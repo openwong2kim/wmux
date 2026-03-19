@@ -8,20 +8,12 @@ interface SurfaceTabsProps {
   onAdd: () => void;
 }
 
-export default function SurfaceTabs({ surfaces, activeSurfaceId, onSelect, onClose, onAdd }: SurfaceTabsProps) {
-  // Surface가 1개 이하일 때는 탭 목록을 숨기되 + 버튼만 표시
+export default function SurfaceTabs({ surfaces, activeSurfaceId, onSelect, onClose }: SurfaceTabsProps) {
+  // Hide the tab bar entirely when there is only one surface — no tabs needed.
+  // The X close button on a single tab would close the pane itself (handled by Pane.tsx),
+  // so it is more intuitive to simply not show the tab strip in the single-tab case.
   if (surfaces.length <= 1) {
-    return (
-      <div className="flex items-center justify-end h-7 bg-[#181825] border-b border-[#313244] px-1">
-        <button
-          className="px-2 h-full text-[#6c7086] hover:text-[#a6e3a1] text-xs transition-colors"
-          onClick={onAdd}
-          title="New tab (Ctrl+T)"
-        >
-          +
-        </button>
-      </div>
-    );
+    return null;
   }
 
   return (
@@ -37,21 +29,16 @@ export default function SurfaceTabs({ surfaces, activeSurfaceId, onSelect, onClo
           onClick={() => onSelect(s.id)}
         >
           <span className="truncate max-w-[120px]">{s.title || 'Terminal'}</span>
+          {/* X close button — always visible, not just on hover */}
           <button
-            className="opacity-0 group-hover:opacity-100 text-[#6c7086] hover:text-[#f38ba8] transition-opacity ml-1"
+            className="text-[#6c7086] hover:text-[#f38ba8] transition-colors ml-1 leading-none"
             onClick={(e) => { e.stopPropagation(); onClose(s.id); }}
+            title="Close tab"
           >
             ✕
           </button>
         </div>
       ))}
-      <button
-        className="px-2 h-full text-[#6c7086] hover:text-[#a6e3a1] text-xs transition-colors"
-        onClick={onAdd}
-        title="New surface (Ctrl+T)"
-      >
-        +
-      </button>
     </div>
   );
 }

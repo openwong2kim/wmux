@@ -5,16 +5,17 @@ import PaneComponent from './Pane';
 
 interface PaneContainerProps {
   pane: PaneType;
+  isWorkspaceVisible?: boolean;
 }
 
-export default function PaneContainer({ pane }: PaneContainerProps) {
+export default function PaneContainer({ pane, isWorkspaceVisible = true }: PaneContainerProps) {
   const activePaneId = useStore((s) => {
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
     return ws?.activePaneId || '';
   });
 
   if (pane.type === 'leaf') {
-    return <PaneComponent pane={pane} isActive={pane.id === activePaneId} />;
+    return <PaneComponent pane={pane} isActive={pane.id === activePaneId} isWorkspaceVisible={isWorkspaceVisible} />;
   }
 
   const orientation = pane.direction === 'horizontal' ? 'horizontal' : 'vertical';
@@ -31,7 +32,7 @@ export default function PaneContainer({ pane }: PaneContainerProps) {
             />
           )}
           <Panel defaultSize={pane.sizes?.[i] ?? 100 / pane.children.length} minSize={10}>
-            <PaneContainer pane={child} />
+            <PaneContainer pane={child} isWorkspaceVisible={isWorkspaceVisible} />
           </Panel>
         </div>
       ))}

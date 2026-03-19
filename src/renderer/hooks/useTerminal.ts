@@ -6,27 +6,37 @@ import { SearchAddon } from '@xterm/addon-search';
 
 interface UseTerminalOptions {
   ptyId: string | null;
+  /** Combined visibility flag: true only when the terminal's workspace AND surface tab are both active.
+   *  When false the terminal DOM container may be hidden (display:none / zero-size). */
+  isVisible?: boolean;
 }
 
 export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>, options: UseTerminalOptions) {
   const terminalRef = useRef<Terminal | null>(null);
   const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
-  const { ptyId } = options;
+  const { ptyId, isVisible = true } = options;
 
   const fit = useCallback(() => {
-    if (fitAddonRef.current && terminalRef.current) {
-      try {
-        fitAddonRef.current.fit();
-        if (ptyId) {
-          const { cols, rows } = terminalRef.current;
+    const container = containerRef.current;
+    if (!fitAddonRef.current || !terminalRef.current || !container) return;
+    // Guard: skip fit entirely when the container is hidden (zero dimensions).
+    // Calling fit() on a display:none element produces 0 cols/rows which
+    // corrupts the xterm buffer and causes the "infinite copy downward" bug.
+    if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
+    try {
+      fitAddonRef.current.fit();
+      if (ptyId) {
+        const { cols, rows } = terminalRef.current;
+        // Never send 0-size resize to PTY — that corrupts the terminal buffer.
+        if (cols > 0 && rows > 0) {
           window.electronAPI.pty.resize(ptyId, cols, rows);
         }
-      } catch {
-        // ignore fit errors during unmount
       }
+    } catch {
+      // ignore fit errors during unmount
     }
-  }, [ptyId]);
+  }, [ptyId, containerRef]);
 
   useEffect(() => {
     const container = containerRef.current;
@@ -80,7 +90,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       console.warn('WebGL addon failed, using canvas renderer');
     }
 
-    fitAddon.fit();
+    // Only fit immediately if the container is actually visible (non-zero size).
+    // If the workspace starts hidden (display:none), skip the initial fit so we
+    // don't corrupt the terminal with 0 cols/rows. The visibility-watcher effect
+    // below will trigger a proper fit when the workspace is shown.
+    if (container.offsetWidth > 0 && container.offsetHeight > 0) {
+      fitAddon.fit();
+    }
 
     // Clipboard handling
     terminal.attachCustomKeyEventHandler((e) => {
@@ -153,20 +169,28 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
     });
 
-    // Resize PTY on initial fit
+    // Resize PTY on initial fit — only when we actually have valid dimensions.
     const { cols, rows } = terminal;
-    window.electronAPI.pty.resize(ptyId, cols, rows);
+    if (cols > 0 && rows > 0) {
+      window.electronAPI.pty.resize(ptyId, cols, rows);
+    }
 
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
 
-    // ResizeObserver for auto-fit — preserves user scroll position across resize
+    // ResizeObserver for auto-fit — preserves user scroll position across resize.
+    // IMPORTANT: skip when the container has zero dimensions (display:none workspace).
+    // Fitting a hidden terminal produces 0 cols/rows, which corrupts the PTY buffer
+    // and manifests as "infinite content duplication" when switching back to it.
     const resizeObserver = new ResizeObserver(() => {
       requestAnimationFrame(() => {
         try {
           const term = terminalRef.current;
           if (!term) return;
+
+          // Skip entirely if container is hidden/zero-size
+          if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
 
           // Snapshot scroll state before fit() reflows the buffer
           const prevYBase = term.buffer.active.baseY;
@@ -185,7 +209,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           }
 
           const { cols, rows } = term;
-          window.electronAPI.pty.resize(ptyId, cols, rows);
+          // Never send 0-size resize to PTY
+          if (cols > 0 && rows > 0) {
+            window.electronAPI.pty.resize(ptyId, cols, rows);
+          }
         } catch {
           // ignore fit errors during unmount
         }
@@ -203,6 +230,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       searchAddonRef.current = null;
     };
   }, [ptyId, containerRef]);
+
+  // Re-fit when the terminal becomes visible (workspace switch or surface tab switch).
+  // Without this, a terminal that was initialized while hidden (0-size) will display
+  // at the wrong size until the next manual resize.
+  useEffect(() => {
+    if (!isVisible) return;
+    // Defer slightly to allow the CSS display change to take effect before measuring
+    const id = requestAnimationFrame(() => {
+      fit();
+    });
+    return () => cancelAnimationFrame(id);
+  }, [isVisible, fit]);
 
   const findNext = useCallback((text: string) => {
     searchAddonRef.current?.findNext(text, {

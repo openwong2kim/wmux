@@ -101,7 +101,7 @@ export default function AppLayout() {
                 flexDirection: 'column',
               }}
             >
-              <PaneContainer pane={ws.rootPane} />
+              <PaneContainer pane={ws.rootPane} isWorkspaceVisible={ws.id === activeWorkspaceId} />
             </div>
           ))}
         </div>

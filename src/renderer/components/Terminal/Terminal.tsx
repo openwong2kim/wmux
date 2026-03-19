@@ -10,10 +10,16 @@ interface TerminalProps {
   shell?: string;
   cwd?: string;
   onPtyCreated?: (ptyId: string) => void;
+  /** True when this surface tab is the selected tab inside its pane. */
   isActive?: boolean;
+  /** True when the parent workspace is the currently visible workspace.
+   *  False when the workspace is hidden via display:none in AppLayout.
+   *  Defaults to true so callers that don't use the all-workspaces rendering
+   *  pattern continue to work without changes. */
+  isWorkspaceVisible?: boolean;
 }
 
-export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, onPtyCreated, isActive = true }: TerminalProps) {
+export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, onPtyCreated, isActive = true, isWorkspaceVisible = true }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [ptyId, setPtyId] = useState<string | null>(externalPtyId || null);
   const creatingRef = useRef(false);
@@ -46,7 +52,10 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     return () => { cancelled = true; };
   }, [externalPtyId, shell, cwd]); // onPtyCreated 제거 (stale closure 방지)
 
-  const { terminal: terminalRef, findNext, findPrevious, clearSearch } = useTerminal(containerRef, { ptyId });
+  // isVisible = workspace is shown AND this surface tab is the active one.
+  // useTerminal uses this to skip fit() when the container is display:none.
+  const isVisible = isWorkspaceVisible && isActive;
+  const { terminal: terminalRef, findNext, findPrevious, clearSearch } = useTerminal(containerRef, { ptyId, isVisible });
 
   const showViCopyMode = viCopyModeActive && isActive && terminalRef.current !== null;
   const showSearchBar = searchBarVisible && isActive;

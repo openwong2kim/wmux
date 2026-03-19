@@ -8,9 +8,10 @@ import SurfaceTabs from './SurfaceTabs';
 interface PaneProps {
   pane: PaneLeaf;
   isActive: boolean;
+  isWorkspaceVisible?: boolean;
 }
 
-export default function PaneComponent({ pane, isActive }: PaneProps) {
+export default function PaneComponent({ pane, isActive, isWorkspaceVisible = true }: PaneProps) {
   const [flashing, setFlashing] = useState(false);
   const setActivePane = useStore((s) => s.setActivePane);
   const setActiveSurface = useStore((s) => s.setActiveSurface);
@@ -101,6 +102,7 @@ export default function PaneComponent({ pane, isActive }: PaneProps) {
               key={surface.id}
               ptyId={surface.ptyId || undefined}
               isActive={surface.id === pane.activeSurfaceId}
+              isWorkspaceVisible={isWorkspaceVisible}
               onPtyCreated={(ptyId) => updateSurfacePtyId(pane.id, surface.id, ptyId)}
             />
           )

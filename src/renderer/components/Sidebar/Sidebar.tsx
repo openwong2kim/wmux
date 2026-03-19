@@ -1,4 +1,3 @@
-import { useRef } from 'react';
 import { useStore } from '../../stores';
 import WorkspaceItem from './WorkspaceItem';
 import type { Pane } from '../../../shared/types';
@@ -22,40 +21,15 @@ export default function Sidebar() {
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const renameWorkspace = useStore((s) => s.renameWorkspace);
   const reorderWorkspace = useStore((s) => s.reorderWorkspace);
-  const splitPane = useStore((s) => s.splitPane);
-
-  // Ctrl+클릭으로 분할에 추가된 워크스페이스 ID 추적
-  const splitWsIds = useRef(new Set<string>());
-
   const handleCtrlSelect = (wsId: string) => {
-    // 이미 분할에 추가된 워크스페이스면 무시 (중복 방지)
-    if (wsId === activeWorkspaceId || splitWsIds.current.has(wsId)) return;
-
-    const state = useStore.getState();
-    const activeWs = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-    if (!activeWs) return;
-
-    // 분할
-    splitPane(activeWs.activePaneId, 'horizontal');
-    splitWsIds.current.add(wsId);
-
-    // 분할 후 새 Pane에 터미널 생성
-    const newState = useStore.getState();
-    const newWs = newState.workspaces.find((w) => w.id === newState.activeWorkspaceId);
-    if (!newWs) return;
-
-    window.electronAPI.pty.create().then((result: { id: string }) => {
-      useStore.getState().addSurface(newWs.activePaneId, result.id, 'Terminal', '');
-    });
+    // Just switch to the workspace (don't split)
+    setActiveWorkspace(wsId);
   };
 
   const handleClose = (wsId: string) => {
     // 삭제 전 해당 워크스페이스의 모든 PTY 정리
     const ws = workspaces.find((w) => w.id === wsId);
     if (ws) disposeAllPtys(ws.rootPane);
-
-    // 분할 추적에서도 제거
-    splitWsIds.current.delete(wsId);
 
     removeWorkspace(wsId);
   };
