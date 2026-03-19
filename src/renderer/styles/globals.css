@@ -17,6 +17,25 @@ html, body, #root {
   font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
 }
 
+/* Custom scrollbar — matches terminal dark theme */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: transparent;
+}
+::-webkit-scrollbar-thumb {
+  background: #313244;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #45475a;
+}
+::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 /* Notification ring pulse on inactive panes with unread notifications */
 @keyframes notification-ring-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(137, 180, 250, 0.4); }
