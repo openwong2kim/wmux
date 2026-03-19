@@ -114,27 +114,28 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         return true; // no selection → SIGINT
       }
 
-      // Ctrl+V: paste from clipboard
+      // Ctrl+V: paste from clipboard (use our IPC clipboard, block event
+      // so xterm doesn't also paste via browser's native paste event)
       if (e.ctrlKey && !e.shiftKey && e.key === 'v') {
+        e.preventDefault();
         void window.clipboardAPI.readText().then((text) => {
-          console.log('[wmux:clipboard] Ctrl+V len=', text?.length ?? 0);
           if (text) window.electronAPI.pty.write(ptyId, text);
-        }).catch((err) => console.error('[wmux:clipboard] Ctrl+V error:', err));
+        }).catch(() => {});
         return false;
       }
 
-      // Ctrl+Shift+C/V still work as fallback
+      // Ctrl+Shift+C: copy fallback
       if (e.ctrlKey && e.shiftKey && e.key === 'C') {
         const sel = terminal.getSelection();
-        console.log('[wmux:clipboard] Ctrl+Shift+C sel=', sel ? `"${sel.slice(0, 50)}..."` : 'none');
         if (sel) void window.clipboardAPI.writeText(sel);
         return false;
       }
+      // Ctrl+Shift+V: paste fallback
       if (e.ctrlKey && e.shiftKey && e.key === 'V') {
+        e.preventDefault();
         void window.clipboardAPI.readText().then((text) => {
-          console.log('[wmux:clipboard] Ctrl+Shift+V len=', text?.length ?? 0);
           if (text) window.electronAPI.pty.write(ptyId, text);
-        }).catch((err) => console.error('[wmux:clipboard] Ctrl+Shift+V error:', err));
+        }).catch(() => {});
         return false;
       }
 
