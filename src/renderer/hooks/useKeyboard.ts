@@ -160,6 +160,13 @@ export function useKeyboard() {
         return;
       }
 
+      // Ctrl+Shift+M: Toggle message feed panel
+      if (ctrl && shift && !alt && key === 'm') {
+        e.preventDefault();
+        store.getState().toggleMessageFeed();
+        return;
+      }
+
       // Ctrl+K: Toggle command palette
       if (ctrl && !shift && !alt && key === 'k') {
         e.preventDefault();
@@ -236,9 +243,16 @@ export function useKeyboard() {
         return;
       }
 
+      // Ctrl+Shift+O: Toggle Company View overlay
+      if (ctrl && shift && !alt && key === 'O') {
+        e.preventDefault();
+        store.getState().toggleCompanyView();
+        return;
+      }
     };
 
-    window.addEventListener('keydown', handler);
-    return () => window.removeEventListener('keydown', handler);
+    // Use capture phase so we run BEFORE xterm's stopPropagation
+    window.addEventListener('keydown', handler, true);
+    return () => window.removeEventListener('keydown', handler, true);
   }, []);
 }
