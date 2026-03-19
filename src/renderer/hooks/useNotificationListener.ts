@@ -16,6 +16,10 @@ function findSurfaceByPtyId(root: Pane, ptyId: string): { surfaceId: string; pan
   return null;
 }
 
+// Throttle notification sounds — min 2s between sounds of same type
+const lastSoundTime: Record<string, number> = {};
+const SOUND_THROTTLE_MS = 2000;
+
 export function useNotificationListener() {
   useEffect(() => {
     const unsubNotif = window.electronAPI.notification.onNew((ptyId, data) => {
@@ -31,9 +35,14 @@ export function useNotificationListener() {
             title: data.title,
             body: data.body,
           });
-          // Play sound if enabled
+          // Play sound if enabled (throttled)
           if (useStore.getState().notificationSoundEnabled) {
-            playNotificationSound(data.type as NotificationType);
+            const now = Date.now();
+            const key = data.type;
+            if (!lastSoundTime[key] || now - lastSoundTime[key] > SOUND_THROTTLE_MS) {
+              lastSoundTime[key] = now;
+              playNotificationSound(data.type as NotificationType);
+            }
           }
           break;
         }

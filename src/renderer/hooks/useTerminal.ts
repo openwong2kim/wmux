@@ -4,6 +4,22 @@ import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
 
+// Lightweight copy feedback toast — injects/removes a DOM element
+let copyToastTimer: ReturnType<typeof setTimeout> | null = null;
+function showCopyToast() {
+  let el = document.getElementById('wmux-copy-toast');
+  if (!el) {
+    el = document.createElement('div');
+    el.id = 'wmux-copy-toast';
+    el.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#a6e3a1;color:#1e1e2e;font-family:monospace;font-size:11px;font-weight:600;padding:3px 12px;border-radius:4px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s';
+    document.body.appendChild(el);
+  }
+  el.textContent = 'Copied!';
+  el.style.opacity = '1';
+  if (copyToastTimer) clearTimeout(copyToastTimer);
+  copyToastTimer = setTimeout(() => { el!.style.opacity = '0'; }, 1200);
+}
+
 interface UseTerminalOptions {
   ptyId: string | null;
   /** Combined visibility flag: true only when the terminal's workspace AND surface tab are both active.
@@ -105,10 +121,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Ctrl+C: copy if selection exists, otherwise send SIGINT
       if (e.ctrlKey && !e.shiftKey && e.key === 'c') {
         const sel = terminal.getSelection();
-        console.log('[wmux:clipboard] Ctrl+C sel=', sel ? `"${sel.slice(0, 50)}..."` : 'none');
         if (sel) {
           void window.clipboardAPI.writeText(sel);
           terminal.clearSelection();
+          showCopyToast();
           return false;
         }
         return true; // no selection → SIGINT
@@ -127,7 +143,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Ctrl+Shift+C: copy fallback
       if (e.ctrlKey && e.shiftKey && e.key === 'C') {
         const sel = terminal.getSelection();
-        if (sel) void window.clipboardAPI.writeText(sel);
+        if (sel) {
+          void window.clipboardAPI.writeText(sel);
+          showCopyToast();
+        }
         return false;
       }
       // Ctrl+Shift+V: paste fallback
