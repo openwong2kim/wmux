@@ -40,27 +40,26 @@ export class PTYBridge {
         case 9:   // Windows Terminal notification
         case 99:  // iTerm2 notification
         case 777: // rxvt-unicode notification
-          win.webContents.send(IPC.NOTIFICATION, ptyId, {
-            type: 'info' as const,
-            title: 'Terminal',
-            body: event.data,
-          });
-          this.toastManager.show('Terminal', event.data);
+          // Silently ignore — no notification, no sound
           break;
       }
     });
 
-    // Handle agent detection events
-    agentDetector.onEvent((agentEvent) => {
+    // Handle agent detection events — status tracking only, no notification/sound
+    agentDetector.onEvent(() => {
+      // Agent status is tracked internally by AgentDetector.
+      // No notification or sound — these fire too frequently and flood the UI.
+    });
+
+    // Handle critical action events — send approval request to renderer
+    agentDetector.onCritical((criticalEvent) => {
       const win = this.getWindow();
       if (!win || win.isDestroyed()) return;
 
-      win.webContents.send(IPC.NOTIFICATION, ptyId, {
-        type: 'agent' as const,
-        title: agentEvent.agent,
-        body: agentEvent.message,
+      win.webContents.send(IPC.APPROVAL_REQUEST, ptyId, {
+        action: criticalEvent.action,
+        riskLevel: criticalEvent.riskLevel,
       });
-      this.toastManager.show(agentEvent.agent, agentEvent.message);
     });
 
     instance.process.onData((data: string) => {
