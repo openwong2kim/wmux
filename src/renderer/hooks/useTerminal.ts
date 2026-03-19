@@ -114,9 +114,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fitAddon.fit();
     }
 
-    // Clipboard handling
+    // Clipboard + shortcut handling
     terminal.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
+
+      // Pass app shortcuts through to useKeyboard (don't let xterm consume them)
+      if (e.ctrlKey && !e.shiftKey && [',', 'b', 'k', 'i', 'n', 't'].includes(e.key)) {
+        return false; // let DOM bubble to useKeyboard
+      }
+      if (e.ctrlKey && e.shiftKey) {
+        return false; // all Ctrl+Shift combos → app shortcuts
+      }
 
       // Ctrl+C: copy if selection exists, otherwise send SIGINT
       if (e.ctrlKey && !e.shiftKey && e.key === 'c') {
