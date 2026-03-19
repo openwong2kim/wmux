@@ -16,9 +16,12 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow): voi
    * Returns the full outer HTML of the current page as a string.
    * params: {}
    */
-  router.register('browser.snapshot', (_params) =>
-    sendToRenderer(getWindow, 'browser.snapshot', {}),
-  );
+  router.register('browser.snapshot', (params) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    return sendToRenderer(getWindow, 'browser.snapshot', {
+      ...(surfaceId && { surfaceId }),
+    });
+  });
 
   /**
    * browser.click
@@ -29,7 +32,11 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow): voi
     if (typeof params['selector'] !== 'string' || params['selector'].length === 0) {
       throw new Error('browser.click: missing required param "selector"');
     }
-    return sendToRenderer(getWindow, 'browser.click', { selector: params['selector'] });
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    return sendToRenderer(getWindow, 'browser.click', {
+      selector: params['selector'],
+      ...(surfaceId && { surfaceId }),
+    });
   });
 
   /**
@@ -44,9 +51,11 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow): voi
     if (typeof params['text'] !== 'string') {
       throw new Error('browser.fill: missing required param "text"');
     }
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     return sendToRenderer(getWindow, 'browser.fill', {
       selector: params['selector'],
       text: params['text'],
+      ...(surfaceId && { surfaceId }),
     });
   });
 
@@ -75,7 +84,11 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow): voi
         throw new Error('browser.eval: code contains blocked pattern');
       }
     }
-    return sendToRenderer(getWindow, 'browser.eval', { code });
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    return sendToRenderer(getWindow, 'browser.eval', {
+      code,
+      ...(surfaceId && { surfaceId }),
+    });
   });
 
   /**
@@ -98,6 +111,10 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow): voi
     ) {
       throw new Error(`browser.navigate: blocked URL scheme`);
     }
-    return sendToRenderer(getWindow, 'browser.navigate', { url });
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    return sendToRenderer(getWindow, 'browser.navigate', {
+      url,
+      ...(surfaceId && { surfaceId }),
+    });
   });
 }
