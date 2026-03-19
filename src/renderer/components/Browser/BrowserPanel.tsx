@@ -1,5 +1,6 @@
 import { useRef, useState, useEffect, useCallback } from 'react';
 import BrowserToolbar from './BrowserToolbar';
+import { useT } from '../../hooks/useT';
 
 // ---------------------------------------------------------------------------
 // Declare the webview element for TypeScript
@@ -41,13 +42,14 @@ interface BrowserPanelProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function BrowserPanel({ initialUrl, isActive, onClose }: BrowserPanelProps) {
+export default function BrowserPanel({ surfaceId, initialUrl, isActive, onClose }: BrowserPanelProps) {
+  const t = useT();
   const webviewRef = useRef<Electron.WebviewTag>(null);
   const [currentUrl, setCurrentUrl] = useState(initialUrl);
   const [isLoading, setIsLoading] = useState(false);
   const [canGoBack, setCanGoBack] = useState(false);
   const [canGoForward, setCanGoForward] = useState(false);
-  const [pageTitle, setPageTitle] = useState('Browser');
+  const [pageTitle, setPageTitle] = useState(() => t('browser.title'));
   const [isReady, setIsReady] = useState(false);
 
   // Update nav state from webview
@@ -92,7 +94,7 @@ export default function BrowserPanel({ initialUrl, isActive, onClose }: BrowserP
     };
 
     const onTitleUpdated = (e: Electron.PageTitleUpdatedEvent) => {
-      setPageTitle(e.title || 'Browser');
+      setPageTitle(e.title || t('browser.title'));
     };
 
     wv.addEventListener('dom-ready', onDomReady);
@@ -204,6 +206,7 @@ export default function BrowserPanel({ initialUrl, isActive, onClose }: BrowserP
           ref={webviewRef as React.RefObject<Electron.WebviewTag>}
           src={initialUrl}
           partition="persist:browser"
+          data-surface-id={surfaceId}
           style={{
             width: '100%',
             height: '100%',
