@@ -11,7 +11,14 @@ const config: ForgeConfig = {
     asar: true,
     icon: './assets/icon',
   },
-  rebuildConfig: {},
+  rebuildConfig: { disablePreGypRecuild: true },
+  hooks: {
+    // Skip native rebuild — pre-built binaries already in node_modules
+    readPackageJson: async (_config, packageJson) => {
+      packageJson.dependencies = packageJson.dependencies || {};
+      return packageJson;
+    },
+  },
   makers: [
     new MakerSquirrel({}),
     new MakerZIP({}, ['darwin']),

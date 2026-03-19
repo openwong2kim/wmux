@@ -1,8 +1,8 @@
 # wmux
 
-> AI Agent Terminal for Windows — Run Claude Code, Codex, Gemini CLI in parallel
+> Terminal multiplexer for Windows with built-in browser, notifications, and AI agent status detection.
 
-Windows-native terminal with AI agent orchestration, built-in browser, notification system, and Company Mode for managing multi-agent teams.
+Windows-native terminal multiplexer with workspaces, panes, tabs, integrated browser, notification system, CLI/API access, and session management.
 
 ## Quick Install
 
@@ -30,6 +30,21 @@ npm start
 - Node.js 18+
 - Git
 
+## Features
+
+- **Terminal**: xterm.js + WebGL GPU rendering, ConPTY, PowerShell native
+- **Workspaces**: Vertical sidebar, drag-and-drop, Ctrl+1~9 switching
+- **Split Panes**: Ctrl+D / Ctrl+Shift+D, directional focus
+- **In-App Browser**: Ctrl+Shift+L, scriptable API
+- **Notifications**: OSC 9/99/777, rings, toast, Ctrl+I panel
+- **AI Agent Status**: Detects Claude Code, Cursor, Aider, Codex, Gemini, Copilot, OpenCode
+- **Command Palette**: Ctrl+K fuzzy search
+- **Terminal Search**: Ctrl+F
+- **Vi Copy Mode**: Ctrl+Shift+X
+- **CLI + API**: Named Pipe JSON-RPC, `wmux` CLI
+- **Session Management**: Save and restore sessions
+- **i18n**: English, Korean, Japanese, Chinese
+
 ## Usage
 
 ```bash
@@ -39,20 +54,23 @@ npm run make           # Create installer
 wmux --help            # CLI commands
 ```
 
-## Features
+## CLI Examples
 
-- **Terminal**: xterm.js + WebGL GPU rendering, ConPTY, PowerShell native
-- **Workspaces**: Vertical sidebar, drag-and-drop, Ctrl+1~9 switching
-- **Split Panes**: Ctrl+D / Ctrl+Shift+D, directional focus
-- **In-App Browser**: Ctrl+Shift+L, scriptable API
-- **Notifications**: OSC 9/99/777, rings, toast, Ctrl+I panel
-- **AI Agent Detection**: Claude Code, Codex, Gemini, Copilot, OpenCode, Aider
-- **Command Palette**: Ctrl+K fuzzy search
-- **Terminal Search**: Ctrl+F
-- **Vi Copy Mode**: Ctrl+Shift+X
-- **CLI + API**: Named Pipe JSON-RPC, `wmux` CLI
-- **i18n**: English, Korean, Japanese, Chinese
-- **Company Mode**: Multi-agent team management with file-based communication
+```bash
+# Workspace management
+wmux workspace create "MyWorkspace"
+wmux workspace list
+wmux workspace switch "MyWorkspace"
+
+# Pane operations
+wmux pane split-right
+wmux pane split-down
+wmux pane send-text "echo hello"
+
+# Surface (browser)
+wmux surface open "https://example.com"
+wmux surface eval "window.location"
+```
 
 ## Keyboard Shortcuts
 
@@ -69,22 +87,16 @@ wmux --help            # CLI commands
 | Ctrl+I | Notifications |
 | Ctrl+, | Settings |
 | Ctrl+Shift+L | Open browser |
-| Ctrl+Shift+O | Company view |
 | Ctrl+Shift+H | Flash pane |
-
-## Company Mode
-
-Create AI agent teams with pre-configured roles:
-
-```bash
-# Templates: Full-Stack, Startup MVP, Code Review, Enterprise
-# CEO → Department Leads → Team Members
-# File-based async communication (.wmux/ directory)
-```
+| Ctrl+1~9 | Switch workspace |
 
 ## Tech Stack
 
 Electron 41 + React 19 + TypeScript 5.9 + Tailwind 3 + Zustand 5 + xterm.js 6 + node-pty
+
+## Note on AI Agents
+
+WinMux detects AI coding agents for status display purposes only. It does not call any AI APIs, capture agent outputs, or automate agent interactions. Users are responsible for complying with their AI provider's Terms of Service.
 
 ## License
 

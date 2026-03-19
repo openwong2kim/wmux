@@ -1,3 +1,7 @@
+// Terminal agent status detection — monitors PTY output for known AI agent
+// prompt patterns and status indicators. This is status display only;
+// no content is captured, stored, or transmitted.
+
 export interface AgentEvent {
   agent: string;
   status: 'completed' | 'waiting' | 'running' | 'error';
