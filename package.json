@@ -49,6 +49,7 @@
     "vite": "^5.4.21"
   },
   "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.27.1",
     "@xterm/addon-fit": "^0.11.0",
     "@xterm/addon-search": "^0.16.0",
     "@xterm/addon-webgl": "^0.19.0",
@@ -59,6 +60,7 @@
     "react": "^19.2.4",
     "react-dom": "^19.2.4",
     "react-resizable-panels": "^4.7.3",
+    "zod": "^4.3.6",
     "zustand": "^5.0.12"
   }
 }
