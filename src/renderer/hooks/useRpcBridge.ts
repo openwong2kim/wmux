@@ -256,24 +256,27 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // -------------------------------------------------------------------------
 
   if (method === 'browser.snapshot') {
-    return handleBrowserSnapshot(store);
+    const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
+    return handleBrowserSnapshot(store, surfaceId);
   }
 
   if (method === 'browser.click') {
     const selector = typeof params.selector === 'string' ? params.selector : '';
     if (!selector) return { error: 'browser.click: missing selector' };
+    const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
     return handleBrowserExec(store, `
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) throw new Error('Element not found: ' + ${JSON.stringify(selector)});
       el.click();
       return { ok: true, selector: ${JSON.stringify(selector)} };
-    `);
+    `, surfaceId);
   }
 
   if (method === 'browser.fill') {
     const selector = typeof params.selector === 'string' ? params.selector : '';
     const text = typeof params.text === 'string' ? params.text : '';
     if (!selector) return { error: 'browser.fill: missing selector' };
+    const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
     return handleBrowserExec(store, `
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) throw new Error('Element not found: ' + ${JSON.stringify(selector)});
@@ -286,7 +289,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         el.value = ${JSON.stringify(text)};
       }
       return { ok: true };
-    `);
+    `, surfaceId);
   }
 
   if (method === 'browser.eval') {
@@ -308,7 +311,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         return { error: 'browser.eval: code contains blocked pattern' };
       }
     }
-    return handleBrowserExec(store, code);
+    const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
+    return handleBrowserExec(store, code, surfaceId);
   }
 
   if (method === 'browser.navigate') {
@@ -324,7 +328,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     ) {
       return { error: `browser.navigate: blocked URL scheme in "${url}"` };
     }
-    return handleBrowserNavigate(store, url);
+    const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
+    return handleBrowserNavigate(store, url, surfaceId);
   }
 
   // -------------------------------------------------------------------------
@@ -372,10 +377,29 @@ function findActiveBrowserWebview(
   return { error: 'browser: no active browser surface found' };
 }
 
+/**
+ * Finds a specific browser Surface's webview by surfaceId.
+ * Falls back to findActiveBrowserWebview if surfaceId is not provided.
+ */
+function findBrowserWebviewBySurfaceId(
+  store: ReturnType<typeof import('../stores').useStore.getState>,
+  surfaceId?: string,
+): HTMLElement | { error: string } {
+  if (!surfaceId) return findActiveBrowserWebview(store);
+
+  const safeSurfaceId = CSS.escape(surfaceId);
+  const webview = document.querySelector<HTMLElement>(
+    `webview[data-surface-id="${safeSurfaceId}"]`,
+  );
+  if (webview) return webview;
+  return { error: `browser: surface ${surfaceId} not found or not a browser` };
+}
+
 async function handleBrowserSnapshot(
   store: ReturnType<typeof import('../stores').useStore.getState>,
+  surfaceId?: string,
 ): Promise<unknown> {
-  const webview = findActiveBrowserWebview(store);
+  const webview = findBrowserWebviewBySurfaceId(store, surfaceId);
   if ('error' in webview) return webview;
 
   // Electron's <webview> exposes executeJavaScript as a method.
@@ -387,8 +411,9 @@ async function handleBrowserSnapshot(
 async function handleBrowserExec(
   store: ReturnType<typeof import('../stores').useStore.getState>,
   code: string,
+  surfaceId?: string,
 ): Promise<unknown> {
-  const webview = findActiveBrowserWebview(store);
+  const webview = findBrowserWebviewBySurfaceId(store, surfaceId);
   if ('error' in webview) return webview;
 
   const wv = webview as HTMLElement & { executeJavaScript: (code: string) => Promise<unknown> };
@@ -399,8 +424,9 @@ async function handleBrowserExec(
 async function handleBrowserNavigate(
   store: ReturnType<typeof import('../stores').useStore.getState>,
   url: string,
+  surfaceId?: string,
 ): Promise<unknown> {
-  const webview = findActiveBrowserWebview(store);
+  const webview = findBrowserWebviewBySurfaceId(store, surfaceId);
   if ('error' in webview) return webview;
 
   const wv = webview as HTMLElement & { loadURL: (url: string) => Promise<void> };
