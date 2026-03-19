@@ -7,6 +7,9 @@ import StatusBar from '../StatusBar/StatusBar';
 import NotificationPanel from '../Notification/NotificationPanel';
 import CommandPalette from '../Palette/CommandPalette';
 import SettingsPanel from '../Settings/SettingsPanel';
+import ApprovalDialog from '../Company/ApprovalDialog';
+import CompanyView from '../Company/CompanyView';
+import MessageFeedPanel from '../Company/MessageFeedPanel';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
@@ -14,6 +17,8 @@ import type { SessionData } from '../../../shared/types';
 
 export default function AppLayout() {
   const sidebarVisible = useStore((s) => s.sidebarVisible);
+  const companyViewVisible = useStore((s) => s.companyViewVisible);
+  const setCompanyViewVisible = useStore((s) => s.setCompanyViewVisible);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const workspaces = useStore((s) => s.workspaces);
   const addSurface = useStore((s) => s.addSurface);
@@ -36,10 +41,16 @@ export default function AppLayout() {
   useEffect(() => {
     const saveSession = () => {
       const state = useStore.getState();
+      // Strip dangerous flags from session persistence
+      const companySafe = state.company ? { ...state.company, skipPermissions: undefined } : null;
       const data: SessionData = {
         workspaces: state.workspaces,
         activeWorkspaceId: state.activeWorkspaceId,
         sidebarVisible: state.sidebarVisible,
+        sidebarMode: state.sidebarMode,
+        company: companySafe,
+        memberCosts: state.memberCosts,
+        sessionStartTime: state.sessionStartTime,
       };
       window.electronAPI.session.save(data);
     };
@@ -83,7 +94,7 @@ export default function AppLayout() {
   if (!activeWorkspace) return null;
 
   return (
-    <div className="flex h-screen w-screen bg-[#1e1e2e] overflow-hidden">
+    <div className="flex h-screen w-screen bg-[#1e1e2e] overflow-hidden" onDragOver={(e) => e.preventDefault()} onDrop={(e) => e.preventDefault()}>
       {sidebarVisible ? <Sidebar /> : <MiniSidebar />}
       <div className="flex-1 min-w-0 flex flex-col">
         <StatusBar />
@@ -107,8 +118,13 @@ export default function AppLayout() {
         </div>
       </div>
       <NotificationPanel />
+      <MessageFeedPanel />
       <CommandPalette />
       <SettingsPanel />
+      <ApprovalDialog />
+      {companyViewVisible && (
+        <CompanyView onClose={() => setCompanyViewVisible(false)} />
+      )}
     </div>
   );
 }

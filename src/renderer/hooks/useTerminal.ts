@@ -179,26 +179,35 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     });
 
     // Drag-and-drop: paste file paths into terminal
-    const handleDragOver = (e: DragEvent) => {
+    // Use the xterm element + capture phase — xterm's internal canvas blocks
+    // normal event propagation on the container div.
+    const xtermEl = terminal.element;
+    const handleDragOver = (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      const de = e as DragEvent;
+      if (de.dataTransfer) de.dataTransfer.dropEffect = 'copy';
     };
-    const handleDrop = (e: DragEvent) => {
+    const handleDrop = (e: Event) => {
       e.preventDefault();
       e.stopPropagation();
-      const files = e.dataTransfer?.files;
+      const de = e as DragEvent;
+      const files = de.dataTransfer?.files;
       if (!files || files.length === 0) return;
       const paths: string[] = [];
       for (let i = 0; i < files.length; i++) {
         paths.push((files[i] as File & { path: string }).path);
       }
-      // Quote paths with spaces, join multiple with space
       const text = paths.map((p) => (p.includes(' ') ? `"${p}"` : p)).join(' ');
       window.electronAPI.pty.write(ptyId, text);
     };
-    container.addEventListener('dragover', handleDragOver);
-    container.addEventListener('drop', handleDrop);
+    if (xtermEl) {
+      xtermEl.addEventListener('dragover', handleDragOver, true);
+      xtermEl.addEventListener('drop', handleDrop, true);
+    }
+    // Also on container as fallback
+    container.addEventListener('dragover', handleDragOver, true);
+    container.addEventListener('drop', handleDrop, true);
 
     // Forward user input to PTY
     terminal.onData((data) => {
@@ -271,8 +280,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     resizeObserver.observe(container);
 
     return () => {
-      container.removeEventListener('dragover', handleDragOver);
-      container.removeEventListener('drop', handleDrop);
+      if (xtermEl) {
+        xtermEl.removeEventListener('dragover', handleDragOver, true);
+        xtermEl.removeEventListener('drop', handleDrop, true);
+      }
+      container.removeEventListener('dragover', handleDragOver, true);
+      container.removeEventListener('drop', handleDrop, true);
       resizeObserver.disconnect();
       removeDataListener();
       removeExitListener();
