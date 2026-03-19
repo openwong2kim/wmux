@@ -1,0 +1,57 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+html, body, #root {
+  height: 100%;
+  width: 100%;
+  overflow: hidden;
+  background-color: #1e1e2e;
+  color: #cdd6f4;
+  font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
+}
+
+/* Notification ring pulse on inactive panes with unread notifications */
+@keyframes notification-ring-pulse {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(137, 180, 250, 0.4); }
+  50% { box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.2); }
+}
+
+.notification-ring {
+  animation: notification-ring-pulse 2s ease-in-out infinite;
+}
+
+/* Notification panel slide-in */
+@keyframes notification-slide-in {
+  from { transform: translateX(100%); }
+  to { transform: translateX(0); }
+}
+
+.notification-panel-enter {
+  animation: notification-slide-in 0.2s ease-out;
+}
+
+/* Pane flash highlight — Ctrl+Shift+H */
+@keyframes pane-flash {
+  0%   { opacity: 0; }
+  15%  { opacity: 0.35; }
+  70%  { opacity: 0.25; }
+  100% { opacity: 0; }
+}
+
+.pane-flash::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: 2px;
+  background: #89b4fa;
+  pointer-events: none;
+  animation: pane-flash 0.5s ease-out forwards;
+  z-index: 100;
+}

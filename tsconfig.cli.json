@@ -1,0 +1,24 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": "dist/cli",
+    "rootDir": "src",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": [
+    "src/cli/**/*",
+    "src/shared/rpc.ts",
+    "src/shared/constants.ts",
+    "src/shared/types.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "src/main/**/*",
+    "src/renderer/**/*",
+    "src/preload/**/*"
+  ]
+}
