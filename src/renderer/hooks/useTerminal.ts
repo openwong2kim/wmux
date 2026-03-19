@@ -178,6 +178,28 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }).catch((err) => console.error('[wmux:clipboard] right-click error:', err));
     });
 
+    // Drag-and-drop: paste file paths into terminal
+    const handleDragOver = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    };
+    const handleDrop = (e: DragEvent) => {
+      e.preventDefault();
+      e.stopPropagation();
+      const files = e.dataTransfer?.files;
+      if (!files || files.length === 0) return;
+      const paths: string[] = [];
+      for (let i = 0; i < files.length; i++) {
+        paths.push((files[i] as File & { path: string }).path);
+      }
+      // Quote paths with spaces, join multiple with space
+      const text = paths.map((p) => (p.includes(' ') ? `"${p}"` : p)).join(' ');
+      window.electronAPI.pty.write(ptyId, text);
+    };
+    container.addEventListener('dragover', handleDragOver);
+    container.addEventListener('drop', handleDrop);
+
     // Forward user input to PTY
     terminal.onData((data) => {
       window.electronAPI.pty.write(ptyId, data);
@@ -249,6 +271,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     resizeObserver.observe(container);
 
     return () => {
+      container.removeEventListener('dragover', handleDragOver);
+      container.removeEventListener('drop', handleDrop);
       resizeObserver.disconnect();
       removeDataListener();
       removeExitListener();
