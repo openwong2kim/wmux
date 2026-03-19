@@ -1,0 +1,25 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "commonjs",
+    "moduleResolution": "node",
+    "outDir": "dist/mcp",
+    "rootDir": "src",
+    "declaration": false,
+    "sourceMap": false
+  },
+  "include": [
+    "src/mcp/**/*",
+    "src/shared/rpc.ts",
+    "src/shared/constants.ts",
+    "src/shared/types.ts"
+  ],
+  "exclude": [
+    "node_modules",
+    "src/main/**/*",
+    "src/renderer/**/*",
+    "src/preload/**/*",
+    "src/cli/**/*"
+  ]
+}
