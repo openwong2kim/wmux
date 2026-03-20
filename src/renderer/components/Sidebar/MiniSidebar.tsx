@@ -12,15 +12,17 @@ export default function MiniSidebar() {
     s.notifications.filter((n) => !n.read).length,
   );
 
+  const addWorkspace = useStore((s) => s.addWorkspace);
+
   return (
     <div className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 48 }}>
-      {/* Expand button */}
+      {/* Header — new workspace button */}
       <button
-        className="flex items-center justify-center h-10 text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors border-b border-[var(--bg-surface)] font-mono text-[11px]"
-        onClick={toggleSidebar}
-        title={t('sidebar.expandTooltip')}
+        className="flex items-center justify-center h-10 text-[var(--text-subtle)] hover:text-[var(--accent-green)] transition-colors border-b border-[var(--bg-surface)] font-mono text-lg leading-none"
+        onClick={() => addWorkspace()}
+        title={t('sidebar.newWorkspaceTooltip')}
       >
-        ›
+        +
       </button>
 
       {/* Workspace dots */}
@@ -46,7 +48,7 @@ export default function MiniSidebar() {
         })}
       </div>
 
-      {/* Status area */}
+      {/* Footer — expand + status */}
       <div className="flex flex-col items-center gap-2 py-2 border-t border-[var(--bg-surface)]">
         {/* Unread badge */}
         {totalUnread > 0 && (
@@ -59,8 +61,14 @@ export default function MiniSidebar() {
           </button>
         )}
 
-        {/* Workspace count */}
-        <span className="text-[9px] font-mono text-[var(--text-muted)]">{workspaces.length}</span>
+        {/* Expand sidebar button — same position as collapse button in full sidebar */}
+        <button
+          className="w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors font-mono text-[11px]"
+          onClick={toggleSidebar}
+          title={t('sidebar.expandTooltip')}
+        >
+          ▶
+        </button>
       </div>
     </div>
   );
