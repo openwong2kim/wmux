@@ -3,6 +3,19 @@ import BrowserToolbar from './BrowserToolbar';
 import { useT } from '../../hooks/useT';
 
 // ---------------------------------------------------------------------------
+// URL safety check — only allow http: and https: schemes
+// ---------------------------------------------------------------------------
+
+function isSafeUrl(url: string): boolean {
+  try {
+    const parsed = new URL(url);
+    return ['http:', 'https:'].includes(parsed.protocol);
+  } catch {
+    return false;
+  }
+}
+
+// ---------------------------------------------------------------------------
 // Declare the webview element for TypeScript
 // ---------------------------------------------------------------------------
 
@@ -130,6 +143,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, isActive, onClose 
   }, [isActive]);
 
   const handleNavigate = useCallback((url: string) => {
+    if (!isSafeUrl(url)) return;
     const wv = webviewRef.current;
     if (!wv) return;
     if (isReady) {

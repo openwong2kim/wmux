@@ -12,6 +12,11 @@ export class PipeServer {
   private readonly connectedSockets = new Set<net.Socket>();
   private readonly authToken: string;
   private readonly rateLimits = new Map<net.Socket, { count: number; resetAt: number }>();
+  private retryCount = 0;
+  private static readonly MAX_RETRIES = 5;
+  private static readonly MAX_CONNECTIONS = 50;
+  private static readonly GLOBAL_RATE_LIMIT = 200;
+  private globalRate = { count: 0, resetAt: 0 };
 
   constructor(router: RpcRouter) {
     this.router = router;
@@ -27,6 +32,8 @@ export class PipeServer {
       return;
     }
 
+    this.retryCount = 0;
+
     this.server = net.createServer((socket) => {
       this.connectedSockets.add(socket);
       socket.on('close', () => {
@@ -36,9 +43,20 @@ export class PipeServer {
       this.handleConnection(socket);
     });
 
+    this.server.maxConnections = PipeServer.MAX_CONNECTIONS;
+
     this.server.on('error', (err: NodeJS.ErrnoException) => {
       if (err.code === 'EADDRINUSE') {
-        console.warn('[PipeServer] EADDRINUSE — retrying in 1s...');
+        this.retryCount++;
+        if (this.retryCount > PipeServer.MAX_RETRIES) {
+          console.error(
+            `[PipeServer] EADDRINUSE — exceeded max retries (${PipeServer.MAX_RETRIES}). Giving up.`,
+          );
+          return;
+        }
+        console.warn(
+          `[PipeServer] EADDRINUSE — retry ${this.retryCount}/${PipeServer.MAX_RETRIES} in 1s...`,
+        );
         setTimeout(() => {
           if (this.server) {
             this.server.close();
@@ -139,8 +157,37 @@ export class PipeServer {
       return;
     }
 
-    // Rate limiting: max 50 requests per second per socket
+    // Authenticate first: reject unauthenticated requests before consuming rate limit budget.
+    // This prevents unauthenticated attackers from exhausting rate limits to DoS legitimate clients.
+    if (request.token !== this.authToken) {
+      const unauthorizedResponse = JSON.stringify({
+        id: request.id,
+        ok: false,
+        error: 'unauthorized',
+      });
+      socket.write(unauthorizedResponse + '\n');
+      return;
+    }
+
+    // Rate limiting: per-socket (50/s) and global (200/s) — only for authenticated requests
     const now = Date.now();
+
+    // Global rate limit across all sockets
+    if (now > this.globalRate.resetAt) {
+      this.globalRate = { count: 0, resetAt: now + 1000 };
+    }
+    this.globalRate.count++;
+    if (this.globalRate.count > PipeServer.GLOBAL_RATE_LIMIT) {
+      const rateLimitResponse = JSON.stringify({
+        id: request.id,
+        ok: false,
+        error: 'rate limited (global)',
+      });
+      socket.write(rateLimitResponse + '\n');
+      return;
+    }
+
+    // Per-socket rate limit
     let limit = this.rateLimits.get(socket);
     if (!limit || now > limit.resetAt) {
       limit = { count: 0, resetAt: now + 1000 };
@@ -154,17 +201,6 @@ export class PipeServer {
         error: 'rate limited',
       });
       socket.write(rateLimitResponse + '\n');
-      return;
-    }
-
-    // Authenticate: every request must carry a valid token
-    if (request.token !== this.authToken) {
-      const unauthorizedResponse = JSON.stringify({
-        id: request.id,
-        ok: false,
-        error: 'unauthorized',
-      });
-      socket.write(unauthorizedResponse + '\n');
       return;
     }
 

@@ -283,14 +283,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     resizeObserver.observe(container);
 
     return () => {
-      if (xtermEl) {
-        xtermEl.removeEventListener('dragenter', handleDragOver, true);
-        xtermEl.removeEventListener('dragover', handleDragOver, true);
-        xtermEl.removeEventListener('drop', handleDrop, true);
-      }
-      container.removeEventListener('dragenter', handleDragOver, true);
-      container.removeEventListener('dragover', handleDragOver, true);
-      container.removeEventListener('drop', handleDrop, true);
       resizeObserver.disconnect();
       removeDataListener();
       removeExitListener();
@@ -299,7 +291,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fitAddonRef.current = null;
       searchAddonRef.current = null;
     };
-  }, [ptyId, containerRef, terminalFontSize, terminalFontFamily, scrollbackLines, xtermTheme]);
+  }, [ptyId, containerRef]);
+
+  // Apply font/theme changes at runtime without recreating the terminal instance.
+  // This preserves the scrollback buffer when the user tweaks visual settings.
+  useEffect(() => {
+    if (!terminalRef.current) return;
+    terminalRef.current.options.fontSize = terminalFontSize;
+    terminalRef.current.options.fontFamily = `'${terminalFontFamily}', 'Consolas', 'Courier New', monospace`;
+    terminalRef.current.options.theme = xtermTheme;
+    fitAddonRef.current?.fit();
+  }, [terminalFontSize, terminalFontFamily, xtermTheme]);
 
   // Re-fit when the terminal becomes visible (workspace switch or surface tab switch).
   // Without this, a terminal that was initialized while hidden (0-size) will display

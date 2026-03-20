@@ -83,6 +83,8 @@ app.on('ready', () => {
       app.quit();
       return;
     }
+    const activePtys = ptyManager.getActiveInstances();
+    console.log(`[Main] ${activePtys.length} PTY(s) still alive — renderer can reconnect via pty:list after reload`);
     setTimeout(() => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
     }, 1000);
@@ -102,7 +104,6 @@ app.on('ready', () => {
   });
   pipeServer.start();
   const authToken = pipeServer.getAuthToken();
-  ptyManager.setAuthToken(authToken);
   mcpRegistrar.register(authToken);
   autoUpdater.start();
 });
@@ -112,6 +113,24 @@ app.on('window-all-closed', () => {
 });
 
 app.on('before-quit', () => {
+  // Attempt to trigger session save from renderer before quitting.
+  // If renderer is alive, we dispatch a synthetic beforeunload event which
+  // triggers the existing saveSession handler in AppLayout.tsx that calls
+  // session:save IPC. If renderer has crashed, this silently fails and
+  // the last periodic save (protected by atomic writes + .bak backup)
+  // remains intact on disk.
+  if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isCrashed()) {
+    try {
+      mainWindow.webContents.executeJavaScript(`
+        try { window.dispatchEvent(new Event('beforeunload')); } catch(e) {}
+      `).catch(() => {
+        // Renderer unavailable — rely on last periodic save on disk
+      });
+    } catch {
+      // Renderer unavailable — rely on last periodic save on disk
+    }
+  }
+
   cleanupHandlers();
   ptyManager.disposeAll();
   pipeServer.stop();

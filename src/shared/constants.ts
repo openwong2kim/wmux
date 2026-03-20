@@ -6,6 +6,8 @@ export const IPC = {
   PTY_DISPOSE: 'pty:dispose',
   PTY_DATA: 'pty:data',
   PTY_EXIT: 'pty:exit',
+  PTY_LIST: 'pty:list',
+  PTY_RECONNECT: 'pty:reconnect',
   SHELL_LIST: 'shell:list',
   SESSION_SAVE: 'session:save',
   SESSION_LOAD: 'session:load',
@@ -30,6 +32,8 @@ export const IPC = {
   UPDATE_INSTALL: 'update:install',
   // Settings sync (renderer → main)
   TOAST_ENABLED: 'settings:toast-enabled',
+  // Agent critical action approval
+  APPROVAL_REQUEST: 'approval:request',
 } as const;
 
 // Named Pipe path for wmux API
