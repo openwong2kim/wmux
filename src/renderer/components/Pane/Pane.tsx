@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, useMemo } from 'react';
+import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -92,6 +93,57 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
         onAdd={handleAddSurface}
       />
 
+      <SplitSurfaceView
+        pane={pane}
+        activeSurfaceId={pane.activeSurfaceId}
+        isWorkspaceVisible={isWorkspaceVisible}
+        onCloseSurface={handleCloseSurface}
+        onPtyCreated={(surfaceId, ptyId) => updateSurfacePtyId(pane.id, surfaceId, ptyId)}
+        emptyMessage={t('pane.empty')}
+      />
+      </ErrorBoundary>
+    </div>
+  );
+}
+
+/** Renders surfaces with a resizable split when both terminals and browsers coexist */
+function SplitSurfaceView({
+  pane,
+  activeSurfaceId,
+  isWorkspaceVisible,
+  onCloseSurface,
+  onPtyCreated,
+  emptyMessage,
+}: {
+  pane: PaneLeaf;
+  activeSurfaceId: string;
+  isWorkspaceVisible: boolean;
+  onCloseSurface: (id: string) => void;
+  onPtyCreated: (surfaceId: string, ptyId: string) => void;
+  emptyMessage: string;
+}) {
+  const terminals = useMemo(
+    () => pane.surfaces.filter((s) => !s.surfaceType || s.surfaceType === 'terminal'),
+    [pane.surfaces],
+  );
+  const browsers = useMemo(
+    () => pane.surfaces.filter((s) => s.surfaceType === 'browser'),
+    [pane.surfaces],
+  );
+
+  const hasBoth = terminals.length > 0 && browsers.length > 0;
+
+  if (pane.surfaces.length === 0) {
+    return (
+      <div className="flex-1 relative overflow-hidden flex items-center justify-center text-[var(--text-muted)] text-sm">
+        {emptyMessage}
+      </div>
+    );
+  }
+
+  // Only terminals or only browsers — no split needed
+  if (!hasBoth) {
+    return (
       <div className="flex-1 relative overflow-hidden">
         {pane.surfaces.map((surface) =>
           surface.surfaceType === 'browser' ? (
@@ -99,27 +151,59 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
               key={surface.id}
               surfaceId={surface.id}
               initialUrl={surface.browserUrl || 'https://google.com'}
-              isActive={surface.id === pane.activeSurfaceId}
-              onClose={() => handleCloseSurface(surface.id)}
+              isActive={surface.id === activeSurfaceId}
+              onClose={() => onCloseSurface(surface.id)}
             />
           ) : (
             <TerminalComponent
               key={surface.id}
               ptyId={surface.ptyId || undefined}
-              isActive={surface.id === pane.activeSurfaceId}
+              isActive={surface.id === activeSurfaceId}
               isWorkspaceVisible={isWorkspaceVisible}
-              onPtyCreated={(ptyId) => updateSurfacePtyId(pane.id, surface.id, ptyId)}
+              onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
             />
-          )
-        )}
-
-        {pane.surfaces.length === 0 && (
-          <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm">
-            {t('pane.empty')}
-          </div>
+          ),
         )}
       </div>
-      </ErrorBoundary>
+    );
+  }
+
+  // Both terminals and browsers exist — resizable split
+  return (
+    <div className="flex-1 relative overflow-hidden">
+      <Group orientation="horizontal" className="h-full w-full">
+        {/* Terminal panel */}
+        <Panel defaultSize={50} minSize={20}>
+          <div className="h-full w-full relative overflow-hidden">
+            {terminals.map((surface) => (
+              <TerminalComponent
+                key={surface.id}
+                ptyId={surface.ptyId || undefined}
+                isActive={surface.id === activeSurfaceId}
+                isWorkspaceVisible={isWorkspaceVisible}
+                onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
+              />
+            ))}
+          </div>
+        </Panel>
+
+        <Separator className="w-1 bg-[var(--bg-surface)] hover:bg-[var(--accent-blue)] transition-colors cursor-col-resize" />
+
+        {/* Browser panel */}
+        <Panel defaultSize={50} minSize={20}>
+          <div className="h-full w-full relative overflow-hidden">
+            {browsers.map((surface) => (
+              <BrowserPanel
+                key={surface.id}
+                surfaceId={surface.id}
+                initialUrl={surface.browserUrl || 'https://google.com'}
+                isActive={surface.id === activeSurfaceId}
+                onClose={() => onCloseSurface(surface.id)}
+              />
+            ))}
+          </div>
+        </Panel>
+      </Group>
     </div>
   );
 }

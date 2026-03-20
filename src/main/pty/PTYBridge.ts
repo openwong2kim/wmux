@@ -99,6 +99,10 @@ export class PTYBridge {
       });
     });
 
+    // Detect CWD from shell prompt patterns (PowerShell: "PS C:\path>", bash: "user@host:~/path$")
+    const promptCwdRegex = /(?:PS\s+([A-Za-z]:\\[^>]*?)>)|(?:\w+@[\w.-]+:([^\$]+?)\$)/;
+    let lastDetectedCwd = '';
+
     instance.process.onData((data: string) => {
       try {
         this.activityMonitor.feed(ptyId, data.length);
@@ -106,6 +110,18 @@ export class PTYBridge {
         if (win && !win.isDestroyed()) {
           oscParser.process(data);
           agentDetector.feed(data);
+
+          // Detect CWD from prompt output (for shells without OSC 7)
+          const promptMatch = data.match(promptCwdRegex);
+          if (promptMatch) {
+            const detectedCwd = (promptMatch[1] || promptMatch[2] || '').trim();
+            if (detectedCwd && detectedCwd !== lastDetectedCwd) {
+              lastDetectedCwd = detectedCwd;
+              updateCwd(ptyId, detectedCwd);
+              win.webContents.send(IPC.CWD_CHANGED, ptyId, detectedCwd);
+            }
+          }
+
           win.webContents.send(IPC.PTY_DATA, ptyId, data);
         }
       } catch (err) {

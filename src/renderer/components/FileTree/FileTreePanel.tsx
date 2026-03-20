@@ -293,7 +293,7 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
-  // Load root directory with periodic polling (10s interval)
+  // Load root directory, preserving expanded folder state on refresh
   useEffect(() => {
     if (!cwd) {
       setTree([]);
@@ -302,11 +302,24 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
     }
     let cancelled = false;
 
+    const mergeNodes = (oldNodes: TreeNode[], newNodes: TreeNode[]): TreeNode[] => {
+      const oldMap = new Map(oldNodes.map((n) => [n.name, n]));
+      return newNodes.map((n) => {
+        const old = oldMap.get(n.name);
+        if (old && old.isDirectory && n.isDirectory && old.isExpanded && old.children) {
+          // Preserve expanded state and children
+          return { ...n, isExpanded: true, children: old.children };
+        }
+        return n;
+      });
+    };
+
     const loadTree = () => {
-      readDir(cwd).then((nodes) => {
+      readDir(cwd!).then((nodes) => {
         if (cancelled) return;
-        treeRef.current = nodes;
-        setTree([...nodes]);
+        const merged = treeRef.current.length > 0 ? mergeNodes(treeRef.current, nodes) : nodes;
+        treeRef.current = merged;
+        setTree([...merged]);
       });
     };
 

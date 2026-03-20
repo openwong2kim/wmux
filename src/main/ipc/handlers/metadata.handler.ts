@@ -1,11 +1,12 @@
 import { ipcMain, BrowserWindow } from 'electron';
+import fs from 'node:fs';
 import { IPC } from '../../../shared/constants';
 import { MetadataCollector } from '../../metadata/MetadataCollector';
 import { PTYManager } from '../../pty/PTYManager';
 
 const collector = new MetadataCollector();
 
-// Track CWD per ptyId (updated via OSC 7 or polling)
+// Track CWD per ptyId (updated via OSC 7, prompt detection, or initial registration)
 const cwdMap = new Map<string, string>();
 
 export function registerMetadataHandlers(
@@ -28,6 +29,16 @@ export function registerMetadataHandlers(
       if (!instance) {
         cwdMap.delete(ptyId);
         continue;
+      }
+
+      // On Linux/macOS, try reading /proc/PID/cwd for live CWD detection
+      if (process.platform !== 'win32') {
+        try {
+          const liveCwd = await fs.promises.readlink(`/proc/${instance.process.pid}/cwd`);
+          if (liveCwd && liveCwd !== cwdMap.get(ptyId)) {
+            cwdMap.set(ptyId, liveCwd);
+          }
+        } catch { /* not available on macOS without /proc */ }
       }
 
       const cwd = cwdMap.get(ptyId);
