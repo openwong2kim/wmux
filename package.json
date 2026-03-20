@@ -2,9 +2,8 @@
   "name": "wmux",
   "productName": "wmux",
   "version": "1.0.1",
-  "description": "AI Agent Terminal for Windows - Run Claude Code, Codex, Gemini CLI in parallel",
-  "main": ".vite/build/index.js",
-  "private": true,
+  "description": "Windows terminal multiplexer with MCP server for AI agents - run multiple CLI sessions in parallel, control via Claude Code and other AI tools",
+  "main": "dist/mcp/mcp/index.js",
   "scripts": {
     "start": "npm run build:mcp && electron-forge start",
     "package": "npm run build:mcp && electron-forge package",
@@ -14,18 +13,45 @@
     "build:cli": "tsc -p tsconfig.cli.json",
     "build:mcp": "tsc -p tsconfig.mcp.json",
     "cli": "node dist/cli/cli/index.js",
-    "mcp": "node dist/mcp/mcp/index.js"
+    "mcp": "node dist/mcp/mcp/index.js",
+    "prepublishOnly": "npm run build:cli && npm run build:mcp"
   },
   "bin": {
     "wmux": "dist/cli/cli/index.js",
     "wmux-mcp": "dist/mcp/mcp/index.js"
   },
-  "keywords": [],
+  "files": [
+    "dist/cli/",
+    "dist/mcp/",
+    "README.md",
+    "LICENSE"
+  ],
+  "keywords": [
+    "terminal",
+    "multiplexer",
+    "mcp",
+    "ai-agent",
+    "cli",
+    "windows",
+    "claude-code",
+    "electron"
+  ],
   "author": {
     "name": "openwong2kim",
     "email": "100856670+openwong2kim@users.noreply.github.com"
   },
   "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/openwong2kim/wmux.git"
+  },
+  "homepage": "https://github.com/openwong2kim/wmux#readme",
+  "bugs": {
+    "url": "https://github.com/openwong2kim/wmux/issues"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
   "devDependencies": {
     "@electron-forge/cli": "^7.11.1",
     "@electron-forge/maker-deb": "^7.11.1",
@@ -53,17 +79,6 @@
   },
   "dependencies": {
     "@modelcontextprotocol/sdk": "^1.27.1",
-    "@xterm/addon-fit": "^0.11.0",
-    "@xterm/addon-search": "^0.16.0",
-    "@xterm/addon-webgl": "^0.19.0",
-    "@xterm/xterm": "^6.0.0",
-    "electron-squirrel-startup": "^1.0.1",
-    "immer": "^11.1.4",
-    "node-pty": "^1.1.0",
-    "react": "^19.2.4",
-    "react-dom": "^19.2.4",
-    "react-resizable-panels": "^4.7.3",
-    "zod": "^4.3.6",
-    "zustand": "^5.0.12"
+    "zod": "^4.3.6"
   }
 }
