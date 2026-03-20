@@ -53,6 +53,7 @@ export default function AppLayout() {
   const addSurface = useStore((s) => s.addSurface);
 
   const multiviewIds = useStore((s) => s.multiviewIds);
+  const clearMultiview = useStore((s) => s.clearMultiview);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
 
@@ -219,7 +220,23 @@ export default function AppLayout() {
                     fontFamily: 'ui-monospace, monospace',
                   }}
                 >
-                  {ws.name}
+                  <span className="flex-1">{ws.name}</span>
+                  <button
+                    onClick={(e) => { e.stopPropagation(); clearMultiview(); }}
+                    className="ml-auto opacity-60 hover:opacity-100"
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'inherit',
+                      cursor: 'pointer',
+                      padding: '0 2px',
+                      fontSize: 14,
+                      lineHeight: 1,
+                    }}
+                    title="Exit multiview"
+                  >
+                    ✕
+                  </button>
                 </div>
                 <div className="flex-1 min-h-0 relative">
                   <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }}>

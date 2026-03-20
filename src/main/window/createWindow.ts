@@ -26,23 +26,23 @@ export function createWindow(): BrowserWindow {
     );
   }
 
-  // CSP header — applied in both production and development modes.
+  // CSP header — production only.
+  // In development, Vite serves scripts from localhost with inline module loaders,
+  // which are incompatible with strict CSP. We only enforce CSP in production builds.
   // 'unsafe-inline' in style-src is required because Tailwind CSS and xterm.js
   // inject inline styles at runtime; removing it breaks UI rendering.
-  const isDevMode = !!MAIN_WINDOW_VITE_DEV_SERVER_URL;
-  const connectSrc = isDevMode
-    ? "connect-src 'self' ws: http://localhost:*"  // Vite HMR uses WebSocket
-    : "connect-src 'self'";
-  const cspPolicy = `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; ${connectSrc}; font-src 'self'; frame-src 'self' https: http:`;
+  if (!MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    const cspPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src 'self' https: http:";
 
-  mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
-    callback({
-      responseHeaders: {
-        ...details.responseHeaders,
-        'Content-Security-Policy': [cspPolicy],
-      },
+    mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Content-Security-Policy': [cspPolicy],
+        },
+      });
     });
-  });
+  }
 
   // Harden webview security: strip preload, enforce contextIsolation
   mainWindow.webContents.on('will-attach-webview', (_event, webPreferences) => {
