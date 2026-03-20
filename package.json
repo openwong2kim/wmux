@@ -1,7 +1,7 @@
 {
   "name": "wmux",
   "productName": "wmux",
-  "version": "1.0.0",
+  "version": "1.0.1",
   "description": "AI Agent Terminal for Windows - Run Claude Code, Codex, Gemini CLI in parallel",
   "main": ".vite/build/index.js",
   "private": true,
