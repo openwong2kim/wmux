@@ -24,9 +24,10 @@ export default function Sidebar() {
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const renameWorkspace = useStore((s) => s.renameWorkspace);
   const reorderWorkspace = useStore((s) => s.reorderWorkspace);
+  const toggleMultiviewWorkspace = useStore((s) => s.toggleMultiviewWorkspace);
+  const multiviewIds = useStore((s) => s.multiviewIds);
   const handleCtrlSelect = (wsId: string) => {
-    // Just switch to the workspace (don't split)
-    setActiveWorkspace(wsId);
+    toggleMultiviewWorkspace(wsId);
   };
 
   const handleClose = (wsId: string) => {
@@ -58,6 +59,7 @@ export default function Sidebar() {
             key={ws.id}
             workspace={ws}
             isActive={ws.id === activeWorkspaceId}
+            isMultiview={multiviewIds.includes(ws.id)}
             index={i}
             onSelect={() => setActiveWorkspace(ws.id)}
             onCtrlSelect={() => handleCtrlSelect(ws.id)}

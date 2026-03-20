@@ -268,6 +268,13 @@ export function useKeyboard() {
         return;
       }
 
+      // Ctrl+Shift+G: Clear multiview (back to single view)
+      if (ctrl && shift && !alt && key === 'G') {
+        e.preventDefault();
+        store.getState().clearMultiview();
+        return;
+      }
+
       // ─── Custom keybindings → terminal input ─────────────────────────
       const { customKeybindings } = store.getState();
       if (customKeybindings.length > 0) {

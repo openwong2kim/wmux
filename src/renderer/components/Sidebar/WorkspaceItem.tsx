@@ -6,6 +6,7 @@ import { useT } from '../../hooks/useT';
 interface WorkspaceItemProps {
   workspace: Workspace;
   isActive: boolean;
+  isMultiview: boolean;
   index: number;
   onSelect: () => void;
   onCtrlSelect: () => void;
@@ -44,7 +45,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-export default function WorkspaceItem({ workspace, isActive, index, onSelect, onCtrlSelect, onRename, onClose, onReorder }: WorkspaceItemProps) {
+export default function WorkspaceItem({ workspace, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onReorder }: WorkspaceItemProps) {
   const t = useT();
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(workspace.name);
@@ -149,6 +150,7 @@ export default function WorkspaceItem({ workspace, isActive, index, onSelect, on
             ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'
             : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
         } ${isDragging ? 'opacity-40' : 'opacity-100'}`}
+        style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
         onDragStart={handleDragStart}

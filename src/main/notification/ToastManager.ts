@@ -2,6 +2,7 @@ import { Notification, BrowserWindow } from 'electron';
 
 export class ToastManager {
   enabled = true;
+  private flashingWindow: BrowserWindow | null = null;
 
   show(title: string, body: string): void {
     if (!this.enabled) return;
@@ -28,5 +29,17 @@ export class ToastManager {
     });
 
     notification.show();
+
+    // Flash taskbar to attract attention
+    const win = BrowserWindow.getAllWindows()[0];
+    if (win) {
+      win.flashFrame(true);
+      if (this.flashingWindow !== win) {
+        this.flashingWindow = win;
+        win.on('focus', () => {
+          win.flashFrame(false);
+        });
+      }
+    }
   }
 }

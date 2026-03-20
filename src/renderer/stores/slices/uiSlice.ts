@@ -62,6 +62,11 @@ export interface UISlice {
   notificationRingEnabled: boolean;
   setNotificationRingEnabled: (enabled: boolean) => void;
 
+  // ─── Multiview ─────────────────────────────────────────────────────────
+  multiviewIds: string[];
+  toggleMultiviewWorkspace: (wsId: string) => void;
+  clearMultiview: () => void;
+
   // ─── Custom keybindings ──────────────────────────────────────────────
   customKeybindings: CustomKeybinding[];
   addKeybinding: (kb: Omit<CustomKeybinding, 'id'>) => void;
@@ -223,6 +228,32 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setNotificationRingEnabled: (enabled) => set((state) => {
     state.notificationRingEnabled = enabled;
+  }),
+
+  // ─── Multiview ─────────────────────────────────────────────────────────
+  multiviewIds: [] as string[],
+
+  toggleMultiviewWorkspace: (wsId) => set((state) => {
+    const idx = state.multiviewIds.indexOf(wsId);
+    if (idx >= 0) {
+      state.multiviewIds.splice(idx, 1);
+    } else {
+      // Add active workspace too if first selection
+      if (state.multiviewIds.length === 0) {
+        state.multiviewIds.push(state.activeWorkspaceId);
+      }
+      if (!state.multiviewIds.includes(wsId)) {
+        state.multiviewIds.push(wsId);
+      }
+    }
+    // If only 1 or 0 left, clear multiview
+    if (state.multiviewIds.length <= 1) {
+      state.multiviewIds = [];
+    }
+  }),
+
+  clearMultiview: () => set((state) => {
+    state.multiviewIds = [];
   }),
 
   // ─── Custom keybindings ──────────────────────────────────────────────

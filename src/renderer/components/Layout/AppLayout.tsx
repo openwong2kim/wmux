@@ -24,6 +24,8 @@ export default function AppLayout() {
   const workspaces = useStore((s) => s.workspaces);
   const addSurface = useStore((s) => s.addSurface);
 
+  const multiviewIds = useStore((s) => s.multiviewIds);
+  const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
 
   useKeyboard();
@@ -187,24 +189,68 @@ export default function AppLayout() {
       {sidebarVisible ? <Sidebar /> : <MiniSidebar />}
       <div className="flex-1 min-w-0 flex flex-col">
         <StatusBar />
-        {/* Render ALL workspaces but only show the active one.
-            This preserves xterm Terminal instances (and their scroll state)
-            across workspace switches — same pattern as surface tab switching. */}
-        <div className="flex-1 min-h-0 relative">
-          {workspaces.map((ws) => (
-            <div
-              key={ws.id}
-              style={{
-                position: 'absolute',
-                inset: 0,
-                display: ws.id === activeWorkspaceId ? 'flex' : 'none',
-                flexDirection: 'column',
-              }}
-            >
-              <PaneContainer pane={ws.rootPane} isWorkspaceVisible={ws.id === activeWorkspaceId} />
-            </div>
-          ))}
-        </div>
+        {/* Render workspaces: single view or multiview grid (Ctrl+click selected) */}
+        {multiviewIds.length >= 2 ? (
+          <div
+            className="flex-1 min-h-0"
+            style={{
+              display: 'grid',
+              gridTemplateColumns: multiviewIds.length === 2 ? '1fr 1fr'
+                : multiviewIds.length <= 4 ? '1fr 1fr'
+                : 'repeat(3, 1fr)',
+              gridAutoRows: '1fr',
+              gap: '2px',
+              backgroundColor: 'var(--bg-surface)',
+            }}
+          >
+            {workspaces.filter((ws) => multiviewIds.includes(ws.id)).map((ws) => (
+              <div
+                key={ws.id}
+                className="relative flex flex-col min-w-0 min-h-0 overflow-hidden cursor-pointer"
+                style={{
+                  border: ws.id === activeWorkspaceId
+                    ? '2px solid var(--accent-blue)'
+                    : '2px solid transparent',
+                  backgroundColor: 'var(--bg-base)',
+                }}
+                onClick={() => setActiveWorkspace(ws.id)}
+              >
+                {/* Workspace label */}
+                <div
+                  className="flex items-center gap-1.5 px-2 py-0.5 shrink-0 text-xs"
+                  style={{
+                    backgroundColor: ws.id === activeWorkspaceId ? 'var(--accent-blue)' : 'var(--bg-mantle)',
+                    color: ws.id === activeWorkspaceId ? '#fff' : 'var(--text-sub2)',
+                    fontFamily: 'ui-monospace, monospace',
+                  }}
+                >
+                  {ws.name}
+                </div>
+                <div className="flex-1 min-h-0 relative">
+                  <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }}>
+                    <PaneContainer pane={ws.rootPane} isWorkspaceVisible={true} />
+                  </div>
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="flex-1 min-h-0 relative">
+            {workspaces.map((ws) => (
+              <div
+                key={ws.id}
+                style={{
+                  position: 'absolute',
+                  inset: 0,
+                  display: ws.id === activeWorkspaceId ? 'flex' : 'none',
+                  flexDirection: 'column',
+                }}
+              >
+                <PaneContainer pane={ws.rootPane} isWorkspaceVisible={ws.id === activeWorkspaceId} />
+              </div>
+            ))}
+          </div>
+        )}
       </div>
       <NotificationPanel />
       <MessageFeedPanel />
