@@ -42,12 +42,11 @@ export const IPC = {
   FS_CHANGED: 'fs:changed',
 } as const;
 
-// Named Pipe path for wmux API
+// Named Pipe / Unix socket path for wmux API
 // Fixed name so MCP clients (e.g. Claude Code) can reconnect across wmux restarts
-export const PIPE_NAME = '\\\\.\\pipe\\wmux';
-
 export function getPipeName(): string {
-  return PIPE_NAME;
+  if (process.platform === 'win32') return '\\\\.\\pipe\\wmux';
+  return '/tmp/wmux.sock';
 }
 
 // Environment variable names injected into PTY sessions

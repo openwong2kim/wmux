@@ -69,6 +69,10 @@ export class PipeServer {
     });
 
     const pipeName = getPipeName();
+    // On Unix, remove stale socket file before listening
+    if (process.platform !== 'win32') {
+      try { require('fs').unlinkSync(pipeName); } catch {}
+    }
     this.server.listen(pipeName, () => {
       console.log(`[PipeServer] Listening on ${pipeName}`);
     });
@@ -90,6 +94,10 @@ export class PipeServer {
         console.error('[PipeServer] Error closing server:', err);
       } else {
         console.log('[PipeServer] Server closed.');
+      }
+      // Clean up Unix socket file
+      if (process.platform !== 'win32') {
+        try { require('fs').unlinkSync(getPipeName()); } catch {}
       }
     });
 

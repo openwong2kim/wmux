@@ -3,7 +3,7 @@ import * as net from 'net';
 import * as crypto from 'crypto';
 import type { RpcRequest, RpcResponse, RpcMethod } from '../shared/rpc';
 
-const PIPE_NAME = process.env.WMUX_SOCKET_PATH || '\\\\.\\pipe\\wmux';
+const PIPE_NAME = process.env.WMUX_SOCKET_PATH || (process.platform === 'win32' ? '\\\\.\\pipe\\wmux' : '/tmp/wmux.sock');
 const TIMEOUT_MS = 5000;
 
 export function sendRequest(
