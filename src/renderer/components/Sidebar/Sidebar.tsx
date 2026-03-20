@@ -26,6 +26,9 @@ export default function Sidebar() {
   const reorderWorkspace = useStore((s) => s.reorderWorkspace);
   const toggleMultiviewWorkspace = useStore((s) => s.toggleMultiviewWorkspace);
   const multiviewIds = useStore((s) => s.multiviewIds);
+  const toggleFileTree = useStore((s) => s.toggleFileTree);
+  const fileTreeVisible = useStore((s) => s.fileTreeVisible);
+
   const handleCtrlSelect = (wsId: string) => {
     toggleMultiviewWorkspace(wsId);
   };
@@ -43,13 +46,22 @@ export default function Sidebar() {
       {/* Header */}
       <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--bg-surface)]">
         <span className="text-sm font-bold text-[var(--text-main)] tracking-widest font-mono">WMUX</span>
-        <button
-          className="text-[var(--text-subtle)] hover:text-[var(--accent-green)] text-lg leading-none transition-colors"
-          onClick={() => addWorkspace()}
-          title={t('sidebar.newWorkspaceTooltip')}
-        >
-          +
-        </button>
+        <div className="flex items-center gap-1.5">
+          <button
+            className={`text-sm leading-none transition-colors ${fileTreeVisible ? 'text-[var(--accent-blue)]' : 'text-[var(--text-subtle)] hover:text-[var(--accent-green)]'}`}
+            onClick={() => toggleFileTree()}
+            title={t('sidebar.fileTreeTooltip') || 'Toggle file tree'}
+          >
+            {'\u{1F4C1}'}
+          </button>
+          <button
+            className="text-[var(--text-subtle)] hover:text-[var(--accent-green)] text-lg leading-none transition-colors"
+            onClick={() => addWorkspace()}
+            title={t('sidebar.newWorkspaceTooltip')}
+          >
+            +
+          </button>
+        </div>
       </div>
 
       {/* Workspace list */}

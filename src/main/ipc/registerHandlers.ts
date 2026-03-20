@@ -6,6 +6,7 @@ import { registerSessionHandlers } from './handlers/session.handler';
 import { registerShellHandlers } from './handlers/shell.handler';
 import { registerMetadataHandlers } from './handlers/metadata.handler';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
+import { registerFsHandlers } from './handlers/fs.handler';
 import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 
@@ -19,6 +20,7 @@ export function registerAllHandlers(
   registerShellHandlers();
   const cleanupMetadata = registerMetadataHandlers(ptyManager, getWindow);
   registerClipboardHandlers();
+  registerFsHandlers();
 
   // Sync toast setting from renderer
   ipcMain.on(IPC.TOAST_ENABLED, (_event, enabled: boolean) => {

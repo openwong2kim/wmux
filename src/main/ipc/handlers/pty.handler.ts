@@ -4,6 +4,7 @@ import path from 'node:path';
 import { PTYManager } from '../../pty/PTYManager';
 import { PTYBridge } from '../../pty/PTYBridge';
 import { IPC } from '../../../shared/constants';
+import { updateCwd } from './metadata.handler';
 
 /**
  * Allowed shell basenames (case-insensitive on Windows).
@@ -43,9 +44,14 @@ export function registerPTYHandlers(ptyManager: PTYManager, ptyBridge: PTYBridge
       }
     }
 
-    const instance = ptyManager.create(safeCwd !== undefined ? { ...options, cwd: safeCwd } : { ...options, cwd: undefined });
+    const effectiveCwd = safeCwd ?? undefined;
+    const instance = ptyManager.create(effectiveCwd !== undefined ? { ...options, cwd: effectiveCwd } : { ...options, cwd: undefined });
     ptyBridge.setupDataForwarding(instance.id);
-    return { id: instance.id, shell: instance.shell };
+    // Return the actual cwd so renderer can track it from the start
+    const actualCwd = effectiveCwd || require('os').homedir();
+    // Register initial CWD in cwdMap so metadata polling works from the start
+    updateCwd(instance.id, actualCwd);
+    return { id: instance.id, shell: instance.shell, cwd: actualCwd };
   });
 
   ipcMain.handle(IPC.PTY_WRITE, (_event, id: string, data: string) => {

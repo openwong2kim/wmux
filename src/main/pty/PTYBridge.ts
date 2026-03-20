@@ -5,6 +5,7 @@ import { AgentDetector } from './AgentDetector';
 import { ActivityMonitor } from './ActivityMonitor';
 import { ToastManager } from '../notification/ToastManager';
 import { IPC } from '../../shared/constants';
+import { updateCwd } from '../ipc/handlers/metadata.handler';
 
 export class PTYBridge {
   private oscParsers = new Map<string, OscParser>();
@@ -65,6 +66,7 @@ export class PTYBridge {
       switch (event.code) {
         case 7: {
           const cwd = event.data.replace(/^file:\/\/[^/]*/, '');
+          updateCwd(ptyId, cwd);
           win.webContents.send(IPC.CWD_CHANGED, ptyId, cwd);
           break;
         }

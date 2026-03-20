@@ -73,6 +73,11 @@ export interface UISlice {
   updateKeybinding: (id: string, kb: Partial<Omit<CustomKeybinding, 'id'>>) => void;
   removeKeybinding: (id: string) => void;
 
+  // ─── File tree ────────────────────────────────────────────────────────
+  fileTreeVisible: boolean;
+  toggleFileTree: () => void;
+  setFileTreeVisible: (visible: boolean) => void;
+
 }
 
 export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]], [], UISlice> = (set) => ({
@@ -273,6 +278,17 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   removeKeybinding: (id) => set((state) => {
     state.customKeybindings = state.customKeybindings.filter((k) => k.id !== id);
+  }),
+
+  // ─── File tree ────────────────────────────────────────────────────────
+  fileTreeVisible: false,
+
+  toggleFileTree: () => set((state) => {
+    state.fileTreeVisible = !state.fileTreeVisible;
+  }),
+
+  setFileTreeVisible: (visible) => set((state) => {
+    state.fileTreeVisible = visible;
   }),
 
 });

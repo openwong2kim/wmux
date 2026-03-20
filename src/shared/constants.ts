@@ -34,6 +34,12 @@ export const IPC = {
   TOAST_ENABLED: 'settings:toast-enabled',
   // Agent critical action approval
   APPROVAL_REQUEST: 'approval:request',
+  // File system
+  FS_READ_DIR: 'fs:read-dir',
+  FS_READ_FILE: 'fs:read-file',
+  FS_WATCH: 'fs:watch',
+  FS_UNWATCH: 'fs:unwatch',
+  FS_CHANGED: 'fs:changed',
 } as const;
 
 // Named Pipe path for wmux API

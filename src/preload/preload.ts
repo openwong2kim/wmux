@@ -76,6 +76,17 @@ const electronAPI = {
     respond: (requestId: string, result: unknown) =>
       ipcRenderer.send(`${IPC.RPC_RESPONSE}:${requestId}`, result),
   },
+  fs: {
+    readDir: (dirPath: string) => ipcRenderer.invoke(IPC.FS_READ_DIR, dirPath),
+    readFile: (filePath: string) => ipcRenderer.invoke(IPC.FS_READ_FILE, filePath) as Promise<string | null>,
+    watch: (dirPath: string) => ipcRenderer.invoke(IPC.FS_WATCH, dirPath),
+    unwatch: (dirPath: string) => ipcRenderer.invoke(IPC.FS_UNWATCH, dirPath),
+    onChanged: (callback: (dirPath: string) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, dirPath: string) => callback(dirPath);
+      ipcRenderer.on(IPC.FS_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.FS_CHANGED, listener); };
+    },
+  },
   updater: {
     checkForUpdates: () =>
       ipcRenderer.invoke(IPC.UPDATE_CHECK) as Promise<{ status: string }>,

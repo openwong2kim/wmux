@@ -1,0 +1,115 @@
+import { ipcMain, BrowserWindow } from 'electron';
+import fs from 'node:fs';
+import path from 'node:path';
+import { IPC } from '../../../shared/constants';
+
+export interface FileEntry {
+  name: string;
+  path: string;
+  isDirectory: boolean;
+  isSymlink: boolean;
+}
+
+const watchers = new Map<string, fs.FSWatcher>();
+const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+
+export function registerFsHandlers(): void {
+  ipcMain.handle(IPC.FS_READ_DIR, async (_event, dirPath: string): Promise<FileEntry[]> => {
+    // 보안: 경로 정규화 및 기본 검증
+    if (!dirPath || typeof dirPath !== 'string') return [];
+
+    const resolved = path.resolve(dirPath);
+
+    try {
+      const entries = await fs.promises.readdir(resolved, { withFileTypes: true });
+      const result: FileEntry[] = [];
+
+      for (const entry of entries) {
+        // node_modules, .git 기본 제외 (너무 큼)
+        if (entry.name === 'node_modules' || entry.name === '.git') continue;
+
+        result.push({
+          name: entry.name,
+          path: path.join(resolved, entry.name),
+          isDirectory: entry.isDirectory(),
+          isSymlink: entry.isSymbolicLink(),
+        });
+      }
+
+      // 디렉토리 먼저, 그 다음 파일. 각각 알파벳 순
+      result.sort((a, b) => {
+        if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
+        return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });
+      });
+
+      return result;
+    } catch {
+      return [];
+    }
+  });
+
+  ipcMain.handle(IPC.FS_READ_FILE, async (_event, filePath: string): Promise<string | null> => {
+    if (!filePath || typeof filePath !== 'string') return null;
+    const resolved = path.resolve(filePath);
+    try {
+      const stat = await fs.promises.stat(resolved);
+      if (stat.size > 1024 * 1024) return null; // 1MB limit
+      return await fs.promises.readFile(resolved, 'utf-8');
+    } catch {
+      return null;
+    }
+  });
+
+  ipcMain.handle(IPC.FS_WATCH, (_event, dirPath: string) => {
+    if (!dirPath || typeof dirPath !== 'string') return false;
+    const resolved = path.resolve(dirPath);
+
+    // Clean up previous watcher for this path
+    if (watchers.has(resolved)) {
+      watchers.get(resolved)!.close();
+      watchers.delete(resolved);
+    }
+
+    try {
+      const watcher = fs.watch(resolved, { persistent: false }, () => {
+        // Debounce: ignore duplicate events within 500ms
+        if (debounceTimers.has(resolved)) {
+          clearTimeout(debounceTimers.get(resolved)!);
+        }
+        debounceTimers.set(resolved, setTimeout(() => {
+          debounceTimers.delete(resolved);
+          const win = BrowserWindow.getFocusedWindow() || BrowserWindow.getAllWindows()[0];
+          if (win && !win.isDestroyed()) {
+            win.webContents.send(IPC.FS_CHANGED, resolved);
+          }
+        }, 500));
+      });
+
+      watcher.on('error', () => {
+        // Silently close on error
+        watcher.close();
+        watchers.delete(resolved);
+      });
+
+      watchers.set(resolved, watcher);
+      return true;
+    } catch {
+      return false;
+    }
+  });
+
+  ipcMain.handle(IPC.FS_UNWATCH, (_event, dirPath: string) => {
+    if (!dirPath || typeof dirPath !== 'string') return;
+    const resolved = path.resolve(dirPath);
+    const watcher = watchers.get(resolved);
+    if (watcher) {
+      watcher.close();
+      watchers.delete(resolved);
+    }
+    const timer = debounceTimers.get(resolved);
+    if (timer) {
+      clearTimeout(timer);
+      debounceTimers.delete(resolved);
+    }
+  });
+}

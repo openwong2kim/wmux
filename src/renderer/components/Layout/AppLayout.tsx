@@ -7,6 +7,7 @@ import StatusBar from '../StatusBar/StatusBar';
 import NotificationPanel from '../Notification/NotificationPanel';
 import CommandPalette from '../Palette/CommandPalette';
 import SettingsPanel from '../Settings/SettingsPanel';
+import FileTreePanel from '../FileTree/FileTreePanel';
 import ApprovalDialog from '../Company/ApprovalDialog';
 import CompanyView from '../Company/CompanyView';
 import MessageFeedPanel from '../Company/MessageFeedPanel';
@@ -46,6 +47,7 @@ function buildSessionData(): SessionData {
 export default function AppLayout() {
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
+  const fileTreeVisible = useStore((s) => s.fileTreeVisible);
   const companyViewVisible = useStore((s) => s.companyViewVisible);
   const setCompanyViewVisible = useStore((s) => s.setCompanyViewVisible);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -154,12 +156,16 @@ export default function AppLayout() {
     if (root.surfaces.length === 0) {
       let cancelled = false;
       const paneId = root.id;
-      window.electronAPI.pty.create().then((result: { id: string }) => {
+      window.electronAPI.pty.create().then((result: { id: string; cwd?: string }) => {
         if (cancelled) {
           window.electronAPI.pty.dispose(result.id);
           return;
         }
-        addSurface(paneId, result.id, 'Terminal', '');
+        addSurface(paneId, result.id, 'Terminal', result.cwd || '');
+        // Set initial CWD in workspace metadata so FileTree can use it immediately
+        if (result.cwd && activeWorkspace) {
+          useStore.getState().updateWorkspaceMetadata(activeWorkspace.id, { cwd: result.cwd });
+        }
       });
       return () => { cancelled = true; };
     }
@@ -265,6 +271,11 @@ export default function AppLayout() {
         )}
       </div>
       </ErrorBoundary>
+      {fileTreeVisible && (
+        <ErrorBoundary name="FileTree">
+          <FileTreePanel position={sidebarPosition === 'left' ? 'right' : 'left'} />
+        </ErrorBoundary>
+      )}
       <NotificationPanel />
       <MessageFeedPanel />
       <CommandPalette />

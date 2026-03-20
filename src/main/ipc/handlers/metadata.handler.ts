@@ -18,11 +18,6 @@ export function registerMetadataHandlers(
     return collector.collect(cwd);
   });
 
-  // Listen for CWD changes from PTYBridge (via OscParser)
-  ipcMain.on(IPC.CWD_CHANGED, (_event, ptyId: string, cwd: string) => {
-    cwdMap.set(ptyId, cwd);
-  });
-
   // Periodic metadata polling (every 5 seconds)
   const pollingInterval = setInterval(async () => {
     const win = getWindow();
@@ -47,7 +42,6 @@ export function registerMetadataHandlers(
   return () => {
     clearInterval(pollingInterval);
     ipcMain.removeHandler(IPC.METADATA_REQUEST);
-    ipcMain.removeAllListeners(IPC.CWD_CHANGED);
   };
 }
 
