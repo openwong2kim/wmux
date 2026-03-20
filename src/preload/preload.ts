@@ -1,4 +1,4 @@
-import { contextBridge, ipcRenderer } from 'electron';
+import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
 
 const electronAPI = {
@@ -98,11 +98,44 @@ const electronAPI = {
   },
 };
 
+// File drag-and-drop: capture in preload where File.path is accessible
+const fileDropCallbacks: ((paths: string[]) => void)[] = [];
+
+document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('dragover', (e) => {
+    e.preventDefault();
+    if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+  });
+  document.addEventListener('drop', (e) => {
+    e.preventDefault();
+    const files = e.dataTransfer?.files;
+    if (!files || files.length === 0) return;
+    const paths: string[] = [];
+    for (let i = 0; i < files.length; i++) {
+      const filePath = webUtils.getPathForFile(files[i]);
+      if (filePath) paths.push(filePath);
+    }
+    if (paths.length > 0) {
+      fileDropCallbacks.forEach((cb) => cb(paths));
+    }
+  });
+});
+
+(electronAPI as Record<string, unknown>).onFileDrop = (callback: (paths: string[]) => void) => {
+  fileDropCallbacks.push(callback);
+  return () => {
+    const idx = fileDropCallbacks.indexOf(callback);
+    if (idx >= 0) fileDropCallbacks.splice(idx, 1);
+  };
+};
+
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
 
 contextBridge.exposeInMainWorld('clipboardAPI', {
   writeText: (text: string) => ipcRenderer.invoke(IPC.CLIPBOARD_WRITE, text),
   readText: () => ipcRenderer.invoke(IPC.CLIPBOARD_READ) as Promise<string>,
+  readImage: () => ipcRenderer.invoke(IPC.CLIPBOARD_READ_IMAGE) as Promise<string | null>,
+  hasImage: () => ipcRenderer.invoke(IPC.CLIPBOARD_HAS_IMAGE) as Promise<boolean>,
 });
 
 export type ElectronAPI = typeof electronAPI;

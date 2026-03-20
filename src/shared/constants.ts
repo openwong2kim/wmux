@@ -19,6 +19,8 @@ export const IPC = {
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',
+  CLIPBOARD_READ_IMAGE: 'clipboard:read-image',
+  CLIPBOARD_HAS_IMAGE: 'clipboard:has-image',
   // Phase 4: Auto updater
   UPDATE_CHECK: 'update:check',
   UPDATE_AVAILABLE: 'update:available',

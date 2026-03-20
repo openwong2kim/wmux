@@ -51,16 +51,10 @@ export function createWindow(): BrowserWindow {
     (webPreferences as Record<string, unknown>)['webSecurity'] = true;
   });
 
-  // Block webview navigations to dangerous URL schemes
+  // Block all navigations except dev server — prevents file drag opening in window
   mainWindow.webContents.on('will-navigate', (event, url) => {
-    const normalized = url.trim().toLowerCase();
-    if (
-      normalized.startsWith('javascript:') ||
-      normalized.startsWith('vbscript:') ||
-      normalized.startsWith('data:')
-    ) {
-      event.preventDefault();
-    }
+    if (MAIN_WINDOW_VITE_DEV_SERVER_URL && url.startsWith(MAIN_WINDOW_VITE_DEV_SERVER_URL)) return;
+    event.preventDefault();
   });
 
   if (process.env.NODE_ENV === 'development') {

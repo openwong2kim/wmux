@@ -32,37 +32,16 @@ export default function AppLayout() {
   useNotificationListener();
   useRpcBridge();
 
-  // ─── Drop overlay (VS Code-style) ─────────────────────────────────────
-  // A transparent full-window overlay appears during external file drags.
-  // This guarantees the OS-level cursor shows "copy" regardless of WebGL canvas.
+  // ─── File drop — handled in preload where File.path is accessible ──────
   const [isDragging, setIsDragging] = useState(false);
   const dragCounterRef = useRef(0);
 
   useEffect(() => {
-    // dragenter/dragleave fire for every child boundary crossing,
-    // so we use a counter to track when the drag truly leaves the window.
-    const onEnter = (e: DragEvent) => {
-      e.preventDefault();
-      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
-      dragCounterRef.current++;
-      if (dragCounterRef.current === 1) setIsDragging(true);
-    };
-    const onLeave = () => {
-      dragCounterRef.current--;
-      if (dragCounterRef.current <= 0) {
-        dragCounterRef.current = 0;
-        setIsDragging(false);
-      }
-    };
-    const onDrop = (e: DragEvent) => {
-      e.preventDefault();
-      dragCounterRef.current = 0;
+    // File drop via preload onFileDrop (reliable cross-platform)
+    const removeDrop = window.electronAPI.onFileDrop((paths) => {
       setIsDragging(false);
+      dragCounterRef.current = 0;
 
-      const files = e.dataTransfer?.files;
-      if (!files || files.length === 0) return;
-
-      // Get active terminal's PTY ID
       const state = useStore.getState();
       const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
       if (!ws) return;
@@ -81,30 +60,30 @@ export default function AppLayout() {
       const activeSurface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
       if (!activeSurface || activeSurface.surfaceType === 'browser') return;
 
-      const ptyId = activeSurface.ptyId;
-      const paths: string[] = [];
-      for (let i = 0; i < files.length; i++) {
-        paths.push((files[i] as File & { path: string }).path);
-      }
       const text = paths.map((p) => (p.includes(' ') ? `"${p}"` : p)).join(' ');
-      window.electronAPI.pty.write(ptyId, text);
-    };
-    // Prevent default on dragover at window level to allow drop everywhere
-    const onOver = (e: DragEvent) => {
+      window.electronAPI.pty.write(activeSurface.ptyId, text);
+    });
+
+    // Visual drag overlay
+    const onEnter = (e: DragEvent) => {
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      dragCounterRef.current++;
+      if (dragCounterRef.current === 1) setIsDragging(true);
     };
-    // Use capture phase so these fire before any child element (e.g. xterm
-    // WebGL canvas) can consume the event and cause a "forbidden" cursor.
-    window.addEventListener('dragenter', onEnter, true);
-    window.addEventListener('dragleave', onLeave, true);
-    window.addEventListener('dragover', onOver, true);
-    window.addEventListener('drop', onDrop, true);
+    const onLeave = () => {
+      dragCounterRef.current--;
+      if (dragCounterRef.current <= 0) {
+        dragCounterRef.current = 0;
+        setIsDragging(false);
+      }
+    };
+    document.addEventListener('dragenter', onEnter, true);
+    document.addEventListener('dragleave', onLeave, true);
     return () => {
-      window.removeEventListener('dragenter', onEnter, true);
-      window.removeEventListener('dragleave', onLeave, true);
-      window.removeEventListener('dragover', onOver, true);
-      window.removeEventListener('drop', onDrop, true);
+      removeDrop();
+      document.removeEventListener('dragenter', onEnter, true);
+      document.removeEventListener('dragleave', onLeave, true);
     };
   }, []);
 

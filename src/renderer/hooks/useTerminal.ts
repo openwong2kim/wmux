@@ -145,9 +145,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // so xterm doesn't also paste via browser's native paste event)
       if (e.ctrlKey && !e.shiftKey && e.key === 'v') {
         e.preventDefault();
-        void window.clipboardAPI.readText().then((text) => {
-          if (text) window.electronAPI.pty.write(ptyId, text);
-        }).catch(() => {});
+        void (async () => {
+          // Try text first
+          const text = await window.clipboardAPI.readText();
+          if (text) {
+            window.electronAPI.pty.write(ptyId, text);
+            return;
+          }
+          // No text — check for image, save to temp file, paste path
+          const imagePath = await window.clipboardAPI.readImage();
+          if (imagePath) {
+            const quoted = imagePath.includes(' ') ? `"${imagePath}"` : imagePath;
+            window.electronAPI.pty.write(ptyId, quoted);
+          }
+        })().catch(() => {});
         return false;
       }
 
@@ -163,9 +174,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Ctrl+Shift+V: paste fallback
       if (e.ctrlKey && e.shiftKey && e.key === 'V') {
         e.preventDefault();
-        void window.clipboardAPI.readText().then((text) => {
-          if (text) window.electronAPI.pty.write(ptyId, text);
-        }).catch(() => {});
+        void (async () => {
+          const text = await window.clipboardAPI.readText();
+          if (text) {
+            window.electronAPI.pty.write(ptyId, text);
+            return;
+          }
+          const imagePath = await window.clipboardAPI.readImage();
+          if (imagePath) {
+            const quoted = imagePath.includes(' ') ? `"${imagePath}"` : imagePath;
+            window.electronAPI.pty.write(ptyId, quoted);
+          }
+        })().catch(() => {});
         return false;
       }
 
@@ -175,44 +195,22 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Right-click: always paste
     terminal.element?.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      void window.clipboardAPI.readText().then((text) => {
+      void (async () => {
+        const text = await window.clipboardAPI.readText();
         console.log('[wmux:clipboard] right-click paste len=', text?.length ?? 0);
-        if (text) window.electronAPI.pty.write(ptyId, text);
-      }).catch((err) => console.error('[wmux:clipboard] right-click error:', err));
+        if (text) {
+          window.electronAPI.pty.write(ptyId, text);
+          return;
+        }
+        const imagePath = await window.clipboardAPI.readImage();
+        if (imagePath) {
+          const quoted = imagePath.includes(' ') ? `"${imagePath}"` : imagePath;
+          window.electronAPI.pty.write(ptyId, quoted);
+        }
+      })().catch((err) => console.error('[wmux:clipboard] right-click error:', err));
     });
 
-    // Drag-and-drop: paste file paths into terminal
-    // Use the xterm element + capture phase — xterm's internal canvas blocks
-    // normal event propagation on the container div.
-    const xtermEl = terminal.element;
-    const handleDragOver = (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const de = e as DragEvent;
-      if (de.dataTransfer) de.dataTransfer.dropEffect = 'copy';
-    };
-    const handleDrop = (e: Event) => {
-      e.preventDefault();
-      e.stopPropagation();
-      const de = e as DragEvent;
-      const files = de.dataTransfer?.files;
-      if (!files || files.length === 0) return;
-      const paths: string[] = [];
-      for (let i = 0; i < files.length; i++) {
-        paths.push((files[i] as File & { path: string }).path);
-      }
-      const text = paths.map((p) => (p.includes(' ') ? `"${p}"` : p)).join(' ');
-      window.electronAPI.pty.write(ptyId, text);
-    };
-    if (xtermEl) {
-      xtermEl.addEventListener('dragenter', handleDragOver, true);
-      xtermEl.addEventListener('dragover', handleDragOver, true);
-      xtermEl.addEventListener('drop', handleDrop, true);
-    }
-    // Also on container as fallback
-    container.addEventListener('dragenter', handleDragOver, true);
-    container.addEventListener('dragover', handleDragOver, true);
-    container.addEventListener('drop', handleDrop, true);
+    // Drag-and-drop is handled globally in preload via webUtils.getPathForFile()
 
     // Forward user input to PTY
     terminal.onData((data) => {
