@@ -28,6 +28,19 @@ if (started) {
   app.quit();
 }
 
+// Prevent multiple instances — focus existing window instead
+const gotLock = app.requestSingleInstanceLock();
+if (!gotLock) {
+  app.quit();
+} else {
+  app.on('second-instance', () => {
+    if (mainWindow) {
+      if (mainWindow.isMinimized()) mainWindow.restore();
+      mainWindow.focus();
+    }
+  });
+}
+
 const ptyManager = new PTYManager();
 let mainWindow: BrowserWindow | null = null;
 const ptyBridge = new PTYBridge(ptyManager, () => mainWindow);
