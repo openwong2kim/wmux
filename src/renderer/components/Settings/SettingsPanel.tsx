@@ -778,13 +778,13 @@ export default function SettingsPanel() {
         if (e.target === e.currentTarget) setVisible(false);
       }}
     >
-      {/* Panel — 600x450 */}
+      {/* Panel — 800x560 */}
       <div
         ref={panelRef}
         className="flex flex-col rounded-xl overflow-hidden shadow-2xl"
         style={{
-          width: 600,
-          height: 450,
+          width: 800,
+          height: 560,
           backgroundColor: 'var(--bg-base)',
           border: '1px solid var(--bg-surface)',
           boxShadow: '0 25px 60px rgba(0,0,0,0.75)',
@@ -812,7 +812,7 @@ export default function SettingsPanel() {
           <nav
             className="flex flex-col gap-0.5 py-3 px-2 shrink-0"
             style={{
-              width: 140,
+              width: 160,
               borderRight: '1px solid var(--bg-surface)',
               backgroundColor: 'var(--bg-mantle)',
             }}

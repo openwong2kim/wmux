@@ -191,7 +191,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.defaultShell = shell;
   }),
 
-  scrollbackLines: 10000,
+  scrollbackLines: 999999,
 
   setScrollbackLines: (lines) => set((state) => {
     state.scrollbackLines = lines;
