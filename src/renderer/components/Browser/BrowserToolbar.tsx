@@ -41,6 +41,15 @@ function IconDevTools() {
   );
 }
 
+function IconInspect() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="6" cy="6" r="4" stroke="currentColor" strokeWidth="1.3" />
+      <line x1="9" y1="9" x2="12.5" y2="12.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
 function IconClose() {
   return (
     <svg width="12" height="12" viewBox="0 0 12 12" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -69,10 +78,12 @@ interface BrowserToolbarProps {
   canGoBack: boolean;
   canGoForward: boolean;
   isActive: boolean;
+  inspecting: boolean;
   onNavigate: (url: string) => void;
   onBack: () => void;
   onForward: () => void;
   onRefresh: () => void;
+  onToggleInspect: () => void;
   onOpenDevTools: () => void;
   onClose: () => void;
 }
@@ -87,10 +98,12 @@ export default function BrowserToolbar({
   canGoBack,
   canGoForward,
   isActive,
+  inspecting,
   onNavigate,
   onBack,
   onForward,
   onRefresh,
+  onToggleInspect,
   onOpenDevTools,
   onClose,
 }: BrowserToolbarProps) {
@@ -228,6 +241,18 @@ export default function BrowserToolbar({
           />
         </div>
       </form>
+
+      {/* Inspector */}
+      <button
+        className={inspecting
+          ? `${btnBase} text-[var(--accent-blue)] bg-[var(--bg-surface)] cursor-pointer`
+          : btnEnabled}
+        onClick={onToggleInspect}
+        title={inspecting ? 'Inspector OFF' : 'Inspector ON — click an element to copy its selector'}
+        tabIndex={-1}
+      >
+        <IconInspect />
+      </button>
 
       {/* DevTools */}
       <button

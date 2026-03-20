@@ -12,19 +12,16 @@ import { getAuthTokenPath } from '../../shared/constants';
  *   - Auth token file: ~/.wmux-auth-token (written here, read by MCP)
  *
  * Config files written:
- *   1. ~/.claude/settings.json   (global settings — mcpServers key)
- *   2. ~/.claude/.mcp.json       (user-level MCP config)
+ *   1. ~/.claude.json   (user-level MCP config — where Claude Code reads mcpServers)
  */
 export class McpRegistrar {
-  private readonly settingsPath: string;
-  private readonly mcpJsonPath: string;
+  private readonly claudeJsonPath: string;
   private readonly authTokenPath: string;
   private registered = false;
 
   constructor() {
     const home = app.getPath('home');
-    this.settingsPath = path.join(home, '.claude', 'settings.json');
-    this.mcpJsonPath = path.join(home, '.claude', '.mcp.json');
+    this.claudeJsonPath = path.join(home, '.claude.json');
     this.authTokenPath = getAuthTokenPath();
   }
 
@@ -45,13 +42,13 @@ export class McpRegistrar {
       }
 
       // Use absolute node path to avoid PATH resolution issues
+      // Use 'node' instead of process.execPath, which returns electron.exe at runtime
       const mcpEntry = {
-        command: process.execPath,
+        command: 'node',
         args: [mcpScript],
       };
 
-      this.registerInSettings(mcpEntry);
-      this.registerInMcpJson(mcpEntry);
+      this.registerInClaudeJson(mcpEntry);
 
       this.registered = true;
       console.log(`[McpRegistrar] Registered wmux MCP → ${mcpScript}`);
@@ -74,8 +71,7 @@ export class McpRegistrar {
     if (!this.registered) return;
 
     try {
-      this.unregisterFromSettings();
-      this.unregisterFromMcpJson();
+      this.unregisterFromClaudeJson();
       console.log('[McpRegistrar] Unregistered wmux MCP.');
     } catch (err) {
       console.error('[McpRegistrar] Failed to unregister:', err);
@@ -83,40 +79,19 @@ export class McpRegistrar {
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private registerInSettings(mcpEntry: Record<string, any>): void {
-    const settings = this.readJson(this.settingsPath);
-    if (!settings.mcpServers) settings.mcpServers = {};
-    settings.mcpServers['wmux'] = mcpEntry;
-    this.writeJson(this.settingsPath, settings);
+  private registerInClaudeJson(mcpEntry: Record<string, any>): void {
+    const config = this.readJson(this.claudeJsonPath);
+    if (!config.mcpServers) config.mcpServers = {};
+    config.mcpServers['wmux'] = mcpEntry;
+    this.writeJson(this.claudeJsonPath, config);
   }
 
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private registerInMcpJson(mcpEntry: Record<string, any>): void {
-    const mcpConfig = this.readJson(this.mcpJsonPath);
-    if (!mcpConfig.mcpServers) mcpConfig.mcpServers = {};
-    mcpConfig.mcpServers['wmux'] = mcpEntry;
-    this.writeJson(this.mcpJsonPath, mcpConfig);
-  }
-
-  private unregisterFromSettings(): void {
-    const settings = this.readJson(this.settingsPath);
-    if (settings.mcpServers?.['wmux']) {
-      delete settings.mcpServers['wmux'];
-      if (Object.keys(settings.mcpServers).length === 0) delete settings.mcpServers;
-      this.writeJson(this.settingsPath, settings);
-    }
-  }
-
-  private unregisterFromMcpJson(): void {
-    const mcpConfig = this.readJson(this.mcpJsonPath);
-    if (mcpConfig.mcpServers?.['wmux']) {
-      delete mcpConfig.mcpServers['wmux'];
-      if (Object.keys(mcpConfig.mcpServers).length === 0) delete mcpConfig.mcpServers;
-      if (Object.keys(mcpConfig).length === 0) {
-        try { fs.unlinkSync(this.mcpJsonPath); } catch { /* ignore */ }
-      } else {
-        this.writeJson(this.mcpJsonPath, mcpConfig);
-      }
+  private unregisterFromClaudeJson(): void {
+    const config = this.readJson(this.claudeJsonPath);
+    if (config.mcpServers?.['wmux']) {
+      delete config.mcpServers['wmux'];
+      if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
+      this.writeJson(this.claudeJsonPath, config);
     }
   }
 
@@ -127,9 +102,24 @@ export class McpRegistrar {
       return null;
     }
 
+    // In dev mode, app.getAppPath() returns .vite/build, so walk up to project root
     const appPath = app.getAppPath();
+    console.log('[McpRegistrar] appPath:', appPath);
+
     const devPath = path.join(appPath, 'dist', 'mcp', 'mcp', 'index.js');
+    console.log('[McpRegistrar] trying devPath:', devPath, fs.existsSync(devPath));
     if (fs.existsSync(devPath)) return devPath;
+
+    // Walk up directories until we find dist/mcp/mcp/index.js or hit root
+    let current = appPath;
+    for (let i = 0; i < 5; i++) {
+      const parent = path.resolve(current, '..');
+      if (parent === current) break;
+      const candidate = path.join(parent, 'dist', 'mcp', 'mcp', 'index.js');
+      console.log('[McpRegistrar] trying candidate:', candidate, fs.existsSync(candidate));
+      if (fs.existsSync(candidate)) return candidate;
+      current = parent;
+    }
 
     return null;
   }

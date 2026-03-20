@@ -31,6 +31,42 @@ if ($major -lt 18) {
     exit 1
 }
 
+# Check and install Python (required by node-gyp for native modules)
+if (-not (Get-Command python -ErrorAction SilentlyContinue) -or -not (& python --version 2>&1 | Select-String 'Python 3')) {
+    Write-Host "  [*] Python 3 not found — installing via winget..." -ForegroundColor Yellow
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent 2>&1 | Out-Null
+        $env:Path = "$env:LOCALAPPDATA\Programs\Python\Python312;$env:LOCALAPPDATA\Programs\Python\Python312\Scripts;$env:Path"
+        Write-Host "  [*] Python 3.12 installed" -ForegroundColor Green
+    } else {
+        Write-Host "  [!] Python 3 is required for native modules. Install from https://www.python.org" -ForegroundColor Red
+        exit 1
+    }
+}
+
+# Check and install Visual Studio Build Tools (required by node-gyp for C++ compilation)
+$vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$hasBuildTools = $false
+if (Test-Path $vsWhere) {
+    $vsInstalls = & $vsWhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json 2>$null | ConvertFrom-Json
+    if ($vsInstalls.Count -gt 0) { $hasBuildTools = $true }
+}
+if (-not $hasBuildTools) {
+    Write-Host "  [*] Visual Studio Build Tools not found — installing via winget..." -ForegroundColor Yellow
+    if (Get-Command winget -ErrorAction SilentlyContinue) {
+        winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" 2>&1 | Out-Null
+        # Install VSSetup module for node-gyp detection
+        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
+        Install-Module VSSetup -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue | Out-Null
+        Write-Host "  [*] Visual Studio Build Tools installed" -ForegroundColor Green
+    } else {
+        Write-Host "  [!] Visual Studio Build Tools required. Install 'Desktop development with C++' workload." -ForegroundColor Red
+        Write-Host "       https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Red
+        exit 1
+    }
+}
+
 Write-Host "  [1/4] Checking latest release..." -ForegroundColor DarkGray
 
 # Get latest release info from GitHub
