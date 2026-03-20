@@ -104,10 +104,8 @@ export class McpRegistrar {
 
     // In dev mode, app.getAppPath() returns .vite/build, so walk up to project root
     const appPath = app.getAppPath();
-    console.log('[McpRegistrar] appPath:', appPath);
 
     const devPath = path.join(appPath, 'dist', 'mcp', 'mcp', 'index.js');
-    console.log('[McpRegistrar] trying devPath:', devPath, fs.existsSync(devPath));
     if (fs.existsSync(devPath)) return devPath;
 
     // Walk up directories until we find dist/mcp/mcp/index.js or hit root
@@ -116,7 +114,6 @@ export class McpRegistrar {
       const parent = path.resolve(current, '..');
       if (parent === current) break;
       const candidate = path.join(parent, 'dist', 'mcp', 'mcp', 'index.js');
-      console.log('[McpRegistrar] trying candidate:', candidate, fs.existsSync(candidate));
       if (fs.existsSync(candidate)) return candidate;
       current = parent;
     }
