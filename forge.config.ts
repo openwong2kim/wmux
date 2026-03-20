@@ -5,19 +5,59 @@ import { VitePlugin } from '@electron-forge/plugin-vite';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
 import { FuseV1Options, FuseVersion } from '@electron/fuses';
+import * as fs from 'fs';
+import * as path from 'path';
+
+function copyDirSync(src: string, dest: string): void {
+  fs.mkdirSync(dest, { recursive: true });
+  for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    const srcPath = path.join(src, entry.name);
+    const destPath = path.join(dest, entry.name);
+    if (entry.isDirectory()) copyDirSync(srcPath, destPath);
+    else fs.copyFileSync(srcPath, destPath);
+  }
+}
 
 const config: ForgeConfig = {
   packagerConfig: {
-    asar: true,
+    asar: {
+      unpack: '**/node_modules/node-pty/**',
+    },
     icon: './assets/icon',
     extraResource: ['./dist/mcp'],
   },
-  rebuildConfig: { disablePreGypRecuild: true },
   hooks: {
-    // Skip native rebuild — pre-built binaries already in node_modules
-    readPackageJson: async (_config, packageJson) => {
-      packageJson.dependencies = packageJson.dependencies || {};
-      return packageJson;
+    postPackage: async (_config, packageResult) => {
+      const asar = require('@electron/asar');
+      const outputPath = packageResult.outputPaths[0];
+      const asarPath = path.join(outputPath, 'resources', 'app.asar');
+      const tempDir = path.join(outputPath, 'resources', '_app_tmp');
+      const unpackedDir = asarPath + '.unpacked';
+
+      // 1. Extract existing asar
+      console.log('[postPackage] Extracting asar...');
+      asar.extractAll(asarPath, tempDir);
+
+      // 2. Copy node-pty into extracted app
+      const destNodePty = path.join(tempDir, 'node_modules', 'node-pty');
+      console.log(`[postPackage] Copying node-pty...`);
+      copyDirSync(path.join(__dirname, 'node_modules', 'node-pty'), destNodePty);
+      const srcAddonApi = path.join(__dirname, 'node_modules', 'node-addon-api');
+      if (fs.existsSync(srcAddonApi)) {
+        copyDirSync(srcAddonApi, path.join(tempDir, 'node_modules', 'node-addon-api'));
+      }
+
+      // 3. Repack asar with native files unpacked
+      console.log('[postPackage] Repacking asar...');
+      fs.unlinkSync(asarPath);
+      if (fs.existsSync(unpackedDir)) fs.rmSync(unpackedDir, { recursive: true });
+      await asar.createPackageWithOptions(tempDir, asarPath, {
+        unpack: '*.node',
+      });
+
+      // 4. Cleanup temp
+      fs.rmSync(tempDir, { recursive: true });
+      console.log('[postPackage] Done — node-pty bundled.');
     },
   },
   makers: [
@@ -52,8 +92,8 @@ const config: ForgeConfig = {
       [FuseV1Options.EnableCookieEncryption]: true,
       [FuseV1Options.EnableNodeOptionsEnvironmentVariable]: false,
       [FuseV1Options.EnableNodeCliInspectArguments]: false,
-      [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: true,
-      [FuseV1Options.OnlyLoadAppFromAsar]: true,
+      [FuseV1Options.EnableEmbeddedAsarIntegrityValidation]: false,
+      [FuseV1Options.OnlyLoadAppFromAsar]: false,
     }),
   ],
 };
