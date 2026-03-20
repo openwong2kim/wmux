@@ -16,6 +16,22 @@ function findSurfaceByPtyId(root: Pane, ptyId: string): { surfaceId: string; pan
   return null;
 }
 
+/** Check if a ptyId belongs to the active pane's active surface in a workspace */
+function isActivePtySurface(ws: { rootPane: Pane; activePaneId: string }, ptyId: string): boolean {
+  const findActiveLeaf = (pane: Pane): PaneLeaf | null => {
+    if (pane.type === 'leaf') return pane.id === ws.activePaneId ? pane : null;
+    for (const child of pane.children) {
+      const found = findActiveLeaf(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const leaf = findActiveLeaf(ws.rootPane);
+  if (!leaf) return false;
+  const activeSurface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+  return activeSurface?.ptyId === ptyId;
+}
+
 // Throttle notification sounds — min 2s between sounds of same type
 const lastSoundTime: Record<string, number> = {};
 const SOUND_THROTTLE_MS = 2000;
@@ -65,7 +81,18 @@ export function useNotificationListener() {
       for (const ws of state.workspaces) {
         const found = findSurfaceByPtyId(ws.rootPane, ptyId);
         if (found) {
-          state.updateWorkspaceMetadata(ws.id, data);
+          // Only update CWD from the active pane's active surface to prevent
+          // stale PTYs from overwriting the current directory
+          const isActiveSurface = isActivePtySurface(ws, ptyId);
+          if (isActiveSurface) {
+            state.updateWorkspaceMetadata(ws.id, data);
+          } else {
+            // For non-active surfaces, update metadata but exclude cwd
+            const { cwd: _cwd, ...rest } = data;
+            if (Object.keys(rest).length > 0) {
+              state.updateWorkspaceMetadata(ws.id, rest);
+            }
+          }
           break;
         }
       }

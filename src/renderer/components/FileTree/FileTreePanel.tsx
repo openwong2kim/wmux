@@ -293,13 +293,27 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
   const [previewContent, setPreviewContent] = useState<string | null>(null);
   const [previewLoading, setPreviewLoading] = useState(false);
 
-  // Load root directory, preserving expanded folder state on refresh
+  // Track previous cwd to detect directory changes vs refreshes
+  const prevCwdRef = useRef<string | undefined>(undefined);
+
+  // Load root directory, preserving expanded folder state on same-dir refresh
   useEffect(() => {
     if (!cwd) {
       setTree([]);
       treeRef.current = [];
+      prevCwdRef.current = undefined;
       return;
     }
+
+    const cwdChanged = prevCwdRef.current !== cwd;
+    prevCwdRef.current = cwd;
+
+    // If CWD changed, reset tree completely (old tree is from different directory)
+    if (cwdChanged) {
+      treeRef.current = [];
+      setTree([]);
+    }
+
     let cancelled = false;
 
     const mergeNodes = (oldNodes: TreeNode[], newNodes: TreeNode[]): TreeNode[] => {
@@ -307,7 +321,6 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
       return newNodes.map((n) => {
         const old = oldMap.get(n.name);
         if (old && old.isDirectory && n.isDirectory && old.isExpanded && old.children) {
-          // Preserve expanded state and children
           return { ...n, isExpanded: true, children: old.children };
         }
         return n;
@@ -323,8 +336,8 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
       });
     };
 
-    loadTree(); // immediate load
-    const interval = setInterval(loadTree, 10_000); // refresh every 10s
+    loadTree();
+    const interval = setInterval(loadTree, 10_000);
 
     return () => {
       cancelled = true;
@@ -377,46 +390,28 @@ export default function FileTreePanel({ position }: FileTreePanelProps) {
     [],
   );
 
+  const addEditorSurface = useStore((s) => s.addEditorSurface);
+
   const handleFileClick = useCallback(
     (filePath: string) => {
-      // Markdown file: open preview instead of sending to terminal
-      if (filePath.toLowerCase().endsWith('.md')) {
-        setPreviewFile(filePath);
-        setPreviewLoading(true);
-        setPreviewContent(null);
-        readFile(filePath).then((content) => {
-          setPreviewContent(content);
-          setPreviewLoading(false);
-        });
-        return;
-      }
-
       if (!activeWorkspace) return;
-      const root = activeWorkspace.rootPane;
 
-      // Find active leaf pane
-      const findLeaf = (pane: typeof root): typeof root | null => {
-        if (pane.type === 'leaf') {
-          return pane.id === activeWorkspace.activePaneId ? pane : null;
-        }
-        for (const child of (pane as any).children ?? []) {
-          const found = findLeaf(child);
+      // Find active leaf pane id
+      const findActivePaneId = (pane: any): string | undefined => {
+        if (pane.type === 'leaf') return pane.id === activeWorkspace.activePaneId ? pane.id : undefined;
+        for (const child of pane.children ?? []) {
+          const found = findActivePaneId(child);
           if (found) return found;
         }
-        return null;
+        return undefined;
       };
 
-      const leaf = findLeaf(root) as any;
-      if (!leaf) return;
-
-      const activeSurface = leaf.surfaces?.find((s: any) => s.id === leaf.activeSurfaceId);
-      if (!activeSurface?.ptyId) return;
-
-      // Quote path if it contains spaces
-      const text = filePath.includes(' ') ? `"${filePath}"` : filePath;
-      window.electronAPI.pty.write(activeSurface.ptyId, text);
+      const paneId = findActivePaneId(activeWorkspace.rootPane);
+      if (paneId) {
+        addEditorSurface(paneId, filePath);
+      }
     },
-    [activeWorkspace],
+    [activeWorkspace, addEditorSurface],
   );
 
   const closePreview = useCallback(() => {

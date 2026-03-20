@@ -5,8 +5,9 @@ export interface Surface {
   title: string;
   shell: string;
   cwd: string;
-  surfaceType?: 'terminal' | 'browser';
+  surfaceType?: 'terminal' | 'browser' | 'editor';
   browserUrl?: string;
+  editorFilePath?: string;
 }
 
 // === Pane: either a leaf (has surfaces) or a branch (has children) ===

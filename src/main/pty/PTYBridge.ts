@@ -100,8 +100,11 @@ export class PTYBridge {
     });
 
     // Detect CWD from shell prompt patterns (PowerShell: "PS C:\path>", bash: "user@host:~/path$")
+    // eslint-disable-next-line no-control-regex
+    const ansiStripRegex = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[[\?]?[0-9;]*[hlm]/g;
     const promptCwdRegex = /(?:PS\s+([A-Za-z]:\\[^>]*?)>)|(?:\w+@[\w.-]+:([^\$]+?)\$)/;
     let lastDetectedCwd = '';
+    let promptBuffer = '';
 
     instance.process.onData((data: string) => {
       try {
@@ -111,8 +114,13 @@ export class PTYBridge {
           oscParser.process(data);
           agentDetector.feed(data);
 
-          // Detect CWD from prompt output (for shells without OSC 7)
-          const promptMatch = data.match(promptCwdRegex);
+          // Buffer recent output for prompt detection (keep last 512 chars)
+          promptBuffer += data;
+          if (promptBuffer.length > 1024) promptBuffer = promptBuffer.slice(-512);
+
+          // Strip ANSI escape sequences before matching prompt
+          const clean = promptBuffer.replace(ansiStripRegex, '');
+          const promptMatch = clean.match(promptCwdRegex);
           if (promptMatch) {
             const detectedCwd = (promptMatch[1] || promptMatch[2] || '').trim();
             if (detectedCwd && detectedCwd !== lastDetectedCwd) {
@@ -120,6 +128,7 @@ export class PTYBridge {
               updateCwd(ptyId, detectedCwd);
               win.webContents.send(IPC.CWD_CHANGED, ptyId, detectedCwd);
             }
+            promptBuffer = ''; // Reset after successful match
           }
 
           win.webContents.send(IPC.PTY_DATA, ptyId, data);

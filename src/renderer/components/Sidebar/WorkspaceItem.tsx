@@ -190,31 +190,6 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
                   </span>
                 )}
               </div>
-              {metadata && (metadata.gitBranch || metadata.cwd || (metadata.listeningPorts && metadata.listeningPorts.length > 0) || metadata.agentName) && (
-                <div className="mt-0.5 space-y-0 text-[10px] text-[var(--text-muted)]">
-                  {metadata.gitBranch && (
-                    <div className="truncate" title={metadata.gitBranch}>
-                      <span className="text-[var(--accent-yellow)]">⎇</span> {metadata.gitBranch}
-                    </div>
-                  )}
-                  {metadata.cwd && (
-                    <div className="truncate" title={metadata.cwd}>
-                      {shortenPath(metadata.cwd)}
-                    </div>
-                  )}
-                  {metadata.listeningPorts && metadata.listeningPorts.length > 0 && (
-                    <div className="truncate">
-                      <span className="text-[var(--accent-green)]">●</span> :{metadata.listeningPorts.slice(0, 3).join(', :')}
-                      {metadata.listeningPorts.length > 3 && ` +${metadata.listeningPorts.length - 3}`}
-                    </div>
-                  )}
-                  {metadata.agentName && (
-                    <div className="truncate" title={`${metadata.agentName}`}>
-                      <span className="text-[var(--accent-purple)]">⚡</span> {metadata.agentName}
-                    </div>
-                  )}
-                </div>
-              )}
             </>
           )}
         </div>

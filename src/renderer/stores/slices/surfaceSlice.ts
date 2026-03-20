@@ -6,6 +6,7 @@ import { createSurface, generateId } from '../../../shared/types';
 export interface SurfaceSlice {
   addSurface: (paneId: string, ptyId: string, shell: string, cwd: string) => void;
   addBrowserSurface: (paneId: string, url?: string) => void;
+  addEditorSurface: (paneId: string, filePath: string) => void;
   closeSurface: (paneId: string, surfaceId: string) => void;
   setActiveSurface: (paneId: string, surfaceId: string) => void;
   nextSurface: (paneId: string) => void;
@@ -49,6 +50,31 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       cwd: '',
       surfaceType: 'browser',
       browserUrl: url || 'https://google.com',
+    };
+    pane.surfaces.push(surface);
+    pane.activeSurfaceId = surface.id;
+  }),
+
+  addEditorSurface: (paneId, filePath) => set((state: StoreState) => {
+    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+    if (!ws) return;
+    const pane = findLeafPane(ws.rootPane, paneId);
+    if (!pane) return;
+    // If the same file is already open, switch to that tab
+    const existing = pane.surfaces.find((s) => s.surfaceType === 'editor' && s.editorFilePath === filePath);
+    if (existing) {
+      pane.activeSurfaceId = existing.id;
+      return;
+    }
+    const fileName = filePath.split(/[/\\]/).pop() || filePath;
+    const surface: Surface = {
+      id: generateId('surface'),
+      ptyId: '',
+      title: fileName,
+      shell: '',
+      cwd: '',
+      surfaceType: 'editor',
+      editorFilePath: filePath,
     };
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;

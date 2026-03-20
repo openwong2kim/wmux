@@ -5,6 +5,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
+import EditorPanel from '../Editor/EditorPanel';
 import SurfaceTabs from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 
@@ -146,7 +147,14 @@ function SplitSurfaceView({
     return (
       <div className="flex-1 relative overflow-hidden">
         {pane.surfaces.map((surface) =>
-          surface.surfaceType === 'browser' ? (
+          surface.surfaceType === 'editor' ? (
+            <EditorPanel
+              key={surface.id}
+              filePath={surface.editorFilePath || ''}
+              isActive={surface.id === activeSurfaceId}
+              surfaceId={surface.id}
+            />
+          ) : surface.surfaceType === 'browser' ? (
             <BrowserPanel
               key={surface.id}
               surfaceId={surface.id}
