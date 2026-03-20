@@ -28,7 +28,7 @@ export class RpcRouter {
     }
 
     try {
-      const result = await handler(request.params);
+      const result = await handler(request.params ?? {});
       return {
         id: request.id,
         ok: true,

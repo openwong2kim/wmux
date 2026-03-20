@@ -5,8 +5,9 @@ const electronAPI = {
   pty: {
     create: (options?: { shell?: string; cwd?: string; cols?: number; rows?: number }) =>
       ipcRenderer.invoke(IPC.PTY_CREATE, options),
-    write: (id: string, data: string) =>
-      ipcRenderer.invoke(IPC.PTY_WRITE, id, data),
+    write: (id: string, data: string) => {
+      ipcRenderer.send(IPC.PTY_WRITE, id, data);
+    },
     resize: (id: string, cols: number, rows: number) =>
       ipcRenderer.invoke(IPC.PTY_RESIZE, id, cols, rows),
     dispose: (id: string) =>

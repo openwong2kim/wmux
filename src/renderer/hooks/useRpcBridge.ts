@@ -133,8 +133,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       cwd: cwd || undefined,
     });
 
-    // Re-read state after async gap.
-    store.addSurface(paneId, ptyId, shell, cwd);
+    // Re-read state after async gap — paneId may have been removed.
+    const freshAfterCreate = useStore.getState();
+    const freshWsAfterCreate = freshAfterCreate.workspaces.find((w) => w.id === freshAfterCreate.activeWorkspaceId);
+    if (!freshWsAfterCreate || !findPaneById(freshWsAfterCreate.rootPane, paneId)) {
+      // Pane was removed during async gap — dispose the orphaned PTY
+      try { await window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
+      return { error: 'pane was removed during PTY creation' };
+    }
+    freshAfterCreate.addSurface(paneId, ptyId, shell, cwd);
 
     const fresh = useStore.getState();
     const freshWs = fresh.workspaces.find((w) => w.id === fresh.activeWorkspaceId);
@@ -321,6 +328,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       /\bchild_process\b/i,
       /\bglobal\s*\.\s*process\b/i,
       /\belectron\b/i,
+      /\beval\s*\(/i,
+      /\bFunction\s*\(/i,
+      /\bimport\s*\(/i,
     ];
     for (const pat of dangerousPatterns) {
       if (pat.test(code)) {

@@ -47,6 +47,8 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       }
       setPtyId(result.id);
       onPtyCreated?.(result.id);
+    }).catch((err: unknown) => {
+      console.error('Failed to create PTY:', err);
     });
 
     return () => { cancelled = true; };

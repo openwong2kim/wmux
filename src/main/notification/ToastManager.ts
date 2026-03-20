@@ -3,6 +3,7 @@ import { Notification, BrowserWindow } from 'electron';
 export class ToastManager {
   enabled = true;
   private flashingWindow: BrowserWindow | null = null;
+  private focusHandler: (() => void) | null = null;
 
   show(title: string, body: string): void {
     if (!this.enabled) return;
@@ -35,10 +36,13 @@ export class ToastManager {
     if (win) {
       win.flashFrame(true);
       if (this.flashingWindow !== win) {
+        // Remove previous listener to prevent accumulation
+        if (this.flashingWindow && this.focusHandler) {
+          this.flashingWindow.removeListener('focus', this.focusHandler);
+        }
         this.flashingWindow = win;
-        win.on('focus', () => {
-          win.flashFrame(false);
-        });
+        this.focusHandler = () => { win.flashFrame(false); };
+        win.on('focus', this.focusHandler);
       }
     }
   }

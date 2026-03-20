@@ -54,7 +54,8 @@ export function registerPTYHandlers(ptyManager: PTYManager, ptyBridge: PTYBridge
     return { id: instance.id, shell: instance.shell, cwd: actualCwd };
   });
 
-  ipcMain.handle(IPC.PTY_WRITE, (_event, id: string, data: string) => {
+  // Use ipcMain.on (fire-and-forget) instead of handle for lower latency
+  ipcMain.on(IPC.PTY_WRITE, (_event, id: string, data: string) => {
     // 세션 복원 시 이전 ptyId가 남아있을 수 있음 — 조용히 무시
     if (!ptyManager.get(id)) return;
     if (typeof data !== 'string') return;

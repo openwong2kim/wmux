@@ -90,6 +90,9 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow): voi
       /\bchild_process\b/i,
       /\bglobal\s*\.\s*process\b/i,
       /\belectron\b/i,
+      /\beval\s*\(/i,
+      /\bFunction\s*\(/i,
+      /\bimport\s*\(/i,
     ];
     for (const pat of dangerousPatterns) {
       if (pat.test(code)) {

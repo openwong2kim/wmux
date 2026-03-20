@@ -151,7 +151,7 @@ export class AgentDetector {
 
   private processLine(line: string): void {
     // Strip ANSI escape codes for pattern matching
-    const clean = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').trim();
+    const clean = line.replace(/\x1b(?:\[[0-9;]*[a-zA-Z]|\][^\x07]*\x07|\([A-Z])/g, '').trim();
     if (!clean) return;
 
     // Check critical patterns first
