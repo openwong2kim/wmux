@@ -31,6 +31,19 @@ export class PTYBridge {
     });
   }
 
+  /**
+   * Clean up all Bridge-side resources for a PTY instance.
+   * Called automatically on process exit, but can also be called externally
+   * (e.g. from PTYManager.dispose()) to ensure cleanup when onExit is not fired.
+   */
+  cleanupInstance(ptyId: string): void {
+    this.oscParsers.delete(ptyId);
+    this.agentDetectors.delete(ptyId);
+    this.ptyCreatedAt.delete(ptyId);
+    this.activityMonitor.stop(ptyId);
+    this.ptyManager.remove(ptyId);
+  }
+
   setupDataForwarding(ptyId: string): void {
     const instance = this.ptyManager.get(ptyId);
     if (!instance) return;
@@ -120,11 +133,7 @@ export class PTYBridge {
           this.toastManager.show(notification.title, notification.body);
         }
       }
-      this.oscParsers.delete(ptyId);
-      this.agentDetectors.delete(ptyId);
-      this.ptyCreatedAt.delete(ptyId);
-      this.activityMonitor.stop(ptyId);
-      this.ptyManager.remove(ptyId);
+      this.cleanupInstance(ptyId);
     });
   }
 }

@@ -10,10 +10,38 @@ import SettingsPanel from '../Settings/SettingsPanel';
 import ApprovalDialog from '../Company/ApprovalDialog';
 import CompanyView from '../Company/CompanyView';
 import MessageFeedPanel from '../Company/MessageFeedPanel';
+import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
 import type { SessionData, PaneLeaf } from '../../../shared/types';
+
+/** Build a consistent SessionData snapshot for save operations */
+function buildSessionData(): SessionData {
+  const state = useStore.getState();
+  const companySafe = state.company ? { ...state.company, skipPermissions: undefined } : null;
+  return {
+    workspaces: state.workspaces,
+    activeWorkspaceId: state.activeWorkspaceId,
+    sidebarVisible: state.sidebarVisible,
+    sidebarMode: state.sidebarMode,
+    company: companySafe,
+    memberCosts: state.memberCosts,
+    sessionStartTime: state.sessionStartTime,
+    // User preferences
+    theme: state.theme,
+    locale: state.locale,
+    terminalFontSize: state.terminalFontSize,
+    terminalFontFamily: state.terminalFontFamily,
+    defaultShell: state.defaultShell,
+    scrollbackLines: state.scrollbackLines,
+    sidebarPosition: state.sidebarPosition,
+    notificationSoundEnabled: state.notificationSoundEnabled,
+    toastEnabled: state.toastEnabled,
+    notificationRingEnabled: state.notificationRingEnabled,
+    customKeybindings: state.customKeybindings,
+  };
+}
 
 export default function AppLayout() {
   const sidebarVisible = useStore((s) => s.sidebarVisible);
@@ -98,31 +126,7 @@ export default function AppLayout() {
   // Save session on beforeunload
   useEffect(() => {
     const saveSession = () => {
-      const state = useStore.getState();
-      // Strip dangerous flags from session persistence
-      const companySafe = state.company ? { ...state.company, skipPermissions: undefined } : null;
-      const data: SessionData = {
-        workspaces: state.workspaces,
-        activeWorkspaceId: state.activeWorkspaceId,
-        sidebarVisible: state.sidebarVisible,
-        sidebarMode: state.sidebarMode,
-        company: companySafe,
-        memberCosts: state.memberCosts,
-        sessionStartTime: state.sessionStartTime,
-        // User preferences
-        theme: state.theme,
-        locale: state.locale,
-        terminalFontSize: state.terminalFontSize,
-        terminalFontFamily: state.terminalFontFamily,
-        defaultShell: state.defaultShell,
-        scrollbackLines: state.scrollbackLines,
-        sidebarPosition: state.sidebarPosition,
-        notificationSoundEnabled: state.notificationSoundEnabled,
-        toastEnabled: state.toastEnabled,
-        notificationRingEnabled: state.notificationRingEnabled,
-        customKeybindings: state.customKeybindings,
-      };
-      window.electronAPI.session.save(data);
+      window.electronAPI.session.save(buildSessionData());
     };
 
     window.addEventListener('beforeunload', saveSession);
@@ -132,24 +136,7 @@ export default function AppLayout() {
   // Periodic session save — protects against crashes
   useEffect(() => {
     const interval = setInterval(() => {
-      const state = useStore.getState();
-      const data: SessionData = {
-        workspaces: state.workspaces,
-        activeWorkspaceId: state.activeWorkspaceId,
-        sidebarVisible: state.sidebarVisible,
-        theme: state.theme,
-        locale: state.locale,
-        terminalFontSize: state.terminalFontSize,
-        terminalFontFamily: state.terminalFontFamily,
-        defaultShell: state.defaultShell,
-        scrollbackLines: state.scrollbackLines,
-        sidebarPosition: state.sidebarPosition,
-        notificationSoundEnabled: state.notificationSoundEnabled,
-        toastEnabled: state.toastEnabled,
-        notificationRingEnabled: state.notificationRingEnabled,
-        customKeybindings: state.customKeybindings,
-      };
-      window.electronAPI.session.save(data);
+      window.electronAPI.session.save(buildSessionData());
     }, 30_000);
     return () => clearInterval(interval);
   }, []);
@@ -189,8 +176,12 @@ export default function AppLayout() {
   if (!activeWorkspace) return null;
 
   return (
+    <ErrorBoundary name="AppLayout">
     <div className={`flex h-screen w-screen bg-[var(--bg-base)] overflow-hidden ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
-      {sidebarVisible ? <Sidebar /> : <MiniSidebar />}
+      <ErrorBoundary name="Sidebar">
+        {sidebarVisible ? <Sidebar /> : <MiniSidebar />}
+      </ErrorBoundary>
+      <ErrorBoundary name="Main">
       <div className="flex-1 min-w-0 flex flex-col">
         <StatusBar />
         {/* Render workspaces: single view or multiview grid (Ctrl+click selected) */}
@@ -256,6 +247,7 @@ export default function AppLayout() {
           </div>
         )}
       </div>
+      </ErrorBoundary>
       <NotificationPanel />
       <MessageFeedPanel />
       <CommandPalette />
@@ -280,5 +272,6 @@ export default function AppLayout() {
         />
       )}
     </div>
+    </ErrorBoundary>
   );
 }

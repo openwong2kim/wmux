@@ -11,6 +11,10 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.PTY_RESIZE, id, cols, rows),
     dispose: (id: string) =>
       ipcRenderer.invoke(IPC.PTY_DISPOSE, id),
+    list: () =>
+      ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string }[]>,
+    reconnect: (id: string) =>
+      ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; error?: string }>,
     onData: (callback: (id: string, data: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, id: string, data: string) => callback(id, data);
       ipcRenderer.on(IPC.PTY_DATA, listener);

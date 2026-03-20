@@ -66,4 +66,21 @@ export function registerPTYHandlers(ptyManager: PTYManager, ptyBridge: PTYBridge
   ipcMain.handle(IPC.PTY_DISPOSE, (_event, id: string) => {
     ptyManager.dispose(id);
   });
+
+  // Crash recovery: renderer can query active PTY instances after reload
+  ipcMain.handle(IPC.PTY_LIST, () => {
+    return ptyManager.getActiveInstances();
+  });
+
+  // Crash recovery: renderer can re-attach to an existing PTY after reload.
+  // Data forwarding is already active (PTYBridge listeners survive reload since
+  // they reference getWindow() which returns the same BrowserWindow), so this
+  // just confirms the PTY is alive and returns its info.
+  ipcMain.handle(IPC.PTY_RECONNECT, (_event, id: string) => {
+    const instance = ptyManager.get(id);
+    if (!instance) {
+      return { success: false, error: 'PTY not found' };
+    }
+    return { success: true, id: instance.id, shell: instance.shell };
+  });
 }

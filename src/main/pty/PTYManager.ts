@@ -8,14 +8,11 @@ export interface PTYInstance {
   shell: string;
 }
 
+const MAX_PTY_INSTANCES = 20;
+
 export class PTYManager {
   private instances = new Map<string, PTYInstance>();
   private nextId = 0;
-  private _authToken: string | undefined;
-
-  setAuthToken(token: string): void {
-    this._authToken = token;
-  }
 
   create(options?: {
     shell?: string;
@@ -24,24 +21,30 @@ export class PTYManager {
     rows?: number;
     workspaceId?: string;
     surfaceId?: string;
-    authToken?: string;
   }): PTYInstance {
+    if (this.instances.size >= MAX_PTY_INSTANCES) {
+      throw new Error('Maximum PTY instances reached');
+    }
     const id = `pty-${++this.nextId}`;
     const shell = options?.shell || this.getDefaultShell();
     const cwd = options?.cwd || os.homedir();
 
-    // Filter out ELECTRON_ variables to prevent leaking internal state to child processes
+    // Filter out sensitive and build-only variables to prevent leaking internal state to child processes
     const env: Record<string, string> = {};
     for (const [key, value] of Object.entries(globalThis.process.env)) {
       if (value === undefined) continue;
       if (key.startsWith('ELECTRON_')) continue;
+      if (key.startsWith('VITE_')) continue;
+      if (key === 'NODE_OPTIONS') continue;
+      if (key === 'ELECTRON_RUN_AS_NODE') continue;
       env[key] = value;
     }
     env[ENV_KEYS.SOCKET_PATH] = getPipeName();
     if (options?.workspaceId) env[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
     if (options?.surfaceId) env[ENV_KEYS.SURFACE_ID] = options.surfaceId;
-    const authToken = options?.authToken || this._authToken;
-    if (authToken) env[ENV_KEYS.AUTH_TOKEN] = authToken;
+    // Security: auth token is NOT passed via environment variable to prevent
+    // malicious child processes (e.g. npm packages) from accessing it.
+    // CLI/MCP clients read the token directly from ~/.wmux-auth-token file.
 
     const process = pty.spawn(shell, [], {
       name: 'xterm-256color',
@@ -88,8 +91,17 @@ export class PTYManager {
     return this.instances.get(id);
   }
 
+  /** Return summary of all active PTY instances for crash recovery reconnection. */
+  getActiveInstances(): { id: string; shell: string }[] {
+    const result: { id: string; shell: string }[] = [];
+    for (const instance of this.instances.values()) {
+      result.push({ id: instance.id, shell: instance.shell });
+    }
+    return result;
+  }
+
   disposeAll(): void {
-    for (const [id] of this.instances) {
+    for (const id of Array.from(this.instances.keys())) {
       this.dispose(id);
     }
   }

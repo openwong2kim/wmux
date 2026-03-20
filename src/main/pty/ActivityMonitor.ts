@@ -31,8 +31,12 @@ export class ActivityMonitor {
   private states = new Map<string, PtyState>();
   private callbacks: ((ptyId: string) => void)[] = [];
 
-  onActiveToIdle(callback: (ptyId: string) => void): void {
+  onActiveToIdle(callback: (ptyId: string) => void): () => void {
     this.callbacks.push(callback);
+    return () => {
+      const idx = this.callbacks.indexOf(callback);
+      if (idx >= 0) this.callbacks.splice(idx, 1);
+    };
   }
 
   start(ptyId: string): void {

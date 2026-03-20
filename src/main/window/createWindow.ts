@@ -1,4 +1,4 @@
-import { BrowserWindow } from 'electron';
+import { BrowserWindow, shell } from 'electron';
 import path from 'node:path';
 
 export function createWindow(): BrowserWindow {
@@ -26,19 +26,23 @@ export function createWindow(): BrowserWindow {
     );
   }
 
-  // CSP header — production only (dev needs full access for Vite HMR)
-  if (!MAIN_WINDOW_VITE_DEV_SERVER_URL) {
-    mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
-      callback({
-        responseHeaders: {
-          ...details.responseHeaders,
-          'Content-Security-Policy': [
-            "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'",
-          ],
-        },
-      });
+  // CSP header — applied in both production and development modes.
+  // 'unsafe-inline' in style-src is required because Tailwind CSS and xterm.js
+  // inject inline styles at runtime; removing it breaks UI rendering.
+  const isDevMode = !!MAIN_WINDOW_VITE_DEV_SERVER_URL;
+  const connectSrc = isDevMode
+    ? "connect-src 'self' ws: http://localhost:*"  // Vite HMR uses WebSocket
+    : "connect-src 'self'";
+  const cspPolicy = `default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; ${connectSrc}; font-src 'self'; frame-src 'self' https: http:`;
+
+  mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
+    callback({
+      responseHeaders: {
+        ...details.responseHeaders,
+        'Content-Security-Policy': [cspPolicy],
+      },
     });
-  }
+  });
 
   // Harden webview security: strip preload, enforce contextIsolation
   mainWindow.webContents.on('will-attach-webview', (_event, webPreferences) => {
@@ -55,6 +59,15 @@ export function createWindow(): BrowserWindow {
   mainWindow.webContents.on('will-navigate', (event, url) => {
     if (MAIN_WINDOW_VITE_DEV_SERVER_URL && url.startsWith(MAIN_WINDOW_VITE_DEV_SERVER_URL)) return;
     event.preventDefault();
+  });
+
+  // Block all window.open() calls by default.
+  // External URLs (http/https) are opened in the user's default browser instead.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (url.startsWith('https://') || url.startsWith('http://')) {
+      shell.openExternal(url);
+    }
+    return { action: 'deny' };
   });
 
   if (process.env.NODE_ENV === 'development') {
