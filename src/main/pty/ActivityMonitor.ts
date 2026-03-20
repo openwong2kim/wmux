@@ -3,27 +3,29 @@
  *
  * Instead of fragile pattern matching, this monitors data throughput:
  *   - "active": sustained output > ACTIVE_THRESHOLD bytes over ACTIVE_WINDOW ms
- *   - "idle":   output drops below IDLE_THRESHOLD bytes for IDLE_DELAY ms
- *   - Notification fires on active→idle transition only
+ *   - "idle":   no output for IDLE_DELAY ms after active period
+ *   - Notification fires ONCE on active→idle, then waits for a new active cycle
  *
- * This reliably catches "agent finished" for ANY agent without pattern matching.
- * User typing (short bursts) doesn't trigger because it never reaches sustained active state.
+ * After firing, the monitor enters a "notified" state.
+ * It will NOT fire again until the PTY produces another sustained burst
+ * (a full new active cycle). This prevents notification spam from
+ * small outputs like cursor blinks or prompt redraws.
  */
 
 interface PtyState {
-  bytes: number;         // bytes accumulated in current window
-  windowStart: number;   // start of current measurement window
-  active: boolean;       // currently in "active" state?
+  bytes: number;
+  windowStart: number;
+  active: boolean;
+  notified: boolean;     // already fired — waiting for new active cycle
   idleTimer: ReturnType<typeof setTimeout> | null;
 }
 
 export class ActivityMonitor {
-  // Must output > 500 bytes in 3 seconds to enter "active" state
-  private static ACTIVE_THRESHOLD = 500;
+  // Must output > 2000 bytes in 3 seconds to enter "active" state
+  private static ACTIVE_THRESHOLD = 2000;
   private static ACTIVE_WINDOW_MS = 3000;
 
-  // Must be idle (< 50 bytes) for 5 seconds to transition to "idle"
-  private static IDLE_THRESHOLD = 50;
+  // Must be idle for 5 seconds after active period
   private static IDLE_DELAY_MS = 5000;
 
   private states = new Map<string, PtyState>();
@@ -38,18 +40,18 @@ export class ActivityMonitor {
       bytes: 0,
       windowStart: Date.now(),
       active: false,
+      notified: false,
       idleTimer: null,
     });
   }
 
-  /** Call on every onData event with the data length */
   feed(ptyId: string, byteCount: number): void {
     const s = this.states.get(ptyId);
     if (!s) return;
 
     const now = Date.now();
 
-    // Reset window if expired
+    // Reset measurement window if expired
     if (now - s.windowStart > ActivityMonitor.ACTIVE_WINDOW_MS) {
       s.bytes = 0;
       s.windowStart = now;
@@ -57,22 +59,24 @@ export class ActivityMonitor {
 
     s.bytes += byteCount;
 
-    // Check if we should enter active state
-    if (!s.active && s.bytes > ActivityMonitor.ACTIVE_THRESHOLD) {
+    // Enter active state when threshold reached (and not already notified)
+    if (!s.active && !s.notified && s.bytes > ActivityMonitor.ACTIVE_THRESHOLD) {
       s.active = true;
-      // Clear any pending idle timer
-      if (s.idleTimer) {
-        clearTimeout(s.idleTimer);
-        s.idleTimer = null;
-      }
     }
 
-    // If active, reset the idle countdown on every data event
+    // If already notified, check if this is a new significant burst to re-arm
+    if (s.notified && s.bytes > ActivityMonitor.ACTIVE_THRESHOLD) {
+      s.notified = false;
+      s.active = true;
+    }
+
+    // If active, reset the idle countdown
     if (s.active) {
       if (s.idleTimer) clearTimeout(s.idleTimer);
       s.idleTimer = setTimeout(() => {
         if (!s.active) return;
         s.active = false;
+        s.notified = true;  // prevent re-firing until new active cycle
         s.idleTimer = null;
         this.callbacks.forEach((cb) => cb(ptyId));
       }, ActivityMonitor.IDLE_DELAY_MS);
