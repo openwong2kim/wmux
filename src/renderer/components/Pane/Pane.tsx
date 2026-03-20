@@ -5,6 +5,7 @@ import { useT } from '../../hooks/useT';
 import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import SurfaceTabs from './SurfaceTabs';
+import { ErrorBoundary } from '../ErrorBoundary';
 
 interface PaneProps {
   pane: PaneLeaf;
@@ -82,6 +83,7 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
       } ${hasUnread ? 'notification-ring' : ''} ${flashing ? 'pane-flash' : ''}`}
       onClick={handleClick}
     >
+      <ErrorBoundary name="pane">
       <SurfaceTabs
         surfaces={pane.surfaces}
         activeSurfaceId={pane.activeSurfaceId}
@@ -117,6 +119,7 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
           </div>
         )}
       </div>
+      </ErrorBoundary>
     </div>
   );
 }

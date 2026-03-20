@@ -64,11 +64,38 @@ app.on('ready', () => {
   console.log('[Main] App ready, creating window...');
   mainWindow = createWindow();
   console.log('[Main] Window created:', !!mainWindow);
+
+  // Renderer crash recovery — auto-reload on crash
+  let lastCrashTime = 0;
+  let crashCount = 0;
+  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+    console.error('[Main] Renderer crashed:', details.reason, details.exitCode);
+    if (details.reason === 'clean-exit') return;
+    const now = Date.now();
+    if (now - lastCrashTime < 5000) {
+      crashCount++;
+    } else {
+      crashCount = 1;
+    }
+    lastCrashTime = now;
+    if (crashCount >= 3) {
+      require('electron').dialog.showErrorBox('wmux', 'Renderer crashed repeatedly. Please restart.');
+      app.quit();
+      return;
+    }
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
+    }, 1000);
+  });
+
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
-  mainWindow.webContents.on('did-fail-load', (_e, code, desc) => {
-    console.error('[Main] Page failed to load:', code, desc);
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    console.error('[Main] Page failed to load:', errorCode, errorDescription);
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
+    }, 2000);
   });
   mainWindow.webContents.on('did-finish-load', () => {
     console.log('[Main] Page loaded successfully');

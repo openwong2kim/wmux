@@ -129,6 +129,31 @@ export default function AppLayout() {
     return () => window.removeEventListener('beforeunload', saveSession);
   }, []);
 
+  // Periodic session save — protects against crashes
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const state = useStore.getState();
+      const data: SessionData = {
+        workspaces: state.workspaces,
+        activeWorkspaceId: state.activeWorkspaceId,
+        sidebarVisible: state.sidebarVisible,
+        theme: state.theme,
+        locale: state.locale,
+        terminalFontSize: state.terminalFontSize,
+        terminalFontFamily: state.terminalFontFamily,
+        defaultShell: state.defaultShell,
+        scrollbackLines: state.scrollbackLines,
+        sidebarPosition: state.sidebarPosition,
+        notificationSoundEnabled: state.notificationSoundEnabled,
+        toastEnabled: state.toastEnabled,
+        notificationRingEnabled: state.notificationRingEnabled,
+        customKeybindings: state.customKeybindings,
+      };
+      window.electronAPI.session.save(data);
+    }, 30_000);
+    return () => clearInterval(interval);
+  }, []);
+
   // Auto-create initial surface for empty leaf panes
   // 세션 복원된 경우: surfaces가 이미 있으므로 이 effect는 실행되지 않음
   // 브라우저 surface만 있는 pane: surfaceType이 'browser'이면 PTY 생성 스킵

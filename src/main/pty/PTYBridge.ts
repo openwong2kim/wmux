@@ -85,14 +85,21 @@ export class PTYBridge {
     });
 
     instance.process.onData((data: string) => {
-      // Feed activity monitor with byte count
-      this.activityMonitor.feed(ptyId, data.length);
-
-      const win = this.getWindow();
-      if (win && !win.isDestroyed()) {
-        oscParser.process(data);
-        agentDetector.feed(data);
-        win.webContents.send(IPC.PTY_DATA, ptyId, data);
+      try {
+        this.activityMonitor.feed(ptyId, data.length);
+        const win = this.getWindow();
+        if (win && !win.isDestroyed()) {
+          oscParser.process(data);
+          agentDetector.feed(data);
+          win.webContents.send(IPC.PTY_DATA, ptyId, data);
+        }
+      } catch (err) {
+        console.error('[PTYBridge] Error processing data:', err);
+        // Still forward raw data to renderer even if parsing failed
+        const win = this.getWindow();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send(IPC.PTY_DATA, ptyId, data);
+        }
       }
     });
 
