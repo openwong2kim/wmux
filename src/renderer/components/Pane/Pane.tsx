@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState } from 'react';
 import type { PaneLeaf } from '../../../shared/types';
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
 import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import SurfaceTabs from './SurfaceTabs';
@@ -12,6 +13,7 @@ interface PaneProps {
 }
 
 export default function PaneComponent({ pane, isActive, isWorkspaceVisible = true }: PaneProps) {
+  const t = useT();
   const [flashing, setFlashing] = useState(false);
   const setActivePane = useStore((s) => s.setActivePane);
   const setActiveSurface = useStore((s) => s.setActiveSurface);
@@ -26,7 +28,8 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
       (n) => !n.read && pane.surfaces.some((surf) => surf.id === n.surfaceId),
     ).length,
   );
-  const hasUnread = !isActive && unreadCount > 0;
+  const notificationRingEnabled = useStore((s) => s.notificationRingEnabled);
+  const hasUnread = !isActive && unreadCount > 0 && notificationRingEnabled;
 
   // Ctrl+Shift+H: flash the active pane
   useEffect(() => {
@@ -75,7 +78,7 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
   return (
     <div
       className={`flex flex-col h-full w-full relative ${
-        isActive ? 'ring-1 ring-[#89b4fa]/50' : ''
+        isActive ? 'ring-1 ring-[rgba(var(--accent-blue-rgb),0.5)]' : ''
       } ${hasUnread ? 'notification-ring' : ''} ${flashing ? 'pane-flash' : ''}`}
       onClick={handleClick}
     >
@@ -109,8 +112,8 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
         )}
 
         {pane.surfaces.length === 0 && (
-          <div className="flex items-center justify-center h-full text-[#585b70] text-sm">
-            Empty pane
+          <div className="flex items-center justify-center h-full text-[var(--text-muted)] text-sm">
+            {t('pane.empty')}
           </div>
         )}
       </div>

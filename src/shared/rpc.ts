@@ -33,6 +33,7 @@ export type RpcMethod =
   | 'meta.setProgress'
   | 'system.identify'
   | 'system.capabilities'
+  | 'browser.open'
   | 'browser.snapshot'
   | 'browser.click'
   | 'browser.fill'
@@ -61,6 +62,7 @@ export const ALL_RPC_METHODS = [
   'meta.setProgress',
   'system.identify',
   'system.capabilities',
+  'browser.open',
   'browser.snapshot',
   'browser.click',
   'browser.fill',

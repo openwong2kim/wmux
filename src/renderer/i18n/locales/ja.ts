@@ -2,11 +2,33 @@ export const ja = {
   // Sidebar
   'sidebar.workspaces': 'ワークスペース',
   'sidebar.newWorkspace': '新しいワークスペース',
+  'sidebar.newWorkspaceTooltip': '新しいワークスペース (Ctrl+N)',
+  'sidebar.hideTooltip': 'サイドバーを隠す (Ctrl+B)',
+  'sidebar.expandTooltip': 'サイドバーを展開する (Ctrl+B)',
+  'sidebar.unreadCount': '未読 {count}件',
+
+  // Workspace
+  'workspace.agentRunning': 'エージェント実行中',
+  'workspace.agentComplete': 'エージェント完了',
+  'workspace.agentError': 'エージェントエラー',
+  'workspace.agentWaiting': 'エージェント待機中',
+  'workspace.agentIdle': 'エージェントアイドル',
+  'workspace.close': 'ワークスペースを閉じる',
 
   // Pane
   'pane.empty': '空のペイン',
   'pane.splitRight': '右に分割',
   'pane.splitDown': '下に分割',
+
+  // Surface
+  'surface.terminal': 'ターミナル',
+  'surface.closeTab': 'タブを閉じる',
+
+  // Search
+  'search.placeholder': '検索...',
+  'search.prevTooltip': '前の結果 (Shift+Enter)',
+  'search.nextTooltip': '次の結果 (Enter)',
+  'search.closeTooltip': '閉じる (ESC)',
 
   // Notification
   'notification.title': '通知',
@@ -28,9 +50,15 @@ export const ja = {
   'palette.cmd.splitDown': '下に分割',
   'palette.cmd.showNotifications': '通知を表示',
   'palette.cmd.openSettings': '設定を開く',
+  'palette.cmd.openBrowser': 'ブラウザを開く',
+  'palette.catWorkspace': 'ワークスペース',
+  'palette.catSurface': 'サーフェス',
+  'palette.catCommand': 'コマンド',
 
   // Terminal
   'terminal.exited': 'プロセスがコード {code} で終了しました',
+  'terminal.exitedBracket': '[プロセスがコード {code} で終了しました]',
+  'terminal.copied': 'コピーしました!',
 
   // Browser
   'browser.urlPlaceholder': 'URLを入力...',
@@ -38,9 +66,17 @@ export const ja = {
   'browser.forward': '進む',
   'browser.reload': '再読み込み',
   'browser.close': '閉じる',
+  'browser.devToolsTooltip': 'DevToolsを開く (F12)',
+  'browser.title': 'ブラウザ',
 
   // VI copy mode
-  'viCopy.mode': 'コピーモード',
+  'viCopy.mode': '-- コピーモード --',
+  'viCopy.visual': '-- ビジュアル --',
+
+  // StatusBar
+  'statusBar.company': '会社',
+  'statusBar.session': 'セッション: {min}分',
+  'statusBar.settingsTooltip': '設定 (Ctrl+,)',
 
   // Settings
   'settings.title': '設定',
@@ -54,4 +90,66 @@ export const ja = {
   'settings.updateAvailable': 'アップデートあり',
   'settings.close': '閉じる',
   'settings.shortcuts': 'キーボードショートカット',
+  'settings.tabGeneral': '一般',
+  'settings.tabAppearance': '外観',
+  'settings.tabNotifications': '通知',
+  'settings.tabShortcuts': 'ショートカット',
+  'settings.tabAbout': 'バージョン情報',
+  'settings.terminal': 'ターミナル',
+  'settings.defaultShell': 'デフォルトシェル',
+  'settings.scrollbackLines': 'スクロールバック行数',
+  'settings.scrollbackDesc': 'ターミナルバッファに保持する行数',
+  'settings.updates': 'アップデート',
+  'settings.wmuxUpdates': 'wmux アップデート',
+  'settings.updateFailed': 'アップデート確認に失敗しました',
+  'settings.lastCheckedNever': '最終確認: なし',
+  'settings.installUpdate': 'アップデートをインストール',
+  'settings.retryCheck': '再確認',
+  'settings.fontSize': 'フォントサイズ',
+  'settings.fontSizeRange': '12~24の範囲',
+  'settings.fontFamily': 'フォントファミリー',
+  'settings.fontFamilyDesc': 'ターミナル用等幅フォント',
+  'settings.layout': 'レイアウト',
+  'settings.sidebarPosition': 'サイドバー位置',
+  'settings.sidebarPositionDesc': 'ターミナルエリアの左右',
+  'settings.sidebarLeft': '左',
+  'settings.sidebarRight': '右',
+  'settings.updateReady': 'アップデート準備完了',
+  'settings.checkFailed': '確認に失敗しました',
+  'settings.unknownError': '不明なエラー',
+  'settings.notificationBehavior': '通知の動作',
+  'settings.soundDesc': 'Web Audio API — 外部ファイル不要',
+  'settings.toast': 'トースト通知',
+  'settings.toastDesc': 'エージェント完了時にトーストを表示',
+  'settings.ring': 'リングアニメーション',
+  'settings.ringDesc': '未読通知のあるペインにパルスボーダー',
+  'settings.sc.toggleSidebar': 'サイドバー切替',
+  'settings.sc.splitHorizontal': '水平分割',
+  'settings.sc.splitVertical': '垂直分割',
+  'settings.sc.newWorkspace': '新ワークスペース',
+  'settings.sc.closePane': 'ペイン/ワークスペースを閉じる',
+  'settings.sc.searchTerminal': 'ターミナル内検索',
+  'settings.sc.commandPalette': 'コマンドパレット',
+  'settings.sc.toggleNotifications': '通知パネル切替',
+  'settings.sc.viCopyMode': 'Viコピーモード',
+  'settings.sc.renameWorkspace': 'ワークスペースの名前変更',
+  'settings.sc.highlightPane': 'アクティブペインをハイライト',
+  'settings.shortcutsNotAvailable': 'ショートカットのカスタマイズはまだ利用できません。',
+  'settings.aboutTagline': 'Windows ネイティブ AI エージェントターミナル',
+  'settings.builtWith': '使用技術',
+  'settings.links': 'リンク',
+  'settings.githubRepo': 'GitHubリポジトリ',
+  'settings.toggleHint': 'Ctrl+, で切替',
+
+  // Custom keybindings
+  'settings.customKeybindings': 'カスタムキーバインド',
+  'settings.kb.add': 'キーバインド追加',
+  'settings.kb.key': 'キー',
+  'settings.kb.label': '名前',
+  'settings.kb.command': 'コマンド',
+  'settings.kb.sendEnter': 'Enter送信',
+  'settings.kb.pressKey': 'キーを押してください...',
+  'settings.kb.conflict': '組み込みショートカットと競合',
+  'settings.kb.delete': '削除',
+  'settings.kb.noBindings': 'カスタムキーバインドなし',
 } as const;

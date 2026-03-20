@@ -3,6 +3,9 @@ import { Terminal } from '@xterm/xterm';
 import { FitAddon } from '@xterm/addon-fit';
 import { WebglAddon } from '@xterm/addon-webgl';
 import { SearchAddon } from '@xterm/addon-search';
+import { useStore } from '../stores';
+import { t } from '../i18n';
+import { XTERM_THEMES, type ThemeId } from '../themes';
 
 // Lightweight copy feedback toast — injects/removes a DOM element
 let copyToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -14,7 +17,7 @@ function showCopyToast() {
     el.style.cssText = 'position:fixed;bottom:28px;left:50%;transform:translateX(-50%);background:#a6e3a1;color:#1e1e2e;font-family:monospace;font-size:11px;font-weight:600;padding:3px 12px;border-radius:4px;z-index:9999;pointer-events:none;opacity:0;transition:opacity 0.2s';
     document.body.appendChild(el);
   }
-  el.textContent = 'Copied!';
+  el.textContent = t('terminal.copied');
   el.style.opacity = '1';
   if (copyToastTimer) clearTimeout(copyToastTimer);
   copyToastTimer = setTimeout(() => { el!.style.opacity = '0'; }, 1200);
@@ -32,6 +35,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const fitAddonRef = useRef<FitAddon | null>(null);
   const searchAddonRef = useRef<SearchAddon | null>(null);
   const { ptyId, isVisible = true } = options;
+  const terminalFontSize = useStore((s) => s.terminalFontSize);
+  const terminalFontFamily = useStore((s) => s.terminalFontFamily);
+  const scrollbackLines = useStore((s) => s.scrollbackLines);
+  const theme = useStore((s) => s.theme) as ThemeId;
+  const xtermTheme = XTERM_THEMES[theme] ?? XTERM_THEMES.catppuccin;
 
   const fit = useCallback(() => {
     const container = containerRef.current;
@@ -60,32 +68,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     const terminal = new Terminal({
       cursorBlink: true,
-      fontSize: 14,
-      scrollback: 10000,
+      fontSize: terminalFontSize,
+      scrollback: scrollbackLines,
       scrollOnUserInput: false,
-      fontFamily: "'Cascadia Code', 'Consolas', 'Courier New', monospace",
-      theme: {
-        background: '#1e1e2e',
-        foreground: '#cdd6f4',
-        cursor: '#f5e0dc',
-        selectionBackground: '#585b70',
-        black: '#45475a',
-        red: '#f38ba8',
-        green: '#a6e3a1',
-        yellow: '#f9e2af',
-        blue: '#89b4fa',
-        magenta: '#f5c2e7',
-        cyan: '#94e2d5',
-        white: '#bac2de',
-        brightBlack: '#585b70',
-        brightRed: '#f38ba8',
-        brightGreen: '#a6e3a1',
-        brightYellow: '#f9e2af',
-        brightBlue: '#89b4fa',
-        brightMagenta: '#f5c2e7',
-        brightCyan: '#94e2d5',
-        brightWhite: '#a6adc8',
-      },
+      fontFamily: `'${terminalFontFamily}', 'Consolas', 'Courier New', monospace`,
+      theme: xtermTheme,
       allowProposedApi: true,
     });
 
@@ -124,6 +111,22 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       if (e.ctrlKey && e.shiftKey) {
         return false; // all Ctrl+Shift combos → app shortcuts
+      }
+
+      // Custom keybindings: let function keys and matched combos pass through to useKeyboard
+      const { customKeybindings } = useStore.getState();
+      if (customKeybindings.length > 0) {
+        const parts: string[] = [];
+        if (e.ctrlKey) parts.push('Ctrl');
+        if (e.shiftKey) parts.push('Shift');
+        if (e.altKey) parts.push('Alt');
+        let k = e.key;
+        if (k.length === 1) k = k.toUpperCase();
+        parts.push(k);
+        const combo = parts.join('+');
+        if (customKeybindings.some((kb) => kb.key === combo)) {
+          return false; // let useKeyboard handle it
+        }
       }
 
       // Ctrl+C: copy if selection exists, otherwise send SIGINT
@@ -202,10 +205,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       window.electronAPI.pty.write(ptyId, text);
     };
     if (xtermEl) {
+      xtermEl.addEventListener('dragenter', handleDragOver, true);
       xtermEl.addEventListener('dragover', handleDragOver, true);
       xtermEl.addEventListener('drop', handleDrop, true);
     }
     // Also on container as fallback
+    container.addEventListener('dragenter', handleDragOver, true);
     container.addEventListener('dragover', handleDragOver, true);
     container.addEventListener('drop', handleDrop, true);
 
@@ -224,7 +229,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Handle PTY exit
     const removeExitListener = window.electronAPI.pty.onExit((id, exitCode) => {
       if (id === ptyId) {
-        terminal.writeln(`\r\n[Process exited with code ${exitCode}]`);
+        terminal.writeln(`\r\n${t('terminal.exitedBracket', { code: exitCode })}`);
       }
     });
 
@@ -281,9 +286,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     return () => {
       if (xtermEl) {
+        xtermEl.removeEventListener('dragenter', handleDragOver, true);
         xtermEl.removeEventListener('dragover', handleDragOver, true);
         xtermEl.removeEventListener('drop', handleDrop, true);
       }
+      container.removeEventListener('dragenter', handleDragOver, true);
       container.removeEventListener('dragover', handleDragOver, true);
       container.removeEventListener('drop', handleDrop, true);
       resizeObserver.disconnect();
@@ -294,7 +301,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fitAddonRef.current = null;
       searchAddonRef.current = null;
     };
-  }, [ptyId, containerRef]);
+  }, [ptyId, containerRef, terminalFontSize, terminalFontFamily, scrollbackLines, xtermTheme]);
 
   // Re-fit when the terminal becomes visible (workspace switch or surface tab switch).
   // Without this, a terminal that was initialized while hidden (0-size) will display

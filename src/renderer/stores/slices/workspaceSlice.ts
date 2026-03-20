@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { createWorkspace, type Pane, type SessionData, type Workspace, type WorkspaceMetadata } from '../../../shared/types';
+import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 
 export interface WorkspaceSlice {
   workspaces: Workspace[];
@@ -92,6 +93,28 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.workspaces = data.workspaces;
       state.activeWorkspaceId = data.activeWorkspaceId;
       state.sidebarVisible = data.sidebarVisible;
+
+      // Restore user preferences
+      if (data.theme) {
+        state.theme = data.theme;
+        document.documentElement.setAttribute('data-theme', data.theme);
+      }
+      if (data.locale) {
+        state.locale = data.locale as Locale;
+        i18nSetLocale(data.locale as Locale);
+      }
+      if (data.terminalFontSize != null) state.terminalFontSize = data.terminalFontSize;
+      if (data.terminalFontFamily) state.terminalFontFamily = data.terminalFontFamily;
+      if (data.defaultShell) state.defaultShell = data.defaultShell;
+      if (data.scrollbackLines != null) state.scrollbackLines = data.scrollbackLines;
+      if (data.sidebarPosition) state.sidebarPosition = data.sidebarPosition;
+      if (data.notificationSoundEnabled != null) state.notificationSoundEnabled = data.notificationSoundEnabled;
+      if (data.toastEnabled != null) {
+        state.toastEnabled = data.toastEnabled;
+        window.electronAPI.settings.setToastEnabled(data.toastEnabled);
+      }
+      if (data.notificationRingEnabled != null) state.notificationRingEnabled = data.notificationRingEnabled;
+      if (data.customKeybindings) state.customKeybindings = data.customKeybindings;
     }),
   };
 };

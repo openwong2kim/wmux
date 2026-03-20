@@ -26,14 +26,16 @@ export const IPC = {
   UPDATE_ERROR: 'update:error',
   UPDATE_DOWNLOAD: 'update:download',
   UPDATE_INSTALL: 'update:install',
+  // Settings sync (renderer → main)
+  TOAST_ENABLED: 'settings:toast-enabled',
 } as const;
 
 // Named Pipe path for wmux API
-// In production, PID is appended at runtime for security isolation
+// Fixed name so MCP clients (e.g. Claude Code) can reconnect across wmux restarts
 export const PIPE_NAME = '\\\\.\\pipe\\wmux';
 
 export function getPipeName(): string {
-  return `${PIPE_NAME}-${globalThis.process?.pid ?? 0}`;
+  return PIPE_NAME;
 }
 
 // Environment variable names injected into PTY sessions
@@ -43,3 +45,9 @@ export const ENV_KEYS = {
   SOCKET_PATH: 'WMUX_SOCKET_PATH',
   AUTH_TOKEN: 'WMUX_AUTH_TOKEN',
 } as const;
+
+// Auth token file path — written by wmux main process, read by MCP server
+export function getAuthTokenPath(): string {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  return `${home}/.wmux-auth-token`;
+}

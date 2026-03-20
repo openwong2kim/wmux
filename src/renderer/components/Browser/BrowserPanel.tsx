@@ -171,13 +171,13 @@ export default function BrowserPanel({ surfaceId, initialUrl, isActive, onClose 
       {/* Title bar strip showing page title */}
       <div
         className="flex items-center gap-2 px-3 py-0.5 shrink-0"
-        style={{ backgroundColor: '#11111b', borderBottom: '1px solid #1e1e2e' }}
+        style={{ backgroundColor: '#11111b', borderBottom: '1px solid var(--bg-base)' }}
       >
         {isLoading && (
-          <span className="w-1.5 h-1.5 rounded-full bg-[#89b4fa] animate-pulse shrink-0" />
+          <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-blue)] animate-pulse shrink-0" />
         )}
         <span
-          className="text-xs text-[#6c7086] truncate"
+          className="text-xs text-[var(--text-subtle)] truncate"
           style={{ fontFamily: 'ui-monospace, monospace' }}
           title={pageTitle}
         >
@@ -201,7 +201,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, isActive, onClose 
       />
 
       {/* WebView */}
-      <div className="flex-1 relative overflow-hidden" style={{ backgroundColor: '#1e1e2e' }}>
+      <div className="flex-1 relative overflow-hidden" style={{ backgroundColor: 'var(--bg-base)' }}>
         <webview
           ref={webviewRef as React.RefObject<Electron.WebviewTag>}
           src={initialUrl}

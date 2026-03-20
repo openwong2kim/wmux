@@ -2,11 +2,33 @@ export const en = {
   // Sidebar
   'sidebar.workspaces': 'Workspaces',
   'sidebar.newWorkspace': 'New workspace',
+  'sidebar.newWorkspaceTooltip': 'New workspace (Ctrl+N)',
+  'sidebar.hideTooltip': 'Hide sidebar (Ctrl+B)',
+  'sidebar.expandTooltip': 'Expand sidebar (Ctrl+B)',
+  'sidebar.unreadCount': '{count} unread',
+
+  // Workspace
+  'workspace.agentRunning': 'Agent running',
+  'workspace.agentComplete': 'Agent complete',
+  'workspace.agentError': 'Agent error',
+  'workspace.agentWaiting': 'Agent waiting',
+  'workspace.agentIdle': 'Agent idle',
+  'workspace.close': 'Close workspace',
 
   // Pane
   'pane.empty': 'Empty pane',
   'pane.splitRight': 'Split right',
   'pane.splitDown': 'Split down',
+
+  // Surface
+  'surface.terminal': 'Terminal',
+  'surface.closeTab': 'Close tab',
+
+  // Search
+  'search.placeholder': 'Search...',
+  'search.prevTooltip': 'Previous result (Shift+Enter)',
+  'search.nextTooltip': 'Next result (Enter)',
+  'search.closeTooltip': 'Close (ESC)',
 
   // Notification
   'notification.title': 'Notifications',
@@ -28,9 +50,15 @@ export const en = {
   'palette.cmd.splitDown': 'Split Down',
   'palette.cmd.showNotifications': 'Show Notifications',
   'palette.cmd.openSettings': 'Open Settings',
+  'palette.cmd.openBrowser': 'Open Browser',
+  'palette.catWorkspace': 'Workspace',
+  'palette.catSurface': 'Surface',
+  'palette.catCommand': 'Command',
 
   // Terminal
   'terminal.exited': 'Process exited with code {code}',
+  'terminal.exitedBracket': '[Process exited with code {code}]',
+  'terminal.copied': 'Copied!',
 
   // Browser
   'browser.urlPlaceholder': 'Enter URL...',
@@ -38,9 +66,17 @@ export const en = {
   'browser.forward': 'Forward',
   'browser.reload': 'Reload',
   'browser.close': 'Close',
+  'browser.devToolsTooltip': 'Open DevTools (F12)',
+  'browser.title': 'Browser',
 
   // VI copy mode
-  'viCopy.mode': 'COPY MODE',
+  'viCopy.mode': '-- COPY MODE --',
+  'viCopy.visual': '-- VISUAL --',
+
+  // StatusBar
+  'statusBar.company': 'COMPANY',
+  'statusBar.session': 'Session: {min}m',
+  'statusBar.settingsTooltip': 'Settings (Ctrl+,)',
 
   // Settings
   'settings.title': 'Settings',
@@ -54,6 +90,68 @@ export const en = {
   'settings.updateAvailable': 'Update available',
   'settings.close': 'Close',
   'settings.shortcuts': 'Keyboard Shortcuts',
+  'settings.tabGeneral': 'General',
+  'settings.tabAppearance': 'Appearance',
+  'settings.tabNotifications': 'Notifications',
+  'settings.tabShortcuts': 'Shortcuts',
+  'settings.tabAbout': 'About',
+  'settings.terminal': 'Terminal',
+  'settings.defaultShell': 'Default shell',
+  'settings.scrollbackLines': 'Scrollback lines',
+  'settings.scrollbackDesc': 'Lines retained in terminal buffer',
+  'settings.updates': 'Updates',
+  'settings.wmuxUpdates': 'wmux updates',
+  'settings.updateFailed': 'Failed to check for updates',
+  'settings.lastCheckedNever': 'Last checked: never',
+  'settings.installUpdate': 'Install update',
+  'settings.retryCheck': 'Retry check',
+  'settings.fontSize': 'Font size',
+  'settings.fontSizeRange': 'range 12~24',
+  'settings.fontFamily': 'Font family',
+  'settings.fontFamilyDesc': 'Monospace font for terminal',
+  'settings.layout': 'Layout',
+  'settings.sidebarPosition': 'Sidebar position',
+  'settings.sidebarPositionDesc': 'Left or right of the terminal area',
+  'settings.sidebarLeft': 'Left',
+  'settings.sidebarRight': 'Right',
+  'settings.updateReady': 'Update ready',
+  'settings.checkFailed': 'Check failed',
+  'settings.unknownError': 'Unknown error',
+  'settings.notificationBehavior': 'Notification behavior',
+  'settings.soundDesc': 'Web Audio API — no external file required',
+  'settings.toast': 'Toast notifications',
+  'settings.toastDesc': 'Show overlay toast when agent completes',
+  'settings.ring': 'Ring animation',
+  'settings.ringDesc': 'Pulse border on panes with unread notifications',
+  'settings.sc.toggleSidebar': 'Toggle sidebar',
+  'settings.sc.splitHorizontal': 'Split pane horizontal',
+  'settings.sc.splitVertical': 'Split pane vertical',
+  'settings.sc.newWorkspace': 'New workspace',
+  'settings.sc.closePane': 'Close pane / workspace',
+  'settings.sc.searchTerminal': 'Search in terminal',
+  'settings.sc.commandPalette': 'Command palette',
+  'settings.sc.toggleNotifications': 'Toggle notification panel',
+  'settings.sc.viCopyMode': 'Vi copy mode',
+  'settings.sc.renameWorkspace': 'Rename workspace',
+  'settings.sc.highlightPane': 'Highlight active pane',
+  'settings.shortcutsNotAvailable': 'Built-in shortcut customization is not yet available.',
+  'settings.aboutTagline': 'Windows native AI agent terminal',
+  'settings.builtWith': 'Built with',
+  'settings.links': 'Links',
+  'settings.githubRepo': 'GitHub Repository',
+  'settings.toggleHint': 'Ctrl+, to toggle',
+
+  // Custom keybindings
+  'settings.customKeybindings': 'Custom Keybindings',
+  'settings.kb.add': 'Add keybinding',
+  'settings.kb.key': 'Key',
+  'settings.kb.label': 'Label',
+  'settings.kb.command': 'Command',
+  'settings.kb.sendEnter': 'Send Enter',
+  'settings.kb.pressKey': 'Press a key...',
+  'settings.kb.conflict': 'Conflicts with built-in shortcut',
+  'settings.kb.delete': 'Delete',
+  'settings.kb.noBindings': 'No custom keybindings yet',
 } as const;
 
 export type TranslationKey = keyof typeof en;

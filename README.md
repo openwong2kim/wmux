@@ -8,17 +8,17 @@ Windows-native terminal multiplexer with workspaces, panes, tabs, integrated bro
 
 **PowerShell (recommended):**
 ```powershell
-irm https://raw.githubusercontent.com/iamwongeeeee/wmux/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
 ```
 
 **Git Bash / WSL:**
 ```bash
-curl -fsSL https://raw.githubusercontent.com/iamwongeeeee/wmux/main/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/openwong2kim/wmux/main/install.sh | bash
 ```
 
 **Manual:**
 ```bash
-git clone https://github.com/iamwongeeeee/wmux.git
+git clone https://github.com/openwong2kim/wmux.git
 cd wmux
 npm install
 npm start
@@ -42,6 +42,8 @@ npm start
 - **Terminal Search**: Ctrl+F
 - **Vi Copy Mode**: Ctrl+Shift+X
 - **CLI + API**: Named Pipe JSON-RPC, `wmux` CLI
+- **MCP Server**: Claude Code can control browser and terminal via MCP tools
+- **Multi-Agent**: Each agent targets its own browser surface via `surfaceId`
 - **Session Management**: Save and restore sessions
 - **i18n**: English, Korean, Japanese, Chinese
 
@@ -93,6 +95,58 @@ wmux surface eval "window.location"
 ## Tech Stack
 
 Electron 41 + React 19 + TypeScript 5.9 + Tailwind 3 + Zustand 5 + xterm.js 6 + node-pty
+
+## MCP Server (Claude Code Integration)
+
+wmux includes an MCP server that lets Claude Code directly control the browser and terminal.
+
+### Setup
+
+```bash
+npm run build:mcp
+```
+
+Add to your project's `.mcp.json`:
+```json
+{
+  "mcpServers": {
+    "wmux": {
+      "command": "node",
+      "args": ["<path-to-wmux>/dist/mcp/mcp/index.js"]
+    }
+  }
+}
+```
+
+`WMUX_SOCKET_PATH` and `WMUX_AUTH_TOKEN` are automatically set in wmux terminal sessions — no extra env config needed when running Claude Code inside wmux.
+
+### Available MCP Tools
+
+| Tool | Description |
+|------|-------------|
+| `browser_navigate` | Navigate browser to URL |
+| `browser_snapshot` | Get page HTML |
+| `browser_click` | Click element by CSS selector |
+| `browser_fill` | Fill input by CSS selector |
+| `browser_eval` | Execute JS in browser |
+| `terminal_read` | Read terminal screen |
+| `terminal_send` | Send text to terminal |
+| `terminal_send_key` | Send key (enter, ctrl+c, etc.) |
+| `workspace_list` | List workspaces |
+| `surface_list` | List surfaces (terminals + browsers) |
+| `pane_list` | List panes |
+
+### Multi-Agent Usage
+
+All browser tools accept an optional `surfaceId` parameter for multi-agent scenarios:
+
+```
+1. Call surface_list → find your browser surface ID
+2. Call browser_navigate with surfaceId="<your-browser-id>"
+3. Call browser_snapshot with surfaceId="<your-browser-id>"
+```
+
+Each agent can independently control its own browser surface. When `surfaceId` is omitted, the currently active browser surface is used.
 
 ## Note on AI Agents
 

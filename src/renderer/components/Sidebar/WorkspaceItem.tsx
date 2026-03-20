@@ -1,6 +1,7 @@
 import { useState, useRef, useEffect } from 'react';
 import type { AgentStatus, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
 
 interface WorkspaceItemProps {
   workspace: Workspace;
@@ -14,20 +15,22 @@ interface WorkspaceItemProps {
 }
 
 // Maps AgentStatus to a colored dot indicator character and Tailwind color class.
-const AGENT_STATUS_ICON: Record<AgentStatus, { dot: string; className: string; label: string }> = {
-  running:  { dot: '●', className: 'text-[#89b4fa]', label: 'Agent running' },
-  complete: { dot: '●', className: 'text-[#a6e3a1]', label: 'Agent complete' },
-  error:    { dot: '●', className: 'text-[#f38ba8]', label: 'Agent error' },
-  waiting:  { dot: '●', className: 'text-[#f9e2af]', label: 'Agent waiting' },
-  idle:     { dot: '●', className: 'text-[#585b70]', label: 'Agent idle' },
+const AGENT_STATUS_ICON: Record<AgentStatus, { dot: string; className: string; labelKey: string }> = {
+  running:  { dot: '●', className: 'text-[var(--accent-blue)]', labelKey: 'workspace.agentRunning' },
+  complete: { dot: '●', className: 'text-[var(--accent-green)]', labelKey: 'workspace.agentComplete' },
+  error:    { dot: '●', className: 'text-[var(--accent-red)]', labelKey: 'workspace.agentError' },
+  waiting:  { dot: '●', className: 'text-[var(--accent-yellow)]', labelKey: 'workspace.agentWaiting' },
+  idle:     { dot: '●', className: 'text-[var(--text-muted)]', labelKey: 'workspace.agentIdle' },
 };
 
 function AgentStatusDot({ status, agentName }: { status: AgentStatus; agentName?: string }): React.ReactElement {
+  const t = useT();
   const icon = AGENT_STATUS_ICON[status];
+  const label = t(icon.labelKey);
   return (
     <span
       className={`text-[8px] leading-none flex-shrink-0 ${icon.className} ${status === 'running' ? 'animate-pulse' : ''}`}
-      title={agentName ? `${agentName} — ${icon.label}` : icon.label}
+      title={agentName ? `${agentName} — ${label}` : label}
     >
       {icon.dot}
     </span>
@@ -42,6 +45,7 @@ function shortenPath(path: string, maxLen = 25): string {
 }
 
 export default function WorkspaceItem({ workspace, isActive, index, onSelect, onCtrlSelect, onRename, onClose, onReorder }: WorkspaceItemProps) {
+  const t = useT();
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(workspace.name);
   const [isDragging, setIsDragging] = useState(false);
@@ -135,15 +139,15 @@ export default function WorkspaceItem({ workspace, isActive, index, onSelect, on
     <div className="relative mx-2">
       {/* 드롭 인디케이터 - 위 */}
       {dropIndicator === 'above' && (
-        <div className="absolute top-0 left-0 right-0 h-0.5 bg-[#89b4fa] rounded-full z-10 -translate-y-px" />
+        <div className="absolute top-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)] rounded-full z-10 -translate-y-px" />
       )}
 
       <div
         draggable
         className={`group flex items-start gap-2 px-3 py-1.5 cursor-pointer rounded-md transition-colors select-none ${
           isActive
-            ? 'bg-[#313244] text-[#cdd6f4]'
-            : 'text-[#6c7086] hover:bg-[#313244]/50 hover:text-[#bac2de]'
+            ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'
+            : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
         } ${isDragging ? 'opacity-40' : 'opacity-100'}`}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
@@ -154,14 +158,14 @@ export default function WorkspaceItem({ workspace, isActive, index, onSelect, on
         onDrop={handleDrop}
       >
         {/* Status indicator */}
-        <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${isActive ? 'bg-[#a6e3a1]' : 'bg-[#585b70]'}`} />
+        <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${isActive ? 'bg-[var(--accent-green)]' : 'bg-[var(--text-muted)]'}`} />
 
         {/* Name + Metadata */}
         <div className="flex-1 min-w-0">
           {editing ? (
             <input
               ref={inputRef}
-              className="w-full bg-[#1e1e2e] text-[#cdd6f4] text-[11px] font-mono px-1 py-0 rounded border border-[#585b70] outline-none"
+              className="w-full bg-[var(--bg-base)] text-[var(--text-main)] text-[11px] font-mono px-1 py-0 rounded border border-[var(--text-muted)] outline-none"
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
               onBlur={commitRename}
@@ -179,16 +183,16 @@ export default function WorkspaceItem({ workspace, isActive, index, onSelect, on
                   <AgentStatusDot status={metadata.agentStatus} agentName={metadata.agentName} />
                 )}
                 {unreadCount > 0 && (
-                  <span className="bg-[#89b4fa] text-[#1e1e2e] text-[9px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0">
+                  <span className="bg-[var(--accent-blue)] text-[var(--bg-base)] text-[9px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0">
                     {unreadCount}
                   </span>
                 )}
               </div>
               {metadata && (metadata.gitBranch || metadata.cwd || (metadata.listeningPorts && metadata.listeningPorts.length > 0) || metadata.agentName) && (
-                <div className="mt-0.5 space-y-0 text-[10px] text-[#585b70]">
+                <div className="mt-0.5 space-y-0 text-[10px] text-[var(--text-muted)]">
                   {metadata.gitBranch && (
                     <div className="truncate" title={metadata.gitBranch}>
-                      <span className="text-[#f9e2af]">⎇</span> {metadata.gitBranch}
+                      <span className="text-[var(--accent-yellow)]">⎇</span> {metadata.gitBranch}
                     </div>
                   )}
                   {metadata.cwd && (
@@ -198,13 +202,13 @@ export default function WorkspaceItem({ workspace, isActive, index, onSelect, on
                   )}
                   {metadata.listeningPorts && metadata.listeningPorts.length > 0 && (
                     <div className="truncate">
-                      <span className="text-[#a6e3a1]">●</span> :{metadata.listeningPorts.slice(0, 3).join(', :')}
+                      <span className="text-[var(--accent-green)]">●</span> :{metadata.listeningPorts.slice(0, 3).join(', :')}
                       {metadata.listeningPorts.length > 3 && ` +${metadata.listeningPorts.length - 3}`}
                     </div>
                   )}
                   {metadata.agentName && (
-                    <div className="truncate" title={`Agent: ${metadata.agentName}`}>
-                      <span className="text-[#cba6f7]">⚡</span> {metadata.agentName}
+                    <div className="truncate" title={`${metadata.agentName}`}>
+                      <span className="text-[var(--accent-purple)]">⚡</span> {metadata.agentName}
                     </div>
                   )}
                 </div>
@@ -214,15 +218,15 @@ export default function WorkspaceItem({ workspace, isActive, index, onSelect, on
         </div>
 
         {/* Shortcut hint */}
-        <span className="text-[8px] font-mono text-[#585b70] flex-shrink-0 mt-0.5">
+        <span className="text-[8px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5">
           {index < 9 ? `^${index + 1}` : ''}
         </span>
 
         {/* Close button */}
         <button
-          className="opacity-0 group-hover:opacity-100 text-[#6c7086] hover:text-[#f38ba8] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity"
+          className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-red)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity"
           onClick={(e) => { e.stopPropagation(); onClose(); }}
-          title="Close workspace"
+          title={t('workspace.close')}
         >
           ✕
         </button>
@@ -230,7 +234,7 @@ export default function WorkspaceItem({ workspace, isActive, index, onSelect, on
 
       {/* 드롭 인디케이터 - 아래 */}
       {dropIndicator === 'below' && (
-        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[#89b4fa] rounded-full z-10 translate-y-px" />
+        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)] rounded-full z-10 translate-y-px" />
       )}
     </div>
   );

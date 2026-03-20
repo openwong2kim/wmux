@@ -1,7 +1,11 @@
 import { Notification, BrowserWindow } from 'electron';
 
 export class ToastManager {
+  enabled = true;
+
   show(title: string, body: string): void {
+    if (!this.enabled) return;
+
     // Only show toast when app is not focused
     const focusedWindow = BrowserWindow.getFocusedWindow();
     if (focusedWindow) return;

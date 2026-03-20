@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
+import { generateId, type CustomKeybinding } from '../../../shared/types';
 
 export interface UISlice {
   sidebarVisible: boolean;
@@ -33,12 +34,26 @@ export interface UISlice {
   toggleSearchBar: () => void;
   setSearchBarVisible: (visible: boolean) => void;
 
-  // ─── Terminal appearance ──────────────────────────────────────────────────
+  // ─── Terminal settings ───────────────────────────────────────────────────
   terminalFontSize: number;
   setTerminalFontSize: (size: number) => void;
 
   terminalFontFamily: string;
   setTerminalFontFamily: (family: string) => void;
+
+  defaultShell: string;
+  setDefaultShell: (shell: string) => void;
+
+  scrollbackLines: number;
+  setScrollbackLines: (lines: number) => void;
+
+  // ─── Theme ──────────────────────────────────────────────────────────────
+  theme: string;
+  setTheme: (theme: string) => void;
+
+  // ─── Layout ────────────────────────────────────────────────────────────
+  sidebarPosition: 'left' | 'right';
+  setSidebarPosition: (position: 'left' | 'right') => void;
 
   // ─── Toast / ring notification UI ────────────────────────────────────────
   toastEnabled: boolean;
@@ -46,6 +61,12 @@ export interface UISlice {
 
   notificationRingEnabled: boolean;
   setNotificationRingEnabled: (enabled: boolean) => void;
+
+  // ─── Custom keybindings ──────────────────────────────────────────────
+  customKeybindings: CustomKeybinding[];
+  addKeybinding: (kb: Omit<CustomKeybinding, 'id'>) => void;
+  updateKeybinding: (id: string, kb: Partial<Omit<CustomKeybinding, 'id'>>) => void;
+  removeKeybinding: (id: string) => void;
 
 }
 
@@ -146,7 +167,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.searchBarVisible = visible;
   }),
 
-  // ─── Terminal appearance ──────────────────────────────────────────────────
+  // ─── Terminal settings ───────────────────────────────────────────────────
   terminalFontSize: 14,
 
   setTerminalFontSize: (size) => set((state) => {
@@ -159,17 +180,68 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.terminalFontFamily = family;
   }),
 
+  defaultShell: 'powershell',
+
+  setDefaultShell: (shell) => set((state) => {
+    state.defaultShell = shell;
+  }),
+
+  scrollbackLines: 10000,
+
+  setScrollbackLines: (lines) => set((state) => {
+    state.scrollbackLines = lines;
+  }),
+
+  // ─── Theme ──────────────────────────────────────────────────────────────
+  theme: 'catppuccin',
+
+  setTheme: (theme) => {
+    document.documentElement.setAttribute('data-theme', theme);
+    set((state) => {
+      state.theme = theme;
+    });
+  },
+
+  // ─── Layout ────────────────────────────────────────────────────────────
+  sidebarPosition: 'left',
+
+  setSidebarPosition: (position) => set((state) => {
+    state.sidebarPosition = position;
+  }),
+
   // ─── Toast / ring notification UI ────────────────────────────────────────
   toastEnabled: true,
 
-  setToastEnabled: (enabled) => set((state) => {
-    state.toastEnabled = enabled;
-  }),
+  setToastEnabled: (enabled) => {
+    window.electronAPI.settings.setToastEnabled(enabled);
+    set((state) => {
+      state.toastEnabled = enabled;
+    });
+  },
 
   notificationRingEnabled: true,
 
   setNotificationRingEnabled: (enabled) => set((state) => {
     state.notificationRingEnabled = enabled;
+  }),
+
+  // ─── Custom keybindings ──────────────────────────────────────────────
+  customKeybindings: [],
+
+  addKeybinding: (kb) => set((state) => {
+    state.customKeybindings.push({
+      id: generateId('kb'),
+      ...kb,
+    });
+  }),
+
+  updateKeybinding: (id, updates) => set((state) => {
+    const idx = state.customKeybindings.findIndex((k) => k.id === id);
+    if (idx !== -1) Object.assign(state.customKeybindings[idx], updates);
+  }),
+
+  removeKeybinding: (id) => set((state) => {
+    state.customKeybindings = state.customKeybindings.filter((k) => k.id !== id);
   }),
 
 });

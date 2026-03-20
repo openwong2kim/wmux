@@ -1,6 +1,7 @@
 import { useEffect, useCallback } from 'react';
 import type { Terminal } from '@xterm/xterm';
 import { useViCopyMode } from '../../hooks/useViCopyMode';
+import { useT } from '../../hooks/useT';
 
 interface ViCopyModeProps {
   terminal: Terminal;
@@ -8,6 +9,7 @@ interface ViCopyModeProps {
 }
 
 export default function ViCopyMode({ terminal, onExit }: ViCopyModeProps) {
+  const t = useT();
   const {
     cursorRow,
     cursorCol,
@@ -57,7 +59,7 @@ export default function ViCopyMode({ terminal, onExit }: ViCopyModeProps) {
     top: `calc(${relativeRow} * ${cellHeight}px + 4px)`,
     width: `${cellWidth}px`,
     height: `${cellHeight}px`,
-    backgroundColor: 'rgba(249, 226, 175, 0.7)', // catppuccin yellow, semi-transparent
+    backgroundColor: 'rgba(var(--accent-yellow-rgb),0.7)', // catppuccin yellow, semi-transparent
     mixBlendMode: 'screen',
     pointerEvents: 'none',
     zIndex: 10,
@@ -80,19 +82,19 @@ export default function ViCopyMode({ terminal, onExit }: ViCopyModeProps) {
         className="absolute bottom-0 left-0 right-0 flex items-center justify-between px-3 py-0.5 text-xs font-mono select-none"
         style={{
           zIndex: 20,
-          backgroundColor: 'rgba(30, 30, 46, 0.92)',
-          borderTop: '1px solid rgba(137, 180, 250, 0.4)',
-          color: '#89b4fa', // catppuccin blue
+          backgroundColor: 'rgba(var(--bg-base-rgb),0.92)',
+          borderTop: '1px solid rgba(var(--accent-blue-rgb),0.4)',
+          color: 'var(--accent-blue)', // catppuccin blue
           backdropFilter: 'blur(4px)',
         }}
       >
         <span className="font-semibold tracking-widest">
-          {isVisual ? '-- VISUAL --' : '-- COPY MODE --'}
+          {isVisual ? t('viCopy.visual') : t('viCopy.mode')}
         </span>
-        <span className="text-[#6c7086]">
+        <span className="text-[var(--text-subtle)]">
           {cursorRow}:{cursorCol}
           &nbsp;&nbsp;
-          <span className="text-[#a6adc8]">
+          <span className="text-[var(--text-sub2)]">
             h/j/k/l &nbsp; w/b &nbsp; v &nbsp; y &nbsp; ESC
           </span>
         </span>

@@ -22,6 +22,7 @@ import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
 import { AutoUpdater } from './updater/AutoUpdater';
+import { McpRegistrar } from './mcp/McpRegistrar';
 
 if (started) {
   app.quit();
@@ -34,6 +35,7 @@ const autoUpdater = new AutoUpdater(() => mainWindow);
 
 const rpcRouter = new RpcRouter();
 const pipeServer = new PipeServer(rpcRouter);
+const mcpRegistrar = new McpRegistrar();
 
 const cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow);
 registerWorkspaceRpc(rpcRouter, () => mainWindow);
@@ -59,7 +61,9 @@ app.on('ready', () => {
     console.log('[Main] Page loaded successfully');
   });
   pipeServer.start();
-  ptyManager.setAuthToken(pipeServer.getAuthToken());
+  const authToken = pipeServer.getAuthToken();
+  ptyManager.setAuthToken(authToken);
+  mcpRegistrar.register(authToken);
   autoUpdater.start();
 });
 
@@ -71,6 +75,7 @@ app.on('before-quit', () => {
   cleanupHandlers();
   ptyManager.disposeAll();
   pipeServer.stop();
+  mcpRegistrar.unregister();
   autoUpdater.stop();
 });
 

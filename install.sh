@@ -1,10 +1,10 @@
 #!/bin/bash
 # wmux installer for WSL/Git Bash
-# Usage: curl -fsSL https://raw.githubusercontent.com/iamwongeeeee/wmux/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/openwong2kim/wmux/main/install.sh | bash
 
 set -e
 
-REPO="iamwongeeeee/wmux"
+REPO="openwong2kim/wmux"
 INSTALL_DIR="$HOME/.wmux"
 
 echo ""

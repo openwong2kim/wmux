@@ -2,11 +2,33 @@ export const zh = {
   // Sidebar
   'sidebar.workspaces': '工作区',
   'sidebar.newWorkspace': '新建工作区',
+  'sidebar.newWorkspaceTooltip': '新建工作区 (Ctrl+N)',
+  'sidebar.hideTooltip': '隐藏侧边栏 (Ctrl+B)',
+  'sidebar.expandTooltip': '展开侧边栏 (Ctrl+B)',
+  'sidebar.unreadCount': '{count} 条未读',
+
+  // Workspace
+  'workspace.agentRunning': '智能体运行中',
+  'workspace.agentComplete': '智能体已完成',
+  'workspace.agentError': '智能体错误',
+  'workspace.agentWaiting': '智能体等待中',
+  'workspace.agentIdle': '智能体空闲',
+  'workspace.close': '关闭工作区',
 
   // Pane
   'pane.empty': '空面板',
   'pane.splitRight': '向右分割',
   'pane.splitDown': '向下分割',
+
+  // Surface
+  'surface.terminal': '终端',
+  'surface.closeTab': '关闭标签',
+
+  // Search
+  'search.placeholder': '搜索...',
+  'search.prevTooltip': '上一个结果 (Shift+Enter)',
+  'search.nextTooltip': '下一个结果 (Enter)',
+  'search.closeTooltip': '关闭 (ESC)',
 
   // Notification
   'notification.title': '通知',
@@ -28,9 +50,15 @@ export const zh = {
   'palette.cmd.splitDown': '向下分割',
   'palette.cmd.showNotifications': '显示通知',
   'palette.cmd.openSettings': '打开设置',
+  'palette.cmd.openBrowser': '打开浏览器',
+  'palette.catWorkspace': '工作区',
+  'palette.catSurface': '界面',
+  'palette.catCommand': '命令',
 
   // Terminal
   'terminal.exited': '进程已退出，代码 {code}',
+  'terminal.exitedBracket': '[进程已退出，代码 {code}]',
+  'terminal.copied': '已复制!',
 
   // Browser
   'browser.urlPlaceholder': '输入URL...',
@@ -38,9 +66,17 @@ export const zh = {
   'browser.forward': '前进',
   'browser.reload': '刷新',
   'browser.close': '关闭',
+  'browser.devToolsTooltip': '打开开发者工具 (F12)',
+  'browser.title': '浏览器',
 
   // VI copy mode
-  'viCopy.mode': '复制模式',
+  'viCopy.mode': '-- 复制模式 --',
+  'viCopy.visual': '-- 可视 --',
+
+  // StatusBar
+  'statusBar.company': '公司',
+  'statusBar.session': '会话: {min}分钟',
+  'statusBar.settingsTooltip': '设置 (Ctrl+,)',
 
   // Settings
   'settings.title': '设置',
@@ -54,4 +90,66 @@ export const zh = {
   'settings.updateAvailable': '有可用更新',
   'settings.close': '关闭',
   'settings.shortcuts': '键盘快捷键',
+  'settings.tabGeneral': '常规',
+  'settings.tabAppearance': '外观',
+  'settings.tabNotifications': '通知',
+  'settings.tabShortcuts': '快捷键',
+  'settings.tabAbout': '关于',
+  'settings.terminal': '终端',
+  'settings.defaultShell': '默认 Shell',
+  'settings.scrollbackLines': '回滚行数',
+  'settings.scrollbackDesc': '终端缓冲区保留行数',
+  'settings.updates': '更新',
+  'settings.wmuxUpdates': 'wmux 更新',
+  'settings.updateFailed': '检查更新失败',
+  'settings.lastCheckedNever': '上次检查：从未',
+  'settings.installUpdate': '安装更新',
+  'settings.retryCheck': '重新检查',
+  'settings.fontSize': '字体大小',
+  'settings.fontSizeRange': '范围 12~24',
+  'settings.fontFamily': '字体族',
+  'settings.fontFamilyDesc': '终端等宽字体',
+  'settings.layout': '布局',
+  'settings.sidebarPosition': '侧边栏位置',
+  'settings.sidebarPositionDesc': '终端区域的左侧或右侧',
+  'settings.sidebarLeft': '左',
+  'settings.sidebarRight': '右',
+  'settings.updateReady': '更新已准备就绪',
+  'settings.checkFailed': '检查失败',
+  'settings.unknownError': '未知错误',
+  'settings.notificationBehavior': '通知行为',
+  'settings.soundDesc': 'Web Audio API — 无需外部文件',
+  'settings.toast': '弹出通知',
+  'settings.toastDesc': '代理完成时显示弹出通知',
+  'settings.ring': '光环动画',
+  'settings.ringDesc': '未读通知窗格的脉冲边框',
+  'settings.sc.toggleSidebar': '切换侧边栏',
+  'settings.sc.splitHorizontal': '水平分割面板',
+  'settings.sc.splitVertical': '垂直分割面板',
+  'settings.sc.newWorkspace': '新建工作区',
+  'settings.sc.closePane': '关闭面板/工作区',
+  'settings.sc.searchTerminal': '在终端中搜索',
+  'settings.sc.commandPalette': '命令面板',
+  'settings.sc.toggleNotifications': '切换通知面板',
+  'settings.sc.viCopyMode': 'Vi 复制模式',
+  'settings.sc.renameWorkspace': '重命名工作区',
+  'settings.sc.highlightPane': '高亮活动面板',
+  'settings.shortcutsNotAvailable': '快捷键自定义暂不可用。',
+  'settings.aboutTagline': 'Windows 原生 AI 代理终端',
+  'settings.builtWith': '构建工具',
+  'settings.links': '链接',
+  'settings.githubRepo': 'GitHub 仓库',
+  'settings.toggleHint': 'Ctrl+, 切换',
+
+  // Custom keybindings
+  'settings.customKeybindings': '自定义快捷键',
+  'settings.kb.add': '添加快捷键',
+  'settings.kb.key': '按键',
+  'settings.kb.label': '名称',
+  'settings.kb.command': '命令',
+  'settings.kb.sendEnter': '发送回车',
+  'settings.kb.pressKey': '请按下按键...',
+  'settings.kb.conflict': '与内置快捷键冲突',
+  'settings.kb.delete': '删除',
+  'settings.kb.noBindings': '暂无自定义快捷键',
 } as const;

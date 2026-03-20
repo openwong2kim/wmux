@@ -6,9 +6,9 @@
   "main": ".vite/build/index.js",
   "private": true,
   "scripts": {
-    "start": "electron-forge start",
-    "package": "electron-forge package",
-    "make": "electron-forge make",
+    "start": "npm run build:mcp && electron-forge start",
+    "package": "npm run build:mcp && electron-forge package",
+    "make": "npm run build:mcp && electron-forge make",
     "publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx .",
     "build:cli": "tsc -p tsconfig.cli.json",
@@ -22,8 +22,8 @@
   },
   "keywords": [],
   "author": {
-    "name": "iamwongeeeee",
-    "email": "100856670+iamwongeeeee@users.noreply.github.com"
+    "name": "openwong2kim",
+    "email": "100856670+openwong2kim@users.noreply.github.com"
   },
   "license": "MIT",
   "devDependencies": {

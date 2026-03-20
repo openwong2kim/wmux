@@ -2,6 +2,80 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Theme CSS Variables ────────────────────────────────────────────────── */
+
+:root, [data-theme="catppuccin"] {
+  --bg-base: #1e1e2e;
+  --bg-mantle: #181825;
+  --bg-surface: #313244;
+  --bg-overlay: #45475a;
+  --text-muted: #585b70;
+  --text-subtle: #6c7086;
+  --text-sub: #bac2de;
+  --text-sub2: #a6adc8;
+  --text-main: #cdd6f4;
+  --accent-cursor: #f5e0dc;
+  --accent-blue: #89b4fa;
+  --accent-green: #a6e3a1;
+  --accent-red: #f38ba8;
+  --accent-yellow: #f9e2af;
+  --accent-pink: #f5c2e7;
+  --accent-teal: #94e2d5;
+  --accent-purple: #cba6f7;
+  /* RGB variants for opacity usage */
+  --accent-blue-rgb: 137, 180, 250;
+  --bg-surface-rgb: 49, 52, 68;
+  --bg-base-rgb: 30, 30, 46;
+}
+
+[data-theme="monochrome"] {
+  --bg-base: #080808;
+  --bg-mantle: #050505;
+  --bg-surface: #1c1c1c;
+  --bg-overlay: #2e2e2e;
+  --text-muted: #555555;
+  --text-subtle: #777777;
+  --text-sub: #aaaaaa;
+  --text-sub2: #999999;
+  --text-main: #e0e0e0;
+  --accent-cursor: #ffffff;
+  --accent-blue: #b0b0b0;
+  --accent-green: #d0d0d0;
+  --accent-red: #ff5555;
+  --accent-yellow: #cccccc;
+  --accent-pink: #c0c0c0;
+  --accent-teal: #b8b8b8;
+  --accent-purple: #b8b8b8;
+  --accent-blue-rgb: 176, 176, 176;
+  --bg-surface-rgb: 28, 28, 28;
+  --bg-base-rgb: 8, 8, 8;
+}
+
+[data-theme="claude"] {
+  --bg-base: #F5F0E8;
+  --bg-mantle: #EDE6D9;
+  --bg-surface: #E0D8CA;
+  --bg-overlay: #D5CCBC;
+  --text-muted: #B8A898;
+  --text-subtle: #9A8C7C;
+  --text-sub: #6B5D4F;
+  --text-sub2: #7A6E60;
+  --text-main: #3D3429;
+  --accent-cursor: #3D3429;
+  --accent-blue: #DA7756;
+  --accent-green: #5A8A4C;
+  --accent-red: #C4533A;
+  --accent-yellow: #B8912D;
+  --accent-pink: #B5647A;
+  --accent-teal: #4A9588;
+  --accent-purple: #7A6AAF;
+  --accent-blue-rgb: 218, 119, 86;
+  --bg-surface-rgb: 224, 216, 202;
+  --bg-base-rgb: 245, 240, 232;
+}
+
+/* ─── Base ────────────────────────────────────────────────────────────────── */
+
 * {
   margin: 0;
   padding: 0;
@@ -12,12 +86,12 @@ html, body, #root {
   height: 100%;
   width: 100%;
   overflow: hidden;
-  background-color: #1e1e2e;
-  color: #cdd6f4;
+  background-color: var(--bg-base);
+  color: var(--text-main);
   font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
 }
 
-/* Custom scrollbar — matches terminal dark theme */
+/* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
   height: 6px;
@@ -26,11 +100,11 @@ html, body, #root {
   background: transparent;
 }
 ::-webkit-scrollbar-thumb {
-  background: #313244;
+  background: var(--bg-surface);
   border-radius: 3px;
 }
 ::-webkit-scrollbar-thumb:hover {
-  background: #45475a;
+  background: var(--bg-overlay);
 }
 ::-webkit-scrollbar-corner {
   background: transparent;
@@ -38,8 +112,8 @@ html, body, #root {
 
 /* Notification ring pulse on inactive panes with unread notifications */
 @keyframes notification-ring-pulse {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(137, 180, 250, 0.4); }
-  50% { box-shadow: 0 0 0 3px rgba(137, 180, 250, 0.2); }
+  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--accent-blue-rgb), 0.4); }
+  50% { box-shadow: 0 0 0 3px rgba(var(--accent-blue-rgb), 0.2); }
 }
 
 .notification-ring {
@@ -69,7 +143,7 @@ html, body, #root {
   position: absolute;
   inset: 0;
   border-radius: 2px;
-  background: #89b4fa;
+  background: var(--accent-blue);
   pointer-events: none;
   animation: pane-flash 0.5s ease-out forwards;
   z-index: 100;

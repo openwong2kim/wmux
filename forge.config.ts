@@ -10,6 +10,7 @@ const config: ForgeConfig = {
   packagerConfig: {
     asar: true,
     icon: './assets/icon',
+    extraResource: ['./dist/mcp'],
   },
   rebuildConfig: { disablePreGypRecuild: true },
   hooks: {

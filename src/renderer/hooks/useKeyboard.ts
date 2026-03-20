@@ -1,6 +1,22 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
 
+/**
+ * Convert a KeyboardEvent into a normalized key combo string.
+ * e.g. Ctrl+Shift held, key='1' → 'Ctrl+Shift+1'
+ *      no modifiers, key='F7' → 'F7'
+ */
+function formatKeyCombo(ctrl: boolean, shift: boolean, alt: boolean, key: string): string {
+  const parts: string[] = [];
+  if (ctrl) parts.push('Ctrl');
+  if (shift) parts.push('Shift');
+  if (alt) parts.push('Alt');
+  let normalizedKey = key;
+  if (key.length === 1) normalizedKey = key.toUpperCase();
+  parts.push(normalizedKey);
+  return parts.join('+');
+}
+
 export function useKeyboard() {
   const store = useStore;
 
@@ -12,9 +28,11 @@ export function useKeyboard() {
       const key = e.key;
 
       // Skip shortcuts when typing in input/textarea/contenteditable
+      // Exception: function keys (F1-F12) and custom keybindings should always work
       const tag = (e.target as HTMLElement)?.tagName;
       const isEditable = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable;
-      if (isEditable && !ctrl && !alt) return;
+      const isFunctionKey = key.length > 1 && /^F\d{1,2}$/.test(key);
+      if (isEditable && !ctrl && !alt && !isFunctionKey) return;
 
       // Ctrl+B: Toggle sidebar
       if (ctrl && !shift && !alt && key === 'b') {
@@ -248,6 +266,40 @@ export function useKeyboard() {
         e.preventDefault();
         store.getState().toggleCompanyView();
         return;
+      }
+
+      // ─── Custom keybindings → terminal input ─────────────────────────
+      const { customKeybindings } = store.getState();
+      if (customKeybindings.length > 0) {
+        const pressed = formatKeyCombo(ctrl, shift, alt, key);
+        const match = customKeybindings.find((kb) => kb.key === pressed);
+        if (match) {
+          e.preventDefault();
+          e.stopImmediatePropagation();
+          const state = store.getState();
+          const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+          if (ws) {
+            const findLeaf = (pane: import('../../shared/types').Pane): import('../../shared/types').PaneLeaf | null => {
+              if (pane.type === 'leaf' && pane.id === ws.activePaneId) return pane;
+              if (pane.type === 'branch') {
+                for (const c of pane.children) {
+                  const found = findLeaf(c);
+                  if (found) return found;
+                }
+              }
+              return null;
+            };
+            const leaf = findLeaf(ws.rootPane);
+            if (leaf) {
+              const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+              if (surface?.ptyId) {
+                const text = match.sendEnter ? match.command + '\r' : match.command;
+                window.electronAPI.pty.write(surface.ptyId, text);
+              }
+            }
+          }
+          return;
+        }
       }
     };
 

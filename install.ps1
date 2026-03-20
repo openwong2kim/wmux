@@ -5,12 +5,12 @@
 .DESCRIPTION
     Downloads and installs wmux — AI Agent Terminal for Windows
 .EXAMPLE
-    irm https://raw.githubusercontent.com/iamwongeeeee/wmux/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
 #>
 
 $ErrorActionPreference = 'Stop'
 
-$repo = 'iamwongeeeee/wmux'
+$repo = 'openwong2kim/wmux'
 $installDir = "$env:LOCALAPPDATA\wmux"
 
 Write-Host ""

@@ -1,6 +1,9 @@
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
 
 export default function MiniSidebar() {
+  const t = useT();
+  const sidebarPosition = useStore((s) => s.sidebarPosition);
   const workspaces = useStore((s) => s.workspaces);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
@@ -10,12 +13,12 @@ export default function MiniSidebar() {
   );
 
   return (
-    <div className="flex flex-col h-full bg-[#181825] border-r border-[#313244]" style={{ width: 48 }}>
+    <div className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 48 }}>
       {/* Expand button */}
       <button
-        className="flex items-center justify-center h-10 text-[#585b70] hover:text-[#cdd6f4] transition-colors border-b border-[#313244] font-mono text-[11px]"
+        className="flex items-center justify-center h-10 text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors border-b border-[var(--bg-surface)] font-mono text-[11px]"
         onClick={toggleSidebar}
-        title="Expand sidebar (Ctrl+B)"
+        title={t('sidebar.expandTooltip')}
       >
         ›
       </button>
@@ -31,8 +34,8 @@ export default function MiniSidebar() {
               key={ws.id}
               className={`w-8 h-8 rounded-md flex items-center justify-center text-xs font-bold font-mono transition-colors ${
                 isActive
-                  ? 'bg-[#313244] text-[#cdd6f4]'
-                  : 'text-[#585b70] hover:bg-[#313244]/50 hover:text-[#bac2de]'
+                  ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'
+                  : 'text-[var(--text-muted)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
               }`}
               onClick={() => setActiveWorkspace(ws.id)}
               title={`${ws.name} (Ctrl+${i + 1})`}
@@ -44,20 +47,20 @@ export default function MiniSidebar() {
       </div>
 
       {/* Status area */}
-      <div className="flex flex-col items-center gap-2 py-2 border-t border-[#313244]">
+      <div className="flex flex-col items-center gap-2 py-2 border-t border-[var(--bg-surface)]">
         {/* Unread badge */}
         {totalUnread > 0 && (
           <button
-            className="w-8 h-8 rounded-md flex items-center justify-center bg-[#89b4fa]/20 text-[#89b4fa] text-[10px] font-bold"
+            className="w-8 h-8 rounded-md flex items-center justify-center bg-[rgba(var(--accent-blue-rgb),0.2)] text-[var(--accent-blue)] text-[10px] font-bold"
             onClick={() => useStore.getState().toggleNotificationPanel()}
-            title={`${totalUnread} unread`}
+            title={t('sidebar.unreadCount', { count: totalUnread })}
           >
             {totalUnread > 99 ? '99+' : totalUnread}
           </button>
         )}
 
         {/* Workspace count */}
-        <span className="text-[9px] font-mono text-[#585b70]">{workspaces.length}</span>
+        <span className="text-[9px] font-mono text-[var(--text-muted)]">{workspaces.length}</span>
       </div>
     </div>
   );

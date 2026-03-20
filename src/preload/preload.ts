@@ -29,6 +29,9 @@ const electronAPI = {
     save: (data: unknown) => ipcRenderer.invoke(IPC.SESSION_SAVE, data),
     load: () => ipcRenderer.invoke(IPC.SESSION_LOAD),
   },
+  settings: {
+    setToastEnabled: (enabled: boolean) => ipcRenderer.send(IPC.TOAST_ENABLED, enabled),
+  },
   notification: {
     onNew: (callback: (ptyId: string, data: { type: string; title: string; body: string }) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, ptyId: string, data: { type: string; title: string; body: string }) =>

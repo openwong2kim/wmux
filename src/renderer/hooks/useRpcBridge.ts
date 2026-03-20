@@ -255,6 +255,22 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // browser.*
   // -------------------------------------------------------------------------
 
+  if (method === 'browser.open') {
+    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+    if (!ws) return { error: 'no active workspace' };
+    const paneId = ws.activePaneId;
+    const url = typeof params.url === 'string' ? params.url : undefined;
+    store.addBrowserSurface(paneId, url);
+
+    const fresh = useStore.getState();
+    const freshWs = fresh.workspaces.find((w) => w.id === fresh.activeWorkspaceId);
+    if (!freshWs) return { ok: true };
+    const pane = findPaneById(freshWs.rootPane, paneId);
+    if (!pane || pane.type !== 'leaf') return { ok: true };
+    const surface = pane.surfaces[pane.surfaces.length - 1];
+    return { ok: true, surfaceId: surface?.id, url: url || 'https://google.com' };
+  }
+
   if (method === 'browser.snapshot') {
     const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
     return handleBrowserSnapshot(store, surfaceId);

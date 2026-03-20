@@ -12,7 +12,7 @@ function isNotificationType(value: unknown): value is NotificationType {
   return typeof value === 'string' && VALID_TYPES.has(value as NotificationType);
 }
 
-const toastManager = new ToastManager();
+export const toastManager = new ToastManager();
 
 export function registerNotifyRpc(router: RpcRouter, getWindow: GetWindow): void {
   /**

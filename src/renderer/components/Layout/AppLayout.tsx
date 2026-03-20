@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useState, useRef } from 'react';
 import { useStore } from '../../stores';
 import Sidebar from '../Sidebar/Sidebar';
 import MiniSidebar from '../Sidebar/MiniSidebar';
@@ -13,10 +13,11 @@ import MessageFeedPanel from '../Company/MessageFeedPanel';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
-import type { SessionData } from '../../../shared/types';
+import type { SessionData, PaneLeaf } from '../../../shared/types';
 
 export default function AppLayout() {
   const sidebarVisible = useStore((s) => s.sidebarVisible);
+  const sidebarPosition = useStore((s) => s.sidebarPosition);
   const companyViewVisible = useStore((s) => s.companyViewVisible);
   const setCompanyViewVisible = useStore((s) => s.setCompanyViewVisible);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -28,6 +29,82 @@ export default function AppLayout() {
   useKeyboard();
   useNotificationListener();
   useRpcBridge();
+
+  // ─── Drop overlay (VS Code-style) ─────────────────────────────────────
+  // A transparent full-window overlay appears during external file drags.
+  // This guarantees the OS-level cursor shows "copy" regardless of WebGL canvas.
+  const [isDragging, setIsDragging] = useState(false);
+  const dragCounterRef = useRef(0);
+
+  useEffect(() => {
+    // dragenter/dragleave fire for every child boundary crossing,
+    // so we use a counter to track when the drag truly leaves the window.
+    const onEnter = (e: DragEvent) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+      dragCounterRef.current++;
+      if (dragCounterRef.current === 1) setIsDragging(true);
+    };
+    const onLeave = () => {
+      dragCounterRef.current--;
+      if (dragCounterRef.current <= 0) {
+        dragCounterRef.current = 0;
+        setIsDragging(false);
+      }
+    };
+    const onDrop = (e: DragEvent) => {
+      e.preventDefault();
+      dragCounterRef.current = 0;
+      setIsDragging(false);
+
+      const files = e.dataTransfer?.files;
+      if (!files || files.length === 0) return;
+
+      // Get active terminal's PTY ID
+      const state = useStore.getState();
+      const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+      if (!ws) return;
+
+      const findLeaf = (pane: typeof ws.rootPane): PaneLeaf | null => {
+        if (pane.type === 'leaf') return pane.id === ws.activePaneId ? pane : null;
+        for (const child of pane.children) {
+          const found = findLeaf(child);
+          if (found) return found;
+        }
+        return null;
+      };
+      const leaf = findLeaf(ws.rootPane);
+      if (!leaf) return;
+
+      const activeSurface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+      if (!activeSurface || activeSurface.surfaceType === 'browser') return;
+
+      const ptyId = activeSurface.ptyId;
+      const paths: string[] = [];
+      for (let i = 0; i < files.length; i++) {
+        paths.push((files[i] as File & { path: string }).path);
+      }
+      const text = paths.map((p) => (p.includes(' ') ? `"${p}"` : p)).join(' ');
+      window.electronAPI.pty.write(ptyId, text);
+    };
+    // Prevent default on dragover at window level to allow drop everywhere
+    const onOver = (e: DragEvent) => {
+      e.preventDefault();
+      if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
+    };
+    // Use capture phase so these fire before any child element (e.g. xterm
+    // WebGL canvas) can consume the event and cause a "forbidden" cursor.
+    window.addEventListener('dragenter', onEnter, true);
+    window.addEventListener('dragleave', onLeave, true);
+    window.addEventListener('dragover', onOver, true);
+    window.addEventListener('drop', onDrop, true);
+    return () => {
+      window.removeEventListener('dragenter', onEnter, true);
+      window.removeEventListener('dragleave', onLeave, true);
+      window.removeEventListener('dragover', onOver, true);
+      window.removeEventListener('drop', onDrop, true);
+    };
+  }, []);
 
   // 앱 시작 시 세션 복원
   useEffect(() => {
@@ -51,6 +128,18 @@ export default function AppLayout() {
         company: companySafe,
         memberCosts: state.memberCosts,
         sessionStartTime: state.sessionStartTime,
+        // User preferences
+        theme: state.theme,
+        locale: state.locale,
+        terminalFontSize: state.terminalFontSize,
+        terminalFontFamily: state.terminalFontFamily,
+        defaultShell: state.defaultShell,
+        scrollbackLines: state.scrollbackLines,
+        sidebarPosition: state.sidebarPosition,
+        notificationSoundEnabled: state.notificationSoundEnabled,
+        toastEnabled: state.toastEnabled,
+        notificationRingEnabled: state.notificationRingEnabled,
+        customKeybindings: state.customKeybindings,
       };
       window.electronAPI.session.save(data);
     };
@@ -94,7 +183,7 @@ export default function AppLayout() {
   if (!activeWorkspace) return null;
 
   return (
-    <div className="flex h-screen w-screen bg-[#1e1e2e] overflow-hidden" onDragOver={(e) => e.preventDefault()} onDrop={(e) => e.preventDefault()}>
+    <div className={`flex h-screen w-screen bg-[var(--bg-base)] overflow-hidden ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
       {sidebarVisible ? <Sidebar /> : <MiniSidebar />}
       <div className="flex-1 min-w-0 flex flex-col">
         <StatusBar />
@@ -124,6 +213,21 @@ export default function AppLayout() {
       <ApprovalDialog />
       {companyViewVisible && (
         <CompanyView onClose={() => setCompanyViewVisible(false)} />
+      )}
+
+      {/* Visual drag indicator — pointer-events always 'none' so it never
+          blocks clicks, scrolling, or keyboard. Drop handling is done entirely
+          via the window-level listeners registered in the useEffect above. */}
+      {isDragging && (
+        <div
+          style={{
+            position: 'fixed',
+            inset: 0,
+            zIndex: 99999,
+            pointerEvents: 'none',
+            backgroundColor: 'rgba(137, 180, 250, 0.08)',
+          }}
+        />
       )}
     </div>
   );

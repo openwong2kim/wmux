@@ -2,11 +2,33 @@ export const ko = {
   // Sidebar
   'sidebar.workspaces': '워크스페이스',
   'sidebar.newWorkspace': '새 워크스페이스',
+  'sidebar.newWorkspaceTooltip': '새 워크스페이스 (Ctrl+N)',
+  'sidebar.hideTooltip': '사이드바 숨기기 (Ctrl+B)',
+  'sidebar.expandTooltip': '사이드바 펼치기 (Ctrl+B)',
+  'sidebar.unreadCount': '읽지 않음 {count}개',
+
+  // Workspace
+  'workspace.agentRunning': '에이전트 실행 중',
+  'workspace.agentComplete': '에이전트 완료',
+  'workspace.agentError': '에이전트 오류',
+  'workspace.agentWaiting': '에이전트 대기 중',
+  'workspace.agentIdle': '에이전트 유휴',
+  'workspace.close': '워크스페이스 닫기',
 
   // Pane
   'pane.empty': '빈 창',
   'pane.splitRight': '오른쪽 분할',
   'pane.splitDown': '아래 분할',
+
+  // Surface
+  'surface.terminal': '터미널',
+  'surface.closeTab': '탭 닫기',
+
+  // Search
+  'search.placeholder': '검색...',
+  'search.prevTooltip': '이전 결과 (Shift+Enter)',
+  'search.nextTooltip': '다음 결과 (Enter)',
+  'search.closeTooltip': '닫기 (ESC)',
 
   // Notification
   'notification.title': '알림',
@@ -28,9 +50,15 @@ export const ko = {
   'palette.cmd.splitDown': '아래 분할',
   'palette.cmd.showNotifications': '알림 보기',
   'palette.cmd.openSettings': '설정 열기',
+  'palette.cmd.openBrowser': '브라우저 열기',
+  'palette.catWorkspace': '워크스페이스',
+  'palette.catSurface': '서피스',
+  'palette.catCommand': '커맨드',
 
   // Terminal
   'terminal.exited': '프로세스가 코드 {code}로 종료됨',
+  'terminal.exitedBracket': '[프로세스가 코드 {code}로 종료됨]',
+  'terminal.copied': '복사됨!',
 
   // Browser
   'browser.urlPlaceholder': 'URL 입력...',
@@ -38,9 +66,17 @@ export const ko = {
   'browser.forward': '앞으로',
   'browser.reload': '새로 고침',
   'browser.close': '닫기',
+  'browser.devToolsTooltip': '개발자 도구 열기 (F12)',
+  'browser.title': '브라우저',
 
   // VI copy mode
-  'viCopy.mode': '복사 모드',
+  'viCopy.mode': '-- 복사 모드 --',
+  'viCopy.visual': '-- 비주얼 --',
+
+  // StatusBar
+  'statusBar.company': '회사',
+  'statusBar.session': '세션: {min}분',
+  'statusBar.settingsTooltip': '설정 (Ctrl+,)',
 
   // Settings
   'settings.title': '설정',
@@ -54,4 +90,66 @@ export const ko = {
   'settings.updateAvailable': '업데이트 있음',
   'settings.close': '닫기',
   'settings.shortcuts': '단축키',
+  'settings.tabGeneral': '일반',
+  'settings.tabAppearance': '외관',
+  'settings.tabNotifications': '알림',
+  'settings.tabShortcuts': '단축키',
+  'settings.tabAbout': '정보',
+  'settings.terminal': '터미널',
+  'settings.defaultShell': '기본 셸',
+  'settings.scrollbackLines': '스크롤백 줄 수',
+  'settings.scrollbackDesc': '터미널 버퍼에 보존되는 줄 수',
+  'settings.updates': '업데이트',
+  'settings.wmuxUpdates': 'wmux 업데이트',
+  'settings.updateFailed': '업데이트 확인 실패',
+  'settings.lastCheckedNever': '마지막 확인: 없음',
+  'settings.installUpdate': '업데이트 설치',
+  'settings.retryCheck': '다시 확인',
+  'settings.fontSize': '글꼴 크기',
+  'settings.fontSizeRange': '12~24 범위',
+  'settings.fontFamily': '글꼴 모음',
+  'settings.fontFamilyDesc': '터미널용 고정폭 글꼴',
+  'settings.layout': '레이아웃',
+  'settings.sidebarPosition': '사이드바 위치',
+  'settings.sidebarPositionDesc': '터미널 영역의 좌측 또는 우측',
+  'settings.sidebarLeft': '왼쪽',
+  'settings.sidebarRight': '오른쪽',
+  'settings.updateReady': '업데이트 준비 완료',
+  'settings.checkFailed': '확인 실패',
+  'settings.unknownError': '알 수 없는 오류',
+  'settings.notificationBehavior': '알림 동작',
+  'settings.soundDesc': 'Web Audio API — 외부 파일 불필요',
+  'settings.toast': '토스트 알림',
+  'settings.toastDesc': '에이전트 완료 시 오버레이 토스트 표시',
+  'settings.ring': '링 애니메이션',
+  'settings.ringDesc': '읽지 않은 알림이 있는 창에 테두리 펄스',
+  'settings.sc.toggleSidebar': '사이드바 전환',
+  'settings.sc.splitHorizontal': '가로 분할',
+  'settings.sc.splitVertical': '세로 분할',
+  'settings.sc.newWorkspace': '새 작업공간',
+  'settings.sc.closePane': '창/작업공간 닫기',
+  'settings.sc.searchTerminal': '터미널에서 검색',
+  'settings.sc.commandPalette': '명령 팔레트',
+  'settings.sc.toggleNotifications': '알림 패널 전환',
+  'settings.sc.viCopyMode': 'Vi 복사 모드',
+  'settings.sc.renameWorkspace': '작업공간 이름 변경',
+  'settings.sc.highlightPane': '활성 창 강조',
+  'settings.shortcutsNotAvailable': '내장 단축키 커스터마이즈는 아직 지원되지 않습니다.',
+  'settings.aboutTagline': 'Windows 네이티브 AI 에이전트 터미널',
+  'settings.builtWith': '사용 기술',
+  'settings.links': '링크',
+  'settings.githubRepo': 'GitHub 저장소',
+  'settings.toggleHint': 'Ctrl+, 으로 전환',
+
+  // Custom keybindings
+  'settings.customKeybindings': '커스텀 키바인딩',
+  'settings.kb.add': '키바인딩 추가',
+  'settings.kb.key': '키',
+  'settings.kb.label': '이름',
+  'settings.kb.command': '명령어',
+  'settings.kb.sendEnter': 'Enter 전송',
+  'settings.kb.pressKey': '키를 누르세요...',
+  'settings.kb.conflict': '내장 단축키와 충돌',
+  'settings.kb.delete': '삭제',
+  'settings.kb.noBindings': '커스텀 키바인딩 없음',
 } as const;

@@ -68,11 +68,32 @@ export type AgentStatus = 'running' | 'complete' | 'error' | 'waiting' | 'idle';
 // === Status indicator colors ===
 export type WorkspaceStatus = 'active' | 'idle' | 'error' | 'running';
 
+// === Custom keybinding ===
+export interface CustomKeybinding {
+  id: string;
+  key: string;        // e.g. 'F7', 'Ctrl+Shift+1'
+  label: string;      // user-defined name
+  command: string;    // text to send to terminal
+  sendEnter: boolean; // append \n after command
+}
+
 // === Session: serialized app state ===
 export interface SessionData {
   workspaces: Workspace[];
   activeWorkspaceId: string;
   sidebarVisible: boolean;
+  // User preferences (persisted across restarts)
+  theme?: string;
+  locale?: string;
+  terminalFontSize?: number;
+  terminalFontFamily?: string;
+  defaultShell?: string;
+  scrollbackLines?: number;
+  sidebarPosition?: 'left' | 'right';
+  notificationSoundEnabled?: boolean;
+  toastEnabled?: boolean;
+  notificationRingEnabled?: boolean;
+  customKeybindings?: CustomKeybinding[];
 }
 
 // === Utility: generate unique IDs ===

@@ -28,6 +28,16 @@ const optionalSurfaceId = z.string().optional().describe(
 // === Browser tools ===
 
 server.tool(
+  'browser_open',
+  'Open a new browser panel in the active pane. Use this when no browser surface exists yet.',
+  {
+    url: z.string().optional().describe('Initial URL to load (defaults to google.com)'),
+  },
+  async ({ url }) =>
+    callRpc('browser.open', url ? { url } : {}),
+);
+
+server.tool(
   'browser_navigate',
   'Navigate the wmux browser panel to a URL',
   {

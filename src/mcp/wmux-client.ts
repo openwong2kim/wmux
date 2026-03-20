@@ -1,23 +1,30 @@
 import * as net from 'net';
+import * as fs from 'fs';
 import * as crypto from 'crypto';
 import type { RpcMethod, RpcResponse } from '../shared/rpc';
+import { getPipeName, getAuthTokenPath } from '../shared/constants';
 
 const TIMEOUT_MS = 10000;
+const RETRY_COUNT = 3;
+const RETRY_DELAY_MS = 1000;
 
-export function sendRpc(
+function readAuthToken(): string | undefined {
+  // Env var takes priority (when running inside wmux terminal)
+  if (process.env.WMUX_AUTH_TOKEN) return process.env.WMUX_AUTH_TOKEN;
+  // File fallback (when spawned by Claude Code as MCP server)
+  try {
+    return fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
+  } catch {
+    return undefined;
+  }
+}
+
+function attemptRpc(
+  pipePath: string,
+  token: string,
   method: RpcMethod,
-  params: Record<string, unknown> = {},
+  params: Record<string, unknown>,
 ): Promise<unknown> {
-  const pipePath = process.env.WMUX_SOCKET_PATH;
-  const token = process.env.WMUX_AUTH_TOKEN;
-
-  if (!pipePath) {
-    return Promise.reject(new Error('WMUX_SOCKET_PATH not set. Is this running inside wmux?'));
-  }
-  if (!token) {
-    return Promise.reject(new Error('WMUX_AUTH_TOKEN not set. Is this running inside wmux?'));
-  }
-
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
     const request = JSON.stringify({ id, method, params, token }) + '\n';
@@ -84,4 +91,37 @@ export function sendRpc(
       }
     });
   });
+}
+
+function sleep(ms: number): Promise<void> {
+  return new Promise((r) => setTimeout(r, ms));
+}
+
+export async function sendRpc(
+  method: RpcMethod,
+  params: Record<string, unknown> = {},
+): Promise<unknown> {
+  const pipePath = process.env.WMUX_SOCKET_PATH || getPipeName();
+
+  for (let attempt = 0; attempt < RETRY_COUNT; attempt++) {
+    // Re-read token on every attempt (wmux may have restarted with new token)
+    const token = readAuthToken();
+    if (!token) {
+      throw new Error('wmux auth token not found. Is wmux running?');
+    }
+
+    try {
+      return await attemptRpc(pipePath, token, method, params);
+    } catch (err) {
+      const msg = (err as Error).message;
+      const isRetryable = msg.includes('not running') || msg.includes('unauthorized');
+      if (isRetryable && attempt < RETRY_COUNT - 1) {
+        await sleep(RETRY_DELAY_MS);
+        continue;
+      }
+      throw err;
+    }
+  }
+
+  throw new Error('wmux is not running. Start the app first.');
 }

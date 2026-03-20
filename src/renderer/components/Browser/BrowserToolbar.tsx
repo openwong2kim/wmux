@@ -1,4 +1,5 @@
 import { useRef, useState, useCallback, useEffect } from 'react';
+import { useT } from '../../hooks/useT';
 
 // ---------------------------------------------------------------------------
 // SVG Icon components
@@ -93,6 +94,7 @@ export default function BrowserToolbar({
   onOpenDevTools,
   onClose,
 }: BrowserToolbarProps) {
+  const t = useT();
   const [inputValue, setInputValue] = useState(currentUrl);
   const [isFocused, setIsFocused] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
@@ -140,19 +142,19 @@ export default function BrowserToolbar({
   const isSecure = currentUrl.startsWith('https://');
 
   const btnBase = 'flex items-center justify-center w-6 h-6 rounded transition-colors duration-100';
-  const btnEnabled = `${btnBase} text-[#a6adc8] hover:text-[#cdd6f4] hover:bg-[#313244] cursor-pointer`;
-  const btnDisabled = `${btnBase} text-[#45475a] cursor-default`;
+  const btnEnabled = `${btnBase} text-[var(--text-sub2)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] cursor-pointer`;
+  const btnDisabled = `${btnBase} text-[var(--bg-overlay)] cursor-default`;
 
   return (
     <div
       className="flex items-center gap-1.5 px-2 py-1.5 shrink-0"
-      style={{ backgroundColor: '#181825', borderBottom: '1px solid #313244' }}
+      style={{ backgroundColor: 'var(--bg-mantle)', borderBottom: '1px solid var(--bg-surface)' }}
     >
       {/* Back */}
       <button
         className={canGoBack ? btnEnabled : btnDisabled}
         onClick={canGoBack ? onBack : undefined}
-        title="Back"
+        title={t('browser.back')}
         tabIndex={-1}
       >
         <IconBack />
@@ -162,7 +164,7 @@ export default function BrowserToolbar({
       <button
         className={canGoForward ? btnEnabled : btnDisabled}
         onClick={canGoForward ? onForward : undefined}
-        title="Forward"
+        title={t('browser.forward')}
         tabIndex={-1}
       >
         <IconForward />
@@ -172,7 +174,7 @@ export default function BrowserToolbar({
       <button
         className={btnEnabled}
         onClick={onRefresh}
-        title="Refresh"
+        title={t('browser.reload')}
         tabIndex={-1}
       >
         <span className={isLoading ? 'animate-spin' : ''}>
@@ -185,19 +187,19 @@ export default function BrowserToolbar({
         <div
           className="flex items-center gap-1.5 px-2.5 py-1 rounded-md"
           style={{
-            backgroundColor: isFocused ? '#1e1e2e' : '#11111b',
-            border: `1px solid ${isFocused ? '#89b4fa' : '#313244'}`,
+            backgroundColor: isFocused ? 'var(--bg-base)' : '#11111b',
+            border: `1px solid ${isFocused ? 'var(--accent-blue)' : 'var(--bg-surface)'}`,
             transition: 'border-color 0.15s',
           }}
         >
           {/* Lock icon */}
-          <span className={isSecure ? 'text-[#a6e3a1]' : 'text-[#585b70]'} style={{ flexShrink: 0 }}>
+          <span className={isSecure ? 'text-[var(--accent-green)]' : 'text-[var(--text-muted)]'} style={{ flexShrink: 0 }}>
             <IconLock />
           </span>
 
           {/* Loading indicator */}
           {isLoading && (
-            <span className="w-1.5 h-1.5 rounded-full bg-[#89b4fa] animate-pulse shrink-0" />
+            <span className="w-1.5 h-1.5 rounded-full bg-[var(--accent-blue)] animate-pulse shrink-0" />
           )}
 
           <input
@@ -219,7 +221,7 @@ export default function BrowserToolbar({
                 inputRef.current?.blur();
               }
             }}
-            className="flex-1 min-w-0 bg-transparent text-[#cdd6f4] text-xs outline-none"
+            className="flex-1 min-w-0 bg-transparent text-[var(--text-main)] text-xs outline-none"
             style={{ fontFamily: 'ui-monospace, monospace' }}
             spellCheck={false}
             autoComplete="off"
@@ -231,7 +233,7 @@ export default function BrowserToolbar({
       <button
         className={btnEnabled}
         onClick={onOpenDevTools}
-        title="Open DevTools (F12)"
+        title={t('browser.devToolsTooltip')}
         tabIndex={-1}
       >
         <IconDevTools />
@@ -239,9 +241,9 @@ export default function BrowserToolbar({
 
       {/* Close */}
       <button
-        className={`${btnBase} text-[#a6adc8] hover:text-[#f38ba8] hover:bg-[#3b1e1e] cursor-pointer`}
+        className={`${btnBase} text-[var(--text-sub2)] hover:text-[var(--accent-red)] hover:bg-[#3b1e1e] cursor-pointer`}
         onClick={onClose}
-        title="Close browser"
+        title={t('browser.close')}
         tabIndex={-1}
       >
         <IconClose />

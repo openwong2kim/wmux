@@ -1,6 +1,7 @@
 import { useStore } from '../../stores';
 import WorkspaceItem from './WorkspaceItem';
 import type { Pane } from '../../../shared/types';
+import { useT } from '../../hooks/useT';
 
 // Pane 트리에서 모든 leaf의 PTY를 dispose
 function disposeAllPtys(pane: Pane) {
@@ -14,6 +15,8 @@ function disposeAllPtys(pane: Pane) {
 }
 
 export default function Sidebar() {
+  const t = useT();
+  const sidebarPosition = useStore((s) => s.sidebarPosition);
   const workspaces = useStore((s) => s.workspaces);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const addWorkspace = useStore((s) => s.addWorkspace);
@@ -35,14 +38,14 @@ export default function Sidebar() {
   };
 
   return (
-    <div className="flex flex-col h-full bg-[#181825] border-r border-[#313244]" style={{ width: 240 }}>
+    <div className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 240 }}>
       {/* Header */}
-      <div className="flex items-center justify-between px-4 py-3 border-b border-[#313244]">
-        <span className="text-sm font-bold text-[#cdd6f4] tracking-widest font-mono">WMUX</span>
+      <div className="flex items-center justify-between px-4 py-3 border-b border-[var(--bg-surface)]">
+        <span className="text-sm font-bold text-[var(--text-main)] tracking-widest font-mono">WMUX</span>
         <button
-          className="text-[#6c7086] hover:text-[#a6e3a1] text-lg leading-none transition-colors"
+          className="text-[var(--text-subtle)] hover:text-[var(--accent-green)] text-lg leading-none transition-colors"
           onClick={() => addWorkspace()}
-          title="New workspace (Ctrl+N)"
+          title={t('sidebar.newWorkspaceTooltip')}
         >
           +
         </button>
@@ -66,12 +69,12 @@ export default function Sidebar() {
       </div>
 
       {/* Footer */}
-      <div className="flex items-center justify-between px-4 py-2 border-t border-[#313244] text-[10px] font-mono text-[#585b70]">
-        <span>{workspaces.length} workspace{workspaces.length !== 1 ? 's' : ''}</span>
+      <div className="flex items-center justify-between px-4 py-2 border-t border-[var(--bg-surface)] text-[10px] font-mono text-[var(--text-muted)]">
+        <span>{workspaces.length} {t('sidebar.workspaces')}</span>
         <button
-          className="text-[#585b70] hover:text-[#cdd6f4] transition-colors"
+          className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors"
           onClick={() => useStore.getState().toggleSidebar()}
-          title="Hide sidebar (Ctrl+B)"
+          title={t('sidebar.hideTooltip')}
         >
           ◀
         </button>

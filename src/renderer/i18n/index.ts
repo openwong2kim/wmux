@@ -46,9 +46,10 @@ export function setLocale(locale: Locale): void {
  * @example
  * t('terminal.exited', { code: 1 }) // "Process exited with code 1"
  */
-export function t(key: TranslationKey, vars?: Record<string, string | number>): string {
+export function t(key: TranslationKey | (string & {}), vars?: Record<string, string | number>): string {
   const map = translations[currentLocale];
-  let str: string = (map[key] ?? translations.en[key as TranslationKey] ?? key) as string;
+  const k = key as TranslationKey;
+  let str: string = (map[k] ?? translations.en[k] ?? key) as string;
 
   if (vars) {
     for (const [k, v] of Object.entries(vars)) {

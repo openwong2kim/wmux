@@ -1,4 +1,5 @@
 import React from 'react';
+import { useT } from '../../hooks/useT';
 
 export type PaletteCategory = 'workspace' | 'surface' | 'command';
 
@@ -16,19 +17,21 @@ interface PaletteItemProps {
   onClick: () => void;
 }
 
-const categoryLabel: Record<PaletteCategory, string> = {
-  workspace: 'Workspace',
-  surface: 'Surface',
-  command: 'Command',
-};
-
 const categoryColor: Record<PaletteCategory, string> = {
-  workspace: 'text-[#89b4fa]',
-  surface: 'text-[#a6e3a1]',
-  command: 'text-[#cba6f7]',
+  workspace: 'text-[var(--accent-blue)]',
+  surface: 'text-[var(--accent-green)]',
+  command: 'text-[var(--accent-purple)]',
 };
 
 export default function PaletteItem({ item, isActive, onClick }: PaletteItemProps) {
+  const t = useT();
+
+  const categoryLabel: Record<PaletteCategory, string> = {
+    workspace: t('palette.catWorkspace'),
+    surface: t('palette.catSurface'),
+    command: t('palette.catCommand'),
+  };
+
   return (
     <button
       type="button"
@@ -36,11 +39,11 @@ export default function PaletteItem({ item, isActive, onClick }: PaletteItemProp
       className={[
         'w-full flex items-center gap-3 px-4 py-2.5 text-left transition-colors',
         isActive
-          ? 'bg-[#313244] text-[#cdd6f4]'
-          : 'text-[#bac2de] hover:bg-[#2a2a3d] hover:text-[#cdd6f4]',
+          ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'
+          : 'text-[var(--text-sub)] hover:bg-[#2a2a3d] hover:text-[var(--text-main)]',
       ].join(' ')}
     >
-      <span className="shrink-0 w-4 h-4 flex items-center justify-center text-[#6c7086]">
+      <span className="shrink-0 w-4 h-4 flex items-center justify-center text-[var(--text-subtle)]">
         {item.icon}
       </span>
       <span className="flex-1 truncate text-sm">{item.label}</span>

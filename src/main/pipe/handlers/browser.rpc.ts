@@ -12,6 +12,18 @@ type GetWindow = () => BrowserWindow | null;
  */
 export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow): void {
   /**
+   * browser.open
+   * Opens a new browser surface in the active pane.
+   * params: { url?: string }
+   */
+  router.register('browser.open', (params) => {
+    const url = typeof params['url'] === 'string' ? params['url'] : undefined;
+    return sendToRenderer(getWindow, 'browser.open', {
+      ...(url && { url }),
+    });
+  });
+
+  /**
    * browser.snapshot
    * Returns the full outer HTML of the current page as a string.
    * params: {}

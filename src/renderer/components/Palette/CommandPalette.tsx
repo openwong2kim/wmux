@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState, useCallback, useMemo } from 'react';
 import { useStore } from '../../stores';
 import PaletteItem, { type PaletteItemData, type PaletteCategory } from './PaletteItem';
+import { useT } from '../../hooks/useT';
 
 // ---------------------------------------------------------------------------
 // SVG Icons (inline, no external dependency)
@@ -90,6 +91,7 @@ function fuzzyScore(str: string, query: string): number | null {
 // ---------------------------------------------------------------------------
 
 export default function CommandPalette() {
+  const t = useT();
   const visible = useStore((s) => s.commandPaletteVisible);
   const setVisible = useStore((s) => s.setCommandPaletteVisible);
   const workspaces = useStore((s) => s.workspaces);
@@ -148,11 +150,11 @@ export default function CommandPalette() {
     // Built-in commands
     const commands: Array<{ label: string; action: () => void }> = [
       {
-        label: 'Toggle Sidebar',
+        label: t('palette.cmd.toggleSidebar'),
         action: () => { useStore.getState().toggleSidebar(); setVisible(false); },
       },
       {
-        label: 'Split Right',
+        label: t('palette.cmd.splitRight'),
         action: () => {
           const state = useStore.getState();
           const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -161,7 +163,7 @@ export default function CommandPalette() {
         },
       },
       {
-        label: 'Split Down',
+        label: t('palette.cmd.splitDown'),
         action: () => {
           const state = useStore.getState();
           const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -170,11 +172,11 @@ export default function CommandPalette() {
         },
       },
       {
-        label: 'New Workspace',
+        label: t('palette.cmd.newWorkspace'),
         action: () => { useStore.getState().addWorkspace(); setVisible(false); },
       },
       {
-        label: 'New Surface',
+        label: t('palette.cmd.newSurface'),
         action: () => {
           const state = useStore.getState();
           const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -187,11 +189,11 @@ export default function CommandPalette() {
         },
       },
       {
-        label: 'Show Notifications',
+        label: t('palette.cmd.showNotifications'),
         action: () => { useStore.getState().setNotificationPanelVisible(true); setVisible(false); },
       },
       {
-        label: 'Open Browser',
+        label: t('palette.cmd.openBrowser'),
         action: () => {
           const state = useStore.getState();
           const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -313,8 +315,8 @@ export default function CommandPalette() {
       <div
         className="w-[480px] max-h-[60vh] flex flex-col rounded-xl overflow-hidden shadow-2xl"
         style={{
-          backgroundColor: '#1e1e2e',
-          border: '1px solid #313244',
+          backgroundColor: 'var(--bg-base)',
+          border: '1px solid var(--bg-surface)',
           boxShadow: '0 25px 60px rgba(0,0,0,0.7)',
         }}
         onMouseDown={(e) => e.stopPropagation()}
@@ -322,9 +324,9 @@ export default function CommandPalette() {
         {/* Search input row */}
         <div
           className="flex items-center gap-2.5 px-4 py-3"
-          style={{ borderBottom: '1px solid #313244' }}
+          style={{ borderBottom: '1px solid var(--bg-surface)' }}
         >
-          <span className="shrink-0 text-[#6c7086]">
+          <span className="shrink-0 text-[var(--text-subtle)]">
             <IconSearch />
           </span>
           <input
@@ -336,14 +338,14 @@ export default function CommandPalette() {
               setActiveIdx(0);
             }}
             onKeyDown={handleKeyDown}
-            placeholder="Type a command..."
-            className="flex-1 bg-transparent text-[#cdd6f4] text-sm placeholder-[#585b70] outline-none"
+            placeholder={t('palette.placeholder')}
+            className="flex-1 bg-transparent text-[var(--text-main)] text-sm placeholder-[var(--text-muted)] outline-none"
             spellCheck={false}
             autoComplete="off"
           />
           <kbd
-            className="shrink-0 text-xs text-[#585b70] px-1.5 py-0.5 rounded"
-            style={{ border: '1px solid #45475a', fontFamily: 'monospace' }}
+            className="shrink-0 text-xs text-[var(--text-muted)] px-1.5 py-0.5 rounded"
+            style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
           >
             ESC
           </kbd>
@@ -352,8 +354,8 @@ export default function CommandPalette() {
         {/* Results list */}
         <div ref={listRef} className="overflow-y-auto flex-1">
           {results.length === 0 ? (
-            <div className="px-4 py-8 text-center text-sm text-[#585b70]">
-              No results for &ldquo;{query}&rdquo;
+            <div className="px-4 py-8 text-center text-sm text-[var(--text-muted)]">
+              {t('palette.noResults')} &ldquo;{query}&rdquo;
             </div>
           ) : (
             results.map((item, idx) => (
@@ -371,34 +373,34 @@ export default function CommandPalette() {
         {/* Footer hint */}
         <div
           className="flex items-center gap-3 px-4 py-2"
-          style={{ borderTop: '1px solid #313244', backgroundColor: '#181825' }}
+          style={{ borderTop: '1px solid var(--bg-surface)', backgroundColor: 'var(--bg-mantle)' }}
         >
-          <span className="text-xs text-[#585b70]">
+          <span className="text-xs text-[var(--text-muted)]">
             <kbd
               className="px-1 py-0.5 rounded mr-0.5"
-              style={{ border: '1px solid #45475a', fontFamily: 'monospace' }}
+              style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
             >
               ↑↓
             </kbd>{' '}
-            navigate
+            {t('palette.navigate')}
           </span>
-          <span className="text-xs text-[#585b70]">
+          <span className="text-xs text-[var(--text-muted)]">
             <kbd
               className="px-1 py-0.5 rounded mr-0.5"
-              style={{ border: '1px solid #45475a', fontFamily: 'monospace' }}
+              style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
             >
               Enter
             </kbd>{' '}
-            select
+            {t('palette.select')}
           </span>
-          <span className="text-xs text-[#585b70]">
+          <span className="text-xs text-[var(--text-muted)]">
             <kbd
               className="px-1 py-0.5 rounded mr-0.5"
-              style={{ border: '1px solid #45475a', fontFamily: 'monospace' }}
+              style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
             >
               Esc
             </kbd>{' '}
-            close
+            {t('palette.close')}
           </span>
         </div>
       </div>

@@ -28,7 +28,7 @@ export default function PaneContainer({ pane, isWorkspaceVisible = true }: PaneC
             <Separator
               className={`${
                 orientation === 'horizontal' ? 'w-1' : 'h-1'
-              } bg-[#313244] hover:bg-[#89b4fa] transition-colors`}
+              } bg-[var(--bg-surface)] hover:bg-[var(--accent-blue)] transition-colors`}
             />
           )}
           <Panel defaultSize={pane.sizes?.[i] ?? 100 / pane.children.length} minSize={10}>
