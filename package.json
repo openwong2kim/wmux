@@ -13,10 +13,12 @@
     "lint": "eslint --ext .ts,.tsx .",
     "build:cli": "tsc -p tsconfig.cli.json",
     "build:mcp": "tsc -p tsconfig.mcp.json",
-    "cli": "node dist/cli/cli/index.js"
+    "cli": "node dist/cli/cli/index.js",
+    "mcp": "node dist/mcp/mcp/index.js"
   },
   "bin": {
-    "wmux": "dist/cli/cli/index.js"
+    "wmux": "dist/cli/cli/index.js",
+    "wmux-mcp": "dist/mcp/mcp/index.js"
   },
   "keywords": [],
   "author": {
