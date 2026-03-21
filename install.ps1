@@ -137,7 +137,7 @@ $installDir = "$env:LOCALAPPDATA\wmux"
 
 if (-not $env:LOCALAPPDATA -or -not $installDir) {
     Write-Host "  [!] Cannot determine install directory (LOCALAPPDATA is not set)" -ForegroundColor Red
-    exit 1
+    return
 }
 
 Write-Host ""
@@ -152,20 +152,20 @@ Write-Host ""
 # Git
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host "  [!] Git is required. Install from https://git-scm.com" -ForegroundColor Red
-    exit 1
+    return
 }
 
 # Node.js
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     Write-Host "  [!] Node.js 18+ is required. Install from https://nodejs.org" -ForegroundColor Red
-    exit 1
+    return
 }
 
 $nodeVersion = (Get-NativeOutput { node --version }) -replace 'v', ''
 $major = [int]($nodeVersion.Split('.')[0])
 if ($major -lt 18) {
     Write-Host "  [!] Node.js 18+ required (found v$nodeVersion)" -ForegroundColor Red
-    exit 1
+    return
 }
 
 # Python 3 (required by node-gyp)
@@ -189,13 +189,13 @@ if (-not $hasPython3) {
         } else {
             Write-Host "  [!] Python was installed but could not locate the install directory" -ForegroundColor Yellow
             Write-Host "       Restart your terminal and re-run the installer" -ForegroundColor Yellow
-            exit 1
+            return
         }
     } else {
         Write-Host "  [!] Python 3 is required for native modules." -ForegroundColor Red
         Write-Host "       Option 1: Install winget — https://aka.ms/getwinget" -ForegroundColor Red
         Write-Host "       Option 2: Install Python manually — https://www.python.org" -ForegroundColor Red
-        exit 1
+        return
     }
 }
 
@@ -230,7 +230,7 @@ if (-not $hasVCTools) {
         } else {
             Write-Host "  [!] VS Installer not found. Add 'Desktop development with C++' workload manually." -ForegroundColor Red
             Write-Host "       Open Visual Studio Installer → Modify → check 'Desktop development with C++'" -ForegroundColor Red
-            exit 1
+            return
         }
     } else {
         # Build Tools not installed — fresh install via winget
@@ -243,7 +243,7 @@ if (-not $hasVCTools) {
             Write-Host "       Option 1: Install winget — https://aka.ms/getwinget" -ForegroundColor Red
             Write-Host "       Option 2: Install manually — https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Red
             Write-Host "                 Select 'Desktop development with C++' workload" -ForegroundColor Red
-            exit 1
+            return
         }
     }
 
@@ -271,7 +271,7 @@ if (-not $hasVCTools) {
     if (-not $hasVCTools) {
         Write-Host "  [!] VCTools not detected after installation (waited ${maxRetries}x5s)." -ForegroundColor Red
         Write-Host "       A reboot may be required. Restart and re-run this installer." -ForegroundColor Red
-        exit 1
+        return
     }
     Write-Host "  [*] VCTools verified" -ForegroundColor Green
 }
@@ -313,7 +313,7 @@ if (Test-Path $installDir) {
         } catch {
             Write-Host "  [!] Cannot remove existing install: $_" -ForegroundColor Red
             Write-Host "       Close wmux and any terminals using $installDir, then re-run." -ForegroundColor Red
-            exit 1
+            return
         }
     }
 }
@@ -326,7 +326,7 @@ if ($version -eq "main") {
 
 if (-not (Test-Path "$installDir\package.json")) {
     Write-Host "  [!] Clone failed" -ForegroundColor Red
-    exit 1
+    return
 }
 
 Write-Host "  [2/4] Cloned to $installDir" -ForegroundColor Green
@@ -352,7 +352,7 @@ try {
         $cliEntry = "$installDir\dist\cli\cli\index.js"
         if (-not (Test-Path $cliEntry)) {
             Write-Host "  [!] CLI build output not found at $cliEntry" -ForegroundColor Red
-            exit 1
+            return
         }
         # Create a .cmd wrapper
         $nodePath = (Get-Command node).Source
