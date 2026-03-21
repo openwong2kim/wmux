@@ -14,10 +14,10 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
           registry-url: https://registry.npmjs.org
 
-      - run: npm ci --ignore-scripts
+      - run: npm install --ignore-scripts
 
       - run: npm run build:cli && npm run build:mcp
 
