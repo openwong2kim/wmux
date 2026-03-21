@@ -57,6 +57,7 @@ export class AutoUpdater {
       clearInterval(this.checkTimer);
       this.checkTimer = null;
     }
+    autoUpdater.removeAllListeners();  // prevent listener accumulation
     // IPC 핸들러 정리
     ipcMain.removeHandler(IPC.UPDATE_CHECK);
     ipcMain.removeHandler(IPC.UPDATE_INSTALL);
@@ -114,7 +115,22 @@ export class AutoUpdater {
     });
 
     // Renderer가 "지금 설치" 요청 → 앱 재시작 후 업데이트 적용
-    ipcMain.handle(IPC.UPDATE_INSTALL, () => {
+    ipcMain.handle(IPC.UPDATE_INSTALL, async () => {
+      // Trigger session save via the existing beforeunload mechanism
+      const win = this.getWindow();
+      if (win && !win.isDestroyed() && !win.webContents.isCrashed()) {
+        try {
+          await win.webContents.executeJavaScript(
+            `try { window.dispatchEvent(new Event('beforeunload')); } catch(e) {}`
+          );
+          // Small delay to let the session:save IPC round-trip complete
+          await new Promise(resolve => setTimeout(resolve, 500));
+          console.log('[AutoUpdater] Session save triggered before update install');
+        } catch {
+          console.warn('[AutoUpdater] Could not trigger session save before update');
+        }
+      }
+
       try {
         autoUpdater.quitAndInstall();
       } catch (err) {
