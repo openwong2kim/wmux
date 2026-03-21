@@ -109,15 +109,25 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   if (method === 'surface.list') {
     const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
     if (!ws) return [];
-    const activePane = findPaneById(ws.rootPane, ws.activePaneId);
-    if (!activePane || activePane.type !== 'leaf') return [];
-    return activePane.surfaces.map((s) => ({
-      id: s.id,
-      ptyId: s.ptyId,
-      title: s.title,
-      shell: s.shell,
-      cwd: s.cwd,
-    }));
+    // Search ALL leaf panes, not just active — so MCP can find browser surfaces anywhere
+    const leaves = findLeafPanes(ws.rootPane);
+    const surfaces = [];
+    for (const leaf of leaves) {
+      for (const s of leaf.surfaces) {
+        surfaces.push({
+          id: s.id,
+          ptyId: s.ptyId,
+          title: s.title,
+          shell: s.shell,
+          cwd: s.cwd,
+          surfaceType: s.surfaceType || 'terminal',
+          browserUrl: s.browserUrl,
+          paneId: leaf.id,
+          isActive: s.id === leaf.activeSurfaceId,
+        });
+      }
+    }
+    return surfaces;
   }
 
   if (method === 'surface.new') {
@@ -265,16 +275,40 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   if (method === 'browser.open') {
     const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
     if (!ws) return { error: 'no active workspace' };
-    const paneId = ws.activePaneId;
     const url = typeof params.url === 'string' ? params.url : undefined;
-    store.addBrowserSurface(paneId, url);
+
+    // Check if a browser surface already exists anywhere — reuse it
+    const leaves = findLeafPanes(ws.rootPane);
+    for (const leaf of leaves) {
+      const existingBrowser = leaf.surfaces.find((s) => s.surfaceType === 'browser');
+      if (existingBrowser) {
+        // Navigate existing browser to the new URL if provided
+        if (url) {
+          existingBrowser.browserUrl = url;
+        }
+        leaf.activeSurfaceId = existingBrowser.id;
+        return { ok: true, surfaceId: existingBrowser.id, url: existingBrowser.browserUrl, reused: true };
+      }
+    }
+
+    // No existing browser — split the active pane horizontally, add browser to new pane
+    const paneId = ws.activePaneId;
+    store.splitPane(paneId, 'horizontal');
 
     const fresh = useStore.getState();
     const freshWs = fresh.workspaces.find((w) => w.id === fresh.activeWorkspaceId);
-    if (!freshWs) return { ok: true };
-    const pane = findPaneById(freshWs.rootPane, paneId);
-    if (!pane || pane.type !== 'leaf') return { ok: true };
-    const surface = pane.surfaces[pane.surfaces.length - 1];
+    if (!freshWs) return { error: 'failed to split pane' };
+
+    // The new pane (created by split) is now the active pane
+    const newPaneId = freshWs.activePaneId;
+    store.addBrowserSurface(newPaneId, url);
+
+    const updated = useStore.getState();
+    const updatedWs = updated.workspaces.find((w) => w.id === updated.activeWorkspaceId);
+    if (!updatedWs) return { ok: true };
+    const newPane = findPaneById(updatedWs.rootPane, newPaneId);
+    if (!newPane || newPane.type !== 'leaf') return { ok: true };
+    const surface = newPane.surfaces[newPane.surfaces.length - 1];
     return { ok: true, surfaceId: surface?.id, url: url || 'https://google.com' };
   }
 
