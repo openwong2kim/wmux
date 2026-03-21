@@ -28,14 +28,16 @@ export class PipeServer {
   private loadOrCreateToken(): string {
     // In dev mode (Vite hot-reload), reuse existing token so MCP clients
     // don't get "unauthorized" after every source change rebuild.
-    // In production, always generate a fresh token per app launch.
-    if (process.env.NODE_ENV === 'development' || process.env.ELECTRON_IS_DEV) {
-      try {
+    // In production (packaged app), always generate a fresh token per launch.
+    // Use app.isPackaged instead of NODE_ENV — Vite may replace NODE_ENV at bundle time.
+    try {
+      const { app } = require('electron');
+      if (!app.isPackaged) {
         const fs = require('fs');
         const existing = fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
         if (existing && existing.length > 0) return existing;
-      } catch { /* file doesn't exist yet */ }
-    }
+      }
+    } catch { /* file doesn't exist yet or app not ready */ }
     return crypto.randomUUID();
   }
 
