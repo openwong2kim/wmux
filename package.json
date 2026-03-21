@@ -1,5 +1,5 @@
 {
-  "name": "wmux",
+  "name": "@wong2kim/wmux",
   "productName": "wmux",
   "version": "1.0.1",
   "description": "Windows terminal multiplexer with MCP server for AI agents - run multiple CLI sessions in parallel, control via Claude Code and other AI tools",
