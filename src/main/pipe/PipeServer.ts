@@ -1,6 +1,6 @@
 import * as net from 'net';
 import * as crypto from 'crypto';
-import { getPipeName } from '../../shared/constants';
+import { getPipeName, getAuthTokenPath } from '../../shared/constants';
 import type { RpcRequest } from '../../shared/rpc';
 import { RpcRouter } from './RpcRouter';
 
@@ -30,9 +30,9 @@ export class PipeServer {
     // don't get "unauthorized" after every source change rebuild.
     // In production, always generate a fresh token per app launch.
     if (process.env.NODE_ENV === 'development' || process.env.ELECTRON_IS_DEV) {
-      const { getAuthTokenPath } = require('../../shared/constants');
       try {
-        const existing = require('fs').readFileSync(getAuthTokenPath(), 'utf8').trim();
+        const fs = require('fs');
+        const existing = fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
         if (existing && existing.length > 0) return existing;
       } catch { /* file doesn't exist yet */ }
     }
