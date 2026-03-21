@@ -5,7 +5,7 @@ process.on('uncaughtException', (err) => {
   console.error('[Main] Uncaught exception:', err);
 });
 
-import { app, BrowserWindow } from 'electron';
+import { app, BrowserWindow, powerMonitor } from 'electron';
 import started from 'electron-squirrel-startup';
 import { createWindow } from './window/createWindow';
 import { PTYManager } from './pty/PTYManager';
@@ -51,24 +51,13 @@ const pipeServer = new PipeServer(rpcRouter);
 const mcpRegistrar = new McpRegistrar();
 
 let cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow);
-registerWorkspaceRpc(rpcRouter, () => mainWindow);
-registerSurfaceRpc(rpcRouter, () => mainWindow);
-registerPaneRpc(rpcRouter, () => mainWindow);
-registerInputRpc(rpcRouter, ptyManager, () => mainWindow);
-registerNotifyRpc(rpcRouter, () => mainWindow);
-registerMetaRpc(rpcRouter, () => mainWindow);
-registerSystemRpc(rpcRouter);
-registerBrowserRpc(rpcRouter, () => mainWindow);
 
-app.on('ready', () => {
-  console.log('[Main] App ready, creating window...');
-  mainWindow = createWindow();
-  console.log('[Main] Window created:', !!mainWindow);
+// Module-scope crash tracking so activate-created windows share the same counters
+let lastCrashTime = 0;
+let crashCount = 0;
 
-  // Renderer crash recovery — auto-reload on crash
-  let lastCrashTime = 0;
-  let crashCount = 0;
-  mainWindow.webContents.on('render-process-gone', (_event, details) => {
+function attachWindowRecovery(win: BrowserWindow): void {
+  win.webContents.on('render-process-gone', (_event, details) => {
     console.error('[Main] Renderer crashed:', details.reason, details.exitCode);
     if (details.reason === 'clean-exit') return;
     const now = Date.now();
@@ -83,19 +72,17 @@ app.on('ready', () => {
       app.quit();
       return;
     }
-    const activePtys = ptyManager.getActiveInstances();
-    console.log(`[Main] ${activePtys.length} PTY(s) still alive — renderer can reconnect via pty:list after reload`);
-    // Clean up old handlers and re-register (prevents accumulation)
     cleanupHandlers();
     cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow);
+    const activePtys = ptyManager.getActiveInstances();
+    console.log(`[Main] ${activePtys.length} PTY(s) still alive — reloading renderer`);
     setTimeout(() => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
     }, 1000);
   });
 
-  // Handle hung renderer — auto-reload after 10s grace period
   let unresponsiveTimer: ReturnType<typeof setTimeout> | null = null;
-  mainWindow.on('unresponsive', () => {
+  win.on('unresponsive', () => {
     console.warn('[Main] Renderer is unresponsive');
     if (unresponsiveTimer) return;
     unresponsiveTimer = setTimeout(() => {
@@ -109,11 +96,49 @@ app.on('ready', () => {
     }, 10_000);
   });
 
-  mainWindow.on('responsive', () => {
+  win.on('responsive', () => {
     if (unresponsiveTimer) {
       clearTimeout(unresponsiveTimer);
       unresponsiveTimer = null;
       console.log('[Main] Renderer recovered from unresponsive state');
+    }
+  });
+}
+
+registerWorkspaceRpc(rpcRouter, () => mainWindow);
+registerSurfaceRpc(rpcRouter, () => mainWindow);
+registerPaneRpc(rpcRouter, () => mainWindow);
+registerInputRpc(rpcRouter, ptyManager, () => mainWindow);
+registerNotifyRpc(rpcRouter, () => mainWindow);
+registerMetaRpc(rpcRouter, () => mainWindow);
+registerSystemRpc(rpcRouter);
+registerBrowserRpc(rpcRouter, () => mainWindow);
+
+app.on('ready', () => {
+  console.log('[Main] App ready, creating window...');
+  mainWindow = createWindow();
+  console.log('[Main] Window created:', !!mainWindow);
+
+  attachWindowRecovery(mainWindow);
+
+  // Handle system sleep/wake — verify PTY processes survived
+  powerMonitor.on('resume', () => {
+    console.log('[Main] System resumed from sleep — checking PTY health');
+    const active = ptyManager.getActiveInstances();
+    for (const { id } of active) {
+      const instance = ptyManager.get(id);
+      if (!instance) continue;
+      try {
+        // Check if process is still alive (signal 0 = no signal, just check)
+        process.kill(instance.process.pid, 0);
+      } catch {
+        // Process is dead — clean up
+        console.warn(`[Main] PTY ${id} (pid ${instance.process.pid}) died during sleep`);
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('pty:exit', id, -1);
+        }
+        ptyBridge.cleanupInstance(id);
+      }
     }
   });
 
@@ -139,22 +164,21 @@ app.on('window-all-closed', () => {
   app.quit();
 });
 
-app.on('before-quit', () => {
-  // Attempt to trigger session save from renderer before quitting.
-  // If renderer is alive, we dispatch a synthetic beforeunload event which
-  // triggers the existing saveSession handler in AppLayout.tsx that calls
-  // session:save IPC. If renderer has crashed, this silently fails and
-  // the last periodic save (protected by atomic writes + .bak backup)
-  // remains intact on disk.
+let isQuitting = false;
+app.on('before-quit', async (e) => {
+  if (isQuitting) return; // second pass — let quit proceed
+  e.preventDefault();
+  isQuitting = true;
+
+  // Attempt session save from renderer
   if (mainWindow && !mainWindow.isDestroyed() && !mainWindow.webContents.isCrashed()) {
     try {
-      mainWindow.webContents.executeJavaScript(`
-        try { window.dispatchEvent(new Event('beforeunload')); } catch(e) {}
-      `).catch(() => {
-        // Renderer unavailable — rely on last periodic save on disk
-      });
+      await mainWindow.webContents.executeJavaScript(
+        `try { window.dispatchEvent(new Event('beforeunload')); } catch(e) {}`
+      );
+      await new Promise(resolve => setTimeout(resolve, 500));
     } catch {
-      // Renderer unavailable — rely on last periodic save on disk
+      // Renderer unavailable — rely on last periodic save
     }
   }
 
@@ -163,10 +187,13 @@ app.on('before-quit', () => {
   pipeServer.stop();
   mcpRegistrar.unregister();
   autoUpdater.stop();
+
+  app.quit(); // re-trigger quit — isQuitting flag skips preventDefault
 });
 
 app.on('activate', () => {
   if (BrowserWindow.getAllWindows().length === 0) {
     mainWindow = createWindow();
+    attachWindowRecovery(mainWindow);
   }
 });

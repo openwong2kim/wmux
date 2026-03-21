@@ -12,7 +12,7 @@ export type OscCallback = (event: OscEvent) => void;
 const MAX_BUFFER = 64 * 1024; // 64 KB
 
 export class OscParser {
-  private buffer = '';
+  private buffer: string[] = [];
   private inOsc = false;
   private callbacks: OscCallback[] = [];
 
@@ -31,20 +31,20 @@ export class OscParser {
       if (this.inOsc) {
         // Look for ST (String Terminator): BEL (\x07) or ESC \ (\x1b\x5c)
         if (data[i] === '\x07') {
-          this.emitOsc(this.buffer);
-          this.buffer = '';
+          this.emitOsc(this.buffer.join(''));
+          this.buffer = [];
           this.inOsc = false;
           i++;
         } else if (data[i] === '\x1b' && i + 1 < data.length && data[i + 1] === '\\') {
-          this.emitOsc(this.buffer);
-          this.buffer = '';
+          this.emitOsc(this.buffer.join(''));
+          this.buffer = [];
           this.inOsc = false;
           i += 2;
         } else {
-          this.buffer += data[i];
+          this.buffer.push(data[i]);
           // Prevent unbounded buffer growth
           if (this.buffer.length > MAX_BUFFER) {
-            this.buffer = '';
+            this.buffer = [];
             this.inOsc = false;
           }
           i++;
@@ -52,7 +52,7 @@ export class OscParser {
       } else if (data[i] === '\x1b' && i + 1 < data.length && data[i + 1] === ']') {
         // OSC start: ESC ]
         this.inOsc = true;
-        this.buffer = '';
+        this.buffer = [];
         i += 2;
       } else {
         result += data[i];

@@ -56,6 +56,11 @@ export function registerInputRpc(
     }
 
     const text = params['text'];
+
+    if (text.length > 100_000) {
+      throw new Error('input.send: text exceeds 100KB limit');
+    }
+
     let ptyId: string;
 
     if (typeof params['ptyId'] === 'string' && params['ptyId'].length > 0) {

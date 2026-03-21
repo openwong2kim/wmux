@@ -70,7 +70,17 @@ export class PipeServer {
     const pipeName = getPipeName();
     // On Unix, remove stale socket file before listening
     if (process.platform !== 'win32') {
-      try { require('fs').unlinkSync(pipeName); } catch {}
+      try {
+        const stat = require('fs').lstatSync(pipeName);
+        // Only remove if it's a socket (not a symlink to something else)
+        if (stat.isSocket()) {
+          require('fs').unlinkSync(pipeName);
+        } else {
+          console.warn(`[PipeServer] ${pipeName} exists but is not a socket — skipping removal`);
+        }
+      } catch {
+        // File doesn't exist — fine
+      }
     }
     this.server.listen(pipeName, () => {
       this.retryCount = 0;
@@ -97,7 +107,18 @@ export class PipeServer {
       }
       // Clean up Unix socket file
       if (process.platform !== 'win32') {
-        try { require('fs').unlinkSync(getPipeName()); } catch {}
+        const stopPipeName = getPipeName();
+        try {
+          const stat = require('fs').lstatSync(stopPipeName);
+          // Only remove if it's a socket (not a symlink to something else)
+          if (stat.isSocket()) {
+            require('fs').unlinkSync(stopPipeName);
+          } else {
+            console.warn(`[PipeServer] ${stopPipeName} exists but is not a socket — skipping removal`);
+          }
+        } catch {
+          // File doesn't exist — fine
+        }
       }
     });
 
@@ -154,7 +175,10 @@ export class PipeServer {
     let request: RpcRequest;
 
     try {
-      request = JSON.parse(line) as RpcRequest;
+      request = JSON.parse(line, (key, value) => {
+        if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+        return value;
+      }) as RpcRequest;
     } catch {
       const errorResponse = JSON.stringify({
         id: null,
