@@ -15,8 +15,8 @@ $ErrorActionPreference = 'Stop'
 # which PowerShell converts to ErrorRecord objects. Under $ErrorActionPreference='Stop',
 # these non-fatal messages would throw terminating exceptions. This wrapper:
 #   1. Temporarily sets ErrorActionPreference to 'Continue' (prevents stderr→exception)
-#   2. Filters out stderr ErrorRecord objects (progress noise)
-#   3. Checks $LASTEXITCODE for real failures
+#   2. Separates stderr (info/progress) from real failures via $LASTEXITCODE
+#   3. Logs stderr lines as warnings so real errors are still visible
 function Invoke-NativeCommand {
     param(
         [Parameter(Mandatory)][string]$Command,
@@ -25,23 +25,58 @@ function Invoke-NativeCommand {
     $backupEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
+        $stderrLines = @()
         & $Command @Arguments 2>&1 | ForEach-Object {
             if ($_ -is [System.Management.Automation.ErrorRecord]) {
-                # stderr progress/info — silently discard
+                $stderrLines += $_.ToString()
             } else {
                 $_  # pass stdout through
             }
         } | Out-Null
         if ($LASTEXITCODE -ne 0) {
-            throw "'$Command $Arguments' failed with exit code $LASTEXITCODE"
+            $stderrMsg = if ($stderrLines.Count -gt 0) { "`n" + ($stderrLines -join "`n") } else { "" }
+            $argStr = if ($Arguments) { $Arguments -join ' ' } else { "" }
+            throw "'$Command $argStr' failed with exit code $LASTEXITCODE$stderrMsg"
         }
     } finally {
         $ErrorActionPreference = $backupEAP
     }
 }
 
+# Helper: safely get version string from native command under Stop mode
+function Get-NativeVersion {
+    param([string]$Command, [string[]]$Arguments)
+    $backupEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $output = & $Command @Arguments 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) { } else { $_ }
+        }
+        return ($output | Out-String).Trim()
+    } finally {
+        $ErrorActionPreference = $backupEAP
+    }
+}
+
+# Helper: PS 5.1-safe array wrapping for ConvertFrom-Json results
+# In PS 5.1, ConvertFrom-Json returns a PSCustomObject for single-element arrays,
+# which has no .Count property. This ensures the result is always an array.
+function ConvertFrom-JsonSafe {
+    param([string]$Json)
+    if (-not $Json -or $Json.Trim() -eq '') { return @() }
+    $result = $Json | ConvertFrom-Json
+    if ($null -eq $result) { return @() }
+    return @($result)
+}
+
 $repo = 'openwong2kim/wmux'
 $installDir = "$env:LOCALAPPDATA\wmux"
+
+# Guard against null/empty install path
+if (-not $installDir -or -not $env:LOCALAPPDATA) {
+    Write-Host "  [!] Cannot determine install directory (LOCALAPPDATA is not set)" -ForegroundColor Red
+    exit 1
+}
 
 Write-Host ""
 Write-Host "  wmux installer" -ForegroundColor Cyan
@@ -54,7 +89,7 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-$nodeVersion = (node --version) -replace 'v', ''
+$nodeVersion = (Get-NativeVersion node --version) -replace 'v', ''
 $major = [int]($nodeVersion.Split('.')[0])
 if ($major -lt 18) {
     Write-Host "  [!] Node.js 18+ required (found v$nodeVersion)" -ForegroundColor Red
@@ -62,7 +97,12 @@ if ($major -lt 18) {
 }
 
 # Check and install Python (required by node-gyp for native modules)
-if (-not (Get-Command python -ErrorAction SilentlyContinue) -or -not (& python --version 2>&1 | Select-String 'Python 3')) {
+$hasPython3 = $false
+if (Get-Command python -ErrorAction SilentlyContinue) {
+    $pyVer = Get-NativeVersion python --version
+    if ($pyVer -match 'Python 3') { $hasPython3 = $true }
+}
+if (-not $hasPython3) {
     Write-Host "  [*] Python 3 not found — installing via winget..." -ForegroundColor Yellow
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Invoke-NativeCommand winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent
@@ -77,22 +117,29 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue) -or -not (& python -
 # Check and install Visual Studio Build Tools (required by node-gyp for C++ compilation)
 $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $hasVCTools = $false
-$hasBuildTools = $false
+$buildToolsInstallPath = $null
 if (Test-Path $vsWhere) {
     # Check if any VS product has VCTools
-    $vsWithVC = & $vsWhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json 2>$null | ConvertFrom-Json
+    $vsWithVCJson = & $vsWhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json 2>$null
+    $vsWithVC = ConvertFrom-JsonSafe $vsWithVCJson
     if ($vsWithVC.Count -gt 0) { $hasVCTools = $true }
-    # Check if Build Tools is installed at all (any product)
-    $vsAny = & $vsWhere -products * -format json 2>$null | ConvertFrom-Json
-    if ($vsAny.Count -gt 0) { $hasBuildTools = $true }
+
+    if (-not $hasVCTools) {
+        # Check specifically for Build Tools product (not Community/Professional/Enterprise)
+        $btJson = & $vsWhere -products Microsoft.VisualStudio.Product.BuildTools -format json 2>$null
+        $btInstalls = ConvertFrom-JsonSafe $btJson
+        if ($btInstalls.Count -gt 0) {
+            $buildToolsInstallPath = $btInstalls[0].installationPath
+        }
+    }
 }
 if (-not $hasVCTools) {
-    if ($hasBuildTools) {
+    if ($buildToolsInstallPath) {
         # Build Tools installed but VCTools workload missing — modify existing installation
         Write-Host "  [*] Build Tools found but C++ workload missing — adding VCTools..." -ForegroundColor Yellow
         $vsInstaller = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
         if (Test-Path $vsInstaller) {
-            Invoke-NativeCommand $vsInstaller modify --productId Microsoft.VisualStudio.Product.BuildTools --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --wait --passive --norestart
+            Invoke-NativeCommand $vsInstaller modify --installPath $buildToolsInstallPath --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --wait --passive --norestart
             Write-Host "  [*] C++ workload added to Build Tools" -ForegroundColor Green
         } else {
             Write-Host "  [!] VS Installer not found. Please add 'Desktop development with C++' workload manually." -ForegroundColor Red
@@ -100,7 +147,7 @@ if (-not $hasVCTools) {
             exit 1
         }
     } else {
-        # Build Tools not installed at all — fresh install via winget
+        # Build Tools not installed — fresh install via winget
         Write-Host "  [*] Visual Studio Build Tools not found — installing via winget..." -ForegroundColor Yellow
         if (Get-Command winget -ErrorAction SilentlyContinue) {
             Invoke-NativeCommand winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
@@ -111,10 +158,6 @@ if (-not $hasVCTools) {
             exit 1
         }
     }
-    # Install VSSetup module for node-gyp detection
-    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
-    Install-Module VSSetup -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue | Out-Null
 }
 
 Write-Host "  [1/4] Checking latest release..." -ForegroundColor DarkGray
@@ -125,9 +168,8 @@ try {
     $version = $release.tag_name
     Write-Host "  [1/4] Latest version: $version" -ForegroundColor Green
 } catch {
-    # No releases yet — clone from main
     $version = "main"
-    Write-Host "  [1/4] No releases found, installing from main branch" -ForegroundColor Yellow
+    Write-Host "  [1/4] No releases found, installing from main branch ($($_.Exception.Message))" -ForegroundColor Yellow
 }
 
 Write-Host "  [2/4] Cloning repository..." -ForegroundColor DarkGray
