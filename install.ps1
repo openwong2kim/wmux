@@ -409,7 +409,7 @@ Write-Host "  Installation complete!" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Usage:" -ForegroundColor Cyan
 Write-Host "    cd $installDir" -ForegroundColor White
-Write-Host "    npm start              # Run wmux" -ForegroundColor White
-Write-Host "    npm run package        # Build executable" -ForegroundColor White
+Write-Host "    npm start              # Run wmux (dev mode)" -ForegroundColor White
+Write-Host "    npm run make           # Build installer (.exe)" -ForegroundColor White
 Write-Host "    wmux --help            # CLI help" -ForegroundColor White
 Write-Host ""
