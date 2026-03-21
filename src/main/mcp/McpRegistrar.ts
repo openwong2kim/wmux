@@ -107,12 +107,16 @@ export class McpRegistrar {
 
   private getMcpScriptPath(): string | null {
     if (app.isPackaged) {
-      const resourcePath = path.join(process.resourcesPath, 'mcp', 'mcp', 'index.js');
-      if (fs.existsSync(resourcePath)) return resourcePath;
+      // Production: bundled single-file in resources/mcp-bundle/
+      const bundlePath = path.join(process.resourcesPath, 'mcp-bundle', 'index.js');
+      if (fs.existsSync(bundlePath)) return bundlePath;
+      // Fallback: old layout (resources/mcp/mcp/index.js)
+      const legacyPath = path.join(process.resourcesPath, 'mcp', 'mcp', 'index.js');
+      if (fs.existsSync(legacyPath)) return legacyPath;
       return null;
     }
 
-    // In dev mode, app.getAppPath() returns .vite/build, so walk up to project root
+    // Dev mode: use the unbundled tsc output (has access to node_modules)
     const appPath = app.getAppPath();
 
     const devPath = path.join(appPath, 'dist', 'mcp', 'mcp', 'index.js');

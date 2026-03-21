@@ -12,7 +12,7 @@
     "forge-publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx .",
     "build:cli": "tsc -p tsconfig.cli.json",
-    "build:mcp": "tsc -p tsconfig.mcp.json",
+    "build:mcp": "tsc -p tsconfig.mcp.json && esbuild dist/mcp/mcp/index.js --bundle --platform=node --outfile=dist/mcp-bundle/index.js --external:electron",
     "cli": "node dist/cli/cli/index.js",
     "mcp": "node dist/mcp/mcp/index.js",
     "prepublishOnly": "npm run build:cli && npm run build:mcp"

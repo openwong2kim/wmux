@@ -24,7 +24,7 @@ const config: ForgeConfig = {
       unpack: '**/node_modules/node-pty/**',
     },
     icon: './assets/icon',
-    extraResource: ['./dist/mcp'],
+    extraResource: ['./dist/mcp-bundle'],
   },
   hooks: {
     postPackage: async (_config, packageResult) => {
