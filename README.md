@@ -14,7 +14,7 @@ Inspired by [cmux](https://github.com/manaflow-ai/cmux) (macOS), wmux brings the
 
 ## Install
 
-**Download:** [wmux-1.0.2 Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
+**Download:** [wmux-1.1.1 Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
 
 Or build from source:
 ```powershell
