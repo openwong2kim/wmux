@@ -150,7 +150,12 @@ if (-not $hasVCTools) {
         # Build Tools not installed — fresh install via winget
         Write-Host "  [*] Visual Studio Build Tools not found — installing via winget..." -ForegroundColor Yellow
         if (Get-Command winget -ErrorAction SilentlyContinue) {
-            Invoke-NativeCommand winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+            # Cannot use Invoke-NativeCommand here: --override requires its value
+            # as a single quoted string, which splatting breaks apart
+            $backupEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
+            winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" 2>&1 | Out-Null
+            $ErrorActionPreference = $backupEAP
+            if ($LASTEXITCODE -ne 0) { throw "winget install Build Tools failed with exit code $LASTEXITCODE" }
             Write-Host "  [*] Visual Studio Build Tools installed" -ForegroundColor Green
         } else {
             Write-Host "  [!] Visual Studio Build Tools required. Install 'Desktop development with C++' workload." -ForegroundColor Red
