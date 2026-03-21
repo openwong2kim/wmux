@@ -9,14 +9,15 @@ const RETRY_COUNT = 3;
 const RETRY_DELAY_MS = 1000;
 
 function readAuthToken(): string | undefined {
-  // Env var takes priority (when running inside wmux terminal)
-  if (process.env.WMUX_AUTH_TOKEN) return process.env.WMUX_AUTH_TOKEN;
-  // File fallback (when spawned by Claude Code as MCP server)
+  // File takes priority — always read the latest token from disk.
+  // Env vars may be stale (Claude Code caches them across MCP restarts).
   try {
-    return fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
-  } catch {
-    return undefined;
-  }
+    const fromFile = fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
+    if (fromFile) return fromFile;
+  } catch { /* file doesn't exist */ }
+  // Env var fallback (when running inside wmux terminal)
+  if (process.env.WMUX_AUTH_TOKEN) return process.env.WMUX_AUTH_TOKEN;
+  return undefined;
 }
 
 function attemptRpc(
