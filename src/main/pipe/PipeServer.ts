@@ -1,4 +1,5 @@
 import * as net from 'net';
+import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { getPipeName, getAuthTokenPath } from '../../shared/constants';
 import type { RpcRequest } from '../../shared/rpc';
@@ -26,18 +27,14 @@ export class PipeServer {
   }
 
   private loadOrCreateToken(): string {
-    // In dev mode (Vite hot-reload), reuse existing token so MCP clients
-    // don't get "unauthorized" after every source change rebuild.
-    // In production (packaged app), always generate a fresh token per launch.
-    // Use app.isPackaged instead of NODE_ENV — Vite may replace NODE_ENV at bundle time.
+    // Reuse existing token if file exists. This prevents token mismatch when
+    // Vite dev server restarts the app (MCP client still holds previous token).
+    // In production, unregister() deletes the token file on shutdown, so
+    // the next launch naturally generates a fresh token.
     try {
-      const { app } = require('electron');
-      if (!app.isPackaged) {
-        const fs = require('fs');
-        const existing = fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
-        if (existing && existing.length > 0) return existing;
-      }
-    } catch { /* file doesn't exist yet or app not ready */ }
+      const existing = fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
+      if (existing) return existing;
+    } catch { /* file doesn't exist yet */ }
     return crypto.randomUUID();
   }
 
