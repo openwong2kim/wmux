@@ -298,7 +298,7 @@ if (-not $hasVCTools) {
 # Install
 # ---------------------------------------------------------------------------
 
-Write-Host "  [1/4] Checking latest release..." -ForegroundColor DarkGray
+Write-Host "  [1/5] Checking latest release..." -ForegroundColor DarkGray
 
 try {
     $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" `
@@ -307,17 +307,17 @@ try {
     $version = $release.tag_name
     # Validate version format
     if ($version -notmatch '^v?\d+\.\d+') {
-        Write-Host "  [1/4] Unexpected version format '$version', using main branch" -ForegroundColor Yellow
+        Write-Host "  [1/5] Unexpected version format '$version', using main branch" -ForegroundColor Yellow
         $version = "main"
     } else {
-        Write-Host "  [1/4] Latest version: $version" -ForegroundColor Green
+        Write-Host "  [1/5] Latest version: $version" -ForegroundColor Green
     }
 } catch {
     $version = "main"
-    Write-Host "  [1/4] No releases found, installing from main branch ($($_.Exception.Message))" -ForegroundColor Yellow
+    Write-Host "  [1/5] No releases found, installing from main branch ($($_.Exception.Message))" -ForegroundColor Yellow
 }
 
-Write-Host "  [2/4] Cloning repository..." -ForegroundColor DarkGray
+Write-Host "  [2/5] Cloning repository..." -ForegroundColor DarkGray
 
 if (Test-Path $installDir) {
     # Check for junction/symlink before removing
@@ -347,9 +347,9 @@ if (-not (Test-Path "$installDir\package.json")) {
     return
 }
 
-Write-Host "  [2/4] Cloned to $installDir" -ForegroundColor Green
+Write-Host "  [2/5] Cloned to $installDir" -ForegroundColor Green
 
-Write-Host "  [3/4] Installing dependencies..." -ForegroundColor DarkGray
+Write-Host "  [3/5] Installing dependencies..." -ForegroundColor DarkGray
 
 Push-Location $installDir
 try {
@@ -360,6 +360,11 @@ try {
 
     # Build CLI
     Invoke-NativeCommand { npm run build:cli }
+
+    # Build Electron app (.exe installer)
+    Write-Host "  [4/5] Building app..." -ForegroundColor DarkGray
+    Invoke-NativeCommand { npm run make }
+    Write-Host "  [4/5] App built" -ForegroundColor Green
 
     # Link CLI globally — may fail without admin/Developer Mode (symlink permissions).
     # Falls back to a .cmd wrapper + user PATH entry.
@@ -389,19 +394,19 @@ try {
     Pop-Location
 }
 
-Write-Host "  [3/4] Dependencies installed" -ForegroundColor Green
+Write-Host "  [3/5] Dependencies installed" -ForegroundColor Green
 
 # ---------------------------------------------------------------------------
 # Verify
 # ---------------------------------------------------------------------------
 
-Write-Host "  [4/4] Verifying installation..." -ForegroundColor DarkGray
+Write-Host "  [5/5] Verifying installation..." -ForegroundColor DarkGray
 
 $wmuxPath = (Get-Command wmux -ErrorAction SilentlyContinue).Source
 if ($wmuxPath) {
-    Write-Host "  [4/4] wmux CLI available at: $wmuxPath" -ForegroundColor Green
+    Write-Host "  [5/5] wmux CLI available at: $wmuxPath" -ForegroundColor Green
 } else {
-    Write-Host "  [4/4] CLI linked (restart terminal to use 'wmux' command)" -ForegroundColor Yellow
+    Write-Host "  [5/5] CLI linked (restart terminal to use 'wmux' command)" -ForegroundColor Yellow
 }
 
 Write-Host ""
