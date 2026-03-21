@@ -53,16 +53,13 @@ export class McpRegistrar {
         return;
       }
 
-      // Use absolute node path to avoid PATH resolution issues
       // Use 'node' instead of process.execPath, which returns electron.exe at runtime
-      // Bake WMUX_SOCKET_PATH into the MCP entry so the subprocess doesn't need to
-      // derive the pipe name (which requires os.userInfo() or USERNAME env var)
+      // Note: do NOT set env field — Claude Code may replace (not merge) the
+      // subprocess environment, breaking PATH/USERPROFILE. getPipeName() uses
+      // os.userInfo().username which works without env vars.
       const mcpEntry = {
         command: 'node',
         args: [mcpScript],
-        env: {
-          WMUX_SOCKET_PATH: getPipeName(),
-        },
       };
 
       this.registerInClaudeJson(mcpEntry);
