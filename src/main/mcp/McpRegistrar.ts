@@ -72,16 +72,11 @@ export class McpRegistrar {
   }
 
   /**
-   * Remove wmux MCP server entry and auth token file.
+   * Remove wmux MCP server entry from Claude Code config.
+   * Token file is intentionally NOT deleted — it is reused across restarts
+   * (dev mode: Vite hot-reload, production: overwritten by next register()).
    */
   unregister(): void {
-    // Always clean up auth token file
-    try {
-      if (fs.existsSync(this.authTokenPath)) {
-        fs.unlinkSync(this.authTokenPath);
-      }
-    } catch { /* ignore */ }
-
     if (!this.registered) return;
 
     try {

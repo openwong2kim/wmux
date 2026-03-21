@@ -24,17 +24,20 @@ export class PipeServer {
     // Reuse existing token from file if available — prevents token mismatch
     // when Vite dev server restarts the app (MCP client may still hold old token)
     this.authToken = this.loadOrCreateToken();
+    console.log(`[PipeServer] Auth token: ${this.authToken} (from ${this.tokenSource})`);
   }
 
+  private tokenSource = 'new';
   private loadOrCreateToken(): string {
-    // Reuse existing token if file exists. This prevents token mismatch when
-    // Vite dev server restarts the app (MCP client still holds previous token).
-    // In production, unregister() deletes the token file on shutdown, so
-    // the next launch naturally generates a fresh token.
     try {
-      const existing = fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
-      if (existing) return existing;
+      const tokenPath = getAuthTokenPath();
+      const existing = fs.readFileSync(tokenPath, 'utf8').trim();
+      if (existing) {
+        this.tokenSource = `file:${tokenPath}`;
+        return existing;
+      }
     } catch { /* file doesn't exist yet */ }
+    this.tokenSource = 'generated';
     return crypto.randomUUID();
   }
 
@@ -207,6 +210,7 @@ export class PipeServer {
     // Authenticate first: reject unauthenticated requests before consuming rate limit budget.
     // This prevents unauthenticated attackers from exhausting rate limits to DoS legitimate clients.
     if (request.token !== this.authToken) {
+      console.warn(`[PipeServer] AUTH MISMATCH: got=${request.token?.slice(0,8)}... expected=${this.authToken.slice(0,8)}...`);
       const unauthorizedResponse = JSON.stringify({
         id: request.id,
         ok: false,
