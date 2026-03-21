@@ -10,6 +10,36 @@
 
 $ErrorActionPreference = 'Stop'
 
+# Helper: run native commands safely under Stop mode
+# stderr from native executables (git, npm, winget) contains progress messages,
+# which PowerShell converts to ErrorRecord objects. Under $ErrorActionPreference='Stop',
+# these non-fatal messages would throw terminating exceptions. This wrapper:
+#   1. Temporarily sets ErrorActionPreference to 'Continue' (prevents stderr→exception)
+#   2. Filters out stderr ErrorRecord objects (progress noise)
+#   3. Checks $LASTEXITCODE for real failures
+function Invoke-NativeCommand {
+    param(
+        [Parameter(Mandatory)][string]$Command,
+        [Parameter(ValueFromRemainingArguments)][string[]]$Arguments
+    )
+    $backupEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        & $Command @Arguments 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                # stderr progress/info — silently discard
+            } else {
+                $_  # pass stdout through
+            }
+        } | Out-Null
+        if ($LASTEXITCODE -ne 0) {
+            throw "'$Command $Arguments' failed with exit code $LASTEXITCODE"
+        }
+    } finally {
+        $ErrorActionPreference = $backupEAP
+    }
+}
+
 $repo = 'openwong2kim/wmux'
 $installDir = "$env:LOCALAPPDATA\wmux"
 
@@ -35,7 +65,7 @@ if ($major -lt 18) {
 if (-not (Get-Command python -ErrorAction SilentlyContinue) -or -not (& python --version 2>&1 | Select-String 'Python 3')) {
     Write-Host "  [*] Python 3 not found — installing via winget..." -ForegroundColor Yellow
     if (Get-Command winget -ErrorAction SilentlyContinue) {
-        winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent 2>&1 | Out-Null
+        Invoke-NativeCommand winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent
         $env:Path = "$env:LOCALAPPDATA\Programs\Python\Python312;$env:LOCALAPPDATA\Programs\Python\Python312\Scripts;$env:Path"
         Write-Host "  [*] Python 3.12 installed" -ForegroundColor Green
     } else {
@@ -54,7 +84,7 @@ if (Test-Path $vsWhere) {
 if (-not $hasBuildTools) {
     Write-Host "  [*] Visual Studio Build Tools not found — installing via winget..." -ForegroundColor Yellow
     if (Get-Command winget -ErrorAction SilentlyContinue) {
-        winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" 2>&1 | Out-Null
+        Invoke-NativeCommand winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
         # Install VSSetup module for node-gyp detection
         [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
         Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
@@ -87,9 +117,9 @@ if (Test-Path $installDir) {
 }
 
 if ($version -eq "main") {
-    git clone --depth 1 "https://github.com/$repo.git" $installDir 2>&1 | Out-Null
+    Invoke-NativeCommand git clone --depth 1 "https://github.com/$repo.git" $installDir
 } else {
-    git clone --depth 1 --branch $version "https://github.com/$repo.git" $installDir 2>&1 | Out-Null
+    Invoke-NativeCommand git clone --depth 1 --branch $version "https://github.com/$repo.git" $installDir
 }
 
 if (-not (Test-Path "$installDir\package.json")) {
@@ -103,16 +133,16 @@ Write-Host "  [3/4] Installing dependencies..." -ForegroundColor DarkGray
 
 Push-Location $installDir
 try {
-    npm install --no-audit --no-fund 2>&1 | Out-Null
+    Invoke-NativeCommand npm install --no-audit --no-fund
 
     # Rebuild native modules for Electron
-    npx electron-rebuild -f -w node-pty 2>&1 | Out-Null
+    Invoke-NativeCommand npx electron-rebuild -f -w node-pty
 
     # Build CLI
-    npm run build:cli 2>&1 | Out-Null
+    Invoke-NativeCommand npm run build:cli
 
     # Link CLI globally
-    npm link 2>&1 | Out-Null
+    Invoke-NativeCommand npm link
 } finally {
     Pop-Location
 }
