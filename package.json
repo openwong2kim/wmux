@@ -3,8 +3,9 @@
   "productName": "wmux",
   "version": "1.0.1",
   "description": "Windows terminal multiplexer with MCP server for AI agents - run multiple CLI sessions in parallel, control via Claude Code and other AI tools",
-  "main": "dist/mcp/mcp/index.js",
+  "main": ".vite/build/index.js",
   "scripts": {
+    "postinstall": "node scripts/fix-node-pty.js",
     "start": "npm run build:mcp && electron-forge start",
     "package": "npm run build:mcp && electron-forge package",
     "make": "npm run build:mcp && electron-forge make",
