@@ -76,25 +76,45 @@ if (-not (Get-Command python -ErrorAction SilentlyContinue) -or -not (& python -
 
 # Check and install Visual Studio Build Tools (required by node-gyp for C++ compilation)
 $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+$hasVCTools = $false
 $hasBuildTools = $false
 if (Test-Path $vsWhere) {
-    $vsInstalls = & $vsWhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json 2>$null | ConvertFrom-Json
-    if ($vsInstalls.Count -gt 0) { $hasBuildTools = $true }
+    # Check if any VS product has VCTools
+    $vsWithVC = & $vsWhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json 2>$null | ConvertFrom-Json
+    if ($vsWithVC.Count -gt 0) { $hasVCTools = $true }
+    # Check if Build Tools is installed at all (any product)
+    $vsAny = & $vsWhere -products * -format json 2>$null | ConvertFrom-Json
+    if ($vsAny.Count -gt 0) { $hasBuildTools = $true }
 }
-if (-not $hasBuildTools) {
-    Write-Host "  [*] Visual Studio Build Tools not found — installing via winget..." -ForegroundColor Yellow
-    if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Invoke-NativeCommand winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
-        # Install VSSetup module for node-gyp detection
-        [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
-        Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
-        Install-Module VSSetup -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue | Out-Null
-        Write-Host "  [*] Visual Studio Build Tools installed" -ForegroundColor Green
+if (-not $hasVCTools) {
+    if ($hasBuildTools) {
+        # Build Tools installed but VCTools workload missing — modify existing installation
+        Write-Host "  [*] Build Tools found but C++ workload missing — adding VCTools..." -ForegroundColor Yellow
+        $vsInstaller = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
+        if (Test-Path $vsInstaller) {
+            Invoke-NativeCommand $vsInstaller modify --productId Microsoft.VisualStudio.Product.BuildTools --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --wait --passive --norestart
+            Write-Host "  [*] C++ workload added to Build Tools" -ForegroundColor Green
+        } else {
+            Write-Host "  [!] VS Installer not found. Please add 'Desktop development with C++' workload manually." -ForegroundColor Red
+            Write-Host "       Open Visual Studio Installer → Modify → check 'Desktop development with C++'" -ForegroundColor Red
+            exit 1
+        }
     } else {
-        Write-Host "  [!] Visual Studio Build Tools required. Install 'Desktop development with C++' workload." -ForegroundColor Red
-        Write-Host "       https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Red
-        exit 1
+        # Build Tools not installed at all — fresh install via winget
+        Write-Host "  [*] Visual Studio Build Tools not found — installing via winget..." -ForegroundColor Yellow
+        if (Get-Command winget -ErrorAction SilentlyContinue) {
+            Invoke-NativeCommand winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended"
+            Write-Host "  [*] Visual Studio Build Tools installed" -ForegroundColor Green
+        } else {
+            Write-Host "  [!] Visual Studio Build Tools required. Install 'Desktop development with C++' workload." -ForegroundColor Red
+            Write-Host "       https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Red
+            exit 1
+        }
     }
+    # Install VSSetup module for node-gyp detection
+    [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+    Install-PackageProvider -Name NuGet -MinimumVersion 2.8.5.201 -Force -ErrorAction SilentlyContinue | Out-Null
+    Install-Module VSSetup -Scope CurrentUser -Force -AllowClobber -ErrorAction SilentlyContinue | Out-Null
 }
 
 Write-Host "  [1/4] Checking latest release..." -ForegroundColor DarkGray
