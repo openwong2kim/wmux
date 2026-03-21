@@ -14,6 +14,7 @@ export function registerMetadataHandlers(
   getWindow: () => BrowserWindow | null,
 ): () => void {
   // Handle metadata request from renderer
+  ipcMain.removeHandler(IPC.METADATA_REQUEST);
   ipcMain.handle(IPC.METADATA_REQUEST, async (_event, ptyId: string) => {
     const cwd = cwdMap.get(ptyId);
     return collector.collect(cwd);
@@ -23,6 +24,7 @@ export function registerMetadataHandlers(
   const pollingInterval = setInterval(async () => {
     const win = getWindow();
     if (!win || win.isDestroyed()) return;
+    if (win.webContents.isLoading()) return;
 
     for (const [ptyId] of cwdMap) {
       const instance = ptyManager.get(ptyId);
@@ -58,4 +60,8 @@ export function registerMetadataHandlers(
 
 export function updateCwd(ptyId: string, cwd: string): void {
   cwdMap.set(ptyId, cwd);
+}
+
+export function removeCwd(ptyId: string): void {
+  cwdMap.delete(ptyId);
 }

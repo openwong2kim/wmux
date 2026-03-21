@@ -13,7 +13,19 @@ export interface FileEntry {
 const watchers = new Map<string, fs.FSWatcher>();
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
 
-export function registerFsHandlers(): void {
+export function closeAllWatchers(): void {
+  for (const watcher of watchers.values()) {
+    watcher.close();
+  }
+  watchers.clear();
+  for (const timer of debounceTimers.values()) {
+    clearTimeout(timer);
+  }
+  debounceTimers.clear();
+}
+
+export function registerFsHandlers(): () => void {
+  ipcMain.removeHandler(IPC.FS_READ_DIR);
   ipcMain.handle(IPC.FS_READ_DIR, async (_event, dirPath: string): Promise<FileEntry[]> => {
     // 보안: 경로 정규화 및 기본 검증
     if (!dirPath || typeof dirPath !== 'string') return [];
@@ -48,6 +60,7 @@ export function registerFsHandlers(): void {
     }
   });
 
+  ipcMain.removeHandler(IPC.FS_READ_FILE);
   ipcMain.handle(IPC.FS_READ_FILE, async (_event, filePath: string): Promise<string | null> => {
     if (!filePath || typeof filePath !== 'string') return null;
     const resolved = path.resolve(filePath);
@@ -60,6 +73,7 @@ export function registerFsHandlers(): void {
     }
   });
 
+  ipcMain.removeHandler(IPC.FS_WATCH);
   ipcMain.handle(IPC.FS_WATCH, (_event, dirPath: string) => {
     if (!dirPath || typeof dirPath !== 'string') return false;
     const resolved = path.resolve(dirPath);
@@ -98,6 +112,7 @@ export function registerFsHandlers(): void {
     }
   });
 
+  ipcMain.removeHandler(IPC.FS_UNWATCH);
   ipcMain.handle(IPC.FS_UNWATCH, (_event, dirPath: string) => {
     if (!dirPath || typeof dirPath !== 'string') return;
     const resolved = path.resolve(dirPath);
@@ -112,4 +127,12 @@ export function registerFsHandlers(): void {
       debounceTimers.delete(resolved);
     }
   });
+
+  return () => {
+    ipcMain.removeHandler(IPC.FS_READ_DIR);
+    ipcMain.removeHandler(IPC.FS_READ_FILE);
+    ipcMain.removeHandler(IPC.FS_WATCH);
+    ipcMain.removeHandler(IPC.FS_UNWATCH);
+    closeAllWatchers();
+  };
 }

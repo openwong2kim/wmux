@@ -15,19 +15,26 @@ export function registerAllHandlers(
   ptyBridge: PTYBridge,
   getWindow: () => BrowserWindow | null,
 ): () => void {
-  registerPTYHandlers(ptyManager, ptyBridge);
-  registerSessionHandlers();
-  registerShellHandlers();
+  const cleanupPty = registerPTYHandlers(ptyManager, ptyBridge);
+  const cleanupSession = registerSessionHandlers();
+  const cleanupShell = registerShellHandlers();
   const cleanupMetadata = registerMetadataHandlers(ptyManager, getWindow);
   registerClipboardHandlers();
-  registerFsHandlers();
+  const cleanupFs = registerFsHandlers();
 
   // Sync toast setting from renderer
-  ipcMain.on(IPC.TOAST_ENABLED, (_event, enabled: boolean) => {
+  const onToastEnabled = (_event: Electron.IpcMainEvent, enabled: boolean): void => {
     toastManager.enabled = enabled;
-  });
+  };
+  ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
+  ipcMain.on(IPC.TOAST_ENABLED, onToastEnabled);
 
   return () => {
+    cleanupPty();
+    cleanupSession();
+    cleanupShell();
     cleanupMetadata();
+    cleanupFs();
+    ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
   };
 }
