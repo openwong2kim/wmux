@@ -9,7 +9,7 @@
     "start": "npm run build:mcp && electron-forge start",
     "package": "npm run build:mcp && electron-forge package",
     "make": "npm run build:mcp && electron-forge make",
-    "publish": "electron-forge publish",
+    "forge-publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx .",
     "build:cli": "tsc -p tsconfig.cli.json",
     "build:mcp": "tsc -p tsconfig.mcp.json",
