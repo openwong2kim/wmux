@@ -80,7 +80,15 @@ Write-Host "  wmux installer" -ForegroundColor Cyan
 Write-Host "  AI Agent Terminal for Windows" -ForegroundColor DarkGray
 Write-Host ""
 
-# Check prerequisites
+# --- Prerequisites ---
+
+# Check git
+if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
+    Write-Host "  [!] Git is required. Install from https://git-scm.com" -ForegroundColor Red
+    exit 1
+}
+
+# Check Node.js
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     Write-Host "  [!] Node.js is required. Install from https://nodejs.org" -ForegroundColor Red
     exit 1
@@ -103,10 +111,23 @@ if (-not $hasPython3) {
     Write-Host "  [*] Python 3 not found — installing via winget..." -ForegroundColor Yellow
     if (Get-Command winget -ErrorAction SilentlyContinue) {
         Invoke-NativeCommand { winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent }
-        $env:Path = "$env:LOCALAPPDATA\Programs\Python\Python312;$env:LOCALAPPDATA\Programs\Python\Python312\Scripts;$env:Path"
-        Write-Host "  [*] Python 3.12 installed" -ForegroundColor Green
+        # Discover actual install path dynamically instead of hardcoding Python312
+        $pyPath = Get-ChildItem "$env:LOCALAPPDATA\Programs\Python" -Directory -ErrorAction SilentlyContinue |
+            Where-Object { $_.Name -match '^Python3' } |
+            Sort-Object Name -Descending |
+            Select-Object -First 1
+        if ($pyPath) {
+            $env:Path = "$($pyPath.FullName);$($pyPath.FullName)\Scripts;$env:Path"
+            Write-Host "  [*] Python installed ($($pyPath.Name))" -ForegroundColor Green
+        } else {
+            Write-Host "  [!] Python was installed but could not locate the install directory" -ForegroundColor Yellow
+            Write-Host "       You may need to restart your terminal and re-run the installer" -ForegroundColor Yellow
+            exit 1
+        }
     } else {
-        Write-Host "  [!] Python 3 is required for native modules. Install from https://www.python.org" -ForegroundColor Red
+        Write-Host "  [!] Python 3 is required for native modules." -ForegroundColor Red
+        Write-Host "       Option 1: Install winget first — https://aka.ms/getwinget" -ForegroundColor Red
+        Write-Host "       Option 2: Install Python manually — https://www.python.org" -ForegroundColor Red
         exit 1
     }
 }
@@ -150,12 +171,16 @@ if (-not $hasVCTools) {
             Invoke-NativeCommand { winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" }
             Write-Host "  [*] Visual Studio Build Tools installed" -ForegroundColor Green
         } else {
-            Write-Host "  [!] Visual Studio Build Tools required. Install 'Desktop development with C++' workload." -ForegroundColor Red
-            Write-Host "       https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Red
+            Write-Host "  [!] Visual Studio Build Tools required." -ForegroundColor Red
+            Write-Host "       Option 1: Install winget first — https://aka.ms/getwinget" -ForegroundColor Red
+            Write-Host "       Option 2: Install manually — https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Red
+            Write-Host "                 Select 'Desktop development with C++' workload" -ForegroundColor Red
             exit 1
         }
     }
 }
+
+# --- Install ---
 
 Write-Host "  [1/4] Checking latest release..." -ForegroundColor DarkGray
 
@@ -200,8 +225,24 @@ try {
     # Build CLI
     Invoke-NativeCommand { npm run build:cli }
 
-    # Link CLI globally
-    Invoke-NativeCommand { npm link }
+    # Link CLI globally — may fail without admin/Developer Mode due to symlink permissions.
+    # Fall back to adding the bin directory to user PATH if npm link fails.
+    try {
+        Invoke-NativeCommand { npm link }
+    } catch {
+        Write-Host "  [*] npm link failed (likely needs admin rights) — adding to PATH instead" -ForegroundColor Yellow
+        $cliEntry = "$installDir\dist\cli\cli\index.js"
+        # Create a batch wrapper in the install dir
+        $wmuxCmd = "$installDir\wmux.cmd"
+        Set-Content -Path $wmuxCmd -Value "@echo off`r`nnode `"$cliEntry`" %*" -Encoding ASCII
+        # Add to user PATH persistently
+        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
+        if ($userPath -notlike "*$installDir*") {
+            [Environment]::SetEnvironmentVariable('Path', "$installDir;$userPath", 'User')
+            $env:Path = "$installDir;$env:Path"
+            Write-Host "  [*] Added $installDir to user PATH" -ForegroundColor Green
+        }
+    }
 } finally {
     Pop-Location
 }
