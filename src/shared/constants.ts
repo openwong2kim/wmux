@@ -46,10 +46,12 @@ export const IPC = {
 // Fixed name so MCP clients (e.g. Claude Code) can reconnect across wmux restarts
 export function getPipeName(): string {
   if (process.platform === 'win32') {
-    const username = process.env.USERNAME || 'default';
+    // Use os.userInfo() instead of process.env.USERNAME — env vars may not
+    // be inherited by MCP subprocesses spawned by Claude Code
+    const username = require('os').userInfo().username || 'default';
     return `\\\\.\\pipe\\wmux-${username}`;
   }
-  const home = process.env.HOME || '/tmp';
+  const home = require('os').homedir() || '/tmp';
   return `${home}/.wmux.sock`;
 }
 

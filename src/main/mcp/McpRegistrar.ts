@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
-import { getAuthTokenPath } from '../../shared/constants';
+import { getAuthTokenPath, getPipeName } from '../../shared/constants';
 
 /**
  * Registers/unregisters the wmux MCP server in Claude Code's config files
@@ -55,9 +55,14 @@ export class McpRegistrar {
 
       // Use absolute node path to avoid PATH resolution issues
       // Use 'node' instead of process.execPath, which returns electron.exe at runtime
+      // Bake WMUX_SOCKET_PATH into the MCP entry so the subprocess doesn't need to
+      // derive the pipe name (which requires os.userInfo() or USERNAME env var)
       const mcpEntry = {
         command: 'node',
         args: [mcpScript],
+        env: {
+          WMUX_SOCKET_PATH: getPipeName(),
+        },
       };
 
       this.registerInClaudeJson(mcpEntry);
