@@ -45,8 +45,12 @@ export const IPC = {
 // Named Pipe / Unix socket path for wmux API
 // Fixed name so MCP clients (e.g. Claude Code) can reconnect across wmux restarts
 export function getPipeName(): string {
-  if (process.platform === 'win32') return '\\\\.\\pipe\\wmux';
-  return '/tmp/wmux.sock';
+  if (process.platform === 'win32') {
+    const username = process.env.USERNAME || 'default';
+    return `\\\\.\\pipe\\wmux-${username}`;
+  }
+  const home = process.env.HOME || '/tmp';
+  return `${home}/.wmux.sock`;
 }
 
 // Environment variable names injected into PTY sessions

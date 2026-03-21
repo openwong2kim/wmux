@@ -13,6 +13,11 @@ const MAX_PTY_INSTANCES = 20;
 export class PTYManager {
   private instances = new Map<string, PTYInstance>();
   private nextId = 0;
+  private onDisposeCallback: ((ptyId: string) => void) | null = null;
+
+  onDispose(callback: (ptyId: string) => void): void {
+    this.onDisposeCallback = callback;
+  }
 
   create(options?: {
     shell?: string;
@@ -78,6 +83,7 @@ export class PTYManager {
     const instance = this.instances.get(id);
     if (instance) {
       try { instance.process.kill(); } catch { /* already dead */ }
+      this.onDisposeCallback?.(id);
       this.instances.delete(id);
     }
   }

@@ -4,6 +4,17 @@ import { sendToRenderer } from './_bridge';
 
 type GetWindow = () => BrowserWindow | null;
 
+const BLOCKED_SCHEMES = ['javascript:', 'data:', 'vbscript:', 'file:', 'blob:'];
+
+function validateUrl(url: string, method: string): void {
+  const normalized = url.trim().toLowerCase();
+  for (const scheme of BLOCKED_SCHEMES) {
+    if (normalized.startsWith(scheme)) {
+      throw new Error(`${method}: blocked URL scheme`);
+    }
+  }
+}
+
 /**
  * Registers browser.* RPC handlers.
  *
@@ -18,6 +29,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow): voi
    */
   router.register('browser.open', (params) => {
     const url = typeof params['url'] === 'string' ? params['url'] : undefined;
+    if (url) validateUrl(url, 'browser.open');
     return sendToRenderer(getWindow, 'browser.open', {
       ...(url && { url }),
     });
@@ -80,25 +92,11 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow): voi
     if (typeof params['code'] !== 'string' || params['code'].length === 0) {
       throw new Error('browser.eval: missing required param "code"');
     }
-    // Security: block patterns that could escape webview sandbox
+    // Security: code runs inside the webview's sandboxed renderer.
+    // contextIsolation: true and sandbox: true prevent access to Node.js APIs.
+    // The webview sandbox is the security boundary — a regex blocklist
+    // is trivially bypassable via string concatenation and gives false confidence.
     const code = params['code'];
-    const dangerousPatterns = [
-      /\brequire\s*\(/i,
-      /\bprocess\s*\./i,
-      /\b__dirname\b/i,
-      /\b__filename\b/i,
-      /\bchild_process\b/i,
-      /\bglobal\s*\.\s*process\b/i,
-      /\belectron\b/i,
-      /\beval\s*\(/i,
-      /\bFunction\s*\(/i,
-      /\bimport\s*\(/i,
-    ];
-    for (const pat of dangerousPatterns) {
-      if (pat.test(code)) {
-        throw new Error('browser.eval: code contains blocked pattern');
-      }
-    }
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     return sendToRenderer(getWindow, 'browser.eval', {
       code,
@@ -115,20 +113,10 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow): voi
     if (typeof params['url'] !== 'string' || params['url'].length === 0) {
       throw new Error('browser.navigate: missing required param "url"');
     }
-    // Security: block dangerous URL schemes
-    const url = params['url'];
-    const normalizedUrl = url.trim().toLowerCase();
-    if (
-      normalizedUrl.startsWith('javascript:') ||
-      normalizedUrl.startsWith('data:') ||
-      normalizedUrl.startsWith('vbscript:') ||
-      normalizedUrl.startsWith('file:')
-    ) {
-      throw new Error(`browser.navigate: blocked URL scheme`);
-    }
+    validateUrl(params['url'], 'browser.navigate');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     return sendToRenderer(getWindow, 'browser.navigate', {
-      url,
+      url: params['url'],
       ...(surfaceId && { surfaceId }),
     });
   });

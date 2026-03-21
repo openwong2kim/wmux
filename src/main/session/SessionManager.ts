@@ -34,7 +34,7 @@ export class SessionManager {
       // 2. Backup current session file (if it exists)
       if (fs.existsSync(this.filePath)) {
         try {
-          fs.copyFileSync(this.filePath, this.bakPath);
+          fs.renameSync(this.filePath, this.bakPath);
         } catch (bakErr) {
           console.warn('[SessionManager] Failed to create backup:', bakErr);
           // Continue — saving is more important than backing up
@@ -54,68 +54,49 @@ export class SessionManager {
     }
   }
 
-  load(): SessionData | null {
-    try {
-      let raw: string | null = null;
-
-      // Try primary file first
-      if (fs.existsSync(this.filePath)) {
-        raw = fs.readFileSync(this.filePath, 'utf-8');
-      }
-
-      // If primary file is missing or empty, try backup
-      if (!raw && fs.existsSync(this.bakPath)) {
-        console.warn('[SessionManager] Primary session file missing, trying backup...');
-        raw = fs.readFileSync(this.bakPath, 'utf-8');
-      }
-
-      if (!raw) return null;
-
-      // Guard against prototype pollution via JSON reviver
-      const parsed: unknown = JSON.parse(raw, (key, value) => {
-        if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
-        return value;
-      });
-
-      // Basic schema validation
-      if (
-        typeof parsed !== 'object' ||
-        parsed === null ||
-        !Array.isArray((parsed as Record<string, unknown>)['workspaces']) ||
-        typeof (parsed as Record<string, unknown>)['activeWorkspaceId'] !== 'string'
-      ) {
-        console.warn('[SessionManager] Session file failed schema validation — discarding.');
-        return null;
-      }
-
-      return parsed as SessionData;
-    } catch (err) {
-      console.error('[SessionManager] Failed to load session:', err);
-
-      // If primary file is corrupt, try backup as fallback
-      if (fs.existsSync(this.bakPath)) {
-        try {
-          console.warn('[SessionManager] Attempting recovery from backup...');
-          const bakRaw = fs.readFileSync(this.bakPath, 'utf-8');
-          const bakParsed: unknown = JSON.parse(bakRaw, (key, value) => {
-            if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
-            return value;
-          });
-          if (
-            typeof bakParsed === 'object' &&
-            bakParsed !== null &&
-            Array.isArray((bakParsed as Record<string, unknown>)['workspaces']) &&
-            typeof (bakParsed as Record<string, unknown>)['activeWorkspaceId'] === 'string'
-          ) {
-            console.warn('[SessionManager] Recovered session from backup.');
-            return bakParsed as SessionData;
-          }
-        } catch (bakErr) {
-          console.error('[SessionManager] Backup recovery also failed:', bakErr);
-        }
-      }
-
+  private validateSession(parsed: unknown): SessionData | null {
+    if (
+      typeof parsed !== 'object' ||
+      parsed === null ||
+      !Array.isArray((parsed as Record<string, unknown>)['workspaces']) ||
+      typeof (parsed as Record<string, unknown>)['activeWorkspaceId'] !== 'string'
+    ) {
       return null;
     }
+    return parsed as SessionData;
+  }
+
+  private parseSessionFile(filePath: string): SessionData | null {
+    if (!fs.existsSync(filePath)) return null;
+    const raw = fs.readFileSync(filePath, 'utf-8');
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw, (key, value) => {
+      if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+      return value;
+    });
+    return this.validateSession(parsed);
+  }
+
+  load(): SessionData | null {
+    try {
+      const result = this.parseSessionFile(this.filePath);
+      if (result) return result;
+    } catch (err) {
+      console.error('[SessionManager] Failed to load primary session:', err);
+    }
+
+    // Primary missing, empty, corrupt, or failed schema — try backup
+    try {
+      console.warn('[SessionManager] Trying backup...');
+      const result = this.parseSessionFile(this.bakPath);
+      if (result) {
+        console.warn('[SessionManager] Recovered session from backup.');
+        return result;
+      }
+    } catch (bakErr) {
+      console.error('[SessionManager] Backup recovery also failed:', bakErr);
+    }
+
+    return null;
   }
 }

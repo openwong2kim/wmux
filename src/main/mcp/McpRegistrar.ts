@@ -33,6 +33,18 @@ export class McpRegistrar {
     try {
       // Write auth token to file so MCP server can read it
       fs.writeFileSync(this.authTokenPath, authToken, { encoding: 'utf8', mode: 0o600 });
+      // On Windows, mode 0o600 is ignored. Use icacls to enforce owner-only access.
+      if (process.platform === 'win32') {
+        try {
+          const { execFileSync } = require('child_process');
+          execFileSync('icacls', [
+            this.authTokenPath, '/inheritance:r',
+            '/grant:r', `${process.env.USERNAME}:F`
+          ], { windowsHide: true });
+        } catch (aclErr) {
+          console.warn('[McpRegistrar] Could not set file ACL:', aclErr);
+        }
+      }
       console.log(`[McpRegistrar] Auth token written to ${this.authTokenPath}`);
 
       const mcpScript = this.getMcpScriptPath();

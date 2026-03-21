@@ -3,14 +3,13 @@ import { PTYManager } from './PTYManager';
 import { OscParser } from './OscParser';
 import { AgentDetector } from './AgentDetector';
 import { ActivityMonitor } from './ActivityMonitor';
-import { ToastManager } from '../notification/ToastManager';
+import { toastManager } from '../pipe/handlers/notify.rpc';
 import { IPC } from '../../shared/constants';
-import { updateCwd } from '../ipc/handlers/metadata.handler';
+import { updateCwd, removeCwd } from '../ipc/handlers/metadata.handler';
 
 export class PTYBridge {
   private oscParsers = new Map<string, OscParser>();
   private agentDetectors = new Map<string, AgentDetector>();
-  private toastManager = new ToastManager();
   private activityMonitor = new ActivityMonitor();
   private ptyCreatedAt = new Map<string, number>();
 
@@ -18,6 +17,7 @@ export class PTYBridge {
     private ptyManager: PTYManager,
     private getWindow: () => BrowserWindow | null,
   ) {
+    this.ptyManager.onDispose((ptyId) => this.cleanupInstance(ptyId));
     // Activity-based notification: fires when sustained output drops to idle
     this.activityMonitor.onActiveToIdle((ptyId) => {
       const win = this.getWindow();
@@ -28,7 +28,7 @@ export class PTYBridge {
         body: 'Terminal output stopped after active period',
       };
       win.webContents.send(IPC.NOTIFICATION, ptyId, notification);
-      this.toastManager.show(notification.title, notification.body);
+      toastManager.show(notification.title, notification.body);
     });
   }
 
@@ -42,12 +42,17 @@ export class PTYBridge {
     this.agentDetectors.delete(ptyId);
     this.ptyCreatedAt.delete(ptyId);
     this.activityMonitor.stop(ptyId);
+    removeCwd(ptyId);
     this.ptyManager.remove(ptyId);
   }
 
   setupDataForwarding(ptyId: string): void {
     const instance = this.ptyManager.get(ptyId);
     if (!instance) return;
+    if (this.oscParsers.has(ptyId)) {
+      console.warn(`[PTYBridge] setupDataForwarding already active for ${ptyId} — skipping`);
+      return;
+    }
 
     this.ptyCreatedAt.set(ptyId, Date.now());
     this.activityMonitor.start(ptyId);
@@ -74,7 +79,7 @@ export class PTYBridge {
         case 99: {
           const notification = { type: 'info' as const, title: 'Terminal', body: event.data };
           win.webContents.send(IPC.NOTIFICATION, ptyId, notification);
-          this.toastManager.show(notification.title, notification.body);
+          toastManager.show(notification.title, notification.body);
           break;
         }
         case 777: {
@@ -83,7 +88,7 @@ export class PTYBridge {
           const body = parts.slice(2).join(';') || '';
           const notification = { type: 'info' as const, title, body };
           win.webContents.send(IPC.NOTIFICATION, ptyId, notification);
-          this.toastManager.show(title, body);
+          toastManager.show(title, body);
           break;
         }
       }
@@ -157,7 +162,7 @@ export class PTYBridge {
             body: `Exit code ${exitCode} after ${seconds}s`,
           };
           win.webContents.send(IPC.NOTIFICATION, ptyId, notification);
-          this.toastManager.show(notification.title, notification.body);
+          toastManager.show(notification.title, notification.body);
         }
       }
       this.cleanupInstance(ptyId);
