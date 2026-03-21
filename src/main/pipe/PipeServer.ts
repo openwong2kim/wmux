@@ -28,12 +28,12 @@ export class PipeServer {
   }
 
   start(): void {
-    if (this.server) {
-      return;
-    }
-
+    if (this.server) return;
     this.retryCount = 0;
+    this.startInternal();
+  }
 
+  private startInternal(): void {
     this.server = net.createServer((socket) => {
       this.connectedSockets.add(socket);
       socket.on('close', () => {
@@ -52,17 +52,16 @@ export class PipeServer {
           console.error(
             `[PipeServer] EADDRINUSE — exceeded max retries (${PipeServer.MAX_RETRIES}). Giving up.`,
           );
+          this.server = null;
           return;
         }
         console.warn(
           `[PipeServer] EADDRINUSE — retry ${this.retryCount}/${PipeServer.MAX_RETRIES} in 1s...`,
         );
-        setTimeout(() => {
-          if (this.server) {
-            this.server.close();
-            this.server.listen(getPipeName());
-          }
-        }, 1000);
+        this.server!.removeAllListeners();
+        this.server!.close();
+        this.server = null;
+        setTimeout(() => this.startInternal(), 1000);
       } else {
         console.error('[PipeServer] Server error:', err);
       }
@@ -74,6 +73,7 @@ export class PipeServer {
       try { require('fs').unlinkSync(pipeName); } catch {}
     }
     this.server.listen(pipeName, () => {
+      this.retryCount = 0;
       console.log(`[PipeServer] Listening on ${pipeName}`);
     });
   }
