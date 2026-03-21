@@ -10,23 +10,21 @@
 
 $ErrorActionPreference = 'Stop'
 
-# Helper: run native commands safely under Stop mode
+# Helper: run native commands safely under Stop mode via ScriptBlock
+# Accepts a ScriptBlock so callers keep full control over quoting and arguments.
 # stderr from native executables (git, npm, winget) contains progress messages,
 # which PowerShell converts to ErrorRecord objects. Under $ErrorActionPreference='Stop',
 # these non-fatal messages would throw terminating exceptions. This wrapper:
 #   1. Temporarily sets ErrorActionPreference to 'Continue' (prevents stderr→exception)
-#   2. Separates stderr (info/progress) from real failures via $LASTEXITCODE
-#   3. Logs stderr lines as warnings so real errors are still visible
+#   2. Collects stderr lines and includes them in the error on failure
+#   3. Checks $LASTEXITCODE for real failures
 function Invoke-NativeCommand {
-    param(
-        [Parameter(Mandatory)][string]$Command,
-        [Parameter(ValueFromRemainingArguments)][string[]]$Arguments
-    )
+    param([Parameter(Mandatory)][ScriptBlock]$ScriptBlock)
     $backupEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
         $stderrLines = @()
-        & $Command @Arguments 2>&1 | ForEach-Object {
+        & $ScriptBlock 2>&1 | ForEach-Object {
             if ($_ -is [System.Management.Automation.ErrorRecord]) {
                 $stderrLines += $_.ToString()
             } else {
@@ -35,21 +33,20 @@ function Invoke-NativeCommand {
         } | Out-Null
         if ($LASTEXITCODE -ne 0) {
             $stderrMsg = if ($stderrLines.Count -gt 0) { "`n" + ($stderrLines -join "`n") } else { "" }
-            $argStr = if ($Arguments) { $Arguments -join ' ' } else { "" }
-            throw "'$Command $argStr' failed with exit code $LASTEXITCODE$stderrMsg"
+            throw "Command failed with exit code $LASTEXITCODE$stderrMsg"
         }
     } finally {
         $ErrorActionPreference = $backupEAP
     }
 }
 
-# Helper: safely get version string from native command under Stop mode
-function Get-NativeVersion {
-    param([string]$Command, [string[]]$Arguments)
+# Helper: safely get output from native command under Stop mode
+function Get-NativeOutput {
+    param([Parameter(Mandatory)][ScriptBlock]$ScriptBlock)
     $backupEAP = $ErrorActionPreference
     $ErrorActionPreference = 'Continue'
     try {
-        $output = & $Command @Arguments 2>&1 | ForEach-Object {
+        $output = & $ScriptBlock 2>&1 | ForEach-Object {
             if ($_ -is [System.Management.Automation.ErrorRecord]) { } else { $_ }
         }
         return ($output | Out-String).Trim()
@@ -89,7 +86,7 @@ if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
     exit 1
 }
 
-$nodeVersion = (Get-NativeVersion node --version) -replace 'v', ''
+$nodeVersion = (Get-NativeOutput { node --version }) -replace 'v', ''
 $major = [int]($nodeVersion.Split('.')[0])
 if ($major -lt 18) {
     Write-Host "  [!] Node.js 18+ required (found v$nodeVersion)" -ForegroundColor Red
@@ -99,13 +96,13 @@ if ($major -lt 18) {
 # Check and install Python (required by node-gyp for native modules)
 $hasPython3 = $false
 if (Get-Command python -ErrorAction SilentlyContinue) {
-    $pyVer = Get-NativeVersion python --version
+    $pyVer = Get-NativeOutput { python --version }
     if ($pyVer -match 'Python 3') { $hasPython3 = $true }
 }
 if (-not $hasPython3) {
     Write-Host "  [*] Python 3 not found — installing via winget..." -ForegroundColor Yellow
     if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Invoke-NativeCommand winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent
+        Invoke-NativeCommand { winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent }
         $env:Path = "$env:LOCALAPPDATA\Programs\Python\Python312;$env:LOCALAPPDATA\Programs\Python\Python312\Scripts;$env:Path"
         Write-Host "  [*] Python 3.12 installed" -ForegroundColor Green
     } else {
@@ -139,7 +136,7 @@ if (-not $hasVCTools) {
         Write-Host "  [*] Build Tools found but C++ workload missing — adding VCTools..." -ForegroundColor Yellow
         $vsInstaller = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
         if (Test-Path $vsInstaller) {
-            Invoke-NativeCommand $vsInstaller modify --installPath $buildToolsInstallPath --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --wait --passive --norestart
+            Invoke-NativeCommand { & $vsInstaller modify --installPath $buildToolsInstallPath --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --wait --passive --norestart }
             Write-Host "  [*] C++ workload added to Build Tools" -ForegroundColor Green
         } else {
             Write-Host "  [!] VS Installer not found. Please add 'Desktop development with C++' workload manually." -ForegroundColor Red
@@ -150,12 +147,7 @@ if (-not $hasVCTools) {
         # Build Tools not installed — fresh install via winget
         Write-Host "  [*] Visual Studio Build Tools not found — installing via winget..." -ForegroundColor Yellow
         if (Get-Command winget -ErrorAction SilentlyContinue) {
-            # Cannot use Invoke-NativeCommand here: --override requires its value
-            # as a single quoted string, which splatting breaks apart
-            $backupEAP = $ErrorActionPreference; $ErrorActionPreference = 'Continue'
-            winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" 2>&1 | Out-Null
-            $ErrorActionPreference = $backupEAP
-            if ($LASTEXITCODE -ne 0) { throw "winget install Build Tools failed with exit code $LASTEXITCODE" }
+            Invoke-NativeCommand { winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" }
             Write-Host "  [*] Visual Studio Build Tools installed" -ForegroundColor Green
         } else {
             Write-Host "  [!] Visual Studio Build Tools required. Install 'Desktop development with C++' workload." -ForegroundColor Red
@@ -184,9 +176,9 @@ if (Test-Path $installDir) {
 }
 
 if ($version -eq "main") {
-    Invoke-NativeCommand git clone --depth 1 "https://github.com/$repo.git" $installDir
+    Invoke-NativeCommand { git clone --depth 1 "https://github.com/$repo.git" $installDir }
 } else {
-    Invoke-NativeCommand git clone --depth 1 --branch $version "https://github.com/$repo.git" $installDir
+    Invoke-NativeCommand { git clone --depth 1 --branch $version "https://github.com/$repo.git" $installDir }
 }
 
 if (-not (Test-Path "$installDir\package.json")) {
@@ -200,16 +192,16 @@ Write-Host "  [3/4] Installing dependencies..." -ForegroundColor DarkGray
 
 Push-Location $installDir
 try {
-    Invoke-NativeCommand npm install --no-audit --no-fund
+    Invoke-NativeCommand { npm install --no-audit --no-fund }
 
     # Rebuild native modules for Electron
-    Invoke-NativeCommand npx electron-rebuild -f -w node-pty
+    Invoke-NativeCommand { npx electron-rebuild -f -w node-pty }
 
     # Build CLI
-    Invoke-NativeCommand npm run build:cli
+    Invoke-NativeCommand { npm run build:cli }
 
     # Link CLI globally
-    Invoke-NativeCommand npm link
+    Invoke-NativeCommand { npm link }
 } finally {
     Pop-Location
 }
