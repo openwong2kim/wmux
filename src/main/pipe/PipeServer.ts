@@ -20,7 +20,19 @@ export class PipeServer {
 
   constructor(router: RpcRouter) {
     this.router = router;
-    this.authToken = crypto.randomUUID();
+    // Reuse existing token from file if available — prevents token mismatch
+    // when Vite dev server restarts the app (MCP client may still hold old token)
+    this.authToken = this.loadOrCreateToken();
+  }
+
+  private loadOrCreateToken(): string {
+    const { getAuthTokenPath } = require('../../shared/constants');
+    const tokenPath = getAuthTokenPath();
+    try {
+      const existing = require('fs').readFileSync(tokenPath, 'utf8').trim();
+      if (existing && existing.length > 0) return existing;
+    } catch { /* file doesn't exist yet */ }
+    return crypto.randomUUID();
   }
 
   getAuthToken(): string {
