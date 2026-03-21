@@ -13,6 +13,10 @@ $ErrorActionPreference = 'Stop'
 # Enforce TLS 1.2+ for all HTTPS calls (prevents downgrade on older Windows)
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
+# Fix encoding: native commands (git, winget, npm) output UTF-8,
+# but PowerShell defaults to system locale (e.g. CP949 on Korean Windows)
+[Console]::OutputEncoding = [System.Text.Encoding]::UTF8
+
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
