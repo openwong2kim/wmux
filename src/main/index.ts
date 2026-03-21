@@ -50,7 +50,7 @@ const rpcRouter = new RpcRouter();
 const pipeServer = new PipeServer(rpcRouter);
 const mcpRegistrar = new McpRegistrar();
 
-const cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow);
+let cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow);
 registerWorkspaceRpc(rpcRouter, () => mainWindow);
 registerSurfaceRpc(rpcRouter, () => mainWindow);
 registerPaneRpc(rpcRouter, () => mainWindow);
@@ -85,9 +85,36 @@ app.on('ready', () => {
     }
     const activePtys = ptyManager.getActiveInstances();
     console.log(`[Main] ${activePtys.length} PTY(s) still alive — renderer can reconnect via pty:list after reload`);
+    // Clean up old handlers and re-register (prevents accumulation)
+    cleanupHandlers();
+    cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow);
     setTimeout(() => {
       if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
     }, 1000);
+  });
+
+  // Handle hung renderer — auto-reload after 10s grace period
+  let unresponsiveTimer: ReturnType<typeof setTimeout> | null = null;
+  mainWindow.on('unresponsive', () => {
+    console.warn('[Main] Renderer is unresponsive');
+    if (unresponsiveTimer) return;
+    unresponsiveTimer = setTimeout(() => {
+      unresponsiveTimer = null;
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        console.warn('[Main] Renderer still unresponsive after 10s — reloading');
+        cleanupHandlers();
+        cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow);
+        mainWindow.reload();
+      }
+    }, 10_000);
+  });
+
+  mainWindow.on('responsive', () => {
+    if (unresponsiveTimer) {
+      clearTimeout(unresponsiveTimer);
+      unresponsiveTimer = null;
+      console.log('[Main] Renderer recovered from unresponsive state');
+    }
   });
 
   mainWindow.on('closed', () => {
