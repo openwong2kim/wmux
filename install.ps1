@@ -10,14 +10,16 @@
 
 $ErrorActionPreference = 'Stop'
 
-# Helper: run native commands safely under Stop mode via ScriptBlock
-# Accepts a ScriptBlock so callers keep full control over quoting and arguments.
-# stderr from native executables (git, npm, winget) contains progress messages,
-# which PowerShell converts to ErrorRecord objects. Under $ErrorActionPreference='Stop',
-# these non-fatal messages would throw terminating exceptions. This wrapper:
-#   1. Temporarily sets ErrorActionPreference to 'Continue' (prevents stderr→exception)
-#   2. Collects stderr lines and includes them in the error on failure
-#   3. Checks $LASTEXITCODE for real failures
+# Enforce TLS 1.2+ for all HTTPS calls (prevents downgrade on older Windows)
+[Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
+
+# ---------------------------------------------------------------------------
+# Helpers
+# ---------------------------------------------------------------------------
+
+# Run native commands safely under $ErrorActionPreference='Stop'.
+# ScriptBlock preserves caller's quoting. Stderr is collected and shown on failure.
+# Stdout passes through to the host for diagnostic visibility.
 function Invoke-NativeCommand {
     param([Parameter(Mandatory)][ScriptBlock]$ScriptBlock)
     $backupEAP = $ErrorActionPreference
@@ -28,9 +30,9 @@ function Invoke-NativeCommand {
             if ($_ -is [System.Management.Automation.ErrorRecord]) {
                 $stderrLines += $_.ToString()
             } else {
-                $_  # pass stdout through
+                Write-Host $_
             }
-        } | Out-Null
+        }
         if ($LASTEXITCODE -ne 0) {
             $stderrMsg = if ($stderrLines.Count -gt 0) { "`n" + ($stderrLines -join "`n") } else { "" }
             throw "Command failed with exit code $LASTEXITCODE$stderrMsg"
@@ -40,7 +42,60 @@ function Invoke-NativeCommand {
     }
 }
 
-# Helper: safely get output from native command under Stop mode
+# Run native commands silently (stdout suppressed), for commands where output is noise.
+function Invoke-NativeCommandSilent {
+    param([Parameter(Mandatory)][ScriptBlock]$ScriptBlock)
+    $backupEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $stderrLines = @()
+        & $ScriptBlock 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                $stderrLines += $_.ToString()
+            }
+            # stdout silently discarded
+        }
+        if ($LASTEXITCODE -ne 0) {
+            $stderrMsg = if ($stderrLines.Count -gt 0) { "`n" + ($stderrLines -join "`n") } else { "" }
+            throw "Command failed with exit code $LASTEXITCODE$stderrMsg"
+        }
+    } finally {
+        $ErrorActionPreference = $backupEAP
+    }
+}
+
+# Run winget install, tolerating "already installed" and "reboot required" exit codes.
+function Invoke-WingetInstall {
+    param([Parameter(Mandatory)][ScriptBlock]$ScriptBlock)
+    $backupEAP = $ErrorActionPreference
+    $ErrorActionPreference = 'Continue'
+    try {
+        $stderrLines = @()
+        & $ScriptBlock 2>&1 | ForEach-Object {
+            if ($_ -is [System.Management.Automation.ErrorRecord]) {
+                $stderrLines += $_.ToString()
+            } else {
+                Write-Host $_
+            }
+        }
+        # 0              = success
+        # -1978335189    = already installed
+        # -1978335140    = no applicable upgrade
+        # 3010           = reboot required (success, but needs restart)
+        $acceptableCodes = @(0, -1978335189, -1978335140, 3010)
+        if ($LASTEXITCODE -notin $acceptableCodes) {
+            $stderrMsg = if ($stderrLines.Count -gt 0) { "`n" + ($stderrLines -join "`n") } else { "" }
+            throw "winget failed with exit code $LASTEXITCODE$stderrMsg"
+        }
+        if ($LASTEXITCODE -eq 3010) {
+            Write-Host "  [*] A reboot may be required to complete the installation" -ForegroundColor Yellow
+        }
+    } finally {
+        $ErrorActionPreference = $backupEAP
+    }
+}
+
+# Safely capture stdout from a native command.
 function Get-NativeOutput {
     param([Parameter(Mandatory)][ScriptBlock]$ScriptBlock)
     $backupEAP = $ErrorActionPreference
@@ -55,22 +110,28 @@ function Get-NativeOutput {
     }
 }
 
-# Helper: PS 5.1-safe array wrapping for ConvertFrom-Json results
-# In PS 5.1, ConvertFrom-Json returns a PSCustomObject for single-element arrays,
-# which has no .Count property. This ensures the result is always an array.
+# PS 5.1-safe JSON parsing. ConvertFrom-Json returns PSCustomObject for single-element
+# arrays in PS 5.1 (no .Count). Also handles malformed/non-JSON output gracefully.
 function ConvertFrom-JsonSafe {
     param([string]$Json)
     if (-not $Json -or $Json.Trim() -eq '') { return @() }
-    $result = $Json | ConvertFrom-Json
+    try {
+        $result = $Json | ConvertFrom-Json -ErrorAction Stop
+    } catch {
+        return @()
+    }
     if ($null -eq $result) { return @() }
     return @($result)
 }
 
+# ---------------------------------------------------------------------------
+# Configuration
+# ---------------------------------------------------------------------------
+
 $repo = 'openwong2kim/wmux'
 $installDir = "$env:LOCALAPPDATA\wmux"
 
-# Guard against null/empty install path
-if (-not $installDir -or -not $env:LOCALAPPDATA) {
+if (-not $env:LOCALAPPDATA -or -not $installDir) {
     Write-Host "  [!] Cannot determine install directory (LOCALAPPDATA is not set)" -ForegroundColor Red
     exit 1
 }
@@ -80,17 +141,19 @@ Write-Host "  wmux installer" -ForegroundColor Cyan
 Write-Host "  AI Agent Terminal for Windows" -ForegroundColor DarkGray
 Write-Host ""
 
-# --- Prerequisites ---
+# ---------------------------------------------------------------------------
+# Prerequisites
+# ---------------------------------------------------------------------------
 
-# Check git
+# Git
 if (-not (Get-Command git -ErrorAction SilentlyContinue)) {
     Write-Host "  [!] Git is required. Install from https://git-scm.com" -ForegroundColor Red
     exit 1
 }
 
-# Check Node.js
+# Node.js
 if (-not (Get-Command node -ErrorAction SilentlyContinue)) {
-    Write-Host "  [!] Node.js is required. Install from https://nodejs.org" -ForegroundColor Red
+    Write-Host "  [!] Node.js 18+ is required. Install from https://nodejs.org" -ForegroundColor Red
     exit 1
 }
 
@@ -101,7 +164,7 @@ if ($major -lt 18) {
     exit 1
 }
 
-# Check and install Python (required by node-gyp for native modules)
+# Python 3 (required by node-gyp)
 $hasPython3 = $false
 if (Get-Command python -ErrorAction SilentlyContinue) {
     $pyVer = Get-NativeOutput { python --version }
@@ -110,57 +173,58 @@ if (Get-Command python -ErrorAction SilentlyContinue) {
 if (-not $hasPython3) {
     Write-Host "  [*] Python 3 not found — installing via winget..." -ForegroundColor Yellow
     if (Get-Command winget -ErrorAction SilentlyContinue) {
-        Invoke-NativeCommand { winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent }
-        # Discover actual install path dynamically instead of hardcoding Python312
+        Invoke-WingetInstall { winget install Python.Python.3.12 --accept-package-agreements --accept-source-agreements --silent }
+        # Discover actual install path dynamically
         $pyPath = Get-ChildItem "$env:LOCALAPPDATA\Programs\Python" -Directory -ErrorAction SilentlyContinue |
             Where-Object { $_.Name -match '^Python3' } |
             Sort-Object Name -Descending |
             Select-Object -First 1
-        if ($pyPath) {
+        if ($pyPath -and (Test-Path "$($pyPath.FullName)\python.exe")) {
             $env:Path = "$($pyPath.FullName);$($pyPath.FullName)\Scripts;$env:Path"
             Write-Host "  [*] Python installed ($($pyPath.Name))" -ForegroundColor Green
         } else {
             Write-Host "  [!] Python was installed but could not locate the install directory" -ForegroundColor Yellow
-            Write-Host "       You may need to restart your terminal and re-run the installer" -ForegroundColor Yellow
+            Write-Host "       Restart your terminal and re-run the installer" -ForegroundColor Yellow
             exit 1
         }
     } else {
         Write-Host "  [!] Python 3 is required for native modules." -ForegroundColor Red
-        Write-Host "       Option 1: Install winget first — https://aka.ms/getwinget" -ForegroundColor Red
+        Write-Host "       Option 1: Install winget — https://aka.ms/getwinget" -ForegroundColor Red
         Write-Host "       Option 2: Install Python manually — https://www.python.org" -ForegroundColor Red
         exit 1
     }
 }
 
-# Check and install Visual Studio Build Tools (required by node-gyp for C++ compilation)
+# Visual Studio Build Tools / VCTools workload (required by node-gyp for C++ compilation)
 $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
 $hasVCTools = $false
-$buildToolsInstallPath = $null
+
 if (Test-Path $vsWhere) {
-    # Check if any VS product has VCTools
-    $vsWithVCJson = & $vsWhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json 2>$null
+    $vsWithVCJson = Get-NativeOutput { & $vsWhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json }
     $vsWithVC = ConvertFrom-JsonSafe $vsWithVCJson
     if ($vsWithVC.Count -gt 0) { $hasVCTools = $true }
+}
 
-    if (-not $hasVCTools) {
-        # Check specifically for Build Tools product (not Community/Professional/Enterprise)
-        $btJson = & $vsWhere -products Microsoft.VisualStudio.Product.BuildTools -format json 2>$null
+if (-not $hasVCTools) {
+    # Check if Build Tools product exists (without VCTools workload)
+    $buildToolsInstanceId = $null
+    if (Test-Path $vsWhere) {
+        $btJson = Get-NativeOutput { & $vsWhere -products Microsoft.VisualStudio.Product.BuildTools -format json }
         $btInstalls = ConvertFrom-JsonSafe $btJson
         if ($btInstalls.Count -gt 0) {
-            $buildToolsInstallPath = $btInstalls[0].installationPath
+            $buildToolsInstanceId = $btInstalls[0].instanceId
         }
     }
-}
-if (-not $hasVCTools) {
-    if ($buildToolsInstallPath) {
+
+    if ($buildToolsInstanceId) {
         # Build Tools installed but VCTools workload missing — modify existing installation
         Write-Host "  [*] Build Tools found but C++ workload missing — adding VCTools..." -ForegroundColor Yellow
         $vsInstaller = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
         if (Test-Path $vsInstaller) {
-            Invoke-NativeCommand { & $vsInstaller modify --installPath $buildToolsInstallPath --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --wait --passive --norestart }
-            Write-Host "  [*] C++ workload added to Build Tools" -ForegroundColor Green
+            Invoke-NativeCommand { & "$vsInstaller" modify --instanceId "$buildToolsInstanceId" --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --wait --passive --norestart }
+            Write-Host "  [*] C++ workload added" -ForegroundColor Green
         } else {
-            Write-Host "  [!] VS Installer not found. Please add 'Desktop development with C++' workload manually." -ForegroundColor Red
+            Write-Host "  [!] VS Installer not found. Add 'Desktop development with C++' workload manually." -ForegroundColor Red
             Write-Host "       Open Visual Studio Installer → Modify → check 'Desktop development with C++'" -ForegroundColor Red
             exit 1
         }
@@ -168,27 +232,57 @@ if (-not $hasVCTools) {
         # Build Tools not installed — fresh install via winget
         Write-Host "  [*] Visual Studio Build Tools not found — installing via winget..." -ForegroundColor Yellow
         if (Get-Command winget -ErrorAction SilentlyContinue) {
-            Invoke-NativeCommand { winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --custom "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" }
+            Invoke-WingetInstall { winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--passive --norestart --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" }
             Write-Host "  [*] Visual Studio Build Tools installed" -ForegroundColor Green
         } else {
             Write-Host "  [!] Visual Studio Build Tools required." -ForegroundColor Red
-            Write-Host "       Option 1: Install winget first — https://aka.ms/getwinget" -ForegroundColor Red
+            Write-Host "       Option 1: Install winget — https://aka.ms/getwinget" -ForegroundColor Red
             Write-Host "       Option 2: Install manually — https://visualstudio.microsoft.com/visual-cpp-build-tools/" -ForegroundColor Red
             Write-Host "                 Select 'Desktop development with C++' workload" -ForegroundColor Red
             exit 1
         }
     }
+
+    # Post-install verification: confirm VCTools is actually available
+    if (Test-Path $vsWhere) {
+        $retries = 0
+        $maxRetries = 12  # 60 seconds max wait
+        while ($retries -lt $maxRetries) {
+            $checkJson = Get-NativeOutput { & $vsWhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json }
+            $checkResult = ConvertFrom-JsonSafe $checkJson
+            if ($checkResult.Count -gt 0) {
+                $hasVCTools = $true
+                break
+            }
+            Start-Sleep -Seconds 5
+            $retries++
+        }
+    }
+    if (-not $hasVCTools) {
+        Write-Host "  [!] VCTools not detected after installation." -ForegroundColor Red
+        Write-Host "       A reboot may be required. Restart and re-run this installer." -ForegroundColor Red
+        exit 1
+    }
 }
 
-# --- Install ---
+# ---------------------------------------------------------------------------
+# Install
+# ---------------------------------------------------------------------------
 
 Write-Host "  [1/4] Checking latest release..." -ForegroundColor DarkGray
 
-# Get latest release info from GitHub
 try {
-    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" -Headers @{ 'User-Agent' = 'wmux-installer' }
+    $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest" `
+        -Headers @{ 'User-Agent' = 'wmux-installer' } `
+        -TimeoutSec 15
     $version = $release.tag_name
-    Write-Host "  [1/4] Latest version: $version" -ForegroundColor Green
+    # Validate version format
+    if ($version -notmatch '^v?\d+\.\d+') {
+        Write-Host "  [1/4] Unexpected version format '$version', using main branch" -ForegroundColor Yellow
+        $version = "main"
+    } else {
+        Write-Host "  [1/4] Latest version: $version" -ForegroundColor Green
+    }
 } catch {
     $version = "main"
     Write-Host "  [1/4] No releases found, installing from main branch ($($_.Exception.Message))" -ForegroundColor Yellow
@@ -197,13 +291,26 @@ try {
 Write-Host "  [2/4] Cloning repository..." -ForegroundColor DarkGray
 
 if (Test-Path $installDir) {
-    Remove-Item -Recurse -Force $installDir
+    # Check for junction/symlink before removing
+    $dirItem = Get-Item $installDir -Force -ErrorAction SilentlyContinue
+    if ($dirItem.Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        Write-Host "  [!] $installDir is a symbolic link or junction — removing link only" -ForegroundColor Yellow
+        $dirItem.Delete()
+    } else {
+        try {
+            Remove-Item -Recurse -Force $installDir -ErrorAction Stop
+        } catch {
+            Write-Host "  [!] Cannot remove existing install: $_" -ForegroundColor Red
+            Write-Host "       Close wmux and any terminals using $installDir, then re-run." -ForegroundColor Red
+            exit 1
+        }
+    }
 }
 
 if ($version -eq "main") {
-    Invoke-NativeCommand { git clone --depth 1 "https://github.com/$repo.git" $installDir }
+    Invoke-NativeCommandSilent { git clone --depth 1 "https://github.com/$repo.git" "$installDir" }
 } else {
-    Invoke-NativeCommand { git clone --depth 1 --branch $version "https://github.com/$repo.git" $installDir }
+    Invoke-NativeCommandSilent { git clone --depth 1 --branch $version "https://github.com/$repo.git" "$installDir" }
 }
 
 if (-not (Test-Path "$installDir\package.json")) {
@@ -225,19 +332,25 @@ try {
     # Build CLI
     Invoke-NativeCommand { npm run build:cli }
 
-    # Link CLI globally — may fail without admin/Developer Mode due to symlink permissions.
-    # Fall back to adding the bin directory to user PATH if npm link fails.
+    # Link CLI globally — may fail without admin/Developer Mode (symlink permissions).
+    # Falls back to a .cmd wrapper + user PATH entry.
     try {
         Invoke-NativeCommand { npm link }
     } catch {
-        Write-Host "  [*] npm link failed (likely needs admin rights) — adding to PATH instead" -ForegroundColor Yellow
+        Write-Host "  [*] npm link failed (needs admin or Developer Mode) — using PATH fallback" -ForegroundColor Yellow
         $cliEntry = "$installDir\dist\cli\cli\index.js"
-        # Create a batch wrapper in the install dir
+        if (-not (Test-Path $cliEntry)) {
+            Write-Host "  [!] CLI build output not found at $cliEntry" -ForegroundColor Red
+            exit 1
+        }
+        # Create a .cmd wrapper
+        $nodePath = (Get-Command node).Source
         $wmuxCmd = "$installDir\wmux.cmd"
-        Set-Content -Path $wmuxCmd -Value "@echo off`r`nnode `"$cliEntry`" %*" -Encoding ASCII
-        # Add to user PATH persistently
+        Set-Content -Path $wmuxCmd -Value "@echo off`r`n`"$nodePath`" `"$cliEntry`" %*" -Encoding ASCII
+        # Add to user PATH persistently (exact match, not substring)
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-        if ($userPath -notlike "*$installDir*") {
+        $pathEntries = if ($userPath) { $userPath.Split(';') } else { @() }
+        if ($installDir -notin $pathEntries) {
             [Environment]::SetEnvironmentVariable('Path', "$installDir;$userPath", 'User')
             $env:Path = "$installDir;$env:Path"
             Write-Host "  [*] Added $installDir to user PATH" -ForegroundColor Green
@@ -249,14 +362,17 @@ try {
 
 Write-Host "  [3/4] Dependencies installed" -ForegroundColor Green
 
+# ---------------------------------------------------------------------------
 # Verify
+# ---------------------------------------------------------------------------
+
 Write-Host "  [4/4] Verifying installation..." -ForegroundColor DarkGray
 
 $wmuxPath = (Get-Command wmux -ErrorAction SilentlyContinue).Source
 if ($wmuxPath) {
     Write-Host "  [4/4] wmux CLI available at: $wmuxPath" -ForegroundColor Green
 } else {
-    Write-Host "  [4/4] CLI linked (may need to restart terminal)" -ForegroundColor Yellow
+    Write-Host "  [4/4] CLI linked (restart terminal to use 'wmux' command)" -ForegroundColor Yellow
 }
 
 Write-Host ""
