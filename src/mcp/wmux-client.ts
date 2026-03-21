@@ -101,25 +101,35 @@ export async function sendRpc(
   method: RpcMethod,
   params: Record<string, unknown> = {},
 ): Promise<unknown> {
-  const pipePath = process.env.WMUX_SOCKET_PATH || getPipeName();
+  // Try WMUX_SOCKET_PATH first (if set), then fall back to getPipeName().
+  // Claude Code may cache a stale WMUX_SOCKET_PATH from a previous session,
+  // so we must fall back to the derived name if the env path fails.
+  const envPath = process.env.WMUX_SOCKET_PATH;
+  const derivedPath = getPipeName();
+  const pipePaths = envPath && envPath !== derivedPath ? [envPath, derivedPath] : [derivedPath];
 
-  for (let attempt = 0; attempt < RETRY_COUNT; attempt++) {
-    // Re-read token on every attempt (wmux may have restarted with new token)
-    const token = readAuthToken();
-    if (!token) {
-      throw new Error('wmux auth token not found. Is wmux running?');
-    }
-
-    try {
-      return await attemptRpc(pipePath, token, method, params);
-    } catch (err) {
-      const msg = (err as Error).message;
-      const isRetryable = msg.includes('not running') || msg.includes('unauthorized');
-      if (isRetryable && attempt < RETRY_COUNT - 1) {
-        await sleep(RETRY_DELAY_MS);
-        continue;
+  for (const pipePath of pipePaths) {
+    for (let attempt = 0; attempt < RETRY_COUNT; attempt++) {
+      const token = readAuthToken();
+      if (!token) {
+        throw new Error('wmux auth token not found. Is wmux running?');
       }
-      throw err;
+
+      try {
+        return await attemptRpc(pipePath, token, method, params);
+      } catch (err) {
+        const msg = (err as Error).message;
+        const isRetryable = msg.includes('not running') || msg.includes('unauthorized');
+        if (isRetryable && attempt < RETRY_COUNT - 1) {
+          await sleep(RETRY_DELAY_MS);
+          continue;
+        }
+        // If env path failed and we have a fallback, break to try derived path
+        if (isRetryable && pipePaths.length > 1 && pipePath === envPath) {
+          break;
+        }
+        throw err;
+      }
     }
   }
 
