@@ -154,9 +154,11 @@ app.on('ready', () => {
   mainWindow.webContents.on('did-finish-load', () => {
     console.log('[Main] Page loaded successfully');
   });
-  pipeServer.start();
+  // Write auth token BEFORE starting pipe server — prevents race where
+  // MCP client reads old token while new pipe is already listening
   const authToken = pipeServer.getAuthToken();
   mcpRegistrar.register(authToken);
+  pipeServer.start();
   autoUpdater.start();
 });
 
