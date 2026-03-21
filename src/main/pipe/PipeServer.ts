@@ -26,12 +26,16 @@ export class PipeServer {
   }
 
   private loadOrCreateToken(): string {
-    const { getAuthTokenPath } = require('../../shared/constants');
-    const tokenPath = getAuthTokenPath();
-    try {
-      const existing = require('fs').readFileSync(tokenPath, 'utf8').trim();
-      if (existing && existing.length > 0) return existing;
-    } catch { /* file doesn't exist yet */ }
+    // In dev mode (Vite hot-reload), reuse existing token so MCP clients
+    // don't get "unauthorized" after every source change rebuild.
+    // In production, always generate a fresh token per app launch.
+    if (process.env.NODE_ENV === 'development' || process.env.ELECTRON_IS_DEV) {
+      const { getAuthTokenPath } = require('../../shared/constants');
+      try {
+        const existing = require('fs').readFileSync(getAuthTokenPath(), 'utf8').trim();
+        if (existing && existing.length > 0) return existing;
+      } catch { /* file doesn't exist yet */ }
+    }
     return crypto.randomUUID();
   }
 
