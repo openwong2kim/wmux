@@ -243,26 +243,33 @@ if (-not $hasVCTools) {
         }
     }
 
-    # Post-install verification: confirm VCTools is actually available
-    if (Test-Path $vsWhere) {
-        $retries = 0
-        $maxRetries = 12  # 60 seconds max wait
-        while ($retries -lt $maxRetries) {
+    # Post-install verification: confirm VCTools is actually available.
+    # vswhere may have been installed just now as part of Build Tools,
+    # so re-check the path (it may not have existed at script start).
+    $vsWhere = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vswhere.exe"
+    Write-Host "  [*] Verifying VCTools installation..." -ForegroundColor DarkGray -NoNewline
+    $retries = 0
+    $maxRetries = 24  # 120 seconds max wait
+    while ($retries -lt $maxRetries) {
+        if (Test-Path $vsWhere) {
             $checkJson = Get-NativeOutput { & $vsWhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json }
             $checkResult = ConvertFrom-JsonSafe $checkJson
             if ($checkResult.Count -gt 0) {
                 $hasVCTools = $true
                 break
             }
-            Start-Sleep -Seconds 5
-            $retries++
         }
+        Write-Host "." -NoNewline
+        Start-Sleep -Seconds 5
+        $retries++
     }
+    Write-Host ""  # newline after dots
     if (-not $hasVCTools) {
-        Write-Host "  [!] VCTools not detected after installation." -ForegroundColor Red
+        Write-Host "  [!] VCTools not detected after installation (waited ${maxRetries}x5s)." -ForegroundColor Red
         Write-Host "       A reboot may be required. Restart and re-run this installer." -ForegroundColor Red
         exit 1
     }
+    Write-Host "  [*] VCTools verified" -ForegroundColor Green
 }
 
 # ---------------------------------------------------------------------------
