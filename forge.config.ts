@@ -61,7 +61,7 @@ const config: ForgeConfig = {
     },
   },
   makers: [
-    new MakerSquirrel({}),
+    new MakerSquirrel({ name: 'wmux' }),
     new MakerZIP({}, ['darwin']),
   ],
   plugins: [
