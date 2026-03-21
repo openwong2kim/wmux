@@ -114,8 +114,19 @@ export class PTYManager {
 
   private getDefaultShell(): string {
     if (process.platform === 'win32') {
-      // PowerShell 우선 (cd로 드라이브 전환 자동 지원)
-      return 'powershell.exe';
+      // Try PowerShell paths in order — basename alone may fail
+      // if Electron's PATH is limited (e.g. installed via install.ps1)
+      const candidates = [
+        `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+        `${process.env.ProgramFiles}\\PowerShell\\7\\pwsh.exe`,
+        'powershell.exe',
+        'cmd.exe',
+      ];
+      const fs = require('fs');
+      for (const shell of candidates) {
+        try { if (fs.existsSync(shell)) return shell; } catch { /* skip */ }
+      }
+      return 'cmd.exe';
     }
     return process.env.SHELL || '/bin/bash';
   }

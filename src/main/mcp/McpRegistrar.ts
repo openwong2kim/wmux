@@ -37,7 +37,8 @@ export class McpRegistrar {
       if (process.platform === 'win32') {
         try {
           const { execFileSync } = require('child_process');
-          execFileSync('icacls', [
+          const icacls = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\icacls.exe`;
+          execFileSync(icacls, [
             this.authTokenPath, '/inheritance:r',
             '/grant:r', `${process.env.USERNAME}:F`
           ], { windowsHide: true });
