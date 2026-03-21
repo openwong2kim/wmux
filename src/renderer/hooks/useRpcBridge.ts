@@ -321,12 +321,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const selector = typeof params.selector === 'string' ? params.selector : '';
     if (!selector) return { error: 'browser.click: missing selector' };
     const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
-    return handleBrowserExec(store, `
+    return handleBrowserExec(store, `(function() {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) throw new Error('Element not found: ' + ${JSON.stringify(selector)});
       el.click();
       return { ok: true, selector: ${JSON.stringify(selector)} };
-    `, surfaceId);
+    })()`, surfaceId);
   }
 
   if (method === 'browser.fill') {
@@ -334,7 +334,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const text = typeof params.text === 'string' ? params.text : '';
     if (!selector) return { error: 'browser.fill: missing selector' };
     const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
-    return handleBrowserExec(store, `
+    return handleBrowserExec(store, `(function() {
       const el = document.querySelector(${JSON.stringify(selector)});
       if (!el) throw new Error('Element not found: ' + ${JSON.stringify(selector)});
       const nativeInputValueSetter = Object.getOwnPropertyDescriptor(window.HTMLInputElement.prototype, 'value')?.set
@@ -346,7 +346,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         el.value = ${JSON.stringify(text)};
       }
       return { ok: true };
-    `, surfaceId);
+    })()`, surfaceId);
   }
 
   if (method === 'browser.eval') {
