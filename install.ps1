@@ -205,7 +205,7 @@ $hasVCTools = $false
 
 if (Test-Path $vsWhere) {
     $vsWithVCJson = Get-NativeOutput { & $vsWhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json }
-    $vsWithVC = ConvertFrom-JsonSafe $vsWithVCJson
+    $vsWithVC = @(ConvertFrom-JsonSafe $vsWithVCJson)
     if ($vsWithVC.Count -gt 0) { $hasVCTools = $true }
 }
 
@@ -214,21 +214,24 @@ if (-not $hasVCTools) {
     $buildToolsInstanceId = $null
     if (Test-Path $vsWhere) {
         $btJson = Get-NativeOutput { & $vsWhere -products Microsoft.VisualStudio.Product.BuildTools -format json }
-        $btInstalls = ConvertFrom-JsonSafe $btJson
+        $btInstalls = @(ConvertFrom-JsonSafe $btJson)
         if ($btInstalls.Count -gt 0) {
-            $buildToolsInstanceId = $btInstalls[0].instanceId
+            $buildToolsInstallPath = $btInstalls[0].installationPath
         }
     }
 
-    if ($buildToolsInstanceId) {
-        # Build Tools installed but VCTools workload missing — modify existing installation
+    if ($buildToolsInstallPath) {
+        # Build Tools installed but VCTools workload missing — modify via setup.exe
+        # Note: vs_installer.exe delegates to setup.exe which has a different arg schema.
+        # --instanceId and --wait are not recognized by setup.exe (exit code 87).
+        # Use setup.exe directly with --installPath.
         Write-Host "  [*] Build Tools found but C++ workload missing — adding VCTools..." -ForegroundColor Yellow
-        $vsInstaller = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\vs_installer.exe"
-        if (Test-Path $vsInstaller) {
-            Invoke-NativeCommand { & "$vsInstaller" modify --instanceId "$buildToolsInstanceId" --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --wait --passive --norestart }
+        $setupExe = "${env:ProgramFiles(x86)}\Microsoft Visual Studio\Installer\setup.exe"
+        if (Test-Path $setupExe) {
+            Invoke-NativeCommand { & "$setupExe" modify --installPath "$buildToolsInstallPath" --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended --passive --norestart }
             Write-Host "  [*] C++ workload added" -ForegroundColor Green
         } else {
-            Write-Host "  [!] VS Installer not found. Add 'Desktop development with C++' workload manually." -ForegroundColor Red
+            Write-Host "  [!] VS setup.exe not found. Add 'Desktop development with C++' workload manually." -ForegroundColor Red
             Write-Host "       Open Visual Studio Installer → Modify → check 'Desktop development with C++'" -ForegroundColor Red
             return
         }
@@ -247,6 +250,21 @@ if (-not $hasVCTools) {
         }
     }
 
+    # Wait for VS setup processes to finish before verification.
+    # setup.exe spawns an elevated child process and returns immediately (non-blocking).
+    # Actual installation runs in background and can take 150s+.
+    Write-Host "  [*] Waiting for VS installer to finish..." -ForegroundColor DarkGray -NoNewline
+    $setupWaitElapsed = 0
+    while ($setupWaitElapsed -lt 600) {
+        $setupProcs = Get-Process -Name "setup" -ErrorAction SilentlyContinue |
+            Where-Object { $_.Path -like "*Visual Studio*" }
+        if (-not $setupProcs) { break }
+        Write-Host "." -NoNewline
+        Start-Sleep -Seconds 10
+        $setupWaitElapsed += 10
+    }
+    Write-Host ""
+
     # Post-install verification: confirm VCTools is actually available.
     # vswhere may have been installed just now as part of Build Tools,
     # so re-check the path (it may not have existed at script start).
@@ -257,7 +275,7 @@ if (-not $hasVCTools) {
     while ($retries -lt $maxRetries) {
         if (Test-Path $vsWhere) {
             $checkJson = Get-NativeOutput { & $vsWhere -products * -requires Microsoft.VisualStudio.Component.VC.Tools.x86.x64 -format json }
-            $checkResult = ConvertFrom-JsonSafe $checkJson
+            $checkResult = @(ConvertFrom-JsonSafe $checkJson)
             if ($checkResult.Count -gt 0) {
                 $hasVCTools = $true
                 break
