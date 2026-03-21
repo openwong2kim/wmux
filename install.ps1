@@ -168,7 +168,7 @@ if (-not $hasVCTools) {
         # Build Tools not installed — fresh install via winget
         Write-Host "  [*] Visual Studio Build Tools not found — installing via winget..." -ForegroundColor Yellow
         if (Get-Command winget -ErrorAction SilentlyContinue) {
-            Invoke-NativeCommand { winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --override "--wait --passive --add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" }
+            Invoke-NativeCommand { winget install Microsoft.VisualStudio.2022.BuildTools --accept-package-agreements --accept-source-agreements --custom "--add Microsoft.VisualStudio.Workload.VCTools --includeRecommended" }
             Write-Host "  [*] Visual Studio Build Tools installed" -ForegroundColor Green
         } else {
             Write-Host "  [!] Visual Studio Build Tools required." -ForegroundColor Red
