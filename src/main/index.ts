@@ -72,10 +72,10 @@ if (process.platform === 'win32') {
         ], { windowsHide: true });
       } catch { /* best-effort */ }
 
-      spawn(updateExe, ['--createShortcut', target, '--shortcut-locations', 'Desktop,StartMenu'], { detached: true })
+      spawn(updateExe, ['--createShortcut', target, '--shortcut-locations', 'Desktop,StartMenu'], { detached: true, windowsHide: true })
         .on('close', () => {
           // Auto-launch app after install
-          spawn(process.execPath, [], { detached: true, stdio: 'ignore' }).unref();
+          spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
           process.exit(0);
         });
       app.quit();
@@ -91,7 +91,7 @@ if (process.platform === 'win32') {
         ], { windowsHide: true });
       } catch { /* best-effort */ }
 
-      spawn(updateExe, ['--createShortcut', target], { detached: true })
+      spawn(updateExe, ['--createShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
       app.quit();
     } else if (squirrelCmd === '--squirrel-uninstall') {
@@ -106,7 +106,7 @@ if (process.platform === 'win32') {
         ], { windowsHide: true });
       } catch { /* best-effort */ }
 
-      spawn(updateExe, ['--removeShortcut', target], { detached: true })
+      spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
       app.quit();
     } else if (squirrelCmd === '--squirrel-obsolete') {

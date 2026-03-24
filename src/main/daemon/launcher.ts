@@ -71,18 +71,10 @@ function pingDaemon(pipeName: string, token: string, timeoutMs = 3000): Promise<
 }
 
 function findNodePath(): string {
-  // Try system node first
-  if (process.platform === 'win32') {
-    const candidates = [
-      `${process.env.ProgramFiles}\\nodejs\\node.exe`,
-      `${process.env.LOCALAPPDATA}\\Programs\\node\\node.exe`,
-      `${process.env.ProgramFiles}\\fnm\\node.exe`,
-    ];
-    for (const c of candidates) {
-      try { if (c && fs.existsSync(c)) return c; } catch {}
-    }
-  }
-  // Fallback to Electron's bundled node (with ELECTRON_RUN_AS_NODE)
+  // Prefer Electron's bundled node (via ELECTRON_RUN_AS_NODE) — it's a GUI
+  // subsystem executable, so it won't flash a console window on Windows.
+  // System node.exe is a console app and briefly shows a window even with
+  // windowsHide: true.
   return process.execPath;
 }
 
