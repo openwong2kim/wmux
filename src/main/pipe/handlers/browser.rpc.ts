@@ -190,14 +190,25 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * params: none
    */
   router.register('browser.cdp.info', async () => {
-    const targets = webviewCdpManager.listTargets().map((t) => ({
-      surfaceId: t.surfaceId,
-      webContentsId: t.webContentsId,
-      targetId: t.targetId,
-      wsUrl: t.wsUrl,  // Internal use only — needed by PlaywrightEngine to connect to webview
-    }));
+    let targets = webviewCdpManager.listTargets();
+
+    // If no targets yet, wait briefly for in-flight registrations to complete.
+    // This eliminates the race where MCP queries before registerWebview() finishes.
+    if (targets.length === 0) {
+      await new Promise((r) => setTimeout(r, 1500));
+      targets = webviewCdpManager.listTargets();
+    }
+
     const cdpPort: number = webviewCdpManager.getCdpPort();
-    return { cdpPort, targets };
+    return {
+      cdpPort,
+      targets: targets.map((t) => ({
+        surfaceId: t.surfaceId,
+        webContentsId: t.webContentsId,
+        targetId: t.targetId,
+        wsUrl: t.wsUrl,  // Internal use only — needed by PlaywrightEngine to connect to webview
+      })),
+    };
   });
 
   /**

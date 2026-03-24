@@ -13,10 +13,10 @@ interface CdpInfoResponse {
   targets: CdpTargetInfo[];
 }
 
-const MAX_CONNECT_RETRIES = 1;
-const RETRY_DELAY_MS = 500;
-const PAGE_FIND_RETRIES = 1;
-const PAGE_FIND_DELAY_MS = 300;
+const MAX_CONNECT_RETRIES = 3;
+const RETRY_DELAY_MS = 800;
+const PAGE_FIND_RETRIES = 3;
+const PAGE_FIND_DELAY_MS = 500;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
@@ -179,8 +179,11 @@ export class PlaywrightEngine {
       }
     }
 
-    console.error('[PlaywrightEngine] No webview page found after all retries — marking as failed');
+    console.error('[PlaywrightEngine] No webview page found after all retries — marking as temporarily failed');
     this.playwrightFailed = true;
+    // Auto-reset after 10s so subsequent browser.open calls get a fresh chance.
+    // Without this, one early failure permanently blocks all Playwright page discovery.
+    setTimeout(() => { this.playwrightFailed = false; }, 10_000);
     return null;
   }
 

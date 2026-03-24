@@ -57,7 +57,8 @@ function collectTerminalSurfaces(pane: Pane): Surface[] {
  *  Returns a map of surfaceId → true for surfaces that were dumped.
  *  SessionData objects from Zustand may be frozen, so we return the map
  *  instead of mutating surfaces directly. */
-function dumpScrollbackBuffers(): Map<string, boolean> {
+/** Sync version — fire-and-forget for beforeunload (cannot await). */
+function dumpScrollbackBuffersSync(): Map<string, boolean> {
   const dumped = new Map<string, boolean>();
   const state = useStore.getState();
   for (const ws of state.workspaces) {
@@ -72,6 +73,30 @@ function dumpScrollbackBuffers(): Map<string, boolean> {
       window.electronAPI.scrollback.dump(surface.id, content).catch(() => {});
     }
   }
+  return dumped;
+}
+
+/** Async version — awaits all IPC dump calls before returning.
+ *  Used by periodic save to guarantee files are written before session.json. */
+async function dumpScrollbackBuffersAsync(): Promise<Map<string, boolean>> {
+  const dumped = new Map<string, boolean>();
+  const promises: Promise<void>[] = [];
+  const state = useStore.getState();
+  for (const ws of state.workspaces) {
+    const surfaces = collectTerminalSurfaces(ws.rootPane);
+    for (const surface of surfaces) {
+      if (!surface.ptyId) continue;
+      const terminal = terminalRegistry.get(surface.ptyId);
+      if (!terminal) continue;
+      const content = serializeTerminalBuffer(terminal);
+      if (!content) continue;
+      dumped.set(surface.id, true);
+      promises.push(
+        window.electronAPI.scrollback.dump(surface.id, content).catch(() => {}),
+      );
+    }
+  }
+  await Promise.all(promises);
   return dumped;
 }
 
@@ -248,10 +273,10 @@ export default function AppLayout() {
     });
   }, []);
 
-  // Save session on beforeunload (with scrollback dump)
+  // Save session on beforeunload (with scrollback dump — sync fire-and-forget)
   useEffect(() => {
     const saveSession = () => {
-      const dumped = dumpScrollbackBuffers();
+      const dumped = dumpScrollbackBuffersSync();
       const data = buildSessionData(dumped);
       window.electronAPI.session.save(data);
     };
@@ -260,14 +285,26 @@ export default function AppLayout() {
     return () => window.removeEventListener('beforeunload', saveSession);
   }, []);
 
-  // Periodic session save — protects against crashes (with scrollback dump)
+  // Periodic session save — protects against crashes.
+  // Awaits scrollback dump completion before saving session.json to guarantee
+  // files referenced in session data actually exist on disk.
   useEffect(() => {
-    const interval = setInterval(() => {
-      const dumped = dumpScrollbackBuffers();
-      const data = buildSessionData(dumped);
-      window.electronAPI.session.save(data);
+    let active = true;
+    let saving = false;
+    const interval = setInterval(async () => {
+      if (!active || saving) return;
+      saving = true;
+      try {
+        const dumped = await dumpScrollbackBuffersAsync();
+        if (active) {
+          const data = buildSessionData(dumped);
+          window.electronAPI.session.save(data);
+        }
+      } finally {
+        saving = false;
+      }
     }, 5_000);
-    return () => clearInterval(interval);
+    return () => { active = false; clearInterval(interval); };
   }, []);
 
   // Auto-create initial surface for empty leaf panes

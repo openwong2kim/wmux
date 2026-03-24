@@ -41,8 +41,11 @@ export function registerSessionHandlers(): () => void {
     try {
       if (!fs.existsSync(filePath)) return null;
       const content = fs.readFileSync(filePath, 'utf-8');
-      // Clean up after loading (one-time use)
-      try { fs.unlinkSync(filePath); } catch { /* ignore */ }
+      // Don't delete scrollback files here — they are overwritten by the
+      // next periodic dump cycle (every 5s).  Deleting on load created a
+      // window where a crash between load and the next dump would lose
+      // all scrollback data because session.json still referenced the
+      // (now-deleted) file.
       return content;
     } catch {
       return null;

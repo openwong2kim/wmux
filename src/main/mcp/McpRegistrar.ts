@@ -99,10 +99,19 @@ export class McpRegistrar {
     const config = this.readJson(this.claudeJsonPath);
     if (!config.mcpServers) config.mcpServers = {};
 
-    // If the key already exists and WinMux did not write it this session, skip.
-    if (config.mcpServers[key] && !this.ownedKeys.has(key)) {
-      console.log(`[McpRegistrar] Key "${key}" already exists (not ours) — skipping.`);
-      return;
+    const existing = config.mcpServers[key];
+    if (existing && !this.ownedKeys.has(key)) {
+      // Always overwrite if the script path changed (e.g. after app update).
+      // Previous logic skipped registration when the key existed from a prior
+      // session, leaving stale paths pointing to old app versions.
+      const existingArgs = JSON.stringify(existing.args ?? []);
+      const newArgs = JSON.stringify(mcpEntry.args ?? []);
+      if (existingArgs === newArgs) {
+        console.log(`[McpRegistrar] Key "${key}" already up-to-date — skipping.`);
+        this.ownedKeys.add(key);
+        return;
+      }
+      console.log(`[McpRegistrar] Key "${key}" path changed — updating.`);
     }
 
     config.mcpServers[key] = mcpEntry;

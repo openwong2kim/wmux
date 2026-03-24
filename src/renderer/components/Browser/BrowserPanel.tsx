@@ -84,15 +84,18 @@ export default function BrowserPanel({ surfaceId, initialUrl, isActive, onClose 
     const wv = webviewRef.current;
     if (!wv) return;
 
-    const onDomReady = () => {
+    const onDomReady = async () => {
       setIsReady(true);
       updateNavState();
 
-      // Register webview with main process for CDP debugging
+      // Register webview with main process for CDP debugging.
+      // Must be awaited so that MCP tools querying browser.cdp.info
+      // after dom-ready find the registered CDP target.
       try {
         const wcId = (wv as any).getWebContentsId?.();
         if (wcId && (window as any).electronAPI?.browser?.registerWebview) {
-          (window as any).electronAPI.browser.registerWebview(surfaceId, wcId);
+          await (window as any).electronAPI.browser.registerWebview(surfaceId, wcId);
+          console.log(`[BrowserPanel] CDP target registered for surface=${surfaceId} wc=${wcId}`);
         }
       } catch (err) {
         console.warn('[BrowserPanel] Failed to register webview for CDP:', err);
