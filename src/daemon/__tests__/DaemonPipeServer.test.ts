@@ -225,8 +225,10 @@ describe('SessionPipe', () => {
     }
   });
 
+  const SESSION_AUTH_TOKEN = 'test-session-token-456';
+
   it('should start and stop without error', async () => {
-    sessionPipe = new SessionPipe(sessionId + '-a', ringBuffer);
+    sessionPipe = new SessionPipe(sessionId + '-a', ringBuffer, SESSION_AUTH_TOKEN);
     await sessionPipe.start();
     expect(sessionPipe.isConnected).toBe(false);
     await sessionPipe.stop();
@@ -237,14 +239,15 @@ describe('SessionPipe', () => {
     const testData = Buffer.from('Hello from ring buffer!');
     ringBuffer.write(testData);
 
-    sessionPipe = new SessionPipe(sessionId + '-b', ringBuffer);
+    sessionPipe = new SessionPipe(sessionId + '-b', ringBuffer, SESSION_AUTH_TOKEN);
     await sessionPipe.start();
     const pipeName = sessionPipe.getPipeName();
 
     const received = await new Promise<Buffer>((resolve, reject) => {
       const chunks: Buffer[] = [];
       const client = net.createConnection(pipeName, () => {
-        // connected
+        // Send auth token first
+        client.write(SESSION_AUTH_TOKEN + '\n');
       });
       client.on('data', (chunk: Buffer) => {
         chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
@@ -265,8 +268,38 @@ describe('SessionPipe', () => {
     expect(received.toString()).toBe('Hello from ring buffer!');
   });
 
+  it('should reject invalid auth token', async () => {
+    sessionPipe = new SessionPipe(sessionId + '-auth', ringBuffer, SESSION_AUTH_TOKEN);
+    await sessionPipe.start();
+    const pipeName = sessionPipe.getPipeName();
+
+    const result = await new Promise<string>((resolve, reject) => {
+      const chunks: Buffer[] = [];
+      const client = net.createConnection(pipeName, () => {
+        client.write('wrong-token\n');
+      });
+      client.on('data', (chunk: Buffer) => {
+        chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        const combined = Buffer.concat(chunks).toString();
+        if (combined.includes('AUTH_FAILED')) {
+          resolve(combined.trim());
+        }
+      });
+      client.on('close', () => {
+        const combined = Buffer.concat(chunks).toString();
+        resolve(combined.trim());
+      });
+      client.on('error', () => {
+        resolve('connection_error');
+      });
+      setTimeout(() => reject(new Error('timeout')), 3000);
+    });
+
+    expect(result).toContain('AUTH_FAILED');
+  });
+
   it('should forward bidirectional data', async () => {
-    sessionPipe = new SessionPipe(sessionId + '-c', ringBuffer);
+    sessionPipe = new SessionPipe(sessionId + '-c', ringBuffer, SESSION_AUTH_TOKEN);
     await sessionPipe.start();
     const pipeName = sessionPipe.getPipeName();
 
@@ -279,7 +312,8 @@ describe('SessionPipe', () => {
     const clientOutput = await new Promise<Buffer>((resolve, reject) => {
       const chunks: Buffer[] = [];
       const client = net.createConnection(pipeName, () => {
-        // connected
+        // Send auth token first
+        client.write(SESSION_AUTH_TOKEN + '\n');
       });
 
       let markerSeen = false;
@@ -332,7 +366,7 @@ describe('SessionPipe', () => {
   });
 
   it('should report isConnected correctly', async () => {
-    sessionPipe = new SessionPipe(sessionId + '-d', ringBuffer);
+    sessionPipe = new SessionPipe(sessionId + '-d', ringBuffer, SESSION_AUTH_TOKEN);
     await sessionPipe.start();
     const pipeName = sessionPipe.getPipeName();
 
@@ -340,11 +374,12 @@ describe('SessionPipe', () => {
 
     const client = net.createConnection(pipeName);
 
-    // Wait for connection
+    // Wait for connection and send auth
     await new Promise<void>((resolve) => {
       client.on('connect', () => {
-        // Small delay to allow server to process
-        setTimeout(resolve, 50);
+        client.write(SESSION_AUTH_TOKEN + '\n');
+        // Small delay to allow server to process auth + connection
+        setTimeout(resolve, 100);
       });
     });
 

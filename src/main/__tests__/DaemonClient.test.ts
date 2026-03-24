@@ -89,13 +89,35 @@ function createMockSessionPipe(
 
   const server = net.createServer((socket) => {
     clientSocket = socket;
-    // Flush done immediately (no ring buffer to replay)
-    socket.write(FLUSH_DONE_MARKER);
+    let authBuffer = Buffer.alloc(0);
+    let authenticated = false;
 
-    socket.on('data', (data: Buffer) => {
-      inputReceived.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
-    });
+    const onAuthData = (data: Buffer): void => {
+      const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+      authBuffer = Buffer.concat([authBuffer, chunk]);
+      const newlineIndex = authBuffer.indexOf(0x0a);
+      if (newlineIndex === -1) return;
 
+      // Auth token received — consume it and proceed
+      authenticated = true;
+      socket.removeListener('data', onAuthData);
+      const leftover = authBuffer.subarray(newlineIndex + 1);
+
+      // Flush done immediately (no ring buffer to replay)
+      socket.write(FLUSH_DONE_MARKER);
+
+      // Set up real data handler
+      socket.on('data', (d: Buffer) => {
+        inputReceived.push(Buffer.isBuffer(d) ? d : Buffer.from(d));
+      });
+
+      // Process any leftover data after auth line
+      if (leftover.length > 0) {
+        inputReceived.push(leftover);
+      }
+    };
+
+    socket.on('data', onAuthData);
     socket.on('close', () => { clientSocket = null; });
     socket.on('error', () => { clientSocket = null; });
   });
@@ -322,10 +344,23 @@ describe('DaemonClient', () => {
       let clientSocket: net.Socket | null = null;
       const sessionServer = net.createServer((socket) => {
         clientSocket = socket;
-        socket.write(FLUSH_DONE_MARKER);
-        socket.on('data', (data) => {
-          inputReceived.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
-        });
+        let authBuf = Buffer.alloc(0);
+        const onAuth = (data: Buffer): void => {
+          const chunk = Buffer.isBuffer(data) ? data : Buffer.from(data);
+          authBuf = Buffer.concat([authBuf, chunk]);
+          const nl = authBuf.indexOf(0x0a);
+          if (nl === -1) return;
+          socket.removeListener('data', onAuth);
+          const leftover = authBuf.subarray(nl + 1);
+          socket.write(FLUSH_DONE_MARKER);
+          socket.on('data', (d) => {
+            inputReceived.push(Buffer.isBuffer(d) ? d : Buffer.from(d));
+          });
+          if (leftover.length > 0) {
+            inputReceived.push(leftover);
+          }
+        };
+        socket.on('data', onAuth);
       });
 
       await new Promise<void>((resolve, reject) => {

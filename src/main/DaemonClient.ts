@@ -128,6 +128,8 @@ export class DaemonClient extends EventEmitter {
 
       const socket = net.createConnection(pipeName, () => {
         clearTimeout(timeout);
+        // Send auth token before setting up data handler
+        socket.write(this.authToken + '\n');
         this.sessionPipes.set(sessionId, socket);
         this.setupSessionPipe(sessionId, socket);
         resolve();
@@ -194,14 +196,12 @@ export class DaemonClient extends EventEmitter {
       }
     });
 
-    socket.on('close', () => {
-      this.connected = false;
-      this.controlPipe = null;
-      this.controlBuffer = '';
-      this.emit('disconnected');
+    socket.on('error', () => {
+      // Node.js will fire 'close' after 'error' — cleanup happens there
     });
 
-    socket.on('error', () => {
+    socket.on('close', () => {
+      if (!this.connected) return; // guard against double emission
       this.connected = false;
       this.controlPipe = null;
       this.controlBuffer = '';

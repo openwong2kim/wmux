@@ -295,7 +295,7 @@ function registerRpcHandlers(
         sessionPipes.delete(p.id);
       }
 
-      const pipe = new SessionPipe(p.id, managed.ringBuffer);
+      const pipe = new SessionPipe(p.id, managed.ringBuffer, pipeServer.getAuthToken());
       sessionPipes.set(p.id, pipe);
 
       // Forward PTY output to session pipe
