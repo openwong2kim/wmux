@@ -56,7 +56,7 @@ export function registerInteractionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         if (smartRef !== undefined) {
@@ -141,7 +141,7 @@ export function registerInteractionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const el = await resolveRef(page, ref);
@@ -200,7 +200,7 @@ export function registerInteractionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         let filled = 0;
@@ -253,7 +253,7 @@ export function registerInteractionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         await page.keyboard.press(key);
@@ -285,7 +285,7 @@ export function registerInteractionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const el = await resolveRef(page, ref);
@@ -327,7 +327,7 @@ export function registerInteractionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const sourceEl = await resolveRef(page, sourceRef);
@@ -396,7 +396,7 @@ export function registerInteractionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const el = await resolveRef(page, ref);
@@ -438,7 +438,7 @@ export function registerInteractionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const el = await resolveRef(page, ref);

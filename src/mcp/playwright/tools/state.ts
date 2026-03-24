@@ -56,7 +56,7 @@ export function registerStateTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const context = page.context();
@@ -147,7 +147,7 @@ export function registerStateTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const storageName = type === 'local' ? 'localStorage' : 'sessionStorage';
@@ -291,7 +291,7 @@ export function registerStateTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const context = page.context();
@@ -446,7 +446,7 @@ export function registerStateTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         await page.setViewportSize({ width, height });

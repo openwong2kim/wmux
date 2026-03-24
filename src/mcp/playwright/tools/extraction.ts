@@ -38,7 +38,7 @@ export function registerExtractionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const snapshot = await getSmartSnapshot(page, {
@@ -102,7 +102,7 @@ export function registerExtractionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const markdown = await extractMarkdown(page, {
@@ -143,7 +143,7 @@ export function registerExtractionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const records = await extractStructuredData(page, goal, fields);

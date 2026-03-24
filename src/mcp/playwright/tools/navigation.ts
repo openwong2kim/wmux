@@ -42,7 +42,7 @@ export function registerNavigationTools(server: McpServer): void {
 
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         await page.goto(url, { waitUntil: 'domcontentloaded' });
@@ -74,7 +74,7 @@ export function registerNavigationTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         await page.goBack();
@@ -117,7 +117,7 @@ export function registerNavigationTools(server: McpServer): void {
       try {
         const browser = await engine.getBrowser();
         if (!browser) {
-          throw new Error('No browser connected. Call browser_open first.');
+          throw new Error('No browser connected. Call browser_open with a URL first to establish a CDP connection.');
         }
 
         const resolvedAction = action ?? 'list';

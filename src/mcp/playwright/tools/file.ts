@@ -41,7 +41,7 @@ export function registerFileTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         if (ref) {
@@ -97,7 +97,7 @@ export function registerFileTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const el = await resolveRef(page, ref);
@@ -164,7 +164,7 @@ export function registerFileTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const download = await page.waitForEvent('download', {
@@ -244,7 +244,7 @@ export function registerFileTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         page.once('dialog', async (dialog) => {

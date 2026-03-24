@@ -167,7 +167,7 @@ export function registerInspectionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const snapshot = await generateSnapshot(page, { format: format ?? 'ai' });
@@ -190,7 +190,7 @@ export function registerInspectionTools(server: McpServer): void {
   // -----------------------------------------------------------------------
   server.tool(
     'browser_screenshot',
-    'Take a screenshot of the current page or a specific element. Returns the image as base64-encoded PNG.',
+    'Take a screenshot of the current page or a specific element. Returns the image as base64-encoded PNG. Requires browser_open to be called first to establish a connection, even if a browser panel is already visible.',
     {
       fullPage: z
         .boolean()
@@ -206,7 +206,7 @@ export function registerInspectionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         let buffer: Buffer;
@@ -256,7 +256,7 @@ export function registerInspectionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const warnings = detectDangerousPatterns(expression);
@@ -309,7 +309,7 @@ export function registerInspectionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const key = surfaceKey(surfaceId);
@@ -367,7 +367,7 @@ export function registerInspectionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const key = surfaceKey(surfaceId);
@@ -419,7 +419,7 @@ export function registerInspectionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const key = surfaceKey(surfaceId);
@@ -479,7 +479,7 @@ export function registerInspectionTools(server: McpServer): void {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
-          throw new Error('No browser page available. Call browser_open first.');
+          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
         const el = await resolveRef(page, ref);
