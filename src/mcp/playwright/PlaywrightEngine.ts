@@ -13,14 +13,6 @@ interface CdpInfoResponse {
   targets: CdpTargetInfo[];
 }
 
-interface JsonTarget {
-  id: string;
-  url: string;
-  type: string;
-  title: string;
-  webSocketDebuggerUrl?: string;
-}
-
 const MAX_CONNECT_RETRIES = 3;
 const RETRY_DELAY_MS = 1000;
 const PAGE_FIND_RETRIES = 5;
@@ -31,27 +23,18 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Returns true if the URL belongs to the Electron main renderer window.
- * Navigating these pages would destroy the app — they must never be returned.
- */
-function isElectronShellUrl(url: string): boolean {
-  return (
-    url.startsWith('http://localhost:') ||
-    url.startsWith('devtools://') ||
-    url.startsWith('chrome://')
-  );
-}
-
-/**
  * PlaywrightEngine -- singleton wrapper around playwright-core's Chromium CDP connection.
  *
- * Connects to the wmux Electron app via Chrome DevTools Protocol and provides
- * access to browser pages for automation.
+ * Connects DIRECTLY to webview targets via their WebSocket debugger URL,
+ * rather than the main Electron CDP port. This is necessary because Electron
+ * <webview> tags run in separate guest processes that are invisible to
+ * the main process's connectOverCDP context.
  */
 export class PlaywrightEngine {
   private static instance: PlaywrightEngine | null = null;
 
   private browser: Browser | null = null;
+  private connectedWsUrl: string | null = null;
   private cdpPort: number | null = null;
 
   private constructor() {}
@@ -63,6 +46,22 @@ export class PlaywrightEngine {
     return PlaywrightEngine.instance;
   }
 
+  /**
+   * Connect to a specific webview target via its WebSocket URL.
+   */
+  private async connectToWebview(wsUrl: string): Promise<void> {
+    if (this.browser && this.connectedWsUrl === wsUrl && this.browser.isConnected()) {
+      return;
+    }
+    await this.disconnect();
+    this.browser = await chromium.connectOverCDP(wsUrl);
+    this.connectedWsUrl = wsUrl;
+    console.log(`[PlaywrightEngine] Connected to webview via ${wsUrl.substring(0, 60)}...`);
+  }
+
+  /**
+   * Connect to the main Electron CDP endpoint (fallback).
+   */
   async connect(cdpPort: number): Promise<void> {
     if (this.browser && this.cdpPort === cdpPort && this.browser.isConnected()) {
       return;
@@ -77,28 +76,37 @@ export class PlaywrightEngine {
     if (this.browser) {
       this.browser = null;
       this.cdpPort = null;
+      this.connectedWsUrl = null;
       console.log('[PlaywrightEngine] Disconnected');
     }
   }
 
   /**
-   * Force reconnect — drops existing connection and creates a fresh one.
-   * Needed when new webviews are created after the initial connection,
-   * because connectOverCDP only discovers targets at connection time.
+   * Ensure connected to a webview target.
+   * Fetches registered targets from WebviewCdpManager and connects
+   * directly to the webview's WebSocket URL.
    */
-  async reconnect(): Promise<void> {
-    const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
-    await this.disconnect();
-    await this.connect(info.cdpPort);
-  }
-
-  async ensureConnected(): Promise<void> {
+  async ensureConnected(surfaceId?: string): Promise<void> {
+    // If already connected, check if it's still valid
     if (this.browser?.isConnected()) return;
 
     for (let attempt = 1; attempt <= MAX_CONNECT_RETRIES; attempt++) {
       try {
         const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
-        await this.connect(info.cdpPort);
+        this.cdpPort = info.cdpPort;
+
+        // Find the target to connect to
+        const target = surfaceId
+          ? info.targets.find((t) => t.surfaceId === surfaceId)
+          : info.targets[0];
+
+        if (target?.wsUrl) {
+          // Connect directly to the webview's WebSocket URL
+          await this.connectToWebview(target.wsUrl);
+        } else {
+          // No webview targets yet — connect to main CDP as fallback
+          await this.connect(info.cdpPort);
+        }
         return;
       } catch (err) {
         console.warn(
@@ -127,99 +135,68 @@ export class PlaywrightEngine {
   }
 
   /**
-   * Fetch the CDP /json target list.
-   */
-  private async fetchJsonTargets(): Promise<JsonTarget[]> {
-    if (!this.cdpPort) return [];
-    const resp = await fetch(`http://127.0.0.1:${this.cdpPort}/json`);
-    return (await resp.json()) as JsonTarget[];
-  }
-
-  /**
-   * Try to find a Playwright Page that corresponds to a registered webview target.
-   * Returns null if no safe page can be found.
-   */
-  private async findWebviewPage(
-    allPages: Page[],
-    target: CdpTargetInfo | undefined,
-  ): Promise<Page | null> {
-    // Strategy 1: Match by targetId → URL from /json endpoint
-    if (target) {
-      try {
-        const jsonTargets = await this.fetchJsonTargets();
-        const jsonTarget = jsonTargets.find((t) => t.id === target.targetId);
-        if (jsonTarget && !isElectronShellUrl(jsonTarget.url)) {
-          // Find Playwright page with matching URL
-          const matched = allPages.find((p) => p.url() === jsonTarget.url);
-          if (matched) return matched;
-
-          // URL might differ slightly (trailing slash, redirect) — try loose match
-          const normalizedTarget = jsonTarget.url.replace(/\/+$/, '');
-          const looseMatch = allPages.find(
-            (p) => p.url().replace(/\/+$/, '') === normalizedTarget,
-          );
-          if (looseMatch) return looseMatch;
-        }
-      } catch {
-        // /json fetch failed
-      }
-    }
-
-    // Strategy 2: Any page that isn't the Electron shell
-    // about:blank is allowed — webviews start there before navigating
-    const candidates = allPages.filter((p) => !isElectronShellUrl(p.url()));
-    if (candidates.length > 0) {
-      return candidates[0];
-    }
-
-    return null;
-  }
-
-  /**
    * Get a Page matching the given surfaceId.
    *
-   * Includes retry logic: if no webview page is found on the first attempt,
-   * reconnects to CDP (to discover newly created webview targets) and retries.
+   * Connects directly to the webview's WebSocket URL for reliable page discovery.
+   * Includes retry logic for webviews that are still initializing.
    */
   async getPage(surfaceId?: string): Promise<Page | null> {
-    await this.ensureConnected();
-
     for (let attempt = 1; attempt <= PAGE_FIND_RETRIES; attempt++) {
-      const allPages = this.getAllPages();
-      if (allPages.length === 0 && attempt < PAGE_FIND_RETRIES) {
-        // No pages yet — reconnect to discover new targets
-        await sleep(PAGE_FIND_DELAY_MS);
-        await this.reconnect();
-        continue;
-      }
+      try {
+        // Fetch current target info
+        const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
+        this.cdpPort = info.cdpPort;
 
-      // Get registered webview targets
-      const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
-      const target = surfaceId
-        ? info.targets.find((t) => t.surfaceId === surfaceId)
-        : info.targets[0];
+        const target = surfaceId
+          ? info.targets.find((t) => t.surfaceId === surfaceId)
+          : info.targets[0];
 
-      // If no targets registered yet, wait for webview to initialize
-      if (!target && attempt < PAGE_FIND_RETRIES) {
-        console.log(
-          `[PlaywrightEngine] No CDP targets registered yet, retry ${attempt}/${PAGE_FIND_RETRIES}...`,
+        if (!target) {
+          if (attempt < PAGE_FIND_RETRIES) {
+            console.log(
+              `[PlaywrightEngine] No CDP targets registered yet, retry ${attempt}/${PAGE_FIND_RETRIES}...`,
+            );
+            await sleep(PAGE_FIND_DELAY_MS);
+            continue;
+          }
+          return null;
+        }
+
+        if (!target.wsUrl) {
+          console.warn('[PlaywrightEngine] Target has no wsUrl:', target.surfaceId);
+          return null;
+        }
+
+        // Connect directly to the webview target
+        // Reconnect if targeting a different webview than currently connected
+        if (this.connectedWsUrl !== target.wsUrl || !this.browser?.isConnected()) {
+          await this.connectToWebview(target.wsUrl);
+        }
+
+        // Get pages from this webview's context
+        const pages = this.getAllPages();
+        if (pages.length > 0) {
+          return pages[0];
+        }
+
+        // Pages might not be ready yet — retry
+        if (attempt < PAGE_FIND_RETRIES) {
+          console.log(
+            `[PlaywrightEngine] Connected but no pages yet, retry ${attempt}/${PAGE_FIND_RETRIES}...`,
+          );
+          await sleep(PAGE_FIND_DELAY_MS);
+          // Force reconnect on next attempt
+          await this.disconnect();
+        }
+      } catch (err) {
+        console.warn(
+          `[PlaywrightEngine] getPage attempt ${attempt} failed:`,
+          err instanceof Error ? err.message : String(err),
         );
-        await sleep(PAGE_FIND_DELAY_MS);
-        // Reconnect to pick up newly created webview targets
-        await this.reconnect();
-        continue;
-      }
-
-      const page = await this.findWebviewPage(allPages, target);
-      if (page) return page;
-
-      // Page not found — reconnect and retry (new webview might not be visible yet)
-      if (attempt < PAGE_FIND_RETRIES) {
-        console.log(
-          `[PlaywrightEngine] Webview page not found, reconnecting... (${attempt}/${PAGE_FIND_RETRIES})`,
-        );
-        await sleep(PAGE_FIND_DELAY_MS);
-        await this.reconnect();
+        if (attempt < PAGE_FIND_RETRIES) {
+          await sleep(PAGE_FIND_DELAY_MS);
+          await this.disconnect();
+        }
       }
     }
 

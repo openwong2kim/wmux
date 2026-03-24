@@ -194,6 +194,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       surfaceId: t.surfaceId,
       webContentsId: t.webContentsId,
       targetId: t.targetId,
+      wsUrl: t.wsUrl,  // Internal use only — needed by PlaywrightEngine to connect to webview
     }));
     const cdpPort: number = webviewCdpManager.getCdpPort();
     return { cdpPort, targets };
