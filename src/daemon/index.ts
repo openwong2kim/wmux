@@ -220,9 +220,40 @@ async function recoverSessions(
         }
       }
 
-      session.state = 'dead';
-      session.exitCode = null;
-      changed = true;
+      // No snapshot file found — still try to recover the session
+      // with an empty scrollback rather than marking it dead.
+      // This handles cases where the daemon was killed before
+      // the 30s snapshot interval fired (e.g. immediate reboot).
+      try {
+        const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+        const recovered = sessionManager.createSession({
+          id: session.id,
+          cmd: session.cmd,
+          cwd,
+          env: session.env,
+          cols: session.cols,
+          rows: session.rows,
+          agent: session.agent,
+          createdAt: session.createdAt,
+        });
+
+        processMonitor.watch(recovered.id, recovered.pid, () => {
+          const managed = sessionManager.getSession(recovered.id);
+          if (managed && managed.meta.state !== 'dead') {
+            managed.meta.state = 'dead';
+            sessionManager.emit('session:died', { id: recovered.id, exitCode: null });
+          }
+        });
+
+        recoveredIds.add(session.id);
+        changed = true;
+        log('info', `Recovered session ${session.id} without scrollback in ${cwd}`);
+      } catch (err) {
+        log('error', `Failed to recover session ${session.id}:`, err);
+        session.state = 'dead';
+        session.exitCode = null;
+        changed = true;
+      }
     }
   }
 
@@ -671,6 +702,7 @@ async function main(): Promise<void> {
   reapInterval.unref();
 
   // 8c. Periodic buffer snapshots (every 30s) — survives forced kills / power loss
+  // Also save sessions.json so recovery has up-to-date session metadata
   const snapshotInterval = setInterval(() => {
     const managed = sessionManager.listManagedSessions();
     const live = managed.filter((m) => m.meta.state !== 'dead');
@@ -683,6 +715,10 @@ async function main(): Promise<void> {
         log('warn', `Snapshot dump failed for ${m.meta.id}:`, err);
       });
     }
+
+    // Save session metadata alongside buffer snapshots
+    const state = buildState(sessionManager);
+    stateWriter.saveImmediate(state);
   }, 30_000);
   snapshotInterval.unref();
 
@@ -692,6 +728,35 @@ async function main(): Promise<void> {
 
   process.on('SIGTERM', () => doShutdown('SIGTERM'));
   process.on('SIGINT', () => doShutdown('SIGINT'));
+
+  // Windows-specific: handle OS shutdown/logoff/restart.
+  // Detached Node processes on Windows don't receive SIGTERM on shutdown.
+  // 'beforeExit' won't fire either. We use the 'exit' event as a last-resort
+  // synchronous save, and also periodic state saves to minimize data loss.
+  if (process.platform === 'win32') {
+    process.on('exit', () => {
+      // Synchronous-only — dump what we can before process dies
+      try {
+        const managed = sessionManager.listManagedSessions();
+        stateWriter.ensureBufferDir();
+        for (const m of managed) {
+          if (m.meta.state === 'dead') continue;
+          const dumpPath = stateWriter.getBufferDumpPath(m.meta.id);
+          try {
+            const data = m.ringBuffer.readAll();
+            fs.writeFileSync(dumpPath, data);
+            m.meta.state = 'suspended';
+            m.meta.bufferDumpPath = dumpPath;
+          } catch { /* best effort */ }
+        }
+        const suspendState: DaemonState = {
+          version: 1,
+          sessions: managed.map((m) => ({ ...m.meta })),
+        };
+        stateWriter.saveImmediate(suspendState);
+      } catch { /* best effort */ }
+    });
+  }
 
   // 10. Uncaught error handlers
   process.on('uncaughtException', (err) => {

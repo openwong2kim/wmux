@@ -24,7 +24,7 @@ const config: ForgeConfig = {
       unpack: '**/node_modules/node-pty/**',
     },
     icon: './assets/icon',
-    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle'],
+    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './assets/icon.ico'],
   },
   hooks: {
     postPackage: async (_config, packageResult) => {
@@ -70,7 +70,11 @@ const config: ForgeConfig = {
     },
   },
   makers: [
-    new MakerSquirrel({ name: 'wmux' }),
+    new MakerSquirrel({
+      name: 'wmux',
+      setupIcon: './assets/icon.ico',
+      iconUrl: 'https://raw.githubusercontent.com/openwong2kim/wmux/main/assets/icon.ico',
+    }),
     new MakerZIP({}, ['darwin']),
   ],
   plugins: [

@@ -46,33 +46,79 @@ if (process.env.WMUX_DISABLE_CDP !== 'true') {
 // The original electron-squirrel-startup had a race between its async
 // app.quit() callback and our synchronous app.quit(). We avoid that by
 // using spawn + 'close' event and only calling process.exit() once.
+//
+// IMPORTANT: Set a flag so the rest of the app initialization is skipped
+// during Squirrel events. Without this, PTYManager/PipeServer/etc.
+// initialize and the before-quit handler tries cleanup — causing errors.
+let isSquirrelEvent = false;
 if (process.platform === 'win32') {
   const squirrelCmd = process.argv[1];
-  const path = require('path');
-  const { spawn } = require('child_process');
-  const updateExe = path.resolve(path.dirname(process.execPath), '..', 'Update.exe');
-  const target = path.basename(process.execPath);
+  if (squirrelCmd?.startsWith('--squirrel-')) {
+    isSquirrelEvent = true;
+    const path = require('path');
+    const { spawn } = require('child_process');
+    const updateExe = path.resolve(path.dirname(process.execPath), '..', 'Update.exe');
+    const target = path.basename(process.execPath);
 
-  if (squirrelCmd === '--squirrel-install') {
-    spawn(updateExe, ['--createShortcut=' + target], { detached: true })
-      .on('close', () => {
-        // Auto-launch app after install
-        spawn(process.execPath, [], { detached: true, stdio: 'ignore' }).unref();
-        process.exit(0);
-      });
-    app.quit();
-  } else if (squirrelCmd === '--squirrel-updated') {
-    spawn(updateExe, ['--createShortcut=' + target], { detached: true })
-      .on('close', () => process.exit(0));
-    app.quit();
-  } else if (squirrelCmd === '--squirrel-uninstall') {
-    spawn(updateExe, ['--removeShortcut=' + target], { detached: true })
-      .on('close', () => process.exit(0));
-    app.quit();
-  } else if (squirrelCmd === '--squirrel-obsolete') {
-    process.exit(0);
+    if (squirrelCmd === '--squirrel-install') {
+      // Register Windows startup entry so wmux survives reboot
+      try {
+        const { execFileSync } = require('child_process');
+        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+        const reg = path.join(systemRoot, 'System32', 'reg.exe');
+        execFileSync(reg, [
+          'add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+          '/v', 'wmux', '/t', 'REG_SZ', '/d', `"${process.execPath}"`, '/f',
+        ], { windowsHide: true });
+      } catch { /* best-effort */ }
+
+      spawn(updateExe, ['--createShortcut=' + target, '--shortcut-locations=Desktop,StartMenu'], { detached: true })
+        .on('close', () => {
+          // Auto-launch app after install
+          spawn(process.execPath, [], { detached: true, stdio: 'ignore' }).unref();
+          process.exit(0);
+        });
+    } else if (squirrelCmd === '--squirrel-updated') {
+      // Re-register startup entry with current exe path (may change after update)
+      try {
+        const { execFileSync } = require('child_process');
+        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+        const reg = path.join(systemRoot, 'System32', 'reg.exe');
+        execFileSync(reg, [
+          'add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+          '/v', 'wmux', '/t', 'REG_SZ', '/d', `"${process.execPath}"`, '/f',
+        ], { windowsHide: true });
+      } catch { /* best-effort */ }
+
+      spawn(updateExe, ['--createShortcut=' + target], { detached: true })
+        .on('close', () => process.exit(0));
+    } else if (squirrelCmd === '--squirrel-uninstall') {
+      // Remove startup registry entry
+      try {
+        const { execFileSync } = require('child_process');
+        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+        const reg = path.join(systemRoot, 'System32', 'reg.exe');
+        execFileSync(reg, [
+          'delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
+          '/v', 'wmux', '/f',
+        ], { windowsHide: true });
+      } catch { /* best-effort */ }
+
+      spawn(updateExe, ['--removeShortcut=' + target], { detached: true })
+        .on('close', () => process.exit(0));
+    } else if (squirrelCmd === '--squirrel-obsolete') {
+      process.exit(0);
+    }
   }
 }
+
+// Skip all app initialization during Squirrel installer events.
+// Squirrel handlers above already called process.exit() in their callbacks.
+if (!isSquirrelEvent) {
+appInit();
+}
+
+function appInit(): void {
 
 // Prevent multiple instances — focus existing window instead
 const gotLock = app.requestSingleInstanceLock();
@@ -80,6 +126,7 @@ console.log('[DEBUG] gotLock =', gotLock);
 if (!gotLock) {
   console.log('[DEBUG] failed to get single instance lock, quitting');
   app.quit();
+  return;
 } else {
   app.on('second-instance', () => {
     if (mainWindow) {
@@ -302,3 +349,5 @@ app.on('activate', () => {
     attachWindowRecovery(mainWindow);
   }
 });
+
+} // end appInit()

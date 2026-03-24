@@ -8,7 +8,9 @@ export function createWindow(): BrowserWindow {
     minWidth: 800,
     minHeight: 600,
     title: 'wmux',
-    icon: path.join(__dirname, '../../assets/icon.ico'),
+    icon: process.env.NODE_ENV === 'development'
+      ? path.join(__dirname, '../../assets/icon.ico')
+      : path.join(process.resourcesPath, 'icon.ico'),
     backgroundColor: '#1e1e2e',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
