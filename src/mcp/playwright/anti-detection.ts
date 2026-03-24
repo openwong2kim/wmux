@@ -25,25 +25,31 @@ export async function applyAntiDetection(page: Page): Promise<void> {
 // ---------------------------------------------------------------------------
 
 /**
- * Evaluate a JavaScript expression in the page context with the
- * `userGesture` flag set to `true`.
+ * Evaluate a JavaScript expression in the page context via CDP
+ * `Runtime.evaluate`.
  *
- * This is useful for actions that require a transient user activation
- * (e.g. opening a popup, triggering downloads) without an actual mouse /
- * keyboard event.
+ * @param page       - The Playwright page to evaluate in.
+ * @param expression - The JavaScript expression to evaluate.
+ * @param options    - Optional settings.
+ * @param options.userGesture - When `true`, the evaluation is treated as if
+ *   triggered by a user gesture (transient activation). Defaults to `false`
+ *   to follow the principle of least privilege. Callers that genuinely need
+ *   user activation (e.g. opening popups, triggering downloads) should
+ *   explicitly pass `true`.
  *
  * Internally opens a CDP session and calls `Runtime.evaluate`.
  */
 export async function evaluateWithGesture(
   page: Page,
   expression: string,
+  options?: { userGesture?: boolean },
 ): Promise<any> {
   const client = await page.context().newCDPSession(page);
 
   try {
     const result = await client.send('Runtime.evaluate', {
       expression,
-      userGesture: true,
+      userGesture: options?.userGesture ?? false,
       returnByValue: true,
       awaitPromise: true,
     });

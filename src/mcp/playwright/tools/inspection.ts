@@ -4,6 +4,7 @@ import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { generateSnapshot, resolveRef } from '../snapshot';
 import { evaluateWithGesture } from '../anti-detection';
+import { detectDangerousPatterns } from '../security';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -258,9 +259,21 @@ export function registerInspectionTools(server: McpServer): void {
           throw new Error('No browser page available. Call browser_open first.');
         }
 
+        const warnings = detectDangerousPatterns(expression);
+        if (warnings.length > 0) {
+          console.warn(`[browser_evaluate] Dangerous patterns detected: ${warnings.join(', ')}`);
+        }
+
         const result = await evaluateWithGesture(page, expression);
         const text =
-          typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+          typeof result === 'string' ? result : (JSON.stringify(result, null, 2) ?? 'undefined');
+
+        if (warnings.length > 0) {
+          const warningText = `\u26A0 Security warning: expression contains potentially dangerous patterns: ${warnings.join(', ')}. Exercise caution with untrusted input.\n\n`;
+          return {
+            content: [{ type: 'text' as const, text: warningText + text }],
+          };
+        }
 
         return {
           content: [{ type: 'text' as const, text: text ?? 'undefined' }],

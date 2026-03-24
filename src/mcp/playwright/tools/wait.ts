@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { detectDangerousPatterns } from '../security';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -82,9 +83,16 @@ export function registerWaitTools(server: McpServer): void {
         }
 
         if (fn) {
+          const warnings = detectDangerousPatterns(fn);
+          if (warnings.length > 0) {
+            console.warn(`[browser_wait] Dangerous patterns in fn: ${warnings.join(', ')}`);
+          }
           await page.waitForFunction(fn, undefined, { timeout: resolvedTimeout });
+          const warningPrefix = warnings.length > 0
+            ? `\u26A0 Security warning: fn contains potentially dangerous patterns: ${warnings.join(', ')}.\n`
+            : '';
           return {
-            content: [{ type: 'text' as const, text: `Wait completed: custom predicate satisfied` }],
+            content: [{ type: 'text' as const, text: warningPrefix + 'Wait completed: custom predicate satisfied' }],
           };
         }
 
