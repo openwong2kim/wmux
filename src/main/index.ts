@@ -72,12 +72,13 @@ if (process.platform === 'win32') {
         ], { windowsHide: true });
       } catch { /* best-effort */ }
 
-      spawn(updateExe, ['--createShortcut=' + target, '--shortcut-locations=Desktop,StartMenu'], { detached: true })
+      spawn(updateExe, ['--createShortcut', target, '--shortcut-locations', 'Desktop,StartMenu'], { detached: true })
         .on('close', () => {
           // Auto-launch app after install
           spawn(process.execPath, [], { detached: true, stdio: 'ignore' }).unref();
           process.exit(0);
         });
+      app.quit();
     } else if (squirrelCmd === '--squirrel-updated') {
       // Re-register startup entry with current exe path (may change after update)
       try {
@@ -90,8 +91,9 @@ if (process.platform === 'win32') {
         ], { windowsHide: true });
       } catch { /* best-effort */ }
 
-      spawn(updateExe, ['--createShortcut=' + target], { detached: true })
+      spawn(updateExe, ['--createShortcut', target], { detached: true })
         .on('close', () => process.exit(0));
+      app.quit();
     } else if (squirrelCmd === '--squirrel-uninstall') {
       // Remove startup registry entry
       try {
@@ -104,8 +106,9 @@ if (process.platform === 'win32') {
         ], { windowsHide: true });
       } catch { /* best-effort */ }
 
-      spawn(updateExe, ['--removeShortcut=' + target], { detached: true })
+      spawn(updateExe, ['--removeShortcut', target], { detached: true })
         .on('close', () => process.exit(0));
+      app.quit();
     } else if (squirrelCmd === '--squirrel-obsolete') {
       process.exit(0);
     }
