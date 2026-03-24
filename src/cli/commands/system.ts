@@ -24,7 +24,7 @@ export async function handleSystem(
         if (!response.ok) { printError(response); return; }
         const info = response.result as IdentifyResult;
         console.log(`app:      ${info?.app ?? 'wmux'}`);
-        console.log(`version:  ${info?.version ?? '1.0.0'}`);
+        console.log(`version:  ${info?.version ?? '2.0.0'}`);
         console.log(`platform: ${info?.platform ?? process.platform}`);
       }
       break;

@@ -735,7 +735,7 @@ function TabAbout() {
             className="text-xs font-mono px-2 py-0.5 rounded"
             style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-blue)', border: '1px solid var(--bg-overlay)' }}
           >
-            v1.0.0
+            v2.0.0
           </span>
           <p className="text-[11px] text-[color:var(--text-muted)] mt-1">
             {t('settings.aboutTagline')}

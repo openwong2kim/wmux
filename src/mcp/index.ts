@@ -16,7 +16,7 @@ import { registerExtractionTools } from './playwright/tools/extraction';
 
 const server = new McpServer({
   name: 'wmux',
-  version: '1.0.0',
+  version: '2.0.0',
 });
 
 // Helper: wrap an RPC call as an MCP tool result
