@@ -213,9 +213,13 @@ function registerRpcHandlers(
   processMonitor: ProcessMonitor,
   startTime: number,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
+  watchdog: Watchdog,
 ): void {
   // daemon.createSession
   pipeServer.onRpc('daemon.createSession', async (params) => {
+    if (watchdog.isBlocked) {
+      throw new Error('Cannot create session: memory pressure too high. Try again later.');
+    }
     const p = params as unknown as DaemonCreateSessionParams;
     if (typeof p.id !== 'string' || !/^[a-zA-Z0-9_-]{1,64}$/.test(p.id)) {
       throw new Error('Invalid session ID');
@@ -552,7 +556,7 @@ async function main(): Promise<void> {
   await recoverSessions(stateWriter, sessionManager, processMonitor);
 
   // 5. Register RPC handlers
-  registerRpcHandlers(pipeServer, sessionManager, stateWriter, sessionPipes, processMonitor, startTime, sessionDataListeners);
+  registerRpcHandlers(pipeServer, sessionManager, stateWriter, sessionPipes, processMonitor, startTime, sessionDataListeners, watchdog);
 
   // 6. Wire events
   wireEvents(sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, sessionDataListeners);
@@ -569,7 +573,28 @@ async function main(): Promise<void> {
     log('warn', 'Failed to write pipe name file:', err);
   }
 
-  // 8. Start watchdog
+  // 8. Start watchdog with escalation callbacks
+  watchdog.setCallbacks({
+    onReapDeadSessions: () => {
+      let reaped = 0;
+      for (const managed of sessionManager.listManagedSessions()) {
+        if (managed.meta.state !== 'dead') continue;
+        sessionManager.destroySession(managed.meta.id);
+        reaped++;
+      }
+      if (reaped > 0) {
+        const state = buildState(sessionManager);
+        stateWriter.saveImmediate(state);
+      }
+      return reaped;
+    },
+    onBlockNewSessions: (blocked) => {
+      log(blocked ? 'warn' : 'info',
+        blocked ? 'New session creation blocked due to memory pressure'
+                : 'New session creation unblocked — memory recovered');
+    },
+  });
+
   watchdog.start(() => ({
     sessions: sessionManager.listSessions().length,
     memory: process.memoryUsage().rss,
