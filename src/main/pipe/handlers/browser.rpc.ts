@@ -201,6 +201,210 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
   });
 
   /**
+   * browser.cdp.send
+   * Proxy any CDP command to the webview via webContents.debugger.
+   * params: { method: string, params?: object, surfaceId?: string }
+   */
+  router.register('browser.cdp.send', async (params) => {
+    const method = typeof params['method'] === 'string' ? params['method'] : '';
+    if (!method) throw new Error('browser.cdp.send: missing "method"');
+    const cdpParams = (typeof params['params'] === 'object' && params['params'] !== null)
+      ? params['params'] as Record<string, unknown>
+      : {};
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+
+    const target = webviewCdpManager.getTarget(surfaceId);
+    if (!target) throw new Error('browser.cdp.send: no webview target registered');
+
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.cdp.send: WebContents unavailable');
+
+    return await wc.debugger.sendCommand(method, cdpParams);
+  });
+
+  /**
+   * browser.screenshot
+   * Capture a screenshot of the webview.
+   * params: { surfaceId?: string, fullPage?: boolean }
+   */
+  router.register('browser.screenshot', async (params) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const fullPage = params['fullPage'] === true;
+
+    const target = webviewCdpManager.getTarget(surfaceId);
+    if (!target) throw new Error('browser.screenshot: no webview target registered');
+
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.screenshot: WebContents unavailable');
+
+    // Always use CDP Page.captureScreenshot (reliable, no timeout issues)
+    const result = await wc.debugger.sendCommand('Page.captureScreenshot', {
+      format: 'png',
+      ...(fullPage && { captureBeyondViewport: true }),
+    });
+    return { data: (result as { data: string }).data };
+  });
+
+  /**
+   * browser.evaluate
+   * Execute JavaScript in the webview and return the result.
+   * params: { expression: string, surfaceId?: string }
+   */
+  router.register('browser.evaluate', async (params) => {
+    const expression = typeof params['expression'] === 'string' ? params['expression'] : '';
+    if (!expression) throw new Error('browser.evaluate: missing "expression"');
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+
+    const target = webviewCdpManager.getTarget(surfaceId);
+    if (!target) throw new Error('browser.evaluate: no webview target registered');
+
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.evaluate: WebContents unavailable');
+
+    // Use CDP Runtime.evaluate for reliable execution (executeJavaScript can fail silently)
+    try {
+      const cdpResult = await wc.debugger.sendCommand('Runtime.evaluate', {
+        expression,
+        returnByValue: true,
+        awaitPromise: true,
+        userGesture: true,
+      }) as { result: { value?: unknown; description?: string; type: string }; exceptionDetails?: { text: string; exception?: { description?: string } } };
+
+      if (cdpResult.exceptionDetails) {
+        const errMsg = cdpResult.exceptionDetails.exception?.description
+          || cdpResult.exceptionDetails.text
+          || 'Unknown script error';
+        throw new Error(errMsg);
+      }
+
+      return { value: cdpResult.result?.value ?? null };
+    } catch (err) {
+      // Fallback to executeJavaScript
+      try {
+        const result = await wc.executeJavaScript(expression);
+        return { value: result };
+      } catch (fallbackErr) {
+        throw new Error(`evaluate failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`);
+      }
+    }
+  });
+
+  /**
+   * browser.type.cdp
+   * Type text into the currently focused element via CDP Input events.
+   * This simulates real keyboard input, which works with React/controlled inputs.
+   * params: { text: string, surfaceId?: string }
+   */
+  router.register('browser.type.cdp', async (params) => {
+    const text = typeof params['text'] === 'string' ? params['text'] : '';
+    if (!text) throw new Error('browser.type.cdp: missing "text"');
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+
+    const target = webviewCdpManager.getTarget(surfaceId);
+    if (!target) throw new Error('browser.type.cdp: no webview target registered');
+
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.type.cdp: WebContents unavailable');
+
+    // Use Input.insertText for reliable text input (handles CJK, React inputs, etc.)
+    await wc.debugger.sendCommand('Input.insertText', { text });
+    return { ok: true, text };
+  });
+
+  /**
+   * browser.click.cdp
+   * Click at coordinates or on the focused element via CDP Input events.
+   * params: { x?: number, y?: number, selector?: string, surfaceId?: string }
+   */
+  router.register('browser.click.cdp', async (params) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const selector = typeof params['selector'] === 'string' ? params['selector'] : undefined;
+
+    const target = webviewCdpManager.getTarget(surfaceId);
+    if (!target) throw new Error('browser.click.cdp: no webview target registered');
+
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.click.cdp: WebContents unavailable');
+
+    let x = typeof params['x'] === 'number' ? params['x'] : 0;
+    let y = typeof params['y'] === 'number' ? params['y'] : 0;
+
+    if (selector) {
+      // Get element coordinates via JS evaluation
+      const coordResult = await wc.debugger.sendCommand('Runtime.evaluate', {
+        expression: `(() => {
+          const el = document.querySelector(${JSON.stringify(selector)});
+          if (!el) return null;
+          const r = el.getBoundingClientRect();
+          return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+        })()`,
+        returnByValue: true,
+      }) as { result: { value: { x: number; y: number } | null } };
+
+      const coords = coordResult.result?.value;
+      if (!coords) throw new Error(`Element not found: ${selector}`);
+      x = coords.x;
+      y = coords.y;
+    }
+
+    // Simulate mouse click via CDP
+    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mousePressed', x, y, button: 'left', clickCount: 1,
+    });
+    await wc.debugger.sendCommand('Input.dispatchMouseEvent', {
+      type: 'mouseReleased', x, y, button: 'left', clickCount: 1,
+    });
+
+    return { ok: true, x, y };
+  });
+
+  /**
+   * browser.press.cdp
+   * Press a keyboard key via CDP Input events.
+   * params: { key: string, surfaceId?: string }
+   */
+  router.register('browser.press.cdp', async (params) => {
+    const key = typeof params['key'] === 'string' ? params['key'] : '';
+    if (!key) throw new Error('browser.press.cdp: missing "key"');
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+
+    const target = webviewCdpManager.getTarget(surfaceId);
+    if (!target) throw new Error('browser.press.cdp: no webview target registered');
+
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.press.cdp: WebContents unavailable');
+
+    // Map key names to CDP key descriptors
+    const keyMap: Record<string, { key: string; code: string; windowsVirtualKeyCode: number; nativeVirtualKeyCode: number }> = {
+      'Enter': { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 },
+      'Tab': { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 },
+      'Escape': { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 },
+      'Backspace': { key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 },
+      'ArrowDown': { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40, nativeVirtualKeyCode: 40 },
+      'ArrowUp': { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38, nativeVirtualKeyCode: 38 },
+      'ArrowLeft': { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37, nativeVirtualKeyCode: 37 },
+      'ArrowRight': { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 },
+    };
+
+    const mapped = keyMap[key];
+    if (mapped) {
+      await wc.debugger.sendCommand('Input.dispatchKeyEvent', {
+        type: 'keyDown', ...mapped,
+      });
+      await wc.debugger.sendCommand('Input.dispatchKeyEvent', {
+        type: 'keyUp', ...mapped,
+      });
+    } else {
+      // For text characters, use char event
+      await wc.debugger.sendCommand('Input.dispatchKeyEvent', {
+        type: 'char', text: key, unmodifiedText: key,
+      });
+    }
+
+    return { ok: true, key };
+  });
+
+  /**
    * browser.cdp.target
    * Returns the CDP WebSocket URL for the active browser webview.
    * params: { surfaceId?: string }

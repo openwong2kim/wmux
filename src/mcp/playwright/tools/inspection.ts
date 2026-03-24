@@ -5,6 +5,7 @@ import { PlaywrightEngine } from '../PlaywrightEngine';
 import { generateSnapshot, resolveRef } from '../snapshot';
 import { evaluateWithGesture } from '../anti-detection';
 import { detectDangerousPatterns } from '../security';
+import { sendRpc } from '../../wmux-client';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -165,15 +166,55 @@ export function registerInspectionTools(server: McpServer): void {
     },
     async ({ format, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
+        // Try Playwright for full snapshot
+        const page = await engine.getPage(surfaceId).catch(() => null);
+        if (page) {
+          const snapshot = await generateSnapshot(page, { format: format ?? 'ai' });
+          return {
+            content: [{ type: 'text' as const, text: snapshot }],
+          };
         }
 
-        const snapshot = await generateSnapshot(page, { format: format ?? 'ai' });
+        // Fallback: extract page structure via RPC evaluation
+        // Tags interactive elements with data-wmux-ref so interaction tools can resolve them
+        const result = await sendRpc('browser.evaluate', {
+          expression: `(() => {
+            const sel = 'a[href], button, input:not([type="hidden"]), textarea, select, [role="button"], [role="link"], [role="textbox"], [role="checkbox"], [role="radio"], [role="combobox"], [role="searchbox"], [role="tab"], [contenteditable="true"]';
+            const interactives = [...document.querySelectorAll(sel)].slice(0, 100);
+            interactives.forEach((el, i) => el.setAttribute('data-wmux-ref', String(i)));
+            const title = document.title;
+            const url = location.href;
+            const lines = ['Page: ' + title, 'URL: ' + url, ''];
+            document.querySelectorAll('h1,h2,h3').forEach(h => {
+              lines.push(h.tagName + ': ' + (h.textContent || '').trim().substring(0, 80));
+            });
+            lines.push('', 'Interactive elements (use ref number for click/fill/type):');
+            interactives.forEach((el, i) => {
+              const tag = el.tagName.toLowerCase();
+              const role = el.getAttribute('role') || '';
+              const text = (el.textContent || '').trim().substring(0, 60);
+              const label = el.getAttribute('aria-label') || '';
+              const name = el.getAttribute('name') || '';
+              const type = el.getAttribute('type') || '';
+              const placeholder = el.getAttribute('placeholder') || '';
+              const href = el.getAttribute('href') || '';
+              let desc = '  [ref=' + i + '] ' + tag;
+              if (type) desc += '[type=' + type + ']';
+              if (role) desc += '[role=' + role + ']';
+              if (name) desc += ' name="' + name + '"';
+              if (label) desc += ' "' + label + '"';
+              else if (text) desc += ' "' + text + '"';
+              if (placeholder) desc += ' placeholder="' + placeholder + '"';
+              if (href) desc += ' -> ' + href.substring(0, 60);
+              lines.push(desc);
+            });
+            return lines.join('\\n');
+          })()`,
+          ...(surfaceId && { surfaceId }),
+        }) as { value: string };
 
         return {
-          content: [{ type: 'text' as const, text: snapshot }],
+          content: [{ type: 'text' as const, text: result.value }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -204,30 +245,32 @@ export function registerInspectionTools(server: McpServer): void {
     },
     async ({ fullPage, ref, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
-
-        let buffer: Buffer;
-
+        // Try Playwright for element-level screenshots (ref)
         if (ref) {
-          const el = await resolveRef(page, ref);
-          if (!el) {
-            throw new Error(`Could not resolve ref="${ref}" to an element.`);
+          const page = await engine.getPage(surfaceId);
+          if (page) {
+            const el = await resolveRef(page, ref);
+            if (!el) {
+              throw new Error(`Could not resolve ref="${ref}" to an element.`);
+            }
+            const buffer = (await el.screenshot()) as Buffer;
+            return {
+              content: [{ type: 'image' as const, data: buffer.toString('base64'), mimeType: 'image/png' as const }],
+            };
           }
-          buffer = (await el.screenshot()) as Buffer;
-        } else {
-          buffer = (await page.screenshot({ fullPage: fullPage ?? false })) as Buffer;
         }
 
-        const base64 = buffer.toString('base64');
+        // Use RPC for fast, reliable screenshots (bypasses Playwright CDP discovery)
+        const result = await sendRpc('browser.screenshot', {
+          ...(surfaceId && { surfaceId }),
+          ...(fullPage && { fullPage }),
+        }) as { data: string };
 
         return {
           content: [
             {
               type: 'image' as const,
-              data: base64,
+              data: result.data,
               mimeType: 'image/png' as const,
             },
           ],
@@ -254,17 +297,26 @@ export function registerInspectionTools(server: McpServer): void {
     },
     async ({ expression, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
-
         const warnings = detectDangerousPatterns(expression);
         if (warnings.length > 0) {
           console.warn(`[browser_evaluate] Dangerous patterns detected: ${warnings.join(', ')}`);
         }
 
-        const result = await evaluateWithGesture(page, expression);
+        let result: unknown;
+
+        // Try Playwright first for gesture-aware evaluation
+        const page = await engine.getPage(surfaceId).catch(() => null);
+        if (page) {
+          result = await evaluateWithGesture(page, expression);
+        } else {
+          // Fallback: RPC evaluation via main process webContents
+          const rpcResult = await sendRpc('browser.evaluate', {
+            expression,
+            ...(surfaceId && { surfaceId }),
+          }) as { value: unknown };
+          result = rpcResult.value;
+        }
+
         const text =
           typeof result === 'string' ? result : (JSON.stringify(result, null, 2) ?? 'undefined');
 

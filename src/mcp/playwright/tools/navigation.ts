@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { validateNavigationUrl } from '../../../shared/types';
+import { sendRpc } from '../../wmux-client';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -40,16 +41,10 @@ export function registerNavigationTools(server: McpServer): void {
           };
         }
 
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
-
-        await page.goto(url, { waitUntil: 'domcontentloaded' });
-        const finalUrl = page.url();
-
+        // Use RPC for fast, reliable navigation (bypasses Playwright CDP discovery)
+        await sendRpc('browser.navigate', { url, ...(surfaceId && { surfaceId }) });
         return {
-          content: [{ type: 'text' as const, text: `Navigated to ${finalUrl}` }],
+          content: [{ type: 'text' as const, text: `Navigated to ${url}` }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -72,16 +67,27 @@ export function registerNavigationTools(server: McpServer): void {
     },
     async ({ surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        // Use CDP via RPC for reliability
+        await sendRpc('browser.cdp.send', {
+          method: 'Page.navigateToHistoryEntry',
+          params: {},
+          ...(surfaceId && { surfaceId }),
+        }).catch(() => {
+          // Fallback: use history navigation via JS evaluation
+          return sendRpc('browser.evaluate', {
+            expression: 'history.back()',
+            ...(surfaceId && { surfaceId }),
+          });
+        });
 
-        await page.goBack();
-        const currentUrl = page.url();
+        // Get current URL
+        const urlResult = await sendRpc('browser.evaluate', {
+          expression: 'location.href',
+          ...(surfaceId && { surfaceId }),
+        }) as { value: string };
 
         return {
-          content: [{ type: 'text' as const, text: `Navigated back to ${currentUrl}` }],
+          content: [{ type: 'text' as const, text: `Navigated back to ${urlResult.value}` }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);

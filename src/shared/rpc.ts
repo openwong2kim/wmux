@@ -43,6 +43,12 @@ export type RpcMethod =
   | 'browser.type.humanlike'
   | 'browser.cdp.target'
   | 'browser.cdp.info'
+  | 'browser.cdp.send'
+  | 'browser.screenshot'
+  | 'browser.evaluate'
+  | 'browser.type.cdp'
+  | 'browser.click.cdp'
+  | 'browser.press.cdp'
   | 'daemon.createSession'
   | 'daemon.destroySession'
   | 'daemon.attachSession'
@@ -83,6 +89,12 @@ export const ALL_RPC_METHODS = [
   'browser.type.humanlike',
   'browser.cdp.target',
   'browser.cdp.info',
+  'browser.cdp.send',
+  'browser.screenshot',
+  'browser.evaluate',
+  'browser.type.cdp',
+  'browser.click.cdp',
+  'browser.press.cdp',
   'daemon.createSession',
   'daemon.destroySession',
   'daemon.attachSession',

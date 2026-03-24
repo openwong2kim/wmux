@@ -4,6 +4,7 @@ import { PlaywrightEngine } from '../PlaywrightEngine';
 import { resolveRef } from '../snapshot';
 import { getLocatorByRef } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
+import { sendRpc } from '../../wmux-client';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -16,6 +17,51 @@ const REF_NOT_FOUND_HINT =
 
 function refNotFound(ref: string): string {
   return REF_NOT_FOUND_HINT.replace('{ref}', ref);
+}
+
+// ---------------------------------------------------------------------------
+// RPC-based interaction helpers (used when Playwright page is unavailable)
+// These resolve elements via data-wmux-ref attributes set by browser_snapshot.
+// ---------------------------------------------------------------------------
+
+async function rpcEval(expression: string, surfaceId?: string): Promise<string> {
+  const result = await sendRpc('browser.evaluate', {
+    expression,
+    ...(surfaceId && { surfaceId }),
+  }) as { value: string };
+  return result.value;
+}
+
+async function rpcClick(ref: string, surfaceId?: string, _double?: boolean): Promise<void> {
+  // Use CDP click: first get element coordinates via JS, then dispatch mouse events
+  await sendRpc('browser.click.cdp', {
+    selector: `[data-wmux-ref="${ref}"]`,
+    ...(surfaceId && { surfaceId }),
+  });
+}
+
+async function rpcFill(ref: string, value: string, surfaceId?: string): Promise<void> {
+  // Click on the element first to focus it
+  await rpcClick(ref, surfaceId);
+  // Small delay for focus
+  await new Promise(r => setTimeout(r, 100));
+  // Select all existing text
+  await sendRpc('browser.evaluate', {
+    expression: `document.execCommand('selectAll')`,
+    ...(surfaceId && { surfaceId }),
+  });
+  // Type the new value via CDP Input.insertText (handles CJK, React controlled inputs)
+  await sendRpc('browser.type.cdp', {
+    text: value,
+    ...(surfaceId && { surfaceId }),
+  });
+}
+
+async function rpcPressKey(key: string, surfaceId?: string): Promise<void> {
+  await sendRpc('browser.press.cdp', {
+    key,
+    ...(surfaceId && { surfaceId }),
+  });
 }
 
 /**
@@ -54,59 +100,42 @@ export function registerInteractionTools(server: McpServer): void {
     },
     async ({ ref, smartRef, double, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        // Try Playwright first
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
-        if (smartRef !== undefined) {
-          // Use dom-intelligence ref resolution
-          const selector = getLocatorByRef(smartRef);
-          if (!selector) {
-            throw new Error(
-              `Element with smartRef=${smartRef} not found. Run browser_smart_snapshot to get current refs.`,
-            );
+        if (page) {
+          if (smartRef !== undefined) {
+            const selector = getLocatorByRef(smartRef);
+            if (!selector) {
+              throw new Error(
+                `Element with smartRef=${smartRef} not found. Run browser_smart_snapshot to get current refs.`,
+              );
+            }
+            const locator = page.locator(selector);
+            if (double) await locator.dblclick();
+            else await locator.click();
+            return {
+              content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}` }],
+            };
           }
 
-          const locator = page.locator(selector);
-          if (double) {
-            await locator.dblclick();
-          } else {
-            await locator.click();
-          }
+          if (!ref) throw new Error('Either ref or smartRef must be provided.');
 
+          const el = await resolveRef(page, ref);
+          if (!el) throw new Error(refNotFound(ref));
+          if (double) await el.dblclick();
+          else await el.click();
           return {
-            content: [
-              {
-                type: 'text' as const,
-                text: `Clicked${double ? ' (double)' : ''} element smartRef=${smartRef}`,
-              },
-            ],
+            content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${ref}` }],
           };
         }
 
-        if (!ref) {
-          throw new Error('Either ref or smartRef must be provided.');
-        }
-
-        const el = await resolveRef(page, ref);
-        if (!el) {
-          throw new Error(refNotFound(ref));
-        }
-
-        if (double) {
-          await el.dblclick();
-        } else {
-          await el.click();
-        }
-
+        // RPC fallback
+        if (!ref && smartRef === undefined) throw new Error('Either ref or smartRef must be provided.');
+        const resolvedRef = ref ?? String(smartRef);
+        await rpcClick(resolvedRef, surfaceId, double);
         return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Clicked${double ? ' (double)' : ''} element ref=${ref}`,
-            },
-          ],
+          content: [{ type: 'text' as const, text: `Clicked${double ? ' (double)' : ''} element ref=${resolvedRef}` }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -139,26 +168,22 @@ export function registerInteractionTools(server: McpServer): void {
     },
     async ({ ref, text, submit, humanlike, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
-        const el = await resolveRef(page, ref);
-        if (!el) {
-          throw new Error(refNotFound(ref));
-        }
-
-        if (humanlike) {
-          // Focus the element first, then use human-like typing via keyboard
-          await el.click();
-          await typeHumanlike(page, '', text);
+        if (page) {
+          const el = await resolveRef(page, ref);
+          if (!el) throw new Error(refNotFound(ref));
+          if (humanlike) {
+            await el.click();
+            await typeHumanlike(page, '', text);
+          } else {
+            await el.fill(text);
+          }
+          if (submit) await page.keyboard.press('Enter');
         } else {
-          await el.fill(text);
-        }
-
-        if (submit) {
-          await page.keyboard.press('Enter');
+          // RPC fallback
+          await rpcFill(ref, text, surfaceId);
+          if (submit) await rpcPressKey('Enter', surfaceId);
         }
 
         return {
@@ -198,22 +223,24 @@ export function registerInteractionTools(server: McpServer): void {
     },
     async ({ fields, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
         let filled = 0;
         const errors: string[] = [];
 
         for (const field of fields) {
-          const el = await resolveRef(page, field.ref);
-          if (!el) {
-            errors.push(refNotFound(field.ref));
-            continue;
+          try {
+            if (page) {
+              const el = await resolveRef(page, field.ref);
+              if (!el) { errors.push(refNotFound(field.ref)); continue; }
+              await el.fill(field.value);
+            } else {
+              await rpcFill(field.ref, field.value, surfaceId);
+            }
+            filled++;
+          } catch (err) {
+            errors.push(err instanceof Error ? err.message : String(err));
           }
-          await el.fill(field.value);
-          filled++;
         }
 
         let resultText = `Filled ${filled}/${fields.length} field(s).`;
@@ -251,12 +278,13 @@ export function registerInteractionTools(server: McpServer): void {
     },
     async ({ key, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
-        await page.keyboard.press(key);
+        if (page) {
+          await page.keyboard.press(key);
+        } else {
+          await rpcPressKey(key, surfaceId);
+        }
 
         return {
           content: [{ type: 'text' as const, text: `Pressed key: ${key}` }],
@@ -283,22 +311,27 @@ export function registerInteractionTools(server: McpServer): void {
     },
     async ({ ref, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
-        const el = await resolveRef(page, ref);
-        if (!el) {
-          throw new Error(refNotFound(ref));
+        if (page) {
+          const el = await resolveRef(page, ref);
+          if (!el) throw new Error(refNotFound(ref));
+          await el.hover();
+        } else {
+          // RPC fallback: dispatch mouseover event
+          const val = await rpcEval(`(() => {
+            const el = document.querySelector('[data-wmux-ref="${ref}"]');
+            if (!el) return 'not_found';
+            el.scrollIntoView({ block: 'center', behavior: 'instant' });
+            el.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+            el.dispatchEvent(new MouseEvent('mouseenter', { bubbles: true }));
+            return 'ok';
+          })()`, surfaceId);
+          if (val === 'not_found') throw new Error(refNotFound(ref));
         }
-
-        await el.hover();
 
         return {
-          content: [
-            { type: 'text' as const, text: `Hovered over element ref=${ref}` },
-          ],
+          content: [{ type: 'text' as const, text: `Hovered over element ref=${ref}` }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -325,49 +358,49 @@ export function registerInteractionTools(server: McpServer): void {
     },
     async ({ sourceRef, targetRef, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
+        const page = await engine.getPage(surfaceId).catch(() => null);
+
+        if (page) {
+          const sourceEl = await resolveRef(page, sourceRef);
+          if (!sourceEl) throw new Error(refNotFound(sourceRef));
+          const targetEl = await resolveRef(page, targetRef);
+          if (!targetEl) throw new Error(refNotFound(targetRef));
+
+          const sourceBox = await sourceEl.boundingBox();
+          const targetBox = await targetEl.boundingBox();
+          if (!sourceBox || !targetBox) {
+            throw new Error('Could not determine bounding box for source or target element.');
+          }
+
+          const sourceX = sourceBox.x + sourceBox.width / 2;
+          const sourceY = sourceBox.y + sourceBox.height / 2;
+          const targetX = targetBox.x + targetBox.width / 2;
+          const targetY = targetBox.y + targetBox.height / 2;
+
+          await page.mouse.move(sourceX, sourceY);
+          await page.mouse.down();
+          await page.mouse.move(targetX, targetY, { steps: 10 });
+          await page.mouse.up();
+        } else {
+          // RPC fallback: simplified drag via JS events
+          const val = await rpcEval(`(() => {
+            const src = document.querySelector('[data-wmux-ref="${sourceRef}"]');
+            const tgt = document.querySelector('[data-wmux-ref="${targetRef}"]');
+            if (!src) return 'source_not_found';
+            if (!tgt) return 'target_not_found';
+            const dt = new DataTransfer();
+            src.dispatchEvent(new DragEvent('dragstart', { bubbles: true, dataTransfer: dt }));
+            tgt.dispatchEvent(new DragEvent('dragover', { bubbles: true, dataTransfer: dt }));
+            tgt.dispatchEvent(new DragEvent('drop', { bubbles: true, dataTransfer: dt }));
+            src.dispatchEvent(new DragEvent('dragend', { bubbles: true, dataTransfer: dt }));
+            return 'ok';
+          })()`, surfaceId);
+          if (val === 'source_not_found') throw new Error(refNotFound(sourceRef));
+          if (val === 'target_not_found') throw new Error(refNotFound(targetRef));
         }
-
-        const sourceEl = await resolveRef(page, sourceRef);
-        if (!sourceEl) {
-          throw new Error(refNotFound(sourceRef));
-        }
-
-        const targetEl = await resolveRef(page, targetRef);
-        if (!targetEl) {
-          throw new Error(refNotFound(targetRef));
-        }
-
-        // Get bounding boxes for source and target
-        const sourceBox = await sourceEl.boundingBox();
-        const targetBox = await targetEl.boundingBox();
-
-        if (!sourceBox || !targetBox) {
-          throw new Error(
-            'Could not determine bounding box for source or target element.',
-          );
-        }
-
-        // Perform drag from center of source to center of target
-        const sourceX = sourceBox.x + sourceBox.width / 2;
-        const sourceY = sourceBox.y + sourceBox.height / 2;
-        const targetX = targetBox.x + targetBox.width / 2;
-        const targetY = targetBox.y + targetBox.height / 2;
-
-        await page.mouse.move(sourceX, sourceY);
-        await page.mouse.down();
-        await page.mouse.move(targetX, targetY, { steps: 10 });
-        await page.mouse.up();
 
         return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Dragged element ref=${sourceRef} to ref=${targetRef}`,
-            },
-          ],
+          content: [{ type: 'text' as const, text: `Dragged element ref=${sourceRef} to ref=${targetRef}` }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -394,25 +427,27 @@ export function registerInteractionTools(server: McpServer): void {
     },
     async ({ ref, values, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
-        const el = await resolveRef(page, ref);
-        if (!el) {
-          throw new Error(refNotFound(ref));
+        if (page) {
+          const el = await resolveRef(page, ref);
+          if (!el) throw new Error(refNotFound(ref));
+          await el.selectOption(values);
+        } else {
+          const escapedValues = JSON.stringify(values);
+          const val = await rpcEval(`(() => {
+            const el = document.querySelector('[data-wmux-ref="${ref}"]');
+            if (!el || el.tagName !== 'SELECT') return 'not_found';
+            const vals = ${escapedValues};
+            [...el.options].forEach(o => { o.selected = vals.includes(o.value); });
+            el.dispatchEvent(new Event('change', { bubbles: true }));
+            return 'ok';
+          })()`, surfaceId);
+          if (val === 'not_found') throw new Error(refNotFound(ref));
         }
-
-        await el.selectOption(values);
 
         return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Selected value(s) [${values.join(', ')}] in element ref=${ref}`,
-            },
-          ],
+          content: [{ type: 'text' as const, text: `Selected value(s) [${values.join(', ')}] in element ref=${ref}` }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
@@ -436,25 +471,24 @@ export function registerInteractionTools(server: McpServer): void {
     },
     async ({ ref, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
-        const el = await resolveRef(page, ref);
-        if (!el) {
-          throw new Error(refNotFound(ref));
+        if (page) {
+          const el = await resolveRef(page, ref);
+          if (!el) throw new Error(refNotFound(ref));
+          await el.scrollIntoViewIfNeeded();
+        } else {
+          const val = await rpcEval(`(() => {
+            const el = document.querySelector('[data-wmux-ref="${ref}"]');
+            if (!el) return 'not_found';
+            el.scrollIntoView({ block: 'center', behavior: 'smooth' });
+            return 'ok';
+          })()`, surfaceId);
+          if (val === 'not_found') throw new Error(refNotFound(ref));
         }
-
-        await el.scrollIntoViewIfNeeded();
 
         return {
-          content: [
-            {
-              type: 'text' as const,
-              text: `Scrolled element ref=${ref} into view`,
-            },
-          ],
+          content: [{ type: 'text' as const, text: `Scrolled element ref=${ref} into view` }],
         };
       } catch (error) {
         const message = error instanceof Error ? error.message : String(error);
