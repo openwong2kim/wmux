@@ -2,6 +2,7 @@ import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { PTYManager } from '../../pty/PTYManager';
 import { sendToRenderer } from './_bridge';
+import { sanitizePtyText } from '../../../shared/types';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -74,7 +75,8 @@ export function registerInputRpc(
       throw new Error(`input.send: PTY not found — id="${ptyId}"`);
     }
 
-    ptyManager.write(ptyId, text);
+    const safeText = params['raw'] === true ? text : sanitizePtyText(text);
+    ptyManager.write(ptyId, safeText);
     return { ok: true, ptyId };
   });
 
@@ -111,7 +113,7 @@ export function registerInputRpc(
     }
 
     ptyManager.write(ptyId, sequence);
-    return { ok: true, ptyId, key, sequence };
+    return { ok: true, ptyId, key };
   });
 
   /**

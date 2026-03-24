@@ -5,6 +5,7 @@ import { PTYManager } from '../../pty/PTYManager';
 import { PTYBridge } from '../../pty/PTYBridge';
 import { DaemonClient } from '../../DaemonClient';
 import { IPC } from '../../../shared/constants';
+import { sanitizePtyText } from '../../../shared/types';
 import { updateCwd } from './metadata.handler';
 
 /**
@@ -121,7 +122,7 @@ export function registerPTYHandlers(
     const onPtyWrite = (_event: Electron.IpcMainEvent, id: string, data: string): void => {
       if (typeof data !== 'string') return;
       if (data.length > 100_000) return; // prevent mega-writes
-      daemonClient.writeToSession(id, data);
+      daemonClient.writeToSession(id, sanitizePtyText(data));
     };
     ipcMain.on(IPC.PTY_WRITE, onPtyWrite);
   } else {
@@ -129,7 +130,7 @@ export function registerPTYHandlers(
       if (!ptyManager.get(id)) return;
       if (typeof data !== 'string') return;
       if (data.length > 100_000) return;
-      ptyManager.write(id, data);
+      ptyManager.write(id, sanitizePtyText(data));
     };
     ipcMain.on(IPC.PTY_WRITE, onPtyWrite);
   }

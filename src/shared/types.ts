@@ -106,13 +106,15 @@ export function generateId(prefix: string): string {
 // === Security: sanitize text before PTY write ===
 
 /**
- * Strips control characters (\r, \n, \x00-\x1f except \t) from text
- * that will be written to a PTY, preventing embedded command injection.
+ * Strips dangerous control characters from text before writing to a PTY.
+ * Removes: NULL byte (\x00) and C1 control characters (\x80-\x9f).
+ * Preserves: CR (\r), LF (\n), Tab (\t), ESC sequences (\x1b[...),
+ * and other standard terminal control characters needed for normal operation.
  */
 export function sanitizePtyText(text: string): string {
-  // Remove all control chars except tab (\x09)
+  // Remove NULL byte and C1 control characters (U+0080–U+009F)
   // eslint-disable-next-line no-control-regex
-  return text.replace(/[\x00-\x08\x0a-\x1f\x7f\u0080-\u009f]/g, '');
+  return text.replace(/[\x00\u0080-\u009f]/g, '');
 }
 
 /**
