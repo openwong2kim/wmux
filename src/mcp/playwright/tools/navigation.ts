@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { validateNavigationUrl } from '../../../shared/types';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -31,6 +32,14 @@ export function registerNavigationTools(server: McpServer): void {
     },
     async ({ url, surfaceId }) => {
       try {
+        const urlCheck = validateNavigationUrl(url);
+        if (!urlCheck.valid) {
+          return {
+            content: [{ type: 'text' as const, text: `URL blocked: ${urlCheck.reason}` }],
+            isError: true,
+          };
+        }
+
         const page = await engine.getPage(surfaceId);
         if (!page) {
           throw new Error('No browser page available. Call browser_open first.');
@@ -153,6 +162,13 @@ export function registerNavigationTools(server: McpServer): void {
 
             const newPage = await context.newPage();
             if (url) {
+              const urlCheck = validateNavigationUrl(url);
+              if (!urlCheck.valid) {
+                return {
+                  content: [{ type: 'text' as const, text: `URL blocked: ${urlCheck.reason}` }],
+                  isError: true,
+                };
+              }
               await newPage.goto(url, { waitUntil: 'domcontentloaded' });
             }
 

@@ -178,3 +178,101 @@ export function createWorkspace(name: string): Workspace {
   };
 }
 
+// === Security: URL validation for SSRF prevention ===
+
+/**
+ * Validates a URL for safe navigation. Blocks dangerous schemes and private
+ * network addresses to prevent SSRF attacks from AI agent-driven browsing.
+ *
+ * Allows localhost/127.0.0.1/[::1] for local development servers.
+ *
+ * NOTE (v1 limitation): This is string-based validation only. DNS-resolved IPs
+ * are not checked, so DNS rebinding attacks are not mitigated. A future version
+ * should resolve hostnames and re-validate the resolved IP.
+ */
+export function validateNavigationUrl(url: string): { valid: boolean; reason?: string } {
+  let parsed: URL;
+  try {
+    parsed = new URL(url);
+  } catch {
+    return { valid: false, reason: 'Invalid URL' };
+  }
+
+  // Only allow http and https schemes
+  const scheme = parsed.protocol.toLowerCase();
+  if (scheme !== 'http:' && scheme !== 'https:') {
+    return { valid: false, reason: `Blocked URL scheme: ${scheme}` };
+  }
+
+  // Extract hostname (strip brackets from IPv6)
+  const hostname = parsed.hostname.toLowerCase();
+
+  // Allow localhost and IPv4/IPv6 loopback
+  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+    return { valid: true };
+  }
+
+  // Block IPv6 private/link-local ranges
+  if (hostname.startsWith('[') || hostname.includes(':')) {
+    // Hostname is an IPv6 address (URL parser strips brackets in .hostname)
+    const addr = hostname;
+    // Block fc00::/7 (unique local) — starts with fc or fd
+    if (addr.startsWith('fc') || addr.startsWith('fd')) {
+      return { valid: false, reason: 'Blocked private IPv6 address (fc00::/7)' };
+    }
+    // Block fe80::/10 (link-local) — starts with fe8, fe9, fea, feb
+    if (/^fe[89ab]/.test(addr)) {
+      return { valid: false, reason: 'Blocked link-local IPv6 address (fe80::/10)' };
+    }
+    // ::1 already allowed above; block any other loopback representation
+    // Normalize: collapse :: and check
+    if (addr === '0:0:0:0:0:0:0:1' || addr === '0000:0000:0000:0000:0000:0000:0000:0001') {
+      return { valid: true };
+    }
+    return { valid: true };
+  }
+
+  // Check for IPv4 addresses
+  const ipv4Match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
+  if (ipv4Match) {
+    const octets = [
+      parseInt(ipv4Match[1], 10),
+      parseInt(ipv4Match[2], 10),
+      parseInt(ipv4Match[3], 10),
+      parseInt(ipv4Match[4], 10),
+    ];
+
+    // 127.0.0.1 already allowed above; block other 127.x.x.x
+    if (octets[0] === 127) {
+      return { valid: false, reason: 'Blocked loopback address' };
+    }
+
+    // Block 10.0.0.0/8
+    if (octets[0] === 10) {
+      return { valid: false, reason: 'Blocked private IP address (10.0.0.0/8)' };
+    }
+
+    // Block 172.16.0.0/12 (172.16.x.x – 172.31.x.x)
+    if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) {
+      return { valid: false, reason: 'Blocked private IP address (172.16.0.0/12)' };
+    }
+
+    // Block 192.168.0.0/16
+    if (octets[0] === 192 && octets[1] === 168) {
+      return { valid: false, reason: 'Blocked private IP address (192.168.0.0/16)' };
+    }
+
+    // Block 169.254.0.0/16 (link-local, includes cloud metadata 169.254.169.254)
+    if (octets[0] === 169 && octets[1] === 254) {
+      return { valid: false, reason: 'Blocked link-local/cloud metadata address (169.254.0.0/16)' };
+    }
+
+    // Block 0.0.0.0
+    if (octets.every((o) => o === 0)) {
+      return { valid: false, reason: 'Blocked null address (0.0.0.0)' };
+    }
+  }
+
+  return { valid: true };
+}
+

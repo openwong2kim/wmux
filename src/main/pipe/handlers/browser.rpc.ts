@@ -6,17 +6,14 @@ import { ProfileManager } from '../../browser-session/ProfileManager';
 import { PortAllocator } from '../../browser-session/PortAllocator';
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
 import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
+import { validateNavigationUrl } from '../../../shared/types';
 
 type GetWindow = () => BrowserWindow | null;
 
-const BLOCKED_SCHEMES = ['javascript:', 'data:', 'vbscript:', 'file:', 'blob:'];
-
 function validateUrl(url: string, method: string): void {
-  const normalized = url.trim().toLowerCase();
-  for (const scheme of BLOCKED_SCHEMES) {
-    if (normalized.startsWith(scheme)) {
-      throw new Error(`${method}: blocked URL scheme`);
-    }
+  const result = validateNavigationUrl(url);
+  if (!result.valid) {
+    throw new Error(`${method}: ${result.reason}`);
   }
 }
 
