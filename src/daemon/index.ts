@@ -120,11 +120,11 @@ function releaseLock(): void {
 
 // === Session recovery ===
 
-function recoverSessions(
+async function recoverSessions(
   stateWriter: StateWriter,
   sessionManager: DaemonSessionManager,
   processMonitor: ProcessMonitor,
-): void {
+): Promise<void> {
   const state = stateWriter.load();
   let changed = false;
   const recoveredIds = new Set<string>();
@@ -179,7 +179,7 @@ function recoverSessions(
     } else {
       // Non-suspended live session from old state — cannot recover
       // Kill orphaned process if still alive
-      if (ProcessMonitor.isAlive(session.pid)) {
+      if (await ProcessMonitor.isAlive(session.pid)) {
         try { process.kill(session.pid); } catch { /* ignore */ }
       }
       session.state = 'dead';
@@ -545,7 +545,7 @@ async function main(): Promise<void> {
   const sessionDataListeners = new Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>();
 
   // 4. Recover previous sessions
-  recoverSessions(stateWriter, sessionManager, processMonitor);
+  await recoverSessions(stateWriter, sessionManager, processMonitor);
 
   // 5. Register RPC handlers
   registerRpcHandlers(pipeServer, sessionManager, stateWriter, sessionPipes, processMonitor, startTime, sessionDataListeners);
