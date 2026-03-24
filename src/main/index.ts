@@ -6,7 +6,6 @@ process.on('uncaughtException', (err) => {
 });
 
 import { app, BrowserWindow, ipcMain, powerMonitor } from 'electron';
-import started from 'electron-squirrel-startup';
 import { createWindow } from './window/createWindow';
 import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
@@ -42,10 +41,23 @@ if (process.env.WMUX_DISABLE_CDP !== 'true') {
   console.log(`[WinMux] CDP enabled on port ${cdpPort}`);
 }
 
-console.log('[DEBUG] started =', started, 'argv =', process.argv);
-if (started) {
-  console.log('[DEBUG] squirrel-startup detected, quitting');
-  app.quit();
+// Handle Squirrel installer events directly.
+// electron-squirrel-startup spawns Update.exe and waits for 'close' before
+// calling app.quit(), which races with the synchronous app.quit() that follows.
+// This caused the installer to hang. Instead we just exit immediately —
+// Squirrel itself creates/removes shortcuts via Update.exe before launching us.
+if (process.platform === 'win32') {
+  const squirrelCmd = process.argv[1];
+  if (
+    squirrelCmd === '--squirrel-install' ||
+    squirrelCmd === '--squirrel-updated' ||
+    squirrelCmd === '--squirrel-uninstall' ||
+    squirrelCmd === '--squirrel-obsolete'
+  ) {
+    console.log(`[Squirrel] handling ${squirrelCmd}, exiting immediately`);
+    app.quit();
+    process.exit(0);
+  }
 }
 
 // Prevent multiple instances — focus existing window instead
