@@ -1,7 +1,7 @@
 # wmux — AI Agent Terminal for Windows
 
-> **Claude Code + Codex + Gemini CLI, 한 화면에서 동시에.**
-> 터미널 분할, 브라우저 자동화, MCP 통합 — Windows에서 AI 에이전트를 제대로 쓰는 유일한 방법.
+> **Run Claude Code + Codex + Gemini CLI side by side.**
+> Split terminals, browser automation, MCP integration — the only proper way to use AI agents on Windows.
 
 [![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
 [![npm](https://img.shields.io/npm/v/@wong2kim/wmux?color=CB3837&logo=npm)](https://www.npmjs.com/package/@wong2kim/wmux)
@@ -11,171 +11,171 @@
 
 ---
 
-## Windows에서 AI 코딩 에이전트, 아직도 터미널 하나로 쓰세요?
+## Still using one terminal for your AI coding agents on Windows?
 
-macOS에는 [cmux](https://github.com/manaflow-ai/cmux)가 있습니다. tmux 위에서 여러 AI 에이전트를 동시에 돌리는 도구죠.
+macOS has [cmux](https://github.com/manaflow-ai/cmux) — a tmux-based terminal multiplexer for AI agents.
 
-**Windows에는 tmux가 없습니다.** WSL 없이는 방법이 없었습니다.
+**Windows has no tmux.** Without WSL, there was no way.
 
-wmux는 이 문제를 해결합니다. Windows 네이티브 터미널 멀티플렉서 + 브라우저 자동화 + MCP 서버. AI 에이전트가 터미널도 읽고, 브라우저도 조작하고, 알아서 일합니다.
+wmux fixes this. Native Windows terminal multiplexer + browser automation + MCP server. Your AI agent reads the terminal, controls the browser, and works autonomously.
 
 ```
-Claude Code가 왼쪽에서 백엔드를 짜는 동안
-Codex가 오른쪽에서 프론트엔드를 짜고
-Gemini CLI가 아래에서 테스트를 돌립니다
-— 전부 한 화면에서, 동시에.
+Claude Code writes the backend on the left
+Codex builds the frontend on the right
+Gemini CLI runs tests at the bottom
+— all on one screen, simultaneously.
 ```
 
 ---
 
-## 30초 설치
+## Install in 30 seconds
 
-**설치 파일:**
+**Installer:**
 
-[wmux-2.0.0 Setup.exe 다운로드](https://github.com/openwong2kim/wmux/releases/latest)
+[Download wmux-2.0.0 Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
 
-**원라인 설치 (PowerShell):**
+**One-liner (PowerShell):**
 ```powershell
 irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
 ```
 
-**npm (CLI + MCP 서버):**
+**npm (CLI + MCP server):**
 ```bash
 npm install -g @wong2kim/wmux
 ```
 
 ---
 
-## 왜 wmux인가?
+## Why wmux?
 
-### 1. AI 에이전트가 브라우저를 직접 조작합니다
+### 1. Your AI agent controls the browser — for real
 
-Claude Code에게 "구글에서 검색해봐"라고 하면, 진짜로 합니다.
+Tell Claude Code "search Google for this" and it actually does it.
 
-wmux의 내장 브라우저는 Chrome DevTools Protocol로 연결됩니다. 클릭, 입력, 스크린샷, JS 실행 — 전부 AI가 직접 합니다. React 컨트롤드 인풋도, 한글 입력도 완벽하게 동작합니다.
+wmux's built-in browser connects via Chrome DevTools Protocol. Click, type, screenshot, execute JS — all done by the AI directly. Works perfectly with React controlled inputs and CJK text.
 
 ```
-You: "리즈포토부스 검색해줘"
-Claude: browser_open → browser_snapshot → browser_fill(ref=13, "리즈포토부스") → browser_press_key("Enter")
-→ 실제로 Google에서 검색 완료
+You: "Search for wmux on Google"
+Claude: browser_open → browser_snapshot → browser_fill(ref=13, "wmux") → browser_press_key("Enter")
+→ Actually searches Google. Done.
 ```
 
-### 2. 터미널 여러 개를 하나의 화면에서
+### 2. Multiple terminals in one window
 
-`Ctrl+D`로 분할, `Ctrl+N`으로 워크스페이스 추가. 각 워크스페이스에 여러 터미널과 브라우저를 배치하고, `Ctrl+click`으로 멀티뷰 — 여러 워크스페이스를 동시에 봅니다.
+`Ctrl+D` to split, `Ctrl+N` for new workspace. Place multiple terminals and browsers in each workspace. `Ctrl+click` for multiview — see multiple workspaces at once.
 
-ConPTY 기반 네이티브 Windows 터미널. xterm.js + WebGL 하드웨어 가속 렌더링. 스크롤백 99만줄. 세션 종료해도 터미널 내용이 보존됩니다.
+ConPTY-based native Windows terminal. xterm.js + WebGL hardware-accelerated rendering. 999K lines of scrollback. Terminal content persists even after restart.
 
-### 3. "다 됐어?" 안 물어봐도 됩니다
+### 3. No more asking "is it done yet?"
 
-AI 에이전트가 끝나면 wmux가 알아서 알려줍니다.
+wmux tells you when your AI agent finishes.
 
-- 작업 완료 → 데스크톱 알림 + 작업표시줄 깜빡임
-- 비정상 종료 → 즉시 경고
-- `git push --force`, `rm -rf`, `DROP TABLE` → 위험 동작 감지
+- Task complete → desktop notification + taskbar flash
+- Abnormal exit → immediate warning
+- `git push --force`, `rm -rf`, `DROP TABLE` → dangerous action detection
 
-패턴 매칭이 아니라 출력 처리량 기반 감지. 어떤 에이전트든 동작합니다.
+Not pattern matching — output throughput-based detection. Works with any agent.
 
-### 4. Claude Code와 자동 연동
+### 4. Automatic Claude Code integration
 
-wmux를 실행하면 MCP 서버가 자동 등록됩니다. Claude Code가 바로 사용 가능:
+Launch wmux and the MCP server registers automatically. Claude Code just works:
 
-| Claude가 할 수 있는 것 | MCP 도구 |
+| What Claude can do | MCP Tool |
 |---|---|
-| 브라우저 열기 | `browser_open` |
-| URL 이동 | `browser_navigate` |
-| 스크린샷 찍기 | `browser_screenshot` |
-| 페이지 구조 읽기 | `browser_snapshot` |
-| 요소 클릭 | `browser_click` |
-| 폼 입력 | `browser_fill` / `browser_type` |
-| JS 실행 | `browser_evaluate` |
-| 키 입력 | `browser_press_key` |
-| 터미널 읽기 | `terminal_read` |
-| 터미널에 명령 보내기 | `terminal_send` |
-| 워크스페이스 관리 | `workspace_list` / `surface_list` / `pane_list` |
+| Open browser | `browser_open` |
+| Navigate to URL | `browser_navigate` |
+| Take screenshot | `browser_screenshot` |
+| Read page structure | `browser_snapshot` |
+| Click element | `browser_click` |
+| Fill form | `browser_fill` / `browser_type` |
+| Execute JS | `browser_evaluate` |
+| Press key | `browser_press_key` |
+| Read terminal | `terminal_read` |
+| Send command | `terminal_send` |
+| Manage workspaces | `workspace_list` / `surface_list` / `pane_list` |
 
-**멀티 에이전트:** 모든 브라우저 도구는 `surfaceId`를 지원합니다. 각 Claude Code 세션이 독립적으로 자기 브라우저를 조작합니다.
+**Multi-agent:** Every browser tool accepts `surfaceId` — each Claude Code session controls its own browser independently.
 
-### 5. 보안을 신경 씁니다
+### 5. Security that actually matters
 
-- 모든 IPC 파이프에 토큰 인증
-- SSRF 차단 — 내부 IP, `file://`, `javascript:` 스킴 차단
-- PTY 입력 새니타이징 — 커맨드 인젝션 방지
-- CDP 포트 랜덤화
-- 메모리 압력 워치독 — 750MB에서 세션 정리, 1GB에서 새 세션 차단
-- Electron Fuses — RunAsNode 비활성화
+- Token authentication on all IPC pipes
+- SSRF protection — blocks private IPs, `file://`, `javascript:` schemes
+- PTY input sanitization — prevents command injection
+- Randomized CDP port — no fixed debug port
+- Memory pressure watchdog — reaps dead sessions at 750MB, blocks new ones at 1GB
+- Electron Fuses — RunAsNode disabled, cookie encryption enabled
 
 ---
 
-## 전체 기능
+## All Features
 
-### 터미널
-- xterm.js + WebGL GPU 가속 렌더링
-- ConPTY 네이티브 Windows 의사 터미널
-- 분할 — `Ctrl+D` 가로, `Ctrl+Shift+D` 세로
-- 탭 — 창마다 여러 surface
-- Vi 복사 모드 — `Ctrl+Shift+X`
-- 검색 — `Ctrl+F`
-- 스크롤백 99만줄, 디스크 저장/복원
+### Terminal
+- xterm.js + WebGL GPU-accelerated rendering
+- ConPTY native Windows pseudo-terminal
+- Split panes — `Ctrl+D` horizontal, `Ctrl+Shift+D` vertical
+- Tabs — multiple surfaces per pane
+- Vi copy mode — `Ctrl+Shift+X`
+- Search — `Ctrl+F`
+- 999K line scrollback with disk persistence
 
-### 워크스페이스
-- 사이드바 드래그 앤 드롭 정렬
-- `Ctrl+1~9` 빠른 전환
-- 멀티뷰 — `Ctrl+click`으로 동시 보기
-- 세션 영속성 — 레이아웃, 탭, cwd, 스크롤백 전부 복원
-- 설정에서 원클릭 초기화
+### Workspaces
+- Sidebar with drag-and-drop reordering
+- `Ctrl+1~9` quick switch
+- Multiview — `Ctrl+click` to view multiple workspaces side by side
+- Full session persistence — layout, tabs, cwd, scrollback all restored
+- One-click reset in Settings
 
-### 브라우저 + CDP 자동화
-- 내장 브라우저 — `Ctrl+Shift+L`
-- 네비게이션 바, DevTools, 뒤로/앞으로
-- 엘리먼트 인스펙터 — 호버하면 하이라이트, 클릭하면 LLM 친화 컨텍스트 복사
-- CDP 기반 자동화 (클릭, 입력, 스크린샷, JS 실행, 키 입력)
+### Browser + CDP Automation
+- Built-in browser panel — `Ctrl+Shift+L`
+- Navigation bar, DevTools, back/forward
+- Element Inspector — hover to highlight, click to copy LLM-friendly context
+- Full CDP automation: click, fill, type, screenshot, JS eval, key press
 
-### 알림
-- 출력량 기반 활동 감지
-- 작업표시줄 깜빡임 + Windows 토스트 알림
-- 프로세스 종료 경고
-- 알림 패널 — `Ctrl+I`
-- Web Audio 사운드
+### Notifications
+- Output throughput-based activity detection
+- Taskbar flash + Windows toast notifications
+- Process exit alerts
+- Notification panel — `Ctrl+I`
+- Web Audio sound effects
 
-### 에이전트 감지
+### Agent Detection
 Claude Code, Cursor, Aider, Codex CLI, Gemini CLI, OpenCode, GitHub Copilot CLI
-- 시작 감지 → 모니터링 활성화
-- 위험 동작 경고
+- Detects agent start → activates monitoring
+- Critical action warnings
 
-### 데몬 프로세스
-- 백그라운드 세션 관리 (앱 재시작에도 생존)
-- 스크롤백 버퍼 덤프/복구
-- Dead 세션 TTL 자동 정리 (24시간)
+### Daemon Process
+- Background session management (survives app restart)
+- Scrollback buffer dump and auto-recovery
+- Dead session TTL reaping (24h default)
 
-### 테마
-Catppuccin, Tokyo Night, Dracula, Nord, Gruvbox, Solarized, One Dark 등
+### Themes
+Catppuccin, Tokyo Night, Dracula, Nord, Gruvbox, Solarized, One Dark, and more.
 
-### 다국어
-English, 한국어, 日本語, 中文
+### i18n
+English, Korean, Japanese, Chinese
 
 ---
 
-## 단축키
+## Keyboard Shortcuts
 
-| 키 | 동작 |
-|-----|------|
-| `Ctrl+D` | 오른쪽 분할 |
-| `Ctrl+Shift+D` | 아래로 분할 |
-| `Ctrl+T` | 새 탭 |
-| `Ctrl+W` | 탭 닫기 |
-| `Ctrl+N` | 새 워크스페이스 |
-| `Ctrl+1~9` | 워크스페이스 전환 |
-| `Ctrl+click` | 멀티뷰 추가 |
-| `Ctrl+Shift+G` | 멀티뷰 종료 |
-| `Ctrl+Shift+L` | 브라우저 열기 |
-| `Ctrl+B` | 사이드바 전환 |
-| `Ctrl+K` | 명령 팔레트 |
-| `Ctrl+I` | 알림 |
-| `Ctrl+,` | 설정 |
-| `Ctrl+F` | 터미널 검색 |
-| `Ctrl+Shift+X` | Vi 복사 모드 |
-| `F12` | 브라우저 DevTools |
+| Key | Action |
+|-----|--------|
+| `Ctrl+D` | Split right |
+| `Ctrl+Shift+D` | Split down |
+| `Ctrl+T` | New tab |
+| `Ctrl+W` | Close tab |
+| `Ctrl+N` | New workspace |
+| `Ctrl+1~9` | Switch workspace |
+| `Ctrl+click` | Add to multiview |
+| `Ctrl+Shift+G` | Exit multiview |
+| `Ctrl+Shift+L` | Open browser |
+| `Ctrl+B` | Toggle sidebar |
+| `Ctrl+K` | Command palette |
+| `Ctrl+I` | Notifications |
+| `Ctrl+,` | Settings |
+| `Ctrl+F` | Search terminal |
+| `Ctrl+Shift+X` | Vi copy mode |
+| `F12` | Browser DevTools |
 
 ---
 
@@ -193,78 +193,78 @@ wmux browser click "#submit-btn"
 
 ---
 
-## 개발
+## Development
 
 ```bash
 git clone https://github.com/openwong2kim/wmux.git
 cd wmux
 npm install
-npm start           # 개발 모드
-npm run make        # 인스톨러 빌드
+npm start           # Dev mode
+npm run make        # Build installer
 ```
 
-### 개발 요구사항
+### Requirements (dev only)
 - Node.js 18+
-- Python 3.x (node-gyp용)
-- Visual Studio Build Tools + C++ 워크로드
+- Python 3.x (for node-gyp)
+- Visual Studio Build Tools with C++ workload
 
-`install.ps1`이 Python과 VS Build Tools를 자동 설치합니다.
+The `install.ps1` script auto-installs Python and VS Build Tools if missing.
 
 ---
 
-## 아키텍처
+## Architecture
 
 ```
 Electron Main Process
 ├── PTYManager (node-pty / ConPTY)
-├── PTYBridge (데이터 포워딩 + ActivityMonitor)
-├── AgentDetector (게이트 기반 에이전트 상태)
-├── SessionManager (원자적 저장 + .bak 복구)
-├── ScrollbackPersistence (터미널 버퍼 덤프/로드)
-├── PipeServer (Named Pipe JSON-RPC + 토큰 인증)
-├── McpRegistrar (~/.claude.json 자동 등록)
-├── WebviewCdpManager (CDP 프록시 → <webview>)
-├── DaemonClient (데몬 모드 커넥터)
-└── ToastManager (OS 알림 + 작업표시줄 깜빡임)
+├── PTYBridge (data forwarding + ActivityMonitor)
+├── AgentDetector (gate-based agent status)
+├── SessionManager (atomic save with .bak recovery)
+├── ScrollbackPersistence (terminal buffer dump/load)
+├── PipeServer (Named Pipe JSON-RPC + token auth)
+├── McpRegistrar (auto-registers MCP in ~/.claude.json)
+├── WebviewCdpManager (CDP proxy to <webview>)
+├── DaemonClient (daemon mode connector)
+└── ToastManager (OS notifications + taskbar flash)
 
 Renderer Process (React 19 + Zustand)
-├── PaneContainer (재귀적 분할 레이아웃)
-├── Terminal (xterm.js + WebGL + 스크롤백 복원)
+├── PaneContainer (recursive split layout)
+├── Terminal (xterm.js + WebGL + scrollback restore)
 ├── BrowserPanel (webview + Inspector + CDP)
 ├── NotificationPanel
-├── SettingsPanel (워크스페이스 초기화)
-└── Multiview 그리드
+├── SettingsPanel (workspace reset)
+└── Multiview grid
 
-Daemon Process (독립 실행)
-├── DaemonSessionManager (ConPTY 수명주기)
-├── RingBuffer (순환 스크롤백 버퍼)
-├── StateWriter (세션 중단/재개)
-├── ProcessMonitor (외부 프로세스 워치독)
-├── Watchdog (메모리 압력 에스컬레이션)
-└── DaemonPipeServer (Named Pipe RPC + 토큰 인증)
+Daemon Process (standalone)
+├── DaemonSessionManager (ConPTY lifecycle)
+├── RingBuffer (circular scrollback buffer)
+├── StateWriter (session suspend/resume)
+├── ProcessMonitor (external process watchdog)
+├── Watchdog (memory pressure escalation)
+└── DaemonPipeServer (Named Pipe RPC + token auth)
 
 MCP Server (stdio)
-├── PlaywrightEngine (CDP 연결, 빠른 실패)
-├── CDP RPC 폴백 (screenshot, evaluate, type, click)
-└── Claude Code <-> wmux Named Pipe RPC 브릿지
+├── PlaywrightEngine (CDP connection, fast-fail)
+├── CDP RPC fallback (screenshot, evaluate, type, click)
+└── Claude Code <-> wmux Named Pipe RPC bridge
 ```
 
 ---
 
-## 감사
+## Acknowledgments
 
-- [cmux](https://github.com/manaflow-ai/cmux) — wmux의 영감이 된 macOS AI 에이전트 터미널
-- [xterm.js](https://xtermjs.org/) — 터미널 렌더링
-- [node-pty](https://github.com/microsoft/node-pty) — 의사 터미널
-- [Electron](https://www.electronjs.org/) — 데스크톱 프레임워크
-- [Playwright](https://playwright.dev/) — 브라우저 자동화
+- [cmux](https://github.com/manaflow-ai/cmux) — The macOS AI agent terminal that inspired wmux
+- [xterm.js](https://xtermjs.org/) — Terminal rendering
+- [node-pty](https://github.com/microsoft/node-pty) — Pseudo-terminal
+- [Electron](https://www.electronjs.org/) — Desktop framework
+- [Playwright](https://playwright.dev/) — Browser automation engine
 
 ---
 
-## AI 에이전트 관련 안내
+## Note on AI Agents
 
-wmux는 AI 코딩 에이전트를 상태 표시 목적으로만 감지합니다. AI API를 호출하거나, 에이전트 출력을 캡처하거나, 에이전트 동작을 자동화하지 않습니다. 사용자는 각 AI 제공자의 서비스 약관을 준수할 책임이 있습니다.
+wmux detects AI coding agents for status display purposes only. It does not call any AI APIs, capture agent outputs, or automate agent interactions. Users are responsible for complying with their AI provider's Terms of Service.
 
-## 라이선스
+## License
 
 MIT
