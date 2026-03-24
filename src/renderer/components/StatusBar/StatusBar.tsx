@@ -48,7 +48,7 @@ export default function StatusBar() {
   const isCompanyMode = sidebarMode === 'company';
 
   return (
-    <div className="flex items-center justify-between h-6 px-3 bg-[#11111b] border-b border-[var(--bg-surface)] text-[10px] text-[var(--text-muted)] shrink-0 select-none font-mono">
+    <div className="flex items-center justify-between h-6 px-3 border-b border-[var(--bg-surface)] text-[10px] text-[var(--text-muted)] shrink-0 select-none font-mono" style={{ backgroundColor: 'var(--bg-mantle)' }}>
       {/* Left: workspace + branch */}
       <div className="flex items-center gap-3">
         <span className="text-[var(--text-main)] font-medium">{activeWs?.name || 'wmux'}</span>
