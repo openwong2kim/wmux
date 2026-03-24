@@ -767,7 +767,7 @@ function TabAbout() {
       <div>
         <SectionLabel label={t('settings.links')} />
         <a
-          href="https://github.com"
+          href="https://github.com/openwong2kim/wmux"
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-[color:var(--accent-blue)] hover:text-[color:var(--text-main)] transition-colors"
