@@ -90,6 +90,7 @@ export class DaemonSessionManager extends EventEmitter {
       /_SECRET$/,           // Secrets (various providers)
       /_PASSWORD$/,         // Database passwords
       /_CREDENTIALS$/,      // Credential file paths/values
+      /_KEY$/,              // API keys (ANTHROPIC_API_KEY, etc.)
     ];
     const SENSITIVE_EXACT = new Set([
       'NODE_OPTIONS',

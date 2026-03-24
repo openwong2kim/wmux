@@ -229,6 +229,25 @@ export function validateNavigationUrl(url: string): { valid: boolean; reason?: s
     if (addr === '0:0:0:0:0:0:0:1' || addr === '0000:0000:0000:0000:0000:0000:0000:0001') {
       return { valid: true };
     }
+
+    // Block null IPv6 address (:: or 0:0:0:0:0:0:0:0) — equivalent to 0.0.0.0
+    if (addr === '::' || addr === '0:0:0:0:0:0:0:0' || addr === '0000:0000:0000:0000:0000:0000:0000:0000') {
+      return { valid: false, reason: 'Blocked null IPv6 address (equivalent to 0.0.0.0)' };
+    }
+
+    // Block IPv4-mapped IPv6 (::ffff:x.x.x.x) and IPv4-compatible IPv6 (::x.x.x.x)
+    // These resolve to their embedded IPv4 address, bypassing IPv4 private IP checks.
+    const v4MappedMatch = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(addr);
+    const v4CompatMatch = !v4MappedMatch ? /^::(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(addr) : null;
+    const embeddedV4 = v4MappedMatch?.[1] ?? v4CompatMatch?.[1];
+    if (embeddedV4) {
+      // Recursively validate the embedded IPv4 through the same checks
+      const embeddedResult = validateNavigationUrl(`http://${embeddedV4}/`);
+      if (!embeddedResult.valid) {
+        return { valid: false, reason: `Blocked IPv4-mapped/compatible IPv6: embedded ${embeddedV4} — ${embeddedResult.reason}` };
+      }
+    }
+
     return { valid: true };
   }
 
