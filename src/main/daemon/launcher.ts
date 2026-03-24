@@ -130,6 +130,7 @@ function spawnDaemon(): Promise<number> {
     const child = spawn(nodePath, [daemonScript], {
       detached: true,
       stdio: 'ignore',
+      windowsHide: true,
       env,
     });
 
