@@ -91,3 +91,13 @@ typings/
 # Electron-Forge
 out/
 dist/
+
+# Windows
+Thumbs.db
+
+# Local env overrides
+.env.local
+.env.*.local
+
+# Windows debug symbols
+*.pdb
