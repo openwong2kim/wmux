@@ -33,6 +33,7 @@ import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
+import { ensureDaemon } from './daemon/launcher';
 
 // CDP (Chrome DevTools Protocol) remote debugging
 if (process.env.WMUX_DISABLE_CDP !== 'true') {
@@ -158,42 +159,37 @@ app.on('ready', async () => {
 
   attachWindowRecovery(mainWindow);
 
-  // Attempt daemon connection
+  // Auto-start daemon and connect
   try {
-    const authToken = readDaemonAuthToken();
-    if (authToken) {
-      const client = new DaemonClient(getDaemonPipeName(), authToken);
-      const connected = await client.connect();
-      if (connected) {
-        // Verify auth with a ping before switching to daemon mode
-        let authOk = false;
-        try {
-          await client.rpc('daemon.ping', {});
-          authOk = true;
-        } catch {
-          console.warn('[Main] Daemon auth failed, falling back to local PTY');
-          await client.disconnect().catch(() => {});
-        }
-        if (authOk) {
-          daemonClient = client;
-          console.log('[Main] Connected to wmux-daemon (auth verified)');
-          cleanupHandlers();
-          cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient);
-          daemonClient.on('disconnected', () => {
-            console.warn('[Main] Daemon disconnected, falling back to local PTY');
-            daemonClient = null;
-            cleanupHandlers();
-            cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow);
-          });
-        }
-      } else {
-        console.log('[Main] Daemon not available, using local PTY');
+    const daemonInfo = await ensureDaemon();
+    console.log(`[Main] Daemon ${daemonInfo.spawned ? 'spawned' : 'found'} (PID: ${daemonInfo.pid})`);
+
+    const client = new DaemonClient(daemonInfo.pipeName, daemonInfo.authToken);
+    const connected = await client.connect();
+    if (connected) {
+      let authOk = false;
+      try {
+        await client.rpc('daemon.ping', {});
+        authOk = true;
+      } catch {
+        console.warn('[Main] Daemon auth failed after spawn, falling back to local PTY');
+        await client.disconnect().catch(() => {});
       }
-    } else {
-      console.log('[Main] No daemon auth token found, using local PTY');
+      if (authOk) {
+        daemonClient = client;
+        console.log('[Main] Connected to wmux-daemon (auth verified)');
+        cleanupHandlers();
+        cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient);
+        daemonClient.on('disconnected', () => {
+          console.warn('[Main] Daemon disconnected, falling back to local PTY');
+          daemonClient = null;
+          cleanupHandlers();
+          cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow);
+        });
+      }
     }
   } catch (err) {
-    console.warn('[Main] Daemon connection failed, using local PTY:', err);
+    console.warn('[Main] Daemon auto-start failed, using local PTY:', err);
   }
 
   // Handle system sleep/wake — verify PTY processes survived

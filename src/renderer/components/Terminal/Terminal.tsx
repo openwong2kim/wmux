@@ -41,7 +41,22 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     creatingRef.current = true;
 
     let cancelled = false;
-    window.electronAPI.pty.create({ shell, cwd }).then((result: { id: string }) => {
+
+    // Estimate initial terminal size from container so the shell banner
+    // is formatted for the actual viewport, preventing cursor misalignment.
+    const container = containerRef.current;
+    let cols: number | undefined;
+    let rows: number | undefined;
+    if (container && container.offsetWidth > 0 && container.offsetHeight > 0) {
+      const fontSize = useStore.getState().terminalFontSize || 13;
+      const charWidth = fontSize * 0.6;
+      const lineHeight = fontSize * 1.2;
+      const padding = 8;
+      cols = Math.max(2, Math.floor((container.offsetWidth - padding) / charWidth));
+      rows = Math.max(2, Math.floor((container.offsetHeight - padding) / lineHeight));
+    }
+
+    window.electronAPI.pty.create({ shell, cwd, cols, rows }).then((result: { id: string }) => {
       if (cancelled) {
         // 이미 unmount됨 — PTY 정리
         window.electronAPI.pty.dispose(result.id);

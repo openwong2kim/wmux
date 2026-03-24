@@ -74,7 +74,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
             if (s.surfaceType !== 'browser') {
-              s.ptyId = '';
+              // Keep ptyId intact — AppLayout will reconcile against active PTYs
+              // and clear only those that are actually dead.
             }
             // Strip dangerous browserUrl schemes that could execute code on load
             if (s.browserUrl) {

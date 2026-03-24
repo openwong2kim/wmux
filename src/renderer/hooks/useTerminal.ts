@@ -107,6 +107,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fitAddon.fit();
     }
 
+    // Track last sent dimensions to avoid redundant resizes
+    let lastSentCols = 0;
+    let lastSentRows = 0;
+    let resizeDebounceTimer: ReturnType<typeof setTimeout> | null = null;
+
     // Clipboard + shortcut handling
     terminal.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
@@ -288,6 +293,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Resize PTY on initial fit — only when we actually have valid dimensions.
     const { cols, rows } = terminal;
     if (cols > 0 && rows > 0) {
+      lastSentCols = cols;
+      lastSentRows = rows;
       window.electronAPI.pty.resize(ptyId, cols, rows);
     }
 
@@ -303,43 +310,45 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Fitting a hidden terminal produces 0 cols/rows, which corrupts the PTY buffer
     // and manifests as "infinite content duplication" when switching back to it.
     const resizeObserver = new ResizeObserver(() => {
-      requestAnimationFrame(() => {
-        try {
-          const term = terminalRef.current;
-          if (!term) return;
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      resizeDebounceTimer = setTimeout(() => {
+        resizeDebounceTimer = null;
+        requestAnimationFrame(() => {
+          try {
+            const term = terminalRef.current;
+            if (!term) return;
 
-          // Skip entirely if container is hidden/zero-size
-          if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
+            if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
 
-          // Snapshot scroll state before fit() reflows the buffer
-          const prevYBase = term.buffer.active.baseY;
-          const prevYDisp = term.buffer.active.viewportY;
-          const wasScrolledUp = prevYDisp < prevYBase;
-          // How many lines from the bottom was the user?
-          const distFromBottom = prevYBase - prevYDisp;
+            const prevYBase = term.buffer.active.baseY;
+            const prevYDisp = term.buffer.active.viewportY;
+            const wasScrolledUp = prevYDisp < prevYBase;
+            const distFromBottom = prevYBase - prevYDisp;
 
-          fitAddon.fit();
+            fitAddon.fit();
 
-          // Restore scroll position if user was not at the bottom
-          if (wasScrolledUp) {
-            const newYBase = term.buffer.active.baseY;
-            const targetYDisp = Math.max(0, newYBase - distFromBottom);
-            term.scrollToLine(targetYDisp);
+            if (wasScrolledUp) {
+              const newYBase = term.buffer.active.baseY;
+              const targetYDisp = Math.max(0, newYBase - distFromBottom);
+              term.scrollToLine(targetYDisp);
+            }
+
+            const { cols, rows } = term;
+            if (cols > 0 && rows > 0 && (cols !== lastSentCols || rows !== lastSentRows)) {
+              lastSentCols = cols;
+              lastSentRows = rows;
+              window.electronAPI.pty.resize(ptyId, cols, rows);
+            }
+          } catch {
+            // ignore fit errors during unmount
           }
-
-          const { cols, rows } = term;
-          // Never send 0-size resize to PTY
-          if (cols > 0 && rows > 0) {
-            window.electronAPI.pty.resize(ptyId, cols, rows);
-          }
-        } catch {
-          // ignore fit errors during unmount
-        }
-      });
+        });
+      }, 100);
     });
     resizeObserver.observe(container);
 
     return () => {
+      if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       resizeObserver.disconnect();
       removeDataListener?.();
       removeExitListener?.();

@@ -6,16 +6,17 @@
   "main": ".vite/build/index.js",
   "scripts": {
     "postinstall": "node scripts/fix-node-pty.js",
-    "start": "npm run build:mcp && electron-forge start",
-    "package": "npm run build:mcp && electron-forge package",
-    "make": "npm run build:mcp && electron-forge make",
+    "start": "npm run build:daemon && npm run build:mcp && electron-forge start",
+    "package": "npm run build:daemon && npm run build:mcp && electron-forge package",
+    "make": "npm run build:daemon && npm run build:mcp && electron-forge make",
     "forge-publish": "electron-forge publish",
     "lint": "eslint --ext .ts,.tsx .",
     "build:cli": "tsc -p tsconfig.cli.json",
+    "build:daemon": "tsc -p tsconfig.daemon.json",
     "build:mcp": "tsc -p tsconfig.mcp.json && esbuild dist/mcp/mcp/index.js --bundle --platform=node --outfile=dist/mcp-bundle/index.js --external:electron --external:playwright-core",
     "cli": "node dist/cli/cli/index.js",
     "mcp": "node dist/mcp/mcp/index.js",
-    "prepublishOnly": "npm run build:cli && npm run build:mcp",
+    "prepublishOnly": "npm run build:daemon && npm run build:cli && npm run build:mcp",
     "test": "vitest run"
   },
   "bin": {

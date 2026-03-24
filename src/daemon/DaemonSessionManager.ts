@@ -58,7 +58,7 @@ export class DaemonSessionManager extends EventEmitter {
     const cols = params.cols ?? DEFAULT_COLS;
     const rows = params.rows ?? DEFAULT_ROWS;
     const cwd = params.cwd || os.homedir();
-    const cmd = params.cmd || this.getDefaultShell();
+    const cmd = this.resolveShellPath(params.cmd) || this.getDefaultShell();
 
     // Build clean environment — strip Electron/Vite vars and sensitive credentials.
     // When no explicit env is provided, use a filtered copy of process.env
@@ -213,6 +213,47 @@ export class DaemonSessionManager extends EventEmitter {
     for (const id of Array.from(this.sessions.keys())) {
       this.destroySession(id);
     }
+  }
+
+  /** Resolve a bare shell name (e.g. 'powershell.exe') to an absolute path. */
+  private resolveShellPath(cmd: string | undefined): string | null {
+    if (!cmd) return null;
+    const fs = require('fs');
+    const path = require('path');
+    // Already absolute?
+    if (path.isAbsolute(cmd)) {
+      try { if (fs.existsSync(cmd)) return cmd; } catch {}
+      return null;
+    }
+    // Bare name — try well-known Windows locations
+    if (process.platform === 'win32') {
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
+      const lookup: Record<string, string[]> = {
+        'powershell.exe': [
+          `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+        ],
+        'pwsh.exe': [
+          `${progFiles}\\PowerShell\\7\\pwsh.exe`,
+        ],
+        'cmd.exe': [
+          `${systemRoot}\\System32\\cmd.exe`,
+        ],
+        'bash.exe': [
+          `${systemRoot}\\System32\\bash.exe`,
+          `${progFiles}\\Git\\bin\\bash.exe`,
+        ],
+        'wsl.exe': [
+          `${systemRoot}\\System32\\wsl.exe`,
+        ],
+      };
+      const basename = path.basename(cmd).toLowerCase();
+      const candidates = lookup[basename] || [];
+      for (const c of candidates) {
+        try { if (fs.existsSync(c)) return c; } catch {}
+      }
+    }
+    return cmd; // fallback to original (let pty.spawn try PATH)
   }
 
   private getDefaultShell(): string {

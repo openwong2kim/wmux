@@ -198,9 +198,39 @@ export default function AppLayout() {
 
   // 앱 시작 시 세션 복원
   useEffect(() => {
-    window.electronAPI.session.load().then((saved: SessionData | null) => {
+    window.electronAPI.session.load().then(async (saved: SessionData | null) => {
       if (!saved) return;
       useStore.getState().loadSession(saved);
+
+      // Reconcile saved PTY IDs with active PTYs
+      try {
+        const activePtys = await window.electronAPI.pty.list();
+        const activeIds = new Set(activePtys.map((p: { id: string }) => p.id));
+
+        const state = useStore.getState();
+        const reconcile = async (pane: Pane) => {
+          if (pane.type === 'leaf') {
+            for (const surface of pane.surfaces) {
+              if (surface.surfaceType === 'browser' || surface.surfaceType === 'editor') continue;
+              if (surface.ptyId && activeIds.has(surface.ptyId)) {
+                // PTY still alive — reconnect
+                await window.electronAPI.pty.reconnect(surface.ptyId);
+              } else if (surface.ptyId) {
+                // PTY dead — clear so Terminal.tsx creates new
+                useStore.getState().updateSurfacePtyId(pane.id, surface.id, '');
+              }
+            }
+          } else {
+            for (const child of pane.children) await reconcile(child);
+          }
+        };
+
+        for (const ws of state.workspaces) {
+          await reconcile(ws.rootPane);
+        }
+      } catch (err) {
+        console.error('[AppLayout] PTY reconciliation failed:', err);
+      }
     });
   }, []);
 
