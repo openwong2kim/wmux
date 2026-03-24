@@ -1,5 +1,6 @@
 import { ipcMain, BrowserWindow } from 'electron';
 import fs from 'node:fs';
+import os from 'node:os';
 import path from 'node:path';
 import { IPC } from '../../../shared/constants';
 
@@ -12,6 +13,51 @@ export interface FileEntry {
 
 const watchers = new Map<string, fs.FSWatcher>();
 const debounceTimers = new Map<string, ReturnType<typeof setTimeout>>();
+const MAX_WATCHERS = 100;
+
+const BLOCKED_DIRS = [
+  '.ssh',
+  '.aws',
+  '.gnupg',
+  '.gpg',
+  '.config/gcloud',
+  '.azure',
+  '.kube',
+  '.docker/config.json',
+];
+
+const BLOCKED_FILES = [
+  '.wmux-auth-token',
+  '.npmrc',
+  '.netrc',
+  '.env',
+];
+
+export function isSensitivePath(resolvedPath: string): boolean {
+  const home = os.homedir();
+  const normalized = resolvedPath.replace(/\\/g, '/').toLowerCase();
+  const homeNorm = home.replace(/\\/g, '/').toLowerCase();
+
+  // Block directories under home
+  for (const dir of BLOCKED_DIRS) {
+    const blocked = (homeNorm + '/' + dir).toLowerCase();
+    if (normalized.startsWith(blocked)) return true;
+  }
+
+  // Block specific files in home
+  for (const file of BLOCKED_FILES) {
+    const blocked = (homeNorm + '/' + file).toLowerCase();
+    if (normalized === blocked) return true;
+  }
+
+  // Block Windows credential stores
+  if (process.platform === 'win32') {
+    if (normalized.includes('/appdata/roaming/microsoft/credentials')) return true;
+    if (normalized.includes('/appdata/local/microsoft/credentials')) return true;
+  }
+
+  return false;
+}
 
 export function closeAllWatchers(): void {
   for (const watcher of watchers.values()) {
@@ -31,6 +77,8 @@ export function registerFsHandlers(): () => void {
     if (!dirPath || typeof dirPath !== 'string') return [];
 
     const resolved = path.resolve(dirPath);
+
+    if (isSensitivePath(resolved)) return [];
 
     try {
       const entries = await fs.promises.readdir(resolved, { withFileTypes: true });
@@ -64,6 +112,7 @@ export function registerFsHandlers(): () => void {
   ipcMain.handle(IPC.FS_READ_FILE, async (_event, filePath: string): Promise<string | null> => {
     if (!filePath || typeof filePath !== 'string') return null;
     const resolved = path.resolve(filePath);
+    if (isSensitivePath(resolved)) return null;
     try {
       const stat = await fs.promises.stat(resolved);
       if (stat.size > 1024 * 1024) return null; // 1MB limit
@@ -78,10 +127,16 @@ export function registerFsHandlers(): () => void {
     if (!dirPath || typeof dirPath !== 'string') return false;
     const resolved = path.resolve(dirPath);
 
+    if (isSensitivePath(resolved)) return false;
+
     // Clean up previous watcher for this path
     if (watchers.has(resolved)) {
       watchers.get(resolved)!.close();
       watchers.delete(resolved);
+    }
+
+    if (watchers.size >= MAX_WATCHERS) {
+      return false;
     }
 
     try {
