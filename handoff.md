@@ -1,7 +1,6 @@
-# Handoff Log
+# Handoff Log — Security Hardening
 
 ## Format
-Each handoff follows:
 - **Teammate**: Agent type and task
 - **Status**: What was completed
 - **Pending**: What remains
