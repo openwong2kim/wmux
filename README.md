@@ -14,7 +14,7 @@ Inspired by [cmux](https://github.com/manaflow-ai/cmux) (macOS), wmux brings the
 
 ## Install
 
-**Download:** [wmux-1.1.1 Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
+**Download:** [wmux-1.1.2 Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
 
 Or build from source:
 ```powershell
@@ -45,13 +45,14 @@ irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
 - **Vi copy mode** — `Ctrl+Shift+X`
 - **Search** — `Ctrl+F`
 - **Unlimited scrollback** — 999,999 lines default
+- **Scrollback persistence** — terminal content saved to disk, restored on restart
 
 ### Workspaces
 - Sidebar with drag-and-drop reordering
 - `Ctrl+1` ~ `Ctrl+9` quick switch
 - **Multiview** — `Ctrl+click` workspaces to split-view them simultaneously
 - `Ctrl+Shift+G` to exit multiview
-- Session persistence — everything restored on restart
+- **Session persistence** — workspace layout, tabs, cwd, and terminal scrollback all restored on restart
 
 ### Browser
 - Built-in browser panel — `Ctrl+Shift+L`
@@ -171,19 +172,28 @@ The `install.ps1` script auto-installs Python and VS Build Tools if missing.
 
 ```
 Electron Main Process
-├── PTYManager (node-pty)
+├── PTYManager (node-pty / ConPTY)
 ├── PTYBridge (data forwarding + ActivityMonitor)
 ├── AgentDetector (gate-based agent status)
+├── SessionManager (atomic save with .bak recovery)
+├── ScrollbackPersistence (dump/load terminal buffers)
 ├── PipeServer (Named Pipe JSON-RPC)
 ├── McpRegistrar (auto-registers MCP in ~/.claude.json)
+├── DaemonClient (optional daemon mode connector)
 └── ToastManager (OS notifications + taskbar flash)
 
 Renderer Process (React 19 + Zustand)
 ├── PaneContainer (recursive split layout)
-├── Terminal (xterm.js + WebGL)
+├── Terminal (xterm.js + WebGL + scrollback restore)
 ├── BrowserPanel (webview + Inspector)
 ├── NotificationPanel
 └── Multiview grid
+
+Daemon Process (optional, standalone)
+├── DaemonSessionManager (ConPTY lifecycle)
+├── RingBuffer (circular scrollback buffer)
+├── StateWriter (session suspend/resume)
+└── DaemonPipeServer (Named Pipe RPC)
 
 MCP Server (stdio)
 └── Bridges Claude Code ↔ wmux via Named Pipe RPC
