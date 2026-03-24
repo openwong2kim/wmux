@@ -32,7 +32,7 @@ Gemini CLI runs tests at the bottom
 
 **Installer:**
 
-[Download wmux-2.0.0 Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
+[Download wmux Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
 
 **One-liner (PowerShell):**
 ```powershell
