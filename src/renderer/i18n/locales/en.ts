@@ -152,6 +152,14 @@ export const en = {
   'settings.kb.conflict': 'Conflicts with built-in shortcut',
   'settings.kb.delete': 'Delete',
   'settings.kb.noBindings': 'No custom keybindings yet',
+
+  // Reset
+  'settings.reset': 'Reset',
+  'settings.resetWorkspaces': 'Reset Workspaces',
+  'settings.resetWorkspacesDesc': 'Close all workspaces and terminals, start fresh.',
+  'settings.resetButton': 'Reset',
+  'settings.resetConfirm': 'Are you sure you want to reset all workspaces?',
+  'settings.resetDone': 'Reset complete',
 } as const;
 
 export type TranslationKey = keyof typeof en;

@@ -152,4 +152,12 @@ export const zh = {
   'settings.kb.conflict': '与内置快捷键冲突',
   'settings.kb.delete': '删除',
   'settings.kb.noBindings': '暂无自定义快捷键',
+
+  // Reset
+  'settings.reset': '重置',
+  'settings.resetWorkspaces': '重置工作区',
+  'settings.resetWorkspacesDesc': '关闭所有工作区和终端，重新开始。',
+  'settings.resetButton': '重置',
+  'settings.resetConfirm': '确定要重置所有工作区吗？',
+  'settings.resetDone': '重置完成',
 } as const;

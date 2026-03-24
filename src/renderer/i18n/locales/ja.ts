@@ -152,4 +152,12 @@ export const ja = {
   'settings.kb.conflict': '組み込みショートカットと競合',
   'settings.kb.delete': '削除',
   'settings.kb.noBindings': 'カスタムキーバインドなし',
+
+  // Reset
+  'settings.reset': 'リセット',
+  'settings.resetWorkspaces': 'ワークスペース初期化',
+  'settings.resetWorkspacesDesc': 'すべてのワークスペースとターミナルを閉じて、最初からやり直します。',
+  'settings.resetButton': '初期化',
+  'settings.resetConfirm': 'すべてのワークスペースを初期化してもよろしいですか？',
+  'settings.resetDone': '初期化完了',
 } as const;

@@ -152,4 +152,12 @@ export const ko = {
   'settings.kb.conflict': '내장 단축키와 충돌',
   'settings.kb.delete': '삭제',
   'settings.kb.noBindings': '커스텀 키바인딩 없음',
+
+  // Reset
+  'settings.reset': '초기화',
+  'settings.resetWorkspaces': '워크스페이스 초기화',
+  'settings.resetWorkspacesDesc': '모든 워크스페이스와 터미널을 닫고 새로 시작합니다.',
+  'settings.resetButton': '초기화',
+  'settings.resetConfirm': '정말 모든 워크스페이스를 초기화하시겠습니까?',
+  'settings.resetDone': '초기화 완료',
 } as const;

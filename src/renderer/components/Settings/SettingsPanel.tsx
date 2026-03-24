@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useRef, useState, useCallback, type ReactNode } from 'react';
 import { useStore } from '../../stores';
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
 import { useT } from '../../hooks/useT';
@@ -194,6 +194,97 @@ const FONT_FAMILY_OPTIONS = [
   { value: 'JetBrains Mono',   label: 'JetBrains Mono' },
 ];
 
+// ─── Reset section ───────────────────────────────────────────────────────────
+
+function ResetSection() {
+  const t = useT();
+  const workspaces = useStore((s) => s.workspaces);
+  const removeWorkspace = useStore((s) => s.removeWorkspace);
+  const addWorkspace = useStore((s) => s.addWorkspace);
+  const setVisible = useStore((s) => s.setSettingsPanelVisible);
+  const [confirming, setConfirming] = useState(false);
+
+  const handleReset = useCallback(async () => {
+    // Dispose all PTYs across all workspaces
+    for (const ws of workspaces) {
+      disposePaneTree(ws.rootPane);
+    }
+
+    // Remove all workspaces except the last one (store requires at least 1)
+    const ids = workspaces.map((w) => w.id);
+    // Add a fresh workspace first
+    addWorkspace('Workspace 1');
+    // Then remove all old ones
+    for (const id of ids) {
+      removeWorkspace(id);
+    }
+
+    // Save the clean session
+    try {
+      const state = useStore.getState();
+      await window.electronAPI.session.save({
+        workspaces: state.workspaces,
+        activeWorkspaceId: state.activeWorkspaceId,
+      });
+    } catch { /* best-effort */ }
+
+    setConfirming(false);
+    setVisible(false);
+  }, [workspaces, removeWorkspace, addWorkspace, setVisible]);
+
+  return (
+    <div>
+      <SectionLabel label={t('settings.reset')} />
+      <div
+        className="px-3 py-2.5 rounded-lg flex items-center justify-between"
+        style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
+      >
+        <div>
+          <p className="text-sm text-[color:var(--text-main)]">{t('settings.resetWorkspaces')}</p>
+          <p className="text-[11px] text-[color:var(--text-muted)] mt-0.5">{t('settings.resetWorkspacesDesc')}</p>
+        </div>
+        {confirming ? (
+          <div className="flex items-center gap-2 shrink-0 ml-3">
+            <button
+              onClick={handleReset}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              style={{ backgroundColor: 'var(--accent-red)', color: '#fff' }}
+            >
+              {t('settings.resetButton')}
+            </button>
+            <button
+              onClick={() => setConfirming(false)}
+              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+              style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)' }}
+            >
+              {t('settings.close')}
+            </button>
+          </div>
+        ) : (
+          <button
+            onClick={() => setConfirming(true)}
+            className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors shrink-0 ml-3"
+            style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-red)' }}
+          >
+            {t('settings.resetButton')}
+          </button>
+        )}
+      </div>
+    </div>
+  );
+}
+
+/** Recursively dispose all PTYs in a pane tree */
+function disposePaneTree(pane: { type: string; surfaces?: Array<{ ptyId?: string }>; children?: Array<typeof pane> }) {
+  if (pane.type === 'leaf' && pane.surfaces) {
+    for (const s of pane.surfaces) {
+      if (s.ptyId) window.electronAPI.pty.dispose(s.ptyId);
+    }
+  } else if (pane.children) {
+    for (const child of pane.children) disposePaneTree(child);
+  }
+}
+
 // ─── Tab content components ───────────────────────────────────────────────────
 
 function TabGeneral({
@@ -315,6 +406,9 @@ function TabGeneral({
           </button>
         </div>
       </div>
+
+      {/* Reset */}
+      <ResetSection />
     </div>
   );
 }
