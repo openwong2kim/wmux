@@ -1,7 +1,7 @@
 {
   "name": "@wong2kim/wmux",
   "productName": "wmux",
-  "version": "2.0.1",
+  "version": "2.0.2",
   "description": "Windows terminal multiplexer with MCP server for AI agents - run multiple CLI sessions in parallel, control via Claude Code and other AI tools",
   "main": ".vite/build/index.js",
   "scripts": {
