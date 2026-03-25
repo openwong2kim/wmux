@@ -358,7 +358,9 @@ try {
     # Rebuild native modules for Electron
     Invoke-NativeCommand { npx electron-rebuild -f -w node-pty }
 
-    # Build CLI
+    # Build daemon, MCP server, and CLI
+    Invoke-NativeCommand { npm run build:daemon }
+    Invoke-NativeCommand { npm run build:mcp }
     Invoke-NativeCommand { npm run build:cli }
 
     # Build Electron app (.exe installer)
@@ -372,7 +374,7 @@ try {
         Invoke-NativeCommand { npm link }
     } catch {
         Write-Host "  [*] npm link failed (needs admin or Developer Mode) — using PATH fallback" -ForegroundColor Yellow
-        $cliEntry = "$installDir\dist\cli\cli\index.js"
+        $cliEntry = "$installDir\dist\cli-bundle\index.js"
         if (-not (Test-Path $cliEntry)) {
             Write-Host "  [!] CLI build output not found at $cliEntry" -ForegroundColor Red
             return

@@ -1,9 +1,11 @@
 {
-  "extends": "./tsconfig.json",
   "compilerOptions": {
-    "target": "ES2020",
+    "target": "ES2022",
     "module": "commonjs",
     "moduleResolution": "node",
+    "esModuleInterop": true,
+    "strict": true,
+    "skipLibCheck": true,
     "outDir": "dist/cli",
     "rootDir": "src",
     "declaration": false,
@@ -14,11 +16,5 @@
     "src/shared/rpc.ts",
     "src/shared/constants.ts",
     "src/shared/types.ts"
-  ],
-  "exclude": [
-    "node_modules",
-    "src/main/**/*",
-    "src/renderer/**/*",
-    "src/preload/**/*"
   ]
 }

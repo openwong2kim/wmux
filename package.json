@@ -5,6 +5,9 @@
   "description": "Windows terminal multiplexer with MCP server for AI agents",
   "private": true,
   "main": ".vite/build/index.js",
+  "bin": {
+    "wmux": "dist/cli-bundle/index.js"
+  },
   "scripts": {
     "postinstall": "node scripts/fix-node-pty.js",
     "start": "npm run build:daemon && npm run build:mcp && electron-forge start",
@@ -12,6 +15,7 @@
     "make": "npm run build:daemon && npm run build:mcp && electron-forge make",
     "lint": "eslint --ext .ts,.tsx .",
     "build:daemon": "tsc -p tsconfig.daemon.json && esbuild dist/daemon/daemon/index.js --bundle --platform=node --outfile=dist/daemon-bundle/index.js --external:node-pty",
+    "build:cli": "tsc -p tsconfig.cli.json && esbuild dist/cli/cli/index.js --bundle --platform=node --outfile=dist/cli-bundle/index.js",
     "build:mcp": "tsc -p tsconfig.mcp.json && esbuild dist/mcp/mcp/index.js --bundle --platform=node --outfile=dist/mcp-bundle/index.js --external:electron --external:playwright-core",
     "mcp": "node dist/mcp/mcp/index.js",
     "test": "vitest run"
