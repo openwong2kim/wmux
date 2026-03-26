@@ -43,11 +43,18 @@ export default function ViCopyMode({ terminal, onExit }: ViCopyModeProps) {
     return () => window.removeEventListener('keydown', onKeyDown, true);
   }, [onKeyDown]);
 
-  // Calculate cursor pixel position relative to the xterm viewport.
-  // xterm renders each cell at roughly (fontSize * charWidth) dimensions.
-  // We use CSS variables / approximate values here.
-  const cellWidth = 8.4;  // approximate character width in px at 14px font size
-  const cellHeight = 17;  // approximate line height in px at 14px font size
+  // Read actual cell dimensions from xterm's internal render service.
+  // Falls back to approximations if the internal API is unavailable.
+  let cellWidth = 8.4;
+  let cellHeight = 17;
+  try {
+    const dims = (terminal as unknown as { _core: { _renderService: { dimensions: { css: { cell: { width: number; height: number } } } } } })
+      ._core._renderService.dimensions.css.cell;
+    cellWidth = dims.width;
+    cellHeight = dims.height;
+  } catch {
+    // fallback: keep approximate values
+  }
 
   // The row offset relative to the current viewport
   const viewportY = terminal.buffer.active.viewportY;

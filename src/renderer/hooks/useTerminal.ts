@@ -113,6 +113,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       fitAddon.fit();
     }
 
+    // Wait for fonts to fully load, then re-fit and refresh to fix CJK glyph
+    // rendering issues (WebGL atlas built before font metrics are final).
+    document.fonts.ready.then(() => {
+      if (!terminalRef.current || terminalRef.current !== terminal) return;
+      if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
+      fitAddon.fit();
+      terminal.refresh(0, terminal.rows - 1);
+    });
+
     // Track last sent dimensions to avoid redundant resizes
     let lastSentCols = 0;
     let lastSentRows = 0;

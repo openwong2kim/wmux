@@ -51,9 +51,24 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     let rows: number | undefined;
     if (container && container.offsetWidth > 0 && container.offsetHeight > 0) {
       const fontSize = useStore.getState().terminalFontSize || 13;
-      const charWidth = fontSize * 0.6;
-      const lineHeight = fontSize * 1.2;
+      const fontFamily = useStore.getState().terminalFontFamily || 'Cascadia Code';
       const padding = 8;
+
+      // Measure actual character dimensions using a canvas probe instead of
+      // hardcoded ratios, so CJK fonts and varying DPI are handled correctly.
+      let charWidth: number;
+      let lineHeight: number;
+      try {
+        const canvas = document.createElement('canvas');
+        const ctx = canvas.getContext('2d')!;
+        ctx.font = `${fontSize}px '${fontFamily}', Consolas, 'Courier New', monospace`;
+        charWidth = ctx.measureText('W').width;
+        lineHeight = fontSize * 1.2;
+      } catch {
+        charWidth = fontSize * 0.6;
+        lineHeight = fontSize * 1.2;
+      }
+
       cols = Math.max(2, Math.floor((container.offsetWidth - padding) / charWidth));
       rows = Math.max(2, Math.floor((container.offsetHeight - padding) / lineHeight));
     }
