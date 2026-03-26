@@ -2,6 +2,24 @@
 @tailwind components;
 @tailwind utilities;
 
+/* ─── Bundled Fonts (SIL Open Font License) ─────────────────────────────── */
+
+@font-face {
+  font-family: 'Cascadia Code';
+  src: url('../assets/fonts/CascadiaCode.woff2') format('woff2');
+  font-weight: 200 700;
+  font-style: normal;
+  font-display: swap;
+}
+
+@font-face {
+  font-family: 'Cascadia Mono';
+  src: url('../assets/fonts/CascadiaMono.woff2') format('woff2');
+  font-weight: 200 700;
+  font-style: normal;
+  font-display: swap;
+}
+
 /* ─── Theme CSS Variables ────────────────────────────────────────────────── */
 
 :root, [data-theme="catppuccin-mocha"] {
