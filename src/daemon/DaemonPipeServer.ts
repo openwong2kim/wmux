@@ -70,7 +70,9 @@ export class DaemonPipeServer {
 
     // On Windows, named pipes can linger as zombie handles after process death.
     // Try the primary name, then fall back to suffixed names.
-    const maxAttempts = process.platform === 'win32' ? 4 : 1;
+    // Use enough attempts to survive scenarios where multiple crashed daemons
+    // each held a pipe (8 covers realistic cascading failure cases).
+    const maxAttempts = process.platform === 'win32' ? 8 : 1;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
       const candidateName = attempt === 0
