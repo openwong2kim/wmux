@@ -227,13 +227,12 @@ ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, web
 
 console.log('[DEBUG] registering app.on(ready)');
 app.on('ready', async () => {
-  console.log('[Main] App ready, creating window...');
-  mainWindow = createWindow();
-  console.log(`[Main] Window created: ${!!mainWindow}`);
+  console.log('[Main] App ready');
 
-  attachWindowRecovery(mainWindow);
-
-  // Auto-start daemon and connect
+  // Connect to daemon BEFORE creating the window.
+  // The renderer starts session reconciliation immediately on load — if the
+  // daemon isn't connected yet, pty.list() returns an empty list and all
+  // saved sessions are replaced with fresh terminals.
   try {
     const daemonInfo = await ensureDaemon();
     console.log(`[Main] Daemon ${daemonInfo.spawned ? 'spawned' : 'found'} (PID: ${daemonInfo.pid})`);
@@ -265,6 +264,12 @@ app.on('ready', async () => {
   } catch (err) {
     console.warn('[Main] Daemon auto-start failed, using local PTY:', err);
   }
+
+  console.log('[Main] Creating window...');
+  mainWindow = createWindow();
+  console.log(`[Main] Window created: ${!!mainWindow}`);
+
+  attachWindowRecovery(mainWindow);
 
   // Handle system sleep/wake — verify PTY processes survived
   powerMonitor.on('resume', () => {
