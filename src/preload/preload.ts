@@ -93,6 +93,13 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.FS_CHANGED, listener); };
     },
   },
+  daemon: {
+    onConnected: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on('daemon:connected', listener);
+      return () => { ipcRenderer.removeListener('daemon:connected', listener); };
+    },
+  },
   scrollback: {
     dump: (surfaceId: string, content: string) =>
       ipcRenderer.invoke(IPC.SCROLLBACK_DUMP, surfaceId, content),

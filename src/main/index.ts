@@ -227,12 +227,13 @@ ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, web
 
 console.log('[DEBUG] registering app.on(ready)');
 app.on('ready', async () => {
-  console.log('[Main] App ready');
+  console.log('[Main] App ready, creating window...');
+  mainWindow = createWindow();
+  console.log(`[Main] Window created: ${!!mainWindow}`);
 
-  // Connect to daemon BEFORE creating the window.
-  // The renderer starts session reconciliation immediately on load — if the
-  // daemon isn't connected yet, pty.list() returns an empty list and all
-  // saved sessions are replaced with fresh terminals.
+  attachWindowRecovery(mainWindow);
+
+  // Auto-start daemon and connect
   try {
     const daemonInfo = await ensureDaemon();
     console.log(`[Main] Daemon ${daemonInfo.spawned ? 'spawned' : 'found'} (PID: ${daemonInfo.pid})`);
@@ -253,6 +254,10 @@ app.on('ready', async () => {
         console.log('[Main] Connected to wmux-daemon (auth verified)');
         cleanupHandlers();
         cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient);
+        // Notify renderer that daemon is now connected so it can re-reconcile
+        if (mainWindow && !mainWindow.isDestroyed()) {
+          mainWindow.webContents.send('daemon:connected');
+        }
         daemonClient.on('disconnected', () => {
           console.warn('[Main] Daemon disconnected, falling back to local PTY');
           daemonClient = null;
@@ -264,12 +269,6 @@ app.on('ready', async () => {
   } catch (err) {
     console.warn('[Main] Daemon auto-start failed, using local PTY:', err);
   }
-
-  console.log('[Main] Creating window...');
-  mainWindow = createWindow();
-  console.log(`[Main] Window created: ${!!mainWindow}`);
-
-  attachWindowRecovery(mainWindow);
 
   // Handle system sleep/wake — verify PTY processes survived
   powerMonitor.on('resume', () => {

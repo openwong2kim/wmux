@@ -77,6 +77,13 @@ const electronAPI = {
     respond: (requestId: string, result: unknown) =>
       ipcRenderer.send(`${IPC.RPC_RESPONSE}:${requestId}`, result),
   },
+  daemon: {
+    onConnected: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on('daemon:connected', listener);
+      return () => { ipcRenderer.removeListener('daemon:connected', listener); };
+    },
+  },
   scrollback: {
     dump: (surfaceId: string, content: string) =>
       ipcRenderer.invoke(IPC.SCROLLBACK_DUMP, surfaceId, content),
