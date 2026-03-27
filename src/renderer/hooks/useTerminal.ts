@@ -161,6 +161,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminal.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
 
+      // Shift+Enter → send CSI u sequence so Claude Code inserts a newline
+      // instead of submitting. Kitty keyboard protocol: ESC [ 13 ; 2 u
+      if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+        e.preventDefault();
+        window.electronAPI.pty.write(ptyId, '\x1b[13;2u');
+        return false;
+      }
+
       // Pass app shortcuts through to useKeyboard (don't let xterm consume them)
       if (e.ctrlKey && !e.shiftKey && [',', 'b', 'k', 'i', 'n', 't'].includes(e.key)) {
         return false; // let DOM bubble to useKeyboard
