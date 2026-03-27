@@ -3,7 +3,6 @@ import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
-import { useResizeGuard } from '../../hooks/useResizeGuard';
 import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
@@ -133,7 +132,6 @@ function SplitSurfaceView({
     [pane.surfaces],
   );
 
-  const onResizeStart = useResizeGuard();
   const hasBoth = terminals.length > 0 && browsers.length > 0;
 
   if (pane.surfaces.length === 0) {
@@ -199,7 +197,7 @@ function SplitSurfaceView({
           </div>
         </Panel>
 
-        <Separator className="w-1 bg-[var(--bg-surface)] hover:bg-[var(--accent-blue)] transition-colors cursor-col-resize" onMouseDown={onResizeStart} />
+        <Separator className="w-1 bg-[var(--bg-surface)] hover:bg-[var(--accent-blue)] transition-colors cursor-col-resize" />
 
         {/* Browser panel */}
         <Panel defaultSize={50} minSize={20}>

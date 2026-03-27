@@ -1,7 +1,6 @@
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { Pane as PaneType } from '../../../shared/types';
 import { useStore } from '../../stores';
-import { useResizeGuard } from '../../hooks/useResizeGuard';
 import PaneComponent from './Pane';
 
 interface PaneContainerProps {
@@ -14,7 +13,6 @@ export default function PaneContainer({ pane, isWorkspaceVisible = true }: PaneC
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
     return ws?.activePaneId || '';
   });
-  const onResizeStart = useResizeGuard();
 
   if (pane.type === 'leaf') {
     return <PaneComponent pane={pane} isActive={pane.id === activePaneId} isWorkspaceVisible={isWorkspaceVisible} />;
@@ -31,7 +29,6 @@ export default function PaneContainer({ pane, isWorkspaceVisible = true }: PaneC
               className={`${
                 orientation === 'horizontal' ? 'w-1' : 'h-1'
               } bg-[var(--bg-surface)] hover:bg-[var(--accent-blue)] transition-colors`}
-              onMouseDown={onResizeStart}
             />
           )}
           <Panel defaultSize={pane.sizes?.[i] ?? 100 / pane.children.length} minSize={10}>

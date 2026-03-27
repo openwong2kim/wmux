@@ -16,6 +16,7 @@ import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
+import { useResizeGuard } from '../../hooks/useResizeGuard';
 import type { SessionData, PaneLeaf, Pane, Surface } from '../../../shared/types';
 import { Terminal } from '@xterm/xterm';
 import { terminalRegistry } from '../../hooks/useTerminal';
@@ -127,6 +128,8 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
 }
 
 export default function AppLayout() {
+  // Global guard: blocks webview pointer capture during panel separator drag
+  useResizeGuard();
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const fileTreeVisible = useStore((s) => s.fileTreeVisible);
