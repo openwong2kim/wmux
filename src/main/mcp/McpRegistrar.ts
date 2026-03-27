@@ -78,20 +78,15 @@ export class McpRegistrar {
   }
 
   /**
-   * Remove wmux MCP server entry from Claude Code config.
-   * Token file is intentionally NOT deleted — it is reused across restarts
-   * (dev mode: Vite hot-reload, production: overwritten by next register()).
+   * Previously removed MCP entries on quit, but this caused a chicken-and-egg
+   * problem: Claude Code couldn't find the MCP server because wmux deleted it
+   * on exit. Now we keep the registration persistent — the MCP server process
+   * handles pipe-not-available gracefully when wmux isn't running.
    */
   unregister(): void {
-    if (!this.registered) return;
-
-    try {
-      this.unregisterFromClaudeJson([...this.ownedKeys]);
-      console.log(`[McpRegistrar] Unregistered MCP keys: ${[...this.ownedKeys].join(', ')}`);
-      this.ownedKeys.clear();
-    } catch (err) {
-      console.error('[McpRegistrar] Failed to unregister:', err);
-    }
+    // Intentionally no-op: keep MCP registration persistent in ~/.claude.json
+    // so Claude Code can always discover the wmux MCP server.
+    this.ownedKeys.clear();
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
