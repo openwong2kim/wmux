@@ -1,7 +1,7 @@
 {
   "name": "wmux",
   "productName": "wmux",
-  "version": "2.2.2",
+  "version": "2.3.0",
   "description": "Windows terminal multiplexer with MCP server for AI agents",
   "private": true,
   "main": ".vite/build/index.js",
