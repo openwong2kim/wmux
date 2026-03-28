@@ -3,10 +3,14 @@ import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerBrowserRpc } from '../browser.rpc';
 
+const { validateResolvedNavigationUrlMock } = vi.hoisted(() => ({
+  validateResolvedNavigationUrlMock: vi.fn(),
+}));
 const mockWebContents = {
   isDestroyed: vi.fn(() => false),
   canGoBack: vi.fn(() => true),
   goBack: vi.fn(),
+  loadURL: vi.fn(),
   debugger: {
     sendCommand: vi.fn(),
   },
@@ -18,11 +22,16 @@ vi.mock('electron', () => ({
   },
 }));
 
+vi.mock('../../../security/navigationPolicy', () => ({
+  validateResolvedNavigationUrl: validateResolvedNavigationUrlMock,
+}));
+
 describe('registerBrowserRpc', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWebContents.isDestroyed.mockReturnValue(false);
     mockWebContents.canGoBack.mockReturnValue(true);
+    validateResolvedNavigationUrlMock.mockResolvedValue({ valid: true });
   });
 
   function register(): RpcRouter {
@@ -83,5 +92,25 @@ describe('registerBrowserRpc', () => {
         targets: [{ surfaceId: 'surface-1', targetId: 'target-1' }],
       });
     }
+  });
+
+  it('browser.navigate rejects URLs whose resolved targets are blocked', async () => {
+    validateResolvedNavigationUrlMock.mockResolvedValue({
+      valid: false,
+      reason: 'Blocked resolved address 169.254.169.254: Blocked link-local/cloud metadata address (169.254.0.0/16)',
+    });
+
+    const router = register();
+    const response = await router.dispatch({
+      id: '4',
+      method: 'browser.navigate',
+      params: { url: 'https://metadata.example' },
+    });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error).toContain('browser.navigate: Blocked resolved address 169.254.169.254');
+    }
+    expect(mockWebContents.loadURL).not.toHaveBeenCalled();
   });
 });

@@ -6,12 +6,12 @@ import { ProfileManager } from '../../browser-session/ProfileManager';
 import { PortAllocator } from '../../browser-session/PortAllocator';
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
 import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
-import { validateNavigationUrl } from '../../../shared/types';
+import { validateResolvedNavigationUrl } from '../../security/navigationPolicy';
 
 type GetWindow = () => BrowserWindow | null;
 
-function validateUrl(url: string, method: string): void {
-  const result = validateNavigationUrl(url);
+async function validateUrl(url: string, method: string): Promise<void> {
+  const result = await validateResolvedNavigationUrl(url);
   if (!result.valid) {
     throw new Error(`${method}: ${result.reason}`);
   }
@@ -34,9 +34,9 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * Opens a new browser surface in the active pane.
    * params: { url?: string }
    */
-  router.register('browser.open', (params) => {
+  router.register('browser.open', async (params) => {
     const url = typeof params['url'] === 'string' ? params['url'] : undefined;
-    if (url) validateUrl(url, 'browser.open');
+    if (url) await validateUrl(url, 'browser.open');
     return sendToRenderer(getWindow, 'browser.open', {
       ...(url && { url }),
     });
@@ -64,7 +64,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
     if (typeof params['url'] !== 'string' || params['url'].length === 0) {
       throw new Error('browser.navigate: missing required param "url"');
     }
-    validateUrl(params['url'], 'browser.navigate');
+    await validateUrl(params['url'], 'browser.navigate');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
     // Try CDP direct navigation first
