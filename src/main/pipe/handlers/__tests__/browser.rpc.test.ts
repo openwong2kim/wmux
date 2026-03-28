@@ -6,6 +6,9 @@ import { registerBrowserRpc } from '../browser.rpc';
 const { validateResolvedNavigationUrlMock } = vi.hoisted(() => ({
   validateResolvedNavigationUrlMock: vi.fn(),
 }));
+const { sendToRendererMock } = vi.hoisted(() => ({
+  sendToRendererMock: vi.fn(),
+}));
 const mockWebContents = {
   isDestroyed: vi.fn(() => false),
   canGoBack: vi.fn(() => true),
@@ -26,12 +29,17 @@ vi.mock('../../../security/navigationPolicy', () => ({
   validateResolvedNavigationUrl: validateResolvedNavigationUrlMock,
 }));
 
+vi.mock('../_bridge', () => ({
+  sendToRenderer: sendToRendererMock,
+}));
+
 describe('registerBrowserRpc', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mockWebContents.isDestroyed.mockReturnValue(false);
     mockWebContents.canGoBack.mockReturnValue(true);
     validateResolvedNavigationUrlMock.mockResolvedValue({ valid: true });
+    sendToRendererMock.mockResolvedValue({ ok: true });
   });
 
   function register(): RpcRouter {
@@ -112,5 +120,34 @@ describe('registerBrowserRpc', () => {
       expect(response.error).toContain('browser.navigate: Blocked resolved address 169.254.169.254');
     }
     expect(mockWebContents.loadURL).not.toHaveBeenCalled();
+  });
+
+  it('browser.open passes the active profile partition to the renderer', async () => {
+    const router = register();
+
+    await router.dispatch({
+      id: '5',
+      method: 'browser.open',
+      params: {},
+    });
+
+    expect(sendToRendererMock).toHaveBeenCalledWith(expect.any(Function), 'browser.open', {
+      partition: 'persist:wmux-default',
+    });
+  });
+
+  it('browser.session.start applies the selected partition to renderer browser surfaces', async () => {
+    const router = register();
+
+    const response = await router.dispatch({
+      id: '6',
+      method: 'browser.session.start',
+      params: { profile: 'login' },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(expect.any(Function), 'browser.session.applyProfile', {
+      partition: 'persist:wmux-login',
+    });
   });
 });

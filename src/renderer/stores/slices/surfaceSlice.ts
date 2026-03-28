@@ -5,7 +5,7 @@ import { createSurface, generateId } from '../../../shared/types';
 
 export interface SurfaceSlice {
   addSurface: (paneId: string, ptyId: string, shell: string, cwd: string) => void;
-  addBrowserSurface: (paneId: string, url?: string) => void;
+  addBrowserSurface: (paneId: string, url?: string, partition?: string) => void;
   addEditorSurface: (paneId: string, filePath: string) => void;
   closeSurface: (paneId: string, surfaceId: string) => void;
   setActiveSurface: (paneId: string, surfaceId: string) => void;
@@ -13,6 +13,7 @@ export interface SurfaceSlice {
   prevSurface: (paneId: string) => void;
   updateSurfacePtyId: (paneId: string, surfaceId: string, ptyId: string) => void;
   updateSurfaceTitle: (surfaceId: string, title: string) => void;
+  updateBrowserPartition: (partition: string, surfaceId?: string) => void;
 }
 
 function findLeafPane(root: Pane, id: string): PaneLeaf | null {
@@ -37,7 +38,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     pane.activeSurfaceId = surface.id;
   }),
 
-  addBrowserSurface: (paneId, url) => set((state: StoreState) => {
+  addBrowserSurface: (paneId, url, partition) => set((state: StoreState) => {
     const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
@@ -50,6 +51,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       cwd: '',
       surfaceType: 'browser',
       browserUrl: url || 'https://google.com',
+      browserPartition: partition || 'persist:wmux-default',
     };
     pane.surfaces.push(surface);
     pane.activeSurfaceId = surface.id;
@@ -146,6 +148,25 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
         return pane.children.some(updateInPane);
       };
       if (updateInPane(ws.rootPane)) return;
+    }
+  }),
+
+  updateBrowserPartition: (partition, surfaceId) => set((state: StoreState) => {
+    for (const ws of state.workspaces) {
+      const updateInPane = (pane: Pane): boolean => {
+        if (pane.type === 'leaf') {
+          let updated = false;
+          for (const surface of pane.surfaces) {
+            if (surface.surfaceType !== 'browser') continue;
+            if (surfaceId && surface.id !== surfaceId) continue;
+            surface.browserPartition = partition;
+            updated = true;
+          }
+          return updated;
+        }
+        return pane.children.some(updateInPane);
+      };
+      if (updateInPane(ws.rootPane) && surfaceId) return;
     }
   }),
 });

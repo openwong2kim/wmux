@@ -321,6 +321,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
     if (!ws) return { error: 'no active workspace' };
     const url = typeof params.url === 'string' ? params.url : undefined;
+    const partition = typeof params.partition === 'string' ? params.partition : 'persist:wmux-default';
 
     // Check if a browser surface already exists anywhere — reuse it
     const leaves = findLeafPanes(ws.rootPane);
@@ -336,8 +337,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           const p = findPaneById(w.rootPane, paneIdForBrowser);
           if (!p || p.type !== 'leaf') return;
           const surf = p.surfaces.find((s) => s.id === surfaceId);
-          if (surf && url) {
-            surf.browserUrl = url;
+          if (surf) {
+            if (url) {
+              surf.browserUrl = url;
+            }
+            surf.browserPartition = partition;
           }
           p.activeSurfaceId = surfaceId;
         });
@@ -358,7 +362,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!afterSplitWs) return { ok: true };
 
     const newPaneId = afterSplitWs.activePaneId;
-    afterSplit.addBrowserSurface(newPaneId, url);
+    afterSplit.addBrowserSurface(newPaneId, url, partition);
 
     // Focus back to the original terminal pane so user can keep typing
     afterSplit.setActivePane(paneId);
@@ -370,6 +374,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!newPane || newPane.type !== 'leaf') return { ok: true };
     const surface = newPane.surfaces[newPane.surfaces.length - 1];
     return { ok: true, surfaceId: surface?.id, url: url || 'https://google.com' };
+  }
+
+  if (method === 'browser.session.applyProfile') {
+    const partition = typeof params.partition === 'string' ? params.partition : '';
+    if (!partition) return { error: 'browser.session.applyProfile: missing partition' };
+    const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
+    store.updateBrowserPartition(partition, surfaceId);
+    return { ok: true, partition, ...(surfaceId && { surfaceId }) };
   }
 
   if (method === 'browser.close') {
