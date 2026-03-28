@@ -31,6 +31,7 @@ const BLOCKED_FILES = [
   '.npmrc',
   '.netrc',
   '.env',
+  '.wmux/daemon-auth-token',
 ];
 
 export function isSensitivePath(resolvedPath: string): boolean {
@@ -59,6 +60,21 @@ export function isSensitivePath(resolvedPath: string): boolean {
   return false;
 }
 
+export async function resolveAccessiblePath(inputPath: string): Promise<string | null> {
+  if (!inputPath || typeof inputPath !== 'string') return null;
+
+  const resolved = path.resolve(inputPath);
+  if (isSensitivePath(resolved)) return null;
+
+  try {
+    const canonical = await fs.promises.realpath(resolved);
+    if (isSensitivePath(canonical)) return null;
+    return canonical;
+  } catch {
+    return null;
+  }
+}
+
 export function closeAllWatchers(): void {
   for (const watcher of watchers.values()) {
     watcher.close();
@@ -73,12 +89,8 @@ export function closeAllWatchers(): void {
 export function registerFsHandlers(): () => void {
   ipcMain.removeHandler(IPC.FS_READ_DIR);
   ipcMain.handle(IPC.FS_READ_DIR, async (_event, dirPath: string): Promise<FileEntry[]> => {
-    // 보안: 경로 정규화 및 기본 검증
-    if (!dirPath || typeof dirPath !== 'string') return [];
-
-    const resolved = path.resolve(dirPath);
-
-    if (isSensitivePath(resolved)) return [];
+    const resolved = await resolveAccessiblePath(dirPath);
+    if (!resolved) return [];
 
     try {
       const entries = await fs.promises.readdir(resolved, { withFileTypes: true });
@@ -110,9 +122,8 @@ export function registerFsHandlers(): () => void {
 
   ipcMain.removeHandler(IPC.FS_READ_FILE);
   ipcMain.handle(IPC.FS_READ_FILE, async (_event, filePath: string): Promise<string | null> => {
-    if (!filePath || typeof filePath !== 'string') return null;
-    const resolved = path.resolve(filePath);
-    if (isSensitivePath(resolved)) return null;
+    const resolved = await resolveAccessiblePath(filePath);
+    if (!resolved) return null;
     try {
       const stat = await fs.promises.stat(resolved);
       if (stat.size > 1024 * 1024) return null; // 1MB limit
@@ -123,11 +134,9 @@ export function registerFsHandlers(): () => void {
   });
 
   ipcMain.removeHandler(IPC.FS_WATCH);
-  ipcMain.handle(IPC.FS_WATCH, (_event, dirPath: string) => {
-    if (!dirPath || typeof dirPath !== 'string') return false;
-    const resolved = path.resolve(dirPath);
-
-    if (isSensitivePath(resolved)) return false;
+  ipcMain.handle(IPC.FS_WATCH, async (_event, dirPath: string) => {
+    const resolved = await resolveAccessiblePath(dirPath);
+    if (!resolved) return false;
 
     // Clean up previous watcher for this path
     if (watchers.has(resolved)) {
@@ -168,9 +177,9 @@ export function registerFsHandlers(): () => void {
   });
 
   ipcMain.removeHandler(IPC.FS_UNWATCH);
-  ipcMain.handle(IPC.FS_UNWATCH, (_event, dirPath: string) => {
-    if (!dirPath || typeof dirPath !== 'string') return;
-    const resolved = path.resolve(dirPath);
+  ipcMain.handle(IPC.FS_UNWATCH, async (_event, dirPath: string) => {
+    const resolved = await resolveAccessiblePath(dirPath);
+    if (!resolved) return;
     const watcher = watchers.get(resolved);
     if (watcher) {
       watcher.close();
