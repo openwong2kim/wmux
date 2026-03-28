@@ -7,6 +7,7 @@ export interface Surface {
   cwd: string;
   surfaceType?: 'terminal' | 'browser' | 'editor';
   browserUrl?: string;
+  browserPartition?: string;
   editorFilePath?: string;
   scrollbackFile?: string;  // surfaceId used as filename for scrollback dump
 }

@@ -29,6 +29,8 @@ const portAllocator = new PortAllocator();
 const humanBehavior = new HumanBehavior();
 
 export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webviewCdpManager: WebviewCdpManager): void {
+  const getActivePartition = (): string => profileManager.getActiveProfile().partition;
+
   /**
    * browser.open
    * Opens a new browser surface in the active pane.
@@ -38,6 +40,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
     const url = typeof params['url'] === 'string' ? params['url'] : undefined;
     if (url) await validateUrl(url, 'browser.open');
     return sendToRenderer(getWindow, 'browser.open', {
+      partition: getActivePartition(),
       ...(url && { url }),
     });
   });
@@ -132,7 +135,6 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * Start a browser session with an optional profile.
    * params: { profile?: string }
    */
-  // TODO: Wire profile partition to renderer webview — currently data-only stub
   router.register('browser.session.start', async (params) => {
     const profileName = typeof params['profile'] === 'string' ? params['profile'] : 'default';
     let profile = profileManager.getProfile(profileName);
@@ -140,6 +142,9 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       profile = profileManager.createProfile(profileName, true);
     }
     profileManager.setActiveProfile(profileName);
+    await sendToRenderer(getWindow, 'browser.session.applyProfile', {
+      partition: profile.partition,
+    });
     const port = await portAllocator.allocate();
     return {
       profile: profile.name,
@@ -153,13 +158,15 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * browser.session.stop
    * Stop the active browser session and release resources.
    */
-  // TODO: Wire profile partition to renderer webview — currently data-only stub
   router.register('browser.session.stop', async () => {
     const port = portAllocator.getPort();
     if (port !== null) {
       portAllocator.release(port);
     }
     profileManager.setActiveProfile('default');
+    await sendToRenderer(getWindow, 'browser.session.applyProfile', {
+      partition: getActivePartition(),
+    });
     return { stopped: true };
   });
 
