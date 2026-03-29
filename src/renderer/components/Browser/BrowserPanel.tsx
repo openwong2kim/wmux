@@ -207,54 +207,24 @@ export default function BrowserPanel({ surfaceId, initialUrl, isActive, onClose 
           return sel;
         }
 
-        function getOpenTag(el) {
-          const tag = el.tagName.toLowerCase();
-          let s = '<' + tag;
-          for (const a of el.attributes) {
-            if (a.name === 'style') continue;
-            let v = a.value;
-            if (v.length > 60) v = v.slice(0, 60) + '...';
-            s += ' ' + a.name + '="' + v + '"';
-            if (s.length > 200) { s += ' ...'; break; }
-          }
-          return s + '>';
-        }
-
-        function getSiblingsSummary(el) {
-          const parent = el.parentElement;
-          if (!parent) return '';
-          const sibs = Array.from(parent.children)
-            .filter(c => c !== el && !c.id?.startsWith('__wmux'))
-            .slice(0, 3)
-            .map(c => {
-              const tag = c.tagName.toLowerCase();
-              let text = (c.textContent || '').replace(/\\n/g, ' ').trim();
-              if (text.length > 30) text = text.slice(0, 30) + '...';
-              return tag + (text ? '"' + text + '"' : '');
-            });
-          return sibs.join(', ');
-        }
-
         function buildContext(el) {
           const selector = getSelector(el);
-          const openTag = getOpenTag(el);
-          let text = (el.textContent || '').replace(/\\n/g, ' ').trim();
-          if (text.length > 80) text = text.slice(0, 80) + '...';
-
-          const parent = el.parentElement;
-          const parentSel = parent ? getSelector(parent) : null;
-          const sibs = getSiblingsSummary(el);
+          const tag = el.tagName.toLowerCase();
+          const keep = ['type','name','placeholder','value','href','src','role','aria-label'];
+          const attrs = keep
+            .filter(k => el.hasAttribute(k))
+            .map(k => {
+              let v = el.getAttribute(k);
+              if (v.length > 60) v = v.slice(0, 60) + '...';
+              return k + '="' + v + '"';
+            })
+            .join(' ');
+          const openTag = '<' + tag + (attrs ? ' ' + attrs : '') + '>';
 
           const lines = [];
           lines.push('[Inspector] ' + document.title + ' (' + location.href + ')');
           lines.push('selector: ' + selector);
           lines.push(openTag);
-          if (text) lines.push('text: "' + text + '"');
-          if (parentSel) {
-            let ctx = 'parent: ' + parentSel;
-            if (sibs) ctx += ' > siblings: ' + sibs;
-            lines.push(ctx);
-          }
           return { text: lines.join('\\n'), selector: selector };
         }
 
@@ -271,10 +241,8 @@ export default function BrowserPanel({ surfaceId, initialUrl, isActive, onClose 
           overlay.style.display = 'block';
 
           const sel = getSelector(el);
-          const dims = Math.round(r.width) + ' x ' + Math.round(r.height);
-          let text = (el.textContent || '').replace(/\\n/g, ' ').trim();
-          if (text.length > 60) text = text.slice(0, 60) + '...';
-          label.textContent = sel + '\\n' + dims + (text ? '\\n"' + text + '"' : '');
+          const tag = el.tagName.toLowerCase();
+          label.textContent = sel + '  <' + tag + '>';
           label.style.display = 'block';
           let lx = e.clientX + 12, ly = e.clientY + 16;
           if (lx + 300 > window.innerWidth) lx = e.clientX - 300;
