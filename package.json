@@ -1,7 +1,7 @@
 {
   "name": "wmux",
   "productName": "wmux",
-  "version": "2.3.0",
+  "version": "2.3.1",
   "description": "Windows terminal multiplexer with MCP server for AI agents",
   "license": "MIT",
   "private": true,
