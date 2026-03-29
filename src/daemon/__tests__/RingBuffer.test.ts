@@ -1,22 +1,5 @@
-import { describe, it, expect, afterEach } from 'vitest';
-import fs from 'node:fs';
-import path from 'node:path';
-import os from 'node:os';
+import { describe, it, expect } from 'vitest';
 import { RingBuffer } from '../RingBuffer';
-
-/** Temp files created during tests — cleaned up in afterEach */
-const tempFiles: string[] = [];
-
-afterEach(() => {
-  for (const f of tempFiles) {
-    try {
-      if (fs.existsSync(f)) fs.unlinkSync(f);
-    } catch {
-      // ignore cleanup errors
-    }
-  }
-  tempFiles.length = 0;
-});
 
 describe('RingBuffer', () => {
   // 1. Basic write + readAll
@@ -88,20 +71,7 @@ describe('RingBuffer', () => {
     expect(rb.totalCapacity).toBe(32);
   });
 
-  // 7. dumpToFile writes buffer contents to disk
-  it('dumps buffer contents to a file', async () => {
-    const rb = new RingBuffer(64);
-    rb.write(Buffer.from('dump-test-content'));
-
-    const tmpFile = path.join(os.tmpdir(), `wmux-rb-test-${Date.now()}.bin`);
-    tempFiles.push(tmpFile);
-
-    await rb.dumpToFile(tmpFile);
-    const ondisk = fs.readFileSync(tmpFile);
-    expect(ondisk.toString()).toBe('dump-test-content');
-  });
-
-  // 8. Empty buffer readAll returns empty Buffer
+  // 7. Empty buffer readAll returns empty Buffer
   it('returns an empty Buffer when nothing has been written', () => {
     const rb = new RingBuffer(16);
     const result = rb.readAll();
@@ -155,44 +125,4 @@ describe('RingBuffer', () => {
     expect(rb.readAll().toString()).toBe('ABCDEFGH');
   });
 
-  // loadFromFile: round-trip dump → load
-  it('loadFromFile restores buffer contents from a dump', async () => {
-    const rb = new RingBuffer(64);
-    rb.write(Buffer.from('hello-from-dump'));
-
-    const tmpFile = path.join(os.tmpdir(), `wmux-rb-load-${Date.now()}.bin`);
-    tempFiles.push(tmpFile);
-
-    await rb.dumpToFile(tmpFile);
-
-    const restored = RingBuffer.loadFromFile(tmpFile, 64);
-    expect(restored.readAll().toString()).toBe('hello-from-dump');
-    expect(restored.size).toBe(15);
-  });
-
-  // loadFromFile: data larger than capacity keeps only tail
-  it('loadFromFile truncates to capacity when file is larger', async () => {
-    const rb = new RingBuffer(32);
-    rb.write(Buffer.from('A'.repeat(32)));
-
-    const tmpFile = path.join(os.tmpdir(), `wmux-rb-load-big-${Date.now()}.bin`);
-    tempFiles.push(tmpFile);
-
-    await rb.dumpToFile(tmpFile);
-
-    const restored = RingBuffer.loadFromFile(tmpFile, 8);
-    expect(restored.readAll().toString()).toBe('A'.repeat(8));
-    expect(restored.size).toBe(8);
-  });
-
-  // loadFromFile: empty file produces empty buffer
-  it('loadFromFile with empty file produces empty buffer', () => {
-    const tmpFile = path.join(os.tmpdir(), `wmux-rb-load-empty-${Date.now()}.bin`);
-    tempFiles.push(tmpFile);
-    fs.writeFileSync(tmpFile, '');
-
-    const restored = RingBuffer.loadFromFile(tmpFile, 16);
-    expect(restored.size).toBe(0);
-    expect(restored.readAll().length).toBe(0);
-  });
 });

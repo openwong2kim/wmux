@@ -1,9 +1,9 @@
 // === Daemon-specific type definitions ===
 
 /** Session lifecycle state */
-export type DaemonSessionState = 'detached' | 'attached' | 'dead' | 'suspended';
+export type DaemonSessionState = 'detached' | 'attached' | 'dead';
 
-/** Per-session metadata persisted to sessions.json */
+/** Per-session metadata */
 export interface DaemonSession {
   id: string;
   state: DaemonSessionState;
@@ -23,13 +23,6 @@ export interface DaemonSession {
   exitCode?: number | null;
   exitSignal?: string | null;
   deadTtlHours: number;
-  bufferDumpPath?: string;
-}
-
-/** Top-level schema for ~/.wmux/sessions.json */
-export interface DaemonState {
-  version: number;
-  sessions: DaemonSession[];
 }
 
 /** Daemon configuration (~/.wmux/config.json) */
