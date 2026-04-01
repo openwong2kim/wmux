@@ -156,10 +156,9 @@ function SplitSurfaceView({
             />
           ) : surface.surfaceType === 'browser' ? (
             <BrowserPanel
-              key={`${surface.id}:${surface.browserPartition || 'persist:wmux-default'}`}
+              key={surface.id}
               surfaceId={surface.id}
               initialUrl={surface.browserUrl || 'https://google.com'}
-              partition={surface.browserPartition || 'persist:wmux-default'}
               isActive={surface.id === activeSurfaceId}
               onClose={() => onCloseSurface(surface.id)}
             />
@@ -205,10 +204,9 @@ function SplitSurfaceView({
           <div className="h-full w-full relative overflow-hidden">
             {browsers.map((surface) => (
               <BrowserPanel
-                key={`${surface.id}:${surface.browserPartition || 'persist:wmux-default'}`}
+                key={surface.id}
                 surfaceId={surface.id}
                 initialUrl={surface.browserUrl || 'https://google.com'}
-                partition={surface.browserPartition || 'persist:wmux-default'}
                 isActive={surface.id === activeSurfaceId}
                 onClose={() => onCloseSurface(surface.id)}
               />

@@ -2,7 +2,6 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
 import { getAuthTokenPath, getPipeName } from '../../shared/constants';
-import { secureWriteTokenFile } from '../../shared/security';
 
 /**
  * Registers/unregisters the wmux MCP server in Claude Code's config files
@@ -35,7 +34,20 @@ export class McpRegistrar {
   register(authToken: string): void {
     try {
       // Write auth token to file so MCP server can read it
-      secureWriteTokenFile(this.authTokenPath, authToken);
+      fs.writeFileSync(this.authTokenPath, authToken, { encoding: 'utf8', mode: 0o600 });
+      // On Windows, mode 0o600 is ignored. Use icacls to enforce owner-only access.
+      if (process.platform === 'win32') {
+        try {
+          const { execFileSync } = require('child_process');
+          const icacls = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\icacls.exe`;
+          execFileSync(icacls, [
+            this.authTokenPath, '/inheritance:r',
+            '/grant:r', `${process.env.USERNAME}:F`
+          ], { windowsHide: true });
+        } catch (aclErr) {
+          console.warn('[McpRegistrar] Could not set file ACL:', aclErr);
+        }
+      }
       console.log(`[McpRegistrar] Auth token written to ${this.authTokenPath}`);
 
       const mcpScript = this.getMcpScriptPath();

@@ -47,7 +47,6 @@ declare global {
 interface BrowserPanelProps {
   surfaceId: string;
   initialUrl: string;
-  partition: string;
   isActive: boolean;
   onClose: () => void;
 }
@@ -56,7 +55,7 @@ interface BrowserPanelProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function BrowserPanel({ surfaceId, initialUrl, partition, isActive, onClose }: BrowserPanelProps) {
+export default function BrowserPanel({ surfaceId, initialUrl, isActive, onClose }: BrowserPanelProps) {
   const t = useT();
   const webviewRef = useRef<Electron.WebviewTag>(null);
   const [currentUrl, setCurrentUrl] = useState(initialUrl);
@@ -400,7 +399,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
         <webview
           ref={webviewRef as React.RefObject<Electron.WebviewTag>}
           src={initialUrl}
-          partition={partition}
+          partition="persist:browser"
           data-surface-id={surfaceId}
           style={{
             width: '100%',

@@ -3,7 +3,9 @@ import { sendRpc } from '../wmux-client';
 
 interface CdpTargetInfo {
   surfaceId: string;
+  webContentsId: number;
   targetId: string;
+  wsUrl: string;
 }
 
 interface CdpInfoResponse {

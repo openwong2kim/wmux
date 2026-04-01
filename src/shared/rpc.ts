@@ -35,7 +35,6 @@ export type RpcMethod =
   | 'system.capabilities'
   | 'browser.open'
   | 'browser.navigate'
-  | 'browser.goBack'
   | 'browser.close'
   | 'browser.session.start'
   | 'browser.session.stop'
@@ -44,6 +43,7 @@ export type RpcMethod =
   | 'browser.type.humanlike'
   | 'browser.cdp.target'
   | 'browser.cdp.info'
+  | 'browser.cdp.send'
   | 'browser.screenshot'
   | 'browser.evaluate'
   | 'browser.type.cdp'
@@ -81,7 +81,6 @@ export const ALL_RPC_METHODS = [
   'system.capabilities',
   'browser.open',
   'browser.navigate',
-  'browser.goBack',
   'browser.close',
   'browser.session.start',
   'browser.session.stop',
@@ -90,6 +89,7 @@ export const ALL_RPC_METHODS = [
   'browser.type.humanlike',
   'browser.cdp.target',
   'browser.cdp.info',
+  'browser.cdp.send',
   'browser.screenshot',
   'browser.evaluate',
   'browser.type.cdp',

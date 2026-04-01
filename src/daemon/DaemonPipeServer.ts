@@ -4,7 +4,6 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type { RpcRequest, RpcResponse } from '../shared/rpc';
-import { secureWriteTokenFile } from '../shared/security';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -53,7 +52,11 @@ export class DaemonPipeServer {
 
     this.authToken = crypto.randomUUID();
     // Ensure directory exists
-    secureWriteTokenFile(tokenPath, this.authToken);
+    const dir = path.dirname(tokenPath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+    fs.writeFileSync(tokenPath, this.authToken, { encoding: 'utf8', mode: 0o600 });
     return this.authToken;
   }
 

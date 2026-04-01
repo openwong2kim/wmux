@@ -6,12 +6,12 @@ import { ProfileManager } from '../../browser-session/ProfileManager';
 import { PortAllocator } from '../../browser-session/PortAllocator';
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
 import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
-import { validateResolvedNavigationUrl } from '../../security/navigationPolicy';
+import { validateNavigationUrl } from '../../../shared/types';
 
 type GetWindow = () => BrowserWindow | null;
 
-async function validateUrl(url: string, method: string): Promise<void> {
-  const result = await validateResolvedNavigationUrl(url);
+function validateUrl(url: string, method: string): void {
+  const result = validateNavigationUrl(url);
   if (!result.valid) {
     throw new Error(`${method}: ${result.reason}`);
   }
@@ -29,18 +29,15 @@ const portAllocator = new PortAllocator();
 const humanBehavior = new HumanBehavior();
 
 export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webviewCdpManager: WebviewCdpManager): void {
-  const getActivePartition = (): string => profileManager.getActiveProfile().partition;
-
   /**
    * browser.open
    * Opens a new browser surface in the active pane.
    * params: { url?: string }
    */
-  router.register('browser.open', async (params) => {
+  router.register('browser.open', (params) => {
     const url = typeof params['url'] === 'string' ? params['url'] : undefined;
-    if (url) await validateUrl(url, 'browser.open');
+    if (url) validateUrl(url, 'browser.open');
     return sendToRenderer(getWindow, 'browser.open', {
-      partition: getActivePartition(),
       ...(url && { url }),
     });
   });
@@ -67,7 +64,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
     if (typeof params['url'] !== 'string' || params['url'].length === 0) {
       throw new Error('browser.navigate: missing required param "url"');
     }
-    await validateUrl(params['url'], 'browser.navigate');
+    validateUrl(params['url'], 'browser.navigate');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
     // Try CDP direct navigation first
@@ -91,43 +88,6 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
     });
   });
 
-  /**
-   * browser.goBack
-   * Navigate the active browser Surface back by one history entry.
-   * params: { surfaceId?: string }
-   */
-  router.register('browser.goBack', async (params) => {
-    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
-
-    const target = webviewCdpManager.getTarget(surfaceId);
-    if (!target) throw new Error('browser.goBack: no webview target registered');
-
-    const wc = webContents.fromId(target.webContentsId);
-    if (!wc || wc.isDestroyed()) throw new Error('browser.goBack: WebContents unavailable');
-
-    const navigationHistory = (wc as Electron.WebContents & {
-      navigationHistory?: {
-        canGoBack?: () => boolean;
-        goBack?: () => void;
-      };
-      canGoBack?: () => boolean;
-      goBack?: () => void;
-    }).navigationHistory;
-
-    const canGoBack = navigationHistory?.canGoBack?.() ?? wc.canGoBack?.() ?? false;
-    if (!canGoBack) {
-      return { ok: false, reason: 'no history entry' };
-    }
-
-    if (navigationHistory?.goBack) {
-      navigationHistory.goBack();
-    } else {
-      wc.goBack();
-    }
-
-    return { ok: true };
-  });
-
   // ── Session handlers ────────────────────────────────────────────────────
 
   /**
@@ -135,6 +95,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * Start a browser session with an optional profile.
    * params: { profile?: string }
    */
+  // TODO: Wire profile partition to renderer webview — currently data-only stub
   router.register('browser.session.start', async (params) => {
     const profileName = typeof params['profile'] === 'string' ? params['profile'] : 'default';
     let profile = profileManager.getProfile(profileName);
@@ -142,9 +103,6 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       profile = profileManager.createProfile(profileName, true);
     }
     profileManager.setActiveProfile(profileName);
-    await sendToRenderer(getWindow, 'browser.session.applyProfile', {
-      partition: profile.partition,
-    });
     const port = await portAllocator.allocate();
     return {
       profile: profile.name,
@@ -158,15 +116,13 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * browser.session.stop
    * Stop the active browser session and release resources.
    */
+  // TODO: Wire profile partition to renderer webview — currently data-only stub
   router.register('browser.session.stop', async () => {
     const port = portAllocator.getPort();
     if (port !== null) {
       portAllocator.release(port);
     }
     profileManager.setActiveProfile('default');
-    await sendToRenderer(getWindow, 'browser.session.applyProfile', {
-      partition: getActivePartition(),
-    });
     return { stopped: true };
   });
 
@@ -230,7 +186,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
 
   /**
    * browser.cdp.info
-   * Returns the CDP port and minimal target metadata required for Playwright attachment.
+   * Returns the CDP port and all registered webview targets.
    * params: none
    */
   router.register('browser.cdp.info', async () => {
@@ -248,9 +204,33 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       cdpPort,
       targets: targets.map((t) => ({
         surfaceId: t.surfaceId,
+        webContentsId: t.webContentsId,
         targetId: t.targetId,
+        wsUrl: t.wsUrl,  // Internal use only — needed by PlaywrightEngine to connect to webview
       })),
     };
+  });
+
+  /**
+   * browser.cdp.send
+   * Proxy any CDP command to the webview via webContents.debugger.
+   * params: { method: string, params?: object, surfaceId?: string }
+   */
+  router.register('browser.cdp.send', async (params) => {
+    const method = typeof params['method'] === 'string' ? params['method'] : '';
+    if (!method) throw new Error('browser.cdp.send: missing "method"');
+    const cdpParams = (typeof params['params'] === 'object' && params['params'] !== null)
+      ? params['params'] as Record<string, unknown>
+      : {};
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+
+    const target = webviewCdpManager.getTarget(surfaceId);
+    if (!target) throw new Error('browser.cdp.send: no webview target registered');
+
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error('browser.cdp.send: WebContents unavailable');
+
+    return await wc.debugger.sendCommand(method, cdpParams);
   });
 
   /**

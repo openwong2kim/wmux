@@ -7,7 +7,6 @@ export interface Surface {
   cwd: string;
   surfaceType?: 'terminal' | 'browser' | 'editor';
   browserUrl?: string;
-  browserPartition?: string;
   editorFilePath?: string;
   scrollbackFile?: string;  // surfaceId used as filename for scrollback dump
 }
@@ -231,12 +230,14 @@ export function createWorkspace(name: string): Workspace {
 // === Security: URL validation for SSRF prevention ===
 
 /**
- * Fast preflight validation for browser navigation URLs.
+ * Validates a URL for safe navigation. Blocks dangerous schemes and private
+ * network addresses to prevent SSRF attacks from AI agent-driven browsing.
  *
- * This blocks dangerous schemes and obvious private/null/link-local literal
- * addresses before navigation requests leave the caller. Hostname resolution
- * checks are enforced separately in the main process at the actual navigation
- * boundary.
+ * Allows localhost/127.0.0.1/[::1] for local development servers.
+ *
+ * NOTE (v1 limitation): This is string-based validation only. DNS-resolved IPs
+ * are not checked, so DNS rebinding attacks are not mitigated. A future version
+ * should resolve hostnames and re-validate the resolved IP.
  */
 export function validateNavigationUrl(url: string): { valid: boolean; reason?: string } {
   let parsed: URL;

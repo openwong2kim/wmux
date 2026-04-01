@@ -1,8 +1,6 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import * as fs from 'fs';
-import * as os from 'os';
-import * as path from 'path';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 
 // Optional surfaceId schema reused across tools
@@ -10,30 +8,6 @@ const optionalSurfaceId = z
   .string()
   .optional()
   .describe('Target a specific surface by ID. Omit to use the active surface.');
-
-function getExportRoot(): string {
-  return path.join(os.homedir(), '.wmux', 'exports');
-}
-
-export function resolveBrowserExportPath(requestedPath: string | undefined, defaultFileName: string): string {
-  const exportRoot = getExportRoot();
-  const candidate = requestedPath?.trim() || defaultFileName;
-  if (path.isAbsolute(candidate)) {
-    throw new Error(`Absolute output paths are not allowed. Use a relative path under ${exportRoot}`);
-  }
-
-  const resolved = path.resolve(exportRoot, candidate);
-  const relative = path.relative(exportRoot, resolved);
-  if (relative.startsWith('..') || path.isAbsolute(relative)) {
-    throw new Error(`Output path escapes the export root. Use a relative path under ${exportRoot}`);
-  }
-
-  return resolved;
-}
-
-async function ensureExportDir(filePath: string): Promise<void> {
-  await fs.promises.mkdir(path.dirname(filePath), { recursive: true });
-}
 
 /**
  * Register utility MCP tools on the given server.
@@ -55,13 +29,13 @@ export function registerUtilityTools(server: McpServer): void {
       path: z
         .string()
         .optional()
-        .describe('Relative output path under ~/.wmux/exports. Defaults to "output.pdf".'),
+        .describe('Output file path for the PDF. Defaults to "output.pdf".'),
       surfaceId: optionalSurfaceId,
     },
     async ({ path: outputPath, surfaceId }) => {
+      const resolvedPath = outputPath ?? 'output.pdf';
+
       try {
-        const resolvedPath = resolveBrowserExportPath(outputPath, 'output.pdf');
-        await ensureExportDir(resolvedPath);
         const page = await engine.getPage(surfaceId);
         if (!page) {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
@@ -129,7 +103,7 @@ export function registerUtilityTools(server: McpServer): void {
       path: z
         .string()
         .optional()
-        .describe('Relative output path under ~/.wmux/exports (used with "stop"). Defaults to "trace.zip".'),
+        .describe('Output file path for the trace (used with "stop"). Defaults to "trace.zip".'),
       surfaceId: optionalSurfaceId,
     },
     async ({ action, path: outputPath, surfaceId }) => {
@@ -154,8 +128,7 @@ export function registerUtilityTools(server: McpServer): void {
         }
 
         // action === 'stop'
-        const resolvedPath = resolveBrowserExportPath(outputPath, 'trace.zip');
-        await ensureExportDir(resolvedPath);
+        const resolvedPath = outputPath ?? 'trace.zip';
         await context.tracing.stop({ path: resolvedPath });
         return {
           content: [
