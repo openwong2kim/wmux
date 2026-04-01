@@ -55,7 +55,15 @@ export type RpcMethod =
   | 'daemon.detachSession'
   | 'daemon.resizeSession'
   | 'daemon.listSessions'
-  | 'daemon.ping';
+  | 'daemon.ping'
+  | 'a2a.whoami'
+  | 'a2a.discover'
+  | 'a2a.task.send'
+  | 'a2a.task.query'
+  | 'a2a.task.update'
+  | 'a2a.task.cancel'
+  | 'a2a.broadcast'
+  | 'meta.setSkills';
 
 // All available methods as array (for system.capabilities)
 export const ALL_RPC_METHODS = [
@@ -102,6 +110,14 @@ export const ALL_RPC_METHODS = [
   'daemon.resizeSession',
   'daemon.listSessions',
   'daemon.ping',
+  'a2a.whoami',
+  'a2a.discover',
+  'a2a.task.send',
+  'a2a.task.query',
+  'a2a.task.update',
+  'a2a.task.cancel',
+  'a2a.broadcast',
+  'meta.setSkills',
 ] as const satisfies readonly RpcMethod[];
 
 // === RPC Parameter Types ===

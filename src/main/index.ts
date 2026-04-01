@@ -20,6 +20,7 @@ import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
 import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
+import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
@@ -218,6 +219,7 @@ registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager);
+registerA2aRpc(rpcRouter, () => mainWindow);
 
 // IPC: webview CDP registration
 ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, webContentsId: number) => {

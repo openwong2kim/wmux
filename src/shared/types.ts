@@ -147,6 +147,71 @@ export interface CustomThemeColors {
   xtermBrightWhite: string;
 }
 
+// === A2A Protocol Types ===
+
+export type A2aTaskStatus = 'submitted' | 'working' | 'input-required' | 'completed' | 'failed' | 'canceled';
+
+/** Valid state transitions for A2A tasks */
+export const VALID_TRANSITIONS: Record<A2aTaskStatus, readonly A2aTaskStatus[]> = {
+  submitted: ['working', 'canceled'],
+  working: ['completed', 'failed', 'canceled', 'input-required'],
+  'input-required': ['working', 'canceled'],
+  completed: [],
+  failed: [],
+  canceled: [],
+};
+
+/** Validate whether a status transition is allowed */
+export function validateTransition(from: A2aTaskStatus, to: A2aTaskStatus): boolean {
+  const allowed = VALID_TRANSITIONS[from];
+  if (!allowed) return false;
+  return allowed.includes(to);
+}
+
+/** Terminal states — tasks in these states are eligible for GC */
+export const TERMINAL_STATES: readonly A2aTaskStatus[] = ['completed', 'failed', 'canceled'];
+
+// Parts (TextPart + DataPart only)
+export type A2aTextPart = { type: 'text'; text: string };
+export type A2aDataPart = { type: 'data'; mimeType: string; data: Record<string, unknown> };
+export type A2aPart = A2aTextPart | A2aDataPart;
+
+/** Task message (conversation within a task) */
+export interface A2aTaskMessage {
+  role: 'sender' | 'receiver';
+  parts: A2aPart[];
+  timestamp: number;
+}
+
+/** Artifact (task result) */
+export interface A2aArtifact {
+  name: string;
+  parts: A2aPart[];
+  index?: number;
+}
+
+/** The core A2A Task model */
+export interface A2aTask {
+  id: string;
+  status: A2aTaskStatus;
+  title: string;
+  from: { workspaceId: string; name: string };
+  to: { workspaceId: string; name: string };
+  messages: A2aTaskMessage[];
+  artifacts: A2aArtifact[];
+  createdAt: number;
+  updatedAt: number;
+}
+
+/** Agent Card (lightweight identity + capabilities) */
+export interface AgentCard {
+  workspaceId: string;
+  name: string;
+  description: string;
+  skills: string[] | null;  // null = unregistered, [] = registered but empty
+  status: 'idle' | 'busy' | 'offline';
+}
+
 // === Utility: generate unique IDs ===
 export function generateId(prefix: string): string {
   return `${prefix}-${crypto.randomUUID()}`;

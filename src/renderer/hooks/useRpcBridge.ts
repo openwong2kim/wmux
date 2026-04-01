@@ -1,6 +1,10 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
-import type { Pane, PaneLeaf } from '../../shared/types';
+import type { Pane, PaneLeaf, Surface } from '../../shared/types';
+import { validateMessage } from '../../shared/types';
+import type { A2aTaskMessage, A2aPart } from '../../shared/types';
+import { formatA2aMessage, formatA2aBroadcast } from '../utils/a2aFormat';
+import type { A2aPriority } from '../utils/a2aFormat';
 
 // ---------------------------------------------------------------------------
 // Pane tree utilities
@@ -29,6 +33,19 @@ function findLeafBySurfaceId(root: Pane, surfaceId: string): PaneLeaf | null {
 }
 
 // ---------------------------------------------------------------------------
+// PTY submit helper — paste text then press Enter after a short delay
+// so Claude Code (and similar TUI apps) process the paste before submit.
+// ---------------------------------------------------------------------------
+
+function submitToPty(ptyId: string, text: string): void {
+  const paste = `\x1b[200~${text}\x1b[201~`;
+  window.electronAPI.pty.write(ptyId, paste);
+  setTimeout(() => {
+    window.electronAPI.pty.write(ptyId, '\r');
+  }, 50);
+}
+
+// ---------------------------------------------------------------------------
 // RPC method handler type
 // ---------------------------------------------------------------------------
 
@@ -54,10 +71,38 @@ export function useRpcBridge(): void {
       },
     );
 
+    // A2A task garbage collection timer — prune terminal-state tasks every 5 min
+    const gcTimer = setInterval(() => {
+      useStore.getState().gcTerminalTasks();
+    }, 5 * 60 * 1000);
+
     return () => {
       cleanupRpc();
+      clearInterval(gcTimer);
     };
   }, []);
+}
+
+// ---------------------------------------------------------------------------
+// PTY notification helper — delivers a formatted A2A message to a workspace's
+// active terminal. Extracted to avoid duplication across send/reply/update.
+// ---------------------------------------------------------------------------
+
+function deliverPtyNotification(
+  targetWs: { rootPane: Pane; activePaneId: string; name: string },
+  senderName: string,
+  message: string,
+): void {
+  const leaves = findLeafPanes(targetWs.rootPane);
+  const activeLeaf = leaves.find((l) => l.id === targetWs.activePaneId)
+    ?? leaves.find((l) => l.surfaces.some((s) => s.surfaceType !== 'browser'));
+  if (activeLeaf) {
+    const termSurface = activeLeaf.surfaces.find((s) => s.surfaceType !== 'browser' && s.ptyId);
+    if (termSurface) {
+      const formatted = formatA2aMessage(senderName, targetWs.name, message);
+      submitToPty(termSurface.ptyId, formatted);
+    }
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -384,6 +429,224 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     }
     const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
     return handleBrowserNavigate(store, url, surfaceId);
+  }
+
+  // -------------------------------------------------------------------------
+  // a2a.*
+  // -------------------------------------------------------------------------
+
+  if (method === 'a2a.whoami') {
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+    const ws = store.workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return { error: `no workspace found for ${workspaceId}` };
+    return {
+      workspaceId: ws.id,
+      name: ws.name,
+      metadata: ws.metadata ?? {},
+    };
+  }
+
+  if (method === 'a2a.discover') {
+    return {
+      agents: store.workspaces.map((w) => ({
+        workspaceId: w.id,
+        name: w.name,
+        description: w.metadata?.agentName ?? w.name,
+        skills: store.getAgentSkills(w.id),
+        status: (w.metadata?.agentStatus as string) ?? 'idle',
+      })),
+    };
+  }
+
+  if (method === 'a2a.task.send') {
+    const taskId = typeof params.taskId === 'string' ? params.taskId : '';
+    const rawMessage = typeof params.message === 'string' ? params.message : '';
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+
+    if (!rawMessage) return { error: 'a2a.task.send: missing "message"' };
+    let message: string;
+    try { message = validateMessage(rawMessage); } catch (e) {
+      return { error: `a2a.task.send: ${e instanceof Error ? e.message : 'invalid'}` };
+    }
+
+    // Build parts
+    const parts: A2aPart[] = [{ type: 'text', text: message }];
+    if (params.data && typeof params.data === 'object') {
+      parts.push({
+        type: 'data',
+        mimeType: typeof params.dataMimeType === 'string' ? params.dataMimeType : 'application/json',
+        data: params.data as Record<string, unknown>,
+      });
+    }
+
+    // ── Reply branch: taskId exists → add message to existing task ──
+    if (taskId) {
+      const task = store.getTask(taskId);
+      if (!task) return { error: `a2a.task.send: task "${taskId}" not found` };
+      // Verify caller is sender or receiver of this task
+      if (task.from.workspaceId !== workspaceId && task.to.workspaceId !== workspaceId) {
+        return { error: 'a2a.task.send: not authorized to reply to this task' };
+      }
+      const role = task.from.workspaceId === workspaceId ? 'sender' : 'receiver';
+      store.addTaskMessage(taskId, { role, parts, timestamp: Date.now() });
+
+      // PTY notification to the other party
+      const targetWsId = role === 'sender' ? task.to.workspaceId : task.from.workspaceId;
+      const targetWs = store.workspaces.find((w) => w.id === targetWsId);
+      if (targetWs) {
+        const senderWs = store.workspaces.find((w) => w.id === workspaceId);
+        const senderName = senderWs?.name ?? 'unknown';
+        deliverPtyNotification(targetWs, senderName, message);
+      }
+      return { ok: true, taskId };
+    }
+
+    // ── New task branch ──
+    const to = typeof params.to === 'string' ? params.to : '';
+    const title = typeof params.title === 'string' ? params.title : '';
+    if (!to) return { error: 'a2a.task.send: missing "to"' };
+
+    const sender = store.workspaces.find((w) => w.id === workspaceId);
+    const fromName = sender?.name ?? `unknown-${workspaceId.substring(0, 8)}`;
+
+    const target = store.workspaces.find(
+      (w) => w.id === to || w.name.toLowerCase() === to.toLowerCase(),
+    );
+    if (!target) return { error: `a2a.task.send: target "${to}" not found` };
+    if (target.id === workspaceId) return { error: 'a2a.task.send: cannot send to yourself' };
+
+    const initialMessage: A2aTaskMessage = { role: 'sender', parts, timestamp: Date.now() };
+
+    const newTaskId = store.createA2aTask({
+      title: title || message.slice(0, 100),
+      status: 'submitted',
+      from: { workspaceId, name: fromName },
+      to: { workspaceId: target.id, name: target.name },
+      messages: [initialMessage],
+      artifacts: [],
+    });
+
+    // Deliver formatted message to target's active terminal PTY
+    deliverPtyNotification(target, fromName, message);
+
+    return { ok: true, taskId: newTaskId };
+  }
+
+  if (method === 'a2a.task.query') {
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+    if (!workspaceId) return { error: 'a2a.task.query: missing "workspaceId"' };
+    const status = typeof params.status === 'string' ? params.status as any : undefined;
+    const role = typeof params.role === 'string' ? params.role as 'sender' | 'receiver' : undefined;
+    const tasks = store.queryTasks(workspaceId, { status, role });
+    return { workspaceId, tasks };
+  }
+
+  if (method === 'a2a.task.update') {
+    const taskId = typeof params.taskId === 'string' ? params.taskId : '';
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+    if (!taskId) return { error: 'a2a.task.update: missing "taskId"' };
+    if (!workspaceId) return { error: 'a2a.task.update: missing "workspaceId"' };
+
+    // Update status if provided
+    if (typeof params.status === 'string') {
+      // Block 'canceled' — must use a2a.task.cancel instead
+      if (params.status === 'canceled') {
+        return { error: 'a2a.task.update: use a2a.task.cancel instead' };
+      }
+      // Validate status value
+      const validStatuses = ['working', 'completed', 'failed', 'input-required'];
+      if (!validStatuses.includes(params.status)) {
+        return { error: `a2a.task.update: invalid status "${params.status}"` };
+      }
+      const result = store.updateTaskStatus(taskId, params.status as any, workspaceId);
+      if (!result.ok) return { error: `a2a.task.update: ${result.error}` };
+    }
+
+    // Add message if provided
+    if (typeof params.message === 'string') {
+      let message: string;
+      try { message = validateMessage(params.message); } catch (e) {
+        return { error: `a2a.task.update: ${e instanceof Error ? e.message : 'invalid'}` };
+      }
+
+      // Verify caller is sender or receiver of this task
+      const task = store.getTask(taskId);
+      if (!task) return { error: 'a2a.task.update: task not found' };
+      if (task.from.workspaceId !== workspaceId && task.to.workspaceId !== workspaceId) {
+        return { error: 'a2a.task.update: not authorized' };
+      }
+      const role = task.from.workspaceId === workspaceId ? 'sender' : 'receiver';
+
+      const parts: A2aPart[] = [{ type: 'text', text: message }];
+      store.addTaskMessage(taskId, { role, parts, timestamp: Date.now() });
+
+      // Deliver to the other party's terminal
+      const targetWsId = role === 'sender' ? task.to.workspaceId : task.from.workspaceId;
+      const targetWs = store.workspaces.find((w) => w.id === targetWsId);
+      if (targetWs) {
+        const callerWs = store.workspaces.find((w) => w.id === workspaceId);
+        const callerName = callerWs?.name ?? 'unknown';
+        deliverPtyNotification(targetWs, callerName, message);
+      }
+    }
+
+    // Add artifact if provided
+    if (params.artifact && typeof params.artifact === 'object') {
+      const artifact = params.artifact as { name?: string; parts?: A2aPart[] };
+      if (artifact.name && artifact.parts) {
+        store.addTaskArtifact(taskId, { name: artifact.name, parts: artifact.parts });
+      }
+    }
+
+    return { ok: true, taskId };
+  }
+
+  if (method === 'a2a.task.cancel') {
+    const taskId = typeof params.taskId === 'string' ? params.taskId : '';
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+    if (!taskId) return { error: 'a2a.task.cancel: missing "taskId"' };
+    if (!workspaceId) return { error: 'a2a.task.cancel: missing "workspaceId"' };
+    const result = store.cancelTask(taskId, workspaceId);
+    if (!result.ok) return { error: `a2a.task.cancel: ${result.error}` };
+    return { ok: true, taskId };
+  }
+
+  if (method === 'a2a.broadcast') {
+    const rawMessage = typeof params.message === 'string' ? params.message : '';
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+    const priority = (typeof params.priority === 'string' ? params.priority : 'normal') as A2aPriority;
+    if (!rawMessage) return { error: 'a2a.broadcast: missing "message"' };
+    let message: string;
+    try { message = validateMessage(rawMessage); } catch (e) {
+      return { error: `a2a.broadcast: ${e instanceof Error ? e.message : 'invalid'}` };
+    }
+
+    const sender = store.workspaces.find((w) => w.id === workspaceId);
+    const fromName = sender?.name ?? `unknown-${workspaceId.substring(0, 8)}`;
+
+    let sent = 0;
+    for (const ws of store.workspaces) {
+      if (ws.id === workspaceId) continue;
+      const leaves = findLeafPanes(ws.rootPane);
+      for (const leaf of leaves) {
+        const termSurface = leaf.surfaces.find((s) => s.surfaceType !== 'browser' && s.ptyId);
+        if (termSurface) {
+          const formatted = formatA2aBroadcast(fromName, message, priority);
+          submitToPty(termSurface.ptyId, formatted);
+          break;
+        }
+      }
+      sent++;
+    }
+    return { ok: true, sent };
+  }
+
+  if (method === 'meta.setSkills') {
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
+    const skills = Array.isArray(params.skills) ? params.skills as string[] : [];
+    if (!workspaceId) return { error: 'meta.setSkills: missing "workspaceId"' };
+    store.setAgentSkills(workspaceId, skills);
+    return { ok: true };
   }
 
   // -------------------------------------------------------------------------
