@@ -1,11 +1,14 @@
 import fs from 'node:fs';
 import path from 'node:path';
+import os from 'node:os';
 import { loadConfig, getWmuxDir } from './config';
 import { DaemonSessionManager } from './DaemonSessionManager';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
+import { StateWriter } from './StateWriter';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
+import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
 
 // === Constants ===
@@ -116,11 +119,164 @@ function releaseLock(): void {
   }
 }
 
+// === Session recovery ===
+
+async function recoverSessions(
+  stateWriter: StateWriter,
+  sessionManager: DaemonSessionManager,
+  processMonitor: ProcessMonitor,
+): Promise<void> {
+  const state = stateWriter.load();
+  let changed = false;
+  const recoveredIds = new Set<string>();
+
+  for (const session of state.sessions) {
+    if (session.state === 'dead') continue;
+
+    if (session.state === 'suspended' && session.bufferDumpPath) {
+      // Attempt to recover suspended session
+      try {
+        let scrollbackData: Buffer | undefined;
+        if (fs.existsSync(session.bufferDumpPath)) {
+          scrollbackData = fs.readFileSync(session.bufferDumpPath);
+        }
+
+        // Verify cwd still exists; fall back to homedir
+        const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+
+        const recovered = sessionManager.createSession({
+          id: session.id,
+          cmd: session.cmd,
+          cwd,
+          env: session.env,
+          cols: session.cols,
+          rows: session.rows,
+          agent: session.agent,
+          createdAt: session.createdAt,
+          scrollbackData,
+        });
+
+        // Start process monitoring for the new PTY
+        processMonitor.watch(recovered.id, recovered.pid, () => {
+          const managed = sessionManager.getSession(recovered.id);
+          if (managed && managed.meta.state !== 'dead') {
+            managed.meta.state = 'dead';
+            sessionManager.emit('session:died', { id: recovered.id, exitCode: null });
+          }
+        });
+
+        // Clean up dump file
+        try { fs.unlinkSync(session.bufferDumpPath); } catch { /* ignore */ }
+
+        recoveredIds.add(session.id);
+        changed = true;
+        log('info', `Recovered session ${session.id} in ${cwd}`);
+      } catch (err) {
+        log('error', `Failed to recover session ${session.id}:`, err);
+        session.state = 'dead';
+        session.exitCode = null;
+        changed = true;
+      }
+    } else {
+      // Non-suspended live session — check for periodic snapshot buf file
+      // (written every 30s, survives forced kills / power loss)
+      if (await ProcessMonitor.isAlive(session.pid)) {
+        try { process.kill(session.pid); } catch { /* ignore */ }
+      }
+
+      const snapshotPath = stateWriter.getBufferDumpPath(session.id);
+      if (fs.existsSync(snapshotPath)) {
+        try {
+          const scrollbackData = fs.readFileSync(snapshotPath);
+          const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+
+          const recovered = sessionManager.createSession({
+            id: session.id,
+            cmd: session.cmd,
+            cwd,
+            env: session.env,
+            cols: session.cols,
+            rows: session.rows,
+            agent: session.agent,
+            createdAt: session.createdAt,
+            scrollbackData,
+          });
+
+          processMonitor.watch(recovered.id, recovered.pid, () => {
+            const managed = sessionManager.getSession(recovered.id);
+            if (managed && managed.meta.state !== 'dead') {
+              managed.meta.state = 'dead';
+              sessionManager.emit('session:died', { id: recovered.id, exitCode: null });
+            }
+          });
+
+          try { fs.unlinkSync(snapshotPath); } catch { /* ignore */ }
+          recoveredIds.add(session.id);
+          changed = true;
+          log('info', `Recovered session ${session.id} from snapshot in ${cwd}`);
+          continue;
+        } catch (err) {
+          log('error', `Failed to recover session ${session.id} from snapshot:`, err);
+        }
+      }
+
+      // No snapshot file found — still try to recover the session
+      // with an empty scrollback rather than marking it dead.
+      // This handles cases where the daemon was killed before
+      // the 30s snapshot interval fired (e.g. immediate reboot).
+      try {
+        const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
+        const recovered = sessionManager.createSession({
+          id: session.id,
+          cmd: session.cmd,
+          cwd,
+          env: session.env,
+          cols: session.cols,
+          rows: session.rows,
+          agent: session.agent,
+          createdAt: session.createdAt,
+        });
+
+        processMonitor.watch(recovered.id, recovered.pid, () => {
+          const managed = sessionManager.getSession(recovered.id);
+          if (managed && managed.meta.state !== 'dead') {
+            managed.meta.state = 'dead';
+            sessionManager.emit('session:died', { id: recovered.id, exitCode: null });
+          }
+        });
+
+        recoveredIds.add(session.id);
+        changed = true;
+        log('info', `Recovered session ${session.id} without scrollback in ${cwd}`);
+      } catch (err) {
+        log('error', `Failed to recover session ${session.id}:`, err);
+        session.state = 'dead';
+        session.exitCode = null;
+        changed = true;
+      }
+    }
+  }
+
+  if (changed) {
+    // Build combined state: recovered (live) sessions + dead sessions from loaded state
+    const liveState = buildState(sessionManager);
+    const deadFromState = state.sessions.filter(
+      (s) => s.state === 'dead' && !recoveredIds.has(s.id),
+    );
+    liveState.sessions.push(...deadFromState);
+    stateWriter.saveImmediate(liveState);
+  }
+
+  // Clean up orphaned buffer files
+  stateWriter.cleanOrphanedBuffers(recoveredIds);
+}
+
 // === RPC handler registration ===
 
 function registerRpcHandlers(
   pipeServer: DaemonPipeServer,
   sessionManager: DaemonSessionManager,
+  stateWriter: StateWriter,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
   startTime: number,
@@ -157,6 +313,10 @@ function registerRpcHandlers(
       }
     });
 
+    // Save state immediately
+    const state = buildState(sessionManager);
+    stateWriter.saveImmediate(state);
+
     return session;
   });
 
@@ -182,6 +342,13 @@ function registerRpcHandlers(
     processMonitor.unwatch(p.id);
 
     sessionManager.destroySession(p.id);
+
+    // Clean up buffer dump file if exists
+    const bufPath = stateWriter.getBufferDumpPath(p.id);
+    try { if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath); } catch { /* ignore */ }
+
+    const state = buildState(sessionManager);
+    stateWriter.saveImmediate(state);
 
     return { ok: true };
   });
@@ -226,6 +393,9 @@ function registerRpcHandlers(
       await pipe.start();
     }
 
+    const state = buildState(sessionManager);
+    stateWriter.saveImmediate(state);
+
     return { ok: true };
   });
 
@@ -248,6 +418,9 @@ function registerRpcHandlers(
     }
 
     sessionManager.detachSession(p.id);
+
+    const state = buildState(sessionManager);
+    stateWriter.saveImmediate(state);
 
     return { ok: true };
   });
@@ -277,6 +450,7 @@ function registerRpcHandlers(
 function wireEvents(
   sessionManager: DaemonSessionManager,
   pipeServer: DaemonPipeServer,
+  stateWriter: StateWriter,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
@@ -306,6 +480,26 @@ function wireEvents(
 
     // Stop process monitoring
     processMonitor.unwatch(payload.id);
+
+    // Clean up buffer dump file — dead sessions don't need snapshots
+    const bufPath = stateWriter.getBufferDumpPath(payload.id);
+    try { if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath); } catch { /* ignore */ }
+
+    // Save state
+    const state = buildState(sessionManager);
+    stateWriter.saveImmediate(state);
+  });
+
+  // session:created → save state (debounced since saveImmediate is called in RPC handler)
+  sessionManager.on('session:created', () => {
+    const state = buildState(sessionManager);
+    stateWriter.saveDebounced(state);
+  });
+
+  // session:stateChanged → save state debounced
+  sessionManager.on('session:stateChanged', () => {
+    const state = buildState(sessionManager);
+    stateWriter.saveDebounced(state);
   });
 
   // Bridge-level events: forward agent/critical/idle from all sessions
@@ -320,6 +514,15 @@ function wireEvents(
   });
 }
 
+// === State builder ===
+
+function buildState(sessionManager: DaemonSessionManager): DaemonState {
+  return {
+    version: 1,
+    sessions: sessionManager.listSessions(),
+  };
+}
+
 // === Graceful shutdown ===
 
 let shuttingDown = false;
@@ -328,6 +531,7 @@ async function shutdown(
   signal: string,
   sessionManager: DaemonSessionManager,
   pipeServer: DaemonPipeServer,
+  stateWriter: StateWriter,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
   watchdog: Watchdog,
@@ -357,8 +561,39 @@ async function shutdown(
   await Promise.all(pipeStops);
   sessionPipes.clear();
 
+  // Dump scrollback buffers and mark live sessions as suspended for recovery
+  const managedSessions = sessionManager.listManagedSessions();
+  stateWriter.ensureBufferDir();
+
+  const dumpPromises: Promise<void>[] = [];
+  for (const managed of managedSessions) {
+    if (managed.meta.state === 'dead') continue;
+
+    const dumpPath = stateWriter.getBufferDumpPath(managed.meta.id);
+    dumpPromises.push(
+      managed.ringBuffer.dumpToFile(dumpPath).then(() => {
+        managed.meta.state = 'suspended';
+        managed.meta.bufferDumpPath = dumpPath;
+        log('info', `Suspended session ${managed.meta.id} (buffer: ${managed.ringBuffer.size} bytes)`);
+      }).catch((err) => {
+        log('warn', `Failed to dump buffer for ${managed.meta.id}:`, err);
+        managed.meta.state = 'dead';
+      }),
+    );
+  }
+  await Promise.all(dumpPromises);
+
+  // Save suspended state BEFORE disposing
+  const suspendState: DaemonState = {
+    version: 1,
+    sessions: managedSessions.map((m) => ({ ...m.meta })),
+  };
+  stateWriter.saveImmediate(suspendState);
+
   // Dispose all sessions (kills PTYs, clears map)
   sessionManager.disposeAll();
+
+  stateWriter.dispose();
 
   // Stop IPC server
   await pipeServer.stop().catch(() => {});
@@ -384,6 +619,7 @@ async function main(): Promise<void> {
   log('info', `Config loaded (logLevel=${config.daemon.logLevel})`);
 
   // 3. Initialize modules
+  const stateWriter = new StateWriter(wmuxDir);
   const sessionManager = new DaemonSessionManager();
   sessionManager.setConfig(config);
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
@@ -392,11 +628,14 @@ async function main(): Promise<void> {
   const sessionPipes = new Map<string, SessionPipe>();
   const sessionDataListeners = new Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>();
 
-  // 4. Register RPC handlers
-  registerRpcHandlers(pipeServer, sessionManager, sessionPipes, processMonitor, startTime, sessionDataListeners, watchdog);
+  // 4. Recover previous sessions
+  await recoverSessions(stateWriter, sessionManager, processMonitor);
 
-  // 5. Wire events
-  wireEvents(sessionManager, pipeServer, sessionPipes, processMonitor, sessionDataListeners);
+  // 5. Register RPC handlers
+  registerRpcHandlers(pipeServer, sessionManager, stateWriter, sessionPipes, processMonitor, startTime, sessionDataListeners, watchdog);
+
+  // 6. Wire events
+  wireEvents(sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, sessionDataListeners);
 
   // 7. Start control pipe
   await pipeServer.start();
@@ -416,8 +655,14 @@ async function main(): Promise<void> {
       let reaped = 0;
       for (const managed of sessionManager.listManagedSessions()) {
         if (managed.meta.state !== 'dead') continue;
+        const bufPath = stateWriter.getBufferDumpPath(managed.meta.id);
+        try { if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath); } catch { /* ignore */ }
         sessionManager.destroySession(managed.meta.id);
         reaped++;
+      }
+      if (reaped > 0) {
+        const state = buildState(sessionManager);
+        stateWriter.saveImmediate(state);
       }
       return reaped;
     },
@@ -442,29 +687,75 @@ async function main(): Promise<void> {
       const deadSince = new Date(managed.meta.lastActivity).getTime();
       const ttlMs = managed.meta.deadTtlHours * 60 * 60 * 1000;
       if (Date.now() - deadSince >= ttlMs) {
+        const bufPath = stateWriter.getBufferDumpPath(managed.meta.id);
+        try { if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath); } catch { /* ignore */ }
         sessionManager.destroySession(managed.meta.id);
         reaped++;
       }
     }
     if (reaped > 0) {
       log('info', `Reaped ${reaped} expired dead session(s)`);
+      const state = buildState(sessionManager);
+      stateWriter.saveImmediate(state);
     }
   }, 60 * 60 * 1000); // Every hour
   reapInterval.unref();
 
+  // 8c. Periodic buffer snapshots (every 30s) — survives forced kills / power loss
+  // Also save sessions.json so recovery has up-to-date session metadata
+  const snapshotInterval = setInterval(() => {
+    const managed = sessionManager.listManagedSessions();
+    const live = managed.filter((m) => m.meta.state !== 'dead');
+    if (live.length === 0) return;
+
+    stateWriter.ensureBufferDir();
+    const dumps = live.map((m) => {
+      const dumpPath = stateWriter.getBufferDumpPath(m.meta.id);
+      return m.ringBuffer.dumpToFile(dumpPath).catch((err) => {
+        log('warn', `Snapshot dump failed for ${m.meta.id}:`, err);
+      });
+    });
+
+    // Save session metadata only after all buffer dumps complete (atomicity)
+    Promise.all(dumps).then(() => {
+      const state = buildState(sessionManager);
+      stateWriter.saveImmediate(state);
+    });
+  }, 30_000);
+  snapshotInterval.unref();
+
   // 9. Signal handlers
   const doShutdown = (sig: string) =>
-    shutdown(sig, sessionManager, pipeServer, sessionPipes, processMonitor, watchdog);
+    shutdown(sig, sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, watchdog);
 
   process.on('SIGTERM', () => doShutdown('SIGTERM'));
   process.on('SIGINT', () => doShutdown('SIGINT'));
 
   // Windows-specific: handle OS shutdown/logoff/restart.
+  // Detached Node processes on Windows don't receive SIGTERM on shutdown.
+  // 'beforeExit' won't fire either. We use the 'exit' event as a last-resort
+  // synchronous save, and also periodic state saves to minimize data loss.
   if (process.platform === 'win32') {
     process.on('exit', () => {
+      // Synchronous-only — dump what we can before process dies
       try {
-        sessionManager.disposeAll();
-        releaseLock();
+        const managed = sessionManager.listManagedSessions();
+        stateWriter.ensureBufferDir();
+        for (const m of managed) {
+          if (m.meta.state === 'dead') continue;
+          const dumpPath = stateWriter.getBufferDumpPath(m.meta.id);
+          try {
+            const data = m.ringBuffer.readAll();
+            fs.writeFileSync(dumpPath, data);
+            m.meta.state = 'suspended';
+            m.meta.bufferDumpPath = dumpPath;
+          } catch { /* best effort */ }
+        }
+        const suspendState: DaemonState = {
+          version: 1,
+          sessions: managed.map((m) => ({ ...m.meta })),
+        };
+        stateWriter.saveImmediate(suspendState);
       } catch { /* best effort */ }
     });
   }
