@@ -3,7 +3,6 @@
   "productName": "wmux",
   "version": "2.3.1",
   "description": "Windows terminal multiplexer with MCP server for AI agents",
-  "license": "MIT",
   "private": true,
   "main": ".vite/build/index.js",
   "bin": {
@@ -33,6 +32,7 @@
     "name": "openwong2kim",
     "email": "100856670+openwong2kim@users.noreply.github.com"
   },
+  "license": "MIT",
   "repository": {
     "type": "git",
     "url": "https://github.com/openwong2kim/wmux.git"

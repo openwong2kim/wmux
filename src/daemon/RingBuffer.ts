@@ -1,3 +1,6 @@
+import { writeFile } from 'node:fs/promises';
+import { readFileSync } from 'node:fs';
+
 /**
  * Fixed-size circular byte buffer for storing ConPTY output per session.
  * Preserves raw bytes including ANSI escape sequences without any filtering.
@@ -91,4 +94,20 @@ export class RingBuffer {
     return this.capacity;
   }
 
+  /** Dump the buffer contents to a file (for DEAD session log preservation). */
+  async dumpToFile(filePath: string): Promise<void> {
+    const data = this.readAll();
+    // Note: mode is no-op on Windows; use icacls for NTFS ACLs
+    await writeFile(filePath, data, { mode: 0o600 });
+  }
+
+  /** Create a RingBuffer pre-filled with data loaded from a file. */
+  static loadFromFile(filePath: string, capacityBytes: number): RingBuffer {
+    const data = readFileSync(filePath);
+    const rb = new RingBuffer(capacityBytes);
+    if (data.length > 0) {
+      rb.write(data);
+    }
+    return rb;
+  }
 }
