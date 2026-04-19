@@ -73,3 +73,15 @@ jobs:
         shell: pwsh
         env:
           CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
+          
+      - name: Publish to winget
+        if: env.WINGET_TOKEN != ''
+        continue-on-error: true
+        uses: vedantmgoyal2009/winget-releaser@v2
+        with:
+          identifier: openwong2kim.wmux
+          version: ${{ steps.pkg.outputs.version }}
+          installers-regex: '\.Setup\.exe$'
+          token: ${{ secrets.WINGET_TOKEN }}
+        env:
+          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
