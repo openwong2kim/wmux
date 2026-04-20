@@ -3,6 +3,7 @@ import OnboardingHighlight from './OnboardingHighlight';
 import { ONBOARDING_STEPS } from './steps';
 import type { OnboardingStep } from './steps';
 import type { TooltipPlacement } from './OnboardingHighlight';
+import { t } from '../../i18n';
 
 interface OnboardingOverlayProps {
   /** Called when the user finishes or skips the entire onboarding flow. */
@@ -98,7 +99,7 @@ export default function OnboardingOverlay({
 
       <OnboardingHighlight
         targetSelector={step.targetSelector}
-        preferredPosition={step.position ?? 'auto'}
+        preferredPosition={step.placement}
       >
         {(placement: TooltipPlacement) => (
           <div
@@ -165,7 +166,7 @@ export default function OnboardingOverlay({
                 margin: '0 0 6px 0',
               }}
             >
-              {step.title}
+              {t(step.titleKey)}
             </h3>
 
             {/* Description */}
@@ -177,7 +178,7 @@ export default function OnboardingOverlay({
                 margin: '0 0 16px 0',
               }}
             >
-              {step.description}
+              {t(step.descriptionKey)}
             </p>
 
             {/* Navigation buttons */}

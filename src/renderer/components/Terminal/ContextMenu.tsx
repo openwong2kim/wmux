@@ -73,15 +73,21 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
         />
       )}
 
-      <MenuItem
-        label={t('contextMenu.paste')}
-        shortcut="Ctrl+V"
-        onClick={() => handleAction(onPaste)}
-      />
+      {/* Paste is handled inline by right-click when no link/selection;
+          only surface it here if no link is present (legacy callers) */}
+      {!linkUrl && (
+        <MenuItem
+          label={t('contextMenu.paste')}
+          shortcut="Ctrl+V"
+          onClick={() => handleAction(onPaste)}
+        />
+      )}
 
       {linkUrl && (
         <>
-          <div className="my-1 mx-2 border-t" style={{ borderColor: 'var(--bg-overlay)' }} />
+          {hasSelection && (
+            <div className="my-1 mx-2 border-t" style={{ borderColor: 'var(--bg-overlay)' }} />
+          )}
           <MenuItem
             label={t('contextMenu.openLink')}
             onClick={() => handleAction(() => onOpenLink(linkUrl))}

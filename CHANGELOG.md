@@ -5,6 +5,40 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.7.1] — 2026-04-20 — Constrained Language Mode Hotfix
+
+PowerShell Constrained Language Mode (AppLocker / WDAC가 적용된 회사·학교 PC)
+환경에서 v2.7.0 사용 시 `사용자 지정 키 처리기에서 예외가 발생했습니다`
+오류가 매 Enter / 매 prompt 렌더마다 발생하던 회귀를 수정한다. 다른
+변경 사항은 없으며 데이터 마이그레이션도 필요 없다.
+
+### Fixed
+
+- **Shell integration script (OSC 133)** — `Set-PSReadLineKeyHandler`의
+  Enter 핸들러가 `[Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()` /
+  `[Console]::Write()`를 호출하던 부분이 Constrained Mode에서 메서드 호출
+  금지 정책에 걸려 PSReadLine이 매 키스트로크마다 예외를 노출했다. 이제
+  init 스크립트가 시작 시 `$ExecutionContext.SessionState.LanguageMode`를
+  검사해 `FullLanguage`가 아니면 통합 자체를 건너뛰고, 핸들러 본문도
+  try/catch로 감싸 런타임 실패 시 plain `AcceptLine`으로 폴백한다.
+  구현: `src/daemon/shell-integration.ts`, `INTEGRATION_VERSION` 1 → 2로
+  bump하여 디스크에 캐시된 옛 스크립트가 자동으로 재생성된다.
+- **PWSH prompt hook (OSC 7 / 7727)** — `[System.Net.Dns]::GetHostName()`
+  과 `[Console]::Write()`가 Constrained Mode에서 매 prompt 렌더 시 예외를
+  던지던 문제. 이제 LanguageMode 게이트 + try/catch + `$env:COMPUTERNAME`
+  치환으로 안전하다.
+  구현: `src/main/pty/shell-hooks/pwsh.ps1`.
+- **Terminal 우클릭 UX** — 항상 Copy/Paste 모달이 뜨던 동작을 Windows
+  Terminal 스타일로 정리. 선택 영역이 있으면 즉시 복사 + 선택 해제, 없으면
+  즉시 붙여넣기, 링크 위에서만 작은 컨텍스트 메뉴(Open Link / Copy Link)가
+  뜬다. 모달 인터럽트 제거.
+  구현: `src/renderer/hooks/useTerminal.ts`,
+  `src/renderer/components/Terminal/ContextMenu.tsx`.
+- **타입 부채 정리** — `companySlice`에 `taskHistory` / `waitGraph` /
+  `createCompany`의 `workDir` 누락, `IPC.FS_WRITE_FILE` 상수 미정의,
+  `OnboardingOverlay`의 옛 필드명 참조 등 27건의 TypeScript 오류를 해결해
+  PR CI가 다시 녹색이 된다. 런타임 동작 변화는 없다.
+
 ## [2.7.0] — 2026-04-19 — Terminal UX Expansion
 
 Terminal 사용성에 집중한 피처 릴리스다. 데몬/세션 영속성 계층 변경은 없으며,

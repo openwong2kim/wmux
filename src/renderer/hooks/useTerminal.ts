@@ -306,18 +306,25 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       return true;
     });
 
-    // Right-click: show context menu or fallback to paste
+    // Right-click behavior (Windows Terminal style):
+    //  • On a link → show small context menu (open / copy link)
+    //  • Selection present → copy and clear, no menu
+    //  • Otherwise → paste immediately, no menu
     terminal.element?.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      const sel = terminal.getSelection();
-      // Detect if right-click target is a link
+
+      // Detect if right-click target is a link element
       let linkUrl: string | null = null;
       const target = e.target as HTMLElement | null;
       if (target) {
         const anchor = target.closest('a[href]') as HTMLAnchorElement | null;
         if (anchor) linkUrl = anchor.href;
       }
-      if (onContextMenuRef.current) {
+
+      const sel = terminal.getSelection();
+
+      // Link → defer to host (renders ContextMenu)
+      if (linkUrl && onContextMenuRef.current) {
         onContextMenuRef.current({
           x: e.clientX,
           y: e.clientY,
@@ -327,7 +334,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         });
         return;
       }
-      // Fallback: paste (original behavior when no context menu handler)
+
+      // Selection → copy + clear (no menu)
+      if (sel) {
+        void window.clipboardAPI.writeText(sel);
+        terminal.clearSelection();
+        return;
+      }
+
+      // No selection, no link → paste immediately
       void (async () => {
         const text = await window.clipboardAPI.readText();
         if (text) {

@@ -18,7 +18,7 @@ import { getWmuxDir } from './config';
  *   - zsh / fish           (v3 roadmap)
  */
 
-const INTEGRATION_VERSION = 1;
+const INTEGRATION_VERSION = 2;
 const VERSION_FILE = '.version';
 
 // -----------------------------------------------------------------------
@@ -30,6 +30,16 @@ const PWSH_INIT = `# wmux shell integration — OSC 133 semantic markers (v${INT
 # without parsing a scrollback viewport.
 
 if ($env:WMUX_SHELL_INTEGRATION -eq '0') { return }
+
+# Constrained Language Mode (AppLocker / WDAC) blocks .NET method invocations
+# on non-core types. Both the prompt body and the PSReadLine Enter handler
+# below call [Console]::Write and [Microsoft.PowerShell.PSConsoleReadLine],
+# which would surface as "Exception in custom key handler / method invocation
+# is supported only on core types" on every Enter keystroke. Skip the whole
+# integration in that case — there is no safe way to emit OSC 133 markers
+# without console method access, and a missing semantic marker is far better
+# than a per-keystroke error.
+if ($ExecutionContext.SessionState.LanguageMode -ne 'FullLanguage') { return }
 
 $global:__wmux_last_exit = 0
 
@@ -64,16 +74,25 @@ function global:prompt {
 
 # Command_start (C) is emitted when the user submits a line. PSReadLine's
 # AcceptLine handler is the cleanest hook; wrap it so custom bindings keep
-# working.
+# working. The script block itself runs on every Enter, so we wrap its body
+# in try/catch — registration-time try/catch wouldn't catch runtime errors
+# raised inside the handler.
 if (Get-Module -ListAvailable -Name PSReadLine) {
     Import-Module PSReadLine -ErrorAction SilentlyContinue
     try {
         Set-PSReadLineKeyHandler -Key Enter -ScriptBlock {
-            [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
-            [Console]::Write([char]27 + ']133;C' + [char]7)
+            try {
+                [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine()
+                [Console]::Write([char]27 + ']133;C' + [char]7)
+            } catch {
+                # Some host (constrained sub-shell, missing console, etc.)
+                # blocked the call — fall back to plain AcceptLine via the
+                # default binding by re-invoking it without the OSC write.
+                try { [Microsoft.PowerShell.PSConsoleReadLine]::AcceptLine() } catch { }
+            }
         } -ErrorAction SilentlyContinue
     } catch {
-        # Fallback (older PSReadLine or no console): silently skip C marker.
+        # Older PSReadLine versions or hosts without Set-PSReadLineKeyHandler.
     }
 }
 `;

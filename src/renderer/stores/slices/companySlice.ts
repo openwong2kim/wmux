@@ -22,8 +22,12 @@ export interface CompanySlice {
   company: Company | null;
 
   // Company CRUD
-  createCompany: (name: string, skipPermissions?: boolean) => void;
+  createCompany: (name: string, skipPermissions?: boolean, workDir?: string) => void;
   destroyCompany: () => void;
+
+  // Loop prevention (L2)
+  taskHistory: Record<string, { from: string; to: string; attempts: number; firstSeen: number }>;
+  waitGraph: Record<string, string>; // memberId -> waiting-on memberId
 
   // Department
   addDepartment: (name: string, leadName: string) => void;
@@ -94,16 +98,19 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
   messageQueue: [],
   memberCosts: {},
   sessionStartTime: null,
+  taskHistory: {},
+  waitGraph: {},
 
   // ─── Company CRUD ─────────────────────────────────────────────────────────
 
-  createCompany: (name, skipPermissions) => set((state) => {
+  createCompany: (name, skipPermissions, workDir) => set((state) => {
     const company: Company = {
       id: generateId('company'),
       name,
       departments: [],
       createdAt: Date.now(),
       skipPermissions,
+      workDir: workDir || undefined,
     };
     state.company = company;
     // 새 company 생성 시 세션 시작 시간 자동 설정
