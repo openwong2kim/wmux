@@ -145,11 +145,34 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   const handlePaste = useCallback(() => {
     if (!ptyId) return;
     void (async () => {
+      const terminal = terminalRef.current;
+      const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } })?.modes;
+
+      // Try image first, then text
+      const hasImg = await window.clipboardAPI.hasImage();
+      if (hasImg) {
+        const imageData = await window.clipboardAPI.readImage();
+        if (imageData) {
+          window.electronAPI.pty.write(ptyId, imageData);
+          return;
+        }
+      }
+
       const text = await window.clipboardAPI.readText();
       if (text) {
-        const terminal = terminalRef.current;
-        const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } })?.modes;
-        if (modes?.bracketedPasteMode) {
+        // Split large text into chunks to avoid PTY buffer overflow
+        const maxChunkSize = 4096;
+        if (text.length > maxChunkSize && modes?.bracketedPasteMode) {
+          window.electronAPI.pty.write(ptyId, '\x1b[200~');
+          for (let i = 0; i < text.length; i += maxChunkSize) {
+            window.electronAPI.pty.write(ptyId, text.slice(i, i + maxChunkSize));
+          }
+          window.electronAPI.pty.write(ptyId, '\x1b[201~');
+        } else if (text.length > maxChunkSize) {
+          for (let i = 0; i < text.length; i += maxChunkSize) {
+            window.electronAPI.pty.write(ptyId, text.slice(i, i + maxChunkSize));
+          }
+        } else if (modes?.bracketedPasteMode) {
           window.electronAPI.pty.write(ptyId, `\x1b[200~${text}\x1b[201~`);
         } else {
           window.electronAPI.pty.write(ptyId, text);

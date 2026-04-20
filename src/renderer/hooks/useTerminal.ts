@@ -342,12 +342,35 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         return;
       }
 
-      // No selection, no link → paste immediately
+      // No selection, no link → paste immediately (text or image)
       void (async () => {
+        // Try image first, then text
+        const hasImg = await window.clipboardAPI.hasImage();
+        if (hasImg) {
+          const imageData = await window.clipboardAPI.readImage();
+          if (imageData) {
+            // Image as data URI: paste it as raw data to clipboard for shell commands
+            window.electronAPI.pty.write(ptyId, imageData);
+            return;
+          }
+        }
+
         const text = await window.clipboardAPI.readText();
         if (text) {
           const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
-          if (modes?.bracketedPasteMode) {
+          // Split large text into chunks to avoid PTY buffer overflow
+          const maxChunkSize = 4096;
+          if (text.length > maxChunkSize && modes?.bracketedPasteMode) {
+            window.electronAPI.pty.write(ptyId, '\x1b[200~');
+            for (let i = 0; i < text.length; i += maxChunkSize) {
+              window.electronAPI.pty.write(ptyId, text.slice(i, i + maxChunkSize));
+            }
+            window.electronAPI.pty.write(ptyId, '\x1b[201~');
+          } else if (text.length > maxChunkSize) {
+            for (let i = 0; i < text.length; i += maxChunkSize) {
+              window.electronAPI.pty.write(ptyId, text.slice(i, i + maxChunkSize));
+            }
+          } else if (modes?.bracketedPasteMode) {
             window.electronAPI.pty.write(ptyId, `\x1b[200~${text}\x1b[201~`);
           } else {
             window.electronAPI.pty.write(ptyId, text);
