@@ -1,3 +1,8 @@
+if (process.platform !== 'win32') {
+  console.log('[fix-node-pty] Skipped: not on Windows (platform=' + process.platform + ')');
+  process.exit(0);
+}
+
 const fs = require('fs');
 const path = require('path');
 
