@@ -9,7 +9,15 @@ on:
 
 jobs:
   validate:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win
+          - os: macos-14
+            target: mac-arm64
+    runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
 
@@ -26,3 +34,48 @@ jobs:
 
       - name: Test
         run: npm test
+
+      # macOS-only: verify the app can be packaged + signed end-to-end so we
+      # catch forge.config / entitlements regressions before tagging a release.
+      # Notarization is the slow part (Apple servers), but it gates release
+      # quality and uses already-registered secrets.
+      - name: Import Apple code signing certificate (macOS)
+        if: matrix.target == 'mac-arm64'
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.CSC_LINK }}
+          p12-password: ${{ secrets.CSC_KEY_PASSWORD }}
+
+      - name: Build macOS app (signed + notarized)
+        if: matrix.target == 'mac-arm64'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run make -- --platform=darwin --arch=arm64
+
+      - name: macOS code signing smoke check
+        if: matrix.target == 'mac-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find out -name "wmux.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then echo "ERROR: wmux.app not found"; exit 1; fi
+          echo "App path: $APP_PATH"
+
+          # 1. App bundle signature verification
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+          # 2. node-pty native binding signature + entitlements applied
+          PTY_NODE=$(find "$APP_PATH" -name "pty.node" | head -1)
+          if [ -z "$PTY_NODE" ]; then echo "ERROR: pty.node not found"; exit 1; fi
+          echo "pty.node: $PTY_NODE"
+          codesign -dvvv "$PTY_NODE" 2>&1 | grep -E "Identifier|Authority|Entitlements" || echo "WARN: codesign output unexpected"
+
+          # 3. Gatekeeper assessment
+          spctl -a -t exec -vvv "$APP_PATH"
+
+          # 4. Notarization ticket stapling check
+          xcrun stapler validate "$APP_PATH"
+
+          echo "All macOS smoke checks passed"

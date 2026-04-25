@@ -6,7 +6,15 @@ on:
 
 jobs:
   build:
-    runs-on: windows-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-latest
+            target: win
+          - os: macos-14
+            target: mac-arm64
+    runs-on: ${{ matrix.os }}
     permissions:
       contents: write
     steps:
@@ -19,16 +27,20 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build & Make
+      # ───────────────────────────────── Windows ─────────────────────────────────
+      - name: Build & Make (Windows)
+        if: matrix.target == 'win'
         run: npm run make
 
-      - name: Upload artifacts
+      - name: Upload artifacts (Windows)
+        if: matrix.target == 'win'
         uses: actions/upload-artifact@v4
         with:
           name: wmux-windows
           path: out/make/**/*
 
-      - name: Create GitHub Release
+      - name: Create GitHub Release (Windows assets)
+        if: matrix.target == 'win'
         uses: softprops/action-gh-release@v2
         with:
           files: |
@@ -38,7 +50,8 @@ jobs:
           generate_release_notes: true
           draft: false
 
-      - name: Get version from package.json
+      - name: Get version from package.json (Windows)
+        if: matrix.target == 'win'
         id: pkg
         run: |
           $v = (Get-Content package.json | ConvertFrom-Json).version
@@ -46,6 +59,7 @@ jobs:
         shell: pwsh
 
       - name: Compute Setup.exe checksum
+        if: matrix.target == 'win'
         id: checksum
         run: |
           $exe = Get-ChildItem "out/make/squirrel.windows/x64/*Setup.exe" | Select-Object -First 1
@@ -54,6 +68,7 @@ jobs:
         shell: pwsh
 
       - name: Build Chocolatey package
+        if: matrix.target == 'win'
         run: |
           $version = "${{ steps.pkg.outputs.version }}"
           $sha256  = "${{ steps.checksum.outputs.sha256 }}"
@@ -67,15 +82,15 @@ jobs:
         shell: pwsh
 
       - name: Push to Chocolatey
-        if: env.CHOCO_API_KEY != ''
+        if: matrix.target == 'win' && env.CHOCO_API_KEY != ''
         continue-on-error: true
         run: choco push out/choco/wmux.${{ steps.pkg.outputs.version }}.nupkg --source https://push.chocolatey.org --api-key ${{ secrets.CHOCO_API_KEY }}
         shell: pwsh
         env:
           CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
-          
+
       - name: Publish to winget
-        if: env.WINGET_TOKEN != ''
+        if: matrix.target == 'win' && env.WINGET_TOKEN != ''
         continue-on-error: true
         uses: vedantmgoyal2009/winget-releaser@v2
         with:
@@ -85,3 +100,61 @@ jobs:
           token: ${{ secrets.WINGET_TOKEN }}
         env:
           WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+
+      # ───────────────────────────────── macOS ─────────────────────────────────
+      - name: Import Apple code signing certificate
+        if: matrix.target == 'mac-arm64'
+        uses: apple-actions/import-codesign-certs@v3
+        with:
+          p12-file-base64: ${{ secrets.CSC_LINK }}
+          p12-password: ${{ secrets.CSC_KEY_PASSWORD }}
+
+      - name: Build macOS app (signed + notarized)
+        if: matrix.target == 'mac-arm64'
+        env:
+          APPLE_ID: ${{ secrets.APPLE_ID }}
+          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
+          APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+        run: npm run make -- --platform=darwin --arch=arm64
+
+      - name: macOS code signing smoke check
+        if: matrix.target == 'mac-arm64'
+        shell: bash
+        run: |
+          set -euo pipefail
+          APP_PATH=$(find out -name "wmux.app" -type d | head -1)
+          if [ -z "$APP_PATH" ]; then echo "ERROR: wmux.app not found"; exit 1; fi
+          echo "App path: $APP_PATH"
+
+          # 1. App bundle signature verification
+          codesign --verify --deep --strict --verbose=2 "$APP_PATH"
+
+          # 2. node-pty native binding signature + entitlements applied
+          PTY_NODE=$(find "$APP_PATH" -name "pty.node" | head -1)
+          if [ -z "$PTY_NODE" ]; then echo "ERROR: pty.node not found"; exit 1; fi
+          echo "pty.node: $PTY_NODE"
+          codesign -dvvv "$PTY_NODE" 2>&1 | grep -E "Identifier|Authority|Entitlements" || echo "WARN: codesign output unexpected"
+
+          # 3. Gatekeeper assessment
+          spctl -a -t exec -vvv "$APP_PATH"
+
+          # 4. Notarization ticket stapling check
+          xcrun stapler validate "$APP_PATH"
+
+          echo "All macOS smoke checks passed"
+
+      - name: Upload macOS DMG artifact
+        if: matrix.target == 'mac-arm64'
+        uses: actions/upload-artifact@v4
+        with:
+          name: wmux-macos-arm64
+          path: out/make/**/*.dmg
+
+      - name: Attach macOS DMG to GitHub Release
+        if: matrix.target == 'mac-arm64'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            out/make/**/*.dmg
+          generate_release_notes: true
+          draft: false
