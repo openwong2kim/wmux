@@ -2,7 +2,7 @@
   "name": "wmux",
   "productName": "wmux",
   "version": "2.7.2",
-  "description": "cmux for Windows — run multiple AI CLI agents (Claude Code, Codex, Gemini) side-by-side with an MCP bridge and browser automation",
+  "description": "cmux for Windows and macOS — run multiple AI CLI agents (Claude Code, Codex, Gemini) side-by-side with an MCP bridge and browser automation",
   "private": true,
   "main": ".vite/build/index.js",
   "bin": {
@@ -26,7 +26,13 @@
     "mcp",
     "ai-agent",
     "windows",
+    "macos",
+    "darwin",
     "electron"
+  ],
+  "os": [
+    "win32",
+    "darwin"
   ],
   "author": {
     "name": "openwong2kim",
@@ -47,6 +53,7 @@
   "devDependencies": {
     "@electron-forge/cli": "^7.11.1",
     "@electron-forge/maker-deb": "^7.11.1",
+    "@electron-forge/maker-dmg": "^7.11.1",
     "@electron-forge/maker-rpm": "^7.11.1",
     "@electron-forge/maker-squirrel": "^7.11.1",
     "@electron-forge/maker-zip": "^7.11.1",
