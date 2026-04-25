@@ -1,6 +1,8 @@
 import type { ForgeConfig } from '@electron-forge/shared-types';
 import { MakerSquirrel } from '@electron-forge/maker-squirrel';
 import { MakerZIP } from '@electron-forge/maker-zip';
+// @ts-ignore — devDep added by T6; types may resolve only after install.
+import { MakerDMG } from '@electron-forge/maker-dmg';
 import { VitePlugin } from '@electron-forge/plugin-vite';
 import { AutoUnpackNativesPlugin } from '@electron-forge/plugin-auto-unpack-natives';
 import { FusesPlugin } from '@electron-forge/plugin-fuses';
@@ -35,6 +37,39 @@ const config: ForgeConfig = {
     },
     icon: './assets/icon',
     extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './assets/icon.ico', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
+    appBundleId: 'com.openwong2kim.wmux',
+    // Sign + notarize only when running on macOS with Apple credentials
+    // available (CI release job). Local dev/Windows builds skip silently.
+    ...(process.env.APPLE_ID && process.env.APPLE_TEAM_ID && process.platform === 'darwin' ? {
+      osxSign: {
+        // Optional. If unset, electron-osx-sign auto-discovers the first
+        // 'Developer ID Application' identity from the keychain.
+        identity: process.env.APPLE_SIGNING_IDENTITY,
+        optionsForFile: (_filePath: string) => {
+          // Apply the same hardened-runtime entitlements to the .app and
+          // every nested binary (incl. node-pty native bindings).
+          return {
+            entitlements: './build/entitlements.mac.plist',
+            'hardened-runtime': true,
+            // notarytool stapled ticket is what Gatekeeper checks at first launch.
+            'gatekeeper-assess': false,
+          };
+        },
+      },
+      // @electron/packager 18+ uses notarytool by default; the legacy
+      // `tool: 'notarytool'` field was removed from the type.
+      osxNotarize: {
+        appleId: process.env.APPLE_ID!,
+        appleIdPassword: process.env.APPLE_APP_SPECIFIC_PASSWORD!,
+        teamId: process.env.APPLE_TEAM_ID!,
+      },
+    } : {}),
+    extendInfo: {
+      // false = show in Dock + menu bar. Flip to true if we ever ship a
+      // pure-tray edition (would also need to drop the main window).
+      LSUIElement: false,
+      NSHighResolutionCapable: true,
+    },
   },
   hooks: {
     postPackage: async (_config, packageResult) => {
@@ -106,7 +141,13 @@ const config: ForgeConfig = {
       setupIcon: './assets/icon.ico',
       iconUrl: 'https://raw.githubusercontent.com/openwong2kim/wmux/main/assets/icon.ico',
     }),
+    // Squirrel.Mac auto-update consumes the .zip. Keep alongside DMG.
     new MakerZIP({}, ['darwin']),
+    new MakerDMG({
+      icon: './assets/icon.icns', // produced by T4
+      name: `wmux-${pkg.version}-arm64`,
+      format: 'ULFO', // Apple-recommended LZFSE compression
+    }, ['darwin']), // arm64-only this sprint; x64 in a follow-up
   ],
   plugins: [
     new AutoUnpackNativesPlugin({}),
