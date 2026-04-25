@@ -1,245 +1,164 @@
-# Progress — 안정성·영속성 개선 (Phase A + B)
+# Progress — macOS Build Pipeline (Phase 1)
 
 ## Summary
-- Phase: 2 (계획 확정) → 3 진입 준비
-- Done: 0/14 | In Progress: 0 | Waiting: 14 | Blocked: 0
-- Branch: team/2026-04-17/stability-persistence
+- **Sprint**: Phase 1 of macOS port (4-week MVP)
+- **Phase**: 3 (구현 — Wave 1 진행 중)
+- **Branch**: `team/2026-04-26/macos-build-pipeline`
+- **Done**: 3/6 (T1, T2, T3) | In Progress: 1 (T4) | Waiting: 2 (T5, T6) | Blocked: 0
 
-## DAG (D10 개정)
+## Notes from completed tasks
+- T2: `osxNotarize.tool` 필드 제거 (최신 @electron/packager 18+ typings에서 deprecated, notarytool이 기본값)
+- T2: `MakerDMG` import에 `// @ts-ignore` 부착 (T6 devDep 추가 전까지)
+- T3: plistlib valid 검증 통과, 정확히 3 entitlement
+
+## DAG
+
 ```
-T1a (atomicWrite 스캐폴딩 + 인터페이스 freeze): []
-T1b (StateWriter/SessionManager 마이그레이션): [T1a]
-T2  (AsyncQueue + flushSync): [T1b]
-T3a (IPC wrapper 모듈 + 샘플 3개 핸들러): []
-T3b (IPC wrapper 전면 롤아웃): [T3a]
-T4  (renderer useIpc 어댑터): [T3a]
-T5  (.bak rotation — rename 체인): [T1a]
-T6  (손상 파일 격리 + corrupted/ 서브디렉토리): [T1a, T5]
-T7  (Lazy 마이그레이션 프레임워크): [T1a]
-T9  (AsyncQueue + flushSync 테스트): [T2]
-T10 (rotation + 격리 통합 테스트): [T5, T6]
-T11 (마이그레이션 golden fixture 테스트 + 체이닝): [T7]
-T12 (daemon crash-restore 통합 테스트): [T2, T5, T7, T1b]
-T13 (migration × rotation × corruption 시나리오 E2E): [T6, T7]
-T14 (기존 배포 데이터 호환성 스냅샷 테스트): [T6]
-T15 (CHANGELOG + 업그레이드/롤백 가이드): []
+T1 (fix-node-pty.js Win 가드): []
+T2 (forge.config.ts macOS makers + osxSign + osxNotarize): []
+T3 (build/entitlements.mac.plist 신규): []
+T4 (assets/icon.icns + iconTemplate.png 생성): []
+T5 (CI matrix + smoke gate: release.yml + ci.yml): [T2, T3, T4]
+T6 (package.json: maker-dmg 의존성 + description 보정): [T2]
 ```
 
-(T8 삭제 — 프로덕션 레지스트리 identity 유지 결정, 샘플은 T11 fixture로 흡수)
+**의존성 설명:**
+- T1, T2, T3, T4는 모두 독립 (병렬 가능)
+- T5는 T2(forge config 완료) + T3(entitlements 파일) + T4(아이콘 자산) 완료 후 시작 — CI에서 빌드를 돌리려면 모든 자산 준비됨
+- T6은 T2 완료 후 (forge.config.ts에서 어떤 maker 추가했는지 확정 후 package.json의 dependencies 업데이트)
 
 ## Parallelization Plan
+
 ```
-Wave 1 (병렬 3, worktree):
-  - T1a (atomicWrite 스캐폴딩)    ← 최우선 blocker
-  - T3a (IPC wrapper + 샘플)      ← 독립
-  - T15 (CHANGELOG/가이드)        ← 독립 문서 작업
+Wave 1 (병렬 4, worktree):
+  - T1 (fix-node-pty.js Win 가드)        ← scripts/, 1 파일
+  - T2 (forge.config.ts + osxSign)       ← forge.config.ts, 1 파일
+  - T3 (entitlements.mac.plist)          ← build/ 신규, 1 파일
+  - T4 (icon.icns + iconTemplate.png)    ← assets/ 신규, 자산 생성
 
-Wave 2 (T1a 완료 후 병렬 3, worktree):
-  - T5  (.bak rotation)           ← atomicWrite/rotation.ts
-  - T7  (Lazy 마이그레이션)        ← atomicWrite/migrate.ts
-  - T1b (호출부 마이그레이션)      ← atomicWrite/core.ts만 사용
-
-Wave 3 (T1b/T3a/T5 완료 후 병렬 3, worktree):
-  - T2  (AsyncQueue + flushSync)  ← T1b 필요
-  - T3b (IPC wrapper 전면 롤아웃)  ← T3a 필요
-  - T4  (useIpc 어댑터)            ← T3a 필요
-  - T6  (손상 파일 격리)           ← T1a, T5 필요
-
-Wave 4 (테스트 + 통합, 병렬 4):
-  - T9  (AsyncQueue 테스트)       ← T2
-  - T10 (rotation/격리 테스트)     ← T5, T6
-  - T11 (마이그레이션 golden)      ← T7
-  - T12 (crash-restore 통합)       ← T2, T5, T7, T1b
-  - T13 (migration × rotation × corruption E2E) ← T6, T7
-  - T14 (기존 데이터 호환성)       ← T6
+Wave 2 (T2 완료 후 병렬 2, worktree):
+  - T5 (CI matrix + smoke gate)          ← .github/workflows/, 2 파일
+  - T6 (package.json 의존성)              ← package.json, 1 파일
 ```
+
+**최대 동시 실행**: 4개 (Wave 1). 룰 준수.
 
 ## Tasks
 
-### T1a. atomicWrite 스캐폴딩 + 인터페이스 freeze
-- **파일 (신규)**: `src/daemon/util/atomicWrite/core.ts`, `src/daemon/util/atomicWrite/index.ts`
+### T1. fix-node-pty.js Win 가드
+- **파일 (수정)**: `scripts/fix-node-pty.js`
 - **요구사항**:
-  - 인터페이스 확정: `atomicWriteJSON(path, data, opts)`, `atomicReadJSON<T>(path, opts)`
-  - opts 타입: `{rotationEnabled?, validate?, migrator?, clock?}`
-  - 기본 동작: tmp→bak→rename (기존 동작 보존). rotation/migrate 훅은 no-op 자리만.
-  - __proto__/constructor/prototype sanitizer 포함
-  - **호출부는 수정하지 않음** (T1b에서 마이그레이션)
-- **검증**: 신규 모듈 유닛 테스트 + 타입 체크 통과
-- **Status**: Waiting
+  - 파일 진입부에 `if (process.platform !== 'win32') process.exit(0);` 추가
+  - 기존 Windows 패치 로직은 그대로 유지
+  - `package.json:postinstall`은 변경하지 않음 (이 스크립트가 그대로 호출되어야 함)
+- **검증**: macOS/Linux에서 실행 시 즉시 exit 0, Windows에서 기존 동작 동일
 - **Subagent**: backend-developer
 - **Worktree**: yes (Wave 1)
-
-### T1b. StateWriter/SessionManager 마이그레이션
-- **파일 (수정)**: `src/daemon/StateWriter.ts`, `src/main/session/SessionManager.ts`
-- **요구사항**:
-  - 두 모듈의 중복 atomic-write 로직을 T1a 모듈 호출로 치환
-  - 외부 API는 유지 (호출부 변경 최소화)
-  - 기존 StateWriter/SessionManager 테스트가 회귀 없이 통과
-- **검증**: 전체 테스트 suite 통과
-- **Status**: Waiting (T1a)
-- **Subagent**: backend-developer
-- **Worktree**: yes (Wave 2)
-
-### T2. AsyncQueue + flushSync
-- **파일 (신규)**: `src/daemon/util/AsyncQueue.ts`
-- **파일 (수정)**: `src/daemon/StateWriter.ts`, `src/main/session/SessionManager.ts`
-- **요구사항**:
-  - 30~50줄 자체 Promise 큐. `enqueue(key, fn)`, `flush()`, `flushSync()`
-  - Coalescing: 같은 key 재진입 시 마지막 값만 실행. key 간은 FIFO 보장.
-  - `saveDebounced` 경로만 큐잉. `saveImmediate`는 동기 시그니처 유지.
-  - `flushSync()`: 큐 drain + `writeFileSync` 폴백. 종료 핸들러에서 호출.
-- **검증**: T9 테스트 통과
-- **Status**: Waiting (T1b)
-- **Subagent**: backend-developer
-- **Worktree**: yes (Wave 3)
-
-### T3a. IPC wrapper 모듈 + 샘플 3개 핸들러
-- **파일 (신규)**: `src/main/ipc/wrapHandler.ts`
-- **파일 (수정)**: `src/main/ipc/handlers/` 중 대표 3개 (pty, workspace, session)
-- **요구사항**:
-  - `wrapHandler(name, fn)`: try/catch + 구조화 JSON 로그(`{ts, level, event, channel, error_code, stack}`)
-  - 성공 시 raw value 반환 유지 (정규화 없음)
-  - 에러 `code` 속성 분류 (`DAEMON_DISCONNECTED`, `VALIDATION_ERROR`, `UNKNOWN`)
-  - 3개 샘플 핸들러에 적용 + 통합 테스트
-- **검증**: throw 시 로그 스키마 일치 + raw 반환 동작 확인
 - **Status**: Waiting
-- **Subagent**: backend-developer
+
+### T2. forge.config.ts macOS makers + osxSign + osxNotarize
+- **파일 (수정)**: `forge.config.ts`
+- **요구사항**:
+  - `@electron-forge/maker-dmg` import + `MakerDMG` instance 추가 (arm64만)
+  - `MakerZIP({}, ['darwin'])`는 유지 (Squirrel.Mac 자동 업데이트용 ZIP)
+  - `packagerConfig`에 추가:
+    - `appBundleId: 'com.openwong2kim.wmux'`
+    - `osxSign`: hardened runtime + entitlements 적용 (entitlements 파일은 T3에서 생성, 경로 `./build/entitlements.mac.plist` 참조)
+    - `osxSign.optionsForFile`: `node-pty/build/Release/pty.node`도 동일 entitlements 적용
+    - `osxNotarize`: notarytool 기반 (`appleId`, `appleIdPassword`, `teamId`는 환경변수에서 읽기 — `process.env.APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID`)
+    - 환경변수 미설정 시 (개발 빌드) osxSign/osxNotarize 비활성화 (조건부)
+  - `extendInfo`: `LSUIElement: false` (트레이만 띄우려면 true 검토 — 일단 false 유지)
+  - 기존 Win 설정 (`MakerSquirrel`, postPackage hook, `RunAsNode` fuse) 모두 그대로 유지
+- **검증**:
+  - `npm run make -- --platform=darwin --arch=arm64` 명령이 (macOS 머신에서) 정상 실행되는지 (CI에서 검증)
+  - `process.env.APPLE_ID` 미설정 시에도 빌드 자체는 성공 (서명만 skip)
+  - 기존 Windows 빌드 회귀 없음 (Win 머신에서 `npm run make` 정상)
+- **Subagent**: devops-engineer
 - **Worktree**: yes (Wave 1)
+- **Status**: Waiting
 
-### T3b. IPC wrapper 전면 롤아웃
-- **파일 (수정)**: 나머지 모든 `src/main/ipc/handlers/*.ts`, `src/main/ipc/registerHandlers.ts`
-- **요구사항**: 모든 ipcMain.handle을 wrapHandler 경유로 전환
-- **검증**: 기존 IPC 통합 테스트 전체 통과
-- **Status**: Waiting (T3a)
-- **Subagent**: backend-developer
-- **Worktree**: yes (Wave 3)
-
-### T4. renderer useIpc 어댑터 훅
-- **파일 (신규)**: `src/renderer/hooks/useIpc.ts`
-- **파일 (수정)**: daemon 의존 호출부 중 상위 5개만 (나머지는 후속 이터)
+### T3. build/entitlements.mac.plist 신규
+- **파일 (신규)**: `build/entitlements.mac.plist`
 - **요구사항**:
-  - `{ok, data, error}` 정규화 + 토스트 + `DAEMON_DISCONNECTED` 전용 메시지
-  - 기존 ipcRenderer.invoke와 호환 (옵트인)
-- **검증**: renderer 빌드 + 신규 훅 에러 시나리오 확인
-- **Status**: Waiting (T3a)
-- **Subagent**: frontend-developer
-- **Worktree**: yes (Wave 3)
+  - 표준 Apple plist XML 형식
+  - 다음 3개 entitlement만 포함 (Eng 리뷰 D2 결정):
+    - `com.apple.security.cs.allow-jit` → `<true/>`
+    - `com.apple.security.cs.allow-dyld-environment-variables` → `<true/>`
+    - `com.apple.security.cs.disable-library-validation` → `<true/>`
+  - 다른 entitlement (`cs.allow-unsigned-executable-memory`, `cs.inherit`) 제외
+- **검증**:
+  - plutil 또는 plistlib로 plist 유효성 확인 (CI smoke check에서)
+  - XML 문법 valid
+- **Subagent**: general-purpose (단순 plist 작성)
+- **Worktree**: yes (Wave 1)
+- **Status**: Waiting
 
-### T5. .bak rotation (rename 체인)
-- **파일 (신규)**: `src/daemon/util/atomicWrite/rotation.ts`
-- **파일 (수정)**: `src/daemon/util/atomicWrite/index.ts` (조합)
+### T4. assets/icon.icns + iconTemplate.png 생성
+- **파일 (신규)**:
+  - `assets/icon.icns` (멀티사이즈 16/32/64/128/256/512/1024)
+  - `assets/iconTemplate.png` (16x16) + `assets/iconTemplate@2x.png` (32x32)
+  - `scripts/generate-mac-icons.js` (신규, SVG → ICNS/PNG 자동화)
 - **요구사항**:
-  - rename 성공 직후 체인: `.bak.2→.bak.3`, `.bak.1→.bak.2`, `.bak→.bak.1`. copy 금지.
-  - 읽기 fallback: primary→.bak→.bak.1→.bak.2→.bak.3. valid 발견 시 즉시 승격 save.
-  - Rotation allowlist regex로 `corrupted/`, `.premigrate.bak` 제외.
-- **검증**: T10 통과
-- **Status**: Waiting (T1a)
-- **Subagent**: backend-developer
+  - 입력: 기존 `assets/icon.svg` (이미 존재)
+  - `icon.icns`: macOS .app 번들 아이콘. iconutil 사용 (macOS) 또는 `png2icons` npm 패키지 사용 (cross-platform)
+  - `iconTemplate.png`: macOS 트레이용 단색 + 투명 (Apple HIG: black silhouette on transparent, will be auto-tinted by macOS based on theme)
+  - `@2x.png`: Retina 대응
+  - `scripts/generate-mac-icons.js`: SVG 입력 → 위 파일들 자동 생성. macOS/Linux/Win에서 동작 (cross-platform 라이브러리 사용)
+- **검증**:
+  - 생성된 .icns가 유효 (file 명령 또는 ImageMagick `identify`)
+  - PNG 파일 크기 정확
+- **Subagent**: general-purpose
+- **Worktree**: yes (Wave 1)
+- **Status**: Waiting
+
+### T5. CI matrix + smoke gate
+- **파일 (수정)**: `.github/workflows/release.yml`, `.github/workflows/ci.yml`
+- **요구사항**:
+  - 기존 `runs-on: windows-latest` job을 matrix로 변환:
+    ```yaml
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { os: windows-latest, target: win }
+          - { os: macos-14, target: mac-arm64 }  # M1 runner
+    ```
+  - macOS job 전용 step:
+    - `Setup Apple cert`: `CSC_LINK` (base64 인증서) + `CSC_KEY_PASSWORD` → keychain import (apple-actions/import-codesign-certs 액션 또는 수동 `security import`)
+    - 환경변수 주입: `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, `APPLE_TEAM_ID` (GitHub Secrets에서)
+    - `npm run make -- --platform=darwin --arch=arm64`
+    - **smoke gate** (필수, CI red on failure):
+      - `codesign --verify --deep --strict --verbose=2 "out/wmux-darwin-arm64/wmux.app"`
+      - `codesign -dvvv "out/wmux-darwin-arm64/wmux.app/Contents/Resources/app.asar.unpacked/node_modules/node-pty/build/Release/pty.node"` → entitlements 적용 확인
+      - `spctl -a -t exec -vvv "out/wmux-darwin-arm64/wmux.app"` → "accepted" 검증
+      - `xcrun stapler validate "out/wmux-darwin-arm64/wmux.app"` → ticket stapled
+  - 릴리즈 step에서 .dmg 업로드 추가 (release.yml만)
+  - Windows job은 기존 그대로 유지 (회귀 없음)
+- **검증**:
+  - `gh workflow run` 또는 PR 푸시 시 CI 통과
+  - macOS job: 서명·notarized .dmg 생성 + 4개 smoke check 모두 통과
+  - Windows job: 기존 동작 그대로
+- **Subagent**: devops-engineer
 - **Worktree**: yes (Wave 2)
+- **Status**: Waiting (T2, T3, T4)
 
-### T6. 손상 파일 격리 + corrupted/ 서브디렉토리
-- **파일 (수정)**: `src/daemon/util/atomicWrite/core.ts`, `src/daemon/util/atomicWrite/rotation.ts`
+### T6. package.json 의존성 + 메타데이터
+- **파일 (수정)**: `package.json`
 - **요구사항**:
-  - validate 실패 시 `{dir}/corrupted/{basename}.{timestamp}.bak`로 rename
-  - `CORRUPT_FILE` 이벤트 JSON 로그 (`code, path, reason, sha256_prefix`)
-  - 누적 제한: 30일 초과 또는 10개 초과 시 오래된 것 삭제. `clock` 주입 가능 설계.
-  - Rotation에서 `corrupted/` 제외.
-- **검증**: T10, T13, T14 통과
-- **Status**: Waiting (T1a, T5)
-- **Subagent**: backend-developer
-- **Worktree**: yes (Wave 3)
-
-### T7. Lazy 마이그레이션 프레임워크
-- **파일 (신규)**: `src/daemon/migrations/index.ts`, `src/daemon/migrations/types.ts`
-- **파일 (신규)**: `src/daemon/util/atomicWrite/migrate.ts`
-- **요구사항**:
-  - 각 마이그레이션: 순수 함수 `migrate(input: vN): vN+1`
-  - load 직후 `{basename}.v{N}.premigrate.bak` 일회성 스냅샷 (존재 시 skip)
-  - 체이닝: 모든 step 성공 → 메모리 객체만 새 버전. save 시점에 새 포맷 기록.
-  - step 실패 시 원본 반환 + CORRUPT_FILE 경로로 위임
-  - 프로덕션 레지스트리는 identity 유지 (`CURRENT_VERSION=1`)
-- **검증**: T11, T13 통과
-- **Status**: Waiting (T1a)
-- **Subagent**: backend-developer
+  - `@electron-forge/maker-dmg` devDependencies 추가 (T2 forge.config.ts에서 import하는 패키지)
+  - `description`/`keywords`에 "Windows" 단독 표현 완화 (예: "tmux-like terminal multiplexer for Windows" → "for Windows and macOS")
+  - `os` 필드: `["win32", "darwin"]` 명시 (없으면 추가)
+  - `npm install` 실행 후 `package-lock.json` 갱신 commit
+- **검증**:
+  - `npm install` 무에러
+  - `npm run make` (Win에서) 회귀 없음
+- **Subagent**: general-purpose
 - **Worktree**: yes (Wave 2)
-
-### T9. AsyncQueue + flushSync 테스트
-- **파일 (신규)**: `src/daemon/util/__tests__/AsyncQueue.test.ts`
-- **요구사항**:
-  - FIFO (key 간), coalescing (같은 key), flush/flushSync 동작
-  - fake timer로 debounced 상호작용
-  - 병렬 enqueue 경합 없음
-  - coalescing 명세: "같은 key 2회 enqueue → 마지막 값만 실행" assert
-- **검증**: vitest 통과
 - **Status**: Waiting (T2)
-- **Subagent**: test-automator
-- **Worktree**: yes (Wave 4)
 
-### T10. rotation + 격리 통합 테스트
-- **파일 (신규)**: `src/daemon/util/__tests__/atomicWrite.rotation.test.ts`, `atomicWrite.corruption.test.ts`
-- **요구사항**:
-  - rotation: 4회 save 후 .bak/.bak.1/.bak.2/.bak.3 검증
-  - 읽기 fallback: primary 손상 → .bak.1 복구 + 승격
-  - 격리: validate 실패 → corrupted/로 이동 + rotation 제외 + 시간 기반 정리 (fake clock)
-- **검증**: vitest 통과
-- **Status**: Waiting (T5, T6)
-- **Subagent**: test-automator
-- **Worktree**: yes (Wave 4)
+---
 
-### T11. 마이그레이션 golden fixture 테스트 + 체이닝
-- **파일 (신규)**: `src/daemon/migrations/__tests__/migrate.test.ts`
-- **파일 (신규)**: `src/daemon/migrations/__tests__/fixtures/session.v1.json`, `session.v2.json`, `session.v3.json`
-- **요구사항**:
-  - golden fixture 기반 순수 함수 회귀
-  - 체이닝 엔진이 버전 skip 안 하는지 (v1→v2→v3)
-  - step 실패 시 원본 반환 + premigrate.bak 존재 assert
-- **검증**: vitest 통과
-- **Status**: Waiting (T7)
-- **Subagent**: test-automator
-- **Worktree**: yes (Wave 4)
+## Notes
 
-### T12. daemon crash-restore 통합 테스트
-- **파일 (신규)**: `src/daemon/__tests__/crashRestore.integration.test.ts`
-- **요구사항**:
-  - 시나리오 1: 세션 저장 중 SIGKILL 시뮬레이션 → 재기동 → .bak에서 복원
-  - 시나리오 2: flushSync 호출 보장 (uncaughtException 경로)
-  - 시나리오 3: emergency sync save가 실제로 파일에 기록됨
-- **검증**: vitest 통과
-- **Status**: Waiting (T2, T5, T7, T1b)
-- **Subagent**: test-automator
-- **Worktree**: yes (Wave 4)
-
-### T13. migration × rotation × corruption E2E
-- **파일 (신규)**: `src/daemon/__tests__/persistenceE2E.test.ts`
-- **요구사항**:
-  - v1 파일 → load 시 premigrate.bak 생성 → save 시 v2 기록 → rotation
-  - 마이그레이션 중 validate 실패 → corrupted/ 격리 → .bak에서 fallback load
-  - 상호작용 엣지 케이스 커버
-- **검증**: vitest 통과
-- **Status**: Waiting (T6, T7)
-- **Subagent**: test-automator
-- **Worktree**: yes (Wave 4)
-
-### T14. 기존 배포 데이터 호환성 스냅샷 테스트
-- **파일 (신규)**: `src/daemon/__tests__/legacyCompat.test.ts`
-- **파일 (신규)**: `src/daemon/__tests__/fixtures/legacy/` (기존 포맷 샘플)
-- **요구사항**:
-  - 현재 프로덕션 포맷 파일을 fixture로 복사
-  - 신규 코드로 1회 load → 손실 0 + 예상 로그만
-  - Rotation allowlist가 기존 누적 .bak을 오삭제하지 않는지
-- **검증**: vitest 통과
-- **Status**: Waiting (T6)
-- **Subagent**: test-automator
-- **Worktree**: yes (Wave 4)
-
-### T15. CHANGELOG + 업그레이드/롤백 가이드
-- **파일 (신규)**: `CHANGELOG.md` 섹션 추가 또는 `docs/upgrade-2026-04-17.md`
-- **요구사항**:
-  - 변경 사항 요약 (사용자 관점)
-  - premigrate.bak/corrupted/ 디렉토리 설명
-  - 롤백 플레이북 (premigrate에서 구버전 복구하는 절차)
-  - IPC 에러 포맷 변경 공지 (renderer 플러그인 개발자용)
-- **검증**: 문서 빌드 성공 + Leader 리뷰
-- **Status**: Waiting
-- **Subagent**: technical-writer
-- **Worktree**: yes (Wave 1)
+- TODOS.md modified 상태로 두고 진행 (이전 세션 reminder 추가, 이번 sprint와 연관됨)
+- `CHANGELOG.md` / `README.md` 업데이트는 Phase 5 (sprint 마무리)에서 별도 처리

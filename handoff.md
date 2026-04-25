@@ -1,41 +1,46 @@
 # Teammate Handoff
 
-## Session State (세션 복구용 필수 필드)
-- **current_phase**: [Phase 0/1/2/3/3.5/4/5/R]
-- **completed_tasks**: [완료된 태스크 ID 목록]
-- **blocked_items**: [블로킹 이슈]
-- **next_steps**: [다음에 해야 할 일]
-- **active_worktrees**: [활성 worktree 경로 + 상태]
+(필요 시 채움. teammate 교체 또는 세션 복구 시 사용.)
+
+## Session State
+- **current_phase**: Phase 0 완료 → Phase 3 진입
+- **completed_tasks**: (없음, sprint 시작)
+- **blocked_items**: (없음)
+- **next_steps**: Wave 1 병렬 스폰 (T1, T2, T3, T4)
+- **active_worktrees**: (Wave 1 시작 시 추가)
+
+---
+
+## Template (teammate 교체 시 채울 것)
 
 ## Outgoing Teammate Summary
-- **Role**: [what this teammate was doing]
-- **Agent**: [subagent_type used]
+- **Role**: [무엇을 하던 teammate인가]
+- **Agent**: [subagent_type]
 - **Termination reason**: [completed / stuck / error loop / context full / timeout]
 
 ## What Was Completed
-- [bullet list of done work]
-- Files created/modified: [paths]
+- [bullet list]
+- Files created/modified: [경로]
 
 ## What Remains
-- [bullet list of remaining tasks]
-- Expected approach: [brief strategy]
+- [bullet list]
+- Expected approach: [전략]
 
 ## Gotchas & Warnings
-- [things the next teammate should know]
-- [edge cases discovered]
-- [failed approaches — don't repeat these]
+- [다음 teammate가 알아야 할 것]
+- [실패한 접근 — 반복 금지]
 
 ## Key File Paths
-- [list of files relevant to this work]
+- [관련 파일 목록]
 
-## Interface Changes (다른 모듈에 영향)
-- [API 계약 변경, 공유 타입 변경, DB 스키마 변경 등]
+## Interface Changes
+- [다른 모듈에 영향 주는 변경사항]
 
 ---
 
 ## For Incoming Teammate
 
-Read this handoff, then:
-1. Confirm understanding of remaining tasks
-2. Submit your plan before starting
-3. Report at checkpoints
+이 handoff를 읽고:
+1. 남은 태스크 이해 확인
+2. 시작 전 plan 제출
+3. 체크포인트마다 보고

@@ -39,3 +39,15 @@
 - **Cons:** collectLeafSurfaces로 workspace별 PTY 수집 로직 필요
 - **Context:** `src/company/renderer/provisioner.ts` 및 기존 CompanyPanel.tsx의 destroy 로직
 - **Depends on:** 없음
+
+## [REMINDER 2026-06-06] wmux-max macOS/Linux 확장 — 게이트 재방문
+- **What:** /plan-ceo-review (2026-04-25) 결과로 보류된 wmux-max 크로스플랫폼 인프라 plan 재방문
+- **Why:** 메모리 비전의 게이트 ("랜딩 2주 + 홍보 4주 = 이메일 100명 GO/NO-GO") 도달 시점 확인
+- **Pros:** 시기상조 회피 + 검증된 수요 위에서 인프라 결정
+- **Cons:** 없음 (체크인 자체는 5분)
+- **Context:**
+  - Plan 파일: `C:\Users\rizz\.claude\plans\replicated-enchanting-dove.md`
+  - 메모리: `project_company_mode_vision.md`
+  - 결정 트리: 이메일 100+명 = Lean Spike 실행 / 50-99명 = 홍보 +2주 / 50명 미만 = /office-hours 메시징 재설계
+  - 6주 = 메모리의 "랜딩 2주 + 홍보 4주" 게이트와 정렬
+- **Depends on:** wmux-max.com 랜딩 라이브 + 이메일 수집 캠페인 시작
