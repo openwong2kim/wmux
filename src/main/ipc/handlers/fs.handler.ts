@@ -58,6 +58,14 @@ export function isSensitivePath(resolvedPath: string): boolean {
     if (normalized.includes('/appdata/local/microsoft/credentials')) return true;
   }
 
+  // Block macOS sensitive paths (Phase 2.5 — eng-review)
+  if (process.platform === 'darwin') {
+    if (normalized.includes('/library/keychains')) return true;
+    if (normalized.includes('/library/cookies')) return true;
+    if (normalized.endsWith('/.aws/credentials')) return true;
+    if (normalized.endsWith('/.config/gh/hosts.yml')) return true;
+  }
+
   return false;
 }
 

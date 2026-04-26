@@ -16,7 +16,9 @@ vi.mock('electron', () => ({
 }));
 
 describe('fs.handler security helpers', () => {
-  const home = path.join('C:', 'Users', 'tester');
+  const home = process.platform === 'win32'
+    ? path.join('C:', 'Users', 'tester')
+    : '/Users/tester';
   let realpathSpy: ReturnType<typeof vi.spyOn>;
 
   beforeEach(() => {
