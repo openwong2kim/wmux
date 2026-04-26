@@ -4,12 +4,48 @@
 - **Sprint**: Phase 1 of macOS port (4-week MVP)
 - **Phase**: 3 (구현 — Wave 1 진행 중)
 - **Branch**: `team/2026-04-26/macos-build-pipeline`
-- **Done**: 3/6 (T1, T2, T3) | In Progress: 1 (T4) | Waiting: 2 (T5, T6) | Blocked: 0
+- **Done**: 6/6 ✅ + Phase 4 follow-up | In Progress: 0 | Waiting: 0 | Blocked: 0
+- **Phase 3 (구현)**: 완료. 7개 commits (`da246db` → `7d5fc32`)
+- **Phase 3.5 (통합)**: 완료.
+- **Phase 4 (코드 리뷰)**: 완료. CONDITIONAL PASS → follow-up commit (`4f60bf8`)으로 Important 5 + Minor 2 + 보너스 (npm script) 일괄 fix.
+- **검증**: tsc 0 errors (모든 단계). vitest 47/47 files, 551/551 tests pass (Wave 1 후 + Wave 2 후 모두 통과). 최종 vitest 진행 중.
+- **Phase 5 (마무리)**: 다음 단계.
+
+## Sprint 최종 commit log (8개)
+```
+4f60bf8 fix(macos): code review follow-up — Important #1-5 + Minor #6-7
+7d5fc32 build(macos): T6 — add @electron-forge/maker-dmg + cross-platform metadata
+98a9f1f ci(macos): T5 — add macOS matrix + 5-step smoke gate
+f2f6d38 build(macos): T2 — add MakerDMG + osxSign + osxNotarize
+dad2f01 build(macos): T4 — add icon.icns + iconTemplate + cross-platform generator
+eb3b3af build(macos): T3 — add hardened-runtime entitlements
+3d2e2d4 build(macos): T1 — guard fix-node-pty.js for non-Windows
+da246db chore(team): start macOS build pipeline sprint (Phase 1)
+```
+
+## Code review verdict
+- 초기: **CONDITIONAL PASS** (Critical 0, Important 5, Minor 6, Praise 7)
+- Follow-up 후: **PASS expected** (Important 5건 + Minor 2건 fix)
+
+## 새 환경변수 컨벤션 (follow-up #3)
+- `WMUX_SKIP_NOTARIZE=true` — ci.yml에서 set, forge.config.ts에서 check
+- ci.yml은 sign-only (~1-2min), release.yml만 full notarize
+
+### T5 design note (선택적 후속)
+CI ci.yml의 macOS notarize 빌드가 매 PR 5-15분 추가. 좁히려면 `if: github.event_name == 'push' || contains(...labels.*.name, 'macos')` 게이트 추가 가능. 일단 smoke 보장 우선으로 그대로 둠.
+
+### T6 finding (사용자 결정 필요)
+`package.json` description이 `"cmux for Windows"`로 되어 있었음 (T6이 macOS 추가만 하고 cmux 자체는 그대로 유지). 의도적 표기인지 오타인지 사용자 확인 필요. 의도면 그대로, 오타면 `wmux for Windows and macOS`로 수정 (별개 PR).
+- **Phase 3.5 (병합)**: 완료. 5개 atomic commits on `team/2026-04-26/macos-build-pipeline` (`da246db` → `f2f6d38`)
+- **Phase 3.5 검증**: tsc 통과 (0 errors), npm install 성공, vitest 진행 중
+- **다음**: vitest 결과 확인 → Wave 2 (T5 CI matrix + T6 package.json 메타) 병렬 스폰
 
 ## Notes from completed tasks
 - T2: `osxNotarize.tool` 필드 제거 (최신 @electron/packager 18+ typings에서 deprecated, notarytool이 기본값)
 - T2: `MakerDMG` import에 `// @ts-ignore` 부착 (T6 devDep 추가 전까지)
 - T3: plistlib valid 검증 통과, 정확히 3 entitlement
+- T4: png2icons + sharp devDep 추가 (이미 package.json에 들어감), .icns 46KB 멀티사이즈 검증 OK
+- 워크트리: T1, T2, T3, T4 worktree 모두 결과를 main worktree에 직접 반영. 별도 머지 불필요. 4개 atomic commits로 분리만.
 
 ## DAG
 
