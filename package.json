@@ -2,7 +2,7 @@
   "name": "wmux",
   "productName": "wmux",
   "version": "2.7.2",
-  "description": "cmux for Windows and macOS — run multiple AI CLI agents (Claude Code, Codex, Gemini) side-by-side with an MCP bridge and browser automation",
+  "description": "wmux for Windows and macOS — run multiple AI CLI agents (Claude Code, Codex, Gemini) side-by-side with an MCP bridge and browser automation",
   "private": true,
   "main": ".vite/build/index.js",
   "bin": {
@@ -17,6 +17,7 @@
     "build:daemon": "tsc -p tsconfig.daemon.json && esbuild dist/daemon/daemon/index.js --bundle --platform=node --outfile=dist/daemon-bundle/index.js --external:node-pty",
     "build:cli": "tsc -p tsconfig.cli.json && esbuild dist/cli/cli/index.js --bundle --platform=node --outfile=dist/cli-bundle/index.js",
     "build:mcp": "tsc -p tsconfig.mcp.json && node scripts/build-mcp.js",
+    "icons:mac": "node scripts/generate-mac-icons.js",
     "mcp": "node dist/mcp/mcp/index.js",
     "test": "vitest run"
   },
@@ -29,10 +30,6 @@
     "macos",
     "darwin",
     "electron"
-  ],
-  "os": [
-    "win32",
-    "darwin"
   ],
   "author": {
     "name": "openwong2kim",

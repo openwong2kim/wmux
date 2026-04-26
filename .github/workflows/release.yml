@@ -156,5 +156,9 @@ jobs:
         with:
           files: |
             out/make/**/*.dmg
-          generate_release_notes: true
+          # Win job above already generated release notes for this tag.
+          # Re-generating here would race and overwrite them with macOS-only
+          # content (or duplicate sections). Keep notes single-sourced from Win.
+          generate_release_notes: false
           draft: false
+          fail_on_unmatched_files: true

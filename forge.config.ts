@@ -19,6 +19,25 @@ import * as path from 'path';
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8')) as { version: string };
 const SQUIRREL_SETUP_EXE = `wmux-${pkg.version}.Setup.exe`;
 
+// macOS code-signing + notarization gates.
+//   macSignEnabled     — sign only (CI=true + Apple ID + Team ID + darwin host).
+//                        Restricting to CI prevents local devs who happen to
+//                        have APPLE_ID exported from triggering an unintended
+//                        5-15 minute notarize on `npm start` / `npm run package`.
+//   macNotarizeEnabled — additionally requires APPLE_APP_SPECIFIC_PASSWORD and
+//                        WMUX_SKIP_NOTARIZE != 'true'. ci.yml sets the skip
+//                        flag (sign-only ~1-2 min); release.yml leaves it
+//                        unset for full notarization on tagged builds.
+const macSignEnabled =
+  process.env.CI === 'true' &&
+  !!process.env.APPLE_ID &&
+  !!process.env.APPLE_TEAM_ID &&
+  process.platform === 'darwin';
+const macNotarizeEnabled =
+  macSignEnabled &&
+  process.env.WMUX_SKIP_NOTARIZE !== 'true' &&
+  !!process.env.APPLE_APP_SPECIFIC_PASSWORD;
+
 function copyDirSync(src: string, dest: string): void {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
@@ -37,9 +56,9 @@ const config: ForgeConfig = {
     icon: './assets/icon',
     extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './assets/icon.ico', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
     appBundleId: 'com.openwong2kim.wmux',
-    // Sign + notarize only when running on macOS with Apple credentials
-    // available (CI release job). Local dev/Windows builds skip silently.
-    ...(process.env.APPLE_ID && process.env.APPLE_TEAM_ID && process.platform === 'darwin' ? {
+    // Sign on CI macOS jobs (see macSignEnabled above). Local dev/Windows
+    // builds skip silently.
+    ...(macSignEnabled ? {
       osxSign: {
         // Optional. If unset, electron-osx-sign auto-discovers the first
         // 'Developer ID Application' identity from the keychain.
@@ -50,13 +69,15 @@ const config: ForgeConfig = {
           return {
             entitlements: './build/entitlements.mac.plist',
             'hardened-runtime': true,
-            // notarytool stapled ticket is what Gatekeeper checks at first launch.
-            'gatekeeper-assess': false,
           };
         },
       },
-      // @electron/packager 18+ uses notarytool by default; the legacy
-      // `tool: 'notarytool'` field was removed from the type.
+    } : {}),
+    // Notarize only on tagged release builds (release.yml). ci.yml sets
+    // WMUX_SKIP_NOTARIZE=true for sign-only PR/push validation.
+    // @electron/packager 18+ uses notarytool by default; the legacy
+    // `tool: 'notarytool'` field was removed from the type.
+    ...(macNotarizeEnabled ? {
       osxNotarize: {
         appleId: process.env.APPLE_ID!,
         appleIdPassword: process.env.APPLE_APP_SPECIFIC_PASSWORD!,
@@ -144,6 +165,11 @@ const config: ForgeConfig = {
     new MakerZIP({}, ['darwin']),
     new MakerDMG({
       icon: './assets/icon.icns', // produced by T4
+      // TODO(2026-Q3): arm64 is hardcoded intentionally. If x64 (Intel) or a
+      //   universal fat binary is added, switch to `wmux-${pkg.version}-${process.arch}`
+      //   (or `-universal`) AND update release.yml's DMG glob/asset names.
+      //   Do not auto-derive from process.arch silently — release naming is a
+      //   distribution contract (winget/choco/Sparkle feed assumptions).
       name: `wmux-${pkg.version}-arm64`,
       format: 'ULFO', // Apple-recommended LZFSE compression
     }, ['darwin']), // arm64-only this sprint; x64 in a follow-up

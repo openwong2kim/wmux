@@ -37,8 +37,8 @@ jobs:
 
       # macOS-only: verify the app can be packaged + signed end-to-end so we
       # catch forge.config / entitlements regressions before tagging a release.
-      # Notarization is the slow part (Apple servers), but it gates release
-      # quality and uses already-registered secrets.
+      # WMUX_SKIP_NOTARIZE=true keeps PR/push CI to ~1-2 min (sign only).
+      # Full notarization runs in release.yml on tagged builds.
       - name: Import Apple code signing certificate (macOS)
         if: matrix.target == 'mac-arm64'
         uses: apple-actions/import-codesign-certs@v3
@@ -46,15 +46,17 @@ jobs:
           p12-file-base64: ${{ secrets.CSC_LINK }}
           p12-password: ${{ secrets.CSC_KEY_PASSWORD }}
 
-      - name: Build macOS app (signed + notarized)
+      - name: Build macOS app (signed, sign-only — no notarize)
         if: matrix.target == 'mac-arm64'
         env:
           APPLE_ID: ${{ secrets.APPLE_ID }}
-          APPLE_APP_SPECIFIC_PASSWORD: ${{ secrets.APPLE_APP_SPECIFIC_PASSWORD }}
           APPLE_TEAM_ID: ${{ secrets.APPLE_TEAM_ID }}
+          # Sign-only: skip the 5-15 min Apple notary roundtrip on PR/push.
+          # release.yml omits this flag for full notarize on tagged releases.
+          WMUX_SKIP_NOTARIZE: 'true'
         run: npm run make -- --platform=darwin --arch=arm64
 
-      - name: macOS code signing smoke check
+      - name: macOS code signing smoke check (sign-only)
         if: matrix.target == 'mac-arm64'
         shell: bash
         run: |
@@ -72,10 +74,8 @@ jobs:
           echo "pty.node: $PTY_NODE"
           codesign -dvvv "$PTY_NODE" 2>&1 | grep -E "Identifier|Authority|Entitlements" || echo "WARN: codesign output unexpected"
 
-          # 3. Gatekeeper assessment
-          spctl -a -t exec -vvv "$APP_PATH"
+          # NOTE: spctl assessment + stapler validate intentionally skipped
+          # in CI (sign-only build has no notary ticket). Both run in
+          # release.yml after full notarization.
 
-          # 4. Notarization ticket stapling check
-          xcrun stapler validate "$APP_PATH"
-
-          echo "All macOS smoke checks passed"
+          echo "All macOS sign-only smoke checks passed"
