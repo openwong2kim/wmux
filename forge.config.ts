@@ -36,7 +36,7 @@ const config: ForgeConfig = {
       unpack: '**/node_modules/node-pty/**',
     },
     icon: './assets/icon',
-    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './assets/icon.ico', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
+    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
   },
   hooks: {
     postPackage: async (_config, packageResult) => {

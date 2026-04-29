@@ -2,6 +2,10 @@ import { contextBridge, ipcRenderer } from 'electron';
 import { IPC } from '../shared/constants';
 
 const electronAPI = {
+  // OS-aware shortcut mapping support — renderer cannot read process.platform
+  // directly under sandbox + contextIsolation, so expose it here.
+  // 'win32' | 'darwin' | 'linux' | 'aix' | 'freebsd' | 'openbsd' | 'sunos' | 'cygwin' | 'netbsd'
+  platform: process.platform as NodeJS.Platform,
   pty: {
     create: (options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string }) =>
       ipcRenderer.invoke(IPC.PTY_CREATE, options),

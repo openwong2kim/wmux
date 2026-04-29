@@ -32,6 +32,19 @@ async function getBootId(): Promise<string> {
       );
       const match = (stdout as string).match(/LastBootUpTime=(\S+)/);
       return match ? match[1].trim() : `fallback-${os.uptime()}`;
+    } else if (process.platform === 'darwin') {
+      // macOS: sysctl exposes the boot timestamp; encode it as a stable string.
+      // Format: "{ sec = 1745678901, usec = 123456 } Mon Apr 28 ..."
+      const { execFile } = require('child_process');
+      const { promisify } = require('util');
+      const execFileAsync = promisify(execFile);
+      const { stdout } = await execFileAsync(
+        'sysctl',
+        ['-n', 'kern.boottime'],
+        { encoding: 'utf-8', timeout: 5000 },
+      );
+      const match = (stdout as string).match(/sec\s*=\s*(\d+)/);
+      return match ? `darwin-${match[1]}` : `fallback-${os.uptime()}`;
     } else {
       // Linux: /proc/sys/kernel/random/boot_id
       return fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim();
@@ -57,6 +70,15 @@ function getBootIdSync(): string {
       );
       const match = result.match(/LastBootUpTime=(\S+)/);
       return match ? match[1].trim() : `fallback-${os.uptime()}`;
+    } else if (process.platform === 'darwin') {
+      const { execFileSync } = require('child_process');
+      const result = execFileSync(
+        'sysctl',
+        ['-n', 'kern.boottime'],
+        { encoding: 'utf-8', timeout: 5000 },
+      );
+      const match = (result as string).match(/sec\s*=\s*(\d+)/);
+      return match ? `darwin-${match[1]}` : `fallback-${os.uptime()}`;
     } else {
       return fs.readFileSync('/proc/sys/kernel/random/boot_id', 'utf-8').trim();
     }

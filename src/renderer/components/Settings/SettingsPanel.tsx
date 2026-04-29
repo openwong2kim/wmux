@@ -846,6 +846,23 @@ function keyCodeToDisplay(code: string): string {
   return KEY_CODE_DISPLAY[code] || code;
 }
 
+/**
+ * Render a "Ctrl+…" key combo using the host OS convention.
+ *
+ * On macOS most shortcuts are mapped to ⌘ in {@link useKeyboard}; mirror that
+ * here so the catalog shows what the user actually has to press.
+ *
+ * tmux-convention combos (Ctrl+B prefix, Ctrl+M / Ctrl+Shift+M bookmark family)
+ * stay on literal Ctrl across every OS, so we never substitute ⌘ for those.
+ */
+function shortcutLabel(combo: string): string {
+  const isMac = window.electronAPI.platform === 'darwin';
+  if (!isMac) return combo;
+  // Preserve tmux/bookmark conventions (must match useKeyboard.ts literalCtrl branches).
+  if (combo === 'Ctrl+B' || combo === 'Ctrl+M' || combo === 'Ctrl+Shift+M') return combo;
+  return combo.replace(/Ctrl/g, '⌘');
+}
+
 const PREFIX_ACTION_IDS = [
   'splitHorizontal', 'splitVertical', 'closePane',
   'newWorkspace', 'nextWorkspace', 'prevWorkspace',
@@ -887,19 +904,22 @@ function TabShortcuts() {
   const prefixKeyDisplay = `Ctrl+${keyCodeToDisplay(prefixConfig.key)}`;
   const bindingEntries = Object.entries(prefixConfig.bindings);
 
+  // OS-aware labels — macOS shows ⌘ for the cmdOrCtrl family, literal Ctrl for
+  // tmux/bookmark family. prefixKeyDisplay always renders as literal Ctrl
+  // because the prefix combo stays on Ctrl across every OS.
   const shortcuts = [
-    { keys: prefixKeyDisplay,  description: t('settings.prefixMode') },
-    { keys: 'Ctrl+D',       description: t('settings.sc.splitHorizontal') },
-    { keys: 'Ctrl+Shift+D', description: t('settings.sc.splitVertical') },
-    { keys: 'Ctrl+T',       description: t('settings.sc.newWorkspace') },
-    { keys: 'Ctrl+W',       description: t('settings.sc.closePane') },
-    { keys: 'Ctrl+F',       description: t('settings.sc.searchTerminal') },
-    { keys: 'Ctrl+K',       description: t('settings.sc.commandPalette') },
-    { keys: 'Ctrl+I',       description: t('settings.sc.toggleNotifications') },
-    { keys: 'Ctrl+Shift+X', description: t('settings.sc.viCopyMode') },
-    { keys: 'Ctrl+Shift+R', description: t('settings.sc.renameWorkspace') },
-    { keys: 'Ctrl+Shift+H', description: t('settings.sc.highlightPane') },
-    { keys: 'Ctrl+`',       description: t('settings.sc.floatingPane') },
+    { keys: prefixKeyDisplay,                description: t('settings.prefixMode') },
+    { keys: shortcutLabel('Ctrl+D'),         description: t('settings.sc.splitHorizontal') },
+    { keys: shortcutLabel('Ctrl+Shift+D'),   description: t('settings.sc.splitVertical') },
+    { keys: shortcutLabel('Ctrl+T'),         description: t('settings.sc.newWorkspace') },
+    { keys: shortcutLabel('Ctrl+W'),         description: t('settings.sc.closePane') },
+    { keys: shortcutLabel('Ctrl+F'),         description: t('settings.sc.searchTerminal') },
+    { keys: shortcutLabel('Ctrl+K'),         description: t('settings.sc.commandPalette') },
+    { keys: shortcutLabel('Ctrl+I'),         description: t('settings.sc.toggleNotifications') },
+    { keys: shortcutLabel('Ctrl+Shift+X'),   description: t('settings.sc.viCopyMode') },
+    { keys: shortcutLabel('Ctrl+Shift+R'),   description: t('settings.sc.renameWorkspace') },
+    { keys: shortcutLabel('Ctrl+Shift+H'),   description: t('settings.sc.highlightPane') },
+    { keys: shortcutLabel('Ctrl+`'),         description: t('settings.sc.floatingPane') },
   ];
 
   return (

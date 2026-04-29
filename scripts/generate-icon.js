@@ -1,110 +1,264 @@
 #!/usr/bin/env node
 /**
- * Generates a simple wmux icon as .ico file using raw pixel data.
- * No external dependencies — pure Node.js.
+ * Cross-platform icon pipeline.
  *
- * Creates a 256x256 icon with:
- * - Dark background (#1e1e2e)
- * - Blue "W" letter (#89b4fa)
- * - Green status dot (#a6e3a1)
+ * Generates platform-specific icons under D:\wmux\assets\:
+ *   - icon.ico   (Windows, multi-size PNG-based ICO; preserved as-is when present)
+ *   - icon.icns  (macOS, Apple ICNS)
+ *   - icon.png   (Linux, 1024x1024 PNG)
+ *
+ * ICO HANDLING (byte-identical contract for Windows):
+ *   The shipped icon.ico is a multi-size PNG-based ICO (16/32/48/256) that
+ *   was authored from a higher-fidelity source than the legacy pixel-art "W"
+ *   used to live here. To keep Windows builds byte-identical we do NOT
+ *   regenerate that file when it already exists. The legacy pixel-art "W"
+ *   path is kept as a last-resort fallback so a fresh checkout missing
+ *   icon.ico can still build.
+ *
+ * SOURCES for .icns / .png:
+ *   We extract the embedded 256x256 PNG chunk from icon.ico and use it as
+ *   the master raster. This guarantees the macOS / Linux assets share a
+ *   single visual identity with the Windows icon.
+ *
+ * Pure JS, no native bindings, no external binaries (no Sharp / iconutil /
+ * ImageMagick). Only dependency: png2icons (idesis-gmbh/png2icons).
  */
+
 const fs = require('fs');
 const path = require('path');
+const png2icons = require('png2icons');
+const UPNG = require('png2icons/lib/UPNG');
 
-// Simple BMP-based ICO generator for 32x32 icon
-const SIZE = 32;
-const pixels = Buffer.alloc(SIZE * SIZE * 4); // BGRA
+const ASSETS_DIR = path.join(__dirname, '..', 'assets');
+const ICO_PATH = path.join(ASSETS_DIR, 'icon.ico');
+const ICNS_PATH = path.join(ASSETS_DIR, 'icon.icns');
+const PNG_PATH = path.join(ASSETS_DIR, 'icon.png');
 
-const BG = [0x2e, 0x1e, 0x1e, 0xff];       // #1e1e2e BGRA
-const BLUE = [0xfa, 0xb4, 0x89, 0xff];      // #89b4fa BGRA
-const GREEN = [0xa1, 0xe3, 0xa6, 0xff];     // #a6e3a1 BGRA
+// ---------------------------------------------------------------------------
+// Step 1: Ensure icon.ico exists. If missing, regenerate the legacy pixel-art
+// "W" 32x32 ICO (preserves the historical generator behavior bit-for-bit).
+// ---------------------------------------------------------------------------
 
-// Fill background
-for (let i = 0; i < SIZE * SIZE; i++) {
-  pixels.set(BG, i * 4);
-}
+function generateLegacyIco() {
+  const SIZE = 32;
+  const pixels = Buffer.alloc(SIZE * SIZE * 4); // BGRA
 
-// Draw "W" shape (simplified pixel art)
-const W_PATTERN = [
-  '..XXXX....XXXX..',
-  '..XXXX....XXXX..',
-  '..XXXX....XXXX..',
-  '..XXXX....XXXX..',
-  '..XXXX....XXXX..',
-  '..XXXX....XXXX..',
-  '..XXXX....XXXX..',
-  '..XXXX....XXXX..',
-  '..XXXX....XXXX..',
-  '..XXXX.XX.XXXX..',
-  '..XXXX.XX.XXXX..',
-  '..XXXXXX.XXXXX..',
-  '..XXXXXX.XXXXX..',
-  '..XXXXX..XXXXX..',
-  '...XXXX..XXXX...',
-  '...XXX....XXX...',
-];
+  const BG = [0x2e, 0x1e, 0x1e, 0xff];     // #1e1e2e BGRA
+  const BLUE = [0xfa, 0xb4, 0x89, 0xff];   // #89b4fa BGRA
+  const GREEN = [0xa1, 0xe3, 0xa6, 0xff];  // #a6e3a1 BGRA
 
-const startY = 8;
-const startX = 8;
-for (let row = 0; row < W_PATTERN.length; row++) {
-  for (let col = 0; col < W_PATTERN[row].length; col++) {
-    if (W_PATTERN[row][col] === 'X') {
-      const x = startX + col;
-      const y = startY + row;
-      if (x < SIZE && y < SIZE) {
-        const idx = ((SIZE - 1 - y) * SIZE + x) * 4; // BMP is bottom-up
-        pixels.set(BLUE, idx);
+  for (let i = 0; i < SIZE * SIZE; i++) pixels.set(BG, i * 4);
+
+  const W_PATTERN = [
+    '..XXXX....XXXX..',
+    '..XXXX....XXXX..',
+    '..XXXX....XXXX..',
+    '..XXXX....XXXX..',
+    '..XXXX....XXXX..',
+    '..XXXX....XXXX..',
+    '..XXXX....XXXX..',
+    '..XXXX....XXXX..',
+    '..XXXX....XXXX..',
+    '..XXXX.XX.XXXX..',
+    '..XXXX.XX.XXXX..',
+    '..XXXXXX.XXXXX..',
+    '..XXXXXX.XXXXX..',
+    '..XXXXX..XXXXX..',
+    '...XXXX..XXXX...',
+    '...XXX....XXX...',
+  ];
+
+  const startY = 8;
+  const startX = 8;
+  for (let row = 0; row < W_PATTERN.length; row++) {
+    for (let col = 0; col < W_PATTERN[row].length; col++) {
+      if (W_PATTERN[row][col] === 'X') {
+        const x = startX + col;
+        const y = startY + row;
+        if (x < SIZE && y < SIZE) {
+          const idx = ((SIZE - 1 - y) * SIZE + x) * 4; // BMP is bottom-up
+          pixels.set(BLUE, idx);
+        }
       }
     }
   }
-}
 
-// Draw green dot (top-right)
-for (let dy = -2; dy <= 2; dy++) {
-  for (let dx = -2; dx <= 2; dx++) {
-    if (dx * dx + dy * dy <= 4) {
-      const x = 26 + dx;
-      const y = 5 + dy;
-      if (x >= 0 && x < SIZE && y >= 0 && y < SIZE) {
-        const idx = ((SIZE - 1 - y) * SIZE + x) * 4;
-        pixels.set(GREEN, idx);
+  // Green status dot (top-right)
+  for (let dy = -2; dy <= 2; dy++) {
+    for (let dx = -2; dx <= 2; dx++) {
+      if (dx * dx + dy * dy <= 4) {
+        const x = 26 + dx;
+        const y = 5 + dy;
+        if (x >= 0 && x < SIZE && y >= 0 && y < SIZE) {
+          const idx = ((SIZE - 1 - y) * SIZE + x) * 4;
+          pixels.set(GREEN, idx);
+        }
       }
     }
   }
+
+  const icoHeader = Buffer.alloc(6);
+  icoHeader.writeUInt16LE(0, 0);
+  icoHeader.writeUInt16LE(1, 2);
+  icoHeader.writeUInt16LE(1, 4);
+
+  const dirEntry = Buffer.alloc(16);
+  dirEntry.writeUInt8(SIZE, 0);
+  dirEntry.writeUInt8(SIZE, 1);
+  dirEntry.writeUInt8(0, 2);
+  dirEntry.writeUInt8(0, 3);
+  dirEntry.writeUInt16LE(1, 4);
+  dirEntry.writeUInt16LE(32, 6);
+
+  const bmpHeader = Buffer.alloc(40);
+  bmpHeader.writeUInt32LE(40, 0);
+  bmpHeader.writeInt32LE(SIZE, 4);
+  bmpHeader.writeInt32LE(SIZE * 2, 8);
+  bmpHeader.writeUInt16LE(1, 12);
+  bmpHeader.writeUInt16LE(32, 14);
+  bmpHeader.writeUInt32LE(0, 16);
+  bmpHeader.writeUInt32LE(pixels.length, 20);
+
+  const imageSize = bmpHeader.length + pixels.length;
+  dirEntry.writeUInt32LE(imageSize, 8);
+  dirEntry.writeUInt32LE(6 + 16, 12);
+
+  const ico = Buffer.concat([icoHeader, dirEntry, bmpHeader, pixels]);
+  fs.writeFileSync(ICO_PATH, ico);
+  console.log(`[generate-icon] Wrote ${path.relative(process.cwd(), ICO_PATH)} (${ico.length} bytes, legacy fallback)`);
 }
 
-// Build ICO file
-// ICO Header: 6 bytes
-const icoHeader = Buffer.alloc(6);
-icoHeader.writeUInt16LE(0, 0);      // Reserved
-icoHeader.writeUInt16LE(1, 2);      // Type: ICO
-icoHeader.writeUInt16LE(1, 4);      // Number of images
+if (!fs.existsSync(ICO_PATH)) {
+  console.log('[generate-icon] icon.ico missing — regenerating legacy pixel-art fallback.');
+  generateLegacyIco();
+} else {
+  console.log(`[generate-icon] Preserving existing icon.ico (${fs.statSync(ICO_PATH).size} bytes) — Windows byte-identity contract.`);
+}
 
-// ICO Directory Entry: 16 bytes
-const dirEntry = Buffer.alloc(16);
-dirEntry.writeUInt8(SIZE, 0);       // Width
-dirEntry.writeUInt8(SIZE, 1);       // Height
-dirEntry.writeUInt8(0, 2);          // Color palette
-dirEntry.writeUInt8(0, 3);          // Reserved
-dirEntry.writeUInt16LE(1, 4);       // Color planes
-dirEntry.writeUInt16LE(32, 6);      // Bits per pixel
+// ---------------------------------------------------------------------------
+// Step 2: Extract the largest PNG chunk from icon.ico to use as the raster
+// master for ICNS / PNG generation. ICOs may contain BMP or PNG chunks; we
+// look for a PNG chunk (89 50 4E 47 magic) at the highest size.
+// ---------------------------------------------------------------------------
 
-// BMP Info Header: 40 bytes
-const bmpHeader = Buffer.alloc(40);
-bmpHeader.writeUInt32LE(40, 0);     // Header size
-bmpHeader.writeInt32LE(SIZE, 4);    // Width
-bmpHeader.writeInt32LE(SIZE * 2, 8); // Height (double for ICO)
-bmpHeader.writeUInt16LE(1, 12);     // Planes
-bmpHeader.writeUInt16LE(32, 14);    // Bits per pixel
-bmpHeader.writeUInt32LE(0, 16);     // Compression (none)
-bmpHeader.writeUInt32LE(pixels.length, 20); // Image size
+function extractMasterPng(icoPath) {
+  const buf = fs.readFileSync(icoPath);
+  if (buf.readUInt16LE(0) !== 0 || buf.readUInt16LE(2) !== 1) {
+    throw new Error(`Not an ICO file: ${icoPath}`);
+  }
+  const numImages = buf.readUInt16LE(4);
+  let bestPng = null;
+  let bestSize = 0;
+  for (let i = 0; i < numImages; i++) {
+    const off = 6 + i * 16;
+    const w = buf.readUInt8(off) || 256; // 0 means 256
+    const h = buf.readUInt8(off + 1) || 256;
+    const sz = buf.readUInt32LE(off + 8);
+    const offset = buf.readUInt32LE(off + 12);
+    const isPng =
+      buf[offset] === 0x89 &&
+      buf[offset + 1] === 0x50 &&
+      buf[offset + 2] === 0x4e &&
+      buf[offset + 3] === 0x47;
+    if (isPng && w * h > bestSize) {
+      bestSize = w * h;
+      bestPng = buf.slice(offset, offset + sz);
+    }
+  }
+  return bestPng;
+}
 
-const imageSize = bmpHeader.length + pixels.length;
-dirEntry.writeUInt32LE(imageSize, 8);  // Size of image data
-dirEntry.writeUInt32LE(6 + 16, 12);   // Offset to image data
+let masterPng = extractMasterPng(ICO_PATH);
 
-const ico = Buffer.concat([icoHeader, dirEntry, bmpHeader, pixels]);
+if (!masterPng) {
+  // ICO is BMP-only (legacy fallback path). Synthesize a 256x256 PNG from
+  // the 32x32 BMP chunk via nearest-neighbor 8x upscale so we still have
+  // something to feed into png2icons.
+  console.log('[generate-icon] ICO has no PNG chunks (BMP-only); synthesizing PNG from BMP chunk.');
+  const buf = fs.readFileSync(ICO_PATH);
+  const dirOff = 6;
+  const w = buf.readUInt8(dirOff) || 256;
+  const dataOff = buf.readUInt32LE(dirOff + 12);
+  // BMP info header (40 bytes) then pixel data, bottom-up BGRA
+  const pxOff = dataOff + 40;
+  const rgba = new Uint8Array(w * w * 4);
+  for (let y = 0; y < w; y++) {
+    for (let x = 0; x < w; x++) {
+      const srcIdx = pxOff + ((w - 1 - y) * w + x) * 4;
+      const dstIdx = (y * w + x) * 4;
+      rgba[dstIdx] = buf[srcIdx + 2];
+      rgba[dstIdx + 1] = buf[srcIdx + 1];
+      rgba[dstIdx + 2] = buf[srcIdx + 0];
+      rgba[dstIdx + 3] = buf[srcIdx + 3];
+    }
+  }
+  // Upscale to 256x256 if smaller (nearest neighbor preserves crisp pixel art)
+  const TARGET = 256;
+  let pixels = rgba;
+  let dim = w;
+  if (w < TARGET) {
+    const scale = Math.floor(TARGET / w);
+    const newDim = w * scale;
+    const upscaled = new Uint8Array(newDim * newDim * 4);
+    for (let y = 0; y < newDim; y++) {
+      for (let x = 0; x < newDim; x++) {
+        const sx = Math.floor(x / scale);
+        const sy = Math.floor(y / scale);
+        const srcIdx = (sy * w + sx) * 4;
+        const dstIdx = (y * newDim + x) * 4;
+        upscaled[dstIdx] = rgba[srcIdx];
+        upscaled[dstIdx + 1] = rgba[srcIdx + 1];
+        upscaled[dstIdx + 2] = rgba[srcIdx + 2];
+        upscaled[dstIdx + 3] = rgba[srcIdx + 3];
+      }
+    }
+    pixels = upscaled;
+    dim = newDim;
+  }
+  masterPng = Buffer.from(UPNG.encode([pixels.buffer], dim, dim, 0));
+}
 
-const outPath = path.join(__dirname, '..', 'assets', 'icon.ico');
-fs.writeFileSync(outPath, ico);
-console.log(`Icon written to ${outPath} (${ico.length} bytes)`);
+// ---------------------------------------------------------------------------
+// Step 3: Generate icon.icns (macOS) via png2icons.createICNS.
+// ---------------------------------------------------------------------------
+
+const icnsBuf = png2icons.createICNS(masterPng, png2icons.BICUBIC2, 0);
+if (!icnsBuf) {
+  throw new Error('png2icons.createICNS returned null');
+}
+fs.writeFileSync(ICNS_PATH, icnsBuf);
+console.log(`[generate-icon] Wrote ${path.relative(process.cwd(), ICNS_PATH)} (${icnsBuf.length} bytes)`);
+
+// ---------------------------------------------------------------------------
+// Step 4: Generate icon.png (Linux, 1024x1024). Decode master PNG, upscale
+// 4x via nearest neighbor (master is 256x256 so 256 -> 1024), re-encode.
+// Nearest neighbor is intentional: the master is already anti-aliased; bicubic
+// would add a second blur pass. For a logo this preserves edge crispness.
+// ---------------------------------------------------------------------------
+
+const decoded = UPNG.decode(masterPng);
+const masterRgba = new Uint8Array(UPNG.toRGBA8(decoded)[0]);
+const SRC_W = decoded.width;
+const SRC_H = decoded.height;
+const TARGET_DIM = 1024;
+const scale = Math.max(1, Math.floor(TARGET_DIM / SRC_W));
+const OUT_W = SRC_W * scale;
+const OUT_H = SRC_H * scale;
+const linuxRgba = new Uint8Array(OUT_W * OUT_H * 4);
+for (let y = 0; y < OUT_H; y++) {
+  for (let x = 0; x < OUT_W; x++) {
+    const sx = Math.floor(x / scale);
+    const sy = Math.floor(y / scale);
+    const srcIdx = (sy * SRC_W + sx) * 4;
+    const dstIdx = (y * OUT_W + x) * 4;
+    linuxRgba[dstIdx] = masterRgba[srcIdx];
+    linuxRgba[dstIdx + 1] = masterRgba[srcIdx + 1];
+    linuxRgba[dstIdx + 2] = masterRgba[srcIdx + 2];
+    linuxRgba[dstIdx + 3] = masterRgba[srcIdx + 3];
+  }
+}
+const linuxPng = Buffer.from(UPNG.encode([linuxRgba.buffer], OUT_W, OUT_H, 0));
+fs.writeFileSync(PNG_PATH, linuxPng);
+console.log(`[generate-icon] Wrote ${path.relative(process.cwd(), PNG_PATH)} (${linuxPng.length} bytes, ${OUT_W}x${OUT_H})`);
+
+console.log('[generate-icon] Done.');

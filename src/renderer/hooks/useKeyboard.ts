@@ -118,8 +118,17 @@ export function useKeyboard() {
       store.getState().setPrefixMode(false);
     };
 
+    // OS-aware shortcut mapping (DX D1 decision):
+    //   • Most shortcuts (split, palette, settings, …) use ⌘ on macOS, Ctrl elsewhere.
+    //   • tmux prefix (Ctrl+B), sidebar toggle (Ctrl+Shift+B) and bookmark (Ctrl+Shift+M)
+    //     keep literal Ctrl on every OS to honor tmux convention.
+    // On non-macOS systems cmdOrCtrl === literalCtrl, so Windows/Linux behaviour is
+    // byte-identical to the previous implementation.
+    const isMac = window.electronAPI.platform === 'darwin';
+
     const handler = (e: KeyboardEvent) => {
-      const ctrl = e.ctrlKey;
+      const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+      const literalCtrl = e.ctrlKey;
       const shift = e.shiftKey;
       const alt = e.altKey;
       const key = e.key;
@@ -172,12 +181,16 @@ export function useKeyboard() {
       const tag = (e.target as HTMLElement)?.tagName;
       const isEditable = tag === 'INPUT' || tag === 'TEXTAREA' || (e.target as HTMLElement)?.isContentEditable;
       const isFunctionKey = key.length > 1 && /^F\d{1,2}$/.test(key);
-      if (isEditable && !ctrl && !alt && !isFunctionKey) return;
+      // Allow shortcuts to fire inside editable fields when any modifier (Ctrl,
+      // ⌘, or Alt) is pressed — covers both literal-Ctrl bindings (tmux prefix)
+      // and cmdOrCtrl bindings (palette, settings, …).
+      if (isEditable && !literalCtrl && !cmdOrCtrl && !alt && !isFunctionKey) return;
 
       // Ctrl+<prefixKey>: Enter prefix mode (configurable, default Ctrl+B)
       // Use e.code for Korean IME compatibility (see commit 60e39b0)
+      // tmux convention → literal Ctrl on every OS (do NOT remap to ⌘ on macOS).
       const prefixKeyCode = store.getState().prefixConfig.key;
-      if (ctrl && !shift && !alt && code === prefixKeyCode) {
+      if (literalCtrl && !shift && !alt && code === prefixKeyCode) {
         e.preventDefault();
         store.getState().setPrefixMode(true);
         // Start timeout — auto-exit prefix mode after 2s
@@ -190,21 +203,22 @@ export function useKeyboard() {
       }
 
       // Ctrl+Shift+B: Toggle sidebar (moved from Ctrl+B)
-      if (ctrl && shift && !alt && code === 'KeyB') {
+      // Pairs with the tmux prefix above → literal Ctrl on every OS.
+      if (literalCtrl && shift && !alt && code === 'KeyB') {
         e.preventDefault();
         store.getState().toggleSidebar();
         return;
       }
 
       // Ctrl+N: New workspace
-      if (ctrl && !shift && !alt && key === 'n') {
+      if (cmdOrCtrl && !shift && !alt && key === 'n') {
         e.preventDefault();
         store.getState().addWorkspace();
         return;
       }
 
       // Ctrl+Shift+W: Close workspace
-      if (ctrl && shift && !alt && key === 'W') {
+      if (cmdOrCtrl && shift && !alt && key === 'W') {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -226,7 +240,7 @@ export function useKeyboard() {
       }
 
       // Ctrl+1~9: Switch workspace
-      if (ctrl && !shift && !alt && key >= '1' && key <= '9') {
+      if (cmdOrCtrl && !shift && !alt && key >= '1' && key <= '9') {
         e.preventDefault();
         const { workspaces } = store.getState();
         const idx = key === '9' ? workspaces.length - 1 : parseInt(key) - 1;
@@ -237,7 +251,7 @@ export function useKeyboard() {
       }
 
       // Ctrl+D: Split right (horizontal)
-      if (ctrl && !shift && !alt && key === 'd') {
+      if (cmdOrCtrl && !shift && !alt && key === 'd') {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -248,7 +262,7 @@ export function useKeyboard() {
       }
 
       // Ctrl+Shift+D: Split down (vertical)
-      if (ctrl && shift && !alt && key === 'D') {
+      if (cmdOrCtrl && shift && !alt && key === 'D') {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -259,7 +273,7 @@ export function useKeyboard() {
       }
 
       // Ctrl+T: New surface
-      if (ctrl && !shift && !alt && key === 't') {
+      if (cmdOrCtrl && !shift && !alt && key === 't') {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -272,7 +286,7 @@ export function useKeyboard() {
       }
 
       // Ctrl+W: Close surface
-      if (ctrl && !shift && !alt && key === 'w') {
+      if (cmdOrCtrl && !shift && !alt && key === 'w') {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -289,7 +303,7 @@ export function useKeyboard() {
       }
 
       // Ctrl+Shift+]: Next surface
-      if (ctrl && shift && !alt && key === ']') {
+      if (cmdOrCtrl && shift && !alt && key === ']') {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -298,7 +312,7 @@ export function useKeyboard() {
       }
 
       // Ctrl+Shift+[: Previous surface
-      if (ctrl && shift && !alt && key === '[') {
+      if (cmdOrCtrl && shift && !alt && key === '[') {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -307,7 +321,7 @@ export function useKeyboard() {
       }
 
       // Alt+Ctrl+Arrow: Focus pane directionally
-      if (ctrl && alt && !shift && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(key)) {
+      if (cmdOrCtrl && alt && !shift && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(key)) {
         e.preventDefault();
         const dirMap: Record<string, 'up' | 'down' | 'left' | 'right'> = {
           ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
@@ -317,35 +331,36 @@ export function useKeyboard() {
       }
 
       // Ctrl+I: Toggle notification panel
-      if (ctrl && !shift && !alt && key === 'i') {
+      if (cmdOrCtrl && !shift && !alt && key === 'i') {
         e.preventDefault();
         store.getState().toggleNotificationPanel();
         return;
       }
 
       // Ctrl+Shift+M: Toggle message feed panel
-      if (ctrl && shift && !alt && key === 'm') {
+      // Bookmark/message-feed convention → literal Ctrl on every OS.
+      if (literalCtrl && shift && !alt && key === 'm') {
         e.preventDefault();
         store.getState().toggleMessageFeed();
         return;
       }
 
       // Ctrl+K: Toggle command palette
-      if (ctrl && !shift && !alt && key === 'k') {
+      if (cmdOrCtrl && !shift && !alt && key === 'k') {
         e.preventDefault();
         store.getState().toggleCommandPalette();
         return;
       }
 
       // Ctrl+,: Toggle settings panel
-      if (ctrl && !shift && !alt && key === ',') {
+      if (cmdOrCtrl && !shift && !alt && key === ',') {
         e.preventDefault();
         store.getState().toggleSettingsPanel();
         return;
       }
 
       // Ctrl+Shift+U: Jump to latest unread notification's workspace
-      if (ctrl && shift && !alt && key === 'U') {
+      if (cmdOrCtrl && shift && !alt && key === 'U') {
         e.preventDefault();
         const state = store.getState();
         const unread = state.notifications
@@ -361,14 +376,14 @@ export function useKeyboard() {
 
       // Ctrl+Shift+R: Rename workspace (triggers inline rename in sidebar)
       // This is handled by the Sidebar component via a custom event
-      if (ctrl && shift && !alt && key === 'R') {
+      if (cmdOrCtrl && shift && !alt && key === 'R') {
         e.preventDefault();
         document.dispatchEvent(new CustomEvent('wmux:rename-workspace'));
         return;
       }
 
       // Ctrl+Shift+L: Open browser panel in a new horizontal split
-      if (ctrl && shift && !alt && key === 'L') {
+      if (cmdOrCtrl && shift && !alt && key === 'L') {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -386,49 +401,50 @@ export function useKeyboard() {
 
       // Ctrl+Shift+X: Enter Vi Copy Mode for terminal scrollback
       // (Ctrl+Shift+C is reserved for clipboard copy)
-      if (ctrl && shift && !alt && key === 'X') {
+      if (cmdOrCtrl && shift && !alt && key === 'X') {
         e.preventDefault();
         store.getState().setViCopyModeActive(true);
         return;
       }
 
       // Ctrl+F: Toggle terminal search bar
-      if (ctrl && !shift && !alt && key === 'f') {
+      if (cmdOrCtrl && !shift && !alt && key === 'f') {
         e.preventDefault();
         store.getState().toggleSearchBar();
         return;
       }
 
       // Ctrl+`: Toggle floating terminal pane
-      if (ctrl && !shift && !alt && e.code === 'Backquote') {
+      if (cmdOrCtrl && !shift && !alt && e.code === 'Backquote') {
         e.preventDefault();
         store.getState().toggleFloatingPane();
         return;
       }
 
       // Ctrl+Shift+H: Flash active pane to highlight its position
-      if (ctrl && shift && !alt && key === 'H') {
+      if (cmdOrCtrl && shift && !alt && key === 'H') {
         e.preventDefault();
         document.dispatchEvent(new CustomEvent('wmux:flash-pane'));
         return;
       }
 
       // Ctrl+Shift+O: Toggle Company View overlay
-      if (ctrl && shift && !alt && key === 'O') {
+      if (cmdOrCtrl && shift && !alt && key === 'O') {
         e.preventDefault();
         store.getState().toggleCompanyView();
         return;
       }
 
       // Ctrl+Shift+G: Clear multiview (back to single view)
-      if (ctrl && shift && !alt && key === 'G') {
+      if (cmdOrCtrl && shift && !alt && key === 'G') {
         e.preventDefault();
         store.getState().clearMultiview();
         return;
       }
 
       // Ctrl+M: Add scrollback bookmark at current scroll position
-      if (ctrl && !shift && !alt && key === 'm') {
+      // Bookmark convention → literal Ctrl on every OS.
+      if (literalCtrl && !shift && !alt && key === 'm') {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -450,7 +466,8 @@ export function useKeyboard() {
       }
 
       // Ctrl+ArrowUp: Jump to previous bookmark (above current position)
-      if (ctrl && !shift && !alt && key === 'ArrowUp') {
+      // Pairs with Ctrl+M bookmark add → literal Ctrl on every OS.
+      if (literalCtrl && !shift && !alt && key === 'ArrowUp') {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -476,7 +493,8 @@ export function useKeyboard() {
       }
 
       // Ctrl+ArrowDown: Jump to next bookmark (below current position)
-      if (ctrl && !shift && !alt && key === 'ArrowDown') {
+      // Pairs with Ctrl+M bookmark add → literal Ctrl on every OS.
+      if (literalCtrl && !shift && !alt && key === 'ArrowDown') {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -502,9 +520,12 @@ export function useKeyboard() {
       }
 
       // ─── Custom keybindings → terminal input ─────────────────────────
+      // Custom keybindings are stored in literal "Ctrl+…" form for cross-OS
+      // consistency; match against literalCtrl so user-defined combos behave
+      // identically on Windows / Linux / macOS.
       const { customKeybindings } = store.getState();
       if (customKeybindings.length > 0) {
-        const pressed = formatKeyCombo(ctrl, shift, alt, key);
+        const pressed = formatKeyCombo(literalCtrl, shift, alt, key);
         const match = customKeybindings.find((kb) => kb.key === pressed);
         if (match) {
           e.preventDefault();
