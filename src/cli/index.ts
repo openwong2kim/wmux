@@ -12,6 +12,7 @@ import { handleInput } from './commands/input';
 import { handleNotify } from './commands/notify';
 import { handleSystem } from './commands/system';
 import { handleBrowser } from './commands/browser';
+import { handleMcp } from './commands/mcp';
 
 const HELP_TEXT = `
 wmux CLI
@@ -58,6 +59,11 @@ BROWSER COMMANDS
   browser session stop              Stop the active browser session
   browser session status            Show active session status
   browser session list              List available profiles
+
+MCP COMMANDS
+  mcp check                         Show whether wmux MCP servers are registered
+  mcp register                      Add wmux entries to ~/.claude.json
+  mcp unregister                    Remove wmux entries from ~/.claude.json
 
 GLOBAL FLAGS
   --json      Output raw JSON (useful for scripting)
@@ -131,6 +137,8 @@ async function main(): Promise<void> {
       await handleSystem(cmd, rest, jsonMode);
     } else if (cmd === 'browser') {
       await handleBrowser(rest, jsonMode);
+    } else if (cmd === 'mcp') {
+      await handleMcp(rest, jsonMode);
     } else {
       console.error(`Unknown command: "${cmd}". Run 'wmux --help' for usage.`);
       process.exit(1);

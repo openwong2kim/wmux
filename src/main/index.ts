@@ -164,7 +164,21 @@ const claudeWorker = new ClaudeWorker(() => mainWindow);
 // Daemon client — initialized on app ready, used if daemon is available
 let daemonClient: DaemonClient | null = null;
 
-let cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow);
+// Settings panel (MCP section) + `wmux mcp` CLI parity. Lazy token getter
+// because pipeServer.getAuthToken() reads the file written during startup,
+// which may not have happened yet when handlers are first registered.
+const mcpHandlerOptions = {
+  mcpRegistrar,
+  getMcpAuthToken: (): string | null => {
+    try {
+      return pipeServer.getAuthToken();
+    } catch {
+      return null;
+    }
+  },
+};
+
+let cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, mcpHandlerOptions);
 
 // Module-scope crash tracking so activate-created windows share the same counters
 let lastCrashTime = 0;
@@ -187,7 +201,7 @@ function attachWindowRecovery(win: BrowserWindow): void {
       return;
     }
     cleanupHandlers();
-    cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient ?? undefined);
+    cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient ?? undefined, mcpHandlerOptions);
     const activePtys = ptyManager.getActiveInstances();
     console.log(`[Main] ${activePtys.length} PTY(s) still alive — reloading renderer`);
     setTimeout(() => {
@@ -204,7 +218,7 @@ function attachWindowRecovery(win: BrowserWindow): void {
       if (mainWindow && !mainWindow.isDestroyed()) {
         console.warn('[Main] Renderer still unresponsive after 10s — reloading');
         cleanupHandlers();
-        cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient ?? undefined);
+        cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient ?? undefined, mcpHandlerOptions);
         mainWindow.reload();
       }
     }, 10_000);
@@ -275,7 +289,7 @@ app.on('ready', async () => {
         daemonClient = client;
         console.log('[Main] Connected to wmux-daemon (auth verified)');
         cleanupHandlers();
-        cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient);
+        cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient, mcpHandlerOptions);
         // Notify renderer that daemon is now connected so it can re-reconcile
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('daemon:connected');
@@ -284,7 +298,7 @@ app.on('ready', async () => {
           console.warn('[Main] Daemon disconnected, falling back to local PTY');
           daemonClient = null;
           cleanupHandlers();
-          cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow);
+          cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, mcpHandlerOptions);
         });
       }
     }

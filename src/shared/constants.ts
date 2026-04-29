@@ -52,6 +52,10 @@ export const IPC = {
   TOKEN_UPDATE: 'token:update',
   // Window control
   WINDOW_HIDE: 'window:hide',
+  // MCP integration status / management (Settings panel + CLI parity)
+  MCP_CHECK: 'mcp:check',
+  MCP_REREGISTER: 'mcp:reregister',
+  MCP_UNREGISTER: 'mcp:unregister',
 } as const;
 
 // Named Pipe / Unix socket path for wmux API

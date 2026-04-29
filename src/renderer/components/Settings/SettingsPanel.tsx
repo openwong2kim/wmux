@@ -285,6 +285,205 @@ function disposePaneTree(pane: { type: string; surfaces?: Array<{ ptyId?: string
   }
 }
 
+// ─── MCP integration status ──────────────────────────────────────────────────
+
+/** Mirror of McpStatusPayload in main/ipc/handlers/mcp.handler.ts. */
+interface McpStatusPayload {
+  wmux: { registered: boolean; path: string | null };
+  wmuxA2a: { registered: boolean; path: string | null };
+  configPath: string;
+  configExists: boolean;
+  configModified: string | null;
+}
+
+interface ElectronMcpApi {
+  check: () => Promise<McpStatusPayload>;
+  reregister: () => Promise<McpStatusPayload>;
+  unregister: () => Promise<McpStatusPayload>;
+}
+
+/**
+ * MCP servers panel in Settings → General. Surfaces whether `~/.claude.json`
+ * has the wmux + wmux-a2a MCP entries, plus Re-register / Unregister buttons.
+ *
+ * Mirrors the `wmux mcp check` CLI output so users have a one-stop way to
+ * verify Claude Code can discover the wmux MCP bridge — DX D4 decision.
+ */
+function McpStatusSection() {
+  const [status, setStatus] = useState<McpStatusPayload | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [confirmingUnregister, setConfirmingUnregister] = useState(false);
+  const [pending, setPending] = useState<'reregister' | 'unregister' | null>(null);
+  // NOT_FOUND is expected when running the dev shell with no main wired up;
+  // silence those toasts so the empty state renders cleanly.
+  const { invoke: ipcInvoke } = useIpc({ silent: ['NOT_FOUND', 'UNKNOWN'] });
+
+  // Lazily access the API so this component is safe to render in tests where
+  // the preload has not exposed mcp yet.
+  const mcpApi = (window.electronAPI as unknown as { mcp?: ElectronMcpApi }).mcp;
+
+  const refresh = useCallback(async () => {
+    if (!mcpApi) {
+      setLoading(false);
+      return;
+    }
+    const result = await ipcInvoke(() => mcpApi.check());
+    if (result.ok) setStatus(result.data);
+    setLoading(false);
+  }, [ipcInvoke, mcpApi]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const handleReregister = useCallback(async () => {
+    if (!mcpApi) return;
+    setPending('reregister');
+    const result = await ipcInvoke(() => mcpApi.reregister());
+    if (result.ok) setStatus(result.data);
+    setPending(null);
+  }, [ipcInvoke, mcpApi]);
+
+  const handleUnregister = useCallback(async () => {
+    if (!mcpApi) return;
+    setPending('unregister');
+    const result = await ipcInvoke(() => mcpApi.unregister());
+    if (result.ok) setStatus(result.data);
+    setPending(null);
+    setConfirmingUnregister(false);
+  }, [ipcInvoke, mcpApi]);
+
+  // Section is hidden entirely when the preload doesn't expose the API —
+  // keeps older dev builds clean and avoids "phantom" buttons that error.
+  if (!mcpApi && !loading) return null;
+
+  const renderRow = (
+    label: string,
+    server: { registered: boolean; path: string | null },
+  ) => (
+    <div
+      className="px-3 py-2 rounded-lg flex items-center justify-between gap-3"
+      style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
+    >
+      <div className="min-w-0 flex-1">
+        <div className="flex items-center gap-2">
+          <span
+            className="text-[10px] font-mono w-3 text-center"
+            style={{ color: server.registered ? 'var(--accent-green, #a6e3a1)' : 'var(--accent-red, #f38ba8)' }}
+          >
+            {server.registered ? '✓' : '✗'}
+          </span>
+          <span className="text-sm text-[color:var(--text-main)] font-mono">{label}</span>
+        </div>
+        {server.path && (
+          <p
+            className="text-[10px] text-[color:var(--text-muted)] mt-0.5 font-mono truncate"
+            title={server.path}
+          >
+            {server.path}
+          </p>
+        )}
+        {!server.registered && (
+          <p className="text-[10px] text-[color:var(--text-muted)] mt-0.5">
+            Not registered in Claude Code config
+          </p>
+        )}
+      </div>
+    </div>
+  );
+
+  return (
+    <div className="flex flex-col gap-2">
+      <SectionLabel label="MCP Servers" />
+      {loading ? (
+        <div
+          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
+        >
+          Checking ~/.claude.json…
+        </div>
+      ) : status ? (
+        <>
+          {renderRow('wmux', status.wmux)}
+          {renderRow('wmux-a2a', status.wmuxA2a)}
+          <div
+            className="px-3 py-2 rounded-lg flex items-center justify-between gap-3"
+            style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
+          >
+            <div className="min-w-0 flex-1">
+              <p className="text-[11px] text-[color:var(--text-sub)] font-mono truncate" title={status.configPath}>
+                {status.configPath}
+              </p>
+              <p className="text-[10px] text-[color:var(--text-muted)] mt-0.5">
+                {status.configExists
+                  ? status.configModified
+                    ? `modified ${new Date(status.configModified).toLocaleString()}`
+                    : 'config file present'
+                  : 'config file does not exist'}
+              </p>
+            </div>
+            <div className="flex items-center gap-2 shrink-0">
+              <button
+                onClick={() => void handleReregister()}
+                disabled={pending !== null}
+                className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                style={{
+                  backgroundColor: 'var(--bg-surface)',
+                  color: 'var(--accent-blue)',
+                  border: '1px solid var(--bg-overlay)',
+                  opacity: pending ? 0.5 : 1,
+                }}
+              >
+                {pending === 'reregister' ? '…' : 'Re-register'}
+              </button>
+              {confirmingUnregister ? (
+                <>
+                  <button
+                    onClick={() => void handleUnregister()}
+                    disabled={pending !== null}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                    style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
+                  >
+                    {pending === 'unregister' ? '…' : 'Confirm'}
+                  </button>
+                  <button
+                    onClick={() => setConfirmingUnregister(false)}
+                    disabled={pending !== null}
+                    className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                    style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)' }}
+                  >
+                    Cancel
+                  </button>
+                </>
+              ) : (
+                <button
+                  onClick={() => setConfirmingUnregister(true)}
+                  disabled={pending !== null}
+                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
+                  style={{
+                    backgroundColor: 'var(--bg-surface)',
+                    color: 'var(--accent-red)',
+                    border: '1px solid var(--bg-overlay)',
+                  }}
+                >
+                  Unregister
+                </button>
+              )}
+            </div>
+          </div>
+        </>
+      ) : (
+        <div
+          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
+        >
+          MCP status unavailable. Restart wmux and try again.
+        </div>
+      )}
+    </div>
+  );
+}
+
 // ─── Update status widget ─────────────────────────────────────────────────────
 
 type UpdateState = 'idle' | 'checking' | 'available' | 'downloaded' | 'not-available' | 'error';
@@ -482,6 +681,9 @@ function TabGeneral() {
           </button>
         </SettingRow>
       </div>
+
+      {/* MCP integration */}
+      <McpStatusSection />
 
       {/* Reset */}
       <ResetSection />

@@ -1,6 +1,15 @@
 import { contextBridge, ipcRenderer, webUtils } from 'electron';
 import { IPC } from '../shared/constants';
 
+/** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
+interface McpStatusPayload {
+  wmux: { registered: boolean; path: string | null };
+  wmuxA2a: { registered: boolean; path: string | null };
+  configPath: string;
+  configExists: boolean;
+  configModified: string | null;
+}
+
 const electronAPI = {
   // OS-aware shortcut mapping support — renderer cannot read process.platform
   // directly under sandbox + contextIsolation, so expose it here.
@@ -111,6 +120,11 @@ const electronAPI = {
       ipcRenderer.on('daemon:connected', listener);
       return () => { ipcRenderer.removeListener('daemon:connected', listener); };
     },
+  },
+  mcp: {
+    check: () => ipcRenderer.invoke(IPC.MCP_CHECK) as Promise<McpStatusPayload>,
+    reregister: () => ipcRenderer.invoke(IPC.MCP_REREGISTER) as Promise<McpStatusPayload>,
+    unregister: () => ipcRenderer.invoke(IPC.MCP_UNREGISTER) as Promise<McpStatusPayload>,
   },
   token: {
     onUpdate: (callback: (ptyId: string, event: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number; cost: number; totalCost: number; totalInputTokens: number; totalOutputTokens: number }) => void) => {

@@ -16,6 +16,29 @@ declare global {
         unwatch: (dirPath: string) => Promise<void>;
         onChanged: (callback: (dirPath: string) => void) => () => void;
       };
+      mcp?: {
+        check: () => Promise<{
+          wmux: { registered: boolean; path: string | null };
+          wmuxA2a: { registered: boolean; path: string | null };
+          configPath: string;
+          configExists: boolean;
+          configModified: string | null;
+        }>;
+        reregister: () => Promise<{
+          wmux: { registered: boolean; path: string | null };
+          wmuxA2a: { registered: boolean; path: string | null };
+          configPath: string;
+          configExists: boolean;
+          configModified: string | null;
+        }>;
+        unregister: () => Promise<{
+          wmux: { registered: boolean; path: string | null };
+          wmuxA2a: { registered: boolean; path: string | null };
+          configPath: string;
+          configExists: boolean;
+          configModified: string | null;
+        }>;
+      };
     };
     clipboardAPI: {
       writeText: (text: string) => Promise<void>;

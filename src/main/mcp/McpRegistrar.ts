@@ -3,6 +3,26 @@ import * as path from 'path';
 import { app } from 'electron';
 import { getAuthTokenPath, getPipeName } from '../../shared/constants';
 import { secureWriteTokenFile } from '../../shared/security';
+import { isMac } from '../../shared/platform';
+import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
+
+/** Per-server registration state surfaced via getStatus(). */
+export interface McpServerStatus {
+  registered: boolean;
+  /** Resolved script path written to ~/.claude.json, or null when not registered. */
+  path: string | null;
+}
+
+/** Aggregate snapshot of MCP integration state for CLI / Settings UI. */
+export interface McpRegistrarStatus {
+  wmux: McpServerStatus;
+  wmuxA2a: McpServerStatus;
+  /** Absolute path to the Claude Code user config file (~/.claude.json). */
+  configPath: string;
+  configExists: boolean;
+  /** Last-modified timestamp (mtime) of the config file, or null when missing. */
+  configModified: Date | null;
+}
 
 /**
  * Registers/unregisters the wmux MCP server in Claude Code's config files
@@ -14,6 +34,12 @@ import { secureWriteTokenFile } from '../../shared/security';
  *
  * Config files written:
  *   1. ~/.claude.json   (user-level MCP config — where Claude Code reads mcpServers)
+ *
+ * NOTE (cross-platform): the path `~/.claude.json` is currently used on every
+ * OS. macOS Claude Desktop may use `~/Library/Application Support/Claude/`
+ * instead — macOS verification pending — see plan Phase 1.17 prereq. Do NOT
+ * add the macOS-specific path here speculatively; gate that behind empirical
+ * verification and ship as a separate change.
  */
 export class McpRegistrar {
   private readonly claudeJsonPath: string;
@@ -26,6 +52,78 @@ export class McpRegistrar {
     const home = app.getPath('home');
     this.claudeJsonPath = path.join(home, '.claude.json');
     this.authTokenPath = getAuthTokenPath();
+  }
+
+  /** Absolute path to the Claude Code user config file. */
+  getClaudeJsonPath(): string {
+    return this.claudeJsonPath;
+  }
+
+  /**
+   * Read-only snapshot of MCP registration state. Used by `wmux mcp check`
+   * and the Settings → General → MCP section to surface whether Claude Code
+   * can discover the wmux MCP servers.
+   *
+   * Pure read — never creates the config file or its parent directory, never
+   * throws. Corrupted JSON or missing files yield "not registered".
+   */
+  getStatus(): McpRegistrarStatus {
+    let configExists = false;
+    let configModified: Date | null = null;
+    try {
+      const stat = fs.statSync(this.claudeJsonPath);
+      configExists = stat.isFile();
+      configModified = configExists ? stat.mtime : null;
+    } catch {
+      configExists = false;
+    }
+
+    let wmuxPath: string | null = null;
+    let a2aPath: string | null = null;
+    if (configExists) {
+      try {
+        const raw = fs.readFileSync(this.claudeJsonPath, 'utf8');
+        const config = JSON.parse(raw, (key, value) => {
+          if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
+          return value;
+        }) as { mcpServers?: Record<string, unknown> };
+        const servers = config && typeof config === 'object' ? config.mcpServers : null;
+        if (servers && typeof servers === 'object') {
+          wmuxPath = extractScriptPath(servers['wmux']);
+          a2aPath = extractScriptPath(servers['wmux-a2a']);
+        }
+      } catch {
+        // Corrupted config — surface as "not registered" rather than throw.
+      }
+    }
+
+    return {
+      wmux: { registered: wmuxPath !== null, path: wmuxPath },
+      wmuxA2a: { registered: a2aPath !== null, path: a2aPath },
+      configPath: this.claudeJsonPath,
+      configExists,
+      configModified,
+    };
+  }
+
+  /**
+   * Force-remove the wmux + wmux-a2a keys from ~/.claude.json. Unlike
+   * {@link unregister} (intentionally a no-op to avoid the chicken-and-egg
+   * problem on app quit), this is invoked from explicit user actions — the
+   * `wmux mcp unregister` CLI and the Settings panel "Unregister" button.
+   *
+   * Other mcpServers entries are left untouched.
+   */
+  forceUnregister(): void {
+    try {
+      this.unregisterFromClaudeJson(['wmux', 'wmux-a2a']);
+      this.ownedKeys.delete('wmux');
+      this.ownedKeys.delete('wmux-a2a');
+      this.registered = false;
+      console.log('[McpRegistrar] Force-unregistered wmux + wmux-a2a from ~/.claude.json');
+    } catch (err) {
+      console.error('[McpRegistrar] Failed to force-unregister:', err);
+    }
   }
 
   /**
@@ -72,6 +170,14 @@ export class McpRegistrar {
       console.log(`[McpRegistrar] Registered wmux MCP → ${mcpScript}`);
     } catch (err) {
       console.error('[McpRegistrar] Failed to register:', err);
+      // macOS users hitting Time Machine restore / sudo-written ~/.claude.json
+      // see ENOACCES/EACCES/EPERM and have no way to know the fix is `chmod 600`.
+      // Surface the catalog entry so the next stderr line shows the exact command.
+      // Other platforms / other errors are unaffected.
+      const code = (err as NodeJS.ErrnoException)?.code;
+      if (isMac && (code === 'EACCES' || code === 'ENOACCES' || code === 'EPERM')) {
+        console.error('\n' + formatMacosError(MACOS_ERRORS.mcpPermissionDenied));
+      }
     }
   }
 
@@ -228,4 +334,20 @@ export class McpRegistrar {
     fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2) + '\n', 'utf8');
     fs.renameSync(tmpPath, filePath);
   }
+}
+
+/**
+ * Extract the MCP script path from a `mcpServers[key]` entry.
+ *
+ * wmux always writes entries shaped `{ command: 'node', args: [scriptPath] }`,
+ * so the script path is the first arg. Returns null when the entry is absent
+ * or malformed (foreign edits, schema drift) — getStatus() then reports the
+ * server as not registered rather than fabricating a path.
+ */
+function extractScriptPath(entry: unknown): string | null {
+  if (!entry || typeof entry !== 'object') return null;
+  const args = (entry as { args?: unknown }).args;
+  if (!Array.isArray(args) || args.length === 0) return null;
+  const first = args[0];
+  return typeof first === 'string' && first.length > 0 ? first : null;
 }

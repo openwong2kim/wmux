@@ -1,5 +1,7 @@
 import { chromium, type Browser, type BrowserContext, type Page, type CDPSession } from 'playwright-core';
 import { sendRpc } from '../wmux-client';
+import { isMac } from '../../shared/platform';
+import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 
 interface CdpTargetInfo {
   surfaceId: string;
@@ -111,12 +113,14 @@ export class PlaywrightEngine {
   async ensureConnected(): Promise<void> {
     if (this.browser?.isConnected()) return;
 
+    let lastError: unknown = null;
     for (let attempt = 1; attempt <= MAX_CONNECT_RETRIES; attempt++) {
       try {
         const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
         await this.connect(info.cdpPort);
         return;
       } catch (err) {
+        lastError = err;
         console.error(
           `[PlaywrightEngine] Connection attempt ${attempt}/${MAX_CONNECT_RETRIES} failed:`,
           err instanceof Error ? err.message : String(err),
@@ -124,6 +128,25 @@ export class PlaywrightEngine {
         if (attempt < MAX_CONNECT_RETRIES) {
           await sleep(RETRY_DELAY_MS);
         }
+      }
+    }
+
+    // macOS Gatekeeper can quarantine the runtime-downloaded Chromium binary
+    // (allow-jit entitlement + un-notarized cache combo). The exact error
+    // wording varies across playwright-core versions, so trigger on any
+    // failure-after-all-retries when the message hints at chromium/launch/
+    // executable problems. Print the catalog entry once to stderr (logged
+    // only — does not change the throw below or any retry behavior).
+    if (isMac && lastError) {
+      const msg = (lastError instanceof Error ? lastError.message : String(lastError)).toLowerCase();
+      if (
+        msg.includes('chromium') ||
+        msg.includes('executable') ||
+        msg.includes('launch') ||
+        msg.includes('gatekeeper') ||
+        msg.includes('quarantine')
+      ) {
+        console.error('\n' + formatMacosError(MACOS_ERRORS.playwrightChromiumQuarantine));
       }
     }
 
