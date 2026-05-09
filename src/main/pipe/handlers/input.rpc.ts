@@ -42,6 +42,37 @@ async function resolveActivePtyId(getWindow: GetWindow): Promise<string> {
   throw new Error('input: could not resolve active ptyId from renderer');
 }
 
+/**
+ * Verify that `ptyId` belongs to a surface inside `expectedWorkspaceId`.
+ * Throws when the PTY is owned by a different workspace (or no workspace at
+ * all). Returns silently when `expectedWorkspaceId` is undefined — internal
+ * callers (CLI, UI) skip this check.
+ *
+ * Closes the cross-workspace bypass where the metadata layer enforced
+ * isolation but the PTY-id-keyed terminal IO layer didn't: any caller that
+ * learned a foreign PTY id (via leaks, screenshots, surface_list) could
+ * read or write that workspace's terminal at will.
+ */
+async function assertWorkspaceOwnsPty(
+  getWindow: GetWindow,
+  ptyId: string,
+  expectedWorkspaceId: string | undefined,
+  rpcName: string,
+): Promise<void> {
+  if (!expectedWorkspaceId) return;
+  const result = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId });
+  const owner =
+    result && typeof result === 'object' && 'workspaceId' in result
+      ? ((result as Record<string, unknown>)['workspaceId'] as string | null)
+      : null;
+  if (owner !== expectedWorkspaceId) {
+    throw new Error(
+      `${rpcName}: PTY "${ptyId}" is not owned by workspace "${expectedWorkspaceId}" ` +
+        `(actual owner: ${owner ?? 'none'}). Cross-workspace terminal access is not allowed.`,
+    );
+  }
+}
+
 export function registerInputRpc(
   router: RpcRouter,
   ptyManager: PTYManager,
@@ -71,6 +102,9 @@ export function registerInputRpc(
     } else {
       ptyId = await resolveActivePtyId(getWindow);
     }
+
+    const callerWs = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+    await assertWorkspaceOwnsPty(getWindow, ptyId, callerWs, 'input.send');
 
     const safeText = params['raw'] === true ? text : sanitizePtyText(text);
 
@@ -117,6 +151,9 @@ export function registerInputRpc(
       ptyId = await resolveActivePtyId(getWindow);
     }
 
+    const callerWs = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+    await assertWorkspaceOwnsPty(getWindow, ptyId, callerWs, 'input.sendKey');
+
     const instance = ptyManager.get(ptyId);
     if (instance) {
       ptyManager.write(ptyId, sequence);
@@ -157,6 +194,9 @@ export function registerInputRpc(
     } else {
       ptyId = await resolveActivePtyId(getWindow);
     }
+
+    const callerWs = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+    await assertWorkspaceOwnsPty(getWindow, ptyId, callerWs, 'terminal.readEvents');
 
     const dc = getDaemonClient?.();
     if (!dc?.isConnected) {

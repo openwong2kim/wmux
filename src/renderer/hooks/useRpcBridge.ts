@@ -557,10 +557,36 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // input.*
   // -------------------------------------------------------------------------
 
+  // input.findOwnerWorkspace — returns the workspace that owns a given ptyId,
+  // or null if no surface in any workspace is bound to that PTY. Main-side
+  // validators use this to gate cross-workspace terminal access (defense
+  // against PTY-id leaks bypassing the metadata-layer isolation).
+  if (method === 'input.findOwnerWorkspace') {
+    const ptyId = typeof params.ptyId === 'string' ? params.ptyId : '';
+    if (!ptyId) return { workspaceId: null };
+    for (const ws of store.workspaces) {
+      const leaves = findLeafPanes(ws.rootPane);
+      for (const leaf of leaves) {
+        for (const s of leaf.surfaces) {
+          if (s.ptyId === ptyId) return { workspaceId: ws.id };
+        }
+      }
+    }
+    return { workspaceId: null };
+  }
+
   if (method === 'input.readScreen') {
+    // Workspace scoping: external MCP callers MUST pass workspaceId so reads
+    // can't be hijacked into whichever workspace the user happens to focus.
+    // Internal callers may omit it and fall back to the active workspace.
+    const callerWsId =
+      typeof params.workspaceId === 'string' && params.workspaceId.length > 0
+        ? params.workspaceId
+        : store.activeWorkspaceId;
+
     let ptyId: string | null = typeof params.ptyId === 'string' ? params.ptyId : null;
     if (!ptyId) {
-      const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
+      const ws = store.workspaces.find((w) => w.id === callerWsId);
       if (ws) {
         const activePane = findPaneById(ws.rootPane, ws.activePaneId);
         if (activePane && activePane.type === 'leaf') {
@@ -569,6 +595,19 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           );
           ptyId = surface?.ptyId ?? null;
         }
+      }
+    } else if (typeof params.workspaceId === 'string' && params.workspaceId.length > 0) {
+      // Caller passed both — validate the PTY belongs to that workspace.
+      const targetWs = store.workspaces.find((w) => w.id === callerWsId);
+      const owned =
+        targetWs &&
+        findLeafPanes(targetWs.rootPane).some((leaf) =>
+          leaf.surfaces.some((s) => s.ptyId === ptyId),
+        );
+      if (!owned) {
+        return {
+          error: `input.readScreen: PTY "${ptyId}" not in workspace "${callerWsId}"`,
+        };
       }
     }
     if (!ptyId) return { ptyId: null, text: '' };

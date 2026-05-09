@@ -207,7 +207,8 @@ server.tool(
     tail_lines: z.number().int().positive().optional().describe('Return only the last N non-empty lines of the viewport. Omit to return everything the terminal buffer knows about.'),
   },
   async ({ ptyId, tail_lines }) => {
-    const params: Record<string, unknown> = {};
+    const workspaceId = await requireWorkspaceId();
+    const params: Record<string, unknown> = { workspaceId };
     const effective = ptyId ?? (await resolveDefaultPtyId()) ?? undefined;
     if (effective) params.ptyId = effective;
     if (tail_lines !== undefined) params.tail_lines = tail_lines;
@@ -225,7 +226,8 @@ server.tool(
     lastCommandOnly: z.boolean().optional().describe('Skip the events list and only return lastCompletedRange (the byte-offset range + exit code of the most recently finished command).'),
   },
   async ({ ptyId, limit, sinceOffset, lastCommandOnly }) => {
-    const params: Record<string, unknown> = {};
+    const workspaceId = await requireWorkspaceId();
+    const params: Record<string, unknown> = { workspaceId };
     const effective = ptyId ?? (await resolveDefaultPtyId()) ?? undefined;
     if (effective) params.ptyId = effective;
     if (limit !== undefined) params.limit = limit;
@@ -243,8 +245,9 @@ server.tool(
     ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
   },
   async ({ text, ptyId }) => {
+    const workspaceId = await requireWorkspaceId();
     const effective = ptyId ?? (await resolveDefaultPtyId()) ?? undefined;
-    return callRpc('input.send', effective ? { text, ptyId: effective } : { text });
+    return callRpc('input.send', effective ? { text, ptyId: effective, workspaceId } : { text, workspaceId });
   },
 );
 
@@ -258,8 +261,9 @@ server.tool(
     ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
   },
   async ({ key, ptyId }) => {
+    const workspaceId = await requireWorkspaceId();
     const effective = ptyId ?? (await resolveDefaultPtyId()) ?? undefined;
-    return callRpc('input.sendKey', effective ? { key, ptyId: effective } : { key });
+    return callRpc('input.sendKey', effective ? { key, ptyId: effective, workspaceId } : { key, workspaceId });
   },
 );
 
