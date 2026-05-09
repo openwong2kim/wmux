@@ -6,10 +6,17 @@ type GetWindow = () => BrowserWindow | null;
 
 export function registerSurfaceRpc(router: RpcRouter, getWindow: GetWindow): void {
   /**
-   * surface.list — returns surfaces of the current workspace's active pane
+   * surface.list — returns surfaces of a workspace.
+   * params: { workspaceId? } — omitted ⇒ active workspace.
+   *
+   * The renderer handler honors `workspaceId` (useRpcBridge.ts), but earlier
+   * the main-side router dropped params entirely, silently scoping every
+   * caller to the active workspace. Forward params unchanged so MCP callers
+   * can target their own workspace explicitly (and enforcement layers above
+   * can rely on the parameter being respected).
    */
-  router.register('surface.list', (_params) =>
-    sendToRenderer(getWindow, 'surface.list'),
+  router.register('surface.list', (params) =>
+    sendToRenderer(getWindow, 'surface.list', params),
   );
 
   /**
