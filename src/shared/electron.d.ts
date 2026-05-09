@@ -1,4 +1,4 @@
-import type { ElectronAPI } from '../preload/index';
+import type { ElectronAPI } from '../preload/preload';
 import type { TokenEvent } from '../main/pty/TokenTracker';
 import type {
   FirstRunCheckResult,

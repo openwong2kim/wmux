@@ -29,12 +29,9 @@ import { useT } from '../hooks/useT';
 
 // ─── Local type narrowing for electronAPI.firstRun ────────────────────────────
 //
-// The shared `electron.d.ts` augmentation re-exports the `ElectronAPI` type
-// from `src/preload/index.ts`, which (as of this task) does not yet include
-// the `firstRun` namespace — that namespace lives on `src/preload/preload.ts`
-// (T1). To stay strictly within the renderer file ownership, we narrow
-// `window.electronAPI` to include `firstRun` here and let the runtime contract
-// (preload.ts is the actual loaded preload) provide the implementation.
+// `firstRun` is also declared as optional on `Window['electronAPI']` in the
+// shared `electron.d.ts` augmentation. We narrow to a non-optional shape here
+// so callers below don't have to optional-chain every method.
 interface FirstRunBridge {
   check: () => Promise<FirstRunCheckResult>;
   complete: () => Promise<void>;

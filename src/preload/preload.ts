@@ -158,6 +158,19 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.TOKEN_UPDATE, listener); };
     },
   },
+  window: {
+    hide: () => ipcRenderer.send(IPC.WINDOW_HIDE),
+  },
+  events: {
+    /**
+     * One-way publish of a pane lifecycle event to the main-process EventBus.
+     * Caller passes a partial event object (`type`, `workspaceId`, plus
+     * type-specific fields); main stamps `seq` and `ts`. Failures are
+     * swallowed — telemetry must never break a state mutation.
+     */
+    publish: (input: { type: string; workspaceId: string; [k: string]: unknown }) =>
+      ipcRenderer.send(IPC.EVENTS_PUBLISH, input),
+  },
   scrollback: {
     dump: (surfaceId: string, content: string) =>
       ipcRenderer.invoke(IPC.SCROLLBACK_DUMP, surfaceId, content),
