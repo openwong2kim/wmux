@@ -153,10 +153,23 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       const terminal = terminalRef.current;
       const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } })?.modes;
 
-      // Try image first, then text. readImage saves a PNG temp file and
-      // returns the path — must be quoted on spaces and wrapped in
-      // bracketed-paste sequences so apps like Claude Code see it as a
-      // single paste rather than streamed input.
+      // Text first, image fallback — matches the Ctrl+V handler's preference.
+      // Browsers populate the clipboard with BOTH text/plain and a
+      // selection-screenshot image when the user copies a paragraph. Image-
+      // first would silently throw away the text in that case and paste a
+      // PNG path instead — almost never what the user wanted. Image-only
+      // clipboards (Snipping Tool, PrtSc, image editors) still work via
+      // the fallback below. readImage() saves the bitmap to a PNG temp file
+      // and returns its path — quoted on spaces and wrapped in bracketed-
+      // paste sequences so apps like Claude Code see it as a single paste.
+      const text = await window.clipboardAPI.readText();
+      if (text) {
+        // Centralized 4096-byte chunking helper avoids the main process's
+        // 100KB pty.write silent backstop when pasting large blobs.
+        pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes ?? null);
+        return;
+      }
+
       const hasImg = await window.clipboardAPI.hasImage();
       if (hasImg) {
         const imagePath = await window.clipboardAPI.readImage();
@@ -167,15 +180,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
           } else {
             window.electronAPI.pty.write(ptyId, quoted);
           }
-          return;
         }
-      }
-
-      const text = await window.clipboardAPI.readText();
-      if (text) {
-        // Centralized 4096-byte chunking helper avoids the main process's
-        // 100KB pty.write silent backstop when pasting large blobs.
-        pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes ?? null);
       }
     })();
   }, [ptyId, terminalRef]);

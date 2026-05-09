@@ -418,12 +418,24 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       void (async () => {
         const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
 
-        // Try image first, then text. clipboardAPI.readImage saves the bitmap
-        // to a PNG temp file and returns the path — NOT a data URI. Quote it
-        // when it contains spaces, and wrap in bracketed-paste sequences when
-        // the foreground app (Claude Code, fish, modern bash) has enabled
-        // them so the path is recognized as a single paste rather than
-        // streamed character-by-character.
+        // Text first, image fallback — matches the Ctrl+V handler. Browsers
+        // populate clipboards with BOTH text/plain and a selection-screenshot
+        // PNG when copying paragraphs; image-first would silently swap the
+        // text out for a PNG path here, which is almost never the user's
+        // intent. Image-only clipboards (Snipping Tool / PrtSc / image
+        // editors) still flow through the fallback. readImage saves a PNG
+        // temp file and returns its path — quoted on spaces and wrapped in
+        // bracketed-paste sequences when the foreground app (Claude Code,
+        // fish, modern bash) supports them so the path is recognized as a
+        // single paste rather than streamed character-by-character.
+        const text = await window.clipboardAPI.readText();
+        if (text) {
+          // Centralized 4096-byte chunking — keeps us under the main
+          // process's 100KB silent backstop on pty.write.
+          pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
+          return;
+        }
+
         const hasImg = await window.clipboardAPI.hasImage();
         if (hasImg) {
           const imagePath = await window.clipboardAPI.readImage();
@@ -434,15 +446,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             } else {
               window.electronAPI.pty.write(ptyId, quoted);
             }
-            return;
           }
-        }
-
-        const text = await window.clipboardAPI.readText();
-        if (text) {
-          // Centralized 4096-byte chunking — keeps us under the main
-          // process's 100KB silent backstop on pty.write.
-          pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
         }
       })().catch((err) => console.error('[wmux:clipboard] right-click error:', err));
     });
