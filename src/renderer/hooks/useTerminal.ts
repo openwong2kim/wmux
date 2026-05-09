@@ -271,8 +271,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         return false;
       }
 
-      // Pass app shortcuts through to useKeyboard (don't let xterm consume them)
-      if (e.ctrlKey && !e.shiftKey && [',', 'b', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'].includes(e.key)) {
+      // Pass app shortcuts through to useKeyboard (don't let xterm consume them).
+      // 'd' is the Ctrl+D split-right shortcut — without it xterm sends EOT (0x04)
+      // to the PTY and PowerShell echoes it back as `^D` instead of triggering split.
+      if (e.ctrlKey && !e.shiftKey && [',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'].includes(e.key)) {
         return false; // let DOM bubble to useKeyboard
       }
       // Ctrl+` by code (cross-layout)
