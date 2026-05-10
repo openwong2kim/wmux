@@ -277,6 +277,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (e.ctrlKey && !e.shiftKey && [',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'].includes(e.key)) {
         return false; // let DOM bubble to useKeyboard
       }
+      // Cross-layout / IME-safe fallback: when a Hangul or other non-Latin layout
+      // is active, e.key is the composed letter (e.g. 'ㅇ') or 'Process', and the
+      // allowlist above misses. Match by physical key code so the split shortcut
+      // still works under any layout/IME state.
+      if (e.ctrlKey && !e.shiftKey && ['KeyB', 'KeyD', 'KeyK', 'KeyI', 'KeyN', 'KeyT', 'KeyM', 'Comma', 'ArrowUp', 'ArrowDown'].includes(e.code)) {
+        return false;
+      }
       // Ctrl+` by code (cross-layout)
       if (e.ctrlKey && !e.shiftKey && e.code === 'Backquote') {
         return false;

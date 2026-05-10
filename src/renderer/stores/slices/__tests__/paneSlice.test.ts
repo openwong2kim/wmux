@@ -70,6 +70,31 @@ describe('PaneSlice', () => {
         expect(wsAfter.rootPane.direction).toBe('vertical');
       }
     });
+
+    // Regression: AppLayout's auto-PTY effect uses the joined empty-leaf id list as
+    // its dep signature so split-induced empty leaves trigger PTY creation. If split
+    // ever stops producing an empty leaf as the new active pane (or that leaf already
+    // carries surfaces), the effect would silently miss it and the new pane would
+    // stay as the "빈 창" placeholder forever. Lock both invariants here.
+    it('split produces a new empty leaf and makes it active', () => {
+      const ws = getActiveWorkspace(store);
+      const rootId = ws.rootPane.id;
+      store.getState().splitPane(rootId, 'horizontal');
+
+      const wsAfter = getActiveWorkspace(store);
+      const emptyLeafIds: string[] = [];
+      const walk = (p: typeof wsAfter.rootPane): void => {
+        if (p.type === 'leaf') {
+          if (p.surfaces.length === 0) emptyLeafIds.push(p.id);
+        } else {
+          p.children.forEach(walk);
+        }
+      };
+      walk(wsAfter.rootPane);
+
+      expect(emptyLeafIds.length).toBeGreaterThanOrEqual(1);
+      expect(emptyLeafIds).toContain(wsAfter.activePaneId);
+    });
   });
 
   describe('closePane', () => {

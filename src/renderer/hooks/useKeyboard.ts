@@ -252,7 +252,9 @@ export function useKeyboard() {
       }
 
       // Ctrl+D: Split right (horizontal)
-      if (cmdOrCtrl && !shift && !alt && key === 'd') {
+      // Match by physical key code as well so Hangul / non-Latin IME state
+      // (where e.key may be 'ㅇ' or 'Process') still triggers the split.
+      if (cmdOrCtrl && !shift && !alt && (key === 'd' || code === 'KeyD')) {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
@@ -263,7 +265,7 @@ export function useKeyboard() {
       }
 
       // Ctrl+Shift+D: Split down (vertical)
-      if (cmdOrCtrl && shift && !alt && key === 'D') {
+      if (cmdOrCtrl && shift && !alt && (key === 'D' || code === 'KeyD')) {
         e.preventDefault();
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
