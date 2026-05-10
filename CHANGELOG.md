@@ -27,6 +27,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - `AppLayout` 의 첫 reconcile 이 `daemon.whenReady()` 를 await 하여 handler 가 안정된 뒤에야 `pty.list` / `pty.reconnect` 를 호출. 토스트 폭주 사라짐.
   - 구현: `src/main/index.ts`, `src/preload/preload.ts`, `src/renderer/components/Layout/AppLayout.tsx`.
 
+- **Split 후 빈 pane 이 영구 placeholder 로 남던 문제** — `AppLayout` 의 auto-PTY effect 가 `activeWorkspace.id` 만 deps 로 가져 split 으로 추가된 새 leaf 가 `surfaces=[]` 인 채 effect 재실행을 유발하지 못했다. 결과적으로 분할된 새 pane 이 "빈 창" placeholder 로 굳어 PTY 가 영영 안 붙었다. `collectEmptyLeaves` 를 effect 바깥으로 끌어올리고 빈 leaf id 들의 join 키를 deps 에 추가해 split 이 즉시 PTY 생성을 트리거하도록 수정. paneSlice 에 회귀 테스트 추가 (`src/renderer/stores/slices/__tests__/paneSlice.test.ts`).
+
+- **한글 IME 상태에서 Ctrl+D / Ctrl+Shift+D split 단축키 미작동** — Hangul 레이아웃에서 `e.key` 가 `'ㅇ'` 또는 `'Process'` 가 되어 useKeyboard 의 `key === 'd'` 매칭이 빗나가고, useTerminal 의 xterm allowlist 도 같은 이유로 빠져 단축키가 xterm 에 흘러갔다. 두 곳 모두 `e.code === 'KeyD'` (물리 키 코드) 도 함께 매칭하도록 수정 — 기존 Ctrl+B / Ctrl+M 등의 cross-layout 패턴과 일관. 구현: `src/renderer/hooks/useKeyboard.ts`, `src/renderer/hooks/useTerminal.ts`.
+
+- **분할 pane 을 키보드/마우스로 닫을 수 없던 문제** — Ctrl+W 가 `closeSurface` 만 호출해 마지막 surface 닫혀도 pane 이 collapse 안 되고, 단일 surface pane 에서는 `SurfaceTabs` 가 strip 자체를 숨겨 X 버튼도 없었다. (1) Ctrl+W 가 마지막 surface 닫힐 때 `closePane` cascade 호출 (Pane.tsx X-button 동작 미러), (2) `SurfaceTabs` 가 surfaces.length === 1 이어도 strip 렌더, (3) 신규 Ctrl+Shift+Q (tmux kill-pane equivalent) 추가 + `BUILTIN_KEYS` 로 보호, (4) SettingsPanel 의 Ctrl+W 라벨이 실제 동작과 어긋났던 것을 closeSurface / closePane 두 줄로 분리해 i18n 4개 로케일 (en/ko/ja/zh) 모두 수정. 구현: `src/renderer/hooks/useKeyboard.ts`, `src/renderer/components/Pane/SurfaceTabs.tsx`, `src/renderer/components/Settings/SettingsPanel.tsx`.
+
+- **Reconnect 후 출력이 두 줄로 중복되던 문제** — `pty.handler.ts` 의 `PTY_CREATE` 와 `PTY_RECONNECT` 가 매번 새 `daemonClient.on('session:data', listener)` 를 등록하면서 이전 listener 를 떼지 않아 누적됐다. 한 세션을 reconnect 한번만 해도 두 listener 가 같은 chunk 를 두 번 forward 해 renderer xterm 에 중복 출력. per-session listener map 으로 분리하여 같은 ptyId 의 이전 listener 를 항상 정리한 뒤에만 새 listener 등록. 구현: `src/main/ipc/handlers/pty.handler.ts`.
+
 ### Migration Notes
 
 - 자동. 첫 v2.8.1 실행 시 `StateWriter.load` 가 7 일 이상 묵힌 suspended 세션을 prune 한다. 추가 액션 불필요. v2.8.0 에서 이미 brick 된 사용자도 업그레이드 후 첫 실행에서 정상 복구된다 (alphabeen 이 가이드한 수동 `sessions.json`/`daemon-pipe`/`daemon.lock`/`daemon.pid` 삭제 절차는 더 이상 필요 없음).
