@@ -207,6 +207,26 @@ describe('useIpc / createInvoke', () => {
       if (!result.ok) expect(result.error.code).toBe('NOT_FOUND');
     });
 
+    // v2.8.2 — codex P2: Electron also wraps the message envelope before
+    // it reaches the renderer (`Error invoking remote method '...': Error:
+    // <orig>`). If we anchor the prefix regex to `^`, the stamp is hidden
+    // behind the envelope and every coded error falls through to UNKNOWN.
+    // These cases lock in the un-anchored behaviour.
+    it('classifies by `[CODE] ` token even when Electron prepends the invoke envelope', async () => {
+      const invoke = createInvoke(undefined, toastSpy);
+      const wrapped = new Error(
+        `Error invoking remote method 'pty:create': Error: [RESOURCE_EXHAUSTED] Cannot create new terminal: 200 active sessions already running. Close some panes (or restart wmux) and try again.`,
+      );
+      const result = await invoke(async () => { throw wrapped; });
+      expect(result.ok).toBe(false);
+      if (!result.ok) {
+        expect(result.error.code).toBe('RESOURCE_EXHAUSTED');
+        expect(result.error.message).toBe(
+          '터미널 세션 한도에 도달했습니다. 일부 pane을 닫거나 wmux를 재시작한 뒤 다시 시도해주세요.',
+        );
+      }
+    });
+
     it('classifies each known code via the message-prefix path', async () => {
       const invoke = createInvoke(undefined, toastSpy);
       const codes: IpcErrorCode[] = [
@@ -214,6 +234,7 @@ describe('useIpc / createInvoke', () => {
         'VALIDATION_ERROR',
         'NOT_FOUND',
         'PERMISSION_DENIED',
+        'RESOURCE_EXHAUSTED',
         'UNKNOWN',
       ];
       for (const code of codes) {

@@ -32,9 +32,13 @@ const KNOWN_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
 
 /**
  * Matches a leading `[CODE] ` prefix written by the wrapper so we can
- * detect that a message has already been stamped. Kept in sync with
- * the renderer-side regex in `useIpc.ts` — if you change one, change
- * the other.
+ * detect that a message has already been stamped (avoids double-stamping
+ * if a handler is wrapped twice). Only the main-side regex is anchored
+ * because we're matching against our own raw output here. The
+ * renderer-side regex in `useIpc.ts` deliberately drops the anchor —
+ * Electron wraps the message envelope (`Error invoking remote method
+ * '...': Error: <msg>`) before it reaches the renderer, so the stamp
+ * is no longer at the start.
  */
 const MESSAGE_CODE_PREFIX =
   /^\[(DAEMON_DISCONNECTED|VALIDATION_ERROR|NOT_FOUND|PERMISSION_DENIED|RESOURCE_EXHAUSTED|UNKNOWN)\] /;

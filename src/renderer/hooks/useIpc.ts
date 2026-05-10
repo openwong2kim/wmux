@@ -34,16 +34,26 @@ const KNOWN_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
 ]);
 
 /**
- * Matches a `[CODE] ` prefix written by `wrapHandler` in the main
- * process. Electron's IPC serializer can drop own properties on
- * `Error` instances (`err.code` included), so the main side also
- * stamps the code into the message as a prefix. This regex is the
- * fallback path when `err.code` did not survive the IPC boundary.
- * Kept in sync with the main-side regex — if you change one, change
- * the other.
+ * Matches a `[CODE] ` token written by `wrapHandler` in the main process.
+ * Electron's IPC serializer drops own properties on `Error` instances
+ * (`err.code` included) AND wraps the message itself — what arrives
+ * here typically looks like:
+ *   `Error invoking remote method 'pty:create': Error: [CODE] <orig msg>`
+ * so the token is NOT anchored to the start of the string. The
+ * alternation only matches known codes, so a literal `[UNKNOWN]` token
+ * elsewhere in user content is the only theoretical false positive — and
+ * if our own wrapHandler stamped it, classifying as UNKNOWN is correct
+ * anyway. Keep the wrapHandler-side regex anchored (`^`) because there
+ * the message starts with our stamp; only the renderer needs the looser
+ * match because Electron prepends the invoke envelope.
+ *
+ * v2.8.2 fix — pre-v2.8.2 the renderer regex was also anchored, so
+ * RESOURCE_EXHAUSTED (and every other coded error) silently fell
+ * through to UNKNOWN whenever Electron wrapped the message, which
+ * was the common case.
  */
 const MESSAGE_CODE_PREFIX =
-  /^\[(DAEMON_DISCONNECTED|VALIDATION_ERROR|NOT_FOUND|PERMISSION_DENIED|RESOURCE_EXHAUSTED|UNKNOWN)\] /;
+  /\[(DAEMON_DISCONNECTED|VALIDATION_ERROR|NOT_FOUND|PERMISSION_DENIED|RESOURCE_EXHAUSTED|UNKNOWN)\] /;
 
 export interface IpcErrorShape {
   code: IpcErrorCode;
