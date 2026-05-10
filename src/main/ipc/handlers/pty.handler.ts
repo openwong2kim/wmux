@@ -70,8 +70,36 @@ export function registerPTYHandlers(
 ): () => void {
   const useDaemon = daemonClient?.isConnected ?? false;
 
-  // Track daemon session:data listeners for cleanup
-  const daemonSessionListeners: Array<(...args: unknown[]) => void> = [];
+  // Track daemon session:data listeners by sessionId so PTY_CREATE / PTY_RECONNECT
+  // can be idempotent. Without per-id tracking, every reconcile (mount + each
+  // daemon.onConnected) would push another listener for an already-active
+  // session, and the same PTY frame would be forwarded to the renderer N times
+  // — manifesting as spinner lines stacking up and characters smearing across
+  // rows in TUIs like Claude Code.
+  const daemonSessionListeners = new Map<string, (...args: unknown[]) => void>();
+
+  /** Register (or replace) the per-session data listener for `sessionId`. */
+  function setSessionDataListener(
+    sessionId: string,
+    listener: (...args: unknown[]) => void,
+  ): void {
+    if (!daemonClient) return;
+    const existing = daemonSessionListeners.get(sessionId);
+    if (existing) {
+      daemonClient.removeListener('session:data', existing);
+    }
+    daemonClient.on('session:data', listener);
+    daemonSessionListeners.set(sessionId, listener);
+  }
+
+  /** Remove the per-session data listener for `sessionId`, if any. */
+  function clearSessionDataListener(sessionId: string): void {
+    if (!daemonClient) return;
+    const existing = daemonSessionListeners.get(sessionId);
+    if (!existing) return;
+    daemonClient.removeListener('session:data', existing);
+    daemonSessionListeners.delete(sessionId);
+  }
 
   // Per-session StringDecoder to handle UTF-8 multi-byte sequences split across chunks
   const sessionDecoders = new Map<string, StringDecoder>();
@@ -115,7 +143,9 @@ export function registerPTYHandlers(
       // Connect session data pipe
       await daemonClient.connectSessionPipe(sessionId);
 
-      // Forward session data to renderer
+      // Forward session data to renderer. Routed through the per-id helper so
+      // a stale listener (from a prior create with the same id, or a reconnect)
+      // is removed before the new one is attached.
       const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
         if (payload.sessionId !== sessionId) return;
         const win = getWindow?.();
@@ -124,8 +154,7 @@ export function registerPTYHandlers(
           if (text) win.webContents.send(IPC.PTY_DATA, sessionId, text);
         }
       };
-      daemonClient.on('session:data', onSessionData as (...args: unknown[]) => void);
-      daemonSessionListeners.push(onSessionData as (...args: unknown[]) => void);
+      setSessionDataListener(sessionId, onSessionData as (...args: unknown[]) => void);
 
       // Register initial CWD
       updateCwd(sessionId, effectiveCwd);
@@ -213,6 +242,9 @@ export function registerPTYHandlers(
       await daemonClient.rpc('daemon.destroySession', { id });
       await daemonClient.disconnectSessionPipe(id);
       sessionDecoders.delete(id);
+      // Drop the data forwarding listener for this session so a future
+      // create or reconnect doesn't pile new listeners on top of dead ones.
+      clearSessionDataListener(id);
     }));
   } else {
     ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, (_event: Electron.IpcMainInvokeEvent, id: string) => {
@@ -251,7 +283,10 @@ export function registerPTYHandlers(
         await daemonClient.rpc('daemon.attachSession', { id });
         await daemonClient.connectSessionPipe(id);
 
-        // Set up data forwarding
+        // Set up data forwarding. Routed through the per-id helper so a
+        // repeat reconnect (e.g. AppLayout's reconcile firing again on the
+        // late daemon.onConnected event) replaces the prior listener instead
+        // of stacking a duplicate that doubles every byte the PTY emits.
         const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
           if (payload.sessionId !== id) return;
           const win = getWindow?.();
@@ -260,8 +295,7 @@ export function registerPTYHandlers(
             if (text) win.webContents.send(IPC.PTY_DATA, id, text);
           }
         };
-        daemonClient.on('session:data', onSessionData as (...args: unknown[]) => void);
-        daemonSessionListeners.push(onSessionData as (...args: unknown[]) => void);
+        setSessionDataListener(id, onSessionData as (...args: unknown[]) => void);
 
         return { success: true, id: session.id, shell: session.cmd };
       } catch (err) {
@@ -302,9 +336,10 @@ export function registerPTYHandlers(
 
     // Clean up daemon listeners
     if (daemonClient) {
-      for (const listener of daemonSessionListeners) {
+      for (const listener of daemonSessionListeners.values()) {
         daemonClient.removeListener('session:data', listener);
       }
+      daemonSessionListeners.clear();
       if (onDaemonSessionDied) {
         daemonClient.removeListener('session:died', onDaemonSessionDied);
       }
