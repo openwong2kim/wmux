@@ -1138,7 +1138,7 @@ function TabShortcuts() {
     'Ctrl+K', 'Ctrl+I', 'Ctrl+,',
     'Ctrl+Shift+W', 'Ctrl+Shift+D', 'Ctrl+Shift+L', 'Ctrl+Shift+X',
     'Ctrl+Shift+H', 'Ctrl+Shift+R', 'Ctrl+Shift+U', 'Ctrl+Shift+O',
-    'Ctrl+Shift+]', 'Ctrl+Shift+[', 'Ctrl+Shift+M',
+    'Ctrl+Shift+]', 'Ctrl+Shift+[', 'Ctrl+Shift+M', 'Ctrl+Shift+Q',
   ]);
 
   const prefixKeyDisplay = `Ctrl+${keyCodeToDisplay(prefixConfig.key)}`;
@@ -1152,7 +1152,8 @@ function TabShortcuts() {
     { keys: shortcutLabel('Ctrl+D'),         description: t('settings.sc.splitHorizontal') },
     { keys: shortcutLabel('Ctrl+Shift+D'),   description: t('settings.sc.splitVertical') },
     { keys: shortcutLabel('Ctrl+T'),         description: t('settings.sc.newWorkspace') },
-    { keys: shortcutLabel('Ctrl+W'),         description: t('settings.sc.closePane') },
+    { keys: shortcutLabel('Ctrl+W'),         description: t('settings.sc.closeSurface') },
+    { keys: shortcutLabel('Ctrl+Shift+Q'),   description: t('settings.sc.closePane') },
     { keys: shortcutLabel('Ctrl+F'),         description: t('settings.sc.searchTerminal') },
     { keys: shortcutLabel('Ctrl+K'),         description: t('settings.sc.commandPalette') },
     { keys: shortcutLabel('Ctrl+I'),         description: t('settings.sc.toggleNotifications') },

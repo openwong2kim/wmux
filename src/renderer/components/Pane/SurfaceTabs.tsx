@@ -11,12 +11,11 @@ interface SurfaceTabsProps {
 
 export default function SurfaceTabs({ surfaces, activeSurfaceId, onSelect, onClose }: SurfaceTabsProps) {
   const t = useT();
-  // Hide the tab bar entirely when there is only one surface — no tabs needed.
-  // The X close button on a single tab would close the pane itself (handled by Pane.tsx),
-  // so it is more intuitive to simply not show the tab strip in the single-tab case.
-  if (surfaces.length <= 1) {
-    return null;
-  }
+  // Always render the strip — even for a single surface — so the X button is
+  // reachable. Pane.tsx's handleCloseSurface cascades into closePane when the
+  // last surface is removed, so this is also the only mouse path to dismantle
+  // a split. Hiding it left users unable to close split panes (the keyboard
+  // shortcut Ctrl+W now mirrors the same cascade, but the X must exist too).
 
   return (
     <div className="flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-7 overflow-x-auto">
