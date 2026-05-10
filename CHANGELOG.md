@@ -16,7 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - **신규 IPC 에러 코드 `RESOURCE_EXHAUSTED`** — `wrapHandler` 의 `classifyError` 가 cap 메시지 패턴 (`cannot create new terminal` + `active sessions already running`) 을 감지해 분류. 메시지에 `[RESOURCE_EXHAUSTED]` prefix 가 stamp 되어 renderer 가 분기 가능.
   - **`useIpc` 매핑** — `DEFAULT_MESSAGES['RESOURCE_EXHAUSTED']` = "터미널 세션 한도에 도달했습니다. 일부 pane을 닫거나 wmux를 재시작한 뒤 다시 시도해주세요.", level `'warn'`. UNKNOWN 으로 매핑되어 generic "알 수 없는 오류" 토스트가 뜨던 path 차단.
   - **세 호출 지점 모두 `ipcInvoke` wrap 으로 통일** — `useKeyboard` Ctrl+T (ref 패턴으로 once-on-mount effect 안에서 사용), `AppLayout` empty-leaf 자동 PTY effect, `FloatingPane` 첫 PTY 생성. 모두 `result.ok` 분기 + 실패 시 toast 자동 게재.
-  - 구현: `src/main/ipc/wrapHandler.ts`, `src/renderer/hooks/useIpc.ts`, `src/renderer/hooks/useKeyboard.ts`, `src/renderer/components/Layout/AppLayout.tsx`, `src/renderer/components/Terminal/FloatingPane.tsx`. 4 unit tests 추가 (wrapHandler RESOURCE_EXHAUSTED classification + message prefix stamping + useIpc 매핑).
+  - **Electron invoke envelope wrap 처리** — codex P2 review 에서 잡힌 결함. `ipcRenderer.invoke` 가 main side 에러를 renderer 로 전달할 때 메시지를 `Error invoking remote method 'X': Error: <orig>` 형태로 감싸서, `useIpc` 의 `MESSAGE_CODE_PREFIX` 가 `^` anchor 였던 탓에 `[RESOURCE_EXHAUSTED]` stamp 가 envelope 뒤로 밀려 매칭 실패 → 모든 coded error 가 다시 UNKNOWN 으로 떨어지던 path 차단. renderer regex 만 anchor 제거 (main side 는 자기 raw output 매칭이라 anchor 유지). 알phabeen 이 PR #25 description 에서 짚어준 결함이 두 번 일어나지 않도록 회귀 테스트 추가.
+  - 구현: `src/main/ipc/wrapHandler.ts`, `src/renderer/hooks/useIpc.ts`, `src/renderer/hooks/useKeyboard.ts`, `src/renderer/components/Layout/AppLayout.tsx`, `src/renderer/components/Terminal/FloatingPane.tsx`. 6 unit tests 추가 (wrapHandler RESOURCE_EXHAUSTED classification + message prefix stamping + useIpc default 매핑 + Electron-wrapped envelope classification).
 
 ### Migration Notes
 
