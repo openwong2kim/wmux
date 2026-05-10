@@ -4,6 +4,7 @@ import { findLeaf } from '../../shared/paneUtils';
 import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
 import { withDefaultShell } from '../utils/ptyCreateOptions';
+import { useIpc } from './useIpc';
 
 // Lightweight bookmark toast — reuses the same DOM element pattern as showCopyToast
 let bookmarkToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -56,6 +57,14 @@ function disposePanePtys(pane: import('../../shared/types').Pane): void {
 export function useKeyboard() {
   const store = useStore;
   const prefixTimeoutRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Capture the IPC invoker via ref so the once-on-mount effect below can
+  // call it without re-binding when the memoised invoke identity changes.
+  // Used to surface RESOURCE_EXHAUSTED toasts on Ctrl+T when the daemon
+  // session cap is hit (without this, the rejected pty.create promise
+  // would be silently dropped and the shortcut would look unresponsive).
+  const { invoke: ipcInvoke } = useIpc();
+  const ipcInvokeRef = useRef(ipcInvoke);
+  ipcInvokeRef.current = ipcInvoke;
 
   useEffect(() => {
     // Action registry — maps action IDs to implementations
@@ -281,8 +290,17 @@ export function useKeyboard() {
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
         if (ws) {
-          window.electronAPI.pty.create(withDefaultShell({ workspaceId: ws.id }, state.defaultShell)).then((result: { id: string }) => {
-            store.getState().addSurface(ws.activePaneId, result.id, 'Terminal', '');
+          // Wrap pty.create through useIpc so that a rejected promise (most
+          // notably MAX_SESSIONS cap reached → RESOURCE_EXHAUSTED) surfaces
+          // an actionable toast instead of being silently dropped — the
+          // pre-v2.8.2 .then-only chain made the shortcut look unresponsive.
+          void ipcInvokeRef.current<{ id: string }>(() =>
+            window.electronAPI.pty.create(withDefaultShell({ workspaceId: ws.id }, state.defaultShell))
+          ).then((result) => {
+            if (result.ok) {
+              store.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', '');
+            }
+            // On failure useIpc already surfaced a toast — nothing to do here.
           });
         }
         return;

@@ -5,6 +5,23 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.2] — 2026-05-11 — Session Cap Headroom + Silent-Failure Fix
+
+@alphabeen 이 v2.8.1 출시 직후 PR #25 로 보고한 두 문제를 한 patch 에 묶는다. v2.8.1 의 startup brick 픽스 이후에도 **runtime accumulation** 시나리오 (X close 후 daemon 이 유지하는 detached 세션이 며칠에 걸쳐 누적) 에서는 hard cap 50 에 다시 도달했고, 더 나쁜 건 cap throw 가 renderer 의 `Ctrl+T` 핸들러에서 silent 하게 묻혀 단축키가 무반응처럼 보이던 결함이다. v2.8.1 사용자는 즉시 업그레이드 권장.
+
+### Fixed
+
+- **데몬 세션 hard cap 50 → 200 상향** — #25, @alphabeen. v2.8.0 의 세션 영속화 이후 cap 의 의미가 "한 세션 동안 최대 동시 PTY" → "lifetime 누적 detached PTY 총합" 으로 바뀐 결과, multi-workspace + 빈번한 split 사용자는 며칠 내 50 에 재도달. 50 자체는 [commit 989dd8a](https://github.com/openwong2kim/wmux/commit/989dd8a) 의 보안 하드닝 단계에서 정한 DoS 휴리스틱이었고 200 도 같은 카테고리 안. soft cap 40 (recovery) / 7-day suspended TTL 정책은 무변경. 헤드룸 10 → 160. 근본 해결 (orphan detached GC) 은 v2.9 트랙으로 별도 검토. 구현: `src/daemon/DaemonSessionManager.ts`, `src/daemon/index.ts` 주석 동기화.
+- **`pty.create` rejection 이 묻혀 단축키 무반응처럼 보이던 회귀** — @alphabeen 이 PR #25 description 에서 짚어준 두 번째 문제. cap 도달 시 daemon 이 actionable 에러 (`Cannot create new terminal: 200 active sessions already running. Close some panes (or restart wmux) and try again.`) 를 throw 하는데 renderer 의 세 호출 지점 (`useKeyboard` Ctrl+T 핸들러 / `AppLayout` empty-leaf 자동 PTY / `FloatingPane` 첫 열림) 모두 `.then()` 만 달고 `.catch()` 누락 (또는 silent catch) 이라 rejection 이 묻히고 단축키가 무반응처럼 보였다. v2.8.1 Bug 1 의 actionable error 의도가 무력화되던 결함.
+  - **신규 IPC 에러 코드 `RESOURCE_EXHAUSTED`** — `wrapHandler` 의 `classifyError` 가 cap 메시지 패턴 (`cannot create new terminal` + `active sessions already running`) 을 감지해 분류. 메시지에 `[RESOURCE_EXHAUSTED]` prefix 가 stamp 되어 renderer 가 분기 가능.
+  - **`useIpc` 매핑** — `DEFAULT_MESSAGES['RESOURCE_EXHAUSTED']` = "터미널 세션 한도에 도달했습니다. 일부 pane을 닫거나 wmux를 재시작한 뒤 다시 시도해주세요.", level `'warn'`. UNKNOWN 으로 매핑되어 generic "알 수 없는 오류" 토스트가 뜨던 path 차단.
+  - **세 호출 지점 모두 `ipcInvoke` wrap 으로 통일** — `useKeyboard` Ctrl+T (ref 패턴으로 once-on-mount effect 안에서 사용), `AppLayout` empty-leaf 자동 PTY effect, `FloatingPane` 첫 PTY 생성. 모두 `result.ok` 분기 + 실패 시 toast 자동 게재.
+  - 구현: `src/main/ipc/wrapHandler.ts`, `src/renderer/hooks/useIpc.ts`, `src/renderer/hooks/useKeyboard.ts`, `src/renderer/components/Layout/AppLayout.tsx`, `src/renderer/components/Terminal/FloatingPane.tsx`. 4 unit tests 추가 (wrapHandler RESOURCE_EXHAUSTED classification + message prefix stamping + useIpc 매핑).
+
+### Migration Notes
+
+- 자동. 클라이언트 / 외부 MCP 통합 측에 변경 없음. 신규 `RESOURCE_EXHAUSTED` 코드는 내부 IPC 경계 안쪽에서만 사용 (renderer ↔ main).
+
 ## [2.8.1] — 2026-05-10 — Session Recovery Stability Hotfix
 
 @alphabeen 이 v2.8.0 출시 직후 보고한 세 가지 회귀 — 시간이 갈수록 wmux 가 사용 불가 상태로 빠지던 critical, recovered pane 출력이 깨지던 high, 매 시작마다 generic 에러 토스트가 뜨던 medium — 을 한 릴리스에 묶어 수정한다. v2.8.0 사용자는 즉시 업그레이드 권장 — 자동 마이그레이션이 누적된 `sessions.json` 을 첫 실행 시 정리한다.

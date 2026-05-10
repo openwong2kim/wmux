@@ -77,6 +77,35 @@ describe('wrapHandler', () => {
     expect(entry.error_code).toBe('DAEMON_DISCONNECTED' satisfies IpcErrorCode);
   });
 
+  // v2.8.2 — daemon session cap (MAX_SESSIONS) reached.
+  // Without this classifier the renderer falls back to a generic
+  // "알 수 없는 오류" toast and hides the actionable instruction the
+  // daemon attached to the error message.
+  it('classifies the daemon session-cap error as RESOURCE_EXHAUSTED', async () => {
+    const wrapped = wrapHandler('pty:create', (_event: unknown) => {
+      throw new Error(
+        'Cannot create new terminal: 200 active sessions already running. ' +
+          'Close some panes (or restart wmux) and try again.',
+      );
+    });
+    await expect(wrapped({} as never)).rejects.toThrow();
+    const entry = parseLoggedEntry(writtenLines[0]);
+    expect(entry.error_code).toBe('RESOURCE_EXHAUSTED' satisfies IpcErrorCode);
+  });
+
+  it('stamps the RESOURCE_EXHAUSTED code into the message prefix', async () => {
+    const err = new Error(
+      'Cannot create new terminal: 200 active sessions already running. ' +
+        'Close some panes (or restart wmux) and try again.',
+    );
+    const wrapped = wrapHandler('pty:create', (_event: unknown) => {
+      throw err;
+    });
+    await expect(wrapped({} as never)).rejects.toBe(err);
+    expect((err as unknown as { code?: string }).code).toBe('RESOURCE_EXHAUSTED');
+    expect(err.message.startsWith('[RESOURCE_EXHAUSTED] ')).toBe(true);
+  });
+
   it('classifies an unrelated error as UNKNOWN', async () => {
     const wrapped = wrapHandler('test:ch', (_event: unknown) => {
       throw new Error('some random problem');

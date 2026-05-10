@@ -2,6 +2,7 @@ import { useRef, useEffect, useCallback } from 'react';
 import { useTerminal } from '../../hooks/useTerminal';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { useIpc } from '../../hooks/useIpc';
 import { withDefaultShell } from '../../utils/ptyCreateOptions';
 import '@xterm/xterm/css/xterm.css';
 
@@ -12,24 +13,31 @@ export default function FloatingPane() {
   const toggleFloatingPane = useStore((s) => s.toggleFloatingPane);
   const setFloatingPanePtyId = useStore((s) => s.setFloatingPanePtyId);
   const t = useT();
+  const { invoke: ipcInvoke } = useIpc();
 
   const containerRef = useRef<HTMLDivElement>(null);
   const creatingRef = useRef(false);
 
-  // Create PTY on first open
+  // Create PTY on first open. Routed through ipcInvoke so a RESOURCE_EXHAUSTED
+  // rejection (daemon session cap reached) shows an actionable toast instead
+  // of being silently swallowed by the previous .catch(() => {}) — that left
+  // the floating pane shortcut looking unresponsive when the cap was hit.
   useEffect(() => {
     if (!floatingPaneVisible) return;
     if (floatingPanePtyId) return;
     if (creatingRef.current) return;
 
     creatingRef.current = true;
-    window.electronAPI.pty.create(withDefaultShell({}, defaultShell)).then((result: { id: string }) => {
-      setFloatingPanePtyId(result.id);
-      creatingRef.current = false;
-    }).catch(() => {
+    void ipcInvoke<{ id: string }>(() =>
+      window.electronAPI.pty.create(withDefaultShell({}, defaultShell))
+    ).then((result) => {
+      if (result.ok) {
+        setFloatingPanePtyId(result.data.id);
+      }
+      // On failure useIpc already surfaced a toast.
       creatingRef.current = false;
     });
-  }, [defaultShell, floatingPaneVisible, floatingPanePtyId, setFloatingPanePtyId]);
+  }, [defaultShell, floatingPaneVisible, floatingPanePtyId, setFloatingPanePtyId, ipcInvoke]);
 
   useTerminal(containerRef, {
     ptyId: floatingPanePtyId,

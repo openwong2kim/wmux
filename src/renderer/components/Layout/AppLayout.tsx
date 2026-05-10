@@ -472,27 +472,35 @@ export default function AppLayout() {
 
     for (const leaf of emptyLeaves) {
       const paneId = leaf.id;
-      window.electronAPI.pty.create(
-        withDefaultShell({ workspaceId: wsId }, useStore.getState().defaultShell)
-      ).then((result: { id: string; shell?: string; cwd?: string }) => {
+      // Wrap through ipcInvoke so a rejected pty.create (e.g.
+      // RESOURCE_EXHAUSTED when the daemon session cap is hit during a
+      // Ctrl+D split) surfaces an actionable toast instead of leaving the
+      // split as a permanent empty-leaf placeholder.
+      void ipcInvoke<{ id: string; shell?: string; cwd?: string }>(() =>
+        window.electronAPI.pty.create(
+          withDefaultShell({ workspaceId: wsId }, useStore.getState().defaultShell)
+        )
+      ).then((result) => {
+        if (!result.ok) return; // toast surfaced by useIpc
+        const created = result.data;
         if (cancelled) {
-          window.electronAPI.pty.dispose(result.id);
+          window.electronAPI.pty.dispose(created.id);
           return;
         }
-        const shellName = result.shell ? shellDisplayName(result.shell) : 'Terminal';
-        addSurface(paneId, result.id, shellName, result.cwd || '');
+        const shellName = created.shell ? shellDisplayName(created.shell) : 'Terminal';
+        addSurface(paneId, created.id, shellName, created.cwd || '');
         // Set initial CWD in workspace metadata from first pane
-        if (result.cwd) {
+        if (created.cwd) {
           const currentMeta = useStore.getState().workspaces.find((w) => w.id === wsId)?.metadata;
           if (!currentMeta?.cwd) {
-            useStore.getState().updateWorkspaceMetadata(wsId, { cwd: result.cwd });
+            useStore.getState().updateWorkspaceMetadata(wsId, { cwd: created.cwd });
           }
         }
       });
     }
 
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- collectEmptyLeaves & addSurface are stable; emptyLeafIdsKey is the meaningful trigger
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- collectEmptyLeaves & addSurface & ipcInvoke are stable; emptyLeafIdsKey is the meaningful trigger
   }, [activeWorkspace?.id, emptyLeafIdsKey]);
 
   // Wizard close handler (T8a). Mirrors firstRunCompleted into uiSlice (main

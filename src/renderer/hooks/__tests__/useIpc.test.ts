@@ -48,6 +48,7 @@ describe('useIpc / createInvoke', () => {
       { code: 'VALIDATION_ERROR',    expected: '요청이 유효하지 않습니다.' },
       { code: 'NOT_FOUND',           expected: '항목을 찾을 수 없습니다.' },
       { code: 'PERMISSION_DENIED',   expected: '권한이 거부되었습니다.' },
+      { code: 'RESOURCE_EXHAUSTED',  expected: '터미널 세션 한도에 도달했습니다. 일부 pane을 닫거나 wmux를 재시작한 뒤 다시 시도해주세요.' },
       { code: 'UNKNOWN',             expected: '알 수 없는 오류가 발생했습니다.' },
     ];
 

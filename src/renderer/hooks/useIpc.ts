@@ -21,6 +21,7 @@ export type IpcErrorCode =
   | 'VALIDATION_ERROR'
   | 'NOT_FOUND'
   | 'PERMISSION_DENIED'
+  | 'RESOURCE_EXHAUSTED'
   | 'UNKNOWN';
 
 const KNOWN_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
@@ -28,6 +29,7 @@ const KNOWN_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
   'VALIDATION_ERROR',
   'NOT_FOUND',
   'PERMISSION_DENIED',
+  'RESOURCE_EXHAUSTED',
   'UNKNOWN',
 ]);
 
@@ -41,7 +43,7 @@ const KNOWN_CODES: ReadonlySet<IpcErrorCode> = new Set<IpcErrorCode>([
  * the other.
  */
 const MESSAGE_CODE_PREFIX =
-  /^\[(DAEMON_DISCONNECTED|VALIDATION_ERROR|NOT_FOUND|PERMISSION_DENIED|UNKNOWN)\] /;
+  /^\[(DAEMON_DISCONNECTED|VALIDATION_ERROR|NOT_FOUND|PERMISSION_DENIED|RESOURCE_EXHAUSTED|UNKNOWN)\] /;
 
 export interface IpcErrorShape {
   code: IpcErrorCode;
@@ -68,6 +70,7 @@ const DEFAULT_MESSAGES: Record<IpcErrorCode, string> = {
   VALIDATION_ERROR: '요청이 유효하지 않습니다.',
   NOT_FOUND: '항목을 찾을 수 없습니다.',
   PERMISSION_DENIED: '권한이 거부되었습니다.',
+  RESOURCE_EXHAUSTED: '터미널 세션 한도에 도달했습니다. 일부 pane을 닫거나 wmux를 재시작한 뒤 다시 시도해주세요.',
   UNKNOWN: '알 수 없는 오류가 발생했습니다.',
 };
 
@@ -77,6 +80,7 @@ const CODE_TO_LEVEL: Record<IpcErrorCode, 'info' | 'warn' | 'error'> = {
   VALIDATION_ERROR: 'warn',
   NOT_FOUND: 'info',
   PERMISSION_DENIED: 'error',
+  RESOURCE_EXHAUSTED: 'warn',
   UNKNOWN: 'error',
 };
 
