@@ -131,9 +131,9 @@ describe('v2.8.1 brick recovery — full Bug 1 flow', () => {
     }
 
     // The combined effect: the v2.8.0 lockout is broken on first
-    // launch — only 40 PTYs spawn during recovery, the daemon's
-    // hard MAX_SESSIONS=50 cap retains 10 free slots for new panes.
-    expect(recoverableIds.size).toBeLessThan(50);
+    // launch — only 40 PTYs spawn during recovery, leaving headroom
+    // for new panes well below MAX_SESSIONS.
+    expect(recoverableIds.size).toBeLessThan(200);
   });
 
   it('a 12-session healthy machine recovers all 12 unchanged', () => {

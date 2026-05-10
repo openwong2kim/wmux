@@ -16,7 +16,7 @@ import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, Dae
 const wmuxDir = getWmuxDir();
 
 // Recovery soft cap. The hard PTY ceiling lives in DaemonSessionManager
-// (MAX_SESSIONS = 50). Recovery has its own lower bound so a state file
+// (MAX_SESSIONS = 200). Recovery has its own lower bound so a state file
 // inflated by past v2.8.0 accumulation can't consume every slot before
 // the user creates their first new pane. Sessions beyond this cap stay
 // suspended in state.sessions and become recoverable on a subsequent

@@ -87,11 +87,14 @@ export class DaemonSessionManager extends EventEmitter {
     }
 
     // Guard against resource exhaustion from unbounded session creation.
-    // The error message is user-facing — it surfaces through createSession
-    // RPC errors all the way to the renderer. Phrase it as an action the
-    // user can actually take so a 50-session lockout doesn't read as a
-    // generic "unknown error" toast.
-    const MAX_SESSIONS = 50;
+    // The error message is user-facing — phrase it as an action the user
+    // can actually take so a cap lockout doesn't read as a generic toast.
+    //
+    // 50 → 200: the v2.8.1 soft cap (MAX_RECOVER_SESSIONS=40) only gates
+    // startup recovery. Detached sessions still accumulate at runtime
+    // because the daemon keeps them alive across X-closes, so 50 is too
+    // tight for multi-workspace users. Soft-cap policy unchanged.
+    const MAX_SESSIONS = 200;
     if (this.sessions.size >= MAX_SESSIONS) {
       throw new Error(
         `Cannot create new terminal: ${MAX_SESSIONS} active sessions already running. ` +

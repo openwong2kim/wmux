@@ -305,16 +305,15 @@ describe('DaemonSessionManager', () => {
 
   // v2.8.1 hotfix: actionable error at MAX_SESSIONS (Bug 1)
   it('throws an actionable error when the session cap is reached', () => {
-    // Create the first 50 sessions successfully.
-    for (let i = 0; i < 50; i++) {
+    for (let i = 0; i < 200; i++) {
       manager.createSession({ id: `cap-${i}`, cmd: 'cmd.exe', cwd: '.' });
     }
-    // The 51st must fail with a message the UI can show verbatim. The
+    // The 201st must fail with a message the UI can show verbatim. The
     // pre-v2.8.1 message was "Maximum session limit (50) reached" which
     // surfaced as a generic "unknown error" toast in the renderer.
     expect(() =>
-      manager.createSession({ id: 'cap-51', cmd: 'cmd.exe', cwd: '.' }),
-    ).toThrow(/Cannot create new terminal: 50 active sessions already running/);
+      manager.createSession({ id: 'cap-201', cmd: 'cmd.exe', cwd: '.' }),
+    ).toThrow(/Cannot create new terminal: 200 active sessions already running/);
   });
 
   // v2.8.1 hotfix: deferred output mode for recovered sessions (Bug 2)
