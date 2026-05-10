@@ -25,6 +25,17 @@ export class DaemonPTYBridge extends EventEmitter {
   private exitDisposable: (() => void) | null = null;
   private idleUnsubscribe: (() => void) | null = null;
   private sessionId: string | null = null;
+  /**
+   * v2.8.1 hotfix: when true, drop PTY output instead of writing it to
+   * the ring buffer. Used by recovery sessions until the renderer has
+   * resized the PTY to its actual cols/rows; otherwise output produced
+   * at the saved/default geometry interleaves with output the renderer
+   * paints at the new geometry.
+   *
+   * Exit notification is unaffected — `ptyProcess.onExit` fires even
+   * while muted so the daemon notices when a recovered shell dies.
+   */
+  private muted = false;
 
   // Prompt-based CWD detection (ported from PTYBridge)
   // eslint-disable-next-line no-control-regex
@@ -86,6 +97,10 @@ export class DaemonPTYBridge extends EventEmitter {
 
     // PTY data handler
     const onDataDisposable = ptyProcess.onData((data: string) => {
+      // Muted: drop the chunk before any side effect. Recovery sessions
+      // run muted until their first resize so the geometry mismatch
+      // window (Bug 2 in v2.8.0) doesn't pollute the ring buffer.
+      if (this.muted) return;
       try {
         const buf = Buffer.from(data);
         ringBuffer.write(buf);
@@ -121,6 +136,20 @@ export class DaemonPTYBridge extends EventEmitter {
       this.emit('exit', { sessionId, exitCode });
     });
     this.exitDisposable = () => onExitDisposable.dispose();
+  }
+
+  /**
+   * Mute or unmute PTY output capture. While muted, the data handler
+   * drops chunks; ringBuffer pre-fill from saved scrollback (set up by
+   * the caller before forwarding starts) is preserved.
+   */
+  setMuted(muted: boolean): void {
+    this.muted = muted;
+  }
+
+  /** Whether the bridge is currently dropping PTY output. */
+  get isMuted(): boolean {
+    return this.muted;
   }
 
   cleanup(): void {

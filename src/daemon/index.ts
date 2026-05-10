@@ -8,11 +8,21 @@ import { SessionPipe } from './SessionPipe';
 import { StateWriter } from './StateWriter';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
+import { selectRecoverableSessions } from './recoverySelector';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
 
 // === Constants ===
 const wmuxDir = getWmuxDir();
+
+// Recovery soft cap. The hard PTY ceiling lives in DaemonSessionManager
+// (MAX_SESSIONS = 50). Recovery has its own lower bound so a state file
+// inflated by past v2.8.0 accumulation can't consume every slot before
+// the user creates their first new pane. Sessions beyond this cap stay
+// suspended in state.sessions and become recoverable on a subsequent
+// launch if the live count drops; SUSPENDED_TTL_HOURS reaps the truly
+// stale ones over time.
+const MAX_RECOVER_SESSIONS = 40;
 
 /** Get a unique identifier for the current OS boot session (async).
  *  Changes after every reboot, enabling stale PID detection. */
@@ -263,8 +273,28 @@ async function recoverSessions(
     log('info', `Boot ID changed (${state.bootId} → ${currentBootId}) — reboot detected, skipping PID kills`);
   }
 
+  // Pick the MAX_RECOVER_SESSIONS most recently active sessions and skip
+  // the rest. Skipped sessions stay in state.sessions verbatim and can be
+  // recovered on a later launch once the live count drops, or get reaped
+  // by SUSPENDED_TTL_HOURS in StateWriter.load if they keep idling.
+  // Cap is independent of MAX_SESSIONS so the user always has headroom
+  // to create new panes after a heavy session.
+  const { recoverableIds, cappedCount } = selectRecoverableSessions(
+    state.sessions,
+    MAX_RECOVER_SESSIONS,
+  );
+  if (cappedCount > 0) {
+    log(
+      'warn',
+      `Recovery cap: ${recoverableIds.size + cappedCount} eligible sessions, recovering ${recoverableIds.size} most recent. ${cappedCount} kept suspended for next launch (or pruned by 7-day TTL).`,
+    );
+  }
+
   for (const session of state.sessions) {
     if (session.state === 'dead') continue;
+    // Cap-skipped: leave session untouched in state.sessions. It will be
+    // re-evaluated on the next launch.
+    if (!recoverableIds.has(session.id)) continue;
 
     if (session.state === 'suspended' && session.bufferDumpPath) {
       // Attempt to recover suspended session
@@ -287,6 +317,10 @@ async function recoverSessions(
           agent: session.agent,
           createdAt: session.createdAt,
           scrollbackData,
+          // v2.8.1: stay muted until the renderer's first resize so PTY
+          // output produced at the saved geometry can't interleave with
+          // the renderer paint at its current geometry (Bug 2).
+          deferOutput: true,
         });
 
         // Start process monitoring for the new PTY
@@ -339,6 +373,8 @@ async function recoverSessions(
             agent: session.agent,
             createdAt: session.createdAt,
             scrollbackData,
+            // v2.8.1: see deferOutput rationale above (Bug 2).
+            deferOutput: true,
           });
 
           processMonitor.watch(recovered.id, recovered.pid, () => {
@@ -374,6 +410,8 @@ async function recoverSessions(
           rows: session.rows,
           agent: session.agent,
           createdAt: session.createdAt,
+          // v2.8.1: see deferOutput rationale above (Bug 2).
+          deferOutput: true,
         });
 
         processMonitor.watch(recovered.id, recovered.pid, () => {
@@ -397,17 +435,27 @@ async function recoverSessions(
   }
 
   if (changed) {
-    // Build combined state: recovered (live) sessions + dead sessions from loaded state
+    // Build combined state: recovered (live) sessions + everything we
+    // intentionally left untouched (originally-dead within TTL, plus
+    // any session the recovery cap excluded — which stays suspended).
     const liveState = buildState(sessionManager);
-    const deadFromState = state.sessions.filter(
-      (s) => s.state === 'dead' && !recoveredIds.has(s.id),
+    const preservedFromState = state.sessions.filter(
+      (s) => !recoveredIds.has(s.id),
     );
-    liveState.sessions.push(...deadFromState);
+    liveState.sessions.push(...preservedFromState);
     stateWriter.saveImmediate(liveState);
   }
 
-  // Clean up orphaned buffer files
-  stateWriter.cleanOrphanedBuffers(recoveredIds);
+  // Clean up orphaned buffer files. Preserve buffers for both the
+  // recovered sessions and the cap-skipped suspended ones — the latter
+  // need their .buf files intact to survive until the next launch.
+  const preservedBufferIds = new Set(recoveredIds);
+  for (const session of state.sessions) {
+    if (session.state !== 'dead' && !recoveredIds.has(session.id)) {
+      preservedBufferIds.add(session.id);
+    }
+  }
+  stateWriter.cleanOrphanedBuffers(preservedBufferIds);
 }
 
 // === RPC handler registration ===

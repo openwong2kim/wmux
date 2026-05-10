@@ -25,7 +25,22 @@ export interface ManagedSession {
   bridge: DaemonPTYBridge;
   /** Structured prompt/command boundaries emitted by OSC 133 shell integration. */
   promptLog: PromptEventLog;
+  /**
+   * True when the session was created in deferred-output mode (recovery)
+   * and is still waiting for its first `resizeSession` to activate.
+   * Once `resizeSession` runs, output capture starts and this flips to
+   * `false` for the rest of the session's lifetime.
+   */
+  deferred: boolean;
 }
+
+/**
+ * Time to wait between resizing a deferred PTY and unmuting its data
+ * forwarding. ConPTY emits any output queued at the prior geometry
+ * synchronously after a resize; the delay lets that flush so we don't
+ * capture mismatched-width bytes into the ring buffer.
+ */
+const DEFERRED_UNMUTE_DELAY_MS = 100;
 
 /**
  * Manages ConPTY session lifecycles within the daemon process.
@@ -56,16 +71,32 @@ export class DaemonSessionManager extends EventEmitter {
     agent?: { role: string; teamId: string; displayName: string };
     createdAt?: string;
     scrollbackData?: Buffer;
+    /**
+     * v2.8.1 hotfix: when true, the bridge starts muted so PTY output
+     * is dropped until `resizeSession` fires. Recovery uses this so the
+     * 80x24-vs-renderer-cols/rows mismatch window can't garble the
+     * terminal display. The pre-filled `scrollbackData` (historical
+     * buffer dump) is unaffected — it lives in the ring buffer
+     * directly, not on the muted PTY data path.
+     */
+    deferOutput?: boolean;
   }): DaemonSession {
     // Validate session ID to prevent path traversal, injection, or oversized keys
     if (!/^[a-zA-Z0-9_-]{1,64}$/.test(params.id)) {
       throw new Error(`Invalid session ID: must be 1-64 chars of [a-zA-Z0-9_-]`);
     }
 
-    // Guard against resource exhaustion from unbounded session creation
+    // Guard against resource exhaustion from unbounded session creation.
+    // The error message is user-facing — it surfaces through createSession
+    // RPC errors all the way to the renderer. Phrase it as an action the
+    // user can actually take so a 50-session lockout doesn't read as a
+    // generic "unknown error" toast.
     const MAX_SESSIONS = 50;
     if (this.sessions.size >= MAX_SESSIONS) {
-      throw new Error(`Maximum session limit (${MAX_SESSIONS}) reached`);
+      throw new Error(
+        `Cannot create new terminal: ${MAX_SESSIONS} active sessions already running. ` +
+          `Close some panes (or restart wmux) and try again.`,
+      );
     }
 
     if (this.sessions.has(params.id)) {
@@ -144,7 +175,15 @@ export class DaemonSessionManager extends EventEmitter {
     const bridge = new DaemonPTYBridge();
     const promptLog = new PromptEventLog();
 
-    const managed: ManagedSession = { meta, ptyProcess, ringBuffer, bridge, promptLog };
+    const deferred = params.deferOutput === true;
+    const managed: ManagedSession = {
+      meta,
+      ptyProcess,
+      ringBuffer,
+      bridge,
+      promptLog,
+      deferred,
+    };
     this.sessions.set(params.id, managed);
 
     // Forward bridge events to manager-level events
@@ -172,6 +211,12 @@ export class DaemonSessionManager extends EventEmitter {
 
     // Set up data forwarding (PTY → RingBuffer + events), hooking the
     // prompt/command log so OSC 133 markers populate a structured journal.
+    // For deferred (recovery) sessions we mute the data path before any
+    // PTY output can land — `resizeSession` unmutes once the renderer's
+    // true geometry is known.
+    if (deferred) {
+      bridge.setMuted(true);
+    }
     bridge.setupDataForwarding(ptyProcess, ringBuffer, params.id, promptLog);
 
     this.emit('session:created', { session: { ...meta } });
@@ -218,6 +263,19 @@ export class DaemonSessionManager extends EventEmitter {
     managed.ptyProcess.resize(cols, rows);
     managed.meta.cols = cols;
     managed.meta.rows = rows;
+
+    // First resize on a deferred (recovery) session unmutes data
+    // capture. The 100ms delay drains any pre-resize output ConPTY
+    // queued at the saved/default geometry.
+    if (managed.deferred) {
+      managed.deferred = false;
+      const sessionId = id;
+      setTimeout(() => {
+        const current = this.sessions.get(sessionId);
+        if (!current) return;
+        current.bridge.setMuted(false);
+      }, DEFERRED_UNMUTE_DELAY_MS).unref?.();
+    }
   }
 
   listSessions(): DaemonSession[] {

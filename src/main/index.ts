@@ -329,6 +329,19 @@ app.on('ready', async () => {
     console.warn('[Main] Daemon auto-start failed, using local PTY:', err);
   }
 
+  // v2.8.1 hotfix (Bug 3): always tell the renderer the daemon-vs-local
+  // decision has settled. Pre-v2.8.1 only `daemon:connected` was sent,
+  // and only on success. Renderer code that fired IPC during the
+  // connect window could hit a transient "no handler registered" error
+  // and surface a generic "알 수 없는 오류" toast. AppLayout's first
+  // reconcile awaits this event, so handlers are stable by the time
+  // any pty:* call is made.
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('daemon:ready', {
+      connected: daemonClient !== null,
+    });
+  }
+
   // Handle system sleep/wake — verify PTY processes survived.
   //
   // The previous implementation relied on `process.kill(pid, 0)`, which is

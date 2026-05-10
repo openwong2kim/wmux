@@ -13,6 +13,18 @@ import { AsyncQueue } from './util/AsyncQueue';
 const DEBOUNCE_MS = 30_000;
 const QUEUE_KEY = 'state';
 
+// Suspended sessions persist across daemon restarts so an interrupted
+// shell can be resumed. Without a TTL they accumulate indefinitely:
+// every X-button shutdown re-suspends every live session, the next
+// launch recovers them, and any panes the user adds before the next
+// shutdown ride along forever. v2.8.0 shipped without this bound and
+// users reached the 50-session hard cap after a few launches, at which
+// point recovery throws and new pane creation throws — wmux silently
+// becomes unusable. 7 days mirrors the dead-session pattern (24h × 7)
+// so a session you stopped touching a week ago is unlikely to be the
+// one you actually wanted to resume.
+const SUSPENDED_TTL_HOURS = 7 * 24;
+
 /**
  * Persists DaemonState (sessions.json) to disk using the shared
  * atomic-write helpers in `./util/atomicWrite`. The public API
@@ -179,12 +191,23 @@ export class StateWriter {
       return empty;
     }
 
-    // Prune DEAD sessions that exceeded their TTL
+    // Prune expired sessions. Two paths:
+    //   - dead: per-session TTL (s.deadTtlHours)
+    //   - suspended: global SUSPENDED_TTL_HOURS (v2.8.1 hotfix — see top
+    //     of this file for the accumulation incident this prevents).
+    //
+    // detached/attached states are runtime-only and never reach disk —
+    // shutdown demotes every live session to suspended before saving.
+    const now = Date.now();
     state.sessions = state.sessions.filter((s) => {
-      if (s.state !== 'dead') return true;
-      const deadSince = new Date(s.lastActivity).getTime();
-      const ttlMs = s.deadTtlHours * 60 * 60 * 1000;
-      return Date.now() - deadSince < ttlMs;
+      const sinceMs = now - new Date(s.lastActivity).getTime();
+      if (s.state === 'dead') {
+        return sinceMs < s.deadTtlHours * 60 * 60 * 1000;
+      }
+      if (s.state === 'suspended') {
+        return sinceMs < SUSPENDED_TTL_HOURS * 60 * 60 * 1000;
+      }
+      return true;
     });
 
     return state;

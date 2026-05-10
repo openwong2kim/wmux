@@ -5,6 +5,33 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.8.1] — 2026-05-10 — Session Recovery Stability Hotfix
+
+@alphabeen 이 v2.8.0 출시 직후 보고한 세 가지 회귀 — 시간이 갈수록 wmux 가 사용 불가 상태로 빠지던 critical, recovered pane 출력이 깨지던 high, 매 시작마다 generic 에러 토스트가 뜨던 medium — 을 한 릴리스에 묶어 수정한다. v2.8.0 사용자는 즉시 업그레이드 권장 — 자동 마이그레이션이 누적된 `sessions.json` 을 첫 실행 시 정리한다.
+
+### Fixed
+
+- **세션 누적으로 인한 brick 상태 (Critical)** — v2.8.0 에서 도입된 데몬 세션 영속화는 사용자가 X 로 종료한 모든 live pane 을 `suspended` 로 저장하고 다음 시작 시 복구한다. 그런데 (1) 복구 횟수에 상한이 없었고, (2) 종료 시점에 사용자가 명시적으로 닫지 않은 세션은 영원히 `sessions.json` 에 남아 누적됐다. 4–5 회 재시작이면 데몬의 하드 PTY 캡 (`MAX_SESSIONS=50`) 을 모두 소진하여 startup recovery 가 새 pane 슬롯을 못 만들고, UI 는 `Ctrl+T` 도 안 먹히고 generic "알 수 없는 오류" 토스트만 도배되는 상태에 빠진다. 자가복구 불가능 (재시작해도 같은 시나리오 반복).
+  - **Suspended 7-day TTL** — `StateWriter.load` 가 이제 dead 세션뿐 아니라 7 일 이상 inactive 한 suspended 도 함께 prune. v2.8.0 에서 누적된 기존 `sessions.json` 도 첫 v2.8.1 실행 시 자동 정리된다.
+  - **Recovery soft cap 40** — 신규 `MAX_RECOVER_SESSIONS=40`. 복구 후보를 `lastActivity` 내림차순 정렬해 상위 40 개만 PTY 로 재생성하고 나머지는 그대로 suspended 로 남는다. 다음 launch 에서 활성 카운트가 줄면 자동으로 복구 후보에 다시 들어오며, 7 일 TTL 이 그래도 정체된 것을 reap. 이로써 hard cap 50 에 도달해도 항상 신규 pane 헤드룸 10 슬롯이 보장된다.
+  - **`createSession` 에러 메시지 사용자 친화적 변경** — `Maximum session limit (50) reached` → `Cannot create new terminal: 50 active sessions already running. Close some panes (or restart wmux) and try again.`. RPC 응답으로 그대로 노출되어 향후 토스트가 generic 이 아닌 actionable 메시지로 보임.
+  - 구현: `src/daemon/StateWriter.ts`, `src/daemon/index.ts`, `src/daemon/DaemonSessionManager.ts`, `src/daemon/recoverySelector.ts` (신규 — pure 함수로 cap 정책을 분리해 unit-test 가능). 9 unit tests 추가.
+
+- **복구된 pane 출력 interleave (High)** — v2.8.0 은 종료 시점의 PTY cols/rows 를 저장하고 복구 시 그 값으로 ConPTY 를 spawn 한다. 사용자가 윈도우 사이즈를 바꾸고 재시작하면 ConPTY 는 옛 geometry 로 출력하는데 xterm 은 새 geometry 로 그려서 같은 줄에 두 paint 의 문자가 interleave 된다 (예: `Accessing workspace:` → `Accessingwworkspace:`).
+  - **Deferred output mode** — `DaemonPTYBridge` 에 `setMuted(bool)` 추가. recovery 경로에서 `createSession({deferOutput: true})` 면 bridge 가 muted 로 시작하여 PTY 데이터 path 가 ring buffer 에 쓰지 않는다 (exit 알림은 muted 와 무관하게 정상 동작). renderer 가 첫 `daemon.resizeSession` 을 호출하면 PTY 가 진짜 geometry 로 resize 되고 `DEFERRED_UNMUTE_DELAY_MS=100` 후 자동 unmute. ConPTY 가 옛 geometry 에서 큐잉했던 출력은 100 ms 동안 drain 되고 버려진다. 저장된 scrollback (buffer dump) 은 ring buffer 에 직접 pre-fill 되므로 muted path 와 무관하게 보존된다.
+  - 구현: `src/daemon/DaemonPTYBridge.ts`, `src/daemon/DaemonSessionManager.ts`, `src/daemon/index.ts` (recoverSessions 의 createSession 호출 3 곳 모두 `deferOutput: true`). 5 unit tests 추가 (drop while muted / scrollback 보존 / resize-then-unmute / 비-deferred regression / muted 중 exit 발화).
+
+- **시작 시 generic 에러 토스트 폭주 (Medium)** — main process 가 daemon connect 를 비동기로 시도하는 동안 renderer 가 이미 IPC 호출을 던져, handler swap (`cleanupHandlers()` → `registerAllHandlers(...)`) 의 sub-millisecond 무등록 윈도우에 떨어진 호출이 `No handler registered for ...` 로 실패해 `useIpc` 가 `UNKNOWN` → "알 수 없는 오류가 발생했습니다." 토스트를 5–10 회 띄우던 문제.
+  - main 이 daemon 결정이 끝나면 (성공/실패/타임아웃 모두) `daemon:ready` IPC event 를 항상 발송한다 (기존 `daemon:connected` 는 성공 시에만 발송, 그대로 유지).
+  - preload 가 `electronAPI.daemon.whenReady(): Promise<{connected: boolean}>` 를 노출. one-shot promise 라 어느 시점에 await 하든 동일 상태를 반환한다.
+  - `AppLayout` 의 첫 reconcile 이 `daemon.whenReady()` 를 await 하여 handler 가 안정된 뒤에야 `pty.list` / `pty.reconnect` 를 호출. 토스트 폭주 사라짐.
+  - 구현: `src/main/index.ts`, `src/preload/preload.ts`, `src/renderer/components/Layout/AppLayout.tsx`.
+
+### Migration Notes
+
+- 자동. 첫 v2.8.1 실행 시 `StateWriter.load` 가 7 일 이상 묵힌 suspended 세션을 prune 한다. 추가 액션 불필요. v2.8.0 에서 이미 brick 된 사용자도 업그레이드 후 첫 실행에서 정상 복구된다 (alphabeen 이 가이드한 수동 `sessions.json`/`daemon-pipe`/`daemon.lock`/`daemon.pid` 삭제 절차는 더 이상 필요 없음).
+- 외부 MCP 통합 측에 변경 없음 — 모든 변경은 daemon 내부 + main↔renderer IPC 가드.
+
 ## [2.8.0] — 2026-05-09 — External Tooling Surface + Cross-Pane Search
 
 외부 AI 도구(Claude Code, 서드파티 MCP)가 wmux 위에 워크플로우를 빌드할 수 있도록 세 개의 신규 surface를 동시 도입한 minor 릴리스다. @alphabeen 의 RFC #15 가 직접적인 트리거이며, 그 결과로 (1) pane 단위 metadata API, (2) cursor 기반 JSON-RPC event bus, (3) cross-pane search 가 묶음으로 들어온다. 모든 신규 필드는 optional 이라 기존 클라이언트는 영향 없으며, `system.capabilities().features` 의 새 키 (`paneMetadata`, `events`) 로 신규 표면을 감지할 수 있다.

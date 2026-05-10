@@ -192,6 +192,55 @@ describe('StateWriter', () => {
     expect(ids).toContain('alive');
   });
 
+  it('load prunes SUSPENDED sessions past 7-day TTL (v2.8.1 hotfix)', () => {
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    // Pre-v2.8.1, suspended sessions accumulated forever and eventually
+    // exhausted MAX_SESSIONS=50, locking the daemon into a brick state.
+    // 7-day TTL is the bound that prevents that.
+    const stale = makeSession({
+      id: 'stale-suspended',
+      state: 'suspended',
+      lastActivity: new Date(now - 8 * 24 * HOUR).toISOString(),
+    });
+    const fresh = makeSession({
+      id: 'fresh-suspended',
+      state: 'suspended',
+      lastActivity: new Date(now - 6 * 24 * HOUR).toISOString(),
+    });
+    // Live sessions and detached ones should never be touched by TTL.
+    const detached = makeSession({ id: 'detached', state: 'detached' });
+    const attached = makeSession({ id: 'attached', state: 'attached' });
+
+    writer.saveImmediate(makeState([stale, fresh, detached, attached]));
+
+    const loaded = writer.load();
+    const ids = loaded.sessions.map((s) => s.id);
+
+    expect(ids).not.toContain('stale-suspended');
+    expect(ids).toContain('fresh-suspended');
+    expect(ids).toContain('detached');
+    expect(ids).toContain('attached');
+  });
+
+  it('load uses suspended TTL even when deadTtlHours is short', () => {
+    // Regression guard: the suspended TTL must not be confused with
+    // the per-session deadTtlHours field, which only governs DEAD pruning.
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    const session = makeSession({
+      id: 'suspended-with-tight-dead-ttl',
+      state: 'suspended',
+      lastActivity: new Date(now - 25 * HOUR).toISOString(),
+      deadTtlHours: 1,
+    });
+    writer.saveImmediate(makeState([session]));
+
+    const loaded = writer.load();
+    expect(loaded.sessions).toHaveLength(1);
+    expect(loaded.sessions[0].id).toBe('suspended-with-tight-dead-ttl');
+  });
+
   it('rejects prototype pollution keys in JSON', () => {
     const filePath = path.join(tmpDir, 'sessions.json');
     const poisoned = JSON.stringify({

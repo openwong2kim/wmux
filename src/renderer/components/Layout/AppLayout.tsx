@@ -344,6 +344,13 @@ export default function AppLayout() {
         setShowAutoUpdatePrompt(true);
       }
 
+      // v2.8.1 hotfix (Bug 3): defer reconciliation until main has
+      // settled the daemon-vs-local decision. Without this gate, the
+      // reconcile fires while IPC handlers are mid-swap and pty.list
+      // can hit a "no handler registered" rejection — the renderer
+      // surfaces that as a generic "알 수 없는 오류" toast spam.
+      await window.electronAPI.daemon.whenReady();
+
       await reconcilePtys();
     });
   }, []);

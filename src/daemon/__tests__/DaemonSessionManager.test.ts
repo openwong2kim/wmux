@@ -302,4 +302,120 @@ describe('DaemonSessionManager', () => {
     expect(managed[0].bridge).toBeDefined();
     expect(managed[0].ptyProcess).toBeDefined();
   });
+
+  // v2.8.1 hotfix: actionable error at MAX_SESSIONS (Bug 1)
+  it('throws an actionable error when the session cap is reached', () => {
+    // Create the first 50 sessions successfully.
+    for (let i = 0; i < 50; i++) {
+      manager.createSession({ id: `cap-${i}`, cmd: 'cmd.exe', cwd: '.' });
+    }
+    // The 51st must fail with a message the UI can show verbatim. The
+    // pre-v2.8.1 message was "Maximum session limit (50) reached" which
+    // surfaced as a generic "unknown error" toast in the renderer.
+    expect(() =>
+      manager.createSession({ id: 'cap-51', cmd: 'cmd.exe', cwd: '.' }),
+    ).toThrow(/Cannot create new terminal: 50 active sessions already running/);
+  });
+
+  // v2.8.1 hotfix: deferred output mode for recovered sessions (Bug 2)
+  describe('deferOutput (recovery mode)', () => {
+    it('drops PTY data while deferred and the ring buffer stays clean', () => {
+      manager.createSession({
+        id: 'rec-1',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        deferOutput: true,
+      });
+      const managed = manager.getSession('rec-1');
+      expect(managed?.deferred).toBe(true);
+      expect(managed?.bridge.isMuted).toBe(true);
+
+      // ConPTY-style early output (saved geometry) gets dropped.
+      lastMockPty?.simulateData('\x1b[?25l$ \x1b[K');
+      expect(managed?.ringBuffer.readAll().toString()).toBe('');
+    });
+
+    it('preserves pre-filled scrollback while muted', () => {
+      // Saved buffer dump is written directly into the ring buffer
+      // before `setupDataForwarding`, so it must survive muting.
+      manager.createSession({
+        id: 'rec-2',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        scrollbackData: Buffer.from('history-before-restart'),
+        deferOutput: true,
+      });
+      const managed = manager.getSession('rec-2');
+      // Replay buffer was pre-filled.
+      expect(managed?.ringBuffer.readAll().toString()).toBe(
+        'history-before-restart',
+      );
+    });
+
+    it('unmutes after first resize plus the drain delay', () => {
+      vi.useFakeTimers();
+      try {
+        manager.createSession({
+          id: 'rec-3',
+          cmd: 'cmd.exe',
+          cwd: '.',
+          deferOutput: true,
+        });
+        const managed = manager.getSession('rec-3');
+        expect(managed?.deferred).toBe(true);
+
+        // Resize flips deferred → false synchronously but schedules
+        // the actual unmute so any output ConPTY emits at the prior
+        // geometry can drain first.
+        manager.resizeSession('rec-3', 120, 30);
+        expect(managed?.deferred).toBe(false);
+        expect(managed?.bridge.isMuted).toBe(true);
+
+        // Output that fires DURING the drain window is still muted.
+        lastMockPty?.simulateData('stale-geometry-bytes');
+        expect(managed?.ringBuffer.readAll().toString()).toBe('');
+
+        vi.advanceTimersByTime(100);
+        expect(managed?.bridge.isMuted).toBe(false);
+
+        // Output produced AFTER the drain reaches the ring buffer.
+        lastMockPty?.simulateData('post-resize prompt $ ');
+        expect(managed?.ringBuffer.readAll().toString()).toBe(
+          'post-resize prompt $ ',
+        );
+      } finally {
+        vi.useRealTimers();
+      }
+    });
+
+    it('default (non-deferred) sessions capture data immediately', () => {
+      // Regression guard: Bug 2 fix must not change normal create flow.
+      manager.createSession({ id: 'live-1', cmd: 'cmd.exe', cwd: '.' });
+      const managed = manager.getSession('live-1');
+      expect(managed?.deferred).toBe(false);
+      expect(managed?.bridge.isMuted).toBe(false);
+
+      lastMockPty?.simulateData('immediate output');
+      expect(managed?.ringBuffer.readAll().toString()).toBe('immediate output');
+    });
+
+    it('deferred session that exits before resize still emits session:died', () => {
+      // Exit notification path must work even while muted — otherwise
+      // a recovered shell that crashes before its first resize would
+      // never tell the daemon, and the slot would leak.
+      manager.createSession({
+        id: 'rec-exit',
+        cmd: 'cmd.exe',
+        cwd: '.',
+        deferOutput: true,
+      });
+      const diedHandler = vi.fn();
+      manager.on('session:died', diedHandler);
+
+      lastMockPty?.simulateExit(2);
+
+      expect(diedHandler).toHaveBeenCalledWith({ id: 'rec-exit', exitCode: 2 });
+      expect(manager.getSession('rec-exit')?.meta.state).toBe('dead');
+    });
+  });
 });
