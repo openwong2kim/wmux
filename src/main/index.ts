@@ -167,6 +167,40 @@ const claudeWorker = new ClaudeWorker(() => mainWindow);
 // Daemon client — initialized on app ready, used if daemon is available
 let daemonClient: DaemonClient | null = null;
 
+// v2.8.1 hotfix (Bug 3): one-shot decision flag for the daemon-vs-local
+// mode. Stays false until app.on('ready') has finished its connect
+// attempt; once flipped, every subsequent `daemon:get-ready-state`
+// invoke resolves immediately with the CURRENT `daemonClient` state.
+// Pending invokes (renderer asked before main decided) are queued and
+// flushed by `markDaemonReady`.
+let daemonReadyDecided = false;
+let daemonReadyPendingResolvers: Array<() => void> = [];
+
+function markDaemonReady(): void {
+  if (daemonReadyDecided) return;
+  daemonReadyDecided = true;
+  const pending = daemonReadyPendingResolvers;
+  daemonReadyPendingResolvers = [];
+  for (const resolve of pending) {
+    try { resolve(); } catch { /* listener cleanup errors are non-fatal */ }
+  }
+}
+
+// Registered once, OUTSIDE the registerAllHandlers swap cycle, so the
+// brief window where pty/* handlers are torn down and re-registered
+// can never race a `whenReady` invoke. The handler always reads the
+// live `daemonClient` value via closure, which means a renderer that
+// reloaded after a mid-session daemon disconnect still gets a truthful
+// answer instead of a cached stale one.
+ipcMain.handle('daemon:get-ready-state', async () => {
+  if (!daemonReadyDecided) {
+    await new Promise<void>((resolve) => {
+      daemonReadyPendingResolvers.push(resolve);
+    });
+  }
+  return { connected: daemonClient !== null };
+});
+
 // Settings panel (MCP section) + `wmux mcp` CLI parity. Lazy token getter
 // because pipeServer.getAuthToken() reads the file written during startup,
 // which may not have happened yet when handlers are first registered.
@@ -329,18 +363,13 @@ app.on('ready', async () => {
     console.warn('[Main] Daemon auto-start failed, using local PTY:', err);
   }
 
-  // v2.8.1 hotfix (Bug 3): always tell the renderer the daemon-vs-local
-  // decision has settled. Pre-v2.8.1 only `daemon:connected` was sent,
-  // and only on success. Renderer code that fired IPC during the
-  // connect window could hit a transient "no handler registered" error
-  // and surface a generic "알 수 없는 오류" toast. AppLayout's first
-  // reconcile awaits this event, so handlers are stable by the time
-  // any pty:* call is made.
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    mainWindow.webContents.send('daemon:ready', {
-      connected: daemonClient !== null,
-    });
-  }
+  // v2.8.1 hotfix (Bug 3): unblock any renderer that already invoked
+  // `daemon:get-ready-state`. From this point on the handler answers
+  // synchronously with the current `daemonClient` value, which means
+  // mainWindow.reload() recovery paths (renderer crash, unresponsive,
+  // did-fail-load) still get a truthful answer instead of deadlocking
+  // on a one-shot event the previous preload instance consumed.
+  markDaemonReady();
 
   // Handle system sleep/wake — verify PTY processes survived.
   //

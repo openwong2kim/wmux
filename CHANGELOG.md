@@ -22,8 +22,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - 구현: `src/daemon/DaemonPTYBridge.ts`, `src/daemon/DaemonSessionManager.ts`, `src/daemon/index.ts` (recoverSessions 의 createSession 호출 3 곳 모두 `deferOutput: true`). 5 unit tests 추가 (drop while muted / scrollback 보존 / resize-then-unmute / 비-deferred regression / muted 중 exit 발화).
 
 - **시작 시 generic 에러 토스트 폭주 (Medium)** — main process 가 daemon connect 를 비동기로 시도하는 동안 renderer 가 이미 IPC 호출을 던져, handler swap (`cleanupHandlers()` → `registerAllHandlers(...)`) 의 sub-millisecond 무등록 윈도우에 떨어진 호출이 `No handler registered for ...` 로 실패해 `useIpc` 가 `UNKNOWN` → "알 수 없는 오류가 발생했습니다." 토스트를 5–10 회 띄우던 문제.
-  - main 이 daemon 결정이 끝나면 (성공/실패/타임아웃 모두) `daemon:ready` IPC event 를 항상 발송한다 (기존 `daemon:connected` 는 성공 시에만 발송, 그대로 유지).
-  - preload 가 `electronAPI.daemon.whenReady(): Promise<{connected: boolean}>` 를 노출. one-shot promise 라 어느 시점에 await 하든 동일 상태를 반환한다.
+  - main 이 단일 IPC handler `daemon:get-ready-state` 를 등록 (registerAllHandlers swap cycle 바깥이라 무등록 race 불가). connect 시도가 끝나면 `markDaemonReady()` 가 그동안 큐잉된 invoke 를 해제. 이후 invoke 는 즉시 현재 `daemonClient` 상태로 응답.
+  - preload 의 `electronAPI.daemon.whenReady()` 가 `ipcRenderer.invoke('daemon:get-ready-state')` 를 호출 (one-shot event 가 아니라 query). renderer crash recovery 의 `mainWindow.reload()` 로 새로 로드된 preload 인스턴스도 정상 응답을 받아 deadlock 안 됨 (codex review fix — 초기 event-based 설계의 P2 결함 보강).
   - `AppLayout` 의 첫 reconcile 이 `daemon.whenReady()` 를 await 하여 handler 가 안정된 뒤에야 `pty.list` / `pty.reconnect` 를 호출. 토스트 폭주 사라짐.
   - 구현: `src/main/index.ts`, `src/preload/preload.ts`, `src/renderer/components/Layout/AppLayout.tsx`.
 

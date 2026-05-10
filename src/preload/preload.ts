@@ -15,30 +15,6 @@ interface McpStatusPayload {
   configModified: string | null;
 }
 
-/**
- * v2.8.1 hotfix (Bug 3): one-shot promise that resolves when main has
- * settled the daemon-vs-local decision. Renderer code that depends on
- * stable IPC handlers (e.g. session reconciliation) awaits this before
- * making its first call. The listener is registered at preload load
- * time so it never misses the event regardless of when renderer JS
- * starts executing.
- */
-let daemonReadyResolver:
-  | ((value: { connected: boolean }) => void)
-  | null = null;
-const daemonReadyPromise = new Promise<{ connected: boolean }>((resolve) => {
-  daemonReadyResolver = resolve;
-});
-ipcRenderer.on(
-  'daemon:ready',
-  (_event: Electron.IpcRendererEvent, payload: { connected: boolean }) => {
-    if (daemonReadyResolver) {
-      daemonReadyResolver(payload ?? { connected: false });
-      daemonReadyResolver = null;
-    }
-  },
-);
-
 const electronAPI = {
   // OS-aware shortcut mapping support — renderer cannot read process.platform
   // directly under sandbox + contextIsolation, so expose it here.
@@ -151,11 +127,20 @@ const electronAPI = {
     },
     /**
      * Resolves once main has finalized the daemon-vs-local decision.
-     * Either branch resolves with `{ connected: bool }`. Multiple awaits
-     * return the same already-resolved promise once the event has
-     * fired, so it's safe to call from any number of renderer modules.
+     * Returns `{ connected: bool }` reflecting the CURRENT state at
+     * invoke time (so a renderer reloaded after the daemon disconnected
+     * mid-session sees the live answer, not a stale "connected at
+     * startup" record).
+     *
+     * Implemented as `ipcRenderer.invoke` rather than a one-shot event
+     * listener so renderers created after main already decided — for
+     * example, the `mainWindow.reload()` paths used by renderer crash
+     * recovery — can still query the state on demand. An event-based
+     * promise would deadlock here because the event was already
+     * consumed by the previous (now-destroyed) preload instance.
      */
-    whenReady: (): Promise<{ connected: boolean }> => daemonReadyPromise,
+    whenReady: (): Promise<{ connected: boolean }> =>
+      ipcRenderer.invoke('daemon:get-ready-state') as Promise<{ connected: boolean }>,
   },
   mcp: {
     check: () => ipcRenderer.invoke(IPC.MCP_CHECK) as Promise<McpStatusPayload>,
