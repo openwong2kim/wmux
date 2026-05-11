@@ -1,8 +1,21 @@
-import { app, Tray, Menu, nativeImage, BrowserWindow } from 'electron';
+import { app, Tray, Menu, nativeImage, BrowserWindow, shell, dialog } from 'electron';
+import fs from 'fs';
 import path from 'path';
 import { platformChoice } from '../shared/platform';
 
 let tray: Tray | null = null;
+
+/**
+ * Resolve a license-style file that ships in <exe>/resources/ when packaged
+ * and lives at the repo root in dev. Returns null if the file is missing
+ * (e.g. running the daemon-only build), so callers can no-op gracefully.
+ */
+function resolveResource(name: string): string | null {
+  const candidate = app.isPackaged
+    ? path.join(process.resourcesPath, name)
+    : path.join(__dirname, '..', '..', name);
+  return fs.existsSync(candidate) ? candidate : null;
+}
 
 export function createTray(mainWindow: BrowserWindow, onQuit: () => void): Tray {
   // In packaged app, extraResource files land in <exe_dir>/resources/
@@ -21,6 +34,22 @@ export function createTray(mainWindow: BrowserWindow, onQuit: () => void): Tray 
   tray = new Tray(nativeImage.createFromPath(iconPath));
   tray.setToolTip('wmux');
 
+  // License / About handlers — surface the MIT notice for wmux itself
+  // and the bundled THIRD_PARTY_NOTICES so users (and downstream
+  // distributors) can find the attribution that ships next to wmux.exe.
+  // `shell.openPath` opens the file in the user's default text app;
+  // failure (missing file in a stripped build, no associated app, etc.)
+  // falls back to revealing the containing folder so the file is still
+  // discoverable.
+  const openOrReveal = async (file: string | null): Promise<void> => {
+    if (!file) {
+      dialog.showErrorBox('wmux', 'License file is missing from this build.');
+      return;
+    }
+    const err = await shell.openPath(file);
+    if (err) shell.showItemInFolder(file);
+  };
+
   const contextMenu = Menu.buildFromTemplate([
     {
       label: 'Open wmux',
@@ -28,6 +57,21 @@ export function createTray(mainWindow: BrowserWindow, onQuit: () => void): Tray 
         mainWindow.show();
         mainWindow.focus();
       },
+    },
+    { type: 'separator' },
+    {
+      label: 'About wmux',
+      click: () => {
+        app.showAboutPanel();
+      },
+    },
+    {
+      label: 'License (wmux)',
+      click: () => void openOrReveal(resolveResource('LICENSE')),
+    },
+    {
+      label: 'Third-party licenses',
+      click: () => void openOrReveal(resolveResource('THIRD_PARTY_NOTICES')),
     },
     { type: 'separator' },
     {

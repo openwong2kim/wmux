@@ -18,6 +18,7 @@
     "build:cli": "tsc -p tsconfig.cli.json && esbuild dist/cli/cli/index.js --bundle --platform=node --outfile=dist/cli-bundle/index.js",
     "build:mcp": "tsc -p tsconfig.mcp.json && node scripts/build-mcp.js",
     "mcp": "node dist/mcp/mcp/index.js",
+    "notices": "node scripts/generate-notices.mjs",
     "test": "vitest run"
   },
   "keywords": [

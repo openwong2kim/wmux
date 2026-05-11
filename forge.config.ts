@@ -36,7 +36,12 @@ const config: ForgeConfig = {
       unpack: '**/node_modules/node-pty/**',
     },
     icon: './assets/icon',
-    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
+    // LICENSE + THIRD_PARTY_NOTICES ship to <exe>/resources/ so the MIT
+    // "include this notice in all copies" obligation is satisfied for
+    // wmux itself and every bundled npm dep. Electron's own LICENSE
+    // (covering Chromium / V8 / Node) is emitted automatically by
+    // electron-packager next to wmux.exe, so we don't duplicate it here.
+    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
   },
   hooks: {
     postPackage: async (_config, packageResult) => {

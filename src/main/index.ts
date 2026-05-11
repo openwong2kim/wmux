@@ -6,6 +6,7 @@ process.on('uncaughtException', (err) => {
 });
 
 import * as crypto from 'crypto';
+import * as path from 'path';
 import { app, BrowserWindow, ipcMain, powerMonitor } from 'electron';
 import { createWindow } from './window/createWindow';
 import { PTYManager } from './pty/PTYManager';
@@ -310,6 +311,23 @@ ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, web
 console.log('[DEBUG] registering app.on(ready)');
 app.on('ready', async () => {
   console.log('[Main] App ready, creating window...');
+
+  // Populate the native About panel (macOS shows this automatically in
+  // the app menu; Windows/Linux render it when `app.showAboutPanel()`
+  // is called from the tray). Including copyright + website here is
+  // best-practice for downstream redistribution and complements the
+  // bundled LICENSE / THIRD_PARTY_NOTICES files.
+  app.setAboutPanelOptions({
+    applicationName: 'wmux',
+    applicationVersion: app.getVersion(),
+    version: app.getVersion(),
+    copyright: 'MIT License — see LICENSE in the install folder.',
+    website: 'https://github.com/openwong2kim/wmux',
+    iconPath: app.isPackaged
+      ? path.join(process.resourcesPath, 'icon.png')
+      : path.join(__dirname, '..', '..', 'assets', 'icon.png'),
+  });
+
   mainWindow = createWindow();
   console.log(`[Main] Window created: ${!!mainWindow}`);
 
