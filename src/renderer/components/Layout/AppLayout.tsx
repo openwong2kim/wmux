@@ -350,7 +350,13 @@ export default function AppLayout() {
       // closed wmux (Codex 1st review #4: lifecycle reset).
       const postLoadState = useStore.getState();
       for (const ws of postLoadState.workspaces) {
-        if (ws.metadata?.agentStatus || ws.metadata?.agentName) {
+        // Only update workspaces whose persisted state actually carries a
+        // live status. Plain truthiness on agentStatus is true for 'idle'
+        // too, so the previous guard re-broadcast a no-op metadata update
+        // for every workspace that had ever held agent state.
+        const status = ws.metadata?.agentStatus;
+        const hasLive = (status && status !== 'idle') || (ws.metadata?.agentName && ws.metadata.agentName.length > 0);
+        if (hasLive) {
           postLoadState.updateWorkspaceMetadata(ws.id, { agentStatus: 'idle', agentName: '' });
         }
       }

@@ -52,16 +52,24 @@ export class PTYBridge {
     private getWindow: () => BrowserWindow | null,
   ) {
     this.ptyManager.onDispose((ptyId) => this.cleanupInstance(ptyId));
-    // Activity-based fallback notification: fires when sustained output
-    // drops to idle. Suppressed if AgentDetector already emitted a precise
-    // status event for this PTY within AGENT_EVENT_SUPPRESSION_MS — that
-    // signal is more accurate and AgentDetector's onEvent path below has
-    // already done the sendNotification + toast work.
+    // Activity-based fallback: fires when sustained output drops to idle.
+    // Suppressed if AgentDetector already emitted a precise status event for
+    // this PTY within AGENT_EVENT_SUPPRESSION_MS — that signal is more
+    // accurate, AgentDetector's onEvent path already did the
+    // sendNotification + toast work, and the agentStatus is already
+    // correctly set to 'waiting'/'complete'.
+    //
+    // When no precise event happened (generic shell command, unsupported
+    // agent, missed prompt), the previous 'running' status from onActive
+    // must be cleared back to 'idle' — otherwise the sidebar dot pulses
+    // forever even though output stopped.
     this.activityMonitor.onActiveToIdle((ptyId) => {
       const lastAgentAt = this.lastAgentEventAt.get(ptyId) ?? 0;
       if (Date.now() - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
       try {
         const win = this.getWindow();
+        // Clear stale 'running' before emitting the generic notification.
+        broadcastMetadataUpdate(win, { ptyId, agentStatus: 'idle', agentName: '' });
         const notification = {
           type: 'agent' as const,
           title: 'Task may have finished',
@@ -110,6 +118,21 @@ export class PTYBridge {
    * (e.g. from PTYManager.dispose()) to ensure cleanup when onExit is not fired.
    */
   cleanupInstance(ptyId: string): void {
+    // Clear agentStatus on every disposal path. onExit already broadcasts
+    // 'idle', but the PTYManager.dispose → onDispose path can reach this
+    // method WITHOUT going through onExit (e.g. user closes a pane via the
+    // UI, MCP destroy, surface swap). Without this idempotent broadcast,
+    // the sidebar dot stays stuck on the last 'running'/'waiting' state
+    // for a terminal that's already gone.
+    try {
+      const win = this.getWindow();
+      if (win && !win.isDestroyed()) {
+        broadcastMetadataUpdate(win, { ptyId, agentStatus: 'idle', agentName: '' });
+      }
+    } catch (err) {
+      console.warn('[PTYBridge] cleanupInstance agentStatus broadcast error:', err);
+    }
+
     // Drain any buffered data before tearing down — preserves trailing output
     // (e.g. final exit lines) that arrived between the last flush and dispose.
     this.flushPending(ptyId);

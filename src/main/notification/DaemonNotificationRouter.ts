@@ -76,13 +76,16 @@ export class DaemonNotificationRouter {
 
     const onActive = (payload: { sessionId: string }) => {
       try {
+        // Intentionally omit `agentName`: the daemon's AgentDetector owns
+        // the last-agent name, and we can't reach into it from main. If we
+        // emitted `agentName: ''` here, the renderer's Object.assign would
+        // clobber the legitimate name set by the previous session:agent
+        // event, making the sidebar label flicker to blank on every burst.
+        // Leaving the field out preserves the prior name; the next
+        // session:agent event will refresh it.
         broadcastMetadataUpdate(this.getWindow(), {
           ptyId: payload.sessionId,
           agentStatus: 'running',
-          // agentName left empty: AgentDetector lives in the daemon, so we
-          // don't have its lastAgent readily available here. The next
-          // 'session:agent' event will populate the name.
-          agentName: '',
         });
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:active error:', err);

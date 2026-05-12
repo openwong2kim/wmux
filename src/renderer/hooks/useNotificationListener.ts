@@ -93,7 +93,12 @@ export function useNotificationListener() {
       // Inline in-app toast fallback — shown in ToastContainer regardless of
       // window focus. The OS-level toast in ToastManager only fires when
       // unfocused, so this guarantees a visible signal in either state.
-      state.pushToast({ message: data.title, level: data.type === 'error' ? 'error' : data.type === 'warning' ? 'warn' : 'info' });
+      // Gated by `toastEnabled` so the existing user preference still wins;
+      // without this gate, disabling toasts in settings would only suppress
+      // OS-level toasts and leave the in-app overlay popping anyway.
+      if (state.toastEnabled) {
+        state.pushToast({ message: data.title, level: data.type === 'error' ? 'error' : data.type === 'warning' ? 'warn' : 'info' });
+      }
       // Play sound if enabled (throttled)
       if (state.notificationSoundEnabled) {
         const now = Date.now();
