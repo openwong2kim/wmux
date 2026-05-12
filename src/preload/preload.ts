@@ -5,6 +5,7 @@ import type {
   RegisterMcpResult,
   SampleTaskStartPayload,
 } from '../shared/firstRun';
+import { isFileDrag } from '../shared/dragDrop';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 interface McpStatusPayload {
@@ -224,10 +225,12 @@ const fileDropCallbacks: ((paths: string[]) => void)[] = [];
 
 document.addEventListener('DOMContentLoaded', () => {
   document.addEventListener('dragover', (e) => {
+    if (!isFileDrag(e.dataTransfer)) return;
     e.preventDefault();
     if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
   });
   document.addEventListener('drop', (e) => {
+    if (!isFileDrag(e.dataTransfer)) return;
     e.preventDefault();
     const files = e.dataTransfer?.files;
     if (!files || files.length === 0) return;

@@ -27,6 +27,7 @@ import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useIpc } from '../../hooks/useIpc';
 import type { SessionData, PaneLeaf, Pane, Surface } from '../../../shared/types';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
+import { isFileDrag } from '../../../shared/dragDrop';
 import { Terminal } from '@xterm/xterm';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import { withDefaultShell } from '../../utils/ptyCreateOptions';
@@ -241,12 +242,14 @@ export default function AppLayout() {
 
     // Visual drag overlay
     const onEnter = (e: DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
       e.preventDefault();
       if (e.dataTransfer) e.dataTransfer.dropEffect = 'copy';
       dragCounterRef.current++;
       if (dragCounterRef.current === 1) setIsDragging(true);
     };
-    const onLeave = () => {
+    const onLeave = (e: DragEvent) => {
+      if (!isFileDrag(e.dataTransfer)) return;
       dragCounterRef.current--;
       if (dragCounterRef.current <= 0) {
         dragCounterRef.current = 0;
