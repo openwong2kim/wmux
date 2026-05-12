@@ -70,9 +70,13 @@ export class DaemonPTYBridge extends EventEmitter {
       this.emit('idle', { sessionId: ptyId });
     });
     // Activity → active notification (start of a sustained output burst).
-    // Consumers (main DaemonNotificationRouter) use this as the 'running'
-    // status signal and to reset AgentDetector emission dedup.
+    // Also resets AgentDetector emission dedup inside the daemon process so
+    // turn N+1's idle prompt fires again even if its text is identical to
+    // turn N. The reset MUST happen in-process: AgentDetector instances
+    // live in the daemon, so the main-side DaemonNotificationRouter can't
+    // reach into them the way local-mode PTYBridge does (Codex P1).
     this.activeUnsubscribe = activityMonitor.onActive((ptyId) => {
+      this.agentDetector?.resetEmissionState();
       this.emit('active', { sessionId: ptyId });
     });
 

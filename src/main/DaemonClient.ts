@@ -303,6 +303,11 @@ export class DaemonClient extends EventEmitter {
           });
           break;
         }
+        case 'session.destroyed':
+          // pty:dispose path — distinct from session.died (natural exit).
+          // Notification router treats both the same: clear agentStatus.
+          this.emit('session:destroyed', { sessionId: event.sessionId });
+          break;
         case 'activity.idle':
           this.emit('session:idle', { sessionId: event.sessionId });
           break;

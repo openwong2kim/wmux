@@ -219,6 +219,12 @@ export interface DaemonEvent {
   data: unknown;
 }
 
+// NOTE: 'session.destroyed' is broadcast when the renderer/MCP explicitly
+// closes a session (pty:dispose → DaemonSessionManager.destroySession),
+// while 'session.died' is broadcast when the underlying PTY exits on its
+// own. Both must clear agentStatus on the main side; only one is reliably
+// observed depending on the caller path.
+
 export interface DaemonCreateSessionParams {
   id: string;
   cwd: string;

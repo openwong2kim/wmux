@@ -121,7 +121,10 @@ export class DaemonNotificationRouter {
       }
     };
 
-    const onDied = (payload: { sessionId: string }) => {
+    // session:died (natural PTY exit) and session:destroyed (pty:dispose)
+    // both clear agentStatus. Only listening to session:died left a stale
+    // sidebar dot when the user closed a terminal intentionally (Codex P2).
+    const onSessionEnd = (payload: { sessionId: string }) => {
       try {
         broadcastMetadataUpdate(this.getWindow(), {
           ptyId: payload.sessionId,
@@ -130,7 +133,7 @@ export class DaemonNotificationRouter {
         });
         this.lastAgentEventAt.delete(payload.sessionId);
       } catch (err) {
-        console.warn('[DaemonNotificationRouter] session:died error:', err);
+        console.warn('[DaemonNotificationRouter] session end error:', err);
       }
     };
 
@@ -138,14 +141,16 @@ export class DaemonNotificationRouter {
     this.daemonClient.on('session:active', onActive);
     this.daemonClient.on('session:idle', onIdle);
     this.daemonClient.on('session:critical', onCritical);
-    this.daemonClient.on('session:died', onDied);
+    this.daemonClient.on('session:died', onSessionEnd);
+    this.daemonClient.on('session:destroyed', onSessionEnd);
 
     this.cleanups.push(
       () => this.daemonClient.off('session:agent', onAgent),
       () => this.daemonClient.off('session:active', onActive),
       () => this.daemonClient.off('session:idle', onIdle),
       () => this.daemonClient.off('session:critical', onCritical),
-      () => this.daemonClient.off('session:died', onDied),
+      () => this.daemonClient.off('session:died', onSessionEnd),
+      () => this.daemonClient.off('session:destroyed', onSessionEnd),
     );
   }
 

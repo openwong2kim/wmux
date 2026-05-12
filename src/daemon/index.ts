@@ -824,6 +824,18 @@ function wireEvents(
     };
     pipeServer.broadcast(event);
   });
+
+  // Explicit destroy (pty:dispose path): distinct from session:died (natural
+  // PTY exit). Both must clear the main-side agentStatus so the sidebar dot
+  // doesn't lie about a closed terminal (Codex P2).
+  sessionManager.on('session:destroyed', (payload: { id: string }) => {
+    const event: DaemonEvent = {
+      type: 'session.destroyed',
+      sessionId: payload.id,
+      data: null,
+    };
+    pipeServer.broadcast(event);
+  });
 }
 
 // === State builder ===
