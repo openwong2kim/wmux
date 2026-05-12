@@ -151,3 +151,66 @@ describe('UISlice — first-run + cheat sheet flags', () => {
     expect(store.getState().cheatSheetDismissed).toBe(true);
   });
 });
+
+describe('UISlice — multiview', () => {
+  // toggleMultiviewWorkspace reads state.activeWorkspaceId, which lives on
+  // WorkspaceSlice. The test store overlays an activeWorkspaceId field after
+  // slice construction so we exercise the cross-slice behavior in isolation.
+  function setActive(store: ReturnType<typeof createTestStore>, id: string) {
+    // @ts-expect-error — augmenting TestState with cross-slice field
+    store.setState({ activeWorkspaceId: id });
+  }
+
+  it('seeds the group with active when starting fresh', () => {
+    const store = createTestStore();
+    setActive(store, 'A');
+    store.getState().toggleMultiviewWorkspace('B');
+    expect(store.getState().multiviewIds).toEqual(['A', 'B']);
+  });
+
+  it('preserves Ctrl-click order across subsequent toggles', () => {
+    const store = createTestStore();
+    setActive(store, 'A');
+    store.getState().toggleMultiviewWorkspace('C');
+    store.getState().toggleMultiviewWorkspace('B');
+    // Active seeded first, then C, then B — render iterates this exact order.
+    expect(store.getState().multiviewIds).toEqual(['A', 'C', 'B']);
+  });
+
+  it('reseeds with new active when toggling outside a stale saved group', () => {
+    // Regression: after preserving the saved group across setActiveWorkspace,
+    // starting a fresh multiview from a non-member workspace must reset to
+    // [newActive, newId] — otherwise AppLayout keeps the grid hidden because
+    // the active id is not in multiviewIds. Caught by Codex 2026-05-12.
+    const store = createTestStore();
+    setActive(store, 'A');
+    store.getState().toggleMultiviewWorkspace('B'); // multiview = [A, B]
+    expect(store.getState().multiviewIds).toEqual(['A', 'B']);
+
+    setActive(store, 'C'); // user plain-clicks C; group preserved but active outside
+    store.getState().toggleMultiviewWorkspace('D'); // Ctrl-click D to start new multiview
+
+    expect(store.getState().multiviewIds).toEqual(['C', 'D']);
+  });
+
+  it('clears multiview when toggling down to a single member', () => {
+    const store = createTestStore();
+    setActive(store, 'A');
+    store.getState().toggleMultiviewWorkspace('B');
+    expect(store.getState().multiviewIds).toEqual(['A', 'B']);
+
+    store.getState().toggleMultiviewWorkspace('B'); // toggle B off
+    expect(store.getState().multiviewIds).toEqual([]);
+  });
+
+  it('clearMultiview empties the saved group', () => {
+    const store = createTestStore();
+    setActive(store, 'A');
+    store.getState().toggleMultiviewWorkspace('B');
+    store.getState().toggleMultiviewWorkspace('C');
+    expect(store.getState().multiviewIds).toEqual(['A', 'B', 'C']);
+
+    store.getState().clearMultiview();
+    expect(store.getState().multiviewIds).toEqual([]);
+  });
+});

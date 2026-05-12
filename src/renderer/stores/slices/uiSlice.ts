@@ -373,9 +373,13 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (idx >= 0) {
       state.multiviewIds.splice(idx, 1);
     } else {
-      // Add active workspace too if first selection
-      if (state.multiviewIds.length === 0) {
-        state.multiviewIds.push(state.activeWorkspaceId);
+      // Seed with active when starting fresh, OR when a previously saved group
+      // is still around but the user has navigated away from it (active is not
+      // a member). The second case appears as "Ctrl-click does nothing" because
+      // AppLayout gates the grid on active ∈ multiviewIds — without reseeding,
+      // the new id gets appended to the stale group and the grid stays hidden.
+      if (state.multiviewIds.length === 0 || !state.multiviewIds.includes(state.activeWorkspaceId)) {
+        state.multiviewIds = [state.activeWorkspaceId];
       }
       if (!state.multiviewIds.includes(wsId)) {
         state.multiviewIds.push(wsId);

@@ -49,13 +49,12 @@ describe('WorkspaceSlice.setActiveWorkspace', () => {
     expect(store.getState().activeWorkspaceId).toBe(wsA.id);
   });
 
-  // Regression: 멀티뷰 상태에서 다른 탭을 눌러도 화면이 안 바뀌던 버그.
-  // Cause: AppLayout renders the multiview grid whenever multiviewIds.length
-  // >= 2, regardless of activeWorkspaceId. So plain-clicking a non-multiview
-  // tab updated activeWorkspaceId silently while the layout kept showing the
-  // old grid. Fix: setActiveWorkspace exits multiview when the target isn't
-  // part of it.
-  it('exits multiview when switching to a workspace not in the multiview set', () => {
+  // 멀티뷰 그룹은 명시적으로 해제하기 전까지 유지된다. 사용자가 그룹 외부
+  // 워크스페이스를 단순 클릭하면 그 워크스페이스의 단일 뷰로 전환되지만,
+  // 저장된 그룹은 그대로 보존돼서 그룹 멤버를 다시 누르면 그리드가 복원된다.
+  // (그리드 표시 조건은 AppLayout에서 activeWorkspaceId가 multiviewIds에
+  // 포함된 경우로 게이트됨 — 첫 회귀 "다른 탭 눌러도 화면 안 바뀜"도 같이 해결.)
+  it('preserves the saved multiview group when switching outside of it', () => {
     const store = createTestStore(
       [wsA, wsB, wsC],
       wsA.id,
@@ -64,7 +63,7 @@ describe('WorkspaceSlice.setActiveWorkspace', () => {
     store.getState().setActiveWorkspace(wsC.id); // C is NOT in multiview
 
     expect(store.getState().activeWorkspaceId).toBe(wsC.id);
-    expect(store.getState().multiviewIds).toEqual([]);
+    expect(store.getState().multiviewIds).toEqual([wsA.id, wsB.id]);
   });
 
   it('keeps multiview intact when switching to a workspace already in it', () => {

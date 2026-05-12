@@ -25,7 +25,7 @@ import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useIpc } from '../../hooks/useIpc';
-import type { SessionData, PaneLeaf, Pane, Surface } from '../../../shared/types';
+import type { SessionData, PaneLeaf, Pane, Surface, Workspace } from '../../../shared/types';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { isFileDrag } from '../../../shared/dragDrop';
 import { Terminal } from '@xterm/xterm';
@@ -537,8 +537,11 @@ export default function AppLayout() {
       <ErrorBoundary name="Main">
       <div className="flex-1 min-w-0 flex flex-col">
         <StatusBar />
-        {/* Render workspaces: single view or multiview grid (Ctrl+click selected) */}
-        {multiviewIds.length >= 2 ? (
+        {/* Render workspaces: single view or multiview grid (Ctrl+click selected).
+            Grid renders only when the active workspace is a member of the saved
+            multiview group, so clicking outside the group shows that workspace's
+            single view while the group is preserved for later restoration. */}
+        {multiviewIds.length >= 2 && multiviewIds.includes(activeWorkspaceId) ? (
           <div
             className="flex-1 min-h-0"
             style={{
@@ -551,7 +554,10 @@ export default function AppLayout() {
               backgroundColor: 'var(--bg-surface)',
             }}
           >
-            {workspaces.filter((ws) => multiviewIds.includes(ws.id)).map((ws) => (
+            {multiviewIds
+              .map((id) => workspaces.find((w) => w.id === id))
+              .filter((ws): ws is Workspace => ws !== undefined)
+              .map((ws) => (
               <div
                 key={ws.id}
                 className="relative flex flex-col min-w-0 min-h-0 overflow-hidden cursor-pointer"

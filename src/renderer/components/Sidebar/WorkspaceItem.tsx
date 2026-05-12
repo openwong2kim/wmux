@@ -2,6 +2,7 @@ import { useState, useRef, useEffect } from 'react';
 import type { AgentStatus, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
+import { AGENT_STATUS_ICON } from './agentStatusIcon';
 
 interface WorkspaceItemProps {
   workspace: Workspace;
@@ -15,15 +16,6 @@ interface WorkspaceItemProps {
   onCopyInfo: () => void;
   onReorder: (fromIndex: number, toIndex: number) => void;
 }
-
-// Maps AgentStatus to a colored dot indicator character and Tailwind color class.
-const AGENT_STATUS_ICON: Record<AgentStatus, { dot: string; className: string; labelKey: string }> = {
-  running:  { dot: '●', className: 'text-[var(--accent-blue)]', labelKey: 'workspace.agentRunning' },
-  complete: { dot: '●', className: 'text-[var(--accent-green)]', labelKey: 'workspace.agentComplete' },
-  error:    { dot: '●', className: 'text-[var(--accent-red)]', labelKey: 'workspace.agentError' },
-  waiting:  { dot: '●', className: 'text-[var(--accent-yellow)]', labelKey: 'workspace.agentWaiting' },
-  idle:     { dot: '●', className: 'text-[var(--text-muted)]', labelKey: 'workspace.agentIdle' },
-};
 
 function AgentStatusDot({ status, agentName }: { status: AgentStatus; agentName?: string }): React.ReactElement {
   const t = useT();
