@@ -6,8 +6,15 @@ import { TokenTracker } from './TokenTracker';
 import { ActivityMonitor } from './ActivityMonitor';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { IPC } from '../../shared/constants';
-import { updateCwd, removeCwd, updateBranch, removeBranch } from '../ipc/handlers/metadata.handler';
+import { updateCwd, removeCwd, updateBranch, removeBranch, broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
+import { sendNotification } from '../notification/sendNotification';
 import { eventBus } from '../events/EventBus';
+import type { AgentStatus } from '../../shared/types';
+
+// How long after an AgentDetector event to suppress the ActivityMonitor idle
+// fallback notification. Prevents double-firing when both signals agree
+// (agent emits 'waiting' then 5s of silence triggers onActiveToIdle).
+const AGENT_EVENT_SUPPRESSION_MS = 10_000;
 
 /**
  * A middleware handler receives raw data from a PTY process.
@@ -23,6 +30,14 @@ export class PTYBridge {
   private activityMonitor = new ActivityMonitor();
   private ptyCreatedAt = new Map<string, number>();
   private middlewareStacks = new Map<string, PTYDataMiddleware[]>();
+  // Per-PTY cleanup hooks for AgentDetector subscriptions. PTYBridge owns
+  // exactly one AgentDetector instance per ptyId; these unsubscribes are
+  // invoked in cleanupInstance to prevent listener accumulation.
+  private agentDetectorCleanups = new Map<string, Array<() => void>>();
+  // Most recent AgentDetector event timestamp per PTY. Used to suppress the
+  // ActivityMonitor idle fallback notification when the agent already
+  // emitted a more precise 'waiting'/'complete' signal a moment earlier.
+  private lastAgentEventAt = new Map<string, number>();
 
   // Micro-batch buffers for the data hot-path. Chunks are accumulated and
   // flushed every BATCH_INTERVAL_MS so middlewares + IPC send each fire once
@@ -37,17 +52,26 @@ export class PTYBridge {
     private getWindow: () => BrowserWindow | null,
   ) {
     this.ptyManager.onDispose((ptyId) => this.cleanupInstance(ptyId));
-    // Activity-based notification: fires when sustained output drops to idle
+    // Activity-based fallback notification: fires when sustained output
+    // drops to idle. Suppressed if AgentDetector already emitted a precise
+    // status event for this PTY within AGENT_EVENT_SUPPRESSION_MS — that
+    // signal is more accurate and AgentDetector's onEvent path below has
+    // already done the sendNotification + toast work.
     this.activityMonitor.onActiveToIdle((ptyId) => {
-      const win = this.getWindow();
-      if (!win || win.isDestroyed()) return;
-      const notification = {
-        type: 'agent' as const,
-        title: 'Task may have finished',
-        body: 'Terminal output stopped after active period',
-      };
-      win.webContents.send(IPC.NOTIFICATION, ptyId, notification);
-      toastManager.show(notification.title, notification.body);
+      const lastAgentAt = this.lastAgentEventAt.get(ptyId) ?? 0;
+      if (Date.now() - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
+      try {
+        const win = this.getWindow();
+        const notification = {
+          type: 'agent' as const,
+          title: 'Task may have finished',
+          body: 'Terminal output stopped after active period',
+        };
+        sendNotification(win, ptyId, notification);
+        toastManager.show(notification.title, notification.body);
+      } catch (err) {
+        console.warn('[PTYBridge] onActiveToIdle callback error:', err);
+      }
     });
   }
 
@@ -93,6 +117,19 @@ export class PTYBridge {
     if (timer) clearTimeout(timer);
     this.pendingTimers.delete(ptyId);
     this.pendingData.delete(ptyId);
+
+    // Unsubscribe AgentDetector + ActivityMonitor.onActive listeners. Without
+    // this, every PTY create/dispose cycle would accumulate closure-captured
+    // callbacks against the same `agentDetector`/`activityMonitor` instances
+    // (same leak class as the v2.7.2 PlaywrightEngine CDP session fix).
+    const cleanups = this.agentDetectorCleanups.get(ptyId);
+    if (cleanups) {
+      for (const fn of cleanups) {
+        try { fn(); } catch (err) { console.warn('[PTYBridge] cleanup hook error:', err); }
+      }
+      this.agentDetectorCleanups.delete(ptyId);
+    }
+    this.lastAgentEventAt.delete(ptyId);
 
     this.oscParsers.delete(ptyId);
     this.agentDetectors.delete(ptyId);
@@ -182,7 +219,7 @@ export class PTYBridge {
         case 9:
         case 99: {
           const notification = { type: 'info' as const, title: 'Terminal', body: event.data };
-          win.webContents.send(IPC.NOTIFICATION, ptyId, notification);
+          sendNotification(win, ptyId, notification);
           toastManager.show(notification.title, notification.body);
           break;
         }
@@ -191,7 +228,7 @@ export class PTYBridge {
           const title = parts[1] || 'Notification';
           const body = parts.slice(2).join(';') || '';
           const notification = { type: 'info' as const, title, body };
-          win.webContents.send(IPC.NOTIFICATION, ptyId, notification);
+          sendNotification(win, ptyId, notification);
           toastManager.show(title, body);
           break;
         }
@@ -205,14 +242,64 @@ export class PTYBridge {
     });
 
     // Critical action detection (kept — this is precise and valuable)
-    agentDetector.onCritical((criticalEvent) => {
-      const win = this.getWindow();
-      if (!win || win.isDestroyed()) return;
-      win.webContents.send(IPC.APPROVAL_REQUEST, ptyId, {
-        action: criticalEvent.action,
-        riskLevel: criticalEvent.riskLevel,
-      });
+    const unsubCritical = agentDetector.onCritical((criticalEvent) => {
+      try {
+        const win = this.getWindow();
+        if (!win || win.isDestroyed()) return;
+        win.webContents.send(IPC.APPROVAL_REQUEST, ptyId, {
+          action: criticalEvent.action,
+          riskLevel: criticalEvent.riskLevel,
+        });
+      } catch (err) {
+        console.warn('[PTYBridge] onCritical callback error:', err);
+      }
     });
+
+    // Agent status events: emit METADATA_UPDATE (drives sidebar dot) and a
+    // NOTIFICATION (drives unread badge + in-app toast + optional OS toast).
+    // The 'waiting'/'complete' transition is the strong "task done" signal.
+    const unsubAgent = agentDetector.onEvent((agentEvent) => {
+      try {
+        const win = this.getWindow();
+        const status = agentEvent.status as AgentStatus;
+        broadcastMetadataUpdate(win, {
+          ptyId,
+          agentStatus: status,
+          agentName: agentEvent.agent,
+        });
+
+        if (status === 'waiting' || status === 'complete') {
+          this.lastAgentEventAt.set(ptyId, Date.now());
+          const title = `${agentEvent.agent}: ${agentEvent.message}`;
+          const body = status === 'waiting' ? 'Ready for input' : 'Task finished';
+          sendNotification(win, ptyId, { type: 'agent', title, body });
+          toastManager.show(title, body);
+        }
+      } catch (err) {
+        console.warn('[PTYBridge] onEvent callback error:', err);
+      }
+    });
+
+    // Activity-based 'running' signal: fires once per active cycle. PTYBridge
+    // also resets AgentDetector's emission dedup state here so the next turn's
+    // 'waiting' prompt fires again even if its text is byte-identical to the
+    // previous turn (otherwise turn N+1 would be silently dropped).
+    const unsubActive = this.activityMonitor.onActive((id) => {
+      if (id !== ptyId) return;
+      try {
+        const lastAgent = agentDetector.getLastAgent() ?? '';
+        broadcastMetadataUpdate(this.getWindow(), {
+          ptyId,
+          agentStatus: 'running',
+          agentName: lastAgent,
+        });
+        agentDetector.resetEmissionState();
+      } catch (err) {
+        console.warn('[PTYBridge] onActive callback error:', err);
+      }
+    });
+
+    this.agentDetectorCleanups.set(ptyId, [unsubCritical, unsubAgent, unsubActive]);
 
     // Detect CWD from shell prompt patterns (PowerShell: "PS C:\path>", bash: "user@host:~/path$")
     // eslint-disable-next-line no-control-regex
@@ -320,6 +407,11 @@ export class PTYBridge {
       if (win && !win.isDestroyed()) {
         win.webContents.send(IPC.PTY_EXIT, ptyId, exitCode);
 
+        // Clear agentStatus so the sidebar dot stops claiming the agent is
+        // still running/waiting after the process is gone. 'idle' is the
+        // explicit absence-of-agent state — MiniSidebar hides the dot.
+        broadcastMetadataUpdate(win, { ptyId, agentStatus: 'idle', agentName: '' });
+
         if (exitCode !== 0) {
           const elapsed = Date.now() - (this.ptyCreatedAt.get(ptyId) ?? Date.now());
           const seconds = Math.round(elapsed / 1000);
@@ -328,7 +420,7 @@ export class PTYBridge {
             title: 'Process exited with error',
             body: `Exit code ${exitCode} after ${seconds}s`,
           };
-          win.webContents.send(IPC.NOTIFICATION, ptyId, notification);
+          sendNotification(win, ptyId, notification);
           toastManager.show(notification.title, notification.body);
         }
       }

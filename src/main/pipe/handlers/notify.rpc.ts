@@ -1,8 +1,8 @@
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { NotificationType } from '../../../shared/types';
-import { IPC } from '../../../shared/constants';
 import { ToastManager } from '../../notification/ToastManager';
+import { sendNotification } from '../../notification/sendNotification';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -20,9 +20,14 @@ export function registerNotifyRpc(router: RpcRouter, getWindow: GetWindow): void
    * not focused, also shows a Windows Toast notification.
    *
    * params: {
-   *   title:   string
-   *   body:    string
-   *   type?:   'info' | 'warning' | 'error' | 'agent'  (default: 'info')
+   *   title:        string
+   *   body:         string
+   *   type?:        'info' | 'warning' | 'error' | 'agent'  (default: 'info')
+   *   workspaceId?: string  — optional. When omitted, the renderer applies
+   *                           to the active workspace (backward compat for
+   *                           CLI `wmux notify` callers; MCP clients that
+   *                           know their workspace via mcp.claimWorkspace
+   *                           SHOULD send it for precise routing)
    * }
    */
   router.register('notify', (params) => {
@@ -38,12 +43,12 @@ export function registerNotifyRpc(router: RpcRouter, getWindow: GetWindow): void
     const type: NotificationType = isNotificationType(params['type'])
       ? params['type']
       : 'info';
+    const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
 
-    const win = getWindow();
-    if (win && !win.isDestroyed()) {
-      // Push notification to the renderer notification store
-      win.webContents.send(IPC.NOTIFICATION, { title, body, type });
-    }
+    // ptyId is null here — this RPC originates outside any PTY. The renderer
+    // resolves a surface via `workspaceId` (if provided) or falls back to
+    // the active workspace.
+    sendNotification(getWindow(), null, { title, body, type, workspaceId });
 
     // Show OS-level toast (only when window is not focused)
     toastManager.show(title, body);

@@ -1,9 +1,24 @@
 import { ipcMain, BrowserWindow } from 'electron';
 import fs from 'node:fs';
 import { IPC } from '../../../shared/constants';
+import type { MetadataUpdatePayload } from '../../../shared/types';
 import { MetadataCollector } from '../../metadata/MetadataCollector';
 import { PTYManager } from '../../pty/PTYManager';
 import { wrapHandler } from '../wrapHandler';
+
+/**
+ * Single source for IPC.METADATA_UPDATE outgoing messages. All metadata-like
+ * channels (this handler's CWD/git polling, PTYBridge's agent status events,
+ * meta.rpc's status/progress RPCs) send through `MetadataUpdatePayload` so
+ * the preload + renderer contract has exactly one shape.
+ */
+export function broadcastMetadataUpdate(
+  window: BrowserWindow | null,
+  payload: MetadataUpdatePayload,
+): void {
+  if (!window || window.isDestroyed()) return;
+  window.webContents.send(IPC.METADATA_UPDATE, payload);
+}
 
 const collector = new MetadataCollector();
 
@@ -54,7 +69,7 @@ export function registerMetadataHandlers(
         // If shell integration provided a branch via OSC 7727, skip git exec polling
         const shellBranch = branchMap.get(ptyId);
         const metadata = await collector.collect(cwd, shellBranch);
-        win.webContents.send(IPC.METADATA_UPDATE, ptyId, metadata);
+        broadcastMetadataUpdate(win, { ptyId, ...metadata });
       }
     }
   }, 5000);

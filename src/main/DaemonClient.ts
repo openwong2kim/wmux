@@ -290,13 +290,33 @@ export class DaemonClient extends EventEmitter {
     if (event.type) {
       this.emit('event', event);
 
-      // Emit specific events for convenience
-      if (event.type === 'session.died') {
-        const data = event.data as { exitCode?: number | null } | null;
-        this.emit('session:died', {
-          sessionId: event.sessionId,
-          exitCode: data?.exitCode ?? null,
-        });
+      // Emit specific events for convenience. Daemon mode consumers (in
+      // particular, DaemonNotificationRouter) subscribe to these to mirror
+      // the local-mode PTYBridge wiring: activity → 'running', agent →
+      // metadata + notification + toast, critical → approval request.
+      switch (event.type) {
+        case 'session.died': {
+          const data = event.data as { exitCode?: number | null } | null;
+          this.emit('session:died', {
+            sessionId: event.sessionId,
+            exitCode: data?.exitCode ?? null,
+          });
+          break;
+        }
+        case 'activity.idle':
+          this.emit('session:idle', { sessionId: event.sessionId });
+          break;
+        case 'activity.active':
+          this.emit('session:active', { sessionId: event.sessionId });
+          break;
+        case 'agent.event':
+          this.emit('session:agent', { sessionId: event.sessionId, event: event.data });
+          break;
+        case 'agent.critical':
+          this.emit('session:critical', { sessionId: event.sessionId, event: event.data });
+          break;
+        default:
+          break;
       }
     }
   }

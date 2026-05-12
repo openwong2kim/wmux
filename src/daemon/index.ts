@@ -786,13 +786,41 @@ function wireEvents(
     stateWriter.saveDebounced(state);
   });
 
-  // Bridge-level events: forward agent/critical/idle from all sessions
-  // These are emitted by DaemonSessionManager which re-emits bridge events
+  // Bridge-level events: forward agent/critical/idle/active from all sessions
+  // to clients (main process). These are emitted by DaemonSessionManager
+  // which re-emits bridge events.
   sessionManager.on('session:idle', (payload: { sessionId: string }) => {
     const event: DaemonEvent = {
       type: 'activity.idle',
       sessionId: payload.sessionId,
       data: null,
+    };
+    pipeServer.broadcast(event);
+  });
+
+  sessionManager.on('session:active', (payload: { sessionId: string }) => {
+    const event: DaemonEvent = {
+      type: 'activity.active',
+      sessionId: payload.sessionId,
+      data: null,
+    };
+    pipeServer.broadcast(event);
+  });
+
+  sessionManager.on('session:agent', (payload: { sessionId: string; event: { agent: string; status: string; message: string } }) => {
+    const event: DaemonEvent = {
+      type: 'agent.event',
+      sessionId: payload.sessionId,
+      data: payload.event,
+    };
+    pipeServer.broadcast(event);
+  });
+
+  sessionManager.on('session:critical', (payload: { sessionId: string; event: { action: string; riskLevel: string } }) => {
+    const event: DaemonEvent = {
+      type: 'agent.critical',
+      sessionId: payload.sessionId,
+      data: payload.event,
     };
     pipeServer.broadcast(event);
   });

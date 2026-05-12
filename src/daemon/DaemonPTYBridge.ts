@@ -14,8 +14,10 @@ import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
  *  - 'data'     → Buffer (raw PTY output)
  *  - 'cwd'      → { sessionId: string, cwd: string }
  *  - 'agent'    → { sessionId: string, event: AgentEvent }
- *  - 'critical'  → { sessionId: string, event: CriticalEvent }
- *  - 'idle'     → { sessionId: string }
+ *  - 'critical' → { sessionId: string, event: CriticalEvent }
+ *  - 'active'   → { sessionId: string }                — onActive cycle start
+ *  - 'idle'     → { sessionId: string }                — onActiveToIdle
+ *  - 'exit'     → { sessionId: string, exitCode }
  */
 export class DaemonPTYBridge extends EventEmitter {
   private oscParser: OscParser | null = null;
@@ -24,6 +26,9 @@ export class DaemonPTYBridge extends EventEmitter {
   private dataDisposable: (() => void) | null = null;
   private exitDisposable: (() => void) | null = null;
   private idleUnsubscribe: (() => void) | null = null;
+  private activeUnsubscribe: (() => void) | null = null;
+  private agentUnsubscribe: (() => void) | null = null;
+  private criticalUnsubscribe: (() => void) | null = null;
   private sessionId: string | null = null;
   /**
    * v2.8.1 hotfix: when true, drop PTY output instead of writing it to
@@ -64,6 +69,12 @@ export class DaemonPTYBridge extends EventEmitter {
     this.idleUnsubscribe = activityMonitor.onActiveToIdle((ptyId) => {
       this.emit('idle', { sessionId: ptyId });
     });
+    // Activity → active notification (start of a sustained output burst).
+    // Consumers (main DaemonNotificationRouter) use this as the 'running'
+    // status signal and to reset AgentDetector emission dedup.
+    this.activeUnsubscribe = activityMonitor.onActive((ptyId) => {
+      this.emit('active', { sessionId: ptyId });
+    });
 
     // OSC events → cwd (OSC 7) and prompt/command markers (OSC 133)
     oscParser.onOsc((event) => {
@@ -82,12 +93,12 @@ export class DaemonPTYBridge extends EventEmitter {
     });
 
     // Agent detection
-    agentDetector.onEvent((agentEvent) => {
+    this.agentUnsubscribe = agentDetector.onEvent((agentEvent) => {
       this.emit('agent', { sessionId, event: agentEvent });
     });
 
     // Critical action detection
-    agentDetector.onCritical((criticalEvent) => {
+    this.criticalUnsubscribe = agentDetector.onCritical((criticalEvent) => {
       this.emit('critical', { sessionId, event: criticalEvent });
     });
 
@@ -161,6 +172,18 @@ export class DaemonPTYBridge extends EventEmitter {
 
     this.idleUnsubscribe?.();
     this.idleUnsubscribe = null;
+
+    this.activeUnsubscribe?.();
+    this.activeUnsubscribe = null;
+
+    // AgentDetector subscriptions: without explicit unsubscribe, recovered
+    // sessions or repeated setupDataForwarding calls would accumulate
+    // closure-captured callbacks against a stale `agentDetector` reference.
+    // (Same leak class as the v2.7.2 PlaywrightEngine CDP session fix.)
+    this.agentUnsubscribe?.();
+    this.agentUnsubscribe = null;
+    this.criticalUnsubscribe?.();
+    this.criticalUnsubscribe = null;
 
     // Stop activity monitor to clear timers and state
     if (this.activityMonitor && this.sessionId) {

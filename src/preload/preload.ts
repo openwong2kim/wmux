@@ -59,8 +59,12 @@ const electronAPI = {
     setAutoUpdateEnabled: (enabled: boolean) => ipcRenderer.send(IPC.AUTO_UPDATE_ENABLED, enabled),
   },
   notification: {
-    onNew: (callback: (ptyId: string, data: { type: string; title: string; body: string }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, ptyId: string, data: { type: string; title: string; body: string }) =>
+    // ptyId may be null for app-level notifications (e.g. external MCP
+    // `notify` RPC, where no PTY originates the message). When null, the
+    // renderer resolves via `data.workspaceId` or falls back to the active
+    // workspace.
+    onNew: (callback: (ptyId: string | null, data: { type: string; title: string; body: string; workspaceId?: string }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, ptyId: string | null, data: { type: string; title: string; body: string; workspaceId?: string }) =>
         callback(ptyId, data);
       ipcRenderer.on(IPC.NOTIFICATION, listener);
       return () => { ipcRenderer.removeListener(IPC.NOTIFICATION, listener); };
@@ -81,9 +85,14 @@ const electronAPI = {
   metadata: {
     request: (ptyId: string) =>
       ipcRenderer.invoke(IPC.METADATA_REQUEST, ptyId),
-    onUpdate: (callback: (ptyId: string, data: { gitBranch?: string; cwd?: string; listeningPorts?: number[] }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, ptyId: string, data: { gitBranch?: string; cwd?: string; listeningPorts?: number[] }) =>
-        callback(ptyId, data);
+    // Single discriminated payload (MetadataUpdatePayload). All main-process
+    // metadata channels (CWD/git polling, agent status, meta.rpc status/
+    // progress) flow through this one shape. Renderer routes by ptyId
+    // (preferred) or workspaceId (for surface-less updates like
+    // meta.setStatus on the active workspace).
+    onUpdate: (callback: (payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number }) =>
+        callback(payload);
       ipcRenderer.on(IPC.METADATA_UPDATE, listener);
       return () => { ipcRenderer.removeListener(IPC.METADATA_UPDATE, listener); };
     },

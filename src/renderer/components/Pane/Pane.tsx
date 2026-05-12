@@ -53,7 +53,7 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
     const { notifications } = useStore.getState();
     const surfaceIds = new Set(pane.surfaces.map((s) => s.id));
     for (const n of notifications) {
-      if (!n.read && surfaceIds.has(n.surfaceId)) {
+      if (!n.read && n.surfaceId !== undefined && surfaceIds.has(n.surfaceId)) {
         markRead(n.id);
       }
     }

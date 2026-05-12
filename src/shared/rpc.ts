@@ -206,7 +206,15 @@ export interface BrowserTypeHumanlikeParams {
 // === Daemon RPC Types ===
 
 export interface DaemonEvent {
-  type: 'session.created' | 'session.destroyed' | 'session.died' | 'session.output' | 'agent.event' | 'agent.critical' | 'activity.idle';
+  type:
+    | 'session.created'
+    | 'session.destroyed'
+    | 'session.died'
+    | 'session.output'
+    | 'agent.event'
+    | 'agent.critical'
+    | 'activity.idle'
+    | 'activity.active';
   sessionId: string;
   data: unknown;
 }

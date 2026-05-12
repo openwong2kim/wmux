@@ -27,6 +27,11 @@ vi.mock('../../ipc/handlers/metadata.handler', () => ({
   removeCwd: vi.fn(),
   updateBranch: vi.fn(),
   removeBranch: vi.fn(),
+  broadcastMetadataUpdate: vi.fn(),
+}));
+
+vi.mock('../../notification/sendNotification', () => ({
+  sendNotification: vi.fn(),
 }));
 
 import { PTYBridge } from '../PTYBridge';

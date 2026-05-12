@@ -195,6 +195,23 @@ export class DaemonSessionManager extends EventEmitter {
       this.emit('session:idle', payload);
     });
 
+    // 'active' (start of an output burst), 'agent' (AgentDetector status
+    // event), 'critical' (sensitive action approval request): forward to
+    // session manager so daemon/index.ts can broadcast them to the main
+    // process. Without this re-emission, daemon mode loses all notification
+    // signal even though DaemonPTYBridge detects it correctly.
+    bridge.on('active', (payload) => {
+      this.emit('session:active', payload);
+    });
+
+    bridge.on('agent', (payload) => {
+      this.emit('session:agent', payload);
+    });
+
+    bridge.on('critical', (payload) => {
+      this.emit('session:critical', payload);
+    });
+
     bridge.on('cwd', (payload: { sessionId: string; cwd: string }) => {
       meta.cwd = payload.cwd;
     });

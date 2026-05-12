@@ -125,4 +125,56 @@ describe('ActivityMonitor', () => {
     vi.advanceTimersByTime(5000);
     expect(fired).toEqual(['p1', 'p2']);
   });
+
+  describe('onActive (burst start signal)', () => {
+    let activeFired: string[];
+
+    beforeEach(() => {
+      activeFired = [];
+      monitor.onActive((id) => activeFired.push(id));
+    });
+
+    it('fires once when output crosses the threshold', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 3000);
+      expect(activeFired).toEqual(['p1']);
+    });
+
+    it('does NOT fire again within the same active cycle (IPC spam guard)', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 3000);
+      expect(activeFired).toEqual(['p1']);
+      // Continued bursting in the same cycle: still 1 fire
+      monitor.feed('p1', 5000);
+      monitor.feed('p1', 5000);
+      expect(activeFired).toEqual(['p1']);
+    });
+
+    it('re-arms after onActiveToIdle so the next cycle can fire again', () => {
+      monitor.start('p1');
+      monitor.feed('p1', 3000);
+      expect(activeFired).toEqual(['p1']);
+
+      // Idle out
+      vi.advanceTimersByTime(5000);
+      expect(fired).toEqual(['p1']);
+
+      // New burst — onActive should fire exactly once again
+      monitor.feed('p1', 3000);
+      expect(activeFired).toEqual(['p1', 'p1']);
+    });
+
+    it('returns an unsubscribe function that stops further fires', () => {
+      const cb = vi.fn();
+      const unsub = monitor.onActive(cb);
+      monitor.start('p1');
+      monitor.feed('p1', 3000);
+      expect(cb).toHaveBeenCalledTimes(1);
+
+      unsub();
+      vi.advanceTimersByTime(5000); // idle out so the next cycle can fire
+      monitor.feed('p1', 3000);
+      expect(cb).toHaveBeenCalledTimes(1); // not 2
+    });
+  });
 });

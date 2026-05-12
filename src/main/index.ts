@@ -30,6 +30,7 @@ import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
+import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
 import { ensureDaemon } from './daemon/launcher';
 import { createTray, destroyTray } from './tray';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
@@ -167,6 +168,11 @@ const claudeWorker = new ClaudeWorker(() => mainWindow);
 
 // Daemon client — initialized on app ready, used if daemon is available
 let daemonClient: DaemonClient | null = null;
+// In daemon mode, this router bridges daemon-broadcast events (agent status,
+// activity transitions, critical actions) into the same IPC channels
+// PTYBridge writes to in local mode. Without it, daemon mode would render
+// the notification pipeline 100% inert (Codex 2nd review #1).
+let daemonNotificationRouter: DaemonNotificationRouter | null = null;
 
 // v2.8.1 hotfix (Bug 3): one-shot decision flag for the daemon-vs-local
 // mode. Stays false until app.on('ready') has finished its connect
@@ -365,12 +371,20 @@ app.on('ready', async () => {
         console.log('[Main] Connected to wmux-daemon (auth verified)');
         cleanupHandlers();
         cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient, mcpHandlerOptions);
+        // Mount the notification router now that we have a live daemon
+        // client. PTY data flows through daemon → DaemonClient events, and
+        // this router translates them into the same renderer-facing IPC
+        // signals PTYBridge produces in local mode.
+        daemonNotificationRouter = new DaemonNotificationRouter(daemonClient, () => mainWindow);
+        daemonNotificationRouter.start();
         // Notify renderer that daemon is now connected so it can re-reconcile
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('daemon:connected');
         }
         daemonClient.on('disconnected', () => {
           console.warn('[Main] Daemon disconnected, falling back to local PTY');
+          daemonNotificationRouter?.stop();
+          daemonNotificationRouter = null;
           daemonClient = null;
           cleanupHandlers();
           cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, mcpHandlerOptions);

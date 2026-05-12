@@ -341,6 +341,20 @@ export default function AppLayout() {
       const isFirstAutoUpdateChoice = saved.autoUpdateEnabled == null;
 
       useStore.getState().loadSession(saved);
+
+      // Sanitize stale per-workspace agent state. agentStatus/agentName
+      // describe a live PTY's current state; carrying them across an app
+      // restart is always wrong — the workspaces just rehydrated, no agent
+      // has emitted anything yet in this session. Without this reset the
+      // sidebar dot would lie about agents that died last time the user
+      // closed wmux (Codex 1st review #4: lifecycle reset).
+      const postLoadState = useStore.getState();
+      for (const ws of postLoadState.workspaces) {
+        if (ws.metadata?.agentStatus || ws.metadata?.agentName) {
+          postLoadState.updateWorkspaceMetadata(ws.id, { agentStatus: 'idle', agentName: '' });
+        }
+      }
+
       sessionLoadedRef.current = true;
 
       if (isFirstAutoUpdateChoice) {

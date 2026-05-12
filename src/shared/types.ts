@@ -126,7 +126,10 @@ export type NotificationType = 'info' | 'warning' | 'error' | 'agent';
 
 export interface Notification {
   id: string;
-  surfaceId: string;
+  // Optional: app-level / workspace-level notifications (e.g. from MCP `notify` RPC
+  // without an originating PTY) have no specific surface. Renderer resolves the
+  // active surface from store when displaying, or treats it as workspace-scoped.
+  surfaceId?: string;
   workspaceId: string;
   type: NotificationType;
   title: string;
@@ -149,6 +152,29 @@ export interface WorkspaceMetadata {
 
 // === Agent status ===
 export type AgentStatus = 'running' | 'complete' | 'error' | 'waiting' | 'idle';
+
+// === Metadata update IPC payload ===
+// Single discriminated payload shape used by IPC.METADATA_UPDATE. Sender (main)
+// includes whichever fields changed; receiver (renderer) merges into the
+// workspace identified by ptyId (preferred) or workspaceId (fallback for
+// surface-less updates like session sanitize on restore).
+//
+// Migration: replaces the previous inconsistent 2-arg (ptyId, data) vs 1-arg
+// (payload) patterns scattered across PTYBridge, meta.rpc, and metadata.handler.
+export interface MetadataUpdatePayload {
+  ptyId?: string;
+  workspaceId?: string;
+  gitBranch?: string;
+  cwd?: string;
+  listeningPorts?: number[];
+  agentStatus?: AgentStatus;
+  agentName?: string;
+  // External RPC channels (meta.setStatus / meta.setProgress) write through
+  // the same payload. Renderer applies these to the active workspace when no
+  // ptyId/workspaceId is provided.
+  status?: string;
+  progress?: number;
+}
 
 // === Status indicator colors ===
 export type WorkspaceStatus = 'active' | 'idle' | 'error' | 'running';
