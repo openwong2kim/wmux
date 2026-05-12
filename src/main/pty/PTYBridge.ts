@@ -8,6 +8,7 @@ import { toastManager } from '../pipe/handlers/notify.rpc';
 import { IPC } from '../../shared/constants';
 import { updateCwd, removeCwd, updateBranch, removeBranch, broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
 import { sendNotification } from '../notification/sendNotification';
+import { recentlySuppressed, clearPty as clearSuppression } from '../notification/idleSuppression';
 import { eventBus } from '../events/EventBus';
 import type { AgentStatus } from '../../shared/types';
 
@@ -64,8 +65,14 @@ export class PTYBridge {
     // must be cleared back to 'idle' — otherwise the sidebar dot pulses
     // forever even though output stopped.
     this.activityMonitor.onActiveToIdle((ptyId) => {
+      const now = Date.now();
       const lastAgentAt = this.lastAgentEventAt.get(ptyId) ?? 0;
-      if (Date.now() - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
+      if (now - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
+      // Suppress the activity fallback when the recent burst was actually
+      // a pty:resize redraw (workspace switch) or user keystroke echo —
+      // both spike ActivityMonitor's byte counter without being a real
+      // agent task ending. See idleSuppression.ts for rationale.
+      if (recentlySuppressed(ptyId, now)) return;
       try {
         const win = this.getWindow();
         // Clear stale 'running' before emitting the generic notification.
@@ -153,6 +160,7 @@ export class PTYBridge {
       this.agentDetectorCleanups.delete(ptyId);
     }
     this.lastAgentEventAt.delete(ptyId);
+    clearSuppression(ptyId);
 
     this.oscParsers.delete(ptyId);
     this.agentDetectors.delete(ptyId);

@@ -3,6 +3,7 @@ import type { DaemonClient } from '../DaemonClient';
 import type { AgentStatus } from '../../shared/types';
 import { IPC } from '../../shared/constants';
 import { sendNotification } from './sendNotification';
+import { recentlySuppressed, clearPty as clearSuppression } from './idleSuppression';
 import { broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 
@@ -93,10 +94,20 @@ export class DaemonNotificationRouter {
     };
 
     const onIdle = (payload: { sessionId: string }) => {
+      const now = Date.now();
       const lastAgentAt = this.lastAgentEventAt.get(payload.sessionId) ?? 0;
-      if (Date.now() - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
+      if (now - lastAgentAt < AGENT_EVENT_SUPPRESSION_MS) return;
+      // Same resize/typing suppression as local mode (see idleSuppression.ts).
+      if (recentlySuppressed(payload.sessionId, now)) return;
       try {
         const win = this.getWindow();
+        // Clear stale 'running' alongside the fallback toast, mirroring
+        // PTYBridge.onActiveToIdle behavior.
+        broadcastMetadataUpdate(win, {
+          ptyId: payload.sessionId,
+          agentStatus: 'idle',
+          agentName: '',
+        });
         const notification = {
           type: 'agent' as const,
           title: 'Task may have finished',
@@ -135,6 +146,7 @@ export class DaemonNotificationRouter {
           agentName: '',
         });
         this.lastAgentEventAt.delete(payload.sessionId);
+        clearSuppression(payload.sessionId);
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session end error:', err);
       }

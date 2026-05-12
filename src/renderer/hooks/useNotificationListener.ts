@@ -83,6 +83,24 @@ export function useNotificationListener() {
       const state = useStore.getState();
       const target = resolveNotificationTarget(state, ptyId, data.workspaceId);
       if (!target) return;
+
+      // Skip notification entirely when the user is already looking at the
+      // originating surface — the badge would only count something they
+      // already saw, and a transient in-app toast over the active terminal
+      // is pure noise. OS toast is still gated by window focus inside
+      // ToastManager, so this only affects the in-app surfaces.
+      if (
+        ptyId &&
+        target.workspaceId === state.activeWorkspaceId &&
+        target.surfaceId &&
+        isActivePtySurface(
+          state.workspaces.find((w) => w.id === target.workspaceId)!,
+          ptyId,
+        )
+      ) {
+        return;
+      }
+
       state.addNotification({
         surfaceId: target.surfaceId,
         workspaceId: target.workspaceId,

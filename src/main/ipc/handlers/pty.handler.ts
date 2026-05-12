@@ -8,6 +8,7 @@ import { DaemonClient } from '../../DaemonClient';
 import { IPC, getPidMapDir } from '../../../shared/constants';
 import { sanitizePtyText } from '../../../shared/types';
 import { updateCwd } from './metadata.handler';
+import { markResize, markUserWrite } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
 
 /**
@@ -185,6 +186,10 @@ export function registerPTYHandlers(
   }
 
   // pty:write
+  // User keystrokes echo back through the PTY (the shell/TUI writes them
+  // to the screen), so they show up to ActivityMonitor as agent output.
+  // Mark the user-write timestamp so the idle fallback suppresses itself
+  // while the user is typing (see idleSuppression.ts).
   ipcMain.removeAllListeners(IPC.PTY_WRITE);
   if (useDaemon && daemonClient) {
     const onPtyWrite = (_event: Electron.IpcMainEvent, id: string, data: string): void => {
@@ -193,6 +198,7 @@ export function registerPTYHandlers(
         console.warn(`[PTY_WRITE] dropped oversize write: ${data.length} chars (limit 100_000). This is a backstop; renderer should chunk.`);
         return; // prevent mega-writes
       }
+      markUserWrite(id);
       daemonClient.writeToSession(id, sanitizePtyText(data));
     };
     ipcMain.on(IPC.PTY_WRITE, onPtyWrite);
@@ -204,18 +210,25 @@ export function registerPTYHandlers(
         console.warn(`[PTY_WRITE] dropped oversize write: ${data.length} chars (limit 100_000). This is a backstop; renderer should chunk.`);
         return;
       }
+      markUserWrite(id);
       ptyManager.write(id, sanitizePtyText(data));
     };
     ipcMain.on(IPC.PTY_WRITE, onPtyWrite);
   }
 
   // pty:resize
+  // TUI agents (Claude, Codex, etc.) respond to SIGWINCH with a full-screen
+  // redraw, which spikes ActivityMonitor's byte counter and triggers the
+  // "Task may have finished" fallback when the user moves on within 5s.
+  // Mark the resize timestamp so the fallback suppresses itself for the
+  // suppression window (see idleSuppression.ts).
   ipcMain.removeHandler(IPC.PTY_RESIZE);
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_RESIZE, wrapHandler(IPC.PTY_RESIZE, async (_event: Electron.IpcMainInvokeEvent, id: string, cols: number, rows: number) => {
       if (!Number.isInteger(cols) || cols <= 0 || !Number.isInteger(rows) || rows <= 0) {
         throw new Error(`PTY_RESIZE: cols and rows must be positive integers (got cols=${cols}, rows=${rows})`);
       }
+      markResize(id);
       try {
         await daemonClient.rpc('daemon.resizeSession', { id, cols, rows });
       } catch (err: unknown) {
@@ -231,6 +244,7 @@ export function registerPTYHandlers(
         throw new Error(`PTY_RESIZE: cols and rows must be positive integers (got cols=${cols}, rows=${rows})`);
       }
       if (!ptyManager.get(id)) return;
+      markResize(id);
       ptyManager.resize(id, cols, rows);
     }));
   }

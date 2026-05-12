@@ -96,6 +96,17 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     setActiveWorkspace: (id) => set((state: StoreState) => {
       if (!state.workspaces.some((w: Workspace) => w.id === id)) return;
       state.activeWorkspaceId = id;
+      // Auto-mark this workspace's notifications as read on activation.
+      // Without this the unread badge keeps climbing whenever the user
+      // switches around without clicking into a specific terminal (the
+      // per-Pane click handler is the only other read trigger).
+      // Guarded for unit tests that exercise workspaceSlice without the
+      // notification slice mounted.
+      if (Array.isArray(state.notifications)) {
+        for (const n of state.notifications) {
+          if (n.workspaceId === id && !n.read) n.read = true;
+        }
+      }
       // multiviewIds is intentionally preserved here. AppLayout renders the
       // grid only when activeWorkspaceId is part of multiviewIds, so switching
       // to a non-multiview workspace shows its single view while the saved
