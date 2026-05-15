@@ -231,11 +231,16 @@ export default function CommandPalette() {
           const state = useStore.getState();
           const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
           if (ws) {
-            state.splitPane(ws.activePaneId, 'horizontal');
-            const newState = useStore.getState();
-            const newWs = newState.workspaces.find((w) => w.id === newState.activeWorkspaceId);
-            if (newWs) {
-              newState.addBrowserSurface(newWs.activePaneId);
+            // splitPane returns false when the workspace has hit the leaf cap
+            // (paneSlice toasts the user). Bail out so the browser surface
+            // does not get attached to the still-active original pane.
+            const ok = state.splitPane(ws.activePaneId, 'horizontal');
+            if (ok) {
+              const newState = useStore.getState();
+              const newWs = newState.workspaces.find((w) => w.id === newState.activeWorkspaceId);
+              if (newWs) {
+                newState.addBrowserSurface(newWs.activePaneId);
+              }
             }
           }
           setVisible(false);
