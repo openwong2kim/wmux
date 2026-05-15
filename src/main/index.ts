@@ -690,8 +690,8 @@ app.on('before-quit', async (e) => {
 // signal before Windows force-kills the process. The 'before-quit' async
 // handler may not complete in time, so we do a synchronous emergency save here.
 if (process.platform === 'win32') {
-  app.on('session-end' as any, () => {
-    console.log('[Main] session-end received — emergency sync save');
+  app.on('session-end' as any, async () => {
+    console.log('[Main] session-end received — emergency sync save + daemon race');
     try {
       // Import SessionManager lazily to avoid circular deps
       const { SessionManager } = require('./session/SessionManager');
@@ -704,8 +704,23 @@ if (process.platform === 'win32') {
       console.error('[Main] Emergency session save failed:', err);
     }
 
-    // Detach daemon synchronously — don't kill sessions
     if (daemonClient?.isConnected) {
+      // Phase A — A5. Race daemon.shutdown against the WM_ENDSESSION budget
+      // (~5 s before Windows SIGKILLs us) so the daemon can complete its
+      // atomic RingBuffer dumps before we tear down the pipe. Leave a 1 s
+      // safety margin for disconnectSync + Electron's own teardown.
+      //
+      // 4 s is the documented floor pending the T5 dynamic test
+      // measurement (Task #15). The harness exists at
+      // scripts/daemon-shutdown-dynamic.mjs; rerun on the target box and
+      // adjust if measured p99 latency calls for a smaller value.
+      const A5_TIMEOUT_MS = 4_000;
+      const race = await raceDaemonShutdown(daemonClient, A5_TIMEOUT_MS);
+      if (!race.ok) {
+        console.warn(
+          `[Main] session-end daemon.shutdown race failed (${A5_TIMEOUT_MS} ms): ${race.error}`,
+        );
+      }
       try {
         daemonClient.disconnectSync();
       } catch {
