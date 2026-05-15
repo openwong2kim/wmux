@@ -39,42 +39,54 @@ export function createSnapshotRunner(
   options: { getBootId: () => string },
 ): () => Promise<void> {
   let running = false;
+  let pendingRerun = false;
   return async function runSnapshotOnce(): Promise<void> {
-    if (running) return;
-    const managed = sessionManager.listManagedSessions();
-    const live = managed.filter((m) => m.meta.state !== 'dead');
-    if (live.length === 0) return;
-
+    // Pending-rerun pattern (codex review P2, session 019e2af8): if a
+    // concurrent trigger arrives while the previous run is mid-dump, mark a
+    // rerun so the freshly-created/attached session that arrived between
+    // listManagedSessions() and finally still gets its .buf produced
+    // immediately rather than waiting for the 30 s interval.
+    if (running) {
+      pendingRerun = true;
+      return;
+    }
     running = true;
-    stateWriter.ensureBufferDir();
     try {
-      for (const m of live) {
-        const dumpPath = stateWriter.getBufferDumpPath(m.meta.id);
+      do {
+        pendingRerun = false;
+        const managed = sessionManager.listManagedSessions();
+        const live = managed.filter((m) => m.meta.state !== 'dead');
+        if (live.length === 0) break;
+
+        stateWriter.ensureBufferDir();
+        for (const m of live) {
+          const dumpPath = stateWriter.getBufferDumpPath(m.meta.id);
+          try {
+            await m.ringBuffer.dumpToFile(dumpPath);
+          } catch (err) {
+            snapshotLog('warn', `Snapshot dump failed for ${m.meta.id}:`, err);
+          }
+        }
         try {
-          await m.ringBuffer.dumpToFile(dumpPath);
+          const liveSessions = sessionManager.listSessions();
+          const liveIds = new Set(liveSessions.map((s) => s.id));
+          let preserved: DaemonSession[] = [];
+          try {
+            const existing = stateWriter.load();
+            preserved = existing.sessions.filter((s) => !liveIds.has(s.id));
+          } catch {
+            // No prior sessions.json (first save) — nothing to preserve.
+          }
+          const merged: DaemonState = {
+            version: 1,
+            sessions: [...liveSessions, ...preserved],
+            bootId: options.getBootId(),
+          };
+          stateWriter.saveImmediate(merged);
         } catch (err) {
-          snapshotLog('warn', `Snapshot dump failed for ${m.meta.id}:`, err);
+          snapshotLog('warn', 'Snapshot state save failed:', err);
         }
-      }
-      try {
-        const liveSessions = sessionManager.listSessions();
-        const liveIds = new Set(liveSessions.map((s) => s.id));
-        let preserved: DaemonSession[] = [];
-        try {
-          const existing = stateWriter.load();
-          preserved = existing.sessions.filter((s) => !liveIds.has(s.id));
-        } catch {
-          // No prior sessions.json (first save) — nothing to preserve.
-        }
-        const merged: DaemonState = {
-          version: 1,
-          sessions: [...liveSessions, ...preserved],
-          bootId: options.getBootId(),
-        };
-        stateWriter.saveImmediate(merged);
-      } catch (err) {
-        snapshotLog('warn', 'Snapshot state save failed:', err);
-      }
+      } while (pendingRerun);
     } finally {
       running = false;
     }

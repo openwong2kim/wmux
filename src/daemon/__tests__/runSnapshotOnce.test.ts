@@ -167,18 +167,15 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     expect(fs.existsSync(writer.getBufferDumpPath('ok-two'))).toBe(true);
   });
 
-  // In-flight guard: a concurrent re-entry while the previous run is still
-  // awaiting a dumpToFile call must skip without performing additional work.
-  // This locks the behavior the inline 30s setInterval relied on (its
-  // `if (snapshotRunning) return` guard) so the setInterval body can safely
-  // fan out to runSnapshotOnce.
-  it('in-flight guard prevents concurrent execution', async () => {
+  // Pending-rerun pattern: a concurrent trigger arriving while the previous
+  // run is mid-dump must NOT be dropped — otherwise a session created during
+  // the in-flight window would miss its .buf until the next 30 s interval.
+  // The runner marks pendingRerun and re-loops after the current iteration
+  // completes. Codex review P2, session 019e2af8.
+  it('in-flight guard queues a rerun for concurrent triggers', async () => {
     manager.createSession({ id: 's1', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
     const session = manager.getSession('s1')!;
 
-    // dumpToFile hangs until we release it via resolveCurrent. The mock
-    // re-installs resolveCurrent on every invocation so we control each call
-    // independently.
     let resolveCurrent: (() => void) | null = null;
     const dumpSpy = vi.spyOn(session.ringBuffer, 'dumpToFile').mockImplementation(
       () => new Promise<void>((resolve) => { resolveCurrent = () => resolve(); }),
@@ -189,20 +186,25 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(dumpSpy).toHaveBeenCalledTimes(1);
 
-    // Second concurrent call must short-circuit on the running flag.
+    // Concurrent trigger marks pendingRerun and returns without dumping.
     await runSnapshotOnce();
     expect(dumpSpy).toHaveBeenCalledTimes(1);
 
-    // Release the first call and wait for it to fully clean up.
+    // Release the first dump. The runner sees pendingRerun and re-loops,
+    // which calls dumpToFile a second time on the next iteration.
     resolveCurrent!();
-    await first;
-    expect(dumpSpy).toHaveBeenCalledTimes(1);
-
-    // After release a fresh call works normally. Start it, let it park on
-    // dumpToFile, then release so the test doesn't hang.
-    const third = runSnapshotOnce();
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(dumpSpy).toHaveBeenCalledTimes(2);
+
+    // Release the rerun's dump so `first` can resolve.
+    resolveCurrent!();
+    await first;
+    expect(dumpSpy).toHaveBeenCalledTimes(2);
+
+    // After the run fully completes, a fresh call works normally.
+    const third = runSnapshotOnce();
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    expect(dumpSpy).toHaveBeenCalledTimes(3);
     resolveCurrent!();
     await third;
   });
