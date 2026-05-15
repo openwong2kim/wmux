@@ -285,9 +285,14 @@ export class StateWriter {
     return path.join(path.dirname(this.filePath), 'buffers', `${sessionId}.buf`);
   }
 
+  /** Get the buffers/ directory path. */
+  getBufferDir(): string {
+    return path.join(path.dirname(this.filePath), 'buffers');
+  }
+
   /** Ensure the buffers/ directory exists. */
   ensureBufferDir(): void {
-    const dir = path.join(path.dirname(this.filePath), 'buffers');
+    const dir = this.getBufferDir();
     if (!fs.existsSync(dir)) {
       // Note: mode is no-op on Windows; use icacls for NTFS ACLs
       fs.mkdirSync(dir, { recursive: true, mode: 0o700 });

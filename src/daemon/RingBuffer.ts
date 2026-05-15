@@ -1,5 +1,18 @@
-import { writeFile } from 'node:fs/promises';
-import { readFileSync } from 'node:fs';
+import { writeFile, rename, unlink } from 'node:fs/promises';
+import {
+  readFileSync,
+  writeFileSync,
+  renameSync,
+  unlinkSync,
+  readdirSync,
+} from 'node:fs';
+import path from 'node:path';
+import crypto from 'node:crypto';
+
+// Pattern that identifies temporary buffer files produced by
+// dumpToFile / dumpToFileSyncAtomic. Recovery / dump-readers must skip
+// these; they may exist briefly between the tmp write and the rename.
+const TMP_SUFFIX_RE = /\.tmp\.[0-9a-f]+$/;
 
 /**
  * Fixed-size circular byte buffer for storing ConPTY output per session.
@@ -109,11 +122,48 @@ export class RingBuffer {
     return this.capacity;
   }
 
-  /** Dump the buffer contents to a file (for DEAD session log preservation). */
+  /**
+   * Dump the buffer contents to a file atomically (write to tmp + rename).
+   *
+   * Phase A — A4. Writing the .buf directly is not safe across a crash:
+   * a reader that races a half-written buffer would see a truncated file
+   * and either fail to parse or restore a scrollback that abruptly cuts
+   * off mid-frame. tmp + rename keeps readers from ever observing a
+   * partial state — the rename either has happened or has not.
+   *
+   * The tmp file lives in the SAME parent directory as the destination
+   * so rename is always intra-FS (cross-device renames fail with EXDEV).
+   * On failure, the tmp file is best-effort cleaned up; recovery code
+   * also sweeps stale tmps via {@link cleanupStaleTmpFiles}.
+   */
   async dumpToFile(filePath: string): Promise<void> {
     const data = this.readAll();
-    // Note: mode is no-op on Windows; use icacls for NTFS ACLs
-    await writeFile(filePath, data, { mode: 0o600 });
+    const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
+    try {
+      // mode is a no-op on Windows; use icacls for NTFS ACLs.
+      await writeFile(tmpPath, data, { mode: 0o600 });
+      await rename(tmpPath, filePath);
+    } catch (err) {
+      try { await unlink(tmpPath); } catch { /* tmp may already be gone */ }
+      throw err;
+    }
+  }
+
+  /**
+   * Synchronous atomic dump. Used by the Windows process.on('exit')
+   * handler as a last-resort save when the daemon has no time to await
+   * the async path. Same tmp + rename invariants as {@link dumpToFile}.
+   */
+  dumpToFileSyncAtomic(filePath: string): void {
+    const data = this.readAll();
+    const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
+    try {
+      writeFileSync(tmpPath, data, { mode: 0o600 });
+      renameSync(tmpPath, filePath);
+    } catch (err) {
+      try { unlinkSync(tmpPath); } catch { /* tmp may already be gone */ }
+      throw err;
+    }
   }
 
   /** Create a RingBuffer pre-filled with data loaded from a file. */
@@ -124,5 +174,39 @@ export class RingBuffer {
       rb.write(data);
     }
     return rb;
+  }
+
+  /**
+   * Best-effort cleanup of stale `.tmp.<hex>` files in the buffer directory.
+   *
+   * tmp files only exist between the write and rename steps of an atomic
+   * dump. Under normal operation rename either succeeds (no tmp left) or
+   * the catch handler unlinks the tmp. A power loss or SIGKILL between
+   * the two steps can leave a tmp behind. Recovery + dump-readers must
+   * ignore them (test the filename against {@link TMP_SUFFIX_RE}); this
+   * helper unlinks them so the buffer directory does not accumulate
+   * orphans. Errors are swallowed — cleanup is best-effort.
+   */
+  static cleanupStaleTmpFiles(dir: string): void {
+    let entries: string[];
+    try {
+      entries = readdirSync(dir);
+    } catch {
+      return; // dir does not exist yet — nothing to clean.
+    }
+    for (const name of entries) {
+      if (TMP_SUFFIX_RE.test(name)) {
+        try {
+          unlinkSync(path.join(dir, name));
+        } catch {
+          // file may have been removed by another process; ignore.
+        }
+      }
+    }
+  }
+
+  /** True if the filename is a tmp companion of an atomic dump. */
+  static isTmpFile(name: string): boolean {
+    return TMP_SUFFIX_RE.test(name);
   }
 }

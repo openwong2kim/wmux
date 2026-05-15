@@ -10,6 +10,7 @@ import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import { createSnapshotRunner } from './snapshotRunner';
+import { RingBuffer } from './RingBuffer';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
 
@@ -895,6 +896,14 @@ function buildState(sessionManager: DaemonSessionManager): DaemonState {
 // === Graceful shutdown ===
 
 let shuttingDown = false;
+// Phase A — A4. Flipped to true once the async shutdown body has resolved
+// every Promise from ringBuffer.dumpToFile(). The Windows process.on('exit')
+// sync fallback consults this flag: if dumps already completed it skips
+// (avoiding duplicate writes), otherwise it runs dumpToFileSyncAtomic for
+// every live session as a last-resort save. Replaces a broader
+// `if (shuttingDown) return` guard that would have skipped the sync save
+// even when the async path was interrupted mid-dump.
+let dumpsCompleted = false;
 
 async function shutdown(
   signal: string,
@@ -952,6 +961,8 @@ async function shutdown(
     );
   }
   await Promise.all(dumpPromises);
+  // A4 — async dumps are durable. Sync exit handler will short-circuit.
+  dumpsCompleted = true;
 
   // Save suspended state BEFORE disposing
   if (!cachedBootId) cachedBootId = await getBootId();
@@ -1009,6 +1020,14 @@ async function main(): Promise<void> {
 
   // 3. Initialize modules
   const stateWriter = new StateWriter(wmuxDir);
+  // A4 — sweep tmp dumps left behind by a previous crash. They are safe to
+  // delete: tmp files only exist between the write and rename steps of an
+  // atomic dump, so any tmp on disk now is from a daemon that died before
+  // the rename completed. The .buf at the same path is either intact (old
+  // good dump) or absent (first dump never finished, scrollback lost for
+  // that session, which we cannot recover anyway).
+  RingBuffer.cleanupStaleTmpFiles(stateWriter.getBufferDir());
+
   const sessionManager = new DaemonSessionManager();
   sessionManager.setConfig(config);
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
@@ -1141,7 +1160,12 @@ async function main(): Promise<void> {
   // synchronous save, and also periodic state saves to minimize data loss.
   if (process.platform === 'win32') {
     process.on('exit', () => {
-      // Synchronous-only — dump what we can before process dies
+      // Phase A — A4. Precise guard: skip the sync save only if the async
+      // shutdown body actually finished its dumps. If the async path was
+      // interrupted mid-dump (process about to die), fall through and run
+      // the sync atomic save as a last-resort.
+      if (dumpsCompleted) return;
+      // Synchronous-only — dump what we can before process dies.
       try {
         const managed = sessionManager.listManagedSessions();
         stateWriter.ensureBufferDir();
@@ -1149,8 +1173,11 @@ async function main(): Promise<void> {
           if (m.meta.state === 'dead') continue;
           const dumpPath = stateWriter.getBufferDumpPath(m.meta.id);
           try {
-            const data = m.ringBuffer.readAll();
-            fs.writeFileSync(dumpPath, data);
+            // A4 — atomic sync write: tmp + renameSync so a reader can
+            // never observe a half-written .buf, even if the OS pulls the
+            // plug mid-write. Replaces the bare writeFileSync that left a
+            // partial file behind on power loss.
+            m.ringBuffer.dumpToFileSyncAtomic(dumpPath);
             m.meta.state = 'suspended';
             m.meta.bufferDumpPath = dumpPath;
           } catch { /* best effort */ }
