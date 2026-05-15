@@ -859,6 +859,51 @@ function buildState(sessionManager: DaemonSessionManager): DaemonState {
   };
 }
 
+// === Snapshot runner (Phase A — A1b) ===
+//
+// Returns an async function that dumps every live session's RingBuffer to disk
+// and persists sessions.json. Owns a per-runner re-entrancy flag so concurrent
+// invocations (e.g., scheduled tick fires while a previous tick is still
+// flushing) collapse to a single run.
+//
+// Extracted from the inline 30s setInterval body so it can also be invoked
+// once at spawn time, closing the window where no .buf yet exists on disk.
+// A crash within the first 30 s after daemon start would otherwise leave a
+// recovery loop with no buffer file to restore from.
+export function createSnapshotRunner(
+  sessionManager: DaemonSessionManager,
+  stateWriter: StateWriter,
+): () => Promise<void> {
+  let running = false;
+  return async function runSnapshotOnce(): Promise<void> {
+    if (running) return;
+    const managed = sessionManager.listManagedSessions();
+    const live = managed.filter((m) => m.meta.state !== 'dead');
+    if (live.length === 0) return;
+
+    running = true;
+    stateWriter.ensureBufferDir();
+    try {
+      for (const m of live) {
+        const dumpPath = stateWriter.getBufferDumpPath(m.meta.id);
+        try {
+          await m.ringBuffer.dumpToFile(dumpPath);
+        } catch (err) {
+          log('warn', `Snapshot dump failed for ${m.meta.id}:`, err);
+        }
+      }
+      try {
+        const state = buildState(sessionManager);
+        stateWriter.saveImmediate(state);
+      } catch (err) {
+        log('warn', 'Snapshot state save failed:', err);
+      }
+    } finally {
+      running = false;
+    }
+  };
+}
+
 // === Graceful shutdown ===
 
 let shuttingDown = false;
@@ -1045,37 +1090,17 @@ async function main(): Promise<void> {
   // 8c. Periodic buffer snapshots (every 30s) — survives forced kills / power loss
   // Also save sessions.json so recovery has up-to-date session metadata.
   // Sequential dumps to avoid simultaneous memory peaks from all buffers at once.
-  let snapshotRunning = false;
+  // The runner is also invoked once immediately below (A1b) to close the
+  // 30 s window where no .buf exists yet on disk.
+  const runSnapshotOnce = createSnapshotRunner(sessionManager, stateWriter);
   const snapshotInterval = setInterval(() => {
-    if (snapshotRunning) return; // skip if previous snapshot cycle still in progress
-    const managed = sessionManager.listManagedSessions();
-    const live = managed.filter((m) => m.meta.state !== 'dead');
-    if (live.length === 0) return;
-
-    snapshotRunning = true;
-    stateWriter.ensureBufferDir();
-
-    (async () => {
-      for (const m of live) {
-        const dumpPath = stateWriter.getBufferDumpPath(m.meta.id);
-        try {
-          await m.ringBuffer.dumpToFile(dumpPath);
-        } catch (err) {
-          log('warn', `Snapshot dump failed for ${m.meta.id}:`, err);
-        }
-      }
-      // Save session metadata after all buffer dumps complete
-      try {
-        const state = buildState(sessionManager);
-        stateWriter.saveImmediate(state);
-      } catch (err) {
-        log('warn', 'Snapshot state save failed:', err);
-      }
-    })().finally(() => {
-      snapshotRunning = false;
-    });
+    void runSnapshotOnce();
   }, 30_000);
   snapshotInterval.unref();
+
+  // A1b — fire an initial snapshot at spawn so a crash within the first
+  // 30 s leaves a recoverable .buf trace rather than nothing.
+  void runSnapshotOnce();
 
   // 9. Signal handlers
   const doShutdown = (sig: string) =>
