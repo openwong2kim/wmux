@@ -304,37 +304,58 @@ export async function spawnMember(
 
 // ─── Destroy company: dispose all PTYs then clean store ──────────────────────
 
-export function destroyCompanyWithCleanup(): void {
+// TODOS #4 + #5 (M6 in-orbit fixes for v2.9.1):
+//
+// #4 race condition: the previous fire-and-forget dispose pattern returned
+// before any pty.dispose() Promise settled, then immediately cleared the
+// store via destroyCompany(). The UI's next render saw company === null
+// while async dispose handlers were still mid-flight, occasionally
+// dereferencing the just-cleared store and crashing the renderer. Fix:
+// await Promise.all on every dispose before mutating the store.
+//
+// #5 PTY leak: only `m.ptyId` (the member's primary terminal) was
+// disposed. If a member workspace had additional surfaces (splits, extra
+// terminals created by the agent), those ptyIds stayed alive — leaking
+// memory until daemon shutdown. Fix: collect leaf surfaces from each
+// member's workspace rootPane, same pattern as the CEO workspace branch.
+export async function destroyCompanyWithCleanup(): Promise<void> {
   const state = useStore.getState();
   const company = state.company;
   if (!company) return;
 
-  // Collect all PTY IDs (members + CEO workspace)
   const ptyIds: string[] = [];
   for (const dept of company.departments) {
     for (const m of dept.members) {
       if (m.ptyId) ptyIds.push(m.ptyId);
+      // TODOS #5 — sweep the member's workspace surfaces too.
+      if (m.workspaceId) {
+        const memWs = state.workspaces.find((ws) => ws.id === m.workspaceId);
+        if (memWs) {
+          for (const ptyId of collectLeafSurfaces(memWs.rootPane)) {
+            if (!ptyIds.includes(ptyId)) ptyIds.push(ptyId);
+          }
+        }
+      }
     }
   }
 
-  // Also dispose CEO workspace PTY
   if (company.ceoWorkspaceId) {
     const ceoWs = state.workspaces.find((ws) => ws.id === company.ceoWorkspaceId);
     if (ceoWs) {
-      const leaves = collectLeafSurfaces(ceoWs.rootPane);
-      for (const ptyId of leaves) {
+      for (const ptyId of collectLeafSurfaces(ceoWs.rootPane)) {
         if (!ptyIds.includes(ptyId)) ptyIds.push(ptyId);
       }
     }
   }
 
-  // Dispose all PTYs (fire-and-forget, errors ignored)
-  for (const ptyId of ptyIds) {
-    window.electronAPI.pty.dispose(ptyId).catch(() => { /* ignore dispose errors */ });
-  }
+  // TODOS #4 — await every dispose before clearing the store.
+  await Promise.all(
+    ptyIds.map((ptyId) =>
+      window.electronAPI.pty.dispose(ptyId).catch(() => { /* ignore dispose errors */ }),
+    ),
+  );
   console.log(`[company] Destroyed: disposed ${ptyIds.length} PTYs`);
 
-  // Clean store
   state.destroyCompany();
 }
 

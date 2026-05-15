@@ -233,7 +233,11 @@ export default function CompanyPanel() {
             <button
               onClick={() => {
                 if (confirm('Destroy company and all teams?')) {
-                  destroyCompanyWithCleanup();
+                  // M6 TODOS #4 — fire-and-forget the async helper here
+                  // (no surrounding UI we need to flip after). The
+                  // internal Promise.all on pty.dispose guards the store
+                  // mutation order; React will re-render on company=null.
+                  void destroyCompanyWithCleanup();
                 }
               }}
               className="text-[9px] font-mono transition-colors"

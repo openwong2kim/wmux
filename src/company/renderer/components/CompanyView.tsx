@@ -56,9 +56,12 @@ function ManageView({ onClose }: { onClose: () => void }) {
     }
   };
 
-  const handleDestroy = () => {
+  const handleDestroy = async () => {
     if (!confirm('Destroy company and all teams?')) return;
-    destroyCompanyWithCleanup();
+    // M6 TODOS #4 — await dispose Promise.all before unmounting so the
+    // store does not flip to company === null while async dispose
+    // handlers still reference it.
+    await destroyCompanyWithCleanup();
     onClose();
   };
 
