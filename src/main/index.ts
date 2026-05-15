@@ -31,6 +31,7 @@ import { McpRegistrar } from './mcp/McpRegistrar';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { raceDaemonShutdown } from './daemonShutdownRace';
+import { migrateScrollbackOnce } from './scrollback/legacyMigration';
 import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
 import { ensureDaemon } from './daemon/launcher';
 import { createTray, destroyTray } from './tray';
@@ -430,6 +431,22 @@ app.on('ready', async () => {
         // Notify renderer that daemon is now connected so it can re-reconcile
         if (mainWindow && !mainWindow.isDestroyed()) {
           mainWindow.webContents.send('daemon:connected');
+        }
+        // Phase A — A7. Run the one-time legacy scrollback migration on
+        // the first daemon-healthy transition. Best-effort: if rename
+        // fails (EBUSY/EPERM under antivirus) the runner returns
+        // retry-needed and the next transition tries again. Log the
+        // breadcrumb either way so the user can spot a stuck migration
+        // in the main-side log.
+        try {
+          const result = migrateScrollbackOnce(app.getPath('userData'), app.getVersion());
+          if (result.status === 'migrated') {
+            console.log(`[Main] A7 scrollback legacy migration → ${result.legacyDir}`);
+          } else if (result.status === 'retry-needed') {
+            console.warn(`[Main] A7 scrollback migration retry-needed: ${result.error}`);
+          }
+        } catch (err) {
+          console.warn('[Main] A7 scrollback migration threw:', err);
         }
         daemonClient.on('disconnected', () => {
           console.warn('[Main] Daemon disconnected, falling back to local PTY');
