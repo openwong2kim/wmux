@@ -23,7 +23,7 @@ vi.mock('node-pty', () => ({
 // Import after mock so DaemonSessionManager wires the mock.
 import { DaemonSessionManager } from '../DaemonSessionManager';
 import { StateWriter } from '../StateWriter';
-import { createSnapshotRunner } from '../index';
+import { createSnapshotRunner } from '../snapshotRunner';
 
 describe('createSnapshotRunner (A1b — extracted from periodic interval body)', () => {
   let tmpDir: string;
@@ -35,7 +35,9 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-a1b-test-'));
     manager = new DaemonSessionManager();
     writer = new StateWriter(tmpDir);
-    runSnapshotOnce = createSnapshotRunner(manager, writer);
+    runSnapshotOnce = createSnapshotRunner(manager, writer, {
+      getBootId: () => 'a1b-test-boot',
+    });
   });
 
   afterEach(() => {
