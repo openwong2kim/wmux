@@ -8,6 +8,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
 import { t } from '../i18n';
 import { XTERM_THEMES, extractXtermColors, type ThemeId, type BuiltinThemeId } from '../themes';
+import { isDaemonModeActive } from '../daemon/daemonMode';
 import { pastePtyChunked, chunkOnDataIfNeeded } from '../utils/clipboardChunk';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
@@ -558,8 +559,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // would write into a torn-down terminal on fast unmount + remount
         // (e.g. workspace switch mid-restore).
         if (terminalRef.current !== terminal) return;
-        if (content) {
-          terminal.write(content);
+        // Phase A — A6. Race cancel: if daemon mode activated between the
+        // scrollback.load() call and now, discard the .txt content. The
+        // daemon SessionPipe replay will provide authoritative scrollback
+        // and writing the stale .txt here would compose it with that
+        // replay (via the divider below), producing visibly broken output.
+        // Pending PTY data still flushes through unchanged.
+        const restored = isDaemonModeActive() ? null : content;
+        if (restored) {
+          terminal.write(restored);
           // Whitespace + ANSI reset boundary so restored scrollback doesn't
           // visually fuse with the fresh PTY prompt drawn moments later.
           // \x1b[0m closes any attribute left open by restored content; the

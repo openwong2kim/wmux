@@ -31,7 +31,20 @@ function scrollbackFilePath(surfaceId: string): string {
   return path.join(app.getPath('userData'), 'scrollback', `${surfaceId}.txt`);
 }
 
-export function registerSessionHandlers(): () => void {
+/**
+ * Phase A — A6. Live getter for daemon-connected state. The handlers gate
+ * scrollback:dump + scrollback:load on this; in daemon mode the renderer
+ * .txt fallback path is short-circuited so the rotation chain hazard
+ * (4-minute self-destruction of good backups) cannot fire while the daemon
+ * is the source of truth. Local mode (getter returns false) keeps the
+ * existing .txt path verbatim.
+ *
+ * Passed as a callback rather than a snapshot so connect/disconnect
+ * transitions during the renderer's lifetime are reflected immediately.
+ */
+export function registerSessionHandlers(
+  isDaemonConnected: () => boolean = () => false,
+): () => void {
   // Instrumentation: scrollback restore race investigation. This function is
   // called from `registerAllHandlers`, which is invoked both at module load
   // AND during the daemon-connect/disconnect handler swap in main/index.ts.
@@ -66,6 +79,14 @@ export function registerSessionHandlers(): () => void {
   //     guard in `serializeTerminalBuffer` is the primary fix.
   ipcMain.removeHandler(IPC.SCROLLBACK_DUMP);
   ipcMain.handle(IPC.SCROLLBACK_DUMP, wrapHandler(IPC.SCROLLBACK_DUMP, (_event: Electron.IpcMainInvokeEvent, surfaceId: string, content: string) => {
+    // Phase A — A6. Daemon mode: skip the .txt write entirely. The daemon
+    // RingBuffer is authoritative for scrollback; persisting the .txt at
+    // the same time would compose two restore paths in the renderer
+    // (`.txt` autoload + daemon SessionPipe flush) and the rotation chain
+    // would still self-destruct on idle terminals.
+    if (isDaemonConnected()) {
+      return { success: true, skipped: true };
+    }
     // Validate surfaceId (alphanumeric + hyphens only, prevent path traversal)
     if (!/^[a-zA-Z0-9-]+$/.test(surfaceId)) return { success: false };
 
@@ -110,6 +131,14 @@ export function registerSessionHandlers(): () => void {
   //     the next good content on the next 5s tick.
   ipcMain.removeHandler(IPC.SCROLLBACK_LOAD);
   ipcMain.handle(IPC.SCROLLBACK_LOAD, wrapHandler(IPC.SCROLLBACK_LOAD, (_event: Electron.IpcMainInvokeEvent, surfaceId: string) => {
+    // Phase A — A6. Daemon mode: return null so the renderer skips its
+    // .txt restore branch and relies entirely on the daemon SessionPipe
+    // flush. Returning even a valid old .txt here would race the daemon
+    // replay and the renderer would compose them with a separator
+    // (codex review Layer C corruption path).
+    if (isDaemonConnected()) {
+      return null;
+    }
     if (!/^[a-zA-Z0-9-]+$/.test(surfaceId)) return null;
     const filePath = scrollbackFilePath(surfaceId);
     try {

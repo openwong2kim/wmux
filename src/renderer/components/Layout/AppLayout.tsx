@@ -32,6 +32,7 @@ import { terminalRegistry } from '../../hooks/useTerminal';
 import { withDefaultShell } from '../../utils/ptyCreateOptions';
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
+import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
 
 /** Map shell executable path to a human-readable display name. */
 function shellDisplayName(shellPath: string): string {
@@ -68,6 +69,16 @@ function collectTerminalSurfaces(pane: Pane): Surface[] {
  *  instead of mutating surfaces directly. */
 /** Sync version — fire-and-forget for beforeunload (cannot await). */
 function dumpScrollbackBuffersSync(): Map<string, boolean> {
+  // Phase A — A6. In daemon mode the daemon RingBuffer is the single source
+  // of truth for scrollback. Skip the helper entirely so the corresponding
+  // scrollback:dump IPC is never invoked and the rotation chain cannot
+  // self-destruct while daemon is healthy. The returned empty map flows
+  // through cloneWithScrollback so no `scrollbackFile` field is stamped
+  // onto session data, preventing a future restore from picking up a stale
+  // entry from a session that ran in local mode.
+  if (isDaemonModeActive()) {
+    return new Map();
+  }
   const dumped = new Map<string, boolean>();
   const state = useStore.getState();
   for (const ws of state.workspaces) {
@@ -459,6 +470,30 @@ export default function AppLayout() {
     });
     return remove;
   }, [reconcilePtys]);
+
+  // Phase A — A6. Keep the module-level daemon-mode flag in sync with the
+  // main process. The flag gates the renderer .txt scrollback path: while
+  // daemon is connected, autosave skips and the IPC layer short-circuits
+  // so the rotation-chain hazard (chronic 64-byte dumps overwriting good
+  // backups) cannot fire. Local-mode users (daemon spawn fail / disconnect
+  // mid-session) keep the .txt fallback exactly as before.
+  useEffect(() => {
+    // Read initial state — covers the case where main already finalised the
+    // daemon decision before the renderer mounted (reload, crash recovery).
+    void window.electronAPI.daemon.whenReady().then(({ connected }) => {
+      setDaemonModeActive(connected);
+    });
+    const offConnected = window.electronAPI.daemon.onConnected(() => {
+      setDaemonModeActive(true);
+    });
+    const offDisconnected = window.electronAPI.daemon.onDisconnected(() => {
+      setDaemonModeActive(false);
+    });
+    return () => {
+      offConnected();
+      offDisconnected();
+    };
+  }, []);
 
   // Save session on beforeunload (with scrollback dump — sync fire-and-forget)
   useEffect(() => {

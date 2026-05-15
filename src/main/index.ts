@@ -237,7 +237,12 @@ const mcpHandlerOptions = {
 // on cold boot, which silently destroyed previous-session scrollback when
 // the post-restore 5s autosave dumped the empty/fresh buffer over it.
 // Same hardening pattern as the v2.8.1 Bug 3 fix for `daemon:get-ready-state`.
-registerSessionHandlers();
+// Phase A — A6. Pass a live getter for the daemon-connected state so the
+// scrollback:dump + scrollback:load handlers short-circuit while a daemon
+// is healthy. The getter closes over the `daemonClient` let above, so the
+// handlers see every connect/disconnect transition that mutates that
+// variable (no closure snapshot).
+registerSessionHandlers(() => daemonClient?.isConnected === true);
 
 let cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, mcpHandlerOptions);
 
@@ -431,6 +436,14 @@ app.on('ready', async () => {
           daemonNotificationRouter?.stop();
           daemonNotificationRouter = null;
           daemonClient = null;
+          // Phase A — A6. Notify the renderer so the daemon-mode .txt
+          // write/load gates open again (local mode preserves the
+          // pre-existing scrollback path). Without this, the renderer
+          // would still treat itself as daemon-connected and skip the
+          // .txt autosave even though no daemon is replaying PTY data.
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('daemon:disconnected');
+          }
           logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup begin');
           cleanupHandlers();
           logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup done, register begin');

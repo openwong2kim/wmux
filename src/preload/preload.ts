@@ -135,6 +135,16 @@ const electronAPI = {
       ipcRenderer.on('daemon:connected', listener);
       return () => { ipcRenderer.removeListener('daemon:connected', listener); };
     },
+    // Phase A — A6. Companion to onConnected. The renderer subscribes to
+    // both so its reactive daemon-mode state machine can update when the
+    // daemon drops out at runtime (e.g., daemon process dies), not only
+    // when it appears for the first time. Used to gate the .txt scrollback
+    // write/load IPCs so local-mode users keep their fallback path.
+    onDisconnected: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on('daemon:disconnected', listener);
+      return () => { ipcRenderer.removeListener('daemon:disconnected', listener); };
+    },
     /**
      * Resolves once main has finalized the daemon-vs-local decision.
      * Returns `{ connected: bool }` reflecting the CURRENT state at
