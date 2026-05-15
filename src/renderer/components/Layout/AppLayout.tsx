@@ -96,14 +96,25 @@ function dumpScrollbackBuffersSync(): Map<string, boolean> {
   return dumped;
 }
 
-/** Deep-clone pane tree, setting scrollbackFile on dumped surfaces */
+/** Deep-clone pane tree, setting scrollbackFile on dumped surfaces.
+ *
+ * Phase A — A6 follow-up (codex review P2, session 019e2af8). When daemon
+ * mode is active and dumped is empty, the previous logic preserved every
+ * surface's existing `scrollbackFile` field. A session saved in local
+ * mode therefore carried its stale `.txt` reference forward; if the
+ * renderer ever reloaded before daemon readiness (or after a failed A7
+ * migration), it would try to restore from the stale `.txt` despite the
+ * IPC-level gate. Clear the field outright in daemon mode so session
+ * data round-trips with the gates' intent.
+ */
 function cloneWithScrollback(pane: Pane, dumped: Map<string, boolean>): Pane {
+  const daemonMode = isDaemonModeActive();
   if (pane.type === 'leaf') {
     return {
       ...pane,
       surfaces: pane.surfaces.map((s) => ({
         ...s,
-        scrollbackFile: dumped.has(s.id) ? s.id : s.scrollbackFile,
+        scrollbackFile: dumped.has(s.id) ? s.id : (daemonMode ? undefined : s.scrollbackFile),
       })),
     };
   }

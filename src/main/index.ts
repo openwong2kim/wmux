@@ -388,8 +388,13 @@ app.on('ready', async () => {
     }
   });
 
-  // System tray — lets the app stay alive when window is closed
-  createTray(mainWindow, () => { isQuitting = true; });
+  // System tray — lets the app stay alive when window is closed.
+  // Phase A — A3/A5 fix (codex review P1, session 019e2af8): the callback
+  // used to set isQuitting=true before tray.ts then called app.quit(). The
+  // resulting before-quit handler hit `if (isQuitting) return` on its first
+  // pass and skipped the entire daemon.shutdown race added in A3. Now the
+  // callback is a no-op; before-quit's first pass sets isQuitting itself.
+  createTray(mainWindow, () => { /* no-op — before-quit handles isQuitting */ });
 
   // Auto-start daemon and connect
   try {

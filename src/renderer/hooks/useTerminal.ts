@@ -503,6 +503,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Deferred PTY listener references — connected after scrollback restore
     let removeDataListener: (() => void) | null = null;
     let removeExitListener: (() => void) | null = null;
+    // Phase A — A6 cold-start race fix (codex review P2 #2, session
+    // 019e2af8). When `.txt` restore lands before daemon mode flips, the
+    // race-cancel guard inside scrollback.load().then() does nothing
+    // (`isDaemonModeActive()` is still false). The stale `.txt` content
+    // is then written into the terminal and a subsequent daemon connect
+    // would replay the daemon RingBuffer on top, recreating the composed
+    // scrollback corruption A6 is meant to prevent.
+    //
+    // Track whether `.txt` content was actually written, and if so listen
+    // for `daemon:connected` — when it fires, clear + reset the terminal
+    // before SessionPipe replay arrives, so the daemon flush lands on a
+    // fresh xterm with no stale prefix.
+    let didRestoreTxt = false;
+    let removeDaemonConnectedForRestore: (() => void) | null = null;
     let firstDataFired = false;
     const fireFirstData = () => {
       if (!firstDataFired) {
@@ -578,6 +592,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // output.
           terminal.write('\r\n\x1b[0m\r\n');
           fireFirstData();
+          didRestoreTxt = true;
+          // Arm the late-connect clear. If daemon mode activates after this
+          // moment, wipe the terminal so the SessionPipe replay does not
+          // compose on top of the stale .txt content we just wrote.
+          removeDaemonConnectedForRestore = window.electronAPI.daemon.onConnected(() => {
+            if (!didRestoreTxt) return;
+            if (terminalRef.current !== terminal) return;
+            terminal.reset();
+            didRestoreTxt = false;
+          });
         }
         scrollbackLoaded = true;
         for (const data of pendingData) {
@@ -696,6 +720,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       resizeObserver.disconnect();
       removeDataListener?.();
       removeExitListener?.();
+      removeDaemonConnectedForRestore?.();
       terminalRegistry.delete(ptyId);
       webglAddonRef.current?.dispose();
       webglAddonRef.current = null;

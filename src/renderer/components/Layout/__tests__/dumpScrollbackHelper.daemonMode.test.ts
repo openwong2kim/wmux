@@ -35,4 +35,17 @@ describe('A6 — dumpScrollbackBuffersSync daemon-mode skip (source-level)', () 
     expect(src).toMatch(/daemon\.onDisconnected/);
     expect(src).toMatch(/whenReady\(\)\.then[\s\S]*?setDaemonModeActive/);
   });
+
+  // Codex review P2 #1 (stale scrollback reference). cloneWithScrollback
+  // must zero out s.scrollbackFile in daemon mode so a session saved
+  // before v2.9.1 / before daemon-readiness does not carry its stale
+  // .txt file path forward into the next session restore cycle.
+  it('cloneWithScrollback clears stale scrollbackFile in daemon mode', () => {
+    const fnIdx = src.indexOf('function cloneWithScrollback(');
+    expect(fnIdx).toBeGreaterThan(0);
+    const body = src.slice(fnIdx, fnIdx + 1500);
+    // The daemon-mode branch resolves to undefined rather than preserving
+    // the stale s.scrollbackFile.
+    expect(body).toMatch(/daemonMode\s*\?\s*undefined\s*:\s*s\.scrollbackFile/);
+  });
 });

@@ -42,4 +42,24 @@ describe('A6 — useTerminal async restore race cancel (source-level)', () => {
     expect(body).toMatch(/scrollbackLoaded\s*=\s*true/);
     expect(body).toMatch(/for\s*\(\s*const\s+data\s+of\s+pendingData/);
   });
+
+  // Codex review P2 #2 (cold-start race): if `.txt` restore lands before
+  // daemon mode flips, the renderer must clear the terminal on the
+  // subsequent daemon:connected event so the SessionPipe replay does not
+  // compose with the stale text.
+  it('arms a daemon.onConnected listener that clears the terminal after .txt restore', () => {
+    // Module-scope flag declared at the top of the effect.
+    expect(src).toMatch(/let\s+didRestoreTxt\s*=\s*false/);
+    // Cleanup slot reserved.
+    expect(src).toMatch(/let\s+removeDaemonConnectedForRestore/);
+    // Inside the restore branch, the flag flips true and the listener arms.
+    const loadIdx = src.indexOf('scrollback.load(scrollbackFile)');
+    const body = src.slice(loadIdx, loadIdx + 4000);
+    expect(body).toMatch(/didRestoreTxt\s*=\s*true/);
+    expect(body).toMatch(/window\.electronAPI\.daemon\.onConnected\(/);
+    // The listener resets the terminal and clears the flag.
+    expect(body).toMatch(/terminal\.reset\(\)/);
+    // Cleanup unregisters the listener.
+    expect(src).toMatch(/removeDaemonConnectedForRestore\?\.\(\)/);
+  });
 });
