@@ -148,7 +148,13 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
       sessions: { id: string; cmd: string; cwd: string; cols: number; rows: number }[];
     };
     expect(persisted.sessions).toHaveLength(1);
-    expect(persisted.sessions[0].cmd).toBe('bash');
+    // DaemonSessionManager resolves bare shell names to absolute paths on
+    // POSIX (`bash` → `/bin/bash` on macOS / Linux) but not on Windows.
+    // The invariant under test is "managed overrides the stale OLD-CMD",
+    // not "cmd equals the string we passed". Match on bash suffix and
+    // assert the stale value is gone.
+    expect(persisted.sessions[0].cmd).toMatch(/bash$/);
+    expect(persisted.sessions[0].cmd).not.toBe('OLD-CMD');
     expect(persisted.sessions[0].cwd).toBe(tmpDir);
     expect(persisted.sessions[0].cols).toBe(80);
     expect(persisted.sessions[0].rows).toBe(24);
