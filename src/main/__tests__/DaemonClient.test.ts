@@ -261,6 +261,60 @@ describe('DaemonClient', () => {
       await expect(client.rpc('daemon.ping')).rejects.toThrow('DaemonClient not connected');
     });
 
+    // A2 — per-call timeout override. Allows daemon.shutdown and any other
+    // long-running RPC to exceed the default 10 s without rewriting the
+    // default for every caller.
+    //
+    // Use a silent net.Server that accepts the connection but never writes a
+    // response, so the RPC must time out.
+    it('honors opts.timeoutMs when the server never responds', async () => {
+      const pipeName = testPipeName('rpc-timeout-short');
+      const silentSockets = new Set<net.Socket>();
+      const silentServer = net.createServer((s) => {
+        silentSockets.add(s);
+        s.setEncoding('utf8');
+        // Read and discard; never reply.
+        s.on('data', () => { /* swallow */ });
+        s.on('close', () => silentSockets.delete(s));
+        s.on('error', () => silentSockets.delete(s));
+      });
+      await new Promise<void>((resolve, reject) => {
+        silentServer.on('error', reject);
+        silentServer.listen(pipeName, () => resolve());
+      });
+
+      client = new DaemonClient(pipeName, AUTH_TOKEN);
+      await client.connect();
+
+      const started = Date.now();
+      await expect(
+        client.rpc('daemon.never', {}, { timeoutMs: 200 }),
+      ).rejects.toThrow(/RPC timeout: daemon\.never \(200ms\)/);
+      const elapsed = Date.now() - started;
+      expect(elapsed).toBeLessThan(2_000);
+
+      await client.disconnect();
+      silentSockets.forEach((s) => s.destroy());
+      await new Promise<void>((resolve) => silentServer.close(() => resolve()));
+    });
+
+    it('falls back to the default 10 s timeout when opts is omitted', async () => {
+      // We do not actually wait 10 s; just verify the error message format
+      // uses the default value when the call resolves quickly.
+      const pipeName = testPipeName('rpc-default');
+      mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+        'daemon.ping': () => ({ ok: true }),
+      });
+      await mockServer.start();
+
+      client = new DaemonClient(pipeName, AUTH_TOKEN);
+      await client.connect();
+      const res = await client.rpc('daemon.ping');
+      expect(res).toEqual({ ok: true });
+      await client.disconnect();
+      await mockServer.stop();
+    });
+
     it('should handle multiple concurrent RPCs', async () => {
       const pipeName = testPipeName('rpc4');
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {

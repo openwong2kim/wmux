@@ -700,11 +700,30 @@ function registerRpcHandlers(
     return { status: 'ok', uptime, sessions: sessions.length };
   });
 
-  // daemon.shutdown — gracefully terminate the daemon process
+  // daemon.shutdown — gracefully terminate the daemon process. A2 makes
+  // this RPC awaitable: the handler runs the full shutdown body (dumps,
+  // state save, dispose) before returning, then defers the pipe stop and
+  // process.exit to setImmediate so the RPC ack actually flushes back to
+  // the caller. Callers (e.g., main before-quit / WM_ENDSESSION) can
+  // await this with a per-call timeoutMs override (DaemonClient.rpc opt).
   pipeServer.onRpc('daemon.shutdown', async () => {
     log('info', 'Shutdown requested via RPC');
-    // Respond first, then initiate shutdown on next tick
-    setImmediate(() => process.emit('SIGTERM' as any));
+    await shutdown(
+      'rpc.shutdown',
+      sessionManager,
+      pipeServer,
+      stateWriter,
+      sessionPipes,
+      processMonitor,
+      watchdog,
+      { skipPipeStop: true, skipExit: true },
+    );
+    // ack flushes after this return; then the pipe + process tear down.
+    setImmediate(() => {
+      void pipeServer.stop().catch(() => { /* best effort */ }).finally(() => {
+        process.exit(0);
+      });
+    });
     return { status: 'ok' };
   });
 }
@@ -885,6 +904,7 @@ async function shutdown(
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
   watchdog: Watchdog,
+  opts: { skipPipeStop?: boolean; skipExit?: boolean } = {},
 ): Promise<void> {
   if (shuttingDown) return;
   shuttingDown = true;
@@ -947,11 +967,25 @@ async function shutdown(
 
   stateWriter.dispose();
 
-  // Stop IPC server
-  await pipeServer.stop().catch(() => {});
+  // Stop IPC server — skipped when the caller (e.g., daemon.shutdown RPC)
+  // still needs the pipe to flush its ack.
+  if (!opts.skipPipeStop) {
+    await pipeServer.stop().catch(() => {});
+  }
 
   releaseLock();
   log('info', 'Daemon stopped');
+
+  // Clear the hard-timeout guard now that shutdown has reached its end.
+  // Without this, the timer would still fire after a skipExit deferral if
+  // the macrotask was delayed under load.
+  clearTimeout(shutdownTimeout);
+
+  if (opts.skipExit) {
+    // Caller (RPC handler) will fire setImmediate(() => process.exit(0))
+    // after returning so the ack flushes back to the client first.
+    return;
+  }
   process.exit(0);
 }
 

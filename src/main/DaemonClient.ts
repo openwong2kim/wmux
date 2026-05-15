@@ -108,19 +108,30 @@ export class DaemonClient extends EventEmitter {
     this.controlBuffer = '';
   }
 
-  /** Send an RPC call over the control pipe. */
-  async rpc(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
+  /**
+   * Send an RPC call over the control pipe.
+   *
+   * `opts.timeoutMs` overrides the default {@link RPC_TIMEOUT_MS}. Pass a
+   * larger value for long-running RPCs such as `daemon.shutdown`, which may
+   * exceed 10 s while RingBuffer dumps complete.
+   */
+  async rpc(
+    method: string,
+    params: Record<string, unknown> = {},
+    opts: { timeoutMs?: number } = {},
+  ): Promise<unknown> {
     if (!this.controlPipe || !this.connected) {
       throw new Error('DaemonClient not connected');
     }
 
     const id = `req-${++this.requestId}`;
+    const timeoutMs = opts.timeoutMs ?? RPC_TIMEOUT_MS;
 
     return new Promise<unknown>((resolve, reject) => {
       const timer = setTimeout(() => {
         this.pendingRequests.delete(id);
-        reject(new Error(`RPC timeout: ${method} (${RPC_TIMEOUT_MS}ms)`));
-      }, RPC_TIMEOUT_MS);
+        reject(new Error(`RPC timeout: ${method} (${timeoutMs}ms)`));
+      }, timeoutMs);
 
       this.pendingRequests.set(id, { resolve, reject, timer });
 
