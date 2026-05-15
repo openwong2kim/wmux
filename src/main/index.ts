@@ -30,6 +30,7 @@ import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
+import { raceDaemonShutdown } from './daemonShutdownRace';
 import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
 import { ensureDaemon } from './daemon/launcher';
 import { createTray, destroyTray } from './tray';
@@ -647,8 +648,26 @@ app.on('before-quit', async (e) => {
   disposeFirstRunHandlers();
 
   if (daemonClient?.isConnected) {
-    // Daemon mode: detach only — sessions persist in daemon
-    console.log('[Main] Daemon mode — detaching sessions (not killing)');
+    // Daemon mode. Phase A — A3: race daemon.shutdown against a calibrated
+    // budget so the daemon can flush RingBuffers atomically before we
+    // detach. The 4 s placeholder is the documented floor pending the T5
+    // dynamic test (Task #15) measurement.
+    const BEFORE_QUIT_TIMEOUT_MS = 4_000;
+    console.log(
+      `[Main] Daemon mode — racing daemon.shutdown (${BEFORE_QUIT_TIMEOUT_MS}ms budget)`,
+    );
+    const race = await raceDaemonShutdown(daemonClient, BEFORE_QUIT_TIMEOUT_MS);
+    if (race.ok) {
+      console.log('[Main] daemon.shutdown ack received');
+    } else {
+      console.warn(
+        `[Main] daemon.shutdown did not complete in time, falling back to detach: ${race.error}`,
+      );
+    }
+    // Always detach as the final step. If the RPC succeeded the pipe is
+    // already torn down on the daemon side; disconnect cleans up our half.
+    // If it failed (timeout / dead daemon), disconnect is the original
+    // fallback path that was in place before A3 landed.
     await daemonClient.disconnect();
     daemonClient = null;
   } else {
