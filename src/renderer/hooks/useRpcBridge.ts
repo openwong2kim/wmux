@@ -367,7 +367,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     if (!ws) return { error: 'no active workspace' };
     const direction =
       params.direction === 'vertical' ? 'vertical' : 'horizontal';
-    store.splitPane(ws.activePaneId, direction);
+    const ok = store.splitPane(ws.activePaneId, direction);
+    if (!ok) return { error: 'pane cap reached (max 20 per workspace)' };
     return { ok: true };
   }
 
@@ -717,7 +718,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // This uses PaneContainer's proven split mechanism instead of
     // trying to render terminal+browser in the same leaf pane.
     const paneId = ws.activePaneId;
-    store.splitPane(paneId, 'horizontal', targetWsId);
+    const ok = store.splitPane(paneId, 'horizontal', targetWsId);
+    // At the per-workspace leaf cap splitPane is a no-op (and pushes its own
+    // toast). Bail out before addBrowserSurface so we don't drop a browser tab
+    // on the still-active original terminal pane.
+    if (!ok) return { error: 'pane cap reached (max 20 per workspace)' };
 
     // After split, the new pane becomes active
     const afterSplit = useStore.getState();

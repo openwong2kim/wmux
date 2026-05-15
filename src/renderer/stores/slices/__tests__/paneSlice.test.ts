@@ -1,14 +1,16 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
-import { createPaneSlice, type PaneSlice } from '../paneSlice';
+import { createPaneSlice, type PaneSlice, MAX_PANES_PER_WORKSPACE } from '../paneSlice';
 import { createWorkspace, type Workspace } from '../../../../shared/types';
 import { findPane, getLeafPanes } from '../../../../shared/paneUtils';
 
-// Minimal store that satisfies PaneSlice dependencies
+// Minimal store that satisfies PaneSlice dependencies. Includes a `pushToast`
+// stub because splitPane calls it via get() when the leaf cap is hit.
 type TestState = PaneSlice & {
   workspaces: Workspace[];
   activeWorkspaceId: string;
+  pushToast: ReturnType<typeof vi.fn>;
 };
 
 function createTestStore() {
@@ -17,6 +19,7 @@ function createTestStore() {
     immer((...args) => ({
       workspaces: [ws],
       activeWorkspaceId: ws.id,
+      pushToast: vi.fn(),
       // @ts-expect-error — minimal test store doesn't match full StoreState
       ...createPaneSlice(...args),
     }))
@@ -232,6 +235,41 @@ describe('PaneSlice', () => {
       // prev again walks toward the front.
       store.getState().cyclePane('prev');
       expect(getActiveWorkspace(store).activePaneId).toBe(leaves[leaves.length - 2].id);
+    });
+  });
+
+  describe('splitPane — leaf cap', () => {
+    // Workspace starts with 1 leaf; each split adds exactly 1 leaf, so
+    // (MAX_PANES_PER_WORKSPACE - 1) splits brings us right to the cap.
+    it('allows splits up to MAX_PANES_PER_WORKSPACE leaves', () => {
+      for (let i = 0; i < MAX_PANES_PER_WORKSPACE - 1; i++) {
+        const ws = getActiveWorkspace(store);
+        const ok = store.getState().splitPane(ws.activePaneId, 'horizontal');
+        expect(ok).toBe(true);
+      }
+      const wsAfter = getActiveWorkspace(store);
+      expect(getLeafPanes(wsAfter.rootPane)).toHaveLength(MAX_PANES_PER_WORKSPACE);
+      expect(store.getState().pushToast).not.toHaveBeenCalled();
+    });
+
+    it('returns false, no-ops the tree, and toasts once at the cap', () => {
+      for (let i = 0; i < MAX_PANES_PER_WORKSPACE - 1; i++) {
+        const ws = getActiveWorkspace(store);
+        store.getState().splitPane(ws.activePaneId, 'horizontal');
+      }
+      const wsAtCap = getActiveWorkspace(store);
+      const leavesAtCap = getLeafPanes(wsAtCap.rootPane).map((l) => l.id);
+
+      const ok = store.getState().splitPane(wsAtCap.activePaneId, 'horizontal');
+      expect(ok).toBe(false);
+
+      const wsAfter = getActiveWorkspace(store);
+      const leavesAfter = getLeafPanes(wsAfter.rootPane).map((l) => l.id);
+      expect(leavesAfter).toEqual(leavesAtCap); // tree unchanged
+      expect(store.getState().pushToast).toHaveBeenCalledTimes(1);
+      const arg = store.getState().pushToast.mock.calls[0][0] as { level: string; message: string };
+      expect(arg.level).toBe('warn');
+      expect(arg.message).toContain(String(MAX_PANES_PER_WORKSPACE));
     });
   });
 });

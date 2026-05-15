@@ -449,12 +449,16 @@ export function useKeyboard() {
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
         if (ws) {
-          state.splitPane(ws.activePaneId, 'horizontal');
-          // After split, the new pane becomes active; add browser surface to it
-          const newState = store.getState();
-          const newWs = newState.workspaces.find((w) => w.id === newState.activeWorkspaceId);
-          if (newWs) {
-            newState.addBrowserSurface(newWs.activePaneId);
+          // splitPane returns false at the leaf cap (and surfaces its own
+          // toast). Bail out so we don't drop a browser surface on the still-
+          // active original terminal pane.
+          const ok = state.splitPane(ws.activePaneId, 'horizontal');
+          if (ok) {
+            const newState = store.getState();
+            const newWs = newState.workspaces.find((w) => w.id === newState.activeWorkspaceId);
+            if (newWs) {
+              newState.addBrowserSurface(newWs.activePaneId);
+            }
           }
         }
         return;

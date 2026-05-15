@@ -21,6 +21,7 @@ export const en = {
   'pane.empty': 'Empty pane',
   'pane.splitRight': 'Split right',
   'pane.splitDown': 'Split down',
+  'pane.maxLeavesReached': 'Pane limit reached ({count}). Close a pane before splitting again.',
 
   // Surface
   'surface.terminal': 'Terminal',

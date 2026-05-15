@@ -21,6 +21,7 @@ export const ko = {
   'pane.empty': '빈 창',
   'pane.splitRight': '오른쪽 분할',
   'pane.splitDown': '아래 분할',
+  'pane.maxLeavesReached': '창 분할 한도 도달 ({count}개). 창을 닫고 다시 시도하세요.',
 
   // Surface
   'surface.terminal': '터미널',

@@ -10,6 +10,14 @@ import {
   publishPaneClosed,
   publishPaneFocused,
 } from '../../events/publisher';
+import { t } from '../../i18n';
+
+// Per-workspace leaf cap. xterm.js + node-pty memory scales linearly with
+// pane count, and the project memory budget targets ~200 MB for 10 panes
+// (TODOS.md "Pane split max depth/count guard"). 20 leaves keeps a runaway
+// shortcut spam (Ctrl+D held, scripted splits, etc.) from exhausting RAM
+// while still being far more than any sane manual layout needs.
+export const MAX_PANES_PER_WORKSPACE = 20;
 
 // M0-d: paneSlice is a read-only mirror for PaneLeaf.metadata. The
 // authoritative writer is MetadataStore in the main process (M0-a + M0-b).
@@ -18,7 +26,14 @@ import {
 // `PaneLeaf.metadata` field remains on the shared type so UI components can
 // read it directly (and so SessionManager hydration can populate it).
 export interface PaneSlice {
-  splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string) => void;
+  /**
+   * Split a leaf pane into a new horizontal/vertical branch.
+   * Returns `true` on success, `false` if the workspace is at
+   * MAX_PANES_PER_WORKSPACE (callers chaining `addBrowserSurface`,
+   * RPC handlers, etc. must abort on `false` so they don't mutate
+   * the still-active original pane).
+   */
+  splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string) => boolean;
   closePane: (paneId: string) => void;
   setActivePane: (paneId: string) => void;
   focusPaneDirection: (direction: 'up' | 'down' | 'left' | 'right') => void;
@@ -60,9 +75,11 @@ function getLeafPanes(root: Pane): PaneLeaf[] {
   return root.children.flatMap(getLeafPanes);
 }
 
-export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]], [], PaneSlice> = (set) => ({
+export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]], [], PaneSlice> = (set, get) => ({
   splitPane: (paneId, direction, workspaceId) => {
     let event: { wsId: string; newPaneId: string; branchId: string; previousActiveId: string } | null = null;
+    let blockedAtCap = false;
+    let created = false;
     set((state: StoreState) => {
       const targetWsId = workspaceId || state.activeWorkspaceId;
       const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
@@ -70,6 +87,15 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
 
       const targetPane = findPane(ws.rootPane, paneId);
       if (!targetPane || targetPane.type !== 'leaf') return;
+
+      // Cap leaf growth — every callsite (Ctrl+D, prefix-mode split, palette,
+      // browser-pane shortcut, sample-task wizard) funnels through here, so a
+      // single guard is enough.
+      if (collectLeafIds(ws.rootPane).length >= MAX_PANES_PER_WORKSPACE) {
+        blockedAtCap = true;
+        return;
+      }
+      created = true;
 
       const newPane = createLeafPane();
       const branch: PaneBranch = {
@@ -109,6 +135,15 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
         publishPaneFocused(e.wsId, e.newPaneId, e.previousActiveId);
       }
     }
+    if (blockedAtCap) {
+      // Toast emitted outside the immer producer so the slice doesn't recurse
+      // into another set() while the producer is still running.
+      get().pushToast({
+        message: t('pane.maxLeavesReached', { count: MAX_PANES_PER_WORKSPACE }),
+        level: 'warn',
+      });
+    }
+    return created;
   },
 
   closePane: (paneId) => {
