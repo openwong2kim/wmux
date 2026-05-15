@@ -35,7 +35,9 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-a1b-test-'));
     manager = new DaemonSessionManager();
     writer = new StateWriter(tmpDir);
-    runSnapshotOnce = createSnapshotRunner(manager, writer);
+    runSnapshotOnce = createSnapshotRunner(manager, writer, {
+      getBootId: () => 'a1b-test-boot',
+    });
   });
 
   afterEach(() => {
@@ -61,20 +63,33 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     expect(fs.existsSync(writer.getBufferDumpPath('s2'))).toBe(true);
   });
 
-  // The runner intentionally does NOT persist sessions.json — that is owned
-  // by the create/attach/detach/destroy RPC handlers + recovery. If the
-  // runner re-saved listSessions() it would clobber any suspended sessions
-  // that recovery preserved past MAX_RECOVER_SESSIONS. Codex review P2,
+  // sessions.json must include both managed sessions (with their current
+  // in-memory metadata: lastActivity, cwd, geometry) AND any non-managed
+  // entries already in the file (cap-skipped suspended sessions from
+  // recovery, which live only in the file because MAX_RECOVER_SESSIONS
+  // bounded what got loaded into sessionManager). Codex review P2,
   // session 019e2af8.
-  it('does not persist sessions.json (cap-skipped session preservation)', async () => {
-    // Seed sessions.json with a session that lives only in the file, not in
-    // sessionManager (simulating a recovery-cap-skipped suspended session).
+  it('merges cap-skipped sessions from existing sessions.json into the save', async () => {
     const sessionsFile = path.join(tmpDir, 'sessions.json');
     fs.writeFileSync(
       sessionsFile,
       JSON.stringify({
         version: 1,
-        sessions: [{ id: 'cap-skipped', state: 'suspended', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24, pid: 999, createdAt: '2026-05-15T00:00:00Z', lastActivity: '2026-05-15T00:00:00Z', deadTtlHours: 24 }],
+        sessions: [
+          {
+            id: 'cap-skipped',
+            state: 'suspended',
+            cmd: 'bash',
+            cwd: tmpDir,
+            env: {},
+            cols: 80,
+            rows: 24,
+            pid: 999,
+            createdAt: '2026-05-15T00:00:00Z',
+            lastActivity: '2026-05-15T00:00:00Z',
+            deadTtlHours: 24,
+          },
+        ],
         bootId: 'old-boot',
       }),
     );
@@ -83,13 +98,60 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
 
     await runSnapshotOnce();
 
-    // sessions.json untouched — cap-skipped entry still present.
     const persisted = JSON.parse(fs.readFileSync(sessionsFile, 'utf-8')) as {
       sessions: { id: string }[];
+      bootId?: string;
     };
-    expect(persisted.sessions.map((s) => s.id)).toEqual(['cap-skipped']);
-    // But the live session's .buf was still produced.
+    // Both entries present.
+    const ids = persisted.sessions.map((s) => s.id).sort();
+    expect(ids).toEqual(['cap-skipped', 'live-one'].sort());
+    // bootId refreshed to runner's value.
+    expect(persisted.bootId).toBe('a1b-test-boot');
+    // Live session's .buf produced.
     expect(fs.existsSync(writer.getBufferDumpPath('live-one'))).toBe(true);
+  });
+
+  // Authoritative-managed rule: if a session id exists in both the existing
+  // file and sessionManager, sessionManager wins (carries the latest
+  // lastActivity / cwd / geometry that may not yet have been saved by any
+  // RPC handler).
+  it('takes sessionManager state as authoritative for managed session ids', async () => {
+    const sessionsFile = path.join(tmpDir, 'sessions.json');
+    fs.writeFileSync(
+      sessionsFile,
+      JSON.stringify({
+        version: 1,
+        sessions: [
+          {
+            id: 'live-one',
+            state: 'detached',
+            cmd: 'OLD-CMD',
+            cwd: '/old/cwd',
+            env: {},
+            cols: 9999,
+            rows: 9999,
+            pid: 1,
+            createdAt: '2026-01-01T00:00:00Z',
+            lastActivity: '2026-01-01T00:00:00Z',
+            deadTtlHours: 24,
+          },
+        ],
+        bootId: 'old-boot',
+      }),
+    );
+
+    manager.createSession({ id: 'live-one', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+
+    await runSnapshotOnce();
+
+    const persisted = JSON.parse(fs.readFileSync(sessionsFile, 'utf-8')) as {
+      sessions: { id: string; cmd: string; cwd: string; cols: number; rows: number }[];
+    };
+    expect(persisted.sessions).toHaveLength(1);
+    expect(persisted.sessions[0].cmd).toBe('bash');
+    expect(persisted.sessions[0].cwd).toBe(tmpDir);
+    expect(persisted.sessions[0].cols).toBe(80);
+    expect(persisted.sessions[0].rows).toBe(24);
   });
 
   it('continues after a per-session dumpToFile failure (isolated error handling)', async () => {

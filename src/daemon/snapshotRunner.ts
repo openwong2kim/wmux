@@ -1,5 +1,6 @@
 import type { DaemonSessionManager } from './DaemonSessionManager';
 import type { StateWriter } from './StateWriter';
+import type { DaemonState, DaemonSession } from './types';
 
 // Side-effect-free module so unit tests can drive runSnapshotOnce without
 // importing src/daemon/index.ts (which would execute its main() bootstrap on
@@ -11,9 +12,9 @@ function snapshotLog(level: string, msg: string, ...args: unknown[]): void {
 }
 
 // Returns an async function that dumps every live session's RingBuffer to
-// disk. Owns a per-runner re-entrancy flag so concurrent invocations (e.g., a
-// scheduled tick fires while a previous one is still flushing) collapse to a
-// single run.
+// disk AND persists a merged sessions.json. Owns a per-runner re-entrancy
+// flag so concurrent invocations (e.g., a scheduled tick fires while a
+// previous one is still flushing) collapse to a single run.
 //
 // Extracted from the inline 30 s setInterval body so the same runner can also
 // be invoked at session-create time and once at spawn, closing the window
@@ -21,15 +22,21 @@ function snapshotLog(level: string, msg: string, ...args: unknown[]): void {
 // daemon start would otherwise leave the recovery loop with no buffer file
 // to restore from.
 //
-// Important: this runner intentionally does NOT persist sessions.json.
-// sessions.json is maintained by every create/attach/detach/destroy RPC
-// handler and by recovery itself. If the runner re-saved listSessions() it
-// would erase any suspended session entries that recovery preserved past
-// MAX_RECOVER_SESSIONS (which are present in sessions.json but absent from
-// sessionManager).
+// sessions.json handling — codex review P2 (2026-05-15) flagged two
+// failure modes that bracket the design:
+//   1. If the runner saves only listSessions(), it clobbers any suspended
+//      entries that recovery preserved past MAX_RECOVER_SESSIONS (those
+//      sessions live only in sessions.json, not in sessionManager).
+//   2. If the runner doesn't save at all, in-memory metadata updates
+//      (lastActivity / cwd / cols / rows / state changes that happen on
+//      data/resize without an RPC roundtrip) never reach disk, and crash
+//      recovery picks stale entries under its own cap.
+// Resolution: load existing sessions.json, take every managed session as
+// authoritative for its id, and append non-managed entries verbatim.
 export function createSnapshotRunner(
   sessionManager: DaemonSessionManager,
   stateWriter: StateWriter,
+  options: { getBootId: () => string },
 ): () => Promise<void> {
   let running = false;
   return async function runSnapshotOnce(): Promise<void> {
@@ -48,6 +55,25 @@ export function createSnapshotRunner(
         } catch (err) {
           snapshotLog('warn', `Snapshot dump failed for ${m.meta.id}:`, err);
         }
+      }
+      try {
+        const liveSessions = sessionManager.listSessions();
+        const liveIds = new Set(liveSessions.map((s) => s.id));
+        let preserved: DaemonSession[] = [];
+        try {
+          const existing = stateWriter.load();
+          preserved = existing.sessions.filter((s) => !liveIds.has(s.id));
+        } catch {
+          // No prior sessions.json (first save) — nothing to preserve.
+        }
+        const merged: DaemonState = {
+          version: 1,
+          sessions: [...liveSessions, ...preserved],
+          bootId: options.getBootId(),
+        };
+        stateWriter.saveImmediate(merged);
+      } catch (err) {
+        snapshotLog('warn', 'Snapshot state save failed:', err);
       }
     } finally {
       running = false;

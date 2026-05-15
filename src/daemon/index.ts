@@ -1078,7 +1078,12 @@ async function main(): Promise<void> {
   // Sequential dumps to avoid simultaneous memory peaks from all buffers at once.
   // The runner is also invoked once immediately below (A1b) to close the
   // 30 s window where no .buf exists yet on disk.
-  const runSnapshotOnce = createSnapshotRunner(sessionManager, stateWriter);
+  const runSnapshotOnce = createSnapshotRunner(sessionManager, stateWriter, {
+    getBootId: () => {
+      if (!cachedBootId) cachedBootId = getBootIdSync();
+      return cachedBootId;
+    },
+  });
   runSnapshotOnceRef = runSnapshotOnce;
   const snapshotInterval = setInterval(() => {
     void runSnapshotOnce();
