@@ -470,6 +470,7 @@ function registerRpcHandlers(
   startTime: number,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
   watchdog: Watchdog,
+  triggerSnapshot: () => void,
 ): void {
   // daemon.createSession
   pipeServer.onRpc('daemon.createSession', async (params) => {
@@ -504,6 +505,11 @@ function registerRpcHandlers(
     // Save state immediately
     const state = buildState(sessionManager);
     stateWriter.saveImmediate(state);
+
+    // A1b — fire the snapshot runner so the new session has a .buf on disk
+    // before the next 30 s tick. Crashes within that window now keep a
+    // recoverable trace instead of losing the brand-new pane entirely.
+    triggerSnapshot();
 
     return session;
   });
@@ -591,6 +597,10 @@ function registerRpcHandlers(
 
     const state = buildState(sessionManager);
     stateWriter.saveImmediate(state);
+
+    // A1b — fire the snapshot runner after attach so a freshly-attached
+    // recovered session has its .buf refreshed inside the first 30 s window.
+    triggerSnapshot();
 
     return { ok: true };
   });
@@ -973,11 +983,28 @@ async function main(): Promise<void> {
   const sessionPipes = new Map<string, SessionPipe>();
   const sessionDataListeners = new Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>();
 
+  // Forward reference — initialised at step 8c after the snapshot runner is
+  // wired. RPC handlers that fire before initialisation simply skip the
+  // immediate snapshot; the 30 s interval will still cover them.
+  let runSnapshotOnceRef: (() => Promise<void>) | null = null;
+
   // 4. Recover previous sessions
   await recoverSessions(stateWriter, sessionManager, processMonitor);
 
   // 5. Register RPC handlers
-  registerRpcHandlers(pipeServer, sessionManager, stateWriter, sessionPipes, processMonitor, startTime, sessionDataListeners, watchdog);
+  registerRpcHandlers(
+    pipeServer,
+    sessionManager,
+    stateWriter,
+    sessionPipes,
+    processMonitor,
+    startTime,
+    sessionDataListeners,
+    watchdog,
+    () => {
+      if (runSnapshotOnceRef) void runSnapshotOnceRef();
+    },
+  );
 
   // 6. Wire events
   wireEvents(sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, sessionDataListeners);
@@ -1051,12 +1078,8 @@ async function main(): Promise<void> {
   // Sequential dumps to avoid simultaneous memory peaks from all buffers at once.
   // The runner is also invoked once immediately below (A1b) to close the
   // 30 s window where no .buf exists yet on disk.
-  const runSnapshotOnce = createSnapshotRunner(sessionManager, stateWriter, {
-    getBootId: () => {
-      if (!cachedBootId) cachedBootId = getBootIdSync();
-      return cachedBootId;
-    },
-  });
+  const runSnapshotOnce = createSnapshotRunner(sessionManager, stateWriter);
+  runSnapshotOnceRef = runSnapshotOnce;
   const snapshotInterval = setInterval(() => {
     void runSnapshotOnce();
   }, 30_000);

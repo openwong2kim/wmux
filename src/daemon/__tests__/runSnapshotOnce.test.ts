@@ -35,9 +35,7 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-a1b-test-'));
     manager = new DaemonSessionManager();
     writer = new StateWriter(tmpDir);
-    runSnapshotOnce = createSnapshotRunner(manager, writer, {
-      getBootId: () => 'a1b-test-boot',
-    });
+    runSnapshotOnce = createSnapshotRunner(manager, writer);
   });
 
   afterEach(() => {
@@ -49,18 +47,49 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
 
   it('no-ops when there are no live sessions', async () => {
     await runSnapshotOnce();
-    expect(fs.existsSync(path.join(tmpDir, 'sessions.json'))).toBe(false);
+    // Buffer dir may exist (ensureBufferDir was skipped on empty); no dumps.
+    expect(fs.readdirSync(tmpDir).filter((n) => n.endsWith('.buf'))).toHaveLength(0);
   });
 
-  it('dumps a .buf for every live session and persists sessions.json', async () => {
+  it('dumps a .buf for every live session', async () => {
     manager.createSession({ id: 's1', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
     manager.createSession({ id: 's2', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
 
     await runSnapshotOnce();
 
-    expect(fs.existsSync(path.join(tmpDir, 'sessions.json'))).toBe(true);
     expect(fs.existsSync(writer.getBufferDumpPath('s1'))).toBe(true);
     expect(fs.existsSync(writer.getBufferDumpPath('s2'))).toBe(true);
+  });
+
+  // The runner intentionally does NOT persist sessions.json — that is owned
+  // by the create/attach/detach/destroy RPC handlers + recovery. If the
+  // runner re-saved listSessions() it would clobber any suspended sessions
+  // that recovery preserved past MAX_RECOVER_SESSIONS. Codex review P2,
+  // session 019e2af8.
+  it('does not persist sessions.json (cap-skipped session preservation)', async () => {
+    // Seed sessions.json with a session that lives only in the file, not in
+    // sessionManager (simulating a recovery-cap-skipped suspended session).
+    const sessionsFile = path.join(tmpDir, 'sessions.json');
+    fs.writeFileSync(
+      sessionsFile,
+      JSON.stringify({
+        version: 1,
+        sessions: [{ id: 'cap-skipped', state: 'suspended', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24, pid: 999, createdAt: '2026-05-15T00:00:00Z', lastActivity: '2026-05-15T00:00:00Z', deadTtlHours: 24 }],
+        bootId: 'old-boot',
+      }),
+    );
+
+    manager.createSession({ id: 'live-one', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+
+    await runSnapshotOnce();
+
+    // sessions.json untouched — cap-skipped entry still present.
+    const persisted = JSON.parse(fs.readFileSync(sessionsFile, 'utf-8')) as {
+      sessions: { id: string }[];
+    };
+    expect(persisted.sessions.map((s) => s.id)).toEqual(['cap-skipped']);
+    // But the live session's .buf was still produced.
+    expect(fs.existsSync(writer.getBufferDumpPath('live-one'))).toBe(true);
   });
 
   it('continues after a per-session dumpToFile failure (isolated error handling)', async () => {
@@ -72,8 +101,6 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
 
     await runSnapshotOnce();
 
-    // sessions.json still written even though one dump failed.
-    expect(fs.existsSync(path.join(tmpDir, 'sessions.json'))).toBe(true);
     // ok-two's dump still produced.
     expect(fs.existsSync(writer.getBufferDumpPath('ok-two'))).toBe(true);
   });
