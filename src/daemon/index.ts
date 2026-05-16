@@ -305,6 +305,17 @@ async function recoverSessions(
         if (fs.existsSync(session.bufferDumpPath)) {
           scrollbackData = fs.readFileSync(session.bufferDumpPath);
         }
+        // Instrumentation for #35 (scrollback-empty-after-restart). The
+        // matching `Suspended session X (buffer: N bytes)` line on the
+        // shutdown side already proves what we dumped; this line proves
+        // what we found on the next boot. If they match, the dump/restore
+        // file path is intact and a downstream layer (RingBuffer write,
+        // SessionPipe flush, renderer) is at fault. If the bytes drop
+        // here, the dump file itself was empty or missing.
+        log(
+          'info',
+          `[recovery] session ${session.id} dump=${session.bufferDumpPath} exists=${scrollbackData !== undefined} bytes=${scrollbackData?.length ?? 0}`,
+        );
 
         // Verify cwd still exists; fall back to homedir
         const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();

@@ -202,6 +202,16 @@ export class SessionPipe {
 
       // Step 1: Flush ring buffer contents
       const buffered = this.ringBuffer.readAll();
+      // Instrumentation for #35 (scrollback-empty-after-restart). Pairs
+      // with `[recovery] session X bytes=N` on daemon startup and
+      // `Suspended session X (buffer: N bytes)` on shutdown. If those
+      // two upstream stages report N>0 but this prints bytes=0, the
+      // renderer attach raced the recovery write and we flushed before
+      // RingBuffer was repopulated — the scrollback-empty signature.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[SessionPipe.flush] sessionId=${this.sessionId} bytes=${buffered.length}`,
+      );
       if (buffered.length > 0) {
         socket.write(buffered);
       }
