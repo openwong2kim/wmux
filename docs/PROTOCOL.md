@@ -337,13 +337,35 @@ The current model is: OS isolates users, token isolates processes, `mcp.claimWor
 
 The two stable-across-restart identifiers are `workspaceId` and MCP server name. Everything else is single-run; clients must reconcile via `pane.list` after a `bootId` change.
 
+### 6.1 `workspaceId` resolution paths
+
+How an MCP server figures out which workspace it belongs to. This matters because every workspace-scoped permission check (§4 point #4) depends on the answer.
+
+There are four resolution paths in the current implementation, in order of preference:
+
+| # | Path | Source | Latency | Determinism |
+|---|---|---|---|---|
+| A | `WMUX_WORKSPACE_ID` env var | Set on the parent PTY by `PTYManager` at spawn time. Inherited down the process tree (shell → Claude Code → MCP server child) when the parent process honors env passthrough. | Instant. | Fully deterministic. |
+| B | PID-tree walk via `a2a.resolve.identity` RPC | When path A is empty, the MCP server asks the daemon for the current PID → `workspaceId` mappings, then walks its own process tree upward (up to 10 levels) looking for a match. The PID query uses PowerShell `Get-CimInstance` on Windows or `ps -o ppid=` on POSIX. | First call ≈ 1–3 s on Windows (PowerShell startup); cached in-process afterwards. | Deterministic once a match is found. |
+| C | `mcp.claimWorkspace` (external-caller fallback) | When paths A and B both fail (typical for an MCP server launched from a non-wmux terminal such as `cmd`, Windows Terminal, or VS Code's integrated terminal), the first pane-targeted tool call invokes `mcp.claimWorkspace`. The daemon spawns a dedicated background workspace named `MCP`, creates a PTY pane inside it, restores the previously-active workspace so the user's focus is not stolen, and pins the new `ptyId` for the MCP server's lifetime. | First claim ≈ 100–400 ms (workspace + PTY spawn). Subsequent calls hit the pin. | Deterministic per MCP server process. |
+| D | `activeWorkspaceId` (renderer-side fallback) | A small number of legacy RPCs (notifications and some renderer-side surfaces) accept an optional `workspaceId` parameter; if omitted, the renderer falls back to `store.activeWorkspaceId`. This path predates `mcp.claimWorkspace` and survives in places that have not yet been migrated. | Instant. | **Non-deterministic — depends on whatever workspace the user is viewing at the moment of the call.** |
+
+Path A is the substrate-aligned answer. Paths B and C are how the substrate keeps that promise when env propagation breaks. Path D is the only remaining footgun and is the substrate boundary documented in §7.
+
+**Substrate alignment notes:**
+
+- The two strict callers (A2A operations via `requireWorkspaceId`, and pane-targeted MCP tools via `resolveDefaultPtyId`) refuse to fall back to path D. They either return a deterministic id from A/B/C, or they fail with an explicit error rather than silently routing to whatever pane the user is viewing.
+- Path D's residual call sites (currently inside `useRpcBridge`/notification handlers) are an explicit Phase 2.1 work item: the four enforcement points cannot mean anything on an RPC whose `workspaceId` is decided after the caller already submitted the request.
+- Env propagation is best-effort. wmux sets `WMUX_WORKSPACE_ID` at the PTY layer, but the substrate cannot enforce that intermediate processes (shells, Claude Code, language runtimes) pass it through. Path B exists precisely because env propagation is not a contract. Phase 2.1 will publish the env-var name and propagation expectations as part of the MCP plugin spec.
+- The PowerShell-based PID-tree walk has a first-call latency. A native PID-parent API call (e.g. cached `ProcessSnapshot` in the daemon) is a v3.x optimization candidate, not a v3.0 blocker.
+
 ---
 
 ## 7. Known limitations and v3.0 boundaries
 
 Things external clients may run into that aren't bugs but are explicit substrate boundaries:
 
-- **Workspace identity blocker (open).** The `project_workspace_identity_fix.md` issue exists but is being investigated in Phase 1 M4. Today, an MCP server that claims workspace A and then writes metadata with an explicit `workspaceId: B` is rejected (correct), but the active-pane resolution path when *no* `workspaceId` is provided can hijack to whichever workspace the user is viewing. External callers SHOULD pass `workspaceId` explicitly to bypass this.
+- **Workspace identity resolution has a non-deterministic fallback (path D).** See §6.1 for the full resolution chain. Paths A, B, and C are substrate-aligned and deterministic per MCP-server process. Path D — renderer-side `activeWorkspaceId` fallback for RPCs that omit `workspaceId` — survives in a small number of legacy call sites (notifications, some `useRpcBridge` surfaces) and resolves at request time to whichever workspace the user happens to be viewing. External callers SHOULD pass `workspaceId` explicitly to avoid path D entirely. The work item to remove path D from substrate-managed RPCs lands in Phase 2.1 as part of the four-enforcement-points implementation; code fix targets v2.10+ patch stream rather than v3.0 itself, since the doc'd workaround is one line for callers.
 - **No buffer access yet.** `terminal.readEvents` covers structured prompt events; arbitrary scrollback buffer reads are partial via `input.readScreen`. The cross-workspace policy gate for full buffer access is a v3.1+ design item.
 - **Cursor evolution.** The opaque-cursor guarantee is a forward-compat hedge. If sharded rings ship in v3.x, the encoding may change; opaque-cursor clients are unaffected by design.
 - **Layered status precedence.** The substrate does not enforce precedence among writers of the top-level `status` field. Last writer wins. Tools that need precedence should coordinate via `custom.<tool>.status` and pick one tool to own the shared field.
@@ -356,5 +378,6 @@ Things external clients may run into that aren't bugs but are explicit substrate
 | Version | Date | Notes |
 |---|---|---|
 | Draft 1 | 2026-05-12 | Phase 0 initial draft. Covers PaneMetadata layered status, mergeMode, version + expectedVersion, bootId, cursor opaqueness, snapshot envelope, permission enforcement (sketch), Named Pipe security model. Phase 1 M3 will expand. |
+| Draft 2 | 2026-05-16 | Phase 1 M4 — adds §6.1 `workspaceId` resolution paths (env / PID-tree walk / `mcp.claimWorkspace` / legacy `activeWorkspaceId` fallback). §7 limitation entry rewritten to point at §6.1 and to define the path-D removal as a Phase 2.1 work item rather than a v3.0 blocker. |
 
 This document evolves alongside the implementation. Changes that affect the wire contract require a major-version bump per [`api/versioning.md`](./api/versioning.md). Changes that clarify existing semantics ship in any release.
