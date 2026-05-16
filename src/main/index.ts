@@ -682,7 +682,16 @@ app.on('before-quit', async (e) => {
   cleanupHandlers();
   disposeFirstRunHandlers();
 
-  if (daemonClient?.isConnected) {
+  // Capture the daemon-client reference BEFORE the race. The race awaits
+  // for up to 4 s; during that window the daemon may close its socket,
+  // which fires the module-level `daemonClient.on('disconnected')` handler
+  // and sets `daemonClient = null`. Without a local capture, the post-race
+  // `daemonClient.disconnect()` call dereferences null and the resulting
+  // unhandled rejection prevents app.quit() from completing — the tray
+  // Quit silently leaves the main process alive. Observed in user dogfood
+  // 2026-05-16 on a 48-PTY daemon where shutdown ran past the 4 s budget.
+  const clientAtQuit = daemonClient;
+  if (clientAtQuit?.isConnected) {
     // Daemon mode. Phase A — A3: race daemon.shutdown against a calibrated
     // budget so the daemon can flush RingBuffers atomically before we
     // detach. The 4 s placeholder is the documented floor pending the T5
@@ -691,7 +700,7 @@ app.on('before-quit', async (e) => {
     console.log(
       `[Main] Daemon mode — racing daemon.shutdown (${BEFORE_QUIT_TIMEOUT_MS}ms budget)`,
     );
-    const race = await raceDaemonShutdown(daemonClient, BEFORE_QUIT_TIMEOUT_MS);
+    const race = await raceDaemonShutdown(clientAtQuit, BEFORE_QUIT_TIMEOUT_MS);
     if (race.ok) {
       console.log('[Main] daemon.shutdown ack received');
     } else {
@@ -702,8 +711,15 @@ app.on('before-quit', async (e) => {
     // Always detach as the final step. If the RPC succeeded the pipe is
     // already torn down on the daemon side; disconnect cleans up our half.
     // If it failed (timeout / dead daemon), disconnect is the original
-    // fallback path that was in place before A3 landed.
-    await daemonClient.disconnect();
+    // fallback path that was in place before A3 landed. Best-effort: if
+    // the 'disconnected' handler already nulled module-level state and
+    // tore down the socket, our disconnect() may throw — swallow it so
+    // the quit sequence below still runs.
+    try {
+      await clientAtQuit.disconnect();
+    } catch (err) {
+      console.warn('[Main] post-race disconnect threw (likely already torn down):', err);
+    }
     daemonClient = null;
   } else {
     // Local mode: kill all PTYs
