@@ -930,6 +930,21 @@ async function shutdown(
   }, 10_000);
   shutdownTimeout.unref();
 
+  // Phase-level latency instrumentation. The 4 s race budget on the main
+  // side (BEFORE_QUIT_TIMEOUT_MS) is regularly exceeded on a 48-PTY daemon
+  // (user dogfood 2026-05-16/17). Without per-phase timing we can only
+  // guess at which step dominates: pipe drain, buffer dump fanout,
+  // state save, or serial PTY kill. These logs make the budget call
+  // empirical instead of a guess.
+  const shutdownStartedAt = Date.now();
+  const phaseStartedAt = (): number => Date.now();
+  const phaseLog = (name: string, startedAt: number, extra?: Record<string, unknown>): void => {
+    const elapsedMs = Date.now() - startedAt;
+    const totalMs = Date.now() - shutdownStartedAt;
+    const extraStr = extra ? ' ' + JSON.stringify(extra) : '';
+    log('info', `[shutdown.phase] ${name} elapsed=${elapsedMs}ms total=${totalMs}ms${extraStr}`);
+  };
+
   // Stop watchdog
   watchdog.stop();
 
@@ -937,17 +952,20 @@ async function shutdown(
   processMonitor.unwatchAll();
 
   // Clean up all session pipes
+  const pipeStopsStart = phaseStartedAt();
   const pipeStops = Array.from(sessionPipes.values()).map((pipe) =>
     pipe.stop().catch(() => {}),
   );
   await Promise.all(pipeStops);
   sessionPipes.clear();
+  phaseLog('pipeStops', pipeStopsStart, { count: pipeStops.length });
 
   // Dump scrollback buffers and mark live sessions as suspended for recovery
   const managedSessions = sessionManager.listManagedSessions();
   stateWriter.ensureBufferDir();
 
   const dumpStart = Date.now();
+  const dumpsStart = phaseStartedAt();
   log('info', `[fix0-dbg] daemon.shutdown: dumping ${managedSessions.length} sessions (excluding dead) at ts=${dumpStart}`);
   const dumpPromises: Promise<void>[] = [];
   for (const managed of managedSessions) {
@@ -970,29 +988,37 @@ async function shutdown(
   log('info', `[fix0-dbg] daemon.shutdown: all ${dumpPromises.length} dumps settled, elapsed=${Date.now() - dumpStart}ms`);
   // A4 — async dumps are durable. Sync exit handler will short-circuit.
   dumpsCompleted = true;
+  phaseLog('bufferDumps', dumpsStart, { count: dumpPromises.length });
 
   // Save suspended state BEFORE disposing
   if (!cachedBootId) cachedBootId = await getBootId();
+  const stateSaveStart = phaseStartedAt();
   const suspendState: DaemonState = {
     version: 1,
     sessions: managedSessions.map((m) => ({ ...m.meta })),
     bootId: cachedBootId,
   };
   stateWriter.saveImmediate(suspendState);
+  phaseLog('stateSave', stateSaveStart, { sessions: managedSessions.length });
 
   // Dispose all sessions (kills PTYs, clears map)
+  const disposeStart = phaseStartedAt();
+  const disposedCount = sessionManager.listManagedSessions().length;
   sessionManager.disposeAll();
+  phaseLog('disposeAll', disposeStart, { count: disposedCount });
 
   stateWriter.dispose();
 
   // Stop IPC server — skipped when the caller (e.g., daemon.shutdown RPC)
   // still needs the pipe to flush its ack.
   if (!opts.skipPipeStop) {
+    const pipeServerStopStart = phaseStartedAt();
     await pipeServer.stop().catch(() => {});
+    phaseLog('pipeServerStop', pipeServerStopStart);
   }
 
   releaseLock();
-  log('info', 'Daemon stopped');
+  log('info', `Daemon stopped (total shutdown ${Date.now() - shutdownStartedAt}ms)`);
 
   // Clear the hard-timeout guard now that shutdown has reached its end.
   // Without this, the timer would still fire after a skipExit deferral if
