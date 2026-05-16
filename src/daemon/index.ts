@@ -11,7 +11,6 @@ import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import { createSnapshotRunner } from './snapshotRunner';
 import { RingBuffer } from './RingBuffer';
-import { hardenWmuxDir } from './util/fileSystemHardening';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
 
@@ -183,11 +182,6 @@ async function acquireLock(): Promise<boolean> {
     // Note: mode is no-op on Windows; use icacls for NTFS ACLs
     fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   }
-
-  // Best-effort NTFS ACL + cloud-sync exclusion hardening on Windows.
-  // POSIX is a no-op (mode 0o700 above already covers it). Idempotent
-  // across daemon restarts; failures log and do not block startup.
-  await hardenWmuxDir(dir, (msg, ...rest) => log('warn', msg, ...rest));
 
   // Attempt exclusive lock file creation to prevent race conditions
   try {
