@@ -28,8 +28,9 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = path.resolve(import.meta.dirname, '..');
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
 
 if (!fs.existsSync(DAEMON_BUNDLE)) {
@@ -230,6 +231,7 @@ async function flow2Recovery(testHome) {
       authToken,
       pipeName,
       recoveryLines,
+      testHome,
     };
   } catch (err) {
     try { child.kill(); } catch { /* */ }
@@ -237,7 +239,7 @@ async function flow2Recovery(testHome) {
   }
 }
 
-async function flow3FlushBytes(daemonProc, log, pipeName, authToken, sessionId) {
+async function flow3FlushBytes(daemonProc, log, pipeName, authToken, sessionId, testHome) {
   const ctrl = await connectPipe(pipeName);
   // Diagnostic: which sessions did recovery actually surface?
   const sessions = await rpc(ctrl, 'daemon.listSessions', {}, authToken).catch(() => null);
@@ -263,9 +265,12 @@ async function flow3FlushBytes(daemonProc, log, pipeName, authToken, sessionId) 
   ctrl.destroy();
 
   // Daemon spec for the session pipe name (matches SessionPipe.getPipeName).
+  // POSIX socket path must be derived from the daemon child's HOME (testHome),
+  // not the parent harness's os.homedir(); the daemon is spawned with HOME
+  // overridden to the temp test home, so its os.homedir() resolves there.
   const sessionPipeName = process.platform === 'win32'
     ? `\\\\.\\pipe\\wmux-session-${effective}`
-    : `${os.homedir()}/.wmux-session-${effective}.sock`;
+    : `${testHome}/.wmux-session-${effective}.sock`;
   return await attemptSessionFlush(sessionPipeName, authToken, log);
 }
 
@@ -315,7 +320,7 @@ async function main() {
   let flow3Ok = false;
   if (flow2Ctx) {
     try {
-      const f3 = await flow3FlushBytes(flow2Ctx.child, flow2Ctx.log, flow2Ctx.pipeName, flow2Ctx.authToken, f1.sessionId);
+      const f3 = await flow3FlushBytes(flow2Ctx.child, flow2Ctx.log, flow2Ctx.pipeName, flow2Ctx.authToken, f1.sessionId, flow2Ctx.testHome);
       if (f3.ok) {
         console.log(`  flush lines:\n${f3.flushLines.map((l) => '    ' + l).join('\n')}`);
         flow3Ok = f3.flushLines.some((l) => l.includes(f1.sessionId) && /bytes=\d+/.test(l));
