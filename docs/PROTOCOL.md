@@ -263,23 +263,50 @@ The substrate has four enforcement points. All four exist to prevent one MCP fro
 
 | # | Point | Status | Notes |
 |---|---|---|---|
-| 1 | Method dispatch | v3.0 (new in Phase 2.1) | `wmuxPermissions` in the MCP server manifest declares which methods this server may call. RPC dispatcher rejects unauthorized calls. |
-| 2 | Metadata path write | v3.0 (new in Phase 2.1) | `wmuxPermissions` may scope writes to specific `custom.<namespace>.*` paths. Writes outside the allowed paths are rejected. |
-| 3 | Event subscription | v3.0 (new in Phase 2.1) | `events.poll` filters are enforced against `wmuxPermissions`. A server that hasn't declared subscription to `pane.created` can't see those events even if it polls. |
-| 4 | Workspace claim | **v2.7.2 (already shipped)** | `mcp.claimWorkspace` binds an MCP server to a workspace. Subsequent writes targeting other workspaces are rejected. |
+| 1 | Method dispatch | Phase 2.1 follow-up (record-only in first PR) | `wmuxPermissions` declared via `mcp.declarePermissions` filters which RPC methods this plugin may call. Enforcement lands in the follow-up PR; the first PR only records declarations to the trust DB so plugins can wire grammar today. |
+| 2 | Metadata path write | Phase 2.1 follow-up (record-only in first PR) | `meta.write[:<path-glob>]` scopes writes to specific `custom.<namespace>.*` paths. Same staging as #1. |
+| 3 | Event subscription | Phase 2.1 follow-up (record-only in first PR) | `events.subscribe[:<type-glob>]` scopes which events `events.poll` may return. Same staging as #1. |
+| 4 | Workspace claim | **v2.7.2 (already shipped)** | `mcp.claimWorkspace` binds a plugin to a workspace. Subsequent writes targeting other workspaces are rejected. Unrelated to `wmuxPermissions` grammar — predates it. |
 
-`wmuxPermissions` syntax (Phase 2.1 spec, draft): `<capability>[:<path-glob>]`. Examples:
+### 4.1 Identity (Phase 2.1 first PR — shipped)
+
+Plugin identity rides the JSON-RPC envelope as `clientName` (and optional `clientVersion`). The MCP server (`src/mcp/index.ts`) populates them from the MCP `InitializeRequest.clientInfo` so the substrate can attribute every call to a declared plugin. Identity is **declared, not verified** — there is no root-of-trust today; threat-model details live in `api/mcp-plugin-spec.md`.
+
+Requests without `clientName` are recorded as `legacy` so future enforcement can grandfather them or prompt the user, never silently bypass.
+
+The trust DB lives at `~/.wmux/plugin-trust.json` (atomic-write, single-process owner = wmux main). Per-plugin record shape (`PluginIdentityRecord` in `src/shared/rpc.ts`):
+
+```jsonc
+{
+  "name": "claude-ai",          // MCP clientInfo.name
+  "version": "1.0.94",          // MCP clientInfo.version (optional)
+  "declaredCapabilities": ["pane.read", "meta.write:custom.dashboard.*"],
+  "rationale": "Optional human-readable hint shown in the future approval UI",
+  "status": "unconfirmed",      // unconfirmed | trusted | denied | legacy
+  "firstSeen": 1715800000000,
+  "lastSeen": 1715800012345
+}
+```
+
+### 4.2 Declaration RPCs (Phase 2.1 first PR — shipped, record-only)
+
+Plugins announce themselves with two RPCs. Both are idempotent and never reject existing user-issued trust state.
+
+- `mcp.identify({ name, version? })` — fired automatically by the wmux-bundled MCP server when the MCP `InitializeRequest` completes. External plugins (non-wmux MCP servers) MAY call it explicitly.
+- `mcp.declarePermissions({ permissions: string[], rationale? })` — plugin declares the full capability set it expects to use. Grammar errors reject the entire declaration; nothing is partial.
+
+### 4.3 `wmuxPermissions` grammar
+
+`<capability>[:<path-glob>]`. Examples:
 
 - `pane.read` — read pane state and metadata.
 - `meta.write` — write any pane's metadata (top-level + custom).
 - `meta.write:custom.dashboard.*` — write only the `dashboard.*` paths inside `custom`.
 - `events.subscribe:pane.*` — subscribe to `pane.created`, `pane.closed`, `pane.focused`, `pane.metadata.changed`.
 
-Per-plugin identity is the MCP server name. Two servers with the same name on the same wmux instance is a registration error.
+`wmux.*` is reserved. The complete capability whitelist, the path-glob rules (`*` excludes `.`, `**` includes it), and the threat model are in `api/mcp-plugin-spec.md`.
 
 **Raw RPC bypass policy:** all four enforcement points are at method-dispatch level. There's no "internal" path that skips them; the IPC handler entry point is the chokepoint. The substrate does not expose a "trusted" mode that lets a plugin opt out of enforcement.
-
-(Full `wmuxPermissions` spec lands in `api/mcp-plugin-spec.md` during Phase 2.1. This section is the contract sketch.)
 
 ---
 
