@@ -11,11 +11,19 @@ import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import { createSnapshotRunner } from './snapshotRunner';
 import { RingBuffer } from './RingBuffer';
+import { initDaemonLogSink } from './util/logSink';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
 
 // === Constants ===
 const wmuxDir = getWmuxDir();
+
+// Install the file log sink before any log() / console.* call below. The
+// launcher spawns this process with `stdio: 'ignore'`, so without this
+// every diagnostic line (recovery, shutdown.phase, PTY retry) is dropped
+// at the OS pipe layer and never reaches disk. After this call the same
+// lines land in ~/.wmux/logs/daemon-YYYY-MM-DD.log.
+initDaemonLogSink(wmuxDir);
 
 // Recovery soft cap. The hard PTY ceiling lives in DaemonSessionManager
 // (MAX_SESSIONS = 200). Recovery has its own lower bound so a state file
