@@ -117,3 +117,18 @@ export function getTcpPortPath(): string {
   const home = process.env.USERPROFILE || process.env.HOME || '';
   return `${home}/.wmux-tcp-port`;
 }
+
+// wmux user home directory — root for plugin-trust.json, pid-map/, and other
+// substrate state that needs to survive across wmux restarts. Single source
+// of truth so callers don't reimplement the USERPROFILE/HOME dance.
+export function getWmuxHomeDir(): string {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  return `${home}/.wmux`;
+}
+
+// Plugin trust database — see `docs/api/mcp-plugin-spec.md`. Written by main
+// process via `PluginTrustStore` (atomicWriteJSON). NOT a secret — it stores
+// declared identities and user-issued trust grants, not credentials.
+export function getPluginTrustPath(): string {
+  return `${getWmuxHomeDir()}/plugin-trust.json`;
+}

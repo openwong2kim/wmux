@@ -5,6 +5,30 @@ export interface RpcRequest {
   method: RpcMethod;
   params: Record<string, unknown>;
   token?: string;
+  /**
+   * v2.10.0+ — declared plugin identity. Carries the MCP `clientInfo.name`
+   * (and version) from the MCP server stdio handshake so handlers can attribute
+   * each call to a plugin. Optional and additive — pre-v2.10 callers still
+   * authenticate by token alone and are treated as `legacy` identities.
+   *
+   * Substrate stance: this is a declared identity, not a verified one. There is
+   * no root-of-trust; any caller can self-name. Permission enforcement (planned
+   * in a follow-up PR) treats unknown names as `legacy` and applies user-issued
+   * trust state from `~/.wmux/plugin-trust.json` to known names. See
+   * `docs/api/mcp-plugin-spec.md` for the threat model.
+   */
+  clientName?: string;
+  clientVersion?: string;
+}
+
+/**
+ * Per-request context surfaced to RPC handlers — populated by PipeServer
+ * from RpcRequest fields. Handlers receive this as an optional second
+ * argument so legacy handlers `(params) => ...` keep compiling.
+ */
+export interface RpcContext {
+  clientName?: string;
+  clientVersion?: string;
 }
 
 export type RpcResponse =
@@ -35,6 +59,8 @@ export type RpcMethod =
   | 'input.readScreen'
   | 'terminal.readEvents'
   | 'mcp.claimWorkspace'
+  | 'mcp.identify'
+  | 'mcp.declarePermissions'
   | 'notify'
   | 'meta.setStatus'
   | 'meta.setProgress'
@@ -125,6 +151,8 @@ export const ALL_RPC_METHODS = [
   'input.readScreen',
   'terminal.readEvents',
   'mcp.claimWorkspace',
+  'mcp.identify',
+  'mcp.declarePermissions',
   'notify',
   'meta.setStatus',
   'meta.setProgress',
@@ -350,3 +378,59 @@ export interface PaneMetadataCapabilities {
  * structured error data.
  */
 export const RPC_VERSION_CONFLICT = -32001 as const;
+
+// === MCP Plugin Identity RPC types (Phase 2.1, v2.10+) ===
+//
+// Two record-only RPCs that wire per-client identity through the substrate.
+// Enforcement is intentionally absent in this revision — handlers persist
+// declared state to `~/.wmux/plugin-trust.json` and return the recorded
+// identity. A follow-up PR will introduce permission checks at the three
+// remaining enforcement points (method dispatch, metadata path write,
+// event subscription).
+
+/**
+ * Trust state for a plugin entry in `~/.wmux/plugin-trust.json`.
+ *
+ *   - 'unconfirmed' — recorded by `mcp.identify` or `mcp.declarePermissions`,
+ *                     not yet shown to the user (no prompt UI in this PR)
+ *   - 'trusted'     — user approved the declared capability set (future PR)
+ *   - 'denied'      — user rejected the plugin (future PR)
+ *   - 'legacy'      — observed via RPC traffic without a clientName envelope
+ *                     (pre-v2.10 callers, or non-MCP RPC clients)
+ */
+export type PluginTrustStatus = 'unconfirmed' | 'trusted' | 'denied' | 'legacy';
+
+export interface PluginIdentityRecord {
+  name: string;
+  version?: string;
+  declaredCapabilities?: string[];
+  rationale?: string;
+  status: PluginTrustStatus;
+  firstSeen: number;
+  lastSeen: number;
+}
+
+export interface McpIdentifyParams {
+  name: string;
+  version?: string;
+}
+
+export interface McpIdentifyResult {
+  ok: true;
+  identity: PluginIdentityRecord;
+}
+
+export interface McpDeclarePermissionsParams {
+  permissions: string[];
+  rationale?: string;
+}
+
+export interface McpDeclarePermissionsResult {
+  ok: true;
+  identity: PluginIdentityRecord;
+  /**
+   * Parsed permission echoes — useful for clients verifying that wmux
+   * accepted the grammar they sent. Order matches `params.permissions`.
+   */
+  accepted: string[];
+}
