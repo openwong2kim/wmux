@@ -65,4 +65,20 @@ describe('before-quit daemon disconnect race — source invariants', () => {
       /daemonClient\.on\(\s*['"]disconnected['"][\s\S]*?daemonClient\s*=\s*null/,
     );
   });
+
+  it('keeps BEFORE_QUIT_TIMEOUT_MS strictly below the daemon-side hard timeout (10s)', () => {
+    // User dogfood on a 48-PTY daemon (2026-05-16/17) hit the previous
+    // 4 s budget. Raising it to 8 s gives daemon shutdown room to flush
+    // without ever crossing the daemon's own 10 s force-exit guard in
+    // `src/daemon/index.ts` (`shutdownTimeout = setTimeout(..., 10_000)`).
+    // If a future refactor pushes the budget at or above 10 s, the main-
+    // side race would expire AFTER the daemon already force-exited,
+    // which defeats the whole purpose of the race (we'd time out either
+    // way and the budget would just be slower for no benefit).
+    const match = /const\s+BEFORE_QUIT_TIMEOUT_MS\s*=\s*(\d+)(?:_(\d+))?\s*;/.exec(indexSrc);
+    expect(match).not.toBeNull();
+    const budget = Number((match![1] + (match![2] ?? '')).replace(/_/g, ''));
+    expect(budget).toBeGreaterThanOrEqual(4_000);
+    expect(budget).toBeLessThan(10_000);
+  });
 });
