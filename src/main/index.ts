@@ -698,14 +698,16 @@ app.on('before-quit', async (e) => {
     // dynamic test (Task #15) measurement.
     const BEFORE_QUIT_TIMEOUT_MS = 4_000;
     console.log(
-      `[Main] Daemon mode — racing daemon.shutdown (${BEFORE_QUIT_TIMEOUT_MS}ms budget)`,
+      `[fix0-dbg] [Main] before-quit: racing daemon.shutdown (${BEFORE_QUIT_TIMEOUT_MS}ms budget) ts=${Date.now()}`,
     );
+    const shutdownStart = Date.now();
     const race = await raceDaemonShutdown(clientAtQuit, BEFORE_QUIT_TIMEOUT_MS);
+    const elapsed = Date.now() - shutdownStart;
     if (race.ok) {
-      console.log('[Main] daemon.shutdown ack received');
+      console.log(`[fix0-dbg] [Main] daemon.shutdown ack received elapsed=${elapsed}ms`);
     } else {
       console.warn(
-        `[Main] daemon.shutdown did not complete in time, falling back to detach: ${race.error}`,
+        `[fix0-dbg] [Main] daemon.shutdown did not complete in time elapsed=${elapsed}ms error=${race.error} — daemon buffer dump may be PARTIAL or SKIPPED`,
       );
     }
     // Always detach as the final step. If the RPC succeeded the pipe is

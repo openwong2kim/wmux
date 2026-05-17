@@ -1,4 +1,7 @@
 export const ko = {
+  // App lifecycle
+  'app.restoringPanes': '패널 복원 중…',
+
   // Sidebar
   'sidebar.workspaces': '워크스페이스',
   'sidebar.newWorkspace': '새 워크스페이스',

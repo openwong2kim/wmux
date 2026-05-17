@@ -1,4 +1,7 @@
 export const ja = {
+  // App lifecycle
+  'app.restoringPanes': 'パネルを復元中…',
+
   // Sidebar
   'sidebar.workspaces': 'ワークスペース',
   'sidebar.newWorkspace': '新しいワークスペース',

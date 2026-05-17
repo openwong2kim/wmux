@@ -67,6 +67,15 @@
 - **Depends on:** 알림 파이프라인 복구 ship + 사용자가 minimize 사용 빈도 확인
 - **Priority:** P2
 
+## Fix B — Scrollback restore cap-aware suspended-session promote
+- **What:** `daemon.listSessions`에 `{includeSuspended}` 파라미터 추가 + `daemon.promoteSession(id)` 신규 RPC. `AppLayout.reconcilePtys` fallback 직전에 promote 시도. cap=40 초과로 자동 복구되지 못한 suspended session도 reconnect 가능하게.
+- **Why:** Fix 0 (mount gate + saved ptyId 보존)는 cap *안*의 graceful Quit session만 복원. cap *초과* session (50+ panes 사용자, 또는 force-kill 후 daemon snapshot은 살아있지만 cap에 밀린 case)은 여전히 fresh terminal. design doc §5 + Update에 spec.
+- **Pros:** scrollback restore feature 100% 완성 (cap 안 + 초과 모두). power user 사용성 결정적.
+- **Cons:** RPC 2개 추가 + dynamic test R2-R5 (cap-skipped promote 4 scenario). Effort ~3-4시간.
+- **Context:** `docs/internal/scrollback-restore-design.md` §5 (Fix B) — full implementation sketch + failure modes + test matrix 이미 작성됨. 구현 시 그대로 따라가면 됨.
+- **Depends on:** Fix 0 (plan `wiggly-booping-cascade.md`) ship + 최소 1주 dogfood. dogfood에서 stale-state / RPC guard / generation race 회귀 없는 것을 확인한 *후*에야 Fix B 진행 (한 번에 두 가지 architecture change 검증 어려움).
+- **Priority:** P1 (Fix 0 dogfood 통과 후)
+
 ## (Phase 2 / Eureka) Agent stop-hook OSC 9 signal
 - **What:** Claude Code/Codex의 `stop` hook 또는 shell integration을 통해 turn 종료 시 OSC 9 BEL (`\x1b]9;Agent done\x07`)를 emit하도록 가이드 + 설치 스크립트. 우리 `OscParser.ts`는 이미 OSC 9를 듣고 있어서 100% 신뢰 신호 채널이 됨.
 - **Why:** 휴리스틱(throughput) + 패턴 매칭(AgentDetector)은 외부에서 추측. agent 자신이 turn boundary를 가장 정확히 안다. tmux `monitor-silence` + iTerm2 OSC 9의 진화 형태.

@@ -1,4 +1,7 @@
 export const zh = {
+  // App lifecycle
+  'app.restoringPanes': '正在恢复面板…',
+
   // Sidebar
   'sidebar.workspaces': '工作区',
   'sidebar.newWorkspace': '新建工作区',

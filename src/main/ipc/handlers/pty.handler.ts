@@ -168,8 +168,10 @@ export function registerPTYHandlers(
       'session:flushComplete',
       (payload: { sessionId: string; recoveredBytes: number }) => {
         const win = getWindow?.();
-        if (win && !win.isDestroyed()) {
-          win.webContents.send(
+        const winOk = !!(win && !win.isDestroyed());
+        console.log(`[fix0-dbg] pty.handler forwarding PTY_FLUSH_COMPLETE ${payload.sessionId} recoveredBytes=${payload.recoveredBytes} winOk=${winOk}`);
+        if (winOk) {
+          win!.webContents.send(
             IPC.PTY_FLUSH_COMPLETE,
             payload.sessionId,
             payload.recoveredBytes,
@@ -444,12 +446,15 @@ export function registerPTYHandlers(
   ipcMain.removeHandler(IPC.PTY_RECONNECT);
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_RECONNECT, wrapHandler(IPC.PTY_RECONNECT, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
+      console.log(`[fix0-dbg] pty:reconnect ENTER ${id}`);
       try {
         const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string }>;
         const session = sessions.find(s => s.id === id);
         if (!session || session.state === 'dead') {
+          console.log(`[fix0-dbg] pty:reconnect ${id} session not found or dead (state=${session?.state ?? 'missing'})`);
           return { success: false, error: 'Session not found or dead' };
         }
+        console.log(`[fix0-dbg] pty:reconnect ${id} session found state=${session.state} cmd=${session.cmd}`);
 
         // Reconnect is an explicit fresh-attach intent — pass forceFresh
         // so a stale sessionPipes entry (left over from a prior daemon
@@ -458,7 +463,9 @@ export function registerPTYHandlers(
         // underlying socket is moments away from receiving its close
         // event, and every subsequent write silently disappears.
         await daemonClient.rpc('daemon.attachSession', { id });
+        console.log(`[fix0-dbg] pty:reconnect ${id} daemon.attachSession ok, connecting SessionPipe`);
         await daemonClient.connectSessionPipe(id, { forceFresh: true });
+        console.log(`[fix0-dbg] pty:reconnect ${id} SessionPipe connected`);
 
         // Health probe: confirm the freshly connected pipe is actually
         // writable before reporting success. A truthy reconnect that
@@ -466,6 +473,7 @@ export function registerPTYHandlers(
         // bug we're trying to prevent here.
         const probeOk = daemonClient.isSessionPipeWritable(id);
         if (!probeOk) {
+          console.warn(`[fix0-dbg] pty:reconnect ${id} pipe NOT writable after connect`);
           return { success: false, error: 'Session pipe not writable after reconnect' };
         }
 
@@ -473,18 +481,29 @@ export function registerPTYHandlers(
         // repeat reconnect (e.g. AppLayout's reconcile firing again on the
         // late daemon.onConnected event) replaces the prior listener instead
         // of stacking a duplicate that doubles every byte the PTY emits.
+        let forwardCount = 0;
+        let forwardBytes = 0;
         const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
           if (payload.sessionId !== id) return;
           const win = getWindow?.();
           if (win && !win.isDestroyed()) {
             const text = decodeSessionData(id, payload.data);
-            if (text) win.webContents.send(IPC.PTY_DATA, id, text);
+            if (text) {
+              forwardCount++;
+              forwardBytes += text.length;
+              if (forwardCount <= 3 || forwardCount % 20 === 0) {
+                console.log(`[fix0-dbg] PTY_DATA forwarded ${id} chunk#${forwardCount} text.length=${text.length} totalBytes=${forwardBytes}`);
+              }
+              win.webContents.send(IPC.PTY_DATA, id, text);
+            }
           }
         };
         setSessionDataListener(id, onSessionData as (...args: unknown[]) => void);
+        console.log(`[fix0-dbg] pty:reconnect ${id} data listener registered, returning success`);
 
         return { success: true, id: session.id, shell: session.cmd };
       } catch (err) {
+        console.warn(`[fix0-dbg] pty:reconnect ${id} THREW: ${err instanceof Error ? err.message : String(err)}`);
         return { success: false, error: err instanceof Error ? err.message : String(err) };
       }
     }));

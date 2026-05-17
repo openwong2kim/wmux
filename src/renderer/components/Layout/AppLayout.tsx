@@ -34,6 +34,45 @@ import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
 
+/**
+ * Fix 0 — startup reconcile timeout.
+ *
+ * startup state machine:
+ *
+ *   mount
+ *     │
+ *     ▼
+ *   [pending] ──► session.load()
+ *     │
+ *     ▼
+ *   loadSession(saved)  ── saved=null? ──► [ready]
+ *     │ (ptyId preserved)                    ▲
+ *     ▼                                      │
+ *   daemon.whenReady()                       │
+ *     │                                      │
+ *     ▼                                      │
+ *   gen = ++startupGenRef                    │
+ *   abortCtl = new AbortController           │
+ *   await raceWithAbort(                     │
+ *     reconcilePtys(abortCtl.signal),        │
+ *     RECONCILE_TIMEOUT_MS                   │
+ *   )                                        │
+ *     │                                      │
+ *     ├── success ──────────────────────────┤
+ *     │                                      │
+ *     ├── timeout/throw ──► abortCtl.abort() │
+ *     │                     if (gen === startupGenRef.current)
+ *     │                       clearAllPtyState()
+ *     │                     ────────────────┤
+ *     │                                      │
+ *     └── (always) finally: setPaneGate('ready') ───┘
+ *
+ * Generation token prevents late-arriving reconcile from mutating store
+ * after a fresher startup ran. AbortController propagates cancellation
+ * into reconcilePtys so its `signal.aborted` checks early-return.
+ */
+const RECONCILE_TIMEOUT_MS = 5_000;
+
 /** Map shell executable path to a human-readable display name. */
 function shellDisplayName(shellPath: string): string {
   const base = shellPath.replace(/\\/g, '/').split('/').pop()?.toLowerCase() || '';
@@ -175,6 +214,10 @@ export default function AppLayout() {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const workspaces = useStore((s) => s.workspaces);
   const addSurface = useStore((s) => s.addSurface);
+  // Fix 0 startup gate. See state machine diagram at top of file.
+  const paneGate = useStore((s) => s.paneGate);
+  const setPaneGate = useStore((s) => s.setPaneGate);
+  const clearAllPtyState = useStore((s) => s.clearAllPtyState);
 
   const multiviewIds = useStore((s) => s.multiviewIds);
   const clearMultiview = useStore((s) => s.clearMultiview);
@@ -214,17 +257,21 @@ export default function AppLayout() {
   const [isDragging, setIsDragging] = useState(false);
   const dragCounterRef = useRef(0);
   const sessionLoadedRef = useRef(false);
-  // Guard against concurrent reconcilePtys runs. The startup-time
-  // `daemon.whenReady()` path and the `daemon.onConnected` listener both
-  // fire reconcilePtys, and on first connect they race: two reconcile
-  // loops interleave and call pty.reconnect twice for the same surface,
-  // which trips a race inside pty:reconnect (attachSession +
-  // connectSessionPipe run twice against the same session). One of the
-  // two reconnects loses, the renderer clears ptyId, and that pane goes
-  // input-mute after a reboot/restore. The flag lets the second caller
-  // skip while the first run owns reconciliation; genuinely late
-  // reconnects after the first run completes are still re-reconciled.
-  const reconcileInFlightRef = useRef(false);
+  // Fix 0: monotonic startup generation counter. Each mount-effect run
+  // bumps it; the startup catch only fires clearAllPtyState if its own
+  // gen still matches the current ref. Prevents a stale startup from
+  // wiping state that a fresher startup already reconciled correctly.
+  // Also used by the in-flight reconcile share (below) so late mutations
+  // from an abandoned run are no-ops.
+  const startupGenRef = useRef(0);
+  // Fix 0: reconcilePtys in-flight promise (was a boolean ref). The
+  // original boolean caused a race where daemon.onConnected fires
+  // reconcile first, then startup's `await reconcilePtys()` returned
+  // immediately because "already in flight" — flipping paneGate to ready
+  // before the racing reconcile actually finished. Now startup awaits
+  // the shared promise of whatever run is in flight. Late re-reconciles
+  // after the first run completes still trigger a fresh pass.
+  const reconcileInFlightRef = useRef<Promise<void> | null>(null);
 
   useEffect(() => {
     // File drop via preload onFileDrop (reliable cross-platform)
@@ -291,131 +338,190 @@ export default function AppLayout() {
     };
   }, []);
 
-  // Reconcile saved PTY IDs with daemon's active sessions.
-  // If a saved ptyId exists in the daemon, reconnect to it.
-  // Otherwise, clear it so Terminal.tsx creates a fresh PTY.
-  const reconcilePtys = useCallback(async () => {
+  // Fix 0 — reconcile saved PTY IDs with daemon's active sessions.
+  //
+  // Contract changes from pre-Fix-0:
+  //   1. Throws (not silently returns) on `pty.list` RPC failure. The
+  //      AppLayout startup catch depends on this to fire clearAllPtyState
+  //      as the explicit fallback.
+  //   2. Accepts an AbortSignal. Each `await` boundary checks
+  //      signal.aborted and early-returns; aborted runs do not mutate
+  //      the store further.
+  //   3. In-flight promise share (not boolean skip). A concurrent caller
+  //      awaits the existing run instead of returning immediately —
+  //      otherwise the startup gate could flip to ready before the
+  //      racing reconcile actually finished.
+  //   4. NO replacement pty.create on stale ptyId. The path that called
+  //      pty.create + updateSurfacePtyId(newId) is the original
+  //      propagation-race source. v2 clears the ptyId and lets
+  //      Terminal.tsx self-create on mount — the well-tested fresh-pane
+  //      path. The mount gate guarantees Terminal mounts AFTER this
+  //      reconcile resolves, so the race is gone.
+  const reconcilePtys = useCallback(async (signal?: AbortSignal): Promise<void> => {
     if (reconcileInFlightRef.current) {
-      // Drop duplicate concurrent trigger. The in-flight run will see
-      // the same daemon state, so re-running would just re-issue the
-      // same reconnects and race against them.
-      console.log('[AppLayout] reconcile already in flight — skipping duplicate trigger');
-      return;
+      console.log('[AppLayout] reconcile already in flight — awaiting shared promise');
+      return reconcileInFlightRef.current;
     }
-    reconcileInFlightRef.current = true;
-    try {
-      const listResult = await ipcInvoke<{ id: string }[]>(() =>
-        window.electronAPI.pty.list()
-      );
-      if (!listResult.ok) {
-        // Toast already shown by useIpc; skip reconciliation silently.
-        console.error('[AppLayout] PTY reconciliation aborted:', listResult.error.code);
-        return;
-      }
-      const activePtys = listResult.data;
-      const activeIds = new Set(activePtys.map((p: { id: string }) => p.id));
-      console.log('[AppLayout] Daemon active PTYs:', [...activeIds]);
+    const run = (async () => {
+      try {
+        const listResult = await ipcInvoke<{ id: string }[]>(() =>
+          window.electronAPI.pty.list()
+        );
+        if (!listResult.ok) {
+          // Throw — the startup catch depends on this to fire
+          // clearAllPtyState as the explicit fallback. Pre-Fix-0 this
+          // silently returned, which broke the documented fallback
+          // contract (codex outside-voice hole #3).
+          throw new Error(`reconcilePtys aborted: ${listResult.error.code}`);
+        }
+        if (signal?.aborted) return;
+        const activePtys = listResult.data;
+        const activeIds = new Set(activePtys.map((p: { id: string }) => p.id));
+        console.log('[AppLayout] Daemon active PTYs:', [...activeIds]);
 
-      const reconcile = async (pane: Pane, wsId: string) => {
-        if (pane.type === 'leaf') {
-          for (const surface of pane.surfaces) {
-            if (surface.surfaceType === 'browser' || surface.surfaceType === 'editor') continue;
-            if (!surface.ptyId) {
-              console.log(`[AppLayout] Surface ${surface.id}: no ptyId, will create new`);
-              continue;
+        const reconcile = async (pane: Pane, wsId: string) => {
+          if (signal?.aborted) return;
+          if (pane.type === 'leaf') {
+            for (const surface of pane.surfaces) {
+              if (signal?.aborted) return;
+              if (surface.surfaceType === 'browser' || surface.surfaceType === 'editor') continue;
+              if (!surface.ptyId) {
+                console.log(`[AppLayout] Surface ${surface.id}: no ptyId, will create new`);
+                continue;
+              }
+              if (activeIds.has(surface.ptyId)) {
+                console.log(`[AppLayout] Surface ${surface.id}: reconnecting to ${surface.ptyId}`);
+                const result = await window.electronAPI.pty.reconnect(surface.ptyId);
+                if (signal?.aborted) return;
+                console.log(`[AppLayout] Reconnect result:`, result);
+                if (!result.success) {
+                  console.warn(`[AppLayout] Reconnect failed, clearing ptyId`);
+                  useStore.getState().updateSurfacePtyId(pane.id, surface.id, '');
+                }
+              } else {
+                // Fix 0: clear stale ptyId, do NOT create a replacement
+                // here. Terminal.tsx self-create on mount handles the
+                // fresh-pane path. Mount gate ensures Terminal mounts
+                // after this reconcile resolves, eliminating the
+                // store→Pane→Terminal propagation race that the
+                // original loadSession wipe was patching around.
+                // wsId intentionally unused now (no per-surface create).
+                console.log(`[AppLayout] Surface ${surface.id}: ptyId ${surface.ptyId} not in daemon, clearing for Terminal self-create`);
+                useStore.getState().updateSurfacePtyId(pane.id, surface.id, '');
+              }
             }
-            if (activeIds.has(surface.ptyId)) {
-              console.log(`[AppLayout] Surface ${surface.id}: reconnecting to ${surface.ptyId}`);
-              const result = await window.electronAPI.pty.reconnect(surface.ptyId);
-              console.log(`[AppLayout] Reconnect result:`, result);
-              if (!result.success) {
-                console.warn(`[AppLayout] Reconnect failed, clearing ptyId`);
-                useStore.getState().updateSurfacePtyId(pane.id, surface.id, '');
-              }
-            } else {
-              console.log(`[AppLayout] Surface ${surface.id}: ptyId ${surface.ptyId} not in daemon, creating new PTY`);
-              try {
-                const newPty = await window.electronAPI.pty.create(
-                  withDefaultShell({ cwd: surface.cwd, workspaceId: wsId }, useStore.getState().defaultShell)
-                );
-                useStore.getState().updateSurfacePtyId(pane.id, surface.id, newPty.id);
-              } catch (err) {
-                console.error(`[AppLayout] Failed to create replacement PTY:`, err);
-                useStore.getState().updateSurfacePtyId(pane.id, surface.id, '');
-              }
+          } else {
+            for (const child of pane.children) {
+              if (signal?.aborted) return;
+              await reconcile(child, wsId);
             }
           }
-        } else {
-          for (const child of pane.children) await reconcile(child, wsId);
-        }
-      };
+        };
 
-      // Iterate the freshest workspace snapshot per walk. The reconcile
-      // path was previously seeded from a single getState() before the
-      // loop, which froze the view of workspaces for the duration of
-      // the walk — any concurrent store update (e.g. a fast-spawned
-      // surface) was invisible until the next reconcile cycle.
-      for (const ws of useStore.getState().workspaces) {
-        console.log(`[AppLayout] Reconciling workspace: ${ws.name}`);
-        await reconcile(ws.rootPane, ws.id);
+        // Iterate the freshest workspace snapshot per walk. The reconcile
+        // path was previously seeded from a single getState() before the
+        // loop, which froze the view of workspaces for the duration of
+        // the walk — any concurrent store update (e.g. a fast-spawned
+        // surface) was invisible until the next reconcile cycle.
+        for (const ws of useStore.getState().workspaces) {
+          if (signal?.aborted) return;
+          console.log(`[AppLayout] Reconciling workspace: ${ws.name}`);
+          await reconcile(ws.rootPane, ws.id);
+        }
+        console.log('[AppLayout] Reconciliation complete');
+      } finally {
+        reconcileInFlightRef.current = null;
       }
-      console.log('[AppLayout] Reconciliation complete');
-    } catch (err) {
-      console.error('[AppLayout] PTY reconciliation failed:', err);
-    } finally {
-      reconcileInFlightRef.current = false;
-    }
+    })();
+    reconcileInFlightRef.current = run;
+    return run;
   }, [ipcInvoke]);
 
-  // 앱 시작 시 세션 복원
+  // 앱 시작 시 세션 복원 (Fix 0 — see state machine diagram at top of file)
   useEffect(() => {
+    const gen = ++startupGenRef.current;
+    let abortCtl: AbortController | null = null;
     window.electronAPI.session.load().then(async (saved: SessionData | null) => {
-      if (!saved) {
-        sessionLoadedRef.current = true;
-        // First ever launch — ask about auto-update
-        setShowAutoUpdatePrompt(true);
-        return;
-      }
-
-      // If autoUpdateEnabled was never set (upgrade from older version), prompt
-      const isFirstAutoUpdateChoice = saved.autoUpdateEnabled == null;
-
-      useStore.getState().loadSession(saved);
-
-      // Sanitize stale per-workspace agent state. agentStatus/agentName
-      // describe a live PTY's current state; carrying them across an app
-      // restart is always wrong — the workspaces just rehydrated, no agent
-      // has emitted anything yet in this session. Without this reset the
-      // sidebar dot would lie about agents that died last time the user
-      // closed wmux (Codex 1st review #4: lifecycle reset).
-      const postLoadState = useStore.getState();
-      for (const ws of postLoadState.workspaces) {
-        // Only update workspaces whose persisted state actually carries a
-        // live status. Plain truthiness on agentStatus is true for 'idle'
-        // too, so the previous guard re-broadcast a no-op metadata update
-        // for every workspace that had ever held agent state.
-        const status = ws.metadata?.agentStatus;
-        const hasLive = (status && status !== 'idle') || (ws.metadata?.agentName && ws.metadata.agentName.length > 0);
-        if (hasLive) {
-          postLoadState.updateWorkspaceMetadata(ws.id, { agentStatus: 'idle', agentName: '' });
+      try {
+        if (!saved) {
+          sessionLoadedRef.current = true;
+          // First ever launch — ask about auto-update
+          setShowAutoUpdatePrompt(true);
+          return;
         }
+
+        // If autoUpdateEnabled was never set (upgrade from older version), prompt
+        const isFirstAutoUpdateChoice = saved.autoUpdateEnabled == null;
+
+        useStore.getState().loadSession(saved);
+
+        // Sanitize stale per-workspace agent state. agentStatus/agentName
+        // describe a live PTY's current state; carrying them across an app
+        // restart is always wrong — the workspaces just rehydrated, no agent
+        // has emitted anything yet in this session. Without this reset the
+        // sidebar dot would lie about agents that died last time the user
+        // closed wmux (Codex 1st review #4: lifecycle reset).
+        const postLoadState = useStore.getState();
+        for (const ws of postLoadState.workspaces) {
+          // Only update workspaces whose persisted state actually carries a
+          // live status. Plain truthiness on agentStatus is true for 'idle'
+          // too, so the previous guard re-broadcast a no-op metadata update
+          // for every workspace that had ever held agent state.
+          const status = ws.metadata?.agentStatus;
+          const hasLive = (status && status !== 'idle') || (ws.metadata?.agentName && ws.metadata.agentName.length > 0);
+          if (hasLive) {
+            postLoadState.updateWorkspaceMetadata(ws.id, { agentStatus: 'idle', agentName: '' });
+          }
+        }
+
+        sessionLoadedRef.current = true;
+
+        if (isFirstAutoUpdateChoice) {
+          setShowAutoUpdatePrompt(true);
+        }
+
+        // v2.8.1 hotfix (Bug 3): defer reconciliation until main has
+        // settled the daemon-vs-local decision. Without this gate, the
+        // reconcile fires while IPC handlers are mid-swap and pty.list
+        // can hit a "no handler registered" rejection — the renderer
+        // surfaces that as a generic "알 수 없는 오류" toast spam.
+        await window.electronAPI.daemon.whenReady();
+
+        // Fix 0 — generation-tokened, AbortController-cancellable
+        // reconcile race. Timeout aborts the in-flight reconcile so
+        // late mutations don't overwrite the cleared-fallback state.
+        abortCtl = new AbortController();
+        const signal = abortCtl.signal;
+        await Promise.race([
+          reconcilePtys(signal),
+          new Promise<never>((_, reject) =>
+            setTimeout(() => {
+              abortCtl?.abort();
+              reject(new Error(`reconcile timeout after ${RECONCILE_TIMEOUT_MS}ms`));
+            }, RECONCILE_TIMEOUT_MS)
+          ),
+        ]);
+      } catch (err) {
+        // Fix 0 explicit fallback. Reconcile aborted, timed out, or
+        // threw (pty.list reject, daemon.whenReady reject, etc.).
+        // Clear all pty-keyed state so Terminal.tsx self-create
+        // receives a consistent blank slate. Generation check prevents
+        // a stale startup from wiping state a fresher startup already
+        // reconciled correctly.
+        console.warn('[AppLayout] startup reconcile failed:', err);
+        abortCtl?.abort();
+        if (gen === startupGenRef.current) {
+          clearAllPtyState();
+        }
+      } finally {
+        // Always flip the gate, even on error — never leave the user
+        // staring at a permanent "Restoring panes…" placeholder.
+        setPaneGate('ready');
       }
-
-      sessionLoadedRef.current = true;
-
-      if (isFirstAutoUpdateChoice) {
-        setShowAutoUpdatePrompt(true);
-      }
-
-      // v2.8.1 hotfix (Bug 3): defer reconciliation until main has
-      // settled the daemon-vs-local decision. Without this gate, the
-      // reconcile fires while IPC handlers are mid-swap and pty.list
-      // can hit a "no handler registered" rejection — the renderer
-      // surfaces that as a generic "알 수 없는 오류" toast spam.
-      await window.electronAPI.daemon.whenReady();
-
-      await reconcilePtys();
     });
+  // setPaneGate / clearAllPtyState are stable zustand action refs; reconcilePtys
+  // captured by closure. Empty deps mirror pre-Fix-0 mount-only behavior.
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   }, []);
 
   // ─── First-run wizard: probe marker on mount (T8a) ────────────────────
@@ -524,6 +630,11 @@ export default function AppLayout() {
   useEffect(() => {
     const interval = setInterval(() => {
       if (!sessionLoadedRef.current) return;
+      // Fix 0: skip autosave while startup reconcile is still in flight.
+      // Without this guard, a half-reconciled snapshot (some surfaces
+      // with old ptyId, some cleared) could be persisted on top of the
+      // saved session — next startup would load garbage state.
+      if (useStore.getState().paneGate !== 'ready') return;
       const dumped = dumpScrollbackBuffersSync();
       const data = buildSessionData(dumped);
       window.electronAPI.session.save(data);
@@ -550,6 +661,13 @@ export default function AppLayout() {
 
   useEffect(() => {
     if (!activeWorkspace) return;
+    // Fix 0: wait until startup reconcile finishes before auto-creating
+    // PTYs for empty leaves. Without this guard, the default workspace
+    // (which has an empty leaf at app construction time) would spawn a
+    // PTY before session.load() replaces it with the saved workspace —
+    // leaking an orphaned daemon session and racing the user's restored
+    // surfaces (codex outside-voice hole #4).
+    if (paneGate !== 'ready') return;
 
     const emptyLeaves = collectEmptyLeaves(activeWorkspace.rootPane);
     if (emptyLeaves.length === 0) return;
@@ -587,8 +705,8 @@ export default function AppLayout() {
     }
 
     return () => { cancelled = true; };
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- collectEmptyLeaves & addSurface & ipcInvoke are stable; emptyLeafIdsKey is the meaningful trigger
-  }, [activeWorkspace?.id, emptyLeafIdsKey]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- collectEmptyLeaves & addSurface & ipcInvoke are stable; emptyLeafIdsKey + paneGate are the meaningful triggers
+  }, [activeWorkspace?.id, emptyLeafIdsKey, paneGate]);
 
   // Wizard close handler (T8a). Mirrors firstRunCompleted into uiSlice (main
   // already wrote the marker via firstRun:complete or :dismiss). The cheat
@@ -624,8 +742,19 @@ export default function AppLayout() {
         {/* Render workspaces: single view or multiview grid (Ctrl+click selected).
             Grid renders only when the active workspace is a member of the saved
             multiview group, so clicking outside the group shows that workspace's
-            single view while the group is preserved for later restoration. */}
-        {multiviewIds.length >= 2 && multiviewIds.includes(activeWorkspaceId) ? (
+            single view while the group is preserved for later restoration.
+
+            Fix 0 — paneGate gate: while the startup reconcile is in flight, the
+            PaneContainer area shows a "Restoring panes…" placeholder. Chrome
+            (Sidebar, StatusBar) stays mounted so the user has immediate visual
+            feedback that wmux is alive. Once reconcile resolves (success,
+            timeout, or thrown), paneGate flips to 'ready' and the real panes
+            mount with their final ptyId. */}
+        {paneGate === 'pending' ? (
+          <div className="flex-1 min-h-0 flex items-center justify-center text-sm" style={{ color: 'var(--text-sub2)' }}>
+            {t('app.restoringPanes') || 'Restoring panes…'}
+          </div>
+        ) : multiviewIds.length >= 2 && multiviewIds.includes(activeWorkspaceId) ? (
           <div
             className="flex-1 min-h-0"
             style={{

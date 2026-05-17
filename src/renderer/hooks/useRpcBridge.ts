@@ -127,6 +127,16 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // Always read the freshest state via getState() to avoid stale closures.
   const store = useStore.getState();
 
+  // Fix 0 — block external RPC during startup reconcile. Even read-only
+  // RPCs (workspace.list) return surface.ptyId fields that the external
+  // caller may use for a follow-up write — and during the pending
+  // window those ptyIds may be stale, cleared by reconcile mid-flight,
+  // or about to be cleared by the fallback. Returning a structured
+  // error lets the caller retry once the gate flips.
+  if (store.paneGate !== 'ready') {
+    return { error: 'wmux is still starting (paneGate=pending)', retryable: true };
+  }
+
   // -------------------------------------------------------------------------
   // workspace.*
   // -------------------------------------------------------------------------

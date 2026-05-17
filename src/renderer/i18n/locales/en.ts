@@ -1,4 +1,7 @@
 export const en = {
+  // App lifecycle
+  'app.restoringPanes': 'Restoring panes…',
+
   // Sidebar
   'sidebar.workspaces': 'Workspaces',
   'sidebar.newWorkspace': 'New workspace',

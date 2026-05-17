@@ -18,6 +18,15 @@ import {
 import { applyCustomCssVars, clearCustomCssVars, DEFAULT_CUSTOM_THEME } from '../../themes';
 
 export interface UISlice {
+  // ─── Startup gate (Fix 0) ─────────────────────────────────────────────
+  // Lifecycle marker promoted from local AppLayout state so RPC handlers
+  // (useRpcBridge, companyRpcHandlers) can cheaply guard against stale
+  // ptyId writes during the startup reconcile window. Flips from
+  // 'pending' to 'ready' exactly once per renderer lifetime, in
+  // AppLayout's mount effect finally block.
+  paneGate: 'pending' | 'ready';
+  setPaneGate: (state: 'pending' | 'ready') => void;
+
   sidebarVisible: boolean;
   toggleSidebar: () => void;
   setSidebarVisible: (visible: boolean) => void;
@@ -205,6 +214,13 @@ function collectFirstLeafId(pane: Pane): string {
 }
 
 export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]], [], UISlice> = (set, get) => ({
+  // ─── Startup gate (Fix 0) ─────────────────────────────────────────────
+  paneGate: 'pending',
+
+  setPaneGate: (gate) => set((state) => {
+    state.paneGate = gate;
+  }),
+
   // ─── Sidebar ─────────────────────────────────────────────────────────────
   sidebarVisible: true,
 

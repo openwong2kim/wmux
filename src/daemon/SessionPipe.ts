@@ -202,6 +202,7 @@ export class SessionPipe {
 
       // Step 1: Flush ring buffer contents
       const buffered = this.ringBuffer.readAll();
+      console.log(`[fix0-dbg] SessionPipe.flush sessionId=${this.sessionId} ringBufferBytes=${buffered.length}`);
       if (buffered.length > 0) {
         socket.write(buffered);
       }

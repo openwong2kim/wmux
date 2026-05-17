@@ -23,6 +23,16 @@ export interface WorkspaceSlice {
   updateWorkspaceMetadata: (id: string, metadata: Partial<WorkspaceMetadata>) => void;
   reorderWorkspace: (fromIndex: number, toIndex: number) => void;
   loadSession: (data: SessionData) => void;
+  /**
+   * Fix 0 fallback action. Clears every ptyId-keyed piece of renderer state
+   * in one atomic immer set: terminal surface ptyId across all workspaces +
+   * nested split panes, floatingPanePtyId, terminalBookmarks, tokenDataByPty,
+   * and company member.ptyId. Called from AppLayout startup catch when
+   * reconcile aborts/times out, so Terminal.tsx self-create receives a
+   * consistent blank slate and external RPC handlers don't have stale
+   * pty-keyed maps lying around.
+   */
+  clearAllPtyState: () => void;
 }
 
 export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], WorkspaceSlice> = (set) => {
@@ -147,38 +157,58 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
 
       // Security + correctness: sanitize surfaces.
       //
-      // ptyId is cleared on every session.load. The previous design kept
-      // saved ptyIds intact and relied on AppLayout.reconcilePtys to
-      // either rebind them to live daemon sessions or clear the dead
-      // ones. That contract failed in the wild: when daemon recovery
-      // missed a session (or returned 0 sessions after a fresh start),
-      // reconcile took the "creating new PTY" path, called pty.create,
-      // and called updateSurfacePtyId with the new id — but the store
-      // update did not propagate to Pane → Terminal in time for the
-      // first keystrokes, and renderers ended up writing to the stale
-      // id permanently. Manifested as "PTY_WRITE drop sessionId=
-      // <stale> reason=no-live-session-pipe" with the terminal looking
-      // alive (stdout still flowing) but input-dead.
+      // HISTORICAL CONTEXT (Pre-Fix-0):
+      //   This slice force-cleared every surface.ptyId = '' on load
+      //   to dodge a Pane→Terminal propagation race: AppLayout
+      //   reconcile would fallback-create a new PTY, call
+      //   updateSurfacePtyId(newId), but the store update did not
+      //   reach Terminal before the user's first keystroke. That
+      //   keystroke went to the old ptyId, which the daemon no
+      //   longer had a SessionPipe for, and `pty.write` dropped it
+      //   silently ("PTY_WRITE drop reason=no-live-session-pipe").
+      //   Terminal looked alive (PTY init output flowed in) but was
+      //   input-dead. The wipe pushed every surface into the
+      //   well-tested Terminal.tsx self-create path, at the cost of
+      //   silently breaking scrollback restore for v2.8.x-v2.9.0.
       //
-      // Clearing ptyId up front pushes the create-fresh path into
-      // Terminal.tsx, which already handles a falsy externalPtyId by
-      // calling pty.create itself and threading the new id back via
-      // setPtyId + the onPtyCreated callback. That path is the one
-      // exercised on every new pane today, so it is the well-tested
-      // path. Scrollback restore continues to work because it keys off
-      // surface.id, not ptyId.
+      // FIX 0 CONTRACT (current):
+      //   Saved ptyIds are preserved here. AppLayout owns the
+      //   reconcile cycle: it gates PaneContainer mount on a
+      //   generation-tokened, AbortController-cancellable reconcile
+      //   pass that either matches each saved ptyId to a live
+      //   daemon session (reconnect, scrollback preserved) or
+      //   clears the ptyId (Terminal self-create on mount). By the
+      //   time Terminal mounts, ptyId is final. The
+      //   store→Pane→Terminal race is impossible because mount
+      //   happens AFTER the gate resolves.
       //
-      // Also block dangerous URL schemes on browser surfaces.
+      //   AppLayout's reconcile no longer fallback-creates
+      //   replacement PTYs (the original race source). It only
+      //   reconnects-or-clears. Fresh PTY creation is owned
+      //   entirely by Terminal.tsx — the well-tested path stays
+      //   well-tested.
+      //
+      //   On any reconcile failure (abort, timeout, RPC reject),
+      //   AppLayout's catch calls store.clearAllPtyState(), which
+      //   reproduces the historical wipe — but as an explicit,
+      //   logged, generation-guarded fallback, not an unconditional
+      //   startup behavior. The wipe lives there, not here.
+      //
+      //   Side state (floatingPanePtyId, terminalBookmarks,
+      //   tokenDataByPty, company member.ptyId) is also cleared by
+      //   clearAllPtyState — see workspaceSlice.clearAllPtyState
+      //   below for the cross-slice fan-out.
+      //
+      //   External RPC handlers (useRpcBridge, companyRpcHandlers)
+      //   guard on uiSlice.paneGate === 'ready' to prevent
+      //   stale-ptyId writes during the pending window.
+      //
+      // Browser URL scheme sanitization stays here — it is an
+      // orthogonal security boundary unrelated to ptyId lifecycle.
       const BLOCKED_URL_SCHEMES = ['javascript:', 'data:', 'vbscript:', 'file:'];
       const sanitizePanes = (pane: Pane) => {
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
-            if (s.surfaceType !== 'browser') {
-              // Force-clear the saved ptyId — the daemon session it
-              // referred to is, by definition, from a previous wmux
-              // launch and cannot be trusted to still exist.
-              s.ptyId = '';
-            }
             // Strip dangerous browserUrl schemes that could execute code on load
             if (s.browserUrl) {
               const normalized = s.browserUrl.trim().toLowerCase();
@@ -251,6 +281,45 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (data.recentCommands) state.recentCommands = data.recentCommands;
       if (data.prefixConfig) state.prefixConfig = data.prefixConfig;
+    }),
+
+    // ─── Fix 0 fallback (cross-slice atomic clear) ───────────────────────
+    // Called from AppLayout startup catch when reconcile aborts or times
+    // out. Reproduces the historical loadSession wipe as an explicit
+    // fallback, plus the side-state fan-out the original wipe never
+    // covered (floating pane, bookmarks, token data, company members).
+    // After this runs, Terminal.tsx self-create sees externalPtyId='' on
+    // mount and creates fresh PTYs — the well-tested new-pane path.
+    clearAllPtyState: () => set((state: StoreState) => {
+      // 1. Terminal surface ptyId across all workspaces + nested split panes.
+      const walkAndClearPtyIds = (pane: Pane) => {
+        if (pane.type === 'leaf') {
+          for (const s of pane.surfaces) {
+            if (s.surfaceType !== 'browser' && s.surfaceType !== 'editor') {
+              s.ptyId = '';
+            }
+          }
+        } else {
+          for (const child of pane.children) walkAndClearPtyIds(child);
+        }
+      };
+      for (const ws of state.workspaces) walkAndClearPtyIds(ws.rootPane);
+
+      // 2. uiSlice fields (cross-slice mutation within the same immer set).
+      state.floatingPanePtyId = null;
+      state.terminalBookmarks = {};
+
+      // 3. tokenSlice field.
+      state.tokenDataByPty = {};
+
+      // 4. companySlice — member.ptyId across all departments.
+      if (state.company) {
+        for (const dept of state.company.departments) {
+          for (const member of dept.members) {
+            member.ptyId = undefined;
+          }
+        }
+      }
     }),
   };
 };
