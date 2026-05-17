@@ -606,8 +606,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // ptyIds, the daemon-side ringBuffer is essentially empty, so a
       // re-attach replays at most the shell prompt — visible cost zero.
       if (daemonModeAtMount) {
-        void window.electronAPI.pty.reconnect(ptyId).catch((err: unknown) => {
-          console.warn(`[useTerminal] pty.reconnect failed for ${ptyId}: ${err instanceof Error ? err.message : String(err)}`);
+        void window.electronAPI.pty.reconnect(ptyId).then((result) => {
+          // Codex P1 — pty.reconnect resolves with { success: false } when
+          // the session died between AppLayout's liveness check and our
+          // mount call. Without this branch the Terminal would keep the
+          // stale ptyId and silently never get input forwarded —
+          // reproducing the exact input-mute class Fix 0 set out to
+          // eliminate. Clear the surface ptyId so the next mount falls
+          // into Terminal.tsx's self-create path.
+          if (!result?.success) {
+            console.warn(`[useTerminal] pty.reconnect rejected ${ptyId}: ${result?.error ?? '<no error>'}`);
+            useStore.getState().clearSurfacePtyIdByPty(ptyId);
+          }
+        }).catch((err: unknown) => {
+          console.warn(`[useTerminal] pty.reconnect threw for ${ptyId}: ${err instanceof Error ? err.message : String(err)}`);
+          useStore.getState().clearSurfacePtyIdByPty(ptyId);
         });
       }
 
@@ -700,8 +713,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Fix 0 (round 3) — trigger pty.reconnect after listener is wired.
       // See the scrollback branch above for the full rationale.
       if (daemonModeAtMount) {
-        void window.electronAPI.pty.reconnect(ptyId).catch((err: unknown) => {
-          console.warn(`[useTerminal] pty.reconnect failed for ${ptyId}: ${err instanceof Error ? err.message : String(err)}`);
+        void window.electronAPI.pty.reconnect(ptyId).then((result) => {
+          // Codex P1 — pty.reconnect resolves with { success: false } when
+          // the session died between AppLayout's liveness check and our
+          // mount call. Without this branch the Terminal would keep the
+          // stale ptyId and silently never get input forwarded —
+          // reproducing the exact input-mute class Fix 0 set out to
+          // eliminate. Clear the surface ptyId so the next mount falls
+          // into Terminal.tsx's self-create path.
+          if (!result?.success) {
+            console.warn(`[useTerminal] pty.reconnect rejected ${ptyId}: ${result?.error ?? '<no error>'}`);
+            useStore.getState().clearSurfacePtyIdByPty(ptyId);
+          }
+        }).catch((err: unknown) => {
+          console.warn(`[useTerminal] pty.reconnect threw for ${ptyId}: ${err instanceof Error ? err.message : String(err)}`);
+          useStore.getState().clearSurfacePtyIdByPty(ptyId);
         });
       }
     }

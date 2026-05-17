@@ -33,6 +33,15 @@ export interface WorkspaceSlice {
    * pty-keyed maps lying around.
    */
   clearAllPtyState: () => void;
+  /**
+   * Fix 0 round 3 follow-up — surgical clear for a single dead ptyId.
+   * useTerminal calls this when `pty.reconnect` returns { success: false }
+   * (session died between AppLayout's liveness check and Terminal mount).
+   * Clearing the surface ptyId triggers re-mount with externalPtyId='',
+   * which falls into Terminal.tsx's self-create path. Without this, the
+   * Terminal sits with a stale ptyId forever and reproduces input-mute.
+   */
+  clearSurfacePtyIdByPty: (ptyId: string) => void;
 }
 
 export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], WorkspaceSlice> = (set) => {
@@ -290,6 +299,22 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     // covered (floating pane, bookmarks, token data, company members).
     // After this runs, Terminal.tsx self-create sees externalPtyId='' on
     // mount and creates fresh PTYs — the well-tested new-pane path.
+    clearSurfacePtyIdByPty: (ptyId: string) => set((state: StoreState) => {
+      if (!ptyId) return;
+      const walk = (pane: Pane) => {
+        if (pane.type === 'leaf') {
+          for (const s of pane.surfaces) {
+            if (s.ptyId === ptyId && s.surfaceType !== 'browser' && s.surfaceType !== 'editor') {
+              s.ptyId = '';
+            }
+          }
+        } else {
+          for (const child of pane.children) walk(child);
+        }
+      };
+      for (const ws of state.workspaces) walk(ws.rootPane);
+    }),
+
     clearAllPtyState: () => set((state: StoreState) => {
       // 1. Terminal surface ptyId across all workspaces + nested split panes.
       const walkAndClearPtyIds = (pane: Pane) => {

@@ -70,11 +70,13 @@ describe('scrollback restore — chain instrumentation', () => {
   });
 
   it('keeps the shutdown-side buffer-bytes log intact (the chain depends on all three points)', () => {
-    // Pre-existing log: 'Suspended session ${managed.meta.id} (buffer: ${managed.ringBuffer.size} bytes)'
-    // A future refactor that drops this line breaks the ability to cross-check
-    // shutdown vs recovery vs flush. Lock it in.
+    // Log format: 'Suspended session ${managed.meta.id} (buffer: ${N} bytes)'
+    // where N is either ${managed.ringBuffer.size} (legacy) or ${sizeAtDump}
+    // (Fix 0 round 3 — captured before dumpToFile to avoid TOCTOU). Either
+    // expression is acceptable as long as the line carries the byte count
+    // so it stays cross-checkable against the recovery + flush points.
     expect(daemonIndexSrc).toMatch(
-      /Suspended session \$\{managed\.meta\.id\}[\s\S]*?buffer:\s*\$\{managed\.ringBuffer\.size\}\s*bytes/,
+      /Suspended session \$\{managed\.meta\.id\}[\s\S]*?buffer:\s*\$\{(managed\.ringBuffer\.size|sizeAtDump)\}\s*bytes/,
     );
   });
 });

@@ -444,8 +444,13 @@ export default function AppLayout() {
   useEffect(() => {
     const gen = ++startupGenRef.current;
     let abortCtl: AbortController | null = null;
-    window.electronAPI.session.load().then(async (saved: SessionData | null) => {
+    // Codex P2 — wrap the entire startup in an async IIFE so a session.load()
+    // rejection (preload gap, IPC handler swap mid-call, renderer reload race)
+    // still reaches the outer try/finally. The previous structure put try inside
+    // .then(), which left paneGate='pending' forever on .then-never-fires paths.
+    void (async () => {
       try {
+        const saved = await window.electronAPI.session.load();
         if (!saved) {
           sessionLoadedRef.current = true;
           // First ever launch — ask about auto-update
@@ -488,7 +493,16 @@ export default function AppLayout() {
         // reconcile fires while IPC handlers are mid-swap and pty.list
         // can hit a "no handler registered" rejection — the renderer
         // surfaces that as a generic "알 수 없는 오류" toast spam.
-        await window.electronAPI.daemon.whenReady();
+        const daemonReady = await window.electronAPI.daemon.whenReady();
+
+        // Codex P1 — set daemonMode flag here, BEFORE paneGate flips ready.
+        // The separate daemonMode useEffect also calls setDaemonModeActive
+        // from its own .then, but that runs on its own React schedule. If
+        // paneGate flips first, Terminals mount with daemonModeAtMount=false
+        // and never call pty.reconnect — reproducing blank-terminal exactly
+        // as if reconcile never happened. Setting it inside this serialized
+        // startup path guarantees daemonMode is correct before Terminal mount.
+        setDaemonModeActive(daemonReady.connected);
 
         // Fix 0 — generation-tokened, AbortController-cancellable
         // reconcile race. Timeout aborts the in-flight reconcile so
@@ -505,12 +519,11 @@ export default function AppLayout() {
           ),
         ]);
       } catch (err) {
-        // Fix 0 explicit fallback. Reconcile aborted, timed out, or
-        // threw (pty.list reject, daemon.whenReady reject, etc.).
-        // Clear all pty-keyed state so Terminal.tsx self-create
-        // receives a consistent blank slate. Generation check prevents
-        // a stale startup from wiping state a fresher startup already
-        // reconciled correctly.
+        // Fix 0 explicit fallback. Reconcile aborted, timed out, session.load
+        // rejected, daemon.whenReady rejected, or any other startup throw.
+        // Clear all pty-keyed state so Terminal.tsx self-create receives a
+        // consistent blank slate. Generation check prevents a stale startup
+        // from wiping state a fresher startup already reconciled correctly.
         console.warn('[AppLayout] startup reconcile failed:', err);
         abortCtl?.abort();
         if (gen === startupGenRef.current) {
@@ -521,7 +534,7 @@ export default function AppLayout() {
         // staring at a permanent "Restoring panes…" placeholder.
         setPaneGate('ready');
       }
-    });
+    })();
   // setPaneGate / clearAllPtyState are stable zustand action refs; reconcilePtys
   // captured by closure. Empty deps mirror pre-Fix-0 mount-only behavior.
   // eslint-disable-next-line react-hooks/exhaustive-deps
