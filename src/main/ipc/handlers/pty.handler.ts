@@ -157,6 +157,28 @@ export function registerPTYHandlers(
     return decoder.write(data);
   }
 
+  // Forward daemon flush-complete events to the renderer so useTerminal can
+  // decide whether to wipe its .txt-cache replay. recoveredBytes>0 means the
+  // daemon has authoritative scrollback that supersedes the cache;
+  // recoveredBytes=0 (cap-skipped session or fresh create) means the cache
+  // is the best approximation and must be kept.
+  // Single broadcast listener; the renderer filters by ptyId.
+  if (useDaemon && daemonClient) {
+    daemonClient.on(
+      'session:flushComplete',
+      (payload: { sessionId: string; recoveredBytes: number }) => {
+        const win = getWindow?.();
+        if (win && !win.isDestroyed()) {
+          win.webContents.send(
+            IPC.PTY_FLUSH_COMPLETE,
+            payload.sessionId,
+            payload.recoveredBytes,
+          );
+        }
+      },
+    );
+  }
+
   // pty:create
   ipcMain.removeHandler(IPC.PTY_CREATE);
   if (useDaemon && daemonClient) {

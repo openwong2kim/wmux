@@ -517,6 +517,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // fresh xterm with no stale prefix.
     let didRestoreTxt = false;
     let removeDaemonConnectedForRestore: (() => void) | null = null;
+    // Flush-marker reset gating (see docs/internal/scrollback-restore-design.md).
+    // The previous unconditional `terminal.reset()` on `daemon.onConnected`
+    // wiped the .txt-cache replay even when the daemon then sent zero bytes
+    // (cap-skipped session or fresh create). Two flags coordinate the new
+    // gate: `pendingFlushReset` means "daemon connected after .txt was
+    // restored — we owe a verdict once flush bytes are known";
+    // `lastFlushRecoveredBytes` caches the verdict for the inverse race
+    // (flush arrives before daemon.onConnected fires).
+    let pendingFlushReset = false;
+    let lastFlushRecoveredBytes: number | null = null;
+    let removeFlushListener: (() => void) | null = null;
     let firstDataFired = false;
     const fireFirstData = () => {
       if (!firstDataFired) {
@@ -567,6 +578,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }
       });
 
+      // Listen for the daemon's flush-complete signal. Two-way race:
+      //  - Flush arrives first: cache `recoveredBytes`; the
+      //    `daemon.onConnected` callback below reads it when it fires.
+      //  - Flush arrives second: the callback set `pendingFlushReset=true`;
+      //    we apply the verdict now.
+      removeFlushListener = window.electronAPI.pty.onFlushComplete((id, recoveredBytes) => {
+        if (id !== ptyId) return;
+        if (terminalRef.current !== terminal) return;
+        lastFlushRecoveredBytes = recoveredBytes;
+        if (pendingFlushReset) {
+          pendingFlushReset = false;
+          if (recoveredBytes > 0) terminal.reset();
+        }
+      });
+
       window.electronAPI.scrollback.load(scrollbackFile).then((content) => {
         // Skip the entire branch if the terminal was disposed during the
         // async IPC round-trip. Without this, the pendingData flush below
@@ -594,13 +620,25 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           fireFirstData();
           didRestoreTxt = true;
           // Arm the late-connect clear. If daemon mode activates after this
-          // moment, wipe the terminal so the SessionPipe replay does not
-          // compose on top of the stale .txt content we just wrote.
+          // moment, the reset only fires when the daemon actually has
+          // authoritative scrollback to replay (recoveredBytes > 0).
+          // Two race outcomes are handled:
+          //   1. Flush already arrived (lastFlushRecoveredBytes != null):
+          //      apply its verdict immediately.
+          //   2. Flush hasn't arrived: set pendingFlushReset so the
+          //      flush-complete listener applies the verdict later.
+          // recoveredBytes=0 (cap-skipped session or fresh create) leaves
+          // the .txt cache on screen — degraded gracefully instead of
+          // wiping to a blank prompt.
           removeDaemonConnectedForRestore = window.electronAPI.daemon.onConnected(() => {
             if (!didRestoreTxt) return;
             if (terminalRef.current !== terminal) return;
-            terminal.reset();
             didRestoreTxt = false;
+            if (lastFlushRecoveredBytes !== null) {
+              if (lastFlushRecoveredBytes > 0) terminal.reset();
+            } else {
+              pendingFlushReset = true;
+            }
           });
         }
         scrollbackLoaded = true;
@@ -721,6 +759,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       removeDataListener?.();
       removeExitListener?.();
       removeDaemonConnectedForRestore?.();
+      removeFlushListener?.();
       terminalRegistry.delete(ptyId);
       webglAddonRef.current?.dispose();
       webglAddonRef.current = null;

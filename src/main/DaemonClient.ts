@@ -407,6 +407,12 @@ export class DaemonClient extends EventEmitter {
 
         if (markerIndex !== -1) {
           flushed = true;
+          // markerIndex is exactly the count of replayed scrollback bytes:
+          // 0 when the daemon's ringBuffer was empty (mismatch case from
+          // the scrollback-restore-sync design — recovery cap dropped this
+          // session, or it was created fresh by reconcile fallback). The
+          // renderer uses this to decide whether to wipe its .txt cache.
+          const recoveredBytes = markerIndex;
 
           // Emit data before marker (ring buffer replay)
           if (markerIndex > 0) {
@@ -415,6 +421,11 @@ export class DaemonClient extends EventEmitter {
               data: combined.subarray(0, markerIndex),
             });
           }
+
+          // Fire flush-complete BEFORE the post-marker data so the
+          // renderer's reset-or-keep decision lands before any live PTY
+          // bytes start composing on the buffer.
+          this.emit('session:flushComplete', { sessionId, recoveredBytes });
 
           // Emit data after marker (if any real-time data arrived in same chunk)
           const afterMarker = combined.subarray(markerIndex + FLUSH_DONE_MARKER.length);

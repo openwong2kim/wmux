@@ -45,6 +45,18 @@ const electronAPI = {
       ipcRenderer.on(IPC.PTY_EXIT, listener);
       return () => { ipcRenderer.removeListener(IPC.PTY_EXIT, listener); };
     },
+    // Fires once per attach when the daemon's SessionPipe ring-buffer
+    // flush completes. recoveredBytes is the exact byte count replayed
+    // from the daemon's scrollback before the FLUSH_DONE_MARKER. 0 means
+    // mismatch case (cap-skipped session or fresh create) — useTerminal
+    // uses this to decide whether to keep its .txt-cache replay on
+    // screen or wipe it for the daemon-authoritative replay.
+    onFlushComplete: (callback: (id: string, recoveredBytes: number) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, id: string, recoveredBytes: number) =>
+        callback(id, recoveredBytes);
+      ipcRenderer.on(IPC.PTY_FLUSH_COMPLETE, listener);
+      return () => { ipcRenderer.removeListener(IPC.PTY_FLUSH_COMPLETE, listener); };
+    },
   },
   shell: {
     list: () => ipcRenderer.invoke(IPC.SHELL_LIST) as Promise<{ name: string; path: string; args?: string[] }[]>,

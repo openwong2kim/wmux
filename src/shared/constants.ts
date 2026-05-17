@@ -8,6 +8,11 @@ export const IPC = {
   PTY_EXIT: 'pty:exit',
   PTY_LIST: 'pty:list',
   PTY_RECONNECT: 'pty:reconnect',
+  // Fires once per attach, after the daemon SessionPipe's ring-buffer
+  // flush completes. Payload: (sessionId, recoveredBytes). The renderer
+  // uses recoveredBytes>0 as the signal to wipe its .txt-cache replay
+  // before letting the live PTY output compose on a clean buffer.
+  PTY_FLUSH_COMPLETE: 'pty:flush-complete',
   SHELL_LIST: 'shell:list',
   SESSION_SAVE: 'session:save',
   SESSION_LOAD: 'session:load',
