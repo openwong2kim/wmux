@@ -66,6 +66,8 @@ Known spoofing scenarios:
 | Two processes both claim `clientName: "claude-ai"` | Both write to the same trust-DB entry; `lastSeen` reflects the most recent contact. capability declarations overwrite each other (last writer wins). |
 | Plugin claims a different name in different RPCs | Each name is recorded independently. The substrate does not cross-check or pin identity within a connection in this first PR. |
 | Plugin claims `wmux` (the bundled identity) | Allowed today. Future enforcement may reject reserved names. |
+| Trusted plugin re-declares a widened capability set | Status is preserved (`trusted` stays `trusted`) and `declaredCapabilities` is overwritten wholesale. In this record-only PR the field is unread, so the widening is dormant. **The follow-up enforcement PR MUST detect set-difference vs the previously approved capabilities and demote to `unconfirmed`** before honouring the new surface. Tracked at `applyDeclaration` in `src/main/mcp/PluginIdentity.ts`. |
+| Hostile `clientName` (`__proto__`, `toString`, multi-MB string) | Trust DB stores plugin records in a null-prototype map and clamps names to `MAX_PLUGIN_NAME_LEN = 256`. Prototype keys cannot collide with `Object.prototype`; oversize names are truncated, never rejected, so the audit trail is preserved. |
 
 Plugins SHOULD pick a stable, namespaced identity (`my-org.my-tool`, not `tool`) so user-issued trust state survives upgrades.
 
@@ -79,7 +81,7 @@ Plugins SHOULD pick a stable, namespaced identity (`my-org.my-tool`, not `tool`)
 
 - `capability` is drawn from a finite whitelist (§3.2).
 - `path-glob` is optional and scopes the capability to a subset of the substrate surface.
-- The separator is a single `:` between the capability and the glob.
+- The separator is the **first** `:` in the string. Additional `:` characters inside the glob are treated as literal characters (regex-escaped during compilation), so values like `meta.write:custom.foo:bar` parse to capability `meta.write` and glob `custom.foo:bar`.
 
 Examples:
 
@@ -163,7 +165,7 @@ Behaviour:
 - The entire array is parsed against §3. If **any** entry is malformed, the whole declaration is rejected — plugins cannot half-declare.
 - Accepted declarations overwrite any prior declaration from the same `clientName`. There is no union/merge in the first PR.
 - The persisted record preserves the raw strings the plugin sent so future parsers can re-validate against an updated grammar.
-- `rationale` is optional, surfaced verbatim in the future approval dialog.
+- `rationale` is optional, surfaced verbatim in the future approval dialog. Omitting it on a re-declaration **clears** any previously stored rationale — the trust DB always reflects the most recent declaration, not a cumulative history.
 
 ### 4.3 Trust states
 

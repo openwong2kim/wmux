@@ -61,6 +61,23 @@ describe('mcp.identify', () => {
     expect(result.identity.name).toBe('cursor-ai');
   });
 
+  it('envelope clientName wins over params.name when both are present', async () => {
+    // Spec contract (mcp.rpc.ts:23-24): the wire envelope is authoritative
+    // so a plugin can't claim a different identity per-call by stuffing
+    // params.name with someone else's name.
+    const response = await router.dispatch({
+      id: 'r-2b',
+      method: 'mcp.identify',
+      params: { name: 'forged-name' },
+      clientName: 'envelope-name',
+    });
+    expect(response.ok).toBe(true);
+    if (!response.ok) return;
+    const result = response.result as McpIdentifyResult;
+    expect(result.identity.name).toBe('envelope-name');
+    expect(await store.get('forged-name')).toBeUndefined();
+  });
+
   it('refreshes lastSeen on subsequent calls', async () => {
     await router.dispatch({
       id: 'r-3a',
@@ -120,9 +137,13 @@ describe('mcp.declarePermissions', () => {
     expect(await store.get('demo-plugin')).toBeUndefined();
   });
 
-  it('records the caller as legacy when no clientName is present', async () => {
-    // Plugin sends a valid permission declaration but no envelope identity —
-    // the substrate records the call under "unknown" so audit logs surface it.
+  it('records the caller under "unknown" when no clientName is present', async () => {
+    // Plugin sends a valid permission declaration but no envelope identity.
+    // mcp.declarePermissions is an identity-owning method (the handler is
+    // the one writing to the trust DB), so the resulting record is
+    // 'unconfirmed' — the spec's `legacy` status is reserved for the
+    // RpcRouter-level audit row produced by envelope-less calls to NON-mcp
+    // methods (see RpcRouter.legacyRecorder).
     const response = await router.dispatch({
       id: 'r-6',
       method: 'mcp.declarePermissions',
@@ -132,5 +153,6 @@ describe('mcp.declarePermissions', () => {
     if (!response.ok) return;
     const result = response.result as McpDeclarePermissionsResult;
     expect(result.identity.name).toBe('unknown');
+    expect(result.identity.status).toBe('unconfirmed');
   });
 });

@@ -3,6 +3,7 @@ import * as os from 'os';
 import * as path from 'path';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import {
+  MAX_PLUGIN_NAME_LEN,
   PLUGIN_TRUST_SCHEMA_VERSION,
   PluginTrustStore,
 } from '../PluginTrustStore';
@@ -94,7 +95,7 @@ describe('PluginTrustStore.load', () => {
   it('tolerates a missing file as an empty DB', async () => {
     const store = new PluginTrustStore(dbPath);
     const db = await store.load();
-    expect(db.plugins).toEqual({});
+    expect(Object.keys(db.plugins)).toEqual([]);
     expect(db.schemaVersion).toBe(PLUGIN_TRUST_SCHEMA_VERSION);
   });
 
@@ -102,7 +103,7 @@ describe('PluginTrustStore.load', () => {
     fs.writeFileSync(dbPath, '{not valid json');
     const store = new PluginTrustStore(dbPath);
     const db = await store.load();
-    expect(db.plugins).toEqual({});
+    expect(Object.keys(db.plugins)).toEqual([]);
   });
 
   it('serialises concurrent writes without losing entries', async () => {
@@ -114,5 +115,90 @@ describe('PluginTrustStore.load', () => {
     ]);
     const list = await store.list();
     expect(list.map((p) => p.name).sort()).toEqual(['a', 'b', 'c']);
+  });
+});
+
+describe('PluginTrustStore.upsertLegacyContact', () => {
+  it('records an envelope-less contact as legacy', async () => {
+    const store = new PluginTrustStore(dbPath);
+    const identity = await store.upsertLegacyContact();
+    expect(identity.name).toBe('unknown');
+    expect(identity.status).toBe('legacy');
+  });
+
+  it('upgrades a legacy entry to unconfirmed when applyContact runs again', async () => {
+    // Two passes through the legacy path simulate a second envelope-less
+    // RPC reaching the substrate after the audit row already exists.
+    const store = new PluginTrustStore(dbPath);
+    await store.upsertLegacyContact();
+    const second = await store.upsertLegacyContact();
+    expect(second.status).toBe('unconfirmed');
+  });
+
+  it('preserves a user-issued trust state when the same name re-appears as legacy', async () => {
+    // If a name was previously approved by the user (trusted), an
+    // envelope-less call must NOT regress that decision.
+    const store = new PluginTrustStore(dbPath);
+    await store.upsertContact('claude-ai');
+    // Forge a trusted state by overwriting on disk — the public API has no
+    // user-approval surface yet (planned for the enforcement PR).
+    const raw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+    raw.plugins['claude-ai'].status = 'trusted';
+    fs.writeFileSync(dbPath, JSON.stringify(raw));
+    const fresh = new PluginTrustStore(dbPath);
+    const next = await fresh.upsertLegacyContact('claude-ai');
+    expect(next.status).toBe('trusted');
+  });
+});
+
+describe('PluginTrustStore hostile-input hardening', () => {
+  it('does not collide with Object.prototype keys', async () => {
+    const store = new PluginTrustStore(dbPath);
+    // Sending `__proto__` as a clientName must not mutate Object.prototype
+    // nor allow inherited values to leak through `get`.
+    await store.upsertContact('__proto__');
+    expect(({} as Record<string, unknown>).poisoned).toBeUndefined();
+    const stored = await store.get('__proto__');
+    expect(stored?.name).toBe('__proto__');
+    expect(stored?.status).toBe('unconfirmed');
+    // Built-in keys like `toString` must not return Object.prototype's method.
+    expect(await store.get('toString')).toBeUndefined();
+  });
+
+  it('truncates oversize plugin names instead of rejecting them', async () => {
+    const store = new PluginTrustStore(dbPath);
+    const huge = 'a'.repeat(MAX_PLUGIN_NAME_LEN + 50);
+    const stored = await store.upsertContact(huge);
+    expect(stored.name.length).toBe(MAX_PLUGIN_NAME_LEN);
+    // The truncated key is what subsequent lookups will use.
+    expect(await store.get(huge)).toBeDefined();
+  });
+
+  it('drops on-disk entries with an invalid status during normalize', async () => {
+    // A future schema version or hand edit might put a status outside the
+    // known union onto disk. load() must drop such entries rather than
+    // surface them — otherwise downstream branching on PluginTrustStatus
+    // sees `undefined` and the trust-status invariant cannot hold.
+    const corrupt = {
+      schemaVersion: PLUGIN_TRUST_SCHEMA_VERSION,
+      plugins: {
+        good: {
+          name: 'good',
+          status: 'unconfirmed',
+          firstSeen: 1,
+          lastSeen: 1,
+        },
+        bad: {
+          name: 'bad',
+          status: 'future-state',
+          firstSeen: 1,
+          lastSeen: 1,
+        },
+      },
+    };
+    fs.writeFileSync(dbPath, JSON.stringify(corrupt));
+    const store = new PluginTrustStore(dbPath);
+    const list = await store.list();
+    expect(list.map((p) => p.name)).toEqual(['good']);
   });
 });

@@ -69,6 +69,56 @@ describe('permissionGrammar.globToRegex', () => {
     // the `+` is a literal, not a regex repetition operator
     expect(re.test('events.pollllspecial')).toBe(false);
   });
+
+  it('handles a bare * (any non-dot run, including empty)', () => {
+    const re = globToRegex('*');
+    expect(re.test('')).toBe(true);
+    expect(re.test('label')).toBe(true);
+    expect(re.test('with.dot')).toBe(false);
+  });
+
+  it('handles a bare ** (any run, dots included)', () => {
+    const re = globToRegex('**');
+    expect(re.test('')).toBe(true);
+    expect(re.test('a.b.c.d')).toBe(true);
+  });
+
+  it('handles leading * (e.g. *.foo)', () => {
+    const re = globToRegex('*.foo');
+    expect(re.test('a.foo')).toBe(true);
+    expect(re.test('.foo')).toBe(true);
+    expect(re.test('a.b.foo')).toBe(false);
+  });
+
+  it('handles a glob with no dots', () => {
+    const re = globToRegex('foo');
+    expect(re.test('foo')).toBe(true);
+    expect(re.test('foo.bar')).toBe(false);
+    expect(re.test('xfoo')).toBe(false);
+  });
+
+  it('escapes triple-star degenerately as **+single-star', () => {
+    // ***  →  ** + *  →  .*[^.]*  — matches any run; behaviour is
+    // intentionally undefined-but-safe (no regex compile error, no
+    // catastrophic backtracking).
+    expect(() => globToRegex('***')).not.toThrow();
+  });
+});
+
+describe('permissionGrammar.parsePermission — separator semantics', () => {
+  it('treats colons after the first one as literal glob characters', () => {
+    // Spec §3.1: the first `:` splits capability from glob; further colons
+    // belong to the glob and are regex-escaped during compilation.
+    const result = parsePermission('meta.write:custom.foo:bar');
+    expect(result.ok).toBe(true);
+    if (result.ok) {
+      expect(result.permission.capability).toBe('meta.write');
+      expect(result.permission.pathGlob).toBe('custom.foo:bar');
+      expect(result.permission.pathRegex?.test('custom.foo:bar')).toBe(true);
+      // The literal `:` must NOT match `x` (i.e. not regex-special).
+      expect(result.permission.pathRegex?.test('custom.fooXbar')).toBe(false);
+    }
+  });
 });
 
 describe('permissionGrammar.parsePermissionList', () => {

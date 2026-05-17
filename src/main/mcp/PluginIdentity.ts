@@ -22,6 +22,19 @@ function sanitizeVersion(version: string | undefined | null): string | undefined
   return trimmed.length > 0 ? trimmed : undefined;
 }
 
+// Forward-compat guard: a record loaded from a future schema version
+// (or a hand-edited file) may carry a status outside our union. Treat
+// anything we don't recognise as `unconfirmed` so the trust-status
+// invariant below ('trusted'/'denied' never regress) can't be subverted
+// by writing `status: "anything-else"` to disk.
+function knownStatus(s: unknown): s is PluginTrustStatus {
+  return s === 'unconfirmed' || s === 'trusted' || s === 'denied' || s === 'legacy';
+}
+
+function currentStatusOf(record: PluginIdentityRecord): PluginTrustStatus {
+  return knownStatus(record.status) ? record.status : 'unconfirmed';
+}
+
 // Fresh identity created on first contact via `mcp.identify`. Recorded with
 // status='unconfirmed' so a future user-approval PR can promote to trusted
 // or denied without re-introducing the record.
@@ -60,8 +73,8 @@ export function applyContact(
   existing: PluginIdentityRecord,
   rawVersion: string | undefined,
 ): PluginIdentityRecord {
-  const nextStatus: PluginTrustStatus =
-    existing.status === 'legacy' ? 'unconfirmed' : existing.status;
+  const cur = currentStatusOf(existing);
+  const nextStatus: PluginTrustStatus = cur === 'legacy' ? 'unconfirmed' : cur;
   return {
     ...existing,
     version: sanitizeVersion(rawVersion) ?? existing.version,
@@ -75,13 +88,21 @@ export function applyContact(
 // back to 'unconfirmed'. The declared capability list is overwritten
 // wholesale; capability unions across reconnects are intentionally not
 // supported until the user-approval PR defines reconciliation semantics.
+//
+// TODO(enforcement-PR): a `trusted` plugin can currently re-declare a
+// widened capability set and keep the `trusted` status. The follow-up PR
+// MUST detect capability widening (set-difference against the previously
+// approved declaredCapabilities) and demote to `unconfirmed` so the user
+// re-approves. See docs/api/mcp-plugin-spec.md §2.3 (spoofing scenarios).
+// In this record-only PR the risk is dormant because no enforcement reads
+// the field yet.
 export function applyDeclaration(
   existing: PluginIdentityRecord,
   capabilities: string[],
   rationale?: string,
 ): PluginIdentityRecord {
-  const nextStatus: PluginTrustStatus =
-    existing.status === 'legacy' ? 'unconfirmed' : existing.status;
+  const cur = currentStatusOf(existing);
+  const nextStatus: PluginTrustStatus = cur === 'legacy' ? 'unconfirmed' : cur;
   return {
     ...existing,
     declaredCapabilities: [...capabilities],
