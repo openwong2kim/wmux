@@ -103,5 +103,10 @@ Thumbs.db
 *.pdb
 .claude/worktrees/
 
+# Local tool/agent state (not committed)
+.claude/
+.context/
+.gstack/
+
 # Private roadmap / strategy docs (not for public repo)
 docs/EDITIONS.md
