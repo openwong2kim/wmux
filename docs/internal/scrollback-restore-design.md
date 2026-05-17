@@ -285,6 +285,60 @@ User-side dogfood verification required before push (per `feedback_no_ship_witho
 
 ---
 
+---
+
+## Update 2026-05-17 — Upstream Root Cause Discovered
+
+Dogfood of the Fix A implementation revealed a layer this design did not
+account for: `src/renderer/stores/slices/workspaceSlice.ts:loadSession`
+**force-clears every surface.ptyId to `""` on every startup**. The
+existing rationale (lines 145-180) cites a past incident where stale
+ptyIds caused PTY_WRITE drops via a Pane → Terminal propagation race.
+The workaround was to wipe the ptyId on load and let Terminal.tsx's
+self-`pty.create` path handle session creation fresh every time.
+
+This wipe makes both Fix A and Fix B ineffective:
+
+```
+session.json: { ptyId: "d5733af7", ... }     ← graceful Quit saved this
+       ↓ startup
+loadSession: ptyId = ""                       ← WIPED before reconcile sees it
+       ↓
+AppLayout.reconcile: `if (!surface.ptyId) continue;`  ← skipped
+       ↓
+Terminal.tsx mount: externalPtyId falsy → calls pty.create()
+       ↓
+new ptyId, new ringBuffer (empty), flush bytes=0  ← what the daemon log showed
+```
+
+The Fix A code in this branch is architecturally correct but inert
+against `ptyId === ""`. The daemon side perfectly recovers the original
+ptyId (16648-byte ringBuffer for `d5733af7` confirmed in the
+2026-05-17 dogfood log) — the renderer is the one that never asks for it.
+
+**Required precursor:** Fix 0 — remove the wipe and properly fix the
+Pane → Terminal propagation race that the wipe was working around. The
+real fix is probably: make AppLayout.reconcile responsible for *every*
+PTY assignment, including the no-existing-ptyId case, and remove
+Terminal.tsx's self-`pty.create` path. That way ptyId only changes via
+`updateSurfacePtyId`, which is propagation-race-free by design.
+
+After Fix 0:
+- Fix A becomes active (current branch's code).
+- Fix B becomes meaningful (cap-skipped ptyIds can be promoted on demand).
+
+This doc needs a second-pass plan-eng-review once Fix 0 is sketched.
+Treat the Section 4 (Fix A) and Section 5 (Fix B) content as the *correct*
+target for the post-Fix-0 architecture, but understand that today's
+build will not produce user-visible improvement until Fix 0 lands.
+
+**Diagnostic instrumentation is the only reason this layer was found.**
+Keep `src/daemon/util/logSink.ts` (on `fix/daemon-shutdown-phase-instrumentation`,
+commit 17df184) and the recovery/shutdown/flush-complete instrumentation
+in this branch. They are the eyes that exposed the wipe.
+
+---
+
 ## GSTACK REVIEW REPORT
 
 | Review | Trigger | Why | Runs | Status | Findings |
@@ -295,5 +349,5 @@ User-side dogfood verification required before push (per `feedback_no_ship_witho
 | Design Review | `/plan-design-review` | UI/UX gaps | 0 | — | — |
 | DX Review | `/plan-devex-review` | Developer experience gaps | 0 | — | — |
 
-**UNRESOLVED:** 0 — all issues converted into design changes.
-**VERDICT:** ENG CLEARED — design ready for implementation pending dogfood verification of R1-R5 dynamic scenarios.
+**UNRESOLVED:** 0 (initial review) → 1 (post-dogfood: upstream loadSession ptyId wipe, see Update section above)
+**VERDICT:** ENG CLEARED for Fix A/B architecture, but **NEEDS RE-REVIEW** after Fix 0 (loadSession wipe removal + Terminal.tsx propagation race fix) is added to the plan. Fix A/B implementation in this branch is correct but inert until Fix 0 lands.
