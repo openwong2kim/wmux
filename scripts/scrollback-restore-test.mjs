@@ -164,13 +164,17 @@ try {
   let socket = await connectControlPipe();
   console.log('[phase 1] connected to daemon control pipe');
 
-  const created = await rpc(socket, 'daemon.createSession', {
-    shell: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
+  // daemon.createSession requires client-supplied id (see src/daemon/index.ts:501
+  // schema check). Use `cmd` not `shell` — the param name is cmd matching
+  // DaemonCreateSessionParams.
+  const sessionId = `t${randomUUID().replace(/-/g, '').slice(0, 12)}`;
+  await rpc(socket, 'daemon.createSession', {
+    id: sessionId,
+    cmd: process.platform === 'win32' ? 'cmd.exe' : '/bin/sh',
     cwd: TEST_HOME,
     cols: 120,
     rows: 30,
   });
-  const sessionId = created.id;
   console.log(`[phase 1] created session id=${sessionId}`);
 
   // Let the shell spawn and produce its prompt. The default shell prints
