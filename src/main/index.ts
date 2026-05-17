@@ -694,9 +694,17 @@ app.on('before-quit', async (e) => {
   if (clientAtQuit?.isConnected) {
     // Daemon mode. Phase A — A3: race daemon.shutdown against a calibrated
     // budget so the daemon can flush RingBuffers atomically before we
-    // detach. The 4 s placeholder is the documented floor pending the T5
-    // dynamic test (Task #15) measurement.
-    const BEFORE_QUIT_TIMEOUT_MS = 4_000;
+    // detach. The 4 s placeholder was hit on a 48-PTY daemon during user
+    // dogfood (2026-05-16/17); the daemon-side hard timeout guard in
+    // `src/daemon/index.ts` is 10 s, so 8 s gives us a safe budget that
+    // (a) stays below the daemon's force-exit ceiling, (b) is 2× the
+    // previous value so the common case stops hitting the fallback, and
+    // (c) keeps tray-Quit responsiveness inside the 10 s users mentally
+    // budget for "app closing". The dedicated phase-latency log added in
+    // commit b127f83 (`[shutdown.phase]`) lets future tuning be empirical
+    // rather than a guess — once 100+ PTY dogfood data lands we can pin
+    // this to a measured p99.
+    const BEFORE_QUIT_TIMEOUT_MS = 8_000;
     console.log(
       `[Main] Daemon mode — racing daemon.shutdown (${BEFORE_QUIT_TIMEOUT_MS}ms budget)`,
     );
