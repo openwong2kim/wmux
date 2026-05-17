@@ -320,21 +320,61 @@ async function recoverSessions(
         // Verify cwd still exists; fall back to homedir
         const cwd = fs.existsSync(session.cwd) ? session.cwd : os.homedir();
 
-        const recovered = sessionManager.createSession({
-          id: session.id,
-          cmd: session.cmd,
-          cwd,
-          env: session.env,
-          cols: session.cols,
-          rows: session.rows,
-          agent: session.agent,
-          createdAt: session.createdAt,
-          scrollbackData,
-          // v2.8.1: stay muted until the renderer's first resize so PTY
-          // output produced at the saved geometry can't interleave with
-          // the renderer paint at its current geometry (Bug 2).
-          deferOutput: true,
-        });
+        // ConPTY on Windows occasionally rejects the first spawn after a
+        // daemon restart with ERROR_INVALID_PARAMETER (87) — a known
+        // transient race in the PROC_THREAD_ATTRIBUTE_PSEUDOCONSOLE init.
+        // Without retry, a single transient failure permanently dead-marks
+        // the session and the user loses their scrollback for good. The
+        // RPC-level retry in scripts/instrumentation-verify.mjs (Flow 1)
+        // is the same pattern; mirror it here for recovery.
+        // Other errors (e.g. ENOENT cwd, MAX_SESSIONS) are not transient
+        // and fall through to the outer catch immediately.
+        // Retry budget sized to absorb the worst observed ConPTY ERROR 87
+        // burst (4 consecutive failures in dynamic verify on a busy box).
+        // 8 attempts × (200 + i*100) ms backoff = up to ~4.4 s waiting
+        // before giving up. Recovery runs once per daemon boot, so the
+        // worst-case latency hit is only paid by users actually hitting
+        // the burst — the happy path still resolves on attempt 1.
+        const RECOVERY_PTY_RETRIES = 8;
+        let recovered: ReturnType<typeof sessionManager.createSession> | undefined;
+        let lastSpawnErr: unknown;
+        for (let attempt = 1; attempt <= RECOVERY_PTY_RETRIES; attempt++) {
+          try {
+            recovered = sessionManager.createSession({
+              id: session.id,
+              cmd: session.cmd,
+              cwd,
+              env: session.env,
+              cols: session.cols,
+              rows: session.rows,
+              agent: session.agent,
+              createdAt: session.createdAt,
+              scrollbackData,
+              // v2.8.1: stay muted until the renderer's first resize so PTY
+              // output produced at the saved geometry can't interleave with
+              // the renderer paint at its current geometry (Bug 2).
+              deferOutput: true,
+            });
+            break;
+          } catch (err) {
+            lastSpawnErr = err;
+            const msg = err instanceof Error ? err.message : String(err);
+            const transient = msg.includes('error code: 87');
+            if (!transient) break;
+            log(
+              'warn',
+              `Recovery PTY spawn attempt ${attempt}/${RECOVERY_PTY_RETRIES} failed for ${session.id}: ${msg}`,
+            );
+            if (attempt < RECOVERY_PTY_RETRIES) {
+              await new Promise((resolve) =>
+                setTimeout(resolve, 200 + attempt * 100),
+              );
+            }
+          }
+        }
+        if (!recovered) {
+          throw lastSpawnErr ?? new Error('PTY spawn failed (no error captured)');
+        }
 
         // Start process monitoring for the new PTY
         processMonitor.watch(recovered.id, recovered.pid, () => {

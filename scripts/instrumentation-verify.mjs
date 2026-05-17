@@ -160,7 +160,11 @@ async function flow1ShutdownPhases() {
     // and let Flow 1 verify the zero-session phase logs (still asserts the
     // instrumentation prints).
     let sessionCreated = false;
-    for (let i = 1; i <= 4; i++) {
+    // Retry budget matched to daemon recovery's RECOVERY_PTY_RETRIES (8)
+    // so the harness and the production code under test absorb the same
+    // worst-case ConPTY ERROR 87 burst window. Otherwise Flow 1 silently
+    // ships a sessions:0 shutdown and Flow 2/3 chase a phantom recovery.
+    for (let i = 1; i <= 8; i++) {
       try {
         await rpc(socket, 'daemon.createSession', {
           id: sessionId,
@@ -178,8 +182,13 @@ async function flow1ShutdownPhases() {
           err.daemonLog = log.combined;
           throw err;
         }
-        await new Promise((r) => setTimeout(r, 600 * i));
+        await new Promise((r) => setTimeout(r, 200 + i * 100));
       }
+    }
+    if (!sessionCreated) {
+      const err = new Error(`Flow 1 createSession failed after 8 ConPTY retries`);
+      err.daemonLog = log.combined;
+      throw err;
     }
 
     // brief settle so the PTY emits a prompt (gives RingBuffer some bytes)
