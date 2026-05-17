@@ -1,6 +1,17 @@
-import type { RpcMethod, RpcRequest, RpcResponse } from '../../shared/rpc';
+import type {
+  RpcContext,
+  RpcMethod,
+  RpcRequest,
+  RpcResponse,
+} from '../../shared/rpc';
 
-type RpcHandler = (params: Record<string, unknown>) => Promise<unknown>;
+// Handlers receive a per-request context as an optional second argument.
+// Existing handlers `(params) => ...` keep compiling because the extra
+// argument is simply ignored at the call site.
+type RpcHandler = (
+  params: Record<string, unknown>,
+  ctx?: RpcContext,
+) => Promise<unknown>;
 
 export class RpcRouter {
   private readonly handlers = new Map<RpcMethod, RpcHandler>();
@@ -27,8 +38,21 @@ export class RpcRouter {
       };
     }
 
+    // Lift the optional identity envelope into the per-request context so
+    // handlers don't reach back into PipeServer internals.
+    const ctx: RpcContext = {
+      clientName:
+        typeof request.clientName === 'string' && request.clientName.trim().length > 0
+          ? request.clientName.trim()
+          : undefined,
+      clientVersion:
+        typeof request.clientVersion === 'string' && request.clientVersion.trim().length > 0
+          ? request.clientVersion.trim()
+          : undefined,
+    };
+
     try {
-      const result = await handler(request.params ?? {});
+      const result = await handler(request.params ?? {}, ctx);
       return {
         id: request.id,
         ok: true,

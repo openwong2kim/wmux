@@ -8,6 +8,25 @@ const TIMEOUT_MS = 10000;
 const RETRY_COUNT = 3;
 const RETRY_DELAY_MS = 1000;
 
+// Module-scoped declared identity. Populated by `setClientIdentity` from
+// the MCP `InitializeRequest` handler (src/mcp/index.ts). Every outbound
+// RPC stamps the envelope with this so PluginTrustStore can attribute the
+// call. May be undefined for the very first RPCs that race the MCP
+// initialize handshake — wmux treats those as 'legacy' and records them.
+let CLIENT_NAME: string | undefined;
+let CLIENT_VERSION: string | undefined;
+
+export function setClientIdentity(name?: string, version?: string): void {
+  const trimmedName = typeof name === 'string' ? name.trim() : '';
+  const trimmedVersion = typeof version === 'string' ? version.trim() : '';
+  CLIENT_NAME = trimmedName.length > 0 ? trimmedName : undefined;
+  CLIENT_VERSION = trimmedVersion.length > 0 ? trimmedVersion : undefined;
+}
+
+export function getClientIdentity(): { name?: string; version?: string } {
+  return { name: CLIENT_NAME, version: CLIENT_VERSION };
+}
+
 function readAuthToken(): string | undefined {
   // File takes priority — always read the latest token from disk.
   // Env vars may be stale (Claude Code caches them across MCP restarts).
@@ -35,7 +54,10 @@ function attemptRpc(
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
-    const request = JSON.stringify({ id, method, params, token }) + '\n';
+    const envelope: Record<string, unknown> = { id, method, params, token };
+    if (CLIENT_NAME) envelope.clientName = CLIENT_NAME;
+    if (CLIENT_VERSION) envelope.clientVersion = CLIENT_VERSION;
+    const request = JSON.stringify(envelope) + '\n';
 
     const socket = typeof target === 'string' ? net.connect(target) : net.connect(target);
     let buffer = '';

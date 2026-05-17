@@ -2,7 +2,7 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { sendRpc } from './wmux-client';
+import { sendRpc, setClientIdentity } from './wmux-client';
 import type { RpcMethod } from '../shared/rpc';
 import { resolveDefaultPtyId as resolveDefaultPtyIdImpl } from './paneResolver';
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
@@ -623,8 +623,37 @@ server.tool(
 
 // === Start server ===
 
+// Hook the MCP initialize handshake so wmux substrate learns the declared
+// plugin identity (clientInfo.name + version). Fire `mcp.identify` once so
+// the trust DB picks up first-contact metadata — record-only, no
+// enforcement. See docs/api/mcp-plugin-spec.md.
+function wireClientIdentityHook(): void {
+  const underlying = (server as unknown as { server?: {
+    oninitialized?: () => void;
+    getClientVersion?: () => { name?: string; version?: string } | undefined;
+  } }).server;
+  if (!underlying) return;
+  underlying.oninitialized = () => {
+    try {
+      const info = underlying.getClientVersion?.();
+      const name = info?.name?.trim() || undefined;
+      const version = info?.version?.trim() || undefined;
+      if (!name) return;
+      setClientIdentity(name, version);
+      // Fire-and-forget — the trust DB write is best-effort; failures must
+      // never block the MCP handshake from completing.
+      sendRpc('mcp.identify', { name, version }).catch(() => {
+        /* substrate may be unavailable mid-restart; legacy path takes over */
+      });
+    } catch {
+      /* swallow — identity is non-essential to MCP operation */
+    }
+  };
+}
+
 async function main(): Promise<void> {
   const transport = new StdioServerTransport();
+  wireClientIdentityHook();
   await server.connect(transport);
 
   // Clean up Playwright connection when transport closes
