@@ -384,18 +384,10 @@ export class DaemonClient extends EventEmitter {
     let flushed = false;
     let pendingChunks: Buffer[] = [];
     let pendingBytes = 0;
-    let firstChunkLogged = false;
     const MAX_PENDING_BYTES = 10 * 1024 * 1024; // 10 MB safety cap
-
-    console.log(`[fix0-dbg] DaemonClient.setupSessionPipe ${sessionId} socket attached, awaiting data`);
 
     socket.on('data', (chunk: Buffer) => {
       const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-
-      if (!firstChunkLogged) {
-        firstChunkLogged = true;
-        console.log(`[fix0-dbg] DaemonClient.sessionPipe ${sessionId} first chunk size=${buf.length} flushedAlready=${flushed}`);
-      }
 
       if (!flushed) {
         pendingChunks.push(buf);
@@ -403,7 +395,6 @@ export class DaemonClient extends EventEmitter {
 
         // Prevent unbounded accumulation if flush marker never arrives
         if (pendingBytes > MAX_PENDING_BYTES) {
-          console.warn(`[fix0-dbg] DaemonClient.sessionPipe ${sessionId} hit MAX_PENDING_BYTES — marker never arrived`);
           flushed = true;
           pendingChunks = [];
           pendingBytes = 0;
@@ -422,8 +413,6 @@ export class DaemonClient extends EventEmitter {
           // session, or it was created fresh by reconcile fallback). The
           // renderer uses this to decide whether to wipe its .txt cache.
           const recoveredBytes = markerIndex;
-          const tailBytes = combined.length - markerIndex - FLUSH_DONE_MARKER.length;
-          console.log(`[fix0-dbg] DaemonClient.sessionPipe ${sessionId} marker found: recoveredBytes=${recoveredBytes} tailBytes=${tailBytes}`);
 
           // Emit data before marker (ring buffer replay)
           if (markerIndex > 0) {
@@ -431,20 +420,17 @@ export class DaemonClient extends EventEmitter {
               sessionId,
               data: combined.subarray(0, markerIndex),
             });
-            console.log(`[fix0-dbg] DaemonClient emit session:data ${sessionId} (replay) size=${markerIndex}`);
           }
 
           // Fire flush-complete BEFORE the post-marker data so the
           // renderer's reset-or-keep decision lands before any live PTY
           // bytes start composing on the buffer.
           this.emit('session:flushComplete', { sessionId, recoveredBytes });
-          console.log(`[fix0-dbg] DaemonClient emit session:flushComplete ${sessionId} recoveredBytes=${recoveredBytes}`);
 
           // Emit data after marker (if any real-time data arrived in same chunk)
           const afterMarker = combined.subarray(markerIndex + FLUSH_DONE_MARKER.length);
           if (afterMarker.length > 0) {
             this.emit('session:data', { sessionId, data: afterMarker });
-            console.log(`[fix0-dbg] DaemonClient emit session:data ${sessionId} (tail-after-marker) size=${afterMarker.length}`);
           }
 
           pendingChunks = [];

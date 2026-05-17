@@ -379,33 +379,36 @@ export default function AppLayout() {
         const activeIds = new Set(activePtys.map((p: { id: string }) => p.id));
         console.log('[AppLayout] Daemon active PTYs:', [...activeIds]);
 
-        const reconcile = async (pane: Pane, wsId: string) => {
+        // Fix 0 (round 3) — reconcile is now ONLY a liveness check.
+        //
+        // The PTY_DATA-loss race we hit in dogfood: reconcile used to call
+        // `pty.reconnect(ptyId)` here, which kicked off daemon SessionPipe
+        // attach + ringBuffer flush. The replay data left main process
+        // BEFORE the renderer's Terminal component mounted, so
+        // ipcRenderer.on(PTY_DATA) had no listener registered and Electron
+        // IPC dropped every replay chunk. Result: dump succeeds, recovery
+        // succeeds, flush succeeds, and the user still sees a fresh empty
+        // terminal because the bytes vanished between main and renderer.
+        //
+        // Fix: reconcile only marks dead ptyIds (not in daemon active
+        // list) as empty. Live ptyIds are left alone. useTerminal mount
+        // is now responsible for calling pty.reconnect AFTER its
+        // pty.onData listener is registered, so the SessionPipe replay
+        // always lands on an attached listener.
+        const reconcile = (pane: Pane, wsId: string) => {
           if (signal?.aborted) return;
           if (pane.type === 'leaf') {
             for (const surface of pane.surfaces) {
               if (signal?.aborted) return;
               if (surface.surfaceType === 'browser' || surface.surfaceType === 'editor') continue;
               if (!surface.ptyId) {
-                console.log(`[AppLayout] Surface ${surface.id}: no ptyId, will create new`);
+                console.log(`[AppLayout] Surface ${surface.id}: no ptyId, Terminal will self-create`);
                 continue;
               }
               if (activeIds.has(surface.ptyId)) {
-                console.log(`[AppLayout] Surface ${surface.id}: reconnecting to ${surface.ptyId}`);
-                const result = await window.electronAPI.pty.reconnect(surface.ptyId);
-                if (signal?.aborted) return;
-                console.log(`[AppLayout] Reconnect result:`, result);
-                if (!result.success) {
-                  console.warn(`[AppLayout] Reconnect failed, clearing ptyId`);
-                  useStore.getState().updateSurfacePtyId(pane.id, surface.id, '');
-                }
+                console.log(`[AppLayout] Surface ${surface.id}: ptyId ${surface.ptyId} alive in daemon, Terminal will reconnect on mount`);
+                // Leave ptyId in place. useTerminal mount reconnects.
               } else {
-                // Fix 0: clear stale ptyId, do NOT create a replacement
-                // here. Terminal.tsx self-create on mount handles the
-                // fresh-pane path. Mount gate ensures Terminal mounts
-                // after this reconcile resolves, eliminating the
-                // store→Pane→Terminal propagation race that the
-                // original loadSession wipe was patching around.
-                // wsId intentionally unused now (no per-surface create).
                 console.log(`[AppLayout] Surface ${surface.id}: ptyId ${surface.ptyId} not in daemon, clearing for Terminal self-create`);
                 useStore.getState().updateSurfacePtyId(pane.id, surface.id, '');
               }
@@ -413,7 +416,7 @@ export default function AppLayout() {
           } else {
             for (const child of pane.children) {
               if (signal?.aborted) return;
-              await reconcile(child, wsId);
+              reconcile(child, wsId);
             }
           }
         };
@@ -426,7 +429,7 @@ export default function AppLayout() {
         for (const ws of useStore.getState().workspaces) {
           if (signal?.aborted) return;
           console.log(`[AppLayout] Reconciling workspace: ${ws.name}`);
-          await reconcile(ws.rootPane, ws.id);
+          reconcile(ws.rootPane, ws.id);
         }
         console.log('[AppLayout] Reconciliation complete');
       } finally {

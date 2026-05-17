@@ -372,8 +372,14 @@ app.on('ready', async () => {
   // 2=warning, 3=error. We capture 2 and 3 only — verbose/info from
   // renderer would otherwise drown the signal we care about.
   mainWindow.webContents.on('console-message', (_event, level, message, line, sourceId) => {
-    if (level < 2) return;
-    const lvl: 'warn' | 'error' = level === 3 ? 'error' : 'warn';
+    // Forward all renderer console messages to the main log file for
+    // postmortem analysis. The previous `if (level < 2) return` filter
+    // dropped every console.log (level 1), which hid renderer-side
+    // diagnostics (AppLayout reconcile path, useTerminal mount events,
+    // pty.reconnect outcomes) — exactly the lines needed to root-cause
+    // IPC race conditions like the scrollback-restore PTY_DATA loss.
+    // Per-level routing preserved so warn/error keep their own bucket.
+    const lvl: 'info' | 'warn' | 'error' = level === 3 ? 'error' : level === 2 ? 'warn' : 'info';
     const where = sourceId ? `${sourceId}:${line}` : 'renderer';
     logLine(lvl, 'renderer', `${where} — ${message}`);
   });
@@ -706,16 +712,16 @@ app.on('before-quit', async (e) => {
     // this to a measured p99.
     const BEFORE_QUIT_TIMEOUT_MS = 8_000;
     console.log(
-      `[fix0-dbg] [Main] before-quit: racing daemon.shutdown (${BEFORE_QUIT_TIMEOUT_MS}ms budget) ts=${Date.now()}`,
+      `[Main] Daemon mode — racing daemon.shutdown (${BEFORE_QUIT_TIMEOUT_MS}ms budget)`,
     );
     const shutdownStart = Date.now();
     const race = await raceDaemonShutdown(clientAtQuit, BEFORE_QUIT_TIMEOUT_MS);
     const elapsed = Date.now() - shutdownStart;
     if (race.ok) {
-      console.log(`[fix0-dbg] [Main] daemon.shutdown ack received elapsed=${elapsed}ms`);
+      console.log(`[Main] daemon.shutdown ack received (elapsed=${elapsed}ms)`);
     } else {
       console.warn(
-        `[fix0-dbg] [Main] daemon.shutdown did not complete in time elapsed=${elapsed}ms error=${race.error} — daemon buffer dump may be PARTIAL or SKIPPED`,
+        `[Main] daemon.shutdown did not complete in time (elapsed=${elapsed}ms): ${race.error}`,
       );
     }
     // Always detach as the final step. If the RPC succeeded the pipe is

@@ -312,9 +312,6 @@ async function recoverSessions(
         let scrollbackData: Buffer | undefined;
         if (fs.existsSync(session.bufferDumpPath)) {
           scrollbackData = fs.readFileSync(session.bufferDumpPath);
-          log('info', `[fix0-dbg] recovery loaded buffer ${session.id} dataBytes=${scrollbackData.length} from ${session.bufferDumpPath}`);
-        } else {
-          log('warn', `[fix0-dbg] recovery buffer file MISSING for ${session.id} expected=${session.bufferDumpPath}`);
         }
         // Instrumentation for #35 (scrollback-empty-after-restart). The
         // matching `Suspended session X (buffer: N bytes)` line on the
@@ -983,9 +980,7 @@ async function shutdown(
   const managedSessions = sessionManager.listManagedSessions();
   stateWriter.ensureBufferDir();
 
-  const dumpStart = Date.now();
   const dumpsStart = phaseStartedAt();
-  log('info', `[fix0-dbg] daemon.shutdown: dumping ${managedSessions.length} sessions (excluding dead) at ts=${dumpStart}`);
   const dumpPromises: Promise<void>[] = [];
   for (const managed of managedSessions) {
     if (managed.meta.state === 'dead') continue;
@@ -996,15 +991,14 @@ async function shutdown(
       managed.ringBuffer.dumpToFile(dumpPath).then(() => {
         managed.meta.state = 'suspended';
         managed.meta.bufferDumpPath = dumpPath;
-        log('info', `[fix0-dbg] Suspended session ${managed.meta.id} bufferBytes=${sizeAtDump} dumpedTo=${dumpPath}`);
+        log('info', `Suspended session ${managed.meta.id} (buffer: ${sizeAtDump} bytes)`);
       }).catch((err) => {
-        log('warn', `[fix0-dbg] FAIL dump ${managed.meta.id} bufferBytes=${sizeAtDump}: ${err instanceof Error ? err.message : String(err)}`);
+        log('warn', `Failed to dump buffer for ${managed.meta.id}:`, err);
         managed.meta.state = 'dead';
       }),
     );
   }
   await Promise.all(dumpPromises);
-  log('info', `[fix0-dbg] daemon.shutdown: all ${dumpPromises.length} dumps settled, elapsed=${Date.now() - dumpStart}ms`);
   // A4 — async dumps are durable. Sync exit handler will short-circuit.
   dumpsCompleted = true;
   phaseLog('bufferDumps', dumpsStart, { count: dumpPromises.length });

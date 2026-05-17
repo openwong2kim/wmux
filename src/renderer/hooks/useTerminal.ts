@@ -147,8 +147,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     if (!container || !ptyId) return;
 
     const daemonModeAtMount = isDaemonModeActive();
-    const mountTs = Date.now();
-    console.log(`[fix0-dbg] useTerminal MOUNT ptyId=${ptyId} daemonMode=${daemonModeAtMount} scrollbackFile=${scrollbackFile ?? '<none>'} ts=${mountTs}`);
 
     const terminal = new Terminal({
       cursorBlink: true,
@@ -543,21 +541,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Restore scrollback from previous session, then connect PTY data listener.
     // Scrollback must be written BEFORE PTY data listener is connected so new
     // output appends after restored content rather than interleaving.
-    let firstDataLogged = false;
-    let cumulativeBytes = 0;
-    let dataChunkCount = 0;
     const connectPty = () => {
-      console.log(`[fix0-dbg] useTerminal connectPty registering pty.onData listener ptyId=${ptyId} elapsedSinceMount=${Date.now() - mountTs}ms`);
       removeDataListener = window.electronAPI.pty.onData((id, data) => {
         if (id === ptyId) {
-          dataChunkCount++;
-          cumulativeBytes += data.length;
-          if (!firstDataLogged) {
-            firstDataLogged = true;
-            console.log(`[fix0-dbg] useTerminal FIRST pty.onData ptyId=${ptyId} size=${data.length} elapsedSinceMount=${Date.now() - mountTs}ms`);
-          } else if (dataChunkCount <= 5 || dataChunkCount % 50 === 0) {
-            console.log(`[fix0-dbg] useTerminal pty.onData ptyId=${ptyId} chunk#${dataChunkCount} size=${data.length} cumulativeBytes=${cumulativeBytes}`);
-          }
           terminal.write(data);
           fireFirstData();
         }
@@ -571,25 +557,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     };
 
     if (scrollbackFile) {
-      console.log(`[fix0-dbg] useTerminal scrollback branch ptyId=${ptyId} scrollbackFile=${scrollbackFile} elapsedSinceMount=${Date.now() - mountTs}ms`);
       // Register PTY listeners immediately to avoid data loss during scrollback load.
       // scrollback.load() is async (IPC round-trip). If PTY sends data before it
       // resolves, connectPty() would not yet be called and data would be lost.
       // Instead, buffer incoming data and flush after scrollback is written.
       const pendingData: string[] = [];
       let scrollbackLoaded = false;
-      let scrollbackBranchFirstDataLogged = false;
-      let scrollbackBranchChunkCount = 0;
-      let scrollbackBranchCumulativeBytes = 0;
 
       removeDataListener = window.electronAPI.pty.onData((id, data) => {
         if (id !== ptyId) return;
-        scrollbackBranchChunkCount++;
-        scrollbackBranchCumulativeBytes += data.length;
-        if (!scrollbackBranchFirstDataLogged) {
-          scrollbackBranchFirstDataLogged = true;
-          console.log(`[fix0-dbg] useTerminal scrollback-branch FIRST pty.onData ptyId=${ptyId} size=${data.length} buffered=${!scrollbackLoaded} elapsedSinceMount=${Date.now() - mountTs}ms`);
-        }
         if (!scrollbackLoaded) {
           pendingData.push(data);
           return;
@@ -612,23 +588,30 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       removeFlushListener = window.electronAPI.pty.onFlushComplete((id, recoveredBytes) => {
         if (id !== ptyId) return;
         if (terminalRef.current !== terminal) return;
-        console.log(`[fix0-dbg] useTerminal flushComplete RECEIVED ptyId=${ptyId} recoveredBytes=${recoveredBytes} pendingFlushReset=${pendingFlushReset} didRestoreTxt=${didRestoreTxt}`);
         lastFlushRecoveredBytes = recoveredBytes;
         if (pendingFlushReset) {
           pendingFlushReset = false;
-          if (recoveredBytes > 0) {
-            console.log(`[fix0-dbg] useTerminal terminal.reset() FROM flushComplete-after-onConnected ptyId=${ptyId} recoveredBytes=${recoveredBytes}`);
-            terminal.reset();
-          } else {
-            console.log(`[fix0-dbg] useTerminal flushComplete recoveredBytes=0 — preserving .txt cache ptyId=${ptyId}`);
-          }
+          if (recoveredBytes > 0) terminal.reset();
         }
       });
 
+      // Fix 0 (round 3) — trigger pty.reconnect ourselves now that all
+      // listeners (pty.onData, pty.onFlushComplete, pty.onExit) are wired.
+      // AppLayout.reconcile used to call pty.reconnect, but that fired
+      // SessionPipe replay BEFORE Terminal mount → ipcRenderer.on(PTY_DATA)
+      // had no listener → every replay chunk dropped. Calling reconnect
+      // here guarantees the replay arrives on registered listeners.
+      // No-op cost when the session is already connected (daemonClient
+      // honors forceFresh=true). For freshly Terminal.tsx-self-created
+      // ptyIds, the daemon-side ringBuffer is essentially empty, so a
+      // re-attach replays at most the shell prompt — visible cost zero.
+      if (daemonModeAtMount) {
+        void window.electronAPI.pty.reconnect(ptyId).catch((err: unknown) => {
+          console.warn(`[useTerminal] pty.reconnect failed for ${ptyId}: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
+
       window.electronAPI.scrollback.load(scrollbackFile).then((content) => {
-        const contentLen = content?.length ?? 0;
-        const daemonNow = isDaemonModeActive();
-        console.log(`[fix0-dbg] useTerminal scrollback.load resolved ptyId=${ptyId} file=${scrollbackFile} contentLen=${contentLen} daemonModeNow=${daemonNow} willWrite=${!daemonNow && contentLen > 0}`);
         // Skip the entire branch if the terminal was disposed during the
         // async IPC round-trip. Without this, the pendingData flush below
         // would write into a torn-down terminal on fast unmount + remount
@@ -640,7 +623,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // and writing the stale .txt here would compose it with that
         // replay (via the divider below), producing visibly broken output.
         // Pending PTY data still flushes through unchanged.
-        const restored = daemonNow ? null : content;
+        const restored = isDaemonModeActive() ? null : content;
         if (restored) {
           terminal.write(restored);
           // Whitespace + ANSI reset boundary so restored scrollback doesn't
@@ -669,16 +652,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             if (!didRestoreTxt) return;
             if (terminalRef.current !== terminal) return;
             didRestoreTxt = false;
-            console.log(`[fix0-dbg] useTerminal daemon.onConnected (post .txt restore) ptyId=${ptyId} lastFlushRecoveredBytes=${lastFlushRecoveredBytes}`);
             if (lastFlushRecoveredBytes !== null) {
-              if (lastFlushRecoveredBytes > 0) {
-                console.log(`[fix0-dbg] useTerminal terminal.reset() FROM onConnected-after-flushAlreadyDone ptyId=${ptyId} recoveredBytes=${lastFlushRecoveredBytes}`);
-                terminal.reset();
-              } else {
-                console.log(`[fix0-dbg] useTerminal onConnected — flush already done with 0 bytes, keeping .txt cache ptyId=${ptyId}`);
-              }
+              if (lastFlushRecoveredBytes > 0) terminal.reset();
             } else {
-              console.log(`[fix0-dbg] useTerminal onConnected — flush not yet arrived, arming pendingFlushReset ptyId=${ptyId}`);
               pendingFlushReset = true;
             }
           });
@@ -721,6 +697,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       connectPty();
       // No scrollback to restore — register immediately for fresh terminals.
       terminalRegistry.set(ptyId, terminal);
+      // Fix 0 (round 3) — trigger pty.reconnect after listener is wired.
+      // See the scrollback branch above for the full rationale.
+      if (daemonModeAtMount) {
+        void window.electronAPI.pty.reconnect(ptyId).catch((err: unknown) => {
+          console.warn(`[useTerminal] pty.reconnect failed for ${ptyId}: ${err instanceof Error ? err.message : String(err)}`);
+        });
+      }
     }
 
     // Resize PTY on initial fit — only when we actually have valid dimensions.

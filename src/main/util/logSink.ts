@@ -96,8 +96,6 @@ export function initLogSink(): void {
   if (initialised) return;
   initialised = true;
 
-  const orig = process.stderr.write.bind(process.stderr);
-
   // Reentrancy guard. Without this, an EPIPE thrown by `orig()` below
   // becomes an `uncaughtException`, the registered handler logs via
   // `console.error`, which routes back through *this* override — and
@@ -110,51 +108,57 @@ export function initLogSink(): void {
   // loop is sufficient to prevent the recursion.
   let writing = false;
 
-  process.stderr.write = ((chunk: unknown, ...rest: unknown[]) => {
-    if (writing) {
-      // Recursive entry — drop silently. The outer call already wrote
-      // the original chunk to the file and is in the middle of the
-      // orig() pass-through. The inner attempt is whatever EPIPE
-      // handler / uncaughtException reporter tried to surface; logging
-      // it here would just amplify the loop.
-      return true;
-    }
-    writing = true;
-    try {
-      try {
-        const filePath = resolveLogPath();
-        if (filePath) {
-          const str = typeof chunk === 'string'
-            ? chunk
-            : (chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf-8') : String(chunk));
-          // appendFileSync writes through to the OS immediately and fsyncs
-          // before returning. createWriteStream would buffer until 16KB
-          // high-water-mark — for a long-lived main with small log lines
-          // that means the file sits at 0 bytes on disk for the whole
-          // session, defeating the postmortem use case entirely.
-          fs.appendFileSync(filePath, str);
-        }
-      } catch { /* swallow — never break stderr */ }
-
-      // Pass through to the original stderr. Wrapped in its own
-      // try/catch because in packaged Windows GUI builds the inherited
-      // stderr handle can be a closed pipe — orig() then throws EPIPE,
-      // which propagates to the caller (often inside console.error)
-      // and becomes uncaughtException. The Node default handler is
-      // already overridden in main/index.ts to log via console.error,
-      // which routes here again. Catching keeps the log-tee one-way
-      // and isolates the "useful" file write from a busted host
-      // stderr.
-      try {
-        // @ts-expect-error - spread re-applies original signature
-        return orig(chunk, ...rest);
-      } catch {
+  function makeTee(stream: NodeJS.WriteStream): typeof stream.write {
+    const orig = stream.write.bind(stream);
+    return ((chunk: unknown, ...rest: unknown[]) => {
+      if (writing) {
+        // Recursive entry — drop silently. The outer call already wrote
+        // the original chunk to the file and is in the middle of the
+        // orig() pass-through.
         return true;
       }
-    } finally {
-      writing = false;
-    }
-  }) as typeof process.stderr.write;
+      writing = true;
+      try {
+        try {
+          const filePath = resolveLogPath();
+          if (filePath) {
+            const str = typeof chunk === 'string'
+              ? chunk
+              : (chunk instanceof Uint8Array ? Buffer.from(chunk).toString('utf-8') : String(chunk));
+            // appendFileSync writes through to the OS immediately and fsyncs
+            // before returning. createWriteStream would buffer until 16KB
+            // high-water-mark — for a long-lived main with small log lines
+            // that means the file sits at 0 bytes on disk for the whole
+            // session, defeating the postmortem use case entirely.
+            fs.appendFileSync(filePath, str);
+          }
+        } catch { /* swallow — never break stderr */ }
+
+        // Pass through to the original stream. Wrapped in its own
+        // try/catch because in packaged Windows GUI builds the inherited
+        // pipe handle can be a closed pipe — orig() then throws EPIPE,
+        // which propagates to the caller and becomes uncaughtException.
+        // Catching keeps the log-tee one-way and isolates the "useful"
+        // file write from a busted host stream.
+        try {
+          // @ts-expect-error - spread re-applies original signature
+          return orig(chunk, ...rest);
+        } catch {
+          return true;
+        }
+      } finally {
+        writing = false;
+      }
+    }) as typeof stream.write;
+  }
+
+  // Tee BOTH stdout and stderr to the log file. Pre-this-change only
+  // stderr was teed, which meant console.log() (which writes to stdout)
+  // never made it to disk — invisible postmortem for the most common
+  // logging call. console.warn / console.error / process.stderr.write
+  // still go through stderr as before.
+  process.stderr.write = makeTee(process.stderr);
+  process.stdout.write = makeTee(process.stdout);
 
   logLine('info', 'logSink', `started — version=${app.getVersion()}, pid=${process.pid}, platform=${process.platform}`);
 }
