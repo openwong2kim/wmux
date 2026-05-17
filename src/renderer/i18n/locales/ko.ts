@@ -129,6 +129,8 @@ export const ko = {
   'settings.defaultShell': '기본 셸',
   'settings.scrollbackLines': '스크롤백 줄 수',
   'settings.scrollbackDesc': '터미널 버퍼에 보존되는 줄 수',
+  'settings.scrollbackRestore': '시작 시 복원',
+  'settings.scrollbackRestoreDesc': '재시작 후 이전 세션 출력 다시 연결. 끄면 매 시작마다 모든 패널이 빈 상태로 시작.',
   'settings.updates': '업데이트',
   'settings.wmuxUpdates': 'wmux 업데이트',
   'settings.updateFailed': '업데이트 확인 실패',

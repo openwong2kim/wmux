@@ -186,6 +186,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalFontFamily: state.terminalFontFamily,
     defaultShell: state.defaultShell,
     scrollbackLines: state.scrollbackLines,
+    scrollbackRestoreEnabled: state.scrollbackRestoreEnabled,
     sidebarPosition: state.sidebarPosition,
     notificationSoundEnabled: state.notificationSoundEnabled,
     toastEnabled: state.toastEnabled,
@@ -503,6 +504,19 @@ export default function AppLayout() {
         // as if reconcile never happened. Setting it inside this serialized
         // startup path guarantees daemonMode is correct before Terminal mount.
         setDaemonModeActive(daemonReady.connected);
+
+        // User-facing scrollback restore toggle. OFF: skip reconcile entirely
+        // and clear every pty-keyed surface field so each Terminal mounts
+        // fresh (Terminal.tsx self-create). Daemon still dumps ringBuffers
+        // on graceful Quit; cleanOrphanedBuffers reaps the now-unreferenced
+        // .buf files on the next launch. Done renderer-side so the daemon
+        // contract stays simple and no extra RPC is needed.
+        const restoreEnabled = useStore.getState().scrollbackRestoreEnabled !== false;
+        if (!restoreEnabled) {
+          console.log('[AppLayout] scrollbackRestoreEnabled=false — clearing pty state for fresh start');
+          clearAllPtyState();
+          return;
+        }
 
         // Fix 0 — generation-tokened, AbortController-cancellable
         // reconcile race. Timeout aborts the in-flight reconcile so

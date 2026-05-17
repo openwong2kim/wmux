@@ -618,6 +618,8 @@ function TabGeneral() {
   const setDefaultShell = useStore((s) => s.setDefaultShell);
   const scrollbackLines = useStore((s) => s.scrollbackLines);
   const setScrollbackLines = useStore((s) => s.setScrollbackLines);
+  const scrollbackRestoreEnabled = useStore((s) => s.scrollbackRestoreEnabled);
+  const setScrollbackRestoreEnabled = useStore((s) => s.setScrollbackRestoreEnabled);
   const autoUpdateEnabled = useStore((s) => s.autoUpdateEnabled);
   const [detectedShells, setDetectedShells] = useState<ShellInfo[]>([]);
   const storeSetAutoUpdate = useStore((s) => s.setAutoUpdateEnabled);
@@ -686,6 +688,13 @@ function TabGeneral() {
             onChange={setScrollbackLines}
             min={1000}
             max={100000}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.scrollbackRestore')} description={t('settings.scrollbackRestoreDesc')}>
+          <Toggle
+            checked={scrollbackRestoreEnabled}
+            onChange={setScrollbackRestoreEnabled}
+            label={t('settings.scrollbackRestore')}
           />
         </SettingRow>
       </div>

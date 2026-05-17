@@ -70,6 +70,16 @@ export interface UISlice {
   scrollbackLines: number;
   setScrollbackLines: (lines: number) => void;
 
+  // Fix 0 — user-facing toggle for scrollback restore behavior.
+  // true (default): startup reconciles + reconnects to daemon SessionPipes
+  //   so prior session output is restored on every launch.
+  // false: startup calls clearAllPtyState and every Terminal mounts fresh.
+  //   The daemon still dumps ringBuffers on graceful Quit (no extra RPC to
+  //   suppress it), but the renderer never reads them — orphan .buf files
+  //   are reaped by cleanOrphanedBuffers on the next launch.
+  scrollbackRestoreEnabled: boolean;
+  setScrollbackRestoreEnabled: (enabled: boolean) => void;
+
   // ─── Theme ──────────────────────────────────────────────────────────────
   theme: string;
   setTheme: (theme: string) => void;
@@ -340,6 +350,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setScrollbackLines: (lines) => set((state) => {
     state.scrollbackLines = lines;
+  }),
+
+  scrollbackRestoreEnabled: true,
+
+  setScrollbackRestoreEnabled: (enabled) => set((state) => {
+    state.scrollbackRestoreEnabled = enabled;
   }),
 
   // ─── Theme ──────────────────────────────────────────────────────────────

@@ -256,6 +256,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (data.terminalFontFamily) state.terminalFontFamily = data.terminalFontFamily;
       if (data.defaultShell) state.defaultShell = data.defaultShell;
       if (data.scrollbackLines != null) state.scrollbackLines = data.scrollbackLines;
+      if (data.scrollbackRestoreEnabled != null) state.scrollbackRestoreEnabled = data.scrollbackRestoreEnabled;
       if (data.sidebarPosition) state.sidebarPosition = data.sidebarPosition;
       if (data.notificationSoundEnabled != null) state.notificationSoundEnabled = data.notificationSoundEnabled;
       if (data.toastEnabled != null) {

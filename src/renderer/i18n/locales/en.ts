@@ -129,6 +129,8 @@ export const en = {
   'settings.defaultShell': 'Default shell',
   'settings.scrollbackLines': 'Scrollback lines',
   'settings.scrollbackDesc': 'Lines retained in terminal buffer',
+  'settings.scrollbackRestore': 'Restore on launch',
+  'settings.scrollbackRestoreDesc': 'Reattach to previous session output after restart. Turn off to start every pane fresh.',
   'settings.updates': 'Updates',
   'settings.wmuxUpdates': 'wmux updates',
   'settings.updateFailed': 'Failed to check for updates',

@@ -160,5 +160,32 @@ export function initLogSink(): void {
   process.stderr.write = makeTee(process.stderr);
   process.stdout.write = makeTee(process.stdout);
 
+  // Auto-prune old daily log files. Bounded sync I/O at startup; errors
+  // swallowed so logging can never crash the main process.
+  pruneOldLogs(LOG_RETENTION_DAYS);
+
   logLine('info', 'logSink', `started — version=${app.getVersion()}, pid=${process.pid}, platform=${process.platform}`);
+}
+
+/** Days to retain daily log files. Older files are deleted at app
+ *  startup. 14 days = typical sprint + a weekend, the realistic
+ *  postmortem window for renderer/main bugs. */
+const LOG_RETENTION_DAYS = 14;
+
+function pruneOldLogs(retentionDays: number): void {
+  try {
+    const dir = app.getPath('logs');
+    if (!fs.existsSync(dir)) return;
+    const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    for (const file of fs.readdirSync(dir)) {
+      if (!/^main-\d{4}-\d{2}-\d{2}\.log$/.test(file)) continue;
+      const full = path.join(dir, file);
+      try {
+        const st = fs.statSync(full);
+        if (st.mtimeMs < cutoffMs) {
+          fs.unlinkSync(full);
+        }
+      } catch { /* skip file on stat/unlink failure */ }
+    }
+  } catch { /* swallow — never break logging */ }
 }

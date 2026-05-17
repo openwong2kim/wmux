@@ -150,9 +150,38 @@ export function initDaemonLogSink(baseDir: string): void {
   wrap(process.stdout);
   wrap(process.stderr);
 
+  // Auto-prune old daily log files. Without this the logs/ directory
+  // accumulates indefinitely (no rotation cap, no retention policy).
+  // Best-effort + sync at startup — bounded I/O against a directory that
+  // is normally <50 entries. Errors are swallowed; logging must never
+  // crash the daemon.
+  pruneOldLogs(LOG_RETENTION_DAYS);
+
   logLine(
     'info',
     'logSink',
     `daemon sink started — pid=${process.pid}, platform=${process.platform}, file=${resolveLogPath() ?? '<unresolved>'}`,
   );
+}
+
+/** Number of days to retain daily log files. Older files are deleted at
+ *  daemon startup. 14 covers a typical sprint cycle plus a weekend, which
+ *  is the realistic postmortem window for daemon bugs. */
+const LOG_RETENTION_DAYS = 14;
+
+function pruneOldLogs(retentionDays: number): void {
+  if (!baseLogDir) return;
+  try {
+    const cutoffMs = Date.now() - retentionDays * 24 * 60 * 60 * 1000;
+    for (const file of fs.readdirSync(baseLogDir)) {
+      if (!/^daemon-\d{4}-\d{2}-\d{2}\.log$/.test(file)) continue;
+      const full = path.join(baseLogDir, file);
+      try {
+        const st = fs.statSync(full);
+        if (st.mtimeMs < cutoffMs) {
+          fs.unlinkSync(full);
+        }
+      } catch { /* skip file on stat/unlink failure */ }
+    }
+  } catch { /* dir missing — fine */ }
 }

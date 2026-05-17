@@ -285,6 +285,15 @@ export interface SessionData {
   terminalFontFamily?: string;
   defaultShell?: string;
   scrollbackLines?: number;
+  /**
+   * User setting: whether to attempt scrollback restore on launch.
+   * true (default) — daemon-side ringBuffer replay + reconnect on Terminal mount.
+   * false — startup clearAllPtyState; every pane mounts fresh. Daemon still
+   *   dumps ringBuffers on graceful Quit (renderer just doesn't read them);
+   *   StateWriter.cleanOrphanedBuffers + SUSPENDED_TTL_HOURS reap the .buf
+   *   files within ~1 launch cycle and 7 days respectively.
+   */
+  scrollbackRestoreEnabled?: boolean;
   sidebarPosition?: 'left' | 'right';
   notificationSoundEnabled?: boolean;
   toastEnabled?: boolean;
