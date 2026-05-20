@@ -233,4 +233,52 @@ describe('UISlice — multiview', () => {
     store.getState().clearMultiview();
     expect(store.getState().multiviewIds).toEqual([]);
   });
+
+  // ─── removeMultiviewWorkspace (close-button primitive) ─────────────────
+  // Regression set for the multiview-X bug. Before the fix, the tile X
+  // button called clearMultiview() so any tile collapsed the whole group.
+  // The fix introduces a dedicated remove primitive so close intent cannot
+  // accidentally re-add the workspace through toggle semantics.
+
+  it('removeMultiviewWorkspace removes only the targeted workspace from a 3+ group', () => {
+    // [A, B, C] active A. Click X on inactive B → grid stays as [A, C].
+    // Pre-fix this collapsed to []; the active-tile case still collapses
+    // unless AppLayout reassigns active, but the slice itself must leave
+    // the remaining members alone.
+    const store = createTestStore();
+    setActive(store, 'A');
+    store.getState().toggleMultiviewWorkspace('B');
+    store.getState().toggleMultiviewWorkspace('C');
+    expect(store.getState().multiviewIds).toEqual(['A', 'B', 'C']);
+
+    store.getState().removeMultiviewWorkspace('B');
+    expect(store.getState().multiviewIds).toEqual(['A', 'C']);
+  });
+
+  it('removeMultiviewWorkspace auto-collapses when only one member would remain', () => {
+    // [A, B] active A. Removing either side leaves a single member, which
+    // is meaningless for a multiview, so multiviewIds is cleared. The
+    // render gate then falls through to single view, matching the
+    // toggleMultiviewWorkspace auto-clear rule.
+    const store = createTestStore();
+    setActive(store, 'A');
+    store.getState().toggleMultiviewWorkspace('B');
+    expect(store.getState().multiviewIds).toEqual(['A', 'B']);
+
+    store.getState().removeMultiviewWorkspace('B');
+    expect(store.getState().multiviewIds).toEqual([]);
+  });
+
+  it('removeMultiviewWorkspace is a no-op for non-members', () => {
+    // A stray X click on a workspace that was never in the multiview group
+    // (e.g. a sidebar event firing into the slice) must not mutate state.
+    const store = createTestStore();
+    setActive(store, 'A');
+    store.getState().toggleMultiviewWorkspace('B');
+    store.getState().toggleMultiviewWorkspace('C');
+    expect(store.getState().multiviewIds).toEqual(['A', 'B', 'C']);
+
+    store.getState().removeMultiviewWorkspace('Z'); // not a member
+    expect(store.getState().multiviewIds).toEqual(['A', 'B', 'C']);
+  });
 });

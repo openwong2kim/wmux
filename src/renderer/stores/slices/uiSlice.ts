@@ -6,6 +6,7 @@ import {
   createLeafPane,
   type CustomKeybinding,
   type CustomThemeColors,
+  type XtermThemeColors,
   type Company,
   type LayoutTemplate,
   type LayoutNode,
@@ -15,7 +16,12 @@ import {
   BUILTIN_TEMPLATES,
   DEFAULT_PREFIX_CONFIG,
 } from '../../../shared/types';
-import { applyCustomCssVars, clearCustomCssVars, DEFAULT_CUSTOM_THEME } from '../../themes';
+import { applyCustomCssVars, clearCustomCssVars, DEFAULT_CUSTOM_THEME, migrateCustomThemeColors } from '../../themes';
+
+// String-valued tokens only. xtermOverrides is an object handled by separate
+// setXtermOverride / clearXtermOverrides actions below.
+type CustomThemeColorKey = Exclude<keyof CustomThemeColors, 'xtermOverrides'>;
+type XtermColorKey = keyof XtermThemeColors;
 
 export interface UISlice {
   // ─── Startup gate (Fix 0) ─────────────────────────────────────────────
@@ -98,6 +104,9 @@ export interface UISlice {
   // ─── Multiview ─────────────────────────────────────────────────────────
   multiviewIds: string[];
   toggleMultiviewWorkspace: (wsId: string) => void;
+  // Close-button primitive. Pure removal, never adds. Use this from the tile
+  // X button so a stale-event toggle cannot re-add the workspace.
+  removeMultiviewWorkspace: (wsId: string) => void;
   clearMultiview: () => void;
 
   // ─── Custom keybindings ──────────────────────────────────────────────
@@ -135,7 +144,12 @@ export interface UISlice {
   // ─── Custom theme ─────────────────────────────────────────────────────
   customThemeColors: CustomThemeColors | null;
   setCustomThemeColors: (colors: CustomThemeColors) => void;
-  updateCustomThemeColor: (key: string, value: string) => void;
+  updateCustomThemeColor: (key: CustomThemeColorKey, value: string) => void;
+  // Per-slot xterm color override on top of the chosen preset. Pass null to
+  // clear a single slot (it falls back to the preset). Pass clearXtermOverrides
+  // to wipe all overrides at once (e.g. "Reset to preset" button).
+  setXtermOverride: (key: XtermColorKey, value: string | null) => void;
+  clearXtermOverrides: () => void;
 
   // ─── Auto-update ──────────────────────────────────────────────────────
   autoUpdateEnabled: boolean;
@@ -430,6 +444,16 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     }
   }),
 
+  removeMultiviewWorkspace: (wsId) => set((state) => {
+    const idx = state.multiviewIds.indexOf(wsId);
+    if (idx < 0) return; // no-op on non-members
+    state.multiviewIds.splice(idx, 1);
+    // Same auto-clear rule as toggleMultiviewWorkspace: ≤1 left → collapse.
+    if (state.multiviewIds.length <= 1) {
+      state.multiviewIds = [];
+    }
+  }),
+
   clearMultiview: () => set((state) => {
     state.multiviewIds = [];
   }),
@@ -497,9 +521,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   customThemeColors: null,
 
   setCustomThemeColors: (colors) => {
-    set((state) => { state.customThemeColors = colors; });
+    // Normalize through migrator so legacy callers (e.g. external code passing
+    // a 37-field object) still work; idempotent on new shape.
+    const normalized = migrateCustomThemeColors(colors);
+    set((state) => { state.customThemeColors = normalized; });
     if (get().theme === 'custom') {
-      applyCustomCssVars(colors);
+      applyCustomCssVars(normalized);
     }
   },
 
@@ -508,12 +535,38 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       if (!state.customThemeColors) {
         state.customThemeColors = { ...DEFAULT_CUSTOM_THEME };
       }
-      (state.customThemeColors as Record<string, string>)[key] = value;
+      (state.customThemeColors as unknown as Record<string, string>)[key] = value;
     });
     if (get().theme === 'custom') {
       const colors = get().customThemeColors;
       if (colors) applyCustomCssVars(colors);
     }
+  },
+
+  setXtermOverride: (key, value) => {
+    set((state) => {
+      if (!state.customThemeColors) {
+        state.customThemeColors = { ...DEFAULT_CUSTOM_THEME };
+      }
+      const overrides = { ...(state.customThemeColors.xtermOverrides ?? {}) };
+      if (value === null || value === '') {
+        delete overrides[key];
+      } else {
+        overrides[key] = value;
+      }
+      // Drop the field entirely when empty so persisted state stays clean.
+      state.customThemeColors.xtermOverrides = Object.keys(overrides).length > 0 ? overrides : undefined;
+    });
+    // Note: xterm theme changes are picked up by useTerminal's effect — no
+    // CSS-var application needed here.
+  },
+
+  clearXtermOverrides: () => {
+    set((state) => {
+      if (state.customThemeColors) {
+        state.customThemeColors.xtermOverrides = undefined;
+      }
+    });
   },
 
   // ─── Auto-update ──────────────────────────────────────────────────────

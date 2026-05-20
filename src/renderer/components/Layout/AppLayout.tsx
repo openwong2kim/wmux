@@ -221,7 +221,7 @@ export default function AppLayout() {
   const clearAllPtyState = useStore((s) => s.clearAllPtyState);
 
   const multiviewIds = useStore((s) => s.multiviewIds);
-  const clearMultiview = useStore((s) => s.clearMultiview);
+  const removeMultiviewWorkspace = useStore((s) => s.removeMultiviewWorkspace);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
 
@@ -827,7 +827,22 @@ export default function AppLayout() {
                 >
                   <span className="flex-1">{ws.name}</span>
                   <button
-                    onClick={(e) => { e.stopPropagation(); clearMultiview(); }}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      // If we're closing the active tile and other members
+                      // remain, hand focus to a neighbor first. Otherwise the
+                      // grid render gate (multiviewIds.includes(activeId))
+                      // fails the next render and the user sees the whole
+                      // multiview collapse to the workspace they just closed,
+                      // which reads as "the window reset" (codex P1).
+                      if (ws.id === activeWorkspaceId && multiviewIds.length > 2) {
+                        const removedIdx = multiviewIds.indexOf(ws.id);
+                        const nextActive =
+                          multiviewIds[removedIdx + 1] ?? multiviewIds[removedIdx - 1];
+                        if (nextActive) setActiveWorkspace(nextActive);
+                      }
+                      removeMultiviewWorkspace(ws.id);
+                    }}
                     className="ml-auto opacity-60 hover:opacity-100"
                     style={{
                       background: 'none',
@@ -838,7 +853,8 @@ export default function AppLayout() {
                       fontSize: 14,
                       lineHeight: 1,
                     }}
-                    title="Exit multiview"
+                    title="Remove from multiview"
+                    aria-label={`Remove ${ws.name} from multiview`}
                   >
                     ✕
                   </button>
