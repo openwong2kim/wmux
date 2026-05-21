@@ -42,11 +42,25 @@ function findLeafBySurfaceId(root: Pane, surfaceId: string): PaneLeaf | null {
 // ---------------------------------------------------------------------------
 // PTY submit helper — paste text then press Enter after a short delay
 // so Claude Code (and similar TUI apps) process the paste before submit.
+//
+// Two-write split (paste then \r) instead of a single `text + '\r'` write:
+//   1. PSReadLine (PowerShell) buffers the body as a multi-line composition.
+//      An immediate trailing \r in the same write lands inside that
+//      composition and reads as line continuation — the prompt sits filled
+//      but never commits. A 100ms gap lets ConPTY drain the paste into
+//      PSReadLine's buffer before the commit arrives.
+//   2. Multi-line bodies need a second \r to close PSReadLine's
+//      continuation buffer. Single-line bodies get exactly one \r so TUI
+//      chat prompts (Claude Code, REPLs) don't see a stray empty-Enter
+//      follow-up that submits a blank message.
 // ---------------------------------------------------------------------------
 
 function submitToPty(ptyId: string, text: string): void {
-  // Direct keyboard input (not bracketed paste) — appears as natural typing
-  window.electronAPI.pty.write(ptyId, text + '\r');
+  const isMultiLine = text.includes('\n');
+  window.electronAPI.pty.write(ptyId, text);
+  setTimeout(() => {
+    window.electronAPI.pty.write(ptyId, isMultiLine ? '\r\r' : '\r');
+  }, 100);
 }
 
 // ---------------------------------------------------------------------------

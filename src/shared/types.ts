@@ -321,47 +321,57 @@ export interface SessionData {
   prefixConfig?: PrefixConfig;
 }
 
+// === xterm 20-slot ANSI palette ===
+// Background, foreground, cursor, selection + 16 ANSI colors (8 normal + 8 bright).
+// Lives in shared/types so CustomThemeColors can reference Partial<XtermThemeColors>
+// for per-color overrides without an import cycle into the renderer-side themes.ts.
+export interface XtermThemeColors {
+  background: string;
+  foreground: string;
+  cursor: string;
+  selectionBackground: string;
+  black: string;
+  red: string;
+  green: string;
+  yellow: string;
+  blue: string;
+  magenta: string;
+  cyan: string;
+  white: string;
+  brightBlack: string;
+  brightRed: string;
+  brightGreen: string;
+  brightYellow: string;
+  brightBlue: string;
+  brightMagenta: string;
+  brightCyan: string;
+  brightWhite: string;
+}
+
 // === Custom Theme Colors ===
+// 10 manual UI tokens + an xterm palette preset id + optional per-color overrides.
+// The renderer derives the remaining 4 CSS variables (bgOverlay, textSubtle,
+// textSub2, accentCursor) from the 10 tokens via deriveFullPalette().
+// xtermOverrides lets the user fine-tune the terminal palette on top of the
+// chosen preset; any key present here replaces the preset value at runtime.
 export interface CustomThemeColors {
-  // CSS variables
+  // Background tier
   bgBase: string;
-  bgMantle: string;
   bgSurface: string;
-  bgOverlay: string;
-  textMuted: string;
-  textSubtle: string;
-  textSub: string;
-  textSub2: string;
+  bgMantle: string;
+  // Text tier
   textMain: string;
-  accentCursor: string;
-  accentBlue: string;
-  accentGreen: string;
-  accentRed: string;
-  accentYellow: string;
-  accentPink: string;
-  accentTeal: string;
-  accentPurple: string;
-  // xterm terminal colors
-  xtermBackground: string;
-  xtermForeground: string;
-  xtermCursor: string;
-  xtermSelection: string;
-  xtermBlack: string;
-  xtermRed: string;
-  xtermGreen: string;
-  xtermYellow: string;
-  xtermBlue: string;
-  xtermMagenta: string;
-  xtermCyan: string;
-  xtermWhite: string;
-  xtermBrightBlack: string;
-  xtermBrightRed: string;
-  xtermBrightGreen: string;
-  xtermBrightYellow: string;
-  xtermBrightBlue: string;
-  xtermBrightMagenta: string;
-  xtermBrightCyan: string;
-  xtermBrightWhite: string;
+  textSub: string;
+  textMuted: string;
+  // Semantic accents
+  accent: string;
+  success: string;
+  danger: string;
+  warning: string;
+  // Terminal 16-color ANSI palette: pick a preset, then optionally override
+  // individual slots. Unset slots fall through to the preset.
+  xtermPaletteId: string;
+  xtermOverrides?: Partial<XtermThemeColors>;
 }
 
 // === A2A Protocol Types (Google A2A Standard) ===

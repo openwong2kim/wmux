@@ -22,26 +22,26 @@
 
 /* ─── Theme CSS Variables ────────────────────────────────────────────────── */
 
+/* Hinomaru — light theme. Text colors are DARK on the cream background.
+ * Previous --text-muted #A8A098 / --text-subtle #8A827A were too pale and
+ * read as "invisible white" against the light background. Tightened to
+ * darker values that still feel quiet but pass WCAG AA on bgBase #FAF8F5. */
 :root, [data-theme="hinomaru"] {
   --bg-base: #FAF8F5;
   --bg-mantle: #F0ECE6;
   --bg-surface: #E2DDD4;
   --bg-overlay: #D4CFC6;
-  --text-muted: #A8A098;
-  --text-subtle: #8A827A;
+  --text-muted: #6E6862;
+  --text-subtle: #5C5651;
   --text-sub: #4A4540;
-  --text-sub2: #6A655E;
+  --text-sub2: #3A3531;
   --text-main: #2A2522;
-  --accent-cursor: #2A2522;
-  --accent-blue: #2C5F7C;
-  --accent-green: #5A7A6A;
+  --accent-cursor: #BC002D;
+  --accent-blue: #1C4D6A;
+  --accent-green: #3D6750;
   --accent-red: #BC002D;
-  --accent-yellow: #C4882D;
-  --accent-pink: #A85060;
-  --accent-teal: #4A8A7A;
-  --accent-purple: #7B6B8A;
-  /* RGB variants for opacity usage */
-  --accent-blue-rgb: 44, 95, 124;
+  --accent-yellow: #A06A1A;
+  --accent-blue-rgb: 28, 77, 106;
   --bg-surface-rgb: 226, 221, 212;
   --bg-base-rgb: 250, 248, 245;
 }
@@ -61,9 +61,6 @@
   --accent-green: #A6E3A1;
   --accent-red: #F38BA8;
   --accent-yellow: #F9E2AF;
-  --accent-pink: #F5C2E7;
-  --accent-teal: #94E2D5;
-  --accent-purple: #CBA6F7;
   --accent-blue-rgb: 137, 180, 250;
   --bg-surface-rgb: 49, 50, 68;
   --bg-base-rgb: 30, 30, 46;
@@ -84,9 +81,6 @@
   --accent-green: #909090;
   --accent-red: #FF5555;
   --accent-yellow: #C0C0C0;
-  --accent-pink: #999999;
-  --accent-teal: #888888;
-  --accent-purple: #959595;
   --accent-blue-rgb: 160, 160, 160;
   --bg-surface-rgb: 26, 26, 26;
   --bg-base-rgb: 8, 8, 8;
@@ -107,9 +101,6 @@
   --accent-green: #4EBF8B;
   --accent-red: #E8554E;
   --accent-yellow: #F2C85B;
-  --accent-pink: #C792EA;
-  --accent-teal: #5BC0BE;
-  --accent-purple: #9B7ED8;
   --accent-blue-rgb: 91, 141, 239;
   --bg-surface-rgb: 30, 46, 74;
   --bg-base-rgb: 12, 20, 40;
@@ -130,9 +121,6 @@
   --accent-green: #5AAE6A;
   --accent-red: #E84040;
   --accent-yellow: #F2C744;
-  --accent-pink: #D4A0D0;
-  --accent-teal: #5A9E8A;
-  --accent-purple: #9A7AB8;
   --accent-blue-rgb: 106, 160, 204;
   --bg-surface-rgb: 58, 26, 26;
   --bg-base-rgb: 26, 10, 10;
@@ -153,9 +141,6 @@
   --accent-green: #8AAA70;
   --accent-red: #CC6B5A;
   --accent-yellow: #C89060;
-  --accent-pink: #B0886E;
-  --accent-teal: #8A9A6A;
-  --accent-purple: #AA8A6A;
   --accent-blue-rgb: 196, 160, 85;
   --bg-surface-rgb: 46, 42, 34;
   --bg-base-rgb: 30, 27, 22;
@@ -176,32 +161,28 @@
   --accent-green: #909090;
   --accent-red: #FF4444;
   --accent-yellow: #A0A0A0;
-  --accent-pink: #808080;
-  --accent-teal: #888888;
-  --accent-purple: #858585;
   --accent-blue-rgb: 192, 192, 192;
   --bg-surface-rgb: 10, 10, 10;
   --bg-base-rgb: 0, 0, 0;
 }
 
+/* Taegeuk — light theme. Same contrast fix as hinomaru: darken muted/subtle
+ * so labels and hints stay legible against the near-white background. */
 [data-theme="taegeuk"] {
   --bg-base: #F8F8FA;
   --bg-mantle: #EEEEF2;
   --bg-surface: #DDDDE4;
   --bg-overlay: #CCCCD6;
-  --text-muted: #9A9AA8;
-  --text-subtle: #6A6A7A;
+  --text-muted: #6A6A7A;
+  --text-subtle: #4F4F62;
   --text-sub: #3A3A50;
-  --text-sub2: #5A5A70;
+  --text-sub2: #2A2A40;
   --text-main: #1A1A2E;
-  --accent-cursor: #1A1A2E;
+  --accent-cursor: #003478;
   --accent-blue: #003478;
-  --accent-green: #2D8A56;
+  --accent-green: #1F6940;
   --accent-red: #C60C30;
-  --accent-yellow: #D4930D;
-  --accent-pink: #A03060;
-  --accent-teal: #1A7A7A;
-  --accent-purple: #5A3D8A;
+  --accent-yellow: #9B6A07;
   --accent-blue-rgb: 0, 52, 120;
   --bg-surface-rgb: 221, 221, 228;
   --bg-base-rgb: 248, 248, 250;

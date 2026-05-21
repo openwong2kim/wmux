@@ -6,7 +6,7 @@ const TAG_COLORS: Record<string, string> = {
   report: 'var(--accent-green)',
   approval: 'var(--accent-yellow)',
   blocked: 'var(--accent-red)',
-  broadcast: 'var(--accent-purple)',
+  broadcast: 'var(--accent-cursor)',
   message: 'var(--text-sub)',
 };
 

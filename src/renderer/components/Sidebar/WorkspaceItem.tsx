@@ -3,6 +3,7 @@ import type { AgentStatus, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
+import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 
 interface WorkspaceItemProps {
   workspace: Workspace;
@@ -42,7 +43,6 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   const t = useT();
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(workspace.name);
-  const [isDragging, setIsDragging] = useState(false);
   const [dropIndicator, setDropIndicator] = useState<'above' | 'below' | null>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const dragStartTimeRef = useRef<number>(0);
@@ -50,6 +50,9 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   const unreadCount = useStore((s) =>
     s.notifications.filter((n) => !n.read && n.workspaceId === workspace.id).length,
   );
+  // Sidebar reorder source index lives in the store, not in dataTransfer.
+  // See uiSlice.draggedWorkspaceIndex for why this is out-of-band.
+  const setDraggedWorkspaceIndex = useStore((s) => s.setDraggedWorkspaceIndex);
 
   const metadata = workspace.metadata;
 
@@ -79,19 +82,49 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
 
   const handleDragStart = (e: React.DragEvent<HTMLDivElement>) => {
     dragStartTimeRef.current = Date.now();
-    e.dataTransfer.setData('text/plain', String(index));
-    e.dataTransfer.effectAllowed = 'move';
-    // 약간의 딜레이 후 dragging 상태로 전환 (더블클릭 구분)
-    setTimeout(() => setIsDragging(true), 0);
+    // dataTransfer carries ONLY the markdown so external chat composers
+    // see a clean text drop. The source index for sidebar reorder is
+    // stashed in zustand (cleared in dragend) — see uiSlice
+    // setDraggedWorkspaceIndex. Mirrors what SurfaceTabs does for pane
+    // export, where there is no internal-drop sibling at all.
+    const md = buildWorkspaceMarkdown(workspace);
+    e.dataTransfer.setData('text/plain', md);
+    // copyMove (not copy): the sibling onDragOver below sets
+    // dropEffect='move' for reorder, which is only valid against an
+    // effectAllowed that includes 'move'. External chat composers
+    // accept the 'copy' half of 'copyMove' just as well.
+    e.dataTransfer.effectAllowed = 'copyMove';
+    setDraggedWorkspaceIndex(index);
+    // Apply the "being dragged" visual synchronously by mutating the
+    // element's inline style. The previous setTimeout(setIsDragging) +
+    // className toggle caused a React re-render right after dragstart
+    // returned, which mutated the live drag source DOM. Chromium's drag
+    // engine then lost track of the source and the OS painted 🚫 on the
+    // cursor immediately. SurfaceTabs has no equivalent state which is
+    // why its path always worked. Inline style avoids React entirely.
+    e.currentTarget.style.opacity = '0.4';
   };
 
-  const handleDragEnd = () => {
-    setIsDragging(false);
+  const handleDragEnd = (e: React.DragEvent<HTMLDivElement>) => {
+    e.currentTarget.style.opacity = '';
     setDropIndicator(null);
+    // Always clear, including the "drag dropped outside any drop target"
+    // path. dragend always fires, drop does not.
+    setDraggedWorkspaceIndex(null);
   };
 
   const handleDragOver = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
+    const reorderFrom = useStore.getState().draggedWorkspaceIndex;
+    if (reorderFrom === null) return;
+    // Codex P1: do NOT force dropEffect='move' on the source row itself.
+    // While the pointer is still over the row that started the drag,
+    // the operation must stay 'copy' (the effectAllowed='copyMove'
+    // default) so an external chat composer the user is about to drop
+    // onto sees a clean copy text drag. Forcing 'move' here poisoned
+    // every subsequent drop target into believing this was a reorder
+    // and external text composers rejected it with 🚫.
+    if (reorderFrom === index) return;
     e.dataTransfer.dropEffect = 'move';
     const rect = e.currentTarget.getBoundingClientRect();
     const midY = rect.top + rect.height / 2;
@@ -108,8 +141,12 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   const handleDrop = (e: React.DragEvent<HTMLDivElement>) => {
     e.preventDefault();
     setDropIndicator(null);
-    const fromIndex = parseInt(e.dataTransfer.getData('text/plain'), 10);
-    if (isNaN(fromIndex) || fromIndex === index) return;
+    // Reorder source comes from the store, not dataTransfer. A null
+    // value means the drop originated from outside the sidebar (or the
+    // user dragged a workspace out and back in) — silently ignore so
+    // foreign markdown drops never reshuffle the list.
+    const fromIndex = useStore.getState().draggedWorkspaceIndex;
+    if (fromIndex === null || fromIndex === index) return;
 
     // 드롭 위치를 아이템 중간 기준으로 결정
     // 위 절반 → 현재 index 앞으로, 아래 절반 → 현재 index 뒤로
@@ -140,10 +177,22 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   };
 
   return (
-    <div className="relative mx-2">
-      {/* 드롭 인디케이터 - 위 */}
+    <div
+      className="relative mx-2"
+      // Allow the drag cursor to pass through the 8px horizontal margin
+      // around each row. Without preventDefault here the OS sees no
+      // drop target on the margin and paints a 🚫 cursor the moment
+      // the pointer leaves the inner row, which the user reads as
+      // "drag is rejected".
+      onDragOver={(e) => {
+        if (useStore.getState().draggedWorkspaceIndex !== null) {
+          e.preventDefault();
+        }
+      }}>
+      {/* 드롭 인디케이터 - 위. pointer-events-none so it never participates
+          in drag hit-testing (codex P3). */}
       {dropIndicator === 'above' && (
-        <div className="absolute top-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)] rounded-full z-10 -translate-y-px" />
+        <div className="absolute top-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)] rounded-full z-10 -translate-y-px pointer-events-none" />
       )}
 
       <div
@@ -152,7 +201,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
           isActive
             ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'
             : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
-        } ${isDragging ? 'opacity-40' : 'opacity-100'}`}
+        }`}
         style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
@@ -221,9 +270,10 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
         </button>
       </div>
 
-      {/* 드롭 인디케이터 - 아래 */}
+      {/* 드롭 인디케이터 - 아래. pointer-events-none so it never participates
+          in drag hit-testing (codex P3). */}
       {dropIndicator === 'below' && (
-        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)] rounded-full z-10 translate-y-px" />
+        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)] rounded-full z-10 translate-y-px pointer-events-none" />
       )}
     </div>
   );

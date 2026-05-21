@@ -4,6 +4,7 @@ import { useStore } from '../../stores';
 import { useIpc } from '../../hooks/useIpc';
 import { withDefaultShell } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
+import { isFileDrag } from '../../../shared/dragDrop';
 import ViCopyMode from './ViCopyMode';
 import SearchBar from './SearchBar';
 import BookmarkIndicator from './BookmarkIndicator';
@@ -187,6 +188,36 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     })();
   }, [ptyId, terminalRef]);
 
+  // Accept text/plain drops (workspace/pane markdown from sidebar + tabs,
+  // file paths from the file tree) and route them through the same chunked
+  // paste path the clipboard handler uses. Native file drags carry the
+  // 'Files' DataTransfer type and are owned by AppLayout's onFileDrop —
+  // bail early so we don't double-handle them. xterm.js does not surface a
+  // drop event of its own, so without this handler the OS accepts the drop
+  // visually (no 🚫) but no text ever reaches the PTY.
+  const handleTerminalDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!ptyId) return;
+    if (isFileDrag(e.dataTransfer)) return;
+    if (!e.dataTransfer.types.includes('text/plain')) return;
+    e.preventDefault();
+    e.dataTransfer.dropEffect = 'copy';
+  }, [ptyId]);
+
+  const handleTerminalDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
+    if (!ptyId) return;
+    if (isFileDrag(e.dataTransfer)) return;
+    const text = e.dataTransfer.getData('text/plain');
+    if (!text) return;
+    e.preventDefault();
+    const terminal = terminalRef.current;
+    const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } })?.modes;
+    void pastePtyChunked(
+      (d) => window.electronAPI.pty.write(ptyId, d),
+      text,
+      modes ?? null,
+    ).catch((err) => console.error('[wmux:terminal-drop] paste failed:', err));
+  }, [ptyId, terminalRef]);
+
   const handleOpenLink = useCallback((url: string) => {
     window.electronAPI.shell.openExternal(url);
   }, []);
@@ -212,9 +243,15 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         </div>
       )}
 
-      {/* xterm mount point */}
+      {/* xterm mount point. draggable={false} is explicit: xterm's selection
+          handler must own pointer events here, otherwise a long-press on
+          selected text could be interpreted as a native drag start and
+          clash with the SurfaceTabs drag-export feature. */}
       <div
         ref={containerRef}
+        draggable={false}
+        onDragOver={handleTerminalDragOver}
+        onDrop={handleTerminalDrop}
         style={{ width: '100%', height: '100%', padding: '4px' }}
       />
 

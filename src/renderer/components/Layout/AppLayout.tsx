@@ -861,7 +861,7 @@ export default function AppLayout() {
                 </div>
                 <div className="flex-1 min-h-0 relative">
                   <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }}>
-                    <PaneContainer pane={ws.rootPane} isWorkspaceVisible={true} />
+                    <PaneContainer pane={ws.rootPane} workspace={ws} isWorkspaceVisible={true} />
                   </div>
                 </div>
               </div>
@@ -879,7 +879,7 @@ export default function AppLayout() {
                   flexDirection: 'column',
                 }}
               >
-                <PaneContainer pane={ws.rootPane} isWorkspaceVisible={ws.id === activeWorkspaceId} />
+                <PaneContainer pane={ws.rootPane} workspace={ws} isWorkspaceVisible={ws.id === activeWorkspaceId} />
               </div>
             ))}
           </div>

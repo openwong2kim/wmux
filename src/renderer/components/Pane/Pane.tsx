@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useState, useMemo } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
-import type { PaneLeaf } from '../../../shared/types';
+import type { PaneLeaf, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
@@ -13,11 +13,16 @@ import { withDefaultShell } from '../../utils/ptyCreateOptions';
 
 interface PaneProps {
   pane: PaneLeaf;
+  // The workspace this leaf pane belongs to. Required so SurfaceTabs can
+  // build a drag-export payload that names the correct workspace even in
+  // multiview, where useStore(activeWorkspaceId) would pick the focused
+  // tile and mis-attribute drags from sibling tiles (codex P1).
+  workspace: Workspace;
   isActive: boolean;
   isWorkspaceVisible?: boolean;
 }
 
-export default function PaneComponent({ pane, isActive, isWorkspaceVisible = true }: PaneProps) {
+export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true }: PaneProps) {
   const t = useT();
   const [flashing, setFlashing] = useState(false);
   const setActivePane = useStore((s) => s.setActivePane);
@@ -100,6 +105,8 @@ export default function PaneComponent({ pane, isActive, isWorkspaceVisible = tru
       <SurfaceTabs
         surfaces={pane.surfaces}
         activeSurfaceId={pane.activeSurfaceId}
+        workspace={workspace}
+        paneId={pane.id}
         onSelect={(surfaceId) => setActiveSurface(pane.id, surfaceId)}
         onClose={handleCloseSurface}
         onAdd={handleAddSurface}

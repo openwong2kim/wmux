@@ -1,10 +1,19 @@
-import { useEffect, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
 import { useStore } from '../../stores';
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
-import { THEME_OPTIONS, builtinToCustom, DEFAULT_CUSTOM_THEME, type BuiltinThemeId, type ThemeId } from '../../themes';
-import type { CustomThemeColors } from '../../../shared/types';
+import { THEME_OPTIONS, XTERM_PALETTE_OPTIONS, XTERM_PALETTES, builtinToCustom, DEFAULT_CUSTOM_THEME, type BuiltinThemeId, type ThemeId, type XtermPaletteId } from '../../themes';
+import {
+  TAILWIND_PALETTE,
+  TAILWIND_SHADES,
+  TAILWIND_HUES,
+  TAILWIND_NEUTRAL_HUES,
+  TAILWIND_COLOR_HUES,
+  nearestTailwindSwatch,
+  type TailwindHue,
+} from '../../tailwindPalette';
+import type { CustomThemeColors, XtermThemeColors } from '../../../shared/types';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 
@@ -738,25 +747,93 @@ function TabGeneral() {
   );
 }
 
-// ─── Color picker row ────────────────────────────────────────────────────────
+// ─── Tailwind swatch picker (popover) ────────────────────────────────────────
 
-function ColorRow({ label, value, onChange }: { label: string; value: string; onChange: (v: string) => void }) {
-  const debounceRef = useRef<NodeJS.Timeout | null>(null);
-  const handleChange = useCallback((hex: string) => {
-    if (debounceRef.current) clearTimeout(debounceRef.current);
-    debounceRef.current = setTimeout(() => onChange(hex), 50);
-  }, [onChange]);
+interface TailwindSwatchPickerProps {
+  value: string;
+  onChange: (hex: string) => void;
+  // Restrict hue set per token category. Default = all hues.
+  hueScope?: 'neutral' | 'color' | 'all';
+}
+
+function TailwindSwatchPicker({ value, onChange, hueScope = 'all' }: TailwindSwatchPickerProps) {
+  const visibleHues = useMemo<readonly TailwindHue[]>(() => {
+    if (hueScope === 'neutral') return TAILWIND_NEUTRAL_HUES;
+    if (hueScope === 'color') return TAILWIND_COLOR_HUES;
+    return TAILWIND_HUES;
+  }, [hueScope]);
+
+  // Pick the active hue tab — nearest Tailwind hue to current value, falling
+  // back to the first hue in scope so the picker always opens on something.
+  const nearest = nearestTailwindSwatch(value);
+  const initialHue: TailwindHue = nearest && visibleHues.includes(nearest.hue)
+    ? nearest.hue
+    : visibleHues[0];
+  const [activeHue, setActiveHue] = useState<TailwindHue>(initialHue);
 
   return (
-    <div className="flex items-center justify-between py-1 px-2">
-      <span className="text-[11px] text-[color:var(--text-sub)] font-mono">{label}</span>
-      <div className="flex items-center gap-2">
-        <span className="text-[10px] text-[color:var(--text-muted)] font-mono">{value}</span>
+    <div
+      className="w-full rounded-lg p-2 flex flex-col gap-2"
+      style={{ backgroundColor: 'var(--bg-base)', border: '1px solid var(--bg-overlay)' }}
+    >
+      {/* Hue tabs */}
+      <div className="flex flex-wrap gap-0.5">
+        {visibleHues.map((hue) => (
+          <button
+            key={hue}
+            onClick={() => setActiveHue(hue)}
+            className="px-1.5 py-0.5 text-[10px] rounded transition-colors"
+            style={{
+              backgroundColor: activeHue === hue ? 'var(--bg-surface)' : 'transparent',
+              color: activeHue === hue ? 'var(--text-main)' : 'var(--text-subtle)',
+              border: '1px solid transparent',
+            }}
+            title={hue}
+          >
+            {hue}
+          </button>
+        ))}
+      </div>
+
+      {/* Shade row */}
+      <div className="flex gap-1">
+        {TAILWIND_SHADES.map((shade) => {
+          const hex = TAILWIND_PALETTE[activeHue][shade];
+          const selected = hex.toLowerCase() === value.toLowerCase();
+          return (
+            <button
+              key={shade}
+              onClick={() => onChange(hex)}
+              className="flex-1 aspect-square rounded transition-transform hover:scale-110"
+              style={{
+                backgroundColor: hex,
+                boxShadow: selected ? '0 0 0 2px var(--accent-blue)' : 'inset 0 0 0 1px rgba(128,128,128,0.25)',
+              }}
+              title={`${activeHue}-${shade} ${hex}`}
+            />
+          );
+        })}
+      </div>
+
+      {/* Custom hex input */}
+      <div className="flex items-center gap-2 pt-1" style={{ borderTop: '1px solid var(--bg-surface)' }}>
+        <span className="text-[10px] text-[color:var(--text-muted)] font-mono">HEX</span>
+        <input
+          type="text"
+          value={value}
+          onChange={(e) => {
+            const v = e.target.value.trim();
+            if (/^#[0-9a-fA-F]{6}$/.test(v)) onChange(v);
+          }}
+          className="text-[10px] font-mono px-1.5 py-0.5 rounded flex-1"
+          style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)', border: '1px solid var(--bg-overlay)' }}
+          spellCheck={false}
+        />
         <input
           type="color"
           value={value}
-          onChange={(e) => handleChange(e.target.value)}
-          className="w-6 h-6 rounded cursor-pointer border-0 p-0"
+          onChange={(e) => onChange(e.target.value)}
+          className="w-5 h-5 rounded cursor-pointer border-0 p-0"
           style={{ backgroundColor: 'transparent' }}
         />
       </div>
@@ -764,56 +841,82 @@ function ColorRow({ label, value, onChange }: { label: string; value: string; on
   );
 }
 
-// ─── Custom theme editor ─────────────────────────────────────────────────────
+// ─── Token row — label + swatch button that toggles the picker ──────────────
 
-const UI_COLOR_GROUPS: { label: string; keys: { key: keyof CustomThemeColors; label: string }[] }[] = [
+interface TokenRowProps {
+  label: string;
+  description?: string;
+  value: string;
+  hueScope?: 'neutral' | 'color' | 'all';
+  onChange: (hex: string) => void;
+}
+
+function TokenRow({ label, description, value, hueScope, onChange }: TokenRowProps) {
+  const [open, setOpen] = useState(false);
+
+  return (
+    <div className="flex flex-col gap-1 px-2 py-1.5">
+      <button
+        className="flex items-center justify-between w-full"
+        onClick={() => setOpen((o) => !o)}
+      >
+        <div className="flex flex-col items-start">
+          <span className="text-[11px] text-[color:var(--text-sub)] font-medium">{label}</span>
+          {description && (
+            <span className="text-[10px] text-[color:var(--text-muted)]">{description}</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <span className="text-[10px] text-[color:var(--text-muted)] font-mono">{value.toUpperCase()}</span>
+          <span
+            className="w-6 h-6 rounded"
+            style={{ backgroundColor: value, border: '1px solid var(--bg-overlay)' }}
+          />
+        </div>
+      </button>
+      {open && (
+        <TailwindSwatchPicker
+          value={value}
+          onChange={onChange}
+          hueScope={hueScope}
+        />
+      )}
+    </div>
+  );
+}
+
+// ─── Custom theme editor — 10 manual tokens + xterm palette preset ──────────
+
+interface UITokenSpec {
+  key: Exclude<keyof CustomThemeColors, 'xtermPaletteId' | 'xtermOverrides'>;
+  labelKey: string;
+  hueScope: 'neutral' | 'color' | 'all';
+}
+
+const UI_TOKEN_GROUPS: { label: string; tokens: UITokenSpec[] }[] = [
   {
     label: 'Background',
-    keys: [
-      { key: 'bgBase', label: 'Base' },
-      { key: 'bgMantle', label: 'Mantle' },
-      { key: 'bgSurface', label: 'Surface' },
-      { key: 'bgOverlay', label: 'Overlay' },
+    tokens: [
+      { key: 'bgBase',    labelKey: 'settings.token.bgBase',    hueScope: 'neutral' },
+      { key: 'bgSurface', labelKey: 'settings.token.bgSurface', hueScope: 'neutral' },
+      { key: 'bgMantle',  labelKey: 'settings.token.bgMantle',  hueScope: 'neutral' },
     ],
   },
   {
     label: 'Text',
-    keys: [
-      { key: 'textMain', label: 'Main' },
-      { key: 'textSub', label: 'Sub' },
-      { key: 'textSub2', label: 'Sub2' },
-      { key: 'textSubtle', label: 'Subtle' },
-      { key: 'textMuted', label: 'Muted' },
+    tokens: [
+      { key: 'textMain',  labelKey: 'settings.token.textMain',  hueScope: 'neutral' },
+      { key: 'textSub',   labelKey: 'settings.token.textSub',   hueScope: 'neutral' },
+      { key: 'textMuted', labelKey: 'settings.token.textMuted', hueScope: 'neutral' },
     ],
   },
   {
-    label: 'Accent',
-    keys: [
-      { key: 'accentBlue', label: 'Blue' },
-      { key: 'accentGreen', label: 'Green' },
-      { key: 'accentRed', label: 'Red' },
-      { key: 'accentYellow', label: 'Yellow' },
-      { key: 'accentPink', label: 'Pink' },
-      { key: 'accentTeal', label: 'Teal' },
-      { key: 'accentPurple', label: 'Purple' },
-      { key: 'accentCursor', label: 'Cursor' },
-    ],
-  },
-  {
-    label: 'Terminal',
-    keys: [
-      { key: 'xtermBackground', label: 'Background' },
-      { key: 'xtermForeground', label: 'Foreground' },
-      { key: 'xtermCursor', label: 'Cursor' },
-      { key: 'xtermSelection', label: 'Selection' },
-      { key: 'xtermBlack', label: 'Black' },
-      { key: 'xtermRed', label: 'Red' },
-      { key: 'xtermGreen', label: 'Green' },
-      { key: 'xtermYellow', label: 'Yellow' },
-      { key: 'xtermBlue', label: 'Blue' },
-      { key: 'xtermMagenta', label: 'Magenta' },
-      { key: 'xtermCyan', label: 'Cyan' },
-      { key: 'xtermWhite', label: 'White' },
+    label: 'Accents',
+    tokens: [
+      { key: 'accent',  labelKey: 'settings.token.accent',  hueScope: 'color' },
+      { key: 'success', labelKey: 'settings.token.success', hueScope: 'color' },
+      { key: 'danger',  labelKey: 'settings.token.danger',  hueScope: 'color' },
+      { key: 'warning', labelKey: 'settings.token.warning', hueScope: 'color' },
     ],
   },
 ];
@@ -829,12 +932,26 @@ const BASE_ON_OPTIONS: { value: BuiltinThemeId; label: string }[] = [
   { value: 'taegeuk', label: 'Taegeuk' },
 ];
 
+// Per-token short hint shown under the label. Static English fallback; the
+// real label comes from i18n via labelKey. Description keeps it discoverable.
+const TOKEN_DESCRIPTIONS: Record<UITokenSpec['key'], string> = {
+  bgBase: 'Main window background',
+  bgSurface: 'Sidebar / cards / panels',
+  bgMantle: 'Headers / recessed areas',
+  textMain: 'Primary text',
+  textSub: 'Secondary text / labels',
+  textMuted: 'Disabled / hints',
+  accent: 'Selection / focus / brand',
+  success: 'OK / running / complete',
+  danger: 'Errors / destructive',
+  warning: 'Waiting / caution',
+};
+
 function CustomThemeEditor() {
   const t = useT();
   const customThemeColors = useStore((s) => s.customThemeColors) ?? DEFAULT_CUSTOM_THEME;
   const setCustomThemeColors = useStore((s) => s.setCustomThemeColors);
   const updateCustomThemeColor = useStore((s) => s.updateCustomThemeColor);
-  const [expandedGroup, setExpandedGroup] = useState<string | null>('Accent');
 
   return (
     <div className="flex flex-col gap-2">
@@ -861,36 +978,219 @@ function CustomThemeEditor() {
         </select>
       </div>
 
-      {/* Color groups (accordion) */}
-      {UI_COLOR_GROUPS.map((group) => (
+      {/* UI token groups (always expanded — only 3-4 tokens each) */}
+      {UI_TOKEN_GROUPS.map((group) => (
         <div
           key={group.label}
           className="rounded-lg overflow-hidden"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
-          <button
-            className="w-full flex items-center justify-between px-3 py-2 text-[11px] font-semibold text-[color:var(--text-sub)] uppercase tracking-wider"
-            onClick={() => setExpandedGroup(expandedGroup === group.label ? null : group.label)}
+          <div
+            className="px-3 py-1.5 text-[10px] font-semibold uppercase tracking-wider"
+            style={{ color: 'var(--text-muted)' }}
           >
-            <span>{group.label}</span>
-            <span className="text-[10px] text-[color:var(--text-muted)]">
-              {expandedGroup === group.label ? '▾' : '▸'}
-            </span>
-          </button>
-          {expandedGroup === group.label && (
-            <div className="pb-1">
-              {group.keys.map(({ key, label }) => (
-                <ColorRow
-                  key={key}
-                  label={label}
-                  value={customThemeColors[key]}
-                  onChange={(v) => updateCustomThemeColor(key, v)}
-                />
-              ))}
+            {t(`settings.tokenGroup.${group.label.toLowerCase()}`) || group.label}
+          </div>
+          <div className="pb-1">
+            {group.tokens.map(({ key, labelKey, hueScope }) => (
+              <TokenRow
+                key={key}
+                label={t(labelKey) || key}
+                description={TOKEN_DESCRIPTIONS[key]}
+                value={customThemeColors[key]}
+                hueScope={hueScope}
+                onChange={(v) => updateCustomThemeColor(key, v)}
+              />
+            ))}
+          </div>
+        </div>
+      ))}
+
+      {/* Terminal palette preset */}
+      <div
+        className="flex items-center justify-between px-3 py-2 rounded-lg"
+        style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
+      >
+        <div className="flex flex-col">
+          <span className="text-[11px] text-[color:var(--text-sub)]">{t('settings.xtermPalette') || 'Terminal Palette'}</span>
+          <span className="text-[10px] text-[color:var(--text-muted)]">
+            {t('settings.xtermPaletteDesc') || '16-color ANSI palette for terminal output'}
+          </span>
+        </div>
+        <select
+          className="text-[11px] rounded px-2 py-0.5 font-mono"
+          style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)', border: '1px solid var(--bg-overlay)' }}
+          value={customThemeColors.xtermPaletteId}
+          onChange={(e) => updateCustomThemeColor('xtermPaletteId', e.target.value as XtermPaletteId)}
+        >
+          {XTERM_PALETTE_OPTIONS.map((o) => (
+            <option key={o.value} value={o.value}>{o.label}</option>
+          ))}
+        </select>
+      </div>
+
+      {/* Per-slot terminal color overrides on top of the preset */}
+      <XtermOverrideEditor />
+    </div>
+  );
+}
+
+// ─── xterm per-slot override editor ─────────────────────────────────────────
+
+interface XtermSlotSpec {
+  key: keyof XtermThemeColors;
+  labelKey: string;
+  fallback: string;
+}
+
+const XTERM_SLOT_GROUPS: { labelKey: string; fallback: string; slots: XtermSlotSpec[] }[] = [
+  {
+    labelKey: 'settings.xtermGroup.surface', fallback: 'Surface',
+    slots: [
+      { key: 'background',          labelKey: 'settings.xtermSlot.background',          fallback: 'Background' },
+      { key: 'foreground',          labelKey: 'settings.xtermSlot.foreground',          fallback: 'Foreground' },
+      { key: 'cursor',              labelKey: 'settings.xtermSlot.cursor',              fallback: 'Cursor' },
+      { key: 'selectionBackground', labelKey: 'settings.xtermSlot.selectionBackground', fallback: 'Selection' },
+    ],
+  },
+  {
+    labelKey: 'settings.xtermGroup.ansi', fallback: 'ANSI 8',
+    slots: [
+      { key: 'black',   labelKey: 'settings.xtermSlot.black',   fallback: 'Black' },
+      { key: 'red',     labelKey: 'settings.xtermSlot.red',     fallback: 'Red' },
+      { key: 'green',   labelKey: 'settings.xtermSlot.green',   fallback: 'Green' },
+      { key: 'yellow',  labelKey: 'settings.xtermSlot.yellow',  fallback: 'Yellow' },
+      { key: 'blue',    labelKey: 'settings.xtermSlot.blue',    fallback: 'Blue' },
+      { key: 'magenta', labelKey: 'settings.xtermSlot.magenta', fallback: 'Magenta' },
+      { key: 'cyan',    labelKey: 'settings.xtermSlot.cyan',    fallback: 'Cyan' },
+      { key: 'white',   labelKey: 'settings.xtermSlot.white',   fallback: 'White' },
+    ],
+  },
+  {
+    labelKey: 'settings.xtermGroup.ansiBright', fallback: 'ANSI Bright',
+    slots: [
+      { key: 'brightBlack',   labelKey: 'settings.xtermSlot.brightBlack',   fallback: 'Bright Black' },
+      { key: 'brightRed',     labelKey: 'settings.xtermSlot.brightRed',     fallback: 'Bright Red' },
+      { key: 'brightGreen',   labelKey: 'settings.xtermSlot.brightGreen',   fallback: 'Bright Green' },
+      { key: 'brightYellow',  labelKey: 'settings.xtermSlot.brightYellow',  fallback: 'Bright Yellow' },
+      { key: 'brightBlue',    labelKey: 'settings.xtermSlot.brightBlue',    fallback: 'Bright Blue' },
+      { key: 'brightMagenta', labelKey: 'settings.xtermSlot.brightMagenta', fallback: 'Bright Magenta' },
+      { key: 'brightCyan',    labelKey: 'settings.xtermSlot.brightCyan',    fallback: 'Bright Cyan' },
+      { key: 'brightWhite',   labelKey: 'settings.xtermSlot.brightWhite',   fallback: 'Bright White' },
+    ],
+  },
+];
+
+function XtermOverrideEditor() {
+  const t = useT();
+  const customThemeColors = useStore((s) => s.customThemeColors) ?? DEFAULT_CUSTOM_THEME;
+  const setXtermOverride = useStore((s) => s.setXtermOverride);
+  const clearXtermOverrides = useStore((s) => s.clearXtermOverrides);
+  const [expanded, setExpanded] = useState(false);
+
+  const presetId = (customThemeColors.xtermPaletteId as XtermPaletteId);
+  const preset = XTERM_PALETTES[presetId] ?? XTERM_PALETTES['catppuccin-mocha'];
+  const overrides = customThemeColors.xtermOverrides ?? {};
+  const overrideCount = Object.keys(overrides).length;
+
+  return (
+    <div
+      className="rounded-lg overflow-hidden"
+      style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
+    >
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-[color:var(--bg-surface)] transition-colors"
+      >
+        <div className="flex flex-col">
+          <span className="text-[11px] text-[color:var(--text-sub)]">
+            {t('settings.xtermOverrides') || 'Customize terminal colors'}
+          </span>
+          <span className="text-[10px] text-[color:var(--text-muted)]">
+            {overrideCount > 0
+              ? (t('settings.xtermOverridesActive') || `${overrideCount} slot(s) overriding preset`).replace('{n}', String(overrideCount))
+              : (t('settings.xtermOverridesIdle') || 'Override individual ANSI colors on top of the preset')}
+          </span>
+        </div>
+        <span className="text-[11px] text-[color:var(--text-muted)] font-mono">{expanded ? '▾' : '▸'}</span>
+      </button>
+
+      {expanded && (
+        <div className="pb-1">
+          {XTERM_SLOT_GROUPS.map((group) => (
+            <div key={group.labelKey}>
+              <div
+                className="px-3 py-1 text-[10px] font-semibold uppercase tracking-wider"
+                style={{ color: 'var(--text-muted)' }}
+              >
+                {t(group.labelKey) || group.fallback}
+              </div>
+              {group.slots.map(({ key, labelKey, fallback }) => {
+                const overrideVal = overrides[key];
+                const effective = overrideVal ?? preset[key];
+                const isOverridden = typeof overrideVal === 'string';
+                return (
+                  <div
+                    key={key}
+                    className="flex items-center gap-2 px-3 py-1.5 hover:bg-[color:var(--bg-surface)] transition-colors"
+                  >
+                    <div className="flex-1 min-w-0">
+                      <div className="flex items-center gap-1.5">
+                        <span className="text-[11px] text-[color:var(--text-sub)] truncate">
+                          {t(labelKey) || fallback}
+                        </span>
+                        {isOverridden && (
+                          <span
+                            className="text-[8px] uppercase tracking-wider rounded px-1"
+                            style={{ color: 'var(--accent-cursor)', border: '1px solid var(--accent-cursor)' }}
+                          >
+                            {t('settings.xtermSlotOverridden') || 'custom'}
+                          </span>
+                        )}
+                      </div>
+                      <span className="text-[9px] text-[color:var(--text-muted)] font-mono">{effective.toUpperCase()}</span>
+                    </div>
+                    <span
+                      className="w-5 h-5 rounded shrink-0"
+                      style={{ backgroundColor: effective, border: '1px solid var(--bg-overlay)' }}
+                    />
+                    <input
+                      type="color"
+                      value={effective}
+                      onChange={(e) => setXtermOverride(key, e.target.value)}
+                      className="w-6 h-6 rounded cursor-pointer shrink-0"
+                      style={{ backgroundColor: 'transparent' }}
+                    />
+                    {isOverridden && (
+                      <button
+                        type="button"
+                        onClick={() => setXtermOverride(key, null)}
+                        className="text-[9px] text-[color:var(--text-subtle)] hover:text-[color:var(--accent-red)] transition-colors shrink-0"
+                        title={t('settings.xtermSlotReset') || 'Reset to preset'}
+                      >
+                        ↺
+                      </button>
+                    )}
+                  </div>
+                );
+              })}
+            </div>
+          ))}
+          {overrideCount > 0 && (
+            <div className="px-3 py-2 flex justify-end">
+              <button
+                type="button"
+                onClick={clearXtermOverrides}
+                className="px-2 py-1 rounded text-[10px] font-medium transition-colors"
+                style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-red)', border: '1px solid var(--bg-overlay)' }}
+              >
+                {t('settings.xtermResetAll') || 'Reset all to preset'}
+              </button>
             </div>
           )}
         </div>
-      ))}
+      )}
     </div>
   );
 }

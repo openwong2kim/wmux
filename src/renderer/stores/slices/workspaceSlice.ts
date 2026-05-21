@@ -3,7 +3,7 @@ import type { StoreState } from '../index';
 import { createWorkspace, generateId, BUILTIN_TEMPLATES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata } from '../../../shared/types';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
-import { applyCustomCssVars, migrateThemeId } from '../../themes';
+import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
 import { publishWorkspaceMetadataChanged } from '../../events/publisher';
 
 /** Collect all leaf panes from a pane tree */
@@ -236,16 +236,20 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.activeWorkspaceId = data.activeWorkspaceId;
       state.sidebarVisible = data.sidebarVisible;
 
-      // Restore user preferences
-      if (data.customThemeColors) {
-        state.customThemeColors = data.customThemeColors;
+      // Restore user preferences. Migrate legacy 37-field customThemeColors
+      // shape to the new 10-token + xtermPaletteId form (idempotent).
+      const migratedCustomTheme = data.customThemeColors
+        ? migrateCustomThemeColors(data.customThemeColors)
+        : null;
+      if (migratedCustomTheme) {
+        state.customThemeColors = migratedCustomTheme;
       }
       if (data.theme) {
         const theme = migrateThemeId(data.theme);
         state.theme = theme;
         document.documentElement.setAttribute('data-theme', theme);
-        if (theme === 'custom' && data.customThemeColors) {
-          applyCustomCssVars(data.customThemeColors);
+        if (theme === 'custom' && migratedCustomTheme) {
+          applyCustomCssVars(migratedCustomTheme);
         }
       }
       if (data.locale) {

@@ -20,7 +20,7 @@ interface PaletteItemProps {
 const categoryColor: Record<PaletteCategory, string> = {
   workspace: 'text-[var(--accent-blue)]',
   surface: 'text-[var(--accent-green)]',
-  command: 'text-[var(--accent-purple)]',
+  command: 'text-[var(--accent-cursor)]',
   recent: 'text-[var(--accent-yellow)]',
 };
 

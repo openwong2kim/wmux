@@ -1,16 +1,22 @@
 import { Fragment, useCallback, useEffect, useRef } from 'react';
 import { Panel, Group, Separator, useGroupRef } from 'react-resizable-panels';
 import type { Layout } from 'react-resizable-panels';
-import type { Pane as PaneType } from '../../../shared/types';
+import type { Pane as PaneType, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
 import PaneComponent from './Pane';
 
 interface PaneContainerProps {
   pane: PaneType;
+  // The workspace this pane tree belongs to. Threaded through PaneContainer's
+  // recursion so leaf panes (and their SurfaceTabs) always know their owning
+  // workspace, even in multiview where multiple workspace trees mount at the
+  // same time and useStore(activeWorkspaceId) would point at the wrong one
+  // (codex P1).
+  workspace: Workspace;
   isWorkspaceVisible?: boolean;
 }
 
-export default function PaneContainer({ pane, isWorkspaceVisible = true }: PaneContainerProps) {
+export default function PaneContainer({ pane, workspace, isWorkspaceVisible = true }: PaneContainerProps) {
   const activePaneId = useStore((s) => {
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
     return ws?.activePaneId || '';
@@ -67,6 +73,7 @@ export default function PaneContainer({ pane, isWorkspaceVisible = true }: PaneC
     return (
       <PaneComponent
         pane={pane}
+        workspace={workspace}
         isActive={pane.id === activePaneId}
         isWorkspaceVisible={isWorkspaceVisible}
       />
@@ -97,7 +104,7 @@ export default function PaneContainer({ pane, isWorkspaceVisible = true }: PaneC
             defaultSize={pane.sizes?.[i] ?? 100 / pane.children.length}
             minSize={10}
           >
-            <PaneContainer pane={child} isWorkspaceVisible={isWorkspaceVisible} />
+            <PaneContainer pane={child} workspace={workspace} isWorkspaceVisible={isWorkspaceVisible} />
           </Panel>
         </Fragment>
       ))}

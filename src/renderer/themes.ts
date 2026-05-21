@@ -1,4 +1,8 @@
-import type { CustomThemeColors } from '../shared/types';
+import type { CustomThemeColors, XtermThemeColors } from '../shared/types';
+import { shiftLightness, mixHex, hexToRgbString, isLight } from './tailwindPalette';
+
+// Re-export so existing renderer-side imports keep working.
+export type { XtermThemeColors };
 
 // ─── Theme IDs ─────────────────────────────────────────────────────────────
 
@@ -9,211 +13,208 @@ export type BuiltinThemeId =
 
 export type ThemeId = BuiltinThemeId | 'custom';
 
-// ─── xterm terminal colors ─────────────────────────────────────────────────
+// Curated xterm palettes. Built-in themes pick one of these; users can also
+// override their custom theme palette independently of the UI tokens.
+export type XtermPaletteId =
+  | 'catppuccin-mocha'
+  | 'tokyo-night'
+  | 'one-dark'
+  | 'gruvbox-dark'
+  | 'solarized-dark'
+  | 'nord'
+  | 'monochrome'
+  | 'sandstone-light'
+  | 'paper-light';
 
-export interface XtermThemeColors {
-  background: string;
-  foreground: string;
-  cursor: string;
-  selectionBackground: string;
-  black: string;
-  red: string;
-  green: string;
-  yellow: string;
-  blue: string;
-  magenta: string;
-  cyan: string;
-  white: string;
-  brightBlack: string;
-  brightRed: string;
-  brightGreen: string;
-  brightYellow: string;
-  brightBlue: string;
-  brightMagenta: string;
-  brightCyan: string;
-  brightWhite: string;
-}
-
-export const XTERM_THEMES: Record<BuiltinThemeId, XtermThemeColors> = {
+export const XTERM_PALETTES: Record<XtermPaletteId, XtermThemeColors> = {
   'catppuccin-mocha': {
-    background: '#1E1E2E',
-    foreground: '#CDD6F4',
-    cursor: '#F5E0DC',
-    selectionBackground: '#585B70',
-    black: '#45475A',
-    red: '#F38BA8',
-    green: '#A6E3A1',
-    yellow: '#F9E2AF',
-    blue: '#89B4FA',
-    magenta: '#F5C2E7',
-    cyan: '#94E2D5',
-    white: '#BAC2DE',
-    brightBlack: '#585B70',
-    brightRed: '#F38BA8',
-    brightGreen: '#A6E3A1',
-    brightYellow: '#F9E2AF',
-    brightBlue: '#89B4FA',
-    brightMagenta: '#F5C2E7',
-    brightCyan: '#94E2D5',
-    brightWhite: '#A6ADC8',
+    background: '#1E1E2E', foreground: '#CDD6F4', cursor: '#F5E0DC', selectionBackground: '#585B70',
+    black: '#45475A', red: '#F38BA8', green: '#A6E3A1', yellow: '#F9E2AF',
+    blue: '#89B4FA', magenta: '#F5C2E7', cyan: '#94E2D5', white: '#BAC2DE',
+    brightBlack: '#585B70', brightRed: '#F38BA8', brightGreen: '#A6E3A1', brightYellow: '#F9E2AF',
+    brightBlue: '#89B4FA', brightMagenta: '#F5C2E7', brightCyan: '#94E2D5', brightWhite: '#A6ADC8',
+  },
+  'tokyo-night': {
+    background: '#1A1B26', foreground: '#C0CAF5', cursor: '#C0CAF5', selectionBackground: '#33467C',
+    black: '#15161E', red: '#F7768E', green: '#9ECE6A', yellow: '#E0AF68',
+    blue: '#7AA2F7', magenta: '#BB9AF7', cyan: '#7DCFFF', white: '#A9B1D6',
+    brightBlack: '#414868', brightRed: '#F7768E', brightGreen: '#9ECE6A', brightYellow: '#E0AF68',
+    brightBlue: '#7AA2F7', brightMagenta: '#BB9AF7', brightCyan: '#7DCFFF', brightWhite: '#C0CAF5',
+  },
+  'one-dark': {
+    background: '#282C34', foreground: '#ABB2BF', cursor: '#528BFF', selectionBackground: '#3E4451',
+    black: '#3F4451', red: '#E06C75', green: '#98C379', yellow: '#E5C07B',
+    blue: '#61AFEF', magenta: '#C678DD', cyan: '#56B6C2', white: '#ABB2BF',
+    brightBlack: '#4F5666', brightRed: '#E06C75', brightGreen: '#98C379', brightYellow: '#E5C07B',
+    brightBlue: '#61AFEF', brightMagenta: '#C678DD', brightCyan: '#56B6C2', brightWhite: '#E6E6E6',
+  },
+  'gruvbox-dark': {
+    background: '#282828', foreground: '#EBDBB2', cursor: '#EBDBB2', selectionBackground: '#504945',
+    black: '#3C3836', red: '#FB4934', green: '#B8BB26', yellow: '#FABD2F',
+    blue: '#83A598', magenta: '#D3869B', cyan: '#8EC07C', white: '#A89984',
+    brightBlack: '#665C54', brightRed: '#FB4934', brightGreen: '#B8BB26', brightYellow: '#FABD2F',
+    brightBlue: '#83A598', brightMagenta: '#D3869B', brightCyan: '#8EC07C', brightWhite: '#EBDBB2',
+  },
+  'solarized-dark': {
+    background: '#002B36', foreground: '#93A1A1', cursor: '#93A1A1', selectionBackground: '#073642',
+    black: '#073642', red: '#DC322F', green: '#859900', yellow: '#B58900',
+    blue: '#268BD2', magenta: '#D33682', cyan: '#2AA198', white: '#EEE8D5',
+    brightBlack: '#586E75', brightRed: '#DC322F', brightGreen: '#859900', brightYellow: '#B58900',
+    brightBlue: '#268BD2', brightMagenta: '#D33682', brightCyan: '#2AA198', brightWhite: '#FDF6E3',
+  },
+  nord: {
+    background: '#2E3440', foreground: '#D8DEE9', cursor: '#D8DEE9', selectionBackground: '#434C5E',
+    black: '#3B4252', red: '#BF616A', green: '#A3BE8C', yellow: '#EBCB8B',
+    blue: '#81A1C1', magenta: '#B48EAD', cyan: '#88C0D0', white: '#E5E9F0',
+    brightBlack: '#4C566A', brightRed: '#BF616A', brightGreen: '#A3BE8C', brightYellow: '#EBCB8B',
+    brightBlue: '#81A1C1', brightMagenta: '#B48EAD', brightCyan: '#8FBCBB', brightWhite: '#ECEFF4',
   },
   monochrome: {
-    background: '#080808',
-    foreground: '#E0E0E0',
-    cursor: '#FFFFFF',
-    selectionBackground: '#2A2A2A',
-    black: '#2A2A2A',
-    red: '#FF5555',
-    green: '#909090',
-    yellow: '#C0C0C0',
-    blue: '#A0A0A0',
-    magenta: '#999999',
-    cyan: '#888888',
-    white: '#B0B0B0',
-    brightBlack: '#404040',
-    brightRed: '#FF5555',
-    brightGreen: '#B0B0B0',
-    brightYellow: '#D0D0D0',
-    brightBlue: '#B0B0B0',
-    brightMagenta: '#AAAAAA',
-    brightCyan: '#999999',
-    brightWhite: '#888888',
+    background: '#080808', foreground: '#E0E0E0', cursor: '#FFFFFF', selectionBackground: '#2A2A2A',
+    black: '#2A2A2A', red: '#FF5555', green: '#909090', yellow: '#C0C0C0',
+    blue: '#A0A0A0', magenta: '#999999', cyan: '#888888', white: '#B0B0B0',
+    brightBlack: '#404040', brightRed: '#FF5555', brightGreen: '#B0B0B0', brightYellow: '#D0D0D0',
+    brightBlue: '#B0B0B0', brightMagenta: '#AAAAAA', brightCyan: '#999999', brightWhite: '#888888',
   },
-  'stars-and-stripes': {
-    background: '#0C1428',
-    foreground: '#C8D6E8',
-    cursor: '#5B8DEF',
-    selectionBackground: '#2A3E5A',
-    black: '#1E2E4A',
-    red: '#E8554E',
-    green: '#4EBF8B',
-    yellow: '#F2C85B',
-    blue: '#5B8DEF',
-    magenta: '#C792EA',
-    cyan: '#5BC0BE',
-    white: '#A0B0C8',
-    brightBlack: '#3A5070',
-    brightRed: '#F06B65',
-    brightGreen: '#66D4A0',
-    brightYellow: '#F5D578',
-    brightBlue: '#78A4F5',
-    brightMagenta: '#D4A8F0',
-    brightCyan: '#78D0CE',
-    brightWhite: '#8090A8',
+  'sandstone-light': {
+    background: '#FAF8F5', foreground: '#2A2522', cursor: '#2A2522', selectionBackground: '#D4CFC6',
+    black: '#2A2522', red: '#BC002D', green: '#3D6750', yellow: '#A06A1A',
+    blue: '#1C4D6A', magenta: '#8A3A4C', cyan: '#2F6A5C', white: '#5A5048',
+    brightBlack: '#A8A098', brightRed: '#D02040', brightGreen: '#4E7C66', brightYellow: '#B47A24',
+    brightBlue: '#2E5F7C', brightMagenta: '#A04E60', brightCyan: '#4A8270', brightWhite: '#6A655E',
   },
-  'red-dynasty': {
-    background: '#1A0A0A',
-    foreground: '#E8D0C0',
-    cursor: '#E84040',
-    selectionBackground: '#4A2A2A',
-    black: '#3A1A1A',
-    red: '#E84040',
-    green: '#5AAE6A',
-    yellow: '#F2C744',
-    blue: '#6AA0CC',
-    magenta: '#D4A0D0',
-    cyan: '#5A9E8A',
-    white: '#C0A898',
-    brightBlack: '#5A3A30',
-    brightRed: '#F06060',
-    brightGreen: '#70C480',
-    brightYellow: '#F5D566',
-    brightBlue: '#80B4DD',
-    brightMagenta: '#E0B4E0',
-    brightCyan: '#70B4A0',
-    brightWhite: '#A08878',
-  },
-  nightowl: {
-    background: '#1E1B16',
-    foreground: '#C8BFA8',
-    cursor: '#C4A055',
-    selectionBackground: '#38332A',
-    black: '#2E2A22',
-    red: '#CC6B5A',
-    green: '#8AAA70',
-    yellow: '#C89060',
-    blue: '#C4A055',
-    magenta: '#B0886E',
-    cyan: '#8A9A6A',
-    white: '#9A9080',
-    brightBlack: '#5A5340',
-    brightRed: '#DD7E6E',
-    brightGreen: '#9EBE84',
-    brightYellow: '#D8A474',
-    brightBlue: '#D4B068',
-    brightMagenta: '#C09880',
-    brightCyan: '#9EAE7E',
-    brightWhite: '#847A68',
-  },
-  void: {
-    background: '#000000',
-    foreground: '#C0C0C0',
-    cursor: '#FFFFFF',
-    selectionBackground: '#141414',
-    black: '#0A0A0A',
-    red: '#FF4444',
-    green: '#909090',
-    yellow: '#A0A0A0',
-    blue: '#C0C0C0',
-    magenta: '#808080',
-    cyan: '#888888',
-    white: '#909090',
-    brightBlack: '#333333',
-    brightRed: '#FF6666',
-    brightGreen: '#A0A0A0',
-    brightYellow: '#B0B0B0',
-    brightBlue: '#D0D0D0',
-    brightMagenta: '#909090',
-    brightCyan: '#999999',
-    brightWhite: '#707070',
-  },
-  hinomaru: {
-    background: '#FAF8F5',
-    foreground: '#2A2522',
-    cursor: '#2A2522',
-    selectionBackground: '#D4CFC6',
-    black: '#2A2522',
-    red: '#BC002D',
-    green: '#5A7A6A',
-    yellow: '#C4882D',
-    blue: '#2C5F7C',
-    magenta: '#A85060',
-    cyan: '#4A8A7A',
-    white: '#8A827A',
-    brightBlack: '#A8A098',
-    brightRed: '#D02040',
-    brightGreen: '#6E8E7E',
-    brightYellow: '#D49E44',
-    brightBlue: '#3E7090',
-    brightMagenta: '#BE6474',
-    brightCyan: '#5EA08E',
-    brightWhite: '#6A655E',
-  },
-  taegeuk: {
-    background: '#F8F8FA',
-    foreground: '#1A1A2E',
-    cursor: '#1A1A2E',
-    selectionBackground: '#CCCCD6',
-    black: '#1A1A2E',
-    red: '#C60C30',
-    green: '#2D8A56',
-    yellow: '#D4930D',
-    blue: '#003478',
-    magenta: '#A03060',
-    cyan: '#1A7A7A',
-    white: '#5A5A70',
-    brightBlack: '#9A9AA8',
-    brightRed: '#DA2848',
-    brightGreen: '#40A06A',
-    brightYellow: '#E4A824',
-    brightBlue: '#1A4A90',
-    brightMagenta: '#B44474',
-    brightCyan: '#2E9090',
-    brightWhite: '#6A6A7A',
+  'paper-light': {
+    background: '#F8F8FA', foreground: '#1A1A2E', cursor: '#1A1A2E', selectionBackground: '#CCCCD6',
+    black: '#1A1A2E', red: '#C60C30', green: '#1F6940', yellow: '#9B6A07',
+    blue: '#003478', magenta: '#82264C', cyan: '#0E5C5C', white: '#3A3A50',
+    brightBlack: '#9A9AA8', brightRed: '#DA2848', brightGreen: '#2D8A56', brightYellow: '#B58817',
+    brightBlue: '#1A4A90', brightMagenta: '#9A3464', brightCyan: '#1F7878', brightWhite: '#6A6A7A',
   },
 };
 
-// ─── CSS variable definitions per theme ─────────────────────────────────────
+// Legacy export — kept so useTerminal.ts can resolve a builtin theme's xterm
+// palette directly. Built from BUILTIN_XTERM_PALETTE + XTERM_PALETTES.
+export const XTERM_THEMES: Record<BuiltinThemeId, XtermThemeColors> = {} as Record<BuiltinThemeId, XtermThemeColors>;
+
+// ─── 10-token UI palette per built-in theme ─────────────────────────────────
+
+export interface UIThemeTokens {
+  bgBase: string;    // main window background
+  bgSurface: string; // elevated surface (sidebar, settings cards)
+  bgMantle: string;  // recessed background (header, secondary)
+  textMain: string;  // primary text
+  textSub: string;   // secondary text (descriptions, labels)
+  textMuted: string; // tertiary / disabled text
+  accent: string;    // brand / selection / focus
+  success: string;   // green family (running OK, complete)
+  danger: string;    // red family (errors, destructive)
+  warning: string;   // yellow/amber family (waiting, caution)
+}
+
+export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
+  'catppuccin-mocha': {
+    bgBase: '#1E1E2E', bgSurface: '#313244', bgMantle: '#181825',
+    textMain: '#CDD6F4', textSub: '#BAC2DE', textMuted: '#7F849C',
+    accent: '#89B4FA', success: '#A6E3A1', danger: '#F38BA8', warning: '#F9E2AF',
+  },
+  monochrome: {
+    bgBase: '#080808', bgSurface: '#1A1A1A', bgMantle: '#050505',
+    textMain: '#E0E0E0', textSub: '#B0B0B0', textMuted: '#707070',
+    accent: '#A0A0A0', success: '#909090', danger: '#FF5555', warning: '#C0C0C0',
+  },
+  'stars-and-stripes': {
+    bgBase: '#0C1428', bgSurface: '#1E2E4A', bgMantle: '#091020',
+    textMain: '#C8D6E8', textSub: '#A0B0C8', textMuted: '#6A7A98',
+    accent: '#5B8DEF', success: '#4EBF8B', danger: '#E8554E', warning: '#F2C85B',
+  },
+  'red-dynasty': {
+    bgBase: '#1A0A0A', bgSurface: '#3A1A1A', bgMantle: '#140808',
+    textMain: '#E8D0C0', textSub: '#C0A898', textMuted: '#8A6A5A',
+    accent: '#E84040', success: '#5AAE6A', danger: '#E84040', warning: '#F2C744',
+  },
+  nightowl: {
+    bgBase: '#1E1B16', bgSurface: '#2E2A22', bgMantle: '#161310',
+    textMain: '#C8BFA8', textSub: '#9A9080', textMuted: '#6B6350',
+    accent: '#C4A055', success: '#8AAA70', danger: '#CC6B5A', warning: '#C89060',
+  },
+  void: {
+    bgBase: '#000000', bgSurface: '#0A0A0A', bgMantle: '#000000',
+    textMain: '#C0C0C0', textSub: '#909090', textMuted: '#606060',
+    accent: '#C0C0C0', success: '#909090', danger: '#FF4444', warning: '#A0A0A0',
+  },
+  hinomaru: {
+    // Light theme — text colors must be DARK against #FAF8F5 background.
+    // Previous textMuted #A8A098 / textSubtle #8A827A were too pale → invisible.
+    bgBase: '#FAF8F5', bgSurface: '#E2DDD4', bgMantle: '#F0ECE6',
+    textMain: '#2A2522', textSub: '#4A4540', textMuted: '#6E6862',
+    accent: '#BC002D', success: '#3D6750', danger: '#BC002D', warning: '#A06A1A',
+  },
+  taegeuk: {
+    bgBase: '#F8F8FA', bgSurface: '#DDDDE4', bgMantle: '#EEEEF2',
+    textMain: '#1A1A2E', textSub: '#3A3A50', textMuted: '#6A6A7A',
+    accent: '#003478', success: '#1F6940', danger: '#C60C30', warning: '#9B6A07',
+  },
+};
+
+// Which xterm palette each built-in theme uses for terminal rendering.
+export const BUILTIN_XTERM_PALETTE: Record<BuiltinThemeId, XtermPaletteId> = {
+  'catppuccin-mocha': 'catppuccin-mocha',
+  monochrome: 'monochrome',
+  'stars-and-stripes': 'one-dark',
+  'red-dynasty': 'gruvbox-dark',
+  nightowl: 'gruvbox-dark',
+  void: 'monochrome',
+  hinomaru: 'sandstone-light',
+  taegeuk: 'paper-light',
+};
+
+// Populate XTERM_THEMES from the palette map (for legacy consumers).
+for (const id of Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[]) {
+  XTERM_THEMES[id] = XTERM_PALETTES[BUILTIN_XTERM_PALETTE[id]];
+}
+
+// ─── Full 14-var CSS palette (derived from 10 manual tokens) ────────────────
+
+export interface FullCssPalette {
+  bgBase: string;
+  bgMantle: string;
+  bgSurface: string;
+  bgOverlay: string;       // derived
+  textMuted: string;
+  textSubtle: string;      // derived
+  textSub: string;
+  textSub2: string;        // derived
+  textMain: string;
+  accentCursor: string;    // derived (= accent) — kept separate so builtin themes can override
+  accentBlue: string;      // derived (= accent)
+  accentGreen: string;     // = success
+  accentRed: string;       // = danger
+  accentYellow: string;    // = warning
+}
+
+/** Expand 10 manual UI tokens to the 14 CSS variables we ship at runtime. */
+export function deriveFullPalette(tokens: UIThemeTokens): FullCssPalette {
+  const lightTheme = isLight(tokens.bgBase);
+  const shadeDir = lightTheme ? -1 : 1;
+  return {
+    bgBase: tokens.bgBase,
+    bgMantle: tokens.bgMantle,
+    bgSurface: tokens.bgSurface,
+    bgOverlay: shiftLightness(tokens.bgSurface, shadeDir * 0.06),
+    textMain: tokens.textMain,
+    textSub: tokens.textSub,
+    textSub2: mixHex(tokens.textMain, tokens.textSub, 0.5),
+    textSubtle: mixHex(tokens.textSub, tokens.textMuted, 0.5),
+    textMuted: tokens.textMuted,
+    accentCursor: tokens.accent,
+    accentBlue: tokens.accent,
+    accentGreen: tokens.success,
+    accentRed: tokens.danger,
+    accentYellow: tokens.warning,
+  };
+}
+
+// ─── Built-in CssThemeVars (legacy export — kept for backwards compat) ──────
 
 export interface CssThemeVars {
   bgBase: string;
@@ -230,71 +231,14 @@ export interface CssThemeVars {
   accentGreen: string;
   accentRed: string;
   accentYellow: string;
-  accentPink: string;
-  accentTeal: string;
-  accentPurple: string;
 }
 
-export const CSS_THEME_VARS: Record<BuiltinThemeId, CssThemeVars> = {
-  'catppuccin-mocha': {
-    bgBase: '#1E1E2E', bgMantle: '#181825', bgSurface: '#313244', bgOverlay: '#45475A',
-    textMuted: '#585B70', textSubtle: '#6C7086', textSub: '#BAC2DE', textSub2: '#A6ADC8',
-    textMain: '#CDD6F4', accentCursor: '#F5E0DC',
-    accentBlue: '#89B4FA', accentGreen: '#A6E3A1', accentRed: '#F38BA8',
-    accentYellow: '#F9E2AF', accentPink: '#F5C2E7', accentTeal: '#94E2D5', accentPurple: '#CBA6F7',
-  },
-  monochrome: {
-    bgBase: '#080808', bgMantle: '#050505', bgSurface: '#1A1A1A', bgOverlay: '#2A2A2A',
-    textMuted: '#404040', textSubtle: '#606060', textSub: '#B0B0B0', textSub2: '#888888',
-    textMain: '#E0E0E0', accentCursor: '#FFFFFF',
-    accentBlue: '#A0A0A0', accentGreen: '#909090', accentRed: '#FF5555',
-    accentYellow: '#C0C0C0', accentPink: '#999999', accentTeal: '#888888', accentPurple: '#959595',
-  },
-  'stars-and-stripes': {
-    bgBase: '#0C1428', bgMantle: '#091020', bgSurface: '#1E2E4A', bgOverlay: '#2A3E5A',
-    textMuted: '#3A5070', textSubtle: '#4A6080', textSub: '#A0B0C8', textSub2: '#8090A8',
-    textMain: '#C8D6E8', accentCursor: '#5B8DEF',
-    accentBlue: '#5B8DEF', accentGreen: '#4EBF8B', accentRed: '#E8554E',
-    accentYellow: '#F2C85B', accentPink: '#C792EA', accentTeal: '#5BC0BE', accentPurple: '#9B7ED8',
-  },
-  'red-dynasty': {
-    bgBase: '#1A0A0A', bgMantle: '#140808', bgSurface: '#3A1A1A', bgOverlay: '#4A2A2A',
-    textMuted: '#5A3A30', textSubtle: '#6A4A3E', textSub: '#C0A898', textSub2: '#A08878',
-    textMain: '#E8D0C0', accentCursor: '#E84040',
-    accentBlue: '#6AA0CC', accentGreen: '#5AAE6A', accentRed: '#E84040',
-    accentYellow: '#F2C744', accentPink: '#D4A0D0', accentTeal: '#5A9E8A', accentPurple: '#9A7AB8',
-  },
-  nightowl: {
-    bgBase: '#1E1B16', bgMantle: '#161310', bgSurface: '#2E2A22', bgOverlay: '#38332A',
-    textMuted: '#5A5340', textSubtle: '#6B6350', textSub: '#9A9080', textSub2: '#847A68',
-    textMain: '#C8BFA8', accentCursor: '#C4A055',
-    accentBlue: '#C4A055', accentGreen: '#8AAA70', accentRed: '#CC6B5A',
-    accentYellow: '#C89060', accentPink: '#B0886E', accentTeal: '#8A9A6A', accentPurple: '#AA8A6A',
-  },
-  void: {
-    bgBase: '#000000', bgMantle: '#000000', bgSurface: '#0A0A0A', bgOverlay: '#141414',
-    textMuted: '#333333', textSubtle: '#505050', textSub: '#909090', textSub2: '#707070',
-    textMain: '#C0C0C0', accentCursor: '#FFFFFF',
-    accentBlue: '#C0C0C0', accentGreen: '#909090', accentRed: '#FF4444',
-    accentYellow: '#A0A0A0', accentPink: '#808080', accentTeal: '#888888', accentPurple: '#858585',
-  },
-  hinomaru: {
-    bgBase: '#FAF8F5', bgMantle: '#F0ECE6', bgSurface: '#E2DDD4', bgOverlay: '#D4CFC6',
-    textMuted: '#A8A098', textSubtle: '#8A827A', textSub: '#4A4540', textSub2: '#6A655E',
-    textMain: '#2A2522', accentCursor: '#2A2522',
-    accentBlue: '#2C5F7C', accentGreen: '#5A7A6A', accentRed: '#BC002D',
-    accentYellow: '#C4882D', accentPink: '#A85060', accentTeal: '#4A8A7A', accentPurple: '#7B6B8A',
-  },
-  taegeuk: {
-    bgBase: '#F8F8FA', bgMantle: '#EEEEF2', bgSurface: '#DDDDE4', bgOverlay: '#CCCCD6',
-    textMuted: '#9A9AA8', textSubtle: '#6A6A7A', textSub: '#3A3A50', textSub2: '#5A5A70',
-    textMain: '#1A1A2E', accentCursor: '#1A1A2E',
-    accentBlue: '#003478', accentGreen: '#2D8A56', accentRed: '#C60C30',
-    accentYellow: '#D4930D', accentPink: '#A03060', accentTeal: '#1A7A7A', accentPurple: '#5A3D8A',
-  },
-};
+export const CSS_THEME_VARS: Record<BuiltinThemeId, CssThemeVars> = {} as Record<BuiltinThemeId, CssThemeVars>;
+for (const id of Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[]) {
+  CSS_THEME_VARS[id] = deriveFullPalette(UI_THEME_TOKENS[id]);
+}
 
-// ─── Theme options for UI ───────────────────────────────────────────────────
+// ─── Theme options for UI picker ────────────────────────────────────────────
 
 export const THEME_OPTIONS: Array<{ value: ThemeId; label: string; preview: [string, string, string, string] }> = [
   { value: 'catppuccin-mocha',  label: 'Catppuccin',       preview: ['#1E1E2E', '#89B4FA', '#A6E3A1', '#F38BA8'] },
@@ -303,81 +247,75 @@ export const THEME_OPTIONS: Array<{ value: ThemeId; label: string; preview: [str
   { value: 'nightowl',          label: 'Nightowl',         preview: ['#1E1B16', '#C4A055', '#8AAA70', '#CC6B5A'] },
   { value: 'void',              label: 'Void',             preview: ['#000000', '#C0C0C0', '#909090', '#FF4444'] },
   { value: 'monochrome',        label: 'Monochrome',       preview: ['#080808', '#A0A0A0', '#909090', '#FF5555'] },
-  { value: 'hinomaru',          label: 'Hinomaru',         preview: ['#FAF8F5', '#BC002D', '#2C5F7C', '#5A7A6A'] },
-  { value: 'taegeuk',           label: 'Taegeuk',          preview: ['#F8F8FA', '#C60C30', '#003478', '#2D8A56'] },
+  { value: 'hinomaru',          label: 'Hinomaru',         preview: ['#FAF8F5', '#BC002D', '#2C5F7C', '#3D6750'] },
+  { value: 'taegeuk',           label: 'Taegeuk',          preview: ['#F8F8FA', '#C60C30', '#003478', '#1F6940'] },
   { value: 'custom',            label: 'Custom',           preview: ['#1E1E2E', '#89B4FA', '#A6E3A1', '#F38BA8'] },
 ];
 
-// ─── Custom theme utilities ─────────────────────────────────────────────────
+export const XTERM_PALETTE_OPTIONS: Array<{ value: XtermPaletteId; label: string }> = [
+  { value: 'catppuccin-mocha', label: 'Catppuccin Mocha' },
+  { value: 'tokyo-night',      label: 'Tokyo Night' },
+  { value: 'one-dark',         label: 'One Dark' },
+  { value: 'gruvbox-dark',     label: 'Gruvbox Dark' },
+  { value: 'solarized-dark',   label: 'Solarized Dark' },
+  { value: 'nord',             label: 'Nord' },
+  { value: 'monochrome',       label: 'Monochrome' },
+  { value: 'sandstone-light',  label: 'Sandstone (light)' },
+  { value: 'paper-light',      label: 'Paper (light)' },
+];
 
-/** Hex (#rrggbb) → "r, g, b" string for CSS rgb() usage */
-export function hexToRgb(hex: string): string {
-  const h = hex.replace('#', '');
-  const n = parseInt(h, 16);
-  return `${(n >> 16) & 255}, ${(n >> 8) & 255}, ${n & 255}`;
-}
+// ─── Custom theme helpers ───────────────────────────────────────────────────
 
-/** Build a full CustomThemeColors from a builtin theme */
+/** Build a fresh CustomThemeColors from a built-in theme. */
 export function builtinToCustom(themeId: BuiltinThemeId): CustomThemeColors {
-  const css = CSS_THEME_VARS[themeId];
-  const xterm = XTERM_THEMES[themeId];
+  const ui = UI_THEME_TOKENS[themeId];
   return {
-    bgBase: css.bgBase, bgMantle: css.bgMantle, bgSurface: css.bgSurface, bgOverlay: css.bgOverlay,
-    textMuted: css.textMuted, textSubtle: css.textSubtle, textSub: css.textSub, textSub2: css.textSub2,
-    textMain: css.textMain, accentCursor: css.accentCursor,
-    accentBlue: css.accentBlue, accentGreen: css.accentGreen, accentRed: css.accentRed,
-    accentYellow: css.accentYellow, accentPink: css.accentPink, accentTeal: css.accentTeal,
-    accentPurple: css.accentPurple,
-    xtermBackground: xterm.background, xtermForeground: xterm.foreground,
-    xtermCursor: xterm.cursor, xtermSelection: xterm.selectionBackground,
-    xtermBlack: xterm.black, xtermRed: xterm.red, xtermGreen: xterm.green, xtermYellow: xterm.yellow,
-    xtermBlue: xterm.blue, xtermMagenta: xterm.magenta, xtermCyan: xterm.cyan, xtermWhite: xterm.white,
-    xtermBrightBlack: xterm.brightBlack, xtermBrightRed: xterm.brightRed,
-    xtermBrightGreen: xterm.brightGreen, xtermBrightYellow: xterm.brightYellow,
-    xtermBrightBlue: xterm.brightBlue, xtermBrightMagenta: xterm.brightMagenta,
-    xtermBrightCyan: xterm.brightCyan, xtermBrightWhite: xterm.brightWhite,
+    ...ui,
+    xtermPaletteId: BUILTIN_XTERM_PALETTE[themeId],
   };
 }
 
 export const DEFAULT_CUSTOM_THEME: CustomThemeColors = builtinToCustom('catppuccin-mocha');
 
-/** Extract XtermThemeColors from custom theme */
-export function extractXtermColors(c: CustomThemeColors): XtermThemeColors {
-  return {
-    background: c.xtermBackground, foreground: c.xtermForeground,
-    cursor: c.xtermCursor, selectionBackground: c.xtermSelection,
-    black: c.xtermBlack, red: c.xtermRed, green: c.xtermGreen, yellow: c.xtermYellow,
-    blue: c.xtermBlue, magenta: c.xtermMagenta, cyan: c.xtermCyan, white: c.xtermWhite,
-    brightBlack: c.xtermBrightBlack, brightRed: c.xtermBrightRed,
-    brightGreen: c.xtermBrightGreen, brightYellow: c.xtermBrightYellow,
-    brightBlue: c.xtermBrightBlue, brightMagenta: c.xtermBrightMagenta,
-    brightCyan: c.xtermBrightCyan, brightWhite: c.xtermBrightWhite,
-  };
+/**
+ * Resolve the effective xterm palette for a custom theme: preset values, then
+ * per-slot overrides layered on top. Unknown override keys are ignored — only
+ * keys that actually exist on XtermThemeColors get applied.
+ */
+export function extractXtermColors(colors: CustomThemeColors): XtermThemeColors {
+  const id = colors.xtermPaletteId as XtermPaletteId;
+  const base = XTERM_PALETTES[id] ?? XTERM_PALETTES['catppuccin-mocha'];
+  if (!colors.xtermOverrides) return base;
+  const merged: XtermThemeColors = { ...base };
+  for (const k of Object.keys(base) as (keyof XtermThemeColors)[]) {
+    const v = colors.xtermOverrides[k];
+    if (typeof v === 'string' && v.length > 0) merged[k] = v;
+  }
+  return merged;
 }
 
-/** CSS variable name mapping */
-const CSS_VAR_MAP: Record<string, string> = {
+/** CSS variable name mapping. */
+const CSS_VAR_MAP: Record<keyof FullCssPalette, string> = {
   bgBase: '--bg-base', bgMantle: '--bg-mantle', bgSurface: '--bg-surface', bgOverlay: '--bg-overlay',
   textMuted: '--text-muted', textSubtle: '--text-subtle', textSub: '--text-sub', textSub2: '--text-sub2',
   textMain: '--text-main', accentCursor: '--accent-cursor',
   accentBlue: '--accent-blue', accentGreen: '--accent-green', accentRed: '--accent-red',
-  accentYellow: '--accent-yellow', accentPink: '--accent-pink', accentTeal: '--accent-teal',
-  accentPurple: '--accent-purple',
+  accentYellow: '--accent-yellow',
 };
 
-/** Apply custom theme CSS variables to document root */
+/** Apply a custom theme to document root — derives the 7 secondary tokens. */
 export function applyCustomCssVars(colors: CustomThemeColors): void {
   const root = document.documentElement;
+  const full = deriveFullPalette(colors);
   for (const [key, varName] of Object.entries(CSS_VAR_MAP)) {
-    root.style.setProperty(varName, (colors as unknown as Record<string, string>)[key]);
+    root.style.setProperty(varName, full[key as keyof FullCssPalette]);
   }
-  // Computed RGB variants
-  root.style.setProperty('--accent-blue-rgb', hexToRgb(colors.accentBlue));
-  root.style.setProperty('--bg-surface-rgb', hexToRgb(colors.bgSurface));
-  root.style.setProperty('--bg-base-rgb', hexToRgb(colors.bgBase));
+  root.style.setProperty('--accent-blue-rgb', hexToRgbString(full.accentBlue));
+  root.style.setProperty('--bg-surface-rgb', hexToRgbString(full.bgSurface));
+  root.style.setProperty('--bg-base-rgb', hexToRgbString(full.bgBase));
 }
 
-/** Clear custom CSS variables (let [data-theme] rules take over) */
+/** Clear custom CSS variables so [data-theme] rules in globals.css take over. */
 export function clearCustomCssVars(): void {
   const root = document.documentElement;
   for (const varName of Object.values(CSS_VAR_MAP)) {
@@ -388,13 +326,13 @@ export function clearCustomCssVars(): void {
   root.style.removeProperty('--bg-base-rgb');
 }
 
-/** Legacy theme ID migration — maps old IDs to new ones */
+/** Legacy theme ID migration — maps old IDs to new ones. */
 export function migrateThemeId(id: string): ThemeId {
   const LEGACY_MAP: Record<string, ThemeId> = {
-    'catppuccin': 'catppuccin-mocha',
-    'sandstone': 'hinomaru',
-    'dracula': 'catppuccin-mocha',
-    'nord': 'stars-and-stripes',
+    catppuccin: 'catppuccin-mocha',
+    sandstone: 'hinomaru',
+    dracula: 'catppuccin-mocha',
+    nord: 'stars-and-stripes',
     'tokyo-night': 'catppuccin-mocha',
     'solarized-dark': 'stars-and-stripes',
     'gruvbox-dark': 'nightowl',
@@ -402,3 +340,60 @@ export function migrateThemeId(id: string): ThemeId {
   };
   return LEGACY_MAP[id] ?? (id as ThemeId);
 }
+
+/**
+ * Migrate a legacy CustomThemeColors (37 fields: 17 UI + 20 xterm) to the new
+ * shape (10 UI + xtermPaletteId). Detects the xterm palette by matching the
+ * stored xtermBackground. Idempotent on already-migrated shapes.
+ */
+export function migrateCustomThemeColors(input: unknown): CustomThemeColors {
+  if (!input || typeof input !== 'object') return DEFAULT_CUSTOM_THEME;
+  const obj = input as Record<string, unknown>;
+
+  // Already in new shape (has xtermPaletteId, no xtermBackground)?
+  if (typeof obj.xtermPaletteId === 'string' && typeof obj.xtermBackground !== 'string') {
+    const ui: UIThemeTokens = {
+      bgBase: String(obj.bgBase ?? DEFAULT_CUSTOM_THEME.bgBase),
+      bgSurface: String(obj.bgSurface ?? DEFAULT_CUSTOM_THEME.bgSurface),
+      bgMantle: String(obj.bgMantle ?? DEFAULT_CUSTOM_THEME.bgMantle),
+      textMain: String(obj.textMain ?? DEFAULT_CUSTOM_THEME.textMain),
+      textSub: String(obj.textSub ?? DEFAULT_CUSTOM_THEME.textSub),
+      textMuted: String(obj.textMuted ?? DEFAULT_CUSTOM_THEME.textMuted),
+      accent: String(obj.accent ?? DEFAULT_CUSTOM_THEME.accent),
+      success: String(obj.success ?? DEFAULT_CUSTOM_THEME.success),
+      danger: String(obj.danger ?? DEFAULT_CUSTOM_THEME.danger),
+      warning: String(obj.warning ?? DEFAULT_CUSTOM_THEME.warning),
+    };
+    return { ...ui, xtermPaletteId: obj.xtermPaletteId as XtermPaletteId };
+  }
+
+  // Legacy 37-field shape. Map old keys to new tokens.
+  const ui: UIThemeTokens = {
+    bgBase: String(obj.bgBase ?? DEFAULT_CUSTOM_THEME.bgBase),
+    bgSurface: String(obj.bgSurface ?? DEFAULT_CUSTOM_THEME.bgSurface),
+    bgMantle: String(obj.bgMantle ?? DEFAULT_CUSTOM_THEME.bgMantle),
+    textMain: String(obj.textMain ?? DEFAULT_CUSTOM_THEME.textMain),
+    textSub: String(obj.textSub ?? DEFAULT_CUSTOM_THEME.textSub),
+    textMuted: String(obj.textMuted ?? DEFAULT_CUSTOM_THEME.textMuted),
+    accent: String(obj.accentBlue ?? DEFAULT_CUSTOM_THEME.accent),
+    success: String(obj.accentGreen ?? DEFAULT_CUSTOM_THEME.success),
+    danger: String(obj.accentRed ?? DEFAULT_CUSTOM_THEME.danger),
+    warning: String(obj.accentYellow ?? DEFAULT_CUSTOM_THEME.warning),
+  };
+
+  // Detect xterm palette by background match (best-effort).
+  let xtermPaletteId: XtermPaletteId = 'catppuccin-mocha';
+  const legacyBg = typeof obj.xtermBackground === 'string' ? obj.xtermBackground.toUpperCase() : '';
+  if (legacyBg) {
+    for (const [pid, palette] of Object.entries(XTERM_PALETTES)) {
+      if (palette.background.toUpperCase() === legacyBg) {
+        xtermPaletteId = pid as XtermPaletteId;
+        break;
+      }
+    }
+  }
+  return { ...ui, xtermPaletteId };
+}
+
+// ─── Backwards-compat re-export of hexToRgb (legacy callers may import it) ──
+export { hexToRgbString as hexToRgb } from './tailwindPalette';

@@ -109,6 +109,15 @@ export interface UISlice {
   removeMultiviewWorkspace: (wsId: string) => void;
   clearMultiview: () => void;
 
+  // ─── Sidebar drag-reorder state ────────────────────────────────────────
+  // Holds the source index of an in-flight sidebar reorder drag. We can't
+  // encode this in dataTransfer because chat composers (Claude Desktop)
+  // interpret extra vendor MIMEs or short payloads as attachment hints and
+  // silently reject the actual markdown text drop. Keeping reorder state
+  // out-of-band lets dataTransfer carry pure text/plain markdown.
+  draggedWorkspaceIndex: number | null;
+  setDraggedWorkspaceIndex: (index: number | null) => void;
+
   // ─── Custom keybindings ──────────────────────────────────────────────
   customKeybindings: CustomKeybinding[];
   addKeybinding: (kb: Omit<CustomKeybinding, 'id'>) => void;
@@ -456,6 +465,11 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   clearMultiview: () => set((state) => {
     state.multiviewIds = [];
+  }),
+
+  draggedWorkspaceIndex: null as number | null,
+  setDraggedWorkspaceIndex: (index) => set((state) => {
+    state.draggedWorkspaceIndex = index;
   }),
 
   // ─── Custom keybindings ──────────────────────────────────────────────
