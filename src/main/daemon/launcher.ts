@@ -55,10 +55,28 @@ function getProcessImageName(pid: number): string | null {
       return match ? match[1] : null;
     } catch { return null; }
   }
-  // POSIX: /proc/<pid>/comm carries the executable name (truncated to 15
-  // bytes on Linux, full name on macOS-with-procfs-mounted, otherwise null).
+  // Linux: /proc/<pid>/comm carries the executable name (truncated to 15
+  // bytes). Fast path because /proc reads are basically free.
+  if (process.platform === 'linux') {
+    try {
+      return fs.readFileSync(`/proc/${pid}/comm`, 'utf-8').trim();
+    } catch { return null; }
+  }
+  // macOS / other POSIX without /proc: shell out to `ps`. The `comm=`
+  // format spec strips the header and emits just the executable name.
+  // (Codex review #5 — without this branch, Darwin lookups always
+  // returned null and the launcher threw on every unresponsive daemon
+  // instead of recovering.)
   try {
-    return fs.readFileSync(`/proc/${pid}/comm`, 'utf-8').trim();
+    const { execFileSync } = require('child_process');
+    const result = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'comm='], {
+      encoding: 'utf-8', timeout: 3000,
+    });
+    const trimmed = result.trim();
+    if (!trimmed) return null;
+    // `ps -o comm=` returns the full path on macOS; the basename
+    // matches the expected wmux image more reliably across builds.
+    return path.basename(trimmed);
   } catch { return null; }
 }
 
@@ -98,10 +116,23 @@ function getProcessCommandLine(pid: number): string | null {
       return trimmed.length > 0 ? trimmed : null;
     } catch { return null; }
   }
-  // POSIX: /proc/<pid>/cmdline carries the argv joined by NUL.
+  // Linux: /proc/<pid>/cmdline carries the argv joined by NUL.
+  if (process.platform === 'linux') {
+    try {
+      const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8');
+      return raw.replace(/\0/g, ' ').trim() || null;
+    } catch { return null; }
+  }
+  // macOS / other POSIX without /proc: shell out to `ps`. (Codex
+  // review #5 — Darwin builds need this path so the daemon verifier
+  // can confirm cmdline carries the daemon-script path.)
   try {
-    const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8');
-    return raw.replace(/\0/g, ' ').trim() || null;
+    const { execFileSync } = require('child_process');
+    const result = execFileSync('/bin/ps', ['-p', String(pid), '-o', 'command='], {
+      encoding: 'utf-8', timeout: 3000,
+    });
+    const trimmed = result.trim();
+    return trimmed.length > 0 ? trimmed : null;
   } catch { return null; }
 }
 
@@ -333,7 +364,20 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
     //       Throw so the respawn controller surfaces the failure via
     //       its budget + IPC, instead of silently corrupting state.
     const expectedImage = path.basename(process.execPath);
-    const daemonScriptMarkers = ['daemon-bundle', 'daemon/daemon/index.js', 'daemon\\daemon\\index.js'];
+    // Markers must cover ALL the daemon-script candidate paths
+    // spawnDaemon() picks from, in both `/` and `\\` form (Windows
+    // command lines may carry either). Without the bare
+    // `daemon/index.js` variant, a daemon spawned from the fallback
+    // tsc-output layout would fail cmdline verification and the
+    // launcher would silently spawn a second daemon over the live one.
+    // (Codex review #5 finding.)
+    const daemonScriptMarkers = [
+      'daemon-bundle',
+      'daemon/daemon/index.js',
+      'daemon\\daemon\\index.js',
+      'daemon/index.js',
+      'daemon\\index.js',
+    ];
     if (existingPid === process.pid) {
       // (b) PID file points back at ourselves — the real daemon must be
       // gone (the OS recycled its PID into us). Safe to clean + spawn.
@@ -375,20 +419,34 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
           console.warn(
             `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive — terminating before respawn`,
           );
+          let killSucceeded = true;
           try {
             process.kill(existingPid, 'SIGKILL');
           } catch (err: unknown) {
-            // ESRCH = process died between isProcessAlive and kill.
-            // That's the benign race — we wanted it gone and it is.
             const code = (err as NodeJS.ErrnoException | undefined)?.code;
-            if (code !== 'ESRCH') {
+            if (code === 'ESRCH') {
+              // ESRCH = process died between isProcessAlive and kill.
+              // Benign race — we wanted it gone and it is.
+            } else {
+              // EPERM (Windows: Access Denied), EINVAL, anything else:
+              // we asked the OS to kill the verified daemon and it
+              // refused. Falling through to "clean stale files + spawn"
+              // would now produce two live daemons fighting over the
+              // pipe. Surface the failure so the controller can budget
+              // and retry / give up loudly. (Codex review #5 finding.)
+              killSucceeded = false;
               console.warn(`[launcher] failed to terminate PID ${existingPid}:`, err);
+              throw new Error(
+                `[launcher] verified wmux daemon at PID ${existingPid} alive but SIGKILL failed (${code ?? 'unknown'}); refusing to spawn a second daemon. Resolve the kill failure manually then retry.`,
+              );
             }
           }
-          // Brief settle so the named-pipe handle on the dying daemon's
-          // side releases before spawnDaemon's first `createServer`
-          // listen attempt.
-          await new Promise((resolve) => setTimeout(resolve, 200));
+          if (killSucceeded) {
+            // Brief settle so the named-pipe handle on the dying daemon's
+            // side releases before spawnDaemon's first `createServer`
+            // listen attempt.
+            await new Promise((resolve) => setTimeout(resolve, 200));
+          }
         }
       }
     }
