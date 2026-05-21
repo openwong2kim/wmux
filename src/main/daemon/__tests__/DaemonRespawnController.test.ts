@@ -271,6 +271,48 @@ describe('DaemonRespawnController respawn loop', () => {
     });
   });
 
+  it('handles a disconnect from the newly installed client (not coalesced)', async () => {
+    // Codex P2 (round 3, issue #54): if the respawned client dies inside
+    // onInstall — before attemptRespawn's success log — the disconnect
+    // event must NOT be silently coalesced into the prior respawn cycle.
+    // Otherwise main is left wired to a dead pipe with no recovery.
+    const h = makeHarness({
+      config: { baseBackoffMs: 50, healthIntervalMs: 0, budget: 5 },
+    });
+    const c1 = new FakeDaemonClient();
+    const c2 = new FakeDaemonClient();
+    const c3 = new FakeDaemonClient();
+    h.clientQueue.push(c1, c2, c3);
+
+    // Make onInstall kill the new client synchronously (simulating the
+    // freshly respawned daemon dying during handler swap).
+    let installCount = 0;
+    (h.deps.onInstall as unknown as { mockImplementation: (fn: (c: FakeDaemonClient) => Promise<void>) => void }).mockImplementation(
+      async (client: FakeDaemonClient) => {
+        installCount++;
+        if (installCount === 2) {
+          // The reconnect install — simulate the new daemon dying mid-install.
+          client.fireDisconnect();
+        }
+      },
+    );
+
+    await h.controller.bootstrap();
+    c1.fireDisconnect();
+    await vi.advanceTimersByTimeAsync(50); // attempt 1 finishes install + immediately disconnects
+
+    // onUninstall should have fired again for the dead c2, AND a new
+    // respawn (attempt 2) should be scheduled with c3.
+    expect(h.deps.onUninstall).toHaveBeenCalledTimes(2);
+    const reconnecting = h.events.filter((e) => e.type === 'reconnecting');
+    expect(reconnecting.length).toBe(2);
+
+    // Let attempt 2 succeed with c3.
+    await vi.advanceTimersByTimeAsync(100);
+    expect(h.controller.isHealthy).toBe(true);
+    expect(h.controller.getClient()).toBe(c3);
+  });
+
   it('coalesces a re-entrant disconnect during respawn', async () => {
     const h = makeHarness({
       config: { baseBackoffMs: 1000, healthIntervalMs: 0 },

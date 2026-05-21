@@ -62,6 +62,49 @@ function getProcessImageName(pid: number): string | null {
   } catch { return null; }
 }
 
+/**
+ * Read a process's full command line, so callers can verify it actually
+ * carries the daemon-script path before treating it as a wmux daemon.
+ *
+ * This is the second safety net for the kill path: image basename alone
+ * ("electron.exe" in dev) collides with the main process itself and with
+ * any other Electron-based app the user happens to be running. Adding
+ * "did this process get spawned with the daemon script as argv[1]"
+ * narrows the false-positive surface dramatically.
+ *
+ * On Windows uses PowerShell + CIM (WMI replacement) — wmic is being
+ * deprecated and this path runs at most once per ensureDaemon() call.
+ * Returns null on any failure; callers must treat null as "can't verify".
+ */
+function getProcessCommandLine(pid: number): string | null {
+  if (process.platform === 'win32') {
+    try {
+      const { execFileSync } = require('child_process');
+      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+      const powershell = path.join(
+        systemRoot, 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
+      );
+      // Single quotes around the filter so the parser doesn't expand
+      // anything; -NoProfile keeps startup cheap.
+      const result = execFileSync(
+        powershell,
+        [
+          '-NoProfile', '-Command',
+          `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}" -ErrorAction SilentlyContinue).CommandLine`,
+        ],
+        { encoding: 'utf-8', timeout: 5000, windowsHide: true },
+      );
+      const trimmed = result.trim();
+      return trimmed.length > 0 ? trimmed : null;
+    } catch { return null; }
+  }
+  // POSIX: /proc/<pid>/cmdline carries the argv joined by NUL.
+  try {
+    const raw = fs.readFileSync(`/proc/${pid}/cmdline`, 'utf-8');
+    return raw.replace(/\0/g, ' ').trim() || null;
+  } catch { return null; }
+}
+
 function pingDaemon(pipeName: string, token: string, timeoutMs = 3000): Promise<boolean> {
   return new Promise((resolve) => {
     const socket = net.connect(pipeName);
@@ -273,15 +316,42 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
     // the kill — the launcher still cleans the stale files below and
     // spawns a fresh daemon, so the user-visible recovery is unchanged.
     //
-    // (Codex review found the original issue #54 fix would PID-reuse-kill
-    // unrelated processes; this image check is the second-pass safety net.)
+    // (Codex review #2 found the original issue #54 fix would PID-reuse-kill
+    // unrelated processes; this image+cmdline check is the safety net.)
+    //
+    // Three gates, all required, in increasing cost order:
+    //   1. NOT process.pid — never kill ourselves. In dev mode the main
+    //      process and daemon both run via electron.exe, so the basename
+    //      check below cannot distinguish them. Codex review #3 finding.
+    //   2. Image basename matches `process.execPath` — wmux daemons spawn
+    //      via the same exe (`ELECTRON_RUN_AS_NODE=1` in prod, plain
+    //      Electron in dev) so a genuine daemon shares the basename.
+    //   3. Command line contains the daemon script path — narrows the
+    //      surviving false-positive (another Electron app on the same
+    //      basename) to near-zero. Daemons are spawned with the
+    //      `daemon-bundle/index.js` (or fallback) path as argv[1].
+    //
+    // If any gate fails, treat as a stale-reuse victim and skip the kill;
+    // the cleanup + spawn path below still produces a working daemon.
+    const isSelf = existingPid === process.pid;
     const imageName = getProcessImageName(existingPid);
     const expectedImage = path.basename(process.execPath);
     const imageMatches = !!imageName &&
       imageName.toLowerCase() === expectedImage.toLowerCase();
-    if (imageMatches) {
+    let cmdlineMatches = false;
+    let cmdline: string | null = null;
+    if (!isSelf && imageMatches) {
+      cmdline = getProcessCommandLine(existingPid);
+      // Recognize either the production bundle path or any of the dev
+      // tsc-output paths the launcher would spawn from. A precise
+      // substring match keeps us from false-positive-ing on unrelated
+      // Electron apps that happen to share the basename.
+      const daemonMarkers = ['daemon-bundle', 'daemon/daemon/index.js', 'daemon\\daemon\\index.js'];
+      cmdlineMatches = !!cmdline && daemonMarkers.some((m) => cmdline!.includes(m));
+    }
+    if (!isSelf && imageMatches && cmdlineMatches) {
       console.warn(
-        `[launcher] PID ${existingPid} alive (image "${imageName}" matches "${expectedImage}") but unresponsive — terminating before respawn`,
+        `[launcher] PID ${existingPid} verified wmux daemon (image="${imageName}", cmdline matched) but unresponsive — terminating before respawn`,
       );
       try {
         process.kill(existingPid, 'SIGKILL');
@@ -297,12 +367,18 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
       // releases before spawnDaemon's first `createServer` listen attempt.
       await new Promise((resolve) => setTimeout(resolve, 200));
     } else {
+      const why = isSelf
+        ? `equals current main process pid`
+        : !imageMatches
+          ? `image "${imageName ?? 'unknown'}" != "${expectedImage}"`
+          : `cmdline does not reference daemon script`;
       console.warn(
-        `[launcher] PID ${existingPid} alive but image "${imageName ?? 'unknown'}" does not match expected "${expectedImage}" — assuming stale-PID reuse, NOT killing`,
+        `[launcher] PID ${existingPid} alive but NOT verified as wmux daemon (${why}) — assuming stale-PID reuse, NOT killing`,
       );
       // Fall through to the stale-files + spawn path. The actual
       // wmux daemon that wrote daemon.pid is gone; the live PID is
-      // somebody else's process and must not be touched.
+      // either ourselves, another app, or an Electron sibling — must
+      // not be touched.
     }
   }
 

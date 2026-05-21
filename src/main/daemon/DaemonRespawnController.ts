@@ -201,6 +201,15 @@ export class DaemonRespawnController {
       return;
     }
     this.client = client;
+    // Clear `respawning` BEFORE wiring the disconnected listener for the
+    // new client. Otherwise a disconnect from THIS client (e.g. the
+    // freshly respawned daemon dying inside onInstall, or in the gap
+    // between install resolving and attemptRespawn clearing the flag)
+    // would hit `handleDisconnect`'s respawn-in-progress gate and be
+    // coalesced away — leaving the controller with a dead client
+    // installed, no onUninstall fired, and no respawn scheduled.
+    // Codex review P2 (round 3) on issue #54.
+    this.respawning = false;
     // Wire the disconnected listener BEFORE we hand control to onInstall.
     // If a disconnect raced the install path itself, we still observe it.
     const listener = () => {
@@ -211,6 +220,14 @@ export class DaemonRespawnController {
     client.on('disconnected', listener);
 
     await this.deps.onInstall(client);
+
+    // onInstall could have raced a disconnect from this client (the
+    // listener above would have run synchronously, called
+    // handleDisconnect, nulled this.client, and scheduled a respawn).
+    // In that case, swallow the rest of the install path so we don't
+    // emit a misleading 'reconnected' or start a probe against a dead
+    // socket on top of the new in-flight respawn.
+    if (this.client !== client) return;
 
     if (opts.isReconnect) {
       this.deps.emit({ type: 'reconnected' });
@@ -341,17 +358,27 @@ export class DaemonRespawnController {
       const client = await this.spawnAndConnect();
       if (!client) throw new Error('spawnAndConnect returned null');
       await this.install(client, { isReconnect: true });
-      this.respawning = false;
-      this.deps.logger.info(
-        `daemon respawn succeeded on attempt ${attempt}`,
-      );
+      // `respawning` is cleared inside install() now (before the
+      // listener wires) so a disconnect from the new client during
+      // onInstall is treated as a real event. If install() observed
+      // such a disconnect and scheduled another respawn cycle, we
+      // log success only when the new client is still installed.
+      if (this.client === client) {
+        this.deps.logger.info(`daemon respawn succeeded on attempt ${attempt}`);
+      } else {
+        this.deps.logger.warn(
+          `respawn attempt ${attempt} client died during install — new respawn already scheduled`,
+        );
+      }
     } catch (err) {
       this.deps.logger.warn(
         `respawn attempt ${attempt} failed: ${this.stringifyError(err)}`,
       );
       // Loop back through the scheduler so backoff + budget tracking
-      // applies uniformly. `respawning` stays true so re-entrant disconnect
-      // events from a half-built client coalesce instead of double-firing.
+      // applies uniformly. `respawning` is already true at this point
+      // (set in handleDisconnect) so an in-flight listener event
+      // from the failed-to-build client still coalesces — install()
+      // would have cleared it only on a successful path.
       this.scheduleRespawn();
     }
   }
