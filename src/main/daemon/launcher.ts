@@ -316,69 +316,81 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
     // the kill — the launcher still cleans the stale files below and
     // spawns a fresh daemon, so the user-visible recovery is unchanged.
     //
-    // (Codex review #2 found the original issue #54 fix would PID-reuse-kill
-    // unrelated processes; this image+cmdline check is the safety net.)
+    // (Codex review #2/#3/#4 hardening sequence on the original issue
+    // #54 fix.) Three categories the gate logic must distinguish:
     //
-    // Three gates, all required, in increasing cost order:
-    //   1. NOT process.pid — never kill ourselves. In dev mode the main
-    //      process and daemon both run via electron.exe, so the basename
-    //      check below cannot distinguish them. Codex review #3 finding.
-    //   2. Image basename matches `process.execPath` — wmux daemons spawn
-    //      via the same exe (`ELECTRON_RUN_AS_NODE=1` in prod, plain
-    //      Electron in dev) so a genuine daemon shares the basename.
-    //   3. Command line contains the daemon script path — narrows the
-    //      surviving false-positive (another Electron app on the same
-    //      basename) to near-zero. Daemons are spawned with the
-    //      `daemon-bundle/index.js` (or fallback) path as argv[1].
-    //
-    // If any gate fails, treat as a stale-reuse victim and skip the kill;
-    // the cleanup + spawn path below still produces a working daemon.
-    const isSelf = existingPid === process.pid;
-    const imageName = getProcessImageName(existingPid);
+    //   (a) Verified-daemon → kill, then spawn. Safe because we know
+    //       what we're killing.
+    //   (b) Verified-stale-reuse (we are sure the PID is NOT our daemon
+    //       anymore — it's ourselves, an unrelated program, or another
+    //       Electron app whose cmdline doesn't carry the daemon script
+    //       path) → don't kill, but the stale-files cleanup + spawn
+    //       path below is safe because the actual daemon is gone.
+    //   (c) Unverified-live (process is alive AND has the wmux image
+    //       basename, but we couldn't read its image or command line at
+    //       all) → refuse to act. Spawning over an unverified live
+    //       daemon would orphan its PTYs and produce duplicate sessions.
+    //       Throw so the respawn controller surfaces the failure via
+    //       its budget + IPC, instead of silently corrupting state.
     const expectedImage = path.basename(process.execPath);
-    const imageMatches = !!imageName &&
-      imageName.toLowerCase() === expectedImage.toLowerCase();
-    let cmdlineMatches = false;
-    let cmdline: string | null = null;
-    if (!isSelf && imageMatches) {
-      cmdline = getProcessCommandLine(existingPid);
-      // Recognize either the production bundle path or any of the dev
-      // tsc-output paths the launcher would spawn from. A precise
-      // substring match keeps us from false-positive-ing on unrelated
-      // Electron apps that happen to share the basename.
-      const daemonMarkers = ['daemon-bundle', 'daemon/daemon/index.js', 'daemon\\daemon\\index.js'];
-      cmdlineMatches = !!cmdline && daemonMarkers.some((m) => cmdline!.includes(m));
-    }
-    if (!isSelf && imageMatches && cmdlineMatches) {
+    const daemonScriptMarkers = ['daemon-bundle', 'daemon/daemon/index.js', 'daemon\\daemon\\index.js'];
+    if (existingPid === process.pid) {
+      // (b) PID file points back at ourselves — the real daemon must be
+      // gone (the OS recycled its PID into us). Safe to clean + spawn.
       console.warn(
-        `[launcher] PID ${existingPid} verified wmux daemon (image="${imageName}", cmdline matched) but unresponsive — terminating before respawn`,
+        `[launcher] daemon.pid=${existingPid} equals current process pid — stale, cleaning + spawning fresh`,
       );
-      try {
-        process.kill(existingPid, 'SIGKILL');
-      } catch (err: unknown) {
-        // ESRCH = process died between isProcessAlive and kill. That's
-        // the benign race — we wanted it gone and it is.
-        const code = (err as NodeJS.ErrnoException | undefined)?.code;
-        if (code !== 'ESRCH') {
-          console.warn(`[launcher] failed to terminate PID ${existingPid}:`, err);
+    } else {
+      const imageName = getProcessImageName(existingPid);
+      if (imageName === null) {
+        // (c) Could not even read the image — refuse.
+        throw new Error(
+          `[launcher] daemon.pid=${existingPid} alive but image lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone.`,
+        );
+      }
+      if (imageName.toLowerCase() !== expectedImage.toLowerCase()) {
+        // (b) Different program owns this PID now — daemon is gone.
+        console.warn(
+          `[launcher] PID ${existingPid} image "${imageName}" != "${expectedImage}" — stale-PID reuse by another program, cleaning + spawning fresh`,
+        );
+      } else {
+        // Image matches — could be the real daemon or another Electron
+        // app. Use the command line to decide.
+        const cmdline = getProcessCommandLine(existingPid);
+        if (cmdline === null) {
+          // (c) Lookup failed — refuse, even though image matched.
+          throw new Error(
+            `[launcher] daemon.pid=${existingPid} alive (image "${imageName}" matches wmux) but command-line lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone.`,
+          );
+        }
+        const cmdlineMatches = daemonScriptMarkers.some((m) => cmdline.includes(m));
+        if (!cmdlineMatches) {
+          // (b) Same image but different app (e.g. another Electron
+          // tool). Don't kill, but the cleanup path below is safe.
+          console.warn(
+            `[launcher] PID ${existingPid} image matches but cmdline does not reference daemon script — stale-PID reuse by sibling Electron app, cleaning + spawning fresh`,
+          );
+        } else {
+          // (a) Verified wmux daemon → kill before respawning.
+          console.warn(
+            `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive — terminating before respawn`,
+          );
+          try {
+            process.kill(existingPid, 'SIGKILL');
+          } catch (err: unknown) {
+            // ESRCH = process died between isProcessAlive and kill.
+            // That's the benign race — we wanted it gone and it is.
+            const code = (err as NodeJS.ErrnoException | undefined)?.code;
+            if (code !== 'ESRCH') {
+              console.warn(`[launcher] failed to terminate PID ${existingPid}:`, err);
+            }
+          }
+          // Brief settle so the named-pipe handle on the dying daemon's
+          // side releases before spawnDaemon's first `createServer`
+          // listen attempt.
+          await new Promise((resolve) => setTimeout(resolve, 200));
         }
       }
-      // Brief settle so the named-pipe handle on the dying daemon's side
-      // releases before spawnDaemon's first `createServer` listen attempt.
-      await new Promise((resolve) => setTimeout(resolve, 200));
-    } else {
-      const why = isSelf
-        ? `equals current main process pid`
-        : !imageMatches
-          ? `image "${imageName ?? 'unknown'}" != "${expectedImage}"`
-          : `cmdline does not reference daemon script`;
-      console.warn(
-        `[launcher] PID ${existingPid} alive but NOT verified as wmux daemon (${why}) — assuming stale-PID reuse, NOT killing`,
-      );
-      // Fall through to the stale-files + spawn path. The actual
-      // wmux daemon that wrote daemon.pid is gone; the live PID is
-      // either ourselves, another app, or an Electron sibling — must
-      // not be touched.
     }
   }
 

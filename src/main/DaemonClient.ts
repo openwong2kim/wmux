@@ -88,15 +88,26 @@ export class DaemonClient extends EventEmitter {
   }
 
   /** Synchronous disconnect — for use in process exit/session-end handlers
-   *  where async operations cannot complete. Destroys all sockets immediately. */
+   *  where async operations cannot complete, AND for runtime recovery
+   *  paths (the respawn controller's hang detector) where we need to
+   *  drop the socket fast but still keep the rest of the app responsive.
+   *  Destroys all sockets immediately and rejects every pending RPC so
+   *  callers do not hang forever waiting on a reply that can no longer
+   *  arrive. (Codex review #4 on issue #54 respawn loop.) */
   disconnectSync(): void {
     for (const [, socket] of this.sessionPipes) {
       try { socket.destroy(); } catch { /* ignore */ }
     }
     this.sessionPipes.clear();
 
+    // Reject pending requests so in-flight RPC promises settle instead
+    // of dangling. The async `disconnect()` already does this; the sync
+    // path used to skip it because the exit path didn't care, but the
+    // respawn controller calls disconnectSync at runtime — silently
+    // dropped pendings would leave renderer actions hung forever.
     for (const [id, pending] of this.pendingRequests) {
       clearTimeout(pending.timer);
+      try { pending.reject(new Error('DaemonClient disconnected')); } catch { /* defensive */ }
       this.pendingRequests.delete(id);
     }
 
