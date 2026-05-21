@@ -218,6 +218,39 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
         return { pid: existingPid, authToken: token, pipeName, spawned: false };
       }
     }
+
+    // PID is alive but we cannot talk to it: either the auth token is
+    // missing or the daemon's event loop is wedged (the `DaemonRespawnController`
+    // health-probe path lands here after `client.disconnectSync()`).
+    //
+    // Without terminating it first, the "clean stale files + spawn"
+    // branch below would leave the original daemon process running,
+    // still holding every PTY child it owns, while a second daemon
+    // spawns and races for the same lock/pipe state. The renderer
+    // would receive duplicate session events, MCP would talk to one
+    // daemon while the watchdog wrote to the other, and at shutdown
+    // one of them would orphan. (Codex review finding, issue #54.)
+    //
+    // On Windows, `process.kill(pid, 'SIGKILL')` calls TerminateProcess
+    // synchronously — no signal forwarding semantics to worry about.
+    // We follow with a short settle window so the kernel finishes
+    // reaping pipe handles before the new daemon tries to listen.
+    console.warn(
+      `[launcher] PID ${existingPid} alive but unresponsive — terminating before respawn`,
+    );
+    try {
+      process.kill(existingPid, 'SIGKILL');
+    } catch (err: unknown) {
+      // ESRCH = process already died between isProcessAlive and kill.
+      // That's the benign race — we wanted it gone and it is.
+      const code = (err as NodeJS.ErrnoException | undefined)?.code;
+      if (code !== 'ESRCH') {
+        console.warn(`[launcher] failed to terminate PID ${existingPid}:`, err);
+      }
+    }
+    // Brief settle so the named-pipe handle on the dying daemon's side
+    // releases before spawnDaemon's first `createServer` listen attempt.
+    await new Promise((resolve) => setTimeout(resolve, 200));
   }
 
   // 3. Clean stale files before spawning — prevents new daemon from seeing
