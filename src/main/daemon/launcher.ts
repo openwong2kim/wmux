@@ -7,7 +7,7 @@ import { app } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
 import { getDaemonPipeName, readDaemonAuthToken } from '../DaemonClient';
 
-interface DaemonInfo {
+export interface DaemonInfo {
   pid: number;
   authToken: string;
   pipeName: string;

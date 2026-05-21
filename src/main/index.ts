@@ -36,6 +36,7 @@ import { raceDaemonShutdown } from './daemonShutdownRace';
 import { migrateScrollbackOnce } from './scrollback/legacyMigration';
 import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
 import { ensureDaemon } from './daemon/launcher';
+import { DaemonRespawnController } from './daemon/DaemonRespawnController';
 import { createTray, destroyTray } from './tray';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
@@ -182,6 +183,11 @@ let daemonClient: DaemonClient | null = null;
 // PTYBridge writes to in local mode. Without it, daemon mode would render
 // the notification pipeline 100% inert (Codex 2nd review #1).
 let daemonNotificationRouter: DaemonNotificationRouter | null = null;
+// Owns the daemon respawn lifecycle: initial bootstrap, disconnect detection,
+// exponential-backoff respawn attempts, active health-ping probe, and the
+// renderer-facing IPC events (daemon:reconnecting / :reconnected /
+// :respawn-exhausted). Lifetime: created on `ready`, disposed on `before-quit`.
+let daemonRespawnController: DaemonRespawnController | null = null;
 
 // v2.8.1 hotfix (Bug 3): one-shot decision flag for the daemon-vs-local
 // mode. Stays false until app.on('ready') has finished its connect
@@ -416,84 +422,99 @@ app.on('ready', async () => {
   // callback is a no-op; before-quit's first pass sets isQuitting itself.
   createTray(mainWindow, () => { /* no-op — before-quit handles isQuitting */ });
 
-  // Auto-start daemon and connect
-  try {
-    const daemonInfo = await ensureDaemon();
-    console.log(`[Main] Daemon ${daemonInfo.spawned ? 'spawned' : 'found'} (PID: ${daemonInfo.pid})`);
-
-    const client = new DaemonClient(daemonInfo.pipeName, daemonInfo.authToken);
-    const connected = await client.connect();
-    if (connected) {
-      let authOk = false;
+  // Auto-start daemon and connect.
+  //
+  // Previously a one-shot `ensureDaemon()` call with a degrade-only
+  // `disconnected` handler — once the daemon died, the app silently
+  // ran in local-only mode for the rest of the session (no persistence,
+  // no MCP notifications, no memory watchdog). Issue #54.
+  //
+  // `DaemonRespawnController` owns the full lifecycle now: initial
+  // launch, exponential-backoff respawn (5 attempts, 1s→30s, reset
+  // after 5 min healthy uptime), active health-ping probe to catch
+  // daemon-hang cases the socket-close path misses, and renderer
+  // signaling via `daemon:reconnecting` / `daemon:reconnected` /
+  // `daemon:respawn-exhausted` so UX can show a toast/badge.
+  daemonRespawnController = new DaemonRespawnController({
+    ensureDaemon,
+    createClient: (pipeName, token) => new DaemonClient(pipeName, token),
+    onInstall: async (client) => {
+      daemonClient = client;
+      console.log('[Main] Connected to wmux-daemon (auth verified)');
+      // Handler swap to daemon-routed mode. The microsecond window where
+      // pty/* handlers are torn down and re-registered is the same
+      // surface the original code used; the swap is logged for the
+      // race-investigation breadcrumb trail kept by previous fixes.
+      logLine('info', 'main', 'handler swap (daemon connect): cleanup begin');
+      cleanupHandlers();
+      logLine('info', 'main', 'handler swap (daemon connect): cleanup done, register begin');
+      cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient, mcpHandlerOptions);
+      logLine('info', 'main', 'handler swap (daemon connect): register done');
+      // Mount the notification router now that we have a live daemon
+      // client. PTY data flows through daemon → DaemonClient events,
+      // and this router translates them into the same renderer-facing
+      // IPC signals PTYBridge produces in local mode.
+      daemonNotificationRouter?.stop();
+      daemonNotificationRouter = new DaemonNotificationRouter(client, () => mainWindow);
+      daemonNotificationRouter.start();
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('daemon:connected');
+      }
+      // Phase A — A7. Run the one-time legacy scrollback migration on
+      // the first daemon-healthy transition. Idempotent — subsequent
+      // calls (e.g. after respawn) return status=already-migrated and
+      // are no-ops; safe to invoke on every install.
       try {
-        await client.rpc('daemon.ping', {});
-        authOk = true;
-      } catch {
-        console.warn('[Main] Daemon auth failed after spawn, falling back to local PTY');
-        await client.disconnect().catch(() => {});
+        const result = migrateScrollbackOnce(app.getPath('userData'), app.getVersion());
+        if (result.status === 'migrated') {
+          console.log(`[Main] A7 scrollback legacy migration → ${result.legacyDir}`);
+        } else if (result.status === 'retry-needed') {
+          console.warn(`[Main] A7 scrollback migration retry-needed: ${result.error}`);
+        }
+      } catch (err) {
+        console.warn('[Main] A7 scrollback migration threw:', err);
       }
-      if (authOk) {
-        daemonClient = client;
-        console.log('[Main] Connected to wmux-daemon (auth verified)');
-        // Instrumentation: handler swap race investigation. The cleanup →
-        // re-register sequence below tears down IPC handlers (including
-        // scrollback:load) for a microsecond window. If the renderer's bulk
-        // useTerminal mount fires scrollback.load during this window, the
-        // invokes reject silently and the post-boot autosave overwrites the
-        // previous scrollback files. Logging the exact swap boundary so we
-        // can correlate with renderer-side .catch traces.
-        logLine('info', 'main', 'handler swap (daemon connect): cleanup begin');
-        cleanupHandlers();
-        logLine('info', 'main', 'handler swap (daemon connect): cleanup done, register begin');
-        cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient, mcpHandlerOptions);
-        logLine('info', 'main', 'handler swap (daemon connect): register done');
-        // Mount the notification router now that we have a live daemon
-        // client. PTY data flows through daemon → DaemonClient events, and
-        // this router translates them into the same renderer-facing IPC
-        // signals PTYBridge produces in local mode.
-        daemonNotificationRouter = new DaemonNotificationRouter(daemonClient, () => mainWindow);
-        daemonNotificationRouter.start();
-        // Notify renderer that daemon is now connected so it can re-reconcile
-        if (mainWindow && !mainWindow.isDestroyed()) {
-          mainWindow.webContents.send('daemon:connected');
-        }
-        // Phase A — A7. Run the one-time legacy scrollback migration on
-        // the first daemon-healthy transition. Best-effort: if rename
-        // fails (EBUSY/EPERM under antivirus) the runner returns
-        // retry-needed and the next transition tries again. Log the
-        // breadcrumb either way so the user can spot a stuck migration
-        // in the main-side log.
-        try {
-          const result = migrateScrollbackOnce(app.getPath('userData'), app.getVersion());
-          if (result.status === 'migrated') {
-            console.log(`[Main] A7 scrollback legacy migration → ${result.legacyDir}`);
-          } else if (result.status === 'retry-needed') {
-            console.warn(`[Main] A7 scrollback migration retry-needed: ${result.error}`);
-          }
-        } catch (err) {
-          console.warn('[Main] A7 scrollback migration threw:', err);
-        }
-        daemonClient.on('disconnected', () => {
-          console.warn('[Main] Daemon disconnected, falling back to local PTY');
-          daemonNotificationRouter?.stop();
-          daemonNotificationRouter = null;
-          daemonClient = null;
-          // Phase A — A6. Notify the renderer so the daemon-mode .txt
-          // write/load gates open again (local mode preserves the
-          // pre-existing scrollback path). Without this, the renderer
-          // would still treat itself as daemon-connected and skip the
-          // .txt autosave even though no daemon is replaying PTY data.
-          if (mainWindow && !mainWindow.isDestroyed()) {
-            mainWindow.webContents.send('daemon:disconnected');
-          }
-          logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup begin');
-          cleanupHandlers();
-          logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup done, register begin');
-          cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, mcpHandlerOptions);
-          logLine('warn', 'main', 'handler swap (daemon disconnect): register done');
+    },
+    onUninstall: () => {
+      console.warn('[Main] Daemon disconnected, falling back to local PTY');
+      daemonNotificationRouter?.stop();
+      daemonNotificationRouter = null;
+      daemonClient = null;
+      // Phase A — A6. Notify the renderer so the daemon-mode .txt
+      // write/load gates open again (local mode preserves the
+      // pre-existing scrollback path). Without this, the renderer
+      // would still treat itself as daemon-connected and skip the
+      // .txt autosave even though no daemon is replaying PTY data.
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('daemon:disconnected');
+      }
+      logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup begin');
+      cleanupHandlers();
+      logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup done, register begin');
+      cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, mcpHandlerOptions);
+      logLine('warn', 'main', 'handler swap (daemon disconnect): register done');
+    },
+    emit: (event) => {
+      if (!mainWindow || mainWindow.isDestroyed()) return;
+      if (event.type === 'reconnecting') {
+        mainWindow.webContents.send('daemon:reconnecting', {
+          attempt: event.attempt,
+          backoffMs: event.backoffMs,
         });
+      } else if (event.type === 'reconnected') {
+        mainWindow.webContents.send('daemon:reconnected');
+      } else if (event.type === 'respawn-exhausted') {
+        mainWindow.webContents.send('daemon:respawn-exhausted');
       }
-    }
+    },
+    logger: {
+      info: (msg) => { logLine('info', 'daemon-respawn', msg); },
+      warn: (msg) => { logLine('warn', 'daemon-respawn', msg); },
+      error: (msg) => { logLine('error', 'daemon-respawn', msg); },
+    },
+  });
+  try {
+    await daemonRespawnController.bootstrap();
   } catch (err) {
     console.warn('[Main] Daemon auto-start failed, using local PTY:', err);
   }
@@ -701,6 +722,14 @@ app.on('before-quit', async (e) => {
 
   cleanupHandlers();
   disposeFirstRunHandlers();
+  // Tear down the respawn controller BEFORE the daemon-shutdown race so
+  // a daemon close during the race window can't trigger a respawn attempt
+  // while the rest of the app is exiting. `dispose()` only stops timers
+  // and detaches listeners — it does NOT call `onUninstall()`, so the
+  // shutdown-race path below remains the single authority for taking the
+  // client offline cleanly.
+  daemonRespawnController?.dispose();
+  daemonRespawnController = null;
 
   // Capture the daemon-client reference BEFORE the race. The race awaits
   // for up to 4 s; during that window the daemon may close its socket,

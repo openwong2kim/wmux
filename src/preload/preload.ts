@@ -164,6 +164,31 @@ const electronAPI = {
       ipcRenderer.on('daemon:disconnected', listener);
       return () => { ipcRenderer.removeListener('daemon:disconnected', listener); };
     },
+    // Issue #54. Respawn-loop telemetry — fired before each backoff so the
+    // renderer can show a "Daemon reconnecting (attempt N)…" toast/badge
+    // instead of leaving the user with a silent local-only degrade.
+    onReconnecting: (callback: (info: { attempt: number; backoffMs: number }) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, info: { attempt: number; backoffMs: number }) => callback(info);
+      ipcRenderer.on('daemon:reconnecting', listener);
+      return () => { ipcRenderer.removeListener('daemon:reconnecting', listener); };
+    },
+    // Fires once a respawned client is healthy again. Distinct from
+    // `onConnected` so the renderer can choose to show recovery UX
+    // (e.g. "Daemon reconnected — sessions restored") rather than the
+    // cold-boot path.
+    onReconnected: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on('daemon:reconnected', listener);
+      return () => { ipcRenderer.removeListener('daemon:reconnected', listener); };
+    },
+    // Budget exhausted — user should be told the app is permanently in
+    // local-only mode for this session and that restarting wmux will
+    // attempt a fresh daemon launch.
+    onRespawnExhausted: (callback: () => void) => {
+      const listener = () => callback();
+      ipcRenderer.on('daemon:respawn-exhausted', listener);
+      return () => { ipcRenderer.removeListener('daemon:respawn-exhausted', listener); };
+    },
     /**
      * Resolves once main has finalized the daemon-vs-local decision.
      * Returns `{ connected: bool }` reflecting the CURRENT state at
