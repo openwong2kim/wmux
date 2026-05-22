@@ -22,6 +22,51 @@ function findLeafPanes(root: Pane): PaneLeaf[] {
   return root.children.flatMap(findLeafPanes);
 }
 
+/**
+ * Resolve the ptyId of a workspace's active pane + active surface.
+ *
+ * Duplicated from StatusBar.tsx's local helper — kept inline here rather
+ * than lifting to a shared module because both call sites read the active
+ * pane through the renderer store and lifting would force a circular
+ * dependency between renderer/utils and the store. Two tiny copies are
+ * cheaper than the shared-module gymnastics.
+ *
+ * Used by the workspace.list RPC response so hook bridge scripts
+ * (integrations/<agent>/bin/wmux-bridge.mjs) can resolve their hook
+ * payload's cwd → workspace → activePtyId in a single round-trip.
+ */
+function findActivePtyId(rootPane: Pane | undefined, activePaneId: string): string | null {
+  if (!rootPane) return null;
+  const findLeaf = (pane: Pane): PaneLeaf | null => {
+    if (pane.type === 'leaf') return pane.id === activePaneId ? pane : null;
+    for (const child of pane.children) {
+      const found = findLeaf(child);
+      if (found) return found;
+    }
+    return null;
+  };
+  const leaf = findLeaf(rootPane);
+  if (!leaf) return null;
+  const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+  return surface?.ptyId ?? null;
+}
+
+/** All ptyIds in a workspace (every leaf, every surface). */
+function collectAllPtyIds(root: Pane): string[] {
+  const ids: string[] = [];
+  const walk = (pane: Pane): void => {
+    if (pane.type === 'leaf') {
+      for (const s of pane.surfaces) {
+        if (s.ptyId) ids.push(s.ptyId);
+      }
+      return;
+    }
+    for (const child of pane.children) walk(child);
+  };
+  walk(root);
+  return ids;
+}
+
 function findPaneById(root: Pane, id: string): Pane | null {
   if (root.id === id) return root;
   if (root.type === 'branch') {
@@ -167,6 +212,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         status: w.metadata?.status ?? null,
         progress: w.metadata?.progress ?? null,
       },
+      // Phase 1 hook plugin support — bridge scripts resolve hook payload's
+      // cwd → workspace → activePtyId. activePtyId is the active pane's
+      // active surface; ptyIds is the union over the whole workspace
+      // (used when bridge needs to disambiguate via env if cwd alone is
+      // ambiguous). Both fields are optional from the wire-format POV —
+      // existing consumers that destructure metadata only are unaffected.
+      activePtyId: findActivePtyId(w.rootPane, w.activePaneId),
+      ptyIds: collectAllPtyIds(w.rootPane),
     }));
   }
 

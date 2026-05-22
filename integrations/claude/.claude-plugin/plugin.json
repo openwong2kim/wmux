@@ -1,0 +1,12 @@
+{
+  "name": "wmux-claude-integration",
+  "version": "0.1.0",
+  "description": "Deterministic Claude Code → wmux notifications via PostToolUse / Stop / SubagentStop / SessionStart hooks. Replaces wmux's regex-based agent detector with 100%-accurate hook signals when this plugin is installed.",
+  "author": {
+    "name": "wmux",
+    "url": "https://github.com/iamwongeeeee/wmux"
+  },
+  "homepage": "https://github.com/iamwongeeeee/wmux",
+  "license": "MIT",
+  "keywords": ["wmux", "terminal", "notifications", "hooks"]
+}

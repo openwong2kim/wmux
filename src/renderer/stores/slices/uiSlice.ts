@@ -134,6 +134,36 @@ export interface UISlice {
   notificationSoundChoice: 'default' | 'none';
   setNotificationSoundChoice: (choice: 'default' | 'none') => void;
 
+  // ─── Claude Code hook integration (Phase 1) ──────────────────────────────
+  // Driven by main process: whenever a hook signal arrives via the
+  // wmux-claude-integration plugin, main pushes the updated signal-health
+  // snapshot to the renderer. Renderer-local state lets us display the
+  // health card in Settings without a hot RPC round-trip per render.
+  //
+  // signalHealth.lastSignalAt === null means "no hook ever observed in
+  // this process lifetime" — distinct from a stale plugin (lastSignalAt
+  // older than threshold). The Settings card handles both branches.
+  hookSignalHealth: {
+    total: number;
+    count: number;
+    p50: number | null;
+    p95: number | null;
+    lastSignalAt: number | null;
+  };
+  setHookSignalHealth: (health: {
+    total: number;
+    count: number;
+    p50: number | null;
+    p95: number | null;
+    lastSignalAt: number | null;
+  }) => void;
+
+  /** User has dismissed the first-run "install wmux-claude-integration"
+   *  banner. Persists across sessions via the same persisted-uiSlice
+   *  fields pattern (see toastEnabled). */
+  hookOnboardingDismissed: boolean;
+  setHookOnboardingDismissed: (dismissed: boolean) => void;
+
   // ─── Multiview ─────────────────────────────────────────────────────────
   multiviewIds: string[];
   toggleMultiviewWorkspace: (wsId: string) => void;
@@ -483,6 +513,25 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setNotificationSoundChoice: (choice) => set((state) => {
     state.notificationSoundChoice = choice;
+  }),
+
+  // ─── Claude Code hook integration (Phase 1) ──────────────────────────────
+  hookSignalHealth: {
+    total: 0,
+    count: 0,
+    p50: null,
+    p95: null,
+    lastSignalAt: null,
+  },
+
+  setHookSignalHealth: (health) => set((state) => {
+    state.hookSignalHealth = health;
+  }),
+
+  hookOnboardingDismissed: false,
+
+  setHookOnboardingDismissed: (dismissed) => set((state) => {
+    state.hookOnboardingDismissed = dismissed;
   }),
 
   // ─── Multiview ─────────────────────────────────────────────────────────
