@@ -143,13 +143,15 @@ export class SignalLatencyMeter {
   }
 
   /**
-   * True when no signal has been observed within the last `thresholdMs`.
+   * True when the buffer is currently empty, OR the most-recent receive
+   * timestamp is older than `thresholdMs`. Buffer-empty returns true
+   * regardless of `totalSeen` because the ring is never trimmed in
+   * practice — these conditions are equivalent at runtime, but the
+   * docstring matches the implementation so a future entry-expiry
+   * refactor doesn't silently invert the contract.
    *
-   * Returns `true` (stale) when the buffer is empty AND no signals have
-   * ever been seen — caller distinguishes "never installed" from "stopped
-   * firing" via the `total` field on getStats(). This is intentional:
-   * a UI that shows "Plugin not detected" can use isStale(threshold) as
-   * a single boolean and let the caller dig deeper if needed.
+   * Caller distinguishes "plugin never installed" from "plugin stopped
+   * firing" via `getStats().total` (lifetime count, never decremented).
    */
   isStale(thresholdMs: number, now: number = Date.now()): boolean {
     if (this.entries.length === 0) return true;

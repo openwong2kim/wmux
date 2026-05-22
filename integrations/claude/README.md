@@ -74,17 +74,43 @@ sendNotification → renderer → toast / sound / ring / taskbar flash
 - If wmux is not running, the bridge exits without ever opening a
   socket connection.
 
+## Phase 1 scope vs. Phase 1.5 (deferred)
+
+This is the Phase 1 backbone. The following live in a follow-up PR:
+
+- **Settings → "Plugin signal health" UI card.** The data collection
+  (SignalLatencyMeter ring buffer + uiSlice fields) ships in Phase 1,
+  but the IPC bridge from main → renderer that populates the slice
+  and the React component that renders the card both land in Phase
+  1.5. Until then, you can verify the plugin is firing by reading
+  `~/.wmux/bridge.log`.
+- **First-run onboarding banner** (`HookOnboardingBanner.tsx`).
+  Phase 1.5.
+- **Bidirectional hook ↔ AgentDetector dedup.** Phase 1 ships the
+  HookSignalRouter ledger and `recordDetector()` API, but PTYBridge
+  is not yet wired to call it. In practice this means: if you have
+  the plugin installed AND wmux's regex detector also catches the
+  same turn end, you may see two notifications within ~1s. Phase
+  1.5 wires `PTYBridge.onEvent` through `recordDetector` so the
+  first-firing source wins and the second is suppressed.
+
+If any of these matter for your dogfood case, file an issue on
+`iamwongeeeee/wmux` and we'll prioritize Phase 1.5.
+
 ## Troubleshooting
 
 - **No notifications:** check `~/.wmux/bridge.log` — every fire is
   logged. If you see `"outcome":"no-auth-token"`, wmux isn't running
   (or hasn't written the token file yet). If you see
   `"outcome":"connect-error"`, the pipe path can't be reached —
-  ensure wmux is the current user's instance.
-- **Hook fires but no notification in wmux:** open Settings →
-  Notifications and check "Plugin signal health". If P50 latency is
-  reasonable, you're seeing a deduplication win against the legacy
-  detector, which is fine.
+  ensure wmux is the current user's instance. If you see
+  `"outcome":"rpc-rejected"` with `reason: "no-workspace-match"`,
+  the hook fired in a cwd that doesn't belong to any wmux workspace
+  (run `cd` into a wmux-tracked dir).
+- **Two notifications per turn:** Phase 1.5 dedup wiring is not
+  landed yet. The plugin notification and the legacy regex detector
+  can both fire. Workaround: temporarily disable wmux's heuristic
+  notification in Settings → Notifications (or wait for Phase 1.5).
 
 ## Uninstall
 

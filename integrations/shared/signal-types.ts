@@ -104,7 +104,10 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
   if (typeof v['agent'] !== 'string' || !ALLOWED_AGENT_SLUGS.has(v['agent'])) return false;
   if (typeof v['cwd'] !== 'string' || v['cwd'].length === 0) return false;
   if (typeof v['ts'] !== 'number' || !Number.isFinite(v['ts'])) return false;
-  if (v['payload'] === null || typeof v['payload'] !== 'object') return false;
+  // Reject arrays — typeof [] === 'object' but the declared payload type
+  // is Record<string, unknown> and downstream code assumes object semantics.
+  // (claude review 2026-05-23 P2 #5.)
+  if (v['payload'] === null || typeof v['payload'] !== 'object' || Array.isArray(v['payload'])) return false;
   if (v['agentSessionId'] !== undefined && typeof v['agentSessionId'] !== 'string') return false;
   return true;
 }

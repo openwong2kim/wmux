@@ -89,33 +89,38 @@ export function registerHooksRpc(
       return { ok: false, reason: 'no-workspace-match' };
     }
 
-    // 3. Dedup arbitration. Hook always records latency; emit decision
-    //    depends on whether AgentDetector got there first.
-    const decision = hookRouter.recordHook(signal, ptyId);
-    if (decision === 'dedup') {
-      // Hook arrived too late — detector already emitted. We measured
-      // the latency (useful for the health card) but don't fan out
-      // a second time.
+    // 3. Latency observability runs for EVERY signal kind, regardless
+    //    of whether the kind is one that emits a user-visible
+    //    notification. We always learned something about plugin
+    //    health from the round-trip.
+    hookRouter.getLatencyMeter().recordSignal(signal.agent, signal.ts);
+
+    // 4. Emit decision. PostToolUse / SessionStart never produce a
+    //    toast (would be spam — codex round-2 P1 #5). They also
+    //    DO NOT write to the dedup ledger (claude review 2026-05-23
+    //    P2 #6) because a no-emit ledger entry would silently block
+    //    a same-kind detector emission for 10s with no benefit. Only
+    //    emit-class kinds participate in dedup.
+    const isEmitKind = signal.kind === 'agent.stop' || signal.kind === 'agent.subagent_stop';
+    if (!isEmitKind) {
       return { ok: true };
     }
 
-    // 4. Emit — but only for kinds the user actually wants to be
-    //    interrupted by (codex round-2 P1 #5). PostToolUse fires
-    //    every tool call (would be noise); SessionStart fires on
-    //    every agent boot (also noise). Both still update the
-    //    latency meter for health observability; only the
-    //    stop-class events fan out to toast / sound / etc.
-    if (signal.kind === 'agent.stop' || signal.kind === 'agent.subagent_stop') {
-      const win = getWindow();
-      if (win) {
-        sendNotification(win, ptyId, {
-          type: 'agent',
-          title: titleFor(signal),
-          body: bodyFor(signal),
-        });
-      }
+    const decision = hookRouter.recordHook(signal, ptyId);
+    if (decision === 'dedup') {
+      // Hook arrived too late — detector already emitted. We measured
+      // the latency (above) but don't fan out a second time.
+      return { ok: true };
     }
 
+    const win = getWindow();
+    if (win) {
+      sendNotification(win, ptyId, {
+        type: 'agent',
+        title: titleFor(signal),
+        body: bodyFor(signal),
+      });
+    }
     return { ok: true };
   });
 }

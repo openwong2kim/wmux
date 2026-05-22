@@ -80,16 +80,25 @@ describe('HookSignalRouter', () => {
     });
   });
 
-  describe('latency recording', () => {
-    it('records latency on every hook, even when deduped', () => {
-      // First, detector wins.
-      router.recordDetector('claude', 'agent.stop', 'p1', 1000);
-      // Hook arrives 100ms later — emit suppressed, but latency recorded.
+  describe('latency recording — caller responsibility', () => {
+    // After the round-3 split (claude review 2026-05-23 P2 #6), latency
+    // is NOT recorded inside recordHook. The caller (hooks.rpc.ts)
+    // records every signal regardless of dedup outcome. These tests
+    // assert the new contract: recordHook itself touches only the
+    // dedup ledger.
+    it('recordHook does not call latencyMeter', () => {
       router.recordHook(makeSignal({ ts: 1050 }), 'p1', 1100);
-      const stats = meter.getStats();
-      expect(stats.count).toBe(1);
-      // Delta = receiveTs (1100) - fireTs (1050) = 50.
-      expect(stats.p50).toBe(50);
+      expect(meter.getStats().count).toBe(0);
+    });
+
+    it('caller can independently record latency to track every signal', () => {
+      // Simulates the hooks.rpc.ts flow: latency first, then dedup.
+      meter.recordSignal('claude', 1050, 1100);
+      router.recordDetector('claude', 'agent.stop', 'p1', 1000);
+      router.recordHook(makeSignal({ ts: 1050 }), 'p1', 1100);
+      // Latency was recorded by the caller, not by recordHook.
+      expect(meter.getStats().count).toBe(1);
+      expect(meter.getStats().p50).toBe(50);
     });
 
     it('does NOT record latency for detector emissions (no fire time)', () => {
@@ -122,10 +131,14 @@ describe('HookSignalRouter', () => {
   });
 
   describe('resetForTests', () => {
-    it('clears dedup ledger but preserves latency history', () => {
+    it('clears dedup ledger; latency meter is independent', () => {
+      // Round-3 split: recordHook no longer touches latency, so the
+      // caller is the only path that writes there. Reset only affects
+      // the ledger.
+      meter.recordSignal('claude', 1000, 1000);
       router.recordHook(makeSignal(), 'p1', 1000);
       router.resetForTests();
-      // Latency from above should still be in the meter.
+      // Caller-recorded latency entry still present.
       expect(meter.getStats().count).toBe(1);
       // But dedup ledger is empty: a detector at 1100 emits.
       const d = router.recordDetector('claude', 'agent.stop', 'p1', 1100);

@@ -64,6 +64,37 @@ export function agentDisplayToSlug(display: string): AgentSlug | undefined {
   }
 }
 
+/**
+ * Map an `AgentEvent.status` to the canonical hook-signal kind that the
+ * dedup ledger uses. Required because AgentDetector emits status names
+ * ('waiting', 'complete', ...) whereas HookSignalRouter dedup keys are
+ * built from hook kinds ('agent.stop', 'agent.activity', ...).
+ *
+ * 'waiting' AND 'complete' both map to 'agent.stop' because both
+ * conceptually represent the same user-visible event ("task finished,
+ * ready for next input"). The status is a finer-grained distinction
+ * the renderer uses for icon variation; for dedup it collapses to one.
+ *
+ * Returns `null` for status values that have no corresponding hook
+ * kind. Caller skips dedup wiring in that case.
+ *
+ * (claude review 2026-05-23 P1 #2 — required before PTYBridge wiring
+ * lands in Phase 1.5.)
+ */
+export function agentStatusToSignalKind(
+  status: AgentEventStatus,
+): 'agent.stop' | 'agent.activity' | null {
+  switch (status) {
+    case 'waiting':
+    case 'complete':
+      return 'agent.stop';
+    case 'running':
+      return 'agent.activity';
+    default:
+      return null;
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Per-agent patterns — ONLY agent-specific, no generic patterns
 // ---------------------------------------------------------------------------

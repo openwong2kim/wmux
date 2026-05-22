@@ -97,7 +97,10 @@ export class HookSignalRouter {
    * @param now    Optional override for test determinism.
    */
   recordHook(signal: AgentSignal, ptyId: string, now: number = Date.now()): RouteDecision {
-    this.latencyMeter.recordSignal(signal.agent, signal.ts, now);
+    // NOTE: latency is NOT recorded here. The caller is responsible for
+    // calling getLatencyMeter().recordSignal directly. This split exists
+    // so non-emit kinds (PostToolUse / SessionStart) can record latency
+    // without touching the dedup ledger — see hooks.rpc.ts for the wiring.
     const key = this.key(signal.agent, ptyId, signal.kind);
     const recent = this.ledger.get(key);
     // Hook beats detector only when the prior record was a detector emit
