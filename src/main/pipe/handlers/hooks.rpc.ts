@@ -99,17 +99,21 @@ export function registerHooksRpc(
       return { ok: true };
     }
 
-    // 4. Emit. Map signal.kind → a NotificationPayload the renderer
-    //    pipeline expects. We use type:'agent' (already supported by
-    //    NotificationType) and a human-readable title/body derived
-    //    from the signal kind.
-    const win = getWindow();
-    if (win) {
-      sendNotification(win, ptyId, {
-        type: 'agent',
-        title: titleFor(signal),
-        body: bodyFor(signal),
-      });
+    // 4. Emit — but only for kinds the user actually wants to be
+    //    interrupted by (codex round-2 P1 #5). PostToolUse fires
+    //    every tool call (would be noise); SessionStart fires on
+    //    every agent boot (also noise). Both still update the
+    //    latency meter for health observability; only the
+    //    stop-class events fan out to toast / sound / etc.
+    if (signal.kind === 'agent.stop' || signal.kind === 'agent.subagent_stop') {
+      const win = getWindow();
+      if (win) {
+        sendNotification(win, ptyId, {
+          type: 'agent',
+          title: titleFor(signal),
+          body: bodyFor(signal),
+        });
+      }
     }
 
     return { ok: true };
@@ -176,10 +180,18 @@ export function resolvePtyIdForCwd(
 }
 
 /**
- * Normalize Windows-style paths to forward slashes and lowercase the
- * drive letter. Bridge captures `process.cwd()` which on Windows is
- * `D:\wmux`; workspace metadata.cwd may be stored either way depending
- * on origin. This keeps the comparison casual but stable.
+ * Normalize Windows-style paths to forward slashes, lowercase the
+ * drive letter, AND collapse `.` / `..` segments (codex round-2 P1 #8).
+ *
+ * Without segment collapse, a malicious authenticated signal can
+ * route past prefix checks via `/repo/../other`. We do not trust the
+ * bridge's cwd as already-canonical because the bridge runs in
+ * Claude Code's process and the payload can be anything.
+ *
+ * Implementation uses Node's path.posix.normalize after backslash
+ * substitution. `path.posix` is used unconditionally so the same
+ * normalized output is produced regardless of which OS the daemon
+ * is running on.
  */
 function normalizeCwd(p: string): string {
   // Replace backslashes with forward slashes.
@@ -189,6 +201,10 @@ function normalizeCwd(p: string): string {
   if (/^[A-Z]:\//.test(out)) {
     out = out[0].toLowerCase() + out.slice(1);
   }
+  // Canonicalize: collapse `./`, `../`, and duplicate separators.
+  // Lazy require to keep this module testable without a Node mock.
+  const posix = require('path').posix as { normalize(s: string): string };
+  out = posix.normalize(out);
   // Strip trailing slash to make prefix logic uniform.
   if (out.endsWith('/') && out.length > 1) out = out.slice(0, -1);
   return out;

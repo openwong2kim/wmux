@@ -2,26 +2,46 @@
   "hooks": {
     "PostToolUse": [
       {
-        "type": "command",
-        "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" PostToolUse"
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" PostToolUse"
+          }
+        ]
       }
     ],
     "Stop": [
       {
-        "type": "command",
-        "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" Stop"
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" Stop"
+          }
+        ]
       }
     ],
     "SubagentStop": [
       {
-        "type": "command",
-        "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" SubagentStop"
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" SubagentStop"
+          }
+        ]
       }
     ],
     "SessionStart": [
       {
-        "type": "command",
-        "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" SessionStart"
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node \"${CLAUDE_PLUGIN_ROOT}/bin/wmux-bridge.mjs\" SessionStart"
+          }
+        ]
       }
     ]
   }

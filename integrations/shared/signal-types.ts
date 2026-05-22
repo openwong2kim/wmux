@@ -85,6 +85,13 @@ export interface HookSignalResponse {
  * wmux build); HookSignalRouter validates with this function before
  * forwarding to AgentDetector dedup + sendNotification.
  */
+/** Closed set of allowed agent slugs. Used by isAgentSignal to reject
+ *  unknown agent values rather than accepting any string (codex round-2
+ *  review P2 #9). Keep this in sync with the AgentSlug union above. */
+const ALLOWED_AGENT_SLUGS: ReadonlySet<string> = new Set([
+  'claude', 'codex', 'gemini', 'aider', 'opencode', 'copilot',
+]);
+
 export function isAgentSignal(value: unknown): value is AgentSignal {
   if (!value || typeof value !== 'object') return false;
   const v = value as Record<string, unknown>;
@@ -94,7 +101,7 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
     v['kind'] !== 'agent.subagent_stop' &&
     v['kind'] !== 'agent.session_start'
   ) return false;
-  if (typeof v['agent'] !== 'string') return false;
+  if (typeof v['agent'] !== 'string' || !ALLOWED_AGENT_SLUGS.has(v['agent'])) return false;
   if (typeof v['cwd'] !== 'string' || v['cwd'].length === 0) return false;
   if (typeof v['ts'] !== 'number' || !Number.isFinite(v['ts'])) return false;
   if (v['payload'] === null || typeof v['payload'] !== 'object') return false;

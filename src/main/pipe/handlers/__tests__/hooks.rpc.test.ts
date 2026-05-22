@@ -73,6 +73,23 @@ describe('resolvePtyIdForCwd', () => {
     expect(got).toBeNull();
   });
 
+  it('rejects path-traversal escapes via canonicalization (codex P1 #8)', () => {
+    // `/repo/../other` collapses to `/other` after canonicalization.
+    // It must NOT match the workspace at `/repo`.
+    const got = resolvePtyIdForCwd('/repo/../other', [
+      { id: 'w1', name: 'repo', metadata: { cwd: '/repo' }, activePtyId: 'p1', ptyIds: ['p1'] },
+      { id: 'w2', name: 'other', metadata: { cwd: '/other' }, activePtyId: 'p2', ptyIds: ['p2'] },
+    ]);
+    expect(got).toBe('p2');
+  });
+
+  it('collapses redundant ./ and // segments', () => {
+    const got = resolvePtyIdForCwd('/repo/./src//foo', [
+      { id: 'w1', name: 'repo', metadata: { cwd: '/repo' }, activePtyId: 'p1', ptyIds: ['p1'] },
+    ]);
+    expect(got).toBe('p1');
+  });
+
   it('exact match short-circuits before prefix scan', () => {
     // If exact-match were not first, the prefix scan over '/foo' would
     // also produce a longest-prefix hit (length 4) on the second entry,

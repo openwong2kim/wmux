@@ -98,7 +98,7 @@ export class HookSignalRouter {
    */
   recordHook(signal: AgentSignal, ptyId: string, now: number = Date.now()): RouteDecision {
     this.latencyMeter.recordSignal(signal.agent, signal.ts, now);
-    const key = this.key(signal.agent, ptyId);
+    const key = this.key(signal.agent, ptyId, signal.kind);
     const recent = this.ledger.get(key);
     // Hook beats detector only when the prior record was a detector emit
     // of the SAME kind within the window. Different kinds always emit
@@ -135,7 +135,7 @@ export class HookSignalRouter {
     ptyId: string,
     now: number = Date.now(),
   ): RouteDecision {
-    const key = this.key(slug, ptyId);
+    const key = this.key(slug, ptyId, kind);
     const recent = this.ledger.get(key);
     if (
       recent &&
@@ -163,7 +163,15 @@ export class HookSignalRouter {
     this.ledger.clear();
   }
 
-  private key(slug: string, ptyId: string): string {
-    return `${slug}:${ptyId}`;
+  /**
+   * Ledger key includes `kind` (codex review round 2, P1 #7). Without it,
+   * an `agent.activity` event would overwrite a recent `agent.stop`
+   * entry on the same (slug, ptyId), defeating dedup for the case where
+   * the user actually cares about (stop arriving while a fresh activity
+   * was the last write). Per-kind ledgers cost a few extra entries per
+   * pty in exchange for correctness.
+   */
+  private key(slug: string, ptyId: string, kind?: AgentSignalKind): string {
+    return kind ? `${slug}:${ptyId}:${kind}` : `${slug}:${ptyId}`;
   }
 }

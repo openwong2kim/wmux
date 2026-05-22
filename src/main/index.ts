@@ -21,6 +21,9 @@ import { registerInputRpc } from './pipe/handlers/input.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
 import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
+import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
+import { HookSignalRouter } from './hooks/HookSignalRouter';
+import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
 import { registerA2aRpc } from './pipe/handlers/a2a.rpc';
 import { registerCompanyRpc } from './pipe/handlers/company.rpc';
@@ -327,6 +330,12 @@ function attachWindowRecovery(win: BrowserWindow): void {
   });
 }
 
+// Hook integration backbone — owns hook-signal dedup ledger + latency
+// observability. Single instance per process, shared with PTYBridge
+// once detector-side wiring lands (see plan Phase 1.5).
+const signalLatencyMeter = new SignalLatencyMeter();
+const hookSignalRouter = new HookSignalRouter({ latencyMeter: signalLatencyMeter });
+
 registerWorkspaceRpc(rpcRouter, () => mainWindow);
 registerSurfaceRpc(rpcRouter, () => mainWindow);
 registerPaneRpc(rpcRouter, () => mainWindow);
@@ -339,6 +348,7 @@ registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker);
 registerCompanyRpc(rpcRouter, () => mainWindow);
 registerEventsRpc(rpcRouter);
 registerMcpPluginRpc(rpcRouter);
+registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter);
 
 // Wire the legacy-contact bookkeeping so envelope-less RPCs land in
 // plugin-trust.json as a `legacy` audit entry, per spec §2.2.

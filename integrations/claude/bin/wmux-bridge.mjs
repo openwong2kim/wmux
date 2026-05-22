@@ -27,6 +27,11 @@ import { randomUUID } from 'node:crypto';
 
 const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow Claude
 const BRIDGE_VERSION = '0.1.0';
+// Cap stdin at 1MB. PostToolUse payloads can balloon when a tool returns
+// a big diff or file content; we have no business forwarding that
+// over the RPC channel. Truncation note is logged so the user sees the
+// elision in bridge.log. (codex review round 2, P2 #10.)
+const MAX_STDIN_BYTES = 1 * 1024 * 1024;
 
 // ----- Hook name → AgentSignal kind ---------------------------------------
 
@@ -87,8 +92,37 @@ function logEvent(outcome, extra) {
 
 async function readStdin() {
   const chunks = [];
+  let total = 0;
+  let truncated = false;
   return new Promise((resolve, reject) => {
-    process.stdin.on('data', (c) => chunks.push(c));
+    process.stdin.on('data', (c) => {
+      // Codex review round 2, P2 #10 — cap input size so a runaway
+      // tool response cannot OOM the bridge. Stop accumulating after
+      // the cap; the resulting JSON will likely be malformed and the
+      // parse-catch path below will log and exit 0.
+      if (total + c.length > MAX_STDIN_BYTES) {
+        truncated = true;
+        const remaining = MAX_STDIN_BYTES - total;
+        if (remaining > 0) chunks.push(c.subarray(0, remaining));
+        total = MAX_STDIN_BYTES;
+        process.stdin.removeAllListeners('data');
+        process.stdin.destroy();
+        // Allow the 'end' handler below to wrap up; if it doesn't fire
+        // because we destroyed early, resolve here.
+        const buf = Buffer.concat(chunks).toString('utf8').trim();
+        try {
+          const parsed = buf ? JSON.parse(buf) : null;
+          if (truncated) logEvent('stdin-truncated', { totalBytes: total });
+          resolve(parsed);
+        } catch (err) {
+          if (truncated) logEvent('stdin-truncated', { totalBytes: total });
+          reject(err);
+        }
+        return;
+      }
+      chunks.push(c);
+      total += c.length;
+    });
     process.stdin.on('end', () => {
       const buf = Buffer.concat(chunks).toString('utf8').trim();
       if (!buf) {
@@ -190,6 +224,14 @@ async function main() {
     return;
   }
 
+  // Prefer payload.cwd when Claude Code provides it — that's the
+  // session's cwd, which is what the user means. Bridge's own
+  // process.cwd() can be the plugin install dir on some platforms
+  // when hooks are spawned outside the session shell. (codex round 2 P1 #6)
+  const payloadCwd = (payload && typeof payload.cwd === 'string' && payload.cwd.length > 0)
+    ? payload.cwd
+    : null;
+
   // Build the AgentSignal envelope. Schema mirrors
   // integrations/shared/signal-types.ts (kept in sync manually because
   // this is JS-only).
@@ -197,7 +239,7 @@ async function main() {
     kind: HOOK_TO_KIND[hookName],
     agent: 'claude',
     agentSessionId: (payload && typeof payload.session_id === 'string') ? payload.session_id : undefined,
-    cwd: process.cwd(),
+    cwd: payloadCwd ?? process.cwd(),
     payload: payload ?? {},
     ts: Date.now(),
   };
@@ -209,12 +251,28 @@ async function main() {
     token,
   };
 
-  const result = await sendRpc(getPipeName(), request);
+  const rpcResult = await sendRpc(getPipeName(), request);
 
-  if (result.ok) {
+  // RpcResponse wraps the handler's return in { id, ok, result, error }.
+  // The handler returns { ok, reason? } as well, so we need to unwrap
+  // both layers. (codex round 2 P1 #3)
+  const outerOk = rpcResult && rpcResult.ok === true;
+  const innerOk = outerOk && rpcResult.result && rpcResult.result.ok === true;
+
+  if (innerOk) {
     logEvent('ok', { hook: hookName });
+  } else if (outerOk) {
+    // Handler ran but reported a logical reason (no-workspace-match etc.)
+    logEvent('rpc-rejected', {
+      hook: hookName,
+      reason: rpcResult.result?.reason ?? 'unknown',
+    });
   } else {
-    logEvent('rpc-failed', { hook: hookName, error: result.error, reason: result.reason });
+    // Transport / auth / dispatch error.
+    logEvent('rpc-failed', {
+      hook: hookName,
+      error: rpcResult?.error ?? 'unknown',
+    });
   }
 }
 
