@@ -336,6 +336,70 @@ If a candidate fails any of these, it stays out. We do not pre-build integration
 4. **Phase 2 dogfood**: ≥ 2 weeks, focus on auth failure modes + polling cost.
 5. **Phase 3**: triggered only by an external integration request meeting the trigger conditions above. No proactive Phase 3 work.
 
+## Capacity budget (honest math)
+
+Personal time, 8–12 hours/week sustainable. Concrete per-milestone
+allocation:
+
+| Milestone | Estimated hours | Wall-clock at 10h/w | Cut trigger |
+|-----------|----------------|---------------------|------------|
+| Phase 1.5 (UI + dedup wiring) | 20–30 | 2–3 weeks | If > 3 weeks elapsed at midpoint, cut top of README fallback ladder |
+| Phase 2 (rate-limit sidecar) | 40–60 | 4–6 weeks | If > 4 weeks elapsed without first sidecar prototype, descope to single-window utilization |
+| Phase 3 slot | n/a | n/a | Demand-driven only |
+
+Re-evaluate at each milestone gate. If reality falls short of estimate,
+**cut from the README fallback ladder before extending the calendar.**
+Silent slipping is the worst failure mode.
+
+## Risk: Anthropic roadmap collision
+
+If Anthropic ships first-party UI for any of the following during
+Phase 1.5 or Phase 2 window, re-evaluate scope:
+
+- **Native hook-signal dashboard** in Claude Code itself (5h/7d
+  utilization, hook latency, per-tool counters). → Phase 2 sidecar
+  scope shrinks materially. Likely just a wmux-side adapter that
+  reads Claude Code's exposed data rather than polling Anthropic.
+- **Multi-agent native UI** (Agent View descendant) that handles
+  /team-style fan-out without external multiplexer. → Phase 1
+  notification path still useful for non-/team workflows, but the
+  "multi-agent orchestration" narrative weakens. Plugin alone is
+  still defensible.
+- **Plugin marketplace UI inside Claude Code** that auto-installs
+  wmux-claude-integration on first detection of wmux running. →
+  Cut the Phase 1.5 onboarding banner entirely; the marketplace
+  does the discovery work.
+
+Monitor monthly: Claude Code release notes + `code.claude.com/docs`
+changelog. Record any move in this plan's revision history.
+
+## Pre-Phase-2 dogfood gate (n=3 external users)
+
+Before Phase 2 implementation starts, run a small external dogfood
+session to confirm the Phase 1 install + signal path works for
+someone who is NOT the author. Concrete protocol:
+
+- **Three participants** (n=3). Selected from outside the author's
+  immediate circle: Kyungshin AI TFT non-KAD-team members, Korean
+  indie iOS developer Slack, or Threads dev-profile replies. Pay
+  honorarium ₩30,000 per session.
+- **Single 20-minute task**: install wmux + plugin from a fresh
+  setup, run one Claude Code session, report whether they received
+  any wmux notification when the session ended.
+- **Gate**: ≥ 2 of 3 receive a notification within their first
+  Claude Code Stop event → Phase 2 starts as planned. < 2 → Phase
+  1.5 polish gets another lap before Phase 2 begins.
+- **Trigger**: invoke after Phase 1.5 hard-floor item ships (the
+  PTYBridge dedup wiring), not before. There is no point dogfooding
+  a known double-notification state.
+
+The point of this gate is to avoid Phase 2 over-fitting to the
+author's own dogfood signal. The author IS the most biased dogfood
+source for this codebase; n=3 outside opinions are not statistically
+robust but they are noise-bounded enough to catch directional
+problems (e.g., "no one figured out the install command", "the
+notification is too quiet to notice").
+
 ## Open questions for next CEO review of this plan
 
 1. Should the marketplace entry be on the official `claude-plugins-official` marketplace or only on a wmux-owned marketplace (`iamwongeeeee/wmux`)? Trade-off: discoverability vs. review cycle dependency.

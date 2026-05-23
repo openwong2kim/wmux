@@ -76,23 +76,42 @@ sendNotification → renderer → toast / sound / ring / taskbar flash
 
 ## Phase 1 scope vs. Phase 1.5 (deferred)
 
-This is the Phase 1 backbone. The following live in a follow-up PR:
+This is the Phase 1 backbone. The list below is ordered as a
+fallback ladder — if Phase 1.5 capacity runs short, items are cut
+from the top, never from the bottom. The hard floor must ship before
+Phase 2 starts.
 
-- **Settings → "Plugin signal health" UI card.** The data collection
-  (SignalLatencyMeter ring buffer + uiSlice fields) ships in Phase 1,
-  but the IPC bridge from main → renderer that populates the slice
-  and the React component that renders the card both land in Phase
-  1.5. Until then, you can verify the plugin is firing by reading
-  `~/.wmux/bridge.log`.
-- **First-run onboarding banner** (`HookOnboardingBanner.tsx`).
-  Phase 1.5.
-- **Bidirectional hook ↔ AgentDetector dedup.** Phase 1 ships the
-  HookSignalRouter ledger and `recordDetector()` API, but PTYBridge
-  is not yet wired to call it. In practice this means: if you have
-  the plugin installed AND wmux's regex detector also catches the
-  same turn end, you may see two notifications within ~1s. Phase
-  1.5 wires `PTYBridge.onEvent` through `recordDetector` so the
-  first-firing source wins and the second is suppressed.
+### Fallback ladder (cut from top first)
+
+1. **First cut — First-run onboarding banner** (`HookOnboardingBanner.tsx`).
+   Users can still install via the README command. Banner is a
+   discoverability nice-to-have.
+2. **Second cut — Settings "Plugin signal health" card.** Data
+   collection (SignalLatencyMeter + uiSlice fields) already ships
+   in Phase 1. The IPC bridge from main → renderer and the card
+   itself land in Phase 1.5. Fallback diagnostic: tail
+   `~/.wmux/bridge.log` for per-fire outcomes.
+3. **Third cut — TokenTracker `/cost` regex maintenance.** Hook
+   path already covers token counts authoritatively for plugin
+   users. The regex stays as a no-plugin fallback but does not
+   need new patterns if Claude Code's `/cost` format changes.
+4. **Hard floor — Bidirectional hook ↔ AgentDetector dedup wiring.**
+   Phase 1 ships `HookSignalRouter` with the ledger + `recordDetector()`
+   API, but `PTYBridge.onEvent` is not yet calling it. Result: a
+   hook fire and a detector regex match within ~1s can both emit
+   notifications. This must ship before Phase 2; otherwise the
+   dedup story is dishonest. Files involved: `src/main/pty/PTYBridge.ts`
+   constructor injection of the router, gate the `agentDetector.onEvent`
+   `sendNotification` call through `recordDetector`. Helper
+   `agentStatusToSignalKind` already exported in `AgentDetector.ts`.
+
+### What capacity looks like
+
+Phase 1.5 estimated: 8–12 hours/week × 2–3 weeks = 20–30 productive
+hours. Phase 2 estimated: 8–12 h/w × 4–6 weeks = 40–60 hours. If
+reality falls short of the estimate at any gate, cut from the
+ladder above. Silent slipping is the worst failure mode — every
+cut is recorded in this README and in `plans/wmux-claude-integration.md`.
 
 If any of these matter for your dogfood case, file an issue on
 `iamwongeeeee/wmux` and we'll prioritize Phase 1.5.
