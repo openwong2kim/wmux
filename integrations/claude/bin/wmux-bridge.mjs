@@ -19,7 +19,7 @@
 // Codex review 2026-05-22 P0 #2: bridges must be JS-only.
 // Codex review 2026-05-22 P0 #4: token is read from disk, not env.
 
-import { readFileSync, existsSync, mkdirSync, appendFileSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, appendFileSync, statSync, openSync, readSync, closeSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
@@ -85,6 +85,67 @@ function logEvent(outcome, extra) {
     appendFileSync(getBridgeLogPath(), line + '\n', { encoding: 'utf8' });
   } catch {
     // No writable home → swallow. Nothing more we can do.
+  }
+}
+
+// ----- Transcript usage extraction ----------------------------------------
+
+// Tail-read the last 64KB of a JSONL transcript and pull `usage` from
+// the most recent assistant message. The tail approach keeps memory
+// bounded even when transcripts grow into the tens of MB after a long
+// session. Returns null on any failure — usage is best-effort, never
+// blocks signal emission.
+//
+// Shape we look for (Claude Code transcript spec):
+//   { "type": "assistant", "message": { "usage": {
+//       "input_tokens": N, "output_tokens": M,
+//       "cache_creation_input_tokens": X, "cache_read_input_tokens": Y
+//   } } }
+function extractUsageFromTranscript(transcriptPath) {
+  try {
+    if (!existsSync(transcriptPath)) return null;
+    const stat = statSync(transcriptPath);
+    const TAIL_BYTES = 64 * 1024;
+    const readBytes = Math.min(TAIL_BYTES, stat.size);
+    const offset = stat.size - readBytes;
+    const buf = Buffer.alloc(readBytes);
+    const fd = openSync(transcriptPath, 'r');
+    try {
+      readSync(fd, buf, 0, readBytes, offset);
+    } finally {
+      closeSync(fd);
+    }
+    const tail = buf.toString('utf8');
+    // Trim leading partial line if we landed mid-line (offset > 0).
+    const start = offset > 0 ? tail.indexOf('\n') + 1 : 0;
+    const lines = tail.slice(start).split('\n').filter((l) => l.trim().length > 0);
+
+    // Walk lines from the END backward — the last assistant message
+    // carries the freshest cumulative usage.
+    for (let i = lines.length - 1; i >= 0; i--) {
+      let entry;
+      try {
+        entry = JSON.parse(lines[i]);
+      } catch {
+        continue;
+      }
+      if (entry && entry.type === 'assistant' && entry.message && entry.message.usage) {
+        const u = entry.message.usage;
+        const inputTokens = (typeof u.input_tokens === 'number' ? u.input_tokens : 0)
+          + (typeof u.cache_creation_input_tokens === 'number' ? u.cache_creation_input_tokens : 0)
+          + (typeof u.cache_read_input_tokens === 'number' ? u.cache_read_input_tokens : 0);
+        const outputTokens = typeof u.output_tokens === 'number' ? u.output_tokens : 0;
+        return {
+          inputTokens,
+          outputTokens,
+          totalTokens: inputTokens + outputTokens,
+        };
+      }
+    }
+    return null;
+  } catch (err) {
+    logEvent('transcript-read-error', { error: String(err) });
+    return null;
   }
 }
 
@@ -232,6 +293,22 @@ async function main() {
     ? payload.cwd
     : null;
 
+  // Token usage extraction from transcript_path. Claude Code's Stop /
+  // SubagentStop hook payload carries `transcript_path` pointing at the
+  // session JSONL. The last assistant message has the cumulative
+  // `usage` block. Reading it is the authoritative way to get token
+  // counts — the regex-based TokenTracker in wmux only fires when the
+  // user types /cost, which most people never do.
+  //
+  // We only do this for stop-class kinds. PostToolUse / SessionStart
+  // do not carry final usage and the cost of the read isn't justified
+  // per tool call.
+  let usage = null;
+  const isStopClass = hookName === 'Stop' || hookName === 'SubagentStop';
+  if (isStopClass && payload && typeof payload.transcript_path === 'string') {
+    usage = extractUsageFromTranscript(payload.transcript_path);
+  }
+
   // Build the AgentSignal envelope. Schema mirrors
   // integrations/shared/signal-types.ts (kept in sync manually because
   // this is JS-only).
@@ -240,7 +317,7 @@ async function main() {
     agent: 'claude',
     agentSessionId: (payload && typeof payload.session_id === 'string') ? payload.session_id : undefined,
     cwd: payloadCwd ?? process.cwd(),
-    payload: payload ?? {},
+    payload: { ...(payload ?? {}), ...(usage ? { usage } : {}) },
     ts: Date.now(),
   };
 

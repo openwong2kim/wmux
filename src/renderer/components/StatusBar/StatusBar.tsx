@@ -199,9 +199,17 @@ export default function StatusBar() {
             ~${totalCost.toFixed(2)}
           </span>
         )}
-        {activeTokenData && activeTokenData.totalCost > 0 && (
+        {activeTokenData && (activeTokenData.totalTokens > 0 || activeTokenData.totalCost > 0) && (
+          // Hook-derived token counts arrive without an authoritative cost
+          // (transcript JSONL has tokens but not USD). The regex-based
+          // TokenTracker fills cost in when the user runs /cost. So we
+          // show tokens whenever we have either signal, and only render
+          // the $X.XX portion when cost is actually known.
           <span className="text-[var(--text-sub2)]" title={`Input: ${formatTokenCount(activeTokenData.inputTokens)} / Output: ${formatTokenCount(activeTokenData.outputTokens)}`}>
-            {'\u26A1'} {formatTokenCount(activeTokenData.totalTokens)} tokens {'\u00B7'} ${activeTokenData.totalCost.toFixed(2)}
+            {'\u26A1'} {formatTokenCount(activeTokenData.totalTokens)} tokens
+            {activeTokenData.totalCost > 0 && (
+              <> {'\u00B7'} ${activeTokenData.totalCost.toFixed(2)}</>
+            )}
           </span>
         )}
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />

@@ -34,6 +34,7 @@ import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
 import { sendNotification } from '../../notification/sendNotification';
 import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
+import { IPC } from '../../../shared/constants';
 import {
   isAgentSignal,
   type AgentSignal,
@@ -94,6 +95,27 @@ export function registerHooksRpc(
     //    notification. We always learned something about plugin
     //    health from the round-trip.
     hookRouter.getLatencyMeter().recordSignal(signal.agent, signal.ts);
+
+    // 3b. Forward token usage if the bridge included it. Stop /
+    //     SubagentStop bridges read the transcript JSONL and embed a
+    //     `usage` block; we reuse the same IPC channel
+    //     (TOKEN_UPDATE) the regex-based TokenTracker already uses,
+    //     so renderer-side handling (useNotificationListener +
+    //     tokenSlice) is unchanged. Hook-derived numbers are
+    //     authoritative and arrive on every turn; TokenTracker
+    //     remains the fallback for users without the plugin.
+    const usage = extractUsageFromPayload(signal.payload);
+    if (usage) {
+      const win = getWindow();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(IPC.TOKEN_UPDATE, ptyId, {
+          totalTokens: usage.totalTokens,
+          inputTokens: usage.inputTokens,
+          outputTokens: usage.outputTokens,
+          timestamp: Date.now(),
+        });
+      }
+    }
 
     // 4. Emit decision. PostToolUse / SessionStart never produce a
     //    toast (would be spam — codex round-2 P1 #5). They also
@@ -243,6 +265,36 @@ function bodyFor(signal: AgentSignal): string {
     case 'agent.session_start':
       return 'Session initialized';
   }
+}
+
+/**
+ * Pull the `usage` block out of a hook payload if the bridge embedded
+ * it. The bridge script (integrations/claude/bin/wmux-bridge.mjs) reads
+ * the Stop hook's transcript_path JSONL and writes the cumulative
+ * counts under `payload.usage` as {inputTokens, outputTokens,
+ * totalTokens}. We re-validate types defensively because the bridge
+ * runs in Claude Code's process and can be on a different version
+ * than the daemon.
+ */
+interface UsageBlock {
+  inputTokens: number;
+  outputTokens: number;
+  totalTokens: number;
+}
+export function extractUsageFromPayload(payload: Record<string, unknown>): UsageBlock | null {
+  const raw = (payload as { usage?: unknown }).usage;
+  if (!raw || typeof raw !== 'object') return null;
+  const u = raw as Record<string, unknown>;
+  const inputTokens = typeof u['inputTokens'] === 'number' ? u['inputTokens'] : null;
+  const outputTokens = typeof u['outputTokens'] === 'number' ? u['outputTokens'] : null;
+  const totalTokens = typeof u['totalTokens'] === 'number' ? u['totalTokens'] : null;
+  if (inputTokens === null || outputTokens === null || totalTokens === null) return null;
+  // Defend against negative / NaN / infinity, all of which would
+  // produce nonsense in the StatusBar formatter.
+  if (!Number.isFinite(inputTokens) || inputTokens < 0) return null;
+  if (!Number.isFinite(outputTokens) || outputTokens < 0) return null;
+  if (!Number.isFinite(totalTokens) || totalTokens < 0) return null;
+  return { inputTokens, outputTokens, totalTokens };
 }
 
 function agentDisplayName(slug: AgentSignal['agent']): string {
