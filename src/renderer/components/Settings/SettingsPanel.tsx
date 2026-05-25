@@ -16,10 +16,11 @@ import {
 import type { CustomThemeColors, XtermThemeColors } from '../../../shared/types';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
+import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type TabId = 'general' | 'appearance' | 'notifications' | 'shortcuts' | 'first-run-setup' | 'about';
+type TabId = 'general' | 'appearance' | 'notifications' | 'shortcuts' | 'claude-integration' | 'first-run-setup' | 'about';
 type ShellInfo = { name: string; path: string; args?: string[] };
 
 // ─── Icon components ──────────────────────────────────────────────────────────
@@ -2230,12 +2231,13 @@ export default function SettingsPanel() {
   const panelRef = useRef<HTMLDivElement>(null);
 
   const tabs: { id: TabId; label: string; icon: string }[] = [
-    { id: 'general',         label: t('settings.tabGeneral'),       icon: '⚙' },
-    { id: 'appearance',      label: t('settings.tabAppearance'),    icon: '◑' },
-    { id: 'notifications',   label: t('settings.tabNotifications'), icon: '◎' },
-    { id: 'shortcuts',       label: t('settings.tabShortcuts'),     icon: '⌨' },
-    { id: 'first-run-setup', label: t('settings.firstRunSetup'),    icon: '◇' },
-    { id: 'about',           label: t('settings.tabAbout'),         icon: 'ℹ' },
+    { id: 'general',            label: t('settings.tabGeneral'),         icon: '⚙' },
+    { id: 'appearance',         label: t('settings.tabAppearance'),      icon: '◑' },
+    { id: 'notifications',      label: t('settings.tabNotifications'),   icon: '◎' },
+    { id: 'shortcuts',          label: t('settings.tabShortcuts'),       icon: '⌨' },
+    { id: 'claude-integration', label: t('claudeIntegration.tab'),       icon: '◈' },
+    { id: 'first-run-setup',    label: t('settings.firstRunSetup'),      icon: '◇' },
+    { id: 'about',              label: t('settings.tabAbout'),           icon: 'ℹ' },
   ];
 
   // Close on Escape
@@ -2325,12 +2327,13 @@ export default function SettingsPanel() {
 
           {/* Right content */}
           <div className="flex-1 overflow-y-auto px-5 py-4">
-            {activeTab === 'general'         && <TabGeneral />}
-            {activeTab === 'appearance'      && <TabAppearance />}
-            {activeTab === 'notifications'   && <TabNotifications />}
-            {activeTab === 'shortcuts'       && <TabShortcuts />}
-            {activeTab === 'first-run-setup' && <TabFirstRunSetup />}
-            {activeTab === 'about'           && <TabAbout />}
+            {activeTab === 'general'            && <TabGeneral />}
+            {activeTab === 'appearance'         && <TabAppearance />}
+            {activeTab === 'notifications'      && <TabNotifications />}
+            {activeTab === 'shortcuts'          && <TabShortcuts />}
+            {activeTab === 'claude-integration' && <ClaudeIntegrationSection />}
+            {activeTab === 'first-run-setup'    && <TabFirstRunSetup />}
+            {activeTab === 'about'              && <TabAbout />}
           </div>
         </div>
 

@@ -22,6 +22,8 @@ import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
 import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
+import { UsagePoller } from './claude/UsagePoller';
+import { IPC } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
@@ -348,7 +350,33 @@ registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker);
 registerCompanyRpc(rpcRouter, () => mainWindow);
 registerEventsRpc(rpcRouter);
 registerMcpPluginRpc(rpcRouter);
-registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter);
+// Returns an unsubscribe for the signal-health push subscription. Called from
+// before-quit so HMR reload / shutdown does not leak the listener.
+const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter);
+
+// ─── Phase 2 — Anthropic 5h/7d usage meter ──────────────────────────────────
+// Opt-in. Stays idle until the renderer sends IPC.USAGE_TOGGLE with `true`.
+// Window visibility is hooked below in the BrowserWindow event wire-up.
+const usagePoller = new UsagePoller();
+const disposeUsagePollerListener = usagePoller.onStateChange((state) => {
+  const win = mainWindow;
+  if (win && !win.isDestroyed()) {
+    win.webContents.send(IPC.USAGE_UPDATE, state);
+  }
+});
+ipcMain.on(IPC.USAGE_TOGGLE, (_event, enabled: unknown) => {
+  if (enabled === true) {
+    usagePoller.start();
+  } else {
+    usagePoller.stop();
+  }
+});
+ipcMain.on(IPC.USAGE_REFRESH, () => {
+  // refreshNow() is fire-and-forget here — the listener above will
+  // push the resulting state to the renderer. Wrapping in `void` so
+  // the floating promise doesn't trip lint.
+  void usagePoller.refreshNow();
+});
 
 // Wire the legacy-contact bookkeeping so envelope-less RPCs land in
 // plugin-trust.json as a `legacy` audit entry, per spec §2.2.
@@ -436,6 +464,13 @@ app.on('ready', async () => {
       mainWindow!.hide();
     }
   });
+
+  // Phase 2 — UsagePoller hidden-window cost control. We treat tray-hide
+  // as "user not looking" so the poller's 30-min skip threshold kicks in
+  // and we don't burn Anthropic quota for a UI nobody sees. Show always
+  // unpauses immediately and forces a catch-up fetch.
+  mainWindow.on('hide', () => { usagePoller.setWindowVisible(false); });
+  mainWindow.on('show', () => { usagePoller.setWindowVisible(true); });
 
   // System tray — lets the app stay alive when window is closed.
   // Phase A — A3/A5 fix (codex review P1, session 019e2af8): the callback
@@ -762,6 +797,9 @@ app.on('before-quit', async (e) => {
 
   cleanupHandlers();
   disposeFirstRunHandlers();
+  disposeHooksRpc();
+  disposeUsagePollerListener();
+  usagePoller.dispose();
   // Tear down the respawn controller BEFORE the daemon-shutdown race so
   // a daemon close during the race window can't trigger a respawn attempt
   // while the rest of the app is exiting. `dispose()` only stops timers

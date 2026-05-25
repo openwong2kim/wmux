@@ -114,18 +114,21 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     }
   }, [pane.id, pane.surfaces, setActivePane, markRead, setPaneNotificationRing]);
 
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const defaultShell = useStore((s) => s.defaultShell);
   const { invoke: ipcInvoke } = useIpc();
   const handleAddSurface = useCallback(async () => {
+    // Use the owning workspace id from the prop, NOT global activeWorkspaceId
+    // — multiview can leave this Pane mounted while a different tile holds
+    // focus, and the global value would tag the new PTY with the wrong
+    // workspace. Codex P1 fix 2026-05-24.
     const result = await ipcInvoke<{ id: string }>(() =>
-      window.electronAPI.pty.create(withDefaultShell({ workspaceId: activeWorkspaceId }, defaultShell))
+      window.electronAPI.pty.create(withDefaultShell({ workspaceId: workspace.id }, defaultShell))
     );
     if (result.ok) {
       addSurface(pane.id, result.data.id, 'Terminal', '');
     }
     // On failure, useIpc already surfaced a toast. No-op here.
-  }, [pane.id, addSurface, activeWorkspaceId, defaultShell, ipcInvoke]);
+  }, [pane.id, addSurface, workspace.id, defaultShell, ipcInvoke]);
 
   const closePane = useStore((s) => s.closePane);
 
@@ -164,6 +167,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
 
       <SplitSurfaceView
         pane={pane}
+        workspaceId={workspace.id}
         activeSurfaceId={pane.activeSurfaceId}
         isWorkspaceVisible={isWorkspaceVisible}
         onCloseSurface={handleCloseSurface}
@@ -178,6 +182,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
 /** Renders surfaces with a resizable split when both terminals and browsers coexist */
 function SplitSurfaceView({
   pane,
+  workspaceId,
   activeSurfaceId,
   isWorkspaceVisible,
   onCloseSurface,
@@ -185,6 +190,9 @@ function SplitSurfaceView({
   emptyMessage,
 }: {
   pane: PaneLeaf;
+  /** Owning workspace id — threaded through to TerminalComponent so PTY
+   *  create uses the correct WMUX_WORKSPACE_ID env (Codex P1 2026-05-24). */
+  workspaceId: string;
   activeSurfaceId: string;
   isWorkspaceVisible: boolean;
   onCloseSurface: (id: string) => void;
@@ -239,6 +247,8 @@ function SplitSurfaceView({
               isWorkspaceVisible={isWorkspaceVisible}
               onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
               scrollbackFile={surface.scrollbackFile}
+              workspaceId={workspaceId}
+              surfaceId={surface.id}
             />
           ),
         )}
@@ -261,6 +271,8 @@ function SplitSurfaceView({
                 isWorkspaceVisible={isWorkspaceVisible}
                 onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
                 scrollbackFile={surface.scrollbackFile}
+                workspaceId={workspaceId}
+                surfaceId={surface.id}
               />
             ))}
           </div>

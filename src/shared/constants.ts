@@ -59,6 +59,25 @@ export const IPC = {
   SCROLLBACK_LOAD: 'scrollback:load',
   // Token tracking
   TOKEN_UPDATE: 'token:update',
+  // Claude Code hook signal health (Phase 1.5). Push channel — main process
+  // emits whenever SignalLatencyMeter stats change (throttled to 1Hz in
+  // registerHooksRpc). Payload: LatencyStats snapshot. Renderer subscribes
+  // via preload `signalHealth.onUpdate` and feeds uiSlice.setHookSignalHealth.
+  SIGNAL_HEALTH_UPDATE: 'signal-health:update',
+  // Anthropic 5h/7d usage meter (Phase 2). Push channel — UsagePoller in
+  // main process emits whenever its state changes (initial fetch, hourly
+  // tick, manual refresh, 401, network error). Payload: PollerState.
+  // Renderer subscribes via preload `usage.onUpdate` and feeds
+  // uiSlice.setAnthropicUsage.
+  USAGE_UPDATE: 'usage:update',
+  // Renderer → main: opt-in / opt-out toggle for the Anthropic usage
+  // meter (Settings → Claude 연동 → Anthropic 사용량 표기 토글). Main
+  // starts/stops the UsagePoller on receipt.
+  USAGE_TOGGLE: 'usage:toggle',
+  // Renderer → main: manual refresh (StatusBar mini widget / Settings
+  // "지금 새로고침" button). Triggers an immediate poll regardless of
+  // interval timing. Caller enforces a UI-side cooldown (5 min).
+  USAGE_REFRESH: 'usage:refresh',
   // EventBus publish — renderer→main one-way for pane lifecycle events
   EVENTS_PUBLISH: 'events:publish',
   // Window control

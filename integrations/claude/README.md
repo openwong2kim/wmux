@@ -19,17 +19,37 @@ This plugin is the bridge: hook fires → bridge reads stdin and
 
 ## Install
 
+### Option A — from GitHub (typical)
+
 Run inside Claude Code:
 
 ```
-/plugin marketplace add iamwongeeeee/wmux
-/plugin install wmux-claude-integration
+/plugin marketplace add openwong2kim/wmux
+/plugin install wmux-claude-integration@wmux
 ```
 
-After install, restart your Claude Code session for the hooks to take
-effect. wmux must be running to receive signals; if it isn't, the
-bridge logs the miss to `~/.wmux/bridge.log` and exits 0 so Claude is
-not slowed down.
+### Option B — from a local checkout (dev / dogfood before merge)
+
+If you've cloned this repo and want to test the plugin against the
+current branch without pushing to GitHub first:
+
+```
+/plugin marketplace add D:/wmux
+/plugin install wmux-claude-integration@wmux
+```
+
+Substitute your local clone path. Claude Code reads
+`.claude-plugin/marketplace.json` from that directory.
+
+### After either path
+
+Restart your Claude Code session for the hooks to take effect. wmux
+must be running to receive signals; if it isn't, the bridge logs the
+miss to `~/.wmux/bridge.log` and exits 0 so Claude is not slowed
+down.
+
+When you edit `bin/wmux-bridge.mjs` locally, run `/plugin reload` in
+Claude Code (or restart the session) to pick up the change.
 
 ## Architecture
 
@@ -114,7 +134,7 @@ ladder above. Silent slipping is the worst failure mode — every
 cut is recorded in this README and in `plans/wmux-claude-integration.md`.
 
 If any of these matter for your dogfood case, file an issue on
-`iamwongeeeee/wmux` and we'll prioritize Phase 1.5.
+`openwong2kim/wmux` and we'll prioritize Phase 1.5.
 
 ## Troubleshooting
 

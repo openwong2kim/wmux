@@ -309,6 +309,22 @@ async function main() {
     usage = extractUsageFromTranscript(payload.transcript_path);
   }
 
+  // Env-first routing identifiers. When Claude Code runs inside a wmux
+  // pane, the PTYManager injects WMUX_WORKSPACE_ID / WMUX_SURFACE_ID into
+  // the shell env. Claude Code → bridge subprocess inherits the env. The
+  // daemon prefers these over cwd because cwd matching is ambiguous when
+  // multiple workspaces share a path (e.g. two panes opened in the same
+  // repo). User dogfood 2026-05-24 hit this: workspace 4 turn-end was
+  // routing to workspace 2's toast because both had the same cwd.
+  const envWorkspaceId =
+    typeof process.env.WMUX_WORKSPACE_ID === 'string' && process.env.WMUX_WORKSPACE_ID.length > 0
+      ? process.env.WMUX_WORKSPACE_ID
+      : undefined;
+  const envSurfaceId =
+    typeof process.env.WMUX_SURFACE_ID === 'string' && process.env.WMUX_SURFACE_ID.length > 0
+      ? process.env.WMUX_SURFACE_ID
+      : undefined;
+
   // Build the AgentSignal envelope. Schema mirrors
   // integrations/shared/signal-types.ts (kept in sync manually because
   // this is JS-only).
@@ -316,10 +332,24 @@ async function main() {
     kind: HOOK_TO_KIND[hookName],
     agent: 'claude',
     agentSessionId: (payload && typeof payload.session_id === 'string') ? payload.session_id : undefined,
+    workspaceId: envWorkspaceId,
+    surfaceId: envSurfaceId,
     cwd: payloadCwd ?? process.cwd(),
     payload: { ...(payload ?? {}), ...(usage ? { usage } : {}) },
     ts: Date.now(),
   };
+
+  // Diagnostic dump for verification harnesses (scripts/verify-bridge-env-capture.mjs).
+  // Stripped from production by the WMUX_BRIDGE_DEBUG gate — token never crosses
+  // this branch. Payload usage block is stripped because transcript content can
+  // be large and is not what we want to verify.
+  if (process.env.WMUX_BRIDGE_DEBUG === '1') {
+    const { payload: envelopePayload, ...envelopeMeta } = envelope;
+    const usageOnly = envelopePayload && envelopePayload.usage ? { usage: envelopePayload.usage } : {};
+    process.stderr.write(
+      `WMUX_BRIDGE_DEBUG_ENVELOPE=${JSON.stringify({ ...envelopeMeta, payloadKeys: Object.keys(envelopePayload ?? {}), ...usageOnly })}\n`,
+    );
+  }
 
   const request = {
     id: `bridge-${randomUUID()}`,

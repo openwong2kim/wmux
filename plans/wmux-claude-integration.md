@@ -103,7 +103,7 @@ Split trigger: after Phase 2 ships AND we see meaningful adoption outside wmux u
 | 3 | SubagentStop hook | /team mode subagent completion routing |
 | 4 | SessionStart hook | Metadata reset trigger (clear stale state) |
 | 5 | Hook ↔ AgentDetector dedup | Hook signal wins; AgentDetector is fallback when plugin absent |
-| 6 | Plugin marketplace entry | `marketplace.json` so users run `/plugin marketplace add iamwongeeeee/wmux` |
+| 6 | Plugin marketplace entry | `marketplace.json` so users run `/plugin marketplace add openwong2kim/wmux` |
 | 7 | First-run onboarding banner | NotificationPanel header prompts install when wmux detects Claude Code use without plugin |
 | 8 | **Agent-agnostic architecture** (CEO 2026-05-22) | `integrations/shared/` at top level + canonical signal envelope. Phase 3 cost pre-amortized |
 | 9 | **Hook signal latency telemetry** (CEO 2026-05-22) | Local-only ring buffer (max 100 entries) recording (claude turn-end → wmux toast) delta. Settings panel shows P50/P95. No remote telemetry, no opt-in needed because data never leaves disk |
@@ -114,7 +114,7 @@ Note: items 21/22/23 from the prior revision (marker-based settings.json editing
 
 ```
 USER ACTION (one time):
-  /plugin marketplace add iamwongeeeee/wmux
+  /plugin marketplace add openwong2kim/wmux
   /plugin install wmux-claude-integration
 
 CLAUDE CODE LOADS PLUGIN:
@@ -402,7 +402,7 @@ notification is too quiet to notice").
 
 ## Open questions for next CEO review of this plan
 
-1. Should the marketplace entry be on the official `claude-plugins-official` marketplace or only on a wmux-owned marketplace (`iamwongeeeee/wmux`)? Trade-off: discoverability vs. review cycle dependency.
+1. Should the marketplace entry be on the official `claude-plugins-official` marketplace or only on a wmux-owned marketplace (`openwong2kim/wmux`)? Trade-off: discoverability vs. review cycle dependency.
 2. Default to "plugin auto-detected" silent-detect, or always show the install banner once on first Claude Code use? UX feel.
 3. Plugin uninstall — should wmux Settings include a "Disable hook integration" toggle that doesn't actually uninstall the plugin (just stops processing signals), for users who want to keep the plugin but pause it temporarily?
 4. Telemetry — is hook arrival latency something we want to measure? If yes, where does the data go (existing wmux telemetry, or none)?

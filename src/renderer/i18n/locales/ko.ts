@@ -342,4 +342,39 @@ export const ko = {
   'settings.firstRunSetup.statusNotRegistered': '미등록',
   'settings.firstRunSetup.openWizard': '설정 마법사 열기',
   'settings.firstRunSetup.showCheatSheet': '키보드 치트시트 보기',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
+  'claudeIntegration.tab': 'Claude 연동',
+  'claudeIntegration.signalHealth.title': '플러그인 신호 상태',
+  'claudeIntegration.signalHealth.unknownBody':
+    '플러그인 상태: 아직 신호가 관측되지 않았습니다. Claude Code에서 아래 명령을 실행해 설치하세요. 첫 hook이 발생하면 wmux가 자동으로 감지합니다.',
+  'claudeIntegration.signalHealth.detectedLastReceived': '마지막 신호 {rel}.',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    '지연 P50 {p50}ms · P95 {p95}ms · 샘플 {count}건',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    '워크스페이스 매칭: {matched}/{total} hook이 wmux pane으로 해결됨',
+  'claudeIntegration.signalHealth.staleBody':
+    '플러그인 상태: 오래됨. 마지막 hook이 {rel}에 도착했습니다 — 플러그인이 멈췄거나 Claude Code가 휴면 상태일 수 있습니다.',
+  'claudeIntegration.signalHealth.copyInstallCommand': '설치 명령 복사',
+  'claudeIntegration.signalHealth.copySuccess': '복사됨 — Claude Code에 붙여넣기',
+  'claudeIntegration.signalHealth.copyError': '복사 실패 — 클립보드 잠김',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Anthropic 사용량 표기 (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'Claude Code의 OAuth 토큰을 로컬에서 읽어 Anthropic에 1토큰 Haiku 더미 요청을 보내고 rate-limit 헤더를 파싱합니다. 본인 quota에서 차감됩니다 (사실상 무료 수준). 토큰은 디스크에 다시 쓰지 않고, 로그에 남기지 않으며, api.anthropic.com으로만 전송됩니다.',
+  'claudeIntegration.usage.enableLabel': '상태 표시줄에 5h / 7d 사용률 표기',
+  'claudeIntegration.usage.refreshButton': '지금 새로고침',
+  'claudeIntegration.usage.refreshCooldown': '{seconds}초 후 새로고침 가능',
+  'claudeIntegration.usage.subscription': '플랜: {tier}',
+  'claudeIntegration.usage.lastFetched': '마지막 조회: {ago}',
+  'claudeIntegration.usage.justNow': '방금 전',
+  'claudeIntegration.usage.minutesAgo': '{n}분 전',
+  'claudeIntegration.usage.hoursAgo': '{n}시간 전',
+  'claudeIntegration.usage.daysAgo': '{n}일 전',
+  'claudeIntegration.usage.status.token-missing': 'Claude Code 로그인 안 됨',
+  'claudeIntegration.usage.status.unauthorized': '토큰 만료 — Claude Code에 다시 로그인 필요',
+  'claudeIntegration.usage.status.http-error': 'Anthropic API 에러',
+  'claudeIntegration.usage.status.network-error': '네트워크 에러',
+  'claudeIntegration.usage.status.read-error': '자격 증명 읽기 실패',
 } as const;

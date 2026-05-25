@@ -5,7 +5,7 @@ import { StringDecoder } from 'node:string_decoder';
 import { PTYManager } from '../../pty/PTYManager';
 import { PTYBridge } from '../../pty/PTYBridge';
 import { DaemonClient } from '../../DaemonClient';
-import { IPC, getPidMapDir } from '../../../shared/constants';
+import { IPC, getPidMapDir, ENV_KEYS } from '../../../shared/constants';
 import { sanitizePtyText } from '../../../shared/types';
 import { updateCwd } from './metadata.handler';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
@@ -182,7 +182,7 @@ export function registerPTYHandlers(
   // pty:create
   ipcMain.removeHandler(IPC.PTY_CREATE);
   if (useDaemon && daemonClient) {
-    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string }) => {
+    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string }) => {
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
@@ -195,6 +195,29 @@ export function registerPTYHandlers(
       const crypto = require('crypto');
       const sessionId = `daemon-${crypto.randomUUID().slice(0, 8)}`;
 
+      // Identity env vars for the spawned shell. The daemon's
+      // `buildSafeChildEnv` passes WMUX_WORKSPACE_ID / WMUX_SURFACE_ID
+      // through (only WMUX_AUTH* is stripped), so PTY children — and
+      // any tooling that spawns from them like the Claude Code hook
+      // bridge — can use the env for deterministic routing instead of
+      // ambiguous cwd matching. (User dogfood 2026-05-24: workspace 4
+      // turn-end was landing on workspace 2's toast because both had
+      // cwd C:\Users\rizz. Env-first now resolves it.)
+      //
+      // Without this, daemon-mode sessions get a bare `globalThis.process.env`
+      // baseline that has no wmux identity at all — main process never had
+      // WMUX_WORKSPACE_ID/SURFACE_ID in its own env (those are PTY-level).
+      const identityEnv: Record<string, string> = {};
+      if (options?.workspaceId) identityEnv[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
+      if (options?.surfaceId) identityEnv[ENV_KEYS.SURFACE_ID] = options.surfaceId;
+      // Merge with main process env so the daemon's buildSafeChildEnv starts
+      // from a complete baseline (PATH, USERPROFILE, etc.) plus our identity.
+      const sessionEnv: Record<string, string> = {};
+      for (const [k, v] of Object.entries(globalThis.process.env)) {
+        if (typeof v === 'string') sessionEnv[k] = v;
+      }
+      Object.assign(sessionEnv, identityEnv);
+
       // Create session via daemon RPC
       const result = await daemonClient.rpc('daemon.createSession', {
         id: sessionId,
@@ -202,6 +225,7 @@ export function registerPTYHandlers(
         cwd: effectiveCwd,
         cols: options?.cols || 80,
         rows: options?.rows || 24,
+        env: sessionEnv,
       });
 
       // Attach to the session (makes daemon start the SessionPipe server)

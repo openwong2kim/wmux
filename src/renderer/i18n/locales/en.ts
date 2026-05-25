@@ -357,6 +357,41 @@ export const en = {
   'settings.firstRunSetup.statusNotRegistered': 'not registered',
   'settings.firstRunSetup.openWizard': 'Open setup wizard',
   'settings.firstRunSetup.showCheatSheet': 'Show keyboard cheat sheet',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
+  'claudeIntegration.tab': 'Claude integration',
+  'claudeIntegration.signalHealth.title': 'Plugin signal health',
+  'claudeIntegration.signalHealth.unknownBody':
+    'Plugin status: not yet observed. Install with the command below in Claude Code. wmux confirms detection once the first hook fires.',
+  'claudeIntegration.signalHealth.detectedLastReceived': 'Last signal {rel}.',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'Latency P50 {p50}ms · P95 {p95}ms · {count} samples',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'Workspace match: {matched}/{total} hooks resolved to a wmux pane',
+  'claudeIntegration.signalHealth.staleBody':
+    'Plugin status: stale. Last hook arrived {rel} — the plugin may have stopped firing or Claude Code is idle.',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'Copy install command',
+  'claudeIntegration.signalHealth.copySuccess': 'Copied — paste into Claude Code',
+  'claudeIntegration.signalHealth.copyError': 'Copy failed — clipboard locked',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Anthropic usage meter (5h / 7d)',
+  'claudeIntegration.usage.description':
+    "Reads your Claude Code OAuth token from local storage and probes Anthropic with a 1-token Haiku request to read the rate-limit headers. The probe is billed to your own quota (≈ negligible). Token is never written back, never logged, only sent to api.anthropic.com.",
+  'claudeIntegration.usage.enableLabel': 'Show 5h / 7d utilization in status bar',
+  'claudeIntegration.usage.refreshButton': 'Refresh now',
+  'claudeIntegration.usage.refreshCooldown': 'Refresh available in {seconds}s',
+  'claudeIntegration.usage.subscription': 'Plan: {tier}',
+  'claudeIntegration.usage.lastFetched': 'Last fetched: {ago}',
+  'claudeIntegration.usage.justNow': 'just now',
+  'claudeIntegration.usage.minutesAgo': '{n}m ago',
+  'claudeIntegration.usage.hoursAgo': '{n}h ago',
+  'claudeIntegration.usage.daysAgo': '{n}d ago',
+  'claudeIntegration.usage.status.token-missing': 'Claude Code not logged in',
+  'claudeIntegration.usage.status.unauthorized': 'Token expired — log in to Claude Code again',
+  'claudeIntegration.usage.status.http-error': 'Anthropic API error',
+  'claudeIntegration.usage.status.network-error': 'Network error',
+  'claudeIntegration.usage.status.read-error': 'Credential read error',
 } as const;
 
 export type TranslationKey = keyof typeof en;

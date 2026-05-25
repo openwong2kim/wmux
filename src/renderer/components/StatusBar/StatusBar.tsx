@@ -2,6 +2,7 @@ import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import type { Notification, Pane, PaneLeaf, Workspace } from '../../../shared/types';
+import { UsageWidgetView } from './UsageWidget';
 
 /** Resolve the ptyId of the active pane's active surface */
 function getActivePtyId(rootPane: Pane | undefined, activePaneId: string): string | null {
@@ -163,6 +164,12 @@ export default function StatusBar() {
   );
   const activeTokenData = activePtyId ? tokenDataByPty[activePtyId] : undefined;
 
+  // Anthropic 5h/7d usage state. Hidden entirely when status === 'idle'
+  // (Settings toggle off). `nowMs` is the existing per-second clock used
+  // for time display — countdown math reuses the same cursor.
+  const usage = useStore((s) => s.anthropicUsage);
+  const nowMs = time.getTime();
+
   return (
     <div className="flex items-center justify-between h-6 px-3 border-b border-[var(--bg-surface)] text-[10px] text-[var(--text-muted)] shrink-0 select-none font-mono" style={{ backgroundColor: 'var(--bg-mantle)' }} data-onboarding-target="status-bar">
       {/* Left: workspace + branch */}
@@ -212,6 +219,13 @@ export default function StatusBar() {
             )}
           </span>
         )}
+        <UsageWidgetView
+          status={usage.status}
+          snapshot={usage.snapshot}
+          lastError={usage.lastError}
+          subscriptionType={usage.subscriptionType}
+          nowMs={nowMs}
+        />
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
         {memUsage && <span>{memUsage}</span>}
         <span>{timeStr}</span>

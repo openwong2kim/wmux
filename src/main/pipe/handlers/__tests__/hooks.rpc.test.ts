@@ -1,5 +1,17 @@
 import { describe, it, expect } from 'vitest';
-import { resolvePtyIdForCwd, extractUsageFromPayload } from '../hooks.rpc';
+import { resolvePtyIdForCwd, resolvePtyIdForSignal, extractUsageFromPayload } from '../hooks.rpc';
+import type { AgentSignal } from '../../../../../integrations/shared/signal-types';
+
+function signal(overrides: Partial<AgentSignal>): AgentSignal {
+  return {
+    kind: 'agent.stop',
+    agent: 'claude',
+    cwd: '/foo/bar',
+    payload: {},
+    ts: 1_700_000_000_000,
+    ...overrides,
+  };
+}
 
 describe('resolvePtyIdForCwd', () => {
   it('exact cwd match returns activePtyId', () => {
@@ -99,6 +111,65 @@ describe('resolvePtyIdForCwd', () => {
       { id: 'w2', name: 'exact', metadata: { cwd: '/foo/bar' }, activePtyId: 'p2', ptyIds: ['p2'] },
     ]);
     expect(got).toBe('p2');
+  });
+});
+
+describe('resolvePtyIdForSignal — env-first routing (Codex P1 #7 fix)', () => {
+  const workspaces = [
+    { id: 'ws-2', name: 'Workspace 2', metadata: { cwd: '/repo' }, activePtyId: 'p2', ptyIds: ['p2'] },
+    { id: 'ws-4', name: 'Workspace 4', metadata: { cwd: '/repo' }, activePtyId: 'p4', ptyIds: ['p4'] },
+  ];
+
+  it('workspaceId env match wins over cwd ambiguity (the bug user dogfood hit)', () => {
+    // Both ws-2 and ws-4 have cwd '/repo' — pure cwd routing would
+    // return p2 (first match). Env-first routes to ws-4 deterministically.
+    const got = resolvePtyIdForSignal(signal({ workspaceId: 'ws-4', cwd: '/repo' }), workspaces);
+    expect(got).toBe('p4');
+  });
+
+  it('workspaceId env match wins even when cwd would match a different workspace', () => {
+    // ws-2 has cwd '/foo' but the signal env says ws-4. Env wins.
+    const ws = [
+      { id: 'ws-2', name: 'A', metadata: { cwd: '/foo' }, activePtyId: 'p2', ptyIds: ['p2'] },
+      { id: 'ws-4', name: 'B', metadata: { cwd: '/bar' }, activePtyId: 'p4', ptyIds: ['p4'] },
+    ];
+    const got = resolvePtyIdForSignal(signal({ workspaceId: 'ws-4', cwd: '/foo' }), ws);
+    expect(got).toBe('p4');
+  });
+
+  it('falls back to cwd when workspaceId is absent', () => {
+    const got = resolvePtyIdForSignal(signal({ cwd: '/repo' }), workspaces);
+    // No env → cwd exact match → first workspaces entry wins (ws-2's p2).
+    expect(got).toBe('p2');
+  });
+
+  it('falls back to cwd when workspaceId references a closed workspace', () => {
+    // Stale env (workspace closed). Recover via cwd matching.
+    const got = resolvePtyIdForSignal(
+      signal({ workspaceId: 'ws-deleted', cwd: '/repo' }),
+      workspaces,
+    );
+    expect(got).toBe('p2');
+  });
+
+  it('returns null when env workspaceId stale AND cwd has no match', () => {
+    const got = resolvePtyIdForSignal(
+      signal({ workspaceId: 'ws-deleted', cwd: '/not-wmux' }),
+      workspaces,
+    );
+    expect(got).toBeNull();
+  });
+
+  it('workspaceId matches but workspace has no ptyId → fall back to cwd', () => {
+    const ws = [
+      { id: 'ws-empty', name: 'empty', metadata: { cwd: '/elsewhere' } },
+      { id: 'ws-with-cwd', name: 'with-cwd', metadata: { cwd: '/repo' }, activePtyId: 'pX', ptyIds: ['pX'] },
+    ];
+    const got = resolvePtyIdForSignal(
+      signal({ workspaceId: 'ws-empty', cwd: '/repo' }),
+      ws,
+    );
+    expect(got).toBe('pX');
   });
 });
 

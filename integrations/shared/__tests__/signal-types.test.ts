@@ -69,4 +69,20 @@ describe('isAgentSignal', () => {
   it('rejects non-string agentSessionId when present', () => {
     expect(isAgentSignal({ ...valid, agentSessionId: 12345 })).toBe(false);
   });
+
+  // Env-first routing fields (Codex P1 #7 promoted 2026-05-24)
+  it('accepts valid workspaceId / surfaceId', () => {
+    expect(isAgentSignal({ ...valid, workspaceId: 'ws-abc' })).toBe(true);
+    expect(isAgentSignal({ ...valid, workspaceId: 'ws-abc', surfaceId: 'surface-xyz' })).toBe(true);
+  });
+
+  it('rejects empty workspaceId / surfaceId', () => {
+    expect(isAgentSignal({ ...valid, workspaceId: '' })).toBe(false);
+    expect(isAgentSignal({ ...valid, surfaceId: '' })).toBe(false);
+  });
+
+  it('rejects non-string workspaceId / surfaceId', () => {
+    expect(isAgentSignal({ ...valid, workspaceId: 42 })).toBe(false);
+    expect(isAgentSignal({ ...valid, surfaceId: { id: 'x' } })).toBe(false);
+  });
 });

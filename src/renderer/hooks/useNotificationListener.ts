@@ -366,12 +366,37 @@ export function useNotificationListener() {
       useStore.getState().updateTokenData(ptyId, data);
     });
 
+    // Phase 1.5 — Claude Code hook signal health. Main throttles to 1Hz so
+    // this fires at most once per second. Just slots into the existing
+    // uiSlice field; no derived state required.
+    const unsubSignalHealth = window.electronAPI.signalHealth.onUpdate((stats) => {
+      useStore.getState().setHookSignalHealth(stats);
+    });
+
+    // Phase 2 — Anthropic 5h/7d usage meter. Main pushes a PollerState
+    // snapshot on initial fetch, hourly tick, manual refresh, and on
+    // error transitions. Renderer treats the payload as opaque.
+    const unsubUsage = window.electronAPI.usage.onUpdate((state) => {
+      useStore.getState().setAnthropicUsage(state);
+    });
+    // Hydrate main from persisted opt-in. Main boots with the poller
+    // stopped; if the user had it enabled before app restart, the
+    // SessionData restore in workspaceSlice.loadSession sets
+    // `anthropicUsageEnabled` back to true, and we mirror that to
+    // main here so the poller starts again. Calling setEnabled on a
+    // poller already in the requested state is a no-op (idempotent).
+    if (useStore.getState().anthropicUsageEnabled) {
+      window.electronAPI.usage.setEnabled(true);
+    }
+
     return () => {
       unsubNotif();
       unsubCwd();
       unsubMeta();
       unsubGitBranch();
       unsubToken();
+      unsubSignalHealth();
+      unsubUsage();
       // Reset throttlers so a hot-reloaded listener doesn't inherit stale
       // last-fire timestamps that would suppress the first notification.
       flashFrameThrottler.cancel();

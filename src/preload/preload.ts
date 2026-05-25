@@ -238,6 +238,79 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.TOKEN_UPDATE, listener); };
     },
   },
+  // Phase 1.5 — Claude Code plugin signal-health push. Main fires whenever
+  // SignalLatencyMeter stats change (throttled to 1Hz). Payload mirrors
+  // `LatencyStats` from src/main/hooks/SignalLatencyMeter.ts. Mirrored here
+  // to avoid a renderer→main type import; renderer uses the structural
+  // shape only.
+  signalHealth: {
+    onUpdate: (
+      callback: (stats: {
+        total: number;
+        count: number;
+        p50: number | null;
+        p95: number | null;
+        lastSignalAt: number | null;
+        perAgent: Record<string, number>;
+        workspaceMatchRate: { matched: number; missed: number };
+      }) => void,
+    ) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        stats: {
+          total: number;
+          count: number;
+          p50: number | null;
+          p95: number | null;
+          lastSignalAt: number | null;
+          perAgent: Record<string, number>;
+          workspaceMatchRate: { matched: number; missed: number };
+        },
+      ) => callback(stats);
+      ipcRenderer.on(IPC.SIGNAL_HEALTH_UPDATE, listener);
+      return () => { ipcRenderer.removeListener(IPC.SIGNAL_HEALTH_UPDATE, listener); };
+    },
+  },
+  // Phase 2 — Anthropic 5h/7d usage meter. Push channel from UsagePoller.
+  // Shape mirrors `PollerState` from src/main/claude/UsagePoller.ts.
+  // The renderer treats the snapshot as opaque: it's read but never
+  // mutated, and the access token is intentionally absent from the
+  // payload (the poller strips it before emitting).
+  usage: {
+    onUpdate: (
+      callback: (state: {
+        status:
+          | 'idle'
+          | 'ok'
+          | 'token-missing'
+          | 'unauthorized'
+          | 'http-error'
+          | 'network-error'
+          | 'read-error';
+        snapshot: {
+          sessionPct: number;
+          sessionResetEpochSec: number;
+          weeklyPct: number;
+          weeklyResetEpochSec: number;
+          fetchedAtMs: number;
+        } | null;
+        lastError: string | null;
+        subscriptionType: string | null;
+      }) => void,
+    ) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        state: Parameters<typeof callback>[0],
+      ) => callback(state);
+      ipcRenderer.on(IPC.USAGE_UPDATE, listener);
+      return () => { ipcRenderer.removeListener(IPC.USAGE_UPDATE, listener); };
+    },
+    /** Toggle the poller on/off. Persisted in uiSlice and synced to
+     *  main on every change. Main starts/stops the interval. */
+    setEnabled: (enabled: boolean) => ipcRenderer.send(IPC.USAGE_TOGGLE, enabled),
+    /** Manual refresh. UI is responsible for the 5-minute cooldown. */
+    refresh: () => ipcRenderer.send(IPC.USAGE_REFRESH),
+  },
   window: {
     hide: () => ipcRenderer.send(IPC.WINDOW_HIDE),
     // T6 Notification System Expansion — recall the user via the Windows

@@ -134,21 +134,29 @@ export interface UISlice {
   notificationSoundChoice: 'default' | 'none';
   setNotificationSoundChoice: (choice: 'default' | 'none') => void;
 
-  // ─── Claude Code hook integration (Phase 1) ──────────────────────────────
+  // ─── Claude Code hook integration (Phase 1.5) ────────────────────────────
   // Driven by main process: whenever a hook signal arrives via the
   // wmux-claude-integration plugin, main pushes the updated signal-health
-  // snapshot to the renderer. Renderer-local state lets us display the
-  // health card in Settings without a hot RPC round-trip per render.
+  // snapshot to the renderer (throttled to 1Hz in registerHooksRpc).
+  // Renderer-local state lets us display the health card in Settings
+  // without a hot RPC round-trip per render.
   //
-  // signalHealth.lastSignalAt === null means "no hook ever observed in
-  // this process lifetime" — distinct from a stale plugin (lastSignalAt
-  // older than threshold). The Settings card handles both branches.
+  // Tri-state derivation in Settings → ClaudeIntegrationSection:
+  //   - count === 0 → "Unknown / not yet observed" (plugin not installed,
+  //     or installed but no hook fired yet)
+  //   - count > 0 && !isStale(24h) → "Detected" (live stats)
+  //   - count > 0 && isStale(24h) → "Stale"
+  // workspaceMatchRate is a separate dimension: even when the plugin is
+  // working, hook fires from outside any wmux workspace bump `missed`
+  // without affecting the tri-state.
   hookSignalHealth: {
     total: number;
     count: number;
     p50: number | null;
     p95: number | null;
     lastSignalAt: number | null;
+    perAgent: Record<string, number>;
+    workspaceMatchRate: { matched: number; missed: number };
   };
   setHookSignalHealth: (health: {
     total: number;
@@ -156,6 +164,8 @@ export interface UISlice {
     p50: number | null;
     p95: number | null;
     lastSignalAt: number | null;
+    perAgent: Record<string, number>;
+    workspaceMatchRate: { matched: number; missed: number };
   }) => void;
 
   /** User has dismissed the first-run "install wmux-claude-integration"
@@ -163,6 +173,53 @@ export interface UISlice {
    *  fields pattern (see toastEnabled). */
   hookOnboardingDismissed: boolean;
   setHookOnboardingDismissed: (dismissed: boolean) => void;
+
+  // ─── Phase 2 — Anthropic usage meter ────────────────────────────────────
+  // Opt-in. When `anthropicUsageEnabled` flips to true, the renderer sends
+  // IPC.USAGE_TOGGLE and main starts the UsagePoller. The poller pushes
+  // PollerState snapshots via IPC.USAGE_UPDATE and they land here in
+  // `anthropicUsage`. The access token itself is NEVER part of this state —
+  // it stays in main process memory during a fetch and is discarded.
+  anthropicUsageEnabled: boolean;
+  setAnthropicUsageEnabled: (enabled: boolean) => void;
+  anthropicUsage: {
+    status:
+      | 'idle'
+      | 'ok'
+      | 'token-missing'
+      | 'unauthorized'
+      | 'http-error'
+      | 'network-error'
+      | 'read-error';
+    snapshot: {
+      sessionPct: number;
+      sessionResetEpochSec: number;
+      weeklyPct: number;
+      weeklyResetEpochSec: number;
+      fetchedAtMs: number;
+    } | null;
+    lastError: string | null;
+    subscriptionType: string | null;
+  };
+  setAnthropicUsage: (state: {
+    status:
+      | 'idle'
+      | 'ok'
+      | 'token-missing'
+      | 'unauthorized'
+      | 'http-error'
+      | 'network-error'
+      | 'read-error';
+    snapshot: {
+      sessionPct: number;
+      sessionResetEpochSec: number;
+      weeklyPct: number;
+      weeklyResetEpochSec: number;
+      fetchedAtMs: number;
+    } | null;
+    lastError: string | null;
+    subscriptionType: string | null;
+  }) => void;
 
   // ─── Multiview ─────────────────────────────────────────────────────────
   multiviewIds: string[];
@@ -515,13 +572,15 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.notificationSoundChoice = choice;
   }),
 
-  // ─── Claude Code hook integration (Phase 1) ──────────────────────────────
+  // ─── Claude Code hook integration (Phase 1.5) ────────────────────────────
   hookSignalHealth: {
     total: 0,
     count: 0,
     p50: null,
     p95: null,
     lastSignalAt: null,
+    perAgent: {},
+    workspaceMatchRate: { matched: 0, missed: 0 },
   },
 
   setHookSignalHealth: (health) => set((state) => {
@@ -532,6 +591,26 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setHookOnboardingDismissed: (dismissed) => set((state) => {
     state.hookOnboardingDismissed = dismissed;
+  }),
+
+  // ─── Phase 2 — Anthropic usage meter ────────────────────────────────────
+  anthropicUsageEnabled: false,
+  setAnthropicUsageEnabled: (enabled) => {
+    // Sync to main so the poller starts/stops. The IPC send is fire-and-
+    // forget; main acknowledges via the next USAGE_UPDATE push.
+    window.electronAPI.usage.setEnabled(enabled);
+    set((state) => {
+      state.anthropicUsageEnabled = enabled;
+    });
+  },
+  anthropicUsage: {
+    status: 'idle',
+    snapshot: null,
+    lastError: null,
+    subscriptionType: null,
+  },
+  setAnthropicUsage: (next) => set((state) => {
+    state.anthropicUsage = next;
   }),
 
   // ─── Multiview ─────────────────────────────────────────────────────────

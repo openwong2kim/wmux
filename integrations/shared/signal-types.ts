@@ -40,10 +40,23 @@ export type AgentSlug = 'claude' | 'codex' | 'gemini' | 'aider' | 'opencode' | '
 /**
  * Canonical envelope. All fields are required UNLESS marked optional.
  *
- * `cwd` is the resolution key the daemon uses to map this signal back
- * to a wmux ptyId. Bridges MUST set `cwd` to the working directory of
- * the agent process (NOT the wmux workspace's stored cwd — those can
- * diverge if the user `cd`s mid-session).
+ * Routing priority (daemon-side, `resolvePtyIdForSignal`):
+ *   1. `workspaceId` (from WMUX_WORKSPACE_ID env, set by wmux PTYManager)
+ *      — strongest signal. When the user runs Claude inside a wmux pane,
+ *      the env propagates through Claude Code's subprocess spawn and
+ *      lands here. Routing is deterministic regardless of cwd overlap
+ *      between workspaces.
+ *   2. `surfaceId` (from WMUX_SURFACE_ID env) — refines workspaceId when
+ *      a workspace has multiple surfaces. Optional even when workspaceId
+ *      is present.
+ *   3. `cwd` — fallback for sessions started outside a wmux pane, OR
+ *      for older bridges that don't fill the env fields. Resolved via
+ *      exact + longest-prefix match against `workspace.metadata.cwd`.
+ *
+ * Bridges MUST set `cwd` (workflow user expects), MAY set `workspaceId` /
+ * `surfaceId` when the env is available. Codex round 1 P1 #7 + user
+ * dogfood report 2026-05-24 (workspace 4 turn-end → workspace 2 toast)
+ * promoted env-first from deferred TODO to required.
  *
  * `ts` is the hook FIRE time in Unix ms, captured by the bridge before
  * the RPC roundtrip. Used by SignalLatencyMeter to compute the
@@ -58,6 +71,10 @@ export interface AgentSignal {
   kind: AgentSignalKind;
   agent: AgentSlug;
   agentSessionId?: string;
+  /** WMUX_WORKSPACE_ID env value when the bridge runs inside a wmux pane. */
+  workspaceId?: string;
+  /** WMUX_SURFACE_ID env value. Refines workspaceId for multi-surface workspaces. */
+  surfaceId?: string;
   cwd: string;
   payload: Record<string, unknown>;
   ts: number;
@@ -109,5 +126,10 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
   // (claude review 2026-05-23 P2 #5.)
   if (v['payload'] === null || typeof v['payload'] !== 'object' || Array.isArray(v['payload'])) return false;
   if (v['agentSessionId'] !== undefined && typeof v['agentSessionId'] !== 'string') return false;
+  // Env-first routing fields (optional). Empty string is rejected so a
+  // misconfigured bridge can't accidentally tunnel routing through cwd
+  // by sending an obviously-bad workspaceId.
+  if (v['workspaceId'] !== undefined && (typeof v['workspaceId'] !== 'string' || v['workspaceId'].length === 0)) return false;
+  if (v['surfaceId'] !== undefined && (typeof v['surfaceId'] !== 'string' || v['surfaceId'].length === 0)) return false;
   return true;
 }

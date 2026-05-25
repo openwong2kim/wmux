@@ -27,9 +27,16 @@ interface TerminalProps {
   isWorkspaceVisible?: boolean;
   /** If set, scrollback content will be restored from this file on mount */
   scrollbackFile?: string;
+  /** ID of the workspace this terminal belongs to. Used at PTY-create time
+   *  so the spawned shell gets the correct WMUX_WORKSPACE_ID env (Codex
+   *  review 2026-05-24 P1: previously read global activeWorkspaceId which
+   *  is wrong during boot reconcile + multiview). */
+  workspaceId?: string;
+  /** ID of the surface this terminal occupies. Sent as WMUX_SURFACE_ID. */
+  surfaceId?: string;
 }
 
-export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, onPtyCreated, isActive = true, isWorkspaceVisible = true, scrollbackFile }: TerminalProps) {
+export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, onPtyCreated, isActive = true, isWorkspaceVisible = true, scrollbackFile, workspaceId: ownerWorkspaceId, surfaceId: ownerSurfaceId }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [ptyId, setPtyId] = useState<string | null>(externalPtyId || null);
   const creatingRef = useRef(false);
@@ -100,11 +107,19 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       rows = Math.max(2, Math.floor((container.offsetHeight - padding) / lineHeight));
     }
 
-    const workspaceId = useStore.getState().activeWorkspaceId;
+    // Owner identity, not global active. Codex P1 fix 2026-05-24: the
+    // previous `useStore.getState().activeWorkspaceId` read produced wrong
+    // env on workspace boot reconcile (all PTYs got the workspace that
+    // happened to be active at restore time) and during multiview rendering
+    // (every tile saw the focused tile's workspace). The owner prop is
+    // threaded down from Pane → Terminal so the correct identity reaches
+    // the daemon at PTY-create time.
+    const workspaceId = ownerWorkspaceId ?? useStore.getState().activeWorkspaceId;
+    const surfaceId = ownerSurfaceId;
     const defaultShell = useStore.getState().defaultShell;
-    console.log(`[Terminal] Creating new PTY: shell=${shell}, cwd=${cwd}, cols=${cols}, rows=${rows}, ws=${workspaceId}`);
+    console.log(`[Terminal] Creating new PTY: shell=${shell}, cwd=${cwd}, cols=${cols}, rows=${rows}, ws=${workspaceId}, surface=${surfaceId ?? '-'}`);
     void ipcInvokeRef.current<{ id: string }>(() =>
-      window.electronAPI.pty.create(withDefaultShell({ shell, cwd, cols, rows, workspaceId }, defaultShell))
+      window.electronAPI.pty.create(withDefaultShell({ shell, cwd, cols, rows, workspaceId, surfaceId }, defaultShell))
     ).then((result) => {
       if (!result.ok) {
         // Toast surfaced by useIpc (e.g. DAEMON_DISCONNECTED). Nothing to do.

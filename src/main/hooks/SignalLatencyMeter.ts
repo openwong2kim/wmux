@@ -15,16 +15,26 @@
 //   Bridge captures ts = Date.now()
 //      │ (RPC: hooks.signal)
 //      ▼
-//   HookSignalRouter.dispatch()
-//      │ calls SignalLatencyMeter.recordSignal(signal.ts, now)
+//   hooks.rpc.ts (registerHooksRpc handler)
+//      │ 1. isAgentSignal(params) validate
+//      │ 2. meter.recordSignal(agent, fireTs)       — pre-workspace (Codex P1#2)
+//      │ 3. resolve cwd → ptyId (may miss)
+//      │ 4. meter.recordWorkspaceMatch(matched)     — separate counter
+//      │ 5. emit/dedup via HookSignalRouter
 //      ▼
-//   ring buffer (max 100 entries, oldest evicted)
+//   ring buffer (max 100 entries, oldest evicted) + workspaceMatchRate
 //      │
 //      ▼
-//   uiSlice reads getStats() periodically (or push on update)
+//   meter.onStatsChange listeners (1Hz throttle in registerHooksRpc subscriber)
 //      │
 //      ▼
-//   Settings → ClaudeIntegrationSection "Signal health" card
+//   win.webContents.send(IPC.SIGNAL_HEALTH_UPDATE, stats)
+//      │
+//      ▼
+//   preload signalHealth.onUpdate → uiSlice.setHookSignalHealth
+//      │
+//      ▼
+//   Settings → ClaudeIntegrationSection (tri-state card)
 
 import type { AgentSlug } from '../../../integrations/shared/signal-types';
 
@@ -53,6 +63,18 @@ export interface LatencyStats {
   lastSignalAt: number | null;
   /** Per-agent breakdown of fill counts. */
   perAgent: Partial<Record<AgentSlug, number>>;
+  /**
+   * Cumulative workspace-cwd match results since process start. Distinct
+   * dimension from `total` (ring entries are recorded BEFORE workspace
+   * match; this counter records the outcome). Codex P1#2: lets the
+   * Settings card surface "plugin works but Claude is running outside
+   * any wmux workspace" instead of conflating it with "plugin not
+   * firing." Neither counter is decremented.
+   */
+  workspaceMatchRate: {
+    matched: number;
+    missed: number;
+  };
 }
 
 /** Fixed ring buffer capacity. Chosen so the structure is bounded at
@@ -71,6 +93,11 @@ export class SignalLatencyMeter {
   private writeIdx = 0;
   /** Lifetime emission count, never decremented. */
   private totalSeen = 0;
+  /** Workspace cwd-match outcomes since process start. Never decremented. */
+  private matchedCount = 0;
+  private missedCount = 0;
+  /** onStatsChange subscribers. Single-fire; no buffering. */
+  private readonly listeners = new Set<(stats: LatencyStats) => void>();
 
   /**
    * Record a single hook arrival.
@@ -97,6 +124,62 @@ export class SignalLatencyMeter {
     }
     this.writeIdx = (this.writeIdx + 1) % MAX_BUFFER;
     this.totalSeen += 1;
+    this.emit();
+  }
+
+  /**
+   * Record the outcome of cwd → ptyId resolution for a signal that was
+   * already recorded via recordSignal. Split from recordSignal so that
+   * the latency ring stays cwd-agnostic and the workspace-match counter
+   * stays a separate dimension (Codex P1#2). Callers should invoke this
+   * once per recordSignal call, after attempting the lookup.
+   */
+  recordWorkspaceMatch(matched: boolean): void {
+    if (matched) {
+      this.matchedCount += 1;
+    } else {
+      this.missedCount += 1;
+    }
+    this.emit();
+  }
+
+  /**
+   * Subscribe to stats changes. Listeners receive a fresh `getStats()`
+   * snapshot synchronously on every recordSignal / recordWorkspaceMatch.
+   * Returns an unsubscribe function; calling it more than once is a
+   * no-op (Set.delete is idempotent on missing keys).
+   *
+   * Callers MUST hold the returned unsubscribe for the meter's lifetime
+   * (registerHooksRpc → main/index.ts before-quit). HMR test teardown
+   * also relies on this contract.
+   */
+  onStatsChange(cb: (stats: LatencyStats) => void): () => void {
+    this.listeners.add(cb);
+    return () => {
+      this.listeners.delete(cb);
+    };
+  }
+
+  /**
+   * Internal — fan-out to listeners. Snapshot once and pass the same
+   * object to every subscriber so a buggy subscriber that mutates
+   * cannot poison its siblings (defensive; the type is readonly in
+   * practice, but TS can't enforce that across IPC).
+   */
+  private emit(): void {
+    if (this.listeners.size === 0) return;
+    const stats = this.getStats();
+    for (const cb of this.listeners) {
+      try {
+        cb(stats);
+      } catch (err) {
+        // Never let a listener throw out of recordSignal. The latency
+        // ring is critical-path observability; one bad subscriber must
+        // not block future signal recording.
+        // eslint-disable-next-line no-console
+        console.warn('[SignalLatencyMeter] listener threw:', err);
+      }
+    }
   }
 
   /**
@@ -104,6 +187,10 @@ export class SignalLatencyMeter {
    * so this is fine to call on every Settings panel render.
    */
   getStats(): LatencyStats {
+    const workspaceMatchRate = {
+      matched: this.matchedCount,
+      missed: this.missedCount,
+    };
     const count = this.entries.length;
     if (count === 0) {
       return {
@@ -113,6 +200,7 @@ export class SignalLatencyMeter {
         p95: null,
         lastSignalAt: null,
         perAgent: {},
+        workspaceMatchRate,
       };
     }
 
@@ -139,6 +227,7 @@ export class SignalLatencyMeter {
       p95,
       lastSignalAt: lastSignalAt === -Infinity ? null : lastSignalAt,
       perAgent,
+      workspaceMatchRate,
     };
   }
 
@@ -165,6 +254,9 @@ export class SignalLatencyMeter {
     this.entries.length = 0;
     this.writeIdx = 0;
     this.totalSeen = 0;
+    this.matchedCount = 0;
+    this.missedCount = 0;
+    this.listeners.clear();
   }
 }
 

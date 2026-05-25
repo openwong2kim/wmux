@@ -1,4 +1,4 @@
-import { describe, it, expect, beforeEach } from 'vitest';
+import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { SignalLatencyMeter, MAX_BUFFER } from '../SignalLatencyMeter';
 
 describe('SignalLatencyMeter', () => {
@@ -17,6 +17,7 @@ describe('SignalLatencyMeter', () => {
       expect(stats.p95).toBeNull();
       expect(stats.lastSignalAt).toBeNull();
       expect(stats.perAgent).toEqual({});
+      expect(stats.workspaceMatchRate).toEqual({ matched: 0, missed: 0 });
     });
 
     it('isStale() returns true with empty buffer regardless of threshold', () => {
@@ -144,6 +145,120 @@ describe('SignalLatencyMeter', () => {
       expect(stats.count).toBe(0);
       expect(stats.total).toBe(0);
       expect(stats.lastSignalAt).toBeNull();
+    });
+
+    it('clears workspace-match counters and listeners', () => {
+      const cb = vi.fn();
+      meter.onStatsChange(cb);
+      meter.recordWorkspaceMatch(true);
+      meter.recordWorkspaceMatch(false);
+      meter.resetForTests();
+      expect(meter.getStats().workspaceMatchRate).toEqual({ matched: 0, missed: 0 });
+      // Listener was cleared — further records do not invoke it.
+      cb.mockClear();
+      meter.recordSignal('claude', 0, 100);
+      expect(cb).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('recordWorkspaceMatch (Codex P1#2)', () => {
+    it('increments matched counter on true', () => {
+      meter.recordWorkspaceMatch(true);
+      meter.recordWorkspaceMatch(true);
+      expect(meter.getStats().workspaceMatchRate).toEqual({ matched: 2, missed: 0 });
+    });
+
+    it('increments missed counter on false', () => {
+      meter.recordWorkspaceMatch(false);
+      meter.recordWorkspaceMatch(false);
+      meter.recordWorkspaceMatch(false);
+      expect(meter.getStats().workspaceMatchRate).toEqual({ matched: 0, missed: 3 });
+    });
+
+    it('counters are independent of the latency ring buffer', () => {
+      // recordSignal does NOT touch matched/missed.
+      meter.recordSignal('claude', 0, 100);
+      meter.recordSignal('claude', 0, 200);
+      expect(meter.getStats().workspaceMatchRate).toEqual({ matched: 0, missed: 0 });
+      // recordWorkspaceMatch does NOT touch the ring buffer / lastSignalAt.
+      const beforeLastTs = meter.getStats().lastSignalAt;
+      meter.recordWorkspaceMatch(true);
+      meter.recordWorkspaceMatch(false);
+      const afterLastTs = meter.getStats().lastSignalAt;
+      expect(afterLastTs).toBe(beforeLastTs);
+      expect(meter.getStats().count).toBe(2); // unchanged ring count
+    });
+  });
+
+  describe('onStatsChange emitter', () => {
+    it('fires synchronously on recordSignal', () => {
+      const cb = vi.fn();
+      meter.onStatsChange(cb);
+      meter.recordSignal('claude', 0, 100);
+      expect(cb).toHaveBeenCalledTimes(1);
+      const [stats] = cb.mock.calls[0];
+      expect(stats.count).toBe(1);
+      expect(stats.lastSignalAt).toBe(100);
+    });
+
+    it('fires synchronously on recordWorkspaceMatch', () => {
+      const cb = vi.fn();
+      meter.onStatsChange(cb);
+      meter.recordWorkspaceMatch(true);
+      meter.recordWorkspaceMatch(false);
+      expect(cb).toHaveBeenCalledTimes(2);
+      const [, secondStats] = cb.mock.calls;
+      expect(secondStats[0].workspaceMatchRate).toEqual({ matched: 1, missed: 1 });
+    });
+
+    it('returns unsubscribe that stops further emissions', () => {
+      const cb = vi.fn();
+      const unsubscribe = meter.onStatsChange(cb);
+      meter.recordSignal('claude', 0, 100);
+      expect(cb).toHaveBeenCalledTimes(1);
+      unsubscribe();
+      meter.recordSignal('claude', 0, 200);
+      expect(cb).toHaveBeenCalledTimes(1); // no new call
+    });
+
+    it('unsubscribe is idempotent (double-call is a no-op)', () => {
+      const cb = vi.fn();
+      const unsubscribe = meter.onStatsChange(cb);
+      unsubscribe();
+      unsubscribe();
+      expect(() => meter.recordSignal('claude', 0, 100)).not.toThrow();
+    });
+
+    it('multiple subscribers all receive the same snapshot', () => {
+      const cb1 = vi.fn();
+      const cb2 = vi.fn();
+      meter.onStatsChange(cb1);
+      meter.onStatsChange(cb2);
+      meter.recordSignal('claude', 0, 100);
+      expect(cb1).toHaveBeenCalledTimes(1);
+      expect(cb2).toHaveBeenCalledTimes(1);
+      // Same stats object identity is not required, but the data is identical.
+      expect(cb1.mock.calls[0][0]).toEqual(cb2.mock.calls[0][0]);
+    });
+
+    it('a throwing subscriber does not block sibling subscribers', () => {
+      const throwing = vi.fn(() => {
+        throw new Error('bad subscriber');
+      });
+      const sibling = vi.fn();
+      meter.onStatsChange(throwing);
+      meter.onStatsChange(sibling);
+      // Should swallow the throw and still invoke sibling.
+      const consoleSpy = vi.spyOn(console, 'warn').mockImplementation(() => undefined);
+      meter.recordSignal('claude', 0, 100);
+      expect(sibling).toHaveBeenCalledTimes(1);
+      consoleSpy.mockRestore();
+    });
+
+    it('does not run emit when no listeners are attached (perf path)', () => {
+      // No listeners — recordSignal must not throw and must complete.
+      expect(() => meter.recordSignal('claude', 0, 100)).not.toThrow();
+      expect(meter.getStats().count).toBe(1);
     });
   });
 });
