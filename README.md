@@ -32,7 +32,7 @@ Gemini CLI runs tests at the bottom
 
 ## Install in 30 seconds
 
-**Winget (recommended):**
+**Winget (recommended — no security warning):**
 ```powershell
 winget install openwong2kim.wmux
 ```
@@ -43,6 +43,8 @@ choco install wmux
 ```
 
 **Installer:** [Download wmux Setup.exe](https://github.com/openwong2kim/wmux/releases/latest)
+
+> **Seeing a "Windows protected your PC" warning?** The installer isn't code-signed yet, so Windows SmartScreen flags it as from an unknown publisher. It's safe to proceed — click **More info → Run anyway**. Installing via **winget** or **Chocolatey** above avoids this prompt entirely, since those package managers run in a trusted context.
 
 **One-liner (PowerShell):**
 ```powershell
@@ -296,6 +298,9 @@ Yes. Each pane runs an independent PTY. Agents can communicate via the A2A (agen
 
 **Does it require WSL?**
 No. wmux is fully native Windows (ConPTY + Electron). No WSL, Cygwin, or MSYS2 needed.
+
+**Why does Windows show a "Windows protected your PC" warning when I run the installer?**
+The installer isn't code-signed yet, so Windows SmartScreen flags it as coming from an unknown publisher. It's safe to proceed — click **More info → Run anyway**. To avoid the prompt entirely, install via `winget install openwong2kim.wmux` or `choco install wmux`; those package managers run in a trusted context, so SmartScreen never appears.
 
 ---
 
