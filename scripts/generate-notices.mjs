@@ -4,7 +4,10 @@
  *
  * Walks `npm ls --prod --all --json` to enumerate every package that ends up
  * in the runtime bundle (direct deps + their transitive prod deps), then
- * reads each package's manifest + LICENSE file from node_modules.
+ * reads each package's manifest + LICENSE + NOTICE/ThirdPartyNotices files
+ * from node_modules. NOTICE preservation is required by Apache 2.0 §4(d)
+ * for any package whose distribution includes one (e.g. playwright-core
+ * carries a Puppeteer-derivation NOTICE that we must propagate).
  *
  * Run via `npm run notices` after dependency changes.
  *
@@ -159,6 +162,56 @@ function readLicenseText(pkgDir) {
   }
 }
 
+// Apache 2.0 4(d) requires that NOTICE files shipped with a package be
+// preserved in derivative-work distributions. We pull both:
+//   - NOTICE / NOTICE.txt / NOTICE.md — the canonical Apache attribution file
+//   - ThirdPartyNotices.txt / THIRD_PARTY_NOTICES (case-insensitive) — common
+//     in Microsoft-authored packages (e.g. playwright-core) where vendored
+//     sub-dependencies are not separate npm packages and therefore would not
+//     appear in our own npm ls walk
+// Both are returned concatenated when present; either may be null.
+function readNoticeText(pkgDir) {
+  let files;
+  try {
+    files = readdirSync(pkgDir);
+  } catch {
+    return null;
+  }
+  const noticeCandidates = files.filter((f) => {
+    const lower = f.toLowerCase();
+    return (
+      lower === 'notice' ||
+      lower === 'notice.txt' ||
+      lower === 'notice.md' ||
+      lower === 'thirdpartynotices.txt' ||
+      lower === 'thirdpartynotices.md' ||
+      lower === 'third_party_notices' ||
+      lower === 'third_party_notices.txt' ||
+      lower === 'third_party_notices.md'
+    );
+  });
+  if (noticeCandidates.length === 0) return null;
+  // Stable ordering: NOTICE first, ThirdPartyNotices second.
+  noticeCandidates.sort((a, b) => {
+    const aIsNotice = a.toLowerCase().startsWith('notice');
+    const bIsNotice = b.toLowerCase().startsWith('notice');
+    if (aIsNotice && !bIsNotice) return -1;
+    if (!aIsNotice && bIsNotice) return 1;
+    return a.localeCompare(b);
+  });
+  const parts = [];
+  for (const f of noticeCandidates) {
+    try {
+      const body = readFileSync(join(pkgDir, f), 'utf8').trim();
+      if (!body) continue;
+      parts.push(`--- ${f} ---\n${body}`);
+    } catch {
+      // best-effort — skip unreadable
+    }
+  }
+  return parts.length ? parts.join('\n\n') : null;
+}
+
 function normalizeAuthor(author) {
   if (!author) return null;
   if (typeof author === 'string') return author;
@@ -202,6 +255,7 @@ for (const { name, version } of [...seen.values()].sort((a, b) => a.name.localeC
     repository: normalizeRepository(manifest.repository),
     homepage: manifest.homepage || null,
     licenseText: readLicenseText(pkgDir),
+    noticeText: readNoticeText(pkgDir),
   });
 }
 
@@ -240,6 +294,14 @@ for (const p of packages) {
     lines.push(p.licenseText);
   } else {
     lines.push(`(No LICENSE file shipped with this package. See ${p.repository || p.homepage || 'package source'} for full terms.)`);
+  }
+  // Apache 2.0 §4(d): NOTICE files (and Microsoft-style ThirdPartyNotices)
+  // must be preserved in derivative-work distributions. Emitted after the
+  // LICENSE text so a single grep-able section per package stays intact.
+  if (p.noticeText) {
+    lines.push('');
+    lines.push('--- ATTRIBUTION NOTICES (preserved per Apache 2.0 §4(d) or equivalent) ---');
+    lines.push(p.noticeText);
   }
   lines.push('');
   lines.push(SEP);
