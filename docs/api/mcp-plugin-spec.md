@@ -129,6 +129,49 @@ The path-glob is intentionally narrow — wmux does not import `minimatch` or an
 
 The reference implementation is `globToRegex` in `src/main/mcp/permissionGrammar.ts`. Plugins SHOULD treat the glob as advisory in the first PR (no enforcement yet) but emit valid grammar so they're ready for the follow-up.
 
+### 3.4 Metadata path namespace
+
+`meta.read` and `meta.write` use dotted JSON paths into `PaneMetadata` (`src/shared/types.ts`) as the path-glob namespace:
+
+| Path | Field | Owner |
+|---|---|---|
+| `label` | shared display label | shared |
+| `role` | shared semantic role | shared |
+| `status` | shared status string | shared |
+| `custom.<key>[.<subkey>...]` | tool-owned subtree (`custom: Record<string, string>`) | declaring plugin |
+
+Default rule:
+
+- `meta.write` (no `:glob`) authorizes writes to **every** metadata path, including shared display fields.
+- `meta.write:custom.myPlugin.*` authorizes writes to `custom.myPlugin.<single-segment>` only. Shared fields (`label`, `role`, `status`) and other plugins' `custom.*` subtrees are rejected at enforcement.
+- A plugin that needs a specific shared field declares it explicitly (e.g. `meta.write:status` for a health monitor, or `meta.write:label` for a labeller). Plugins that want all shared fields request the unscoped `meta.write` and accept the broader approval prompt.
+- `meta.read` follows the same namespace and default rule on the read side.
+
+`updatedAt` is substrate-maintained and not writeable by plugins regardless of declared `meta.write` glob.
+
+### 3.5 Event topic namespace
+
+`events.subscribe` uses dot-separated event topic names as the path-glob namespace. The substrate intentionally uses one capability + topic glob rather than minting a new capability per event type, so the event surface can grow without expanding the whitelist.
+
+| Glob | Matches |
+|---|---|
+| `events.subscribe` | every event topic (broad) |
+| `events.subscribe:pane.*` | `pane.created`, `pane.closed`, `pane.focused`, `pane.metadata.changed` |
+| `events.subscribe:pane.metadata.changed` | only that single topic |
+| `events.subscribe:pane.metadata.**` | metadata events (depth-tolerant) |
+| `events.subscribe:process.*` | `process.started`, `process.exited` |
+| `events.subscribe:agent.lifecycle` | the single `agent.lifecycle` topic (sub-kind rides in payload) |
+
+Current top-level event topics (see `src/shared/events.ts` `WmuxEventType` for the authoritative union): `pane.created`, `pane.closed`, `pane.focused`, `pane.metadata.changed`, `workspace.metadata.changed`, `process.started`, `process.exited`, `agent.lifecycle`. New topics are additive and matched by the same glob namespace; plugins SHOULD declare the broadest glob they're willing to be approved against.
+
+### 3.6 Terminal-content risk class
+
+`terminal.read` and `pane.search` are classified as **terminal-content** capabilities — declaring either grants the plugin visibility into user terminal sessions (`pane.search` returns matched logical lines plus up to two surrounding context lines, 500-char truncated). This risk class is categorically distinct from metadata and event access.
+
+The future approval dialog (next PR) SHOULD surface terminal-content capabilities with stronger user-facing language than metadata or event capabilities, so the asymmetry stays visible to the user at approval time.
+
+`terminal.send` is also high-risk (it writes input to a live pane) and gets its own approval prompt.
+
 ---
 
 ## 4. Declaration flow

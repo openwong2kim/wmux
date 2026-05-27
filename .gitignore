@@ -108,6 +108,7 @@ Thumbs.db
 .context/
 .gstack/
 .team/
+.local-scratch/
 
 # Private roadmap / strategy docs (not for public repo)
 docs/EDITIONS.md
