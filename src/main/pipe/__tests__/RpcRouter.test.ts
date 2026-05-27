@@ -319,3 +319,84 @@ describe('RpcRouter shadow-mode enforcement wiring', () => {
     expect(response.ok).toBe(true);
   });
 });
+
+describe('RpcRouter legacy traffic counter', () => {
+  it('ticks on every envelope-less RPC (not process-once like the trust recorder)', async () => {
+    const router = makeRouter();
+    const counter = { record: vi.fn() };
+    router.setLegacyTrafficCounter(counter);
+
+    await router.dispatch({ id: 'r-1', method: 'pane.list', params: {} });
+    await router.dispatch({ id: 'r-2', method: 'pane.list', params: {} });
+    await router.dispatch({ id: 'r-3', method: 'pane.list', params: {} });
+
+    expect(counter.record).toHaveBeenCalledTimes(3);
+    expect(counter.record.mock.calls.map((c) => c[0])).toEqual([
+      'pane.list',
+      'pane.list',
+      'pane.list',
+    ]);
+  });
+
+  it('does NOT tick for envelope-carrying requests', async () => {
+    const router = makeRouter();
+    const counter = { record: vi.fn() };
+    router.setLegacyTrafficCounter(counter);
+
+    await router.dispatch({
+      id: 'r-1',
+      method: 'pane.list',
+      params: {},
+      clientName: 'p1',
+    });
+    expect(counter.record).not.toHaveBeenCalled();
+  });
+
+  it('does NOT tick for identity-bootstrap RPCs (handler owns identity recording)', async () => {
+    const router = new RpcRouter();
+    router.register('mcp.identify', async () => ({ ok: true }));
+    router.register('mcp.declarePermissions', async () => ({ ok: true }));
+    const counter = { record: vi.fn() };
+    router.setLegacyTrafficCounter(counter);
+
+    await router.dispatch({ id: 'r-1', method: 'mcp.identify', params: {} });
+    await router.dispatch({
+      id: 'r-2',
+      method: 'mcp.declarePermissions',
+      params: {},
+    });
+    expect(counter.record).not.toHaveBeenCalled();
+  });
+
+  it('runs in parallel with the process-once trust recorder (both fire on first call)', async () => {
+    const router = makeRouter();
+    const recorder = vi.fn();
+    const counter = { record: vi.fn() };
+    router.setLegacyContactRecorder(recorder);
+    router.setLegacyTrafficCounter(counter);
+
+    await router.dispatch({ id: 'r-1', method: 'pane.list', params: {} });
+    expect(recorder).toHaveBeenCalledTimes(1);
+    expect(counter.record).toHaveBeenCalledTimes(1);
+
+    // Second call: recorder is process-once (silent), counter keeps ticking.
+    await router.dispatch({ id: 'r-2', method: 'pane.list', params: {} });
+    expect(recorder).toHaveBeenCalledTimes(1);
+    expect(counter.record).toHaveBeenCalledTimes(2);
+  });
+
+  it('survives a throwing counter without failing the RPC', async () => {
+    const router = makeRouter();
+    router.setLegacyTrafficCounter({
+      record: () => {
+        throw new Error('counter blew up');
+      },
+    });
+    const response = await router.dispatch({
+      id: 'r-1',
+      method: 'pane.list',
+      params: {},
+    });
+    expect(response.ok).toBe(true);
+  });
+});

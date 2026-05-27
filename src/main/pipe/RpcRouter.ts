@@ -25,6 +25,17 @@ type RpcHandler = (
 type LegacyContactRecorder = (method: RpcMethod) => void;
 
 /**
+ * Counter for per-method legacy traffic (Phase 2.2 pre-commit 4). Lifts
+ * the process-once trust-DB write to a per-(envelope-less-method)
+ * counter so v3.1 can surface accurate "your old integrations are
+ * calling these RPCs" data. Best-effort: failures must never affect
+ * dispatch. Wired in main/index.ts to LegacyTrafficCounter; unit tests
+ * stub with a vi.fn(). When unset, the router behaves as if no counter
+ * is configured (no record, no log).
+ */
+type LegacyTrafficCounter = { record(method: RpcMethod): void };
+
+/**
  * Async lookup that resolves a clientName to the caller's current trust
  * record (or undefined if none exists). Wired by main/index.ts to
  * PluginTrustStore.get(); tests inject a synchronous stub. RpcRouter
@@ -57,6 +68,7 @@ const IDENTITY_OWN_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
 export class RpcRouter {
   private readonly handlers = new Map<RpcMethod, RpcHandler>();
   private legacyRecorder: LegacyContactRecorder | undefined;
+  private legacyTrafficCounter: LegacyTrafficCounter | undefined;
   private trustLookup: TrustLookup | undefined;
   private shadowSink: ShadowRejectionSink | undefined;
   // Process-once flag — the legacy bucket is a single audit entry, not a
@@ -75,6 +87,16 @@ export class RpcRouter {
   setLegacyContactRecorder(recorder: LegacyContactRecorder | undefined): void {
     this.legacyRecorder = recorder;
     this.legacyContactPersisted = false;
+  }
+
+  /**
+   * Wire the per-method legacy traffic counter (Phase 2.2 pre-commit 4).
+   * Called for EVERY envelope-less RPC (not process-once like the trust-DB
+   * recorder above). main/index.ts injects LegacyTrafficCounter pointed at
+   * the shadow audit log; unset is a no-op for tests that don't care.
+   */
+  setLegacyTrafficCounter(counter: LegacyTrafficCounter | undefined): void {
+    this.legacyTrafficCounter = counter;
   }
 
   /**
@@ -129,21 +151,37 @@ export class RpcRouter {
           : undefined,
     };
 
-    // Spec §2.2: requests without `clientName` are recorded as `legacy` so
-    // the enforcement PR can grandfather pre-v2.10 callers. Fire-and-forget
-    // and gated on a process-once flag (see comment on the field) — the
-    // recorder failing must never affect the actual RPC response.
-    if (
-      !ctx.clientName &&
-      !this.legacyContactPersisted &&
-      this.legacyRecorder &&
-      !IDENTITY_OWN_METHODS.has(request.method)
-    ) {
-      this.legacyContactPersisted = true;
-      try {
-        this.legacyRecorder(request.method);
-      } catch {
-        /* swallow — trust-store writes are best-effort */
+    // Spec §2.2: requests without `clientName` are recorded as `legacy`.
+    // Two side-channels fire here:
+    //
+    //   1. Process-once trust-DB write (`legacyRecorder`) — one row per
+    //      process in `~/.wmux/plugin-trust.json`. Enough to signal "this
+    //      process saw legacy traffic" without disk-pounding on every RPC.
+    //
+    //   2. Per-method counter (`legacyTrafficCounter`, Phase 2.2 pre-commit
+    //      4) — every call ticks a counter; threshold milestones flush a
+    //      summary entry to the shadow audit log so v3.1 can surface
+    //      accurate per-method legacy traffic data.
+    //
+    // Both are gated on `!IDENTITY_OWN_METHODS` so the identity bootstrap
+    // handlers (which own their own recording) don't double-count. Both
+    // are fire-and-forget and wrapped in try/catch — they MUST NOT
+    // affect dispatch latency or response.
+    if (!ctx.clientName && !IDENTITY_OWN_METHODS.has(request.method)) {
+      if (!this.legacyContactPersisted && this.legacyRecorder) {
+        this.legacyContactPersisted = true;
+        try {
+          this.legacyRecorder(request.method);
+        } catch {
+          /* swallow — trust-store writes are best-effort */
+        }
+      }
+      if (this.legacyTrafficCounter) {
+        try {
+          this.legacyTrafficCounter.record(request.method);
+        } catch {
+          /* swallow — counter is best-effort telemetry */
+        }
       }
     }
 

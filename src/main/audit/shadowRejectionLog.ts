@@ -33,7 +33,22 @@ import * as path from 'path';
 import { getWmuxHomeDir } from '../../shared/constants';
 import type { RpcMethod, RpcRejection } from '../../shared/rpc';
 
+/**
+ * Discriminated union of audit entries written to the shadow log. v3.0
+ * starts with two kinds:
+ *
+ *   - 'rejection'       — would-be permission rejection (shadow mode)
+ *   - 'legacy-traffic'  — per-method legacy (envelope-less) call counts,
+ *                          emitted at threshold milestones (1, 10, 100, ...)
+ *
+ * Read-back of pre-2.2-pre-commit-4 entries (no `entryKind` field) is not
+ * needed because this log is only meaningful inside a single dogfood
+ * window; rotation eats older entries. New entries always carry `entryKind`.
+ */
+export type ShadowAuditEntry = ShadowRejectionEntry | LegacyTrafficEntry;
+
 export interface ShadowRejectionEntry {
+  entryKind: 'rejection';
   /** Unix ms timestamp. */
   ts: number;
   /** Caller's declared clientName, or undefined for envelope-less callers. */
@@ -42,6 +57,18 @@ export interface ShadowRejectionEntry {
   method: RpcMethod;
   /** The structured rejection the enforcer produced. */
   rejection: RpcRejection;
+}
+
+/**
+ * Legacy traffic milestone — emitted by LegacyTrafficCounter when an
+ * envelope-less RPC method count crosses one of its threshold values.
+ * `count` is the running total at the moment the milestone fired.
+ */
+export interface LegacyTrafficEntry {
+  entryKind: 'legacy-traffic';
+  ts: number;
+  method: RpcMethod;
+  count: number;
 }
 
 export interface ShadowRejectionLoggerOptions {
@@ -81,12 +108,29 @@ export class ShadowRejectionLogger {
     method: RpcMethod;
     rejection: RpcRejection;
   }): void {
-    const entry: ShadowRejectionEntry = {
+    this.writeEntry({
+      entryKind: 'rejection',
       ts: this.now(),
       clientName: input.clientName,
       method: input.method,
       rejection: input.rejection,
-    };
+    });
+  }
+
+  /**
+   * Record a legacy-traffic milestone crossing. Same best-effort guarantees
+   * as `append`. Called by LegacyTrafficCounter at threshold counts.
+   */
+  appendLegacyTraffic(input: { method: RpcMethod; count: number }): void {
+    this.writeEntry({
+      entryKind: 'legacy-traffic',
+      ts: this.now(),
+      method: input.method,
+      count: input.count,
+    });
+  }
+
+  private writeEntry(entry: ShadowAuditEntry): void {
     try {
       this.ensureDir();
       this.rotateIfNeeded();
@@ -101,18 +145,18 @@ export class ShadowRejectionLogger {
   }
 
   /** Test-only: read the log back as parsed entries. */
-  readAll(): ShadowRejectionEntry[] {
+  readAll(): ShadowAuditEntry[] {
     let raw: string;
     try {
       raw = fs.readFileSync(this.filePath, 'utf8');
     } catch {
       return [];
     }
-    const out: ShadowRejectionEntry[] = [];
+    const out: ShadowAuditEntry[] = [];
     for (const line of raw.split('\n')) {
       if (line.length === 0) continue;
       try {
-        out.push(JSON.parse(line) as ShadowRejectionEntry);
+        out.push(JSON.parse(line) as ShadowAuditEntry);
       } catch {
         // Tolerate partial writes / hand-edits: skip malformed lines.
       }

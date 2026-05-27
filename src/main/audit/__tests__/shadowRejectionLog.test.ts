@@ -2,7 +2,15 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
-import { ShadowRejectionLogger } from '../shadowRejectionLog';
+import {
+  ShadowRejectionLogger,
+  type ShadowAuditEntry,
+  type ShadowRejectionEntry,
+} from '../shadowRejectionLog';
+
+function rejectionEntries(entries: ShadowAuditEntry[]): ShadowRejectionEntry[] {
+  return entries.filter((e): e is ShadowRejectionEntry => e.entryKind === 'rejection');
+}
 
 let tmpDir: string;
 let logPath: string;
@@ -47,7 +55,7 @@ describe('ShadowRejectionLogger.append', () => {
         rejected: [{ path: 'agent.lifecycle', declared: ['pane.*'] }],
       },
     });
-    const entries = log.readAll();
+    const entries = rejectionEntries(log.readAll());
     expect(entries).toHaveLength(2);
     expect(entries[0].clientName).toBe('p1');
     expect(entries[0].method).toBe('pane.list');
@@ -67,7 +75,7 @@ describe('ShadowRejectionLogger.append', () => {
         capability: 'pane.read',
       },
     });
-    const entries = log.readAll();
+    const entries = rejectionEntries(log.readAll());
     expect(entries).toHaveLength(1);
     // JSON.stringify drops undefined keys, so the field round-trips as missing
     // — equivalent to undefined for our purposes.
@@ -125,9 +133,38 @@ describe('ShadowRejectionLogger.append', () => {
     });
     expect(fs.existsSync(logPath + '.1')).toBe(true);
     // New file contains only the post-rotation entry.
-    const entries = log.readAll();
+    const entries = rejectionEntries(log.readAll());
     expect(entries).toHaveLength(1);
     expect(entries[0].clientName).toBe('p2');
+  });
+
+  it('writes legacy-traffic entries with entryKind discrimination', () => {
+    const log = new ShadowRejectionLogger({ path: logPath });
+    log.append({
+      clientName: 'p1',
+      method: 'pane.list',
+      rejection: {
+        reason: 'capability-not-declared',
+        method: 'pane.list',
+        capability: 'pane.read',
+      },
+    });
+    log.appendLegacyTraffic({ method: 'pane.list', count: 10 });
+    log.appendLegacyTraffic({ method: 'events.poll', count: 100 });
+
+    const all = log.readAll();
+    expect(all).toHaveLength(3);
+    expect(all[0].entryKind).toBe('rejection');
+    expect(all[1].entryKind).toBe('legacy-traffic');
+    expect(all[2].entryKind).toBe('legacy-traffic');
+    if (all[1].entryKind === 'legacy-traffic') {
+      expect(all[1].method).toBe('pane.list');
+      expect(all[1].count).toBe(10);
+    }
+    if (all[2].entryKind === 'legacy-traffic') {
+      expect(all[2].method).toBe('events.poll');
+      expect(all[2].count).toBe(100);
+    }
   });
 
   it('swallows fs errors so shadow logging never breaks RPC dispatch', () => {

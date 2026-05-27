@@ -33,6 +33,7 @@ import { registerEventsRpc } from './pipe/handlers/events.rpc';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
 import { ShadowRejectionLogger } from './audit/shadowRejectionLog';
+import { LegacyTrafficCounter } from './audit/legacyTrafficCounter';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
@@ -406,6 +407,17 @@ rpcRouter.setTrustLookup((clientName) =>
 rpcRouter.setShadowRejectionSink((entry) => {
   shadowRejectionLogger.append(entry);
 });
+
+// Per-method legacy traffic counter (Phase 2.2 pre-commit 4). Milestone
+// crossings (1st, 10th, 100th, 1000th, 10000th call) emit a summary row to
+// the shadow audit log. The trust-DB write above remains process-once and
+// independent — this counter is purely audit telemetry.
+const legacyTrafficCounter = new LegacyTrafficCounter({
+  sink: ({ method, count }) => {
+    shadowRejectionLogger.appendLegacyTraffic({ method, count });
+  },
+});
+rpcRouter.setLegacyTrafficCounter(legacyTrafficCounter);
 
 // IPC: webview CDP registration
 ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, webContentsId: number) => {
