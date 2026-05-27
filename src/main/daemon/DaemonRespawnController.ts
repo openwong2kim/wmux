@@ -47,7 +47,18 @@ export interface DaemonRespawnDeps {
 export type RespawnEvent =
   | { type: 'reconnecting'; attempt: number; backoffMs: number }
   | { type: 'reconnected' }
-  | { type: 'respawn-exhausted' };
+  | {
+      type: 'respawn-exhausted';
+      /**
+       * Last error message captured during the failed respawn loop, if
+       * the controller has one. Undefined when the budget exhausted
+       * without any captured throw (e.g. spawnAndConnect kept returning
+       * null without raising). Main consumes this to populate the
+       * Electron dialog so the user has something more actionable than
+       * "wmux daemon could not start".
+       */
+      lastError?: string;
+    };
 
 export interface DaemonRespawnConfig {
   /** Max consecutive respawn attempts before giving up. Default 5. */
@@ -109,6 +120,14 @@ export class DaemonRespawnController {
    *  re-entrant respawn schedules from a health probe that races a real
    *  socket close. */
   private respawning = false;
+  /**
+   * Latest error captured by the respawn loop — set on bootstrap throw,
+   * spawnAndConnect null returns inside attemptRespawn, and any other
+   * caught error in the lifecycle. Surfaces in `respawn-exhausted` so
+   * the renderer / main dialog can show a meaningful diagnostic instead
+   * of a generic "wmux daemon could not start".
+   */
+  private lastError: string | undefined;
 
   constructor(
     private readonly deps: DaemonRespawnDeps,
@@ -137,11 +156,18 @@ export class DaemonRespawnController {
     if (this.client) return this.client;
     try {
       const client = await this.spawnAndConnect();
-      if (!client) return null;
+      if (!client) {
+        // spawnAndConnect already logged the specific reason. Capture
+        // a generic anchor here so respawn-exhausted has something to
+        // surface if the loop never makes it past the first attempt.
+        this.lastError = this.lastError ?? 'daemon spawn/connect returned no client';
+        return null;
+      }
       await this.install(client, { isReconnect: false });
       return client;
     } catch (err) {
-      this.deps.logger.warn(`bootstrap failed: ${this.stringifyError(err)}`);
+      this.lastError = this.stringifyError(err);
+      this.deps.logger.warn(`bootstrap failed: ${this.lastError}`);
       return null;
     }
   }
@@ -228,6 +254,11 @@ export class DaemonRespawnController {
     // emit a misleading 'reconnected' or start a probe against a dead
     // socket on top of the new in-flight respawn.
     if (this.client !== client) return;
+
+    // A successful install means the loop closed cleanly — any error
+    // captured along the way is no longer the "latest" the user should
+    // see if the budget exhausts later in this lifetime. Clear it.
+    this.lastError = undefined;
 
     if (opts.isReconnect) {
       this.deps.emit({ type: 'reconnected' });
@@ -329,9 +360,9 @@ export class DaemonRespawnController {
       this.exhausted = true;
       this.respawning = false;
       this.deps.logger.error(
-        `respawn budget exhausted (${this.cfg.budget} attempts) — staying in local mode`,
+        `respawn budget exhausted (${this.cfg.budget} attempts) — staying in local mode${this.lastError ? `; lastError=${this.lastError}` : ''}`,
       );
-      this.deps.emit({ type: 'respawn-exhausted' });
+      this.deps.emit({ type: 'respawn-exhausted', lastError: this.lastError });
       return;
     }
 
@@ -356,7 +387,12 @@ export class DaemonRespawnController {
     if (this.disposed) return;
     try {
       const client = await this.spawnAndConnect();
-      if (!client) throw new Error('spawnAndConnect returned null');
+      if (!client) {
+        // spawnAndConnect logs detail; preserve it via lastError so
+        // an exhausted budget has something to surface to the user.
+        this.lastError = this.lastError ?? 'spawnAndConnect returned null';
+        throw new Error('spawnAndConnect returned null');
+      }
       await this.install(client, { isReconnect: true });
       // `respawning` is cleared inside install() now (before the
       // listener wires) so a disconnect from the new client during
@@ -371,8 +407,9 @@ export class DaemonRespawnController {
         );
       }
     } catch (err) {
+      this.lastError = this.stringifyError(err);
       this.deps.logger.warn(
-        `respawn attempt ${attempt} failed: ${this.stringifyError(err)}`,
+        `respawn attempt ${attempt} failed: ${this.lastError}`,
       );
       // Loop back through the scheduler so backoff + budget tracking
       // applies uniformly. `respawning` is already true at this point

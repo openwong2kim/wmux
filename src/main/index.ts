@@ -7,7 +7,7 @@ process.on('uncaughtException', (err) => {
 
 import * as crypto from 'crypto';
 import * as path from 'path';
-import { app, BrowserWindow, ipcMain, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import { createWindow, loadMainRenderer } from './window/createWindow';
 import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
@@ -634,7 +634,25 @@ app.on('ready', async () => {
       } else if (event.type === 'reconnected') {
         mainWindow.webContents.send('daemon:reconnected');
       } else if (event.type === 'respawn-exhausted') {
-        mainWindow.webContents.send('daemon:respawn-exhausted');
+        // Forward to renderer (channel exists since v2.7.x — preload.ts
+        // and daemonMode.ts both subscribe). The renderer doesn't yet
+        // render a toast for this signal, but a future UX iteration
+        // will hook the lastError payload directly.
+        mainWindow.webContents.send('daemon:respawn-exhausted', { lastError: event.lastError });
+        // Native OS dialog gives the user a visible, persistent breadcrumb
+        // even when wmux is sitting in the tray. showErrorBox blocks the
+        // main thread until dismissed; that's harmless here because the
+        // daemon-respawn budget exhausted means there is no daemon for the
+        // main thread to talk to anyway. Suppress for automated runs.
+        if (process.env.WMUX_NO_DIALOG !== '1') {
+          const hint = event.lastError && event.lastError.length > 0
+            ? event.lastError
+            : 'wmux could not bring the daemon back up after 5 retries.';
+          dialog.showErrorBox(
+            'wmux daemon unavailable',
+            `${hint}\n\nwmux will keep running in local-only mode. To recover:\n  1. Quit wmux from the tray.\n  2. In an elevated PowerShell, run:  Get-Process | Where-Object { $_.Path -like '*wmux*' }\n  3. taskkill /F /PID <pid>  for any leftover daemon process.\n  4. Delete ~/.wmux/daemon.pid if it exists.\n  5. Re-launch wmux.`,
+          );
+        }
       }
     },
     logger: {

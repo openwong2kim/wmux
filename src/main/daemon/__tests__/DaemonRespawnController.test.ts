@@ -236,7 +236,75 @@ describe('DaemonRespawnController respawn loop', () => {
     // Budget exhausted on the 6th would-be attempt.
     const exhausted = h.events.find((e) => e.type === 'respawn-exhausted');
     expect(exhausted).toBeTruthy();
+    // Every failed attempt threw "spawn failed" — that message must
+    // travel out on `lastError` so main can show something meaningful
+    // in the showErrorBox prompt instead of a generic "could not start".
+    expect(exhausted).toMatchObject({ type: 'respawn-exhausted', lastError: 'spawn failed' });
     expect(h.controller.isHealthy).toBe(false);
+  });
+
+  it('clears lastError after a successful install', async () => {
+    // If a transient failure during respawn is recovered, the captured
+    // lastError must NOT linger. We can't observe the private field
+    // directly, but we can observe the lifecycle: the only place
+    // exhaustion fires is scheduleRespawn, which reads lastError at
+    // that moment. So: drive one failure, recover, then walk the
+    // budget to exhaustion with NEW failures — the surfaced lastError
+    // must be the new one, not the original. This pins the contract
+    // that lastError is cleared on install rather than persisting
+    // across cycles.
+    let throwMessage = 'first cycle error';
+    let ensureFail = false;
+    const ensureImpl = vi.fn(async () => {
+      if (ensureFail) throw new Error(throwMessage);
+      return { pid: 1, authToken: 't', pipeName: 'p', spawned: true };
+    });
+    const h = makeHarness({
+      ensureDaemonImpl: ensureImpl as unknown as () => Promise<DaemonInfo>,
+      // Big budget so the recovery cycle below doesn't graze the cap;
+      // small backoff so each fake-timer step lands cleanly.
+      config: { baseBackoffMs: 50, maxBackoffMs: 50, budget: 5, healthIntervalMs: 0, resetWindowMs: 10 },
+    });
+
+    const c1 = new FakeDaemonClient();
+    const c2 = new FakeDaemonClient();
+    h.clientQueue.push(c1, c2);
+    await h.controller.bootstrap();
+
+    // Cycle 1: fail once, then succeed on retry. lastError gets set
+    // mid-cycle, then cleared inside install() when c2 comes up.
+    ensureFail = true;
+    c1.fireDisconnect();
+    await vi.advanceTimersByTimeAsync(50); // attempt 1 — throws
+    ensureFail = false;
+    await vi.advanceTimersByTimeAsync(50); // attempt 2 — succeeds
+    expect(h.controller.isHealthy).toBe(true);
+    expect(h.events.find((e) => e.type === 'respawn-exhausted')).toBeUndefined();
+
+    // Walk past resetWindowMs (10ms) so attemptCount drops back to 0
+    // — otherwise the next cycle starts already at the budget cap
+    // (we used 2 attempts above) and exhausts before any new error
+    // can be captured.
+    await vi.advanceTimersByTimeAsync(100);
+
+    // Cycle 2: drain queue + replenish, switch the error message, then
+    // fail every attempt until the budget exhausts. The surfaced
+    // lastError must be the NEW message.
+    while (h.clientQueue.length > 0) h.clientQueue.shift();
+    for (let i = 0; i < 10; i++) h.clientQueue.push(new FakeDaemonClient());
+    throwMessage = 'second cycle error';
+    ensureFail = true;
+    c2.fireDisconnect();
+    // Walk through the entire budget — each attempt = backoff(50).
+    for (let i = 0; i < 6; i++) {
+      await vi.advanceTimersByTimeAsync(50);
+    }
+    const exhausted = h.events.find((e) => e.type === 'respawn-exhausted');
+    expect(exhausted).toBeDefined();
+    expect(exhausted).toMatchObject({
+      type: 'respawn-exhausted',
+      lastError: 'second cycle error',
+    });
   });
 
   it('resets the attempt counter after sustained healthy uptime', async () => {
