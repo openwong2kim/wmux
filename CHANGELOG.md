@@ -5,6 +5,33 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Daemon lifecycle hardening
+
+Closes four gaps in the wmux daemon lifecycle: an orphan daemon that survives forever in RAM after a forced wmux quit, a boot-block when anti-virus prevents PID verification, an opaque "daemon could not start" error after the respawn budget exhausts, and a transient first-ping race during cold-boot. Combined effect: the "1 wmux ≙ 1 daemon" invariant is now self-healing instead of relying on the next clean shutdown.
+
+### Added
+
+- **Daemon idle self-shutdown** — the daemon now terminates itself after 5 minutes with zero RPC clients and zero live PTY sessions (configurable via `daemon.idleShutdownMinutes` in `~/.wmux/config.json`; set to `0` to keep the legacy "alive forever" behavior). Routes through the same `shutdown()` body used by SIGTERM / SIGINT / `daemon.shutdown` RPC, so the existing phase instrumentation and re-entry guard apply. Logs `[shutdown.phase] idle.timeout idleMs=… cfgMs=…`.
+- **`DaemonPipeServer.getConnectionCount()` / `getLastDisconnectAt()`** — public accessors for the Watchdog idle predicate. The disconnect anchor is stamped only on the 0-edge (last socket closing), so a flapping reconnect cycle resets the idle deadline forward instead of accumulating stale idle time.
+- **`Watchdog` idle-check hook** — opt-in callbacks `onIdleCheck` / `onIdleShutdown` evaluated on every health tick. Decision logic exposed as `evaluateIdle()` so unit tests drive it without timers. Single state machine: `idleMs = now − (lastDisconnectAt ?? startTime)`. Grace window and idle window are independently configurable.
+- **`scripts/daemon-idle-shutdown-dynamic.mjs`** — end-to-end verification that spawns the bundled daemon in an isolated tmp `WMUX_DIR` with `WMUX_IDLE_SHUTDOWN_MS` / `WMUX_IDLE_GRACE_MS` / `WMUX_WATCHDOG_TICK_MS` env overrides, connects, disconnects, and asserts the daemon exits cleanly with the `idle.timeout` breadcrumb. Runs in ~5s.
+
+### Fixed
+
+- **Launcher ping retry** — `ensureDaemon` now retries the first `daemon.ping` once with a 250ms delay before declaring the existing daemon unresponsive. Absorbs the cold-boot race where Defender realtime scan, ConPTY cold-init, or a large recovery loop makes the daemon miss the first 3-second ping window. Total worst case 6.25s, still well under the 15s spawn budget.
+- **Unverified-live PID is now recoverable** — when anti-virus blocks `tasklist.exe` / `Get-CimInstance` and the launcher cannot confirm what owns `daemon.pid`, it now prompts the user with an Electron dialog offering "Clean up and start fresh" instead of refusing to boot. Cancel re-throws the legacy error, now annotated with the exact elevated-PowerShell `taskkill /F /PID …` command for manual recovery.
+- **Respawn-exhausted is no longer silent** — `DaemonRespawnController` now captures the latest error message from the bootstrap or respawn loop and ships it on the `respawn-exhausted` event. `main` surfaces it via a native `dialog.showErrorBox` plus the existing renderer IPC channel, with concrete recovery steps. `lastError` is cleared on successful install so future exhaustions don't echo stale diagnostics.
+- **SIGKILL-failure throw now embeds the recovery command** — when the OS refuses to terminate a verified-stale daemon (typically EPERM under AV / different-user scenarios), the thrown error now includes the exact `taskkill /F /PID …` invocation the user needs in an elevated PowerShell. No silent `taskkill` fallback because `process.kill('SIGKILL')` already walks the same `TerminateProcess` path with the same user token; embedding the hint is more honest than retrying.
+
+### Changed
+
+- `DaemonRespawnController.RespawnEvent` — the `respawn-exhausted` variant now carries an optional `lastError` field. Additive change; existing consumers that ignore the field still type-check.
+- Suppression env var `WMUX_NO_DIALOG=1` bypasses both the launcher recovery dialog and the respawn-exhausted dialog for automated runs.
+
+### Test
+
+- New `idleShutdown.test.ts` (source-level invariants for the daemon main wiring), new idle-flow test cases in `Watchdog.test.ts`, new `getConnectionCount` / `getLastDisconnectAt` lifecycle test in `DaemonPipeServer.test.ts`, new `lastError` propagation test in `DaemonRespawnController.test.ts`, and `scripts/daemon-idle-shutdown-dynamic.mjs` for the end-to-end path.
+
 ## [Unreleased] — Workspace identity drift fix (daemon-lifecycle-hardening)
 
 Fixes a serious multi-agent bug: an in-pane MCP server (e.g. Claude Code) could get permanently stuck reporting a workspace id that no longer exists — `a2a.whoami` returning `no workspace found for ws-…` and `terminal_send` rejecting with `not owned by workspace … (actual owner: …)`. Every identity-gated MCP call (A2A, `terminal_*`, browser routing) failed until the MCP server was restarted. Triggered when a workspace id is re-minted (daemon respawn / session restore) while the shell process — and its frozen `WMUX_WORKSPACE_ID` env — lives on.
