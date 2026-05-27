@@ -98,12 +98,21 @@ function validateCwd(cwd: string | undefined): string | undefined {
   return resolved;
 }
 
-/** Write sessionId/PID → workspaceId mapping for MCP identity resolution */
-function writePidMap(key: string | number, workspaceId: string): void {
+/**
+ * Write a PID → ptyId mapping for MCP workspace-identity resolution.
+ *
+ * We deliberately store the ptyId, NOT the workspaceId: a workspace id can be
+ * re-minted (daemon respawn / session restore) while the shell process lives
+ * on, so a frozen workspace id goes stale. The ptyId is immutable for the
+ * process lifetime; `a2a.resolve.identity` maps ptyId → the CURRENT owning
+ * workspace at lookup time. (Claude Code doesn't propagate env vars to MCP
+ * child processes, so this on-disk map is the resolution anchor.)
+ */
+function writePidMap(pid: string | number, ptyId: string): void {
   try {
     const dir = getPidMapDir();
     if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, String(key)), workspaceId, 'utf8');
+    fs.writeFileSync(path.join(dir, String(pid)), ptyId, 'utf8');
   } catch { /* best-effort */ }
 }
 
@@ -250,11 +259,12 @@ export function registerPTYHandlers(
       // Register initial CWD
       updateCwd(sessionId, effectiveCwd);
 
-      // Write shell PID→workspaceId mapping for MCP workspace identity resolution
-      // (Claude Code doesn't propagate env vars to MCP child processes)
+      // Anchor MCP workspace-identity resolution: map the shell PID → ptyId
+      // (the session id). The owning workspace is resolved live downstream,
+      // so this never goes stale when a workspace id is re-minted.
       const shellPid = (result as { pid?: number })?.pid;
-      if (options?.workspaceId && shellPid) {
-        writePidMap(shellPid, options.workspaceId);
+      if (shellPid) {
+        writePidMap(shellPid, sessionId);
       }
 
       return { id: sessionId, shell, cwd: effectiveCwd };
@@ -469,7 +479,7 @@ export function registerPTYHandlers(
   if (useDaemon && daemonClient) {
     ipcMain.handle(IPC.PTY_RECONNECT, wrapHandler(IPC.PTY_RECONNECT, async (_event: Electron.IpcMainInvokeEvent, id: string) => {
       try {
-        const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string }>;
+        const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string; pid?: number }>;
         const session = sessions.find(s => s.id === id);
         if (!session || session.state === 'dead') {
           return { success: false, error: 'Session not found or dead' };
@@ -491,6 +501,17 @@ export function registerPTYHandlers(
         const probeOk = daemonClient.isSessionPipeWritable(id);
         if (!probeOk) {
           return { success: false, error: 'Session pipe not writable after reconnect' };
+        }
+
+        // Re-anchor the PID → ptyId identity map. A surviving shell keeps its
+        // OS PID across a renderer restart / daemon respawn, but its workspace
+        // id may have been re-minted in the meantime, leaving the create-time
+        // map stale. Rewriting it here (keyed by the live shell PID) keeps MCP
+        // identity resolution correct without a full restart. ptyId is the
+        // stable anchor; the owning workspace is resolved live by
+        // a2a.resolve.identity.
+        if (typeof session.pid === 'number' && session.pid > 0) {
+          writePidMap(session.pid, id);
         }
 
         // Set up data forwarding. Routed through the per-id helper so a

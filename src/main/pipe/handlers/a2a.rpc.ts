@@ -8,19 +8,55 @@ import { getPidMapDir } from '../../../shared/constants';
 type GetWindow = () => BrowserWindow | null;
 
 export function registerA2aRpc(router: RpcRouter, getWindow: GetWindow, claudeWorker: ClaudeWorker): void {
-  // a2a.resolve.identity — handled in main process (not renderer)
-  // Returns all known sessionId/PID → workspaceId mappings so MCP can resolve itself
+  // a2a.resolve.identity — handled in main process (not renderer).
+  // Returns PID → CURRENT workspaceId mappings so an MCP server can resolve
+  // which workspace it belongs to by walking its own process tree.
+  //
+  // The on-disk pid-map stores PID → ptyId (a stable, immutable anchor). The
+  // owning workspace is resolved LIVE here, from the renderer, every time —
+  // because a workspace id can be re-minted by a daemon respawn or session
+  // restore while the shell process (and its frozen WMUX_WORKSPACE_ID env)
+  // lives on. Storing the workspace id at create time and trusting it forever
+  // is exactly what produced stale identities ("no workspace found for ws-…").
   router.register('a2a.resolve.identity', async () => {
     const dir = getPidMapDir();
     const mappings: Record<string, string> = {};
     try {
       if (fs.existsSync(dir)) {
         for (const file of fs.readdirSync(dir)) {
-          const wsId = fs.readFileSync(`${dir}/${file}`, 'utf8').trim();
-          if (wsId) mappings[file] = wsId;
+          let value: string;
+          try {
+            value = fs.readFileSync(`${dir}/${file}`, 'utf8').trim();
+          } catch {
+            continue; // unreadable / racing-unlink entry — skip
+          }
+          if (!value) continue;
+
+          if (value.startsWith('ws-')) {
+            // Legacy entry written before the live-ownership change
+            // (PID → workspaceId). Pass it through best-effort; it is
+            // overwritten with a ptyId on the next session create/reconnect.
+            mappings[file] = value;
+            continue;
+          }
+
+          // Current format: PID → ptyId. Resolve the workspace that owns this
+          // pty RIGHT NOW. PID → ptyId is immutable for the process lifetime;
+          // only the pty → workspace edge changes, and that is read live.
+          try {
+            const owner = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId: value });
+            const wsId =
+              owner && typeof owner === 'object' && 'workspaceId' in owner
+                ? (owner as Record<string, unknown>)['workspaceId']
+                : null;
+            if (typeof wsId === 'string' && wsId) mappings[file] = wsId;
+          } catch {
+            // Renderer unavailable (early boot / reload) — skip this entry;
+            // the caller retries resolution on its next identity-gated call.
+          }
         }
       }
-    } catch { /* best-effort */ }
+    } catch { /* best-effort: identity resolution is non-critical */ }
     return { mappings };
   });
 

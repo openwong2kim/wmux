@@ -35,53 +35,76 @@ function getVersion(): string {
   }
 }
 
-// Workspace identity — set by PTY env var when running inside wmux.
-// If empty, resolved lazily on first A2A call via a2a.resolve.identity RPC.
-let MY_WORKSPACE_ID = process.env.WMUX_WORKSPACE_ID || '';
-let workspaceResolved = !!MY_WORKSPACE_ID;
+// Workspace identity. The PTY env var (WMUX_WORKSPACE_ID) is a HINT only — it
+// is frozen at PTY-create time and goes stale when the workspace id is
+// re-minted (daemon respawn / session restore). We resolve the CURRENT owner
+// via a2a.resolve.identity (PID → live workspace) and use the env hint only as
+// a last resort. See src/mcp/index.ts for the full rationale.
+const ENV_WORKSPACE_HINT = process.env.WMUX_WORKSPACE_ID || '';
+let MY_WORKSPACE_ID = '';
+let workspaceResolved = false;
 
 const server = new McpServer({
   name: 'wmux-company',
   version: getVersion(),
 });
 
+// Detect an RPC outcome that means our cached workspace identity is stale.
+function isStaleIdentityResult(value: unknown): boolean {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  return /no workspace found|not owned by workspace/i.test(text);
+}
+
 async function callRpc(
   method: RpcMethod,
   params: Record<string, unknown> = {},
 ): Promise<{ content: { type: 'text'; text: string }[] }> {
-  const result = await sendRpc(method, params);
-  const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-  return { content: [{ type: 'text', text }] };
+  try {
+    const result = await sendRpc(method, params);
+    if (isStaleIdentityResult(result)) invalidateWorkspaceId();
+    const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+    return { content: [{ type: 'text', text }] };
+  } catch (err) {
+    if (isStaleIdentityResult(err instanceof Error ? err.message : String(err))) {
+      invalidateWorkspaceId();
+    }
+    throw err;
+  }
 }
 
-async function resolveWorkspaceId(): Promise<string> {
-  if (MY_WORKSPACE_ID && workspaceResolved) return MY_WORKSPACE_ID;
+function invalidateWorkspaceId(): void {
+  workspaceResolved = false;
+}
+
+async function resolveWorkspaceId(opts?: { force?: boolean }): Promise<string> {
+  if (workspaceResolved && MY_WORKSPACE_ID && !opts?.force) return MY_WORKSPACE_ID;
 
   try {
     const result = await sendRpc('a2a.resolve.identity' as RpcMethod, {});
     const { mappings } = result as { mappings: Record<string, string> };
-    if (!mappings || Object.keys(mappings).length === 0) return MY_WORKSPACE_ID;
-
-    const knownPids = new Map<number, string>();
-    for (const [pidStr, wsId] of Object.entries(mappings)) {
-      const pid = parseInt(pidStr, 10);
-      if (!isNaN(pid)) knownPids.set(pid, wsId);
-    }
-
-    let currentPid = process.ppid;
-    for (let depth = 0; depth < 10; depth++) {
-      const wsId = knownPids.get(currentPid);
-      if (wsId) {
-        MY_WORKSPACE_ID = wsId;
-        workspaceResolved = true;
-        return MY_WORKSPACE_ID;
+    if (mappings && Object.keys(mappings).length > 0) {
+      const knownPids = new Map<number, string>();
+      for (const [pidStr, wsId] of Object.entries(mappings)) {
+        const pid = parseInt(pidStr, 10);
+        if (!isNaN(pid)) knownPids.set(pid, wsId);
       }
-      const parentPid = await getParentPid(currentPid);
-      if (!parentPid || parentPid === currentPid || parentPid <= 1) break;
-      currentPid = parentPid;
-    }
-  } catch { /* resolve failed */ }
 
+      let currentPid = process.ppid;
+      for (let depth = 0; depth < 10; depth++) {
+        const wsId = knownPids.get(currentPid);
+        if (wsId) {
+          MY_WORKSPACE_ID = wsId;
+          workspaceResolved = true;
+          return MY_WORKSPACE_ID;
+        }
+        const parentPid = await getParentPid(currentPid);
+        if (!parentPid || parentPid === currentPid || parentPid <= 1) break;
+        currentPid = parentPid;
+      }
+    }
+  } catch { /* resolve failed, fall through to env hint */ }
+
+  if (ENV_WORKSPACE_HINT) return ENV_WORKSPACE_HINT;
   return MY_WORKSPACE_ID;
 }
 

@@ -3,16 +3,19 @@
  * Helper probe for workspace-identity-dynamic.mjs.
  *
  * Mirrors the resolveWorkspaceId algorithm from src/mcp/index.ts and
- * reports telemetry on stdout (single JSON object). The full chain:
+ * reports telemetry on stdout (single JSON object). The chain:
  *
- *   1. If WMUX_WORKSPACE_ID env is set, return it (path A).
- *   2. Otherwise call a2a.resolve.identity RPC for the PID map.
- *   3. Walk PPID chain up to 10 levels looking for a match (path B).
+ *   1. Call a2a.resolve.identity RPC for the PID → (live) workspaceId map.
+ *   2. Walk PPID chain up to 10 levels looking for a match (path B).
+ *   3. Only if that finds nothing, fall back to the WMUX_WORKSPACE_ID env
+ *      hint (path A). The env is NO LONGER a short-circuit: it is frozen at
+ *      PTY-create time and goes stale when the workspace id is re-minted, so
+ *      the live PID map is always preferred over it.
  *
  * Inputs (env):
  *   WMUX_WSID_PROBE_PIPE   pipe / socket name of the bundled daemon
  *   WMUX_WSID_PROBE_TOKEN  auth token for the daemon
- *   WMUX_WORKSPACE_ID      either set (path A) or empty (force chain)
+ *   WMUX_WORKSPACE_ID      env hint (may be stale); used only as last resort
  *
  * Output (single line JSON to stdout):
  *   {
@@ -93,38 +96,40 @@ function getParentPid(pid) {
 }
 
 async function resolveWorkspaceId() {
-  // Path A — env var short-circuit.
-  if (envWorkspaceId) return envWorkspaceId;
-
-  // Path B — RPC for PID map, then walk PPID chain.
+  // Path B/C first — RPC for the live PID map, then walk the PPID chain.
+  // The env hint is deliberately NOT consulted up front: trusting it forever
+  // is what produced stale identities ("no workspace found for ws-…").
   let socket;
   try {
     socket = await connectSocket();
     const result = await rpc(socket, 'a2a.resolve.identity', {});
     const mappings = result?.mappings ?? {};
-    if (Object.keys(mappings).length === 0) return '';
+    if (Object.keys(mappings).length > 0) {
+      const known = new Map();
+      for (const [pidStr, wsId] of Object.entries(mappings)) {
+        const pid = parseInt(pidStr, 10);
+        if (!Number.isNaN(pid)) known.set(pid, wsId);
+      }
 
-    const known = new Map();
-    for (const [pidStr, wsId] of Object.entries(mappings)) {
-      const pid = parseInt(pidStr, 10);
-      if (!Number.isNaN(pid)) known.set(pid, wsId);
+      let currentPid = process.ppid;
+      for (let depth = 0; depth < 10; depth++) {
+        walkDepth = depth + 1;
+        const wsId = known.get(currentPid);
+        if (wsId) return wsId;
+        const parent = getParentPid(currentPid);
+        if (!parent || parent === currentPid || parent <= 1) break;
+        currentPid = parent;
+      }
     }
-
-    let currentPid = process.ppid;
-    for (let depth = 0; depth < 10; depth++) {
-      walkDepth = depth + 1;
-      const wsId = known.get(currentPid);
-      if (wsId) return wsId;
-      const parent = getParentPid(currentPid);
-      if (!parent || parent === currentPid || parent <= 1) break;
-      currentPid = parent;
-    }
-    return '';
-  } catch (err) {
-    return '';
+  } catch {
+    /* fall through to the env hint */
   } finally {
     if (socket) socket.end();
   }
+
+  // Path A (last resort) — unconfirmed, possibly-stale env hint.
+  if (envWorkspaceId) return envWorkspaceId;
+  return '';
 }
 
 (async () => {

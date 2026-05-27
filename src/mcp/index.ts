@@ -26,64 +26,105 @@ function getVersion(): string {
   }
 }
 
-// Workspace identity — set by PTY env var when running inside wmux.
-// If empty, resolved lazily on first A2A call via a2a.whoami RPC.
-let MY_WORKSPACE_ID = process.env.WMUX_WORKSPACE_ID || '';
-let workspaceResolved = !!MY_WORKSPACE_ID;
+// Workspace identity.
+//
+// The PTY env var (WMUX_WORKSPACE_ID) is treated as a HINT only — it is
+// frozen at PTY-create time and goes stale the moment the workspace id is
+// re-minted (daemon respawn / session restore) while this process lives on.
+// Trusting it permanently is what produced "no workspace found for ws-…":
+// the agent reports a dead workspace and every identity-gated call fails
+// until the MCP server is restarted. We instead resolve the CURRENT owner
+// via a2a.resolve.identity (which now maps our PID → live workspace) and
+// fall back to the env hint only when the live map is unavailable.
+const ENV_WORKSPACE_HINT = process.env.WMUX_WORKSPACE_ID || '';
+let MY_WORKSPACE_ID = '';
+let workspaceResolved = false;
 
 const server = new McpServer({
   name: 'wmux',
   version: getVersion(),
 });
 
+// Detect an RPC outcome that means our cached workspace identity is stale
+// (workspace id re-minted). Matches both error-shaped results and thrown
+// errors so the next identity-gated call re-resolves the live owner.
+function isStaleIdentityResult(value: unknown): boolean {
+  const text = typeof value === 'string' ? value : JSON.stringify(value ?? '');
+  return /no workspace found|not owned by workspace/i.test(text);
+}
+
 // Helper: wrap an RPC call as an MCP tool result
 async function callRpc(
   method: RpcMethod,
   params: Record<string, unknown> = {},
 ): Promise<{ content: { type: 'text'; text: string }[] }> {
-  const result = await sendRpc(method, params);
-  const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
-  return { content: [{ type: 'text', text }] };
+  try {
+    const result = await sendRpc(method, params);
+    if (isStaleIdentityResult(result)) invalidateWorkspaceId();
+    const text = typeof result === 'string' ? result : JSON.stringify(result, null, 2);
+    return { content: [{ type: 'text', text }] };
+  } catch (err) {
+    if (isStaleIdentityResult(err instanceof Error ? err.message : String(err))) {
+      invalidateWorkspaceId();
+    }
+    throw err;
+  }
+}
+
+/**
+ * Drop the cached workspace identity so the next resolve re-queries the live
+ * owner. Called when an RPC reports our cached id is stale (the workspace was
+ * re-minted mid-session) so the server self-heals without a restart.
+ */
+function invalidateWorkspaceId(): void {
+  workspaceResolved = false;
 }
 
 /**
  * Resolve workspace identity by:
- * 1. Getting PID→workspaceId mappings from main process via RPC
- * 2. Walking our process tree upward to find a matching PTY PID
+ * 1. Getting PID→workspaceId mappings from the main process via RPC. The map
+ *    is keyed by PID and resolved to the CURRENT owning workspace server-side,
+ *    so it reflects live ownership rather than a frozen create-time value.
+ * 2. Walking our process tree upward to find a matching PTY shell PID.
  *
- * Process chain: MCP server → Claude Code → shell(PTY)
- * The PTY shell PID is in the mapping, so we need to go up ~2 levels.
+ * Process chain: MCP server → Claude Code → shell(PTY).
+ *
+ * The (stale-prone) env hint is used only as a last resort when the live map
+ * cannot be obtained, and is NOT cached, so a later call retries live
+ * resolution once the renderer / pid-map becomes available.
  */
-async function resolveWorkspaceId(): Promise<string> {
-  if (MY_WORKSPACE_ID && workspaceResolved) return MY_WORKSPACE_ID;
+async function resolveWorkspaceId(opts?: { force?: boolean }): Promise<string> {
+  if (workspaceResolved && MY_WORKSPACE_ID && !opts?.force) return MY_WORKSPACE_ID;
 
   try {
-    // Get PID→workspaceId mappings from main process
+    // Get PID→(live)workspaceId mappings from main process
     const result = await sendRpc('a2a.resolve.identity' as RpcMethod, {});
     const { mappings } = result as { mappings: Record<string, string> };
-    if (!mappings || Object.keys(mappings).length === 0) return MY_WORKSPACE_ID;
-
-    const knownPids = new Map<number, string>();
-    for (const [pidStr, wsId] of Object.entries(mappings)) {
-      const pid = parseInt(pidStr, 10);
-      if (!isNaN(pid)) knownPids.set(pid, wsId);
-    }
-
-    // Walk process tree upward: MCP server → Claude Code → shell(PTY)
-    let currentPid = process.ppid;
-    for (let depth = 0; depth < 10; depth++) {
-      const wsId = knownPids.get(currentPid);
-      if (wsId) {
-        MY_WORKSPACE_ID = wsId;
-        workspaceResolved = true;
-        return MY_WORKSPACE_ID;
+    if (mappings && Object.keys(mappings).length > 0) {
+      const knownPids = new Map<number, string>();
+      for (const [pidStr, wsId] of Object.entries(mappings)) {
+        const pid = parseInt(pidStr, 10);
+        if (!isNaN(pid)) knownPids.set(pid, wsId);
       }
-      const parentPid = await getParentPid(currentPid);
-      if (!parentPid || parentPid === currentPid || parentPid <= 1) break;
-      currentPid = parentPid;
-    }
-  } catch { /* resolve failed, fall through */ }
 
+      // Walk process tree upward: MCP server → Claude Code → shell(PTY)
+      let currentPid = process.ppid;
+      for (let depth = 0; depth < 10; depth++) {
+        const wsId = knownPids.get(currentPid);
+        if (wsId) {
+          MY_WORKSPACE_ID = wsId;
+          workspaceResolved = true;
+          return MY_WORKSPACE_ID;
+        }
+        const parentPid = await getParentPid(currentPid);
+        if (!parentPid || parentPid === currentPid || parentPid <= 1) break;
+        currentPid = parentPid;
+      }
+    }
+  } catch { /* resolve failed, fall through to env hint */ }
+
+  // Last resort: the unconfirmed (possibly stale) env hint. Not cached.
+  if (ENV_WORKSPACE_HINT) return ENV_WORKSPACE_HINT;
   return MY_WORKSPACE_ID;
 }
 

@@ -16,27 +16,31 @@
  *
  * Scenarios:
  *
- *   W1  a2a.resolve.identity reads PID map directory verbatim.
- *       Lock the contract that backs paths B and C: the handler must
- *       return whatever PTYManager wrote to ~/.wmux/pid-map/<pid>.
+ *   W1  a2a.resolve.identity resolves PID → ptyId → LIVE workspace.
+ *       pid-map stores PID → ptyId; the handler returns the ptyId's
+ *       current owner. Legacy "ws-" entries pass through; ptyIds with no
+ *       live owner are omitted.
  *
- *   W2  Path A — WMUX_WORKSPACE_ID env short-circuits.
- *       Probe spawned WITH env. Asserts: result === env value,
- *       rpcCalls === 0, walkDepth === 0. No daemon involvement.
+ *   W2  REGRESSION (the identity-drift bug): stale env + live PID map.
+ *       The PTY env names a workspace that no longer exists, but the live
+ *       PID map resolves the PPID to the CURRENT workspace. Asserts the
+ *       resolver returns the LIVE id, NOT the stale env. (Before the fix,
+ *       env short-circuited and the agent was stuck on the dead id.)
+ *
+ *   W2b Env hint fallback. env set + no PID-map match → the resolver
+ *       falls back to the (unconfirmed) env hint rather than failing.
  *
  *   W3  Path B — env empty + PID-tree walk hits a mapping.
- *       pid-map/<test-runner-pid> = "ws-walk-match" → probe's PPID
- *       is the runner, first walk step matches.
+ *       pid-map/<test-runner-pid> = ptyId, owner = "ws-walk-match" →
+ *       probe's PPID is the runner, first walk step matches.
  *
  *   W4  Path B exhaustion (boundary to path C).
- *       env empty + pid-map empty. Walk runs, finds nothing, returns
- *       "". In production this is where claim triggers; here we just
- *       verify the empty-result contract.
+ *       env empty + pid-map empty. Walk runs, finds nothing, returns "".
  *
  *   W5  Path C — mcp.claimWorkspace routing.
- *       Real handler is sendToRenderer; without a renderer attached
- *       the substrate must NOT silently fall through. Asserts: claim
- *       RPC fails with a window/renderer-attribution error.
+ *       Real handler is sendToRenderer; without a renderer attached the
+ *       substrate must NOT silently fall through. Asserts: claim RPC
+ *       fails with a window/renderer-attribution error.
  */
 import { spawn } from 'node:child_process';
 import net from 'node:net';
@@ -67,7 +71,7 @@ function makePipeName(tag) {
   return path.join(os.tmpdir(), `wmux-wsid-${tag}.sock`);
 }
 
-function spawnMiniServer({ pipeName, authToken, testHome }) {
+function spawnMiniServer({ pipeName, authToken, testHome, owners }) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [MINI_SERVER], {
       cwd: REPO_ROOT,
@@ -79,6 +83,8 @@ function spawnMiniServer({ pipeName, authToken, testHome }) {
         HOMEPATH: undefined,
         WMUX_MINISERVER_PIPE: pipeName,
         WMUX_MINISERVER_TOKEN: authToken,
+        // Simulated renderer ptyId → workspaceId ownership table.
+        WMUX_MINISERVER_OWNERS: JSON.stringify(owners ?? {}),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -146,12 +152,12 @@ async function killChild(child) {
   if (!child.killed) child.kill('SIGKILL');
 }
 
-async function withServer(label, body) {
+async function withServer(label, body, owners) {
   const testHome = makeTestHome();
   const wmuxDir = path.join(testHome, '.wmux');
   const pipeName = makePipeName(`${label}-${randomUUID().slice(0, 8)}`);
   const authToken = randomUUID();
-  const { child, getStderr } = await spawnMiniServer({ pipeName, authToken, testHome });
+  const { child, getStderr } = await spawnMiniServer({ pipeName, authToken, testHome, owners });
   try {
     return await body({ testHome, wmuxDir, pipeName, authToken });
   } catch (err) {
@@ -208,10 +214,14 @@ function runProbe({ pipeName, authToken, testHome, envWorkspaceId }) {
 
 async function runW1(report) {
   await withServer('W1', async ({ wmuxDir, pipeName, authToken }) => {
+    // pid-map stores PID → ptyId. The handler resolves each ptyId to its
+    // live owner; the legacy ws- entry passes through; the dead ptyId
+    // (no owner) is omitted.
     const pidMapDir = path.join(wmuxDir, 'pid-map');
     fs.mkdirSync(pidMapDir, { recursive: true });
-    fs.writeFileSync(path.join(pidMapDir, '12345'), 'ws-alpha', 'utf-8');
-    fs.writeFileSync(path.join(pidMapDir, '67890'), 'ws-beta', 'utf-8');
+    fs.writeFileSync(path.join(pidMapDir, '12345'), 'daemon-aaaa', 'utf-8');
+    fs.writeFileSync(path.join(pidMapDir, '67890'), 'ws-legacy', 'utf-8');
+    fs.writeFileSync(path.join(pidMapDir, '55555'), 'daemon-dead', 'utf-8');
 
     const socket = await connectSocket(pipeName);
     try {
@@ -219,35 +229,62 @@ async function runW1(report) {
       const m = result.mappings;
       const pass =
         m &&
-        m['12345'] === 'ws-alpha' &&
-        m['67890'] === 'ws-beta' &&
+        m['12345'] === 'ws-alpha' &&   // live owner of daemon-aaaa
+        m['67890'] === 'ws-legacy' &&  // legacy passthrough
+        !('55555' in m) &&             // dead ptyId omitted
         Object.keys(m).length === 2;
       report.push({ scenario: 'W1', pass, mappings: m });
     } finally {
       socket.end();
     }
-  });
+  }, { 'daemon-aaaa': 'ws-alpha' });
 }
 
 async function runW2(report) {
+  // REGRESSION for the identity-drift bug. The env names a workspace that no
+  // longer exists (re-minted by a respawn/restore), but the live PID map maps
+  // this runner's pid → ptyId → the CURRENT workspace. The resolver must
+  // return the LIVE id, never the stale env.
   await withServer('W2', async ({ testHome, wmuxDir, pipeName, authToken }) => {
-    // Decoy pid-map — must NOT be consulted when env is set (path A).
-    fs.mkdirSync(path.join(wmuxDir, 'pid-map'), { recursive: true });
-    fs.writeFileSync(path.join(wmuxDir, 'pid-map', '999999'), 'ws-DECOY', 'utf-8');
+    const pidMapDir = path.join(wmuxDir, 'pid-map');
+    fs.mkdirSync(pidMapDir, { recursive: true });
+    fs.writeFileSync(path.join(pidMapDir, String(process.pid)), 'daemon-live', 'utf-8');
 
-    const probe = await runProbe({ pipeName, authToken, testHome, envWorkspaceId: 'ws-from-env' });
-    const pass = probe.resolved === 'ws-from-env' && probe.rpcCalls === 0 && probe.walkDepth === 0;
+    const probe = await runProbe({
+      pipeName, authToken, testHome,
+      envWorkspaceId: 'ws-stale-DEAD',
+    });
+    const pass =
+      probe.resolved === 'ws-live-current' &&
+      probe.resolved !== 'ws-stale-DEAD' &&
+      probe.rpcCalls === 1 &&
+      probe.walkDepth === 1;
     report.push({ scenario: 'W2', pass, probe });
+  }, { 'daemon-live': 'ws-live-current' });
+}
+
+async function runW2b(report) {
+  // Env hint fallback. No PID-map match (empty map) → the resolver falls back
+  // to the env hint rather than returning nothing.
+  await withServer('W2b', async ({ testHome, wmuxDir, pipeName, authToken }) => {
+    fs.mkdirSync(path.join(wmuxDir, 'pid-map'), { recursive: true });
+
+    const probe = await runProbe({
+      pipeName, authToken, testHome,
+      envWorkspaceId: 'ws-from-env',
+    });
+    const pass = probe.resolved === 'ws-from-env' && probe.rpcCalls === 1;
+    report.push({ scenario: 'W2b', pass, probe });
   });
 }
 
 async function runW3(report) {
   await withServer('W3', async ({ testHome, wmuxDir, pipeName, authToken }) => {
-    // Map THIS test runner's pid → ws-walk-match. The probe's PPID
-    // equals this process's pid, so depth=1 walk step finds the match.
+    // Map THIS test runner's pid → ptyId, owner = ws-walk-match. The probe's
+    // PPID equals this process's pid, so depth=1 walk step finds the match.
     const pidMapDir = path.join(wmuxDir, 'pid-map');
     fs.mkdirSync(pidMapDir, { recursive: true });
-    fs.writeFileSync(path.join(pidMapDir, String(process.pid)), 'ws-walk-match', 'utf-8');
+    fs.writeFileSync(path.join(pidMapDir, String(process.pid)), 'daemon-walk', 'utf-8');
 
     const probe = await runProbe({ pipeName, authToken, testHome, envWorkspaceId: '' });
     const pass =
@@ -255,7 +292,7 @@ async function runW3(report) {
       probe.rpcCalls === 1 &&
       probe.walkDepth === 1;
     report.push({ scenario: 'W3', pass, probe });
-  });
+  }, { 'daemon-walk': 'ws-walk-match' });
 }
 
 async function runW4(report) {
@@ -302,6 +339,7 @@ async function main() {
   const report = [];
   await runW1(report);
   await runW2(report);
+  await runW2b(report);
   await runW3(report);
   await runW4(report);
   await runW5(report);
