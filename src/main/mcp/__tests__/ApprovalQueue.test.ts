@@ -40,19 +40,29 @@ afterEach(() => {
 });
 
 describe('ApprovalQueue.requestApproval', () => {
-  it('opens a prompt and resolves on approve', async () => {
+  it('opens a prompt and exposes promptId synchronously', () => {
     const queue = makeQueue();
-    const p = queue.requestApproval({
+    const handle = queue.requestApproval({
       clientName: 'plugin-a',
       declaredCapabilities: ['pane.read'],
     });
+    // promptId available BEFORE the user clicks anything — this is what
+    // RpcRouter threads into rejection.pendingApproval.
+    expect(handle.promptId).toBe('prompt-1');
     expect(opened).toHaveLength(1);
     expect(opened[0].promptId).toBe('prompt-1');
     expect(opened[0].clientName).toBe('plugin-a');
     expect(opened[0].declaredCapabilities).toEqual(['pane.read']);
+  });
 
-    await queue.resolvePrompt('prompt-1', true);
-    const result = await p;
+  it('resolves with trusted status on approve', async () => {
+    const queue = makeQueue();
+    const handle = queue.requestApproval({
+      clientName: 'plugin-a',
+      declaredCapabilities: ['pane.read'],
+    });
+    await queue.resolvePrompt(handle.promptId, true);
+    const result = await handle.resolution;
     expect(result.approved).toBe(true);
     expect(result.promptId).toBe('prompt-1');
     expect(result.identity?.status).toBe('trusted');
@@ -61,31 +71,30 @@ describe('ApprovalQueue.requestApproval', () => {
 
   it('persists denied status (spec §4.3)', async () => {
     const queue = makeQueue();
-    const p = queue.requestApproval({
+    const handle = queue.requestApproval({
       clientName: 'plugin-b',
       declaredCapabilities: ['terminal.read'],
     });
-    await queue.resolvePrompt('prompt-1', false);
-    const result = await p;
+    await queue.resolvePrompt(handle.promptId, false);
+    const result = await handle.resolution;
     expect(result.approved).toBe(false);
     expect(result.identity?.status).toBe('denied');
 
-    // Subsequent reads see the denied state on disk.
     const onDisk = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
     expect(onDisk.plugins['plugin-b'].status).toBe('denied');
   });
 
   it('dedupes concurrent requests with identical (clientName, capabilities)', async () => {
     const queue = makeQueue();
-    const p1 = queue.requestApproval({
+    const h1 = queue.requestApproval({
       clientName: 'plugin-c',
       declaredCapabilities: ['pane.read', 'meta.read'],
     });
-    const p2 = queue.requestApproval({
+    const h2 = queue.requestApproval({
       clientName: 'plugin-c',
       declaredCapabilities: ['pane.read', 'meta.read'],
     });
-    const p3 = queue.requestApproval({
+    const h3 = queue.requestApproval({
       clientName: 'plugin-c',
       // Same set in different order — still same dedupe key.
       declaredCapabilities: ['meta.read', 'pane.read'],
@@ -94,17 +103,23 @@ describe('ApprovalQueue.requestApproval', () => {
     // Only one prompt opened despite three requestApproval calls.
     expect(opened).toHaveLength(1);
     expect(queue.inflightCount()).toBe(1);
+    // All three handles share the same promptId.
+    expect(h1.promptId).toBe('prompt-1');
+    expect(h2.promptId).toBe('prompt-1');
+    expect(h3.promptId).toBe('prompt-1');
 
     await queue.resolvePrompt('prompt-1', true);
-    const [r1, r2, r3] = await Promise.all([p1, p2, p3]);
+    const [r1, r2, r3] = await Promise.all([
+      h1.resolution,
+      h2.resolution,
+      h3.resolution,
+    ]);
     expect(r1.approved).toBe(true);
     expect(r2.approved).toBe(true);
     expect(r3.approved).toBe(true);
-    expect(r1.promptId).toBe(r2.promptId);
-    expect(r2.promptId).toBe(r3.promptId);
   });
 
-  it('treats different capability sets as different prompts', async () => {
+  it('treats different capability sets as different prompts', () => {
     const queue = makeQueue();
     queue.requestApproval({
       clientName: 'plugin-d',
@@ -119,7 +134,7 @@ describe('ApprovalQueue.requestApproval', () => {
     expect(queue.inflightCount()).toBe(2);
   });
 
-  it('treats different plugin names as different prompts', async () => {
+  it('treats different plugin names as different prompts', () => {
     const queue = makeQueue();
     queue.requestApproval({
       clientName: 'plugin-e',
@@ -139,26 +154,21 @@ describe('ApprovalQueue.requestApproval', () => {
       },
       mintPromptId: mintId,
     });
-    const p = queue.requestApproval({
+    const handle = queue.requestApproval({
       clientName: 'plugin-g',
       declaredCapabilities: ['pane.read'],
     });
-    // Promise must still be pending — the queue is still tracking it.
+    expect(handle.promptId).toBe('prompt-1');
     expect(queue.inflightCount()).toBe(1);
-    await queue.resolvePrompt('prompt-1', true);
-    const result = await p;
+    await queue.resolvePrompt(handle.promptId, true);
+    const result = await handle.resolution;
     expect(result.approved).toBe(true);
   });
 
   it('keeps coalesced waiters whole when the trust-store write fails', async () => {
-    // Point the store at an unwritable location to force setUserDecision throw.
     const badStore = new PluginTrustStore(
       path.join(tmpDir, 'no-such-dir', 'plugin-trust.json'),
     );
-    // Try a write to ensure subsequent ones also fail (atomicWriteJSON throws
-    // when the parent dir can't be created — but we mkdir via ensureWmuxHomeDir
-    // which targets a fixed path. To force a failure deterministically, stub
-    // setUserDecision.
     const stubbed = badStore as unknown as {
       setUserDecision: () => Promise<never>;
     };
@@ -170,14 +180,12 @@ describe('ApprovalQueue.requestApproval', () => {
       openPrompt: (info) => opened.push(info),
       mintPromptId: mintId,
     });
-    const p = queue.requestApproval({
+    const handle = queue.requestApproval({
       clientName: 'plugin-h',
       declaredCapabilities: ['pane.read'],
     });
-    await queue.resolvePrompt('prompt-1', true);
-    const result = await p;
-    // Approved decision is communicated to the waiter; identity is
-    // undefined because the persistence write failed.
+    await queue.resolvePrompt(handle.promptId, true);
+    const result = await handle.resolution;
     expect(result.approved).toBe(true);
     expect(result.identity).toBeUndefined();
   });
@@ -186,18 +194,20 @@ describe('ApprovalQueue.requestApproval', () => {
 describe('ApprovalQueue.resolvePrompt', () => {
   it('is a no-op for unknown promptIds', async () => {
     const queue = makeQueue();
-    await expect(queue.resolvePrompt('does-not-exist', true)).resolves.toBeUndefined();
+    await expect(
+      queue.resolvePrompt('does-not-exist', true),
+    ).resolves.toBeUndefined();
   });
 
   it('is idempotent (second resolve does nothing)', async () => {
     const queue = makeQueue();
-    const p = queue.requestApproval({
+    const handle = queue.requestApproval({
       clientName: 'plugin-i',
       declaredCapabilities: ['pane.read'],
     });
-    await queue.resolvePrompt('prompt-1', true);
-    await queue.resolvePrompt('prompt-1', false); // second call — no-op
-    const result = await p;
+    await queue.resolvePrompt(handle.promptId, true);
+    await queue.resolvePrompt(handle.promptId, false); // second call — no-op
+    const result = await handle.resolution;
     expect(result.approved).toBe(true);
   });
 });
@@ -205,21 +215,23 @@ describe('ApprovalQueue.resolvePrompt', () => {
 describe('ApprovalQueue.cancelPrompt', () => {
   it('rejects all coalesced waiters with the cancellation reason', async () => {
     const queue = makeQueue();
-    const p1 = queue.requestApproval({
+    const h1 = queue.requestApproval({
       clientName: 'plugin-j',
       declaredCapabilities: ['pane.read'],
     });
-    const p2 = queue.requestApproval({
+    const h2 = queue.requestApproval({
       clientName: 'plugin-j',
       declaredCapabilities: ['pane.read'],
     });
-    queue.cancelPrompt('prompt-1', 'plugin disconnected');
-    await expect(p1).rejects.toThrow(/plugin disconnected/);
-    await expect(p2).rejects.toThrow(/plugin disconnected/);
+    queue.cancelPrompt(h1.promptId, 'plugin disconnected');
+    await expect(h1.resolution).rejects.toThrow(/plugin disconnected/);
+    await expect(h2.resolution).rejects.toThrow(/plugin disconnected/);
   });
 
   it('is a no-op for unknown promptIds', () => {
     const queue = makeQueue();
-    expect(() => queue.cancelPrompt('does-not-exist', 'whatever')).not.toThrow();
+    expect(() =>
+      queue.cancelPrompt('does-not-exist', 'whatever'),
+    ).not.toThrow();
   });
 });

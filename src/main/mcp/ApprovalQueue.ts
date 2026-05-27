@@ -46,6 +46,18 @@ export interface ApprovalResult {
   identity: PluginIdentityRecord | undefined;
 }
 
+/**
+ * Return shape of `requestApproval`. The promptId is available
+ * synchronously so the RpcRouter dispatch path can thread it into the
+ * `pendingApproval.promptId` slot of an identity-status rejection without
+ * awaiting the user's decision. The `resolution` promise resolves when the
+ * user clicks Approve/Deny (or cancellation rejects it).
+ */
+export interface ApprovalHandle {
+  promptId: string;
+  resolution: Promise<ApprovalResult>;
+}
+
 interface PendingPrompt {
   promptId: string;
   clientName: string;
@@ -104,24 +116,33 @@ export class ApprovalQueue {
 
   /**
    * Request user approval for a (clientName, declaredCapabilities) pair.
-   * Returns a promise that resolves once the user clicks Approve/Deny
-   * (possibly via another concurrent caller's prompt — see dedupe above).
+   *
+   * Returns an `ApprovalHandle` with:
+   *   - `promptId` (synchronously available): the dispatcher threads this
+   *     into the `pendingApproval.promptId` slot of the identity-status
+   *     rejection so the client can correlate the response with the
+   *     eventual approve/deny decision.
+   *   - `resolution`: a promise that resolves once the user clicks
+   *     Approve/Deny (possibly via another concurrent caller's prompt —
+   *     see dedupe above).
    *
    * Multiple inflight calls with the same dedupe key share a prompt; the
-   * renderer only sees one modal.
+   * renderer only sees one modal. Coalesced callers receive identical
+   * `promptId`s and the same eventual resolution.
    */
   requestApproval(input: {
     clientName: string;
     declaredCapabilities: readonly string[];
     rationale?: string;
-  }): Promise<ApprovalResult> {
+  }): ApprovalHandle {
     const key = dedupKey(input.clientName, input.declaredCapabilities);
     const existing = this.inflight.get(key);
     if (existing) {
-      return new Promise<ApprovalResult>((resolve, reject) => {
+      const resolution = new Promise<ApprovalResult>((resolve, reject) => {
         existing.resolvers.push(resolve);
         existing.rejecters.push(reject);
       });
+      return { promptId: existing.promptId, resolution };
     }
     const promptId = this.mintPromptId();
     const pending: PendingPrompt = {
@@ -134,7 +155,7 @@ export class ApprovalQueue {
     };
     this.inflight.set(key, pending);
     this.byPromptId.set(promptId, key);
-    const promise = new Promise<ApprovalResult>((resolve, reject) => {
+    const resolution = new Promise<ApprovalResult>((resolve, reject) => {
       pending.resolvers.push(resolve);
       pending.rejecters.push(reject);
     });
@@ -153,7 +174,7 @@ export class ApprovalQueue {
     } catch {
       /* swallow — best-effort renderer notification */
     }
-    return promise;
+    return { promptId, resolution };
   }
 
   /**

@@ -34,6 +34,8 @@ import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
 import { ShadowRejectionLogger } from './audit/shadowRejectionLog';
 import { LegacyTrafficCounter } from './audit/legacyTrafficCounter';
+import { ApprovalQueue } from './mcp/ApprovalQueue';
+import { resolveEnforcementMode } from './mcp/enforcementMode';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
@@ -418,6 +420,46 @@ const legacyTrafficCounter = new LegacyTrafficCounter({
   },
 });
 rpcRouter.setLegacyTrafficCounter(legacyTrafficCounter);
+
+// Phase 2.2 pre-commit 6: enforcement mode + approval queue.
+// Production wmux defaults to `enforce`; dev (electron-forge / npm start)
+// defaults to `shadow` so a bad delta doesn't lock the developer out.
+// Override via `mcp.mode` in `~/.wmux/config.json`.
+const isDevEnvironment = !app.isPackaged || process.env.NODE_ENV === 'development';
+const enforcementMode = resolveEnforcementMode({ isDev: isDevEnvironment });
+rpcRouter.setEnforcementMode(enforcementMode);
+
+const approvalQueue = new ApprovalQueue(getPluginTrustStore(), {
+  openPrompt: (info) => {
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.webContents.send(IPC.PERMISSION_PROMPT_OPEN, info);
+    } catch {
+      /* renderer might be mid-reload — the next request will surface */
+    }
+  },
+});
+rpcRouter.setApprovalQueue(approvalQueue);
+
+ipcMain.handle(
+  IPC.PERMISSION_PROMPT_RESOLVE,
+  async (_event, payload: { promptId: string; approved: boolean }) => {
+    if (
+      !payload ||
+      typeof payload.promptId !== 'string' ||
+      typeof payload.approved !== 'boolean'
+    ) {
+      return { ok: false, error: 'invalid permission prompt payload' };
+    }
+    await approvalQueue.resolvePrompt(payload.promptId, payload.approved);
+    return { ok: true };
+  },
+);
+
+console.log(
+  `[Main] Phase 2.2 enforcement mode: ${enforcementMode} (dev=${isDevEnvironment})`,
+);
 
 // IPC: webview CDP registration
 ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, webContentsId: number) => {

@@ -29,6 +29,8 @@ import {
   type LegacyTrafficEntry,
 } from '../../audit/shadowRejectionLog';
 import { LegacyTrafficCounter } from '../../audit/legacyTrafficCounter';
+import { ApprovalQueue, type ApprovalPromptInfo } from '../ApprovalQueue';
+import type { RpcRejection } from '../../../shared/rpc';
 
 let tmpDir = '';
 let dbPath = '';
@@ -341,5 +343,159 @@ describe('phase 2.2 dynamic — full plugin lifecycle against real disk', () => 
     const byMethod = new Map(legacy.map((e) => [e.method, e.count]));
     expect(byMethod.get('pane.list')).toBe(1);
     expect(byMethod.get('input.send')).toBe(1);
+  });
+});
+
+describe('phase 2.2 dynamic — enforce mode (pre-commit 6)', () => {
+  let opened: ApprovalPromptInfo[] = [];
+  let approvalQueue: ApprovalQueue;
+  let promptCounter = 0;
+
+  beforeEach(() => {
+    opened = [];
+    promptCounter = 0;
+    approvalQueue = new ApprovalQueue(store, {
+      openPrompt: (info) => opened.push(info),
+      mintPromptId: () => `e-prompt-${++promptCounter}`,
+    });
+    router.setEnforcementMode('enforce');
+    router.setApprovalQueue(approvalQueue);
+  });
+
+  it('returns rejection (handler NOT invoked) in enforce mode for capability-not-declared', async () => {
+    let handlerRan = false;
+    router.register('input.send', async () => {
+      handlerRan = true;
+      return { ok: true };
+    });
+    await store.upsertContact('p-strict', '1.0.0');
+    await store.upsertDeclaration('p-strict', ['pane.read']);
+    // Forge trusted state.
+    const raw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+    raw.plugins['p-strict'].status = 'trusted';
+    fs.writeFileSync(dbPath, JSON.stringify(raw));
+    store.invalidateCache();
+
+    const r = await router.dispatch({
+      id: 'enforce-1',
+      method: 'input.send',
+      params: { text: 'hi' },
+      clientName: 'p-strict',
+    });
+    expect(handlerRan).toBe(false);
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected failure');
+    expect(r.rejection).toBeDefined();
+    expect(r.rejection?.reason).toBe('capability-not-declared');
+    expect(r.error).toMatch(/terminal\.send.*not declared/i);
+  });
+
+  it('threads pendingApproval.promptId into identity-status:unconfirmed rejections', async () => {
+    // Plugin declares capabilities but hasn't been approved yet.
+    await store.upsertContact('p-pending', '1.0.0');
+    await store.upsertDeclaration('p-pending', ['pane.read', 'meta.write']);
+    // status stays 'unconfirmed' — no forging.
+
+    const r = await router.dispatch({
+      id: 'enforce-2',
+      method: 'pane.list',
+      params: {},
+      clientName: 'p-pending',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected failure');
+    const rej = r.rejection;
+    expect(rej?.reason).toBe('identity-status');
+    if (rej?.reason !== 'identity-status') throw new Error('narrow');
+    expect(rej.status).toBe('unconfirmed');
+    expect(rej.pendingApproval?.promptId).toBeDefined();
+    // The same promptId appears in the renderer-bound info.
+    expect(opened).toHaveLength(1);
+    expect(opened[0].promptId).toBe(rej.pendingApproval?.promptId);
+    expect(opened[0].clientName).toBe('p-pending');
+    expect(opened[0].declaredCapabilities).toEqual(['pane.read', 'meta.write']);
+  });
+
+  it('does NOT mint a prompt for denied plugins (spec §4.3)', async () => {
+    await store.upsertContact('p-denied');
+    await store.upsertDeclaration('p-denied', ['pane.read']);
+    const raw = JSON.parse(fs.readFileSync(dbPath, 'utf8'));
+    raw.plugins['p-denied'].status = 'denied';
+    fs.writeFileSync(dbPath, JSON.stringify(raw));
+    store.invalidateCache();
+
+    const r = await router.dispatch({
+      id: 'enforce-3',
+      method: 'pane.list',
+      params: {},
+      clientName: 'p-denied',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected failure');
+    expect(r.rejection?.reason).toBe('identity-status');
+    if (r.rejection?.reason === 'identity-status') {
+      expect(r.rejection.status).toBe('denied');
+      expect(r.rejection.pendingApproval).toBeUndefined();
+    }
+    expect(opened).toHaveLength(0);
+  });
+
+  it('resolves the prompt → next call succeeds with the same capability', async () => {
+    router.register('pane.list', async () => ({ panes: [] }));
+    await store.upsertContact('p-flow');
+    await store.upsertDeclaration('p-flow', ['pane.read']);
+
+    // First call: unconfirmed → reject + prompt.
+    const r1 = await router.dispatch({
+      id: 'flow-1',
+      method: 'pane.list',
+      params: {},
+      clientName: 'p-flow',
+    });
+    expect(r1.ok).toBe(false);
+    if (r1.ok) throw new Error('expected failure');
+    const promptId = (r1.rejection as RpcRejection & { reason: 'identity-status' })
+      .pendingApproval?.promptId;
+    expect(promptId).toBeDefined();
+
+    // User clicks Approve.
+    await approvalQueue.resolvePrompt(promptId as string, true);
+    store.invalidateCache();
+    await settle();
+
+    // Second call: trusted now → handler runs, response ok.
+    const r2 = await router.dispatch({
+      id: 'flow-2',
+      method: 'pane.list',
+      params: {},
+      clientName: 'p-flow',
+    });
+    expect(r2.ok).toBe(true);
+  });
+
+  it('still allows identity-bootstrap RPCs in enforce mode (mcp.identify + mcp.declarePermissions)', async () => {
+    const r = await router.dispatch({
+      id: 'boot-1',
+      method: 'mcp.identify',
+      params: {},
+      clientName: 'p-bootstrap',
+    });
+    expect(r.ok).toBe(true);
+    const d = await router.dispatch({
+      id: 'boot-2',
+      method: 'mcp.declarePermissions',
+      params: { permissions: ['pane.read'] },
+      clientName: 'p-bootstrap',
+    });
+    expect(d.ok).toBe(true);
+  });
+
+  it('allows legacy callers (no clientName envelope) in enforce mode', async () => {
+    const r = await router.dispatch({
+      id: 'legacy-1',
+      method: 'pane.list',
+      params: {},
+    });
+    expect(r.ok).toBe(true);
   });
 });

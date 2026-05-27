@@ -41,6 +41,13 @@ export const IPC = {
   AUTO_UPDATE_ENABLED: 'settings:auto-update-enabled',
   // Agent critical action approval
   APPROVAL_REQUEST: 'approval:request',
+  // Phase 2.2 — MCP plugin permission approval (main → renderer subscribe,
+  // renderer → main response). Emitted when the enforcer rejects an
+  // unconfirmed plugin in enforce mode and the ApprovalQueue mints a
+  // prompt. The renderer's PermissionApprovalDialog renders the prompt
+  // and sends the user's decision back over PERMISSION_PROMPT_RESOLVE.
+  PERMISSION_PROMPT_OPEN: 'permission:prompt-open',
+  PERMISSION_PROMPT_RESOLVE: 'permission:prompt-resolve',
   // Shell
   SHELL_OPEN_EXTERNAL: 'shell:open-external',
   // Open an absolute filesystem path in the OS default app / explorer.

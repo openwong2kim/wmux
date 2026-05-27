@@ -54,6 +54,25 @@ declare global {
         onSampleTaskReady: (callback: () => void) => () => void;
         onSampleTaskTimeout: (callback: () => void) => () => void;
       };
+      /**
+       * Phase 2.2 — MCP plugin permission approval. Main fires `onOpen`
+       * with the prompt payload; renderer resolves via `resolve(promptId,
+       * approved)`. See `PermissionApprovalDialog` for the UX.
+       */
+      permissionPrompt?: {
+        onOpen: (
+          callback: (info: {
+            promptId: string;
+            clientName: string;
+            declaredCapabilities: string[];
+            rationale?: string;
+          }) => void,
+        ) => () => void;
+        resolve: (
+          promptId: string,
+          approved: boolean,
+        ) => Promise<{ ok: boolean; error?: string }>;
+      };
     };
     clipboardAPI: {
       /**

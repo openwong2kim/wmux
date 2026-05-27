@@ -399,6 +399,34 @@ document.addEventListener('DOMContentLoaded', () => {
   };
 };
 
+// Phase 2.2 — MCP plugin permission approval bridge.
+// Main fires PERMISSION_PROMPT_OPEN with the ApprovalPromptInfo payload
+// when an unconfirmed plugin needs the user's approval; the renderer's
+// PermissionApprovalDialog renders it and sends the decision back via
+// PERMISSION_PROMPT_RESOLVE. Both channels are shape-validated downstream
+// so a stale renderer can't corrupt the queue.
+(electronAPI as Record<string, unknown>).permissionPrompt = {
+  onOpen: (
+    callback: (info: {
+      promptId: string;
+      clientName: string;
+      declaredCapabilities: string[];
+      rationale?: string;
+    }) => void,
+  ) => {
+    const listener = (_event: unknown, info: Parameters<typeof callback>[0]) => callback(info);
+    ipcRenderer.on(IPC.PERMISSION_PROMPT_OPEN, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC.PERMISSION_PROMPT_OPEN, listener);
+    };
+  },
+  resolve: (promptId: string, approved: boolean) =>
+    ipcRenderer.invoke(IPC.PERMISSION_PROMPT_RESOLVE, {
+      promptId,
+      approved,
+    }) as Promise<{ ok: boolean; error?: string }>,
+};
+
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
 
 /**

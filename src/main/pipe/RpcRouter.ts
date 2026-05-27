@@ -7,6 +7,8 @@ import type {
   RpcResponse,
 } from '../../shared/rpc';
 import { check as enforcerCheck } from '../mcp/PermissionEnforcer';
+import type { EnforcementMode } from '../mcp/enforcementMode';
+import type { ApprovalQueue } from '../mcp/ApprovalQueue';
 
 // Handlers receive a per-request context as an optional second argument.
 // Existing handlers `(params) => ...` keep compiling because the extra
@@ -71,6 +73,20 @@ export class RpcRouter {
   private legacyTrafficCounter: LegacyTrafficCounter | undefined;
   private trustLookup: TrustLookup | undefined;
   private shadowSink: ShadowRejectionSink | undefined;
+  /**
+   * Phase 2.2 pre-commit 6: enforcement mode. Default is `shadow` so a
+   * router that was never explicitly set up (unit tests, transitional
+   * code paths) preserves pre-Phase-2.2 behavior. main/index.ts calls
+   * `setEnforcementMode` after reading `~/.wmux/config.json`.
+   */
+  private enforcementMode: EnforcementMode = 'shadow';
+  /**
+   * Phase 2.2 pre-commit 6: approval queue. When set AND mode === 'enforce'
+   * AND the enforcer rejects with identity-status:unconfirmed for a plugin
+   * that has declared capabilities, dispatch fires a prompt and threads
+   * the synchronously-available promptId into rejection.pendingApproval.
+   */
+  private approvalQueue: ApprovalQueue | undefined;
   // Process-once flag — the legacy bucket is a single audit entry, not a
   // per-request log. After the first envelope-less RPC reaches the wire,
   // subsequent calls don't re-touch the trust DB until the process restarts.
@@ -118,6 +134,26 @@ export class RpcRouter {
    */
   setShadowRejectionSink(sink: ShadowRejectionSink | undefined): void {
     this.shadowSink = sink;
+  }
+
+  /**
+   * Phase 2.2 pre-commit 6: switch between shadow (log + proceed) and
+   * enforce (log + return rejection). The mode is read from
+   * `~/.wmux/config.json` at main/index.ts boot time.
+   */
+  setEnforcementMode(mode: EnforcementMode): void {
+    this.enforcementMode = mode;
+  }
+
+  /**
+   * Phase 2.2 pre-commit 6: inject the approval queue. main/index.ts wires
+   * this with a renderer-IPC opener. When the enforcer rejects an
+   * unconfirmed plugin that has declared a capability set, the dispatcher
+   * fires `requestApproval` to surface the prompt and threads the
+   * synchronously-available promptId into the rejection.
+   */
+  setApprovalQueue(queue: ApprovalQueue | undefined): void {
+    this.approvalQueue = queue;
   }
 
   async dispatch(request: RpcRequest): Promise<RpcResponse> {
@@ -227,6 +263,53 @@ export class RpcRouter {
       }
     }
 
+    // Pre-commit 6: enforce-mode short-circuit. When mode is 'enforce',
+    // a non-allow outcome turns into an RPC failure response — the handler
+    // is NOT invoked. In 'shadow' mode (dogfood default), we still call
+    // the handler after logging, preserving pre-2.2 behavior.
+    if (outcome.kind !== 'allow' && this.enforcementMode === 'enforce') {
+      let rejection: RpcRejection = outcome.rejection;
+      // For unconfirmed identity with a non-empty declaration, surface an
+      // approval prompt and thread the synchronously-minted promptId into
+      // the rejection so the client can correlate its retry. The resolution
+      // promise is NOT awaited — clients poll/retry on their own cadence
+      // (OAuth `authorization_pending` precedent, plan D4).
+      if (
+        rejection.reason === 'identity-status' &&
+        rejection.status === 'unconfirmed' &&
+        trust?.declaredCapabilities &&
+        trust.declaredCapabilities.length > 0 &&
+        this.approvalQueue
+      ) {
+        try {
+          const handle = this.approvalQueue.requestApproval({
+            clientName: ctx.clientName ?? trust.name,
+            declaredCapabilities: trust.declaredCapabilities,
+            rationale: trust.rationale,
+          });
+          rejection = {
+            ...rejection,
+            pendingApproval: { promptId: handle.promptId },
+          };
+          // Intentionally not awaiting handle.resolution — dispatch returns
+          // immediately and the user's eventual decision is consumed by
+          // the next RPC the plugin makes.
+          handle.resolution.catch(() => {
+            /* swallow cancellations; downstream IPC error handlers cover the rest */
+          });
+        } catch {
+          /* approval queue failure must not block dispatch */
+        }
+      }
+      const errorMessage = renderRejectionMessage(rejection);
+      return {
+        id: request.id,
+        ok: false,
+        error: errorMessage,
+        rejection,
+      };
+    }
+
     try {
       const result = await handler(request.params ?? {}, ctx);
       return {
@@ -242,5 +325,30 @@ export class RpcRouter {
         error: message,
       };
     }
+  }
+}
+
+/**
+ * Human-readable error message for an RpcRejection. Composed inline at
+ * dispatch time so external clients reading only `error` (without the
+ * structured `rejection`) still see something useful. The structured
+ * variant has the full per-path detail.
+ */
+function renderRejectionMessage(r: RpcRejection): string {
+  switch (r.reason) {
+    case 'capability-not-declared':
+      return `${r.method}: capability "${r.capability}" was not declared by this plugin`;
+    case 'path-not-allowed':
+      return `${r.method}: path "${r.path}" not allowed by declared ${r.capability} globs [${r.declared.join(', ')}]`;
+    case 'paths-partially-allowed':
+      return `${r.method}: ${r.rejected.length} of ${r.allowed.length + r.rejected.length} paths not covered by declared ${r.capability} globs`;
+    case 'identity-status':
+      if (r.status === 'denied') {
+        return `${r.method}: plugin is denied; edit ~/.wmux/plugin-trust.json to restore`;
+      }
+      if (r.pendingApproval) {
+        return `${r.method}: awaiting user approval (promptId=${r.pendingApproval.promptId})`;
+      }
+      return `${r.method}: plugin is unconfirmed; call mcp.identify + mcp.declarePermissions first`;
   }
 }
