@@ -1142,7 +1142,11 @@ async function main(): Promise<void> {
     graceMs: graceEnvMs ?? 60_000,
     startTime,
   };
-  const watchdog = new Watchdog(30000, idleConfig);
+  // Watchdog tick interval — production stays at 30s. The dynamic test
+  // (scripts/daemon-idle-shutdown-dynamic.mjs) drops this so it doesn't
+  // have to wait a full tick after the idle window elapses.
+  const watchdogTickMs = parsePositiveMs(process.env.WMUX_WATCHDOG_TICK_MS) ?? 30000;
+  const watchdog = new Watchdog(watchdogTickMs, idleConfig);
   const sessionPipes = new Map<string, SessionPipe>();
   const sessionDataListeners = new Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>();
 
