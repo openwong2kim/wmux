@@ -1220,12 +1220,17 @@ async function main(): Promise<void> {
     // Idle snapshot: how Watchdog sees the daemon's "is anyone using me?"
     // signals. connections is the live wmux main + any MCP clients that
     // sit directly on the daemon pipe (currently none — MCP routes via
-    // main). sessions = live PTY count. lastDisconnectAt anchors the
-    // idle window; see DaemonPipeServer.getLastDisconnectAt for the
-    // 0-edge stamping rule.
+    // main). sessions = LIVE PTY count only — listLiveSessions() filters
+    // out `dead` (PTY exited, retained for scrollback until the 24h
+    // reap fires) and `suspended` (recovery cap-skipped, no PTY behind
+    // the metadata). Without that filter, a daemon whose only remaining
+    // sessions are tombstones would stay alive for up to 24 hours past
+    // the user closing every pane. lastDisconnectAt anchors the idle
+    // window; see DaemonPipeServer.getLastDisconnectAt for the 0-edge
+    // stamping rule.
     onIdleCheck: () => ({
       connections: pipeServer.getConnectionCount(),
-      sessions: sessionManager.listSessions().length,
+      sessions: sessionManager.listLiveSessions().length,
       lastDisconnectAt: pipeServer.getLastDisconnectAt(),
     }),
     // Idle self-terminate. Routes through the same shutdown() path used

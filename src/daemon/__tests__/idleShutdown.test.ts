@@ -21,14 +21,22 @@ describe('Daemon idle shutdown (source-level invariants)', () => {
     expect(src).toMatch(/WMUX_IDLE_GRACE_MS/);
   });
 
-  it('feeds connection count + session count + last-disconnect into onIdleCheck', () => {
+  it('feeds connection count + LIVE session count + last-disconnect into onIdleCheck', () => {
     // Watchdog cannot infer activity by itself — it needs the three
     // signals we expose via the public accessors. The accessor names
     // are pinned here so a refactor that drops or renames one of them
     // surfaces immediately.
+    //
+    // The session-count signal MUST go through listLiveSessions(): a
+    // plain listSessions().length would keep counting tombstones
+    // (dead + suspended) for up to 24h after the user closed every
+    // pane, and idle shutdown would never fire on the orphan path
+    // the feature is meant to clean up. The regex below explicitly
+    // rejects the broader accessor.
     expect(src).toMatch(/onIdleCheck:\s*\(\)\s*=>/);
     expect(src).toMatch(/pipeServer\.getConnectionCount\(\)/);
-    expect(src).toMatch(/sessionManager\.listSessions\(\)\.length/);
+    expect(src).toMatch(/sessionManager\.listLiveSessions\(\)\.length/);
+    expect(src).not.toMatch(/onIdleCheck[\s\S]{0,300}sessionManager\.listSessions\(\)\.length/);
     expect(src).toMatch(/pipeServer\.getLastDisconnectAt\(\)/);
   });
 

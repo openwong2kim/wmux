@@ -302,6 +302,24 @@ export class DaemonSessionManager extends EventEmitter {
     return Array.from(this.sessions.values()).map((m) => ({ ...m.meta }));
   }
 
+  /**
+   * Return only sessions that hold a usable PTY child — `attached` or
+   * `detached`. Excludes `dead` (PTY exited, scrollback retained until
+   * the reap TTL fires up to 24h later) and `suspended` (recovery
+   * cap-skipped, no live PTY behind the metadata).
+   *
+   * Watchdog idle-shutdown uses this so a daemon whose only remaining
+   * sessions are tombstones can self-terminate instead of waiting for
+   * the dead-TTL reaper. Other lifecycle introspection (e.g. health
+   * endpoints, MCP `is anyone using the daemon?` probes) should call
+   * this rather than re-implementing the filter at each site.
+   */
+  listLiveSessions(): DaemonSession[] {
+    return Array.from(this.sessions.values())
+      .filter((m) => m.meta.state === 'attached' || m.meta.state === 'detached')
+      .map((m) => ({ ...m.meta }));
+  }
+
   getSession(id: string): ManagedSession | undefined {
     return this.sessions.get(id);
   }

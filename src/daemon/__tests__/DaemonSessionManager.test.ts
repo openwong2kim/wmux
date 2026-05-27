@@ -128,6 +128,53 @@ describe('DaemonSessionManager', () => {
     expect(sessions.map((s) => s.id).sort()).toEqual(['s1', 's2']);
   });
 
+  // 2b. listLiveSessions → filters out dead + suspended
+  it('listLiveSessions excludes dead and suspended sessions', () => {
+    // Seed four sessions covering every state. createSession defaults
+    // to 'detached'; attachSession flips one to 'attached'; the
+    // simulateExit hook on the mocked PTY drives one to 'dead'; the
+    // last one we drop into 'suspended' by reaching into the managed
+    // record directly because that transition normally happens inside
+    // recovery paths the manager does not expose publicly.
+    manager.createSession({ id: 'attached-one', cmd: 'cmd.exe', cwd: '.' });
+    manager.attachSession('attached-one');
+
+    manager.createSession({ id: 'detached-one', cmd: 'cmd.exe', cwd: '.' });
+    // Already in 'detached' on creation — no transition needed.
+
+    manager.createSession({ id: 'dead-one', cmd: 'cmd.exe', cwd: '.' });
+    lastMockPty?.simulateExit(0);
+
+    manager.createSession({ id: 'suspended-one', cmd: 'cmd.exe', cwd: '.' });
+    const susp = manager.getSession('suspended-one');
+    if (!susp) throw new Error('test setup: suspended-one not found');
+    susp.meta.state = 'suspended';
+
+    const live = manager.listLiveSessions();
+    expect(live.map((s) => s.id).sort()).toEqual(['attached-one', 'detached-one']);
+    // listSessions still returns all four — listLiveSessions is the
+    // filtered view, not a replacement.
+    expect(manager.listSessions()).toHaveLength(4);
+  });
+
+  it('listLiveSessions returns an empty array when only tombstones exist', () => {
+    // Worst-case shape for the idle-shutdown predicate: the daemon
+    // accepts a wmux disconnect, every remaining session is dead or
+    // suspended, and the reap TTL is still 24h away. listLiveSessions
+    // must report 0 so Watchdog can self-terminate without waiting.
+    manager.createSession({ id: 'd1', cmd: 'cmd.exe', cwd: '.' });
+    lastMockPty?.simulateExit(0);
+    manager.createSession({ id: 'd2', cmd: 'cmd.exe', cwd: '.' });
+    lastMockPty?.simulateExit(0);
+    const s = manager.createSession({ id: 'sp', cmd: 'cmd.exe', cwd: '.' });
+    void s;
+    const sp = manager.getSession('sp')!;
+    sp.meta.state = 'suspended';
+
+    expect(manager.listLiveSessions()).toEqual([]);
+    expect(manager.listSessions()).toHaveLength(3);
+  });
+
   // 3. attachSession → state changes to attached
   it('changes state to attached via attachSession', () => {
     manager.createSession({ id: 'att', cmd: 'cmd.exe', cwd: '.' });
