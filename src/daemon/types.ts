@@ -41,6 +41,14 @@ export interface DaemonConfig {
     pipeName: string;
     logLevel: 'trace' | 'debug' | 'info' | 'warn' | 'error';
     autoStart: boolean;
+    /**
+     * Minutes the daemon waits with zero clients and zero PTY sessions
+     * before terminating itself. Defaults to 5. Set to 0 to keep the
+     * daemon alive forever (legacy behavior). Useful when a user force-
+     * kills the wmux main process and forgets to reopen the UI — the
+     * orphaned daemon would otherwise occupy RAM indefinitely.
+     */
+    idleShutdownMinutes?: number;
   };
   session: {
     defaultShell: string;

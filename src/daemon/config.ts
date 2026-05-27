@@ -38,6 +38,7 @@ export function createDefaultConfig(): DaemonConfig {
       pipeName: getDefaultPipeName(),
       logLevel: 'info',
       autoStart: true,
+      idleShutdownMinutes: 5,
     },
     session: {
       defaultShell: getDefaultShell(),
@@ -140,6 +141,13 @@ function validateConfig(parsed: unknown): parsed is DaemonConfig {
   if (typeof d['pipeName'] !== 'string') return false;
   if (typeof d['logLevel'] !== 'string') return false;
   if (typeof d['autoStart'] !== 'boolean') return false;
+  // idleShutdownMinutes is optional, but if present must be a finite number.
+  // The post-validate path below still clamps to a sensible range — this
+  // gate just rejects garbage like {"idleShutdownMinutes": "five"}.
+  if (
+    d['idleShutdownMinutes'] !== undefined &&
+    (typeof d['idleShutdownMinutes'] !== 'number' || !Number.isFinite(d['idleShutdownMinutes'] as number))
+  ) return false;
 
   // session section
   const session = obj['session'];

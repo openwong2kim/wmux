@@ -1118,7 +1118,31 @@ async function main(): Promise<void> {
   sessionManager.setConfig(config);
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   const processMonitor = new ProcessMonitor();
-  const watchdog = new Watchdog(30000);
+
+  // Idle-shutdown config. Defaults: 5 min idle window + 60 s grace.
+  // `WMUX_IDLE_SHUTDOWN_MS` and `WMUX_IDLE_GRACE_MS` env vars override
+  // both — the dynamic test (scripts/daemon-idle-shutdown-dynamic.mjs)
+  // uses them to verify the self-terminate path in seconds instead of
+  // waiting the production 6 minutes. Env overrides only apply when the
+  // value parses to a finite positive number.
+  const parsePositiveMs = (raw: string | undefined): number | null => {
+    if (!raw) return null;
+    const n = Number(raw);
+    return Number.isFinite(n) && n > 0 ? n : null;
+  };
+  const idleEnvMs = parsePositiveMs(process.env.WMUX_IDLE_SHUTDOWN_MS);
+  const graceEnvMs = parsePositiveMs(process.env.WMUX_IDLE_GRACE_MS);
+  const configuredIdleMinutes = config.daemon.idleShutdownMinutes ?? 5;
+  // Negative or non-finite config falls back to defaults; 0 = disabled.
+  const safeConfigIdleMs = Number.isFinite(configuredIdleMinutes) && configuredIdleMinutes >= 0
+    ? configuredIdleMinutes * 60_000
+    : 5 * 60_000;
+  const idleConfig = {
+    idleTimeoutMs: idleEnvMs ?? safeConfigIdleMs,
+    graceMs: graceEnvMs ?? 60_000,
+    startTime,
+  };
+  const watchdog = new Watchdog(30000, idleConfig);
   const sessionPipes = new Map<string, SessionPipe>();
   const sessionDataListeners = new Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>();
 
@@ -1160,6 +1184,13 @@ async function main(): Promise<void> {
     log('warn', 'Failed to write pipe name file:', err);
   }
 
+  // doShutdown is hoisted ahead of `setCallbacks` so the idle-shutdown
+  // callback can route through the same termination path used by
+  // SIGTERM/SIGINT/daemon.shutdown — referenced from within the
+  // Watchdog tick (always runs after this point in the boot order).
+  const doShutdown = (sig: string): Promise<void> =>
+    shutdown(sig, sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, watchdog);
+
   // 8. Start watchdog with escalation callbacks
   watchdog.setCallbacks({
     onReapDeadSessions: () => {
@@ -1181,6 +1212,25 @@ async function main(): Promise<void> {
       log(blocked ? 'warn' : 'info',
         blocked ? 'New session creation blocked due to memory pressure'
                 : 'New session creation unblocked — memory recovered');
+    },
+    // Idle snapshot: how Watchdog sees the daemon's "is anyone using me?"
+    // signals. connections is the live wmux main + any MCP clients that
+    // sit directly on the daemon pipe (currently none — MCP routes via
+    // main). sessions = live PTY count. lastDisconnectAt anchors the
+    // idle window; see DaemonPipeServer.getLastDisconnectAt for the
+    // 0-edge stamping rule.
+    onIdleCheck: () => ({
+      connections: pipeServer.getConnectionCount(),
+      sessions: sessionManager.listSessions().length,
+      lastDisconnectAt: pipeServer.getLastDisconnectAt(),
+    }),
+    // Idle self-terminate. Routes through the same shutdown() path used
+    // by SIGTERM / SIGINT / daemon.shutdown RPC — the `shuttingDown`
+    // re-entry guard at index.ts top-level protects against a racing
+    // signal arriving while we're already on our way out.
+    onIdleShutdown: (idleMs) => {
+      log('info', `[shutdown.phase] idle.timeout idleMs=${idleMs} cfgMs=${idleConfig.idleTimeoutMs}`);
+      void doShutdown('idle.timeout');
     },
   });
 
@@ -1233,10 +1283,8 @@ async function main(): Promise<void> {
   // 30 s leaves a recoverable .buf trace rather than nothing.
   void runSnapshotOnce();
 
-  // 9. Signal handlers
-  const doShutdown = (sig: string) =>
-    shutdown(sig, sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, watchdog);
-
+  // 9. Signal handlers — doShutdown was hoisted above setCallbacks so
+  // the idle-shutdown callback can reuse it.
   process.on('SIGTERM', () => doShutdown('SIGTERM'));
   process.on('SIGINT', () => doShutdown('SIGINT'));
 
