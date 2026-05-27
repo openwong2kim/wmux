@@ -252,6 +252,43 @@ export class PluginTrustStore {
     });
   }
 
+  /**
+   * Record an explicit user decision from the approval dialog (Phase 2.2
+   * pre-commit 5). The user has clicked Approve or Deny against a specific
+   * `(clientName, declaredCapabilities)` pair; that decision MUST stick:
+   *
+   *   - 'trusted' — bypasses applyContact/applyDeclaration's auto-demotion
+   *     since the user explicitly approved the current declaration. If no
+   *     record exists yet (a prompt that fired before mcp.identify
+   *     landed), seed a minimal trusted entry.
+   *   - 'denied' — spec §4.3 "denied never regresses". The next
+   *     applyContact or applyDeclaration call will read this status and
+   *     refuse to upgrade away from it.
+   *
+   * `lastSeen` advances. `declaredCapabilities` are NOT overwritten — the
+   * decision applies to whatever set was active when the user clicked.
+   */
+  async setUserDecision(
+    name: string,
+    status: 'trusted' | 'denied',
+  ): Promise<PluginIdentityRecord> {
+    const safeName = clampName(name);
+    return this.mutate((db) => {
+      const existing = ownPlugin(db, safeName);
+      const t = Date.now();
+      const next: PluginIdentityRecord = existing
+        ? { ...existing, status, lastSeen: t }
+        : {
+            name: safeName,
+            status,
+            firstSeen: t,
+            lastSeen: t,
+          };
+      db.plugins[safeName] = next;
+      return next;
+    });
+  }
+
   // Record an RPC call that arrived without a clientName envelope.
   // Pre-v2.10 callers and the wmux-bundled MCP server's pre-handshake RPCs
   // land here. Status is `legacy` on first contact and refreshes via

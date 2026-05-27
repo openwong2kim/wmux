@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import { ALL_RPC_METHODS, type RpcMethod } from '../../../shared/rpc';
-import { METHOD_CAPABILITY } from '../methodCapabilityMap';
+import {
+  CAPABILITY_RISK_CLASS,
+  METHOD_CAPABILITY,
+  RISK_CLASS_COPY,
+  type RiskClass,
+} from '../methodCapabilityMap';
 import { listKnownCapabilities } from '../permissionGrammar';
 
 describe('methodCapabilityMap totality', () => {
@@ -96,6 +101,62 @@ describe('methodCapabilityMap path extractor behavior', () => {
       'pane.created',
       'agent.lifecycle',
     ]);
+  });
+});
+
+describe('CAPABILITY_RISK_CLASS — wording table coverage (Phase 2.2 pre-commit 5)', () => {
+  it('classifies every grantable capability from KNOWN_CAPABILITIES', () => {
+    const known = listKnownCapabilities();
+    for (const cap of known) {
+      expect(
+        CAPABILITY_RISK_CLASS[cap],
+        `capability ${cap} has no risk class — approval dialog would render fallback copy`,
+      ).toBeDefined();
+    }
+  });
+
+  it('uses only well-defined risk classes from RISK_CLASS_COPY', () => {
+    for (const [cap, klass] of Object.entries(CAPABILITY_RISK_CLASS)) {
+      expect(
+        RISK_CLASS_COPY[klass],
+        `capability ${cap} → risk class ${klass} has no copy entry`,
+      ).toBeDefined();
+    }
+  });
+
+  it('flags terminal.read and pane.search as terminal-content (spec §3.6)', () => {
+    expect(CAPABILITY_RISK_CLASS['terminal.read']).toBe('terminal-content');
+    expect(CAPABILITY_RISK_CLASS['pane.search']).toBe('terminal-content');
+  });
+
+  it('flags terminal.send as terminal-input (spec §3.6)', () => {
+    expect(CAPABILITY_RISK_CLASS['terminal.send']).toBe('terminal-input');
+  });
+});
+
+describe('RISK_CLASS_COPY — wording asymmetry (plan D5)', () => {
+  it('rates terminal-content and terminal-input as critical severity', () => {
+    expect(RISK_CLASS_COPY['terminal-content'].severity).toBe('critical');
+    expect(RISK_CLASS_COPY['terminal-input'].severity).toBe('critical');
+  });
+
+  it('rates metadata, events, pane-lifecycle, and workspace as neutral', () => {
+    const neutrals: RiskClass[] = ['metadata', 'events', 'pane-lifecycle', 'workspace'];
+    for (const r of neutrals) {
+      expect(RISK_CLASS_COPY[r].severity).toBe('neutral');
+    }
+  });
+
+  it('rates browser and a2a as caution', () => {
+    expect(RISK_CLASS_COPY['browser'].severity).toBe('caution');
+    expect(RISK_CLASS_COPY['a2a'].severity).toBe('caution');
+  });
+
+  it('uses concrete user-facing language for terminal-content (no euphemisms)', () => {
+    // The copy must name the concrete privilege, not soften it. This pins
+    // the asymmetry against future "let's be friendlier" refactors.
+    const detail = RISK_CLASS_COPY['terminal-content'].detail;
+    expect(detail).toMatch(/secrets|read|screen/i);
   });
 });
 

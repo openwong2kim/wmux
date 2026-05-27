@@ -299,3 +299,128 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // should fire these — `wmux.internal` keeps the gate closed.
   'hooks.signal': { capability: 'wmux.internal' },
 };
+
+/**
+ * Capability → RiskClass lookup. The methodCapabilityMap above is keyed by
+ * RPC method; the approval dialog needs to classify each *capability* a
+ * plugin declared, regardless of which methods that capability gates. This
+ * table is the second axis.
+ *
+ * Keep in sync with KNOWN_CAPABILITIES in permissionGrammar.ts — every
+ * grantable capability MUST appear here so the approval dialog can render
+ * appropriate copy. A future test pins this invariant.
+ *
+ * `wmux.internal` is intentionally absent: it's a reserved prefix that
+ * never appears in a plugin's declaration, so the dialog never renders it.
+ */
+export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
+  // Pane lifecycle and content
+  'pane.read':       'pane-lifecycle',
+  'pane.write':      'pane-lifecycle',
+  'pane.create':     'pane-lifecycle',
+  'pane.delete':     'pane-lifecycle',
+  'pane.search':     'terminal-content',
+  // Metadata
+  'meta.read':       'metadata',
+  'meta.write':      'metadata',
+  // Events
+  'events.subscribe':'events',
+  // Workspaces
+  'workspace.read':  'workspace',
+  'workspace.claim': 'workspace',
+  // Terminal IO
+  'terminal.send':   'terminal-input',
+  'terminal.read':   'terminal-content',
+  // Browser
+  'browser.navigate':  'browser',
+  'browser.click':     'browser',
+  'browser.type':      'browser',
+  'browser.screenshot':'browser',
+  'browser.evaluate':  'browser',
+  'browser.read':      'browser',
+  // A2A
+  'a2a.send':    'a2a',
+  'a2a.execute': 'a2a',
+  'a2a.read':    'a2a',
+};
+
+/**
+ * Risk-class → user-facing copy for the approval dialog (plan D5).
+ *
+ * Wording asymmetry is intentional. Terminal-content/input get bold-warning
+ * language that names the concrete privilege ("read what's on your screen,
+ * including secrets") — this is the difference between "I clicked Approve
+ * because metadata sounds harmless" and "I clicked Approve knowing exactly
+ * what I gave away." Metadata, events, pane-lifecycle, and workspace are
+ * intentionally neutral — they don't expose user data.
+ *
+ * `severity` drives the dialog's accent color (warning vs caution vs none).
+ * `summary` is the headline shown next to the capability name. `detail` is
+ * the paragraph shown in expanded view.
+ */
+export interface RiskClassCopy {
+  /** Severity level — drives visual treatment (color, icon, font weight). */
+  severity: 'critical' | 'caution' | 'neutral';
+  /** Short headline displayed inline with the capability name. */
+  summary: string;
+  /** Expanded paragraph explaining what the user is agreeing to. */
+  detail: string;
+}
+
+export const RISK_CLASS_COPY: Record<RiskClass, RiskClassCopy> = {
+  'terminal-content': {
+    severity: 'critical',
+    summary: 'Can read what is on your screen',
+    detail:
+      'Includes secrets, agent output, command history, and anything else visible in your terminal panes — even content that was on screen before the plugin connected.',
+  },
+  'terminal-input': {
+    severity: 'critical',
+    summary: 'Can type into your panes as if it were you',
+    detail:
+      'The plugin can send keystrokes (including Enter, Ctrl+C, and editor commands) to any pane in this workspace. Treat this with the same trust level as giving someone your keyboard.',
+  },
+  'browser': {
+    severity: 'caution',
+    summary: 'Can control a Playwright browser session',
+    detail:
+      'The plugin can open pages, click elements, type text, run JavaScript, and capture screenshots. Sites you log into in this browser are reachable by the plugin.',
+  },
+  'a2a': {
+    severity: 'caution',
+    summary: 'Can send and read agent-to-agent messages',
+    detail:
+      'The plugin can dispatch tasks to other agents in your wmux session and read their responses. `a2a.execute` additionally lets it spawn agents with bypassPermissions.',
+  },
+  'metadata': {
+    severity: 'neutral',
+    summary: 'Can label your panes',
+    detail:
+      'Reads and writes pane labels, statuses, and a per-plugin custom data map. Does not see terminal contents — only the substrate-managed metadata layer.',
+  },
+  'events': {
+    severity: 'neutral',
+    summary: 'Can subscribe to pane lifecycle events',
+    detail:
+      'Receives notifications when panes are created, closed, focused, or have their metadata changed. Payloads contain pane IDs and metadata, never terminal content.',
+  },
+  'pane-lifecycle': {
+    severity: 'neutral',
+    summary: 'Can list, create, and focus panes',
+    detail:
+      'The plugin can enumerate your panes and manipulate the layout. It cannot read terminal contents through these capabilities alone.',
+  },
+  'workspace': {
+    severity: 'neutral',
+    summary: 'Can read and claim workspaces',
+    detail:
+      'The plugin can see the list of workspaces and attribute its RPC calls to a specific one. No data leakage between workspaces.',
+  },
+  'internal': {
+    severity: 'critical',
+    summary: 'wmux internal — should never be shown to user',
+    detail:
+      'Reserved capability that no plugin can declare. If you see this in an approval dialog, file a bug.',
+  },
+};
+

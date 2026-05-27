@@ -302,3 +302,43 @@ describe('PluginTrustStore LRU eviction', () => {
     expect(list).toHaveLength(3);
   });
 });
+
+describe('PluginTrustStore.setUserDecision (Phase 2.2 pre-commit 5)', () => {
+  it('persists a trusted decision on a fresh plugin (no prior record)', async () => {
+    const store = new PluginTrustStore(dbPath);
+    const rec = await store.setUserDecision('fresh-plugin', 'trusted');
+    expect(rec.status).toBe('trusted');
+    expect(rec.name).toBe('fresh-plugin');
+    expect(rec.firstSeen).toBeGreaterThan(0);
+    expect(rec.lastSeen).toBe(rec.firstSeen);
+  });
+
+  it('persists a denied decision and survives a fresh store instance', async () => {
+    const store = new PluginTrustStore(dbPath);
+    await store.upsertContact('p1', '1.0.0');
+    await store.setUserDecision('p1', 'denied');
+    const reincarnated = new PluginTrustStore(dbPath);
+    const reloaded = await reincarnated.get('p1');
+    expect(reloaded?.status).toBe('denied');
+    expect(reloaded?.version).toBe('1.0.0');
+  });
+
+  it('overwrites prior trusted/denied/unconfirmed state explicitly', async () => {
+    const store = new PluginTrustStore(dbPath);
+    await store.upsertDeclaration('p1', ['pane.read']);
+    expect((await store.get('p1'))?.status).toBe('unconfirmed');
+    await store.setUserDecision('p1', 'trusted');
+    expect((await store.get('p1'))?.status).toBe('trusted');
+    await store.setUserDecision('p1', 'denied');
+    expect((await store.get('p1'))?.status).toBe('denied');
+    // declaredCapabilities preserved across decisions.
+    expect((await store.get('p1'))?.declaredCapabilities).toEqual(['pane.read']);
+  });
+
+  it('clamps oversized plugin names like every other write path', async () => {
+    const store = new PluginTrustStore(dbPath);
+    const huge = 'X'.repeat(MAX_PLUGIN_NAME_LEN + 100);
+    const rec = await store.setUserDecision(huge, 'trusted');
+    expect(rec.name.length).toBeLessThanOrEqual(MAX_PLUGIN_NAME_LEN);
+  });
+});
