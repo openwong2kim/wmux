@@ -162,6 +162,118 @@ describe('Watchdog', () => {
     expect(healthCheck).toHaveBeenCalledTimes(1);
   });
 
+  describe('idle shutdown', () => {
+    // Idle-shutdown evaluation runs at the tail of every health tick. We
+    // drive the Watchdog directly via `evaluateIdle()` instead of relying
+    // on `start()` + fake timers — that keeps these tests pure-functional
+    // and decoupled from the 30s default interval. A daemon main loop in
+    // production wires the same callbacks and lets `start()` drive it.
+
+    function makeWatchdogWithIdle(opts: { idleTimeoutMs: number; graceMs?: number; bootedAt?: number }): Watchdog {
+      return new Watchdog(30_000, {
+        idleTimeoutMs: opts.idleTimeoutMs,
+        graceMs: opts.graceMs ?? 60_000,
+        startTime: opts.bootedAt ?? Date.now(),
+      });
+    }
+
+    it('does not fire when disabled (idleTimeoutMs <= 0)', () => {
+      const onIdleShutdown = vi.fn();
+      const wd = makeWatchdogWithIdle({ idleTimeoutMs: 0, bootedAt: Date.now() - 10 * 60_000 });
+      wd.setCallbacks({
+        onIdleCheck: () => ({ connections: 0, sessions: 0, lastDisconnectAt: Date.now() - 9 * 60_000 }),
+        onIdleShutdown,
+      });
+      wd.evaluateIdle();
+      expect(onIdleShutdown).not.toHaveBeenCalled();
+    });
+
+    it('does not fire inside the grace window', () => {
+      const onIdleShutdown = vi.fn();
+      // Just booted — uptime well below the 60s grace.
+      const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 10_000 });
+      wd.setCallbacks({
+        onIdleCheck: () => ({ connections: 0, sessions: 0, lastDisconnectAt: null }),
+        onIdleShutdown,
+      });
+      wd.evaluateIdle();
+      expect(onIdleShutdown).not.toHaveBeenCalled();
+    });
+
+    it('does not fire while at least one client is connected', () => {
+      const onIdleShutdown = vi.fn();
+      const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 10 * 60_000 });
+      wd.setCallbacks({
+        onIdleCheck: () => ({ connections: 1, sessions: 0, lastDisconnectAt: null }),
+        onIdleShutdown,
+      });
+      wd.evaluateIdle();
+      expect(onIdleShutdown).not.toHaveBeenCalled();
+    });
+
+    it('does not fire while at least one PTY session is alive', () => {
+      const onIdleShutdown = vi.fn();
+      const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 10 * 60_000 });
+      wd.setCallbacks({
+        onIdleCheck: () => ({ connections: 0, sessions: 1, lastDisconnectAt: Date.now() - 90_000 }),
+        onIdleShutdown,
+      });
+      wd.evaluateIdle();
+      expect(onIdleShutdown).not.toHaveBeenCalled();
+    });
+
+    it('fires after lastDisconnectAt + idleTimeoutMs has elapsed', () => {
+      const onIdleShutdown = vi.fn();
+      const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 10 * 60_000 });
+      const disconnectedAt = Date.now() - 90_000; // 90s ago
+      wd.setCallbacks({
+        onIdleCheck: () => ({ connections: 0, sessions: 0, lastDisconnectAt: disconnectedAt }),
+        onIdleShutdown,
+      });
+      wd.evaluateIdle();
+      expect(onIdleShutdown).toHaveBeenCalledTimes(1);
+      const idleMs = onIdleShutdown.mock.calls[0][0] as number;
+      expect(idleMs).toBeGreaterThanOrEqual(60_000);
+    });
+
+    it('fires after boot+grace+idleTimeoutMs when no client has ever connected', () => {
+      // Daemon spawned but main never appeared (e.g. main crashed before
+      // first ping). lastDisconnectAt stays null → falls back to startTime.
+      const onIdleShutdown = vi.fn();
+      const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 5 * 60_000 });
+      wd.setCallbacks({
+        onIdleCheck: () => ({ connections: 0, sessions: 0, lastDisconnectAt: null }),
+        onIdleShutdown,
+      });
+      wd.evaluateIdle();
+      expect(onIdleShutdown).toHaveBeenCalledTimes(1);
+    });
+
+    it('only fires once even if evaluated repeatedly', () => {
+      const onIdleShutdown = vi.fn();
+      const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 10 * 60_000 });
+      wd.setCallbacks({
+        onIdleCheck: () => ({ connections: 0, sessions: 0, lastDisconnectAt: Date.now() - 5 * 60_000 }),
+        onIdleShutdown,
+      });
+      wd.evaluateIdle();
+      wd.evaluateIdle();
+      wd.evaluateIdle();
+      expect(onIdleShutdown).toHaveBeenCalledTimes(1);
+    });
+
+    it('does nothing when onIdleCheck callback is not wired', () => {
+      // Defensive: a daemon that forgets to wire the callback must not
+      // accidentally self-terminate. Without `onIdleCheck` returning a
+      // payload, evaluateIdle has no signal to act on.
+      const onIdleShutdown = vi.fn();
+      const wd = makeWatchdogWithIdle({ idleTimeoutMs: 60_000, bootedAt: Date.now() - 10 * 60_000 });
+      wd.setCallbacks({ onIdleShutdown });
+      wd.evaluateIdle();
+      expect(onIdleShutdown).not.toHaveBeenCalled();
+    });
+  });
+
   it('logs health every 5th check', () => {
     const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
     watchdog.start(() => ({ sessions: 1, memory: 100 * 1024 * 1024, uptime: 10 }));
