@@ -169,20 +169,23 @@ export class PTYManager {
     };
     this.instances.set(id, instance);
 
-    // Write PID->workspaceId mapping so MCP servers can resolve identity
-    // (Claude Code doesn't propagate env vars to MCP child processes)
-    if (options?.workspaceId) {
-      this.writePidMap(ptyProcess.pid, options.workspaceId);
+    // Write PID->ptyId mapping so MCP servers can resolve identity (Claude
+    // Code doesn't propagate env vars to MCP child processes). We store the
+    // ptyId (stable) rather than the workspaceId — the owning workspace is
+    // resolved live by a2a.resolve.identity, so it can't go stale if the
+    // workspace id is re-minted.
+    if (ptyProcess.pid) {
+      this.writePidMap(ptyProcess.pid, id);
     }
 
     return instance;
   }
 
-  private writePidMap(pid: number, workspaceId: string): void {
+  private writePidMap(pid: number, ptyId: string): void {
     try {
       const dir = getPidMapDir();
       if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-      fs.writeFileSync(`${dir}/${pid}`, workspaceId, 'utf8');
+      fs.writeFileSync(`${dir}/${pid}`, ptyId, 'utf8');
     } catch { /* best-effort */ }
   }
 

@@ -9,9 +9,13 @@
  * Handlers reproduced:
  *
  *   a2a.resolve.identity
- *     Reads ~/.wmux/pid-map/ (via HOME/USERPROFILE override) and
- *     returns { mappings: { <pid>: <workspaceId> } }. Same algorithm
- *     as src/main/pipe/handlers/a2a.rpc.ts:13-25.
+ *     Reads ~/.wmux/pid-map/ (via HOME/USERPROFILE override). Each entry is
+ *     PID → ptyId; the handler resolves the CURRENT owning workspace for that
+ *     ptyId, mirroring src/main/pipe/handlers/a2a.rpc.ts. The live pty →
+ *     workspace lookup (real handler: input.findOwnerWorkspace on the
+ *     renderer) is simulated here via WMUX_MINISERVER_OWNERS, a JSON
+ *     { <ptyId>: <workspaceId> } map. Legacy "ws-"-prefixed entries are
+ *     passed through; ptyIds with no live owner are omitted.
  *
  *   mcp.claimWorkspace
  *     Returns an explicit "no window" error to mirror what the real
@@ -45,14 +49,39 @@ function getPidMapDir() {
   return path.join(home, '.wmux', 'pid-map');
 }
 
+function getSimulatedOwners() {
+  // Simulates the renderer's live ptyId → workspaceId ownership table that the
+  // real handler reaches via sendToRenderer('input.findOwnerWorkspace').
+  try {
+    const parsed = JSON.parse(process.env.WMUX_MINISERVER_OWNERS || '{}');
+    return parsed && typeof parsed === 'object' ? parsed : {};
+  } catch {
+    return {};
+  }
+}
+
 function handleA2aResolveIdentity() {
   const dir = getPidMapDir();
+  const owners = getSimulatedOwners();
   const mappings = {};
   try {
     if (fs.existsSync(dir)) {
       for (const file of fs.readdirSync(dir)) {
-        const wsId = fs.readFileSync(path.join(dir, file), 'utf-8').trim();
-        if (wsId) mappings[file] = wsId;
+        let value;
+        try {
+          value = fs.readFileSync(path.join(dir, file), 'utf-8').trim();
+        } catch {
+          continue;
+        }
+        if (!value) continue;
+        if (value.startsWith('ws-')) {
+          // Legacy PID → workspaceId entry: pass through.
+          mappings[file] = value;
+          continue;
+        }
+        // Current format: PID → ptyId. Resolve the live owning workspace.
+        const wsId = owners[value];
+        if (typeof wsId === 'string' && wsId) mappings[file] = wsId;
       }
     }
   } catch { /* best-effort */ }

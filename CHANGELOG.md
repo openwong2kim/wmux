@@ -5,6 +5,20 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Workspace identity drift fix (daemon-lifecycle-hardening)
+
+Fixes a serious multi-agent bug: an in-pane MCP server (e.g. Claude Code) could get permanently stuck reporting a workspace id that no longer exists — `a2a.whoami` returning `no workspace found for ws-…` and `terminal_send` rejecting with `not owned by workspace … (actual owner: …)`. Every identity-gated MCP call (A2A, `terminal_*`, browser routing) failed until the MCP server was restarted. Triggered when a workspace id is re-minted (daemon respawn / session restore) while the shell process — and its frozen `WMUX_WORKSPACE_ID` env — lives on.
+
+### Fixed
+
+- **Workspace-identity is now anchored to the immutable `ptyId`, not a frozen workspace id.** The on-disk PID map (`~/.wmux/pid-map/<pid>`) stores the ptyId; `a2a.resolve.identity` resolves the **current** owning workspace live from the renderer (`input.findOwnerWorkspace`) on every call. A re-minted workspace id can no longer produce a stale identity. The map is also re-anchored on `pty.reconnect`, so a surviving shell re-adopted after a respawn resolves correctly without a restart.
+- **MCP resolvers (`src/mcp`, `src/company/mcp`) no longer permanently trust the env hint.** `WMUX_WORKSPACE_ID` is demoted to a last-resort fallback behind the live PID-walk; an RPC that reports a stale identity (`no workspace found` / `not owned by workspace`) invalidates the in-process cache so the next call self-heals.
+
+### Changed
+
+- `a2a.resolve.identity` returns PID → **current** workspaceId (resolved live), legacy `ws-`-prefixed pid-map entries pass through for one cycle, and ptyIds with no live owner are omitted (no phantom mappings).
+- `docs/PROTOCOL.md §6.1` reordered: path B (live PID-walk) is now preferred over path A (stale-prone env hint); added the `ptyId`-anchor and self-heal notes.
+
 ## [Unreleased] — Phase 2.2 MCP plugin permission enforcement
 
 Lands the active enforcement layer on top of the Phase 2.1 record-only identity + grammar substrate (PR #48) and the spec-side default rules (PR #68). Plugins that declare a capability set via `mcp.declarePermissions` now have those declarations verified against every RPC they issue; mismatches return a structured `RpcRejection` describing the per-path failure, and unconfirmed declarations surface a user-approval prompt before the call can proceed.
