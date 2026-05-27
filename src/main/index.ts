@@ -32,6 +32,7 @@ import { registerCompanyRpc } from './pipe/handlers/company.rpc';
 import { registerEventsRpc } from './pipe/handlers/events.rpc';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
+import { ShadowRejectionLogger } from './audit/shadowRejectionLog';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
@@ -392,6 +393,18 @@ rpcRouter.setLegacyContactRecorder(() => {
     .catch(() => {
       /* trust-store writes are best-effort; never block RPC */
     });
+});
+
+// Phase 2.2 enforcement substrate (shadow mode). Trust lookups consult the
+// existing plugin-trust.json store; would-be rejections are appended to
+// `~/.wmux/shadow-rejections.log` for the v3.0 dogfood window before the
+// pre-commit-6 flip turns rejections into hard RPC failures.
+const shadowRejectionLogger = new ShadowRejectionLogger();
+rpcRouter.setTrustLookup((clientName) =>
+  getPluginTrustStore().get(clientName),
+);
+rpcRouter.setShadowRejectionSink((entry) => {
+  shadowRejectionLogger.append(entry);
 });
 
 // IPC: webview CDP registration

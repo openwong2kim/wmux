@@ -1,9 +1,12 @@
 import type {
+  PluginIdentityRecord,
   RpcContext,
   RpcMethod,
+  RpcRejection,
   RpcRequest,
   RpcResponse,
 } from '../../shared/rpc';
+import { check as enforcerCheck } from '../mcp/PermissionEnforcer';
 
 // Handlers receive a per-request context as an optional second argument.
 // Existing handlers `(params) => ...` keep compiling because the extra
@@ -21,6 +24,28 @@ type RpcHandler = (
 // real ~/.wmux state.
 type LegacyContactRecorder = (method: RpcMethod) => void;
 
+/**
+ * Async lookup that resolves a clientName to the caller's current trust
+ * record (or undefined if none exists). Wired by main/index.ts to
+ * PluginTrustStore.get(); tests inject a synchronous stub. RpcRouter
+ * deliberately does NOT import PluginTrustStore directly — the trust
+ * store has FS side effects and the router must stay unit-testable
+ * without touching ~/.wmux state.
+ */
+type TrustLookup = (clientName: string) => Promise<PluginIdentityRecord | undefined>;
+
+/**
+ * Side-channel sink for would-be rejections during shadow mode. Wired by
+ * main/index.ts to ShadowRejectionLogger.append; the router calls it for
+ * every non-allow enforcer outcome regardless of whether dispatch ends up
+ * delivering the handler's result.
+ */
+type ShadowRejectionSink = (input: {
+  clientName: string | undefined;
+  method: RpcMethod;
+  rejection: RpcRejection;
+}) => void;
+
 // Methods that handle plugin identity themselves — they must NOT trigger
 // a parallel legacy write because their own handlers do the right thing
 // (record an `unconfirmed` contact via the resolved name).
@@ -32,6 +57,8 @@ const IDENTITY_OWN_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
 export class RpcRouter {
   private readonly handlers = new Map<RpcMethod, RpcHandler>();
   private legacyRecorder: LegacyContactRecorder | undefined;
+  private trustLookup: TrustLookup | undefined;
+  private shadowSink: ShadowRejectionSink | undefined;
   // Process-once flag — the legacy bucket is a single audit entry, not a
   // per-request log. After the first envelope-less RPC reaches the wire,
   // subsequent calls don't re-touch the trust DB until the process restarts.
@@ -48,6 +75,27 @@ export class RpcRouter {
   setLegacyContactRecorder(recorder: LegacyContactRecorder | undefined): void {
     this.legacyRecorder = recorder;
     this.legacyContactPersisted = false;
+  }
+
+  /**
+   * Phase 2.2 enforcer wiring (shadow mode). main/index.ts injects a lookup
+   * backed by PluginTrustStore.get; tests inject synchronous stubs. When
+   * unset, the enforcer runs with trust=undefined for every request (which
+   * is treated as legacy/grandfather → allow), making the router behave
+   * identically to pre-Phase-2.2 dispatch.
+   */
+  setTrustLookup(lookup: TrustLookup | undefined): void {
+    this.trustLookup = lookup;
+  }
+
+  /**
+   * Phase 2.2 shadow-mode sink. main/index.ts injects ShadowRejectionLogger;
+   * tests pass a vi.fn() to assert calls. When unset, would-be rejections
+   * are not recorded — useful for unit tests that don't care about the side
+   * channel.
+   */
+  setShadowRejectionSink(sink: ShadowRejectionSink | undefined): void {
+    this.shadowSink = sink;
   }
 
   async dispatch(request: RpcRequest): Promise<RpcResponse> {
@@ -96,6 +144,48 @@ export class RpcRouter {
         this.legacyRecorder(request.method);
       } catch {
         /* swallow — trust-store writes are best-effort */
+      }
+    }
+
+    // Phase 2.2 enforcement (shadow mode in this commit).
+    //
+    // Trust lookup is awaited only when a clientName is present — the
+    // enforcer's first-line branches (identity bootstrap, no-clientName
+    // legacy path) don't need a record, so we save a microtask hop on
+    // every legacy / pre-handshake RPC.
+    //
+    // Behaviour in this commit (pre-commit 3, shadow only): we call the
+    // enforcer, record any non-allow outcome to the shadow sink, and THEN
+    // proceed to invoke the handler regardless. This populates the shadow
+    // log with would-be rejections during the v3.0 dogfood window. The
+    // enforce-mode flip (pre-commit 6) will gate handler invocation on
+    // the outcome and convert rejections into RpcResponse failures.
+    let trust: PluginIdentityRecord | undefined;
+    if (ctx.clientName && this.trustLookup) {
+      try {
+        trust = await this.trustLookup(ctx.clientName);
+      } catch {
+        // Trust DB read errors fall through as undefined — the enforcer
+        // treats that as "self-named but not yet recorded" (unconfirmed),
+        // which in shadow mode just generates a log entry.
+        trust = undefined;
+      }
+    }
+    const outcome = enforcerCheck({
+      method: request.method,
+      params: request.params ?? {},
+      ctx,
+      trust,
+    });
+    if (outcome.kind !== 'allow' && this.shadowSink) {
+      try {
+        this.shadowSink({
+          clientName: ctx.clientName,
+          method: request.method,
+          rejection: outcome.rejection,
+        });
+      } catch {
+        /* shadow logging must never affect dispatch */
       }
     }
 
