@@ -28,6 +28,10 @@ Lands the active enforcement layer on top of the Phase 2.1 record-only identity 
 - `RpcRouter.dispatch` now calls the enforcer before invoking the handler. In `shadow` mode, the would-be rejection is logged and the handler still runs (no behavior change for v2.x callers). In `enforce` mode, a non-allow outcome returns the RpcResponse failure WITHOUT calling the handler. `legacy` callers (no `clientName` envelope) and identity-bootstrap RPCs are always allowed.
 - `ApprovalQueue.requestApproval` returns `{ promptId, resolution }` — the promptId is available synchronously so the dispatcher can thread it into the rejection without awaiting the user's decision.
 
+### Fixed
+
+- **Keyboard pane/surface navigation now moves keyboard focus, not just the active border** (`src/renderer/hooks/useActivePaneFocus.ts`). Switching panes with the tmux prefix arrows, `Alt+Ctrl+Arrow`, `Ctrl+Tab`, the RPC `pane.focus` bridge, or keyboard tab-switching moved the red active border (driven by `ws.activePaneId`) but left DOM focus on the previously focused pane's xterm — so keystrokes still landed in the old pane. xterm routes input from whichever textarea holds DOM focus, and no navigation path ever called `terminal.focus()`. A central `useActivePaneFocus` hook now pulls DOM focus onto the resolved active terminal whenever the target workspace/pane/surface changes, covering every state-only switch path in one place. Mouse clicks were unaffected (the click focuses the target xterm for free) and remain so.
+
 ### Notes for plugin authors
 
 - Plugins SHOULD retry on `rejection.pendingApproval.promptId` with 1–5 s backoff. The substrate doesn't pin a socket waiting for the user (50-connection cap; OAuth `authorization_pending` precedent).

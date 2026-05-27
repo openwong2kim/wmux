@@ -22,6 +22,7 @@ import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
+import { useActivePaneFocus } from '../../hooks/useActivePaneFocus';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
@@ -255,6 +256,10 @@ export default function AppLayout() {
   const t = useT();
 
   useKeyboard();
+  // Pull DOM focus onto the active pane's xterm after keyboard/RPC pane &
+  // surface switches — without this the red active border moves but typing
+  // stays in the previously focused pane (see useActivePaneFocus).
+  useActivePaneFocus();
   useNotificationListener();
   useRpcBridge();
   const { invoke: ipcInvoke } = useIpc();
