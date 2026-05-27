@@ -35,6 +35,46 @@ export type RpcResponse =
   | { id: string; ok: true; result: unknown }
   | { id: string; ok: false; error: string };
 
+// Structured rejection surfaced by the Phase 2.2 permission enforcer.
+//
+// Defined here as a standalone exported type so the enforcer module (pure,
+// non-wire-format) can share a vocabulary with the eventual RpcResponse
+// extension that carries it. Pre-commit 2 wires this into RpcResponse;
+// callers that switch on `r.ok` keep narrowing as before, and ones that
+// want machine-readable rejection detail branch on `rejection.reason`.
+//
+// `pendingApproval.promptId` is minted by ApprovalQueue (Pre-commit 5) so
+// the client can correlate a rejection with the user-facing prompt and
+// retry once the prompt resolves — see plan D4 for the OAuth
+// `authorization_pending` precedent.
+export type RpcRejection =
+  | {
+      reason: 'capability-not-declared';
+      method: RpcMethod;
+      capability: string;
+    }
+  | {
+      reason: 'path-not-allowed';
+      method: RpcMethod;
+      capability: string;
+      path: string;
+      declared: string[];
+    }
+  | {
+      reason: 'paths-partially-allowed';
+      method: RpcMethod;
+      capability: string;
+      allowed: string[];
+      rejected: { path: string; declared: string[] }[];
+    }
+  | {
+      reason: 'identity-status';
+      method: RpcMethod;
+      capability: string;
+      status: 'denied' | 'unconfirmed';
+      pendingApproval?: { promptId: string };
+    };
+
 // === RPC Method definitions ===
 export type RpcMethod =
   | 'workspace.list'
