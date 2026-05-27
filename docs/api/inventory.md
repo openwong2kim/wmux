@@ -223,3 +223,55 @@ The EventBus (`src/main/events/EventBus.ts`) is an in-memory ring buffer of `RIN
 - [`stability.md`](./stability.md) freezes the "stable" tier subset as the v3.0 contract.
 - [`../PROTOCOL.md`](../PROTOCOL.md) elaborates on the wire contract for the stable surfaces.
 - `system.capabilities` will report the tier map programmatically in v3.0.
+
+---
+
+## Permission gate (Phase 2.2)
+
+Every RPC method maps to a single declarative entry in `src/main/mcp/methodCapabilityMap.ts`. The enforcer (`PermissionEnforcer.check`) consults this table at dispatch time to decide whether the caller's declared `wmuxPermissions` cover the request. See [`mcp-plugin-spec.md` §4.4](./mcp-plugin-spec.md#44-enforcement-contract-phase-22) for the wire contract and retry idiom.
+
+The capability column below summarises the table. Three sentinels:
+
+- `null` — identity-bootstrap / system-introspection method; no capability required. Any caller can invoke regardless of trust state.
+- `wmux.internal` — reserved-prefix capability that NO plugin can ever declare (`permissionGrammar.ts` rejects `wmux.*` at declaration time). Internal-only surfaces. Legacy callers (no `clientName` envelope) still grandfather through.
+- `<capability>` — must match one of `KNOWN_CAPABILITIES` (spec §3.2).
+
+### Capability map (subset — full table in code)
+
+| Method | Capability | Path source | Risk class |
+|---|---|---|---|
+| `mcp.identify` | `null` (bootstrap) | — | — |
+| `mcp.declarePermissions` | `null` (bootstrap) | — | — |
+| `mcp.claimWorkspace` | `workspace.claim` | — | workspace |
+| `pane.list` / `pane.focus` | `pane.read` | — | pane-lifecycle |
+| `pane.split` | `pane.create` | — | pane-lifecycle |
+| `pane.search` | `pane.search` | — | **terminal-content** |
+| `pane.setMetadata` | `meta.write` | each present field → path | metadata |
+| `pane.getMetadata` | `meta.read` | — (v3.0 reads whole record) | metadata |
+| `pane.clearMetadata` | `meta.write` | shared paths (label/role/status) | metadata |
+| `events.poll` | `events.subscribe` | `params.types` (`**` if absent) | events |
+| `input.send` / `input.sendKey` | `terminal.send` | — | **terminal-input** |
+| `input.readScreen` / `terminal.readEvents` | `terminal.read` | — | **terminal-content** |
+| `meta.setStatus` / `meta.setProgress` / `meta.setSkills` | `meta.write` | — | metadata |
+| `system.identify` / `system.capabilities` | `null` (bootstrap) | — | — |
+| `browser.navigate` / `browser.open` / `browser.goBack` / `browser.close` | `browser.navigate` | — | browser |
+| `browser.click.cdp` | `browser.click` | — | browser |
+| `browser.type.humanlike` / `browser.type.cdp` / `browser.press.cdp` | `browser.type` | — | browser |
+| `browser.screenshot` | `browser.screenshot` | — | browser |
+| `browser.evaluate` | `browser.evaluate` | — | browser |
+| `browser.session.status` / `browser.session.list` / `browser.cdp.target` / `browser.cdp.info` | `browser.read` | — | browser |
+| `browser.session.start` / `browser.session.stop` | `browser.navigate` | — | browser |
+| `a2a.whoami` / `a2a.discover` / `a2a.resolve.identity` / `a2a.task.query` | `a2a.read` | — | a2a |
+| `a2a.task.send` / `a2a.task.update` / `a2a.broadcast` | `a2a.send` | — | a2a |
+| `a2a.task.cancel` | `a2a.execute` | — | a2a |
+| `workspace.list` / `workspace.current` | `workspace.read` | — | workspace |
+| `workspace.new` / `workspace.focus` / `workspace.close` | `wmux.internal` | — | — |
+| `surface.list` / `surface.new` / `surface.focus` / `surface.close` | `wmux.internal` | — | — |
+| `daemon.*` | `wmux.internal` | — | — |
+| `company.*` | `wmux.internal` | — | — |
+| `notify` | `wmux.internal` | — | — |
+| `hooks.signal` | `wmux.internal` | — | — |
+
+Methods marked **bold** are surfaced in the approval dialog with stronger user-facing language (spec §3.6 — terminal-content / terminal-input risk classes).
+
+The full machine-readable map (with path extractors and `multiPathMode` flags) lives at `src/main/mcp/methodCapabilityMap.ts`. `tsc --noEmit` enforces totality via `Record<RpcMethod, ...>` so a new RPC method without a map entry fails the build.

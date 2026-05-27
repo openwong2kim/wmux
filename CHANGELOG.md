@@ -5,6 +5,35 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased] — Phase 2.2 MCP plugin permission enforcement
+
+Lands the active enforcement layer on top of the Phase 2.1 record-only identity + grammar substrate (PR #48) and the spec-side default rules (PR #68). Plugins that declare a capability set via `mcp.declarePermissions` now have those declarations verified against every RPC they issue; mismatches return a structured `RpcRejection` describing the per-path failure, and unconfirmed declarations surface a user-approval prompt before the call can proceed.
+
+### Added
+
+- **`PermissionEnforcer` substrate (`src/main/mcp/PermissionEnforcer.ts`)** — pure-function permission gate. Given a method, params, request context, and trust record, returns `allow`, `reject`, or `partial`. Same function runs in both shadow and enforce modes; only the dispatcher's reaction changes.
+- **Single declarative `methodCapabilityMap`** — `Record<RpcMethod, RequiredCapability>` covering the full 96-method RPC surface. `tsc --noEmit` enforces totality so a new method without a gate entry fails the build. Identity bootstrap (`mcp.identify`, `mcp.declarePermissions`, `system.identify`, `system.capabilities`) is `capability: null`. Internal surfaces (daemon, company, surface, hooks) map to the reserved `wmux.internal` capability that no plugin can declare.
+- **Structured `RpcRejection` discriminated union** on `RpcResponse`'s failure arm — `capability-not-declared`, `path-not-allowed`, `paths-partially-allowed` (with `{allowed, rejected[]}`), and `identity-status` (with optional `pendingApproval.promptId`). Additive on the existing `{ok:false; error}` arm; every `switch (r.ok)` site keeps narrowing.
+- **`ShadowRejectionLogger` + JSONL audit log at `~/.wmux/shadow-rejections.log`** — discriminated entries (`rejection` / `legacy-traffic`). 1 MiB cap with single-generation rotation. Sync writes wrapped in try/catch — telemetry must never affect RPC throughput.
+- **`LegacyTrafficCounter`** — per-method milestones (1st / 10th / 100th / 1000th / 10000th call) for envelope-less RPCs, flushed to the shadow log. Replaces the previous process-once trust-DB write for accurate v3.1 surfacing data.
+- **`ApprovalQueue`** — `(clientName, hash(declaredCapabilities))` dedupe key, synchronous promptId minting + async resolution. On approve/deny, writes through `PluginTrustStore.setUserDecision`. Multiple inflight RPCs from the same plugin during a prompt coalesce onto one modal.
+- **`PermissionApprovalDialog`** — risk-class-grouped capability list with asymmetric wording. Terminal-content (`terminal.read`, `pane.search`) and terminal-input (`terminal.send`) get critical-severity copy that names the concrete privilege ("can read what's on your screen, including secrets"); metadata / events / pane-lifecycle / workspace get neutral copy. Browser and A2A get caution.
+- **`mcp.mode` config flag** in `~/.wmux/config.json` — `shadow` or `enforce`. Production wmux defaults to `enforce`; dev (`electron-forge start` / `NODE_ENV=test`) defaults to `shadow` for dogfood rollback safety.
+- **`PluginTrustStore.setUserDecision(name, 'trusted' | 'denied')`** — explicit user-decision write path. Seeds a fresh record when a prompt fires before `mcp.identify` lands.
+- **Spec §4.4 "Enforcement contract"** — documents the wire shape, retry idiom, mode flag, and worked glob example (`meta.write:custom.foo` ≠ `custom.foo.bar` without trailing `*` or `**`).
+- **`inventory.md` Phase 2.2 capability map** — per-method capability + path-source + risk-class column.
+
+### Changed
+
+- `RpcRouter.dispatch` now calls the enforcer before invoking the handler. In `shadow` mode, the would-be rejection is logged and the handler still runs (no behavior change for v2.x callers). In `enforce` mode, a non-allow outcome returns the RpcResponse failure WITHOUT calling the handler. `legacy` callers (no `clientName` envelope) and identity-bootstrap RPCs are always allowed.
+- `ApprovalQueue.requestApproval` returns `{ promptId, resolution }` — the promptId is available synchronously so the dispatcher can thread it into the rejection without awaiting the user's decision.
+
+### Notes for plugin authors
+
+- Plugins SHOULD retry on `rejection.pendingApproval.promptId` with 1–5 s backoff. The substrate doesn't pin a socket waiting for the user (50-connection cap; OAuth `authorization_pending` precedent).
+- `meta.write:custom.foo` matches the EXACT path `custom.foo`. Declare `meta.write:custom.foo.*` or `meta.write:custom.foo.**` to cover the subtree.
+- `events.poll` is `partial`-mode multi-path: subscribing to mixed-allowed topics returns the allowed subset with a `paths-partially-allowed` rejection on the failure arm carrying both `allowed` and `rejected` lists. `pane.setMetadata` and `pane.clearMetadata` are `all-or-nothing`.
+
 ## [2.11.0] — 2026-05-26 — Orchestrator substrate + Claude Code hook plugin
 
 Lands the substrate piece that the new [`@wmux/orchestrator`](https://github.com/openwong2kim/wmux-orchestrator) npm SDK consumes, plus the Claude Code hook plugin integration that delivers sub-200ms agent-completion signals (vs the heuristic regex detector). Minor version bump because the new `agent.lifecycle` event type is additive — no breaking changes vs v2.10.x clients.

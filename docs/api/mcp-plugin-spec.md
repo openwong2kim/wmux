@@ -253,7 +253,81 @@ Forbidden automated transitions (only the user-approval dialog can perform these
 - `denied → anything` (never regresses)
 - `trusted → trusted` after a widening (must demote and re-approve)
 
-### 4.4 Trust DB location
+### 4.4 Enforcement contract (Phase 2.2)
+
+Once a plugin has identified itself and declared its capability set, every subsequent RPC is gated against the trust record. The substrate either calls the handler (the plugin is `trusted` and the capability+path match its declaration), or it returns an `RpcResponse` failure with a structured `rejection` field carrying machine-readable detail.
+
+**Mode flag.** `~/.wmux/config.json` carries an optional `mcp.mode` field:
+
+```jsonc
+{
+  "version": 1,
+  "daemon": { ... },
+  "session": { ... },
+  "mcp": { "mode": "enforce" }   // "shadow" | "enforce"
+}
+```
+
+- Production wmux defaults to `enforce` (the v3.0 ship target).
+- Dev wmux (electron-forge / `npm start` / `NODE_ENV=test`) defaults to `shadow` — rejection decisions are logged to `~/.wmux/shadow-rejections.log` but the handler still runs, so a bad delta during dogfood doesn't lock the developer out.
+- Users can override either way explicitly via the config key.
+
+**Wire shape.** The `RpcResponse` failure arm carries a `rejection?: RpcRejection` discriminated union (see `src/shared/rpc.ts`):
+
+```ts
+type RpcRejection =
+  | { reason: 'capability-not-declared'; method; capability }
+  | { reason: 'path-not-allowed'; method; capability; path; declared }
+  | { reason: 'paths-partially-allowed'; method; capability;
+      allowed: string[]; rejected: { path; declared }[] }
+  | { reason: 'identity-status'; method; capability; status;
+      pendingApproval?: { promptId } };
+```
+
+The existing `error: string` field carries a human-readable summary suitable for log output; clients that want per-path detail or want to drive an auto-retry loop branch on `rejection.reason`.
+
+**`pendingApproval.promptId` retry idiom.** When a plugin tries to use a declared capability before the user has approved its declaration, the rejection carries:
+
+```jsonc
+{
+  "ok": false,
+  "error": "pane.list: awaiting user approval (promptId=abc123)",
+  "rejection": {
+    "reason": "identity-status",
+    "method": "pane.list",
+    "capability": "pane.read",
+    "status": "unconfirmed",
+    "pendingApproval": { "promptId": "abc123" }
+  }
+}
+```
+
+This is intentionally non-blocking — the substrate doesn't pin a socket waiting for the user's response (50-connection cap + renderer-stall fault tolerance + OAuth `authorization_pending` precedent). Plugins should:
+
+1. Surface the `pendingApproval` state to their own user (e.g. "wmux is waiting for permission approval").
+2. Retry the same RPC on a small backoff (1–5 s) until the response no longer carries `pendingApproval`.
+3. If `rejection.status` flips to `denied` on a retry, stop — the user explicitly rejected the declaration and the substrate will continue to deny.
+
+The `@wmux/orchestrator` SDK ships a `withApprovalRetry()` helper that wraps this idiom; external integrators can copy the pattern from the orchestrator README.
+
+**Worked glob example.** A plugin declaring:
+
+```
+meta.write:custom.foo
+```
+
+is authorised to write to the EXACT path `custom.foo`. It is NOT authorised to write to `custom.foo.bar` — the substrate's `*` glob stops at the path separator. To match the whole subtree, declare either:
+
+- `meta.write:custom.foo.*` — single-segment children (`custom.foo.x`, `custom.foo.y`).
+- `meta.write:custom.foo.**` — full recursive subtree (`custom.foo.x.y.z`).
+
+`meta.write` (no `:glob`) authorises every metadata path including shared `label`/`role`/`status`. Plugins should declare the narrowest glob that covers their actual writes — the approval prompt renders the declared globs verbatim so the user can verify scope.
+
+**Multi-path partial rejection.** `events.poll` with multiple types in `params.types` is in `partial` multi-path mode: if some topics match the declaration and some don't, the wire returns `paths-partially-allowed` on the failure arm with `allowed: [...]` and `rejected: [...]` arrays. Clients should drop the rejected topics from their next poll. `pane.setMetadata` and `pane.clearMetadata` are `all-or-nothing` — any path miss wholesale-rejects the call (writes can't silently drop fields).
+
+**Identity bootstrap exemption.** `mcp.identify`, `mcp.declarePermissions`, `system.identify`, and `system.capabilities` are exempt from the gate — they have `capability: null` in the method table. A plugin in `unconfirmed` or `denied` state can still call these to refresh its identity or query substrate capabilities; everything else returns a structured rejection.
+
+### 4.5 Trust DB location
 
 `~/.wmux/plugin-trust.json` (on Windows, `%USERPROFILE%\.wmux\plugin-trust.json`).
 
