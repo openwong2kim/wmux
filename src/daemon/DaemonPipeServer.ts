@@ -32,6 +32,13 @@ export class DaemonPipeServer {
   private activePipeName: string;
   private tokenPathOverride: string | null = null;
 
+  // Idle-shutdown bookkeeping. `lastDisconnectAt` is updated whenever the
+  // last connected socket closes, i.e. only when `connectedSockets.size`
+  // drops to 0. While at least one client is connected the value is left
+  // alone — Watchdog reads it together with `getConnectionCount()` so a
+  // long-lived main process keeps the daemon alive on its own.
+  private lastDisconnectAt: number | null = null;
+
   constructor(private readonly pipeName: string) {
     this.activePipeName = pipeName;
   }
@@ -44,6 +51,21 @@ export class DaemonPipeServer {
   /** Get the actual pipe name being used (may differ from requested if fallback occurred). */
   getActivePipeName(): string {
     return this.activePipeName;
+  }
+
+  /** Number of currently connected RPC clients. */
+  getConnectionCount(): number {
+    return this.connectedSockets.size;
+  }
+
+  /**
+   * Timestamp (ms) of the moment the last connection dropped to zero, or
+   * `null` if a client has never connected during this daemon's lifetime.
+   * Watchdog uses this together with the daemon's `startTime` to compute
+   * an idle window — see `src/daemon/index.ts` idle-shutdown logic.
+   */
+  getLastDisconnectAt(): number | null {
+    return this.lastDisconnectAt;
   }
 
   /** Load existing auth token from disk, or generate a new one. */
@@ -181,6 +203,13 @@ export class DaemonPipeServer {
         socket.on('close', () => {
           this.connectedSockets.delete(socket);
           this.rateLimits.delete(socket);
+          // Record the moment we dropped to zero clients so the Watchdog
+          // idle-shutdown timer has an anchor. We re-stamp on every drop
+          // to zero (not just the first), so a flapping reconnect cycle
+          // pushes the deadline forward instead of accumulating idle time.
+          if (this.connectedSockets.size === 0) {
+            this.lastDisconnectAt = Date.now();
+          }
         });
         this.handleConnection(socket);
       });
@@ -267,6 +296,8 @@ export class DaemonPipeServer {
     }
     this.connectedSockets.clear();
     this.rateLimits.clear();
+    // Forced drop-to-zero — keep idle-window accounting consistent.
+    this.lastDisconnectAt = Date.now();
     return newToken;
   }
 

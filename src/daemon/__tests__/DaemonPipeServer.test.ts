@@ -235,6 +235,53 @@ describe('DaemonPipeServer', () => {
     expect(closed).toBe(true);
   });
 
+  it('tracks connection count and last-disconnect timestamp', async () => {
+    // Idle-shutdown plumbing: Watchdog reads these accessors to decide
+    // whether the daemon is currently serving anyone and, if not, when
+    // it last did. Verify both counters track real socket lifecycle.
+    server.onRpc('daemon.ping', async () => ({ pong: true }));
+    await server.start();
+
+    expect(server.getConnectionCount()).toBe(0);
+    expect(server.getLastDisconnectAt()).toBeNull();
+
+    // Open two concurrent sockets — count should reach 2.
+    const c1 = net.createConnection(pipeName);
+    const c2 = net.createConnection(pipeName);
+    await new Promise<void>((resolve) => {
+      let opened = 0;
+      const onConn = (): void => { opened++; if (opened === 2) resolve(); };
+      c1.on('connect', onConn);
+      c2.on('connect', onConn);
+    });
+    // Server-side socket registration runs inside the listener callback,
+    // give it a tick to land in connectedSockets.
+    await new Promise((r) => setTimeout(r, 50));
+    expect(server.getConnectionCount()).toBe(2);
+    // While a client is still connected, the disconnect anchor must remain
+    // untouched (otherwise the idle window would start during active use).
+    expect(server.getLastDisconnectAt()).toBeNull();
+
+    const before = Date.now();
+    const c1Closed = new Promise<void>((r) => c1.on('close', () => r()));
+    const c2Closed = new Promise<void>((r) => c2.on('close', () => r()));
+    c1.destroy();
+    await c1Closed;
+    await new Promise((r) => setTimeout(r, 30));
+    // One socket still alive — counter dropped to 1, anchor still null.
+    expect(server.getConnectionCount()).toBe(1);
+    expect(server.getLastDisconnectAt()).toBeNull();
+
+    c2.destroy();
+    await c2Closed;
+    await new Promise((r) => setTimeout(r, 30));
+    expect(server.getConnectionCount()).toBe(0);
+    const anchor = server.getLastDisconnectAt();
+    expect(anchor).not.toBeNull();
+    expect(anchor!).toBeGreaterThanOrEqual(before);
+    expect(anchor!).toBeLessThanOrEqual(Date.now());
+  });
+
   it('rotateToken invalidates old token, issues new one, drops connected sockets', async () => {
     // Redirect token file to a temp location so we don't clobber the user's
     // real ~/.wmux/daemon-auth-token during the test.
