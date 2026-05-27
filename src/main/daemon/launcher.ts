@@ -3,7 +3,7 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { spawn } from 'child_process';
 import * as crypto from 'crypto';
-import { app } from 'electron';
+import { app, dialog } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
 import { getDaemonPipeName, readDaemonAuthToken } from '../DaemonClient';
 
@@ -12,6 +12,53 @@ export interface DaemonInfo {
   authToken: string;
   pipeName: string;
   spawned: boolean;
+}
+
+/**
+ * Show a synchronous Electron dialog asking the user whether to recover
+ * from an unverified-live daemon PID. Returns `true` if the user accepts
+ * the stale-cleanup + spawn path, `false` if they cancel (we re-throw).
+ *
+ * Dialog is suppressed (and the function returns `false`) when:
+ *  - `WMUX_NO_DIALOG=1` is set in the environment (test / headless runs)
+ *  - the Electron `app` module is unavailable or not ready yet
+ *
+ * In those cases the caller falls back to the legacy throw so the
+ * automation path is preserved exactly.
+ */
+function askUserToRecoverFromStalePid(opts: {
+  reason: string;
+  pid: number;
+  pidFile: string;
+}): boolean {
+  if (process.env.WMUX_NO_DIALOG === '1') return false;
+  // `app` may be undefined when launcher is exercised by unit tests
+  // (vitest doesn't import the full Electron runtime).
+  if (!app || typeof app.isReady !== 'function' || !app.isReady()) return false;
+
+  const detail = [
+    `wmux thinks a previous daemon at PID ${opts.pid} may still be alive,`,
+    `but the OS will not confirm what process owns that PID.`,
+    '',
+    `Reason: ${opts.reason}`,
+    '',
+    'You can either:',
+    `  • Let wmux clean up ${opts.pidFile} and start a fresh daemon.`,
+    '  • Cancel — investigate manually first. To force-kill, run in an',
+    `    elevated PowerShell:  taskkill /F /PID ${opts.pid}`,
+  ].join('\n');
+
+  const choice = dialog.showMessageBoxSync({
+    type: 'warning',
+    title: 'wmux daemon recovery',
+    message: 'Could not verify the existing daemon process.',
+    detail,
+    buttons: ['Clean up and start fresh', 'Cancel'],
+    defaultId: 0,
+    cancelId: 1,
+    noLink: true,
+  });
+  return choice === 0;
 }
 
 function isProcessAlive(pid: number): boolean {
@@ -398,12 +445,26 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
     } else {
       const imageName = getProcessImageName(existingPid);
       if (imageName === null) {
-        // (c) Could not even read the image — refuse.
-        throw new Error(
-          `[launcher] daemon.pid=${existingPid} alive but image lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone.`,
+        // (c) Could not even read the image — ask the user whether to
+        // recover. Refusing outright used to leave the user stranded
+        // when AV blocked tasklist.exe or PowerShell. The user keeps
+        // ultimate authority (cancel re-throws the same error), but
+        // the common case — yes, it really is a stale pid file — now
+        // resolves without manual filesystem work.
+        const recovered = askUserToRecoverFromStalePid({
+          reason: `image lookup for PID ${existingPid} failed (anti-virus may be blocking tasklist.exe / ps / WMI)`,
+          pid: existingPid,
+          pidFile,
+        });
+        if (!recovered) {
+          throw new Error(
+            `[launcher] daemon.pid=${existingPid} alive but image lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
+          );
+        }
+        console.warn(
+          `[launcher] user approved cleanup of unverified PID ${existingPid} (image lookup failed)`,
         );
-      }
-      if (imageName.toLowerCase() !== expectedImage.toLowerCase()) {
+      } else if (imageName.toLowerCase() !== expectedImage.toLowerCase()) {
         // (b) Different program owns this PID now — daemon is gone.
         console.warn(
           `[launcher] PID ${existingPid} image "${imageName}" != "${expectedImage}" — stale-PID reuse by another program, cleaning + spawning fresh`,
@@ -413,50 +474,63 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
         // app. Use the command line to decide.
         const cmdline = getProcessCommandLine(existingPid);
         if (cmdline === null) {
-          // (c) Lookup failed — refuse, even though image matched.
-          throw new Error(
-            `[launcher] daemon.pid=${existingPid} alive (image "${imageName}" matches wmux) but command-line lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone.`,
-          );
-        }
-        const cmdlineMatches = daemonScriptMarkers.some((m) => cmdline.includes(m));
-        if (!cmdlineMatches) {
-          // (b) Same image but different app (e.g. another Electron
-          // tool). Don't kill, but the cleanup path below is safe.
+          // (c) Lookup failed — same recovery dance as the image
+          // path: ask the user, treat cancel as the legacy throw.
+          const recovered = askUserToRecoverFromStalePid({
+            reason: `command-line lookup for PID ${existingPid} (image "${imageName}") failed (anti-virus may be blocking PowerShell / Get-CimInstance)`,
+            pid: existingPid,
+            pidFile,
+          });
+          if (!recovered) {
+            throw new Error(
+              `[launcher] daemon.pid=${existingPid} alive (image "${imageName}" matches wmux) but command-line lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
+            );
+          }
           console.warn(
-            `[launcher] PID ${existingPid} image matches but cmdline does not reference daemon script — stale-PID reuse by sibling Electron app, cleaning + spawning fresh`,
+            `[launcher] user approved cleanup of unverified PID ${existingPid} (cmdline lookup failed)`,
           );
         } else {
-          // (a) Verified wmux daemon → kill before respawning.
-          console.warn(
-            `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive — terminating before respawn`,
-          );
-          let killSucceeded = true;
-          try {
-            process.kill(existingPid, 'SIGKILL');
-          } catch (err: unknown) {
-            const code = (err as NodeJS.ErrnoException | undefined)?.code;
-            if (code === 'ESRCH') {
-              // ESRCH = process died between isProcessAlive and kill.
-              // Benign race — we wanted it gone and it is.
-            } else {
-              // EPERM (Windows: Access Denied), EINVAL, anything else:
-              // we asked the OS to kill the verified daemon and it
-              // refused. Falling through to "clean stale files + spawn"
-              // would now produce two live daemons fighting over the
-              // pipe. Surface the failure so the controller can budget
-              // and retry / give up loudly. (Codex review #5 finding.)
-              killSucceeded = false;
-              console.warn(`[launcher] failed to terminate PID ${existingPid}:`, err);
-              throw new Error(
-                `[launcher] verified wmux daemon at PID ${existingPid} alive but SIGKILL failed (${code ?? 'unknown'}); refusing to spawn a second daemon. Resolve the kill failure manually then retry.`,
-              );
+          const cmdlineMatches = daemonScriptMarkers.some((m) => cmdline.includes(m));
+          if (!cmdlineMatches) {
+            // (b) Same image but different app (e.g. another Electron
+            // tool). Don't kill, but the cleanup path below is safe.
+            console.warn(
+              `[launcher] PID ${existingPid} image matches but cmdline does not reference daemon script — stale-PID reuse by sibling Electron app, cleaning + spawning fresh`,
+            );
+          } else {
+            // (a) Verified wmux daemon → kill before respawning.
+            console.warn(
+              `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive — terminating before respawn`,
+            );
+            let killSucceeded = true;
+            try {
+              process.kill(existingPid, 'SIGKILL');
+            } catch (err: unknown) {
+              const code = (err as NodeJS.ErrnoException | undefined)?.code;
+              if (code === 'ESRCH') {
+                // ESRCH = process died between isProcessAlive and kill.
+                // Benign race — we wanted it gone and it is.
+              } else {
+                // EPERM (Windows: Access Denied), EINVAL, anything else:
+                // we asked the OS to kill the verified daemon and it
+                // refused. taskkill /F travels the same TerminateProcess
+                // path with the same user token, so we don't auto-retry —
+                // we surface the failure with the exact command the user
+                // needs to run in an elevated shell. RespawnController
+                // catches the throw and burns a budget unit.
+                killSucceeded = false;
+                console.warn(`[launcher] failed to terminate PID ${existingPid}:`, err);
+                throw new Error(
+                  `[launcher] verified wmux daemon at PID ${existingPid} alive but SIGKILL failed (${code ?? 'unknown'}); refusing to spawn a second daemon. Run in an elevated PowerShell:  taskkill /F /PID ${existingPid}  — then retry.`,
+                );
+              }
             }
-          }
-          if (killSucceeded) {
-            // Brief settle so the named-pipe handle on the dying daemon's
-            // side releases before spawnDaemon's first `createServer`
-            // listen attempt.
-            await new Promise((resolve) => setTimeout(resolve, 200));
+            if (killSucceeded) {
+              // Brief settle so the named-pipe handle on the dying daemon's
+              // side releases before spawnDaemon's first `createServer`
+              // listen attempt.
+              await new Promise((resolve) => setTimeout(resolve, 200));
+            }
           }
         }
       }
