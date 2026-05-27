@@ -319,7 +319,18 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
     const pipeName = readPipeNameFromFile(wmuxDir) || getDaemonPipeName();
 
     if (token) {
-      const alive = await pingDaemon(pipeName, token);
+      // Two-shot ping: a freshly spawned daemon can briefly miss the ping
+      // window while its event loop is busy on startup (recovery loop on
+      // big sessions.json, Defender realtime scan on cold ASAR, ConPTY
+      // cold-init). 250 ms between attempts is comfortably above observed
+      // worst-case startup hiccups but well below the 15-second spawn
+      // budget — so the retry doesn't push us into the verification
+      // throw-or-kill branch for what is actually a transient stall.
+      let alive = await pingDaemon(pipeName, token);
+      if (!alive) {
+        await new Promise<void>((resolve) => setTimeout(resolve, 250));
+        alive = await pingDaemon(pipeName, token);
+      }
       if (alive) {
         console.log(`[launcher] Daemon already running (PID: ${existingPid})`);
         return { pid: existingPid, authToken: token, pipeName, spawned: false };
