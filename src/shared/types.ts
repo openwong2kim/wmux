@@ -157,7 +157,16 @@ export interface WorkspaceMetadata {
 }
 
 // === Agent status ===
-export type AgentStatus = 'running' | 'complete' | 'error' | 'waiting' | 'idle';
+// 'awaiting_input' — agent paused mid-turn for a confirmation prompt (y/N,
+// approval gate) and is blocked until the user responds. Distinct from
+// 'waiting' (which means "turn ended, ready for next instruction").
+export type AgentStatus =
+  | 'running'
+  | 'complete'
+  | 'error'
+  | 'waiting'
+  | 'awaiting_input'
+  | 'idle';
 
 // === Metadata update IPC payload ===
 // Single discriminated payload shape used by IPC.METADATA_UPDATE. Sender (main)

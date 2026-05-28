@@ -83,13 +83,15 @@ export function agentDisplayToSlug(display: string): AgentSlug | undefined {
  */
 export function agentStatusToSignalKind(
   status: AgentEventStatus,
-): 'agent.stop' | 'agent.activity' | null {
+): 'agent.stop' | 'agent.activity' | 'agent.awaiting_input' | null {
   switch (status) {
     case 'waiting':
     case 'complete':
       return 'agent.stop';
     case 'running':
       return 'agent.activity';
+    case 'awaiting_input':
+      return 'agent.awaiting_input';
     default:
       return null;
   }
@@ -113,9 +115,15 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // appears while a response is in flight (hint that the user can ESC to
       // cancel), not when the agent is idle. Including it produced
       // false-positive "waiting" notifications mid-turn. Removed.
-      { regex: /bypass permissions on/,          status: 'waiting',   message: 'Ready for input' },
-      { regex: /shift\+tab to cycle/,            status: 'waiting',   message: 'Ready for input' },
-      { regex: /Do you want to proceed/,         status: 'waiting',   message: 'Waiting for confirmation' },
+      { regex: /bypass permissions on/,          status: 'waiting',          message: 'Ready for input' },
+      { regex: /shift\+tab to cycle/,            status: 'waiting',          message: 'Ready for input' },
+      // Approval prompts — Claude Code is paused mid-turn waiting for the user
+      // to pick an option. Orchestrators can react to 'awaiting_input' to feed
+      // pre-approved answers without waiting for the full turn to end.
+      // `Do you want to proceed` is followed by a numbered option list ("1.
+      // Yes / 2. No"); `Allow tool use` appears on Bash/Edit approval gates.
+      { regex: /Do you want to proceed/,         status: 'awaiting_input',   message: 'Approval requested' },
+      { regex: /Allow tool use/,                 status: 'awaiting_input',   message: 'Tool approval requested' },
     ],
   },
 

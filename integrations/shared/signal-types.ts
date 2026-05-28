@@ -13,16 +13,25 @@
 /**
  * The kind of signal. Dispatch keys at the daemon side.
  *
- * - agent.stop          — agent finished its turn. Strongest "task done" signal.
- * - agent.activity      — per-tool-call activity ping (optional, may be dropped if too noisy).
- * - agent.subagent_stop — subagent finished (e.g. /team mode coordinator).
- * - agent.session_start — agent session began. Used to clear stale metadata.
+ * - agent.stop            — agent finished its turn. Strongest "task done" signal.
+ * - agent.activity        — per-tool-call activity ping (optional, may be dropped if too noisy).
+ * - agent.subagent_stop   — subagent finished (e.g. /team mode coordinator).
+ * - agent.session_start   — agent session began. Used to clear stale metadata.
+ * - agent.awaiting_input  — agent paused mid-turn for a y/N or approval prompt.
+ *                           Detector-only kind in v2.13.0: emitted by the
+ *                           regex-based AgentDetector when a confirmation
+ *                           pattern matches on a previously-gated agent. Hook
+ *                           bridges are not expected to emit this kind today;
+ *                           it is included in the union so HookSignalRouter
+ *                           can dedup detector signals through the same ledger
+ *                           shape used for `agent.stop`.
  */
 export type AgentSignalKind =
   | 'agent.stop'
   | 'agent.activity'
   | 'agent.subagent_stop'
-  | 'agent.session_start';
+  | 'agent.session_start'
+  | 'agent.awaiting_input';
 
 /**
  * SLUG-form agent identifiers. Matches AgentPattern.slug in AgentDetector.ts.

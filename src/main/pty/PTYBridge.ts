@@ -291,6 +291,56 @@ export class PTYBridge {
           win.webContents.send(IPC.GIT_BRANCH_CHANGED, ptyId, event.data);
           break;
         }
+        case 133: {
+          // OSC 133 shell integration — semantic prompt boundaries.
+          //   A — prompt start (shell ready for user input)
+          //   B — prompt end (prompt drawn)
+          //   C — command start (Enter pressed, output follows)
+          //   D[;<exitCode>] — command end (process finished)
+          //
+          // Only the D marker is teed to the EventBus today. It's a shell-
+          // agnostic, latency-zero signal that any CLI (npm, pytest, make,
+          // git...) emits when wrapped by shell integration. Orchestrators
+          // can poll wmux_events_poll for `source:'osc133'` lifecycle events
+          // instead of round-tripping through `terminal_read_events`, picking
+          // up command exits ~1-2s before the regex-based AgentDetector would.
+          //
+          // OSC 133 doesn't identify the agent — it's a generic shell signal —
+          // so `agent` is set to the detector's last-known agent slug for the
+          // PTY when one is gated, otherwise null. Hook/detector lifecycle
+          // events always carry a non-null agent; null is the discriminator
+          // for "no agent context, but a shell command completed".
+          //
+          // Daemon-side PromptEventLog (src/daemon/PromptEventLog.ts) is the
+          // authoritative byte-offset log used by `terminal_read_events`;
+          // the EventBus tee here is a parallel projection for the
+          // workspaceId-scoped poll path. The two streams may interleave but
+          // never disagree about what happened — both parse the same OSC 133
+          // bytes from the same PTY data path.
+          const payload = event.data || '';
+          const parts = payload.split(';');
+          if (parts[0] === 'D' && instance.workspaceId) {
+            let exitCode: number | null = null;
+            if (parts.length > 1 && parts[1].length > 0) {
+              const parsed = Number.parseInt(parts[1], 10);
+              if (!Number.isNaN(parsed)) {
+                exitCode = parsed;
+              }
+            }
+            const agentSlug = agentDisplayToSlug(agentDetector.getLastAgent() ?? '') ?? null;
+            eventBus.emit({
+              type: 'agent.lifecycle',
+              workspaceId: instance.workspaceId,
+              ptyId,
+              kind: 'agent.stop',
+              source: 'osc133',
+              agent: agentSlug,
+              decision: 'emit',
+              exitCode,
+            });
+          }
+          break;
+        }
       }
     });
 
@@ -321,39 +371,46 @@ export class PTYBridge {
           agentName: agentEvent.agent,
         });
 
-        if (status === 'waiting' || status === 'complete') {
+        if (status === 'waiting' || status === 'complete' || status === 'awaiting_input') {
           this.lastAgentEventAt.set(ptyId, Date.now());
           const title = `${agentEvent.agent}: ${agentEvent.message}`;
-          const body = status === 'waiting' ? 'Ready for input' : 'Task finished';
+          const body = status === 'awaiting_input'
+            ? 'Awaiting input'
+            : status === 'waiting' ? 'Ready for input' : 'Task finished';
           sendNotification(win, ptyId, { type: 'agent', title, body });
           toastManager.show(title, body);
 
           // Tee to EventBus for external observers (orchestrator clients).
-          // Both 'waiting' and 'complete' collapse to kind:'agent.stop' —
-          // they represent the same user-visible event ("turn finished,
-          // ready for next input"), matching the hook-side dedup mapping
-          // in HookSignalRouter. Call `recordDetector` before emitting
-          // so the ledger sees this side of the dedup window: a hook+
-          // detector pair for the same turn now resolves to one 'emit'
-          // and one 'dedup', not two emits. Without this, an orchestrator
-          // filtering on `decision === 'emit'` would re-run follow-up
-          // work twice on the standard plugin-plus-detector setup. The
-          // existing sendNotification/toast above is unchanged — that
-          // dedup gate lives in the hook path, not here, and is
-          // pre-existing scope. Skip when workspaceId is unknown — same
-          // gate as the process.started emit above.
+          // 'waiting' and 'complete' collapse to kind:'agent.stop' — they
+          // represent the same user-visible event ("turn finished, ready
+          // for next input"), matching the hook-side dedup mapping in
+          // HookSignalRouter. 'awaiting_input' maps to its own kind so
+          // orchestrators can distinguish "turn ended, send next task"
+          // from "agent paused mid-turn, send y/N answer". Call
+          // `recordDetector` before emitting so the ledger sees this side
+          // of the dedup window: a hook+detector pair for the same turn
+          // now resolves to one 'emit' and one 'dedup', not two emits.
+          // Without this, an orchestrator filtering on `decision === 'emit'`
+          // would re-run follow-up work twice on the standard
+          // plugin-plus-detector setup. The existing sendNotification/toast
+          // above is unchanged — that dedup gate lives in the hook path,
+          // not here, and is pre-existing scope. Skip when workspaceId is
+          // unknown — same gate as the process.started emit above.
           if (instance.workspaceId) {
             const slug = agentDisplayToSlug(agentEvent.agent);
             if (slug) {
+              const lifecycleKind = status === 'awaiting_input'
+                ? 'agent.awaiting_input' as const
+                : 'agent.stop' as const;
               const hookRouter = this.getHookRouter?.() ?? null;
               const decision = hookRouter
-                ? hookRouter.recordDetector(slug, 'agent.stop', ptyId)
+                ? hookRouter.recordDetector(slug, lifecycleKind, ptyId)
                 : 'emit';
               eventBus.emit({
                 type: 'agent.lifecycle',
                 workspaceId: instance.workspaceId,
                 ptyId,
-                kind: 'agent.stop',
+                kind: lifecycleKind,
                 source: 'detector',
                 agent: slug,
                 decision,

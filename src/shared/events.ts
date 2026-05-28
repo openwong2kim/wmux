@@ -130,15 +130,26 @@ export interface ProcessExitedEvent extends WmuxEventBase {
 }
 
 /**
- * Fires when an inner agent (Claude Code, etc.) finishes a turn or subagent
- * spans. Sourced from either the Claude Code hook bridge (`source:'hook'`,
- * deterministic, sub-200ms) or the regex-based AgentDetector
- * (`source:'detector'`, heuristic, ~1-2s lag). Both sources stream so the
- * caller can compare and choose; the dedup ledger inside HookSignalRouter
- * decides whether a fan-out notification fires, and `decision` reflects
- * that outcome — but the event itself is emitted regardless so external
- * consumers (orchestrator clients) see both signals for forensic / replay
- * purposes.
+ * Fires when an inner agent (Claude Code, etc.) finishes a turn, surfaces a
+ * y/N approval prompt, or a generic shell command completes under OSC 133
+ * shell integration. Three sources stream so callers can compare and pick:
+ *
+ *   - `source:'hook'`      — Claude Code hook bridge. Deterministic, sub-200ms.
+ *                             Carries `agent` (the hook plugin knows who fired).
+ *   - `source:'detector'`  — Regex-based AgentDetector. Heuristic, ~1-2s lag.
+ *                             Carries `agent` (regex gates identify the agent).
+ *   - `source:'osc133'`    — Shell integration OSC 133 D marker. Latency-zero,
+ *                             shell-agnostic (any CLI: npm, pytest, make...).
+ *                             `agent` may be `null` when no agent context is
+ *                             known; `exitCode` is set when the marker carried
+ *                             one (`OSC 133;D;<n>`).
+ *
+ * The dedup ledger inside HookSignalRouter decides whether a fan-out
+ * notification fires (`decision`); the event itself is emitted regardless so
+ * external consumers (orchestrator clients) see all three signals for
+ * forensic / replay purposes. OSC 133 events are not dedup-gated — they
+ * represent shell command lifecycle, not agent turn boundaries — and always
+ * carry `decision:'emit'`.
  *
  * Intentionally omitted: `agent.activity` (per-tool-call) and
  * `agent.session_start`. activity events can fire 5-30 times per turn per
@@ -155,21 +166,44 @@ export interface AgentLifecycleEvent extends WmuxEventBase {
   type: 'agent.lifecycle';
   ptyId: string;
   /**
-   * 'agent.stop' = turn finished. 'agent.subagent_stop' = nested subagent
-   * (e.g. /team coordinator) returned. Other AgentSignalKind values are
-   * NOT emitted here — see the doc comment above for rationale.
+   * 'agent.stop'           — turn finished, ready for next user input.
+   * 'agent.subagent_stop'  — nested subagent (e.g. /team coordinator) returned.
+   * 'agent.awaiting_input' — agent paused mid-turn for a y/N / approval prompt
+   *                          and is blocked until the user responds. Emitted
+   *                          by AgentDetector when a confirmation regex matches
+   *                          on a previously-gated agent. Distinct from
+   *                          'agent.stop' (which signals turn completion);
+   *                          orchestrators that auto-approve trusted operations
+   *                          can react to this kind to feed input back without
+   *                          waiting for the turn to end.
+   *
+   * Other AgentSignalKind values are NOT emitted here — see the doc comment
+   * above for rationale.
    */
-  kind: 'agent.stop' | 'agent.subagent_stop';
-  source: 'hook' | 'detector';
-  agent: AgentSlug;
+  kind: 'agent.stop' | 'agent.subagent_stop' | 'agent.awaiting_input';
+  source: 'hook' | 'detector' | 'osc133';
+  /**
+   * Canonical agent slug. `null` only when `source:'osc133'` and no agent
+   * context is known for the PTY (e.g. plain shell command in a non-agent
+   * pane). Hook and detector sources always carry a non-null agent.
+   */
+  agent: AgentSlug | null;
   /**
    * 'emit' = HookSignalRouter decided to fan out a notification.
    * 'dedup' = a same-pane same-kind signal already emitted within the
    * dedup window, so no notification fired. The lifecycle event itself
    * is published either way for observability; consumers that only want
-   * "first-of-kind" signals filter on `decision === 'emit'`.
+   * "first-of-kind" signals filter on `decision === 'emit'`. OSC 133
+   * events are always 'emit' (no dedup applies to shell command lifecycle).
    */
   decision: 'emit' | 'dedup';
+  /**
+   * Process exit code reported by the OSC 133 D marker, when present.
+   * Only set for `source:'osc133'`; absent or `null` for hook/detector
+   * sources (which signal agent-turn boundaries, not process exits).
+   * `null` when the shell emitted `OSC 133;D` without an exit code suffix.
+   */
+  exitCode?: number | null;
 }
 
 export type WmuxEvent =

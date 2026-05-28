@@ -201,4 +201,132 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     expect(events.length).toBeGreaterThanOrEqual(1);
     expect(events[0]).toMatchObject({ source: 'detector', decision: 'emit' });
   });
+
+  it('emits agent.lifecycle source:"awaiting_input" when AgentDetector matches an approval prompt', () => {
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('Do you want to proceed?\n');
+    flush();
+
+    const events = pollLifecycle();
+    const awaiting = events.find((e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input');
+    expect(awaiting).toBeDefined();
+    expect(awaiting).toMatchObject({
+      type: 'agent.lifecycle',
+      ptyId: 'pty-1',
+      workspaceId: 'ws-a',
+      kind: 'agent.awaiting_input',
+      source: 'detector',
+      agent: 'claude',
+      decision: 'emit',
+    });
+  });
+});
+
+describe('PTYBridge — agent.lifecycle EventBus tee (osc133 source)', () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    eventBus.reset();
+    mocks.broadcastMetadataUpdate.mockReset();
+    mocks.sendNotification.mockReset();
+    mocks.toastManager.show.mockReset();
+  });
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  function flush() {
+    vi.advanceTimersByTime(50);
+  }
+
+  // OSC 133 wire format: ESC ] 133 ; <subcmd> [; <args>] BEL
+  const OSC_133_D_OK = '\x1b]133;D;0\x07';
+  const OSC_133_D_FAIL = '\x1b]133;D;1\x07';
+  const OSC_133_D_NO_EXIT = '\x1b]133;D\x07';
+  const OSC_133_A = '\x1b]133;A\x07';
+
+  it('emits source:"osc133" with parsed exitCode on OSC 133 D;<exitCode>', () => {
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData(OSC_133_D_OK);
+    flush();
+
+    const events = pollLifecycle();
+    expect(events.length).toBe(1);
+    expect(events[0]).toMatchObject({
+      type: 'agent.lifecycle',
+      ptyId: 'pty-1',
+      workspaceId: 'ws-a',
+      kind: 'agent.stop',
+      source: 'osc133',
+      agent: null,
+      decision: 'emit',
+      exitCode: 0,
+    });
+  });
+
+  it('emits exitCode null when OSC 133 D carries no exit code suffix', () => {
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData(OSC_133_D_NO_EXIT);
+    flush();
+
+    const events = pollLifecycle();
+    expect(events.length).toBe(1);
+    expect(events[0]).toMatchObject({ source: 'osc133', exitCode: null });
+  });
+
+  it('does NOT emit for non-D subcommands (A/B/C)', () => {
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData(OSC_133_A);
+    flush();
+
+    expect(pollLifecycle()).toHaveLength(0);
+  });
+
+  it('does NOT emit when workspaceId is unknown', () => {
+    const { proc } = makeBridge({});
+
+    proc.emitData(OSC_133_D_OK);
+    flush();
+
+    expect(pollLifecycle()).toHaveLength(0);
+  });
+
+  it('sets agent to the detector last-known slug when a gated agent is active', () => {
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    // Gate the Claude Code detector first so getLastAgent() returns 'Claude Code'.
+    proc.emitData('Claude Code\n');
+    proc.emitData('  shift+tab to cycle\n');
+    flush();
+    // Drain the detector-source lifecycle event so the next poll sees only osc133.
+    eventBus.reset();
+
+    proc.emitData(OSC_133_D_FAIL);
+    flush();
+
+    const events = pollLifecycle();
+    expect(events.length).toBe(1);
+    expect(events[0]).toMatchObject({
+      source: 'osc133',
+      agent: 'claude',
+      exitCode: 1,
+    });
+  });
+
+  it('osc133 events bypass HookSignalRouter dedup (always decision:"emit")', () => {
+    const router = stubHookRouter('dedup');
+    const { proc } = makeBridge({ workspaceId: 'ws-a', hookRouter: router });
+
+    proc.emitData(OSC_133_D_OK);
+    flush();
+
+    const events = pollLifecycle();
+    expect(events.length).toBe(1);
+    expect(events[0]).toMatchObject({ source: 'osc133', decision: 'emit' });
+    expect(router.recordDetector).not.toHaveBeenCalled();
+  });
 });

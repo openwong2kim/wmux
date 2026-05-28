@@ -468,6 +468,8 @@ function titleFor(signal: AgentSignal): string {
       return `${display}: Activity`;
     case 'agent.session_start':
       return `${display}: Session started`;
+    case 'agent.awaiting_input':
+      return `${display}: Awaiting input`;
   }
 }
 
@@ -484,6 +486,8 @@ function bodyFor(signal: AgentSignal): string {
       return 'Tool call completed';
     case 'agent.session_start':
       return 'Session initialized';
+    case 'agent.awaiting_input':
+      return 'Approval requested';
   }
 }
 
