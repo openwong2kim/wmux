@@ -222,6 +222,50 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
       decision: 'emit',
     });
   });
+
+  it('does NOT emit awaiting_input for conversational "Do you want to proceed?" mentions', () => {
+    // Codex round-2 P2 catch — the phrase embedded in a longer sentence
+    // (e.g. Claude documenting how an approval gate looks) must not fire
+    // awaiting_input. The line-end anchor on the regex ensures only the
+    // real prompt line matches.
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('If the CLI asks "Do you want to proceed?", choose no\n');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeUndefined();
+  });
+
+  it('still matches a real approval line wrapped in Claude box-drawing chars', () => {
+    // Realistic Claude TUI line: `│ Do you want to proceed?   │`
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('│ Do you want to proceed?   │\n');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeDefined();
+  });
+
+  it('does NOT emit awaiting_input for conversational "Allow tool use for X" mentions mid-sentence', () => {
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('click Allow tool use for Bash to enable git push\n');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeUndefined();
+  });
 });
 
 describe('PTYBridge — agent.lifecycle EventBus tee (osc133 source)', () => {

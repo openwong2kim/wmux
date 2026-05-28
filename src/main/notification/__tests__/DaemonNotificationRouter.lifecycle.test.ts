@@ -281,4 +281,55 @@ describe('DaemonNotificationRouter — osc133 lifecycle tee', () => {
       router.stop();
     }
   });
+
+  it('snapshots the cached agent slug BEFORE awaiting workspace.list (race fix)', async () => {
+    // Codex round-2 P2 — shell may emit OSC 133;D and then redraw the
+    // prompt, which fires a session:agent burst, all while the OSC 133
+    // tee is mid-await on workspace.list. If the slug were read AFTER
+    // the await it would reflect the new turn's agent, mis-attributing
+    // the just-completed command. PTYBridge local-mode snapshots
+    // `agentDetector.getLastAgent()` synchronously before any await;
+    // daemon-mode must match.
+    let resolveWorkspaceListRpc: (value: typeof FIXTURE_WORKSPACE_LIST) => void = () => {};
+    sendToRendererMock.mockImplementationOnce(
+      () => new Promise((res) => { resolveWorkspaceListRpc = res; }),
+    );
+
+    const { router, captured } = makeRouter();
+    try {
+      // Seed the cache with Claude (running is metadata-only — does NOT
+      // trigger emitDetectorLifecycle, so sendToRenderer is NOT consumed).
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'running', message: 'Working' },
+      });
+
+      // OSC 133;D arrives — emitOsc133Lifecycle captures 'Claude Code'
+      // synchronously, then awaits the mocked workspace.list above.
+      captured.prompt!({
+        sessionId: 'pty-a',
+        event: { type: 'command_end', ts: 1000, byteOffset: 42, exitCode: 0 },
+      });
+
+      // While the await is pending, the shell redraws and a new agent
+      // gate fires — the cache flips to Codex CLI.
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Codex CLI', status: 'running', message: 'Working' },
+      });
+
+      // Now resolve the workspace.list RPC; the OSC 133 emit completes.
+      resolveWorkspaceListRpc(FIXTURE_WORKSPACE_LIST);
+      await flushMicrotasks();
+
+      const osc = pollLifecycle().find(
+        (e) => e.type === 'agent.lifecycle' && (e as { source?: string }).source === 'osc133',
+      );
+      // Must be 'claude' — the slug snapshot at command_end time, NOT
+      // 'codex' which the cache now holds.
+      expect(osc).toMatchObject({ source: 'osc133', agent: 'claude' });
+    } finally {
+      router.stop();
+    }
+  });
 });

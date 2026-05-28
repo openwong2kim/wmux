@@ -212,11 +212,18 @@ export class DaemonNotificationRouter {
    *     omitted the suffix on `OSC 133;D`)
    */
   private async emitOsc133Lifecycle(ptyId: string, exitCode: number | null): Promise<void> {
+    // Snapshot the agent slug BEFORE awaiting workspace.list. The shell may
+    // emit `OSC 133;D` then redraw the prompt and trigger a `session:agent`
+    // update in the same burst; if we resolved the slug after the await,
+    // the cache could already reflect a future turn's agent, mis-attributing
+    // this command_end. This matches PTYBridge's local-mode case 133 path,
+    // which reads `agentDetector.getLastAgent()` synchronously before any
+    // EventBus emit (Codex round-2 P2).
+    const lastAgentName = this.lastAgentNameByPty.get(ptyId) ?? '';
+    const agentSlug = agentDisplayToSlug(lastAgentName) ?? null;
     try {
       const workspaceId = await this.resolveWorkspaceIdForPty(ptyId);
       if (!workspaceId) return;
-      const lastAgentName = this.lastAgentNameByPty.get(ptyId) ?? '';
-      const agentSlug = agentDisplayToSlug(lastAgentName) ?? null;
       eventBus.emit({
         type: 'agent.lifecycle',
         workspaceId,

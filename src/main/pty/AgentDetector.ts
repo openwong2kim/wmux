@@ -121,18 +121,22 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // to pick an option. Orchestrators can react to 'awaiting_input' to feed
       // pre-approved answers without waiting for the full turn to end.
       //
-      // The patterns below are anchored to the approval-prompt SHAPE rather
-      // than to the phrase appearing anywhere on the line: a literal `?` for
-      // `Do you want to proceed?`, and the Claude-specific `Allow tool use
-      // for <Bash|Edit|Write|...>` form. Codex round-1 P2 catch: an
-      // unanchored `Do you want to proceed` matched Claude conversational
-      // output that included the phrase rhetorically; an unanchored
-      // `Allow tool use` matched any explanation of how tool gates work
-      // (docs, debug logs, the agent describing its own permission model).
-      // False positives here are particularly costly because orchestrators
-      // may auto-feed approval responses into the PTY.
-      { regex: /\bDo you want to proceed\?/,           status: 'awaiting_input',   message: 'Approval requested' },
-      { regex: /\bAllow tool use for [A-Z][A-Za-z]+/,  status: 'awaiting_input',   message: 'Tool approval requested' },
+      // The patterns are anchored to the END of the line: a real approval
+      // prompt occupies the whole line (possibly inside Claude's box-drawing
+      // frame), whereas conversational mentions are followed by more sentence
+      // text. Codex round-1/round-2 P2: an unanchored `Do you want to
+      // proceed` matched `If the CLI asks "Do you want to proceed?", choose
+      // no`, and unanchored `Allow tool use` matched `click Allow tool use
+      // for Bash` in plain text. Because orchestrators may auto-feed
+      // approval responses into the PTY, false positives here are
+      // particularly costly.
+      //
+      // Trailing class accepts whitespace and box-drawing glyphs Claude's
+      // TUI uses to frame prompt lines (`│ ║ ┃ ═ ━ ┄ ┅ ┆ ┇`). Anything else
+      // after the matched phrase means there's more sentence content on the
+      // line and the match is rejected.
+      { regex: /\bDo you want to proceed\?[\s│║┃═━┄┅┆┇·]*$/,          status: 'awaiting_input',   message: 'Approval requested' },
+      { regex: /\bAllow tool use for [A-Z][A-Za-z]+\??[\s│║┃═━┄┅┆┇·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
     ],
   },
 
