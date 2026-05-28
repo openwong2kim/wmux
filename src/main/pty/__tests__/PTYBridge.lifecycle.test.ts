@@ -299,6 +299,40 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     );
     expect(awaiting).toBeDefined();
   });
+
+  it('matches boxed prompt lines that use light-horizontal border (─)', () => {
+    // Codex round-4 P2 — `╭─ Do you want to proceed? ─╮` is a real Claude
+    // approval prompt variant. The U+2500 light-horizontal glyph must be
+    // in the trailing whitelist.
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('╭─ Do you want to proceed? ─╮\n');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeDefined();
+  });
+
+  it('does NOT emit awaiting_input for "Allow tool use for Bash_command" with single-underscore tail', () => {
+    // Codex round-4 P2 — the round-3 broadening accepted single-underscore
+    // identifiers, which let conversational text like `Please click Allow
+    // tool use for Bash_command │` slip back through. The split
+    // alternation (capitalized built-in OR mcp__ prefix) now rejects this
+    // shape.
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('Please click Allow tool use for Bash_command │\n');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeUndefined();
+  });
 });
 
 describe('PTYBridge — agent.lifecycle EventBus tee (osc133 source)', () => {

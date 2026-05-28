@@ -133,18 +133,29 @@ const AGENT_PATTERNS: AgentPattern[] = [
       //
       // Trailing class accepts whitespace and the full set of box-drawing
       // glyphs Claude's TUI uses to frame prompt lines:
-      //   straight: │ ║ ┃ ═ ━ ┄ ┅ ┆ ┇
-      //   corners:  ╭ ╮ ╯ ╰ ╔ ╗ ╝ ╚ ┌ ┐ ┘ └
-      //   dots/sep: · (added for early-frame variants)
+      //   straight:   │ ║ ┃ ═ ━ ─ ┄ ┅ ┆ ┇ ┈ ┉
+      //   corners:    ╭ ╮ ╯ ╰ ╔ ╗ ╝ ╚ ┌ ┐ ┘ └
+      //   separators: · ─
       // Round-3 P2: omitting corners caused boxed prompt lines ending in
-      // `╮` or `╯` to be skipped, mis-firing as false negatives.
+      // `╮` or `╯` to be skipped. Round-4 P2: omitting `─` (U+2500, light
+      // horizontal) missed boxed prompts like `╭─ Do you want to
+      // proceed? ─╮` where the horizontal border butts up against the
+      // text.
       //
-      // Tool-name pattern covers both Claude's built-in tool labels
-      // (`Bash`, `Edit`, `Write`, `WebFetch`...) and the MCP namespaced
-      // form (`mcp__github__create_issue`). Restricting to `[A-Z][A-Za-z]+`
-      // missed MCP variants entirely (Round-3 P2 false negative).
-      { regex: /\bDo you want to proceed\?[\s│║┃═━┄┅┆┇╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                  status: 'awaiting_input',   message: 'Approval requested' },
-      { regex: /\bAllow tool use for [A-Za-z_][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)*\??[\s│║┃═━┄┅┆┇╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
+      // Tool-name pattern covers TWO and only two forms:
+      //   - Claude's built-in tool labels: `[A-Z][A-Za-z]+` (Bash, Edit,
+      //     Write, WebFetch, ...). Capitalized + no underscores.
+      //   - MCP namespaced form: `mcp__<server>__<tool>` with literal
+      //     `mcp__` prefix and at least one `__` segment.
+      // Round-4 P2: the prior `[A-Za-z_][A-Za-z0-9_]*` accepted any
+      // single-underscore identifier such as `Bash_command`, which let
+      // conversational lines like
+      //   `Please click Allow tool use for Bash_command │`
+      // re-introduce the false positive the round-2 anchor was meant to
+      // eliminate. The split alternation now rejects single-underscore
+      // identifiers while still admitting the canonical MCP form.
+      { regex: /\bDo you want to proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                              status: 'awaiting_input',   message: 'Approval requested' },
+      { regex: /\bAllow tool use for (?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9_]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
     ],
   },
 
