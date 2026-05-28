@@ -915,6 +915,21 @@ function wireEvents(
     pipeServer.broadcast(event);
   });
 
+  // OSC 133 prompt/command markers — broadcast to main so
+  // DaemonNotificationRouter can mirror the local-mode PTYBridge OSC 133
+  // tee onto the EventBus as `source:'osc133'` agent.lifecycle events.
+  // Daemon-side PromptEventLog remains the byte-offset authoritative log
+  // used by `terminal_read_events`; this broadcast is a parallel projection
+  // for workspaceId-scoped poll consumers.
+  sessionManager.on('session:prompt', (payload: { sessionId: string; event: { type: string; ts: number; byteOffset: number; exitCode?: number } }) => {
+    const event: DaemonEvent = {
+      type: 'prompt.event',
+      sessionId: payload.sessionId,
+      data: payload.event,
+    };
+    pipeServer.broadcast(event);
+  });
+
   // Explicit destroy (pty:dispose path): distinct from session:died (natural
   // PTY exit). Both must clear the main-side agentStatus so the sidebar dot
   // doesn't lie about a closed terminal (Codex P2).

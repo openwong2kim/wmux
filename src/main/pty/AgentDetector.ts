@@ -120,10 +120,19 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // Approval prompts — Claude Code is paused mid-turn waiting for the user
       // to pick an option. Orchestrators can react to 'awaiting_input' to feed
       // pre-approved answers without waiting for the full turn to end.
-      // `Do you want to proceed` is followed by a numbered option list ("1.
-      // Yes / 2. No"); `Allow tool use` appears on Bash/Edit approval gates.
-      { regex: /Do you want to proceed/,         status: 'awaiting_input',   message: 'Approval requested' },
-      { regex: /Allow tool use/,                 status: 'awaiting_input',   message: 'Tool approval requested' },
+      //
+      // The patterns below are anchored to the approval-prompt SHAPE rather
+      // than to the phrase appearing anywhere on the line: a literal `?` for
+      // `Do you want to proceed?`, and the Claude-specific `Allow tool use
+      // for <Bash|Edit|Write|...>` form. Codex round-1 P2 catch: an
+      // unanchored `Do you want to proceed` matched Claude conversational
+      // output that included the phrase rhetorically; an unanchored
+      // `Allow tool use` matched any explanation of how tool gates work
+      // (docs, debug logs, the agent describing its own permission model).
+      // False positives here are particularly costly because orchestrators
+      // may auto-feed approval responses into the PTY.
+      { regex: /\bDo you want to proceed\?/,           status: 'awaiting_input',   message: 'Approval requested' },
+      { regex: /\bAllow tool use for [A-Z][A-Za-z]+/,  status: 'awaiting_input',   message: 'Tool approval requested' },
     ],
   },
 

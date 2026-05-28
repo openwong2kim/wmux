@@ -385,6 +385,13 @@ export class DaemonClient extends EventEmitter {
         case 'agent.critical':
           this.emit('session:critical', { sessionId: event.sessionId, event: event.data });
           break;
+        case 'prompt.event':
+          // OSC 133 shell-integration marker (A/B/C/D) parsed in the daemon.
+          // DaemonNotificationRouter consumes this to tee the D variant onto
+          // the EventBus as a `source:'osc133'` agent.lifecycle event,
+          // matching the local-mode PTYBridge.OscParser case 133 path.
+          this.emit('session:prompt', { sessionId: event.sessionId, event: event.data });
+          break;
         default:
           break;
       }

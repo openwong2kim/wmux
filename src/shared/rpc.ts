@@ -284,7 +284,8 @@ export interface DaemonEvent {
     | 'agent.event'
     | 'agent.critical'
     | 'activity.idle'
-    | 'activity.active';
+    | 'activity.active'
+    | 'prompt.event';
   sessionId: string;
   data: unknown;
 }

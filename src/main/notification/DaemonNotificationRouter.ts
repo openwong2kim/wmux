@@ -73,6 +73,19 @@ const WORKSPACE_LIST_CACHE_TTL_MS = 2_000;
 export class DaemonNotificationRouter {
   private cleanups: Array<() => void> = [];
   private lastAgentEventAt = new Map<string, number>();
+  /**
+   * Per-PTY last-known agent display name. Populated on every
+   * `session:agent` event so the `session:prompt` (OSC 133) handler can
+   * attach an agent slug to the EventBus tee. Without this cache, OSC 133
+   * events emitted in daemon mode would always carry `agent: null` even
+   * when AgentDetector has already gated a Claude Code / Codex CLI / ...
+   * session — losing parity with the local-mode PTYBridge case 133 path
+   * which reads `agentDetector.getLastAgent()` directly.
+   *
+   * Cleared on `session:died` / `session:destroyed` (alongside
+   * `lastAgentEventAt`) so stale agent labels never leak across PTY reuse.
+   */
+  private lastAgentNameByPty = new Map<string, string>();
   private workspaceCache: { value: WorkspaceListEntry[]; ts: number } | null = null;
 
   constructor(
@@ -150,7 +163,11 @@ export class DaemonNotificationRouter {
    * No throw path — daemon notification flow is best-effort and a tee
    * failure must never break the toast/sidebar update.
    */
-  private async emitDetectorLifecycle(ptyId: string, agentName: string): Promise<void> {
+  private async emitDetectorLifecycle(
+    ptyId: string,
+    agentName: string,
+    kind: 'agent.stop' | 'agent.awaiting_input' = 'agent.stop',
+  ): Promise<void> {
     try {
       const slug = agentDisplayToSlug(agentName);
       if (!slug) return;
@@ -159,7 +176,7 @@ export class DaemonNotificationRouter {
       // ~50-200ms workspace.list round-trip to match local-mode semantics.
       const hookRouter = this.getHookRouter?.() ?? null;
       const decision = hookRouter
-        ? hookRouter.recordDetector(slug, 'agent.stop', ptyId)
+        ? hookRouter.recordDetector(slug, kind, ptyId)
         : 'emit';
       // Now do the workspace lookup. If it fails or returns null we drop
       // the event entirely (event without scope = wrong subscriber routing)
@@ -171,13 +188,47 @@ export class DaemonNotificationRouter {
         type: 'agent.lifecycle',
         workspaceId,
         ptyId,
-        kind: 'agent.stop',
+        kind,
         source: 'detector',
         agent: slug,
         decision,
       });
     } catch (err) {
       console.warn('[DaemonNotificationRouter] emitDetectorLifecycle error:', err);
+    }
+  }
+
+  /**
+   * OSC 133 mirror of PTYBridge's case 133 path for daemon-backed PTYs.
+   * Fires on every `command_end` PromptEvent forwarded from the daemon.
+   * Unlike `emitDetectorLifecycle`, this path:
+   *   - never goes through `HookSignalRouter.recordDetector` (OSC 133 is
+   *     shell command lifecycle, not agent-turn boundaries — dedup against
+   *     hook signals would conflate two different semantic levels)
+   *   - resolves agent slug from `lastAgentNameByPty` (best-effort);
+   *     emits `agent: null` when no agent context is gated, matching the
+   *     local-mode behavior
+   *   - sets `exitCode` from the parsed marker (`null` when the shell
+   *     omitted the suffix on `OSC 133;D`)
+   */
+  private async emitOsc133Lifecycle(ptyId: string, exitCode: number | null): Promise<void> {
+    try {
+      const workspaceId = await this.resolveWorkspaceIdForPty(ptyId);
+      if (!workspaceId) return;
+      const lastAgentName = this.lastAgentNameByPty.get(ptyId) ?? '';
+      const agentSlug = agentDisplayToSlug(lastAgentName) ?? null;
+      eventBus.emit({
+        type: 'agent.lifecycle',
+        workspaceId,
+        ptyId,
+        kind: 'agent.stop',
+        source: 'osc133',
+        agent: agentSlug,
+        decision: 'emit',
+        exitCode,
+      });
+    } catch (err) {
+      console.warn('[DaemonNotificationRouter] emitOsc133Lifecycle error:', err);
     }
   }
 
@@ -192,10 +243,20 @@ export class DaemonNotificationRouter {
           agentStatus: ev.status,
           agentName: ev.agent,
         });
-        if (ev.status === 'waiting' || ev.status === 'complete') {
+        // Cache the agent display name for any subsequent OSC 133
+        // command_end on this PTY. Daemon mode has no direct equivalent
+        // of `agentDetector.getLastAgent()` because the detector lives in
+        // the daemon process — the freshest signal main sees is each
+        // session:agent payload.
+        if (ev.agent) {
+          this.lastAgentNameByPty.set(payload.sessionId, ev.agent);
+        }
+        if (ev.status === 'waiting' || ev.status === 'complete' || ev.status === 'awaiting_input') {
           this.lastAgentEventAt.set(payload.sessionId, Date.now());
           const title = `${ev.agent}: ${ev.message}`;
-          const body = ev.status === 'waiting' ? 'Ready for input' : 'Task finished';
+          const body = ev.status === 'awaiting_input'
+            ? 'Awaiting input'
+            : ev.status === 'waiting' ? 'Ready for input' : 'Task finished';
           sendNotification(win, payload.sessionId, { type: 'agent', title, body });
           toastManager.show(title, body);
 
@@ -208,10 +269,34 @@ export class DaemonNotificationRouter {
           // and ledger update fire-and-forget — we don't await before
           // returning from the IPC handler, so the toast/sendNotification
           // path above is never blocked on a renderer round-trip.
-          void this.emitDetectorLifecycle(payload.sessionId, ev.agent);
+          //
+          // `awaiting_input` maps to its own lifecycle kind so orchestrators
+          // can distinguish "turn ended, next instruction please" from
+          // "agent paused mid-turn for a y/N answer". Parity with the
+          // local-mode PTYBridge.onEvent path added in the same patch.
+          const kind = ev.status === 'awaiting_input' ? 'agent.awaiting_input' : 'agent.stop';
+          void this.emitDetectorLifecycle(payload.sessionId, ev.agent, kind);
         }
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:agent error:', err);
+      }
+    };
+
+    // OSC 133 D markers from daemon mode. Mirror of PTYBridge.OscParser
+    // case 133 — the daemon already parsed the payload and forwarded a
+    // PromptEvent; we only need to dispatch `command_end` to the
+    // EventBus tee (PromptEventLog inside the daemon is the canonical
+    // byte-offset log; this is the parallel projection for
+    // workspaceId-scoped poll consumers).
+    const onPrompt = (payload: { sessionId: string; event: unknown }) => {
+      try {
+        const ev = payload.event as { type?: string; exitCode?: number } | null;
+        if (!ev || typeof ev !== 'object') return;
+        if (ev.type !== 'command_end') return;
+        const exitCode = typeof ev.exitCode === 'number' ? ev.exitCode : null;
+        void this.emitOsc133Lifecycle(payload.sessionId, exitCode);
+      } catch (err) {
+        console.warn('[DaemonNotificationRouter] session:prompt error:', err);
       }
     };
 
@@ -286,6 +371,7 @@ export class DaemonNotificationRouter {
           agentName: '',
         });
         this.lastAgentEventAt.delete(payload.sessionId);
+        this.lastAgentNameByPty.delete(payload.sessionId);
         clearSuppression(payload.sessionId);
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session end error:', err);
@@ -296,6 +382,7 @@ export class DaemonNotificationRouter {
     this.daemonClient.on('session:active', onActive);
     this.daemonClient.on('session:idle', onIdle);
     this.daemonClient.on('session:critical', onCritical);
+    this.daemonClient.on('session:prompt', onPrompt);
     this.daemonClient.on('session:died', onSessionEnd);
     this.daemonClient.on('session:destroyed', onSessionEnd);
 
@@ -314,6 +401,7 @@ export class DaemonNotificationRouter {
       () => this.daemonClient.off('session:active', onActive),
       () => this.daemonClient.off('session:idle', onIdle),
       () => this.daemonClient.off('session:critical', onCritical),
+      () => this.daemonClient.off('session:prompt', onPrompt),
       () => this.daemonClient.off('session:died', onSessionEnd),
       () => this.daemonClient.off('session:destroyed', onSessionEnd),
       unsubscribeMeta,
@@ -326,6 +414,7 @@ export class DaemonNotificationRouter {
     }
     this.cleanups.length = 0;
     this.lastAgentEventAt.clear();
+    this.lastAgentNameByPty.clear();
     this.workspaceCache = null;
   }
 }

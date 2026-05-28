@@ -212,6 +212,17 @@ export class DaemonSessionManager extends EventEmitter {
       this.emit('session:critical', payload);
     });
 
+    // OSC 133 shell integration markers — daemon-side parsing populates
+    // PromptEventLog (canonical, byte-offset indexed); this re-emit teases
+    // out the same parsed PromptEvent so main-process notification routing
+    // can tee the D (command_end) marker to the EventBus as a
+    // `source:'osc133'` agent.lifecycle event. Without it, daemon-backed
+    // panes (the default production path) miss osc133 lifecycle entirely
+    // even though the daemon detects every marker correctly.
+    bridge.on('prompt', (payload) => {
+      this.emit('session:prompt', payload);
+    });
+
     bridge.on('cwd', (payload: { sessionId: string; cwd: string }) => {
       meta.cwd = payload.cwd;
     });
