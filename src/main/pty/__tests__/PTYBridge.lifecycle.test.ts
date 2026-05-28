@@ -333,6 +333,80 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     );
     expect(awaiting).toBeUndefined();
   });
+
+  it('does NOT emit awaiting_input when a leading conversational phrase precedes "Allow tool use for X"', () => {
+    // Codex round-5 P2 — the suffix anchor passed `Please click Allow
+    // tool use for Bash` because nothing constrained what came before
+    // the phrase. The leading anchor now requires whitespace/box-frame
+    // glyphs as prefix.
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('Please click Allow tool use for Bash\n');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeUndefined();
+  });
+
+  it('does NOT emit awaiting_input when a leading conversational phrase precedes "Do you want to proceed?"', () => {
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('Answer Do you want to proceed?\n');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeUndefined();
+  });
+
+  it('matches canonical MCP tool names with hyphens (mcp__server__tool-with-hyphens)', () => {
+    // Codex round-5 P2 — the prior `mcp__[A-Za-z0-9_]+` regex rejected
+    // hyphenated MCP tool names like `mcp__context7__get-library-docs`.
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('Allow tool use for mcp__context7__get-library-docs?\n');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeDefined();
+  });
+
+  it('rejects non-canonical MCP tool names with a single underscore segment', () => {
+    // Codex round-5 P2 — `mcp__github_create_issue` (single `__`, then
+    // single `_`) is not the canonical `mcp__<server>__<tool>` form;
+    // the regex now requires two `__` separators.
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('Allow tool use for mcp__github_create_issue?\n');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeUndefined();
+  });
+
+  it('matches Claude built-in tool labels with longer PascalCase (TodoWrite, ExitPlanMode)', () => {
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('Allow tool use for TodoWrite?\n');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeDefined();
+  });
 });
 
 describe('PTYBridge — agent.lifecycle EventBus tee (osc133 source)', () => {

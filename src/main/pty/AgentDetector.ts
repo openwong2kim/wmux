@@ -131,31 +131,33 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // approval responses into the PTY, false positives here are
       // particularly costly.
       //
-      // Trailing class accepts whitespace and the full set of box-drawing
-      // glyphs Claude's TUI uses to frame prompt lines:
+      // Trailing AND leading character classes accept whitespace and the
+      // full set of box-drawing glyphs Claude's TUI uses to frame prompt
+      // lines:
       //   straight:   │ ║ ┃ ═ ━ ─ ┄ ┅ ┆ ┇ ┈ ┉
       //   corners:    ╭ ╮ ╯ ╰ ╔ ╗ ╝ ╚ ┌ ┐ ┘ └
       //   separators: · ─
       // Round-3 P2: omitting corners caused boxed prompt lines ending in
       // `╮` or `╯` to be skipped. Round-4 P2: omitting `─` (U+2500, light
       // horizontal) missed boxed prompts like `╭─ Do you want to
-      // proceed? ─╮` where the horizontal border butts up against the
-      // text.
+      // proceed? ─╮`. Round-5 P2: omitting the leading anchor allowed
+      // conversational lines such as `Please click Allow tool use for
+      // Bash` to slip through — the round-2 comment promised "real
+      // prompts occupy the whole line" but the regex only checked the
+      // suffix. The whole-line constraint now applies on both ends.
       //
       // Tool-name pattern covers TWO and only two forms:
       //   - Claude's built-in tool labels: `[A-Z][A-Za-z]+` (Bash, Edit,
-      //     Write, WebFetch, ...). Capitalized + no underscores.
-      //   - MCP namespaced form: `mcp__<server>__<tool>` with literal
-      //     `mcp__` prefix and at least one `__` segment.
-      // Round-4 P2: the prior `[A-Za-z_][A-Za-z0-9_]*` accepted any
-      // single-underscore identifier such as `Bash_command`, which let
-      // conversational lines like
-      //   `Please click Allow tool use for Bash_command │`
-      // re-introduce the false positive the round-2 anchor was meant to
-      // eliminate. The split alternation now rejects single-underscore
-      // identifiers while still admitting the canonical MCP form.
-      { regex: /\bDo you want to proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                              status: 'awaiting_input',   message: 'Approval requested' },
-      { regex: /\bAllow tool use for (?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9_]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
+      //     Write, WebFetch, TodoWrite, ExitPlanMode, ...). Capitalized,
+      //     no underscores or hyphens.
+      //   - Canonical MCP namespaced form: `mcp__<server>__<tool>` with
+      //     literal `mcp__` prefix, at least two `__` segments, and
+      //     hyphens permitted inside the server/tool ids
+      //     (`mcp__context7__get-library-docs`). Round-5 P2: the prior
+      //     `mcp__[A-Za-z0-9_]+` rejected hyphens and accepted
+      //     non-canonical single-`__` names like `mcp__github_create_issue`.
+      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do you want to proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                                                  status: 'awaiting_input',   message: 'Approval requested' },
+      { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow tool use for (?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
     ],
   },
 
