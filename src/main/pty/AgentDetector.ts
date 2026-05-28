@@ -131,12 +131,20 @@ const AGENT_PATTERNS: AgentPattern[] = [
       // approval responses into the PTY, false positives here are
       // particularly costly.
       //
-      // Trailing class accepts whitespace and box-drawing glyphs Claude's
-      // TUI uses to frame prompt lines (`│ ║ ┃ ═ ━ ┄ ┅ ┆ ┇`). Anything else
-      // after the matched phrase means there's more sentence content on the
-      // line and the match is rejected.
-      { regex: /\bDo you want to proceed\?[\s│║┃═━┄┅┆┇·]*$/,          status: 'awaiting_input',   message: 'Approval requested' },
-      { regex: /\bAllow tool use for [A-Z][A-Za-z]+\??[\s│║┃═━┄┅┆┇·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
+      // Trailing class accepts whitespace and the full set of box-drawing
+      // glyphs Claude's TUI uses to frame prompt lines:
+      //   straight: │ ║ ┃ ═ ━ ┄ ┅ ┆ ┇
+      //   corners:  ╭ ╮ ╯ ╰ ╔ ╗ ╝ ╚ ┌ ┐ ┘ └
+      //   dots/sep: · (added for early-frame variants)
+      // Round-3 P2: omitting corners caused boxed prompt lines ending in
+      // `╮` or `╯` to be skipped, mis-firing as false negatives.
+      //
+      // Tool-name pattern covers both Claude's built-in tool labels
+      // (`Bash`, `Edit`, `Write`, `WebFetch`...) and the MCP namespaced
+      // form (`mcp__github__create_issue`). Restricting to `[A-Z][A-Za-z]+`
+      // missed MCP variants entirely (Round-3 P2 false negative).
+      { regex: /\bDo you want to proceed\?[\s│║┃═━┄┅┆┇╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                  status: 'awaiting_input',   message: 'Approval requested' },
+      { regex: /\bAllow tool use for [A-Za-z_][A-Za-z0-9_]*(?:__[A-Za-z0-9_]+)*\??[\s│║┃═━┄┅┆┇╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
     ],
   },
 

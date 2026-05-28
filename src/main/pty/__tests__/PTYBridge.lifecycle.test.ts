@@ -266,6 +266,39 @@ describe('PTYBridge — agent.lifecycle EventBus tee (detector source)', () => {
     );
     expect(awaiting).toBeUndefined();
   });
+
+  it('matches approval prompt lines that end with box corner glyphs (╮/╯)', () => {
+    // Codex round-3 P2 — Claude's TUI sometimes terminates a boxed prompt
+    // line with a corner glyph instead of a vertical edge. Without these
+    // in the trailing whitelist, real approval prompts go unrecognized.
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('│ Do you want to proceed? ╮\n');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeDefined();
+  });
+
+  it('matches "Allow tool use for <MCP tool name>" with double-underscore namespace', () => {
+    // Codex round-3 P2 — MCP tools are named like
+    // `mcp__github__create_issue`. The original [A-Z][A-Za-z]+ class
+    // rejected them, so approval prompts for MCP tools fired no
+    // awaiting_input event. Pattern now covers the namespaced form.
+    const { proc } = makeBridge({ workspaceId: 'ws-a' });
+
+    proc.emitData('Claude Code\n');
+    proc.emitData('Allow tool use for mcp__github__create_issue?\n');
+    flush();
+
+    const awaiting = pollLifecycle().find(
+      (e) => e.type === 'agent.lifecycle' && e.kind === 'agent.awaiting_input',
+    );
+    expect(awaiting).toBeDefined();
+  });
 });
 
 describe('PTYBridge — agent.lifecycle EventBus tee (osc133 source)', () => {
