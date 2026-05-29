@@ -5,6 +5,25 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [2.14.0] — 2026-05-29 — Session-replacement fix + lifecycle observability + token ACL hardening
+
+Fixes the reported instability where, while running several Claude Code windows, "the daemon resets and sessions get replaced by new empty windows." Root-caused via a multi-expert review (see `plans/RCA-daemon-session-replacement-2026-05-29.md`): the daemon process never actually dies (uptime is monotonic). The renderer's reconnect/reconcile path could not distinguish a *transient* failure from a *permanent* one and destructively cleared live `ptyId`s, making Terminal self-create empty sessions while the daemon still held the originals.
+
+### Fixed — live sessions replaced on reconnect (RCA A1/A2)
+- `pty.reconnect` now tags failures `transient` (pipe-not-writable / RPC threw during handler swap) vs permanent (session dead). `useTerminal` retries transient failures with short backoff instead of immediately clearing the surface — a live session no longer gets discarded on a momentary blip.
+- `AppLayout` reconcile preserves all `ptyId`s when the daemon returns an empty session list (almost always "not ready yet", not "all dead"). The late-reconnect (`daemon:connected`) path is now abort/timeout/catch guarded and never falls through to `clearAllPtyState`.
+- `RECONCILE_TIMEOUT_MS` is now derived from `DAEMON_RPC_TIMEOUT_MS` in `shared/timeouts.ts` (15s > 10s), removing the asymmetry that let a slow-but-successful `pty.list` trip the destructive startup fallback.
+
+### Added — daemon/main lifecycle observability (RCA A8)
+- Structured `[lifecycle]` logging on daemon `attachSession`/`detachSession`, main `daemon:connected` emit, `DaemonClient.connect` error codes (EPERM etc.), `pty.list` live-session count, and the renderer's destructive `ptyId`-clear decisions (mirrored into the main log). Reconnect/session-replacement events are now diagnosable post-hoc instead of invisible.
+
+### Security — token file ACL re-hardening (RCA A12)
+- `secureWriteTokenFile` only locked permissions when a token was freshly written; a token loaded from disk kept whatever (possibly broad, inherited) ACL it had. New `reHardenTokenFileAcl()` re-applies a restrictive ACL (Windows `icacls`) / `chmod 0600` (POSIX) on the existing `daemon-auth-token` and `~/.wmux-auth-token` at load time. Best-effort: never crashes a live daemon.
+
+### Fixed — session config merge + prefix mode
+- Merge session config against defaults on load and harden prefix mode handling.
+- Skip keybinding back-fill on key collision.
+
 ## [2.13.0] — 2026-05-29 — OSC 133 EventBus tee + agent.awaiting_input lifecycle
 
 Extends the `agent.lifecycle` event in `wmux_events_poll` with two new substrate signals so orchestrator SDKs and any MCP consumer can react to shell command lifecycle and agent approval prompts without polling `terminal_read_events`. Both signals are wired BOTH on the local-mode PTYBridge path AND on the daemon-mode DaemonNotificationRouter path (the default production path).
