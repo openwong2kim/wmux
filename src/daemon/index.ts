@@ -662,6 +662,11 @@ function registerRpcHandlers(
     // recovered session has its .buf refreshed inside the first 30 s window.
     triggerSnapshot();
 
+    // RCA A8 — log the attach lifecycle event. Previously success was silent,
+    // so a client re-attaching (the renderer reconnect path) left no daemon-side
+    // trace to correlate with renderer ptyId-clear / session-replacement.
+    log('info', `[lifecycle] attachSession id=${p.id} pipe=${managed ? 'started' : 'no-managed-session'} total=${sessionManager.listSessions().length}`);
+
     return { ok: true };
   });
 
@@ -691,6 +696,9 @@ function registerRpcHandlers(
 
     const state = buildState(sessionManager);
     stateWriter.saveImmediate(state);
+
+    // RCA A8 — log the detach lifecycle event (was silent on success).
+    log('info', `[lifecycle] detachSession id=${p.id} total=${sessionManager.listSessions().length}`);
 
     return { ok: true };
   });

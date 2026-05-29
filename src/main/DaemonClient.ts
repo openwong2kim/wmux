@@ -3,8 +3,11 @@ import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import type { RpcResponse, DaemonEvent } from '../shared/rpc';
 import { FLUSH_DONE_MARKER } from '../daemon/SessionPipe';
+import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
 
-const RPC_TIMEOUT_MS = 10_000;
+// RCA A2 — single source of truth in shared/timeouts.ts so the renderer's
+// RECONCILE_TIMEOUT_MS can be derived from (and stay greater than) this value.
+const RPC_TIMEOUT_MS = DAEMON_RPC_TIMEOUT_MS;
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB
 
 interface PendingRequest {
@@ -44,6 +47,10 @@ export class DaemonClient extends EventEmitter {
 
     return new Promise<boolean>((resolve) => {
       const timeout = setTimeout(() => {
+        // RCA A6/A8 — record connect timeouts. Previously this resolved(false)
+        // with no trace, so a daemon that was alive but slow to accept on the
+        // control pipe was indistinguishable from a dead one in the logs.
+        console.warn(`[lifecycle] DaemonClient.connect timeout (5s) pipe=${this.pipeName}`);
         socket.destroy();
         resolve(false);
       }, 5_000);
@@ -56,8 +63,14 @@ export class DaemonClient extends EventEmitter {
         resolve(true);
       });
 
-      socket.on('error', () => {
+      socket.on('error', (err: NodeJS.ErrnoException) => {
+        // RCA A6/A8 — surface the error CODE (EPERM/ECONNREFUSED/ENOENT). On
+        // Windows EPERM here indicates AV scan / handle contention on the named
+        // pipe — a transient, retryable condition — not a dead daemon. The
+        // pre-fix code dropped the error entirely, which is the single biggest
+        // reason the control-pipe disconnect class was undiagnosable.
         clearTimeout(timeout);
+        console.warn(`[lifecycle] DaemonClient.connect error code=${err?.code ?? '?'} pipe=${this.pipeName} msg=${err?.message ?? String(err)}`);
         resolve(false);
       });
     });

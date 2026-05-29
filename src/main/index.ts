@@ -588,6 +588,13 @@ app.on('ready', async () => {
       daemonNotificationRouter = new DaemonNotificationRouter(client, () => mainWindow, () => hookSignalRouter);
       daemonNotificationRouter.start();
       if (mainWindow && !mainWindow.isDestroyed()) {
+        // RCA A3/A8 — every install (initial AND every reconnect/respawn) emits
+        // daemon:connected, which drives the renderer's late reconcile. Logging
+        // the emit makes the "reconnect → re-reconcile" cadence visible in the
+        // main log file so it can be correlated with any renderer ptyId-clear.
+        // The preceding handler-swap lines + any 'daemon hang detected' /
+        // 'respawn attempt' lines above distinguish initial from reconnect.
+        logLine('info', 'main', 'emitting daemon:connected → renderer will re-reconcile PTYs');
         mainWindow.webContents.send('daemon:connected');
       }
       // Phase A — A7. Run the one-time legacy scrollback migration on

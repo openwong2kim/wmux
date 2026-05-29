@@ -15,10 +15,20 @@ import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
+import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 
 // Module-level terminal registry for scrollback persistence
 const terminalRegistry = new Map<string, Terminal>();
 export { terminalRegistry };
+
+// RCA A1 — reconnect-with-retry policy lives in its own module so it can be
+// unit-tested without xterm/zustand/electron. Bound to the live deps here.
+function reconnectPtyWithRetry(ptyId: string, isCurrent: () => boolean): Promise<void> {
+  return reconnectPtyWithRetryImpl(ptyId, isCurrent, {
+    reconnect: (id) => window.electronAPI.pty.reconnect(id),
+    clearPtyId: (id) => useStore.getState().clearSurfacePtyIdByPty(id),
+  });
+}
 
 // Lightweight copy feedback toast — injects/removes a DOM element
 let copyToastTimer: ReturnType<typeof setTimeout> | null = null;
@@ -670,22 +680,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // ptyIds, the daemon-side ringBuffer is essentially empty, so a
       // re-attach replays at most the shell prompt — visible cost zero.
       if (daemonModeAtMount) {
-        void window.electronAPI.pty.reconnect(ptyId).then((result) => {
-          // Codex P1 — pty.reconnect resolves with { success: false } when
-          // the session died between AppLayout's liveness check and our
-          // mount call. Without this branch the Terminal would keep the
-          // stale ptyId and silently never get input forwarded —
-          // reproducing the exact input-mute class Fix 0 set out to
-          // eliminate. Clear the surface ptyId so the next mount falls
-          // into Terminal.tsx's self-create path.
-          if (!result?.success) {
-            console.warn(`[useTerminal] pty.reconnect rejected ${ptyId}: ${result?.error ?? '<no error>'}`);
-            useStore.getState().clearSurfacePtyIdByPty(ptyId);
-          }
-        }).catch((err: unknown) => {
-          console.warn(`[useTerminal] pty.reconnect threw for ${ptyId}: ${err instanceof Error ? err.message : String(err)}`);
-          useStore.getState().clearSurfacePtyIdByPty(ptyId);
-        });
+        // RCA A1 — retry transient reconnect failures instead of immediately
+        // clearing the ptyId. See reconnectPtyWithRetry() for the full
+        // rationale. Only a daemon-confirmed dead session clears on the spot.
+        void reconnectPtyWithRetry(ptyId, () => terminalRef.current === terminal);
       }
 
       window.electronAPI.scrollback.load(scrollbackFile).then((content) => {
@@ -776,23 +774,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       terminalRegistry.set(ptyId, terminal);
       // Fix 0 (round 3) — trigger pty.reconnect after listener is wired.
       // See the scrollback branch above for the full rationale.
+      // RCA A1 — retry transient failures (see reconnectPtyWithRetry()).
       if (daemonModeAtMount) {
-        void window.electronAPI.pty.reconnect(ptyId).then((result) => {
-          // Codex P1 — pty.reconnect resolves with { success: false } when
-          // the session died between AppLayout's liveness check and our
-          // mount call. Without this branch the Terminal would keep the
-          // stale ptyId and silently never get input forwarded —
-          // reproducing the exact input-mute class Fix 0 set out to
-          // eliminate. Clear the surface ptyId so the next mount falls
-          // into Terminal.tsx's self-create path.
-          if (!result?.success) {
-            console.warn(`[useTerminal] pty.reconnect rejected ${ptyId}: ${result?.error ?? '<no error>'}`);
-            useStore.getState().clearSurfacePtyIdByPty(ptyId);
-          }
-        }).catch((err: unknown) => {
-          console.warn(`[useTerminal] pty.reconnect threw for ${ptyId}: ${err instanceof Error ? err.message : String(err)}`);
-          useStore.getState().clearSurfacePtyIdByPty(ptyId);
-        });
+        void reconnectPtyWithRetry(ptyId, () => terminalRef.current === terminal);
       }
     }
 

@@ -34,7 +34,11 @@ const electronAPI = {
     list: () =>
       ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string }[]>,
     reconnect: (id: string) =>
-      ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; error?: string }>,
+      // RCA A1 — `transient` distinguishes a recoverable failure (pipe not
+      // writable yet, RPC threw during a handler-swap window) from a permanent
+      // one (session genuinely dead). The renderer retries transient failures
+      // instead of immediately clearing the ptyId and replacing the session.
+      ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; error?: string; code?: string; transient?: boolean }>,
     onData: (callback: (id: string, data: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, id: string, data: string) => callback(id, data);
       ipcRenderer.on(IPC.PTY_DATA, listener);

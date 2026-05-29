@@ -35,6 +35,7 @@ import { withDefaultShell } from '../../utils/ptyCreateOptions';
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
+import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 
 /**
  * Fix 0 — startup reconcile timeout.
@@ -72,8 +73,13 @@ import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode
  * Generation token prevents late-arriving reconcile from mutating store
  * after a fresher startup ran. AbortController propagates cancellation
  * into reconcilePtys so its `signal.aborted` checks early-return.
+ *
+ * RCA A2 — RECONCILE_TIMEOUT_MS now lives in shared/timeouts.ts and is
+ * derived as DAEMON_RPC_TIMEOUT_MS + 5s (= 15s). Previously this was a
+ * standalone 5_000 that had drifted BELOW the 10s RPC ceiling, so a daemon
+ * that answered pty.list in 6–9s under load still lost the race and the
+ * startup catch wiped every live session via clearAllPtyState().
  */
-const RECONCILE_TIMEOUT_MS = 5_000;
 
 /** Map shell executable path to a human-readable display name. */
 function shellDisplayName(shellPath: string): string {
@@ -397,6 +403,29 @@ export default function AppLayout() {
         const activeIds = new Set(activePtys.map((p: { id: string }) => p.id));
         console.log('[AppLayout] Daemon active PTYs:', [...activeIds]);
 
+        // RCA A1 — empty-list guard (the single most important non-destructive
+        // change). `pty.list` returning ZERO live sessions on a reconnect
+        // almost always means the daemon/RPC isn't ready yet (main just
+        // reconnected, daemon mid-rehydrate), NOT that every session died.
+        // The pre-fix code would then clear every surface's ptyId and let
+        // Terminal self-create empty sessions — exactly the reported
+        // "daemon reset, all sessions replaced" bug. Preserve everything this
+        // cycle; useTerminal mount re-validates each ptyId individually (with
+        // retry), and a subsequent reconcile / daemon:connected runs again
+        // once the list is populated. A genuine "all sessions dead" state is
+        // rare and self-heals on the next mount's reconnect.
+        const hasSavedPtyIds = useStore.getState().workspaces.some(ws => {
+          const walk = (p: Pane): boolean =>
+            p.type === 'leaf'
+              ? p.surfaces.some(s => !!s.ptyId)
+              : p.children.some(walk);
+          return walk(ws.rootPane);
+        });
+        if (activeIds.size === 0 && hasSavedPtyIds) {
+          console.warn('[lifecycle] reconcile: daemon returned 0 live sessions but saved ptyIds exist — preserving all (no destructive clear, likely daemon not ready yet)');
+          return;
+        }
+
         // Fix 0 (round 3) — reconcile is now ONLY a liveness check.
         //
         // The PTY_DATA-loss race we hit in dogfood: reconcile used to call
@@ -427,7 +456,14 @@ export default function AppLayout() {
                 console.log(`[AppLayout] Surface ${surface.id}: ptyId ${surface.ptyId} alive in daemon, Terminal will reconnect on mount`);
                 // Leave ptyId in place. useTerminal mount reconnects.
               } else {
-                console.log(`[AppLayout] Surface ${surface.id}: ptyId ${surface.ptyId} not in daemon, clearing for Terminal self-create`);
+                // RCA A8 — this is a destructive decision (live ptyId → ''),
+                // logged at warn so it lands in the main log file (mirrored via
+                // the webContents console-message listener) and can be
+                // correlated with the daemon's pty.list count. Reached only
+                // when the daemon returned a NON-empty list that omits this
+                // ptyId (empty lists are preserved above), so this is a
+                // genuinely-absent session per the daemon's own snapshot.
+                console.warn(`[lifecycle] reconcile clearing ptyId=${surface.ptyId} surface=${surface.id} (absent from daemon's ${activeIds.size}-session list) → Terminal self-create`);
                 useStore.getState().updateSurfacePtyId(pane.id, surface.id, '');
               }
             }
@@ -628,11 +664,31 @@ export default function AppLayout() {
   // renderer may have already reconciled with empty pty list
   // before main process finished connecting to daemon).
   useEffect(() => {
+    let activeCtl: AbortController | null = null;
     const remove = window.electronAPI.daemon.onConnected(() => {
-      console.log('[AppLayout] Daemon connected late — re-reconciling PTYs');
-      reconcilePtys();
+      console.log('[lifecycle] daemon connected late — re-reconciling PTYs');
+      // RCA A1/A3 — the late reconcile previously ran as a bare
+      // reconcilePtys() with NO abort, timeout, or catch (unlike the startup
+      // path's 5 guards). A pty.list rejection here escaped as an unhandled
+      // rejection, and the call could outlive a fresher reconcile. Add an
+      // abort+timeout and swallow failures by PRESERVING ptyIds — crucially we
+      // never fall through to clearAllPtyState here (that destructive fallback
+      // is startup-only). reconcilePtys is itself non-destructive on empty
+      // lists now (A1 empty-list guard), so a transient blip preserves state.
+      activeCtl?.abort();
+      const ctl = new AbortController();
+      activeCtl = ctl;
+      const timer = setTimeout(() => ctl.abort(), RECONCILE_TIMEOUT_MS);
+      void reconcilePtys(ctl.signal)
+        .catch((err) => {
+          console.warn('[lifecycle] late reconcile failed — preserving ptyIds (no clear):', err);
+        })
+        .finally(() => clearTimeout(timer));
     });
-    return remove;
+    return () => {
+      activeCtl?.abort();
+      remove();
+    };
   }, [reconcilePtys]);
 
   // Phase A — A6. Keep the module-level daemon-mode flag in sync with the

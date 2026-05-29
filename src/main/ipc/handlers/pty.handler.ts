@@ -464,9 +464,15 @@ export function registerPTYHandlers(
     ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, async () => {
       const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string }>;
       // Map to same shape as local PTYManager.getActiveInstances()
-      return sessions
+      const live = sessions
         .filter(s => s.state !== 'dead')
         .map(s => ({ id: s.id, shell: s.cmd }));
+      // RCA A8 — log the count the renderer's reconcile will act on. An empty
+      // or short list here, correlated with a renderer ptyId-clear, is the
+      // signature of the session-replacement bug. Without this line the
+      // decision was invisible in the daemon/main logs.
+      console.log(`[lifecycle] pty.list -> ${live.length} live session(s) of ${sessions.length} total`);
+      return live;
     }));
   } else {
     ipcMain.handle(IPC.PTY_LIST, wrapHandler(IPC.PTY_LIST, () => {
@@ -482,7 +488,11 @@ export function registerPTYHandlers(
         const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; cmd: string; state: string; pid?: number }>;
         const session = sessions.find(s => s.id === id);
         if (!session || session.state === 'dead') {
-          return { success: false, error: 'Session not found or dead' };
+          // RCA A1 — permanent failure: the daemon authoritatively reports the
+          // session as absent or dead. Safe for the renderer to clear the
+          // ptyId and self-create. transient:false signals "do not retry".
+          console.log(`[lifecycle] pty.reconnect id=${id} result=fail code=session-dead (transient=false)`);
+          return { success: false, error: 'Session not found or dead', code: 'session-dead', transient: false };
         }
 
         // Reconnect is an explicit fresh-attach intent — pass forceFresh
@@ -500,7 +510,14 @@ export function registerPTYHandlers(
         // bug we're trying to prevent here.
         const probeOk = daemonClient.isSessionPipeWritable(id);
         if (!probeOk) {
-          return { success: false, error: 'Session pipe not writable after reconnect' };
+          // RCA A1 — transient failure: the session is alive in the daemon but
+          // the freshly-attached pipe is not writable yet (forceFresh tears the
+          // old socket down asynchronously; the daemon-side close can arrive a
+          // tick after connect resolves). The renderer must NOT clear the ptyId
+          // — it should retry, otherwise a live session gets replaced by an
+          // empty one. transient:true signals "retry".
+          console.log(`[lifecycle] pty.reconnect id=${id} result=fail code=pipe-not-writable (transient=true)`);
+          return { success: false, error: 'Session pipe not writable after reconnect', code: 'pipe-not-writable', transient: true };
         }
 
         // Re-anchor the PID → ptyId identity map. A surviving shell keeps its
@@ -528,9 +545,16 @@ export function registerPTYHandlers(
         };
         setSessionDataListener(id, onSessionData as (...args: unknown[]) => void);
 
+        console.log(`[lifecycle] pty.reconnect id=${id} result=ok pid=${session.pid ?? '?'}`);
         return { success: true, id: session.id, shell: session.cmd };
       } catch (err) {
-        return { success: false, error: err instanceof Error ? err.message : String(err) };
+        // RCA A1 — RPC threw (timeout, ECONNRESET, handler swap mid-call).
+        // This is a transient infrastructure failure, NOT proof the session is
+        // dead. transient:true so the renderer retries rather than discarding
+        // the session.
+        const msg = err instanceof Error ? err.message : String(err);
+        console.log(`[lifecycle] pty.reconnect id=${id} result=fail code=rpc-error transient=true err=${msg}`);
+        return { success: false, error: msg, code: 'rpc-error', transient: true };
       }
     }));
   } else {
