@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type { RpcRequest, RpcResponse } from '../shared/rpc';
-import { secureWriteTokenFile } from '../shared/security';
+import { secureWriteTokenFile, reHardenTokenFileAcl } from '../shared/security';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -75,6 +75,12 @@ export class DaemonPipeServer {
       const existing = fs.readFileSync(tokenPath, 'utf8').trim();
       if (existing) {
         this.authToken = existing;
+        // RCA A12 — re-harden the ACL on the EXISTING token file. Tokens created
+        // by older versions (or carrying broad inherited ACLs) would otherwise
+        // remain readable by Administrators/SYSTEM/other local accounts, letting
+        // any local process steal the token and drive the daemon RPC surface.
+        const hardened = reHardenTokenFileAcl(tokenPath);
+        console.log(`[lifecycle] daemon auth token loaded from disk — ACL re-harden ${hardened ? 'ok' : 'FAILED (token perms may be loose)'}`);
         return this.authToken;
       }
     } catch {

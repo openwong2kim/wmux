@@ -2,7 +2,7 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../../shared/constants';
-import { secureWriteTokenFile } from '../../shared/security';
+import { secureWriteTokenFile, reHardenTokenFileAcl } from '../../shared/security';
 import type { RpcRequest } from '../../shared/rpc';
 import { RpcRouter } from './RpcRouter';
 
@@ -33,7 +33,16 @@ export class PipeServer {
   private loadOrCreateToken(): string {
     try {
       const existing = fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
-      if (existing) return existing;
+      if (existing) {
+        // RCA A12 — re-harden the ACL on the existing ~/.wmux-auth-token. See
+        // reHardenTokenFileAcl(): the write path locks perms only on creation,
+        // so a token loaded from disk could remain broadly readable.
+        const hardened = reHardenTokenFileAcl(getAuthTokenPath());
+        if (!hardened) {
+          console.warn('[PipeServer] auth token ACL re-harden failed — file perms may be loose');
+        }
+        return existing;
+      }
     } catch { /* file doesn't exist yet */ }
     // Persist the freshly generated token immediately so MCP clients and other
     // processes don't see an empty token file during the window between server
