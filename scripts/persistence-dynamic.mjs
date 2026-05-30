@@ -29,8 +29,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import { fileURLToPath } from 'node:url';
 
-const REPO_ROOT = path.resolve(import.meta.dirname, '..');
+// import.meta.dirname is Node 20.11+; package.json supports Node >=18, so derive
+// the script directory from import.meta.url instead (Codex P3).
+const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
 
 if (!fs.existsSync(DAEMON_BUNDLE)) {

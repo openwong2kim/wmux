@@ -984,6 +984,18 @@ app.on('before-quit', async (e) => {
     // with us regardless — dispose explicitly for a clean exit. There is no
     // persistence in local mode; that is the cost of running without a daemon.
     ptyManager.disposeAll();
+    // Codex P2: an explicit "Shut down wmux (close all sessions)" must still
+    // tear down a daemon that is alive on disk even when main has NO live
+    // client to it — the daemon dropped/respawn-exhausted into local mode while
+    // daemon.pid still points at a live daemon. Without this the user's
+    // close-all request silently leaves that daemon and its PTYs running. The
+    // pid-kill is verify-before-kill (image + cmdline), so a recycled PID is
+    // never signalled. A normal Quit (fullShutdownRequested=false) still leaves
+    // any such daemon alone — that is the persistence promise.
+    if (fullShutdownRequested) {
+      const killed = killDaemonByPidFile();
+      logLine('warn', 'main', `full-shutdown (no live client): pid-kill backstop ${killed ? 'killed the daemon' : 'found no verified daemon to kill'}`);
+    }
   }
 
   claudeWorker.stop();

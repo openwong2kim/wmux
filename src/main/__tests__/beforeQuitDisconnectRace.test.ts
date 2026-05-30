@@ -82,4 +82,16 @@ describe('before-quit daemon lifecycle — source invariants (tmux persistence)'
     expect(budget).toBeGreaterThanOrEqual(4_000);
     expect(budget).toBeLessThan(10_000);
   });
+
+  it('explicit full shutdown pid-kills a live daemon even when no client is connected', () => {
+    // Codex P2: the connected-client full-shutdown branch is nested under
+    // `clientAtQuit?.isConnected`. When main has dropped to local-only mode
+    // (daemon disconnect / respawn-exhausted) but daemon.pid still points at a
+    // live daemon, an explicit "Shut down wmux (close all sessions)" must still
+    // tear that daemon down. Lock the pid-kill into the local-mode branch.
+    const localBranch = beforeQuitBlock.slice(beforeQuitBlock.indexOf('ptyManager.disposeAll()'));
+    expect(localBranch.length).toBeGreaterThan(0);
+    expect(localBranch).toMatch(/if\s*\(\s*fullShutdownRequested\s*\)/);
+    expect(localBranch).toMatch(/killDaemonByPidFile\(\)/);
+  });
 });
