@@ -15,20 +15,28 @@ import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
+import { webglContextPool } from '../terminal/webglContextPool';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 
 // Module-level terminal registry for scrollback persistence
 const terminalRegistry = new Map<string, Terminal>();
 export { terminalRegistry };
 
-// RCA (2026-05-29 view-switch lag): when a terminal is hidden we DEFER WebGL
-// context dispose by this delay instead of tearing it down immediately. A
-// hidden terminal usually reappears within seconds (workspace switch back,
-// multiview<->single toggle); immediate dispose+reload thrashes GPU context
-// creation, which is the main source of the view-switch lag the user reported.
-// If the terminal becomes visible again before the timer fires, the dispose is
-// cancelled and the live context reused. Long-hidden panes still free their
-// context, bounding the simultaneous-context count under Chromium's ~16 limit.
+// Monotonic token source so each useTerminal instance gets a stable, unique key
+// in the shared WebGL context pool. We never key the pool on ptyId directly —
+// a fast unmount→remount can briefly run two instances on the same ptyId, and
+// the pool's accounting must treat them as distinct slots.
+let webglTokenSeq = 0;
+
+// RCA (2026-05-29 view-switch lag): when a terminal is hidden we DEFER releasing
+// its WebGL context (back to the shared pool) by this delay instead of freeing
+// it immediately. A hidden terminal usually reappears within seconds (workspace
+// switch back, multiview<->single toggle); immediate release+reload thrashes GPU
+// context creation, which is the main source of the view-switch lag the user
+// reported. If the terminal becomes visible again before the timer fires, the
+// release is cancelled and the live context reused. The HARD ceiling on
+// simultaneous contexts is enforced by webglContextPool (LRU eviction under
+// Chromium's ~16 cap); this timer is only the no-pressure cleanup.
 export const WEBGL_HIDDEN_DISPOSE_DELAY_MS = 10_000;
 
 // RCA A1 — reconnect-with-retry policy lives in its own module so it can be
@@ -112,14 +120,29 @@ function showCopyErrorToast() {
 export function copySelectionWithFeedback(
   terminal: { clearSelection(): void } | null,
   selection: string,
+  options?: { keepSelection?: boolean },
 ): Promise<void> {
   return runCopyWithFeedback(selection, {
     write: (text) => window.clipboardAPI.writeText(text),
-    clearSelection: () => terminal?.clearSelection(),
+    // `keepSelection` leaves the highlight in place after a successful copy.
+    // The right-click copy path uses this so the selection survives the
+    // gesture: the old async clearSelection() wiped it a tick later, and a
+    // fast second right-click then saw an empty selection and fell through to
+    // the paste branch — the reported copy↔paste collision. Keeping the
+    // selection makes a repeat right-click copy again (idempotent) instead.
+    clearSelection: () => { if (!options?.keepSelection) terminal?.clearSelection(); },
     onSuccess: showCopyToast,
     onError: showCopyErrorToast,
   });
 }
+
+// How long after a right-click copy we suppress a right-click paste. A second
+// contextmenu within this window is treated as a stray repeat of the copy
+// gesture (double right-click, or the selection getting wiped by incoming PTY
+// data between two intentional clicks) rather than an intent to paste. This is
+// the deterministic guard that kills the copy↔paste collision even when the
+// selection is no longer present on the second click.
+const RIGHT_CLICK_PASTE_SUPPRESS_MS = 300;
 
 export interface ContextMenuEvent {
   x: number;
@@ -151,7 +174,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const webglAddonRef = useRef<WebglAddon | null>(null);
   // loadWebgl closure ref — set by the main effect, called by visibility effect.
   const loadWebglRef = useRef<(() => void) | null>(null);
-  // Pending deferred-WebGL-dispose timer (see WEBGL_HIDDEN_DISPOSE_DELAY_MS).
+  // disposeWebgl closure ref — the pool calls this to evict our context.
+  const disposeWebglRef = useRef<(() => void) | null>(null);
+  // Stable unique token for this terminal's slot in the shared WebGL pool.
+  const webglTokenRef = useRef<string>('');
+  if (!webglTokenRef.current) webglTokenRef.current = `wgl-${++webglTokenSeq}`;
+  // Pending deferred-WebGL-release timer (see WEBGL_HIDDEN_DISPOSE_DELAY_MS).
   const webglDisposeTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const { ptyId, isVisible = true, scrollbackFile, onFirstData, onContextMenu } = options;
   const ptyIdRef = useRef(ptyId);
@@ -201,8 +229,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   useEffect(() => {
     const container = containerRef.current;
     if (!container || !ptyId) return;
-
-    const daemonModeAtMount = isDaemonModeActive();
 
     const terminal = new Terminal({
       cursorBlink: true,
@@ -265,19 +291,25 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminal.unicode.activeVersion = '11';
     terminal.open(container);
 
-    // WebGL addon loading — only called for visible terminals.
-    // Chromium limits simultaneous WebGL contexts (~8–16). Exceeding the limit
-    // causes context-loss on the oldest context, killing that terminal's renderer.
-    // We therefore load WebGL lazily (via the visibility effect) and dispose it
-    // when the terminal is hidden, keeping the active context count low.
+    // WebGL addon loading — driven by the shared webglContextPool, NOT called
+    // directly. Chromium hard-caps simultaneous WebGL contexts (~16); exceeding
+    // it force-evicts the oldest context and blanks that terminal. The pool
+    // bounds the live count below the cap and grants contexts to the most
+    // recently shown terminals, so persistence can restore an arbitrary session
+    // count without any pane going blank. loadWebgl is the pool's "acquire"
+    // callback; disposeWebgl is its "evict" callback (reverts to DOM renderer).
     function loadWebgl() {
       if (webglAddonRef.current) return; // already loaded
       try {
         const addon = new WebglAddon();
         addon.onContextLoss(() => {
-          console.warn('[Terminal] WebGL context lost — falling back to canvas');
+          // A real GPU driver reset (not our pool eviction): the context is
+          // gone. Dispose, drop to xterm's DOM renderer, and free our pool slot
+          // so the pool stops counting us and can re-grant on the next toggle.
+          console.warn('[Terminal] WebGL context lost — falling back to DOM renderer');
           addon.dispose();
           webglAddonRef.current = null;
+          webglContextPool.notifyDisposed(webglTokenRef.current);
           try {
             terminal.refresh(0, terminal.rows - 1);
           } catch {
@@ -287,11 +319,30 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         terminal.loadAddon(addon);
         webglAddonRef.current = addon;
       } catch {
-        console.warn('WebGL addon failed, using canvas renderer');
+        console.warn('WebGL addon failed, using DOM renderer');
         webglAddonRef.current = null;
       }
     }
     loadWebglRef.current = loadWebgl;
+    // Controlled teardown the pool calls when this terminal is evicted to stay
+    // under Chromium's context cap. Disposing the addon reverts xterm to its
+    // DOM renderer (always available), so the terminal keeps rendering — it
+    // just loses GPU acceleration until it is granted a context again.
+    function disposeWebgl() {
+      if (!webglAddonRef.current) return;
+      try {
+        webglAddonRef.current.dispose();
+      } catch {
+        /* already disposed */
+      }
+      webglAddonRef.current = null;
+      try {
+        terminal.refresh(0, terminal.rows - 1);
+      } catch {
+        // terminal may already be disposed
+      }
+    }
+    disposeWebglRef.current = disposeWebgl;
 
     // Only fit immediately if the container is actually visible (non-zero size).
     // If the workspace starts hidden (display:none), skip the initial fit so we
@@ -477,8 +528,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     // Right-click behavior (Windows Terminal style):
     //  • On a link → show small context menu (open / copy link)
-    //  • Selection present → copy and clear, no menu
+    //  • Selection present → copy (keep selection), no menu
     //  • Otherwise → paste immediately, no menu
+    // `lastRightClickCopyAt` records when the most recent right-click copy ran
+    // so the paste branch can suppress a paste that lands within
+    // RIGHT_CLICK_PASTE_SUPPRESS_MS — the fix for the copy↔paste collision.
+    let lastRightClickCopyAt = 0;
     terminal.element?.addEventListener('contextmenu', (e) => {
       e.preventDefault();
 
@@ -504,13 +559,28 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         return;
       }
 
-      // Selection → copy + clear (no menu)
+      // Selection → copy, KEEP selection (no menu). We deliberately do NOT
+      // clear the selection here: the old async clearSelection() created a
+      // window where a fast second right-click saw an empty selection and
+      // pasted. Cancel any pending debounced auto-copy so this is the single
+      // authoritative clipboard write for the selection, and stamp the copy
+      // time so the paste branch can reject an immediately-following click.
       if (sel) {
-        void copySelectionWithFeedback(terminal, sel);
+        lastRightClickCopyAt = Date.now();
+        autoCopy.dispose();
+        void copySelectionWithFeedback(terminal, sel, { keepSelection: true });
         return;
       }
 
-      // No selection, no link → paste immediately (text or image)
+      // No selection, no link → paste immediately (text or image). Guard:
+      // if a right-click copy just happened, this contextmenu is almost
+      // certainly a stray repeat of the copy gesture (double right-click, or
+      // the selection got wiped by incoming PTY data between two intentional
+      // clicks). Suppressing the paste here is what kills the reported
+      // copy↔paste collision.
+      if (Date.now() - lastRightClickCopyAt < RIGHT_CLICK_PASTE_SUPPRESS_MS) {
+        return;
+      }
       void (async () => {
         const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
 
@@ -681,22 +751,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }
       });
 
-      // Fix 0 (round 3) — trigger pty.reconnect ourselves now that all
-      // listeners (pty.onData, pty.onFlushComplete, pty.onExit) are wired.
-      // AppLayout.reconcile used to call pty.reconnect, but that fired
-      // SessionPipe replay BEFORE Terminal mount → ipcRenderer.on(PTY_DATA)
-      // had no listener → every replay chunk dropped. Calling reconnect
-      // here guarantees the replay arrives on registered listeners.
-      // No-op cost when the session is already connected (daemonClient
-      // honors forceFresh=true). For freshly Terminal.tsx-self-created
-      // ptyIds, the daemon-side ringBuffer is essentially empty, so a
-      // re-attach replays at most the shell prompt — visible cost zero.
-      if (daemonModeAtMount) {
-        // RCA A1 — retry transient reconnect failures instead of immediately
-        // clearing the ptyId. See reconnectPtyWithRetry() for the full
-        // rationale. Only a daemon-confirmed dead session clears on the spot.
-        void reconnectPtyWithRetry(ptyId, () => terminalRef.current === terminal);
-      }
+      // Fix 0 (round 3) — all listeners (pty.onData, pty.onFlushComplete,
+      // pty.onExit) are now wired, which is the precondition for triggering
+      // pty.reconnect (the replay must land on registered listeners, never
+      // before mount as AppLayout.reconcile used to do).
+      // Fix D (2026-05-30) — the actual reattach moved to the dedicated
+      // daemon-mode effect below so it fires whether daemon mode is active at
+      // mount OR connects later (the fresh-daemon-spawn startup race that left
+      // panes blank with no replay). That effect runs after this mount effect,
+      // so the listeners above are already registered when it reconnects.
 
       window.electronAPI.scrollback.load(scrollbackFile).then((content) => {
         // Skip the entire branch if the terminal was disposed during the
@@ -784,12 +847,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       connectPty();
       // No scrollback to restore — register immediately for fresh terminals.
       terminalRegistry.set(ptyId, terminal);
-      // Fix 0 (round 3) — trigger pty.reconnect after listener is wired.
-      // See the scrollback branch above for the full rationale.
-      // RCA A1 — retry transient failures (see reconnectPtyWithRetry()).
-      if (daemonModeAtMount) {
-        void reconnectPtyWithRetry(ptyId, () => terminalRef.current === terminal);
-      }
+      // Fix D — daemon (re)attach is owned by the daemon-mode effect below
+      // (fires at mount if active, or on a later daemon:connected). connectPty
+      // above has already registered pty.onData/onExit, so replay lands safely.
     }
 
     // Resize PTY on initial fit — only when we actually have valid dimensions.
@@ -877,15 +937,54 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         clearTimeout(webglDisposeTimerRef.current);
         webglDisposeTimerRef.current = null;
       }
+      // Release our pool slot (disposes the addon if we held a context) so the
+      // budget frees for other terminals. The backstop dispose covers the
+      // unlikely case of an addon created outside a pool grant (e.g. the
+      // fonts.ready atlas rebuild firing during teardown).
+      webglContextPool.release(webglTokenRef.current);
       webglAddonRef.current?.dispose();
       webglAddonRef.current = null;
       loadWebglRef.current = null;
+      disposeWebglRef.current = null;
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
     };
   }, [ptyId, containerRef]);
+
+  // Fix D (2026-05-30 blank-terminal-on-restore): own the daemon session
+  // (re)attach here instead of as a one-shot `if (daemonModeAtMount)` gate
+  // inside the mount effect. When wmux spawns a fresh daemon, its connect
+  // signal can land AFTER this terminal mounts — the renderer reconciles and
+  // opens the pane gate before main finishes bootstrapping a cold daemon that
+  // is recovering a large session set. The mount-time snapshot was then false,
+  // so the pane kept a valid ptyId but never called pty.reconnect: the daemon
+  // never attached a SessionPipe, no RingBuffer replay arrived, and the
+  // terminal sat blank (the exact dogfood symptom — 20 live sessions, zero
+  // daemon-side attachSession). This effect reattaches when daemon mode is
+  // active at mount OR when `daemon:connected` fires later (also self-heals a
+  // mid-session daemon respawn). The mount effect has already wired
+  // pty.onData/onExit/onFlushComplete by the time this runs, so replay lands on
+  // registered listeners (the Fix 0 invariant). A local guard makes the attach
+  // exactly-once per ptyId; the effect re-runs (and resets) when ptyId changes.
+  useEffect(() => {
+    const id = ptyId;
+    if (!id) return;
+    let attached = false;
+    const attach = (reason: string) => {
+      if (attached || !isDaemonModeActive()) return;
+      attached = true;
+      console.log(`[useTerminal] daemon reattach ptyId=${id} (${reason})`);
+      void reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null);
+    };
+    // Already connected when we mounted → reattach now (listeners are wired).
+    attach('active-at-mount');
+    // Connected after we mounted (fresh-daemon-spawn race / respawn) → reattach
+    // when the signal lands.
+    const off = window.electronAPI.daemon.onConnected(() => attach('daemon:connected'));
+    return () => { if (off) off(); };
+  }, [ptyId]);
 
   // Apply font/theme changes at runtime without recreating the terminal instance.
   // This preserves the scrollback buffer when the user tweaks visual settings.
@@ -922,18 +1021,23 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // to free the WebGL context for other terminals.  Also re-fit so a terminal
   // that was initialized while hidden displays at the correct size.
   useEffect(() => {
+    const token = webglTokenRef.current;
     if (isVisible) {
-      // Cancel any pending deferred WebGL dispose — the terminal is visible
-      // again (fast workspace switch / multiview<->single toggle), so reuse the
-      // still-live context instead of tearing it down and rebuilding. This is
-      // the de-thrash that removes the view-switch lag.
+      // Cancel any pending deferred release — the terminal is visible again
+      // (fast workspace switch / multiview<->single toggle), so keep our slot
+      // instead of freeing and rebuilding it. This is the de-thrash that
+      // removes the view-switch lag.
       if (webglDisposeTimerRef.current) {
         clearTimeout(webglDisposeTimerRef.current);
         webglDisposeTimerRef.current = null;
       }
-      // Load WebGL for this terminal if not already loaded
-      if (!webglAddonRef.current && loadWebglRef.current) {
-        loadWebglRef.current();
+      // Ask the shared pool for a context. Under budget → granted immediately;
+      // at budget → the pool evicts the least-recently-shown terminal (it drops
+      // to the DOM renderer) and grants us. This hard-bounds the live context
+      // count below Chromium's cap, so no terminal is ever force-evicted into a
+      // blank pane. Idempotent if we already hold one (just bumps our LRU rank).
+      if (loadWebglRef.current && disposeWebglRef.current) {
+        webglContextPool.acquire(token, loadWebglRef.current, disposeWebglRef.current);
       }
       // Defer fit to allow CSS display change to take effect before measuring.
       // Selection-preservation guard — workspace/tab switch then immediate
@@ -950,18 +1054,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       });
       return () => cancelAnimationFrame(id);
     } else {
-      // DEFER WebGL dispose rather than tearing it down the instant the
-      // terminal is hidden (see WEBGL_HIDDEN_DISPOSE_DELAY_MS). A hidden
-      // terminal usually reappears within seconds; immediate dispose+reload
-      // is the view-switch lag. Only free the context if it stays hidden past
-      // the grace period, which still bounds simultaneous contexts.
-      if (webglAddonRef.current && !webglDisposeTimerRef.current) {
+      // DEFER the pool release rather than freeing the instant the terminal is
+      // hidden (see WEBGL_HIDDEN_DISPOSE_DELAY_MS). A hidden terminal usually
+      // reappears within seconds; releasing immediately is the view-switch lag.
+      // If another terminal needs the budget sooner, the pool evicts us anyway
+      // (we are the least-recently-shown), so this timer is only the no-pressure
+      // cleanup that frees the slot when nothing else is contending for it.
+      if (!webglDisposeTimerRef.current) {
         webglDisposeTimerRef.current = setTimeout(() => {
           webglDisposeTimerRef.current = null;
-          if (webglAddonRef.current) {
-            webglAddonRef.current.dispose();
-            webglAddonRef.current = null;
-          }
+          webglContextPool.release(token);
         }, WEBGL_HIDDEN_DISPOSE_DELAY_MS);
       }
     }
