@@ -966,23 +966,35 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // active at mount OR when `daemon:connected` fires later (also self-heals a
   // mid-session daemon respawn). The mount effect has already wired
   // pty.onData/onExit/onFlushComplete by the time this runs, so replay lands on
-  // registered listeners (the Fix 0 invariant). A local guard makes the attach
-  // exactly-once per ptyId; the effect re-runs (and resets) when ptyId changes.
+  // registered listeners (the Fix 0 invariant). The effect re-runs (and its
+  // local in-flight guard resets) when ptyId changes.
   useEffect(() => {
     const id = ptyId;
     if (!id) return;
-    let attached = false;
-    const attach = (reason: string) => {
-      if (attached || !isDaemonModeActive()) return;
-      attached = true;
+    // In-flight guard local to THIS ptyId: collapse a near-simultaneous
+    // active-at-mount + daemon:connected into a single reconnect so the daemon
+    // RingBuffer replay isn't doubled (scrollback duplication). It is NOT a
+    // permanent latch — once an attempt settles, a later connect/respawn
+    // reattaches again. Lives in the effect-run closure so it resets per ptyId.
+    let inFlight = false;
+    const reattach = (reason: string) => {
+      if (inFlight) return;
+      inFlight = true;
       console.log(`[useTerminal] daemon reattach ptyId=${id} (${reason})`);
-      void reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null);
+      void reconnectPtyWithRetry(id, () => ptyIdRef.current === id && terminalRef.current !== null)
+        .finally(() => { inFlight = false; });
     };
-    // Already connected when we mounted → reattach now (listeners are wired).
-    attach('active-at-mount');
-    // Connected after we mounted (fresh-daemon-spawn race / respawn) → reattach
-    // when the signal lands.
-    const off = window.electronAPI.daemon.onConnected(() => attach('daemon:connected'));
+    // Daemon already connected when we mounted: its daemon:connected fired before
+    // the renderer could listen, so we reattach now off the module flag (set by
+    // AppLayout's serialized startup before the pane gate opens).
+    if (isDaemonModeActive()) reattach('active-at-mount');
+    // Every LATER connect/respawn reattaches to the new daemon generation.
+    // Codex P2: do NOT gate this on isDaemonModeActive() and do NOT latch it —
+    // (a) our listener can run before AppLayout's flips the module flag true, so
+    // gating here would drop the only reattach for that generation; (b) a latch
+    // would skip every generation after the first (a respawn would leave the
+    // pane attached to a dead session). The event itself is the connect signal.
+    const off = window.electronAPI.daemon.onConnected(() => reattach('daemon:connected'));
     return () => { if (off) off(); };
   }, [ptyId]);
 
