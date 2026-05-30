@@ -96,9 +96,21 @@ describe('buildShortcuts', () => {
     expect(winList.find((e) => e.label === 'cheatSheet.toggleSidebar')?.combo).toBe('Ctrl+Shift+B');
   });
 
-  it('returns 9 shortcut entries', () => {
-    expect(buildShortcuts('darwin').length).toBe(9);
-    expect(buildShortcuts('win32').length).toBe(9);
+  it('returns 11 shortcut entries', () => {
+    expect(buildShortcuts('darwin').length).toBe(11);
+    expect(buildShortcuts('win32').length).toBe(11);
+  });
+
+  it('includes the Ctrl+Shift+Arrow move-focus entry (literal Ctrl on every platform)', () => {
+    const macList = buildShortcuts('darwin');
+    const winList = buildShortcuts('win32');
+    expect(macList.find((e) => e.label === 'Move focus')?.combo).toBe('Ctrl+Shift+Arrows');
+    expect(winList.find((e) => e.label === 'Move focus')?.combo).toBe('Ctrl+Shift+Arrows');
+  });
+
+  it('includes the Alt+Up/Down workspace-switch entry', () => {
+    const winList = buildShortcuts('win32');
+    expect(winList.find((e) => e.label === 'Switch workspace')?.combo).toBe('Alt+Up/Down');
   });
 
   it('cyclePane combo is literal "Ctrl+Tab" on every platform', () => {
@@ -212,12 +224,12 @@ describe('KeyboardCheatSheetView (renderToStaticMarkup)', () => {
     expect(renderView({ progress: 5 })).toMatch(/style="width:\s*100%/);
   });
 
-  it('renders all 9 shortcut entries in the list', () => {
+  it('renders all 11 shortcut entries in the list', () => {
     const html = renderView({ shortcuts: buildShortcuts('win32') });
     // Each shortcut entry is rendered inside a <li>; count occurrences of the
-    // closing </li> tag inside the list to verify all 9 made it.
+    // opening <li tag inside the list to verify all 11 made it.
     const liMatches = html.match(/<li/g) ?? [];
-    expect(liMatches.length).toBe(9);
+    expect(liMatches.length).toBe(11);
   });
 });
 

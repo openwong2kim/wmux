@@ -56,6 +56,24 @@ describe('A2 — daemon.shutdown RPC + shutdown() opts (source-level invariants)
     expect(body).toMatch(/setImmediate\([\s\S]*?process\.exit\(0\)/);
   });
 
+  it('daemon.shutdown guards the deferred exit with a non-unref force-exit timer (orphan-daemon fix)', () => {
+    // Regression lock for the zombie-daemon bug: pipeServer.stop() awaits
+    // server.close(cb), which never fires if a tracked client socket won't
+    // close, so the .finally(process.exit) never runs and the daemon survives
+    // forever after acking shutdown — the exact zombie wmux.exe daemons users
+    // saw outlive every Quit. The handler must arm a force-exit setTimeout that
+    // calls process.exit(0) regardless, and must NOT unref() it (an unref'd
+    // timer wouldn't hold the event loop, defeating the guarantee).
+    const body = extractRpcHandlerBody('shutdown');
+
+    // A force-exit timer lives inside the deferred setImmediate and exits.
+    expect(body).toMatch(/setImmediate\([\s\S]*?setTimeout\([\s\S]*?process\.exit\(0\)/);
+    // The force-exit timer must never be unref'd.
+    expect(body).not.toMatch(/forceExit\.unref\(\)/);
+    // The happy path (stop resolved) clears the guard before its own exit.
+    expect(body).toMatch(/clearTimeout\(forceExit\)/);
+  });
+
   it('shutdown function signature accepts opts with skipPipeStop and skipExit', () => {
     // Match shutdown() definition (named async function).
     const defStart = lines.findIndex((l) => /^async function shutdown\(/.test(l));

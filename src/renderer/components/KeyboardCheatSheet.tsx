@@ -71,6 +71,19 @@ export function buildShortcuts(platform: string | undefined): CheatSheetEntry[] 
     // Ctrl+Tab is literal on every OS — useKeyboard binds it via literalCtrl
     // so the cheat sheet must show "Ctrl+" instead of ⌘ on macOS.
     { label: 'cheatSheet.cyclePane', combo: 'Ctrl+Tab', literal: false },
+    // Ctrl+Arrow directional pane focus — literal Ctrl on every OS (bound via
+    // literalCtrl in useKeyboard.ts). Mirrors prefix+Arrow.
+    // TODO(T1): wire i18n key for cheat sheet "Move pane focus" entry.
+    // Ctrl+Shift+Arrow moves focus: pane focus within a workspace, or between
+    // tiles when the multiview grid is showing. literalCtrl+shift →
+    // focusPaneDirection / focusMultiviewDirection in useKeyboard.ts. (Bare
+    // Ctrl+Arrow is intentionally unbound; split stays on Ctrl+D.)
+    { label: 'Move focus', combo: 'Ctrl+Shift+Arrows', literal: true },
+    // Alt+Up/Down cycle workspaces (prev / next). Own modifier so it doesn't
+    // collide with move (Ctrl) or split (Ctrl+Shift). Direct prev/next on top
+    // of Ctrl+1-9 (jump to N) and the prefix path.
+    // TODO(T1): wire i18n key for cheat sheet "Switch workspace" entry.
+    { label: 'Switch workspace', combo: 'Alt+Up/Down', literal: true },
     // tmux prefix is always literal Ctrl+B (wmux convention, D1 / useKeyboard.ts).
     // TODO(T1): wire i18n key for cheat sheet "tmux prefix" entry.
     { label: 'tmux prefix', combo: 'Ctrl+B', literal: true },

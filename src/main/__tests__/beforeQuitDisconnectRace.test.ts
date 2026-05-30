@@ -2,80 +2,81 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// Source-level invariants for the before-quit daemon disconnect race fix.
+// Source-level invariants for the before-quit daemon lifecycle.
 //
-// User dogfood (2026-05-16, 48-PTY daemon) hit this sequence in
-// src/main/index.ts:
+// wmux follows tmux-style persistence: a normal Quit DETACHES from the daemon
+// (every live PTY session keeps running, and the next launch reattaches), and
+// ONLY an explicit tray "Shut down wmux (close all sessions)" tears the daemon
+// down. This test locks the structural guarantees of both paths in
+// src/main/index.ts so a refactor can't silently regress persistence:
 //
-//   1. before-quit checks `daemonClient?.isConnected`.
-//   2. `raceDaemonShutdown(daemonClient, 4000)` awaits up to 4 s.
-//   3. During the wait, daemon closes socket → module-level
-//      `daemonClient.on('disconnected')` handler fires and sets
-//      `daemonClient = null`.
-//   4. race times out (daemon shutdown was running long for 48 PTYs).
-//   5. `await daemonClient.disconnect()` dereferences null →
-//      "Cannot read properties of null (reading 'disconnect')" →
-//      unhandled rejection blocks app.quit() and the tray Quit
-//      leaves main process alive.
-//
-// Fix: capture `daemonClient` into a local `clientAtQuit` BEFORE the race,
-// and use that local for the post-race disconnect, wrapped in try/catch so
-// a torn-down socket does not throw past the quit sequence.
+//   1. The default path must NOT race daemon.shutdown — it only disconnects,
+//      leaving the daemon (and every live PTY) alive. Sending daemon.shutdown
+//      on every Quit is the exact regression that broke persistence
+//      ("Quit killed my sessions" — the original embarrassment).
+//   2. The full-teardown path (gated on `fullShutdownRequested`) races
+//      daemon.shutdown and, on timeout, pid-kills the daemon so a wedged
+//      daemon can't survive an explicit teardown the user asked for.
+//   3. Both paths capture `daemonClient` into a local `clientAtQuit` BEFORE
+//      any await, because the module-level daemon lifecycle
+//      (DaemonRespawnController.onUninstall) can null `daemonClient` from
+//      under us; a post-await deref of the module-level var would throw and
+//      stall app.quit() (observed in 2026-05-16 dogfood on a 48-PTY daemon).
 
-describe('before-quit daemon disconnect race — source invariants', () => {
+describe('before-quit daemon lifecycle — source invariants (tmux persistence)', () => {
   const indexPath = path.join(__dirname, '..', 'index.ts');
   const indexSrc = fs.readFileSync(indexPath, 'utf-8');
+  const beforeQuitBlock = indexSrc.slice(
+    indexSrc.indexOf("app.on('before-quit'"),
+    indexSrc.indexOf("app.on('session-end'"),
+  );
 
-  it('captures daemonClient into clientAtQuit before the race', () => {
+  it('captures daemonClient into clientAtQuit before any await/race', () => {
     expect(indexSrc).toMatch(/const\s+clientAtQuit\s*=\s*daemonClient\s*;/);
-    // The capture happens before the isConnected check + race.
     const capturePos = indexSrc.indexOf('const clientAtQuit = daemonClient');
     const racePos = indexSrc.indexOf('raceDaemonShutdown(clientAtQuit');
     expect(capturePos).toBeGreaterThan(0);
     expect(racePos).toBeGreaterThan(capturePos);
   });
 
-  it('races shutdown using the local capture (not module-level daemonClient)', () => {
-    expect(indexSrc).toMatch(/raceDaemonShutdown\(\s*clientAtQuit\s*,/);
-    // No call to raceDaemonShutdown using the module-level variable
-    // inside the before-quit handler.
-    const beforeQuitBlock = indexSrc.slice(
-      indexSrc.indexOf("app.on('before-quit'"),
-      indexSrc.indexOf("app.on('session-end'"),
-    );
+  it('default Quit DETACHES — daemon.shutdown race is gated behind fullShutdownRequested', () => {
+    // Persistence regression lock: the race must be reachable ONLY inside the
+    // explicit full-teardown branch. If daemon.shutdown ran on every Quit, the
+    // daemon would die and live sessions would be lost — the bug this whole
+    // change set fixes.
+    expect(beforeQuitBlock).toMatch(/if\s*\(\s*fullShutdownRequested\s*\)/);
+    const flagPos = beforeQuitBlock.indexOf('fullShutdownRequested');
+    const racePos = beforeQuitBlock.indexOf('raceDaemonShutdown(clientAtQuit');
+    expect(flagPos).toBeGreaterThan(0);
+    // The flag check must precede the race in source order (race lives inside
+    // the `if (fullShutdownRequested)` block).
+    expect(racePos).toBeGreaterThan(flagPos);
+  });
+
+  it('full-teardown races shutdown using the local capture (not module-level daemonClient)', () => {
+    expect(beforeQuitBlock).toMatch(/raceDaemonShutdown\(\s*clientAtQuit\s*,/);
+    // Never race against the module-level variable inside before-quit — it can
+    // be nulled mid-await by the disconnected handler.
     expect(beforeQuitBlock).not.toMatch(/raceDaemonShutdown\(\s*daemonClient\s*,/);
   });
 
-  it('post-race disconnect targets the local capture inside a try/catch', () => {
-    const beforeQuitBlock = indexSrc.slice(
-      indexSrc.indexOf("app.on('before-quit'"),
-      indexSrc.indexOf("app.on('session-end'"),
-    );
+  it('post-teardown disconnect targets the local capture inside a try/catch', () => {
     expect(beforeQuitBlock).toMatch(
       /try\s*\{[\s\S]*?await\s+clientAtQuit\.disconnect\(\)\s*;[\s\S]*?\}\s*catch/,
     );
   });
 
-  it("'disconnected' handler still nulls module-level daemonClient (race precondition is intentional)", () => {
-    // The handler that races against us is the one we documented in the
-    // capture comment. Locking the null assignment here means a refactor
-    // that drops it (and therefore would defeat this whole class of bug
-    // by accident) gets a heads-up failure that points at the dependency.
-    expect(indexSrc).toMatch(
-      /daemonClient\.on\(\s*['"]disconnected['"][\s\S]*?daemonClient\s*=\s*null/,
-    );
+  it('full-teardown has a pid-kill backstop when daemon.shutdown times out', () => {
+    // A wedged daemon must not survive an explicit "Shut down completely":
+    // when the graceful RPC misses its budget, fall back to a verified kill.
+    expect(beforeQuitBlock).toMatch(/killDaemonByPidFile\(\)/);
   });
 
-  it('keeps BEFORE_QUIT_TIMEOUT_MS strictly below the daemon-side hard timeout (10s)', () => {
-    // User dogfood on a 48-PTY daemon (2026-05-16/17) hit the previous
-    // 4 s budget. Raising it to 8 s gives daemon shutdown room to flush
-    // without ever crossing the daemon's own 10 s force-exit guard in
-    // `src/daemon/index.ts` (`shutdownTimeout = setTimeout(..., 10_000)`).
-    // If a future refactor pushes the budget at or above 10 s, the main-
-    // side race would expire AFTER the daemon already force-exited,
-    // which defeats the whole purpose of the race (we'd time out either
-    // way and the budget would just be slower for no benefit).
-    const match = /const\s+BEFORE_QUIT_TIMEOUT_MS\s*=\s*(\d+)(?:_(\d+))?\s*;/.exec(indexSrc);
+  it('keeps the full-shutdown budget strictly below the daemon-side hard timeout (10s)', () => {
+    // The daemon's own force-exit guard in src/daemon/index.ts is 10 s. The
+    // main-side budget must stay under it so the race is meaningful (expiring
+    // after the daemon already force-exited would just be slower for nothing).
+    const match = /const\s+FULL_SHUTDOWN_TIMEOUT_MS\s*=\s*(\d+)(?:_(\d+))?\s*;/.exec(indexSrc);
     expect(match).not.toBeNull();
     const budget = Number((match![1] + (match![2] ?? '')).replace(/_/g, ''));
     expect(budget).toBeGreaterThanOrEqual(4_000);

@@ -341,7 +341,6 @@ export interface SessionData {
   company?: Company | null;
   memberCosts?: Record<string, number>;
   sessionStartTime?: number;
-  tokenDataByPty?: Record<string, { totalTokens: number; inputTokens: number; outputTokens: number; totalCost: number; lastUpdate: number }>;
   onboardingCompleted?: boolean;
   // First-run wizard (Plan 1.15) — magical-moment onboarding marker.
   // Optional so older saved sessions deserialize cleanly (default: false on read).

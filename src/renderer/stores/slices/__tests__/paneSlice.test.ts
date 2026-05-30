@@ -98,6 +98,34 @@ describe('PaneSlice', () => {
       expect(emptyLeafIds.length).toBeGreaterThanOrEqual(1);
       expect(emptyLeafIds).toContain(wsAfter.activePaneId);
     });
+
+    // 4-way directional split (Ctrl+Shift+Arrow): position drives which slot
+    // the new pane lands in. Right/Down → 'after', Left/Up → 'before'.
+    it('position "after" (default) puts the new pane second (right/below)', () => {
+      const ws = getActiveWorkspace(store);
+      const rootId = ws.rootPane.id;
+      store.getState().splitPane(rootId, 'horizontal'); // default position 'after'
+      const wsAfter = getActiveWorkspace(store);
+      expect(wsAfter.rootPane.type).toBe('branch');
+      if (wsAfter.rootPane.type === 'branch') {
+        // original stays in slot 0, new (active) pane lands in slot 1
+        expect(wsAfter.rootPane.children[0].id).toBe(rootId);
+        expect(wsAfter.rootPane.children[1].id).toBe(wsAfter.activePaneId);
+      }
+    });
+
+    it('position "before" puts the new pane first (left/above)', () => {
+      const ws = getActiveWorkspace(store);
+      const rootId = ws.rootPane.id;
+      store.getState().splitPane(rootId, 'vertical', undefined, 'before');
+      const wsAfter = getActiveWorkspace(store);
+      expect(wsAfter.rootPane.type).toBe('branch');
+      if (wsAfter.rootPane.type === 'branch') {
+        // new (active) pane lands in slot 0, original moves to slot 1
+        expect(wsAfter.rootPane.children[0].id).toBe(wsAfter.activePaneId);
+        expect(wsAfter.rootPane.children[1].id).toBe(rootId);
+      }
+    });
   });
 
   describe('closePane', () => {
@@ -270,6 +298,49 @@ describe('PaneSlice', () => {
       const arg = store.getState().pushToast.mock.calls[0][0] as { level: string; message: string };
       expect(arg.level).toBe('warn');
       expect(arg.message).toContain(String(MAX_PANES_PER_WORKSPACE));
+    });
+  });
+
+  describe('setSurfaceAgentStatus (B8: completed-terminal blink)', () => {
+    it('stores attention statuses (complete / waiting / awaiting_input)', () => {
+      store.getState().setSurfaceAgentStatus('pty-1', 'complete');
+      store.getState().setSurfaceAgentStatus('pty-2', 'waiting');
+      store.getState().setSurfaceAgentStatus('pty-3', 'awaiting_input');
+      const map = store.getState().surfaceAgentStatus;
+      expect(map['pty-1']).toBe('complete');
+      expect(map['pty-2']).toBe('waiting');
+      expect(map['pty-3']).toBe('awaiting_input');
+    });
+
+    it('clears the entry on running / idle / error (non-attention statuses)', () => {
+      store.getState().setSurfaceAgentStatus('pty-1', 'complete');
+      store.getState().setSurfaceAgentStatus('pty-1', 'running');
+      expect(store.getState().surfaceAgentStatus['pty-1']).toBeUndefined();
+
+      store.getState().setSurfaceAgentStatus('pty-2', 'awaiting_input');
+      store.getState().setSurfaceAgentStatus('pty-2', 'idle');
+      expect(store.getState().surfaceAgentStatus['pty-2']).toBeUndefined();
+
+      store.getState().setSurfaceAgentStatus('pty-3', 'complete');
+      store.getState().setSurfaceAgentStatus('pty-3', 'error');
+      expect(store.getState().surfaceAgentStatus['pty-3']).toBeUndefined();
+    });
+
+    it('clears the entry on null (pane focused / seen)', () => {
+      store.getState().setSurfaceAgentStatus('pty-1', 'complete');
+      store.getState().setSurfaceAgentStatus('pty-1', null);
+      expect(store.getState().surfaceAgentStatus['pty-1']).toBeUndefined();
+    });
+
+    it('ignores an empty ptyId', () => {
+      store.getState().setSurfaceAgentStatus('', 'complete');
+      expect(store.getState().surfaceAgentStatus['']).toBeUndefined();
+    });
+
+    it('overwrites an existing attention status with a newer attention status', () => {
+      store.getState().setSurfaceAgentStatus('pty-1', 'waiting');
+      store.getState().setSurfaceAgentStatus('pty-1', 'complete');
+      expect(store.getState().surfaceAgentStatus['pty-1']).toBe('complete');
     });
   });
 });

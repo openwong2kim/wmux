@@ -229,6 +229,14 @@ export interface UISlice {
   // X button so a stale-event toggle cannot re-add the workspace.
   removeMultiviewWorkspace: (wsId: string) => void;
   clearMultiview: () => void;
+  /**
+   * Move active-workspace focus to the spatially adjacent multiview tile.
+   * No-op unless the multiview grid is actually showing (≥2 members AND the
+   * active workspace is one of them — matches AppLayout's render gate). Column
+   * count mirrors AppLayout's grid (≤4 tiles → 2 cols, else 3) so arrow nav
+   * matches what the user sees on screen.
+   */
+  focusMultiviewDirection: (direction: 'up' | 'down' | 'left' | 'right') => void;
 
   // ─── Sidebar drag-reorder state ────────────────────────────────────────
   // Holds the source index of an in-flight sidebar reorder drag. We can't
@@ -653,6 +661,32 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   clearMultiview: () => set((state) => {
     state.multiviewIds = [];
   }),
+
+  focusMultiviewDirection: (direction) => {
+    const state = get();
+    const ids = state.multiviewIds;
+    // Only meaningful when the grid is actually rendered (matches AppLayout's
+    // gate: ≥2 members AND the active workspace is one of them).
+    if (ids.length < 2) return;
+    const idx = ids.indexOf(state.activeWorkspaceId);
+    if (idx < 0) return;
+    // Column count mirrors AppLayout.tsx grid (≤4 tiles → 2 cols, else 3).
+    const cols = ids.length <= 4 ? 2 : 3;
+    const col = idx % cols;
+    let target = -1;
+    switch (direction) {
+      case 'left': if (col > 0) target = idx - 1; break;
+      case 'right': if (col < cols - 1 && idx + 1 < ids.length) target = idx + 1; break;
+      case 'up': if (idx - cols >= 0) target = idx - cols; break;
+      case 'down': if (idx + cols < ids.length) target = idx + cols; break;
+    }
+    if (target >= 0 && target < ids.length) {
+      // Route through setActiveWorkspace so notification auto-read and any
+      // other activation side-effects fire — never mutate activeWorkspaceId
+      // directly here.
+      state.setActiveWorkspace(ids[target]);
+    }
+  },
 
   draggedWorkspaceIndex: null as number | null,
   setDraggedWorkspaceIndex: (index) => set((state) => {

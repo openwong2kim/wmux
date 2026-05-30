@@ -2,7 +2,6 @@ import { describe, it, expect } from 'vitest';
 import {
   resolvePtyIdForCwd,
   resolvePtyIdForSignal,
-  extractUsageFromPayload,
   findWorkspaceIdForPty,
 } from '../hooks.rpc';
 import type { AgentSignal } from '../../../../../integrations/shared/signal-types';
@@ -184,50 +183,6 @@ describe('isAgentSignal (re-export check)', () => {
   // sure the public API surface is exported.
   it('module exports resolvePtyIdForCwd', () => {
     expect(typeof resolvePtyIdForCwd).toBe('function');
-  });
-});
-
-describe('extractUsageFromPayload', () => {
-  it('extracts a well-formed usage block', () => {
-    const got = extractUsageFromPayload({
-      usage: { inputTokens: 100, outputTokens: 50, totalTokens: 150 },
-    });
-    expect(got).toEqual({ inputTokens: 100, outputTokens: 50, totalTokens: 150 });
-  });
-
-  it('returns null when payload has no usage field', () => {
-    expect(extractUsageFromPayload({})).toBeNull();
-    expect(extractUsageFromPayload({ session_id: 'abc' })).toBeNull();
-  });
-
-  it('returns null when usage is not an object', () => {
-    expect(extractUsageFromPayload({ usage: 'not an object' })).toBeNull();
-    expect(extractUsageFromPayload({ usage: 123 })).toBeNull();
-    expect(extractUsageFromPayload({ usage: null })).toBeNull();
-  });
-
-  it('returns null when required fields are missing or wrong type', () => {
-    expect(extractUsageFromPayload({ usage: { inputTokens: 100 } })).toBeNull();
-    expect(extractUsageFromPayload({ usage: { inputTokens: '100', outputTokens: 50, totalTokens: 150 } })).toBeNull();
-  });
-
-  it('rejects negative / NaN / infinity values defensively', () => {
-    expect(extractUsageFromPayload({
-      usage: { inputTokens: -1, outputTokens: 50, totalTokens: 150 },
-    })).toBeNull();
-    expect(extractUsageFromPayload({
-      usage: { inputTokens: NaN, outputTokens: 50, totalTokens: 150 },
-    })).toBeNull();
-    expect(extractUsageFromPayload({
-      usage: { inputTokens: 100, outputTokens: Infinity, totalTokens: 150 },
-    })).toBeNull();
-  });
-
-  it('accepts zero token counts (e.g., session_start with empty conversation)', () => {
-    const got = extractUsageFromPayload({
-      usage: { inputTokens: 0, outputTokens: 0, totalTokens: 0 },
-    });
-    expect(got).toEqual({ inputTokens: 0, outputTokens: 0, totalTokens: 0 });
   });
 });
 

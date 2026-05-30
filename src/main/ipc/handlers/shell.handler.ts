@@ -1,4 +1,4 @@
-import { ipcMain, shell } from 'electron';
+import { ipcMain, shell, app } from 'electron';
 import * as path from 'path';
 import { ShellDetector } from '../../pty/ShellDetector';
 import { IPC } from '../../../shared/constants';
@@ -91,9 +91,27 @@ export function registerShellHandlers(): () => void {
     return { ok: !err, error: err || undefined };
   }));
 
+  // Total app memory across the whole Electron process tree. The StatusBar
+  // RAM widget used to read performance.memory.usedJSHeapSize in the renderer,
+  // which is just this renderer's V8 JS heap (~10MB) — it excludes the
+  // renderer's native/RSS footprint, the main process, the GPU process, every
+  // other renderer, and Utility processes, so the displayed figure was off by
+  // an order of magnitude. app.getAppMetrics() reports per-process
+  // workingSetSize (RSS) in KB; summing it gives the real footprint. (The
+  // detached wmux daemon is a separate process not covered by getAppMetrics.)
+  ipcMain.removeHandler(IPC.APP_MEMORY);
+  ipcMain.handle(IPC.APP_MEMORY, wrapHandler(IPC.APP_MEMORY, (_event: Electron.IpcMainInvokeEvent) => {
+    let totalKB = 0;
+    for (const m of app.getAppMetrics()) {
+      totalKB += m.memory?.workingSetSize ?? 0;
+    }
+    return totalKB * 1024; // bytes
+  }));
+
   return () => {
     ipcMain.removeHandler(IPC.SHELL_LIST);
     ipcMain.removeHandler(IPC.SHELL_OPEN_EXTERNAL);
     ipcMain.removeHandler(IPC.SHELL_OPEN_PATH);
+    ipcMain.removeHandler(IPC.APP_MEMORY);
   };
 }

@@ -64,8 +64,6 @@ export const IPC = {
   // Scrollback persistence
   SCROLLBACK_DUMP: 'scrollback:dump',
   SCROLLBACK_LOAD: 'scrollback:load',
-  // Token tracking
-  TOKEN_UPDATE: 'token:update',
   // Claude Code hook signal health (Phase 1.5). Push channel — main process
   // emits whenever SignalLatencyMeter stats change (throttled to 1Hz in
   // registerHooksRpc). Payload: LatencyStats snapshot. Renderer subscribes
@@ -87,6 +85,11 @@ export const IPC = {
   USAGE_REFRESH: 'usage:refresh',
   // EventBus publish — renderer→main one-way for pane lifecycle events
   EVENTS_PUBLISH: 'events:publish',
+  // Total app memory (renderer → main, invoke). Returns the summed
+  // workingSetSize (RSS) across the whole Electron process tree in bytes.
+  // Replaces the renderer-only performance.memory.usedJSHeapSize, which only
+  // measured the renderer V8 JS heap (~10MB) and grossly under-reported usage.
+  APP_MEMORY: 'app:memory',
   // Window control
   WINDOW_HIDE: 'window:hide',
   // Windows taskbar attention recall. Renderer asks main to flash the

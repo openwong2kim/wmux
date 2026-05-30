@@ -17,7 +17,20 @@ function resolveResource(name: string): string | null {
   return fs.existsSync(candidate) ? candidate : null;
 }
 
-export function createTray(mainWindow: BrowserWindow, onQuit: () => void): Tray {
+/**
+ * Tray quit callbacks. wmux follows tmux-style persistence: the default
+ * "Quit" only detaches the UI (the daemon keeps every PTY session running and
+ * the next launch reattaches), while "Shut down completely" tears the daemon
+ * and all sessions down.
+ */
+export interface TrayCallbacks {
+  /** Default Quit — detach from the daemon; live sessions keep running. */
+  onQuit: () => void;
+  /** Full teardown — close every session and stop the daemon. */
+  onShutdownAll: () => void;
+}
+
+export function createTray(mainWindow: BrowserWindow, callbacks: TrayCallbacks): Tray {
   // In packaged app, extraResource files land in <exe_dir>/resources/
   // In dev, assets are at project root: <__dirname>/../../assets/
   //
@@ -75,9 +88,16 @@ export function createTray(mainWindow: BrowserWindow, onQuit: () => void): Tray 
     },
     { type: 'separator' },
     {
-      label: 'Quit',
+      label: 'Quit (keep sessions running)',
       click: () => {
-        onQuit();
+        callbacks.onQuit();
+        app.quit();
+      },
+    },
+    {
+      label: 'Shut down wmux (close all sessions)',
+      click: () => {
+        callbacks.onShutdownAll();
         app.quit();
       },
     },

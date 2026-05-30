@@ -165,33 +165,12 @@ export function registerHooksRpc(
       return { ok: false, reason: 'no-workspace-match' };
     }
 
-    // 4. Forward token usage if the bridge included it. Stop /
-    //    SubagentStop bridges read the transcript JSONL and embed a
-    //    `usage` block; we reuse the same IPC channel
-    //    (TOKEN_UPDATE) the regex-based TokenTracker already uses,
-    //    so renderer-side handling (useNotificationListener +
-    //    tokenSlice) is unchanged. Hook-derived numbers are
-    //    authoritative and arrive on every turn; TokenTracker
-    //    remains the fallback for users without the plugin.
-    //
-    //    NOTE: Token IPC is intentionally workspace-match-gated (unlike
-    //    signal-health above). Token data is per-pane (needs a ptyId
-    //    target); signal-health is global plugin status (no target
-    //    required). Two consumers, two data shapes. Don't conflate.
-    const usage = extractUsageFromPayload(signal.payload);
-    if (usage) {
-      const win = getWindow();
-      if (win && !win.isDestroyed()) {
-        win.webContents.send(IPC.TOKEN_UPDATE, ptyId, {
-          totalTokens: usage.totalTokens,
-          inputTokens: usage.inputTokens,
-          outputTokens: usage.outputTokens,
-          timestamp: Date.now(),
-        });
-      }
-    }
+    // (Per-pane token usage forwarding was removed in B6: the StatusBar token
+    // chip it fed was discarded as an unreliable, partly-heuristic display.
+    // The bridge may still embed a `usage` block in the payload — it is simply
+    // ignored here now. Signal-health recording above is unaffected.)
 
-    // 5. Emit decision. PostToolUse / SessionStart never produce a
+    // 4. Emit decision. PostToolUse / SessionStart never produce a
     //    toast (would be spam — codex round-2 P1 #5). They also
     //    DO NOT write to the dedup ledger (claude review 2026-05-23
     //    P2 #6) because a no-emit ledger entry would silently block
@@ -204,7 +183,7 @@ export function registerHooksRpc(
 
     const decision = hookRouter.recordHook(signal, ptyId);
 
-    // 6. Tee to EventBus for external observers (orchestrator clients via
+    // 5. Tee to EventBus for external observers (orchestrator clients via
     //    `wmux_events_poll`). Emits BOTH 'emit' and 'dedup' decisions so
     //    a forensic consumer can see the dedup ledger's behavior; the
     //    fan-out notification below is the only side effect gated on
@@ -222,7 +201,7 @@ export function registerHooksRpc(
     //    This collapses a latent double-toast that was always possible
     //    when hook+detector both ran, and is the intended consequence
     //    of round-2 cross-model review feedback — not an accident.
-    //    SIGNAL_HEALTH_UPDATE and TOKEN_UPDATE are unchanged.
+    //    SIGNAL_HEALTH_UPDATE is unchanged.
     //
     //    Carries ptyId only (no paneId). The workspaceId attached here is
     //    the one that owns the resolved ptyId — needed so events.poll
@@ -584,36 +563,6 @@ function bodyFor(signal: AgentSignal): string {
     case 'agent.awaiting_input':
       return 'Approval requested';
   }
-}
-
-/**
- * Pull the `usage` block out of a hook payload if the bridge embedded
- * it. The bridge script (integrations/claude/bin/wmux-bridge.mjs) reads
- * the Stop hook's transcript_path JSONL and writes the cumulative
- * counts under `payload.usage` as {inputTokens, outputTokens,
- * totalTokens}. We re-validate types defensively because the bridge
- * runs in Claude Code's process and can be on a different version
- * than the daemon.
- */
-interface UsageBlock {
-  inputTokens: number;
-  outputTokens: number;
-  totalTokens: number;
-}
-export function extractUsageFromPayload(payload: Record<string, unknown>): UsageBlock | null {
-  const raw = (payload as { usage?: unknown }).usage;
-  if (!raw || typeof raw !== 'object') return null;
-  const u = raw as Record<string, unknown>;
-  const inputTokens = typeof u['inputTokens'] === 'number' ? u['inputTokens'] : null;
-  const outputTokens = typeof u['outputTokens'] === 'number' ? u['outputTokens'] : null;
-  const totalTokens = typeof u['totalTokens'] === 'number' ? u['totalTokens'] : null;
-  if (inputTokens === null || outputTokens === null || totalTokens === null) return null;
-  // Defend against negative / NaN / infinity, all of which would
-  // produce nonsense in the StatusBar formatter.
-  if (!Number.isFinite(inputTokens) || inputTokens < 0) return null;
-  if (!Number.isFinite(outputTokens) || outputTokens < 0) return null;
-  if (!Number.isFinite(totalTokens) || totalTokens < 0) return null;
-  return { inputTokens, outputTokens, totalTokens };
 }
 
 function agentDisplayName(slug: AgentSignal['agent']): string {

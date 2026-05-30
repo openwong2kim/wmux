@@ -479,7 +479,8 @@ export function useKeyboard() {
         return;
       }
 
-      // Alt+Ctrl+Arrow: Focus pane directionally
+      // Alt+Ctrl+Arrow: Focus pane directionally (alternate combo; kept so the
+      // macOS ⌘+Alt+Arrow path and existing muscle memory still work).
       if (cmdOrCtrl && alt && !shift && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(key)) {
         e.preventDefault();
         const dirMap: Record<string, 'up' | 'down' | 'left' | 'right'> = {
@@ -641,57 +642,46 @@ export function useKeyboard() {
         return;
       }
 
-      // Ctrl+ArrowUp: Jump to previous bookmark (above current position)
-      // Pairs with Ctrl+M bookmark add → literal Ctrl on every OS.
-      if (literalCtrl && !shift && !alt && key === 'ArrowUp') {
+      // Ctrl+Shift+Arrow: MOVE focus — pane focus within the active workspace,
+      // or (in multiview) focus between grid tiles. focusPaneDirection walks one
+      // workspace's pane tree (bails at leaves<=1); focusMultiviewDirection
+      // navigates the multiview grid. This is the primary directional-move
+      // gesture (bare Ctrl+Arrow is intentionally unbound). split stays on
+      // Ctrl+D / Ctrl+Shift+D. stopImmediatePropagation so xterm never sees it.
+      if (literalCtrl && shift && !alt && ['ArrowUp', 'ArrowDown', 'ArrowLeft', 'ArrowRight'].includes(key)) {
         e.preventDefault();
-        const state = store.getState();
-        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-        if (ws) {
-          const pane = findLeaf(ws.rootPane, ws.activePaneId);
-          if (pane) {
-            const surface = pane.surfaces.find((s) => s.id === pane.activeSurfaceId);
-            if (surface?.ptyId) {
-              const term = terminalRegistry.get(surface.ptyId);
-              const bookmarks = state.terminalBookmarks[surface.ptyId];
-              if (term && bookmarks && bookmarks.length > 0) {
-                const currentLine = term.buffer.active.baseY + term.buffer.active.viewportY;
-                // Find nearest bookmark strictly above current position
-                const above = bookmarks.filter((l) => l < currentLine);
-                if (above.length > 0) {
-                  term.scrollToLine(above[above.length - 1]);
-                }
-              }
-            }
-          }
+        e.stopImmediatePropagation();
+        const dirMap: Record<string, 'up' | 'down' | 'left' | 'right'> = {
+          ArrowUp: 'up', ArrowDown: 'down', ArrowLeft: 'left', ArrowRight: 'right',
+        };
+        // Multiview grid → move between tiles (workspaces); else pane focus.
+        const { multiviewIds, activeWorkspaceId } = store.getState();
+        if (multiviewIds.length >= 2 && multiviewIds.includes(activeWorkspaceId)) {
+          store.getState().focusMultiviewDirection(dirMap[key]);
+        } else {
+          store.getState().focusPaneDirection(dirMap[key]);
         }
         return;
       }
 
-      // Ctrl+ArrowDown: Jump to next bookmark (below current position)
-      // Pairs with Ctrl+M bookmark add → literal Ctrl on every OS.
-      if (literalCtrl && !shift && !alt && key === 'ArrowDown') {
+      // Alt+ArrowUp: previous workspace. wmux only had Ctrl+1-9 (jump to N) and
+      // the prefix path before — this adds direct prev/next cycling on the
+      // sidebar order (↑ = previous, ↓ = next). Reuses the prefix
+      // prevWorkspace/nextWorkspace logic. stopImmediatePropagation so xterm
+      // never sees Alt+Arrow as an escape sequence.
+      if (alt && !literalCtrl && !shift && key === 'ArrowUp') {
         e.preventDefault();
-        const state = store.getState();
-        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
-        if (ws) {
-          const pane = findLeaf(ws.rootPane, ws.activePaneId);
-          if (pane) {
-            const surface = pane.surfaces.find((s) => s.id === pane.activeSurfaceId);
-            if (surface?.ptyId) {
-              const term = terminalRegistry.get(surface.ptyId);
-              const bookmarks = state.terminalBookmarks[surface.ptyId];
-              if (term && bookmarks && bookmarks.length > 0) {
-                const currentLine = term.buffer.active.baseY + term.buffer.active.viewportY;
-                // Find nearest bookmark strictly below current position
-                const below = bookmarks.filter((l) => l > currentLine);
-                if (below.length > 0) {
-                  term.scrollToLine(below[0]);
-                }
-              }
-            }
-          }
-        }
+        e.stopImmediatePropagation();
+        prefixActions.prevWorkspace();
+        return;
+      }
+
+      // Alt+ArrowDown: next workspace (pairs with Alt+ArrowUp = previous).
+      // stopImmediatePropagation so xterm never sees Alt+Arrow as an escape seq.
+      if (alt && !literalCtrl && !shift && key === 'ArrowDown') {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+        prefixActions.nextWorkspace();
         return;
       }
 

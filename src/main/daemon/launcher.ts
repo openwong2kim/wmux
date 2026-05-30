@@ -557,3 +557,55 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
 
   return { pid, authToken: token, pipeName, spawned: true };
 }
+
+/**
+ * Force-kill the daemon recorded in `daemon.pid` — but ONLY if the live
+ * process at that PID verifiably still belongs to wmux (image basename +
+ * cmdline carry the daemon script). This is the explicit-full-shutdown
+ * backstop for main's before-quit: when the user picks "Shut down wmux
+ * completely" and the graceful `daemon.shutdown` RPC times out, this
+ * guarantees a wedged daemon can't survive the teardown the user explicitly
+ * asked for.
+ *
+ * The PID-reuse guards mirror ensureDaemon()'s verify-before-kill logic so we
+ * never SIGKILL an unrelated process that recycled the daemon's old PID. We
+ * only abort the kill when a check returns a DEFINITIVE mismatch; an
+ * indeterminate result (null image/cmdline, e.g. AV blocking tasklist) still
+ * proceeds, because this path runs at most a few seconds after we were
+ * actively talking to that PID, so reuse is near-impossible and leaving an
+ * orphan is the worse outcome here.
+ *
+ * Best-effort: never throws. Returns true only when a verified daemon was
+ * signalled.
+ */
+export function killDaemonByPidFile(): boolean {
+  try {
+    const wmuxDir = getWmuxDir();
+    const pidStr = fs.readFileSync(path.join(wmuxDir, 'daemon.pid'), 'utf8').trim();
+    const pid = parseInt(pidStr, 10);
+    if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return false;
+    if (!isProcessAlive(pid)) return false;
+
+    const expectedImage = path.basename(process.execPath);
+    const image = getProcessImageName(pid);
+    if (image !== null && image.toLowerCase() !== expectedImage.toLowerCase()) {
+      return false; // definitive: a different program owns this PID now
+    }
+    const cmdline = getProcessCommandLine(pid);
+    const markers = [
+      'daemon-bundle',
+      'daemon/daemon/index.js',
+      'daemon\\daemon\\index.js',
+      'daemon/index.js',
+      'daemon\\index.js',
+    ];
+    if (cmdline !== null && !markers.some((m) => cmdline.includes(m))) {
+      return false; // definitive: same image but not our daemon script
+    }
+
+    process.kill(pid, 'SIGKILL');
+    return true;
+  } catch {
+    return false;
+  }
+}

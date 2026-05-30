@@ -45,12 +45,21 @@ export function composePaneClassName(opts: {
   ringState: PaneRingState;
   paneRingEnabled: boolean;
   flashing: boolean;
+  /** B8: pane's active surface has a completed/awaiting agent and the pane is
+   *  not focused — blink the border for attention. Takes precedence over the
+   *  generic notification ring (the completion blink IS the signal for that
+   *  pane, so showing both the blue glow and the green blink would be noisy). */
+  completeBlink?: boolean;
 }): string {
-  const { hasUnread, ringState, paneRingEnabled, flashing } = opts;
+  const { hasUnread, ringState, paneRingEnabled, flashing, completeBlink } = opts;
   const classes = ['flex', 'flex-col', 'h-full', 'w-full', 'relative', 'box-border'];
   if (hasUnread) classes.push('notification-ring');
-  if (paneRingEnabled && ringState === 'flash') classes.push('pane-ring-flash');
-  if (paneRingEnabled && ringState === 'glow') classes.push('pane-ring-glow');
+  if (completeBlink) {
+    classes.push('pane-complete-blink');
+  } else {
+    if (paneRingEnabled && ringState === 'flash') classes.push('pane-ring-flash');
+    if (paneRingEnabled && ringState === 'glow') classes.push('pane-ring-glow');
+  }
   if (flashing) classes.push('pane-flash');
   return classes.join(' ');
 }
@@ -81,6 +90,29 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // so the new visual is on by default until the user disables it.
   const ringState = useStore((s) => s.paneNotificationRing[pane.id]);
   const paneRingEnabled = useStore((s) => s.paneRingEnabled);
+
+  // ─── B8: completed-terminal blink ────────────────────────────────────────
+  // The pane's active surface ptyId drives the border blink. When that
+  // surface's agent reaches a "needs attention" status (complete / waiting /
+  // awaiting_input) AND this pane is not focused, the border blinks green.
+  // Visiting the pane clears the status (the effect below), so the blink is a
+  // one-shot "you haven't looked yet" cue rather than a permanent decoration.
+  const activeSurfacePtyId = pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.ptyId;
+  const setSurfaceAgentStatus = useStore((s) => s.setSurfaceAgentStatus);
+  const activeSurfaceStatus = useStore((s) =>
+    activeSurfacePtyId ? s.surfaceAgentStatus[activeSurfacePtyId] : undefined,
+  );
+  const completeBlink = !isActive && !!activeSurfaceStatus;
+
+  // Clear the attention status once the user is actually on the pane (covers
+  // both "navigated to a blinking pane" and "agent finished while I was
+  // watching"). Keyboard nav sets isActive without firing handleClick, so the
+  // clear must live here rather than only in the click handler.
+  useEffect(() => {
+    if (isActive && activeSurfacePtyId && activeSurfaceStatus) {
+      setSurfaceAgentStatus(activeSurfacePtyId, null);
+    }
+  }, [isActive, activeSurfacePtyId, activeSurfaceStatus, setSurfaceAgentStatus]);
 
   // Ctrl+Shift+H: flash the active pane
   useEffect(() => {
@@ -147,7 +179,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
 
   return (
     <div
-      className={composePaneClassName({ hasUnread, ringState, paneRingEnabled, flashing })}
+      className={composePaneClassName({ hasUnread, ringState, paneRingEnabled, flashing, completeBlink })}
       style={{
         border: `1px solid ${isActive ? 'var(--accent-cursor)' : 'var(--bg-surface)'}`,
       }}

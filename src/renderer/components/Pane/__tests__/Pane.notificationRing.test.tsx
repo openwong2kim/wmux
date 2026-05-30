@@ -133,6 +133,47 @@ describe('composePaneClassName — paneRingEnabled gate (OPTION C)', () => {
   });
 });
 
+describe('composePaneClassName — completeBlink (B8: completed-terminal blink)', () => {
+  const base = { hasUnread: false, paneRingEnabled: true, flashing: false } as const;
+
+  it('completeBlink=true applies pane-complete-blink', () => {
+    const cls = composePaneClassName({ ...base, ringState: null, completeBlink: true });
+    expect(cls).toContain('pane-complete-blink');
+  });
+
+  it('completeBlink omitted/false does NOT apply pane-complete-blink', () => {
+    expect(composePaneClassName({ ...base, ringState: null })).not.toContain('pane-complete-blink');
+    expect(composePaneClassName({ ...base, ringState: null, completeBlink: false })).not.toContain('pane-complete-blink');
+  });
+
+  it('completeBlink takes precedence: suppresses pane-ring-glow even when ringState="glow"', () => {
+    // A completed agent also fires a notification (→ ring glow). The green
+    // completion blink IS the signal for that pane, so the blue glow must be
+    // suppressed to avoid two competing border treatments.
+    const cls = composePaneClassName({ ...base, ringState: 'glow', completeBlink: true });
+    expect(cls).toContain('pane-complete-blink');
+    expect(cls).not.toContain('pane-ring-glow');
+  });
+
+  it('completeBlink takes precedence: suppresses pane-ring-flash even when ringState="flash"', () => {
+    const cls = composePaneClassName({ ...base, ringState: 'flash', completeBlink: true });
+    expect(cls).toContain('pane-complete-blink');
+    expect(cls).not.toContain('pane-ring-flash');
+  });
+
+  it('completeBlink=false restores normal ring behavior', () => {
+    const cls = composePaneClassName({ ...base, ringState: 'glow', completeBlink: false });
+    expect(cls).toContain('pane-ring-glow');
+    expect(cls).not.toContain('pane-complete-blink');
+  });
+
+  it('completeBlink and pane-flash (Ctrl+Shift+H) coexist — independent channels', () => {
+    const cls = composePaneClassName({ hasUnread: false, ringState: null, paneRingEnabled: true, flashing: true, completeBlink: true });
+    expect(cls).toContain('pane-complete-blink');
+    expect(cls).toContain('pane-flash');
+  });
+});
+
 describe('composePaneClassName — legacy classes preserved', () => {
   it('hasUnread=true applies notification-ring', () => {
     const cls = composePaneClassName({

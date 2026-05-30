@@ -802,10 +802,36 @@ function registerRpcHandlers(
       { skipPipeStop: true, skipExit: true },
     );
     // ack flushes after this return; then the pipe + process tear down.
+    //
+    // Orphan-daemon fix: `pipeServer.stop()` awaits `server.close(cb)`, and
+    // Node only fires that callback once EVERY tracked connection has closed.
+    // If one client socket won't close (the very socket we just acked on, a
+    // half-open session pipe, or a lingering Windows named-pipe handle), the
+    // callback never fires, the returned promise never settles, and the
+    // `.finally(() => process.exit(0))` never runs — leaving the daemon alive
+    // forever after it already acked shutdown. That was the zombie `wmux.exe`
+    // daemon users saw survive every Quit. Guard with a force-exit timer that
+    // is deliberately NOT unref()'d, so it keeps the event loop alive until it
+    // fires and guarantees the process dies even when stop() hangs.
     setImmediate(() => {
-      void pipeServer.stop().catch(() => { /* best effort */ }).finally(() => {
+      const forceExit = setTimeout(() => {
+        log('warn', 'daemon.shutdown: pipeServer.stop() did not finalize in 1s — forcing process.exit(0)');
         process.exit(0);
-      });
+      }, 1000);
+      // Delay stop()+exit by a tick so the `{status:'ok'}` ack flushes to the
+      // caller's socket FIRST. pipeServer.stop() destroys every connected
+      // socket; running it in the same macrotask as the queued ack write drops
+      // the ack before it leaves the kernel buffer, and the caller (main's
+      // full-shutdown race) then waits out its ENTIRE RPC timeout (~8-10s
+      // observed) before the pid-kill backstop fires — a sluggish, ugly "Shut
+      // down completely". 50 ms is ample for a local named-pipe / UDS flush;
+      // the 1 s forceExit above still bounds a genuinely hung stop().
+      setTimeout(() => {
+        void pipeServer.stop().catch(() => { /* best effort */ }).finally(() => {
+          clearTimeout(forceExit);
+          process.exit(0);
+        });
+      }, 50);
     });
     return { status: 'ok' };
   });

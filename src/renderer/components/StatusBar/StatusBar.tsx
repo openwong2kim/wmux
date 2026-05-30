@@ -1,31 +1,8 @@
 import { useState, useEffect, useMemo } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
-import type { Notification, Pane, PaneLeaf, Workspace } from '../../../shared/types';
+import type { Notification, Workspace } from '../../../shared/types';
 import { UsageWidgetView } from './UsageWidget';
-
-/** Resolve the ptyId of the active pane's active surface */
-function getActivePtyId(rootPane: Pane | undefined, activePaneId: string): string | null {
-  if (!rootPane) return null;
-  const findLeaf = (pane: Pane): PaneLeaf | null => {
-    if (pane.type === 'leaf') return pane.id === activePaneId ? pane : null;
-    for (const child of pane.children) {
-      const found = findLeaf(child);
-      if (found) return found;
-    }
-    return null;
-  };
-  const leaf = findLeaf(rootPane);
-  if (!leaf) return null;
-  const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-  return surface?.ptyId ?? null;
-}
-
-function formatTokenCount(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1_000) return `${(n / 1_000).toFixed(1)}K`;
-  return String(n);
-}
 
 /**
  * Compute the unread notification count, excluding notifications whose
@@ -114,7 +91,6 @@ export default function StatusBar() {
   );
   const toggleNotificationPanel = useStore((s) => s.toggleNotificationPanel);
   const toggleSettingsPanel = useStore((s) => s.toggleSettingsPanel);
-  const tokenDataByPty = useStore((s) => s.tokenDataByPty);
 
   // Prefix mode (tmux-style Ctrl+B)
   const prefixMode = useStore((s) => s.prefixMode);
@@ -140,29 +116,27 @@ export default function StatusBar() {
     return () => clearInterval(timer);
   }, [sessionStartTime]);
 
-  // Update memory usage every 5 seconds
+  // Update memory usage every 5 seconds. Reads the TOTAL app footprint from
+  // main (app.getAppMetrics summed RSS across the whole Electron process tree)
+  // instead of the renderer-only performance.memory.usedJSHeapSize, which
+  // measured just this renderer's V8 JS heap (~10MB) and under-reported real
+  // memory usage by roughly an order of magnitude.
   useEffect(() => {
+    let cancelled = false;
     const update = () => {
-      const perf = performance as unknown as { memory?: { usedJSHeapSize: number } };
-      if (perf.memory) {
-        setMemUsage(`${Math.round(perf.memory.usedJSHeapSize / 1024 / 1024)}MB`);
-      }
+      void window.electronAPI.system.getMemoryUsage().then((bytes) => {
+        if (cancelled || typeof bytes !== 'number' || bytes <= 0) return;
+        setMemUsage(`${Math.round(bytes / 1024 / 1024)}MB`);
+      }).catch(() => { /* main not ready / handler swapped — keep last value */ });
     };
     update();
     const timer = setInterval(update, 5000);
-    return () => clearInterval(timer);
+    return () => { cancelled = true; clearInterval(timer); };
   }, []);
 
   const timeStr = time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
   const branch = activeWs?.metadata?.gitBranch;
   const isCompanyMode = sidebarMode === 'company';
-
-  // Token/cost for the active pane
-  const activePtyId = useMemo(
-    () => getActivePtyId(activeWs?.rootPane, activeWs?.activePaneId ?? ''),
-    [activeWs?.rootPane, activeWs?.activePaneId],
-  );
-  const activeTokenData = activePtyId ? tokenDataByPty[activePtyId] : undefined;
 
   // Anthropic 5h/7d usage state. Hidden entirely when status === 'idle'
   // (Settings toggle off). `nowMs` is the existing per-second clock used
@@ -204,19 +178,6 @@ export default function StatusBar() {
         {isCompanyMode && (
           <span className="text-[var(--text-sub2)]" title={t('statusBar.session', { min: sessionMin })}>
             ~${totalCost.toFixed(2)}
-          </span>
-        )}
-        {activeTokenData && (activeTokenData.totalTokens > 0 || activeTokenData.totalCost > 0) && (
-          // Hook-derived token counts arrive without an authoritative cost
-          // (transcript JSONL has tokens but not USD). The regex-based
-          // TokenTracker fills cost in when the user runs /cost. So we
-          // show tokens whenever we have either signal, and only render
-          // the $X.XX portion when cost is actually known.
-          <span className="text-[var(--text-sub2)]" title={`Input: ${formatTokenCount(activeTokenData.inputTokens)} / Output: ${formatTokenCount(activeTokenData.outputTokens)}`}>
-            {'\u26A1'} {formatTokenCount(activeTokenData.totalTokens)} tokens
-            {activeTokenData.totalCost > 0 && (
-              <> {'\u00B7'} ${activeTokenData.totalCost.toFixed(2)}</>
-            )}
           </span>
         )}
         <UsageWidgetView

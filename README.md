@@ -122,12 +122,14 @@ Launch wmux and the MCP server registers automatically. Claude Code just works:
 
 **Programmatic orchestration:** If you want to drive multiple wmux panes from your own script (TypeScript / Node), the MCP surface is wrapped by [`@wmux/orchestrator`](https://github.com/openwong2kim/wmux-orchestrator) — a small client-side SDK that gives you `sendAndWait`, `sendCommandAndWait` (OSC 133 exit codes), atomic pane claim, fan-out, and `agent.lifecycle` event subscription. Composes the primitives above, ships independently from wmux.
 
-### 5. Session persistence — survives restart and reboot
+### 5. Session persistence — tmux-style, survives Quit, crash, and reboot
 
-Terminal sessions survive app restarts. Close wmux and reopen — your sessions are still there, scrollback intact.
+wmux never kills your work when you close the window. Like a tmux server, the background daemon owns every PTY and keeps it running; the UI only attaches and detaches. Quit wmux and reopen — your sessions are **still running, processes and all** (a build mid-flight, a `vim` buffer, an `ssh` shell), not just scrollback text.
 
-- **App restart:** Daemon keeps PTY processes alive in the background. Reconnects instantly.
-- **Reboot:** Sessions are recovered with saved scrollback and working directory. wmux auto-starts on login.
+- **Quit / app restart:** Closing wmux detaches from the daemon, which keeps every PTY process alive. The next launch reattaches each pane to its live session instantly.
+- **Crash:** Same path — the daemon outlives the UI, so a renderer or main-process crash never takes your terminals with it.
+- **Reboot:** PTYs can't survive a power cycle, so sessions are restored from saved scrollback + working directory instead. wmux auto-starts on login.
+- **Full teardown:** When you want everything to actually stop, use the tray's **"Shut down wmux (close all sessions)"**. Closing every pane also lets the daemon idle-shut-down on its own after a few minutes.
 - **Auto-update:** Checks for updates via GitHub Releases. Toggle on/off in Settings.
 
 ### 6. Security that actually matters

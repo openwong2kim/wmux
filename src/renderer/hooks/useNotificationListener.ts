@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useRef } from 'react';
 import { useStore } from '../stores';
-import type { NotificationType, Pane, PaneLeaf, Workspace } from '../../shared/types';
+import type { AgentStatus, NotificationType, Pane, PaneLeaf, Workspace } from '../../shared/types';
 import { playNotificationSound } from './useNotificationSound';
 import { createThrottler, type Throttler } from '../utils/createThrottler';
 import {
@@ -333,6 +333,14 @@ export function useNotificationListener() {
       };
 
       if (ptyId) {
+        // B8: mirror agent lifecycle status into the per-surface map so an
+        // inactive pane whose terminal completed (or is awaiting input) can
+        // blink for attention. setSurfaceAgentStatus itself filters to the
+        // attention statuses and clears on running/idle, so a plain CWD/git
+        // metadata update (no agentStatus) is a no-op here.
+        if (typeof rest.agentStatus === 'string') {
+          state.setSurfaceAgentStatus(ptyId, rest.agentStatus as AgentStatus);
+        }
         for (const ws of state.workspaces) {
           const found = findSurfaceByPtyId(ws.rootPane, ptyId);
           if (found) {
@@ -360,10 +368,6 @@ export function useNotificationListener() {
           break;
         }
       }
-    });
-
-    const unsubToken = window.electronAPI.token.onUpdate((ptyId, data) => {
-      useStore.getState().updateTokenData(ptyId, data);
     });
 
     // Phase 1.5 — Claude Code hook signal health. Main throttles to 1Hz so
@@ -394,7 +398,6 @@ export function useNotificationListener() {
       unsubCwd();
       unsubMeta();
       unsubGitBranch();
-      unsubToken();
       unsubSignalHealth();
       unsubUsage();
       // Reset throttlers so a hot-reloaded listener doesn't inherit stale

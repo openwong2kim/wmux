@@ -6,7 +6,7 @@ import { DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Company, type P
 
 // Fix 0 — minimum cross-slice state surface that workspaceSlice.loadSession
 // and clearAllPtyState mutate. We intentionally don't pull in the full
-// uiSlice / tokenSlice / companySlice creators here — those creators have
+// uiSlice / companySlice creators here — those creators have
 // side effects (apply DOM theme classes, sync i18n locale, register
 // listeners). The tests below only need the FIELDS those slices declare,
 // so we hand-roll them as initial state.
@@ -36,8 +36,6 @@ type TestState = WorkspaceSlice & {
   cheatSheetDismissed: boolean;
   floatingPanePtyId: string | null;
   terminalBookmarks: Record<string, number[]>;
-  // tokenSlice fields
-  tokenDataByPty: Record<string, { totalTokens: number; inputTokens: number; outputTokens: number; totalCost: number; lastUpdate: number }>;
   // companySlice fields
   company: Company | null;
   memberCosts: Record<string, number>;
@@ -76,7 +74,6 @@ function createTestStore() {
       cheatSheetDismissed: false,
       floatingPanePtyId: null,
       terminalBookmarks: {},
-      tokenDataByPty: {},
       company: null,
       memberCosts: {},
       sessionStartTime: null,
@@ -304,22 +301,18 @@ describe('WorkspaceSlice.clearAllPtyState — Fix 0 fallback', () => {
     expect(root.surfaces[0].ptyId).toBe('browser-should-not-clear');
   });
 
-  it('clears floatingPanePtyId, terminalBookmarks, tokenDataByPty in a single atomic set', () => {
+  it('clears floatingPanePtyId, terminalBookmarks in a single atomic set', () => {
     const store = createTestStore();
     // Seed cross-slice state that clearAllPtyState should wipe.
     store.setState((s) => {
       s.floatingPanePtyId = 'pty-floating';
       s.terminalBookmarks = { 'pty-x': [10, 20], 'pty-y': [3] };
-      s.tokenDataByPty = {
-        'pty-x': { totalTokens: 100, inputTokens: 60, outputTokens: 40, totalCost: 0.5, lastUpdate: 1 },
-      };
     });
 
     store.getState().clearAllPtyState();
 
     expect(store.getState().floatingPanePtyId).toBeNull();
     expect(store.getState().terminalBookmarks).toEqual({});
-    expect(store.getState().tokenDataByPty).toEqual({});
   });
 
   it('clears company member.ptyId across all departments when company mode active', () => {

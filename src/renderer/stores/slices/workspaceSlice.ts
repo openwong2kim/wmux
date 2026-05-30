@@ -26,7 +26,7 @@ export interface WorkspaceSlice {
   /**
    * Fix 0 fallback action. Clears every ptyId-keyed piece of renderer state
    * in one atomic immer set: terminal surface ptyId across all workspaces +
-   * nested split panes, floatingPanePtyId, terminalBookmarks, tokenDataByPty,
+   * nested split panes, floatingPanePtyId, terminalBookmarks,
    * and company member.ptyId. Called from AppLayout startup catch when
    * reconcile aborts/times out, so Terminal.tsx self-create receives a
    * consistent blank slate and external RPC handlers don't have stale
@@ -231,7 +231,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       //   startup behavior. The wipe lives there, not here.
       //
       //   Side state (floatingPanePtyId, terminalBookmarks,
-      //   tokenDataByPty, company member.ptyId) is also cleared by
+      //   company member.ptyId) is also cleared by
       //   clearAllPtyState — see workspaceSlice.clearAllPtyState
       //   below for the cross-slice fan-out.
       //
@@ -325,7 +325,6 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (data.company !== undefined) state.company = data.company ?? null;
       if (data.memberCosts) state.memberCosts = data.memberCosts;
       if (data.sessionStartTime != null) state.sessionStartTime = data.sessionStartTime;
-      if (data.tokenDataByPty) state.tokenDataByPty = data.tokenDataByPty;
       if (data.onboardingCompleted != null) state.onboardingCompleted = data.onboardingCompleted;
       // First-run wizard + cheat sheet (Plan 1.15 + 1.18). Mirrors onboardingCompleted
       // pattern: only overwrite when the saved field is present, otherwise leave the
@@ -402,10 +401,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.floatingPanePtyId = null;
       state.terminalBookmarks = {};
 
-      // 3. tokenSlice field.
-      state.tokenDataByPty = {};
-
-      // 4. companySlice — member.ptyId across all departments.
+      // 3. companySlice — member.ptyId across all departments.
       if (state.company) {
         for (const dept of state.company.departments) {
           for (const member of dept.members) {

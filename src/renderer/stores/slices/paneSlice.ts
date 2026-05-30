@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import type { Pane, PaneLeaf, PaneBranch, Workspace } from '../../../shared/types';
+import type { Pane, PaneLeaf, PaneBranch, Workspace, AgentStatus } from '../../../shared/types';
 import {
   createLeafPane,
   generateId,
@@ -33,7 +33,7 @@ export interface PaneSlice {
    * RPC handlers, etc. must abort on `false` so they don't mutate
    * the still-active original pane).
    */
-  splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string) => boolean;
+  splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string, position?: 'before' | 'after') => boolean;
   closePane: (paneId: string) => void;
   setActivePane: (paneId: string) => void;
   focusPaneDirection: (direction: 'up' | 'down' | 'left' | 'right') => void;
@@ -45,7 +45,24 @@ export interface PaneSlice {
   // T11 will consume this for the flash→glow CSS treatment around each pane.
   paneNotificationRing: Record<string, 'flash' | 'glow'>;
   setPaneNotificationRing: (paneId: string, ring: 'flash' | 'glow' | null) => void;
+  // B8: per-surface agent lifecycle status keyed by ptyId. Only the
+  // "needs attention" statuses (complete / waiting / awaiting_input) are
+  // retained; running / idle / error / null all clear the entry. Drives the
+  // "completed terminal" blink on inactive panes (Pane.tsx) and the per-tab
+  // status dot (SurfaceTabs). Populated from METADATA_UPDATE in
+  // useNotificationListener; cleared when the owning pane is focused or the
+  // agent resumes / the PTY exits (PTYBridge broadcasts running/idle).
+  surfaceAgentStatus: Record<string, AgentStatus>;
+  setSurfaceAgentStatus: (ptyId: string, status: AgentStatus | null) => void;
 }
+
+// The agent statuses that mean "this terminal wants the user's attention"
+// (the work finished or is paused waiting for input). Anything else clears.
+const ATTENTION_STATUSES: ReadonlySet<AgentStatus> = new Set<AgentStatus>([
+  'complete',
+  'waiting',
+  'awaiting_input',
+]);
 
 function findPane(root: Pane, id: string): Pane | null {
   if (root.id === id) return root;
@@ -90,7 +107,21 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     state.paneNotificationRing[paneId] = ring;
   }),
 
-  splitPane: (paneId, direction, workspaceId) => {
+  surfaceAgentStatus: {},
+
+  setSurfaceAgentStatus: (ptyId, status) => set((state: StoreState) => {
+    if (!ptyId) return;
+    // Store only attention-worthy statuses; everything else (running, idle,
+    // error, null) clears the entry so the blink stops as soon as the agent
+    // resumes, goes idle, or the PTY exits.
+    if (status && ATTENTION_STATUSES.has(status)) {
+      state.surfaceAgentStatus[ptyId] = status;
+    } else {
+      delete state.surfaceAgentStatus[ptyId];
+    }
+  }),
+
+  splitPane: (paneId, direction, workspaceId, position = 'after') => {
     let event: { wsId: string; newPaneId: string; branchId: string; previousActiveId: string } | null = null;
     let blockedAtCap = false;
     let created = false;
@@ -112,11 +143,14 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       created = true;
 
       const newPane = createLeafPane();
+      // `position` drives 4-way directional split from Ctrl+Shift+Arrow:
+      // 'before' puts the new pane left/up of the target, 'after' (default)
+      // right/down. Left/Up → before, Right/Down → after.
       const branch: PaneBranch = {
         id: generateId('pane'),
         type: 'branch',
         direction,
-        children: [{ ...targetPane }, newPane],
+        children: position === 'before' ? [newPane, { ...targetPane }] : [{ ...targetPane }, newPane],
         sizes: [50, 50],
       };
 

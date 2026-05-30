@@ -2,7 +2,6 @@ import { BrowserWindow } from 'electron';
 import { PTYManager } from './PTYManager';
 import { OscParser } from './OscParser';
 import { AgentDetector, agentDisplayToSlug } from './AgentDetector';
-import { TokenTracker } from './TokenTracker';
 import { ActivityMonitor } from './ActivityMonitor';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { IPC } from '../../shared/constants';
@@ -28,7 +27,6 @@ export type PTYDataMiddleware = (data: string) => void;
 export class PTYBridge {
   private oscParsers = new Map<string, OscParser>();
   private agentDetectors = new Map<string, AgentDetector>();
-  private tokenTrackers = new Map<string, TokenTracker>();
   private activityMonitor = new ActivityMonitor();
   private ptyCreatedAt = new Map<string, number>();
   private middlewareStacks = new Map<string, PTYDataMiddleware[]>();
@@ -175,7 +173,6 @@ export class PTYBridge {
 
     this.oscParsers.delete(ptyId);
     this.agentDetectors.delete(ptyId);
-    this.tokenTrackers.delete(ptyId);
     this.ptyCreatedAt.delete(ptyId);
     this.activityMonitor.stop(ptyId);
     this.middlewareStacks.delete(ptyId);
@@ -245,17 +242,6 @@ export class PTYBridge {
 
     const agentDetector = new AgentDetector();
     this.agentDetectors.set(ptyId, agentDetector);
-
-    const tokenTracker = new TokenTracker();
-    this.tokenTrackers.set(ptyId, tokenTracker);
-
-    // Token usage event handling — forward to renderer
-    tokenTracker.onToken((event) => {
-      const win = this.getWindow();
-      if (win && !win.isDestroyed()) {
-        win.webContents.send(IPC.TOKEN_UPDATE, ptyId, event);
-      }
-    });
 
     // Handle OSC events
     oscParser.onOsc((event) => {
@@ -468,12 +454,7 @@ export class PTYBridge {
       agentDetector.feed(data);
     });
 
-    // 4. Token tracker
-    this.addMiddleware(ptyId, (data) => {
-      tokenTracker.feed(data);
-    });
-
-    // 5. Prompt buffer + CWD detection
+    // 4. Prompt buffer + CWD detection
     this.addMiddleware(ptyId, (data) => {
       const win = this.getWindow();
       if (!win || win.isDestroyed()) return;

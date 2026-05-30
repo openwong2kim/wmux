@@ -308,3 +308,61 @@ html, body, #root {
     border-width: 2px !important;
   }
 }
+
+/* ─── B8: completed-terminal attention blink ────────────────────────────────
+ * A pane whose active surface's agent reached complete / waiting /
+ * awaiting_input blinks its border (green) while the pane is NOT focused,
+ * until the user visits it (paneSlice.surfaceAgentStatus drives the class via
+ * Pane.composePaneClassName). CSS animations sit ABOVE inline normal styles in
+ * the cascade, so the keyframe's border-color overrides Pane.tsx's inline
+ * `border` without !important (which is ignored inside @keyframes anyway). The
+ * inset box-shadow gives the blink a second, color-fast channel that doesn't
+ * fight the inline border at all. */
+@keyframes pane-complete-blink {
+  0%, 100% {
+    border-color: var(--accent-green);
+    box-shadow: 0 0 0 2px var(--accent-green) inset;
+  }
+  50% {
+    border-color: var(--bg-surface);
+    box-shadow: 0 0 0 2px transparent inset;
+  }
+}
+.pane-complete-blink {
+  animation: pane-complete-blink 1.2s ease-in-out infinite;
+}
+
+/* Small blinking status dot on a background surface tab whose terminal
+ * completed (SurfaceTabs). Opacity-only so it works regardless of dot color. */
+@keyframes tab-status-blink {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.2; }
+}
+.tab-status-blink {
+  animation: tab-status-blink 1.2s ease-in-out infinite;
+}
+
+/* Reduced motion: no flashing. Convey completion with a steady green border /
+ * full-opacity dot instead of animation. !important is needed for the static
+ * border-color to beat Pane.tsx's inline border (a static rule, unlike the
+ * animation above, does not outrank inline). */
+@media (prefers-reduced-motion: reduce) {
+  .pane-complete-blink {
+    animation: none;
+    border-color: var(--accent-green) !important;
+    box-shadow: 0 0 0 2px var(--accent-green) inset;
+  }
+  .tab-status-blink {
+    animation: none;
+    opacity: 1;
+  }
+}
+
+/* Forced-colors (Windows high-contrast): the green border/box-shadow is
+ * system-overridden, so fall back to a thicker border to stay visible. */
+@media (forced-colors: active) {
+  .pane-complete-blink {
+    animation: none;
+    border-width: 2px !important;
+  }
+}

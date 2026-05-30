@@ -304,6 +304,69 @@ describe('UISlice — multiview', () => {
     expect(store.getState().multiviewIds).toEqual([]);
   });
 
+  // ─── focusMultiviewDirection (grid spatial nav) ────────────────────────
+  // Regression: multiview arrow-nav was unimplemented. focusPaneDirection only
+  // walks ONE workspace's pane tree (and bails at leaves<=1), so the arrows
+  // were dead in the multiview grid. focusMultiviewDirection routes through
+  // setActiveWorkspace, which the UISlice-only test store lacks — inject a spy
+  // that also moves activeWorkspaceId so chained navigation works.
+  function withMvNav(ids: string[], active: string) {
+    const store = createTestStore();
+    const setActiveWorkspace = vi.fn((id: string) => store.setState({
+      // @ts-expect-error — cross-slice field overlaid for the test
+      activeWorkspaceId: id,
+    }));
+    store.setState({
+      multiviewIds: ids,
+      // @ts-expect-error — cross-slice fields injected for the test
+      activeWorkspaceId: active,
+      setActiveWorkspace,
+    });
+    return { store, setActiveWorkspace };
+  }
+
+  it('2-tile row: right/left move between tiles, up/down no-op', () => {
+    const { store, setActiveWorkspace } = withMvNav(['A', 'B'], 'A');
+    store.getState().focusMultiviewDirection('right');
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('B');
+    store.getState().focusMultiviewDirection('left');
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('A');
+    setActiveWorkspace.mockClear();
+    store.getState().focusMultiviewDirection('up');
+    store.getState().focusMultiviewDirection('down');
+    expect(setActiveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('2x2 grid: spatial nav in all four directions', () => {
+    // Layout (2 cols): A B / C D
+    const { store, setActiveWorkspace } = withMvNav(['A', 'B', 'C', 'D'], 'A');
+    store.getState().focusMultiviewDirection('right'); // A→B
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('B');
+    store.getState().focusMultiviewDirection('down');  // B→D
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('D');
+    store.getState().focusMultiviewDirection('left');  // D→C
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('C');
+    store.getState().focusMultiviewDirection('up');    // C→A
+    expect(setActiveWorkspace).toHaveBeenLastCalledWith('A');
+  });
+
+  it('no-op at the top-left grid edge', () => {
+    const { store, setActiveWorkspace } = withMvNav(['A', 'B', 'C', 'D'], 'A');
+    store.getState().focusMultiviewDirection('left'); // col 0 → no-op
+    store.getState().focusMultiviewDirection('up');   // row 0 → no-op
+    expect(setActiveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('no-op when fewer than 2 tiles or active is not a member', () => {
+    const single = withMvNav(['A'], 'A');
+    single.store.getState().focusMultiviewDirection('right');
+    expect(single.setActiveWorkspace).not.toHaveBeenCalled();
+
+    const orphan = withMvNav(['A', 'B'], 'Z');
+    orphan.store.getState().focusMultiviewDirection('right');
+    expect(orphan.setActiveWorkspace).not.toHaveBeenCalled();
+  });
+
   // ─── removeMultiviewWorkspace (close-button primitive) ─────────────────
   // Regression set for the multiview-X bug. Before the fix, the tile X
   // button called clearMultiview() so any tile collapsed the whole group.

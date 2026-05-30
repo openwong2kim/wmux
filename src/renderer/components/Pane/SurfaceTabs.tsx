@@ -1,10 +1,16 @@
 import { useRef } from 'react';
-import type { Surface, Workspace } from '../../../shared/types';
+import type { AgentStatus, Surface, Workspace } from '../../../shared/types';
 import { useT } from '../../hooks/useT';
+import { useStore } from '../../stores';
 import {
   buildExportPayload,
   buildPaneMarkdown,
 } from '../../utils/sessionInfoMarkdown';
+
+/** B8: dot color for a completed/awaiting surface tab. */
+function statusDotColor(status: AgentStatus): string {
+  return status === 'complete' ? 'var(--accent-green)' : 'var(--accent-yellow)';
+}
 
 interface SurfaceTabsProps {
   surfaces: Surface[];
@@ -32,6 +38,11 @@ export default function SurfaceTabs({
   // Same 200ms threshold pattern WorkspaceItem uses so a fast click never
   // gets eaten by a click-after-dragend race.
   const dragStartTimeRef = useRef<number>(0);
+  // B8: per-surface completed/awaiting status. A blinking dot marks a
+  // BACKGROUND tab (not the active surface) whose terminal finished, so a
+  // completed agent is discoverable even when its tab isn't on top. The
+  // active surface's completion is conveyed by the pane border blink instead.
+  const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
 
   // Always render the strip — even for a single surface — so the X button is
   // reachable. Pane.tsx's handleCloseSurface cascades into closePane when the
@@ -79,6 +90,18 @@ export default function SurfaceTabs({
           }`}
           onClick={() => handleTabClick(s.id)}
         >
+          {(() => {
+            const status = s.ptyId ? surfaceAgentStatus[s.ptyId] : undefined;
+            if (!status || s.id === activeSurfaceId) return null;
+            return (
+              <span
+                className="tab-status-blink inline-block w-1.5 h-1.5 rounded-full shrink-0"
+                style={{ backgroundColor: statusDotColor(status) }}
+                title={t('surface.terminal')}
+                aria-hidden="true"
+              />
+            );
+          })()}
           <span className="truncate max-w-[120px]">{s.title || t('surface.terminal')}</span>
           {/* X close button — always visible, not just on hover */}
           <button

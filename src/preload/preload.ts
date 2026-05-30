@@ -77,6 +77,16 @@ const electronAPI = {
     save: (data: unknown) => ipcRenderer.invoke(IPC.SESSION_SAVE, data),
     load: () => ipcRenderer.invoke(IPC.SESSION_LOAD),
   },
+  system: {
+    /**
+     * Total app memory (bytes) across the whole Electron process tree —
+     * main + GPU + every renderer + utility processes. Backed by
+     * app.getAppMetrics() in main. Replaces the old renderer-only
+     * performance.memory.usedJSHeapSize, which reported just this renderer's
+     * V8 JS heap (~10MB) and under-reported real usage by ~10x.
+     */
+    getMemoryUsage: () => ipcRenderer.invoke(IPC.APP_MEMORY) as Promise<number>,
+  },
   settings: {
     setToastEnabled: (enabled: boolean) => ipcRenderer.send(IPC.TOAST_ENABLED, enabled),
     setAutoUpdateEnabled: (enabled: boolean) => ipcRenderer.send(IPC.AUTO_UPDATE_ENABLED, enabled),
@@ -232,14 +242,6 @@ const electronAPI = {
       const listener = () => callback();
       ipcRenderer.on(IPC.FIRST_RUN_SAMPLE_TASK_TIMEOUT, listener);
       return () => { ipcRenderer.removeListener(IPC.FIRST_RUN_SAMPLE_TASK_TIMEOUT, listener); };
-    },
-  },
-  token: {
-    onUpdate: (callback: (ptyId: string, event: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number; cost: number; totalCost: number; totalInputTokens: number; totalOutputTokens: number }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, ptyId: string, data: { inputTokens: number; outputTokens: number; cacheRead: number; cacheWrite: number; cost: number; totalCost: number; totalInputTokens: number; totalOutputTokens: number }) =>
-        callback(ptyId, data);
-      ipcRenderer.on(IPC.TOKEN_UPDATE, listener);
-      return () => { ipcRenderer.removeListener(IPC.TOKEN_UPDATE, listener); };
     },
   },
   // Phase 1.5 — Claude Code plugin signal-health push. Main fires whenever
