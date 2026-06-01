@@ -23,10 +23,30 @@ vi.mock('child_process', () => ({
   execFileSync: execFileSyncMock,
 }));
 
+// Make execFileSync answer `whoami /user` with a fixed SID while leaving every
+// other invocation (icacls) returning empty. Mirrors the real two-call flow:
+// applyRestrictiveWindowsAcl resolves the SID first, then runs icacls.
+function stubWhoamiSid(sid: string): void {
+  execFileSyncMock.mockImplementation((cmd: unknown) =>
+    typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')
+      ? Buffer.from(`\nUser Name        SID\n=============== ${'='.repeat(40)}\nmachine\\user    ${sid}\n`)
+      : Buffer.from(''),
+  );
+}
+
+// Pull out the args of the icacls invocation (the whoami call is bookkeeping).
+function icaclsArgs(): unknown[] | undefined {
+  const call = execFileSyncMock.mock.calls.find(
+    ([cmd]) => typeof cmd === 'string' && cmd.toLowerCase().includes('icacls'),
+  );
+  return call?.[1] as unknown[] | undefined;
+}
+
 describe('secureWriteTokenFile', () => {
   beforeEach(() => {
     vi.resetModules();
     vi.clearAllMocks();
+    execFileSyncMock.mockReset();
     fsMock.existsSync.mockReturnValue(true);
   });
 
@@ -46,27 +66,89 @@ describe('secureWriteTokenFile', () => {
     });
   });
 
-  it('applies Windows ACL hardening when running on Windows', async () => {
+  it('grants Full control by SID, with /grant before /inheritance:r, on Windows', async () => {
     vi.stubEnv('USERNAME', 'tester');
     vi.stubEnv('SystemRoot', 'C:\\Windows');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
 
     const { secureWriteTokenFile } = await import('../security');
     const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
     secureWriteTokenFile(tokenPath, 'secret-token');
 
+    // SID is resolved via whoami first...
     expect(execFileSyncMock).toHaveBeenCalledWith(
-      'C:\\Windows\\System32\\icacls.exe',
-      [tokenPath, '/inheritance:r', '/grant:r', 'tester:F'],
+      'C:\\Windows\\System32\\whoami.exe',
+      ['/user', '/fo', 'list'],
       { windowsHide: true },
     );
+    // ...then icacls grants by *SID, and crucially /grant comes BEFORE
+    // /inheritance:r so the owner keeps WRITE_DAC through the inheritance strip.
+    expect(icaclsArgs()).toEqual([
+      tokenPath,
+      '/grant:r',
+      '*S-1-5-21-1-2-3-1001:F',
+      '/inheritance:r',
+    ]);
+  });
+
+  // Regression: a non-ASCII (Korean) profile name passed verbatim to icacls is
+  // mangled into a ghost principal (`홍길동\:(F)`), granting Full control to a
+  // non-existent account while the real owner gets nothing — locking the owner
+  // out of their own token file. Granting by SID (pure ASCII) avoids this.
+  it('never passes a non-ASCII username to icacls (Korean-account lock-out regression)', async () => {
+    vi.stubEnv('USERNAME', '홍길동');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+
+    const { secureWriteTokenFile } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', '홍길동', '.wmux-auth-token');
+    secureWriteTokenFile(tokenPath, 'secret-token');
+
+    expect(icaclsArgs()).toEqual([
+      tokenPath,
+      '/grant:r',
+      '*S-1-5-21-1-2-3-1001:F',
+      '/inheritance:r',
+    ]);
+    // The grant target (the principal arg) must be the *SID, never the raw
+    // username — the file PATH legitimately still contains the Korean name.
+    expect(icaclsArgs()?.[2]).not.toContain('홍길동');
+  });
+
+  it('falls back to %USERNAME% when the SID cannot be resolved', async () => {
+    vi.stubEnv('USERNAME', 'tester');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    execFileSyncMock.mockImplementation((cmd: unknown) => {
+      if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
+        throw new Error('whoami unavailable');
+      }
+      return Buffer.from('');
+    });
+
+    const { secureWriteTokenFile } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+    secureWriteTokenFile(tokenPath, 'secret-token');
+
+    expect(icaclsArgs()).toEqual([
+      tokenPath,
+      '/grant:r',
+      'tester:F',
+      '/inheritance:r',
+    ]);
   });
 
   it('deletes the token file and throws when Windows ACL hardening fails', async () => {
     vi.stubEnv('USERNAME', 'tester');
     vi.stubEnv('SystemRoot', 'C:\\Windows');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    execFileSyncMock.mockImplementation(() => {
+    // whoami resolves fine; icacls is the step that fails.
+    execFileSyncMock.mockImplementation((cmd: unknown) => {
+      if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
+        return Buffer.from('user S-1-5-21-1-2-3-1001\n');
+      }
       throw new Error('icacls failed');
     });
 
@@ -92,10 +174,11 @@ describe('reHardenTokenFileAcl', () => {
     fsMock.chmodSync.mockReset();
   });
 
-  it('re-applies the restrictive ACL on Windows and returns true', async () => {
+  it('re-applies the SID-based restrictive ACL on Windows and returns true', async () => {
     vi.stubEnv('USERNAME', 'tester');
     vi.stubEnv('SystemRoot', 'C:\\Windows');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
 
     const { reHardenTokenFileAcl } = await import('../security');
     const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
@@ -103,11 +186,12 @@ describe('reHardenTokenFileAcl', () => {
     const ok = reHardenTokenFileAcl(tokenPath);
 
     expect(ok).toBe(true);
-    expect(execFileSyncMock).toHaveBeenCalledWith(
-      'C:\\Windows\\System32\\icacls.exe',
-      [tokenPath, '/inheritance:r', '/grant:r', 'tester:F'],
-      { windowsHide: true },
-    );
+    expect(icaclsArgs()).toEqual([
+      tokenPath,
+      '/grant:r',
+      '*S-1-5-21-1-2-3-1001:F',
+      '/inheritance:r',
+    ]);
     // Must NOT rewrite the token contents — only the ACL.
     expect(fsMock.writeFileSync).not.toHaveBeenCalled();
   });
@@ -129,7 +213,11 @@ describe('reHardenTokenFileAcl', () => {
     vi.stubEnv('USERNAME', 'tester');
     vi.stubEnv('SystemRoot', 'C:\\Windows');
     vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
-    execFileSyncMock.mockImplementation(() => {
+    execFileSyncMock.mockImplementation((cmd: unknown) => {
+      // whoami succeeds; icacls denies — hardening must still fail soft.
+      if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
+        return Buffer.from('user S-1-5-21-1-2-3-1001\n');
+      }
       throw new Error('icacls denied');
     });
 
