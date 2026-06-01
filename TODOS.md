@@ -152,3 +152,12 @@
 - **Depends on:** split-brain plan과 함께 진행 (Step ①이 이 항목을 흡수)
 - **Priority:** P3 (P1 split-brain 작업 중 자연히 일부 커버됨)
 
+## Substrate 3.0 lifecycle — daemon threshold config화 (P2, plan ready)
+- **What:** 데몬 하드코딩 임계값 5개(`maxSessions` 200, memory `warn/reap/block` 500/750/1024MB, `suspendedTtlHours` 7d)를 config.json으로. `deadSessionTtlHours`는 이미 config(중복만 정리), `maxRecoverSessions`는 노출 안 하고 `maxSessions`에서 파생. + PROTOCOL.md에 lifecycle/config-contract 섹션.
+- **Why:** 데몬이 lifecycle floor를 하드코딩 → substrate neutrality가 state/event/identity엔 적용되나 lifecycle엔 미적용. 운영자가 자원 floor를 조정 가능해야 + 계약 명문화.
+- **Pros:** 저사양/고사양 머신별 한계 조정, substrate 일관성, "왜 이 값인가"를 계약으로 설명.
+- **Cons:** 데몬 = 최고위험 영역. test-first + step별 codex + GUI dogfood 게이트 필수.
+- **Context:** **plan ready + eng review 완료** — `plans/substrate-3.0-lifecycle-boundary.md`. 5 knobs + per-field clamp(idle만 0=off, 나머지 hard min + memory 절대상한) + per-field backfill(whole-file reset 금지) + default SSOT=createDefaultConfig. codex 13건 fold-in. 6파일 sequential(config.ts/types.ts/DaemonSessionManager/index/StateWriter/Watchdog). **codex P1 주의: ① acquireLock 조기 StateWriter.load(`index.ts:222`) config 경로 ② maxSessions 축소 시 overflow는 SUSPENDED 유지·dead 마킹 금지(`index.ts:412`) ③ memory block min floor + startup warning(silent brick 방지) ④ dead TTL은 per-session 영속(신규 세션만 적용).** 회귀 5건 필수.
+- **Depends on:** 없음. 단 split-brain plan(P1)과 같은 daemon-lifecycle 영역 → 한 번에 두 architecture change 검증 어려움, 순차 권장.
+- **Priority:** P2 (plan ready, defect성 — 하드코딩 floor가 저사양 머신서 조정 불가)
+
