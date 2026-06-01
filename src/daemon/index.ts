@@ -33,13 +33,16 @@ eventLoopMonitor.enable();
 // lines land in ~/.wmux/logs/daemon-YYYY-MM-DD.log.
 initDaemonLogSink(wmuxDir);
 
-// Recovery soft cap. The hard PTY ceiling lives in DaemonSessionManager
-// (MAX_SESSIONS = 200). Recovery has its own lower bound so a state file
-// inflated by past v2.8.0 accumulation can't consume every slot before
-// the user creates their first new pane. Sessions beyond this cap stay
-// suspended in state.sessions and become recoverable on a subsequent
-// launch if the live count drops; SUSPENDED_TTL_HOURS reaps the truly
-// stale ones over time.
+// Recovery soft-cap ceiling. The hard PTY ceiling is now configurable
+// (config.session.maxSessions, default 200); recovery derives its own cap
+// as min(maxSessions, 40) in main(). This 40 is the startup-headroom
+// heuristic: even with a large maxSessions, recover at most 40 so a state
+// file inflated by past v2.8.0 accumulation can't consume every slot before
+// the user creates their first new pane. Deriving from maxSessions also
+// guarantees maxRecover ≤ maxSessions, so recovery can never trip the
+// createSession cap and dead-mark the overflow (codex #4). Sessions beyond
+// the cap stay suspended and become recoverable on a later launch, or get
+// reaped by the suspended TTL.
 const MAX_RECOVER_SESSIONS = 40;
 
 /** Get a unique identifier for the current OS boot session (async).
@@ -219,6 +222,13 @@ async function acquireLock(): Promise<boolean> {
           // Use bootId comparison as a fallback: if bootId matches the saved state,
           // the lock is truly stale (same boot, process gone).
           // If bootId differs, it's definitely stale (reboot happened).
+          //
+          // This one-shot StateWriter intentionally omits the suspended-TTL
+          // config — acquireLock() runs before loadConfig(), so it isn't
+          // available yet. Safe: we only read savedState.bootId here and
+          // discard the pruned session list; the authoritative, config-driven
+          // prune runs on the main StateWriter during recovery (codex #3 —
+          // both startup paths handled).
           const stateWriter = new StateWriter(wmuxDir);
           const savedState = stateWriter.load();
           const currentBoot = await getBootId();
@@ -279,6 +289,7 @@ async function recoverSessions(
   stateWriter: StateWriter,
   sessionManager: DaemonSessionManager,
   processMonitor: ProcessMonitor,
+  maxRecover: number,
 ): Promise<void> {
   const state = stateWriter.load();
   let changed = false;
@@ -299,7 +310,7 @@ async function recoverSessions(
   // to create new panes after a heavy session.
   const { recoverableIds, cappedCount } = selectRecoverableSessions(
     state.sessions,
-    MAX_RECOVER_SESSIONS,
+    maxRecover,
   );
   if (cappedCount > 0) {
     log(
@@ -1179,7 +1190,10 @@ async function main(): Promise<void> {
   log('info', `Config loaded (logLevel=${config.daemon.logLevel})`);
 
   // 3. Initialize modules
-  const stateWriter = new StateWriter(wmuxDir);
+  // Thread the configured suspended-tombstone TTL into the authoritative
+  // StateWriter (codex #2). The acquireLock() one-shot above runs pre-config
+  // and only reads bootId, so the default there is harmless.
+  const stateWriter = new StateWriter(wmuxDir, config.session.suspendedTtlHours);
   // A4 — sweep tmp dumps left behind by a previous crash. They are safe to
   // delete: tmp files only exist between the write and rename steps of an
   // atomic dump, so any tmp on disk now is from a daemon that died before
@@ -1220,7 +1234,11 @@ async function main(): Promise<void> {
   // (scripts/daemon-idle-shutdown-dynamic.mjs) drops this so it doesn't
   // have to wait a full tick after the idle window elapses.
   const watchdogTickMs = parsePositiveMs(process.env.WMUX_WATCHDOG_TICK_MS) ?? 30000;
-  const watchdog = new Watchdog(watchdogTickMs, idleConfig);
+  const watchdog = new Watchdog(watchdogTickMs, idleConfig, {
+    warnMb: config.daemon.memWarnMb,
+    reapMb: config.daemon.memReapMb,
+    blockMb: config.daemon.memBlockMb,
+  });
   const sessionPipes = new Map<string, SessionPipe>();
   const sessionDataListeners = new Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>();
 
@@ -1229,8 +1247,13 @@ async function main(): Promise<void> {
   // immediate snapshot; the 30 s interval will still cover them.
   let runSnapshotOnceRef: (() => Promise<void>) | null = null;
 
-  // 4. Recover previous sessions
-  await recoverSessions(stateWriter, sessionManager, processMonitor);
+  // 4. Recover previous sessions. Derive the recovery soft cap from the
+  // configured session ceiling: min(maxSessions, 40). Capping at maxSessions
+  // guarantees recovery never trips the createSession limit and dead-marks
+  // the overflow — a freshly lowered maxSessions keeps the excess SUSPENDED
+  // instead of destroying it (codex #4).
+  const maxRecover = Math.min(config.session.maxSessions, MAX_RECOVER_SESSIONS);
+  await recoverSessions(stateWriter, sessionManager, processMonitor, maxRecover);
 
   // 5. Register RPC handlers
   registerRpcHandlers(

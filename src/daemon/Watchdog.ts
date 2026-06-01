@@ -36,10 +36,14 @@ export class Watchdog {
   private checkCount = 0;
   private idleShutdownFired = false;
 
-  // Escalation thresholds
-  private static readonly WARN_BYTES = 500 * 1024 * 1024;   // 500 MB — log warning
-  private static readonly REAP_BYTES = 750 * 1024 * 1024;   // 750 MB — reap dead sessions
-  private static readonly BLOCK_BYTES = 1024 * 1024 * 1024; // 1 GB — block new sessions
+  // Memory escalation thresholds (bytes). Instance-level (was static) so the
+  // daemon can thread config.daemon.mem{Warn,Reap,Block}Mb. The defaults
+  // preserve the historical 500/750/1024 MB ladder for callers that omit
+  // memConfig — which keeps every existing Watchdog escalation test locked
+  // to the same behaviour (substrate 3.0 regression #2).
+  private readonly warnBytes: number;
+  private readonly reapBytes: number;
+  private readonly blockBytes: number;
 
   /**
    * @param checkIntervalMs how often to poll health (default 30s)
@@ -47,6 +51,10 @@ export class Watchdog {
    *                        values to enable, set `idleTimeoutMs <= 0` to
    *                        keep the daemon alive forever (default behavior
    *                        before this knob existed)
+   * @param memConfig       memory-pressure escalation thresholds in MB. The
+   *                        daemon passes config.daemon.mem{Warn,Reap,Block}Mb
+   *                        (already clamped + ordered by loadConfig). Omit to
+   *                        get the default 500/750/1024 MB ladder.
    */
   constructor(
     private readonly checkIntervalMs: number = 30000,
@@ -55,7 +63,16 @@ export class Watchdog {
       graceMs: 60_000,
       startTime: Date.now(),
     },
-  ) {}
+    memConfig: { warnMb: number; reapMb: number; blockMb: number } = {
+      warnMb: 500,
+      reapMb: 750,
+      blockMb: 1024,
+    },
+  ) {
+    this.warnBytes = memConfig.warnMb * 1024 * 1024;
+    this.reapBytes = memConfig.reapMb * 1024 * 1024;
+    this.blockBytes = memConfig.blockMb * 1024 * 1024;
+  }
 
   setCallbacks(callbacks: WatchdogCallbacks): void {
     this.callbacks = callbacks;
@@ -75,30 +92,30 @@ export class Watchdog {
         const health = healthCheck();
         const memMB = (health.memory / 1024 / 1024).toFixed(1);
 
-        // Level 3: Block new sessions (>= 1GB)
-        if (health.memory >= Watchdog.BLOCK_BYTES) {
+        // Level 3: Block new sessions (>= block threshold)
+        if (health.memory >= this.blockBytes) {
           if (!this.sessionsBlocked) {
             this.sessionsBlocked = true;
             this.callbacks.onBlockNewSessions?.(true);
-            console.log(`[Watchdog] CRITICAL: Memory ${memMB}MB >= 1GB — blocking new sessions`);
+            console.log(`[Watchdog] CRITICAL: Memory ${memMB}MB >= ${Math.round(this.blockBytes / 1024 / 1024)}MB — blocking new sessions`);
           }
         }
 
-        // Level 2: Reap dead sessions (>= 750MB)
-        if (health.memory >= Watchdog.REAP_BYTES) {
+        // Level 2: Reap dead sessions (>= reap threshold)
+        if (health.memory >= this.reapBytes) {
           const reaped = this.callbacks.onReapDeadSessions?.() ?? 0;
           if (reaped > 0) {
-            console.log(`[Watchdog] WARNING: Memory ${memMB}MB >= 750MB — reaped ${reaped} dead sessions`);
+            console.log(`[Watchdog] WARNING: Memory ${memMB}MB >= ${Math.round(this.reapBytes / 1024 / 1024)}MB — reaped ${reaped} dead sessions`);
           }
         }
 
-        // Level 1: Warning (>= 500MB)
-        if (health.memory >= Watchdog.WARN_BYTES) {
-          console.log(`[Watchdog] WARNING: Memory ${memMB}MB exceeds 500MB threshold`);
+        // Level 1: Warning (>= warn threshold)
+        if (health.memory >= this.warnBytes) {
+          console.log(`[Watchdog] WARNING: Memory ${memMB}MB exceeds ${Math.round(this.warnBytes / 1024 / 1024)}MB threshold`);
         }
 
         // Recovery: unblock if memory drops below block threshold
-        if (this.sessionsBlocked && health.memory < Watchdog.BLOCK_BYTES) {
+        if (this.sessionsBlocked && health.memory < this.blockBytes) {
           this.sessionsBlocked = false;
           this.callbacks.onBlockNewSessions?.(false);
           console.log(`[Watchdog] Memory recovered to ${memMB}MB — unblocking new sessions`);

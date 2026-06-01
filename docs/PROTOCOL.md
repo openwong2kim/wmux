@@ -383,7 +383,7 @@ There are four resolution paths in the current implementation, in order of prefe
 | C | `mcp.claimWorkspace` (external-caller fallback) | When paths B and A both fail (typical for an MCP server launched from a non-wmux terminal such as `cmd`, Windows Terminal, or VS Code's integrated terminal), the first pane-targeted tool call invokes `mcp.claimWorkspace`. The daemon spawns a dedicated background workspace named `MCP`, creates a PTY pane inside it, restores the previously-active workspace so the user's focus is not stolen, and pins the new `ptyId` for the MCP server's lifetime. | First claim ≈ 100–400 ms (workspace + PTY spawn). Subsequent calls hit the pin. | Deterministic per MCP server process. |
 | D | `activeWorkspaceId` (renderer-side fallback) | A small number of legacy RPCs (notifications and some renderer-side surfaces) accept an optional `workspaceId` parameter; if omitted, the renderer falls back to `store.activeWorkspaceId`. This path predates `mcp.claimWorkspace` and survives in places that have not yet been migrated. | Instant. | **Non-deterministic — depends on whatever workspace the user is viewing at the moment of the call.** |
 
-Path B is the substrate-aligned answer: it anchors identity to the immutable `ptyId` and resolves the owning workspace live, so it survives workspace-id re-minting. Path A is now a stale-prone hint, demoted to a last resort behind B (it previously short-circuited resolution, which left agents permanently stuck on a dead workspace id after a respawn/restore — "no workspace found for ws-…"). Path C covers non-wmux terminals; path D is the only remaining footgun and is the substrate boundary documented in §7.
+Path B is the substrate-aligned answer: it anchors identity to the immutable `ptyId` and resolves the owning workspace live, so it survives workspace-id re-minting. Path A is now a stale-prone hint, demoted to a last resort behind B (it previously short-circuited resolution, which left agents permanently stuck on a dead workspace id after a respawn/restore — "no workspace found for ws-…"). Path C covers non-wmux terminals; path D is the only remaining footgun and is the substrate boundary documented in §8.
 
 **Substrate alignment notes:**
 
@@ -395,7 +395,50 @@ Path B is the substrate-aligned answer: it anchors identity to the immutable `pt
 
 ---
 
-## 7. Known limitations and v3.0 boundaries
+## 7. Daemon lifecycle & resource floors
+
+§§1–6 cover the state, event, and identity surfaces. This section covers the daemon **lifecycle** and the **config contract** that parameterises it.
+
+The governing principle mirrors the neutrality of the other surfaces. The substrate enforces **resource floors** — configurable, triggered by measured pressure or count, and resolved by *refusing* new work or *garbage-collecting* dead artifacts. It never evicts a *live* session because of idle-time or age. Idle/age eviction is workflow policy and lives in an outer layer (§8).
+
+### 7.1 Three tiers
+
+| Tier | Owner | Behaviour |
+|---|---|---|
+| **1 — Mechanism** | substrate, no knob | create / destroy / attach / detach; persist-across-detach + recover; **exit-empty** — the daemon exits after a grace window once *zero* live sessions remain. This fires on count == 0 (the daemon has nothing to hold), never on idle-time. |
+| **2 — Resource floor** | substrate, **configurable threshold** | `maxSessions` cap → refuse new with `RESOURCE_EXHAUSTED` (never evict existing); memory-pressure ladder → warn, then GC dead tombstones, then refuse new (never kill live); dead/suspended **tombstone GC** on a configurable TTL. |
+| **3 — Policy** | outer layer (GUI / plugin / operator), off by default | idle-session reaping, suspend-on-idle, age-based eviction of *live* sessions, "kill oldest to make room". The substrate's only role is to expose the facts and the `destroySession` mechanism; the decision lives here. **Not in the substrate.** |
+
+A Tier-2 floor is legitimate substrate only because its threshold is a knob, not a literal, and it reacts to measured pressure/count (or GCs an artifact with no live process behind it) — never to idle-time, age, or intent. Reaping a dead/suspended tombstone is garbage collection (no live process behind the retained metadata); reaping a *live* idle session would be eviction and belongs in Tier 3.
+
+### 7.2 Config contract
+
+The daemon reads `~/.wmux/config.json`. Lifecycle knobs and their defaults:
+
+| Key | Default | Floor / cap | Semantics |
+|---|---|---|---|
+| `daemon.idleShutdownMinutes` | `5` | `0` = off | exit-empty grace window (Tier 1). `0` keeps the daemon alive forever. |
+| `daemon.memWarnMb` | `500` | floor 128, cap = physical RAM | RSS ≥ this → log a warning (Tier 2). |
+| `daemon.memReapMb` | `750` | floor 192, cap = RAM | RSS ≥ this → GC DEAD tombstones. |
+| `daemon.memBlockMb` | `1024` | floor 256, cap = RAM | RSS ≥ this → refuse new sessions until RSS recovers. A value below the floor is clamped **and logged at startup** — a block threshold under normal idle RSS would silently brick session creation. |
+| `session.maxSessions` | `200` | floor 1, cap 10000 | hard cap on concurrent sessions; new-session creation throws `RESOURCE_EXHAUSTED` at the cap. Startup recovery derives its own soft cap as `min(maxSessions, 40)`, so a freshly lowered cap can never dead-mark persisted sessions. |
+| `session.suspendedTtlHours` | `168` (7d) | floor 1, cap 8760 (1y) | a SUSPENDED tombstone idle longer than this is GC'd on the next load. |
+| `session.deadSessionTtlHours` | `24` | — | a DEAD tombstone older than this is reaped. Captured **per session at create time**; a config change applies only to *new* sessions — existing tombstones keep their create-time value (no silent retroactive change). |
+
+Contract rules:
+
+- **Per-field backfill.** A config.json missing a lifecycle key gets that key filled from its default; a key with a garbage value is reset to its default **in isolation** — a single bad field never resets the whole file (whole-file reset stays reserved for core-structure breakage like a missing `pipeName`). `idleShutdownMinutes` is the one exception and keeps its pre-existing whole-reset-on-garbage validation.
+- **Floors have no "off".** `0`/negative on a floor (`maxSessions`, the memory triple, `suspendedTtlHours`) clamps to the floor; "permanent" retention is a large value, not `0`. Only `idleShutdownMinutes` treats `0` as off.
+- **Memory order invariant.** After per-field clamping the substrate enforces `memWarnMb ≤ memReapMb ≤ memBlockMb`, raising `reap`/`block` rather than lowering `warn`.
+- **Operator contract, not wire contract.** These keys are a daemon **config** contract, distinct from the §1–§3 pane/event/identity **wire** contract — but still a contract: renaming a key or changing a default is a compatibility concern.
+
+### 7.3 Lifecycle facts and events
+
+The daemon tracks `createdAt`, `lastActivity`, and `state` (`attached` / `detached` / `suspended` / `dead`) per session, surfaced to the wmux main process via the internal `daemon.listSessions` RPC. A **client-facing** idle surface on the external event bus — an `idleSince` fact plus a `session.idleThresholdExceeded` event (emit-only; the substrate would never act on it) — is deferred to v3.1: no Tier-3 consumer exists yet, and wiring an unused event into the contract would be a proxy-metric anti-pattern. v3.0 ships the floors and the config contract; it emits no idle event.
+
+---
+
+## 8. Known limitations and v3.0 boundaries
 
 Things external clients may run into that aren't bugs but are explicit substrate boundaries:
 
@@ -404,15 +447,17 @@ Things external clients may run into that aren't bugs but are explicit substrate
 - **Cursor evolution.** The opaque-cursor guarantee is a forward-compat hedge. If sharded rings ship in v3.x, the encoding may change; opaque-cursor clients are unaffected by design.
 - **Layered status precedence.** The substrate does not enforce precedence among writers of the top-level `status` field. Last writer wins. Tools that need precedence should coordinate via `custom.<tool>.status` and pick one tool to own the shared field.
 - **Cross-producer ordering.** `seq` is arrival order, not causal order. See §2.7.
+- **Lifecycle neutrality — the substrate enforces resource floors, never idle/age eviction.** The daemon refuses new sessions at `session.maxSessions` (`RESOURCE_EXHAUSTED`) and under memory pressure, and GCs dead/suspended tombstones on configurable TTLs — all count/pressure/GC-based. It never kills or suspends a *live* session because it has been idle or old. Idle-session reaping, age eviction, and "kill oldest to make room" are outer-layer policy (GUI app / plugin / operator): the substrate exposes the facts (`createdAt`, `lastActivity`, session `state`) and the `destroySession` mechanism, but the decision lives above it. See §7 for the tier model and config contract.
 
 ---
 
-## 8. Change history of this document
+## 9. Change history of this document
 
 | Version | Date | Notes |
 |---|---|---|
 | Draft 1 | 2026-05-12 | Phase 0 initial draft. Covers PaneMetadata layered status, mergeMode, version + expectedVersion, bootId, cursor opaqueness, snapshot envelope, permission enforcement (sketch), Named Pipe security model. Phase 1 M3 will expand. |
 | Draft 2 | 2026-05-16 | Phase 1 M4 — adds §6.1 `workspaceId` resolution paths (env / PID-tree walk / `mcp.claimWorkspace` / legacy `activeWorkspaceId` fallback). §7 limitation entry rewritten to point at §6.1 and to define the path-D removal as a Phase 2.1 work item rather than a v3.0 blocker. |
 | Draft 3 | 2026-05-18 | Phase 2.1 follow-up — §4.2 adds structured rejection result for `mcp.declarePermissions` (discriminated union with per-entry `errors`) and the trust-DB invariants subsection: capability-widening demotion, LRU eviction cap, transport-close identity clear. No method-dispatch enforcement yet. |
+| Draft 4 | 2026-06-01 | Substrate 3.0 lifecycle boundary — adds §7 (daemon lifecycle three-tier model, config contract for the 5 new lifecycle knobs, lifecycle facts/event deferral to v3.1) and the §8 "Lifecycle neutrality" boundary entry. Documents resource-floor neutrality: substrate refuses/GCs on pressure/count, never evicts a live session on idle/age (that is outer-layer policy). Renumbered prior §7/§8 → §8/§9. |
 
 This document evolves alongside the implementation. Changes that affect the wire contract require a major-version bump per [`api/versioning.md`](./api/versioning.md). Changes that clarify existing semantics ship in any release.

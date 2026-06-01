@@ -13,17 +13,21 @@ import { AsyncQueue } from './util/AsyncQueue';
 const DEBOUNCE_MS = 30_000;
 const QUEUE_KEY = 'state';
 
-// Suspended sessions persist across daemon restarts so an interrupted
-// shell can be resumed. Without a TTL they accumulate indefinitely:
-// every X-button shutdown re-suspends every live session, the next
-// launch recovers them, and any panes the user adds before the next
-// shutdown ride along forever. v2.8.0 shipped without this bound and
-// users reached the 50-session hard cap after a few launches, at which
-// point recovery throws and new pane creation throws — wmux silently
-// becomes unusable. 7 days mirrors the dead-session pattern (24h × 7)
-// so a session you stopped touching a week ago is unlikely to be the
-// one you actually wanted to resume.
-const SUSPENDED_TTL_HOURS = 7 * 24;
+// Default suspended-session retention (hours). Suspended sessions persist
+// across daemon restarts so an interrupted shell can be resumed. Without a
+// TTL they accumulate indefinitely: every X-button shutdown re-suspends
+// every live session, the next launch recovers them, and any panes the
+// user adds before the next shutdown ride along forever. v2.8.0 shipped
+// without this bound and users reached the session hard cap after a few
+// launches, at which point recovery throws and new pane creation throws —
+// wmux silently becomes unusable. 7 days mirrors the dead-session pattern
+// (24h × 7) so a session you stopped touching a week ago is unlikely to be
+// the one you actually wanted to resume.
+//
+// Substrate 3.0: now configurable via config.session.suspendedTtlHours,
+// threaded through the constructor. This constant is only the fallback for
+// callers that don't pass config (see constructor).
+const SUSPENDED_TTL_HOURS_DEFAULT = 7 * 24;
 
 /**
  * Persists DaemonState (sessions.json) to disk using the shared
@@ -46,6 +50,7 @@ const SUSPENDED_TTL_HOURS = 7 * 24;
  */
 export class StateWriter {
   private filePath: string;
+  private readonly suspendedTtlHours: number;
   private debounceTimer: NodeJS.Timeout | null = null;
   private pendingState: DaemonState | null = null;
   private readonly queue = new AsyncQueue();
@@ -58,8 +63,15 @@ export class StateWriter {
   private immediateEpoch = 0;
   private lastImmediateState: DaemonState | null = null;
 
-  constructor(baseDir: string) {
+  constructor(baseDir: string, suspendedTtlHours: number = SUSPENDED_TTL_HOURS_DEFAULT) {
     this.filePath = path.join(baseDir, 'sessions.json');
+    // Substrate 3.0: suspended-tombstone GC retention. The daemon main
+    // threads config.session.suspendedTtlHours here (codex #2). The
+    // acquireLock() one-shot StateWriter omits it — it only reads bootId
+    // and discards the pruned sessions, so the default is harmless there;
+    // the authoritative prune runs on the main instance during recovery
+    // (codex #3 — both startup paths handled).
+    this.suspendedTtlHours = suspendedTtlHours;
 
     // Sync fallback used by `flushSync()` on emergency exit paths.
     // It writes whatever the latest pending snapshot is using the
@@ -193,8 +205,9 @@ export class StateWriter {
 
     // Prune expired sessions. Two paths:
     //   - dead: per-session TTL (s.deadTtlHours)
-    //   - suspended: global SUSPENDED_TTL_HOURS (v2.8.1 hotfix — see top
-    //     of this file for the accumulation incident this prevents).
+    //   - suspended: this.suspendedTtlHours (configurable, default 7d —
+    //     v2.8.1 hotfix; see top of this file for the accumulation incident
+    //     this prevents).
     //
     // detached/attached states are runtime-only and never reach disk —
     // shutdown demotes every live session to suspended before saving.
@@ -205,7 +218,7 @@ export class StateWriter {
         return sinceMs < s.deadTtlHours * 60 * 60 * 1000;
       }
       if (s.state === 'suspended') {
-        return sinceMs < SUSPENDED_TTL_HOURS * 60 * 60 * 1000;
+        return sinceMs < this.suspendedTtlHours * 60 * 60 * 1000;
       }
       return true;
     });

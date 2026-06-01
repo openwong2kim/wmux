@@ -49,6 +49,24 @@ export interface DaemonConfig {
      * orphaned daemon would otherwise occupy RAM indefinitely.
      */
     idleShutdownMinutes?: number;
+    /**
+     * Memory-pressure escalation thresholds in MB, measured against the
+     * daemon process RSS. Substrate 3.0 lifecycle Tier-2 floors: as RSS
+     * climbs the daemon warns (`memWarnMb`), then GCs DEAD tombstones
+     * (`memReapMb`), then refuses new sessions (`memBlockMb`) — it never
+     * evicts a live session. `memWarnMb ≤ memReapMb ≤ memBlockMb` is
+     * enforced at load time; each has a sane floor and an absolute upper
+     * cap (a value above physical RAM can't silently disable protection),
+     * and a `memBlockMb` below the floor logs a startup warning rather than
+     * silently bricking session creation. Backfilled per-field from
+     * defaults when absent/garbage — see `loadConfig` in config.ts.
+     *
+     * Normalised by `loadConfig`, so they are always present at runtime;
+     * a raw config.json may omit them (old files) and gets backfilled.
+     */
+    memWarnMb: number;
+    memReapMb: number;
+    memBlockMb: number;
   };
   session: {
     defaultShell: string;
@@ -58,5 +76,22 @@ export interface DaemonConfig {
     bufferMaxMb: number;
     deadSessionTtlHours: number;
     deadSessionDumpBuffer: boolean;
+    /**
+     * Hard cap on concurrent sessions the daemon will hold. New-session
+     * creation throws RESOURCE_EXHAUSTED at this ceiling — the substrate
+     * refuses, it never evicts an existing session to make room (Tier-2
+     * floor, refuse-not-evict). Startup recovery derives its own soft cap
+     * as `min(maxSessions, 40)` so a freshly lowered cap can't dead-mark
+     * persisted sessions. Backfilled from the default when absent/garbage.
+     */
+    maxSessions: number;
+    /**
+     * TTL in hours after which an idle SUSPENDED session tombstone is
+     * garbage-collected on the next `StateWriter.load`. This is GC of a
+     * tombstone (no live PTY behind it), not eviction of a live session.
+     * "Permanent" retention = a large value, never 0. Backfilled from the
+     * default when absent/garbage.
+     */
+    suspendedTtlHours: number;
   };
 }

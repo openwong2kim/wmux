@@ -80,6 +80,28 @@ describe('selectRecoverableSessions', () => {
     expect(cappedCount).toBe(0);
   });
 
+  it('REGRESSION #4: cap below the recoverable count keeps the overflow SUSPENDED, never dead (codex #4)', () => {
+    // When maxSessions is lowered below the persisted recoverable count, the
+    // daemon derives cap = min(maxSessions, 40) (see index.ts main()). The
+    // overflow must stay suspended: it lands in cappedCount, never in
+    // recoverableIds, so recoverSessions preserves it verbatim
+    // (buildState + preservedFromState) and never calls createSession for
+    // it — which means it can never trip the MAX_SESSIONS throw → catch →
+    // dead-mark path. cap ≤ maxSessions by construction also guarantees
+    // recovery itself can't exhaust the cap. This is the data-loss guard.
+    const sessions: DaemonSession[] = [];
+    for (let i = 0; i < 10; i++) {
+      const ts = new Date(2026, 4, 1, 0, 0, i).toISOString();
+      sessions.push(session(`s-${i}`, 'suspended', ts));
+    }
+    const maxSessions = 5;
+    const cap = Math.min(maxSessions, 40); // mirror index.ts main()
+    const { recoverableIds, cappedCount } = selectRecoverableSessions(sessions, cap);
+    expect(recoverableIds.size).toBe(5); // recover up to the cap
+    expect(cappedCount).toBe(5); // overflow stays suspended, NOT dead-marked
+    expect(recoverableIds.size).toBeLessThanOrEqual(maxSessions); // never exceeds the ceiling
+  });
+
   it('handles cap=0 by skipping every session', () => {
     // Defensive: a config that disables recovery should not throw.
     const sessions = [

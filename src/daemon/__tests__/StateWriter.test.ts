@@ -241,6 +241,42 @@ describe('StateWriter', () => {
     expect(loaded.sessions[0].id).toBe('suspended-with-tight-dead-ttl');
   });
 
+  it('honours a custom suspendedTtlHours from the constructor (substrate 3.0)', () => {
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    // A writer configured with a 48h suspended TTL instead of the 7d default.
+    const customWriter = new StateWriter(tmpDir, 48);
+    const stale = makeSession({
+      id: 'stale-3d',
+      state: 'suspended',
+      lastActivity: new Date(now - 3 * 24 * HOUR).toISOString(), // 72h > 48h → pruned
+    });
+    const fresh = makeSession({
+      id: 'fresh-1d',
+      state: 'suspended',
+      lastActivity: new Date(now - 24 * HOUR).toISOString(), // 24h < 48h → survives
+    });
+    customWriter.saveImmediate(makeState([stale, fresh]));
+
+    const ids = customWriter.load().sessions.map((s) => s.id);
+    expect(ids).not.toContain('stale-3d');
+    expect(ids).toContain('fresh-1d');
+  });
+
+  it('default constructor keeps the 7-day suspended TTL (no config passed)', () => {
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    // 3 days old: would be pruned under a 48h TTL, but kept under the 7d
+    // default — proves the default still applies when config is omitted.
+    const s = makeSession({
+      id: 'three-day-suspended',
+      state: 'suspended',
+      lastActivity: new Date(now - 3 * 24 * HOUR).toISOString(),
+    });
+    writer.saveImmediate(makeState([s]));
+    expect(writer.load().sessions.map((x) => x.id)).toContain('three-day-suspended');
+  });
+
   it('rejects prototype pollution keys in JSON', () => {
     const filePath = path.join(tmpDir, 'sessions.json');
     const poisoned = JSON.stringify({

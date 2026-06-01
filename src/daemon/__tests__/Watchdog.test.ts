@@ -294,4 +294,56 @@ describe('Watchdog', () => {
 
     consoleSpy.mockRestore();
   });
+
+  describe('custom memory thresholds (substrate 3.0)', () => {
+    // Proves the escalation ladder is instance-driven (config.daemon.mem*Mb)
+    // rather than the old static constants. The pairing with the control
+    // case below is the actual evidence: 250 MB trips a custom 200 MB block
+    // but is a no-op under the 1 GB default.
+    it('blocks at a custom block threshold below the 1GB default', () => {
+      const wd = new Watchdog(1000, undefined, { warnMb: 100, reapMb: 150, blockMb: 200 });
+      const onBlock = vi.fn();
+      wd.setCallbacks({ onBlockNewSessions: onBlock });
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      wd.start(() => ({ sessions: 5, memory: 250 * 1024 * 1024, uptime: 100 }));
+      vi.advanceTimersByTime(1000);
+
+      expect(wd.isBlocked).toBe(true);
+      expect(onBlock).toHaveBeenCalledWith(true);
+      wd.stop();
+      consoleSpy.mockRestore();
+    });
+
+    it('default thresholds do NOT block at 250MB (control for the above)', () => {
+      const wd = new Watchdog(1000); // omit memConfig → default 500/750/1024
+      const onBlock = vi.fn();
+      wd.setCallbacks({ onBlockNewSessions: onBlock });
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      wd.start(() => ({ sessions: 5, memory: 250 * 1024 * 1024, uptime: 100 }));
+      vi.advanceTimersByTime(1000);
+
+      expect(wd.isBlocked).toBe(false);
+      expect(onBlock).not.toHaveBeenCalled();
+      wd.stop();
+      consoleSpy.mockRestore();
+    });
+
+    it('reaps dead sessions at a custom reap threshold', () => {
+      const wd = new Watchdog(1000, undefined, { warnMb: 100, reapMb: 150, blockMb: 200 });
+      const onReap = vi.fn(() => 2);
+      wd.setCallbacks({ onReapDeadSessions: onReap });
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+
+      // 160MB: above custom reap(150), below custom block(200).
+      wd.start(() => ({ sessions: 3, memory: 160 * 1024 * 1024, uptime: 100 }));
+      vi.advanceTimersByTime(1000);
+
+      expect(onReap).toHaveBeenCalledTimes(1);
+      expect(wd.isBlocked).toBe(false);
+      wd.stop();
+      consoleSpy.mockRestore();
+    });
+  });
 });
