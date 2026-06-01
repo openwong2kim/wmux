@@ -140,6 +140,35 @@ describe('secureWriteTokenFile', () => {
     ]);
   });
 
+  // Guard: when the SID can't be resolved, the %USERNAME% fallback must NOT be
+  // used for a non-ASCII account — that would re-create the very ghost-principal
+  // lock-out this code exists to prevent (and re-apply it on every load). The
+  // write path must refuse: never run icacls with the mangling-prone name, and
+  // delete the just-written (now un-hardenable) token rather than leave it loose.
+  it('refuses (throws + deletes, no icacls) when SID unresolved AND USERNAME is non-ASCII', async () => {
+    vi.stubEnv('USERNAME', '홍길동');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    // whoami fails → SID unresolved; the only fallback would be the Korean name.
+    execFileSyncMock.mockImplementation((cmd: unknown) => {
+      if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
+        throw new Error('whoami unavailable');
+      }
+      return Buffer.from('');
+    });
+
+    const { secureWriteTokenFile } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', '홍길동', '.wmux-auth-token');
+
+    expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+      /refusing to apply a mangling-prone ACL/,
+    );
+    // icacls must NEVER run with the mangling-prone principal...
+    expect(icaclsArgs()).toBeUndefined();
+    // ...and the un-hardenable token is removed (fail-closed, like any ACL fail).
+    expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
+  });
+
   it('deletes the token file and throws when Windows ACL hardening fails', async () => {
     vi.stubEnv('USERNAME', 'tester');
     vi.stubEnv('SystemRoot', 'C:\\Windows');
@@ -207,6 +236,29 @@ describe('reHardenTokenFileAcl', () => {
     expect(ok).toBe(true);
     expect(fsMock.chmodSync).toHaveBeenCalledWith(tokenPath, 0o600);
     expect(fsMock.writeFileSync).not.toHaveBeenCalled();
+  });
+
+  // Guard (re-harden side): SID unresolved + non-ASCII USERNAME must fail soft —
+  // never run icacls with the mangling-prone name, never delete the working
+  // token. Re-locking the owner out on every load is worse than leaving the
+  // file's current ACL untouched.
+  it('returns false without running icacls when SID unresolved AND USERNAME is non-ASCII', async () => {
+    vi.stubEnv('USERNAME', '홍길동');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    execFileSyncMock.mockImplementation((cmd: unknown) => {
+      if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
+        throw new Error('whoami unavailable');
+      }
+      return Buffer.from('');
+    });
+
+    const { reHardenTokenFileAcl } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', '홍길동', '.wmux-auth-token');
+
+    expect(reHardenTokenFileAcl(tokenPath)).toBe(false);
+    expect(icaclsArgs()).toBeUndefined();
+    expect(fsMock.unlinkSync).not.toHaveBeenCalled();
   });
 
   it('returns false (does NOT throw) when hardening fails — best-effort', async () => {

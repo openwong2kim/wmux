@@ -43,7 +43,10 @@ function getCurrentUserSid(): string | null {
  *
  * Two correctness rules encoded in the argv order and principal choice:
  *   1. Identify the owner by SID (`*S-1-5-...`) when resolvable, not by
- *      `%USERNAME%` — see getCurrentUserSid for the non-ASCII lock-out bug.
+ *      `%USERNAME%` — see getCurrentUserSid for the non-ASCII lock-out bug. If
+ *      the SID is unresolvable, fall back to the account name ONLY when it is
+ *      pure ASCII; refuse a non-ASCII/empty name rather than re-introduce the
+ *      mangle.
  *   2. `/grant:r` comes BEFORE `/inheritance:r`. icacls applies operations
  *      left-to-right; stripping inheritance first removes the owner's WRITE_DAC
  *      and the subsequent grant can fail silently (the RCA documented in
@@ -53,10 +56,35 @@ function getCurrentUserSid(): string | null {
 function applyRestrictiveWindowsAcl(filePath: string): void {
   const icacls = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\icacls.exe`;
   const sid = getCurrentUserSid();
-  // icacls accepts a SID principal when prefixed with `*`. Fall back to the
-  // account name only if the SID can't be resolved (keeps ASCII accounts working
-  // even on a stripped-down system where whoami is unavailable).
-  const principal = sid ? `*${sid}` : `${process.env.USERNAME}`;
+  // icacls accepts a SID principal when prefixed with `*` (ASCII, codepage-proof
+  // — always preferred). Fall back to the account name ONLY when the SID can't
+  // be resolved (e.g. a stripped-down system where whoami is unavailable) AND
+  // that name is pure ASCII.
+  //
+  // Never fall back to a non-ASCII (or empty/undefined) USERNAME: icacls would
+  // mangle it in the console OEM codepage into a ghost principal, granting Full
+  // control to a non-existent account while `/inheritance:r` strips the real
+  // owner's ACEs — the exact lock-out getCurrentUserSid exists to prevent, and
+  // re-applied on every token load. Refuse and throw instead so callers fail
+  // safe: secureWriteTokenFile deletes the token and rethrows;
+  // reHardenTokenFileAcl returns false without touching the existing ACL — both
+  // strictly better than silently re-locking the owner out.
+  let principal: string;
+  if (sid) {
+    principal = `*${sid}`;
+  } else {
+    const username = process.env.USERNAME;
+    // A non-ASCII char is >1 UTF-8 byte, so byteLength === length iff pure ASCII.
+    if (!username || Buffer.byteLength(username, 'utf8') !== username.length) {
+      throw new Error(
+        `Cannot harden ${filePath}: owner SID unresolved and USERNAME is ` +
+          `${username ? 'non-ASCII' : 'unset'}. Passing it to icacls would mangle ` +
+          `the principal and lock the owner out; refusing to apply a ` +
+          `mangling-prone ACL.`,
+      );
+    }
+    principal = username;
+  }
   execFileSync(icacls, [
     filePath,
     '/grant:r',
