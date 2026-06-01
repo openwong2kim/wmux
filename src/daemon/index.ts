@@ -376,6 +376,7 @@ async function recoverSessions(
               rows: session.rows,
               agent: session.agent,
               createdAt: session.createdAt,
+              deadTtlHours: session.deadTtlHours,
               scrollbackData,
               // v2.8.1: stay muted until the renderer's first resize so PTY
               // output produced at the saved geometry can't interleave with
@@ -452,6 +453,7 @@ async function recoverSessions(
             rows: session.rows,
             agent: session.agent,
             createdAt: session.createdAt,
+            deadTtlHours: session.deadTtlHours,
             scrollbackData,
             // v2.8.1: see deferOutput rationale above (Bug 2).
             deferOutput: true,
@@ -490,6 +492,7 @@ async function recoverSessions(
           rows: session.rows,
           agent: session.agent,
           createdAt: session.createdAt,
+          deadTtlHours: session.deadTtlHours,
           // v2.8.1: see deferOutput rationale above (Bug 2).
           deferOutput: true,
         });

@@ -56,8 +56,13 @@ const MEM_BLOCK_FLOOR_MB = 256;
  * `idleShutdownMinutes`).
  */
 function clampLifecycle(raw: unknown, def: number, min: number, max: number): number {
-  if (typeof raw !== 'number' || !Number.isFinite(raw)) return def;
-  return Math.min(Math.max(Math.floor(raw), min), max);
+  // Fall back to the default for an absent/non-numeric value, then clamp the
+  // RESULT — default included — to [min, max]. Clamping the fallback matters
+  // on a box with less RAM than a memory default: an omitted memBlockMb must
+  // still cap at physical RAM, not sit above it and silently disable the
+  // guard (codex P3).
+  const v = typeof raw === 'number' && Number.isFinite(raw) ? raw : def;
+  return Math.min(Math.max(Math.floor(v), min), max);
 }
 
 /** Build a DaemonConfig with all defaults */

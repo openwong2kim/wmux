@@ -70,6 +70,13 @@ export class DaemonSessionManager extends EventEmitter {
     rows?: number;
     agent?: { role: string; teamId: string; displayName: string };
     createdAt?: string;
+    /**
+     * Recovery passes the session's persisted per-session dead-TTL so a
+     * recovered session keeps its create-time retention instead of being
+     * restamped from the current config (codex P2). Omitted for brand-new
+     * sessions, which take the config default.
+     */
+    deadTtlHours?: number;
     scrollbackData?: Buffer;
     /**
      * v2.8.1 hotfix: when true, the bridge starts muted so PTY output
@@ -182,12 +189,13 @@ export class DaemonSessionManager extends EventEmitter {
       env,
       cols,
       rows,
-      // Per-session snapshot of the dead-TTL config. codex #5: this is
-      // captured at create time and the reaper reads the per-session value,
-      // so a later config change applies only to NEW sessions — existing
-      // tombstones keep the value they were created with (no silent
-      // retroactive change to retention).
-      deadTtlHours: cfg.session.deadSessionTtlHours,
+      // Per-session dead-TTL. codex #5: captured at create time and the
+      // reaper reads the per-session value, so a later config change applies
+      // only to NEW sessions. Recovery passes the persisted value
+      // (params.deadTtlHours) so a recovered session keeps its create-time
+      // retention; a brand-new session takes the current config default
+      // (codex P2 — recovery must not silently restamp existing retention).
+      deadTtlHours: params.deadTtlHours ?? cfg.session.deadSessionTtlHours,
     };
     if (params.agent) {
       meta.agent = params.agent;

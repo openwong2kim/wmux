@@ -412,6 +412,19 @@ describe('DaemonSessionManager', () => {
     expect(s.deadTtlHours).toBe(24);
   });
 
+  // codex P2: recovery passes the saved per-session value, which must win
+  // over the current config so a recovered session keeps its create-time
+  // retention instead of being silently restamped.
+  it('preserves a passed deadTtlHours over the config default (recovery path)', () => {
+    const cfg = createDefaultConfig();
+    cfg.session.deadSessionTtlHours = 48; // current config
+    manager.setConfig(cfg);
+    // Recovery hands back the value the session was created with (e.g. 12h
+    // from an older config), not the current 48h.
+    const s = manager.createSession({ id: 'rec-ttl', cmd: 'cmd.exe', cwd: '.', deadTtlHours: 12 });
+    expect(s.deadTtlHours).toBe(12);
+  });
+
   // v2.8.1 hotfix: deferred output mode for recovered sessions (Bug 2)
   describe('deferOutput (recovery mode)', () => {
     it('drops PTY data while deferred and the ring buffer stays clean', () => {
