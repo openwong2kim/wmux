@@ -333,7 +333,7 @@ Every connection must present the token from `%APPDATA%\wmux\pipe-token` in the 
 }
 ```
 
-The token is a random UUIDv4 (122 bits of entropy, via `crypto.randomUUID()`) generated on first daemon launch and persisted to disk; it is reused across boots and rotated only on explicit request (planned CLI: `wmux pipe rotate-token`). The file is written with `secureWriteTokenFile` and re-hardened on every load by `reHardenTokenFileAcl` — on Windows the ACL is set via `icacls /inheritance:r /grant:r %USERNAME%:F` (inheritance stripped, current user granted Full control), so no other local account can read it.
+The token is a random UUIDv4 (122 bits of entropy, via `crypto.randomUUID()`) generated on first daemon launch and persisted to disk; it is reused across boots and rotated only on explicit request (planned CLI: `wmux pipe rotate-token`). The file is written with `secureWriteTokenFile` and re-hardened on every load by `reHardenTokenFileAcl` — on Windows the ACL is set via `icacls /grant:r *<owner-SID>:F /inheritance:r` (owner granted Full control by SID, then inheritance stripped), so no other local account can read it. The owner is identified by SID rather than `%USERNAME%` so that non-ASCII profile names are not mangled by icacls, and the grant precedes the inheritance strip so the owner keeps `WRITE_DAC` throughout.
 
 ### 5.2 Connection cap
 
