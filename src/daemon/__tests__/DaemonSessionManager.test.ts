@@ -380,6 +380,24 @@ describe('DaemonSessionManager', () => {
     ).toThrow(/Cannot create new terminal: 3 active sessions already running/);
   });
 
+  // codex P2: DEAD tombstones must not occupy a cap slot
+  it('does not count DEAD tombstones against maxSessions', () => {
+    const cfg = createDefaultConfig();
+    cfg.session.maxSessions = 2;
+    manager.setConfig(cfg);
+    manager.createSession({ id: 'd1', cmd: 'cmd.exe', cwd: '.' });
+    const d1Pty = lastMockPty; // capture before d2 overwrites lastMockPty
+    manager.createSession({ id: 'd2', cmd: 'cmd.exe', cwd: '.' });
+    // d1's PTY exits → it becomes a DEAD tombstone still held in the map.
+    d1Pty?.simulateExit(0);
+    expect(manager.getSession('d1')?.meta.state).toBe('dead');
+    // 1 live (d2) + 1 dead (d1). Under cap=2 a new session must be allowed —
+    // the dead tombstone must not occupy a live slot.
+    expect(() =>
+      manager.createSession({ id: 'd3', cmd: 'cmd.exe', cwd: '.' }),
+    ).not.toThrow();
+  });
+
   // substrate 3.0: dead-TTL is stamped per session from config (codex #5)
   it('stamps new sessions with deadSessionTtlHours from config', () => {
     const cfg = createDefaultConfig();

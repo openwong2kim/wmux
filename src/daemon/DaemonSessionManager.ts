@@ -98,8 +98,19 @@ export class DaemonSessionManager extends EventEmitter {
     // user-facing, so phrase it as an action the user can actually take.
     // The ceiling is configurable via session.maxSessions (default 200);
     // startup recovery derives its own soft cap as min(maxSessions, 40).
+    //
+    // Count only LIVE PTYs (attached/detached). DEAD tombstones linger in the
+    // map until the TTL/memory reaper runs but hold no live PTY — counting
+    // them would wrongly reject a new session under a low maxSessions the
+    // moment a PTY dies (codex P2). `suspended` never sits in this runtime
+    // map (it is a disk-only state the shutdown path demotes live sessions to
+    // before persisting, and recovery re-creates them as `detached`).
     const maxSessions = cfg.session.maxSessions;
-    if (this.sessions.size >= maxSessions) {
+    let liveCount = 0;
+    for (const m of this.sessions.values()) {
+      if (m.meta.state === 'attached' || m.meta.state === 'detached') liveCount++;
+    }
+    if (liveCount >= maxSessions) {
       throw new Error(
         `Cannot create new terminal: ${maxSessions} active sessions already running. ` +
           `Close some panes (or restart wmux) and try again.`,
