@@ -61,19 +61,63 @@ function askUserToRecoverFromStalePid(opts: {
   return choice === 0;
 }
 
-function isProcessAlive(pid: number): boolean {
+export type ProcessLiveness = 'alive' | 'dead' | 'unknown';
+
+/**
+ * Classify a Windows `tasklist` probe result. `stdout === null` means the
+ * probe itself failed (timeout under Defender realtime scan, CPU/WMI
+ * pressure, exec error) — that is `unknown`, NOT `dead`. Only an
+ * authoritative empty listing (exec succeeded, PID absent) is `dead`.
+ */
+export function classifyTasklistOutput(pid: number, stdout: string | null): ProcessLiveness {
+  if (stdout === null) return 'unknown';
+  return stdout.includes(`"${pid}"`) ? 'alive' : 'dead';
+}
+
+/**
+ * Classify a POSIX `process.kill(pid, 0)` outcome. No error → the signal
+ * reached a live process (`alive`). `ESRCH` → authoritative "no such
+ * process" (`dead`). `EPERM` → the process exists but we may not signal it
+ * (`alive`). Anything else → `unknown`.
+ */
+export function classifyKillOutcome(code: string | undefined): ProcessLiveness {
+  if (code === undefined) return 'alive';
+  if (code === 'ESRCH') return 'dead';
+  if (code === 'EPERM') return 'alive';
+  return 'unknown';
+}
+
+/**
+ * Three-state liveness probe. A probe FAILURE (timeout / exec error) is
+ * `unknown`, never `dead` — mirroring `ProcessMonitor.isDefinitelyDead`
+ * (PR #87). Only positive confirmation of death (`dead`) may authorize a
+ * destructive / spawn-over branch; callers must treat `unknown` as "assume
+ * alive, do not spawn over it." Reading a probe timeout as "process absent"
+ * was the upstream trigger of the duplicate-daemon / split-brain bug
+ * (Defect 1): tasklist stalls on a loaded box → false "dead" → ensureDaemon
+ * skips ping/reuse and spawns a second daemon over the live one.
+ */
+function checkProcessLiveness(pid: number): ProcessLiveness {
   if (process.platform === 'win32') {
+    let stdout: string | null = null;
     try {
       const { execFileSync } = require('child_process');
       const systemRoot = process.env.SystemRoot || 'C:\\Windows';
       const tasklist = path.join(systemRoot, 'System32', 'tasklist.exe');
-      const result = execFileSync(tasklist, ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'], {
+      stdout = execFileSync(tasklist, ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'], {
         encoding: 'utf-8', timeout: 3000, windowsHide: true,
       });
-      return result.includes(`"${pid}"`);
-    } catch { return false; }
+    } catch {
+      stdout = null; // timeout / exec failure → unknown (NOT dead)
+    }
+    return classifyTasklistOutput(pid, stdout);
   }
-  try { process.kill(pid, 0); return true; } catch { return false; }
+  try {
+    process.kill(pid, 0);
+    return classifyKillOutcome(undefined);
+  } catch (err: unknown) {
+    return classifyKillOutcome((err as NodeJS.ErrnoException | undefined)?.code);
+  }
 }
 
 /**
@@ -360,8 +404,10 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
     existingPid = parseInt(pidStr, 10);
   } catch {}
 
-  // 2. If PID exists and process alive, try to ping
-  if (existingPid && isProcessAlive(existingPid)) {
+  // 2. If the PID is alive OR its liveness is unknown (a probe timeout must
+  //    NOT be read as "dead" — Defect 1), enter the ping/reuse path. Only a
+  //    confirmed-dead PID skips straight to spawn over a possibly-live daemon.
+  if (existingPid && checkProcessLiveness(existingPid) !== 'dead') {
     const token = readDaemonAuthToken();
     const pipeName = readPipeNameFromFile(wmuxDir) || getDaemonPipeName();
 
@@ -508,7 +554,7 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
             } catch (err: unknown) {
               const code = (err as NodeJS.ErrnoException | undefined)?.code;
               if (code === 'ESRCH') {
-                // ESRCH = process died between isProcessAlive and kill.
+                // ESRCH = process died between the liveness check and kill.
                 // Benign race — we wanted it gone and it is.
               } else {
                 // EPERM (Windows: Access Denied), EINVAL, anything else:
@@ -584,7 +630,11 @@ export function killDaemonByPidFile(): boolean {
     const pidStr = fs.readFileSync(path.join(wmuxDir, 'daemon.pid'), 'utf8').trim();
     const pid = parseInt(pidStr, 10);
     if (!Number.isFinite(pid) || pid <= 0 || pid === process.pid) return false;
-    if (!isProcessAlive(pid)) return false;
+    // Only a confirmed-dead PID skips the kill (already gone). `unknown`
+    // proceeds — this backstop runs seconds after we were talking to the
+    // daemon, so an orphan is the worse outcome; the image/cmdline guards
+    // below still prevent killing an unrelated PID-reuse victim.
+    if (checkProcessLiveness(pid) === 'dead') return false;
 
     const expectedImage = path.basename(process.execPath);
     const image = getProcessImageName(pid);
