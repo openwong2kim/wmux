@@ -39,6 +39,12 @@ let webglTokenSeq = 0;
 // Chromium's ~16 cap); this timer is only the no-pressure cleanup.
 export const WEBGL_HIDDEN_DISPOSE_DELAY_MS = 10_000;
 
+// Keep xterm on the DOM renderer by default. Dogfooding with Codex TUI showed
+// the WebGL addon can leave upper rows unpainted while the daemon buffer and
+// bottom status rows are correct, making tool output look missing even though
+// PTY bytes arrived. DOM rendering is slower but is the reliable path.
+const XTERM_WEBGL_ENABLED = false;
+
 // RCA A1 — reconnect-with-retry policy lives in its own module so it can be
 // unit-tested without xterm/zustand/electron. Bound to the live deps here.
 function reconnectPtyWithRetry(ptyId: string, isCurrent: () => boolean): Promise<void> {
@@ -347,6 +353,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // count without any pane going blank. loadWebgl is the pool's "acquire"
     // callback; disposeWebgl is its "evict" callback (reverts to DOM renderer).
     function loadWebgl() {
+      if (!XTERM_WEBGL_ENABLED) return;
       if (webglAddonRef.current) return; // already loaded
       try {
         const addon = new WebglAddon();
@@ -1081,6 +1088,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // to free the WebGL context for other terminals.  Also re-fit so a terminal
   // that was initialized while hidden displays at the correct size.
   useEffect(() => {
+    if (!XTERM_WEBGL_ENABLED) {
+      const id = requestAnimationFrame(() => {
+        if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
+          console.debug('[Terminal] visibility fit skipped — active selection');
+          return;
+        }
+        fit();
+      });
+      return () => cancelAnimationFrame(id);
+    }
+
     const token = webglTokenRef.current;
     if (isVisible) {
       // Cancel any pending deferred release — the terminal is visible again
