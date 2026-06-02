@@ -228,14 +228,33 @@ function getProcessCommandLine(pid: number): string | null {
   } catch { return null; }
 }
 
-function pingDaemon(pipeName: string, token: string, timeoutMs = 3000): Promise<boolean> {
+interface DaemonPingResult {
+  status?: string;
+  pid?: number;
+  uptime?: number;
+  sessions?: number;
+  eventLoopLagMs?: number;
+}
+
+/**
+ * Send `daemon.ping` and return the daemon's reported result (which carries
+ * `pid` since the Step ③ follow-up), or `null` on timeout / error / refusal.
+ * `pingDaemon` is the boolean wrapper most callers use; the reconnect path
+ * uses the result's `pid` to restore daemon.pid.
+ */
+function daemonPing(pipeName: string, token: string, timeoutMs = 3000): Promise<DaemonPingResult | null> {
   return new Promise((resolve) => {
     const socket = net.connect(pipeName);
     let settled = false;
+    const finish = (value: DaemonPingResult | null) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      socket.destroy();
+      resolve(value);
+    };
 
-    const timer = setTimeout(() => {
-      if (!settled) { settled = true; socket.destroy(); resolve(false); }
-    }, timeoutMs);
+    const timer = setTimeout(() => finish(null), timeoutMs);
     timer.unref();
 
     socket.on('connect', () => {
@@ -253,20 +272,19 @@ function pingDaemon(pipeName: string, token: string, timeoutMs = 3000): Promise<
         try {
           const resp = JSON.parse(line.trim());
           if (resp.ok || (resp.result && resp.result.status === 'ok')) {
-            settled = true;
-            clearTimeout(timer);
-            socket.destroy();
-            resolve(true);
+            finish((resp.result as DaemonPingResult) ?? { status: 'ok' });
             return;
           }
         } catch {}
       }
     });
 
-    socket.on('error', () => {
-      if (!settled) { settled = true; clearTimeout(timer); resolve(false); }
-    });
+    socket.on('error', () => finish(null));
   });
+}
+
+function pingDaemon(pipeName: string, token: string, timeoutMs = 3000): Promise<boolean> {
+  return daemonPing(pipeName, token, timeoutMs).then((r) => r !== null);
 }
 
 /**
@@ -670,20 +688,32 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
       // canonical pipe (split-brain avoided — no second live daemon, no `-N`
       // pipe). Reconnect to the existing daemon instead of looping into another
       // spawn. The pipe file was cleaned with the stale files above, so resolve
-      // the canonical name deterministically. (DaemonInfo.pid is log-only
-      // downstream, so a best-effort pid is fine.)
+      // the canonical name deterministically.
       const canonicalPipe = getDaemonPipeName();
       const reconnectToken = readDaemonAuthToken();
-      if (reconnectToken && (await pingDaemon(canonicalPipe, reconnectToken))) {
-        console.log(
-          '[launcher] spawned daemon yielded to a live daemon — reconnected to the existing daemon',
-        );
-        return {
-          pid: existingPid ?? 0,
-          authToken: reconnectToken,
-          pipeName: canonicalPipe,
-          spawned: false,
-        };
+      if (reconnectToken) {
+        const pong = await daemonPing(canonicalPipe, reconnectToken);
+        if (pong) {
+          // Restore daemon.pid (the stale-file cleanup above deleted it) to the
+          // live daemon's reported pid, so the NEXT launch hits the cheap reuse
+          // branch (existingPid → ping → reuse) instead of repeating this
+          // spawn-yield-reconnect dance every launch.
+          const livePid = typeof pong.pid === 'number' && pong.pid > 0 ? pong.pid : (existingPid ?? 0);
+          if (livePid > 0) {
+            try {
+              fs.writeFileSync(pidFile, String(livePid), { encoding: 'utf-8', mode: 0o600 });
+            } catch { /* best effort — reconnect still succeeds without it */ }
+          }
+          console.log(
+            '[launcher] spawned daemon yielded to a live daemon — reconnected to the existing daemon',
+          );
+          return {
+            pid: livePid,
+            authToken: reconnectToken,
+            pipeName: canonicalPipe,
+            spawned: false,
+          };
+        }
       }
     }
     throw err;

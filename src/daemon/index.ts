@@ -798,7 +798,9 @@ function registerRpcHandlers(
     const meanNs = eventLoopMonitor.mean;
     const eventLoopLagMs = Number.isFinite(meanNs) ? Math.round(meanNs / 1e6) : 0;
     eventLoopMonitor.reset();
-    return { status: 'ok', uptime, sessions: sessions.length, eventLoopLagMs };
+    // `pid` lets the launcher restore daemon.pid after a Step ③ reconnect
+    // (the redundant-daemon path cleaned the pid file). Log-only otherwise.
+    return { status: 'ok', pid: process.pid, uptime, sessions: sessions.length, eventLoopLagMs };
   });
 
   // daemon.shutdown — gracefully terminate the daemon process. A2 makes
