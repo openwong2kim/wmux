@@ -115,6 +115,14 @@ export const IPC = {
   FIRST_RUN_SAMPLE_TASK_TIMEOUT: 'first-run:sample-task-timeout',
 } as const;
 
+// Daemon process exit codes. A spawned daemon that finds the canonical control
+// pipe already owned by a LIVE daemon exits with this distinct code (rather than
+// a generic failure) so the launcher reconnects to the existing daemon instead
+// of looping into another spawn — the duplicate-daemon / split-brain fix
+// (Defect 3 / Step ③). 75 mirrors sysexits.h EX_TEMPFAIL: "try again", and is
+// well clear of Node's own 1/2/9-ish fatal codes.
+export const DAEMON_EXIT_ALREADY_RUNNING = 75;
+
 // Named Pipe / Unix socket path for wmux API
 // Fixed name so MCP clients (e.g. Claude Code) can reconnect across wmux restarts
 export function getPipeName(): string {

@@ -6,6 +6,7 @@ import * as crypto from 'crypto';
 import { app, dialog } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
 import { getDaemonPipeName, readDaemonAuthToken } from '../DaemonClient';
+import { DAEMON_EXIT_ALREADY_RUNNING } from '../../shared/constants';
 
 export interface DaemonInfo {
   pid: number;
@@ -404,6 +405,23 @@ function spawnDaemon(): Promise<number> {
         reject(new Error('Daemon spawned but not responding after 15 seconds'));
       }
     }, 200);
+
+    // A redundant second daemon (spawned over a daemon the launcher failed to
+    // detect) yields the canonical pipe to the live owner and exits with
+    // DAEMON_EXIT_ALREADY_RUNNING (split-brain Defect 3). Surface that as a
+    // distinct error so ensureDaemon reconnects to the existing daemon instead
+    // of treating it as a spawn failure. Other early exits fall through to the
+    // poll's own 15s timeout.
+    child.on('exit', (code) => {
+      if (code === DAEMON_EXIT_ALREADY_RUNNING) {
+        clearInterval(poll);
+        const e = new Error(
+          'daemon yielded: another daemon already owns the canonical control pipe',
+        ) as NodeJS.ErrnoException;
+        e.code = 'EDAEMON_ALREADY_RUNNING';
+        reject(e);
+      }
+    });
   });
 }
 
@@ -643,7 +661,33 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
     try { fs.unlinkSync(path.join(wmuxDir, name)); } catch { /* ignore */ }
   }
 
-  const pid = await spawnDaemon();
+  let pid: number;
+  try {
+    pid = await spawnDaemon();
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException | undefined)?.code === 'EDAEMON_ALREADY_RUNNING') {
+      // The daemon we spawned yielded to a live daemon already owning the
+      // canonical pipe (split-brain avoided — no second live daemon, no `-N`
+      // pipe). Reconnect to the existing daemon instead of looping into another
+      // spawn. The pipe file was cleaned with the stale files above, so resolve
+      // the canonical name deterministically. (DaemonInfo.pid is log-only
+      // downstream, so a best-effort pid is fine.)
+      const canonicalPipe = getDaemonPipeName();
+      const reconnectToken = readDaemonAuthToken();
+      if (reconnectToken && (await pingDaemon(canonicalPipe, reconnectToken))) {
+        console.log(
+          '[launcher] spawned daemon yielded to a live daemon — reconnected to the existing daemon',
+        );
+        return {
+          pid: existingPid ?? 0,
+          authToken: reconnectToken,
+          pipeName: canonicalPipe,
+          spawned: false,
+        };
+      }
+    }
+    throw err;
+  }
 
   // Read connection info after spawn
   const token = readDaemonAuthToken();

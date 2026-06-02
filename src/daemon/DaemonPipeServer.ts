@@ -10,6 +10,34 @@ const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clie
 
 type RpcHandler = (params: Record<string, unknown>) => Promise<unknown>;
 
+/** Action a reclaim probe implies, distinguishing a live owner from a zombie. */
+export type ReclaimOutcome = 'live-owner' | 'reclaimed' | 'unreclaimable';
+
+/**
+ * Classify a reclaim-probe result into the action the pipe server should take.
+ * Pure, so the live-owner-vs-zombie decision is unit-testable without a real
+ * socket.
+ *   - connect succeeded         → 'live-owner'    (a live process owns the pipe)
+ *   - ECONNREFUSED/RESET/EPIPE   → 'reclaimed'     (zombie; probe released it)
+ *   - timeout / any other error  → 'unreclaimable' (ambiguous; do NOT claim live)
+ *
+ * The 'live-owner' vs 'unreclaimable' split is the split-brain fix (Defect 3):
+ * the OLD code folded both into "false" and then fell back to a `-N` suffix,
+ * spawning a second LIVE daemon on the canonical pipe. Only a confirmed live
+ * owner must make `start()` yield; an ambiguous probe keeps the legacy retry.
+ */
+export function classifyReclaimProbe(
+  event: 'connect' | 'error' | 'timeout',
+  errCode?: string,
+): ReclaimOutcome {
+  if (event === 'connect') return 'live-owner';
+  if (event === 'timeout') return 'unreclaimable';
+  if (errCode === 'ECONNREFUSED' || errCode === 'ECONNRESET' || errCode === 'EPIPE') {
+    return 'reclaimed';
+  }
+  return 'unreclaimable';
+}
+
 /**
  * Daemon Control Pipe server.
  * Listens on a Named Pipe (Windows) or Unix domain socket for JSON-RPC requests.
@@ -123,10 +151,17 @@ export class DaemonPipeServer {
           throw err;
         }
 
-        // Attempt to reclaim the zombie pipe before falling back
+        // Attempt to reclaim the pipe before falling back. Distinguish a LIVE
+        // owner from a genuine zombie: a live owner on the CANONICAL pipe
+        // (attempt 0) means we are a redundant second daemon — the split-brain
+        // trigger (Defect 3). We must NOT fall back to the `-N` suffix (that
+        // produces two live daemons racing for the session pipes); fail fast so
+        // the entrypoint exits cleanly and the launcher reconnects to the
+        // existing daemon. The `-N` suffix stays only for the genuine-zombie
+        // and ambiguous cases.
         if (process.platform === 'win32' && code === 'EADDRINUSE') {
-          const reclaimed = await this.tryReclaimPipe(candidateName);
-          if (reclaimed) {
+          const outcome = await this.tryReclaimPipe(candidateName);
+          if (outcome === 'reclaimed') {
             try {
               await this.tryListen(candidateName);
               this.activePipeName = candidateName;
@@ -134,7 +169,16 @@ export class DaemonPipeServer {
             } catch {
               // Reclaim succeeded but listen still failed — fall through
             }
+          } else if (outcome === 'live-owner' && attempt === 0) {
+            const e = new Error(
+              `[daemon] canonical control pipe ${candidateName} is owned by a live daemon — refusing to start a redundant second daemon`,
+            ) as NodeJS.ErrnoException;
+            e.code = 'EDAEMON_ALREADY_RUNNING';
+            throw e;
           }
+          // 'unreclaimable', or a live-owner on a `-N` attempt: fall through to
+          // the next suffix (legacy behavior for the genuinely ambiguous or
+          // multi-daemon-cleanup case).
         }
 
         if (attempt === maxAttempts - 1) {
@@ -146,40 +190,40 @@ export class DaemonPipeServer {
   }
 
   /**
-   * Attempt to reclaim a zombie Windows named pipe.
-   *
-   * When a process crashes without closing its pipe handle, Windows keeps the
-   * pipe object alive until all handles are closed.  We probe the pipe:
-   *   - If connect succeeds → a live process owns it, cannot reclaim.
-   *   - If connect gets ECONNREFUSED/ECONNRESET → zombie pipe. Connecting
-   *     and immediately destroying the socket releases the last handle,
-   *     freeing the pipe name for reuse.
+   * Probe a Windows named pipe to decide whether it can be reclaimed. Returns
+   * a three-state outcome (see `classifyReclaimProbe`):
+   *   - 'live-owner': connect succeeded → a live process owns it. start() must
+   *     yield rather than fall back to a `-N` suffix (the split-brain fix).
+   *   - 'reclaimed': connect refused/reset → zombie; the probe released the
+   *     last handle, the name is free to retry.
+   *   - 'unreclaimable': timeout / unexpected error → ambiguous; neither claim
+   *     a live owner nor assume the name is free.
    */
-  private tryReclaimPipe(name: string): Promise<boolean> {
+  private tryReclaimPipe(name: string): Promise<ReclaimOutcome> {
     return new Promise((resolve) => {
       const probe = net.connect(name);
       const timer = setTimeout(() => {
         probe.destroy();
-        resolve(false);
+        resolve(classifyReclaimProbe('timeout'));
       }, 2000);
       timer.unref();
 
       probe.on('connect', () => {
-        // Pipe is owned by a live process — cannot reclaim
         clearTimeout(timer);
         probe.destroy();
-        resolve(false);
+        resolve(classifyReclaimProbe('connect'));
       });
 
       probe.on('error', (err: NodeJS.ErrnoException) => {
         clearTimeout(timer);
         probe.destroy();
-        if (err.code === 'ECONNREFUSED' || err.code === 'ECONNRESET' || err.code === 'EPIPE') {
-          // Zombie pipe — the connect attempt released the handle
-          // Wait briefly for Windows to clean up the pipe name
-          setTimeout(() => resolve(true), 200);
+        const outcome = classifyReclaimProbe('error', err.code);
+        if (outcome === 'reclaimed') {
+          // The connect attempt released the zombie handle — wait briefly for
+          // Windows to clean up the pipe name before the caller retries listen.
+          setTimeout(() => resolve('reclaimed'), 200);
         } else {
-          resolve(false);
+          resolve(outcome);
         }
       });
     });

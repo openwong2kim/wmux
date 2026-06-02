@@ -15,6 +15,7 @@ import { initDaemonLogSink } from './util/logSink';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
 import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { DAEMON_EXIT_ALREADY_RUNNING } from '../shared/constants';
 
 // === Constants ===
 const wmuxDir = getWmuxDir();
@@ -1486,6 +1487,19 @@ async function main(): Promise<void> {
 }
 
 main().catch((err) => {
+  const code = (err as NodeJS.ErrnoException | undefined)?.code;
+  if (code === 'EDAEMON_ALREADY_RUNNING') {
+    // Another LIVE daemon already owns the canonical control pipe — we are a
+    // redundant second daemon the launcher spawned over a daemon it failed to
+    // detect (split-brain Defect 3 / Step ③). Exit with a DISTINCT code so the
+    // launcher reconnects to the existing daemon instead of treating this as a
+    // generic startup failure. releaseLock() clears the daemon.pid that
+    // acquireLock() wrote for us; the launcher reconnects via the canonical
+    // pipe name, not the pid file.
+    log('warn', 'another live daemon owns the control pipe — exiting cleanly (EDAEMON_ALREADY_RUNNING)');
+    releaseLock();
+    process.exit(DAEMON_EXIT_ALREADY_RUNNING);
+  }
   log('error', 'Fatal error during startup:', err);
   releaseLock();
   process.exit(1);
