@@ -9,8 +9,9 @@ type TestState = {
 
 function createHarness() {
   const workspace = createWorkspace('Test');
+  const otherWorkspace = createWorkspace('Other');
   const state: TestState = {
-    workspaces: [workspace],
+    workspaces: [workspace, otherWorkspace],
     activeWorkspaceId: workspace.id,
   };
 
@@ -23,6 +24,23 @@ function createHarness() {
 }
 
 describe('surfaceSlice browser partition state', () => {
+  it('adds terminal surfaces to an explicit workspace even when another workspace is active', () => {
+    const { state, slice } = createHarness();
+    const targetWorkspace = state.workspaces[1];
+    const paneId = targetWorkspace.rootPane.id;
+
+    slice.addSurface(paneId, 'pty-explicit', 'powershell.exe', 'C:\\Users\\LORD', targetWorkspace.id);
+
+    const activePane = state.workspaces[0].rootPane;
+    const targetPane = targetWorkspace.rootPane;
+    if (activePane.type !== 'leaf' || targetPane.type !== 'leaf') {
+      throw new Error('expected leaf panes');
+    }
+    expect(activePane.surfaces).toHaveLength(0);
+    expect(targetPane.surfaces).toHaveLength(1);
+    expect(targetPane.surfaces[0].ptyId).toBe('pty-explicit');
+  });
+
   it('stores the provided partition on new browser surfaces', () => {
     const { state, slice } = createHarness();
     const paneId = state.workspaces[0].rootPane.id;

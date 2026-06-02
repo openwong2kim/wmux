@@ -389,7 +389,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       try { await window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
       return { error: 'pane was removed during PTY creation' };
     }
-    freshAfterCreate.addSurface(paneId, ptyId, shell, cwd);
+    freshAfterCreate.addSurface(paneId, ptyId, shell, cwd, workspaceId);
 
     const fresh = useStore.getState();
     const freshWs = fresh.workspaces.find((w) => w.id === workspaceId);

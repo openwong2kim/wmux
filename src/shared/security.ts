@@ -2,6 +2,12 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 
+function sleepMs(ms: number): void {
+  const sab = new SharedArrayBuffer(4);
+  const view = new Int32Array(sab);
+  Atomics.wait(view, 0, 0, ms);
+}
+
 /**
  * Resolve the current user's SID (e.g. `S-1-5-21-...-1001`) so the ACL grant can
  * name the owner by SID instead of by SAM account name. Returns the bare SID
@@ -135,16 +141,33 @@ export function secureWriteTokenFile(filePath: string, token: string): void {
  * restrictive ACL/mode was successfully (re)applied.
  */
 export function reHardenTokenFileAcl(filePath: string): boolean {
-  try {
-    if (process.platform === 'win32') {
-      applyRestrictiveWindowsAcl(filePath);
-    } else {
-      // POSIX: ensure owner-only read/write on the existing file.
-      fs.chmodSync(filePath, 0o600);
+  const attempts = process.platform === 'win32' ? 3 : 1;
+
+  for (let attempt = 1; attempt <= attempts; attempt++) {
+    try {
+      if (process.platform === 'win32') {
+        applyRestrictiveWindowsAcl(filePath);
+      } else {
+        // POSIX: ensure owner-only read/write on the existing file.
+        fs.chmodSync(filePath, 0o600);
+      }
+      return true;
+    } catch (err) {
+      const message = err instanceof Error ? `${err.name}: ${err.message}` : String(err);
+      const isTransientWindowsAclError =
+        process.platform === 'win32' &&
+        attempt < attempts &&
+        /access is denied|eperm|eacces|busy|sharing violation/i.test(message);
+
+      if (isTransientWindowsAclError) {
+        sleepMs(75 * attempt);
+        continue;
+      }
+
+      console.warn(`[reHardenTokenFileAcl] could not re-harden ${filePath}:`, err);
+      return false;
     }
-    return true;
-  } catch (err) {
-    console.warn(`[reHardenTokenFileAcl] could not re-harden ${filePath}:`, err);
-    return false;
   }
+
+  return false;
 }

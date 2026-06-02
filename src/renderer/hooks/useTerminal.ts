@@ -316,6 +316,27 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // width. Without this, xterm defaults to v6 and TUI apps that use cursor
     // positioning (Claude Code, vim, etc.) collide frames over Korean text.
     terminal.unicode.activeVersion = '11';
+
+    // Wheel handling: xterm's default wheel path will hand off to the app in
+    // some buffer states. That leaves hosted shells with scrollback feeling
+    // dead under the mouse wheel in wmux even though the buffer exists.
+    // Explicitly route wheel deltas into terminal scrollback when it is
+    // available, and let xterm keep its app-side wheel behavior only when
+    // there is no scrollback to show.
+    const wheelHandler = (ev: WheelEvent) => {
+      if (terminal.buffer.active.type !== 'normal') return true;
+      const sensitivity = terminal.options.scrollSensitivity ?? 1;
+      const unit = ev.deltaMode === WheelEvent.DOM_DELTA_PAGE
+        ? terminal.rows
+        : ev.deltaMode === WheelEvent.DOM_DELTA_PIXEL
+          ? 40
+          : 1;
+      const deltaLines = Math.max(1, Math.round((Math.abs(ev.deltaY) / unit) * sensitivity));
+      terminal.scrollLines(ev.deltaY > 0 ? deltaLines : -deltaLines);
+      ev.preventDefault();
+      return false;
+    };
+    terminal.attachCustomWheelEventHandler(wheelHandler);
     terminal.open(container);
 
     // WebGL addon loading — driven by the shared webglContextPool, NOT called

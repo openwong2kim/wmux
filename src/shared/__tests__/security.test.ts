@@ -225,6 +225,34 @@ describe('reHardenTokenFileAcl', () => {
     expect(fsMock.writeFileSync).not.toHaveBeenCalled();
   });
 
+  it('retries transient Windows ACL access-denied failures before warning', async () => {
+    vi.stubEnv('USERNAME', 'tester');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+
+    let icaclsAttempts = 0;
+    execFileSyncMock.mockImplementation((cmd: unknown) => {
+      if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
+        return Buffer.from('user S-1-5-21-1-2-3-1001\n');
+      }
+      icaclsAttempts += 1;
+      if (icaclsAttempts === 1) {
+        throw new Error('Command failed: icacls Access is denied.');
+      }
+      return Buffer.from('');
+    });
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+
+    const { reHardenTokenFileAcl } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+    expect(reHardenTokenFileAcl(tokenPath)).toBe(true);
+    expect(icaclsAttempts).toBe(2);
+    expect(warnSpy).not.toHaveBeenCalled();
+
+    warnSpy.mockRestore();
+  });
+
   it('chmods to 0600 on POSIX and returns true', async () => {
     vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
 

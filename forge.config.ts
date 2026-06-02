@@ -98,6 +98,9 @@ async function signMacAppIfConfigured(appPath: string): Promise<void> {
 }
 
 const config: ForgeConfig = {
+  rebuildConfig: {
+    ignoreModules: ['node-pty'],
+  },
   packagerConfig: {
     asar: {
       unpack: '**/node_modules/node-pty/**',

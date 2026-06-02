@@ -4,7 +4,7 @@ import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { createSurface, generateId } from '../../../shared/types';
 
 export interface SurfaceSlice {
-  addSurface: (paneId: string, ptyId: string, shell: string, cwd: string) => void;
+  addSurface: (paneId: string, ptyId: string, shell: string, cwd: string, workspaceId?: string) => void;
   addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
   addEditorSurface: (paneId: string, filePath: string) => void;
   closeSurface: (paneId: string, surfaceId: string) => void;
@@ -28,8 +28,9 @@ function findLeafPane(root: Pane, id: string): PaneLeaf | null {
 }
 
 export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], SurfaceSlice> = (set) => ({
-  addSurface: (paneId, ptyId, shell, cwd) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+  addSurface: (paneId, ptyId, shell, cwd, workspaceId) => set((state: StoreState) => {
+    const targetWsId = workspaceId || state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane) return;
