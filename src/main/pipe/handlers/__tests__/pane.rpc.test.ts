@@ -226,6 +226,22 @@ describe('pane.rpc — search', () => {
     expect(sendToRendererMock).not.toHaveBeenCalled();
   });
 
+  it('forwards workspaceId when splitting a pane', async () => {
+    const router = register();
+    const response = await router.dispatch({
+      id: '14',
+      method: 'pane.split',
+      params: { direction: 'horizontal', workspaceId: 'ws-caller' },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.any(Function),
+      'pane.split',
+      { direction: 'horizontal', workspaceId: 'ws-caller' },
+    );
+  });
+
   it('returns the renderer response payload to the caller', async () => {
     const router = register();
     const fakeResponse = {

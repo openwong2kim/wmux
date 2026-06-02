@@ -365,8 +365,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   }
 
   if (method === 'surface.new') {
-    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
-    if (!ws) return { error: 'no active workspace' };
+    const workspaceId = typeof params.workspaceId === 'string' && params.workspaceId.length > 0
+      ? params.workspaceId
+      : store.activeWorkspaceId;
+    const ws = store.workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return { error: `no workspace found for ${workspaceId}` };
 
     const paneId = ws.activePaneId;
     const shell = typeof params.shell === 'string' ? params.shell : '';
@@ -380,7 +383,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
 
     // Re-read state after async gap — paneId may have been removed.
     const freshAfterCreate = useStore.getState();
-    const freshWsAfterCreate = freshAfterCreate.workspaces.find((w) => w.id === freshAfterCreate.activeWorkspaceId);
+    const freshWsAfterCreate = freshAfterCreate.workspaces.find((w) => w.id === workspaceId);
     if (!freshWsAfterCreate || !findPaneById(freshWsAfterCreate.rootPane, paneId)) {
       // Pane was removed during async gap — dispose the orphaned PTY
       try { await window.electronAPI.pty.dispose(ptyId); } catch { /* best-effort */ }
@@ -389,7 +392,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     freshAfterCreate.addSurface(paneId, ptyId, shell, cwd);
 
     const fresh = useStore.getState();
-    const freshWs = fresh.workspaces.find((w) => w.id === fresh.activeWorkspaceId);
+    const freshWs = fresh.workspaces.find((w) => w.id === workspaceId);
     if (!freshWs) return { ptyId };
     const pane = findPaneById(freshWs.rootPane, paneId);
     if (!pane || pane.type !== 'leaf') return { ptyId };
@@ -468,11 +471,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   }
 
   if (method === 'pane.split') {
-    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
-    if (!ws) return { error: 'no active workspace' };
+    const workspaceId = typeof params.workspaceId === 'string' && params.workspaceId.length > 0
+      ? params.workspaceId
+      : store.activeWorkspaceId;
+    const ws = store.workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return { error: `no workspace found for ${workspaceId}` };
     const direction =
       params.direction === 'vertical' ? 'vertical' : 'horizontal';
-    const ok = store.splitPane(ws.activePaneId, direction);
+    const ok = store.splitPane(ws.activePaneId, direction, workspaceId);
     if (!ok) return { error: 'pane cap reached (max 20 per workspace)' };
     return { ok: true };
   }

@@ -128,7 +128,11 @@ export function registerPaneRpc(
         new Error('pane.split: "direction" must be "horizontal" or "vertical"'),
       );
     }
-    return sendToRenderer(getWindow, 'pane.split', { direction });
+    const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+    return sendToRenderer(getWindow, 'pane.split', {
+      direction,
+      ...(workspaceId !== undefined && { workspaceId }),
+    });
   });
 
   /**

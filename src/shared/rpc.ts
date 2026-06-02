@@ -316,6 +316,17 @@ export interface DaemonResizeParams {
   rows: number;
 }
 
+export interface PaneSplitParams {
+  direction: 'horizontal' | 'vertical';
+  workspaceId?: string;
+}
+
+export interface SurfaceNewParams {
+  shell?: string;
+  cwd?: string;
+  workspaceId?: string;
+}
+
 // === Pane Metadata RPC types (M0-f) ===
 //
 // Wire-format spec for the metadata RPC surface. Lifted out of the handler

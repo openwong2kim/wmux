@@ -22,8 +22,12 @@ export function registerSurfaceRpc(router: RpcRouter, getWindow: GetWindow): voi
   /**
    * surface.new — creates a new surface in the active pane
    */
-  router.register('surface.new', (_params) =>
-    sendToRenderer(getWindow, 'surface.new'),
+  router.register('surface.new', (params) =>
+    sendToRenderer(getWindow, 'surface.new', {
+      ...(typeof params['workspaceId'] === 'string' && { workspaceId: params['workspaceId'] }),
+      ...(typeof params['shell'] === 'string' && { shell: params['shell'] }),
+      ...(typeof params['cwd'] === 'string' && { cwd: params['cwd'] }),
+    }),
   );
 
   /**
