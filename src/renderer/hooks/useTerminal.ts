@@ -772,13 +772,23 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // scrollback.load() is async (IPC round-trip). If PTY sends data before it
       // resolves, connectPty() would not yet be called and data would be lost.
       // Instead, buffer incoming data and flush after scrollback is written.
-      const pendingData: string[] = [];
+      const pendingReplayData: string[] = [];
+      const pendingLiveData: string[] = [];
       let scrollbackLoaded = false;
+      let daemonFlushComplete = !isDaemonModeActive();
+      let dropDaemonReplayUntilFlush = false;
 
       removeDataListener = window.electronAPI.pty.onData((id, data) => {
         if (id !== ptyId) return;
+        if (dropDaemonReplayUntilFlush && !daemonFlushComplete) {
+          return;
+        }
         if (!scrollbackLoaded) {
-          pendingData.push(data);
+          if (!daemonFlushComplete) {
+            pendingReplayData.push(data);
+          } else {
+            pendingLiveData.push(data);
+          }
           return;
         }
         terminal.write(data);
@@ -799,6 +809,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       removeFlushListener = window.electronAPI.pty.onFlushComplete((id, recoveredBytes) => {
         if (id !== ptyId) return;
         if (terminalRef.current !== terminal) return;
+        daemonFlushComplete = true;
+        dropDaemonReplayUntilFlush = false;
         lastFlushRecoveredBytes = recoveredBytes;
         if (pendingFlushReset) {
           pendingFlushReset = false;
@@ -822,13 +834,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // would write into a torn-down terminal on fast unmount + remount
         // (e.g. workspace switch mid-restore).
         if (terminalRef.current !== terminal) return;
-        // Phase A — A6. Race cancel: if daemon mode activated between the
-        // scrollback.load() call and now, discard the .txt content. The
-        // daemon SessionPipe replay will provide authoritative scrollback
-        // and writing the stale .txt here would compose it with that
-        // replay (via the divider below), producing visibly broken output.
-        // Pending PTY data still flushes through unchanged.
-        const restored = isDaemonModeActive() ? null : content;
+        const restored = content;
+        const restoreBeatsDaemonReplay =
+          !!restored && isDaemonModeActive() && (lastFlushRecoveredBytes ?? 1) > 0;
         if (restored) {
           terminal.write(restored);
           // Whitespace + ANSI reset boundary so restored scrollback doesn't
@@ -841,35 +849,42 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // output.
           terminal.write('\r\n\x1b[0m\r\n');
           fireFirstData();
-          didRestoreTxt = true;
-          // Arm the late-connect clear. If daemon mode activates after this
-          // moment, the reset only fires when the daemon actually has
-          // authoritative scrollback to replay (recoveredBytes > 0).
-          // Two race outcomes are handled:
-          //   1. Flush already arrived (lastFlushRecoveredBytes != null):
-          //      apply its verdict immediately.
-          //   2. Flush hasn't arrived: set pendingFlushReset so the
-          //      flush-complete listener applies the verdict later.
-          // recoveredBytes=0 (cap-skipped session or fresh create) leaves
-          // the .txt cache on screen — degraded gracefully instead of
-          // wiping to a blank prompt.
-          removeDaemonConnectedForRestore = window.electronAPI.daemon.onConnected(() => {
-            if (!didRestoreTxt) return;
-            if (terminalRef.current !== terminal) return;
-            didRestoreTxt = false;
-            if (lastFlushRecoveredBytes !== null) {
-              if (lastFlushRecoveredBytes > 0) terminal.reset();
-            } else {
-              pendingFlushReset = true;
-            }
-          });
+          if (restoreBeatsDaemonReplay) {
+            dropDaemonReplayUntilFlush = !daemonFlushComplete;
+          } else {
+            didRestoreTxt = true;
+            // Arm the late-connect clear. If daemon mode activates after this
+            // moment, the reset only fires when the daemon actually has
+            // authoritative scrollback to replay (recoveredBytes > 0).
+            // Two race outcomes are handled:
+            //   1. Flush already arrived (lastFlushRecoveredBytes != null):
+            //      apply its verdict immediately.
+            //   2. Flush hasn't arrived: set pendingFlushReset so the
+            //      flush-complete listener applies the verdict later.
+            // recoveredBytes=0 (cap-skipped session or fresh create) leaves
+            // the .txt cache on screen — degraded gracefully instead of
+            // wiping to a blank prompt.
+            removeDaemonConnectedForRestore = window.electronAPI.daemon.onConnected(() => {
+              if (!didRestoreTxt) return;
+              if (terminalRef.current !== terminal) return;
+              didRestoreTxt = false;
+              if (lastFlushRecoveredBytes !== null) {
+                if (lastFlushRecoveredBytes > 0) terminal.reset();
+              } else {
+                pendingFlushReset = true;
+              }
+            });
+          }
         }
         scrollbackLoaded = true;
-        for (const data of pendingData) {
+        const replayData = restoreBeatsDaemonReplay ? [] : pendingReplayData;
+        const flushData = [...replayData, ...pendingLiveData];
+        for (const data of flushData) {
           terminal.write(data);
         }
-        if (pendingData.length > 0) fireFirstData();
-        pendingData.length = 0;
+        if (flushData.length > 0) fireFirstData();
+        pendingReplayData.length = 0;
+        pendingLiveData.length = 0;
         // Register with the scrollback autosave only after restore
         // completes. Setting it synchronously before the async load lets
         // the 5s autosave tick dump an empty/partial buffer over the
@@ -891,11 +906,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         console.error(`[useTerminal] scrollback.load FAILED surfaceFile=${scrollbackFile} ptyId=${ptyId} err=${msg}`);
         if (terminalRef.current !== terminal) return;
         scrollbackLoaded = true;
-        for (const data of pendingData) {
+        const flushData = [...pendingReplayData, ...pendingLiveData];
+        for (const data of flushData) {
           terminal.write(data);
         }
-        if (pendingData.length > 0) fireFirstData();
-        pendingData.length = 0;
+        if (flushData.length > 0) fireFirstData();
+        pendingReplayData.length = 0;
+        pendingLiveData.length = 0;
         terminalRegistry.set(ptyId, terminal);
       });
     } else {

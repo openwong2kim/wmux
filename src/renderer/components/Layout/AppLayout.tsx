@@ -117,16 +117,6 @@ function collectTerminalSurfaces(pane: Pane): Surface[] {
  *  instead of mutating surfaces directly. */
 /** Sync version — fire-and-forget for beforeunload (cannot await). */
 function dumpScrollbackBuffersSync(): Map<string, boolean> {
-  // Phase A — A6. In daemon mode the daemon RingBuffer is the single source
-  // of truth for scrollback. Skip the helper entirely so the corresponding
-  // scrollback:dump IPC is never invoked and the rotation chain cannot
-  // self-destruct while daemon is healthy. The returned empty map flows
-  // through cloneWithScrollback so no `scrollbackFile` field is stamped
-  // onto session data, preventing a future restore from picking up a stale
-  // entry from a session that ran in local mode.
-  if (isDaemonModeActive()) {
-    return new Map();
-  }
   const dumped = new Map<string, boolean>();
   const state = useStore.getState();
   for (const ws of state.workspaces) {
@@ -146,23 +136,18 @@ function dumpScrollbackBuffersSync(): Map<string, boolean> {
 
 /** Deep-clone pane tree, setting scrollbackFile on dumped surfaces.
  *
- * Phase A — A6 follow-up (codex review P2, session 019e2af8). When daemon
- * mode is active and dumped is empty, the previous logic preserved every
- * surface's existing `scrollbackFile` field. A session saved in local
- * mode therefore carried its stale `.txt` reference forward; if the
- * renderer ever reloaded before daemon readiness (or after a failed A7
- * migration), it would try to restore from the stale `.txt` despite the
- * IPC-level gate. Clear the field outright in daemon mode so session
- * data round-trips with the gates' intent.
+ * Preserve the last known rendered snapshot reference when a terminal is
+ * temporarily unmounted or ineligible to dump. In daemon mode this snapshot
+ * is the UI recovery source; raw daemon bytes remain the fallback when no
+ * snapshot exists.
  */
 function cloneWithScrollback(pane: Pane, dumped: Map<string, boolean>): Pane {
-  const daemonMode = isDaemonModeActive();
   if (pane.type === 'leaf') {
     return {
       ...pane,
       surfaces: pane.surfaces.map((s) => ({
         ...s,
-        scrollbackFile: dumped.has(s.id) ? s.id : (daemonMode ? undefined : s.scrollbackFile),
+        scrollbackFile: dumped.has(s.id) ? s.id : s.scrollbackFile,
       })),
     };
   }

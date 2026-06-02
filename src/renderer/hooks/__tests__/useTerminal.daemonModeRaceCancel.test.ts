@@ -2,18 +2,16 @@ import { describe, it, expect } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 
-// Phase A — A6. The async scrollback.load() in useTerminal can resolve
-// AFTER daemon mode becomes active. Writing the stale .txt content into
-// the terminal at that point would compose with the daemon SessionPipe
-// flush via the \r\n\x1b[0m\r\n divider and produce visibly broken
-// scrollback (codex review Layer C corruption path).
+// Rendered scrollback snapshots are the UI recovery source for repainting
+// TUIs. When daemon replay arrives during snapshot restore, useTerminal must
+// drop the old replay bytes and keep only live bytes after the flush marker.
 //
 // useTerminal is a 700-line React hook with xterm dependencies that are
 // awkward to bootstrap in vitest, so we verify the race cancel at the
 // source level. The integration assertion (daemon connects mid-load →
 // terminal shows daemon flush only) is part of the manual Windows
 // checklist in docs/upgrade-v2.9.1.md.
-describe('A6 — useTerminal async restore race cancel (source-level)', () => {
+describe('daemon-mode snapshot restore (source-level)', () => {
   const hookPath = path.join(__dirname, '..', 'useTerminal.ts');
   const src = fs.readFileSync(hookPath, 'utf-8');
 
@@ -23,36 +21,35 @@ describe('A6 — useTerminal async restore race cancel (source-level)', () => {
     );
   });
 
-  it('scrollback.load().then(content) guards on isDaemonModeActive() before writing', () => {
+  it('writes loaded snapshots even when daemon mode is active', () => {
     const loadIdx = src.indexOf('scrollback.load(scrollbackFile)');
     expect(loadIdx).toBeGreaterThan(0);
-    // Slice forward enough lines to capture the then handler body.
     const body = src.slice(loadIdx, loadIdx + 4000);
-    // The guard substitutes the .txt content with null when daemon-mode
-    // activated during the IPC round-trip.
-    expect(body).toMatch(/isDaemonModeActive\(\)\s*\?\s*null\s*:\s*content/);
-    // The write call must use the guarded value, not the raw `content`.
+    expect(body).toMatch(/const\s+restored\s*=\s*content/);
     expect(body).toMatch(/terminal\.write\(\s*restored\s*\)/);
   });
 
-  it('still flushes pending PTY data after the daemon-mode skip', () => {
+  it('splits replay bytes from live bytes while scrollback is loading', () => {
     const loadIdx = src.indexOf('scrollback.load(scrollbackFile)');
     const body = src.slice(loadIdx, loadIdx + 4000);
-    // pendingData.length > 0 check happens whether or not restored ran.
-    expect(body).toMatch(/scrollbackLoaded\s*=\s*true/);
-    expect(body).toMatch(/for\s*\(\s*const\s+data\s+of\s+pendingData/);
+    expect(body).toMatch(/pendingReplayData/);
+    expect(body).toMatch(/pendingLiveData/);
+    expect(body).toMatch(/daemonFlushComplete/);
   });
 
-  // Codex review P2 #2 (cold-start race): if `.txt` restore lands before
-  // daemon mode flips, the renderer must clear the terminal on the
-  // subsequent daemon:connected event so the SessionPipe replay does not
-  // compose with the stale text.
-  it('arms a daemon.onConnected listener that clears the terminal after .txt restore', () => {
+  it('drops old daemon replay when a rendered snapshot exists', () => {
+    const loadIdx = src.indexOf('scrollback.load(scrollbackFile)');
+    const body = src.slice(loadIdx, loadIdx + 5000);
+    expect(body).toMatch(/restoreBeatsDaemonReplay/);
+    expect(body).toMatch(/dropDaemonReplayUntilFlush\s*=\s*!daemonFlushComplete/);
+    expect(body).toMatch(/scrollbackLoaded\s*=\s*true/);
+    expect(body).toMatch(/const\s+replayData\s*=\s*restoreBeatsDaemonReplay\s*\?\s*\[\]\s*:\s*pendingReplayData/);
+  });
+
+  it('keeps the legacy late-daemon reset fallback for non-daemon restores', () => {
     // Module-scope flag declared at the top of the effect.
     expect(src).toMatch(/let\s+didRestoreTxt\s*=\s*false/);
-    // Cleanup slot reserved.
     expect(src).toMatch(/let\s+removeDaemonConnectedForRestore/);
-    // Inside the restore branch, the flag flips true and the listener arms.
     const loadIdx = src.indexOf('scrollback.load(scrollbackFile)');
     const body = src.slice(loadIdx, loadIdx + 4000);
     expect(body).toMatch(/didRestoreTxt\s*=\s*true/);
