@@ -268,6 +268,28 @@ function pingDaemon(pipeName: string, token: string, timeoutMs = 3000): Promise<
   });
 }
 
+/**
+ * Escalating re-ping. After the two short startup pings (250+250 ms) fail,
+ * give a busy-but-alive daemon a longer budget before treating it as wedged
+ * and SIGKILLing it — which would destroy the sessions the user chose to keep
+ * (split-brain Defect 2). Injectable (`ping`/`sleep` passed in) so the
+ * reuse-vs-kill decision is unit-testable without a live daemon. Returns true
+ * as soon as any escalated ping succeeds (→ reuse, do not kill); stops at the
+ * first success.
+ */
+export async function tryEscalatedReping(
+  ping: (timeoutMs: number) => Promise<boolean>,
+  timeouts: number[],
+  backoffMs: number,
+  sleep: (ms: number) => Promise<void>,
+): Promise<boolean> {
+  for (const timeoutMs of timeouts) {
+    await sleep(backoffMs);
+    if (await ping(timeoutMs)) return true;
+  }
+  return false;
+}
+
 function findNodePath(): string {
   // Prefer Electron's bundled node (via ELECTRON_RUN_AS_NODE) — it's a GUI
   // subsystem executable, so it won't flash a console window on Windows.
@@ -544,9 +566,39 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
               `[launcher] PID ${existingPid} image matches but cmdline does not reference daemon script — stale-PID reuse by sibling Electron app, cleaning + spawning fresh`,
             );
           } else {
+            // (a) Verified wmux daemon (image+cmdline match) that missed the
+            //     two-shot (250+250 ms) ping. Before the DESTRUCTIVE SIGKILL —
+            //     which nukes the very sessions the user chose to keep
+            //     (Defect 2) — escalate the ping budget. A busy-but-alive
+            //     daemon (big sessions.json recovery, ConPTY cold-init,
+            //     Defender realtime scan) can stall past the short pings while
+            //     fully alive and still owning its PTYs. Only a daemon that
+            //     ALSO fails the escalated ping is treated as genuinely wedged.
+            //     The escalating budget (~1.9 s worst case) stays well inside
+            //     the 15 s spawn budget.
+            //
+            //     A graceful shutdown RPC is intentionally NOT attempted: a
+            //     daemon that can't answer a ping can't answer an RPC either,
+            //     so escalated re-ping (→ reuse) is the only thing that
+            //     actually preserves kept sessions. A confirmed-wedged daemon
+            //     leaves SIGKILL+respawn as the single-daemon recovery.
+            if (token) {
+              const recovered = await tryEscalatedReping(
+                (timeoutMs) => pingDaemon(pipeName, token, timeoutMs),
+                [500, 1000],
+                200,
+                (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+              );
+              if (recovered) {
+                console.log(
+                  `[launcher] Daemon (PID ${existingPid}) recovered on escalated re-ping — reusing, no kill`,
+                );
+                return { pid: existingPid, authToken: token, pipeName, spawned: false };
+              }
+            }
             // (a) Verified wmux daemon → kill before respawning.
             console.warn(
-              `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive — terminating before respawn`,
+              `[launcher] PID ${existingPid} verified wmux daemon (image+cmdline) but unresponsive${token ? ' after escalated re-ping' : ' (no auth token to ping)'} — terminating before respawn`,
             );
             let killSucceeded = true;
             try {
