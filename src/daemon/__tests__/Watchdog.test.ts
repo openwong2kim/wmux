@@ -272,6 +272,33 @@ describe('Watchdog', () => {
       wd.evaluateIdle();
       expect(onIdleShutdown).not.toHaveBeenCalled();
     });
+
+    it('logs which signal holds it alive on the 5th idle tick (orphan diagnosis)', () => {
+      // Regression lock for the orphan-reap observability. A daemon held
+      // alive past grace by a live session must periodically log WHY, so a
+      // future orphan that never reaps is diagnosable from the daemon log
+      // instead of a live-process inspection. Driven via start() rather than
+      // a direct evaluateIdle() call because the trace is gated on the
+      // health-tick counter (checkCount), which only advances under start().
+      const consoleSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+      const wd = new Watchdog(1000, {
+        idleTimeoutMs: 60_000,
+        graceMs: 1,
+        startTime: Date.now() - 10 * 60_000,
+      });
+      wd.setCallbacks({
+        onIdleCheck: () => ({ connections: 0, sessions: 1, lastDisconnectAt: null }),
+        onIdleShutdown: vi.fn(),
+      });
+      wd.start(() => ({ sessions: 1, memory: 1024, uptime: 600 }));
+      vi.advanceTimersByTime(5000); // 5 ticks → checkCount hits 5 → trace fires
+      const heldLogs = consoleSpy.mock.calls.filter(
+        (a) => typeof a[0] === 'string' && a[0].includes('idle-eval: held alive'),
+      );
+      expect(heldLogs.length).toBeGreaterThanOrEqual(1);
+      wd.stop();
+      consoleSpy.mockRestore();
+    });
   });
 
   it('logs health every 5th check', () => {

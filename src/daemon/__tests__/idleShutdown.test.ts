@@ -70,4 +70,19 @@ describe('Daemon idle shutdown (source-level invariants)', () => {
     expect(setCallbacksIdx).toBeGreaterThan(0);
     expect(doShutdownIdx).toBeLessThan(setCallbacksIdx);
   });
+
+  it('watches every spawned/recovered PTY so a dead process can reap the session (S2 orphan path)', () => {
+    // idle-shutdown can only fire once listLiveSessions() reaches 0. A
+    // session leaves the live set only when its PTY death transitions it to
+    // 'dead', and that transition is driven by processMonitor.watch's onDead
+    // callback. If any PTY-spawning path (the create RPC, or one of the three
+    // recovery branches: suspended / snapshot / no-scrollback) forgets to
+    // watch, an orphan daemon whose parent UI has died would hold that
+    // 'detached' session forever and never self-reap — the orphan-
+    // accumulation symptom this lock guards. Pin that every spawn path is
+    // paired with a watch, and that a watch callback can mark a session dead.
+    const watchCalls = src.match(/processMonitor\.watch\(/g) ?? [];
+    expect(watchCalls.length).toBeGreaterThanOrEqual(4);
+    expect(src).toMatch(/processMonitor\.watch\([\s\S]{0,500}?state = 'dead'/);
+  });
 });

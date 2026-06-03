@@ -173,11 +173,36 @@ export class Watchdog {
 
     const info = this.callbacks.onIdleCheck?.();
     if (!info) return; // wiring missing — refuse to act
-    if (info.connections > 0 || info.sessions > 0) return;
+
+    // Observability (orphan-reap diagnosis): when the daemon is NOT
+    // idle-eligible, periodically log WHICH signal is holding it alive. An
+    // orphan daemon that never self-reaps (parent UI dead, no client, but a
+    // lingering `detached` session) could previously only be diagnosed by
+    // inspecting the live process; now the reason lands in the daemon log
+    // next to the `[Watchdog] Health:` lines. Gated to every 5th health tick
+    // to match the Health cadence; `checkCount === 0` for direct
+    // `evaluateIdle()` unit calls, so the unit suite stays log-silent.
+    const traceIdle = this.checkCount > 0 && this.checkCount % 5 === 0;
+
+    if (info.connections > 0 || info.sessions > 0) {
+      if (traceIdle) {
+        console.log(
+          `[Watchdog] idle-eval: held alive by connections=${info.connections} liveSessions=${info.sessions} (pid=${process.pid})`,
+        );
+      }
+      return;
+    }
 
     const lastActivityAt = info.lastDisconnectAt ?? startTime;
     const idleMs = now - lastActivityAt;
-    if (idleMs < idleTimeoutMs) return;
+    if (idleMs < idleTimeoutMs) {
+      if (traceIdle) {
+        console.log(
+          `[Watchdog] idle-eval: empty but counting down idleMs=${idleMs}/${idleTimeoutMs} (pid=${process.pid})`,
+        );
+      }
+      return;
+    }
 
     this.idleShutdownFired = true;
     this.callbacks.onIdleShutdown?.(idleMs);
