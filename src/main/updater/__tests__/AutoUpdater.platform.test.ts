@@ -27,6 +27,7 @@ afterEach(() => {
   Object.defineProperty(process, 'platform', { value: realPlatform, configurable: true });
   vi.resetModules();
   vi.useRealTimers();
+  vi.unstubAllEnvs();
 });
 
 /**
@@ -36,6 +37,10 @@ afterEach(() => {
  */
 async function loadForPlatform(platform: NodeJS.Platform) {
   vi.resetModules();
+  // start() bails early when NODE_ENV === 'development', so pin a non-dev value.
+  // Otherwise these win32 invariants silently no-op when the suite is run from a
+  // shell that exports NODE_ENV=development (e.g. inside wmux's own dev session).
+  vi.stubEnv('NODE_ENV', 'production');
   Object.defineProperty(process, 'platform', { value: platform, configurable: true });
 
   const requestUrls: string[] = [];
