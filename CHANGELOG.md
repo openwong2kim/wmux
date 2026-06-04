@@ -8,7 +8,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ### Added
-- **Per-workspace process profiles.** Each workspace can define environment variables and an optional startup command, applied to **new panes only** — existing and recovered daemon PTYs keep their create-time environment. Right-click a workspace → "Configure profile…". Generic by design (no provider hardcoding): point `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, SSH wrappers, etc. at different accounts per workspace. This is environment separation, not an OS-level security sandbox.
+- **Per-workspace process profiles.** Each workspace can define environment variables and an optional startup command, applied to **new panes only** — existing and recovered daemon PTYs keep their create-time environment. Right-click a workspace → "Configure profile…". Generic by design (no provider hardcoding): point `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, SSH wrappers, etc. at different accounts per workspace. This is environment separation, not an OS-level security sandbox. See [docs/workspace-profiles.md](docs/workspace-profiles.md) for setup and multi-account recipes.
 
 ### Security
 - **Recursive IPC error-log redaction.** The structured IPC error logger now redacts sensitive keys at any depth, redacts startup-command values, and summarizes env maps to a key count — so workspace-profile env/commands flowing through `pty:create` can never leak into `args_summary`. Profile env is also kept out of the copy-session-info / drag-export markdown, and reserved `WMUX_*` keys are rejected so a profile can't spoof workspace identity.
