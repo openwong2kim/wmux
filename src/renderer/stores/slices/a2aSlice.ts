@@ -194,15 +194,25 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
       }
     }
 
-    // If still over limit, remove oldest terminal tasks first
+    // If still over the hard cap, evict oldest tasks. Prefer terminal tasks (their data
+    // is safe to drop), but fall back to evicting the oldest non-terminal tasks so
+    // GC_MAX_TASKS is a TRUE hard bound: a peer that creates tasks and never drives them
+    // to a terminal state would otherwise grow a2aTasks without limit, since the
+    // age-based prune above only removes terminal tasks.
     const remaining = Object.values(state.a2aTasks);
     if (remaining.length > GC_MAX_TASKS) {
-      const terminalTasks = remaining
-        .filter((t) => (TERMINAL_STATES as readonly string[]).includes(t.status.state))
-        .sort((a, b) => new Date(a.metadata.updatedAt).getTime() - new Date(b.metadata.updatedAt).getTime());
-
       let toRemove = remaining.length - GC_MAX_TASKS;
-      for (const task of terminalTasks) {
+      const oldestFirst = [...remaining].sort(
+        (a, b) => new Date(a.metadata.updatedAt).getTime() - new Date(b.metadata.updatedAt).getTime(),
+      );
+      const isTerminal = (t: (typeof remaining)[number]) =>
+        (TERMINAL_STATES as readonly string[]).includes(t.status.state);
+      // Terminal tasks first (oldest-first), then non-terminal oldest-first as a backstop.
+      const evictionOrder = [
+        ...oldestFirst.filter(isTerminal),
+        ...oldestFirst.filter((t) => !isTerminal(t)),
+      ];
+      for (const task of evictionOrder) {
         if (toRemove <= 0) break;
         delete state.a2aTasks[task.id];
         toRemove--;
