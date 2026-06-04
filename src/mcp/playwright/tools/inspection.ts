@@ -32,34 +32,25 @@ interface NetworkEntry {
   };
 }
 
-const consoleMessages = new Map<string, ConsoleEntry[]>();
-const networkRequests = new Map<string, NetworkEntry[]>();
+// Capture buffers are keyed by the Page object itself, not by surfaceId. A Page is the
+// true identity: an omitted surfaceId and an explicit surfaceId can resolve to the SAME
+// Page (one buffer, no stranding), and two DISTINCT Pages never collide on an alias key
+// like '__default__' (so closing one page cannot delete another's data). WeakMap also
+// lets a closed/GC'd Page drop its buffers automatically.
+const consoleMessages = new WeakMap<Page, ConsoleEntry[]>();
+const networkRequests = new WeakMap<Page, NetworkEntry[]>();
 
-// Bound the per-surface capture arrays so a long-lived MCP server process does not
-// grow without limit on a chatty / polling page. Oldest entries are dropped first.
+// Bound the per-page capture arrays so a long-lived MCP server process does not grow
+// without limit on a chatty / polling page. Oldest entries are dropped first.
 const MAX_CAPTURE_ENTRIES = 1000;
 // Cap each retained response body so a single large payload cannot pin unbounded RAM.
 const MAX_RESPONSE_BODY_BYTES = 256 * 1024;
 
-// Track which pages already have listeners attached
+// Track which pages already have listeners attached. Keyed by the Page object so a
+// closed/GC'd page drops its guard automatically.
 const attachedConsolePages = new WeakSet<Page>();
 const attachedNetworkPages = new WeakSet<Page>();
 const cleanupBoundPages = new WeakSet<Page>();
-
-// A single physical Page can be reached under more than one surfaceKey (e.g. an
-// omitted surfaceId resolves to '__default__' while an explicit surfaceId names the
-// same active page). The per-Page listener guards below would early-return on the
-// second key, stranding its data under the first key and leaving cleanup to delete
-// only the first key. Pin each Page to the FIRST surfaceKey it is seen with so every
-// access, listener, and the close cleanup all agree on one canonical key.
-const pageCanonicalKey = new WeakMap<Page, string>();
-
-function resolveCanonicalKey(page: Page, surfaceKey: string): string {
-  const existing = pageCanonicalKey.get(page);
-  if (existing !== undefined) return existing;
-  pageCanonicalKey.set(page, surfaceKey);
-  return surfaceKey;
-}
 
 /** Append to a capped ring: drop the oldest entries once MAX_CAPTURE_ENTRIES is exceeded. */
 function pushCapped<T>(entries: T[], item: T): void {
@@ -70,54 +61,49 @@ function pushCapped<T>(entries: T[], item: T): void {
 }
 
 /**
- * Delete a page's capture buffers when it closes, so a closed surface does not strand
- * its arrays (and any retained response bodies) under a dead key for the rest of the
- * MCP process lifetime. Bound once per page; the key is the page's canonical key.
+ * Eagerly drop a page's capture buffers when it closes. The WeakMap would reclaim them
+ * once the Page is GC'd, but the engine may retain the Page object past close, so we
+ * delete on 'close' to free the (potentially large) retained response bodies promptly.
+ * Bound once per page.
  */
-function ensurePageCloseCleanup(page: Page, canonicalKey: string): void {
+function ensurePageCloseCleanup(page: Page): void {
   if (cleanupBoundPages.has(page)) return;
   cleanupBoundPages.add(page);
 
   page.on('close', () => {
-    consoleMessages.delete(canonicalKey);
-    networkRequests.delete(canonicalKey);
+    consoleMessages.delete(page);
+    networkRequests.delete(page);
   });
 }
 
-/** Attach the console listener (idempotent per page) and return the canonical key to use. */
-function ensureConsoleListener(page: Page, surfaceKey: string): string {
-  const key = resolveCanonicalKey(page, surfaceKey);
-  ensurePageCloseCleanup(page, key);
-  if (attachedConsolePages.has(page)) return key;
+function ensureConsoleListener(page: Page): void {
+  ensurePageCloseCleanup(page);
+  if (attachedConsolePages.has(page)) return;
   attachedConsolePages.add(page);
 
-  if (!consoleMessages.has(key)) {
-    consoleMessages.set(key, []);
+  if (!consoleMessages.has(page)) {
+    consoleMessages.set(page, []);
   }
 
   page.on('console', (msg) => {
-    const entries = consoleMessages.get(key);
+    const entries = consoleMessages.get(page);
     if (entries) {
       pushCapped(entries, { level: msg.type(), text: msg.text() });
     }
   });
-
-  return key;
 }
 
-/** Attach the network listeners (idempotent per page) and return the canonical key to use. */
-function ensureNetworkListener(page: Page, surfaceKey: string): string {
-  const key = resolveCanonicalKey(page, surfaceKey);
-  ensurePageCloseCleanup(page, key);
-  if (attachedNetworkPages.has(page)) return key;
+function ensureNetworkListener(page: Page): void {
+  ensurePageCloseCleanup(page);
+  if (attachedNetworkPages.has(page)) return;
   attachedNetworkPages.add(page);
 
-  if (!networkRequests.has(key)) {
-    networkRequests.set(key, []);
+  if (!networkRequests.has(page)) {
+    networkRequests.set(page, []);
   }
 
   page.on('request', (request) => {
-    const entries = networkRequests.get(key);
+    const entries = networkRequests.get(page);
     if (entries) {
       pushCapped(entries, {
         url: request.url(),
@@ -127,7 +113,7 @@ function ensureNetworkListener(page: Page, surfaceKey: string): string {
   });
 
   page.on('response', (response) => {
-    const entries = networkRequests.get(key);
+    const entries = networkRequests.get(page);
     if (!entries) return;
 
     const url = response.url();
@@ -171,12 +157,6 @@ function ensureNetworkListener(page: Page, surfaceKey: string): string {
       }
     }
   });
-
-  return key;
-}
-
-function surfaceKey(surfaceId?: string): string {
-  return surfaceId ?? '__default__';
 }
 
 /**
@@ -433,9 +413,9 @@ export function registerInspectionTools(server: McpServer): void {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
-        const key = ensureConsoleListener(page, surfaceKey(surfaceId));
+        ensureConsoleListener(page);
 
-        const entries = consoleMessages.get(key) ?? [];
+        const entries = consoleMessages.get(page) ?? [];
 
         const filterLevel = level ?? 'all';
         const filtered =
@@ -454,7 +434,7 @@ export function registerInspectionTools(server: McpServer): void {
             : filtered.map((e) => `[${e.level}] ${e.text}`).join('\n');
 
         if (clear) {
-          consoleMessages.set(key, []);
+          consoleMessages.set(page, []);
         }
 
         return {
@@ -494,9 +474,9 @@ export function registerInspectionTools(server: McpServer): void {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
-        const key = ensureNetworkListener(page, surfaceKey(surfaceId));
+        ensureNetworkListener(page);
 
-        const entries = networkRequests.get(key) ?? [];
+        const entries = networkRequests.get(page) ?? [];
 
         const filtered = filter
           ? entries.filter((e) => matchesGlob(e.url, filter))
@@ -514,7 +494,7 @@ export function registerInspectionTools(server: McpServer): void {
             : JSON.stringify(summary, null, 2);
 
         if (clear) {
-          networkRequests.set(key, []);
+          networkRequests.set(page, []);
         }
 
         return {
@@ -549,9 +529,9 @@ export function registerInspectionTools(server: McpServer): void {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
-        const key = ensureNetworkListener(page, surfaceKey(surfaceId));
+        ensureNetworkListener(page);
 
-        const entries = networkRequests.get(key) ?? [];
+        const entries = networkRequests.get(page) ?? [];
 
         // Find the last matching entry with a captured body
         let matchedEntry: NetworkEntry | undefined;
