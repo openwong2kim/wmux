@@ -5,6 +5,14 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Per-workspace process profiles.** Each workspace can define environment variables and an optional startup command, applied to **new panes only** — existing and recovered daemon PTYs keep their create-time environment. Right-click a workspace → "Configure profile…". Generic by design (no provider hardcoding): point `CLAUDE_CONFIG_DIR`, `CODEX_HOME`, SSH wrappers, etc. at different accounts per workspace. This is environment separation, not an OS-level security sandbox.
+
+### Security
+- **Recursive IPC error-log redaction.** The structured IPC error logger now redacts sensitive keys at any depth, redacts startup-command values, and summarizes env maps to a key count — so workspace-profile env/commands flowing through `pty:create` can never leak into `args_summary`. Profile env is also kept out of the copy-session-info / drag-export markdown, and reserved `WMUX_*` keys are rejected so a profile can't spoof workspace identity.
+
 ## [2.16.2] — 2026-06-03 — daemon hardening: security, split-brain fix, configurable lifecycle
 
 Bundles everything merged since v2.16.1: a token-file permission hardening (security), the duplicate-daemon / split-brain fix behind the "relaunch resets my terminals" bug, configurable daemon lifecycle thresholds, and idle-reap diagnostics. No config changes are required — defaults are unchanged.
