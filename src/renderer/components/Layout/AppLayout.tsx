@@ -32,7 +32,7 @@ import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { isFileDrag } from '../../../shared/dragDrop';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import { resolvePtyIdsToClear } from '../../hooks/reconcileWithReQuery';
-import { withDefaultShell } from '../../utils/ptyCreateOptions';
+import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
@@ -814,7 +814,10 @@ export default function AppLayout() {
       // split as a permanent empty-leaf placeholder.
       void ipcInvoke<{ id: string; shell?: string; cwd?: string }>(() =>
         window.electronAPI.pty.create(
-          withDefaultShell({ workspaceId: wsId }, useStore.getState().defaultShell)
+          withWorkspaceProfile(
+            withDefaultShell({ workspaceId: wsId }, useStore.getState().defaultShell),
+            activeWorkspace.profile,
+          )
         )
       ).then((result) => {
         if (!result.ok) return; // toast surfaced by useIpc

@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata } from '../../../shared/types';
+import { createWorkspace, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
@@ -21,6 +22,13 @@ export interface WorkspaceSlice {
   setActiveWorkspace: (id: string) => void;
   renameWorkspace: (id: string, name: string) => void;
   updateWorkspaceMetadata: (id: string, metadata: Partial<WorkspaceMetadata>) => void;
+  /**
+   * Set (or clear) a workspace's process profile. Deliberately does NOT publish
+   * a metadata-change event — profile values may be secret-adjacent and must
+   * not travel the metadata event/RPC bus. Pass undefined (or an empty profile)
+   * to clear. Applies to NEW panes only; existing PTYs are untouched.
+   */
+  setWorkspaceProfile: (id: string, profile: WorkspaceProfile | undefined) => void;
   reorderWorkspace: (fromIndex: number, toIndex: number) => void;
   loadSession: (data: SessionData) => void;
   /**
@@ -180,6 +188,19 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
     },
 
+    setWorkspaceProfile: (id, profile) => set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === id);
+      if (!ws) return;
+      // Normalize defensively even though the UI pre-validates — drops invalid
+      // entries / reserved keys and collapses an empty profile to undefined.
+      const normalized = normalizeWorkspaceProfile(profile);
+      if (normalized) {
+        ws.profile = normalized;
+      } else {
+        delete ws.profile;
+      }
+    }),
+
     reorderWorkspace: (fromIndex, toIndex) => set((state: StoreState) => {
       if (fromIndex === toIndex) return;
       if (fromIndex < 0 || fromIndex >= state.workspaces.length) return;
@@ -258,6 +279,16 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         }
       };
       for (const ws of data.workspaces) sanitizePanes(ws.rootPane);
+
+      // Sanitize each workspace profile from the (untrusted) saved session:
+      // drop invalid env keys/values, reserved WMUX_* keys, and collapse an
+      // empty profile so it doesn't linger as `{ env: {} }`.
+      for (const ws of data.workspaces) {
+        if (ws.profile === undefined) continue;
+        const normalized = normalizeWorkspaceProfile(ws.profile);
+        if (normalized) ws.profile = normalized;
+        else delete ws.profile;
+      }
 
       state.workspaces = data.workspaces;
       state.activeWorkspaceId = data.activeWorkspaceId;

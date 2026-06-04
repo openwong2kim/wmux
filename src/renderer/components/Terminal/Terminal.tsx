@@ -2,7 +2,7 @@ import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
 import { useTerminal, copySelectionWithFeedback, type ContextMenuEvent } from '../../hooks/useTerminal';
 import { useStore } from '../../stores';
 import { useIpc } from '../../hooks/useIpc';
-import { withDefaultShell } from '../../utils/ptyCreateOptions';
+import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isFileDrag } from '../../../shared/dragDrop';
 import ViCopyMode from './ViCopyMode';
@@ -117,9 +117,11 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     const workspaceId = ownerWorkspaceId ?? useStore.getState().activeWorkspaceId;
     const surfaceId = ownerSurfaceId;
     const defaultShell = useStore.getState().defaultShell;
+    // Owning workspace's profile (env + startup command) for this new pane.
+    const profile = useStore.getState().workspaces.find((w) => w.id === workspaceId)?.profile;
     console.log(`[Terminal] Creating new PTY: shell=${shell}, cwd=${cwd}, cols=${cols}, rows=${rows}, ws=${workspaceId}, surface=${surfaceId ?? '-'}`);
     void ipcInvokeRef.current<{ id: string }>(() =>
-      window.electronAPI.pty.create(withDefaultShell({ shell, cwd, cols, rows, workspaceId, surfaceId }, defaultShell))
+      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ shell, cwd, cols, rows, workspaceId, surfaceId }, defaultShell), profile))
     ).then((result) => {
       if (!result.ok) {
         // Toast surfaced by useIpc (e.g. DAEMON_DISCONNECTED). Nothing to do.

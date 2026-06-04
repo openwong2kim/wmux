@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
-import { withDefaultShell } from '../utils/ptyCreateOptions';
+import { withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface } from '../../shared/types';
 import { validateMessage } from '../../shared/types';
 import type { Message, Part, TaskState, Artifact, AgentSkill } from '../../shared/types';
@@ -372,11 +372,16 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const shell = typeof params.shell === 'string' ? params.shell : '';
     const cwd = typeof params.cwd === 'string' ? params.cwd : '';
 
-    const { id: ptyId } = await window.electronAPI.pty.create({
-      ...withDefaultShell({ shell: shell || undefined }, store.defaultShell),
-      cwd: cwd || undefined,
-      workspaceId: ws.id,
-    });
+    const { id: ptyId } = await window.electronAPI.pty.create(
+      withWorkspaceProfile(
+        {
+          ...withDefaultShell({ shell: shell || undefined }, store.defaultShell),
+          cwd: cwd || undefined,
+          workspaceId: ws.id,
+        },
+        ws.profile,
+      ),
+    );
 
     // Re-read state after async gap — paneId may have been removed.
     const freshAfterCreate = useStore.getState();

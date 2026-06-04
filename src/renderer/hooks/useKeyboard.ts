@@ -3,7 +3,7 @@ import { useStore } from '../stores';
 import { findLeaf } from '../../shared/paneUtils';
 import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
-import { withDefaultShell } from '../utils/ptyCreateOptions';
+import { withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import { useIpc } from './useIpc';
 import { pastePtyChunked } from '../utils/clipboardChunk';
 
@@ -407,7 +407,7 @@ export function useKeyboard() {
           // an actionable toast instead of being silently dropped — the
           // pre-v2.8.2 .then-only chain made the shortcut look unresponsive.
           void ipcInvokeRef.current<{ id: string }>(() =>
-            window.electronAPI.pty.create(withDefaultShell({ workspaceId: ws.id }, state.defaultShell))
+            window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: ws.id }, state.defaultShell), ws.profile))
           ).then((result) => {
             if (result.ok) {
               store.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', '');

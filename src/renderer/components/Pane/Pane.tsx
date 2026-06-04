@@ -9,7 +9,7 @@ import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import SurfaceTabs from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
-import { withDefaultShell } from '../../utils/ptyCreateOptions';
+import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 
 interface PaneProps {
   pane: PaneLeaf;
@@ -154,7 +154,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     // focus, and the global value would tag the new PTY with the wrong
     // workspace. Codex P1 fix 2026-05-24.
     const result = await ipcInvoke<{ id: string }>(() =>
-      window.electronAPI.pty.create(withDefaultShell({ workspaceId: workspace.id }, defaultShell))
+      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: workspace.id }, defaultShell), workspace.profile))
     );
     if (result.ok) {
       addSurface(pane.id, result.data.id, 'Terminal', '');
