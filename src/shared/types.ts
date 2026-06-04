@@ -83,6 +83,29 @@ export interface PaneBranch {
 
 export type Pane = PaneLeaf | PaneBranch;
 
+// === Workspace Profile ===
+// Per-workspace process profile applied to NEW panes only. Generic by design:
+// it carries environment variables and an optional startup command, so it can
+// drive Claude/Codex/Gemini config dirs, SSH wrappers, or any CLI tool without
+// the app hardcoding a provider. This is environment separation for new child
+// PTYs — NOT an OS-level security sandbox.
+//
+// Stored on Workspace (persisted in session.json), deliberately NOT on
+// WorkspaceMetadata: metadata is published over event/RPC paths and is the
+// wrong surface for user-entered, potentially secret-adjacent values.
+export interface WorkspaceProfile {
+  /** Env vars merged into new PTYs after the safe-inherited baseline. */
+  env?: Record<string, string>;
+  /** Optional command written into each new pane's shell after creation. */
+  defaultPaneCommand?: string;
+}
+
+// Validation caps — enforced by shared/workspaceProfile.ts.
+export const WORKSPACE_PROFILE_MAX_ENV_ENTRIES = 64;
+export const WORKSPACE_PROFILE_ENV_KEY_MAX = 128;
+export const WORKSPACE_PROFILE_ENV_VALUE_MAX = 8192;
+export const WORKSPACE_PROFILE_COMMAND_MAX = 4096;
+
 // === Workspace: a named collection of panes ===
 export interface Workspace {
   id: string;
@@ -90,6 +113,8 @@ export interface Workspace {
   rootPane: Pane;
   activePaneId: string;
   metadata?: WorkspaceMetadata;
+  /** Per-workspace process profile (env + startup command) for new panes. */
+  profile?: WorkspaceProfile;
   companyRole?: 'ceo' | 'lead' | 'member';
   companyDeptName?: string;
 }
