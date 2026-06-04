@@ -172,20 +172,26 @@ export function registerPTYHandlers(
   // recoveredBytes=0 (cap-skipped session or fresh create) means the cache
   // is the best approximation and must be kept.
   // Single broadcast listener; the renderer filters by ptyId.
+  // Stored in a named variable (not an anonymous closure) so the cleanup function below
+  // can removeListener it, mirroring session:data / session:died. Without this, repeated
+  // handler swaps on the same surviving daemonClient (renderer-crash / unresponsive-reload
+  // recovery) accumulate flushComplete listeners → MaxListenersExceededWarning + duplicate
+  // PTY_FLUSH_COMPLETE sends.
+  let onDaemonFlushComplete:
+    | ((payload: { sessionId: string; recoveredBytes: number }) => void)
+    | null = null;
   if (useDaemon && daemonClient) {
-    daemonClient.on(
-      'session:flushComplete',
-      (payload: { sessionId: string; recoveredBytes: number }) => {
-        const win = getWindow?.();
-        if (win && !win.isDestroyed()) {
-          win.webContents.send(
-            IPC.PTY_FLUSH_COMPLETE,
-            payload.sessionId,
-            payload.recoveredBytes,
-          );
-        }
-      },
-    );
+    onDaemonFlushComplete = (payload: { sessionId: string; recoveredBytes: number }) => {
+      const win = getWindow?.();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(
+          IPC.PTY_FLUSH_COMPLETE,
+          payload.sessionId,
+          payload.recoveredBytes,
+        );
+      }
+    };
+    daemonClient.on('session:flushComplete', onDaemonFlushComplete);
   }
 
   // pty:create
@@ -597,6 +603,9 @@ export function registerPTYHandlers(
       daemonSessionListeners.clear();
       if (onDaemonSessionDied) {
         daemonClient.removeListener('session:died', onDaemonSessionDied);
+      }
+      if (onDaemonFlushComplete) {
+        daemonClient.removeListener('session:flushComplete', onDaemonFlushComplete);
       }
     }
   };
