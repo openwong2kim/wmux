@@ -20,6 +20,24 @@ export const en = {
   'workspace.close': 'Close workspace',
   'workspace.copyInfo': 'Copy session info',
   'workspace.copied': 'Copied!',
+  'workspace.configureProfile': 'Configure profile…',
+
+  // Workspace profile (env + startup command for new panes)
+  'workspaceProfile.title': 'Workspace profile',
+  'workspaceProfile.subtitle': 'Environment for new panes in "{name}"',
+  'workspaceProfile.envHeading': 'Environment variables',
+  'workspaceProfile.keyPlaceholder': 'NAME',
+  'workspaceProfile.valuePlaceholder': 'value',
+  'workspaceProfile.addRow': '+ Add variable',
+  'workspaceProfile.removeRow': 'Remove',
+  'workspaceProfile.commandHeading': 'Startup command (optional)',
+  'workspaceProfile.commandPlaceholder': 'e.g. claude --dangerously-skip-permissions',
+  'workspaceProfile.invalidKey': 'Invalid or reserved name — will be dropped on save.',
+  'workspaceProfile.warningNewPanes': 'Applied to new panes only. Existing and recovered panes keep their current environment.',
+  'workspaceProfile.warningNotSandbox': 'This separates process environments. It is not an OS-level security sandbox.',
+  'workspaceProfile.warningPlaintext': 'Values are stored in plaintext in your local session file. Prefer pointing at config directories over pasting raw API keys.',
+  'workspaceProfile.save': 'Save',
+  'workspaceProfile.cancel': 'Cancel',
 
   // Pane
   'pane.empty': 'Empty pane',

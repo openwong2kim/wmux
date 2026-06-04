@@ -96,10 +96,11 @@ const INITIAL_COMMAND_DELAY_MS = 200;
  * logged (wrapHandler redacts initialCommand); only control chars are stripped
  * by the caller via sanitizePtyText before it reaches the shell.
  */
-function writeInitialCommand(write: () => void, command: string | undefined): void {
+function writeInitialCommand(command: string | undefined, write: (cmd: string) => void): void {
   if (!command || command.trim().length === 0) return;
+  const cmd = command;
   setTimeout(() => {
-    try { write(); } catch { /* best-effort — pane may have closed */ }
+    try { write(cmd); } catch { /* best-effort — pane may have closed */ }
   }, INITIAL_COMMAND_DELAY_MS).unref?.();
 }
 
@@ -296,7 +297,7 @@ export function registerPTYHandlers(
       // preserved — same pattern company provisioning already uses. Deferred a
       // beat so the freshly-connected session pipe is writable and the shell
       // has loaded its integration hook before the command lands.
-      writeInitialCommand(() => daemonClient.writeToSession(sessionId, sanitizePtyText(options!.initialCommand!) + '\r'), options?.initialCommand);
+      writeInitialCommand(options?.initialCommand, (cmd) => daemonClient.writeToSession(sessionId, sanitizePtyText(cmd) + '\r'));
 
       return { id: sessionId, shell, cwd: effectiveCwd };
     }));
@@ -315,7 +316,7 @@ export function registerPTYHandlers(
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = effectiveCwd || require('os').homedir();
       updateCwd(instance.id, actualCwd);
-      writeInitialCommand(() => ptyManager.write(instance.id, sanitizePtyText(initialCommand!) + '\r'), initialCommand);
+      writeInitialCommand(initialCommand, (cmd) => ptyManager.write(instance.id, sanitizePtyText(cmd) + '\r'));
       return { id: instance.id, shell: instance.shell, cwd: actualCwd };
     }));
   }

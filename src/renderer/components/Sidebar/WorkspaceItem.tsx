@@ -4,6 +4,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
+import WorkspaceProfileModal from './WorkspaceProfileModal';
 
 interface WorkspaceItemProps {
   workspace: Workspace;
@@ -44,6 +45,8 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(workspace.name);
   const [dropIndicator, setDropIndicator] = useState<'above' | 'below' | null>(null);
+  const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const [profileModalOpen, setProfileModalOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dragStartTimeRef = useRef<number>(0);
 
@@ -176,6 +179,27 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
     setEditing(true);
   };
 
+  const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
+    e.preventDefault();
+    e.stopPropagation();
+    setMenuPos({ x: e.clientX, y: e.clientY });
+  };
+
+  // Close the context menu on any outside click or Escape.
+  useEffect(() => {
+    if (!menuPos) return;
+    const close = () => setMenuPos(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setMenuPos(null); };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [menuPos]);
+
+  const hasProfile = workspace.profile !== undefined;
+
   return (
     <div
       className="relative mx-2"
@@ -205,6 +229,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
         style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
         onClick={handleClick}
         onDoubleClick={handleDoubleClick}
+        onContextMenu={handleContextMenu}
         onDragStart={handleDragStart}
         onDragEnd={handleDragEnd}
         onDragOver={handleDragOver}
@@ -233,6 +258,14 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
             <>
               <div className="flex items-center gap-1">
                 <span className="text-[11px] font-mono truncate">{workspace.name}</span>
+                {hasProfile && (
+                  <span
+                    className="text-[8px] leading-none flex-shrink-0 text-[var(--accent-blue)]"
+                    title={t('workspaceProfile.title')}
+                  >
+                    ⚙
+                  </span>
+                )}
                 {metadata?.agentStatus && metadata.agentStatus !== 'idle' && (
                   <AgentStatusDot status={metadata.agentStatus} agentName={metadata.agentName} />
                 )}
@@ -274,6 +307,28 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
           in drag hit-testing (codex P3). */}
       {dropIndicator === 'below' && (
         <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)] rounded-full z-10 translate-y-px pointer-events-none" />
+      )}
+
+      {/* Right-click context menu */}
+      {menuPos && (
+        <div
+          className="fixed z-[9999] min-w-[180px] py-1 rounded-md shadow-xl"
+          style={{ left: menuPos.x, top: menuPos.y, background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <button
+            className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+            style={{ color: 'var(--text-main)' }}
+            onClick={() => { setMenuPos(null); setProfileModalOpen(true); }}
+          >
+            {t('workspace.configureProfile')}
+          </button>
+        </div>
+      )}
+
+      {/* Profile editor modal */}
+      {profileModalOpen && (
+        <WorkspaceProfileModal workspace={workspace} onClose={() => setProfileModalOpen(false)} />
       )}
     </div>
   );

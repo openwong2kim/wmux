@@ -55,6 +55,32 @@ function makeWorkspace(): Workspace {
   };
 }
 
+describe('sessionInfoMarkdown — profile must never leak into copy/export', () => {
+  // Security lock: a workspace profile may hold secret-adjacent env values.
+  // The copy-session-info / drag-export markdown must never serialize them.
+  it('buildWorkspaceMarkdown omits profile env keys and values', () => {
+    const ws = makeWorkspace();
+    ws.profile = {
+      env: { CLAUDE_CONFIG_DIR: 'C:/secret/account-a', GEMINI_API_KEY: 'sk-do-not-leak' },
+      defaultPaneCommand: 'claude --token sk-also-secret',
+    };
+    const md = buildWorkspaceMarkdown(ws);
+    expect(md).not.toContain('CLAUDE_CONFIG_DIR');
+    expect(md).not.toContain('account-a');
+    expect(md).not.toContain('GEMINI_API_KEY');
+    expect(md).not.toContain('sk-do-not-leak');
+    expect(md).not.toContain('sk-also-secret');
+  });
+
+  it('buildPaneMarkdown omits profile env keys and values', () => {
+    const ws = makeWorkspace();
+    ws.profile = { env: { SECRET_PATH: 'C:/secret' } };
+    const md = buildPaneMarkdown(ws, 'pane-1');
+    expect(md).not.toContain('SECRET_PATH');
+    expect(md).not.toContain('C:/secret');
+  });
+});
+
 describe('sessionInfoMarkdown', () => {
   // ─── Workspace export ─────────────────────────────────────────────────
   // Regression lock: the markdown body MUST match what Sidebar.handleCopy
