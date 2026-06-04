@@ -46,6 +46,21 @@ const attachedConsolePages = new WeakSet<Page>();
 const attachedNetworkPages = new WeakSet<Page>();
 const cleanupBoundPages = new WeakSet<Page>();
 
+// A single physical Page can be reached under more than one surfaceKey (e.g. an
+// omitted surfaceId resolves to '__default__' while an explicit surfaceId names the
+// same active page). The per-Page listener guards below would early-return on the
+// second key, stranding its data under the first key and leaving cleanup to delete
+// only the first key. Pin each Page to the FIRST surfaceKey it is seen with so every
+// access, listener, and the close cleanup all agree on one canonical key.
+const pageCanonicalKey = new WeakMap<Page, string>();
+
+function resolveCanonicalKey(page: Page, surfaceKey: string): string {
+  const existing = pageCanonicalKey.get(page);
+  if (existing !== undefined) return existing;
+  pageCanonicalKey.set(page, surfaceKey);
+  return surfaceKey;
+}
+
 /** Append to a capped ring: drop the oldest entries once MAX_CAPTURE_ENTRIES is exceeded. */
 function pushCapped<T>(entries: T[], item: T): void {
   entries.push(item);
@@ -55,48 +70,54 @@ function pushCapped<T>(entries: T[], item: T): void {
 }
 
 /**
- * Delete a surface's capture buffers when its page closes, so a closed surface does not
- * strand its arrays (and any retained response bodies) under a dead key for the rest of
- * the MCP process lifetime. Bound once per page via cleanupBoundPages.
+ * Delete a page's capture buffers when it closes, so a closed surface does not strand
+ * its arrays (and any retained response bodies) under a dead key for the rest of the
+ * MCP process lifetime. Bound once per page; the key is the page's canonical key.
  */
-function ensurePageCloseCleanup(page: Page, surfaceKey: string): void {
+function ensurePageCloseCleanup(page: Page, canonicalKey: string): void {
   if (cleanupBoundPages.has(page)) return;
   cleanupBoundPages.add(page);
 
   page.on('close', () => {
-    consoleMessages.delete(surfaceKey);
-    networkRequests.delete(surfaceKey);
+    consoleMessages.delete(canonicalKey);
+    networkRequests.delete(canonicalKey);
   });
 }
 
-function ensureConsoleListener(page: Page, surfaceKey: string): void {
-  ensurePageCloseCleanup(page, surfaceKey);
-  if (attachedConsolePages.has(page)) return;
+/** Attach the console listener (idempotent per page) and return the canonical key to use. */
+function ensureConsoleListener(page: Page, surfaceKey: string): string {
+  const key = resolveCanonicalKey(page, surfaceKey);
+  ensurePageCloseCleanup(page, key);
+  if (attachedConsolePages.has(page)) return key;
   attachedConsolePages.add(page);
 
-  if (!consoleMessages.has(surfaceKey)) {
-    consoleMessages.set(surfaceKey, []);
+  if (!consoleMessages.has(key)) {
+    consoleMessages.set(key, []);
   }
 
   page.on('console', (msg) => {
-    const entries = consoleMessages.get(surfaceKey);
+    const entries = consoleMessages.get(key);
     if (entries) {
       pushCapped(entries, { level: msg.type(), text: msg.text() });
     }
   });
+
+  return key;
 }
 
-function ensureNetworkListener(page: Page, surfaceKey: string): void {
-  ensurePageCloseCleanup(page, surfaceKey);
-  if (attachedNetworkPages.has(page)) return;
+/** Attach the network listeners (idempotent per page) and return the canonical key to use. */
+function ensureNetworkListener(page: Page, surfaceKey: string): string {
+  const key = resolveCanonicalKey(page, surfaceKey);
+  ensurePageCloseCleanup(page, key);
+  if (attachedNetworkPages.has(page)) return key;
   attachedNetworkPages.add(page);
 
-  if (!networkRequests.has(surfaceKey)) {
-    networkRequests.set(surfaceKey, []);
+  if (!networkRequests.has(key)) {
+    networkRequests.set(key, []);
   }
 
   page.on('request', (request) => {
-    const entries = networkRequests.get(surfaceKey);
+    const entries = networkRequests.get(key);
     if (entries) {
       pushCapped(entries, {
         url: request.url(),
@@ -106,7 +127,7 @@ function ensureNetworkListener(page: Page, surfaceKey: string): void {
   });
 
   page.on('response', (response) => {
-    const entries = networkRequests.get(surfaceKey);
+    const entries = networkRequests.get(key);
     if (!entries) return;
 
     const url = response.url();
@@ -150,6 +171,8 @@ function ensureNetworkListener(page: Page, surfaceKey: string): void {
       }
     }
   });
+
+  return key;
 }
 
 function surfaceKey(surfaceId?: string): string {
@@ -410,8 +433,7 @@ export function registerInspectionTools(server: McpServer): void {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
-        const key = surfaceKey(surfaceId);
-        ensureConsoleListener(page, key);
+        const key = ensureConsoleListener(page, surfaceKey(surfaceId));
 
         const entries = consoleMessages.get(key) ?? [];
 
@@ -472,8 +494,7 @@ export function registerInspectionTools(server: McpServer): void {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
-        const key = surfaceKey(surfaceId);
-        ensureNetworkListener(page, key);
+        const key = ensureNetworkListener(page, surfaceKey(surfaceId));
 
         const entries = networkRequests.get(key) ?? [];
 
@@ -528,8 +549,7 @@ export function registerInspectionTools(server: McpServer): void {
           throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
         }
 
-        const key = surfaceKey(surfaceId);
-        ensureNetworkListener(page, key);
+        const key = ensureNetworkListener(page, surfaceKey(surfaceId));
 
         const entries = networkRequests.get(key) ?? [];
 
