@@ -33,6 +33,13 @@ If your work touches multiple areas, split it into separate PRs.
 - [ ] New code has tests
 - [ ] Commit messages are clear and descriptive
 
+### Test layout
+
+Use `*.runtime.test.ts`, `*.runtime.test.tsx`, or `*.runtime.test.mjs` for
+tests that spawn real OS resources, such as ConPTY shells or Windows process
+probes. `npm test` runs these runtime tests serially after the regular parallel
+suite to avoid cross-test contention.
+
 ### Commit Style
 
 ```

@@ -88,5 +88,5 @@ jobs:
       - name: ESLint (new cross-platform code, strict)
         run: npx eslint --max-warnings=0 src/shared/platform.ts src/shared/__tests__/platform.test.ts src/main/pty/__tests__/ShellDetector.test.ts src/main/notification/__tests__/ToastManager.test.ts
 
-      - name: Vitest (cross-platform)
-        run: npx vitest run
+      - name: Test (cross-platform)
+        run: npm test

@@ -19,7 +19,9 @@
     "build:mcp": "tsc -p tsconfig.mcp.json && node scripts/build-mcp.js",
     "mcp": "node dist/mcp/mcp/index.js",
     "notices": "node scripts/generate-notices.mjs",
-    "test": "vitest run"
+    "test": "npm run test:parallel && npm run test:runtime",
+    "test:parallel": "vitest run --exclude \"**/*.runtime.test.ts\" --exclude \"**/*.runtime.test.tsx\" --exclude \"**/*.runtime.test.mjs\"",
+    "test:runtime": "vitest run --config vitest.runtime.config.ts"
   },
   "keywords": [
     "terminal",
