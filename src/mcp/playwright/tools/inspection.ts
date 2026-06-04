@@ -35,11 +35,42 @@ interface NetworkEntry {
 const consoleMessages = new Map<string, ConsoleEntry[]>();
 const networkRequests = new Map<string, NetworkEntry[]>();
 
+// Bound the per-surface capture arrays so a long-lived MCP server process does not
+// grow without limit on a chatty / polling page. Oldest entries are dropped first.
+const MAX_CAPTURE_ENTRIES = 1000;
+// Cap each retained response body so a single large payload cannot pin unbounded RAM.
+const MAX_RESPONSE_BODY_BYTES = 256 * 1024;
+
 // Track which pages already have listeners attached
 const attachedConsolePages = new WeakSet<Page>();
 const attachedNetworkPages = new WeakSet<Page>();
+const cleanupBoundPages = new WeakSet<Page>();
+
+/** Append to a capped ring: drop the oldest entries once MAX_CAPTURE_ENTRIES is exceeded. */
+function pushCapped<T>(entries: T[], item: T): void {
+  entries.push(item);
+  if (entries.length > MAX_CAPTURE_ENTRIES) {
+    entries.splice(0, entries.length - MAX_CAPTURE_ENTRIES);
+  }
+}
+
+/**
+ * Delete a surface's capture buffers when its page closes, so a closed surface does not
+ * strand its arrays (and any retained response bodies) under a dead key for the rest of
+ * the MCP process lifetime. Bound once per page via cleanupBoundPages.
+ */
+function ensurePageCloseCleanup(page: Page, surfaceKey: string): void {
+  if (cleanupBoundPages.has(page)) return;
+  cleanupBoundPages.add(page);
+
+  page.on('close', () => {
+    consoleMessages.delete(surfaceKey);
+    networkRequests.delete(surfaceKey);
+  });
+}
 
 function ensureConsoleListener(page: Page, surfaceKey: string): void {
+  ensurePageCloseCleanup(page, surfaceKey);
   if (attachedConsolePages.has(page)) return;
   attachedConsolePages.add(page);
 
@@ -50,12 +81,13 @@ function ensureConsoleListener(page: Page, surfaceKey: string): void {
   page.on('console', (msg) => {
     const entries = consoleMessages.get(surfaceKey);
     if (entries) {
-      entries.push({ level: msg.type(), text: msg.text() });
+      pushCapped(entries, { level: msg.type(), text: msg.text() });
     }
   });
 }
 
 function ensureNetworkListener(page: Page, surfaceKey: string): void {
+  ensurePageCloseCleanup(page, surfaceKey);
   if (attachedNetworkPages.has(page)) return;
   attachedNetworkPages.add(page);
 
@@ -66,7 +98,7 @@ function ensureNetworkListener(page: Page, surfaceKey: string): void {
   page.on('request', (request) => {
     const entries = networkRequests.get(surfaceKey);
     if (entries) {
-      entries.push({
+      pushCapped(entries, {
         url: request.url(),
         method: request.method(),
       });
@@ -81,10 +113,14 @@ function ensureNetworkListener(page: Page, surfaceKey: string): void {
     // Find the matching request entry (last one with same URL and no status yet)
     for (let i = entries.length - 1; i >= 0; i--) {
       if (entries[i].url === url && entries[i].status === undefined) {
-        entries[i].status = response.status();
+        // Capture a stable reference to the entry object: the capture array is a
+        // capped ring (pushCapped), so positional indices can shift while the async
+        // response.text() below is in flight.
+        const entry = entries[i];
+        entry.status = response.status();
         // Store response headers for later body retrieval
         const headers = response.headers();
-        entries[i].response = { headers };
+        entry.response = { headers };
         // Only eagerly capture body for text-based content types
         const contentType = headers['content-type'] ?? '';
         const isTextual =
@@ -98,8 +134,12 @@ function ensureNetworkListener(page: Page, surfaceKey: string): void {
           response
             .text()
             .then((body) => {
-              if (entries[i].response) {
-                entries[i].response!.body = body;
+              if (entry.response) {
+                entry.response.body =
+                  body.length > MAX_RESPONSE_BODY_BYTES
+                    ? body.slice(0, MAX_RESPONSE_BODY_BYTES) +
+                      `\n... [truncated ${body.length - MAX_RESPONSE_BODY_BYTES} chars]`
+                    : body;
               }
             })
             .catch(() => {
@@ -413,15 +453,19 @@ export function registerInspectionTools(server: McpServer): void {
   // -----------------------------------------------------------------------
   server.tool(
     'browser_network',
-    'Retrieve network requests collected from the browser page. Requests are accumulated over time. Use a URL glob pattern to filter.',
+    'Retrieve network requests collected from the browser page. Requests are accumulated over time; use clear=true to reset. Use a URL glob pattern to filter.',
     {
       filter: z
         .string()
         .optional()
         .describe('URL glob pattern to filter requests (e.g. "*api*", "*.json").'),
+      clear: z
+        .boolean()
+        .optional()
+        .describe('Clear collected requests (and any retained response bodies) after returning them.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ filter, surfaceId }) => {
+    async ({ filter, clear, surfaceId }) => {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
@@ -447,6 +491,10 @@ export function registerInspectionTools(server: McpServer): void {
           summary.length === 0
             ? 'No network requests collected.'
             : JSON.stringify(summary, null, 2);
+
+        if (clear) {
+          networkRequests.set(key, []);
+        }
 
         return {
           content: [{ type: 'text' as const, text }],
