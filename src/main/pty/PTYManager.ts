@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { buildSafeChildEnv } from '../../shared/envFilter';
+import { applyProfileEnv } from '../../shared/workspaceProfile';
 import { isWindows } from '../../shared/platform';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
@@ -126,6 +127,8 @@ export class PTYManager {
     rows?: number;
     workspaceId?: string;
     surfaceId?: string;
+    /** Workspace profile env overlay (see PtyCreateOptions.env). */
+    env?: Record<string, string>;
   }): PTYInstance {
     if (this.instances.size >= MAX_PTY_INSTANCES) {
       throw new Error('Maximum PTY instances reached');
@@ -140,6 +143,12 @@ export class PTYManager {
     // previously this filter was laxer than the daemon's and would leak
     // WMUX_AUTH_TOKEN, GITHUB_TOKEN, ANTHROPIC_API_KEY, etc. to shells.
     const env = buildSafeChildEnv(globalThis.process.env);
+    // Workspace profile overlay — user-intentional, so applied AFTER the
+    // inherited-env denylist (otherwise an intentional *_KEY/*_TOKEN would be
+    // stripped) and BEFORE the wmux identity vars below, which are forced last
+    // so a profile can never spoof workspace/surface identity. applyProfileEnv
+    // additionally skips reserved WMUX_* keys as belt-and-suspenders.
+    applyProfileEnv(env, options?.env);
     env[ENV_KEYS.SOCKET_PATH] = getPipeName();
     if (options?.workspaceId) env[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
     if (options?.surfaceId) env[ENV_KEYS.SURFACE_ID] = options.surfaceId;

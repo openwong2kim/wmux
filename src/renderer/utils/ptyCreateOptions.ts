@@ -5,6 +5,18 @@ export interface PtyCreateOptions {
   rows?: number;
   workspaceId?: string;
   surfaceId?: string;
+  /**
+   * Workspace profile env overlay. Merged into the new PTY's environment AFTER
+   * the safe-inherited baseline and BEFORE wmux identity vars are forced, so a
+   * profile can configure tools (CLAUDE_CONFIG_DIR, etc.) but never spoof
+   * WMUX_WORKSPACE_ID / WMUX_SURFACE_ID / WMUX_SOCKET_PATH.
+   */
+  env?: Record<string, string>;
+  /**
+   * Startup command written into the new pane's shell after creation (NOT
+   * spawned as the executable — preserves shell-allowlist + quoting behavior).
+   */
+  initialCommand?: string;
 }
 
 const LEGACY_DEFAULT_SHELL_VALUES = new Set(['powershell', 'cmd', 'gitbash', 'wsl']);

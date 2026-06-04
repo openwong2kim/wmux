@@ -67,6 +67,26 @@ export function normalizeEnv(input: unknown): Record<string, string> {
   return out;
 }
 
+/**
+ * Apply a workspace profile env overlay onto a child-process env map, in place.
+ *
+ * Used by BOTH spawn paths (local PTYManager + daemon DaemonSessionManager).
+ * Reserved `WMUX_*` keys are skipped here too — so even if validation were
+ * bypassed (e.g. a hand-edited session.json), a profile can never overwrite
+ * the wmux identity vars the spawn layer forces. Non-string values are ignored.
+ */
+export function applyProfileEnv(
+  target: Record<string, string>,
+  profileEnv: Record<string, string> | undefined,
+): void {
+  if (!profileEnv) return;
+  for (const [key, value] of Object.entries(profileEnv)) {
+    if (typeof value !== 'string') continue;
+    if (isReservedEnvKey(key)) continue;
+    target[key] = value;
+  }
+}
+
 /** Normalize a startup command: trim for emptiness, cap length, preserve content. */
 export function normalizeCommand(input: unknown): string | undefined {
   if (typeof input !== 'string') return undefined;

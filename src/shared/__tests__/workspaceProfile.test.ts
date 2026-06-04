@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
+  applyProfileEnv,
   isReservedEnvKey,
   isValidEnvKey,
   normalizeCommand,
@@ -84,6 +85,37 @@ describe('normalizeCommand', () => {
   it('drops over-long commands and non-strings', () => {
     expect(normalizeCommand('x'.repeat(WORKSPACE_PROFILE_COMMAND_MAX + 1))).toBeUndefined();
     expect(normalizeCommand(42 as unknown as string)).toBeUndefined();
+  });
+});
+
+describe('applyProfileEnv', () => {
+  it('overlays profile values onto the target in place', () => {
+    const target: Record<string, string> = { PATH: '/usr/bin' };
+    applyProfileEnv(target, { CLAUDE_CONFIG_DIR: 'C:/a', PATH: '/custom' });
+    expect(target).toEqual({ PATH: '/custom', CLAUDE_CONFIG_DIR: 'C:/a' });
+  });
+
+  it('preserves an intentional *_KEY/*_TOKEN that the env denylist would strip', () => {
+    // The whole point of the separate overlay: a user-set secret-shaped key
+    // survives because applyProfileEnv runs AFTER buildSafeChildEnv.
+    const target: Record<string, string> = {};
+    applyProfileEnv(target, { GEMINI_API_KEY: 'user-set', SOME_TOKEN: 't' });
+    expect(target.GEMINI_API_KEY).toBe('user-set');
+    expect(target.SOME_TOKEN).toBe('t');
+  });
+
+  it('skips reserved WMUX_* keys so identity cannot be spoofed', () => {
+    const target: Record<string, string> = { WMUX_WORKSPACE_ID: 'real' };
+    applyProfileEnv(target, { WMUX_WORKSPACE_ID: 'spoof', WMUX_AUTH_TOKEN: 'x', SAFE: 'y' });
+    expect(target.WMUX_WORKSPACE_ID).toBe('real');
+    expect(target.WMUX_AUTH_TOKEN).toBeUndefined();
+    expect(target.SAFE).toBe('y');
+  });
+
+  it('is a no-op for undefined overlay', () => {
+    const target: Record<string, string> = { A: '1' };
+    applyProfileEnv(target, undefined);
+    expect(target).toEqual({ A: '1' });
   });
 });
 

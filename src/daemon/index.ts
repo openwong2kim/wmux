@@ -569,6 +569,7 @@ function registerRpcHandlers(
       cmd: p.cmd,
       cwd: p.cwd,
       env: p.env,
+      profileEnv: p.profileEnv,
       cols: p.cols,
       rows: p.rows,
       agent: p.agent,

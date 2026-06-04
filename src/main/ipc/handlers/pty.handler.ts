@@ -84,6 +84,26 @@ const RESIZE_RETRY_ATTEMPTS = 50;
 const RESIZE_RETRY_DELAY_MS = 20;
 
 /**
+ * Delay before a workspace-profile startup command is written into a new pane.
+ * Gives the freshly-connected daemon session pipe time to become writable and
+ * the shell a beat to load its integration hook before the command lands.
+ */
+const INITIAL_COMMAND_DELAY_MS = 200;
+
+/**
+ * Write a workspace-profile startup command into a just-created PTY, deferred
+ * and best-effort. No-op when there is no command. The command string is never
+ * logged (wrapHandler redacts initialCommand); only control chars are stripped
+ * by the caller via sanitizePtyText before it reaches the shell.
+ */
+function writeInitialCommand(write: () => void, command: string | undefined): void {
+  if (!command || command.trim().length === 0) return;
+  setTimeout(() => {
+    try { write(); } catch { /* best-effort — pane may have closed */ }
+  }, INITIAL_COMMAND_DELAY_MS).unref?.();
+}
+
+/**
  * Validate and resolve cwd. Returns undefined if invalid.
  * Shared by both daemon and local modes.
  */
@@ -191,7 +211,7 @@ export function registerPTYHandlers(
   // pty:create
   ipcMain.removeHandler(IPC.PTY_CREATE);
   if (useDaemon && daemonClient) {
-    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string }) => {
+    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, async (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string }) => {
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
@@ -227,7 +247,10 @@ export function registerPTYHandlers(
       }
       Object.assign(sessionEnv, identityEnv);
 
-      // Create session via daemon RPC
+      // Create session via daemon RPC. The workspace profile overlay rides
+      // as a SEPARATE `profileEnv` field: the daemon runs buildSafeChildEnv
+      // over `env` (which would strip an intentional *_KEY/*_TOKEN), then
+      // applies `profileEnv` after that filter and skips reserved WMUX_* keys.
       const result = await daemonClient.rpc('daemon.createSession', {
         id: sessionId,
         cmd: shell,
@@ -235,6 +258,7 @@ export function registerPTYHandlers(
         cols: options?.cols || 80,
         rows: options?.rows || 24,
         env: sessionEnv,
+        profileEnv: options?.env,
       });
 
       // Attach to the session (makes daemon start the SessionPipe server)
@@ -267,20 +291,31 @@ export function registerPTYHandlers(
         writePidMap(shellPid, sessionId);
       }
 
+      // Workspace profile startup command. Written as shell input (not spawned
+      // as the executable) so the allowed-shell check and quoting behavior are
+      // preserved — same pattern company provisioning already uses. Deferred a
+      // beat so the freshly-connected session pipe is writable and the shell
+      // has loaded its integration hook before the command lands.
+      writeInitialCommand(() => daemonClient.writeToSession(sessionId, sanitizePtyText(options!.initialCommand!) + '\r'), options?.initialCommand);
+
       return { id: sessionId, shell, cwd: effectiveCwd };
     }));
   } else {
-    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string }) => {
+    ipcMain.handle(IPC.PTY_CREATE, wrapHandler(IPC.PTY_CREATE, (_event: Electron.IpcMainInvokeEvent, options?: { shell?: string; cwd?: string; cols?: number; rows?: number; workspaceId?: string; surfaceId?: string; env?: Record<string, string>; initialCommand?: string }) => {
       if (options?.shell !== undefined && !isAllowedShell(options.shell)) {
         throw new Error(`PTY_CREATE: shell not allowed: ${options.shell}`);
       }
 
       const safeCwd = validateCwd(options?.cwd);
       const effectiveCwd = safeCwd ?? undefined;
-      const instance = ptyManager.create(effectiveCwd !== undefined ? { ...options, cwd: effectiveCwd } : { ...options, cwd: undefined });
+      // Split off initialCommand — it's written into the shell post-create, not
+      // a spawn option. The rest (incl. the profile env overlay) goes to create.
+      const { initialCommand, ...createOpts } = options ?? {};
+      const instance = ptyManager.create({ ...createOpts, cwd: effectiveCwd });
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = effectiveCwd || require('os').homedir();
       updateCwd(instance.id, actualCwd);
+      writeInitialCommand(() => ptyManager.write(instance.id, sanitizePtyText(initialCommand!) + '\r'), initialCommand);
       return { id: instance.id, shell: instance.shell, cwd: actualCwd };
     }));
   }

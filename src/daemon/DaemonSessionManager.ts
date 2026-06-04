@@ -8,6 +8,7 @@ import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection } from './shell-integration';
 import { buildSafeChildEnv } from '../shared/envFilter';
+import { applyProfileEnv } from '../shared/workspaceProfile';
 import { isMac } from '../shared/platform';
 import { createDefaultConfig } from './config';
 
@@ -66,6 +67,14 @@ export class DaemonSessionManager extends EventEmitter {
     cmd: string;
     cwd: string;
     env?: Record<string, string>;
+    /**
+     * Workspace profile env overlay, applied AFTER buildSafeChildEnv (so an
+     * intentional *_KEY/*_TOKEN isn't stripped) and after shell-integration
+     * injection. Reserved WMUX_* keys are skipped so identity can't be spoofed.
+     * The merged result is persisted in meta.env, so recovery reproduces the
+     * exact create-time environment.
+     */
+    profileEnv?: Record<string, string>;
     cols?: number;
     rows?: number;
     agent?: { role: string; teamId: string; displayName: string };
@@ -156,6 +165,11 @@ export class DaemonSessionManager extends EventEmitter {
       // eslint-disable-next-line no-console
       console.warn('[DaemonSessionManager] shell integration unavailable:', err);
     }
+
+    // Workspace profile overlay — applied here (not folded into params.env)
+    // so it survives the buildSafeChildEnv filter above. Reserved WMUX_* keys
+    // are skipped, so the identity vars baked into params.env stay authoritative.
+    applyProfileEnv(env, params.profileEnv);
 
     // Spawn the PTY. node-pty throws synchronously on a missing/invalid shell
     // binary or an unreadable cwd — common on macOS/Linux where the resolved
