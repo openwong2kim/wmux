@@ -54,7 +54,27 @@ export interface StructuredLogEntry {
 }
 
 const ARGS_SUMMARY_CAP = 200;
-const SENSITIVE_KEY_PATTERN = /(password|token|secret|key|authorization|auth)/i;
+const SENSITIVE_KEY_PATTERN = /(password|token|secret|key|authorization|auth|credential)/i;
+
+/**
+ * Keys whose *value* is redacted outright because it may carry user secrets
+ * or paths the user considers private — e.g. a workspace profile's startup
+ * command (`claude --some-flag <token>`). Matched case-insensitively against
+ * the full key name. Distinct from SENSITIVE_KEY_PATTERN (which is a substring
+ * match) so a benign key like `cmdPalette` doesn't get caught by `cmd`.
+ */
+const REDACT_VALUE_KEYS = /^(initialcommand|defaultpanecommand|command|cmd)$/i;
+
+/**
+ * Keys holding an environment-variable map (workspace profile env overlay).
+ * The requirement is explicit: never log env *values*. We replace the object
+ * with a `{ keyCount }` summary so an error log keeps a diagnostic signal
+ * (how many vars were set) without exposing any name→value pair.
+ */
+const ENV_SUMMARY_KEYS = /^(env|profileenv)$/i;
+
+/** Depth cap so a pathological/cyclic payload can't blow the stack. */
+const MAX_REDACT_DEPTH = 6;
 
 /** Heuristic classification of an unknown error into one of the known codes. */
 function classifyError(err: unknown): IpcErrorCode {
@@ -94,19 +114,33 @@ function classifyError(err: unknown): IpcErrorCode {
   return 'UNKNOWN';
 }
 
-/** Recursively redact values whose key matches the sensitive pattern. 1-depth only. */
-function redactShallow(value: unknown): unknown {
+/**
+ * Recursively redact values whose key is sensitive, at ANY depth.
+ *
+ * Earlier this was a 1-depth pass, which leaked nested secrets: once
+ * `pty:create` started carrying `{ env: { SOME_TOKEN: "..." }, initialCommand:
+ * "..." }`, the outer key is just `env`, so the shallow pass serialized the
+ * nested token straight into `args_summary` on a spawn error. This walk
+ * handles:
+ *   - sensitive key (substring match)      → value replaced with [REDACTED]
+ *   - command-like key (exact match)       → value replaced with [REDACTED]
+ *   - env map key (exact match)            → value replaced with { keyCount }
+ *   - plain objects / arrays               → recurse (depth-capped)
+ */
+function redactDeep(value: unknown, depth = 0): unknown {
   if (value === null || typeof value !== 'object') return value;
+  if (depth >= MAX_REDACT_DEPTH) return '[REDACTED:depth]';
   if (Array.isArray(value)) {
-    // Arrays: preserve structure but redact nothing at this level (no keys).
-    return value;
+    return value.map((v) => redactDeep(v, depth + 1));
   }
   const out: Record<string, unknown> = {};
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
-    if (SENSITIVE_KEY_PATTERN.test(k)) {
+    if (SENSITIVE_KEY_PATTERN.test(k) || REDACT_VALUE_KEYS.test(k)) {
       out[k] = '[REDACTED]';
+    } else if (ENV_SUMMARY_KEYS.test(k) && v !== null && typeof v === 'object' && !Array.isArray(v)) {
+      out[k] = { keyCount: Object.keys(v as Record<string, unknown>).length };
     } else {
-      out[k] = v;
+      out[k] = redactDeep(v, depth + 1);
     }
   }
   return out;
@@ -121,7 +155,7 @@ export function buildArgsSummary(args: readonly unknown[]): string | undefined {
   const first = args[0];
   let raw: string;
   try {
-    const redacted = redactShallow(first);
+    const redacted = redactDeep(first);
     raw = JSON.stringify(redacted);
   } catch {
     // Circular structure / BigInt / etc — fall back to String().
