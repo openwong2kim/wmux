@@ -7,6 +7,8 @@ import { PTYBridge } from '../../pty/PTYBridge';
 import { DaemonClient } from '../../DaemonClient';
 import { IPC, getPidMapDir, ENV_KEYS } from '../../../shared/constants';
 import { sanitizePtyText } from '../../../shared/types';
+import { buildSafeChildEnv } from '../../../shared/envFilter';
+import { applyProfileEnv } from '../../../shared/workspaceProfile';
 import { updateCwd } from './metadata.handler';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
@@ -84,24 +86,80 @@ const RESIZE_RETRY_ATTEMPTS = 50;
 const RESIZE_RETRY_DELAY_MS = 20;
 
 /**
- * Delay before a workspace-profile startup command is written into a new pane.
- * Gives the freshly-connected daemon session pipe time to become writable and
- * the shell a beat to load its integration hook before the command lands.
+ * Settle delay after the shell's first output before the startup command is
+ * written. First output means the shell has started and (for daemon mode) the
+ * session pipe is live; the settle lets the prompt finish rendering so the
+ * command lands at a ready prompt rather than mid-init.
  */
-const INITIAL_COMMAND_DELAY_MS = 200;
+const INITIAL_COMMAND_SETTLE_MS = 120;
+/**
+ * Fallback: if the shell produces NO output within this window (unusual — a
+ * silent shell, or output we never see), write the command anyway rather than
+ * never running it.
+ */
+const INITIAL_COMMAND_FALLBACK_MS = 3000;
+/** Delivery retry budget for daemon mode (write can fail while the pipe is mid-attach). */
+const INITIAL_COMMAND_RETRY_ATTEMPTS = 15;
+const INITIAL_COMMAND_RETRY_DELAY_MS = 80;
 
 /**
- * Write a workspace-profile startup command into a just-created PTY, deferred
- * and best-effort. No-op when there is no command. The command string is never
- * logged (wrapHandler redacts initialCommand); only control chars are stripped
- * by the caller via sanitizePtyText before it reaches the shell.
+ * Schedule a workspace-profile startup command for a just-created PTY.
+ *
+ * Why this is event-driven rather than a fixed delay: the previous blind
+ * 200 ms timer was racy and dropped the command intermittently. Two failure
+ * modes: (1) in daemon mode `writeToSession` returns false while the session
+ * pipe is still mid-attach, and a single fire-and-forget write was silently
+ * dropped; (2) on a busy machine PowerShell hadn't reached its interactive
+ * prompt at 200 ms, so the keystrokes were lost. This helper instead:
+ *   - waits for the shell's FIRST output (caller invokes the returned trigger),
+ *     which signals the shell is alive and the pipe is carrying data;
+ *   - then waits a short settle for the prompt to finish rendering;
+ *   - then writes, RETRYING while the write reports "not delivered" (daemon
+ *     mode returns a boolean) up to a bounded budget;
+ *   - and falls back to firing anyway if no output ever arrives.
+ *
+ * The command string is never logged (wrapHandler redacts initialCommand);
+ * the caller strips control chars via sanitizePtyText before it reaches the
+ * shell. Returns a `{ onFirstData }` trigger; call it on the first PTY data
+ * for this session. No-op (trigger is a harmless noop) when there is no command.
  */
-function writeInitialCommand(command: string | undefined, write: (cmd: string) => void): void {
-  if (!command || command.trim().length === 0) return;
+function scheduleInitialCommand(
+  command: string | undefined,
+  /** Perform the write. Return `false` to signal "not delivered, please retry". */
+  write: (cmd: string) => boolean | void,
+): { onFirstData: () => void } {
+  if (!command || command.trim().length === 0) return { onFirstData: () => {} };
   const cmd = command;
-  setTimeout(() => {
-    try { write(cmd); } catch { /* best-effort — pane may have closed */ }
-  }, INITIAL_COMMAND_DELAY_MS).unref?.();
+  let fired = false;
+
+  const fire = () => {
+    if (fired) return;
+    fired = true;
+    let attempts = 0;
+    const attempt = () => {
+      let delivered: boolean | void;
+      try {
+        delivered = write(cmd);
+      } catch {
+        return; // pane closed mid-write — best-effort, give up
+      }
+      if (delivered === false && ++attempts < INITIAL_COMMAND_RETRY_ATTEMPTS) {
+        setTimeout(attempt, INITIAL_COMMAND_RETRY_DELAY_MS).unref?.();
+      }
+    };
+    setTimeout(attempt, INITIAL_COMMAND_SETTLE_MS).unref?.();
+  };
+
+  // Fallback so a silent shell still gets its command.
+  const fallback = setTimeout(fire, INITIAL_COMMAND_FALLBACK_MS);
+  fallback.unref?.();
+
+  return {
+    onFirstData: () => {
+      clearTimeout(fallback);
+      fire();
+    },
+  };
 }
 
 /**
@@ -237,21 +295,25 @@ export function registerPTYHandlers(
       // Without this, daemon-mode sessions get a bare `globalThis.process.env`
       // baseline that has no wmux identity at all — main process never had
       // WMUX_WORKSPACE_ID/SURFACE_ID in its own env (those are PTY-level).
-      const identityEnv: Record<string, string> = {};
-      if (options?.workspaceId) identityEnv[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
-      if (options?.surfaceId) identityEnv[ENV_KEYS.SURFACE_ID] = options.surfaceId;
-      // Merge with main process env so the daemon's buildSafeChildEnv starts
-      // from a complete baseline (PATH, USERPROFILE, etc.) plus our identity.
-      const sessionEnv: Record<string, string> = {};
-      for (const [k, v] of Object.entries(globalThis.process.env)) {
-        if (typeof v === 'string') sessionEnv[k] = v;
-      }
-      Object.assign(sessionEnv, identityEnv);
+      //
+      // Env resolution happens HERE in main (the trusted control process),
+      // symmetric with local-mode PTYManager.create, so the daemon stays
+      // profile-agnostic and replays the persisted env verbatim on recovery:
+      //   1. buildSafeChildEnv(process.env) — strip the main process's own
+      //      inherited secrets/build-tooling vars from the child baseline.
+      //   2. applyProfileEnv(...) — overlay the workspace profile AFTER the
+      //      denylist (so an intentional *_KEY/*_TOKEN survives) and skip
+      //      reserved WMUX_* keys.
+      //   3. force WMUX identity LAST so a profile can never spoof it.
+      // The daemon receives this as the complete `env`; it no longer needs a
+      // separate `profileEnv` field, and recovery (which replays session.env)
+      // reproduces the exact create-time environment without re-filtering.
+      const sessionEnv = buildSafeChildEnv(globalThis.process.env);
+      applyProfileEnv(sessionEnv, options?.env);
+      if (options?.workspaceId) sessionEnv[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
+      if (options?.surfaceId) sessionEnv[ENV_KEYS.SURFACE_ID] = options.surfaceId;
 
-      // Create session via daemon RPC. The workspace profile overlay rides
-      // as a SEPARATE `profileEnv` field: the daemon runs buildSafeChildEnv
-      // over `env` (which would strip an intentional *_KEY/*_TOKEN), then
-      // applies `profileEnv` after that filter and skips reserved WMUX_* keys.
+      // Create session via daemon RPC.
       const result = await daemonClient.rpc('daemon.createSession', {
         id: sessionId,
         cmd: shell,
@@ -259,7 +321,6 @@ export function registerPTYHandlers(
         cols: options?.cols || 80,
         rows: options?.rows || 24,
         env: sessionEnv,
-        profileEnv: options?.env,
       });
 
       // Attach to the session (makes daemon start the SessionPipe server)
@@ -268,11 +329,23 @@ export function registerPTYHandlers(
       // Connect session data pipe
       await daemonClient.connectSessionPipe(sessionId);
 
+      // Workspace profile startup command. Written as shell INPUT (not spawned
+      // as the executable) so the allowed-shell check and quoting behavior are
+      // preserved — same pattern company provisioning uses. Gated on the
+      // session's first output (see scheduleInitialCommand) and retried while
+      // the pipe reports "not delivered", which fixes the intermittent
+      // never-ran-the-command race the fixed-delay version had.
+      const initialCmd = scheduleInitialCommand(
+        options?.initialCommand,
+        (cmd) => daemonClient.writeToSession(sessionId, sanitizePtyText(cmd) + '\r'),
+      );
+
       // Forward session data to renderer. Routed through the per-id helper so
       // a stale listener (from a prior create with the same id, or a reconnect)
       // is removed before the new one is attached.
       const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
         if (payload.sessionId !== sessionId) return;
+        initialCmd.onFirstData();
         const win = getWindow?.();
         if (win && !win.isDestroyed()) {
           const text = decodeSessionData(sessionId, payload.data);
@@ -292,13 +365,6 @@ export function registerPTYHandlers(
         writePidMap(shellPid, sessionId);
       }
 
-      // Workspace profile startup command. Written as shell input (not spawned
-      // as the executable) so the allowed-shell check and quoting behavior are
-      // preserved — same pattern company provisioning already uses. Deferred a
-      // beat so the freshly-connected session pipe is writable and the shell
-      // has loaded its integration hook before the command lands.
-      writeInitialCommand(options?.initialCommand, (cmd) => daemonClient.writeToSession(sessionId, sanitizePtyText(cmd) + '\r'));
-
       return { id: sessionId, shell, cwd: effectiveCwd };
     }));
   } else {
@@ -316,7 +382,19 @@ export function registerPTYHandlers(
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = effectiveCwd || require('os').homedir();
       updateCwd(instance.id, actualCwd);
-      writeInitialCommand(initialCommand, (cmd) => ptyManager.write(instance.id, sanitizePtyText(cmd) + '\r'));
+      // Startup command: gate on the shell's first output (one-shot onData)
+      // so it lands at a ready prompt, mirroring the daemon path. ptyManager
+      // writes are always delivered locally, so the writer returns void.
+      if (initialCommand && initialCommand.trim().length > 0) {
+        const initialCmd = scheduleInitialCommand(
+          initialCommand,
+          (cmd) => { ptyManager.write(instance.id, sanitizePtyText(cmd) + '\r'); },
+        );
+        const disposable = instance.process.onData(() => {
+          disposable.dispose();
+          initialCmd.onFirstData();
+        });
+      }
       return { id: instance.id, shell: instance.shell, cwd: actualCwd };
     }));
   }

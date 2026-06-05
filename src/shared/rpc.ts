@@ -300,14 +300,13 @@ export interface DaemonCreateSessionParams {
   id: string;
   cwd: string;
   cmd: string;
-  env?: Record<string, string>;
   /**
-   * Workspace profile env overlay. Carried SEPARATELY from `env` because the
-   * daemon runs buildSafeChildEnv() over `env` (which would strip intentional
-   * *_KEY/*_TOKEN profile vars). `profileEnv` is applied after that filter, so
-   * a user's deliberate overlay survives. Reserved WMUX_* keys are skipped.
+   * The fully-resolved child environment. Main builds this (buildSafeChildEnv
+   * + workspace-profile overlay + forced WMUX identity) and the daemon replays
+   * it verbatim — it is NOT re-filtered daemon-side, so an intentional
+   * *_KEY/*_TOKEN survives and recovery reproduces the create-time env.
    */
-  profileEnv?: Record<string, string>;
+  env?: Record<string, string>;
   cols?: number;
   rows?: number;
   agent?: { role: string; teamId: string; displayName: string };
