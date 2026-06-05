@@ -15,7 +15,13 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
  */
 
 const mockSendRpc = vi.fn();
-vi.mock('../wmux-client', () => ({
+// NOTE: path is relative to THIS test file. PlaywrightEngine.ts lives one
+// directory up and imports '../wmux-client' (= src/mcp/wmux-client), so from
+// src/mcp/playwright/__tests__/ the same module is '../../wmux-client'. The
+// previous '../wmux-client' resolved to a non-existent module and silently
+// failed to mock sendRpc — only unnoticed because earlier tests never drove a
+// code path that called it.
+vi.mock('../../wmux-client', () => ({
   sendRpc: (...args: unknown[]) => mockSendRpc(...args),
 }));
 
@@ -27,7 +33,81 @@ vi.mock('playwright-core', () => ({
 }));
 
 // Import after mocks are declared.
-import { PlaywrightEngine } from '../PlaywrightEngine';
+import { PlaywrightEngine, isElectronShellUrl } from '../PlaywrightEngine';
+
+/*
+ * Regression tests for app-shell URL detection.
+ *
+ * Background: getPage() picks the "first page whose URL is not the Electron
+ * shell" as the page to drive. In packaged builds the main window is loaded
+ * via loadFile() of the bundled renderer, producing a file:// URL ending in
+ * `.../renderer/main_window/index.html`. The original isElectronShellUrl()
+ * only excluded http://localhost, http://127.0.0.1, devtools://, chrome:// —
+ * so the packaged file:// shell slipped through and was returned instead of
+ * the real <webview> page. Dev builds (Vite dev server on http://localhost)
+ * were unaffected, which is why the bug only reproduced in production.
+ */
+describe('isElectronShellUrl', () => {
+  it('treats the dev-server shell origins as the shell', () => {
+    expect(isElectronShellUrl('http://localhost:5173/')).toBe(true);
+    expect(isElectronShellUrl('http://127.0.0.1:5173/index.html')).toBe(true);
+    expect(isElectronShellUrl('devtools://devtools/bundled/inspector.html')).toBe(true);
+    expect(isElectronShellUrl('chrome://gpu/')).toBe(true);
+  });
+
+  it('treats the packaged file:// renderer entry as the shell', () => {
+    // Windows asar-packed path with a percent-encoded directory.
+    expect(
+      isElectronShellUrl(
+        'file:///C:/Program%20Files/wmux/resources/app.asar/.vite/renderer/main_window/index.html',
+      ),
+    ).toBe(true);
+    // POSIX asar-packed path.
+    expect(
+      isElectronShellUrl('file:///opt/wmux/resources/app.asar/.vite/renderer/main_window/index.html'),
+    ).toBe(true);
+    // Unpacked (asar disabled) packaged path.
+    expect(
+      isElectronShellUrl('file:///opt/wmux/resources/app/.vite/renderer/main_window/index.html'),
+    ).toBe(true);
+    // Tolerate a trailing query/hash appended by the renderer.
+    expect(
+      isElectronShellUrl('file:///x/.vite/renderer/main_window/index.html?foo=1#bar'),
+    ).toBe(true);
+    // Case-insensitive (Windows filesystems are case-insensitive).
+    expect(
+      isElectronShellUrl('file:///X/.vite/renderer/main_window/INDEX.HTML'),
+    ).toBe(true);
+  });
+
+  it('does NOT misclassify a user project that merely ends in main_window/index.html', () => {
+    // The key false-positive risk: a user opening their OWN project's
+    // main_window/index.html as the page being browsed. Without the
+    // `.vite/renderer/` qualifier this would be dropped as the app shell.
+    expect(isElectronShellUrl('file:///C:/myproj/main_window/index.html')).toBe(false);
+    expect(isElectronShellUrl('file:///home/user/app/src/main_window/index.html')).toBe(false);
+    // Even a renderer/main_window/index.html without the `.vite` segment is a
+    // user page, not wmux's build output.
+    expect(isElectronShellUrl('file:///home/user/renderer/main_window/index.html')).toBe(false);
+  });
+
+  it('does NOT exclude other legitimate user-opened file:// pages', () => {
+    expect(isElectronShellUrl('file:///home/user/report.html')).toBe(false);
+    expect(isElectronShellUrl('file:///C:/docs/index.html')).toBe(false);
+    expect(isElectronShellUrl('file:///some/other_window/index.html')).toBe(false);
+    // A directory URL (trailing slash) is not the shell entry file.
+    expect(isElectronShellUrl('file:///x/.vite/renderer/main_window/')).toBe(false);
+  });
+
+  it('does NOT exclude real remote page URLs', () => {
+    // A remote page that coincidentally mirrors the shell path is still a page.
+    expect(
+      isElectronShellUrl('https://example.com/.vite/renderer/main_window/index.html'),
+    ).toBe(false);
+    expect(isElectronShellUrl('https://example.com/')).toBe(false);
+    expect(isElectronShellUrl('about:blank')).toBe(false);
+  });
+});
 
 interface FakeSession {
   send: ReturnType<typeof vi.fn>;
@@ -118,5 +198,140 @@ describe('PlaywrightEngine CDP session lifecycle', () => {
 
     await expect(engine.disconnect()).resolves.toBeUndefined();
     expect(sessions[0].detach).toHaveBeenCalledTimes(1);
+  });
+});
+
+/*
+ * Tests for the runtime shell-URL hardening (Option B + reorder).
+ *
+ * The engine learns the app shell's real URL from the browser.cdp.info RPC
+ * (`shellUrl`) and uses an exact-match against it to recognize the shell —
+ * instead of guessing from build-path shape. The static isElectronShellUrl()
+ * heuristic remains as a defense-in-depth fallback for when the runtime URL
+ * isn't available yet. getPage() also tries positive targetId matching before
+ * the negative "first non-shell page" filter so it never returns the shell.
+ */
+
+// Minimal access to the engine's private shell-URL surface for unit testing.
+interface ShellUrlInternals {
+  shellUrl: string | null;
+  cacheShellUrl(info: { cdpPort: number; shellUrl?: string; targets: unknown[] }): void;
+  isShellPage(url: string): boolean;
+}
+function priv(engine: PlaywrightEngine): ShellUrlInternals {
+  return engine as unknown as ShellUrlInternals;
+}
+
+interface FakePage {
+  url: ReturnType<typeof vi.fn>;
+  context: ReturnType<typeof vi.fn>;
+}
+
+describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  it('caches shellUrl from cdp.info and exact-matches it as the shell', () => {
+    const engine = PlaywrightEngine.getInstance();
+    priv(engine).cacheShellUrl({ cdpPort: 1, shellUrl: 'https://app.internal/shell', targets: [] });
+
+    expect(priv(engine).shellUrl).toBe('https://app.internal/shell');
+    expect(priv(engine).isShellPage('https://app.internal/shell')).toBe(true);
+    // A different page (the real webview) is NOT the shell.
+    expect(priv(engine).isShellPage('https://example.com/page')).toBe(false);
+  });
+
+  it('ignores empty/missing shellUrl so a known-good value is not clobbered', () => {
+    const engine = PlaywrightEngine.getInstance();
+    const good = 'file:///real/.vite/renderer/main_window/index.html';
+    priv(engine).cacheShellUrl({ cdpPort: 1, shellUrl: good, targets: [] });
+    priv(engine).cacheShellUrl({ cdpPort: 1, targets: [] });            // missing
+    priv(engine).cacheShellUrl({ cdpPort: 1, shellUrl: '', targets: [] }); // empty
+
+    expect(priv(engine).shellUrl).toBe(good);
+  });
+
+  it('falls back to the static heuristic when no runtime shellUrl is known', () => {
+    const engine = PlaywrightEngine.getInstance();
+    expect(priv(engine).shellUrl).toBeNull();
+
+    // Heuristic still catches the packaged + dev shell shapes...
+    expect(priv(engine).isShellPage('file:///x/.vite/renderer/main_window/index.html')).toBe(true);
+    expect(priv(engine).isShellPage('http://localhost:5173/')).toBe(true);
+    // ...but does not over-exclude a user-opened file:// page.
+    expect(priv(engine).isShellPage('file:///home/user/main_window/index.html')).toBe(false);
+  });
+
+  it('exact-match excludes only the shell, even for a dev-server shell URL', () => {
+    const engine = PlaywrightEngine.getInstance();
+    priv(engine).cacheShellUrl({ cdpPort: 1, shellUrl: 'http://localhost:5173/', targets: [] });
+
+    expect(priv(engine).isShellPage('http://localhost:5173/')).toBe(true);
+    // A real remote webview is reachable.
+    expect(priv(engine).isShellPage('https://example.com/')).toBe(false);
+  });
+
+  it('clears the cached shellUrl on disconnect', async () => {
+    const sessions: FakeSession[] = [];
+    mockConnectOverCDP.mockResolvedValue(makeFakeBrowser(sessions));
+
+    const engine = PlaywrightEngine.getInstance();
+    await engine.connect(9222);
+    priv(engine).cacheShellUrl({ cdpPort: 9222, shellUrl: 'file:///x/.vite/renderer/main_window/index.html', targets: [] });
+    expect(priv(engine).shellUrl).not.toBeNull();
+
+    await engine.disconnect();
+    expect(priv(engine).shellUrl).toBeNull();
+  });
+
+  it('getPage returns the guest webview, not the exact-match app shell', async () => {
+    const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
+
+    const makePage = (u: string): FakePage => {
+      const page: FakePage = {
+        url: vi.fn().mockReturnValue(u),
+        context: vi.fn(),
+      };
+      return page;
+    };
+    const shellPage = makePage(shellUrl);
+    const webviewPage = makePage('https://example.com/');
+
+    // A context whose pages() exposes both the shell and the webview.
+    const ctx = {
+      pages: vi.fn().mockReturnValue([shellPage, webviewPage]),
+      newCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+    };
+    shellPage.context.mockReturnValue(ctx);
+    webviewPage.context.mockReturnValue(ctx);
+
+    const browser = {
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+      contexts: vi.fn().mockReturnValue([ctx]),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    mockConnectOverCDP.mockResolvedValue(browser);
+
+    // cdp.info advertises the shell URL and no registered webview target, so
+    // positive targetId matching yields nothing and the negative filter runs —
+    // which must skip the exact-match shell page and pick the webview.
+    mockSendRpc.mockImplementation((method: string) => {
+      if (method === 'browser.cdp.info') {
+        return Promise.resolve({ cdpPort: 9222, shellUrl, targets: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    const engine = PlaywrightEngine.getInstance();
+    await engine.connect(9222);
+
+    const page = await engine.getPage();
+    expect(page).toBe(webviewPage);
+    // The shell URL was learned from cdp.info during discovery.
+    expect(priv(engine).shellUrl).toBe(shellUrl);
   });
 });

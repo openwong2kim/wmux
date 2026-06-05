@@ -246,8 +246,22 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
     }
 
     const cdpPort: number = webviewCdpManager.getCdpPort();
+
+    // Expose the actual runtime URL of the main-window webContents (the app
+    // shell) so the Playwright engine can recognize the shell by exact-match
+    // instead of guessing from build-path shape. dev → http://localhost:..,
+    // packaged → file:///.../.vite/renderer/main_window/index.html. The guest
+    // <webview> is a separate webContents and never appears here. Suppress an
+    // empty URL (window still mid-load) so the engine keeps any prior value.
+    let shellUrl: string | undefined;
+    try {
+      const url = getWindow()?.webContents.getURL();
+      if (url && url.length > 0) shellUrl = url;
+    } catch { /* window destroyed — omit shellUrl */ }
+
     return {
       cdpPort,
+      ...(shellUrl && { shellUrl }),
       targets: targets.map((t) => ({
         surfaceId: t.surfaceId,
         targetId: t.targetId,

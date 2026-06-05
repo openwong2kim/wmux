@@ -10,6 +10,14 @@ interface CdpTargetInfo {
 
 interface CdpInfoResponse {
   cdpPort: number;
+  /**
+   * The actual runtime URL of the main-window webContents (the app shell),
+   * as reported by the main process. Optional: absent on older mains or when
+   * the window is mid-load (empty URL is suppressed). When present it is the
+   * authoritative shell identifier; when absent we fall back to the static
+   * isElectronShellUrl() heuristic. See browser.cdp.info handler.
+   */
+  shellUrl?: string;
   targets: CdpTargetInfo[];
 }
 
@@ -23,15 +31,65 @@ function sleep(ms: number): Promise<void> {
 }
 
 /**
- * Returns true if the URL belongs to the Electron main renderer window.
+ * Returns true if the URL belongs to the Electron main renderer window
+ * (the wmux app shell), which must never be mistaken for a guest <webview>
+ * page when discovering the page to drive.
+ *
+ * Two shapes exist depending on build:
+ *  - dev:       the Vite dev server, e.g. http://localhost:5173/ (or 127.0.0.1)
+ *  - packaged:  loadFile() of the bundled renderer, i.e. a file:// URL ending
+ *               in `.../renderer/main_window/index.html` (see
+ *               src/main/window/createWindow.ts loadMainRenderer + the
+ *               `main_window` renderer entry in forge.config.ts).
+ *
+ * The packaged file:// shell was previously NOT excluded, so getPage()'s
+ * "first non-shell page" heuristic returned the app shell instead of the real
+ * page DOM. We match ONLY the app's own renderer entry path so that a
+ * legitimate user-opened file:// page (the thing being browsed) is still
+ * reachable.
  */
-function isElectronShellUrl(url: string): boolean {
-  return (
+export function isElectronShellUrl(url: string): boolean {
+  if (
     url.startsWith('http://localhost:') ||
     url.startsWith('http://127.0.0.1:') ||
     url.startsWith('devtools://') ||
     url.startsWith('chrome://')
-  );
+  ) {
+    return true;
+  }
+  if (url.startsWith('file://')) {
+    return isAppShellFileUrl(url);
+  }
+  return false;
+}
+
+/**
+ * Matches the packaged app shell's renderer entry.
+ *
+ * The shell is loaded via `loadFile(path.join(__dirname, '../renderer/
+ * main_window/index.html'))` (src/main/window/createWindow.ts). In a packaged
+ * build `__dirname` is `.vite/build`, so the resulting file path always ends
+ * with `.vite/renderer/main_window/index.html` (forge's `main_window`
+ * renderer entry). asar packaging only prepends `.../app.asar/` to that, so
+ * the `.vite/renderer/main_window/index.html` suffix is the stable, specific
+ * identifier.
+ *
+ * We deliberately require the `.vite/renderer/` segment rather than just
+ * `main_window/index.html`: a user could legitimately open their OWN project's
+ * `file:///.../main_window/index.html` as the page being browsed, and that
+ * must stay drivable. Only wmux's own build-output layout is excluded.
+ */
+function isAppShellFileUrl(url: string): boolean {
+  let pathname: string;
+  try {
+    pathname = new URL(url).pathname;
+  } catch {
+    // Fall back to the raw URL minus any query/hash if URL parsing fails.
+    pathname = url.split(/[?#]/)[0];
+  }
+  // Normalize Windows backslashes that may survive the raw-URL fallback.
+  pathname = pathname.replace(/\\/g, '/');
+  return /\.vite\/renderer\/main_window\/index\.html$/i.test(pathname);
 }
 
 /**
@@ -57,6 +115,14 @@ export class PlaywrightEngine {
    * Playwright's internal connection map and leak memory over time.
    */
   private autoAttachSession: CDPSession | null = null;
+  /**
+   * The actual runtime URL of the app-shell main window, as reported by the
+   * main process via browser.cdp.info (`shellUrl`). When set, this is the
+   * authoritative way to recognize the shell page — exact-match against a
+   * page's URL — so getPage() never has to guess from build-path shape.
+   * Refreshed on every browser.cdp.info response and cleared on disconnect.
+   */
+  private shellUrl: string | null = null;
 
   private constructor() {}
 
@@ -65,6 +131,35 @@ export class PlaywrightEngine {
       PlaywrightEngine.instance = new PlaywrightEngine();
     }
     return PlaywrightEngine.instance;
+  }
+
+  /**
+   * Update the cached app-shell URL from a browser.cdp.info response. Ignores
+   * empty/missing values so a window that is still mid-load (empty getURL())
+   * doesn't clobber a previously-known good shell URL.
+   */
+  private cacheShellUrl(info: CdpInfoResponse): void {
+    if (info.shellUrl && info.shellUrl.length > 0) {
+      this.shellUrl = info.shellUrl;
+    }
+  }
+
+  /**
+   * Returns true if `url` is the wmux app shell (the main renderer window),
+   * which must never be returned as the page-to-drive.
+   *
+   * Primary signal: exact-match against the runtime shell URL reported by the
+   * main process (this.shellUrl). This reflects the real loaded document, so
+   * it is immune to build-tool/forge path changes.
+   *
+   * Defense-in-depth fallback: when the runtime URL hasn't been obtained yet
+   * (older main, or a mid-load race), fall back to the static
+   * isElectronShellUrl() heuristic so a shell page is still never mistaken
+   * for the guest webview.
+   */
+  private isShellPage(url: string): boolean {
+    if (this.shellUrl && url === this.shellUrl) return true;
+    return isElectronShellUrl(url);
   }
 
   async connect(cdpPort: number): Promise<void> {
@@ -99,6 +194,9 @@ export class PlaywrightEngine {
     this.browser = null;
     this.cdpPort = null;
     this.autoAttachSession = null;
+    // Drop the cached shell URL — a reconnect may target a different window
+    // (different port) whose shell URL must be re-fetched, not reused.
+    this.shellUrl = null;
     if (s) {
       await s.detach().catch(() => { /* session may already be gone */ });
     }
@@ -117,6 +215,7 @@ export class PlaywrightEngine {
     for (let attempt = 1; attempt <= MAX_CONNECT_RETRIES; attempt++) {
       try {
         const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
+        this.cacheShellUrl(info);
         await this.connect(info.cdpPort);
         return;
       } catch (err) {
@@ -195,20 +294,27 @@ export class PlaywrightEngine {
 
     for (let attempt = 1; attempt <= PAGE_FIND_RETRIES; attempt++) {
       try {
-        // Strategy 1: Check existing pages
-        const allPages = this.getAllPages();
-        console.error(`[PlaywrightEngine] Attempt ${attempt}: ${allPages.length} pages in ${this.browser?.contexts().length ?? 0} contexts`);
-
-        const safePage = allPages.find((p) => !isElectronShellUrl(p.url()));
-        if (safePage) {
-          console.error(`[PlaywrightEngine] Found page via contexts: ${safePage.url()}`);
-          return safePage;
-        }
-
-        // Strategy 2: Use CDP Target.getTargets to find webview targets
+        // Strategy 1 (was 2): positive identification via the registered
+        // targetId from WebviewCdpManager. This is the authoritative match —
+        // it pins the exact guest webview by id — so it runs FIRST, before the
+        // negative "any non-shell page" heuristic, to avoid ever returning the
+        // shell when the shell happens to slip past URL classification.
         if (this.browser) {
           const page = await this.findViaTargetDomain(surfaceId);
           if (page) return page;
+        }
+
+        // Strategy 2 (was 1): fall back to the first existing page that isn't
+        // the app shell. Used when positive targetId matching didn't yield a
+        // page (e.g. target not registered yet). isShellPage() prefers the
+        // runtime shell URL and falls back to the static heuristic.
+        const allPages = this.getAllPages();
+        console.error(`[PlaywrightEngine] Attempt ${attempt}: ${allPages.length} pages in ${this.browser?.contexts().length ?? 0} contexts`);
+
+        const safePage = allPages.find((p) => !this.isShellPage(p.url()));
+        if (safePage) {
+          console.error(`[PlaywrightEngine] Found page via contexts: ${safePage.url()}`);
+          return safePage;
         }
 
         // Strategy 3: Use /json endpoint + match registered targets
@@ -300,6 +406,7 @@ export class PlaywrightEngine {
 
         // Get registered wmux targets for matching
         const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
+        this.cacheShellUrl(info);
         const wmuxTarget = surfaceId
           ? info.targets.find((t) => t.surfaceId === surfaceId)
           : info.targets[0];
@@ -312,7 +419,7 @@ export class PlaywrightEngine {
         // Fallback: find any page target that isn't the Electron shell
         if (!webviewTarget) {
           webviewTarget = targetInfos.find(
-            (t) => t.type === 'page' && !isElectronShellUrl(t.url) && t.url !== 'about:blank',
+            (t) => t.type === 'page' && !this.isShellPage(t.url) && t.url !== 'about:blank',
           );
         }
 
@@ -338,7 +445,7 @@ export class PlaywrightEngine {
         const newPages = this.getAllPages();
         console.error(`[PlaywrightEngine] After attach: ${newPages.length} pages`);
 
-        const matchedPage = newPages.find((p) => !isElectronShellUrl(p.url()));
+        const matchedPage = newPages.find((p) => !this.isShellPage(p.url()));
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page after attach: ${matchedPage.url()}`);
           return matchedPage;
@@ -379,6 +486,7 @@ export class PlaywrightEngine {
 
       // Get registered wmux targets
       const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
+      this.cacheShellUrl(info);
       const wmuxTarget = surfaceId
         ? info.targets.find((t) => t.surfaceId === surfaceId)
         : info.targets[0];
@@ -390,7 +498,7 @@ export class PlaywrightEngine {
 
       if (!jsonTarget) {
         jsonTarget = targets.find(
-          (t) => t.type === 'page' && !isElectronShellUrl(t.url) && t.url !== 'about:blank',
+          (t) => t.type === 'page' && !this.isShellPage(t.url) && t.url !== 'about:blank',
         );
       }
 
@@ -421,7 +529,7 @@ export class PlaywrightEngine {
         const pages = this.getAllPages();
         console.error(`[PlaywrightEngine] After /json attach: ${pages.length} pages`);
 
-        const matchedPage = pages.find((p) => !isElectronShellUrl(p.url()));
+        const matchedPage = pages.find((p) => !this.isShellPage(p.url()));
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page via /json attach: ${matchedPage.url()}`);
           return matchedPage;
