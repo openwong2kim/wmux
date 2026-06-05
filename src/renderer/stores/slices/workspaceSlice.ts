@@ -191,9 +191,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     setWorkspaceProfile: (id, profile) => set((state: StoreState) => {
       const ws = state.workspaces.find((w: Workspace) => w.id === id);
       if (!ws) return;
-      // Normalize defensively even though the UI pre-validates — drops invalid
-      // entries / reserved keys and collapses an empty profile to undefined.
-      const normalized = normalizeWorkspaceProfile(profile);
+      // This is the editor/save boundary, so enforce the secret-name policy
+      // (dropSecretKeys) in addition to dropping invalid/reserved entries. Load
+      // is intentionally NOT dropSecretKeys (non-destructive — see loadSession).
+      const normalized = normalizeWorkspaceProfile(profile, { dropSecretKeys: true });
       if (normalized) {
         ws.profile = normalized;
       } else {
@@ -282,7 +283,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
 
       // Sanitize each workspace profile from the (untrusted) saved session:
       // drop invalid env keys/values, reserved WMUX_* keys, and collapse an
-      // empty profile so it doesn't linger as `{ env: {} }`.
+      // empty profile so it doesn't linger as `{ env: {} }`. Deliberately NOT
+      // dropSecretKeys — load is non-destructive, so a secret-named key saved
+      // before the policy keeps working until the user re-saves the profile
+      // (the editor flags it and drops it on save). Dropping here would
+      // silently delete working config without un-storing the plaintext value.
       for (const ws of data.workspaces) {
         if (ws.profile === undefined) continue;
         const normalized = normalizeWorkspaceProfile(ws.profile);

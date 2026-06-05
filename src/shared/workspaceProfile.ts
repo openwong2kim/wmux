@@ -49,17 +49,31 @@ export function isReservedEnvKey(key: string): boolean {
 }
 
 /**
- * True when `key` looks like a raw credential (e.g. *_KEY, *_TOKEN, *_SECRET).
+ * Credential-NAMED keys whose value is a PATH/reference, not a secret — the
+ * "reference over secret" pattern we actively encourage. These match the
+ * inherited-env denylist by name but must NOT be treated as raw secrets by the
+ * profile policy (dropping them would break documented cloud/SSH use cases).
+ * Compared case-insensitively.
+ */
+const SECRET_KEY_ALLOWLIST: ReadonlySet<string> = new Set([
+  'GOOGLE_APPLICATION_CREDENTIALS', // path to a service-account JSON
+  'AWS_SHARED_CREDENTIALS_FILE',    // path to an AWS credentials file
+]);
+
+/**
+ * True when `key` looks like a raw credential (e.g. *_KEY, *_TOKEN, *_SECRET)
+ * AND is not a known path-pointer (SECRET_KEY_ALLOWLIST).
  *
  * Profiles are stored in plaintext in the session file, so by policy we do NOT
- * persist secret-NAMED env vars — the supported pattern is to point at a config
- * directory (CLAUDE_CONFIG_DIR, CODEX_HOME) that holds the real credential,
- * not to paste the credential itself. `normalizeEnv` drops these keys, and the
- * editor flags them. Case-insensitive (env names are conventionally uppercase,
- * but a user might type `openai_api_key`), reusing the inherited-env denylist
- * so the two stay in lockstep.
+ * accept secret-NAMED env vars from the editor — the supported pattern is to
+ * point at a config directory/file (CLAUDE_CONFIG_DIR, CODEX_HOME,
+ * GOOGLE_APPLICATION_CREDENTIALS) that holds the real credential, not to paste
+ * the credential itself. Case-insensitive (env names are conventionally
+ * uppercase, but a user might type `openai_api_key`), reusing the inherited-env
+ * denylist so the two stay in lockstep.
  */
 export function isSecretLikeEnvKey(key: string): boolean {
+  if (SECRET_KEY_ALLOWLIST.has(key.toUpperCase())) return false;
   return isSensitiveEnvKey(key.toUpperCase());
 }
 
@@ -67,18 +81,23 @@ export function isSecretLikeEnvKey(key: string): boolean {
  * Normalize an arbitrary value into a clean env map. Invalid keys/values are
  * dropped; the result is capped at WORKSPACE_PROFILE_MAX_ENV_ENTRIES, keeping
  * the first valid entries in insertion order.
+ *
+ * `dropSecretKeys` enforces the secret-name policy. It is applied only at the
+ * editor/save boundary (setWorkspaceProfile), NOT on load: load-time
+ * sanitization must be non-destructive so an existing session.json that
+ * predates this policy keeps working until the user actively edits it (the
+ * editor then flags the key and drops it on save). Dropping on load would
+ * silently delete a user's working config without un-storing the already-
+ * persisted value.
  */
-export function normalizeEnv(input: unknown): Record<string, string> {
+export function normalizeEnv(input: unknown, dropSecretKeys = false): Record<string, string> {
   const out: Record<string, string> = {};
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return out;
   let count = 0;
   for (const [rawKey, rawValue] of Object.entries(input as Record<string, unknown>)) {
     if (count >= WORKSPACE_PROFILE_MAX_ENV_ENTRIES) break;
     if (!isValidEnvKey(rawKey)) continue;
-    // Policy: never persist a secret-NAMED key in plaintext (point at a config
-    // directory instead). Dropped here so both UI-save and load-time sanitize
-    // enforce it uniformly.
-    if (isSecretLikeEnvKey(rawKey)) continue;
+    if (dropSecretKeys && isSecretLikeEnvKey(rawKey)) continue;
     if (typeof rawValue !== 'string') continue;
     if (rawValue.length > WORKSPACE_PROFILE_ENV_VALUE_MAX) continue;
     out[rawKey] = rawValue;
@@ -120,11 +139,14 @@ export function normalizeCommand(input: unknown): string | undefined {
  * result would be empty. `env` is omitted when it has no valid entries so an
  * empty profile never persists as `{ env: {} }`.
  */
-export function normalizeWorkspaceProfile(input: unknown): WorkspaceProfile | undefined {
+export function normalizeWorkspaceProfile(
+  input: unknown,
+  opts: { dropSecretKeys?: boolean } = {},
+): WorkspaceProfile | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
   const src = input as { env?: unknown; defaultPaneCommand?: unknown };
 
-  const env = normalizeEnv(src.env);
+  const env = normalizeEnv(src.env, opts.dropSecretKeys ?? false);
   const command = normalizeCommand(src.defaultPaneCommand);
 
   const profile: WorkspaceProfile = {};

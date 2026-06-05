@@ -41,12 +41,21 @@ describe('workspaceSlice — setWorkspaceProfile', () => {
     expect(ws?.profile).toEqual({ env: { CLAUDE_CONFIG_DIR: 'C:/a' }, defaultPaneCommand: 'claude' });
   });
 
-  it('drops invalid env keys and reserved WMUX_* keys', () => {
+  it('drops invalid, reserved, and secret-named keys on save', () => {
     store.getState().setWorkspaceProfile(wsId, {
-      env: { CLAUDE_CONFIG_DIR: 'C:/a', '1BAD': 'x', WMUX_WORKSPACE_ID: 'spoof' },
+      env: {
+        CLAUDE_CONFIG_DIR: 'C:/a',
+        '1BAD': 'x',
+        WMUX_WORKSPACE_ID: 'spoof',
+        OPENAI_API_KEY: 'sk-leak',
+        GOOGLE_APPLICATION_CREDENTIALS: 'C:/gcp.json', // allowlisted path pointer — kept
+      },
     });
     const ws = store.getState().workspaces.find((w) => w.id === wsId);
-    expect(ws?.profile?.env).toEqual({ CLAUDE_CONFIG_DIR: 'C:/a' });
+    expect(ws?.profile?.env).toEqual({
+      CLAUDE_CONFIG_DIR: 'C:/a',
+      GOOGLE_APPLICATION_CREDENTIALS: 'C:/gcp.json',
+    });
   });
 
   it('clears the profile when given an empty profile', () => {
@@ -94,6 +103,16 @@ describe('workspaceSlice — loadSession profile sanitization', () => {
     );
     const ws = store.getState().workspaces[0];
     expect(ws.profile).toEqual({ env: { CLAUDE_CONFIG_DIR: 'C:/a' }, defaultPaneCommand: 'go' });
+  });
+
+  it('PRESERVES a secret-named key on load (non-destructive for legacy sessions)', () => {
+    // A session.json saved before the secret-name policy must keep working —
+    // load does not drop secret keys (only the editor save path does).
+    store.getState().loadSession(
+      sessionWith({ env: { CLAUDE_CONFIG_DIR: 'C:/a', LEGACY_TOKEN: 'keep-me' } }),
+    );
+    const ws = store.getState().workspaces[0];
+    expect(ws.profile?.env).toEqual({ CLAUDE_CONFIG_DIR: 'C:/a', LEGACY_TOKEN: 'keep-me' });
   });
 
   it('drops an empty/invalid profile on load', () => {

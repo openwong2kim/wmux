@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Workspace } from '../../../shared/types';
-import { isSecretLikeEnvKey, isValidEnvKey, normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
+import { isSecretLikeEnvKey, isValidEnvKey } from '../../../shared/workspaceProfile';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 
@@ -73,10 +73,10 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
       if (key === '') continue;
       env[key] = row.value;
     }
-    // normalizeWorkspaceProfile drops invalid/reserved keys and collapses an
-    // empty profile to undefined (which clears it).
-    const profile = normalizeWorkspaceProfile({ env, defaultPaneCommand: command });
-    setWorkspaceProfile(workspace.id, profile);
+    // setWorkspaceProfile normalizes (drops invalid/reserved AND secret-named
+    // keys, collapses an empty profile to undefined) — it is the single
+    // enforcing boundary, so we just hand it the raw rows.
+    setWorkspaceProfile(workspace.id, { env, defaultPaneCommand: command });
     onClose();
   }, [rows, command, setWorkspaceProfile, workspace.id, onClose]);
 

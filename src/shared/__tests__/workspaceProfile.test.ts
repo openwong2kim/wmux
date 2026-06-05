@@ -55,16 +55,33 @@ describe('isSecretLikeEnvKey', () => {
     expect(isSecretLikeEnvKey('GIT_SSH_COMMAND')).toBe(false);
     expect(isSecretLikeEnvKey('SSH_AUTH_SOCK')).toBe(false); // safe-passthrough
   });
+
+  it('does NOT flag path-pointer credential vars on the allowlist', () => {
+    // These match the denylist by name but hold a PATH (reference over secret),
+    // which is exactly the supported pattern — must not be dropped.
+    expect(isSecretLikeEnvKey('GOOGLE_APPLICATION_CREDENTIALS')).toBe(false);
+    expect(isSecretLikeEnvKey('google_application_credentials')).toBe(false);
+    expect(isSecretLikeEnvKey('AWS_SHARED_CREDENTIALS_FILE')).toBe(false);
+  });
 });
 
 describe('normalizeEnv', () => {
-  it('drops secret-NAMED keys by policy (not persisted in plaintext)', () => {
-    const env = normalizeEnv({
-      CLAUDE_CONFIG_DIR: 'C:/a',
-      OPENAI_API_KEY: 'sk-leak',
-      github_token: 'ghp_leak',
+  it('drops secret-NAMED keys only when dropSecretKeys is set (save boundary)', () => {
+    const input = { CLAUDE_CONFIG_DIR: 'C:/a', OPENAI_API_KEY: 'sk-leak', github_token: 'ghp_leak' };
+    // Save path: drop secrets.
+    expect(normalizeEnv(input, true)).toEqual({ CLAUDE_CONFIG_DIR: 'C:/a' });
+    // Load path (default): preserve — non-destructive for legacy session.json.
+    expect(normalizeEnv(input)).toEqual({
+      CLAUDE_CONFIG_DIR: 'C:/a', OPENAI_API_KEY: 'sk-leak', github_token: 'ghp_leak',
     });
-    expect(env).toEqual({ CLAUDE_CONFIG_DIR: 'C:/a' });
+  });
+
+  it('keeps GOOGLE_APPLICATION_CREDENTIALS even with dropSecretKeys (allowlist)', () => {
+    const env = normalizeEnv(
+      { GOOGLE_APPLICATION_CREDENTIALS: 'C:/gcp/sa.json', OPENAI_API_KEY: 'sk-x' },
+      true,
+    );
+    expect(env).toEqual({ GOOGLE_APPLICATION_CREDENTIALS: 'C:/gcp/sa.json' });
   });
 
   it('keeps valid string entries and drops invalid ones', () => {
@@ -122,12 +139,14 @@ describe('applyProfileEnv', () => {
     expect(target).toEqual({ PATH: '/custom', CLAUDE_CONFIG_DIR: 'C:/a' });
   });
 
-  it('preserves an intentional *_KEY/*_TOKEN that the env denylist would strip', () => {
-    // The whole point of the separate overlay: a user-set secret-shaped key
-    // survives because applyProfileEnv runs AFTER buildSafeChildEnv.
+  it('applies any key verbatim — does not re-run the denylist (mechanism)', () => {
+    // applyProfileEnv is the spawn mechanism: it applies whatever it's given,
+    // so a key that reaches this layer is not re-stripped. WHICH keys a profile
+    // may contain is decided one layer up by the editor policy (normalizeEnv
+    // drops secret-named keys on save) — see the normalizeEnv tests.
     const target: Record<string, string> = {};
-    applyProfileEnv(target, { GEMINI_API_KEY: 'user-set', SOME_TOKEN: 't' });
-    expect(target.GEMINI_API_KEY).toBe('user-set');
+    applyProfileEnv(target, { GEMINI_API_KEY: 'x', SOME_TOKEN: 't' });
+    expect(target.GEMINI_API_KEY).toBe('x');
     expect(target.SOME_TOKEN).toBe('t');
   });
 
