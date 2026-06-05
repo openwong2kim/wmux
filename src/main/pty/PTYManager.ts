@@ -3,8 +3,7 @@ import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
-import { buildSafeChildEnv } from '../../shared/envFilter';
-import { applyProfileEnv } from '../../shared/workspaceProfile';
+import { resolveSpawnEnv } from './resolveSpawnEnv';
 import { isWindows } from '../../shared/platform';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
@@ -142,20 +141,16 @@ export class PTYManager {
     // via src/shared/envFilter so both spawn paths evolve in lockstep —
     // previously this filter was laxer than the daemon's and would leak
     // WMUX_AUTH_TOKEN, GITHUB_TOKEN, ANTHROPIC_API_KEY, etc. to shells.
-    const env = buildSafeChildEnv(globalThis.process.env);
-    // Workspace profile overlay — user-intentional, so applied AFTER the
-    // inherited-env denylist (otherwise an intentional *_KEY/*_TOKEN would be
-    // stripped) and BEFORE the wmux identity vars below, which are forced last
-    // so a profile can never spoof workspace/surface identity. applyProfileEnv
-    // additionally skips reserved WMUX_* keys as belt-and-suspenders.
-    applyProfileEnv(env, options?.env);
-    env[ENV_KEYS.SOCKET_PATH] = getPipeName();
-    if (options?.workspaceId) env[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
-    if (options?.surfaceId) env[ENV_KEYS.SURFACE_ID] = options.surfaceId;
-    // Security: auth token is NEVER passed via environment variable to child
-    // shells — buildSafeChildEnv strips WMUX_AUTH* so any inherited token
-    // from the main process's own env is dropped. CLI/MCP clients read the
-    // token directly from ~/.wmux-auth-token file instead.
+    // Resolve the child env in the canonical order (safe baseline → profile
+    // overlay → forced identity); see resolveSpawnEnv. Identity is forced last
+    // so a profile can never spoof socket path / workspace / surface.
+    // Security: auth token is NEVER passed via env — buildSafeChildEnv strips
+    // WMUX_AUTH*, so any inherited token from the main process is dropped. CLI/
+    // MCP clients read the token from ~/.wmux-auth-token instead.
+    const identity: Record<string, string> = { [ENV_KEYS.SOCKET_PATH]: getPipeName() };
+    if (options?.workspaceId) identity[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
+    if (options?.surfaceId) identity[ENV_KEYS.SURFACE_ID] = options.surfaceId;
+    const env = resolveSpawnEnv(globalThis.process.env, options?.env, identity);
 
     // Detect shell type and inject hook
     const shellType = this.detectShellType(shell);

@@ -1,0 +1,34 @@
+import { buildSafeChildEnv } from '../../shared/envFilter';
+import { applyProfileEnv } from '../../shared/workspaceProfile';
+
+/**
+ * Resolve the environment for a NEW child PTY, in the single canonical order
+ * shared by both spawn paths (local PTYManager and the daemon-mode handler in
+ * pty.handler). Extracted as a pure function so the security-critical merge
+ * order has direct regression coverage and the two callsites can't drift.
+ *
+ *   1. buildSafeChildEnv(baseEnv) — strip the control process's own inherited
+ *      secrets / build-tooling vars from the child baseline.
+ *   2. applyProfileEnv(...)       — overlay the workspace profile AFTER the
+ *      denylist (so an intentional *_KEY/*_TOKEN survives) and skipping
+ *      reserved WMUX_* keys.
+ *   3. identity                   — forced LAST, so a profile can never spoof
+ *      WMUX_WORKSPACE_ID / WMUX_SURFACE_ID / WMUX_SOCKET_PATH. The caller
+ *      decides which identity vars apply (local mode also sets the socket
+ *      path; daemon mode does not).
+ *
+ * The result is a fresh object the caller may further mutate (e.g. shell-
+ * integration injection layered on top).
+ */
+export function resolveSpawnEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  profileEnv: Record<string, string> | undefined,
+  identity: Record<string, string>,
+): Record<string, string> {
+  const env = buildSafeChildEnv(baseEnv);
+  applyProfileEnv(env, profileEnv);
+  for (const [k, v] of Object.entries(identity)) {
+    if (typeof v === 'string') env[k] = v;
+  }
+  return env;
+}

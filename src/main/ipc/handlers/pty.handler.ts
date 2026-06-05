@@ -7,8 +7,8 @@ import { PTYBridge } from '../../pty/PTYBridge';
 import { DaemonClient } from '../../DaemonClient';
 import { IPC, getPidMapDir, ENV_KEYS } from '../../../shared/constants';
 import { sanitizePtyText } from '../../../shared/types';
-import { buildSafeChildEnv } from '../../../shared/envFilter';
-import { applyProfileEnv } from '../../../shared/workspaceProfile';
+import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
+import { scheduleInitialCommand } from './scheduleInitialCommand';
 import { updateCwd } from './metadata.handler';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
@@ -86,81 +86,10 @@ const RESIZE_RETRY_ATTEMPTS = 50;
 const RESIZE_RETRY_DELAY_MS = 20;
 
 /**
- * Settle delay after the shell's first output before the startup command is
- * written. First output means the shell has started and (for daemon mode) the
- * session pipe is live; the settle lets the prompt finish rendering so the
- * command lands at a ready prompt rather than mid-init.
+ * Startup-command scheduling lives in ./scheduleInitialCommand (electron-free,
+ * unit-tested). The wiring below supplies the per-mode writer + an exhaustion
+ * log so a command that never gets delivered leaves a diagnostic trail.
  */
-const INITIAL_COMMAND_SETTLE_MS = 120;
-/**
- * Fallback: if the shell produces NO output within this window (unusual — a
- * silent shell, or output we never see), write the command anyway rather than
- * never running it.
- */
-const INITIAL_COMMAND_FALLBACK_MS = 3000;
-/** Delivery retry budget for daemon mode (write can fail while the pipe is mid-attach). */
-const INITIAL_COMMAND_RETRY_ATTEMPTS = 15;
-const INITIAL_COMMAND_RETRY_DELAY_MS = 80;
-
-/**
- * Schedule a workspace-profile startup command for a just-created PTY.
- *
- * Why this is event-driven rather than a fixed delay: the previous blind
- * 200 ms timer was racy and dropped the command intermittently. Two failure
- * modes: (1) in daemon mode `writeToSession` returns false while the session
- * pipe is still mid-attach, and a single fire-and-forget write was silently
- * dropped; (2) on a busy machine PowerShell hadn't reached its interactive
- * prompt at 200 ms, so the keystrokes were lost. This helper instead:
- *   - waits for the shell's FIRST output (caller invokes the returned trigger),
- *     which signals the shell is alive and the pipe is carrying data;
- *   - then waits a short settle for the prompt to finish rendering;
- *   - then writes, RETRYING while the write reports "not delivered" (daemon
- *     mode returns a boolean) up to a bounded budget;
- *   - and falls back to firing anyway if no output ever arrives.
- *
- * The command string is never logged (wrapHandler redacts initialCommand);
- * the caller strips control chars via sanitizePtyText before it reaches the
- * shell. Returns a `{ onFirstData }` trigger; call it on the first PTY data
- * for this session. No-op (trigger is a harmless noop) when there is no command.
- */
-function scheduleInitialCommand(
-  command: string | undefined,
-  /** Perform the write. Return `false` to signal "not delivered, please retry". */
-  write: (cmd: string) => boolean | void,
-): { onFirstData: () => void } {
-  if (!command || command.trim().length === 0) return { onFirstData: () => {} };
-  const cmd = command;
-  let fired = false;
-
-  const fire = () => {
-    if (fired) return;
-    fired = true;
-    let attempts = 0;
-    const attempt = () => {
-      let delivered: boolean | void;
-      try {
-        delivered = write(cmd);
-      } catch {
-        return; // pane closed mid-write — best-effort, give up
-      }
-      if (delivered === false && ++attempts < INITIAL_COMMAND_RETRY_ATTEMPTS) {
-        setTimeout(attempt, INITIAL_COMMAND_RETRY_DELAY_MS).unref?.();
-      }
-    };
-    setTimeout(attempt, INITIAL_COMMAND_SETTLE_MS).unref?.();
-  };
-
-  // Fallback so a silent shell still gets its command.
-  const fallback = setTimeout(fire, INITIAL_COMMAND_FALLBACK_MS);
-  fallback.unref?.();
-
-  return {
-    onFirstData: () => {
-      clearTimeout(fallback);
-      fire();
-    },
-  };
-}
 
 /**
  * Validate and resolve cwd. Returns undefined if invalid.
@@ -308,19 +237,20 @@ export function registerPTYHandlers(
       // The daemon receives this as the complete `env`; it no longer needs a
       // separate `profileEnv` field, and recovery (which replays session.env)
       // reproduces the exact create-time environment without re-filtering.
-      const sessionEnv = buildSafeChildEnv(globalThis.process.env);
-      applyProfileEnv(sessionEnv, options?.env);
-      if (options?.workspaceId) sessionEnv[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
-      if (options?.surfaceId) sessionEnv[ENV_KEYS.SURFACE_ID] = options.surfaceId;
+      const identity: Record<string, string> = {};
+      if (options?.workspaceId) identity[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
+      if (options?.surfaceId) identity[ENV_KEYS.SURFACE_ID] = options.surfaceId;
+      const resolvedEnv = resolveSpawnEnv(globalThis.process.env, options?.env, identity);
 
-      // Create session via daemon RPC.
+      // Create session via daemon RPC. `env` is the FULLY-RESOLVED child env;
+      // the daemon replays it verbatim (see DaemonCreateSessionParams.env).
       const result = await daemonClient.rpc('daemon.createSession', {
         id: sessionId,
         cmd: shell,
         cwd: effectiveCwd,
         cols: options?.cols || 80,
         rows: options?.rows || 24,
-        env: sessionEnv,
+        env: resolvedEnv,
       });
 
       // Attach to the session (makes daemon start the SessionPipe server)
@@ -335,10 +265,13 @@ export function registerPTYHandlers(
       // session's first output (see scheduleInitialCommand) and retried while
       // the pipe reports "not delivered", which fixes the intermittent
       // never-ran-the-command race the fixed-delay version had.
-      const initialCmd = scheduleInitialCommand(
-        options?.initialCommand,
-        (cmd) => daemonClient.writeToSession(sessionId, sanitizePtyText(cmd) + '\r'),
-      );
+      const initialCmd = scheduleInitialCommand(options?.initialCommand, {
+        write: (cmd) => daemonClient.writeToSession(sessionId, sanitizePtyText(cmd) + '\r'),
+        onExhausted: () => console.warn(
+          `[pty:create] startup command for ${sessionId} not delivered after ` +
+          `retries — session pipe never became writable (pane may be empty).`,
+        ),
+      });
 
       // Forward session data to renderer. Routed through the per-id helper so
       // a stale listener (from a prior create with the same id, or a reconnect)
@@ -386,10 +319,9 @@ export function registerPTYHandlers(
       // so it lands at a ready prompt, mirroring the daemon path. ptyManager
       // writes are always delivered locally, so the writer returns void.
       if (initialCommand && initialCommand.trim().length > 0) {
-        const initialCmd = scheduleInitialCommand(
-          initialCommand,
-          (cmd) => { ptyManager.write(instance.id, sanitizePtyText(cmd) + '\r'); },
-        );
+        const initialCmd = scheduleInitialCommand(initialCommand, {
+          write: (cmd) => { ptyManager.write(instance.id, sanitizePtyText(cmd) + '\r'); },
+        });
         const disposable = instance.process.onData(() => {
           disposable.dispose();
           initialCmd.onFirstData();

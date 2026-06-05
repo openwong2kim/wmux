@@ -15,6 +15,24 @@ const DEFAULT_COLS = 80;
 const DEFAULT_ROWS = 24;
 const DEFAULT_BUFFER_SIZE = 512 * 1024; // 512 KB
 
+/** The daemon's own RPC auth-token namespace — must never reach a child shell. */
+const RESERVED_AUTH_PREFIX = /^WMUX_AUTH/i;
+
+/**
+ * Return a fresh env copy with the daemon's reserved auth-token namespace
+ * removed. Applied to every child env regardless of caller (substrate
+ * invariant). WMUX_AUTH* is reserved, so this can never drop a legitimate
+ * user/profile key.
+ */
+function stripReservedAuth(env: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (RESERVED_AUTH_PREFIX.test(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
 /**
  * Internal type: session metadata + runtime resources.
  */
@@ -150,9 +168,14 @@ export class DaemonSessionManager extends EventEmitter {
     // we trust a supplied env verbatim and only filter the process.env fallback
     // (direct/legacy callers that don't pre-resolve). The daemon stays
     // profile-agnostic — it never needs to know what a "profile" is.
-    const env = params.env
-      ? { ...params.env }
-      : buildSafeChildEnv(globalThis.process.env);
+    //
+    // SUBSTRATE INVARIANT (not profile policy): regardless of caller, the
+    // daemon's own RPC auth token must never reach a child shell. We always
+    // drop the WMUX_AUTH* namespace even from a supplied env — it is reserved
+    // (a profile can never set it) so this can't strip a user/profile key. This
+    // bounds the trusted-env contract: a misbehaving/legacy caller that passes
+    // a raw env can at worst leak ITS inherited vars, never wmux's auth token.
+    const env = stripReservedAuth(params.env ?? buildSafeChildEnv(globalThis.process.env));
 
     // Shell integration: dot-source our OSC 133 init script when the shell
     // is a supported family (pwsh/bash). Unknown shells (cmd.exe, zsh, etc.)
