@@ -1,4 +1,6 @@
 import type { Page } from 'playwright-core';
+import type { JsonEvaluator } from './page-eval';
+import { evalFunctionOrRpc } from './page-eval';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -341,18 +343,34 @@ function buildSerialiseScript(
  *
  * Strips navigation, footer, ad, and other non-content elements, then
  * converts the remaining HTML structure into readable markdown text.
+ *
+ * Takes a JsonEvaluator rather than a Page so the same logic serves both the
+ * Playwright transport and the packaged-build RPC fallback (issue #105). The
+ * in-page work is a string script (buildSerialiseScript), so neither transport
+ * changes behavior.
  */
 export async function extractMarkdown(
-  page: Page,
+  evaluate: JsonEvaluator,
   options?: ExtractionOptions,
 ): Promise<string> {
+  const selector = options?.selector ?? null;
+  const script = buildSerialiseScript(selector, NOISE_SELECTORS);
+  const tree = (await evaluate(script)) as SerializedNode | null;
+  return treeToMarkdown(tree, options);
+}
+
+/**
+ * Convert a serialised DOM tree (the output of buildSerialiseScript) into clean
+ * markdown. Pure Node-side logic — split out from extractMarkdown so it can be
+ * unit-tested against a canned tree without a browser.
+ */
+export function treeToMarkdown(
+  tree: SerializedNode | null,
+  options?: ExtractionOptions,
+): string {
   const maxLength = options?.maxLength ?? DEFAULT_MAX_LENGTH;
   const includeLinks = options?.includeLinks ?? true;
   const includeImages = options?.includeImages ?? false;
-  const selector = options?.selector ?? null;
-
-  const script = buildSerialiseScript(selector, NOISE_SELECTORS);
-  const tree = await page.evaluate(script) as SerializedNode | null;
 
   if (!tree) {
     return '';
@@ -374,31 +392,34 @@ export async function extractMarkdown(
  * such as tables, lists, or repeated elements and maps them to the
  * requested fields.
  *
- * @param page     Playwright Page instance
- * @param goal     Human-readable description of what to extract (used to
- *                 narrow scope when multiple data regions exist)
- * @param fields   Mapping of field names to human descriptions, e.g.
- *                 `{ title: "product name", price: "price in USD" }`
- * @returns        Array of objects with keys matching `fields`
+ * @param page      Playwright Page, or null to use the RPC fallback (issue #105)
+ * @param surfaceId Optional surface to target on the RPC path
+ * @param goal      Human-readable description of what to extract (reserved;
+ *                  not yet used to narrow scope)
+ * @param fields    Mapping of field names to human descriptions, e.g.
+ *                  `{ title: "product name", price: "price in USD" }`
+ * @returns         Array of objects with keys matching `fields`
  */
 export async function extractStructuredData(
-  page: Page,
+  page: Page | null,
+  surfaceId: string | undefined,
   goal: string,
   fields: Record<string, string>,
 ): Promise<Record<string, unknown>[]> {
+  void goal; // reserved for future scope-narrowing; not yet used
   const fieldNames = Object.keys(fields);
   if (fieldNames.length === 0) return [];
 
   // Strategy 1: Try to extract from <table> elements
-  const tableData = await extractFromTables(page, fieldNames);
+  const tableData = await extractFromTables(page, surfaceId, fieldNames);
   if (tableData.length > 0) return tableData;
 
   // Strategy 2: Try to extract from repeated list items
-  const listData = await extractFromLists(page, fieldNames);
+  const listData = await extractFromLists(page, surfaceId, fieldNames);
   if (listData.length > 0) return listData;
 
   // Strategy 3: Try to find repeated element patterns (grids, cards, etc.)
-  const repeatedData = await extractFromRepeatedElements(page, fieldNames);
+  const repeatedData = await extractFromRepeatedElements(page, surfaceId, fieldNames);
   if (repeatedData.length > 0) return repeatedData;
 
   return [];
@@ -409,11 +430,13 @@ export async function extractStructuredData(
 // ---------------------------------------------------------------------------
 
 async function extractFromTables(
-  page: Page,
+  page: Page | null,
+  surfaceId: string | undefined,
   fieldNames: string[],
 ): Promise<Record<string, unknown>[]> {
-  return await page.evaluate(
-    ({ fieldNames: names }) => {
+  return await evalFunctionOrRpc(
+    page,
+    ({ fieldNames: names }: { fieldNames: string[] }) => {
       const tables = document.querySelectorAll('table');
       if (tables.length === 0) return [];
 
@@ -476,6 +499,7 @@ async function extractFromTables(
       return [];
     },
     { fieldNames },
+    surfaceId,
   );
 }
 
@@ -484,11 +508,13 @@ async function extractFromTables(
 // ---------------------------------------------------------------------------
 
 async function extractFromLists(
-  page: Page,
+  page: Page | null,
+  surfaceId: string | undefined,
   fieldNames: string[],
 ): Promise<Record<string, unknown>[]> {
-  return await page.evaluate(
-    ({ fieldNames: names }) => {
+  return await evalFunctionOrRpc(
+    page,
+    ({ fieldNames: names }: { fieldNames: string[] }) => {
       const lists = document.querySelectorAll('ul, ol');
       if (lists.length === 0) return [];
 
@@ -547,6 +573,7 @@ async function extractFromLists(
       return results;
     },
     { fieldNames },
+    surfaceId,
   );
 }
 
@@ -555,11 +582,13 @@ async function extractFromLists(
 // ---------------------------------------------------------------------------
 
 async function extractFromRepeatedElements(
-  page: Page,
+  page: Page | null,
+  surfaceId: string | undefined,
   fieldNames: string[],
 ): Promise<Record<string, unknown>[]> {
-  return await page.evaluate(
-    ({ fieldNames: names }) => {
+  return await evalFunctionOrRpc(
+    page,
+    ({ fieldNames: names }: { fieldNames: string[] }) => {
       // Find class names that appear 3+ times, suggesting repeated items
       const classCount = new Map<string, number>();
       const allElements = document.querySelectorAll('div, li, article, section');
@@ -661,5 +690,6 @@ async function extractFromRepeatedElements(
       return [];
     },
     { fieldNames },
+    surfaceId,
   );
 }

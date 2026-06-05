@@ -3,8 +3,10 @@ import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { generateSnapshot, resolveRef } from '../snapshot';
+import { INTERACTIVE_SELECTOR } from '../dom-intelligence';
 import { evaluateWithGesture } from '../anti-detection';
 import { detectDangerousPatterns } from '../security';
+import { sanitizeRef } from './interaction';
 import { sendRpc } from '../../wmux-client';
 
 // Optional surfaceId schema reused across tools
@@ -222,7 +224,7 @@ export function registerInspectionTools(server: McpServer): void {
         // Tags interactive elements with data-wmux-ref so interaction tools can resolve them
         const result = await sendRpc('browser.evaluate', {
           expression: `(() => {
-            const sel = 'a[href], button, input:not([type="hidden"]), textarea, select, [role="button"], [role="link"], [role="textbox"], [role="checkbox"], [role="radio"], [role="combobox"], [role="searchbox"], [role="tab"], [contenteditable="true"]';
+            const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
             const interactives = [...document.querySelectorAll(sel)].slice(0, 100);
             interactives.forEach((el, i) => el.setAttribute('data-wmux-ref', String(i)));
             const title = document.title;
@@ -583,22 +585,38 @@ export function registerInspectionTools(server: McpServer): void {
     },
     async ({ ref, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
-        const el = await resolveRef(page, ref);
-        if (!el) {
-          throw new Error(`Could not resolve ref="${ref}" to an element.`);
-        }
+        if (page) {
+          const el = await resolveRef(page, ref);
+          if (!el) {
+            throw new Error(`Could not resolve ref="${ref}" to an element.`);
+          }
 
-        await el.evaluate(
-          (element: Element) => {
-            (element as HTMLElement).style.outline = '3px solid red';
-            (element as HTMLElement).style.outlineOffset = '2px';
-          },
-        );
+          await el.evaluate(
+            (element: Element) => {
+              (element as HTMLElement).style.outline = '3px solid red';
+              (element as HTMLElement).style.outlineOffset = '2px';
+            },
+          );
+        } else {
+          // RPC fallback (packaged builds): resolve via the data-wmux-ref tag set
+          // by browser_snapshot / browser_smart_snapshot and set the outline inline.
+          const safeRef = sanitizeRef(ref);
+          const result = await sendRpc('browser.evaluate', {
+            expression: `(() => {
+              const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
+              if (!el) return 'not_found';
+              el.style.outline = '3px solid red';
+              el.style.outlineOffset = '2px';
+              return 'ok';
+            })()`,
+            ...(surfaceId && { surfaceId }),
+          }) as { value: string };
+          if (result.value === 'not_found') {
+            throw new Error(`Could not resolve ref="${ref}" to an element.`);
+          }
+        }
 
         return {
           content: [{ type: 'text' as const, text: 'Element highlighted' }],

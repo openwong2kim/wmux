@@ -32,8 +32,12 @@ async function rpcEval(expression: string, surfaceId?: string): Promise<string> 
   return result.value;
 }
 
-/** Sanitize ref to prevent injection in CSS selectors / JS template literals. */
-function sanitizeRef(ref: string): string {
+/**
+ * Sanitize ref to prevent injection in CSS selectors / JS template literals.
+ * Exported so other tool modules that interpolate a ref into injected JS
+ * (e.g. browser_highlight in inspection.ts) reuse the same guard.
+ */
+export function sanitizeRef(ref: string): string {
   if (!/^[a-zA-Z0-9_-]+$/.test(ref)) throw new Error(`Invalid ref: "${ref}"`);
   return ref;
 }
@@ -556,8 +560,9 @@ export function registerInteractionTools(server: McpServer): void {
         } else {
           // RPC fallback
           if (ref) {
+            const safeRef = sanitizeRef(ref);
             await rpcEval(`(() => {
-              const el = document.querySelector('[data-wmux-ref="${ref}"]');
+              const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
               if (!el) return 'not_found';
               el.scrollBy(${deltaX}, ${deltaY});
               return 'ok';
