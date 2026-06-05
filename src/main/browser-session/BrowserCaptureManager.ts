@@ -264,15 +264,19 @@ export class BrowserCaptureManager {
         ? Buffer.from(result.body, 'base64').toString('utf8')
         : result.body;
 
-      if (body.length > MAX_RESPONSE_BODY_BYTES) {
+      // Truncate by UTF-8 BYTES (not string length) so a multibyte body cannot
+      // exceed the byte budget the constant names.
+      const byteLen = Buffer.byteLength(body, 'utf8');
+      if (byteLen > MAX_RESPONSE_BODY_BYTES) {
         body =
-          body.slice(0, MAX_RESPONSE_BODY_BYTES) +
-          `\n... [truncated ${body.length - MAX_RESPONSE_BODY_BYTES} chars]`;
+          Buffer.from(body, 'utf8').subarray(0, MAX_RESPONSE_BODY_BYTES).toString('utf8') +
+          `\n... [truncated ${byteLen - MAX_RESPONSE_BODY_BYTES} bytes]`;
       }
 
-      // The entry may have been evicted from the ring while getResponseBody was
-      // in flight; only retain the body if it is still tracked.
-      if (!state.byRequestId.has(entry.requestId)) return;
+      // The entry may have been evicted, or its requestId reused by a redirect
+      // hop, while getResponseBody was in flight — only attach if it is still
+      // the tracked entry (identity, not just requestId presence).
+      if (state.byRequestId.get(entry.requestId) !== entry) return;
 
       if (!entry.response) entry.response = { headers: {} };
       entry.response.body = body;
@@ -311,7 +315,12 @@ export class BrowserCaptureManager {
     while (state.network.length > MAX_CAPTURE_ENTRIES) {
       const old = state.network.shift();
       if (!old) break;
-      state.byRequestId.delete(old.requestId);
+      // Redirect hops share a requestId: only drop the index entry if it still
+      // points at the evicted object, so an older hop never deletes the mapping
+      // for a newer hop that is still in the ring.
+      if (state.byRequestId.get(old.requestId) === old) {
+        state.byRequestId.delete(old.requestId);
+      }
       if (old.response?.body !== undefined) {
         state.totalBodyBytes -= old.bodyBytes ?? 0;
       }

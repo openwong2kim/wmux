@@ -144,6 +144,39 @@ describe('BrowserCaptureManager', () => {
     expect(mgr.getNetwork(1)).toEqual([{ url: 'https://x.test/api', method: 'GET', status: 200 }]);
   });
 
+  it('records redirect hops and correlates the final response by reused requestId (C6)', async () => {
+    await mgr.ensure(1);
+    // CDP reuses the requestId across a redirect chain.
+    emit(fakeWc!, 'Network.requestWillBeSent', { requestId: 'r1', request: { url: 'https://x.test/a', method: 'GET' } });
+    emit(fakeWc!, 'Network.requestWillBeSent', {
+      requestId: 'r1',
+      request: { url: 'https://x.test/b', method: 'GET' },
+      redirectResponse: { status: 301, headers: { location: '/b' } },
+    });
+    emit(fakeWc!, 'Network.responseReceived', { requestId: 'r1', response: { status: 200, headers: {} } });
+    const net = mgr.getNetwork(1);
+    expect(net).toEqual([
+      { url: 'https://x.test/a', method: 'GET', status: 301 }, // redirect hop preserved
+      { url: 'https://x.test/b', method: 'GET', status: 200 }, // final correlates
+    ]);
+  });
+
+  it('truncates a large body by UTF-8 bytes (C7)', async () => {
+    await mgr.ensure(1);
+    const big = 'x'.repeat(300 * 1024); // > 256KB cap
+    fakeWc!.debugger.__body = { body: big, base64Encoded: false };
+    emit(fakeWc!, 'Network.requestWillBeSent', { requestId: 'r1', request: { url: 'https://x.test/big.json', method: 'GET' } });
+    emit(fakeWc!, 'Network.responseReceived', { requestId: 'r1', response: { status: 200, headers: { 'content-type': 'application/json' } } });
+    emit(fakeWc!, 'Network.loadingFinished', { requestId: 'r1' });
+    await tick();
+    const body = mgr.getResponseBody(1, '*big*');
+    expect(body).not.toBeNull();
+    expect(body).toContain('truncated');
+    expect(body).toContain('bytes');
+    // retained bytes are bounded by the per-body cap (+ the short suffix)
+    expect(Buffer.byteLength(body!, 'utf8')).toBeLessThan(256 * 1024 + 100);
+  });
+
   it('clear empties the respective buffer', async () => {
     await mgr.ensure(1);
     emit(fakeWc!, 'Runtime.consoleAPICalled', { type: 'log', args: [{ type: 'string', value: 'x' }] });
