@@ -265,6 +265,19 @@ describe('wrapHandler', () => {
       expect(summary).not.toContain('sk-leak');
     });
 
+    it('never String()-falls-back an object when redaction throws', () => {
+      // A throwing getter makes redactDeep/JSON.stringify blow up. The fallback
+      // must NOT String() the object (a hostile toString could leak) — it
+      // returns a safe marker instead.
+      const hostile = {
+        get token() { throw new Error('boom'); },
+        toString() { return 'SECRET_LEAK_sk-123'; },
+      };
+      const summary = buildArgsSummary([hostile]);
+      expect(summary).toBe('[unserializable]');
+      expect(summary).not.toContain('SECRET_LEAK');
+    });
+
     it('redacts secrets inside arrays of objects', () => {
       const summary = buildArgsSummary([
         { items: [{ apiKey: 'k1' }, { name: 'fine' }] },

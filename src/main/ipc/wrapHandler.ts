@@ -165,7 +165,10 @@ export function buildArgsSummary(args: readonly unknown[]): string | undefined {
     const redacted = redactDeep(first);
     raw = JSON.stringify(redacted);
   } catch {
-    // Circular structure / BigInt / etc — fall back to String().
+    // redactDeep / JSON.stringify threw (circular, BigInt, a throwing getter…).
+    // NEVER String()-fall-back an object: redaction was bypassed, and a hostile
+    // toString() could leak a secret. Only primitives are safe to stringify.
+    if (first !== null && typeof first === 'object') return '[unserializable]';
     try {
       raw = String(first);
     } catch {

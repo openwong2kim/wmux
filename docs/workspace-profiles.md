@@ -20,8 +20,14 @@ When you open a **new** pane in a workspace, wmux builds its environment like
 this:
 
 ```
-safe inherited env  →  + shell-integration vars  →  + your profile env  →  + forced WMUX_* identity
+safe inherited env  →  + your profile env  →  + forced WMUX_* identity  →  (+ shell-integration vars)
 ```
+
+The first three steps are resolved together in the main process
+(`resolveSpawnEnv`); shell-integration vars (OSC 133 hooks) are layered last by
+whichever spawner runs — the local PTY manager or the daemon. Only local-mode
+spawns also force `WMUX_SOCKET_PATH`; daemon-mode panes reach the daemon by its
+pipe-name file, so they force only `WMUX_WORKSPACE_ID` / `WMUX_SURFACE_ID`.
 
 Consequences worth internalizing:
 
@@ -47,9 +53,10 @@ Consequences worth internalizing:
 
 1. **Right-click** a workspace in the sidebar → **"Configure profile…"**.
 2. Add environment variables as `NAME = value` rows. Invalid or reserved
-   (`WMUX_*`) names are flagged in red and dropped on save; secret-looking
-   names (`*_KEY`, `*_TOKEN`, …) get an amber hint steering you toward a
-   config-directory path instead of a raw secret (still saveable).
+   (`WMUX_*`) names are flagged in red and dropped on save. Secret-looking
+   names (`*_KEY`, `*_TOKEN`, `*_SECRET`, …) are **also dropped by policy** —
+   profiles are stored in plaintext, so wmux won't persist a raw credential;
+   point at a config directory instead (see below).
 3. Optionally set a **startup command** — written into each new pane's shell
    after it starts (it is *not* spawned as the executable, so your shell,
    quoting, and shell integration all behave normally).
@@ -64,9 +71,12 @@ Profile values live in plaintext in your local wmux session file
 (`session.json` under Electron's `userData`). They are **never** logged, and
 **never** included in "Copy session info" / drag-export markdown.
 
-Best practice: **store paths, not secrets.** Point a profile at a *config
-directory* (e.g. `CLAUDE_CONFIG_DIR`, `CODEX_HOME`) that holds the real
-credentials, rather than pasting raw API keys into the profile.
+**Paths, not secrets — enforced.** A profile points at a *config directory*
+(e.g. `CLAUDE_CONFIG_DIR`, `CODEX_HOME`) that holds the real credentials; it
+does not hold the credentials themselves. Secret-named keys (`*_KEY`, `*_TOKEN`,
+…) are dropped on save rather than written to `session.json` in plaintext. (If
+first-class encrypted secret storage is added later it will go through the OS
+keystore via Electron `safeStorage`, not the plaintext session file.)
 
 ---
 
