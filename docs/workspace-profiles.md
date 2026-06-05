@@ -47,7 +47,9 @@ Consequences worth internalizing:
 
 1. **Right-click** a workspace in the sidebar → **"Configure profile…"**.
 2. Add environment variables as `NAME = value` rows. Invalid or reserved
-   (`WMUX_*`) names are flagged and dropped on save.
+   (`WMUX_*`) names are flagged in red and dropped on save; secret-looking
+   names (`*_KEY`, `*_TOKEN`, …) get an amber hint steering you toward a
+   config-directory path instead of a raw secret (still saveable).
 3. Optionally set a **startup command** — written into each new pane's shell
    after it starts (it is *not* spawned as the executable, so your shell,
    quoting, and shell integration all behave normally).
