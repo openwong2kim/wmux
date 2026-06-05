@@ -1,7 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import type { Workspace } from '../../../shared/types';
-import { isValidEnvKey, normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
-import { isSensitiveEnvKey } from '../../../shared/envFilter';
+import { isSecretLikeEnvKey, isValidEnvKey, normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 
@@ -92,17 +91,16 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
     return set;
   }, [rows]);
 
-  // A key is flagged secret-looking (amber, still saveable) when it's a valid
-  // name that matches the inherited-env denylist (e.g. *_KEY, *_TOKEN). These
-  // would be stored in plaintext in the session file, so we steer the user to
-  // point at a config directory instead of pasting a raw secret — without hard-
-  // blocking, since false positives exist and the value may legitimately be a
-  // path (and reserved/invalid keys are already covered by `invalidIds`).
+  // A key is flagged secret-looking when it's a valid name that matches the
+  // inherited-env denylist (e.g. *_KEY, *_TOKEN). By policy these are NOT
+  // persisted in plaintext — normalizeEnv drops them on save — so the editor
+  // tells the user the key won't be saved and to point at a config directory
+  // instead. (Reserved/invalid keys are already covered by `invalidIds`.)
   const secretIds = useMemo(() => {
     const set = new Set<number>();
     for (const row of rows) {
       const key = row.key.trim();
-      if (key !== '' && isValidEnvKey(key) && isSensitiveEnvKey(key)) set.add(row.id);
+      if (key !== '' && isValidEnvKey(key) && isSecretLikeEnvKey(key)) set.add(row.id);
     }
     return set;
   }, [rows]);
@@ -174,7 +172,7 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
                       {t('workspaceProfile.invalidKey')}
                     </div>
                   )}
-                  {secretIds.has(row.id) && (
+                  {secretIds.has(row.id) && !invalidIds.has(row.id) && (
                     <div className="text-[10px] mt-0.5 ml-0.5" style={{ color: 'var(--accent-yellow)' }}>
                       {t('workspaceProfile.secretKeyWarning')}
                     </div>

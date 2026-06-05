@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   applyProfileEnv,
   isReservedEnvKey,
+  isSecretLikeEnvKey,
   isValidEnvKey,
   normalizeCommand,
   normalizeEnv,
@@ -39,7 +40,33 @@ describe('isValidEnvKey', () => {
   });
 });
 
+describe('isSecretLikeEnvKey', () => {
+  it('flags raw-credential-shaped keys (case-insensitive)', () => {
+    expect(isSecretLikeEnvKey('ANTHROPIC_API_KEY')).toBe(true);
+    expect(isSecretLikeEnvKey('GITHUB_TOKEN')).toBe(true);
+    expect(isSecretLikeEnvKey('openai_api_key')).toBe(true); // lowercase still caught
+    expect(isSecretLikeEnvKey('SOME_SECRET')).toBe(true);
+    expect(isSecretLikeEnvKey('DB_PASSWORD')).toBe(true);
+  });
+
+  it('does NOT flag config-directory / path keys (the intended use)', () => {
+    expect(isSecretLikeEnvKey('CLAUDE_CONFIG_DIR')).toBe(false);
+    expect(isSecretLikeEnvKey('CODEX_HOME')).toBe(false);
+    expect(isSecretLikeEnvKey('GIT_SSH_COMMAND')).toBe(false);
+    expect(isSecretLikeEnvKey('SSH_AUTH_SOCK')).toBe(false); // safe-passthrough
+  });
+});
+
 describe('normalizeEnv', () => {
+  it('drops secret-NAMED keys by policy (not persisted in plaintext)', () => {
+    const env = normalizeEnv({
+      CLAUDE_CONFIG_DIR: 'C:/a',
+      OPENAI_API_KEY: 'sk-leak',
+      github_token: 'ghp_leak',
+    });
+    expect(env).toEqual({ CLAUDE_CONFIG_DIR: 'C:/a' });
+  });
+
   it('keeps valid string entries and drops invalid ones', () => {
     const env = normalizeEnv({
       CLAUDE_CONFIG_DIR: 'C:/a',

@@ -28,6 +28,7 @@ import {
   WORKSPACE_PROFILE_MAX_ENV_ENTRIES,
   type WorkspaceProfile,
 } from './types';
+import { isSensitiveEnvKey } from './envFilter';
 
 /** Reserved env-key prefix that a workspace profile may never set. */
 export const RESERVED_ENV_KEY_PREFIX = 'WMUX_';
@@ -48,6 +49,21 @@ export function isReservedEnvKey(key: string): boolean {
 }
 
 /**
+ * True when `key` looks like a raw credential (e.g. *_KEY, *_TOKEN, *_SECRET).
+ *
+ * Profiles are stored in plaintext in the session file, so by policy we do NOT
+ * persist secret-NAMED env vars — the supported pattern is to point at a config
+ * directory (CLAUDE_CONFIG_DIR, CODEX_HOME) that holds the real credential,
+ * not to paste the credential itself. `normalizeEnv` drops these keys, and the
+ * editor flags them. Case-insensitive (env names are conventionally uppercase,
+ * but a user might type `openai_api_key`), reusing the inherited-env denylist
+ * so the two stay in lockstep.
+ */
+export function isSecretLikeEnvKey(key: string): boolean {
+  return isSensitiveEnvKey(key.toUpperCase());
+}
+
+/**
  * Normalize an arbitrary value into a clean env map. Invalid keys/values are
  * dropped; the result is capped at WORKSPACE_PROFILE_MAX_ENV_ENTRIES, keeping
  * the first valid entries in insertion order.
@@ -59,6 +75,10 @@ export function normalizeEnv(input: unknown): Record<string, string> {
   for (const [rawKey, rawValue] of Object.entries(input as Record<string, unknown>)) {
     if (count >= WORKSPACE_PROFILE_MAX_ENV_ENTRIES) break;
     if (!isValidEnvKey(rawKey)) continue;
+    // Policy: never persist a secret-NAMED key in plaintext (point at a config
+    // directory instead). Dropped here so both UI-save and load-time sanitize
+    // enforce it uniformly.
+    if (isSecretLikeEnvKey(rawKey)) continue;
     if (typeof rawValue !== 'string') continue;
     if (rawValue.length > WORKSPACE_PROFILE_ENV_VALUE_MAX) continue;
     out[rawKey] = rawValue;
