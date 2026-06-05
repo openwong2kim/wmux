@@ -137,8 +137,15 @@ function redactDeep(value: unknown, depth = 0): unknown {
   for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
     if (SENSITIVE_KEY_PATTERN.test(k) || REDACT_VALUE_KEYS.test(k)) {
       out[k] = '[REDACTED]';
-    } else if (ENV_SUMMARY_KEYS.test(k) && v !== null && typeof v === 'object' && !Array.isArray(v)) {
-      out[k] = { keyCount: Object.keys(v as Record<string, unknown>).length };
+    } else if (ENV_SUMMARY_KEYS.test(k)) {
+      // An env map: NEVER let its value reach the log. A plain object is
+      // summarized to a key count; ANY other shape (string, array, number —
+      // e.g. a malformed `{ env: "ANTHROPIC_API_KEY=sk-..." }`) is redacted
+      // outright. Without the type-agnostic branch a non-object value would
+      // fall through and be stringified, landing a secret in the log.
+      out[k] = (v !== null && typeof v === 'object' && !Array.isArray(v))
+        ? { keyCount: Object.keys(v as Record<string, unknown>).length }
+        : '[REDACTED]';
     } else {
       out[k] = redactDeep(v, depth + 1);
     }

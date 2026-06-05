@@ -244,6 +244,27 @@ describe('wrapHandler', () => {
       expect(summary).not.toContain('sk-abc123');
     });
 
+    it('redacts a non-object value under env (string bypass attempt)', () => {
+      // Regression: a malformed env carried as a string must not be stringified
+      // into the log. Without the type-agnostic env branch this leaked.
+      const summary = buildArgsSummary([
+        { shell: 'powershell.exe', env: 'ANTHROPIC_API_KEY=sk-do-not-leak' },
+      ]);
+      expect(summary).toBeDefined();
+      expect(summary).toContain('[REDACTED]');
+      expect(summary).not.toContain('sk-do-not-leak');
+      expect(summary).not.toContain('ANTHROPIC_API_KEY');
+      expect(summary).toContain('powershell.exe');
+    });
+
+    it('redacts an array value under env without exposing entries', () => {
+      const summary = buildArgsSummary([
+        { env: ['SECRET=sk-leak', 'X=1'] },
+      ]);
+      expect(summary).toBeDefined();
+      expect(summary).not.toContain('sk-leak');
+    });
+
     it('redacts secrets inside arrays of objects', () => {
       const summary = buildArgsSummary([
         { items: [{ apiKey: 'k1' }, { name: 'fine' }] },
