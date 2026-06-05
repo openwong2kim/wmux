@@ -119,6 +119,9 @@ export type RpcMethod =
   | 'browser.cdp.info'
   | 'browser.screenshot'
   | 'browser.evaluate'
+  | 'browser.console.get'
+  | 'browser.network.get'
+  | 'browser.responseBody.get'
   | 'browser.type.cdp'
   | 'browser.click.cdp'
   | 'browser.press.cdp'
@@ -212,6 +215,9 @@ export const ALL_RPC_METHODS = [
   'browser.cdp.info',
   'browser.screenshot',
   'browser.evaluate',
+  'browser.console.get',
+  'browser.network.get',
+  'browser.responseBody.get',
   'browser.type.cdp',
   'browser.click.cdp',
   'browser.press.cdp',
