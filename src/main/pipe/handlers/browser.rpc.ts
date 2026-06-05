@@ -6,6 +6,7 @@ import { ProfileManager } from '../../browser-session/ProfileManager';
 import { PortAllocator } from '../../browser-session/PortAllocator';
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
 import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
+import { BrowserCaptureManager } from '../../browser-session/BrowserCaptureManager';
 import { validateResolvedNavigationUrl } from '../../security/navigationPolicy';
 
 type GetWindow = () => BrowserWindow | null;
@@ -27,9 +28,15 @@ async function validateUrl(url: string, method: string): Promise<void> {
 const profileManager = new ProfileManager();
 const portAllocator = new PortAllocator();
 const humanBehavior = new HumanBehavior();
+// CDP event capture for browser_console / browser_network / browser_response_body
+// in packaged builds (#106). Lazy: enables domains on first drain call.
+const captureManager = new BrowserCaptureManager();
 
 export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webviewCdpManager: WebviewCdpManager): void {
   const getActivePartition = (): string => profileManager.getActiveProfile().partition;
+
+  // Tear down capture listeners whenever a surface's CDP session is unregistered.
+  webviewCdpManager.setCaptureCleanup((webContentsId) => captureManager.drop(webContentsId));
 
   /**
    * browser.open
@@ -339,6 +346,68 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
         throw new Error(`evaluate failed: ${fallbackErr instanceof Error ? fallbackErr.message : String(fallbackErr)}`);
       }
     }
+  });
+
+  /**
+   * browser.console.get
+   * Drain captured console messages for the webview (packaged-build fallback for
+   * the MCP browser_console tool, #106). Capture is enabled lazily on first call.
+   * params: { surfaceId?: string, clear?: boolean }
+   */
+  router.register('browser.console.get', async (params) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const clear = params['clear'] === true;
+
+    const target = webviewCdpManager.getTarget(surfaceId);
+    if (!target) throw new Error('browser.console.get: no webview target registered');
+
+    const state = await captureManager.ensure(target.webContentsId);
+    if (!state) throw new Error('browser.console.get: capture unavailable (webContents gone)');
+
+    const entries = captureManager.getConsole(target.webContentsId);
+    if (clear) captureManager.clearConsole(target.webContentsId);
+    return { entries };
+  });
+
+  /**
+   * browser.network.get
+   * Drain captured network request summaries for the webview (#106). Bodies are
+   * fetched separately via browser.responseBody.get to keep this payload small.
+   * params: { surfaceId?: string, clear?: boolean }
+   */
+  router.register('browser.network.get', async (params) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const clear = params['clear'] === true;
+
+    const target = webviewCdpManager.getTarget(surfaceId);
+    if (!target) throw new Error('browser.network.get: no webview target registered');
+
+    const state = await captureManager.ensure(target.webContentsId);
+    if (!state) throw new Error('browser.network.get: capture unavailable (webContents gone)');
+
+    const entries = captureManager.getNetwork(target.webContentsId);
+    if (clear) captureManager.clearNetwork(target.webContentsId);
+    return { entries };
+  });
+
+  /**
+   * browser.responseBody.get
+   * Return the last captured response body whose URL matches the glob (#106).
+   * params: { surfaceId?: string, urlPattern: string }
+   */
+  router.register('browser.responseBody.get', async (params) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const urlPattern = typeof params['urlPattern'] === 'string' ? params['urlPattern'] : '';
+    if (!urlPattern) throw new Error('browser.responseBody.get: missing "urlPattern"');
+
+    const target = webviewCdpManager.getTarget(surfaceId);
+    if (!target) throw new Error('browser.responseBody.get: no webview target registered');
+
+    const state = await captureManager.ensure(target.webContentsId);
+    if (!state) throw new Error('browser.responseBody.get: capture unavailable (webContents gone)');
+
+    const body = captureManager.getResponseBody(target.webContentsId, urlPattern);
+    return { body };
   });
 
   /**

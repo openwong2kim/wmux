@@ -171,6 +171,38 @@ function matchesGlob(url: string, pattern: string): boolean {
   return regex.test(url);
 }
 
+// --- Shared formatters: used by both the Playwright path and the RPC fallback
+// (#106) so console/network render identically regardless of transport. ---
+
+function filterConsole(entries: ConsoleEntry[], level?: string): ConsoleEntry[] {
+  const filterLevel = level ?? 'all';
+  if (filterLevel === 'all') return entries;
+  return entries.filter((e) => {
+    if (filterLevel === 'info') return e.level === 'log' || e.level === 'info';
+    return e.level === filterLevel;
+  });
+}
+
+function formatConsole(entries: ConsoleEntry[]): string {
+  return entries.length === 0
+    ? 'No console messages collected.'
+    : entries.map((e) => `[${e.level}] ${e.text}`).join('\n');
+}
+
+/** Filter by URL glob and render the {url, method, status} summary JSON. */
+function formatNetwork(
+  entries: Array<{ url: string; method: string; status?: number }>,
+  filter?: string,
+): string {
+  const filtered = filter ? entries.filter((e) => matchesGlob(e.url, filter)) : entries;
+  const summary = filtered.map((e) => ({
+    url: e.url,
+    method: e.method,
+    status: e.status ?? '(pending)',
+  }));
+  return summary.length === 0 ? 'No network requests collected.' : JSON.stringify(summary, null, 2);
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -410,34 +442,23 @@ export function registerInspectionTools(server: McpServer): void {
     },
     async ({ level, clear, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
+        const page = await engine.getPage(surfaceId).catch(() => null);
+
+        let entries: ConsoleEntry[];
+        if (page) {
+          ensureConsoleListener(page);
+          entries = consoleMessages.get(page) ?? [];
+          if (clear) consoleMessages.set(page, []);
+        } else {
+          // RPC fallback (packaged builds): drain the main-process CDP capture.
+          const result = await sendRpc('browser.console.get', {
+            ...(surfaceId && { surfaceId }),
+            ...(clear && { clear: true }),
+          }) as { entries: ConsoleEntry[] };
+          entries = result.entries ?? [];
         }
 
-        ensureConsoleListener(page);
-
-        const entries = consoleMessages.get(page) ?? [];
-
-        const filterLevel = level ?? 'all';
-        const filtered =
-          filterLevel === 'all'
-            ? entries
-            : entries.filter((e) => {
-                if (filterLevel === 'info') {
-                  return e.level === 'log' || e.level === 'info';
-                }
-                return e.level === filterLevel;
-              });
-
-        const text =
-          filtered.length === 0
-            ? 'No console messages collected.'
-            : filtered.map((e) => `[${e.level}] ${e.text}`).join('\n');
-
-        if (clear) {
-          consoleMessages.set(page, []);
-        }
+        const text = formatConsole(filterConsole(entries, level));
 
         return {
           content: [{ type: 'text' as const, text }],
@@ -471,33 +492,23 @@ export function registerInspectionTools(server: McpServer): void {
     },
     async ({ filter, clear, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
+        const page = await engine.getPage(surfaceId).catch(() => null);
+
+        let entries: Array<{ url: string; method: string; status?: number }>;
+        if (page) {
+          ensureNetworkListener(page);
+          entries = networkRequests.get(page) ?? [];
+          if (clear) networkRequests.set(page, []);
+        } else {
+          // RPC fallback (packaged builds): drain the main-process CDP capture.
+          const result = await sendRpc('browser.network.get', {
+            ...(surfaceId && { surfaceId }),
+            ...(clear && { clear: true }),
+          }) as { entries: Array<{ url: string; method: string; status?: number }> };
+          entries = result.entries ?? [];
         }
 
-        ensureNetworkListener(page);
-
-        const entries = networkRequests.get(page) ?? [];
-
-        const filtered = filter
-          ? entries.filter((e) => matchesGlob(e.url, filter))
-          : entries;
-
-        const summary = filtered.map((e) => ({
-          url: e.url,
-          method: e.method,
-          status: e.status ?? '(pending)',
-        }));
-
-        const text =
-          summary.length === 0
-            ? 'No network requests collected.'
-            : JSON.stringify(summary, null, 2);
-
-        if (clear) {
-          networkRequests.set(page, []);
-        }
+        const text = formatNetwork(entries, filter);
 
         return {
           content: [{ type: 'text' as const, text }],
@@ -526,25 +537,31 @@ export function registerInspectionTools(server: McpServer): void {
     },
     async ({ urlPattern, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
-        ensureNetworkListener(page);
-
-        const entries = networkRequests.get(page) ?? [];
-
-        // Find the last matching entry with a captured body
-        let matchedEntry: NetworkEntry | undefined;
-        for (let i = entries.length - 1; i >= 0; i--) {
-          if (matchesGlob(entries[i].url, urlPattern) && entries[i].response?.body !== undefined) {
-            matchedEntry = entries[i];
-            break;
+        let body: string | null = null;
+        if (page) {
+          ensureNetworkListener(page);
+          const entries = networkRequests.get(page) ?? [];
+          // Find the last matching entry with a captured body
+          for (let i = entries.length - 1; i >= 0; i--) {
+            const candidate = entries[i].response?.body;
+            if (candidate !== undefined && matchesGlob(entries[i].url, urlPattern)) {
+              body = candidate;
+              break;
+            }
           }
+        } else {
+          // RPC fallback (packaged builds): the main process matches and returns
+          // the body from its CDP capture buffer.
+          const result = await sendRpc('browser.responseBody.get', {
+            urlPattern,
+            ...(surfaceId && { surfaceId }),
+          }) as { body: string | null };
+          body = result.body ?? null;
         }
 
-        if (!matchedEntry || !matchedEntry.response?.body) {
+        if (body === null) {
           return {
             content: [
               {
@@ -559,7 +576,7 @@ export function registerInspectionTools(server: McpServer): void {
           content: [
             {
               type: 'text' as const,
-              text: matchedEntry.response.body,
+              text: body,
             },
           ],
         };
