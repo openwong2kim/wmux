@@ -33,6 +33,7 @@ export const en = {
   'workspaceProfile.commandHeading': 'Startup command (optional)',
   'workspaceProfile.commandPlaceholder': 'e.g. claude --dangerously-skip-permissions',
   'workspaceProfile.invalidKey': 'Invalid or reserved name — will be dropped on save.',
+  'workspaceProfile.secretKeyWarning': 'Looks like a secret. Values are stored in plaintext — prefer pointing at a config directory (e.g. CLAUDE_CONFIG_DIR) over pasting a raw key.',
   'workspaceProfile.warningNewPanes': 'Applied to new panes only. Existing and recovered panes keep their current environment.',
   'workspaceProfile.warningNotSandbox': 'This separates process environments. It is not an OS-level security sandbox.',
   'workspaceProfile.warningPlaintext': 'Values are stored in plaintext in your local session file. Prefer pointing at config directories over pasting raw API keys.',
