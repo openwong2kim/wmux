@@ -14,13 +14,18 @@ describe('resolveSpawnEnv', () => {
     expect(env.WMUX_AUTH_TOKEN).toBeUndefined();
   });
 
-  it('keeps an intentional profile *_KEY that the baseline denylist would strip', () => {
+  it('applies any profile key verbatim (spawn mechanism — policy is one layer up)', () => {
+    // resolveSpawnEnv applies whatever the profile contains; it does NOT re-run
+    // the denylist on profile keys. WHICH keys a profile may contain is decided
+    // by the editor policy (workspaceProfile: secret-named keys dropped on
+    // save), tested separately. Here we only assert the mechanism: a key that
+    // reaches this layer survives even if its name matches the baseline denylist.
     const env = resolveSpawnEnv(
       { PATH: '/usr/bin' },
-      { GEMINI_API_KEY: 'intentional', CLAUDE_CONFIG_DIR: 'C:/a' },
+      { GEMINI_API_KEY: 'x', CLAUDE_CONFIG_DIR: 'C:/a' },
       {},
     );
-    expect(env.GEMINI_API_KEY).toBe('intentional');
+    expect(env.GEMINI_API_KEY).toBe('x');
     expect(env.CLAUDE_CONFIG_DIR).toBe('C:/a');
   });
 

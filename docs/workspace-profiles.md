@@ -40,9 +40,10 @@ Consequences worth internalizing:
   restart).
 - **No cross-workspace leakage.** A pane only ever sees its own workspace's
   profile.
-- **Identity is protected.** `WMUX_WORKSPACE_ID`, `WMUX_SURFACE_ID`, and
-  `WMUX_SOCKET_PATH` are forced last; a profile cannot override them. Any
-  `WMUX_*` key you type is rejected.
+- **Identity is protected.** The wmux identity vars are forced last, so a
+  profile cannot override them, and any `WMUX_*` key you type is rejected.
+  (`WMUX_WORKSPACE_ID` / `WMUX_SURFACE_ID` in both modes; `WMUX_SOCKET_PATH`
+  in local mode only — see the mental-model note above.)
 - **Profile env overwrites, it does not append.** If you set `PATH` in a
   profile it *replaces* the inherited `PATH` — almost never what you want. Set
   tool-specific vars (config-dir pointers), not `PATH`.
@@ -173,9 +174,12 @@ That keeps each account's tokens in its own `<CODEX_HOME>\auth.json`.
 The same pattern works for any CLI whose account/config is selectable via an
 environment variable or config-dir pointer — e.g. `GIT_SSH_COMMAND` for an SSH
 key wrapper, `AWS_CONFIG_FILE` / `AWS_SHARED_CREDENTIALS_FILE`,
-`KUBECONFIG`, `GOOGLE_APPLICATION_CREDENTIALS`, etc. If the tool keys off the
-OS keyring or a hardcoded path, profile env alone won't isolate it (same class
-of caveat as Codex's `auto` mode).
+`KUBECONFIG`, `GOOGLE_APPLICATION_CREDENTIALS`, etc. These name a *path* (a
+reference, not the secret itself), so they're allowed even though some match
+the secret-name policy — `GOOGLE_APPLICATION_CREDENTIALS` and
+`AWS_SHARED_CREDENTIALS_FILE` are on the path-pointer allowlist. If the tool
+keys off the OS keyring or a hardcoded path, profile env alone won't isolate it
+(same class of caveat as Codex's `auto` mode).
 
 ---
 

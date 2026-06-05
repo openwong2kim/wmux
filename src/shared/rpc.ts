@@ -303,8 +303,8 @@ export interface DaemonCreateSessionParams {
   /**
    * The fully-resolved child environment. Main builds this (resolveSpawnEnv:
    * buildSafeChildEnv + workspace-profile overlay + forced WMUX identity) and
-   * the daemon replays it verbatim — NOT re-filtered daemon-side, so an
-   * intentional *_KEY/*_TOKEN survives and recovery reproduces the create-time
+   * the daemon replays it verbatim — NOT re-filtered daemon-side, so any key
+   * main placed here is applied as-is and recovery reproduces the create-time
    * env. Trusted-env contract: the caller is responsible for filtering. The
    * daemon's one unconditional guard is that it strips its own WMUX_AUTH*
    * namespace from any supplied env, so its RPC token can never reach a child.

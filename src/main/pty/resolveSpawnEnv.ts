@@ -10,8 +10,12 @@ import { applyProfileEnv } from '../../shared/workspaceProfile';
  *   1. buildSafeChildEnv(baseEnv) — strip the control process's own inherited
  *      secrets / build-tooling vars from the child baseline.
  *   2. applyProfileEnv(...)       — overlay the workspace profile AFTER the
- *      denylist (so an intentional *_KEY/*_TOKEN survives) and skipping
- *      reserved WMUX_* keys.
+ *      denylist, so a configured profile key is applied verbatim and not
+ *      re-stripped; reserved WMUX_* keys are skipped. NOTE: this is the spawn
+ *      MECHANISM — it applies whatever the profile contains. WHICH keys a
+ *      profile may contain is decided one layer up by the editor's policy
+ *      (shared/workspaceProfile: reserved + secret-named keys are dropped on
+ *      save), not here.
  *   3. identity                   — forced LAST, so a profile can never spoof
  *      WMUX_WORKSPACE_ID / WMUX_SURFACE_ID / WMUX_SOCKET_PATH. The caller
  *      decides which identity vars apply (local mode also sets the socket
