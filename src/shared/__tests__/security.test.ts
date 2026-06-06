@@ -187,6 +187,77 @@ describe('secureWriteTokenFile', () => {
     ]);
   });
 
+  // Regression (codex PR #140): PowerShell EXISTS but is unusable — AppLocker /
+  // Constrained Language Mode blocks the .NET ACL calls, so the powershell.exe
+  // invocation throws. The write path must DEGRADE to the icacls fallback (which
+  // still strips the common broad ACEs) rather than abort and delete the token.
+  it('falls through to icacls when PowerShell is present but the .NET rebuild throws (AppLocker/CLM)', async () => {
+    vi.stubEnv('USERNAME', 'tester');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubPowershellPresent(true); // powershell.exe is on disk...
+    execFileSyncMock.mockImplementation((cmd: unknown) => {
+      const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
+      if (c.includes('whoami')) {
+        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
+      }
+      if (c.includes('powershell')) {
+        throw new Error('AppLocker blocked this script'); // ...but blocked at runtime
+      }
+      return Buffer.from(''); // icacls succeeds
+    });
+
+    const { secureWriteTokenFile } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+    // Must NOT throw — the icacls fallback hardened the file.
+    expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).not.toThrow();
+    // PowerShell was attempted, then icacls carried the hardening.
+    expect(powershellCall()).toBeDefined();
+    expect(icaclsArgs()).toEqual([
+      tokenPath,
+      '/grant:r',
+      '*S-1-5-21-1-2-3-1001:F',
+      '/inheritance:r',
+      '/remove:g',
+      '*S-1-1-0',
+      '/remove:g',
+      '*S-1-5-32-545',
+      '/remove:g',
+      '*S-1-5-11',
+      '/remove:g',
+      '*S-1-5-4',
+    ]);
+    // The token survives — fail-closed deletion must NOT fire when the fallback worked.
+    expect(fsMock.unlinkSync).not.toHaveBeenCalled();
+  });
+
+  // When BOTH the PowerShell primary AND the icacls fallback fail, the write path
+  // must still fail closed: delete the un-hardenable token and throw.
+  it('fails closed (deletes + throws) when BOTH PowerShell and the icacls fallback throw', async () => {
+    vi.stubEnv('USERNAME', 'tester');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubPowershellPresent(true);
+    execFileSyncMock.mockImplementation((cmd: unknown) => {
+      const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
+      if (c.includes('whoami')) {
+        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
+      }
+      throw new Error(c.includes('powershell') ? 'CLM blocked' : 'icacls denied');
+    });
+
+    const { secureWriteTokenFile } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+    expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+      `Failed to set secure ACL on ${tokenPath}: icacls denied`,
+    );
+    expect(powershellCall()).toBeDefined();
+    expect(icaclsCall()).toBeDefined();
+    expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
+  });
+
   it('parses the SID field instead of SID-like text in the account name', async () => {
     vi.stubEnv('USERNAME', 'victim');
     vi.stubEnv('SystemRoot', 'C:\\Windows');

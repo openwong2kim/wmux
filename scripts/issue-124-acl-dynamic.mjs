@@ -39,9 +39,12 @@ import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 
-const REPO_ROOT = path.resolve(import.meta.dirname, '..');
+// import.meta.dirname is undefined before Node 20.11; package.json supports
+// node >=18, so derive the script directory from the module URL instead.
+const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
+const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
 const SECURITY_TS = path.join(REPO_ROOT, 'src', 'shared', 'security.ts');
 const SYS32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
 const ICACLS = path.join(SYS32, 'icacls.exe');
@@ -98,14 +101,22 @@ async function loadRealSecurityModule() {
 // world the code under test then operates on; they are NOT the thing being
 // verified (the code under test is the imported security.ts function).
 // ---------------------------------------------------------------------------
-function ps(script) {
+// `targetPath`, when given, is passed to the script as $env:WMUX_DT_PATH rather
+// than interpolated into the command string — a path containing an apostrophe
+// (e.g. C:\Users\O'Neil\...) would otherwise break a single-quoted PS literal.
+// Scripts read the file via `-LiteralPath $env:WMUX_DT_PATH`.
+function ps(script, targetPath) {
   // $ProgressPreference suppresses the CLIXML progress records PowerShell
   // otherwise streams for Get-Acl/Set-Acl, which only clutters this harness'
   // output (the seeding/inspection is scaffolding, not the code under test).
   return execFileSync(
     POWERSHELL,
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `$ProgressPreference='SilentlyContinue'; ${script}`],
-    { windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'] },
+    {
+      windowsHide: true,
+      stdio: ['pipe', 'pipe', 'ignore'],
+      env: targetPath === undefined ? process.env : { ...process.env, WMUX_DT_PATH: targetPath },
+    },
   ).toString('utf8').trim();
 }
 
@@ -117,10 +128,12 @@ function makeTempToken() {
 
 function seedExplicitEveryoneRead(p) {
   ps(
-    `$a = Get-Acl -LiteralPath '${p}';` +
+    `$p = $env:WMUX_DT_PATH;` +
+      `$a = Get-Acl -LiteralPath $p;` +
       `$e = New-Object System.Security.Principal.SecurityIdentifier([System.Security.Principal.WellKnownSidType]::WorldSid, $null);` +
       `$a.AddAccessRule((New-Object System.Security.AccessControl.FileSystemAccessRule($e,'Read','Allow')));` +
-      `Set-Acl -LiteralPath '${p}' -AclObject $a`,
+      `Set-Acl -LiteralPath $p -AclObject $a`,
+    p,
   );
 }
 
@@ -132,11 +145,12 @@ function seedShippedIcaclsState(p) {
 // Returns the DACL as an array of { sid, rights, type, inherited }.
 function readDacl(p) {
   const json = ps(
-    `$acl = Get-Acl -LiteralPath '${p}';` +
+    `$acl = Get-Acl -LiteralPath $env:WMUX_DT_PATH;` +
       `$acl.Access | ForEach-Object {` +
       `  $s = try { $_.IdentityReference.Translate([System.Security.Principal.SecurityIdentifier]).Value } catch { $_.IdentityReference.Value };` +
       `  [pscustomobject]@{ sid=$s; rights=[int]$_.FileSystemRights; type=[string]$_.AccessControlType; inherited=$_.IsInherited }` +
       `} | ConvertTo-Json -Compress`,
+    p,
   );
   if (!json) return [];
   const parsed = JSON.parse(json);

@@ -183,8 +183,13 @@ function applyRestrictiveAclViaIcacls(filePath: string, principal: string): void
  * `FileInfo.SetAccessControl`, invoked through `powershell.exe -EncodedCommand`.
  * See DACL_ONLY_REBUILD_SCRIPT for why this is correct where `icacls /grant:r`
  * (leaks explicit ACEs) and the `Set-Acl` cmdlet (PrivilegeNotHeldException on
- * the upgrade-from-icacls state) are not. icacls is kept ONLY as a fallback for
- * the rare SKU where PowerShell is absent (see applyRestrictiveAclViaIcacls).
+ * the upgrade-from-icacls state) are not. icacls is the fallback for any SKU
+ * where the PRIMARY path is unavailable — powershell.exe absent, OR present but
+ * blocked (AppLocker / Constrained Language Mode can fail the .NET ACL calls).
+ * The fallback still strips the common broad ACEs, so a hardened endpoint is
+ * left strictly better off than the un-hardened token (see
+ * applyRestrictiveAclViaIcacls). We only fail (and let the caller delete the
+ * token) when BOTH primitives fail.
  *
  * Owner identity rule (issue #90): prefer the SID (pure ASCII, codepage-proof);
  * fall back to %USERNAME% ONLY when it is pure ASCII; refuse a non-ASCII/empty
@@ -197,29 +202,44 @@ function applyRestrictiveWindowsAcl(filePath: string): void {
   // path goes through an environment variable (not argv) so a non-ASCII path is
   // not subject to console OEM-codepage mangling, and the identity goes through
   // stdin for the same reason.
+  //
+  // If powershell.exe is missing, OR present but throws (AppLocker / Constrained
+  // Language Mode blocking the .NET calls), fall through to the icacls fallback
+  // rather than abort — on a hardened endpoint the previous main implementation
+  // used icacls directly, and stripping the common broad ACEs there beats
+  // deleting the freshly-written token. Only when icacls ALSO fails do we throw.
   const powershell = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
   if (fs.existsSync(powershell)) {
-    const encoded = Buffer.from(DACL_ONLY_REBUILD_SCRIPT, 'utf16le').toString('base64');
-    execFileSync(
-      powershell,
-      ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
-      {
-        input: JSON.stringify({ sid, username }),
-        env: { ...process.env, WMUX_ACL_TARGET: filePath },
-        windowsHide: true,
-        // stdin carries the identity payload; stdout is ignored so the child's
-        // CLIXML progress stream never leaks into the daemon's own stdout; stderr
-        // is captured so a real failure message rides the thrown error.
-        stdio: ['pipe', 'ignore', 'pipe'],
-      },
-    );
-    return;
+    try {
+      const encoded = Buffer.from(DACL_ONLY_REBUILD_SCRIPT, 'utf16le').toString('base64');
+      execFileSync(
+        powershell,
+        ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-EncodedCommand', encoded],
+        {
+          input: JSON.stringify({ sid, username }),
+          env: { ...process.env, WMUX_ACL_TARGET: filePath },
+          windowsHide: true,
+          // stdin carries the identity payload; stdout is ignored so the child's
+          // CLIXML progress stream never leaks into the daemon's own stdout;
+          // stderr is captured so a real failure message rides the thrown error.
+          stdio: ['pipe', 'ignore', 'pipe'],
+        },
+      );
+      return;
+    } catch (psErr) {
+      // PowerShell present but unusable — degrade to icacls below.
+      console.warn(
+        `[applyRestrictiveWindowsAcl] PowerShell DACL rebuild failed for ${filePath}; ` +
+          `falling back to icacls:`,
+        psErr,
+      );
+    }
   }
 
-  // FALLBACK: PowerShell is unavailable (Server Core / hardened SKU). icacls is
-  // always present. It accepts a SID principal when prefixed with `*` (ASCII,
-  // codepage-proof); resolveOwnerIdentity already guaranteed any username
-  // fallback is pure ASCII.
+  // FALLBACK: icacls is always present in %SystemRoot%\System32. It accepts a
+  // SID principal when prefixed with `*` (ASCII, codepage-proof);
+  // resolveOwnerIdentity already guaranteed any username fallback is pure ASCII.
+  // If this throws too, it propagates — the caller fails closed.
   const principal = sid ? `*${sid}` : (username as string);
   applyRestrictiveAclViaIcacls(filePath, principal);
 }
