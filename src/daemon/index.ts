@@ -1006,6 +1006,19 @@ function wireEvents(
     pipeServer.broadcast(event);
   });
 
+  // Working-directory change (OSC 7 / prompt scrape, detected in the daemon
+  // bridge). Broadcast so main can forward it to the renderer as
+  // IPC.CWD_CHANGED, giving daemon-mode panes the same live per-surface cwd
+  // the local path already had.
+  sessionManager.on('session:cwd', (payload: { sessionId: string; cwd: string }) => {
+    const event: DaemonEvent = {
+      type: 'cwd.changed',
+      sessionId: payload.sessionId,
+      data: payload.cwd,
+    };
+    pipeServer.broadcast(event);
+  });
+
   // Explicit destroy (pty:dispose path): distinct from session:died (natural
   // PTY exit). Both must clear the main-side agentStatus so the sidebar dot
   // doesn't lie about a closed terminal (Codex P2).

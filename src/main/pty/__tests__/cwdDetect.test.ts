@@ -27,6 +27,16 @@ describe('parseOsc7Cwd', () => {
   it('does not mangle a drive-relative-looking POSIX dir', () => {
     expect(parseOsc7Cwd('file://host/srv/data')).toBe('/srv/data');
   });
+
+  it('reconstructs a Windows UNC path emitted by the hook', () => {
+    // The pwsh hook turns `\\server\share\proj` into `//server/share/proj` and
+    // appends it after the host separator → "file://HOST///server/share/proj".
+    expect(parseOsc7Cwd('file://DESKTOP///server/share/proj')).toBe('\\\\server\\share\\proj');
+  });
+
+  it('percent-decodes a UNC path with spaces', () => {
+    expect(parseOsc7Cwd('file://HOST///nas/Team%20Share/x')).toBe('\\\\nas\\Team Share\\x');
+  });
 });
 
 describe('detectPromptCwd', () => {

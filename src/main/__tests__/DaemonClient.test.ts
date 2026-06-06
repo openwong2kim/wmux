@@ -528,6 +528,54 @@ describe('DaemonClient', () => {
       await new Promise<void>(resolve => server.close(() => resolve()));
     });
 
+    it('should emit session:cwd event from a cwd.changed daemon broadcast', async () => {
+      const pipeName = testPipeName('evcwd');
+      const sockets = new Set<net.Socket>();
+
+      const server = net.createServer((socket) => {
+        sockets.add(socket);
+        socket.on('close', () => sockets.delete(socket));
+        socket.setEncoding('utf8');
+        socket.on('data', () => { /* accept all; no RPC handling needed */ });
+      });
+
+      await new Promise<void>((resolve, reject) => {
+        server.on('error', reject);
+        server.listen(pipeName, () => resolve());
+      });
+
+      client = new DaemonClient(pipeName, AUTH_TOKEN);
+      await client.connect();
+
+      const cwdEvents: Array<{ sessionId: string; cwd: string }> = [];
+      client.on('session:cwd', (payload: { sessionId: string; cwd: string }) => {
+        cwdEvents.push(payload);
+      });
+
+      await new Promise(r => setTimeout(r, 100));
+
+      // The daemon broadcasts the resolved cwd as the event's `data` string.
+      const event = JSON.stringify({
+        type: 'cwd.changed',
+        sessionId: 'sess-cwd-1',
+        data: 'D:\\proj\\api',
+      }) + '\n';
+
+      expect(sockets.size).toBeGreaterThan(0);
+      for (const socket of sockets) {
+        socket.write(event);
+      }
+
+      await new Promise(r => setTimeout(r, 200));
+
+      expect(cwdEvents).toHaveLength(1);
+      expect(cwdEvents[0]).toEqual({ sessionId: 'sess-cwd-1', cwd: 'D:\\proj\\api' });
+
+      await client.disconnect();
+      sockets.forEach(s => s.destroy());
+      await new Promise<void>(resolve => server.close(() => resolve()));
+    });
+
     it('should emit disconnected when daemon goes away', async () => {
       const pipeName = testPipeName('ev2');
       mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {});

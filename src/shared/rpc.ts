@@ -297,7 +297,8 @@ export interface DaemonEvent {
     | 'agent.critical'
     | 'activity.idle'
     | 'activity.active'
-    | 'prompt.event';
+    | 'prompt.event'
+    | 'cwd.changed';
   sessionId: string;
   data: unknown;
 }

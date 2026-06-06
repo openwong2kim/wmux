@@ -22,6 +22,10 @@ const PROMPT_CWD_RE = /(?:PS\s+([A-Za-z]:\\[^>]*?)>)|(?:\w+@[\w.-]+:([^$]+?)\$)/
  *   - collapse a Windows drive path (`/C:/Users/me` → `C:\Users\me`) by shape,
  *     not by host platform, so the result is correct regardless of where the
  *     code runs and is unit-testable without mocking `process.platform`.
+ *   - reconstruct a UNC path: the hook emits a `\\server\share` cwd as
+ *     `file://<host>///server/share` (the leading `//` of the UNC becomes the
+ *     `///` after the host separator), which we collapse back to
+ *     `\\server\share`.
  * POSIX paths (`/home/me`) pass through unchanged.
  */
 export function parseOsc7Cwd(data: string): string {
@@ -33,7 +37,11 @@ export function parseOsc7Cwd(data: string): string {
   }
   // Windows drive path by shape: "/C:/Users/me" → "C:\Users\me".
   if (/^\/[A-Za-z]:\//.test(p)) {
-    p = p.slice(1).replace(/\//g, '\\');
+    return p.slice(1).replace(/\//g, '\\');
+  }
+  // Windows UNC path: "/" (host separator) + "//server/share" → "\\server\share".
+  if (/^\/\/\//.test(p)) {
+    return p.slice(1).replace(/\//g, '\\');
   }
   return p;
 }

@@ -427,6 +427,12 @@ export class DaemonClient extends EventEmitter {
           // matching the local-mode PTYBridge.OscParser case 133 path.
           this.emit('session:prompt', { sessionId: event.sessionId, event: event.data });
           break;
+        case 'cwd.changed':
+          // Working-directory change detected daemon-side; surfaced to the
+          // renderer (via pty.handler) as IPC.CWD_CHANGED for live per-surface
+          // cwd. event.data is the resolved cwd string.
+          this.emit('session:cwd', { sessionId: event.sessionId, cwd: event.data as string });
+          break;
         default:
           break;
       }

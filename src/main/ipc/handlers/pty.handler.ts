@@ -188,6 +188,11 @@ export function registerPTYHandlers(
   let onDaemonFlushComplete:
     | ((payload: { sessionId: string; recoveredBytes: number }) => void)
     | null = null;
+  // Daemon-mode cwd forwarder. Same named-variable/cleanup discipline as
+  // flushComplete: the daemon detects cwd (OSC 7 / prompt) and emits
+  // session:cwd; we relay it to the renderer as IPC.CWD_CHANGED and refresh
+  // the main-side cwd cache, matching what local-mode PTYBridge does inline.
+  let onDaemonCwd: ((payload: { sessionId: string; cwd: string }) => void) | null = null;
   if (useDaemon && daemonClient) {
     onDaemonFlushComplete = (payload: { sessionId: string; recoveredBytes: number }) => {
       const win = getWindow?.();
@@ -200,6 +205,15 @@ export function registerPTYHandlers(
       }
     };
     daemonClient.on('session:flushComplete', onDaemonFlushComplete);
+
+    onDaemonCwd = (payload: { sessionId: string; cwd: string }) => {
+      updateCwd(payload.sessionId, payload.cwd);
+      const win = getWindow?.();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(IPC.CWD_CHANGED, payload.sessionId, payload.cwd);
+      }
+    };
+    daemonClient.on('session:cwd', onDaemonCwd);
   }
 
   // pty:create
@@ -652,6 +666,9 @@ export function registerPTYHandlers(
       }
       if (onDaemonFlushComplete) {
         daemonClient.removeListener('session:flushComplete', onDaemonFlushComplete);
+      }
+      if (onDaemonCwd) {
+        daemonClient.removeListener('session:cwd', onDaemonCwd);
       }
     }
   };

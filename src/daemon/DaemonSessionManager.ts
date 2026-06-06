@@ -301,6 +301,11 @@ export class DaemonSessionManager extends EventEmitter {
 
     bridge.on('cwd', (payload: { sessionId: string; cwd: string }) => {
       meta.cwd = payload.cwd;
+      // Forward across the daemon→main boundary so the renderer can live-update
+      // the per-surface cwd (tab tooltip + "Working directories" menu). Without
+      // this, daemon mode (the default path) only kept cwd in daemon-local
+      // meta and the UI never saw a change. Mirrors the session:prompt tee.
+      this.emit('session:cwd', payload);
     });
 
     bridge.on('data', () => {

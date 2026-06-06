@@ -3,6 +3,7 @@ import type { IPty } from 'node-pty';
 import { OscParser } from '../main/pty/OscParser';
 import { AgentDetector } from '../main/pty/AgentDetector';
 import { ActivityMonitor } from '../main/pty/ActivityMonitor';
+import { parseOsc7Cwd, detectPromptCwd } from '../main/pty/cwdDetect';
 import { RingBuffer } from './RingBuffer';
 import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
 
@@ -42,10 +43,11 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private muted = false;
 
-  // Prompt-based CWD detection (ported from PTYBridge)
+  // Prompt-based CWD detection. Parsing is shared with the local PTYBridge via
+  // ../main/pty/cwdDetect (parseOsc7Cwd / detectPromptCwd) so both spawn paths
+  // stay in lockstep; this only owns the ANSI strip + buffering.
   // eslint-disable-next-line no-control-regex
-  private static readonly ANSI_STRIP = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[[\?]?[0-9;]*[hlm]/g;
-  private static readonly PROMPT_CWD = /(?:PS\s+([A-Za-z]:\\[^>]*?)>)|(?:\w+@[\w.-]+:([^\$]+?)\$)/;
+  private static readonly ANSI_STRIP = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[[?]?[0-9;]*[hlm]/g;
 
   setupDataForwarding(
     ptyProcess: IPty,
@@ -83,7 +85,7 @@ export class DaemonPTYBridge extends EventEmitter {
     // OSC events → cwd (OSC 7) and prompt/command markers (OSC 133)
     oscParser.onOsc((event) => {
       if (event.code === 7) {
-        const cwd = event.data.replace(/^file:\/\/[^/]*/, '');
+        const cwd = parseOsc7Cwd(event.data);
         this.emit('cwd', { sessionId, cwd });
         return;
       }
@@ -128,10 +130,9 @@ export class DaemonPTYBridge extends EventEmitter {
         if (promptBuffer.length > 1024) promptBuffer = promptBuffer.slice(-512);
 
         const clean = promptBuffer.replace(DaemonPTYBridge.ANSI_STRIP, '');
-        const promptMatch = clean.match(DaemonPTYBridge.PROMPT_CWD);
-        if (promptMatch) {
-          const detectedCwd = (promptMatch[1] || promptMatch[2] || '').trim();
-          if (detectedCwd && detectedCwd !== lastDetectedCwd) {
+        const detectedCwd = detectPromptCwd(clean);
+        if (detectedCwd !== null) {
+          if (detectedCwd !== lastDetectedCwd) {
             lastDetectedCwd = detectedCwd;
             this.emit('cwd', { sessionId, cwd: detectedCwd });
           }
