@@ -17,6 +17,8 @@ const DEFAULT_BUFFER_SIZE = 512 * 1024; // 512 KB
 
 /** The daemon's own RPC auth-token namespace — must never reach a child shell. */
 const RESERVED_AUTH_PREFIX = /^WMUX_AUTH/i;
+/** The full reserved wmux namespace (auth token + identity vars). */
+const RESERVED_PREFIX = /^WMUX_/i;
 
 /**
  * Return a fresh env copy with the daemon's reserved auth-token namespace
@@ -28,6 +30,24 @@ function stripReservedAuth(env: Record<string, string>): Record<string, string> 
   const out: Record<string, string> = {};
   for (const [k, v] of Object.entries(env)) {
     if (RESERVED_AUTH_PREFIX.test(k)) continue;
+    out[k] = v;
+  }
+  return out;
+}
+
+/**
+ * Return a fresh env copy with the ENTIRE reserved WMUX_* namespace removed
+ * (auth token + identity). Used only for the process.env fallback — a caller
+ * that doesn't pre-resolve has supplied no forced identity, so a daemon that
+ * was itself launched from a wmux pane must not leak its inherited
+ * WMUX_WORKSPACE_ID/SURFACE_ID/SOCKET_PATH into the session. Mirrors the
+ * main-side resolveSpawnEnv baseline strip. NOT applied to a supplied env,
+ * which intentionally carries main's already-forced identity.
+ */
+function stripReservedNamespace(env: Record<string, string>): Record<string, string> {
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(env)) {
+    if (RESERVED_PREFIX.test(k)) continue;
     out[k] = v;
   }
   return out;
@@ -175,7 +195,20 @@ export class DaemonSessionManager extends EventEmitter {
     // (a profile can never set it) so this can't strip a user/profile key. This
     // bounds the trusted-env contract: a misbehaving/legacy caller that passes
     // a raw env can at worst leak ITS inherited vars, never wmux's auth token.
-    const env = stripReservedAuth(params.env ?? buildSafeChildEnv(globalThis.process.env));
+    //
+    // The fallback (no supplied env) carries NO caller-forced identity, so it
+    // also drops the whole WMUX_* namespace — otherwise a daemon launched from
+    // a wmux pane would leak its own inherited WMUX_WORKSPACE_ID/SURFACE_ID/
+    // SOCKET_PATH into a session that should have none. Mirrors resolveSpawnEnv.
+    // KNOWN LIMITATION: a supplied env is replayed verbatim (minus AUTH), so a
+    // sessions.json written before the main-side identity-strip fix can still
+    // carry a stale identity on recovery. New sessions persist a clean env;
+    // pre-fix contaminated blobs are accepted rather than migrated (re-deriving
+    // identity on replay would need session→workspace/surface plumbing the
+    // daemon deliberately does not have).
+    const env = params.env
+      ? stripReservedAuth(params.env)
+      : stripReservedNamespace(buildSafeChildEnv(globalThis.process.env));
 
     // Shell integration: dot-source our OSC 133 init script when the shell
     // is a supported family (pwsh/bash). Unknown shells (cmd.exe, zsh, etc.)

@@ -7,14 +7,17 @@ class MockPty extends EventEmitter {
   pid = 12345;
   private _cols: number;
   private _rows: number;
+  /** Captured spawn env, so tests can assert the resolved child environment. */
+  readonly spawnEnv: Record<string, string> | undefined;
   private dataCallbacks: ((data: string) => void)[] = [];
   private exitCallbacks: ((e: { exitCode: number; signal?: number }) => void)[] = [];
   killed = false;
 
-  constructor(_cmd: string, _args: string[], opts: { cols: number; rows: number }) {
+  constructor(_cmd: string, _args: string[], opts: { cols: number; rows: number; env?: Record<string, string> }) {
     super();
     this._cols = opts.cols;
     this._rows = opts.rows;
+    this.spawnEnv = opts.env;
   }
 
   onData(cb: (data: string) => void) {
@@ -101,6 +104,39 @@ describe('DaemonSessionManager', () => {
     expect(session.rows).toBe(24);
     expect(session.pid).toBe(12345);
     expect(session.createdAt).toBeTruthy();
+  });
+
+  // Env resolution: the daemon trusts a supplied (main-resolved) env verbatim
+  // except its own auth token, but for the process.env FALLBACK it drops the
+  // whole reserved WMUX_* namespace so a daemon launched from a wmux pane can't
+  // leak a stale identity. See resolveSpawnEnv (main) for the symmetric strip.
+  it('drops the whole reserved WMUX_* namespace from the process.env fallback', () => {
+    const prevWs = process.env.WMUX_WORKSPACE_ID;
+    const prevSock = process.env.WMUX_SOCKET_PATH;
+    process.env.WMUX_WORKSPACE_ID = 'stale-ws';
+    process.env.WMUX_SOCKET_PATH = '\\\\.\\pipe\\stale';
+    try {
+      manager.createSession({ id: 'fallback-env', cmd: 'cmd.exe', cwd: '.' }); // no env supplied
+      expect(lastMockPty?.spawnEnv?.WMUX_WORKSPACE_ID).toBeUndefined();
+      expect(lastMockPty?.spawnEnv?.WMUX_SOCKET_PATH).toBeUndefined();
+    } finally {
+      if (prevWs === undefined) delete process.env.WMUX_WORKSPACE_ID; else process.env.WMUX_WORKSPACE_ID = prevWs;
+      if (prevSock === undefined) delete process.env.WMUX_SOCKET_PATH; else process.env.WMUX_SOCKET_PATH = prevSock;
+    }
+  });
+
+  it('trusts a supplied env verbatim except the auth token (forced identity preserved)', () => {
+    manager.createSession({
+      id: 'supplied-env',
+      cmd: 'cmd.exe',
+      cwd: '.',
+      env: { WMUX_WORKSPACE_ID: 'real-ws', WMUX_AUTH_TOKEN: 'secret', FOO: 'bar' },
+    });
+    // main already forced identity into the supplied env — keep it.
+    expect(lastMockPty?.spawnEnv?.WMUX_WORKSPACE_ID).toBe('real-ws');
+    expect(lastMockPty?.spawnEnv?.FOO).toBe('bar');
+    // the daemon's own RPC token is always stripped, even from a supplied env.
+    expect(lastMockPty?.spawnEnv?.WMUX_AUTH_TOKEN).toBeUndefined();
   });
 
   it('emits session:created event', () => {
