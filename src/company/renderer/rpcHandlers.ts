@@ -48,6 +48,14 @@ function resolveTargetMembers(
   return partialMatches.length === 1 ? partialMatches : [];
 }
 
+function getCompanyActorName(company: Company, workspaceId: string): string | null {
+  const allMembers = company.departments.flatMap((d) => d.members);
+  const member = allMembers.find((m) => m.workspaceId === workspaceId);
+  if (member) return member.name;
+  if (company.ceoWorkspaceId === workspaceId) return 'CEO';
+  return null;
+}
+
 function deliverToCeo(store: Store, from: string, message: string): void {
   const c = store.company;
   if (!c?.ceoWorkspaceId) return;
@@ -294,16 +302,18 @@ export async function handleCompanyRpc(
 
   if (method === 'company.a2a.send') {
     const rawMessage = typeof params.message === 'string' ? params.message : '';
-    const from = typeof params.from === 'string' ? params.from : '';
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
     const to = typeof params.to === 'string' ? params.to : '';
     const priority = typeof params.priority === 'string' ? params.priority : 'normal';
-    if (!from || !to || !rawMessage) return { error: 'company.a2a.send: missing params' };
+    if (!workspaceId || !to || !rawMessage) return { error: 'company.a2a.send: missing params' };
     let message: string;
     try { message = validateMessage(rawMessage); } catch (e) {
       return { error: `company.a2a.send: ${e instanceof Error ? e.message : 'invalid'}` };
     }
     const c = store.company;
     if (!c) return { error: 'no company active' };
+    const from = getCompanyActorName(c, workspaceId);
+    if (!from) return { error: `no company sender for workspace ${workspaceId}` };
     store.addFeedEntry({ from, to, message, tag: 'message' });
     if (to.trim().toLowerCase() === 'ceo' && c.ceoWorkspaceId) {
       deliverToCeo(store, from, message);
@@ -327,15 +337,17 @@ export async function handleCompanyRpc(
 
   if (method === 'company.a2a.broadcast') {
     const rawMessage = typeof params.message === 'string' ? params.message : '';
-    const from = typeof params.from === 'string' ? params.from : '';
+    const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
     const priority = typeof params.priority === 'string' ? params.priority : 'normal';
-    if (!from || !rawMessage) return { error: 'company.a2a.broadcast: missing params' };
+    if (!workspaceId || !rawMessage) return { error: 'company.a2a.broadcast: missing params' };
     let message: string;
     try { message = validateMessage(rawMessage); } catch (e) {
       return { error: `company.a2a.broadcast: ${e instanceof Error ? e.message : 'invalid'}` };
     }
     const c = store.company;
     if (!c) return { error: 'no company active' };
+    const from = getCompanyActorName(c, workspaceId);
+    if (!from) return { error: `no company sender for workspace ${workspaceId}` };
     store.addFeedEntry({ from, to: 'All', message, tag: 'broadcast' });
     let sent = 0;
     for (const member of c.departments.flatMap((d) => d.members)) {
