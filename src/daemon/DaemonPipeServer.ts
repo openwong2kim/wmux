@@ -9,6 +9,7 @@ import { secureWriteTokenFile, reHardenTokenFileAcl } from '../shared/security';
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
 type RpcHandler = (params: Record<string, unknown>) => Promise<unknown>;
+type TokenRotationHandler = (newToken: string) => void;
 
 /** Action a reclaim probe implies, distinguishing a live owner from a zombie. */
 export type ReclaimOutcome = 'live-owner' | 'reclaimed' | 'unreclaimable';
@@ -45,8 +46,9 @@ export function classifyReclaimProbe(
  */
 export class DaemonPipeServer {
   private server: net.Server | null = null;
-  private authToken: string = '';
+  private authToken = '';
   private readonly handlers = new Map<string, RpcHandler>();
+  private readonly tokenRotationHandlers = new Set<TokenRotationHandler>();
   private readonly connectedSockets = new Set<net.Socket>();
   private readonly rateLimits = new Map<net.Socket, { count: number; resetAt: number }>();
   private globalRate = { count: 0, resetAt: 0 };
@@ -327,6 +329,14 @@ export class DaemonPipeServer {
     return this.authToken;
   }
 
+  /** Register a handler that runs after the daemon auth token rotates. */
+  onTokenRotated(handler: TokenRotationHandler): () => void {
+    this.tokenRotationHandlers.add(handler);
+    return () => {
+      this.tokenRotationHandlers.delete(handler);
+    };
+  }
+
   /** For testing: set token directly without file I/O. */
   setAuthToken(token: string): void {
     this.authToken = token;
@@ -346,6 +356,9 @@ export class DaemonPipeServer {
     }
     this.connectedSockets.clear();
     this.rateLimits.clear();
+    for (const handler of this.tokenRotationHandlers) {
+      handler(newToken);
+    }
     // Forced drop-to-zero — keep idle-window accounting consistent.
     this.lastDisconnectAt = Date.now();
     return newToken;

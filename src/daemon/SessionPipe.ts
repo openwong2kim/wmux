@@ -29,11 +29,15 @@ export class SessionPipe {
   // Anything above this cap in a 1-second window is brute-force / scanner traffic.
   private static readonly MAX_NEW_CONNECTIONS_PER_SEC = 10;
 
+  private readonly authTokenProvider: () => string;
+
   constructor(
     private readonly sessionId: string,
     private readonly ringBuffer: RingBuffer,
-    private readonly authToken: string,
-  ) {}
+    authToken: string | (() => string),
+  ) {
+    this.authTokenProvider = typeof authToken === 'function' ? authToken : () => authToken;
+  }
 
   /** Get the platform-specific pipe name for this session. */
   getPipeName(): string {
@@ -183,6 +187,16 @@ export class SessionPipe {
     return this.client !== null && !this.client.destroyed;
   }
 
+  /** Disconnect any authenticated client after daemon token rotation. */
+  handleAuthTokenRotated(): void {
+    if (this.client) {
+      this.client.destroy();
+      this.client = null;
+    }
+    this.flushed = false;
+    this.connectionRate = { count: 0, resetAt: 0 };
+  }
+
   private handleClient(socket: net.Socket): void {
     // Auth handshake: client must send TOKEN\n within 5 seconds
     let authBuffer = Buffer.alloc(0);
@@ -218,7 +232,7 @@ export class SessionPipe {
 
       clearTimeout(authTimeout);
       const clientToken = authBuffer.subarray(0, newlineIndex);
-      const expectedToken = Buffer.from(this.authToken);
+      const expectedToken = Buffer.from(this.authTokenProvider());
 
       if (clientToken.length !== expectedToken.length ||
           !crypto.timingSafeEqual(clientToken, expectedToken)) {

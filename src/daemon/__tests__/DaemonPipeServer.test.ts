@@ -523,6 +523,80 @@ describe('SessionPipe', () => {
     expect(allInput).toBe('user input');
   });
 
+  it('should reject stale session tokens and drop clients after daemon token rotation', async () => {
+    const tmpTokenPath = path.join(os.tmpdir(), `wmux-test-token-${crypto.randomUUID().slice(0, 8)}`);
+    const daemon = new DaemonPipeServer(testPipeName('session-rotate-ctrl'));
+    daemon.setAuthToken('old-session-token');
+    daemon.setTokenPathForTest(tmpTokenPath);
+
+    ringBuffer.write(Buffer.from('buffered output'));
+    sessionPipe = new SessionPipe(sessionId + '-rotate', ringBuffer, () => daemon.getAuthToken());
+    daemon.onTokenRotated(() => sessionPipe.handleAuthTokenRotated());
+    await sessionPipe.start();
+    const pipeName = sessionPipe.getPipeName();
+
+    try {
+      const liveClient = net.createConnection(pipeName);
+      const liveClosed = new Promise<void>((resolve) => liveClient.on('close', () => resolve()));
+      await new Promise<void>((resolve, reject) => {
+        const timeout = setTimeout(() => reject(new Error('timeout')), 3000);
+        const chunks: Buffer[] = [];
+        liveClient.on('connect', () => {
+          liveClient.write('old-session-token\n');
+        });
+        liveClient.on('data', (chunk: Buffer) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          if (Buffer.concat(chunks).indexOf(FLUSH_DONE_MARKER) !== -1) {
+            clearTimeout(timeout);
+            resolve();
+          }
+        });
+        liveClient.on('error', reject);
+      });
+      expect(sessionPipe.isConnected).toBe(true);
+
+      const newToken = daemon.rotateToken();
+      expect(newToken).not.toBe('old-session-token');
+      await liveClosed;
+      expect(sessionPipe.isConnected).toBe(false);
+
+      const staleResult = await new Promise<string>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        const client = net.createConnection(pipeName, () => {
+          client.write('old-session-token\n');
+        });
+        client.on('data', (chunk: Buffer) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+        });
+        client.on('close', () => resolve(Buffer.concat(chunks).toString()));
+        client.on('error', reject);
+        setTimeout(() => reject(new Error('timeout')), 3000);
+      });
+      expect(staleResult).toContain('AUTH_FAILED');
+
+      const newResult = await new Promise<Buffer>((resolve, reject) => {
+        const chunks: Buffer[] = [];
+        const client = net.createConnection(pipeName, () => {
+          client.write(newToken + '\n');
+        });
+        client.on('data', (chunk: Buffer) => {
+          chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk));
+          const combined = Buffer.concat(chunks);
+          if (combined.indexOf(FLUSH_DONE_MARKER) !== -1) {
+            client.destroy();
+            resolve(combined);
+          }
+        });
+        client.on('error', reject);
+        setTimeout(() => reject(new Error('timeout')), 3000);
+      });
+      expect(newResult.indexOf(FLUSH_DONE_MARKER)).not.toBe(-1);
+    } finally {
+      await daemon.stop();
+      try { fs.unlinkSync(tmpTokenPath); } catch { /* ignore */ }
+    }
+  });
+
   it('should report isConnected correctly', async () => {
     sessionPipe = new SessionPipe(sessionId + '-d', ringBuffer, SESSION_AUTH_TOKEN);
     await sessionPipe.start();

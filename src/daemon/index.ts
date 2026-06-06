@@ -655,7 +655,7 @@ function registerRpcHandlers(
         sessionPipes.delete(p.id);
       }
 
-      const pipe = new SessionPipe(p.id, managed.ringBuffer, pipeServer.getAuthToken());
+      const pipe = new SessionPipe(p.id, managed.ringBuffer, () => pipeServer.getAuthToken());
       sessionPipes.set(p.id, pipe);
 
       // Forward PTY output to session pipe
@@ -1247,6 +1247,11 @@ async function main(): Promise<void> {
   });
   const sessionPipes = new Map<string, SessionPipe>();
   const sessionDataListeners = new Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>();
+  pipeServer.onTokenRotated(() => {
+    for (const pipe of sessionPipes.values()) {
+      pipe.handleAuthTokenRotated();
+    }
+  });
 
   // Forward reference — initialised at step 8c after the snapshot runner is
   // wired. RPC handlers that fire before initialisation simply skip the
