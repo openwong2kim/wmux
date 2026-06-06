@@ -138,4 +138,26 @@ describe('extractStructuredData — DOM field mapping (#110)', () => {
     expect(out[0]).toMatchObject({ title: 'Card One', price: '$5', url: 'https://p.test/1' });
     expect(out[2].title).toBe('Card Three');
   });
+
+  it('card with a class-hinted name and a CTA link maps name to the class, not the link', async () => {
+    // Regression for the #112 review: a non-table card like
+    // <span class="name">Widget</span><a>Buy</a> must map name -> "Widget"
+    // (the class hint), not "Buy" (the call-to-action link). The primary-link
+    // fallback is reserved for table-row link lists (HN-style) where the class
+    // cell is a rank/badge.
+    document.body.innerHTML = `
+      <div class="grid">
+        <div class="item"><span class="name">Widget</span><a href="https://shop.test/w">Buy</a></div>
+        <div class="item"><span class="name">Gadget</span><a href="https://shop.test/g">Buy</a></div>
+        <div class="item"><span class="name">Gizmo</span><a href="https://shop.test/z">Buy</a></div>
+      </div>`;
+    const out = (await extractStructuredData(directPage, undefined, 'items', {
+      name: 'string',
+      url: 'string',
+    })) as Array<{ name: unknown; url: unknown }>;
+
+    expect(out.length).toBeGreaterThanOrEqual(2);
+    expect(out[0]).toMatchObject({ name: 'Widget', url: 'https://shop.test/w' });
+    expect(out[1].name).toBe('Gadget');
+  });
 });

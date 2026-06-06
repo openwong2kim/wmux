@@ -40,6 +40,11 @@ const KNOWN_CAPABILITIES = new Set<string>([
   // strictly more than page-JS execution and must be declared/approved on its
   // own rather than riding on browser.evaluate.
   'browser.cookies',
+  // Browser-state emulation via CDP: offline mode, extra request headers,
+  // timezone/locale/device overrides, and Browser.grantPermissions/
+  // resetPermissions. These mutate browser state in ways page JS cannot, so it is
+  // declared/approved on its own rather than riding on browser.evaluate.
+  'browser.emulate',
   // Agent-to-agent
   'a2a.send',
   'a2a.execute',

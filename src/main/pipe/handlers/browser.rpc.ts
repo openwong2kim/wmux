@@ -724,13 +724,13 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
         }
         applied.push(`geo=${geo.latitude},${geo.longitude}`);
       } else {
+        // Only clear the geolocation override, mirroring the Playwright path,
+        // which leaves permissions untouched here. Browser.resetPermissions would
+        // wipe every permission override for the whole browser context (all
+        // origins), revoking grants this tool never made, so it is deliberately
+        // not called — clearing the coordinate override is what actually stops
+        // location emulation.
         await send('Emulation.clearGeolocationOverride');
-        // Best-effort symmetric reset so a prior grant doesn't linger.
-        try {
-          await send('Browser.resetPermissions');
-        } catch {
-          /* unavailable on this transport; clearing the override above is what matters */
-        }
         applied.push('geo=cleared');
       }
     }
@@ -766,6 +766,18 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       const label = typeof params['deviceLabel'] === 'string' ? params['deviceLabel'] : `${dm.width}x${dm.height}`;
       applied.push(`device=${label}`);
     } else if (params['deviceReset'] === true) {
+      // Actually undo the preset over CDP: drop the device metrics override and
+      // restore the real user agent. Without this, a packaged caller who switches
+      // to a phone preset and then resets stays on the mobile UA/metrics for every
+      // subsequent page. CDP has no "clear UA override" command, so re-apply the
+      // WebContents' own UA to shed the mobile one set by the preset above.
+      await send('Emulation.clearDeviceMetricsOverride');
+      try {
+        const ua = typeof wc.getUserAgent === 'function' ? wc.getUserAgent() : undefined;
+        if (ua) await send('Emulation.setUserAgentOverride', { userAgent: ua });
+      } catch {
+        /* getUserAgent / UA override unavailable on this transport; metrics still cleared */
+      }
       applied.push('device=reset (use browser_resize to set viewport)');
     }
 

@@ -687,7 +687,14 @@ async function extractFromRepeatedElements(
             if (/title|name|heading/i.test(lower)) {
               const heading = el.querySelector('h1, h2, h3, h4, h5, h6');
               if (heading) value = (heading.textContent ?? '').trim();
-              if (!value && primaryAnchor) {
+              // For table-row link lists (HN-style) a "[class*=title]" cell is
+              // often a rank/badge (HN's <td class="title"> holds "1."), so the
+              // primary link text is the real title and wins first. For ordinary
+              // card/list markup like <span class="name">Widget</span><a>Buy</a>,
+              // the class hint is the title and the link is a CTA — so there we try
+              // class hints first and fall back to the link only as a last resort.
+              const isTableRow = el.tagName === 'TR' || el.closest('tr') !== null;
+              if (!value && isTableRow && primaryAnchor) {
                 value = (primaryAnchor.textContent ?? '').trim();
               }
               if (!value) {
@@ -695,6 +702,9 @@ async function extractFromRepeatedElements(
                   '[class*="title"], [class*="name"], [class*="heading"]',
                 );
                 if (titleEl) value = (titleEl.textContent ?? '').trim();
+              }
+              if (!value && primaryAnchor) {
+                value = (primaryAnchor.textContent ?? '').trim();
               }
             }
 
