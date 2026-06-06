@@ -281,6 +281,10 @@ export function useNotificationListener() {
 
     const unsubCwd = window.electronAPI.notification.onCwdChanged((ptyId, cwd) => {
       const state = useStore.getState();
+      // Per-surface cwd: every terminal tracks its own working directory (not
+      // just the workspace's active cwd), so the "Working directories" menu and
+      // the tab tooltip can show each powershell's path — and it persists.
+      state.updateSurfaceCwd(ptyId, cwd);
       for (const ws of state.workspaces) {
         const found = findSurfaceByPtyId(ws.rootPane, ptyId);
         if (found) {

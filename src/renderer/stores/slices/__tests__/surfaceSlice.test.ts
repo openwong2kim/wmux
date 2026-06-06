@@ -22,6 +22,47 @@ function createHarness() {
   return { state, slice };
 }
 
+describe('surfaceSlice.updateSurfaceCwd', () => {
+  it('updates the cwd of the surface bound to a ptyId', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\start');
+
+    slice.updateSurfaceCwd('pty-1', 'D:\\proj\\api');
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    expect(pane.surfaces[0].cwd).toBe('D:\\proj\\api');
+  });
+
+  it('only touches the surface that owns the ptyId', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+    slice.addSurface(paneId, 'pty-2', 'pwsh', 'C:\\b');
+
+    slice.updateSurfaceCwd('pty-2', 'D:\\moved');
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    expect(pane.surfaces.find((s) => s.ptyId === 'pty-1')?.cwd).toBe('C:\\a');
+    expect(pane.surfaces.find((s) => s.ptyId === 'pty-2')?.cwd).toBe('D:\\moved');
+  });
+
+  it('is a no-op for an empty or unknown ptyId', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+
+    slice.updateSurfaceCwd('', 'D:\\nope');
+    slice.updateSurfaceCwd('ghost', 'D:\\nope');
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    expect(pane.surfaces[0].cwd).toBe('C:\\a');
+  });
+});
+
 describe('surfaceSlice browser partition state', () => {
   it('stores the provided partition on new browser surfaces', () => {
     const { state, slice } = createHarness();

@@ -13,6 +13,15 @@ export interface SurfaceSlice {
   prevSurface: (paneId: string) => void;
   updateSurfacePtyId: (paneId: string, surfaceId: string, ptyId: string) => void;
   updateSurfaceTitle: (surfaceId: string, title: string) => void;
+  /**
+   * Update the live working directory of the surface bound to `ptyId`. Driven
+   * by the OSC 7 shell-integration channel (onCwdChanged), so each terminal
+   * tracks its own cwd — not just the workspace's single active cwd. Because
+   * surfaces are persisted in session.json, this also makes the last cwd
+   * survive a close/reopen, which the workspace "Working directories" menu and
+   * the tab tooltip rely on. No-op for an empty ptyId or an unknown pty.
+   */
+  updateSurfaceCwd: (ptyId: string, cwd: string) => void;
   updateBrowserPartition: (partition: string, surfaceId?: string) => void;
 }
 
@@ -144,6 +153,21 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
         if (pane.type === 'leaf') {
           const surface = pane.surfaces.find((s) => s.id === surfaceId);
           if (surface) { surface.title = title; return true; }
+          return false;
+        }
+        return pane.children.some(updateInPane);
+      };
+      if (updateInPane(ws.rootPane)) return;
+    }
+  }),
+
+  updateSurfaceCwd: (ptyId, cwd) => set((state: StoreState) => {
+    if (!ptyId) return;
+    for (const ws of state.workspaces) {
+      const updateInPane = (pane: Pane): boolean => {
+        if (pane.type === 'leaf') {
+          const surface = pane.surfaces.find((s) => s.ptyId === ptyId);
+          if (surface) { surface.cwd = cwd; return true; }
           return false;
         }
         return pane.children.some(updateInPane);
