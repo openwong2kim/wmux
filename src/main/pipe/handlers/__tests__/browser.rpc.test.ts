@@ -136,18 +136,52 @@ describe('registerBrowserRpc', () => {
     });
   });
 
-  it('browser.session.start applies the selected partition to renderer browser surfaces', async () => {
+  it('browser.session.start applies only the default partition to renderer browser surfaces', async () => {
     const router = register();
 
     const response = await router.dispatch({
       id: '6',
       method: 'browser.session.start',
-      params: { profile: 'login' },
+      params: {},
     });
 
     expect(response.ok).toBe(true);
     expect(sendToRendererMock).toHaveBeenCalledWith(expect.any(Function), 'browser.session.applyProfile', {
+      partition: 'persist:wmux-default',
+    });
+  });
+
+  it('browser.session.start rejects protected browser profiles', async () => {
+    const router = register();
+
+    const response = await router.dispatch({
+      id: '7',
+      method: 'browser.session.start',
+      params: { profile: 'login' },
+    });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error).toContain('profile "login" is not available');
+    }
+    expect(sendToRendererMock).not.toHaveBeenCalledWith(expect.any(Function), 'browser.session.applyProfile', {
       partition: 'persist:wmux-login',
     });
+  });
+
+  it('browser.session.start rejects invalid profile names before building partitions', async () => {
+    const router = register();
+
+    const response = await router.dispatch({
+      id: '8',
+      method: 'browser.session.start',
+      params: { profile: '../login\ncontrol-char' },
+    });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error).toContain('Browser profile names must be 1-64 characters');
+    }
+    expect(sendToRendererMock).not.toHaveBeenCalled();
   });
 });

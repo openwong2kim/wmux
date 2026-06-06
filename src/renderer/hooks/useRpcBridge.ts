@@ -182,6 +182,15 @@ function deliverPtyNotification(
 // Dispatch table
 // ---------------------------------------------------------------------------
 
+// Defense-in-depth: renderer profile switches should not mount arbitrary
+// persistent Electron partitions if a malformed bridge message is received.
+function isSelectableBrowserPartition(partition: string): boolean {
+  return (
+    partition === 'persist:wmux-default'
+    || /^wmux-[A-Za-z0-9](?:[A-Za-z0-9_-]{0,63})$/.test(partition)
+  );
+}
+
 async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcResult> {
   // Always read the freshest state via getState() to avoid stale closures.
   const store = useStore.getState();
@@ -857,6 +866,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   if (method === 'browser.session.applyProfile') {
     const partition = typeof params.partition === 'string' ? params.partition : '';
     if (!partition) return { error: 'browser.session.applyProfile: missing partition' };
+    if (!isSelectableBrowserPartition(partition)) {
+      return { error: 'browser.session.applyProfile: invalid partition' };
+    }
     const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
     store.updateBrowserPartition(partition, surfaceId);
     return { ok: true, partition, ...(surfaceId && { surfaceId }) };

@@ -30,6 +30,16 @@ describe('ProfileManager', () => {
     );
   });
 
+  it('should reject unsafe profile names before creating partitions', () => {
+    expect(() => manager.createProfile('../login\ncontrol-char')).toThrow(
+      'Browser profile names must be 1-64 characters'
+    );
+    expect(() => manager.createProfile('a'.repeat(65))).toThrow(
+      'Browser profile names must be 1-64 characters'
+    );
+    expect(manager.listProfiles()).toHaveLength(2);
+  });
+
   it('should retrieve a profile via getProfile()', () => {
     const profile = manager.getProfile('default');
     expect(profile).toBeDefined();

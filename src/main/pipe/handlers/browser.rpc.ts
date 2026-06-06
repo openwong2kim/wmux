@@ -2,7 +2,11 @@ import type { BrowserWindow } from 'electron';
 import { webContents } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
-import { ProfileManager } from '../../browser-session/ProfileManager';
+import {
+  ProfileManager,
+  isSelectableBrowserProfile,
+  validateBrowserProfileName,
+} from '../../browser-session/ProfileManager';
 import { PortAllocator } from '../../browser-session/PortAllocator';
 import { HumanBehavior } from '../../browser-session/HumanBehavior';
 import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
@@ -143,10 +147,17 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * params: { profile?: string }
    */
   router.register('browser.session.start', async (params) => {
-    const profileName = typeof params['profile'] === 'string' ? params['profile'] : 'default';
-    let profile = profileManager.getProfile(profileName);
+    const profileName = typeof params['profile'] === 'string'
+      ? validateBrowserProfileName(params['profile'])
+      : 'default';
+    if (!isSelectableBrowserProfile(profileName)) {
+      throw new Error(
+        `browser.session.start: profile "${profileName}" is not available for RPC browser sessions`,
+      );
+    }
+    const profile = profileManager.getProfile(profileName);
     if (!profile) {
-      profile = profileManager.createProfile(profileName, true);
+      throw new Error(`browser.session.start: profile "${profileName}" does not exist`);
     }
     profileManager.setActiveProfile(profileName);
     await sendToRenderer(getWindow, 'browser.session.applyProfile', {
