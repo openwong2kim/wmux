@@ -704,9 +704,33 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
         await send('Emulation.setGeolocationOverride', {
           latitude: geo.latitude, longitude: geo.longitude, accuracy: geo.accuracy ?? 100,
         });
+        // Overriding the coordinates is not enough on its own: navigator.geolocation
+        // stays blocked unless the page also holds the geolocation permission. The
+        // Playwright path grants it explicitly (context.grantPermissions); mirror
+        // that so the packaged fallback actually emulates location for the common
+        // permission-gated flow. Browser.grantPermissions is a browser-target
+        // command and may be unavailable on Electron's page-level debugger, so this
+        // is best-effort — the coordinate override still applies if it throws.
+        try {
+          const origin = (() => {
+            try { return new URL(wc.getURL()).origin; } catch { return undefined; }
+          })();
+          await send('Browser.grantPermissions', {
+            ...(origin && origin !== 'null' ? { origin } : {}),
+            permissions: ['geolocation'],
+          });
+        } catch {
+          /* page-target debugger can't grant browser-level permissions; coords still set */
+        }
         applied.push(`geo=${geo.latitude},${geo.longitude}`);
       } else {
         await send('Emulation.clearGeolocationOverride');
+        // Best-effort symmetric reset so a prior grant doesn't linger.
+        try {
+          await send('Browser.resetPermissions');
+        } catch {
+          /* unavailable on this transport; clearing the override above is what matters */
+        }
         applied.push('geo=cleared');
       }
     }
