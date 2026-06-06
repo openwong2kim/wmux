@@ -4,6 +4,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
+import { collectTerminalSurfaces } from '../../utils/paneTraversal';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 
 interface WorkspaceItemProps {
@@ -34,6 +35,19 @@ function AgentStatusDot({ status, agentName }: { status: AgentStatus; agentName?
   );
 }
 
+/**
+ * Brief bottom-center toast. Mirrors Sidebar.handleCopySessionInfo so the
+ * "Copied!" feedback is visually identical wherever a copy happens.
+ */
+function showCopyToast(text: string): void {
+  const toast = document.createElement('div');
+  toast.textContent = text;
+  toast.style.cssText = 'position:fixed;bottom:40px;left:50%;transform:translateX(-50%);background:var(--bg-surface);color:var(--text-main);padding:4px 12px;border-radius:4px;font-size:12px;z-index:9999;opacity:0;transition:opacity .2s';
+  document.body.appendChild(toast);
+  requestAnimationFrame(() => { toast.style.opacity = '1'; });
+  setTimeout(() => { toast.style.opacity = '0'; setTimeout(() => toast.remove(), 200); }, 1500);
+}
+
 function shortenPath(path: string, maxLen = 25): string {
   if (!path || path.length <= maxLen) return path;
   const parts = path.replace(/\\/g, '/').split('/');
@@ -47,6 +61,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   const [editName, setEditName] = useState(workspace.name);
   const [dropIndicator, setDropIndicator] = useState<'above' | 'below' | null>(null);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
+  const [wdOpen, setWdOpen] = useState(false);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dragStartTimeRef = useRef<number>(0);
@@ -186,6 +201,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   const handleContextMenu = (e: React.MouseEvent<HTMLDivElement>) => {
     e.preventDefault();
     e.stopPropagation();
+    setWdOpen(false);
     setMenuPos({ x: e.clientX, y: e.clientY });
   };
 
@@ -323,17 +339,73 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
           <button
             className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
             style={{ color: 'var(--text-main)' }}
-            onClick={() => { setMenuPos(null); onDuplicate(); }}
-          >
-            {t('workspace.duplicate')}
-          </button>
-          <button
-            className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
-            style={{ color: 'var(--text-main)' }}
             onClick={() => { setMenuPos(null); setProfileModalOpen(true); }}
           >
             {t('workspace.configureProfile')}
           </button>
+          <button
+            className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+            style={{ color: 'var(--text-main)' }}
+            onClick={() => { setMenuPos(null); onDuplicate(); }}
+          >
+            {t('workspace.duplicate')}
+          </button>
+
+          {/* Working directories — hover to reveal each terminal's cwd. Flips to
+              the left when the menu is opened near the right screen edge. */}
+          <div
+            className="relative"
+            onMouseEnter={() => setWdOpen(true)}
+            onMouseLeave={() => setWdOpen(false)}
+          >
+            <button
+              className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              style={{ color: 'var(--text-main)' }}
+            >
+              <span>{t('workspace.workingDirs')}</span>
+              <span className="text-[var(--text-muted)]">▸</span>
+            </button>
+            {wdOpen && (
+              <div
+                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[240px] max-w-[420px] py-1 rounded-md shadow-xl`}
+                style={{ background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
+              >
+                {(() => {
+                  const terminals = collectTerminalSurfaces(workspace.rootPane);
+                  if (terminals.length === 0) {
+                    return (
+                      <div className="px-3 py-1.5 text-xs text-[var(--text-muted)]">
+                        {t('workspace.noWorkingDirs')}
+                      </div>
+                    );
+                  }
+                  return terminals.map((s) => {
+                    const label = s.title || t('surface.terminal');
+                    const path = s.cwd || '—';
+                    return (
+                      <div key={s.id} className="flex items-center gap-2 px-3 py-1 text-xs">
+                        <span className="font-medium text-[var(--accent-blue)] truncate max-w-[110px] shrink-0" title={label}>{label}</span>
+                        <span className="text-[var(--text-subtle)] truncate flex-1 font-mono text-[11px]" title={path}>{path}</span>
+                        <button
+                          className="text-[var(--text-subtle)] hover:text-[var(--accent-blue)] shrink-0 transition-colors disabled:opacity-30 disabled:hover:text-[var(--text-subtle)]"
+                          disabled={!s.cwd}
+                          title={t('workspace.copyPath')}
+                          onClick={() => {
+                            setMenuPos(null);
+                            window.clipboardAPI.writeText(s.cwd)
+                              .then(() => showCopyToast(t('workspace.copied')))
+                              .catch(() => { /* clipboard denied — silent, non-critical */ });
+                          }}
+                        >
+                          ⧉
+                        </button>
+                      </div>
+                    );
+                  });
+                })()}
+              </div>
+            )}
+          </div>
         </div>
       )}
 

@@ -6,7 +6,7 @@
 // the previous in-file copies — the listener's regression tests (R1-R4) lock
 // the routing semantics, so any change here must preserve them exactly.
 
-import type { Pane, PaneLeaf } from '../../shared/types';
+import type { Pane, PaneLeaf, Surface } from '../../shared/types';
 
 /**
  * Locate the surface that owns a given ptyId anywhere in a pane tree.
@@ -27,6 +27,19 @@ export function findSurfaceByPtyId(
     if (found) return found;
   }
   return null;
+}
+
+/**
+ * Collect every terminal surface in a pane tree, left-to-right / top-to-bottom
+ * (the natural reading order of the split layout). Browser and editor surfaces
+ * are skipped — they have no shell working directory. Used by the workspace
+ * "Working directories" menu to list each powershell's cwd.
+ */
+export function collectTerminalSurfaces(root: Pane): Surface[] {
+  if (root.type === 'leaf') {
+    return root.surfaces.filter((s) => !s.surfaceType || s.surfaceType === 'terminal');
+  }
+  return root.children.flatMap(collectTerminalSurfaces);
 }
 
 /**
