@@ -30,6 +30,20 @@ export function resolveSpawnEnv(
   identity: Record<string, string>,
 ): Record<string, string> {
   const env = buildSafeChildEnv(baseEnv);
+  // Drop the ENTIRE reserved WMUX_* namespace from the baseline before we
+  // overlay or force anything. buildSafeChildEnv only strips WMUX_AUTH*, so a
+  // wmux launched from inside a wmux pane (e.g. `npm start` while dogfooding)
+  // would otherwise inherit the PARENT pane's WMUX_WORKSPACE_ID / SURFACE_ID /
+  // SOCKET_PATH from its own process.env — a stale identity the caller never
+  // forced (daemon mode never sets SOCKET_PATH; some create paths run before a
+  // surfaceId exists). Clearing it here means a child's identity is ONLY ever
+  // what we force below, making the "identity can't be spoofed" guarantee
+  // unconditional rather than profile-only. Safe to clear all WMUX_*: the
+  // shell-hook var is injected by the caller AFTER this, and identity is
+  // re-applied immediately below.
+  for (const key of Object.keys(env)) {
+    if (key.toUpperCase().startsWith('WMUX_')) delete env[key];
+  }
   applyProfileEnv(env, profileEnv);
   for (const [k, v] of Object.entries(identity)) {
     if (typeof v === 'string') env[k] = v;

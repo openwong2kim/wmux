@@ -50,4 +50,31 @@ describe('resolveSpawnEnv', () => {
     expect(env.WMUX_SOCKET_PATH).toBe('\\\\.\\pipe\\wmux');
     expect(env.WMUX_WORKSPACE_ID).toBe('ws-1');
   });
+
+  it('drops STALE inherited WMUX_* identity the caller does not force (nested-wmux launch)', () => {
+    // Simulates `npm start` from inside a wmux pane: the child main process
+    // inherits the parent pane's identity in its own env. The new child must
+    // NOT carry that stale identity forward — only what we force survives.
+    const env = resolveSpawnEnv(
+      {
+        PATH: '/usr/bin',
+        WMUX_WORKSPACE_ID: 'parent-ws',
+        WMUX_SURFACE_ID: 'parent-surface',
+        WMUX_SOCKET_PATH: '\\\\.\\pipe\\parent',
+      },
+      undefined,
+      // Daemon-mode shape: only workspace id is forced (no socket path, no surface id).
+      { WMUX_WORKSPACE_ID: 'child-ws' },
+    );
+    expect(env.PATH).toBe('/usr/bin');
+    expect(env.WMUX_WORKSPACE_ID).toBe('child-ws');     // forced wins
+    expect(env.WMUX_SURFACE_ID).toBeUndefined();        // stale parent value dropped
+    expect(env.WMUX_SOCKET_PATH).toBeUndefined();       // stale parent socket dropped
+  });
+
+  it('strips the reserved namespace case-insensitively', () => {
+    const env = resolveSpawnEnv({ wmux_socket_path: 'stale', PATH: '/p' }, undefined, {});
+    expect(env.wmux_socket_path).toBeUndefined();
+    expect(env.PATH).toBe('/p');
+  });
 });
