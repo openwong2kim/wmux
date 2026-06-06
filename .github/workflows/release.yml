@@ -9,6 +9,8 @@ jobs:
     runs-on: windows-latest
     permissions:
       contents: write
+    outputs:
+      version: ${{ steps.pkg.outputs.version }}
     env:
       # NN2-T1 — SignPath Foundation (OSS) code signing. EMPTY until the secret
       # is configured, which makes every signing step below no-op so unsigned
@@ -169,17 +171,24 @@ jobs:
         env:
           CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
 
+  winget:
+    name: Publish to WinGet
+    needs: build
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    env:
+      WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
+    steps:
       - name: Publish to winget
         if: env.WINGET_TOKEN != ''
         continue-on-error: true
-        uses: vedantmgoyal2009/winget-releaser@v2
+        uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e
         with:
           identifier: openwong2kim.wmux
-          version: ${{ steps.pkg.outputs.version }}
+          version: ${{ needs.build.outputs.version }}
           installers-regex: '\.Setup\.exe$'
           token: ${{ secrets.WINGET_TOKEN }}
-        env:
-          WINGET_TOKEN: ${{ secrets.WINGET_TOKEN }}
 
   # ── macOS build leg ──────────────────────────────────────────────────────
   # OPT-IN: runs only when the repo variable ENABLE_CROSS_PLATFORM_RELEASE is
