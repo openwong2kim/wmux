@@ -1,14 +1,41 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { devices } from 'playwright-core';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { matchSensitiveDomain } from '../security';
+import { evalFunctionOrRpc } from '../page-eval';
+import { sendRpc } from '../../wmux-client';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
   .string()
   .optional()
   .describe('Target a specific surface by ID. Omit to use the active surface.');
+
+// ---------------------------------------------------------------------------
+// Packaged RPC fallback (#111)
+// ---------------------------------------------------------------------------
+//
+// On packaged builds playwright-core cannot surface the guest <webview> as a
+// Playwright Page, so engine.getPage() returns null. These state tools then
+// route the same operation through the main-process CDP channel (browser.* RPC),
+// exactly as the extraction/capture tools already do (#105/#106). Each tool tries
+// the Playwright Page first and falls back to RPC only when no Page is available.
+
+/** Current page URL, transport-agnostic. Used for sensitive-domain checks. */
+async function currentUrl(page: Page | null, surfaceId?: string): Promise<string> {
+  if (page) return page.url();
+  try {
+    const r = (await sendRpc('browser.evaluate', {
+      expression: 'location.href',
+      ...(surfaceId && { surfaceId }),
+    })) as { value: unknown };
+    return typeof r.value === 'string' ? r.value : '';
+  } catch {
+    return '';
+  }
+}
 
 // ---------------------------------------------------------------------------
 // Registration
@@ -59,12 +86,8 @@ export function registerStateTools(server: McpServer): void {
     },
     async ({ action, url, cookies, allowSensitiveDomains, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
-
-        const context = page.context();
+        // Playwright Page when available (dev), else CDP over RPC (packaged, #111).
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
         switch (action) {
           case 'get': {
@@ -77,7 +100,13 @@ export function registerStateTools(server: McpServer): void {
                 );
               }
             }
-            const allCookies = await context.cookies(url ? [url] : []);
+            const allCookies: Array<{ domain?: string; value: string; [k: string]: unknown }> = page
+              ? await page.context().cookies(url ? [url] : [])
+              : ((await sendRpc('browser.cookies', {
+                  action: 'get',
+                  urls: url ? [url] : [],
+                  ...(surfaceId && { surfaceId }),
+                })) as { cookies: Array<{ domain?: string; value: string }> }).cookies;
             const safe = allCookies.map((c) => {
               const hit = matchSensitiveDomain(c.domain ?? '');
               if (hit && !allowSensitiveDomains) {
@@ -100,16 +129,26 @@ export function registerStateTools(server: McpServer): void {
               throw new Error('No cookies provided for "set" action.');
             }
 
-            // Playwright requires url or domain+path for each cookie
+            // Playwright (and CDP Network.setCookies) require url or domain+path
+            // per cookie. In RPC mode page is null, so we leave url undefined for
+            // bare cookies and the handler defaults it to the live page URL.
             const cookiesToAdd = cookies.map((c) => ({
               name: c.name,
               value: c.value,
               domain: c.domain,
               path: c.path ?? '/',
-              url: !c.domain ? (url ?? page.url()) : undefined,
+              url: !c.domain ? (url ?? (page ? page.url() : undefined)) : undefined,
             }));
 
-            await context.addCookies(cookiesToAdd);
+            if (page) {
+              await page.context().addCookies(cookiesToAdd);
+            } else {
+              await sendRpc('browser.cookies', {
+                action: 'set',
+                cookies: cookiesToAdd,
+                ...(surfaceId && { surfaceId }),
+              });
+            }
 
             return {
               content: [
@@ -122,7 +161,14 @@ export function registerStateTools(server: McpServer): void {
           }
 
           case 'clear': {
-            await context.clearCookies();
+            if (page) {
+              await page.context().clearCookies();
+            } else {
+              await sendRpc('browser.cookies', {
+                action: 'clear',
+                ...(surfaceId && { surfaceId }),
+              });
+            }
             return {
               content: [{ type: 'text' as const, text: 'Cookies cleared.' }],
             };
@@ -170,17 +216,17 @@ export function registerStateTools(server: McpServer): void {
     },
     async ({ type, action, key, value, allowSensitiveDomains, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        // browser_storage is pure page.evaluate, so it unifies over the same
+        // evaluate transport the extraction tools use: a Playwright Page when
+        // available, else browser.evaluate over RPC (packaged builds, #111).
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
         const storageName = type === 'local' ? 'localStorage' : 'sessionStorage';
 
         switch (action) {
           case 'get': {
             if (!allowSensitiveDomains) {
-              const sensitive = matchSensitiveDomain(page.url());
+              const sensitive = matchSensitiveDomain(await currentUrl(page, surfaceId));
               if (sensitive) {
                 throw new Error(
                   `browser_storage get blocked: current page "${sensitive}" is on the sensitive-domain blocklist (email / banking / auth). ` +
@@ -188,7 +234,8 @@ export function registerStateTools(server: McpServer): void {
                 );
               }
             }
-            const result = await page.evaluate(
+            const result = await evalFunctionOrRpc(
+              page,
               ([sName, sKey]: [string, string | undefined]) => {
                 const storage = (window as any)[sName] as Storage;
                 if (sKey) {
@@ -205,6 +252,7 @@ export function registerStateTools(server: McpServer): void {
                 return entries;
               },
               [storageName, key] as [string, string | undefined],
+              surfaceId,
             );
 
             const text =
@@ -220,12 +268,14 @@ export function registerStateTools(server: McpServer): void {
               throw new Error('Key is required for "set" action.');
             }
 
-            await page.evaluate(
+            await evalFunctionOrRpc(
+              page,
               ([sName, sKey, sValue]: [string, string, string]) => {
                 const storage = (window as any)[sName] as Storage;
                 storage.setItem(sKey, sValue);
               },
               [storageName, key, value ?? ''] as [string, string, string],
+              surfaceId,
             );
 
             return {
@@ -239,12 +289,14 @@ export function registerStateTools(server: McpServer): void {
           }
 
           case 'clear': {
-            await page.evaluate(
+            await evalFunctionOrRpc(
+              page,
               (sName: string) => {
                 const storage = (window as any)[sName] as Storage;
                 storage.clear();
               },
               storageName,
+              surfaceId,
             );
 
             return {
@@ -323,117 +375,135 @@ export function registerStateTools(server: McpServer): void {
     },
     async ({ offline, headers, credentials, geo, media, timezone, locale, device, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
-
-        const context = page.context();
+        const page = await engine.getPage(surfaceId).catch(() => null);
         const applied: string[] = [];
 
-        // offline
-        if (offline !== undefined) {
-          await context.setOffline(offline);
-          applied.push(`offline=${offline}`);
+        // Resolve a device preset (if any) up front: both transports need its
+        // viewport + user agent, and the lookup throws on an unknown name before
+        // any partial emulation is applied.
+        const deviceDescriptor = device ? devices[device] : undefined;
+        if (device && !deviceDescriptor) {
+          throw new Error(
+            `Unknown device "${device}". Use a name from Playwright's device list (e.g. "iPhone 13", "Pixel 5").`,
+          );
         }
 
-        // headers
-        if (headers !== undefined) {
-          await context.setExtraHTTPHeaders(headers);
-          applied.push(`headers=${Object.keys(headers).length} header(s)`);
-        }
+        if (page) {
+          const context = page.context();
 
-        // credentials
-        if (credentials !== undefined) {
-          try {
-            await context.setHTTPCredentials(credentials as { username: string; password: string } | null);
-            applied.push(credentials ? 'credentials=set' : 'credentials=cleared');
-          } catch {
-            applied.push(
-              'credentials=failed (HTTP credentials via context is not supported in CDP mode. Use browser_emulate headers with a Base64-encoded Authorization header instead.)',
-            );
+          // offline
+          if (offline !== undefined) {
+            await context.setOffline(offline);
+            applied.push(`offline=${offline}`);
           }
-        }
 
-        // geo
-        if (geo !== undefined) {
-          if (geo) {
-            await context.setGeolocation(geo);
-            await context.grantPermissions(['geolocation']);
-            applied.push(`geo=${geo.latitude},${geo.longitude}`);
-          } else {
-            await context.setGeolocation(null as any);
-            applied.push('geo=cleared');
+          // headers
+          if (headers !== undefined) {
+            await context.setExtraHTTPHeaders(headers);
+            applied.push(`headers=${Object.keys(headers).length} header(s)`);
           }
-        }
 
-        // media / color scheme
-        if (media !== undefined) {
-          await page.emulateMedia({
-            colorScheme: media as 'dark' | 'light' | 'no-preference' | null,
-          });
-          applied.push(media ? `colorScheme=${media}` : 'colorScheme=reset');
-        }
-
-        // timezone via CDP
-        if (timezone !== undefined) {
-          const client = await context.newCDPSession(page);
-          try {
-            if (timezone) {
-              await client.send('Emulation.setTimezoneOverride', {
-                timezoneId: timezone,
-              });
-              applied.push(`timezone=${timezone}`);
-            } else {
-              await client.send('Emulation.setTimezoneOverride', {
-                timezoneId: '',
-              });
-              applied.push('timezone=reset');
-            }
-          } finally {
-            await client.detach().catch(() => {});
-          }
-        }
-
-        // locale via CDP
-        if (locale !== undefined) {
-          const client = await context.newCDPSession(page);
-          try {
-            if (locale) {
-              await client.send('Emulation.setLocaleOverride', {
-                locale,
-              });
-              applied.push(`locale=${locale}`);
-            } else {
-              await client.send('Emulation.setLocaleOverride', {
-                locale: '',
-              });
-              applied.push('locale=reset');
-            }
-          } finally {
-            await client.detach().catch(() => {});
-          }
-        }
-
-        // device preset
-        if (device !== undefined) {
-          if (device) {
-            const deviceDescriptor = devices[device];
-            if (!deviceDescriptor) {
-              throw new Error(
-                `Unknown device "${device}". Use a name from Playwright's device list (e.g. "iPhone 13", "Pixel 5").`,
+          // credentials
+          if (credentials !== undefined) {
+            try {
+              await context.setHTTPCredentials(credentials as { username: string; password: string } | null);
+              applied.push(credentials ? 'credentials=set' : 'credentials=cleared');
+            } catch {
+              applied.push(
+                'credentials=failed (HTTP credentials via context is not supported in CDP mode. Use browser_emulate headers with a Base64-encoded Authorization header instead.)',
               );
             }
-            await page.setViewportSize(deviceDescriptor.viewport);
-            // Apply user agent via extra headers
-            await context.setExtraHTTPHeaders({
-              ...(headers ?? {}),
-              'User-Agent': deviceDescriptor.userAgent,
-            });
-            applied.push(`device=${device} (${deviceDescriptor.viewport.width}x${deviceDescriptor.viewport.height})`);
-          } else {
-            applied.push('device=reset (use browser_resize to set viewport)');
           }
+
+          // geo
+          if (geo !== undefined) {
+            if (geo) {
+              await context.setGeolocation(geo);
+              await context.grantPermissions(['geolocation']);
+              applied.push(`geo=${geo.latitude},${geo.longitude}`);
+            } else {
+              await context.setGeolocation(null as any);
+              applied.push('geo=cleared');
+            }
+          }
+
+          // media / color scheme
+          if (media !== undefined) {
+            await page.emulateMedia({
+              colorScheme: media as 'dark' | 'light' | 'no-preference' | null,
+            });
+            applied.push(media ? `colorScheme=${media}` : 'colorScheme=reset');
+          }
+
+          // timezone via CDP
+          if (timezone !== undefined) {
+            const client = await context.newCDPSession(page);
+            try {
+              await client.send('Emulation.setTimezoneOverride', {
+                timezoneId: timezone || '',
+              });
+              applied.push(timezone ? `timezone=${timezone}` : 'timezone=reset');
+            } finally {
+              await client.detach().catch(() => {});
+            }
+          }
+
+          // locale via CDP
+          if (locale !== undefined) {
+            const client = await context.newCDPSession(page);
+            try {
+              await client.send('Emulation.setLocaleOverride', {
+                locale: locale || '',
+              });
+              applied.push(locale ? `locale=${locale}` : 'locale=reset');
+            } finally {
+              await client.detach().catch(() => {});
+            }
+          }
+
+          // device preset
+          if (device !== undefined) {
+            if (deviceDescriptor) {
+              await page.setViewportSize(deviceDescriptor.viewport);
+              // Apply user agent via extra headers
+              await context.setExtraHTTPHeaders({
+                ...(headers ?? {}),
+                'User-Agent': deviceDescriptor.userAgent,
+              });
+              applied.push(`device=${device} (${deviceDescriptor.viewport.width}x${deviceDescriptor.viewport.height})`);
+            } else {
+              applied.push('device=reset (use browser_resize to set viewport)');
+            }
+          }
+        } else {
+          // Packaged RPC fallback (#111). The main-process handler applies each
+          // setting over CDP and returns the same `applied` summary. Device
+          // presets are resolved here so playwright-core's device table stays out
+          // of the main process — only the viewport + UA cross the wire.
+          const emulateParams: Record<string, unknown> = {};
+          if (offline !== undefined) emulateParams.offline = offline;
+          if (headers !== undefined) emulateParams.headers = headers;
+          if (credentials !== undefined) emulateParams.credentialsRequested = true;
+          if (geo !== undefined) emulateParams.geo = geo;
+          if (media !== undefined) emulateParams.media = media;
+          if (timezone !== undefined) emulateParams.timezone = timezone;
+          if (locale !== undefined) emulateParams.locale = locale;
+          if (device !== undefined) {
+            if (deviceDescriptor) {
+              emulateParams.deviceMetrics = {
+                width: deviceDescriptor.viewport.width,
+                height: deviceDescriptor.viewport.height,
+              };
+              emulateParams.deviceLabel = `${device} (${deviceDescriptor.viewport.width}x${deviceDescriptor.viewport.height})`;
+              emulateParams.userAgent = deviceDescriptor.userAgent;
+            } else {
+              emulateParams.deviceReset = true;
+            }
+          }
+          if (surfaceId) emulateParams.surfaceId = surfaceId;
+
+          const res = (await sendRpc('browser.emulate', emulateParams)) as { applied: string[] };
+          applied.push(...res.applied);
         }
 
         if (applied.length === 0) {
@@ -478,12 +548,18 @@ export function registerStateTools(server: McpServer): void {
     },
     async ({ width, height, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
-        await page.setViewportSize({ width, height });
+        if (page) {
+          await page.setViewportSize({ width, height });
+        } else {
+          // Packaged RPC fallback (#111): CDP Emulation.setDeviceMetricsOverride.
+          await sendRpc('browser.resize', {
+            width,
+            height,
+            ...(surfaceId && { surfaceId }),
+          });
+        }
 
         return {
           content: [

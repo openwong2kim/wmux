@@ -246,6 +246,15 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.type.cdp':          { capability: 'browser.type',  riskClass: 'browser' },
   'browser.click.cdp':         { capability: 'browser.click', riskClass: 'browser' },
   'browser.press.cdp':         { capability: 'browser.type',  riskClass: 'browser' },
+  // State tools (#111 packaged RPC fallback). Gated under `browser.evaluate`
+  // rather than inventing new capabilities: a caller that can run arbitrary JS
+  // can already read/write cookies (document.cookie), read/write storage, and
+  // resize/emulate via the page — these methods expose no privilege beyond what
+  // `browser.evaluate` already grants. The mutating actions (cookies set/clear,
+  // emulate, resize) make `browser.evaluate` the honest gate over `browser.read`.
+  'browser.cookies':           { capability: 'browser.evaluate', riskClass: 'browser' },
+  'browser.resize':            { capability: 'browser.evaluate', riskClass: 'browser' },
+  'browser.emulate':           { capability: 'browser.evaluate', riskClass: 'browser' },
 
   // --- Daemon control. Internal-only; reserved capability.
   'daemon.createSession':    { capability: 'wmux.internal' },

@@ -125,6 +125,9 @@ export type RpcMethod =
   | 'browser.type.cdp'
   | 'browser.click.cdp'
   | 'browser.press.cdp'
+  | 'browser.cookies'
+  | 'browser.resize'
+  | 'browser.emulate'
   | 'daemon.createSession'
   | 'daemon.destroySession'
   | 'daemon.attachSession'
@@ -221,6 +224,9 @@ export const ALL_RPC_METHODS = [
   'browser.type.cdp',
   'browser.click.cdp',
   'browser.press.cdp',
+  'browser.cookies',
+  'browser.resize',
+  'browser.emulate',
   'daemon.createSession',
   'daemon.destroySession',
   'daemon.attachSession',

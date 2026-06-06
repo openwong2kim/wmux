@@ -89,6 +89,9 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'browser.click.cdp',
   'browser.type.cdp',
   'browser.press.cdp',
+  'browser.cookies',
+  'browser.resize',
+  'browser.emulate',
   // agent-to-agent
   'a2a.resolve.identity',
   'a2a.whoami',

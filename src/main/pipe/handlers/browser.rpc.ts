@@ -35,6 +35,18 @@ const captureManager = new BrowserCaptureManager();
 export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webviewCdpManager: WebviewCdpManager): void {
   const getActivePartition = (): string => profileManager.getActiveProfile().partition;
 
+  // Resolve the guest webview's WebContents for a CDP-backed handler, throwing a
+  // method-tagged error if no target is registered or the WebContents is gone.
+  // Shared by the #111 state handlers (cookies / resize / emulate) which all
+  // drive the page over `wc.debugger.sendCommand`.
+  const resolveWc = (surfaceId: string | undefined, method: string): Electron.WebContents => {
+    const target = webviewCdpManager.getTarget(surfaceId);
+    if (!target) throw new Error(`${method}: no webview target registered`);
+    const wc = webContents.fromId(target.webContentsId);
+    if (!wc || wc.isDestroyed()) throw new Error(`${method}: WebContents unavailable`);
+    return wc;
+  };
+
   // Tear down capture listeners whenever a surface's CDP session is unregistered.
   webviewCdpManager.setCaptureCleanup((webContentsId) => captureManager.drop(webContentsId));
 
@@ -560,5 +572,179 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       targetId: target.targetId,
       surfaceId: target.surfaceId,
     };
+  });
+
+  // ── State handlers (packaged RPC fallback for browser_cookies / _resize /
+  //    _emulate, #111). On packaged builds playwright-core cannot hand the guest
+  //    <webview> back as a Playwright Page, so these tools fall through to CDP
+  //    over the page debugger — the same route browser.evaluate already uses.
+  //    browser_storage needs no handler here: it routes through browser.evaluate.
+
+  /**
+   * browser.cookies
+   * Get, set, or clear cookies via CDP Network domain.
+   *   - get:   { action:'get', urls?: string[] }   -> { cookies: Network.Cookie[] }
+   *   - set:   { action:'set', cookies: CookieParam[] } (url defaulted to page URL
+   *            for entries lacking both url and domain) -> { ok: true }
+   *   - clear: { action:'clear' } -> { ok: true }
+   * params: { action, urls?, cookies?, surfaceId? }
+   * Sensitive-domain redaction stays in the MCP tool (state.ts), not here.
+   */
+  router.register('browser.cookies', async (params) => {
+    const action = params['action'];
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const wc = resolveWc(surfaceId, 'browser.cookies');
+
+    if (action === 'get') {
+      const urls = Array.isArray(params['urls'])
+        ? (params['urls'] as unknown[]).filter((u): u is string => typeof u === 'string')
+        : [];
+      let result: { cookies: unknown[] };
+      if (urls.length > 0) {
+        result = await wc.debugger.sendCommand('Network.getCookies', { urls }) as { cookies: unknown[] };
+      } else {
+        // Whole-context read. Network.getAllCookies is deprecated in newer CDP
+        // but still present in Electron's Chromium; fall back to a urls-less
+        // getCookies (current-page frames) if it has been removed.
+        try {
+          result = await wc.debugger.sendCommand('Network.getAllCookies') as { cookies: unknown[] };
+        } catch {
+          result = await wc.debugger.sendCommand('Network.getCookies', {}) as { cookies: unknown[] };
+        }
+      }
+      return { cookies: result.cookies };
+    }
+
+    if (action === 'set') {
+      const raw = Array.isArray(params['cookies']) ? params['cookies'] as Record<string, unknown>[] : [];
+      if (raw.length === 0) throw new Error('browser.cookies set: no cookies provided');
+      const pageUrl = (() => { try { return wc.getURL(); } catch { return undefined; } })();
+      const cookies = raw.map((c) => {
+        const hasDomain = typeof c['domain'] === 'string' && (c['domain'] as string).length > 0;
+        const hasUrl = typeof c['url'] === 'string' && (c['url'] as string).length > 0;
+        // CDP Network.setCookies requires url OR domain. Default missing ones to
+        // the live page URL so a bare { name, value } still lands.
+        return (!hasDomain && !hasUrl && pageUrl) ? { ...c, url: pageUrl } : c;
+      });
+      await wc.debugger.sendCommand('Network.setCookies', { cookies });
+      return { ok: true };
+    }
+
+    if (action === 'clear') {
+      await wc.debugger.sendCommand('Network.clearBrowserCookies');
+      return { ok: true };
+    }
+
+    throw new Error(`browser.cookies: unknown action "${String(action)}"`);
+  });
+
+  /**
+   * browser.resize
+   * Override the viewport size via CDP Emulation.setDeviceMetricsOverride.
+   * params: { width: number, height: number, surfaceId? }
+   */
+  router.register('browser.resize', async (params) => {
+    const width = typeof params['width'] === 'number' ? params['width'] : NaN;
+    const height = typeof params['height'] === 'number' ? params['height'] : NaN;
+    if (!Number.isFinite(width) || !Number.isFinite(height)) {
+      throw new Error('browser.resize: width and height must be numbers');
+    }
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const wc = resolveWc(surfaceId, 'browser.resize');
+    await wc.debugger.sendCommand('Emulation.setDeviceMetricsOverride', {
+      width, height, deviceScaleFactor: 0, mobile: false,
+    });
+    return { ok: true, width, height };
+  });
+
+  /**
+   * browser.emulate
+   * Apply emulation settings via CDP. The MCP tool (state.ts) resolves any
+   * device preset to deviceMetrics + userAgent before calling, so this handler
+   * never needs playwright-core's device table. Returns the list of applied
+   * settings (including the "credentials unsupported over CDP" note) so the tool
+   * can render an identical summary in both transports.
+   * params: {
+   *   offline?, headers?, credentialsRequested?, geo?(|null), media?(|null),
+   *   timezone?(|null), locale?(|null), deviceMetrics?, userAgent?, deviceReset?,
+   *   surfaceId?
+   * }
+   */
+  router.register('browser.emulate', async (params) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const wc = resolveWc(surfaceId, 'browser.emulate');
+    const send = (method: string, p?: Record<string, unknown>): Promise<unknown> =>
+      wc.debugger.sendCommand(method, p);
+    const applied: string[] = [];
+
+    if (typeof params['offline'] === 'boolean') {
+      await send('Network.enable');
+      await send('Network.emulateNetworkConditions', {
+        offline: params['offline'], latency: 0, downloadThroughput: -1, uploadThroughput: -1,
+      });
+      applied.push(`offline=${params['offline']}`);
+    }
+
+    if (params['headers'] && typeof params['headers'] === 'object' && !Array.isArray(params['headers'])) {
+      const headers = params['headers'] as Record<string, string>;
+      await send('Network.enable');
+      await send('Network.setExtraHTTPHeaders', { headers });
+      applied.push(`headers=${Object.keys(headers).length} header(s)`);
+    }
+
+    if (params['credentialsRequested'] === true) {
+      applied.push(
+        'credentials=failed (HTTP credentials require a Playwright context and are not available over the CDP fallback. Use browser_emulate headers with a Base64-encoded Authorization header instead.)',
+      );
+    }
+
+    if ('geo' in params) {
+      const geo = params['geo'] as { latitude: number; longitude: number; accuracy?: number } | null;
+      if (geo) {
+        await send('Emulation.setGeolocationOverride', {
+          latitude: geo.latitude, longitude: geo.longitude, accuracy: geo.accuracy ?? 100,
+        });
+        applied.push(`geo=${geo.latitude},${geo.longitude}`);
+      } else {
+        await send('Emulation.clearGeolocationOverride');
+        applied.push('geo=cleared');
+      }
+    }
+
+    if ('media' in params) {
+      const media = params['media'] as string | null;
+      await send('Emulation.setEmulatedMedia',
+        media ? { features: [{ name: 'prefers-color-scheme', value: media }] } : { features: [] });
+      applied.push(media ? `colorScheme=${media}` : 'colorScheme=reset');
+    }
+
+    if ('timezone' in params) {
+      const timezone = params['timezone'] as string | null;
+      await send('Emulation.setTimezoneOverride', { timezoneId: timezone || '' });
+      applied.push(timezone ? `timezone=${timezone}` : 'timezone=reset');
+    }
+
+    if ('locale' in params) {
+      const locale = params['locale'] as string | null;
+      await send('Emulation.setLocaleOverride', locale ? { locale } : {});
+      applied.push(locale ? `locale=${locale}` : 'locale=reset');
+    }
+
+    if (params['deviceMetrics'] && typeof params['deviceMetrics'] === 'object') {
+      const dm = params['deviceMetrics'] as { width: number; height: number; deviceScaleFactor?: number; mobile?: boolean };
+      await send('Emulation.setDeviceMetricsOverride', {
+        width: dm.width, height: dm.height,
+        deviceScaleFactor: dm.deviceScaleFactor ?? 0, mobile: dm.mobile ?? false,
+      });
+      if (typeof params['userAgent'] === 'string') {
+        await send('Emulation.setUserAgentOverride', { userAgent: params['userAgent'] });
+      }
+      const label = typeof params['deviceLabel'] === 'string' ? params['deviceLabel'] : `${dm.width}x${dm.height}`;
+      applied.push(`device=${label}`);
+    } else if (params['deviceReset'] === true) {
+      applied.push('device=reset (use browser_resize to set viewport)');
+    }
+
+    return { applied };
   });
 }
