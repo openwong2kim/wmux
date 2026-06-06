@@ -156,8 +156,42 @@ describe('McpRegistrar.forceUnregister', () => {
   });
 });
 
-describe('McpRegistrar.unregister (legacy no-op)', () => {
-  it('does NOT remove keys (preserves the chicken-and-egg fix)', () => {
+describe('McpRegistrar.register', () => {
+  it('writes an absolute executable path instead of resolving node through PATH', () => {
+    fs.mkdirSync(path.join(tmpHome, 'dist', 'mcp', 'mcp', 'a2a'), { recursive: true });
+    const wmuxScript = path.join(tmpHome, 'dist', 'mcp', 'mcp', 'index.js');
+    const a2aScript = path.join(tmpHome, 'dist', 'mcp', 'mcp', 'a2a', 'index.js');
+    fs.writeFileSync(wmuxScript, '');
+    fs.writeFileSync(a2aScript, '');
+
+    new McpRegistrar().register('token');
+
+    const after = JSON.parse(
+      fs.readFileSync(path.join(tmpHome, '.claude.json'), 'utf8'),
+    ) as { mcpServers?: Record<string, { command: string; args: string[] }> };
+    expect(after.mcpServers?.wmux).toEqual({ command: process.execPath, args: [wmuxScript] });
+    expect(after.mcpServers?.['wmux-a2a']).toEqual({ command: process.execPath, args: [a2aScript] });
+    expect(path.isAbsolute(after.mcpServers?.wmux.command ?? '')).toBe(true);
+  });
+});
+
+describe('McpRegistrar.unregister', () => {
+  it('removes keys owned by the current process on quit', () => {
+    fs.mkdirSync(path.join(tmpHome, 'dist', 'mcp', 'mcp', 'a2a'), { recursive: true });
+    fs.writeFileSync(path.join(tmpHome, 'dist', 'mcp', 'mcp', 'index.js'), '');
+    fs.writeFileSync(path.join(tmpHome, 'dist', 'mcp', 'mcp', 'a2a', 'index.js'), '');
+
+    const registrar = new McpRegistrar();
+    registrar.register('token');
+    registrar.unregister();
+
+    const after = JSON.parse(
+      fs.readFileSync(path.join(tmpHome, '.claude.json'), 'utf8'),
+    ) as { mcpServers?: Record<string, unknown> };
+    expect(after.mcpServers).toBeUndefined();
+  });
+
+  it('does not remove keys it did not write', () => {
     const cfg = {
       mcpServers: {
         wmux: { command: 'node', args: ['/x/wmux.js'] },

@@ -231,11 +231,11 @@ function registerEntries(): RegisterOutcome {
 
   const wrote: string[] = [];
   if (wmuxScript) {
-    servers['wmux'] = { command: 'node', args: [wmuxScript] };
+    servers['wmux'] = { command: process.execPath, args: [wmuxScript] };
     wrote.push('wmux');
   }
   if (a2aScript) {
-    servers['wmux-a2a'] = { command: 'node', args: [a2aScript] };
+    servers['wmux-a2a'] = { command: process.execPath, args: [a2aScript] };
     wrote.push('wmux-a2a');
   }
   config.mcpServers = servers;

@@ -1,7 +1,7 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
-import { getAuthTokenPath, getPipeName } from '../../shared/constants';
+import { getAuthTokenPath } from '../../shared/constants';
 import { secureWriteTokenFile } from '../../shared/security';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
@@ -14,6 +14,12 @@ export interface McpServerStatus {
 }
 
 /** Aggregate snapshot of MCP integration state for CLI / Settings UI. */
+interface McpEntry {
+  command: string;
+  args: string[];
+  env?: Record<string, string>;
+}
+
 export interface McpRegistrarStatus {
   wmux: McpServerStatus;
   wmuxA2a: McpServerStatus;
@@ -108,8 +114,8 @@ export class McpRegistrar {
 
   /**
    * Force-remove the wmux + wmux-a2a keys from ~/.claude.json. Unlike
-   * {@link unregister} (intentionally a no-op to avoid the chicken-and-egg
-   * problem on app quit), this is invoked from explicit user actions — the
+   * {@link unregister} (which only removes entries owned by the current
+   * process on app quit), this is invoked from explicit user actions — the
    * `wmux mcp unregister` CLI and the Settings panel "Unregister" button.
    *
    * Other mcpServers entries are left untouched.
@@ -142,24 +148,12 @@ export class McpRegistrar {
         return;
       }
 
-      // Use 'node' instead of process.execPath, which returns electron.exe at runtime
-      // Note: do NOT set env field — Claude Code may replace (not merge) the
-      // subprocess environment, breaking PATH/USERPROFILE. getPipeName() uses
-      // os.userInfo().username which works without env vars.
-      const mcpEntry = {
-        command: 'node',
-        args: [mcpScript],
-      };
-
-      this.registerInClaudeJson('wmux', mcpEntry);
+      this.registerInClaudeJson('wmux', this.createMcpEntry(mcpScript));
 
       // Register wmux-a2a MCP server (Agent-to-Agent communication)
       const a2aScript = this.getA2aScriptPath();
       if (a2aScript) {
-        this.registerInClaudeJson('wmux-a2a', {
-          command: 'node',
-          args: [a2aScript],
-        });
+        this.registerInClaudeJson('wmux-a2a', this.createMcpEntry(a2aScript));
         console.log(`[McpRegistrar] Registered wmux-a2a MCP → ${a2aScript}`);
       }
 
@@ -182,15 +176,38 @@ export class McpRegistrar {
   }
 
   /**
-   * Previously removed MCP entries on quit, but this caused a chicken-and-egg
-   * problem: Claude Code couldn't find the MCP server because wmux deleted it
-   * on exit. Now we keep the registration persistent — the MCP server process
-   * handles pipe-not-available gracefully when wmux isn't running.
+   * Remove MCP entries owned by this wmux process on quit. Keeping the
+   * Claude Code registration scoped to the active wmux session avoids
+   * unintended future MCP autostart after the app has exited.
    */
   unregister(): void {
-    // Intentionally no-op: keep MCP registration persistent in ~/.claude.json
-    // so Claude Code can always discover the wmux MCP server.
-    this.ownedKeys.clear();
+    try {
+      this.unregisterFromClaudeJson([...this.ownedKeys]);
+      this.ownedKeys.clear();
+      this.registered = false;
+    } catch (err) {
+      console.error('[McpRegistrar] Failed to unregister:', err);
+    }
+  }
+
+  private createMcpEntry(scriptPath: string): McpEntry {
+    const entry: McpEntry = {
+      // Use an absolute executable path so Claude Code does not resolve a
+      // planted node.exe/node.cmd from the current directory or PATH later.
+      command: process.execPath,
+      args: [scriptPath],
+    };
+
+    if (isElectronExecutable(process.execPath)) {
+      const env: Record<string, string> = { ELECTRON_RUN_AS_NODE: '1' };
+      for (const key of ['HOME', 'USERPROFILE', 'APPDATA', 'LOCALAPPDATA', 'SystemRoot', 'WINDIR']) {
+        const value = process.env[key];
+        if (value) env[key] = value;
+      }
+      entry.env = env;
+    }
+
+    return entry;
   }
 
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -339,7 +356,7 @@ export class McpRegistrar {
 /**
  * Extract the MCP script path from a `mcpServers[key]` entry.
  *
- * wmux always writes entries shaped `{ command: 'node', args: [scriptPath] }`,
+ * wmux writes entries shaped `{ command: executablePath, args: [scriptPath] }`,
  * so the script path is the first arg. Returns null when the entry is absent
  * or malformed (foreign edits, schema drift) — getStatus() then reports the
  * server as not registered rather than fabricating a path.
@@ -350,4 +367,9 @@ function extractScriptPath(entry: unknown): string | null {
   if (!Array.isArray(args) || args.length === 0) return null;
   const first = args[0];
   return typeof first === 'string' && first.length > 0 ? first : null;
+}
+
+function isElectronExecutable(executablePath: string): boolean {
+  const base = path.basename(executablePath).toLowerCase();
+  return base === 'electron' || base === 'electron.exe' || base === 'wmux' || base === 'wmux.exe';
 }
