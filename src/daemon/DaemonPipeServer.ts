@@ -422,6 +422,11 @@ export class DaemonPipeServer {
       return;
     }
 
+    if (request?.method === 'daemon.identify') {
+      this.handleIdentify(socket, request);
+      return;
+    }
+
     // Authenticate before rate limit check (prevents DoS via rate exhaustion)
     // Use timing-safe comparison to prevent timing attacks
     const tokenBuf = Buffer.from(request.token || '');
@@ -473,6 +478,31 @@ export class DaemonPipeServer {
           socket.write(res + '\n');
         }
       });
+  }
+
+
+  private handleIdentify(socket: net.Socket, request: RpcRequest): void {
+    const params = request.params ?? {};
+    const clientNonce = typeof params.clientNonce === 'string' ? params.clientNonce : '';
+    if (typeof request.id !== 'string' || clientNonce.length < 16 || clientNonce.length > 256) {
+      socket.write(JSON.stringify({ id: request.id || '', ok: false, error: 'Invalid identify request' }) + '\n');
+      return;
+    }
+
+    const proof = crypto
+      .createHmac('sha256', this.authToken)
+      .update(clientNonce)
+      .digest('hex');
+    socket.write(JSON.stringify({
+      id: request.id,
+      ok: true,
+      result: {
+        status: 'ok',
+        pid: process.pid,
+        proof,
+        algorithm: 'hmac-sha256',
+      },
+    }) + '\n');
   }
 
   private async dispatch(request: RpcRequest): Promise<RpcResponse> {

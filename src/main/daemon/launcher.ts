@@ -236,16 +236,31 @@ interface DaemonPingResult {
   eventLoopLagMs?: number;
 }
 
+interface DaemonIdentifyResult extends DaemonPingResult {
+  proof?: string;
+  algorithm?: string;
+}
+
+function verifyDaemonProof(token: string, clientNonce: string, proof: unknown): boolean {
+  if (typeof proof !== 'string') return false;
+  const expected = crypto.createHmac('sha256', token).update(clientNonce).digest('hex');
+  const proofBuf = Buffer.from(proof, 'hex');
+  const expectedBuf = Buffer.from(expected, 'hex');
+  return proofBuf.length === expectedBuf.length && crypto.timingSafeEqual(proofBuf, expectedBuf);
+}
+
 /**
- * Send `daemon.ping` and return the daemon's reported result (which carries
- * `pid` since the Step ③ follow-up), or `null` on timeout / error / refusal.
- * `pingDaemon` is the boolean wrapper most callers use; the reconnect path
- * uses the result's `pid` to restore daemon.pid.
+ * Prove daemon identity without disclosing the auth token to the endpoint. The
+ * daemon returns an HMAC over a fresh launcher nonce; pipe squatters that do
+ * not already know the token cannot forge it, so startup discovery no longer
+ * leaks the bearer token to a predictable/stale pipe.
  */
 function daemonPing(pipeName: string, token: string, timeoutMs = 3000): Promise<DaemonPingResult | null> {
   return new Promise((resolve) => {
     const socket = net.connect(pipeName);
     let settled = false;
+    const requestId = crypto.randomUUID();
+    const clientNonce = crypto.randomBytes(32).toString('hex');
     const finish = (value: DaemonPingResult | null) => {
       if (settled) return;
       settled = true;
@@ -258,8 +273,11 @@ function daemonPing(pipeName: string, token: string, timeoutMs = 3000): Promise<
     timer.unref();
 
     socket.on('connect', () => {
-      const id = crypto.randomUUID();
-      socket.write(JSON.stringify({ id, method: 'daemon.ping', params: {}, token }) + '\n');
+      socket.write(JSON.stringify({
+        id: requestId,
+        method: 'daemon.identify',
+        params: { clientNonce },
+      }) + '\n');
     });
 
     let buffer = '';
@@ -271,8 +289,21 @@ function daemonPing(pipeName: string, token: string, timeoutMs = 3000): Promise<
         if (!line.trim()) continue;
         try {
           const resp = JSON.parse(line.trim());
-          if (resp.ok || (resp.result && resp.result.status === 'ok')) {
-            finish((resp.result as DaemonPingResult) ?? { status: 'ok' });
+          const result = resp.result as DaemonIdentifyResult | undefined;
+          if (
+            resp.id === requestId
+            && resp.ok === true
+            && result?.status === 'ok'
+            && result.algorithm === 'hmac-sha256'
+            && verifyDaemonProof(token, clientNonce, result.proof)
+          ) {
+            finish({
+              status: result.status,
+              pid: result.pid,
+              uptime: result.uptime,
+              sessions: result.sessions,
+              eventLoopLagMs: result.eventLoopLagMs,
+            });
             return;
           }
         } catch {}
@@ -467,9 +498,9 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
   //    confirmed-dead PID skips straight to spawn over a possibly-live daemon.
   if (existingPid && checkProcessLiveness(existingPid) !== 'dead') {
     const token = readDaemonAuthToken();
-    const pipeName = readPipeNameFromFile(wmuxDir) || getDaemonPipeName();
+    const pipeName = readPipeNameFromFile(wmuxDir);
 
-    if (token) {
+    if (token && pipeName) {
       // Two-shot ping: a freshly spawned daemon can briefly miss the ping
       // window while its event loop is busy on startup (recovery loop on
       // big sessions.json, Defender realtime scan on cold ASAR, ConPTY
@@ -618,7 +649,7 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
             //     so escalated re-ping (→ reuse) is the only thing that
             //     actually preserves kept sessions. A confirmed-wedged daemon
             //     leaves SIGKILL+respawn as the single-daemon recovery.
-            if (token) {
+            if (token && pipeName) {
               const recovered = await tryEscalatedReping(
                 (timeoutMs) => pingDaemon(pipeName, token, timeoutMs),
                 [500, 1000],
@@ -684,47 +715,25 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
     pid = await spawnDaemon();
   } catch (err) {
     if ((err as NodeJS.ErrnoException | undefined)?.code === 'EDAEMON_ALREADY_RUNNING') {
-      // The daemon we spawned yielded to a live daemon already owning the
-      // canonical pipe (split-brain avoided — no second live daemon, no `-N`
-      // pipe). Reconnect to the existing daemon instead of looping into another
-      // spawn. The pipe file was cleaned with the stale files above, so resolve
-      // the canonical name deterministically.
-      const canonicalPipe = getDaemonPipeName();
-      const reconnectToken = readDaemonAuthToken();
-      if (reconnectToken) {
-        const pong = await daemonPing(canonicalPipe, reconnectToken);
-        if (pong) {
-          // Restore daemon.pid (the stale-file cleanup above deleted it) to the
-          // live daemon's reported pid, so the NEXT launch hits the cheap reuse
-          // branch (existingPid → ping → reuse) instead of repeating this
-          // spawn-yield-reconnect dance every launch.
-          const livePid = typeof pong.pid === 'number' && pong.pid > 0 ? pong.pid : (existingPid ?? 0);
-          if (livePid > 0) {
-            try {
-              fs.writeFileSync(pidFile, String(livePid), { encoding: 'utf-8', mode: 0o600 });
-            } catch { /* best effort — reconnect still succeeds without it */ }
-          }
-          console.log(
-            '[launcher] spawned daemon yielded to a live daemon — reconnected to the existing daemon',
-          );
-          return {
-            pid: livePid,
-            authToken: reconnectToken,
-            pipeName: canonicalPipe,
-            spawned: false,
-          };
-        }
-      }
+      // A live owner on the predictable canonical pipe may be either a real
+      // daemon or a pipe squatter. Do not send the bearer token to that name
+      // during recovery; fall back to local PTY instead of risking disclosure.
+      throw new Error(
+        '[launcher] canonical daemon pipe is already owned but no trusted daemon-pipe file is available; refusing token-bearing reconnect',
+      );
     }
     throw err;
   }
 
   // Read connection info after spawn
   const token = readDaemonAuthToken();
-  const pipeName = readPipeNameFromFile(wmuxDir) || getDaemonPipeName();
+  const pipeName = readPipeNameFromFile(wmuxDir);
 
   if (!token) {
     throw new Error('Daemon spawned but auth token not found');
+  }
+  if (!pipeName) {
+    throw new Error('Daemon spawned but trusted pipe name not found');
   }
 
   return { pid, authToken: token, pipeName, spawned: true };

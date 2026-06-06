@@ -142,6 +142,31 @@ describe('DaemonPipeServer', () => {
     expect(res.error).toBe('unauthorized');
   });
 
+  it('should prove daemon identity without requiring or echoing the auth token', async () => {
+    await server.start();
+    const clientNonce = crypto.randomBytes(32).toString('hex');
+
+    const res = await sendRpc(pipeName, {
+      id: 'identify-1',
+      method: 'daemon.identify',
+      params: { clientNonce },
+    });
+
+    const expectedProof = crypto
+      .createHmac('sha256', 'test-token-123')
+      .update(clientNonce)
+      .digest('hex');
+    expect(res.ok).toBe(true);
+    expect(res.id).toBe('identify-1');
+    expect(res.result).toMatchObject({
+      status: 'ok',
+      pid: process.pid,
+      proof: expectedProof,
+      algorithm: 'hmac-sha256',
+    });
+    expect(JSON.stringify(res)).not.toContain('test-token-123');
+  });
+
   it('should return error for unknown method', async () => {
     await server.start();
 
