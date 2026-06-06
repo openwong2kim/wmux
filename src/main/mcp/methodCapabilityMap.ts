@@ -246,13 +246,16 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.type.cdp':          { capability: 'browser.type',  riskClass: 'browser' },
   'browser.click.cdp':         { capability: 'browser.click', riskClass: 'browser' },
   'browser.press.cdp':         { capability: 'browser.type',  riskClass: 'browser' },
-  // State tools (#111 packaged RPC fallback). Gated under `browser.evaluate`
-  // rather than inventing new capabilities: a caller that can run arbitrary JS
-  // can already read/write cookies (document.cookie), read/write storage, and
-  // resize/emulate via the page — these methods expose no privilege beyond what
-  // `browser.evaluate` already grants. The mutating actions (cookies set/clear,
-  // emulate, resize) make `browser.evaluate` the honest gate over `browser.read`.
-  'browser.cookies':           { capability: 'browser.evaluate', riskClass: 'browser' },
+  // State tools (#111 packaged RPC fallback). resize/emulate stay under
+  // `browser.evaluate`: a caller that can already run arbitrary JS can drive the
+  // same viewport/emulation surface through the page, so they grant nothing
+  // beyond what browser.evaluate does. browser.cookies is the exception and gets
+  // its own capability: the CDP Network domain reads/writes HttpOnly cookies and
+  // the whole jar that document.cookie can never reach, so gating it on
+  // browser.evaluate would let a page-JS grant silently leak raw cookie access.
+  // (The sensitive-domain redaction lives in the MCP tool, not the raw RPC, so
+  // the handler itself hands back everything.)
+  'browser.cookies':           { capability: 'browser.cookies',  riskClass: 'browser' },
   'browser.resize':            { capability: 'browser.evaluate', riskClass: 'browser' },
   'browser.emulate':           { capability: 'browser.evaluate', riskClass: 'browser' },
 
@@ -350,6 +353,7 @@ export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
   'browser.screenshot':'browser',
   'browser.evaluate':  'browser',
   'browser.read':      'browser',
+  'browser.cookies':   'browser',
   // A2A
   'a2a.send':    'a2a',
   'a2a.execute': 'a2a',
