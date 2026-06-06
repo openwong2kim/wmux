@@ -73,8 +73,9 @@ export default function ContextMenu({ x, y, hasSelection, selectedText, linkUrl,
         />
       )}
 
-      {/* Paste is handled inline by right-click when no link/selection;
-          only surface it here if no link is present (legacy callers) */}
+      {/* Paste is always an explicit menu action. Do not paste directly from a
+          right-click event: xterm-rendered links are not reliably DOM anchors,
+          so missed link detection must not fall through to clipboard input. */}
       {!linkUrl && (
         <MenuItem
           label={t('contextMenu.paste')}

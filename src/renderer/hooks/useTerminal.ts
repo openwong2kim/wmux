@@ -136,14 +136,6 @@ export function copySelectionWithFeedback(
   });
 }
 
-// How long after a right-click copy we suppress a right-click paste. A second
-// contextmenu within this window is treated as a stray repeat of the copy
-// gesture (double right-click, or the selection getting wiped by incoming PTY
-// data between two intentional clicks) rather than an intent to paste. This is
-// the deterministic guard that kills the copy↔paste collision even when the
-// selection is no longer present on the second click.
-const RIGHT_CLICK_PASTE_SUPPRESS_MS = 300;
-
 export interface ContextMenuEvent {
   x: number;
   y: number;
@@ -553,18 +545,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       return true;
     });
 
-    // Right-click behavior (Windows Terminal style):
-    //  • On a link → show small context menu (open / copy link)
+    // Right-click behavior:
+    //  • On a DOM link → show small context menu (open / copy link)
     //  • Selection present → copy (keep selection), no menu
-    //  • Otherwise → paste immediately, no menu
-    // `lastRightClickCopyAt` records when the most recent right-click copy ran
-    // so the paste branch can suppress a paste that lands within
-    // RIGHT_CLICK_PASTE_SUPPRESS_MS — the fix for the copy↔paste collision.
-    let lastRightClickCopyAt = 0;
+    //  • Otherwise → show the explicit context menu (Copy/Paste)
+    // Never paste directly from right-click alone. xterm link rendering is not
+    // reliably backed by DOM anchors (WebLinksAddon/WebGL may target canvas or
+    // xterm-managed nodes), so falling through from a missed link detection to
+    // an automatic paste can leak clipboard contents or submit commands.
     terminal.element?.addEventListener('contextmenu', (e) => {
       e.preventDefault();
 
-      // Detect if right-click target is a link element
+      // Detect if right-click target is a real DOM link element. This is only a
+      // menu enhancement; missed detections must still stay safe by opening the
+      // explicit context menu instead of pasting.
       let linkUrl: string | null = null;
       const target = e.target as HTMLElement | null;
       if (target) {
@@ -574,7 +568,6 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
       const sel = terminal.getSelection();
 
-      // Link → defer to host (renders ContextMenu)
       if (linkUrl && onContextMenuRef.current) {
         onContextMenuRef.current({
           x: e.clientX,
@@ -587,64 +580,23 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
 
       // Selection → copy, KEEP selection (no menu). We deliberately do NOT
-      // clear the selection here: the old async clearSelection() created a
-      // window where a fast second right-click saw an empty selection and
-      // pasted. Cancel any pending debounced auto-copy so this is the single
-      // authoritative clipboard write for the selection, and stamp the copy
-      // time so the paste branch can reject an immediately-following click.
+      // clear the selection here: clearing created a window where a fast second
+      // right-click saw an empty selection. With automatic paste removed, a
+      // follow-up no-selection right-click opens the explicit paste menu.
       if (sel) {
-        lastRightClickCopyAt = Date.now();
         autoCopy.dispose();
         void copySelectionWithFeedback(terminal, sel, { keepSelection: true });
         return;
       }
 
-      // No selection, no link → paste immediately (text or image). Guard:
-      // if a right-click copy just happened, this contextmenu is almost
-      // certainly a stray repeat of the copy gesture (double right-click, or
-      // the selection got wiped by incoming PTY data between two intentional
-      // clicks). Suppressing the paste here is what kills the reported
-      // copy↔paste collision.
-      if (Date.now() - lastRightClickCopyAt < RIGHT_CLICK_PASTE_SUPPRESS_MS) {
-        return;
-      }
-      void (async () => {
-        const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
-
-        // Text first, image fallback — matches the Ctrl+V handler. Browsers
-        // populate clipboards with BOTH text/plain and a selection-screenshot
-        // PNG when copying paragraphs; image-first would silently swap the
-        // text out for a PNG path here, which is almost never the user's
-        // intent. Image-only clipboards (Snipping Tool / PrtSc / image
-        // editors) still flow through the fallback. readImage saves a PNG
-        // temp file and returns its path — quoted on spaces and wrapped in
-        // bracketed-paste sequences when the foreground app (Claude Code,
-        // fish, modern bash) supports them so the path is recognized as a
-        // single paste rather than streamed character-by-character.
-        const text = await window.clipboardAPI.readText();
-        if (text) {
-          // Async chunked write: paces the IPC queue so the conpty input
-          // pipe drains between chunks, normalizes line endings to \r so
-          // PowerShell does not execute mid-paste, keeps surrogate pairs
-          // whole, and wraps the body in bracketed-paste markers when
-          // the foreground app enabled DECSET 2004.
-          await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
-          return;
-        }
-
-        const hasImg = await window.clipboardAPI.hasImage();
-        if (hasImg) {
-          const imagePath = await window.clipboardAPI.readImage();
-          if (imagePath) {
-            const quoted = imagePath.includes(' ') ? `"${imagePath}"` : imagePath;
-            if (modes?.bracketedPasteMode) {
-              window.electronAPI.pty.write(ptyId, `\x1b[200~${quoted}\x1b[201~`);
-            } else {
-              window.electronAPI.pty.write(ptyId, quoted);
-            }
-          }
-        }
-      })().catch((err) => console.error('[wmux:clipboard] right-click error:', err));
+      // No selection/no reliable DOM link: require an explicit menu action.
+      onContextMenuRef.current?.({
+        x: e.clientX,
+        y: e.clientY,
+        hasSelection: false,
+        selectedText: '',
+        linkUrl: null,
+      });
     });
 
     // Drag-and-drop is handled globally in preload via webUtils.getPathForFile()
