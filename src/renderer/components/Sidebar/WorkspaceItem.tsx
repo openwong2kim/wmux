@@ -62,6 +62,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   const [dropIndicator, setDropIndicator] = useState<'above' | 'below' | null>(null);
   const [menuPos, setMenuPos] = useState<{ x: number; y: number } | null>(null);
   const [wdOpen, setWdOpen] = useState(false);
+  const [closeConfirmPos, setCloseConfirmPos] = useState<{ x: number; y: number } | null>(null);
   const [profileModalOpen, setProfileModalOpen] = useState(false);
   const inputRef = useRef<HTMLInputElement>(null);
   const dragStartTimeRef = useRef<number>(0);
@@ -218,6 +219,19 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
     };
   }, [menuPos]);
 
+  // Same outside-click / Escape dismissal for the close-confirmation popover.
+  useEffect(() => {
+    if (!closeConfirmPos) return;
+    const close = () => setCloseConfirmPos(null);
+    const onKey = (e: KeyboardEvent) => { if (e.key === 'Escape') setCloseConfirmPos(null); };
+    document.addEventListener('mousedown', close);
+    document.addEventListener('keydown', onKey);
+    return () => {
+      document.removeEventListener('mousedown', close);
+      document.removeEventListener('keydown', onKey);
+    };
+  }, [closeConfirmPos]);
+
   const hasProfile = workspace.profile !== undefined;
 
   return (
@@ -313,10 +327,10 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
           ⧉
         </button>
 
-        {/* Close button */}
+        {/* Close button — asks for confirmation first (anti-misclick). */}
         <button
           className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-red)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity"
-          onClick={(e) => { e.stopPropagation(); onClose(); }}
+          onClick={(e) => { e.stopPropagation(); setMenuPos(null); setCloseConfirmPos({ x: e.clientX, y: e.clientY }); }}
           title={t('workspace.close')}
         >
           ✕
@@ -405,6 +419,42 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
                 })()}
               </div>
             )}
+          </div>
+        </div>
+      )}
+
+      {/* Close-workspace confirmation (anti-misclick). */}
+      {closeConfirmPos && (
+        <div
+          className="fixed z-[9999] w-[220px] py-2 rounded-md shadow-xl"
+          style={{ left: Math.min(closeConfirmPos.x, window.innerWidth - 232), top: closeConfirmPos.y, background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
+          onMouseDown={(e) => e.stopPropagation()}
+        >
+          <div className="px-3 pb-1 text-xs text-[var(--text-main)]">
+            {t('workspace.closeConfirm', { name: workspace.name })}
+          </div>
+          {(() => {
+            const count = collectTerminalSurfaces(workspace.rootPane).length;
+            if (count === 0) return null;
+            return (
+              <div className="px-3 pb-2 text-[11px] text-[var(--text-muted)]">
+                {t('workspace.closeConfirmDetail', { count })}
+              </div>
+            );
+          })()}
+          <div className="flex justify-end gap-2 px-3 pt-1">
+            <button
+              className="px-2 py-0.5 text-[11px] rounded transition-colors text-[var(--text-subtle)] hover:bg-[var(--bg-overlay)]"
+              onClick={() => setCloseConfirmPos(null)}
+            >
+              {t('workspace.closeCancel')}
+            </button>
+            <button
+              className="px-2 py-0.5 text-[11px] rounded transition-colors text-[var(--accent-red)] hover:bg-[var(--bg-overlay)]"
+              onClick={() => { setCloseConfirmPos(null); onClose(); }}
+            >
+              {t('workspace.closeConfirmYes')}
+            </button>
           </div>
         </div>
       )}

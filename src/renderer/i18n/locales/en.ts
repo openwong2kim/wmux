@@ -25,6 +25,10 @@ export const en = {
   'workspace.workingDirs': 'Working directories',
   'workspace.noWorkingDirs': 'No terminals in this workspace',
   'workspace.copyPath': 'Copy path',
+  'workspace.closeConfirm': 'Close “{name}”?',
+  'workspace.closeConfirmDetail': '{count} terminal(s) will be closed',
+  'workspace.closeCancel': 'Cancel',
+  'workspace.closeConfirmYes': 'Close',
 
   // Workspace profile (env + startup command for new panes)
   'workspaceProfile.title': 'Workspace profile',
