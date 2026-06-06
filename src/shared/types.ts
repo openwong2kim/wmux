@@ -623,6 +623,49 @@ export function createWorkspace(name: string): Workspace {
   };
 }
 
+/**
+ * Deep-clone a pane tree for workspace duplication.
+ *
+ * Every pane and surface id is regenerated (ids must stay globally unique) and
+ * each surface's `ptyId` is cleared + `scrollbackFile` dropped, so the cloned
+ * panes spawn FRESH PTYs on mount (Terminal self-create path) instead of
+ * aliasing the source workspace's live sessions or replaying its scrollback.
+ *
+ * Everything that defines the *shape and intent* of the layout is preserved:
+ * branch direction/sizes, and each surface's shell, cwd, surfaceType, browser
+ * URL/partition, editor path, and title — plus leaf pane metadata. Browser and
+ * editor surfaces keep their content pointer (URL / file path) so a duplicated
+ * layout reopens to the same places.
+ */
+export function clonePaneTreeFresh(pane: Pane): Pane {
+  if (pane.type === 'leaf') {
+    const surfaces: Surface[] = pane.surfaces.map((s) => {
+      // Spread to preserve shell/cwd/type and any browser/editor pointers,
+      // then reset ptyId and drop scrollbackFile (keyed by the OLD surface id)
+      // so the clone is a clean slate that spawns its own PTY on mount.
+      const next: Surface = { ...s, id: generateId('surface'), ptyId: '' };
+      delete next.scrollbackFile;
+      return next;
+    });
+    // Preserve which surface was active by POSITION, since ids changed.
+    const activeIdx = pane.surfaces.findIndex((s) => s.id === pane.activeSurfaceId);
+    return {
+      id: generateId('pane'),
+      type: 'leaf',
+      surfaces,
+      activeSurfaceId: surfaces[activeIdx >= 0 ? activeIdx : 0]?.id ?? '',
+      ...(pane.metadata ? { metadata: { ...pane.metadata } } : {}),
+    };
+  }
+  return {
+    id: generateId('pane'),
+    type: 'branch',
+    direction: pane.direction,
+    children: pane.children.map(clonePaneTreeFresh),
+    ...(pane.sizes ? { sizes: [...pane.sizes] } : {}),
+  };
+}
+
 // === Security: URL validation for SSRF prevention ===
 
 type UrlValidationResult = { valid: boolean; reason?: string };

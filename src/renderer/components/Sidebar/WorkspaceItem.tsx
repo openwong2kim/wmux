@@ -16,6 +16,7 @@ interface WorkspaceItemProps {
   onRename: (name: string) => void;
   onClose: () => void;
   onCopyInfo: () => void;
+  onDuplicate: () => void;
   onReorder: (fromIndex: number, toIndex: number) => void;
 }
 
@@ -40,7 +41,7 @@ function shortenPath(path: string, maxLen = 25): string {
   return `.../${parts.slice(-2).join('/')}`;
 }
 
-export default function WorkspaceItem({ workspace, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onCopyInfo, onReorder }: WorkspaceItemProps) {
+export default function WorkspaceItem({ workspace, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onCopyInfo, onDuplicate, onReorder }: WorkspaceItemProps) {
   const t = useT();
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(workspace.name);
@@ -319,6 +320,13 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
           style={{ left: menuPos.x, top: menuPos.y, background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
           onMouseDown={(e) => e.stopPropagation()}
         >
+          <button
+            className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+            style={{ color: 'var(--text-main)' }}
+            onClick={() => { setMenuPos(null); onDuplicate(); }}
+          >
+            {t('workspace.duplicate')}
+          </button>
           <button
             className="w-full text-left px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
             style={{ color: 'var(--text-main)' }}

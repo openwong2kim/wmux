@@ -21,6 +21,7 @@ export const en = {
   'workspace.copyInfo': 'Copy session info',
   'workspace.copied': 'Copied!',
   'workspace.configureProfile': 'Configure profile…',
+  'workspace.duplicate': 'Duplicate (layout + profile)',
 
   // Workspace profile (env + startup command for new panes)
   'workspaceProfile.title': 'Workspace profile',

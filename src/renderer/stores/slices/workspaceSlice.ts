@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { createWorkspace, clonePaneTreeFresh, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
@@ -13,11 +13,36 @@ function collectLeafPanes(pane: Pane): PaneLeaf[] {
   return pane.children.flatMap(collectLeafPanes);
 }
 
+/**
+ * Build a non-colliding "<base> copy" / "<base> copy N" name for a duplicate.
+ * An existing copy-suffix on the source is stripped first so duplicating a copy
+ * yields "Foo copy 2" rather than "Foo copy copy". Locale-neutral by design —
+ * mirrors the hardcoded "Workspace N" scheme used by addWorkspace.
+ */
+function nextCopyName(base: string, existing: string[]): string {
+  const taken = new Set(existing);
+  const root = base.replace(/ copy(?: \d+)?$/, '') || base;
+  const first = `${root} copy`;
+  if (!taken.has(first)) return first;
+  let n = 2;
+  while (taken.has(`${root} copy ${n}`)) n++;
+  return `${root} copy ${n}`;
+}
+
 export interface WorkspaceSlice {
   workspaces: Workspace[];
   activeWorkspaceId: string;
   addWorkspace: (name?: string) => void;
   addWorkspaceWithPreset: (presetId: string, name?: string) => void;
+  /**
+   * Duplicate an existing workspace's LAYOUT (pane tree, with fresh ids and
+   * cleared ptyIds → new panes spawn their own PTYs) and its PROFILE (env +
+   * startup command, re-normalized through the save-boundary secret policy).
+   * The clone is named "<name> copy [N]", inserted right after the source, and
+   * activated. Company role/department membership is intentionally NOT copied.
+   * No-op if the id is unknown.
+   */
+  duplicateWorkspace: (id: string) => void;
   removeWorkspace: (id: string) => void;
   setActiveWorkspace: (id: string) => void;
   renameWorkspace: (id: string, name: string) => void;
@@ -106,6 +131,40 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         activePaneId: leaves[0]?.id || rootPane.id,
       };
       state.workspaces.push(ws);
+      state.activeWorkspaceId = ws.id;
+    }),
+
+    duplicateWorkspace: (id) => set((state: StoreState) => {
+      const idx = state.workspaces.findIndex((w: Workspace) => w.id === id);
+      if (idx === -1) return;
+      const src = state.workspaces[idx];
+
+      const rootPane = clonePaneTreeFresh(src.rootPane);
+
+      // Preserve the active pane by structural position: clonePaneTreeFresh
+      // walks panes in the same order, so the source's active-pane index maps
+      // onto the clone's leaves directly.
+      const srcLeaves = collectLeafPanes(src.rootPane);
+      const newLeaves = collectLeafPanes(rootPane);
+      const activeIdx = srcLeaves.findIndex((p) => p.id === src.activePaneId);
+      const activePaneId = newLeaves[activeIdx >= 0 ? activeIdx : 0]?.id ?? rootPane.id;
+
+      // Re-normalize the cloned profile through the editor/save policy
+      // (dropSecretKeys) so a copy never silently re-persists a secret-named
+      // env value the source happened to retain from a pre-policy load.
+      const profile = src.profile
+        ? normalizeWorkspaceProfile({ ...src.profile, env: src.profile.env ? { ...src.profile.env } : undefined }, { dropSecretKeys: true })
+        : undefined;
+
+      const ws: Workspace = {
+        id: generateId('ws'),
+        name: nextCopyName(src.name, state.workspaces.map((w: Workspace) => w.name)),
+        rootPane,
+        activePaneId,
+        ...(profile ? { profile } : {}),
+      };
+      // Insert right after the source for intuitive placement, then activate.
+      state.workspaces.splice(idx + 1, 0, ws);
       state.activeWorkspaceId = ws.id;
     }),
 

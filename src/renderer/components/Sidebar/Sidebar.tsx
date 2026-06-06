@@ -26,6 +26,7 @@ export default function Sidebar() {
   const removeWorkspace = useStore((s) => s.removeWorkspace);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const renameWorkspace = useStore((s) => s.renameWorkspace);
+  const duplicateWorkspace = useStore((s) => s.duplicateWorkspace);
   const reorderWorkspace = useStore((s) => s.reorderWorkspace);
   const toggleMultiviewWorkspace = useStore((s) => s.toggleMultiviewWorkspace);
   const multiviewIds = useStore((s) => s.multiviewIds);
@@ -116,6 +117,7 @@ export default function Sidebar() {
             onRename={(name) => renameWorkspace(ws.id, name)}
             onClose={() => handleClose(ws.id)}
             onCopyInfo={() => handleCopySessionInfo(ws.id)}
+            onDuplicate={() => duplicateWorkspace(ws.id)}
             onReorder={reorderWorkspace}
           />
         ))}
