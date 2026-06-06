@@ -1,4 +1,4 @@
-import { useRef } from 'react';
+import { useRef, useState, useEffect } from 'react';
 import type { AgentStatus, Surface, Workspace } from '../../../shared/types';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
@@ -45,6 +45,34 @@ export default function SurfaceTabs({
   const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
+  // Double-click a tab to rename it (a free-text "mark" so a powershell is
+  // easier to recognise). Edits surface.title directly — nothing auto-updates
+  // it, so the user's name sticks. Mirrors the workspace double-click rename.
+  const updateSurfaceTitle = useStore((s) => s.updateSurfaceTitle);
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [editName, setEditName] = useState('');
+  const inputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (editingId) {
+      inputRef.current?.focus();
+      inputRef.current?.select();
+    }
+  }, [editingId]);
+
+  const startRename = (s: Surface) => {
+    // Suppress the rename that a double-click would trigger right after a drag.
+    if (Date.now() - dragStartTimeRef.current < 300) return;
+    setEditName(s.title || '');
+    setEditingId(s.id);
+  };
+
+  const commitRename = (surfaceId: string) => {
+    const trimmed = editName.trim();
+    if (trimmed) updateSurfaceTitle(surfaceId, trimmed);
+    setEditingId(null);
+  };
+
   // Always render the strip — even for a single surface — so the X button is
   // reachable. Pane.tsx's handleCloseSurface cascades into closePane when the
   // last surface is removed, so this is also the only mouse path to dismantle
@@ -83,7 +111,7 @@ export default function SurfaceTabs({
       {surfaces.map((s) => (
         <div
           key={s.id}
-          draggable
+          draggable={editingId !== s.id}
           onDragStart={handleDragStart}
           onDragEnd={() => setTerminalTextDropDragActive(false)}
           className={`group flex items-center gap-1 px-3 h-full cursor-pointer text-xs border-r border-[var(--bg-surface)] transition-colors ${
@@ -92,6 +120,10 @@ export default function SurfaceTabs({
               : 'text-[var(--text-subtle)] hover:text-[var(--text-sub)] hover:bg-[rgba(var(--bg-base-rgb),0.5)]'
           }`}
           onClick={() => handleTabClick(s.id)}
+          onDoubleClick={() => startRename(s)}
+          // Hover shows the terminal's working directory (cwd is always present
+          // once the shell renders its first prompt; before that, the name).
+          title={editingId === s.id ? undefined : (s.cwd || s.title || t('surface.terminal'))}
         >
           {(() => {
             const status = s.ptyId ? surfaceAgentStatus[s.ptyId] : undefined;
@@ -105,7 +137,23 @@ export default function SurfaceTabs({
               />
             );
           })()}
-          <span className="truncate max-w-[120px]">{s.title || t('surface.terminal')}</span>
+          {editingId === s.id ? (
+            <input
+              ref={inputRef}
+              className="bg-[var(--bg-base)] text-[var(--text-main)] text-xs font-mono px-1 py-0 rounded border border-[var(--text-muted)] outline-none max-w-[120px]"
+              value={editName}
+              onChange={(e) => setEditName(e.target.value)}
+              onBlur={() => commitRename(s.id)}
+              onKeyDown={(e) => {
+                if (e.key === 'Enter') commitRename(s.id);
+                if (e.key === 'Escape') setEditingId(null);
+              }}
+              onClick={(e) => e.stopPropagation()}
+              onDoubleClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <span className="truncate max-w-[120px]">{s.title || t('surface.terminal')}</span>
+          )}
           {/* X close button — always visible, not just on hover */}
           <button
             className="text-[var(--text-subtle)] hover:text-[var(--accent-red)] transition-colors ml-1 leading-none"

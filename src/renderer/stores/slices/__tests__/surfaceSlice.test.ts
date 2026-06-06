@@ -63,6 +63,21 @@ describe('surfaceSlice.updateSurfaceCwd', () => {
   });
 });
 
+describe('surfaceSlice.updateSurfaceTitle', () => {
+  it('renames the surface with the given id (the tab "mark")', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const surfaceId = pane.surfaces[0].id;
+
+    slice.updateSurfaceTitle(surfaceId, 'api-server');
+
+    expect(pane.surfaces[0].title).toBe('api-server');
+  });
+});
+
 describe('surfaceSlice browser partition state', () => {
   it('stores the provided partition on new browser surfaces', () => {
     const { state, slice } = createHarness();
