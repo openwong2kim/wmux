@@ -153,8 +153,15 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     // — multiview can leave this Pane mounted while a different tile holds
     // focus, and the global value would tag the new PTY with the wrong
     // workspace. Codex P1 fix 2026-05-24.
+    //
+    // Read the profile FRESH from the store rather than closing over
+    // `workspace.profile`: this callback is memoized on workspace.id, so after
+    // the user saves a profile the stale closure would spawn the "+" terminal
+    // with the OLD profile, violating the "applies to new panes" contract.
+    // Mirrors Terminal.tsx's create path, which also reads the live profile.
+    const profile = useStore.getState().workspaces.find((w) => w.id === workspace.id)?.profile;
     const result = await ipcInvoke<{ id: string }>(() =>
-      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: workspace.id }, defaultShell), workspace.profile))
+      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: workspace.id }, defaultShell), profile))
     );
     if (result.ok) {
       addSurface(pane.id, result.data.id, 'Terminal', '');
