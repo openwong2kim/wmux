@@ -10,15 +10,16 @@ jobs:
     permissions:
       contents: write
     env:
-      # NN2-T1 — SignPath Foundation (OSS) code signing. EMPTY until the secret
-      # is configured, which makes every signing step below no-op so unsigned
-      # builds still ship exactly as today. To enable after SignPath approval:
+      # NN2-T1 — SignPath Foundation (OSS) code signing. This non-secret gate
+      # keeps signing steps no-op until SIGNPATH_API_TOKEN is configured, while
+      # avoiding exposure of the token to dependency install/build scripts. To
+      # enable after SignPath approval:
       #   1. Add repo SECRET   SIGNPATH_API_TOKEN          (the CI user token)
       #   2. Add repo VARIABLES SIGNPATH_ORGANIZATION_ID,
       #      SIGNPATH_PROJECT_SLUG, SIGNPATH_SIGNING_POLICY_SLUG,
       #      SIGNPATH_ARTIFACT_CONFIGURATION_SLUG (from the SignPath project UI)
       # See docs.signpath.io/trusted-build-systems/github.
-      SIGNPATH_API_TOKEN: ${{ secrets.SIGNPATH_API_TOKEN }}
+      SIGNPATH_ENABLED: ${{ secrets.SIGNPATH_API_TOKEN != '' }}
     steps:
       - uses: actions/checkout@v4
 
@@ -33,13 +34,13 @@ jobs:
         run: npm run make
 
       # ── Authenticode code signing (SignPath Foundation, OSS) ─────────────
-      # No-op until SIGNPATH_API_TOKEN is set (see job env). Signs the prebuilt
+      # No-op until SIGNPATH_ENABLED is true (see job env). Signs the prebuilt
       # Setup.exe and replaces the unsigned copy BEFORE the checksum/manifest
       # steps, so the published SHA-256 matches the signed binary. (Signing the
       # embedded app exe + delta .nupkg is the NN2-T2 follow-up.)
       - name: Upload unsigned Setup.exe for signing
         id: upload-unsigned
-        if: env.SIGNPATH_API_TOKEN != ''
+        if: env.SIGNPATH_ENABLED == 'true'
         uses: actions/upload-artifact@v4
         with:
           name: wmux-setup-unsigned
@@ -47,7 +48,7 @@ jobs:
           if-no-files-found: error
 
       - name: Sign Setup.exe via SignPath
-        if: env.SIGNPATH_API_TOKEN != ''
+        if: env.SIGNPATH_ENABLED == 'true'
         uses: signpath/github-action-submit-signing-request@v2
         with:
           api-token: ${{ secrets.SIGNPATH_API_TOKEN }}
@@ -60,7 +61,7 @@ jobs:
           output-artifact-directory: out/signed
 
       - name: Replace unsigned Setup.exe with the signed one
-        if: env.SIGNPATH_API_TOKEN != ''
+        if: env.SIGNPATH_ENABLED == 'true'
         shell: pwsh
         run: |
           $signed = Get-ChildItem "out/signed" -Recurse -Filter "*.Setup.exe" | Select-Object -First 1
