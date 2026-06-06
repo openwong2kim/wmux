@@ -240,9 +240,27 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.cdp.info':          { capability: 'browser.read',     riskClass: 'browser' },
   'browser.screenshot':        { capability: 'browser.screenshot', riskClass: 'browser' },
   'browser.evaluate':          { capability: 'browser.evaluate',   riskClass: 'browser' },
+  'browser.console.get':       { capability: 'browser.read',       riskClass: 'browser' },
+  'browser.network.get':       { capability: 'browser.read',       riskClass: 'browser' },
+  'browser.responseBody.get':  { capability: 'browser.read',       riskClass: 'browser' },
   'browser.type.cdp':          { capability: 'browser.type',  riskClass: 'browser' },
   'browser.click.cdp':         { capability: 'browser.click', riskClass: 'browser' },
   'browser.press.cdp':         { capability: 'browser.type',  riskClass: 'browser' },
+  // State tools (#111 packaged RPC fallback). resize stays under
+  // `browser.evaluate`: a caller that can already run arbitrary JS can resize the
+  // viewport through the page, so it grants nothing beyond what browser.evaluate
+  // does. browser.cookies and browser.emulate are the exceptions and each gets its
+  // own capability. cookies: the CDP Network domain reads/writes HttpOnly cookies
+  // and the whole jar that document.cookie can never reach. emulate: it toggles
+  // offline mode, injects extra request headers, overrides timezone/locale/device
+  // metrics, and calls Browser.grantPermissions/resetPermissions — browser-state
+  // mutations page JavaScript cannot perform. Gating either on browser.evaluate
+  // would silently widen a page-JS grant into raw cookie access or browser-state
+  // mutation. (The sensitive-domain redaction lives in the MCP tool, not the raw
+  // RPC, so the cookies handler itself hands back everything.)
+  'browser.cookies':           { capability: 'browser.cookies',  riskClass: 'browser' },
+  'browser.resize':            { capability: 'browser.evaluate', riskClass: 'browser' },
+  'browser.emulate':           { capability: 'browser.emulate',  riskClass: 'browser' },
 
   // --- Daemon control. Internal-only; reserved capability.
   'daemon.createSession':    { capability: 'wmux.internal' },
@@ -338,6 +356,8 @@ export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
   'browser.screenshot':'browser',
   'browser.evaluate':  'browser',
   'browser.read':      'browser',
+  'browser.cookies':   'browser',
+  'browser.emulate':   'browser',
   // A2A
   'a2a.send':    'a2a',
   'a2a.execute': 'a2a',

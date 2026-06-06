@@ -1,18 +1,16 @@
 // ─── Soul Loader ──────────────────────────────────────────────────────────────
-// Loads agent SOUL files from GitHub (agency-agents repo) with in-memory caching.
+// Maintains the agent SOUL API while preventing runtime third-party prompt downloads.
 // Designed to work in the Electron renderer process (no Node.js fs required).
-// Souls are fetched once per session and cached in memory.
 
 import { SOUL_MAPPING } from './soulMapping';
 
-const GITHUB_RAW_BASE =
-  'https://raw.githubusercontent.com/msitarzewski/agency-agents/main';
-
+// Remote SOUL prompt downloads are disabled by default. The previous
+// implementation fetched mutable third-party markdown from GitHub and
+// installed it as Claude instructions, which made company spawning depend on
+// unaudited command-capable prompts. Keep the loader shape for callers, but do
+// not make network requests or cache remote prompt text.
 /** In-memory cache: presetId -> raw markdown content */
 const soulCache = new Map<string, string>();
-
-/** Track in-flight fetches to avoid duplicate requests */
-const pendingFetches = new Map<string, Promise<string | null>>();
 
 // ─── Public API ──────────────────────────────────────────────────────────────
 
@@ -31,42 +29,15 @@ export function loadSoulSync(presetId: string): string | null {
 }
 
 /**
- * Fetch a SOUL file from GitHub and cache it in memory.
- * Returns the raw content, or null if fetch fails or no mapping exists.
- * Deduplicates concurrent requests for the same preset.
+ * Runtime network fetching is intentionally disabled for SOUL files.
+ * Returns null so callers fall back to built-in wmux role prompts.
  */
-export async function fetchSoul(presetId: string): Promise<string | null> {
-  // Return from cache if available
-  const cached = soulCache.get(presetId);
-  if (cached) return cached;
-
-  const repoPath = SOUL_MAPPING[presetId as keyof typeof SOUL_MAPPING];
-  if (!repoPath) return null;
-
-  // Deduplicate in-flight fetches
-  const pending = pendingFetches.get(presetId);
-  if (pending) return pending;
-
-  const fetchPromise = (async (): Promise<string | null> => {
-    const url = `${GITHUB_RAW_BASE}/${repoPath}`;
-    try {
-      const response = await fetch(url);
-      if (!response.ok) return null;
-      const content = await response.text();
-
-      // Cache in memory
-      soulCache.set(presetId, content);
-      return content;
-    } catch {
-      // Network error — return null, caller uses base persona
-      return null;
-    } finally {
-      pendingFetches.delete(presetId);
-    }
-  })();
-
-  pendingFetches.set(presetId, fetchPromise);
-  return fetchPromise;
+export async function fetchSoul(_presetId: string): Promise<string | null> {
+  void _presetId;
+  // Intentionally do not fetch third-party prompt/instruction files at runtime.
+  // Callers fall back to the built-in wmux role prompts when no cached SOUL is
+  // available, avoiding a supply-chain prompt-injection path into Claude PTYs.
+  return null;
 }
 
 /**
@@ -79,16 +50,13 @@ export async function loadSoul(presetId: string): Promise<string | null> {
 }
 
 /**
- * Pre-fetch all souls for a list of preset IDs in parallel.
- * Useful before spawning a company to warm the cache.
- * Returns count of successfully loaded souls.
+ * Runtime network fetching is disabled, so no SOULs are prefetched.
+ * Returns the count of successfully loaded souls (always zero).
  */
-export async function prefetchSouls(presetIds: string[]): Promise<number> {
-  const unique = [...new Set(presetIds.filter((id) => hasSoul(id)))];
-  const results = await Promise.allSettled(unique.map((id) => fetchSoul(id)));
-  return results.filter(
-    (r) => r.status === 'fulfilled' && r.value !== null,
-  ).length;
+export async function prefetchSouls(_presetIds: string[]): Promise<number> {
+  void _presetIds;
+  // Runtime remote SOUL loading is disabled; there is nothing to prefetch.
+  return 0;
 }
 
 // ─── Soul Condensing ─────────────────────────────────────────────────────────
@@ -155,26 +123,14 @@ export function condenseSoul(raw: string): string {
 }
 
 /**
- * Write the SOUL as .claude/CLAUDE.md via the main-process fs IPC.
- *
- * Previously this built a POSIX shell heredoc and piped it through the PTY,
- * which introduced three defects: (1) supply-chain RCE via the fixed heredoc
- * delimiter when upstream markdown contained `WMUX_SOUL_EOF`, (2) silent
- * failure on Windows PowerShell (no `mkdir -p`, `&&`, or heredoc), and
- * (3) corruption of every apostrophe into `'\''` because the inline-quote
- * escape was applied inside a quoted heredoc where no expansion happens.
- *
- * Writing via the main process eliminates the shell round-trip entirely.
- * Returns true on success, false otherwise.
+ * Do not write third-party SOUL content into .claude/CLAUDE.md.
+ * Returns false so company spawning continues with the built-in role prompt.
  */
-export async function writeSoulToFile(presetId: string, workDir: string): Promise<boolean> {
-  if (!hasSoul(presetId)) return false;
-  const raw = await loadSoul(presetId);
-  if (!raw) return false;
-  const fs = window.electronAPI.fs;
-  if (!fs) return false;
-  const filePath = `${workDir}/.claude/CLAUDE.md`;
-  return fs.writeFile(filePath, raw);
+export async function writeSoulToFile(_presetId: string, _workDir: string): Promise<boolean> {
+  void _presetId;
+  void _workDir;
+  // Do not install remotely sourced SOUL files as Claude instruction files.
+  return false;
 }
 
 /**

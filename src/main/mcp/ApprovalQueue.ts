@@ -16,9 +16,10 @@
 // When the user resolves it, every coalesced caller gets the same answer.
 //
 // Persistence: on resolve, the queue writes the user's decision through
-// PluginTrustStore.setUserDecision so the next prompt for the same plugin
-// reads the persisted state (and the enforcer can short-circuit denied
-// plugins without ever surfacing another modal).
+// PluginTrustStore.setUserDecision with the exact capability snapshot that
+// appeared in the prompt. That prevents a plugin from widening its stored
+// declaration while a prompt is pending and having the wider set become
+// trusted when the user approves the older prompt.
 
 import { createHash } from 'node:crypto';
 import type { PluginIdentityRecord } from '../../shared/rpc';
@@ -196,6 +197,7 @@ export class ApprovalQueue {
       identity = await this.trustStore.setUserDecision(
         pending.clientName,
         approved ? 'trusted' : 'denied',
+        approved ? pending.declaredCapabilities : undefined,
       );
     } catch {
       // Trust-DB write failed — still resolve the waiters so they don't

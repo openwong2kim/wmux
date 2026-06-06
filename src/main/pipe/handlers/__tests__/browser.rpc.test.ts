@@ -14,8 +14,14 @@ const mockWebContents = {
   canGoBack: vi.fn(() => true),
   goBack: vi.fn(),
   loadURL: vi.fn(),
+  once: vi.fn(),
   debugger: {
-    sendCommand: vi.fn(),
+    sendCommand: vi.fn(async () => ({})),
+    // EventEmitter-ish surface used by BrowserCaptureManager (#106).
+    isAttached: vi.fn(() => true),
+    attach: vi.fn(),
+    on: vi.fn(),
+    removeListener: vi.fn(),
   },
 };
 
@@ -42,17 +48,24 @@ describe('registerBrowserRpc', () => {
     sendToRendererMock.mockResolvedValue({ ok: true });
   });
 
-  function register(): RpcRouter {
+  function register(getWindow: () => BrowserWindow | null = () => null): RpcRouter {
     const router = new RpcRouter();
     const webviewCdpManager = {
       getTarget: vi.fn(() => ({ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/target-1' })),
       listTargets: vi.fn(() => [{ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/target-1' }]),
       getCdpPort: vi.fn(() => 18800),
       waitForTarget: vi.fn(),
+      setCaptureCleanup: vi.fn(),
     };
 
-    registerBrowserRpc(router, (() => null) as () => BrowserWindow | null, webviewCdpManager as never);
+    registerBrowserRpc(router, getWindow, webviewCdpManager as never);
     return router;
+  }
+
+  /** Build a fake main window whose webContents.getURL() returns `url`. */
+  function windowWithUrl(url: string | (() => string)): () => BrowserWindow {
+    const getURL = typeof url === 'function' ? url : () => url;
+    return () => ({ webContents: { getURL } }) as unknown as BrowserWindow;
   }
 
   it('does not expose browser.cdp.send through the RPC router', async () => {
@@ -95,10 +108,61 @@ describe('registerBrowserRpc', () => {
 
     expect(response.ok).toBe(true);
     if (response.ok) {
+      // No window (getWindow → null): shellUrl is omitted, not null.
       expect(response.result).toEqual({
         cdpPort: 18800,
         targets: [{ surfaceId: 'surface-1', targetId: 'target-1' }],
       });
+    }
+  });
+
+  it('browser.cdp.info exposes the main-window URL as shellUrl', async () => {
+    const router = register(
+      windowWithUrl('file:///x/.vite/renderer/main_window/index.html'),
+    );
+
+    const response = await router.dispatch({
+      id: '3b',
+      method: 'browser.cdp.info',
+      params: {},
+    });
+
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.result).toMatchObject({
+        cdpPort: 18800,
+        shellUrl: 'file:///x/.vite/renderer/main_window/index.html',
+      });
+    }
+  });
+
+  it('browser.cdp.info omits shellUrl when the URL is empty (mid-load)', async () => {
+    const router = register(windowWithUrl(''));
+
+    const response = await router.dispatch({
+      id: '3c',
+      method: 'browser.cdp.info',
+      params: {},
+    });
+
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.result).not.toHaveProperty('shellUrl');
+    }
+  });
+
+  it('browser.cdp.info omits shellUrl when getURL throws (window destroyed)', async () => {
+    const router = register(windowWithUrl(() => { throw new Error('destroyed'); }));
+
+    const response = await router.dispatch({
+      id: '3d',
+      method: 'browser.cdp.info',
+      params: {},
+    });
+
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.result).not.toHaveProperty('shellUrl');
     }
   });
 
@@ -183,5 +247,63 @@ describe('registerBrowserRpc', () => {
       expect(response.error).toContain('Browser profile names must be 1-64 characters');
     }
     expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('browser.console.get drains the capture buffer (#106)', async () => {
+    const router = register();
+    const response = await router.dispatch({ id: '7', method: 'browser.console.get', params: {} });
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.result).toHaveProperty('entries');
+      expect(Array.isArray((response.result as { entries: unknown[] }).entries)).toBe(true);
+    }
+  });
+
+  it('browser.network.get drains the capture buffer (#106)', async () => {
+    const router = register();
+    const response = await router.dispatch({ id: '8', method: 'browser.network.get', params: {} });
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.result).toHaveProperty('entries');
+    }
+  });
+
+  it('browser.responseBody.get requires urlPattern (#106)', async () => {
+    const router = register();
+    const response = await router.dispatch({ id: '9', method: 'browser.responseBody.get', params: {} });
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error).toContain('missing "urlPattern"');
+    }
+  });
+
+  it('browser.responseBody.get returns a body field for a pattern (#106)', async () => {
+    const router = register();
+    const response = await router.dispatch({
+      id: '10',
+      method: 'browser.responseBody.get',
+      params: { urlPattern: '*api*' },
+    });
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.result).toHaveProperty('body');
+    }
+  });
+
+  it('browser.console.get fails clearly when no webview target is registered (#106)', async () => {
+    const router = new RpcRouter();
+    const webviewCdpManager = {
+      getTarget: vi.fn(() => null),
+      listTargets: vi.fn(() => []),
+      getCdpPort: vi.fn(() => 18800),
+      waitForTarget: vi.fn(),
+      setCaptureCleanup: vi.fn(),
+    };
+    registerBrowserRpc(router, () => null, webviewCdpManager as never);
+    const response = await router.dispatch({ id: '11', method: 'browser.console.get', params: {} });
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error).toContain('no webview target registered');
+    }
   });
 });

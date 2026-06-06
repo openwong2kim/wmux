@@ -1,4 +1,6 @@
 import type { Page } from 'playwright-core';
+import type { JsonEvaluator } from './page-eval';
+import { evalFunctionOrRpc } from './page-eval';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -341,18 +343,34 @@ function buildSerialiseScript(
  *
  * Strips navigation, footer, ad, and other non-content elements, then
  * converts the remaining HTML structure into readable markdown text.
+ *
+ * Takes a JsonEvaluator rather than a Page so the same logic serves both the
+ * Playwright transport and the packaged-build RPC fallback (issue #105). The
+ * in-page work is a string script (buildSerialiseScript), so neither transport
+ * changes behavior.
  */
 export async function extractMarkdown(
-  page: Page,
+  evaluate: JsonEvaluator,
   options?: ExtractionOptions,
 ): Promise<string> {
+  const selector = options?.selector ?? null;
+  const script = buildSerialiseScript(selector, NOISE_SELECTORS);
+  const tree = (await evaluate(script)) as SerializedNode | null;
+  return treeToMarkdown(tree, options);
+}
+
+/**
+ * Convert a serialised DOM tree (the output of buildSerialiseScript) into clean
+ * markdown. Pure Node-side logic — split out from extractMarkdown so it can be
+ * unit-tested against a canned tree without a browser.
+ */
+export function treeToMarkdown(
+  tree: SerializedNode | null,
+  options?: ExtractionOptions,
+): string {
   const maxLength = options?.maxLength ?? DEFAULT_MAX_LENGTH;
   const includeLinks = options?.includeLinks ?? true;
   const includeImages = options?.includeImages ?? false;
-  const selector = options?.selector ?? null;
-
-  const script = buildSerialiseScript(selector, NOISE_SELECTORS);
-  const tree = await page.evaluate(script) as SerializedNode | null;
 
   if (!tree) {
     return '';
@@ -374,31 +392,34 @@ export async function extractMarkdown(
  * such as tables, lists, or repeated elements and maps them to the
  * requested fields.
  *
- * @param page     Playwright Page instance
- * @param goal     Human-readable description of what to extract (used to
- *                 narrow scope when multiple data regions exist)
- * @param fields   Mapping of field names to human descriptions, e.g.
- *                 `{ title: "product name", price: "price in USD" }`
- * @returns        Array of objects with keys matching `fields`
+ * @param page      Playwright Page, or null to use the RPC fallback (issue #105)
+ * @param surfaceId Optional surface to target on the RPC path
+ * @param goal      Human-readable description of what to extract (reserved;
+ *                  not yet used to narrow scope)
+ * @param fields    Mapping of field names to human descriptions, e.g.
+ *                  `{ title: "product name", price: "price in USD" }`
+ * @returns         Array of objects with keys matching `fields`
  */
 export async function extractStructuredData(
-  page: Page,
+  page: Page | null,
+  surfaceId: string | undefined,
   goal: string,
   fields: Record<string, string>,
 ): Promise<Record<string, unknown>[]> {
+  void goal; // reserved for future scope-narrowing; not yet used
   const fieldNames = Object.keys(fields);
   if (fieldNames.length === 0) return [];
 
   // Strategy 1: Try to extract from <table> elements
-  const tableData = await extractFromTables(page, fieldNames);
+  const tableData = await extractFromTables(page, surfaceId, fieldNames);
   if (tableData.length > 0) return tableData;
 
   // Strategy 2: Try to extract from repeated list items
-  const listData = await extractFromLists(page, fieldNames);
+  const listData = await extractFromLists(page, surfaceId, fieldNames);
   if (listData.length > 0) return listData;
 
   // Strategy 3: Try to find repeated element patterns (grids, cards, etc.)
-  const repeatedData = await extractFromRepeatedElements(page, fieldNames);
+  const repeatedData = await extractFromRepeatedElements(page, surfaceId, fieldNames);
   if (repeatedData.length > 0) return repeatedData;
 
   return [];
@@ -409,11 +430,13 @@ export async function extractStructuredData(
 // ---------------------------------------------------------------------------
 
 async function extractFromTables(
-  page: Page,
+  page: Page | null,
+  surfaceId: string | undefined,
   fieldNames: string[],
 ): Promise<Record<string, unknown>[]> {
-  return await page.evaluate(
-    ({ fieldNames: names }) => {
+  return await evalFunctionOrRpc(
+    page,
+    ({ fieldNames: names }: { fieldNames: string[] }) => {
       const tables = document.querySelectorAll('table');
       if (tables.length === 0) return [];
 
@@ -437,9 +460,14 @@ async function extractFromTables(
           // Exact match first
           let idx = headers.indexOf(lower);
           if (idx === -1) {
-            // Partial match
+            // Partial match. Guard against empty/one-char headers: an empty
+            // header makes `lower.includes(h)` always true (every string
+            // contains ''), which would collapse every field onto the first
+            // blank column. Layout tables (e.g. HN) have blank header cells, so
+            // this guard also makes them fail to match and fall through to the
+            // repeated-element strategy instead of returning duplicated columns.
             idx = headers.findIndex(
-              (h) => h.includes(lower) || lower.includes(h),
+              (h) => h.length >= 2 && (h.includes(lower) || lower.includes(h)),
             );
           }
           if (idx !== -1) {
@@ -459,7 +487,18 @@ async function extractFromTables(
           for (const name of names) {
             const colIdx = fieldToCol.get(name);
             if (colIdx !== undefined && colIdx < cells.length) {
-              const text = (cells[colIdx].textContent ?? '').trim();
+              const cell = cells[colIdx];
+              // For link/url fields, prefer the cell's anchor href over its
+              // visible text so a "url" column yields an actual URL.
+              let text: string;
+              if (/link|url|href/i.test(name.toLowerCase())) {
+                const anchor = cell.querySelector('a[href]');
+                text = anchor
+                  ? (anchor.getAttribute('href') ?? '').trim()
+                  : (cell.textContent ?? '').trim();
+              } else {
+                text = (cell.textContent ?? '').trim();
+              }
               record[name] = text;
               if (text) hasValue = true;
             } else {
@@ -476,6 +515,7 @@ async function extractFromTables(
       return [];
     },
     { fieldNames },
+    surfaceId,
   );
 }
 
@@ -484,11 +524,13 @@ async function extractFromTables(
 // ---------------------------------------------------------------------------
 
 async function extractFromLists(
-  page: Page,
+  page: Page | null,
+  surfaceId: string | undefined,
   fieldNames: string[],
 ): Promise<Record<string, unknown>[]> {
-  return await page.evaluate(
-    ({ fieldNames: names }) => {
+  return await evalFunctionOrRpc(
+    page,
+    ({ fieldNames: names }: { fieldNames: string[] }) => {
       const lists = document.querySelectorAll('ul, ol');
       if (lists.length === 0) return [];
 
@@ -547,6 +589,7 @@ async function extractFromLists(
       return results;
     },
     { fieldNames },
+    surfaceId,
   );
 }
 
@@ -555,14 +598,19 @@ async function extractFromLists(
 // ---------------------------------------------------------------------------
 
 async function extractFromRepeatedElements(
-  page: Page,
+  page: Page | null,
+  surfaceId: string | undefined,
   fieldNames: string[],
 ): Promise<Record<string, unknown>[]> {
-  return await page.evaluate(
-    ({ fieldNames: names }) => {
-      // Find class names that appear 3+ times, suggesting repeated items
+  return await evalFunctionOrRpc(
+    page,
+    ({ fieldNames: names }: { fieldNames: string[] }) => {
+      // Find class names that appear 3+ times, suggesting repeated items.
+      // `tr` is included so table-layout lists (e.g. HN's <tr class="athing">
+      // rows, a very common pattern) are recognized as repeated items even
+      // though they live in a table with no usable header row.
       const classCount = new Map<string, number>();
-      const allElements = document.querySelectorAll('div, li, article, section');
+      const allElements = document.querySelectorAll('div, li, article, section, tr');
 
       for (const el of allElements) {
         const cls = el.className;
@@ -601,18 +649,63 @@ async function extractFromRepeatedElements(
           const record: Record<string, unknown> = {};
           let hasValue = false;
 
+          // The most meaningful link in this item. Skip empty-text navigation
+          // anchors (vote arrows, icon links) and prefer a link that has visible
+          // text. Used for url fields (its href) and as a title fallback (its
+          // text) so a link-list row like HN maps title->link text, url->href
+          // instead of grabbing the first href-less vote anchor.
+          let primaryAnchor: Element | null = null;
+          {
+            const anchors = el.querySelectorAll('a[href]');
+            let firstUsable: Element | null = null;
+            for (const a of anchors) {
+              const href = a.getAttribute('href') ?? '';
+              if (!href || href.startsWith('javascript:') || href.startsWith('#')) {
+                continue;
+              }
+              if (!firstUsable) firstUsable = a;
+              if ((a.textContent ?? '').trim().length >= 2) {
+                primaryAnchor = a;
+                break;
+              }
+            }
+            if (!primaryAnchor) primaryAnchor = firstUsable;
+          }
+
           for (const name of names) {
             const lower = name.toLowerCase();
 
             // Try to find a child element whose class/tag/aria-label hints at the field
             let value: string | null = null;
 
-            // Check common patterns: heading elements for title-like fields
+            // Check common patterns: heading elements for title-like fields.
+            // Headings win; then the primary link's text (covers link-lists with
+            // no heading, like HN); then class hints. The primary-link step is
+            // ordered above class hints on purpose: a "[class*=title]" cell can
+            // be a rank/badge (HN's <td class="title"> holds "1."), whereas the
+            // primary link text is the actual title.
             if (/title|name|heading/i.test(lower)) {
-              const heading =
-                el.querySelector('h1, h2, h3, h4, h5, h6') ??
-                el.querySelector('[class*="title"], [class*="name"], [class*="heading"]');
+              const heading = el.querySelector('h1, h2, h3, h4, h5, h6');
               if (heading) value = (heading.textContent ?? '').trim();
+              // For table-row link lists (HN-style) a "[class*=title]" cell is
+              // often a rank/badge (HN's <td class="title"> holds "1."), so the
+              // primary link text is the real title and wins first. For ordinary
+              // card/list markup like <span class="name">Widget</span><a>Buy</a>,
+              // the class hint is the title and the link is a CTA — so there we try
+              // class hints first and fall back to the link only as a last resort.
+              const isTableRow = el.tagName === 'TR' || el.closest('tr') !== null;
+              if (!value && isTableRow && primaryAnchor) {
+                value = (primaryAnchor.textContent ?? '').trim();
+              }
+              if (!value) {
+                const titleEl = el.querySelector(
+                  '[class*="title"], [class*="name"], [class*="heading"]',
+                );
+                if (titleEl) value = (titleEl.textContent ?? '').trim();
+              }
+              if (!value && primaryAnchor) {
+                value = (primaryAnchor.textContent ?? '').trim();
+              }
             }
 
             // Price-like fields
@@ -631,10 +724,13 @@ async function extractFromRepeatedElements(
               if (descEl) value = (descEl.textContent ?? '').trim();
             }
 
-            // Link / URL fields
+            // Link / URL fields — prefer the meaningful anchor's href.
             if (!value && /link|url|href/i.test(lower)) {
-              const anchor = el.querySelector('a[href]');
-              if (anchor) value = anchor.getAttribute('href');
+              if (primaryAnchor) value = primaryAnchor.getAttribute('href');
+              if (!value) {
+                const anchor = el.querySelector('a[href]');
+                if (anchor) value = anchor.getAttribute('href');
+              }
             }
 
             // Image fields
@@ -661,5 +757,6 @@ async function extractFromRepeatedElements(
       return [];
     },
     { fieldNames },
+    surfaceId,
   );
 }

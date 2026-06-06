@@ -205,16 +205,19 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     })();
   }, [ptyId, terminalRef]);
 
-  // Accept text/plain drops (workspace/pane markdown from sidebar + tabs,
-  // file paths from the file tree) and route them through the same chunked
-  // paste path the clipboard handler uses. Native file drags carry the
-  // 'Files' DataTransfer type and are owned by AppLayout's onFileDrop —
-  // bail early so we don't double-handle them. xterm.js does not surface a
-  // drop event of its own, so without this handler the OS accepts the drop
-  // visually (no 🚫) but no text ever reaches the PTY.
+  // Accept text/plain drops only from wmux-owned drag sources (workspace/pane
+  // markdown from sidebar + tabs, file paths from the file tree) and route
+  // them through the same chunked paste path the clipboard handler uses.
+  // DataTransfer text from external apps or embedded web pages is untrusted:
+  // a benign visible drag label can hide shell commands in text/plain, and
+  // pastePtyChunked normalizes newlines to Enter for non-bracketed prompts.
+  // The in-memory store flag below is set during wmux dragstart and is never
+  // exposed through DataTransfer, so Terminal remains an internal-only text
+  // drop target while native file drags stay owned by AppLayout.onFileDrop.
   const handleTerminalDragOver = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     if (!ptyId) return;
     if (isFileDrag(e.dataTransfer)) return;
+    if (!useStore.getState().terminalTextDropDragActive) return;
     if (!e.dataTransfer.types.includes('text/plain')) return;
     e.preventDefault();
     e.dataTransfer.dropEffect = 'copy';
@@ -223,6 +226,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   const handleTerminalDrop = useCallback((e: React.DragEvent<HTMLDivElement>) => {
     if (!ptyId) return;
     if (isFileDrag(e.dataTransfer)) return;
+    if (!useStore.getState().terminalTextDropDragActive) return;
     const text = e.dataTransfer.getData('text/plain');
     if (!text) return;
     e.preventDefault();

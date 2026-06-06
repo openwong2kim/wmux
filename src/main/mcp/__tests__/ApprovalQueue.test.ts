@@ -69,6 +69,25 @@ describe('ApprovalQueue.requestApproval', () => {
     expect(result.identity?.name).toBe('plugin-a');
   });
 
+  it('trusts the prompt snapshot if capabilities change before approval', async () => {
+    const queue = makeQueue();
+    await store.upsertDeclaration('plugin-race', ['pane.read']);
+    const handle = queue.requestApproval({
+      clientName: 'plugin-race',
+      declaredCapabilities: ['pane.read'],
+    });
+
+    await store.upsertDeclaration('plugin-race', ['terminal.send']);
+    await queue.resolvePrompt(handle.promptId, true);
+    const result = await handle.resolution;
+
+    expect(result.identity?.status).toBe('trusted');
+    expect(result.identity?.declaredCapabilities).toEqual(['pane.read']);
+    expect((await store.get('plugin-race'))?.declaredCapabilities).toEqual([
+      'pane.read',
+    ]);
+  });
+
   it('persists denied status (spec §4.3)', async () => {
     const queue = makeQueue();
     const handle = queue.requestApproval({

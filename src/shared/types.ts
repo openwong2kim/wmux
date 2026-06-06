@@ -625,6 +625,137 @@ export function createWorkspace(name: string): Workspace {
 
 // === Security: URL validation for SSRF prevention ===
 
+type UrlValidationResult = { valid: boolean; reason?: string };
+
+function parseIpv4Octets(address: string): number[] | null {
+  const parts = address.split('.');
+  if (parts.length !== 4) return null;
+
+  const octets = parts.map((part) => Number.parseInt(part, 10));
+  if (octets.some((octet) => Number.isNaN(octet) || octet < 0 || octet > 255)) {
+    return null;
+  }
+
+  return octets;
+}
+
+function validateIpv4NavigationAddress(address: string): UrlValidationResult {
+  const octets = parseIpv4Octets(address);
+  if (!octets) return { valid: false, reason: `Invalid IPv4 address: ${address}` };
+
+  // 127.0.0.1 is allowed for local development; block other 127.x.x.x.
+  if (octets[0] === 127) {
+    return octets[1] === 0 && octets[2] === 0 && octets[3] === 1
+      ? { valid: true }
+      : { valid: false, reason: 'Blocked loopback address' };
+  }
+
+  // Block 10.0.0.0/8
+  if (octets[0] === 10) {
+    return { valid: false, reason: 'Blocked private IP address (10.0.0.0/8)' };
+  }
+
+  // Block 172.16.0.0/12 (172.16.x.x – 172.31.x.x)
+  if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) {
+    return { valid: false, reason: 'Blocked private IP address (172.16.0.0/12)' };
+  }
+
+  // Block 192.168.0.0/16
+  if (octets[0] === 192 && octets[1] === 168) {
+    return { valid: false, reason: 'Blocked private IP address (192.168.0.0/16)' };
+  }
+
+  // Block 169.254.0.0/16 (link-local, includes cloud metadata 169.254.169.254)
+  if (octets[0] === 169 && octets[1] === 254) {
+    return { valid: false, reason: 'Blocked link-local/cloud metadata address (169.254.0.0/16)' };
+  }
+
+  // Block 0.0.0.0
+  if (octets.every((o) => o === 0)) {
+    return { valid: false, reason: 'Blocked null address (0.0.0.0)' };
+  }
+
+  return { valid: true };
+}
+
+function expandIpv6NavigationAddress(address: string): string[] | null {
+  let normalized = address.toLowerCase();
+  const lastColon = normalized.lastIndexOf(':');
+
+  if (normalized.includes('.') && lastColon !== -1) {
+    const embeddedIpv4 = normalized.slice(lastColon + 1);
+    const octets = parseIpv4Octets(embeddedIpv4);
+    if (!octets) return null;
+
+    const hi = ((octets[0] << 8) | octets[1]).toString(16);
+    const lo = ((octets[2] << 8) | octets[3]).toString(16);
+    normalized = `${normalized.slice(0, lastColon)}:${hi}:${lo}`;
+  }
+
+  const pieces = normalized.split('::');
+  if (pieces.length > 2) return null;
+
+  const [head, tail] = pieces;
+  const headParts = head ? head.split(':').filter(Boolean) : [];
+  const tailParts = tail ? tail.split(':').filter(Boolean) : [];
+  const allParts = [...headParts, ...tailParts];
+  if (allParts.some((part) => !/^[0-9a-f]{1,4}$/.test(part))) {
+    return null;
+  }
+
+  if (!normalized.includes('::')) {
+    return headParts.length === 8 ? headParts.map((part) => part.padStart(4, '0')) : null;
+  }
+
+  const missingGroups = 8 - allParts.length;
+  if (missingGroups < 1) return null;
+
+  return [
+    ...headParts.map((part) => part.padStart(4, '0')),
+    ...Array.from({ length: missingGroups }, () => '0000'),
+    ...tailParts.map((part) => part.padStart(4, '0')),
+  ];
+}
+
+function validateIpv6NavigationAddress(address: string): UrlValidationResult {
+  const expanded = expandIpv6NavigationAddress(address);
+  if (!expanded) return { valid: false, reason: `Invalid IPv6 address: ${address}` };
+
+  const compact = expanded.join(':');
+  if (compact === '0000:0000:0000:0000:0000:0000:0000:0000') {
+    return { valid: false, reason: 'Blocked null IPv6 address (equivalent to 0.0.0.0)' };
+  }
+  if (compact === '0000:0000:0000:0000:0000:0000:0000:0001') {
+    return { valid: true };
+  }
+
+  // Block IPv4-mapped IPv6 (::ffff:x.x.x.x / ::ffff:hhhh:hhhh) and
+  // IPv4-compatible IPv6 (::x.x.x.x / ::hhhh:hhhh) by validating the embedded
+  // IPv4 address after WHATWG URL normalization has converted dotted quads to
+  // hexadecimal groups.
+  const isIpv4Mapped = expanded.slice(0, 5).every((group) => group === '0000') && expanded[5] === 'ffff';
+  const isIpv4Compatible = expanded.slice(0, 6).every((group) => group === '0000');
+  if (isIpv4Mapped || isIpv4Compatible) {
+    const hi = Number.parseInt(expanded[6], 16);
+    const lo = Number.parseInt(expanded[7], 16);
+    const ipv4 = `${hi >> 8}.${hi & 0xff}.${lo >> 8}.${lo & 0xff}`;
+    const embeddedResult = validateIpv4NavigationAddress(ipv4);
+    if (!embeddedResult.valid) {
+      return { valid: false, reason: `Blocked IPv4-mapped/compatible IPv6: embedded ${ipv4} — ${embeddedResult.reason}` };
+    }
+  }
+
+  const firstGroup = Number.parseInt(expanded[0], 16);
+  if ((firstGroup & 0xfe00) === 0xfc00) {
+    return { valid: false, reason: 'Blocked private IPv6 address (fc00::/7)' };
+  }
+  if ((firstGroup & 0xffc0) === 0xfe80) {
+    return { valid: false, reason: 'Blocked link-local IPv6 address (fe80::/10)' };
+  }
+
+  return { valid: true };
+}
+
 /**
  * Fast preflight validation for browser navigation URLs.
  *
@@ -633,7 +764,7 @@ export function createWorkspace(name: string): Workspace {
  * checks are enforced separately in the main process at the actual navigation
  * boundary.
  */
-export function validateNavigationUrl(url: string): { valid: boolean; reason?: string } {
+export function validateNavigationUrl(url: string): UrlValidationResult {
   let parsed: URL;
   try {
     parsed = new URL(url);
@@ -647,92 +778,26 @@ export function validateNavigationUrl(url: string): { valid: boolean; reason?: s
     return { valid: false, reason: `Blocked URL scheme: ${scheme}` };
   }
 
-  // Extract hostname (strip brackets from IPv6)
-  const hostname = parsed.hostname.toLowerCase();
+  // WHATWG URL keeps IPv6 literals bracketed in Node/Electron. Strip the
+  // brackets before doing range checks so private/link-local prefixes and
+  // IPv4-mapped forms cannot bypass validation.
+  const rawHostname = parsed.hostname.toLowerCase();
+  const hostname = rawHostname.startsWith('[') && rawHostname.endsWith(']')
+    ? rawHostname.slice(1, -1)
+    : rawHostname;
 
   // Allow localhost and IPv4/IPv6 loopback
-  if (hostname === 'localhost' || hostname === '127.0.0.1' || hostname === '::1') {
+  if (hostname === 'localhost') {
     return { valid: true };
   }
 
-  // Block IPv6 private/link-local ranges
-  if (hostname.startsWith('[') || hostname.includes(':')) {
-    // Hostname is an IPv6 address (URL parser strips brackets in .hostname)
-    const addr = hostname;
-    // Block fc00::/7 (unique local) — starts with fc or fd
-    if (addr.startsWith('fc') || addr.startsWith('fd')) {
-      return { valid: false, reason: 'Blocked private IPv6 address (fc00::/7)' };
-    }
-    // Block fe80::/10 (link-local) — starts with fe8, fe9, fea, feb
-    if (/^fe[89ab]/.test(addr)) {
-      return { valid: false, reason: 'Blocked link-local IPv6 address (fe80::/10)' };
-    }
-    // ::1 already allowed above; block any other loopback representation
-    // Normalize: collapse :: and check
-    if (addr === '0:0:0:0:0:0:0:1' || addr === '0000:0000:0000:0000:0000:0000:0000:0001') {
-      return { valid: true };
-    }
-
-    // Block null IPv6 address (:: or 0:0:0:0:0:0:0:0) — equivalent to 0.0.0.0
-    if (addr === '::' || addr === '0:0:0:0:0:0:0:0' || addr === '0000:0000:0000:0000:0000:0000:0000:0000') {
-      return { valid: false, reason: 'Blocked null IPv6 address (equivalent to 0.0.0.0)' };
-    }
-
-    // Block IPv4-mapped IPv6 (::ffff:x.x.x.x) and IPv4-compatible IPv6 (::x.x.x.x)
-    // These resolve to their embedded IPv4 address, bypassing IPv4 private IP checks.
-    const v4MappedMatch = /^::ffff:(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(addr);
-    const v4CompatMatch = !v4MappedMatch ? /^::(\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3})$/.exec(addr) : null;
-    const embeddedV4 = v4MappedMatch?.[1] ?? v4CompatMatch?.[1];
-    if (embeddedV4) {
-      // Recursively validate the embedded IPv4 through the same checks
-      const embeddedResult = validateNavigationUrl(`http://${embeddedV4}/`);
-      if (!embeddedResult.valid) {
-        return { valid: false, reason: `Blocked IPv4-mapped/compatible IPv6: embedded ${embeddedV4} — ${embeddedResult.reason}` };
-      }
-    }
-
-    return { valid: true };
+  if (hostname.includes(':')) {
+    return validateIpv6NavigationAddress(hostname);
   }
 
   // Check for IPv4 addresses
-  const ipv4Match = /^(\d{1,3})\.(\d{1,3})\.(\d{1,3})\.(\d{1,3})$/.exec(hostname);
-  if (ipv4Match) {
-    const octets = [
-      parseInt(ipv4Match[1], 10),
-      parseInt(ipv4Match[2], 10),
-      parseInt(ipv4Match[3], 10),
-      parseInt(ipv4Match[4], 10),
-    ];
-
-    // 127.0.0.1 already allowed above; block other 127.x.x.x
-    if (octets[0] === 127) {
-      return { valid: false, reason: 'Blocked loopback address' };
-    }
-
-    // Block 10.0.0.0/8
-    if (octets[0] === 10) {
-      return { valid: false, reason: 'Blocked private IP address (10.0.0.0/8)' };
-    }
-
-    // Block 172.16.0.0/12 (172.16.x.x – 172.31.x.x)
-    if (octets[0] === 172 && octets[1] >= 16 && octets[1] <= 31) {
-      return { valid: false, reason: 'Blocked private IP address (172.16.0.0/12)' };
-    }
-
-    // Block 192.168.0.0/16
-    if (octets[0] === 192 && octets[1] === 168) {
-      return { valid: false, reason: 'Blocked private IP address (192.168.0.0/16)' };
-    }
-
-    // Block 169.254.0.0/16 (link-local, includes cloud metadata 169.254.169.254)
-    if (octets[0] === 169 && octets[1] === 254) {
-      return { valid: false, reason: 'Blocked link-local/cloud metadata address (169.254.0.0/16)' };
-    }
-
-    // Block 0.0.0.0
-    if (octets.every((o) => o === 0)) {
-      return { valid: false, reason: 'Blocked null address (0.0.0.0)' };
-    }
+  if (/^\d{1,3}\.\d{1,3}\.\d{1,3}\.\d{1,3}$/.test(hostname)) {
+    return validateIpv4NavigationAddress(hostname);
   }
 
   return { valid: true };

@@ -34,6 +34,17 @@ const KNOWN_CAPABILITIES = new Set<string>([
   'browser.screenshot',
   'browser.evaluate',
   'browser.read',
+  // Raw cookie access via the CDP Network domain. Kept distinct from
+  // browser.evaluate on purpose: CDP reads/writes HttpOnly cookies (and the
+  // whole cookie jar) that document.cookie can never reach, so it grants
+  // strictly more than page-JS execution and must be declared/approved on its
+  // own rather than riding on browser.evaluate.
+  'browser.cookies',
+  // Browser-state emulation via CDP: offline mode, extra request headers,
+  // timezone/locale/device overrides, and Browser.grantPermissions/
+  // resetPermissions. These mutate browser state in ways page JS cannot, so it is
+  // declared/approved on its own rather than riding on browser.evaluate.
+  'browser.emulate',
   // Agent-to-agent
   'a2a.send',
   'a2a.execute',

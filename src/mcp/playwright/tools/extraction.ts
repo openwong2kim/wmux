@@ -1,8 +1,9 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
-import { getSmartSnapshot } from '../dom-intelligence';
+import { getSmartSnapshot, getSmartSnapshotViaEval } from '../dom-intelligence';
 import { extractMarkdown, extractStructuredData } from '../markdown-extractor';
+import { resolveEvaluator, rpcEvaluator } from '../page-eval';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -36,19 +37,18 @@ export function registerExtractionTools(server: McpServer): void {
     },
     async ({ maxContentLength, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
-
-        const snapshot = await getSmartSnapshot(page, {
-          maxContentLength: maxContentLength ?? 3000,
-        });
+        // Playwright path uses the CDP accessibility tree; when no Page is
+        // available (packaged builds, issue #105) fall back to a DOM-based
+        // snapshot over the RPC channel.
+        const page = await engine.getPage(surfaceId).catch(() => null);
+        const snapshot = page
+          ? await getSmartSnapshot(page, { maxContentLength: maxContentLength ?? 3000 })
+          : await getSmartSnapshotViaEval(rpcEvaluator(surfaceId), { maxContentLength: maxContentLength ?? 3000 });
 
         // Format the snapshot output: indexed elements + content summary
         const lines: string[] = [];
 
-        lines.push(`Page: ${snapshot.title ?? page.url()}`);
+        lines.push(`Page: ${snapshot.title ?? snapshot.url}`);
         lines.push('');
 
         if (snapshot.elements && snapshot.elements.length > 0) {
@@ -100,12 +100,12 @@ export function registerExtractionTools(server: McpServer): void {
     },
     async ({ selector, maxLength, includeLinks, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        // resolveEvaluator picks the Playwright page when available, else the
+        // RPC channel (packaged builds, issue #105). extract_text's in-page work
+        // is a string script, so both transports produce identical output.
+        const evaluate = await resolveEvaluator(engine, surfaceId);
 
-        const markdown = await extractMarkdown(page, {
+        const markdown = await extractMarkdown(evaluate, {
           selector,
           maxLength,
           includeLinks,
@@ -141,12 +141,11 @@ export function registerExtractionTools(server: McpServer): void {
     },
     async ({ goal, fields, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        // Native page.evaluate(fn, arg) when a Page exists (unchanged dev path);
+        // RPC fallback when not (packaged builds, issue #105).
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
-        const records = await extractStructuredData(page, goal, fields);
+        const records = await extractStructuredData(page, surfaceId, goal, fields);
 
         return {
           content: [
