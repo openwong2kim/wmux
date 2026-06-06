@@ -172,9 +172,9 @@ describe('secureWriteTokenFile', () => {
     expect(powershellCall()).toBeUndefined();
     expect(icaclsArgs()).toEqual([
       tokenPath,
-      '/inheritance:r',
       '/grant:r',
       '*S-1-5-21-1-2-3-1001:F',
+      '/inheritance:r',
       // explicit removal of the well-known broad principals by SID
       '/remove:g',
       '*S-1-1-0', // Everyone
@@ -270,9 +270,9 @@ describe('secureWriteTokenFile', () => {
     // Username (pure ASCII) is the principal; no `*` SID prefix.
     expect(icaclsArgs()?.slice(0, 4)).toEqual([
       tokenPath,
-      '/inheritance:r',
       '/grant:r',
       'tester:F',
+      '/inheritance:r',
     ]);
   });
 

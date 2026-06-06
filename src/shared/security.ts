@@ -151,11 +151,16 @@ function resolveOwnerIdentity(filePath: string): { sid: string | null; username?
  */
 function applyRestrictiveAclViaIcacls(filePath: string, principal: string): void {
   const icacls = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\icacls.exe`;
+  // Order matters: icacls applies args left-to-right. Grant the owner Full
+  // control FIRST so the owner holds an explicit WRITE_DAC ACE, THEN strip
+  // inheritance. If `/inheritance:r` ran first, a caller whose edit rights came
+  // only from inherited ACEs would lose them mid-command and the `/grant:r`
+  // could fail, locking the owner out (caught by codex on PR #140).
   const args = [
     filePath,
-    '/inheritance:r',
     '/grant:r',
     `${principal}:F`,
+    '/inheritance:r',
   ];
   for (const broadSid of WELL_KNOWN_BROAD_SIDS) {
     args.push('/remove:g', `*${broadSid}`);
