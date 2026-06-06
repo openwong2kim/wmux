@@ -22,19 +22,58 @@ const optionalSurfaceId = z
 // closely as the transport allows.
 
 /**
- * Convert a Playwright-style URL glob to an anchored RegExp, matching
- * `waitForURL` glob semantics: `**` spans path separators (`.*`), while a single
- * `*` is confined to one path segment (`[^/]*`). Every other regex metacharacter
- * is escaped first.
+ * Convert a Playwright-style URL glob to an anchored RegExp, ported from
+ * playwright-core's `globToRegexPattern` so packaged builds match `waitForURL`
+ * exactly:
+ *   - a single `*` is confined to one path segment (`[^/]*`);
+ *   - a "deep" `**` bounded by `/` or the string edge spans zero or more whole
+ *     segments and absorbs the following slash, so `/**​/settings` also matches
+ *     `/settings` (zero segments), not just `/a/b/settings`.
+ * Every other character is escaped to a regex literal.
  */
 function urlGlobToRegExp(glob: string): RegExp {
-  const DOUBLE = String.fromCharCode(0); // placeholder so ** survives the single-* pass
-  const escaped = glob
-    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
-    .replace(/\*\*/g, DOUBLE)
-    .replace(/\*/g, '[^/]*')
-    .replace(new RegExp(DOUBLE, 'g'), '.*');
-  return new RegExp(`^${escaped}$`);
+  const tokens = ['^'];
+  for (let i = 0; i < glob.length; i++) {
+    const c = glob[i];
+    if (c === '*') {
+      const beforeDeep = glob[i - 1];
+      let starCount = 1;
+      while (glob[i + 1] === '*') {
+        starCount++;
+        i++;
+      }
+      const afterDeep = glob[i + 1];
+      const isDeep =
+        starCount > 1 &&
+        (beforeDeep === '/' || beforeDeep === undefined) &&
+        (afterDeep === '/' || afterDeep === undefined);
+      if (isDeep) {
+        tokens.push('((?:[^/]*(?:/|$))*)');
+        i++; // consume the trailing slash that the deep wildcard already spans
+      } else {
+        tokens.push('([^/]*)');
+      }
+    } else {
+      tokens.push(c.replace(/[.+?^${}()|[\]\\]/g, '\\$&'));
+    }
+  }
+  tokens.push('$');
+  return new RegExp(tokens.join(''));
+}
+
+/**
+ * Whether a JS string looks like a function expression (arrow or classic) rather
+ * than a bare predicate expression. `page.waitForFunction(string)` invokes a
+ * function-looking string on each poll, so the fallback must call it too — a bare
+ * `() => cond` would otherwise be a truthy function object and satisfy the wait
+ * immediately. Mirrors that branch over the CDP transport.
+ */
+function isFunctionExpression(source: string): boolean {
+  const s = source.trim();
+  return (
+    /^(async\s+)?function\b/.test(s) ||
+    /^(async\s+)?(\([^)]*\)|[A-Za-z_$][\w$]*)\s*=>/.test(s)
+  );
 }
 
 /** Setup errors (no target / dead WebContents) are not transient navigation
@@ -135,12 +174,15 @@ export function registerWaitTools(server: McpServer): void {
               console.warn(`[browser_wait] Dangerous patterns in fn: ${warnings.join(', ')}`);
               warningPrefix = `⚠ Security warning: fn contains potentially dangerous patterns: ${warnings.join(', ')}.\n`;
             }
-            // fn is a JS predicate expression evaluated in page context (Playwright
-            // waitForFunction(string) semantics). Coerce to a boolean IN the page:
-            // browser.evaluate returns only the CDP result.value, so a truthy but
-            // non-serializable result (e.g. a DOM node from querySelector) would
-            // otherwise come back as null and never satisfy the wait.
-            predicate = async () => Boolean(await evaluate(`!!(${fn})`));
+            // fn is a JS predicate evaluated in page context (Playwright
+            // waitForFunction(string) semantics). A function-looking string is
+            // *called* each poll; a bare expression is evaluated as-is. Then
+            // coerce to a boolean IN the page: browser.evaluate returns only the
+            // CDP result.value, so a truthy but non-serializable result (e.g. a
+            // DOM node from querySelector) would otherwise come back as null and
+            // never satisfy the wait.
+            const expr = isFunctionExpression(fn) ? `!!((${fn})())` : `!!(${fn})`;
+            predicate = async () => Boolean(await evaluate(expr));
             label = 'custom predicate satisfied';
           } else {
             // networkidle has no page-target debugger equivalent over this
@@ -149,6 +191,9 @@ export function registerWaitTools(server: McpServer): void {
             label = 'network idle (approximated by document.readyState === "complete" over the CDP fallback)';
           }
 
+          // Playwright treats timeout:0 as "wait forever"; mirror that by polling
+          // with no deadline rather than expiring on the first miss.
+          const hasDeadline = resolvedTimeout > 0;
           const deadline = Date.now() + resolvedTimeout;
           for (;;) {
             let ok = false;
@@ -167,10 +212,10 @@ export function registerWaitTools(server: McpServer): void {
                 content: [{ type: 'text' as const, text: warningPrefix + `Wait completed: ${label}` }],
               };
             }
-            if (Date.now() >= deadline) {
+            if (hasDeadline && Date.now() >= deadline) {
               throw new Error(`Timeout ${resolvedTimeout}ms exceeded`);
             }
-            await sleep(Math.min(250, Math.max(0, deadline - Date.now())));
+            await sleep(hasDeadline ? Math.min(250, Math.max(0, deadline - Date.now())) : 250);
           }
         }
 

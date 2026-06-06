@@ -105,6 +105,38 @@ describe('browser_wait RPC fallback', () => {
     expect(res.content[0].text).toContain('Timed out');
   });
 
+  it('matches zero path segments for a double-star URL glob (**/ is optional subpath)', async () => {
+    // `**/settings` must also match the zero-segment case `/settings`, like waitForURL.
+    mockSendRpc.mockImplementation(evalRouter({
+      'location.href': 'https://site.test/settings',
+      'document.readyState': 'complete',
+    }));
+    const res = await wait({ url: 'https://site.test/**/settings', timeout: 1000 });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0].text).toContain('URL matched');
+  });
+
+  it('calls a function-expression predicate instead of testing the function object', async () => {
+    mockSendRpc.mockResolvedValue({ value: true });
+    const res = await wait({ fn: '() => window.ready' });
+    expect(res.content[0].text).toContain('custom predicate satisfied');
+    const expr = (mockSendRpc.mock.calls[0][1] as { expression: string }).expression;
+    // The arrow function is invoked, not coerced to a (truthy) function object.
+    expect(expr).toBe('!!((() => window.ready)())');
+  });
+
+  it('treats timeout:0 as an unbounded wait, not an instant timeout', async () => {
+    // First poll false, second true: with a 0ms deadline the old code would time
+    // out immediately; now it keeps polling until the condition holds.
+    mockSendRpc
+      .mockResolvedValueOnce({ value: false })
+      .mockResolvedValue({ value: true });
+    const res = await wait({ selector: '#eventual', timeout: 0 });
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0].text).toContain('selector "#eventual" found');
+    expect(mockSendRpc.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
   it('approximates networkidle with document.readyState', async () => {
     mockSendRpc.mockResolvedValue({ value: 'complete' });
     const res = await wait({});
