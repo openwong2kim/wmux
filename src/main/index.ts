@@ -5,7 +5,6 @@ process.on('uncaughtException', (err) => {
   console.error('[Main] Uncaught exception:', err);
 });
 
-import * as crypto from 'crypto';
 import * as path from 'path';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
 import { createWindow, loadMainRenderer } from './window/createWindow';
@@ -40,6 +39,7 @@ import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
+import { resolveCdpRemoteDebuggingConfig } from './browser-session/cdpConfig';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { raceDaemonShutdown } from './daemonShutdownRace';
 import { migrateScrollbackOnce } from './scrollback/legacyMigration';
@@ -60,15 +60,20 @@ import { initLogSink, logLine } from './util/logSink';
 // on non-ASCII locales (e.g. Korean Windows where cp949 garbles console output).
 app.commandLine.appendSwitch('lang', 'en-US');
 
-// CDP (Chrome DevTools Protocol) remote debugging
-let cdpPort = 0;
-if (process.env.WMUX_DISABLE_CDP !== 'true') {
-  // Randomize port within range to prevent predictable scanning
-  const basePort = 18800;
-  const range = 100;
-  cdpPort = basePort + crypto.randomInt(range);
+// CDP (Chrome DevTools Protocol) remote debugging. Packaged builds keep
+// Electron's unauthenticated debugging endpoint closed unless the operator
+// explicitly opts in for a debugging session.
+const cdpConfig = resolveCdpRemoteDebuggingConfig({
+  env: process.env,
+  isPackaged: app.isPackaged,
+});
+const cdpPort = cdpConfig.port;
+if (cdpConfig.enabled) {
+  app.commandLine.appendSwitch('remote-debugging-address', '127.0.0.1');
   app.commandLine.appendSwitch('remote-debugging-port', cdpPort.toString());
-  console.log(`[WinMux] CDP enabled on port ${cdpPort}`);
+  console.log(`[WinMux] CDP enabled on 127.0.0.1:${cdpPort}`);
+} else {
+  console.log(`[WinMux] CDP disabled (${cdpConfig.reason ?? 'not enabled'})`);
 }
 
 // Handle Squirrel installer events.
