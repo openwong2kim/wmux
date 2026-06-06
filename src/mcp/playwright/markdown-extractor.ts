@@ -460,9 +460,14 @@ async function extractFromTables(
           // Exact match first
           let idx = headers.indexOf(lower);
           if (idx === -1) {
-            // Partial match
+            // Partial match. Guard against empty/one-char headers: an empty
+            // header makes `lower.includes(h)` always true (every string
+            // contains ''), which would collapse every field onto the first
+            // blank column. Layout tables (e.g. HN) have blank header cells, so
+            // this guard also makes them fail to match and fall through to the
+            // repeated-element strategy instead of returning duplicated columns.
             idx = headers.findIndex(
-              (h) => h.includes(lower) || lower.includes(h),
+              (h) => h.length >= 2 && (h.includes(lower) || lower.includes(h)),
             );
           }
           if (idx !== -1) {
@@ -482,7 +487,18 @@ async function extractFromTables(
           for (const name of names) {
             const colIdx = fieldToCol.get(name);
             if (colIdx !== undefined && colIdx < cells.length) {
-              const text = (cells[colIdx].textContent ?? '').trim();
+              const cell = cells[colIdx];
+              // For link/url fields, prefer the cell's anchor href over its
+              // visible text so a "url" column yields an actual URL.
+              let text: string;
+              if (/link|url|href/i.test(name.toLowerCase())) {
+                const anchor = cell.querySelector('a[href]');
+                text = anchor
+                  ? (anchor.getAttribute('href') ?? '').trim()
+                  : (cell.textContent ?? '').trim();
+              } else {
+                text = (cell.textContent ?? '').trim();
+              }
               record[name] = text;
               if (text) hasValue = true;
             } else {
@@ -589,9 +605,12 @@ async function extractFromRepeatedElements(
   return await evalFunctionOrRpc(
     page,
     ({ fieldNames: names }: { fieldNames: string[] }) => {
-      // Find class names that appear 3+ times, suggesting repeated items
+      // Find class names that appear 3+ times, suggesting repeated items.
+      // `tr` is included so table-layout lists (e.g. HN's <tr class="athing">
+      // rows, a very common pattern) are recognized as repeated items even
+      // though they live in a table with no usable header row.
       const classCount = new Map<string, number>();
-      const allElements = document.querySelectorAll('div, li, article, section');
+      const allElements = document.querySelectorAll('div, li, article, section, tr');
 
       for (const el of allElements) {
         const cls = el.className;
@@ -630,18 +649,53 @@ async function extractFromRepeatedElements(
           const record: Record<string, unknown> = {};
           let hasValue = false;
 
+          // The most meaningful link in this item. Skip empty-text navigation
+          // anchors (vote arrows, icon links) and prefer a link that has visible
+          // text. Used for url fields (its href) and as a title fallback (its
+          // text) so a link-list row like HN maps title->link text, url->href
+          // instead of grabbing the first href-less vote anchor.
+          let primaryAnchor: Element | null = null;
+          {
+            const anchors = el.querySelectorAll('a[href]');
+            let firstUsable: Element | null = null;
+            for (const a of anchors) {
+              const href = a.getAttribute('href') ?? '';
+              if (!href || href.startsWith('javascript:') || href.startsWith('#')) {
+                continue;
+              }
+              if (!firstUsable) firstUsable = a;
+              if ((a.textContent ?? '').trim().length >= 2) {
+                primaryAnchor = a;
+                break;
+              }
+            }
+            if (!primaryAnchor) primaryAnchor = firstUsable;
+          }
+
           for (const name of names) {
             const lower = name.toLowerCase();
 
             // Try to find a child element whose class/tag/aria-label hints at the field
             let value: string | null = null;
 
-            // Check common patterns: heading elements for title-like fields
+            // Check common patterns: heading elements for title-like fields.
+            // Headings win; then the primary link's text (covers link-lists with
+            // no heading, like HN); then class hints. The primary-link step is
+            // ordered above class hints on purpose: a "[class*=title]" cell can
+            // be a rank/badge (HN's <td class="title"> holds "1."), whereas the
+            // primary link text is the actual title.
             if (/title|name|heading/i.test(lower)) {
-              const heading =
-                el.querySelector('h1, h2, h3, h4, h5, h6') ??
-                el.querySelector('[class*="title"], [class*="name"], [class*="heading"]');
+              const heading = el.querySelector('h1, h2, h3, h4, h5, h6');
               if (heading) value = (heading.textContent ?? '').trim();
+              if (!value && primaryAnchor) {
+                value = (primaryAnchor.textContent ?? '').trim();
+              }
+              if (!value) {
+                const titleEl = el.querySelector(
+                  '[class*="title"], [class*="name"], [class*="heading"]',
+                );
+                if (titleEl) value = (titleEl.textContent ?? '').trim();
+              }
             }
 
             // Price-like fields
@@ -660,10 +714,13 @@ async function extractFromRepeatedElements(
               if (descEl) value = (descEl.textContent ?? '').trim();
             }
 
-            // Link / URL fields
+            // Link / URL fields — prefer the meaningful anchor's href.
             if (!value && /link|url|href/i.test(lower)) {
-              const anchor = el.querySelector('a[href]');
-              if (anchor) value = anchor.getAttribute('href');
+              if (primaryAnchor) value = primaryAnchor.getAttribute('href');
+              if (!value) {
+                const anchor = el.querySelector('a[href]');
+                if (anchor) value = anchor.getAttribute('href');
+              }
             }
 
             // Image fields
