@@ -42,7 +42,10 @@ describe('registerBrowserRpc', () => {
     sendToRendererMock.mockResolvedValue({ ok: true });
   });
 
-  function register(getWindow: () => BrowserWindow | null = () => null): RpcRouter {
+  function register(
+    getWindow: () => BrowserWindow | null = () => null,
+    cdpAccessToken?: string,
+  ): RpcRouter {
     const router = new RpcRouter();
     const webviewCdpManager = {
       getTarget: vi.fn(() => ({ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/target-1' })),
@@ -51,7 +54,7 @@ describe('registerBrowserRpc', () => {
       waitForTarget: vi.fn(),
     };
 
-    registerBrowserRpc(router, getWindow, webviewCdpManager as never);
+    registerBrowserRpc(router, getWindow, webviewCdpManager as never, { cdpAccessToken });
     return router;
   }
 
@@ -103,9 +106,32 @@ describe('registerBrowserRpc', () => {
     if (response.ok) {
       // No window (getWindow → null): shellUrl is omitted, not null.
       expect(response.result).toEqual({
-        cdpPort: 18800,
         targets: [{ surfaceId: 'surface-1', targetId: 'target-1' }],
       });
+    }
+  });
+
+  it('browser.cdp.info returns cdpPort only with the internal CDP access token', async () => {
+    const router = register(undefined, 'internal-cdp-token');
+
+    const publicResponse = await router.dispatch({
+      id: '3a-public',
+      method: 'browser.cdp.info',
+      params: {},
+    });
+    const internalResponse = await router.dispatch({
+      id: '3a-internal',
+      method: 'browser.cdp.info',
+      params: { cdpAccessToken: 'internal-cdp-token' },
+    });
+
+    expect(publicResponse.ok).toBe(true);
+    expect(internalResponse.ok).toBe(true);
+    if (publicResponse.ok) {
+      expect(publicResponse.result).not.toHaveProperty('cdpPort');
+    }
+    if (internalResponse.ok) {
+      expect(internalResponse.result).toMatchObject({ cdpPort: 18800 });
     }
   });
 
@@ -123,9 +149,9 @@ describe('registerBrowserRpc', () => {
     expect(response.ok).toBe(true);
     if (response.ok) {
       expect(response.result).toMatchObject({
-        cdpPort: 18800,
         shellUrl: 'file:///x/.vite/renderer/main_window/index.html',
       });
+      expect(response.result).not.toHaveProperty('cdpPort');
     }
   });
 

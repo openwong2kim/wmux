@@ -2,7 +2,7 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import type { RpcMethod, RpcResponse } from '../shared/rpc';
-import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../shared/constants';
+import { getPipeName, getAuthTokenPath, getTcpPortPath, getCdpAccessTokenPath } from '../shared/constants';
 
 const TIMEOUT_MS = 10000;
 const RETRY_COUNT = 3;
@@ -49,6 +49,15 @@ function readAuthToken(): string | undefined {
   // Env var fallback (when running inside wmux terminal)
   if (process.env.WMUX_AUTH_TOKEN) return process.env.WMUX_AUTH_TOKEN;
   return undefined;
+}
+
+export function readCdpAccessToken(): string | undefined {
+  try {
+    const token = fs.readFileSync(getCdpAccessTokenPath(), 'utf8').trim();
+    return token || undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 function readTcpPort(): number | undefined {

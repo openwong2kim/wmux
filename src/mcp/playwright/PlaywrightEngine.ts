@@ -1,5 +1,5 @@
 import { chromium, type Browser, type BrowserContext, type Page, type CDPSession } from 'playwright-core';
-import { sendRpc } from '../wmux-client';
+import { readCdpAccessToken, sendRpc } from '../wmux-client';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 
@@ -9,7 +9,7 @@ interface CdpTargetInfo {
 }
 
 interface CdpInfoResponse {
-  cdpPort: number;
+  cdpPort?: number;
   /**
    * The actual runtime URL of the main-window webContents (the app shell),
    * as reported by the main process. Optional: absent on older mains or when
@@ -28,6 +28,22 @@ const PAGE_FIND_DELAY_MS = 500;
 
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+async function requestCdpInfo(options: { includePort?: boolean } = {}): Promise<CdpInfoResponse> {
+  const params: Record<string, unknown> = {};
+  if (options.includePort) {
+    const cdpAccessToken = readCdpAccessToken();
+    if (cdpAccessToken) params.cdpAccessToken = cdpAccessToken;
+  }
+  return (await sendRpc('browser.cdp.info', params)) as CdpInfoResponse;
+}
+
+function requireCdpPort(info: CdpInfoResponse): number {
+  if (typeof info.cdpPort !== 'number') {
+    throw new Error('browser.cdp.info did not return a CDP port for the Playwright engine');
+  }
+  return info.cdpPort;
 }
 
 /**
@@ -214,9 +230,9 @@ export class PlaywrightEngine {
     let lastError: unknown = null;
     for (let attempt = 1; attempt <= MAX_CONNECT_RETRIES; attempt++) {
       try {
-        const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
+        const info = await requestCdpInfo({ includePort: true });
         this.cacheShellUrl(info);
-        await this.connect(info.cdpPort);
+        await this.connect(requireCdpPort(info));
         return;
       } catch (err) {
         lastError = err;
@@ -405,7 +421,7 @@ export class PlaywrightEngine {
         console.error(`[PlaywrightEngine] CDP targets: ${targetInfos.map(t => `${t.type}:${t.url.substring(0, 40)}`).join(', ')}`);
 
         // Get registered wmux targets for matching
-        const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
+        const info = await requestCdpInfo();
         this.cacheShellUrl(info);
         const wmuxTarget = surfaceId
           ? info.targets.find((t) => t.surfaceId === surfaceId)
@@ -485,7 +501,7 @@ export class PlaywrightEngine {
       console.error(`[PlaywrightEngine] /json targets: ${targets.map(t => `${t.type}:${t.url.substring(0, 40)}`).join(', ')}`);
 
       // Get registered wmux targets
-      const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
+      const info = await requestCdpInfo();
       this.cacheShellUrl(info);
       const wmuxTarget = surfaceId
         ? info.targets.find((t) => t.surfaceId === surfaceId)

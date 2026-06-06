@@ -152,6 +152,16 @@ export function getAuthTokenPath(): string {
   return `${home}/.wmux-auth-token`;
 }
 
+// CDP access token path — written by wmux main process, read by the bundled
+// MCP Playwright engine when it needs the raw Chromium debugging port. This is
+// deliberately separate from the general RPC auth token so ordinary
+// token-bearing RPC clients cannot discover the randomized CDP port through
+// browser.cdp.info.
+export function getCdpAccessTokenPath(): string {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  return `${home}/.wmux-cdp-access-token`;
+}
+
 // PID-to-workspace mapping directory — written by PTYManager, read by MCP server
 // to resolve workspace identity when env vars don't propagate through Claude Code
 export function getPidMapDir(): string {

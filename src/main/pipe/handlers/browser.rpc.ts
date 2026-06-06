@@ -10,6 +10,10 @@ import { validateResolvedNavigationUrl } from '../../security/navigationPolicy';
 
 type GetWindow = () => BrowserWindow | null;
 
+interface BrowserRpcOptions {
+  cdpAccessToken?: string;
+}
+
 async function validateUrl(url: string, method: string): Promise<void> {
   const result = await validateResolvedNavigationUrl(url);
   if (!result.valid) {
@@ -28,7 +32,12 @@ const profileManager = new ProfileManager();
 const portAllocator = new PortAllocator();
 const humanBehavior = new HumanBehavior();
 
-export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webviewCdpManager: WebviewCdpManager): void {
+export function registerBrowserRpc(
+  router: RpcRouter,
+  getWindow: GetWindow,
+  webviewCdpManager: WebviewCdpManager,
+  options: BrowserRpcOptions = {},
+): void {
   const getActivePartition = (): string => profileManager.getActiveProfile().partition;
 
   /**
@@ -237,10 +246,16 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
 
   /**
    * browser.cdp.info
-   * Returns the CDP port and minimal target metadata required for Playwright attachment.
+   * Returns minimal target metadata required for Playwright attachment.
+   *
+   * The randomized raw CDP port is only included when the bundled MCP
+   * Playwright engine presents the separate CDP access token. Generic RPC
+   * callers authenticated with the normal wmux RPC token can still discover
+   * mediated browser target metadata, but cannot use this method to discover
+   * the unauthenticated Chromium debugging endpoint.
    * params: none
    */
-  router.register('browser.cdp.info', async () => {
+  router.register('browser.cdp.info', async (params) => {
     let targets = webviewCdpManager.listTargets();
 
     // If no targets yet, wait briefly for in-flight registrations to complete.
@@ -250,7 +265,12 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       targets = webviewCdpManager.listTargets();
     }
 
-    const cdpPort: number = webviewCdpManager.getCdpPort();
+    const requestedCdpAccessToken =
+      typeof params['cdpAccessToken'] === 'string' ? params['cdpAccessToken'] : undefined;
+    const includeCdpPort =
+      typeof options.cdpAccessToken === 'string' &&
+      options.cdpAccessToken.length > 0 &&
+      requestedCdpAccessToken === options.cdpAccessToken;
 
     // Expose the actual runtime URL of the main-window webContents (the app
     // shell) so the Playwright engine can recognize the shell by exact-match
@@ -265,7 +285,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
     } catch { /* window destroyed — omit shellUrl */ }
 
     return {
-      cdpPort,
+      ...(includeCdpPort && { cdpPort: webviewCdpManager.getCdpPort() }),
       ...(shellUrl && { shellUrl }),
       targets: targets.map((t) => ({
         surfaceId: t.surfaceId,

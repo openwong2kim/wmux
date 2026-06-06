@@ -23,7 +23,7 @@ import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { UsagePoller } from './claude/UsagePoller';
-import { IPC } from '../shared/constants';
+import { getCdpAccessTokenPath, IPC } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
 import { registerBrowserRpc } from './pipe/handlers/browser.rpc';
@@ -55,12 +55,23 @@ import { collectLegacyMetadata } from './metadata/legacyMigration';
 import { sessionManager, registerSessionHandlers } from './ipc/handlers/session.handler';
 import { eventBus } from './events/EventBus';
 import { initLogSink, logLine } from './util/logSink';
+import { secureWriteTokenFile } from '../shared/security';
 
 // Force English for Chromium internal messages to avoid encoding corruption
 // on non-ASCII locales (e.g. Korean Windows where cp949 garbles console output).
 app.commandLine.appendSwitch('lang', 'en-US');
 
 // CDP (Chrome DevTools Protocol) remote debugging
+// Separate one-process token that gates disclosure of the randomized raw CDP
+// port. The ordinary RPC auth token is intentionally insufficient to retrieve
+// the port from browser.cdp.info.
+const cdpAccessToken = crypto.randomUUID();
+try {
+  secureWriteTokenFile(getCdpAccessTokenPath(), cdpAccessToken);
+} catch (err) {
+  console.warn('[WinMux] Failed to persist CDP access token:', err);
+}
+
 let cdpPort = 0;
 if (process.env.WMUX_DISABLE_CDP !== 'true') {
   // Randomize port within range to prevent predictable scanning
@@ -391,7 +402,7 @@ registerInputRpc(rpcRouter, ptyManager, () => mainWindow, () => daemonClient);
 registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
-registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager);
+registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager, { cdpAccessToken });
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker);
 registerCompanyRpc(rpcRouter, () => mainWindow);
 registerEventsRpc(rpcRouter);
