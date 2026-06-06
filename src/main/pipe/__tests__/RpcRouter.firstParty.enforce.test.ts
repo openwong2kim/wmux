@@ -141,4 +141,24 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
     });
     expect(res.ok).toBe(false); // confirms enforce mode blocks, not shadow
   });
+
+  it('SECURITY: a failing trust lookup denies the first-party bypass (a denied row could be unreadable)', async () => {
+    // Simulate a corrupt / unreadable trust DB by making the lookup throw
+    // instead of cleanly resolving. A clean miss grants the bypass (see the
+    // "NO trust record" case above), but a *failed* read is an unknown state:
+    // an operator `denied` row might exist and merely be unreadable, so
+    // first-party must fall through to fail-closed enforcement rather than
+    // silently honoring claude-code. Without trustLookupFailed plumbing this
+    // call would wrongly succeed.
+    router.setTrustLookup(async () => {
+      throw new Error('simulated corrupt plugin-trust.json');
+    });
+    const res = await router.dispatch({
+      id: 'fp-lookup-fail',
+      method: 'browser.open',
+      params: {},
+      clientName: CLAUDE,
+    });
+    expect(res.ok, 'first-party must not be allowed when the trust lookup throws').toBe(false);
+  });
 });

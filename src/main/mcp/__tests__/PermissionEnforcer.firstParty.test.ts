@@ -130,4 +130,40 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
       expect(out.kind, `${method} must never be first-party-allowed`).toBe('reject');
     }
   });
+
+  it('SECURITY: declines the first-party bypass when the trust lookup FAILED (a denied row may be unreadable)', () => {
+    // A clean miss (trust=undefined, no failure) grants the bypass — see the
+    // "NO trust record" test above. But when the trust-store read THREW (corrupt
+    // DB / I/O), an operator `denied` row might exist and merely be unreadable.
+    // Honoring first-party here would silently bypass that escape hatch, so the
+    // enforcer must fall through to the fail-closed ladder instead. Symmetric
+    // with non-first-party callers, which already fail closed on undefined trust.
+    for (const method of SAMPLE_ALLOWED) {
+      const out = check({
+        method,
+        params: {},
+        ctx: ctx(FP),
+        trust: undefined,
+        trustLookupFailed: true,
+      });
+      expect(out.kind, `${method} must not be first-party-allowed on a failed lookup`).toBe(
+        'reject',
+      );
+    }
+  });
+
+  it('still grants the first-party bypass on a clean miss (trustLookupFailed=false)', () => {
+    // Regression guard for the live boot path: trust=undefined from a clean
+    // lookup is the fresh-identify case and MUST keep working unchanged.
+    for (const method of SAMPLE_ALLOWED) {
+      const out = check({
+        method,
+        params: {},
+        ctx: ctx(FP),
+        trust: undefined,
+        trustLookupFailed: false,
+      });
+      expect(out, `${method} should be allowed on a clean miss`).toEqual({ kind: 'allow' });
+    }
+  });
 });

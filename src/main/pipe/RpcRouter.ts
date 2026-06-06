@@ -235,14 +235,20 @@ export class RpcRouter {
     // enforce-mode flip (pre-commit 6) will gate handler invocation on
     // the outcome and convert rejections into RpcResponse failures.
     let trust: PluginIdentityRecord | undefined;
+    let trustLookupFailed = false;
     if (ctx.clientName && this.trustLookup) {
       try {
         trust = await this.trustLookup(ctx.clientName);
       } catch {
-        // Trust DB read errors fall through as undefined — the enforcer
-        // treats that as "self-named but not yet recorded" (unconfirmed),
-        // which in shadow mode just generates a log entry.
+        // Trust DB read error (corrupt file / I/O). This is NOT the same as a
+        // clean "no record" miss: flag it so the enforcer can distinguish them.
+        // For a normal plugin the outcome is identical (unconfirmed → reject in
+        // enforce mode), but for the first-party bypass it matters — an operator
+        // `denied` row that simply couldn't be read must not be silently
+        // bypassed. The enforcer declines the first-party bypass on this unknown
+        // state and falls through to the fail-closed ladder.
         trust = undefined;
+        trustLookupFailed = true;
       }
     }
     const outcome = enforcerCheck({
@@ -250,6 +256,7 @@ export class RpcRouter {
       params: request.params ?? {},
       ctx,
       trust,
+      trustLookupFailed,
     });
     if (outcome.kind !== 'allow' && this.shadowSink) {
       try {
