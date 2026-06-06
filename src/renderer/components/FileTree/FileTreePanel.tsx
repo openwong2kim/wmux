@@ -215,9 +215,16 @@ function TreeItem({
     }
   };
 
+  const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
+
   const handleDragStart = (e: React.DragEvent) => {
     e.dataTransfer.setData('text/plain', node.path);
     e.dataTransfer.effectAllowed = 'copy';
+    setTerminalTextDropDragActive(true);
+  };
+
+  const handleDragEnd = () => {
+    setTerminalTextDropDragActive(false);
   };
 
   return (
@@ -229,6 +236,7 @@ function TreeItem({
         title={node.path}
         draggable={!node.isDirectory}
         onDragStart={handleDragStart}
+        onDragEnd={handleDragEnd}
       >
         <span className="mr-1 shrink-0 text-[11px]">{icon}</span>
         <span className="truncate">{node.name}</span>

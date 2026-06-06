@@ -415,3 +415,23 @@ describe('UISlice — multiview', () => {
     expect(store.getState().multiviewIds).toEqual(['A', 'B', 'C']);
   });
 });
+
+describe('UISlice — terminal text-drop trust boundary', () => {
+  let store: ReturnType<typeof createTestStore>;
+
+  beforeEach(() => {
+    store = createTestStore();
+  });
+
+  it('terminalTextDropDragActive defaults to false', () => {
+    expect(store.getState().terminalTextDropDragActive).toBe(false);
+  });
+
+  it('setTerminalTextDropDragActive toggles the internal drag marker', () => {
+    store.getState().setTerminalTextDropDragActive(true);
+    expect(store.getState().terminalTextDropDragActive).toBe(true);
+
+    store.getState().setTerminalTextDropDragActive(false);
+    expect(store.getState().terminalTextDropDragActive).toBe(false);
+  });
+});
