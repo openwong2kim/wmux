@@ -193,6 +193,7 @@ const autoUpdater = new AutoUpdater(() => mainWindow);
 const rpcRouter = new RpcRouter();
 const pipeServer = new PipeServer(rpcRouter);
 const mcpRegistrar = new McpRegistrar();
+rpcRouter.setFirstPartyToken(mcpRegistrar.getFirstPartyToken());
 const webviewCdpManager = new WebviewCdpManager(cdpPort);
 
 const claudeWorker = new ClaudeWorker(() => mainWindow);

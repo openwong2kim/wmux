@@ -1,7 +1,8 @@
 import * as fs from 'fs';
 import * as path from 'path';
+import * as crypto from 'crypto';
 import { app } from 'electron';
-import { getAuthTokenPath, getPipeName } from '../../shared/constants';
+import { getAuthTokenPath, getFirstPartyTokenPath, getPipeName } from '../../shared/constants';
 import { secureWriteTokenFile } from '../../shared/security';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
@@ -44,6 +45,8 @@ export interface McpRegistrarStatus {
 export class McpRegistrar {
   private readonly claudeJsonPath: string;
   private readonly authTokenPath: string;
+  private readonly firstPartyTokenPath: string;
+  private readonly firstPartyToken: string;
   private registered = false;
   /** Keys that WinMux actually wrote (so we only unregister our own). */
   private readonly ownedKeys = new Set<string>();
@@ -52,6 +55,24 @@ export class McpRegistrar {
     const home = app.getPath('home');
     this.claudeJsonPath = path.join(home, '.claude.json');
     this.authTokenPath = getAuthTokenPath();
+    this.firstPartyTokenPath = getFirstPartyTokenPath();
+    this.firstPartyToken = this.loadOrCreateFirstPartyToken();
+  }
+
+  getFirstPartyToken(): string {
+    return this.firstPartyToken;
+  }
+
+  private loadOrCreateFirstPartyToken(): string {
+    try {
+      const existing = fs.readFileSync(this.firstPartyTokenPath, 'utf8').trim();
+      if (existing) return existing;
+    } catch {
+      // Missing on first run; create below.
+    }
+    const token = crypto.randomUUID();
+    secureWriteTokenFile(this.firstPartyTokenPath, token);
+    return token;
   }
 
   /** Absolute path to the Claude Code user config file. */
@@ -132,8 +153,11 @@ export class McpRegistrar {
    */
   register(authToken: string): void {
     try {
-      // Write auth token to file so MCP server can read it
+      // Write auth token to file so MCP server can read it. Also refresh the
+      // first-party token file in case ACL hardening or a previous cleanup
+      // removed it after this registrar was constructed.
       secureWriteTokenFile(this.authTokenPath, authToken);
+      secureWriteTokenFile(this.firstPartyTokenPath, this.firstPartyToken);
       console.log(`[McpRegistrar] Auth token written to ${this.authTokenPath}`);
 
       const mcpScript = this.getMcpScriptPath();

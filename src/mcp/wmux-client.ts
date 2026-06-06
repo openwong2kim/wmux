@@ -2,7 +2,7 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import type { RpcMethod, RpcResponse } from '../shared/rpc';
-import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../shared/constants';
+import { getPipeName, getAuthTokenPath, getFirstPartyTokenPath, getTcpPortPath } from '../shared/constants';
 
 const TIMEOUT_MS = 10000;
 const RETRY_COUNT = 3;
@@ -51,6 +51,14 @@ function readAuthToken(): string | undefined {
   return undefined;
 }
 
+function readFirstPartyToken(): string | undefined {
+  try {
+    const fromFile = fs.readFileSync(getFirstPartyTokenPath(), 'utf8').trim();
+    if (fromFile) return fromFile;
+  } catch { /* file doesn't exist */ }
+  return undefined;
+}
+
 function readTcpPort(): number | undefined {
   try {
     const port = parseInt(fs.readFileSync(getTcpPortPath(), 'utf8').trim(), 10);
@@ -61,12 +69,14 @@ function readTcpPort(): number | undefined {
 function attemptRpc(
   target: string | { host: string; port: number },
   token: string,
+  firstPartyToken: string | undefined,
   method: RpcMethod,
   params: Record<string, unknown>,
 ): Promise<unknown> {
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
     const envelope: Record<string, unknown> = { id, method, params, token };
+    if (firstPartyToken) envelope.firstPartyToken = firstPartyToken;
     if (CLIENT_NAME) envelope.clientName = CLIENT_NAME;
     if (CLIENT_VERSION) envelope.clientVersion = CLIENT_VERSION;
     const request = JSON.stringify(envelope) + '\n';
@@ -148,6 +158,8 @@ export async function sendRpc(
     throw new Error('wmux auth token not found. Is wmux running?');
   }
 
+  const firstPartyToken = readFirstPartyToken();
+
   // Try WMUX_SOCKET_PATH first (if set), then fall back to getPipeName().
   // Claude Code may cache a stale WMUX_SOCKET_PATH from a previous session,
   // so we must fall back to the derived name if the env path fails.
@@ -163,7 +175,7 @@ export async function sendRpc(
   for (const pipePath of pipePaths) {
     for (let attempt = 0; attempt < RETRY_COUNT; attempt++) {
       try {
-        return await attemptRpc(pipePath, token, method, params);
+        return await attemptRpc(pipePath, token, firstPartyToken, method, params);
       } catch (err) {
         lastError = err as Error;
         const msg = lastError.message;
@@ -185,7 +197,13 @@ export async function sendRpc(
   // TCP localhost fallback — bypasses Windows named pipe ACL issues
   if (tcpPort) {
     try {
-      return await attemptRpc({ host: '127.0.0.1', port: tcpPort }, token, method, params);
+      return await attemptRpc(
+        { host: '127.0.0.1', port: tcpPort },
+        token,
+        firstPartyToken,
+        method,
+        params,
+      );
     } catch { /* fall through */ }
   }
 

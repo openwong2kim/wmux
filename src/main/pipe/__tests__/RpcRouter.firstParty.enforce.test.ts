@@ -1,14 +1,9 @@
-// Dynamic verification of the first-party lockout fix through the REAL
-// enforce-mode dispatch pipeline.
-//
-// This reproduces the exact production scenario that was broken
-// (plans/first-party-mcp-trust.md): a packaged build runs the enforcer in
-// `enforce` mode, the bundled MCP server identifies as `claude-code` and is
-// recorded `unconfirmed`, and every capability-bearing RPC it makes was
-// rejected with no recovery path. We wire the production objects (real
+// Dynamic verification of first-party enforcement through the REAL enforce-mode
+// dispatch pipeline. These are deliberately higher-level than
+// PermissionEnforcer.firstParty.test.ts: they wire the production objects (real
 // RpcRouter + real PluginTrustStore on an isolated tmpdir + the real enforcer)
 // exactly like src/main/index.ts, flip enforce mode on, and assert the bundled
-// server's calls now pass while an impersonator and reserved methods do not.
+// server allowlist only works after the private first-party token is verified.
 //
 // Per-module unit tests can't catch a regression in this wiring — only
 // dispatching through the assembled pipeline can.
@@ -24,6 +19,7 @@ import { registerMcpPluginRpc } from '../handlers/mcp.rpc';
 let tmpDir = '';
 let store: PluginTrustStore;
 let router: RpcRouter;
+const FIRST_PARTY_TOKEN = 'test-first-party-token';
 
 function wireEnforced(): void {
   registerMcpPluginRpc(router, store);
@@ -47,6 +43,7 @@ beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-fp-enforce-'));
   store = new PluginTrustStore(path.join(tmpDir, 'plugin-trust.json'));
   router = new RpcRouter();
+  router.setFirstPartyToken(FIRST_PARTY_TOKEN);
   wireEnforced();
 });
 
@@ -60,10 +57,8 @@ afterEach(() => {
 
 const CLAUDE = 'claude-code';
 
-describe('enforce-mode dispatch — first-party bundled server (the lockout fix)', () => {
-  it('allows browser.open / surface.list / company.a2a.whoami for claude-code recorded unconfirmed', async () => {
-    // Mirror the live trust DB: mcp.identify recorded claude-code unconfirmed,
-    // no declaration. This is the exact state ~/.wmux/plugin-trust.json showed.
+describe('enforce-mode dispatch — first-party bundled server', () => {
+  it('allows browser.open / surface.list / company.a2a.whoami for claude-code only with the first-party token', async () => {
     await store.upsertContact(CLAUDE, '2.1.167');
     expect((await store.get(CLAUDE))?.status).toBe('unconfirmed');
 
@@ -74,17 +69,46 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
         params: {},
         clientName: CLAUDE,
         clientVersion: '2.1.167',
+        firstPartyToken: FIRST_PARTY_TOKEN,
       });
-      expect(res.ok, `${method} should pass enforce-mode dispatch for first-party`).toBe(true);
+      expect(
+        res.ok,
+        `${method} should pass enforce-mode dispatch for token-authenticated first-party`,
+      ).toBe(true);
     }
   });
 
-  it('allows even with NO trust record at all (tool call racing ahead of identify)', async () => {
+  it('rejects claude-code with NO trust record at all (spoofed clean miss)', async () => {
     const res = await router.dispatch({
       id: 'fp-norecord',
       method: 'surface.list',
       params: {},
       clientName: CLAUDE,
+    });
+    expect(res.ok).toBe(false);
+  });
+
+  it('allows claude-code with NO trust record when token is verified (fresh identify race)', async () => {
+    const res = await router.dispatch({
+      id: 'fp-token-norecord',
+      method: 'surface.list',
+      params: {},
+      clientName: CLAUDE,
+      firstPartyToken: FIRST_PARTY_TOKEN,
+    });
+    expect(res.ok).toBe(true);
+  });
+
+  it('allows claude-code while only recorded as unconfirmed when token is verified', async () => {
+    await store.upsertContact(CLAUDE, '2.1.167');
+    expect((await store.get(CLAUDE))?.status).toBe('unconfirmed');
+    const res = await router.dispatch({
+      id: 'fp-unconfirmed',
+      method: 'surface.list',
+      params: {},
+      clientName: CLAUDE,
+      clientVersion: '2.1.167',
+      firstPartyToken: FIRST_PARTY_TOKEN,
     });
     expect(res.ok).toBe(true);
   });
@@ -112,6 +136,7 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
       method: 'workspace.new', // wmux.internal, NOT in FIRST_PARTY_METHODS
       params: {},
       clientName: CLAUDE,
+      firstPartyToken: FIRST_PARTY_TOKEN,
     });
     expect(res.ok).toBe(false);
   });
@@ -124,6 +149,7 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
       method: 'browser.open',
       params: {},
       clientName: CLAUDE,
+      firstPartyToken: FIRST_PARTY_TOKEN,
     });
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/denied/);
@@ -144,12 +170,10 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
 
   it('SECURITY: a failing trust lookup denies the first-party bypass (a denied row could be unreadable)', async () => {
     // Simulate a corrupt / unreadable trust DB by making the lookup throw
-    // instead of cleanly resolving. A clean miss grants the bypass (see the
-    // "NO trust record" case above), but a *failed* read is an unknown state:
-    // an operator `denied` row might exist and merely be unreadable, so
+    // instead of cleanly resolving. A failed read is an unknown state: an
+    // operator `denied` row might exist and merely be unreadable, so
     // first-party must fall through to fail-closed enforcement rather than
-    // silently honoring claude-code. Without trustLookupFailed plumbing this
-    // call would wrongly succeed.
+    // silently honoring claude-code.
     router.setTrustLookup(async () => {
       throw new Error('simulated corrupt plugin-trust.json');
     });
@@ -158,7 +182,10 @@ describe('enforce-mode dispatch — first-party bundled server (the lockout fix)
       method: 'browser.open',
       params: {},
       clientName: CLAUDE,
+      firstPartyToken: FIRST_PARTY_TOKEN,
     });
-    expect(res.ok, 'first-party must not be allowed when the trust lookup throws').toBe(false);
+    expect(res.ok, 'first-party must not be allowed when the trust lookup throws').toBe(
+      false,
+    );
   });
 });

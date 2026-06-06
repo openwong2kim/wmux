@@ -5,6 +5,8 @@ export interface RpcRequest {
   method: RpcMethod;
   params: Record<string, unknown>;
   token?: string;
+  /** Optional first-party bearer credential for the bundled wmux MCP bridge. */
+  firstPartyToken?: string;
   /**
    * v2.10.0+ — declared plugin identity. Carries the MCP `clientInfo.name`
    * (and version) from the MCP server stdio handshake so handlers can attribute
@@ -29,6 +31,8 @@ export interface RpcRequest {
 export interface RpcContext {
   clientName?: string;
   clientVersion?: string;
+  /** True only when RpcRouter verified the request's first-party credential. */
+  firstPartyAuthenticated?: boolean;
 }
 
 export type RpcResponse =

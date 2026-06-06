@@ -74,14 +74,10 @@ export interface EnforcerInput {
   /**
    * True when the trust-store lookup *threw* (corrupt DB / I/O error) instead
    * of cleanly resolving to "no record". The two cases look identical at the
-   * `trust === undefined` level but must NOT be treated the same: a clean miss
-   * is a fresh first-party caller (grant the bypass), whereas a failed read
-   * means an operator `denied` row might exist but couldn't be loaded — so the
-   * first-party bypass declines on this unknown state and lets the caller fall
-   * through to the normal (fail-closed) ladder. Non-first-party callers already
-   * fail closed here regardless; this keeps first-party symmetric for the
-   * security-relevant `denied` case. Defaults to `false` when omitted (the
-   * common path and every unit test that doesn't exercise a lookup failure).
+   * `trust === undefined` level. A failed read must still fail closed because it
+   * might be hiding an operator `denied` row. Defaults to `false` when omitted
+   * (the common path and every unit test that doesn't exercise a lookup
+   * failure).
    */
   trustLookupFailed?: boolean;
 }
@@ -178,27 +174,15 @@ export function check(input: EnforcerInput): EnforcerOutcome {
     return { kind: 'allow' };
   }
 
-  // First-party bundled wmux MCP server (recognised by the host clientName it
-  // reports). It ships inside wmux and never goes through the external-plugin
-  // declare/approve flow — and it couldn't if it tried, because several tools
-  // it exposes map to `wmux.internal` methods (surface.list, company.a2a.*)
-  // that the permission grammar forbids from any declaration. Grant exactly
-  // the method set it calls (firstParty.ts), nothing more, regardless of the
-  // trust-DB `unconfirmed` status that the bundled server is otherwise stuck
-  // in. Three guards keep this from becoming a blanket bypass:
-  //   - An explicit user `denied` still wins (operator escape hatch): fall
-  //     through to the `denied` branch below.
-  //   - A failed trust lookup (corrupt DB / I/O error, signalled by
-  //     `trustLookupFailed`) is an UNKNOWN state, not a clean miss: a `denied`
-  //     row may exist but be unreadable, so we decline the bypass and fall
-  //     through to fail-closed enforcement rather than honoring the bundled
-  //     server while an operator's `denied` couldn't be loaded.
-  //   - A method outside the curated allowlist also falls through to normal
-  //     enforcement, so a coverage gap surfaces as a rejection instead of
-  //     silently widening first-party scope.
-  // See plans/first-party-mcp-trust.md and docs/api/mcp-plugin-spec.md.
+  // First-party bundled wmux MCP server. `clientName` is self-declared (see
+  // shared/rpc.ts), so a caller-controlled name must never grant privileges on
+  // its own. The router must also verify the private first-party bearer token
+  // before the curated method set can bypass declaration/approval. Denied rows,
+  // failed trust lookups, unauthenticated first-party claims, and methods
+  // outside the list all fall through to the normal fail-closed ladder below.
   if (
     isFirstPartyClient(input.ctx.clientName) &&
+    input.ctx.firstPartyAuthenticated === true &&
     !input.trustLookupFailed &&
     input.trust?.status !== 'denied' &&
     FIRST_PARTY_METHODS.has(input.method)

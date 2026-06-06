@@ -152,6 +152,15 @@ export function getAuthTokenPath(): string {
   return `${home}/.wmux-auth-token`;
 }
 
+// Separate bearer credential for the bundled first-party MCP bridge. This must
+// not be accepted as the general RPC auth token; it only proves that a request
+// came from the wmux-registered MCP script rather than a caller spoofing
+// clientName="claude-code" over an already-authenticated pipe.
+export function getFirstPartyTokenPath(): string {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  return `${home}/.wmux-first-party-token`;
+}
+
 // PID-to-workspace mapping directory — written by PTYManager, read by MCP server
 // to resolve workspace identity when env vars don't propagate through Claude Code
 export function getPidMapDir(): string {

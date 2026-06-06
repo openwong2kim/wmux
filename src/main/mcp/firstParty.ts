@@ -18,29 +18,20 @@
 // declaration (RESERVED_PREFIXES = ['wmux.']). No amount of user approval can
 // grant those.
 //
-// The fix: recognise the bundled server by the host clientName it reports and
-// allow exactly the method set it actually calls — nothing more. This is a
-// scoped allowlist, NOT a blanket "first party can do anything" bypass: a
-// method outside the set falls through to normal enforcement, and an explicit
-// user `denied` still wins (see PermissionEnforcer.check).
-//
-// Threat model (matches the spec's "declared, not verified" stance, rpc.ts):
-// recognition is by self-asserted clientName. On a single-user OS this is no
-// weaker than any local secret — a same-user process that wanted to
-// impersonate the host already holds the daemon auth token and could call the
-// pipe directly. What the scoped allowlist buys over a blanket bypass is that
-// even an impersonator only reaches the curated method set, never daemon.*,
-// workspace.new, company mutation, or other reserved surface. Documented in
-// docs/api/mcp-plugin-spec.md.
+// The fix: pair the bundled server's host clientName with a private
+// first-party bearer credential before allowing exactly the method set it
+// actually calls — nothing more. `clientName` is self-declared (rpc.ts), so a
+// clean missing or unconfirmed row cannot grant first-party privileges by
+// itself. A method outside the set falls through to normal enforcement, and an
+// explicit user `denied` still wins (see PermissionEnforcer.check).
 
 import type { RpcMethod } from '../../shared/rpc';
 
-// Host identities that own the bundled wmux MCP server. The server reports the
-// connecting MCP client's `clientInfo.name` (see wireClientIdentityHook in
-// src/mcp/index.ts); Claude Code reports `claude-code`. A Set so additional
-// first-party hosts (e.g. a future wmux-native CLI) can be added without
-// touching the enforcer. Exact match — `clientName` is already trimmed by
-// PipeServer when it builds RpcContext.
+// Host identities that may own the bundled wmux MCP server once the request
+// also carries the private first-party token. The server reports the connecting
+// MCP client's `clientInfo.name` (see wireClientIdentityHook in src/mcp/index.ts);
+// Claude Code reports `claude-code`. Exact match — `clientName` is already
+// trimmed by PipeServer when it builds RpcContext.
 export const FIRST_PARTY_CLIENT_NAMES: ReadonlySet<string> = new Set<string>([
   'claude-code',
 ]);
@@ -50,8 +41,7 @@ export const FIRST_PARTY_CLIENT_NAMES: ReadonlySet<string> = new Set<string>([
 // `firstParty.test.ts`, which parses src/mcp/ for every callRpc/sendRpc method
 // literal and fails if any is missing here. Least privilege: methods the
 // bundled server does NOT call (e.g. daemon.shutdown, workspace.new,
-// company.create) are intentionally absent, so a clientName impersonator can
-// never reach them through the first-party path.
+// company.create) are intentionally absent.
 export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // identity / workspace bootstrap
   'mcp.identify',

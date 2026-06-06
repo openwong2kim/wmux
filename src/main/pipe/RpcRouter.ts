@@ -73,6 +73,7 @@ export class RpcRouter {
   private legacyTrafficCounter: LegacyTrafficCounter | undefined;
   private trustLookup: TrustLookup | undefined;
   private shadowSink: ShadowRejectionSink | undefined;
+  private firstPartyToken: string | undefined;
   /**
    * Phase 2.2 pre-commit 6: enforcement mode. Default is `shadow` so a
    * router that was never explicitly set up (unit tests, transitional
@@ -137,6 +138,17 @@ export class RpcRouter {
   }
 
   /**
+   * Configure the private bearer credential accepted for the bundled wmux MCP
+   * bridge. The clientName remains self-declared; this token is the provenance
+   * check that prevents a normal authenticated RPC caller from spoofing
+   * clientName="claude-code" into the first-party allowlist.
+   */
+  setFirstPartyToken(token: string | undefined): void {
+    const trimmed = typeof token === 'string' ? token.trim() : '';
+    this.firstPartyToken = trimmed.length > 0 ? trimmed : undefined;
+  }
+
+  /**
    * Phase 2.2 pre-commit 6: switch between shadow (log + proceed) and
    * enforce (log + return rejection). The mode is read from
    * `~/.wmux/config.json` at main/index.ts boot time.
@@ -185,6 +197,11 @@ export class RpcRouter {
         typeof request.clientVersion === 'string' && request.clientVersion.trim().length > 0
           ? request.clientVersion.trim()
           : undefined,
+      firstPartyAuthenticated:
+        typeof request.firstPartyToken === 'string' &&
+        this.firstPartyToken !== undefined &&
+        request.firstPartyToken.length === this.firstPartyToken.length &&
+        request.firstPartyToken === this.firstPartyToken,
     };
 
     // Spec §2.2: requests without `clientName` are recorded as `legacy`.

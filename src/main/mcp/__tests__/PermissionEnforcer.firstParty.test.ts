@@ -1,10 +1,7 @@
 // First-party scoped-allowlist behavior in the Phase 2.2 enforcer.
 //
-// These cover the production lockout fix (plans/first-party-mcp-trust.md): the
-// bundled wmux MCP server identifies as `claude-code` and is recorded
-// `unconfirmed` in the trust DB, but must still be allowed to call the method
-// set it actually uses — including `wmux.internal` methods (surface.list,
-// company.a2a.*) that can never be declared/approved.
+// `clientName` is self-declared, so the first-party allowlist is only reachable
+// when RpcRouter has verified the private first-party bearer credential.
 
 import { describe, expect, it } from 'vitest';
 import type { PluginIdentityRecord, RpcContext, RpcMethod } from '../../../shared/rpc';
@@ -16,8 +13,8 @@ function trust(
 ): PluginIdentityRecord {
   return { firstSeen: 1000, lastSeen: 2000, ...overrides };
 }
-function ctx(clientName?: string): RpcContext {
-  return clientName ? { clientName } : {};
+function ctx(clientName?: string, firstPartyAuthenticated = false): RpcContext {
+  return clientName ? { clientName, firstPartyAuthenticated } : {};
 }
 
 const FP = 'claude-code';
@@ -32,29 +29,36 @@ const SAMPLE_ALLOWED: RpcMethod[] = [
 ];
 
 describe('PermissionEnforcer.check — first-party allowlist', () => {
-  it('allows allowlisted methods for claude-code even when status=unconfirmed', () => {
+  it('allows allowlisted methods for claude-code when the first-party token is verified', () => {
     for (const method of SAMPLE_ALLOWED) {
       const out = check({
         method,
         params: {},
-        ctx: ctx(FP),
+        ctx: ctx(FP, true),
         trust: trust({ name: FP, status: 'unconfirmed' }),
       });
-      expect(out, `${method} should be allowed for first-party/unconfirmed`).toEqual({
+      expect(out, `${method} should be allowed for token-authenticated first-party`).toEqual({
         kind: 'allow',
       });
     }
   });
 
-  it('allows allowlisted methods for claude-code with NO trust record (fresh identify)', () => {
-    // The actual live scenario: claude-code called mcp.identify, then a tool
-    // RPC arrives before/without any declaration. trust may be undefined or a
-    // bare unconfirmed row — either way the bundled server must work.
+  it('rejects claude-code with NO trust record when the first-party token is absent', () => {
     const out = check({
       method: 'surface.list',
       params: {},
       ctx: ctx(FP),
       trust: undefined,
+    });
+    expect(out.kind).toBe('reject');
+  });
+
+  it('allows claude-code with an unconfirmed trust record when the first-party token is verified', () => {
+    const out = check({
+      method: 'surface.list',
+      params: {},
+      ctx: ctx(FP, true),
+      trust: trust({ name: FP, status: 'unconfirmed' }),
     });
     expect(out).toEqual({ kind: 'allow' });
   });
@@ -64,7 +68,7 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
       const out = check({
         method,
         params: {},
-        ctx: ctx(FP),
+        ctx: ctx(FP, true),
         trust: trust({ name: FP, status: 'unconfirmed' }),
       });
       expect(out, `${method}`).toEqual({ kind: 'allow' });
@@ -75,7 +79,7 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
     const out = check({
       method: 'browser.open',
       params: {},
-      ctx: ctx(FP),
+      ctx: ctx(FP, true),
       trust: trust({ name: FP, status: 'denied' }),
     });
     expect(out.kind).toBe('reject');
@@ -94,7 +98,7 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
       const out = check({
         method,
         params: {},
-        ctx: ctx(FP),
+        ctx: ctx(FP, true),
         trust: trust({ name: FP, status: 'unconfirmed' }),
       });
       expect(out.kind, `${method} must not be auto-allowed for first-party`).toBe('reject');
@@ -116,10 +120,9 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
     }
   });
 
-  it('SECURITY: even spoofing clientName="claude-code" only reaches the curated set, never reserved daemon methods', () => {
-    // Defense-in-depth assertion: the worst a clientName impersonator (who
-    // already needs the daemon auth token) can do via the first-party path is
-    // the allowlist — never daemon.shutdown/compact or company mutation.
+  it('SECURITY: untrusted spoofing clientName="claude-code" cannot reach reserved daemon methods', () => {
+    // Defense-in-depth assertion: an unconfirmed clientName impersonator never
+    // reaches daemon.shutdown/compact or company mutation.
     for (const method of ['daemon.shutdown', 'daemon.compact', 'company.create'] as const) {
       const out = check({
         method,
@@ -132,17 +135,14 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
   });
 
   it('SECURITY: declines the first-party bypass when the trust lookup FAILED (a denied row may be unreadable)', () => {
-    // A clean miss (trust=undefined, no failure) grants the bypass — see the
-    // "NO trust record" test above. But when the trust-store read THREW (corrupt
-    // DB / I/O), an operator `denied` row might exist and merely be unreadable.
-    // Honoring first-party here would silently bypass that escape hatch, so the
-    // enforcer must fall through to the fail-closed ladder instead. Symmetric
-    // with non-first-party callers, which already fail closed on undefined trust.
+    // When the trust-store read THREW (corrupt DB / I/O), an operator `denied`
+    // row might exist and merely be unreadable. The enforcer must fall through
+    // to the fail-closed ladder instead.
     for (const method of SAMPLE_ALLOWED) {
       const out = check({
         method,
         params: {},
-        ctx: ctx(FP),
+        ctx: ctx(FP, true),
         trust: undefined,
         trustLookupFailed: true,
       });
@@ -152,18 +152,20 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
     }
   });
 
-  it('still grants the first-party bypass on a clean miss (trustLookupFailed=false)', () => {
-    // Regression guard for the live boot path: trust=undefined from a clean
-    // lookup is the fresh-identify case and MUST keep working unchanged.
+  it('allows the first-party bypass on a clean miss only when the token is verified', () => {
+    // A clean miss is safe only when paired with the private first-party token;
+    // clientName alone is covered by the NO trust record rejection above.
     for (const method of SAMPLE_ALLOWED) {
       const out = check({
         method,
         params: {},
-        ctx: ctx(FP),
+        ctx: ctx(FP, true),
         trust: undefined,
         trustLookupFailed: false,
       });
-      expect(out, `${method} should be allowed on a clean miss`).toEqual({ kind: 'allow' });
+      expect(out, `${method} should allow on a token-verified clean miss`).toEqual({
+        kind: 'allow',
+      });
     }
   });
 });
