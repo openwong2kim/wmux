@@ -34,6 +34,15 @@ function collectTools(): Map<string, ToolHandler> {
 
 const wait = collectTools().get('browser_wait')!;
 
+/** Resolve common page reads (href/readyState) and let each test override the
+ *  predicate-defining expression via `truthy`. */
+function evalRouter(map: Record<string, unknown>, fallback: unknown = false) {
+  return (_method: string, params: { expression: string }) => {
+    if (params.expression in map) return Promise.resolve({ value: map[params.expression] });
+    return Promise.resolve({ value: fallback });
+  };
+}
+
 beforeEach(() => {
   mockSendRpc.mockReset();
   getPage.mockReset();
@@ -41,14 +50,17 @@ beforeEach(() => {
 });
 
 describe('browser_wait RPC fallback', () => {
-  it('polls selector presence over browser.evaluate', async () => {
+  it('polls selector presence AND visibility over browser.evaluate', async () => {
     mockSendRpc.mockResolvedValue({ value: true });
     const res = await wait({ selector: '#app', surfaceId: 's1' });
     expect(res.isError).toBeUndefined();
     expect(res.content[0].text).toContain('selector "#app" found');
     const [method, params] = mockSendRpc.mock.calls[0] as [string, { expression: string; surfaceId?: string }];
     expect(method).toBe('browser.evaluate');
-    expect(params.expression).toBe('!!document.querySelector("#app")');
+    // Mirrors Playwright's default state:'visible' — attachment + visible box.
+    expect(params.expression).toContain('querySelector("#app")');
+    expect(params.expression).toContain('getBoundingClientRect');
+    expect(params.expression).toContain('visibility');
     expect(params.surfaceId).toBe('s1');
   });
 
@@ -60,19 +72,37 @@ describe('browser_wait RPC fallback', () => {
     expect(expr).toContain('document.body.innerText.includes("Ready")');
   });
 
-  it('evaluates a custom predicate expression', async () => {
+  it('coerces the custom predicate to a boolean in the page (truthy objects survive RPC)', async () => {
     mockSendRpc.mockResolvedValue({ value: true });
-    const res = await wait({ fn: "window.__ready === 'yes'" });
+    const res = await wait({ fn: "document.querySelector('#app')" });
     expect(res.content[0].text).toContain('custom predicate satisfied');
     const expr = (mockSendRpc.mock.calls[0][1] as { expression: string }).expression;
-    expect(expr).toBe("(window.__ready === 'yes')");
+    // !! wrapper means a truthy DOM node serializes as `true`, not `null`.
+    expect(expr).toBe("!!(document.querySelector('#app'))");
   });
 
-  it('matches a URL glob against location.href', async () => {
-    mockSendRpc.mockResolvedValue({ value: 'https://example.com/dashboard/42' });
+  it('matches a URL glob and waits for the load state (readyState complete)', async () => {
+    mockSendRpc.mockImplementation(evalRouter({
+      'location.href': 'https://example.com/dashboard/42',
+      'document.readyState': 'complete',
+    }));
     const res = await wait({ url: '**/dashboard/**' });
+    expect(res.isError).toBeUndefined();
     expect(res.content[0].text).toContain('URL matched "**/dashboard/**"');
-    expect((mockSendRpc.mock.calls[0][1] as { expression: string }).expression).toBe('location.href');
+    const exprs = mockSendRpc.mock.calls.map((c) => (c[1] as { expression: string }).expression);
+    expect(exprs).toContain('location.href');
+    expect(exprs).toContain('document.readyState');
+  });
+
+  it('confines a single * to one path segment (glob parity with waitForURL)', async () => {
+    // href has an extra segment, so single-* must NOT match -> times out.
+    mockSendRpc.mockImplementation(evalRouter({
+      'location.href': 'https://site.test/a/b/settings',
+      'document.readyState': 'complete',
+    }));
+    const res = await wait({ url: 'https://site.test/*/settings', timeout: 60 });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('Timed out');
   });
 
   it('approximates networkidle with document.readyState', async () => {
@@ -98,6 +128,15 @@ describe('browser_wait RPC fallback', () => {
     expect(res.isError).toBeUndefined();
     expect(res.content[0].text).toContain('selector "#late" found');
     expect(mockSendRpc.mock.calls.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('surfaces a setup error immediately instead of timing out', async () => {
+    mockSendRpc.mockRejectedValue(new Error('browser.evaluate: no webview target registered'));
+    const res = await wait({ selector: '#app', timeout: 30000 });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('no webview target registered');
+    // Failed fast — did not burn the 30s deadline polling.
+    expect(mockSendRpc.mock.calls.length).toBe(1);
   });
 
   it('uses the Playwright Page when one exists (no RPC)', async () => {

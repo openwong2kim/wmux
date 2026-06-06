@@ -18,15 +18,29 @@ const optionalSurfaceId = z
 // Playwright Page, so engine.getPage() returns null and page.waitFor* is
 // unavailable. browser_wait then polls the condition over the main-process CDP
 // channel (browser.evaluate), the same route the state/extraction tools use
-// (#105/#106/#111).
+// (#105/#106/#111). Each predicate mirrors the Playwright path's semantics as
+// closely as the transport allows.
 
 /**
- * Convert a Playwright-style URL glob to an anchored RegExp. `*` and `**` both
- * match any run of characters; every other regex metacharacter is escaped.
+ * Convert a Playwright-style URL glob to an anchored RegExp, matching
+ * `waitForURL` glob semantics: `**` spans path separators (`.*`), while a single
+ * `*` is confined to one path segment (`[^/]*`). Every other regex metacharacter
+ * is escaped first.
  */
 function urlGlobToRegExp(glob: string): RegExp {
-  const escaped = glob.replace(/[.+?^${}()|[\]\\]/g, '\\$&').replace(/\*/g, '.*');
+  const DOUBLE = String.fromCharCode(0); // placeholder so ** survives the single-* pass
+  const escaped = glob
+    .replace(/[.+?^${}()|[\]\\]/g, '\\$&')
+    .replace(/\*\*/g, DOUBLE)
+    .replace(/\*/g, '[^/]*')
+    .replace(new RegExp(DOUBLE, 'g'), '.*');
   return new RegExp(`^${escaped}$`);
+}
+
+/** Setup errors (no target / dead WebContents) are not transient navigation
+ *  races — re-raise them immediately instead of polling until the deadline. */
+function isSetupError(message: string): boolean {
+  return /no webview target registered|WebContents unavailable/i.test(message);
 }
 
 function sleep(ms: number): Promise<void> {
@@ -89,13 +103,26 @@ export function registerWaitTools(server: McpServer): void {
           // Playwright path below).
           if (url) {
             const re = urlGlobToRegExp(url);
+            // waitForURL waits for the load state (default 'load') after the URL
+            // matches, so require document.readyState === 'complete' too — without
+            // it the fallback could complete against a partially loaded page.
             predicate = async () => {
               const href = await evaluate('location.href');
-              return typeof href === 'string' && (href === url || re.test(href));
+              if (!(typeof href === 'string' && (href === url || re.test(href)))) return false;
+              return (await evaluate('document.readyState')) === 'complete';
             };
             label = `URL matched "${url}"`;
           } else if (selector) {
-            const expr = `!!document.querySelector(${JSON.stringify(selector)})`;
+            // waitForSelector defaults to state 'visible', so match attachment AND
+            // visibility (non-empty box, not display:none/visibility:hidden) rather
+            // than mere DOM presence.
+            const expr =
+              `(() => { const el = document.querySelector(${JSON.stringify(selector)});` +
+              ` if (!el) return false;` +
+              ` const s = window.getComputedStyle(el);` +
+              ` if (s.visibility === 'hidden' || s.display === 'none') return false;` +
+              ` const r = el.getBoundingClientRect();` +
+              ` return r.width > 0 && r.height > 0; })()`;
             predicate = async () => Boolean(await evaluate(expr));
             label = `selector "${selector}" found`;
           } else if (text) {
@@ -108,9 +135,12 @@ export function registerWaitTools(server: McpServer): void {
               console.warn(`[browser_wait] Dangerous patterns in fn: ${warnings.join(', ')}`);
               warningPrefix = `⚠ Security warning: fn contains potentially dangerous patterns: ${warnings.join(', ')}.\n`;
             }
-            // fn is a JS predicate expression evaluated in page context, matching
-            // Playwright's waitForFunction(string) semantics.
-            predicate = async () => Boolean(await evaluate(`(${fn})`));
+            // fn is a JS predicate expression evaluated in page context (Playwright
+            // waitForFunction(string) semantics). Coerce to a boolean IN the page:
+            // browser.evaluate returns only the CDP result.value, so a truthy but
+            // non-serializable result (e.g. a DOM node from querySelector) would
+            // otherwise come back as null and never satisfy the wait.
+            predicate = async () => Boolean(await evaluate(`!!(${fn})`));
             label = 'custom predicate satisfied';
           } else {
             // networkidle has no page-target debugger equivalent over this
@@ -124,9 +154,13 @@ export function registerWaitTools(server: McpServer): void {
             let ok = false;
             try {
               ok = await predicate();
-            } catch {
-              // Transient evaluate error mid-navigation (e.g. body not ready);
-              // keep polling until the deadline.
+            } catch (error) {
+              // A missing target / dead WebContents is a setup error, not a
+              // transient navigation race — surface it immediately so the caller
+              // gets an actionable message instead of a timeout.
+              const message = error instanceof Error ? error.message : String(error);
+              if (isSetupError(message)) throw error;
+              // Otherwise transient (e.g. body not ready mid-navigation): keep polling.
             }
             if (ok) {
               return {
@@ -173,7 +207,7 @@ export function registerWaitTools(server: McpServer): void {
           }
           await page.waitForFunction(fn, undefined, { timeout: resolvedTimeout });
           const warningPrefix = warnings.length > 0
-            ? `\u26A0 Security warning: fn contains potentially dangerous patterns: ${warnings.join(', ')}.\n`
+            ? `⚠ Security warning: fn contains potentially dangerous patterns: ${warnings.join(', ')}.\n`
             : '';
           return {
             content: [{ type: 'text' as const, text: warningPrefix + 'Wait completed: custom predicate satisfied' }],
