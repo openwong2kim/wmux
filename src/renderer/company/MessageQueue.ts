@@ -6,6 +6,7 @@
 import { generateId } from '../../shared/types';
 import type { MemberStatus } from '../../shared/types';
 import { formatMessage, formatBroadcast, type MessagePriority } from './messageTemplates';
+import { formatBracketedPastePayload, isMultilinePtyPayload } from '../../shared/ptyMessageDelivery';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -95,7 +96,10 @@ export class MessageQueue {
         ? formatBroadcast(msg.from, msg.message, msg.priority)
         : formatMessage(msg.from, msg.targetName, msg.message, msg.priority);
 
-      this.deliverFn(msg.targetPtyId, formatted + '\r');
+      this.deliverFn(msg.targetPtyId, formatBracketedPastePayload(formatted));
+      setTimeout(() => {
+        this.deliverFn(msg.targetPtyId, isMultilinePtyPayload(formatted) ? '\r\r' : '\r');
+      }, 100);
       msg.delivered = true;
     }
   }

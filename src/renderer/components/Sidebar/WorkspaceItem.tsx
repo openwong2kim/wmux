@@ -56,6 +56,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   // Sidebar reorder source index lives in the store, not in dataTransfer.
   // See uiSlice.draggedWorkspaceIndex for why this is out-of-band.
   const setDraggedWorkspaceIndex = useStore((s) => s.setDraggedWorkspaceIndex);
+  const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
   const metadata = workspace.metadata;
 
@@ -98,6 +99,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
     // accept the 'copy' half of 'copyMove' just as well.
     e.dataTransfer.effectAllowed = 'copyMove';
     setDraggedWorkspaceIndex(index);
+    setTerminalTextDropDragActive(true);
     // Apply the "being dragged" visual synchronously by mutating the
     // element's inline style. The previous setTimeout(setIsDragging) +
     // className toggle caused a React re-render right after dragstart
@@ -111,6 +113,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   const handleDragEnd = (e: React.DragEvent<HTMLDivElement>) => {
     e.currentTarget.style.opacity = '';
     setDropIndicator(null);
+    setTerminalTextDropDragActive(false);
     // Always clear, including the "drag dropped outside any drop target"
     // path. dragend always fires, drop does not.
     setDraggedWorkspaceIndex(null);

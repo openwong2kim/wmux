@@ -604,20 +604,11 @@ server.tool(
   {
     to: z.string().describe('Target agent name, department name, or "CEO"'),
     message: z.string().describe('Message content'),
-    from: z.string().optional().describe('Sender name (auto-detected if omitted)'),
     priority: z.enum(['low', 'normal', 'high']).optional().describe('Message priority (default: normal)'),
   },
-  async ({ to, message, from, priority }) => {
+  async ({ to, message, priority }) => {
     const wsId = await requireWorkspaceId();
-    let senderName = from;
-    if (!senderName) {
-      try {
-        const whoami = await sendRpc('company.a2a.whoami', { workspaceId: wsId }) as { name?: string } | null;
-        senderName = whoami?.name;
-      } catch { /* use fallback */ }
-    }
     return callRpc('company.a2a.send', {
-      from: senderName || 'Agent',
       to,
       message,
       priority: priority || 'normal',
@@ -631,20 +622,11 @@ server.tool(
   'Company mode: broadcast a message to ALL agents in the company. Use sparingly. For workspace-wide broadcast (not company members), use a2a_broadcast.',
   {
     message: z.string().describe('Broadcast message content'),
-    from: z.string().optional().describe('Sender name (auto-detected if omitted)'),
     priority: z.enum(['low', 'normal', 'high']).optional().describe('Message priority'),
   },
-  async ({ message, from, priority }) => {
+  async ({ message, priority }) => {
     const wsId = await requireWorkspaceId();
-    let senderName = from;
-    if (!senderName) {
-      try {
-        const whoami = await sendRpc('company.a2a.whoami', { workspaceId: wsId }) as { name?: string } | null;
-        senderName = whoami?.name;
-      } catch { /* use fallback */ }
-    }
     return callRpc('company.a2a.broadcast', {
-      from: senderName || 'Agent',
       message,
       priority: priority || 'normal',
       workspaceId: wsId,

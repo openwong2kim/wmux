@@ -25,8 +25,8 @@ function getCurrentUserSid(): string | null {
     const out = execFileSync(whoami, ['/user', '/fo', 'list'], {
       windowsHide: true,
     }).toString('utf8');
-    const match = out.match(/S-1-[0-9-]+/);
-    return match ? match[0] : null;
+    const match = out.match(/^\s*SID\s*:\s*(S-\d-(?:\d+|0x[0-9a-fA-F]+)(?:-\d+)+)\s*$/im);
+    return match ? match[1] : null;
   } catch {
     return null;
   }

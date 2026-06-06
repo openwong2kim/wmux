@@ -43,6 +43,7 @@ export default function SurfaceTabs({
   // completed agent is discoverable even when its tab isn't on top. The
   // active surface's completion is conveyed by the pane border blink instead.
   const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
+  const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
   // Always render the strip — even for a single surface — so the X button is
   // reachable. Pane.tsx's handleCloseSurface cascades into closePane when the
@@ -67,6 +68,7 @@ export default function SurfaceTabs({
     const md = buildPaneMarkdown(workspace, paneId);
     e.dataTransfer.setData('text/plain', md);
     e.dataTransfer.effectAllowed = 'copy';
+    setTerminalTextDropDragActive(true);
   };
 
   const handleTabClick = (surfaceId: string) => {
@@ -83,6 +85,7 @@ export default function SurfaceTabs({
           key={s.id}
           draggable
           onDragStart={handleDragStart}
+          onDragEnd={() => setTerminalTextDropDragActive(false)}
           className={`group flex items-center gap-1 px-3 h-full cursor-pointer text-xs border-r border-[var(--bg-surface)] transition-colors ${
             s.id === activeSurfaceId
               ? 'bg-[var(--bg-base)] text-[var(--text-main)]'

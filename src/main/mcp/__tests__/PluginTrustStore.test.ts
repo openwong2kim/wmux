@@ -335,6 +335,20 @@ describe('PluginTrustStore.setUserDecision (Phase 2.2 pre-commit 5)', () => {
     expect((await store.get('p1'))?.declaredCapabilities).toEqual(['pane.read']);
   });
 
+  it('can bind a trusted decision to the reviewed capability snapshot', async () => {
+    const store = new PluginTrustStore(dbPath);
+    await store.upsertDeclaration('p-race', ['pane.read']);
+    await store.upsertDeclaration('p-race', ['terminal.send']);
+
+    const rec = await store.setUserDecision('p-race', 'trusted', ['pane.read']);
+
+    expect(rec.status).toBe('trusted');
+    expect(rec.declaredCapabilities).toEqual(['pane.read']);
+    expect((await store.get('p-race'))?.declaredCapabilities).toEqual([
+      'pane.read',
+    ]);
+  });
+
   it('clamps oversized plugin names like every other write path', async () => {
     const store = new PluginTrustStore(dbPath);
     const huge = 'X'.repeat(MAX_PLUGIN_NAME_LEN + 100);

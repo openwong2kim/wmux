@@ -247,6 +247,15 @@ export interface UISlice {
   draggedWorkspaceIndex: number | null;
   setDraggedWorkspaceIndex: (index: number | null) => void;
 
+  // ─── Terminal text-drop trust boundary ────────────────────────────────
+  // Browser/Electron DataTransfer text is attacker-controlled across app and
+  // web boundaries. Terminal.tsx only accepts text/plain drops while this
+  // in-memory flag is set by a wmux-owned drag source (sidebar, surface tabs,
+  // or file tree), preserving internal drag-paste without accepting external
+  // page/application payloads.
+  terminalTextDropDragActive: boolean;
+  setTerminalTextDropDragActive: (active: boolean) => void;
+
   // ─── Custom keybindings ──────────────────────────────────────────────
   customKeybindings: CustomKeybinding[];
   addKeybinding: (kb: Omit<CustomKeybinding, 'id'>) => void;
@@ -691,6 +700,11 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   draggedWorkspaceIndex: null as number | null,
   setDraggedWorkspaceIndex: (index) => set((state) => {
     state.draggedWorkspaceIndex = index;
+  }),
+
+  terminalTextDropDragActive: false,
+  setTerminalTextDropDragActive: (active) => set((state) => {
+    state.terminalTextDropDragActive = active;
   }),
 
   // ─── Custom keybindings ──────────────────────────────────────────────

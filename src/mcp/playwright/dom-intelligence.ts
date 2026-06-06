@@ -1,4 +1,20 @@
 import type { Page } from 'playwright-core';
+import type { JsonEvaluator } from './page-eval';
+
+// ---------------------------------------------------------------------------
+// Shared interactive-element selector
+// ---------------------------------------------------------------------------
+
+/**
+ * CSS selector for "interactive" elements that get a ref number in DOM-based
+ * (RPC) snapshots. Shared between browser_snapshot's RPC fallback (inspection.ts)
+ * and getSmartSnapshotViaEval so both tools tag the SAME elements with
+ * data-wmux-ref. The numbering BASE differs by design (browser_snapshot is
+ * 0-based; smart snapshot is 1-based to match getSmartSnapshot / getLocatorByRef),
+ * so refs are not interchangeable across the two tools — only the element set is.
+ */
+export const INTERACTIVE_SELECTOR =
+  'a[href], button, input:not([type="hidden"]), textarea, select, [role="button"], [role="link"], [role="textbox"], [role="checkbox"], [role="radio"], [role="combobox"], [role="searchbox"], [role="tab"], [contenteditable="true"]';
 
 // ---------------------------------------------------------------------------
 // Types
@@ -219,6 +235,105 @@ export async function getSmartSnapshot(
   elementCache = elements;
 
   return { url, title, elements, content };
+}
+
+/**
+ * DOM-based smart snapshot for the packaged-build RPC fallback (issue #105).
+ *
+ * When PlaywrightEngine.getPage() returns null, the CDP accessibility tree used
+ * by getSmartSnapshot() is unavailable, so this derives the same SmartSnapshot
+ * shape from a single injected DOM script over the RPC `browser.evaluate`
+ * channel. Lower role fidelity than the AX tree (tag/role heuristic) — the
+ * accepted packaged-mode degradation; the dev path keeps full fidelity.
+ *
+ * Refs are 1-based to match getSmartSnapshot() and getLocatorByRef()'s `ref-1`
+ * lookup. Each interactive element is tagged `data-wmux-ref="<ref>"` with the
+ * SAME 1-based number, so:
+ *   - RPC-mode click: browser_click({smartRef}) -> [data-wmux-ref="<smartRef>"].
+ *   - page-mode click after getPage() recovers: getLocatorByRef returns
+ *     `[data-wmux-ref="<ref>"]`, which page.locator() resolves against the
+ *     attributes this snapshot left in the (same) webview DOM.
+ * elementCache is populated for exactly that second case.
+ */
+export async function getSmartSnapshotViaEval(
+  evaluate: JsonEvaluator,
+  options?: SmartSnapshotOptions,
+): Promise<SmartSnapshot> {
+  const maxContentLength = Math.max(
+    0,
+    Math.floor(options?.maxContentLength ?? DEFAULT_MAX_CONTENT_LENGTH),
+  );
+
+  // Note: the selector + .slice(0, 100) cap + data-wmux-ref tagging mirror
+  // browser_snapshot's RPC fallback (inspection.ts) via INTERACTIVE_SELECTOR.
+  const script = `(() => {
+    const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
+    const max = ${maxContentLength};
+    const els = [...document.querySelectorAll(sel)].slice(0, 100);
+    const roleFor = (el) => {
+      const explicit = el.getAttribute('role');
+      if (explicit) return explicit;
+      const tag = el.tagName.toLowerCase();
+      if (tag === 'a') return 'link';
+      if (tag === 'button') return 'button';
+      if (tag === 'select') return 'combobox';
+      if (tag === 'textarea') return 'textbox';
+      if (tag === 'input') {
+        const t = (el.getAttribute('type') || 'text').toLowerCase();
+        if (t === 'checkbox') return 'checkbox';
+        if (t === 'radio') return 'radio';
+        if (t === 'button' || t === 'submit' || t === 'reset') return 'button';
+        return 'textbox';
+      }
+      if (el.getAttribute('contenteditable') === 'true') return 'textbox';
+      return 'generic';
+    };
+    const elements = els.map((el, i) => {
+      const ref = i + 1; // 1-based — matches getSmartSnapshot / getLocatorByRef
+      el.setAttribute('data-wmux-ref', String(ref));
+      const name = (el.getAttribute('aria-label')
+        || (el.textContent || '').trim()
+        || el.getAttribute('placeholder')
+        || el.getAttribute('name')
+        || '').substring(0, 120);
+      const out = { ref, role: roleFor(el), name };
+      const val = el.value;
+      if (typeof val === 'string' && val) out.value = val;
+      const desc = el.getAttribute('aria-description');
+      if (desc) out.description = desc;
+      return out;
+    });
+    let content = (document.body && document.body.innerText) || '';
+    if (content.length > max) content = content.slice(0, max) + '\\n... (truncated)';
+    return { url: location.href, title: document.title, content, elements };
+  })()`;
+
+  const raw = (await evaluate(script)) as {
+    url?: string;
+    title?: string;
+    content?: string;
+    elements?: Array<{ ref: number; role: string; name: string; value?: string; description?: string }>;
+  } | null;
+
+  const elements: IndexedElement[] = (raw?.elements ?? []).map((e) => ({
+    ref: e.ref,
+    role: e.role,
+    name: e.name,
+    ...(e.value !== undefined && { value: e.value }),
+    ...(e.description !== undefined && { description: e.description }),
+    locator: `[data-wmux-ref="${e.ref}"]`,
+  }));
+
+  // Cache so browser_click({smartRef}) resolves via getLocatorByRef even if
+  // getPage() flips null->page between this snapshot and the click.
+  elementCache = elements;
+
+  return {
+    url: raw?.url ?? '',
+    title: raw?.title ?? '',
+    elements,
+    content: raw?.content ?? '',
+  };
 }
 
 /**

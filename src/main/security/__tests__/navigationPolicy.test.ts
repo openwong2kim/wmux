@@ -72,4 +72,20 @@ describe('validateResolvedNavigationUrl', () => {
       reason: 'Blocked resolved address ::ffff:169.254.169.254: Blocked link-local/cloud metadata address (169.254.0.0/16)',
     });
   });
+
+  it('blocks private IPv6 literal URLs before DNS resolution', async () => {
+    await expect(validateResolvedNavigationUrl('http://[fd00::1]/')).resolves.toEqual({
+      valid: false,
+      reason: 'Blocked private IPv6 address (fc00::/7)',
+    });
+    expect(lookupMock).not.toHaveBeenCalled();
+  });
+
+  it('blocks IPv4-mapped IPv6 literal URLs before DNS resolution', async () => {
+    await expect(validateResolvedNavigationUrl('http://[::ffff:169.254.169.254]/')).resolves.toEqual({
+      valid: false,
+      reason: 'Blocked IPv4-mapped/compatible IPv6: embedded 169.254.169.254 — Blocked link-local/cloud metadata address (169.254.0.0/16)',
+    });
+    expect(lookupMock).not.toHaveBeenCalled();
+  });
 });

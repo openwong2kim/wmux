@@ -29,7 +29,7 @@ vi.mock('child_process', () => ({
 function stubWhoamiSid(sid: string): void {
   execFileSyncMock.mockImplementation((cmd: unknown) =>
     typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')
-      ? Buffer.from(`\nUser Name        SID\n=============== ${'='.repeat(40)}\nmachine\\user    ${sid}\n`)
+      ? Buffer.from(`\nUSER INFORMATION\n----------------\nUser Name: machine\\user\nSID:       ${sid}\n`)
       : Buffer.from(''),
   );
 }
@@ -90,6 +90,33 @@ describe('secureWriteTokenFile', () => {
       '*S-1-5-21-1-2-3-1001:F',
       '/inheritance:r',
     ]);
+  });
+
+  it('parses the SID field instead of SID-like text in the account name', async () => {
+    vi.stubEnv('USERNAME', 'victim');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    execFileSyncMock.mockImplementation((cmd: unknown) =>
+      typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')
+        ? Buffer.from(
+            '\nUSER INFORMATION\n----------------\n' +
+              'User Name: S-1-1-0\\victim\n' +
+              'SID:       S-1-5-21-1111111111-2222222222-3333333333-1001\n',
+          )
+        : Buffer.from(''),
+    );
+
+    const { secureWriteTokenFile } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'victim', '.wmux-auth-token');
+    secureWriteTokenFile(tokenPath, 'secret-token');
+
+    expect(icaclsArgs()).toEqual([
+      tokenPath,
+      '/grant:r',
+      '*S-1-5-21-1111111111-2222222222-3333333333-1001:F',
+      '/inheritance:r',
+    ]);
+    expect(icaclsArgs()?.[2]).not.toBe('*S-1-1-0:F');
   });
 
   // Regression: a non-ASCII (Korean) profile name passed verbatim to icacls is
@@ -176,7 +203,7 @@ describe('secureWriteTokenFile', () => {
     // whoami resolves fine; icacls is the step that fails.
     execFileSyncMock.mockImplementation((cmd: unknown) => {
       if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
-        return Buffer.from('user S-1-5-21-1-2-3-1001\n');
+        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
       }
       throw new Error('icacls failed');
     });
@@ -268,7 +295,7 @@ describe('reHardenTokenFileAcl', () => {
     execFileSyncMock.mockImplementation((cmd: unknown) => {
       // whoami succeeds; icacls denies — hardening must still fail soft.
       if (typeof cmd === 'string' && cmd.toLowerCase().includes('whoami')) {
-        return Buffer.from('user S-1-5-21-1-2-3-1001\n');
+        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
       }
       throw new Error('icacls denied');
     });

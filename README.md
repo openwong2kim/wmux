@@ -30,6 +30,10 @@ Gemini CLI runs tests at the bottom
 
 ---
 
+## Star History
+
+[![Star History Chart](https://api.star-history.com/svg?repos=openwong2kim/wmux&type=Date)](https://star-history.com/#openwong2kim/wmux&Date)
+
 ## Install in 30 seconds
 
 **Winget (recommended — no security warning):**

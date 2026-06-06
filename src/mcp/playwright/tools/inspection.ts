@@ -3,8 +3,10 @@ import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { generateSnapshot, resolveRef } from '../snapshot';
+import { INTERACTIVE_SELECTOR } from '../dom-intelligence';
 import { evaluateWithGesture } from '../anti-detection';
 import { detectDangerousPatterns } from '../security';
+import { sanitizeRef } from './interaction';
 import { sendRpc } from '../../wmux-client';
 
 // Optional surfaceId schema reused across tools
@@ -169,6 +171,38 @@ function matchesGlob(url: string, pattern: string): boolean {
   return regex.test(url);
 }
 
+// --- Shared formatters: used by both the Playwright path and the RPC fallback
+// (#106) so console/network render identically regardless of transport. ---
+
+function filterConsole(entries: ConsoleEntry[], level?: string): ConsoleEntry[] {
+  const filterLevel = level ?? 'all';
+  if (filterLevel === 'all') return entries;
+  return entries.filter((e) => {
+    if (filterLevel === 'info') return e.level === 'log' || e.level === 'info';
+    return e.level === filterLevel;
+  });
+}
+
+function formatConsole(entries: ConsoleEntry[]): string {
+  return entries.length === 0
+    ? 'No console messages collected.'
+    : entries.map((e) => `[${e.level}] ${e.text}`).join('\n');
+}
+
+/** Filter by URL glob and render the {url, method, status} summary JSON. */
+function formatNetwork(
+  entries: Array<{ url: string; method: string; status?: number }>,
+  filter?: string,
+): string {
+  const filtered = filter ? entries.filter((e) => matchesGlob(e.url, filter)) : entries;
+  const summary = filtered.map((e) => ({
+    url: e.url,
+    method: e.method,
+    status: e.status ?? '(pending)',
+  }));
+  return summary.length === 0 ? 'No network requests collected.' : JSON.stringify(summary, null, 2);
+}
+
 // ---------------------------------------------------------------------------
 // Registration
 // ---------------------------------------------------------------------------
@@ -222,7 +256,7 @@ export function registerInspectionTools(server: McpServer): void {
         // Tags interactive elements with data-wmux-ref so interaction tools can resolve them
         const result = await sendRpc('browser.evaluate', {
           expression: `(() => {
-            const sel = 'a[href], button, input:not([type="hidden"]), textarea, select, [role="button"], [role="link"], [role="textbox"], [role="checkbox"], [role="radio"], [role="combobox"], [role="searchbox"], [role="tab"], [contenteditable="true"]';
+            const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
             const interactives = [...document.querySelectorAll(sel)].slice(0, 100);
             interactives.forEach((el, i) => el.setAttribute('data-wmux-ref', String(i)));
             const title = document.title;
@@ -408,34 +442,23 @@ export function registerInspectionTools(server: McpServer): void {
     },
     async ({ level, clear, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
+        const page = await engine.getPage(surfaceId).catch(() => null);
+
+        let entries: ConsoleEntry[];
+        if (page) {
+          ensureConsoleListener(page);
+          entries = consoleMessages.get(page) ?? [];
+          if (clear) consoleMessages.set(page, []);
+        } else {
+          // RPC fallback (packaged builds): drain the main-process CDP capture.
+          const result = await sendRpc('browser.console.get', {
+            ...(surfaceId && { surfaceId }),
+            ...(clear && { clear: true }),
+          }) as { entries: ConsoleEntry[] };
+          entries = result.entries ?? [];
         }
 
-        ensureConsoleListener(page);
-
-        const entries = consoleMessages.get(page) ?? [];
-
-        const filterLevel = level ?? 'all';
-        const filtered =
-          filterLevel === 'all'
-            ? entries
-            : entries.filter((e) => {
-                if (filterLevel === 'info') {
-                  return e.level === 'log' || e.level === 'info';
-                }
-                return e.level === filterLevel;
-              });
-
-        const text =
-          filtered.length === 0
-            ? 'No console messages collected.'
-            : filtered.map((e) => `[${e.level}] ${e.text}`).join('\n');
-
-        if (clear) {
-          consoleMessages.set(page, []);
-        }
+        const text = formatConsole(filterConsole(entries, level));
 
         return {
           content: [{ type: 'text' as const, text }],
@@ -469,33 +492,23 @@ export function registerInspectionTools(server: McpServer): void {
     },
     async ({ filter, clear, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
+        const page = await engine.getPage(surfaceId).catch(() => null);
+
+        let entries: Array<{ url: string; method: string; status?: number }>;
+        if (page) {
+          ensureNetworkListener(page);
+          entries = networkRequests.get(page) ?? [];
+          if (clear) networkRequests.set(page, []);
+        } else {
+          // RPC fallback (packaged builds): drain the main-process CDP capture.
+          const result = await sendRpc('browser.network.get', {
+            ...(surfaceId && { surfaceId }),
+            ...(clear && { clear: true }),
+          }) as { entries: Array<{ url: string; method: string; status?: number }> };
+          entries = result.entries ?? [];
         }
 
-        ensureNetworkListener(page);
-
-        const entries = networkRequests.get(page) ?? [];
-
-        const filtered = filter
-          ? entries.filter((e) => matchesGlob(e.url, filter))
-          : entries;
-
-        const summary = filtered.map((e) => ({
-          url: e.url,
-          method: e.method,
-          status: e.status ?? '(pending)',
-        }));
-
-        const text =
-          summary.length === 0
-            ? 'No network requests collected.'
-            : JSON.stringify(summary, null, 2);
-
-        if (clear) {
-          networkRequests.set(page, []);
-        }
+        const text = formatNetwork(entries, filter);
 
         return {
           content: [{ type: 'text' as const, text }],
@@ -524,25 +537,31 @@ export function registerInspectionTools(server: McpServer): void {
     },
     async ({ urlPattern, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
-        ensureNetworkListener(page);
-
-        const entries = networkRequests.get(page) ?? [];
-
-        // Find the last matching entry with a captured body
-        let matchedEntry: NetworkEntry | undefined;
-        for (let i = entries.length - 1; i >= 0; i--) {
-          if (matchesGlob(entries[i].url, urlPattern) && entries[i].response?.body !== undefined) {
-            matchedEntry = entries[i];
-            break;
+        let body: string | null = null;
+        if (page) {
+          ensureNetworkListener(page);
+          const entries = networkRequests.get(page) ?? [];
+          // Find the last matching entry with a captured body
+          for (let i = entries.length - 1; i >= 0; i--) {
+            const candidate = entries[i].response?.body;
+            if (candidate !== undefined && matchesGlob(entries[i].url, urlPattern)) {
+              body = candidate;
+              break;
+            }
           }
+        } else {
+          // RPC fallback (packaged builds): the main process matches and returns
+          // the body from its CDP capture buffer.
+          const result = await sendRpc('browser.responseBody.get', {
+            urlPattern,
+            ...(surfaceId && { surfaceId }),
+          }) as { body: string | null };
+          body = result.body ?? null;
         }
 
-        if (!matchedEntry || !matchedEntry.response?.body) {
+        if (body === null) {
           return {
             content: [
               {
@@ -557,7 +576,7 @@ export function registerInspectionTools(server: McpServer): void {
           content: [
             {
               type: 'text' as const,
-              text: matchedEntry.response.body,
+              text: body,
             },
           ],
         };
@@ -583,22 +602,38 @@ export function registerInspectionTools(server: McpServer): void {
     },
     async ({ ref, surfaceId }) => {
       try {
-        const page = await engine.getPage(surfaceId);
-        if (!page) {
-          throw new Error('No browser page available. Call browser_open with a URL first to establish a CDP connection (required even if a browser panel is already visible).');
-        }
+        const page = await engine.getPage(surfaceId).catch(() => null);
 
-        const el = await resolveRef(page, ref);
-        if (!el) {
-          throw new Error(`Could not resolve ref="${ref}" to an element.`);
-        }
+        if (page) {
+          const el = await resolveRef(page, ref);
+          if (!el) {
+            throw new Error(`Could not resolve ref="${ref}" to an element.`);
+          }
 
-        await el.evaluate(
-          (element: Element) => {
-            (element as HTMLElement).style.outline = '3px solid red';
-            (element as HTMLElement).style.outlineOffset = '2px';
-          },
-        );
+          await el.evaluate(
+            (element: Element) => {
+              (element as HTMLElement).style.outline = '3px solid red';
+              (element as HTMLElement).style.outlineOffset = '2px';
+            },
+          );
+        } else {
+          // RPC fallback (packaged builds): resolve via the data-wmux-ref tag set
+          // by browser_snapshot / browser_smart_snapshot and set the outline inline.
+          const safeRef = sanitizeRef(ref);
+          const result = await sendRpc('browser.evaluate', {
+            expression: `(() => {
+              const el = document.querySelector('[data-wmux-ref="${safeRef}"]');
+              if (!el) return 'not_found';
+              el.style.outline = '3px solid red';
+              el.style.outlineOffset = '2px';
+              return 'ok';
+            })()`,
+            ...(surfaceId && { surfaceId }),
+          }) as { value: string };
+          if (result.value === 'not_found') {
+            throw new Error(`Could not resolve ref="${ref}" to an element.`);
+          }
+        }
 
         return {
           content: [{ type: 'text' as const, text: 'Element highlighted' }],

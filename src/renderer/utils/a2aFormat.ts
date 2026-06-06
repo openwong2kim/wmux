@@ -2,12 +2,35 @@ import { sanitizePtyText } from '../../shared/types';
 
 export type A2aPriority = 'low' | 'normal' | 'high';
 
+/**
+ * Strip control characters from names/message content that will be
+ * embedded into PTY-bound text to prevent injection of extra commands.
+ *
+ * `sanitizePtyText` preserves CR/LF/TAB/ESC for ordinary terminal writes.
+ * Inter-agent envelopes are different: sender-controlled CR/LF can split the
+ * envelope into extra PTY input lines, and raw ESC can forge terminal control
+ * sequences or bracketed-paste boundaries. The envelope's own separators are
+ * added after these helpers run, so message structure remains intact.
+ */
+// eslint-disable-next-line no-control-regex
+const ESC_CSI_RE = /\x1b\[[0-?]*[ -/]*[@-~]/g;
+// eslint-disable-next-line no-control-regex
+const ESC_OTHER_RE = /\x1b[@-_]/g;
+
+function stripEscapes(input: string): string {
+  return input.replace(ESC_CSI_RE, '').replace(ESC_OTHER_RE, '');
+}
+
 function safeName(name: string): string {
-  return sanitizePtyText(name).slice(0, 100);
+  return stripEscapes(sanitizePtyText(name))
+    .replace(/[\r\n\t]/g, ' ')
+    .slice(0, 100);
 }
 
 function safeBody(message: string): string {
-  return sanitizePtyText(message);
+  return stripEscapes(sanitizePtyText(message))
+    .replace(/\r/g, '')
+    .replace(/\n/g, '\u2424');
 }
 
 /**

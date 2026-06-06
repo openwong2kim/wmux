@@ -119,9 +119,15 @@ export type RpcMethod =
   | 'browser.cdp.info'
   | 'browser.screenshot'
   | 'browser.evaluate'
+  | 'browser.console.get'
+  | 'browser.network.get'
+  | 'browser.responseBody.get'
   | 'browser.type.cdp'
   | 'browser.click.cdp'
   | 'browser.press.cdp'
+  | 'browser.cookies'
+  | 'browser.resize'
+  | 'browser.emulate'
   | 'daemon.createSession'
   | 'daemon.destroySession'
   | 'daemon.attachSession'
@@ -212,9 +218,15 @@ export const ALL_RPC_METHODS = [
   'browser.cdp.info',
   'browser.screenshot',
   'browser.evaluate',
+  'browser.console.get',
+  'browser.network.get',
+  'browser.responseBody.get',
   'browser.type.cdp',
   'browser.click.cdp',
   'browser.press.cdp',
+  'browser.cookies',
+  'browser.resize',
+  'browser.emulate',
   'daemon.createSession',
   'daemon.destroySession',
   'daemon.attachSession',

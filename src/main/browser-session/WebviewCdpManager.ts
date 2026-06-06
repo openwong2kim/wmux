@@ -11,9 +11,19 @@ export class WebviewCdpManager {
   private sessions = new Map<string, CdpTargetInfo>();
   private waiters = new Map<string, Array<(target: CdpTargetInfo) => void>>();
   private cdpPort: number;
+  // Optional hook so a CDP event-capture layer (BrowserCaptureManager, #106) can
+  // tear down its debugger listeners when a surface is unregistered — manual
+  // wc.debugger.detach() does not remove EventEmitter listeners, and may not
+  // fire the debugger 'detach' event, so we notify explicitly.
+  private captureCleanup?: (webContentsId: number) => void;
 
   constructor(cdpPort = 18800) {
     this.cdpPort = cdpPort;
+  }
+
+  /** Register a callback invoked with the webContentsId on every unregister. */
+  setCaptureCleanup(fn: (webContentsId: number) => void): void {
+    this.captureCleanup = fn;
   }
 
   async register(surfaceId: string, webContentsId: number): Promise<void> {
@@ -74,6 +84,13 @@ export class WebviewCdpManager {
   unregister(surfaceId: string): void {
     const session = this.sessions.get(surfaceId);
     if (!session) return;
+
+    // Let the capture layer remove its debugger listeners before we detach.
+    try {
+      this.captureCleanup?.(session.webContentsId);
+    } catch {
+      // capture cleanup is best-effort
+    }
 
     try {
       const wc = webContents.fromId(session.webContentsId);

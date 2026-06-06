@@ -258,31 +258,43 @@ export class PluginTrustStore {
    * `(clientName, declaredCapabilities)` pair; that decision MUST stick:
    *
    *   - 'trusted' — bypasses applyContact/applyDeclaration's auto-demotion
-   *     since the user explicitly approved the current declaration. If no
-   *     record exists yet (a prompt that fired before mcp.identify
-   *     landed), seed a minimal trusted entry.
+   *     since the user explicitly approved the prompt's declaration. When
+   *     the prompt passes an approved capability snapshot, persist that exact
+   *     snapshot rather than whatever the plugin has redeclared since the
+   *     prompt opened. If no record exists yet (a prompt that fired before
+   *     mcp.identify landed), seed a minimal trusted entry.
    *   - 'denied' — spec §4.3 "denied never regresses". The next
    *     applyContact or applyDeclaration call will read this status and
    *     refuse to upgrade away from it.
    *
-   * `lastSeen` advances. `declaredCapabilities` are NOT overwritten — the
-   * decision applies to whatever set was active when the user clicked.
+   * `lastSeen` advances. When `approvedCapabilities` is provided,
+   * `declaredCapabilities` is rebound to that reviewed snapshot.
    */
   async setUserDecision(
     name: string,
     status: 'trusted' | 'denied',
+    approvedCapabilities?: readonly string[],
   ): Promise<PluginIdentityRecord> {
     const safeName = clampName(name);
     return this.mutate((db) => {
       const existing = ownPlugin(db, safeName);
       const t = Date.now();
+      const declaredCapabilities = approvedCapabilities
+        ? [...approvedCapabilities]
+        : undefined;
       const next: PluginIdentityRecord = existing
-        ? { ...existing, status, lastSeen: t }
+        ? {
+            ...existing,
+            ...(declaredCapabilities ? { declaredCapabilities } : {}),
+            status,
+            lastSeen: t,
+          }
         : {
             name: safeName,
             status,
             firstSeen: t,
             lastSeen: t,
+            ...(declaredCapabilities ? { declaredCapabilities } : {}),
           };
       db.plugins[safeName] = next;
       return next;

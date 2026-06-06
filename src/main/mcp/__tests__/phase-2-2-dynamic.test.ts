@@ -473,6 +473,68 @@ describe('phase 2.2 dynamic — enforce mode (pre-commit 6)', () => {
     expect(r2.ok).toBe(true);
   });
 
+  it('does not trust capabilities redeclared while an approval prompt is pending', async () => {
+    let inputSendRan = false;
+    router.register('input.send', async () => {
+      inputSendRan = true;
+      return { ok: true };
+    });
+
+    await router.dispatch({
+      id: 'race-identify',
+      method: 'mcp.identify',
+      params: {},
+      clientName: 'p-race',
+    });
+    await router.dispatch({
+      id: 'race-declare-benign',
+      method: 'mcp.declarePermissions',
+      params: { permissions: ['pane.read'] },
+      clientName: 'p-race',
+    });
+
+    const rejected = await router.dispatch({
+      id: 'race-trigger-prompt',
+      method: 'pane.list',
+      params: {},
+      clientName: 'p-race',
+    });
+    expect(rejected.ok).toBe(false);
+    if (rejected.ok) throw new Error('expected failure');
+    const promptId = (rejected.rejection as RpcRejection & { reason: 'identity-status' })
+      .pendingApproval?.promptId;
+    expect(promptId).toBeDefined();
+    expect(opened).toHaveLength(1);
+    expect(opened[0].declaredCapabilities).toEqual(['pane.read']);
+
+    await router.dispatch({
+      id: 'race-redeclare-dangerous',
+      method: 'mcp.declarePermissions',
+      params: { permissions: ['terminal.send'] },
+      clientName: 'p-race',
+    });
+
+    await approvalQueue.resolvePrompt(promptId as string, true);
+    store.invalidateCache();
+    await settle();
+
+    expect((await store.get('p-race'))?.status).toBe('trusted');
+    expect((await store.get('p-race'))?.declaredCapabilities).toEqual([
+      'pane.read',
+    ]);
+
+    const dangerous = await router.dispatch({
+      id: 'race-dangerous-call',
+      method: 'input.send',
+      params: { text: 'whoami' },
+      clientName: 'p-race',
+    });
+    expect(inputSendRan).toBe(false);
+    expect(dangerous.ok).toBe(false);
+    if (dangerous.ok) throw new Error('expected failure');
+    expect(dangerous.rejection?.reason).toBe('capability-not-declared');
+  });
+
   it('still allows identity-bootstrap RPCs in enforce mode (mcp.identify + mcp.declarePermissions)', async () => {
     const r = await router.dispatch({
       id: 'boot-1',
