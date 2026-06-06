@@ -221,32 +221,40 @@ if (-not $FromSource) {
         return
     }
 
-    # Integrity: verify SHA-256 against the published manifest when available.
+    # Integrity: require SHA-256 verification against the published manifest.
     # TODO(NN2): once Authenticode signing lands, also verify
     # (Get-AuthenticodeSignature $tempExe).Status -eq 'Valid' and the publisher.
-    $expectedSha = $null
-    if ($manifestAsset) {
-        try {
-            $manifest = Invoke-RestMethod $manifestAsset.browser_download_url `
-                -Headers @{ 'User-Agent' = 'wmux-installer' } -TimeoutSec 15
-            $expectedSha = $manifest.sha256
-        } catch {
-            Write-Host "  [*] Could not fetch update-manifest.json ($($_.Exception.Message))" -ForegroundColor Yellow
-        }
+    if (-not $manifestAsset) {
+        Remove-Item $tempExe -Force -ErrorAction SilentlyContinue
+        Write-Host "  [!] No checksum manifest for this release. Aborting." -ForegroundColor Red
+        return
     }
-    if ($expectedSha) {
-        $actualSha = (Get-FileHash $tempExe -Algorithm SHA256).Hash
-        if ($actualSha.ToLower() -ne $expectedSha.ToLower()) {
-            Remove-Item $tempExe -Force -ErrorAction SilentlyContinue
-            Write-Host "  [!] SHA-256 mismatch — download may be corrupt or tampered. Aborting." -ForegroundColor Red
-            Write-Host "       expected $($expectedSha.ToLower())" -ForegroundColor Red
-            Write-Host "       actual   $($actualSha.ToLower())" -ForegroundColor Red
-            return
-        }
-        Write-Host "  [2/3] Verified SHA-256" -ForegroundColor Green
-    } else {
-        Write-Host "  [2/3] No checksum manifest for this release — skipping SHA-256 verification" -ForegroundColor Yellow
+
+    try {
+        $manifest = Invoke-RestMethod $manifestAsset.browser_download_url `
+            -Headers @{ 'User-Agent' = 'wmux-installer' } -TimeoutSec 15
+        $expectedSha = [string]$manifest.sha256
+    } catch {
+        Remove-Item $tempExe -Force -ErrorAction SilentlyContinue
+        Write-Host "  [!] Could not fetch update-manifest.json ($($_.Exception.Message)). Aborting." -ForegroundColor Red
+        return
     }
+
+    if ($expectedSha -notmatch '^[A-Fa-f0-9]{64}$') {
+        Remove-Item $tempExe -Force -ErrorAction SilentlyContinue
+        Write-Host "  [!] update-manifest.json is missing a valid SHA-256 checksum. Aborting." -ForegroundColor Red
+        return
+    }
+
+    $actualSha = (Get-FileHash $tempExe -Algorithm SHA256).Hash
+    if ($actualSha.ToLower() -ne $expectedSha.ToLower()) {
+        Remove-Item $tempExe -Force -ErrorAction SilentlyContinue
+        Write-Host "  [!] SHA-256 mismatch — download may be corrupt or tampered. Aborting." -ForegroundColor Red
+        Write-Host "       expected $($expectedSha.ToLower())" -ForegroundColor Red
+        Write-Host "       actual   $($actualSha.ToLower())" -ForegroundColor Red
+        return
+    }
+    Write-Host "  [2/3] Verified SHA-256" -ForegroundColor Green
 
     Write-Host "  [3/3] Launching installer..." -ForegroundColor Green
     Start-Process -FilePath $tempExe
