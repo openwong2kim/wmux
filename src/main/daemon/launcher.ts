@@ -228,6 +228,17 @@ function getProcessCommandLine(pid: number): string | null {
   } catch { return null; }
 }
 
+
+function signDaemonAuthProof(token: string, payload: string): string {
+  return crypto.createHmac('sha256', token).update(payload).digest('hex');
+}
+
+function timingSafeEqualHex(a: string, b: string): boolean {
+  const aBuf = Buffer.from(a);
+  const bBuf = Buffer.from(b);
+  return aBuf.length === bBuf.length && crypto.timingSafeEqual(aBuf, bBuf);
+}
+
 interface DaemonPingResult {
   status?: string;
   pid?: number;
@@ -246,6 +257,8 @@ function daemonPing(pipeName: string, token: string, timeoutMs = 3000): Promise<
   return new Promise((resolve) => {
     const socket = net.connect(pipeName);
     let settled = false;
+    let challengeNonce = '';
+    let pingRequestId = '';
     const finish = (value: DaemonPingResult | null) => {
       if (settled) return;
       settled = true;
@@ -259,7 +272,7 @@ function daemonPing(pipeName: string, token: string, timeoutMs = 3000): Promise<
 
     socket.on('connect', () => {
       const id = crypto.randomUUID();
-      socket.write(JSON.stringify({ id, method: 'daemon.ping', params: {}, token }) + '\n');
+      socket.write(JSON.stringify({ id, method: 'daemon.authChallenge', params: {} }) + '\n');
     });
 
     let buffer = '';
@@ -267,14 +280,47 @@ function daemonPing(pipeName: string, token: string, timeoutMs = 3000): Promise<
       if (settled) return;
       buffer += chunk.toString('utf8');
       const lines = buffer.split('\n');
+      buffer = lines.pop() ?? '';
       for (const line of lines) {
         if (!line.trim()) continue;
         try {
           const resp = JSON.parse(line.trim());
-          if (resp.ok || (resp.result && resp.result.status === 'ok')) {
-            finish((resp.result as DaemonPingResult) ?? { status: 'ok' });
+          if (!challengeNonce) {
+            const nonce = resp?.result?.nonce;
+            if (!resp.ok || typeof nonce !== 'string' || nonce.length === 0) {
+              finish(null);
+              return;
+            }
+            challengeNonce = nonce;
+            pingRequestId = crypto.randomUUID();
+            const authProof = signDaemonAuthProof(token, `${challengeNonce}:${pingRequestId}:daemon.ping`);
+            socket.write(JSON.stringify({
+              id: pingRequestId,
+              method: 'daemon.ping',
+              params: {},
+              authNonce: challengeNonce,
+              authProof,
+            }) + '\n');
+            continue;
+          }
+
+          const result = resp.result as DaemonPingResult | undefined;
+          const expectedProof = signDaemonAuthProof(
+            token,
+            `${challengeNonce}:${pingRequestId}:response:${JSON.stringify(resp.ok ? result : resp.error)}`,
+          );
+          if (
+            resp.ok &&
+            result &&
+            result.status === 'ok' &&
+            typeof resp.authProof === 'string' &&
+            timingSafeEqualHex(resp.authProof, expectedProof)
+          ) {
+            finish(result);
             return;
           }
+          finish(null);
+          return;
         } catch {}
       }
     });

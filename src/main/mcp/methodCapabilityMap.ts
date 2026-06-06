@@ -252,6 +252,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'daemon.resizeSession':    { capability: 'wmux.internal' },
   'daemon.listSessions':     { capability: 'wmux.internal' },
   'daemon.readPromptEvents': { capability: 'wmux.internal' },
+  'daemon.authChallenge':    { capability: 'wmux.internal' },
   'daemon.ping':             { capability: 'wmux.internal' },
   'daemon.shutdown':         { capability: 'wmux.internal' },
   'daemon.compact':          { capability: 'wmux.internal' },

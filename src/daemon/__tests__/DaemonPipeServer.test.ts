@@ -20,8 +20,15 @@ function testPipeName(suffix: string): string {
 // Helper: connect to pipe and send a JSON-RPC request, return parsed response
 function sendRpc(
   pipeName: string,
-  req: { id: string; method: string; params?: Record<string, unknown>; token?: string },
-): Promise<{ id: string; ok: boolean; result?: unknown; error?: string }> {
+  req: {
+    id: string;
+    method: string;
+    params?: Record<string, unknown>;
+    token?: string;
+    authNonce?: string;
+    authProof?: string;
+  },
+): Promise<{ id: string; ok: boolean; result?: unknown; error?: string; authProof?: string }> {
   return new Promise((resolve, reject) => {
     const client = net.createConnection(pipeName, () => {
       client.write(JSON.stringify(req) + '\n');
@@ -111,6 +118,67 @@ describe('DaemonPipeServer', () => {
 
     expect(res.ok).toBe(true);
     expect(res.result).toEqual({ created: 'sess-1' });
+  });
+
+  it('should authenticate ping through challenge proof without disclosing the token', async () => {
+    server.onRpc('daemon.ping', async () => ({ status: 'ok' }));
+    await server.start();
+
+    const seenWrites: string[] = [];
+    const responses = await new Promise<Array<{ id: string; ok: boolean; result?: unknown; authProof?: string }>>((resolve, reject) => {
+      const client = net.createConnection(pipeName, () => {
+        const request = JSON.stringify({ id: 'challenge-1', method: 'daemon.authChallenge', params: {} }) + '\n';
+        seenWrites.push(request);
+        client.write(request);
+      });
+      const parsedResponses: Array<{ id: string; ok: boolean; result?: unknown; authProof?: string }> = [];
+      let buf = '';
+      client.setEncoding('utf8');
+      client.on('data', (chunk: string) => {
+        buf += chunk;
+        const lines = buf.split('\n');
+        buf = lines.pop() ?? '';
+        for (const line of lines) {
+          const trimmed = line.trim();
+          if (!trimmed) continue;
+          const parsed = JSON.parse(trimmed);
+          parsedResponses.push(parsed);
+          if (parsedResponses.length === 1) {
+            const nonce = parsed?.result?.nonce;
+            const id = 'ping-1';
+            const authProof = crypto
+              .createHmac('sha256', 'test-token-123')
+              .update(`${nonce}:${id}:daemon.ping`)
+              .digest('hex');
+            const request = JSON.stringify({
+              id,
+              method: 'daemon.ping',
+              params: {},
+              authNonce: nonce,
+              authProof,
+            }) + '\n';
+            seenWrites.push(request);
+            client.write(request);
+          } else {
+            client.destroy();
+            resolve(parsedResponses);
+          }
+        }
+      });
+      client.on('error', reject);
+    });
+
+    const [challenge, res] = responses;
+    expect(challenge.ok).toBe(true);
+    expect(res.ok).toBe(true);
+    expect(res.result).toEqual({ status: 'ok' });
+    expect(res.authProof).toBe(
+      crypto
+        .createHmac('sha256', 'test-token-123')
+        .update(`${(challenge.result as { nonce: string }).nonce}:ping-1:response:${JSON.stringify(res.result)}`)
+        .digest('hex'),
+    );
+    expect(seenWrites.join('')).not.toContain('test-token-123');
   });
 
   it('should reject requests with invalid token', async () => {

@@ -129,6 +129,7 @@ export type RpcMethod =
   | 'daemon.resizeSession'
   | 'daemon.listSessions'
   | 'daemon.readPromptEvents'
+  | 'daemon.authChallenge'
   | 'daemon.ping'
   | 'daemon.shutdown'
   | 'daemon.compact'
@@ -222,6 +223,7 @@ export const ALL_RPC_METHODS = [
   'daemon.resizeSession',
   'daemon.listSessions',
   'daemon.readPromptEvents',
+  'daemon.authChallenge',
   'daemon.ping',
   'daemon.shutdown',
   'daemon.compact',

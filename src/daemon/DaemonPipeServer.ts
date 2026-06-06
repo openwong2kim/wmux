@@ -7,6 +7,11 @@ import type { RpcRequest, RpcResponse } from '../shared/rpc';
 import { secureWriteTokenFile, reHardenTokenFileAcl } from '../shared/security';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
+const AUTH_CHALLENGE_METHOD = 'daemon.authChallenge';
+
+function signAuthProof(token: string, payload: string): string {
+  return crypto.createHmac('sha256', token).update(payload).digest('hex');
+}
 
 type RpcHandler = (params: Record<string, unknown>) => Promise<unknown>;
 
@@ -48,6 +53,7 @@ export class DaemonPipeServer {
   private authToken: string = '';
   private readonly handlers = new Map<string, RpcHandler>();
   private readonly connectedSockets = new Set<net.Socket>();
+  private readonly authChallenges = new WeakMap<net.Socket, string>();
   private readonly rateLimits = new Map<net.Socket, { count: number; resetAt: number }>();
   private globalRate = { count: 0, resetAt: 0 };
   private connectionRate = { count: 0, resetAt: 0 };
@@ -252,6 +258,7 @@ export class DaemonPipeServer {
         this.connectedSockets.add(socket);
         socket.on('close', () => {
           this.connectedSockets.delete(socket);
+          this.authChallenges.delete(socket);
           this.rateLimits.delete(socket);
           // Record the moment we dropped to zero clients so the Watchdog
           // idle-shutdown timer has an anchor. We re-stamp on every drop
@@ -422,11 +429,23 @@ export class DaemonPipeServer {
       return;
     }
 
-    // Authenticate before rate limit check (prevents DoS via rate exhaustion)
-    // Use timing-safe comparison to prevent timing attacks
-    const tokenBuf = Buffer.from(request.token || '');
-    const authBuf = Buffer.from(this.authToken);
-    if (tokenBuf.length !== authBuf.length || !crypto.timingSafeEqual(tokenBuf, authBuf)) {
+    if (request.method === AUTH_CHALLENGE_METHOD) {
+      const nonce = crypto.randomUUID();
+      this.authChallenges.set(socket, nonce);
+      socket.write(JSON.stringify({
+        id: request.id,
+        ok: true,
+        result: { nonce, algorithm: 'hmac-sha256' },
+      }) + '\n');
+      return;
+    }
+
+    // Authenticate before rate limit check (prevents DoS via rate exhaustion).
+    // Legacy callers can still send the token directly, but sensitive liveness
+    // probes use the challenge/HMAC path so an untrusted named-pipe owner never
+    // receives the daemon secret in plaintext.
+    const proofNonce = this.verifyRequestAuth(socket, request);
+    if (proofNonce === false) {
       const res = JSON.stringify({ id: request.id, ok: false, error: 'unauthorized' });
       socket.write(res + '\n');
       // Close the socket so brute-force must pay the per-second connection cap
@@ -464,7 +483,16 @@ export class DaemonPipeServer {
     this.dispatch(request)
       .then((response) => {
         if (!socket.destroyed) {
-          socket.write(JSON.stringify(response) + '\n');
+          const signedResponse = proofNonce
+            ? {
+                ...response,
+                authProof: signAuthProof(
+                  this.authToken,
+                  `${proofNonce}:${request.id}:response:${JSON.stringify(response.ok ? response.result : response.error)}`,
+                ),
+              }
+            : response;
+          socket.write(JSON.stringify(signedResponse) + '\n');
         }
       })
       .catch(() => {
@@ -473,6 +501,30 @@ export class DaemonPipeServer {
           socket.write(res + '\n');
         }
       });
+  }
+
+
+  private verifyRequestAuth(socket: net.Socket, request: RpcRequest): string | false {
+    const authProof = (request as RpcRequest & { authProof?: unknown }).authProof;
+    const authNonce = (request as RpcRequest & { authNonce?: unknown }).authNonce;
+    if (typeof authProof === 'string' && typeof authNonce === 'string') {
+      const expectedNonce = this.authChallenges.get(socket);
+      this.authChallenges.delete(socket);
+      if (expectedNonce !== authNonce) return false;
+      const expected = signAuthProof(this.authToken, `${authNonce}:${request.id}:${request.method}`);
+      const proofBuf = Buffer.from(authProof);
+      const expectedBuf = Buffer.from(expected);
+      return proofBuf.length === expectedBuf.length && crypto.timingSafeEqual(proofBuf, expectedBuf)
+        ? authNonce
+        : false;
+    }
+
+    // Use timing-safe comparison to prevent timing attacks.
+    const tokenBuf = Buffer.from(request.token || '');
+    const authBuf = Buffer.from(this.authToken);
+    return tokenBuf.length === authBuf.length && crypto.timingSafeEqual(tokenBuf, authBuf)
+      ? ''
+      : false;
   }
 
   private async dispatch(request: RpcRequest): Promise<RpcResponse> {
