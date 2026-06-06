@@ -61,6 +61,13 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
   });
 
+  it('terminal default routing uses verified identity, not the env-hint resolver', () => {
+    const start = src.indexOf('function resolveDefaultPtyId');
+    expect(start).toBeGreaterThan(0);
+    const block = src.slice(start, src.indexOf('}', start) + 2);
+    expect(block).toContain('resolveDefaultPtyIdImpl({ sendRpc, resolveWorkspaceId: resolveVerifiedWorkspaceId })');
+  });
+
   it('browser_session_start is GLOBAL — carries no workspace identity (no resolver calls)', () => {
     // Session start manages a single global profile + CDP port; the RPC handler
     // ignores workspaceId. Requiring identity here would protect no routing and

@@ -92,15 +92,16 @@ describe('resolveDefaultPtyId', () => {
     await expect(p3).resolves.toBe('pty-99');
   });
 
-  it('returns null and does not pin when the claim RPC fails', async () => {
-    const sendRpc = vi.fn().mockRejectedValue(new Error('pipe closed'));
+  it('throws and does not pin when the claim RPC fails', async () => {
+    const sendRpc = vi.fn().mockRejectedValueOnce(new Error('pipe closed'));
     const deps = makeDeps({
       sendRpc,
       resolveWorkspaceId: vi.fn().mockResolvedValue(''),
     });
 
-    const result = await resolveDefaultPtyId(deps);
-    expect(result).toBeNull();
+    await expect(resolveDefaultPtyId(deps)).rejects.toThrow(
+      'Unable to claim a dedicated MCP terminal workspace: pipe closed',
+    );
 
     // Next call should retry — failures must not permanently disable the
     // external caller's default-pane resolution.
@@ -110,14 +111,28 @@ describe('resolveDefaultPtyId', () => {
     expect(sendRpc).toHaveBeenCalledTimes(2);
   });
 
-  it('returns null when the claim RPC returns a malformed response', async () => {
+  it('throws when the claim RPC returns a malformed response', async () => {
     const sendRpc = vi.fn().mockResolvedValue({ workspaceId: 'ws-1' }); // missing ptyId
     const deps = makeDeps({
       sendRpc,
       resolveWorkspaceId: vi.fn().mockResolvedValue(''),
     });
 
+    await expect(resolveDefaultPtyId(deps)).rejects.toThrow(
+      'Unable to claim a dedicated MCP terminal workspace: mcp.claimWorkspace returned no ptyId',
+    );
+  });
+
+  it('does not treat unverified workspace identity as internal', async () => {
+    const sendRpc = vi.fn().mockResolvedValue({ ptyId: 'pty-claimed' });
+    const deps = makeDeps({
+      sendRpc,
+      resolveWorkspaceId: vi.fn().mockResolvedValue(''),
+    });
+
     const result = await resolveDefaultPtyId(deps);
-    expect(result).toBeNull();
+
+    expect(result).toBe('pty-claimed');
+    expect(sendRpc).toHaveBeenCalledWith('mcp.claimWorkspace', { name: 'MCP' });
   });
 });

@@ -93,7 +93,7 @@ function invalidateWorkspaceId(): void {
  * cannot be obtained, and is NOT cached, so a later call retries live
  * resolution once the renderer / pid-map becomes available.
  */
-async function resolveWorkspaceId(opts?: { force?: boolean }): Promise<string> {
+async function resolveWorkspaceId(opts?: { force?: boolean; verifiedOnly?: boolean }): Promise<string> {
   if (workspaceResolved && MY_WORKSPACE_ID && !opts?.force) return MY_WORKSPACE_ID;
 
   try {
@@ -124,8 +124,15 @@ async function resolveWorkspaceId(opts?: { force?: boolean }): Promise<string> {
   } catch { /* resolve failed, fall through to env hint */ }
 
   // Last resort: the unconfirmed (possibly stale) env hint. Not cached.
-  if (ENV_WORKSPACE_HINT) return ENV_WORKSPACE_HINT;
-  return MY_WORKSPACE_ID;
+  // Security-sensitive routing (terminal default-pane resolution) asks for a
+  // verified identity only; in that mode, never treat a user-supplied env var
+  // as proof that the MCP server is running inside a wmux PTY.
+  if (!opts?.verifiedOnly && ENV_WORKSPACE_HINT) return ENV_WORKSPACE_HINT;
+  return opts?.verifiedOnly ? '' : MY_WORKSPACE_ID;
+}
+
+function resolveVerifiedWorkspaceId(): Promise<string> {
+  return resolveWorkspaceId({ force: true, verifiedOnly: true });
 }
 
 async function getParentPid(pid: number): Promise<number | null> {
@@ -165,9 +172,12 @@ async function requireWorkspaceId(): Promise<string> {
 }
 
 // External-caller pane pinning — see src/mcp/paneResolver.ts for rationale.
-// Bind the resolver's deps to this module's sendRpc + resolveWorkspaceId.
+// Bind the resolver's deps to this module's sendRpc + verified identity
+// resolver. Unlike A2A tools, terminal defaults must not trust WMUX_WORKSPACE_ID
+// because an external launcher can spoof it and otherwise regain active-pane
+// fallback.
 function resolveDefaultPtyId(): Promise<string | null> {
-  return resolveDefaultPtyIdImpl({ sendRpc, resolveWorkspaceId });
+  return resolveDefaultPtyIdImpl({ sendRpc, resolveWorkspaceId: resolveVerifiedWorkspaceId });
 }
 
 // === Browser tools (RPC-based: surface management stays in main process) ===

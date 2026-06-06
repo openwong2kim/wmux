@@ -22,8 +22,9 @@ export interface PaneResolverDeps {
   /** JSON-RPC sender (wmux-client.sendRpc, usually). */
   sendRpc: (method: RpcMethod, params?: Record<string, unknown>) => Promise<unknown>;
   /**
-   * Identity resolver. Must return empty string when the MCP server can't
-   * locate a host workspace (i.e. it's running outside any wmux PTY).
+   * Verified identity resolver. Must return empty string when the MCP server
+   * can't prove it is running inside a live wmux PTY. This resolver must not
+   * trust user-supplied environment hints such as WMUX_WORKSPACE_ID.
    */
   resolveWorkspaceId: () => Promise<string>;
 }
@@ -59,10 +60,12 @@ export async function resolveDefaultPtyId(deps: PaneResolverDeps): Promise<strin
         pinnedPtyId = ptyId;
         return ptyId;
       }
+      throw new Error('mcp.claimWorkspace returned no ptyId');
     } catch (err) {
-      console.error('[mcp] claimWorkspace failed:', err instanceof Error ? err.message : String(err));
+      const message = err instanceof Error ? err.message : String(err);
+      console.error('[mcp] claimWorkspace failed:', message);
+      throw new Error(`Unable to claim a dedicated MCP terminal workspace: ${message}`);
     }
-    return null;
   })();
 
   try {
