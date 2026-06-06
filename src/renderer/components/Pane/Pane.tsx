@@ -275,6 +275,7 @@ function SplitSurfaceView({
             <TerminalComponent
               key={surface.id}
               ptyId={surface.ptyId || undefined}
+              cwd={surface.cwd || undefined}
               isActive={surface.id === activeSurfaceId}
               isWorkspaceVisible={isWorkspaceVisible}
               onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
@@ -299,6 +300,7 @@ function SplitSurfaceView({
               <TerminalComponent
                 key={surface.id}
                 ptyId={surface.ptyId || undefined}
+                cwd={surface.cwd || undefined}
                 isActive={surface.id === activeSurfaceId}
                 isWorkspaceVisible={isWorkspaceVisible}
                 onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}

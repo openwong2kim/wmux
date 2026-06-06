@@ -14,19 +14,20 @@ function collectLeafPanes(pane: Pane): PaneLeaf[] {
 }
 
 /**
- * Build a non-colliding "<base> copy" / "<base> copy N" name for a duplicate.
- * An existing copy-suffix on the source is stripped first so duplicating a copy
- * yields "Foo copy 2" rather than "Foo copy copy". Locale-neutral by design —
- * mirrors the hardcoded "Workspace N" scheme used by addWorkspace.
+ * Build a non-colliding "<base> (copy)" / "<base> (copy N)" name for a
+ * duplicate. An existing copy-suffix on the source is stripped first so
+ * duplicating a copy yields "Foo (copy 2)" rather than "Foo (copy) (copy)".
+ * Locale-neutral by design — mirrors the hardcoded "Workspace N" scheme used
+ * by addWorkspace.
  */
 function nextCopyName(base: string, existing: string[]): string {
   const taken = new Set(existing);
-  const root = base.replace(/ copy(?: \d+)?$/, '') || base;
-  const first = `${root} copy`;
+  const root = base.replace(/ \(copy(?: \d+)?\)$/, '') || base;
+  const first = `${root} (copy)`;
   if (!taken.has(first)) return first;
   let n = 2;
-  while (taken.has(`${root} copy ${n}`)) n++;
-  return `${root} copy ${n}`;
+  while (taken.has(`${root} (copy ${n})`)) n++;
+  return `${root} (copy ${n})`;
 }
 
 export interface WorkspaceSlice {
@@ -38,7 +39,7 @@ export interface WorkspaceSlice {
    * Duplicate an existing workspace's LAYOUT (pane tree, with fresh ids and
    * cleared ptyIds → new panes spawn their own PTYs) and its PROFILE (env +
    * startup command, re-normalized through the save-boundary secret policy).
-   * The clone is named "<name> copy [N]", inserted right after the source, and
+   * The clone is named "<name> (copy [N])", inserted right after the source, and
    * activated. Company role/department membership is intentionally NOT copied.
    * No-op if the id is unknown.
    */

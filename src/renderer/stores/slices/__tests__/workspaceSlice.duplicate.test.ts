@@ -33,12 +33,12 @@ describe('WorkspaceSlice.duplicateWorkspace', () => {
     const ws = store.getState().workspaces;
     expect(ws).toHaveLength(3);
     expect(ws[0].id).toBe(a.id);
-    expect(ws[1].name).toBe('A copy'); // inserted after source
+    expect(ws[1].name).toBe('A (copy)'); // inserted after source
     expect(ws[2].id).toBe(b.id);
     expect(store.getState().activeWorkspaceId).toBe(ws[1].id);
   });
 
-  it('names successive copies A copy, A copy 2, A copy 3', () => {
+  it('names successive copies A (copy), A (copy 2), A (copy 3)', () => {
     const a = createWorkspace('A');
     const store = createTestStore([a], a.id);
 
@@ -47,21 +47,21 @@ describe('WorkspaceSlice.duplicateWorkspace', () => {
     store.getState().duplicateWorkspace(a.id);
 
     const names = store.getState().workspaces.map((w) => w.name);
-    expect(names).toContain('A copy');
-    expect(names).toContain('A copy 2');
-    expect(names).toContain('A copy 3');
+    expect(names).toContain('A (copy)');
+    expect(names).toContain('A (copy 2)');
+    expect(names).toContain('A (copy 3)');
   });
 
   it('does not stack the copy suffix when duplicating a copy', () => {
-    const a = createWorkspace('A copy');
+    const a = createWorkspace('A (copy)');
     const store = createTestStore([a], a.id);
 
     store.getState().duplicateWorkspace(a.id);
 
     const names = store.getState().workspaces.map((w) => w.name);
-    // root "A" is re-derived, so "A copy" copies to "A copy 2", not "A copy copy".
-    expect(names).toContain('A copy 2');
-    expect(names).not.toContain('A copy copy');
+    // root "A" is re-derived, so "A (copy)" copies to "A (copy 2)", not "A (copy) (copy)".
+    expect(names).toContain('A (copy 2)');
+    expect(names).not.toContain('A (copy) (copy)');
   });
 
   it('clones the layout with fresh ids and cleared ptyIds', () => {

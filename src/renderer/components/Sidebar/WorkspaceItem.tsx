@@ -346,7 +346,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
       {/* Right-click context menu */}
       {menuPos && (
         <div
-          className="fixed z-[9999] min-w-[180px] py-1 rounded-md shadow-xl"
+          className="fixed z-[9999] w-max min-w-[150px] py-1 rounded-md shadow-xl"
           style={{ left: menuPos.x, top: menuPos.y, background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
           onMouseDown={(e) => e.stopPropagation()}
         >
