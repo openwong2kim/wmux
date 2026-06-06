@@ -346,7 +346,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
       {/* Right-click context menu */}
       {menuPos && (
         <div
-          className="fixed z-[9999] w-max min-w-[150px] py-1 rounded-md shadow-xl"
+          className="fixed z-[9999] w-max flex flex-col py-1 rounded-md shadow-xl"
           style={{ left: menuPos.x, top: menuPos.y, background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
           onMouseDown={(e) => e.stopPropagation()}
         >
@@ -373,7 +373,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
             onMouseLeave={() => setWdOpen(false)}
           >
             <button
-              className="w-full flex items-center justify-between gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
+              className="w-full flex items-center gap-2 px-3 py-1.5 text-xs transition-colors hover:bg-[var(--bg-overlay)]"
               style={{ color: 'var(--text-main)' }}
             >
               <span>{t('workspace.workingDirs')}</span>
