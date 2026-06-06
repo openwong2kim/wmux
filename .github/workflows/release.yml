@@ -250,6 +250,7 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           FILES=$(find out/make -type f \( -name '*.dmg' -o -name '*.zip' \))
@@ -257,7 +258,7 @@ jobs:
           printf 'Uploading:\n%s\n' "$FILES"
           # Filenames carry no spaces (wmux-<ver>-<arch>.dmg); intentional word split.
           # shellcheck disable=SC2086
-          gh release upload "${{ github.ref_name }}" $FILES --clobber
+          gh release upload "$RELEASE_TAG" $FILES --clobber
 
       - name: Clean up temporary keychain
         if: always() && env.APPLE_CERT_P12_BASE64 != ''
@@ -300,10 +301,11 @@ jobs:
         continue-on-error: true
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_TAG: ${{ github.ref_name }}
         run: |
           set -euo pipefail
           FILES=$(find out/make -type f \( -name '*.deb' -o -name '*.rpm' -o -name '*.AppImage' \))
           if [ -z "$FILES" ]; then echo "No Linux artifacts found — skipping upload"; exit 0; fi
           printf 'Uploading:\n%s\n' "$FILES"
           # shellcheck disable=SC2086
-          gh release upload "${{ github.ref_name }}" $FILES --clobber
+          gh release upload "$RELEASE_TAG" $FILES --clobber
