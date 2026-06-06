@@ -3,6 +3,7 @@ import { PTYManager } from './PTYManager';
 import { OscParser } from './OscParser';
 import { AgentDetector, agentDisplayToSlug } from './AgentDetector';
 import { ActivityMonitor } from './ActivityMonitor';
+import { parseOsc7Cwd, detectPromptCwd } from './cwdDetect';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { IPC } from '../../shared/constants';
 import { updateCwd, removeCwd, updateBranch, removeBranch, broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
@@ -250,7 +251,7 @@ export class PTYBridge {
 
       switch (event.code) {
         case 7: {
-          const cwd = event.data.replace(/^file:\/\/[^/]*/, '');
+          const cwd = parseOsc7Cwd(event.data);
           updateCwd(ptyId, cwd);
           win.webContents.send(IPC.CWD_CHANGED, ptyId, cwd);
           break;
@@ -430,10 +431,11 @@ export class PTYBridge {
 
     this.agentDetectorCleanups.set(ptyId, [unsubCritical, unsubAgent, unsubActive]);
 
-    // Detect CWD from shell prompt patterns (PowerShell: "PS C:\path>", bash: "user@host:~/path$")
+    // Detect CWD from shell prompt patterns (PowerShell: "PS C:\path>", bash: "user@host:~/path$").
+    // Parsing lives in ./cwdDetect (pure + unit-tested); see detectPromptCwd for
+    // why the LAST prompt in the buffer is the live one.
     // eslint-disable-next-line no-control-regex
-    const ansiStripRegex = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[[\?]?[0-9;]*[hlm]/g;
-    const promptCwdRegex = /(?:PS\s+([A-Za-z]:\\[^>]*?)>)|(?:\w+@[\w.-]+:([^\$]+?)\$)/;
+    const ansiStripRegex = /\x1b\[[0-9;]*[a-zA-Z]|\x1b\][^\x07]*\x07|\x1b\[[?]?[0-9;]*[hlm]/g;
     let lastDetectedCwd = '';
     let promptBuffer = '';
 
@@ -463,10 +465,9 @@ export class PTYBridge {
       if (promptBuffer.length > 1024) promptBuffer = promptBuffer.slice(-512);
 
       const clean = promptBuffer.replace(ansiStripRegex, '');
-      const promptMatch = clean.match(promptCwdRegex);
-      if (promptMatch) {
-        const detectedCwd = (promptMatch[1] || promptMatch[2] || '').trim();
-        if (detectedCwd && detectedCwd !== lastDetectedCwd) {
+      const detectedCwd = detectPromptCwd(clean);
+      if (detectedCwd !== null) {
+        if (detectedCwd !== lastDetectedCwd) {
           lastDetectedCwd = detectedCwd;
           updateCwd(ptyId, detectedCwd);
           win.webContents.send(IPC.CWD_CHANGED, ptyId, detectedCwd);
