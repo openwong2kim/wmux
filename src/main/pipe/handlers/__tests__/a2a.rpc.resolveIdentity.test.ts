@@ -98,58 +98,17 @@ describe('a2a.resolve.identity — live ownership resolution', () => {
     expect(listFiles()).toEqual(['2222']); // not pruned on the read path
   });
 
-  it('purges a legacy ws- entry that is ABSENT from the live workspace list', async () => {
-    // Legacy PID→workspaceId with no matching live workspace = a re-minted/closed
-    // ghost (or a recycled PID). Verified absent → purge it (this case was the
-    // root cause of the ghost bug).
+  it('DROPS legacy PID→workspaceId entries (ws- prefix) and deletes the file', async () => {
+    // Legacy entries have no ptyId anchor, cannot be live-resolved, and on a
+    // recycled PID surface as a ghost workspace. They must be purged, not passed
+    // through (the old passthrough behavior was the root cause of the ghost bug).
     fs.writeFileSync(path.join(dirRef.current, '3333'), 'ws-legacy-frozen');
-    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
-      if (method === 'workspace.list') return Promise.resolve([{ id: 'ws-something-else' }]);
-      return Promise.resolve({ workspaceId: null });
-    });
 
     const mappings = await resolveIdentity(setupRouter());
 
     expect(mappings).toEqual({});
-    expect(sendToRendererMock).toHaveBeenCalledWith(expect.anything(), 'workspace.list');
-    expect(listFiles()).toEqual([]); // ghost file purged
-  });
-
-  it('KEEPS and resolves a legacy ws- entry that is LIVE (upgraded pane anchor)', async () => {
-    // A pane created by an older version, still running after an upgrade, carries
-    // a legacy entry as its only identity anchor. If the workspace is live,
-    // resolve to it and keep the file — purging it would orphan the pane's MCP
-    // children ("no active workspace"), the very symptom the fix cures.
-    fs.writeFileSync(path.join(dirRef.current, '3434'), 'ws-still-live');
-    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
-      if (method === 'workspace.list') {
-        return Promise.resolve([{ id: 'ws-still-live' }, { id: 'ws-other' }]);
-      }
-      return Promise.resolve({ workspaceId: null });
-    });
-
-    const mappings = await resolveIdentity(setupRouter());
-
-    expect(mappings).toEqual({ '3434': 'ws-still-live' });
-    expect(listFiles()).toEqual(['3434']); // live anchor preserved
-  });
-
-  it('KEEPS a legacy ws- entry when the workspace list is unavailable (unknown)', async () => {
-    // The retryable "still starting" envelope (or any non-array) is NOT proof of
-    // death. Keep the entry and skip — the caller retries — so a boot race never
-    // deletes a genuinely-live anchor.
-    fs.writeFileSync(path.join(dirRef.current, '3535'), 'ws-maybe-live');
-    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
-      if (method === 'workspace.list') {
-        return Promise.resolve({ error: 'wmux is still starting', retryable: true });
-      }
-      return Promise.resolve({ workspaceId: null });
-    });
-
-    const mappings = await resolveIdentity(setupRouter());
-
-    expect(mappings).toEqual({});
-    expect(listFiles()).toEqual(['3535']); // not purged on 'unknown'
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+    expect(listFiles()).toEqual([]); // file purged
   });
 
   it('skips an entry when the renderer lookup throws (early boot / reload)', async () => {
@@ -163,40 +122,33 @@ describe('a2a.resolve.identity — live ownership resolution', () => {
     expect(listFiles()).toEqual(['4444']);
   });
 
-  it('resolves a mix of live, absent-legacy, and dead-owner entries in one pass', async () => {
+  it('resolves a mix of live, legacy, and dead-owner entries in one pass', async () => {
     fs.writeFileSync(path.join(dirRef.current, '10'), 'daemon-live');
     fs.writeFileSync(path.join(dirRef.current, '20'), 'ws-legacy');
     fs.writeFileSync(path.join(dirRef.current, '30'), 'daemon-dead');
     sendToRendererMock.mockImplementation(
-      (_w: unknown, method: string, params?: { ptyId: string }) => {
-        if (method === 'workspace.list') return Promise.resolve([{ id: 'ws-A' }]); // ws-legacy absent
-        return Promise.resolve({ workspaceId: params?.ptyId === 'daemon-live' ? 'ws-A' : null });
-      },
+      (_w: unknown, _method: string, params: { ptyId: string }) =>
+        Promise.resolve({
+          workspaceId: params.ptyId === 'daemon-live' ? 'ws-A' : null,
+        }),
     );
 
     const mappings = await resolveIdentity(setupRouter());
 
-    // Legacy '20' (ws-legacy) is absent from the live list → purged; '30'
-    // resolves to null (dead owner) → omitted but kept on disk.
+    // Legacy '20' is dropped; '30' resolves to null (dead owner) and is omitted.
     expect(mappings).toEqual({ '10': 'ws-A' });
-    expect(listFiles()).toEqual(['10', '30']);
+    expect(listFiles()).toEqual(['10', '30']); // legacy file purged, others kept
   });
 
-  it('purges multiple absent legacy files with a single workspace.list lookup', async () => {
+  it('purges multiple legacy files in one pass without any renderer call', async () => {
     fs.writeFileSync(path.join(dirRef.current, '40'), 'ws-old-a');
     fs.writeFileSync(path.join(dirRef.current, '50'), 'ws-old-b');
     fs.writeFileSync(path.join(dirRef.current, '60'), 'ws-old-c');
-    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
-      if (method === 'workspace.list') return Promise.resolve([]); // none live
-      return Promise.resolve({ workspaceId: null });
-    });
 
     const mappings = await resolveIdentity(setupRouter());
 
     expect(mappings).toEqual({});
-    // The live list is fetched once and cached for the whole pass.
-    const listCalls = sendToRendererMock.mock.calls.filter((c) => c[1] === 'workspace.list');
-    expect(listCalls).toHaveLength(1);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
     expect(listFiles()).toEqual([]);
   });
 

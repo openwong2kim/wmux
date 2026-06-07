@@ -83,15 +83,6 @@ function getSimulatedWorkspaces() {
 function handleA2aResolveIdentity() {
   const dir = getPidMapDir();
   const owners = getSimulatedOwners();
-  // Live workspace id set, for verifying legacy "ws-" entries (mirrors the real
-  // handler's lazy workspace.list fetch). The mini-server always has a concrete
-  // array, so there is no 'unknown' state to model here — that path is covered
-  // by the unit tests.
-  const liveWorkspaceIds = new Set(
-    getSimulatedWorkspaces()
-      .map((w) => (w && typeof w === 'object' ? w.id : null))
-      .filter((id) => typeof id === 'string' && id),
-  );
   const mappings = {};
   try {
     if (fs.existsSync(dir)) {
@@ -104,15 +95,10 @@ function handleA2aResolveIdentity() {
         }
         if (!value) continue;
         if (value.startsWith('ws-')) {
-          // Legacy PID → workspaceId entry, mirroring src/main/pipe/handlers/
-          // a2a.rpc.ts: verify against the live workspace list. A live workspace
-          // (e.g. a pane carried across an upgrade) is resolved and kept; an
-          // absent one is a re-minted/recycled ghost and is purged.
-          if (liveWorkspaceIds.has(value)) {
-            mappings[file] = value;
-          } else {
-            try { fs.unlinkSync(path.join(dir, file)); } catch { /* best-effort */ }
-          }
+          // Legacy PID → workspaceId entry: DROP it (delete the file), mirroring
+          // src/main/pipe/handlers/a2a.rpc.ts. Passing it through is what let a
+          // re-minted/recycled legacy id resurface as a ghost workspace.
+          try { fs.unlinkSync(path.join(dir, file)); } catch { /* best-effort */ }
           continue;
         }
         // Current format: PID → ptyId. Resolve the live owning workspace; a

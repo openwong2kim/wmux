@@ -7,32 +7,6 @@ import { getPidMapDir } from '../../../shared/constants';
 
 type GetWindow = () => BrowserWindow | null;
 
-/**
- * Fetch the live workspace ids from the renderer for verifying legacy
- * "PID → workspaceId" pid-map entries. Returns a Set of live ids, or `null`
- * when the list can't be confirmed (renderer unavailable, or the retryable
- * "still starting" envelope) so callers treat that as 'unknown' and never
- * purge on it. Mirrors classifyWorkspaceListResult's array/{workspaces} shape
- * tolerance and its require-positive-proof discipline.
- */
-async function fetchLiveWorkspaceIds(getWindow: GetWindow): Promise<Set<string> | null> {
-  try {
-    const result = await sendToRenderer(getWindow, 'workspace.list');
-    const list = Array.isArray(result)
-      ? result
-      : (result as { workspaces?: unknown[] } | null)?.workspaces;
-    if (!Array.isArray(list)) return null; // 'unknown' — not a confirmed list
-    const ids = new Set<string>();
-    for (const w of list) {
-      const id = w && typeof w === 'object' ? (w as Record<string, unknown>)['id'] : null;
-      if (typeof id === 'string' && id) ids.add(id);
-    }
-    return ids;
-  } catch {
-    return null; // renderer unavailable — 'unknown', never purge on this
-  }
-}
-
 export function registerA2aRpc(router: RpcRouter, getWindow: GetWindow, claudeWorker: ClaudeWorker): void {
   // a2a.resolve.identity — handled in main process (not renderer).
   // Returns PID → CURRENT workspaceId mappings so an MCP server can resolve
@@ -47,12 +21,6 @@ export function registerA2aRpc(router: RpcRouter, getWindow: GetWindow, claudeWo
   router.register('a2a.resolve.identity', async () => {
     const dir = getPidMapDir();
     const mappings: Record<string, string> = {};
-    // Live workspace ids, fetched lazily on the first legacy entry and cached
-    // for the rest of this call. `undefined` = not fetched yet; `null` = the
-    // list is transiently unavailable (renderer booting / reloading); a Set =
-    // the confirmed live set. One renderer round-trip at most per call, and
-    // only when a legacy entry actually exists.
-    let liveWorkspaceIds: Set<string> | null | undefined;
     try {
       if (!fs.existsSync(dir)) return { mappings };
 
@@ -65,31 +33,31 @@ export function registerA2aRpc(router: RpcRouter, getWindow: GetWindow, claudeWo
         }
         if (!value) continue;
 
-        // Legacy "PID → workspaceId" entries. These predate the ptyId anchor
-        // and have no pty to live-resolve, but a pane created by an OLDER
-        // version that is still running after an upgrade may carry one as its
-        // ONLY identity anchor (Claude Code doesn't propagate WMUX_WORKSPACE_ID
-        // to MCP child processes, so the on-disk map is all the MCP server has).
-        // The old fix purged every "ws-" entry unconditionally, which deleted
-        // those live anchors and left the upgraded pane resolving to no
-        // workspace — the very "no active workspace" symptom this is meant to
-        // cure. Instead, verify the workspaceId against the live workspace list
-        // (the same positive-proof discipline as the env-hint gate):
-        //   - live   → resolve to it AND keep the file (genuine upgraded pane).
-        //   - absent → purge it (a re-minted/closed ghost; the OS can recycle
-        //              its PID onto an unrelated live process, the ghost source).
-        //   - unknown (list unavailable) → keep and skip; the caller retries, so
-        //              a boot race never deletes a genuinely-live anchor.
+        // Drop legacy "PID → workspaceId" entries unconditionally. They have no
+        // ptyId anchor so they cannot be live-resolved; the old code passed them
+        // through verbatim, handing back a frozen id that goes stale the moment
+        // the workspace is re-minted (daemon respawn / session restore). Worse,
+        // the OS recycles PID numbers onto unrelated live processes (Notepad /
+        // Discord / RuntimeBroker observed in the wild), so a legacy entry on a
+        // recycled-but-live PID resurfaces as a ghost workspace (browser_open →
+        // "no active workspace"; terminal ops → "not owned by workspace ws-…").
+        // The current writer only ever stores ptyIds, so any "ws-" value is pure
+        // legacy debris — purge it. This is the single largest ghost source and
+        // is safe to delete on this read path (no liveness probe, no race).
+        //
+        // We deliberately do NOT "keep it if its workspace is still live"
+        // (considered, then rejected): workspace.list proves only that the
+        // workspace exists, not that this PID file still belongs to that pane.
+        // Legacy files are PID-keyed with ws- content, so removePidMapByPtyId
+        // (keyed by ptyId content) can never prune them — a kept entry lives
+        // forever, and once the OS recycles its PID onto another MCP server's
+        // ancestor it mis-routes commands to a live-but-WRONG workspace (worse
+        // than the dead-id ghost: silent, not a hard failure). Unverifiable +
+        // unprunable ⇒ unconditional purge is the only safe policy. A genuinely
+        // live pane re-anchors with a current-format ptyId entry on its next
+        // reconnect, so nothing is permanently lost.
         if (value.startsWith('ws-')) {
-          if (liveWorkspaceIds === undefined) {
-            liveWorkspaceIds = await fetchLiveWorkspaceIds(getWindow);
-          }
-          if (liveWorkspaceIds === null) continue; // unknown — keep, don't resolve
-          if (liveWorkspaceIds.has(value)) {
-            mappings[file] = value; // live pre-upgrade pane — resolve to it
-          } else {
-            try { fs.unlinkSync(`${dir}/${file}`); } catch { /* best-effort */ }
-          }
+          try { fs.unlinkSync(`${dir}/${file}`); } catch { /* best-effort */ }
           continue;
         }
 
