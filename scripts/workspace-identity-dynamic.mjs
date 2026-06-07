@@ -71,7 +71,7 @@ function makePipeName(tag) {
   return path.join(os.tmpdir(), `wmux-wsid-${tag}.sock`);
 }
 
-function spawnMiniServer({ pipeName, authToken, testHome, owners, workspaces }) {
+function spawnMiniServer({ pipeName, authToken, testHome, owners, workspaces, resolveOnce }) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [MINI_SERVER], {
       cwd: REPO_ROOT,
@@ -87,6 +87,8 @@ function spawnMiniServer({ pipeName, authToken, testHome, owners, workspaces }) 
         WMUX_MINISERVER_OWNERS: JSON.stringify(owners ?? {}),
         // Simulated renderer workspace.list (live workspace array).
         WMUX_MINISERVER_WORKSPACES: JSON.stringify(workspaces ?? []),
+        // When set, the PID map resolves only on the first call (then empty).
+        WMUX_MINISERVER_RESOLVE_ONCE: resolveOnce ? '1' : undefined,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -154,12 +156,12 @@ async function killChild(child) {
   if (!child.killed) child.kill('SIGKILL');
 }
 
-async function withServer(label, body, owners, workspaces) {
+async function withServer(label, body, owners, workspaces, extra = {}) {
   const testHome = makeTestHome();
   const wmuxDir = path.join(testHome, '.wmux');
   const pipeName = makePipeName(`${label}-${randomUUID().slice(0, 8)}`);
   const authToken = randomUUID();
-  const { child, getStderr } = await spawnMiniServer({ pipeName, authToken, testHome, owners, workspaces });
+  const { child, getStderr } = await spawnMiniServer({ pipeName, authToken, testHome, owners, workspaces, resolveOnce: extra.resolveOnce });
   try {
     return await body({ testHome, wmuxDir, pipeName, authToken });
   } catch (err) {
@@ -172,7 +174,7 @@ async function withServer(label, body, owners, workspaces) {
   }
 }
 
-function runProbe({ pipeName, authToken, testHome, envWorkspaceId }) {
+function runProbe({ pipeName, authToken, testHome, envWorkspaceId, double }) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [HELPER_PROBE], {
       cwd: REPO_ROOT,
@@ -185,6 +187,9 @@ function runProbe({ pipeName, authToken, testHome, envWorkspaceId }) {
         WMUX_WSID_PROBE_PIPE: pipeName,
         WMUX_WSID_PROBE_TOKEN: authToken,
         WMUX_WORKSPACE_ID: envWorkspaceId ?? '',
+        // Resolve twice (cache, then force-re-resolve) to exercise the
+        // stale-cache fallback gate.
+        WMUX_WSID_PROBE_DOUBLE: double ? '1' : undefined,
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -307,6 +312,27 @@ async function runW2c(report) {
   }, {}, [{ id: 'ws-other-live' }]);
 }
 
+async function runW2d(report) {
+  // Codex PR #142 R3 P2 — a stale cached identity must not outlive its
+  // workspace. The first resolve hits the PID-map walk and caches
+  // MY_WORKSPACE_ID = the owner. The server is in RESOLVE_ONCE mode, so the
+  // forced second resolve sees an EMPTY pid-map (pane gone / re-minted) and
+  // falls through. With no env hint and the cached workspace ABSENT from
+  // workspace.list, the resolver must drop the cached id and return "" — not
+  // keep routing to the confirmed-dead id (the ghost loop).
+  await withServer('W2d', async ({ testHome, wmuxDir, pipeName, authToken }) => {
+    const pidMapDir = path.join(wmuxDir, 'pid-map');
+    fs.mkdirSync(pidMapDir, { recursive: true });
+    fs.writeFileSync(path.join(pidMapDir, String(process.pid)), 'daemon-cache', 'utf-8');
+
+    const probe = await runProbe({ pipeName, authToken, testHome, envWorkspaceId: '', double: true });
+    const pass =
+      probe.resolved === '' &&             // stale cache dropped, not returned
+      probe.resolved !== 'ws-cached-DEAD';
+    report.push({ scenario: 'W2d', pass, probe });
+  }, { 'daemon-cache': 'ws-cached-DEAD' }, [{ id: 'ws-other-live' }], { resolveOnce: true });
+}
+
 async function runW3(report) {
   await withServer('W3', async ({ testHome, wmuxDir, pipeName, authToken }) => {
     // Map THIS test runner's pid → ptyId, owner = ws-walk-match. The probe's
@@ -370,6 +396,7 @@ async function main() {
   await runW2(report);
   await runW2b(report);
   await runW2c(report);
+  await runW2d(report);
   await runW3(report);
   await runW4(report);
   await runW5(report);

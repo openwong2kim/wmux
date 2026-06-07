@@ -127,6 +127,15 @@ async function resolveWorkspaceId(opts?: { force?: boolean }): Promise<string> {
   if (ENV_WORKSPACE_HINT) {
     if ((await isLiveWorkspace(ENV_WORKSPACE_HINT)) !== 'absent') return ENV_WORKSPACE_HINT;
   }
+  // Last-resort cached identity. invalidateWorkspaceId clears workspaceResolved
+  // but not MY_WORKSPACE_ID, so gate the cached fallback on liveness too: drop a
+  // confirmed-dead ('absent') id (and clear the cache so the next call
+  // re-resolves clean), keep it on 'unknown' (workspace.list transiently down).
+  // Mirrors src/mcp/index.ts so both surfaces close the ghost loop identically.
+  if (MY_WORKSPACE_ID && (await isLiveWorkspace(MY_WORKSPACE_ID)) === 'absent') {
+    MY_WORKSPACE_ID = '';
+    workspaceResolved = false;
+  }
   return MY_WORKSPACE_ID;
 }
 

@@ -140,7 +140,20 @@ async function resolveWorkspaceId(opts?: { force?: boolean; verifiedOnly?: boole
   if (!opts?.verifiedOnly && ENV_WORKSPACE_HINT) {
     if ((await isLiveWorkspace(ENV_WORKSPACE_HINT)) !== 'absent') return ENV_WORKSPACE_HINT;
   }
-  return opts?.verifiedOnly ? '' : MY_WORKSPACE_ID;
+  if (opts?.verifiedOnly) return '';
+
+  // Last-resort cached identity. invalidateWorkspaceId() clears the
+  // `workspaceResolved` flag but NOT MY_WORKSPACE_ID, so a re-minted/closed
+  // workspace could otherwise leak back here and keep routing to a confirmed-
+  // dead id — the ghost loop this whole change exists to stop. Gate it exactly
+  // like the env hint: drop it only on positive proof it is 'absent' (and clear
+  // the cache so the next call re-resolves clean); keep it on 'unknown'
+  // (workspace.list transiently down) to carry the call through a boot blip.
+  if (MY_WORKSPACE_ID && (await isLiveWorkspace(MY_WORKSPACE_ID)) === 'absent') {
+    MY_WORKSPACE_ID = '';
+    workspaceResolved = false;
+  }
+  return MY_WORKSPACE_ID;
 }
 
 function resolveVerifiedWorkspaceId(): Promise<string> {

@@ -80,10 +80,21 @@ function getSimulatedWorkspaces() {
   }
 }
 
+// First-call-only mode: when WMUX_MINISERVER_RESOLVE_ONCE is set, the PID map
+// resolves on the FIRST a2a.resolve.identity call and returns empty afterward.
+// Models a workspace that resolved successfully once, then had its pid-map entry
+// vanish (pane closed / re-minted) — used to exercise the stale-cache fallback
+// gate (resolveWorkspaceId must not return a confirmed-dead cached id).
+let resolveCallCount = 0;
+
 function handleA2aResolveIdentity() {
   const dir = getPidMapDir();
   const owners = getSimulatedOwners();
   const mappings = {};
+  resolveCallCount += 1;
+  if (process.env.WMUX_MINISERVER_RESOLVE_ONCE && resolveCallCount > 1) {
+    return { mappings }; // empty on subsequent calls
+  }
   try {
     if (fs.existsSync(dir)) {
       for (const file of fs.readdirSync(dir)) {
