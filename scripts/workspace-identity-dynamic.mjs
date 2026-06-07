@@ -71,7 +71,7 @@ function makePipeName(tag) {
   return path.join(os.tmpdir(), `wmux-wsid-${tag}.sock`);
 }
 
-function spawnMiniServer({ pipeName, authToken, testHome, owners }) {
+function spawnMiniServer({ pipeName, authToken, testHome, owners, workspaces }) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [MINI_SERVER], {
       cwd: REPO_ROOT,
@@ -85,6 +85,8 @@ function spawnMiniServer({ pipeName, authToken, testHome, owners }) {
         WMUX_MINISERVER_TOKEN: authToken,
         // Simulated renderer ptyId → workspaceId ownership table.
         WMUX_MINISERVER_OWNERS: JSON.stringify(owners ?? {}),
+        // Simulated renderer workspace.list (live workspace array).
+        WMUX_MINISERVER_WORKSPACES: JSON.stringify(workspaces ?? []),
       },
       stdio: ['ignore', 'pipe', 'pipe'],
     });
@@ -152,12 +154,12 @@ async function killChild(child) {
   if (!child.killed) child.kill('SIGKILL');
 }
 
-async function withServer(label, body, owners) {
+async function withServer(label, body, owners, workspaces) {
   const testHome = makeTestHome();
   const wmuxDir = path.join(testHome, '.wmux');
   const pipeName = makePipeName(`${label}-${randomUUID().slice(0, 8)}`);
   const authToken = randomUUID();
-  const { child, getStderr } = await spawnMiniServer({ pipeName, authToken, testHome, owners });
+  const { child, getStderr } = await spawnMiniServer({ pipeName, authToken, testHome, owners, workspaces });
   try {
     return await body({ testHome, wmuxDir, pipeName, authToken });
   } catch (err) {
@@ -214,26 +216,31 @@ function runProbe({ pipeName, authToken, testHome, envWorkspaceId }) {
 
 async function runW1(report) {
   await withServer('W1', async ({ wmuxDir, pipeName, authToken }) => {
-    // pid-map stores PID → ptyId. The handler resolves each ptyId to its
-    // live owner; the legacy ws- entry passes through; the dead ptyId
-    // (no owner) is omitted.
+    // pid-map stores PID → ptyId. The handler resolves each ptyId to its live
+    // owner; the legacy ws- entry is DROPPED (file deleted, the ghost-fix
+    // behavior); the dead ptyId (no owner) is omitted from the map but its file
+    // is left on disk (read path is non-destructive for current-format files).
     const pidMapDir = path.join(wmuxDir, 'pid-map');
     fs.mkdirSync(pidMapDir, { recursive: true });
-    fs.writeFileSync(path.join(pidMapDir, '12345'), 'daemon-aaaa', 'utf-8');
-    fs.writeFileSync(path.join(pidMapDir, '67890'), 'ws-legacy', 'utf-8');
-    fs.writeFileSync(path.join(pidMapDir, '55555'), 'daemon-dead', 'utf-8');
+    fs.writeFileSync(path.join(pidMapDir, '12345'), 'daemon-aaaa', 'utf-8'); // live
+    fs.writeFileSync(path.join(pidMapDir, '67890'), 'ws-legacy', 'utf-8');   // legacy → dropped
+    fs.writeFileSync(path.join(pidMapDir, '55555'), 'daemon-dead', 'utf-8'); // dead owner → omitted
 
     const socket = await connectSocket(pipeName);
     try {
       const result = await rpc(socket, 'a2a.resolve.identity', {}, authToken);
       const m = result.mappings;
+      const filesAfter = fs.readdirSync(pidMapDir).sort();
       const pass =
         m &&
-        m['12345'] === 'ws-alpha' &&   // live owner of daemon-aaaa
-        m['67890'] === 'ws-legacy' &&  // legacy passthrough
-        !('55555' in m) &&             // dead ptyId omitted
-        Object.keys(m).length === 2;
-      report.push({ scenario: 'W1', pass, mappings: m });
+        m['12345'] === 'ws-alpha' &&        // live owner of daemon-aaaa
+        !('67890' in m) &&                  // legacy dropped from map
+        !('55555' in m) &&                  // dead ptyId omitted
+        Object.keys(m).length === 1 &&
+        !filesAfter.includes('67890') &&    // legacy file purged from disk
+        filesAfter.includes('12345') &&     // live file kept
+        filesAfter.includes('55555');       // dead current-format file kept (non-destructive read)
+      report.push({ scenario: 'W1', pass, mappings: m, filesAfter });
     } finally {
       socket.end();
     }
@@ -264,8 +271,10 @@ async function runW2(report) {
 }
 
 async function runW2b(report) {
-  // Env hint fallback. No PID-map match (empty map) → the resolver falls back
-  // to the env hint rather than returning nothing.
+  // Env hint fallback — hint names a LIVE workspace. No PID-map match (empty
+  // map) → the resolver falls back to the env hint, gates it on workspace.list,
+  // sees it is live, and returns it. rpcCalls === 2 (resolve.identity +
+  // workspace.list).
   await withServer('W2b', async ({ testHome, wmuxDir, pipeName, authToken }) => {
     fs.mkdirSync(path.join(wmuxDir, 'pid-map'), { recursive: true });
 
@@ -273,9 +282,29 @@ async function runW2b(report) {
       pipeName, authToken, testHome,
       envWorkspaceId: 'ws-from-env',
     });
-    const pass = probe.resolved === 'ws-from-env' && probe.rpcCalls === 1;
+    const pass = probe.resolved === 'ws-from-env' && probe.rpcCalls === 2;
     report.push({ scenario: 'W2b', pass, probe });
-  });
+  }, {}, [{ id: 'ws-from-env' }]);
+}
+
+async function runW2c(report) {
+  // Env hint is a CONFIRMED GHOST. No PID-map match, and workspace.list does
+  // NOT contain the hint → the resolver must DROP it and return "" (so the MCP
+  // server raises a clear "identity unknown" rather than routing into a ghost).
+  // This is the env-hint half of the ghost fix.
+  await withServer('W2c', async ({ testHome, wmuxDir, pipeName, authToken }) => {
+    fs.mkdirSync(path.join(wmuxDir, 'pid-map'), { recursive: true });
+
+    const probe = await runProbe({
+      pipeName, authToken, testHome,
+      envWorkspaceId: 'ws-stale-ghost',
+    });
+    const pass =
+      probe.resolved === '' &&
+      probe.resolved !== 'ws-stale-ghost' &&
+      probe.rpcCalls === 2;
+    report.push({ scenario: 'W2c', pass, probe });
+  }, {}, [{ id: 'ws-other-live' }]);
 }
 
 async function runW3(report) {
@@ -340,6 +369,7 @@ async function main() {
   await runW1(report);
   await runW2(report);
   await runW2b(report);
+  await runW2c(report);
   await runW3(report);
   await runW4(report);
   await runW5(report);

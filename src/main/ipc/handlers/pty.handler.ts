@@ -124,6 +124,30 @@ function writePidMap(pid: string | number, ptyId: string): void {
   } catch { /* best-effort */ }
 }
 
+/**
+ * Remove every pid-map file pointing at `ptyId`. Called when a daemon-owned
+ * session dies so the map is pruned at the WRITE boundary instead of on the
+ * read hot-path. Daemon sessions otherwise leak a file per shell forever
+ * (writePidMap has no PID-keyed remove pair here, unlike PTYManager.dispose),
+ * which let the OS recycle those PIDs onto unrelated processes — the accretion
+ * behind the ghost-workspace bug. Keyed by ptyId (content) because the
+ * session:died payload carries the sessionId/ptyId, not the OS PID.
+ */
+function removePidMapByPtyId(ptyId: string): void {
+  if (!ptyId) return;
+  try {
+    const dir = getPidMapDir();
+    if (!fs.existsSync(dir)) return;
+    for (const file of fs.readdirSync(dir)) {
+      try {
+        if (fs.readFileSync(path.join(dir, file), 'utf8').trim() === ptyId) {
+          fs.unlinkSync(path.join(dir, file));
+        }
+      } catch { /* unreadable / racing-unlink — skip */ }
+    }
+  } catch { /* best-effort */ }
+}
+
 export function registerPTYHandlers(
   ptyManager: PTYManager,
   ptyBridge: PTYBridge,
@@ -642,6 +666,9 @@ export function registerPTYHandlers(
         win.webContents.send(IPC.PTY_EXIT, payload.sessionId, payload.exitCode ?? -1);
       }
       daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => {});
+      // Prune this session's pid-map anchor now that the shell is gone, so the
+      // map doesn't accrete dead entries the OS can recycle into ghosts.
+      removePidMapByPtyId(payload.sessionId);
     };
     daemonClient.on('session:died', onDaemonSessionDied);
   }

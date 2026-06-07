@@ -8,9 +8,11 @@
  *   1. Call a2a.resolve.identity RPC for the PID → (live) workspaceId map.
  *   2. Walk PPID chain up to 10 levels looking for a match (path B).
  *   3. Only if that finds nothing, fall back to the WMUX_WORKSPACE_ID env
- *      hint (path A). The env is NO LONGER a short-circuit: it is frozen at
- *      PTY-create time and goes stale when the workspace id is re-minted, so
- *      the live PID map is always preferred over it.
+ *      hint (path A) — but gate it on workspace.list first: the hint is frozen
+ *      at PTY-create time and goes stale when the workspace id is re-minted, so
+ *      a hint that is a CONFIRMED ghost (absent from workspace.list) is dropped.
+ *      A hint is kept on 'unknown' (workspace.list unavailable) to avoid turning
+ *      a transient condition into a hard failure. Mirrors src/mcp/index.ts.
  *
  * Inputs (env):
  *   WMUX_WSID_PROBE_PIPE   pipe / socket name of the bundled daemon
@@ -20,7 +22,7 @@
  * Output (single line JSON to stdout):
  *   {
  *     resolved: string,    // the resolved workspaceId, or "" on failure
- *     rpcCalls: number,    // 0 if path A, 1 if path B was attempted
+ *     rpcCalls: number,    // resolve.identity (+ workspace.list if hint gated)
  *     walkDepth: number,   // 0 if path A, >=1 if walk ran
  *   }
  */
@@ -127,9 +129,28 @@ async function resolveWorkspaceId() {
     if (socket) socket.end();
   }
 
-  // Path A (last resort) — unconfirmed, possibly-stale env hint.
-  if (envWorkspaceId) return envWorkspaceId;
+  // Path A (last resort) — env hint, but reject a CONFIRMED ghost first.
+  // Mirrors src/mcp/index.ts: drop the hint only on positive proof it is gone
+  // ('absent'); keep it on 'unknown' (workspace.list unavailable / non-array).
+  if (envWorkspaceId) {
+    if ((await classifyEnvHint(envWorkspaceId)) !== 'absent') return envWorkspaceId;
+  }
   return '';
+}
+
+async function classifyEnvHint(wsId) {
+  let socket;
+  try {
+    socket = await connectSocket();
+    const result = await rpc(socket, 'workspace.list', {});
+    const list = Array.isArray(result) ? result : result?.workspaces;
+    if (!Array.isArray(list)) return 'unknown';
+    return list.some((w) => w && typeof w === 'object' && w.id === wsId) ? 'live' : 'absent';
+  } catch {
+    return 'unknown';
+  } finally {
+    if (socket) socket.end();
+  }
 }
 
 (async () => {
