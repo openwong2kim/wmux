@@ -217,13 +217,14 @@ function runProbe({ pipeName, authToken, testHome, envWorkspaceId }) {
 async function runW1(report) {
   await withServer('W1', async ({ wmuxDir, pipeName, authToken }) => {
     // pid-map stores PID → ptyId. The handler resolves each ptyId to its live
-    // owner; the legacy ws- entry is DROPPED (file deleted, the ghost-fix
-    // behavior); the dead ptyId (no owner) is omitted from the map but its file
-    // is left on disk (read path is non-destructive for current-format files).
+    // owner; the legacy ws- entry is verified against the live workspace list
+    // and PURGED because it is ABSENT (a ghost); the dead ptyId (no owner) is
+    // omitted from the map but its file is left on disk (read path is
+    // non-destructive for current-format files). (Live-legacy is W1b.)
     const pidMapDir = path.join(wmuxDir, 'pid-map');
     fs.mkdirSync(pidMapDir, { recursive: true });
     fs.writeFileSync(path.join(pidMapDir, '12345'), 'daemon-aaaa', 'utf-8'); // live
-    fs.writeFileSync(path.join(pidMapDir, '67890'), 'ws-legacy', 'utf-8');   // legacy → dropped
+    fs.writeFileSync(path.join(pidMapDir, '67890'), 'ws-legacy', 'utf-8');   // legacy, absent → purged
     fs.writeFileSync(path.join(pidMapDir, '55555'), 'daemon-dead', 'utf-8'); // dead owner → omitted
 
     const socket = await connectSocket(pipeName);
@@ -244,7 +245,35 @@ async function runW1(report) {
     } finally {
       socket.end();
     }
-  }, { 'daemon-aaaa': 'ws-alpha' });
+  }, { 'daemon-aaaa': 'ws-alpha' }, [{ id: 'ws-alpha' }]); // ws-legacy absent from live list
+}
+
+async function runW1b(report) {
+  // Legacy "ws-" entry whose workspace is STILL LIVE — a pane carried across an
+  // upgrade, with the legacy file as its only identity anchor. It must be
+  // resolved to its workspaceId AND kept on disk; purging it (the old
+  // unconditional behavior) would orphan the upgraded pane's MCP children
+  // ("no active workspace"). Codex PR #142 P1.
+  await withServer('W1b', async ({ wmuxDir, pipeName, authToken }) => {
+    const pidMapDir = path.join(wmuxDir, 'pid-map');
+    fs.mkdirSync(pidMapDir, { recursive: true });
+    fs.writeFileSync(path.join(pidMapDir, '24680'), 'ws-upgraded-live', 'utf-8');
+
+    const socket = await connectSocket(pipeName);
+    try {
+      const result = await rpc(socket, 'a2a.resolve.identity', {}, authToken);
+      const m = result.mappings;
+      const filesAfter = fs.readdirSync(pidMapDir).sort();
+      const pass =
+        m &&
+        m['24680'] === 'ws-upgraded-live' && // resolved to its live workspace
+        Object.keys(m).length === 1 &&
+        filesAfter.includes('24680');         // live legacy anchor preserved
+      report.push({ scenario: 'W1b', pass, mappings: m, filesAfter });
+    } finally {
+      socket.end();
+    }
+  }, {}, [{ id: 'ws-upgraded-live' }, { id: 'ws-other' }]);
 }
 
 async function runW2(report) {
@@ -367,6 +396,7 @@ async function main() {
   console.log(`Workspace identity dynamic test — platform=${process.platform}`);
   const report = [];
   await runW1(report);
+  await runW1b(report);
   await runW2(report);
   await runW2b(report);
   await runW2c(report);
