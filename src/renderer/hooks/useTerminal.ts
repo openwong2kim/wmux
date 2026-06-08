@@ -15,6 +15,7 @@ import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
+import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
 import { webglContextPool } from '../terminal/webglContextPool';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 
@@ -430,11 +431,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminal.attachCustomKeyEventHandler((e) => {
       if (e.type !== 'keydown') return true;
 
-      // Shift+Enter → send CSI u sequence so Claude Code inserts a newline
-      // instead of submitting. Kitty keyboard protocol: ESC [ 13 ; 2 u
-      if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey) {
+      // Deterministic newline keys (Shift+Enter, Ctrl+J). Resolved by physical
+      // `code` where needed so a CJK IME can't mangle the keystroke: xterm
+      // derives Ctrl+<letter> from the deprecated `keyCode`, which becomes 229
+      // ("Process") under an active IME, silently dropping Ctrl+J. We emit the
+      // byte ourselves and bypass xterm. See terminal/newlineKeys.ts.
+      const newlineByte = resolveNewlineKeyByte(e);
+      if (newlineByte !== null) {
         e.preventDefault();
-        window.electronAPI.pty.write(ptyId, '\x1b[13;2u');
+        window.electronAPI.pty.write(ptyId, newlineByte);
         return false;
       }
 

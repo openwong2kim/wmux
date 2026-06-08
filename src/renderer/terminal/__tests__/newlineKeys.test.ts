@@ -1,0 +1,61 @@
+/**
+ * Tests for the deterministic newline-key encoder.
+ *
+ * Regression target: Ctrl+J silently dropped under a CJK IME. xterm.js derives
+ * Ctrl+<letter> from the deprecated `keyCode`, which becomes 229 ("Process")
+ * with the IME active, so Ctrl+J never produced an LF and in-pane TUIs (codex,
+ * Claude Code) never saw the newline. The encoder matches the physical `code`
+ * so the byte is emitted regardless of IME/layout state.
+ */
+import { describe, it, expect } from 'vitest';
+import { resolveNewlineKeyByte, type NewlineKeyEventLike } from '../newlineKeys';
+
+function ev(partial: Partial<NewlineKeyEventLike>): NewlineKeyEventLike {
+  return {
+    key: '',
+    code: '',
+    ctrlKey: false,
+    shiftKey: false,
+    altKey: false,
+    metaKey: false,
+    ...partial,
+  };
+}
+
+describe('resolveNewlineKeyByte — Ctrl+J', () => {
+  it('emits LF for Ctrl+J via physical code (Latin layout)', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'j', code: 'KeyJ', ctrlKey: true }))).toBe('\n');
+  });
+
+  it('emits LF for Ctrl+J even when an IME mangles key to "Process"', () => {
+    // keyCode would be 229 here; we never look at it. code stays 'KeyJ'.
+    expect(resolveNewlineKeyByte(ev({ key: 'Process', code: 'KeyJ', ctrlKey: true }))).toBe('\n');
+  });
+
+  it('ignores Ctrl+Shift+J (reserved for app shortcuts)', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'j', code: 'KeyJ', ctrlKey: true, shiftKey: true }))).toBeNull();
+  });
+
+  it('ignores Ctrl+Alt+J and Ctrl+Meta+J', () => {
+    expect(resolveNewlineKeyByte(ev({ code: 'KeyJ', ctrlKey: true, altKey: true }))).toBeNull();
+    expect(resolveNewlineKeyByte(ev({ code: 'KeyJ', ctrlKey: true, metaKey: true }))).toBeNull();
+  });
+
+  it('ignores a bare J (no Ctrl)', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'j', code: 'KeyJ' }))).toBeNull();
+  });
+});
+
+describe('resolveNewlineKeyByte — Shift+Enter (preserved behavior)', () => {
+  it('emits CSI u for Shift+Enter', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true }))).toBe('\x1b[13;2u');
+  });
+
+  it('ignores plain Enter', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter' }))).toBeNull();
+  });
+
+  it('ignores Ctrl+Shift+Enter', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true, ctrlKey: true }))).toBeNull();
+  });
+});
