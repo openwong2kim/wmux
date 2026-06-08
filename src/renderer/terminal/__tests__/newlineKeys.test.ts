@@ -18,6 +18,7 @@ function ev(partial: Partial<NewlineKeyEventLike>): NewlineKeyEventLike {
     shiftKey: false,
     altKey: false,
     metaKey: false,
+    isComposing: false,
     ...partial,
   };
 }
@@ -43,6 +44,24 @@ describe('resolveNewlineKeyByte — Ctrl+J', () => {
 
   it('ignores a bare J (no Ctrl)', () => {
     expect(resolveNewlineKeyByte(ev({ key: 'j', code: 'KeyJ' }))).toBeNull();
+  });
+
+  it('defers during an active IME composition (isComposing) so preedit is not split', () => {
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'Process', code: 'KeyJ', ctrlKey: true, isComposing: true })),
+    ).toBeNull();
+  });
+
+  it('defers to an explicit user Ctrl+J keybinding', () => {
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'j', code: 'KeyJ', ctrlKey: true }), { hasCustomCtrlJBinding: true }),
+    ).toBe(null);
+  });
+
+  it('still emits LF when opts is present but no Ctrl+J binding', () => {
+    expect(
+      resolveNewlineKeyByte(ev({ key: 'j', code: 'KeyJ', ctrlKey: true }), { hasCustomCtrlJBinding: false }),
+    ).toBe('\n');
   });
 });
 

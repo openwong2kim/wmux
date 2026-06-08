@@ -435,8 +435,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // `code` where needed so a CJK IME can't mangle the keystroke: xterm
       // derives Ctrl+<letter> from the deprecated `keyCode`, which becomes 229
       // ("Process") under an active IME, silently dropping Ctrl+J. We emit the
-      // byte ourselves and bypass xterm. See terminal/newlineKeys.ts.
-      const newlineByte = resolveNewlineKeyByte(e);
+      // byte ourselves and bypass xterm. The resolver defers during an active
+      // IME composition and when the user has bound Ctrl+J themselves. See
+      // terminal/newlineKeys.ts.
+      const newlineByte = resolveNewlineKeyByte(e, {
+        hasCustomCtrlJBinding: useStore.getState().customKeybindings.some(
+          (kb) => kb.key === 'Ctrl+J',
+        ),
+      });
       if (newlineByte !== null) {
         e.preventDefault();
         window.electronAPI.pty.write(ptyId, newlineByte);
