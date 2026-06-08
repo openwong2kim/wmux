@@ -240,4 +240,7 @@ export const ms = {
   'firstRun.autoUpdateMessage': 'Adakah anda mahu WMUX memeriksa kemas kini secara automatik? Anda boleh ubah ini kemudian di Tetapan.',
   'firstRun.enable': 'Dayakan',
   'firstRun.disable': 'Tidak, terima kasih',
+  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+  'settings.firstRunSetup': 'Persediaan kali pertama',
+  'claudeIntegration.tab': 'Penyepaduan Claude',
 } as const;

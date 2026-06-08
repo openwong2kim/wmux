@@ -240,4 +240,7 @@ export const bs = {
   'firstRun.autoUpdateMessage': 'Želite li da WMUX automatski provjerava ažuriranja? Možete to promijeniti kasnije u Postavkama.',
   'firstRun.enable': 'Omogući',
   'firstRun.disable': 'Ne, hvala',
+  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+  'settings.firstRunSetup': 'Početno postavljanje',
+  'claudeIntegration.tab': 'Claude integracija',
 } as const;

@@ -283,4 +283,7 @@ export const zh = {
   'firstRun.autoUpdateMessage': '是否让 WMUX 自动检查更新？您可以稍后在设置中更改。',
   'firstRun.enable': '启用',
   'firstRun.disable': '不需要',
+  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+  'settings.firstRunSetup': '首次运行设置',
+  'claudeIntegration.tab': 'Claude 集成',
 } as const;

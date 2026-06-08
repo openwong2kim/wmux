@@ -240,4 +240,7 @@ export const zhTW = {
   'firstRun.autoUpdateMessage': '要讓 WMUX 自動檢查更新嗎? 您之後可以在設定中變更。',
   'firstRun.enable': '啟用',
   'firstRun.disable': '不用了',
+  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+  'settings.firstRunSetup': '首次執行設定',
+  'claudeIntegration.tab': 'Claude 整合',
 } as const;

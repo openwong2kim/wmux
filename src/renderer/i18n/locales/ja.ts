@@ -283,4 +283,7 @@ export const ja = {
   'firstRun.autoUpdateMessage': 'WMUXが自動的にアップデートを確認するようにしますか？後で設定から変更できます。',
   'firstRun.enable': '有効にする',
   'firstRun.disable': 'いいえ',
+  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+  'settings.firstRunSetup': '初回設定',
+  'claudeIntegration.tab': 'Claude 連携',
 } as const;

@@ -240,4 +240,7 @@ export const nb = {
   'firstRun.autoUpdateMessage': 'Vil du at WMUX skal se etter oppdateringer automatisk? Du kan endre dette senere i Innstillinger.',
   'firstRun.enable': 'Aktiver',
   'firstRun.disable': 'Nei takk',
+  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+  'settings.firstRunSetup': 'Førstegangsoppsett',
+  'claudeIntegration.tab': 'Claude-integrasjon',
 } as const;

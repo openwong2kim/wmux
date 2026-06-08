@@ -240,4 +240,7 @@ export const ptBR = {
   'firstRun.autoUpdateMessage': 'Deseja que o WMUX verifique atualizações automaticamente? Você pode alterar isso depois em Configurações.',
   'firstRun.enable': 'Ativar',
   'firstRun.disable': 'Não, obrigado',
+  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+  'settings.firstRunSetup': 'Configuração inicial',
+  'claudeIntegration.tab': 'Integração com Claude',
 } as const;

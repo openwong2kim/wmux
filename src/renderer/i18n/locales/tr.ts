@@ -240,4 +240,7 @@ export const tr = {
   'firstRun.autoUpdateMessage': 'WMUX güncellemeleri otomatik denetlemesin mi? Bunu daha sonra Ayarlar\'dan değiştirebilirsiniz.',
   'firstRun.enable': 'Etkinleştir',
   'firstRun.disable': 'Hayır, teşekkürler',
+  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+  'settings.firstRunSetup': 'İlk kurulum',
+  'claudeIntegration.tab': 'Claude entegrasyonu',
 } as const;

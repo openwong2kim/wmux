@@ -240,4 +240,7 @@ export const vi = {
   'firstRun.autoUpdateMessage': 'Bạn có muốn WMUX tự động kiểm tra cập nhật? Bạn có thể đổi sau trong Cài đặt.',
   'firstRun.enable': 'Bật',
   'firstRun.disable': 'Không, cảm ơn',
+  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+  'settings.firstRunSetup': 'Thiết lập lần đầu',
+  'claudeIntegration.tab': 'Tích hợp Claude',
 } as const;

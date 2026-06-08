@@ -240,4 +240,7 @@ export const hi = {
   'firstRun.autoUpdateMessage': 'क्या आप चाहते हैं कि WMUX स्वचालित रूप से अपडेट जाँचे? आप इसे बाद में सेटिंग्स में बदल सकते हैं।',
   'firstRun.enable': 'सक्षम करें',
   'firstRun.disable': 'नहीं, धन्यवाद',
+  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+  'settings.firstRunSetup': 'पहली बार सेटअप',
+  'claudeIntegration.tab': 'Claude एकीकरण',
 } as const;
