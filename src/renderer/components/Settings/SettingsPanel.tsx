@@ -24,22 +24,133 @@ type TabId = 'general' | 'appearance' | 'notifications' | 'shortcuts' | 'claude-
 type ShellInfo = { name: string; path: string; args?: string[] };
 
 // ─── Icon components ──────────────────────────────────────────────────────────
+//
+// One stroke-based line-icon system. All icons share a 14×14 viewBox,
+// `stroke="currentColor"` (so they inherit the caller's text color, including
+// active/inactive tab coloring), strokeWidth 1.3, and round caps/joins. This
+// replaces the Unicode glyphs (⚙◑◎⌨◈◇ℹ✓✗▾▸↺✕⎋) that rendered at mismatched
+// sizes and weights across platforms (issue #145).
 
-function IconX() {
+/** Shared svg wrapper — keeps every icon on the same grid + style. */
+function Icon({ children, size = 14 }: { children: React.ReactNode; size?: number }) {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <line x1="2" y1="2" x2="12" y2="12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
-      <line x1="12" y1="2" x2="2" y2="12" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" />
+    <svg
+      width={size}
+      height={size}
+      viewBox="0 0 14 14"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth="1.3"
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      xmlns="http://www.w3.org/2000/svg"
+      aria-hidden="true"
+    >
+      {children}
     </svg>
   );
 }
 
-function IconRefresh() {
+function IconX() {
+  return <Icon><line x1="3" y1="3" x2="11" y2="11" /><line x1="11" y1="3" x2="3" y2="11" /></Icon>;
+}
+
+function IconCheck() {
+  return <Icon><polyline points="2.5,7.4 5.8,10.5 11.5,3.5" /></Icon>;
+}
+
+function IconChevron() {
+  // Points right; rotate 90° via transform for an expanded/down state.
+  return <Icon><polyline points="5.5,3 9.5,7 5.5,11" /></Icon>;
+}
+
+function IconExternalLink() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
-      <path d="M1.5 7a5.5 5.5 0 1 0 1.1-3.3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-      <polyline points="1.5,2 1.5,4.5 4,4.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
-    </svg>
+    <Icon>
+      <path d="M6 3H3.3v7.7h7.7V8" />
+      <polyline points="8.2,2.5 11.5,2.5 11.5,5.8" />
+      <line x1="11.5" y1="2.5" x2="6.6" y2="7.4" />
+    </Icon>
+  );
+}
+
+// ─── Shared focus ring ─────────────────────────────────────────────────────────
+//
+// Keyboard-visible focus indicator. wmux is a keyboard-first developer tool, so
+// every interactive control needs one. Applied via className so it composes with
+// inline color styles. (Audit: 33 buttons, only 3 had focus rings.)
+
+const FOCUS_RING =
+  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent-blue)] focus-visible:ring-offset-1 focus-visible:ring-offset-[color:var(--bg-base)]';
+
+// ─── Card primitive ────────────────────────────────────────────────────────────
+//
+// The `rounded-lg + bg-mantle + 1px bg-surface border` surface was copy-pasted
+// ~25× inline. One component now owns it — change the surface treatment once and
+// it propagates everywhere. Callers pass layout via className and may override
+// individual style properties (e.g. maxHeight) via `style`.
+
+function Card({
+  className = '',
+  style,
+  children,
+  ...rest
+}: React.HTMLAttributes<HTMLDivElement>) {
+  return (
+    <div
+      className={`rounded-lg ${className}`}
+      style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)', ...style }}
+      {...rest}
+    >
+      {children}
+    </div>
+  );
+}
+
+// ─── Button primitive ──────────────────────────────────────────────────────────
+
+type ButtonVariant = 'secondary' | 'primary' | 'destructive' | 'accent';
+
+const BUTTON_VARIANT_STYLE: Record<ButtonVariant, React.CSSProperties> = {
+  secondary:   { backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)',  border: '1px solid var(--bg-overlay)' },
+  primary:     { backgroundColor: 'var(--accent-blue)', color: 'var(--bg-base)',    border: '1px solid transparent' },
+  destructive: { backgroundColor: 'var(--accent-red)',  color: 'var(--bg-base)',    border: '1px solid transparent' },
+  accent:      { backgroundColor: 'var(--bg-surface)',  color: 'var(--accent-blue)', border: '1px solid var(--bg-overlay)' },
+};
+
+function Button({
+  variant = 'secondary',
+  className = '',
+  style,
+  children,
+  ...rest
+}: React.ButtonHTMLAttributes<HTMLButtonElement> & { variant?: ButtonVariant }) {
+  return (
+    <button
+      className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${FOCUS_RING} ${className}`}
+      style={{ ...BUTTON_VARIANT_STYLE[variant], ...style }}
+      {...rest}
+    >
+      {children}
+    </button>
+  );
+}
+
+// ─── Status badge ──────────────────────────────────────────────────────────────
+//
+// A check (ok) / cross (fail) status dot. Replaces the inline ✓/✗ glyphs and
+// carries an aria-label so the state is exposed to assistive tech.
+
+function StatusBadge({ ok, okLabel = 'OK', failLabel = 'Not OK' }: { ok: boolean; okLabel?: string; failLabel?: string }) {
+  return (
+    <span
+      role="img"
+      aria-label={ok ? okLabel : failLabel}
+      className="shrink-0 inline-flex items-center justify-center"
+      style={{ color: ok ? 'var(--accent-green)' : 'var(--accent-red)', width: 14, height: 14 }}
+    >
+      {ok ? <IconCheck /> : <IconX />}
+    </span>
   );
 }
 
@@ -47,7 +158,7 @@ function IconRefresh() {
 
 function IconGeneral() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <line x1="2" y1="3.5" x2="12" y2="3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
       <line x1="2" y1="7" x2="12" y2="7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
       <line x1="2" y1="10.5" x2="12" y2="10.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
@@ -60,7 +171,7 @@ function IconGeneral() {
 
 function IconAppearance() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.3" />
       <path d="M7 2a5 5 0 0 1 0 10z" fill="currentColor" />
     </svg>
@@ -69,7 +180,7 @@ function IconAppearance() {
 
 function IconNotifications() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <path d="M3.5 9.5c.7-.7.9-1.7.9-2.9a2.6 2.6 0 0 1 5.2 0c0 1.2.2 2.2.9 2.9z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
       <path d="M5.9 11.2a1.2 1.2 0 0 0 2.2 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
     </svg>
@@ -78,7 +189,7 @@ function IconNotifications() {
 
 function IconShortcuts() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <rect x="1.5" y="3.5" width="11" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
       <line x1="3.7" y1="5.9" x2="3.7" y2="5.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
       <line x1="5.7" y1="5.9" x2="5.7" y2="5.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
@@ -91,7 +202,7 @@ function IconShortcuts() {
 
 function IconClaude() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <path d="M7 1.5 8.3 5.7 12.5 7 8.3 8.3 7 12.5 5.7 8.3 1.5 7 5.7 5.7Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
     </svg>
   );
@@ -99,7 +210,7 @@ function IconClaude() {
 
 function IconFirstRun() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <line x1="3.5" y1="1.8" x2="3.5" y2="12.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
       <path d="M3.5 2.5h6.7l-1.7 2.3 1.7 2.3H3.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
     </svg>
@@ -108,7 +219,7 @@ function IconFirstRun() {
 
 function IconAbout() {
   return (
-    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
       <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.3" />
       <line x1="7" y1="6.4" x2="7" y2="9.8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
       <line x1="7" y1="4.3" x2="7" y2="4.3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
@@ -131,7 +242,7 @@ function Toggle({ checked, onChange, label }: ToggleProps) {
       aria-checked={checked}
       aria-label={label}
       onClick={() => onChange(!checked)}
-      className="relative inline-flex h-5 w-9 items-center rounded-full transition-colors focus:outline-none shrink-0"
+      className={`relative inline-flex h-5 w-9 items-center rounded-full transition-colors shrink-0 ${FOCUS_RING}`}
       style={{ backgroundColor: checked ? 'var(--accent-blue)' : 'var(--bg-overlay)' }}
     >
       <span
@@ -154,16 +265,13 @@ function SettingRow({
   children: React.ReactNode;
 }) {
   return (
-    <div
-      className="flex items-center justify-between px-3 py-2.5 rounded-lg"
-      style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
-    >
+    <Card className="flex items-center justify-between px-3 py-2.5">
       <div className="min-w-0 mr-3">
         <p className="text-sm text-[color:var(--text-main)]">{label}</p>
         {description && <p className="text-[11px] text-[color:var(--text-muted)] mt-0.5">{description}</p>}
       </div>
       {children}
-    </div>
+    </Card>
   );
 }
 
@@ -228,7 +336,7 @@ function SettingNumberInput({
         const n = parseInt(e.target.value, 10);
         if (!isNaN(n) && n >= min && n <= max) onChange(n);
       }}
-      className="text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono text-center"
+      className="text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono tabular-nums text-center"
       style={{
         backgroundColor: 'var(--bg-surface)',
         color: 'var(--text-main)',
@@ -256,7 +364,7 @@ function KbdRow({ keys, description }: { keys: string; description: string }) {
     <div className="flex items-center justify-between py-1.5 px-3 rounded-lg hover:bg-[color:var(--bg-mantle)] transition-colors">
       <span className="text-[12px] text-[color:var(--text-sub)]">{description}</span>
       <span
-        className="text-[10px] font-mono px-2 py-0.5 rounded"
+        className="text-[10px] font-mono tabular-nums px-2 py-0.5 rounded"
         style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-blue)', border: '1px solid var(--bg-overlay)' }}
       >
         {keys}
@@ -347,29 +455,22 @@ function ResetSection() {
         </div>
         {confirming ? (
           <div className="flex items-center gap-2 shrink-0 ml-3">
-            <button
-              onClick={handleReset}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-              style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
-            >
+            <Button variant="destructive" onClick={handleReset}>
               {t('settings.resetButton')}
-            </button>
-            <button
-              onClick={() => setConfirming(false)}
-              className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-              style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)' }}
-            >
+            </Button>
+            <Button variant="secondary" onClick={() => setConfirming(false)}>
               {t('settings.close')}
-            </button>
+            </Button>
           </div>
         ) : (
-          <button
+          <Button
+            variant="secondary"
+            className="shrink-0 ml-3"
+            style={{ color: 'var(--accent-red)' }}
             onClick={() => setConfirming(true)}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors shrink-0 ml-3"
-            style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-red)' }}
           >
             {t('settings.resetButton')}
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -469,12 +570,7 @@ function McpStatusSection() {
     >
       <div className="min-w-0 flex-1">
         <div className="flex items-center gap-2">
-          <span
-            className="text-[10px] font-mono w-3 text-center"
-            style={{ color: server.registered ? 'var(--accent-green, #a6e3a1)' : 'var(--accent-red, #f38ba8)' }}
-          >
-            {server.registered ? '✓' : '✗'}
-          </span>
+          <StatusBadge ok={server.registered} okLabel="registered" failLabel="not registered" />
           <span className="text-sm text-[color:var(--text-main)] font-mono">{label}</span>
         </div>
         {server.path && (
@@ -525,51 +621,40 @@ function McpStatusSection() {
               </p>
             </div>
             <div className="flex items-center gap-2 shrink-0">
-              <button
+              <Button
+                variant="accent"
                 onClick={() => void handleReregister()}
                 disabled={pending !== null}
-                className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                style={{
-                  backgroundColor: 'var(--bg-surface)',
-                  color: 'var(--accent-blue)',
-                  border: '1px solid var(--bg-overlay)',
-                  opacity: pending ? 0.5 : 1,
-                }}
+                style={{ opacity: pending ? 0.5 : 1 }}
               >
                 {pending === 'reregister' ? '…' : 'Re-register'}
-              </button>
+              </Button>
               {confirmingUnregister ? (
                 <>
-                  <button
+                  <Button
+                    variant="destructive"
                     onClick={() => void handleUnregister()}
                     disabled={pending !== null}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                    style={{ backgroundColor: 'var(--accent-red)', color: 'var(--bg-base)' }}
                   >
                     {pending === 'unregister' ? '…' : 'Confirm'}
-                  </button>
-                  <button
+                  </Button>
+                  <Button
+                    variant="secondary"
                     onClick={() => setConfirmingUnregister(false)}
                     disabled={pending !== null}
-                    className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                    style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)' }}
                   >
                     Cancel
-                  </button>
+                  </Button>
                 </>
               ) : (
-                <button
+                <Button
+                  variant="secondary"
                   onClick={() => setConfirmingUnregister(true)}
                   disabled={pending !== null}
-                  className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-                  style={{
-                    backgroundColor: 'var(--bg-surface)',
-                    color: 'var(--accent-red)',
-                    border: '1px solid var(--bg-overlay)',
-                  }}
+                  style={{ color: 'var(--accent-red)' }}
                 >
                   Unregister
-                </button>
+                </Button>
               )}
             </div>
           </div>
@@ -641,8 +726,8 @@ function UpdateStatus() {
   const statusColor = (() => {
     switch (state) {
       case 'available':
-      case 'downloaded': return 'var(--accent-green, #a6e3a1)';
-      case 'error': return 'var(--accent-red, #f38ba8)';
+      case 'downloaded': return 'var(--accent-green)';
+      case 'error': return 'var(--accent-red)';
       default: return 'var(--text-muted)';
     }
   })();
@@ -663,27 +748,21 @@ function UpdateStatus() {
       </div>
       <div className="flex gap-2 shrink-0 ml-3">
         {state === 'downloaded' ? (
-          <button
+          <Button
             onClick={handleInstall}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer"
             style={{ backgroundColor: 'var(--accent-green)', color: 'var(--bg-base)', border: 'none' }}
           >
             {t('settings.updateReady')}
-          </button>
+          </Button>
         ) : (
-          <button
+          <Button
+            variant="secondary"
             onClick={handleCheck}
             disabled={state === 'checking'}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium cursor-pointer"
-            style={{
-              backgroundColor: 'var(--bg-surface)',
-              color: 'var(--text-main)',
-              border: 'none',
-              opacity: state === 'checking' ? 0.5 : 1,
-            }}
+            style={{ border: 'none', opacity: state === 'checking' ? 0.5 : 1 }}
           >
             {t('settings.checkUpdate')}
-          </button>
+          </Button>
         )}
       </div>
     </div>
@@ -739,7 +818,7 @@ function TabGeneral() {
             <button
               key={value}
               onClick={() => setLocale(value as Locale)}
-              className="px-3 py-2 rounded-lg text-sm transition-colors text-left"
+              className={`px-3 py-2 rounded-lg text-sm transition-colors text-left ${FOCUS_RING}`}
               style={{
                 backgroundColor: locale === value ? 'var(--bg-surface)' : 'transparent',
                 color: locale === value ? 'var(--text-main)' : 'var(--text-subtle)',
@@ -799,16 +878,17 @@ function TabGeneral() {
       <div className="flex flex-col gap-2">
         <SectionLabel label={t('settings.tutorial')} />
         <SettingRow label={t('settings.restartTutorial')} description={t('settings.restartTutorialDesc')}>
-          <button
+          <Button
+            variant="secondary"
+            className="shrink-0"
+            style={{ color: 'var(--text-subtle)' }}
             onClick={() => {
               useStore.getState().startOnboarding();
               useStore.getState().setSettingsPanelVisible(false);
             }}
-            className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors shrink-0"
-            style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-subtle)', border: '1px solid var(--bg-overlay)' }}
           >
             {t('settings.restartTutorial')}
-          </button>
+          </Button>
         </SettingRow>
       </div>
 
@@ -899,7 +979,7 @@ function TailwindSwatchPicker({ value, onChange, hueScope = 'all' }: TailwindSwa
             const v = e.target.value.trim();
             if (/^#[0-9a-fA-F]{6}$/.test(v)) onChange(v);
           }}
-          className="text-[10px] font-mono px-1.5 py-0.5 rounded flex-1"
+          className="text-[10px] font-mono tabular-nums px-1.5 py-0.5 rounded flex-1"
           style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)', border: '1px solid var(--bg-overlay)' }}
           spellCheck={false}
         />
@@ -931,7 +1011,7 @@ function TokenRow({ label, description, value, hueScope, onChange }: TokenRowPro
   return (
     <div className="flex flex-col gap-1 px-2 py-1.5">
       <button
-        className="flex items-center justify-between w-full"
+        className={`flex items-center justify-between w-full rounded ${FOCUS_RING}`}
         onClick={() => setOpen((o) => !o)}
       >
         <div className="flex flex-col items-start">
@@ -941,7 +1021,7 @@ function TokenRow({ label, description, value, hueScope, onChange }: TokenRowPro
           )}
         </div>
         <div className="flex items-center gap-2">
-          <span className="text-[10px] text-[color:var(--text-muted)] font-mono">{value.toUpperCase()}</span>
+          <span className="text-[10px] text-[color:var(--text-muted)] font-mono tabular-nums">{value.toUpperCase()}</span>
           <span
             className="w-6 h-6 rounded"
             style={{ backgroundColor: value, border: '1px solid var(--bg-overlay)' }}
@@ -1038,7 +1118,7 @@ function CustomThemeEditor() {
       >
         <span className="text-[11px] text-[color:var(--text-sub)]">{t('settings.baseOnPreset')}</span>
         <select
-          className="text-[11px] rounded px-2 py-0.5 font-mono"
+          className={`text-[11px] rounded px-2 py-0.5 font-mono ${FOCUS_RING}`}
           style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)', border: '1px solid var(--bg-overlay)' }}
           onChange={(e) => {
             setCustomThemeColors(builtinToCustom(e.target.value as BuiltinThemeId));
@@ -1092,7 +1172,7 @@ function CustomThemeEditor() {
           </span>
         </div>
         <select
-          className="text-[11px] rounded px-2 py-0.5 font-mono"
+          className={`text-[11px] rounded px-2 py-0.5 font-mono ${FOCUS_RING}`}
           style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)', border: '1px solid var(--bg-overlay)' }}
           value={customThemeColors.xtermPaletteId}
           onChange={(e) => updateCustomThemeColor('xtermPaletteId', e.target.value as XtermPaletteId)}
@@ -1175,7 +1255,8 @@ function XtermOverrideEditor() {
       <button
         type="button"
         onClick={() => setExpanded((v) => !v)}
-        className="w-full flex items-center justify-between px-3 py-2 text-left hover:bg-[color:var(--bg-surface)] transition-colors"
+        aria-expanded={expanded}
+        className={`w-full flex items-center justify-between px-3 py-2 text-left hover:bg-[color:var(--bg-surface)] transition-colors ${FOCUS_RING}`}
       >
         <div className="flex flex-col">
           <span className="text-[11px] text-[color:var(--text-sub)]">
@@ -1187,7 +1268,12 @@ function XtermOverrideEditor() {
               : (t('settings.xtermOverridesIdle') || 'Override individual ANSI colors on top of the preset')}
           </span>
         </div>
-        <span className="text-[11px] text-[color:var(--text-muted)] font-mono">{expanded ? '▾' : '▸'}</span>
+        <span
+          className="text-[color:var(--text-muted)] transition-transform shrink-0"
+          style={{ transform: expanded ? 'rotate(90deg)' : 'none' }}
+        >
+          <IconChevron />
+        </span>
       </button>
 
       {expanded && (
@@ -1216,14 +1302,14 @@ function XtermOverrideEditor() {
                         </span>
                         {isOverridden && (
                           <span
-                            className="text-[8px] uppercase tracking-wider rounded px-1"
-                            style={{ color: 'var(--accent-cursor)', border: '1px solid var(--accent-cursor)' }}
+                            className="text-[10px] uppercase tracking-wider rounded px-1"
+                            style={{ color: 'var(--accent-blue)', border: '1px solid var(--accent-blue)' }}
                           >
                             {t('settings.xtermSlotOverridden') || 'custom'}
                           </span>
                         )}
                       </div>
-                      <span className="text-[9px] text-[color:var(--text-muted)] font-mono">{effective.toUpperCase()}</span>
+                      <span className="text-[10px] text-[color:var(--text-muted)] font-mono tabular-nums">{effective.toUpperCase()}</span>
                     </div>
                     <span
                       className="w-5 h-5 rounded shrink-0"
@@ -1240,10 +1326,11 @@ function XtermOverrideEditor() {
                       <button
                         type="button"
                         onClick={() => setXtermOverride(key, null)}
-                        className="text-[9px] text-[color:var(--text-subtle)] hover:text-[color:var(--accent-red)] transition-colors shrink-0"
+                        className={`inline-flex items-center text-[color:var(--text-subtle)] hover:text-[color:var(--accent-red)] transition-colors shrink-0 rounded ${FOCUS_RING}`}
                         title={t('settings.xtermSlotReset') || 'Reset to preset'}
+                        aria-label={t('settings.xtermSlotReset') || 'Reset to preset'}
                       >
-                        ↺
+                        <Icon size={12}><path d="M11.5 4.2A5 5 0 1 0 12 7" /><polyline points="11.8,1.5 11.8,4.4 8.9,4.4" /></Icon>
                       </button>
                     )}
                   </div>
@@ -1305,7 +1392,7 @@ function TabAppearance() {
             <button
               key={value}
               onClick={() => setTheme(value)}
-              className="px-2 py-2 rounded-lg text-[11px] transition-colors text-center flex flex-col items-center"
+              className={`px-2 py-2 rounded-lg text-[11px] transition-colors text-center flex flex-col items-center ${FOCUS_RING}`}
               style={{
                 backgroundColor: currentTheme === value ? 'var(--bg-surface)' : 'transparent',
                 color: currentTheme === value ? 'var(--text-main)' : 'var(--text-subtle)',
@@ -1335,7 +1422,7 @@ function TabAppearance() {
               aria-label={t('settings.fontSize')}
               className="w-24 accent-[color:var(--accent-blue)]"
             />
-            <span className="text-xs font-mono text-[color:var(--text-sub)] w-6 text-right">{terminalFontSize}</span>
+            <span className="text-xs font-mono tabular-nums text-[color:var(--text-sub)] w-6 text-right">{terminalFontSize}</span>
           </div>
         </SettingRow>
         <SettingRow label={t('settings.fontFamily')} description={t('settings.fontFamilyDesc')}>
@@ -1824,7 +1911,7 @@ function TabShortcuts() {
         </span>
         <span className="text-[10px] text-[color:var(--text-muted)]">{t('settings.prefixKeyDesc')}</span>
         <button
-          className="text-[11px] font-mono px-3 py-1 rounded shrink-0"
+          className={`text-[11px] font-mono tabular-nums px-3 py-1 rounded shrink-0 ${FOCUS_RING}`}
           style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-blue)', border: '1px solid var(--bg-overlay)', minWidth: 50, textAlign: 'center' }}
           onClick={() => setCapturingPrefixKey(true)}
         >
@@ -1836,7 +1923,7 @@ function TabShortcuts() {
       <div className="text-[10px] text-[color:var(--text-muted)] mt-1 mb-1 px-1 flex items-center justify-between">
         <span>{t('settings.prefixBindings')}</span>
         <button
-          className="text-[10px] text-[color:var(--accent-yellow)] hover:text-[color:var(--text-main)] transition-colors"
+          className={`text-[10px] px-1.5 py-0.5 rounded text-[color:var(--accent-yellow)] hover:text-[color:var(--text-main)] transition-colors ${FOCUS_RING}`}
           onClick={() => { if (confirm(t('settings.prefixResetConfirm'))) resetPrefixConfig(); }}
         >
           {t('settings.prefixReset')}
@@ -1852,15 +1939,15 @@ function TabShortcuts() {
           bindingEntries.map(([key, actionId]) => (
             <div key={key} className="flex items-center gap-2 px-3 py-1.5" style={{ borderBottom: '1px solid var(--bg-surface)' }}>
               <button
-                className="text-[10px] font-mono px-2 py-0.5 rounded shrink-0"
+                className={`text-[10px] font-mono tabular-nums px-2 py-0.5 rounded shrink-0 ${FOCUS_RING}`}
                 style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-green)', border: '1px solid var(--bg-overlay)', minWidth: 50, textAlign: 'center' }}
                 onClick={() => setCapturingBindingKey(key)}
               >
                 {key}
               </button>
-              <span className="text-[10px] text-[color:var(--text-muted)]">&rarr;</span>
+              <span className="text-[color:var(--text-muted)] shrink-0"><IconChevron /></span>
               <select
-                className="flex-1 bg-transparent text-[11px] text-[color:var(--text-sub)] font-mono outline-none cursor-pointer"
+                className={`flex-1 bg-transparent text-[11px] text-[color:var(--text-sub)] font-mono outline-none cursor-pointer rounded ${FOCUS_RING}`}
                 value={actionId}
                 onChange={(e) => {
                   removePrefixBinding(key);
@@ -1872,11 +1959,12 @@ function TabShortcuts() {
                 ))}
               </select>
               <button
-                className="text-[color:var(--text-subtle)] hover:text-[color:var(--accent-red)] text-xs transition-colors shrink-0"
+                className={`inline-flex items-center text-[color:var(--text-subtle)] hover:text-[color:var(--accent-red)] transition-colors shrink-0 rounded ${FOCUS_RING}`}
                 onClick={() => removePrefixBinding(key)}
                 title={t('settings.kb.delete')}
+                aria-label={t('settings.kb.delete')}
               >
-                ✕
+                <Icon size={12}><line x1="3" y1="3" x2="11" y2="11" /><line x1="11" y1="3" x2="3" y2="11" /></Icon>
               </button>
             </div>
           ))
@@ -1885,7 +1973,7 @@ function TabShortcuts() {
 
       {/* Add prefix binding */}
       <button
-        className="mt-1 px-3 py-1.5 rounded-lg text-xs font-mono transition-colors"
+        className={`mt-1 px-3 py-1.5 rounded-lg text-xs font-mono transition-colors ${FOCUS_RING}`}
         style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-green)', border: '1px solid var(--bg-overlay)' }}
         onClick={() => setAddingBinding(true)}
       >
@@ -1951,7 +2039,7 @@ function TabShortcuts() {
             >
               {/* Key badge */}
               <button
-                className="text-[10px] font-mono px-2 py-0.5 rounded shrink-0"
+                className={`text-[10px] font-mono tabular-nums px-2 py-0.5 rounded shrink-0 ${FOCUS_RING}`}
                 style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-blue)', border: '1px solid var(--bg-overlay)', minWidth: 60, textAlign: 'center' }}
                 onClick={() => setCapturingFor(kb.id)}
               >
@@ -1991,11 +2079,12 @@ function TabShortcuts() {
 
               {/* Delete */}
               <button
-                className="text-[color:var(--text-subtle)] hover:text-[color:var(--accent-red)] text-xs transition-colors shrink-0"
+                className={`inline-flex items-center text-[color:var(--text-subtle)] hover:text-[color:var(--accent-red)] transition-colors shrink-0 rounded ${FOCUS_RING}`}
                 onClick={() => removeKeybinding(kb.id)}
                 title={t('settings.kb.delete')}
+                aria-label={t('settings.kb.delete')}
               >
-                ✕
+                <Icon size={12}><line x1="3" y1="3" x2="11" y2="11" /><line x1="11" y1="3" x2="3" y2="11" /></Icon>
               </button>
             </div>
           ))}
@@ -2004,7 +2093,7 @@ function TabShortcuts() {
 
       {/* Add button */}
       <button
-        className="mt-2 px-3 py-1.5 rounded-lg text-xs font-mono transition-colors"
+        className={`mt-2 px-3 py-1.5 rounded-lg text-xs font-mono transition-colors ${FOCUS_RING}`}
         style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-green)', border: '1px solid var(--bg-overlay)' }}
         onClick={() => setCapturingFor('new')}
       >
@@ -2125,12 +2214,7 @@ export function FirstRunStatusView({ status, onOpenWizard, onShowCheatSheet }: F
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
           data-testid="first-run-setup-claude-row"
         >
-          <span
-            className="text-[10px] font-mono w-3 text-center"
-            style={{ color: claudeFound ? 'var(--accent-green, #a6e3a1)' : 'var(--accent-red, #f38ba8)' }}
-          >
-            {claudeFound ? '✓' : '✗'}
-          </span>
+          <StatusBadge ok={claudeFound} okLabel="detected" failLabel="not detected" />
           <span className="text-sm text-[color:var(--text-main)] font-mono">{claudeStatusText}</span>
         </div>
 
@@ -2139,12 +2223,7 @@ export function FirstRunStatusView({ status, onOpenWizard, onShowCheatSheet }: F
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
           data-testid="first-run-setup-mcp-row"
         >
-          <span
-            className="text-[10px] font-mono w-3 text-center"
-            style={{ color: mcpRegistered ? 'var(--accent-green, #a6e3a1)' : 'var(--accent-red, #f38ba8)' }}
-          >
-            {mcpRegistered ? '✓' : '✗'}
-          </span>
+          <StatusBadge ok={mcpRegistered} okLabel="registered" failLabel="not registered" />
           <span className="text-sm text-[color:var(--text-main)] font-mono">{mcpStatusText}</span>
         </div>
 
@@ -2161,30 +2240,20 @@ export function FirstRunStatusView({ status, onOpenWizard, onShowCheatSheet }: F
 
       {/* Actions */}
       <div className="flex items-center gap-2">
-        <button
+        <Button
+          variant="accent"
           onClick={onOpenWizard}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-          style={{
-            backgroundColor: 'var(--bg-surface)',
-            color: 'var(--accent-blue)',
-            border: '1px solid var(--bg-overlay)',
-          }}
           data-testid="first-run-setup-open-wizard"
         >
           {t('settings.firstRunSetup.openWizard')}
-        </button>
-        <button
+        </Button>
+        <Button
+          variant="secondary"
           onClick={onShowCheatSheet}
-          className="px-3 py-1.5 rounded-lg text-xs font-medium transition-colors"
-          style={{
-            backgroundColor: 'var(--bg-surface)',
-            color: 'var(--text-main)',
-            border: '1px solid var(--bg-overlay)',
-          }}
           data-testid="first-run-setup-show-cheat-sheet"
         >
           {t('settings.firstRunSetup.showCheatSheet')}
-        </button>
+        </Button>
       </div>
     </div>
   );
@@ -2237,30 +2306,28 @@ function TabAbout() {
 
   return (
     <div className="flex flex-col gap-4">
-      <div
-        className="flex flex-col items-center gap-3 py-6 rounded-lg"
-        style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
-      >
-        <span className="text-3xl font-bold font-mono tracking-widest text-[color:var(--text-main)]">WMUX</span>
-        <div className="flex flex-col items-center gap-1">
-          <span
-            className="text-xs font-mono px-2 py-0.5 rounded"
-            style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--accent-blue)', border: '1px solid var(--bg-overlay)' }}
-          >
-            v{__APP_VERSION__}
-          </span>
-          <p className="text-[11px] text-[color:var(--text-muted)] mt-1">
+      {/* Product header — left-aligned, name + version inline (no centered hero) */}
+      <Card className="flex items-center gap-3 px-4 py-3.5">
+        <span
+          className="grid place-items-center rounded-md shrink-0"
+          style={{ width: 40, height: 40, backgroundColor: 'var(--bg-surface)', color: 'var(--accent-blue)' }}
+        >
+          <Icon size={22}><path d="M7 1.5 L8 6 L12.5 7 L8 8 L7 12.5 L6 8 L1.5 7 L6 6 Z" /></Icon>
+        </span>
+        <div className="min-w-0">
+          <div className="flex items-baseline gap-2">
+            <span className="text-base font-semibold font-mono tracking-wide text-[color:var(--text-main)]">wmux</span>
+            <span className="text-[11px] font-mono tabular-nums text-[color:var(--accent-blue)]">v{__APP_VERSION__}</span>
+          </div>
+          <p className="text-[11px] text-[color:var(--text-muted)] mt-0.5 truncate">
             {t('settings.aboutTagline')}
           </p>
         </div>
-      </div>
+      </Card>
 
       <div className="flex flex-col gap-2">
         <SectionLabel label={t('settings.builtWith')} />
-        <div
-          className="px-3 py-2.5 rounded-lg flex flex-col gap-1.5"
-          style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
-        >
+        <Card className="px-3 py-2.5 flex flex-col gap-1.5">
           {[
             'Electron 41',
             'React 19 + TypeScript 5.9',
@@ -2269,11 +2336,11 @@ function TabAbout() {
             'Zustand 5 + Immer',
           ].map((item) => (
             <div key={item} className="flex items-center gap-2">
-              <span className="text-[color:var(--accent-green)] text-[10px]">▸</span>
+              <span className="shrink-0 rounded-full" style={{ width: 4, height: 4, backgroundColor: 'var(--text-muted)' }} />
               <span className="text-[12px] text-[color:var(--text-sub)] font-mono">{item}</span>
             </div>
           ))}
-        </div>
+        </Card>
       </div>
 
       <div>
@@ -2282,10 +2349,10 @@ function TabAbout() {
           href="https://github.com/openwong2kim/wmux"
           target="_blank"
           rel="noopener noreferrer"
-          className="flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-[color:var(--accent-blue)] hover:text-[color:var(--text-main)] transition-colors"
+          className={`flex items-center gap-2 px-3 py-2.5 rounded-lg text-sm text-[color:var(--accent-blue)] hover:text-[color:var(--text-main)] transition-colors ${FOCUS_RING}`}
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
-          <span>⎋</span>
+          <IconExternalLink />
           <span>{t('settings.githubRepo')}</span>
         </a>
       </div>
@@ -2357,7 +2424,7 @@ export default function SettingsPanel() {
         >
           <span className="text-sm font-semibold text-[color:var(--text-main)] font-mono tracking-wide">{t('settings.title')}</span>
           <button
-            className="text-[color:var(--text-subtle)] hover:text-[color:var(--text-main)] transition-colors"
+            className={`inline-flex items-center rounded p-0.5 text-[color:var(--text-subtle)] hover:text-[color:var(--text-main)] transition-colors ${FOCUS_RING}`}
             onClick={() => setVisible(false)}
             aria-label={t('settings.close')}
           >
@@ -2382,14 +2449,15 @@ export default function SettingsPanel() {
                 <button
                   key={tab.id}
                   onClick={() => setActiveTab(tab.id)}
-                  className="flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors text-[12px]"
+                  aria-current={isActive ? 'page' : undefined}
+                  className={`flex items-center gap-2.5 px-3 py-2 rounded-lg text-left transition-colors text-[12px] ${!isActive ? 'hover:bg-[color:var(--bg-surface)]' : ''} ${FOCUS_RING}`}
                   style={{
                     backgroundColor: isActive ? 'var(--bg-surface)' : 'transparent',
                     color: isActive ? 'var(--text-main)' : 'var(--text-subtle)',
                     fontWeight: isActive ? 600 : 400,
                   }}
                 >
-                  <span className="inline-flex items-center leading-none" style={{ color: isActive ? 'var(--accent-blue)' : 'var(--text-muted)' }}>
+                  <span className="inline-flex items-center leading-none shrink-0" style={{ color: isActive ? 'var(--accent-blue)' : 'var(--text-muted)' }}>
                     {tab.icon}
                   </span>
                   {tab.label}
@@ -2417,7 +2485,7 @@ export default function SettingsPanel() {
         >
           <span className="text-[10px] text-[color:var(--text-muted)] font-mono">{t('settings.toggleHint')}</span>
           <button
-            className="text-xs text-[color:var(--text-subtle)] hover:text-[color:var(--text-main)] transition-colors"
+            className={`text-xs px-2 py-1 rounded text-[color:var(--text-subtle)] hover:text-[color:var(--text-main)] transition-colors ${FOCUS_RING}`}
             onClick={() => setVisible(false)}
           >
             {t('settings.close')}
