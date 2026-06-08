@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, useCallback } from 'react';
+import { useEffect, useMemo, useRef, useState, useCallback, type ReactNode } from 'react';
 import { useStore } from '../../stores';
 import { LOCALE_OPTIONS, type Locale } from '../../i18n';
 import { useT } from '../../hooks/useT';
@@ -39,6 +39,79 @@ function IconRefresh() {
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
       <path d="M1.5 7a5.5 5.5 0 1 0 1.1-3.3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
       <polyline points="1.5,2 1.5,4.5 4,4.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+// ─── Tab icons (stroke line icons — 14px, currentColor) ───────────────────────
+
+function IconGeneral() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <line x1="2" y1="3.5" x2="12" y2="3.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="2" y1="7" x2="12" y2="7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="2" y1="10.5" x2="12" y2="10.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <circle cx="4.5" cy="3.5" r="1.6" fill="currentColor" />
+      <circle cx="9.5" cy="7" r="1.6" fill="currentColor" />
+      <circle cx="5.5" cy="10.5" r="1.6" fill="currentColor" />
+    </svg>
+  );
+}
+
+function IconAppearance() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M7 2a5 5 0 0 1 0 10z" fill="currentColor" />
+    </svg>
+  );
+}
+
+function IconNotifications() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M3.5 9.5c.7-.7.9-1.7.9-2.9a2.6 2.6 0 0 1 5.2 0c0 1.2.2 2.2.9 2.9z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <path d="M5.9 11.2a1.2 1.2 0 0 0 2.2 0" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconShortcuts() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <rect x="1.5" y="3.5" width="11" height="7" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+      <line x1="3.7" y1="5.9" x2="3.7" y2="5.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="5.7" y1="5.9" x2="5.7" y2="5.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="7.7" y1="5.9" x2="7.7" y2="5.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="9.7" y1="5.9" x2="9.7" y2="5.9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="4.5" y1="8.3" x2="9.5" y2="8.3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconClaude() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <path d="M7 1.5 8.3 5.7 12.5 7 8.3 8.3 7 12.5 5.7 8.3 1.5 7 5.7 5.7Z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconFirstRun() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <line x1="3.5" y1="1.8" x2="3.5" y2="12.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <path d="M3.5 2.5h6.7l-1.7 2.3 1.7 2.3H3.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+    </svg>
+  );
+}
+
+function IconAbout() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
+      <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.3" />
+      <line x1="7" y1="6.4" x2="7" y2="9.8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="7" y1="4.3" x2="7" y2="4.3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
     </svg>
   );
 }
@@ -2230,14 +2303,14 @@ export default function SettingsPanel() {
   const [activeTab, setActiveTab] = useState<TabId>('general');
   const panelRef = useRef<HTMLDivElement>(null);
 
-  const tabs: { id: TabId; label: string; icon: string }[] = [
-    { id: 'general',            label: t('settings.tabGeneral'),         icon: '⚙' },
-    { id: 'appearance',         label: t('settings.tabAppearance'),      icon: '◑' },
-    { id: 'notifications',      label: t('settings.tabNotifications'),   icon: '◎' },
-    { id: 'shortcuts',          label: t('settings.tabShortcuts'),       icon: '⌨' },
-    { id: 'claude-integration', label: t('claudeIntegration.tab'),       icon: '◈' },
-    { id: 'first-run-setup',    label: t('settings.firstRunSetup'),      icon: '◇' },
-    { id: 'about',              label: t('settings.tabAbout'),           icon: 'ℹ' },
+  const tabs: { id: TabId; label: string; icon: ReactNode }[] = [
+    { id: 'general',            label: t('settings.tabGeneral'),         icon: <IconGeneral /> },
+    { id: 'appearance',         label: t('settings.tabAppearance'),      icon: <IconAppearance /> },
+    { id: 'notifications',      label: t('settings.tabNotifications'),   icon: <IconNotifications /> },
+    { id: 'shortcuts',          label: t('settings.tabShortcuts'),       icon: <IconShortcuts /> },
+    { id: 'claude-integration', label: t('claudeIntegration.tab'),       icon: <IconClaude /> },
+    { id: 'first-run-setup',    label: t('settings.firstRunSetup'),      icon: <IconFirstRun /> },
+    { id: 'about',              label: t('settings.tabAbout'),           icon: <IconAbout /> },
   ];
 
   // Close on Escape
@@ -2316,7 +2389,7 @@ export default function SettingsPanel() {
                     fontWeight: isActive ? 600 : 400,
                   }}
                 >
-                  <span className="text-[13px] leading-none" style={{ color: isActive ? 'var(--accent-blue)' : 'var(--text-muted)' }}>
+                  <span className="inline-flex items-center leading-none" style={{ color: isActive ? 'var(--accent-blue)' : 'var(--text-muted)' }}>
                     {tab.icon}
                   </span>
                   {tab.label}
