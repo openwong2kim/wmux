@@ -283,7 +283,52 @@ export const zh = {
   'firstRun.autoUpdateMessage': '是否让 WMUX 自动检查更新？您可以稍后在设置中更改。',
   'firstRun.enable': '启用',
   'firstRun.disable': '不需要',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': '首次运行设置',
+  'settings.firstRunSetupDesc': '重新打开欢迎向导，或再次显示键盘速查表。',
+  'settings.firstRunSetup.lastCompleted': '上次完成：{date}',
+  'settings.firstRunSetup.notCompleted': '尚未完成',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code：{status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP：{status}',
+  'settings.firstRunSetup.statusDetected': '已检测到',
+  'settings.firstRunSetup.statusNotDetected': '未检测到',
+  'settings.firstRunSetup.statusRegistered': '已注册',
+  'settings.firstRunSetup.statusNotRegistered': '未注册',
+  'settings.firstRunSetup.openWizard': '打开设置向导',
+  'settings.firstRunSetup.showCheatSheet': '显示键盘速查表',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude 集成',
+  'claudeIntegration.signalHealth.title': '插件信号健康状况',
+  'claudeIntegration.signalHealth.unknownBody':
+    '插件状态：尚未观测到。请在 Claude Code 中使用下方命令安装。首个钩子触发后，wmux 即会确认检测到插件。',
+  'claudeIntegration.signalHealth.detectedLastReceived': '上次信号：{rel}。',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    '延迟 P50 {p50}ms · P95 {p95}ms · {count} 个样本',
+  'claudeIntegration.signalHealth.workspaceMatchFormat': '工作区匹配：{matched}/{total} 个钩子已解析到 wmux 面板',
+  'claudeIntegration.signalHealth.staleBody':
+    '插件状态：已过期。最近一个钩子在 {rel}到达 — 插件可能已停止触发，或 Claude Code 处于空闲状态。',
+  'claudeIntegration.signalHealth.copyInstallCommand': '复制安装命令',
+  'claudeIntegration.signalHealth.copySuccess': '已复制 — 粘贴到 Claude Code 中',
+  'claudeIntegration.signalHealth.copyError': '复制失败 — 剪贴板已锁定',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Anthropic 用量表（5h / 7d）',
+  'claudeIntegration.usage.description':
+    '从本地存储读取你的 Claude Code OAuth 令牌，并以 1-token 的 Haiku 请求探测 Anthropic，以读取速率限制响应头。该探测会计入你自己的配额（≈ 可忽略不计）。令牌绝不会被写回、绝不会被记录，仅发送至 api.anthropic.com。',
+  'claudeIntegration.usage.enableLabel': '在状态栏显示 5h / 7d 用量',
+  'claudeIntegration.usage.refreshButton': '立即刷新',
+  'claudeIntegration.usage.refreshCooldown': '{seconds} 秒后可刷新',
+  'claudeIntegration.usage.subscription': '套餐：{tier}',
+  'claudeIntegration.usage.lastFetched': '上次获取：{ago}',
+  'claudeIntegration.usage.justNow': '刚刚',
+  'claudeIntegration.usage.minutesAgo': '{n} 分钟前',
+  'claudeIntegration.usage.hoursAgo': '{n} 小时前',
+  'claudeIntegration.usage.daysAgo': '{n} 天前',
+  'claudeIntegration.usage.status.token-missing': 'Claude Code 未登录',
+  'claudeIntegration.usage.status.unauthorized': '令牌已过期 — 请重新登录 Claude Code',
+  'claudeIntegration.usage.status.http-error': 'Anthropic API 错误',
+  'claudeIntegration.usage.status.network-error': '网络错误',
+  'claudeIntegration.usage.status.read-error': '凭据读取错误',
 } as const;

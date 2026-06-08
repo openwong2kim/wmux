@@ -240,7 +240,54 @@ export const hi = {
   'firstRun.autoUpdateMessage': 'क्या आप चाहते हैं कि WMUX स्वचालित रूप से अपडेट जाँचे? आप इसे बाद में सेटिंग्स में बदल सकते हैं।',
   'firstRun.enable': 'सक्षम करें',
   'firstRun.disable': 'नहीं, धन्यवाद',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': 'पहली बार सेटअप',
+  'settings.firstRunSetupDesc': 'वेलकम विज़ार्ड फिर से खोलें या कीबोर्ड चीट शीट दोबारा दिखाएँ।',
+  'settings.firstRunSetup.lastCompleted': 'अंतिम बार पूरा हुआ: {date}',
+  'settings.firstRunSetup.notCompleted': 'अभी तक पूरा नहीं हुआ',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': 'पता चला',
+  'settings.firstRunSetup.statusNotDetected': 'पता नहीं चला',
+  'settings.firstRunSetup.statusRegistered': 'पंजीकृत',
+  'settings.firstRunSetup.statusNotRegistered': 'पंजीकृत नहीं',
+  'settings.firstRunSetup.openWizard': 'सेटअप विज़ार्ड खोलें',
+  'settings.firstRunSetup.showCheatSheet': 'कीबोर्ड चीट शीट दिखाएँ',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude एकीकरण',
+  'claudeIntegration.signalHealth.title': 'प्लगइन सिग्नल स्थिति',
+  'claudeIntegration.signalHealth.unknownBody':
+    'प्लगइन स्थिति: अभी तक नहीं देखा गया। Claude Code में नीचे दिए गए कमांड से इंस्टॉल करें। पहला हुक चलते ही wmux पता लगने की पुष्टि कर देता है।',
+  'claudeIntegration.signalHealth.detectedLastReceived': 'अंतिम सिग्नल {rel}।',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'विलंबता P50 {p50}ms · P95 {p95}ms · {count} नमूने',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'वर्कस्पेस मिलान: {matched}/{total} हुक किसी wmux पेन से मैप हुए',
+  'claudeIntegration.signalHealth.staleBody':
+    'प्लगइन स्थिति: पुरानी। अंतिम हुक {rel} आया — हो सकता है प्लगइन ने चलना बंद कर दिया हो या Claude Code निष्क्रिय हो।',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'इंस्टॉल कमांड कॉपी करें',
+  'claudeIntegration.signalHealth.copySuccess': 'कॉपी हो गया — Claude Code में पेस्ट करें',
+  'claudeIntegration.signalHealth.copyError': 'कॉपी विफल — क्लिपबोर्ड लॉक है',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Anthropic उपयोग मीटर (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'लोकल स्टोरेज से आपका Claude Code OAuth टोकन पढ़ता है और रेट-लिमिट हेडर पढ़ने के लिए 1-token Haiku अनुरोध भेजकर Anthropic की जाँच करता है। यह जाँच आपके अपने कोटे से बिल होती है (≈ नगण्य)। टोकन कभी वापस नहीं लिखा जाता, कभी लॉग नहीं होता, केवल api.anthropic.com को भेजा जाता है।',
+  'claudeIntegration.usage.enableLabel': 'स्टेटस बार में 5h / 7d उपयोग दिखाएँ',
+  'claudeIntegration.usage.refreshButton': 'अभी रिफ्रेश करें',
+  'claudeIntegration.usage.refreshCooldown': 'रिफ्रेश {seconds}s में उपलब्ध होगा',
+  'claudeIntegration.usage.subscription': 'प्लान: {tier}',
+  'claudeIntegration.usage.lastFetched': 'अंतिम बार लाया गया: {ago}',
+  'claudeIntegration.usage.justNow': 'अभी-अभी',
+  'claudeIntegration.usage.minutesAgo': '{n} मिनट पहले',
+  'claudeIntegration.usage.hoursAgo': '{n} घंटे पहले',
+  'claudeIntegration.usage.daysAgo': '{n} दिन पहले',
+  'claudeIntegration.usage.status.token-missing': 'Claude Code में लॉग इन नहीं है',
+  'claudeIntegration.usage.status.unauthorized':
+    'टोकन समाप्त हो गया — Claude Code में फिर से लॉग इन करें',
+  'claudeIntegration.usage.status.http-error': 'Anthropic API त्रुटि',
+  'claudeIntegration.usage.status.network-error': 'नेटवर्क त्रुटि',
+  'claudeIntegration.usage.status.read-error': 'क्रेडेंशियल पढ़ने में त्रुटि',
 } as const;

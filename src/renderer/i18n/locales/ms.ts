@@ -240,7 +240,55 @@ export const ms = {
   'firstRun.autoUpdateMessage': 'Adakah anda mahu WMUX memeriksa kemas kini secara automatik? Anda boleh ubah ini kemudian di Tetapan.',
   'firstRun.enable': 'Dayakan',
   'firstRun.disable': 'Tidak, terima kasih',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': 'Persediaan kali pertama',
+  'settings.firstRunSetupDesc':
+    'Buka semula bestari alu-aluan atau tunjukkan helaian pintasan papan kekunci sekali lagi.',
+  'settings.firstRunSetup.lastCompleted': 'Terakhir diselesaikan: {date}',
+  'settings.firstRunSetup.notCompleted': 'Belum diselesaikan lagi',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': 'dikesan',
+  'settings.firstRunSetup.statusNotDetected': 'tidak dikesan',
+  'settings.firstRunSetup.statusRegistered': 'didaftarkan',
+  'settings.firstRunSetup.statusNotRegistered': 'tidak didaftarkan',
+  'settings.firstRunSetup.openWizard': 'Buka bestari persediaan',
+  'settings.firstRunSetup.showCheatSheet': 'Tunjukkan helaian pintasan papan kekunci',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Penyepaduan Claude',
+  'claudeIntegration.signalHealth.title': 'Kesihatan isyarat pemalam',
+  'claudeIntegration.signalHealth.unknownBody':
+    'Status pemalam: belum diperhatikan. Pasang dengan arahan di bawah dalam Claude Code. wmux akan mengesahkan pengesanan sebaik sahaja hook pertama dicetuskan.',
+  'claudeIntegration.signalHealth.detectedLastReceived': 'Isyarat terakhir {rel}.',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'Kependaman P50 {p50}ms · P95 {p95}ms · {count} sampel',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'Padanan ruang kerja: {matched}/{total} hook dipadankan ke panel wmux',
+  'claudeIntegration.signalHealth.staleBody':
+    'Status pemalam: basi. Hook terakhir tiba {rel} — pemalam mungkin telah berhenti dicetuskan atau Claude Code sedang tidak aktif.',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'Salin arahan pemasangan',
+  'claudeIntegration.signalHealth.copySuccess': 'Disalin — tampal ke dalam Claude Code',
+  'claudeIntegration.signalHealth.copyError': 'Gagal menyalin — papan keratan dikunci',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Meter penggunaan Anthropic (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'Membaca token OAuth Claude Code anda daripada storan tempatan dan menguji Anthropic dengan permintaan Haiku 1-token untuk membaca pengepala had kadar. Ujian ini dicajkan kepada kuota anda sendiri (≈ boleh diabaikan). Token tidak pernah ditulis semula, tidak pernah dilog, hanya dihantar ke api.anthropic.com.',
+  'claudeIntegration.usage.enableLabel': 'Tunjukkan penggunaan 5h / 7d dalam bar status',
+  'claudeIntegration.usage.refreshButton': 'Segar semula sekarang',
+  'claudeIntegration.usage.refreshCooldown': 'Segar semula tersedia dalam {seconds}s',
+  'claudeIntegration.usage.subscription': 'Pelan: {tier}',
+  'claudeIntegration.usage.lastFetched': 'Terakhir diambil: {ago}',
+  'claudeIntegration.usage.justNow': 'sebentar tadi',
+  'claudeIntegration.usage.minutesAgo': '{n}m lalu',
+  'claudeIntegration.usage.hoursAgo': '{n}h lalu',
+  'claudeIntegration.usage.daysAgo': '{n}d lalu',
+  'claudeIntegration.usage.status.token-missing': 'Claude Code belum log masuk',
+  'claudeIntegration.usage.status.unauthorized':
+    'Token tamat tempoh — log masuk ke Claude Code semula',
+  'claudeIntegration.usage.status.http-error': 'Ralat API Anthropic',
+  'claudeIntegration.usage.status.network-error': 'Ralat rangkaian',
+  'claudeIntegration.usage.status.read-error': 'Ralat membaca kelayakan',
 } as const;

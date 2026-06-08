@@ -240,7 +240,55 @@ export const es = {
   'firstRun.autoUpdateMessage': '¿Quieres que WMUX busque actualizaciones automáticamente? Puedes cambiarlo más tarde en Ajustes.',
   'firstRun.enable': 'Activar',
   'firstRun.disable': 'No, gracias',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': 'Configuración inicial',
+  'settings.firstRunSetupDesc':
+    'Vuelve a abrir el asistente de bienvenida o muestra de nuevo la chuleta de atajos de teclado.',
+  'settings.firstRunSetup.lastCompleted': 'Completada por última vez: {date}',
+  'settings.firstRunSetup.notCompleted': 'Aún no completada',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': 'detectado',
+  'settings.firstRunSetup.statusNotDetected': 'no detectado',
+  'settings.firstRunSetup.statusRegistered': 'registrado',
+  'settings.firstRunSetup.statusNotRegistered': 'no registrado',
+  'settings.firstRunSetup.openWizard': 'Abrir asistente de configuración',
+  'settings.firstRunSetup.showCheatSheet': 'Mostrar chuleta de atajos de teclado',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Integración con Claude',
+  'claudeIntegration.signalHealth.title': 'Estado de la señal del plugin',
+  'claudeIntegration.signalHealth.unknownBody':
+    'Estado del plugin: aún no observado. Instálalo con el comando de abajo en Claude Code. wmux confirma la detección en cuanto se dispara el primer hook.',
+  'claudeIntegration.signalHealth.detectedLastReceived': 'Última señal {rel}.',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'Latencia P50 {p50}ms · P95 {p95}ms · {count} muestras',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'Coincidencia de espacio de trabajo: {matched}/{total} hooks resueltos a un panel de wmux',
+  'claudeIntegration.signalHealth.staleBody':
+    'Estado del plugin: obsoleto. El último hook llegó {rel} — puede que el plugin haya dejado de dispararse o que Claude Code esté inactivo.',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'Copiar comando de instalación',
+  'claudeIntegration.signalHealth.copySuccess': 'Copiado — pégalo en Claude Code',
+  'claudeIntegration.signalHealth.copyError': 'Error al copiar — portapapeles bloqueado',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Medidor de uso de Anthropic (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'Lee tu token OAuth de Claude Code del almacenamiento local y consulta a Anthropic con una petición Haiku de 1-token para leer las cabeceras de límite de frecuencia. La consulta se factura a tu propia cuota (≈ insignificante). El token nunca se vuelve a escribir, nunca se registra y solo se envía a api.anthropic.com.',
+  'claudeIntegration.usage.enableLabel': 'Mostrar uso de 5h / 7d en la barra de estado',
+  'claudeIntegration.usage.refreshButton': 'Actualizar ahora',
+  'claudeIntegration.usage.refreshCooldown': 'Podrás actualizar en {seconds}s',
+  'claudeIntegration.usage.subscription': 'Plan: {tier}',
+  'claudeIntegration.usage.lastFetched': 'Última obtención: {ago}',
+  'claudeIntegration.usage.justNow': 'justo ahora',
+  'claudeIntegration.usage.minutesAgo': 'hace {n}min',
+  'claudeIntegration.usage.hoursAgo': 'hace {n}h',
+  'claudeIntegration.usage.daysAgo': 'hace {n}d',
+  'claudeIntegration.usage.status.token-missing': 'No has iniciado sesión en Claude Code',
+  'claudeIntegration.usage.status.unauthorized':
+    'Token caducado — inicia sesión de nuevo en Claude Code',
+  'claudeIntegration.usage.status.http-error': 'Error de la API de Anthropic',
+  'claudeIntegration.usage.status.network-error': 'Error de red',
+  'claudeIntegration.usage.status.read-error': 'Error al leer las credenciales',
 } as const;

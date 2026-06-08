@@ -240,7 +240,53 @@ export const vi = {
   'firstRun.autoUpdateMessage': 'Bạn có muốn WMUX tự động kiểm tra cập nhật? Bạn có thể đổi sau trong Cài đặt.',
   'firstRun.enable': 'Bật',
   'firstRun.disable': 'Không, cảm ơn',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': 'Thiết lập lần đầu',
+  'settings.firstRunSetupDesc': 'Mở lại trình hướng dẫn chào mừng hoặc xem lại bảng phím tắt.',
+  'settings.firstRunSetup.lastCompleted': 'Hoàn tất lần cuối: {date}',
+  'settings.firstRunSetup.notCompleted': 'Chưa hoàn tất',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': 'đã phát hiện',
+  'settings.firstRunSetup.statusNotDetected': 'chưa phát hiện',
+  'settings.firstRunSetup.statusRegistered': 'đã đăng ký',
+  'settings.firstRunSetup.statusNotRegistered': 'chưa đăng ký',
+  'settings.firstRunSetup.openWizard': 'Mở trình hướng dẫn thiết lập',
+  'settings.firstRunSetup.showCheatSheet': 'Hiện bảng phím tắt',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Tích hợp Claude',
+  'claudeIntegration.signalHealth.title': 'Tình trạng tín hiệu plugin',
+  'claudeIntegration.signalHealth.unknownBody':
+    'Trạng thái plugin: chưa quan sát được. Hãy cài đặt bằng lệnh bên dưới trong Claude Code. wmux sẽ xác nhận phát hiện khi hook đầu tiên kích hoạt.',
+  'claudeIntegration.signalHealth.detectedLastReceived': 'Tín hiệu cuối {rel}.',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'Độ trễ P50 {p50}ms · P95 {p95}ms · {count} mẫu',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'Khớp không gian làm việc: {matched}/{total} hook đã phân giải về một khung wmux',
+  'claudeIntegration.signalHealth.staleBody':
+    'Trạng thái plugin: đã cũ. Hook cuối đến {rel} — plugin có thể đã ngừng kích hoạt hoặc Claude Code đang nhàn rỗi.',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'Sao chép lệnh cài đặt',
+  'claudeIntegration.signalHealth.copySuccess': 'Đã sao chép — dán vào Claude Code',
+  'claudeIntegration.signalHealth.copyError': 'Sao chép thất bại — bộ nhớ tạm bị khoá',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Đồng hồ sử dụng Anthropic (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'Đọc token OAuth Claude Code của bạn từ bộ nhớ cục bộ và thăm dò Anthropic bằng một yêu cầu Haiku 1-token để đọc các header giới hạn tốc độ. Lần thăm dò được tính vào hạn mức của chính bạn (≈ không đáng kể). Token không bao giờ được ghi ngược lại, không bao giờ được ghi log, chỉ gửi tới api.anthropic.com.',
+  'claudeIntegration.usage.enableLabel': 'Hiện mức sử dụng 5h / 7d trên thanh trạng thái',
+  'claudeIntegration.usage.refreshButton': 'Làm mới ngay',
+  'claudeIntegration.usage.refreshCooldown': 'Có thể làm mới sau {seconds}s',
+  'claudeIntegration.usage.subscription': 'Gói: {tier}',
+  'claudeIntegration.usage.lastFetched': 'Lấy lần cuối: {ago}',
+  'claudeIntegration.usage.justNow': 'vừa xong',
+  'claudeIntegration.usage.minutesAgo': '{n} phút trước',
+  'claudeIntegration.usage.hoursAgo': '{n} giờ trước',
+  'claudeIntegration.usage.daysAgo': '{n} ngày trước',
+  'claudeIntegration.usage.status.token-missing': 'Chưa đăng nhập Claude Code',
+  'claudeIntegration.usage.status.unauthorized': 'Token đã hết hạn — đăng nhập lại Claude Code',
+  'claudeIntegration.usage.status.http-error': 'Lỗi API Anthropic',
+  'claudeIntegration.usage.status.network-error': 'Lỗi mạng',
+  'claudeIntegration.usage.status.read-error': 'Lỗi đọc thông tin xác thực',
 } as const;

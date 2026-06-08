@@ -240,7 +240,55 @@ export const ar = {
   'firstRun.autoUpdateMessage': 'هل تريد أن يتحقق WMUX من التحديثات تلقائياً؟ يمكنك تغيير ذلك لاحقاً في الإعدادات.',
   'firstRun.enable': 'تفعيل',
   'firstRun.disable': 'لا، شكراً',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': 'إعداد التشغيل الأول',
+  'settings.firstRunSetupDesc':
+    'أعد فتح معالج الترحيب أو اعرض ورقة اختصارات لوحة المفاتيح مرة أخرى.',
+  'settings.firstRunSetup.lastCompleted': 'آخر اكتمال: {date}',
+  'settings.firstRunSetup.notCompleted': 'لم يكتمل بعد',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': 'مكتشف',
+  'settings.firstRunSetup.statusNotDetected': 'غير مكتشف',
+  'settings.firstRunSetup.statusRegistered': 'مسجَّل',
+  'settings.firstRunSetup.statusNotRegistered': 'غير مسجَّل',
+  'settings.firstRunSetup.openWizard': 'فتح معالج الإعداد',
+  'settings.firstRunSetup.showCheatSheet': 'عرض ورقة اختصارات لوحة المفاتيح',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'تكامل Claude',
+  'claudeIntegration.signalHealth.title': 'سلامة إشارة الإضافة',
+  'claudeIntegration.signalHealth.unknownBody':
+    'حالة الإضافة: لم تُرصد بعد. ثبِّتها باستخدام الأمر أدناه في Claude Code. يؤكد wmux الكشف بمجرد تشغيل أول خطّاف.',
+  'claudeIntegration.signalHealth.detectedLastReceived': 'آخر إشارة {rel}.',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'زمن الاستجابة P50 {p50}ms · P95 {p95}ms · {count} عيّنة',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'تطابق مساحة العمل: {matched}/{total} خطّاف تم ربطه بجزء wmux',
+  'claudeIntegration.signalHealth.staleBody':
+    'حالة الإضافة: قديمة. وصل آخر خطّاف {rel} — ربما توقفت الإضافة عن العمل أو أن Claude Code خامل.',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'نسخ أمر التثبيت',
+  'claudeIntegration.signalHealth.copySuccess': 'تم النسخ — الصقه في Claude Code',
+  'claudeIntegration.signalHealth.copyError': 'فشل النسخ — الحافظة مقفلة',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'عدّاد استخدام Anthropic (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'يقرأ رمز OAuth الخاص بـ Claude Code من التخزين المحلي، ويفحص Anthropic بطلب Haiku بحجم 1-token لقراءة ترويسات حد المعدل. يُحتسب الفحص على حصتك الخاصة (≈ لا يُذكر). لا يُعاد كتابة الرمز أبداً، ولا يُسجَّل أبداً، ويُرسَل فقط إلى api.anthropic.com.',
+  'claudeIntegration.usage.enableLabel': 'عرض استخدام 5h / 7d في شريط الحالة',
+  'claudeIntegration.usage.refreshButton': 'تحديث الآن',
+  'claudeIntegration.usage.refreshCooldown': 'التحديث متاح خلال {seconds} ث',
+  'claudeIntegration.usage.subscription': 'الخطة: {tier}',
+  'claudeIntegration.usage.lastFetched': 'آخر جلب: {ago}',
+  'claudeIntegration.usage.justNow': 'الآن',
+  'claudeIntegration.usage.minutesAgo': 'قبل {n} د',
+  'claudeIntegration.usage.hoursAgo': 'قبل {n} س',
+  'claudeIntegration.usage.daysAgo': 'قبل {n} ي',
+  'claudeIntegration.usage.status.token-missing': 'لم يتم تسجيل الدخول إلى Claude Code',
+  'claudeIntegration.usage.status.unauthorized':
+    'انتهت صلاحية الرمز — سجّل الدخول إلى Claude Code مرة أخرى',
+  'claudeIntegration.usage.status.http-error': 'خطأ في واجهة Anthropic API',
+  'claudeIntegration.usage.status.network-error': 'خطأ في الشبكة',
+  'claudeIntegration.usage.status.read-error': 'خطأ في قراءة بيانات الاعتماد',
 } as const;

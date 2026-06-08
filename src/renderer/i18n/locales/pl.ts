@@ -240,7 +240,55 @@ export const pl = {
   'firstRun.autoUpdateMessage': 'Czy chcesz, aby WMUX automatycznie sprawdzał aktualizacje? Możesz zmienić to później w ustawieniach.',
   'firstRun.enable': 'Włącz',
   'firstRun.disable': 'Nie, dziękuję',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': 'Konfiguracja początkowa',
+  'settings.firstRunSetupDesc':
+    'Otwórz ponownie kreatora powitalnego lub pokaż ponownie ściągę klawiszy.',
+  'settings.firstRunSetup.lastCompleted': 'Ostatnio ukończono: {date}',
+  'settings.firstRunSetup.notCompleted': 'Jeszcze nie ukończono',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': 'wykryto',
+  'settings.firstRunSetup.statusNotDetected': 'nie wykryto',
+  'settings.firstRunSetup.statusRegistered': 'zarejestrowano',
+  'settings.firstRunSetup.statusNotRegistered': 'nie zarejestrowano',
+  'settings.firstRunSetup.openWizard': 'Otwórz kreatora konfiguracji',
+  'settings.firstRunSetup.showCheatSheet': 'Pokaż ściągę klawiszy',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Integracja z Claude',
+  'claudeIntegration.signalHealth.title': 'Kondycja sygnału wtyczki',
+  'claudeIntegration.signalHealth.unknownBody':
+    'Status wtyczki: jeszcze nieobserwowany. Zainstaluj poniższym poleceniem w Claude Code. wmux potwierdzi wykrycie, gdy zadziała pierwszy hook.',
+  'claudeIntegration.signalHealth.detectedLastReceived': 'Ostatni sygnał {rel}.',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'Opóźnienie P50 {p50}ms · P95 {p95}ms · {count} próbek',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'Dopasowanie obszaru roboczego: {matched}/{total} hooków przypisano do panelu wmux',
+  'claudeIntegration.signalHealth.staleBody':
+    'Status wtyczki: nieaktualny. Ostatni hook dotarł {rel} — wtyczka mogła przestać działać lub Claude Code jest bezczynny.',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'Kopiuj polecenie instalacji',
+  'claudeIntegration.signalHealth.copySuccess': 'Skopiowano — wklej w Claude Code',
+  'claudeIntegration.signalHealth.copyError': 'Kopiowanie nie powiodło się — schowek zablokowany',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Miernik zużycia Anthropic (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'Odczytuje token OAuth Claude Code z lokalnej pamięci i odpytuje Anthropic żądaniem Haiku o wielkości 1-token, aby odczytać nagłówki limitu zapytań. Odpytanie jest rozliczane z Twojego własnego limitu (≈ pomijalne). Token nigdy nie jest zapisywany z powrotem ani logowany, jest wysyłany wyłącznie do api.anthropic.com.',
+  'claudeIntegration.usage.enableLabel': 'Pokaż wykorzystanie 5h / 7d na pasku stanu',
+  'claudeIntegration.usage.refreshButton': 'Odśwież teraz',
+  'claudeIntegration.usage.refreshCooldown': 'Odświeżenie dostępne za {seconds}s',
+  'claudeIntegration.usage.subscription': 'Plan: {tier}',
+  'claudeIntegration.usage.lastFetched': 'Ostatnio pobrano: {ago}',
+  'claudeIntegration.usage.justNow': 'przed chwilą',
+  'claudeIntegration.usage.minutesAgo': '{n} min temu',
+  'claudeIntegration.usage.hoursAgo': '{n} godz. temu',
+  'claudeIntegration.usage.daysAgo': '{n} dni temu',
+  'claudeIntegration.usage.status.token-missing': 'Brak logowania do Claude Code',
+  'claudeIntegration.usage.status.unauthorized':
+    'Token wygasł — zaloguj się ponownie do Claude Code',
+  'claudeIntegration.usage.status.http-error': 'Błąd API Anthropic',
+  'claudeIntegration.usage.status.network-error': 'Błąd sieci',
+  'claudeIntegration.usage.status.read-error': 'Błąd odczytu poświadczeń',
 } as const;

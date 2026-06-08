@@ -283,7 +283,53 @@ export const ja = {
   'firstRun.autoUpdateMessage': 'WMUXが自動的にアップデートを確認するようにしますか？後で設定から変更できます。',
   'firstRun.enable': '有効にする',
   'firstRun.disable': 'いいえ',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': '初回設定',
+  'settings.firstRunSetupDesc': 'ようこそ画面のウィザードをもう一度開いたり、キーボードショートカット一覧を再表示したりできます。',
+  'settings.firstRunSetup.lastCompleted': '最終完了: {date}',
+  'settings.firstRunSetup.notCompleted': 'まだ完了していません',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': '検出済み',
+  'settings.firstRunSetup.statusNotDetected': '未検出',
+  'settings.firstRunSetup.statusRegistered': '登録済み',
+  'settings.firstRunSetup.statusNotRegistered': '未登録',
+  'settings.firstRunSetup.openWizard': 'セットアップウィザードを開く',
+  'settings.firstRunSetup.showCheatSheet': 'キーボードショートカット一覧を表示',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude 連携',
+  'claudeIntegration.signalHealth.title': 'プラグインのシグナル状態',
+  'claudeIntegration.signalHealth.unknownBody':
+    'プラグインの状態: まだ検出されていません。Claude Code で下記のコマンドを実行してインストールしてください。最初のフックが発火すると、wmux が検出を確認します。',
+  'claudeIntegration.signalHealth.detectedLastReceived': '最後のシグナル: {rel}',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'レイテンシ P50 {p50}ms · P95 {p95}ms · サンプル {count} 件',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'ワークスペースの一致: {matched}/{total} 件のフックが wmux のペインに対応付けられました',
+  'claudeIntegration.signalHealth.staleBody':
+    'プラグインの状態: 古くなっています。最後のフックが届いたのは {rel} です — プラグインの発火が止まったか、Claude Code がアイドル状態の可能性があります。',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'インストールコマンドをコピー',
+  'claudeIntegration.signalHealth.copySuccess': 'コピーしました — Claude Code に貼り付けてください',
+  'claudeIntegration.signalHealth.copyError': 'コピーに失敗しました — クリップボードがロックされています',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Anthropic 使用量メーター (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'ローカルストレージから Claude Code の OAuth トークンを読み取り、1-token の Haiku リクエストで Anthropic にプローブしてレート制限ヘッダーを取得します。プローブの料金はご自身のクォータに課金されます (≈ ごくわずか)。トークンは書き戻されることもログに記録されることもなく、api.anthropic.com にのみ送信されます。',
+  'claudeIntegration.usage.enableLabel': 'ステータスバーに 5h / 7d の使用率を表示',
+  'claudeIntegration.usage.refreshButton': '今すぐ更新',
+  'claudeIntegration.usage.refreshCooldown': '{seconds} 秒後に更新できます',
+  'claudeIntegration.usage.subscription': 'プラン: {tier}',
+  'claudeIntegration.usage.lastFetched': '最終取得: {ago}',
+  'claudeIntegration.usage.justNow': 'たった今',
+  'claudeIntegration.usage.minutesAgo': '{n} 分前',
+  'claudeIntegration.usage.hoursAgo': '{n} 時間前',
+  'claudeIntegration.usage.daysAgo': '{n} 日前',
+  'claudeIntegration.usage.status.token-missing': 'Claude Code にログインしていません',
+  'claudeIntegration.usage.status.unauthorized': 'トークンの有効期限が切れました — Claude Code に再度ログインしてください',
+  'claudeIntegration.usage.status.http-error': 'Anthropic API エラー',
+  'claudeIntegration.usage.status.network-error': 'ネットワークエラー',
+  'claudeIntegration.usage.status.read-error': '認証情報の読み取りエラー',
 } as const;

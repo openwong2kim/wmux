@@ -240,7 +240,53 @@ export const zhTW = {
   'firstRun.autoUpdateMessage': '要讓 WMUX 自動檢查更新嗎? 您之後可以在設定中變更。',
   'firstRun.enable': '啟用',
   'firstRun.disable': '不用了',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': '首次執行設定',
+  'settings.firstRunSetupDesc': '重新開啟歡迎精靈，或再次顯示鍵盤速查表。',
+  'settings.firstRunSetup.lastCompleted': '上次完成：{date}',
+  'settings.firstRunSetup.notCompleted': '尚未完成',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code：{status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP：{status}',
+  'settings.firstRunSetup.statusDetected': '已偵測到',
+  'settings.firstRunSetup.statusNotDetected': '未偵測到',
+  'settings.firstRunSetup.statusRegistered': '已註冊',
+  'settings.firstRunSetup.statusNotRegistered': '未註冊',
+  'settings.firstRunSetup.openWizard': '開啟設定精靈',
+  'settings.firstRunSetup.showCheatSheet': '顯示鍵盤速查表',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude 整合',
+  'claudeIntegration.signalHealth.title': '外掛訊號健康狀態',
+  'claudeIntegration.signalHealth.unknownBody':
+    '外掛狀態：尚未偵測到。請在 Claude Code 中使用下方指令安裝。第一個 hook 觸發後，wmux 即會確認偵測結果。',
+  'claudeIntegration.signalHealth.detectedLastReceived': '上次收到訊號：{rel}。',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    '延遲 P50 {p50}ms · P95 {p95}ms · {count} 個樣本',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    '工作區比對：{matched}/{total} 個 hook 對應到 wmux 面板',
+  'claudeIntegration.signalHealth.staleBody':
+    '外掛狀態：已停滯。上次 hook 於 {rel} 送達 — 外掛可能已停止觸發，或 Claude Code 處於閒置狀態。',
+  'claudeIntegration.signalHealth.copyInstallCommand': '複製安裝指令',
+  'claudeIntegration.signalHealth.copySuccess': '已複製 — 貼到 Claude Code',
+  'claudeIntegration.signalHealth.copyError': '複製失敗 — 剪貼簿已鎖定',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Anthropic 用量計 (5h / 7d)',
+  'claudeIntegration.usage.description':
+    '從本機儲存讀取你的 Claude Code OAuth 權杖，並以 1-token Haiku 請求向 Anthropic 探測，藉此讀取速率限制標頭。此探測會計入你自己的配額（≈ 微不足道）。權杖絕不會回寫、絕不會記錄，只會傳送至 api.anthropic.com。',
+  'claudeIntegration.usage.enableLabel': '在狀態列顯示 5h / 7d 使用率',
+  'claudeIntegration.usage.refreshButton': '立即重新整理',
+  'claudeIntegration.usage.refreshCooldown': '{seconds} 秒後可重新整理',
+  'claudeIntegration.usage.subscription': '方案：{tier}',
+  'claudeIntegration.usage.lastFetched': '上次擷取：{ago}',
+  'claudeIntegration.usage.justNow': '剛剛',
+  'claudeIntegration.usage.minutesAgo': '{n} 分鐘前',
+  'claudeIntegration.usage.hoursAgo': '{n} 小時前',
+  'claudeIntegration.usage.daysAgo': '{n} 天前',
+  'claudeIntegration.usage.status.token-missing': 'Claude Code 尚未登入',
+  'claudeIntegration.usage.status.unauthorized': '權杖已過期 — 請重新登入 Claude Code',
+  'claudeIntegration.usage.status.http-error': 'Anthropic API 錯誤',
+  'claudeIntegration.usage.status.network-error': '網路錯誤',
+  'claudeIntegration.usage.status.read-error': '憑證讀取錯誤',
 } as const;

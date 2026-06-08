@@ -240,7 +240,55 @@ export const ru = {
   'firstRun.autoUpdateMessage': 'Разрешить WMUX автоматически проверять обновления? Это можно изменить позже в настройках.',
   'firstRun.enable': 'Включить',
   'firstRun.disable': 'Нет, спасибо',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': 'Первоначальная настройка',
+  'settings.firstRunSetupDesc':
+    'Снова откройте мастер первоначальной настройки или покажите шпаргалку по сочетаниям клавиш.',
+  'settings.firstRunSetup.lastCompleted': 'Последнее завершение: {date}',
+  'settings.firstRunSetup.notCompleted': 'Ещё не завершено',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': 'обнаружен',
+  'settings.firstRunSetup.statusNotDetected': 'не обнаружен',
+  'settings.firstRunSetup.statusRegistered': 'зарегистрирован',
+  'settings.firstRunSetup.statusNotRegistered': 'не зарегистрирован',
+  'settings.firstRunSetup.openWizard': 'Открыть мастер настройки',
+  'settings.firstRunSetup.showCheatSheet': 'Показать шпаргалку по клавишам',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Интеграция с Claude',
+  'claudeIntegration.signalHealth.title': 'Состояние сигнала плагина',
+  'claudeIntegration.signalHealth.unknownBody':
+    'Статус плагина: ещё не зафиксирован. Установите его командой ниже в Claude Code. wmux подтвердит обнаружение, как только сработает первый хук.',
+  'claudeIntegration.signalHealth.detectedLastReceived': 'Последний сигнал {rel}.',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'Задержка P50 {p50}ms · P95 {p95}ms · {count} измерений',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'Совпадение рабочих пространств: {matched}/{total} хуков сопоставлены с панелью wmux',
+  'claudeIntegration.signalHealth.staleBody':
+    'Статус плагина: устарел. Последний хук пришёл {rel} — возможно, плагин перестал срабатывать или Claude Code простаивает.',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'Копировать команду установки',
+  'claudeIntegration.signalHealth.copySuccess': 'Скопировано — вставьте в Claude Code',
+  'claudeIntegration.signalHealth.copyError': 'Не удалось скопировать — буфер обмена заблокирован',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Счётчик использования Anthropic (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'Считывает ваш OAuth-токен Claude Code из локального хранилища и опрашивает Anthropic запросом к Haiku на 1 токен (1-token), чтобы прочитать заголовки лимита запросов. Запрос списывается с вашей собственной квоты (≈ незначительно). Токен никогда не записывается обратно, никогда не логируется и отправляется только на api.anthropic.com.',
+  'claudeIntegration.usage.enableLabel': 'Показывать использование 5h / 7d в строке состояния',
+  'claudeIntegration.usage.refreshButton': 'Обновить сейчас',
+  'claudeIntegration.usage.refreshCooldown': 'Обновление будет доступно через {seconds} с',
+  'claudeIntegration.usage.subscription': 'Тариф: {tier}',
+  'claudeIntegration.usage.lastFetched': 'Последнее обновление: {ago}',
+  'claudeIntegration.usage.justNow': 'только что',
+  'claudeIntegration.usage.minutesAgo': '{n} мин назад',
+  'claudeIntegration.usage.hoursAgo': '{n} ч назад',
+  'claudeIntegration.usage.daysAgo': '{n} дн назад',
+  'claudeIntegration.usage.status.token-missing': 'Вход в Claude Code не выполнен',
+  'claudeIntegration.usage.status.unauthorized':
+    'Срок действия токена истёк — войдите в Claude Code снова',
+  'claudeIntegration.usage.status.http-error': 'Ошибка API Anthropic',
+  'claudeIntegration.usage.status.network-error': 'Ошибка сети',
+  'claudeIntegration.usage.status.read-error': 'Ошибка чтения учётных данных',
 } as const;

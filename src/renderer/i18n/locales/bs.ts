@@ -240,7 +240,54 @@ export const bs = {
   'firstRun.autoUpdateMessage': 'Želite li da WMUX automatski provjerava ažuriranja? Možete to promijeniti kasnije u Postavkama.',
   'firstRun.enable': 'Omogući',
   'firstRun.disable': 'Ne, hvala',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': 'Početno postavljanje',
+  'settings.firstRunSetupDesc':
+    'Ponovo otvori čarobnjak dobrodošlice ili ponovo prikaži pregled tipkovničkih prečica.',
+  'settings.firstRunSetup.lastCompleted': 'Posljednji put završeno: {date}',
+  'settings.firstRunSetup.notCompleted': 'Još nije završeno',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': 'otkriveno',
+  'settings.firstRunSetup.statusNotDetected': 'nije otkriveno',
+  'settings.firstRunSetup.statusRegistered': 'registrirano',
+  'settings.firstRunSetup.statusNotRegistered': 'nije registrirano',
+  'settings.firstRunSetup.openWizard': 'Otvori čarobnjak za postavljanje',
+  'settings.firstRunSetup.showCheatSheet': 'Prikaži pregled tipkovničkih prečica',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude integracija',
+  'claudeIntegration.signalHealth.title': 'Stanje signala dodatka',
+  'claudeIntegration.signalHealth.unknownBody':
+    'Status dodatka: još nije zabilježen. Instaliraj komandom ispod u Claude Code. wmux potvrđuje otkrivanje čim se okine prvi hook.',
+  'claudeIntegration.signalHealth.detectedLastReceived': 'Posljednji signal {rel}.',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'Latencija P50 {p50}ms · P95 {p95}ms · {count} uzoraka',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'Podudaranje radnog prostora: {matched}/{total} hookova razriješeno na wmux panel',
+  'claudeIntegration.signalHealth.staleBody':
+    'Status dodatka: zastario. Posljednji hook stigao {rel} — dodatak je možda prestao okidati ili Claude Code miruje.',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'Kopiraj komandu za instalaciju',
+  'claudeIntegration.signalHealth.copySuccess': 'Kopirano — zalijepi u Claude Code',
+  'claudeIntegration.signalHealth.copyError': 'Kopiranje neuspjelo — međuspremnik zaključan',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Mjerač korištenja Anthropic (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'Čita tvoj Claude Code OAuth token iz lokalnog spremišta i ispituje Anthropic s 1-token Haiku zahtjevom kako bi pročitao zaglavlja ograničenja brzine. Ispitivanje se naplaćuje s tvoje vlastite kvote (≈ zanemarivo). Token se nikada ne upisuje natrag, nikada se ne bilježi, šalje se samo na api.anthropic.com.',
+  'claudeIntegration.usage.enableLabel': 'Prikaži iskorištenost 5h / 7d u statusnoj traci',
+  'claudeIntegration.usage.refreshButton': 'Osvježi sada',
+  'claudeIntegration.usage.refreshCooldown': 'Osvježavanje dostupno za {seconds}s',
+  'claudeIntegration.usage.subscription': 'Plan: {tier}',
+  'claudeIntegration.usage.lastFetched': 'Posljednje dohvaćeno: {ago}',
+  'claudeIntegration.usage.justNow': 'upravo sada',
+  'claudeIntegration.usage.minutesAgo': 'prije {n}m',
+  'claudeIntegration.usage.hoursAgo': 'prije {n}h',
+  'claudeIntegration.usage.daysAgo': 'prije {n}d',
+  'claudeIntegration.usage.status.token-missing': 'Nisi prijavljen u Claude Code',
+  'claudeIntegration.usage.status.unauthorized': 'Token istekao — ponovo se prijavi u Claude Code',
+  'claudeIntegration.usage.status.http-error': 'Greška Anthropic API-ja',
+  'claudeIntegration.usage.status.network-error': 'Mrežna greška',
+  'claudeIntegration.usage.status.read-error': 'Greška čitanja vjerodajnica',
 } as const;

@@ -240,7 +240,55 @@ export const tr = {
   'firstRun.autoUpdateMessage': 'WMUX güncellemeleri otomatik denetlemesin mi? Bunu daha sonra Ayarlar\'dan değiştirebilirsiniz.',
   'firstRun.enable': 'Etkinleştir',
   'firstRun.disable': 'Hayır, teşekkürler',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': 'İlk kurulum',
+  'settings.firstRunSetupDesc':
+    'Karşılama sihirbazını yeniden açın veya klavye kısayolları kartını tekrar gösterin.',
+  'settings.firstRunSetup.lastCompleted': 'Son tamamlanma: {date}',
+  'settings.firstRunSetup.notCompleted': 'henüz tamamlanmadı',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': 'algılandı',
+  'settings.firstRunSetup.statusNotDetected': 'algılanmadı',
+  'settings.firstRunSetup.statusRegistered': 'kayıtlı',
+  'settings.firstRunSetup.statusNotRegistered': 'kayıtlı değil',
+  'settings.firstRunSetup.openWizard': 'Kurulum sihirbazını aç',
+  'settings.firstRunSetup.showCheatSheet': 'Klavye kısayolları kartını göster',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude entegrasyonu',
+  'claudeIntegration.signalHealth.title': 'Eklenti sinyal durumu',
+  'claudeIntegration.signalHealth.unknownBody':
+    'Eklenti durumu: henüz gözlemlenmedi. Claude Code içinde aşağıdaki komutla yükleyin. İlk kanca tetiklendiğinde wmux algılamayı onaylar.',
+  'claudeIntegration.signalHealth.detectedLastReceived': 'Son sinyal {rel}.',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'Gecikme P50 {p50}ms · P95 {p95}ms · {count} örnek',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'Çalışma alanı eşleşmesi: {matched}/{total} kanca bir wmux bölmesine çözümlendi',
+  'claudeIntegration.signalHealth.staleBody':
+    'Eklenti durumu: eski. Son kanca {rel} geldi — eklenti tetiklemeyi durdurmuş olabilir ya da Claude Code boşta.',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'Yükleme komutunu kopyala',
+  'claudeIntegration.signalHealth.copySuccess': 'Kopyalandı — Claude Code içine yapıştırın',
+  'claudeIntegration.signalHealth.copyError': 'Kopyalama başarısız — pano kilitli',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Anthropic kullanım ölçer (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'Claude Code OAuth jetonunuzu yerel depolamadan okur ve hız sınırı başlıklarını okumak için Anthropic\'i 1-token Haiku isteğiyle yoklar. Yoklama kendi kotanıza faturalanır (≈ ihmal edilebilir). Jeton asla geri yazılmaz, asla günlüğe kaydedilmez, yalnızca api.anthropic.com adresine gönderilir.',
+  'claudeIntegration.usage.enableLabel': 'Durum çubuğunda 5h / 7d kullanımını göster',
+  'claudeIntegration.usage.refreshButton': 'Şimdi yenile',
+  'claudeIntegration.usage.refreshCooldown': 'Yenileme {seconds}sn içinde kullanılabilir',
+  'claudeIntegration.usage.subscription': 'Plan: {tier}',
+  'claudeIntegration.usage.lastFetched': 'Son alınma: {ago}',
+  'claudeIntegration.usage.justNow': 'az önce',
+  'claudeIntegration.usage.minutesAgo': '{n}dk önce',
+  'claudeIntegration.usage.hoursAgo': '{n}sa önce',
+  'claudeIntegration.usage.daysAgo': '{n}g önce',
+  'claudeIntegration.usage.status.token-missing': 'Claude Code\'da oturum açılmamış',
+  'claudeIntegration.usage.status.unauthorized':
+    'Jeton süresi doldu — Claude Code\'da tekrar oturum açın',
+  'claudeIntegration.usage.status.http-error': 'Anthropic API hatası',
+  'claudeIntegration.usage.status.network-error': 'Ağ hatası',
+  'claudeIntegration.usage.status.read-error': 'Kimlik bilgisi okuma hatası',
 } as const;

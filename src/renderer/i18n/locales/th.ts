@@ -240,7 +240,53 @@ export const th = {
   'firstRun.autoUpdateMessage': 'ต้องการให้ WMUX ตรวจสอบการอัปเดตโดยอัตโนมัติหรือไม่? คุณสามารถเปลี่ยนแปลงได้ในภายหลังในการตั้งค่า',
   'firstRun.enable': 'เปิดใช้งาน',
   'firstRun.disable': 'ไม่ ขอบคุณ',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': 'การตั้งค่าครั้งแรก',
+  'settings.firstRunSetupDesc': 'เปิดตัวช่วยต้อนรับอีกครั้ง หรือแสดงสรุปแป้นพิมพ์ลัดอีกครั้ง',
+  'settings.firstRunSetup.lastCompleted': 'ทำเสร็จครั้งล่าสุด: {date}',
+  'settings.firstRunSetup.notCompleted': 'ยังทำไม่เสร็จ',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': 'ตรวจพบแล้ว',
+  'settings.firstRunSetup.statusNotDetected': 'ไม่พบ',
+  'settings.firstRunSetup.statusRegistered': 'ลงทะเบียนแล้ว',
+  'settings.firstRunSetup.statusNotRegistered': 'ยังไม่ลงทะเบียน',
+  'settings.firstRunSetup.openWizard': 'เปิดตัวช่วยตั้งค่า',
+  'settings.firstRunSetup.showCheatSheet': 'แสดงสรุปแป้นพิมพ์ลัด',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'การเชื่อมต่อ Claude',
+  'claudeIntegration.signalHealth.title': 'สถานะสัญญาณปลั๊กอิน',
+  'claudeIntegration.signalHealth.unknownBody':
+    'สถานะปลั๊กอิน: ยังไม่พบสัญญาณ ติดตั้งโดยใช้คำสั่งด้านล่างนี้ใน Claude Code แล้ว wmux จะยืนยันการตรวจพบเมื่อ hook แรกทำงาน',
+  'claudeIntegration.signalHealth.detectedLastReceived': 'สัญญาณล่าสุดเมื่อ {rel}',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'ความหน่วง P50 {p50}ms · P95 {p95}ms · {count} ตัวอย่าง',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'การจับคู่พื้นที่ทำงาน: {matched}/{total} hook เชื่อมโยงกับพาเนลของ wmux',
+  'claudeIntegration.signalHealth.staleBody':
+    'สถานะปลั๊กอิน: ค้าง hook ล่าสุดมาถึงเมื่อ {rel} — ปลั๊กอินอาจหยุดส่งสัญญาณ หรือ Claude Code กำลังว่างอยู่',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'คัดลอกคำสั่งติดตั้ง',
+  'claudeIntegration.signalHealth.copySuccess': 'คัดลอกแล้ว — วางลงใน Claude Code',
+  'claudeIntegration.signalHealth.copyError': 'คัดลอกไม่สำเร็จ — คลิปบอร์ดถูกล็อก',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'มาตรวัดการใช้งาน Anthropic (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'อ่านโทเค็น OAuth ของ Claude Code จากที่จัดเก็บภายในเครื่อง แล้วส่งคำขอ Haiku แบบ 1-token ไปยัง Anthropic เพื่ออ่านส่วนหัวขีดจำกัดอัตรา การส่งคำขอนี้จะคิดค่าใช้จ่ายจากโควตาของคุณเอง (≈ น้อยมาก) โทเค็นจะไม่ถูกเขียนกลับ ไม่ถูกบันทึก และส่งไปยัง api.anthropic.com เท่านั้น',
+  'claudeIntegration.usage.enableLabel': 'แสดงการใช้งาน 5h / 7d ในแถบสถานะ',
+  'claudeIntegration.usage.refreshButton': 'รีเฟรชเดี๋ยวนี้',
+  'claudeIntegration.usage.refreshCooldown': 'รีเฟรชได้ในอีก {seconds} วินาที',
+  'claudeIntegration.usage.subscription': 'แผน: {tier}',
+  'claudeIntegration.usage.lastFetched': 'ดึงข้อมูลล่าสุด: {ago}',
+  'claudeIntegration.usage.justNow': 'เมื่อสักครู่',
+  'claudeIntegration.usage.minutesAgo': '{n} นาทีที่แล้ว',
+  'claudeIntegration.usage.hoursAgo': '{n} ชั่วโมงที่แล้ว',
+  'claudeIntegration.usage.daysAgo': '{n} วันที่แล้ว',
+  'claudeIntegration.usage.status.token-missing': 'ยังไม่ได้เข้าสู่ระบบ Claude Code',
+  'claudeIntegration.usage.status.unauthorized': 'โทเค็นหมดอายุ — เข้าสู่ระบบ Claude Code อีกครั้ง',
+  'claudeIntegration.usage.status.http-error': 'ข้อผิดพลาดของ Anthropic API',
+  'claudeIntegration.usage.status.network-error': 'ข้อผิดพลาดของเครือข่าย',
+  'claudeIntegration.usage.status.read-error': 'อ่านข้อมูลรับรองผิดพลาด',
 } as const;

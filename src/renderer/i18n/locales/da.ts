@@ -240,7 +240,53 @@ export const da = {
   'firstRun.autoUpdateMessage': 'Vil du have WMUX til at tjekke for opdateringer automatisk? Du kan ændre dette senere i Indstillinger.',
   'firstRun.enable': 'Aktiver',
   'firstRun.disable': 'Nej tak',
-  // Settings tabs (#145 follow-up — labels missing from non-en/ko locales)
+
+  // Settings — First-run setup section (D7-C4)
   'settings.firstRunSetup': 'Førstegangsopsætning',
+  'settings.firstRunSetupDesc': 'Genåbn velkomstguiden, eller vis tastaturgenvejsoversigten igen.',
+  'settings.firstRunSetup.lastCompleted': 'Sidst fuldført: {date}',
+  'settings.firstRunSetup.notCompleted': 'Ikke fuldført endnu',
+  'settings.firstRunSetup.claudeStatus': 'Claude Code: {status}',
+  'settings.firstRunSetup.mcpStatus': 'wmux MCP: {status}',
+  'settings.firstRunSetup.statusDetected': 'fundet',
+  'settings.firstRunSetup.statusNotDetected': 'ikke fundet',
+  'settings.firstRunSetup.statusRegistered': 'registreret',
+  'settings.firstRunSetup.statusNotRegistered': 'ikke registreret',
+  'settings.firstRunSetup.openWizard': 'Åbn opsætningsguide',
+  'settings.firstRunSetup.showCheatSheet': 'Vis tastaturgenvejsoversigt',
+
+  // Settings — Claude integration (Phase 1.5 signal-health card)
   'claudeIntegration.tab': 'Claude-integration',
+  'claudeIntegration.signalHealth.title': 'Plugin-signaltilstand',
+  'claudeIntegration.signalHealth.unknownBody':
+    'Plugin-status: endnu ikke observeret. Installer med kommandoen nedenfor i Claude Code. wmux bekræfter registrering, når den første hook udløses.',
+  'claudeIntegration.signalHealth.detectedLastReceived': 'Seneste signal {rel}.',
+  'claudeIntegration.signalHealth.detectedLatencyFormat':
+    'Latenstid P50 {p50}ms · P95 {p95}ms · {count} målinger',
+  'claudeIntegration.signalHealth.workspaceMatchFormat':
+    'Arbejdsområde-match: {matched}/{total} hooks knyttet til et wmux-panel',
+  'claudeIntegration.signalHealth.staleBody':
+    'Plugin-status: forældet. Seneste hook ankom {rel} — pluginnet er måske holdt op med at udløse, eller Claude Code er inaktiv.',
+  'claudeIntegration.signalHealth.copyInstallCommand': 'Kopiér installationskommando',
+  'claudeIntegration.signalHealth.copySuccess': 'Kopieret — indsæt i Claude Code',
+  'claudeIntegration.signalHealth.copyError': 'Kopiering mislykkedes — udklipsholderen er låst',
+
+  // Phase 2 — Anthropic 5h/7d usage meter
+  'claudeIntegration.usage.title': 'Anthropic-forbrugsmåler (5h / 7d)',
+  'claudeIntegration.usage.description':
+    'Læser dit Claude Code OAuth-token fra lokal lagring og prober Anthropic med en 1-token Haiku-forespørgsel for at læse rate-limit-headerne. Proben afregnes på din egen kvote (≈ ubetydeligt). Tokenet skrives aldrig tilbage, logges aldrig og sendes kun til api.anthropic.com.',
+  'claudeIntegration.usage.enableLabel': 'Vis 5h / 7d-udnyttelse i statuslinjen',
+  'claudeIntegration.usage.refreshButton': 'Opdater nu',
+  'claudeIntegration.usage.refreshCooldown': 'Opdatering tilgængelig om {seconds}s',
+  'claudeIntegration.usage.subscription': 'Plan: {tier}',
+  'claudeIntegration.usage.lastFetched': 'Sidst hentet: {ago}',
+  'claudeIntegration.usage.justNow': 'lige nu',
+  'claudeIntegration.usage.minutesAgo': 'for {n}m siden',
+  'claudeIntegration.usage.hoursAgo': 'for {n}h siden',
+  'claudeIntegration.usage.daysAgo': 'for {n}d siden',
+  'claudeIntegration.usage.status.token-missing': 'Ikke logget ind i Claude Code',
+  'claudeIntegration.usage.status.unauthorized': 'Token udløbet — log ind i Claude Code igen',
+  'claudeIntegration.usage.status.http-error': 'Anthropic API-fejl',
+  'claudeIntegration.usage.status.network-error': 'Netværksfejl',
+  'claudeIntegration.usage.status.read-error': 'Fejl ved læsning af loginoplysninger',
 } as const;
