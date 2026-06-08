@@ -104,7 +104,7 @@ describe('FirstRunStatusView (renderToStaticMarkup)', () => {
     expect(html).toContain('2026-04-29');
   });
 
-  it('shows "✓" + "detected" + "registered" when both flags true', () => {
+  it('shows ok StatusBadge + "detected" + "registered" when both flags true', () => {
     const html = renderToStaticMarkup(
       createElement(FirstRunStatusView, {
         status: checkResult({ claudeFound: true, mcpRegistered: true }),
@@ -116,12 +116,14 @@ describe('FirstRunStatusView (renderToStaticMarkup)', () => {
     expect(html).toContain('first-run-setup-mcp-row');
     expect(html).toContain('detected');
     expect(html).toContain('registered');
-    // ✓ glyph for both rows
-    const checkmarks = html.match(/✓/g) ?? [];
-    expect(checkmarks.length).toBeGreaterThanOrEqual(2);
+    // Two StatusBadge icons, one per row, labelled with the positive state.
+    expect(html).toContain('aria-label="detected"');
+    expect(html).toContain('aria-label="registered"');
+    const badges = html.match(/role="img"/g) ?? [];
+    expect(badges.length).toBeGreaterThanOrEqual(2);
   });
 
-  it('shows "✗" + "not detected" / "not registered" when both flags false', () => {
+  it('shows fail StatusBadge + "not detected" / "not registered" when both flags false', () => {
     const html = renderToStaticMarkup(
       createElement(FirstRunStatusView, {
         status: checkResult({ claudeFound: false, mcpRegistered: false }),
@@ -131,8 +133,10 @@ describe('FirstRunStatusView (renderToStaticMarkup)', () => {
     );
     expect(html).toContain('not detected');
     expect(html).toContain('not registered');
-    const crosses = html.match(/✗/g) ?? [];
-    expect(crosses.length).toBeGreaterThanOrEqual(2);
+    expect(html).toContain('aria-label="not detected"');
+    expect(html).toContain('aria-label="not registered"');
+    const badges = html.match(/role="img"/g) ?? [];
+    expect(badges.length).toBeGreaterThanOrEqual(2);
   });
 
   it('renders both action buttons with stable test ids', () => {

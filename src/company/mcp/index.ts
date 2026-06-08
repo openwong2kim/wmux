@@ -23,6 +23,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { sendRpc } from '../../mcp/wmux-client';
 import type { RpcMethod } from '../../shared/rpc';
+import { classifyWorkspaceListResult, type WorkspaceLiveness } from '../../mcp/workspaceIdentity';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -76,6 +77,22 @@ function invalidateWorkspaceId(): void {
   workspaceResolved = false;
 }
 
+/**
+ * Classify whether `wsId` exists right now (kept in lockstep with src/mcp's
+ * isLiveWorkspace). Gates the env-hint fallback so a re-minted ghost id can't
+ * leak through after a daemon respawn / session restore. 'absent' = confirmed
+ * gone (drop the hint); 'unknown' = workspace.list unavailable (keep the hint
+ * rather than turning a transient condition into a hard failure).
+ */
+async function isLiveWorkspace(wsId: string): Promise<WorkspaceLiveness> {
+  try {
+    const result = await sendRpc('workspace.list' as RpcMethod, {});
+    return classifyWorkspaceListResult(result, wsId);
+  } catch {
+    return 'unknown';
+  }
+}
+
 async function resolveWorkspaceId(opts?: { force?: boolean }): Promise<string> {
   if (workspaceResolved && MY_WORKSPACE_ID && !opts?.force) return MY_WORKSPACE_ID;
 
@@ -104,7 +121,21 @@ async function resolveWorkspaceId(opts?: { force?: boolean }): Promise<string> {
     }
   } catch { /* resolve failed, fall through to env hint */ }
 
-  if (ENV_WORKSPACE_HINT) return ENV_WORKSPACE_HINT;
+  // Drop the frozen env hint only on positive proof it names a dead workspace
+  // ('absent'); keep it on 'unknown' (workspace.list transiently unavailable).
+  // Mirrors src/mcp/index.ts so both MCP surfaces reject ghost ids identically.
+  if (ENV_WORKSPACE_HINT) {
+    if ((await isLiveWorkspace(ENV_WORKSPACE_HINT)) !== 'absent') return ENV_WORKSPACE_HINT;
+  }
+  // Last-resort cached identity. invalidateWorkspaceId clears workspaceResolved
+  // but not MY_WORKSPACE_ID, so gate the cached fallback on liveness too: drop a
+  // confirmed-dead ('absent') id (and clear the cache so the next call
+  // re-resolves clean), keep it on 'unknown' (workspace.list transiently down).
+  // Mirrors src/mcp/index.ts so both surfaces close the ghost loop identically.
+  if (MY_WORKSPACE_ID && (await isLiveWorkspace(MY_WORKSPACE_ID)) === 'absent') {
+    MY_WORKSPACE_ID = '';
+    workspaceResolved = false;
+  }
   return MY_WORKSPACE_ID;
 }
 

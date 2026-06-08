@@ -22,38 +22,64 @@ export function registerA2aRpc(router: RpcRouter, getWindow: GetWindow, claudeWo
     const dir = getPidMapDir();
     const mappings: Record<string, string> = {};
     try {
-      if (fs.existsSync(dir)) {
-        for (const file of fs.readdirSync(dir)) {
-          let value: string;
-          try {
-            value = fs.readFileSync(`${dir}/${file}`, 'utf8').trim();
-          } catch {
-            continue; // unreadable / racing-unlink entry — skip
-          }
-          if (!value) continue;
+      if (!fs.existsSync(dir)) return { mappings };
 
-          if (value.startsWith('ws-')) {
-            // Legacy entry written before the live-ownership change
-            // (PID → workspaceId). Pass it through best-effort; it is
-            // overwritten with a ptyId on the next session create/reconnect.
-            mappings[file] = value;
-            continue;
-          }
+      for (const file of fs.readdirSync(dir)) {
+        let value: string;
+        try {
+          value = fs.readFileSync(`${dir}/${file}`, 'utf8').trim();
+        } catch {
+          continue; // unreadable / racing-unlink entry — skip
+        }
+        if (!value) continue;
 
-          // Current format: PID → ptyId. Resolve the workspace that owns this
-          // pty RIGHT NOW. PID → ptyId is immutable for the process lifetime;
-          // only the pty → workspace edge changes, and that is read live.
-          try {
-            const owner = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId: value });
-            const wsId =
-              owner && typeof owner === 'object' && 'workspaceId' in owner
-                ? (owner as Record<string, unknown>)['workspaceId']
-                : null;
-            if (typeof wsId === 'string' && wsId) mappings[file] = wsId;
-          } catch {
-            // Renderer unavailable (early boot / reload) — skip this entry;
-            // the caller retries resolution on its next identity-gated call.
-          }
+        // Drop legacy "PID → workspaceId" entries unconditionally. They have no
+        // ptyId anchor so they cannot be live-resolved; the old code passed them
+        // through verbatim, handing back a frozen id that goes stale the moment
+        // the workspace is re-minted (daemon respawn / session restore). Worse,
+        // the OS recycles PID numbers onto unrelated live processes (Notepad /
+        // Discord / RuntimeBroker observed in the wild), so a legacy entry on a
+        // recycled-but-live PID resurfaces as a ghost workspace (browser_open →
+        // "no active workspace"; terminal ops → "not owned by workspace ws-…").
+        // The current writer only ever stores ptyIds, so any "ws-" value is pure
+        // legacy debris — purge it. This is the single largest ghost source and
+        // is safe to delete on this read path (no liveness probe, no race).
+        //
+        // We deliberately do NOT "keep it if its workspace is still live"
+        // (considered, then rejected): workspace.list proves only that the
+        // workspace exists, not that this PID file still belongs to that pane.
+        // Legacy files are PID-keyed with ws- content, so removePidMapByPtyId
+        // (keyed by ptyId content) can never prune them — a kept entry lives
+        // forever, and once the OS recycles its PID onto another MCP server's
+        // ancestor it mis-routes commands to a live-but-WRONG workspace (worse
+        // than the dead-id ghost: silent, not a hard failure). Unverifiable +
+        // unprunable ⇒ unconditional purge is the only safe policy. A genuinely
+        // live pane re-anchors with a current-format ptyId entry on its next
+        // reconnect, so nothing is permanently lost.
+        if (value.startsWith('ws-')) {
+          try { fs.unlinkSync(`${dir}/${file}`); } catch { /* best-effort */ }
+          continue;
+        }
+
+        // Current format: PID → ptyId. Resolve the workspace that owns this pty
+        // RIGHT NOW. PID → ptyId is immutable for the process lifetime; only the
+        // pty → workspace edge changes, and that is read live. A dead or
+        // recycled-but-live PID whose stored ptyId no longer exists resolves to
+        // null here and is correctly excluded — so a stale current-format file
+        // can never produce a ghost and is harmless if left on disk. Accretion
+        // is bounded instead at the write boundary (see pty.handler.ts
+        // onDaemonSessionDied cleanup); pruning here would add a destructive
+        // tasklist probe to the hot path with no correctness benefit.
+        try {
+          const owner = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId: value });
+          const wsId =
+            owner && typeof owner === 'object' && 'workspaceId' in owner
+              ? (owner as Record<string, unknown>)['workspaceId']
+              : null;
+          if (typeof wsId === 'string' && wsId) mappings[file] = wsId;
+        } catch {
+          // Renderer unavailable (early boot / reload) — skip this entry;
+          // the caller retries resolution on its next identity-gated call.
         }
       }
     } catch { /* best-effort: identity resolution is non-critical */ }

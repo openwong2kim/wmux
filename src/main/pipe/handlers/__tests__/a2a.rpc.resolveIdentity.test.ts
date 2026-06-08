@@ -44,6 +44,10 @@ async function resolveIdentity(router: RpcRouter): Promise<Record<string, string
   return (res as { result: { mappings: Record<string, string> } }).result.mappings;
 }
 
+function listFiles(): string[] {
+  return fs.existsSync(dirRef.current) ? fs.readdirSync(dirRef.current).sort() : [];
+}
+
 describe('a2a.resolve.identity — live ownership resolution', () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -81,24 +85,30 @@ describe('a2a.resolve.identity — live ownership resolution', () => {
     );
   });
 
-  it('omits a ptyId whose pane no longer exists (owner === null)', async () => {
-    // A re-minted / closed pane must not produce a phantom mapping — better to
-    // return nothing and let the caller fall back than to assert a dead id.
-    fs.writeFileSync(path.join(dirRef.current, '2222'), 'daemon-dead');
+  it('omits a ptyId whose pane no longer exists (owner === null) without deleting the file', async () => {
+    // A dead/recycled current-format entry resolves to null and is excluded from
+    // the map — so it can never produce a ghost. It is left on disk (harmless);
+    // accretion is bounded at the write boundary, not on this read hot-path.
+    fs.writeFileSync(path.join(dirRef.current, '2222'), 'daemon-gone');
     sendToRendererMock.mockResolvedValue({ workspaceId: null });
 
     const mappings = await resolveIdentity(setupRouter());
 
     expect(mappings).toEqual({});
+    expect(listFiles()).toEqual(['2222']); // not pruned on the read path
   });
 
-  it('passes through legacy PID→workspaceId entries (ws- prefix) without a renderer call', async () => {
+  it('DROPS legacy PID→workspaceId entries (ws- prefix) and deletes the file', async () => {
+    // Legacy entries have no ptyId anchor, cannot be live-resolved, and on a
+    // recycled PID surface as a ghost workspace. They must be purged, not passed
+    // through (the old passthrough behavior was the root cause of the ghost bug).
     fs.writeFileSync(path.join(dirRef.current, '3333'), 'ws-legacy-frozen');
 
     const mappings = await resolveIdentity(setupRouter());
 
-    expect(mappings).toEqual({ '3333': 'ws-legacy-frozen' });
+    expect(mappings).toEqual({});
     expect(sendToRendererMock).not.toHaveBeenCalled();
+    expect(listFiles()).toEqual([]); // file purged
   });
 
   it('skips an entry when the renderer lookup throws (early boot / reload)', async () => {
@@ -108,9 +118,11 @@ describe('a2a.resolve.identity — live ownership resolution', () => {
     const mappings = await resolveIdentity(setupRouter());
 
     expect(mappings).toEqual({});
+    // Not pruned: a renderer error is not proof the entry is stale.
+    expect(listFiles()).toEqual(['4444']);
   });
 
-  it('resolves a mix of live, legacy, and dead entries in one pass', async () => {
+  it('resolves a mix of live, legacy, and dead-owner entries in one pass', async () => {
     fs.writeFileSync(path.join(dirRef.current, '10'), 'daemon-live');
     fs.writeFileSync(path.join(dirRef.current, '20'), 'ws-legacy');
     fs.writeFileSync(path.join(dirRef.current, '30'), 'daemon-dead');
@@ -123,7 +135,21 @@ describe('a2a.resolve.identity — live ownership resolution', () => {
 
     const mappings = await resolveIdentity(setupRouter());
 
-    expect(mappings).toEqual({ '10': 'ws-A', '20': 'ws-legacy' });
+    // Legacy '20' is dropped; '30' resolves to null (dead owner) and is omitted.
+    expect(mappings).toEqual({ '10': 'ws-A' });
+    expect(listFiles()).toEqual(['10', '30']); // legacy file purged, others kept
+  });
+
+  it('purges multiple legacy files in one pass without any renderer call', async () => {
+    fs.writeFileSync(path.join(dirRef.current, '40'), 'ws-old-a');
+    fs.writeFileSync(path.join(dirRef.current, '50'), 'ws-old-b');
+    fs.writeFileSync(path.join(dirRef.current, '60'), 'ws-old-c');
+
+    const mappings = await resolveIdentity(setupRouter());
+
+    expect(mappings).toEqual({});
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+    expect(listFiles()).toEqual([]);
   });
 
   it('returns an empty map when no pid-map dir exists', async () => {

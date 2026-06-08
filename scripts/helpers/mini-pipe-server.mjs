@@ -15,7 +15,15 @@
  *     workspace lookup (real handler: input.findOwnerWorkspace on the
  *     renderer) is simulated here via WMUX_MINISERVER_OWNERS, a JSON
  *     { <ptyId>: <workspaceId> } map. Legacy "ws-"-prefixed entries are
- *     passed through; ptyIds with no live owner are omitted.
+ *     DROPPED (file deleted) — not passed through — mirroring the fix that
+ *     stopped legacy debris from resurfacing as ghost workspaces. ptyIds with
+ *     no live owner are omitted but their files are left on disk (the read path
+ *     is non-destructive for current-format entries).
+ *
+ *   workspace.list
+ *     Returns the simulated live workspace array from WMUX_MINISERVER_WORKSPACES
+ *     (JSON array of { id }). Used by the probe to gate the env hint: a hint
+ *     absent from this list is a confirmed ghost and must be dropped.
  *
  *   mcp.claimWorkspace
  *     Returns an explicit "no window" error to mirror what the real
@@ -24,9 +32,11 @@
  *     §6.1 does not silently fall through to substrate state.
  *
  * Inputs (env):
- *   WMUX_MINISERVER_PIPE   pipe / socket name to listen on
- *   WMUX_MINISERVER_TOKEN  expected auth token
- *   USERPROFILE / HOME     override for pid-map directory location
+ *   WMUX_MINISERVER_PIPE        pipe / socket name to listen on
+ *   WMUX_MINISERVER_TOKEN       expected auth token
+ *   WMUX_MINISERVER_OWNERS      JSON { ptyId: workspaceId } live-owner table
+ *   WMUX_MINISERVER_WORKSPACES  JSON [{ id }] live workspace list
+ *   USERPROFILE / HOME          override for pid-map directory location
  *
  * Stdout: emits "READY" on a single line once listening, so the test
  * runner can synchronize without polling a pipe file.
@@ -60,10 +70,31 @@ function getSimulatedOwners() {
   }
 }
 
+function getSimulatedWorkspaces() {
+  // Simulates the renderer's workspace.list response (live workspace array).
+  try {
+    const parsed = JSON.parse(process.env.WMUX_MINISERVER_WORKSPACES || '[]');
+    return Array.isArray(parsed) ? parsed : [];
+  } catch {
+    return [];
+  }
+}
+
+// First-call-only mode: when WMUX_MINISERVER_RESOLVE_ONCE is set, the PID map
+// resolves on the FIRST a2a.resolve.identity call and returns empty afterward.
+// Models a workspace that resolved successfully once, then had its pid-map entry
+// vanish (pane closed / re-minted) — used to exercise the stale-cache fallback
+// gate (resolveWorkspaceId must not return a confirmed-dead cached id).
+let resolveCallCount = 0;
+
 function handleA2aResolveIdentity() {
   const dir = getPidMapDir();
   const owners = getSimulatedOwners();
   const mappings = {};
+  resolveCallCount += 1;
+  if (process.env.WMUX_MINISERVER_RESOLVE_ONCE && resolveCallCount > 1) {
+    return { mappings }; // empty on subsequent calls
+  }
   try {
     if (fs.existsSync(dir)) {
       for (const file of fs.readdirSync(dir)) {
@@ -75,17 +106,24 @@ function handleA2aResolveIdentity() {
         }
         if (!value) continue;
         if (value.startsWith('ws-')) {
-          // Legacy PID → workspaceId entry: pass through.
-          mappings[file] = value;
+          // Legacy PID → workspaceId entry: DROP it (delete the file), mirroring
+          // src/main/pipe/handlers/a2a.rpc.ts. Passing it through is what let a
+          // re-minted/recycled legacy id resurface as a ghost workspace.
+          try { fs.unlinkSync(path.join(dir, file)); } catch { /* best-effort */ }
           continue;
         }
-        // Current format: PID → ptyId. Resolve the live owning workspace.
+        // Current format: PID → ptyId. Resolve the live owning workspace; a
+        // dead ptyId (no owner) is omitted but its file is left on disk.
         const wsId = owners[value];
         if (typeof wsId === 'string' && wsId) mappings[file] = wsId;
       }
     }
   } catch { /* best-effort */ }
   return { mappings };
+}
+
+function handleWorkspaceList() {
+  return getSimulatedWorkspaces();
 }
 
 function handleMcpClaimWorkspace() {
@@ -97,6 +135,7 @@ function handleMcpClaimWorkspace() {
 function dispatch(method, params) {
   switch (method) {
     case 'a2a.resolve.identity': return handleA2aResolveIdentity();
+    case 'workspace.list':       return handleWorkspaceList();
     case 'mcp.claimWorkspace':   return handleMcpClaimWorkspace();
     default: throw new Error(`Unknown method: ${method}`);
   }

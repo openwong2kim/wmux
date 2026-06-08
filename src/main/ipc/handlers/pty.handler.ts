@@ -5,7 +5,8 @@ import { StringDecoder } from 'node:string_decoder';
 import { PTYManager } from '../../pty/PTYManager';
 import { PTYBridge } from '../../pty/PTYBridge';
 import { DaemonClient } from '../../DaemonClient';
-import { IPC, getPidMapDir, ENV_KEYS } from '../../../shared/constants';
+import { IPC, ENV_KEYS } from '../../../shared/constants';
+import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';
 import { sanitizePtyText } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
@@ -104,24 +105,6 @@ function validateCwd(cwd: string | undefined): string | undefined {
   const stat = fs.statSync(resolved);
   if (!stat.isDirectory()) return undefined;
   return resolved;
-}
-
-/**
- * Write a PID → ptyId mapping for MCP workspace-identity resolution.
- *
- * We deliberately store the ptyId, NOT the workspaceId: a workspace id can be
- * re-minted (daemon respawn / session restore) while the shell process lives
- * on, so a frozen workspace id goes stale. The ptyId is immutable for the
- * process lifetime; `a2a.resolve.identity` maps ptyId → the CURRENT owning
- * workspace at lookup time. (Claude Code doesn't propagate env vars to MCP
- * child processes, so this on-disk map is the resolution anchor.)
- */
-function writePidMap(pid: string | number, ptyId: string): void {
-  try {
-    const dir = getPidMapDir();
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    fs.writeFileSync(path.join(dir, String(pid)), ptyId, 'utf8');
-  } catch { /* best-effort */ }
 }
 
 export function registerPTYHandlers(
@@ -517,6 +500,11 @@ export function registerPTYHandlers(
       // Drop the data forwarding listener for this session so a future
       // create or reconnect doesn't pile new listeners on top of dead ones.
       clearSessionDataListener(id);
+      // Prune this session's pid-map anchor. destroySession emits
+      // session:destroyed (not session:died), so onDaemonSessionDied never
+      // fires for an explicit close — without this, every pane/workspace
+      // close leaks its anchor for the OS to recycle into a ghost.
+      removePidMapByPtyId(id);
     }));
   } else {
     ipcMain.handle(IPC.PTY_DISPOSE, wrapHandler(IPC.PTY_DISPOSE, (_event: Electron.IpcMainInvokeEvent, id: string) => {
@@ -642,6 +630,9 @@ export function registerPTYHandlers(
         win.webContents.send(IPC.PTY_EXIT, payload.sessionId, payload.exitCode ?? -1);
       }
       daemonClient.disconnectSessionPipe(payload.sessionId).catch(() => {});
+      // Prune this session's pid-map anchor now that the shell is gone, so the
+      // map doesn't accrete dead entries the OS can recycle into ghosts.
+      removePidMapByPtyId(payload.sessionId);
     };
     daemonClient.on('session:died', onDaemonSessionDied);
   }

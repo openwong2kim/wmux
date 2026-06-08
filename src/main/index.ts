@@ -49,6 +49,7 @@ import { DaemonRespawnController } from './daemon/DaemonRespawnController';
 import { createTray, destroyTray, updateTraySessionCount } from './tray';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
+import { isSquirrelInstallerEvent } from './squirrel';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
@@ -80,10 +81,19 @@ if (process.env.WMUX_DISABLE_CDP !== 'true') {
 // IMPORTANT: Set a flag so the rest of the app initialization is skipped
 // during Squirrel events. Without this, PTYManager/PipeServer/etc.
 // initialize and the before-quit handler tries cleanup — causing errors.
+//
+// Only the four INSTALLER lifecycle events (install/updated/uninstall/obsolete)
+// are handled-and-exited here. '--squirrel-firstrun' is NOT an installer hook —
+// Squirrel passes it on the first normal launch, so it must fall through to
+// appInit() where the single-instance lock dedupes it against the clean instance
+// auto-launched from --squirrel-install. (A bare startsWith('--squirrel-') guard
+// used to catch firstrun, set the flag, match no handler, never quit, and skip
+// appInit() — leaving an invisible zombie that spawned its own gpu/network procs.
+// See isSquirrelInstallerEvent + src/main/squirrel.ts.)
 let isSquirrelEvent = false;
 if (process.platform === 'win32') {
   const squirrelCmd = process.argv[1];
-  if (squirrelCmd?.startsWith('--squirrel-')) {
+  if (isSquirrelInstallerEvent(squirrelCmd)) {
     isSquirrelEvent = true;
     const path = require('path');
     const { spawn } = require('child_process');

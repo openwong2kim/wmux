@@ -5,6 +5,7 @@ import { z } from 'zod';
 import { clearClientIdentity, sendRpc, setClientIdentity } from './wmux-client';
 import type { RpcMethod } from '../shared/rpc';
 import { resolveDefaultPtyId as resolveDefaultPtyIdImpl } from './paneResolver';
+import { classifyWorkspaceListResult, type WorkspaceLiveness } from './workspaceIdentity';
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { registerNavigationTools } from './playwright/tools/navigation';
 import { registerInteractionTools } from './playwright/tools/interaction';
@@ -127,12 +128,59 @@ async function resolveWorkspaceId(opts?: { force?: boolean; verifiedOnly?: boole
   // Security-sensitive routing (terminal default-pane resolution) asks for a
   // verified identity only; in that mode, never treat a user-supplied env var
   // as proof that the MCP server is running inside a wmux PTY.
-  if (!opts?.verifiedOnly && ENV_WORKSPACE_HINT) return ENV_WORKSPACE_HINT;
-  return opts?.verifiedOnly ? '' : MY_WORKSPACE_ID;
+  //
+  // Even for non-verified callers the hint must still not name a CONFIRMED
+  // ghost. The PID-map walk above already fails closed once legacy "ws-" debris
+  // is pruned (a2a.resolve.identity); the hint is the only remaining path a
+  // re-minted ghost id can leak through. Drop it ONLY on positive proof it is
+  // gone ('absent'); on 'unknown' (workspace.list transiently unavailable
+  // during boot reconcile) keep trusting the hint, since this fallback exists
+  // precisely to carry the call through while the RPC layer is briefly down.
+  // Not cached, so a later call re-checks once the renderer is ready.
+  if (!opts?.verifiedOnly && ENV_WORKSPACE_HINT) {
+    if ((await isLiveWorkspace(ENV_WORKSPACE_HINT)) !== 'absent') return ENV_WORKSPACE_HINT;
+  }
+  if (opts?.verifiedOnly) return '';
+
+  // Last-resort cached identity. invalidateWorkspaceId() clears the
+  // `workspaceResolved` flag but NOT MY_WORKSPACE_ID, so a re-minted/closed
+  // workspace could otherwise leak back here and keep routing to a confirmed-
+  // dead id — the ghost loop this whole change exists to stop. Gate it exactly
+  // like the env hint: drop it only on positive proof it is 'absent' (and clear
+  // the cache so the next call re-resolves clean); keep it on 'unknown'
+  // (workspace.list transiently down) to carry the call through a boot blip.
+  if (MY_WORKSPACE_ID && (await isLiveWorkspace(MY_WORKSPACE_ID)) === 'absent') {
+    MY_WORKSPACE_ID = '';
+    workspaceResolved = false;
+  }
+  return MY_WORKSPACE_ID;
 }
 
 function resolveVerifiedWorkspaceId(): Promise<string> {
   return resolveWorkspaceId({ force: true, verifiedOnly: true });
+}
+
+/**
+ * Classify whether `wsId` names a workspace that exists RIGHT NOW. Used to gate
+ * the env-hint fallback: WMUX_WORKSPACE_ID is frozen at PTY-create time, so
+ * after a daemon respawn / session restore the workspace id is re-minted and
+ * the hint becomes a ghost (absent from workspace.list). Routing into a ghost
+ * is what made browser_open fail with "no active workspace" and terminal ops
+ * throw "not owned by workspace ws-…".
+ *
+ * Returns 'absent' only on positive proof the id is gone; 'unknown' when
+ * workspace.list is unavailable (threw, or a retryable envelope during boot
+ * reconcile) so callers keep trusting the hint instead of hard-failing. The
+ * classification is shared with src/company/mcp via classifyWorkspaceListResult
+ * so both surfaces behave identically.
+ */
+async function isLiveWorkspace(wsId: string): Promise<WorkspaceLiveness> {
+  try {
+    const result = await sendRpc('workspace.list' as RpcMethod, {});
+    return classifyWorkspaceListResult(result, wsId);
+  } catch {
+    return 'unknown';
+  }
 }
 
 async function getParentPid(pid: number): Promise<number | null> {
