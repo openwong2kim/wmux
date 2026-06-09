@@ -27,19 +27,31 @@ function prompt {
     $oscPrefix = ''
     if (-not $script:__wmux_skip_osc) {
         try {
+            # ESC / BEL as [char] codes, NOT the PowerShell `e / `a escapes.
+            # The `e escape (escape char) only exists in PowerShell 6+. Under
+            # Windows PowerShell 5.1 "`e" is the literal two-char string and
+            # collapses to "e", so the prompt would emit visible `e]7;...` text
+            # instead of a real OSC 7 sequence — a garbled prompt plus broken
+            # cwd reporting, and the stray glyphs throw off the cursor baseline
+            # that in-pane TUIs (codex, Claude Code) render against. [char]27 /
+            # [char]7 work on 5.1 and 7+, matching the OSC 133 hook in
+            # daemon/shell-integration.ts.
+            $esc = [char]27
+            $bel = [char]7
+
             # --- OSC 7: Current Working Directory ---
             $cwd = (Get-Location).ProviderPath
             $hostname = $env:COMPUTERNAME
             # file:// URI with forward slashes
             $uri = 'file://' + $hostname + '/' + ($cwd -replace '\\', '/')
-            $oscPrefix += "`e]7;$uri`a"
+            $oscPrefix += "$esc]7;$uri$bel"
 
             # --- OSC 7727: Git branch (best-effort) ---
             $gitExe = Get-Command git -ErrorAction SilentlyContinue
             if ($gitExe) {
                 $branch = & git rev-parse --abbrev-ref HEAD 2>$null
                 if ($LASTEXITCODE -eq 0 -and $branch) {
-                    $oscPrefix += "`e]7727;$branch`a"
+                    $oscPrefix += "$esc]7727;$branch$bel"
                 }
             }
         } catch {
