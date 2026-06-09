@@ -6,6 +6,7 @@ import type { Pane } from '../../../shared/types';
 import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
+import { collapseGlyph } from './sidebarGlyphs';
 
 // Pane 트리에서 모든 leaf의 PTY를 dispose
 function disposeAllPtys(pane: Pane) {
@@ -127,15 +128,16 @@ export default function Sidebar() {
         ))}
       </div>
 
-      {/* Footer */}
-      <div className="flex items-center justify-between px-4 py-2 border-t border-[var(--bg-surface)] text-[10px] font-mono text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+      {/* Footer — when docked right, mirror the row so the collapse arrow sits
+          on the inner edge facing the content area (issue #151). */}
+      <div className={`flex items-center justify-between px-4 py-2 border-t border-[var(--bg-surface)] text-[10px] font-mono text-[var(--text-muted)] ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`} {...tokenAttrs('textMuted', 'text')}>
         <span>{workspaces.length} {t('sidebar.workspaces')}</span>
         <button
           className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors"
           onClick={() => useStore.getState().toggleSidebar()}
           title={t('sidebar.hideTooltip')}
         >
-          ◀
+          {collapseGlyph(sidebarPosition)}
         </button>
       </div>
     </div>

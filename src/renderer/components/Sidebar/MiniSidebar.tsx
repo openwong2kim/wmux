@@ -3,6 +3,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { tokenAttrs } from '../../themes';
+import { expandGlyph } from './sidebarGlyphs';
 
 export default function MiniSidebar() {
   const t = useT();
@@ -174,7 +175,7 @@ export default function MiniSidebar() {
           onClick={toggleSidebar}
           title={t('sidebar.expandTooltip')}
         >
-          ▶
+          {expandGlyph(sidebarPosition)}
         </button>
       </div>
     </div>
