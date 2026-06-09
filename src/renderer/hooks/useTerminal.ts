@@ -190,6 +190,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const { ptyId, isVisible = true, scrollbackFile, onFirstData, onContextMenu } = options;
   const ptyIdRef = useRef(ptyId);
   ptyIdRef.current = ptyId;
+  // Live visibility for long-lived callbacks (the burst repaint below) — the
+  // closure value captured at mount would go stale across workspace switches.
+  const isVisibleRef = useRef(isVisible);
+  isVisibleRef.current = isVisible;
   const onFirstDataRef = useRef(onFirstData);
   onFirstDataRef.current = onFirstData;
   const onContextMenuRef = useRef(onContextMenu);
@@ -389,12 +393,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Issue #166 — defensive repaints for the "garbled glyphs until resize"
     // corruption. Strategy and trigger rationale live in terminal/glyphRepaint.ts.
     // Cost split: focus/visible clear the WebGL texture atlas (repairs atlas
-    // corruption; rare, user-initiated) AND force a full refresh (repairs
-    // dirty-region desync); burst-settle only refreshes — clearing a CJK-heavy
-    // atlas after every agent output burst would be constant re-rasterisation.
+    // corruption; throttled — "focus" fires not just on mouse clicks but on
+    // every keyboard pane-nav / MCP pane.focus via useActivePaneFocus's
+    // term.focus(), so the throttle is load-bearing) AND force a full refresh
+    // (repairs dirty-region desync); burst-settle only refreshes — clearing a
+    // CJK-heavy atlas after every agent output burst would be constant
+    // re-rasterisation.
     const glyphRepaint = createGlyphRepaintScheduler({
       repaint: (reason) => {
         if (terminalRef.current !== terminal) return;
+        // A hidden pane (background workspace/tab, display:none) skips the
+        // burst refresh — nobody can see the staleness, and the `visible`
+        // repaint on re-show repairs it at the moment it matters. Without
+        // this gate, N background agent panes each schedule a full-range
+        // refresh after every output burst.
+        if (reason === 'burst' && !isVisibleRef.current) return;
         if (reason !== 'burst') {
           try {
             webglAddonRef.current?.clearTextureAtlas();

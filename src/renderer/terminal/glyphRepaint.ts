@@ -17,7 +17,10 @@
 // chasing a single trigger we schedule cheap repaints at the moments a user
 // would notice staleness, covering both classes:
 //
-//   - `focus`   — the user clicked into the pane (throttled).
+//   - `focus`   — the pane became the focused pane: mouse click, keyboard
+//                 pane-nav, or the MCP pane.focus bridge (useActivePaneFocus
+//                 calls term.focus() for all of these). Throttled because
+//                 keyboard nav can cycle panes several times per second.
 //   - `visible` — the pane's workspace/tab became visible again. Matters for
 //                 fast view switches where the WebGL context pool kept the
 //                 (possibly stale) context alive instead of rebuilding it.
