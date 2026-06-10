@@ -1,6 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { isMac, isLinux, platformChoice } from '../../shared/platform';
+import { findWindowsPwsh7, windowsPowerShell51Path } from '../../shared/shellResolution';
 
 export interface ShellInfo {
   name: string;
@@ -18,54 +19,19 @@ export class ShellDetector {
     });
   }
 
-  /**
-   * Resolve a Windows shell candidate to a path that node-pty can actually
-   * spawn, or null if it is not launchable (#179).
-   *
-   * A regular file launches as-is. The WindowsApps pwsh.exe installed via the
-   * Microsoft Store, however, is an App Execution Alias — a 0-byte
-   * IO_REPARSE_TAG_APPEXECLINK reparse point. fs.existsSync() does not follow
-   * it (so existsSync-only detection misses it entirely), AND node-pty's
-   * CreateProcess cannot launch the alias stub directly — it silently falls
-   * back to Windows PowerShell 5.1 (dogfood 2026-06-10: declaring the alias as
-   * the shell spawned 5.1, not pwsh 7). So we must hand back the *resolved*
-   * package target (readlink, the same path libuv would resolve), which spawns
-   * pwsh 7 correctly. Requiring the resolved target to exist also filters out a
-   * dead alias stub left by an uninstalled package.
-   */
-  private resolveLaunchableWindowsExe(p: string): string | null {
-    if (!p) return null;
-    try {
-      if (fs.existsSync(p)) return p;
-      if (!fs.lstatSync(p).isSymbolicLink()) return null;
-      const target = fs.readlinkSync(p);
-      // win32 semantics explicitly: this helper only runs for Windows paths,
-      // but unit tests exercise it on POSIX hosts too.
-      const resolved = path.win32.isAbsolute(target) ? target : path.resolve(path.dirname(p), target);
-      return fs.existsSync(resolved) ? resolved : null;
-    } catch {
-      return null;
-    }
-  }
-
   private detectWindows(): ShellInfo[] {
     const shells: ShellInfo[] = [];
 
-    // PowerShell 7+ (pwsh)
-    const pwshPaths = [
-      'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
-      path.join(process.env.LOCALAPPDATA || '', 'Microsoft\\WindowsApps\\pwsh.exe'),
-    ];
-    for (const p of pwshPaths) {
-      const launchable = this.resolveLaunchableWindowsExe(p);
-      if (launchable) {
-        shells.push({ name: 'PowerShell 7', path: launchable });
-        break;
-      }
+    // PowerShell 7+ (pwsh) — candidate paths + Store-alias readlink resolution
+    // live in shared/shellResolution (#179/#183) so the daemon resolves the
+    // exact same set of installs as the main process.
+    const pwsh7 = findWindowsPwsh7();
+    if (pwsh7) {
+      shells.push({ name: 'PowerShell 7', path: pwsh7 });
     }
 
     // Windows PowerShell 5.1
-    const ps5 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+    const ps5 = windowsPowerShell51Path();
     if (fs.existsSync(ps5)) {
       shells.push({ name: 'Windows PowerShell', path: ps5 });
     }

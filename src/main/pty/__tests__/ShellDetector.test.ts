@@ -1,6 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
-import path from 'node:path';
 
 // Hoisted mutable state shared between the vi.mock factory and the tests.
 const platformState = vi.hoisted(() => {
@@ -139,8 +138,25 @@ describe('ShellDetector', () => {
   });
 
   describe('windows', () => {
+    let origSystemRoot: string | undefined;
+    let origProgramFiles: string | undefined;
+
     beforeEach(() => {
       platformState.set('win32');
+      // The shared candidate table (shellResolution.ts) composes paths from
+      // these env vars via template literals — pin them so the constants
+      // below match the source's exact strings on any CI OS.
+      origSystemRoot = process.env.SystemRoot;
+      origProgramFiles = process.env.ProgramFiles;
+      process.env.SystemRoot = 'C:\\Windows';
+      process.env.ProgramFiles = 'C:\\Program Files';
+    });
+
+    afterEach(() => {
+      if (origSystemRoot === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = origSystemRoot;
+      if (origProgramFiles === undefined) delete process.env.ProgramFiles;
+      else process.env.ProgramFiles = origProgramFiles;
     });
 
     it('does not include unix-only shells', () => {
@@ -159,10 +175,9 @@ describe('ShellDetector', () => {
     // Windows box, so a 5.1-first ordering would mask pwsh 7 forever.
     it('lists PowerShell 7 before Windows PowerShell 5.1 and picks it as default', () => {
       const pwsh7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
-      // Build the 5.1 path exactly as detectWindows does (path.join), so the
-      // mock matches on POSIX CI runners too — a template literal diverges from
-      // path.posix.join's separator handling and the path would never match.
-      const ps5 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+      // shellResolution.ts builds candidate paths with backslash template
+      // literals (env pinned above), so plain literals match on any CI OS.
+      const ps5 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
       existsSpy.mockImplementation((p: fs.PathLike) => p === pwsh7 || p === ps5);
       const detector = new ShellDetector();
       const shells = detector.detect();
@@ -180,9 +195,9 @@ describe('ShellDetector', () => {
     // directly (it falls back to 5.1), so the detector must hand back the
     // RESOLVED package target, not the alias path itself.
     describe('Store-build pwsh App Execution Alias (#179)', () => {
-      const aliasPath = path.join('C:\\Users\\test\\AppData\\Local', 'Microsoft\\WindowsApps\\pwsh.exe');
+      const aliasPath = 'C:\\Users\\test\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe';
       const aliasTarget = 'C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.5.0.0_x64__8wekyb3d8bbwe\\pwsh.exe';
-      const ps5 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+      const ps5 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
       let originalLocalAppData: string | undefined;
       let lstatSpy: ReturnType<typeof vi.spyOn>;
       let readlinkSpy: ReturnType<typeof vi.spyOn>;
@@ -250,7 +265,7 @@ describe('ShellDetector', () => {
     });
 
     it('getDefault falls back to Windows PowerShell 5.1 when pwsh 7 is absent', () => {
-      const ps5 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+      const ps5 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
       existsSpy.mockImplementation((p: fs.PathLike) => p === ps5);
       const detector = new ShellDetector();
       expect(detector.getDefault()).toBe(ps5);

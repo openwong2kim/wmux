@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import type { DaemonConfig } from './types';
+import { getWindowsDefaultShell } from '../shared/shellResolution';
 
 /** ~/.wmux directory */
 export function getWmuxDir(): string {
@@ -16,7 +17,9 @@ export function getConfigPath(): string {
 /** Resolve default shell for current platform */
 function getDefaultShell(): string {
   if (process.platform === 'win32') {
-    return process.env.COMSPEC || 'cmd.exe';
+    // Shared resolution (#183): same pwsh-7-first chain (incl. the Store
+    // App Execution Alias) as ShellDetector and DaemonSessionManager.
+    return getWindowsDefaultShell();
   }
   return process.env.SHELL || '/bin/sh';
 }

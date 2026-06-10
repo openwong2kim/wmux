@@ -573,22 +573,38 @@ describe('DaemonSessionManager', () => {
     let origPlatform: PropertyDescriptor | undefined;
     let origSystemRoot: string | undefined;
     let origProgramFiles: string | undefined;
+    let origLocalAppData: string | undefined;
     let existsSpy: ReturnType<typeof vi.spyOn>;
+    let lstatSpy: ReturnType<typeof vi.spyOn>;
+    let readlinkSpy: ReturnType<typeof vi.spyOn>;
 
-    // getDefaultShell composes the candidate paths from these env vars via
-    // template literals, so pin them to fixed values: the test must match the
-    // source's exact string on any CI OS (where these vars are normally unset).
+    // The shared candidate table (shared/shellResolution.ts, #183) composes
+    // paths from these env vars via template literals, so pin them to fixed
+    // values: the test must match the source's exact string on any CI OS
+    // (where these vars are normally unset).
     const PWSH7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
     const PS5 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+    const ALIAS = 'C:\\Users\\test\\AppData\\Local\\Microsoft\\WindowsApps\\pwsh.exe';
+    const ALIAS_TARGET = 'C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.5.0.0_x64__8wekyb3d8bbwe\\pwsh.exe';
 
     beforeEach(() => {
       origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
       Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
       origSystemRoot = process.env.SystemRoot;
       origProgramFiles = process.env.ProgramFiles;
+      origLocalAppData = process.env.LOCALAPPDATA;
       process.env.SystemRoot = 'C:\\Windows';
       process.env.ProgramFiles = 'C:\\Program Files';
+      process.env.LOCALAPPDATA = 'C:\\Users\\test\\AppData\\Local';
       existsSpy = vi.spyOn(fs, 'existsSync');
+      // Default: the WindowsApps alias slot is empty (lstat throws), so tests
+      // that don't opt into the alias scenario never touch the real fs.
+      lstatSpy = vi.spyOn(fs, 'lstatSync').mockImplementation(() => {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      });
+      readlinkSpy = vi.spyOn(fs, 'readlinkSync').mockImplementation(() => {
+        throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' });
+      });
     });
 
     afterEach(() => {
@@ -597,7 +613,11 @@ describe('DaemonSessionManager', () => {
       else process.env.SystemRoot = origSystemRoot;
       if (origProgramFiles === undefined) delete process.env.ProgramFiles;
       else process.env.ProgramFiles = origProgramFiles;
+      if (origLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+      else process.env.LOCALAPPDATA = origLocalAppData;
       existsSpy.mockRestore();
+      lstatSpy.mockRestore();
+      readlinkSpy.mockRestore();
     });
 
     it('prefers PowerShell 7 over Windows PowerShell 5.1 when both exist', () => {
@@ -611,6 +631,40 @@ describe('DaemonSessionManager', () => {
       existsSpy.mockImplementation((p: fs.PathLike) => p === PS5);
       const session = manager.createSession({ id: 'def-ps5', cmd: '', cwd: '.' });
       expect(session.cmd).toBe(PS5);
+    });
+
+    // Issue #183: on a machine where pwsh 7 exists ONLY as the Microsoft
+    // Store App Execution Alias (no traditional install), the daemon must
+    // resolve the alias to its spawnable package target instead of dropping
+    // to 5.1 — the same behavior #179/#180 gave the main process.
+    it('picks Store-installed pwsh 7 (WindowsApps alias) when it is the only pwsh 7 present', () => {
+      existsSpy.mockImplementation((p: fs.PathLike) => p === ALIAS_TARGET || p === PS5);
+      lstatSpy.mockImplementation((p: fs.PathLike) => {
+        if (p === ALIAS) return { isSymbolicLink: () => true } as fs.Stats;
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      });
+      readlinkSpy.mockImplementation((p: fs.PathLike) => {
+        if (p === ALIAS) return ALIAS_TARGET;
+        throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' });
+      });
+      const session = manager.createSession({ id: 'def-alias', cmd: '', cwd: '.' });
+      // The resolved package target, NOT the alias stub (node-pty cannot
+      // spawn the stub — it silently falls back to 5.1).
+      expect(session.cmd).toBe(ALIAS_TARGET);
+    });
+
+    it('resolves a bare "pwsh.exe" cmd through the Store alias when no traditional install exists', () => {
+      existsSpy.mockImplementation((p: fs.PathLike) => p === ALIAS_TARGET || p === PS5);
+      lstatSpy.mockImplementation((p: fs.PathLike) => {
+        if (p === ALIAS) return { isSymbolicLink: () => true } as fs.Stats;
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      });
+      readlinkSpy.mockImplementation((p: fs.PathLike) => {
+        if (p === ALIAS) return ALIAS_TARGET;
+        throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' });
+      });
+      const session = manager.createSession({ id: 'bare-pwsh', cmd: 'pwsh.exe', cwd: '.' });
+      expect(session.cmd).toBe(ALIAS_TARGET);
     });
   });
 });

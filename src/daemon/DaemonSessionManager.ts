@@ -9,6 +9,7 @@ import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection } from './shell-integration';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac } from '../shared/platform';
+import { getWindowsDefaultShell, resolveLaunchableWindowsExe, windowsPowerShell51Path, windowsPwsh7Candidates } from '../shared/shellResolution';
 import { createDefaultConfig } from './config';
 
 const DEFAULT_COLS = 80;
@@ -478,6 +479,9 @@ export class DaemonSessionManager extends EventEmitter {
     const path = require('path');
     // Already absolute?
     if (path.isAbsolute(cmd)) {
+      // On Windows the path may be a Store App Execution Alias that
+      // existsSync misses and node-pty cannot spawn — resolve it (#179/#183).
+      if (process.platform === 'win32') return resolveLaunchableWindowsExe(cmd);
       try { if (fs.existsSync(cmd)) return cmd; } catch {}
       return null;
     }
@@ -487,11 +491,12 @@ export class DaemonSessionManager extends EventEmitter {
       const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
       const lookup: Record<string, string[]> = {
         'powershell.exe': [
-          `${systemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
+          windowsPowerShell51Path(),
         ],
-        'pwsh.exe': [
-          `${progFiles}\\PowerShell\\7\\pwsh.exe`,
-        ],
+        // Shared candidate table (#183): includes the Microsoft Store
+        // App Execution Alias, which the per-candidate readlink resolution
+        // below turns into a spawnable package target (#179).
+        'pwsh.exe': windowsPwsh7Candidates(),
         'cmd.exe': [
           `${systemRoot}\\System32\\cmd.exe`,
         ],
@@ -506,7 +511,8 @@ export class DaemonSessionManager extends EventEmitter {
       const basename = path.basename(cmd).toLowerCase();
       const candidates = lookup[basename] || [];
       for (const c of candidates) {
-        try { if (fs.existsSync(c)) return c; } catch {}
+        const launchable = resolveLaunchableWindowsExe(c);
+        if (launchable) return launchable;
       }
     } else if (process.platform === 'darwin') {
       // mac: common shell names → absolute paths.
@@ -540,25 +546,11 @@ export class DaemonSessionManager extends EventEmitter {
 
   private getDefaultShell(): string {
     if (process.platform === 'win32') {
-      const fs = require('fs');
-      // PowerShell 7 first, then Windows PowerShell 5.1 — mirrors
-      // ShellDetector's priority so the daemon picks the same default as the
-      // main process (issue #176). 5.1 ships on every Windows box, so a
-      // 5.1-first order would mask an installed pwsh 7 forever.
-      const candidates = [
-        `${process.env.ProgramFiles}\\PowerShell\\7\\pwsh.exe`,
-        `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
-        'powershell.exe',
-        'cmd.exe',
-      ];
-      for (const shell of candidates) {
-        try {
-          if (fs.existsSync(shell)) return shell;
-        } catch {
-          /* skip */
-        }
-      }
-      return 'cmd.exe';
+      // Shared resolution (#183): PowerShell 7 first (traditional install OR
+      // Store App Execution Alias, resolved to its spawnable package target),
+      // then Windows PowerShell 5.1 — the exact same priority and candidate
+      // table as the main process's ShellDetector (#176/#179).
+      return getWindowsDefaultShell();
     }
     if (isMac) return process.env.SHELL || '/bin/zsh';
     return process.env.SHELL || '/bin/bash';
