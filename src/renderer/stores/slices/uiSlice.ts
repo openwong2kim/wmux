@@ -85,6 +85,15 @@ export interface UISlice {
   defaultShell: string;
   setDefaultShell: (shell: string) => void;
 
+  // Issue #174: split panes inherit the splitting pane's cwd (default on).
+  splitInheritsCwd: boolean;
+  setSplitInheritsCwd: (enabled: boolean) => void;
+
+  // Issue #175: global default starting directory for new terminals.
+  // '' = unset → os.homedir() fallback in the spawn layer.
+  startupDirectory: string;
+  setStartupDirectory: (dir: string) => void;
+
   scrollbackLines: number;
   setScrollbackLines: (lines: number) => void;
 
@@ -600,6 +609,18 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setDefaultShell: (shell) => set((state) => {
     state.defaultShell = shell;
+  }),
+
+  splitInheritsCwd: true,
+
+  setSplitInheritsCwd: (enabled) => set((state) => {
+    state.splitInheritsCwd = enabled;
+  }),
+
+  startupDirectory: '',
+
+  setStartupDirectory: (dir) => set((state) => {
+    state.startupDirectory = dir.trim();
   }),
 
   scrollbackLines: 10000,

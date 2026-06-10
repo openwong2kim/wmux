@@ -402,6 +402,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         state.terminalFontFamily = sanitizeFontFamily(data.terminalFontFamily) || 'Cascadia Code';
       }
       if (data.defaultShell) state.defaultShell = data.defaultShell;
+      if (data.splitInheritsCwd != null) state.splitInheritsCwd = data.splitInheritsCwd;
+      if (typeof data.startupDirectory === 'string') state.startupDirectory = data.startupDirectory.trim();
       if (data.scrollbackLines != null) state.scrollbackLines = data.scrollbackLines;
       if (data.scrollbackRestoreEnabled != null) state.scrollbackRestoreEnabled = data.scrollbackRestoreEnabled;
       if (data.sidebarPosition) state.sidebarPosition = data.sidebarPosition;

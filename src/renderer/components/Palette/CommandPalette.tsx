@@ -3,7 +3,7 @@ import { useStore } from '../../stores';
 import PaletteItem, { type PaletteItemData, type PaletteCategory } from './PaletteItem';
 import { useT } from '../../hooks/useT';
 import { useIpc } from '../../hooks/useIpc';
-import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
+import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { tokenAttrs } from '../../themes';
 
@@ -211,8 +211,10 @@ export default function CommandPalette() {
           const state = useStore.getState();
           const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
           if (ws) {
+            // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.
+            const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: state.startupDirectory });
             void ipcInvoke<{ id: string }>(() =>
-              window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: ws.id }, state.defaultShell), ws.profile))
+              window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: ws.id, cwd }, state.defaultShell), ws.profile))
             ).then((result) => {
               if (result.ok) {
                 useStore.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', '');

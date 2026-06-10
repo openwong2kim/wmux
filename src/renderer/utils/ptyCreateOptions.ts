@@ -62,3 +62,24 @@ export function withWorkspaceProfile<T extends PtyCreateOptions>(
   }
   return next;
 }
+
+/**
+ * Resolve the starting directory for a NEW terminal (issues #173/#174/#175).
+ *
+ * Priority: split-inherited cwd (when the toggle is on) > workspace
+ * profile.startupCwd > global startupDirectory setting > undefined (the spawn
+ * layer falls back to os.homedir()). Every value is best-effort: main's
+ * validateCwd tolerantly drops non-existent/UNC/non-directory paths, so a
+ * stale seed or a typo'd setting can never fail the spawn.
+ */
+export function resolveStartupCwd(args: {
+  splitSeed?: string;
+  splitInheritsCwd: boolean;
+  profile?: WorkspaceProfile;
+  startupDirectory?: string;
+}): string | undefined {
+  if (args.splitInheritsCwd && args.splitSeed) return args.splitSeed;
+  if (args.profile?.startupCwd) return args.profile.startupCwd;
+  if (args.startupDirectory && args.startupDirectory.trim().length > 0) return args.startupDirectory.trim();
+  return undefined;
+}

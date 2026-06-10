@@ -26,6 +26,7 @@ import {
   WORKSPACE_PROFILE_ENV_KEY_MAX,
   WORKSPACE_PROFILE_ENV_VALUE_MAX,
   WORKSPACE_PROFILE_MAX_ENV_ENTRIES,
+  WORKSPACE_PROFILE_STARTUP_CWD_MAX,
   type WorkspaceProfile,
 } from './types';
 import { isSensitiveEnvKey } from './envFilter';
@@ -135,6 +136,19 @@ export function normalizeCommand(input: unknown): string | undefined {
 }
 
 /**
+ * Normalize a startup directory (issue #175): trim, drop when empty or
+ * over-long. No existence check here — paths may live on currently-detached
+ * drives; the spawn layer's validateCwd tolerantly falls back to homedir.
+ */
+export function normalizeStartupCwd(input: unknown): string | undefined {
+  if (typeof input !== 'string') return undefined;
+  const trimmed = input.trim();
+  if (trimmed.length === 0) return undefined;
+  if (trimmed.length > WORKSPACE_PROFILE_STARTUP_CWD_MAX) return undefined;
+  return trimmed;
+}
+
+/**
  * Build a clean WorkspaceProfile from untrusted input, or `undefined` when the
  * result would be empty. `env` is omitted when it has no valid entries so an
  * empty profile never persists as `{ env: {} }`.
@@ -144,16 +158,18 @@ export function normalizeWorkspaceProfile(
   opts: { dropSecretKeys?: boolean } = {},
 ): WorkspaceProfile | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const src = input as { env?: unknown; defaultPaneCommand?: unknown };
+  const src = input as { env?: unknown; defaultPaneCommand?: unknown; startupCwd?: unknown };
 
   const env = normalizeEnv(src.env, opts.dropSecretKeys ?? false);
   const command = normalizeCommand(src.defaultPaneCommand);
+  const startupCwd = normalizeStartupCwd(src.startupCwd);
 
   const profile: WorkspaceProfile = {};
   if (Object.keys(env).length > 0) profile.env = env;
   if (command !== undefined) profile.defaultPaneCommand = command;
+  if (startupCwd !== undefined) profile.startupCwd = startupCwd;
 
-  if (profile.env === undefined && profile.defaultPaneCommand === undefined) {
+  if (profile.env === undefined && profile.defaultPaneCommand === undefined && profile.startupCwd === undefined) {
     return undefined;
   }
   return profile;

@@ -9,7 +9,7 @@ import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import SurfaceTabs from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
-import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
+import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { tokenAttrs } from '../../themes';
 
 interface PaneProps {
@@ -161,8 +161,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     // with the OLD profile, violating the "applies to new panes" contract.
     // Mirrors Terminal.tsx's create path, which also reads the live profile.
     const profile = useStore.getState().workspaces.find((w) => w.id === workspace.id)?.profile;
+    // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.
+    const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile, startupDirectory: useStore.getState().startupDirectory });
     const result = await ipcInvoke<{ id: string }>(() =>
-      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: workspace.id }, defaultShell), profile))
+      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: workspace.id, cwd }, defaultShell), profile))
     );
     if (result.ok) {
       addSurface(pane.id, result.data.id, 'Terminal', '');

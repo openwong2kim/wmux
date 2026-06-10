@@ -423,6 +423,44 @@ function SettingNumberInput({
   );
 }
 
+// ─── Path text input (commit on blur/Enter so typing isn't trimmed live) ─────
+
+function SettingPathInput({
+  value,
+  onCommit,
+  placeholder,
+  label,
+}: {
+  value: string;
+  onCommit: (v: string) => void;
+  placeholder: string;
+  label: string;
+}) {
+  const [draft, setDraft] = useState(value);
+  useEffect(() => { setDraft(value); }, [value]);
+  return (
+    <input
+      type="text"
+      aria-label={label}
+      value={draft}
+      placeholder={placeholder}
+      spellCheck={false}
+      autoCapitalize="off"
+      autoCorrect="off"
+      onChange={(e) => setDraft(e.target.value)}
+      onBlur={() => onCommit(draft)}
+      onKeyDown={(e) => { if (e.key === 'Enter') onCommit(draft); }}
+      className="text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono"
+      style={{
+        backgroundColor: 'var(--bg-surface)',
+        color: 'var(--text-main)',
+        border: '1px solid var(--bg-overlay)',
+        width: 200,
+      }}
+    />
+  );
+}
+
 // ─── Section divider label ────────────────────────────────────────────────────
 
 function SectionLabel({ label }: { label: string }) {
@@ -872,6 +910,10 @@ function TabGeneral() {
   const setScrollbackLines = useStore((s) => s.setScrollbackLines);
   const scrollbackRestoreEnabled = useStore((s) => s.scrollbackRestoreEnabled);
   const setScrollbackRestoreEnabled = useStore((s) => s.setScrollbackRestoreEnabled);
+  const splitInheritsCwd = useStore((s) => s.splitInheritsCwd);
+  const setSplitInheritsCwd = useStore((s) => s.setSplitInheritsCwd);
+  const startupDirectory = useStore((s) => s.startupDirectory);
+  const setStartupDirectory = useStore((s) => s.setStartupDirectory);
   const autoUpdateEnabled = useStore((s) => s.autoUpdateEnabled);
   const [detectedShells, setDetectedShells] = useState<ShellInfo[]>([]);
   const storeSetAutoUpdate = useStore((s) => s.setAutoUpdateEnabled);
@@ -931,6 +973,21 @@ function TabGeneral() {
             value={defaultShell}
             onChange={setDefaultShell}
             options={shellOptions}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.startupDirectory')} description={t('settings.startupDirectoryDesc')}>
+          <SettingPathInput
+            label={t('settings.startupDirectory')}
+            value={startupDirectory}
+            onCommit={setStartupDirectory}
+            placeholder={t('settings.startupDirectoryPlaceholder')}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.splitInheritsCwd')} description={t('settings.splitInheritsCwdDesc')}>
+          <Toggle
+            checked={splitInheritsCwd}
+            onChange={setSplitInheritsCwd}
+            label={t('settings.splitInheritsCwd')}
           />
         </SettingRow>
         <SettingRow label={t('settings.scrollbackLines')} description={t('settings.scrollbackDesc')}>

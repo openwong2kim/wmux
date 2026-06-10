@@ -98,6 +98,13 @@ export interface WorkspaceProfile {
   env?: Record<string, string>;
   /** Optional command written into each new pane's shell after creation. */
   defaultPaneCommand?: string;
+  /**
+   * Starting directory for new terminals in this workspace. Overrides the
+   * global startupDirectory setting; overridden by split CWD inheritance.
+   * Tolerant at spawn time: a missing/invalid path falls back to homedir
+   * (validateCwd in pty.handler), so a disconnected drive never hard-fails.
+   */
+  startupCwd?: string;
 }
 
 // Validation caps — enforced by shared/workspaceProfile.ts.
@@ -105,6 +112,7 @@ export const WORKSPACE_PROFILE_MAX_ENV_ENTRIES = 64;
 export const WORKSPACE_PROFILE_ENV_KEY_MAX = 128;
 export const WORKSPACE_PROFILE_ENV_VALUE_MAX = 8192;
 export const WORKSPACE_PROFILE_COMMAND_MAX = 4096;
+export const WORKSPACE_PROFILE_STARTUP_CWD_MAX = 1024;
 
 // === Workspace: a named collection of panes ===
 export interface Workspace {
@@ -346,6 +354,16 @@ export interface SessionData {
   terminalFontFamily?: string;
   defaultShell?: string;
   scrollbackLines?: number;
+  /**
+   * Issue #174: whether a pane created by splitting inherits the splitting
+   * pane's current working directory (OSC 7-tracked). Default true.
+   */
+  splitInheritsCwd?: boolean;
+  /**
+   * Issue #175: global default starting directory for new terminals.
+   * Empty/unset → os.homedir(). Per-workspace profile.startupCwd overrides.
+   */
+  startupDirectory?: string;
   /**
    * User setting: whether to attempt scrollback restore on launch.
    * true (default) — daemon-side ringBuffer replay + reconnect on Terminal mount.

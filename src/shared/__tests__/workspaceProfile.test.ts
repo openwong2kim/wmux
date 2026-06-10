@@ -6,6 +6,7 @@ import {
   isValidEnvKey,
   normalizeCommand,
   normalizeEnv,
+  normalizeStartupCwd,
   normalizeWorkspaceProfile,
 } from '../workspaceProfile';
 import {
@@ -189,5 +190,32 @@ describe('normalizeWorkspaceProfile', () => {
     expect(normalizeWorkspaceProfile({ env: {}, defaultPaneCommand: '  ' })).toBeUndefined();
     expect(normalizeWorkspaceProfile(null)).toBeUndefined();
     expect(normalizeWorkspaceProfile('nope')).toBeUndefined();
+  });
+
+  // Issue #175: per-workspace starting directory.
+  it('keeps a valid startupCwd and trims it', () => {
+    expect(normalizeWorkspaceProfile({ startupCwd: '  C:\\Projects  ' })).toEqual({ startupCwd: 'C:\\Projects' });
+  });
+
+  it('drops an empty or non-string startupCwd', () => {
+    expect(normalizeWorkspaceProfile({ startupCwd: '   ' })).toBeUndefined();
+    expect(normalizeWorkspaceProfile({ startupCwd: 42 })).toBeUndefined();
+  });
+
+  it('drops an over-long startupCwd but keeps the rest of the profile', () => {
+    const profile = normalizeWorkspaceProfile({ startupCwd: 'x'.repeat(2000), defaultPaneCommand: 'go' });
+    expect(profile).toEqual({ defaultPaneCommand: 'go' });
+  });
+});
+
+describe('normalizeStartupCwd', () => {
+  it('trims and returns a usable path', () => {
+    expect(normalizeStartupCwd(' D:\\wmux ')).toBe('D:\\wmux');
+  });
+  it('returns undefined for empty, non-string, or over-long input', () => {
+    expect(normalizeStartupCwd('')).toBeUndefined();
+    expect(normalizeStartupCwd('   ')).toBeUndefined();
+    expect(normalizeStartupCwd(null)).toBeUndefined();
+    expect(normalizeStartupCwd('x'.repeat(1025))).toBeUndefined();
   });
 });

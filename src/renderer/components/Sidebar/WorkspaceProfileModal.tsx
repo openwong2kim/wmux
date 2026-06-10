@@ -37,6 +37,7 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
   const setWorkspaceProfile = useStore((s) => s.setWorkspaceProfile);
   const [rows, setRows] = useState<EnvRow[]>(() => rowsFromProfile(workspace));
   const [command, setCommand] = useState<string>(workspace.profile?.defaultPaneCommand ?? '');
+  const [startupCwd, setStartupCwd] = useState<string>(workspace.profile?.startupCwd ?? '');
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -76,9 +77,9 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
     // setWorkspaceProfile normalizes (drops invalid/reserved AND secret-named
     // keys, collapses an empty profile to undefined) — it is the single
     // enforcing boundary, so we just hand it the raw rows.
-    setWorkspaceProfile(workspace.id, { env, defaultPaneCommand: command });
+    setWorkspaceProfile(workspace.id, { env, defaultPaneCommand: command, startupCwd });
     onClose();
-  }, [rows, command, setWorkspaceProfile, workspace.id, onClose]);
+  }, [rows, command, startupCwd, setWorkspaceProfile, workspace.id, onClose]);
 
   // A key is flagged invalid (red, dropped on save) when non-empty but not a
   // valid, non-reserved name.
@@ -195,6 +196,26 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
               spellCheck={false}
               onChange={(e) => setCommand(e.target.value)}
             />
+          </div>
+
+          {/* Startup directory (issue #175) */}
+          <div>
+            <div className="text-[11px] font-semibold mb-1.5" style={{ color: 'var(--text-sub)' }}>
+              {t('workspaceProfile.startupCwdHeading')}
+            </div>
+            <input
+              className="w-full bg-[var(--bg-base)] text-[11px] font-mono px-2 py-1 rounded border border-[var(--text-muted)] outline-none"
+              style={{ color: 'var(--text-main)' }}
+              placeholder={t('workspaceProfile.startupCwdPlaceholder')}
+              value={startupCwd}
+              spellCheck={false}
+              autoCapitalize="off"
+              autoCorrect="off"
+              onChange={(e) => setStartupCwd(e.target.value)}
+            />
+            <div className="text-[10px] mt-0.5 ml-0.5" style={{ color: 'var(--text-muted)' }}>
+              {t('workspaceProfile.startupCwdHint')}
+            </div>
           </div>
 
           {/* Warnings */}

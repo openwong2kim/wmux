@@ -33,7 +33,7 @@ import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { isFileDrag } from '../../../shared/dragDrop';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import { resolvePtyIdsToClear } from '../../hooks/reconcileWithReQuery';
-import { withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
+import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
@@ -194,6 +194,8 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalFontSize: state.terminalFontSize,
     terminalFontFamily: state.terminalFontFamily,
     defaultShell: state.defaultShell,
+    splitInheritsCwd: state.splitInheritsCwd,
+    startupDirectory: state.startupDirectory || undefined,
     scrollbackLines: state.scrollbackLines,
     scrollbackRestoreEnabled: state.scrollbackRestoreEnabled,
     sidebarPosition: state.sidebarPosition,
@@ -809,6 +811,18 @@ export default function AppLayout() {
 
     for (const leaf of emptyLeaves) {
       const paneId = leaf.id;
+      // Issues #173/#174/#175: split-inherited cwd > profile.startupCwd >
+      // global startupDirectory > homedir (main-side fallback). The seed is
+      // consumed immediately so a later effect re-run (e.g. PTY create failed
+      // at the session cap) can't replay a stale directory.
+      const storeState = useStore.getState();
+      const startupCwd = resolveStartupCwd({
+        splitSeed: storeState.splitCwdSeed[paneId],
+        splitInheritsCwd: storeState.splitInheritsCwd,
+        profile: activeWorkspace.profile,
+        startupDirectory: storeState.startupDirectory,
+      });
+      if (storeState.splitCwdSeed[paneId]) storeState.clearSplitCwdSeed(paneId);
       // Wrap through ipcInvoke so a rejected pty.create (e.g.
       // RESOURCE_EXHAUSTED when the daemon session cap is hit during a
       // Ctrl+D split) surfaces an actionable toast instead of leaving the
@@ -816,7 +830,7 @@ export default function AppLayout() {
       void ipcInvoke<{ id: string; shell?: string; cwd?: string }>(() =>
         window.electronAPI.pty.create(
           withWorkspaceProfile(
-            withDefaultShell({ workspaceId: wsId }, useStore.getState().defaultShell),
+            withDefaultShell({ workspaceId: wsId, cwd: startupCwd }, useStore.getState().defaultShell),
             activeWorkspace.profile,
           )
         )

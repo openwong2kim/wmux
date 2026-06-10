@@ -99,6 +99,62 @@ describe('PaneSlice', () => {
       expect(emptyLeafIds).toContain(wsAfter.activePaneId);
     });
 
+    // Issue #173: splitting a pane whose active surface has an OSC 7-tracked
+    // cwd records a transient seed for the new pane; the AppLayout funnel
+    // consumes it as the new PTY's starting directory.
+    describe('splitCwdSeed (#173)', () => {
+      function seedSurface(cwd: string, surfaceType?: 'terminal' | 'browser' | 'editor') {
+        store.setState((s) => {
+          const root = s.workspaces[0].rootPane;
+          if (root.type !== 'leaf') throw new Error('expected leaf root');
+          root.surfaces.push({ id: 's1', ptyId: 'pty-1', title: 't', shell: 'pwsh', cwd, ...(surfaceType ? { surfaceType } : {}) });
+          root.activeSurfaceId = 's1';
+        });
+      }
+
+      it('captures the active surface cwd for the new pane', () => {
+        const rootId = getActiveWorkspace(store).rootPane.id;
+        seedSurface('D:\\proj');
+        store.getState().splitPane(rootId, 'horizontal');
+
+        const wsAfter = getActiveWorkspace(store);
+        expect(store.getState().splitCwdSeed[wsAfter.activePaneId]).toBe('D:\\proj');
+      });
+
+      it('records no seed when the active surface has no cwd yet', () => {
+        const rootId = getActiveWorkspace(store).rootPane.id;
+        seedSurface('');
+        store.getState().splitPane(rootId, 'horizontal');
+        expect(Object.keys(store.getState().splitCwdSeed)).toHaveLength(0);
+      });
+
+      it('records no seed for a browser surface', () => {
+        const rootId = getActiveWorkspace(store).rootPane.id;
+        seedSurface('D:\\proj', 'browser');
+        store.getState().splitPane(rootId, 'horizontal');
+        expect(Object.keys(store.getState().splitCwdSeed)).toHaveLength(0);
+      });
+
+      it('clearSplitCwdSeed consumes the entry', () => {
+        const rootId = getActiveWorkspace(store).rootPane.id;
+        seedSurface('D:\\proj');
+        store.getState().splitPane(rootId, 'horizontal');
+        const newPaneId = getActiveWorkspace(store).activePaneId;
+        store.getState().clearSplitCwdSeed(newPaneId);
+        expect(store.getState().splitCwdSeed[newPaneId]).toBeUndefined();
+      });
+
+      it('closePane drops a dangling seed', () => {
+        const rootId = getActiveWorkspace(store).rootPane.id;
+        seedSurface('D:\\proj');
+        store.getState().splitPane(rootId, 'horizontal');
+        const newPaneId = getActiveWorkspace(store).activePaneId;
+        expect(store.getState().splitCwdSeed[newPaneId]).toBe('D:\\proj');
+        store.getState().closePane(newPaneId);
+        expect(store.getState().splitCwdSeed[newPaneId]).toBeUndefined();
+      });
+    });
+
     // 4-way directional split (Ctrl+Shift+Arrow): position drives which slot
     // the new pane lands in. Right/Down → 'after', Left/Up → 'before'.
     it('position "after" (default) puts the new pane second (right/below)', () => {

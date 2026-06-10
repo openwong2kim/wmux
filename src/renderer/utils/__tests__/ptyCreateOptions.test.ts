@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { withDefaultShell, withWorkspaceProfile } from '../ptyCreateOptions';
+import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../ptyCreateOptions';
 
 describe('withDefaultShell', () => {
   it('uses the stored detected shell path when no shell is specified', () => {
@@ -59,5 +59,52 @@ describe('withWorkspaceProfile', () => {
 
   it('leaves env/initialCommand absent for an empty profile', () => {
     expect(withWorkspaceProfile({ workspaceId: 'ws-1' }, {})).toEqual({ workspaceId: 'ws-1' });
+  });
+});
+
+// Issues #173/#174/#175: priority chain for a new terminal's starting directory.
+describe('resolveStartupCwd', () => {
+  it('prefers the split seed when the toggle is on', () => {
+    expect(resolveStartupCwd({
+      splitSeed: 'D:\\proj',
+      splitInheritsCwd: true,
+      profile: { startupCwd: 'C:\\ws' },
+      startupDirectory: 'C:\\global',
+    })).toBe('D:\\proj');
+  });
+
+  it('ignores the split seed when the toggle is off (#174)', () => {
+    expect(resolveStartupCwd({
+      splitSeed: 'D:\\proj',
+      splitInheritsCwd: false,
+      profile: { startupCwd: 'C:\\ws' },
+      startupDirectory: 'C:\\global',
+    })).toBe('C:\\ws');
+  });
+
+  it('falls back profile → global → undefined', () => {
+    expect(resolveStartupCwd({
+      splitInheritsCwd: true,
+      profile: { startupCwd: 'C:\\ws' },
+      startupDirectory: 'C:\\global',
+    })).toBe('C:\\ws');
+    expect(resolveStartupCwd({
+      splitInheritsCwd: true,
+      startupDirectory: 'C:\\global',
+    })).toBe('C:\\global');
+    expect(resolveStartupCwd({ splitInheritsCwd: true })).toBeUndefined();
+  });
+
+  it('treats an empty/whitespace global setting as unset', () => {
+    expect(resolveStartupCwd({ splitInheritsCwd: true, startupDirectory: '   ' })).toBeUndefined();
+    expect(resolveStartupCwd({ splitInheritsCwd: true, startupDirectory: '' })).toBeUndefined();
+  });
+
+  it('skips a profile whose startupCwd is unset', () => {
+    expect(resolveStartupCwd({
+      splitInheritsCwd: true,
+      profile: { env: { FOO: 'bar' } },
+      startupDirectory: 'C:\\global',
+    })).toBe('C:\\global');
   });
 });

@@ -54,6 +54,12 @@ export interface PaneSlice {
   // agent resumes / the PTY exits (PTYBridge broadcasts running/idle).
   surfaceAgentStatus: Record<string, AgentStatus>;
   setSurfaceAgentStatus: (ptyId: string, status: AgentStatus | null) => void;
+  // Issue #173: transient map of pane id → cwd inherited from the pane that
+  // was split. Written by splitPane, consumed (and cleared) by the AppLayout
+  // empty-leaf PTY funnel. Deliberately NOT persisted — buildSessionData's
+  // allowlist never includes it, so a saved session can't replay stale seeds.
+  splitCwdSeed: Record<string, string>;
+  clearSplitCwdSeed: (paneId: string) => void;
 }
 
 // The agent statuses that mean "this terminal wants the user's attention"
@@ -121,6 +127,12 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     }
   }),
 
+  splitCwdSeed: {},
+
+  clearSplitCwdSeed: (paneId) => set((state: StoreState) => {
+    delete state.splitCwdSeed[paneId];
+  }),
+
   splitPane: (paneId, direction, workspaceId, position = 'after') => {
     let event: { wsId: string; newPaneId: string; branchId: string; previousActiveId: string } | null = null;
     let blockedAtCap = false;
@@ -141,6 +153,17 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
         return;
       }
       created = true;
+
+      // Issue #173: capture the splitting pane's live cwd (OSC 7-tracked on
+      // its active surface) so the new pane's PTY can start there. Browser /
+      // editor surfaces have no shell cwd to inherit; surfaces that never
+      // emitted OSC 7 have cwd '' — both fall through to the startup-directory
+      // chain in the AppLayout funnel.
+      const srcSurface = targetPane.surfaces.find((s) => s.id === targetPane.activeSurfaceId);
+      const inheritedCwd =
+        srcSurface && (srcSurface.surfaceType ?? 'terminal') === 'terminal' && srcSurface.cwd
+          ? srcSurface.cwd
+          : undefined;
 
       const newPane = createLeafPane();
       // `position` drives 4-way directional split from Ctrl+Shift+Arrow:
@@ -168,6 +191,8 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
 
       const previousActiveId = ws.activePaneId;
       ws.activePaneId = newPane.id;
+
+      if (inheritedCwd) state.splitCwdSeed[newPane.id] = inheritedCwd;
 
       event = {
         wsId: targetWsId,
@@ -236,6 +261,8 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       // CEO A7: drop ring state for the deleted pane so a re-used paneId (or stale
       // selector) can't render a phantom ring on a pane that no longer exists.
       delete state.paneNotificationRing[paneId];
+      // A pane closed before its PTY spawned would leave a dangling cwd seed.
+      delete state.splitCwdSeed[paneId];
 
       event = {
         wsId: ws.id,

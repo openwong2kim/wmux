@@ -3,7 +3,7 @@ import { useStore } from '../stores';
 import { findLeaf } from '../../shared/paneUtils';
 import { terminalRegistry } from './useTerminal';
 import { t } from '../i18n';
-import { withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
+import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import { useIpc } from './useIpc';
 import { pastePtyChunked } from '../utils/clipboardChunk';
 
@@ -470,8 +470,10 @@ export function useKeyboard() {
           // notably MAX_SESSIONS cap reached → RESOURCE_EXHAUSTED) surfaces
           // an actionable toast instead of being silently dropped — the
           // pre-v2.8.2 .then-only chain made the shortcut look unresponsive.
+          // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.
+          const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: state.startupDirectory });
           void ipcInvokeRef.current<{ id: string }>(() =>
-            window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: ws.id }, state.defaultShell), ws.profile))
+            window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: ws.id, cwd }, state.defaultShell), ws.profile))
           ).then((result) => {
             if (result.ok) {
               store.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', '');
