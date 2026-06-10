@@ -173,6 +173,82 @@ describe('ShellDetector', () => {
       expect(detector.getDefault()).toBe(pwsh7);
     });
 
+    // Issue #179: Store-installed pwsh 7 lives behind an App Execution Alias
+    // (a reparse-point symlink) that fs.existsSync() does not follow, so an
+    // existsSync-only gate misses it and 5.1 wins despite pwsh being usable.
+    // Dogfood found a second trap: node-pty cannot spawn the alias stub
+    // directly (it falls back to 5.1), so the detector must hand back the
+    // RESOLVED package target, not the alias path itself.
+    describe('Store-build pwsh App Execution Alias (#179)', () => {
+      const aliasPath = path.join('C:\\Users\\test\\AppData\\Local', 'Microsoft\\WindowsApps\\pwsh.exe');
+      const aliasTarget = 'C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.5.0.0_x64__8wekyb3d8bbwe\\pwsh.exe';
+      const ps5 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32\\WindowsPowerShell\\v1.0\\powershell.exe');
+      let originalLocalAppData: string | undefined;
+      let lstatSpy: ReturnType<typeof vi.spyOn>;
+      let readlinkSpy: ReturnType<typeof vi.spyOn>;
+
+      beforeEach(() => {
+        originalLocalAppData = process.env.LOCALAPPDATA;
+        process.env.LOCALAPPDATA = 'C:\\Users\\test\\AppData\\Local';
+        lstatSpy = vi.spyOn(fs, 'lstatSync');
+        readlinkSpy = vi.spyOn(fs, 'readlinkSync');
+      });
+
+      afterEach(() => {
+        lstatSpy.mockRestore();
+        readlinkSpy.mockRestore();
+        if (originalLocalAppData === undefined) delete process.env.LOCALAPPDATA;
+        else process.env.LOCALAPPDATA = originalLocalAppData;
+      });
+
+      it('resolves the alias to its package target (not the alias path) so node-pty can spawn it', () => {
+        existsSpy.mockImplementation((p: fs.PathLike) => p === aliasTarget || p === ps5);
+        lstatSpy.mockImplementation((p: fs.PathLike) => {
+          if (p === aliasPath) return { isSymbolicLink: () => true } as fs.Stats;
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        });
+        readlinkSpy.mockImplementation((p: fs.PathLike) => {
+          if (p === aliasPath) return aliasTarget;
+          throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' });
+        });
+        const detector = new ShellDetector();
+        const shells = detector.detect();
+        const pwsh = shells.find((s) => s.name === 'PowerShell 7');
+        // The resolved target, NOT the alias — the alias stub is unspawnable.
+        expect(pwsh?.path).toBe(aliasTarget);
+        expect(detector.getDefault()).toBe(aliasTarget);
+      });
+
+      it('skips a dead alias stub whose target package is gone', () => {
+        existsSpy.mockImplementation((p: fs.PathLike) => p === ps5);
+        lstatSpy.mockImplementation((p: fs.PathLike) => {
+          if (p === aliasPath) return { isSymbolicLink: () => true } as fs.Stats;
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        });
+        readlinkSpy.mockImplementation((p: fs.PathLike) => {
+          if (p === aliasPath) return aliasTarget;
+          throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' });
+        });
+        const detector = new ShellDetector();
+        const shells = detector.detect();
+        expect(shells.find((s) => s.name === 'PowerShell 7')).toBeUndefined();
+        expect(detector.getDefault()).toBe(ps5);
+      });
+
+      it('skips the alias path when readlink fails', () => {
+        existsSpy.mockImplementation((p: fs.PathLike) => p === ps5);
+        lstatSpy.mockImplementation((p: fs.PathLike) => {
+          if (p === aliasPath) return { isSymbolicLink: () => true } as fs.Stats;
+          throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+        });
+        readlinkSpy.mockImplementation(() => {
+          throw Object.assign(new Error('EINVAL'), { code: 'EINVAL' });
+        });
+        const detector = new ShellDetector();
+        expect(detector.getDefault()).toBe(ps5);
+      });
+    });
+
     it('getDefault falls back to Windows PowerShell 5.1 when pwsh 7 is absent', () => {
       const ps5 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32\\WindowsPowerShell\\v1.0\\powershell.exe');
       existsSpy.mockImplementation((p: fs.PathLike) => p === ps5);

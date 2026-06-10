@@ -18,6 +18,36 @@ export class ShellDetector {
     });
   }
 
+  /**
+   * Resolve a Windows shell candidate to a path that node-pty can actually
+   * spawn, or null if it is not launchable (#179).
+   *
+   * A regular file launches as-is. The WindowsApps pwsh.exe installed via the
+   * Microsoft Store, however, is an App Execution Alias — a 0-byte
+   * IO_REPARSE_TAG_APPEXECLINK reparse point. fs.existsSync() does not follow
+   * it (so existsSync-only detection misses it entirely), AND node-pty's
+   * CreateProcess cannot launch the alias stub directly — it silently falls
+   * back to Windows PowerShell 5.1 (dogfood 2026-06-10: declaring the alias as
+   * the shell spawned 5.1, not pwsh 7). So we must hand back the *resolved*
+   * package target (readlink, the same path libuv would resolve), which spawns
+   * pwsh 7 correctly. Requiring the resolved target to exist also filters out a
+   * dead alias stub left by an uninstalled package.
+   */
+  private resolveLaunchableWindowsExe(p: string): string | null {
+    if (!p) return null;
+    try {
+      if (fs.existsSync(p)) return p;
+      if (!fs.lstatSync(p).isSymbolicLink()) return null;
+      const target = fs.readlinkSync(p);
+      // win32 semantics explicitly: this helper only runs for Windows paths,
+      // but unit tests exercise it on POSIX hosts too.
+      const resolved = path.win32.isAbsolute(target) ? target : path.resolve(path.dirname(p), target);
+      return fs.existsSync(resolved) ? resolved : null;
+    } catch {
+      return null;
+    }
+  }
+
   private detectWindows(): ShellInfo[] {
     const shells: ShellInfo[] = [];
 
@@ -27,8 +57,9 @@ export class ShellDetector {
       path.join(process.env.LOCALAPPDATA || '', 'Microsoft\\WindowsApps\\pwsh.exe'),
     ];
     for (const p of pwshPaths) {
-      if (fs.existsSync(p)) {
-        shells.push({ name: 'PowerShell 7', path: p });
+      const launchable = this.resolveLaunchableWindowsExe(p);
+      if (launchable) {
+        shells.push({ name: 'PowerShell 7', path: launchable });
         break;
       }
     }
