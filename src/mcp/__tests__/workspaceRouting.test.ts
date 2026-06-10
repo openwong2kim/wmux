@@ -49,9 +49,10 @@ describe('MCP workspace routing (source-level invariants)', () => {
     // requireWorkspaceId is the single sanctioned caller: it throws when the
     // resolver returns falsy. Any tool handler that calls resolveWorkspaceId()
     // directly can silently fall back to the active workspace on a miss — the
-    // exact bug. `resolveWorkspaceId` passed by REFERENCE (resolveDefaultPtyId
-    // deps) has no parens and is intentionally excluded by the `()` in the regex.
-    const directCalls = src.match(/resolveWorkspaceId\(\)/g) ?? [];
+    // exact bug. The `(?<!function )` lookbehind excludes the parameter-less
+    // declaration (`async function resolveWorkspaceId()`) so only call sites
+    // are counted.
+    const directCalls = src.match(/(?<!function )resolveWorkspaceId\(\)/g) ?? [];
     expect(directCalls).toHaveLength(1);
   });
 
@@ -61,11 +62,69 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
   });
 
-  it('terminal default routing uses verified identity, not the env-hint resolver', () => {
-    const start = src.indexOf('function resolveDefaultPtyId');
+  it('terminal default routing binds the verified router, not the weak resolver (#163 Part 2)', () => {
+    // resolveTerminalRouteBound wires resolveTerminalRoute to the verified
+    // PID-map lookup + claim pinning. The cache getter MUST honor
+    // workspaceResolved so an invalidated (stale) identity re-resolves instead
+    // of being served from cache — otherwise callRpc's self-heal is defeated.
+    const start = src.indexOf('function resolveTerminalRouteBound');
     expect(start).toBeGreaterThan(0);
-    const block = src.slice(start, src.indexOf('}', start) + 2);
-    expect(block).toContain('resolveDefaultPtyIdImpl({ sendRpc, resolveWorkspaceId: resolveVerifiedWorkspaceId })');
+    const block = src.slice(start, src.indexOf('\n}', start) + 2);
+    expect(block).toContain('resolveTerminalRoute(');
+    expect(block).toContain('lookupPidMapWorkspace');
+    expect(block).toContain('claimPinnedRoute');
+    // The verified-cache getter is gated on workspaceResolved (R1).
+    expect(block).toMatch(/workspaceResolved\s*\?\s*MY_WORKSPACE_ID\s*:\s*''/);
+  });
+
+  it('the env-hint resolver (verifiedOnly) is fully removed — terminal IO never reaches it', () => {
+    // resolveVerifiedWorkspaceId / the verifiedOnly opt were the old seam. They
+    // are gone; terminal routing now has its own verified path. If they ever
+    // reappear, terminal IO could regain the env-hint fallback.
+    expect(src).not.toContain('resolveVerifiedWorkspaceId');
+    expect(src).not.toContain('verifiedOnly');
+  });
+
+  it('every terminal IO tool routes through resolveTerminalRouteBound, never the workspaceId resolvers', () => {
+    for (const tool of [
+      'terminal_read',
+      'terminal_read_events',
+      'terminal_send',
+      'terminal_send_key',
+    ]) {
+      const block = toolBlock(tool);
+      expect(block, `${tool} must use resolveTerminalRouteBound`).toMatch(
+        /resolveTerminalRouteBound\(/,
+      );
+      // Must NOT resolve workspaceId via the weak/A2A resolvers — those accept
+      // the spoofable env hint.
+      expect(block, `${tool} must not call requireWorkspaceId`).not.toMatch(
+        /requireWorkspaceId\(\)/,
+      );
+      expect(block, `${tool} must not call resolveWorkspaceId`).not.toMatch(
+        /resolveWorkspaceId\(\)/,
+      );
+    }
+  });
+
+  it('terminal tools always send workspaceId — never a conditional spread that could drop it', () => {
+    // An absent/empty workspaceId makes the main-side assertWorkspaceOwnsPty
+    // treat the call as an internal caller and skip the ownership check — the
+    // exact bypass. workspaceId must come from route.workspaceId unconditionally.
+    for (const tool of [
+      'terminal_read',
+      'terminal_read_events',
+      'terminal_send',
+      'terminal_send_key',
+    ]) {
+      const block = toolBlock(tool);
+      expect(block, `${tool} must set workspaceId from route unconditionally`).toMatch(
+        /workspaceId:\s*route\.workspaceId/,
+      );
+      expect(block, `${tool} must not conditionally spread workspaceId`).not.toMatch(
+        /\.\.\.\(\s*workspaceId/,
+      );
+    }
   });
 
   it('browser_session_start is GLOBAL — carries no workspace identity (no resolver calls)', () => {

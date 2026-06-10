@@ -1,138 +1,118 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import { resolveDefaultPtyId, __resetPaneResolverForTesting } from '../paneResolver';
-import type { PaneResolverDeps } from '../paneResolver';
+import {
+  claimPinnedRoute,
+  getPinnedRoute,
+  __resetPaneResolverForTesting,
+} from '../paneResolver';
+import type { ClaimDeps } from '../paneResolver';
 
-function makeDeps(overrides: Partial<PaneResolverDeps> = {}): PaneResolverDeps {
+function makeDeps(overrides: Partial<ClaimDeps> = {}): ClaimDeps {
   return {
     sendRpc: overrides.sendRpc ?? vi.fn(),
-    resolveWorkspaceId: overrides.resolveWorkspaceId ?? vi.fn().mockResolvedValue(''),
   };
 }
 
-describe('resolveDefaultPtyId', () => {
+describe('claimPinnedRoute / getPinnedRoute', () => {
   beforeEach(() => {
     __resetPaneResolverForTesting();
   });
 
-  it('returns null for internal callers so the main process falls through to the active pane', async () => {
-    // Internal callers can resolve their host workspace via the PID-tree walk.
-    const sendRpc = vi.fn();
-    const resolveWorkspaceId = vi.fn().mockResolvedValue('ws-123');
-    const deps = makeDeps({ sendRpc, resolveWorkspaceId });
-
-    const result = await resolveDefaultPtyId(deps);
-
-    expect(result).toBeNull();
-    // Internal callers must NOT claim a new workspace — that would spawn a
-    // surprise pane when the user just wanted to target their current one.
-    expect(sendRpc).not.toHaveBeenCalled();
+  it('returns null from getPinnedRoute before any claim', () => {
+    expect(getPinnedRoute()).toBeNull();
   });
 
-  it('claims a workspace and returns the new ptyId for external callers', async () => {
+  it('claims a dedicated workspace and pins BOTH ids', async () => {
     const sendRpc = vi.fn().mockResolvedValue({
       ptyId: 'pty-42',
       workspaceId: 'ws-new',
       workspaceName: 'MCP',
     });
-    const resolveWorkspaceId = vi.fn().mockResolvedValue('');
-    const deps = makeDeps({ sendRpc, resolveWorkspaceId });
+    const deps = makeDeps({ sendRpc });
 
-    const result = await resolveDefaultPtyId(deps);
+    const route = await claimPinnedRoute(deps);
 
-    expect(result).toBe('pty-42');
+    expect(route).toEqual({ ptyId: 'pty-42', workspaceId: 'ws-new' });
     expect(sendRpc).toHaveBeenCalledWith('mcp.claimWorkspace', { name: 'MCP' });
+    // The pin must carry the workspaceId so terminal RPCs have a verified id to
+    // assert against — never the spoofable env hint.
+    expect(getPinnedRoute()).toEqual({ ptyId: 'pty-42', workspaceId: 'ws-new' });
   });
 
-  it('pins the claimed ptyId so subsequent calls reuse it without a second RPC', async () => {
-    const sendRpc = vi.fn().mockResolvedValue({ ptyId: 'pty-7' });
-    const deps = makeDeps({
-      sendRpc,
-      resolveWorkspaceId: vi.fn().mockResolvedValue(''),
-    });
+  it('pins the claimed route so subsequent claims reuse it without a second RPC', async () => {
+    const sendRpc = vi.fn().mockResolvedValue({ ptyId: 'pty-7', workspaceId: 'ws-7' });
+    const deps = makeDeps({ sendRpc });
 
-    const first = await resolveDefaultPtyId(deps);
-    const second = await resolveDefaultPtyId(deps);
-    const third = await resolveDefaultPtyId(deps);
+    const first = await claimPinnedRoute(deps);
+    const second = await claimPinnedRoute(deps);
+    const third = await claimPinnedRoute(deps);
 
-    expect(first).toBe('pty-7');
-    expect(second).toBe('pty-7');
-    expect(third).toBe('pty-7');
-    // All three calls must share a single claim RPC — re-claiming on every
-    // tool call would spawn a new workspace each time and defeat the point.
+    expect(first).toEqual({ ptyId: 'pty-7', workspaceId: 'ws-7' });
+    expect(second).toEqual(first);
+    expect(third).toEqual(first);
+    // All three calls share a single claim RPC — re-claiming on every tool call
+    // would spawn a new workspace each time.
     expect(sendRpc).toHaveBeenCalledTimes(1);
   });
 
   it('de-duplicates concurrent first calls so only one claim RPC fires', async () => {
-    // Simulate an RPC that takes a moment — three terminal tools invoked in
-    // parallel on first startup must converge onto a single claim.
     let resolveRpc!: (value: unknown) => void;
     const sendRpc = vi.fn().mockImplementation(
       () => new Promise((r) => {
         resolveRpc = r;
       }),
     );
-    const deps = makeDeps({
-      sendRpc,
-      resolveWorkspaceId: vi.fn().mockResolvedValue(''),
-    });
+    const deps = makeDeps({ sendRpc });
 
-    const p1 = resolveDefaultPtyId(deps);
-    const p2 = resolveDefaultPtyId(deps);
-    const p3 = resolveDefaultPtyId(deps);
+    const p1 = claimPinnedRoute(deps);
+    const p2 = claimPinnedRoute(deps);
+    const p3 = claimPinnedRoute(deps);
 
-    // Only one inflight claim, not three.
     await Promise.resolve();
     await Promise.resolve();
     expect(sendRpc).toHaveBeenCalledTimes(1);
 
-    resolveRpc({ ptyId: 'pty-99' });
+    resolveRpc({ ptyId: 'pty-99', workspaceId: 'ws-99' });
 
-    await expect(p1).resolves.toBe('pty-99');
-    await expect(p2).resolves.toBe('pty-99');
-    await expect(p3).resolves.toBe('pty-99');
+    await expect(p1).resolves.toEqual({ ptyId: 'pty-99', workspaceId: 'ws-99' });
+    await expect(p2).resolves.toEqual({ ptyId: 'pty-99', workspaceId: 'ws-99' });
+    await expect(p3).resolves.toEqual({ ptyId: 'pty-99', workspaceId: 'ws-99' });
   });
 
   it('throws and does not pin when the claim RPC fails', async () => {
     const sendRpc = vi.fn().mockRejectedValueOnce(new Error('pipe closed'));
-    const deps = makeDeps({
-      sendRpc,
-      resolveWorkspaceId: vi.fn().mockResolvedValue(''),
-    });
+    const deps = makeDeps({ sendRpc });
 
-    await expect(resolveDefaultPtyId(deps)).rejects.toThrow(
+    await expect(claimPinnedRoute(deps)).rejects.toThrow(
       'Unable to claim a dedicated MCP terminal workspace: pipe closed',
     );
+    expect(getPinnedRoute()).toBeNull();
 
-    // Next call should retry — failures must not permanently disable the
-    // external caller's default-pane resolution.
-    sendRpc.mockResolvedValueOnce({ ptyId: 'pty-retry' });
-    const retry = await resolveDefaultPtyId(deps);
-    expect(retry).toBe('pty-retry');
+    // Next call should retry — failures must not permanently disable resolution.
+    sendRpc.mockResolvedValueOnce({ ptyId: 'pty-retry', workspaceId: 'ws-retry' });
+    const retry = await claimPinnedRoute(deps);
+    expect(retry).toEqual({ ptyId: 'pty-retry', workspaceId: 'ws-retry' });
     expect(sendRpc).toHaveBeenCalledTimes(2);
   });
 
-  it('throws when the claim RPC returns a malformed response', async () => {
-    const sendRpc = vi.fn().mockResolvedValue({ workspaceId: 'ws-1' }); // missing ptyId
-    const deps = makeDeps({
-      sendRpc,
-      resolveWorkspaceId: vi.fn().mockResolvedValue(''),
-    });
+  it('throws and does not pin when the claim response is missing ptyId', async () => {
+    const sendRpc = vi.fn().mockResolvedValue({ workspaceId: 'ws-1' }); // no ptyId
+    const deps = makeDeps({ sendRpc });
 
-    await expect(resolveDefaultPtyId(deps)).rejects.toThrow(
+    await expect(claimPinnedRoute(deps)).rejects.toThrow(
       'Unable to claim a dedicated MCP terminal workspace: mcp.claimWorkspace returned no ptyId',
     );
+    expect(getPinnedRoute()).toBeNull();
   });
 
-  it('does not treat unverified workspace identity as internal', async () => {
-    const sendRpc = vi.fn().mockResolvedValue({ ptyId: 'pty-claimed' });
-    const deps = makeDeps({
-      sendRpc,
-      resolveWorkspaceId: vi.fn().mockResolvedValue(''),
-    });
+  it('throws and does not pin when the claim response is missing workspaceId', async () => {
+    // Pinning a ptyId without its owning workspaceId would force terminal RPCs
+    // back onto the spoofable env hint — fail closed instead (issue #163).
+    const sendRpc = vi.fn().mockResolvedValue({ ptyId: 'pty-1' }); // no workspaceId
+    const deps = makeDeps({ sendRpc });
 
-    const result = await resolveDefaultPtyId(deps);
-
-    expect(result).toBe('pty-claimed');
-    expect(sendRpc).toHaveBeenCalledWith('mcp.claimWorkspace', { name: 'MCP' });
+    await expect(claimPinnedRoute(deps)).rejects.toThrow(
+      'Unable to claim a dedicated MCP terminal workspace: mcp.claimWorkspace returned no workspaceId',
+    );
+    expect(getPinnedRoute()).toBeNull();
   });
 });

@@ -4,7 +4,8 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod';
 import { clearClientIdentity, sendRpc, setClientIdentity } from './wmux-client';
 import type { RpcMethod } from '../shared/rpc';
-import { resolveDefaultPtyId as resolveDefaultPtyIdImpl } from './paneResolver';
+import { claimPinnedRoute, getPinnedRoute } from './paneResolver';
+import { resolveTerminalRoute, type PidMapLookup } from './terminalRouting';
 import { classifyWorkspaceListResult, type WorkspaceLiveness } from './workspaceIdentity';
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { registerNavigationTools } from './playwright/tools/navigation';
@@ -82,65 +83,79 @@ function invalidateWorkspaceId(): void {
 }
 
 /**
- * Resolve workspace identity by:
- * 1. Getting PID→workspaceId mappings from the main process via RPC. The map
- *    is keyed by PID and resolved to the CURRENT owning workspace server-side,
- *    so it reflects live ownership rather than a frozen create-time value.
- * 2. Walking our process tree upward to find a matching PTY shell PID.
+ * Live PID→workspace lookup, classified so callers can tell apart a
+ * confirmed-external caller (map populated, our process chain absent) from a
+ * transient boot/respawn window (RPC down, or map momentarily empty).
  *
- * Process chain: MCP server → Claude Code → shell(PTY).
- *
- * The (stale-prone) env hint is used only as a last resort when the live map
- * cannot be obtained, and is NOT cached, so a later call retries live
- * resolution once the renderer / pid-map becomes available.
+ * Process chain: MCP server → Claude Code → shell(PTY). A `hit` is verified
+ * identity (our PID tree owns a live workspace); the env hint never reaches
+ * here. Shared by the weak resolveWorkspaceId() (A2A routing) and the verified
+ * terminal router (resolveTerminalRoute) so the walk lives in one place.
  */
-async function resolveWorkspaceId(opts?: { force?: boolean; verifiedOnly?: boolean }): Promise<string> {
-  if (workspaceResolved && MY_WORKSPACE_ID && !opts?.force) return MY_WORKSPACE_ID;
-
+async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
+  let mappings: Record<string, string> | undefined;
   try {
-    // Get PID→(live)workspaceId mappings from main process
     const result = await sendRpc('a2a.resolve.identity' as RpcMethod, {});
-    const { mappings } = result as { mappings: Record<string, string> };
-    if (mappings && Object.keys(mappings).length > 0) {
-      const knownPids = new Map<number, string>();
-      for (const [pidStr, wsId] of Object.entries(mappings)) {
-        const pid = parseInt(pidStr, 10);
-        if (!isNaN(pid)) knownPids.set(pid, wsId);
-      }
+    mappings = (result as { mappings: Record<string, string> }).mappings;
+  } catch {
+    return { status: 'rpc-down' };
+  }
+  if (!mappings || Object.keys(mappings).length === 0) {
+    return { status: 'empty-map' };
+  }
 
-      // Walk process tree upward: MCP server → Claude Code → shell(PTY)
-      let currentPid = process.ppid;
-      for (let depth = 0; depth < 10; depth++) {
-        const wsId = knownPids.get(currentPid);
-        if (wsId) {
-          MY_WORKSPACE_ID = wsId;
-          workspaceResolved = true;
-          return MY_WORKSPACE_ID;
-        }
-        const parentPid = await getParentPid(currentPid);
-        if (!parentPid || parentPid === currentPid || parentPid <= 1) break;
-        currentPid = parentPid;
-      }
-    }
-  } catch { /* resolve failed, fall through to env hint */ }
+  const knownPids = new Map<number, string>();
+  for (const [pidStr, wsId] of Object.entries(mappings)) {
+    const pid = parseInt(pidStr, 10);
+    if (!isNaN(pid)) knownPids.set(pid, wsId);
+  }
+
+  // Walk process tree upward: MCP server → Claude Code → shell(PTY)
+  let currentPid = process.ppid;
+  for (let depth = 0; depth < 10; depth++) {
+    const wsId = knownPids.get(currentPid);
+    if (wsId) return { status: 'hit', wsId };
+    const parentPid = await getParentPid(currentPid);
+    if (!parentPid || parentPid === currentPid || parentPid <= 1) break;
+    currentPid = parentPid;
+  }
+  return { status: 'miss' };
+}
+
+/**
+ * Resolve workspace identity for A2A / non-terminal tools (the WEAK resolver):
+ * 1. Verified PID-map lookup (caches a hit).
+ * 2. Falls back to the unconfirmed env hint when no verified identity is
+ *    available — NOT cached, so a later call retries live resolution.
+ *
+ * Terminal IO does NOT use this — it routes through resolveTerminalRoute,
+ * which trusts only verified identity (issue #163 Part 2). The env-hint
+ * fallback below is the bypass that fix closes for terminal IO; it remains
+ * for A2A tools, which carry no PTY-ownership assertion.
+ */
+async function resolveWorkspaceId(): Promise<string> {
+  if (workspaceResolved && MY_WORKSPACE_ID) return MY_WORKSPACE_ID;
+
+  const lookup = await lookupPidMapWorkspace();
+  if (lookup.status === 'hit') {
+    MY_WORKSPACE_ID = lookup.wsId;
+    workspaceResolved = true;
+    return MY_WORKSPACE_ID;
+  }
 
   // Last resort: the unconfirmed (possibly stale) env hint. Not cached.
-  // Security-sensitive routing (terminal default-pane resolution) asks for a
-  // verified identity only; in that mode, never treat a user-supplied env var
-  // as proof that the MCP server is running inside a wmux PTY.
   //
-  // Even for non-verified callers the hint must still not name a CONFIRMED
-  // ghost. The PID-map walk above already fails closed once legacy "ws-" debris
-  // is pruned (a2a.resolve.identity); the hint is the only remaining path a
-  // re-minted ghost id can leak through. Drop it ONLY on positive proof it is
-  // gone ('absent'); on 'unknown' (workspace.list transiently unavailable
-  // during boot reconcile) keep trusting the hint, since this fallback exists
-  // precisely to carry the call through while the RPC layer is briefly down.
-  // Not cached, so a later call re-checks once the renderer is ready.
-  if (!opts?.verifiedOnly && ENV_WORKSPACE_HINT) {
+  // The hint must still not name a CONFIRMED ghost. The PID-map walk above
+  // already fails closed once legacy "ws-" debris is pruned; the hint is the
+  // only remaining path a re-minted ghost id can leak through. Drop it ONLY on
+  // positive proof it is gone ('absent'); on 'unknown' (workspace.list
+  // transiently unavailable during boot reconcile) keep trusting the hint,
+  // since this fallback exists precisely to carry the call through while the
+  // RPC layer is briefly down. Not cached, so a later call re-checks once the
+  // renderer is ready.
+  if (ENV_WORKSPACE_HINT) {
     if ((await isLiveWorkspace(ENV_WORKSPACE_HINT)) !== 'absent') return ENV_WORKSPACE_HINT;
   }
-  if (opts?.verifiedOnly) return '';
 
   // Last-resort cached identity. invalidateWorkspaceId() clears the
   // `workspaceResolved` flag but NOT MY_WORKSPACE_ID, so a re-minted/closed
@@ -154,10 +169,6 @@ async function resolveWorkspaceId(opts?: { force?: boolean; verifiedOnly?: boole
     workspaceResolved = false;
   }
   return MY_WORKSPACE_ID;
-}
-
-function resolveVerifiedWorkspaceId(): Promise<string> {
-  return resolveWorkspaceId({ force: true, verifiedOnly: true });
 }
 
 /**
@@ -219,13 +230,27 @@ async function requireWorkspaceId(): Promise<string> {
   return wsId;
 }
 
-// External-caller pane pinning — see src/mcp/paneResolver.ts for rationale.
-// Bind the resolver's deps to this module's sendRpc + verified identity
-// resolver. Unlike A2A tools, terminal defaults must not trust WMUX_WORKSPACE_ID
-// because an external launcher can spoof it and otherwise regain active-pane
-// fallback.
-function resolveDefaultPtyId(): Promise<string | null> {
-  return resolveDefaultPtyIdImpl({ sendRpc, resolveWorkspaceId: resolveVerifiedWorkspaceId });
+// Verified terminal routing — see src/mcp/terminalRouting.ts for the full
+// state machine. Binds the router's deps to this module's PID-map lookup,
+// verified-identity cache, and external-claim pinning. Unlike A2A tools,
+// terminal IO must not trust WMUX_WORKSPACE_ID: an external launcher can spoof
+// it to a victim workspace and read/write that workspace's terminal
+// (issue #163). The cache getter honors workspaceResolved so a stale identity
+// invalidated by callRpc re-resolves instead of being served from cache.
+function resolveTerminalRouteBound(explicitPtyId?: string) {
+  return resolveTerminalRoute(
+    {
+      lookupPidMapWorkspace,
+      getCachedVerifiedWorkspaceId: () => (workspaceResolved ? MY_WORKSPACE_ID : ''),
+      cacheVerifiedWorkspaceId: (wsId: string) => {
+        MY_WORKSPACE_ID = wsId;
+        workspaceResolved = true;
+      },
+      getPinnedRoute,
+      claimPinnedRoute: () => claimPinnedRoute({ sendRpc }),
+    },
+    explicitPtyId,
+  );
 }
 
 // === Browser tools (RPC-based: surface management stays in main process) ===
@@ -314,10 +339,9 @@ server.tool(
     tail_lines: z.number().int().positive().optional().describe('Return only the last N non-empty lines of the viewport. Omit to return everything the terminal buffer knows about.'),
   },
   async ({ ptyId, tail_lines }) => {
-    const workspaceId = await requireWorkspaceId();
-    const params: Record<string, unknown> = { workspaceId };
-    const effective = ptyId ?? (await resolveDefaultPtyId()) ?? undefined;
-    if (effective) params.ptyId = effective;
+    const route = await resolveTerminalRouteBound(ptyId);
+    const params: Record<string, unknown> = { workspaceId: route.workspaceId };
+    if (route.ptyId) params.ptyId = route.ptyId;
     if (tail_lines !== undefined) params.tail_lines = tail_lines;
     return callRpc('input.readScreen', params);
   },
@@ -333,10 +357,9 @@ server.tool(
     lastCommandOnly: z.boolean().optional().describe('Skip the events list and only return lastCompletedRange (the byte-offset range + exit code of the most recently finished command).'),
   },
   async ({ ptyId, limit, sinceOffset, lastCommandOnly }) => {
-    const workspaceId = await requireWorkspaceId();
-    const params: Record<string, unknown> = { workspaceId };
-    const effective = ptyId ?? (await resolveDefaultPtyId()) ?? undefined;
-    if (effective) params.ptyId = effective;
+    const route = await resolveTerminalRouteBound(ptyId);
+    const params: Record<string, unknown> = { workspaceId: route.workspaceId };
+    if (route.ptyId) params.ptyId = route.ptyId;
     if (limit !== undefined) params.limit = limit;
     if (sinceOffset !== undefined) params.sinceOffset = sinceOffset;
     if (lastCommandOnly) params.lastCommandOnly = true;
@@ -353,10 +376,9 @@ server.tool(
     submit: z.boolean().optional().describe('When true, append a carriage return (\\r) after the text so it is committed — equivalent to pressing Enter. Use this for shell commands and TUI chat prompts (e.g. Claude Code, REPLs). Default: false (text is written as-is; you must call terminal_send_key({ key: "enter" }) separately to commit).'),
   },
   async ({ text, ptyId, submit }) => {
-    const workspaceId = await requireWorkspaceId();
-    const effective = ptyId ?? (await resolveDefaultPtyId()) ?? undefined;
-    const base: Record<string, unknown> = { text, workspaceId };
-    if (effective) base.ptyId = effective;
+    const route = await resolveTerminalRouteBound(ptyId);
+    const base: Record<string, unknown> = { text, workspaceId: route.workspaceId };
+    if (route.ptyId) base.ptyId = route.ptyId;
     if (submit) base.submit = true;
     return callRpc('input.send', base);
   },
@@ -372,9 +394,10 @@ server.tool(
     ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
   },
   async ({ key, ptyId }) => {
-    const workspaceId = await requireWorkspaceId();
-    const effective = ptyId ?? (await resolveDefaultPtyId()) ?? undefined;
-    return callRpc('input.sendKey', effective ? { key, ptyId: effective, workspaceId } : { key, workspaceId });
+    const route = await resolveTerminalRouteBound(ptyId);
+    const params: Record<string, unknown> = { key, workspaceId: route.workspaceId };
+    if (route.ptyId) params.ptyId = route.ptyId;
+    return callRpc('input.sendKey', params);
   },
 );
 

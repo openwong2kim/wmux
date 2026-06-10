@@ -9,58 +9,68 @@
  * Terminal / VS Code terminal) — there the user almost always has live
  * work in the focused pane and keystrokes would hijack it.
  *
- * This module holds a process-lifetime "pinned ptyId" that external
- * callers claim on first use via the mcp.claimWorkspace RPC. The pin
- * survives for the MCP server process only; when the external Claude Code
- * exits, the subprocess dies and the pin disappears. The claimed workspace
- * and its pane are left intact so the user can inspect output afterwards.
+ * This module holds a process-lifetime "pinned route" (ptyId + owning
+ * workspaceId) that external callers claim on first use via the
+ * mcp.claimWorkspace RPC. The pin survives for the MCP server process
+ * only; when the external Claude Code exits, the subprocess dies and the
+ * pin disappears. The claimed workspace and its pane are left intact so
+ * the user can inspect output afterwards.
+ *
+ * The workspaceId is pinned ALONGSIDE the ptyId (issue #163 Part 2): the
+ * terminal RPCs carry workspaceId so the main process can assert PTY
+ * ownership, and that id must come from the claim response — never from
+ * the spoofable WMUX_WORKSPACE_ID env hint. A pin without a workspaceId
+ * would force callers back onto the hint, reopening the bypass, so a
+ * claim response missing either id fails closed.
  */
 
 import type { RpcMethod } from '../shared/rpc';
 
-export interface PaneResolverDeps {
-  /** JSON-RPC sender (wmux-client.sendRpc, usually). */
-  sendRpc: (method: RpcMethod, params?: Record<string, unknown>) => Promise<unknown>;
-  /**
-   * Verified identity resolver. Must return empty string when the MCP server
-   * can't prove it is running inside a live wmux PTY. This resolver must not
-   * trust user-supplied environment hints such as WMUX_WORKSPACE_ID.
-   */
-  resolveWorkspaceId: () => Promise<string>;
+export interface PinnedRoute {
+  ptyId: string;
+  workspaceId: string;
 }
 
-let pinnedPtyId: string | null = null;
-let claimInFlight: Promise<string | null> | null = null;
+export interface ClaimDeps {
+  /** JSON-RPC sender (wmux-client.sendRpc, usually). */
+  sendRpc: (method: RpcMethod, params?: Record<string, unknown>) => Promise<unknown>;
+}
+
+let pinned: PinnedRoute | null = null;
+let claimInFlight: Promise<PinnedRoute> | null = null;
+
+/** The route claimed earlier in this process, or null before the first claim. */
+export function getPinnedRoute(): PinnedRoute | null {
+  return pinned;
+}
 
 /**
- * Resolve the default ptyId for terminal tools when the caller didn't
- * provide one explicitly.
- *
- * Returns:
- * - A pinned ptyId for external callers (first call triggers a claim RPC
- *   that creates a dedicated workspace + PTY).
- * - null for internal callers — signalling that the main process should
- *   fall back to the active pane (existing behavior).
+ * Claim a dedicated workspace + PTY for an external caller and pin both ids
+ * for the rest of this process's lifetime.
  *
  * Concurrent first calls de-dupe through claimInFlight so we don't race
- * and spawn multiple claim workspaces.
+ * and spawn multiple claim workspaces. Failures throw (fail-closed) and do
+ * NOT pin, so a later call retries instead of being permanently disabled.
  */
-export async function resolveDefaultPtyId(deps: PaneResolverDeps): Promise<string | null> {
-  if (pinnedPtyId) return pinnedPtyId;
+export async function claimPinnedRoute(deps: ClaimDeps): Promise<PinnedRoute> {
+  if (pinned) return pinned;
   if (claimInFlight) return claimInFlight;
 
   claimInFlight = (async () => {
-    const wsId = await deps.resolveWorkspaceId();
-    if (wsId) return null;
-
     try {
       const result = await deps.sendRpc('mcp.claimWorkspace', { name: 'MCP' });
       const ptyId = (result as { ptyId?: string } | null)?.ptyId;
-      if (typeof ptyId === 'string' && ptyId.length > 0) {
-        pinnedPtyId = ptyId;
-        return ptyId;
+      const workspaceId = (result as { workspaceId?: string } | null)?.workspaceId;
+      if (typeof ptyId !== 'string' || ptyId.length === 0) {
+        throw new Error('mcp.claimWorkspace returned no ptyId');
       }
-      throw new Error('mcp.claimWorkspace returned no ptyId');
+      if (typeof workspaceId !== 'string' || workspaceId.length === 0) {
+        // Pinning the ptyId without its owner would leave terminal RPCs with
+        // no trustworthy workspaceId to assert against — fail closed instead.
+        throw new Error('mcp.claimWorkspace returned no workspaceId');
+      }
+      pinned = { ptyId, workspaceId };
+      return pinned;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[mcp] claimWorkspace failed:', message);
@@ -77,6 +87,6 @@ export async function resolveDefaultPtyId(deps: PaneResolverDeps): Promise<strin
 
 /** Test-only: clear module state so each test starts with an empty pin. */
 export function __resetPaneResolverForTesting(): void {
-  pinnedPtyId = null;
+  pinned = null;
   claimInFlight = null;
 }

@@ -1,4 +1,6 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerInputRpc } from '../input.rpc';
@@ -128,4 +130,29 @@ describe('input.readScreen — cross-workspace ownership (issue #163)', () => {
       expect.objectContaining({ workspaceId: 'ws-self' }),
     );
   });
+});
+
+// Source-level invariant lock (issue #163, requested in the issue). All four
+// terminal-IO RPC handlers must call assertWorkspaceOwnsPty before delegating
+// to the renderer. input.readScreen was the one that silently skipped it; this
+// pins parity so a future handler can't regress the same way. Keys off source
+// text rather than behavior so it catches a NEW handler that forgets the check.
+describe('input.rpc — assertWorkspaceOwnsPty parity (source invariant)', () => {
+  const rawSrc = fs.readFileSync(path.join(__dirname, '..', 'input.rpc.ts'), 'utf-8');
+  const src = rawSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+
+  // Slice a single router.register('name', ...) block, bounded by the next
+  // router.register( (or end of file for the last one).
+  function handlerBlock(method: string): string {
+    const start = src.indexOf(`router.register('${method}'`);
+    expect(start, `handler ${method} must exist`).toBeGreaterThan(0);
+    const next = src.indexOf('router.register(', start + method.length + 20);
+    return src.slice(start, next > start ? next : src.length);
+  }
+
+  for (const method of ['input.send', 'input.sendKey', 'input.readScreen', 'terminal.readEvents']) {
+    it(`${method} calls assertWorkspaceOwnsPty`, () => {
+      expect(handlerBlock(method)).toMatch(/assertWorkspaceOwnsPty\(/);
+    });
+  }
 });
