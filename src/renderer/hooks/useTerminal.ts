@@ -534,6 +534,18 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (e.ctrlKey && !e.shiftKey && e.code === 'Backquote') {
         return false;
       }
+      // Terminal font zoom: Ctrl+= / Ctrl+- / Ctrl+0 (#171). Let these bubble to
+      // useKeyboard instead of feeding '=' / '-' / '0' bytes to the PTY. Match by
+      // physical code as well so zoom survives a Hangul / non-Latin IME. The
+      // Ctrl++ (Shift+=) and numpad variants are already covered: the Ctrl+Shift
+      // catch-all below bubbles the former, and useKeyboard maps NumpadAdd etc.
+      if (e.ctrlKey && !e.shiftKey && (
+        e.key === '=' || e.key === '-' || e.key === '0' ||
+        e.code === 'Equal' || e.code === 'Minus' || e.code === 'Digit0' ||
+        e.code === 'NumpadAdd' || e.code === 'NumpadSubtract' || e.code === 'Numpad0'
+      )) {
+        return false; // let DOM bubble to useKeyboard's zoom handlers
+      }
       if (e.ctrlKey && e.shiftKey) {
         return false; // all Ctrl+Shift combos → app shortcuts
       }

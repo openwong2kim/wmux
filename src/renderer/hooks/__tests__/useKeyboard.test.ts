@@ -24,6 +24,7 @@ import * as path from 'node:path';
 import {
   ctrlByteForKeyCode,
   createPrefixActions,
+  clampFontSize,
   type PrefixActionDeps,
 } from '../useKeyboard';
 import { DEFAULT_PREFIX_CONFIG } from '../../../shared/types';
@@ -418,5 +419,84 @@ describe('useKeyboard handler — inspect suppression (D-exclusive)', () => {
     // unconsumed so InspectOverlay's React onKeyDown handles exitInspect.
     const head = handlerHead();
     expect(head).not.toMatch(/Escape/);
+  });
+});
+
+// ─── Terminal font zoom (#171) ──────────────────────────────────────────────
+
+describe('clampFontSize', () => {
+  it('passes through values inside the [12, 24] range', () => {
+    expect(clampFontSize(14)).toBe(14);
+    expect(clampFontSize(12)).toBe(12);
+    expect(clampFontSize(24)).toBe(24);
+  });
+
+  it('clamps below the minimum up to 12', () => {
+    expect(clampFontSize(11)).toBe(12);
+    expect(clampFontSize(-5)).toBe(12);
+    expect(clampFontSize(0)).toBe(12);
+  });
+
+  it('clamps above the maximum down to 24', () => {
+    expect(clampFontSize(25)).toBe(24);
+    expect(clampFontSize(100)).toBe(24);
+  });
+});
+
+describe('useKeyboard handler — zoom shortcuts (#171)', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'useKeyboard.ts'),
+    'utf-8',
+  );
+
+  it('zoom range constants stay aligned with the Settings slider + store default', () => {
+    expect(src).toContain('const FONT_SIZE_MIN = 12;');
+    expect(src).toContain('const FONT_SIZE_MAX = 24;');
+    expect(src).toContain('const FONT_SIZE_DEFAULT = 14;');
+  });
+
+  it('zoom in matches both e.key and physical e.code (IME-safe), incl. numpad', () => {
+    // The combined zoom-in guard must accept '=' / '+' by key and Equal /
+    // NumpadAdd by code so a Hangul IME (e.key = composed glyph) still zooms.
+    expect(src).toMatch(/key === '=' \|\| key === '\+' \|\| code === 'Equal' \|\| code === 'NumpadAdd'/);
+  });
+
+  it('zoom out matches Ctrl+- by key and Minus / NumpadSubtract by code', () => {
+    expect(src).toMatch(/key === '-' \|\| key === '_' \|\| code === 'Minus' \|\| code === 'NumpadSubtract'/);
+  });
+
+  it('reset zoom (Ctrl+0) restores FONT_SIZE_DEFAULT and excludes Shift', () => {
+    const reset = src.indexOf("key === '0' || code === 'Digit0' || code === 'Numpad0'");
+    expect(reset, 'reset guard not found').toBeGreaterThan(-1);
+    // The reset guard line requires !shift so Ctrl+Shift+0 stays free.
+    const guardLineStart = src.lastIndexOf('if (', reset);
+    expect(src.slice(guardLineStart, reset)).toContain('!shift');
+    expect(src).toContain('store.getState().setTerminalFontSize(FONT_SIZE_DEFAULT);');
+  });
+
+  it('places the zoom guards AFTER the Ctrl+1~9 workspace switch (so Ctrl+0 is unambiguous)', () => {
+    const wsSwitch = src.indexOf("key >= '1' && key <= '9'");
+    const zoomIn = src.indexOf('Zoom in: Ctrl+= or Ctrl++');
+    expect(wsSwitch).toBeGreaterThan(-1);
+    expect(zoomIn).toBeGreaterThan(-1);
+    expect(zoomIn).toBeGreaterThan(wsSwitch);
+  });
+
+  it('zoom writes through setTerminalFontSize (runtime font effect, no re-create)', () => {
+    expect(src).toContain('store.getState().setTerminalFontSize(next)');
+  });
+});
+
+describe('useTerminal — zoom combos bubble past xterm (#171)', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'useTerminal.ts'),
+    'utf-8',
+  );
+
+  it('returns false (bubbles) for Ctrl+= / Ctrl+- / Ctrl+0 by key and code', () => {
+    // Without this, xterm would feed '=' / '-' / '0' to the PTY instead of
+    // letting useKeyboard zoom. Match the guard that lists the keys + codes.
+    expect(src).toMatch(/e\.key === '=' \|\| e\.key === '-' \|\| e\.key === '0'/);
+    expect(src).toMatch(/e\.code === 'Equal' \|\| e\.code === 'Minus' \|\| e\.code === 'Digit0'/);
   });
 });

@@ -44,6 +44,20 @@ const PREFIX_TIMEOUT_MS = 2000;
 /** How long to show "Unknown: [key]" error */
 const PREFIX_ERROR_DISPLAY_MS = 500;
 
+// Terminal font-size zoom bounds. Kept in lockstep with the Appearance tab's
+// font-size slider (SettingsPanel TabAppearance: min 12 / max 24) and the
+// store default (uiSlice terminalFontSize: 14) so keyboard zoom and the slider
+// never disagree on the reachable range. One-px steps mirror the slider grain.
+const FONT_SIZE_MIN = 12;
+const FONT_SIZE_MAX = 24;
+const FONT_SIZE_DEFAULT = 14;
+const FONT_SIZE_STEP = 1;
+
+/** Clamp a candidate terminal font size into the [MIN, MAX] zoom range. */
+export function clampFontSize(n: number): number {
+  return Math.max(FONT_SIZE_MIN, Math.min(FONT_SIZE_MAX, n));
+}
+
 /**
  * Map a `Key<X>` `e.code` to the matching ASCII control byte (Ctrl+X).
  *
@@ -377,6 +391,47 @@ export function useKeyboard() {
         const idx = key === '9' ? workspaces.length - 1 : parseInt(key) - 1;
         if (idx >= 0 && idx < workspaces.length) {
           store.getState().setActiveWorkspace(workspaces[idx].id);
+        }
+        return;
+      }
+
+      // ─── Terminal font zoom (Ctrl+= / Ctrl+- / Ctrl+0) ─────────────────
+      // Matches the Windows Terminal / VS Code / browser convention. We match
+      // both e.key and the physical e.code: '=' and '-' sit on the same keys
+      // across Latin layouts, but resolving by code as well keeps zoom working
+      // under a Hangul / non-Latin IME (where e.key can be a composed glyph or
+      // 'Process'), mirroring the IME-safe split/prefix handling elsewhere in
+      // this file. Numpad +/-/0 are accepted too. Ctrl+1~9 above already
+      // returned, so '0' here is unambiguous (digit 0 is not a workspace key).
+      //
+      // The zoom step writes through setTerminalFontSize, so xterm picks it up
+      // via the runtime font effect in useTerminal (no terminal re-creation,
+      // scrollback preserved). For these to reach this handler while a terminal
+      // is focused, useTerminal's attachCustomKeyEventHandler must let the combo
+      // bubble (it does — see the zoom pass-through there).
+      const zoomFont = (delta: number) => {
+        const cur = store.getState().terminalFontSize;
+        const next = clampFontSize(cur + delta);
+        if (next !== cur) store.getState().setTerminalFontSize(next);
+      };
+      // Zoom in: Ctrl+= or Ctrl++ (Shift+=) — accept either so users needn't
+      // reach for Shift. NumpadAdd covers the numeric keypad.
+      if (cmdOrCtrl && !alt && (key === '=' || key === '+' || code === 'Equal' || code === 'NumpadAdd')) {
+        e.preventDefault();
+        zoomFont(FONT_SIZE_STEP);
+        return;
+      }
+      // Zoom out: Ctrl+- (Shift produces '_', accepted for symmetry).
+      if (cmdOrCtrl && !alt && (key === '-' || key === '_' || code === 'Minus' || code === 'NumpadSubtract')) {
+        e.preventDefault();
+        zoomFont(-FONT_SIZE_STEP);
+        return;
+      }
+      // Reset zoom: Ctrl+0 → back to the default font size.
+      if (cmdOrCtrl && !shift && !alt && (key === '0' || code === 'Digit0' || code === 'Numpad0')) {
+        e.preventDefault();
+        if (store.getState().terminalFontSize !== FONT_SIZE_DEFAULT) {
+          store.getState().setTerminalFontSize(FONT_SIZE_DEFAULT);
         }
         return;
       }
