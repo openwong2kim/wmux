@@ -1,6 +1,6 @@
 import { ipcMain, shell, app } from 'electron';
 import * as path from 'path';
-import { ShellDetector } from '../../pty/ShellDetector';
+import { ShellDetector } from '../../../shared/ShellDetector';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 

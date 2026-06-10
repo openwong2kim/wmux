@@ -37,7 +37,7 @@ vi.mock('electron', () => {
 // constructor so the test doesn't drag in pty discovery side effects.
 // Use a plain class — vi.fn().mockImplementation does not produce a real
 // constructor and would fail `new ShellDetector()`.
-vi.mock('../../../pty/ShellDetector', () => ({
+vi.mock('../../../../shared/ShellDetector', () => ({
   ShellDetector: class {
     detect() {
       return Promise.resolve([]);

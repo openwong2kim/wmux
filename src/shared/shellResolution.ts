@@ -74,6 +74,71 @@ export function windowsPowerShell51Path(): string {
 }
 
 /**
+ * Candidate absolute paths for a bare shell executable name (e.g.
+ * "pwsh.exe", "zsh"), per platform, in preference order. Single source of
+ * truth for the well-known location tables that previously lived inside
+ * DaemonSessionManager.resolveShellPath (#185). Platform is checked at call
+ * time (not import time) so the daemon's session-create path — and tests
+ * that redefine process.platform — resolve against the right table.
+ */
+export function bareShellCandidates(basename: string): string[] {
+  if (process.platform === 'win32') {
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+    const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
+    switch (basename) {
+      case 'powershell.exe': return [windowsPowerShell51Path()];
+      case 'pwsh.exe': return windowsPwsh7Candidates();
+      case 'cmd.exe': return [`${systemRoot}\\System32\\cmd.exe`];
+      case 'bash.exe': return [`${systemRoot}\\System32\\bash.exe`, `${progFiles}\\Git\\bin\\bash.exe`];
+      case 'wsl.exe': return [`${systemRoot}\\System32\\wsl.exe`];
+      default: return [];
+    }
+  }
+  if (process.platform === 'darwin') {
+    switch (basename) {
+      case 'zsh': return ['/bin/zsh'];
+      case 'bash': return ['/bin/bash'];
+      case 'pwsh': return ['/opt/homebrew/bin/pwsh', '/usr/local/bin/pwsh'];
+      case 'fish': return ['/opt/homebrew/bin/fish', '/usr/local/bin/fish'];
+      default: return [];
+    }
+  }
+  if (process.platform === 'linux') {
+    switch (basename) {
+      case 'bash': return ['/bin/bash'];
+      case 'zsh': return ['/usr/bin/zsh', '/bin/zsh'];
+      case 'pwsh': return ['/usr/bin/pwsh', '/snap/bin/pwsh'];
+      case 'fish': return ['/usr/bin/fish'];
+      default: return [];
+    }
+  }
+  return [];
+}
+
+/**
+ * Resolve a bare shell name to a launchable absolute path, or null when no
+ * well-known location matches (callers may then fall back to PATH search).
+ * On Windows each candidate goes through the Store-alias readlink resolution,
+ * so a bare "pwsh.exe" resolves on Store-only boxes too (#179/#183).
+ */
+export function resolveBareShellName(cmd: string): string | null {
+  const basename = path.basename(cmd).toLowerCase();
+  for (const c of bareShellCandidates(basename)) {
+    if (process.platform === 'win32') {
+      const launchable = resolveLaunchableWindowsExe(c);
+      if (launchable) return launchable;
+    } else {
+      try {
+        if (fs.existsSync(c)) return c;
+      } catch {
+        /* skip */
+      }
+    }
+  }
+  return null;
+}
+
+/**
  * Default shell resolution for Windows shared by main and daemon:
  * PowerShell 7 (either install flavor) → Windows PowerShell 5.1 →
  * bare names as a last resort (let CreateProcess search PATH).

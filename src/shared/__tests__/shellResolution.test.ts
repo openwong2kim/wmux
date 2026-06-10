@@ -6,6 +6,8 @@ import {
   findWindowsPwsh7,
   windowsPowerShell51Path,
   getWindowsDefaultShell,
+  bareShellCandidates,
+  resolveBareShellName,
 } from '../shellResolution';
 
 // Single source of truth for Windows shell candidate paths (#183) — shared
@@ -107,6 +109,74 @@ describe('shellResolution', () => {
 
     it('returns null when no pwsh 7 is usable', () => {
       expect(findWindowsPwsh7()).toBeNull();
+    });
+  });
+
+  // Bare-name resolution (#185) — the per-platform well-known location
+  // tables that previously lived inside DaemonSessionManager.resolveShellPath.
+  // Platform is read at CALL time, so redefining process.platform works.
+  describe('bare shell name resolution', () => {
+    let origPlatform: PropertyDescriptor | undefined;
+
+    const setPlatform = (p: string): void => {
+      origPlatform = origPlatform ?? Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: p, configurable: true });
+    };
+
+    afterEach(() => {
+      if (origPlatform) {
+        Object.defineProperty(process, 'platform', origPlatform);
+        origPlatform = undefined;
+      }
+    });
+
+    it('win32: resolves bare "pwsh.exe" through the Store alias (#179/#183)', () => {
+      setPlatform('win32');
+      mockAlias(true);
+      expect(resolveBareShellName('pwsh.exe')).toBe(ALIAS_TARGET);
+    });
+
+    it('win32: resolves "powershell.exe" and "cmd.exe" to System32 paths', () => {
+      setPlatform('win32');
+      existsSpy.mockImplementation((p: fs.PathLike) =>
+        p === PS5 || p === 'C:\\Windows\\System32\\cmd.exe',
+      );
+      expect(resolveBareShellName('powershell.exe')).toBe(PS5);
+      expect(resolveBareShellName('cmd.exe')).toBe('C:\\Windows\\System32\\cmd.exe');
+    });
+
+    it('darwin: resolves zsh/pwsh from canonical locations', () => {
+      setPlatform('darwin');
+      existsSpy.mockImplementation((p: fs.PathLike) =>
+        p === '/bin/zsh' || p === '/usr/local/bin/pwsh',
+      );
+      expect(resolveBareShellName('zsh')).toBe('/bin/zsh');
+      // First homebrew candidate absent → falls through to /usr/local.
+      expect(resolveBareShellName('pwsh')).toBe('/usr/local/bin/pwsh');
+    });
+
+    it('linux: resolves bash/pwsh from canonical locations', () => {
+      setPlatform('linux');
+      existsSpy.mockImplementation((p: fs.PathLike) =>
+        p === '/bin/bash' || p === '/snap/bin/pwsh',
+      );
+      expect(resolveBareShellName('bash')).toBe('/bin/bash');
+      expect(resolveBareShellName('pwsh')).toBe('/snap/bin/pwsh');
+    });
+
+    it('returns null for an unknown name or when nothing exists', () => {
+      setPlatform('win32');
+      expect(resolveBareShellName('mystery.exe')).toBeNull();
+      expect(resolveBareShellName('pwsh.exe')).toBeNull();
+    });
+
+    it('candidate tables are platform-scoped', () => {
+      setPlatform('darwin');
+      expect(bareShellCandidates('pwsh.exe')).toEqual([]);
+      expect(bareShellCandidates('pwsh')).toEqual(['/opt/homebrew/bin/pwsh', '/usr/local/bin/pwsh']);
+      setPlatform('win32');
+      expect(bareShellCandidates('pwsh')).toEqual([]);
+      expect(bareShellCandidates('pwsh.exe')).toEqual([PWSH7, ALIAS]);
     });
   });
 

@@ -2,6 +2,8 @@ import { EventEmitter } from 'node:events';
 import * as pty from 'node-pty';
 import type { IPty } from 'node-pty';
 import os from 'node:os';
+import fs from 'node:fs';
+import path from 'node:path';
 import type { DaemonSession, DaemonSessionState, DaemonConfig } from './types';
 import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
@@ -9,7 +11,7 @@ import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection } from './shell-integration';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac } from '../shared/platform';
-import { getWindowsDefaultShell, resolveLaunchableWindowsExe, windowsPowerShell51Path, windowsPwsh7Candidates } from '../shared/shellResolution';
+import { getWindowsDefaultShell, resolveBareShellName, resolveLaunchableWindowsExe } from '../shared/shellResolution';
 import { createDefaultConfig } from './config';
 
 const DEFAULT_COLS = 80;
@@ -475,72 +477,18 @@ export class DaemonSessionManager extends EventEmitter {
   /** Resolve a bare shell name (e.g. 'powershell.exe') to an absolute path. */
   private resolveShellPath(cmd: string | undefined): string | null {
     if (!cmd) return null;
-    const fs = require('fs');
-    const path = require('path');
     // Already absolute?
     if (path.isAbsolute(cmd)) {
       // On Windows the path may be a Store App Execution Alias that
       // existsSync misses and node-pty cannot spawn — resolve it (#179/#183).
       if (process.platform === 'win32') return resolveLaunchableWindowsExe(cmd);
-      try { if (fs.existsSync(cmd)) return cmd; } catch {}
+      try { if (fs.existsSync(cmd)) return cmd; } catch { /* fall through */ }
       return null;
     }
-    // Bare name — try well-known Windows locations
-    if (process.platform === 'win32') {
-      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      const progFiles = process.env.ProgramFiles || 'C:\\Program Files';
-      const lookup: Record<string, string[]> = {
-        'powershell.exe': [
-          windowsPowerShell51Path(),
-        ],
-        // Shared candidate table (#183): includes the Microsoft Store
-        // App Execution Alias, which the per-candidate readlink resolution
-        // below turns into a spawnable package target (#179).
-        'pwsh.exe': windowsPwsh7Candidates(),
-        'cmd.exe': [
-          `${systemRoot}\\System32\\cmd.exe`,
-        ],
-        'bash.exe': [
-          `${systemRoot}\\System32\\bash.exe`,
-          `${progFiles}\\Git\\bin\\bash.exe`,
-        ],
-        'wsl.exe': [
-          `${systemRoot}\\System32\\wsl.exe`,
-        ],
-      };
-      const basename = path.basename(cmd).toLowerCase();
-      const candidates = lookup[basename] || [];
-      for (const c of candidates) {
-        const launchable = resolveLaunchableWindowsExe(c);
-        if (launchable) return launchable;
-      }
-    } else if (process.platform === 'darwin') {
-      // mac: common shell names → absolute paths.
-      const lookup: Record<string, string[]> = {
-        'zsh': ['/bin/zsh'],
-        'bash': ['/bin/bash'],
-        'pwsh': ['/opt/homebrew/bin/pwsh', '/usr/local/bin/pwsh'],
-        'fish': ['/opt/homebrew/bin/fish', '/usr/local/bin/fish'],
-      };
-      const basename = path.basename(cmd).toLowerCase();
-      const candidates = lookup[basename] || [];
-      for (const c of candidates) {
-        try { if (fs.existsSync(c)) return c; } catch {}
-      }
-    } else if (process.platform === 'linux') {
-      // linux: common shell names → absolute paths.
-      const lookup: Record<string, string[]> = {
-        'bash': ['/bin/bash'],
-        'zsh': ['/usr/bin/zsh', '/bin/zsh'],
-        'pwsh': ['/usr/bin/pwsh', '/snap/bin/pwsh'],
-        'fish': ['/usr/bin/fish'],
-      };
-      const basename = path.basename(cmd).toLowerCase();
-      const candidates = lookup[basename] || [];
-      for (const c of candidates) {
-        try { if (fs.existsSync(c)) return c; } catch {}
-      }
-    }
+    // Bare name — shared well-known location tables (win/mac/linux), single
+    // source with the main process (#185).
+    const resolved = resolveBareShellName(cmd);
+    if (resolved) return resolved;
     return cmd; // fallback to original (let pty.spawn try PATH)
   }
 

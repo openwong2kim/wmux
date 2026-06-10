@@ -5,7 +5,7 @@ import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
 import { isWindows } from '../../shared/platform';
-import { ShellDetector } from './ShellDetector';
+import { ShellDetector } from '../../shared/ShellDetector';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
 

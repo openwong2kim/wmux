@@ -4,7 +4,7 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { PTYManager } from '../../pty/PTYManager';
 import { PTYBridge } from '../../pty/PTYBridge';
-import { ShellDetector } from '../../pty/ShellDetector';
+import { ShellDetector } from '../../../shared/ShellDetector';
 import { DaemonClient } from '../../DaemonClient';
 import { IPC, ENV_KEYS } from '../../../shared/constants';
 import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';

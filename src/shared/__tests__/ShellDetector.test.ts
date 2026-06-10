@@ -18,7 +18,7 @@ const platformState = vi.hoisted(() => {
   };
 });
 
-vi.mock('../../../shared/platform', () => ({
+vi.mock('../platform', () => ({
   get isWindows() { return platformState.state.isWindows; },
   get isMac() { return platformState.state.isMac; },
   get isLinux() { return platformState.state.isLinux; },

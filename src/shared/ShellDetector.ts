@@ -1,7 +1,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
-import { isMac, isLinux, platformChoice } from '../../shared/platform';
-import { findWindowsPwsh7, windowsPowerShell51Path } from '../../shared/shellResolution';
+import { isMac, isLinux, platformChoice } from './platform';
+import { findWindowsPwsh7, windowsPowerShell51Path } from './shellResolution';
 
 export interface ShellInfo {
   name: string;
