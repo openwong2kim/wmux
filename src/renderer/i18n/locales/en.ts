@@ -20,6 +20,7 @@ export const en = {
   'workspace.close': 'Close workspace',
   'workspace.copyInfo': 'Copy session info',
   'workspace.copied': 'Copied!',
+  'workspace.rename': 'Rename workspace',
   'workspace.configureProfile': 'Configure profile…',
   'workspace.duplicate': 'Duplicate workspace',
   'workspace.workingDirs': 'Working directories',
