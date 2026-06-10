@@ -4,6 +4,7 @@ import path from 'node:path';
 import { StringDecoder } from 'node:string_decoder';
 import { PTYManager } from '../../pty/PTYManager';
 import { PTYBridge } from '../../pty/PTYBridge';
+import { ShellDetector } from '../../pty/ShellDetector';
 import { DaemonClient } from '../../DaemonClient';
 import { IPC, ENV_KEYS } from '../../../shared/constants';
 import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';
@@ -209,7 +210,10 @@ export function registerPTYHandlers(
 
       const safeCwd = validateCwd(options?.cwd);
       const effectiveCwd = safeCwd ?? require('os').homedir();
-      const shell = options?.shell || (process.platform === 'win32' ? 'powershell.exe' : (process.env.SHELL || '/bin/bash'));
+      // Daemon-mode default shell. On Windows prefer PowerShell 7 over 5.1 via
+      // ShellDetector (issue #176) — mirrors PTYManager.getDefaultShell() so
+      // both modes pick the same default.
+      const shell = options?.shell || (process.platform === 'win32' ? new ShellDetector().getDefault() : (process.env.SHELL || '/bin/bash'));
 
       // Generate a unique session ID
       const crypto = require('crypto');

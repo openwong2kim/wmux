@@ -5,6 +5,7 @@ import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
 import { isWindows } from '../../shared/platform';
+import { ShellDetector } from './ShellDetector';
 
 export type ShellType = 'powershell' | 'bash' | 'cmd' | 'unknown';
 
@@ -259,18 +260,11 @@ export class PTYManager {
 
   private getDefaultShell(): string {
     if (process.platform === 'win32') {
-      // Try PowerShell paths in order — basename alone may fail
-      // if Electron's PATH is limited (e.g. installed via install.ps1)
-      const candidates = [
-        `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
-        `${process.env.ProgramFiles}\\PowerShell\\7\\pwsh.exe`,
-        'powershell.exe',
-        'cmd.exe',
-      ];
-      for (const s of candidates) {
-        try { if (fs.existsSync(s)) return s; } catch { /* skip */ }
-      }
-      return 'cmd.exe';
+      // Single source of truth for shell preference: ShellDetector lists
+      // PowerShell 7 before Windows PowerShell 5.1, so pwsh 7 is the default
+      // when installed (issue #176). 5.1 is the fallback — present on every
+      // Windows box, and absolute paths sidestep a limited Electron PATH.
+      return new ShellDetector().getDefault();
     }
     return process.env.SHELL || '/bin/bash';
   }
