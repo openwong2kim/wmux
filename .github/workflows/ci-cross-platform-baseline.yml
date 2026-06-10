@@ -86,7 +86,7 @@ jobs:
       # arguments and walk up the directory tree until it found a stray
       # .eslintrc.json inside the actions/checkout install dir.
       - name: ESLint (new cross-platform code, strict)
-        run: npx eslint --max-warnings=0 src/shared/platform.ts src/shared/__tests__/platform.test.ts src/main/pty/__tests__/ShellDetector.test.ts src/main/notification/__tests__/ToastManager.test.ts
+        run: npx eslint --max-warnings=0 src/shared/platform.ts src/shared/__tests__/platform.test.ts src/shared/ShellDetector.ts src/shared/__tests__/ShellDetector.test.ts src/shared/shellResolution.ts src/shared/__tests__/shellResolution.test.ts src/main/notification/__tests__/ToastManager.test.ts
 
       - name: Test (cross-platform)
         run: npm test
