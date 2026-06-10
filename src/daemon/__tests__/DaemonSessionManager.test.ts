@@ -1,5 +1,6 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { EventEmitter } from 'node:events';
+import fs from 'node:fs';
 
 // --- Mock node-pty -----------------------------------------------------------
 
@@ -560,6 +561,56 @@ describe('DaemonSessionManager', () => {
 
       expect(diedHandler).toHaveBeenCalledWith(expect.objectContaining({ id: 'rec-exit', exitCode: 2 }));
       expect(manager.getSession('rec-exit')?.meta.state).toBe('dead');
+    });
+  });
+
+  // The daemon's own default-shell fallback (getDefaultShell), used when a
+  // session is created with no explicit cmd, listed Windows PowerShell 5.1
+  // before PowerShell 7 — the same ordering bug #176/#178 fixed in the main
+  // process but left unfixed on the daemon path. Since 5.1 ships on every
+  // Windows box, a 5.1-first order masks an installed pwsh 7 forever.
+  describe('default shell fallback (Windows)', () => {
+    let origPlatform: PropertyDescriptor | undefined;
+    let origSystemRoot: string | undefined;
+    let origProgramFiles: string | undefined;
+    let existsSpy: ReturnType<typeof vi.spyOn>;
+
+    // getDefaultShell composes the candidate paths from these env vars via
+    // template literals, so pin them to fixed values: the test must match the
+    // source's exact string on any CI OS (where these vars are normally unset).
+    const PWSH7 = 'C:\\Program Files\\PowerShell\\7\\pwsh.exe';
+    const PS5 = 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe';
+
+    beforeEach(() => {
+      origPlatform = Object.getOwnPropertyDescriptor(process, 'platform');
+      Object.defineProperty(process, 'platform', { value: 'win32', configurable: true });
+      origSystemRoot = process.env.SystemRoot;
+      origProgramFiles = process.env.ProgramFiles;
+      process.env.SystemRoot = 'C:\\Windows';
+      process.env.ProgramFiles = 'C:\\Program Files';
+      existsSpy = vi.spyOn(fs, 'existsSync');
+    });
+
+    afterEach(() => {
+      if (origPlatform) Object.defineProperty(process, 'platform', origPlatform);
+      if (origSystemRoot === undefined) delete process.env.SystemRoot;
+      else process.env.SystemRoot = origSystemRoot;
+      if (origProgramFiles === undefined) delete process.env.ProgramFiles;
+      else process.env.ProgramFiles = origProgramFiles;
+      existsSpy.mockRestore();
+    });
+
+    it('prefers PowerShell 7 over Windows PowerShell 5.1 when both exist', () => {
+      existsSpy.mockImplementation((p: fs.PathLike) => p === PWSH7 || p === PS5);
+      // Empty cmd is falsy → resolveShellPath returns null → getDefaultShell runs.
+      const session = manager.createSession({ id: 'def-pwsh7', cmd: '', cwd: '.' });
+      expect(session.cmd).toBe(PWSH7);
+    });
+
+    it('falls back to Windows PowerShell 5.1 when pwsh 7 is absent', () => {
+      existsSpy.mockImplementation((p: fs.PathLike) => p === PS5);
+      const session = manager.createSession({ id: 'def-ps5', cmd: '', cwd: '.' });
+      expect(session.cmd).toBe(PS5);
     });
   });
 });

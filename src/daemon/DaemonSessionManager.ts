@@ -541,9 +541,13 @@ export class DaemonSessionManager extends EventEmitter {
   private getDefaultShell(): string {
     if (process.platform === 'win32') {
       const fs = require('fs');
+      // PowerShell 7 first, then Windows PowerShell 5.1 — mirrors
+      // ShellDetector's priority so the daemon picks the same default as the
+      // main process (issue #176). 5.1 ships on every Windows box, so a
+      // 5.1-first order would mask an installed pwsh 7 forever.
       const candidates = [
-        `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
         `${process.env.ProgramFiles}\\PowerShell\\7\\pwsh.exe`,
+        `${process.env.SystemRoot}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`,
         'powershell.exe',
         'cmd.exe',
       ];
