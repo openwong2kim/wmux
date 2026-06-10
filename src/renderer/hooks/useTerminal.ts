@@ -517,6 +517,24 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         return false;
       }
 
+      // IME-safe Escape (same class of bug as the Ctrl+J newline above).
+      // When a CJK IME is active, Windows/Chromium delivers the Escape
+      // keydown with `keyCode === 229` ("Process"). xterm's CompositionHelper
+      // drops EVERY keyCode-229 keydown (it returns false, so `_keyDown` bails
+      // before emitting), so no `\x1b` ever reaches the PTY — Esc silently does
+      // nothing inside in-pane TUIs (Claude Code's /status dialog, fzf, less, …)
+      // while Tab still works (Tab is keyCode 9, which the IME doesn't claim).
+      // We emit the ESC byte ourselves and bypass xterm. `keyCode === 229` is
+      // exactly the set xterm drops, so this never double-sends on the normal
+      // keyCode-27 path. `!isComposing` defers to the IME while a candidate
+      // window / preedit is open, where Escape legitimately cancels the
+      // composition rather than the foreground app (mirrors newlineKeys).
+      if (e.code === 'Escape' && !e.isComposing && e.keyCode === 229) {
+        e.preventDefault();
+        window.electronAPI.pty.write(ptyId, '\x1b');
+        return false;
+      }
+
       // Pass app shortcuts through to useKeyboard (don't let xterm consume them).
       // 'd' is the Ctrl+D split-right shortcut — without it xterm sends EOT (0x04)
       // to the PTY and PowerShell echoes it back as `^D` instead of triggering split.
