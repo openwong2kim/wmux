@@ -174,6 +174,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
 
   const closePane = useStore((s) => s.closePane);
 
+  // Issue #182: zoomed badge. Without a visual cue, a zoomed pane reads as
+  // "all my other panes vanished" — mirror tmux's status-line Z marker.
+  const isZoomed = useStore((s) => s.zoomedPaneId === pane.id);
+
   const handleCloseSurface = useCallback((surfaceId: string) => {
     const surface = pane.surfaces.find((s) => s.id === surfaceId);
     if (surface?.ptyId) {
@@ -199,6 +203,35 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       data-derived="accentCursor"
     >
       <ErrorBoundary name="pane">
+      {isZoomed && (
+        <button
+          onClick={(e) => {
+            e.stopPropagation();
+            useStore.getState().togglePaneZoom(pane.id);
+          }}
+          title={t('settings.prefix.toggleZoom')}
+          aria-label={t('settings.prefix.toggleZoom')}
+          style={{
+            position: 'absolute',
+            top: 4,
+            right: 6,
+            zIndex: 20,
+            padding: '1px 6px',
+            fontSize: 10,
+            fontFamily: 'ui-monospace, monospace',
+            fontWeight: 700,
+            letterSpacing: '0.08em',
+            color: 'var(--bg-main)',
+            backgroundColor: 'var(--accent-cursor)',
+            border: 'none',
+            borderRadius: 3,
+            cursor: 'pointer',
+            opacity: 0.85,
+          }}
+        >
+          ZOOM
+        </button>
+      )}
       <SurfaceTabs
         surfaces={pane.surfaces}
         activeSurfaceId={pane.activeSurfaceId}

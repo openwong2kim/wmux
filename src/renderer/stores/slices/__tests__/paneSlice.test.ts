@@ -11,6 +11,8 @@ type TestState = PaneSlice & {
   workspaces: Workspace[];
   activeWorkspaceId: string;
   pushToast: ReturnType<typeof vi.fn>;
+  // uiSlice field that splitPane/closePane mutate for zoom coherence (#182).
+  zoomedPaneId: string | null;
 };
 
 function createTestStore() {
@@ -20,6 +22,7 @@ function createTestStore() {
       workspaces: [ws],
       activeWorkspaceId: ws.id,
       pushToast: vi.fn(),
+      zoomedPaneId: null,
       // @ts-expect-error — minimal test store doesn't match full StoreState
       ...createPaneSlice(...args),
     }))
@@ -397,6 +400,53 @@ describe('PaneSlice', () => {
       store.getState().setSurfaceAgentStatus('pty-1', 'waiting');
       store.getState().setSurfaceAgentStatus('pty-1', 'complete');
       expect(store.getState().surfaceAgentStatus['pty-1']).toBe('complete');
+    });
+  });
+
+  // Issue #182: split/close must keep the zoom state coherent. zoomedPaneId
+  // lives in uiSlice; the pane mutations below clear it via the shared
+  // StoreState, so the test store injects it with setState.
+  describe('pane zoom coherence (issue #182)', () => {
+    it('splitPane un-zooms when the zoomed pane is in the target workspace', () => {
+      const ws = getActiveWorkspace(store);
+      const rootId = ws.rootPane.id;
+      store.setState({ zoomedPaneId: rootId });
+
+      store.getState().splitPane(rootId, 'horizontal');
+
+      expect(store.getState().zoomedPaneId).toBeNull();
+    });
+
+    it('splitPane keeps a zoom that belongs to a different workspace', () => {
+      const ws = getActiveWorkspace(store);
+      store.setState({ zoomedPaneId: 'pane-elsewhere' });
+
+      store.getState().splitPane(ws.rootPane.id, 'horizontal');
+
+      expect(store.getState().zoomedPaneId).toBe('pane-elsewhere');
+    });
+
+    it('closePane clears the zoom when closing the zoomed pane', () => {
+      const ws = getActiveWorkspace(store);
+      store.getState().splitPane(ws.rootPane.id, 'horizontal');
+      const leaves = getLeafPanes(getActiveWorkspace(store).rootPane);
+      const target = leaves[1].id;
+      store.setState({ zoomedPaneId: target });
+
+      store.getState().closePane(target);
+
+      expect(store.getState().zoomedPaneId).toBeNull();
+    });
+
+    it('closePane keeps the zoom when closing a different pane', () => {
+      const ws = getActiveWorkspace(store);
+      store.getState().splitPane(ws.rootPane.id, 'horizontal');
+      const leaves = getLeafPanes(getActiveWorkspace(store).rootPane);
+      store.setState({ zoomedPaneId: leaves[0].id });
+
+      store.getState().closePane(leaves[1].id);
+
+      expect(store.getState().zoomedPaneId).toBe(leaves[0].id);
     });
   });
 });

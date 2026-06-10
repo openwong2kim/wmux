@@ -2,6 +2,7 @@ import { Fragment, useCallback, useEffect, useRef } from 'react';
 import { Panel, Group, Separator, useGroupRef } from 'react-resizable-panels';
 import type { Layout } from 'react-resizable-panels';
 import type { Pane as PaneType, Workspace } from '../../../shared/types';
+import { findLeaf } from '../../../shared/paneUtils';
 import { useStore } from '../../stores';
 import PaneComponent from './Pane';
 
@@ -21,6 +22,15 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
     return ws?.activePaneId || '';
   });
+
+  // Pane zoom (issue #182): when a leaf in THIS subtree is zoomed, hide every
+  // sibling Panel that is not on the path to the zoomed leaf. The library
+  // sizes panels with flexGrow over flexBasis:0, so once the off-path
+  // siblings (and separators) are display:none, the on-path panel is the only
+  // grow item left and naturally fills 100% — no layout state is touched, so
+  // un-zooming restores the exact previous split. All panes stay mounted
+  // (same hide-don't-unmount pattern as inactive workspaces in AppLayout).
+  const zoomedPaneId = useStore((s) => s.zoomedPaneId);
 
   const updatePaneSizes = useStore((s) => s.updatePaneSizes);
 
@@ -82,6 +92,10 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
 
   const orientation = pane.direction === 'horizontal' ? 'horizontal' : 'vertical';
 
+  // Zoom only affects this branch when the zoomed leaf lives somewhere below
+  // it; a zoomed pane in another workspace (or none) leaves rendering as-is.
+  const zoomInSubtree = zoomedPaneId !== null && findLeaf(pane, zoomedPaneId) !== null;
+
   return (
     <Group
       groupRef={groupRef}
@@ -90,24 +104,34 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
       resizeTargetMinimumSize={{ coarse: 37, fine: 16 }}
       onLayoutChanged={handleLayoutChanged}
     >
-      {pane.children.map((child, i) => (
-        <Fragment key={child.id}>
-          {i > 0 && (
-            <Separator
-              className={`${
-                orientation === 'horizontal' ? 'w-1.5' : 'h-1.5'
-              } bg-[var(--bg-surface)] hover:bg-[var(--accent-blue)] transition-colors`}
-            />
-          )}
-          <Panel
-            id={child.id}
-            defaultSize={pane.sizes?.[i] ?? 100 / pane.children.length}
-            minSize={10}
-          >
-            <PaneContainer pane={child} workspace={workspace} isWorkspaceVisible={isWorkspaceVisible} />
-          </Panel>
-        </Fragment>
-      ))}
+      {pane.children.map((child, i) => {
+        // Off the zoom path → hide (keep mounted). The data attribute is
+        // spread onto the Panel's OUTER flex-item div (className would land
+        // on the inner one), and the globals.css rule beats the library's
+        // inline display with !important.
+        const zoomHidden = zoomInSubtree && findLeaf(child, zoomedPaneId) === null;
+        return (
+          <Fragment key={child.id}>
+            {i > 0 && (
+              <Separator
+                className={`${
+                  orientation === 'horizontal' ? 'w-1.5' : 'h-1.5'
+                } bg-[var(--bg-surface)] hover:bg-[var(--accent-blue)] transition-colors ${
+                  zoomInSubtree ? 'wmux-zoom-hidden' : ''
+                }`}
+              />
+            )}
+            <Panel
+              id={child.id}
+              defaultSize={pane.sizes?.[i] ?? 100 / pane.children.length}
+              minSize={10}
+              {...(zoomHidden ? { 'data-wmux-zoom-hidden': true } : {})}
+            >
+              <PaneContainer pane={child} workspace={workspace} isWorkspaceVisible={isWorkspaceVisible} />
+            </Panel>
+          </Fragment>
+        );
+      })}
     </Group>
   );
 }

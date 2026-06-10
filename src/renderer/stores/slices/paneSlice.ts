@@ -192,6 +192,13 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       const previousActiveId = ws.activePaneId;
       ws.activePaneId = newPane.id;
 
+      // Issue #182: splitting while a pane in this workspace is zoomed must
+      // un-zoom (tmux behavior) — otherwise the freshly created sibling would
+      // be born hidden behind the zoom and look like the split did nothing.
+      if (state.zoomedPaneId !== null && findPane(ws.rootPane, state.zoomedPaneId)) {
+        state.zoomedPaneId = null;
+      }
+
       if (inheritedCwd) state.splitCwdSeed[newPane.id] = inheritedCwd;
 
       event = {
@@ -263,6 +270,11 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       delete state.paneNotificationRing[paneId];
       // A pane closed before its PTY spawned would leave a dangling cwd seed.
       delete state.splitCwdSeed[paneId];
+      // Issue #182: closing the zoomed pane ends the zoom; a stale id would
+      // make the next toggle on another pane read as an un-zoom.
+      if (state.zoomedPaneId === paneId) {
+        state.zoomedPaneId = null;
+      }
 
       event = {
         wsId: ws.id,

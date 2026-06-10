@@ -402,3 +402,13 @@ html, body, #root {
     border-width: 2px !important;
   }
 }
+
+/* Pane zoom (issue #182): panels off the path to the zoomed leaf are hidden
+ * but stay mounted. The attribute lives on the Panel's outer flex-item div;
+ * !important is required to beat the library's inline display style. With the
+ * off-path siblings and separators gone, the on-path panel is the only
+ * flex-grow item left (flexBasis is 0) and fills the whole group. */
+[data-panel][data-wmux-zoom-hidden],
+.wmux-zoom-hidden {
+  display: none !important;
+}
