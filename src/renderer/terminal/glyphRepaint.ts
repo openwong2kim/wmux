@@ -4,18 +4,16 @@
 // Symptom: a pane's text renders as corrupted/mojibake glyphs after fast
 // output bursts (CJK + box-drawing heavy, several panes updating at once),
 // and stays corrupted until a pane-border drag forces a resize — which is the
-// only code path today that triggers a full xterm repaint. Two known
-// root-cause classes produce exactly this signature:
-//
-//   1. WebGL texture atlas corruption — the addon's glyph cache holds stale
-//      texture data; only `clearTextureAtlas()` (or addon recreate) repairs it.
-//   2. Dirty-region desync — xterm's incremental renderer thinks rows are
-//      clean when their on-screen pixels are stale; a full-range `refresh()`
-//      repairs it.
+// only code path today that triggers a full xterm repaint. This module repairs
+// the dirty-region desync — xterm's incremental renderer treats rows as clean
+// when their on-screen pixels are stale — with a full-range `refresh()`. It
+// does NOT clear the WebGL texture atlas: xterm shares one glyph atlas across
+// same-config terminals (CharAtlasCache), so clearing it from one pane corrupts
+// the others; atlas-level staleness is left to xterm's own page management.
 //
 // The corruption is non-deterministic (driver/timing dependent), so instead of
 // chasing a single trigger we schedule cheap repaints at the moments a user
-// would notice staleness, covering both classes:
+// would notice staleness:
 //
 //   - `focus`   — the pane became the focused pane: mouse click, keyboard
 //                 pane-nav, or the MCP pane.focus bridge (useActivePaneFocus
@@ -28,10 +26,10 @@
 //                 (quiet for burstQuietMs). This is the "watching agent output
 //                 garble live" case where neither focus nor visibility changes.
 //
-// The caller decides repaint cost per reason: focus/visible clear the texture
-// atlas AND refresh (rare, user-initiated); burst only refreshes (frequent
-// under agent workloads — atlas re-rasterisation of a CJK-heavy screen on
-// every burst would be measurable GPU churn for no benefit in class 2).
+// All three reasons run the same full-range refresh; the caller does not vary
+// repaint cost per reason. The refresh never mutates the shared glyph atlas
+// (#191), so it cannot corrupt sibling panes — the burst-visibility gate aside,
+// the only per-reason difference is the throttle on `focus`.
 //
 // This module is pure scheduling logic (timers + counters) so it can be unit
 // tested without xterm; all rendering side effects live in the caller's

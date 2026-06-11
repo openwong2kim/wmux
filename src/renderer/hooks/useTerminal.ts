@@ -407,15 +407,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     }
     disposeWebglRef.current = disposeWebgl;
 
-    // Issue #166 — defensive repaints for the "garbled glyphs until resize"
-    // corruption. Strategy and trigger rationale live in terminal/glyphRepaint.ts.
-    // Cost split: focus/visible clear the WebGL texture atlas (repairs atlas
-    // corruption; throttled — "focus" fires not just on mouse clicks but on
+    // Issue #166 — defensive full-range repaint for the "garbled glyphs until
+    // resize" corruption (dirty-region desync). Strategy and trigger rationale
+    // live in terminal/glyphRepaint.ts. Every reason (focus / visible / burst)
+    // does a plain full-range refresh; "focus" is throttled because it fires on
     // every keyboard pane-nav / MCP pane.focus via useActivePaneFocus's
-    // term.focus(), so the throttle is load-bearing) AND force a full refresh
-    // (repairs dirty-region desync); burst-settle only refreshes — clearing a
-    // CJK-heavy atlas after every agent output burst would be constant
-    // re-rasterisation.
+    // term.focus(), not just mouse clicks, so the throttle is load-bearing. The
+    // repaint must NOT clearTextureAtlas (see the repaint body): xterm shares one
+    // glyph atlas across same-config panes, so clearing it corrupts the others.
     const glyphRepaint = createGlyphRepaintScheduler({
       repaint: (reason) => {
         if (terminalRef.current !== terminal) return;
@@ -425,13 +424,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // this gate, N background agent panes each schedule a full-range
         // refresh after every output burst.
         if (reason === 'burst' && !isVisibleRef.current) return;
-        if (reason !== 'burst') {
-          try {
-            webglAddonRef.current?.clearTextureAtlas();
-          } catch {
-            // addon may be mid-dispose (pool eviction race) — refresh still runs
-          }
-        }
+        // Do NOT clearTextureAtlas here (#191). xterm shares ONE glyph atlas
+        // across every same-config terminal (CharAtlasCache); clearing it from
+        // one pane empties it for all of them, and siblings that do not rebuild
+        // their model on a focus event then sample an emptied/repositioned atlas
+        // and render garbled or blank glyphs. A full-range refresh repairs only
+        // this pane's dirty-region staleness without mutating the shared atlas.
         try {
           terminal.refresh(0, terminal.rows - 1);
         } catch {
@@ -1210,13 +1208,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // ResizeObserver tick (after selection is released) handles the
       // deferred resize naturally.
       const id = requestAnimationFrame(() => {
-        // Issue #166 — repaint BEFORE the selection guard: neither the atlas
-        // clear nor refresh() touches the selection, and a stale pane must
-        // repair on view-switch-back even while a selection is live. Runs
-        // after the pool acquire above, so if a NEW addon was just created
-        // the atlas clear is a cheap no-op on a fresh atlas; the case this
-        // exists for is the fast switch where the old context (and its
-        // possibly stale atlas) was kept alive.
+        // Issue #166 — repaint BEFORE the selection guard: refresh() does not
+        // touch the selection, and a stale pane must repair on view-switch-back
+        // even while a selection is live. This matters most on a fast switch
+        // where the pool kept the old (possibly stale) context alive instead of
+        // rebuilding it.
         glyphRepaintRef.current?.onVisible();
         if (!shouldFitWhilePreservingSelection(terminalRef.current)) {
           console.debug('[Terminal] visibility fit skipped — active selection');
