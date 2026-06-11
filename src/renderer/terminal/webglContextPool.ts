@@ -19,20 +19,15 @@
 // force-evicted by Chromium (uncontrolled, unreliable fallback, blank panes).
 //
 // Net effect: we never exceed the cap, so Chromium never force-evicts, so no
-// terminal ever loses its renderer. The most-recently-shown terminals get
+// terminal ever loses its renderer. The 12 most-recently-shown terminals get
 // GPU acceleration; any extras render via DOM (visually identical, only slower
 // on high-throughput output — invisible for the background panes you are not
 // actively reading). Persistence can now restore an arbitrary session count
 // and every restored terminal renders.
 
-/** Safe ceiling below Chromium's ~16-context cap. The headroom (8) absorbs
- *  incidental contexts the renderer process may hold AND the brief overlap
- *  during churn — an evicted context's GPU-side teardown can lag the new
- *  grant's creation, so the transient live count runs above this budget. Paired
- *  with the loseContext() teardown in useTerminal (which stops disposed addons
- *  from leaking zombie contexts), this keeps the real live count well under
- *  Chromium's cap even under heavy split/tab churn (#191 / #197). */
-export const MAX_WEBGL_CONTEXTS = 8;
+/** Safe ceiling below Chromium's ~16-context cap. Leaves headroom for any
+ *  incidental contexts the renderer process may hold. */
+export const MAX_WEBGL_CONTEXTS = 12;
 
 interface PoolEntry {
   /** Load the WebGL addon for this terminal (idempotent — no-ops if loaded). */
