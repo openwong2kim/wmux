@@ -129,7 +129,8 @@ describe('WebglContextPool', () => {
     terms.forEach((t) => request(pool, t));
 
     expect(pool.grantedCount()).toBe(MAX_WEBGL_CONTEXTS);
-    // The 12 most-recently-requested keep GPU; the first 8 fell back to DOM.
+    // The MAX_WEBGL_CONTEXTS most-recently-requested keep GPU; the earlier
+    // overflow fell back to DOM.
     const granted = pool.grantedTokens().sort((x, y) => Number(x.slice(1)) - Number(y.slice(1)));
     expect(granted).toEqual(
       Array.from({ length: MAX_WEBGL_CONTEXTS }, (_, i) => `s${i + (20 - MAX_WEBGL_CONTEXTS)}`),

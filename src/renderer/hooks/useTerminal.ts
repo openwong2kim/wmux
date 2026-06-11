@@ -19,6 +19,7 @@ import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
 import { attachImeResidueGuard } from '../terminal/imeResidueGuard';
 import { webglContextPool } from '../terminal/webglContextPool';
+import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 
@@ -393,11 +394,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // just loses GPU acceleration until it is granted a context again.
     function disposeWebgl() {
       if (!webglAddonRef.current) return;
-      try {
-        webglAddonRef.current.dispose();
-      } catch {
-        /* already disposed */
-      }
+      teardownWebglAddon(webglAddonRef.current);
       webglAddonRef.current = null;
       try {
         terminal.refresh(0, terminal.rows - 1);
@@ -461,7 +458,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (!terminalRef.current || terminalRef.current !== terminal) return;
       if (container.offsetWidth === 0 || container.offsetHeight === 0) return;
       if (webglAddonRef.current) {
-        webglAddonRef.current.dispose();
+        // [#191/#197] Release the old context (not just dispose) before
+        // recreating — this runs once per terminal on mount, so on a multi-pane
+        // restore it is a burst of dispose+create pairs; leaking the old
+        // contexts here is a prime zombie-context source.
+        teardownWebglAddon(webglAddonRef.current);
         webglAddonRef.current = null;
         loadWebgl();
       }
@@ -1084,12 +1085,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         webglDisposeTimerRef.current = null;
       }
       // Release our pool slot (disposes the addon if we held a context) so the
-      // budget frees for other terminals. The backstop dispose covers the
+      // budget frees for other terminals. The backstop teardown covers the
       // unlikely case of an addon created outside a pool grant (e.g. the
-      // fonts.ready atlas rebuild firing during teardown).
+      // fonts.ready atlas rebuild firing during teardown) — it must loseContext
+      // too, not just dispose, or unmount churn leaks zombie contexts (#191 / #197).
       webglContextPool.release(webglTokenRef.current);
-      webglAddonRef.current?.dispose();
-      webglAddonRef.current = null;
+      if (webglAddonRef.current) {
+        teardownWebglAddon(webglAddonRef.current);
+        webglAddonRef.current = null;
+      }
       loadWebglRef.current = null;
       disposeWebglRef.current = null;
       terminal.dispose();
