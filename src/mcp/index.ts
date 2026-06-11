@@ -196,19 +196,26 @@ async function isLiveWorkspace(wsId: string): Promise<WorkspaceLiveness> {
 
 async function getParentPid(pid: number): Promise<number | null> {
   try {
-    const { execFileSync } = await import('child_process');
+    // Async execFile (not execFileSync): this walk runs per hop on the
+    // workspace-identity hot path, so a synchronous spawn would park the Node
+    // event loop for the child's whole lifetime — up to the per-hop timeout ×
+    // depth — freezing every other MCP operation. Awaiting a promisified
+    // execFile keeps the loop free while each child process runs.
+    const { execFile } = await import('child_process');
+    const { promisify } = await import('util');
+    const execFileAsync = promisify(execFile);
     if (process.platform === 'win32') {
       const path = await import('path');
       const ps = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-      const out = execFileSync(ps, [
+      const { stdout } = await execFileAsync(ps, [
         '-NoProfile', '-Command',
         `(Get-CimInstance Win32_Process -Filter "ProcessId=${pid}").ParentProcessId`,
       ], { encoding: 'utf8', windowsHide: true, timeout: 5000 });
-      const parsed = parseInt(out.trim(), 10);
+      const parsed = parseInt(stdout.trim(), 10);
       return isNaN(parsed) ? null : parsed;
     } else {
-      const out = execFileSync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 });
-      return parseInt(out.trim(), 10) || null;
+      const { stdout } = await execFileAsync('ps', ['-o', 'ppid=', '-p', String(pid)], { encoding: 'utf8', timeout: 3000 });
+      return parseInt(stdout.trim(), 10) || null;
     }
   } catch {
     return null;
