@@ -123,8 +123,22 @@ export class PlaywrightEngine {
    * Refreshed on every browser.cdp.info response and cleared on disconnect.
    */
   private shellUrl: string | null = null;
+  /**
+   * Resolves the calling session's workspace id for auto-open (#190). Wired
+   * by src/mcp/index.ts to requireWorkspaceId(). Auto-open issues browser.open
+   * outside any MCP tool handler, so the per-tool requireWorkspaceId() guard
+   * cannot cover it; without this resolver the RPC would carry no workspaceId
+   * and the renderer would bind the new surface to the UI-active workspace at
+   * IPC-handling time — the wrong workspace whenever the user switches while
+   * the open attempt is in flight.
+   */
+  private workspaceIdResolver: (() => Promise<string>) | null = null;
 
   private constructor() {}
+
+  setWorkspaceIdResolver(resolver: () => Promise<string>): void {
+    this.workspaceIdResolver = resolver;
+  }
 
   static getInstance(): PlaywrightEngine {
     if (!PlaywrightEngine.instance) {
@@ -329,12 +343,13 @@ export class PlaywrightEngine {
           console.error('[PlaywrightEngine] No page found — auto-opening browser surface');
           this.autoOpenAttempted = true;
           try {
-            await sendRpc('browser.open', {});
-            // Wait for the webview to register its CDP target
-            await sleep(2000);
-            await this.disconnect();
-            await this.ensureConnected();
-            continue; // retry page discovery
+            if (await this.attemptAutoOpen()) {
+              // Wait for the webview to register its CDP target
+              await sleep(2000);
+              await this.disconnect();
+              await this.ensureConnected();
+              continue; // retry page discovery
+            }
           } catch (openErr) {
             console.error('[PlaywrightEngine] Auto-open failed:', openErr instanceof Error ? openErr.message : String(openErr));
           }
@@ -365,6 +380,37 @@ export class PlaywrightEngine {
     // Without this, one early failure permanently blocks all Playwright page discovery.
     setTimeout(() => { this.playwrightFailed = false; this.autoOpenAttempted = false; }, 10_000);
     return null;
+  }
+
+  /**
+   * Issue the auto-open browser.open RPC, pinned to the calling session's
+   * workspace. Fails closed: when no resolver is wired or identity cannot be
+   * resolved, NO RPC is sent (returns false) — a workspace-less browser.open
+   * would let the renderer fall back to the UI-active workspace (#190). The
+   * caller then proceeds to the normal "no page" retry/error path, surfacing
+   * the existing "Call browser_open first" guidance to the user.
+   */
+  private async attemptAutoOpen(): Promise<boolean> {
+    if (!this.workspaceIdResolver) {
+      console.error('[PlaywrightEngine] Auto-open skipped: no workspace resolver wired');
+      return false;
+    }
+    let workspaceId: string;
+    try {
+      workspaceId = await this.workspaceIdResolver();
+    } catch (err) {
+      console.error(
+        '[PlaywrightEngine] Auto-open skipped: workspace identity unresolved:',
+        err instanceof Error ? err.message : String(err),
+      );
+      return false;
+    }
+    if (!workspaceId) {
+      console.error('[PlaywrightEngine] Auto-open skipped: empty workspace id');
+      return false;
+    }
+    await sendRpc('browser.open', { workspaceId });
+    return true;
   }
 
   /**

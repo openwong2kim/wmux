@@ -335,3 +335,96 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
     expect(priv(engine).shellUrl).toBe(shellUrl);
   });
 });
+
+/*
+ * Regression tests for auto-open workspace routing (#190).
+ *
+ * Background: when getPage() finds no CDP-discoverable page, Strategy 4
+ * auto-opens a browser surface via the browser.open RPC. A workspace-less
+ * browser.open is bound by the renderer (useRpcBridge.ts) to
+ * store.activeWorkspaceId AT IPC-HANDLING TIME — so if the user switches
+ * workspaces while the open attempt is in flight, the surface lands in the
+ * newly active workspace instead of the calling session's. The engine must
+ * therefore send the session's workspaceId (resolved via the strict resolver
+ * wired by src/mcp/index.ts), and must fail closed — issue NO browser.open at
+ * all — when identity cannot be resolved.
+ */
+
+// Minimal access to the engine's auto-open surface. setWorkspaceIdResolver is
+// public API; attemptAutoOpen is private and reached the same way the
+// shell-URL tests reach their internals.
+interface AutoOpenInternals {
+  setWorkspaceIdResolver(resolver: () => Promise<string>): void;
+  attemptAutoOpen(): Promise<boolean>;
+}
+function autoOpen(engine: PlaywrightEngine): AutoOpenInternals {
+  return engine as unknown as AutoOpenInternals;
+}
+
+describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  it('sends browser.open with the workspaceId from the wired resolver', async () => {
+    const engine = PlaywrightEngine.getInstance();
+    autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-caller-1');
+    mockSendRpc.mockResolvedValue({});
+
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(true);
+
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
+  });
+
+  it('fails closed — no browser.open RPC — when the resolver throws', async () => {
+    const engine = PlaywrightEngine.getInstance();
+    autoOpen(engine).setWorkspaceIdResolver(async () => {
+      throw new Error('Workspace identity unknown');
+    });
+
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(false);
+
+    expect(mockSendRpc).not.toHaveBeenCalledWith('browser.open', expect.anything());
+  });
+
+  it('fails closed when the resolver returns an empty id', async () => {
+    const engine = PlaywrightEngine.getInstance();
+    autoOpen(engine).setWorkspaceIdResolver(async () => '');
+
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(false);
+
+    expect(mockSendRpc).not.toHaveBeenCalledWith('browser.open', expect.anything());
+  });
+
+  it('fails closed when no resolver is wired', async () => {
+    const engine = PlaywrightEngine.getInstance();
+
+    await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(false);
+
+    expect(mockSendRpc).not.toHaveBeenCalledWith('browser.open', expect.anything());
+  });
+
+  it('getPage never issues a workspace-less browser.open when identity is unavailable', async () => {
+    // End-to-end through the page-discovery loop: no page exists anywhere and
+    // no resolver is wired. The misrouting shape is browser.open carrying no
+    // workspaceId — the renderer then falls back to the UI-active workspace.
+    // The engine must skip auto-open entirely (fail closed) and give up.
+    const sessions: FakeSession[] = [];
+    mockConnectOverCDP.mockImplementation(async () => makeFakeBrowser(sessions));
+    mockSendRpc.mockImplementation((method: string) => {
+      if (method === 'browser.cdp.info') {
+        return Promise.resolve({ cdpPort: 59222, targets: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    const engine = PlaywrightEngine.getInstance();
+    const page = await engine.getPage();
+
+    expect(page).toBeNull();
+    const browserOpenCalls = mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open');
+    expect(browserOpenCalls).toHaveLength(0);
+  }, 15_000);
+});
