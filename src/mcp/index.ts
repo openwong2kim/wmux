@@ -293,10 +293,9 @@ registerExtractionTools(server);
 
 // The engine's auto-open (getPage Strategy 4) issues browser.open outside any
 // tool handler, so it cannot rely on the per-tool requireWorkspaceId() guard
-// above (#190). Inject the strict resolver so the auto-opened surface is
-// pinned to this session's workspace; on a resolve miss the engine fails
-// closed (skips auto-open) instead of sending a workspace-less browser.open,
-// which the renderer would bind to the UI-active workspace.
+// above. Inject the strict resolver so the auto-opened surface is pinned to
+// this session's workspace; on a resolve miss the engine fails closed (skips
+// auto-open) rather than opening in an unspecified workspace.
 PlaywrightEngine.getInstance().setWorkspaceIdResolver(requireWorkspaceId);
 
 // === Browser session tools ===

@@ -337,17 +337,16 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
 });
 
 /*
- * Regression tests for auto-open workspace routing (#190).
+ * Auto-open workspace routing invariants (#190).
  *
- * Background: when getPage() finds no CDP-discoverable page, Strategy 4
- * auto-opens a browser surface via the browser.open RPC. A workspace-less
- * browser.open is bound by the renderer (useRpcBridge.ts) to
- * store.activeWorkspaceId AT IPC-HANDLING TIME — so if the user switches
- * workspaces while the open attempt is in flight, the surface lands in the
- * newly active workspace instead of the calling session's. The engine must
- * therefore send the session's workspaceId (resolved via the strict resolver
- * wired by src/mcp/index.ts), and must fail closed — issue NO browser.open at
- * all — when identity cannot be resolved.
+ * When getPage() finds no CDP-discoverable page, Strategy 4 auto-opens a
+ * browser surface via the browser.open RPC. The renderer (useRpcBridge.ts)
+ * binds a workspace-less browser.open to store.activeWorkspaceId at
+ * IPC-handling time, so auto-open must carry the calling session's workspaceId
+ * (resolved via the strict resolver wired by src/mcp/index.ts) to pin the
+ * surface to the right workspace, and must fail closed — issue no browser.open
+ * at all — when identity cannot be resolved, rather than open in an
+ * unspecified workspace.
  */
 
 // Minimal access to the engine's auto-open surface. setWorkspaceIdResolver is
@@ -386,7 +385,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
 
     await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(false);
 
-    expect(mockSendRpc).not.toHaveBeenCalledWith('browser.open', expect.anything());
+    expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
 
   it('fails closed when the resolver returns an empty id', async () => {
@@ -395,7 +394,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
 
     await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(false);
 
-    expect(mockSendRpc).not.toHaveBeenCalledWith('browser.open', expect.anything());
+    expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
 
   it('fails closed when no resolver is wired', async () => {
@@ -403,7 +402,7 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
 
     await expect(autoOpen(engine).attemptAutoOpen()).resolves.toBe(false);
 
-    expect(mockSendRpc).not.toHaveBeenCalledWith('browser.open', expect.anything());
+    expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   });
 
   it('getPage never issues a workspace-less browser.open when identity is unavailable', async () => {
@@ -426,5 +425,51 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     expect(page).toBeNull();
     const browserOpenCalls = mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open');
     expect(browserOpenCalls).toHaveLength(0);
+  }, 15_000);
+
+  it('getPage auto-opens with the session workspaceId, then returns the new webview', async () => {
+    // Full loop: no page on the first pass, so Strategy 4 auto-opens. The
+    // browser.open must carry the wired session id; after it lands, the webview
+    // surfaces and getPage returns it. This is the only test that exercises the
+    // id flowing through _getPageImpl -> attemptAutoOpen -> browser.open and on
+    // to a returned page, so a regression that dropped the id would fail here.
+    const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
+    let opened = false;
+
+    const webviewPage: FakePage = {
+      url: vi.fn().mockReturnValue('https://example.com/'),
+      context: vi.fn(),
+    };
+    const ctx = {
+      pages: vi.fn().mockImplementation(() => (opened ? [webviewPage] : [])),
+      newCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+    };
+    webviewPage.context.mockReturnValue(ctx);
+
+    const browser = {
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+      contexts: vi.fn().mockImplementation(() => (opened ? [ctx] : [])),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    mockConnectOverCDP.mockResolvedValue(browser);
+    mockSendRpc.mockImplementation((method: string) => {
+      if (method === 'browser.cdp.info') {
+        return Promise.resolve({ cdpPort: 9222, shellUrl, targets: [] });
+      }
+      if (method === 'browser.open') {
+        opened = true;
+        return Promise.resolve({ ok: true });
+      }
+      return Promise.resolve({});
+    });
+
+    const engine = PlaywrightEngine.getInstance();
+    autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-caller-1');
+
+    const page = await engine.getPage();
+
+    expect(page).toBe(webviewPage);
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
   }, 15_000);
 });

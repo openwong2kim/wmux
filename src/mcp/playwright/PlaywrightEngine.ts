@@ -124,13 +124,12 @@ export class PlaywrightEngine {
    */
   private shellUrl: string | null = null;
   /**
-   * Resolves the calling session's workspace id for auto-open (#190). Wired
-   * by src/mcp/index.ts to requireWorkspaceId(). Auto-open issues browser.open
-   * outside any MCP tool handler, so the per-tool requireWorkspaceId() guard
-   * cannot cover it; without this resolver the RPC would carry no workspaceId
-   * and the renderer would bind the new surface to the UI-active workspace at
-   * IPC-handling time — the wrong workspace whenever the user switches while
-   * the open attempt is in flight.
+   * Resolves the calling session's workspace id for auto-open. Wired by
+   * src/mcp/index.ts to requireWorkspaceId(). Auto-open issues browser.open
+   * outside any MCP tool handler, so it cannot use the per-tool
+   * requireWorkspaceId() guard and carries the resolved id explicitly instead.
+   * null means no resolver is wired, in which case auto-open is skipped (fail
+   * closed) rather than opening in an unspecified workspace.
    */
   private workspaceIdResolver: (() => Promise<string>) | null = null;
 
@@ -341,9 +340,12 @@ export class PlaywrightEngine {
         // This eliminates the requirement for callers to call browser_open first.
         if (attempt === 1 && !this.autoOpenAttempted) {
           console.error('[PlaywrightEngine] No page found — auto-opening browser surface');
-          this.autoOpenAttempted = true;
           try {
             if (await this.attemptAutoOpen()) {
+              // Latch only once the RPC actually went out, so a fail-closed
+              // skip (no resolver / unresolved identity) leaves a later call
+              // free to retry instead of spending the one-shot attempt.
+              this.autoOpenAttempted = true;
               // Wait for the webview to register its CDP target
               await sleep(2000);
               await this.disconnect();
