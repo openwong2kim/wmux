@@ -1,4 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
+import { readFileSync } from 'node:fs';
 import type { WebglAddon } from '@xterm/addon-webgl';
 import { teardownWebglAddon } from '../webglTeardown';
 
@@ -53,5 +54,32 @@ describe('teardownWebglAddon', () => {
     const f = makeAddon({ disposeThrows: true });
     expect(() => teardownWebglAddon(f.addon)).not.toThrow();
     expect(f.loseContext).toHaveBeenCalledOnce();
+  });
+});
+
+/**
+ * Dependency-shape lock. teardownWebglAddon force-releases the context by
+ * walking the private path addon._renderer._gl (WebglAddon._renderer →
+ * WebglRenderer._gl). The behavioural tests above all mock that shape, so an
+ * @xterm/addon-webgl bump that renamed those internals would let
+ * teardownWebglAddon silently degrade to a plain dispose — the zombie-context
+ * leak (#197) returns while every mock test stays green. Assert the two fields
+ * still exist in the installed package source so such a bump fails loudly here.
+ *
+ * `this\._gl\b` is word-bounded on purpose: a bare /_gl/ also matches `_glyph`
+ * (GlyphRenderer), which would keep passing even if WebglRenderer._gl were gone.
+ */
+describe('@xterm/addon-webgl private-path shape lock', () => {
+  // The resolved dist (lib/addon-webgl.js) is a minified UMD bundle, but
+  // property accesses like `this._renderer` / `this._gl` are NOT mangled, so
+  // require.resolve()'s entry is a reliable target — no need for the .ts source.
+  const addonSrc = readFileSync(require.resolve('@xterm/addon-webgl'), 'utf8');
+
+  it('WebglAddon still exposes the _renderer field teardown reads', () => {
+    expect(addonSrc).toMatch(/this\._renderer\b/);
+  });
+
+  it('WebglRenderer still exposes the _gl field teardown reads', () => {
+    expect(addonSrc).toMatch(/this\._gl\b/);
   });
 });
