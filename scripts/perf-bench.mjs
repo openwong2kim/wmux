@@ -112,7 +112,18 @@ function parseArgs(argv) {
     else if (a === '--cold-runs') out.coldRuns = Math.max(1, Number(argv[++i]) || 0);
     else if (a === '--samples') out.samples = Math.max(5, Number(argv[++i]) || 0);
     else if (a === '--samples8') out.samples8 = Math.max(5, Number(argv[++i]) || 0);
-    else if (a === '--scrollback-lines') out.scrollbackLines = Math.max(0, Number(argv[++i]) || 0);
+    else if (a === '--scrollback-lines') {
+      // Reject garbage instead of coercing to 0 — a silently-zeroed seed
+      // would measure "scrollback disabled" while the runner believes they
+      // asked for N lines, poisoning the A/B comparison.
+      const n = Number(argv[++i]);
+      if (!Number.isInteger(n) || n < 1) {
+        console.error(`--scrollback-lines expects a positive integer, got: ${argv[i]}`);
+        out.help = true;
+      } else {
+        out.scrollbackLines = n;
+      }
+    }
     else if (a === '--webgl-occupancy') out.webglOccupancy = true;
     else if (a === '--skip-cold') out.skipCold = true;
     else if (a === '--skip-input') out.skipInput = true;

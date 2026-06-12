@@ -101,9 +101,11 @@ node scripts/perf-bench.mjs --skip-cold --skip-input --scrollback-lines 1000  --
 empty-PTY pane) carrying `scrollbackLines: N` into each isolated instance's
 `userData`. The renderer's `loadSession` applies the preference **before any
 terminal mounts**, so every measured pane — the seeded pane and the 7 split
-children — allocates its xterm CircularBuffer at `N` lines. Both `idle1Pane` and
-`panes8` reflect the size, so the 8-pane delta between the two runs (where the
-per-pane cost is amplified ×8) is the scrollback's RAM contribution.
+children — gets an xterm CircularBuffer *configured* for `N` lines. Note the
+buffer is lazily populated: RAM only grows as scrollback actually fills, so on
+the near-empty terminals this scenario boots, the 8-pane delta between two runs
+bounds the *configured worst case*, not a guaranteed linear increase (see the
+measured verdict below, where the empty-buffer delta was ~0).
 
 > Why a `session.json` pre-seed and not a live CDP injection: `scrollbackLines`
 > is persisted in `SessionData`, but the zustand store is not exposed on
