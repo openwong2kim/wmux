@@ -548,14 +548,25 @@ async function bootInstance(inst) {
 //      not exist) — no Escape handler; click its first button ("disable",
 //      which also keeps the updater off during the bench).
 async function dismissOverlays(page) {
-  for (let attempt = 0; attempt < 4; attempt++) {
+  // The overlays mount asynchronously (session.load + first-run check), so a
+  // single "nothing there" observation right after boot can be premature —
+  // on slow CI runners the tour appeared AFTER this check and swallowed the
+  // 1-pane scenario's focus click. Require two consecutive clean observations
+  // before declaring the page overlay-free.
+  let cleanChecks = 0;
+  for (let attempt = 0; attempt < 10; attempt++) {
     try {
       const state = await page.evaluate(() => ({
         tour: !!document.querySelector('.onboarding-overlay'),
         autoUpdate: [...document.querySelectorAll('div.fixed.inset-0')]
           .some((d) => d.className.includes('z-[60]')),
       }));
-      if (!state.tour && !state.autoUpdate) return;
+      if (!state.tour && !state.autoUpdate) {
+        if (++cleanChecks >= 2) return;
+        await sleep(500);
+        continue;
+      }
+      cleanChecks = 0;
       if (state.tour) {
         await page.keyboard.press('Escape');
       } else {
@@ -595,8 +606,21 @@ async function measureInputLatency(page, sampleTarget, label) {
     return best;
   });
   if (!box) throw new Error('no usable .xterm-screen (all below 80x60)');
-  await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
-  await sleep(300);
+  // Click and VERIFY the terminal actually took focus. A late-mounting
+  // overlay (tour/auto-update) can swallow the click and steal focus to
+  // <body> — every sample then times out. Re-dismiss and retry.
+  let focused = false;
+  for (let attempt = 0; attempt < 4 && !focused; attempt++) {
+    await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+    await sleep(300);
+    focused = await page.evaluate(() =>
+      !!document.activeElement?.classList?.contains('xterm-helper-textarea'));
+    if (!focused) {
+      console.error(`[${label}] click did not focus the terminal (attempt ${attempt + 1}/4) — dismissing overlays and retrying`);
+      await dismissOverlays(page);
+    }
+  }
+  if (!focused) throw new Error('terminal never took focus after 4 click attempts');
 
   // Reset hook state for this scenario (drop pin from a previous pane).
   await page.evaluate(() => {
