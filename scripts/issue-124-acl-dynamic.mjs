@@ -118,7 +118,11 @@ function ps(script, targetPath) {
   // variable, 5.1 rebuilds its own default module path. Mirrors the same fix
   // in src/shared/security.ts childPsEnv().
   const env = targetPath === undefined ? { ...process.env } : { ...process.env, WMUX_DT_PATH: targetPath };
-  delete env.PSModulePath;
+  // Case-insensitive (mirrors childPsEnv in security.ts): the spread copies
+  // whichever casing the parent set, so a cased delete could miss variants.
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === 'psmodulepath') delete env[key];
+  }
   return execFileSync(
     POWERSHELL,
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `$ProgressPreference='SilentlyContinue'; ${script}`],

@@ -154,18 +154,32 @@ function readDaemonLog() {
   } catch { return ''; }
 }
 
-function daclIsOwnerOnly(p, ownerSid) {
-  // icacls output lists one "<principal>:(...)" per ACE; owner-only means a
-  // single ACE for our SID. icacls prints the SID when the account has no
-  // friendly name and the name otherwise — match loosely on ACE count.
+function daclIsOwnerOnly(p, ownerSid, ownerName) {
+  // icacls output lists one "<principal>:(...)" per ACE. Owner-only means a
+  // single ACE AND that ACE's principal is the current user — a single ACE
+  // belonging to SYSTEM/another account must FAIL (that is exactly the
+  // guarantee this dogfood verifies). icacls prints the friendly account name
+  // (MACHINE\user) when resolvable and the raw SID otherwise, so accept either
+  // form of the owner identity, case-insensitively.
   const out = execFileSync(ICACLS, [p], { windowsHide: true, env: { ...process.env } }).toString('utf8');
   const aceLines = out.split('\n').map((l) => l.trim()).filter((l) => l.includes(':('));
-  return { ownerOnly: aceLines.length === 1, aces: aceLines };
+  const principalOf = (line) => line.slice(0, line.indexOf(':(')).split(' ').pop().toLowerCase();
+  const ownerForms = [ownerSid.toLowerCase(), ownerName.toLowerCase()];
+  const isOwnerAce = aceLines.length === 1 && ownerForms.includes(principalOf(aceLines[0]));
+  return { ownerOnly: isOwnerAce, aces: aceLines };
 }
 
-const OWNER_SID = (() => {
+const { OWNER_SID, OWNER_NAME } = (() => {
+  // SID via `/user /fo list`: the "SID:" label is ASCII on every locale.
+  // Account name via bare `whoami` (no args): prints only MACHINE\user with
+  // no label at all — localized Windows (e.g. Korean "사용자 이름:") breaks
+  // any label-based parse of the /fo list output.
   const out = execFileSync(path.join(SYS32, 'whoami.exe'), ['/user', '/fo', 'list'], { windowsHide: true }).toString('utf8');
-  return out.match(/^\s*SID\s*:\s*(S-\S+)\s*$/im)[1];
+  const name = execFileSync(path.join(SYS32, 'whoami.exe'), [], { windowsHide: true }).toString('utf8').trim();
+  return {
+    OWNER_SID: out.match(/^\s*SID\s*:\s*(S-\S+)\s*$/im)[1],
+    OWNER_NAME: name,
+  };
 })();
 
 async function main() {
@@ -210,7 +224,7 @@ async function main() {
   console.log('\nfinal DACL state');
   for (const [label, p] of [['main token', mainToken], ['daemon token', daemonToken]]) {
     if (!p) continue;
-    const { ownerOnly, aces } = daclIsOwnerOnly(p, OWNER_SID);
+    const { ownerOnly, aces } = daclIsOwnerOnly(p, OWNER_SID, OWNER_NAME);
     check(`${label} DACL is single-ACE owner-only`, ownerOnly, JSON.stringify(aces));
   }
 

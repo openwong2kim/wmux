@@ -293,7 +293,12 @@ function powershellDaclArgs(): string[] {
  */
 function childPsEnv(filePath: string): NodeJS.ProcessEnv {
   const env: NodeJS.ProcessEnv = { ...process.env, WMUX_ACL_TARGET: filePath };
-  delete env.PSModulePath;
+  // Case-insensitive strip: Windows env vars are case-insensitive, and the
+  // spread above copies whichever single casing the parent happened to set
+  // (PSModulePath / psmodulepath / ...). A cased `delete` would miss variants.
+  for (const key of Object.keys(env)) {
+    if (key.toLowerCase() === 'psmodulepath') delete env[key];
+  }
   return env;
 }
 
