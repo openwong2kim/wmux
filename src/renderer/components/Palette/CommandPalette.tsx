@@ -9,6 +9,8 @@ import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import { tokenAttrs } from '../../themes';
 import { usePlugins } from '../../plugins/usePlugins';
 import { postPluginCommand } from '../../plugins/pluginFrameRegistry';
+import { runProjectCommand } from '../../utils/projectCommands';
+import { applyProjectLayoutFresh } from '../../utils/projectConfigProbe';
 
 // ---------------------------------------------------------------------------
 // SVG Icons (inline, no external dependency)
@@ -140,6 +142,8 @@ export default function CommandPalette() {
   const togglePalette = useStore((s) => s.toggleCommandPalette);
   // Plugin-contributed palette commands (B-1 ui.commands).
   const { plugins } = usePlugins();
+  // Project config commands (X5 wmux.json) — active workspace only.
+  const projectConfigs = useStore((s) => s.projectConfigs);
 
   const buildItems = useCallback((): PaletteItemData[] => {
     const items: PaletteItemData[] = [];
@@ -375,6 +379,55 @@ export default function CommandPalette() {
       });
     }
 
+    // Project config commands (X5 wmux.json). Trusted projects expose their
+    // custom commands + layout apply; anything else (untrusted / stale /
+    // denied / invalid) collapses to a single "Review…" entry that opens the
+    // trust dialog — display-only until the user approves the file.
+    const activeProject = activeWorkspaceId ? projectConfigs[activeWorkspaceId] : undefined;
+    if (activeProject?.found && activeWorkspaceId) {
+      if (activeProject.trust === 'trusted') {
+        for (const cmd of activeProject.config?.commands ?? []) {
+          items.push({
+            id: `project-cmd-${cmd.id}`,
+            label: `${t('palette.cmd.projectPrefix')}${cmd.title}`,
+            category: 'command' as PaletteCategory,
+            icon: <IconCommand />,
+            action: () => {
+              void runProjectCommand(activeWorkspaceId, cmd.id);
+              setVisible(false);
+            },
+          });
+        }
+        if (activeProject.config?.layout) {
+          items.push({
+            id: 'project-apply-layout',
+            label: t('palette.cmd.projectApplyLayout'),
+            category: 'command' as PaletteCategory,
+            icon: <IconGrid />,
+            action: () => {
+              void applyProjectLayoutFresh(activeWorkspaceId);
+              setVisible(false);
+            },
+          });
+        }
+      } else if (activeProject.trust !== 'denied') {
+        // untrusted / stale / invalid → a single review entry point.
+        // 'denied' shows NOTHING here (plan table: badge only) — the user
+        // explicitly said no, so the dim sidebar badge stays the sole
+        // re-evaluation entry point.
+        items.push({
+          id: 'project-review',
+          label: t('palette.cmd.projectReview'),
+          category: 'command' as PaletteCategory,
+          icon: <IconCommand />,
+          action: () => {
+            useStore.getState().setProjectDialogWsId(activeWorkspaceId);
+            setVisible(false);
+          },
+        });
+      }
+    }
+
     // Layout template commands
     for (const tmpl of layoutTemplates) {
       items.push({
@@ -474,7 +527,7 @@ export default function CommandPalette() {
     }
 
     return items;
-  }, [workspaces, activeWorkspaceId, layoutTemplates, setVisible, ipcInvoke, recentCommands, togglePalette, plugins]);
+  }, [workspaces, activeWorkspaceId, layoutTemplates, setVisible, ipcInvoke, recentCommands, togglePalette, plugins, projectConfigs, t]);
 
   // -------------------------------------------------------------------------
   // Filtered + scored results — useMemo to cache across renders

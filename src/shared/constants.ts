@@ -127,6 +127,11 @@ export const IPC = {
   PLUGINS_REQUEST_APPROVAL: 'plugins:request-approval',
   // Main → renderer push for `ui.decoratePane` — payload PluginPaneDecoration.
   PLUGIN_PANE_DECORATION: 'plugins:pane-decoration',
+  // Project config (X5 wmux.json). GET resolves a workspace cwd to the nearest
+  // wmux.json (repo-boundary walk) + its trust state; SET_TRUST persists a
+  // user decision bound to the content hash the approval UI displayed.
+  PROJECT_CONFIG_GET: 'project-config:get',
+  PROJECT_CONFIG_SET_TRUST: 'project-config:set-trust',
 } as const;
 
 // Daemon process exit codes. A spawned daemon that finds the canonical control

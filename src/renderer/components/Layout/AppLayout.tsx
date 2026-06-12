@@ -35,6 +35,8 @@ import { isFileDrag } from '../../../shared/dragDrop';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import { resolvePtyIdsToClear } from '../../hooks/reconcileWithReQuery';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
+import ProjectConfigDialog from '../Project/ProjectConfigDialog';
+import { probeProjectConfig, maybeAutoApplyProjectLayout, workspaceProbeCwd } from '../../utils/projectConfigProbe';
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
@@ -797,6 +799,15 @@ export default function AppLayout() {
     ? collectEmptyLeaves(activeWorkspace.rootPane).map((l) => l.id).join('|')
     : '';
 
+  // Panes with a pty.create in flight. Guards double-creation when the effect
+  // re-runs while an earlier run's create hasn't resolved yet — which happens
+  // EVERY multi-pane project-layout apply: the browser-leaf branch below
+  // mutates the store synchronously, re-rendering and re-running the effect
+  // mid-loop. (The old `cancelled` cleanup flag disposed the in-flight PTYs on
+  // any re-run, and since their one-shot seeds were already consumed, the
+  // re-run recreated them WITHOUT their startup commands — X5 dogfood S4c.)
+  const ptyCreateInFlightRef = useRef<Set<string>>(new Set());
+
   useEffect(() => {
     if (!activeWorkspace) return;
     // Fix 0: wait until startup reconcile finishes before auto-creating
@@ -810,23 +821,45 @@ export default function AppLayout() {
     const emptyLeaves = collectEmptyLeaves(activeWorkspace.rootPane);
     if (emptyLeaves.length === 0) return;
 
-    let cancelled = false;
     const wsId = activeWorkspace.id;
+
+    const findLiveLeaf = (pane: import('../../../shared/types').Pane, id: string): LeafPane | null => {
+      if (pane.type === 'leaf') return pane.id === id ? pane : null;
+      for (const child of pane.children) {
+        const found = findLiveLeaf(child, id);
+        if (found) return found;
+      }
+      return null;
+    };
 
     for (const leaf of emptyLeaves) {
       const paneId = leaf.id;
+      if (ptyCreateInFlightRef.current.has(paneId)) continue;
       // Issues #173/#174/#175: split-inherited cwd > profile.startupCwd >
       // global startupDirectory > homedir (main-side fallback). The seed is
       // consumed immediately so a later effect re-run (e.g. PTY create failed
       // at the session cap) can't replay a stale directory.
       const storeState = useStore.getState();
-      const startupCwd = resolveStartupCwd({
+      // X5: a project-layout seed outranks everything — applyProjectLayout
+      // pinned this pane's bootstrap (command/cwd/browser url) to the trusted
+      // wmux.json. Consumed immediately, same replay rule as splitCwdSeed.
+      const projectSeed = storeState.projectPaneSeed[paneId];
+      if (projectSeed) storeState.clearProjectPaneSeed(paneId);
+      if (projectSeed?.url) {
+        // Browser leaf (X3 surface) — no PTY at all. NOTE: this synchronous
+        // store write re-renders and re-runs this effect before the loop's
+        // other iterations' creates resolve — see ptyCreateInFlightRef above.
+        useStore.getState().addBrowserSurface(paneId, projectSeed.url, undefined, wsId);
+        continue;
+      }
+      const startupCwd = projectSeed?.cwd ?? resolveStartupCwd({
         splitSeed: storeState.splitCwdSeed[paneId],
         splitInheritsCwd: storeState.splitInheritsCwd,
         profile: activeWorkspace.profile,
         startupDirectory: storeState.startupDirectory,
       });
       if (storeState.splitCwdSeed[paneId]) storeState.clearSplitCwdSeed(paneId);
+      ptyCreateInFlightRef.current.add(paneId);
       // Wrap through ipcInvoke so a rejected pty.create (e.g.
       // RESOURCE_EXHAUSTED when the daemon session cap is hit during a
       // Ctrl+D split) surfaces an actionable toast instead of leaving the
@@ -834,14 +867,25 @@ export default function AppLayout() {
       void ipcInvoke<{ id: string; shell?: string; cwd?: string }>(() =>
         window.electronAPI.pty.create(
           withWorkspaceProfile(
-            withDefaultShell({ workspaceId: wsId, cwd: startupCwd }, useStore.getState().defaultShell),
+            withDefaultShell(
+              { workspaceId: wsId, cwd: startupCwd, ...(projectSeed?.command ? { initialCommand: projectSeed.command } : {}) },
+              useStore.getState().defaultShell,
+            ),
             activeWorkspace.profile,
           )
         )
       ).then((result) => {
+        ptyCreateInFlightRef.current.delete(paneId);
         if (!result.ok) return; // toast surfaced by useIpc
         const created = result.data;
-        if (cancelled) {
+        // Orphan guard, replacing the old effect-cleanup `cancelled` flag:
+        // adopt the PTY only if the target pane still exists in this
+        // workspace AND is still empty. A live-tree check survives benign
+        // effect re-runs (which the cancelled flag did not) while keeping
+        // the protection against leaking a PTY into a closed/replaced pane.
+        const liveWs = useStore.getState().workspaces.find((w) => w.id === wsId);
+        const livePane = liveWs ? findLiveLeaf(liveWs.rootPane, paneId) : null;
+        if (!livePane || livePane.surfaces.length > 0) {
           window.electronAPI.pty.dispose(created.id);
           return;
         }
@@ -856,10 +900,40 @@ export default function AppLayout() {
         }
       });
     }
-
-    return () => { cancelled = true; };
     // eslint-disable-next-line react-hooks/exhaustive-deps -- collectEmptyLeaves & addSurface & ipcInvoke are stable; emptyLeafIdsKey + paneGate are the meaningful triggers
   }, [activeWorkspace?.id, emptyLeafIdsKey, paneGate]);
+
+  // X5 wmux.json discovery. Probes main whenever a workspace's effective cwd
+  // (X1 metadata.cwd, seeded by the first pane) appears or changes; the probe
+  // caches the result in projectConfigs and runs the auto-apply policy
+  // (trusted + layout + fresh workspace, once per run). A newly discovered
+  // UNTRUSTED file gets one discoverability toast per workspace+root — the
+  // file never executes anything without the explicit trust grant.
+  const probedCwdRef = useRef<Map<string, string>>(new Map());
+  const discoveryToastedRef = useRef<Set<string>>(new Set());
+  const projectCwdSignature = workspaces
+    .map((w) => `${w.id}:${workspaceProbeCwd(w) ?? ''}`)
+    .join('|');
+  useEffect(() => {
+    if (paneGate !== 'ready') return;
+    for (const ws of workspaces) {
+      const cwd = workspaceProbeCwd(ws);
+      if (!cwd) continue;
+      if (probedCwdRef.current.get(ws.id) === cwd) continue;
+      probedCwdRef.current.set(ws.id, cwd);
+      const wsId = ws.id;
+      void probeProjectConfig(wsId).then((result) => {
+        if (!result?.found) return;
+        maybeAutoApplyProjectLayout(wsId);
+        const toastKey = `${wsId}:${result.root}`;
+        if (result.trust === 'untrusted' && !discoveryToastedRef.current.has(toastKey)) {
+          discoveryToastedRef.current.add(toastKey);
+          useStore.getState().pushToast({ level: 'info', message: t('project.discoveredToast') });
+        }
+      });
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- projectCwdSignature + paneGate are the meaningful triggers; workspaces identity churns every render
+  }, [projectCwdSignature, paneGate]);
 
   // Wizard close handler (T8a). Mirrors firstRunCompleted into uiSlice (main
   // already wrote the marker via firstRun:complete or :dismiss). The cheat
@@ -1030,6 +1104,7 @@ export default function AppLayout() {
       <ApprovalDialog />
       <ExecuteApprovalDialog />
       <PermissionApprovalDialogContainer />
+      <ProjectConfigDialog />
 
       {onboardingActive && (
         <OnboardingOverlay onComplete={() => { completeOnboarding(); }} />

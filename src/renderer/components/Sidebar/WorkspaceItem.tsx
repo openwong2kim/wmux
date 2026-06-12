@@ -182,6 +182,8 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
   const metadata = workspace.metadata;
+  // X5 wmux.json badge state for this workspace (transient, probe-driven).
+  const projectState = useStore((s) => s.projectConfigs[workspace.id]);
 
   // X1→X3 bridge: a listening-port badge click jumps to the workspace and
   // shows http://localhost:<port> in its browser pane (reusing one if the
@@ -413,6 +415,31 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
                   >
                     ⚙
                   </span>
+                )}
+                {projectState?.found && (
+                  // X5 wmux.json badge. Color encodes the trust verdict:
+                  // blue=trusted (actions available), yellow=needs review
+                  // (untrusted/stale/invalid), grey=denied. Click opens the
+                  // review/actions dialog for THIS workspace.
+                  <button
+                    type="button"
+                    className="text-[8px] leading-none flex-shrink-0 font-mono cursor-pointer hover:underline"
+                    style={{
+                      color: projectState.trust === 'trusted'
+                        ? 'var(--accent-blue)'
+                        : projectState.trust === 'denied'
+                          ? 'var(--text-muted)'
+                          : 'var(--accent-yellow)',
+                    }}
+                    title={t('project.badgeTooltip')}
+                    aria-label={t('project.badgeTooltip')}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      useStore.getState().setProjectDialogWsId(workspace.id);
+                    }}
+                  >
+                    ⛭
+                  </button>
                 )}
                 {metadata?.agentStatus && metadata.agentStatus !== 'idle' && (
                   <AgentStatusDot status={metadata.agentStatus} agentName={metadata.agentName} />

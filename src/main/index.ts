@@ -33,6 +33,7 @@ import { registerEventsRpc } from './pipe/handlers/events.rpc';
 import { PluginHostLoader } from './plugins/PluginHostLoader';
 import { registerPluginSchemePrivileges, registerPluginProtocolHandler } from './plugins/pluginProtocol';
 import { registerPluginHostHandlers } from './ipc/handlers/pluginHost.handler';
+import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.handler';
 import { registerUiPluginRpc } from './pipe/handlers/uiPlugin.rpc';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
@@ -465,6 +466,10 @@ registerMcpPluginRpc(rpcRouter);
 // RpcRouter instance, so plugin-iframe RPCs hit the identical enforcement
 // stack as pipe clients. Registered once, outside the handler swap cycle.
 registerPluginHostHandlers(rpcRouter, () => pluginHostLoader, () => approvalQueue);
+// Project config IPC (X5 wmux.json): discovery + trust gate. Renderer-only
+// surface — never exposed on the pipe RPC (external clients must not be able
+// to read project files or grant trust). Registered once, like plugin host.
+registerProjectConfigHandlers();
 // Returns an unsubscribe for the signal-health push subscription. Called from
 // before-quit so HMR reload / shutdown does not leak the listener.
 const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter);

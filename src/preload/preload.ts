@@ -173,6 +173,15 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.FS_CHANGED, listener); };
     },
   },
+  // Project config (X5 wmux.json). `get` resolves a workspace cwd to the
+  // nearest wmux.json + trust state; `setTrust` persists a user decision
+  // bound to the contentHash the approval dialog displayed.
+  projectConfig: {
+    get: (cwd: string) =>
+      ipcRenderer.invoke(IPC.PROJECT_CONFIG_GET, cwd) as Promise<import('../shared/wmuxProjectConfig').ProjectConfigState>,
+    setTrust: (root: string, decision: 'trusted' | 'denied' | 'clear', contentHash?: string) =>
+      ipcRenderer.invoke(IPC.PROJECT_CONFIG_SET_TRUST, root, decision, contentHash) as Promise<{ ok: boolean }>,
+  },
   // Plugin host (B-1). `list` returns loaded UI plugin summaries + load
   // failures; `rpc` forwards a host-validated bridge request from a plugin
   // iframe to main, where it dispatches through the shared RpcRouter with
