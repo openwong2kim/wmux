@@ -16,6 +16,13 @@
  *    strictly for LATE connects (respawn/reconnect), so it bails while the
  *    gate is still pending.
  *
+ *    Skipping is information-lossless only because a daemon respawn cannot
+ *    complete inside the startup window: DaemonRespawnController enforces a
+ *    ≥1 s minimum backoff, far longer than the pty.list → gate-flip gap, so
+ *    a skipped connect during startup is always the INITIAL connect whose
+ *    state the startup reconcile is about to read anyway. If that backoff
+ *    floor is ever tuned below the reconcile gap, revisit this gate.
+ *
  * 2. RCA A1/A3 guards. The late reconcile previously ran as a bare
  *    reconcilePtys() with NO abort, timeout, or catch (unlike the startup
  *    path's 5 guards). A pty.list rejection escaped as an unhandled

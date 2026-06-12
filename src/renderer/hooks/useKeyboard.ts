@@ -465,6 +465,15 @@ export function useKeyboard() {
       if (cmdOrCtrl && !shift && !alt && key === 't') {
         e.preventDefault();
         const state = store.getState();
+        // S-A Step 1 — the renderer now mounts in parallel with the daemon
+        // bootstrap, so this handler is live while the LOCAL→DAEMON handler
+        // swap may still be in flight. A pty.create fired in that window
+        // mints a local-mode id whose writes the daemon handler silently
+        // drops (the dda4c0c first-keystroke bug). paneGate flips to
+        // 'ready' only after the startup reconcile, which is serialized
+        // behind the daemon-vs-local decision — gate on it like every
+        // other create path.
+        if (state.paneGate !== 'ready') return;
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
         if (ws) {
           // Wrap pty.create through useIpc so that a rejected promise (most

@@ -868,9 +868,43 @@ app.on('ready', async () => {
   //       startup reconcile (which itself awaits whenReady) flips it to
   //       'ready' — so no pty id can be minted against a mid-swap handler
   //       topology.
-  // The companion change gates AppLayout's late-reconcile listener on
-  // paneGate, closing the one path that was unreachable under the old
-  // serialized order (daemon:connected arriving before startup reconcile).
+  // Companion changes gate the renderer paths that became reachable under
+  // the new timing: AppLayout's late-reconcile listener plus the three
+  // event-driven pty.create entry points (Ctrl+T, Ctrl+` floating pane,
+  // palette new-surface) whose handlers live outside the paneGate
+  // placeholder subtree.
+  //
+  // Load-failure recovery (adversarial review P2): these listeners used to
+  // be registered later in the ready handler with no intervening await, so
+  // they could not miss the first load failure. Now that an `await
+  // daemonBootstrapP` sits between the load and the rest of the handler,
+  // they must be attached BEFORE loadMainRenderer() or a did-fail-load
+  // fired during the bootstrap await (dev server not up yet, corrupt
+  // packaged assets) would escape the auto-reload backoff entirely.
+  //
+  // dev에서 Vite dev server가 아직 준비 전이거나(포트 점유로 5174 지연) 죽었을 때
+  // did-fail-load가 발생한다. 기존엔 2초 고정 간격으로 무한 reload해 콘솔을
+  // ERR_CONNECTION_REFUSED로 도배했다. 지수 백오프 + 재시도 상한으로 교체한다.
+  let didFailLoadCount = 0;
+  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
+    // ERR_ABORTED(-3): 새 내비게이션이 이전 로드를 정상 취소한 경우 — 재시도 불필요.
+    if (errorCode === -3) return;
+    console.error('[Main] Page failed to load:', errorCode, errorDescription);
+    didFailLoadCount += 1;
+    if (didFailLoadCount > 10) {
+      console.error('[Main] did-fail-load 10회 초과 — 자동 reload 중단. dev server(npm start)나 빌드 자산을 확인하세요.');
+      return;
+    }
+    const delay = Math.min(500 * 2 ** (didFailLoadCount - 1), 30_000);
+    setTimeout(() => {
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
+    }, delay);
+  });
+  mainWindow.webContents.on('did-finish-load', () => {
+    didFailLoadCount = 0; // 로드 성공 — 백오프 카운터 리셋
+    console.log('[Main] Page loaded successfully');
+  });
+
   if (mainWindow && !mainWindow.isDestroyed()) {
     loadMainRenderer(mainWindow);
     markBoot('renderer-load-triggered');
@@ -965,28 +999,6 @@ app.on('ready', async () => {
 
   mainWindow.on('closed', () => {
     mainWindow = null;
-  });
-  // dev에서 Vite dev server가 아직 준비 전이거나(포트 점유로 5174 지연) 죽었을 때
-  // did-fail-load가 발생한다. 기존엔 2초 고정 간격으로 무한 reload해 콘솔을
-  // ERR_CONNECTION_REFUSED로 도배했다. 지수 백오프 + 재시도 상한으로 교체한다.
-  let didFailLoadCount = 0;
-  mainWindow.webContents.on('did-fail-load', (_event, errorCode, errorDescription) => {
-    // ERR_ABORTED(-3): 새 내비게이션이 이전 로드를 정상 취소한 경우 — 재시도 불필요.
-    if (errorCode === -3) return;
-    console.error('[Main] Page failed to load:', errorCode, errorDescription);
-    didFailLoadCount += 1;
-    if (didFailLoadCount > 10) {
-      console.error('[Main] did-fail-load 10회 초과 — 자동 reload 중단. dev server(npm start)나 빌드 자산을 확인하세요.');
-      return;
-    }
-    const delay = Math.min(500 * 2 ** (didFailLoadCount - 1), 30_000);
-    setTimeout(() => {
-      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.reload();
-    }, delay);
-  });
-  mainWindow.webContents.on('did-finish-load', () => {
-    didFailLoadCount = 0; // 로드 성공 — 백오프 카운터 리셋
-    console.log('[Main] Page loaded successfully');
   });
   // M0-e — hydrate MetadataStore from disk, then wire the persist callback
   // so subsequent `metadataStore.set/clear/onPaneDeleted` flush to disk

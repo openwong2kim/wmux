@@ -218,6 +218,13 @@ export default function CommandPalette() {
         label: t('palette.cmd.newSurface'),
         action: () => {
           const state = useStore.getState();
+          // S-A Step 1 — gate event-driven pty.create until the startup
+          // reconcile flips paneGate (same dda4c0c-race guard as Ctrl+T in
+          // useKeyboard.ts; the palette outlives the paneGate placeholder).
+          if (state.paneGate !== 'ready') {
+            setVisible(false);
+            return;
+          }
           const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
           if (ws) {
             // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.

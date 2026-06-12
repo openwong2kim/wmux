@@ -706,6 +706,10 @@ export default function AppLayout() {
   // the RCA A1/A3 guards are unit-testable.
   useEffect(() => {
     const late = createLateReconcileOnConnect({
+      // Must stay a fresh getState() read — the gate is re-evaluated per
+      // daemon:connected event, and a snapshot taken at effect time would
+      // freeze 'pending' forever (the unit tests pin the factory's per-event
+      // re-read, not this wiring).
       getPaneGate: () => useStore.getState().paneGate,
       reconcile: (signal) => reconcilePtys(signal),
       timeoutMs: RECONCILE_TIMEOUT_MS,

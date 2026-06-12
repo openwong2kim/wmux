@@ -10,6 +10,7 @@ export default function FloatingPane() {
   const floatingPaneVisible = useStore((s) => s.floatingPaneVisible);
   const floatingPanePtyId = useStore((s) => s.floatingPanePtyId);
   const defaultShell = useStore((s) => s.defaultShell);
+  const paneGate = useStore((s) => s.paneGate);
   const toggleFloatingPane = useStore((s) => s.toggleFloatingPane);
   const setFloatingPanePtyId = useStore((s) => s.setFloatingPanePtyId);
   const t = useT();
@@ -22,7 +23,16 @@ export default function FloatingPane() {
   // rejection (daemon session cap reached) shows an actionable toast instead
   // of being silently swallowed by the previous .catch(() => {}) — that left
   // the floating pane shortcut looking unresponsive when the cap was hit.
+  //
+  // paneGate (S-A Step 1): this component mounts OUTSIDE the paneGate
+  // placeholder subtree, so with the renderer loading in parallel with the
+  // daemon bootstrap this effect can fire while the LOCAL→DAEMON handler
+  // swap is still in flight — a create in that window mints a local-mode id
+  // whose writes the daemon handler silently drops (dda4c0c). Defer the
+  // create until the gate flips; paneGate is in the deps, so an early
+  // Ctrl+` simply creates the PTY the moment startup reconcile completes.
   useEffect(() => {
+    if (paneGate !== 'ready') return;
     if (!floatingPaneVisible) return;
     if (floatingPanePtyId) return;
     if (creatingRef.current) return;
@@ -37,7 +47,7 @@ export default function FloatingPane() {
       // On failure useIpc already surfaced a toast.
       creatingRef.current = false;
     });
-  }, [defaultShell, floatingPaneVisible, floatingPanePtyId, setFloatingPanePtyId, ipcInvoke]);
+  }, [defaultShell, floatingPaneVisible, floatingPanePtyId, setFloatingPanePtyId, ipcInvoke, paneGate]);
 
   useTerminal(containerRef, {
     ptyId: floatingPanePtyId,
