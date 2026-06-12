@@ -46,6 +46,15 @@ function okPing(result: DaemonPingResult): RpcResponse {
   return { id: 'x', ok: true, result };
 }
 
+// A reachable main process pipe (system.identify success envelope).
+function okIdentify(): RpcResponse {
+  return {
+    id: 'x',
+    ok: true,
+    result: { app: 'wmux', version: '3.2.0', platform: 'win32', electronVersion: '30' },
+  };
+}
+
 function healthyPing(): DaemonPingResult {
   const jsStart = 50_000;
   return {
@@ -78,6 +87,7 @@ function makeDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
   };
   const deps: DoctorDeps = {
     ping: vi.fn().mockResolvedValue(okPing(healthyPing())),
+    appPipeReachable: vi.fn().mockResolvedValue(okIdentify()),
     version: '3.2.0',
     platform: 'win32',
     pipeName: '\\\\.\\pipe\\wmux-user',
@@ -181,7 +191,46 @@ describe('environment section', () => {
     expect(labels).toContain('platform');
     expect(labels).toContain('control pipe');
     expect(labels).toContain('auth token file');
+    expect(labels).toContain('app (main process) pipe reachable');
     expect(labels).toContain('WMUX_DATA_SUFFIX');
+  });
+
+  it('reports the app pipe as reachable (OK) when system.identify answers', async () => {
+    const r = await buildDoctorReport(makeDeps());
+    const line = r.environment.lines.find(
+      (l) => l.label === 'app (main process) pipe reachable',
+    );
+    expect(line?.value).toBe('yes');
+    expect(line?.verdict).toBe('OK');
+  });
+
+  it('WARNs (informational) when the app pipe is unreachable but does not FAIL', async () => {
+    // main process down (pipe probe rejects), daemon still alive (default ping).
+    const deps = makeDeps({
+      appPipeReachable: vi.fn().mockRejectedValue(new Error('wmux is not running.')),
+    });
+    const r = await buildDoctorReport(deps);
+    const line = r.environment.lines.find(
+      (l) => l.label === 'app (main process) pipe reachable',
+    );
+    expect(line?.value).toBe('no');
+    expect(line?.verdict).toBe('WARN');
+    // A closed app is not a doctor FAIL when the daemon answers.
+    expect(r.daemon.verdict).toBe('OK');
+    expect(r.overall).not.toBe('FAIL');
+  });
+
+  it('treats an app-pipe error envelope (ok:false) as unreachable', async () => {
+    const deps = makeDeps({
+      appPipeReachable: vi
+        .fn()
+        .mockResolvedValue({ id: 'x', ok: false, error: 'boom' } as RpcResponse),
+    });
+    const r = await buildDoctorReport(deps);
+    const line = r.environment.lines.find(
+      (l) => l.label === 'app (main process) pipe reachable',
+    );
+    expect(line?.verdict).toBe('WARN');
   });
 
   it('WARNs when the auth token file is missing', async () => {

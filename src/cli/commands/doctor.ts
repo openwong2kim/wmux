@@ -17,7 +17,7 @@
 import { readFileSync, openSync, fstatSync, readSync, closeSync } from 'fs';
 import { join } from 'path';
 import * as os from 'os';
-import { sendRequest } from '../client';
+import { sendRequest, sendDaemonRequest } from '../client';
 import {
   getPipeName,
   getAuthTokenPath,
@@ -94,8 +94,25 @@ export interface DaemonPingResult {
 }
 
 export interface DoctorDeps {
-  /** Resolves to the daemon.ping result, or rejects if the daemon is down. */
+  /**
+   * Resolves to the `daemon.ping` result, or rejects if the daemon is down.
+   *
+   * MUST connect to the DAEMON control pipe directly, not proxy through the
+   * main process pipe: `daemon.ping` is only registered on the daemon pipe
+   * (src/daemon/index.ts), so a main-pipe proxy always returns "Unknown
+   * method" and reports a live daemon as down. A direct connect also lets the
+   * doctor diagnose the daemon when the main process is dead. The real wiring
+   * is `sendDaemonRequest('daemon.ping', {})` (src/cli/client.ts).
+   */
   ping: () => Promise<RpcResponse>;
+  /**
+   * Probe the MAIN process pipe (`system.identify`) once. Resolves to the
+   * raw RPC response on a reachable main process, rejects when the pipe is
+   * unreachable. Lets the report distinguish "main down + daemon alive" from
+   * "both down" — informational only (a dead main process is not a doctor
+   * failure when the daemon answers).
+   */
+  appPipeReachable: () => Promise<RpcResponse>;
   /** App version (from package.json), already resolved. */
   version: string;
   platform: string;
@@ -145,7 +162,18 @@ export function worst(verdicts: Verdict[]): Verdict {
 // --- report builder (pure) ---------------------------------------------------
 
 export async function buildDoctorReport(deps: DoctorDeps): Promise<DoctorReport> {
-  const environment = buildEnvironment(deps);
+  // Probe the main process pipe once (system.identify). This is independent of
+  // the daemon ping below — the two are SEPARATE servers — so a dead main
+  // process is reported as an informational WARN without masking a live daemon.
+  let appPipeReachable = false;
+  try {
+    const resp = await deps.appPipeReachable();
+    appPipeReachable = resp.ok;
+  } catch {
+    appPipeReachable = false;
+  }
+
+  const environment = buildEnvironment(deps, appPipeReachable);
 
   // Ping the daemon once; reuse the result for the daemon + boot-phase sections.
   let ping: DaemonPingResult | null = null;
@@ -177,12 +205,30 @@ export async function buildDoctorReport(deps: DoctorDeps): Promise<DoctorReport>
   return { overall, environment, daemon, bootPhases, avHint, logs };
 }
 
-function buildEnvironment(deps: DoctorDeps): DoctorReport['environment'] {
+function buildEnvironment(
+  deps: DoctorDeps,
+  appPipeReachable: boolean,
+): DoctorReport['environment'] {
   const lines: CheckLine[] = [];
 
   lines.push({ label: 'app version', value: deps.version, verdict: 'OK' });
   lines.push({ label: 'platform', value: deps.platform, verdict: 'OK' });
   lines.push({ label: 'control pipe', value: deps.pipeName, verdict: 'OK' });
+
+  // Liveness of the MAIN process pipe, separate from the daemon. A reachable
+  // app pipe is OK; an unreachable one is an informational WARN, not a FAIL —
+  // the daemon section below carries the real health gate, and the daemon can
+  // be alive while the app window is closed (or vice versa). This line is what
+  // lets a user tell "app down, daemon up" apart from "everything down".
+  lines.push({
+    label: 'app (main process) pipe reachable',
+    value: appPipeReachable ? 'yes' : 'no',
+    verdict: appPipeReachable ? 'OK' : 'WARN',
+    hint: appPipeReachable
+      ? undefined
+      : 'The wmux app (main process) is not answering on its control pipe — it may be closed. ' +
+        'The daemon is diagnosed independently below.',
+  });
 
   const tokenPresent = deps.readTextFile(deps.authTokenPath) !== null;
   lines.push({
@@ -593,7 +639,14 @@ export async function handleDoctor(_args: string[], jsonMode: boolean): Promise<
   const version = getFallbackVersion();
 
   const deps: DoctorDeps = {
-    ping: () => sendRequest('daemon.ping', {}),
+    // Direct daemon-pipe connection — `daemon.ping` lives ONLY on the daemon
+    // pipe, and a direct connect lets the doctor diagnose the daemon even when
+    // the main process is dead. NOT `sendRequest` (that targets the main pipe,
+    // which returns "Unknown method: daemon.ping").
+    ping: () => sendDaemonRequest('daemon.ping', {}),
+    // Main-pipe liveness probe — system.identify is registered on the main
+    // pipe and is always permitted (null capability).
+    appPipeReachable: () => sendRequest('system.identify', {}),
     version,
     platform: process.platform,
     pipeName: getPipeName(),
