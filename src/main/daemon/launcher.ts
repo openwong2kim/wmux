@@ -310,6 +310,137 @@ export async function tryEscalatedReping(
   return false;
 }
 
+/**
+ * Poll cadence for the freshly-spawned daemon readiness loop.
+ *
+ * The daemon typically writes its pipe file and answers its first ping
+ * within a few hundred ms on a warm machine, so the old fixed 200 ms
+ * interval quantized that wait by +0–200 ms (~+100 ms median, visible in
+ * the daemon-spawned → daemon-first-ping-ok boot-trace span). Poll densely
+ * (40 ms) for the first 2 s to catch the common fast path with minimal
+ * latency, then back off to the original 200 ms for the long tail
+ * (Defender cold-scan, ConPTY cold-init) where poll resolution no longer
+ * matters and cheap-but-nonzero pipe probes shouldn't pile onto a machine
+ * that is already struggling.
+ */
+export function nextPollDelayMs(elapsedMs: number): number {
+  return elapsedMs < 2_000 ? 40 : 200;
+}
+
+export interface DaemonReadinessPollOptions {
+  budgetMs: number;
+  readPipeName: () => string | null;
+  readToken: () => string | null;
+  ping: (pipeName: string, token: string) => Promise<boolean>;
+  onPipeFileSeen?: () => void;
+  onPingOk?: () => void;
+}
+
+/**
+ * Wait for a freshly-spawned daemon to become reachable: pipe-name file
+ * written → auth token readable → first ping answered.
+ *
+ * Self-scheduling timeout chain (not setInterval): each check runs to
+ * completion — including the up-to-2 s ping — before the next one is
+ * scheduled, so checks can never overlap and the old `pinging` in-flight
+ * guard is structural now. The budget is wall-clock from poll start rather
+ * than an attempt count because the cadence is adaptive (nextPollDelayMs).
+ *
+ * The pipe-file gate is preserved from the original loop: pinging before
+ * the daemon writes its pipe name would connect to a zombie Windows named
+ * pipe left by a crashed predecessor and burn 1 s timeouts.
+ *
+ * `cancel(err)` settles the poll with `err` (used when the child exits
+ * with DAEMON_EXIT_ALREADY_RUNNING mid-poll); a ping already in flight is
+ * discarded on return.
+ */
+export function pollDaemonReady(
+  opts: DaemonReadinessPollOptions,
+): { promise: Promise<void>; cancel: (err: Error) => void } {
+  let settled = false;
+  let timer: NodeJS.Timeout | null = null;
+  let pipeFileSeen = false;
+  let resolveFn!: () => void;
+  let rejectFn!: (err: Error) => void;
+  const promise = new Promise<void>((res, rej) => {
+    resolveFn = res;
+    rejectFn = rej;
+  });
+  const start = Date.now();
+  const budgetLabel = `${Math.round(opts.budgetMs / 1000)} seconds`;
+
+  const finish = (fn: () => void): void => {
+    if (settled) return;
+    settled = true;
+    if (timer) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    fn();
+  };
+
+  const schedule = (): void => {
+    if (settled) return;
+    timer = setTimeout(() => {
+      void check();
+    }, nextPollDelayMs(Date.now() - start));
+  };
+
+  const overBudget = (): boolean => Date.now() - start >= opts.budgetMs;
+
+  const check = async (): Promise<void> => {
+    if (settled) return;
+
+    // Wait for daemon to write its pipe name file before attempting ping
+    const pipeName = opts.readPipeName();
+    if (!pipeName) {
+      if (overBudget()) {
+        finish(() => rejectFn(new Error(`Daemon spawned but pipe name file not created after ${budgetLabel}`)));
+      } else {
+        schedule();
+      }
+      return;
+    }
+    if (!pipeFileSeen) {
+      pipeFileSeen = true;
+      opts.onPipeFileSeen?.();
+    }
+
+    const token = opts.readToken();
+    if (!token) {
+      if (overBudget()) {
+        finish(() => rejectFn(new Error(`Daemon spawned but auth token not found after ${budgetLabel}`)));
+      } else {
+        schedule();
+      }
+      return;
+    }
+
+    const alive = await opts.ping(pipeName, token);
+    if (settled) return; // cancelled while the ping was in flight
+
+    if (alive) {
+      opts.onPingOk?.();
+      finish(() => resolveFn());
+      return;
+    }
+
+    if (overBudget()) {
+      finish(() => rejectFn(new Error(`Daemon spawned but not responding after ${budgetLabel}`)));
+      return;
+    }
+    schedule();
+  };
+
+  // First check immediately rather than after one interval: on a warm
+  // machine the pipe file can already exist within tens of ms of spawn,
+  // and the old fixed setInterval burned a guaranteed 200 ms before even
+  // looking.
+  void check();
+
+  return { promise, cancel: (err: Error) => finish(() => rejectFn(err)) };
+}
+
 function findNodePath(): string {
   // Prefer Electron's bundled node (via ELECTRON_RUN_AS_NODE) — it's a GUI
   // subsystem executable, so it won't flash a console window on Windows.
@@ -377,57 +508,18 @@ function spawnDaemon(): Promise<number> {
     markBoot('daemon-spawned');
     console.log(`[launcher] Daemon spawned with PID: ${child.pid}`);
 
-    // Wait for daemon to be ready.
-    // Only ping once the daemon-pipe file exists — this means the daemon has
-    // finished starting its pipe server and written the actual pipe name.
-    // Without this guard, early polls connect to a zombie Windows named pipe
-    // left by a crashed predecessor, wasting time on 1s timeouts.
-    let attempts = 0;
-    const maxAttempts = 75; // 75 * 200ms = 15 seconds
-    let pinging = false; // prevent concurrent pings
-
-    const poll = setInterval(async () => {
-      attempts++;
-      if (pinging) return; // previous ping still in-flight
-
-      const wmuxDir = getWmuxDir();
-      const pipeName = readPipeNameFromFile(wmuxDir);
-
-      // Wait for daemon to write its pipe name file before attempting ping
-      if (!pipeName) {
-        if (attempts >= maxAttempts) {
-          clearInterval(poll);
-          reject(new Error('Daemon spawned but pipe name file not created after 15 seconds'));
-        }
-        return;
-      }
-      markBoot('daemon-pipe-file-seen');
-
-      const token = readDaemonAuthToken();
-      if (!token) {
-        if (attempts >= maxAttempts) {
-          clearInterval(poll);
-          reject(new Error('Daemon spawned but auth token not found after 15 seconds'));
-        }
-        return;
-      }
-
-      pinging = true;
-      const alive = await pingDaemon(pipeName, token, 2000);
-      pinging = false;
-
-      if (alive) {
-        markBoot('daemon-first-ping-ok');
-        clearInterval(poll);
-        resolve(child.pid!);
-        return;
-      }
-
-      if (attempts >= maxAttempts) {
-        clearInterval(poll);
-        reject(new Error('Daemon spawned but not responding after 15 seconds'));
-      }
-    }, 200);
+    // Wait for daemon to be ready. Adaptive cadence + the pipe-file zombie
+    // guard live in pollDaemonReady (extracted so the chain is unit-testable
+    // with fake timers).
+    const readiness = pollDaemonReady({
+      budgetMs: 15_000, // same wall-clock budget as the old 75 × 200 ms loop
+      readPipeName: () => readPipeNameFromFile(getWmuxDir()),
+      readToken: readDaemonAuthToken,
+      ping: (pipeName, token) => pingDaemon(pipeName, token, 2000),
+      onPipeFileSeen: () => markBoot('daemon-pipe-file-seen'),
+      onPingOk: () => markBoot('daemon-first-ping-ok'),
+    });
+    readiness.promise.then(() => resolve(child.pid!), reject);
 
     // A redundant second daemon (spawned over a daemon the launcher failed to
     // detect) yields the canonical pipe to the live owner and exits with
@@ -437,12 +529,11 @@ function spawnDaemon(): Promise<number> {
     // poll's own 15s timeout.
     child.on('exit', (code) => {
       if (code === DAEMON_EXIT_ALREADY_RUNNING) {
-        clearInterval(poll);
         const e = new Error(
           'daemon yielded: another daemon already owns the canonical control pipe',
         ) as NodeJS.ErrnoException;
         e.code = 'EDAEMON_ALREADY_RUNNING';
-        reject(e);
+        readiness.cancel(e);
       }
     });
   });
