@@ -23,6 +23,7 @@ describe('isAgentSignal', () => {
     'agent.activity',
     'agent.subagent_stop',
     'agent.session_start',
+    'agent.awaiting_input',
   ])('accepts kind = %s', (kind) => {
     expect(isAgentSignal({ ...valid, kind })).toBe(true);
   });

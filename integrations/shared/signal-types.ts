@@ -17,14 +17,13 @@
  * - agent.activity        — per-tool-call activity ping (optional, may be dropped if too noisy).
  * - agent.subagent_stop   — subagent finished (e.g. /team mode coordinator).
  * - agent.session_start   — agent session began. Used to clear stale metadata.
- * - agent.awaiting_input  — agent paused mid-turn for a y/N or approval prompt.
- *                           Detector-only kind in v2.13.0: emitted by the
- *                           regex-based AgentDetector when a confirmation
- *                           pattern matches on a previously-gated agent. Hook
- *                           bridges are not expected to emit this kind today;
- *                           it is included in the union so HookSignalRouter
- *                           can dedup detector signals through the same ledger
- *                           shape used for `agent.stop`.
+ * - agent.awaiting_input  — agent paused for input. Two emitters: the regex
+ *                           AgentDetector (single-line y/N or approval prompts),
+ *                           AND the Claude Code hook bridge, which maps a
+ *                           PreToolUse hook on the AskUserQuestion tool to this
+ *                           kind (the boxed multi-line question UI never matched
+ *                           a detector regex). Both route through the same
+ *                           HookSignalRouter ledger shape used for `agent.stop`.
  */
 export type AgentSignalKind =
   | 'agent.stop'
@@ -125,7 +124,8 @@ export function isAgentSignal(value: unknown): value is AgentSignal {
     v['kind'] !== 'agent.stop' &&
     v['kind'] !== 'agent.activity' &&
     v['kind'] !== 'agent.subagent_stop' &&
-    v['kind'] !== 'agent.session_start'
+    v['kind'] !== 'agent.session_start' &&
+    v['kind'] !== 'agent.awaiting_input'
   ) return false;
   if (typeof v['agent'] !== 'string' || !ALLOWED_AGENT_SLUGS.has(v['agent'])) return false;
   if (typeof v['cwd'] !== 'string' || v['cwd'].length === 0) return false;
