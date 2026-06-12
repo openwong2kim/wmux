@@ -414,6 +414,12 @@ const electronAPI = {
       ipcRenderer.on(IPC.UPDATE_ERROR, listener);
       return () => { ipcRenderer.removeListener(IPC.UPDATE_ERROR, listener); };
     },
+    onUpdateProgress: (callback: (data: { status: string; percent: number | null }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, data: { status: string; percent: number | null }) =>
+        callback(data);
+      ipcRenderer.on(IPC.UPDATE_DOWNLOAD, listener);
+      return () => { ipcRenderer.removeListener(IPC.UPDATE_DOWNLOAD, listener); };
+    },
   },
 };
 
