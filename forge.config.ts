@@ -32,6 +32,33 @@ function copyDirSync(src: string, dest: string): void {
   }
 }
 
+// node-pty ships prebuilt native binaries for every platform/arch under
+// prebuilds/<platform>-<arch>/. The Windows ConPTY prebuilds are ~30 MB EACH
+// (win32-x64 + win32-arm64 ≈ 58 MB), so shipping the non-target architectures
+// bloats both the app.asar.unpacked AND the daemon-bundle copy for binaries the
+// build can never load (a win32-x64 build will never dlopen a win32-arm64 or
+// darwin .node). Delete every prebuild dir that doesn't match the build target.
+//
+// Keyed on the ACTUAL packaged platform/arch (not the host) so cross-arch makes
+// keep the right one. Defensive: if the target dir is somehow missing we keep
+// everything rather than emit a build with no loadable PTY binary.
+function pruneForeignPrebuilds(nodePtyDir: string, platform: string, arch: string): void {
+  const prebuildsDir = path.join(nodePtyDir, 'prebuilds');
+  if (!fs.existsSync(prebuildsDir)) return;
+  const keep = `${platform}-${arch}`;
+  const entries = fs.readdirSync(prebuildsDir, { withFileTypes: true });
+  if (!entries.some((e) => e.isDirectory() && e.name === keep)) {
+    console.warn(`[postPackage] node-pty prebuild '${keep}' not found — keeping all prebuilds.`);
+    return;
+  }
+  for (const entry of entries) {
+    if (entry.isDirectory() && entry.name !== keep) {
+      fs.rmSync(path.join(prebuildsDir, entry.name), { recursive: true, force: true });
+      console.log(`[postPackage] Pruned foreign node-pty prebuild: ${entry.name}`);
+    }
+  }
+}
+
 // node-pty의 spawn-helper(macOS에서 셸을 fork/exec하는 바이너리)는 npm prebuild가
 // 실행권한 없이(rw-r--r--) 풀려서, +x를 직접 부여하지 않으면 posix_spawnp가
 // 셸을 띄우지 못한다("posix_spawnp failed"). 반드시 코드 서명 "전"에 호출해야
@@ -117,6 +144,10 @@ const config: ForgeConfig = {
     postPackage: async (_config, packageResult) => {
       const asar = require('@electron/asar');
       const outputPath = packageResult.outputPaths[0];
+      // Build target — prune node-pty prebuilds to this platform/arch only.
+      // Fall back to the host triple if forge doesn't surface them.
+      const targetPlatform = (packageResult as { platform?: string }).platform ?? process.platform;
+      const targetArch = (packageResult as { arch?: string }).arch ?? process.arch;
       // macOS는 .app 번들이라 리소스가 <app>.app/Contents/Resources에,
       // Windows/Linux는 <output>/resources에 위치한다. .app 이름은
       // productName에 따라 달라지므로 디렉토리에서 직접 찾는다.
@@ -138,6 +169,7 @@ const config: ForgeConfig = {
       const destNodePty = path.join(tempDir, 'node_modules', 'node-pty');
       console.log(`[postPackage] Copying node-pty...`);
       copyDirSync(path.join(__dirname, 'node_modules', 'node-pty'), destNodePty);
+      pruneForeignPrebuilds(destNodePty, targetPlatform, targetArch);
       const srcAddonApi = path.join(__dirname, 'node_modules', 'node-addon-api');
       if (fs.existsSync(srcAddonApi)) {
         copyDirSync(srcAddonApi, path.join(tempDir, 'node_modules', 'node-addon-api'));
@@ -192,6 +224,7 @@ const config: ForgeConfig = {
         const daemonNodePty = path.join(daemonBundleDir, 'node_modules', 'node-pty');
         console.log('[postPackage] Copying node-pty for daemon-bundle...');
         copyDirSync(path.join(__dirname, 'node_modules', 'node-pty'), daemonNodePty);
+        pruneForeignPrebuilds(daemonNodePty, targetPlatform, targetArch);
         console.log('[postPackage] Done — node-pty available for daemon.');
       }
 
