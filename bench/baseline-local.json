@@ -3,10 +3,10 @@
   "meta": {
     "tool": "perf-bench.mjs",
     "mode": "local",
-    "appVersion": "3.1.1",
-    "commit": "922fa59",
-    "startedAt": "2026-06-12T10:01:41.796Z",
-    "finishedAt": "2026-06-12T10:03:30.932Z",
+    "appVersion": "3.2.0",
+    "commit": "c843b5e",
+    "startedAt": "2026-06-12T14:24:44.069Z",
+    "finishedAt": "2026-06-12T14:26:12.721Z",
     "platform": "win32",
     "arch": "x64",
     "cpuModel": "13th Gen Intel(R) Core(TM) i5-13420H",
@@ -24,61 +24,281 @@
     "coldStart": {
       "runs": [
         {
-          "cdpReadyMs": 120,
-          "pipeReadyMs": 5053,
-          "rendererReadyMs": 5454,
-          "firstPtyDataMs": 5476,
-          "fcpMs": 5176
+          "cdpReadyMs": 122,
+          "pipeReadyMs": 833,
+          "rendererReadyMs": 1299,
+          "firstPtyDataMs": 1326,
+          "fcpMs": 1083.9,
+          "marks": {
+            "js-start": 113,
+            "imports-done": 117,
+            "lock-acquired": 118,
+            "construction-start": 118,
+            "pre-pipe-server-ctor": 119,
+            "pipe-server-ctor-done": 175,
+            "module-eval-end": 181,
+            "ready-fired": 216,
+            "plugins-loaded": 227,
+            "window-created": 291,
+            "daemon-bootstrap-start": 313,
+            "daemon-ensure-start": 314,
+            "daemon-liveness-checked": 316,
+            "daemon-spawn-start": 318,
+            "daemon-spawned": 335,
+            "daemon-pipe-file-seen": 755,
+            "daemon-first-ping-ok": 763,
+            "daemon-bootstrap-end": 774,
+            "renderer-load-triggered": 792,
+            "ready-end": 811
+          },
+          "daemonBoot": {
+            "jsStartMs": 469,
+            "marks": {
+              "main-start": 472,
+              "lock-acquired": 474,
+              "bootid-done": 478,
+              "config-loaded": 483,
+              "recovery-done": 486,
+              "pre-pipe-start": 487,
+              "pipe-listening": 555,
+              "pipe-file-written": 556,
+              "ready": 557
+            }
+          }
         },
         {
-          "cdpReadyMs": 121,
-          "pipeReadyMs": 5085,
-          "rendererReadyMs": 5451,
-          "firstPtyDataMs": 5570,
-          "fcpMs": 5221.7
+          "cdpReadyMs": 143,
+          "pipeReadyMs": 838,
+          "rendererReadyMs": 1329,
+          "firstPtyDataMs": 1436,
+          "fcpMs": 1072.7,
+          "marks": {
+            "js-start": 135,
+            "imports-done": 139,
+            "lock-acquired": 141,
+            "construction-start": 141,
+            "pre-pipe-server-ctor": 141,
+            "pipe-server-ctor-done": 204,
+            "module-eval-end": 209,
+            "ready-fired": 258,
+            "plugins-loaded": 267,
+            "window-created": 324,
+            "daemon-bootstrap-start": 346,
+            "daemon-ensure-start": 347,
+            "daemon-liveness-checked": 348,
+            "daemon-spawn-start": 350,
+            "daemon-spawned": 367,
+            "daemon-pipe-file-seen": 783,
+            "daemon-first-ping-ok": 788,
+            "daemon-bootstrap-end": 800,
+            "renderer-load-triggered": 819,
+            "ready-end": 833
+          },
+          "daemonBoot": {
+            "jsStartMs": 527,
+            "marks": {
+              "main-start": 531,
+              "lock-acquired": 533,
+              "bootid-done": 537,
+              "config-loaded": 542,
+              "recovery-done": 546,
+              "pre-pipe-start": 546,
+              "pipe-listening": 616,
+              "pipe-file-written": 616,
+              "ready": 617
+            }
+          }
         },
         {
-          "cdpReadyMs": 124,
-          "pipeReadyMs": 5118,
-          "rendererReadyMs": 5518,
-          "firstPtyDataMs": 5626,
-          "fcpMs": 5257.5
+          "cdpReadyMs": 131,
+          "pipeReadyMs": 814,
+          "rendererReadyMs": 1639,
+          "firstPtyDataMs": 1740,
+          "fcpMs": 1160.8,
+          "marks": {
+            "js-start": 130,
+            "imports-done": 134,
+            "lock-acquired": 136,
+            "construction-start": 136,
+            "pre-pipe-server-ctor": 136,
+            "pipe-server-ctor-done": 202,
+            "module-eval-end": 209,
+            "ready-fired": 250,
+            "plugins-loaded": 260,
+            "window-created": 313,
+            "daemon-bootstrap-start": 332,
+            "daemon-ensure-start": 333,
+            "daemon-liveness-checked": 335,
+            "daemon-spawn-start": 336,
+            "daemon-spawned": 350,
+            "daemon-pipe-file-seen": 761,
+            "daemon-first-ping-ok": 766,
+            "daemon-bootstrap-end": 775,
+            "renderer-load-triggered": 790,
+            "ready-end": 807
+          },
+          "daemonBoot": {
+            "jsStartMs": 494,
+            "marks": {
+              "main-start": 500,
+              "lock-acquired": 503,
+              "bootid-done": 508,
+              "config-loaded": 517,
+              "recovery-done": 522,
+              "pre-pipe-start": 523,
+              "pipe-listening": 667,
+              "pipe-file-written": 668,
+              "ready": 669
+            }
+          }
         },
         {
-          "cdpReadyMs": 118,
-          "pipeReadyMs": 5035,
-          "rendererReadyMs": 5389,
-          "firstPtyDataMs": 5485,
-          "fcpMs": 5150.2
+          "cdpReadyMs": 127,
+          "pipeReadyMs": 2469,
+          "rendererReadyMs": 2948,
+          "firstPtyDataMs": 2994,
+          "fcpMs": 2689.4,
+          "marks": {
+            "js-start": 126,
+            "imports-done": 130,
+            "lock-acquired": 131,
+            "construction-start": 132,
+            "pre-pipe-server-ctor": 132,
+            "pipe-server-ctor-done": 186,
+            "module-eval-end": 191,
+            "ready-fired": 231,
+            "plugins-loaded": 239,
+            "window-created": 297,
+            "daemon-bootstrap-start": 318,
+            "daemon-ensure-start": 319,
+            "daemon-liveness-checked": 321,
+            "daemon-spawn-start": 322,
+            "daemon-spawned": 335,
+            "daemon-pipe-file-seen": 2414,
+            "daemon-first-ping-ok": 2418,
+            "daemon-bootstrap-end": 2430,
+            "renderer-load-triggered": 2446,
+            "ready-end": 2457
+          },
+          "daemonBoot": {
+            "jsStartMs": 495,
+            "marks": {
+              "main-start": 501,
+              "lock-acquired": 504,
+              "bootid-done": 510,
+              "config-loaded": 516,
+              "recovery-done": 519,
+              "pre-pipe-start": 520,
+              "pipe-listening": 2242,
+              "pipe-file-written": 2243,
+              "ready": 2243
+            }
+          }
         },
         {
-          "cdpReadyMs": 119,
-          "pipeReadyMs": 5047,
-          "rendererReadyMs": 5484,
-          "firstPtyDataMs": 5589,
-          "fcpMs": 5178.6
+          "cdpReadyMs": 142,
+          "pipeReadyMs": 832,
+          "rendererReadyMs": 1323,
+          "firstPtyDataMs": 1362,
+          "fcpMs": 1077.1,
+          "marks": {
+            "js-start": 140,
+            "imports-done": 144,
+            "lock-acquired": 146,
+            "construction-start": 147,
+            "pre-pipe-server-ctor": 147,
+            "pipe-server-ctor-done": 202,
+            "module-eval-end": 208,
+            "ready-fired": 242,
+            "plugins-loaded": 251,
+            "window-created": 307,
+            "daemon-bootstrap-start": 330,
+            "daemon-ensure-start": 331,
+            "daemon-liveness-checked": 333,
+            "daemon-spawn-start": 334,
+            "daemon-spawned": 349,
+            "daemon-pipe-file-seen": 774,
+            "daemon-first-ping-ok": 779,
+            "daemon-bootstrap-end": 794,
+            "renderer-load-triggered": 811,
+            "ready-end": 825
+          },
+          "daemonBoot": {
+            "jsStartMs": 470,
+            "marks": {
+              "main-start": 475,
+              "lock-acquired": 477,
+              "bootid-done": 481,
+              "config-loaded": 486,
+              "recovery-done": 490,
+              "pre-pipe-start": 491,
+              "pipe-listening": 582,
+              "pipe-file-written": 583,
+              "ready": 583
+            }
+          }
         }
       ],
       "median": {
-        "cdpReadyMs": 120,
-        "pipeReadyMs": 5053,
-        "rendererReadyMs": 5454,
-        "firstPtyDataMs": 5570,
-        "fcpMs": 5178.6
+        "cdpReadyMs": 131,
+        "pipeReadyMs": 833,
+        "rendererReadyMs": 1329,
+        "firstPtyDataMs": 1436,
+        "fcpMs": 1083.9
+      },
+      "medianRunCounts": {
+        "cdpReadyMs": 5,
+        "pipeReadyMs": 5,
+        "rendererReadyMs": 5,
+        "firstPtyDataMs": 5,
+        "fcpMs": 5
+      },
+      "medianMarks": {
+        "js-start": 130,
+        "imports-done": 134,
+        "lock-acquired": 136,
+        "construction-start": 136,
+        "pre-pipe-server-ctor": 136,
+        "pipe-server-ctor-done": 202,
+        "module-eval-end": 208,
+        "ready-fired": 242,
+        "plugins-loaded": 251,
+        "window-created": 307,
+        "daemon-bootstrap-start": 330,
+        "daemon-ensure-start": 331,
+        "daemon-liveness-checked": 333,
+        "daemon-spawn-start": 334,
+        "daemon-spawned": 349,
+        "daemon-pipe-file-seen": 774,
+        "daemon-first-ping-ok": 779,
+        "daemon-bootstrap-end": 794,
+        "renderer-load-triggered": 811,
+        "ready-end": 825
+      },
+      "medianDaemonMarks": {
+        "main-start": 500,
+        "lock-acquired": 503,
+        "bootid-done": 508,
+        "config-loaded": 516,
+        "recovery-done": 519,
+        "pre-pipe-start": 520,
+        "pipe-listening": 616,
+        "pipe-file-written": 616,
+        "ready": 617
       }
     },
     "ram": {
       "idle1Pane": {
-        "workingSetBytes": 671526912,
-        "commitBytes": 505245696,
-        "processCount": 7,
-        "appMetricsRaw": 484495360
+        "workingSetBytes": 769224704,
+        "commitBytes": 561721344,
+        "processCount": 11,
+        "appMetricsRaw": 492163072
       },
       "panes8": {
-        "workingSetBytes": 1369104384,
-        "commitBytes": 1125564416,
+        "workingSetBytes": 1357795328,
+        "commitBytes": 1113468928,
         "processCount": 21,
-        "appMetricsRaw": 493412352
+        "appMetricsRaw": 501497856
       }
     },
     "inputLatency": {
@@ -88,25 +308,25 @@
       "throttled": false,
       "echoMs": {
         "count": 120,
-        "p50": 14.2,
-        "p95": 29.2,
-        "p99": 29.7,
+        "p50": 14,
+        "p95": 27.4,
+        "p99": 28.8,
         "min": 1.2,
-        "max": 30.4,
-        "mean": 16.642
+        "max": 30.1,
+        "mean": 15.213
       },
       "frameMs": {
         "count": 120,
-        "p50": 30.2,
-        "p95": 44.1,
-        "p99": 45.3,
-        "min": 6.2,
-        "max": 46.1,
-        "mean": 31.072
+        "p50": 29.5,
+        "p95": 42.8,
+        "p99": 43.3,
+        "min": 7.7,
+        "max": 43.4,
+        "mean": 29.551
       },
       "rafCadenceMs": {
         "p50": 16.7,
-        "p95": 16.9
+        "p95": 16.8
       }
     },
     "inputLatency8": {
@@ -116,25 +336,25 @@
       "throttled": false,
       "echoMs": {
         "count": 60,
-        "p50": 14.8,
-        "p95": 29.5,
-        "p99": 29.9,
-        "min": 1.2,
-        "max": 29.9,
-        "mean": 15.365
+        "p50": 13.5,
+        "p95": 17.9,
+        "p99": 25.1,
+        "min": 3.1,
+        "max": 25.1,
+        "mean": 13.487
       },
       "frameMs": {
         "count": 60,
-        "p50": 30.6,
-        "p95": 45.2,
-        "p99": 45.8,
-        "min": 11,
-        "max": 45.8,
-        "mean": 29.852
+        "p50": 28.7,
+        "p95": 33.7,
+        "p99": 40.6,
+        "min": 11.4,
+        "max": 40.6,
+        "mean": 24.363
       },
       "rafCadenceMs": {
         "p50": 16.7,
-        "p95": 17
+        "p95": 16.8
       }
     }
   }

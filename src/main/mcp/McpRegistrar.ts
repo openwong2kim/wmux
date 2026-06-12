@@ -132,9 +132,21 @@ export class McpRegistrar {
    */
   register(authToken: string): void {
     try {
-      // Write auth token to file so MCP server can read it
-      secureWriteTokenFile(this.authTokenPath, authToken);
-      console.log(`[McpRegistrar] Auth token written to ${this.authTokenPath}`);
+      // Write auth token to file so MCP server can read it. Skip when the
+      // on-disk value already matches (S-A cold-start): PipeServer's ctor
+      // wrote this exact token through the same secure path moments ago, and
+      // secureWriteTokenFile's overwrite branch costs a 1-2s PowerShell ACL
+      // rebuild. A mismatch (token rotation, stale file) still rewrites.
+      let onDisk: string | null = null;
+      try {
+        onDisk = fs.readFileSync(this.authTokenPath, 'utf8').trim();
+      } catch { /* missing/unreadable — write below */ }
+      if (onDisk === authToken) {
+        console.log(`[McpRegistrar] Auth token already current at ${this.authTokenPath} — skipping rewrite`);
+      } else {
+        secureWriteTokenFile(this.authTokenPath, authToken);
+        console.log(`[McpRegistrar] Auth token written to ${this.authTokenPath}`);
+      }
 
       const mcpScript = this.getMcpScriptPath();
       if (!mcpScript) {
