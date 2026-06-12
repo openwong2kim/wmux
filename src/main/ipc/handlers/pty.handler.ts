@@ -177,6 +177,10 @@ export function registerPTYHandlers(
   // session:cwd; we relay it to the renderer as IPC.CWD_CHANGED and refresh
   // the main-side cwd cache, matching what local-mode PTYBridge does inline.
   let onDaemonCwd: ((payload: { sessionId: string; cwd: string }) => void) | null = null;
+  // Daemon-mode title forwarder. The daemon detects OSC 0/2 and emits
+  // session:title; we relay it to the renderer as IPC.TERMINAL_TITLE_CHANGED,
+  // matching what local-mode PTYBridge does inline.
+  let onDaemonTitle: ((payload: { sessionId: string; title: string }) => void) | null = null;
   if (useDaemon && daemonClient) {
     onDaemonFlushComplete = (payload: { sessionId: string; recoveredBytes: number }) => {
       const win = getWindow?.();
@@ -198,6 +202,14 @@ export function registerPTYHandlers(
       }
     };
     daemonClient.on('session:cwd', onDaemonCwd);
+
+    onDaemonTitle = (payload: { sessionId: string; title: string }) => {
+      const win = getWindow?.();
+      if (win && !win.isDestroyed()) {
+        win.webContents.send(IPC.TERMINAL_TITLE_CHANGED, payload.sessionId, payload.title);
+      }
+    };
+    daemonClient.on('session:title', onDaemonTitle);
   }
 
   // pty:create
@@ -670,6 +682,9 @@ export function registerPTYHandlers(
       }
       if (onDaemonCwd) {
         daemonClient.removeListener('session:cwd', onDaemonCwd);
+      }
+      if (onDaemonTitle) {
+        daemonClient.removeListener('session:title', onDaemonTitle);
       }
     }
   };
