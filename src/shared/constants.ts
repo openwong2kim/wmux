@@ -20,6 +20,7 @@ export const IPC = {
   NOTIFICATION: 'notification:new',
   CWD_CHANGED: 'notification:cwd-changed',
   GIT_BRANCH_CHANGED: 'notification:git-branch-changed',
+  TERMINAL_TITLE_CHANGED: 'terminal:title-changed',
   METADATA_UPDATE: 'metadata:update',
   METADATA_REQUEST: 'metadata:request',
   // Phase 3: RPC bridge (Main ↔ Renderer)

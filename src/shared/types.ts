@@ -44,6 +44,8 @@ export interface Surface {
   browserPartition?: string;
   editorFilePath?: string;
   scrollbackFile?: string;  // surfaceId used as filename for scrollback dump
+  /** True once the user manually renamed this tab; blocks shell-set (OSC 0/2) titles. */
+  titleLocked?: boolean;
 }
 
 // === Pane: either a leaf (has surfaces) or a branch (has children) ===

@@ -302,6 +302,7 @@ export interface DaemonEvent {
     | 'prompt.event'
     | 'notification.event'
     | 'cwd.changed'
+    | 'title.changed'
     // X1 workspace-context sidebar (schema-freeze §2). Per-session live
     // context detected where the PTY lives:
     //   context.git   → { branch: string | null, isWorktree: boolean }
