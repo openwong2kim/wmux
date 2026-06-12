@@ -101,13 +101,18 @@ export interface ShimPaths {
   cliJsPath: string;
 }
 
-/** Derive shim locations from the current executable (squirrel layout). */
+/**
+ * Derive shim locations from the current executable (squirrel layout).
+ * Uses path.win32 explicitly: the shim is Windows-only (Squirrel), and the
+ * POSIX path module would treat a `C:\…` execPath as one relative segment —
+ * which is also why the unit test must pass on the macOS/Linux CI baseline.
+ */
 export function deriveShimPaths(execPath: string): ShimPaths {
-  const appDir = path.dirname(execPath); // …\wmux\app-X.Y.Z
-  const rootDir = path.resolve(appDir, '..'); // …\wmux (Update.exe lives here)
+  const appDir = path.win32.dirname(execPath); // …\wmux\app-X.Y.Z
+  const rootDir = path.win32.resolve(appDir, '..'); // …\wmux (Update.exe lives here)
   return {
-    binDir: path.join(rootDir, 'bin'),
-    cliJsPath: path.join(appDir, 'resources', 'cli-bundle', 'index.js'),
+    binDir: path.win32.join(rootDir, 'bin'),
+    cliJsPath: path.win32.join(appDir, 'resources', 'cli-bundle', 'index.js'),
   };
 }
 
