@@ -25,9 +25,11 @@ import { fileURLToPath } from 'node:url';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKTREE_ROOT = path.resolve(__dirname, '..');
-// The packaged app lives in the MAIN repo's out/ (the worktree shares no out/).
-const MAIN_REPO = 'D:\\wmux';
-const APP_EXE = path.join(MAIN_REPO, 'out', 'wmux-win32-x64', 'wmux.exe');
+// The packaged app normally lives in this checkout's own out/. When running
+// from a git worktree (which shares no out/ with the main checkout), point
+// WMUX_APP_ROOT at the checkout that ran `npm run package`.
+const APP_ROOT = process.env.WMUX_APP_ROOT || WORKTREE_ROOT;
+const APP_EXE = path.join(APP_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
 const CLI_BUNDLE = path.join(WORKTREE_ROOT, 'dist', 'cli-bundle', 'index.js');
 const USERNAME = os.userInfo().username || 'default';
 const POWERSHELL_EXE = path.join(
