@@ -1,7 +1,7 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
-import type { Pane, PaneLeaf, Surface } from '../../shared/types';
+import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { validateMessage } from '../../shared/types';
 import type { Message, Part, TaskState, Artifact, AgentSkill } from '../../shared/types';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
@@ -421,16 +421,27 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
 
   if (method === 'surface.close') {
     const surfaceId = String(params.id ?? '');
-    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
-    if (!ws) return { error: 'no active workspace' };
 
-    const targetLeaf = findLeafBySurfaceId(ws.rootPane, surfaceId);
-    if (!targetLeaf) return { error: `surface ${surfaceId} not found` };
+    // Surface ids are globally unique, so an explicit id is an unambiguous
+    // target — search every workspace, not just the UI-active one. The old
+    // active-only lookup made CLI/MCP closes of a background workspace's
+    // surface fail with "surface not found" (see cli/utils.ts).
+    let targetWs: Workspace | null = null;
+    let targetLeaf: PaneLeaf | null = null;
+    for (const ws of store.workspaces) {
+      const leaf = findLeafBySurfaceId(ws.rootPane, surfaceId);
+      if (leaf) {
+        targetWs = ws;
+        targetLeaf = leaf;
+        break;
+      }
+    }
+    if (!targetWs || !targetLeaf) return { error: `surface ${surfaceId} not found` };
 
     const surface = targetLeaf.surfaces.find((s) => s.id === surfaceId);
     const ptyId = surface?.ptyId;
 
-    store.closeSurface(targetLeaf.id, surfaceId);
+    store.closeSurface(targetLeaf.id, surfaceId, targetWs.id);
 
     if (ptyId) {
       try {
@@ -835,31 +846,46 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   }
 
   if (method === 'browser.close') {
-    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
-    if (!ws) return { error: 'no active workspace' };
-
     const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
+    // Workspace routing mirrors browser.open (lines above): an explicit
+    // workspaceId (MCP requireWorkspaceId / CLI verified identity) pins the
+    // close to the CALLER's workspace; absent, fall back to the UI-active one.
+    // Without this, an agent in workspace A issuing browser_close closed
+    // whatever browser the USER happened to be looking at in workspace B —
+    // the open path was fixed in #193, close kept the asymmetry.
+    const targetWsId = typeof params.workspaceId === 'string'
+      ? params.workspaceId
+      : store.activeWorkspaceId;
 
-    // Find the browser surface to close — by surfaceId or the active one
-    const leaves = findLeafPanes(ws.rootPane);
+    let targetWs: Workspace | null = null;
     let targetLeaf: PaneLeaf | null = null;
     let targetSurfaceId: string | null = null;
 
     if (surfaceId) {
-      // Find the specific browser surface
-      for (const leaf of leaves) {
-        const surface = leaf.surfaces.find((s) => s.id === surfaceId && s.surfaceType === 'browser');
-        if (surface) {
-          targetLeaf = leaf;
-          targetSurfaceId = surface.id;
-          break;
+      // Explicit surface id — unambiguous target, so search EVERY workspace.
+      // Scoping an explicit id to one workspace only manufactures false
+      // "not found" errors (the surface.close lesson — see cli/utils.ts).
+      for (const ws of store.workspaces) {
+        for (const leaf of findLeafPanes(ws.rootPane)) {
+          const surface = leaf.surfaces.find((s) => s.id === surfaceId && s.surfaceType === 'browser');
+          if (surface) {
+            targetWs = ws;
+            targetLeaf = leaf;
+            targetSurfaceId = surface.id;
+            break;
+          }
         }
+        if (targetLeaf) break;
       }
     } else {
-      // Find any active browser surface
-      for (const leaf of leaves) {
+      // No surface id — "the browser pane" is ambiguous, so resolve it inside
+      // the routed workspace only. Never reach into other workspaces here.
+      const ws = store.workspaces.find((w) => w.id === targetWsId);
+      if (!ws) return { error: 'browser.close: workspace not found' };
+      for (const leaf of findLeafPanes(ws.rootPane)) {
         const surface = leaf.surfaces.find((s) => s.surfaceType === 'browser');
         if (surface) {
+          targetWs = ws;
           targetLeaf = leaf;
           targetSurfaceId = surface.id;
           break;
@@ -867,7 +893,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       }
     }
 
-    if (!targetLeaf || !targetSurfaceId) {
+    if (!targetWs || !targetLeaf || !targetSurfaceId) {
       return { error: 'browser.close: no browser surface found' };
     }
 
@@ -877,7 +903,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // applies the mutation.
     const wasLastSurface = targetLeaf.surfaces.length <= 1;
 
-    store.closeSurface(targetLeaf.id, targetSurfaceId);
+    store.closeSurface(targetLeaf.id, targetSurfaceId, targetWs.id);
 
     // Mirror the UI close path's cascade: when the closed surface was the
     // pane's last one, remove the now-empty leaf too. Without this, AppLayout's
@@ -901,7 +927,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // Keep these two calls synchronous and adjacent; an await between them would
     // expose the empty leaf to the effect and reintroduce the backfill.
     if (wasLastSurface) {
-      store.closePane(targetLeaf.id);
+      store.closePane(targetLeaf.id, targetWs.id);
     }
     return { ok: true };
   }

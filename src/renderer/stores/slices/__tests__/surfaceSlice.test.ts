@@ -149,6 +149,54 @@ describe('surfaceSlice.setActiveSurface', () => {
   });
 });
 
+describe('surfaceSlice.closeSurface', () => {
+  it('targets the active workspace when no workspaceId is given', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', '');
+    slice.addSurface(paneId, 'pty-2', 'pwsh', '');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const firstId = pane.surfaces[0].id;
+
+    slice.closeSurface(paneId, firstId);
+
+    expect(pane.surfaces).toHaveLength(1);
+    expect(pane.surfaces.find((s) => s.id === firstId)).toBeUndefined();
+  });
+
+  it('targets a non-active workspace via the workspaceId parameter', () => {
+    const { state, slice } = createHarness();
+    const other = createWorkspace('Other');
+    state.workspaces.push(other);
+    slice.addBrowserSurface(other.rootPane.id, 'https://x.example', undefined, other.id);
+    const pane = other.rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const surfaceId = pane.surfaces[0].id;
+
+    slice.closeSurface(pane.id, surfaceId, other.id);
+
+    expect(pane.surfaces).toHaveLength(0);
+    expect(state.activeWorkspaceId).not.toBe(other.id);
+  });
+
+  it('is a no-op for a non-active workspace pane without the workspaceId parameter', () => {
+    // Documents WHY callers must thread workspaceId: the pane lookup runs
+    // inside one workspace tree, so a background-workspace pane silently
+    // no-ops instead of closing (the browser.close asymmetry).
+    const { state, slice } = createHarness();
+    const other = createWorkspace('Other');
+    state.workspaces.push(other);
+    slice.addBrowserSurface(other.rootPane.id, 'https://x.example', undefined, other.id);
+    const pane = other.rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+
+    slice.closeSurface(pane.id, pane.surfaces[0].id);
+
+    expect(pane.surfaces).toHaveLength(1);
+  });
+});
+
 describe('surfaceSlice browser partition state', () => {
   it('stores the provided partition on new browser surfaces', () => {
     const { state, slice } = createHarness();

@@ -34,7 +34,10 @@ export interface PaneSlice {
    * the still-active original pane).
    */
   splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string, position?: 'before' | 'after') => boolean;
-  closePane: (paneId: string) => void;
+  /** Close a leaf pane. `workspaceId` lets RPC/CLI callers target a
+   * non-active workspace (defaults to the active one — existing callers are
+   * unchanged). */
+  closePane: (paneId: string, workspaceId?: string) => void;
   setActivePane: (paneId: string) => void;
   focusPaneDirection: (direction: 'up' | 'down' | 'left' | 'right') => void;
   cyclePane: (direction: 'next' | 'prev') => void;
@@ -246,10 +249,10 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     return created;
   },
 
-  closePane: (paneId) => {
+  closePane: (paneId, workspaceId) => {
     let event: { wsId: string; closedPaneId: string; previousActiveId: string; newActiveId: string | null } | null = null;
     set((state: StoreState) => {
-      const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+      const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
       if (!ws) return;
 
       const parent = findParent(ws.rootPane, paneId);

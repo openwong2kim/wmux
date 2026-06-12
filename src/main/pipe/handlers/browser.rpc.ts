@@ -78,12 +78,18 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
   /**
    * browser.close
    * Closes the browser panel.
-   * params: { surfaceId?: string }
+   * params: { surfaceId?: string, workspaceId?: string }
    */
   router.register('browser.close', (params) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
     return sendToRenderer(getWindow, 'browser.close', {
       ...(surfaceId && { surfaceId }),
+      // Same caller-workspace routing contract as browser.open above: absent
+      // workspaceId falls back to the UI-active workspace in the renderer.
+      // MCP/CLI callers pass an explicit id so a close issued from workspace A
+      // can never tear down the browser the user is viewing in workspace B.
+      ...(workspaceId && { workspaceId }),
     });
   });
 

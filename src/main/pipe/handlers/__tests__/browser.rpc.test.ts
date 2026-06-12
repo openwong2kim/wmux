@@ -200,6 +200,33 @@ describe('registerBrowserRpc', () => {
     });
   });
 
+  it('browser.close forwards surfaceId and workspaceId to the renderer (caller-ws routing)', async () => {
+    const router = register();
+
+    await router.dispatch({
+      id: '5b',
+      method: 'browser.close',
+      params: { surfaceId: 'surface-9', workspaceId: 'ws-caller' },
+    });
+
+    expect(sendToRendererMock).toHaveBeenCalledWith(expect.any(Function), 'browser.close', {
+      surfaceId: 'surface-9',
+      workspaceId: 'ws-caller',
+    });
+  });
+
+  it('browser.close omits absent ids (renderer falls back to the active workspace)', async () => {
+    const router = register();
+
+    await router.dispatch({
+      id: '5c',
+      method: 'browser.close',
+      params: {},
+    });
+
+    expect(sendToRendererMock).toHaveBeenCalledWith(expect.any(Function), 'browser.close', {});
+  });
+
   it('browser.session.start applies only the default partition to renderer browser surfaces', async () => {
     const router = register();
 

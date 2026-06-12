@@ -48,7 +48,8 @@ USAGE
 
 SUBCOMMANDS
   navigate <url>                  Navigate the active browser surface to a URL
-  close                           Close the browser panel
+  close [--workspace <id>]        Close the browser panel (defaults to your own
+                                  workspace when run inside a wmux pane)
   session start [--profile <name>]  Start a browser session
   session stop                      Stop the active browser session
   session status                    Show active session status
@@ -94,9 +95,27 @@ export async function handleBrowser(
       break;
     }
 
-    // ── browser close ────────────────────────────────────────────────────────
+    // ── browser close [--workspace <id>] ─────────────────────────────────────
     case 'close': {
-      response = await sendRequest('browser.close', {});
+      // Mirror `wmux open`: inside a wmux pane the close targets the caller's
+      // own workspace via verified PID-map identity, so it can never tear down
+      // a browser the user is viewing in another workspace. Outside a pane the
+      // identity resolves to nothing and the active workspace is used (the
+      // pre-fix behavior).
+      let workspaceId = parseFlag(rest, '--workspace');
+      if (!workspaceId) {
+        const ctx = await resolveSelfContext({
+          sendRequest,
+          env: process.env,
+          ppid: process.ppid,
+          getParentPid: getParentPidDefault,
+        });
+        workspaceId = ctx.workspaceId;
+      }
+      const params: Record<string, unknown> = {};
+      if (workspaceId) params.workspaceId = workspaceId;
+
+      response = await sendRequest('browser.close', params);
       if (jsonMode) {
         printResult(response);
       } else {

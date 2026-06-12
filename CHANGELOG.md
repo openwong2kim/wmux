@@ -13,6 +13,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Changed
 - **`a2a.resolve.identity` now returns pane-level `entries`** (`pid` + `ptyId` + `workspaceId`) alongside the existing `mappings` — additive; existing MCP clients are unaffected.
 
+### Fixed
+- **`browser_close` / `wmux browser close` can no longer tear down a browser pane the user is viewing in another workspace.** `browser.open` was pinned to the caller's workspace in #193, but `browser.close` kept resolving "the browser pane" inside the UI-active workspace — an agent in workspace A issuing a close took down whatever browser the user happened to be looking at in workspace B, or got a spurious "not found" when B had none. Close now routes the same way open does: MCP resolves the calling workspace (fail-closed), the CLI uses its verified self-pane identity (with a `--workspace` override), and an explicit `surfaceId` — which is globally unique — is found across all workspaces. `surface.close` with an explicit id likewise no longer fails with "surface not found" when the surface lives outside the active workspace. Callers that pass no workspace at all keep the active-workspace behavior.
+
 ## [3.1.1] — 2026-06-12 — browser pane wired into the workflow, IME input self-healing
 
 Headline: the embedded browser pane is now reachable from where you actually work — terminal URLs route smartly, sidebar port badges open localhost in one click, and browser panes restore on the page you last visited. And the field-reported "keyboard input dies until you toggle multiview" IME failure on Korean Windows now self-heals: the suspect textarea-clearing is off by default and a storm guard detects the dead-input signature and resyncs the IME automatically.

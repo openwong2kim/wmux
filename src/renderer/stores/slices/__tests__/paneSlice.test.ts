@@ -188,6 +188,48 @@ describe('PaneSlice', () => {
   });
 
   describe('closePane', () => {
+    it('closes a pane in a non-active workspace via the workspaceId parameter', () => {
+      const ws1 = getActiveWorkspace(store);
+      const ws2 = createWorkspace('Other');
+      store.setState((s) => { s.workspaces.push(ws2); });
+
+      // Build a 2-pane tree inside ws2 (splitPane operates on the active
+      // workspace), then return focus to ws1 so ws2 is a background workspace.
+      store.setState((s) => { s.activeWorkspaceId = ws2.id; });
+      store.getState().splitPane(ws2.rootPane.id, 'horizontal');
+      store.setState((s) => { s.activeWorkspaceId = ws1.id; });
+
+      const ws2Split = store.getState().workspaces.find((w) => w.id === ws2.id)!;
+      expect(ws2Split.rootPane.type).toBe('branch');
+      if (ws2Split.rootPane.type !== 'branch') return;
+      const childId = ws2Split.rootPane.children[0].id;
+
+      store.getState().closePane(childId, ws2.id);
+
+      const ws2After = store.getState().workspaces.find((w) => w.id === ws2.id)!;
+      expect(ws2After.rootPane.type).toBe('leaf');
+      // The active workspace must be untouched.
+      expect(store.getState().activeWorkspaceId).toBe(ws1.id);
+      expect(getActiveWorkspace(store).rootPane.type).toBe('leaf');
+    });
+
+    it('without workspaceId, a non-active workspace pane is a no-op (the asymmetry guard)', () => {
+      const ws1 = getActiveWorkspace(store);
+      const ws2 = createWorkspace('Other');
+      store.setState((s) => { s.workspaces.push(ws2); });
+      store.setState((s) => { s.activeWorkspaceId = ws2.id; });
+      store.getState().splitPane(ws2.rootPane.id, 'horizontal');
+      store.setState((s) => { s.activeWorkspaceId = ws1.id; });
+
+      const ws2Split = store.getState().workspaces.find((w) => w.id === ws2.id)!;
+      if (ws2Split.rootPane.type !== 'branch') throw new Error('expected branch');
+
+      store.getState().closePane(ws2Split.rootPane.children[0].id);
+
+      const ws2After = store.getState().workspaces.find((w) => w.id === ws2.id)!;
+      expect(ws2After.rootPane.type).toBe('branch');
+    });
+
     it('removes a leaf and collapses the parent branch', () => {
       const ws = getActiveWorkspace(store);
       const originalLeafId = ws.rootPane.id;

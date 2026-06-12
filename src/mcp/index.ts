@@ -281,11 +281,21 @@ server.tool(
 
 server.tool(
   'browser_close',
-  'Close the browser panel in the active pane',
+  'Close the browser panel in the calling workspace',
   {
-    surfaceId: z.string().optional().describe('Target a specific surface by ID. Omit to use the active surface.'),
+    surfaceId: z.string().optional().describe('Target a specific surface by ID (searched across all workspaces). Omit to close the browser surface in the calling workspace.'),
   },
-  async ({ surfaceId }) => callRpc('browser.close', surfaceId ? { surfaceId } : {}),
+  async ({ surfaceId }) => {
+    // Same fail-closed identity rule as browser_open: without an explicit
+    // workspaceId the renderer falls back to the UI-active workspace, so a
+    // surfaceId-less close issued here would tear down whatever browser the
+    // user is currently looking at — possibly in a different workspace.
+    // An explicit surfaceId is unambiguous (renderer searches all
+    // workspaces), but requireWorkspaceId is kept unconditional so both
+    // shapes share one identity contract.
+    const workspaceId = await requireWorkspaceId();
+    return callRpc('browser.close', { ...(surfaceId && { surfaceId }), workspaceId });
+  },
 );
 
 // === Playwright browser tools ===

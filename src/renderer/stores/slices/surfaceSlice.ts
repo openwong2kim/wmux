@@ -8,7 +8,10 @@ export interface SurfaceSlice {
   addSurface: (paneId: string, ptyId: string, shell: string, cwd: string) => void;
   addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
   addEditorSurface: (paneId: string, filePath: string) => void;
-  closeSurface: (paneId: string, surfaceId: string) => void;
+  /** Close a surface tab. `workspaceId` lets RPC/CLI callers target a
+   * non-active workspace (defaults to the active one — existing callers are
+   * unchanged). */
+  closeSurface: (paneId: string, surfaceId: string, workspaceId?: string) => void;
   /** Activate a surface tab. `workspaceId` lets RPC/helper callers target a
    * non-active workspace (defaults to the active one — existing callers are
    * unchanged). */
@@ -106,8 +109,8 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     pane.activeSurfaceId = surface.id;
   }),
 
-  closeSurface: (paneId, surfaceId) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+  closeSurface: (paneId, surfaceId, workspaceId) => set((state: StoreState) => {
+    const ws = state.workspaces.find((w: Workspace) => w.id === (workspaceId || state.activeWorkspaceId));
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane) return;

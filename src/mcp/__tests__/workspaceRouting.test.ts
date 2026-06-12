@@ -62,6 +62,15 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
   });
 
+  it('browser_close routes through requireWorkspaceId, never the weak resolver', () => {
+    // The close mirror of invariant 2: a surfaceId-less browser_close used to
+    // fall back to the UI-active workspace and tore down whatever browser the
+    // user was looking at — the same #190-class misroute browser_open had.
+    const block = toolBlock('browser_close');
+    expect(block).toMatch(/requireWorkspaceId\(\)/);
+    expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
+  });
+
   it('terminal default routing binds the verified router, not the weak resolver (#163 Part 2)', () => {
     // resolveTerminalRouteBound wires resolveTerminalRoute to the verified
     // PID-map lookup + claim pinning. The cache getter MUST honor

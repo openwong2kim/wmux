@@ -47,7 +47,7 @@ describe('useRpcBridge browser.close cascade (issue #143)', () => {
     const block = closeBlock();
     expect(block).toMatch(/store\.closeSurface\(/);
     // The empty-pane cleanup that issue #143 was missing.
-    expect(block).toMatch(/store\.closePane\(targetLeaf\.id\)/);
+    expect(block).toMatch(/store\.closePane\(targetLeaf\.id,\s*targetWs\.id\)/);
   });
 
   it('decides last-surface BEFORE closeSurface (no off-by-one on the snapshot)', () => {
@@ -62,5 +62,57 @@ describe('useRpcBridge browser.close cascade (issue #143)', () => {
     const closeAt = block.indexOf('store.closeSurface(');
     expect(snapAt).toBeGreaterThanOrEqual(0);
     expect(closeAt).toBeGreaterThan(snapAt);
+  });
+});
+
+/**
+ * Workspace-routing invariants for the close paths (X4 follow-up).
+ *
+ * browser.close used to resolve "the browser pane" inside the UI-ACTIVE
+ * workspace only, while browser.open had been fixed (#193) to honor the
+ * caller's workspaceId. The asymmetry meant an agent in workspace A issuing
+ * a surfaceId-less close tore down whatever browser the user was viewing in
+ * workspace B — or got a spurious "not found" when B had none.
+ *
+ * surface.close had the sibling false-negative: an explicit (globally unique)
+ * surface id outside the active workspace returned "surface not found".
+ */
+describe('useRpcBridge close-path workspace routing', () => {
+  const src = fs.readFileSync(
+    path.join(__dirname, '..', 'useRpcBridge.ts'),
+    'utf-8',
+  );
+
+  function blockBetween(startMarker: string, endMarker: string): string {
+    const match = src.match(
+      new RegExp(`${startMarker}[\\s\\S]*?${endMarker}`),
+    );
+    if (!match) {
+      throw new Error(
+        `${startMarker} -> ${endMarker} handler region not found in ` +
+          'useRpcBridge.ts. Update the regex if the layout changed.',
+      );
+    }
+    return match[0];
+  }
+
+  it('browser.close honors params.workspaceId with an active-workspace fallback (mirrors browser.open)', () => {
+    const block = blockBetween("method === 'browser\\.close'", "method === 'browser\\.navigate'");
+    expect(block).toMatch(/params\.workspaceId/);
+    expect(block).toMatch(/store\.activeWorkspaceId/);
+    // The store mutations must be pinned to the RESOLVED workspace, or the
+    // slice-level active-workspace default silently no-ops on background ones.
+    expect(block).toMatch(/store\.closeSurface\(targetLeaf\.id,\s*targetSurfaceId,\s*targetWs\.id\)/);
+  });
+
+  it('browser.close with an explicit surfaceId searches every workspace (unambiguous target)', () => {
+    const block = blockBetween("method === 'browser\\.close'", "method === 'browser\\.navigate'");
+    expect(block).toMatch(/for \(const ws of store\.workspaces\)/);
+  });
+
+  it('surface.close resolves an explicit surface id across all workspaces', () => {
+    const block = blockBetween("method === 'surface\\.close'", "method === 'pane\\.list'");
+    expect(block).toMatch(/for \(const ws of store\.workspaces\)/);
+    expect(block).toMatch(/store\.closeSurface\(targetLeaf\.id,\s*surfaceId,\s*targetWs\.id\)/);
   });
 });
