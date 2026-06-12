@@ -109,13 +109,23 @@ function ps(script, targetPath) {
   // $ProgressPreference suppresses the CLIXML progress records PowerShell
   // otherwise streams for Get-Acl/Set-Acl, which only clutters this harness'
   // output (the seeding/inspection is scaffolding, not the code under test).
+  //
+  // PSModulePath is STRIPPED for the 5.1 child: when this harness runs from a
+  // PowerShell 7 shell, the inherited PSModulePath leads with pwsh 7's
+  // Core-edition Modules dir and 5.1 then fails to auto-load Get-Acl/Set-Acl
+  // (CommandNotFoundException on Microsoft.PowerShell.Security) — every
+  // readDacl came back null and the harness false-failed. Without the
+  // variable, 5.1 rebuilds its own default module path. Mirrors the same fix
+  // in src/shared/security.ts childPsEnv().
+  const env = targetPath === undefined ? { ...process.env } : { ...process.env, WMUX_DT_PATH: targetPath };
+  delete env.PSModulePath;
   return execFileSync(
     POWERSHELL,
     ['-NoProfile', '-NonInteractive', '-ExecutionPolicy', 'Bypass', '-Command', `$ProgressPreference='SilentlyContinue'; ${script}`],
     {
       windowsHide: true,
       stdio: ['pipe', 'pipe', 'ignore'],
-      env: targetPath === undefined ? process.env : { ...process.env, WMUX_DT_PATH: targetPath },
+      env,
     },
   ).toString('utf8').trim();
 }
@@ -184,9 +194,15 @@ function assertOwnerOnly(label, p) {
 async function main() {
   console.log(`issue-124-acl-dynamic — owner SID ${OWNER_SID}`);
   console.log(`PowerShell present: ${fs.existsSync(POWERSHELL)} (primary .NET path)\n`);
-  const { reHardenTokenFileAcl, secureWriteTokenFile } = await loadRealSecurityModule();
+  const { reHardenTokenFileAcl, secureWriteTokenFile, scheduleTokenFileReHarden } =
+    await loadRealSecurityModule();
 
   // ---- (a) fresh-inherited: secureWriteTokenFile (the write path) ----
+  // S-A note: since the fresh-vs-overwrite split, a file that did NOT exist
+  // before the write is hardened via the FAST icacls-first primitive — this
+  // case is therefore also the live proof that the icacls strip yields an
+  // owner-only DACL on a just-created file (the #124 explicit-ACE leak is
+  // unreachable there: a fresh file carries only inherited ACEs).
   console.log('CASE (a) fresh-inherited — secureWriteTokenFile then reHarden');
   {
     const p = path.join(os.tmpdir(), `wmux-fresh-${process.pid}-${Math.random().toString(36).slice(2)}`);
@@ -256,6 +272,33 @@ async function main() {
     check('(c) reHardenTokenFileAcl did NOT throw', threw === null, threw ? String(threw.message) : '');
     check('(c) reHardenTokenFileAcl returned true', ret === true);
     assertOwnerOnly('(c) — Everyone:(R) removed', p);
+    fs.rmSync(p, { force: true });
+  }
+
+  // ---- (d) S-A deferred re-harden converges to the same end state ----
+  // scheduleTokenFileReHarden is the async, off-critical-path variant the
+  // main PipeServer ctor and DaemonPipeServer.start now use. It must reach
+  // the SAME owner-only DACL as the sync re-harden — including on the
+  // explicit-Everyone leak state — just later. Fire-and-forget, so poll the
+  // DACL until it converges (bounded).
+  console.log('\nCASE (d) deferred re-harden (scheduleTokenFileReHarden) converges to owner-only');
+  {
+    const p = makeTempToken();
+    seedExplicitEveryoneRead(p);
+    scheduleTokenFileReHarden(p);
+    const deadline = Date.now() + 15000;
+    let converged = false;
+    while (Date.now() < deadline) {
+      const dacl = readDacl(p);
+      const nonOwner = dacl.filter((a) => a.sid !== OWNER_SID);
+      if (dacl.length === 1 && nonOwner.length === 0 && !dacl[0].inherited) {
+        converged = true;
+        break;
+      }
+      await new Promise((r) => setTimeout(r, 250));
+    }
+    check('(d) deferred re-harden converged to owner-only within 15s', converged, converged ? '' : `dacl=${JSON.stringify(readDacl(p))}`);
+    assertOwnerOnly('(d) — explicit Everyone:(R) removed by the deferred path', p);
     fs.rmSync(p, { force: true });
   }
 

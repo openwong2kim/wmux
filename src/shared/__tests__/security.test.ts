@@ -7,9 +7,12 @@ const fsMock = vi.hoisted(() => ({
   writeFileSync: vi.fn(),
   unlinkSync: vi.fn(),
   chmodSync: vi.fn(),
+  promises: { chmod: vi.fn() },
 }));
 
 const execFileSyncMock = vi.hoisted(() => vi.fn());
+const execFileMock = vi.hoisted(() => vi.fn());
+const spawnMock = vi.hoisted(() => vi.fn());
 
 vi.mock('fs', () => ({
   existsSync: fsMock.existsSync,
@@ -17,10 +20,13 @@ vi.mock('fs', () => ({
   writeFileSync: fsMock.writeFileSync,
   unlinkSync: fsMock.unlinkSync,
   chmodSync: fsMock.chmodSync,
+  promises: fsMock.promises,
 }));
 
 vi.mock('child_process', () => ({
   execFileSync: execFileSyncMock,
+  execFile: execFileMock,
+  spawn: spawnMock,
 }));
 
 // NOTE: these are STRUCTURAL tests — execFileSync is mocked, so they assert the
@@ -92,6 +98,9 @@ describe('secureWriteTokenFile', () => {
     vi.resetModules();
     vi.clearAllMocks();
     execFileSyncMock.mockReset();
+    // existsSync=true pins every test in this block to the OVERWRITE branch
+    // (existedBefore=true → PowerShell-first). The fresh-create branch has its
+    // own dedicated describe below ("fresh-vs-overwrite primitive selection").
     fsMock.existsSync.mockReturnValue(true);
   });
 
@@ -142,6 +151,10 @@ describe('secureWriteTokenFile', () => {
     // mangled by the console OEM codepage; the target path travels via env.
     expect(powershellPayload()).toEqual({ sid: 'S-1-5-21-1-2-3-1001' });
     expect((psCall?.[2]?.env as Record<string, string>)?.WMUX_ACL_TARGET).toBe(tokenPath);
+    // PSModulePath must be STRIPPED from the 5.1 child: an inherited pwsh 7
+    // module path makes 5.1 auto-load the Core-edition module for Get-Item and
+    // fail, silently degrading the #124 rebuild to the icacls fallback.
+    expect('PSModulePath' in ((psCall?.[2]?.env as Record<string, string>) ?? {})).toBe(false);
     // The child's stdout is discarded (no CLIXML leak); stderr kept for errors.
     expect(psCall?.[2]?.stdio).toEqual(['pipe', 'ignore', 'pipe']);
     // Crucially the DACL-only primitive: protect (discard inheritance) + a fresh
@@ -494,5 +507,267 @@ describe('reHardenTokenFileAcl', () => {
     // The existing (possibly-loose) token file is NOT deleted — unlike the
     // write path, we keep the working token rather than break auth.
     expect(fsMock.unlinkSync).not.toHaveBeenCalled();
+  });
+});
+
+// S-A cold-start: the write path picks its primitive by whether the file
+// existed BEFORE the write. A fresh file carries only inherited ACEs, so the
+// fast icacls strip is security-equivalent to the PowerShell DACL rebuild;
+// an OVERWRITE (rotation, empty-file repair) may carry pre-existing EXPLICIT
+// broad ACEs that only the PowerShell rebuild removes (#124) — it must keep
+// the PowerShell-first order.
+describe('secureWriteTokenFile — fresh-vs-overwrite primitive selection (S-A)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    execFileSyncMock.mockReset();
+    fsMock.existsSync.mockReset();
+  });
+
+  function stubTokenFileExists(exists: boolean): void {
+    // Token file existence drives the fresh/overwrite branch; every other
+    // existsSync (parent dir, powershell.exe) stays true.
+    fsMock.existsSync.mockImplementation((p: unknown) =>
+      typeof p === 'string' && p.toLowerCase().includes('auth-token') ? exists : true,
+    );
+  }
+
+  it('fresh file (did not exist) → icacls FIRST, PowerShell never runs', async () => {
+    vi.stubEnv('USERNAME', 'tester');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubTokenFileExists(false);
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+
+    const { secureWriteTokenFile } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+    secureWriteTokenFile(tokenPath, 'secret-token');
+
+    expect(icaclsArgs()?.slice(0, 4)).toEqual([
+      tokenPath,
+      '/grant:r',
+      '*S-1-5-21-1-2-3-1001:F',
+      '/inheritance:r',
+    ]);
+    expect(powershellCall()).toBeUndefined();
+  });
+
+  it('overwrite (existed before) → PowerShell-first order is preserved (#124)', async () => {
+    vi.stubEnv('USERNAME', 'tester');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubTokenFileExists(true);
+    stubWhoamiSid('S-1-5-21-1-2-3-1001');
+
+    const { secureWriteTokenFile } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+    secureWriteTokenFile(tokenPath, 'secret-token');
+
+    expect(powershellCall()).toBeDefined();
+    expect(icaclsCall()).toBeUndefined();
+  });
+
+  it('fresh file: icacls failure falls back to PowerShell (fail-closed preserved when BOTH fail)', async () => {
+    vi.stubEnv('USERNAME', 'tester');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubTokenFileExists(false);
+    execFileSyncMock.mockImplementation((cmd: unknown) => {
+      const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
+      if (c.includes('whoami')) {
+        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
+      }
+      if (c.includes('icacls')) throw new Error('icacls denied');
+      return Buffer.from(''); // PowerShell succeeds
+    });
+
+    const { secureWriteTokenFile } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+
+    expect(() => secureWriteTokenFile(tokenPath, 'secret-token')).not.toThrow();
+    expect(icaclsCall()).toBeDefined();
+    expect(powershellCall()).toBeDefined();
+    expect(fsMock.unlinkSync).not.toHaveBeenCalled();
+
+    // Now make PowerShell fail too — fail-closed (delete + throw) must fire.
+    vi.resetModules();
+    execFileSyncMock.mockReset();
+    fsMock.unlinkSync.mockReset();
+    stubTokenFileExists(false);
+    execFileSyncMock.mockImplementation((cmd: unknown) => {
+      const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
+      if (c.includes('whoami')) {
+        return Buffer.from('User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
+      }
+      throw new Error(c.includes('icacls') ? 'icacls denied' : 'CLM blocked');
+    });
+    const fresh = await import('../security');
+    expect(() => fresh.secureWriteTokenFile(tokenPath, 'secret-token')).toThrow(
+      /Failed to set secure ACL/,
+    );
+    expect(fsMock.unlinkSync).toHaveBeenCalledWith(tokenPath);
+  });
+});
+
+// S-A deferred re-harden: same best-effort contract and primitive order as the
+// sync reHardenTokenFileAcl, but fully async (execFile/spawn, never *Sync) so
+// the multi-second PowerShell shell-out can never stall the event loop of the
+// process that scheduled it (in the daemon that would time out the launcher's
+// first ping against the freshly-opened control pipe).
+describe('scheduleTokenFileReHarden (S-A deferred re-harden)', () => {
+  beforeEach(() => {
+    vi.resetModules();
+    vi.clearAllMocks();
+    execFileSyncMock.mockReset();
+    execFileMock.mockReset();
+    spawnMock.mockReset();
+    fsMock.existsSync.mockReset();
+    fsMock.existsSync.mockReturnValue(true);
+    fsMock.promises.chmod.mockReset();
+    fsMock.promises.chmod.mockResolvedValue(undefined);
+  });
+
+  /** Fake spawn() child: stdin sink, stderr emitter, close with exitCode. */
+  function stubPowershellSpawn(exitCode: number): {
+    stdinWrites: string[];
+  } {
+    const stdinWrites: string[] = [];
+    spawnMock.mockImplementation(() => ({
+      stdin: {
+        write: (chunk: string) => { stdinWrites.push(chunk); return true; },
+        end: vi.fn(),
+        on: vi.fn(),
+      },
+      stderr: { on: vi.fn() },
+      on: (ev: string, cb: (arg?: unknown) => void) => {
+        if (ev === 'close') setImmediate(() => cb(exitCode));
+      },
+    }));
+    return { stdinWrites };
+  }
+
+  /** execFile mock: whoami answers with a SID; icacls succeeds/fails. */
+  function stubAsyncExecFile(opts: { icaclsError?: Error } = {}): void {
+    execFileMock.mockImplementation(
+      (cmd: unknown, _args: unknown, _opts: unknown, cb?: (err: Error | null, stdout?: string) => void) => {
+        const done = (typeof _opts === 'function' ? _opts : cb) as (
+          err: Error | null,
+          stdout?: string,
+        ) => void;
+        const c = typeof cmd === 'string' ? cmd.toLowerCase() : '';
+        setImmediate(() => {
+          if (c.includes('whoami')) {
+            done(null, 'User Name: machine\\user\nSID:       S-1-5-21-1-2-3-1001\n');
+          } else if (c.includes('icacls')) {
+            done(opts.icaclsError ?? null, '');
+          } else {
+            done(null, '');
+          }
+        });
+      },
+    );
+  }
+
+  async function flushScheduled(): Promise<void> {
+    // setImmediate chain: scheduler → whoami → spawn close → possible icacls.
+    for (let i = 0; i < 8; i++) {
+      await new Promise<void>((r) => setImmediate(r));
+    }
+  }
+
+  it('POSIX: chmods 0600 asynchronously', async () => {
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('linux');
+
+    const { scheduleTokenFileReHarden } = await import('../security');
+    scheduleTokenFileReHarden('/home/tester/.wmux-auth-token');
+    await flushScheduled();
+
+    expect(fsMock.promises.chmod).toHaveBeenCalledWith('/home/tester/.wmux-auth-token', 0o600);
+    // No sync primitives on the deferred path — that is its entire point.
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    expect(fsMock.chmodSync).not.toHaveBeenCalled();
+  });
+
+  it('win32: resolves the SID via async whoami and rebuilds the DACL via spawned PowerShell (stdin payload)', async () => {
+    vi.stubEnv('USERNAME', 'tester');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubAsyncExecFile();
+    const ps = stubPowershellSpawn(0);
+
+    const { scheduleTokenFileReHarden } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+    scheduleTokenFileReHarden(tokenPath);
+    await flushScheduled();
+
+    // whoami went through ASYNC execFile…
+    expect(execFileMock).toHaveBeenCalledWith(
+      'C:\\Windows\\System32\\whoami.exe',
+      ['/user', '/fo', 'list'],
+      { windowsHide: true },
+      expect.any(Function),
+    );
+    // …PowerShell through spawn with the identity over stdin and the target via env.
+    const spawnCall = spawnMock.mock.calls[0];
+    expect(String(spawnCall[0]).toLowerCase()).toContain('powershell');
+    expect((spawnCall[2] as { env: Record<string, string> }).env.WMUX_ACL_TARGET).toBe(tokenPath);
+    // Same PSModulePath strip as the sync path (pwsh7-inherited module path
+    // breaks 5.1 cmdlet auto-loading).
+    expect('PSModulePath' in (spawnCall[2] as { env: Record<string, string> }).env).toBe(false);
+    expect(JSON.parse(ps.stdinWrites.join(''))).toEqual({ sid: 'S-1-5-21-1-2-3-1001' });
+    // Nothing synchronous ran.
+    expect(execFileSyncMock).not.toHaveBeenCalled();
+    // PowerShell succeeded → no icacls fallback.
+    const icaclsAsync = execFileMock.mock.calls.find(([cmd]) =>
+      String(cmd).toLowerCase().includes('icacls'),
+    );
+    expect(icaclsAsync).toBeUndefined();
+  });
+
+  it('win32: falls back to async icacls when the spawned PowerShell exits non-zero', async () => {
+    vi.stubEnv('USERNAME', 'tester');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubAsyncExecFile();
+    stubPowershellSpawn(1);
+
+    const { scheduleTokenFileReHarden } = await import('../security');
+    const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+    scheduleTokenFileReHarden(tokenPath);
+    await flushScheduled();
+
+    const icaclsAsync = execFileMock.mock.calls.find(([cmd]) =>
+      String(cmd).toLowerCase().includes('icacls'),
+    );
+    expect(icaclsAsync).toBeDefined();
+    expect((icaclsAsync?.[1] as unknown[])?.slice(0, 4)).toEqual([
+      tokenPath,
+      '/grant:r',
+      '*S-1-5-21-1-2-3-1001:F',
+      '/inheritance:r',
+    ]);
+  });
+
+  it('win32: never throws to the caller when every primitive fails (best-effort, like the sync path)', async () => {
+    vi.stubEnv('USERNAME', 'tester');
+    vi.stubEnv('SystemRoot', 'C:\\Windows');
+    vi.spyOn(process, 'platform', 'get').mockReturnValue('win32');
+    stubAsyncExecFile({ icaclsError: new Error('icacls denied') });
+    stubPowershellSpawn(1);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown): void => { unhandled.push(reason); };
+    process.on('unhandledRejection', onUnhandled);
+
+    try {
+      const { scheduleTokenFileReHarden } = await import('../security');
+      const tokenPath = path.join('C:', 'Users', 'tester', '.wmux-auth-token');
+      expect(() => scheduleTokenFileReHarden(tokenPath)).not.toThrow();
+      await flushScheduled();
+      expect(unhandled).toEqual([]);
+      // The existing token is never deleted on the re-harden path.
+      expect(fsMock.unlinkSync).not.toHaveBeenCalled();
+    } finally {
+      process.off('unhandledRejection', onUnhandled);
+    }
   });
 });

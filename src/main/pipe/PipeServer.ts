@@ -2,7 +2,7 @@ import * as net from 'net';
 import * as fs from 'fs';
 import * as crypto from 'crypto';
 import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../../shared/constants';
-import { secureWriteTokenFile, reHardenTokenFileAcl } from '../../shared/security';
+import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../../shared/security';
 import type { RpcRequest } from '../../shared/rpc';
 import { RpcRouter } from './RpcRouter';
 
@@ -34,13 +34,16 @@ export class PipeServer {
     try {
       const existing = fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
       if (existing) {
-        // RCA A12 — re-harden the ACL on the existing ~/.wmux-auth-token. See
-        // reHardenTokenFileAcl(): the write path locks perms only on creation,
-        // so a token loaded from disk could remain broadly readable.
-        const hardened = reHardenTokenFileAcl(getAuthTokenPath());
-        if (!hardened) {
-          console.warn('[PipeServer] auth token ACL re-harden failed — file perms may be loose');
-        }
+        // RCA A12 — re-harden the ACL on the existing ~/.wmux-auth-token: the
+        // write path locks perms only on creation, so a token loaded from disk
+        // could remain broadly readable. Deferred to background (S-A): the
+        // sync harden's whoami+PowerShell shell-outs cost ~2s of cold start
+        // inside this very constructor, while the token VALUE is unchanged —
+        // an attacker exploiting the loose-ACL window could have read the
+        // file at any point of its prior on-disk lifetime, so deferral adds
+        // no material exposure. Failures are logged by the scheduler
+        // (best-effort, same contract as the old sync path).
+        scheduleTokenFileReHarden(getAuthTokenPath());
         return existing;
       }
     } catch { /* file doesn't exist yet */ }

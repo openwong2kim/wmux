@@ -4,7 +4,7 @@ import crypto from 'node:crypto';
 import os from 'node:os';
 import path from 'node:path';
 import type { RpcRequest, RpcResponse } from '../shared/rpc';
-import { secureWriteTokenFile, reHardenTokenFileAcl } from '../shared/security';
+import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../shared/security';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -107,8 +107,17 @@ export class DaemonPipeServer {
         // by older versions (or carrying broad inherited ACLs) would otherwise
         // remain readable by Administrators/SYSTEM/other local accounts, letting
         // any local process steal the token and drive the daemon RPC surface.
-        const hardened = reHardenTokenFileAcl(tokenPath);
-        console.log(`[lifecycle] daemon auth token loaded from disk — ACL re-harden ${hardened ? 'ok' : 'FAILED (token perms may be loose)'}`);
+        // Deferred to background (S-A): the sync harden's whoami+PowerShell
+        // shell-outs cost 3.5-3.8s here — directly on the launcher-blocked
+        // critical path, since loadOrCreateToken runs inside start() before
+        // tryListen and before the daemon-pipe file the launcher polls for.
+        // The token VALUE is unchanged, so deferring the tightening adds no
+        // material exposure (the file sat under the same ACL its whole prior
+        // lifetime); the RPC surface is protected by the token value itself.
+        // The scheduler is fully async (never *Sync), so the harden cannot
+        // stall the freshly-opened control pipe's event loop either.
+        scheduleTokenFileReHarden(tokenPath);
+        console.log('[lifecycle] daemon auth token loaded from disk — ACL re-harden scheduled (deferred)');
         return this.authToken;
       }
     } catch {
