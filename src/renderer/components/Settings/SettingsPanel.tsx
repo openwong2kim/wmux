@@ -801,13 +801,14 @@ function McpStatusSection() {
 
 // ─── Update status widget ─────────────────────────────────────────────────────
 
-type UpdateState = 'idle' | 'checking' | 'available' | 'downloaded' | 'not-available' | 'error';
+type UpdateState = 'idle' | 'checking' | 'available' | 'downloading' | 'downloaded' | 'not-available' | 'error';
 
 function UpdateStatus() {
   const t = useT();
   const [state, setState] = useState<UpdateState>('idle');
   const [releaseName, setReleaseName] = useState<string>('');
   const [errorMsg, setErrorMsg] = useState<string>('');
+  const [percent, setPercent] = useState<number | null>(null);
   // Updater-not-configured in dev is expected; don't spam toasts for UNKNOWN.
   const { invoke: ipcInvoke } = useIpc({ silent: ['UNKNOWN'] });
 
@@ -820,6 +821,10 @@ function UpdateStatus() {
         setState('available');
       }
     });
+    const removeProgress = window.electronAPI.updater.onUpdateProgress((data) => {
+      setState('downloading');
+      setPercent(typeof data.percent === 'number' ? data.percent : null);
+    });
     const removeNotAvailable = window.electronAPI.updater.onUpdateNotAvailable(() => {
       setState('not-available');
     });
@@ -827,7 +832,7 @@ function UpdateStatus() {
       setState('error');
       setErrorMsg(data.message || '');
     });
-    return () => { removeAvailable(); removeNotAvailable(); removeError(); };
+    return () => { removeAvailable(); removeProgress(); removeNotAvailable(); removeError(); };
   }, []);
 
   const handleCheck = async () => {
@@ -843,6 +848,9 @@ function UpdateStatus() {
   const statusText = (() => {
     switch (state) {
       case 'checking': return t('settings.checkUpdate') + '...';
+      case 'downloading': return percent === null
+        ? t('settings.checkUpdate') + '…'
+        : `${t('settings.checkUpdate')}… ${percent}%`;
       case 'available': return t('settings.updateAvailable');
       case 'downloaded': return t('settings.updateReady') + (releaseName ? ` (${releaseName})` : '');
       case 'not-available': return t('settings.upToDate');
@@ -854,6 +862,7 @@ function UpdateStatus() {
   const statusColor = (() => {
     switch (state) {
       case 'available':
+      case 'downloading':
       case 'downloaded': return 'var(--accent-green)';
       case 'error': return 'var(--accent-red)';
       default: return 'var(--text-muted)';
@@ -873,6 +882,18 @@ function UpdateStatus() {
         {state === 'error' && errorMsg && (
           <p className="text-[10px] mt-0.5" style={{ color: 'var(--text-muted)' }}>{errorMsg}</p>
         )}
+        {state === 'downloading' && (
+          <div className="mt-1.5 h-1 w-40 rounded-full overflow-hidden" style={{ backgroundColor: 'var(--bg-surface)' }}>
+            <div
+              className="h-full rounded-full transition-all"
+              style={{
+                width: percent === null ? '100%' : `${percent}%`,
+                backgroundColor: 'var(--accent-green)',
+                opacity: percent === null ? 0.4 : 1,
+              }}
+            />
+          </div>
+        )}
       </div>
       <div className="flex gap-2 shrink-0 ml-3">
         {state === 'downloaded' ? (
@@ -886,8 +907,8 @@ function UpdateStatus() {
           <Button
             variant="secondary"
             onClick={handleCheck}
-            disabled={state === 'checking'}
-            style={{ border: 'none', opacity: state === 'checking' ? 0.5 : 1 }}
+            disabled={state === 'checking' || state === 'downloading'}
+            style={{ border: 'none', opacity: state === 'checking' || state === 'downloading' ? 0.5 : 1 }}
           >
             {t('settings.checkUpdate')}
           </Button>

@@ -29,7 +29,7 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
 
   const requestUrls: string[] = [];
   const ipcHandlers = new Map<string, (...a: unknown[]) => unknown>();
-  const openPath = vi.fn(async () => '');
+  const openPath = vi.fn(async (_p: string) => '');
 
   // Route net.request by URL: feed → update JSON, manifest → manifest JSON,
   // download → 200 with Content-Length + body chunk.
