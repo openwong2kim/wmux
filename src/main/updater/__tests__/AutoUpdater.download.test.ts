@@ -123,4 +123,22 @@ describe('AutoUpdater two-step flow (win32)', () => {
     const progress = sent.find((s) => s.channel === IPC.UPDATE_DOWNLOAD)!;
     expect(progress.data.percent).toBe(100);
   });
+
+  it('UPDATE_INSTALL launches the downloaded file without re-fetching the manifest', async () => {
+    const { AutoUpdater, ipcHandlers, requestUrls, openPath, win } = await loadWin32();
+    const updater = new AutoUpdater(() => win as never);
+    updater.start();
+
+    await ipcHandlers.get(IPC.UPDATE_CHECK)!();
+    await flush();
+    const urlsAfterDownload = requestUrls.length;
+
+    await ipcHandlers.get(IPC.UPDATE_INSTALL)!();
+    await flush();
+
+    // Launched the local installer, and made NO new network request.
+    expect(openPath).toHaveBeenCalledTimes(1);
+    expect(openPath.mock.calls[0][0]).toContain('wmux-update-');
+    expect(requestUrls.length).toBe(urlsAfterDownload);
+  });
 });

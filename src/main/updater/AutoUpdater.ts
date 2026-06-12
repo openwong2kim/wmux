@@ -320,8 +320,13 @@ export class AutoUpdater {
         console.log(`[AutoUpdater] UPDATE_INSTALL ignored on ${process.platform} — no in-app installer for this platform.`);
         return;
       }
-      const pending = this.pendingUpdate;
-      if (!pending) return;
+      const tempPath = this.downloadedPath;
+      if (!tempPath) {
+        // The UI only surfaces the install button after 'downloaded' fired, so
+        // this is a defensive no-op (e.g. a prior download failed).
+        console.log('[AutoUpdater] UPDATE_INSTALL ignored — no verified installer downloaded yet.');
+        return;
+      }
 
       const win = this.getWindow();
       if (win && !win.isDestroyed() && !win.webContents.isCrashed()) {
@@ -336,35 +341,14 @@ export class AutoUpdater {
         }
       }
 
-      // NN2-T4 — fail-closed download-verify-launch. Never hand the user an
-      // unverified binary (the old path was shell.openExternal on an unchecked
-      // URL). Fetch the CI-published SHA-256 manifest, download the Setup.exe
-      // ourselves, verify its digest, and only then launch the LOCAL file. Any
-      // failure aborts the install and surfaces an error — no openExternal
-      // fallback, so a tampered/unverifiable artifact can never run.
-      let tempPath: string | null = null;
-      try {
-        const manifestRaw = await this.fetchManifest();
-        const validated = validateManifest(manifestRaw, pending.name);
-        if (!validated.ok) {
-          throw new Error(`update manifest rejected: ${validated.reason}`);
-        }
-        tempPath = await this.downloadAndVerify(validated.manifest);
-        console.log('[AutoUpdater] Update verified (sha256 match) — launching installer');
-        const openErr = await shell.openPath(tempPath);
-        if (openErr) {
-          // openPath resolves to a non-empty error string on failure.
-          throw new Error(`failed to launch verified installer: ${openErr}`);
-        }
-      } catch (err) {
-        const message = err instanceof Error ? err.message : String(err);
-        console.error('[AutoUpdater] install aborted (fail-closed):', message);
-        if (tempPath) {
-          await unlink(tempPath).catch(() => { /* best-effort cleanup */ });
-        }
+      // Launch the LOCAL, already-verified installer. Download + SHA-256 verify
+      // happened during detection (downloadUpdate); we never launch an
+      // unverified artifact.
+      const openErr = await shell.openPath(tempPath);
+      if (openErr) {
         this.sendToRenderer(IPC.UPDATE_ERROR, {
           status: 'error',
-          message: `Update could not be verified and was not installed: ${message}`,
+          message: `failed to launch verified installer: ${openErr}`,
         });
       }
     });
