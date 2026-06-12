@@ -459,6 +459,12 @@ export class DaemonClient extends EventEmitter {
           // cwd. event.data is the resolved cwd string.
           this.emit('session:cwd', { sessionId: event.sessionId, cwd: event.data as string });
           break;
+        case 'title.changed':
+          // OSC 0/2 window title detected daemon-side; surfaced to the renderer
+          // (via pty.handler) as IPC.TERMINAL_TITLE_CHANGED. event.data is the
+          // sanitized title string.
+          this.emit('session:title', { sessionId: event.sessionId, title: event.data as string });
+          break;
         case 'context.git':
           // X1 — git branch/worktree from the daemon's fs.watch on
           // .git/HEAD. WorkspaceContextRouter folds it into the sidebar

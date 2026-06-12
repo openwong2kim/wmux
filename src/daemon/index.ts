@@ -1046,6 +1046,18 @@ function wireEvents(
     pipeServer.broadcast(event);
   });
 
+  // Window-title change (OSC 0/2, detected in the daemon bridge). Broadcast so
+  // main can forward it to the renderer as IPC.TERMINAL_TITLE_CHANGED — same
+  // shape as cwd.changed above.
+  sessionManager.on('session:title', (payload: { sessionId: string; title: string }) => {
+    const event: DaemonEvent = {
+      type: 'title.changed',
+      sessionId: payload.sessionId,
+      data: payload.title,
+    };
+    pipeServer.broadcast(event);
+  });
+
   // Explicit destroy (pty:dispose path): distinct from session:died (natural
   // PTY exit). Both must clear the main-side agentStatus so the sidebar dot
   // doesn't lie about a closed terminal (Codex P2).

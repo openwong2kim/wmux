@@ -5,6 +5,7 @@ import { TerminalNotificationParser } from '../main/pty/oscNotification';
 import { AgentDetector } from '../main/pty/AgentDetector';
 import { ActivityMonitor } from '../main/pty/ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from '../main/pty/cwdDetect';
+import { sanitizeTitle } from '../main/pty/titleDetect';
 import { RingBuffer } from './RingBuffer';
 import { PromptEventLog, parseOsc133Payload } from './PromptEventLog';
 
@@ -96,6 +97,13 @@ export class DaemonPTYBridge extends EventEmitter {
     // OSC events → cwd (OSC 7), prompt/command markers (OSC 133), and
     // desktop notifications (OSC 9/777/99)
     oscParser.onOsc((event) => {
+      if (event.code === 0 || event.code === 2) {
+        // OSC 0/2 window title (e.g. Claude Code `/rename`). OSC 1 (icon-only)
+        // is ignored. Sanitized here so the daemon→main payload is already safe.
+        const title = sanitizeTitle(event.data);
+        if (title) this.emit('title', { sessionId, title });
+        return;
+      }
       if (event.code === 7) {
         const cwd = parseOsc7Cwd(event.data);
         this.emit('cwd', { sessionId, cwd });

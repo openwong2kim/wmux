@@ -359,6 +359,12 @@ export class DaemonSessionManager extends EventEmitter {
       this.emit('session:cwd', payload);
     });
 
+    bridge.on('title', (payload: { sessionId: string; title: string }) => {
+      // Forward across the daemon→main boundary so the renderer can set the
+      // per-surface tab title (e.g. Claude Code `/rename`). Mirrors session:cwd.
+      this.emit('session:title', payload);
+    });
+
     bridge.on('data', () => {
       meta.lastActivity = new Date().toISOString();
     });
