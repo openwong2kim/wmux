@@ -14,7 +14,7 @@
  * the section verdicts without spawning a daemon or touching the real FS.
  */
 
-import { readFileSync } from 'fs';
+import { readFileSync, openSync, fstatSync, readSync, closeSync } from 'fs';
 import { join } from 'path';
 import * as os from 'os';
 import { sendRequest } from '../client';
@@ -107,6 +107,13 @@ export interface DoctorDeps {
   daemonLogPath: string;
   /** Reads a file's full text, or returns null if it does not exist / errors. */
   readTextFile: (path: string) => string | null;
+  /** Reads at most the trailing `maxBytes` of a file as UTF-8 text (or null if
+   *  it does not exist / errors). Used for log files, which can grow unbounded
+   *  (a log-flood incident produced a 692MB main log) — the boot summary and
+   *  the recent error/warn lines live near the tail, so a bounded tail read is
+   *  both sufficient and safe against OOM on a runaway log. The first returned
+   *  line may be a partial fragment when the file exceeds `maxBytes`. */
+  tailReadTextFile: (path: string, maxBytes: number) => string | null;
   /** Process env snapshot — only WMUX_DATA_SUFFIX is consulted today. */
   env: Record<string, string | undefined>;
 }
@@ -117,6 +124,11 @@ export interface DoctorDeps {
 export const EVENT_LOOP_LAG_WARN_MS = 100;
 /** A single daemon-boot phase above this → AV-tax hint (cold image rescan). */
 export const AV_TAX_PHASE_WARN_MS = 1500;
+/** Bytes of trailing log to read for the boot-summary + error/warn scan. The
+ *  `[boot-trace] summary=` line is emitted at ready-end (near the file tail),
+ *  and error/warn counts only need recency, so 256KB is ample while capping
+ *  memory against a runaway log (cf. the 692MB log-flood incident). */
+export const MAIN_LOG_TAIL_BYTES = 256 * 1024;
 
 // --- verdict algebra ---------------------------------------------------------
 
@@ -260,7 +272,11 @@ function buildBootPhases(
   ping: DaemonPingResult | null,
 ): DoctorReport['bootPhases'] {
   // --- main process: parse the last summary line from today's main log ---
-  const mainLogText = deps.readTextFile(deps.mainLogPath);
+  // Tail-read only the trailing window: the summary line is emitted at
+  // ready-end so it lives near the file end, and bounding the read protects
+  // against a runaway log. parseBootSummary already tolerates a truncated
+  // leading line (JSON.parse failure on a partial fragment → skip).
+  const mainLogText = deps.tailReadTextFile(deps.mainLogPath, MAIN_LOG_TAIL_BYTES);
   const summary: BootSummary | null = mainLogText ? parseBootSummary(mainLogText) : null;
 
   let main: PhaseRow[] | null = null;
@@ -346,7 +362,9 @@ function buildLogs(deps: DoctorDeps): DoctorReport['logs'] {
     ['main log', deps.mainLogPath],
     ['daemon log', deps.daemonLogPath],
   ] as const) {
-    const text = deps.readTextFile(path);
+    // Tail-read: the error/warn count only needs recent lines, and a bounded
+    // read guards against a runaway log (cf. the 692MB log-flood incident).
+    const text = deps.tailReadTextFile(path, MAIN_LOG_TAIL_BYTES);
     if (text === null) {
       lines.push({
         label,
@@ -373,14 +391,18 @@ function phaseRows(defs: readonly PhaseDef[], marks: Record<string, number>): Ph
   return defs.map((d) => ({ label: d.label, ms: span(marks, d.from, d.to), indent: d.indent }));
 }
 
-/** Count `[error]` / `[warn]` level lines, matching the logSink line format
- *  `[<iso>] [<level>] [<source>] <message>`. Case-insensitive on the level. */
+/** Count `[error]` / `[warn]` level lines across BOTH log line formats:
+ *   - main logSink:  `[<iso>] [<level>] [<source>] <message>`  → `[error]`
+ *   - daemon logger: `[<iso>] [daemon/<level>] <message>`      → `[daemon/error]`
+ *     (see src/daemon/index.ts `log()` — `[${ts}] [daemon/${level}] ${msg}`).
+ *  The level token may carry an optional `<source>/` prefix; we match the level
+ *  word as the final segment inside the bracket. Case-insensitive on the level. */
 export function countErrorWarn(text: string): { errors: number; warns: number } {
   let errors = 0;
   let warns = 0;
   for (const line of text.split('\n')) {
-    if (/\[error\]/i.test(line)) errors++;
-    else if (/\[warn(?:ing)?\]/i.test(line)) warns++;
+    if (/\[(?:[^\][/]*\/)?error\]/i.test(line)) errors++;
+    else if (/\[(?:[^\][/]*\/)?warn(?:ing)?\]/i.test(line)) warns++;
   }
   return { errors, warns };
 }
@@ -451,6 +473,46 @@ function readTextFileSafe(path: string): string | null {
     return readFileSync(path, 'utf-8');
   } catch {
     return null;
+  }
+}
+
+/**
+ * Read at most the trailing `maxBytes` of a file as UTF-8 text, without
+ * loading the whole file. Returns null if the file is absent / unreadable.
+ *
+ * Reads from `max(0, size - maxBytes)` to EOF so a multi-hundred-MB runaway
+ * log never lands fully in memory (the 692MB log-flood incident). When the
+ * file exceeds the window, the first decoded line is a partial fragment — that
+ * is acceptable for both consumers: `parseBootSummary` skips lines whose JSON
+ * fails to parse, and the error/warn scanner only over/under-counts a single
+ * boundary line at worst.
+ */
+function tailReadTextFileSafe(path: string, maxBytes: number): string | null {
+  let fd: number | null = null;
+  try {
+    fd = openSync(path, 'r');
+    const size = fstatSync(fd).size;
+    const readLen = Math.min(size, Math.max(0, maxBytes));
+    if (readLen === 0) return '';
+    const start = size - readLen;
+    const buf = Buffer.allocUnsafe(readLen);
+    let got = 0;
+    while (got < readLen) {
+      const n = readSync(fd, buf, got, readLen - got, start + got);
+      if (n <= 0) break;
+      got += n;
+    }
+    return buf.toString('utf-8', 0, got);
+  } catch {
+    return null;
+  } finally {
+    if (fd !== null) {
+      try {
+        closeSync(fd);
+      } catch {
+        // best-effort close
+      }
+    }
   }
 }
 
@@ -539,6 +601,7 @@ export async function handleDoctor(_args: string[], jsonMode: boolean): Promise<
     mainLogPath: resolveMainLogPath(date),
     daemonLogPath: resolveDaemonLogPath(date),
     readTextFile: readTextFileSafe,
+    tailReadTextFile: tailReadTextFileSafe,
     env: process.env,
   };
 

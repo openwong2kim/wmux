@@ -8,9 +8,21 @@
  * each named phase) were duplicated there inline (perf-bench.mjs:958-977).
  * `wmux doctor` needs the identical phase decomposition so its output matches
  * the bench. This module owns the canonical pair table; perf-bench can be
- * migrated onto it in a follow-up, but for now the two MUST agree mark-for-mark
- * or the doctor table would silently disagree with the bench. The pair labels
- * and mark names here are copied verbatim from perf-bench's console lines.
+ * migrated onto it in a follow-up, but for now the two MUST agree on the
+ * phase *spans* (the from→to deltas) or the doctor table would silently
+ * disagree with the bench. The pair labels and mark names here are copied
+ * verbatim from perf-bench's console lines.
+ *
+ * What "agree" does and does NOT cover: spans are origin-invariant — a phase's
+ * duration is `to − from`, so any shared timeline origin yields the same span.
+ * That is the guarantee. The ABSOLUTE anchor values are NOT guaranteed equal,
+ * because the two callers rebase the daemon's epoch marks against different
+ * origins: perf-bench rebases against the app-side spawn time `inst.t0` (its
+ * daemon anchor row reads "ms since spawn", so `main-start` is the non-zero
+ * spawn→main-start gap), whereas doctor rebases against the daemon's own
+ * `bootTrace.jsStartEpochMs` (so its `main-start` clamps to ~0). The daemon
+ * anchor rows therefore differ row-for-row by a constant spawn-overhead offset
+ * even though every span between two daemon marks matches.
  *
  * Mark-coordinate contract: `span(marks, a, b)` treats marks as numbers on a
  * single monotonic timeline (any common origin works — the caller normalizes).

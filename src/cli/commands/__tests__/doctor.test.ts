@@ -76,7 +76,7 @@ function makeDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     '/auth-token': 'TOKEN123',
     '/logs/daemon-2026-06-13.log': '[info] daemon up\n',
   };
-  return {
+  const deps: DoctorDeps = {
     ping: vi.fn().mockResolvedValue(okPing(healthyPing())),
     version: '3.2.0',
     platform: 'win32',
@@ -85,9 +85,21 @@ function makeDeps(overrides: Partial<DoctorDeps> = {}): DoctorDeps {
     mainLogPath: '/logs/main-2026-06-13.log',
     daemonLogPath: '/logs/daemon-2026-06-13.log',
     readTextFile: vi.fn((p: string) => files[p] ?? null),
+    // Default tail reader delegates to the (possibly overridden) readTextFile so
+    // log/boot reads honor a test's readTextFile override; the production code
+    // reads only the trailing bytes from disk, but for in-memory fixtures the
+    // full text is well under the window. Callers may override either.
+    tailReadTextFile: vi.fn(),
     env: {},
     ...overrides,
   };
+  // Wire the default tail reader AFTER overrides so it captures the final
+  // readTextFile (overridden or not). If the caller supplied its own
+  // tailReadTextFile, leave it in place.
+  if (!overrides.tailReadTextFile) {
+    deps.tailReadTextFile = vi.fn((p: string) => deps.readTextFile(p));
+  }
+  return deps;
 }
 
 // ---- worst() algebra ---------------------------------------------------------
@@ -113,20 +125,48 @@ describe('worst', () => {
 // ---- countErrorWarn ----------------------------------------------------------
 
 describe('countErrorWarn', () => {
-  it('counts [error] and [warn] lines (logSink format)', () => {
+  it('counts main logSink format `[<iso>] [<level>] [<source>] msg`', () => {
     const text = [
-      '[2026-06-13T00:00:00.000Z] [info] [x] hi',
-      '[2026-06-13T00:00:01.000Z] [warn] [x] careful',
-      '[2026-06-13T00:00:02.000Z] [error] [x] boom',
-      '[2026-06-13T00:00:03.000Z] [error] [x] boom again',
+      '[2026-06-13T00:00:00.000Z] [info] [main] hi',
+      '[2026-06-13T00:00:01.000Z] [warn] [main] careful',
+      '[2026-06-13T00:00:02.000Z] [error] [main] boom',
+      '[2026-06-13T00:00:03.000Z] [error] [main] boom again',
     ].join('\n');
     expect(countErrorWarn(text)).toEqual({ errors: 2, warns: 1 });
   });
-  it('does not double-count an error line as a warn', () => {
-    expect(countErrorWarn('[error] only')).toEqual({ errors: 1, warns: 0 });
+
+  it('counts daemon format `[<iso>] [daemon/<level>] msg` (P2 regression guard)', () => {
+    // Ground truth: src/daemon/index.ts log() → `[${ts}] [daemon/${level}] ${msg}`.
+    // The level word carries a `daemon/` source prefix inside the bracket, which
+    // the original `/\[error\]/` pattern missed (always counted 0).
+    const text = [
+      '[2026-06-13T00:00:00.000Z] [daemon/info] daemon up',
+      '[2026-06-13T00:00:01.000Z] [daemon/warn] retrying',
+      '[2026-06-13T00:00:02.000Z] [daemon/error] spawn failed',
+      '[2026-06-13T00:00:03.000Z] [daemon/error] lock contended',
+    ].join('\n');
+    expect(countErrorWarn(text)).toEqual({ errors: 2, warns: 1 });
   });
+
+  it('counts a mix of main and daemon formats in one buffer', () => {
+    const text = [
+      '[2026-06-13T00:00:00.000Z] [error] [main] main boom',
+      '[2026-06-13T00:00:01.000Z] [daemon/error] daemon boom',
+      '[2026-06-13T00:00:02.000Z] [warn] [main] main warn',
+      '[2026-06-13T00:00:03.000Z] [daemon/warn] daemon warn',
+      '[2026-06-13T00:00:04.000Z] [info] [main] noise',
+    ].join('\n');
+    expect(countErrorWarn(text)).toEqual({ errors: 2, warns: 2 });
+  });
+
+  it('does not double-count an error line as a warn (both formats)', () => {
+    expect(countErrorWarn('[error] only')).toEqual({ errors: 1, warns: 0 });
+    expect(countErrorWarn('[daemon/error] only')).toEqual({ errors: 1, warns: 0 });
+  });
+
   it('returns zeros for clean text', () => {
     expect(countErrorWarn('[info] all good')).toEqual({ errors: 0, warns: 0 });
+    expect(countErrorWarn('[daemon/info] all good')).toEqual({ errors: 0, warns: 0 });
   });
 });
 
@@ -330,11 +370,35 @@ describe('logs section', () => {
     expect(daemonLog?.value).toContain('not found');
   });
 
-  it('WARNs when today\'s log has error lines', async () => {
+  it('reads log + boot data via the bounded tail reader, not the full slurp', async () => {
+    // P3-d: doctor must tail-read logs (runaway-log OOM guard). Both the boot
+    // summary and the error/warn scan go through tailReadTextFile; readTextFile
+    // is reserved for the auth-token check.
+    const tail = vi.fn((p: string) => {
+      if (p.includes('main')) return mainSummaryLine();
+      return '[2026-06-13T00:00:00.000Z] [daemon/error] boom\n';
+    });
+    const read = vi.fn((p: string) => (p.includes('auth') ? 'TOKEN' : null));
+    const r = await buildDoctorReport(makeDeps({ tailReadTextFile: tail, readTextFile: read }));
+    // Both log paths were tail-read (main for boot summary + count, daemon for count).
+    const paths = tail.mock.calls.map((c) => c[0]);
+    expect(paths).toContain('/logs/main-2026-06-13.log');
+    expect(paths).toContain('/logs/daemon-2026-06-13.log');
+    // Boot summary parsed from the tail read, and the daemon error surfaced.
+    expect(r.bootPhases.main).not.toBeNull();
+    expect(r.logs.lines.find((l) => l.label === 'daemon log')?.value).toContain('1 error');
+    // The auth-token line still uses the full reader (it is not a log file).
+    expect(read.mock.calls.some((c) => String(c[0]).includes('auth'))).toBe(true);
+  });
+
+  it('WARNs when today\'s daemon log has error lines (real daemon format)', async () => {
+    // Ground truth: the daemon logger writes `[<iso>] [daemon/<level>] <msg>`
+    // (src/daemon/index.ts log()), NOT `[error] [daemon] ...`. This fixture
+    // pins the actual on-disk format so the [daemon/error] match cannot regress.
     const deps = makeDeps({
       readTextFile: vi.fn((p: string) => {
         if (p.includes('main')) return mainSummaryLine();
-        return '[2026-06-13T00:00:00.000Z] [error] [daemon] spawn failed\n';
+        return '[2026-06-13T00:00:00.000Z] [daemon/error] spawn failed\n';
       }),
     });
     const r = await buildDoctorReport(deps);
