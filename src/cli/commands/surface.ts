@@ -1,5 +1,5 @@
 import { sendRequest } from '../client';
-import { printResult, printError } from '../utils';
+import { printResult, ensureOk } from '../utils';
 import type { RpcResponse } from '../../shared/rpc';
 
 interface SurfaceInfo {
@@ -45,7 +45,7 @@ export async function handleSurface(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         formatSurfaceList(response.result);
       }
       break;
@@ -56,7 +56,7 @@ export async function handleSurface(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         const s = response.result as SurfaceInfo;
         console.log(`Created surface: ${s?.id ?? '(unknown)'}`);
       }
@@ -73,7 +73,7 @@ export async function handleSurface(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         console.log(`Focused surface: ${id}`);
       }
       break;
@@ -89,7 +89,7 @@ export async function handleSurface(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         console.log(`Closed surface: ${id}`);
       }
       break;

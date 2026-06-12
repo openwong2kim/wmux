@@ -108,7 +108,7 @@ const config: ForgeConfig = {
     // wmux itself and every bundled npm dep. Electron's own LICENSE
     // (covering Chromium / V8 / Node) is emitted automatically by
     // electron-packager next to wmux.exe, so we don't duplicate it here.
-    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
+    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './dist/cli-bundle', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
     // macOS 서명/노타라이즈는 packagerConfig가 아니라 postPackage hook 끝에서
     // 수행한다(signMacAppIfConfigured 주석 참고). 여기서 서명하면 postPackage의
     // node-pty 복사가 서명을 깨뜨리기 때문이다.

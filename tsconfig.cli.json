@@ -16,5 +16,8 @@
     "src/shared/rpc.ts",
     "src/shared/constants.ts",
     "src/shared/types.ts"
+  ],
+  "exclude": [
+    "src/cli/__tests__/**"
   ]
 }

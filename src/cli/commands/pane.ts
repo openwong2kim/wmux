@@ -1,5 +1,5 @@
 import { sendRequest } from '../client';
-import { printResult, printError, parseFlag } from '../utils';
+import { printResult, ensureOk, parseFlag } from '../utils';
 import type { RpcResponse } from '../../shared/rpc';
 
 interface PaneInfo {
@@ -46,7 +46,7 @@ export async function handlePane(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         formatPaneList(response.result);
       }
       break;
@@ -62,7 +62,7 @@ export async function handlePane(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         console.log(`Focused pane: ${id}`);
       }
       break;
@@ -81,7 +81,7 @@ export async function handlePane(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         console.log(`Split pane ${direction}.`);
       }
       break;

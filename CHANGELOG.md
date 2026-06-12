@@ -5,6 +5,14 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **`wmux` CLI on your PATH, with verified self-pane identity (X4).** The installer now drops a `wmux` command onto the user PATH (regenerated on every update, removed on uninstall), so any shell — inside or outside wmux — can script the app: `wmux send "npm test" --submit`, `wmux read-screen`, `wmux notify "Done" "Build finished"`, `wmux open http://localhost:3000`, `wmux split`, `wmux list-workspaces --json`. Run inside a wmux pane, terminal commands target **the pane you typed them in** — identity is resolved by walking the CLI's own process tree against the PID map (the same verified identity the MCP terminal tools use, never the spoofable/stale env hint), and the zero-spawn fast path covers the common shell-direct case. `--pane <ptyId>` targets another pane explicitly, `--active` keeps the old UI-focused-pane behavior, and notifications/browser opens route to the calling workspace automatically. The CLI client also gained the TCP-localhost fallback for Windows named-pipe ACL edge cases.
+
+### Changed
+- **`a2a.resolve.identity` now returns pane-level `entries`** (`pid` + `ptyId` + `workspaceId`) alongside the existing `mappings` — additive; existing MCP clients are unaffected.
+
 ## [3.1.1] — 2026-06-12 — browser pane wired into the workflow, IME input self-healing
 
 Headline: the embedded browser pane is now reachable from where you actually work — terminal URLs route smartly, sidebar port badges open localhost in one click, and browser panes restore on the page you last visited. And the field-reported "keyboard input dies until you toggle multiview" IME failure on Korean Windows now self-heals: the suspect textarea-clearing is off by default and a storm guard detects the dead-input signature and resyncs the IME automatically.

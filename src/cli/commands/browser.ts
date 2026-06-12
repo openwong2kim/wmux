@@ -1,6 +1,44 @@
 import { sendRequest } from '../client';
-import { printResult, printError } from '../utils';
+import { printResult, ensureOk, parseFlag } from '../utils';
+import { resolveSelfContext, getParentPidDefault } from '../identity';
 import type { RpcResponse } from '../../shared/rpc';
+
+/**
+ * wmux open <url> [--workspace <id>]
+ *
+ * Opens (or reuses — X3 semantics) a browser pane and navigates it to <url>.
+ * Inside a wmux pane the browser opens in the caller's own workspace via
+ * verified PID-map identity; otherwise the active workspace is used.
+ */
+export async function handleOpen(args: string[], jsonMode: boolean): Promise<void> {
+  const url = args.find((a) => !a.startsWith('--'));
+  if (!url) {
+    console.error('Error: open requires <url> — e.g. `wmux open http://localhost:3000`');
+    process.exit(1);
+  }
+
+  let workspaceId = parseFlag(args, '--workspace');
+  if (!workspaceId) {
+    const ctx = await resolveSelfContext({
+      sendRequest,
+      env: process.env,
+      ppid: process.ppid,
+      getParentPid: getParentPidDefault,
+    });
+    workspaceId = ctx.workspaceId;
+  }
+
+  const params: Record<string, unknown> = { url };
+  if (workspaceId) params.workspaceId = workspaceId;
+
+  const response = await sendRequest('browser.open', params);
+  if (jsonMode) {
+    printResult(response);
+  } else {
+    ensureOk(response);
+    console.log(`Opened in browser pane: ${url}`);
+  }
+}
 
 const BROWSER_HELP = `
 wmux browser — Browser Commands
@@ -50,7 +88,7 @@ export async function handleBrowser(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         console.log(`Navigated to: ${url}`);
       }
       break;
@@ -62,7 +100,7 @@ export async function handleBrowser(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         console.log('Browser panel closed.');
       }
       break;
@@ -86,7 +124,7 @@ export async function handleBrowser(
           if (jsonMode) {
             printResult(response);
           } else {
-            if (!response.ok) { printError(response); return; }
+            ensureOk(response);
             const r = response.result as Record<string, unknown>;
             console.log(`Session started with profile: ${r['profile'] ?? 'default'}`);
           }
@@ -97,7 +135,7 @@ export async function handleBrowser(
           if (jsonMode) {
             printResult(response);
           } else {
-            if (!response.ok) { printError(response); return; }
+            ensureOk(response);
             console.log('Session stopped.');
           }
           break;
@@ -107,7 +145,7 @@ export async function handleBrowser(
           if (jsonMode) {
             printResult(response);
           } else {
-            if (!response.ok) { printError(response); return; }
+            ensureOk(response);
             const r = response.result as Record<string, unknown>;
             console.log(`Active profile: ${r['profile'] ?? 'none'}`);
             console.log(`CDP port: ${r['port'] ?? 'none'}`);
@@ -119,7 +157,7 @@ export async function handleBrowser(
           if (jsonMode) {
             printResult(response);
           } else {
-            if (!response.ok) { printError(response); return; }
+            ensureOk(response);
             const profiles = (response.result as Record<string, unknown>)['profiles'] as Array<Record<string, unknown>>;
             if (!profiles || profiles.length === 0) {
               console.log('No profiles found.');

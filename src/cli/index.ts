@@ -11,7 +11,7 @@ import { handlePane } from './commands/pane';
 import { handleInput } from './commands/input';
 import { handleNotify } from './commands/notify';
 import { handleSystem } from './commands/system';
-import { handleBrowser } from './commands/browser';
+import { handleBrowser, handleOpen } from './commands/browser';
 import { handleMcp } from './commands/mcp';
 
 const HELP_TEXT = `
@@ -39,12 +39,20 @@ PANE COMMANDS
   split [--direction right|down]    Split the active pane (default: right)
 
 INPUT COMMANDS
-  send <text>                       Send text to the active terminal
+  send <text> [--submit]            Send text to your own pane (--submit presses Enter)
   send-key <keystroke>              Send a key (e.g. Enter, ctrl-c, Tab)
-  read-screen                       Read the current terminal screen content
+  read-screen [--tail <n>]          Read the current terminal screen content
+
+  Inside a wmux pane these target the pane you ran the command from
+  (verified PID-map identity). Options: --pane <ptyId> to target another
+  pane explicitly, --active to target the UI-focused pane instead.
+
+BROWSER PANE
+  open <url> [--workspace <id>]     Open/reuse a browser pane at <url>
 
 NOTIFICATION COMMANDS
-  notify --title <title> --body <body>   Show a notification in wmux
+  notify <title> [body]             Show a notification in wmux
+         [--type info|warning|error|agent] [--workspace <id>]
 
 SYSTEM COMMANDS
   set-status <text>                 Set a status message on the active workspace
@@ -72,8 +80,9 @@ GLOBAL FLAGS
 EXAMPLES
   wmux list-workspaces
   wmux new-workspace --name dev
-  wmux send "echo hello"
-  wmux notify --title "Done" --body "Build finished"
+  wmux send "echo hello" --submit
+  wmux notify "Done" "Build finished"
+  wmux open http://localhost:3000
   wmux identify --json
   wmux browser navigate "https://example.com"
   wmux browser close
@@ -135,6 +144,8 @@ async function main(): Promise<void> {
       await handleNotify(rest, jsonMode);
     } else if (SYSTEM_CMDS.has(cmd)) {
       await handleSystem(cmd, rest, jsonMode);
+    } else if (cmd === 'open') {
+      await handleOpen(rest, jsonMode);
     } else if (cmd === 'browser') {
       await handleBrowser(rest, jsonMode);
     } else if (cmd === 'mcp') {

@@ -1,7 +1,7 @@
 import { readFileSync } from 'fs';
 import { join } from 'path';
 import { sendRequest } from '../client';
-import { printResult, printError } from '../utils';
+import { printResult, ensureOk } from '../utils';
 import type { RpcResponse } from '../../shared/rpc';
 
 function getFallbackVersion(): string {
@@ -32,7 +32,7 @@ export async function handleSystem(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         const info = response.result as IdentifyResult;
         console.log(`app:      ${info?.app ?? 'wmux'}`);
         console.log(`version:  ${info?.version ?? getFallbackVersion()}`);
@@ -46,7 +46,7 @@ export async function handleSystem(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         // server may return { methods: string[] } or string[] directly
         const result = response.result as { methods?: string[] } | string[];
         const methods = Array.isArray(result) ? result : (result?.methods || []);
@@ -72,7 +72,7 @@ export async function handleSystem(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         console.log(`Status set: "${text}"`);
       }
       break;
@@ -93,7 +93,7 @@ export async function handleSystem(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         console.log(`Progress set: ${value}%`);
       }
       break;

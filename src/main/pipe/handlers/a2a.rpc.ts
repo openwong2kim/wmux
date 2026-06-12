@@ -21,8 +21,13 @@ export function registerA2aRpc(router: RpcRouter, getWindow: GetWindow, claudeWo
   router.register('a2a.resolve.identity', async () => {
     const dir = getPidMapDir();
     const mappings: Record<string, string> = {};
+    // Additive (X4 CLI): per-PID detail including the immutable ptyId anchor,
+    // so a caller that finds its own shell PID here gets pane-level identity
+    // (ptyId) and not just the owning workspace. `mappings` is kept verbatim
+    // for existing MCP clients.
+    const entries: Array<{ pid: string; ptyId: string; workspaceId: string }> = [];
     try {
-      if (!fs.existsSync(dir)) return { mappings };
+      if (!fs.existsSync(dir)) return { mappings, entries };
 
       for (const file of fs.readdirSync(dir)) {
         let value: string;
@@ -76,14 +81,17 @@ export function registerA2aRpc(router: RpcRouter, getWindow: GetWindow, claudeWo
             owner && typeof owner === 'object' && 'workspaceId' in owner
               ? (owner as Record<string, unknown>)['workspaceId']
               : null;
-          if (typeof wsId === 'string' && wsId) mappings[file] = wsId;
+          if (typeof wsId === 'string' && wsId) {
+            mappings[file] = wsId;
+            entries.push({ pid: file, ptyId: value, workspaceId: wsId });
+          }
         } catch {
           // Renderer unavailable (early boot / reload) — skip this entry;
           // the caller retries resolution on its next identity-gated call.
         }
       }
     } catch { /* best-effort: identity resolution is non-critical */ }
-    return { mappings };
+    return { mappings, entries };
   });
 
   // A2A protocol — passthrough to renderer

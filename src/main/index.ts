@@ -117,6 +117,10 @@ if (process.platform === 'win32') {
         ], { windowsHide: true });
       } catch { /* best-effort */ }
 
+      // X4: drop the `wmux` CLI shim into <root>\bin and register it on the
+      // user PATH. Internally best-effort — never blocks the install.
+      try { require('./cliShim').installCliShim(process.execPath); } catch { /* best-effort */ }
+
       spawn(updateExe, ['--createShortcut', target, '--shortcut-locations', 'Desktop,StartMenu'], { detached: true, windowsHide: true })
         .on('close', () => {
           // Auto-launch app after install
@@ -136,6 +140,10 @@ if (process.platform === 'win32') {
         ], { windowsHide: true });
       } catch { /* best-effort */ }
 
+      // X4: regenerate the CLI shim — it embeds the absolute app-X.Y.Z path,
+      // which changes on every update.
+      try { require('./cliShim').installCliShim(process.execPath); } catch { /* best-effort */ }
+
       spawn(updateExe, ['--createShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
       app.quit();
@@ -150,6 +158,9 @@ if (process.platform === 'win32') {
           '/v', 'wmux', '/f',
         ], { windowsHide: true });
       } catch { /* best-effort */ }
+
+      // X4: remove the CLI shim + strip <root>\bin from the user PATH.
+      try { require('./cliShim').uninstallCliShim(process.execPath); } catch { /* best-effort */ }
 
       spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));

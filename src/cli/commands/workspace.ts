@@ -1,5 +1,5 @@
 import { sendRequest } from '../client';
-import { printResult, printError, parseFlag } from '../utils';
+import { printResult, ensureOk, parseFlag } from '../utils';
 import type { RpcResponse } from '../../shared/rpc';
 
 interface WorkspaceInfo {
@@ -47,7 +47,7 @@ export async function handleWorkspace(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         formatWorkspaceList(response.result);
       }
       break;
@@ -59,7 +59,7 @@ export async function handleWorkspace(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         const ws = response.result as WorkspaceInfo;
         console.log(`Created workspace: ${ws?.name ?? name} (${ws?.id ?? ''})`);
       }
@@ -76,7 +76,7 @@ export async function handleWorkspace(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         console.log(`Focused workspace: ${id}`);
       }
       break;
@@ -92,7 +92,7 @@ export async function handleWorkspace(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         console.log(`Closed workspace: ${id}`);
       }
       break;
@@ -103,7 +103,7 @@ export async function handleWorkspace(
       if (jsonMode) {
         printResult(response);
       } else {
-        if (!response.ok) { printError(response); return; }
+        ensureOk(response);
         formatWorkspaceCurrent(response.result);
       }
       break;

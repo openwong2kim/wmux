@@ -159,4 +159,40 @@ describe('a2a.resolve.identity — live ownership resolution', () => {
 
     expect(mappings).toEqual({});
   });
+
+  it('exposes pane-level entries (pid + ptyId + workspaceId) alongside mappings — X4 CLI', async () => {
+    fs.writeFileSync(path.join(dirRef.current, '70'), 'daemon-pane');
+    fs.writeFileSync(path.join(dirRef.current, '80'), 'daemon-dead');
+    sendToRendererMock.mockImplementation(
+      (_w: unknown, _method: string, params: { ptyId: string }) =>
+        Promise.resolve({
+          workspaceId: params.ptyId === 'daemon-pane' ? 'ws-X' : null,
+        }),
+    );
+
+    const res = await setupRouter().dispatch({
+      id: 'r2',
+      method: 'a2a.resolve.identity',
+      params: {},
+    });
+    expect(res.ok).toBe(true);
+    const result = (res as { result: { mappings: Record<string, string>; entries: unknown } }).result;
+
+    // mappings stays verbatim for existing MCP clients (additive change)
+    expect(result.mappings).toEqual({ '70': 'ws-X' });
+    // entries carries the immutable ptyId anchor; dead-owner entries excluded
+    expect(result.entries).toEqual([{ pid: '70', ptyId: 'daemon-pane', workspaceId: 'ws-X' }]);
+  });
+
+  it('returns empty entries alongside empty mappings when the dir is missing', async () => {
+    fs.rmSync(dirRef.current, { recursive: true, force: true });
+
+    const res = await setupRouter().dispatch({
+      id: 'r3',
+      method: 'a2a.resolve.identity',
+      params: {},
+    });
+    expect(res.ok).toBe(true);
+    expect((res as { result: { entries: unknown } }).result.entries).toEqual([]);
+  });
 });
