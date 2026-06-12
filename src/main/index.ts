@@ -624,19 +624,14 @@ app.on('ready', async () => {
       : path.join(__dirname, '..', '..', 'assets', 'icon.png'),
   });
 
-  // First-launch race fix: create the BrowserWindow but DEFER renderer
-  // navigation until after the daemon bootstrap completes below. Loading
-  // the renderer here used to race the LOCAL→DAEMON handler swap inside
-  // `DaemonRespawnController.bootstrap()` — on fresh PCs the daemon spawn
-  // stretches into hundreds of ms (Defender realtime scan + ASAR cold
-  // cache + ConPTY cold start), and any `pty.write` issued from a renderer
-  // that mounted in LOCAL mode but reached the DAEMON-swapped handler
-  // silently dropped because `sessionPipes.get('pty-N')` is undefined.
-  // Symptom: "first keystroke doesn't register" / "only the first
-  // keystroke registers" on cold-start. Deferring navigation closes the
-  // race window at the cost of a brief solid-color window during the
-  // first daemon spawn — `backgroundColor: '#1e1e2e'` keeps that visible
-  // bridge inoffensive.
+  // Create the BrowserWindow but DEFER renderer navigation until the
+  // explicit loadMainRenderer() call below — after the console-message
+  // relay, recovery hooks, and tray wiring are attached, and after the
+  // daemon bootstrap has been KICKED (S-A Step 1 runs the renderer load in
+  // parallel with the bootstrap; see the comment at the loadMainRenderer
+  // call site for why the dda4c0c LOCAL-id-into-DAEMON-handler race that
+  // originally motivated full serialization is now closed by the
+  // get-ready-state resolver queue + paneGate instead of by ordering).
   // Plugin host (B-1): discover UI plugin bundles and serve them over
   // wmux-plugin:// to sandboxed iframes. Registered before the window
   // loads so panel iframes never race the protocol handler. Best-effort:
@@ -851,11 +846,38 @@ app.on('ready', async () => {
     },
   });
   markBoot('daemon-bootstrap-start');
-  try {
-    await daemonRespawnController.bootstrap();
-  } catch (err) {
+  // S-A Step 1 — kick the bootstrap WITHOUT awaiting so the renderer load
+  // below runs in parallel with the daemon spawn/connect (boot-trace showed
+  // renderer ~625 ms vs bootstrap ~464 ms serialized back-to-back; the
+  // shorter leg now hides behind the longer one). The .catch preserves the
+  // v2.8.1 invariant: a bootstrap failure must still fall through to
+  // markDaemonReady() so the renderer unblocks into local-PTY mode.
+  const daemonBootstrapP = daemonRespawnController.bootstrap().catch((err) => {
     console.warn('[Main] Daemon auto-start failed, using local PTY:', err);
+  });
+
+  // S-A Step 1 — load the renderer NOW, in parallel with the daemon
+  // bootstrap above. This deliberately reopens the dda4c0c window (renderer
+  // mounting while the LOCAL→DAEMON handler swap happens mid-flight), which
+  // is safe today because two defenses that did not exist back then both
+  // gate the race:
+  //   (a) the renderer's first `daemon.whenReady()` invoke parks in the
+  //       `daemon:get-ready-state` pending-resolver queue until
+  //       markDaemonReady() flushes it after the bootstrap settles, and
+  //   (b) paneGate keeps every renderer `pty.create` path closed until the
+  //       startup reconcile (which itself awaits whenReady) flips it to
+  //       'ready' — so no pty id can be minted against a mid-swap handler
+  //       topology.
+  // The companion change gates AppLayout's late-reconcile listener on
+  // paneGate, closing the one path that was unreachable under the old
+  // serialized order (daemon:connected arriving before startup reconcile).
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    loadMainRenderer(mainWindow);
+    markBoot('renderer-load-triggered');
+    logLine('info', 'main', 'renderer load triggered in parallel with daemon bootstrap');
   }
+
+  await daemonBootstrapP;
   markBoot('daemon-bootstrap-end');
 
   // v2.8.1 hotfix (Bug 3): unblock any renderer that already invoked
@@ -864,25 +886,13 @@ app.on('ready', async () => {
   // mainWindow.reload() recovery paths (renderer crash, unresponsive,
   // did-fail-load) still get a truthful answer instead of deadlocking
   // on a one-shot event the previous preload instance consumed.
-  // Order matters: mark ready BEFORE loading the renderer so the very
-  // first `daemon.whenReady()` invoke from the renderer resolves on its
-  // synchronous path (no pending-resolver queueing) and AppLayout can
-  // reconcile immediately against the now-stable handler topology.
+  // With the parallel renderer load above, the FIRST whenReady() invoke
+  // typically arrives before the bootstrap settles — it parks in the
+  // pending-resolver queue and this call flushes it with the now-final
+  // `daemonClient` value. Order still matters: mark ready only AFTER the
+  // bootstrap promise settles so the flushed answer reflects the decided
+  // daemon-vs-local topology.
   markDaemonReady();
-
-  // First-launch race fix companion: now that `cleanupHandlers` reflects
-  // the final daemon-vs-local handler topology and `markDaemonReady()`
-  // has unblocked future `daemon.whenReady()` calls, it is safe to load
-  // the renderer. Every subsequent `pty.create` from the renderer will
-  // be routed by the correct handler and produce a correctly-formatted
-  // id (`daemon-XX` in daemon mode, `pty-N` in local mode) — eliminating
-  // the LOCAL-id-into-DAEMON-handler silent-drop race documented above
-  // the `createWindow({ deferLoad: true })` call.
-  if (mainWindow && !mainWindow.isDestroyed()) {
-    loadMainRenderer(mainWindow);
-    markBoot('renderer-load-triggered');
-    logLine('info', 'main', 'renderer load triggered after daemon bootstrap');
-  }
 
   // Handle system sleep/wake — verify PTY processes survived.
   //

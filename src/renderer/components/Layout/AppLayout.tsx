@@ -34,6 +34,7 @@ import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { isFileDrag } from '../../../shared/dragDrop';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import { resolvePtyIdsToClear } from '../../hooks/reconcileWithReQuery';
+import { createLateReconcileOnConnect } from '../../hooks/lateReconcileOnConnect';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import ProjectConfigDialog from '../Project/ProjectConfigDialog';
 import { probeProjectConfig, maybeAutoApplyProjectLayout, workspaceProbeCwd } from '../../utils/projectConfigProbe';
@@ -697,33 +698,21 @@ export default function AppLayout() {
     }
   }, [firstRunCompleted, onboardingCompleted, workspaces.length, startOnboarding]);
 
-  // Re-reconcile when daemon connects late (race condition:
-  // renderer may have already reconciled with empty pty list
-  // before main process finished connecting to daemon).
+  // Re-reconcile when daemon connects late (respawn/reconnect after the
+  // startup reconcile already ran). Gating + abort/timeout/preserve logic
+  // lives in createLateReconcileOnConnect — extracted so the paneGate gate
+  // (S-A Step 1: the initial daemon:connected can now arrive mid-startup
+  // because the renderer loads in parallel with the daemon bootstrap) and
+  // the RCA A1/A3 guards are unit-testable.
   useEffect(() => {
-    let activeCtl: AbortController | null = null;
-    const remove = window.electronAPI.daemon.onConnected(() => {
-      console.log('[lifecycle] daemon connected late — re-reconciling PTYs');
-      // RCA A1/A3 — the late reconcile previously ran as a bare
-      // reconcilePtys() with NO abort, timeout, or catch (unlike the startup
-      // path's 5 guards). A pty.list rejection here escaped as an unhandled
-      // rejection, and the call could outlive a fresher reconcile. Add an
-      // abort+timeout and swallow failures by PRESERVING ptyIds — crucially we
-      // never fall through to clearAllPtyState here (that destructive fallback
-      // is startup-only). reconcilePtys is itself non-destructive on empty
-      // lists now (A1 empty-list guard), so a transient blip preserves state.
-      activeCtl?.abort();
-      const ctl = new AbortController();
-      activeCtl = ctl;
-      const timer = setTimeout(() => ctl.abort(), RECONCILE_TIMEOUT_MS);
-      void reconcilePtys(ctl.signal)
-        .catch((err) => {
-          console.warn('[lifecycle] late reconcile failed — preserving ptyIds (no clear):', err);
-        })
-        .finally(() => clearTimeout(timer));
+    const late = createLateReconcileOnConnect({
+      getPaneGate: () => useStore.getState().paneGate,
+      reconcile: (signal) => reconcilePtys(signal),
+      timeoutMs: RECONCILE_TIMEOUT_MS,
     });
+    const remove = window.electronAPI.daemon.onConnected(late.onConnected);
     return () => {
-      activeCtl?.abort();
+      late.dispose();
       remove();
     };
   }, [reconcilePtys]);

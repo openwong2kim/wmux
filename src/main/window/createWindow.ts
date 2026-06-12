@@ -13,16 +13,18 @@ const iconFile = `icon.${iconExt}`;
  * in production) into an existing BrowserWindow.
  *
  * Exposed as a standalone export so the first-launch path in `app.on('ready')`
- * can DEFER navigation until after `DaemonRespawnController.bootstrap()`
- * finishes. Loading the renderer before the daemon is connected opens a
- * race window where the renderer mounts in LOCAL mode (pty-N ids) while the
- * IPC handler swap to DAEMON mode happens mid-mount — subsequent
- * `pty.write` calls then carry LOCAL-prefix ids into the DAEMON handler,
- * which silently drops them inside `DaemonClient.writeToSession` because
- * `sessionPipes.get('pty-N')` is undefined. Symptom: "first keystroke
- * doesn't register" or "only the first keystroke registers" on cold-start
- * over fresh installs, where Defender realtime scan + ASAR cold cache push
- * daemon spawn into the hundreds-of-ms range.
+ * controls WHEN navigation starts: since S-A Step 1 it fires in parallel with
+ * `DaemonRespawnController.bootstrap()` (the renderer leg is the longer one,
+ * so the daemon spawn hides behind it). History: dda4c0c originally deferred
+ * this until after bootstrap because a renderer mounting in LOCAL mode
+ * (pty-N ids) while the IPC handler swap to DAEMON mode happened mid-mount
+ * sent LOCAL-prefix ids into the DAEMON handler, which silently dropped them
+ * inside `DaemonClient.writeToSession` ("first keystroke doesn't register"
+ * on cold installs). That race is closed structurally today: the renderer's
+ * first `daemon.whenReady()` parks in the get-ready-state resolver queue
+ * until the bootstrap settles, and paneGate keeps every `pty.create` path
+ * shut until the startup reconcile completes — ordering is no longer the
+ * defense.
  */
 export function loadMainRenderer(mainWindow: BrowserWindow): void {
   if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
@@ -39,10 +41,11 @@ export function loadMainRenderer(mainWindow: BrowserWindow): void {
  * security hardening, and event wiring.
  *
  * Pass `opts.deferLoad: true` to skip the renderer navigation. The caller
- * MUST then call `loadMainRenderer(window)` once it is safe to mount the
- * renderer — see `loadMainRenderer` for the rationale. The macOS
- * `app.on('activate')` re-open path leaves `deferLoad` unset because the
- * daemon is already healthy by the time activate fires.
+ * MUST then call `loadMainRenderer(window)` itself once its window wiring
+ * (console relay, recovery hooks) is attached — see `loadMainRenderer` for
+ * the load-timing rationale. The macOS `app.on('activate')` re-open path
+ * leaves `deferLoad` unset because the daemon is already healthy by the
+ * time activate fires.
  */
 export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow {
   const mainWindow = new BrowserWindow({
