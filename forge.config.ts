@@ -145,9 +145,17 @@ const config: ForgeConfig = {
       const asar = require('@electron/asar');
       const outputPath = packageResult.outputPaths[0];
       // Build target — prune node-pty prebuilds to this platform/arch only.
-      // Fall back to the host triple if forge doesn't surface them.
-      const targetPlatform = (packageResult as { platform?: string }).platform ?? process.platform;
-      const targetArch = (packageResult as { arch?: string }).arch ?? process.arch;
+      // Use forge's packageResult triple (the actual build target, correct even
+      // under cross-compilation). If forge doesn't surface it, skip pruning
+      // entirely rather than fall back to the host triple — pruning against the
+      // wrong target could delete the only loadable prebuild. A larger build
+      // beats a broken one.
+      const targetPlatform = (packageResult as { platform?: string }).platform;
+      const targetArch = (packageResult as { arch?: string }).arch;
+      const canPrune = Boolean(targetPlatform && targetArch);
+      if (!canPrune) {
+        console.warn('[postPackage] packageResult platform/arch unavailable — skipping node-pty prebuild pruning.');
+      }
       // macOS는 .app 번들이라 리소스가 <app>.app/Contents/Resources에,
       // Windows/Linux는 <output>/resources에 위치한다. .app 이름은
       // productName에 따라 달라지므로 디렉토리에서 직접 찾는다.
@@ -169,7 +177,7 @@ const config: ForgeConfig = {
       const destNodePty = path.join(tempDir, 'node_modules', 'node-pty');
       console.log(`[postPackage] Copying node-pty...`);
       copyDirSync(path.join(__dirname, 'node_modules', 'node-pty'), destNodePty);
-      pruneForeignPrebuilds(destNodePty, targetPlatform, targetArch);
+      if (canPrune) pruneForeignPrebuilds(destNodePty, targetPlatform!, targetArch!);
       const srcAddonApi = path.join(__dirname, 'node_modules', 'node-addon-api');
       if (fs.existsSync(srcAddonApi)) {
         copyDirSync(srcAddonApi, path.join(tempDir, 'node_modules', 'node-addon-api'));
@@ -224,7 +232,7 @@ const config: ForgeConfig = {
         const daemonNodePty = path.join(daemonBundleDir, 'node_modules', 'node-pty');
         console.log('[postPackage] Copying node-pty for daemon-bundle...');
         copyDirSync(path.join(__dirname, 'node_modules', 'node-pty'), daemonNodePty);
-        pruneForeignPrebuilds(daemonNodePty, targetPlatform, targetArch);
+        if (canPrune) pruneForeignPrebuilds(daemonNodePty, targetPlatform!, targetArch!);
         console.log('[postPackage] Done — node-pty available for daemon.');
       }
 
