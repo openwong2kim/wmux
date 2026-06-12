@@ -4,10 +4,33 @@ import * as path from 'path';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 
-// Track the last paste temp file so we can clean it up on the next paste
-let lastPasteFile: string | null = null;
+// Paste temp files must outlive the next paste: consumers (e.g. Claude Code)
+// read the pasted file path later, so deleting the previous file on each paste
+// destroys earlier images when multiple are pasted (issue #201). Instead,
+// sweep stale files older than MAX_PASTE_FILE_AGE_MS once at startup.
+const MAX_PASTE_FILE_AGE_MS = 24 * 60 * 60 * 1000;
+
+function cleanupStalePasteFiles(): void {
+  const tempDir = app.getPath('temp');
+  let entries: string[];
+  try {
+    entries = fs.readdirSync(tempDir);
+  } catch {
+    return;
+  }
+  const cutoff = Date.now() - MAX_PASTE_FILE_AGE_MS;
+  for (const name of entries) {
+    if (!name.startsWith('wmux-paste-') || !name.endsWith('.png')) continue;
+    const filePath = path.join(tempDir, name);
+    try {
+      if (fs.statSync(filePath).mtimeMs < cutoff) fs.unlinkSync(filePath);
+    } catch { /* file vanished or locked; skip */ }
+  }
+}
 
 export function registerClipboardHandlers(): void {
+  cleanupStalePasteFiles();
+
   // Remove any previously registered handlers before re-registering.
   // ipcMain.handle() throws if the same channel is registered twice (e.g.
   // during dev HMR reloads), which silently kills clipboard IPC.
@@ -43,15 +66,13 @@ export function registerClipboardHandlers(): void {
     const image = clipboard.readImage();
     if (image.isEmpty()) return null;
 
-    // Clean up previous paste file to avoid accumulating temp files
-    if (lastPasteFile) {
-      try { fs.unlinkSync(lastPasteFile); } catch { /* already deleted */ }
-    }
-
     const tempDir = app.getPath('temp');
-    const filePath = path.join(tempDir, `wmux-paste-${Date.now()}.png`);
+    // Date.now() alone can collide when pasting rapidly; add a random suffix
+    const filePath = path.join(
+      tempDir,
+      `wmux-paste-${Date.now()}-${Math.random().toString(36).slice(2, 8)}.png`
+    );
     fs.writeFileSync(filePath, image.toPNG());
-    lastPasteFile = filePath;
     return filePath;
   }));
 
