@@ -20,6 +20,7 @@ export interface SurfaceSlice {
   prevSurface: (paneId: string) => void;
   updateSurfacePtyId: (paneId: string, surfaceId: string, ptyId: string) => void;
   updateSurfaceTitle: (surfaceId: string, title: string) => void;
+  updateSurfaceTitleByPty: (ptyId: string, title: string) => void;
   /**
    * Update the live working directory of the surface bound to `ptyId`. Driven
    * by the OSC 7 shell-integration channel (onCwdChanged), so each terminal
@@ -169,7 +170,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       const updateInPane = (pane: Pane): boolean => {
         if (pane.type === 'leaf') {
           const surface = pane.surfaces.find((s) => s.id === surfaceId);
-          if (surface) { surface.title = title; return true; }
+          if (surface) { surface.title = title; surface.titleLocked = true; return true; }
           return false;
         }
         return pane.children.some(updateInPane);
@@ -186,6 +187,25 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
           const surface = pane.surfaces.find((s) => s.ptyId === ptyId);
           if (surface) { surface.cwd = cwd; return true; }
           return false;
+        }
+        return pane.children.some(updateInPane);
+      };
+      if (updateInPane(ws.rootPane)) return;
+    }
+  }),
+
+  updateSurfaceTitleByPty: (ptyId, title) => set((state: StoreState) => {
+    if (!ptyId) return;
+    for (const ws of state.workspaces) {
+      const updateInPane = (pane: Pane): boolean => {
+        if (pane.type === 'leaf') {
+          const surface = pane.surfaces.find((s) => s.ptyId === ptyId);
+          if (!surface) return false;
+          // Terminal surfaces only, and never override a user's manual rename.
+          if ((surface.surfaceType ?? 'terminal') === 'terminal' && !surface.titleLocked) {
+            surface.title = title;
+          }
+          return true;
         }
         return pane.children.some(updateInPane);
       };

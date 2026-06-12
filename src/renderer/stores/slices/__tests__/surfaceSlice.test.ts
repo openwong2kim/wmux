@@ -78,6 +78,50 @@ describe('surfaceSlice.updateSurfaceTitle', () => {
   });
 });
 
+describe('surfaceSlice.updateSurfaceTitleByPty', () => {
+  it('sets the title of the terminal surface bound to a ptyId', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+
+    slice.updateSurfaceTitleByPty('pty-1', 'claude: feature-x');
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    expect(pane.surfaces[0].title).toBe('claude: feature-x');
+  });
+
+  it('is a no-op for an unknown ptyId', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+    const pane0 = state.workspaces[0].rootPane;
+    if (pane0.type !== 'leaf') throw new Error('expected leaf pane');
+    const before = pane0.surfaces[0].title;
+
+    slice.updateSurfaceTitleByPty('ghost', 'nope');
+
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    expect(pane.surfaces[0].title).toBe(before);
+  });
+
+  it('is ignored once the surface title is locked by a manual rename', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const surfaceId = pane.surfaces[0].id;
+
+    slice.updateSurfaceTitle(surfaceId, 'my-name'); // manual rename → locks
+    slice.updateSurfaceTitleByPty('pty-1', 'shell-set'); // must be ignored
+
+    expect(pane.surfaces[0].title).toBe('my-name');
+    expect(pane.surfaces[0].titleLocked).toBe(true);
+  });
+});
+
 describe('surfaceSlice.updateBrowserUrl', () => {
   function harnessWithBrowser() {
     const h = createHarness();
