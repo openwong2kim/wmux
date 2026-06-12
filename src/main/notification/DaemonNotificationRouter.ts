@@ -291,7 +291,7 @@ export class DaemonNotificationRouter {
             ? 'Awaiting input'
             : ev.status === 'waiting' ? 'Ready for input' : 'Task finished';
           sendNotification(win, payload.sessionId, { type: 'agent', title, body });
-          toastManager.show(title, body);
+          toastManager.show(title, body, { ptyId: payload.sessionId });
 
           // Tee to EventBus for external observers (orchestrator clients via
           // `wmux_events_poll`). The local-mode mirror of this lives in
@@ -351,7 +351,7 @@ export class DaemonNotificationRouter {
           title: title ?? 'Terminal',
           body: ev.body,
         });
-        toastManager.show(title ?? 'Terminal', ev.body);
+        toastManager.show(title ?? 'Terminal', ev.body, { ptyId: payload.sessionId });
         // X1 — fold the latest notification text into the sidebar metadata
         // (schema-freeze §2 lastNotificationText). The renderer merges it
         // into WorkspaceMetadata and renders the one-line summary.
@@ -412,7 +412,7 @@ export class DaemonNotificationRouter {
           body: 'Terminal output stopped after active period',
         };
         sendNotification(win, payload.sessionId, notification);
-        toastManager.show(notification.title, notification.body);
+        toastManager.show(notification.title, notification.body, { ptyId: payload.sessionId });
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:idle error:', err);
       }

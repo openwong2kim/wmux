@@ -58,6 +58,84 @@ export function resolveNotificationTarget(
   return { workspaceId: ws.id, surfaceId, paneId: leaf?.id };
 }
 
+// ─── Toast click → pane jump (X2) ──────────────────────────────────────────
+
+/**
+ * Minimal store surface `focusNotificationTarget` needs. Indirected through
+ * a getState() thunk (same pattern as NotificationHandlerDeps) because the
+ * jump is a multi-step mutation: setActivePane/setActiveSurface only operate
+ * on the ACTIVE workspace, so each step must observe the previous step's
+ * state — a snapshot taken before setActiveWorkspace would silently no-op.
+ */
+export interface FocusTargetState {
+  workspaces: Workspace[];
+  activeWorkspaceId: string;
+  setActiveWorkspace: (id: string) => void;
+  setActivePane: (paneId: string) => void;
+  setActiveSurface: (paneId: string, surfaceId: string, workspaceId?: string) => void;
+  notifications: Array<{ id: string; read: boolean; surfaceId?: string }>;
+  markRead: (id: string) => void;
+  setPaneNotificationRing: (paneId: string, ring: 'flash' | 'glow' | null) => void;
+}
+
+/**
+ * Jump to the pane that originated an OS toast. Resolution mirrors
+ * `resolveNotificationTarget`: ptyId is the strongest signal (activates
+ * workspace + pane + surface); workspaceId is the fallback for app-level
+ * toasts (activates the workspace only). Unresolvable ids — the PTY may
+ * have closed between toast and click — are a silent no-op.
+ *
+ * Read/ring semantics mirror Pane's click handler: notifications for the
+ * target surface are marked read, and the attention ring is cleared only
+ * when something was actually marked (a no-unread jump must not wipe a
+ * fresh flash that belongs to a notification the user hasn't seen).
+ *
+ * Returns true when any activation happened (test observability).
+ */
+export function focusNotificationTarget(
+  getState: () => FocusTargetState,
+  payload: { ptyId?: string | null; workspaceId?: string | null },
+): boolean {
+  const state = getState();
+  if (payload.ptyId) {
+    for (const ws of state.workspaces) {
+      const found = findSurfaceByPtyId(ws.rootPane, payload.ptyId);
+      if (!found) continue;
+      if (ws.id !== state.activeWorkspaceId) {
+        state.setActiveWorkspace(ws.id);
+      }
+      // Re-read after the workspace switch — setActivePane resolves the
+      // pane inside the CURRENT active workspace (see FocusTargetState).
+      const fresh = getState();
+      fresh.setActivePane(found.paneId);
+      fresh.setActiveSurface(found.paneId, found.surfaceId, ws.id);
+      let markedAny = false;
+      for (const n of fresh.notifications) {
+        if (!n.read && n.surfaceId !== undefined && n.surfaceId === found.surfaceId) {
+          fresh.markRead(n.id);
+          markedAny = true;
+        }
+      }
+      if (markedAny) {
+        fresh.setPaneNotificationRing(found.paneId, null);
+      }
+      return true;
+    }
+    // PTY closed since the toast fired — fall through to workspaceId, which
+    // is null for PTY-originated toasts, so this ends as a no-op.
+  }
+  if (payload.workspaceId) {
+    const ws = state.workspaces.find((w) => w.id === payload.workspaceId);
+    if (ws) {
+      if (ws.id !== state.activeWorkspaceId) {
+        state.setActiveWorkspace(ws.id);
+      }
+      return true;
+    }
+  }
+  return false;
+}
+
 // ─── Throttle windows ──────────────────────────────────────────────────────
 // - Sound: 2s per NotificationType (preserves pre-T8 behavior — `agent`
 //   and `error` were already independent, see the old lastSoundTime map).
@@ -279,6 +357,12 @@ export function useNotificationListener() {
 
     const unsubNotif = window.electronAPI.notification.onNew(handleNotification);
 
+    // X2 — OS toast clicked: main already restored/focused the window;
+    // jump to the originating workspace/pane/surface.
+    const unsubFocus = window.electronAPI.notification.onFocusRequest((payload) => {
+      focusNotificationTarget(() => useStore.getState(), payload);
+    });
+
     const unsubCwd = window.electronAPI.notification.onCwdChanged((ptyId, cwd) => {
       const state = useStore.getState();
       // Per-surface cwd: every terminal tracks its own working directory (not
@@ -413,6 +497,7 @@ export function useNotificationListener() {
 
     return () => {
       unsubNotif();
+      unsubFocus();
       unsubCwd();
       unsubMeta();
       unsubGitBranch();

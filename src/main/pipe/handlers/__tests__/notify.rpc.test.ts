@@ -81,6 +81,18 @@ describe('notify.rpc', () => {
   it('always invokes the OS toast manager (focus gate is internal to ToastManager)', async () => {
     const { router } = setupRouter();
     await router.dispatch({ id: '6', method: 'notify', params: { title: 't', body: 'b' } });
-    expect(mocks.toastManagerShow).toHaveBeenCalledWith('t', 'b');
+    // Third arg is the X2 click-to-jump context. With no workspaceId in the
+    // request it carries undefined — ToastManager treats that as "click only
+    // focuses the window" (legacy behavior).
+    expect(mocks.toastManagerShow).toHaveBeenCalledWith('t', 'b', { workspaceId: undefined });
+  });
+
+  it('passes workspaceId to the toast click context when provided (X2 pane jump)', async () => {
+    const { router } = setupRouter();
+    await router.dispatch({
+      id: '7', method: 'notify',
+      params: { title: 't', body: 'b', workspaceId: 'ws-7' },
+    });
+    expect(mocks.toastManagerShow).toHaveBeenCalledWith('t', 'b', { workspaceId: 'ws-7' });
   });
 });

@@ -50,8 +50,10 @@ export function registerNotifyRpc(router: RpcRouter, getWindow: GetWindow): void
     // the active workspace.
     sendNotification(getWindow(), null, { title, body, type, workspaceId });
 
-    // Show OS-level toast (only when window is not focused)
-    toastManager.show(title, body);
+    // Show OS-level toast (only when window is not focused). workspaceId
+    // (when the caller sent one) makes the toast clickable: click jumps to
+    // that workspace. No ptyId exists for this RPC — see comment above.
+    toastManager.show(title, body, { workspaceId });
 
     return Promise.resolve({ delivered: true, type });
   });

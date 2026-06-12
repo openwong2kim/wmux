@@ -18,6 +18,10 @@ export const IPC = {
   SESSION_SAVE: 'session:save',
   SESSION_LOAD: 'session:load',
   NOTIFICATION: 'notification:new',
+  // X2 — OS toast click → jump to the originating pane. Main sends the
+  // toast's {ptyId, workspaceId} context; renderer resolves and activates
+  // the workspace/pane/surface (see useNotificationListener).
+  NOTIFICATION_FOCUS: 'notification:focus',
   CWD_CHANGED: 'notification:cwd-changed',
   GIT_BRANCH_CHANGED: 'notification:git-branch-changed',
   METADATA_UPDATE: 'metadata:update',

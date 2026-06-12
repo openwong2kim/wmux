@@ -18,7 +18,9 @@ import { describe, it, expect, vi, beforeEach } from 'vitest';
 import {
   createNotificationHandler,
   resolveNotificationTarget,
+  focusNotificationTarget,
   type NotificationHandlerDeps,
+  type FocusTargetState,
 } from '../useNotificationListener';
 import { createThrottler } from '../../utils/createThrottler';
 import type { Workspace, Pane, Surface } from '../../../shared/types';
@@ -441,5 +443,142 @@ describe('createNotificationHandler — cleanup (R11)', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+// ─── X2 — focusNotificationTarget (OS toast click → pane jump) ─────────────
+
+describe('focusNotificationTarget', () => {
+  interface JumpHarness {
+    state: FocusTargetState;
+    spies: {
+      setActiveWorkspace: ReturnType<typeof vi.fn>;
+      setActivePane: ReturnType<typeof vi.fn>;
+      setActiveSurface: ReturnType<typeof vi.fn>;
+      markRead: ReturnType<typeof vi.fn>;
+      setPaneNotificationRing: ReturnType<typeof vi.fn>;
+    };
+    getState: () => FocusTargetState;
+  }
+
+  function makeJumpHarness(opts: {
+    workspaces: Workspace[];
+    activeWorkspaceId: string;
+    notifications?: Array<{ id: string; read: boolean; surfaceId?: string }>;
+  }): JumpHarness {
+    const spies = {
+      setActiveWorkspace: vi.fn(),
+      setActivePane: vi.fn(),
+      setActiveSurface: vi.fn(),
+      markRead: vi.fn(),
+      setPaneNotificationRing: vi.fn(),
+    };
+    const state: FocusTargetState = {
+      workspaces: opts.workspaces,
+      activeWorkspaceId: opts.activeWorkspaceId,
+      notifications: opts.notifications ?? [],
+      ...spies,
+    };
+    // setActiveWorkspace mutates the harness state the way zustand would,
+    // so the post-switch getState() re-read (the multi-step contract the
+    // function is documented around) observes the new active workspace.
+    spies.setActiveWorkspace.mockImplementation((id: string) => {
+      state.activeWorkspaceId = id;
+    });
+    return { state, spies, getState: () => state };
+  }
+
+  const wsA = () =>
+    makeWorkspace({
+      id: 'ws-a',
+      panes: [{ id: 'pane-a', surfaces: [{ id: 'sf-a', ptyId: 'pty-a' }] }],
+    });
+  const wsB = () =>
+    makeWorkspace({
+      id: 'ws-b',
+      panes: [{ id: 'pane-b', surfaces: [{ id: 'sf-b', ptyId: 'pty-b' }] }],
+    });
+
+  it('J1: ptyId in a non-active workspace → workspace switch + pane + surface activation', () => {
+    const h = makeJumpHarness({ workspaces: [wsA(), wsB()], activeWorkspaceId: 'ws-a' });
+    const handled = focusNotificationTarget(h.getState, { ptyId: 'pty-b', workspaceId: null });
+    expect(handled).toBe(true);
+    expect(h.spies.setActiveWorkspace).toHaveBeenCalledWith('ws-b');
+    expect(h.spies.setActivePane).toHaveBeenCalledWith('pane-b');
+    expect(h.spies.setActiveSurface).toHaveBeenCalledWith('pane-b', 'sf-b', 'ws-b');
+  });
+
+  it('J2: ptyId in the already-active workspace → no workspace switch, pane + surface still activated', () => {
+    const h = makeJumpHarness({ workspaces: [wsA(), wsB()], activeWorkspaceId: 'ws-a' });
+    const handled = focusNotificationTarget(h.getState, { ptyId: 'pty-a', workspaceId: null });
+    expect(handled).toBe(true);
+    expect(h.spies.setActiveWorkspace).not.toHaveBeenCalled();
+    expect(h.spies.setActivePane).toHaveBeenCalledWith('pane-a');
+    expect(h.spies.setActiveSurface).toHaveBeenCalledWith('pane-a', 'sf-a', 'ws-a');
+  });
+
+  it('J3: unread notifications for the target surface are marked read and the ring cleared', () => {
+    const h = makeJumpHarness({
+      workspaces: [wsA()],
+      activeWorkspaceId: 'ws-a',
+      notifications: [
+        { id: 'n1', read: false, surfaceId: 'sf-a' },
+        { id: 'n2', read: true, surfaceId: 'sf-a' },   // already read — untouched
+        { id: 'n3', read: false, surfaceId: 'sf-other' }, // different surface — untouched
+        { id: 'n4', read: false },                     // no surface — untouched
+      ],
+    });
+    focusNotificationTarget(h.getState, { ptyId: 'pty-a', workspaceId: null });
+    expect(h.spies.markRead).toHaveBeenCalledTimes(1);
+    expect(h.spies.markRead).toHaveBeenCalledWith('n1');
+    expect(h.spies.setPaneNotificationRing).toHaveBeenCalledWith('pane-a', null);
+  });
+
+  it('J4: no unread for the target surface → ring NOT cleared (mirrors Pane click semantics)', () => {
+    const h = makeJumpHarness({
+      workspaces: [wsA()],
+      activeWorkspaceId: 'ws-a',
+      notifications: [{ id: 'n1', read: true, surfaceId: 'sf-a' }],
+    });
+    focusNotificationTarget(h.getState, { ptyId: 'pty-a', workspaceId: null });
+    expect(h.spies.markRead).not.toHaveBeenCalled();
+    expect(h.spies.setPaneNotificationRing).not.toHaveBeenCalled();
+  });
+
+  it('J5: unknown ptyId (PTY closed since the toast) → silent no-op, returns false', () => {
+    const h = makeJumpHarness({ workspaces: [wsA()], activeWorkspaceId: 'ws-a' });
+    const handled = focusNotificationTarget(h.getState, { ptyId: 'pty-gone', workspaceId: null });
+    expect(handled).toBe(false);
+    expect(h.spies.setActiveWorkspace).not.toHaveBeenCalled();
+    expect(h.spies.setActivePane).not.toHaveBeenCalled();
+    expect(h.spies.setActiveSurface).not.toHaveBeenCalled();
+  });
+
+  it('J6: workspaceId-only payload (external notify RPC) → workspace switch only', () => {
+    const h = makeJumpHarness({ workspaces: [wsA(), wsB()], activeWorkspaceId: 'ws-a' });
+    const handled = focusNotificationTarget(h.getState, { ptyId: null, workspaceId: 'ws-b' });
+    expect(handled).toBe(true);
+    expect(h.spies.setActiveWorkspace).toHaveBeenCalledWith('ws-b');
+    expect(h.spies.setActivePane).not.toHaveBeenCalled();
+    expect(h.spies.setActiveSurface).not.toHaveBeenCalled();
+  });
+
+  it('J7: workspaceId already active → handled but no redundant switch', () => {
+    const h = makeJumpHarness({ workspaces: [wsA()], activeWorkspaceId: 'ws-a' });
+    const handled = focusNotificationTarget(h.getState, { ptyId: null, workspaceId: 'ws-a' });
+    expect(handled).toBe(true);
+    expect(h.spies.setActiveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('J8: unknown workspaceId → no-op, returns false', () => {
+    const h = makeJumpHarness({ workspaces: [wsA()], activeWorkspaceId: 'ws-a' });
+    const handled = focusNotificationTarget(h.getState, { ptyId: null, workspaceId: 'ws-gone' });
+    expect(handled).toBe(false);
+    expect(h.spies.setActiveWorkspace).not.toHaveBeenCalled();
+  });
+
+  it('J9: empty payload (both ids null) → no-op, returns false', () => {
+    const h = makeJumpHarness({ workspaces: [wsA()], activeWorkspaceId: 'ws-a' });
+    expect(focusNotificationTarget(h.getState, { ptyId: null, workspaceId: null })).toBe(false);
   });
 });

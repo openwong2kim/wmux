@@ -41,6 +41,27 @@ current branch without pushing to GitHub first:
 Substitute your local clone path. Claude Code reads
 `.claude-plugin/marketplace.json` from that directory.
 
+### Option C — `wmux setup-hooks` (no plugin)
+
+If you'd rather not use the marketplace plugin at all, the wmux CLI can
+install the same 4 hooks directly into your Claude Code user settings
+(`~/.claude/settings.json`):
+
+```
+wmux setup-hooks            # install
+wmux setup-hooks --status   # show install + bridge freshness
+wmux setup-hooks --remove   # uninstall (leaves your other hooks intact)
+```
+
+This copies the bridge to a stable path (`~/.wmux/hooks/wmux-bridge.mjs`)
+and references it from settings.json, so it survives app updates. Re-run
+`wmux setup-hooks` after a wmux update to refresh the copied bridge.
+
+**Caveat — do not combine with the plugin.** If you install BOTH this
+plugin (Option A/B) and the `setup-hooks` settings entries, each turn
+fires the hook twice. wmux dedups hook-vs-detector, but not
+hook-vs-hook, so you'd get double signals. Pick one path.
+
 ### After either path
 
 Restart your Claude Code session for the hooks to take effect. wmux

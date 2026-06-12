@@ -38,6 +38,7 @@ const electronMocks = vi.hoisted(() => {
     isMinimized: vi.fn().mockReturnValue(false),
     restore: vi.fn(),
     focus: vi.fn(),
+    webContents: { send: vi.fn() },
   };
 
   const BrowserWindow = {
@@ -106,6 +107,64 @@ describe('ToastManager (OS-aware notifications)', () => {
     expect(electronMocks.notificationInstances).toHaveLength(0);
     expect(electronMocks.win.flashFrame).not.toHaveBeenCalled();
     expect(electronMocks.dockBounce).not.toHaveBeenCalled();
+  });
+
+  describe('click → pane jump (X2)', () => {
+    // Pull the 'click' handler the SUT registered on the Notification mock
+    // and invoke it, simulating the user clicking the OS toast.
+    function clickToast(): void {
+      const onCalls = electronMocks.notificationInstances[0].on.mock.calls;
+      const clickCall = onCalls.find((c: unknown[]) => c[0] === 'click');
+      expect(clickCall).toBeDefined();
+      (clickCall![1] as () => void)();
+    }
+
+    it('sends NOTIFICATION_FOCUS with the ptyId context after focusing the window', async () => {
+      const { ToastManager } = await import('../ToastManager');
+      const { IPC } = await import('../../../shared/constants');
+      new ToastManager().show('t', 'b', { ptyId: 'pty-1' });
+      clickToast();
+      expect(electronMocks.win.focus).toHaveBeenCalled();
+      expect(electronMocks.win.webContents.send).toHaveBeenCalledWith(
+        IPC.NOTIFICATION_FOCUS,
+        { ptyId: 'pty-1', workspaceId: null },
+      );
+    });
+
+    it('sends NOTIFICATION_FOCUS with the workspaceId fallback context', async () => {
+      const { ToastManager } = await import('../ToastManager');
+      const { IPC } = await import('../../../shared/constants');
+      new ToastManager().show('t', 'b', { workspaceId: 'ws-1' });
+      clickToast();
+      expect(electronMocks.win.webContents.send).toHaveBeenCalledWith(
+        IPC.NOTIFICATION_FOCUS,
+        { ptyId: null, workspaceId: 'ws-1' },
+      );
+    });
+
+    it('does NOT send NOTIFICATION_FOCUS without a context (legacy focus-only click)', async () => {
+      const { ToastManager } = await import('../ToastManager');
+      new ToastManager().show('t', 'b');
+      clickToast();
+      expect(electronMocks.win.focus).toHaveBeenCalled();
+      expect(electronMocks.win.webContents.send).not.toHaveBeenCalled();
+    });
+
+    it('does NOT send NOTIFICATION_FOCUS when the context carries only nulls', async () => {
+      const { ToastManager } = await import('../ToastManager');
+      new ToastManager().show('t', 'b', { ptyId: null, workspaceId: undefined });
+      clickToast();
+      expect(electronMocks.win.webContents.send).not.toHaveBeenCalled();
+    });
+
+    it('restores a minimized window before focusing', async () => {
+      electronMocks.win.isMinimized.mockReturnValue(true);
+      const { ToastManager } = await import('../ToastManager');
+      new ToastManager().show('t', 'b', { ptyId: 'pty-1' });
+      clickToast();
+      expect(electronMocks.win.restore).toHaveBeenCalled();
+      expect(electronMocks.win.focus).toHaveBeenCalled();
+    });
   });
 
   describe('on Windows', () => {

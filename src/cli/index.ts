@@ -13,6 +13,7 @@ import { handleNotify } from './commands/notify';
 import { handleSystem } from './commands/system';
 import { handleBrowser, handleOpen } from './commands/browser';
 import { handleMcp } from './commands/mcp';
+import { handleSetupHooks } from './commands/setupHooks';
 
 const HELP_TEXT = `
 wmux CLI
@@ -72,6 +73,11 @@ MCP COMMANDS
   mcp check                         Show whether wmux MCP servers are registered
   mcp register                      Add wmux entries to ~/.claude.json
   mcp unregister                    Remove wmux entries from ~/.claude.json
+
+CLAUDE CODE INTEGRATION
+  setup-hooks                       Install Claude Code hooks (no plugin needed)
+              [--remove]            Remove the wmux-owned hook entries
+              [--status]            Report hook + bridge install state
 
 GLOBAL FLAGS
   --json      Output raw JSON (useful for scripting)
@@ -150,6 +156,8 @@ async function main(): Promise<void> {
       await handleBrowser(rest, jsonMode);
     } else if (cmd === 'mcp') {
       await handleMcp(rest, jsonMode);
+    } else if (cmd === 'setup-hooks') {
+      await handleSetupHooks(rest, jsonMode);
     } else {
       console.error(`Unknown command: "${cmd}". Run 'wmux --help' for usage.`);
       process.exit(1);

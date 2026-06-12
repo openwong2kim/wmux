@@ -109,6 +109,16 @@ const electronAPI = {
       ipcRenderer.on(IPC.NOTIFICATION, listener);
       return () => { ipcRenderer.removeListener(IPC.NOTIFICATION, listener); };
     },
+    // X2 — OS toast click → pane jump. Main sends the toast's originating
+    // context after restoring/focusing the window; the renderer resolves
+    // ptyId → workspace/pane/surface (or workspaceId → workspace) and
+    // activates it. Unresolvable ids are a silent no-op.
+    onFocusRequest: (callback: (payload: { ptyId: string | null; workspaceId: string | null }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId: string | null; workspaceId: string | null }) =>
+        callback(payload);
+      ipcRenderer.on(IPC.NOTIFICATION_FOCUS, listener);
+      return () => { ipcRenderer.removeListener(IPC.NOTIFICATION_FOCUS, listener); };
+    },
     onCwdChanged: (callback: (ptyId: string, cwd: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, ptyId: string, cwd: string) =>
         callback(ptyId, cwd);
