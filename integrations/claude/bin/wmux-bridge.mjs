@@ -50,6 +50,7 @@ const MAX_STDIN_BYTES = 1 * 1024 * 1024;
 // ----- Hook name → AgentSignal kind ---------------------------------------
 
 const HOOK_TO_KIND = {
+  PreToolUse: 'agent.awaiting_input',
   PostToolUse: 'agent.activity',
   Stop: 'agent.stop',
   SubagentStop: 'agent.subagent_stop',
@@ -318,6 +319,15 @@ async function main() {
   // Empty stdin is allowed for SessionStart per Claude Code spec.
   if (payload === null && hookName !== 'SessionStart') {
     logEvent('empty-stdin', { hook: hookName });
+    return;
+  }
+
+  // PreToolUse fires per tool call; we only treat AskUserQuestion as
+  // "awaiting input". A future broad PreToolUse matcher can never tunnel a
+  // spurious awaiting_input through here — other PreToolUse tools are dropped.
+  if (hookName === 'PreToolUse'
+      && !(payload && payload.tool_name === 'AskUserQuestion')) {
+    logEvent('skip-pretooluse', { tool: payload && payload.tool_name });
     return;
   }
 
