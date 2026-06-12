@@ -56,10 +56,13 @@ function emitLine(line: string): void {
 /**
  * Record a boot milestone and emit it immediately. Idempotent per name —
  * only the first call sticks (and only the first call emits a line).
+ * `epochOverride` lets a mark carry a timestamp captured earlier than the
+ * call itself (used for js-start, whose moment is the module-level
+ * JS_START_EPOCH_MS capture, not the markBoot call at the end of this file).
  */
-export function markBoot(name: string): void {
+export function markBoot(name: string, epochOverride?: number): void {
   if (name in marks) return;
-  const epoch = Date.now();
+  const epoch = epochOverride ?? Date.now();
   marks[name] = epoch;
   emitLine(`[boot-trace] mark=${name} epoch=${epoch}`);
 }
@@ -106,6 +109,7 @@ export function getBootTrace(): {
 }
 
 // Record js-start as a mark too so the bench's mark parser sees the anchor
-// without special-casing the summary line. Emitted at module eval — i.e. the
-// first JS the main process runs (this module is index.ts's first import).
-markBoot('js-start');
+// without special-casing the summary line. The epoch is the module-level
+// JS_START_EPOCH_MS capture (the first JS the main process runs — this module
+// is index.ts's first import), not this call's own Date.now().
+markBoot('js-start', JS_START_EPOCH_MS);

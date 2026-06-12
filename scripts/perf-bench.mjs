@@ -352,6 +352,9 @@ function spawnInstance(inst) {
   // Boot-trace mark collector (S-A). Separate listener from the CDP matcher
   // above: that one early-returns once the port is found, while marks keep
   // arriving until ready-end. Line-buffered because chunks can split lines.
+  // STDERR ONLY: bootTrace.ts emits marks via process.stderr.write, and a
+  // single buffer shared across both streams could interleave stdout chunks
+  // into the middle of a stderr line and corrupt the parse.
   // Marks are emitted as absolute epochs by src/main/util/bootTrace.ts and
   // re-based here onto the bench timeline (same machine clock as t0).
   {
@@ -370,7 +373,6 @@ function spawnInstance(inst) {
       // Cap a pathological lineless tail (binary noise) — marks always end in \n.
       if (traceBuf.length > 65536) traceBuf = traceBuf.slice(-4096);
     };
-    inst.proc.stdout.on('data', onTraceChunk);
     inst.proc.stderr.on('data', onTraceChunk);
   }
   // Surface app errors to the harness log without flooding it.

@@ -219,13 +219,15 @@ let fullShutdownRequested = false;
 
 // Prevent multiple instances — focus existing window instead
 const gotLock = app.requestSingleInstanceLock();
-markBoot('lock-acquired');
 console.log(`[DEBUG] gotLock = ${gotLock}`);
 if (!gotLock) {
   console.log('[DEBUG] failed to get single instance lock, quitting');
   app.quit();
   return;
 } else {
+  // Mark only on the success path — the duplicate-instance branch quits and
+  // must not leave a "lock-acquired" lie in the boot trace.
+  markBoot('lock-acquired');
   app.on('second-instance', () => {
     if (isQuitting) return;
     if (mainWindow) {
