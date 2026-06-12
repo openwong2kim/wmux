@@ -1,0 +1,114 @@
+name: Perf
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    # The history append commit only touches bench/history.ndjson; ignoring it
+    # (and docs) here prevents the commit from re-triggering this workflow.
+    paths-ignore:
+      - 'bench/history.ndjson'
+      - '**/*.md'
+  pull_request:
+    paths:
+      - 'src/**'
+      - 'scripts/perf-bench.mjs'
+      - 'scripts/perf-compare.mjs'
+      - 'package.json'
+      - 'package-lock.json'
+      - '.github/workflows/perf.yml'
+      - 'forge.config.*'
+
+concurrency:
+  group: perf-${{ github.ref }}
+  # Cancel superseded PR runs, but never kill a main-push run mid-flight — the
+  # history append happens at the END of the job, so cancelling main runs would
+  # make the trend file routinely lossy under normal merge cadence.
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  bench:
+    runs-on: windows-latest
+    timeout-minutes: 45
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Package app
+        run: npm run package
+
+      # The harness exits nonzero on a *harness* failure (could not launch the
+      # packaged app, etc.) — that must fail the job.
+      - name: Run perf bench
+        run: node scripts/perf-bench.mjs --mode ci --json out/perf-current.json
+
+      # On push to main we also append a trend line to bench/history.ndjson in
+      # the same compare invocation. Compute the extra flag once.
+      - name: Compute history flag
+        id: histflag
+        run: |
+          if ($env:GITHUB_EVENT_NAME -eq 'push') {
+            "value=--append-history bench/history.ndjson" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          } else {
+            "value=" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
+      # Gate. baseline-ci.json may not exist yet — compare prints
+      # "no baseline — record-only run" and exits 0 (bootstrap path). A real
+      # regression past both thresholds exits 1 and fails the job here.
+      - name: Compare against baseline
+        run: node scripts/perf-compare.mjs --current out/perf-current.json --baseline bench/baseline-ci.json --summary perf-summary.md ${{ steps.histflag.outputs.value }}
+
+      - name: Append summary to step summary
+        if: always()
+        run: |
+          if (Test-Path perf-summary.md) {
+            Get-Content perf-summary.md | Add-Content $env:GITHUB_STEP_SUMMARY
+          }
+
+      - name: Upload artifacts
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: perf-${{ github.run_id }}
+          path: |
+            out/perf-current.json
+            perf-summary.md
+          if-no-files-found: ignore
+
+      # Persist the trend line on main. paths-ignore above prevents this commit
+      # from re-triggering the workflow.
+      - name: Commit perf history
+        if: github.event_name == 'push'
+        run: |
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add bench/history.ndjson
+          $changed = (git status --porcelain bench/history.ndjson)
+          if ([string]::IsNullOrWhiteSpace($changed)) {
+            Write-Host "No perf history change to commit."
+          } else {
+            git commit -m "chore(bench): append perf history [perf-history]"
+            # Retry the rebase+push: another main push may have advanced the
+            # ref while the bench ran. History is best-effort trend data —
+            # exhausting retries must not fail the perf gate itself.
+            $pushed = $false
+            for ($i = 0; $i -lt 3 -and -not $pushed; $i++) {
+              git pull --rebase origin main
+              git push
+              if ($LASTEXITCODE -eq 0) { $pushed = $true } else { Start-Sleep -Seconds 5 }
+            }
+            if (-not $pushed) { Write-Host "::warning::perf history push failed after 3 attempts (non-fatal)" }
+            exit 0
+          }
