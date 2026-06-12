@@ -5,6 +5,7 @@ import { TerminalNotificationParser } from './oscNotification';
 import { AgentDetector, agentDisplayToSlug } from './AgentDetector';
 import { ActivityMonitor } from './ActivityMonitor';
 import { parseOsc7Cwd, detectPromptCwd } from './cwdDetect';
+import { sanitizeTitle } from './titleDetect';
 import { toastManager } from '../pipe/handlers/notify.rpc';
 import { IPC } from '../../shared/constants';
 import { updateCwd, removeCwd, updateBranch, removeBranch, broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
@@ -257,6 +258,14 @@ export class PTYBridge {
       if (!win || win.isDestroyed()) return;
 
       switch (event.code) {
+        case 0:
+        case 2: {
+          // OSC 0 (icon + window title) / OSC 2 (window title) — e.g. Claude
+          // Code's `/rename`. OSC 1 (icon name only) is intentionally ignored.
+          const title = sanitizeTitle(event.data);
+          if (title) win.webContents.send(IPC.TERMINAL_TITLE_CHANGED, ptyId, title);
+          break;
+        }
         case 7: {
           const cwd = parseOsc7Cwd(event.data);
           updateCwd(ptyId, cwd);
