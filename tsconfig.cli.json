@@ -15,7 +15,8 @@
     "src/cli/**/*",
     "src/shared/rpc.ts",
     "src/shared/constants.ts",
-    "src/shared/types.ts"
+    "src/shared/types.ts",
+    "src/shared/bootPhases.ts"
   ],
   "exclude": [
     "src/cli/__tests__/**"

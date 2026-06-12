@@ -14,6 +14,7 @@ import { handleSystem } from './commands/system';
 import { handleBrowser, handleOpen } from './commands/browser';
 import { handleMcp } from './commands/mcp';
 import { handleSetupHooks } from './commands/setupHooks';
+import { handleDoctor } from './commands/doctor';
 
 const HELP_TEXT = `
 wmux CLI
@@ -61,6 +62,11 @@ SYSTEM COMMANDS
   identify                          Show wmux app info
   capabilities                      List all supported RPC methods
 
+DIAGNOSTICS
+  doctor                            Run health checks (env, daemon, boot phases,
+                                    AV-tax hint, log pointers). Works even when
+                                    the daemon is down.
+
 BROWSER COMMANDS
   browser navigate <url>            Navigate the browser surface to a URL
   browser close                     Close the browser panel
@@ -92,6 +98,8 @@ EXAMPLES
   wmux identify --json
   wmux browser navigate "https://example.com"
   wmux browser close
+  wmux doctor
+  wmux doctor --json
 `.trimStart();
 
 const WORKSPACE_CMDS = new Set([
@@ -158,6 +166,8 @@ async function main(): Promise<void> {
       await handleMcp(rest, jsonMode);
     } else if (cmd === 'setup-hooks') {
       await handleSetupHooks(rest, jsonMode);
+    } else if (cmd === 'doctor') {
+      await handleDoctor(rest, jsonMode);
     } else {
       console.error(`Unknown command: "${cmd}". Run 'wmux --help' for usage.`);
       process.exit(1);
