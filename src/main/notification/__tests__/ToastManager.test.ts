@@ -116,7 +116,8 @@ describe('ToastManager (OS-aware notifications)', () => {
       const onCalls = electronMocks.notificationInstances[0].on.mock.calls;
       const clickCall = onCalls.find((c: unknown[]) => c[0] === 'click');
       expect(clickCall).toBeDefined();
-      (clickCall![1] as () => void)();
+      if (!clickCall) throw new Error('no click handler registered');
+      (clickCall[1] as () => void)();
     }
 
     it('sends NOTIFICATION_FOCUS with the ptyId context after focusing the window', async () => {
