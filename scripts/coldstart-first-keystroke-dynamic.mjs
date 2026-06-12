@@ -733,7 +733,7 @@ async function main() {
     check('S4: gate-skip line present where the mid-startup window was hit (outcome A)', true,
       `gate fired in ${gateFired.length} env(s): ${gateFired.map((g) => g.tag).join(', ')}`);
   } else {
-    console.log(`  [INFO] 게이트 시나리오 미발화 — the gate-skip branch was not hit this run: on every boot the `
+    console.log(`  [INFO] gate scenario not exercised — the gate-skip branch was not hit this run: on every boot the `
       + `startup reconcile flipped paneGate to 'ready' before daemon:connected arrived, so the listener took the `
       + `GENUINE late-connect path (outcome B) in ${lateFired.length} env(s). This is correct, race-safe behavior `
       + `(no keystroke dropped per S2/S3), NOT a FAIL — the spec anticipates timing may not hit the gate window.`);
