@@ -31,10 +31,21 @@ over shell-set titles.
 
 ## Architecture
 
-The transport mirrors the existing `CWD_CHANGED` path exactly: main parses the
-sequence, sends `(ptyId, value)` to the renderer over a dedicated IPC channel,
+The transport mirrors the existing `CWD_CHANGED` path exactly: parse the
+sequence, send `(ptyId, value)` to the renderer over a dedicated IPC channel,
 and a renderer listener updates the matching surface field. This keeps the new
 code aligned with a proven, tested pattern.
+
+**Both PTY modes must be wired**, exactly as cwd is. wmux runs terminals either
+in-process (`PTYBridge`, local mode) or in a separate daemon (`DaemonPTYBridge`,
+the default). The cwd signal travels two parallel paths, and the title must
+follow both:
+- **Local:** `PTYBridge` OSC handler → `IPC.TERMINAL_TITLE_CHANGED`.
+- **Daemon:** `DaemonPTYBridge` OSC handler → `'title'` → `DaemonSessionManager`
+  `'session:title'` → `daemon/index.ts` broadcasts `DaemonEvent {type:'title.changed'}`
+  → `DaemonClient` re-emits `'session:title'` → `pty.handler` forwards
+  `IPC.TERMINAL_TITLE_CHANGED`. This is the byte-for-byte analog of the
+  `cwd`/`session:cwd`/`cwd.changed` chain.
 
 ```
 shell emits OSC 0/2  →  OscParser strips bytes, emits {code,data}
