@@ -20,7 +20,16 @@
  *   ram            Working set + commit charge summed over the FULL process
  *                  tree: main exe + Chromium children + the detached daemon
  *                  (read from its pid file) + its ConPTY/conhost children.
- *                  Sampled at idle-1-pane and at 8 panes.
+ *                  Sampled at idle-1-pane and at 8 panes. PR D adds an additive
+ *                  `breakdown` field that attributes that flat total to per-
+ *                  process categories (main / renderer / gpu / utility / daemon
+ *                  / conhost / other) via the Electron `--type=` flag, so a
+ *                  diet candidate (scrollback cap, V8 heap, GPU release) can be
+ *                  located before it is built. With --scrollback-lines N the
+ *                  bench pre-seeds session.json so EVERY measured pane mounts at
+ *                  that scrollback size (clean A/B at both idle1Pane and 8
+ *                  panes — see buildScrollbackSeedSession). With
+ *                  --webgl-occupancy it logs the 8-pane WebGL-canvas count.
  *
  * ISOLATION MODEL
  * ---------------
@@ -56,6 +65,8 @@
  *                          ci: 3 /80/40)
  *        --json <path>     write machine-readable results
  *        --cold-runs N --samples N --samples8 N   explicit overrides
+ *        --scrollback-lines N   inject scrollback=N into measured panes (A/B)
+ *        --webgl-occupancy      log the 8-pane WebGL canvas count (DOM approx)
  *        --skip-cold | --skip-input | --skip-ram
  *        --keep-app        leave the last instance running (debugging)
  */
@@ -67,6 +78,7 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright-core';
+import { accumulateBreakdown, RAM_CATEGORIES } from './perf-process-classify.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
@@ -85,6 +97,12 @@ function parseArgs(argv) {
     mode: 'local', json: null, help: false, keepApp: false,
     coldRuns: null, samples: null, samples8: null,
     skipCold: false, skipInput: false, skipRam: false, diag: false,
+    // PR D — RAM attribution. scrollbackLines: null leaves the app default
+    // (10000) untouched; a number injects that scrollback into the panes the
+    // bench measures so two runs (e.g. 10000 vs 1000) form an A/B for the
+    // scrollback-cap go/no-go. webglOccupancy: log the 8-pane WebGL-canvas
+    // count (approximation; see measureWebglOccupancy).
+    scrollbackLines: null, webglOccupancy: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -94,6 +112,8 @@ function parseArgs(argv) {
     else if (a === '--cold-runs') out.coldRuns = Math.max(1, Number(argv[++i]) || 0);
     else if (a === '--samples') out.samples = Math.max(5, Number(argv[++i]) || 0);
     else if (a === '--samples8') out.samples8 = Math.max(5, Number(argv[++i]) || 0);
+    else if (a === '--scrollback-lines') out.scrollbackLines = Math.max(0, Number(argv[++i]) || 0);
+    else if (a === '--webgl-occupancy') out.webglOccupancy = true;
     else if (a === '--skip-cold') out.skipCold = true;
     else if (a === '--skip-input') out.skipInput = true;
     else if (a === '--skip-ram') out.skipRam = true;
@@ -118,7 +138,14 @@ Usage (PowerShell, package first):
 
 Scenarios: coldStart (N isolated boots, warmup discarded), inputLatency
 (key→echo / key→frame in-renderer, 1 pane and 8 panes), ram (process-tree
-working set at idle-1-pane / 8 panes). See bench/README.md.`);
+working set at idle-1-pane / 8 panes). See bench/README.md.
+
+RAM-attribution flags (PR D):
+  --scrollback-lines N   inject scrollback=N into the panes the bench creates
+                         (run twice, e.g. 10000 vs 1000, for a scrollback A/B).
+  --webgl-occupancy      log the 8-pane WebGL canvas count (DOM approximation).
+ram results carry an additive ram.breakdown (per-process-category working set:
+main / renderer / gpu / utility / daemon / conhost / other) — never gated.`);
   process.exit(0);
 }
 if (!fs.existsSync(APP_EXE)) {
@@ -308,6 +335,17 @@ function makeInstance() {
   const userDataDir = path.join(env.APPDATA, `wmux${suffix}`);
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
+  // PR D scrollback A/B: pre-seed session.json so loadSession applies the
+  // scrollbackLines preference BEFORE any terminal mounts (see
+  // buildScrollbackSeedSession for why this beats CDP store-injection). Only
+  // when --scrollback-lines is supplied; otherwise the app boots untouched.
+  if (ARGS.scrollbackLines != null) {
+    fs.writeFileSync(
+      path.join(userDataDir, 'session.json'),
+      JSON.stringify(buildScrollbackSeedSession(ARGS.scrollbackLines)),
+      'utf8',
+    );
+  }
   return {
     seq, suffix, home, env,
     proc: null, cdpPort: null, browser: null, page: null,
@@ -775,7 +813,11 @@ const POWERSHELL_EXE = path.join(
 ); // absolute path — bare 'powershell.exe' is ENOENT under some shells (git-bash PATH)
 function snapshotProcesses() {
   return new Promise((resolve, reject) => {
-    const ps = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,WorkingSetSize,PageFileUsage | ConvertTo-Json -Compress';
+    // PR D: Name + CommandLine are added so measureRam() can attribute the flat
+    // total to per-process categories (the Electron `--type=` flag lives on the
+    // command line). CommandLine is null for processes the bench user can't read
+    // — the classifier tolerates that and buckets them by image name / fallback.
+    const ps = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,WorkingSetSize,PageFileUsage | ConvertTo-Json -Compress';
     execFile(POWERSHELL_EXE, ['-NoProfile', '-NonInteractive', '-Command', ps],
       { maxBuffer: 64 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
         if (err) return reject(err);
@@ -805,18 +847,142 @@ async function measureRam(inst, label) {
   }
   let workingSetBytes = 0;
   let commitBytes = 0;
+  // PR D: collect the normalized per-process rows over the SAME tree the flat
+  // sum walks, so the breakdown reconciles exactly to workingSetBytes below.
+  const treeRows = [];
   for (const pid of seen) {
     const p = byPid.get(pid);
-    workingSetBytes += Number(p.WorkingSetSize) || 0;
-    commitBytes += (Number(p.PageFileUsage) || 0) * 1024; // PageFileUsage is KB
+    const ws = Number(p.WorkingSetSize) || 0;
+    const commit = (Number(p.PageFileUsage) || 0) * 1024; // PageFileUsage is KB
+    workingSetBytes += ws;
+    commitBytes += commit;
+    treeRows.push({
+      pid: p.ProcessId,
+      name: p.Name,
+      commandLine: p.CommandLine,
+      workingSetBytes: ws,
+      commitBytes: commit,
+    });
   }
+  // Additive RAM attribution (PR D). Pure classifier in perf-process-classify
+  // .mjs; never gated (perf-compare.mjs gates only explicit dot-paths).
+  const breakdown = accumulateBreakdown(treeRows, { mainPid: inst.proc.pid, daemonPid });
   let appMetricsRaw = null;
   try {
     appMetricsRaw = await inst.page.evaluate(() =>
       window.electronAPI?.system?.getMemoryUsage ? window.electronAPI.system.getMemoryUsage() : null);
   } catch { /* informational only */ }
   console.log(`[${label}] workingSet=${(workingSetBytes / 1048576).toFixed(1)}MB commit=${(commitBytes / 1048576).toFixed(1)}MB procs=${seen.size}${daemonPid ? '' : ' (daemon pid missing!)'}`);
-  return { workingSetBytes, commitBytes, processCount: seen.size, appMetricsRaw };
+  // Per-category working-set line (MB), only the non-empty buckets.
+  const breakdownLine = RAM_CATEGORIES
+    .filter((c) => breakdown[c].processCount > 0)
+    .map((c) => `${c}=${(breakdown[c].workingSetBytes / 1048576).toFixed(1)}MB×${breakdown[c].processCount}`)
+    .join(' ');
+  console.log(`[${label}] breakdown: ${breakdownLine}`);
+  return { workingSetBytes, commitBytes, processCount: seen.size, breakdown, appMetricsRaw };
+}
+
+// === Scrollback A/B seed (PR D) ===
+//
+// HOW scrollbackLines is persisted (investigation result):
+//   It rides SessionData — written by AppLayout.buildSessionData into
+//   session.json (<userData>/session.json, SessionManager) and read back by
+//   workspaceSlice.loadSession on boot, which sets uiSlice.scrollbackLines
+//   (default 10000). useTerminal then constructs every xterm with
+//   `scrollback: scrollbackLines`. Two product facts shaped the seeding choice:
+//     1. The zustand store is NOT exposed on window, so a post-boot CDP
+//        `setScrollbackLines()` injection has no handle to call (verified —
+//        no window.useStore / __wmuxStore in src/renderer). Driving the
+//        Settings UI by CDP is possible but brittle (i18n labels, DOM shape).
+//     2. loadSession EARLY-RETURNS on an empty `workspaces` array
+//        (`if (!data.workspaces || data.workspaces.length === 0) return;`),
+//        so a preference-only session.json is silently ignored.
+//   => We pre-seed a session.json carrying ONE minimal, schema-valid workspace
+//      (a single leaf pane with one empty-ptyId surface — exactly the shape a
+//      fresh boot self-creates, so Terminal.tsx takes its self-create path and
+//      spawns a real PTY on mount) PLUS scrollbackLines. loadSession applies
+//      the preference BEFORE any terminal mounts, so every measured pane (the
+//      seeded pane and the 7 split children) allocates its CircularBuffer at
+//      the seeded size — a clean, uniform A/B at both idle1Pane and 8 panes.
+//      This is the persisted-location pre-seed the plan asked for; the store
+//      not being on window is why the CDP-inject alternative was rejected.
+//
+// The seed is only written when --scrollback-lines is supplied; otherwise the
+// app boots its normal default-workspace path untouched.
+function buildScrollbackSeedSession(lines) {
+  const id = (prefix) => `${prefix}-${randomUUID()}`;
+  const surfaceId = id('surface');
+  const paneId = id('pane');
+  const wsId = id('ws');
+  return {
+    workspaces: [
+      {
+        id: wsId,
+        name: 'Workspace 1',
+        rootPane: {
+          id: paneId,
+          type: 'leaf',
+          // Empty ptyId → Terminal.tsx self-creates a fresh PTY on mount (the
+          // well-tested path), so this seeded pane behaves like a normal first
+          // pane — no stale-session reconnect, no scrollback file to replay.
+          surfaces: [
+            { id: surfaceId, ptyId: '', title: 'powershell', shell: 'powershell', cwd: '' },
+          ],
+          activeSurfaceId: surfaceId,
+        },
+        activePaneId: paneId,
+      },
+    ],
+    activeWorkspaceId: wsId,
+    sidebarVisible: true,
+    // The field under test.
+    scrollbackLines: lines,
+    // Match the bench's regular-boot assumptions: skip onboarding / first-run
+    // overlays that would otherwise steal the pane-focus click.
+    onboardingCompleted: true,
+    firstRunCompleted: true,
+  };
+}
+
+// === WebGL pool occupancy (PR D) ===
+//
+// webglContextPool is a module-level singleton in
+// src/renderer/terminal/webglContextPool.ts and is intentionally NOT exposed on
+// window. Per PR D we must NOT add a debug window export to product code, so we
+// approximate the live GPU-context count from the DOM: xterm's WebglAddon
+// appends a <canvas> to each accelerated terminal's `.xterm-screen`, whereas the
+// DOM-renderer fallback (panes the pool evicted) has no canvas. We count
+// `.xterm-screen canvas` elements and, defensively, probe each canvas for a live
+// webgl/webgl2 context so a stray 2D canvas can't inflate the number.
+//
+// LIMITATIONS (reported in the JSON + log):
+//   - This is a DOM proxy, not the pool's own grantedCount(). It can diverge
+//     during the 10s deferred-dispose window (a hidden pane still holds a
+//     canvas) or right after an eviction before xterm tears the canvas down.
+//   - It cannot see the pool's LRU ordering or its MAX_WEBGL_CONTEXTS budget
+//     directly; it only observes the realized canvas count, which is the thing
+//     that actually consumes GPU memory — adequate for the occupancy question.
+async function measureWebglOccupancy(page) {
+  return page.evaluate(() => {
+    const screens = [...document.querySelectorAll('.xterm-screen')];
+    const canvases = [...document.querySelectorAll('.xterm-screen canvas')];
+    let liveWebglContexts = 0;
+    for (const c of canvases) {
+      try {
+        // Reuse the existing context if xterm already created one (getContext
+        // returns the same object for the same type); this does NOT allocate a
+        // new context.
+        if (c.getContext('webgl2') || c.getContext('webgl')) liveWebglContexts++;
+      } catch { /* tainted/!canvas — ignore */ }
+    }
+    return {
+      method: 'dom-canvas-approximation',
+      xtermScreens: screens.length,
+      webglCanvases: canvases.length,
+      liveWebglContexts,
+      note: 'DOM proxy for webglContextPool.grantedCount(); pool is not exposed on window (no product debug hook added per PR D). May diverge during the 10s deferred-dispose window.',
+    };
+  });
 }
 
 // === Results ===
@@ -840,7 +1006,15 @@ const RESULTS = {
     totalMemBytes: os.totalmem(),
     osRelease: os.release(),
     nodeVersion: process.version,
-    config: { coldRuns: ARGS.coldRuns, inputSamples: ARGS.samples, inputSamples8: ARGS.samples8 },
+    config: {
+      coldRuns: ARGS.coldRuns,
+      inputSamples: ARGS.samples,
+      inputSamples8: ARGS.samples8,
+      // PR D: which scrollback A/B leg this run is (null = app default 10000,
+      // not seeded). Records the run's identity so two result files can be
+      // diffed unambiguously.
+      scrollbackLines: ARGS.scrollbackLines,
+    },
   },
   scenarios: {},
 };
@@ -885,6 +1059,9 @@ process.on('exit', () => {
 
   console.log(`exe: ${APP_EXE}`);
   console.log(`mode: ${ARGS.mode}  coldRuns=${ARGS.coldRuns} samples=${ARGS.samples} samples8=${ARGS.samples8}`);
+  if (ARGS.scrollbackLines != null) {
+    console.log(`[scrollback A/B] seeding session.json scrollbackLines=${ARGS.scrollbackLines} into every fresh instance (panes mount at this size). idle1Pane and 8-pane RAM reflect it; compare two runs (e.g. 10000 vs 1000).`);
+  }
 
   let lastInst = null;
 
@@ -1095,6 +1272,23 @@ process.on('exit', () => {
     console.log('--- ram: 8 panes (5s settle) ---');
     await sleep(5000);
     RESULTS.scenarios.ram.panes8 = await measureRam(lastInst, 'ram panes8');
+  }
+
+  // ---------- WebGL pool occupancy at 8 panes (PR D) ----------
+  // Always recorded when the 8-pane state exists (additive, near-zero cost);
+  // --webgl-occupancy is the explicit knob for runs that skip RAM. The pool
+  // budget is MAX_WEBGL_CONTEXTS=12, so 8 panes sits below the cap — we expect
+  // up to 8 live canvases here. See measureWebglOccupancy for the DOM-proxy
+  // caveat (it is not the pool's own grantedCount()).
+  if ((!ARGS.skipInput || !ARGS.skipRam) && (ARGS.webglOccupancy || !ARGS.skipRam)) {
+    try {
+      const occ = await measureWebglOccupancy(lastInst.page);
+      RESULTS.scenarios.ram = RESULTS.scenarios.ram ?? {};
+      RESULTS.scenarios.ram.webglOccupancy8 = occ;
+      console.log(`[webgl occupancy 8-pane] screens=${occ.xtermScreens} canvases=${occ.webglCanvases} liveContexts=${occ.liveWebglContexts} (DOM approximation)`);
+    } catch (e) {
+      console.error(`[webgl occupancy] measurement failed (continuing): ${e.message}`);
+    }
   }
 
   // ---------- inputLatency: 8 panes (focused pane) ----------
