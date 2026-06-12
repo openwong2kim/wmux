@@ -412,3 +412,77 @@ html, body, #root {
 .wmux-zoom-hidden {
   display: none !important;
 }
+
+/* ─── Sidebar polish: depth + motion (refined-terminal pass) ────────────────
+ * Depth on the active row comes from token-derived color-mix values, so all
+ * built-in and custom themes work: the gradient/highlight lean toward
+ * --text-main, which flips light/dark direction automatically per theme.
+ * Motion is subtle (~150ms hovers, 2s breathing glow); everything animated
+ * is disabled under prefers-reduced-motion below.
+ * --border-soft is the shared softened-border color for sidebar surfaces. */
+
+:root {
+  --border-soft: color-mix(in srgb, var(--bg-surface) 60%, transparent);
+}
+
+.sidebar-row {
+  transition: background-color 150ms ease, color 150ms ease;
+}
+
+.sidebar-row-active {
+  background: linear-gradient(
+    180deg,
+    color-mix(in srgb, var(--bg-surface) 94%, var(--text-main)),
+    var(--bg-surface)
+  );
+  box-shadow:
+    inset 0 1px 0 color-mix(in srgb, var(--text-main) 7%, transparent),
+    0 1px 3px color-mix(in srgb, var(--bg-base) 60%, transparent);
+}
+
+/* Status dots. Color comes from the inline background (set per status in
+ * the component); these classes add the glow channel. */
+.sidebar-dot {
+  transition: background-color 150ms ease, box-shadow 150ms ease;
+}
+@keyframes sidebar-dot-breathe {
+  0%, 100% { box-shadow: 0 0 4px 0 var(--sidebar-dot-glow, transparent); }
+  50%      { box-shadow: 0 0 7px 1px var(--sidebar-dot-glow, transparent); }
+}
+.sidebar-dot-running {
+  --sidebar-dot-glow: color-mix(in srgb, var(--accent-green) 70%, transparent);
+  animation: sidebar-dot-breathe 2s ease-in-out infinite;
+}
+.sidebar-dot-waiting {
+  --sidebar-dot-glow: color-mix(in srgb, var(--accent-yellow) 70%, transparent);
+  animation: sidebar-dot-breathe 1.2s ease-in-out infinite;
+}
+.sidebar-dot-error {
+  --sidebar-dot-glow: color-mix(in srgb, var(--accent-red) 70%, transparent);
+  box-shadow: 0 0 5px 0 var(--sidebar-dot-glow);
+}
+
+/* New workspace rows ease in; popovers/menus fade-scale in. */
+@keyframes sidebar-row-enter {
+  from { opacity: 0; transform: translateY(-3px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+.sidebar-row-enter { animation: sidebar-row-enter 150ms ease-out; }
+
+@keyframes sidebar-popover-enter {
+  from { opacity: 0; transform: scale(0.98); }
+  to   { opacity: 1; transform: scale(1); }
+}
+.sidebar-popover-enter {
+  animation: sidebar-popover-enter 120ms ease-out;
+  transform-origin: top;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-row, .sidebar-dot { transition: none; }
+  .sidebar-dot-running, .sidebar-dot-waiting {
+    animation: none;
+    box-shadow: 0 0 5px 0 var(--sidebar-dot-glow);
+  }
+  .sidebar-row-enter, .sidebar-popover-enter { animation: none; }
+}

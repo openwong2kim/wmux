@@ -25,20 +25,12 @@ import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
 import { Icon, IconX, IconCheck, IconChevron, IconExternalLink } from '../icons';
+import { FOCUS_RING } from '../focusRing';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type TabId = 'general' | 'appearance' | 'notifications' | 'shortcuts' | 'claude-integration' | 'first-run-setup' | 'about';
 type ShellInfo = { name: string; path: string; args?: string[] };
-
-// ─── Shared focus ring ─────────────────────────────────────────────────────────
-//
-// Keyboard-visible focus indicator. wmux is a keyboard-first developer tool, so
-// every interactive control needs one. Applied via className so it composes with
-// inline color styles. (Audit: 33 buttons, only 3 had focus rings.)
-
-const FOCUS_RING =
-  'focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent-blue)] focus-visible:ring-offset-1 focus-visible:ring-offset-[color:var(--bg-base)]';
 
 // ─── Card primitive ────────────────────────────────────────────────────────────
 //
