@@ -26,22 +26,22 @@ export function Icon({ children, size = 14 }: { children: React.ReactNode; size?
   );
 }
 
-export function IconX() {
-  return <Icon><line x1="3" y1="3" x2="11" y2="11" /><line x1="11" y1="3" x2="3" y2="11" /></Icon>;
+export function IconX({ size = 14 }: { size?: number }) {
+  return <Icon size={size}><line x1="3" y1="3" x2="11" y2="11" /><line x1="11" y1="3" x2="3" y2="11" /></Icon>;
 }
 
-export function IconCheck() {
-  return <Icon><polyline points="2.5,7.4 5.8,10.5 11.5,3.5" /></Icon>;
+export function IconCheck({ size = 14 }: { size?: number }) {
+  return <Icon size={size}><polyline points="2.5,7.4 5.8,10.5 11.5,3.5" /></Icon>;
 }
 
-export function IconChevron() {
+export function IconChevron({ size = 14 }: { size?: number }) {
   // Points right; rotate 90° via transform for an expanded/down state.
-  return <Icon><polyline points="5.5,3 9.5,7 5.5,11" /></Icon>;
+  return <Icon size={size}><polyline points="5.5,3 9.5,7 5.5,11" /></Icon>;
 }
 
-export function IconExternalLink() {
+export function IconExternalLink({ size = 14 }: { size?: number }) {
   return (
-    <Icon>
+    <Icon size={size}>
       <path d="M6 3H3.3v7.7h7.7V8" />
       <polyline points="8.2,2.5 11.5,2.5 11.5,5.8" />
       <line x1="11.5" y1="2.5" x2="6.6" y2="7.4" />

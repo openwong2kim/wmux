@@ -1,8 +1,10 @@
 import { useState, useRef, useEffect } from 'react';
-import type { AgentStatus, PrStatus, Workspace, WorkspaceMetadata } from '../../../shared/types';
+import type { PrStatus, Workspace, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
+import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron } from '../icons';
+import { tokenAttrs } from '../../themes';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { collectTerminalSurfaces } from '../../utils/paneTraversal';
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
@@ -20,20 +22,6 @@ interface WorkspaceItemProps {
   onCopyInfo: () => void;
   onDuplicate: () => void;
   onReorder: (fromIndex: number, toIndex: number) => void;
-}
-
-function AgentStatusDot({ status, agentName }: { status: AgentStatus; agentName?: string }): React.ReactElement {
-  const t = useT();
-  const icon = AGENT_STATUS_ICON[status];
-  const label = t(icon.labelKey);
-  return (
-    <span
-      className={`text-[8px] leading-none flex-shrink-0 ${icon.className} ${status === 'running' ? 'animate-pulse' : ''}`}
-      title={agentName ? `${agentName} — ${label}` : label}
-    >
-      {icon.dot}
-    </span>
-  );
 }
 
 /**
@@ -352,7 +340,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
 
   return (
     <div
-      className="relative mx-2"
+      className="relative mx-2 sidebar-row-enter"
       // Allow the drag cursor to pass through the 8px horizontal margin
       // around each row. Without preventDefault here the OS sees no
       // drop target on the margin and paints a 🚫 cursor the moment
@@ -366,14 +354,15 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
       {/* 드롭 인디케이터 - 위. pointer-events-none so it never participates
           in drag hit-testing (codex P3). */}
       {dropIndicator === 'above' && (
-        <div className="absolute top-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)] rounded-full z-10 -translate-y-px pointer-events-none" />
+        <div className="absolute top-0 left-0 right-0 h-[3px] bg-[var(--accent-blue)] rounded-full z-10 -translate-y-px pointer-events-none sidebar-row-enter" />
       )}
 
       <div
         draggable
-        className={`group flex items-start gap-2 px-3 py-1.5 cursor-pointer rounded-md transition-colors select-none ${
+        {...tokenAttrs('bgSurface', 'bg')}
+        className={`group sidebar-row flex items-start gap-2 px-3 py-1.5 cursor-pointer rounded-md select-none ${
           isActive
-            ? 'bg-[var(--bg-surface)] text-[var(--text-main)]'
+            ? 'sidebar-row-active text-[var(--text-main)]'
             : 'text-[var(--text-subtle)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)] hover:text-[var(--text-sub)]'
         }`}
         style={isMultiview ? { borderLeft: '2px solid var(--accent-blue)' } : undefined}
@@ -387,7 +376,15 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
         onDrop={handleDrop}
       >
         {/* Status indicator */}
-        <div className={`w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${isActive ? 'bg-[var(--accent-green)]' : 'bg-[var(--text-muted)]'}`} />
+        {(() => {
+          const st = metadata?.agentStatus && metadata.agentStatus !== 'idle' ? AGENT_STATUS_ICON[metadata.agentStatus] : null;
+          return (
+            <div
+              className={`sidebar-dot w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${st ? st.glowClass : ''}`}
+              style={{ backgroundColor: st ? st.dotVar : isActive ? 'var(--accent-green)' : 'var(--text-muted)' }}
+            />
+          );
+        })()}
 
         {/* Name + Metadata */}
         <div className="flex-1 min-w-0">
@@ -413,7 +410,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
                     className="text-[8px] leading-none flex-shrink-0 text-[var(--accent-blue)]"
                     title={t('workspaceProfile.title')}
                   >
-                    ⚙
+                    <IconGear size={9} />
                   </span>
                 )}
                 {projectState?.found && (
@@ -438,11 +435,8 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
                       useStore.getState().setProjectDialogWsId(workspace.id);
                     }}
                   >
-                    ⛭
+                    <IconGear size={9} />
                   </button>
-                )}
-                {metadata?.agentStatus && metadata.agentStatus !== 'idle' && (
-                  <AgentStatusDot status={metadata.agentStatus} agentName={metadata.agentName} />
                 )}
                 {unreadCount > 0 && (
                   <span className="bg-[var(--accent-blue)] text-[var(--bg-base)] text-[9px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0">
@@ -455,6 +449,17 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
           )}
         </div>
 
+        {/* Agent status mark (play/pause), right-aligned. */}
+        {(() => {
+          const st = metadata?.agentStatus ? AGENT_STATUS_ICON[metadata.agentStatus] : null;
+          if (!st?.mark) return null;
+          return (
+            <span className={`flex-shrink-0 mt-1 ${st.className}`} title={t(st.labelKey)}>
+              {st.mark === 'play' ? <IconPlay size={9} /> : <IconPause size={9} />}
+            </span>
+          );
+        })()}
+
         {/* Shortcut hint */}
         <span className="text-[8px] font-mono text-[var(--text-muted)] flex-shrink-0 mt-0.5">
           {index < 9 ? `^${index + 1}` : ''}
@@ -462,11 +467,11 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
 
         {/* Copy session info button */}
         <button
-          className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity"
+          className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity duration-150"
           onClick={(e) => { e.stopPropagation(); onCopyInfo(); }}
           title={t('workspace.copyInfo')}
         >
-          ⧉
+          <IconCopy size={11} />
         </button>
 
         {/* Close button — asks for confirmation first (anti-misclick). */}
@@ -475,21 +480,21 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
           onClick={(e) => { e.stopPropagation(); setMenuPos(null); setCloseConfirmPos({ x: e.clientX, y: e.clientY }); }}
           title={t('workspace.close')}
         >
-          ✕
+          <IconX size={11} />
         </button>
       </div>
 
       {/* 드롭 인디케이터 - 아래. pointer-events-none so it never participates
           in drag hit-testing (codex P3). */}
       {dropIndicator === 'below' && (
-        <div className="absolute bottom-0 left-0 right-0 h-0.5 bg-[var(--accent-blue)] rounded-full z-10 translate-y-px pointer-events-none" />
+        <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-[var(--accent-blue)] rounded-full z-10 translate-y-px pointer-events-none sidebar-row-enter" />
       )}
 
       {/* Right-click context menu */}
       {menuPos && (
         <div
-          className="fixed z-[9999] w-max flex flex-col py-1 rounded-md shadow-xl"
-          style={{ left: menuPos.x, top: menuPos.y, background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
+          className="fixed z-[9999] w-max flex flex-col py-1 rounded-lg shadow-xl sidebar-popover-enter"
+          style={{ left: menuPos.x, top: menuPos.y, background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
           onMouseDown={(e) => e.stopPropagation()}
         >
           <button
@@ -526,12 +531,12 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
               style={{ color: 'var(--text-main)' }}
             >
               <span>{t('workspace.workingDirs')}</span>
-              <span className="text-[var(--text-muted)]">▸</span>
+              <span className="text-[var(--text-muted)]"><IconChevron /></span>
             </button>
             {wdOpen && (
               <div
-                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[240px] max-w-[420px] py-1 rounded-md shadow-xl`}
-                style={{ background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
+                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[240px] max-w-[420px] py-1 rounded-lg shadow-xl sidebar-popover-enter`}
+                style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
               >
                 {(() => {
                   const terminals = collectTerminalSurfaces(workspace.rootPane);
@@ -560,7 +565,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
                               .catch(() => { /* clipboard denied — silent, non-critical */ });
                           }}
                         >
-                          ⧉
+                          <IconCopy size={11} />
                         </button>
                       </div>
                     );
@@ -575,8 +580,8 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
       {/* Close-workspace confirmation (anti-misclick). */}
       {closeConfirmPos && (
         <div
-          className="fixed z-[9999] w-[220px] py-2 rounded-md shadow-xl"
-          style={{ left: Math.min(closeConfirmPos.x, window.innerWidth - 232), top: closeConfirmPos.y, background: 'var(--bg-surface)', border: '1px solid var(--bg-overlay)' }}
+          className="fixed z-[9999] w-[220px] py-2 rounded-lg shadow-xl sidebar-popover-enter"
+          style={{ left: Math.min(closeConfirmPos.x, window.innerWidth - 232), top: closeConfirmPos.y, background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
           onMouseDown={(e) => e.stopPropagation()}
         >
           <div className="px-3 pb-1 text-xs text-[var(--text-main)]">
