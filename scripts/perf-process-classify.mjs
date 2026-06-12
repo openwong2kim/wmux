@@ -23,9 +23,12 @@
  *   daemon   — the detached wmux daemon (runs the bundled daemon entry; NOT an
  *              Electron child of the main exe, identified by its pid file).
  *   conhost  — ConPTY's conhost.exe instances backing each shell (one per PTY).
- *   other    — anything in the tree we could not confidently bucket (e.g. the
- *              user's shells themselves, or a crashpad handler). Kept explicit
- *              so the breakdown always reconciles to the flat total.
+ *   other    — user shells plus any unclassified Chromium child types. The
+ *              utility bucket only matches the --type= roles we enumerate
+ *              (utility/network/audio/storage/broker); other Chromium child
+ *              types (e.g. zygote, crashpad-handler) land here, as do the
+ *              user's own shells. Kept explicit so the breakdown always
+ *              reconciles to the flat total.
  */
 export const RAM_CATEGORIES = [
   'main',
@@ -107,8 +110,36 @@ export function classifyProcess(row, opts = {}) {
   //    typeless electron.exe as main too.
   if (name === 'electron.exe' && !type) return 'main';
 
-  // 6. Everything else in the tree (user shells, crashpad, etc.).
+  // 6. Everything else in the tree: user shells plus any Chromium child type
+  //    we don't enumerate in step 3 (e.g. zygote, crashpad-handler).
   return 'other';
+}
+
+/**
+ * True when a row is a wmux.exe child whose CommandLine CIM could not read
+ * (null/empty) AND whose identity isn't otherwise pinned by pid. Such a row
+ * carries no `--type=` token, so extractChromiumType returns null and
+ * classifyProcess silently folds it into the `main` bucket — even though it may
+ * really be a renderer/gpu/utility child. We can't fix the attribution without
+ * the command line, but we CAN surface how often it happens so a skewed
+ * breakdown is never silent.
+ *
+ * Excluded on purpose: (a) a typeless wmux.exe WITH a real command line is a
+ * genuine main process, and (b) the daemon shares the wmux.exe image and also
+ * has a null/typeless command line, but it is bucketed authoritatively by its
+ * pid-file match — so a null command line there is expected, not a skew risk.
+ */
+function isUnreadableWmuxCommandLine(row, opts = {}) {
+  const name = String(row?.name ?? '').toLowerCase();
+  const { pid, mainPid, daemonPid } = opts;
+  // The daemon is pinned by pid; its null command line never skews `main`.
+  if (daemonPid != null && pid != null && pid === daemonPid) return false;
+  const isWmuxImage = name.includes('wmux') || (mainPid != null && pid === mainPid);
+  if (!isWmuxImage) return false;
+  const commandLine = row?.commandLine;
+  // CIM returns null (or, defensively, an empty string) when the bench user
+  // lacks read access to the target process's command line.
+  return commandLine == null || String(commandLine).trim() === '';
 }
 
 /**
@@ -117,6 +148,13 @@ export function classifyProcess(row, opts = {}) {
  * present in the output (zeroed when empty) so the JSON shape stays stable
  * across runs. The summed totals reconcile exactly to the flat working-set /
  * commit the bench already reports.
+ *
+ * The result also carries an additive `commandLineNullCount`: the number of
+ * wmux.exe rows whose CommandLine was unreadable. These rows fall back into the
+ * `main` bucket for lack of a `--type=` token, so a non-zero count means the
+ * main attribution may be inflated by hidden renderer/gpu/utility children. The
+ * field sits alongside the category keys (which stay the canonical
+ * RAM_CATEGORIES set) and does NOT participate in the bucket-sum invariant.
  *
  * @param {Array<{pid:number,name:string,commandLine:string,
  *                workingSetBytes:number,commitBytes:number}>} rows
@@ -127,6 +165,7 @@ export function accumulateBreakdown(rows, opts = {}) {
   for (const cat of RAM_CATEGORIES) {
     out[cat] = { workingSetBytes: 0, commitBytes: 0, processCount: 0 };
   }
+  let commandLineNullCount = 0;
   for (const row of rows) {
     const cat = classifyProcess(
       { name: row.name, commandLine: row.commandLine },
@@ -135,6 +174,10 @@ export function accumulateBreakdown(rows, opts = {}) {
     out[cat].workingSetBytes += Number(row.workingSetBytes) || 0;
     out[cat].commitBytes += Number(row.commitBytes) || 0;
     out[cat].processCount += 1;
+    if (isUnreadableWmuxCommandLine(row, { pid: row.pid, mainPid: opts.mainPid, daemonPid: opts.daemonPid })) {
+      commandLineNullCount += 1;
+    }
   }
+  out.commandLineNullCount = commandLineNullCount;
   return out;
 }

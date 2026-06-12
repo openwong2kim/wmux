@@ -142,3 +142,75 @@ describe('accumulateBreakdown — folding rows into category totals', () => {
     expect(sumCommit).toBe(flatCommit);
   });
 });
+
+describe('accumulateBreakdown — commandLineNullCount (P2-1 skew signal)', () => {
+  // All command lines readable: main + two renderers + a conhost.
+  const readableRows = [
+    { pid: 1000, name: 'wmux.exe', commandLine: MAIN_CMD, workingSetBytes: 100, commitBytes: 50 },
+    { pid: 1001, name: 'wmux.exe', commandLine: RENDERER_CMD, workingSetBytes: 200, commitBytes: 80 },
+    { pid: 1002, name: 'wmux.exe', commandLine: RENDERER_CMD, workingSetBytes: 210, commitBytes: 90 },
+    { pid: 5000, name: 'conhost.exe', commandLine: null, workingSetBytes: 25, commitBytes: 10 },
+  ];
+
+  it('exposes the field as 0 for an all-readable tree', () => {
+    const b = accumulateBreakdown(readableRows, { mainPid: 1000, daemonPid: 4242 });
+    expect(b.commandLineNullCount).toBe(0);
+  });
+
+  it('exposes the field as 0 on an empty tree (stable JSON shape)', () => {
+    expect(accumulateBreakdown([], {}).commandLineNullCount).toBe(0);
+  });
+
+  it('counts a typeless wmux.exe child whose CommandLine CIM could not read', () => {
+    // CIM null CommandLine → no --type token → silently folded into `main`.
+    // The count surfaces that the main attribution may be inflated.
+    const skewed = [
+      { pid: 1000, name: 'wmux.exe', commandLine: MAIN_CMD, workingSetBytes: 100, commitBytes: 50 },
+      { pid: 2000, name: 'wmux.exe', commandLine: null, workingSetBytes: 180, commitBytes: 70 },
+      { pid: 2001, name: 'wmux.exe', commandLine: undefined, workingSetBytes: 150, commitBytes: 60 },
+      { pid: 2002, name: 'wmux.exe', commandLine: '   ', workingSetBytes: 90, commitBytes: 40 },
+    ];
+    const b = accumulateBreakdown(skewed, { mainPid: 1000 });
+    // All three unreadable rows fall into `main` alongside the genuine main.
+    expect(b.main.processCount).toBe(4);
+    expect(b.commandLineNullCount).toBe(3);
+  });
+
+  it('does NOT count the daemon — its null command line is pinned by pid', () => {
+    // The daemon shares the wmux.exe image with a null/typeless command line,
+    // but it is bucketed authoritatively by pid, so it is not a skew risk.
+    const withDaemon = [
+      { pid: 1000, name: 'wmux.exe', commandLine: MAIN_CMD, workingSetBytes: 100, commitBytes: 50 },
+      { pid: 4242, name: 'wmux.exe', commandLine: null, workingSetBytes: 60, commitBytes: 30 },
+    ];
+    const b = accumulateBreakdown(withDaemon, { mainPid: 1000, daemonPid: 4242 });
+    expect(b.daemon.processCount).toBe(1);
+    expect(b.commandLineNullCount).toBe(0);
+  });
+
+  it('does NOT count a non-wmux process with a null command line', () => {
+    // A null command line on conhost/crashpad is bucketed by name, not skew.
+    const b = accumulateBreakdown(
+      [{ pid: 5000, name: 'conhost.exe', commandLine: null, workingSetBytes: 25, commitBytes: 10 }],
+      {},
+    );
+    expect(b.commandLineNullCount).toBe(0);
+  });
+
+  it('keeps the bucket-sum invariant intact even with the additive count present', () => {
+    // commandLineNullCount must not participate in the working-set/commit sums.
+    const skewed = [
+      { pid: 1000, name: 'wmux.exe', commandLine: MAIN_CMD, workingSetBytes: 100, commitBytes: 50 },
+      { pid: 2000, name: 'wmux.exe', commandLine: null, workingSetBytes: 180, commitBytes: 70 },
+      { pid: 5000, name: 'conhost.exe', commandLine: null, workingSetBytes: 25, commitBytes: 10 },
+    ];
+    const b = accumulateBreakdown(skewed, { mainPid: 1000 });
+    const flatWs = skewed.reduce((a, r) => a + r.workingSetBytes, 0);
+    const flatCommit = skewed.reduce((a, r) => a + r.commitBytes, 0);
+    const sumWs = RAM_CATEGORIES.reduce((a, c) => a + b[c].workingSetBytes, 0);
+    const sumCommit = RAM_CATEGORIES.reduce((a, c) => a + b[c].commitBytes, 0);
+    expect(sumWs).toBe(flatWs);
+    expect(sumCommit).toBe(flatCommit);
+    expect(b.commandLineNullCount).toBe(1);
+  });
+});

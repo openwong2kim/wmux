@@ -45,8 +45,9 @@ pre-announce targets."*
   per-process categories: `main` (Electron browser process), `renderer` (React
   UI + every xterm), `gpu` (WebGL contexts), `utility` (network/audio/storage
   services), `daemon` (the detached wmux daemon, matched by its pid file),
-  `conhost` (ConPTY hosts, one per shell), and `other` (user shells, crashpad,
-  …). Processes are bucketed from the Electron `--type=` command-line flag plus
+  `conhost` (ConPTY hosts, one per shell), and `other` (user shells +
+  unclassified Chromium child types such as zygote, crashpad-handler, …).
+  Processes are bucketed from the Electron `--type=` command-line flag plus
   image-name heuristics (pure classifier in `scripts/perf-process-classify.mjs`,
   unit-tested in `scripts/__tests__/perfProcessClassify.test.mjs`). Each bucket
   carries `{workingSetBytes, commitBytes, processCount}` and the buckets

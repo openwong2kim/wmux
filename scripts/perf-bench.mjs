@@ -879,6 +879,12 @@ async function measureRam(inst, label) {
     .map((c) => `${c}=${(breakdown[c].workingSetBytes / 1048576).toFixed(1)}MB×${breakdown[c].processCount}`)
     .join(' ');
   console.log(`[${label}] breakdown: ${breakdownLine}`);
+  // PR D review P2-1: a wmux.exe child whose CommandLine CIM could not read
+  // carries no --type= token and silently falls into the `main` bucket. Surface
+  // it so a skewed attribution is never silent (additive count is in the JSON).
+  if (breakdown.commandLineNullCount > 0) {
+    console.error(`[${label}] attribution may be skewed: ${breakdown.commandLineNullCount} wmux processes had unreadable CommandLine`);
+  }
   return { workingSetBytes, commitBytes, processCount: seen.size, breakdown, appMetricsRaw };
 }
 
@@ -970,8 +976,11 @@ async function measureWebglOccupancy(page) {
     for (const c of canvases) {
       try {
         // Reuse the existing context if xterm already created one (getContext
-        // returns the same object for the same type); this does NOT allocate a
-        // new context.
+        // returns the same object for the same type). On a canvas that already
+        // has a live context this does NOT allocate a new one; on a canvas
+        // whose context was just lost, getContext CAN re-allocate. We run this
+        // probe in a steady state (after panes settle), so in practice it only
+        // observes contexts xterm already holds and does not perturb the count.
         if (c.getContext('webgl2') || c.getContext('webgl')) liveWebglContexts++;
       } catch { /* tainted/!canvas — ignore */ }
     }
