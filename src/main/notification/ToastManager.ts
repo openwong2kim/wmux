@@ -37,16 +37,18 @@ export class ToastManager {
     });
 
     notification.on('click', () => {
-      // Bring app to front when toast is clicked
+      // Bring app to front when toast is clicked. Windows Action Center
+      // keeps toasts clickable long after they fire — the window may be
+      // gone or mid-teardown by now, so guard isDestroyed before touching it.
       const win = BrowserWindow.getAllWindows()[0];
-      if (win) {
+      if (win && !win.isDestroyed()) {
         if (win.isMinimized()) win.restore();
         win.focus();
         // X2 — pane jump. Sent after focus so the renderer applies the
         // workspace/pane switch on an already-foregrounded window. The
         // context is captured at show() time; by click time the PTY may be
         // gone — the renderer treats unresolvable ids as a silent no-op.
-        if (context && (context.ptyId || context.workspaceId)) {
+        if (context && (context.ptyId || context.workspaceId) && !win.webContents.isDestroyed()) {
           win.webContents.send(IPC.NOTIFICATION_FOCUS, {
             ptyId: context.ptyId ?? null,
             workspaceId: context.workspaceId ?? null,

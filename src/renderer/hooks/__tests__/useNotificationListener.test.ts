@@ -455,6 +455,7 @@ describe('focusNotificationTarget', () => {
       setActiveWorkspace: ReturnType<typeof vi.fn>;
       setActivePane: ReturnType<typeof vi.fn>;
       setActiveSurface: ReturnType<typeof vi.fn>;
+      togglePaneZoom: ReturnType<typeof vi.fn>;
       markRead: ReturnType<typeof vi.fn>;
       setPaneNotificationRing: ReturnType<typeof vi.fn>;
     };
@@ -465,17 +466,20 @@ describe('focusNotificationTarget', () => {
     workspaces: Workspace[];
     activeWorkspaceId: string;
     notifications?: Array<{ id: string; read: boolean; surfaceId?: string }>;
+    zoomedPaneId?: string | null;
   }): JumpHarness {
     const spies = {
       setActiveWorkspace: vi.fn(),
       setActivePane: vi.fn(),
       setActiveSurface: vi.fn(),
+      togglePaneZoom: vi.fn(),
       markRead: vi.fn(),
       setPaneNotificationRing: vi.fn(),
     };
     const state: FocusTargetState = {
       workspaces: opts.workspaces,
       activeWorkspaceId: opts.activeWorkspaceId,
+      zoomedPaneId: opts.zoomedPaneId ?? null,
       notifications: opts.notifications ?? [],
       ...spies,
     };
@@ -580,5 +584,25 @@ describe('focusNotificationTarget', () => {
   it('J9: empty payload (both ids null) → no-op, returns false', () => {
     const h = makeJumpHarness({ workspaces: [wsA()], activeWorkspaceId: 'ws-a' });
     expect(focusNotificationTarget(h.getState, { ptyId: null, workspaceId: null })).toBe(false);
+  });
+
+  it('J10: jump to a pane hidden behind a zoomed sibling clears the zoom (#182 coherence)', () => {
+    const h = makeJumpHarness({
+      workspaces: [wsA()],
+      activeWorkspaceId: 'ws-a',
+      zoomedPaneId: 'pane-zoomed-sibling',
+    });
+    focusNotificationTarget(h.getState, { ptyId: 'pty-a', workspaceId: null });
+    expect(h.spies.togglePaneZoom).toHaveBeenCalledWith('pane-zoomed-sibling');
+  });
+
+  it('J11: jump to the zoomed pane itself keeps the zoom', () => {
+    const h = makeJumpHarness({
+      workspaces: [wsA()],
+      activeWorkspaceId: 'ws-a',
+      zoomedPaneId: 'pane-a',
+    });
+    focusNotificationTarget(h.getState, { ptyId: 'pty-a', workspaceId: null });
+    expect(h.spies.togglePaneZoom).not.toHaveBeenCalled();
   });
 });

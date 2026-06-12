@@ -36,9 +36,10 @@ const electronMocks = vi.hoisted(() => {
     on,
     removeListener,
     isMinimized: vi.fn().mockReturnValue(false),
+    isDestroyed: vi.fn().mockReturnValue(false),
     restore: vi.fn(),
     focus: vi.fn(),
-    webContents: { send: vi.fn() },
+    webContents: { send: vi.fn(), isDestroyed: vi.fn().mockReturnValue(false) },
   };
 
   const BrowserWindow = {
@@ -79,6 +80,9 @@ describe('ToastManager (OS-aware notifications)', () => {
     electronMocks.BrowserWindow.getFocusedWindow.mockReturnValue(null);
     electronMocks.BrowserWindow.getAllWindows.mockReturnValue([electronMocks.win]);
     electronMocks.NotificationMock.isSupported.mockReturnValue(true);
+    electronMocks.win.isMinimized.mockReturnValue(false);
+    electronMocks.win.isDestroyed.mockReturnValue(false);
+    electronMocks.win.webContents.isDestroyed.mockReturnValue(false);
   });
 
   afterEach(() => {
@@ -155,6 +159,24 @@ describe('ToastManager (OS-aware notifications)', () => {
       const { ToastManager } = await import('../ToastManager');
       new ToastManager().show('t', 'b', { ptyId: null, workspaceId: undefined });
       clickToast();
+      expect(electronMocks.win.webContents.send).not.toHaveBeenCalled();
+    });
+
+    it('does nothing when the window was destroyed before the click (Action Center late click)', async () => {
+      electronMocks.win.isDestroyed.mockReturnValue(true);
+      const { ToastManager } = await import('../ToastManager');
+      new ToastManager().show('t', 'b', { ptyId: 'pty-1' });
+      clickToast();
+      expect(electronMocks.win.focus).not.toHaveBeenCalled();
+      expect(electronMocks.win.webContents.send).not.toHaveBeenCalled();
+    });
+
+    it('skips the IPC send (but still focuses) when only webContents is destroyed', async () => {
+      electronMocks.win.webContents.isDestroyed.mockReturnValue(true);
+      const { ToastManager } = await import('../ToastManager');
+      new ToastManager().show('t', 'b', { ptyId: 'pty-1' });
+      clickToast();
+      expect(electronMocks.win.focus).toHaveBeenCalled();
       expect(electronMocks.win.webContents.send).not.toHaveBeenCalled();
     });
 

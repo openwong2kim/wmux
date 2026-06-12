@@ -70,9 +70,11 @@ export function resolveNotificationTarget(
 export interface FocusTargetState {
   workspaces: Workspace[];
   activeWorkspaceId: string;
+  zoomedPaneId: string | null;
   setActiveWorkspace: (id: string) => void;
   setActivePane: (paneId: string) => void;
   setActiveSurface: (paneId: string, surfaceId: string, workspaceId?: string) => void;
+  togglePaneZoom: (paneId: string) => void;
   notifications: Array<{ id: string; read: boolean; surfaceId?: string }>;
   markRead: (id: string) => void;
   setPaneNotificationRing: (paneId: string, ring: 'flash' | 'glow' | null) => void;
@@ -85,10 +87,18 @@ export interface FocusTargetState {
  * toasts (activates the workspace only). Unresolvable ids — the PTY may
  * have closed between toast and click — are a silent no-op.
  *
- * Read/ring semantics mirror Pane's click handler: notifications for the
- * target surface are marked read, and the attention ring is cleared only
- * when something was actually marked (a no-unread jump must not wipe a
- * fresh flash that belongs to a notification the user hasn't seen).
+ * Read/ring semantics: unread notifications for the TARGET surface (not the
+ * whole pane — narrower than Pane's click handler, which clears every tab)
+ * are marked read, and the attention ring is cleared only when something was
+ * actually marked (a no-unread jump must not wipe a fresh flash that belongs
+ * to a notification the user hasn't seen). On a cross-workspace jump the
+ * real setActiveWorkspace already marks the whole workspace read and wipes
+ * its rings, so this loop only adds behavior for same-workspace jumps.
+ *
+ * Zoom coherence: a zoomed sibling hides every other leaf via
+ * display:none (#182), so jumping to a pane outside the zoomed one would
+ * land focus on an invisible pane. Same rule split/close apply — clear the
+ * zoom unless the jump target IS the zoomed pane.
  *
  * Returns true when any activation happened (test observability).
  */
@@ -109,6 +119,11 @@ export function focusNotificationTarget(
       const fresh = getState();
       fresh.setActivePane(found.paneId);
       fresh.setActiveSurface(found.paneId, found.surfaceId, ws.id);
+      if (fresh.zoomedPaneId !== null && fresh.zoomedPaneId !== found.paneId) {
+        // Toggle on the currently-zoomed id == clear (togglePaneZoom is the
+        // only zoom mutator the store exposes).
+        fresh.togglePaneZoom(fresh.zoomedPaneId);
+      }
       let markedAny = false;
       for (const n of fresh.notifications) {
         if (!n.read && n.surfaceId !== undefined && n.surfaceId === found.surfaceId) {

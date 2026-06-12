@@ -542,10 +542,24 @@ export async function handleSetupHooks(args: string[], jsonMode: boolean): Promi
     return;
   }
 
+  // Reject unknown arguments rather than silently falling through to a full
+  // install — a typo like `--remov` must not WRITE hooks the user was trying
+  // to delete.
+  const unknown = args.filter((a) => a !== '--remove' && a !== '--status');
+  if (unknown.length > 0) {
+    console.error(`Unknown argument(s): ${unknown.join(', ')}. Run 'wmux setup-hooks --help' for usage.`);
+    process.exit(1);
+    return;
+  }
+
   const paths = defaultPaths();
 
   if (status) {
-    printStatus(statusHooks(paths), jsonMode);
+    const outcome = statusHooks(paths);
+    printStatus(outcome, jsonMode);
+    // Scripted `wmux setup-hooks --status && …` must be able to gate on a
+    // corrupted settings.json.
+    if (outcome.settingsCorrupted) process.exit(1);
     return;
   }
 
