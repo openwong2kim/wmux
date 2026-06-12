@@ -24,62 +24,12 @@ import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
+import { Icon, IconX, IconCheck, IconChevron, IconExternalLink } from '../icons';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
 type TabId = 'general' | 'appearance' | 'notifications' | 'shortcuts' | 'claude-integration' | 'first-run-setup' | 'about';
 type ShellInfo = { name: string; path: string; args?: string[] };
-
-// ─── Icon components ──────────────────────────────────────────────────────────
-//
-// One stroke-based line-icon system. All icons share a 14×14 viewBox,
-// `stroke="currentColor"` (so they inherit the caller's text color, including
-// active/inactive tab coloring), strokeWidth 1.3, and round caps/joins. This
-// replaces the Unicode glyphs (⚙◑◎⌨◈◇ℹ✓✗▾▸↺✕⎋) that rendered at mismatched
-// sizes and weights across platforms (issue #145).
-
-/** Shared svg wrapper — keeps every icon on the same grid + style. */
-function Icon({ children, size = 14 }: { children: React.ReactNode; size?: number }) {
-  return (
-    <svg
-      width={size}
-      height={size}
-      viewBox="0 0 14 14"
-      fill="none"
-      stroke="currentColor"
-      strokeWidth="1.3"
-      strokeLinecap="round"
-      strokeLinejoin="round"
-      xmlns="http://www.w3.org/2000/svg"
-      aria-hidden="true"
-    >
-      {children}
-    </svg>
-  );
-}
-
-function IconX() {
-  return <Icon><line x1="3" y1="3" x2="11" y2="11" /><line x1="11" y1="3" x2="3" y2="11" /></Icon>;
-}
-
-function IconCheck() {
-  return <Icon><polyline points="2.5,7.4 5.8,10.5 11.5,3.5" /></Icon>;
-}
-
-function IconChevron() {
-  // Points right; rotate 90° via transform for an expanded/down state.
-  return <Icon><polyline points="5.5,3 9.5,7 5.5,11" /></Icon>;
-}
-
-function IconExternalLink() {
-  return (
-    <Icon>
-      <path d="M6 3H3.3v7.7h7.7V8" />
-      <polyline points="8.2,2.5 11.5,2.5 11.5,5.8" />
-      <line x1="11.5" y1="2.5" x2="6.6" y2="7.4" />
-    </Icon>
-  );
-}
 
 // ─── Shared focus ring ─────────────────────────────────────────────────────────
 //
