@@ -121,6 +121,12 @@ const electronAPI = {
       ipcRenderer.on(IPC.GIT_BRANCH_CHANGED, listener);
       return () => { ipcRenderer.removeListener(IPC.GIT_BRANCH_CHANGED, listener); };
     },
+    onTitleChanged: (callback: (ptyId: string, title: string) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, ptyId: string, title: string) =>
+        callback(ptyId, title);
+      ipcRenderer.on(IPC.TERMINAL_TITLE_CHANGED, listener);
+      return () => { ipcRenderer.removeListener(IPC.TERMINAL_TITLE_CHANGED, listener); };
+    },
   },
   metadata: {
     request: (ptyId: string) =>
