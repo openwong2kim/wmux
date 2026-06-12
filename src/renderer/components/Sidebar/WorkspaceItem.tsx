@@ -470,6 +470,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
           className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-blue)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity duration-150"
           onClick={(e) => { e.stopPropagation(); onCopyInfo(); }}
           title={t('workspace.copyInfo')}
+          aria-label={t('workspace.copyInfo')}
         >
           <IconCopy size={11} />
         </button>
@@ -479,6 +480,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
           className="opacity-0 group-hover:opacity-100 text-[var(--text-subtle)] hover:text-[var(--accent-red)] text-[10px] font-mono flex-shrink-0 mt-0.5 transition-opacity"
           onClick={(e) => { e.stopPropagation(); setMenuPos(null); setCloseConfirmPos({ x: e.clientX, y: e.clientY }); }}
           title={t('workspace.close')}
+          aria-label={t('workspace.close')}
         >
           <IconX size={11} />
         </button>
@@ -558,6 +560,7 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
                           className="text-[var(--text-subtle)] hover:text-[var(--accent-blue)] shrink-0 transition-colors disabled:opacity-30 disabled:hover:text-[var(--text-subtle)]"
                           disabled={!s.cwd}
                           title={t('workspace.copyPath')}
+                          aria-label={t('workspace.copyPath')}
                           onClick={() => {
                             setMenuPos(null);
                             window.clipboardAPI.writeText(s.cwd)

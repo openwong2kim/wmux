@@ -93,6 +93,7 @@ export default function Sidebar() {
             className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-subtle)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
             onClick={togglePicker}
             title={t('sidebar.newWorkspaceTooltip')}
+            aria-label={t('sidebar.newWorkspaceTooltip')}
             data-onboarding-target="add-workspace"
             {...tokenAttrs('textSub', 'text')}
             {...tokenAttrs('success', 'accent')}

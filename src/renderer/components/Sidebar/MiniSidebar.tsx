@@ -35,6 +35,7 @@ export default function MiniSidebar() {
         style={{ borderColor: 'var(--border-soft)' }}
         onClick={() => addWorkspace()}
         title={t('sidebar.newWorkspaceTooltip')}
+        aria-label={t('sidebar.newWorkspaceTooltip')}
         data-onboarding-target="add-workspace"
         {...tokenAttrs('textSub', 'text')}
         {...tokenAttrs('success', 'accent')}
@@ -177,6 +178,7 @@ export default function MiniSidebar() {
           className={`w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 font-mono text-[11px] ${FOCUS_RING}`}
           onClick={toggleSidebar}
           title={t('sidebar.expandTooltip')}
+          aria-label={t('sidebar.expandTooltip')}
         >
           <IconChevronDir dir={expandDirection(sidebarPosition)} />
         </button>

@@ -85,7 +85,8 @@ Plain CSS only (transitions + keyframes) — no animation library:
 - Hover/active state changes ease over ~150ms.
 - Running-agent dot glow pulses on a ~2s breathing cycle.
 - Waiting-for-input dot pulses slightly faster to draw the eye.
-- New workspace rows fade+slide in; removed rows fade out.
+- New workspace rows fade+slide in. (Row-removal fade-out is deferred — exit
+  animations are omitted in the implementation plan.)
 - All animation is disabled under `prefers-reduced-motion: reduce` via a
   single media-query gate.
 
