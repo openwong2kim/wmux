@@ -42,6 +42,7 @@ import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
 import { sendNotification } from '../../notification/sendNotification';
+import { broadcastMetadataUpdate } from '../../ipc/handlers/metadata.handler';
 import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
 import { eventBus } from '../../events/EventBus';
@@ -176,7 +177,9 @@ export function registerHooksRpc(
     //    P2 #6) because a no-emit ledger entry would silently block
     //    a same-kind detector emission for 10s with no benefit. Only
     //    emit-class kinds participate in dedup.
-    const isEmitKind = signal.kind === 'agent.stop' || signal.kind === 'agent.subagent_stop';
+    const isEmitKind = signal.kind === 'agent.stop'
+      || signal.kind === 'agent.subagent_stop'
+      || signal.kind === 'agent.awaiting_input';
     if (!isEmitKind) {
       return { ok: true };
     }
@@ -233,6 +236,12 @@ export function registerHooksRpc(
         title: titleFor(signal),
         body: bodyFor(signal),
       });
+      // Hook path (unlike the detector path in DaemonNotificationRouter) does
+      // not otherwise touch agentStatus. For awaiting_input, set it so the
+      // sidebar dot turns yellow — the part users see at a glance.
+      if (signal.kind === 'agent.awaiting_input') {
+        broadcastMetadataUpdate(win, { ptyId, agentStatus: 'awaiting_input' });
+      }
     }
     return { ok: true };
   });

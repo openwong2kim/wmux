@@ -10,9 +10,10 @@ import { eventBus } from '../../../events/EventBus';
 import type { HookSignalRouter } from '../../../hooks/HookSignalRouter';
 import type { AgentSignal } from '../../../../../integrations/shared/signal-types';
 
-const { sendToRendererMock, sendNotificationMock } = vi.hoisted(() => ({
+const { sendToRendererMock, sendNotificationMock, broadcastMetadataUpdateMock } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
   sendNotificationMock: vi.fn(),
+  broadcastMetadataUpdateMock: vi.fn(),
 }));
 
 vi.mock('../_bridge', () => ({
@@ -21,6 +22,10 @@ vi.mock('../_bridge', () => ({
 
 vi.mock('../../../notification/sendNotification', () => ({
   sendNotification: sendNotificationMock,
+}));
+
+vi.mock('../../../ipc/handlers/metadata.handler', () => ({
+  broadcastMetadataUpdate: broadcastMetadataUpdateMock,
 }));
 
 // Static import — vi.mock declarations are hoisted, so the module-under-test
@@ -128,6 +133,31 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
     });
     // Regression: sendNotification still fires when decision=emit.
     expect(sendNotificationMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('emits and lights the sidebar dot for agent.awaiting_input', async () => {
+    const stub = stubHookRouter();
+    stub.setDecision('emit');
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    const res = await router.dispatch({
+      id: '8',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.awaiting_input' }) as unknown as Record<string, unknown>,
+    });
+
+    expect(res.ok).toBe(true);
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0].kind).toBe('agent.awaiting_input');
+    // Sound/toast fires…
+    expect(sendNotificationMock).toHaveBeenCalledTimes(1);
+    // …and the sidebar dot is set to awaiting_input for the resolved pty.
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ ptyId: 'pty-1', agentStatus: 'awaiting_input' }),
+    );
   });
 
   it('emits agent.lifecycle on dedup decision but skips sendNotification', async () => {
