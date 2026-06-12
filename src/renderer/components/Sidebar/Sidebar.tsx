@@ -6,7 +6,8 @@ import type { Pane } from '../../../shared/types';
 import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
-import { collapseGlyph } from './sidebarGlyphs';
+import { collapseDirection } from './sidebarGlyphs';
+import { IconPlus, IconChevronDir } from '../icons';
 import PluginPanels from '../../plugins/PluginPanels';
 
 // Pane 트리에서 모든 leaf의 PTY를 dispose
@@ -69,9 +70,13 @@ export default function Sidebar() {
   };
 
   return (
-    <div className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 240 }} {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}>
+    <div
+      className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`}
+      style={{ width: 240, borderColor: 'color-mix(in srgb, var(--bg-surface) 60%, transparent)' }}
+      {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}
+    >
       {/* Header */}
-      <div className="relative flex items-center justify-between px-4 py-3 border-b border-[var(--bg-surface)]">
+      <div className="relative flex items-center justify-between px-4 py-3 border-b border-[var(--bg-surface)]" style={{ borderColor: 'color-mix(in srgb, var(--bg-surface) 60%, transparent)' }}>
         <span className="text-sm font-bold text-[var(--text-main)] tracking-widest font-mono" {...tokenAttrs('textMain', 'text')}>WMUX</span>
         <div className="flex items-center gap-1.5">
           {/* File tree button hidden - feature unstable
@@ -84,7 +89,7 @@ export default function Sidebar() {
           </button>
           */}
           <button
-            className="text-[var(--text-subtle)] hover:text-[var(--accent-green)] text-lg leading-none transition-colors"
+            className="flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-subtle)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150"
             onClick={togglePicker}
             title={t('sidebar.newWorkspaceTooltip')}
             data-onboarding-target="add-workspace"
@@ -92,7 +97,7 @@ export default function Sidebar() {
             {...tokenAttrs('success', 'accent')}
             data-derived="textSubtle"
           >
-            +
+            <IconPlus size={13} />
           </button>
         </div>
         {pickerOpen && <PresetPicker onClose={closePicker} />}
@@ -134,14 +139,14 @@ export default function Sidebar() {
 
       {/* Footer — when docked right, mirror the row so the collapse arrow sits
           on the inner edge facing the content area (issue #151). */}
-      <div className={`flex items-center justify-between px-4 py-2 border-t border-[var(--bg-surface)] text-[10px] font-mono text-[var(--text-muted)] ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`} {...tokenAttrs('textMuted', 'text')}>
+      <div className={`flex items-center justify-between px-4 py-2 border-t border-[var(--bg-surface)] text-[10px] font-mono text-[var(--text-muted)] ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`} style={{ borderColor: 'color-mix(in srgb, var(--bg-surface) 60%, transparent)' }} {...tokenAttrs('textMuted', 'text')}>
         <span>{workspaces.length} {t('sidebar.workspaces')}</span>
         <button
-          className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors"
+          className="flex items-center justify-center w-5 h-5 rounded text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150"
           onClick={() => useStore.getState().toggleSidebar()}
           title={t('sidebar.hideTooltip')}
         >
-          {collapseGlyph(sidebarPosition)}
+          <IconChevronDir dir={collapseDirection(sidebarPosition)} />
         </button>
       </div>
     </div>

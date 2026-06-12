@@ -1,34 +1,31 @@
 /**
- * Regression for issue #151: the sidebar hide/expand button glyphs must follow
- * the sidebar's physical position. Left-docked points one way, right-docked
- * mirrors it. Tested as a pure helper because vitest runs in the node env with
- * no DOM (same constraint as the SettingsPanel suites).
+ * Regression for issue #151: the sidebar hide/expand button directions must
+ * follow the sidebar's physical position. Left-docked points one way,
+ * right-docked mirrors it. Tested as a pure helper because vitest runs in the
+ * node env with no DOM (same constraint as the SettingsPanel suites).
  */
 import { describe, it, expect } from 'vitest';
-import { collapseGlyph, expandGlyph } from '../sidebarGlyphs';
+import { collapseDirection, expandDirection } from '../sidebarGlyphs';
 
-describe('sidebar glyphs (issue #151)', () => {
+describe('sidebar collapse/expand directions (issue #151)', () => {
   it('collapse arrow points toward the docked edge', () => {
-    // Left sidebar collapses toward the left edge; right toward the right edge.
-    expect(collapseGlyph('left')).toBe('◀');
-    expect(collapseGlyph('right')).toBe('▶');
+    expect(collapseDirection('left')).toBe('left');
+    expect(collapseDirection('right')).toBe('right');
   });
 
   it('expand arrow points inward toward the content area', () => {
-    // Mini sidebar on the left expands rightward; on the right expands leftward.
-    expect(expandGlyph('left')).toBe('▶');
-    expect(expandGlyph('right')).toBe('◀');
+    expect(expandDirection('left')).toBe('right');
+    expect(expandDirection('right')).toBe('left');
   });
 
   it('collapse and expand always point in opposite directions', () => {
-    // The two buttons swap places visually, so their arrows must never match.
     for (const pos of ['left', 'right'] as const) {
-      expect(collapseGlyph(pos)).not.toBe(expandGlyph(pos));
+      expect(collapseDirection(pos)).not.toBe(expandDirection(pos));
     }
   });
 
-  it('flipping the position mirrors both glyphs', () => {
-    expect(collapseGlyph('left')).toBe(expandGlyph('right'));
-    expect(collapseGlyph('right')).toBe(expandGlyph('left'));
+  it('flipping the position mirrors both directions', () => {
+    expect(collapseDirection('left')).toBe(expandDirection('right'));
+    expect(collapseDirection('right')).toBe(expandDirection('left'));
   });
 });

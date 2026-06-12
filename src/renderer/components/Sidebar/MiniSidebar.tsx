@@ -3,7 +3,8 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { tokenAttrs } from '../../themes';
-import { expandGlyph } from './sidebarGlyphs';
+import { expandDirection } from './sidebarGlyphs';
+import { IconPlus, IconChevronDir } from '../icons';
 
 export default function MiniSidebar() {
   const t = useT();
@@ -26,10 +27,11 @@ export default function MiniSidebar() {
   const [dropIndicator, setDropIndicator] = useState<{ index: number; side: 'above' | 'below' } | null>(null);
 
   return (
-    <div className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 48 }} {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}>
+    <div className={`flex flex-col h-full bg-[var(--bg-mantle)] ${sidebarPosition === 'right' ? 'border-l' : 'border-r'} border-[var(--bg-surface)]`} style={{ width: 48, borderColor: 'color-mix(in srgb, var(--bg-surface) 60%, transparent)' }} {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}>
       {/* Header — new workspace button */}
       <button
-        className="flex items-center justify-center h-10 text-[var(--text-subtle)] hover:text-[var(--accent-green)] transition-colors border-b border-[var(--bg-surface)] font-mono text-lg leading-none"
+        className="flex items-center justify-center h-10 text-[var(--text-subtle)] hover:text-[var(--accent-green)] transition-colors duration-150 border-b border-[var(--bg-surface)] font-mono text-lg leading-none"
+        style={{ borderColor: 'color-mix(in srgb, var(--bg-surface) 60%, transparent)' }}
         onClick={() => addWorkspace()}
         title={t('sidebar.newWorkspaceTooltip')}
         data-onboarding-target="add-workspace"
@@ -37,7 +39,7 @@ export default function MiniSidebar() {
         {...tokenAttrs('success', 'accent')}
         data-derived="textSubtle"
       >
-        +
+        <IconPlus size={14} />
       </button>
 
       {/* Workspace dots */}
@@ -157,7 +159,7 @@ export default function MiniSidebar() {
       </div>
 
       {/* Footer — expand + status */}
-      <div className="flex flex-col items-center gap-2 py-2 border-t border-[var(--bg-surface)]">
+      <div className="flex flex-col items-center gap-2 py-2 border-t border-[var(--bg-surface)]" style={{ borderColor: 'color-mix(in srgb, var(--bg-surface) 60%, transparent)' }}>
         {/* Unread badge */}
         {totalUnread > 0 && (
           <button
@@ -171,11 +173,11 @@ export default function MiniSidebar() {
 
         {/* Expand sidebar button — same position as collapse button in full sidebar */}
         <button
-          className="w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors font-mono text-[11px]"
+          className="w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 font-mono text-[11px]"
           onClick={toggleSidebar}
           title={t('sidebar.expandTooltip')}
         >
-          {expandGlyph(sidebarPosition)}
+          <IconChevronDir dir={expandDirection(sidebarPosition)} />
         </button>
       </div>
     </div>
