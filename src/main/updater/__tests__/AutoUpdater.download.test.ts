@@ -141,4 +141,23 @@ describe('AutoUpdater two-step flow (win32)', () => {
     expect(openPath.mock.calls[0][0]).toContain('wmux-update-');
     expect(requestUrls.length).toBe(urlsAfterDownload);
   });
+
+  it('rejects on sha256 mismatch: emits error, no downloaded path, install is a no-op', async () => {
+    const BAD_SHA = 'a'.repeat(64);
+    const { AutoUpdater, ipcHandlers, sent, openPath, win } = await loadWin32({ sha: BAD_SHA });
+    const updater = new AutoUpdater(() => win as never);
+    updater.start();
+
+    await ipcHandlers.get(IPC.UPDATE_CHECK)!();
+    await flush();
+
+    const statuses = sent.map((s) => `${s.channel}:${s.data.status}`);
+    expect(statuses).toContain(`${IPC.UPDATE_ERROR}:error`);
+    expect(statuses).not.toContain(`${IPC.UPDATE_AVAILABLE}:downloaded`);
+
+    // No verified file → install launches nothing.
+    await ipcHandlers.get(IPC.UPDATE_INSTALL)!();
+    await flush();
+    expect(openPath).not.toHaveBeenCalled();
+  });
 });
