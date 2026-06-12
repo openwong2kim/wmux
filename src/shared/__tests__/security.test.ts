@@ -151,10 +151,13 @@ describe('secureWriteTokenFile', () => {
     // mangled by the console OEM codepage; the target path travels via env.
     expect(powershellPayload()).toEqual({ sid: 'S-1-5-21-1-2-3-1001' });
     expect((psCall?.[2]?.env as Record<string, string>)?.WMUX_ACL_TARGET).toBe(tokenPath);
-    // PSModulePath must be STRIPPED from the 5.1 child: an inherited pwsh 7
-    // module path makes 5.1 auto-load the Core-edition module for Get-Item and
-    // fail, silently degrading the #124 rebuild to the icacls fallback.
-    expect('PSModulePath' in ((psCall?.[2]?.env as Record<string, string>) ?? {})).toBe(false);
+    // PSModulePath must be STRIPPED from the 5.1 child — case-insensitively,
+    // since Windows env keys are case-insensitive and the parent may have set
+    // any casing: an inherited pwsh 7 module path makes 5.1 auto-load the
+    // Core-edition module for Get-Item and fail, silently degrading the #124
+    // rebuild to the icacls fallback.
+    const syncEnvKeys = Object.keys((psCall?.[2]?.env as Record<string, string>) ?? {});
+    expect(syncEnvKeys.filter((k) => k.toLowerCase() === 'psmodulepath')).toEqual([]);
     // The child's stdout is discarded (no CLIXML leak); stderr kept for errors.
     expect(psCall?.[2]?.stdio).toEqual(['pipe', 'ignore', 'pipe']);
     // Crucially the DACL-only primitive: protect (discard inheritance) + a fresh
@@ -711,9 +714,10 @@ describe('scheduleTokenFileReHarden (S-A deferred re-harden)', () => {
     const spawnCall = spawnMock.mock.calls[0];
     expect(String(spawnCall[0]).toLowerCase()).toContain('powershell');
     expect((spawnCall[2] as { env: Record<string, string> }).env.WMUX_ACL_TARGET).toBe(tokenPath);
-    // Same PSModulePath strip as the sync path (pwsh7-inherited module path
-    // breaks 5.1 cmdlet auto-loading).
-    expect('PSModulePath' in (spawnCall[2] as { env: Record<string, string> }).env).toBe(false);
+    // Same case-insensitive PSModulePath strip as the sync path
+    // (pwsh7-inherited module path breaks 5.1 cmdlet auto-loading).
+    const asyncEnvKeys = Object.keys((spawnCall[2] as { env: Record<string, string> }).env);
+    expect(asyncEnvKeys.filter((k) => k.toLowerCase() === 'psmodulepath')).toEqual([]);
     expect(JSON.parse(ps.stdinWrites.join(''))).toEqual({ sid: 'S-1-5-21-1-2-3-1001' });
     // Nothing synchronous ran.
     expect(execFileSyncMock).not.toHaveBeenCalled();
