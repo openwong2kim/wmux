@@ -416,7 +416,16 @@ export function pollDaemonReady(
       return;
     }
 
-    const alive = await opts.ping(pipeName, token);
+    // Defensive: the real pingDaemon never rejects (errors resolve false),
+    // but the injected contract only promises Promise<boolean> — treat a
+    // rejection as a failed ping instead of leaking an unhandled rejection
+    // out of the void-returning chain.
+    let alive: boolean;
+    try {
+      alive = await opts.ping(pipeName, token);
+    } catch {
+      alive = false;
+    }
     if (settled) return; // cancelled while the ping was in flight
 
     if (alive) {
@@ -425,6 +434,9 @@ export function pollDaemonReady(
       return;
     }
 
+    // Budget is evaluated after the ping returns, so a ping started just
+    // inside the budget can settle up to one ping-timeout past it — same
+    // property as the old attempt-count loop, intentional.
     if (overBudget()) {
       finish(() => rejectFn(new Error(`Daemon spawned but not responding after ${budgetLabel}`)));
       return;
@@ -512,7 +524,7 @@ function spawnDaemon(): Promise<number> {
     // guard live in pollDaemonReady (extracted so the chain is unit-testable
     // with fake timers).
     const readiness = pollDaemonReady({
-      budgetMs: 15_000, // same wall-clock budget as the old 75 × 200 ms loop
+      budgetMs: 15_000, // wall-clock 15 s (the old loop's 75 × 200 ms ceiling, now measured directly)
       readPipeName: () => readPipeNameFromFile(getWmuxDir()),
       readToken: readDaemonAuthToken,
       ping: (pipeName, token) => pingDaemon(pipeName, token, 2000),

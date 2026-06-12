@@ -125,10 +125,12 @@ describe('pollDaemonReady', () => {
   it('never overlaps checks while a slow ping is in flight', async () => {
     let inFlight = 0;
     let maxInFlight = 0;
+    let calls = 0;
     const state = observe(
       startPoll({
         ping: () =>
           new Promise<boolean>((resolve) => {
+            calls++;
             inFlight++;
             maxInFlight = Math.max(maxInFlight, inFlight);
             setTimeout(() => {
@@ -136,14 +138,39 @@ describe('pollDaemonReady', () => {
               resolve(false);
             }, 1_000); // slower than many dense ticks
           }),
-        budgetMs: 3_000,
+        budgetMs: 10_000,
       }).promise,
     );
 
     await vi.advanceTimersByTimeAsync(2_500);
     expect(maxInFlight).toBe(1);
+    // The chain must not queue extra ticks while a ping is in flight: each
+    // 1 s ping is followed by exactly one scheduled delay before the next
+    // check. In 2 500 ms that is ping(0–1000) → 40 ms → ping(1040–2040) →
+    // 200 ms → ping(2240–…) = 3 calls. A fixed-interval loop that kept
+    // ticking behind the in-flight guard would not hold this bound.
+    expect(calls).toBe(3);
     expect(state.resolved).toBe(false);
     expect(state.rejected).toBeNull();
+  });
+
+  it('treats a rejecting ping as a failed attempt (no unhandled rejection)', async () => {
+    let calls = 0;
+    const state = observe(
+      startPoll({
+        ping: async () => {
+          calls++;
+          if (calls === 1) throw new Error('pipe write EPIPE');
+          return true;
+        },
+      }).promise,
+    );
+
+    await vi.advanceTimersByTimeAsync(0);
+    expect(state.resolved).toBe(false); // first attempt rejected → retry
+    await vi.advanceTimersByTimeAsync(40);
+    expect(state.resolved).toBe(true);
+    expect(calls).toBe(2);
   });
 
   it('rejects with the pipe-file message when the budget runs out', async () => {
