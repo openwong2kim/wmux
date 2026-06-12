@@ -115,6 +115,36 @@ per-pane cost is amplified ×8) is the scrollback's RAM contribution.
 The `--scrollback-lines` run identity is recorded in `meta.config.scrollbackLines`
 so two result files are unambiguous.
 
+#### First measured verdict (2026-06-13, dev machine i5-13420H) — diet NO-GO
+
+The A/B above was run on the C1+Step-1 build. Buckets reconciled exactly to
+the flat total in all four samples; `commandLineNullCount` was 0; WebGL
+occupancy at 8 panes was 8/12 (cap never hit).
+
+| 8-pane bucket | working set |
+|---|---|
+| other (user shells ×8 + unclassified Chromium) | **~632 MB (≈48%)** |
+| gpu (one process, same at idle) | ~186 MB |
+| renderer | ~146 MB |
+| daemon | ~120 MB |
+| main | ~106 MB |
+| conhost (×8) | ~66 MB |
+
+- **Half the 8-pane footprint is the user's own shells** (PowerShell ≈80 MB
+  each) — not reachable by any wmux code change.
+- **Scrollback A/B delta ≈ 0** (renderer −5 MB, inside noise): xterm's
+  CircularBuffer is lazily populated, so on near-empty terminals the
+  configured line count costs nothing. A future fill-the-scrollback scenario
+  would be needed to measure the *populated* cost; on the diet question the
+  empty-buffer result already kills the "cap scrollback by default" idea.
+- gpu is a single fixed-cost process (identical at idle and 8 panes) — not a
+  per-pane lever either.
+
+Per the plan gate (renderer attribution >60% AND A/B delta >100 MB → build a
+scrollback-cap PR): **both conditions failed → no RAM-diet code work.** The
+remaining footprint is Chromium/V8/shell tax; this section is the
+documentation-closure the plan called for.
+
 ## Isolation
 
 The bench spawns the **packaged exe** with a `WMUX_DATA_SUFFIX` so it runs in an
