@@ -21,6 +21,24 @@ export function broadcastMetadataUpdate(
   window.webContents.send(IPC.METADATA_UPDATE, payload);
 }
 
+/**
+ * Whether the 5 s metadata poll should run for this window right now.
+ *
+ * Metadata (git branch, listening ports, PR badge) is purely cosmetic and
+ * only matters for a UI the user can actually see. When the window is hidden
+ * to tray or minimized, the per-PTY git / `gh` / `/proc` work the poll drives
+ * is the dominant idle cost on the main process for a UI nobody is looking at.
+ * Skipping it then makes a backgrounded wmux go quiet; the next visible tick
+ * (≤5 s after the window returns) refreshes everything, so staleness is
+ * bounded. Mirrors UsagePoller's hidden-window cost control.
+ */
+export function shouldPollMetadata(win: BrowserWindow): boolean {
+  if (win.isDestroyed()) return false;
+  if (win.webContents.isLoading()) return false;
+  if (!win.isVisible() || win.isMinimized()) return false;
+  return true;
+}
+
 const collector = new MetadataCollector();
 
 // Track CWD per ptyId (updated via OSC 7, prompt detection, or initial registration)
@@ -99,8 +117,7 @@ export function registerMetadataHandlers(
   // Periodic metadata polling (every 5 seconds)
   const pollingInterval = setInterval(async () => {
     const win = getWindow();
-    if (!win || win.isDestroyed()) return;
-    if (win.webContents.isLoading()) return;
+    if (!win || !shouldPollMetadata(win)) return;
 
     for (const [ptyId] of cwdMap) {
       const instance = ptyManager.get(ptyId);
