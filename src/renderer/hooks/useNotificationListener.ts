@@ -294,6 +294,12 @@ export function useNotificationListener() {
       }
     });
 
+    const unsubTitle = window.electronAPI.notification.onTitleChanged((ptyId, title) => {
+      // OSC 0/2 window title (e.g. Claude Code `/rename`) → the tab title,
+      // unless the user manually renamed this surface (titleLocked).
+      useStore.getState().updateSurfaceTitleByPty(ptyId, title);
+    });
+
     const unsubMeta = window.electronAPI.metadata.onUpdate((payload) => {
       const state = useStore.getState();
       // Discriminator: ptyId routes to its workspace; workspaceId is direct;
@@ -414,6 +420,7 @@ export function useNotificationListener() {
     return () => {
       unsubNotif();
       unsubCwd();
+      unsubTitle();
       unsubMeta();
       unsubGitBranch();
       unsubSignalHealth();
