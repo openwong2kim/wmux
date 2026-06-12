@@ -19,11 +19,21 @@ const TMP_SUFFIX_RE = /\.tmp\.[0-9a-f]+$/;
  * Preserves raw bytes including ANSI escape sequences without any filtering.
  * When the buffer is full, the oldest data is overwritten.
  */
+/**
+ * Initial physical allocation for a new buffer. The ring grows from here by
+ * doubling, up to its configured ceiling, so an idle session that prints
+ * little holds only ~64 KB instead of the full multi-MB ceiling (the default
+ * is 8 MB/session). Buffers whose ceiling is already ≤ this value allocate
+ * their ceiling outright and behave as a classic fixed ring.
+ */
+const INITIAL_PHYSICAL_BYTES = 64 * 1024;
+
 export class RingBuffer {
   private buffer: Buffer;
-  private readonly capacity: number;
-  private writePos: number;   // next write position (0..capacity-1)
-  private length: number;     // bytes currently stored (<= capacity)
+  private readonly capacity: number;  // logical ceiling — the max this ring will ever hold
+  private physical: number;           // bytes currently allocated (<= capacity), grown on demand
+  private writePos: number;   // next write position (0..physical-1)
+  private length: number;     // bytes currently stored (<= physical)
   private totalWritten: number; // monotonic lifetime count (used as byte offset for PromptEventLog)
 
   constructor(capacityBytes: number) {
@@ -31,10 +41,35 @@ export class RingBuffer {
       throw new Error('capacityBytes must be a positive integer');
     }
     this.capacity = capacityBytes;
-    this.buffer = Buffer.alloc(capacityBytes);
+    this.physical = Math.min(INITIAL_PHYSICAL_BYTES, capacityBytes);
+    this.buffer = Buffer.alloc(this.physical);
     this.writePos = 0;
     this.length = 0;
     this.totalWritten = 0;
+  }
+
+  /**
+   * Grow the physical allocation so it can hold at least `needed` bytes
+   * linearly, doubling each step and clamping at the ceiling. No-op once the
+   * allocation already covers `needed` or has reached the ceiling. Existing
+   * contents are copied in logical order (oldest→newest) into the new buffer,
+   * which also un-wraps the ring (writePos = length) — safe because after a
+   * grow the stored length is strictly below the new physical size.
+   */
+  private ensureCapacity(needed: number): void {
+    if (this.physical >= this.capacity || needed <= this.physical) return;
+    let next = this.physical;
+    while (next < needed && next < this.capacity) next *= 2;
+    next = Math.min(next, this.capacity);
+    if (next === this.physical) return;
+
+    const existing = this.readAll(); // oldest→newest, exactly `length` bytes
+    const grown = Buffer.alloc(next);
+    existing.copy(grown, 0);
+    this.buffer = grown;
+    this.physical = next;
+    this.writePos = existing.length; // length < next, so no wrap
+    this.length = existing.length;
   }
 
   /**
@@ -47,17 +82,21 @@ export class RingBuffer {
 
     this.totalWritten += dataLen;
 
-    // If incoming data is larger than capacity, only keep the tail
-    if (dataLen >= this.capacity) {
-      const offset = dataLen - this.capacity;
+    // Grow toward the ceiling so this write lands without prematurely
+    // overwriting still-young data. Once at the ceiling the ring wraps.
+    this.ensureCapacity(this.length + dataLen);
+
+    // If incoming data is larger than the current allocation, only keep the tail
+    if (dataLen >= this.physical) {
+      const offset = dataLen - this.physical;
       data.copy(this.buffer, 0, offset, dataLen);
       this.writePos = 0;
-      this.length = this.capacity;
+      this.length = this.physical;
       return;
     }
 
     // How much space from writePos to end of buffer
-    const spaceToEnd = this.capacity - this.writePos;
+    const spaceToEnd = this.physical - this.writePos;
 
     if (dataLen <= spaceToEnd) {
       // Fits without wrapping
@@ -68,8 +107,8 @@ export class RingBuffer {
       data.copy(this.buffer, 0, spaceToEnd, dataLen);
     }
 
-    this.writePos = (this.writePos + dataLen) % this.capacity;
-    this.length = Math.min(this.length + dataLen, this.capacity);
+    this.writePos = (this.writePos + dataLen) % this.physical;
+    this.length = Math.min(this.length + dataLen, this.physical);
   }
 
   /**
@@ -89,15 +128,15 @@ export class RingBuffer {
       return Buffer.alloc(0);
     }
 
-    if (this.length < this.capacity) {
+    if (this.length < this.physical) {
       // Buffer has not wrapped yet; data is at [0..length)
       return Buffer.from(this.buffer.subarray(0, this.length));
     }
 
     // Buffer is full and has wrapped.
     // writePos points to the oldest byte (it's where the next write will go).
-    // Order: [writePos..capacity) + [0..writePos)
-    const tail = this.buffer.subarray(this.writePos, this.capacity);
+    // Order: [writePos..physical) + [0..writePos)
+    const tail = this.buffer.subarray(this.writePos, this.physical);
     const head = this.buffer.subarray(0, this.writePos);
     return Buffer.concat([tail, head]);
   }
@@ -117,9 +156,14 @@ export class RingBuffer {
     return this.length;
   }
 
-  /** Total buffer capacity in bytes. */
+  /** Logical ceiling in bytes — the most this ring will ever store. */
   get totalCapacity(): number {
     return this.capacity;
+  }
+
+  /** Bytes currently committed for backing storage (grows on demand toward the ceiling). */
+  get allocatedBytes(): number {
+    return this.physical;
   }
 
   /**

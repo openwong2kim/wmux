@@ -185,6 +185,72 @@ describe('RingBuffer', () => {
     expect(restored.size).toBe(8);
   });
 
+  // ── Lazy growth (idle-memory optimization) ──
+
+  // A large-capacity buffer must NOT commit its full ceiling upfront.
+  it('allocates far below the ceiling for a large empty buffer', () => {
+    const eightMb = 8 * 1024 * 1024;
+    const rb = new RingBuffer(eightMb);
+    // Ceiling is reported as the configured capacity...
+    expect(rb.totalCapacity).toBe(eightMb);
+    // ...but actual committed memory starts tiny (well under 1 MB).
+    expect(rb.allocatedBytes).toBeLessThan(1024 * 1024);
+    expect(rb.size).toBe(0);
+  });
+
+  // Growth kicks in only as data demands it, and never exceeds the ceiling.
+  it('grows allocation on demand up to but not beyond the ceiling', () => {
+    const cap = 1024 * 1024; // 1 MB ceiling
+    const rb = new RingBuffer(cap);
+    const initial = rb.allocatedBytes;
+    expect(initial).toBeLessThan(cap);
+
+    // Write 300 KB — should force at least one growth step.
+    rb.write(Buffer.alloc(300 * 1024, 0x41));
+    expect(rb.allocatedBytes).toBeGreaterThan(initial);
+    expect(rb.allocatedBytes).toBeLessThanOrEqual(cap);
+    expect(rb.size).toBe(300 * 1024);
+
+    // Fill past the ceiling — allocation caps at the ceiling, ring wraps.
+    rb.write(Buffer.alloc(cap, 0x42));
+    expect(rb.allocatedBytes).toBe(cap);
+    expect(rb.size).toBe(cap);
+  });
+
+  // Growth must preserve byte order across the reallocation boundary.
+  it('preserves data order and content across a growth reallocation', () => {
+    const rb = new RingBuffer(1024 * 1024);
+    // First chunk fits in the initial allocation.
+    rb.write(Buffer.from('HEAD'));
+    // Force growth with a chunk larger than the initial allocation.
+    const big = Buffer.alloc(200 * 1024, 0x5a); // 'Z' * 200K
+    rb.write(big);
+    rb.write(Buffer.from('TAIL'));
+
+    const all = rb.readAll();
+    expect(all.subarray(0, 4).toString()).toBe('HEAD');
+    expect(all.subarray(all.length - 4).toString()).toBe('TAIL');
+    expect(all.length).toBe(4 + big.length + 4);
+    // Middle is all 'Z'.
+    expect(all.subarray(4, 4 + big.length).every((b) => b === 0x5a)).toBe(true);
+  });
+
+  // A grown buffer still round-trips through dump → load correctly.
+  it('dump/load round-trips a grown buffer by logical contents', async () => {
+    const rb = new RingBuffer(1024 * 1024);
+    const payload = Buffer.alloc(250 * 1024, 0x37); // '7' * 250K
+    rb.write(payload);
+    expect(rb.allocatedBytes).toBeGreaterThan(64 * 1024);
+
+    const tmpFile = path.join(os.tmpdir(), `wmux-rb-grow-${Date.now()}.bin`);
+    tempFiles.push(tmpFile);
+    await rb.dumpToFile(tmpFile);
+
+    const restored = RingBuffer.loadFromFile(tmpFile, 1024 * 1024);
+    expect(restored.size).toBe(payload.length);
+    expect(restored.readAll().equals(payload)).toBe(true);
+  });
+
   // loadFromFile: empty file produces empty buffer
   it('loadFromFile with empty file produces empty buffer', () => {
     const tmpFile = path.join(os.tmpdir(), `wmux-rb-load-empty-${Date.now()}.bin`);
