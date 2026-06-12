@@ -75,14 +75,14 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   const sent: Sent[] = [];
   const win = {
     isDestroyed: () => false,
-    webContents: { isCrashed: () => false, send: (channel: string, data: Record<string, unknown>) => sent.push({ channel, data }), executeJavaScript: vi.fn(async () => {}) },
+    webContents: { isCrashed: () => false, send: (channel: string, data: Record<string, unknown>) => sent.push({ channel, data }), executeJavaScript: vi.fn(async () => undefined) },
   };
 
   // Mock fs so no real installer file is written; capture the streamed bytes.
   vi.doMock('node:fs', () => ({
-    createWriteStream: () => ({ write: vi.fn(), end: (cb?: () => void) => cb && cb(), destroy: vi.fn(), on: () => {} }),
+    createWriteStream: () => ({ write: vi.fn(), end: (cb?: () => void) => cb && cb(), destroy: vi.fn(), on: () => undefined }),
   }));
-  vi.doMock('node:fs/promises', () => ({ unlink: vi.fn(async () => {}) }));
+  vi.doMock('node:fs/promises', () => ({ unlink: vi.fn(async () => undefined) }));
 
   vi.doMock('electron', () => ({
     autoUpdater: {},
