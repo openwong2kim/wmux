@@ -30,6 +30,16 @@ pre-announce targets."*
 - **RAM** — working-set bytes of the **full process tree**, including the
   detached daemon, at two states: idle with 1 pane (`idle1Pane`) and 8 panes
   (`panes8`). `appMetricsRaw` is captured for context but is **never gated**.
+- **Boot-phase attribution** (S-A) — the main process emits one
+  `[boot-trace] mark=<name> epoch=<ms>` stderr line per boot milestone
+  (`src/main/util/bootTrace.ts`), and the daemon exposes its own marks via the
+  `daemon.ping` response (`bootTrace` field). The harness re-bases both onto
+  the spawn timeline and records them per run (`runs[i].marks`,
+  `runs[i].daemonBoot`) plus medians (`coldStart.medianMarks`,
+  `coldStart.medianDaemonMarks`), and prints a derived phase table
+  (pre-JS → module eval → app-ready wait → plugin load → daemon bootstrap
+  with spawn/pipe/ping sub-phases → ready tail). All fields are **additive
+  and never gated** — they exist to attribute regressions, not to gate them.
 
 The result schema (`schemaVersion: 1`) is documented inline in
 `scripts/perf-compare.mjs` (the gated dot-paths) and produced by
@@ -111,6 +121,17 @@ regression first.
 - CI runners are shared and use software GL, so absolute numbers there are
   noisier and slower than real hardware. The CI gate thresholds are
   intentionally loose for exactly this reason.
+- **Antivirus tax on cold start**: real-time scanning (Windows Defender) can
+  dominate local cold-start numbers — the same commit measures ~2.4x slower on
+  a Defender-active dev machine than on CI. To attribute it, compare the
+  boot-phase table local vs CI: AV cost concentrates in `pre-JS`, module eval,
+  and the `daemon-spawned → daemon-pipe-file-seen` span (a second exe image
+  scan), while genuine code cost inflates phases uniformly. For a one-off
+  LOCAL diagnosis you can temporarily add a Defender exclusion for
+  `out\wmux-win32-x64` plus the bench temp root via the Windows Security UI,
+  re-run `--skip-input --skip-ram --cold-runs 3`, diff the phase tables, and
+  **remove the exclusions afterwards**. Never automate or ship exclusions —
+  this is a diagnostic procedure only.
 - `baseline-local.json` is the sensitive one — the dev machine is stable, so its
   thresholds are the meaningful guardrail for everyday work.
 - frame numbers depend on the compositor; trust `echoMs` first when a run looks

@@ -16,11 +16,29 @@ import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink } from './util/logSink';
 import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
-import { monitorEventLoopDelay } from 'node:perf_hooks';
+import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING } from '../shared/constants';
 
 // === Constants ===
 const wmuxDir = getWmuxDir();
+
+// Boot-phase trace (S-A). The launcher spawns this process with
+// `stdio: 'ignore'`, so unlike the main process we cannot stream marks over
+// stderr — instead marks accumulate here and are exposed two ways:
+//  - `daemon.ping` response carries `bootTrace` (additive field; the bench
+//    reads it, the launcher/respawn-controller only read status/pid)
+//  - one `[boot-trace] summary=` log line at the end of main() lands in
+//    ~/.wmux/logs/daemon-YYYY-MM-DD.log for postmortems.
+// Marks are absolute Date.now() epochs so the bench can place them on the
+// same timeline as the main-process marks (same machine, same clock).
+const DAEMON_BOOT: { jsStartEpochMs: number; marks: Record<string, number> } = {
+  jsStartEpochMs: Date.now(),
+  marks: {},
+};
+function markDaemonBoot(name: string): void {
+  if (name in DAEMON_BOOT.marks) return; // first-occurrence-wins
+  DAEMON_BOOT.marks[name] = Date.now();
+}
 
 // RCA A4 — event-loop lag monitor. Enabled once at module load; daemon.ping
 // reports the mean lag (ms) since the previous ping so the main-side health
@@ -811,7 +829,16 @@ function registerRpcHandlers(
     eventLoopMonitor.reset();
     // `pid` lets the launcher restore daemon.pid after a Step ③ reconnect
     // (the redundant-daemon path cleaned the pid file). Log-only otherwise.
-    return { status: 'ok', pid: process.pid, uptime, sessions: sessions.length, eventLoopLagMs };
+    // `bootTrace` is additive (S-A cold-start instrumentation): the perf
+    // bench reads it; launcher/respawn-controller only read status/pid.
+    return {
+      status: 'ok',
+      pid: process.pid,
+      uptime,
+      sessions: sessions.length,
+      eventLoopLagMs,
+      bootTrace: { jsStartEpochMs: DAEMON_BOOT.jsStartEpochMs, marks: DAEMON_BOOT.marks },
+    };
   });
 
   // daemon.shutdown — gracefully terminate the daemon process. A2 makes
@@ -1320,18 +1347,22 @@ async function shutdown(
 
 async function main(): Promise<void> {
   const startTime = Date.now();
+  markDaemonBoot('main-start');
   log('info', `wmux-daemon starting (PID ${process.pid})`);
 
   // 1. Single-instance check
   if (!(await acquireLock())) {
     process.exit(1);
   }
+  markDaemonBoot('lock-acquired');
 
   // Cache boot ID early (async) so buildState() never needs to block
   await initBootId();
+  markDaemonBoot('bootid-done');
 
   // 2. Load configuration
   const config = loadConfig();
+  markDaemonBoot('config-loaded');
   log('info', `Config loaded (logLevel=${config.daemon.logLevel})`);
 
   // 3. Initialize modules
@@ -1399,6 +1430,7 @@ async function main(): Promise<void> {
   // instead of destroying it (codex #4).
   const maxRecover = Math.min(config.session.maxSessions, MAX_RECOVER_SESSIONS);
   await recoverSessions(stateWriter, sessionManager, processMonitor, maxRecover);
+  markDaemonBoot('recovery-done');
 
   // 5. Register RPC handlers
   registerRpcHandlers(
@@ -1422,7 +1454,9 @@ async function main(): Promise<void> {
   disposeContextWatchers = wireContextWatchers(sessionManager, pipeServer);
 
   // 7. Start control pipe
+  markDaemonBoot('pre-pipe-start');
   await pipeServer.start();
+  markDaemonBoot('pipe-listening');
 
   // Write active pipe name so clients know which pipe to connect to
   const activePipeName = pipeServer.getActivePipeName();
@@ -1432,6 +1466,7 @@ async function main(): Promise<void> {
   } catch (err) {
     log('warn', 'Failed to write pipe name file:', err);
   }
+  markDaemonBoot('pipe-file-written');
 
   // doShutdown is hoisted ahead of `setCallbacks` so the idle-shutdown
   // callback can route through the same termination path used by
@@ -1627,7 +1662,18 @@ async function main(): Promise<void> {
     log('error', 'Unhandled rejection:', reason);
   });
 
+  markDaemonBoot('ready');
   log('info', `Daemon ready — pipe: ${activePipeName}`);
+  // Boot summary for postmortems. nodeTiming gives the Node/V8 startup split
+  // for free (all values are ms relative to nodeTiming's own timeOrigin).
+  try {
+    const nt = nodePerformance.nodeTiming;
+    log('info', `[boot-trace] summary=${JSON.stringify({
+      jsStartEpochMs: DAEMON_BOOT.jsStartEpochMs,
+      marks: DAEMON_BOOT.marks,
+      nodeTiming: { nodeStart: nt.nodeStart, v8Start: nt.v8Start, bootstrapComplete: nt.bootstrapComplete, environment: nt.environment },
+    })}`);
+  } catch { /* tracing must never break boot */ }
 }
 
 main().catch((err) => {

@@ -316,6 +316,8 @@ function makeInstance() {
     wmuxDir: path.join(home, `.wmux${suffix}`),
     t0: null,
     milestones: {},
+    bootMarks: {},   // [boot-trace] mark lines from the app, ms relative to t0
+    daemonBoot: null, // daemon.ping bootTrace (marks re-based to t0), or null
   };
 }
 
@@ -347,6 +349,30 @@ function spawnInstance(inst) {
     inst.proc.on('exit', (code) => reject(new Error(`app exited early (code ${code}) before CDP line`)));
     setTimeout(() => reject(new Error('timeout waiting for CDP port line (20s)')), 20000);
   });
+  // Boot-trace mark collector (S-A). Separate listener from the CDP matcher
+  // above: that one early-returns once the port is found, while marks keep
+  // arriving until ready-end. Line-buffered because chunks can split lines.
+  // Marks are emitted as absolute epochs by src/main/util/bootTrace.ts and
+  // re-based here onto the bench timeline (same machine clock as t0).
+  {
+    let traceBuf = '';
+    const onTraceChunk = (b) => {
+      traceBuf += b.toString('utf8');
+      let nl;
+      while ((nl = traceBuf.indexOf('\n')) !== -1) {
+        const line = traceBuf.slice(0, nl);
+        traceBuf = traceBuf.slice(nl + 1);
+        const m = line.match(/\[boot-trace\] mark=([\w-]+) epoch=(\d+)/);
+        if (m && !(m[1] in inst.bootMarks)) {
+          inst.bootMarks[m[1]] = Number(m[2]) - inst.t0;
+        }
+      }
+      // Cap a pathological lineless tail (binary noise) — marks always end in \n.
+      if (traceBuf.length > 65536) traceBuf = traceBuf.slice(-4096);
+    };
+    inst.proc.stdout.on('data', onTraceChunk);
+    inst.proc.stderr.on('data', onTraceChunk);
+  }
   // Surface app errors to the harness log without flooding it.
   inst.proc.on('exit', (code) => {
     if (liveInstances.has(inst)) console.error(`[app#${inst.seq}] exited (code ${code})`);
@@ -535,6 +561,28 @@ async function bootInstance(inst) {
     });
     inst.milestones.fcpMs = fcpEpoch != null ? round(fcpEpoch - inst.t0) : null;
   } catch { inst.milestones.fcpMs = null; }
+
+  // Daemon-side boot breakdown (S-A): daemon.ping carries `bootTrace`
+  // (additive field). Best-effort — a local-PTY-fallback boot has no daemon.
+  try {
+    const token = readDaemonToken(inst);
+    const daemonPipe = readDaemonPipeName(inst);
+    if (token && await pipeAlive(daemonPipe)) {
+      const dc = new PipeClient(daemonPipe, token);
+      await dc.connect();
+      const pong = await dc.call('daemon.ping', {}, 3000);
+      dc.close();
+      if (pong?.bootTrace?.marks) {
+        const rebase = (epoch) => round(epoch - inst.t0);
+        inst.daemonBoot = {
+          jsStartMs: rebase(pong.bootTrace.jsStartEpochMs),
+          marks: Object.fromEntries(
+            Object.entries(pong.bootTrace.marks).map(([k, v]) => [k, rebase(v)]),
+          ),
+        };
+      }
+    }
+  } catch { inst.daemonBoot = null; }
 
   return inst;
 }
@@ -856,6 +904,10 @@ process.on('exit', () => {
         rendererReadyMs: m.rendererReadyMs ?? null,
         firstPtyDataMs: m.firstPtyDataMs ?? null,
         fcpMs: m.fcpMs ?? null,
+        // S-A boot-phase attribution (additive — perf-compare gates only by
+        // explicit dot-paths, so these fields never affect the gate).
+        marks: { ...inst.bootMarks },
+        daemonBoot: inst.daemonBoot,
       });
       console.log(`    cdp=${m.cdpReadyMs}ms pipe=${m.pipeReadyMs}ms renderer=${m.rendererReadyMs}ms firstPty=${m.firstPtyDataMs}ms fcp=${m.fcpMs}ms`);
       if (i < ARGS.coldRuns - 1) await shutdownInstance(inst);
@@ -879,6 +931,49 @@ process.on('exit', () => {
     }
     const med = RESULTS.scenarios.coldStart.median;
     console.log(`coldStart median: firstPtyData=${med.firstPtyDataMs}ms renderer=${med.rendererReadyMs}ms`);
+
+    // ---- boot-phase attribution (S-A) ----
+    // Median across runs for every mark seen in any run (key union — the
+    // reuse path emits daemon-reused, the spawn path emits spawn marks).
+    const medianMarkMap = (pick) => {
+      const keys = new Set(runs.flatMap((r) => Object.keys(pick(r) ?? {})));
+      const out = {};
+      for (const k of keys) out[k] = median(runs.map((r) => pick(r)?.[k] ?? null));
+      return out;
+    };
+    const medianMarks = medianMarkMap((r) => r.marks);
+    const medianDaemonMarks = medianMarkMap((r) => r.daemonBoot?.marks);
+    RESULTS.scenarios.coldStart.medianMarks = medianMarks;
+    RESULTS.scenarios.coldStart.medianDaemonMarks = medianDaemonMarks;
+
+    const span = (marks, a, b) => {
+      const va = a === 'spawn' ? 0 : marks[a];
+      const vb = marks[b];
+      return typeof va === 'number' && typeof vb === 'number' ? Math.round(vb - va) : null;
+    };
+    const fmt = (v) => (v == null ? 'n/a' : `${v}ms`);
+    console.log('boot-phase breakdown (median, ms since spawn):');
+    console.log(`  pre-JS (spawn→js-start)                       ${fmt(span(medianMarks, 'spawn', 'js-start'))}`);
+    console.log(`  module imports (js-start→imports-done)        ${fmt(span(medianMarks, 'js-start', 'imports-done'))}`);
+    console.log(`  app init (imports-done→module-eval-end)       ${fmt(span(medianMarks, 'imports-done', 'module-eval-end'))}`);
+    console.log(`    pty managers (construction-start→pre-pipe-server-ctor) ${fmt(span(medianMarks, 'construction-start', 'pre-pipe-server-ctor'))}`);
+    console.log(`    PipeServer ctor / token ACL (pre→ctor-done) ${fmt(span(medianMarks, 'pre-pipe-server-ctor', 'pipe-server-ctor-done'))}`);
+    console.log(`    handler registration (ctor-done→eval-end)   ${fmt(span(medianMarks, 'pipe-server-ctor-done', 'module-eval-end'))}`);
+    console.log(`  ready wait (module-eval-end→ready-fired)      ${fmt(span(medianMarks, 'module-eval-end', 'ready-fired'))}`);
+    console.log(`  plugin load (ready-fired→plugins-loaded)      ${fmt(span(medianMarks, 'ready-fired', 'plugins-loaded'))}`);
+    console.log(`  window create (plugins-loaded→window-created) ${fmt(span(medianMarks, 'plugins-loaded', 'window-created'))}`);
+    console.log(`  daemon bootstrap (start→end)                  ${fmt(span(medianMarks, 'daemon-bootstrap-start', 'daemon-bootstrap-end'))}`);
+    console.log(`    spawn call (ensure-start→spawned)           ${fmt(span(medianMarks, 'daemon-ensure-start', 'daemon-spawned'))}`);
+    console.log(`    daemon boot (spawned→pipe-file-seen)        ${fmt(span(medianMarks, 'daemon-spawned', 'daemon-pipe-file-seen'))}`);
+    console.log(`    ping latency (pipe-file-seen→first-ping-ok) ${fmt(span(medianMarks, 'daemon-pipe-file-seen', 'daemon-first-ping-ok'))}`);
+    console.log(`  ready tail (renderer-load-triggered→ready-end) ${fmt(span(medianMarks, 'renderer-load-triggered', 'ready-end'))}`);
+    if (Object.keys(medianDaemonMarks).length > 0) {
+      const d = medianDaemonMarks;
+      console.log('  daemon internal (ms since spawn): '
+        + ['main-start', 'lock-acquired', 'bootid-done', 'config-loaded', 'recovery-done', 'pre-pipe-start', 'pipe-listening', 'ready']
+          .map((k) => `${k}=${d[k] ?? 'n/a'}`).join(' '));
+      console.log(`    daemon pipe start / token ACL (pre-pipe-start→pipe-listening) ${fmt(span(medianDaemonMarks, 'pre-pipe-start', 'pipe-listening'))}`);
+    }
   }
 
   if (!lastInst && (ARGS.diag || !ARGS.skipInput || !ARGS.skipRam)) {

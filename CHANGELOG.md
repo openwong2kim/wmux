@@ -5,6 +5,11 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+- **Cold-start boot-phase instrumentation (S-A).** The main process now emits one cheap `[boot-trace]` line per boot milestone (process spawn → module eval → app-ready → plugin load → daemon bootstrap with spawn/pipe/ping sub-phases → ready end), plus a JSON summary that lands in the daily log file; the daemon exposes its own boot marks through `daemon.ping`. The perf bench collects both and prints a derived phase-attribution table, so a cold-start regression now points at the guilty phase instead of a single opaque number. First run of the new table immediately attributed ~70% of the measured cold start to the auth-token ACL hardening's synchronous PowerShell shell-outs (one in the main process, one in the daemon) — the optimization target for the follow-up PR. Zero telemetry: stderr and local log files only.
+
 ## [3.2.0] — 2026-06-12 — wmux CLI on your PATH, wmux.json project config, click-to-jump notifications, perf gate
 
 Headline: every shell — inside or outside wmux — gets a `wmux` command with verified self-pane identity; a repo-root `wmux.json` turns "open this repo" into a fully arranged workspace (custom commands + declarative pane layout) behind a byte-exact trust gate; clicking a desktop toast now jumps straight to the pane that fired it; and a benchmark harness with a CI regression gate puts real numbers behind the performance story (echo p95 29.2 ms, no degradation at 8 panes). Plus cross-workspace browser-close routing, a multi-image paste fix, and Smart App Control install guidance.

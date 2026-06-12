@@ -7,6 +7,7 @@ import { app, dialog } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
 import { getDaemonPipeName, readDaemonAuthToken } from '../DaemonClient';
 import { DAEMON_EXIT_ALREADY_RUNNING } from '../../shared/constants';
+import { markBoot } from '../util/bootTrace';
 
 export interface DaemonInfo {
   pid: number;
@@ -318,6 +319,7 @@ function findNodePath(): string {
 }
 
 function spawnDaemon(): Promise<number> {
+  markBoot('daemon-spawn-start');
   return new Promise((resolve, reject) => {
     // Find daemon script
     // In dev: app.getAppPath() = project root → dist/daemon/daemon/index.js
@@ -372,6 +374,7 @@ function spawnDaemon(): Promise<number> {
       return;
     }
 
+    markBoot('daemon-spawned');
     console.log(`[launcher] Daemon spawned with PID: ${child.pid}`);
 
     // Wait for daemon to be ready.
@@ -398,6 +401,7 @@ function spawnDaemon(): Promise<number> {
         }
         return;
       }
+      markBoot('daemon-pipe-file-seen');
 
       const token = readDaemonAuthToken();
       if (!token) {
@@ -413,6 +417,7 @@ function spawnDaemon(): Promise<number> {
       pinging = false;
 
       if (alive) {
+        markBoot('daemon-first-ping-ok');
         clearInterval(poll);
         resolve(child.pid!);
         return;
@@ -452,6 +457,7 @@ function readPipeNameFromFile(wmuxDir: string): string | null {
 }
 
 export async function ensureDaemon(): Promise<DaemonInfo> {
+  markBoot('daemon-ensure-start');
   const wmuxDir = getWmuxDir();
   const pidFile = path.join(wmuxDir, 'daemon.pid');
 
@@ -465,7 +471,11 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
   // 2. If the PID is alive OR its liveness is unknown (a probe timeout must
   //    NOT be read as "dead" — Defect 1), enter the ping/reuse path. Only a
   //    confirmed-dead PID skips straight to spawn over a possibly-live daemon.
-  if (existingPid && checkProcessLiveness(existingPid) !== 'dead') {
+  const livenessOnBoot = existingPid ? checkProcessLiveness(existingPid) : null;
+  // Boot-trace only (first-occurrence-wins): isolates the tasklist.exe cost
+  // on machines where AV slows process probes. No-op on respawn re-entry.
+  markBoot('daemon-liveness-checked');
+  if (existingPid && livenessOnBoot !== 'dead') {
     const token = readDaemonAuthToken();
     const pipeName = readPipeNameFromFile(wmuxDir) || getDaemonPipeName();
 
@@ -483,6 +493,7 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
         alive = await pingDaemon(pipeName, token);
       }
       if (alive) {
+        markBoot('daemon-reused');
         console.log(`[launcher] Daemon already running (PID: ${existingPid})`);
         return { pid: existingPid, authToken: token, pipeName, spawned: false };
       }

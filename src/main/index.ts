@@ -5,6 +5,11 @@ process.on('uncaughtException', (err) => {
   console.error('[Main] Uncaught exception:', err);
 });
 
+// MUST stay the first import: ESM import hoisting means evaluation order ==
+// import order, and bootTrace's module body stamps `js-start` (the first JS
+// the main process runs). Moving it below another import skews every boot
+// phase measurement by that import's eval cost.
+import { markBoot, emitBootSummary } from './util/bootTrace';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
@@ -62,6 +67,8 @@ import { collectLegacyMetadata } from './metadata/legacyMigration';
 import { sessionManager, registerSessionHandlers } from './ipc/handlers/session.handler';
 import { eventBus } from './events/EventBus';
 import { initLogSink, logLine } from './util/logSink';
+
+markBoot('imports-done');
 
 // Force English for Chromium internal messages to avoid encoding corruption
 // on non-ASCII locales (e.g. Korean Windows where cp949 garbles console output).
@@ -176,6 +183,10 @@ if (process.platform === 'win32') {
 // Squirrel handlers above already called process.exit() in their callbacks.
 if (!isSquirrelEvent) {
 appInit();
+// All module-level construction is done (PTYManager, PipeServer ctor's sync
+// token-file read, handler registration). ready-fired minus this mark =
+// pure Electron app-ready wait.
+markBoot('module-eval-end');
 }
 
 function appInit(): void {
@@ -208,6 +219,7 @@ let fullShutdownRequested = false;
 
 // Prevent multiple instances — focus existing window instead
 const gotLock = app.requestSingleInstanceLock();
+markBoot('lock-acquired');
 console.log(`[DEBUG] gotLock = ${gotLock}`);
 if (!gotLock) {
   console.log('[DEBUG] failed to get single instance lock, quitting');
@@ -224,6 +236,7 @@ if (!gotLock) {
   });
 }
 
+markBoot('construction-start');
 const ptyManager = new PTYManager();
 let mainWindow: BrowserWindow | null = null;
 // Forward-declared: PTYBridge captures this binding by reference and reads it
@@ -235,7 +248,12 @@ const ptyBridge = new PTYBridge(ptyManager, () => mainWindow, () => hookSignalRo
 const autoUpdater = new AutoUpdater(() => mainWindow);
 
 const rpcRouter = new RpcRouter();
+markBoot('pre-pipe-server-ctor');
 const pipeServer = new PipeServer(rpcRouter);
+// Isolates the PipeServer constructor: its loadOrCreateToken() shells out to
+// PowerShell for token-file ACL hardening (secureWriteTokenFile /
+// reHardenTokenFileAcl) — a prime cold-start suspect.
+markBoot('pipe-server-ctor-done');
 
 // Plugin host (B-1). Scheme privileges MUST be registered before app
 // 'ready'; the loader itself is constructed inside the ready handler (it
@@ -580,6 +598,7 @@ ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, web
 
 console.log('[DEBUG] registering app.on(ready)');
 app.on('ready', async () => {
+  markBoot('ready-fired');
   // Persistent log sink — must come first so every subsequent stderr write
   // and explicit logLine() call lands on disk for postmortem analysis.
   // Path: %APPDATA%\wmux\logs\main-YYYY-MM-DD.log (Windows default).
@@ -633,8 +652,10 @@ app.on('ready', async () => {
     logLine('warn', 'main', `plugin host load failed: ${err instanceof Error ? err.message : String(err)}`);
   }
   registerPluginProtocolHandler(() => pluginHostLoader);
+  markBoot('plugins-loaded');
 
   mainWindow = createWindow({ deferLoad: true });
+  markBoot('window-created');
   console.log(`[Main] Window created (renderer load deferred): ${!!mainWindow}`);
   logLine('info', 'main', `window created (deferred): present=${!!mainWindow}`);
 
@@ -827,11 +848,13 @@ app.on('ready', async () => {
       error: (msg) => { logLine('error', 'daemon-respawn', msg); },
     },
   });
+  markBoot('daemon-bootstrap-start');
   try {
     await daemonRespawnController.bootstrap();
   } catch (err) {
     console.warn('[Main] Daemon auto-start failed, using local PTY:', err);
   }
+  markBoot('daemon-bootstrap-end');
 
   // v2.8.1 hotfix (Bug 3): unblock any renderer that already invoked
   // `daemon:get-ready-state`. From this point on the handler answers
@@ -855,6 +878,7 @@ app.on('ready', async () => {
   // the `createWindow({ deferLoad: true })` call.
   if (mainWindow && !mainWindow.isDestroyed()) {
     loadMainRenderer(mainWindow);
+    markBoot('renderer-load-triggered');
     logLine('info', 'main', 'renderer load triggered after daemon bootstrap');
   }
 
@@ -1040,6 +1064,10 @@ app.on('ready', async () => {
   mcpRegistrar.register(authToken);
   pipeServer.start();
   autoUpdater.start();
+  markBoot('ready-end');
+  // Log sink is up by now, so the summary line (unlike the early per-mark
+  // stderr lines) is durably teed into the daily log file for postmortems.
+  emitBootSummary();
 });
 
 // Browser-pane popup policy (X3). The BrowserPanel webview sets allowpopups

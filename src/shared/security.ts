@@ -196,6 +196,21 @@ function applyRestrictiveAclViaIcacls(filePath: string, principal: string): void
  * name rather than re-introduce the icacls codepage mangle.
  */
 function applyRestrictiveWindowsAcl(filePath: string): void {
+  // Boot-phase diagnostics (S-A): this function shells out synchronously to
+  // whoami.exe + powershell.exe (or icacls) and runs on EVERY cold start in
+  // both the main process (PipeServer ctor → loadOrCreateToken) and the
+  // daemon (DaemonPipeServer.start → loadOrCreateToken). PowerShell process
+  // start under AV is a known multi-second tax — log the duration so boot
+  // traces can attribute it.
+  const aclStart = Date.now();
+  try {
+    applyRestrictiveWindowsAclInner(filePath);
+  } finally {
+    console.log(`[security] token ACL harden took ${Date.now() - aclStart}ms (${path.basename(filePath)})`);
+  }
+}
+
+function applyRestrictiveWindowsAclInner(filePath: string): void {
   const { sid, username } = resolveOwnerIdentity(filePath);
 
   // PRIMARY: DACL-only rebuild via .NET FileInfo.SetAccessControl. The target
