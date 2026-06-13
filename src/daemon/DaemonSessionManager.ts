@@ -148,6 +148,16 @@ export class DaemonSessionManager extends EventEmitter {
      */
     exec?: { command: string };
     /**
+     * X6 resume: a NON-persisted launch command used ONLY to spawn this
+     * replay. When set (replay paths whose agent should resume — see
+     * agentResume.toResumeCommand), buildExecArgs runs THIS command (e.g.
+     * `claude --continue`) while `meta.exec.command` still stores the ORIGINAL
+     * (`claude`). So first launch stays fresh, the badge/`wmux list` show the
+     * launch command, and a restart/reboot revives the conversation. Ignored
+     * unless `exec` is also set. Defaults to `exec.command`.
+     */
+    execLaunchCommand?: string;
+    /**
      * X8 supervision policy + sticky status. Fresh creates pass
      * status:'armed'; recovery replays the persisted value so a
      * runaway-guard 'stopped' survives reboots.
@@ -235,10 +245,15 @@ export class DaemonSessionManager extends EventEmitter {
       // and injection args would collide with the wrapper argv). When the
       // resolved shell's family is unknown we swap to a known-good platform
       // shell rather than guess argv for it.
-      let execArgs = buildExecArgs(cmd, params.exec.command);
+      //
+      // X6: spawn the (possibly resume-rewritten) launch command, but persist
+      // the ORIGINAL below (meta.exec.command). Replay-only callers set
+      // execLaunchCommand; brand-new sessions omit it → spawn === persisted.
+      const launchCommand = params.execLaunchCommand ?? params.exec.command;
+      let execArgs = buildExecArgs(cmd, launchCommand);
       if (!execArgs) {
         cmd = this.resolveExecFallbackShell();
-        execArgs = buildExecArgs(cmd, params.exec.command);
+        execArgs = buildExecArgs(cmd, launchCommand);
       }
       if (!execArgs) {
         throw new Error(`No usable wrapper shell for exec session (resolved: ${cmd})`);

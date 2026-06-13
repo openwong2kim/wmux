@@ -19,6 +19,7 @@ import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING } from '../shared/constants';
+import { toResumeCommand } from '../shared/agentResume';
 
 // === Constants ===
 const wmuxDir = getWmuxDir();
@@ -146,6 +147,26 @@ const LOCK_FILE = path.join(wmuxDir, 'daemon.lock');
 function log(level: string, msg: string, ...args: unknown[]): void {
   const ts = new Date().toISOString();
   console.log(`[${ts}] [daemon/${level}] ${msg}`, ...args);
+}
+
+// === X6 resume on replay ===
+// Compute the NON-persisted launch command for a supervised exec session being
+// REPLAYED (recovery or supervisor restart). Returns the resume-rewritten
+// command (e.g. `claude --continue`) only when:
+//   - the session is an exec unit (has `exec`), AND
+//   - its ORIGINAL cwd still exists — resume is cwd-scoped, so a homedir
+//     fallback would resume an unrelated/empty session (run fresh instead), AND
+//   - the launch command is a known agent launcher (toResumeCommand rewrites it).
+// Otherwise returns undefined → createSession spawns the original command.
+// The persisted meta.exec.command is never affected; first launch is never
+// touched (brand-new createSession callers don't call this).
+function resumeLaunchCommand(session: { id: string; exec?: { command: string }; cwd: string }): string | undefined {
+  if (!session.exec) return undefined;
+  if (!fs.existsSync(session.cwd)) return undefined; // cwd gone → fresh, not wrong-target resume
+  const rewritten = toResumeCommand(session.exec.command);
+  if (rewritten === session.exec.command) return undefined; // not a known agent launcher / already resuming
+  log('info', `X6 resume: replaying session ${session.id} as resume form in ${session.cwd}`);
+  return rewritten;
 }
 
 // === PID / Lock helpers ===
@@ -403,6 +424,9 @@ async function recoverSessions(
               // session this relaunches the supervised command itself (the
               // reboot-survival story), not an empty shell.
               exec: session.exec,
+              // X6: if the exec unit is an agent, resume its conversation
+              // (non-persisted launch command; meta.exec.command stays original).
+              execLaunchCommand: resumeLaunchCommand(session),
               supervision: session.supervision,
               scrollbackData,
               // v2.8.1: stay muted until the renderer's first resize so PTY
@@ -483,6 +507,8 @@ async function recoverSessions(
             deadTtlHours: session.deadTtlHours,
             // X8: replay exec unit + supervision (see suspended path above).
             exec: session.exec,
+            // X6: resume the agent conversation on replay (see suspended path).
+            execLaunchCommand: resumeLaunchCommand(session),
             supervision: session.supervision,
             scrollbackData,
             // v2.8.1: see deferOutput rationale above (Bug 2).
@@ -525,6 +551,8 @@ async function recoverSessions(
           deadTtlHours: session.deadTtlHours,
           // X8: replay exec unit + supervision (see suspended path above).
           exec: session.exec,
+          // X6: resume the agent conversation on replay (see suspended path).
+          execLaunchCommand: resumeLaunchCommand(session),
           supervision: session.supervision,
           // v2.8.1: see deferOutput rationale above (Bug 2).
           deferOutput: true,
@@ -618,6 +646,9 @@ function restartSupervisedSession(
     createdAt: meta.createdAt,
     deadTtlHours: meta.deadTtlHours,
     exec: meta.exec,
+    // X6: a supervised agent that crashed resumes its conversation on restart
+    // (non-persisted launch command; meta.exec.command stays original).
+    execLaunchCommand: resumeLaunchCommand(meta),
     supervision: meta.supervision,
   };
 

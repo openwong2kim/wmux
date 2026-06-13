@@ -718,6 +718,43 @@ describe('DaemonSessionManager', () => {
       expect(session.exec).toEqual({ command: 'claude /loop' });
     });
 
+    // X6: a non-persisted execLaunchCommand spawns the resume-rewritten command
+    // (used by recovery/restart replays) while meta.exec.command stays original.
+    it('spawns execLaunchCommand but persists the ORIGINAL exec.command (X6 resume replay)', () => {
+      const session = manager.createSession({
+        id: 'x6-replay',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude' },
+        execLaunchCommand: 'claude --continue',
+      });
+      // Spawned argv carries the resume form...
+      expect(lastMockPty?.spawnArgs).toEqual([
+        '-NoLogo',
+        '-NoProfile',
+        '-Command',
+        `claude --continue${PWSH_EXIT_TAIL}`,
+      ]);
+      // ...but the persisted unit command is the ORIGINAL (badge / future
+      // first-launch semantics / no drift across repeated replays).
+      expect(session.exec).toEqual({ command: 'claude' });
+    });
+
+    it('without execLaunchCommand, spawns the original exec.command (first launch unchanged)', () => {
+      manager.createSession({
+        id: 'x6-fresh',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude' },
+      });
+      expect(lastMockPty?.spawnArgs).toEqual([
+        '-NoLogo',
+        '-NoProfile',
+        '-Command',
+        `claude${PWSH_EXIT_TAIL}`,
+      ]);
+    });
+
     it('stores supervision meta as an owned copy (no caller aliasing)', () => {
       const limit = { burst: 5, healthyUptimeSec: 300 };
       const session = manager.createSession({
