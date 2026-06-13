@@ -875,11 +875,14 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const fireFirstData = () => {
       if (!firstDataFired) {
         firstDataFired = true;
-        // X6 ②: the pane is interactive — its resume pill may now be clicked.
-        useStore.getState().markPtyReady(ptyId);
         onFirstDataRef.current?.();
       }
     };
+    // X6 ②: the resume pill becomes clickable only on LIVE PTY data — NOT on
+    // restored scrollback (which also calls fireFirstData to hide overlays).
+    // Marking ready on a restore write would let the pill paste before the
+    // recovered pipe is confirmed writable (CodeRabbit #3 / eng review EI6).
+    const markPaneLive = () => useStore.getState().markPtyReady(ptyId);
 
     // Restore scrollback from previous session, then connect PTY data listener.
     // Scrollback must be written BEFORE PTY data listener is connected so new
@@ -890,6 +893,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           terminal.write(data);
           glyphRepaint.onData(data.length);
           fireFirstData();
+          markPaneLive();
         }
       });
 
@@ -917,6 +921,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         terminal.write(data);
         glyphRepaint.onData(data.length);
         fireFirstData();
+        markPaneLive();
       });
 
       removeExitListener = window.electronAPI.pty.onExit((id, exitCode) => {
@@ -1002,7 +1007,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         for (const data of pendingData) {
           terminal.write(data);
         }
-        if (pendingData.length > 0) fireFirstData();
+        if (pendingData.length > 0) { fireFirstData(); markPaneLive(); }
         pendingData.length = 0;
         // Register with the scrollback autosave only after restore
         // completes. Setting it synchronously before the async load lets
@@ -1028,7 +1033,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         for (const data of pendingData) {
           terminal.write(data);
         }
-        if (pendingData.length > 0) fireFirstData();
+        if (pendingData.length > 0) { fireFirstData(); markPaneLive(); }
         pendingData.length = 0;
         registerTerminal(ptyId, terminal);
       });

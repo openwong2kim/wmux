@@ -1285,6 +1285,7 @@ function wireEvents(
   // PTY exit). Both must clear the main-side agentStatus so the sidebar dot
   // doesn't lie about a closed terminal (Codex P2).
   sessionManager.on('session:destroyed', (payload: { id: string }) => {
+    recoveredAgentShellIds.delete(payload.id); // X6 ②: drop hint on explicit close too (CodeRabbit #2)
     const event: DaemonEvent = {
       type: 'session.destroyed',
       sessionId: payload.id,

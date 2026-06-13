@@ -109,6 +109,7 @@ async function main() {
   const authToken = randomUUID();
   writeConfig(wmuxDir, pipeName, authToken);
   const childEnv = { ...process.env, USERPROFILE: testHome, HOME: testHome };
+  const shell = process.platform === 'win32' ? 'cmd.exe' : '/bin/sh';
 
   // --- Daemon #1: create three real sessions (valid spawn env + shapes) ---
   let d1 = spawnDaemon(testHome);
@@ -116,13 +117,13 @@ async function main() {
   let resolved = await waitForPipeFile(wmuxDir);
   let sock = await connectSocket(resolved);
   await rpc(sock, 'daemon.createSession', {
-    id: 'p1-agent-shell', cmd: 'cmd.exe', cwd: projDir, env: childEnv, cols: 80, rows: 24,
+    id: 'p1-agent-shell', cmd: shell, cwd: projDir, env: childEnv, cols: 80, rows: 24,
   }, authToken); // interactive shell — will get lastDetectedAgent injected
   await rpc(sock, 'daemon.createSession', {
-    id: 'p2-plain-shell', cmd: 'cmd.exe', cwd: projDir, env: childEnv, cols: 80, rows: 24,
+    id: 'p2-plain-shell', cmd: shell, cwd: projDir, env: childEnv, cols: 80, rows: 24,
   }, authToken); // interactive shell — stays agent-less
   await rpc(sock, 'daemon.createSession', {
-    id: 'p3-exec-agent', cmd: 'cmd.exe', cwd: projDir, env: childEnv, cols: 80, rows: 24,
+    id: 'p3-exec-agent', cmd: shell, cwd: projDir, env: childEnv, cols: 80, rows: 24,
     exec: { command: 'claude' },
     supervision: { restart: 'always', limit: { burst: 5, healthyUptimeSec: 300 } },
   }, authToken); // supervised exec — excluded from the pill (auto-resumes via ①)
