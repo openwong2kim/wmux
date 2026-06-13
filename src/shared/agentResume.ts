@@ -138,3 +138,26 @@ export function toResumeCommand(command: string): string {
 export function isResumableLaunchCommand(command: string): boolean {
   return toResumeCommand(command) !== command;
 }
+
+/**
+ * X6 Feature ②: does a RECOVERED session qualify for the one-click resume pill?
+ *
+ * Only INTERACTIVE agent shells do: the user typed `claude` in a plain pane and
+ * a reboot replayed the SHELL (the agent is gone — the pill offers to bring it
+ * back). Excluded:
+ *   - exec/supervised units — they already auto-resume via execLaunchCommand
+ *     (Feature ①); a pill would be a redundant second resume.
+ *   - panes that never ran a detectable agent (no lastDetectedAgent).
+ *
+ * Returns the agent slug to offer, or undefined. The caller is responsible for
+ * the "recovered THIS boot" half of the gate — a live reconnect must never
+ * reach here (Codex eng review EC4).
+ */
+export function resumeOfferForRecovered(session: {
+  exec?: { command: string };
+  supervision?: unknown;
+  lastDetectedAgent?: string;
+}): string | undefined {
+  if (session.exec || session.supervision) return undefined;
+  return session.lastDetectedAgent || undefined;
+}

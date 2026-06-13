@@ -11,8 +11,9 @@ import { createToastSlice, type ToastSlice } from './slices/toastSlice';
 import { createSearchSlice, type SearchSlice } from './slices/searchSlice';
 import { createProjectConfigSlice, type ProjectConfigSlice } from './slices/projectConfigSlice';
 import { createSupervisionSlice, type SupervisionSlice } from './slices/supervisionSlice';
+import { createResumeSlice, type ResumeSlice } from './slices/resumeSlice';
 
-export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice;
+export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice;
 
 export const useStore = create<StoreState>()(
   immer((...args) => ({
@@ -27,5 +28,6 @@ export const useStore = create<StoreState>()(
     ...createSearchSlice(...args),
     ...createProjectConfigSlice(...args),
     ...createSupervisionSlice(...args),
+    ...createResumeSlice(...args),
   }))
 );

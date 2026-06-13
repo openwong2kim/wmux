@@ -39,7 +39,7 @@ const electronAPI = {
     // sessions — the renderer uses it to hydrate its supervision slice on boot
     // and daemon-reconnect. Absent in local mode and for unsupervised panes.
     list: () =>
-      ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number } }[]>,
+      ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string }[]>,
     reconnect: (id: string) =>
       // RCA A1 — `transient` distinguishes a recoverable failure (pipe not
       // writable yet, RPC threw during a handler-swap window) from a permanent

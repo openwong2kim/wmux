@@ -176,6 +176,10 @@ export const en = {
   'supervision.stop': 'Stop supervision',
   'supervision.rearm': 'Rearm supervision',
   'supervision.actionFailed': 'Supervision action failed — daemon may be offline',
+  // X6 ② — one-click resume pill on a recovered interactive agent pane.
+  'resume.label': 'Resume {agent}',
+  'resume.tooltip': 'Resume the previous agent conversation in this pane',
+  'resume.dismiss': 'Dismiss',
 
   // Browser
   'browser.urlPlaceholder': 'Enter URL...',

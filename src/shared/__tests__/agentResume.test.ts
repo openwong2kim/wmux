@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { toResumeCommand, isResumableLaunchCommand } from '../agentResume';
+import { toResumeCommand, isResumableLaunchCommand, resumeOfferForRecovered } from '../agentResume';
 
 describe('toResumeCommand (X6)', () => {
   describe('rewrites known agent launchers', () => {
@@ -93,6 +93,22 @@ describe('toResumeCommand (X6)', () => {
     it('false for already-resuming or non-agent', () => {
       expect(isResumableLaunchCommand('claude --continue')).toBe(false);
       expect(isResumableLaunchCommand('node x.js')).toBe(false);
+    });
+  });
+
+  describe('resumeOfferForRecovered (Feature ② EC4 gate)', () => {
+    it('offers the slug for an interactive agent shell', () => {
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'claude' })).toBe('claude');
+    });
+    it('no offer when no agent was detected', () => {
+      expect(resumeOfferForRecovered({})).toBeUndefined();
+      expect(resumeOfferForRecovered({ lastDetectedAgent: '' })).toBeUndefined();
+    });
+    it('EXCLUDES exec units (they auto-resume via Feature ①)', () => {
+      expect(resumeOfferForRecovered({ exec: { command: 'claude' }, lastDetectedAgent: 'claude' })).toBeUndefined();
+    });
+    it('EXCLUDES supervised units', () => {
+      expect(resumeOfferForRecovered({ supervision: { restart: 'always' }, lastDetectedAgent: 'claude' })).toBeUndefined();
     });
   });
 });

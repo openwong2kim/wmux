@@ -19,7 +19,20 @@ import type { DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams } from '../shared/rpc';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING } from '../shared/constants';
-import { toResumeCommand } from '../shared/agentResume';
+import { toResumeCommand, resumeOfferForRecovered } from '../shared/agentResume';
+import { agentDisplayToSlug } from '../main/pty/AgentDetector';
+import type { AgentSlug } from '../shared/events';
+
+// X6 Feature ②: sessions RECOVERED this daemon boot that were running an
+// INTERACTIVE agent (non-exec, non-supervised) → ptyId → the agent slug to
+// resume. The only sessions that get a one-click resume pill. Transient
+// (per-boot, never persisted): populated in recoverSessions FROM THE PERSISTED
+// session (the recovered LIVE meta is a fresh shell with no lastDetectedAgent,
+// so the slug MUST be captured here, not read back off the live session).
+// Cleared when the agent is re-detected (it relaunched) or the session ends.
+// A LIVE reconnect never enters this map, so the pill can't paste
+// `claude --continue` into a still-running agent (Codex eng review EC4).
+const recoveredAgentShellIds = new Map<string, AgentSlug>();
 
 // === Constants ===
 const wmuxDir = getWmuxDir();
@@ -590,6 +603,18 @@ async function recoverSessions(
     stateWriter.saveImmediate(liveState);
   }
 
+  // X6 Feature ②: flag recovered INTERACTIVE agent panes for the resume pill.
+  // Read lastDetectedAgent from the PERSISTED session (the live recovered meta
+  // is a fresh shell with no agent yet — correct: the pill is a one-time "this
+  // pane WAS an agent, resume?" offer). Exec/supervised panes are excluded —
+  // they already auto-resume via execLaunchCommand (Feature ①).
+  for (const s of state.sessions) {
+    const offer = resumeOfferForRecovered(s);
+    if (recoveredIds.has(s.id) && offer) {
+      recoveredAgentShellIds.set(s.id, offer as AgentSlug);
+    }
+  }
+
   // Clean up orphaned buffer files. Preserve buffers for both the
   // recovered sessions and the cap-skipped suspended ones — the latter
   // need their .buf files intact to survive until the next launch.
@@ -892,9 +917,17 @@ function registerRpcHandlers(
     // X8: join the supervisor's volatile runtime (restart counts, pending
     // backoff) onto supervised sessions — additive field consumed by
     // `wmux list --json` and the sidebar badge.
-    return sessionManager.listSessions().map((s) =>
-      s.supervision ? { ...s, supervisionRuntime: paneSupervisor.getRuntime(s.id) } : s,
-    );
+    // X6 ②: attach resumeAgent ONLY for sessions recovered-this-boot that were
+    // interactive agents (recoveredAgentShellIds) — drives the resume pill.
+    return sessionManager.listSessions().map((s) => {
+      // The slug is held in the map (captured from the persisted session at
+      // recovery) — NOT read off the live meta, which is a fresh shell here.
+      const resumeAgent = recoveredAgentShellIds.get(s.id);
+      const withRuntime = s.supervision
+        ? { ...s, supervisionRuntime: paneSupervisor.getRuntime(s.id) }
+        : s;
+      return resumeAgent ? { ...withRuntime, resumeAgent } : withRuntime;
+    });
   });
 
   // X8 supervision control — renderer-only surface (main IPC → daemon).
@@ -1070,6 +1103,7 @@ function wireEvents(
     // ⇒ the process exited on its own (exitCode/signal say why); a
     // `destroySession` log just before ⇒ wmux killed it.
     log('info', `[lifecycle] session:died id=${payload.id} reason=${payload.reason ?? 'pty-exit'} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} idleMsBeforeExit=${payload.lastActivityMsAgo ?? '?'} liveTotal=${sessionManager.listSessions().length}`);
+    recoveredAgentShellIds.delete(payload.id); // X6 ②: drop a stale resume hint
     try {
       const event: DaemonEvent = {
         type: 'session.died',
@@ -1164,6 +1198,19 @@ function wireEvents(
   });
 
   sessionManager.on('session:agent', (payload: { sessionId: string; event: { agent: string; status: string; message: string } }) => {
+    // X6 Feature ②: record the detected agent SLUG on the session so a future
+    // reboot knows this interactive pane was an agent. agentDisplayToSlug maps
+    // the AgentDetector display name ('Claude Code') → canonical slug ('claude').
+    const slug = agentDisplayToSlug(payload.event.agent);
+    if (slug) {
+      const managed = sessionManager.getSession(payload.sessionId);
+      if (managed && managed.meta.lastDetectedAgent !== slug) {
+        managed.meta.lastDetectedAgent = slug;
+        stateWriter.saveDebounced(buildState(sessionManager));
+      }
+      // The agent is live again → this pane is no longer a "resume me" shell.
+      recoveredAgentShellIds.delete(payload.sessionId);
+    }
     const event: DaemonEvent = {
       type: 'agent.event',
       sessionId: payload.sessionId,

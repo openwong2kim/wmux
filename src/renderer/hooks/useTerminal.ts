@@ -817,6 +817,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // own bracketed-paste markers if it pre-wrapped the payload.
     let inputBuffer = '';
     terminal.onData((data) => {
+      // X6 ②: the user is driving this shell themselves — retract any pending
+      // resume offer so the pill can't fire into a session they've moved on in.
+      useStore.getState().clearResumeHint(ptyId);
       void chunkOnDataIfNeeded(
         (d) => window.electronAPI.pty.write(ptyId, d),
         data,
@@ -872,6 +875,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const fireFirstData = () => {
       if (!firstDataFired) {
         firstDataFired = true;
+        // X6 ②: the pane is interactive — its resume pill may now be clicked.
+        useStore.getState().markPtyReady(ptyId);
         onFirstDataRef.current?.();
       }
     };

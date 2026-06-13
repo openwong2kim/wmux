@@ -1,6 +1,7 @@
 // === Daemon-specific type definitions ===
 
 import type { DaemonSupervisionPolicy } from '../shared/rpc';
+import type { AgentSlug } from '../shared/events';
 
 /** Session lifecycle state */
 export type DaemonSessionState = 'detached' | 'attached' | 'dead' | 'suspended';
@@ -45,6 +46,14 @@ export interface DaemonSession {
   exec?: { command: string };
   /** X8 supervision policy + sticky status (counters live in PaneSupervisor). */
   supervision?: DaemonSessionSupervision;
+  /**
+   * X6 resume: canonical slug of the last agent detected running in this
+   * session (set from AgentDetector via agentDisplayToSlug). Persisted so that
+   * after a reboot the daemon knows an INTERACTIVE pane was running an agent
+   * and can offer a one-click resume. Only drives the resume pill for sessions
+   * RECOVERED this boot (see recoveredAgentShellIds) — never live reconnects.
+   */
+  lastDetectedAgent?: AgentSlug;
 }
 
 /** Top-level schema for ~/.wmux/sessions.json */

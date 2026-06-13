@@ -187,6 +187,17 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     activeSurfacePtyId ? s.supervisionByPtyId[activeSurfacePtyId] : undefined,
   );
 
+  // X6 ② resume pill. A pane recovered-this-boot that was running an agent gets
+  // a one-click "Resume <Agent>" offer. Clickable only once the pane is
+  // interactive (first PTY data — EI6) so the paste can't land before the
+  // recovered pipe is writable. Click pastes `<agent> --continue` and retracts.
+  const resumeHint = useStore((s) =>
+    activeSurfacePtyId ? s.resumeHintByPtyId[activeSurfacePtyId] : undefined,
+  );
+  const resumePtyReady = useStore((s) =>
+    activeSurfacePtyId ? !!s.ptyReadyByPtyId[activeSurfacePtyId] : false,
+  );
+
   const handleCloseSurface = useCallback((surfaceId: string) => {
     const surface = pane.surfaces.find((s) => s.id === surfaceId);
     if (surface?.ptyId) {
@@ -277,6 +288,67 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           }}
         >
           {supervision.status === 'stopped' ? '⟳!' : '⟳'}
+        </span>
+      )}
+      {resumeHint && resumePtyReady && !supervision && activeSurfacePtyId && (
+        <span
+          style={{
+            position: 'absolute',
+            top: 4,
+            left: 6,
+            zIndex: 20,
+            display: 'inline-flex',
+            alignItems: 'center',
+            gap: 6,
+            fontSize: 10,
+            fontFamily: 'ui-monospace, monospace',
+            fontWeight: 700,
+            letterSpacing: '0.04em',
+            color: 'var(--bg-main)',
+            backgroundColor: 'var(--accent-cursor)',
+            borderRadius: 3,
+            opacity: 0.9,
+            overflow: 'hidden',
+          }}
+        >
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              window.electronAPI.pty.write(activeSurfacePtyId, `${resumeHint} --continue\r`);
+              useStore.getState().clearResumeHint(activeSurfacePtyId);
+            }}
+            title={t('resume.tooltip')}
+            aria-label={t('resume.tooltip')}
+            style={{
+              padding: '1px 6px',
+              font: 'inherit',
+              color: 'inherit',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+            }}
+          >
+            {`▶ ${t('resume.label', { agent: resumeHint.charAt(0).toUpperCase() + resumeHint.slice(1) })}`}
+          </button>
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              useStore.getState().clearResumeHint(activeSurfacePtyId);
+            }}
+            title={t('resume.dismiss')}
+            aria-label={t('resume.dismiss')}
+            style={{
+              padding: '1px 5px 1px 0',
+              font: 'inherit',
+              color: 'inherit',
+              background: 'none',
+              border: 'none',
+              cursor: 'pointer',
+              opacity: 0.8,
+            }}
+          >
+            ×
+          </button>
         </span>
       )}
       <SurfaceTabs

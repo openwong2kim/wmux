@@ -124,6 +124,10 @@ export const ko = {
   'supervision.stop': '감독 중지',
   'supervision.rearm': '감독 재개',
   'supervision.actionFailed': '감독 작업 실패 — 데몬이 오프라인일 수 있습니다',
+  // X6 ② — 복원된 대화형 에이전트 pane의 원클릭 resume pill.
+  'resume.label': '{agent} 이어가기',
+  'resume.tooltip': '이 pane의 이전 에이전트 대화를 이어갑니다',
+  'resume.dismiss': '닫기',
 
   // Browser
   'browser.urlPlaceholder': 'URL 입력...',

@@ -657,6 +657,8 @@ export function registerPTYHandlers(
         // additive volatile runtime joined by the daemon's listSessions handler.
         supervision?: { restart: string; limit: unknown; status: 'armed' | 'stopped' };
         supervisionRuntime?: { status: 'armed' | 'stopped'; restartCount: number };
+        // X6 ② — present only for an interactive agent pane recovered this boot.
+        resumeAgent?: string;
       }>;
       // Map to same shape as local PTYManager.getActiveInstances(), plus an
       // additive `supervision` summary for the renderer's supervision slice
@@ -676,6 +678,8 @@ export function registerPTYHandlers(
                 },
               }
             : {}),
+          // X6 ② — carry the resume hint (agent slug) for the renderer pill.
+          ...(s.resumeAgent ? { resumeAgent: s.resumeAgent } : {}),
         }));
       // RCA A8 — log the count the renderer's reconcile will act on. An empty
       // or short list here, correlated with a renderer ptyId-clear, is the

@@ -1,4 +1,5 @@
 import { useEffect, useState, useRef, useCallback } from 'react';
+import type { AgentSlug } from '../../../shared/events';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Sidebar from '../Sidebar/Sidebar';
@@ -762,10 +763,14 @@ export default function AppLayout() {
     const hydrate = () => {
       void window.electronAPI.pty.list().then((sessions) => {
         const snapshot: Record<string, { status: 'armed' | 'stopped'; restartCount: number }> = {};
+        // X6 ②: resume hints for recovered interactive agent panes.
+        const resumeSnapshot: Record<string, AgentSlug> = {};
         for (const s of sessions) {
           if (s.supervision) snapshot[s.id] = s.supervision;
+          if (s.resumeAgent) resumeSnapshot[s.id] = s.resumeAgent as AgentSlug;
         }
         useStore.getState().hydrateSupervision(snapshot);
+        useStore.getState().hydrateResume(resumeSnapshot);
       }).catch(() => { /* best-effort — a transient list failure self-heals on the next connect */ });
     };
     hydrate();
