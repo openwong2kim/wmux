@@ -76,6 +76,8 @@ export const IPC = {
   // Triggered by Ctrl+click on a path token rendered in the terminal.
   // Path is validated main-side: must be absolute, no NUL bytes, length-capped.
   SHELL_OPEN_PATH: 'shell:open-path',
+  GIT_STATUS: 'git:status',
+  DIALOG_PICK_FILE: 'dialog:pick-file',
   // File system
   FS_READ_DIR: 'fs:read-dir',
   FS_READ_FILE: 'fs:read-file',

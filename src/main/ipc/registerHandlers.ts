@@ -19,6 +19,7 @@ import { registerMetadataHandlers } from './handlers/metadata.handler';
 import { startLocalContextWatch } from '../metadata/localContextWatch';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
 import { registerFsHandlers } from './handlers/fs.handler';
+import { registerToolbarHandlers } from './handlers/toolbar.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
 import { IPC } from '../../shared/constants';
@@ -56,6 +57,7 @@ export function registerAllHandlers(
   });
   registerClipboardHandlers();
   const cleanupFs = registerFsHandlers();
+  const cleanupToolbar = registerToolbarHandlers();
   const cleanupMcp = options.mcpRegistrar
     ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null))
     : null;
@@ -123,6 +125,7 @@ export function registerAllHandlers(
     cleanupMetadata();
     if (cleanupLocalContext) cleanupLocalContext();
     cleanupFs();
+    cleanupToolbar();
     if (cleanupMcp) cleanupMcp();
     ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
     ipcMain.removeAllListeners(IPC.WINDOW_HIDE);

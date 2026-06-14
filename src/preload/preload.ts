@@ -223,6 +223,12 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.FS_CHANGED, listener); };
     },
   },
+  git: {
+    status: (cwd: string) => ipcRenderer.invoke(IPC.GIT_STATUS, cwd) as Promise<string>,
+  },
+  dialog: {
+    pickFile: () => ipcRenderer.invoke(IPC.DIALOG_PICK_FILE) as Promise<string[]>,
+  },
   // Project config (X5 wmux.json). `get` resolves a workspace cwd to the
   // nearest wmux.json + trust state; `setTrust` persists a user decision
   // bound to the contentHash the approval dialog displayed.
