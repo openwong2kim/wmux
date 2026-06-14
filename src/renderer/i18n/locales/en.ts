@@ -528,6 +528,24 @@ export const en = {
   'claudeIntegration.usage.status.http-error': 'Anthropic API error',
   'claudeIntegration.usage.status.network-error': 'Network error',
   'claudeIntegration.usage.status.read-error': 'Credential read error',
+
+  // Agent toolbar
+  'toolbar.attach': 'Attach',
+  'toolbar.fileExplorer': 'File explorer',
+  'toolbar.snippets': 'Snippets',
+  'toolbar.richInput': 'Rich Input',
+  'toolbar.new': 'New',
+  'toolbar.send': 'Send',
+  'toolbar.richPlaceholder': 'Write or paste a prompt. Enter for newline. Send pastes it into the agent.',
+  'toolbar.noTerminal': 'No terminal focused',
+  'toolbar.addSnippet': 'Add snippet',
+  'toolbar.snippetLabel': 'Label',
+  'toolbar.snippetText': 'Prompt text',
+  'settings.agentToolbar': 'Agent toolbar',
+  'settings.agentToolbarShow': 'Show agent toolbar',
+  'settings.agentToolbarShowDesc': 'A bottom bar of quick tools that inject into the focused agent.',
+  'settings.agentToolbarNewCommand': 'New-conversation command',
+  'settings.agentToolbarManageSnippets': 'Manage snippets',
 } as const;
 
 export type TranslationKey = keyof typeof en;

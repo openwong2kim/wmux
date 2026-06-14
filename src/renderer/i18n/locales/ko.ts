@@ -457,4 +457,22 @@ export const ko = {
   'settings.inspect.menuBorder': '테두리',
   'settings.inspect.menuAccent': '강조',
   'settings.inspect.proxyLabel': '{token} 편집 ({role})',
+
+  // Agent toolbar
+  'toolbar.attach': '첨부',
+  'toolbar.fileExplorer': '파일 탐색기',
+  'toolbar.snippets': '스니펫',
+  'toolbar.richInput': '리치 입력',
+  'toolbar.new': '새로',
+  'toolbar.send': '보내기',
+  'toolbar.richPlaceholder': '프롬프트를 입력하거나 붙여넣으세요. Enter는 줄바꿈입니다. Send를 누르면 에이전트에 붙여넣습니다.',
+  'toolbar.noTerminal': '포커스된 터미널 없음',
+  'toolbar.addSnippet': '스니펫 추가',
+  'toolbar.snippetLabel': '레이블',
+  'toolbar.snippetText': '프롬프트 텍스트',
+  'settings.agentToolbar': '에이전트 도구 모음',
+  'settings.agentToolbarShow': '에이전트 도구 모음 표시',
+  'settings.agentToolbarShowDesc': '포커스된 에이전트에 입력을 주입하는 하단 도구 모음입니다.',
+  'settings.agentToolbarNewCommand': '새 대화 명령',
+  'settings.agentToolbarManageSnippets': '스니펫 관리',
 } as const;
