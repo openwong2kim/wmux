@@ -474,5 +474,4 @@ export const ko = {
   'settings.agentToolbarShow': '에이전트 도구 모음 표시',
   'settings.agentToolbarShowDesc': '포커스된 에이전트에 입력을 주입하는 하단 도구 모음입니다.',
   'settings.agentToolbarNewCommand': '새 대화 명령',
-  'settings.agentToolbarManageSnippets': '스니펫 관리',
 } as const;

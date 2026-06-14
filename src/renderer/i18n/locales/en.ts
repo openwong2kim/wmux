@@ -545,7 +545,6 @@ export const en = {
   'settings.agentToolbarShow': 'Show agent toolbar',
   'settings.agentToolbarShowDesc': 'A bottom bar of quick tools that inject into the focused agent.',
   'settings.agentToolbarNewCommand': 'New-conversation command',
-  'settings.agentToolbarManageSnippets': 'Manage snippets',
 } as const;
 
 export type TranslationKey = keyof typeof en;

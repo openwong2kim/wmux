@@ -1,4 +1,4 @@
-import { useCallback, useEffect } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { focusedTerminalPtyId } from '../../utils/focusedSurface';
@@ -14,6 +14,8 @@ export default function AgentToolbar() {
   const popover = useStore((s) => s.toolbarPopover);
   const setPopover = useStore((s) => s.setToolbarPopover);
   const newCommand = useStore((s) => s.newConversationCommand);
+
+  const containerRef = useRef<HTMLDivElement>(null);
 
   const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const ptyId = focusedTerminalPtyId(activeWorkspace);
@@ -35,8 +37,31 @@ export default function AgentToolbar() {
     setPopover(popover === name ? null : name);
 
   useEffect(() => {
+    if (!popover) return;
+    const onKey = (e: KeyboardEvent) => {
+      if (e.key === 'Escape') { e.preventDefault(); setPopover(null); }
+    };
+    const onDown = (e: MouseEvent) => {
+      if (containerRef.current && !containerRef.current.contains(e.target as Node)) {
+        setPopover(null);
+      }
+    };
+    document.addEventListener('keydown', onKey);
+    document.addEventListener('mousedown', onDown);
+    return () => {
+      document.removeEventListener('keydown', onKey);
+      document.removeEventListener('mousedown', onDown);
+    };
+  }, [popover, setPopover]);
+
+  useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'g' || e.key === 'G')) {
+        const el = e.target as HTMLElement | null;
+        if (el && containerRef.current && !containerRef.current.contains(el)) {
+          const tag = el.tagName;
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable) return;
+        }
         const state = useStore.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
         if (!focusedTerminalPtyId(ws)) return;
@@ -55,6 +80,7 @@ export default function AgentToolbar() {
 
   return (
     <div
+      ref={containerRef}
       className="relative flex items-center gap-2 px-2.5 py-1.5 shrink-0 border-t border-[var(--bg-surface)] bg-[var(--bg-mantle)]"
       data-testid="agent-toolbar"
     >
