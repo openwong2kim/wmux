@@ -536,6 +536,8 @@ export const en = {
   'toolbar.richInput': 'Rich Input',
   'toolbar.new': 'New',
   'toolbar.send': 'Send',
+  'toolbar.addToPrompt': 'Add to prompt',
+  'toolbar.close': 'Close',
   'toolbar.richPlaceholder': 'Write or paste a prompt. Enter for newline. Send pastes it into the agent.',
   'toolbar.noTerminal': 'No terminal focused',
   'toolbar.addSnippet': 'Add snippet',
