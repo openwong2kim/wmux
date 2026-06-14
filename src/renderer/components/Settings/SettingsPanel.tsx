@@ -880,6 +880,10 @@ function TabGeneral() {
   const startupDirectory = useStore((s) => s.startupDirectory);
   const setStartupDirectory = useStore((s) => s.setStartupDirectory);
   const autoUpdateEnabled = useStore((s) => s.autoUpdateEnabled);
+  const agentToolbarEnabled = useStore((s) => s.agentToolbarEnabled);
+  const setAgentToolbarEnabled = useStore((s) => s.setAgentToolbarEnabled);
+  const newConversationCommand = useStore((s) => s.newConversationCommand);
+  const setNewConversationCommand = useStore((s) => s.setNewConversationCommand);
   const [detectedShells, setDetectedShells] = useState<ShellInfo[]>([]);
   const storeSetAutoUpdate = useStore((s) => s.setAutoUpdateEnabled);
   const setAutoUpdateEnabled = (enabled: boolean) => {
@@ -1008,6 +1012,32 @@ function TabGeneral() {
           >
             {t('settings.restartTutorial')}
           </Button>
+        </SettingRow>
+      </div>
+
+      {/* Agent toolbar */}
+      <div className="flex flex-col gap-2">
+        <SectionLabel label={t('settings.agentToolbar')} />
+        <SettingRow label={t('settings.agentToolbarShow')} description={t('settings.agentToolbarShowDesc')}>
+          <Toggle
+            checked={agentToolbarEnabled}
+            onChange={setAgentToolbarEnabled}
+            label={t('settings.agentToolbarShow')}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.agentToolbarNewCommand')}>
+          <input
+            type="text"
+            value={newConversationCommand}
+            onChange={(e) => setNewConversationCommand(e.target.value)}
+            className="text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono"
+            style={{
+              backgroundColor: 'var(--bg-surface)',
+              color: 'var(--text-main)',
+              border: '1px solid var(--bg-overlay)',
+              width: 200,
+            }}
+          />
         </SettingRow>
       </div>
 
