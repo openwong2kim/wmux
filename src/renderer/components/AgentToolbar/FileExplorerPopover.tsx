@@ -18,18 +18,19 @@ export default function FileExplorerPopover() {
   const addEditorSurface = useStore((s) => s.addEditorSurface);
   const setPopover = useStore((s) => s.setToolbarPopover);
 
-  // Derive cwd + activePaneId reactively from the store.
-  const { cwd, activePaneId } = useStore((s) => {
-    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
-    if (!ws) return { cwd: undefined as string | undefined, activePaneId: undefined as string | undefined };
-    let resolvedCwd: string | undefined = ws.metadata?.cwd;
-    if (!resolvedCwd) {
-      const leaf = findActiveLeaf(ws);
-      const surface = leaf?.surfaces.find((surf) => surf.id === leaf.activeSurfaceId);
-      resolvedCwd = surface?.cwd || undefined;
-    }
-    return { cwd: resolvedCwd, activePaneId: ws.activePaneId };
-  });
+  // Subscribe to stable references (the workspaces array + the active id) and
+  // derive cwd/activePaneId in the render body. Returning a fresh object from
+  // the selector would fail Zustand's Object.is snapshot check every render and
+  // spin into an infinite update loop ("getSnapshot should be cached").
+  const workspaces = useStore((s) => s.workspaces);
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const ws = workspaces.find((w) => w.id === activeWorkspaceId);
+  const activePaneId = ws?.activePaneId;
+  let cwd: string | undefined = ws?.metadata?.cwd;
+  if (ws && !cwd) {
+    const leaf = findActiveLeaf(ws);
+    cwd = leaf?.surfaces.find((surf) => surf.id === leaf.activeSurfaceId)?.cwd || undefined;
+  }
 
   const [entries, setEntries] = useState<Entry[]>([]);
   const [statusByRel, setStatusByRel] = useState<Record<string, GitStatusCode>>({});
