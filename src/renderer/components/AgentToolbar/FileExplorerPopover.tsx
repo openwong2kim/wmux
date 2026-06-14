@@ -1,5 +1,6 @@
 import { useEffect, useState, useCallback } from 'react';
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
 import { parsePorcelain, type GitStatusCode } from '../../../shared/gitStatus';
 import { findActiveLeaf } from '../../utils/focusedSurface';
 
@@ -15,6 +16,7 @@ const BADGE_COLOR: Record<GitStatusCode, string> = {
 };
 
 export default function FileExplorerPopover() {
+  const t = useT();
   const addEditorSurface = useStore((s) => s.addEditorSurface);
   const setPopover = useStore((s) => s.setToolbarPopover);
 
@@ -36,33 +38,42 @@ export default function FileExplorerPopover() {
   const [statusByRel, setStatusByRel] = useState<Record<string, GitStatusCode>>({});
 
   useEffect(() => {
-    if (!cwd) return;
+    if (!cwd) {
+      // Clear stale listing/badges when the cwd becomes unavailable.
+      setEntries([]);
+      setStatusByRel({});
+      return;
+    }
     let cancelled = false;
 
     const fsApi = window.electronAPI.fs;
     if (fsApi) {
-      void fsApi.readDir(cwd).then((list) => {
-        if (!cancelled) setEntries(list as Entry[]);
-      });
+      void fsApi.readDir(cwd)
+        .then((list) => { if (!cancelled) setEntries(list as Entry[]); })
+        .catch(() => { if (!cancelled) setEntries([]); });
     }
 
-    void window.electronAPI.git.status(cwd).then((out) => {
-      if (cancelled) return;
-      const map: Record<string, GitStatusCode> = {};
-      for (const { path, code } of parsePorcelain(out)) {
-        map[path.replace(/\\/g, '/')] = code;
-      }
-      setStatusByRel(map);
-    });
+    void window.electronAPI.git.status(cwd)
+      .then((out) => {
+        if (cancelled) return;
+        const map: Record<string, GitStatusCode> = {};
+        for (const { path, code } of parsePorcelain(out)) {
+          map[path.replace(/\\/g, '/')] = code;
+        }
+        setStatusByRel(map);
+      })
+      .catch(() => { if (!cancelled) setStatusByRel({}); });
 
     return () => { cancelled = true; };
   }, [cwd]);
 
+  // Match git-status entries by their exact (forward-slashed) relative path, or
+  // a directory whose subtree contains a change. No basename fallback: a bare
+  // filename match could badge the wrong same-named file from another directory.
   const badgeFor = useCallback((name: string): GitStatusCode | undefined => {
     if (statusByRel[name]) return statusByRel[name];
     for (const rel of Object.keys(statusByRel)) {
-      const base = rel.split('/').pop();
-      if (rel === name || base === name || rel.startsWith(name + '/')) return statusByRel[rel];
+      if (rel === name || rel.startsWith(name + '/')) return statusByRel[rel];
     }
     return undefined;
   }, [statusByRel]);
@@ -78,7 +89,7 @@ export default function FileExplorerPopover() {
       data-testid="file-explorer"
     >
       {!cwd && (
-        <p className="text-[var(--text-muted)] px-2 py-2">No working directory.</p>
+        <p className="text-[var(--text-muted)] px-2 py-2">{t('toolbar.noWorkingDir')}</p>
       )}
       {entries.map((e) => {
         const badge = e.isDirectory ? undefined : badgeFor(e.name);

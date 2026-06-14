@@ -469,6 +469,7 @@ export const ko = {
   'toolbar.close': '닫기',
   'toolbar.richPlaceholder': '프롬프트를 입력하거나 붙여넣으세요. Enter는 줄바꿈입니다. Send를 누르면 에이전트에 붙여넣습니다.',
   'toolbar.noTerminal': '포커스된 터미널 없음',
+  'toolbar.noWorkingDir': '작업 디렉터리 없음.',
   'toolbar.addSnippet': '스니펫 추가',
   'toolbar.snippetLabel': '레이블',
   'toolbar.snippetText': '프롬프트 텍스트',

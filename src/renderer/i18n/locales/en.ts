@@ -540,6 +540,7 @@ export const en = {
   'toolbar.close': 'Close',
   'toolbar.richPlaceholder': 'Write or paste a prompt. Enter for newline. Send pastes it into the agent.',
   'toolbar.noTerminal': 'No terminal focused',
+  'toolbar.noWorkingDir': 'No working directory.',
   'toolbar.addSnippet': 'Add snippet',
   'toolbar.snippetLabel': 'Label',
   'toolbar.snippetText': 'Prompt text',

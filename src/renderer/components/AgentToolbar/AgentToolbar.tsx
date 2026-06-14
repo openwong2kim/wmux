@@ -57,10 +57,14 @@ export default function AgentToolbar() {
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
       if ((e.ctrlKey || e.metaKey) && (e.key === 'g' || e.key === 'G')) {
+        // Don't hijack Ctrl/Cmd+G while the user is typing in the toolbar's own
+        // editable fields (Rich Input textarea, Snippet inputs). Editable
+        // elements OUTSIDE the toolbar (notably the focused terminal's xterm
+        // textarea) must still toggle Rich Input — that's the primary entry.
         const el = e.target as HTMLElement | null;
-        if (el && containerRef.current && !containerRef.current.contains(el)) {
+        if (el && containerRef.current && containerRef.current.contains(el)) {
           const tag = el.tagName;
-          if (tag === 'INPUT' || tag === 'TEXTAREA' || el.isContentEditable) return;
+          if (tag === 'INPUT' || tag === 'TEXTAREA' || tag === 'SELECT' || el.isContentEditable) return;
         }
         const state = useStore.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
