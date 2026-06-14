@@ -28,4 +28,16 @@ describe('parsePorcelain', () => {
       { path: 'y', code: 'A' },
     ]);
   });
+
+  it('strips surrounding quotes from paths with spaces', () => {
+    expect(parsePorcelain(' M "src/my file.ts"\n')).toEqual([
+      { path: 'src/my file.ts', code: 'M' },
+    ]);
+  });
+
+  it('strips quotes and keeps the new name for quoted renames', () => {
+    expect(parsePorcelain('R  "old name.ts" -> "new name.ts"\n')).toEqual([
+      { path: 'new name.ts', code: 'R' },
+    ]);
+  });
 });

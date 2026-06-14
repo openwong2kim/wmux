@@ -36,6 +36,7 @@ export function parsePorcelain(output: string): GitFileStatus[] {
     let path = line.slice(3).trim();
     const arrow = path.indexOf(' -> ');
     if (arrow !== -1) path = path.slice(arrow + 4).trim();
+    if (path.startsWith('"') && path.endsWith('"')) path = path.slice(1, -1);
     if (path) result.push({ path, code });
   }
   return result;
