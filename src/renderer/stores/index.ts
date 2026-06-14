@@ -12,8 +12,9 @@ import { createSearchSlice, type SearchSlice } from './slices/searchSlice';
 import { createProjectConfigSlice, type ProjectConfigSlice } from './slices/projectConfigSlice';
 import { createSupervisionSlice, type SupervisionSlice } from './slices/supervisionSlice';
 import { createResumeSlice, type ResumeSlice } from './slices/resumeSlice';
+import { createAgentToolbarSlice, type AgentToolbarSlice } from './slices/agentToolbarSlice';
 
-export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice;
+export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice;
 
 export const useStore = create<StoreState>()(
   immer((...args) => ({
@@ -29,5 +30,6 @@ export const useStore = create<StoreState>()(
     ...createProjectConfigSlice(...args),
     ...createSupervisionSlice(...args),
     ...createResumeSlice(...args),
+    ...createAgentToolbarSlice(...args),
   }))
 );
