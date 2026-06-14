@@ -214,7 +214,10 @@ if (process.env.WMUX_DATA_SUFFIX) {
 // second, ungrouped button under a process-derived ID. Squirrel sets the
 // shortcut AUMID to `com.squirrel.<package>.<exe>` = `com.squirrel.wmux.wmux`
 // (MakerSquirrel name 'wmux' + wmux.exe). Must run before any BrowserWindow.
-if (process.platform === 'win32') {
+// Packaged-only: in dev there is no Squirrel-created shortcut whose AUMID
+// matches this id, so setting it unpackaged can muddle taskbar grouping. Gate
+// on app.isPackaged, mirroring the WMUX_DATA_SUFFIX dev/packaged split above.
+if (process.platform === 'win32' && app.isPackaged) {
   app.setAppUserModelId('com.squirrel.wmux.wmux');
 }
 
