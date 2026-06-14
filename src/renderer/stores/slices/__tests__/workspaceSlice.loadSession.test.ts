@@ -40,6 +40,10 @@ type TestState = WorkspaceSlice & {
   company: Company | null;
   memberCosts: Record<string, number>;
   sessionStartTime: number | null;
+  // agentToolbarSlice fields touched by loadSession
+  agentToolbarEnabled: boolean;
+  toolbarSnippets: { id: string; label: string; text: string }[];
+  newConversationCommand: string;
 };
 
 function createTestStore() {
@@ -77,6 +81,9 @@ function createTestStore() {
       company: null,
       memberCosts: {},
       sessionStartTime: null,
+      agentToolbarEnabled: true,
+      toolbarSnippets: [],
+      newConversationCommand: '/clear',
     }))
   );
 }
@@ -359,6 +366,29 @@ describe('WorkspaceSlice.clearAllPtyState — Fix 0 fallback', () => {
     expect(store.getState().company).toBeNull();
     expect(() => store.getState().clearAllPtyState()).not.toThrow();
     expect(store.getState().company).toBeNull();
+  });
+});
+
+describe('loadSession — agent toolbar prefs', () => {
+  it('restores enabled, snippets, and new command', () => {
+    const store = createTestStore();
+    const ws: Workspace = {
+      id: 'ws-toolbar',
+      name: 'Toolbar',
+      rootPane: makeBrowserSurfaceTree('https://example.com'),
+      activePaneId: 'pane-root',
+    };
+    store.getState().loadSession({
+      workspaces: [ws],
+      activeWorkspaceId: ws.id,
+      sidebarVisible: true,
+      agentToolbarEnabled: false,
+      agentToolbarSnippets: [{ id: 's1', label: 'A', text: 'aaa' }],
+      agentToolbarNewCommand: '/reset',
+    } as any);
+    expect(store.getState().agentToolbarEnabled).toBe(false);
+    expect(store.getState().toolbarSnippets).toEqual([{ id: 's1', label: 'A', text: 'aaa' }]);
+    expect(store.getState().newConversationCommand).toBe('/reset');
   });
 });
 

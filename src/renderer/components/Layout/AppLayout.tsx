@@ -229,6 +229,9 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     // field convention (omit when empty).
     layoutTemplates: state.layoutTemplates.filter((t) => !t.builtin),
     recentCommands: state.recentCommands.length > 0 ? state.recentCommands : undefined,
+    agentToolbarEnabled: state.agentToolbarEnabled,
+    agentToolbarSnippets: state.toolbarSnippets.length > 0 ? state.toolbarSnippets : undefined,
+    agentToolbarNewCommand: state.newConversationCommand,
   };
 }
 

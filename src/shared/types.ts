@@ -431,6 +431,11 @@ export interface SessionData {
   layoutTemplates?: LayoutTemplate[];
   recentCommands?: string[];
   prefixConfig?: PrefixConfig;
+  // Agent toolbar (2026-06-14). Non-sensitive prefs only — rich-input drafts
+  // and transcript content are never persisted.
+  agentToolbarEnabled?: boolean;
+  agentToolbarSnippets?: { id: string; label: string; text: string }[];
+  agentToolbarNewCommand?: string;
 }
 
 // === xterm 20-slot ANSI palette ===
