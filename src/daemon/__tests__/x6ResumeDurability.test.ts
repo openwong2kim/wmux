@@ -1,0 +1,132 @@
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+
+import { StateWriter } from '../StateWriter';
+import type { DaemonState } from '../types';
+
+// X6 ② reboot-survival durability regression lock.
+//
+// Bug: after a REAL OS reboot, the "▶ Resume Claude" pill did not appear on
+// recovered agent panes. Root cause (confirmed by an expert panel + live test):
+//   - The pill is gated entirely on the PERSISTED lastDetectedAgent
+//     (resumeOfferForRecovered, src/shared/agentResume.ts:156 — reads it off the
+//     persisted session, since the recovered live meta is a fresh shell).
+//   - The session:agent handler (src/daemon/index.ts) set meta.lastDetectedAgent
+//     but persisted it via stateWriter.saveDebounced (30s, in-memory pendingState).
+//   - A real reboot SIGKILLs the daemon; flush()/process.on('exit') never run, so
+//     a fresh detection with no other state-changing event to opportunistically
+//     flush it is lost -> empty recovery offer -> no pill.
+//   - meta.cwd was STRICTLY WORSE: the session:cwd handler persisted NOTHING, so a
+//     reboot restored the pane to a stale cwd and `claude --continue` (cwd-scoped)
+//     resumed the wrong/none conversation.
+//
+// Why the original dogfood missed it: scripts/x6-pill-offer-isolated.mjs MANUALLY
+// SEEDS lastDetectedAgent into sessions.json before respawning the daemon, which
+// bypasses the detect->persist step entirely and so could never hit the race.
+//
+// Fix: both handlers now persist via saveImmediate (agent detection is bounded to
+// one write per slug transition by the !== slug guard; cwd is bounded to actual
+// `cd` by a change-guard in DaemonSessionManager's bridge 'cwd' handler).
+describe('X6 ② reboot-survival durability', () => {
+  let tmpDir: string;
+  let writer: StateWriter;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-x6dur-test-'));
+    writer = new StateWriter(tmpDir);
+  });
+
+  afterEach(() => {
+    writer.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+  });
+
+  // --- The race the fix closes (behavioral proof) ---------------------------
+
+  it('saveDebounced does NOT write synchronously — a SIGKILL in the window loses it', () => {
+    const filePath = path.join(tmpDir, 'sessions.json');
+    expect(fs.existsSync(filePath)).toBe(false);
+    // This is exactly what the OLD session:agent handler did. With a 30s debounce
+    // the payload sits only in memory; a reboot here drops lastDetectedAgent.
+    writer.saveDebounced({ version: 1, sessions: [] });
+    expect(fs.existsSync(filePath)).toBe(false);
+  });
+
+  it('saveImmediate writes synchronously — survives an instant SIGKILL (the fix)', () => {
+    const filePath = path.join(tmpDir, 'sessions.json');
+    writer.saveImmediate({
+      version: 1,
+      sessions: [
+        {
+          id: 'x6dur-agent',
+          state: 'attached',
+          createdAt: new Date().toISOString(),
+          lastActivity: new Date().toISOString(),
+          pid: 4242,
+          cmd: 'pwsh.exe',
+          cwd: 'D:\\proj',
+          env: {},
+          cols: 80,
+          rows: 24,
+          deadTtlHours: 24,
+          lastDetectedAgent: 'claude',
+        },
+      ] as DaemonState['sessions'],
+    });
+    // No await, no timer fire — the field must already be on disk.
+    expect(fs.existsSync(filePath)).toBe(true);
+    const persisted = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as DaemonState;
+    expect(persisted.sessions[0]?.lastDetectedAgent).toBe('claude');
+  });
+
+  // --- Source-level guards (lock the handlers against a regress to debounce) -
+  //
+  // The behavioral tests above prove StateWriter semantics but do not invoke the
+  // production handlers (they live inside main() in index.ts). These static
+  // guards read the daemon entrypoint and lock the two handlers to saveImmediate,
+  // mirroring createSessionPersistence.test.ts's source-guard approach. A refactor
+  // that reverts either to saveDebounced (re-opening the reboot race) fails here.
+
+  function extractEventHandlerBody(src: string, event: string): string {
+    const lines = src.split('\n');
+    const startIdx = lines.findIndex((l) => l.includes(`sessionManager.on('${event}'`));
+    if (startIdx < 0) throw new Error(`Handler not found: ${event}`);
+    // Body runs until the next sessionManager.on( registration, exclusive.
+    const nextIdx = lines.findIndex(
+      (l, i) => i > startIdx && /sessionManager\.on\(/.test(l),
+    );
+    const endIdx = nextIdx > 0 ? nextIdx : lines.length;
+    return lines.slice(startIdx, endIdx).join('\n');
+  }
+
+  const daemonIndexPath = path.join(__dirname, '..', 'index.ts');
+
+  it('session:agent handler persists via saveImmediate, not saveDebounced', () => {
+    const src = fs.readFileSync(daemonIndexPath, 'utf-8');
+    const body = extractEventHandlerBody(src, 'session:agent');
+    expect(body).toMatch(/stateWriter\.saveImmediate\(/);
+    // The bug: this used to be saveDebounced. Lock it out.
+    expect(body).not.toMatch(/stateWriter\.saveDebounced\(/);
+    expect(body).not.toMatch(/setImmediate\([^)]*saveImmediate/);
+  });
+
+  it('session:cwd handler persists via saveImmediate (cwd-scoped resume needs live cwd)', () => {
+    const src = fs.readFileSync(daemonIndexPath, 'utf-8');
+    const body = extractEventHandlerBody(src, 'session:cwd');
+    expect(body).toMatch(/stateWriter\.saveImmediate\(/);
+    expect(body).not.toMatch(/stateWriter\.saveDebounced\(/);
+  });
+
+  it('bridge cwd handler has a change-guard so the immediate write only fires on real cd', () => {
+    const mgrPath = path.join(__dirname, '..', 'DaemonSessionManager.ts');
+    const src = fs.readFileSync(mgrPath, 'utf-8');
+    const lines = src.split('\n');
+    const startIdx = lines.findIndex((l) => l.includes("bridge.on('cwd'"));
+    expect(startIdx).toBeGreaterThan(-1);
+    const body = lines.slice(startIdx, startIdx + 12).join('\n');
+    // Same cwd must early-return before mutating meta / emitting / persisting.
+    expect(body).toMatch(/if \(meta\.cwd === payload\.cwd\) return;/);
+  });
+});

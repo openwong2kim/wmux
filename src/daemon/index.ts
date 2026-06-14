@@ -1206,7 +1206,16 @@ function wireEvents(
       const managed = sessionManager.getSession(payload.sessionId);
       if (managed && managed.meta.lastDetectedAgent !== slug) {
         managed.meta.lastDetectedAgent = slug;
-        stateWriter.saveDebounced(buildState(sessionManager));
+        // X6 ②: persist IMMEDIATELY, not debounced. lastDetectedAgent is the
+        // SOLE basis for the post-reboot resume offer (resumeOfferForRecovered
+        // reads it off the persisted session). A real OS reboot SIGKILLs the
+        // daemon — flush()/process.on('exit') never run — so a 30s debounce
+        // (or the periodic snapshot) can drop a fresh detection that has no
+        // other state-changing event to opportunistically flush it. The
+        // !== slug guard above bounds this to one sync write per agent
+        // transition (effectively once per idle agent pane), so the cost is
+        // negligible vs. the durability it buys.
+        stateWriter.saveImmediate(buildState(sessionManager));
       }
       // The agent is live again → this pane is no longer a "resume me" shell.
       recoveredAgentShellIds.delete(payload.sessionId);
@@ -1267,6 +1276,13 @@ function wireEvents(
       data: payload.cwd,
     };
     pipeServer.broadcast(event);
+    // Persist the new cwd IMMEDIATELY. Recovery replays meta.cwd (the pane
+    // respawns in it) AND the X6 ② resume pill pastes `claude --continue`,
+    // which is cwd-scoped — so a cwd lost to the reboot window would restore
+    // the pane to a stale directory and resume the wrong (or no) conversation.
+    // The bridge-level change-guard (DaemonSessionManager 'cwd' handler) means
+    // this only fires on an actual cd, so the immediate write stays cheap.
+    stateWriter.saveImmediate(buildState(sessionManager));
   });
 
   // Window-title change (OSC 0/2, detected in the daemon bridge). Broadcast so

@@ -410,6 +410,11 @@ export class DaemonSessionManager extends EventEmitter {
     });
 
     bridge.on('cwd', (payload: { sessionId: string; cwd: string }) => {
+      // Change-guard: OSC 7 / prompt scrape can re-report the SAME cwd on every
+      // prompt. Only act on a real change so the daemon/index.ts persistence
+      // write (and the renderer broadcast) fire on cd, not on every prompt —
+      // keeps the immediate cwd persistence cheap (no write amplification).
+      if (meta.cwd === payload.cwd) return;
       meta.cwd = payload.cwd;
       // Forward across the daemon→main boundary so the renderer can live-update
       // the per-surface cwd (tab tooltip + "Working directories" menu). Without
