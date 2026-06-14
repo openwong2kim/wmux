@@ -55,12 +55,6 @@ declare global {
        * with the prompt payload; renderer resolves via `resolve(promptId,
        * approved)`. See `PermissionApprovalDialog` for the UX.
        */
-      git?: {
-        status: (cwd: string) => Promise<string>;
-      };
-      dialog?: {
-        pickFile: () => Promise<string[]>;
-      };
       permissionPrompt?: {
         onOpen: (
           callback: (info: {

@@ -1,4 +1,4 @@
-import { ipcMain, dialog } from 'electron';
+import { ipcMain, dialog, BrowserWindow } from 'electron';
 import { execFile } from 'node:child_process';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
@@ -12,7 +12,7 @@ function gitStatusPorcelain(cwd: string): Promise<string> {
     execFile(
       'git',
       ['-C', cwd, 'status', '--porcelain'],
-      { timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 },
+      { timeout: 5000, windowsHide: true, maxBuffer: 4 * 1024 * 1024 }, // generous for porcelain; real repos are well under this
       (err, stdout) => resolve(err ? '' : stdout),
     );
   });
@@ -27,10 +27,12 @@ export function registerToolbarHandlers(): () => void {
   }));
 
   ipcMain.removeHandler(IPC.DIALOG_PICK_FILE);
-  ipcMain.handle(IPC.DIALOG_PICK_FILE, wrapHandler(IPC.DIALOG_PICK_FILE, async (): Promise<string[]> => {
-    const result = await dialog.showOpenDialog({
-      properties: ['openFile', 'multiSelections'],
-    });
+  ipcMain.handle(IPC.DIALOG_PICK_FILE, wrapHandler(IPC.DIALOG_PICK_FILE, async (event: Electron.IpcMainInvokeEvent): Promise<string[]> => {
+    const win = BrowserWindow.fromWebContents(event.sender);
+    const opts = { properties: ['openFile', 'multiSelections'] as Array<'openFile' | 'multiSelections'> };
+    const result = win
+      ? await dialog.showOpenDialog(win, opts)
+      : await dialog.showOpenDialog(opts);
     if (result.canceled) return [];
     return result.filePaths;
   }));
