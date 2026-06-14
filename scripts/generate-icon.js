@@ -7,13 +7,19 @@
  *   - icon.icns  (macOS, Apple ICNS)
  *   - icon.png   (Linux, 1024x1024 PNG)
  *
- * ICO HANDLING (byte-identical contract for Windows):
- *   The shipped icon.ico is a multi-size PNG-based ICO (16/32/48/256) that
- *   was authored from a higher-fidelity source than the legacy pixel-art "W"
- *   used to live here. To keep Windows builds byte-identical we do NOT
- *   regenerate that file when it already exists. The legacy pixel-art "W"
- *   path is kept as a last-resort fallback so a fresh checkout missing
- *   icon.ico can still build.
+ * ICO HANDLING (Windows shell-loader compatibility):
+ *   icon.ico is REGENERATED from the 256x256 master every run via
+ *   png2icons.createICO(..., forWinExe=true). forWinExe stores every frame
+ *   SMALLER than 64px (16/32/48) as an uncompressed Windows BMP and the
+ *   larger frames as PNG. This matters: the Win32 shell icon loader that
+ *   paints the taskbar button / Alt-Tab / Explorer HICON can NOT render
+ *   PNG-compressed frames below 256px, so an all-PNG ICO renders BLANK in
+ *   the taskbar even though Chromium (tray nativeImage) decodes it fine.
+ *   A previous "byte-identity" contract shipped an all-PNG ICO and caused
+ *   exactly that blank-taskbar regression. The artwork is unchanged — we
+ *   only re-encode the existing master. The legacy pixel-art "W" path is
+ *   kept as a last-resort source so a fresh checkout missing icon.ico can
+ *   still bootstrap a master to re-encode from.
  *
  * SOURCES for .icns / .png:
  *   We extract the embedded 256x256 PNG chunk from icon.ico and use it as
@@ -132,7 +138,7 @@ if (!fs.existsSync(ICO_PATH)) {
   console.log('[generate-icon] icon.ico missing — regenerating legacy pixel-art fallback.');
   generateLegacyIco();
 } else {
-  console.log(`[generate-icon] Preserving existing icon.ico (${fs.statSync(ICO_PATH).size} bytes) — Windows byte-identity contract.`);
+  console.log(`[generate-icon] Using existing icon.ico (${fs.statSync(ICO_PATH).size} bytes) as the master source — will re-encode below.`);
 }
 
 // ---------------------------------------------------------------------------
@@ -217,6 +223,23 @@ if (!masterPng) {
   }
   masterPng = Buffer.from(UPNG.encode([pixels.buffer], dim, dim, 0));
 }
+
+// ---------------------------------------------------------------------------
+// Step 2.5: Re-encode icon.ico (Windows) from the master with shell-safe frame
+// encoding. forWinExe=true stores frames < 64px (16/32/48) as uncompressed
+// Windows BMP and larger frames as PNG. The Win32 shell icon loader (taskbar
+// button, Alt-Tab, Explorer, window title-bar) can't render PNG-compressed
+// sub-256 frames, so an all-PNG ICO shows a BLANK taskbar icon. This is the
+// fix for that regression — artwork is unchanged, only the encoding. (PNG arg
+// is ignored when forWinExe is true.)
+// ---------------------------------------------------------------------------
+
+const icoBuf = png2icons.createICO(masterPng, png2icons.BICUBIC2, 0, false, true);
+if (!icoBuf) {
+  throw new Error('png2icons.createICO returned null');
+}
+fs.writeFileSync(ICO_PATH, icoBuf);
+console.log(`[generate-icon] Wrote ${path.relative(process.cwd(), ICO_PATH)} (${icoBuf.length} bytes, BMP<64 + PNG, Windows shell-safe)`);
 
 // ---------------------------------------------------------------------------
 // Step 3: Generate icon.icns (macOS) via png2icons.createICNS.

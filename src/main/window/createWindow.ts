@@ -1,4 +1,4 @@
-import { BrowserWindow, shell } from 'electron';
+import { app, BrowserWindow, shell } from 'electron';
 import path from 'node:path';
 import { platformChoice } from '../../shared/platform';
 import { attachFlashFrameAutoClear } from './flashFrame';
@@ -54,9 +54,11 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     minWidth: 800,
     minHeight: 600,
     title: 'wmux',
-    icon: process.env.NODE_ENV === 'development'
-      ? path.join(__dirname, '../../assets', iconFile)
-      : path.join(process.resourcesPath, iconFile),
+    // Resolve via app.isPackaged (mirrors tray.ts) — not NODE_ENV, which isn't
+    // reliably set and could send an unpackaged build to the packaged path.
+    icon: app.isPackaged
+      ? path.join(process.resourcesPath, iconFile)
+      : path.join(__dirname, '../../assets', iconFile),
     backgroundColor: '#1e1e2e',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
