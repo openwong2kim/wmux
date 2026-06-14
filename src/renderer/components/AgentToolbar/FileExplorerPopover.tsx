@@ -60,7 +60,8 @@ export default function FileExplorerPopover() {
   const badgeFor = useCallback((name: string): GitStatusCode | undefined => {
     if (statusByRel[name]) return statusByRel[name];
     for (const rel of Object.keys(statusByRel)) {
-      if (rel === name || rel.startsWith(name + '/')) return statusByRel[rel];
+      const base = rel.split('/').pop();
+      if (rel === name || base === name || rel.startsWith(name + '/')) return statusByRel[rel];
     }
     return undefined;
   }, [statusByRel]);
