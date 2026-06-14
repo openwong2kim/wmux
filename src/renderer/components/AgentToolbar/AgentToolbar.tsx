@@ -1,4 +1,4 @@
-import { useCallback } from 'react';
+import { useCallback, useEffect } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { focusedTerminalPtyId } from '../../utils/focusedSurface';
@@ -33,6 +33,21 @@ export default function AgentToolbar() {
 
   const togglePopover = (name: 'explorer' | 'snippets' | 'rich') =>
     setPopover(popover === name ? null : name);
+
+  useEffect(() => {
+    const handler = (e: KeyboardEvent) => {
+      if ((e.ctrlKey || e.metaKey) && (e.key === 'g' || e.key === 'G')) {
+        const state = useStore.getState();
+        const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+        if (!focusedTerminalPtyId(ws)) return;
+        e.preventDefault();
+        const cur = useStore.getState().toolbarPopover;
+        setPopover(cur === 'rich' ? null : 'rich');
+      }
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }, [setPopover]);
 
   const btn = 'px-2.5 py-1 rounded border text-[11px] font-mono transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
   const idle = 'bg-[var(--bg-surface)] border-[var(--bg-overlay)] text-[var(--text-sub)] hover:text-[var(--text-main)]';
