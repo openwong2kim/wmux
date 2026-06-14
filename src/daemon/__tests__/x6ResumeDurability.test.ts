@@ -119,6 +119,24 @@ describe('X6 ② reboot-survival durability', () => {
     expect(body).not.toMatch(/stateWriter\.saveDebounced\(/);
   });
 
+  it('useTerminal onData guards clearResumeHint against focus reports (CSI I / CSI O)', () => {
+    // The renderer retracts the resume pill when the user drives the shell
+    // (terminal.onData). But xterm emits focus-tracking reports (CSI I / CSI O)
+    // through the SAME onData on every pane mount/refocus — a recovered agent
+    // pane fires CSI I on mount, which cleared the pill the instant it hydrated
+    // (the bug that made the pill invisible after every reboot). The handler must
+    // exclude those reports so only real input retracts the offer.
+    const utPath = path.join(__dirname, '..', '..', 'renderer', 'hooks', 'useTerminal.ts');
+    const src = fs.readFileSync(utPath, 'utf-8');
+    const idx = src.indexOf('terminal.onData((data)');
+    expect(idx).toBeGreaterThan(-1);
+    const body = src.slice(idx, idx + 1400);
+    expect(body).toMatch(/clearResumeHint/);
+    // focus reports must be excluded from the clear path
+    expect(body).toMatch(/\\x1b\[I/);
+    expect(body).toMatch(/\\x1b\[O/);
+  });
+
   it('bridge cwd handler has a change-guard so the immediate write only fires on real cd', () => {
     const mgrPath = path.join(__dirname, '..', 'DaemonSessionManager.ts');
     const src = fs.readFileSync(mgrPath, 'utf-8');

@@ -819,7 +819,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminal.onData((data) => {
       // X6 ②: the user is driving this shell themselves — retract any pending
       // resume offer so the pill can't fire into a session they've moved on in.
-      useStore.getState().clearResumeHint(ptyId);
+      //
+      // BUT onData also carries terminal REPORTS that are not user typing — most
+      // notably focus-tracking (CSI I / CSI O), which xterm emits every time the
+      // pane mounts or refocuses. A recovered agent pane fires CSI I on mount, so
+      // without this guard the resume pill is cleared the instant it hydrates and
+      // never renders (the bug that made the pill invisible after every reboot).
+      // Focus reports are the only non-input bytes observed here; real keys,
+      // pastes, and IME commits all still clear as intended.
+      if (data !== '\x1b[I' && data !== '\x1b[O') {
+        useStore.getState().clearResumeHint(ptyId);
+      }
       void chunkOnDataIfNeeded(
         (d) => window.electronAPI.pty.write(ptyId, d),
         data,
