@@ -273,7 +273,7 @@ describe('surfaceSlice.closeSurface — surfaceAgent cleanup (Part A leak-preven
   it('clears the surfaceAgent entry for the closed surface ptyId', () => {
     const { state, slice } = createHarness();
     const paneId = state.workspaces[0].rootPane.id;
-    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\a');
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf pane');
     const surfaceId = pane.surfaces.find((s) => s.ptyId === 'pty-1')!.id;

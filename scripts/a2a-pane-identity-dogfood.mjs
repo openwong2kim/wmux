@@ -163,8 +163,9 @@ async function main() {
 
   // Valid pane-addressed send: ws2 → ws1 surface B.
   const okSend = await rpcCall('a2a.task.send', { workspaceId: ws2, to: ws1, surfaceId: surfB.id, message: 'pane-routed hello', silent: true });
-  check('a2a_task_send with a valid surface_id succeeds', okSend.result?.ok === true || okSend.ok === true, JSON.stringify(okSend.result ?? okSend));
   const sentTaskId = okSend.result?.taskId ?? okSend.taskId;
+  // Require BOTH ok:true AND a real taskId — a bare ok flag could be a false positive.
+  check('a2a_task_send with a valid surface_id succeeds', (okSend.result?.ok === true || okSend.ok === true) && typeof sentTaskId === 'string' && sentTaskId.length > 0, JSON.stringify(okSend.result ?? okSend));
   // Confirm the task stored the pane address.
   const q = await rpcResult('a2a.task.query', { workspaceId: ws1 });
   const storedTask = (q.tasks || []).find((t) => t.id === sentTaskId);

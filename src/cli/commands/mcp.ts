@@ -150,13 +150,19 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
 
     case 'register': {
       const scripts = resolveScripts();
-      if (!scripts.wmux && !scripts.a2a) {
+      // The core `wmux` MCP script is REQUIRED — registering the optional
+      // `wmux-a2a` server alone is an incoherent partial state (the primary
+      // tool surface would be missing). Bail if the main bundle isn't found.
+      if (!scripts.wmux) {
         const warning =
           'Could not locate the wmux MCP bundle next to this CLI. Open the wmux app once and use Settings → General → MCP → Re-register, or reinstall wmux.';
         if (jsonMode) console.log(JSON.stringify({ error: warning }, null, 2));
         else console.error(warning);
         process.exit(1);
         return;
+      }
+      if (!scripts.a2a) {
+        console.warn('Note: the optional wmux-a2a bundle was not found — registering wmux only.');
       }
       // registerTarget propagates write/permission errors (only parse/edit
       // issues are 'malformed'); capture them per-target so one failure neither
@@ -204,13 +210,23 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
     }
 
     case 'unregister': {
-      const results = targets.map((t) => ({ target: t, result: unregisterTarget(t, home) }));
+      // unregisterTarget propagates write errors — capture per-target (same as
+      // register) so one failure neither crashes the CLI nor is swallowed.
+      const results = targets.map((t) => {
+        try { return { target: t, result: unregisterTarget(t, home), error: null as string | null }; }
+        catch (e) { return { target: t, result: null, error: e instanceof Error ? e.message : String(e) }; }
+      });
       if (jsonMode) {
-        console.log(JSON.stringify({ results: results.map((r) => ({ id: r.target.id, ...r.result })) }, null, 2));
+        console.log(JSON.stringify({ results: results.map((r) => ({ id: r.target.id, error: r.error, ...(r.result ?? {}) })) }, null, 2));
+        if (results.some((r) => r.error)) process.exit(1);
         return;
       }
-      for (const { target, result } of results) {
-        if (!result.configExisted) {
+      let failed = false;
+      for (const { target, result, error } of results) {
+        if (error || !result) {
+          failed = true;
+          console.error(`${target.displayName}: unregister FAILED — ${error}`);
+        } else if (!result.configExisted) {
           console.log(`${target.displayName}: no config — nothing to unregister`);
         } else if (result.removed.length === 0) {
           console.log(`${target.displayName}: wmux not registered — nothing changed`);
@@ -218,6 +234,7 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
           console.log(`${target.displayName}: removed ${result.removed.join(', ')} from ${result.configPath}`);
         }
       }
+      if (failed) process.exit(1);
       return;
     }
 

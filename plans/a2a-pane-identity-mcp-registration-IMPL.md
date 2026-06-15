@@ -6,7 +6,7 @@
 
 ## Locked decisions (eng-review + user)
 - **D1 = Part A + Part B FULL** — Part B delivers real "reach": registrar/CLI/Settings multi-target **+ Codex `clientName` first-party whitelist (empirically determined) + identity-topology verification + live end-to-end Codex dogfood.** Gemini EXCLUDED (CLI not installed → not empirically verifiable; registry hook only).
-- **D2 = TOML round-trip via `smol-toml`** — robust parse→object→stringify. Accepts comment/ordering loss; preserves all data; only writes on explicit register.
+- **D2 = surgical TOML block write** (smol-toml parse for READS only) — the initially-chosen round-trip was reversed during implementation: `smol-toml` stringify silently drops backslashes in literal-string keys (would corrupt `[projects.'d:\wmux']`). Surgical insert/replace/remove preserves comments/ordering/keys; only writes on explicit register. (User-approved reversal; `codex mcp add` itself does surgical append.)
 - **A1 = renderer per-ptyId map** (not MetadataStore). **A5 = clean break on getStatus shape** (internal-only consumers). **Q1 = shared `configIO` extracted** (kill McpRegistrar/CLI duplication).
 - Cross-ws guard = **renderer tree-membership check** (the real guard); drop the false `assertWorkspaceOwnsPty` parity claim (A2A delivery bypasses `input.send` via `pty.write`).
 
