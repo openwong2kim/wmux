@@ -141,7 +141,13 @@ export class McpRegistrar {
           }
         } catch (err) {
           // Per-target isolation: one target's failure must not abort the rest.
+          // A write/permission failure reaches here (registerTarget propagates
+          // it rather than misreporting "malformed"); surface the macOS hint.
           console.error(`[McpRegistrar] ${target.displayName} registration failed:`, err);
+          const code = (err as NodeJS.ErrnoException)?.code;
+          if (isMac && (code === 'EACCES' || code === 'ENOACCES' || code === 'EPERM')) {
+            console.error('\n' + formatMacosError(MACOS_ERRORS.mcpPermissionDenied));
+          }
         }
       }
 

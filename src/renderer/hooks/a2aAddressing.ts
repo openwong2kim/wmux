@@ -13,8 +13,12 @@ export type PaneAddress = { ptyId: string; paneId: string; surfaceId: string };
  * explicit pane address is supplied.
  */
 export function activePaneTerminalPty(leaves: PaneLeaf[], activePaneId: string): string | null {
+  // Fallback (active pane not found) must land on a leaf that actually has a
+  // deliverable terminal — require `s.ptyId` in the predicate, else a leaf whose
+  // only non-browser surface lacks a pty would be picked and yield null even
+  // when a later leaf has a live terminal.
   const activeLeaf = leaves.find((l) => l.id === activePaneId)
-    ?? leaves.find((l) => l.surfaces.some((s) => s.surfaceType !== 'browser'));
+    ?? leaves.find((l) => l.surfaces.some((s) => s.surfaceType !== 'browser' && s.ptyId));
   const termSurface = activeLeaf?.surfaces.find((s) => s.surfaceType !== 'browser' && s.ptyId);
   return termSurface?.ptyId ?? null;
 }

@@ -158,13 +158,26 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
         process.exit(1);
         return;
       }
-      const results = targets.map((t) => ({ target: t, result: registerTarget(t, home, scripts) }));
+      // registerTarget propagates write/permission errors (only parse/edit
+      // issues are 'malformed'); capture them per-target so one failure neither
+      // aborts the rest nor is silently swallowed.
+      const results = targets.map((t) => {
+        try { return { target: t, result: registerTarget(t, home, scripts), error: null as string | null }; }
+        catch (e) { return { target: t, result: null, error: e instanceof Error ? e.message : String(e) }; }
+      });
       if (jsonMode) {
-        console.log(JSON.stringify({ scripts, results: results.map((r) => ({ id: r.target.id, ...r.result })) }, null, 2));
+        console.log(JSON.stringify({ scripts, results: results.map((r) => ({ id: r.target.id, error: r.error, ...(r.result ?? {}) })) }, null, 2));
+        if (results.some((r) => r.error)) process.exit(1);
         return;
       }
       let wroteAny = false;
-      for (const { target, result } of results) {
+      let failed = false;
+      for (const { target, result, error } of results) {
+        if (error || !result) {
+          failed = true;
+          console.error(`${target.displayName}: registration FAILED — ${error}`);
+          continue;
+        }
         if (result.skipped === 'absent') {
           console.log(`${target.displayName}: not installed — skipped`);
           continue;
@@ -186,6 +199,7 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
       if (scripts.wmux) console.log(`  wmux     → ${scripts.wmux}`);
       if (scripts.a2a) console.log(`  wmux-a2a → ${scripts.a2a}`);
       if (wroteAny) console.log('Restart the affected agent(s) to pick up the new servers.');
+      if (failed) process.exit(1);
       return;
     }
 

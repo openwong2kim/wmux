@@ -156,6 +156,11 @@ export function registerTarget(
     [WMUX_SERVER_KEY, scripts.wmux],
     [WMUX_A2A_SERVER_KEY, scripts.a2a],
   ];
+  // Build + validate the new text. Parse/edit failures mean the config is in a
+  // shape we can't safely edit → 'malformed' (graceful skip, never clobber).
+  // The actual WRITE is intentionally OUTSIDE this catch so a permission/rename
+  // failure propagates to the caller (McpRegistrar surfaces the macOS hint; the
+  // CLI exits non-zero) instead of being misreported as "malformed".
   try {
     for (const [key, script] of entries) {
       if (!script) continue;
@@ -171,9 +176,9 @@ export function registerTarget(
         }
         // ours but stale path → fall through to update
       }
-      // upsert validates its INPUT, so a previous iteration that produced an
-      // unparseable intermediate (e.g. an inline-table entry the line-based
-      // editor duplicated) throws here and is caught below.
+      // upsert validates its INPUT and OUTPUT, so a previous iteration that
+      // produced an unparseable intermediate (e.g. an inline-table entry the
+      // line-based editor duplicated) throws here and is caught below.
       newText = upsertMcpServer(newText, target.format, key, script);
       wrote.push(key);
       ownedKeys?.add(key);
@@ -183,18 +188,11 @@ export function registerTarget(
     if (target.id === 'claude') {
       newText = removeMcpServers(newText, 'json', ['wmux-playwright', 'wmux-devtools']);
     }
-
-    if (newText !== text) {
-      // Final guard: the OUTPUT must parse before writing. The surgical TOML
-      // editor is line-based, so an existing entry in a form it can't target
-      // (an inline table `wmux = { ... }` under a `[mcp_servers]` parent) would
-      // append a duplicate table → unparseable. Never write a broken config.
-      parseConfig(newText, target.format);
-      writeFileAtomic(configPath, newText);
-    }
   } catch {
     return { configPath, skipped: 'malformed', wrote: [], foreign };
   }
+
+  if (newText !== text) writeFileAtomic(configPath, newText); // write errors propagate
   return { configPath, skipped: null, wrote, foreign };
 }
 
@@ -235,11 +233,16 @@ export function unregisterTarget(target: McpTarget, home: string): UnregisterTar
   // honest empty `removed` rather than claiming a removal that didn't happen.
   if (newText === text) return { configPath, removed: [], configExisted: true };
   // Output-validation guard: never write a config that no longer parses.
+  let reparsed: Record<string, unknown>;
   try {
-    parseConfig(newText, target.format);
+    reparsed = parseConfig(newText, target.format);
   } catch {
     return { configPath, removed: [], configExisted: true };
   }
   writeFileAtomic(configPath, newText);
-  return { configPath, removed: toRemove, configExisted: true };
+  // Report only keys that are ACTUALLY gone — a mixed config (one removable
+  // header-form key + one un-targetable inline key) must not claim the inline
+  // one was removed.
+  const removed = toRemove.filter((k) => getMcpServerEntry(reparsed, target.format, k) === null);
+  return { configPath, removed, configExisted: true };
 }

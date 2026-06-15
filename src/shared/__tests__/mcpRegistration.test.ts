@@ -159,6 +159,23 @@ describe('unregisterTarget', () => {
     expect(r.removed).toEqual([]);
     expect(fs.readFileSync(p, 'utf8')).toBe(inline); // untouched
   });
+
+  // Codex final review: a MIXED config (un-targetable inline wmux + removable
+  // header-form wmux-a2a) must report ONLY the key actually removed.
+  it('reports only the actually-removed key in a mixed inline/header config', () => {
+    const p = codexTarget.configPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(
+      p,
+      `[mcp_servers]\nwmux = { command = "node", args = ["/x.js"] }\n\n[mcp_servers.wmux-a2a]\ncommand = "node"\nargs = ["/a.js"]\n`,
+      'utf8',
+    );
+    const r = unregisterTarget(codexTarget, home);
+    expect(r.removed).toEqual(['wmux-a2a']); // NOT ['wmux','wmux-a2a']
+    const after = fs.readFileSync(p, 'utf8');
+    expect(after).toContain('wmux = { command = "node"'); // inline wmux survives
+    expect(after).not.toContain('[mcp_servers.wmux-a2a]');
+  });
 });
 
 describe('MCP_TARGETS registry', () => {

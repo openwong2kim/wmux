@@ -62,7 +62,9 @@ describe('a2a.rpc — execute uses the resolved workspaceId', () => {
     'utf-8',
   );
   it('reads toWorkspaceId from the renderer result instead of the raw fuzzy `to`', () => {
+    // The resolved id is pulled off the renderer result and preferred over params.to.
+    expect(src).toMatch(/resolvedTo\b/);
     expect(src).toMatch(/toWorkspaceId/);
-    expect(src).toMatch(/const resolvedTo = \(result as Record<string, unknown>\)\?\.\['?toWorkspaceId'?\]|result as Record<string, unknown>\)\?\.toWorkspaceId/);
+    expect(src).toMatch(/resolvedTo[\s\S]*?:\s*\(typeof params\.to/); // fallback to params.to
   });
 });

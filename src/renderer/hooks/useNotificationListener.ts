@@ -520,7 +520,11 @@ export function useNotificationListener() {
                   if (!name) return;
                   const s = useStore.getState();
                   if (needWsBackfill) s.updateWorkspaceMetadata(targetWsId, { agentName: name });
-                  if (needSurfaceBackfill) s.setSurfaceAgent(ptyId, name, 'running');
+                  // Backfill the NAME only — pass undefined status so a newer
+                  // status (the surface may have gone complete/idle while this
+                  // async resolveAgent was in flight) is preserved, not stomped
+                  // back to 'running'. setSurfaceAgent keeps the existing status.
+                  if (needSurfaceBackfill) s.setSurfaceAgent(ptyId, name, undefined);
                 });
               }
             }

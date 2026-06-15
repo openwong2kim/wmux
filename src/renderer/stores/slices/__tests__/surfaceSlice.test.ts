@@ -5,6 +5,7 @@ import { createSurfaceSlice } from '../surfaceSlice';
 type TestState = {
   workspaces: Workspace[];
   activeWorkspaceId: string;
+  surfaceAgent: Record<string, { name: string; status: string }>;
 };
 
 function createHarness() {
@@ -12,6 +13,7 @@ function createHarness() {
   const state: TestState = {
     workspaces: [workspace],
     activeWorkspaceId: workspace.id,
+    surfaceAgent: {},
   };
 
   const set = (updater: (state: TestState) => void) => {
@@ -264,5 +266,21 @@ describe('surfaceSlice browser partition state', () => {
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf pane');
     expect(pane.surfaces.every((surface) => surface.browserPartition === 'persist:wmux-login')).toBe(true);
+  });
+});
+
+describe('surfaceSlice.closeSurface — surfaceAgent cleanup (Part A leak-prevention)', () => {
+  it('clears the surfaceAgent entry for the closed surface ptyId', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\a');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const surfaceId = pane.surfaces.find((s) => s.ptyId === 'pty-1')!.id;
+    state.surfaceAgent['pty-1'] = { name: 'Claude Code', status: 'running' };
+
+    slice.closeSurface(paneId, surfaceId);
+
+    expect(state.surfaceAgent['pty-1']).toBeUndefined();
   });
 });
