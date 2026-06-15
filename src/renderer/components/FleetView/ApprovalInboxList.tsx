@@ -1,4 +1,5 @@
 import { useEffect, useState } from 'react';
+import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { groupCapabilities } from '../Approval/PermissionApprovalDialog';
 import type { RiskClassCopy } from '../../../main/mcp/methodCapabilityMap';
@@ -35,6 +36,12 @@ function severityAccent(severity: RiskClassCopy['severity']): string {
 
 export default function ApprovalInboxList({ items, focusedIdx, onResolve }: ApprovalInboxListProps) {
   const t = useT();
+
+  // Resolve A2A sender/receiver workspace IDs to display names (mirrors
+  // ExecuteApprovalDialog) so the row tells the user WHICH workspace wants
+  // bypassPermissions — security context, not just a title.
+  const workspaces = useStore((s) => s.workspaces);
+  const wsName = (id: string) => workspaces.find((w) => w.id === id)?.name ?? id;
 
   // Live countdown tick for any A2A row, mirroring ExecuteApprovalDialog's
   // now-tick. Gated on the inbox actually containing an A2A row so an inbox of
@@ -98,6 +105,16 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
                 <span className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
                   {t('fleet.approvals.autoDenyIn', { seconds: remainingSec })}
                 </span>
+              </div>
+              {/* Who is asking + what they want — security context (subordinate,
+                  muted, mono). Uses the previously-dead from/to/a2aDesc keys. */}
+              <div className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
+                {t('fleet.approvals.from')} {wsName(item.senderWorkspaceId)}
+                {' → '}
+                {t('fleet.approvals.to')} {wsName(item.receiverWorkspaceId)}
+              </div>
+              <div className="text-[10px] font-mono" style={{ color: 'var(--text-subtle)' }}>
+                {t('fleet.approvals.a2aDesc')}
               </div>
               <p
                 className="text-xs font-mono whitespace-pre-wrap break-words"

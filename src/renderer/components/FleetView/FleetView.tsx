@@ -222,7 +222,20 @@ export default function FleetView() {
       // keystroke never leaks to the background xterm. A critical MCP row's
       // Enter is a deliberate no-op: granting a critical capability requires an
       // explicit click / Tab-to-Approve, never a blind keyboard grant.
-      if (tab === 'approvals' && inbox.length > 0) {
+      //
+      // The roving shortcuts fire ONLY when the inbox ROW itself (role=option)
+      // holds focus. If the user has Tab-focused a dialog <button> (a row's
+      // Deny / Approve, or a tab button), we must NOT intercept: native button
+      // activation owns Enter/Space there. Otherwise the capture-phase Enter
+      // would approve the focused ROW even when the user pressed Enter on the
+      // Deny button (opposite of intent — codex P1), and a critical row's
+      // explicit keyboard Approve (the sanctioned path per guard #5) would be
+      // unreachable because the critical-row no-op swallows Enter first.
+      const active = document.activeElement;
+      const onDialogButton =
+        active instanceof HTMLElement && active.tagName === 'BUTTON' &&
+        !!panelRef.current?.contains(active);
+      if (tab === 'approvals' && inbox.length > 0 && !onDialogButton) {
         if (e.key === 'Enter') {
           e.preventDefault();
           e.stopPropagation();

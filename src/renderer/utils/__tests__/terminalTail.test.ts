@@ -31,6 +31,8 @@ function makeTerminal(opts: {
   baseY?: number;
   elementOffsetWidth?: number;
   elementConnected?: boolean;
+  /** Spy invoked on every `buffer.getLine(idx)` — proves the scan is bounded. */
+  onGetLine?: (idx: number) => void;
 }) {
   const {
     lines,
@@ -38,6 +40,7 @@ function makeTerminal(opts: {
     baseY = 0,
     elementOffsetWidth = 800,
     elementConnected = true,
+    onGetLine,
   } = opts;
   const fullLines = lines.concat(Array.from({ length: trailingEmpty }, () => ''));
   const buffer = {
@@ -45,6 +48,7 @@ function makeTerminal(opts: {
     baseY,
     cursorY: fullLines.length === 0 ? 0 : fullLines.length - 1 - baseY,
     getLine(idx: number) {
+      onGetLine?.(idx);
       const text = fullLines[idx];
       if (text === undefined) return undefined;
       return { translateToString: (_trimRight: boolean) => text };
@@ -126,6 +130,75 @@ describe('tailForPty', () => {
 
   it('returns [] for a missing ptyId', () => {
     expect(tailForPty('nope', 3)).toEqual([]);
+  });
+
+  // ── Fix 2: bounded tail equivalence + bounded scan ──────────────────────
+  // The bounded tail must match the old full-read `slice(-n)` for the common
+  // case, skip trailing empties within the bound, preserve INTERIOR empties,
+  // and never walk the whole scrollback.
+
+  it('common case: tailForPty equals the full-read slice(-n)', () => {
+    (terminalRegistry as Map<string, unknown>).set(
+      'p1',
+      makeTerminal({ lines: ['l1', 'l2', 'l3', 'l4', 'l5', 'l6'] }),
+    );
+    const fullSlice = readPtyBufferLines('p1').slice(-3);
+    expect(tailForPty('p1', 3)).toEqual(fullSlice);
+    expect(tailForPty('p1', 3)).toEqual(['l4', 'l5', 'l6']);
+  });
+
+  it('skips trailing empties within the bound (last N content lines)', () => {
+    (terminalRegistry as Map<string, unknown>).set(
+      'p1',
+      makeTerminal({ lines: ['a', 'b', 'c', 'd'], trailingEmpty: 10 }),
+    );
+    expect(tailForPty('p1', 3)).toEqual(['b', 'c', 'd']);
+  });
+
+  it('preserves interior empty lines between content', () => {
+    // Content rows with a blank line wedged in the middle; the blank is part of
+    // the last-N window so it must survive (matches full-read slice(-n)).
+    (terminalRegistry as Map<string, unknown>).set(
+      'p1',
+      makeTerminal({ lines: ['top', 'first', '', 'last'] }),
+    );
+    const fullSlice = readPtyBufferLines('p1').slice(-3);
+    expect(tailForPty('p1', 3)).toEqual(fullSlice);
+    expect(tailForPty('p1', 3)).toEqual(['first', '', 'last']);
+  });
+
+  it('bounded scan: a huge buffer reads ~SCAN_BOUND+n lines, not all', () => {
+    // 10000 content rows. A full O(scrollback) read would call getLine 10000
+    // times; the bounded tail caps the upward scan at SCAN_BOUND (= n + 50) and
+    // then re-reads at most n rows to collect — so far fewer than 10000.
+    const N = 3;
+    const calls: number[] = [];
+    const big = Array.from({ length: 10000 }, (_, i) => `row-${i}`);
+    (terminalRegistry as Map<string, unknown>).set(
+      'huge',
+      makeTerminal({ lines: big, onGetLine: (idx) => calls.push(idx) }),
+    );
+    const out = tailForPty('huge', N);
+    expect(out).toEqual(['row-9997', 'row-9998', 'row-9999']);
+    // Upward scan stops at the first non-empty (the bottom row) = 1 call; the
+    // collect loop reads n more. Hard ceiling = SCAN_BOUND (n + 50) + n. The
+    // load-bearing assertion is simply "not 10000".
+    expect(calls.length).toBeLessThanOrEqual(N + 50 + N);
+    expect(calls.length).toBeLessThan(10000);
+  });
+
+  it('mostly-empty tail beyond the bound yields a short/empty tail (no full walk)', () => {
+    // 100 blank rows of cursor padding past one content row near the top: the
+    // content sits beyond SCAN_BOUND, so the bounded scan returns [] rather
+    // than walking the whole buffer. Acceptable per the documented trade-off.
+    const calls: number[] = [];
+    const lines = ['lonely content'];
+    (terminalRegistry as Map<string, unknown>).set(
+      'sparse',
+      makeTerminal({ lines, trailingEmpty: 100, onGetLine: (idx) => calls.push(idx) }),
+    );
+    expect(tailForPty('sparse', 3)).toEqual([]);
+    expect(calls.length).toBeLessThanOrEqual(3 + 50);
   });
 
   // ── GUARD-ABSENCE LOCK ──────────────────────────────────────────────────
