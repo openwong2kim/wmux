@@ -336,7 +336,7 @@ async function main() {
 
     // Confirm the background pane's xterm element is genuinely display:none /
     // offsetWidth 0 (the trap) — proving the tail must NOT use the offsetWidth guard.
-    const bgHidden = await page.evaluate((ptyId) => {
+    const bgHidden = await page.evaluate(() => {
       // PaneContainer roots are keyed; the surest signal is that the background
       // workspace's panes are inside a display:none container. We can't map ptyId
       // → DOM directly without store access, so report the count of xterm screens
@@ -345,7 +345,7 @@ async function main() {
       let zero = 0, nonzero = 0;
       for (const el of screens) { if (el.offsetWidth === 0) zero++; else nonzero++; }
       return { zero, nonzero, total: screens.length };
-    }, bgPty);
+    });
     check('1A: at least one xterm is offsetWidth-0 (a background pane exists in DOM)',
       bgHidden.zero >= 1, `xterm offsetWidth: zero=${bgHidden.zero} nonzero=${bgHidden.nonzero}`);
 

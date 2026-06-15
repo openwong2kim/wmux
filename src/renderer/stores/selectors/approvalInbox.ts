@@ -1,5 +1,5 @@
 import type { StoreState } from '../index';
-import { groupCapabilities } from '../../components/Approval/PermissionApprovalDialog';
+import { groupCapabilities } from '../../components/Approval/capabilityGrouping';
 
 // ─── S-C2 Approval Inbox — unified pending-approval list ──────────────────────
 //
