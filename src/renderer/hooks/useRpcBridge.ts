@@ -205,6 +205,21 @@ function isLiveTuiAgent(meta: { agentName?: string; agentStatus?: string } | und
   return !!meta.agentName && meta.agentStatus != null && LIVE_AGENT_STATUSES.has(meta.agentStatus);
 }
 
+// Liveness metadata for an A2A delivery decision (nudge vs full paste). When an
+// explicit pane/surface was addressed, the decision must reflect THAT pane's
+// agent (a workspace can host more than one agent) — read it from the
+// per-ptyId surfaceAgent map. Falls back to ws-level metadata when no explicit
+// pty was resolved (the active-pane heuristic path).
+function deliveryLiveMeta(
+  surfaceAgent: Record<string, { name: string; status: string }>,
+  explicitPty: string | undefined,
+  fallbackMeta: { agentName?: string; agentStatus?: string } | undefined,
+): { agentName?: string; agentStatus?: string } | undefined {
+  if (!explicitPty) return fallbackMeta;
+  const a = surfaceAgent[explicitPty];
+  return a ? { agentName: a.name, agentStatus: a.status } : undefined;
+}
+
 /**
  * One-line nudge for a live-agent receiver. SINGLE LINE — no embedded
  * newlines, no message body (the body rides the dual-party-scoped task store,
@@ -1272,7 +1287,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
             }
           }
           if (!pinnedAddressLost) {
-            if (!silentExplicit && isLiveTuiAgent(targetWs.metadata)) {
+            const liveMeta = deliveryLiveMeta(store.surfaceAgent, explicitPty, targetWs.metadata);
+            if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
               deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), explicitPty);
             } else {
               deliverPtyNotification(targetWs, senderName, message, explicitPty);
@@ -1319,6 +1335,14 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // target's tree is searched). An explicit-but-invalid address is a hard
     // error — never silently fall back to the active pane (that would deliver
     // to the wrong agent on a typo).
+    // Fail closed on a present-but-non-string address: coercing to '' would
+    // silently drop it and fall back to active-pane delivery (wrong agent).
+    if (params.paneId !== undefined && typeof params.paneId !== 'string') {
+      return { error: 'a2a.task.send: "pane_id" must be a string' };
+    }
+    if (params.surfaceId !== undefined && typeof params.surfaceId !== 'string') {
+      return { error: 'a2a.task.send: "surface_id" must be a string' };
+    }
     const reqPaneId = typeof params.paneId === 'string' ? params.paneId : '';
     const reqSurfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : '';
     let resolvedAddr: PaneAddress | undefined;
@@ -1349,7 +1373,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // flooded); no live agent (or explicit silent:false) keeps the loud paste.
     if (!silent) {
       const explicitPty = resolvedAddr?.ptyId;
-      if (!silentExplicit && isLiveTuiAgent(target.metadata)) {
+      // Liveness for the nudge-vs-paste choice must reflect the ADDRESSED pane's
+      // agent (a workspace can host >1 agent), not ws-level metadata.
+      const liveMeta = deliveryLiveMeta(store.surfaceAgent, explicitPty, target.metadata);
+      if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
         deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName), explicitPty);
       } else {
         deliverPtyNotification(target, fromName, message, explicitPty);

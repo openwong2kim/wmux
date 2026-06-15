@@ -57,16 +57,27 @@ function serversKey(format: McpConfigFormat): 'mcp_servers' | 'mcpServers' {
  */
 export function parseConfig(text: string, format: McpConfigFormat): Record<string, unknown> {
   if (!text.trim()) return {};
+  let parsed: unknown;
   try {
-    if (format === 'json') {
-      return JSON.parse(text, (key, value) =>
-        key === '__proto__' || key === 'constructor' || key === 'prototype' ? undefined : value,
-      ) as Record<string, unknown>;
-    }
-    return parseTomlText(text) as Record<string, unknown>;
+    parsed = format === 'json'
+      ? JSON.parse(text, (key, value) =>
+          key === '__proto__' || key === 'constructor' || key === 'prototype' ? undefined : value)
+      : parseTomlText(text);
   } catch (e) {
     throw new ConfigParseError(e instanceof Error ? e.message : String(e));
   }
+  // The config root must be a plain object/table — a top-level array or scalar
+  // (or `null`) is not a usable config and must not be silently accepted.
+  if (parsed === null || typeof parsed !== 'object' || Array.isArray(parsed)) {
+    throw new ConfigParseError('config root is not a table/object');
+  }
+  // If the server container is present it must be a table, not an array — an
+  // array `mcpServers` would corrupt entry lookups / writes.
+  const servers = (parsed as Record<string, unknown>)[serversKey(format)];
+  if (servers !== undefined && (servers === null || typeof servers !== 'object' || Array.isArray(servers))) {
+    throw new ConfigParseError(`"${serversKey(format)}" is not a table/object`);
+  }
+  return parsed as Record<string, unknown>;
 }
 
 /** Read a single MCP server entry from already-parsed config, or null. */
@@ -286,7 +297,13 @@ export function upsertMcpServer(
   // Validate parseability up-front so a malformed file aborts instead of being
   // clobbered (TOML append would otherwise blindly tack a block onto garbage).
   parseConfig(text, format);
-  return format === 'json' ? upsertJson(text, key, scriptPath) : upsertToml(text, key, scriptPath);
+  const out = format === 'json' ? upsertJson(text, key, scriptPath) : upsertToml(text, key, scriptPath);
+  // Never RETURN invalid TOML: the line-based surgical editor can't target an
+  // inline-table entry (`wmux = { ... }` under `[mcp_servers]`) and would append
+  // a duplicate table. Validate the output and throw rather than hand a caller a
+  // string it might persist. (JSON re-stringify is always valid.)
+  if (format === 'toml') parseConfig(out, format);
+  return out;
 }
 
 /** Return new file text with the given wmux keys removed (only those keys). */

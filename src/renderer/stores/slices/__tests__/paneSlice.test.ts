@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createPaneSlice, type PaneSlice, MAX_PANES_PER_WORKSPACE } from '../paneSlice';
-import { createWorkspace, type Workspace } from '../../../../shared/types';
+import { createWorkspace, type Workspace, type Surface } from '../../../../shared/types';
 import { findPane, getLeafPanes } from '../../../../shared/paneUtils';
 
 // Minimal store that satisfies PaneSlice dependencies. Includes a `pushToast`
@@ -521,6 +521,23 @@ describe('PaneSlice', () => {
       store.getState().setSurfaceAgent('pty-1', 'Claude Code', 'running');
       store.getState().clearSurfaceAgent('pty-1');
       expect(store.getState().surfaceAgent['pty-1']).toBeUndefined();
+    });
+
+    it('closePane auto-clears surfaceAgent for every surface under the closed subtree (leak-prevention)', () => {
+      const ws = getActiveWorkspace(store);
+      const rootLeafId = getLeafPanes(ws.rootPane)[0].id;
+      store.getState().splitPane(rootLeafId, 'horizontal');
+      const closing = getLeafPanes(getActiveWorkspace(store).rootPane)[1];
+      // Give the closing pane a terminal surface with a known ptyId (a freshly
+      // split leaf is empty until AppLayout funnels a PTY in the real app).
+      store.setState((s) => {
+        const leaf = getLeafPanes(s.workspaces[0].rootPane).find((l) => l.id === closing.id);
+        if (leaf) leaf.surfaces.push({ id: 'surf-ct', ptyId: 'pty-closetest', title: 'x', shell: '', cwd: '', surfaceType: 'terminal' } as Surface);
+      });
+      store.getState().setSurfaceAgent('pty-closetest', 'Claude Code', 'running');
+      expect(store.getState().surfaceAgent['pty-closetest']).toBeTruthy();
+      store.getState().closePane(closing.id);
+      expect(store.getState().surfaceAgent['pty-closetest']).toBeUndefined();
     });
   });
 });

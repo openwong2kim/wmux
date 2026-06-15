@@ -111,6 +111,11 @@ keep = true
     expect(removeMcpServers(arr, 'toml', ['wmux'])).toBe(arr);
   });
 
+  it('throws when the surgical edit would produce invalid TOML (inline-table → duplicate)', () => {
+    const inline = `[mcp_servers]\nwmux = { command = "node", args = ["/old.js"] }\n`;
+    expect(() => upsertMcpServer(inline, 'toml', 'wmux', '/new.js')).toThrow(ConfigParseError);
+  });
+
   it('recognizes a header with a trailing inline comment (P2)', () => {
     const withComment = `[mcp_servers.wmux] # wmux server\ncommand = "node"\nargs = ["/old.js"]\n\n[other]\nx = 1\n`;
     const out = upsertMcpServer(withComment, 'toml', 'wmux', '/new.js');
@@ -161,6 +166,12 @@ describe('configIO — JSON write', () => {
 
   it('throws ConfigParseError on malformed JSON', () => {
     expect(() => upsertMcpServer('{ not json', 'json', 'wmux', 'x')).toThrow(ConfigParseError);
+  });
+
+  it('rejects a non-object root and an array mcpServers (parseConfig hardening)', () => {
+    expect(() => parseConfig('[1,2,3]', 'json')).toThrow(ConfigParseError);
+    expect(() => parseConfig('null', 'json')).toThrow(ConfigParseError);
+    expect(() => parseConfig('{"mcpServers":[1,2]}', 'json')).toThrow(ConfigParseError);
   });
 });
 

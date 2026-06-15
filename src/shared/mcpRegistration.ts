@@ -12,6 +12,7 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import { randomBytes } from 'crypto';
 import {
   MCP_TARGETS,
   WMUX_SERVER_KEY,
@@ -46,13 +47,21 @@ export interface TargetRegStatus {
   wmuxA2a: ServerRegState;
 }
 
-/** Atomic write (tmp + rename), creating the parent dir if needed. */
+/** Atomic write (tmp + rename), creating the parent dir if needed. The temp
+ *  name carries a per-process random suffix so two concurrent writers (CLI +
+ *  GUI registrar, or parallel CLI invocations) can't collide on a shared
+ *  `.tmp`; the temp file is cleaned up if the rename fails. */
 export function writeFileAtomic(filePath: string, text: string): void {
   const dir = path.dirname(filePath);
   if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-  const tmp = filePath + '.tmp';
+  const tmp = `${filePath}.${process.pid}-${randomBytes(6).toString('hex')}.tmp`;
   fs.writeFileSync(tmp, text, 'utf8');
-  fs.renameSync(tmp, filePath);
+  try {
+    fs.renameSync(tmp, filePath);
+  } catch (e) {
+    try { fs.unlinkSync(tmp); } catch { /* best-effort cleanup */ }
+    throw e;
+  }
 }
 
 /** Pure read of one target's registration state. Never creates / throws. */
