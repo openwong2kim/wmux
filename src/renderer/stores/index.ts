@@ -6,6 +6,7 @@ import { createSurfaceSlice, type SurfaceSlice } from './slices/surfaceSlice';
 import { createUISlice, type UISlice } from './slices/uiSlice';
 import { createNotificationSlice, type NotificationSlice } from './slices/notificationSlice';
 import { createA2aSlice, type A2aSlice } from './slices/a2aSlice';
+import { createApprovalInboxSlice, type ApprovalInboxSlice } from './slices/approvalInboxSlice';
 import { createCompanySlice, type CompanySlice } from './slices/companySlice';
 import { createToastSlice, type ToastSlice } from './slices/toastSlice';
 import { createSearchSlice, type SearchSlice } from './slices/searchSlice';
@@ -14,7 +15,7 @@ import { createSupervisionSlice, type SupervisionSlice } from './slices/supervis
 import { createResumeSlice, type ResumeSlice } from './slices/resumeSlice';
 import { createAgentToolbarSlice, type AgentToolbarSlice } from './slices/agentToolbarSlice';
 
-export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice;
+export type StoreState = WorkspaceSlice & PaneSlice & SurfaceSlice & UISlice & NotificationSlice & A2aSlice & ApprovalInboxSlice & CompanySlice & ToastSlice & SearchSlice & ProjectConfigSlice & SupervisionSlice & ResumeSlice & AgentToolbarSlice;
 
 export const useStore = create<StoreState>()(
   immer((...args) => ({
@@ -24,6 +25,7 @@ export const useStore = create<StoreState>()(
     ...createUISlice(...args),
     ...createNotificationSlice(...args),
     ...createA2aSlice(...args),
+    ...createApprovalInboxSlice(...args),
     ...createCompanySlice(...args),
     ...createToastSlice(...args),
     ...createSearchSlice(...args),

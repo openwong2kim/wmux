@@ -35,6 +35,10 @@ import { sanitizeFontFamily } from '../../utils/terminalFont';
 type CustomThemeColorKey = Exclude<keyof CustomThemeColors, 'xtermOverrides'>;
 type XtermColorKey = keyof XtermThemeColors;
 
+// S-C2 — Fleet View cockpit tab. 'fleet' = the S-C1 agent grid; 'approvals' =
+// the S-C2 unified approval inbox.
+export type FleetTab = 'fleet' | 'approvals';
+
 export interface UISlice {
   // ─── Startup gate (Fix 0) ─────────────────────────────────────────────
   // Lifecycle marker promoted from local AppLayout state so RPC handlers
@@ -63,6 +67,16 @@ export interface UISlice {
   fleetViewVisible: boolean;
   toggleFleetView: () => void;
   setFleetViewVisible: (visible: boolean) => void;
+
+  // S-C2 — which tab the Fleet View cockpit shows: the agent grid ('fleet',
+  // S-C1) or the unified approval inbox ('approvals', S-C2). Lifted to uiSlice
+  // (rather than FleetView-local) so the A2A / MCP approval modals can suppress
+  // themselves while the inbox tab is open (one surface per item). Transient UI
+  // state exactly like fleetViewVisible — never persisted (buildSessionData
+  // allowlist excludes it; defaults fresh to 'fleet' on every load). FleetView
+  // resets this to 'fleet' on unmount (mount-gated = close).
+  fleetActiveTab: FleetTab;
+  setFleetActiveTab: (tab: FleetTab) => void;
 
   settingsPanelVisible: boolean;
   toggleSettingsPanel: () => void;
@@ -575,6 +589,14 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       state.settingsPanelVisible = false;
       if (state.inspectModeActive) resetInspectState(state);
     }
+  }),
+
+  // S-C2 — cockpit tab. Defaults to the agent grid; FleetView resets it on
+  // unmount so reopening the cockpit always lands on 'fleet'.
+  fleetActiveTab: 'fleet',
+
+  setFleetActiveTab: (tab) => set((state) => {
+    state.fleetActiveTab = tab;
   }),
 
   // ─── Settings panel ──────────────────────────────────────────────────────
