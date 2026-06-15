@@ -7,14 +7,16 @@ import {
   countNeedsAttention,
   type FleetPane,
 } from '../../stores/selectors/fleet';
+import { selectApprovalInbox } from '../../stores/selectors/approvalInbox';
+import { resolveInboxItem } from '../../utils/resolveInboxItem';
 import {
   focusPaneByPtyId,
   activatePaneTarget,
   focusNotificationTarget,
 } from '../../hooks/useNotificationListener';
+import type { FleetTab } from '../../stores/slices/uiSlice';
 import FleetCard from './FleetCard';
-
-type FleetTab = 'fleet' | 'approvals';
+import ApprovalInboxList from './ApprovalInboxList';
 
 /**
  * S-C1 Fleet View — the cockpit. A full-screen overlay (Ctrl+Shift+A) that
@@ -31,10 +33,19 @@ export default function FleetView() {
   const workspaces = useStore((s) => s.workspaces);
   const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
 
-  const [tab, setTab] = useState<FleetTab>('fleet');
+  // S-C2: tab lives in uiSlice (not FleetView-local) so the A2A / MCP approval
+  // modals can suppress themselves while the inbox tab is open (AppLayout delta
+  // 5). Reset to 'fleet' on unmount (mount-gated = close) so reopening the
+  // cockpit always lands on the agent grid.
+  const tab = useStore((s) => s.fleetActiveTab);
+  const setTab = useStore((s) => s.setFleetActiveTab);
+  useEffect(() => () => setTab('fleet'), [setTab]);
+
   const [focusedIdx, setFocusedIdx] = useState(0);
+  const [inboxIdx, setInboxIdx] = useState(0);
   const panelRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
 
   // Derive + sort outside the hot render path. Re-runs only when the workspace
   // trees or the per-pty attention map change (the two inputs the selector
@@ -44,6 +55,16 @@ export default function FleetView() {
     [workspaces, surfaceAgentStatus],
   );
   const needsCount = useMemo(() => countNeedsAttention(panes), [panes]);
+
+  // S-C2 approval inbox — pure derivation of the two pending-approval sources
+  // (A2A-first, then MCP). Mirrors the fleet selector's narrow subscription.
+  const mcpPrompts = useStore((s) => s.mcpPrompts);
+  const mcpPromptOrder = useStore((s) => s.mcpPromptOrder);
+  const pendingExecuteApproval = useStore((s) => s.pendingExecuteApproval);
+  const inbox = useMemo(
+    () => selectApprovalInbox({ mcpPrompts, mcpPromptOrder, pendingExecuteApproval }),
+    [mcpPrompts, mcpPromptOrder, pendingExecuteApproval],
+  );
 
   // Jump to a pane's workspace + pane + surface, then close the overlay.
   // Terminal panes resolve by their active-surface ptyId via the full
@@ -75,6 +96,12 @@ export default function FleetView() {
     setFocusedIdx((i) => Math.min(i, Math.max(panes.length - 1, 0)));
   }, [panes.length]);
 
+  // Same clamp for the inbox: a row resolving (or the A2A 30s auto-deny)
+  // shrinks the list, so the focused index must never dangle past the end.
+  useEffect(() => {
+    setInboxIdx((i) => Math.min(i, Math.max(inbox.length - 1, 0)));
+  }, [inbox.length]);
+
   // Pull DOM focus INTO the overlay (the focused card, else the panel) so no
   // keystroke — arrows, Enter, or typed text — can leak to the background
   // pane's xterm textarea underneath the backdrop, and so the keyboard
@@ -84,12 +111,18 @@ export default function FleetView() {
       if (tab === 'fleet' && panes.length > 0) {
         const cards = gridRef.current?.querySelectorAll<HTMLElement>('[data-fleet-card]');
         (cards && cards[focusedIdx])?.focus();
+      } else if (tab === 'approvals' && inbox.length > 0) {
+        // Mirror the fleet-tab branch for the inbox listbox so arrows / Enter /
+        // deny-keys land on the focused row and can't leak to the background
+        // xterm underneath the backdrop.
+        const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
+        (rows && rows[inboxIdx])?.focus();
       } else {
         panelRef.current?.focus();
       }
     });
     return () => cancelAnimationFrame(raf);
-  }, [tab, focusedIdx, panes.length]);
+  }, [tab, focusedIdx, inboxIdx, panes.length, inbox.length]);
 
   // Keyboard: Esc closes; unmodified arrows move card focus and are ALWAYS
   // swallowed (capture-phase) so they never reach the background xterm or
@@ -128,22 +161,55 @@ export default function FleetView() {
         focusables[next]?.focus();
         return;
       }
+      // Approvals tab: Enter approves the focused row (guard #5 — non-critical
+      // only), Backspace/Delete denies it (always safe). Both swallowed so the
+      // keystroke never leaks to the background xterm. A critical MCP row's
+      // Enter is a deliberate no-op: granting a critical capability requires an
+      // explicit click / Tab-to-Approve, never a blind keyboard grant.
+      if (tab === 'approvals' && inbox.length > 0) {
+        if (e.key === 'Enter') {
+          e.preventDefault();
+          e.stopPropagation();
+          const it = inbox[inboxIdx];
+          if (it && !(it.source === 'mcp' && it.isCritical)) {
+            resolveInboxItem(it, true);
+          }
+          return;
+        }
+        if (e.key === 'Backspace' || e.key === 'Delete') {
+          e.preventDefault();
+          e.stopPropagation();
+          const it = inbox[inboxIdx];
+          if (it) resolveInboxItem(it, false);
+          return;
+        }
+      }
+
       const isArrow =
         e.key === 'ArrowDown' || e.key === 'ArrowUp' ||
         e.key === 'ArrowLeft' || e.key === 'ArrowRight';
       if (!isArrow || e.ctrlKey || e.metaKey || e.altKey) return;
       e.preventDefault();
       e.stopPropagation();
-      if (tab !== 'fleet' || panes.length === 0) return;
-      if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
-        setFocusedIdx((i) => Math.min(i + 1, panes.length - 1));
-      } else {
-        setFocusedIdx((i) => Math.max(i - 1, 0));
+      if (tab === 'fleet' && panes.length > 0) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+          setFocusedIdx((i) => Math.min(i + 1, panes.length - 1));
+        } else {
+          setFocusedIdx((i) => Math.max(i - 1, 0));
+        }
+        return;
+      }
+      if (tab === 'approvals' && inbox.length > 0) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+          setInboxIdx((i) => Math.min(i + 1, inbox.length - 1));
+        } else {
+          setInboxIdx((i) => Math.max(i - 1, 0));
+        }
       }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [tab, panes.length, setVisible]);
+  }, [tab, panes.length, inbox, inboxIdx, setVisible]);
 
   return (
     <div
@@ -216,11 +282,15 @@ export default function FleetView() {
         </div>
 
         {/* Body */}
-        <div className="overflow-y-auto flex-1 p-4">
+        <div ref={bodyRef} className="overflow-y-auto flex-1 p-4">
           {tab === 'approvals' ? (
-            <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
-              {t('fleet.approvalsComingSoon')}
-            </div>
+            inbox.length > 0 ? (
+              <ApprovalInboxList items={inbox} focusedIdx={inboxIdx} onResolve={resolveInboxItem} />
+            ) : (
+              <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
+                {t('fleet.approvals.empty')}
+              </div>
+            )
           ) : panes.length === 0 ? (
             <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
               {t('fleet.empty')}
@@ -245,7 +315,7 @@ export default function FleetView() {
           )}
         </div>
 
-        {/* Footer hint */}
+        {/* Footer hint — approve/deny on the Approvals tab, jump on Fleet. */}
         <div
           className="flex items-center gap-3 px-4 py-2"
           style={{ borderTop: '1px solid var(--bg-surface)', backgroundColor: 'var(--bg-mantle)' }}
@@ -259,15 +329,38 @@ export default function FleetView() {
             </kbd>{' '}
             {t('palette.navigate')}
           </span>
-          <span className="text-xs text-[var(--text-muted)]">
-            <kbd
-              className="px-1 py-0.5 rounded mr-0.5"
-              style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
-            >
-              Enter
-            </kbd>{' '}
-            {t('fleet.jumpHint')}
-          </span>
+          {tab === 'approvals' ? (
+            <>
+              <span className="text-xs text-[var(--text-muted)]">
+                <kbd
+                  className="px-1 py-0.5 rounded mr-0.5"
+                  style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
+                >
+                  Enter
+                </kbd>{' '}
+                {t('fleet.approvals.enterApprove')}
+              </span>
+              <span className="text-xs text-[var(--text-muted)]">
+                <kbd
+                  className="px-1 py-0.5 rounded mr-0.5"
+                  style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
+                >
+                  Del
+                </kbd>{' '}
+                {t('fleet.approvals.delDeny')}
+              </span>
+            </>
+          ) : (
+            <span className="text-xs text-[var(--text-muted)]">
+              <kbd
+                className="px-1 py-0.5 rounded mr-0.5"
+                style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
+              >
+                Enter
+              </kbd>{' '}
+              {t('fleet.jumpHint')}
+            </span>
+          )}
         </div>
       </div>
     </div>

@@ -86,6 +86,20 @@ export const ko = {
   'fleet.needsYourInput': '입력 대기 중',
   'fleet.jumpHint': '에이전트로 이동',
 
+  // Fleet View — 승인 탭 (S-C2 통합 승인 인박스)
+  'fleet.approvals.empty': '대기 중인 승인 없음',
+  'fleet.approvals.approve': '승인',
+  'fleet.approvals.deny': '거부',
+  'fleet.approvals.critical': '위험',
+  'fleet.approvals.a2aTitle': '백그라운드 실행',
+  'fleet.approvals.a2aDesc': '원격 A2A 호출자가 bypassPermissions로 Claude CLI를 실행하려 합니다.',
+  'fleet.approvals.autoDenyIn': '{seconds}초 후 자동 거부',
+  'fleet.approvals.from': '보낸 쪽',
+  'fleet.approvals.to': '받는 쪽',
+  'fleet.approvals.plugin': '플러그인',
+  'fleet.approvals.enterApprove': '승인',
+  'fleet.approvals.delDeny': '거부',
+
   // Project config (X5 wmux.json)
   'project.dialogTitle': '프로젝트 설정 (wmux.json)',
   'project.file': '파일',

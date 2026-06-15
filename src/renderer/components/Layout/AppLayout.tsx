@@ -30,6 +30,7 @@ import { useActivePaneFocus } from '../../hooks/useActivePaneFocus';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
+import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
 import { useIpc } from '../../hooks/useIpc';
 import type { SessionData, PaneLeaf, Pane, Surface, Workspace } from '../../../shared/types';
@@ -268,6 +269,12 @@ export default function AppLayout() {
   // only run while the cockpit is open (the open toggle lives in the global
   // keyboard handler, not inside FleetView, so gating the mount is safe).
   const fleetViewVisible = useStore((s) => s.fleetViewVisible);
+  // S-C2: while the Fleet View's Approvals tab owns the screen, it is the SOLE
+  // approval surface — suppress the standalone A2A / MCP modals (delta 5, one
+  // surface per item). The container keeps its pluginHost deadlock-break UX in
+  // every other state.
+  const fleetActiveTab = useStore((s) => s.fleetActiveTab);
+  const inboxOwnsApprovals = fleetViewVisible && fleetActiveTab === 'approvals';
   const onboardingActive = useStore((s) => s.onboardingActive);
   const onboardingCompleted = useStore((s) => s.onboardingCompleted);
   const startOnboarding = useStore((s) => s.startOnboarding);
@@ -299,6 +306,10 @@ export default function AppLayout() {
   useActivePaneFocus();
   useNotificationListener();
   useRpcBridge();
+  // S-C2 Approval Inbox bridge: the SINGLE owner of permissionPrompt.onOpen /
+  // onClosed (guard #2). Always-on (not gated on fleetViewVisible) so MCP
+  // prompts accumulate in the store before the cockpit's Approvals tab opens.
+  useApprovalInboxBridge();
   // Plugin host (B-1): ui.decoratePane push → uiSlice pane decorations.
   usePaneDecorationChannel();
   const { invoke: ipcInvoke } = useIpc();
@@ -1187,8 +1198,8 @@ export default function AppLayout() {
           inspectModeActive is false. */}
       <InspectOverlay />
       <ApprovalDialog />
-      <ExecuteApprovalDialog />
-      <PermissionApprovalDialogContainer />
+      {!inboxOwnsApprovals && <ExecuteApprovalDialog />}
+      {!inboxOwnsApprovals && <PermissionApprovalDialogContainer />}
       <ProjectConfigDialog />
 
       {onboardingActive && (

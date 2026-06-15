@@ -131,6 +131,20 @@ export const en = {
   'fleet.needsYourInput': 'Needs your input',
   'fleet.jumpHint': 'jump to agent',
 
+  // Fleet View — Approvals tab (S-C2 unified approval inbox)
+  'fleet.approvals.empty': 'No pending approvals',
+  'fleet.approvals.approve': 'Approve',
+  'fleet.approvals.deny': 'Deny',
+  'fleet.approvals.critical': 'Critical',
+  'fleet.approvals.a2aTitle': 'Background execution',
+  'fleet.approvals.a2aDesc': 'A remote A2A caller wants to spawn a Claude CLI with bypassPermissions.',
+  'fleet.approvals.autoDenyIn': 'auto-deny in {seconds}s',
+  'fleet.approvals.from': 'from',
+  'fleet.approvals.to': 'to',
+  'fleet.approvals.plugin': 'plugin',
+  'fleet.approvals.enterApprove': 'approve',
+  'fleet.approvals.delDeny': 'deny',
+
   // Project config (X5 wmux.json)
   'project.dialogTitle': 'Project configuration (wmux.json)',
   'project.file': 'file',
