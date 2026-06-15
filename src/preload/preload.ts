@@ -539,6 +539,13 @@ document.addEventListener('DOMContentLoaded', () => {
       promptId,
       approved,
     }) as Promise<{ ok: boolean; error?: string }>,
+  onClosed: (callback: (payload: { promptId: string }) => void) => {
+    const listener = (_event: unknown, payload: { promptId: string }) => callback(payload);
+    ipcRenderer.on(IPC.PERMISSION_PROMPT_CLOSED, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC.PERMISSION_PROMPT_CLOSED, listener);
+    };
+  },
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

@@ -70,6 +70,11 @@ export const IPC = {
   // and sends the user's decision back over PERMISSION_PROMPT_RESOLVE.
   PERMISSION_PROMPT_OPEN: 'permission:prompt-open',
   PERMISSION_PROMPT_RESOLVE: 'permission:prompt-resolve',
+  // Main → renderer push fired from INSIDE ApprovalQueue.resolvePrompt AND
+  // cancelPrompt the moment a prompt leaves the queue (resolved by the modal,
+  // the pluginHost deadlock-break, or a coalesced sibling). Lets the renderer
+  // approval-inbox remove the row. Payload: { promptId }.
+  PERMISSION_PROMPT_CLOSED: 'permission:prompt-closed',
   // Shell
   SHELL_OPEN_EXTERNAL: 'shell:open-external',
   // Open an absolute filesystem path in the OS default app / explorer.

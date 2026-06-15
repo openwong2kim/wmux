@@ -68,6 +68,9 @@ declare global {
           promptId: string,
           approved: boolean,
         ) => Promise<{ ok: boolean; error?: string }>;
+        onClosed: (
+          callback: (payload: { promptId: string }) => void,
+        ) => () => void;
       };
     };
     clipboardAPI: {

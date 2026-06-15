@@ -583,6 +583,15 @@ const approvalQueue = new ApprovalQueue(getPluginTrustStore(), {
       /* renderer might be mid-reload — the next request will surface */
     }
   },
+  closePrompt: (promptId) => {
+    const win = mainWindow;
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.webContents.send(IPC.PERMISSION_PROMPT_CLOSED, { promptId });
+    } catch {
+      /* renderer might be mid-reload */
+    }
+  },
 });
 rpcRouter.setApprovalQueue(approvalQueue);
 

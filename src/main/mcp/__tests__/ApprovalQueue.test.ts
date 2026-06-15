@@ -254,3 +254,56 @@ describe('ApprovalQueue.cancelPrompt', () => {
     ).not.toThrow();
   });
 });
+
+describe('ApprovalQueue removal-push (closePrompt)', () => {
+  function makeQueueWithCloser(closePrompt: (promptId: string) => void): ApprovalQueue {
+    opened = [];
+    return new ApprovalQueue(store, {
+      openPrompt: (info) => opened.push(info),
+      closePrompt,
+      mintPromptId: mintId,
+    });
+  }
+
+  it('fires closePrompt with the exact promptId on resolve', async () => {
+    const closePrompt = vi.fn();
+    const queue = makeQueueWithCloser(closePrompt);
+    const handle = queue.requestApproval({
+      clientName: 'plugin-close-a',
+      declaredCapabilities: ['pane.read'],
+    });
+    await queue.resolvePrompt(handle.promptId, true);
+    expect(closePrompt).toHaveBeenCalledTimes(1);
+    expect(closePrompt).toHaveBeenCalledWith(handle.promptId);
+  });
+
+  it('fires closePrompt with the exact promptId on cancel', () => {
+    const closePrompt = vi.fn();
+    const queue = makeQueueWithCloser(closePrompt);
+    const handle = queue.requestApproval({
+      clientName: 'plugin-close-b',
+      declaredCapabilities: ['terminal.read'],
+    });
+    // Reject the parked waiter so the unhandled rejection doesn't leak.
+    void handle.resolution.catch(() => {});
+    queue.cancelPrompt(handle.promptId, 'plugin disconnected');
+    expect(closePrompt).toHaveBeenCalledTimes(1);
+    expect(closePrompt).toHaveBeenCalledWith(handle.promptId);
+  });
+
+  it('does NOT fire closePrompt for a no-op resolve (double-resolve fires once)', async () => {
+    const closePrompt = vi.fn();
+    const queue = makeQueueWithCloser(closePrompt);
+    const handle = queue.requestApproval({
+      clientName: 'plugin-close-c',
+      declaredCapabilities: ['pane.read'],
+    });
+    await queue.resolvePrompt(handle.promptId, true);
+    // Second resolve hits the `if (!key) return` guard → no second push.
+    await queue.resolvePrompt(handle.promptId, false);
+    // Unknown promptId never entered the queue → guard short-circuits.
+    await queue.resolvePrompt('never-existed', true);
+    expect(closePrompt).toHaveBeenCalledTimes(1);
+    expect(closePrompt).toHaveBeenCalledWith(handle.promptId);
+  });
+});

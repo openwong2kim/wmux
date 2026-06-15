@@ -39,6 +39,9 @@ export interface ApprovalPromptInfo {
 /** Callback the queue invokes when a fresh prompt should appear on screen. */
 export type ApprovalPromptOpener = (info: ApprovalPromptInfo) => void;
 
+/** Callback the queue invokes when a prompt leaves the queue (resolved/cancelled). */
+export type ApprovalPromptCloser = (promptId: string) => void;
+
 /** Resolution shape returned to every coalesced caller. */
 export interface ApprovalResult {
   approved: boolean;
@@ -77,6 +80,11 @@ export interface ApprovalQueueOptions {
    */
   openPrompt: ApprovalPromptOpener;
   /**
+   * Notify the renderer a prompt left the queue (resolved/cancelled) so the
+   * inbox removes its row. Best-effort; failures must not throw past the queue.
+   */
+  closePrompt?: ApprovalPromptCloser;
+  /**
    * Optional override for the prompt-id factory (test determinism). Default
    * uses crypto.randomUUID().
    */
@@ -106,12 +114,14 @@ export class ApprovalQueue {
   private readonly inflight = new Map<string, PendingPrompt>();
   private readonly byPromptId = new Map<string, string>(); // promptId → dedupKey
   private readonly openPrompt: ApprovalPromptOpener;
+  private readonly closePrompt: ApprovalPromptCloser | undefined;
   private readonly mintPromptId: () => string;
   private readonly trustStore: PluginTrustStore;
 
   constructor(trustStore: PluginTrustStore, options: ApprovalQueueOptions) {
     this.trustStore = trustStore;
     this.openPrompt = options.openPrompt;
+    this.closePrompt = options.closePrompt;
     this.mintPromptId = options.mintPromptId ?? defaultMintPromptId;
   }
 
@@ -191,6 +201,9 @@ export class ApprovalQueue {
     if (!pending) return;
     this.byPromptId.delete(promptId);
     this.inflight.delete(key);
+    // Fire the removal-push BEFORE the trust-store await so the renderer
+    // inbox row is removed even if the persistence write below fails.
+    try { this.closePrompt?.(promptId); } catch { /* best-effort renderer notification */ }
 
     let identity: PluginIdentityRecord | undefined;
     try {
@@ -232,6 +245,7 @@ export class ApprovalQueue {
     if (!pending) return;
     this.byPromptId.delete(promptId);
     this.inflight.delete(key);
+    try { this.closePrompt?.(promptId); } catch { /* best-effort renderer notification */ }
     const err = new Error(`Approval prompt cancelled: ${reason}`);
     for (const r of pending.rejecters) {
       try {
