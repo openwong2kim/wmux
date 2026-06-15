@@ -16,6 +16,7 @@ import { readPtyBufferLines } from '../utils/terminalTail';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
+import { resolvePaneAddress, activePaneTerminalPty, type PaneAddress } from './a2aAddressing';
 
 // ---------------------------------------------------------------------------
 // Pane tree utilities
@@ -156,16 +157,11 @@ function deliverPtyNotification(
   targetWs: { rootPane: Pane; activePaneId: string; name: string },
   senderName: string,
   message: string,
+  explicitPtyId?: string,
 ): void {
-  const leaves = findLeafPanes(targetWs.rootPane);
-  const activeLeaf = leaves.find((l) => l.id === targetWs.activePaneId)
-    ?? leaves.find((l) => l.surfaces.some((s) => s.surfaceType !== 'browser'));
-  if (activeLeaf) {
-    const termSurface = activeLeaf.surfaces.find((s) => s.surfaceType !== 'browser' && s.ptyId);
-    if (termSurface) {
-      const formatted = formatA2aMessage(senderName, targetWs.name, message);
-      submitToPty(termSurface.ptyId, formatted);
-    }
+  const ptyId = explicitPtyId ?? activePaneTerminalPty(findLeafPanes(targetWs.rootPane), targetWs.activePaneId);
+  if (ptyId) {
+    submitToPty(ptyId, formatA2aMessage(senderName, targetWs.name, message));
   }
 }
 
@@ -181,15 +177,11 @@ function deliverPtyNotification(
 function deliverPtyNudge(
   targetWs: { rootPane: Pane; activePaneId: string },
   nudge: string,
+  explicitPtyId?: string,
 ): void {
-  const leaves = findLeafPanes(targetWs.rootPane);
-  const activeLeaf = leaves.find((l) => l.id === targetWs.activePaneId)
-    ?? leaves.find((l) => l.surfaces.some((s) => s.surfaceType !== 'browser'));
-  if (activeLeaf) {
-    const termSurface = activeLeaf.surfaces.find((s) => s.surfaceType !== 'browser' && s.ptyId);
-    if (termSurface) {
-      submitToPty(termSurface.ptyId, nudge);
-    }
+  const ptyId = explicitPtyId ?? activePaneTerminalPty(findLeafPanes(targetWs.rootPane), targetWs.activePaneId);
+  if (ptyId) {
+    submitToPty(ptyId, nudge);
   }
 }
 
@@ -442,6 +434,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const surfaces = [];
     for (const leaf of leaves) {
       for (const s of leaf.surfaces) {
+        // Part A: per-surface agent label so a workspace hosting >1 agent is
+        // distinguishable without the buffer-fingerprint workaround (gap 3).
+        const agent = store.surfaceAgent[s.ptyId];
         surfaces.push({
           id: s.id,
           ptyId: s.ptyId,
@@ -453,6 +448,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           browserUrl: s.browserUrl,
           paneId: leaf.id,
           isActive: s.id === leaf.activeSurfaceId,
+          agentName: agent?.name ?? null,
+          agentStatus: agent?.status ?? null,
         });
       }
     }
@@ -574,6 +571,13 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         // CLI table and external readers that ignore unknown fields are
         // unaffected.
         surfacePtyIds: l.surfaces.map((s) => s.ptyId).filter((id): id is string => Boolean(id)),
+        // Part A: per-surface agent labels for this leaf. A split pane can hold
+        // more than one terminal surface; each detected agent is listed so the
+        // pane is individually addressable (gaps 1/8).
+        agents: l.surfaces.flatMap((s) => {
+          const a = store.surfaceAgent[s.ptyId];
+          return a ? [{ ptyId: s.ptyId, surfaceId: s.id, agentName: a.name, agentStatus: a.status }] : [];
+        }),
       };
     });
   }
@@ -1130,6 +1134,32 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         // never gate sending on this, it just lets a sender pre-check whether
         // the receiver is likely to react to a paste vs. needs the inbox poll.
         const live = isLiveTuiAgent(w.metadata);
+        // Part A — per-pane agent labels (gaps 1/3/8). Each terminal surface in
+        // the workspace becomes an addressable entry (paneId/surfaceId/ptyId)
+        // carrying its detected agent (null when undetected). Clients that need
+        // to talk to a SPECIFIC agent in a multi-agent workspace iterate
+        // `panes` and address `a2a_task_send` with the surface_id/pane_id; the
+        // ws-level fields below stay for back-compat single-agent callers.
+        const panes: Array<{
+          paneId: string;
+          surfaceId: string;
+          ptyId: string;
+          agentName: string | null;
+          agentStatus: string | null;
+        }> = [];
+        for (const leaf of findLeafPanes(w.rootPane)) {
+          for (const s of leaf.surfaces) {
+            if (s.surfaceType === 'browser' || !s.ptyId) continue;
+            const a = store.surfaceAgent[s.ptyId];
+            panes.push({
+              paneId: leaf.id,
+              surfaceId: s.id,
+              ptyId: s.ptyId,
+              agentName: a?.name ?? null,
+              agentStatus: a?.status ?? null,
+            });
+          }
+        }
         return {
           name: w.name,
           description: w.metadata?.agentName ?? w.name,
@@ -1145,6 +1175,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           // resolve.identity PID→ws cross-check would set a stronger source.
           live,
           liveSource: live ? 'store-metadata' : undefined,
+          panes,
           metadata: {
             workspaceId: w.id,
             status: (w.metadata?.agentStatus as string) ?? 'idle',
@@ -1217,15 +1248,35 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       // don't corrupt its prompt; otherwise (no live agent, or explicit
       // silent:false) keep the loud full-body paste.
       if (!silent) {
-        const targetWsId = role === 'user' ? task.metadata.to.workspaceId : task.metadata.from.workspaceId;
+        const replyingToReceiver = role === 'user';
+        const targetWsId = replyingToReceiver ? task.metadata.to.workspaceId : task.metadata.from.workspaceId;
         const targetWs = store.workspaces.find((w) => w.id === targetWsId);
         if (targetWs) {
           const senderWs = store.workspaces.find((w) => w.id === workspaceId);
           const senderName = senderWs?.name ?? 'unknown';
-          if (!silentExplicit && isLiveTuiAgent(targetWs.metadata)) {
-            deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName));
-          } else {
-            deliverPtyNotification(targetWs, senderName, message);
+          // Part A: keep the thread pinned to the originally-addressed pane.
+          // Only the receiver side (`to`) carries a stored pane address; replies
+          // back to the original sender (`from`) have none → active-pane.
+          let explicitPty: string | undefined;
+          let pinnedAddressLost = false;
+          if (replyingToReceiver && (task.metadata.to.paneId || task.metadata.to.surfaceId)) {
+            const addr = resolvePaneAddress(findLeafPanes(targetWs.rootPane), task.metadata.to.paneId ?? '', task.metadata.to.surfaceId ?? '');
+            if ('error' in addr) {
+              // The addressed pane no longer resolves (closed / re-split). Fail
+              // CLOSED: do not paste to a different (active) pane — that could
+              // land on the wrong agent. The reply is still persisted + on the
+              // EventBus, so the receiver can still poll it via a2a_task_query.
+              pinnedAddressLost = true;
+            } else {
+              explicitPty = addr.ptyId;
+            }
+          }
+          if (!pinnedAddressLost) {
+            if (!silentExplicit && isLiveTuiAgent(targetWs.metadata)) {
+              deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), explicitPty);
+            } else {
+              deliverPtyNotification(targetWs, senderName, message, explicitPty);
+            }
           }
         }
       }
@@ -1263,12 +1314,30 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     }
     if (target.id === workspaceId) return { error: 'a2a.task.send: cannot send to yourself' };
 
+    // Part A — optional pane-level addressing. Resolve paneId/surfaceId to a
+    // concrete pty INSIDE the target ws (cross-ws ids fail-closed: only
+    // target's tree is searched). An explicit-but-invalid address is a hard
+    // error — never silently fall back to the active pane (that would deliver
+    // to the wrong agent on a typo).
+    const reqPaneId = typeof params.paneId === 'string' ? params.paneId : '';
+    const reqSurfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : '';
+    let resolvedAddr: PaneAddress | undefined;
+    if (reqPaneId || reqSurfaceId) {
+      const addr = resolvePaneAddress(findLeafPanes(target.rootPane), reqPaneId, reqSurfaceId);
+      if ('error' in addr) return { error: `a2a.task.send: ${addr.error}` };
+      resolvedAddr = addr;
+    }
+
     const initialMessage: Message = { kind: 'message', messageId: generateId('msg'), role: 'user', parts };
 
     const newTaskId = store.createA2aTask({
       title: title || message.slice(0, 100),
       from: { workspaceId, name: fromName },
-      to: { workspaceId: target.id, name: target.name },
+      to: {
+        workspaceId: target.id,
+        name: target.name,
+        ...(resolvedAddr && { paneId: resolvedAddr.paneId, surfaceId: resolvedAddr.surfaceId }),
+      },
       history: [initialMessage],
       artifacts: [],
     });
@@ -1279,10 +1348,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // an unset silent + live-TUI receiver gets a one-line nudge (prompt not
     // flooded); no live agent (or explicit silent:false) keeps the loud paste.
     if (!silent) {
+      const explicitPty = resolvedAddr?.ptyId;
       if (!silentExplicit && isLiveTuiAgent(target.metadata)) {
-        deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName));
+        deliverPtyNudge(target, buildA2aNudge(newTaskId, fromName), explicitPty);
       } else {
-        deliverPtyNotification(target, fromName, message);
+        deliverPtyNotification(target, fromName, message, explicitPty);
       }
     }
 
@@ -1293,7 +1363,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const createdTask = store.getTask(newTaskId);
     if (createdTask) emitA2aTaskEvent(createdTask, 'created');
 
-    return { ok: true, taskId: newTaskId, silent };
+    // Return the RESOLVED target workspaceId so the main-side a2a.rpc handler
+    // uses it for execute:true (confirm + ClaudeWorker), instead of the raw
+    // fuzzy `to` string (which could be a number/partial name).
+    return { ok: true, taskId: newTaskId, silent, toWorkspaceId: target.id };
   }
 
   if (method === 'a2a.task.query') {

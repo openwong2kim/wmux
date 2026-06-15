@@ -35,7 +35,9 @@ export interface A2aSlice {
   createA2aTask: (task: {
     title: string;
     from: { workspaceId: string; name: string };
-    to: { workspaceId: string; name: string };
+    // Optional pane-level target (Part A). Passed through verbatim into
+    // WmuxTaskMetadata.to so a reply can re-resolve the addressed pane.
+    to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
     history: Message[];
     artifacts: Artifact[];
   }) => string;

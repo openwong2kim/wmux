@@ -491,4 +491,36 @@ describe('PaneSlice', () => {
       expect(store.getState().zoomedPaneId).toBe(leaves[0].id);
     });
   });
+
+  // Part A — per-surface agent identity map.
+  describe('surfaceAgent', () => {
+    it('stores name + status keyed by ptyId', () => {
+      store.getState().setSurfaceAgent('pty-1', 'Claude Code', 'waiting');
+      expect(store.getState().surfaceAgent['pty-1']).toEqual({ name: 'Claude Code', status: 'waiting' });
+    });
+
+    it('keeps the known name when a later update carries an empty name (running broadcast)', () => {
+      store.getState().setSurfaceAgent('pty-1', 'Codex CLI', 'running');
+      store.getState().setSurfaceAgent('pty-1', '', 'running'); // ActivityMonitor running, name not yet gated
+      expect(store.getState().surfaceAgent['pty-1']).toEqual({ name: 'Codex CLI', status: 'running' });
+    });
+
+    it('updates only the status when a status-only update arrives for a known agent', () => {
+      store.getState().setSurfaceAgent('pty-1', 'Claude Code', 'running');
+      store.getState().setSurfaceAgent('pty-1', undefined, 'complete');
+      expect(store.getState().surfaceAgent['pty-1']).toEqual({ name: 'Claude Code', status: 'complete' });
+    });
+
+    it('does nothing when no name is known yet (no entry created)', () => {
+      store.getState().setSurfaceAgent('pty-x', '', 'running');
+      store.getState().setSurfaceAgent('pty-x', undefined, 'waiting');
+      expect(store.getState().surfaceAgent['pty-x']).toBeUndefined();
+    });
+
+    it('clearSurfaceAgent removes the entry', () => {
+      store.getState().setSurfaceAgent('pty-1', 'Claude Code', 'running');
+      store.getState().clearSurfaceAgent('pty-1');
+      expect(store.getState().surfaceAgent['pty-1']).toBeUndefined();
+    });
+  });
 });

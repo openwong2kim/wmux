@@ -561,12 +561,23 @@ function disposePaneTree(pane: { type: string; surfaces?: Array<{ ptyId?: string
 // ─── MCP integration status ──────────────────────────────────────────────────
 
 /** Mirror of McpStatusPayload in main/ipc/handlers/mcp.handler.ts. */
-interface McpStatusPayload {
-  wmux: { registered: boolean; path: string | null };
-  wmuxA2a: { registered: boolean; path: string | null };
+interface McpServerState {
+  registered: boolean;
+  path: string | null;
+}
+interface McpTargetStatusPayload {
+  id: string;
+  displayName: string;
+  format: 'json' | 'toml';
   configPath: string;
   configExists: boolean;
   configModified: string | null;
+  verified: boolean;
+  wmux: McpServerState;
+  wmuxA2a: McpServerState;
+}
+interface McpStatusPayload {
+  targets: McpTargetStatusPayload[];
 }
 
 interface ElectronMcpApi {
@@ -651,82 +662,96 @@ function McpStatusSection() {
             {server.path}
           </p>
         )}
-        {!server.registered && (
-          <p className="text-[10px] text-[color:var(--text-muted)] mt-0.5">
-            Not registered in Claude Code config
-          </p>
-        )}
       </div>
     </div>
   );
 
+  // Per-target group: agent name + config path/state, and (when the config
+  // exists) the two server rows. Non-existent targets render as "not detected"
+  // (the agent isn't installed — wmux never creates its config).
+  const renderTarget = (target: McpTargetStatusPayload) => (
+    <div key={target.id} className="flex flex-col gap-1.5">
+      <div className="flex items-center gap-2">
+        <span className="text-[11px] font-semibold text-[color:var(--text-sub)]">{target.displayName}</span>
+        {!target.verified && (
+          <span
+            className="text-[9px] px-1 py-0.5 rounded"
+            style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-muted)' }}
+            title="Integration not yet verified end-to-end"
+          >
+            experimental
+          </span>
+        )}
+      </div>
+      {target.configExists ? (
+        <>
+          {renderRow('wmux', target.wmux)}
+          {renderRow('wmux-a2a', target.wmuxA2a)}
+          <p className="text-[10px] text-[color:var(--text-muted)] font-mono truncate" title={target.configPath}>
+            {target.configPath}
+            {target.configModified ? ` · modified ${new Date(target.configModified).toLocaleString()}` : ''}
+          </p>
+        </>
+      ) : (
+        <div
+          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
+        >
+          Not detected · <span className="font-mono">{target.configPath}</span>
+        </div>
+      )}
+    </div>
+  );
+
   return (
-    <div className="flex flex-col gap-2">
+    <div className="flex flex-col gap-3">
       <SectionLabel label="MCP Servers" />
       {loading ? (
         <div
           className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
           style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
         >
-          Checking ~/.claude.json…
+          Checking agent configs…
         </div>
       ) : status ? (
         <>
-          {renderRow('wmux', status.wmux)}
-          {renderRow('wmux-a2a', status.wmuxA2a)}
-          <div
-            className="px-3 py-2 rounded-lg flex items-center justify-between gap-3"
-            style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
-          >
-            <div className="min-w-0 flex-1">
-              <p className="text-[11px] text-[color:var(--text-sub)] font-mono truncate" title={status.configPath}>
-                {status.configPath}
-              </p>
-              <p className="text-[10px] text-[color:var(--text-muted)] mt-0.5">
-                {status.configExists
-                  ? status.configModified
-                    ? `modified ${new Date(status.configModified).toLocaleString()}`
-                    : 'config file present'
-                  : 'config file does not exist'}
-              </p>
-            </div>
-            <div className="flex items-center gap-2 shrink-0">
-              <Button
-                variant="accent"
-                onClick={() => void handleReregister()}
-                disabled={pending !== null}
-                style={{ opacity: pending ? 0.5 : 1 }}
-              >
-                {pending === 'reregister' ? '…' : 'Re-register'}
-              </Button>
-              {confirmingUnregister ? (
-                <>
-                  <Button
-                    variant="destructive"
-                    onClick={() => void handleUnregister()}
-                    disabled={pending !== null}
-                  >
-                    {pending === 'unregister' ? '…' : 'Confirm'}
-                  </Button>
-                  <Button
-                    variant="secondary"
-                    onClick={() => setConfirmingUnregister(false)}
-                    disabled={pending !== null}
-                  >
-                    Cancel
-                  </Button>
-                </>
-              ) : (
+          {status.targets.map((t) => renderTarget(t))}
+          <div className="flex items-center justify-end gap-2 shrink-0">
+            <Button
+              variant="accent"
+              onClick={() => void handleReregister()}
+              disabled={pending !== null}
+              style={{ opacity: pending ? 0.5 : 1 }}
+            >
+              {pending === 'reregister' ? '…' : 'Re-register'}
+            </Button>
+            {confirmingUnregister ? (
+              <>
+                <Button
+                  variant="destructive"
+                  onClick={() => void handleUnregister()}
+                  disabled={pending !== null}
+                >
+                  {pending === 'unregister' ? '…' : 'Confirm'}
+                </Button>
                 <Button
                   variant="secondary"
-                  onClick={() => setConfirmingUnregister(true)}
+                  onClick={() => setConfirmingUnregister(false)}
                   disabled={pending !== null}
-                  style={{ color: 'var(--accent-red)' }}
                 >
-                  Unregister
+                  Cancel
                 </Button>
-              )}
-            </div>
+              </>
+            ) : (
+              <Button
+                variant="secondary"
+                onClick={() => setConfirmingUnregister(true)}
+                disabled={pending !== null}
+                style={{ color: 'var(--accent-red)' }}
+              >
+                Unregister
+              </Button>
+            )}
           </div>
         </>
       ) : (

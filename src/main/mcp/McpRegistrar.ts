@@ -1,142 +1,117 @@
 import * as fs from 'fs';
 import * as path from 'path';
 import { app } from 'electron';
-import { getAuthTokenPath, getPipeName } from '../../shared/constants';
+import { getAuthTokenPath } from '../../shared/constants';
 import { secureWriteTokenFile } from '../../shared/security';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
+import { MCP_TARGETS } from '../../shared/mcpTargets';
+import {
+  readAllTargetStatuses,
+  registerTarget,
+  unregisterTarget,
+  type TargetRegStatus,
+  type ServerRegState,
+} from '../../shared/mcpRegistration';
 
 /** Per-server registration state surfaced via getStatus(). */
-export interface McpServerStatus {
-  registered: boolean;
-  /** Resolved script path written to ~/.claude.json, or null when not registered. */
-  path: string | null;
-}
+export type McpServerStatus = ServerRegState;
+/** Registration state for a single agent target (Claude / Codex / Gemini). */
+export type McpTargetStatus = TargetRegStatus;
 
 /** Aggregate snapshot of MCP integration state for CLI / Settings UI. */
 export interface McpRegistrarStatus {
-  wmux: McpServerStatus;
-  wmuxA2a: McpServerStatus;
-  /** Absolute path to the Claude Code user config file (~/.claude.json). */
-  configPath: string;
-  configExists: boolean;
-  /** Last-modified timestamp (mtime) of the config file, or null when missing. */
-  configModified: Date | null;
+  targets: McpTargetStatus[];
 }
 
 /**
- * Registers/unregisters the wmux MCP server in Claude Code's config files
- * and writes the auth token to a well-known file so the MCP server can read it.
+ * Registers/unregisters the wmux MCP servers (`wmux`, `wmux-a2a`) into the
+ * config files of the installed agent CLIs, and writes the auth token to a
+ * well-known file so the MCP server can read it. The per-target fs + config
+ * orchestration lives in `shared/mcpRegistration` so this class and the
+ * `wmux mcp` CLI behave identically; this class adds the Electron-specific
+ * bundle-path resolution, the auth-token write, and macOS error hints.
  *
- * The MCP server uses:
- *   - Fixed pipe path: \\.\pipe\wmux  (from shared/constants)
- *   - Auth token file: ~/.wmux-auth-token (written here, read by MCP)
+ * Targets (see `shared/mcpTargets.ts`):
+ *   - Claude Code  ~/.claude.json          (JSON, created on demand)
+ *   - Codex CLI    ~/.codex/config.toml     (TOML, only if installed)
+ *   - Gemini CLI   ~/.gemini/settings.json  (JSON, only if installed; unverified)
  *
- * Config files written:
- *   1. ~/.claude.json   (user-level MCP config — where Claude Code reads mcpServers)
+ * EMPIRICAL GATE: a non-Claude target is only written when its config already
+ * exists (the CLI is installed) and is shipped as `verified` only after the
+ * agent was confirmed to discover AND use the wmux tools end-to-end — which
+ * additionally requires the agent's MCP `clientName` to be first-party
+ * recognized by the daemon enforcer (`firstParty.ts`). Codex (`codex-mcp-client`)
+ * was verified 2026-06-15.
  *
- * NOTE (cross-platform): the path `~/.claude.json` is currently used on every
- * OS. macOS Claude Desktop may use `~/Library/Application Support/Claude/`
- * instead — macOS verification pending — see plan Phase 1.17 prereq. Do NOT
- * add the macOS-specific path here speculatively; gate that behind empirical
- * verification and ship as a separate change.
+ * NOTE (macOS Claude Desktop `~/Library/Application Support/Claude/`): still
+ * pending empirical verification — out of scope, do not add speculatively.
  */
 export class McpRegistrar {
-  private readonly claudeJsonPath: string;
+  private readonly home: string;
   private readonly authTokenPath: string;
   private registered = false;
-  /** Keys that WinMux actually wrote (so we only unregister our own). */
-  private readonly ownedKeys = new Set<string>();
+  /** Per-target sets of keys wmux wrote this session (so we update/own them). */
+  private readonly ownedKeys = new Map<string, Set<string>>();
 
   constructor() {
-    const home = app.getPath('home');
-    this.claudeJsonPath = path.join(home, '.claude.json');
+    this.home = app.getPath('home');
     this.authTokenPath = getAuthTokenPath();
   }
 
-  /** Absolute path to the Claude Code user config file. */
+  /** Absolute path to the Claude Code user config file (back-compat accessor). */
   getClaudeJsonPath(): string {
-    return this.claudeJsonPath;
+    return path.join(this.home, '.claude.json');
+  }
+
+  private ownedFor(targetId: string): Set<string> {
+    let set = this.ownedKeys.get(targetId);
+    if (!set) {
+      set = new Set<string>();
+      this.ownedKeys.set(targetId, set);
+    }
+    return set;
   }
 
   /**
-   * Read-only snapshot of MCP registration state. Used by `wmux mcp check`
-   * and the Settings → General → MCP section to surface whether Claude Code
-   * can discover the wmux MCP servers.
-   *
-   * Pure read — never creates the config file or its parent directory, never
-   * throws. Corrupted JSON or missing files yield "not registered".
+   * Read-only snapshot of MCP registration state across all targets. Pure read
+   * — never creates a file, never throws. Corrupted/missing configs yield "not
+   * registered".
    */
   getStatus(): McpRegistrarStatus {
-    let configExists = false;
-    let configModified: Date | null = null;
-    try {
-      const stat = fs.statSync(this.claudeJsonPath);
-      configExists = stat.isFile();
-      configModified = configExists ? stat.mtime : null;
-    } catch {
-      configExists = false;
-    }
-
-    let wmuxPath: string | null = null;
-    let a2aPath: string | null = null;
-    if (configExists) {
-      try {
-        const raw = fs.readFileSync(this.claudeJsonPath, 'utf8');
-        const config = JSON.parse(raw, (key, value) => {
-          if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
-          return value;
-        }) as { mcpServers?: Record<string, unknown> };
-        const servers = config && typeof config === 'object' ? config.mcpServers : null;
-        if (servers && typeof servers === 'object') {
-          wmuxPath = extractScriptPath(servers['wmux']);
-          a2aPath = extractScriptPath(servers['wmux-a2a']);
-        }
-      } catch {
-        // Corrupted config — surface as "not registered" rather than throw.
-      }
-    }
-
-    return {
-      wmux: { registered: wmuxPath !== null, path: wmuxPath },
-      wmuxA2a: { registered: a2aPath !== null, path: a2aPath },
-      configPath: this.claudeJsonPath,
-      configExists,
-      configModified,
-    };
+    return { targets: readAllTargetStatuses(this.home) };
   }
 
   /**
-   * Force-remove the wmux + wmux-a2a keys from ~/.claude.json. Unlike
-   * {@link unregister} (intentionally a no-op to avoid the chicken-and-egg
-   * problem on app quit), this is invoked from explicit user actions — the
-   * `wmux mcp unregister` CLI and the Settings panel "Unregister" button.
-   *
-   * Other mcpServers entries are left untouched.
+   * Force-remove the wmux + wmux-a2a keys from every target config. Invoked
+   * from explicit user actions (`wmux mcp unregister`, Settings "Unregister").
+   * Only removes wmux-owned-shaped keys; foreign entries and unrelated keys are
+   * left intact.
    */
   forceUnregister(): void {
-    try {
-      this.unregisterFromClaudeJson(['wmux', 'wmux-a2a']);
-      this.ownedKeys.delete('wmux');
-      this.ownedKeys.delete('wmux-a2a');
-      this.registered = false;
-      console.log('[McpRegistrar] Force-unregistered wmux + wmux-a2a from ~/.claude.json');
-    } catch (err) {
-      console.error('[McpRegistrar] Failed to force-unregister:', err);
+    for (const target of MCP_TARGETS) {
+      try {
+        const result = unregisterTarget(target, this.home);
+        this.ownedFor(target.id).clear();
+        if (result.removed.length > 0) {
+          console.log(`[McpRegistrar] Unregistered ${result.removed.join(', ')} from ${result.configPath}`);
+        }
+      } catch (err) {
+        console.error(`[McpRegistrar] Failed to force-unregister ${target.displayName}:`, err);
+      }
     }
+    this.registered = false;
   }
 
   /**
-   * Write auth token to file and register MCP server in Claude Code configs.
-   * Must be called after PipeServer.start().
+   * Write auth token to file and register the MCP servers in every installed
+   * target. Must be called after PipeServer.start().
    */
   register(authToken: string): void {
     try {
-      // Write auth token to file so MCP server can read it. Skip when the
-      // on-disk value already matches (S-A cold-start): PipeServer's ctor
-      // wrote this exact token through the same secure path moments ago, and
-      // secureWriteTokenFile's overwrite branch costs a 1-2s PowerShell ACL
-      // rebuild. A mismatch (token rotation, stale file) still rewrites.
+      // Write auth token to file so the MCP server can read it. Skip when the
+      // on-disk value already matches (S-A cold-start): a rewrite costs a 1-2s
+      // PowerShell ACL rebuild. A mismatch (rotation / stale) still rewrites.
       let onDisk: string | null = null;
       try {
         onDisk = fs.readFileSync(this.authTokenPath, 'utf8').trim();
@@ -153,39 +128,29 @@ export class McpRegistrar {
         console.warn('[McpRegistrar] Could not determine MCP script path — skipping registration.');
         return;
       }
-
-      // Use 'node' instead of process.execPath, which returns electron.exe at runtime
-      // Note: do NOT set env field — Claude Code may replace (not merge) the
-      // subprocess environment, breaking PATH/USERPROFILE. getPipeName() uses
-      // os.userInfo().username which works without env vars.
-      const mcpEntry = {
-        command: 'node',
-        args: [mcpScript],
-      };
-
-      this.registerInClaudeJson('wmux', mcpEntry);
-
-      // Register wmux-a2a MCP server (Agent-to-Agent communication)
       const a2aScript = this.getA2aScriptPath();
-      if (a2aScript) {
-        this.registerInClaudeJson('wmux-a2a', {
-          command: 'node',
-          args: [a2aScript],
-        });
-        console.log(`[McpRegistrar] Registered wmux-a2a MCP → ${a2aScript}`);
-      }
 
-      // Clean up legacy MCP keys from previous versions
-      this.removeLegacyKeys(['wmux-playwright', 'wmux-devtools']);
+      for (const target of MCP_TARGETS) {
+        try {
+          const result = registerTarget(target, this.home, { wmux: mcpScript, a2a: a2aScript }, this.ownedFor(target.id));
+          if (result.wrote.length > 0) {
+            console.log(`[McpRegistrar] ${target.displayName}: wrote ${result.wrote.join(', ')} → ${result.configPath}`);
+          }
+          if (result.foreign.length > 0) {
+            console.warn(`[McpRegistrar] ${target.displayName}: left foreign key(s) ${result.foreign.join(', ')} untouched`);
+          }
+        } catch (err) {
+          // Per-target isolation: one target's failure must not abort the rest.
+          console.error(`[McpRegistrar] ${target.displayName} registration failed:`, err);
+        }
+      }
 
       this.registered = true;
       console.log(`[McpRegistrar] Registered wmux MCP → ${mcpScript}`);
     } catch (err) {
       console.error('[McpRegistrar] Failed to register:', err);
-      // macOS users hitting Time Machine restore / sudo-written ~/.claude.json
-      // see ENOACCES/EACCES/EPERM and have no way to know the fix is `chmod 600`.
-      // Surface the catalog entry so the next stderr line shows the exact command.
-      // Other platforms / other errors are unaffected.
+      // macOS Time Machine restore / sudo-written configs surface
+      // ENOACCES/EACCES/EPERM with no hint that the fix is `chmod 600`.
       const code = (err as NodeJS.ErrnoException)?.code;
       if (isMac && (code === 'EACCES' || code === 'ENOACCES' || code === 'EPERM')) {
         console.error('\n' + formatMacosError(MACOS_ERRORS.mcpPermissionDenied));
@@ -194,79 +159,14 @@ export class McpRegistrar {
   }
 
   /**
-   * Previously removed MCP entries on quit, but this caused a chicken-and-egg
-   * problem: Claude Code couldn't find the MCP server because wmux deleted it
-   * on exit. Now we keep the registration persistent — the MCP server process
-   * handles pipe-not-available gracefully when wmux isn't running.
+   * Previously removed MCP entries on quit, which deadlocked discovery (Claude
+   * couldn't find the server wmux deleted on exit). Now persistent; the MCP
+   * process handles pipe-not-available gracefully when wmux isn't running.
    */
   unregister(): void {
-    // Intentionally no-op: keep MCP registration persistent in ~/.claude.json
-    // so Claude Code can always discover the wmux MCP server.
+    // Intentionally no-op: keep registration persistent so agents can always
+    // discover the wmux MCP server.
     this.ownedKeys.clear();
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private registerInClaudeJson(key: string, mcpEntry: Record<string, any>): void {
-    const config = this.readJson(this.claudeJsonPath);
-    if (!config.mcpServers) config.mcpServers = {};
-
-    const existing = config.mcpServers[key];
-    if (existing && !this.ownedKeys.has(key)) {
-      // Always overwrite if the script path changed (e.g. after app update).
-      // Previous logic skipped registration when the key existed from a prior
-      // session, leaving stale paths pointing to old app versions.
-      const existingArgs = JSON.stringify(existing.args ?? []);
-      const newArgs = JSON.stringify(mcpEntry.args ?? []);
-      if (existingArgs === newArgs) {
-        console.log(`[McpRegistrar] Key "${key}" already up-to-date — skipping.`);
-        this.ownedKeys.add(key);
-        return;
-      }
-      console.log(`[McpRegistrar] Key "${key}" path changed — updating.`);
-    }
-
-    config.mcpServers[key] = mcpEntry;
-    this.writeJson(this.claudeJsonPath, config);
-    this.ownedKeys.add(key);
-  }
-
-  /**
-   * Remove legacy MCP keys that WinMux no longer manages.
-   * These are cleaned up regardless of who originally wrote them.
-   */
-  private removeLegacyKeys(keys: string[]): void {
-    const config = this.readJson(this.claudeJsonPath);
-    if (!config.mcpServers) return;
-
-    let changed = false;
-    for (const key of keys) {
-      if (config.mcpServers[key]) {
-        delete config.mcpServers[key];
-        changed = true;
-        console.log(`[McpRegistrar] Removed legacy key "${key}"`);
-      }
-    }
-    if (changed) {
-      if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
-      this.writeJson(this.claudeJsonPath, config);
-    }
-  }
-
-  private unregisterFromClaudeJson(keys: string[]): void {
-    const config = this.readJson(this.claudeJsonPath);
-    if (!config.mcpServers) return;
-
-    let changed = false;
-    for (const key of keys) {
-      if (config.mcpServers[key]) {
-        delete config.mcpServers[key];
-        changed = true;
-      }
-    }
-    if (changed) {
-      if (Object.keys(config.mcpServers).length === 0) delete config.mcpServers;
-      this.writeJson(this.claudeJsonPath, config);
-    }
   }
 
   private getMcpScriptPath(): string | null {
@@ -321,45 +221,4 @@ export class McpRegistrar {
 
     return null;
   }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private readJson(filePath: string): Record<string, any> {
-    try {
-      if (fs.existsSync(filePath)) {
-        return JSON.parse(fs.readFileSync(filePath, 'utf8'), (key, value) => {
-          if (key === '__proto__' || key === 'constructor' || key === 'prototype') return undefined;
-          return value;
-        });
-      }
-    } catch { /* corrupted — start fresh */ }
-
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    return {};
-  }
-
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  private writeJson(filePath: string, data: Record<string, any>): void {
-    const dir = path.dirname(filePath);
-    if (!fs.existsSync(dir)) fs.mkdirSync(dir, { recursive: true });
-    const tmpPath = filePath + '.tmp';
-    fs.writeFileSync(tmpPath, JSON.stringify(data, null, 2) + '\n', 'utf8');
-    fs.renameSync(tmpPath, filePath);
-  }
-}
-
-/**
- * Extract the MCP script path from a `mcpServers[key]` entry.
- *
- * wmux always writes entries shaped `{ command: 'node', args: [scriptPath] }`,
- * so the script path is the first arg. Returns null when the entry is absent
- * or malformed (foreign edits, schema drift) — getStatus() then reports the
- * server as not registered rather than fabricating a path.
- */
-function extractScriptPath(entry: unknown): string | null {
-  if (!entry || typeof entry !== 'object') return null;
-  const args = (entry as { args?: unknown }).args;
-  if (!Array.isArray(args) || args.length === 0) return null;
-  const first = args[0];
-  return typeof first === 'string' && first.length > 0 ? first : null;
 }

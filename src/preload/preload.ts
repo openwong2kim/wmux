@@ -9,12 +9,19 @@ import { isFileDrag } from '../shared/dragDrop';
 import type { ResumeBinding } from '../shared/agentResume';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
-interface McpStatusPayload {
-  wmux: { registered: boolean; path: string | null };
-  wmuxA2a: { registered: boolean; path: string | null };
+interface McpTargetStatusPayload {
+  id: string;
+  displayName: string;
+  format: 'json' | 'toml';
   configPath: string;
   configExists: boolean;
   configModified: string | null;
+  verified: boolean;
+  wmux: { registered: boolean; path: string | null };
+  wmuxA2a: { registered: boolean; path: string | null };
+}
+interface McpStatusPayload {
+  targets: McpTargetStatusPayload[];
 }
 
 const electronAPI = {

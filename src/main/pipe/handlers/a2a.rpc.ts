@@ -115,7 +115,21 @@ export function registerA2aRpc(router: RpcRouter, getWindow: GetWindow, claudeWo
       const taskId = (result as Record<string, unknown>)?.taskId as string | undefined;
       if (taskId && !params.taskId) {
         const senderWsId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
-        const receiverWsId = typeof params.to === 'string' ? params.to : '';
+        // Use the RESOLVED target workspaceId returned by the renderer, not the
+        // raw `params.to` (which may be a number / partial name / fuzzy match).
+        // The confirmation dialog and ClaudeWorker.execute both key off this id,
+        // so a fuzzy `to` would otherwise confirm/run against the wrong (or no)
+        // workspace. Fall back to params.to only if the renderer didn't resolve.
+        //
+        // NOTE: pane-level addressing (paneId/surfaceId) is intentionally NOT
+        // propagated here — `execute:true` spawns a HEADLESS background Claude
+        // scoped to the receiver WORKSPACE (no pane/TUI). Pane addressing only
+        // steers the renderer-side delivery/nudge; background execution stays
+        // ws-level by design.
+        const resolvedTo = (result as Record<string, unknown>)?.toWorkspaceId;
+        const receiverWsId = typeof resolvedTo === 'string' && resolvedTo
+          ? resolvedTo
+          : (typeof params.to === 'string' ? params.to : '');
         const message = typeof params.message === 'string' ? params.message : '';
         const cwd = typeof params.cwd === 'string' ? params.cwd : undefined;
 

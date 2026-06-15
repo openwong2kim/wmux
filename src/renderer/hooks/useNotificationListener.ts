@@ -471,6 +471,18 @@ export function useNotificationListener() {
         if (typeof rest.agentStatus === 'string') {
           state.setSurfaceAgentStatus(ptyId, rest.agentStatus as AgentStatus);
         }
+        // Part A: stamp per-surface agent IDENTITY (name + status) keyed by
+        // ptyId so a2a_discover / surface_list / pane_list can label each pane
+        // individually. setSurfaceAgent keeps an already-known name when only a
+        // status arrives, and ignores empty names (the 'running' broadcast may
+        // carry agentName='' before a gate matches).
+        if (typeof rest.agentName === 'string' || typeof rest.agentStatus === 'string') {
+          state.setSurfaceAgent(
+            ptyId,
+            typeof rest.agentName === 'string' ? rest.agentName : undefined,
+            typeof rest.agentStatus === 'string' ? (rest.agentStatus as AgentStatus) : undefined,
+          );
+        }
         for (const ws of state.workspaces) {
           const found = findSurfaceByPtyId(ws.rootPane, ptyId);
           if (found) {
@@ -495,13 +507,22 @@ export function useNotificationListener() {
             // gate emit)은 1회성이라, ptyId↔surface 매핑이 준비되기 전에 발화하면
             // 영영 유실된다. 매핑이 생긴 지금(running 수신 + agentName 비어 있음)
             // main의 lastAgentNameByPty 캐시에서 race-free하게 pull해 메운다.
-            if (rest.agentStatus === 'running' && !ws.metadata?.agentName) {
-              const targetWsId = ws.id;
-              void window.electronAPI.metadata.resolveAgent(ptyId).then((name) => {
-                if (name) {
-                  useStore.getState().updateWorkspaceMetadata(targetWsId, { agentName: name });
-                }
-              });
+            if (rest.agentStatus === 'running') {
+              const needWsBackfill = !ws.metadata?.agentName;
+              // Per-surface backfill (Codex review): the one-shot agentName can
+              // miss this pty's surfaceAgent map just as it misses ws metadata.
+              // The ws may already carry a name from another pane while THIS
+              // surface still has none, so check the per-surface entry too.
+              const needSurfaceBackfill = !state.surfaceAgent[ptyId]?.name;
+              if (needWsBackfill || needSurfaceBackfill) {
+                const targetWsId = ws.id;
+                void window.electronAPI.metadata.resolveAgent(ptyId).then((name) => {
+                  if (!name) return;
+                  const s = useStore.getState();
+                  if (needWsBackfill) s.updateWorkspaceMetadata(targetWsId, { agentName: name });
+                  if (needSurfaceBackfill) s.setSurfaceAgent(ptyId, name, 'running');
+                });
+              }
             }
             break;
           }

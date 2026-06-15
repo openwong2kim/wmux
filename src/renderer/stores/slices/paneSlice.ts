@@ -57,6 +57,16 @@ export interface PaneSlice {
   // agent resumes / the PTY exits (PTYBridge broadcasts running/idle).
   surfaceAgentStatus: Record<string, AgentStatus>;
   setSurfaceAgentStatus: (ptyId: string, status: AgentStatus | null) => void;
+  // Part A — per-surface agent IDENTITY keyed by ptyId. Distinct from
+  // surfaceAgentStatus (attention-only, clears on idle): this retains the
+  // detected agent name + last status for the life of the PTY so a2a_discover /
+  // surface_list / pane_list can label each pane individually — one workspace
+  // can host >1 agent (gaps 1/3/8). Populated from METADATA_UPDATE in
+  // useNotificationListener; cleared when the owning surface/pane closes.
+  // Transient — never persisted (buildSessionData allowlist excludes it).
+  surfaceAgent: Record<string, { name: string; status: AgentStatus }>;
+  setSurfaceAgent: (ptyId: string, name: string | undefined, status: AgentStatus | undefined) => void;
+  clearSurfaceAgent: (ptyId: string) => void;
   // X1: per-surface listening ports keyed by ptyId. Main emits ports per PTY
   // (PID-tree scoped); the workspace-level sidebar value is the UNION over
   // the workspace's surfaces, computed at write time in
@@ -137,6 +147,28 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     } else {
       delete state.surfaceAgentStatus[ptyId];
     }
+  }),
+
+  surfaceAgent: {},
+
+  setSurfaceAgent: (ptyId, name, status) => set((state: StoreState) => {
+    if (!ptyId) return;
+    const existing = state.surfaceAgent[ptyId];
+    // Never overwrite a known agent name with an empty one. PTYBridge's
+    // ActivityMonitor 'running' broadcasts carry agentName = getLastAgent() ??
+    // '' which is '' until a gate matches; a status-only update must keep the
+    // already-detected name. If no name is known yet, there is nothing to stamp.
+    const resolvedName = name && name.length > 0 ? name : existing?.name;
+    if (!resolvedName) return;
+    state.surfaceAgent[ptyId] = {
+      name: resolvedName,
+      status: status ?? existing?.status ?? 'running',
+    };
+  }),
+
+  clearSurfaceAgent: (ptyId) => set((state: StoreState) => {
+    if (!ptyId) return;
+    delete state.surfaceAgent[ptyId];
   }),
 
   surfacePorts: {},
@@ -263,6 +295,15 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
 
       const idx = parent.children.findIndex((c) => c.id === paneId);
       if (idx === -1) return;
+
+      // Part A: drop per-surface agent identity for every surface under the
+      // closing subtree (leaf or branch) so the surfaceAgent map doesn't leak
+      // entries for PTYs that no longer have a surface.
+      for (const leaf of getLeafPanes(parent.children[idx])) {
+        for (const s of leaf.surfaces) {
+          if (s.ptyId) delete state.surfaceAgent[s.ptyId];
+        }
+      }
 
       const previousActiveId = ws.activePaneId;
       parent.children.splice(idx, 1);

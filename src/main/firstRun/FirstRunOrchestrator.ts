@@ -168,8 +168,12 @@ export class FirstRunOrchestrator {
       return { ok: false, code: 'UNKNOWN', message: 'auth token not ready (pipe server still starting)' };
     }
     this.mcpRegistrar.register(token);
+    // First-run is the Claude onboarding flow; success is keyed on Claude's
+    // target. Codex/Gemini are written opportunistically by register() when
+    // installed and their failure must not fail first-run.
     const status = this.mcpRegistrar.getStatus();
-    if (status.wmux.registered) return { ok: true };
+    const claude = status.targets.find((t) => t.id === 'claude');
+    if (claude?.wmux.registered) return { ok: true };
     return { ok: false, code: 'UNKNOWN', message: 'registration completed without recording wmux entry' };
   }
 

@@ -119,6 +119,13 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     const idx = pane.surfaces.findIndex((s) => s.id === surfaceId);
     if (idx === -1) return;
 
+    // Part A: drop per-surface agent identity so the surfaceAgent map doesn't
+    // retain a label for a PTY that no longer has a surface. (surfaceAgent is
+    // owned by paneSlice; guard the cross-slice access so an isolated test store
+    // composed without paneSlice doesn't trip on an undefined map.)
+    const closedPtyId = pane.surfaces[idx].ptyId;
+    if (closedPtyId && state.surfaceAgent) delete state.surfaceAgent[closedPtyId];
+
     pane.surfaces.splice(idx, 1);
     if (pane.activeSurfaceId === surfaceId) {
       pane.activeSurfaceId = pane.surfaces[Math.min(idx, pane.surfaces.length - 1)]?.id || '';

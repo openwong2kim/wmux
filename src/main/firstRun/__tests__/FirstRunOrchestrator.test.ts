@@ -139,11 +139,19 @@ function makeMcpRegistrar(opts?: {
   return {
     register: vi.fn(opts?.registerImpl ?? (() => { /* no-op: success default */ })),
     getStatus: vi.fn(() => ({
-      wmux: { registered: opts?.registered ?? true, path: '/some/path' },
-      wmuxA2a: { registered: false, path: null },
-      configPath: '/home/test/.claude.json',
-      configExists: true,
-      configModified: new Date(),
+      targets: [
+        {
+          id: 'claude',
+          displayName: 'Claude Code',
+          format: 'json',
+          configPath: '/home/test/.claude.json',
+          configExists: true,
+          configModified: new Date(),
+          verified: true,
+          wmux: { registered: opts?.registered ?? true, path: '/some/path' },
+          wmuxA2a: { registered: false, path: null },
+        },
+      ],
     })),
   };
 }

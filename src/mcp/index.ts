@@ -563,8 +563,8 @@ server.tool(
 );
 
 // 3. send_message — Primary tool for inter-workspace communication
-const sendMessageHandler = async ({ to, title, task_id, message, execute, silent, data, data_mime_type }: {
-  to?: string; title?: string; task_id?: string; message: string; execute?: boolean; silent?: boolean;
+const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, message, execute, silent, data, data_mime_type }: {
+  to?: string; pane_id?: string; surface_id?: string; title?: string; task_id?: string; message: string; execute?: boolean; silent?: boolean;
   data?: Record<string, unknown>; data_mime_type?: string;
 }) => {
   const wsId = await requireWorkspaceId();
@@ -574,6 +574,12 @@ const sendMessageHandler = async ({ to, title, task_id, message, execute, silent
   };
   if (task_id) params.taskId = task_id;
   if (to) params.to = to;
+  // Pane-level addressing: route delivery to a specific pane/surface inside the
+  // target workspace (e.g. a workspace running two agents). Both optional and
+  // ws-scoped — the id must belong to `to`, else the send fails (never silently
+  // delivers to the active pane).
+  if (pane_id) params.paneId = pane_id;
+  if (surface_id) params.surfaceId = surface_id;
   if (title) params.title = title;
   if (execute) params.execute = true;
   // Forward `silent` whenever it is explicitly provided (true OR false), not
@@ -591,6 +597,8 @@ const sendMessageHandler = async ({ to, title, task_id, message, execute, silent
 
 const sendMessageParams = {
   to: z.string().optional().describe('Target: workspace number (1, 2, 3), name ("Workspace 1"), or ID'),
+  pane_id: z.string().optional().describe('Optional: deliver to a specific pane inside the target workspace (from pane_list / a2a_discover panes[].paneId). Use when a workspace runs more than one agent. Must belong to "to".'),
+  surface_id: z.string().optional().describe('Optional: deliver to a specific surface inside the target workspace (from surface_list / a2a_discover panes[].surfaceId). More specific than pane_id; if both are given they must agree. Must belong to "to".'),
   title: z.string().optional().describe('Short title for the message'),
   task_id: z.string().optional().describe('Reply to existing task ID'),
   message: z.string().describe('Message to send'),

@@ -41,11 +41,26 @@ import type { RpcMethod } from '../../shared/rpc';
 // Host identities that own the bundled wmux MCP server. The server reports the
 // connecting MCP client's `clientInfo.name` (see wireClientIdentityHook in
 // src/mcp/index.ts); Claude Code reports `claude-code`. A Set so additional
-// first-party hosts (e.g. a future wmux-native CLI) can be added without
-// touching the enforcer. Exact match — `clientName` is already trimmed by
-// PipeServer when it builds RpcContext.
+// first-party hosts can be added without touching the enforcer. Exact match —
+// `clientName` is already trimmed by PipeServer when it builds RpcContext.
+//
+// Each entry is the bundled wmux MCP server running under a DIFFERENT agent
+// host (the bundle code is identical; only the connecting client's reported
+// name differs). Adding a host grants it the SAME scoped allowlist
+// (FIRST_PARTY_METHODS) — never a blanket bypass, and an explicit user `denied`
+// still wins. Threat model is unchanged: best-effort same-user attribution, not
+// a security boundary (a same-user impersonator already holds the auth token).
+//
+//   - `claude-code`        Claude Code           (verified)
+//   - `codex-mcp-client`   OpenAI Codex CLI      (verified 2026-06-15; clientInfo
+//                          name captured live — `codex mcp add` → initialize)
+//
+// New names MUST be captured empirically (the agent's actual clientInfo.name),
+// not guessed, and the agent must be confirmed to use the wmux tools end-to-end
+// before being added. See plans/a2a-pane-identity-mcp-registration-IMPL.md.
 export const FIRST_PARTY_CLIENT_NAMES: ReadonlySet<string> = new Set<string>([
   'claude-code',
+  'codex-mcp-client',
 ]);
 
 // The exact RPC methods the bundled MCP server (src/mcp/index.ts and its

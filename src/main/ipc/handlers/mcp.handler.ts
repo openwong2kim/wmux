@@ -10,22 +10,37 @@ import type { McpRegistrar, McpRegistrarStatus } from '../../mcp/McpRegistrar';
  * cloneable, but ISO strings are friendlier for the React side that just
  * formats them for display).
  */
-export interface McpStatusPayload {
-  wmux: { registered: boolean; path: string | null };
-  wmuxA2a: { registered: boolean; path: string | null };
+/** Per-target serialized status (Date → ISO string for the IPC boundary). */
+export interface McpTargetStatusPayload {
+  id: string;
+  displayName: string;
+  format: 'json' | 'toml';
   configPath: string;
   configExists: boolean;
   /** ISO 8601 string, or null when the config file does not exist. */
   configModified: string | null;
+  verified: boolean;
+  wmux: { registered: boolean; path: string | null };
+  wmuxA2a: { registered: boolean; path: string | null };
+}
+
+export interface McpStatusPayload {
+  targets: McpTargetStatusPayload[];
 }
 
 function serialize(status: McpRegistrarStatus): McpStatusPayload {
   return {
-    wmux: status.wmux,
-    wmuxA2a: status.wmuxA2a,
-    configPath: status.configPath,
-    configExists: status.configExists,
-    configModified: status.configModified ? status.configModified.toISOString() : null,
+    targets: status.targets.map((t) => ({
+      id: t.id,
+      displayName: t.displayName,
+      format: t.format,
+      configPath: t.configPath,
+      configExists: t.configExists,
+      configModified: t.configModified ? t.configModified.toISOString() : null,
+      verified: t.verified,
+      wmux: t.wmux,
+      wmuxA2a: t.wmuxA2a,
+    })),
   };
 }
 
