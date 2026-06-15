@@ -15,6 +15,9 @@ interface FleetCardProps {
   card: FleetPane;
   focused: boolean;
   onJump: () => void;
+  /** S-C2 live output tail — last ~3 plaintext lines of this pane's buffer.
+   *  Only meaningful for terminal cards with a ptyId; already plaintext. */
+  tail?: string[];
 }
 
 /**
@@ -23,12 +26,13 @@ interface FleetCardProps {
  * unattended-loop money state — gets a yellow border + "needs your input"
  * affordance so a blocked agent is unmissable. Click jumps to its pane.
  */
-export default function FleetCard({ card, focused, onJump }: FleetCardProps) {
+export default function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
   const t = useT();
   const icon = AGENT_STATUS_ICON[card.agentStatus];
   const isAwaitingInput = card.agentStatus === 'awaiting_input';
   const isIdle = card.agentStatus === 'idle';
   const displayName = card.agentName || card.title || t('surface.terminal');
+  const showTail = card.surfaceType === 'terminal' && tail && tail.length > 0;
 
   return (
     <button
@@ -89,6 +93,24 @@ export default function FleetCard({ card, focused, onJump }: FleetCardProps) {
           {card.surfaceType}
         </div>
       ) : null}
+
+      {/* S-C2 live output tail — last ~3 lines of the pane's buffer. Already
+          plaintext (no xterm renderer needed); subordinate to the header. Each
+          line is its own truncated row so a long line can never widen / break
+          the card. Hidden entirely when there is no terminal output to show. */}
+      {showTail && (
+        <div
+          className="mt-0.5 flex flex-col font-mono text-[10px] leading-tight overflow-hidden"
+          style={{ color: 'var(--text-subtle)' }}
+          aria-hidden="true"
+        >
+          {tail.map((line, i) => (
+            <span key={i} className="block truncate whitespace-pre">
+              {line || ' '}
+            </span>
+          ))}
+        </div>
+      )}
     </button>
   );
 }

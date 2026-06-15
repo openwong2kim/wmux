@@ -15,6 +15,8 @@ import {
   focusNotificationTarget,
 } from '../../hooks/useNotificationListener';
 import type { FleetTab } from '../../stores/slices/uiSlice';
+import { tailForPty } from '../../utils/terminalTail';
+import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
 import ApprovalInboxList from './ApprovalInboxList';
 
@@ -43,6 +45,9 @@ export default function FleetView() {
 
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [inboxIdx, setInboxIdx] = useState(0);
+  // S-C2 Phase 2 — live output tail. {ptyId: last-3-lines}. Filled by ONE
+  // shared coarse poll below; passed down to terminal cards only.
+  const [tails, setTails] = useState<Record<string, string[]>>({});
   const panelRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -65,6 +70,57 @@ export default function FleetView() {
     () => selectApprovalInbox({ mcpPrompts, mcpPromptOrder, pendingExecuteApproval }),
     [mcpPrompts, mcpPromptOrder, pendingExecuteApproval],
   );
+
+  // S-C2 Phase 2 — live output tail. ONE shared coarse interval (the whole
+  // component is mount-gated on cockpit-open, so the poll only runs while the
+  // overlay is visible). Each tick reads the last 3 plaintext lines of every
+  // terminal pane that has a ptyId via the shared `tailForPty` (same buffer-read
+  // path as `input.readScreen`) — read-only, no daemon round-trip. We rebuild a
+  // next map and shallow-compare it against the previous one so an unchanged
+  // tail does NOT mint a new object identity / re-render every 750ms.
+  //
+  // Bounds: terminals-with-a-ptyId only, last-3-rows window only, one timer for
+  // the whole fleet (never per-pane). An `onTerminalRegistered` subscription
+  // refreshes when a pane mounts late (e.g. a restored terminal finishing its
+  // async scrollback load after the first tick). NO offsetWidth guard — see
+  // terminalTail.ts; background panes are display:none yet must still show a tail.
+  useEffect(() => {
+    const terminalPtyIds = panes
+      .filter((p) => p.surfaceType === 'terminal' && p.ptyId)
+      .map((p) => p.ptyId);
+
+    const refresh = () => {
+      setTails((prev) => {
+        const next: Record<string, string[]> = {};
+        let changed = false;
+        for (const ptyId of terminalPtyIds) {
+          const tail = tailForPty(ptyId, 3);
+          next[ptyId] = tail;
+          const before = prev[ptyId];
+          if (
+            !before ||
+            before.length !== tail.length ||
+            tail.some((line, i) => line !== before[i])
+          ) {
+            changed = true;
+          }
+        }
+        // A pty dropping out of the fleet (closed pane) is also a change.
+        if (!changed && Object.keys(prev).length !== terminalPtyIds.length) {
+          changed = true;
+        }
+        return changed ? next : prev;
+      });
+    };
+
+    refresh(); // paint immediately; don't wait 750ms for the first tail.
+    const id = window.setInterval(refresh, 750);
+    const unsub = onTerminalRegistered(() => refresh());
+    return () => {
+      window.clearInterval(id);
+      unsub();
+    };
+  }, [panes]);
 
   // Jump to a pane's workspace + pane + surface, then close the overlay.
   // Terminal panes resolve by their active-surface ptyId via the full
@@ -309,6 +365,7 @@ export default function FleetView() {
                   card={card}
                   focused={idx === focusedIdx}
                   onJump={() => jump(card)}
+                  tail={card.ptyId ? tails[card.ptyId] : undefined}
                 />
               ))}
             </div>

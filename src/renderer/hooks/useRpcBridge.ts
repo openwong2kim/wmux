@@ -12,6 +12,7 @@ import type { A2aPriority } from '../utils/a2aFormat';
 import { setExecuteApprovalResolver } from '../utils/executeApproval';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import { terminalRegistry } from './useTerminal';
+import { readPtyBufferLines } from '../utils/terminalTail';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
@@ -845,14 +846,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const terminal = terminalRegistry.get(ptyId);
     if (!terminal) return { ptyId, text: '' };
 
-    const buffer = terminal.buffer.active;
-    const lastLine = buffer.baseY + buffer.cursorY;
-    const lines: string[] = [];
-    for (let i = 0; i <= lastLine && i < buffer.length; i++) {
-      const line = buffer.getLine(i);
-      if (line) lines.push(line.translateToString(true));
-    }
-    while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+    // Single buffer-read path shared with the Fleet View tail. Behaviour is
+    // identical to the prior inline loop (walk 0..baseY+cursorY,
+    // translateToString(true), pop trailing empties) — see terminalTail.ts.
+    const lines = readPtyBufferLines(ptyId);
 
     // Optional tail_lines cap — return only the last N non-empty lines.
     // Useful for AI agents that don't need the full viewport and want to
