@@ -61,6 +61,21 @@ describe('paneSlice — event publication', () => {
       expect(focused?.args[0]).toBe(wsId);
       expect(focused?.args[2]).toBe(rootPaneId);
     });
+
+    it('background-ws split emits pane.created but NOT pane.focused (#236 focus-scoping)', () => {
+      const ws2 = createWorkspace('Background');
+      store.setState((s) => { s.workspaces.push(ws2); });
+      publishCalls.length = 0;
+
+      // ws1 (rootPaneId) is active; split ws2 explicitly via its workspaceId.
+      store.getState().splitPane(ws2.rootPane.id, 'horizontal', ws2.id);
+
+      const created = publishCalls.filter((c) => c.fn === 'pane.created');
+      const focused = publishCalls.filter((c) => c.fn === 'pane.focused');
+      expect(created).toHaveLength(1);
+      expect(created[0].args[0]).toBe(ws2.id); // pane.created scoped to ws2
+      expect(focused).toHaveLength(0);          // no focus event for a background pane
+    });
   });
 
   describe('closePane', () => {

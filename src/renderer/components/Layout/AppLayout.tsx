@@ -39,7 +39,7 @@ import { isFileDrag } from '../../../shared/dragDrop';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import { resolvePtyIdsToClear } from '../../hooks/reconcileWithReQuery';
 import { createLateReconcileOnConnect } from '../../hooks/lateReconcileOnConnect';
-import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
+import { resolveStartupCwd, shellDisplayName, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import ProjectConfigDialog from '../Project/ProjectConfigDialog';
 import { probeProjectConfig, maybeAutoApplyProjectLayout, workspaceProbeCwd } from '../../utils/projectConfigProbe';
 import {
@@ -95,21 +95,6 @@ import AgentToolbar from '../AgentToolbar/AgentToolbar';
  * that answered pty.list in 6–9s under load still lost the race and the
  * startup catch wiped every live session via clearAllPtyState().
  */
-
-/** Map shell executable path to a human-readable display name. */
-function shellDisplayName(shellPath: string): string {
-  const base = shellPath.replace(/\\/g, '/').split('/').pop()?.toLowerCase() || '';
-  if (base.includes('pwsh')) return 'PowerShell 7';
-  if (base.includes('powershell')) return 'PowerShell';
-  if (base.includes('bash')) return 'Bash';
-  if (base.includes('wsl')) return 'WSL';
-  if (base.includes('cmd')) return 'CMD';
-  if (base.includes('zsh')) return 'Zsh';
-  if (base.includes('fish')) return 'Fish';
-  // Strip extension and capitalize
-  const name = base.replace(/\.exe$/i, '');
-  return name.charAt(0).toUpperCase() + name.slice(1);
-}
 
 /** Collect all terminal surfaces from a pane tree */
 function collectTerminalSurfaces(pane: Pane): Surface[] {

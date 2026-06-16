@@ -187,6 +187,73 @@ describe('PaneSlice', () => {
     });
   });
 
+  describe('splitPane — background workspace targeting (#236)', () => {
+    // ws1 stays active; ws2 is split DIRECTLY via the workspaceId arg without
+    // ever being activated — exactly what the pane.split RPC does for an
+    // external multi-agent caller whose workspace isn't the one on screen.
+    function twoWorkspaces() {
+      const ws1 = getActiveWorkspace(store);
+      const ws2 = createWorkspace('Background');
+      store.setState((s) => { s.workspaces.push(ws2); });
+      return { ws1, ws2 };
+    }
+
+    it('splits the explicit background workspace while another ws stays active', () => {
+      const { ws1, ws2 } = twoWorkspaces();
+      const ok = store.getState().splitPane(ws2.rootPane.id, 'horizontal', ws2.id);
+      expect(ok).toBe(true);
+
+      const ws2After = store.getState().workspaces.find((w) => w.id === ws2.id)!;
+      expect(ws2After.rootPane.type).toBe('branch'); // ws2 got the split
+      const ws1After = store.getState().workspaces.find((w) => w.id === ws1.id)!;
+      expect(ws1After.rootPane.type).toBe('leaf');    // ws1 untouched
+      expect(store.getState().activeWorkspaceId).toBe(ws1.id); // global focus didn't move
+    });
+
+    it('does NOT change the active ws activePaneId when splitting a background ws', () => {
+      const { ws1, ws2 } = twoWorkspaces();
+      const activeBefore = ws1.activePaneId;
+      store.getState().splitPane(ws2.rootPane.id, 'horizontal', ws2.id);
+      const ws1After = store.getState().workspaces.find((w) => w.id === ws1.id)!;
+      expect(ws1After.activePaneId).toBe(activeBefore);
+    });
+
+    it('leaves the background ws own activePaneId untouched (focus-scoping); new empty leaf is locatable', () => {
+      const { ws2 } = twoWorkspaces();
+      const ws2ActiveBefore = ws2.activePaneId;
+      store.getState().splitPane(ws2.rootPane.id, 'horizontal', ws2.id);
+      const ws2After = store.getState().workspaces.find((w) => w.id === ws2.id)!;
+      // The RPC handler locates the fresh empty leaf structurally, so the slice
+      // does not need to (and must not) move the background ws's selection.
+      expect(ws2After.activePaneId).toBe(ws2ActiveBefore);
+      const emptyLeaves = getLeafPanes(ws2After.rootPane).filter((l) => l.surfaces.length === 0);
+      expect(emptyLeaves.length).toBeGreaterThanOrEqual(1);
+    });
+
+    it('still records the splitCwdSeed for a background split (the PTY funnel / eager-spawn needs it)', () => {
+      const { ws2 } = twoWorkspaces();
+      store.setState((s) => {
+        const w = s.workspaces.find((x) => x.id === ws2.id)!;
+        if (w.rootPane.type !== 'leaf') throw new Error('expected leaf');
+        w.rootPane.surfaces.push({ id: 's-bg', ptyId: 'pty-bg', title: 't', shell: 'pwsh', cwd: 'D:\\bg' });
+        w.rootPane.activeSurfaceId = 's-bg';
+      });
+      store.getState().splitPane(ws2.rootPane.id, 'horizontal', ws2.id);
+      const ws2After = store.getState().workspaces.find((w) => w.id === ws2.id)!;
+      const newLeaf = getLeafPanes(ws2After.rootPane).find((l) => l.surfaces.length === 0)!;
+      expect(store.getState().splitCwdSeed[newLeaf.id]).toBe('D:\\bg');
+    });
+
+    it('no-workspaceId split still targets the active ws (human-path regression guard)', () => {
+      const { ws1, ws2 } = twoWorkspaces();
+      store.getState().splitPane(ws1.activePaneId, 'horizontal'); // omit workspaceId
+      const ws1After = store.getState().workspaces.find((w) => w.id === ws1.id)!;
+      const ws2After = store.getState().workspaces.find((w) => w.id === ws2.id)!;
+      expect(ws1After.rootPane.type).toBe('branch'); // active ws split
+      expect(ws2After.rootPane.type).toBe('leaf');    // background untouched
+    });
+  });
+
   describe('closePane', () => {
     it('closes a pane in a non-active workspace via the workspaceId parameter', () => {
       const ws1 = getActiveWorkspace(store);

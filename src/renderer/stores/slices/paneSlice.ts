@@ -189,7 +189,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   }),
 
   splitPane: (paneId, direction, workspaceId, position = 'after') => {
-    let event: { wsId: string; newPaneId: string; branchId: string; previousActiveId: string } | null = null;
+    let event: { wsId: string; newPaneId: string; branchId: string; previousActiveId: string; focusMoved: boolean } | null = null;
     let blockedAtCap = false;
     let created = false;
     set((state: StoreState) => {
@@ -245,13 +245,26 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       }
 
       const previousActiveId = ws.activePaneId;
-      ws.activePaneId = newPane.id;
+      // Focus-scoping (#236): only move the active selection + emit pane.focused
+      // when the split targets the GLOBALLY-active workspace. A background-ws
+      // split (an external agent owns ws B while the user looks at ws A) must
+      // NOT hijack ws A's focus or fire a focus event for a pane the user can't
+      // see. The pane.created emit and the splitCwdSeed write below stay
+      // UNCONDITIONAL — the pane really was created, and its PTY (the AppLayout
+      // funnel, or the eager-spawn in the pane.split RPC handler) needs the
+      // inherited cwd regardless of which workspace is active.
+      const isActiveWsSplit = targetWsId === state.activeWorkspaceId;
+      if (isActiveWsSplit) {
+        ws.activePaneId = newPane.id;
 
-      // Issue #182: splitting while a pane in this workspace is zoomed must
-      // un-zoom (tmux behavior) — otherwise the freshly created sibling would
-      // be born hidden behind the zoom and look like the split did nothing.
-      if (state.zoomedPaneId !== null && findPane(ws.rootPane, state.zoomedPaneId)) {
-        state.zoomedPaneId = null;
+        // Issue #182: splitting while a pane in this workspace is zoomed must
+        // un-zoom (tmux behavior) — otherwise the freshly created sibling would
+        // be born hidden behind the zoom and look like the split did nothing.
+        // zoomedPaneId is a single global view-state field that only ever holds
+        // a pane in the active workspace, so gating it here is correct.
+        if (state.zoomedPaneId !== null && findPane(ws.rootPane, state.zoomedPaneId)) {
+          state.zoomedPaneId = null;
+        }
       }
 
       if (inheritedCwd) state.splitCwdSeed[newPane.id] = inheritedCwd;
@@ -261,12 +274,17 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
         newPaneId: newPane.id,
         branchId: branch.id,
         previousActiveId,
+        focusMoved: isActiveWsSplit,
       };
     });
     if (event) {
-      const e = event as { wsId: string; newPaneId: string; branchId: string; previousActiveId: string };
+      const e = event as { wsId: string; newPaneId: string; branchId: string; previousActiveId: string; focusMoved: boolean };
       publishPaneCreated(e.wsId, e.newPaneId, e.branchId);
-      if (e.previousActiveId !== e.newPaneId) {
+      // pane.focused only when the active selection actually moved (active-ws
+      // split). A background split leaves the active ws's activePaneId
+      // untouched, so emitting a focus event would misreport the user's current
+      // pane to external EventBus pollers.
+      if (e.focusMoved && e.previousActiveId !== e.newPaneId) {
         publishPaneFocused(e.wsId, e.newPaneId, e.previousActiveId);
       }
     }

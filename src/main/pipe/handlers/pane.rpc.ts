@@ -199,7 +199,21 @@ export function registerPaneRpc(
         new Error('pane.split: "direction" must be "horizontal" or "vertical"'),
       );
     }
-    return sendToRenderer(getWindow, 'pane.split', { direction });
+    // #236: forward an explicit workspaceId so an external multi-agent caller
+    // can split inside ITS OWN workspace rather than whichever workspace the
+    // user is currently viewing. Omitted → the renderer falls back to the
+    // active workspace (unchanged human-keybind / first-party CLI behavior).
+    // Mirrors the pane.search forwarding guard above.
+    const workspaceId = params['workspaceId'];
+    if (workspaceId !== undefined && typeof workspaceId !== 'string') {
+      return Promise.reject(
+        new Error('pane.split: "workspaceId" must be a string if provided'),
+      );
+    }
+    return sendToRenderer(getWindow, 'pane.split', {
+      direction,
+      ...(workspaceId !== undefined && { workspaceId }),
+    });
   });
 
   /**

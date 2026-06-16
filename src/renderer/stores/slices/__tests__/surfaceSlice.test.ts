@@ -24,6 +24,37 @@ function createHarness() {
   return { state, slice };
 }
 
+describe('surfaceSlice.addSurface — workspace targeting (#236)', () => {
+  it('lands the surface in a background workspace when workspaceId is given', () => {
+    const { state, slice } = createHarness();
+    const ws1 = state.workspaces[0];
+    const ws2 = createWorkspace('Background');
+    state.workspaces.push(ws2);
+
+    slice.addSurface(ws2.rootPane.id, 'pty-bg', 'pwsh', 'D:\\bg', ws2.id);
+
+    const ws2Pane = state.workspaces.find((w) => w.id === ws2.id)!.rootPane;
+    if (ws2Pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(ws2Pane.surfaces).toHaveLength(1);
+    expect(ws2Pane.surfaces[0].ptyId).toBe('pty-bg');
+
+    // ws1 (the active ws) must NOT receive the surface.
+    const ws1Pane = ws1.rootPane;
+    if (ws1Pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(ws1Pane.surfaces).toHaveLength(0);
+    expect(state.activeWorkspaceId).toBe(ws1.id);
+  });
+
+  it('defaults to the active workspace when workspaceId is omitted (back-compat)', () => {
+    const { state, slice } = createHarness();
+    slice.addSurface(state.workspaces[0].rootPane.id, 'pty-1', 'pwsh', 'C:\\a');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf');
+    expect(pane.surfaces).toHaveLength(1);
+    expect(pane.surfaces[0].ptyId).toBe('pty-1');
+  });
+});
+
 describe('surfaceSlice.updateSurfaceCwd', () => {
   it('updates the cwd of the surface bound to a ptyId', () => {
     const { state, slice } = createHarness();

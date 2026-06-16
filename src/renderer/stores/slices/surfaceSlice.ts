@@ -5,7 +5,11 @@ import { createSurface, generateId } from '../../../shared/types';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 
 export interface SurfaceSlice {
-  addSurface: (paneId: string, ptyId: string, shell: string, cwd: string) => void;
+  /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
+   * callers (e.g. the pane.split background-workspace path, #236) target a
+   * non-active workspace — defaults to the active one, so existing positional
+   * callers are unchanged. */
+  addSurface: (paneId: string, ptyId: string, shell: string, cwd: string, workspaceId?: string) => void;
   addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
   addEditorSurface: (paneId: string, filePath: string) => void;
   /** Close a surface tab. `workspaceId` lets RPC/CLI callers target a
@@ -55,8 +59,9 @@ function findLeafPane(root: Pane, id: string): PaneLeaf | null {
 }
 
 export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], SurfaceSlice> = (set) => ({
-  addSurface: (paneId, ptyId, shell, cwd) => set((state: StoreState) => {
-    const ws = state.workspaces.find((w: Workspace) => w.id === state.activeWorkspaceId);
+  addSurface: (paneId, ptyId, shell, cwd, workspaceId) => set((state: StoreState) => {
+    const targetWsId = workspaceId || state.activeWorkspaceId;
+    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane) return;

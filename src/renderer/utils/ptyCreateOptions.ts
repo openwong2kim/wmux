@@ -98,3 +98,24 @@ export function resolveStartupCwd(args: {
   if (args.startupDirectory && args.startupDirectory.trim().length > 0) return args.startupDirectory.trim();
   return undefined;
 }
+
+/**
+ * Human-readable shell label derived from an executable path
+ * (e.g. `C:\\…\\pwsh.exe` → "PowerShell 7"). Used for the surface tab title
+ * when a PTY is adopted. Lifted out of AppLayout so the eager-spawn path in
+ * the `pane.split` RPC handler (background-workspace split, #236) produces the
+ * exact same labels as the empty-leaf PTY funnel.
+ */
+export function shellDisplayName(shellPath: string): string {
+  const base = shellPath.replace(/\\/g, '/').split('/').pop()?.toLowerCase() || '';
+  if (base.includes('pwsh')) return 'PowerShell 7';
+  if (base.includes('powershell')) return 'PowerShell';
+  if (base.includes('bash')) return 'Bash';
+  if (base.includes('wsl')) return 'WSL';
+  if (base.includes('cmd')) return 'CMD';
+  if (base.includes('zsh')) return 'Zsh';
+  if (base.includes('fish')) return 'Fish';
+  // Strip extension and capitalize
+  const name = base.replace(/\.exe$/i, '');
+  return name.charAt(0).toUpperCase() + name.slice(1);
+}

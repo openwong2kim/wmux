@@ -1,6 +1,6 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
-import { withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
+import { resolveStartupCwd, shellDisplayName, withDefaultShell, withWorkspaceProfile } from '../utils/ptyCreateOptions';
 import type { Pane, PaneLeaf, Surface, Workspace } from '../../shared/types';
 import { validateMessage } from '../../shared/types';
 import type { Message, Part, TaskState, Artifact, AgentSkill, Task } from '../../shared/types';
@@ -604,13 +604,111 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   }
 
   if (method === 'pane.split') {
-    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
-    if (!ws) return { error: 'no active workspace' };
+    // ─── Workspace scope + fail-closed (#236, mirrors pane.search) ───────
+    // An external multi-agent caller passes `workspaceId` so the split lands
+    // in the CALLING workspace, not whichever the user is currently viewing.
+    // The human keybind / first-party CLI omit it → active workspace.
+    const requestedWsId =
+      typeof params.workspaceId === 'string' && params.workspaceId.length > 0
+        ? params.workspaceId
+        : store.activeWorkspaceId;
+    const ws = store.workspaces.find((w) => w.id === requestedWsId);
+    if (!ws) {
+      // Fail CLOSED on an explicit-but-unknown workspaceId — never silently
+      // fall back to the active ws (that would split the wrong agent's
+      // workspace, the exact #236 bug). Unlike browser.open this method has no
+      // requireWorkspaceId() MCP guard upstream, so the check lives here.
+      if (typeof params.workspaceId === 'string' && params.workspaceId.length > 0) {
+        return { error: `pane.split: workspace "${requestedWsId}" not found` };
+      }
+      return { error: 'pane.split: no active workspace' };
+    }
+
     const direction =
       params.direction === 'vertical' ? 'vertical' : 'horizontal';
-    const ok = store.splitPane(ws.activePaneId, direction);
-    if (!ok) return { error: 'pane cap reached (max 20 per workspace)' };
-    return { ok: true };
+
+    // Snapshot this workspace's empty leaves BEFORE the split so the freshly
+    // created (always-empty) leaf can be identified afterwards — without
+    // widening splitPane's boolean return, which would ripple to ~30 keybind /
+    // palette / test callsites.
+    const emptyBefore = new Set(
+      findLeafPanes(ws.rootPane).filter((l) => l.surfaces.length === 0).map((l) => l.id),
+    );
+
+    const ok = store.splitPane(ws.activePaneId, direction, ws.id);
+    if (!ok) return { error: 'pane.split: pane cap reached (max 20 per workspace)' };
+
+    // Locate the new leaf: the one empty leaf that was not empty-listed before.
+    const afterSplit = useStore.getState();
+    const splitWs = afterSplit.workspaces.find((w) => w.id === ws.id);
+    if (!splitWs) return { ok: true }; // ws vanished in the async gap; split still happened
+    const newLeaf = findLeafPanes(splitWs.rootPane).find(
+      (l) => l.surfaces.length === 0 && !emptyBefore.has(l.id),
+    );
+    const newPaneId = newLeaf?.id;
+
+    // Active-ws split: the AppLayout empty-leaf funnel owns PTY creation (it
+    // carries the full startup-cwd / project-seed / X8-supervision chain), so
+    // we do NOT duplicate it here. The ptyId is only known after that async
+    // create, hence it is omitted from the return for the active-ws path.
+    if (splitWs.id === afterSplit.activeWorkspaceId) {
+      return { ok: true, paneId: newPaneId };
+    }
+
+    // ─── Background-ws split: eager-spawn the PTY (#236 P0) ──────────────
+    // The funnel is gated on the ACTIVE workspace (AppLayout effect dep =
+    // activeWorkspace.id), so a pane split into a background ws would stay
+    // surface-less — no terminal — until the user activates that workspace. An
+    // external agent that splits-then-sends needs a live PTY immediately, so
+    // spawn it here, mirroring surface.new's create + orphan-guard + adopt.
+    if (!newPaneId) return { ok: true }; // couldn't locate the new leaf; tree split still ok
+
+    // Same cwd precedence the funnel applies (split-inherited > profile
+    // startupCwd > global startupDirectory > main-side homedir). Consume the
+    // seed so a later activation's funnel can't double-create on this pane.
+    const startupCwd = resolveStartupCwd({
+      splitSeed: afterSplit.splitCwdSeed[newPaneId],
+      splitInheritsCwd: afterSplit.splitInheritsCwd,
+      profile: splitWs.profile,
+      startupDirectory: afterSplit.startupDirectory,
+    });
+    if (afterSplit.splitCwdSeed[newPaneId]) afterSplit.clearSplitCwdSeed(newPaneId);
+
+    let created: { id: string; shell?: string; cwd?: string };
+    try {
+      created = await window.electronAPI.pty.create(
+        withWorkspaceProfile(
+          withDefaultShell(
+            { workspaceId: splitWs.id, cwd: startupCwd || undefined },
+            useStore.getState().defaultShell,
+          ),
+          splitWs.profile,
+        ),
+      );
+    } catch (err) {
+      // The tree split already succeeded and is valid — surface the PTY failure
+      // but do NOT roll back (the agent asked for the pane; the funnel will
+      // backfill it if the ws is later activated).
+      return {
+        ok: true,
+        paneId: newPaneId,
+        ptyWarning: `pane.split: PTY create failed — ${err instanceof Error ? err.message : String(err)}`,
+      };
+    }
+
+    // Orphan guard (mirror surface.new / funnel): adopt the PTY only if the
+    // pane still exists AND is still empty. If the user switched to the ws
+    // mid-create and the funnel already filled it, dispose ours.
+    const afterPty = useStore.getState();
+    const freshWs = afterPty.workspaces.find((w) => w.id === splitWs.id);
+    const livePane = freshWs ? findPaneById(freshWs.rootPane, newPaneId) : null;
+    if (!livePane || livePane.type !== 'leaf' || livePane.surfaces.length > 0) {
+      try { await window.electronAPI.pty.dispose(created.id); } catch { /* best-effort */ }
+      return { ok: true, paneId: newPaneId };
+    }
+    const shellName = created.shell ? shellDisplayName(created.shell) : 'Terminal';
+    afterPty.addSurface(newPaneId, created.id, shellName, created.cwd || '', splitWs.id);
+    return { ok: true, paneId: newPaneId, ptyId: created.id };
   }
 
   if (method === 'pane.resolveActiveLeaf') {

@@ -1424,3 +1424,57 @@ describe('pane.rpc — pane.list supervision join (X8)', () => {
     }
   });
 });
+
+describe('pane.rpc — pane.split workspaceId forwarding (#236)', () => {
+  beforeEach(() => {
+    vi.clearAllMocks();
+    sendToRendererMock.mockResolvedValue({ ok: true, paneId: 'pane-new' });
+  });
+
+  it('forwards an explicit workspaceId to the renderer', async () => {
+    const router = register();
+    const res = await router.dispatch({
+      id: 's1',
+      method: 'pane.split',
+      params: { direction: 'vertical', workspaceId: 'ws-bg' },
+    });
+    expect(res.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.any(Function),
+      'pane.split',
+      { direction: 'vertical', workspaceId: 'ws-bg' },
+    );
+  });
+
+  it('omits workspaceId from the forwarded payload when the caller did not provide it', async () => {
+    const router = register();
+    await router.dispatch({ id: 's2', method: 'pane.split', params: { direction: 'horizontal' } });
+    const payload = sendToRendererMock.mock.calls[0][2] as Record<string, unknown>;
+    expect(payload).toEqual({ direction: 'horizontal' });
+    expect('workspaceId' in payload).toBe(false);
+  });
+
+  it('rejects a non-string workspaceId before any renderer call', async () => {
+    const router = register();
+    const res = await router.dispatch({
+      id: 's3',
+      method: 'pane.split',
+      params: { direction: 'vertical', workspaceId: 42 as unknown as string },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/string/);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+
+  it('still rejects an invalid direction (regression)', async () => {
+    const router = register();
+    const res = await router.dispatch({
+      id: 's4',
+      method: 'pane.split',
+      params: { direction: 'sideways' },
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/horizontal.*vertical/);
+    expect(sendToRendererMock).not.toHaveBeenCalled();
+  });
+});
