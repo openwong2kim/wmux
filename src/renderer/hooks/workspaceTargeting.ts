@@ -30,11 +30,15 @@ export function resolveWorkspaceTarget(
   workspaces: WorkspaceRef[],
   to: string,
 ): WorkspaceTargetResult {
-  // 1. Exact ID — never ambiguous (UUID), highest precedence.
-  const byId = workspaces.find((w) => w.id === to);
-  if (byId) return { kind: 'resolved', id: byId.id };
+  const toTrimmed = to.trim();
+  const toNorm = toTrimmed.toLowerCase();
+  // Whitespace-only / empty target never matches — otherwise the substring tier
+  // below would `includes('')` every workspace and silently route to the first.
+  if (!toNorm) return { kind: 'not-found' };
 
-  const toNorm = to.toLowerCase().trim();
+  // 1. Exact ID — never ambiguous (UUID), highest precedence.
+  const byId = workspaces.find((w) => w.id === toTrimmed);
+  if (byId) return { kind: 'resolved', id: byId.id };
 
   // 2. Exact name (case-insensitive) — STRICT ambiguity refusal.
   const exact = workspaces.filter((w) => w.name.toLowerCase() === toNorm);

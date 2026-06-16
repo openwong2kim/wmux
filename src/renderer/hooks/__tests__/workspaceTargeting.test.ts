@@ -53,4 +53,18 @@ describe('resolveWorkspaceTarget', () => {
     const list = [ws('ws-aaa', 'Alpha')];
     expect(resolveWorkspaceTarget(list, 'zzz')).toEqual({ kind: 'not-found' });
   });
+
+  it('returns not-found for a whitespace-only / empty target (no includes("") first-ws routing)', () => {
+    // Without the guard, trim()→'' would substring-match every workspace and
+    // silently route to the first (CodeRabbit). Must be not-found instead.
+    const list = [ws('ws-aaa', 'Alpha'), ws('ws-bbb', 'Beta')];
+    expect(resolveWorkspaceTarget(list, '   ')).toEqual({ kind: 'not-found' });
+    expect(resolveWorkspaceTarget(list, '')).toEqual({ kind: 'not-found' });
+  });
+
+  it('trims surrounding whitespace before matching id and name', () => {
+    const list = [ws('ws-aaa', 'Alpha')];
+    expect(resolveWorkspaceTarget(list, '  ws-aaa  ')).toEqual({ kind: 'resolved', id: 'ws-aaa' });
+    expect(resolveWorkspaceTarget(list, '  alpha  ')).toEqual({ kind: 'resolved', id: 'ws-aaa' });
+  });
 });
