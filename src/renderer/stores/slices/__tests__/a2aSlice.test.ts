@@ -121,6 +121,52 @@ describe('a2aSlice — gcTerminalTasks hard cap (issue #99)', () => {
   });
 });
 
+describe('a2aSlice — updateTaskStatus transitions (P3 message clarity)', () => {
+  let store: ReturnType<typeof createTestStore>;
+  let taskId: string;
+
+  beforeEach(() => {
+    store = createTestStore();
+    taskId = store.getState().createA2aTask({
+      title: 'Test',
+      from: { workspaceId: 'ws-sender', name: 'Sender' },
+      to: { workspaceId: 'ws-receiver', name: 'Receiver' },
+      history: [makeMessage('hello')],
+      artifacts: [],
+    });
+  });
+
+  it('rejects submitted -> completed with allowed-next guidance (must go through working)', () => {
+    const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver');
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/Invalid transition: submitted -> completed/);
+    expect(r.error).toMatch(/working/); // surfaces the allowed next state
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('submitted'); // unchanged
+  });
+
+  it('allows submitted -> working (the gate is not over-tightened by the message change)', () => {
+    const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
+    expect(r.ok).toBe(true);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('working');
+  });
+
+  it('allows working -> completed, then rejects completed -> working as terminal', () => {
+    store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
+    const done = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver');
+    expect(done.ok).toBe(true);
+    const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/terminal state/);
+  });
+
+  it('keeps the receiver-permission gate ahead of the transition check', () => {
+    const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-sender');
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/Permission denied/);
+    expect(r.error).not.toMatch(/Invalid transition/); // permission fires first
+  });
+});
+
 describe('a2aSlice — pendingExecuteApproval', () => {
   it('starts null and round-trips through setter', () => {
     const store = createTestStore();

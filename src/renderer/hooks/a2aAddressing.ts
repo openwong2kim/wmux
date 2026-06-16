@@ -122,3 +122,43 @@ export function decideSameWsSend(
   // (senderPtyId absent) deliver silently so an unprovable self-send can't loop.
   return { kind: 'deliver', suppressPaste: !senderPtyId };
 }
+
+export type SelfPaneIdentity = {
+  ptyId: string;
+  paneId: string;
+  surfaceId: string;
+  agentName: string | null;
+  agentStatus: string | null;
+};
+
+/**
+ * Resolve the CALLER's own pane within its workspace tree from a verified
+ * senderPtyId, for a2a_whoami's pane-level answer. The search is scoped to
+ * `leaves` (the caller's own workspace tree), so an absent, forged, or foreign
+ * senderPtyId yields null → the caller degrades to the ws-level identity (never
+ * an error). It never trusts a value outside the given tree, and the agent label
+ * is read per-pane (the ws-level metadata.agentName collapses N agents into one).
+ * Read-only: confers no capability. `agentFor` maps a ptyId to its detected agent
+ * (kept as a callback so this stays pure / store-free / unit-testable).
+ */
+export function resolveSelfPaneIdentity(
+  leaves: PaneLeaf[],
+  agentFor: (ptyId: string) => { name?: string; status?: string } | undefined,
+  senderPtyId: string,
+): SelfPaneIdentity | null {
+  if (!senderPtyId) return null;
+  for (const leaf of leaves) {
+    const s = leaf.surfaces.find((su) => su.surfaceType !== 'browser' && su.ptyId === senderPtyId);
+    if (s) {
+      const a = agentFor(s.ptyId);
+      return {
+        ptyId: s.ptyId,
+        paneId: leaf.id,
+        surfaceId: s.id,
+        agentName: a?.name ?? null,
+        agentStatus: a?.status ?? null,
+      };
+    }
+  }
+  return null;
+}

@@ -25,11 +25,47 @@ const KEY_MAP: Readonly<Record<string, string>> = {
 } as const;
 
 /**
- * Resolves the active ptyId from the renderer when none is provided.
- * Asks the renderer for the currently focused surface's ptyId.
+ * Guard for terminal_send / terminal_send_key when ptyId is OMITTED.
+ *
+ * A verified first-party agent caller carries its own `senderPtyId` (the MCP
+ * server's MY_PTY_ID, populated only on a verified PID-map hit). For such a
+ * caller, "the active terminal" is ill-defined: it resolves either to the
+ * caller's OWN pane (bracket-paste + submit loops into its own prompt) or, in a
+ * multi-pane workspace, to a non-deterministic UI-focus-dependent sibling — a
+ * silent mis-delivery that assertWorkspaceOwnsPty cannot catch (it only blocks
+ * cross-workspace access, never an intra-workspace sibling). So we refuse and
+ * require an explicit ptyId.
+ *
+ * External callers (no senderPtyId — env-hint identity / non-agent) are
+ * unaffected: omitting ptyId legitimately targets their own pinned terminal. An
+ * explicit ptyId never reaches this guard (handled by the early branch), so a
+ * legitimate cross-pane send is structurally safe. A spoofed senderPtyId from a
+ * raw pipe client can only self-reject its OWN omitted-ptyId send (it cannot
+ * misroute — explicit ptyId bypasses this), so provenance need not be verified.
  */
-async function resolveActivePtyId(getWindow: GetWindow): Promise<string> {
-  const result = await sendToRenderer(getWindow, 'input.readScreen');
+export function decideTerminalOmittedTarget(senderPtyId: string): {
+  allow: boolean;
+  reason?: string;
+} {
+  if (!senderPtyId) return { allow: true };
+  return {
+    allow: false,
+    reason:
+      'cannot resolve "the active terminal" for an agent caller — it would loop ' +
+      'into your own pane or a non-deterministic sibling. Pass an explicit ptyId ' +
+      '(call surface_list() to find the target PTY ID).',
+  };
+}
+
+/**
+ * Resolves the active ptyId from the renderer when none is provided. Scoped to
+ * the caller's workspace (not the globally UI-focused one) so an external caller
+ * resolves its OWN active pane — mirrors the input.readScreen handler's scoped
+ * passthrough (the workspaceId-less variant read whatever the user had focused).
+ */
+async function resolveActivePtyId(getWindow: GetWindow, callerWs?: string): Promise<string> {
+  const scoped = callerWs ? { workspaceId: callerWs } : {};
+  const result = await sendToRenderer(getWindow, 'input.readScreen', scoped);
   // renderer returns { ptyId: string, ... } for the active surface
   if (
     result !== null &&
@@ -95,15 +131,21 @@ export function registerInputRpc(
       throw new Error('input.send: text exceeds 100KB limit');
     }
 
+    const callerWs = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+
     let ptyId: string;
 
     if (typeof params['ptyId'] === 'string' && params['ptyId'].length > 0) {
       ptyId = params['ptyId'];
     } else {
-      ptyId = await resolveActivePtyId(getWindow);
+      const senderPtyId = typeof params['senderPtyId'] === 'string' ? params['senderPtyId'] : '';
+      const decision = decideTerminalOmittedTarget(senderPtyId);
+      if (!decision.allow) {
+        throw new Error(`input.send: ${decision.reason}`);
+      }
+      ptyId = await resolveActivePtyId(getWindow, callerWs);
     }
 
-    const callerWs = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
     await assertWorkspaceOwnsPty(getWindow, ptyId, callerWs, 'input.send');
 
     const safeText = params['raw'] === true ? text : sanitizePtyText(text);
@@ -153,14 +195,20 @@ export function registerInputRpc(
       );
     }
 
+    const callerWs = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+
     let ptyId: string;
     if (typeof params['ptyId'] === 'string' && params['ptyId'].length > 0) {
       ptyId = params['ptyId'];
     } else {
-      ptyId = await resolveActivePtyId(getWindow);
+      const senderPtyId = typeof params['senderPtyId'] === 'string' ? params['senderPtyId'] : '';
+      const decision = decideTerminalOmittedTarget(senderPtyId);
+      if (!decision.allow) {
+        throw new Error(`input.sendKey: ${decision.reason}`);
+      }
+      ptyId = await resolveActivePtyId(getWindow, callerWs);
     }
 
-    const callerWs = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
     await assertWorkspaceOwnsPty(getWindow, ptyId, callerWs, 'input.sendKey');
 
     const instance = ptyManager.get(ptyId);

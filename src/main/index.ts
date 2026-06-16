@@ -13,6 +13,7 @@ import { markBoot, emitBootSummary } from './util/bootTrace';
 import * as crypto from 'crypto';
 import * as path from 'path';
 import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
+import { checkUserDataIsolation } from './dataIsolation';
 import { createWindow, loadMainRenderer } from './window/createWindow';
 import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
@@ -201,10 +202,26 @@ if (!app.isPackaged && !process.env.WMUX_DATA_SUFFIX) {
   process.env.WMUX_DATA_SUFFIX = '-dev';
 }
 if (process.env.WMUX_DATA_SUFFIX) {
+  const suffix = process.env.WMUX_DATA_SUFFIX;
   try {
-    app.setPath('userData', app.getPath('userData') + process.env.WMUX_DATA_SUFFIX);
+    app.setPath('userData', app.getPath('userData') + suffix);
   } catch (err) {
     console.error('[Main] userData 격리 setPath 실패:', err);
+  }
+  // Diagnostics + fail-loud: confirm the suffix actually landed in userData. If
+  // setPath threw / no-op'd, userData stayed at the PRODUCTION dir and an
+  // isolated instance would boot onto prod's session.json — silently restoring
+  // the wrong workspaces (the "a fresh suffix restored an old workspace" bug).
+  // Hard-exit rather than corrupt prod state. Only trips on a real mismatch;
+  // an empty suffix (normal production) never enters this block. app.exit (not
+  // throw) because the top-level uncaughtException handler above would swallow a
+  // throw and let the boot continue onto the prod dir.
+  const resolvedUserData = app.getPath('userData');
+  console.log(`[Main] WMUX_DATA_SUFFIX="${suffix}" → userData="${resolvedUserData}"`);
+  const isolation = checkUserDataIsolation(suffix, resolvedUserData);
+  if (!isolation.ok) {
+    console.error(`[Main] FATAL: ${isolation.error}`);
+    app.exit(1);
   }
 }
 

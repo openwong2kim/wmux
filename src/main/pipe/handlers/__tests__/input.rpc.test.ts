@@ -3,7 +3,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
-import { registerInputRpc } from '../input.rpc';
+import { registerInputRpc, decideTerminalOmittedTarget } from '../input.rpc';
 import type { PTYManager } from '../../../pty/PTYManager';
 
 // Mock the renderer bridge so we can drive input.findOwnerWorkspace (the
@@ -155,4 +155,110 @@ describe('input.rpc — assertWorkspaceOwnsPty parity (source invariant)', () =>
       expect(handlerBlock(method)).toMatch(/assertWorkspaceOwnsPty\(/);
     });
   }
+});
+
+// P0 — terminal_send / terminal_send_key self-loop guard. A first-party agent
+// (verified senderPtyId) that omits ptyId must be refused: "the active
+// terminal" would loop into its own pane or, in a multi-pane workspace, a
+// non-deterministic sibling that assertWorkspaceOwnsPty cannot catch (intra-ws).
+// An explicit ptyId must NEVER be blocked; an external caller (no senderPtyId)
+// keeps resolving its own pinned pane, scoped to its workspace.
+describe('input.send / input.sendKey — omitted-target self-loop guard (P0)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function setupWithWrite(): { router: RpcRouter; writeMock: ReturnType<typeof vi.fn> } {
+    const writeMock = vi.fn();
+    const pty = { get: vi.fn(() => ({ id: 'x' })), write: writeMock } as unknown as PTYManager;
+    const router = new RpcRouter();
+    registerInputRpc(router, pty, () => fakeWindow);
+    return { router, writeMock };
+  }
+
+  it('decideTerminalOmittedTarget rejects a first-party caller (senderPtyId present)', () => {
+    const d = decideTerminalOmittedTarget('pty-self');
+    expect(d.allow).toBe(false);
+    expect(d.reason).toMatch(/explicit ptyId/);
+  });
+
+  it('decideTerminalOmittedTarget allows an external caller (senderPtyId absent)', () => {
+    expect(decideTerminalOmittedTarget('').allow).toBe(true);
+  });
+
+  it('rejects an omitted-ptyId send from a first-party caller, before resolving any pane or writing', async () => {
+    const { router, writeMock } = setupWithWrite();
+    const res = await router.dispatch({
+      id: '1',
+      method: 'input.send',
+      params: { text: 'hi', workspaceId: 'ws-self', senderPtyId: 'pty-self' },
+    });
+    expect(res.ok).toBe(false);
+    // Guard fired BEFORE active-pane resolution (no readScreen) and BEFORE write.
+    expect(sendToRendererMock).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'input.readScreen',
+      expect.anything(),
+    );
+    expect(writeMock).not.toHaveBeenCalled();
+  });
+
+  it('NEVER blocks an explicit-ptyId send even when senderPtyId equals that ptyId', async () => {
+    // The CRITICAL constraint: a legit explicit cross/self-pane send must write.
+    // Explicit ptyId takes the early branch and never reaches the guard.
+    const { router, writeMock } = setupWithWrite();
+    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
+      if (method === 'input.findOwnerWorkspace') return Promise.resolve({ workspaceId: 'ws-self' });
+      return Promise.resolve(null);
+    });
+    const res = await router.dispatch({
+      id: '2',
+      method: 'input.send',
+      params: { text: 'hi', ptyId: 'pty-self', workspaceId: 'ws-self', senderPtyId: 'pty-self' },
+    });
+    expect(res.ok).toBe(true);
+    expect(writeMock).toHaveBeenCalledWith('pty-self', expect.any(String));
+    // No active-pane resolution happened (explicit ptyId bypassed it).
+    expect(sendToRendererMock).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'input.readScreen',
+      expect.anything(),
+    );
+  });
+
+  it('resolves the active pane scoped to the caller workspace for an external caller (no senderPtyId)', async () => {
+    const { router, writeMock } = setupWithWrite();
+    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
+      if (method === 'input.readScreen') return Promise.resolve({ ptyId: 'pty-pinned', text: '' });
+      if (method === 'input.findOwnerWorkspace') return Promise.resolve({ workspaceId: 'ws-ext' });
+      return Promise.resolve(null);
+    });
+    const res = await router.dispatch({
+      id: '3',
+      method: 'input.send',
+      params: { text: 'hi', workspaceId: 'ws-ext' },
+    });
+    expect(res.ok).toBe(true);
+    // Active-pane lookup forwarded the caller workspaceId (scoped, not UI focus).
+    expect(sendToRendererMock).toHaveBeenCalledWith(
+      expect.anything(),
+      'input.readScreen',
+      expect.objectContaining({ workspaceId: 'ws-ext' }),
+    );
+    expect(writeMock).toHaveBeenCalledWith('pty-pinned', expect.any(String));
+  });
+
+  it('input.sendKey parity — rejects an omitted-ptyId key send from a first-party caller', async () => {
+    const { router, writeMock } = setupWithWrite();
+    const res = await router.dispatch({
+      id: '4',
+      method: 'input.sendKey',
+      params: { key: 'enter', workspaceId: 'ws-self', senderPtyId: 'pty-self' },
+    });
+    expect(res.ok).toBe(false);
+    expect(sendToRendererMock).not.toHaveBeenCalledWith(
+      expect.anything(),
+      'input.readScreen',
+      expect.anything(),
+    );
+    expect(writeMock).not.toHaveBeenCalled();
+  });
 });

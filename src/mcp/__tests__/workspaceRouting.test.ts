@@ -45,15 +45,25 @@ describe('MCP workspace routing (source-level invariants)', () => {
     return src.slice(start, next > start ? next : start + 800);
   }
 
-  it('only requireWorkspaceId() may CALL the weak resolveWorkspaceId() — exactly one call site', () => {
-    // requireWorkspaceId is the single sanctioned caller: it throws when the
-    // resolver returns falsy. Any tool handler that calls resolveWorkspaceId()
-    // directly can silently fall back to the active workspace on a miss — the
-    // exact bug. The `(?<!function )` lookbehind excludes the parameter-less
-    // declaration (`async function resolveWorkspaceId()`) so only call sites
-    // are counted.
+  it('only requireWorkspaceId() and the two fail-soft READ tools call the weak resolveWorkspaceId() — exactly three call sites', () => {
+    // requireWorkspaceId is the sanctioned caller for WRITE/identity tools: it
+    // throws when the resolver returns falsy, so a write (browser_open, a2a_*,
+    // terminal routing) never silently lands on the UI-active workspace — the
+    // exact bug this invariant guards.
+    //
+    // surface_list and pane_list are READ tools that deliberately call the weak
+    // resolver directly: caller-scoped when identity resolves (converging with
+    // a2a_whoami so a multi-agent workspace's surfaces are the CALLER's, not the
+    // GUI-focused ones), and a fail-soft active fallback on a genuine miss — a
+    // read must not throw during the boot reconcile window. They forward an
+    // explicit workspaceId once resolved, so the fallback only fires on a true
+    // identity miss. Any NEW direct call site must be reviewed against this
+    // read-vs-write split — hence the exact count.
+    //
+    // The `(?<!function )` lookbehind excludes the parameter-less declaration
+    // (`async function resolveWorkspaceId()`) so only call sites are counted.
     const directCalls = src.match(/(?<!function )resolveWorkspaceId\(\)/g) ?? [];
-    expect(directCalls).toHaveLength(1);
+    expect(directCalls).toHaveLength(3);
   });
 
   it('browser_open routes through requireWorkspaceId, never the weak resolver', () => {

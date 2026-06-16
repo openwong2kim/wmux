@@ -16,7 +16,8 @@ import { readPtyBufferLines } from '../utils/terminalTail';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, type PaneAddress } from './a2aAddressing';
+import { resolveWorkspaceTarget } from './workspaceTargeting';
 
 // ---------------------------------------------------------------------------
 // Pane tree utilities
@@ -1220,11 +1221,27 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     }
     const ws = store.workspaces.find((w) => w.id === workspaceId);
     if (!ws) return { error: `no workspace found for ${workspaceId}` };
-    return {
+    const base = {
       workspaceId: ws.id,
       name: ws.name,
       metadata: ws.metadata ?? {},
     };
+    // Pane-level identity: when the MCP server forwarded our OWN verified ptyId
+    // (senderPtyId — populated only on a verified PID-map hit), resolve which of
+    // THIS workspace's panes is the caller and return its pane address + the
+    // agent detected on that specific pane (ws.metadata.agentName is a single
+    // ws-level aggregate that collapses N agents into one). resolveSelfPaneIdentity
+    // is scoped to ws.rootPane's own leaves, so a forged/foreign ptyId yields null
+    // and we degrade to the ws-level answer (never an error, never echoing a
+    // client-supplied selector as trusted identity). Read-only: these fields grant
+    // no capability — whoami output never flows into terminal routing.
+    const rawSenderPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
+    const self = resolveSelfPaneIdentity(
+      findLeafPanes(ws.rootPane),
+      (ptyId) => store.surfaceAgent[ptyId],
+      rawSenderPtyId,
+    );
+    return self ? { ...base, ...self } : base;
   }
 
   if (method === 'a2a.discover') {
@@ -1419,23 +1436,24 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const sender = store.workspaces.find((w) => w.id === workspaceId);
     const fromName = sender?.name ?? `unknown-${workspaceId.substring(0, 8)}`;
 
-    const toNorm = to.toLowerCase().trim();
-    // Extract number from inputs like "3번", "3", "ws3", "workspace 3", "#3"
-    const numMatch = toNorm.match(/^#?(?:ws|workspace\s*)?(\d+)(?:번)?$/);
-    const targetNum = numMatch ? parseInt(numMatch[1], 10) : NaN;
-
-    const target = store.workspaces.find((w) => {
-      if (w.id === to) return true;
-      if (w.name.toLowerCase() === toNorm) return true;
-      // Match by workspace number (1-indexed)
-      if (!isNaN(targetNum)) {
-        const wsNumMatch = w.name.match(/(\d+)/);
-        if (wsNumMatch && parseInt(wsNumMatch[1], 10) === targetNum) return true;
-      }
-      // Partial name match
-      if (w.name.toLowerCase().includes(toNorm)) return true;
-      return false;
-    });
+    // Resolve the target workspace by id / exact name / number / substring. A
+    // DUPLICATE EXACT NAME is REFUSED (ambiguous) rather than silently picking
+    // whichever appears first — two same-named workspaces previously misrouted a
+    // send. Number/substring stay first-match (the documented "N번"/partial
+    // addressing contract).
+    const targetResult = resolveWorkspaceTarget(store.workspaces, to);
+    if (targetResult.kind === 'ambiguous') {
+      const ids = targetResult.matches.map((w) => `"${w.name}" (${w.id})`).join(', ');
+      return {
+        error:
+          `a2a.task.send: target "${to}" is ambiguous — ${targetResult.matches.length} ` +
+          `workspaces share that name: ${ids}. Re-send addressing the workspace by ID.`,
+      };
+    }
+    const target =
+      targetResult.kind === 'resolved'
+        ? store.workspaces.find((w) => w.id === targetResult.id)
+        : undefined;
     if (!target) {
       const available = store.workspaces.map((w) => w.name).join(', ');
       return { error: `a2a.task.send: target "${to}" not found. Available: ${available}` };

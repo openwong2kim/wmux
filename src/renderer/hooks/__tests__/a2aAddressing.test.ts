@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { PaneLeaf, Surface } from '../../../shared/types';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves } from '../a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity } from '../a2aAddressing';
 
 function surface(id: string, ptyId: string, surfaceType: Surface['surfaceType'] = 'terminal'): Surface {
   return { id, ptyId, title: id, shell: '', cwd: '', surfaceType } as Surface;
@@ -111,5 +111,48 @@ describe('isTerminalPtyInLeaves', () => {
   it('rejects a foreign/unknown pty and the empty string', () => {
     expect(isTerminalPtyInLeaves(leaves, 'pty-from-other-ws')).toBe(false);
     expect(isTerminalPtyInLeaves(leaves, '')).toBe(false);
+  });
+});
+
+describe('resolveSelfPaneIdentity (a2a_whoami pane-level)', () => {
+  const agents: Record<string, { name?: string; status?: string }> = {
+    'pty-A': { name: 'Claude Code', status: 'working' },
+    'pty-B1': { name: 'Codex', status: 'idle' },
+  };
+  const agentFor = (ptyId: string) => agents[ptyId];
+
+  it('resolves a verified senderPtyId to its OWN pane + per-pane agent', () => {
+    expect(resolveSelfPaneIdentity(leaves, agentFor, 'pty-A')).toEqual({
+      ptyId: 'pty-A', paneId: 'pane-A', surfaceId: 'surf-A',
+      agentName: 'Claude Code', agentStatus: 'working',
+    });
+  });
+
+  it('two sibling ptyIds resolve to DIFFERENT panes (the divergence fix)', () => {
+    const a = resolveSelfPaneIdentity(leaves, agentFor, 'pty-A');
+    const b = resolveSelfPaneIdentity(leaves, agentFor, 'pty-B1');
+    expect(a?.paneId).toBe('pane-A');
+    expect(b?.paneId).toBe('pane-B');
+    expect(a?.agentName).not.toBe(b?.agentName);
+  });
+
+  it('degrades to null for an ABSENT senderPtyId (caller falls back to ws-level)', () => {
+    expect(resolveSelfPaneIdentity(leaves, agentFor, '')).toBeNull();
+  });
+
+  it('degrades to null for a FOREIGN/unknown senderPtyId (fail-closed, never echo)', () => {
+    expect(resolveSelfPaneIdentity(leaves, agentFor, 'pty-from-other-ws')).toBeNull();
+  });
+
+  it('does not resolve a browser-surface pty (terminal only)', () => {
+    expect(resolveSelfPaneIdentity(leaves, agentFor, 'pty-web')).toBeNull();
+  });
+
+  it('returns null agent fields when the resolved pane has no detected agent', () => {
+    // pty-B2 is a real terminal surface but absent from the agent map.
+    expect(resolveSelfPaneIdentity(leaves, agentFor, 'pty-B2')).toEqual({
+      ptyId: 'pty-B2', paneId: 'pane-B', surfaceId: 'surf-B2',
+      agentName: null, agentStatus: null,
+    });
   });
 });

@@ -1,7 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Task, Message, TaskState, Artifact, AgentSkill } from '../../../shared/types';
-import { generateId, validateTransition, TERMINAL_STATES } from '../../../shared/types';
+import { generateId, validateTransition, TERMINAL_STATES, VALID_TRANSITIONS } from '../../../shared/types';
 
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 const GC_MAX_TASKS = 500;
@@ -103,9 +103,17 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     if (task.metadata.to.workspaceId !== callerWorkspaceId) {
       return { ok: false, error: `Permission denied: caller ${callerWorkspaceId} is not the receiver` };
     }
-    // Validate state transition
+    // Validate state transition. On rejection, surface the allowed next states
+    // (read from VALID_TRANSITIONS — the static graph only, never task payload)
+    // so the caller learns e.g. that 'submitted' must pass through 'working'
+    // before it can 'complete', instead of a bare "Invalid transition".
     if (!validateTransition(task.status.state, newState)) {
-      return { ok: false, error: `Invalid transition: ${task.status.state} -> ${newState}` };
+      const from = task.status.state;
+      const allowed = VALID_TRANSITIONS[from];
+      const guidance = allowed.length
+        ? `allowed next: [${allowed.join(', ')}]`
+        : `'${from}' is a terminal state with no further transitions`;
+      return { ok: false, error: `Invalid transition: ${from} -> ${newState}. ${guidance}.` };
     }
     set((state: StoreState) => {
       const t = state.a2aTasks[taskId];

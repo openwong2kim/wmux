@@ -433,6 +433,11 @@ server.tool(
     const route = await resolveTerminalRouteBound(ptyId);
     const base: Record<string, unknown> = { text, workspaceId: route.workspaceId };
     if (route.ptyId) base.ptyId = route.ptyId;
+    // Forward our OWN verified ptyId so main can reject an omitted-ptyId send
+    // from an agent (it would loop into its own pane or a non-deterministic
+    // sibling). Present only on a verified PID-map hit; absent for external
+    // callers, where omitting ptyId legitimately targets their pinned terminal.
+    if (MY_PTY_ID) base.senderPtyId = MY_PTY_ID;
     if (submit) base.submit = true;
     return callRpc('input.send', base);
   },
@@ -451,6 +456,9 @@ server.tool(
     const route = await resolveTerminalRouteBound(ptyId);
     const params: Record<string, unknown> = { key, workspaceId: route.workspaceId };
     if (route.ptyId) params.ptyId = route.ptyId;
+    // See terminal_send: forward our verified ptyId so main can reject an
+    // omitted-ptyId key send from an agent (self-loop / sibling misroute).
+    if (MY_PTY_ID) params.senderPtyId = MY_PTY_ID;
     return callRpc('input.sendKey', params);
   },
 );
@@ -466,20 +474,33 @@ server.tool(
 
 server.tool(
   'surface_list',
-  'List all surfaces (terminals and browsers) in a workspace. Returns surfaceId, ptyId, shell, CWD, git branch for each surface. Omit workspaceId to list the active workspace.',
+  'List all surfaces (terminals and browsers) in a workspace. Returns surfaceId, ptyId, shell, CWD, git branch for each surface. Omit workspaceId to list your own workspace.',
   {
-    workspaceId: z.string().optional().describe('Target a specific workspace by ID. Omit to use the active workspace.'),
+    workspaceId: z.string().optional().describe("Target a specific workspace by ID. Omit to use your own (the caller's) workspace."),
   },
-  async ({ workspaceId }) => callRpc('surface.list', workspaceId ? { workspaceId } : {}),
+  async ({ workspaceId }) => {
+    // Scope to the CALLER's own workspace when omitted, not the GUI-focused one
+    // (the a2a_whoami-vs-surface_list divergence). resolveWorkspaceId is
+    // fail-soft (returns '' on identity miss, never throws — unlike a write tool,
+    // a read must not hard-fail); an empty resolution falls back to the
+    // renderer's active-ws default, preserving the old behavior.
+    const resolved = workspaceId || (await resolveWorkspaceId());
+    return callRpc('surface.list', resolved ? { workspaceId: resolved } : {});
+  },
 );
 
 server.tool(
   'pane_list',
-  'List all panes in a workspace with CWD, git branch, and metadata. Omit workspaceId to list the active workspace.',
+  'List all panes in a workspace with CWD, git branch, and metadata. Omit workspaceId to list your own workspace.',
   {
-    workspaceId: z.string().optional().describe('Target a specific workspace by ID. Omit to use the active workspace.'),
+    workspaceId: z.string().optional().describe("Target a specific workspace by ID. Omit to use your own (the caller's) workspace."),
   },
-  async ({ workspaceId }) => callRpc('pane.list', workspaceId ? { workspaceId } : {}),
+  async ({ workspaceId }) => {
+    // Caller-scoped when omitted (see surface_list) — fail-soft via
+    // resolveWorkspaceId so a read never throws on identity miss.
+    const resolved = workspaceId || (await resolveWorkspaceId());
+    return callRpc('pane.list', resolved ? { workspaceId: resolved } : {});
+  },
 );
 
 server.tool(
@@ -580,7 +601,13 @@ server.tool(
   {},
   async () => {
     const wsId = await requireWorkspaceId();
-    return callRpc('a2a.whoami', { workspaceId: wsId });
+    const params: Record<string, unknown> = { workspaceId: wsId };
+    // Forward our OWN verified ptyId so the renderer can answer pane-level
+    // ("which agent am I in this multi-agent workspace?"), not just ws-level.
+    // Present only on a verified PID-map hit; absent → renderer degrades to the
+    // ws-level answer. Server-derived, never an agent-settable tool param.
+    if (MY_PTY_ID) params.senderPtyId = MY_PTY_ID;
+    return callRpc('a2a.whoami', params);
   },
 );
 
