@@ -17,14 +17,24 @@ export type IsolationCheck = { ok: true } | { ok: false; error: string };
  * load-bearing distinction: the guard must not turn every normal production boot
  * into a crash.
  */
-export function checkUserDataIsolation(suffix: string, resolvedUserData: string): IsolationCheck {
+export function checkUserDataIsolation(
+  suffix: string,
+  resolvedUserData: string,
+  originalUserData: string,
+): IsolationCheck {
   if (!suffix) return { ok: true };
-  if (resolvedUserData.endsWith(suffix)) return { ok: true };
+  // Exact-path comparison, NOT a tail substring (`endsWith`). A suffix that
+  // coincidentally tails the production path — e.g. 'x' when userData already
+  // ends in 'wmux' — would let endsWith() report success even after setPath
+  // failed/no-op'd and the app is still pointed at production state, the exact
+  // corruption this guard exists to catch.
+  if (resolvedUserData === originalUserData + suffix) return { ok: true };
   return {
     ok: false,
     error:
       `data isolation broken: WMUX_DATA_SUFFIX="${suffix}" but userData resolved to ` +
-      `"${resolvedUserData}" (suffix not applied). Refusing to boot onto the production ` +
-      `data dir — an isolated instance would corrupt or restore production state.`,
+      `"${resolvedUserData}" (expected "${originalUserData}${suffix}"). Refusing to boot ` +
+      `onto the production data dir — an isolated instance would corrupt or restore ` +
+      `production state.`,
   };
 }

@@ -203,8 +203,9 @@ if (!app.isPackaged && !process.env.WMUX_DATA_SUFFIX) {
 }
 if (process.env.WMUX_DATA_SUFFIX) {
   const suffix = process.env.WMUX_DATA_SUFFIX;
+  const originalUserData = app.getPath('userData');
   try {
-    app.setPath('userData', app.getPath('userData') + suffix);
+    app.setPath('userData', originalUserData + suffix);
   } catch (err) {
     console.error('[Main] userData 격리 setPath 실패:', err);
   }
@@ -218,7 +219,7 @@ if (process.env.WMUX_DATA_SUFFIX) {
   // throw and let the boot continue onto the prod dir.
   const resolvedUserData = app.getPath('userData');
   console.log(`[Main] WMUX_DATA_SUFFIX="${suffix}" → userData="${resolvedUserData}"`);
-  const isolation = checkUserDataIsolation(suffix, resolvedUserData);
+  const isolation = checkUserDataIsolation(suffix, resolvedUserData, originalUserData);
   if (!isolation.ok) {
     console.error(`[Main] FATAL: ${isolation.error}`);
     app.exit(1);
