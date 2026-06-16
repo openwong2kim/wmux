@@ -149,7 +149,6 @@ function makeMcpRegistrar(opts?: {
           configModified: new Date(),
           verified: true,
           wmux: { registered: opts?.registered ?? true, path: '/some/path' },
-          wmuxA2a: { registered: false, path: null },
         },
       ],
     })),

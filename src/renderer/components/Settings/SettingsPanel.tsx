@@ -574,7 +574,6 @@ interface McpTargetStatusPayload {
   configModified: string | null;
   verified: boolean;
   wmux: McpServerState;
-  wmuxA2a: McpServerState;
 }
 interface McpStatusPayload {
   targets: McpTargetStatusPayload[];
@@ -587,8 +586,8 @@ interface ElectronMcpApi {
 }
 
 /**
- * MCP servers panel in Settings → General. Surfaces whether `~/.claude.json`
- * has the wmux + wmux-a2a MCP entries, plus Re-register / Unregister buttons.
+ * MCP servers panel in Settings → General. Surfaces whether each agent config
+ * has the wmux MCP entry, plus Re-register / Unregister buttons.
  *
  * Mirrors the `wmux mcp check` CLI output so users have a one-stop way to
  * verify Claude Code can discover the wmux MCP bridge — DX D4 decision.
@@ -686,7 +685,6 @@ function McpStatusSection() {
       {target.configExists ? (
         <>
           {renderRow('wmux', target.wmux)}
-          {renderRow('wmux-a2a', target.wmuxA2a)}
           <p className="text-[10px] text-[color:var(--text-muted)] font-mono truncate" title={target.configPath}>
             {target.configPath}
             {target.configModified ? ` · modified ${new Date(target.configModified).toLocaleString()}` : ''}

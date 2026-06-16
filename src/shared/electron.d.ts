@@ -1,4 +1,4 @@
-import type { ElectronAPI } from '../preload/preload';
+import type { ElectronAPI, McpTargetStatusPayload } from '../preload/preload';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -18,27 +18,9 @@ declare global {
         onChanged: (callback: (dirPath: string) => void) => () => void;
       };
       mcp?: {
-        check: () => Promise<{
-          wmux: { registered: boolean; path: string | null };
-          wmuxA2a: { registered: boolean; path: string | null };
-          configPath: string;
-          configExists: boolean;
-          configModified: string | null;
-        }>;
-        reregister: () => Promise<{
-          wmux: { registered: boolean; path: string | null };
-          wmuxA2a: { registered: boolean; path: string | null };
-          configPath: string;
-          configExists: boolean;
-          configModified: string | null;
-        }>;
-        unregister: () => Promise<{
-          wmux: { registered: boolean; path: string | null };
-          wmuxA2a: { registered: boolean; path: string | null };
-          configPath: string;
-          configExists: boolean;
-          configModified: string | null;
-        }>;
+        check: () => Promise<{ targets: McpTargetStatusPayload[] }>;
+        reregister: () => Promise<{ targets: McpTargetStatusPayload[] }>;
+        unregister: () => Promise<{ targets: McpTargetStatusPayload[] }>;
       };
       firstRun?: {
         check: () => Promise<FirstRunCheckResult>;

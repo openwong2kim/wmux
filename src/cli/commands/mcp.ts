@@ -30,12 +30,12 @@ USAGE
   wmux mcp <subcommand> [--target <id>] [--json]
 
 SUBCOMMANDS
-  check        Show whether wmux + wmux-a2a are registered in each agent config.
-  register     Add wmux + wmux-a2a entries to each installed agent's config.
+  check        Show whether the wmux MCP server is registered in each agent config.
+  register     Add the wmux entry to each installed agent's config.
                Note: written paths point at this CLI's own bundle layout — for a
                GUI re-register that uses the running app's resolved paths, use
                Settings → General → MCP → Re-register.
-  unregister   Remove the wmux + wmux-a2a keys from each agent config.
+  unregister   Remove the wmux key from each agent config.
                Other entries are left untouched.
 
 OPTIONS
@@ -81,22 +81,26 @@ function printCheck(statuses: TargetRegStatus[], jsonMode: boolean): void {
     }
     const fmt = (srv: { registered: boolean; path: string | null }) =>
       srv.registered ? `registered → ${srv.path}` : 'NOT REGISTERED';
-    console.log(`  wmux:     ${fmt(s.wmux)}`);
-    console.log(`  wmux-a2a: ${fmt(s.wmuxA2a)}`);
-    console.log(`  config:   ${s.configPath} (${formatModified(s.configModified)})`);
+    console.log(`  wmux:   ${fmt(s.wmux)}`);
+    console.log(`  config: ${s.configPath} (${formatModified(s.configModified)})`);
   }
 }
 
 /**
- * Find the bundled MCP scripts when this CLI is invoked from a packaged
+ * Find the bundled wmux MCP script when this CLI is invoked from a packaged
  * install. The CLI bundle lives in `dist/cli-bundle/index.js` next to
  * `dist/mcp-bundle/index.js` (or the legacy `dist/mcp/mcp/index.js` layout).
- * Returns null when neither candidate exists.
+ * Returns null when no candidate exists.
  */
-function findScript(candidateRelative: string[]): string | null {
+function resolveWmuxScript(): string | null {
+  const candidates = [
+    path.join('mcp-bundle', 'index.js'),
+    path.join('dist', 'mcp-bundle', 'index.js'),
+    path.join('dist', 'mcp', 'mcp', 'index.js'),
+  ];
   let dir = __dirname;
   for (let i = 0; i < 6; i++) {
-    for (const rel of candidateRelative) {
+    for (const rel of candidates) {
       const candidate = path.join(dir, rel);
       if (fs.existsSync(candidate)) return candidate;
     }
@@ -105,21 +109,6 @@ function findScript(candidateRelative: string[]): string | null {
     dir = parent;
   }
   return null;
-}
-
-function resolveScripts(): { wmux: string | null; a2a: string | null } {
-  return {
-    wmux: findScript([
-      path.join('mcp-bundle', 'index.js'),
-      path.join('dist', 'mcp-bundle', 'index.js'),
-      path.join('dist', 'mcp', 'mcp', 'index.js'),
-    ]),
-    a2a: findScript([
-      path.join('a2a-bundle', 'index.js'),
-      path.join('dist', 'a2a-bundle', 'index.js'),
-      path.join('dist', 'mcp', 'mcp', 'a2a', 'index.js'),
-    ]),
-  };
 }
 
 export async function handleMcp(args: string[], jsonMode: boolean): Promise<void> {
@@ -149,11 +138,9 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
     }
 
     case 'register': {
-      const scripts = resolveScripts();
-      // The core `wmux` MCP script is REQUIRED — registering the optional
-      // `wmux-a2a` server alone is an incoherent partial state (the primary
-      // tool surface would be missing). Bail if the main bundle isn't found.
-      if (!scripts.wmux) {
+      const wmuxScript = resolveWmuxScript();
+      // The wmux MCP script is required; bail if the bundle can't be found.
+      if (!wmuxScript) {
         const warning =
           'Could not locate the wmux MCP bundle next to this CLI. Open the wmux app once and use Settings → General → MCP → Re-register, or reinstall wmux.';
         if (jsonMode) console.log(JSON.stringify({ error: warning }, null, 2));
@@ -161,18 +148,15 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
         process.exit(1);
         return;
       }
-      if (!scripts.a2a) {
-        console.warn('Note: the optional wmux-a2a bundle was not found — registering wmux only.');
-      }
       // registerTarget propagates write/permission errors (only parse/edit
       // issues are 'malformed'); capture them per-target so one failure neither
       // aborts the rest nor is silently swallowed.
       const results = targets.map((t) => {
-        try { return { target: t, result: registerTarget(t, home, scripts), error: null as string | null }; }
+        try { return { target: t, result: registerTarget(t, home, wmuxScript), error: null as string | null }; }
         catch (e) { return { target: t, result: null, error: e instanceof Error ? e.message : String(e) }; }
       });
       if (jsonMode) {
-        console.log(JSON.stringify({ scripts, results: results.map((r) => ({ id: r.target.id, error: r.error, ...(r.result ?? {}) })) }, null, 2));
+        console.log(JSON.stringify({ scripts: { wmux: wmuxScript }, results: results.map((r) => ({ id: r.target.id, error: r.error, ...(r.result ?? {}) })) }, null, 2));
         if (results.some((r) => r.error)) process.exit(1);
         return;
       }
@@ -202,9 +186,8 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
           console.warn(`  left foreign key(s) ${result.foreign.join(', ')} untouched`);
         }
       }
-      if (scripts.wmux) console.log(`  wmux     → ${scripts.wmux}`);
-      if (scripts.a2a) console.log(`  wmux-a2a → ${scripts.a2a}`);
-      if (wroteAny) console.log('Restart the affected agent(s) to pick up the new servers.');
+      console.log(`  wmux → ${wmuxScript}`);
+      if (wroteAny) console.log('Restart the affected agent(s) to pick up the new server.');
       if (failed) process.exit(1);
       return;
     }

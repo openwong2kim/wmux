@@ -1,7 +1,7 @@
 // Format-aware MCP-config read/write, shared by McpRegistrar (main) and the
 // `wmux mcp` CLI so both registration paths behave identically.
 //
-// READ  — parse the file to inspect the wmux/wmux-a2a entries (status,
+// READ  — parse the file to inspect the wmux entry (status,
 //          idempotency, foreign-key detection). TOML is parsed with smol-toml;
 //          JSON with a proto-pollution-guarded JSON.parse.
 // WRITE — JSON is object-merge + 2-space re-stringify (JSON has no comments, so
@@ -151,7 +151,7 @@ function detectEol(text: string): '\r\n' | '\n' {
   return text.includes('\r\n') ? '\r\n' : '\n';
 }
 
-/** Split a dotted TOML key path (`mcp_servers.'wmux-a2a'.env`) into unquoted
+/** Split a dotted TOML key path (`mcp_servers.'my-server'.env`) into unquoted
  *  segments, honoring basic- and literal-string quoting. */
 function splitTomlKeyPath(path: string): string[] {
   const segs: string[] = [];

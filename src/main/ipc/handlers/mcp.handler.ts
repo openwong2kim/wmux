@@ -21,7 +21,6 @@ export interface McpTargetStatusPayload {
   configModified: string | null;
   verified: boolean;
   wmux: { registered: boolean; path: string | null };
-  wmuxA2a: { registered: boolean; path: string | null };
 }
 
 export interface McpStatusPayload {
@@ -39,7 +38,6 @@ function serialize(status: McpRegistrarStatus): McpStatusPayload {
       configModified: t.configModified ? t.configModified.toISOString() : null,
       verified: t.verified,
       wmux: t.wmux,
-      wmuxA2a: t.wmuxA2a,
     })),
   };
 }

@@ -25,8 +25,8 @@ export interface McpRegistrarStatus {
 }
 
 /**
- * Registers/unregisters the wmux MCP servers (`wmux`, `wmux-a2a`) into the
- * config files of the installed agent CLIs, and writes the auth token to a
+ * Registers/unregisters the wmux MCP server (`wmux`) into the config files of
+ * the installed agent CLIs, and writes the auth token to a
  * well-known file so the MCP server can read it. The per-target fs + config
  * orchestration lives in `shared/mcpRegistration` so this class and the
  * `wmux mcp` CLI behave identically; this class adds the Electron-specific
@@ -83,7 +83,7 @@ export class McpRegistrar {
   }
 
   /**
-   * Force-remove the wmux + wmux-a2a keys from every target config. Invoked
+   * Force-remove the wmux key from every target config. Invoked
    * from explicit user actions (`wmux mcp unregister`, Settings "Unregister").
    * Only removes wmux-owned-shaped keys; foreign entries and unrelated keys are
    * left intact.
@@ -128,11 +128,10 @@ export class McpRegistrar {
         console.warn('[McpRegistrar] Could not determine MCP script path — skipping registration.');
         return;
       }
-      const a2aScript = this.getA2aScriptPath();
 
       for (const target of MCP_TARGETS) {
         try {
-          const result = registerTarget(target, this.home, { wmux: mcpScript, a2a: a2aScript }, this.ownedFor(target.id));
+          const result = registerTarget(target, this.home, mcpScript, this.ownedFor(target.id));
           if (result.wrote.length > 0) {
             console.log(`[McpRegistrar] ${target.displayName}: wrote ${result.wrote.join(', ')} → ${result.configPath}`);
           }
@@ -198,29 +197,6 @@ export class McpRegistrar {
       const parent = path.resolve(current, '..');
       if (parent === current) break;
       const candidate = path.join(parent, 'dist', 'mcp', 'mcp', 'index.js');
-      if (fs.existsSync(candidate)) return candidate;
-      current = parent;
-    }
-
-    return null;
-  }
-
-  private getA2aScriptPath(): string | null {
-    if (app.isPackaged) {
-      const bundlePath = path.join(process.resourcesPath, 'a2a-bundle', 'index.js');
-      if (fs.existsSync(bundlePath)) return bundlePath;
-      return null;
-    }
-
-    const appPath = app.getAppPath();
-    const devPath = path.join(appPath, 'dist', 'mcp', 'mcp', 'a2a', 'index.js');
-    if (fs.existsSync(devPath)) return devPath;
-
-    let current = appPath;
-    for (let i = 0; i < 5; i++) {
-      const parent = path.resolve(current, '..');
-      if (parent === current) break;
-      const candidate = path.join(parent, 'dist', 'mcp', 'mcp', 'a2a', 'index.js');
       if (fs.existsSync(candidate)) return candidate;
       current = parent;
     }

@@ -9,7 +9,7 @@ import { isFileDrag } from '../shared/dragDrop';
 import type { ResumeBinding } from '../shared/agentResume';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
-interface McpTargetStatusPayload {
+export interface McpTargetStatusPayload {
   id: string;
   displayName: string;
   format: 'json' | 'toml';
@@ -18,7 +18,6 @@ interface McpTargetStatusPayload {
   configModified: string | null;
   verified: boolean;
   wmux: { registered: boolean; path: string | null };
-  wmuxA2a: { registered: boolean; path: string | null };
 }
 interface McpStatusPayload {
   targets: McpTargetStatusPayload[];

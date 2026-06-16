@@ -71,17 +71,17 @@ keep = true
     expect((parsed.other as Record<string, unknown>).keep).toBe(true);
   });
 
-  it('removes only the wmux blocks, leaving foreign tables intact', () => {
+  it('removes multiple named blocks, leaving foreign tables intact', () => {
     const seeded = upsertMcpServer(
       upsertMcpServer(CODEX_CONFIG, 'toml', 'wmux', 'C:\\w\\i.js'),
       'toml',
-      'wmux-a2a',
+      'wmux-extra',
       'C:\\w\\a.js',
     );
-    const removed = removeMcpServers(seeded, 'toml', ['wmux', 'wmux-a2a']);
+    const removed = removeMcpServers(seeded, 'toml', ['wmux', 'wmux-extra']);
     const parsed = parseConfig(removed, 'toml');
     expect(getMcpServerScript(parsed, 'toml', 'wmux')).toBeNull();
-    expect(getMcpServerScript(parsed, 'toml', 'wmux-a2a')).toBeNull();
+    expect(getMcpServerScript(parsed, 'toml', 'wmux-extra')).toBeNull();
     expect(parsed.model).toBe('gpt-5.5');
     expect((parsed.projects as Record<string, unknown>)['d:\\wmux']).toBeTruthy();
     expect((parsed.tui as Record<string, unknown>).model_availability_nux).toBeTruthy();
@@ -95,10 +95,10 @@ keep = true
     expect(getMcpServerScript(parseConfig(out, 'toml'), 'toml', 'wmux')).toBe('C:\\w\\i.js');
   });
 
-  it('handles a quoted/dashed key (wmux-a2a) and an empty file', () => {
-    const out = upsertMcpServer('', 'toml', 'wmux-a2a', 'C:\\w\\a.js');
-    expect(out).toContain('[mcp_servers.wmux-a2a]');
-    expect(getMcpServerScript(parseConfig(out, 'toml'), 'toml', 'wmux-a2a')).toBe('C:\\w\\a.js');
+  it('handles a quoted/dashed key (wmux-extra) and an empty file', () => {
+    const out = upsertMcpServer('', 'toml', 'wmux-extra', 'C:\\w\\a.js');
+    expect(out).toContain('[mcp_servers.wmux-extra]');
+    expect(getMcpServerScript(parseConfig(out, 'toml'), 'toml', 'wmux-extra')).toBe('C:\\w\\a.js');
   });
 
   it('throws ConfigParseError on malformed TOML (never clobbers)', () => {

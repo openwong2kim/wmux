@@ -16,7 +16,6 @@ import { randomBytes } from 'crypto';
 import {
   MCP_TARGETS,
   WMUX_SERVER_KEY,
-  WMUX_A2A_SERVER_KEY,
   WMUX_SERVER_KEYS,
   type McpTarget,
   type McpConfigFormat,
@@ -44,7 +43,6 @@ export interface TargetRegStatus {
   configModified: Date | null;
   verified: boolean;
   wmux: ServerRegState;
-  wmuxA2a: ServerRegState;
 }
 
 /** Atomic write (tmp + rename), creating the parent dir if needed. The temp
@@ -78,12 +76,10 @@ export function readTargetStatus(target: McpTarget, home: string): TargetRegStat
   }
 
   let wmuxPath: string | null = null;
-  let a2aPath: string | null = null;
   if (configExists) {
     try {
       const parsed = parseConfig(fs.readFileSync(configPath, 'utf8'), target.format);
       wmuxPath = getMcpServerScript(parsed, target.format, WMUX_SERVER_KEY);
-      a2aPath = getMcpServerScript(parsed, target.format, WMUX_A2A_SERVER_KEY);
     } catch {
       // corrupted → not registered
     }
@@ -98,7 +94,6 @@ export function readTargetStatus(target: McpTarget, home: string): TargetRegStat
     configModified,
     verified: target.verified,
     wmux: { registered: wmuxPath !== null, path: wmuxPath },
-    wmuxA2a: { registered: a2aPath !== null, path: a2aPath },
   };
 }
 
@@ -117,14 +112,14 @@ export interface RegisterTargetResult {
 }
 
 /**
- * Ensure `wmux` / `wmux-a2a` point at the given scripts in one target's config.
+ * Ensure the `wmux` MCP server points at `wmuxScript` in one target's config.
  * `ownedKeys` (optional) tracks keys written this session so a key wmux already
  * owns is updated even if its on-disk shape looks foreign-adjacent.
  */
 export function registerTarget(
   target: McpTarget,
   home: string,
-  scripts: { wmux: string | null; a2a: string | null },
+  wmuxScript: string,
   ownedKeys?: Set<string>,
 ): RegisterTargetResult {
   const configPath = target.configPath(home);
@@ -152,41 +147,36 @@ export function registerTarget(
   let newText = text;
   const wrote: string[] = [];
   const foreign: string[] = [];
-  const entries: Array<[string, string | null]> = [
-    [WMUX_SERVER_KEY, scripts.wmux],
-    [WMUX_A2A_SERVER_KEY, scripts.a2a],
-  ];
   // Build + validate the new text. Parse/edit failures mean the config is in a
   // shape we can't safely edit → 'malformed' (graceful skip, never clobber).
   // The actual WRITE is intentionally OUTSIDE this catch so a permission/rename
   // failure propagates to the caller (McpRegistrar surfaces the macOS hint; the
   // CLI exits non-zero) instead of being misreported as "malformed".
   try {
-    for (const [key, script] of entries) {
-      if (!script) continue;
-      const existing = getMcpServerEntry(parsed, target.format, key);
-      if (existing && !ownedKeys?.has(key)) {
-        if (!isWmuxOwnedEntry(existing)) {
-          foreign.push(key);
-          continue;
-        }
-        if (existing.args[0] === script) {
-          ownedKeys?.add(key); // already up to date
-          continue;
-        }
-        // ours but stale path → fall through to update
+    const existing = getMcpServerEntry(parsed, target.format, WMUX_SERVER_KEY);
+    let skip = false;
+    if (existing && !ownedKeys?.has(WMUX_SERVER_KEY)) {
+      if (!isWmuxOwnedEntry(existing)) {
+        foreign.push(WMUX_SERVER_KEY); // foreign hand-authored entry — never modify
+        skip = true;
+      } else if (existing.args[0] === wmuxScript) {
+        ownedKeys?.add(WMUX_SERVER_KEY); // already up to date
+        skip = true;
       }
-      // upsert validates its INPUT and OUTPUT, so a previous iteration that
-      // produced an unparseable intermediate (e.g. an inline-table entry the
-      // line-based editor duplicated) throws here and is caught below.
-      newText = upsertMcpServer(newText, target.format, key, script);
-      wrote.push(key);
-      ownedKeys?.add(key);
+      // else: ours but stale path → update below
+    }
+    if (!skip) {
+      // upsert validates its INPUT and OUTPUT, so an inline-table entry the
+      // line-based editor can't target (which would duplicate) throws here.
+      newText = upsertMcpServer(newText, target.format, WMUX_SERVER_KEY, wmuxScript);
+      wrote.push(WMUX_SERVER_KEY);
+      ownedKeys?.add(WMUX_SERVER_KEY);
     }
 
-    // Legacy cleanup only applies to Claude's JSON (old wmux-playwright keys).
+    // Legacy cleanup only applies to Claude's JSON (old wmux-playwright keys
+    // plus the removed wmux-a2a server, in case a historical stray exists).
     if (target.id === 'claude') {
-      newText = removeMcpServers(newText, 'json', ['wmux-playwright', 'wmux-devtools']);
+      newText = removeMcpServers(newText, 'json', ['wmux-playwright', 'wmux-devtools', 'wmux-a2a']);
     }
   } catch {
     return { configPath, skipped: 'malformed', wrote: [], foreign };
@@ -202,7 +192,7 @@ export interface UnregisterTargetResult {
   configExisted: boolean;
 }
 
-/** Remove only wmux-owned `wmux` / `wmux-a2a` keys from one target's config. */
+/** Remove the wmux-owned `wmux` key from one target's config. */
 export function unregisterTarget(target: McpTarget, home: string): UnregisterTargetResult {
   const configPath = target.configPath(home);
   if (!fs.existsSync(configPath)) return { configPath, removed: [], configExisted: false };

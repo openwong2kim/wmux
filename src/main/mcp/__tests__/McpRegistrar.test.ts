@@ -49,7 +49,6 @@ describe('McpRegistrar.getStatus (multi-target)', () => {
       expect(t.configExists).toBe(false);
       expect(t.configModified).toBeNull();
       expect(t.wmux).toEqual({ registered: false, path: null });
-      expect(t.wmuxA2a).toEqual({ registered: false, path: null });
     }
     expect(target(status, 'claude').configPath).toBe(claudeJson());
     expect(target(status, 'codex').configPath).toBe(codexToml());
@@ -65,7 +64,6 @@ describe('McpRegistrar.getStatus (multi-target)', () => {
     const cfg = {
       mcpServers: {
         wmux: { command: 'node', args: ['/abs/mcp-bundle/index.js'] },
-        'wmux-a2a': { command: 'node', args: ['/abs/a2a-bundle/index.js'] },
         'someone-else': { command: 'node', args: ['/elsewhere/index.js'] },
       },
     };
@@ -75,7 +73,6 @@ describe('McpRegistrar.getStatus (multi-target)', () => {
     expect(claude.configExists).toBe(true);
     expect(claude.configModified).toBeInstanceOf(Date);
     expect(claude.wmux).toEqual({ registered: true, path: '/abs/mcp-bundle/index.js' });
-    expect(claude.wmuxA2a).toEqual({ registered: true, path: '/abs/a2a-bundle/index.js' });
   });
 
   it('extracts registered script paths from Codex TOML (mcp_servers table)', () => {
@@ -89,7 +86,6 @@ describe('McpRegistrar.getStatus (multi-target)', () => {
     expect(codex.configExists).toBe(true);
     expect(codex.format).toBe('toml');
     expect(codex.wmux).toEqual({ registered: true, path: 'C:\\w\\index.js' });
-    expect(codex.wmuxA2a.registered).toBe(false);
   });
 
   it('treats malformed entries / corrupt configs as not registered (no throw)', () => {
@@ -116,13 +112,12 @@ describe('McpRegistrar.getStatus (multi-target)', () => {
 });
 
 describe('McpRegistrar.forceUnregister (multi-target)', () => {
-  it('removes wmux keys from both Claude JSON and Codex TOML, leaving foreign intact', () => {
+  it('removes the wmux key from both Claude JSON and Codex TOML, leaving foreign intact', () => {
     fs.writeFileSync(
       claudeJson(),
       JSON.stringify({
         mcpServers: {
           wmux: { command: 'node', args: ['/x/wmux.js'] },
-          'wmux-a2a': { command: 'node', args: ['/x/a2a.js'] },
           'someone-else': { command: 'node', args: ['/y/other.js'] },
         },
         otherTopLevel: { keep: true },
