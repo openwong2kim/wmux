@@ -45,25 +45,40 @@ describe('MCP workspace routing (source-level invariants)', () => {
     return src.slice(start, next > start ? next : start + 800);
   }
 
-  it('only requireWorkspaceId() and the two fail-soft READ tools call the weak resolveWorkspaceId() — exactly three call sites', () => {
+  it('the weak resolveWorkspaceId() is called only by requireWorkspaceId and the fail-soft read resolver — exactly three call sites', () => {
     // requireWorkspaceId is the sanctioned caller for WRITE/identity tools: it
     // throws when the resolver returns falsy, so a write (browser_open, a2a_*,
     // terminal routing) never silently lands on the UI-active workspace — the
-    // exact bug this invariant guards.
+    // exact bug this invariant guards. It calls the weak resolver ONCE.
     //
-    // surface_list and pane_list are READ tools that deliberately call the weak
-    // resolver directly: caller-scoped when identity resolves (converging with
-    // a2a_whoami so a multi-agent workspace's surfaces are the CALLER's, not the
-    // GUI-focused ones), and a fail-soft active fallback on a genuine miss — a
-    // read must not throw during the boot reconcile window. They forward an
-    // explicit workspaceId once resolved, so the fallback only fires on a true
-    // identity miss. Any NEW direct call site must be reviewed against this
-    // read-vs-write split — hence the exact count.
+    // resolveScopedReadWorkspaceId is the fail-soft read resolver behind
+    // surface_list/pane_list. It calls the weak resolver TWICE: once normally,
+    // then again after invalidating a stale cached id (#243 P2-1). No tool
+    // handler calls the weak resolver directly anymore — reads route through
+    // resolveScopedReadWorkspaceId, writes through requireWorkspaceId — so any NEW
+    // direct call site must be reviewed against this read-vs-write split. Hence
+    // the exact count: 1 (requireWorkspaceId) + 2 (resolveScopedReadWorkspaceId).
     //
     // The `(?<!function )` lookbehind excludes the parameter-less declaration
     // (`async function resolveWorkspaceId()`) so only call sites are counted.
     const directCalls = src.match(/(?<!function )resolveWorkspaceId\(\)/g) ?? [];
     expect(directCalls).toHaveLength(3);
+  });
+
+  it('surface_list/pane_list route through resolveScopedReadWorkspaceId, not the weak resolver (#243)', () => {
+    for (const tool of ['surface_list', 'pane_list']) {
+      const block = toolBlock(tool);
+      expect(block, `${tool} should resolve via resolveScopedReadWorkspaceId`).toMatch(/resolveScopedReadWorkspaceId\(\)/);
+    }
+  });
+
+  it('resolveScopedReadWorkspaceId revalidates a stale id and prefers the pin (#243 P2-1/P2-2)', () => {
+    const start = src.indexOf('async function resolveScopedReadWorkspaceId');
+    expect(start).toBeGreaterThan(0);
+    const block = src.slice(start, start + 600);
+    expect(block, 'P2-1: must revalidate liveness').toMatch(/isLiveWorkspace/);
+    expect(block, 'P2-1: must invalidate a stale cached id').toMatch(/invalidateWorkspaceId/);
+    expect(block, 'P2-2: must prefer the external pin').toMatch(/getPinnedRoute/);
   });
 
   it('browser_open routes through requireWorkspaceId, never the weak resolver', () => {

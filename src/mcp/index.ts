@@ -267,6 +267,34 @@ async function requireWorkspaceId(): Promise<string> {
   return wsId;
 }
 
+/**
+ * Resolve the caller's workspace for fail-soft READ tools (surface_list /
+ * pane_list). Hardens the omitted-workspace path beyond the weak
+ * resolveWorkspaceId (codex P2 follow-ups, #243):
+ *   - Staleness (P2-1): the resolveWorkspaceId fast path can return a cached id
+ *     that is no longer live after a workspace re-mint (daemon respawn / session
+ *     restore). For a fail-soft read that would otherwise keep reporting an empty
+ *     list, revalidate the id and re-resolve clean once it is proven gone.
+ *   - External pin (P2-2): a confirmed-external caller has no PID/env identity but
+ *     may have claimed a dedicated workspace via terminal_read. Prefer that pin
+ *     over the renderer's UI-active fallback so the read reports the caller's OWN
+ *     workspace, not whatever the user has focused.
+ * Still degrades to '' (renderer active-ws fallback) on a true miss — a read must
+ * never throw.
+ */
+async function resolveScopedReadWorkspaceId(): Promise<string> {
+  let wsId = await resolveWorkspaceId();
+  if (wsId && (await isLiveWorkspace(wsId)) === 'absent') {
+    invalidateWorkspaceId();
+    wsId = await resolveWorkspaceId();
+  }
+  if (!wsId) {
+    const pin = getPinnedRoute();
+    if (pin?.workspaceId) wsId = pin.workspaceId;
+  }
+  return wsId;
+}
+
 // Verified terminal routing — see src/mcp/terminalRouting.ts for the full
 // state machine. Binds the router's deps to this module's PID-map lookup,
 // verified-identity cache, and external-claim pinning. Unlike A2A tools,
@@ -480,11 +508,12 @@ server.tool(
   },
   async ({ workspaceId }) => {
     // Scope to the CALLER's own workspace when omitted, not the GUI-focused one
-    // (the a2a_whoami-vs-surface_list divergence). resolveWorkspaceId is
-    // fail-soft (returns '' on identity miss, never throws — unlike a write tool,
-    // a read must not hard-fail); an empty resolution falls back to the
-    // renderer's active-ws default, preserving the old behavior.
-    const resolved = workspaceId || (await resolveWorkspaceId());
+    // (the a2a_whoami-vs-surface_list divergence). resolveScopedReadWorkspaceId
+    // is fail-soft (returns '' on identity miss, never throws — unlike a write
+    // tool, a read must not hard-fail), revalidates a stale cached id, and
+    // prefers an external caller's pin (#243); an empty resolution falls back to
+    // the renderer's active-ws default, preserving the old behavior.
+    const resolved = workspaceId || (await resolveScopedReadWorkspaceId());
     return callRpc('surface.list', resolved ? { workspaceId: resolved } : {});
   },
 );
@@ -497,8 +526,8 @@ server.tool(
   },
   async ({ workspaceId }) => {
     // Caller-scoped when omitted (see surface_list) — fail-soft via
-    // resolveWorkspaceId so a read never throws on identity miss.
-    const resolved = workspaceId || (await resolveWorkspaceId());
+    // resolveScopedReadWorkspaceId so a read never throws on identity miss.
+    const resolved = workspaceId || (await resolveScopedReadWorkspaceId());
     return callRpc('pane.list', resolved ? { workspaceId: resolved } : {});
   },
 );
