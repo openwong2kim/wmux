@@ -754,13 +754,26 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         return;
       }
 
+      // Foreground app owns the mouse (xterm mouseTrackingMode is non-'none' —
+      // x10/vt200/drag/any, i.e. DECSET 9/1000/1002/1003): a plain right-click
+      // already reaches the app as a mouse event, so wmux must NOT also paste —
+      // that double-handling is the reported right-click double-paste.
+      // Shift+right-click forces wmux's own paste (the suppression guard below
+      // honours Shift too), matching Windows Terminal's Shift-override.
+      const mouseMode = (terminal as unknown as { modes?: { mouseTrackingMode?: string } })
+        .modes?.mouseTrackingMode ?? 'none';
+      if (mouseMode !== 'none' && !e.shiftKey) {
+        return;
+      }
+
       // No selection, no link → paste immediately (text or image). Guard:
       // if a right-click copy just happened, this contextmenu is almost
       // certainly a stray repeat of the copy gesture (double right-click, or
       // the selection got wiped by incoming PTY data between two intentional
       // clicks). Suppressing the paste here is what kills the reported
-      // copy↔paste collision.
-      if (Date.now() - lastRightClickCopyAt < RIGHT_CLICK_PASTE_SUPPRESS_MS) {
+      // copy↔paste collision. A held Shift is a deliberate paste, so it
+      // bypasses this suppression — keeping Shift+right-click a true override.
+      if (!e.shiftKey && Date.now() - lastRightClickCopyAt < RIGHT_CLICK_PASTE_SUPPRESS_MS) {
         return;
       }
       void (async () => {
