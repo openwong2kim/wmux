@@ -5,6 +5,11 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.5.1] — 2026-06-17
+
+### Fixed
+- **`surface_list`/`pane_list` caller-scoping hardening ([#245](https://github.com/openwong2kim/wmux/pull/245)).** An omitted-workspace `surface_list`/`pane_list` now revalidates a stale cached workspace id after a re-mint (daemon respawn / session restore) and prefers a confirmed-external caller's pinned workspace over the UI-active fallback — so a fail-soft read reports the caller's own workspace instead of an empty list or whatever the user has focused. Follow-up to the codex review on [#242](https://github.com/openwong2kim/wmux/pull/242) ([#243](https://github.com/openwong2kim/wmux/issues/243)).
+
 ## [3.5.0] — 2026-06-17 — Multi-agent workspaces that talk to each other
 
 Headline: a workspace full of agents that can finally coordinate. Same-workspace agents now message each other directly (#239), every pane is individually addressable (#235), and the identity layer is hardened (#242) so a message never loops into the wrong pane or silently routes to a duplicate-named workspace. The A2A task inbox moved onto the EventBus so cross-agent delivery no longer corrupts a live terminal (#232), and Fleet View gained a unified approval inbox to clear every blocked agent from one list (#234).
