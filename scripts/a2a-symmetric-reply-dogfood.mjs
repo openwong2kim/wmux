@@ -94,11 +94,16 @@ const rpcResult = async (m, p, o) => { const r = await rpcCall(m, p, o); if (r &
 // payload — NEVER the transport-level envelope `ok` (true whenever the RPC didn't
 // throw, even when the handler returned { error }).
 const sendResp = (r) => {
-  // Use ONLY the handler payload (r.result). If it is missing, treat the call as
-  // failed rather than reading the transport-level envelope `ok` (true on any
-  // non-throwing RPC), which would mask a missing/empty handler response as a pass.
-  const p = (r && typeof r === 'object' && r.result && typeof r.result === 'object') ? r.result : {};
-  const error = typeof p.error === 'string' ? p.error : undefined;
+  // Use ONLY the handler payload (r.result). A missing/invalid payload is a
+  // failure with a diagnostic — never the transport-level envelope `ok` (true on
+  // any non-throwing RPC), which would mask a missing handler response as a pass.
+  const envelope = (r && typeof r === 'object') ? r : {};
+  const p = envelope.result;
+  if (!p || typeof p !== 'object' || Array.isArray(p)) {
+    const error = typeof envelope.error === 'string' ? envelope.error : `unexpected response: ${JSON.stringify(r)}`;
+    return { ok: false, error };
+  }
+  const error = typeof p.error === 'string' ? p.error : (p.error ? JSON.stringify(p.error) : undefined);
   const taskId = typeof p.taskId === 'string' ? p.taskId : undefined;
   return { ok: !error && (p.ok === true || !!taskId), taskId, error };
 };
@@ -117,7 +122,7 @@ async function waitMainToken(timeoutMs) {
 async function waitRendererReady(timeoutMs) {
   const dl = Date.now() + timeoutMs; let last = '';
   while (Date.now() < dl) {
-    try { const r = await rpcCall('workspace.list', {}, { timeoutMs: 4000 }); if (r && Array.isArray(r.result)) return r.result; }
+    try { const r = await rpcCall('workspace.list', {}, { timeoutMs: 4000 }); if (r && Array.isArray(r.result) && r.result.length > 0) return r.result; }
     catch (e) { last = e.message; }
     await sleep(250);
   }
