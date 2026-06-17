@@ -70,10 +70,18 @@ jobs:
           if (-not $signed) { Write-Error "SignPath returned no signed Setup.exe"; exit 1 }
           $dest = Get-ChildItem "out/make/squirrel.windows/x64/*.Setup.exe" | Select-Object -First 1
           Copy-Item $signed.FullName $dest.FullName -Force
-          # Fail the release if the result is not a valid Authenticode signature.
+          # Verify a signature is actually present. A SELF-SIGNED test certificate
+          # (SignPath's test-signing policy) signs correctly but does not chain to a
+          # trusted root, so Get-AuthenticodeSignature reports 'UnknownError' rather
+          # than 'Valid' — expected for test signing. Require a signer cert in all
+          # cases, but only demand a fully 'Valid' chain under the production policy
+          # (release-signing), so a test-signed release still publishes.
           $sig = Get-AuthenticodeSignature $dest.FullName
-          if ($sig.Status -ne 'Valid') { Write-Error "Signed exe failed Authenticode validation: $($sig.Status)"; exit 1 }
-          Write-Host "Signed Setup.exe in place (publisher: $($sig.SignerCertificate.Subject))"
+          if (-not $sig.SignerCertificate) { Write-Error "Signed exe carries no signature: $($sig.Status)"; exit 1 }
+          if ('${{ vars.SIGNPATH_SIGNING_POLICY_SLUG }}' -eq 'release-signing' -and $sig.Status -ne 'Valid') {
+            Write-Error "Production signature is not Valid: $($sig.Status)"; exit 1
+          }
+          Write-Host "Signed Setup.exe in place (status=$($sig.Status), publisher: $($sig.SignerCertificate.Subject))"
 
       - name: Get version from package.json
         id: pkg
