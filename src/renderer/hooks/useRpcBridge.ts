@@ -16,7 +16,7 @@ import { readPtyBufferLines } from '../utils/terminalTail';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, type PaneAddress } from './a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 
 // ---------------------------------------------------------------------------
@@ -1368,59 +1368,63 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       if (task.metadata.from.workspaceId !== workspaceId && task.metadata.to.workspaceId !== workspaceId) {
         return { error: 'a2a.task.send: not authorized to reply to this task' };
       }
-      // NOTE: for a SAME-workspace task (from.ws === to.ws) this collapses to
-      // 'user' for either party — the sender/receiver distinction needs per-pane
-      // identity, deferred to the from.ptyId model (S-C2). Delivery for same-ws
-      // tasks is suppressed below, so the only residual effect is the stored
-      // history role; documented interim limitation, not a cross-ws regression.
-      const role = task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent';
+      // S-C2: resolve the CALLER's own pane (verified senderPtyId in the caller's
+      // OWN ws tree — same guard as the send path) so the history role is computed
+      // per-pane and the reply pins back to the originating pane. callerAddr null
+      // (absent/forged senderPtyId, or a ws-only task side) → ws-level role
+      // fallback, preserving cross-ws behavior exactly.
+      const callerWsForReply = store.workspaces.find((w) => w.id === workspaceId);
+      const callerLeaves = callerWsForReply ? findLeafPanes(callerWsForReply.rootPane) : [];
+      const rawCallerPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
+      const callerPtyId = isTerminalPtyInLeaves(callerLeaves, rawCallerPtyId) ? rawCallerPtyId : '';
+      const callerAddr = resolveSenderPaneAddress(callerLeaves, callerPtyId);
+      const role = resolvePaneRole(task.metadata, callerAddr)
+        ?? (task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent');
       const msg: Message = { kind: 'message', messageId: generateId('msg'), role, parts };
       store.addTaskMessage(taskId, msg);
 
-      // Deliver reply to the other party's terminal (unless silent).
-      // silent-default: when silent was not set explicitly AND the receiver is
-      // a live TUI agent, send a one-line nudge instead of the full body so we
-      // don't corrupt its prompt; otherwise (no live agent, or explicit
-      // silent:false) keep the loud full-body paste.
-      // Same-ws task reply safety: a task whose from/to are the SAME workspace
-      // has no reliable per-pane reply address (the `from` side carries none), so
-      // the active-pane delivery below could paste back into the sender's own
-      // pane (loop) or an uninvolved pane. Suppress the paste for same-ws tasks;
-      // the reply is still persisted (addTaskMessage above) + queryable via
-      // a2a_task_query. NOTE: same-ws reply/status authz stays workspace-granular
-      // (any pane in the ws can reply) pending the per-pane `from.ptyId` model
-      // (S-C2 follow-up) — a documented limitation, not a cross-ws regression.
-      const sameWsTask = task.metadata.from.workspaceId === task.metadata.to.workspaceId;
-      if (!silent && !sameWsTask) {
+      // Deliver the reply to the OTHER party, pinned symmetrically: a reply FROM
+      // the sender (role 'user') targets the receiver's `to` anchor; a reply FROM
+      // the receiver (role 'agent') targets the original sender's `from` anchor
+      // (S-C2 — previously the `from` side had no anchor → active-pane fallback,
+      // misrouting on a multi-agent sender). Fail CLOSED on a lost pin (no
+      // active-pane fallback — could hit the wrong agent on a typo / closed pane).
+      // Same-ws safety: suppress the paste when the addressed pane can't be proven
+      // a non-self sibling — no anchor to pin (would fall back to the active pane =
+      // the #239 loop) or it resolves to the caller's own pty (self) — so we never
+      // re-enter "paste into your own prompt". The reply is still persisted +
+      // teed onto the bus (pollable via a2a_task_query). Same-ws delivery is a
+      // one-line NUDGE only, never a full-body paste into a sibling agent's prompt.
+      if (!silent) {
         const replyingToReceiver = role === 'user';
         const targetWsId = replyingToReceiver ? task.metadata.to.workspaceId : task.metadata.from.workspaceId;
         const targetWs = store.workspaces.find((w) => w.id === targetWsId);
         if (targetWs) {
           const senderWs = store.workspaces.find((w) => w.id === workspaceId);
           const senderName = senderWs?.name ?? 'unknown';
-          // Part A: keep the thread pinned to the originally-addressed pane.
-          // Only the receiver side (`to`) carries a stored pane address; replies
-          // back to the original sender (`from`) have none → active-pane.
+          const sameWsTask = task.metadata.from.workspaceId === task.metadata.to.workspaceId;
+          const pinAnchor = replyingToReceiver ? task.metadata.to : task.metadata.from;
+          const hasAnchor = !!(pinAnchor.paneId || pinAnchor.surfaceId);
           let explicitPty: string | undefined;
           let pinnedAddressLost = false;
-          if (replyingToReceiver && (task.metadata.to.paneId || task.metadata.to.surfaceId)) {
-            const addr = resolvePaneAddress(findLeafPanes(targetWs.rootPane), task.metadata.to.paneId ?? '', task.metadata.to.surfaceId ?? '');
-            if ('error' in addr) {
-              // The addressed pane no longer resolves (closed / re-split). Fail
-              // CLOSED: do not paste to a different (active) pane — that could
-              // land on the wrong agent. The reply is still persisted + on the
-              // EventBus, so the receiver can still poll it via a2a_task_query.
-              pinnedAddressLost = true;
-            } else {
-              explicitPty = addr.ptyId;
-            }
+          if (hasAnchor) {
+            const addr = resolvePaneAddress(findLeafPanes(targetWs.rootPane), pinAnchor.paneId ?? '', pinAnchor.surfaceId ?? '');
+            if ('error' in addr) pinnedAddressLost = true;
+            else explicitPty = addr.ptyId;
           }
-          if (!pinnedAddressLost) {
-            const liveMeta = deliveryLiveMeta(store.surfaceAgent, explicitPty, targetWs.metadata);
-            if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
+          const selfLoop = !!explicitPty && !!callerPtyId && explicitPty === callerPtyId;
+          const sameWsNoAnchor = sameWsTask && !hasAnchor;
+          if (!pinnedAddressLost && !sameWsNoAnchor && !selfLoop) {
+            if (sameWsTask) {
+              // Same-ws sibling: pointer-only nudge (no full-body injection).
               deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), explicitPty);
             } else {
-              deliverPtyNotification(targetWs, senderName, message, explicitPty);
+              const liveMeta = deliveryLiveMeta(store.surfaceAgent, explicitPty, targetWs.metadata);
+              if (!silentExplicit && isLiveTuiAgent(liveMeta)) {
+                deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), explicitPty);
+              } else {
+                deliverPtyNotification(targetWs, senderName, message, explicitPty);
+              }
             }
           }
         }
@@ -1493,15 +1497,26 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // resolves to a real terminal pty in the SENDER's own workspace — a bogus /
     // foreign value is treated as ABSENT (→ silent), never as a loud-paste enabler.
     const rawSenderPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
-    const senderPtyId = (sender && isTerminalPtyInLeaves(findLeafPanes(sender.rootPane), rawSenderPtyId)) ? rawSenderPtyId : '';
+    const senderLeaves = sender ? findLeafPanes(sender.rootPane) : [];
+    const senderPtyId = isTerminalPtyInLeaves(senderLeaves, rawSenderPtyId) ? rawSenderPtyId : '';
     const sameWsDecision = decideSameWsSend(target.id === workspaceId, resolvedAddr?.ptyId, senderPtyId);
     if (sameWsDecision.kind === 'reject') return { error: `a2a.task.send: ${sameWsDecision.error}` };
+
+    // S-C2: capture the sender's pane anchor (symmetric with `to`) so a reply can
+    // return to THIS exact pane and the stored history role is computed per-pane.
+    // senderPtyId is already validated against the sender's own tree above, so an
+    // absent/forged value resolves to null → `from` stays ws-only (no regression).
+    const senderAddr = resolveSenderPaneAddress(senderLeaves, senderPtyId);
 
     const initialMessage: Message = { kind: 'message', messageId: generateId('msg'), role: 'user', parts };
 
     const newTaskId = store.createA2aTask({
       title: title || message.slice(0, 100),
-      from: { workspaceId, name: fromName },
+      from: {
+        workspaceId,
+        name: fromName,
+        ...(senderAddr && { paneId: senderAddr.paneId, surfaceId: senderAddr.surfaceId }),
+      },
       to: {
         workspaceId: target.id,
         name: target.name,
@@ -1587,10 +1602,24 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       }
     }
 
+    // S-C2: resolve the caller's own pane ONCE, up front, so the SAME pane-level
+    // decision drives BOTH the status-transition authz (P2) and the message
+    // append role/delivery below — no split ws-vs-pane model across the two store
+    // writes. callerAddr null (absent senderPtyId — the headless ClaudeWorker and
+    // token clients inject none; or a forged/foreign value) → ws-level authz +
+    // role, exactly today's behavior. This is load-bearing: the worker reports
+    // working→completed with no senderPtyId, so pane-gating on `to.paneId` alone
+    // would lock it out and hang every pane-addressed execute task in `working`.
+    const callerWsUpdate = store.workspaces.find((w) => w.id === workspaceId);
+    const callerLeavesUpdate = callerWsUpdate ? findLeafPanes(callerWsUpdate.rootPane) : [];
+    const rawCallerPtyIdUpdate = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
+    const callerPtyIdUpdate = isTerminalPtyInLeaves(callerLeavesUpdate, rawCallerPtyIdUpdate) ? rawCallerPtyIdUpdate : '';
+    const callerAddrUpdate = resolveSenderPaneAddress(callerLeavesUpdate, callerPtyIdUpdate);
+
     // ── Apply the status transition ──
     let transitioned = false;
     if (nextState) {
-      const result = store.updateTaskStatus(taskId, nextState, workspaceId);
+      const result = store.updateTaskStatus(taskId, nextState, workspaceId, callerAddrUpdate);
       if (!result.ok) return { error: `a2a.task.update: ${result.error}` };
       transitioned = true;
     }
@@ -1603,36 +1632,52 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       if (task.metadata.from.workspaceId !== workspaceId && task.metadata.to.workspaceId !== workspaceId) {
         return { error: 'a2a.task.update: not authorized' };
       }
-      // Same-ws role collapses to 'user' for either party (see the a2a.task.send
-      // reply branch) — per-pane role needs the from.ptyId model (S-C2). Delivery
-      // is suppressed for same-ws below, so only the stored history role is
-      // affected; documented interim limitation.
-      const role = task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent';
+      // Per-pane role (S-C2): same model as the a2a.task.send reply branch, using
+      // the callerAddr resolved above. Falls back to the ws-level role when the
+      // caller's pane is unknown (preserves cross-ws behavior exactly).
+      const role = resolvePaneRole(task.metadata, callerAddrUpdate)
+        ?? (task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent');
 
       const parts: Part[] = [{ kind: 'text', text: message }];
       const msg: Message = { kind: 'message', messageId: generateId('msg'), role, parts };
       store.addTaskMessage(taskId, msg);
 
-      // Deliver update to the other party's terminal. silent-default (S-C2 ②):
-      // a live TUI receiver gets a one-line nudge instead of a full-body paste
-      // (its prompt is not corrupted); a receiver with no live agent keeps the
-      // loud paste. Mirrors the a2a.task.send reply branch so EVERY delivery
-      // path honors the live-agent protection, not just the initial send.
-      // Same-ws task: suppress the PTY paste (mirrors the a2a.task.send reply
-      // branch). A same-ws update has no reliable per-pane reply address and
-      // would paste to the ws active pane — risking a loop into the caller's own
-      // or an uninvolved pane. The update is still persisted + teed onto the bus,
-      // so the other pane sees it via a2a_task_query.
-      const sameWsTask = task.metadata.from.workspaceId === task.metadata.to.workspaceId;
-      const targetWsId = role === 'user' ? task.metadata.to.workspaceId : task.metadata.from.workspaceId;
+      // Deliver the update to the OTHER party, symmetric pin (mirrors the reply
+      // branch): reply-from-sender → `to` anchor, reply-from-receiver → `from`
+      // anchor. Fail CLOSED on a lost pin (no active-pane fallback). Same-ws is
+      // suppressed unless a non-self sibling is provable (no anchor → would loop,
+      // or self-pty → skip) and is delivered as a one-line NUDGE only. The update
+      // is still persisted + teed onto the bus regardless, so the other pane sees
+      // it via a2a_task_query.
+      const replyingToReceiver = role === 'user';
+      const targetWsId = replyingToReceiver ? task.metadata.to.workspaceId : task.metadata.from.workspaceId;
       const targetWs = store.workspaces.find((w) => w.id === targetWsId);
-      if (targetWs && !sameWsTask) {
+      if (targetWs) {
         const callerWs = store.workspaces.find((w) => w.id === workspaceId);
         const callerName = callerWs?.name ?? 'unknown';
-        if (isLiveTuiAgent(targetWs.metadata)) {
-          deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName));
-        } else {
-          deliverPtyNotification(targetWs, callerName, message);
+        const sameWsTask = task.metadata.from.workspaceId === task.metadata.to.workspaceId;
+        const pinAnchor = replyingToReceiver ? task.metadata.to : task.metadata.from;
+        const hasAnchor = !!(pinAnchor.paneId || pinAnchor.surfaceId);
+        let explicitPty: string | undefined;
+        let pinnedAddressLost = false;
+        if (hasAnchor) {
+          const addr = resolvePaneAddress(findLeafPanes(targetWs.rootPane), pinAnchor.paneId ?? '', pinAnchor.surfaceId ?? '');
+          if ('error' in addr) pinnedAddressLost = true;
+          else explicitPty = addr.ptyId;
+        }
+        const selfLoop = !!explicitPty && !!callerPtyIdUpdate && explicitPty === callerPtyIdUpdate;
+        const sameWsNoAnchor = sameWsTask && !hasAnchor;
+        if (!pinnedAddressLost && !sameWsNoAnchor && !selfLoop) {
+          if (sameWsTask) {
+            deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), explicitPty);
+          } else {
+            const liveMeta = deliveryLiveMeta(store.surfaceAgent, explicitPty, targetWs.metadata);
+            if (isLiveTuiAgent(liveMeta)) {
+              deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), explicitPty);
+            } else {
+              deliverPtyNotification(targetWs, callerName, message, explicitPty);
+            }
+          }
         }
       }
     }

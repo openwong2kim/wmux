@@ -132,33 +132,68 @@ export type SelfPaneIdentity = {
 };
 
 /**
+ * Resolve the CALLER's own pane ADDRESS from a verified senderPtyId — the
+ * reverse of resolvePaneAddress (ptyId → {paneId, surfaceId}). The search is
+ * scoped to `leaves` (the caller's own workspace tree), so an absent, forged, or
+ * foreign senderPtyId yields null: it never trusts a value outside the given
+ * tree. Pure + store-free so the whoami pane-identity path AND the A2A
+ * from-pane/role paths (S-C2) share one tested unit. Browser surfaces (no pty)
+ * are never a match.
+ */
+export function resolveSenderPaneAddress(leaves: PaneLeaf[], senderPtyId: string): PaneAddress | null {
+  if (!senderPtyId) return null;
+  for (const leaf of leaves) {
+    const s = leaf.surfaces.find((su) => su.surfaceType !== 'browser' && su.ptyId === senderPtyId);
+    if (s) return { ptyId: s.ptyId, paneId: leaf.id, surfaceId: s.id };
+  }
+  return null;
+}
+
+/**
  * Resolve the CALLER's own pane within its workspace tree from a verified
- * senderPtyId, for a2a_whoami's pane-level answer. The search is scoped to
- * `leaves` (the caller's own workspace tree), so an absent, forged, or foreign
- * senderPtyId yields null → the caller degrades to the ws-level identity (never
- * an error). It never trusts a value outside the given tree, and the agent label
- * is read per-pane (the ws-level metadata.agentName collapses N agents into one).
- * Read-only: confers no capability. `agentFor` maps a ptyId to its detected agent
- * (kept as a callback so this stays pure / store-free / unit-testable).
+ * senderPtyId, for a2a_whoami's pane-level answer. Builds on
+ * resolveSenderPaneAddress (same fail-closed scoping) and enriches it with the
+ * per-pane agent label (the ws-level metadata.agentName collapses N agents into
+ * one). An absent/forged/foreign senderPtyId yields null → the caller degrades
+ * to the ws-level identity (never an error). Read-only: confers no capability.
+ * `agentFor` maps a ptyId to its detected agent (a callback so this stays pure /
+ * store-free / unit-testable).
  */
 export function resolveSelfPaneIdentity(
   leaves: PaneLeaf[],
   agentFor: (ptyId: string) => { name?: string; status?: string } | undefined,
   senderPtyId: string,
 ): SelfPaneIdentity | null {
-  if (!senderPtyId) return null;
-  for (const leaf of leaves) {
-    const s = leaf.surfaces.find((su) => su.surfaceType !== 'browser' && su.ptyId === senderPtyId);
-    if (s) {
-      const a = agentFor(s.ptyId);
-      return {
-        ptyId: s.ptyId,
-        paneId: leaf.id,
-        surfaceId: s.id,
-        agentName: a?.name ?? null,
-        agentStatus: a?.status ?? null,
-      };
-    }
-  }
+  const addr = resolveSenderPaneAddress(leaves, senderPtyId);
+  if (!addr) return null;
+  const a = agentFor(addr.ptyId);
+  return {
+    ptyId: addr.ptyId,
+    paneId: addr.paneId,
+    surfaceId: addr.surfaceId,
+    agentName: a?.name ?? null,
+    agentStatus: a?.status ?? null,
+  };
+}
+
+/**
+ * Compute the A2A history role of the CALLER from its verified pane address vs
+ * the task's stored `from`/`to` pane anchors (S-C2). Comparison is at paneId
+ * granularity — one pane = one agent identity — so a reply from a sibling
+ * SURFACE of the same pane still resolves correctly; surfaceId is used only for
+ * delivery pinning + the self-loop ptyId check, never for role. Returns null
+ * when the caller's pane is unknown (callerAddr null — absent/forged senderPtyId
+ * or a ws-only task side) or matches neither anchor → the caller falls back to
+ * the ws-level role, preserving cross-ws behavior exactly.
+ *   - caller pane === `from` pane → 'user'  (the original sender)
+ *   - caller pane === `to` pane   → 'agent' (the receiver)
+ */
+export function resolvePaneRole(
+  task: { from: { paneId?: string }; to: { paneId?: string } },
+  callerAddr: PaneAddress | null,
+): 'user' | 'agent' | null {
+  if (!callerAddr) return null;
+  if (task.from.paneId && task.from.paneId === callerAddr.paneId) return 'user';
+  if (task.to.paneId && task.to.paneId === callerAddr.paneId) return 'agent';
   return null;
 }

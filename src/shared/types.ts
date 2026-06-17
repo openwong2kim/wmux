@@ -556,12 +556,15 @@ export interface Artifact {
 
 export interface WmuxTaskMetadata {
   title: string;
-  from: { workspaceId: string; name: string };
-  // Pane-level addressing (Part A): `paneId`/`surfaceId` pin the task to a
-  // specific pane/surface inside the target workspace so delivery lands on the
-  // intended agent when a workspace hosts more than one. Both optional — a
-  // ws-only `to` keeps the active-pane delivery behavior. Always ws-scoped: the
-  // id must belong to `workspaceId` (validated at delivery; cross-ws is refused).
+  // Pane-level addressing: `paneId`/`surfaceId` pin the task to a specific
+  // pane/surface inside a workspace so delivery lands on the intended agent when
+  // a workspace hosts more than one. `to` is the receiver pin (Part A, #235);
+  // `from` is the symmetric sender pin (S-C2) so a reply can return to the exact
+  // originating pane and the stored history role is computed per-pane. Both
+  // sides optional — a ws-only side keeps active-pane delivery / ws-level role.
+  // Always ws-scoped: the id must belong to its own `workspaceId` (validated at
+  // delivery; cross-ws is refused).
+  from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
   to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
   createdAt: string; // ISO 8601
   updatedAt: string; // ISO 8601

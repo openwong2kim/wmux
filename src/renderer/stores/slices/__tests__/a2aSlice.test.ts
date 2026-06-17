@@ -3,6 +3,7 @@ import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createA2aSlice, type A2aSlice } from '../a2aSlice';
 import type { Message } from '../../../../shared/types';
+import type { PaneAddress } from '../../../hooks/a2aAddressing';
 
 type TestState = A2aSlice;
 
@@ -164,6 +165,71 @@ describe('a2aSlice — updateTaskStatus transitions (P3 message clarity)', () =>
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/Permission denied/);
     expect(r.error).not.toMatch(/Invalid transition/); // permission fires first
+  });
+});
+
+describe('a2aSlice — updateTaskStatus pane-granular authz (S-C2 P2)', () => {
+  let store: ReturnType<typeof createTestStore>;
+  const addrPaneB: PaneAddress = { ptyId: 'pty-B', paneId: 'pane-B', surfaceId: 'surf-B' };
+  const addrPaneC: PaneAddress = { ptyId: 'pty-C', paneId: 'pane-C', surfaceId: 'surf-C' };
+
+  // A pane-addressed task: receiver pinned to pane-B.
+  function makePaneTask() {
+    return store.getState().createA2aTask({
+      title: 'Pane task',
+      from: { workspaceId: 'ws-sender', name: 'Sender', paneId: 'pane-A', surfaceId: 'surf-A' },
+      to: { workspaceId: 'ws-receiver', name: 'Receiver', paneId: 'pane-B', surfaceId: 'surf-B' },
+      history: [makeMessage('hello')],
+      artifacts: [],
+    });
+  }
+
+  beforeEach(() => { store = createTestStore(); });
+
+  it('WORKER-PATH (callerAddr absent) ⇒ ws-authz unconditionally — receiver ws completes a pane-addressed task', () => {
+    // The headless ClaudeWorker reports working→completed with NO senderPtyId.
+    // Gating on to.paneId would hang it in `working` forever; absent callerAddr
+    // MUST fall through to ws-authz. This is the load-bearing P0/A5 guard.
+    const taskId = makePaneTask();
+    const working = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver'); // no callerAddr
+    expect(working.ok).toBe(true);
+    const done = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver');
+    expect(done.ok).toBe(true);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('completed');
+  });
+
+  it('callerAddr on the ADDRESSED pane ⇒ allowed', () => {
+    const taskId = makePaneTask();
+    const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver', addrPaneB);
+    expect(r.ok).toBe(true);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('working');
+  });
+
+  it('callerAddr on a SIBLING pane (right ws, wrong pane) ⇒ rejected', () => {
+    const taskId = makePaneTask();
+    const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver', addrPaneC);
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/not the addressed receiver pane/);
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('submitted'); // unchanged
+  });
+
+  it('ws-only task (no to.paneId anchor) ⇒ ws-authz even when callerAddr is present', () => {
+    const taskId = store.getState().createA2aTask({
+      title: 'ws task',
+      from: { workspaceId: 'ws-sender', name: 'Sender' },
+      to: { workspaceId: 'ws-receiver', name: 'Receiver' },
+      history: [makeMessage('hi')],
+      artifacts: [],
+    });
+    const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver', addrPaneC);
+    expect(r.ok).toBe(true);
+  });
+
+  it('wrong WORKSPACE is rejected before the pane check', () => {
+    const taskId = makePaneTask();
+    const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-sender', addrPaneB);
+    expect(r.ok).toBe(false);
+    expect(r.error).toMatch(/not the receiver/);
   });
 });
 

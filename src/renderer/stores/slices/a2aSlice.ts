@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type { Task, Message, TaskState, Artifact, AgentSkill } from '../../../shared/types';
 import { generateId, validateTransition, TERMINAL_STATES, VALID_TRANSITIONS } from '../../../shared/types';
+import type { PaneAddress } from '../../hooks/a2aAddressing';
 
 const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 const GC_MAX_TASKS = 500;
@@ -34,15 +35,21 @@ export interface A2aSlice {
   // Actions
   createA2aTask: (task: {
     title: string;
-    from: { workspaceId: string; name: string };
-    // Optional pane-level target (Part A). Passed through verbatim into
-    // WmuxTaskMetadata.to so a reply can re-resolve the addressed pane.
+    // Optional pane-level anchors, passed verbatim into WmuxTaskMetadata. `to`
+    // pins the receiver pane (Part A); `from` pins the sender pane (S-C2) so a
+    // reply can return to the exact originating pane and history role is computed
+    // per-pane. Both optional — a ws-only side keeps the prior behavior.
+    from: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
     to: { workspaceId: string; name: string; paneId?: string; surfaceId?: string };
     history: Message[];
     artifacts: Artifact[];
   }) => string;
   addTaskMessage: (taskId: string, message: Message) => void;
-  updateTaskStatus: (taskId: string, state: TaskState, callerWorkspaceId: string, statusMessage?: Message) => { ok: boolean; error?: string };
+  // P2 (S-C2): `callerAddr` is the caller's verified pane. When present AND the
+  // task is pinned to a specific receiver pane (`to.paneId`), the status update
+  // is restricted to THAT pane. Absent (headless worker / token client / env-hint
+  // fallback) ⇒ ws-granular authz, unchanged.
+  updateTaskStatus: (taskId: string, state: TaskState, callerWorkspaceId: string, callerAddr?: PaneAddress | null, statusMessage?: Message) => { ok: boolean; error?: string };
   addTaskArtifact: (taskId: string, artifact: Artifact) => void;
   cancelTask: (taskId: string, callerWorkspaceId: string) => { ok: boolean; error?: string };
   queryTasks: (workspaceId: string, filters?: { status?: TaskState; role?: 'user' | 'agent' }) => Task[];
@@ -94,14 +101,26 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     }
   }),
 
-  updateTaskStatus: (taskId, newState, callerWorkspaceId, statusMessage) => {
+  updateTaskStatus: (taskId, newState, callerWorkspaceId, callerAddr, statusMessage) => {
     const task = get().a2aTasks[taskId];
     if (!task) {
       return { ok: false, error: `Task not found: ${taskId}` };
     }
-    // Permission: only receiver can update status
+    // Permission: only the receiver workspace can update status.
     if (task.metadata.to.workspaceId !== callerWorkspaceId) {
       return { ok: false, error: `Permission denied: caller ${callerWorkspaceId} is not the receiver` };
+    }
+    // P2 (S-C2) pane-granular authz: when the caller's pane is known (callerAddr
+    // present) AND the task is pinned to a specific receiver pane (to.paneId),
+    // require the caller to BE that pane — a sibling pane in the receiver ws can
+    // no longer drive another pane's task status. INVARIANT: gate on callerAddr
+    // ABSENCE, never on to.paneId presence. The headless ClaudeWorker reports
+    // working→completed with NO senderPtyId (callerAddr null) yet to.paneId is
+    // stored for pane-addressed tasks; gating on to.paneId would reject the
+    // worker's completion and hang the task in `working` forever. Absent
+    // callerAddr ⇒ ws-authz, unconditionally.
+    if (callerAddr && task.metadata.to.paneId && task.metadata.to.paneId !== callerAddr.paneId) {
+      return { ok: false, error: `Permission denied: caller pane is not the addressed receiver pane` };
     }
     // Validate state transition. On rejection, surface the allowed next states
     // (read from VALID_TRANSITIONS — the static graph only, never task payload)

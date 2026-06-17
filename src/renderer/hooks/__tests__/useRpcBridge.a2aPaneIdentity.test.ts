@@ -64,24 +64,45 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     expect(block).toMatch(/const rawSenderPtyId = typeof params\.senderPtyId === 'string'/);
     expect(block).toMatch(/decideSameWsSend\(target\.id === workspaceId, resolvedAddr\?\.ptyId, senderPtyId\)/);
     expect(block).toMatch(/sameWsDecision\.kind === 'reject'/);
-    // delivery is gated by suppressPaste (silent OR same-ws-can't-prove-non-self)
+    // new-task delivery is gated by suppressPaste (silent OR same-ws-can't-prove-non-self)
     expect(block).toMatch(/const suppressPaste = silent \|\| sameWsDecision\.suppressPaste/);
     expect(block).toMatch(/if \(!suppressPaste\)/);
-    // same-ws task replies suppress the PTY paste (no active-pane loop)
+    // S-C2: the same-ws reply is no longer blanket-suppressed — it pins to the
+    // SYMMETRIC from/to anchor and suppresses ONLY on no-anchor or self-loop,
+    // delivering a one-line nudge to a proven sibling (never a full-body paste).
     expect(block).toMatch(/const sameWsTask = task\.metadata\.from\.workspaceId === task\.metadata\.to\.workspaceId/);
-    expect(block).toMatch(/if \(!silent && !sameWsTask\)/);
+    expect(block).toMatch(/const pinAnchor = replyingToReceiver \? task\.metadata\.to : task\.metadata\.from/);
+    expect(block).toMatch(/const sameWsNoAnchor = sameWsTask && !hasAnchor/);
+    expect(block).toMatch(/const selfLoop = !!explicitPty && !!callerPtyId && explicitPty === callerPtyId/);
+  });
+
+  it('a2a.task.send computes the reply role per-pane (S-C2) with a ws-level fallback', () => {
+    const block = region("method === 'a2a\\.task\\.send'", "method === 'a2a\\.task\\.query'");
+    // caller pane resolved from the verified senderPtyId, then role-per-pane with
+    // an exact ws-level fallback (cross-ws behavior preserved)
+    expect(block).toMatch(/const callerAddr = resolveSenderPaneAddress\(callerLeaves, callerPtyId\)/);
+    expect(block).toMatch(/resolvePaneRole\(task\.metadata, callerAddr\)/);
   });
 
   it('a2a.task.send validates senderPtyId provenance against the sender workspace', () => {
     const block = region("method === 'a2a\\.task\\.send'", "method === 'a2a\\.task\\.query'");
     // a foreign/bogus senderPtyId is treated as absent (→ safe silent fallback)
-    expect(block).toMatch(/isTerminalPtyInLeaves\(findLeafPanes\(sender\.rootPane\), rawSenderPtyId\)/);
+    expect(block).toMatch(/const senderLeaves = sender \? findLeafPanes\(sender\.rootPane\) : \[\]/);
+    expect(block).toMatch(/isTerminalPtyInLeaves\(senderLeaves, rawSenderPtyId\)/);
+    // S-C2: the validated senderPtyId is captured as the `from` pane anchor
+    expect(block).toMatch(/const senderAddr = resolveSenderPaneAddress\(senderLeaves, senderPtyId\)/);
   });
 
-  it('a2a.task.update suppresses the PTY paste for same-ws tasks (no active-pane loop)', () => {
+  it('a2a.task.update mirrors the reply branch: per-pane role, symmetric pin + self-loop, pane-granular authz', () => {
     const block = region("method === 'a2a\\.task\\.update'", 'addTaskArtifact');
-    expect(block).toMatch(/const sameWsTask = task\.metadata\.from\.workspaceId === task\.metadata\.to\.workspaceId/);
-    expect(block).toMatch(/if \(targetWs && !sameWsTask\)/);
+    // per-pane role + symmetric pin (same model as the reply branch)
+    expect(block).toMatch(/resolvePaneRole\(task\.metadata, callerAddrUpdate\)/);
+    expect(block).toMatch(/const pinAnchor = replyingToReceiver \? task\.metadata\.to : task\.metadata\.from/);
+    // same-ws is pinned + nudged, suppressed only on no-anchor / self-loop
+    expect(block).toMatch(/const sameWsNoAnchor = sameWsTask && !hasAnchor/);
+    expect(block).toMatch(/const selfLoop = !!explicitPty && !!callerPtyIdUpdate && explicitPty === callerPtyIdUpdate/);
+    // P2: pane-granular status authz threads the caller's pane into the store
+    expect(block).toMatch(/updateTaskStatus\(taskId, nextState, workspaceId, callerAddrUpdate\)/);
   });
 });
 

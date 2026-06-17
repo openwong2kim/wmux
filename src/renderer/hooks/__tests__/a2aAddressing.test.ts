@@ -1,6 +1,6 @@
 import { describe, it, expect } from 'vitest';
 import type { PaneLeaf, Surface } from '../../../shared/types';
-import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity } from '../a2aAddressing';
+import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, type PaneAddress } from '../a2aAddressing';
 
 function surface(id: string, ptyId: string, surfaceType: Surface['surfaceType'] = 'terminal'): Surface {
   return { id, ptyId, title: id, shell: '', cwd: '', surfaceType } as Surface;
@@ -154,5 +154,60 @@ describe('resolveSelfPaneIdentity (a2a_whoami pane-level)', () => {
       ptyId: 'pty-B2', paneId: 'pane-B', surfaceId: 'surf-B2',
       agentName: null, agentStatus: null,
     });
+  });
+});
+
+describe('resolveSenderPaneAddress (S-C2 ptyId → address reverse map)', () => {
+  it('resolves a verified senderPtyId to its pane address', () => {
+    expect(resolveSenderPaneAddress(leaves, 'pty-A')).toEqual({ ptyId: 'pty-A', paneId: 'pane-A', surfaceId: 'surf-A' });
+    expect(resolveSenderPaneAddress(leaves, 'pty-B2')).toEqual({ ptyId: 'pty-B2', paneId: 'pane-B', surfaceId: 'surf-B2' });
+  });
+
+  it('returns null for an absent / empty senderPtyId', () => {
+    expect(resolveSenderPaneAddress(leaves, '')).toBeNull();
+  });
+
+  it('returns null for a foreign / unknown senderPtyId (fail-closed scoping)', () => {
+    expect(resolveSenderPaneAddress(leaves, 'pty-from-other-ws')).toBeNull();
+  });
+
+  it('never matches a browser surface (no terminal pty)', () => {
+    expect(resolveSenderPaneAddress(leaves, 'pty-web')).toBeNull();
+  });
+});
+
+describe('resolvePaneRole (S-C2 per-pane history role)', () => {
+  const task = { from: { paneId: 'pane-A' }, to: { paneId: 'pane-B' } };
+  const addrA: PaneAddress = { ptyId: 'pty-A', paneId: 'pane-A', surfaceId: 'surf-A' };
+  const addrB1: PaneAddress = { ptyId: 'pty-B1', paneId: 'pane-B', surfaceId: 'surf-B1' };
+
+  it('caller on the from pane → user (the original sender)', () => {
+    expect(resolvePaneRole(task, addrA)).toBe('user');
+  });
+
+  it('caller on the to pane → agent (the receiver)', () => {
+    expect(resolvePaneRole(task, addrB1)).toBe('agent');
+  });
+
+  it('compares by paneId: a reply from a sibling SURFACE of the to pane still resolves to agent', () => {
+    // pane-B hosts surf-B1 and surf-B2 — one pane = one agent identity, so the
+    // other surface of the same pane keeps the receiver role.
+    const addrB2: PaneAddress = { ptyId: 'pty-B2', paneId: 'pane-B', surfaceId: 'surf-B2' };
+    expect(resolvePaneRole(task, addrB2)).toBe('agent');
+  });
+
+  it('caller on neither pane → null (ws-level fallback)', () => {
+    const addrC: PaneAddress = { ptyId: 'pty-C', paneId: 'pane-C', surfaceId: 'surf-C' };
+    expect(resolvePaneRole(task, addrC)).toBeNull();
+  });
+
+  it('null callerAddr → null (absent/forged senderPtyId → ws-level fallback)', () => {
+    expect(resolvePaneRole(task, null)).toBeNull();
+  });
+
+  it('a ws-only task side (no paneId anchor) never matches → null', () => {
+    const wsOnlyFrom = { from: {}, to: { paneId: 'pane-B' } };
+    expect(resolvePaneRole(wsOnlyFrom, addrA)).toBeNull(); // from has no anchor
+    expect(resolvePaneRole(wsOnlyFrom, addrB1)).toBe('agent'); // to still matches
   });
 });

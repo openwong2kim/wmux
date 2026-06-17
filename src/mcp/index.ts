@@ -738,6 +738,11 @@ server.tool(
   async ({ task_id, status, message, artifact_name, artifact_data }) => {
     const wsId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId: wsId, taskId: task_id, status };
+    // S-C2: include our OWN verified ptyId (best-effort — present only on a
+    // PID-map hit) so the renderer can compute per-pane role + pane-granular
+    // status authz for this update. Absent on the env-hint fallback / headless
+    // worker → the renderer falls back to ws-level role + ws authz (unchanged).
+    if (MY_PTY_ID) params.senderPtyId = MY_PTY_ID;
     if (message) params.message = message;
     if (artifact_name) {
       params.artifact = {
