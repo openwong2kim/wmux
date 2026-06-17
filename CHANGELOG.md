@@ -5,6 +5,11 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+- **Terminal + browser split no longer blanks the unfocused side ([#247](https://github.com/openwong2kim/wmux/pull/247)).** A pane holding both a terminal and a browser surface renders them in a side-by-side split, but each surface gated its visibility on the pane's single active-surface id — so focusing one side hid the other (`display:none`) and the unfocused pane went blank, toggling as you switched. Visibility is now decoupled from focus: both sides stay rendered, and the active-surface id only drives keyboard focus.
+
 ## [3.5.1] — 2026-06-17
 
 ### Fixed
