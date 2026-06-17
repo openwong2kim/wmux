@@ -136,19 +136,23 @@ async function main() {
   if (wss.length < 1) throw new Error('no workspace at boot — cannot run the dogfood');
   const ws1 = wss[0].id;
 
-  // Split ws1 into two addressable terminal panes (A = sender, B = receiver).
-  await rpcResult('pane.split', { direction: 'vertical' }).catch((e) => console.log('  (split note:', e.message, ')'));
+  // Split ws1 into THREE addressable terminal panes up front: A = sender,
+  // B = receiver, C = a third non-participant pane (for the codex P2 check).
+  // Two splits, each pinned to ws1 (pane.split honors workspaceId, #238).
+  await rpcResult('pane.split', { workspaceId: ws1, direction: 'vertical' }).catch((e) => console.log('  (split1 note:', e.message, ')'));
+  await rpcResult('pane.split', { workspaceId: ws1, direction: 'horizontal' }).catch((e) => console.log('  (split2 note:', e.message, ')'));
   let surfaces = [];
-  for (let i = 0; i < 40; i++) {
+  for (let i = 0; i < 60; i++) {
     surfaces = (await rpcResult('surface.list', { workspaceId: ws1 })).filter((s) => s.surfaceType !== 'browser' && s.ptyId);
-    if (surfaces.length >= 2) break;
+    if (surfaces.length >= 3) break;
     await sleep(250);
   }
-  check('ws1 has two terminal surfaces after split', surfaces.length >= 2, `surfaces=${surfaces.length}`);
+  check('ws1 has at least two terminal surfaces after split', surfaces.length >= 2, `surfaces=${surfaces.length}`);
   if (surfaces.length < 2) throw new Error('need two panes to test symmetric reply');
   const surfA = surfaces[0];
   const surfB = surfaces[1];
-  console.log(`  paneA pty=${surfA.ptyId} surf=${surfA.id} | paneB pty=${surfB.ptyId} surf=${surfB.id}`);
+  const surfC = surfaces[2]; // third pane (non-participant); may be undefined
+  console.log(`  paneA pty=${surfA.ptyId} surf=${surfA.id} | paneB pty=${surfB.ptyId} surf=${surfB.id} | paneC surf=${surfC?.id ?? 'none'}`);
 
   const getTask = async (ws, id) => {
     const q = await rpcResult('a2a.task.query', { workspaceId: ws });
@@ -214,6 +218,26 @@ async function main() {
   check('★ P2: update from addressed pane B is ALLOWED', u3.ok, JSON.stringify(u3));
   const task1d = await getTask(ws1, t1.taskId);
   check('P2: task completed by the addressed pane', task1d?.status?.state === 'completed', `state=${task1d?.status?.state}`);
+
+  // ── codex P2: a VERIFIED third pane C (neither from nor to) is a
+  // non-participant of the fully-anchored A→B task — its reply/update is rejected
+  // rather than defaulting to the ws-level 'user' role (which would store C's
+  // message as the sender's and nudge B). Best-effort: skip (not fail) if a third
+  // pane didn't materialize — the guard is also covered by a structural test. ──
+  if (surfC) {
+    const cReply = sendResp(await rpcCall('a2a.task.send', {
+      workspaceId: ws1, taskId: t1.taskId, senderPtyId: surfC.ptyId, message: 'C butts in', silent: true,
+    }));
+    check('★ codex P2: verified non-participant pane C reply is REJECTED',
+      !cReply.ok && /not a participant/.test(cReply.error || ''), `err=${cReply.error}`);
+    const cUpdate = sendResp(await rpcCall('a2a.task.update', {
+      workspaceId: ws1, taskId: t1.taskId, message: 'C status note', senderPtyId: surfC.ptyId,
+    }));
+    check('★ codex P2: verified non-participant pane C update is REJECTED',
+      !cUpdate.ok && /not a participant/.test(cUpdate.error || ''), `err=${cUpdate.error}`);
+  } else {
+    console.log('  (note: third pane did not materialize — codex P2 behavioral check skipped; covered by the structural test)');
+  }
 
   // ── cross-ws no-regression: from-pane capture + reply role across workspaces ──
   const ws2 = (await rpcResult('workspace.new', { name: 'sender-ws' })).id;

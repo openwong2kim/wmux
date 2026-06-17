@@ -85,6 +85,9 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     // an exact ws-level fallback (cross-ws behavior preserved)
     expect(block).toMatch(/const callerAddr = resolveSenderPaneAddress\(callerLeaves, callerPtyId\)/);
     expect(block).toMatch(/resolvePaneRole\(task\.metadata, callerAddr\)/);
+    // a verified third-party pane (neither from nor to) in a fully-anchored
+    // same-ws task is rejected instead of defaulting to the ws-level 'user' role
+    expect(block).toMatch(/caller pane is not a participant of this task/);
   });
 
   it('a2a.task.send validates senderPtyId provenance against the sender workspace', () => {
@@ -100,6 +103,7 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     const block = region("method === 'a2a\\.task\\.update'", 'addTaskArtifact');
     // per-pane role + symmetric pin (same model as the reply branch)
     expect(block).toMatch(/resolvePaneRole\(task\.metadata, callerAddrUpdate\)/);
+    expect(block).toMatch(/caller pane is not a participant of this task/);
     expect(block).toMatch(/const pinAnchor = replyingToReceiver \? task\.metadata\.to : task\.metadata\.from/);
     // same-ws is pinned + nudged, suppressed only on no-anchor / self-loop
     expect(block).toMatch(/const sameWsNoAnchor = sameWsTask && !hasAnchor/);

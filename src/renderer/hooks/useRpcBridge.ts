@@ -1378,8 +1378,19 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       const rawCallerPtyId = typeof params.senderPtyId === 'string' ? params.senderPtyId : '';
       const callerPtyId = isTerminalPtyInLeaves(callerLeaves, rawCallerPtyId) ? rawCallerPtyId : '';
       const callerAddr = resolveSenderPaneAddress(callerLeaves, callerPtyId);
-      const role = resolvePaneRole(task.metadata, callerAddr)
-        ?? (task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent');
+      const paneRole = resolvePaneRole(task.metadata, callerAddr);
+      // In a fully pane-anchored SAME-ws task, only the addressed `from`/`to`
+      // panes participate. A VERIFIED caller pane (callerAddr) that matches
+      // neither is a third-party non-participant — reject, rather than fall back
+      // to the ws-level 'user' role, which would store its message as the
+      // sender's and nudge the receiver as if it came from `from`. Cross-ws keeps
+      // the ws-level model (the whole `from` ws is the sender side); an unverified
+      // caller is handled by the suppress path below, not here.
+      if (task.metadata.from.workspaceId === task.metadata.to.workspaceId
+          && task.metadata.from.paneId && callerAddr && paneRole === null) {
+        return { error: 'a2a.task.send: caller pane is not a participant of this task' };
+      }
+      const role = paneRole ?? (task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent');
       const msg: Message = { kind: 'message', messageId: generateId('msg'), role, parts };
       store.addTaskMessage(taskId, msg);
 
@@ -1643,8 +1654,17 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       // Per-pane role (S-C2): same model as the a2a.task.send reply branch, using
       // the callerAddr resolved above. Falls back to the ws-level role when the
       // caller's pane is unknown (preserves cross-ws behavior exactly).
-      const role = resolvePaneRole(task.metadata, callerAddrUpdate)
-        ?? (task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent');
+      const paneRole = resolvePaneRole(task.metadata, callerAddrUpdate);
+      // A fully pane-anchored same-ws task only admits its from/to panes (mirror
+      // of the reply branch). A verified non-participant pane is rejected rather
+      // than defaulting to the ws-level 'user' role. (A status-only update from a
+      // non-participant is already rejected by updateTaskStatus's pane authz
+      // above; this covers a message-only update.)
+      if (task.metadata.from.workspaceId === task.metadata.to.workspaceId
+          && task.metadata.from.paneId && callerAddrUpdate && paneRole === null) {
+        return { error: 'a2a.task.update: caller pane is not a participant of this task' };
+      }
+      const role = paneRole ?? (task.metadata.from.workspaceId === workspaceId ? 'user' : 'agent');
 
       const parts: Part[] = [{ kind: 'text', text: message }];
       const msg: Message = { kind: 'message', messageId: generateId('msg'), role, parts };
