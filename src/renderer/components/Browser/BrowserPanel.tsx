@@ -21,7 +21,12 @@ interface BrowserPanelProps {
   surfaceId: string;
   initialUrl: string;
   partition: string;
+  /** Focused surface (drives F12 devtools + toolbar active state). */
   isActive: boolean;
+  /** Rendered (display:flex) regardless of focus. The terminal+browser split
+   *  shows both sides at once, so visibility is decoupled from `isActive`.
+   *  Defaults to `isActive` (stacked/tab case: only the active tab renders). */
+  visible?: boolean;
   onClose: () => void;
 }
 
@@ -29,7 +34,7 @@ interface BrowserPanelProps {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function BrowserPanel({ surfaceId, initialUrl, partition, isActive, onClose }: BrowserPanelProps) {
+export default function BrowserPanel({ surfaceId, initialUrl, partition, isActive, visible, onClose }: BrowserPanelProps) {
   const t = useT();
   const updateBrowserUrl = useStore((s) => s.updateBrowserUrl);
   const webviewRef = useRef<Electron.WebviewTag>(null);
@@ -324,7 +329,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
       style={{
         position: 'absolute',
         inset: 0,
-        display: isActive ? 'flex' : 'none',
+        display: (visible ?? isActive) ? 'flex' : 'none',
       }}
     >
       {/* Title bar strip showing page title */}

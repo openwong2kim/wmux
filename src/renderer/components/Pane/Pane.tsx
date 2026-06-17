@@ -67,6 +67,29 @@ export function composePaneClassName(opts: {
   return classes.join(' ');
 }
 
+/**
+ * Choose which terminal and which browser surface is SHOWN on each side of the
+ * terminal+browser split (`SplitSurfaceView` hasBoth). Both sides are laid out
+ * side by side and must stay visible, but a pane has a single `activeSurfaceId`,
+ * so visibility (what renders on each side) must be decoupled from focus (which
+ * side `activeSurfaceId` points at). Each side shows its active surface when the
+ * active surface is on that side, otherwise its first surface — so neither side
+ * ever blanks when the other is focused. (Bug: each surface gated `display` on
+ * `surface.id === activeSurfaceId`, so focusing one side display:none'd the other.)
+ *
+ * Pure so it is unit-testable without mounting the split (which pulls in xterm).
+ */
+export function pickSplitShownSurfaces(
+  terminals: ReadonlyArray<{ id: string }>,
+  browsers: ReadonlyArray<{ id: string }>,
+  activeSurfaceId: string,
+): { shownTerminalId: string | undefined; shownBrowserId: string | undefined } {
+  return {
+    shownTerminalId: terminals.find((s) => s.id === activeSurfaceId)?.id ?? terminals[0]?.id,
+    shownBrowserId: browsers.find((s) => s.id === activeSurfaceId)?.id ?? browsers[0]?.id,
+  };
+}
+
 export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true }: PaneProps) {
   const t = useT();
   const [flashing, setFlashing] = useState(false);
@@ -534,7 +557,11 @@ function SplitSurfaceView({
     );
   }
 
-  // Both terminals and browsers exist — resizable split
+  // Both terminals and browsers exist — resizable split. Both sides stay
+  // visible at once; visibility is decoupled from the pane's single
+  // activeSurfaceId (which now only drives focus), else focusing one side
+  // display:none'd the other (blank-pane bug).
+  const { shownTerminalId, shownBrowserId } = pickSplitShownSurfaces(terminals, browsers, activeSurfaceId);
   return (
     <div className="flex-1 relative overflow-hidden">
       <Group orientation="horizontal" className="h-full w-full" resizeTargetMinimumSize={{ coarse: 37, fine: 16 }}>
@@ -547,6 +574,7 @@ function SplitSurfaceView({
                 ptyId={surface.ptyId || undefined}
                 cwd={surface.cwd || undefined}
                 isActive={surface.id === activeSurfaceId}
+                visible={surface.id === shownTerminalId}
                 isWorkspaceVisible={isWorkspaceVisible}
                 onPtyCreated={(ptyId) => onPtyCreated(surface.id, ptyId)}
                 scrollbackFile={surface.scrollbackFile}
@@ -569,6 +597,7 @@ function SplitSurfaceView({
                 initialUrl={surface.browserUrl || 'https://google.com'}
                 partition={surface.browserPartition || 'persist:wmux-default'}
                 isActive={surface.id === activeSurfaceId}
+                visible={surface.id === shownBrowserId}
                 onClose={() => onCloseSurface(surface.id)}
               />
             ))}

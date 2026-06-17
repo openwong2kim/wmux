@@ -21,8 +21,14 @@ interface TerminalProps {
   shell?: string;
   cwd?: string;
   onPtyCreated?: (ptyId: string) => void;
-  /** True when this surface tab is the selected tab inside its pane. */
+  /** True when this surface tab is the selected tab inside its pane (drives
+   *  keyboard focus, vi-copy mode, search bar). */
   isActive?: boolean;
+  /** True when this surface should be RENDERED (display:flex) regardless of
+   *  focus. The terminal+browser split shows both sides at once, so visibility
+   *  is decoupled from `isActive`. Defaults to `isActive` (stacked/tab case:
+   *  only the active tab renders). */
+  visible?: boolean;
   /** True when the parent workspace is the currently visible workspace.
    *  False when the workspace is hidden via display:none in AppLayout.
    *  Defaults to true so callers that don't use the all-workspaces rendering
@@ -39,7 +45,7 @@ interface TerminalProps {
   surfaceId?: string;
 }
 
-export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, onPtyCreated, isActive = true, isWorkspaceVisible = true, scrollbackFile, workspaceId: ownerWorkspaceId, surfaceId: ownerSurfaceId }: TerminalProps) {
+export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, onPtyCreated, isActive = true, visible, isWorkspaceVisible = true, scrollbackFile, workspaceId: ownerWorkspaceId, surfaceId: ownerSurfaceId }: TerminalProps) {
   const containerRef = useRef<HTMLDivElement>(null);
   const [ptyId, setPtyId] = useState<string | null>(externalPtyId || null);
   const creatingRef = useRef(false);
@@ -155,7 +161,12 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     setCtxMenu(e);
   }, []);
 
-  const isVisible = isWorkspaceVisible && isActive;
+  // `visible` decouples render (display) from focus (`isActive`): the
+  // terminal+browser split shows both sides at once, so a visible-but-unfocused
+  // terminal must still render AND fit (else xterm stays blank). Falls back to
+  // `isActive` for the stacked/tab case (one tab visible at a time).
+  const shown = visible ?? isActive;
+  const isVisible = isWorkspaceVisible && shown;
   const { terminal: terminalRef, findNext, findPrevious, clearSearch } = useTerminal(containerRef, { ptyId, isVisible, scrollbackFile, onFirstData: scrollbackFile ? handleFirstData : undefined, onContextMenu: handleContextMenu });
 
   const showViCopyMode = viCopyModeActive && isActive && terminalRef.current !== null;
@@ -285,7 +296,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   return (
     <div
       style={{
-        display: isActive ? 'flex' : 'none',
+        display: shown ? 'flex' : 'none',
         flexDirection: 'column',
         width: '100%',
         height: '100%',
