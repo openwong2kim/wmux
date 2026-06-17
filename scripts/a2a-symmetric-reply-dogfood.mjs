@@ -94,7 +94,10 @@ const rpcResult = async (m, p, o) => { const r = await rpcCall(m, p, o); if (r &
 // payload — NEVER the transport-level envelope `ok` (true whenever the RPC didn't
 // throw, even when the handler returned { error }).
 const sendResp = (r) => {
-  const p = (r && typeof r === 'object' && r.result && typeof r.result === 'object') ? r.result : (r ?? {});
+  // Use ONLY the handler payload (r.result). If it is missing, treat the call as
+  // failed rather than reading the transport-level envelope `ok` (true on any
+  // non-throwing RPC), which would mask a missing/empty handler response as a pass.
+  const p = (r && typeof r === 'object' && r.result && typeof r.result === 'object') ? r.result : {};
   const error = typeof p.error === 'string' ? p.error : undefined;
   const taskId = typeof p.taskId === 'string' ? p.taskId : undefined;
   return { ok: !error && (p.ok === true || !!taskId), taskId, error };
@@ -130,6 +133,7 @@ async function main() {
   if (!TOKEN) throw new Error('main token never appeared');
   const wss = await waitRendererReady(30000);
   check('renderer ready + default workspace exists', wss.length >= 1, `workspaces=${wss.length}`);
+  if (wss.length < 1) throw new Error('no workspace at boot — cannot run the dogfood');
   const ws1 = wss[0].id;
 
   // Split ws1 into two addressable terminal panes (A = sender, B = receiver).

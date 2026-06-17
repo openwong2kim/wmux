@@ -1414,7 +1414,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
           }
           const selfLoop = !!explicitPty && !!callerPtyId && explicitPty === callerPtyId;
           const sameWsNoAnchor = sameWsTask && !hasAnchor;
-          if (!pinnedAddressLost && !sameWsNoAnchor && !selfLoop) {
+          // Same-ws with an UNVERIFIED caller (no senderPtyId): we cannot tell the
+          // sender pane from the receiver pane, so the ws-level role defaults to
+          // 'user' and would route the nudge to `to` — which is the caller ITSELF
+          // when the receiver is the one replying (self-route), and the selfLoop
+          // guard can't catch it because callerPtyId is empty. Suppress, mirroring
+          // decideSameWsSend's absent-senderPtyId rule. The reply is still
+          // persisted + teed onto the bus (pollable via a2a_task_query).
+          const sameWsUnverified = sameWsTask && !callerPtyId;
+          if (!pinnedAddressLost && !sameWsNoAnchor && !selfLoop && !sameWsUnverified) {
             if (sameWsTask) {
               // Same-ws sibling: pointer-only nudge (no full-body injection).
               deliverPtyNudge(targetWs, buildA2aNudge(taskId, senderName), explicitPty);
@@ -1667,7 +1675,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         }
         const selfLoop = !!explicitPty && !!callerPtyIdUpdate && explicitPty === callerPtyIdUpdate;
         const sameWsNoAnchor = sameWsTask && !hasAnchor;
-        if (!pinnedAddressLost && !sameWsNoAnchor && !selfLoop) {
+        // Same-ws with an UNVERIFIED caller (no senderPtyId) → suppress: the
+        // ws-level role defaults to 'user' and would self-route the nudge to the
+        // caller's own pane (mirror of the reply branch + decideSameWsSend).
+        const sameWsUnverified = sameWsTask && !callerPtyIdUpdate;
+        if (!pinnedAddressLost && !sameWsNoAnchor && !selfLoop && !sameWsUnverified) {
           if (sameWsTask) {
             deliverPtyNudge(targetWs, buildA2aNudge(taskId, callerName), explicitPty);
           } else {

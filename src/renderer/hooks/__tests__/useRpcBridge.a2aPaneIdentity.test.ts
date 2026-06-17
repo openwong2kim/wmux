@@ -74,6 +74,9 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     expect(block).toMatch(/const pinAnchor = replyingToReceiver \? task\.metadata\.to : task\.metadata\.from/);
     expect(block).toMatch(/const sameWsNoAnchor = sameWsTask && !hasAnchor/);
     expect(block).toMatch(/const selfLoop = !!explicitPty && !!callerPtyId && explicitPty === callerPtyId/);
+    // an unverified same-ws caller (no senderPtyId) is suppressed: ws-level role
+    // defaults to 'user' and would self-route the nudge to the caller's own pane
+    expect(block).toMatch(/const sameWsUnverified = sameWsTask && !callerPtyId/);
   });
 
   it('a2a.task.send computes the reply role per-pane (S-C2) with a ws-level fallback', () => {
@@ -101,6 +104,7 @@ describe('useRpcBridge — pane-level A2A identity wiring', () => {
     // same-ws is pinned + nudged, suppressed only on no-anchor / self-loop
     expect(block).toMatch(/const sameWsNoAnchor = sameWsTask && !hasAnchor/);
     expect(block).toMatch(/const selfLoop = !!explicitPty && !!callerPtyIdUpdate && explicitPty === callerPtyIdUpdate/);
+    expect(block).toMatch(/const sameWsUnverified = sameWsTask && !callerPtyIdUpdate/);
     // P2: pane-granular status authz threads the caller's pane into the store
     expect(block).toMatch(/updateTaskStatus\(taskId, nextState, workspaceId, callerAddrUpdate\)/);
   });
