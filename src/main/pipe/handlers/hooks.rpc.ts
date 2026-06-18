@@ -47,6 +47,7 @@ import type { HookSignalRouter } from '../../hooks/HookSignalRouter';
 import { HookFloodMeter, describeHookFlood } from '../../hooks/HookFloodMeter';
 import { eventBus } from '../../events/EventBus';
 import { IPC, dataSuffix } from '../../../shared/constants';
+import { summarizeActivity } from '../../../shared/activitySummary';
 import type { DaemonClient } from '../../DaemonClient';
 import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume';
 import os from 'node:os';
@@ -147,6 +148,18 @@ const WORKSPACE_LIST_FETCH_TIMEOUT_MS = 1_500;
 const HOOK_DEGRADED_FETCH_MS = 500;
 const HOOK_FLOOD_LOG_INTERVAL_MS = 30_000;
 
+// Fleet View activity line (fleet-activity-line-hook.md): PostToolUse
+// (`agent.activity`) fires on EVERY tool call, so a tool-heavy turn = many per
+// second per agent. We rate-limit the activity broadcast with the MINIMUM
+// machinery: a per-ptyId LEADING-EDGE timestamp throttle. On each activity, if
+// `now - (lastSent.get(ptyId) ?? 0) >= ACTIVITY_THROTTLE_MS` we broadcast +
+// stamp; else we drop. No timers, no EventBus subscription, no process.exited
+// sweep — the only residue is a `number` per dead ptyId (microscopic), cleared
+// wholesale on handler teardown. (eng-review + adversarial review decision: a
+// trailing throttler-instance map would need timers + a leaky sweep for no
+// real gain over `tail`'s plain 750ms renderer poll.)
+export const ACTIVITY_THROTTLE_MS = 3_000;
+
 /**
  * Register `hooks.signal` on the router. Must be called once at boot
  * (main/index.ts) after both the PipeServer and HookSignalRouter exist.
@@ -171,6 +184,12 @@ export function registerHooksRpc(
   // Short-TTL, coalescing cache so a burst of hooks in one turn collapses to
   // a single workspace.list round-trip (see WORKSPACE_LIST_CACHE_TTL_MS note).
   const workspaceCache = createWorkspaceListCache(() => safeListWorkspaces(getWindow));
+
+  // Fleet activity leading-edge throttle: ptyId → lastSentMs. Scoped to this
+  // registration (like workspaceCache/floodMeter) so it lives for the handler's
+  // lifetime and is cleared wholesale on the returned cleanup — no per-ptyId GC
+  // needed (see ACTIVITY_THROTTLE_MS).
+  const activityLastSent = new Map<string, number>();
 
   // Observability: surface a hook-RPC flood in the main log (postmortem
   // visible) by tallying slow/failed workspace.list resolutions per window.
@@ -273,6 +292,31 @@ export function registerHooksRpc(
     // chip it fed was discarded as an unreliable, partly-heuristic display.
     // The bridge may still embed a `usage` block in the payload — it is simply
     // ignored here now. Signal-health recording above is unaffected.)
+
+    // Fleet View activity line (fleet-activity-line-hook.md). PostToolUse maps
+    // to `agent.activity` and the bridge already ships the full Claude payload
+    // (tool_name/tool_input) — currently discarded at the isEmitKind early-return
+    // below. We surface it as a per-pane "what is this agent doing" string via
+    // the SAME metadata funnel the renderer already consumes (no new RPC/IPC).
+    //
+    // This is purely ADDITIVE and sits BEFORE the early-return: it does NOT
+    // touch the dedup ledger, does NOT emit to the EventBus, and does NOT call
+    // sendNotification. Activity is per-ptyId only (never workspace state).
+    // Throttled leading-edge per ptyId (see ACTIVITY_THROTTLE_MS) so a tool-heavy
+    // turn doesn't flood IPC. ptyId is already guaranteed non-null here (the
+    // !ptyId early-return ran above).
+    if (signal.kind === 'agent.activity') {
+      const now = Date.now();
+      const lastSent = activityLastSent.get(ptyId) ?? 0;
+      if (now - lastSent >= ACTIVITY_THROTTLE_MS) {
+        activityLastSent.set(ptyId, now);
+        const activity = summarizeActivity(signal.payload?.tool_name, signal.payload?.tool_input);
+        const win = getWindow();
+        if (win) {
+          broadcastMetadataUpdate(win, { ptyId, activity });
+        }
+      }
+    }
 
     // 4. Emit decision. PostToolUse / SessionStart never produce a
     //    toast (would be spam — codex round-2 P1 #5). They also
@@ -380,6 +424,8 @@ export function registerHooksRpc(
     unsubscribe();
     throttledPush.cancel();
     clearInterval(floodTimer);
+    // Drop the activity throttle state wholesale (no per-ptyId sweep needed).
+    activityLastSent.clear();
   };
 }
 

@@ -3,7 +3,7 @@
 // `sendNotification` (so we don't need a real BrowserWindow). The
 // HookSignalRouter is a hand-rolled stub so we can control `recordHook`
 // return values per test.
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { eventBus } from '../../../events/EventBus';
@@ -258,5 +258,194 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
     const events = pollLifecycle();
     expect(events).toHaveLength(1);
     expect(events[0].agent).toBe('codex');
+  });
+
+  // ─── Fleet View activity line (fleet-activity-line-hook.md) ────────────────
+  // agent.activity (PostToolUse) is surfaced via broadcastMetadataUpdate but is
+  // purely additive: NO EventBus tee, NO recordHook, NO sendNotification.
+
+  it('agent.activity with a ptyId broadcasts { ptyId, activity }', async () => {
+    const stub = stubHookRouter();
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    const res = await router.dispatch({
+      id: 'a1',
+      method: 'hooks.signal',
+      params: signal({
+        kind: 'agent.activity',
+        payload: { tool_name: 'Edit', tool_input: { file_path: '/repo/fleet.ts' } },
+      }) as unknown as Record<string, unknown>,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      { ptyId: 'pty-1', activity: '✎ fleet.ts' },
+    );
+    // Additive only: activity must NOT tee to the EventBus, call recordHook,
+    // or fire a notification.
+    expect(pollLifecycle()).toHaveLength(0);
+    expect(stub.recordHookCalls).toHaveLength(0);
+    expect(sendNotificationMock).not.toHaveBeenCalled();
+  });
+
+  it('agent.activity with NO resolvable ptyId does NOT broadcast', async () => {
+    const stub = stubHookRouter();
+    // workspace.list has no workspace owning '/elsewhere' → ptyId unresolved.
+    sendToRendererMock.mockResolvedValueOnce([
+      { id: 'ws-x', name: 'x', metadata: { cwd: '/somewhere-else' }, activePtyId: 'p-x', ptyIds: ['p-x'] },
+    ]);
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    const res = await router.dispatch({
+      id: 'a2',
+      method: 'hooks.signal',
+      params: signal({
+        kind: 'agent.activity',
+        cwd: '/elsewhere',
+        payload: { tool_name: 'Bash', tool_input: { command: 'ls' } },
+      }) as unknown as Record<string, unknown>,
+    });
+
+    // Unresolvable ptyId → the handler returns no-workspace-match BEFORE the
+    // activity branch (dispatch still reports RPC-level ok:true, as the existing
+    // workspace-match-fail test asserts), so nothing is broadcast.
+    expect(res.ok).toBe(true);
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+  });
+
+  describe('agent.activity leading-edge throttle (ACTIVITY_THROTTLE_MS = 3s)', () => {
+    // Base the clock well past 0 so the FIRST activity always clears the leading
+    // edge (lastSent defaults to 0; in production Date.now() is ~1.7e12 so the
+    // first call always fires — mirror that here instead of starting at epoch).
+    const T0 = 1_000_000_000;
+    beforeEach(() => {
+      vi.useFakeTimers();
+      vi.setSystemTime(T0);
+    });
+    afterEach(() => {
+      vi.useRealTimers();
+    });
+
+    async function fireActivity(router: RpcRouter, id: string): Promise<void> {
+      await router.dispatch({
+        id,
+        method: 'hooks.signal',
+        params: signal({
+          kind: 'agent.activity',
+          payload: { tool_name: 'Read', tool_input: { file_path: '/repo/a.ts' } },
+        }) as unknown as Record<string, unknown>,
+      });
+    }
+
+    it('two activities <3s apart for the same ptyId → ONE broadcast', async () => {
+      const stub = stubHookRouter();
+      const router = new RpcRouter();
+      registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+      vi.setSystemTime(T0);
+      await fireActivity(router, 't1');
+      vi.setSystemTime(T0 + 1_500); // 1.5s later — inside the 3s window
+      await fireActivity(router, 't2');
+
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
+    });
+
+    it('two activities >3s apart for the same ptyId → TWO broadcasts', async () => {
+      const stub = stubHookRouter();
+      const router = new RpcRouter();
+      registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+      vi.setSystemTime(T0);
+      await fireActivity(router, 't1');
+      vi.setSystemTime(T0 + 3_500); // 3.5s later — past the 3s window
+      await fireActivity(router, 't2');
+
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(2);
+    });
+
+    it('throttle is PER-ptyId — two different panes each broadcast immediately', async () => {
+      const stub = stubHookRouter();
+      // Two workspaces / two panes, each owning its own cwd.
+      sendToRendererMock.mockResolvedValue([
+        { id: 'ws-1', name: 'one', metadata: { cwd: '/repo-a' }, activePtyId: 'pty-a', ptyIds: ['pty-a'] },
+        { id: 'ws-2', name: 'two', metadata: { cwd: '/repo-b' }, activePtyId: 'pty-b', ptyIds: ['pty-b'] },
+      ]);
+      const router = new RpcRouter();
+      registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+      vi.setSystemTime(T0);
+      await router.dispatch({
+        id: 'p-a',
+        method: 'hooks.signal',
+        params: signal({ kind: 'agent.activity', cwd: '/repo-a', payload: { tool_name: 'Read', tool_input: { file_path: '/repo-a/x.ts' } } }) as unknown as Record<string, unknown>,
+      });
+      // Same instant, different pane — the other pane's lastSent is still 0.
+      await router.dispatch({
+        id: 'p-b',
+        method: 'hooks.signal',
+        params: signal({ kind: 'agent.activity', cwd: '/repo-b', payload: { tool_name: 'Read', tool_input: { file_path: '/repo-b/y.ts' } } }) as unknown as Record<string, unknown>,
+      });
+
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(2);
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(expect.anything(), { ptyId: 'pty-a', activity: '→ x.ts' });
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(expect.anything(), { ptyId: 'pty-b', activity: '→ y.ts' });
+    });
+  });
+
+  // ─── [REGRESSION] activity branch must not alter the emit-kind path ────────
+
+  it('[regression] agent.stop still emits + tees + notifies (activity branch is inert for stop)', async () => {
+    const stub = stubHookRouter();
+    stub.setDecision('emit');
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    await router.dispatch({
+      id: 'r1',
+      method: 'hooks.signal',
+      // Even with a tool payload present, a stop signal must behave exactly as
+      // before — no activity broadcast, full emit path.
+      params: signal({ kind: 'agent.stop', payload: { tool_name: 'Edit', tool_input: { file_path: '/x.ts' } } }) as unknown as Record<string, unknown>,
+    });
+
+    // Lifecycle tee + recordHook + notification all fire as before.
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ kind: 'agent.stop', decision: 'emit' });
+    expect(stub.recordHookCalls).toHaveLength(1);
+    expect(sendNotificationMock).toHaveBeenCalledTimes(1);
+    // The activity funnel is NOT used for a stop kind.
+    expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+  });
+
+  it('[regression] agent.awaiting_input still emits + sets the sidebar dot (no activity funnel)', async () => {
+    const stub = stubHookRouter();
+    stub.setDecision('emit');
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    await router.dispatch({
+      id: 'r2',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.awaiting_input' }) as unknown as Record<string, unknown>,
+    });
+
+    const events = pollLifecycle();
+    expect(events).toHaveLength(1);
+    expect(events[0].kind).toBe('agent.awaiting_input');
+    expect(sendNotificationMock).toHaveBeenCalledTimes(1);
+    // awaiting_input sets agentStatus via the SAME funnel, but NOT an activity.
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ ptyId: 'pty-1', agentStatus: 'awaiting_input' }),
+    );
+    // The awaiting_input broadcast must not carry an activity field.
+    const call = broadcastMetadataUpdateMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(call).not.toHaveProperty('activity');
   });
 });

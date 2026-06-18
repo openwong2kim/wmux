@@ -253,6 +253,13 @@ export interface MetadataUpdatePayload {
   gitIsWorktree?: boolean;
   pr?: PrStatus | null;
   lastNotificationText?: LastNotificationText;
+  // Fleet View per-pane activity line (fleet-activity-line-hook.md). Derived in
+  // hooks.rpc from a PostToolUse hook's tool_name/tool_input via
+  // summarizeActivity(). Per-ptyId ONLY — the renderer stores it in the
+  // transient surfaceActivity[ptyId] map and MUST destructure it out before
+  // applying any active-pane update to workspace metadata (it is not workspace
+  // state). Never persisted.
+  activity?: string;
 }
 
 // === Status indicator colors ===
