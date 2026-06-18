@@ -169,3 +169,30 @@
 - **Depends on:** 없음. 단 split-brain plan(P1)과 같은 daemon-lifecycle 영역 → 한 번에 두 architecture change 검증 어려움, 순차 권장.
 - **Priority:** P2 (plan ready, defect성 — 하드코딩 floor가 저사양 머신서 조정 불가)
 
+## Fleet activity line — pipe payload 슬림화 (P3, follow-up of fleet-activity-line-hook)
+- **What:** `agent.activity`(PostToolUse) envelope에서 `tool_input`의 큰 필드(Edit old/new string 등)를 bridge에서 잘라 named pipe로 안 보내게. 활동 문자열 추출은 이미 main(`src/shared/activitySummary.ts`)에서 하므로 full tool_input 불필요.
+- **Why:** 현재 PostToolUse가 full payload를 pipe로 보냄(기존 동작, fleet-activity PR이 만든 비용 아님). source에서 슬림 가능.
+- **Pros:** pipe 트래픽 감소(특히 큰 Edit).
+- **Cons:** bridge(.mjs) 변경 → 기존 사용자 `wmux setup-hooks` 재실행 필요(bridge-version skew). 그래서 v1에서 분리.
+- **Context:** `plans/fleet-activity-line-hook.md` "Deferred" 참조. bridge=`integrations/claude/bin/wmux-bridge.mjs`.
+- **Depends on:** fleet-activity-line ship 후.
+- **Priority:** P3
+
+## Fleet activity line — UserPromptSubmit "현재 요청" 신호 (P2, follow-up)
+- **What:** setup-hooks에 UserPromptSubmit 추가 → "↳ {사용자 마지막 요청}"을 activity로. PostToolUse는 completion이라 "방금 한 것"인데, UserPromptSubmit이 "지금 뭐 하는지"의 더 정확한 신호.
+- **Why:** v1 activity는 과거형(도구 완료 후). 진짜 "right now"는 사용자 요청 — 조종석 가치를 키움.
+- **Pros:** "지금 X 작업 중" 의미가 더 정확.
+- **Cons:** setup-hooks 변경(재실행 필요) + prompt truncation + 프라이버시(요청 텍스트 표시).
+- **Context:** `plans/fleet-activity-line-hook.md` "Honest scope" + "Optional enrichment". `HOOK_TO_KIND`(wmux-bridge.mjs:52)에 매핑 추가.
+- **Depends on:** fleet-activity-line ship 후.
+- **Priority:** P2
+
+## (bug) transient per-ptyId 맵이 surface close 시 leak (P3, found in fleet-activity adversarial review)
+- **What:** `surfacePorts`(및 `surfaceAgentStatus`)가 `closePane`/`closeSurface`에서 정리 안 됨 → 죽은 ptyId 엔트리 잔존. fleet-activity PR이 `surfaceActivity`는 양 사이트에서 정리하지만 기존 두 맵은 미수정.
+- **Why:** 적대 리뷰가 "surfacePorts를 cleanup 선례로 쓰지 말라(그 자체로 leak)"며 발견. 장기 세션서 죽은 ptyId 누적.
+- **Pros:** store 위생, 미세 메모리.
+- **Cons:** 영향 미미(엔트리 작음).
+- **Context:** `closePane`(paneSlice.ts:322) + `closeSurface`(surfaceSlice.ts:132)에 delete 추가. fleet-activity가 정리 패턴을 이미 깔아둠.
+- **Depends on:** 없음.
+- **Priority:** P3
+
