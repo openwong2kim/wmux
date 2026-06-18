@@ -34,6 +34,9 @@ export default function FleetView() {
   const setVisible = useStore((s) => s.setFleetViewVisible);
   const workspaces = useStore((s) => s.workspaces);
   const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
+  // Hook-driven per-pane activity line (fleet-activity-line-hook). Subscribed
+  // here so the selector re-runs when an agent's PostToolUse activity changes.
+  const surfaceActivity = useStore((s) => s.surfaceActivity);
 
   // S-C2: tab lives in uiSlice (not FleetView-local) so the A2A / MCP approval
   // modals can suppress themselves while the inbox tab is open (AppLayout delta
@@ -56,8 +59,8 @@ export default function FleetView() {
   // trees or the per-pty attention map change (the two inputs the selector
   // reads), not on every unrelated store mutation.
   const panes = useMemo(
-    () => sortFleetPanes(selectFleetPanes({ workspaces, surfaceAgentStatus })),
-    [workspaces, surfaceAgentStatus],
+    () => sortFleetPanes(selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity })),
+    [workspaces, surfaceAgentStatus, surfaceActivity],
   );
   const needsCount = useMemo(() => countNeedsAttention(panes), [panes]);
 

@@ -6,6 +6,7 @@ type TestState = {
   workspaces: Workspace[];
   activeWorkspaceId: string;
   surfaceAgent: Record<string, { name: string; status: string }>;
+  surfaceActivity: Record<string, string>;
 };
 
 function createHarness() {
@@ -14,6 +15,7 @@ function createHarness() {
     workspaces: [workspace],
     activeWorkspaceId: workspace.id,
     surfaceAgent: {},
+    surfaceActivity: {},
   };
 
   const set = (updater: (state: TestState) => void) => {
@@ -313,5 +315,38 @@ describe('surfaceSlice.closeSurface — surfaceAgent cleanup (Part A leak-preven
     slice.closeSurface(paneId, surfaceId);
 
     expect(state.surfaceAgent['pty-1']).toBeUndefined();
+  });
+});
+
+describe('surfaceSlice.closeSurface — surfaceActivity cleanup (Fleet activity teardown)', () => {
+  it('clears the surfaceActivity entry for the closed surface ptyId (the OTHER real teardown site)', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const surfaceId = pane.surfaces.find((s) => s.ptyId === 'pty-1')!.id;
+    state.surfaceActivity['pty-1'] = '✎ fleet.ts';
+
+    slice.closeSurface(paneId, surfaceId);
+
+    expect(state.surfaceActivity['pty-1']).toBeUndefined();
+  });
+
+  it('leaves activity for other surfaces untouched when one closes', () => {
+    const { state, slice } = createHarness();
+    const paneId = state.workspaces[0].rootPane.id;
+    slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\a');
+    slice.addSurface(paneId, 'pty-2', 'pwsh', 'C:\\b');
+    const pane = state.workspaces[0].rootPane;
+    if (pane.type !== 'leaf') throw new Error('expected leaf pane');
+    const surfaceId1 = pane.surfaces.find((s) => s.ptyId === 'pty-1')!.id;
+    state.surfaceActivity['pty-1'] = '$ build';
+    state.surfaceActivity['pty-2'] = '✎ keep.ts';
+
+    slice.closeSurface(paneId, surfaceId1);
+
+    expect(state.surfaceActivity['pty-1']).toBeUndefined();
+    expect(state.surfaceActivity['pty-2']).toBe('✎ keep.ts');
   });
 });

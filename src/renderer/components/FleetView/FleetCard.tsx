@@ -32,7 +32,14 @@ export default function FleetCard({ card, focused, onJump, tail }: FleetCardProp
   const isAwaitingInput = card.agentStatus === 'awaiting_input';
   const isIdle = card.agentStatus === 'idle';
   const displayName = card.agentName || card.title || t('surface.terminal');
-  const showTail = card.surfaceType === 'terminal' && tail && tail.length > 0;
+  // Hook-driven activity line (fleet-activity-line-hook). When present it is the
+  // card's primary status text — a meaningful one-liner ("✎ fleet.ts") instead
+  // of raw scrollback. The raw tail is the FALLBACK, shown only for terminals
+  // that have NO activity (Codex / Gemini / plain shells, or a Claude pane
+  // before its first PostToolUse). awaiting_input still wins the third row.
+  const activity = card.activity?.trim() || undefined;
+  const showTail =
+    !activity && card.surfaceType === 'terminal' && !!tail && tail.length > 0;
 
   return (
     <button
@@ -94,10 +101,28 @@ export default function FleetCard({ card, focused, onJump, tail }: FleetCardProp
         </div>
       ) : null}
 
+      {/* Hook-driven activity line — the deterministic "what is it doing" string
+          (PostToolUse → summarizeActivity in main). Single truncated row so a
+          long path/command can never widen the card. Shown for any non-awaiting
+          card that has activity (the affordance owns the row when awaiting
+          input); it REPLACES the raw tail (showTail is false whenever activity
+          is present). data-fleet-activity exposes it for dogfood/tests. */}
+      {!isAwaitingInput && activity && (
+        <div
+          data-fleet-activity
+          className="block truncate font-mono text-[11px] leading-tight"
+          style={{ color: 'var(--text-subtle)' }}
+          title={activity}
+        >
+          {activity}
+        </div>
+      )}
+
       {/* S-C2 live output tail — last ~3 lines of the pane's buffer. Already
           plaintext (no xterm renderer needed); subordinate to the header. Each
           line is its own truncated row so a long line can never widen / break
-          the card. Hidden entirely when there is no terminal output to show. */}
+          the card. Hidden entirely when there is no terminal output to show, OR
+          when the hook-driven activity line above is present (its fallback). */}
       {showTail && (
         <div
           className="mt-0.5 flex flex-col font-mono text-[10px] leading-tight overflow-hidden"

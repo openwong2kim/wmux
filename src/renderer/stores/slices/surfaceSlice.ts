@@ -127,9 +127,13 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     // Part A: drop per-surface agent identity so the surfaceAgent map doesn't
     // retain a label for a PTY that no longer has a surface. (surfaceAgent is
     // owned by paneSlice; guard the cross-slice access so an isolated test store
-    // composed without paneSlice doesn't trip on an undefined map.)
+    // composed without paneSlice doesn't trip on an undefined map.) The Fleet
+    // activity line (surfaceActivity, also paneSlice-owned, keyed by ptyId) is
+    // the OTHER real teardown site — clear it here too so a closed surface's
+    // last activity string doesn't survive on a re-used ptyId.
     const closedPtyId = pane.surfaces[idx].ptyId;
     if (closedPtyId && state.surfaceAgent) delete state.surfaceAgent[closedPtyId];
+    if (closedPtyId && state.surfaceActivity) delete state.surfaceActivity[closedPtyId];
 
     pane.surfaces.splice(idx, 1);
     if (pane.activeSurfaceId === surfaceId) {

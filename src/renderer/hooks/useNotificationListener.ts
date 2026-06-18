@@ -436,7 +436,11 @@ export function useNotificationListener() {
       const state = useStore.getState();
       // Discriminator: ptyId routes to its workspace; workspaceId is direct;
       // neither means "active workspace" (e.g. meta.setStatus from a CLI).
-      const { ptyId, workspaceId: payloadWsId, ...rest } = payload;
+      // `activity` (Fleet per-pane line) is per-ptyId surface state, NOT
+      // workspace metadata — pull it OUT here, alongside ptyId, so it can never
+      // flow into `...rest` and get written into updateWorkspaceMetadata by
+      // applyToWorkspace's spread.
+      const { ptyId, workspaceId: payloadWsId, activity, ...rest } = payload;
 
       // X1: workspace metadata is one record per workspace, but context
       // updates arrive per-PTY. Two rules keep multi-pane workspaces from
@@ -482,6 +486,12 @@ export function useNotificationListener() {
             typeof rest.agentName === 'string' ? rest.agentName : undefined,
             typeof rest.agentStatus === 'string' ? (rest.agentStatus as AgentStatus) : undefined,
           );
+        }
+        // Fleet View per-pane activity line: store the (already main-side
+        // sanitized + throttled) string in the transient per-ptyId map. Main
+        // only sets `activity` on its own; an empty string clears the entry.
+        if (typeof activity === 'string') {
+          state.setSurfaceActivity(ptyId, activity);
         }
         for (const ws of state.workspaces) {
           const found = findSurfaceByPtyId(ws.rootPane, ptyId);

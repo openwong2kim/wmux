@@ -57,8 +57,16 @@ const surfaceAgentStatus: Record<string, AgentStatus> = {
   'pty-2b': 'complete',
 };
 
+// Hook-driven activity strings keyed per-ptyId. pty-2a is the ACTIVE surface of
+// the multi-surface leaf p2a, so its activity must land on that card; pty-1 has
+// one to prove activity coexists with an attention status.
+const surfaceActivity: Record<string, string> = {
+  'pty-1': '$ npm test',
+  'pty-2a': '✎ fleet.ts',
+};
+
 function fixture() {
-  return { workspaces: [w1, w2, w3], surfaceAgentStatus };
+  return { workspaces: [w1, w2, w3], surfaceAgentStatus, surfaceActivity };
 }
 
 function byPane(panes: FleetPane[], paneId: string): FleetPane {
@@ -90,7 +98,7 @@ describe('selectFleetPanes', () => {
       ]),
       'p4a',
     );
-    const panes = selectFleetPanes({ workspaces: [deep], surfaceAgentStatus: {} });
+    const panes = selectFleetPanes({ workspaces: [deep], surfaceAgentStatus: {}, surfaceActivity: {} });
     expect(panes.map((p) => p.paneId).sort()).toEqual(['p4a', 'p4b', 'p4c']);
   });
 
@@ -99,7 +107,7 @@ describe('selectFleetPanes', () => {
     // must reflect the urgent state, not silently show idle.
     const tabbed = leaf('p', [surface('active', 'pty-active'), surface('bg', 'pty-bg')], 'active');
     const ws = workspace('w', 'w', tabbed, 'p');
-    const [card] = selectFleetPanes({ workspaces: [ws], surfaceAgentStatus: { 'pty-bg': 'awaiting_input' } });
+    const [card] = selectFleetPanes({ workspaces: [ws], surfaceAgentStatus: { 'pty-bg': 'awaiting_input' }, surfaceActivity: {} });
     expect(card.agentStatus).toBe('awaiting_input'); // from the background tab
     expect(card.ptyId).toBe('pty-active');           // card stays keyed on active surface
   });
@@ -110,6 +118,7 @@ describe('selectFleetPanes', () => {
     const [card] = selectFleetPanes({
       workspaces: [ws],
       surfaceAgentStatus: { pb: 'complete', pc: 'awaiting_input' },
+      surfaceActivity: {},
     });
     expect(card.agentStatus).toBe('awaiting_input'); // rank 0 beats complete (rank 3)
   });
@@ -160,6 +169,41 @@ describe('selectFleetPanes', () => {
     expect(p2b.workspaceId).toBe('ws-2');
     expect(p2b.workspaceName).toBe('beta');
     expect(p2b.cwd).toBe('C:\\repo\\s2b');
+  });
+
+  // ─── Hook-driven activity line (fleet-activity-line-hook) ──────────────────
+
+  it('threads the per-ptyId activity string onto the card', () => {
+    const p1 = byPane(selectFleetPanes(fixture()), 'p1');
+    expect(p1.activity).toBe('$ npm test'); // surfaceActivity['pty-1']
+  });
+
+  it('keys activity on the ACTIVE surface of a multi-surface leaf (not surfaces[0])', () => {
+    // p2a's active surface is pty-2a; surfaceActivity has pty-2a → "✎ fleet.ts".
+    // The non-active first surface (pty-2a-first) has no entry, so picking the
+    // wrong surface would yield undefined.
+    const p2a = byPane(selectFleetPanes(fixture()), 'p2a');
+    expect(p2a.ptyId).toBe('pty-2a');
+    expect(p2a.activity).toBe('✎ fleet.ts');
+  });
+
+  it('leaves activity undefined when the pty has no entry (no-hook fallback path)', () => {
+    // p2b (browser, pty-2b) and p3 (unspawned, ptyId '') have no activity entry.
+    const panes = selectFleetPanes(fixture());
+    expect(byPane(panes, 'p2b').activity).toBeUndefined();
+    expect(byPane(panes, 'p3').activity).toBeUndefined();
+  });
+
+  it('never reads activity for an unspawned surface (empty ptyId)', () => {
+    // Even if a stray '' key existed in the map, the selector must not surface
+    // it onto an unspawned card.
+    const ws = workspace('w', 'w', leaf('p', [surface('s', '')]), 'p');
+    const [card] = selectFleetPanes({
+      workspaces: [ws],
+      surfaceAgentStatus: {},
+      surfaceActivity: { '': 'should-never-show' },
+    });
+    expect(card.activity).toBeUndefined();
   });
 });
 

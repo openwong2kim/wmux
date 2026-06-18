@@ -26,11 +26,19 @@ export interface FleetPane {
   surfaceType: 'terminal' | 'browser' | 'editor';
   /** True when this leaf is its workspace's active pane (badge fidelity hint). */
   isActivePane: boolean;
+  /**
+   * Hook-driven activity line for the active surface's PTY (fleet-activity-line
+   * -hook.md). Sourced from the per-ptyId `surfaceActivity` map (PostToolUse →
+   * summarizeActivity → throttled in main). Present only for panes whose agent
+   * emits PostToolUse hooks; FleetCard falls back to the raw scrollback tail
+   * when absent. Reflects the most recent FINISHED tool, not the live one.
+   */
+  activity?: string;
 }
 
 /** Minimal store surface the selector reads — keeps the fixture trivial and the
- *  subscription narrow (the FleetView memoizes on exactly these two fields). */
-export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentStatus'>;
+ *  subscription narrow (the FleetView memoizes on exactly these fields). */
+export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentStatus' | 'surfaceActivity'>;
 
 // Priority of each status for "which one wants the user most". Lower = more
 // urgent. Drives both the per-leaf attention scan (a background tab can be
@@ -91,6 +99,10 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         title: surf?.title ?? '',
         surfaceType: surf?.surfaceType ?? 'terminal',
         isActivePane,
+        // Per-ptyId activity line for the active surface (keyed like the card
+        // itself). Undefined when the agent emits no PostToolUse hook — the
+        // card then shows the raw tail. Empty ptyId never has an entry.
+        activity: ptyId ? state.surfaceActivity[ptyId] : undefined,
       });
     }
   }

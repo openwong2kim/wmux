@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach, vi } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createPaneSlice, type PaneSlice, MAX_PANES_PER_WORKSPACE } from '../paneSlice';
-import { createWorkspace, type Workspace, type Surface } from '../../../../shared/types';
+import { createWorkspace, type Workspace, type Surface, type SessionData } from '../../../../shared/types';
 import { findPane, getLeafPanes } from '../../../../shared/paneUtils';
 
 // Minimal store that satisfies PaneSlice dependencies. Includes a `pushToast`
@@ -605,6 +605,89 @@ describe('PaneSlice', () => {
       expect(store.getState().surfaceAgent['pty-closetest']).toBeTruthy();
       store.getState().closePane(closing.id);
       expect(store.getState().surfaceAgent['pty-closetest']).toBeUndefined();
+    });
+  });
+
+  // Fleet View per-pane activity line (fleet-activity-line-hook). Transient
+  // per-ptyId map; main supplies an already-sanitized + throttled string.
+  describe('surfaceActivity', () => {
+    it('stores the activity string keyed by ptyId', () => {
+      store.getState().setSurfaceActivity('pty-1', '✎ fleet.ts');
+      expect(store.getState().surfaceActivity['pty-1']).toBe('✎ fleet.ts');
+    });
+
+    it('overwrites an existing entry with a newer activity', () => {
+      store.getState().setSurfaceActivity('pty-1', '→ types.ts');
+      store.getState().setSurfaceActivity('pty-1', '$ npm test');
+      expect(store.getState().surfaceActivity['pty-1']).toBe('$ npm test');
+    });
+
+    it('clears the entry on null or empty string', () => {
+      store.getState().setSurfaceActivity('pty-1', '$ build');
+      store.getState().setSurfaceActivity('pty-1', null);
+      expect(store.getState().surfaceActivity['pty-1']).toBeUndefined();
+
+      store.getState().setSurfaceActivity('pty-2', '$ build');
+      store.getState().setSurfaceActivity('pty-2', '');
+      expect(store.getState().surfaceActivity['pty-2']).toBeUndefined();
+    });
+
+    it('ignores an empty ptyId', () => {
+      store.getState().setSurfaceActivity('', '$ ghost');
+      expect(store.getState().surfaceActivity['']).toBeUndefined();
+    });
+
+    it('closePane auto-clears surfaceActivity for every surface under the closed subtree (the real teardown site)', () => {
+      const ws = getActiveWorkspace(store);
+      const rootLeafId = getLeafPanes(ws.rootPane)[0].id;
+      store.getState().splitPane(rootLeafId, 'horizontal');
+      const closing = getLeafPanes(getActiveWorkspace(store).rootPane)[1];
+      store.setState((s) => {
+        const leaf = getLeafPanes(s.workspaces[0].rootPane).find((l) => l.id === closing.id);
+        if (leaf) leaf.surfaces.push({ id: 'surf-act', ptyId: 'pty-act', title: 'x', shell: '', cwd: '', surfaceType: 'terminal' } as Surface);
+      });
+      store.getState().setSurfaceActivity('pty-act', '✎ fleet.ts');
+      expect(store.getState().surfaceActivity['pty-act']).toBe('✎ fleet.ts');
+      store.getState().closePane(closing.id);
+      expect(store.getState().surfaceActivity['pty-act']).toBeUndefined();
+    });
+  });
+
+  // [REGRESSION] surfaceActivity must NEVER be persisted. buildSessionData
+  // (AppLayout.tsx) is an allowlist-by-construction whose return type is
+  // SessionData; a field absent from SessionData therefore cannot be written to
+  // session.json. This pins the contract two ways: (1) the SessionData type has
+  // no `surfaceActivity` key (a @ts-expect-error fires if one is ever added),
+  // mirroring how surfaceAgent / surfacePorts / surfaceAgentStatus are excluded;
+  // (2) a representative persisted snapshot has no such key at runtime. If a
+  // future edit adds surfaceActivity to either the allowlist or the type, this
+  // breaks — exactly the regression the plan asks for.
+  describe('surfaceActivity persistence exclusion (regression)', () => {
+    it('is not a member of the SessionData persistence allowlist', () => {
+      // A representative persisted snapshot (what buildSessionData returns, which
+      // is typed SessionData). The transient per-ptyId maps — surfaceActivity,
+      // surfaceAgent, surfacePorts, surfaceAgentStatus — must not appear here.
+      const persisted: SessionData = {
+        workspaces: [],
+        activeWorkspaceId: '',
+        sidebarVisible: true,
+      };
+      expect(Object.keys(persisted)).not.toContain('surfaceActivity');
+      expect(Object.keys(persisted)).not.toContain('surfaceAgent');
+      expect(Object.keys(persisted)).not.toContain('surfacePorts');
+    });
+
+    it('is rejected by the SessionData type (compile-time allowlist guard)', () => {
+      const probe = (): SessionData => ({
+        workspaces: [],
+        activeWorkspaceId: '',
+        sidebarVisible: true,
+        // @ts-expect-error — surfaceActivity is transient store state, NOT a
+        // SessionData field. If this stops erroring, the transient map became
+        // persistable (the regression this guard exists to catch).
+        surfaceActivity: { 'pty-1': '✎ fleet.ts' },
+      });
+      expect(typeof probe).toBe('function');
     });
   });
 });

@@ -76,6 +76,16 @@ export interface PaneSlice {
   // never persisted (buildSessionData allowlist excludes it).
   surfacePorts: Record<string, number[]>;
   setSurfacePorts: (ptyId: string, ports: number[] | null) => void;
+  // Fleet View per-pane ACTIVITY line keyed by ptyId (fleet-activity-line-hook).
+  // The string is derived + sanitized + throttled in the MAIN process
+  // (hooks.rpc summarizeActivity, 3s leading-edge per-ptyId) and arrives on
+  // METADATA_UPDATE.activity; the renderer only stores + renders it — never
+  // re-throttles, never re-sanitizes. Kept across Stop so a finished card still
+  // reads "✎ fleet.ts" rather than blank; cleared at the two real surface
+  // teardown sites (closePane here + closeSurface). Transient — never persisted
+  // (buildSessionData is an allowlist and deliberately omits it).
+  surfaceActivity: Record<string, string>;
+  setSurfaceActivity: (ptyId: string, activity: string | null) => void;
   // Issue #173: transient map of pane id → cwd inherited from the pane that
   // was split. Written by splitPane, consumed (and cleared) by the AppLayout
   // empty-leaf PTY funnel. Deliberately NOT persisted — buildSessionData's
@@ -179,6 +189,20 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       state.surfacePorts[ptyId] = ports;
     } else {
       delete state.surfacePorts[ptyId];
+    }
+  }),
+
+  surfaceActivity: {},
+
+  setSurfaceActivity: (ptyId, activity) => set((state: StoreState) => {
+    if (!ptyId) return;
+    // The main side already sanitized + truncated the string; here we only
+    // store a non-empty value and clear on null/empty. A same-string write
+    // keeps the existing reference (immer), so React shallow-compares it away.
+    if (activity) {
+      state.surfaceActivity[ptyId] = activity;
+    } else {
+      delete state.surfaceActivity[ptyId];
     }
   }),
 
@@ -316,10 +340,16 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
 
       // Part A: drop per-surface agent identity for every surface under the
       // closing subtree (leaf or branch) so the surfaceAgent map doesn't leak
-      // entries for PTYs that no longer have a surface.
+      // entries for PTYs that no longer have a surface. The Fleet activity line
+      // is keyed the same way and is one of the two REAL teardown sites (the
+      // other is closeSurface) — clear it here too so a closed pane's last
+      // activity string can't linger on a re-used ptyId.
       for (const leaf of getLeafPanes(parent.children[idx])) {
         for (const s of leaf.surfaces) {
-          if (s.ptyId) delete state.surfaceAgent[s.ptyId];
+          if (s.ptyId) {
+            delete state.surfaceAgent[s.ptyId];
+            delete state.surfaceActivity[s.ptyId];
+          }
         }
       }
 
