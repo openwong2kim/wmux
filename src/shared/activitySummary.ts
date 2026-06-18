@@ -19,6 +19,23 @@
 /** Hard cap on the produced activity string (chars). Never trust input length. */
 export const MAX_ACTIVITY_LEN = 80;
 
+/**
+ * Hard cap applied at the TOP of clean() before any regex / split / URL work
+ * runs on untrusted input. A multi-MB tool_name or tool_input field (e.g. a
+ * Claude Bash command that captured huge output, or a malformed payload) would
+ * otherwise make the control-char regex and whitespace collapse do O(n) work
+ * on the full string and block the main thread for tens of ms per call.
+ *
+ * 1024 is chosen as: comfortably above MAX_ACTIVITY_LEN (80) + any reasonable
+ * prefix/suffix overhead, well below any size that causes perceptible latency
+ * on V8's regex engine, and large enough that no real file path, command
+ * prefix, grep pattern, or URL host could be legitimately longer. Any real
+ * tool input needing more than 1024 chars for its key field (e.g. a `command`
+ * that is itself a giant heredoc) is noise in a 1-line status display; the
+ * BASH_CMD_LEN=40 display cap handles the output side.
+ */
+export const MAX_RAW_LEN = 1024;
+
 /** Max chars of a Bash command we surface (the rest is elided). */
 const BASH_CMD_LEN = 40;
 
@@ -163,7 +180,13 @@ function hostFromUrl(url: string): string {
 const CONTROL_CHARS_RE = new RegExp('[\\x00-\\x1f\\x7f-\\x9f]', 'g');
 
 function clean(s: string): string {
-  return s
+  // Cap BEFORE any regex / split / URL work so a giant untrusted string cannot
+  // block the main thread. Every interpolated value flows through here, so this
+  // single guard covers tool_name, file_path, command, pattern, description,
+  // url, query — all paths. MAX_RAW_LEN >> MAX_ACTIVITY_LEN so no legitimate
+  // display value is lost; the output is further truncated by truncate().
+  const capped = s.length > MAX_RAW_LEN ? s.slice(0, MAX_RAW_LEN) : s;
+  return capped
     // Drop C0 controls, DEL, and C1 controls.
     .replace(CONTROL_CHARS_RE, " ")
     // Collapse all whitespace runs (now incl. the spaces we just substituted)

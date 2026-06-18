@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { summarizeActivity, MAX_ACTIVITY_LEN } from '../activitySummary';
+import { summarizeActivity, MAX_ACTIVITY_LEN, MAX_RAW_LEN } from '../activitySummary';
 
 describe('summarizeActivity — tool_name → activity string', () => {
   // Table-driven happy path. Each row: a tool_name + tool_input → expected.
@@ -160,6 +160,61 @@ describe('summarizeActivity — hard truncation to <= MAX_ACTIVITY_LEN', () => {
 
   it('a long file path (long basename) is truncated to MAX_ACTIVITY_LEN', () => {
     const out = summarizeActivity('Edit', { file_path: `/repo/${'f'.repeat(500)}.ts` });
+    expect(out.length).toBeLessThanOrEqual(MAX_ACTIVITY_LEN);
+  });
+});
+
+describe('summarizeActivity — MAX_RAW_LEN input cap (DoS guard)', () => {
+  // Every interpolated value flows through clean(), which slices at MAX_RAW_LEN
+  // before any regex/split/URL work. These tests verify:
+  //   1. Multi-MB inputs complete quickly (no O(n) blowup on the main thread).
+  //   2. The output still respects MAX_ACTIVITY_LEN.
+  //   3. The cap boundary is exact: length > MAX_RAW_LEN is sliced, = MAX_RAW_LEN
+  //      is kept whole, < MAX_RAW_LEN is untouched.
+
+  it('2 MB Bash command returns quickly and respects MAX_ACTIVITY_LEN', () => {
+    const huge = 'x'.repeat(2_000_000);
+    const start = Date.now();
+    const out = summarizeActivity('Bash', { command: huge });
+    const elapsed = Date.now() - start;
+    expect(out.length).toBeLessThanOrEqual(MAX_ACTIVITY_LEN);
+    // Should complete in well under 50ms on any CI machine — the cap makes the
+    // regex work O(MAX_RAW_LEN) not O(2MB).
+    expect(elapsed).toBeLessThan(50);
+  });
+
+  it('2 MB tool_name returns quickly and respects MAX_ACTIVITY_LEN', () => {
+    const huge = 'T'.repeat(2_000_000);
+    const start = Date.now();
+    const out = summarizeActivity(huge, {});
+    const elapsed = Date.now() - start;
+    expect(out.length).toBeLessThanOrEqual(MAX_ACTIVITY_LEN);
+    expect(elapsed).toBeLessThan(50);
+  });
+
+  it('2 MB file_path returns quickly and respects MAX_ACTIVITY_LEN', () => {
+    const huge = '/repo/' + 'f'.repeat(2_000_000) + '.ts';
+    const start = Date.now();
+    const out = summarizeActivity('Edit', { file_path: huge });
+    const elapsed = Date.now() - start;
+    expect(out.length).toBeLessThanOrEqual(MAX_ACTIVITY_LEN);
+    expect(elapsed).toBeLessThan(50);
+  });
+
+  it('input exactly at MAX_RAW_LEN is not truncated by the cap', () => {
+    // A pattern of exactly MAX_RAW_LEN plain ASCII chars: the cap must not
+    // shorten it (only the final truncate() call may shorten the output).
+    const atCap = 'p'.repeat(MAX_RAW_LEN);
+    const out = summarizeActivity('Grep', { pattern: atCap });
+    // Output is "⌕ " + up-to-80-char slice of 'ppp...', so it starts correctly.
+    expect(out.startsWith('⌕ ')).toBe(true);
+    expect(out.length).toBeLessThanOrEqual(MAX_ACTIVITY_LEN);
+  });
+
+  it('input one char past MAX_RAW_LEN is silently sliced at the cap', () => {
+    const overCap = 'q'.repeat(MAX_RAW_LEN + 1);
+    const out = summarizeActivity('Grep', { pattern: overCap });
+    expect(out.startsWith('⌕ ')).toBe(true);
     expect(out.length).toBeLessThanOrEqual(MAX_ACTIVITY_LEN);
   });
 });
