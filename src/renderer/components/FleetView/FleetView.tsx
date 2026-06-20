@@ -46,6 +46,12 @@ export default function FleetView() {
   const setTab = useStore((s) => s.setFleetActiveTab);
   useEffect(() => () => setTab('fleet'), [setTab]);
 
+  // S-C1 follow-up — situational sort: 'attention' (awaiting_input floats up,
+  // then sidebar order) ↔ 'workspace' (pure sidebar order). Persists across
+  // cockpit open/close within a session (not reset on unmount, unlike the tab).
+  const fleetSortMode = useStore((s) => s.fleetSortMode);
+  const setFleetSortMode = useStore((s) => s.setFleetSortMode);
+
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [inboxIdx, setInboxIdx] = useState(0);
   // S-C2 Phase 2 — live output tail. {ptyId: last-3-lines}. Filled by ONE
@@ -59,8 +65,8 @@ export default function FleetView() {
   // trees or the per-pty attention map change (the two inputs the selector
   // reads), not on every unrelated store mutation.
   const panes = useMemo(
-    () => sortFleetPanes(selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity })),
-    [workspaces, surfaceAgentStatus, surfaceActivity],
+    () => sortFleetPanes(selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity }), fleetSortMode),
+    [workspaces, surfaceAgentStatus, surfaceActivity, fleetSortMode],
   );
   const needsCount = useMemo(() => countNeedsAttention(panes), [panes]);
 
@@ -322,6 +328,20 @@ export default function FleetView() {
             </span>
           )}
           <div className="flex-1" />
+          {/* Situational sort toggle (fleet tab only). Cycles attention-first
+              ↔ pure workspace (sidebar) order. */}
+          {tab === 'fleet' && (
+            <button
+              type="button"
+              onClick={() => setFleetSortMode(fleetSortMode === 'attention' ? 'workspace' : 'attention')}
+              className="text-[11px] px-2 py-0.5 rounded transition-colors hover:text-[var(--text-main)]"
+              style={{ border: '1px solid var(--bg-overlay)', color: 'var(--text-muted)' }}
+              title={t('fleet.sort.tooltip')}
+              aria-label={t('fleet.sort.tooltip')}
+            >
+              {t('fleet.sort.label')}: {t(fleetSortMode === 'attention' ? 'fleet.sort.attention' : 'fleet.sort.workspace')}
+            </button>
+          )}
           <kbd
             className="text-xs text-[var(--text-muted)] px-1.5 py-0.5 rounded"
             style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}

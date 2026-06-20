@@ -109,18 +109,36 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
   return result;
 }
 
-// Sort order for the cockpit grid: the agents that want the user float to the
-// top (awaiting_input first — the unattended-loop money state, via STATUS_RANK
-// above), idle terminals sink. Ties break by workspace name then title for
-// stable, scannable rows.
-export function sortFleetPanes(panes: FleetPane[]): FleetPane[] {
-  return [...panes].sort((a, b) => {
-    const r = STATUS_RANK[a.agentStatus] - STATUS_RANK[b.agentStatus];
-    if (r !== 0) return r;
-    const w = a.workspaceName.localeCompare(b.workspaceName);
-    if (w !== 0) return w;
-    return a.title.localeCompare(b.title);
-  });
+/** Situational sort mode for the cockpit grid (uiSlice.fleetSortMode). */
+export type FleetSortMode = 'attention' | 'workspace';
+
+// Sort order for the cockpit grid — two situational modes:
+//   - 'attention' (default): the agents that want the user float to the top
+//     (awaiting_input first — the unattended-loop money state, via STATUS_RANK
+//     above), idle terminals sink. WITHIN a status tier, panes keep the
+//     selector's emission order, which is `state.workspaces` (sidebar) order
+//     then leaf order.
+//   - 'workspace': mirror the sidebar exactly — pure workspace+leaf order,
+//     status ignored. For users who navigate the fleet spatially.
+//
+// Both break ties by the original index (selector order == sidebar order), NOT
+// by workspaceName/title: the old alphabetical localeCompare reordered the grid
+// away from the sidebar, which read as "the fleet is in the wrong order". The
+// index tie-break is explicit (no reliance on Array.sort stability).
+export function sortFleetPanes(
+  panes: FleetPane[],
+  mode: FleetSortMode = 'attention',
+): FleetPane[] {
+  return panes
+    .map((pane, index) => ({ pane, index }))
+    .sort((a, b) => {
+      if (mode === 'attention') {
+        const r = STATUS_RANK[a.pane.agentStatus] - STATUS_RANK[b.pane.agentStatus];
+        if (r !== 0) return r;
+      }
+      return a.index - b.index;
+    })
+    .map((entry) => entry.pane);
 }
 
 // Statuses that count toward the "N need you" header chip: awaiting_input is the

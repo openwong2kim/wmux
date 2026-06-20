@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
+import type { FleetSortMode } from '../selectors/fleet';
 import {
   generateId,
   createLeafPane,
@@ -77,6 +78,13 @@ export interface UISlice {
   // resets this to 'fleet' on unmount (mount-gated = close).
   fleetActiveTab: FleetTab;
   setFleetActiveTab: (tab: FleetTab) => void;
+
+  // S-C1 follow-up — situational sort for the cockpit grid. Unlike the tab this
+  // is NOT reset on unmount, so it persists across cockpit open/close within a
+  // session. Not yet in buildSessionData's allowlist → resets to 'attention' on
+  // app restart (cross-session persistence is a deliberate follow-up).
+  fleetSortMode: FleetSortMode;
+  setFleetSortMode: (mode: FleetSortMode) => void;
 
   settingsPanelVisible: boolean;
   toggleSettingsPanel: () => void;
@@ -597,6 +605,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setFleetActiveTab: (tab) => set((state) => {
     state.fleetActiveTab = tab;
+  }),
+
+  fleetSortMode: 'attention',
+
+  setFleetSortMode: (mode) => set((state) => {
+    state.fleetSortMode = mode;
   }),
 
   // ─── Settings panel ──────────────────────────────────────────────────────

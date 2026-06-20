@@ -216,16 +216,25 @@ describe('sortFleetPanes', () => {
     expect(sorted.map((p) => p.paneId)).toEqual(['p1', 'p2b', 'p2a', 'p3']);
   });
 
-  it('breaks ties by workspace name, then title', () => {
+  it('breaks ties by workspace (selector) order, NOT alphabetical name', () => {
     const base: FleetPane = { workspaceId: 'w', workspaceName: '', paneId: '', surfaceId: 's', ptyId: 'p', agentStatus: 'running', title: '', surfaceType: 'terminal', isActivePane: false };
-    // same status → workspace name decides (alpha < zeta)
-    const a = { ...base, paneId: 'a', workspaceName: 'zeta', title: 'a' };
-    const b = { ...base, paneId: 'b', workspaceName: 'alpha', title: 'b' };
-    expect(sortFleetPanes([a, b]).map((p) => p.paneId)).toEqual(['b', 'a']);
-    // same status + same workspace → title decides (aaa < zzz)
-    const c = { ...base, paneId: 'c', workspaceName: 'alpha', title: 'zzz' };
-    const d = { ...base, paneId: 'd', workspaceName: 'alpha', title: 'aaa' };
-    expect(sortFleetPanes([c, d]).map((p) => p.paneId)).toEqual(['d', 'c']);
+    // Same status → the selector's emission order (== state.workspaces / sidebar
+    // order) is preserved, even though the names are reverse-alphabetical. The
+    // old behavior reordered these to [b, a] by name; the fix keeps input order
+    // so the cockpit mirrors the sidebar.
+    const a = { ...base, paneId: 'a', workspaceName: 'zeta', title: 'z' };
+    const b = { ...base, paneId: 'b', workspaceName: 'alpha', title: 'a' };
+    expect(sortFleetPanes([a, b]).map((p) => p.paneId)).toEqual(['a', 'b']);
+  });
+
+  it("'workspace' mode mirrors selector order and ignores status", () => {
+    const base: FleetPane = { workspaceId: 'w', workspaceName: 'w', paneId: '', surfaceId: 's', ptyId: 'p', agentStatus: 'idle', title: 't', surfaceType: 'terminal', isActivePane: false };
+    const first = { ...base, paneId: 'first', agentStatus: 'idle' as const };
+    const second = { ...base, paneId: 'second', agentStatus: 'awaiting_input' as const };
+    // workspace mode: pure input (sidebar) order, status ignored.
+    expect(sortFleetPanes([first, second], 'workspace').map((p) => p.paneId)).toEqual(['first', 'second']);
+    // attention mode (default): awaiting_input floats above idle.
+    expect(sortFleetPanes([first, second], 'attention').map((p) => p.paneId)).toEqual(['second', 'first']);
   });
 
   it('preserves input order for fully-equal entries (stable sort)', () => {
