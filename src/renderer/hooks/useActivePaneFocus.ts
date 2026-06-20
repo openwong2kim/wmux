@@ -214,12 +214,19 @@ export function useActivePaneFocus(): void {
   // focusKey. The `isFocusOrphaned` guard inside means a real element holding
   // focus (palette, toolbar, another pane, browser webview) is never disturbed.
   useEffect(() => {
+    // Track deferred frames so cleanup fully disarms the heal: a focusout /
+    // keydown landing right before unmount could otherwise leave a queued rAF
+    // that refocuses a terminal from a torn-down effect instance.
+    const pending = new Set<number>();
     const onSignal = (): void => reassertFocusIfOrphaned({
       resolveTarget: () => resolveActivePanePtyId(useStore.getState()),
       getActiveElement: () => document.activeElement,
       getBody: () => document.body,
       focusTerminal: (id) => terminalRegistry.get(id)?.focus(),
-      defer: (cb) => requestAnimationFrame(cb),
+      defer: (cb) => {
+        const handle = requestAnimationFrame(() => { pending.delete(handle); cb(); });
+        pending.add(handle);
+      },
       onHeal: (id) => console.debug(`[useActivePaneFocus] reclaimed orphaned focus → pty=${id}`),
     });
     // window 'focus': OS focus returns (alt-tab back) onto <body>.
@@ -234,6 +241,8 @@ export function useActivePaneFocus(): void {
       window.removeEventListener('focus', onSignal);
       document.removeEventListener('focusout', onSignal);
       document.removeEventListener('keydown', onSignal);
+      for (const handle of pending) cancelAnimationFrame(handle);
+      pending.clear();
     };
   }, []);
 }
