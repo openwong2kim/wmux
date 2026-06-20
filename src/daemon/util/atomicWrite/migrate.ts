@@ -301,3 +301,17 @@ export const DAEMON_STATE_REGISTRY: MigrationRegistry = {
   currentVersion: 1,
   steps: [],
 };
+
+/**
+ * Channel state schema (channels.json). Identity registry — no
+ * migrations registered yet. The Channels subsystem (see
+ * `src/shared/channels.ts` and `src/daemon/channels/`) registers
+ * this registry with the migrator factory in the same way that
+ * StateWriter registers `DAEMON_STATE_REGISTRY`: pass-through with
+ * the identity-registry short-circuit for legacy v0 payloads
+ * missing the version marker.
+ */
+export const CHANNEL_STATE_REGISTRY: MigrationRegistry = {
+  currentVersion: 1,
+  steps: [],
+};
