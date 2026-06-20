@@ -39,6 +39,27 @@ export interface PaneSlice {
    * unchanged). */
   closePane: (paneId: string, workspaceId?: string) => void;
   setActivePane: (paneId: string) => void;
+  /**
+   * Focus a leaf pane (and optionally one of its surfaces) in an EXPLICIT
+   * workspace — the address-resolution counterpart to `setActivePane`, used by
+   * the `pane.focus` / `surface.focus` RPC so an external agent that owns a
+   * BACKGROUND workspace can focus its own pane without the active-workspace
+   * scoping `setActivePane` enforces.
+   *
+   * Resolves `workspaceId` exactly (no self-search, no `activeWorkspaceId`
+   * fallback) and NEVER mutates `activeWorkspaceId` — bringing a workspace
+   * on-screen is the separate `workspace.focus` RPC, so this is inherently
+   * non-yank. Sets `activePaneId` and (when `surfaceId` is supplied and present
+   * on the leaf) `activeSurfaceId` in ONE transaction. Emits `pane.focused`
+   * when — and only when — the active pane actually changed (a surface-only
+   * change on the already-active pane does not, since `pane.focused` is a pane
+   * event); the emit is NOT gated on `activeWorkspaceId`, so a real focus change
+   * in a background/multiview workspace is reported honestly.
+   *
+   * Returns `false` (no mutation, no emit) when the workspace is unknown or the
+   * pane is missing / not a leaf (a branch); `true` otherwise.
+   */
+  focusPaneSurface: (workspaceId: string, paneId: string, surfaceId?: string) => boolean;
   focusPaneDirection: (direction: 'up' | 'down' | 'left' | 'right') => void;
   cyclePane: (direction: 'next' | 'prev') => void;
   updatePaneSizes: (branchId: string, sizes: number[]) => void;
@@ -418,6 +439,50 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       const e = event as { wsId: string; paneId: string; previousActiveId: string };
       publishPaneFocused(e.wsId, e.paneId, e.previousActiveId);
     }
+  },
+
+  focusPaneSurface: (workspaceId, paneId, surfaceId) => {
+    // Mirrors setActivePane's capture-outside-set / publish-after-set shape, but
+    // resolves the workspace by EXPLICIT id (the RPC bridge already located the
+    // owning workspace by globally-unique pane/surface id) instead of the
+    // active one, and emits even for a background workspace (#236 follow-up).
+    let event: { wsId: string; paneId: string; previousActiveId: string } | null = null;
+    let ok = false;
+    set((state: StoreState) => {
+      const ws = state.workspaces.find((w: Workspace) => w.id === workspaceId);
+      if (!ws) return; // unknown workspace → false, no mutation, no emit.
+
+      // Only a leaf is focusable: a branch id (or a missing id) must not move the
+      // active selection. findPane returns the node of either type, so assert leaf.
+      const target = findPane(ws.rootPane, paneId);
+      if (!target || target.type !== 'leaf') return;
+
+      const previousActiveId = ws.activePaneId;
+      const paneChanged = previousActiveId !== target.id;
+
+      // Atomic: set the active pane and (when asked + present) the active surface
+      // in the SAME producer, so an observer never sees the new pane with a stale
+      // active surface (the two-write race the dedicated action exists to avoid).
+      ws.activePaneId = target.id;
+      if (surfaceId && target.surfaces.some((s) => s.id === surfaceId)) {
+        target.activeSurfaceId = surfaceId;
+      }
+
+      ok = true;
+      // pane.focused is a PANE event: emit only when the active pane actually
+      // changed. A surface-only change on the already-active pane is a no-emit.
+      // No activeWorkspaceId gate — a real focus change in a background/multiview
+      // workspace is honest to report, and events are ws-scoped so there is no
+      // cross-workspace leak.
+      if (paneChanged) {
+        event = { wsId: ws.id, paneId: target.id, previousActiveId };
+      }
+    });
+    if (event) {
+      const e = event as { wsId: string; paneId: string; previousActiveId: string };
+      publishPaneFocused(e.wsId, e.paneId, e.previousActiveId);
+    }
+    return ok;
   },
 
   updatePaneSizes: (branchId, sizes) => set((state: StoreState) => {

@@ -408,6 +408,8 @@ There are four resolution paths in the current implementation, in order of prefe
 
 Path B is the substrate-aligned answer: it anchors identity to the immutable `ptyId` and resolves the owning workspace live, so it survives workspace-id re-minting. Path A is now a stale-prone hint, demoted to a last resort behind B (it previously short-circuited resolution, which left agents permanently stuck on a dead workspace id after a respawn/restore — "no workspace found for ws-…"). Path C covers non-wmux terminals; path D is the only remaining footgun and is the substrate boundary documented in §8.
 
+The address-resolution methods that target an existing node by its globally-unique id — `pane.focus`, `surface.focus`, `pane.close`, `surface.close` — sidestep path D entirely: they resolve the owning workspace by scanning every workspace for that `paneId`/`surfaceId` and never read or mutate `activeWorkspaceId`, so a caller in a background workspace addresses its own pane without the resolution depending on (or disturbing) whichever workspace the user is viewing. Focusing a pane is therefore non-yank — bringing a workspace on-screen is the separate `workspace.focus` RPC.
+
 **Substrate alignment notes:**
 
 - Identity is anchored to `ptyId`, not `workspaceId`. The on-disk PID map (`~/.wmux/pid-map/<pid>`) stores the ptyId, which never changes for a process's lifetime; the pty → workspace edge is resolved live in `a2a.resolve.identity`. This is what keeps identity correct across a daemon respawn or session restore that re-mints the workspace id. The map is (re)written at PTY create and on reconnect.

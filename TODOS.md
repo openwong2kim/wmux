@@ -196,3 +196,30 @@
 - **Depends on:** 없음.
 - **Priority:** P3
 
+## (security) Unscoped plugin events.poll leaks cross-workspace lifecycle events (P2)
+- **What:** `PluginFrame.tsx:89`가 `events.poll`을 `{}`(workspaceId 없음)로 호출 → `events.rpc.ts:97` `caller ? e.workspaceId===caller : true`가 unscoped 호출에 **전 워크스페이스**의 `pane.created/closed/focused/process.*`를 통과시킴. `events.subscribe` capability를 declare한 플러그인이 다른 ws의 lifecycle을 관측 가능. `a2a.task`만 unscoped서 fail-closed.
+- **Why:** substrate 격리 원칙 위반. `a2a.task`의 `!!caller &&` fail-closed 절이 lifecycle 타입엔 없음. focus-rpc 리뷰(plan-eng-review, security 전문가)서 발견 — 선재 버그이며 focus 픽스가 만든 게 아니지만 EMIT이 약간 넓힘.
+- **Pros:** 플러그인 샌드박스의 cross-ws 관측 차단.
+- **Cons:** 둘 중 택1 — (a) `PluginFrame`이 호스트 프레임의 workspaceId를 poll에 실어보냄, 또는 (b) unscoped poll에서 lifecycle 타입도 fail-closed(`a2a.task`처럼). (a)가 깔끔하나 플러그인이 여러 ws를 의도적으로 보는 합법 케이스가 있는지 확인 필요.
+- **Context:** `src/main/pipe/handlers/events.rpc.ts:93-104`(post-filter), `src/renderer/plugins/PluginFrame.tsx:88-89`(unscoped poll). 시작점=poll params에 workspaceId 주입 vs 필터 fail-closed 결정.
+- **Depends on:** 없음 (focus 픽스와 독립).
+- **Priority:** P2 (보안 격리)
+
+## surface.focus capability를 pane.read로 통일 (P3)
+- **What:** `methodCapabilityMap.ts:181` `surface.focus` = `wmux.internal` → `pane.read`로(sibling `pane.focus:186`과 일치). first-party MCP에 surface.focus 도구 노출 + 서드파티 declarable.
+- **Why:** 동일 blast radius(focus 마커 이동)인 두 메서드가 다른 capability 클래스. security 전문가: 방어 가능(grandfather 경로 + self-asserted clientName이라 wmux.internal 라벨이 same-user 대상 보안 이득 0)하나 coherence 결함.
+- **Pros:** capability 대칭, surface.focus가 sibling처럼 first-party/declarable.
+- **Cons:** capability 정책 변경 = 별도 검토. focus ws-scoping 픽스에 묶지 말 것(orthogonal).
+- **Context:** focus-rpc 리뷰서 식별. `src/main/mcp/methodCapabilityMap.ts:181/186`, `firstParty.ts` allowlist.
+- **Depends on:** focus ws-scoping 픽스 ship 후.
+- **Priority:** P3
+
+## Per-target ownership authz for focus/close family (P3)
+- **What:** globally-unique id 해석 메서드(`pane.focus`/`surface.focus`/`pane.close`/`surface.close`)에 호출자 ws 소유권 게이트 추가 — 공유 `resolvePaneOwner(id)` 헬퍼를 authz 지점으로.
+- **Why:** id 보유 시 어느 ws의 pane이든 focus/close 가능. ids는 unguessable + `pane_list`/`surface_list`는 ws-scoped라 열거 불가지만, 적대적 멀티에이전트면 per-target authz가 정답. security 전문가: focus는 close(#256, pane 파괴)보다 약하므로 close-family부터.
+- **Pros:** 진짜 적대적 멀티에이전트 격리.
+- **Cons:** id-as-capability 모델을 owner-gate로 바꾸는 건 #256 close까지 소급 = 넓은 변경. 현 위협모델(single-user)에선 과함.
+- **Context:** focus-rpc 리뷰서 식별. close-family부터 게이트, focus를 같은 패스에. 시작점=`useRpcBridge.ts:550` all-ws scan을 `resolvePaneOwner`로 추출 후 caller-ws 비교.
+- **Depends on:** 구체적 적대 멀티에이전트 위협 리포트 발생 시.
+- **Priority:** P3
+

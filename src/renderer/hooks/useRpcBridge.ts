@@ -90,6 +90,35 @@ function findLeafBySurfaceId(root: Pane, surfaceId: string): PaneLeaf | null {
   return leaves.find((l) => l.surfaces.some((s) => s.id === surfaceId)) ?? null;
 }
 
+/**
+ * Find the workspace whose pane tree contains `paneId` (paneIds are globally
+ * unique). Used by the address-resolution focus handlers — the counterpart to
+ * the all-ws scan in `pane.close` — so an external caller can focus a pane in
+ * its own background workspace by id alone. Returns the first owner or null.
+ */
+function findOwningWorkspace(workspaces: Workspace[], paneId: string): Workspace | null {
+  for (const ws of workspaces) {
+    if (findPaneById(ws.rootPane, paneId)) return ws;
+  }
+  return null;
+}
+
+/**
+ * Find the workspace + leaf owning `surfaceId` (surfaceIds are globally unique).
+ * The surface counterpart to findOwningWorkspace, mirroring `surface.close`'s
+ * all-ws scan. Returns `{ ws, leaf }` for the first owner or null.
+ */
+function findOwningWorkspaceBySurface(
+  workspaces: Workspace[],
+  surfaceId: string,
+): { ws: Workspace; leaf: PaneLeaf } | null {
+  for (const ws of workspaces) {
+    const leaf = findLeafBySurfaceId(ws.rootPane, surfaceId);
+    if (leaf) return { ws, leaf };
+  }
+  return null;
+}
+
 // ---------------------------------------------------------------------------
 // PTY submit helper — paste structured inter-agent messages through bracketed
 // paste before submitting, so receiver-controlled shells/readline prompts treat
@@ -527,15 +556,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   }
 
   if (method === 'surface.focus') {
+    // surfaceIds are globally unique → resolve across ALL workspaces (mirrors
+    // surface.close / pane.focus below), never the UI-active one. focusPaneSurface
+    // sets the owning ws's active pane + surface atomically and is non-yank
+    // (activeWorkspaceId is untouched), so a background agent can focus its own
+    // surface without stealing the user's screen.
     const surfaceId = String(params.id ?? '');
-    const ws = store.workspaces.find((w) => w.id === store.activeWorkspaceId);
-    if (!ws) return { error: 'no active workspace' };
-
-    const targetLeaf = findLeafBySurfaceId(ws.rootPane, surfaceId);
-    if (!targetLeaf) return { error: `surface ${surfaceId} not found` };
-
-    store.setActivePane(targetLeaf.id);
-    store.setActiveSurface(targetLeaf.id, surfaceId);
+    const owner = findOwningWorkspaceBySurface(store.workspaces, surfaceId);
+    if (!owner) return { error: `surface.focus: surface ${surfaceId} not found` };
+    store.focusPaneSurface(owner.ws.id, owner.leaf.id, surfaceId);
     return { ok: true };
   }
 
@@ -646,8 +675,17 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   }
 
   if (method === 'pane.focus') {
+    // paneIds are globally unique → resolve across ALL workspaces (mirrors
+    // pane.close), never the UI-active one. focusPaneSurface is non-yank
+    // (activeWorkspaceId untouched) so an external agent can focus a pane in its
+    // own background workspace. The old direct setActivePane call silently
+    // no-op'd for any non-active workspace yet still returned {ok:true} (false
+    // success); resolve-then-error surfaces the miss via getResultError.
     const paneId = String(params.id ?? '');
-    store.setActivePane(paneId);
+    const ownerWs = findOwningWorkspace(store.workspaces, paneId);
+    if (!ownerWs) return { error: `pane.focus: pane ${paneId} not found` };
+    const ok = store.focusPaneSurface(ownerWs.id, paneId);
+    if (!ok) return { error: `pane.focus: pane ${paneId} is not a focusable leaf` };
     return { ok: true };
   }
 
