@@ -11,7 +11,14 @@
  * same-pane surface (tab) switches, and must decline non-terminal surfaces.
  */
 import { describe, it, expect } from 'vitest';
-import { resolveActivePanePtyId, driveFocusToTerminal, type FocusDriverDeps } from '../useActivePaneFocus';
+import {
+  resolveActivePanePtyId,
+  driveFocusToTerminal,
+  isFocusOrphaned,
+  reassertFocusIfOrphaned,
+  type FocusDriverDeps,
+  type FocusReassertDeps,
+} from '../useActivePaneFocus';
 import type { Workspace, Pane, PaneLeaf, Surface } from '../../../shared/types';
 
 function surface(id: string, ptyId: string, surfaceType?: Surface['surfaceType']): Surface {
@@ -195,5 +202,100 @@ describe('driveFocusToTerminal', () => {
     h.register('pty-1');
     expect(h.focused).toEqual([]);
     expect(h.listenerCount()).toBe(0);
+  });
+});
+
+// ─── isFocusOrphaned ─────────────────────────────────────────────────────────
+// The guard that lets the self-heal RECLAIM abandoned focus without ever
+// STEALING focus the user placed on a real element.
+
+describe('isFocusOrphaned', () => {
+  const body = {} as Element;
+  const real = {} as Element;
+
+  it('true when nothing holds focus (activeElement null)', () => {
+    expect(isFocusOrphaned(null, body)).toBe(true);
+  });
+  it('true when <body> holds focus', () => {
+    expect(isFocusOrphaned(body, body)).toBe(true);
+  });
+  it('false when a real interactive element holds focus', () => {
+    expect(isFocusOrphaned(real, body)).toBe(false);
+  });
+});
+
+// ─── reassertFocusIfOrphaned ─────────────────────────────────────────────────
+// Pins the fix for the field bug "typing dies in the Claude pane until I toggle
+// multiview": an overlay closes, focus falls to <body>, and the terminal must
+// be re-focused — but only when focus is genuinely orphaned.
+
+/** Drives the heal with a controllable activeElement sequence + manual defer. */
+function makeReassertHarness(seq: Array<'body' | 'real' | 'null'>, target: string | null) {
+  const body = {} as Element;
+  const real = {} as Element;
+  const resolve = { body, real, null: null } as const;
+  const active = seq.map((s) => resolve[s]);
+  let i = 0;
+  const focused: string[] = [];
+  const healed: string[] = [];
+  const deferQueue: Array<() => void> = [];
+
+  const deps: FocusReassertDeps = {
+    resolveTarget: () => target,
+    // Each read advances the staged sequence, clamping at the last entry so a
+    // heal that reads activeElement twice (sync + deferred) sees both stages.
+    getActiveElement: () => active[Math.min(i++, active.length - 1)],
+    getBody: () => body,
+    focusTerminal: (id) => focused.push(id),
+    defer: (cb) => deferQueue.push(cb),
+    onHeal: (id) => healed.push(id),
+  };
+
+  return {
+    deps,
+    focused,
+    healed,
+    deferredCount: () => deferQueue.length,
+    drain: () => { while (deferQueue.length) { const cb = deferQueue.shift(); if (cb) cb(); } },
+  };
+}
+
+describe('reassertFocusIfOrphaned', () => {
+  it('focuses the active terminal when focus is orphaned to <body>', () => {
+    const h = makeReassertHarness(['body', 'body'], 'pty-1');
+    reassertFocusIfOrphaned(h.deps);
+    // Deferred — nothing focused synchronously.
+    expect(h.focused).toEqual([]);
+    h.drain();
+    expect(h.focused).toEqual(['pty-1']);
+    expect(h.healed).toEqual(['pty-1']);
+  });
+
+  it('fast-bails (schedules no defer) when a real element holds focus', () => {
+    const h = makeReassertHarness(['real'], 'pty-1');
+    reassertFocusIfOrphaned(h.deps);
+    expect(h.deferredCount()).toBe(0); // hot per-keystroke path stays cheap
+    h.drain();
+    expect(h.focused).toEqual([]);
+  });
+
+  it('does nothing when no terminal target resolves (browser/editor/empty)', () => {
+    const h = makeReassertHarness(['body', 'body'], null);
+    reassertFocusIfOrphaned(h.deps);
+    h.drain();
+    expect(h.focused).toEqual([]);
+    expect(h.healed).toEqual([]);
+  });
+
+  it('does NOT yank focus when a real element claims it before the deferred frame', () => {
+    // Orphaned at the synchronous check (body), but a legit element (palette
+    // input) takes focus by the time the deferred re-check runs — the user
+    // moved focus on purpose, so the heal must stand down.
+    const h = makeReassertHarness(['body', 'real'], 'pty-1');
+    reassertFocusIfOrphaned(h.deps);
+    expect(h.deferredCount()).toBe(1);
+    h.drain();
+    expect(h.focused).toEqual([]);
+    expect(h.healed).toEqual([]);
   });
 });

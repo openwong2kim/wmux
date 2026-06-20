@@ -105,6 +105,64 @@ export function driveFocusToTerminal(ptyId: string, deps: FocusDriverDeps): () =
 }
 
 /**
+ * Is DOM focus "orphaned" — sitting on <body> or nowhere — rather than on a
+ * real interactive element?
+ *
+ * This is the load-bearing guard for the focus self-heal below. The heal may
+ * ONLY reclaim abandoned focus, never STEAL focus the user has placed: when a
+ * palette input, the agent-toolbar textarea, another pane's xterm, or a browser
+ * webview legitimately holds focus, `document.activeElement` is THAT element
+ * (not body), so this returns false and the heal stands down. It is exactly
+ * what lets the heal coexist with `driveFocusToTerminal`'s deliberately
+ * one-shot disarm (see its doc): that disarm stops focus being re-grabbed on a
+ * remount; this only ever fires when nobody owns focus at all.
+ */
+export function isFocusOrphaned(active: Element | null, body: Element | null): boolean {
+  return active === null || active === body;
+}
+
+export interface FocusReassertDeps {
+  /** The ptyId that SHOULD hold focus, or null (browser/editor/empty/no-ws). */
+  resolveTarget: () => string | null;
+  getActiveElement: () => Element | null;
+  getBody: () => Element | null;
+  /** Pull DOM focus onto a terminal's xterm by ptyId. No-op if unregistered. */
+  focusTerminal: (ptyId: string) => void;
+  /** Defer one frame so we read activeElement AFTER the focus change settles. */
+  defer: (cb: () => void) => void;
+  /** Instrumentation: called with the ptyId whenever a heal actually fires. */
+  onHeal?: (ptyId: string) => void;
+}
+
+/**
+ * Reclaim DOM focus onto the active terminal when it has been orphaned to
+ * <body>. This closes the structural hole behind the field bug "typing dies in
+ * the Claude pane until I toggle multiview": every transient overlay (Ctrl+F
+ * search bar, Ctrl+K palette, notification panel, agent-toolbar RichInput)
+ * focuses its OWN field and, on dismiss, UNMOUNTS — dropping DOM focus to
+ * <body>. Those overlays toggle via store flags that are NOT part of
+ * `useActivePaneFocus`'s focusKey, so the one-shot driver never re-runs and the
+ * terminal stays deaf. A multiview toggle "recovers" only because it remounts
+ * the whole workspace subtree and re-runs focus resolution from scratch.
+ *
+ * Two-stage check: a synchronous fast-bail keeps the per-keystroke path cheap
+ * (when a real element holds focus we never even touch the defer), and a
+ * deferred re-check absorbs the transient `<body>` window during a LEGIT focus
+ * move (terminal → palette input) so we don't yank focus back out from under
+ * the user mid-transition.
+ */
+export function reassertFocusIfOrphaned(deps: FocusReassertDeps): void {
+  if (!isFocusOrphaned(deps.getActiveElement(), deps.getBody())) return;
+  deps.defer(() => {
+    if (!isFocusOrphaned(deps.getActiveElement(), deps.getBody())) return;
+    const ptyId = deps.resolveTarget();
+    if (!ptyId) return;
+    deps.focusTerminal(ptyId);
+    deps.onHeal?.(ptyId);
+  });
+}
+
+/**
  * Keyboard pane/surface navigation moves the *visual* active marker (the red
  * pane border, driven by `ws.activePaneId` in the store) but does NOT move DOM
  * focus. xterm routes keystrokes from whichever textarea currently holds DOM
@@ -146,4 +204,36 @@ export function useActivePaneFocus(): void {
       caf: (handle) => cancelAnimationFrame(handle),
     });
   }, [focusKey]);
+
+  // Self-heal: reclaim focus when an overlay (search bar / command palette /
+  // notification panel / agent-toolbar RichInput) closes and drops DOM focus to
+  // <body>. The primary effect above only fires when the focus TARGET changes;
+  // these triggers cover the "target unchanged, focus abandoned" hole that left
+  // the terminal deaf until a multiview remount. Mounted once (this hook lives
+  // at AppLayout) and never re-armed per target, so it is independent of
+  // focusKey. The `isFocusOrphaned` guard inside means a real element holding
+  // focus (palette, toolbar, another pane, browser webview) is never disturbed.
+  useEffect(() => {
+    const onSignal = (): void => reassertFocusIfOrphaned({
+      resolveTarget: () => resolveActivePanePtyId(useStore.getState()),
+      getActiveElement: () => document.activeElement,
+      getBody: () => document.body,
+      focusTerminal: (id) => terminalRegistry.get(id)?.focus(),
+      defer: (cb) => requestAnimationFrame(cb),
+      onHeal: (id) => console.debug(`[useActivePaneFocus] reclaimed orphaned focus → pty=${id}`),
+    });
+    // window 'focus': OS focus returns (alt-tab back) onto <body>.
+    // 'focusout': an element (overlay input) just relinquished / was unmounted;
+    //   bubbles to document, unlike 'blur'.
+    // 'keydown': safety net — a key reached <body> because nothing is focused
+    //   (the literal dead-input moment); re-assert so the NEXT key lands.
+    window.addEventListener('focus', onSignal);
+    document.addEventListener('focusout', onSignal);
+    document.addEventListener('keydown', onSignal);
+    return () => {
+      window.removeEventListener('focus', onSignal);
+      document.removeEventListener('focusout', onSignal);
+      document.removeEventListener('keydown', onSignal);
+    };
+  }, []);
 }
