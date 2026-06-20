@@ -4,7 +4,7 @@
 
 ### The Windows terminal built for AI agents.
 
-Run **Claude Code**, **Codex CLI**, and **Gemini CLI** side by side — split panes, a browser your agents can actually drive, and zero-config MCP. **No WSL.**
+Run **Claude Code**, **Codex CLI**, and **Gemini CLI** side by side — split panes, agents that **hand work to each other**, a browser they can actually drive, and zero-config MCP. **No WSL.**
 
 <img width="924" alt="wmux" src="https://github.com/user-attachments/assets/6ad876f5-1f41-409a-b949-8ca78471cd4f" />
 
@@ -37,19 +37,23 @@ winget install openwong2kim.wmux
 |   |   |
 |---|---|
 | 🪟 **Many agents, one window** | Split panes + workspaces. Claude on the left, Codex on the right, Gemini running tests below — simultaneously. |
+| 🤝 **Agents coordinate, not just coexist** | Agent-to-agent messaging + task delegation. One agent hands a job to another, addressed by pane — and an **execute approval gate** stops any agent from running code in your workspace without your OK. This is the multi-agent moat. |
 | 🌐 **Agents drive a *real* browser** | Built-in Chrome over CDP. Say *"search Google for this"* and your agent actually clicks, types, and screenshots. Works with React inputs and CJK text. |
-| 🧭 **Fleet View** | `Ctrl+Shift+A` — every agent across every workspace on one screen, the ones blocked on input floated to the top. Click to jump straight there. |
+| 🧭 **Fleet View cockpit** | `Ctrl+Shift+A` — every agent across every workspace on one screen, blocked ones floated to the top with a live activity line. Clear every stuck approval from one **inbox**; click any card to jump straight there. |
 | 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` before they run. |
-| 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** Claude panes even offer to resume the exact conversation after a reboot. |
+| 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots, resuming the *exact* Claude conversation it was on. |
 | 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — browser + terminal tools register automatically. |
 
 ---
 
 ## ✨ Highlights
 
+- 🤝 **A2A multi-agent** — agents message + delegate tasks by pane, gated by a per-pane execute approval, with a pollable task inbox + symmetric reply
+- 🤖 **Agent supervision** — declare a pane in `wmux.json` (trust-gated) and the daemon keeps it alive: restart policy, backoff, reboot survival
 - 🖥️ **ConPTY + xterm.js WebGL** rendering · 999K-line scrollback · Unicode 11 (correct CJK / emoji)
 - ⌨️ **Tmux-style prefix** (`Ctrl+B` + key, 13 actions) · **floating pane** (`` Ctrl+` ``) · scroll bookmarks
 - 🔀 **Multiview** — several workspaces side by side · layout templates · drag-to-reorder sidebar
+- 🧩 **Plugin host** — sandboxed iframe plugins with an explicit permission model
 - 🛡️ **Token-authed IPC**, SSRF guard, PTY input sanitization, randomized CDP port, Electron Fuses
 - 🎨 Catppuccin Mocha · Monochrome · Sandstone &nbsp;·&nbsp; 🌏 English · 한국어 · 日本語 · 中文
 
@@ -93,6 +97,12 @@ winget install openwong2kim.wmux
 
 **Agent detection** — Claude Code, Cursor, Aider, Codex CLI, Gemini CLI, OpenCode, GitHub Copilot CLI. Detects start → activates monitoring, warns on critical actions.
 
+**Multi-agent (A2A)** — agent-to-agent messaging + task delegation addressed by pane/surface, same-workspace and cross-workspace. Per-pane **execute approval gate** (a remote agent can't spawn a `bypassPermissions` worker in your workspace without your approval). Symmetric reply (a reply returns to the exact pane that asked), pollable task inbox on the EventBus, broadcast, and a unified approval inbox in Fleet View.
+
+**Supervision & wmux.json** — declare panes/agents in a trust-gated `wmux.json` (auto-layout + custom commands). The daemon supervises declared agent panes like an init system: restart policy with backoff across process exits, daemon restarts, and full reboots, with a runaway-crash guard — and it resumes the exact agent conversation on restart, not a fresh shell.
+
+**Plugins** — sandboxed iframe plugin host with a bridge + explicit permission model and pane decorations.
+
 **Daemon** — background session management (survives app restart), scrollback dump + auto-recovery, Windows startup registration (survives reboot), dead-session TTL reaping.
 
 **MCP tools** — `browser_*` (open / navigate / screenshot / snapshot / click / fill / type / evaluate / press_key), `terminal_read` / `terminal_read_events` (OSC 133) / `terminal_send`, `workspace_list` / `surface_list` / `pane_list`, `a2a_*` agent-to-agent + task delegation, `company_a2a_*` coordination. Every browser tool takes a `surfaceId` so each session drives its own browser.
@@ -132,7 +142,7 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 
 **Works with Claude Code / Codex / Gemini?** Yes. wmux auto-detects them and registers an MCP server so they can drive the browser and read terminal output.
 
-**Multiple agents at once?** Yes — each pane is an independent PTY, and agents can talk via the A2A MCP tools.
+**Multiple agents at once?** Yes. Each pane is an independent PTY, and agents coordinate over A2A MCP tools — message each other, delegate tasks by pane, reply to the exact pane that asked, and gate any cross-agent code execution behind your approval.
 
 **"Windows protected your PC" warning?** The installer isn't Authenticode-signed yet (free signing via [SignPath.io](https://signpath.io/) / [SignPath Foundation](https://signpath.org/) is being set up), so SmartScreen flags an unknown publisher. It's safe — click **More info → Run anyway**, or install via **winget** / **Chocolatey** to skip the prompt.
 
