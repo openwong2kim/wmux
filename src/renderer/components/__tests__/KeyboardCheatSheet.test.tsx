@@ -96,9 +96,17 @@ describe('buildShortcuts', () => {
     expect(winList.find((e) => e.label === 'cheatSheet.toggleSidebar')?.combo).toBe('Ctrl+Shift+B');
   });
 
-  it('returns 11 shortcut entries', () => {
-    expect(buildShortcuts('darwin').length).toBe(11);
-    expect(buildShortcuts('win32').length).toBe(11);
+  it('returns 12 shortcut entries', () => {
+    expect(buildShortcuts('darwin').length).toBe(12);
+    expect(buildShortcuts('win32').length).toBe(12);
+  });
+
+  it('includes the Maximize pane entry (literal "Ctrl+B Z" on every platform)', () => {
+    const macList = buildShortcuts('darwin');
+    const winList = buildShortcuts('win32');
+    expect(macList.find((e) => e.label === 'Maximize pane')?.combo).toBe('Ctrl+B Z');
+    expect(winList.find((e) => e.label === 'Maximize pane')?.combo).toBe('Ctrl+B Z');
+    expect(macList.find((e) => e.label === 'Maximize pane')?.literal).toBe(true);
   });
 
   it('includes the Ctrl+Shift+Arrow move-focus entry (literal Ctrl on every platform)', () => {
@@ -224,12 +232,12 @@ describe('KeyboardCheatSheetView (renderToStaticMarkup)', () => {
     expect(renderView({ progress: 5 })).toMatch(/style="width:\s*100%/);
   });
 
-  it('renders all 11 shortcut entries in the list', () => {
+  it('renders all 12 shortcut entries in the list', () => {
     const html = renderView({ shortcuts: buildShortcuts('win32') });
     // Each shortcut entry is rendered inside a <li>; count occurrences of the
-    // opening <li tag inside the list to verify all 11 made it.
+    // opening <li tag inside the list to verify all 12 made it.
     const liMatches = html.match(/<li/g) ?? [];
-    expect(liMatches.length).toBe(11);
+    expect(liMatches.length).toBe(12);
   });
 });
 

@@ -256,6 +256,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       }}
       onClick={handleClick}
       data-onboarding-target="pane-area"
+      data-wmux-pane-root
       {...tokenAttrs('accent', 'border')}
       data-derived="accentCursor"
     >
@@ -289,6 +290,41 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           }}
         >
           ZOOM
+        </button>
+      )}
+      {/* Issue #182 discoverability: an un-zoomed pane exposes a quiet maximize
+          button (hover-revealed via .wmux-pane-maximize-btn in globals.css) so
+          the zoom feature isn't keyboard-only. Clicking it zooms the pane; once
+          zoomed, the always-visible ZOOM badge above takes over as the toggle. */}
+      {!isZoomed && (
+        <button
+          className="wmux-pane-maximize-btn"
+          onClick={(e) => {
+            e.stopPropagation();
+            useStore.getState().togglePaneZoom(pane.id);
+          }}
+          title={t('settings.prefix.toggleZoom')}
+          aria-label={t('settings.prefix.toggleZoom')}
+          style={{
+            position: 'absolute',
+            top: 4,
+            // Sit left of the supervision badge when present (it owns right:6 on
+            // an un-zoomed pane); otherwise take the corner.
+            right: supervision ? 32 : 6,
+            zIndex: 20,
+            padding: '0 5px',
+            height: 16,
+            fontSize: 12,
+            lineHeight: '16px',
+            fontFamily: 'ui-monospace, monospace',
+            color: 'var(--text-main)',
+            backgroundColor: 'var(--bg-surface)',
+            border: '1px solid var(--bg-surface0, rgba(255,255,255,0.12))',
+            borderRadius: 3,
+            cursor: 'pointer',
+          }}
+        >
+          ⤢
         </button>
       )}
       {supervision && (

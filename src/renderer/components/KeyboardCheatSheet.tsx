@@ -87,6 +87,13 @@ export function buildShortcuts(platform: string | undefined): CheatSheetEntry[] 
     // tmux prefix is always literal Ctrl+B (wmux convention, D1 / useKeyboard.ts).
     // TODO(T1): wire i18n key for cheat sheet "tmux prefix" entry.
     { label: 'tmux prefix', combo: 'Ctrl+B', literal: true },
+    // Maximize / zoom the focused pane to fill the window (tmux prefix then z;
+    // press again to restore). Surfaced here because there is no always-visible
+    // button — the pane only reveals a maximize affordance on hover — so the
+    // "no fullscreen button" gap is at least discoverable via the cheat sheet.
+    // literal: the prefix is Ctrl+B on every OS, so the combo can't use ⌘.
+    // TODO(T1): wire i18n key for cheat sheet "Maximize pane" entry.
+    { label: 'Maximize pane', combo: 'Ctrl+B Z', literal: true },
     // Bookmark is always literal Ctrl+M (matches useKeyboard.ts:448).
     // TODO(T1): wire i18n key for cheat sheet "Bookmark line" entry.
     { label: 'Bookmark line', combo: 'Ctrl+M', literal: true },

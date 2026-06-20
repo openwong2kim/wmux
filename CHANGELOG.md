@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+- **A pane now has a discoverable maximize button.** Hovering an un-zoomed pane reveals a quiet `⤢` button in its top-right corner; clicking it zooms that pane to fill the window — the same toggle as the tmux-style prefix + `z`, which was previously keyboard-only and undocumented. The keyboard cheat sheet (`?` in prefix mode) gained a **Maximize pane** entry. Surfaced after Reddit feedback that there was no visible fullscreen/maximize control to find ([#182](https://github.com/openwong2kim/wmux/issues/182) follow-up).
+
+### Fixed
+- **Ctrl+Enter now inserts a newline instead of submitting, inside in-pane TUIs like Claude Code and codex.** xterm sends a bare carriage return for Ctrl+Enter — byte-identical to plain Enter — so a TUI couldn't tell the two apart and treated Ctrl+Enter as submit. wmux now emits a line feed for the Ctrl+Enter chord, matching the existing Shift+Enter and Ctrl+J newline keys. Surfaced after Reddit feedback.
+
 ## [3.6.0] — 2026-06-17 — A reply finds the exact agent that asked
 
 Headline: same-workspace agents now reply to the *exact* pane that asked. A task's reply returns to its originating pane instead of the workspace's active one, same-workspace history finally tells the two agents apart (sender vs receiver, per pane), and a status update is restricted to the addressed pane — completing the pane-level multi-agent mesh that #239 and #242 began. Plus a fix for the terminal+browser split that blanked its unfocused side.

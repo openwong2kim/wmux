@@ -413,6 +413,28 @@ html, body, #root {
   display: none !important;
 }
 
+/* Pane maximize affordance (issue #182 discoverability): the per-pane maximize
+ * button stays invisible until the pane is hovered, then fades in — keeps the
+ * terminal surface clean while giving a discoverable click target alongside the
+ * keyboard path (prefix + z) and the cheat-sheet entry. A zoomed pane keeps its
+ * always-visible ZOOM badge instead (rendered separately in Pane.tsx). */
+.wmux-pane-maximize-btn {
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+[data-wmux-pane-root]:hover .wmux-pane-maximize-btn {
+  opacity: 0.85;
+}
+.wmux-pane-maximize-btn:hover,
+.wmux-pane-maximize-btn:focus-visible {
+  opacity: 1 !important;
+}
+@media (prefers-reduced-motion: reduce) {
+  .wmux-pane-maximize-btn {
+    transition: none;
+  }
+}
+
 /* ─── Sidebar polish: depth + motion (refined-terminal pass) ────────────────
  * Depth on the active row comes from token-derived color-mix values, so all
  * built-in and custom themes work: the gradient/highlight lean toward
