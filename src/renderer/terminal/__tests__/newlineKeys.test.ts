@@ -78,3 +78,30 @@ describe('resolveNewlineKeyByte — Shift+Enter (preserved behavior)', () => {
     expect(resolveNewlineKeyByte(ev({ key: 'Enter', shiftKey: true, ctrlKey: true }))).toBeNull();
   });
 });
+
+describe('resolveNewlineKeyByte — Ctrl+Enter', () => {
+  it('emits LF for Ctrl+Enter so an in-pane TUI inserts a newline instead of submitting', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', code: 'Enter', ctrlKey: true }))).toBe('\n');
+  });
+
+  it('emits LF for Ctrl+Enter on the numeric keypad (NumpadEnter still reports key "Enter")', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', code: 'NumpadEnter', ctrlKey: true }))).toBe('\n');
+  });
+
+  it('ignores Ctrl+Shift+Enter (Shift+Enter already owns its CSI u path)', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', ctrlKey: true, shiftKey: true }))).toBeNull();
+  });
+
+  it('ignores Ctrl+Alt+Enter and Ctrl+Meta+Enter', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', ctrlKey: true, altKey: true }))).toBeNull();
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', ctrlKey: true, metaKey: true }))).toBeNull();
+  });
+
+  it('defers during an active IME composition so a preedit is not split', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter', ctrlKey: true, isComposing: true }))).toBeNull();
+  });
+
+  it('ignores a bare Enter (no Ctrl) — plain submit is unchanged', () => {
+    expect(resolveNewlineKeyByte(ev({ key: 'Enter' }))).toBeNull();
+  });
+});

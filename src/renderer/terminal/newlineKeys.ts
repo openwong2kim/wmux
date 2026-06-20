@@ -21,6 +21,11 @@
  *   - Shift+Enter → CSI u (`ESC [ 13 ; 2 u`): Claude Code / kitty-protocol
  *     apps insert a newline instead of submitting. (Pre-existing behavior,
  *     moved here verbatim.)
+ *   - Ctrl+Enter → LF (`\n`): same intent as Ctrl+J. With no extended keyboard
+ *     protocol enabled, xterm sends a bare CR for Ctrl+Enter — byte-identical
+ *     to plain Enter — so an in-pane TUI submits instead of inserting a
+ *     newline. Many users reach for Ctrl+Enter expecting a newline; we emit LF
+ *     so it behaves like Ctrl+J / Shift+Enter.
  *   - Ctrl+J → LF (`\n`, U+000A): the canonical "insert newline, do not
  *     submit" byte that codex / Claude Code / readline editors expect. This
  *     is exactly what xterm would emit in its legacy path — we just emit it
@@ -61,6 +66,26 @@ export function resolveNewlineKeyByte(
   // constrained — preserves the original inline handler's exact predicate.)
   if (e.key === 'Enter' && e.shiftKey && !e.ctrlKey && !e.altKey) {
     return '\x1b[13;2u';
+  }
+
+  // Ctrl+Enter → LF, same intent as Ctrl+J: insert a newline without
+  // submitting. xterm has no extended keyboard protocol enabled, so it sends a
+  // bare CR (\r) for Ctrl+Enter — indistinguishable from plain Enter — and an
+  // in-pane TUI (Claude Code, codex) submits instead of adding a line. Emitting
+  // LF ourselves gives the editor the "newline, don't submit" byte it expects.
+  // Keyed on `key === 'Enter'` to mirror the Shift+Enter predicate above
+  // (NumpadEnter also reports key 'Enter'). The other modifiers are excluded so
+  // only the pure Ctrl+Enter chord matches, and `!isComposing` defers to an
+  // active IME preedit exactly like the Ctrl+J path below.
+  if (
+    e.key === 'Enter' &&
+    e.ctrlKey &&
+    !e.shiftKey &&
+    !e.altKey &&
+    !e.metaKey &&
+    !e.isComposing
+  ) {
+    return '\n';
   }
 
   // Ctrl+J → LF. Match the physical key so it survives a CJK IME where
