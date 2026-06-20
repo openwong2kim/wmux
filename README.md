@@ -55,7 +55,7 @@ winget install openwong2kim.wmux
 - 🔀 **Multiview** — several workspaces side by side · layout templates · drag-to-reorder sidebar
 - 🧩 **Plugin host** — sandboxed iframe plugins with an explicit permission model
 - 🛡️ **Token-authed IPC**, SSRF guard, PTY input sanitization, randomized CDP port, Electron Fuses
-- 🎨 Catppuccin Mocha · Monochrome · Sandstone &nbsp;·&nbsp; 🌏 English · 한국어 · 日本語 · 中文
+- 🎨 Catppuccin Mocha · Monochrome · Sandstone &nbsp;·&nbsp; 🌏 **23 locales scaffolded** — English & 한국어 complete, 日本語 / 中文 in progress — **[translations welcome](https://github.com/openwong2kim/wmux/labels/good%20first%20issue)**
 
 > 💡 **Tip:** point Claude Code at the MCP tools (`browser_open`, `terminal_read`, `pane_list`, `a2a_task_send`) or script the `wmux` CLI (`wmux send` / `read-screen` / `list-panes --json`) to orchestrate panes programmatically.
 
@@ -172,6 +172,8 @@ Requires Node 18+, Python 3.x, and VS Build Tools (C++ workload). `WMUX_FROM_SOU
 ---
 
 ## 🙌 Contributors
+
+New here? Grab a [**good first issue**](https://github.com/openwong2kim/wmux/labels/good%20first%20issue), help translate a locale, or read [**CONTRIBUTING.md**](CONTRIBUTING.md) — PRs welcome.
 
 [![Contributors](https://contrib.rocks/image?repo=openwong2kim/wmux)](https://github.com/openwong2kim/wmux/graphs/contributors)
 

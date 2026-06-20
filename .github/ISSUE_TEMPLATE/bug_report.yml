@@ -1,0 +1,124 @@
+name: Bug report
+description: Something in wmux is broken or behaves unexpectedly.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to file a bug. wmux is a native Windows
+        terminal multiplexer — please include enough detail for us to reproduce
+        it on a clean machine. Search [existing issues](https://github.com/openwong2kim/wmux/issues?q=is%3Aissue)
+        first; if you find a match, add a 👍 or a comment instead of opening a new one.
+
+  - type: textarea
+    id: summary
+    attributes:
+      label: What happened?
+      description: A clear, concise description of the bug — what you saw versus what you expected.
+      placeholder: When I split a pane with Ctrl+D, the new pane renders blank until I click it.
+    validations:
+      required: true
+
+  - type: textarea
+    id: repro
+    attributes:
+      label: Steps to reproduce
+      description: Number the exact steps so we can follow along. Include any `wmux.json` or layout that matters.
+      placeholder: |
+        1. Launch wmux
+        2. Open a workspace and run `claude`
+        3. Press Ctrl+D to split right
+        4. Observe the right pane is blank
+    validations:
+      required: true
+
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected behavior
+      description: What did you expect to happen instead?
+    validations:
+      required: true
+
+  - type: input
+    id: wmux-version
+    attributes:
+      label: wmux version
+      description: "Found in Settings → About, or run `wmux --version`."
+      placeholder: e.g. 3.6.0
+    validations:
+      required: true
+
+  - type: dropdown
+    id: install-method
+    attributes:
+      label: How did you install wmux?
+      options:
+        - winget
+        - Chocolatey
+        - Setup.exe (direct download)
+        - Built from source
+        - Other / not sure
+    validations:
+      required: true
+
+  - type: dropdown
+    id: shell
+    attributes:
+      label: Shell in the affected pane
+      description: Which shell was running in the pane where the bug occurred?
+      options:
+        - PowerShell 7+ (pwsh)
+        - Windows PowerShell 5.1
+        - Command Prompt (cmd)
+        - WSL / other
+        - Not applicable
+    validations:
+      required: true
+
+  - type: input
+    id: windows-version
+    attributes:
+      label: Windows version
+      description: "Run `winver`, or Settings → System → About. Include the build number."
+      placeholder: e.g. Windows 11 23H2 (build 22631.3737)
+    validations:
+      required: true
+
+  - type: dropdown
+    id: agent
+    attributes:
+      label: AI agent involved (if any)
+      description: Was a coding agent running in the pane when this happened?
+      options:
+        - None / not relevant
+        - Claude Code
+        - Codex CLI
+        - Gemini CLI
+        - Other agent
+      default: 0
+    validations:
+      required: false
+
+  - type: textarea
+    id: logs
+    attributes:
+      label: Logs, screenshots, or recordings
+      description: |
+        Attach anything that helps. Daemon and renderer logs live under
+        `%APPDATA%\wmux\logs`. Drag-and-drop images or paste a short clip.
+        Code and logs are rendered automatically — no backticks needed.
+      render: shell
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues and this is not a duplicate.
+          required: true
+        - label: I am on Windows 10 or 11 (wmux is Windows-only).
+          required: true

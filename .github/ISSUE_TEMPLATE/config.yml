@@ -1,0 +1,11 @@
+blank_issues_enabled: false
+contact_links:
+  - name: 💬 Questions & ideas (Discussions)
+    url: https://github.com/openwong2kim/wmux/discussions
+    about: Ask a question, share a setup, or float an open-ended idea before it becomes an issue.
+  - name: 🔒 Report a security vulnerability
+    url: https://github.com/openwong2kim/wmux/security/advisories/new
+    about: Please report security issues privately here — do not open a public issue.
+  - name: 📖 Documentation
+    url: https://github.com/openwong2kim/wmux#readme
+    about: Installation, keyboard shortcuts, and the full feature list live in the README.

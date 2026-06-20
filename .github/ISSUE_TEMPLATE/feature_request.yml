@@ -1,0 +1,52 @@
+name: Feature request
+description: Suggest an idea or improvement for wmux.
+title: "[Feature]: "
+labels: ["enhancement"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for helping shape wmux. Search [existing issues](https://github.com/openwong2kim/wmux/issues?q=is%3Aissue)
+        and [Discussions](https://github.com/openwong2kim/wmux/discussions) first —
+        if your idea is open-ended, a Discussion is often a better home for it.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What problem are you trying to solve? What's frustrating or missing today?
+      placeholder: I run four agents across two workspaces and can't tell at a glance which one is blocked on an approval.
+    validations:
+      required: true
+
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed solution
+      description: Describe the feature or behavior you'd like. Be as concrete as you can.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Other approaches, workarounds you currently use, or how similar tools (tmux, cmux, Windows Terminal) handle this.
+    validations:
+      required: false
+
+  - type: textarea
+    id: context
+    attributes:
+      label: Additional context
+      description: Mockups, screenshots, links, or anything else that helps explain the request.
+    validations:
+      required: false
+
+  - type: checkboxes
+    id: checks
+    attributes:
+      label: Confirmation
+      options:
+        - label: I searched existing issues and Discussions and this is not a duplicate.
+          required: true
