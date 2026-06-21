@@ -7,11 +7,36 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.8.0] — 2026-06-22 — LanLink: local-first cross-PC agent messaging
+
+Headline: **LanLink** lets two wmux machines on the same LAN pair once with a 6-digit PIN, then exchange read-only agent messages over an authenticated, encrypted channel — no cloud, no account, off by default. The epic is built so that **running commands across machines is physically impossible**: the background daemon imports none of the agent-spawning code, a remote message can only ever surface as a read-only card in the renderer (never pasted into a terminal), and every internal RPC now carries a required trust-origin so the execute path fails closed for anything not provably local. Also lands A2A channels U1 (the rooms half of a future cross-PC group chat), a Fleet View sort toggle, a quieter zoom-restore button, and a keyboard-focus self-heal.
+
+### Added
+
+- **LanLink — local-first cross-PC agent messaging, off by default.** Two machines on the same LAN pair with a 6-digit PIN and then exchange read-only text messages over a ChaCha20-Poly1305 channel with per-connection fresh keys. Built across five PRs, with execute excluded by construction at every layer:
+  - **Durable inbox + cursor-pull delivery ([#271](https://github.com/openwong2kim/wmux/pull/271)).** A daemon-side append-only inbox persists inbound remote messages and survives a renderer or main crash; the renderer pulls by cursor on reconnect, so nothing is lost and nothing replays twice. A dedicated IPC channel keeps a remote message structurally unable to reach the terminal-paste path.
+  - **Control plane + Settings ([#272](https://github.com/openwong2kim/wmux/pull/272)).** An enable toggle and NIC picker in Settings, config persisted across daemon restarts, with the NIC stored as a name+MAC identity (re-resolved to a live IP at bind time, never a stale address). No listener yet — this is the network-0 control surface.
+  - **LanLinkServer core ([#273](https://github.com/openwong2kim/wmux/pull/273)).** The network surface: an isolated `net.Server` bound only to a real external IPv4 on the chosen NIC (fail-closed bind guard, Windows Private-profile firewall), PIN-EKE pairing (X25519 + scrypt over the PIN, which never travels on the wire; ≤2-minute window; fail-burn after 5 wrong attempts), the AEAD channel, an allow-list router that admits only text/state messages (never execute/spawn), an ingress sanitizer, and a fail-closed per-peer store with live revoke. Per-peer random UUIDs and long-term secrets under an owner-only DACL.
+  - **Renderer + pairing UX ([#275](https://github.com/openwong2kim/wmux/pull/275)).** A read-only **remote-peer card** in a new Fleet View *Remote* tab — untrusted off-machine text rendered as plain React text, never a terminal escape — plus a Settings **pairing section** (generate a PIN with a live countdown, join another machine, list and revoke peers), and the main-process bridge that exposes the daemon's pairing RPCs to the UI with the daemon itself untouched.
+  - **Review follow-ups.** The pairing screen shows this machine's `host:port` next to the PIN so a peer can join from one screen ([#277](https://github.com/openwong2kim/wmux/pull/277)).
+
+- **A2A channels — domain types + persistence (U1, [#269](https://github.com/openwong2kim/wmux/pull/269)).** The first half of channels — Slack-style rooms for agents: the channel domain types and a durable persistence layer, contributed by @AnandSundar. Converges with LanLink at a shared delivery seam toward a local-first cross-PC group chat.
+
+- **Fleet View situational sort toggle ([#268](https://github.com/openwong2kim/wmux/pull/268)).** The cockpit grid can now toggle between attention-first (blocked agents float to the top) and pure workspace order.
+
 ### Changed
 
-- **The zoom restore button is now a quiet, minimal control that matches the maximize button.** When a pane is zoomed, the toggle that returns it to the grid was a bold red `ZOOM` badge — it reused the cursor accent color, which is a strong red in several themes. It's now styled identically to the hover-revealed `⤢` maximize button (neutral surface background, subtle border) and uses a `⤡` restore glyph, so the maximize and restore controls read as a matched pair instead of the restore button drawing the eye. It still stays visible while zoomed so the way back out is always obvious ([#258](https://github.com/openwong2kim/wmux/pull/258) follow-up).
+- **The A2A execute path is hardened against off-machine callers ([#270](https://github.com/openwong2kim/wmux/pull/270)).** Every internal RPC now carries a required trust-origin tag (`local` vs `remote`), and the agent-spawning `a2a.task.send` path only runs when the call provably came from this machine — a positive-allow gate that fails closed for anything else, pinned by a source-level test that the background daemon can never even import the code that spawns agents. Nothing changes for same-machine multi-agent use; this is the foundation that makes cross-PC execute impossible.
+- **`system.capabilities` advertises only methods that are actually callable over the wire ([#276](https://github.com/openwong2kim/wmux/pull/276)).** Control-pipe-only RPCs (`daemon.*`, `lanlink.*`) are dispatched by the daemon pipe and never registered on the RPC router, so they're no longer listed — a wire client gets an honest capability list instead of methods that would just return unknown-method.
+- **The zoom restore button is now a quiet, minimal control that matches the maximize button ([#274](https://github.com/openwong2kim/wmux/pull/274)).** When a pane is zoomed, the toggle that returns it to the grid was a bold red `ZOOM` badge — reusing the cursor accent, a strong red in several themes. It's now styled identically to the hover-revealed `⤢` maximize button (neutral surface, subtle border) with a `⤡` restore glyph, so maximize and restore read as a matched pair. It still stays visible while zoomed so the way back out is always obvious ([#258](https://github.com/openwong2kim/wmux/pull/258) follow-up).
 
-- **Hardened the A2A execute path against off-machine callers.** Every internal RPC now carries a required trust-origin tag (`local` vs `remote`), and the agent-spawning `a2a.task.send` path only runs when the call provably came from this machine, a positive-allow gate that fails closed for anything else. A source-level test pins that the background daemon can never even import the code that spawns agents. Nothing changes for same-machine multi-agent use today; this is the foundation for cross-PC A2A where remote agents can exchange messages but never execute commands.
+### Fixed
+
+- **Self-heal orphaned keyboard focus ([#267](https://github.com/openwong2kim/wmux/pull/267)).** Closing an overlay (search, palette, notifications, toolbar) could drop DOM focus to `<body>`, leaving the terminal unable to receive input until you opened multiview. A central guard now detects orphaned focus and reasserts it onto the active pane, so input keeps working after any overlay closes.
+
+### Documentation
+
+- **The README foregrounds the A2A multi-agent moat ([#260](https://github.com/openwong2kim/wmux/pull/260))**, and the contributor onramp gained issue templates plus an honest i18n status ([#261](https://github.com/openwong2kim/wmux/pull/261)).
 
 ## [3.7.0] — 2026-06-20 — A2A execute approval hardened, and remote RPC that lands in the right workspace
 
