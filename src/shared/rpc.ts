@@ -198,7 +198,16 @@ export type RpcMethod =
   | 'company.provision'
   | 'company.provisionAll'
   | 'company.provisionCeo'
-  | 'hooks.signal';
+  | 'hooks.signal'
+  | 'a2a.channel.list'
+  | 'a2a.channel.get'
+  | 'a2a.channel.getMessages'
+  | 'a2a.channel.getMembers'
+  | 'a2a.channel.create'
+  | 'a2a.channel.archive'
+  | 'a2a.channel.join'
+  | 'a2a.channel.leave'
+  | 'a2a.channel.post';
 
 // All available methods as array (for system.capabilities)
 export const ALL_RPC_METHODS = [
@@ -313,6 +322,15 @@ export const ALL_RPC_METHODS = [
   'company.provisionAll',
   'company.provisionCeo',
   'hooks.signal',
+  'a2a.channel.list',
+  'a2a.channel.get',
+  'a2a.channel.getMessages',
+  'a2a.channel.getMembers',
+  'a2a.channel.create',
+  'a2a.channel.archive',
+  'a2a.channel.join',
+  'a2a.channel.leave',
+  'a2a.channel.post',
 ] as const satisfies readonly RpcMethod[];
 
 // === RPC Parameter Types ===
@@ -368,7 +386,18 @@ export interface DaemonEvent {
     // LanLinkRemoteReceivedData ({ seq }); `sessionId` is the
     // LANLINK_SENTINEL_SESSION_ID — no PTY session backs a remote message.
     //   lanlink.remote.received → { seq: number }
-    | 'lanlink.remote.received';
+    | 'lanlink.remote.received'
+    // A2A channels (a2a-channels U4) — daemon broadcasts every successful
+    // post as `channel.message`. `sessionId` is not meaningful here (no
+    // session owns the event) so the field is set to '' (the rest of the
+    // dispatch path tolerates it; the consumer in DaemonNotificationRouter
+    // reads only `data`). `data` carries the full ChannelMessageEvent
+    // envelope (channelId, seq, sender, recipients, message,
+    // workspaceId). Main tees this onto the in-process EventBus as a
+    // WmuxEvent `channel.message`, which `events.poll` then scopes per-
+    // recipient (see events.rpc.ts). Naming matches the WmuxEvent
+    // counterpart 1:1; do not invent a new shape here.
+    | 'channel.message';
   sessionId: string;
   data: unknown;
 }

@@ -49,6 +49,15 @@ const KNOWN_CAPABILITIES = new Set<string>([
   'a2a.send',
   'a2a.execute',
   'a2a.read',
+  // A2A channels (a2a-channels). Two-capability split mirrors the read/send
+  // pattern above: `read` covers list/get/getMessages/getMembers, `send`
+  // covers create/post/join/leave/archive. A channel post is a
+  // fan-out operation that hits every member workspace, so the gate must
+  // not be sneaked in through a permissive a2a.send — that capability
+  // is bounded to a single peer (a2a.task.send) and a different shape
+  // of risk.
+  'a2a.channel.read',
+  'a2a.channel.send',
   // Plugin host UI contribution points (B-1). Enforced at contribution
   // registration time — the host refuses to mount the iframe/widget when
   // the capability is missing or the plugin isn't trusted; per-RPC

@@ -625,6 +625,18 @@ export class DaemonClient extends EventEmitter {
           this.emit('lanlink:nudge', { seq: data?.seq ?? 0 });
           break;
         }
+        case 'channel.message':
+          // A2A channels (a2a-channels U4) — every successful post on the
+          // daemon side is broadcast as `channel.message` with the full
+          // ChannelMessageEvent envelope in `data`. DaemonNotificationRouter
+          // tees this onto the main-process EventBus as a WmuxEvent
+          // `channel.message` (with the per-recipient scope filter in
+          // events.rpc.ts). Field shape mirrors the WmuxEvent counterpart
+          // 1:1 — see ChannelMessageEvent in src/shared/events.ts.
+          // `sessionId` is '' (no session owns the event); consumers read
+          // only `data`.
+          this.emit('channel:message', { data: event.data });
+          break;
         default:
           break;
       }

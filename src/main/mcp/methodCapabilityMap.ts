@@ -333,6 +333,23 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.task.cancel':      { capability: 'a2a.send',    riskClass: 'a2a' },
   'a2a.broadcast':        { capability: 'a2a.send',    riskClass: 'a2a' },
 
+  // --- A2A channels (a2a-channels) ---
+  // Two-capability split. `read` covers the four read methods; `send`
+  // covers every mutation including post (the post path is the fan-out
+  // fan-out: one call hits N member workspaces via the channel.message
+  // bus event). Capability is the only gate — channels have no
+  // per-payload path glob today (the workspaceId is the bus-scoping
+  // anchor, not a permission boundary).
+  'a2a.channel.list':        { capability: 'a2a.channel.read', riskClass: 'a2a' },
+  'a2a.channel.get':         { capability: 'a2a.channel.read', riskClass: 'a2a' },
+  'a2a.channel.getMessages': { capability: 'a2a.channel.read', riskClass: 'a2a' },
+  'a2a.channel.getMembers':  { capability: 'a2a.channel.read', riskClass: 'a2a' },
+  'a2a.channel.create':      { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'a2a.channel.archive':     { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'a2a.channel.join':        { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'a2a.channel.leave':       { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  'a2a.channel.post':        { capability: 'a2a.channel.send', riskClass: 'a2a' },
+
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.
   'company.create':         { capability: 'wmux.internal' },
@@ -411,6 +428,11 @@ export const CAPABILITY_RISK_CLASS: Record<string, RiskClass> = {
   'a2a.send':    'a2a',
   'a2a.execute': 'a2a',
   'a2a.read':    'a2a',
+  // A2A channels (a2a-channels). Same risk class as a2a.send/read —
+  // the approval dialog renders the same wording; the split is a
+  // capability-level fence, not a UX differentiation.
+  'a2a.channel.read': 'a2a',
+  'a2a.channel.send': 'a2a',
   // Plugin host UI contribution points (B-1) — enforced at mount time by
   // the renderer host, not per-RPC; classed here so the approval dialog
   // renders real copy instead of fallback text.

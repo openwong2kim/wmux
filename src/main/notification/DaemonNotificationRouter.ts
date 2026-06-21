@@ -11,6 +11,7 @@ import { eventBus } from '../events/EventBus';
 import { findWorkspaceIdForPty } from '../pipe/handlers/hooks.rpc';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import { agentDisplayToSlug } from '../pty/AgentDetector';
+import type { ChannelMessage } from '../../shared/channels';
 
 // Mirrors PTYBridge.AGENT_EVENT_SUPPRESSION_MS — same dedup semantics across
 // daemon and local modes.
@@ -320,6 +321,80 @@ export class DaemonNotificationRouter {
     }
   }
 
+  /**
+   * A2A channels (a2a-channels U4) — tee a daemon-broadcast `channel.message`
+   * onto the main-process EventBus as a WmuxEvent `channel.message`.
+   *
+   * Unlike the per-PTY tees above, this event is NOT scoped via
+   * `resolveWorkspaceIdForPty` — the sender's workspace is the `workspaceId`
+   * field on the event itself (the daemon froze it at the critical-section
+   * entry in ChannelService.post, plan KTD3), and the recipient set is
+   * `recipientWorkspaceIds`. The per-recipient fan-out is the job of
+   * `events.poll` (events.rpc.ts), which reads those two fields directly
+   * and drops the event for any caller not in scope. Teeing here with a
+   * `workspaceId: sender` so a consumer that ignores channel.message stays
+   * scoped to the sender (the base-scoping invariant in events.ts).
+   *
+   * No workspace-resolution-or-drop contract applies because the
+   * workspaceId is ALREADY authoritative on the event. We do, however,
+   * still skip a malformed payload — a missing `channelId` / `seq` /
+   * `senderWorkspaceId` / `message` would crash the bus-projection
+   * downstream, and the per-recipient filter in events.rpc.ts already
+   * tolerates empty `recipientWorkspaceIds` (it just routes to the sender
+   * only).
+   */
+  private emitChannelMessage(event: {
+    channelId?: string;
+    seq?: number;
+    sender?: { workspaceId?: string; memberId?: string; memberName?: string };
+    recipients?: Array<{ workspaceId?: string; memberId?: string; status?: string }>;
+    message?: ChannelMessage;
+    workspaceId?: string;
+  }): void {
+    try {
+      // Guard the minimum shape. Anything less is a daemon-side bug; log
+      // and skip rather than crash the bus.
+      if (
+        typeof event.channelId !== 'string' ||
+        event.channelId.length === 0 ||
+        typeof event.seq !== 'number' ||
+        typeof event.workspaceId !== 'string' ||
+        event.workspaceId.length === 0 ||
+        !event.message ||
+        !Array.isArray(event.recipients)
+      ) {
+        console.warn('[DaemonNotificationRouter] channel.message payload missing required fields; dropping', event);
+        return;
+      }
+      // Project the ChannelService-side shape (sender / recipients) onto
+      // the WmuxEvent counterpart (senderWorkspaceId / recipientWorkspaceIds).
+      // The daemon side carries the full sender ref for trace logging; the
+      // bus only needs the workspaceId, matching the field already named in
+      // the WmuxEvent interface.
+      const recipientWorkspaceIds = event.recipients
+        .map((r) => r.workspaceId)
+        .filter((w): w is string => typeof w === 'string' && w.length > 0);
+      // Always include the sender's workspaceId — it's the base-scope anchor
+      // and a post is implicitly addressed to its own sender (membership is a
+      // precondition). Without this, a single-member channel would have an
+      // empty recipient list and the sender wouldn't see their own post.
+      if (!recipientWorkspaceIds.includes(event.workspaceId)) {
+        recipientWorkspaceIds.push(event.workspaceId);
+      }
+      eventBus.emit({
+        type: 'channel.message',
+        channelId: event.channelId,
+        seq: event.seq,
+        senderWorkspaceId: event.workspaceId,
+        recipientWorkspaceIds,
+        message: event.message,
+        workspaceId: event.workspaceId,
+      });
+    } catch (err) {
+      console.warn('[DaemonNotificationRouter] emitChannelMessage error:', err);
+    }
+  }
+
   start(): void {
     const onAgent = (payload: { sessionId: string; event: unknown }) => {
       try {
@@ -530,6 +605,18 @@ export class DaemonNotificationRouter {
       void this.emitPaneSupervision(payload.sessionId, payload.status, payload.reason);
     };
 
+    // A2A channels (a2a-channels U4) — daemon → main EventBus tee. See
+    // emitChannelMessage for the projection contract.
+    const onChannelMessage = (payload: { data: unknown }) => {
+      try {
+        const ev = payload.data as Parameters<typeof this.emitChannelMessage>[0] | null;
+        if (!ev || typeof ev !== 'object') return;
+        this.emitChannelMessage(ev);
+      } catch (err) {
+        console.warn('[DaemonNotificationRouter] channel:message error:', err);
+      }
+    };
+
     this.daemonClient.on('session:agent', onAgent);
     this.daemonClient.on('session:active', onActive);
     this.daemonClient.on('session:idle', onIdle);
@@ -540,6 +627,15 @@ export class DaemonNotificationRouter {
     this.daemonClient.on('session:destroyed', onSessionEnd);
     this.daemonClient.on('session:restarted', onRestarted);
     this.daemonClient.on('supervision:changed', onSupervisionChanged);
+    // A2A channels (a2a-channels U4) — project daemon-broadcast channel
+    // messages onto the main-process EventBus so `events.poll` consumers
+    // (renderer's channelsSlice in U6 + orchestrator clients) see them.
+    // The projection does NOT await workspace resolution: the sender's
+    // workspaceId is already authoritative on the event (frozen at
+    // ChannelService.post critical-section entry, plan KTD3), so the
+    // projection is sync. Per-recipient scope is `events.poll`'s job
+    // (events.rpc.ts), NOT this tee's.
+    this.daemonClient.on('channel:message', onChannelMessage);
 
     // Invalidate the workspace.list cache whenever a workspace's metadata
     // mutates. Workspace creation/deletion does not currently publish to
@@ -562,6 +658,7 @@ export class DaemonNotificationRouter {
       () => this.daemonClient.off('session:destroyed', onSessionEnd),
       () => this.daemonClient.off('session:restarted', onRestarted),
       () => this.daemonClient.off('supervision:changed', onSupervisionChanged),
+      () => this.daemonClient.off('channel:message', onChannelMessage),
       unsubscribeMeta,
     );
   }

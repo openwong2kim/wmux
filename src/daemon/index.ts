@@ -979,6 +979,7 @@ function registerRpcHandlers(
   watchdog: Watchdog,
   paneSupervisor: PaneSupervisor,
   triggerSnapshot: () => void,
+  channelService: ChannelService,
 ): void {
   // daemon.createSession
   pipeServer.onRpc('daemon.createSession', async (params) => {
@@ -1456,6 +1457,97 @@ function registerRpcHandlers(
       eventLoopLagMs,
       bootTrace: { jsStartEpochMs: DAEMON_BOOT.jsStartEpochMs, marks: DAEMON_BOOT.marks },
     };
+  });
+
+  // === A2A Channels (a2a-channels U4) ===
+  // Seven thin pass-throughs onto ChannelService. Each handler validates the
+  // caller-supplied shape enough to keep `params as unknown as XParams`
+  // sound, then returns the service's Result envelope verbatim. Wire-format
+  // errors (the `ChannelError` branch) flow back to the renderer untouched
+  // so a typed RPC failure mirrors the typed service error. The Post path
+  // additionally emits a `channel.message` event via the injected emit
+  // sink (ChannelService.emit → pipeServer.broadcast) — see ChannelService
+  // plan KTD3 for the critical-section placement.
+  //
+  // Capability enforcement lives upstream in RpcRouter (methodCapabilityMap)
+  // and gates these as either `a2a.channel.read` (list, get, getMessages,
+  // getMembers) or `a2a.channel.send` (create, post, join, leave, archive).
+  // The pipe layer has no per-call identity context here; the auth token
+  // covers the daemon transport, and finer-grained plugin permission will
+  // land in the follow-up PR that introduces the permission enforcer for
+  // method dispatch (mcp-plugin-spec).
+  pipeServer.onRpc('a2a.channel.list', async () => {
+    return { ok: true, channels: channelService.list() };
+  });
+
+  pipeServer.onRpc('a2a.channel.get', async (params) => {
+    const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    if (!channelId) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
+    }
+    const channel = channelService.get(channelId);
+    if (!channel) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${channelId}` } };
+    }
+    return { ok: true, channel };
+  });
+
+  pipeServer.onRpc('a2a.channel.getMessages', async (params) => {
+    const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    if (!channelId) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
+    }
+    const sinceSeq = typeof params['sinceSeq'] === 'number' ? params['sinceSeq'] : undefined;
+    return { ok: true, messages: channelService.getMessages(channelId, sinceSeq) };
+  });
+
+  pipeServer.onRpc('a2a.channel.getMembers', async (params) => {
+    const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    if (!channelId) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
+    }
+    return { ok: true, members: channelService.getMembers(channelId) };
+  });
+
+  pipeServer.onRpc('a2a.channel.create', async (params) => {
+    const p = params as unknown as import('./channels/ChannelService').CreateChannelParams;
+    if (!p.name || !p.visibility || !p.createdBy) {
+      return { ok: false, error: { code: 'INVALID_NAME', message: 'name, visibility, and createdBy are required' } };
+    }
+    return channelService.create(p);
+  });
+
+  pipeServer.onRpc('a2a.channel.archive', async (params) => {
+    const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    const archivedBy = typeof params['archivedBy'] === 'string' ? params['archivedBy'] : '';
+    if (!channelId || !archivedBy) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId and archivedBy are required' } };
+    }
+    return channelService.archive({ channelId, archivedBy });
+  });
+
+  pipeServer.onRpc('a2a.channel.join', async (params) => {
+    const p = params as unknown as import('./channels/ChannelService').JoinChannelParams;
+    if (!p.channelId || !p.member) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId and member are required' } };
+    }
+    return channelService.join(p);
+  });
+
+  pipeServer.onRpc('a2a.channel.leave', async (params) => {
+    const p = params as unknown as import('./channels/ChannelService').LeaveChannelParams;
+    if (!p.channelId || !p.workspaceId || !p.memberId) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId, workspaceId, and memberId are required' } };
+    }
+    return channelService.leave(p);
+  });
+
+  pipeServer.onRpc('a2a.channel.post', async (params) => {
+    const p = params as unknown as import('./channels/ChannelService').PostMessageParams;
+    if (!p.channelId || !p.sender || typeof p.text !== 'string') {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId, sender, and text are required' } };
+    }
+    return channelService.post(p);
   });
 
   // daemon.shutdown — gracefully terminate the daemon process. A2 makes
@@ -2081,10 +2173,6 @@ async function main(): Promise<void> {
       }
     },
   });
-  // `channelService` is reserved for U4 (a2a.channel.* RPC handlers).
-  // Touching it here silences the unused-var lint until the RPC layer
-  // wires the channel.* methods onto the pipe server.
-  void channelService;
   const processMonitor = new ProcessMonitor();
 
   // LanLink PR-4 — the network surface. An ISOLATED net.Server (its OWN admission
@@ -2239,6 +2327,7 @@ async function main(): Promise<void> {
     () => {
       if (runSnapshotOnceRef) void runSnapshotOnceRef();
     },
+    channelService,
   );
 
   // 6. Wire events

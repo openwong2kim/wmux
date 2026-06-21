@@ -62,7 +62,13 @@ export type WmuxEventType =
   | 'pane.supervision'
   // A2A (agent-to-agent) task lifecycle tee. See A2aTaskEvent below — a
   // dual-party event (from/to) where the base workspaceId always equals `from`.
-  | 'a2a.task';
+  | 'a2a.task'
+  // A2A channels (per-recipient scoped). A channel post may have N recipients
+  // in M workspaces (vs. a2a.task's fixed 2 workspaces). The event is fanned
+  // out to every workspace in `recipientWorkspaceIds` plus the sender, with
+  // the post-scoping done in `events.poll` (parallel to a2a.task's dual-party
+  // filter) — see `src/main/pipe/handlers/events.rpc.ts`.
+  | 'channel.message';
 
 export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.created',
@@ -77,6 +83,7 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.restarted',
   'pane.supervision',
   'a2a.task',
+  'channel.message',
 ] as const;
 
 export interface WmuxEventBase {
@@ -308,6 +315,43 @@ export interface A2aTaskEvent extends WmuxEventBase {
   messagePreview?: string;
 }
 
+import type { ChannelMessage } from './channels';
+
+/**
+ * A2A channels: a message was posted in a channel. The base `workspaceId` is
+ * always set `=== senderWorkspaceId` so a consumer that ignores channel.message
+ * still scopes to the sender and never leaks to a third party; `events.poll`
+ * then adds every `recipientWorkspaceId` as an additional matchable key for
+ * this type only (see events.rpc.ts per-recipient filter). Unlike `a2a.task`
+ * (which is fixed 2 workspaces), channels may have N recipients in M
+ * workspaces — so this is a generalization, not a parallel of, the dual-party
+ * pattern.
+ *
+ * `recipients` is the per-recipient delivery snapshot frozen at critical-
+ * section entry inside `ChannelService.post` (plan KTD3). Each entry carries
+ * `workspaceId` so the renderer can filter to its own delivery row.
+ *
+ * SANITIZATION CAVEAT: `message.text` and `message.memberName` flow through
+ * `LocalPtyDelivery.defaultChannelMessage` / `defaultChannelNudge` (which
+ * delegate to `sanitizeA2aName` and an inline strip) before they ever reach a
+ * terminal. The event itself, however, is NOT pre-sanitized — any UI that
+ * renders `message.text` directly (a panel that doesn't route through the
+ * delivery formatter) MUST sanitize first.
+ */
+export interface ChannelMessageEvent extends WmuxEventBase {
+  type: 'channel.message';
+  channelId: string;
+  /** Per-channel monotonic seq (see plan KTD2). */
+  seq: number;
+  /** Sender's workspaceId. Also equals the base `workspaceId`. */
+  senderWorkspaceId: string;
+  /** Every workspaceId the post targeted. Used by `events.poll` to fan out
+   *  the event to all member workspaces (parallel to a2a.task's `to` key). */
+  recipientWorkspaceIds: string[];
+  /** The full posted message (sender, text, seq, postedAt, recipientSnapshot). */
+  message: ChannelMessage;
+}
+
 export type WmuxEvent =
   | PaneCreatedEvent
   | PaneClosedEvent
@@ -320,7 +364,8 @@ export type WmuxEvent =
   | NotificationReceivedEvent
   | PaneRestartedEvent
   | PaneSupervisionEvent
-  | A2aTaskEvent;
+  | A2aTaskEvent
+  | ChannelMessageEvent;
 
 export const RING_CAPACITY = 1024;
 export const POLL_DEFAULT_MAX = 256;
