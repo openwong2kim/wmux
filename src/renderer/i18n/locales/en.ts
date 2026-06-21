@@ -277,7 +277,7 @@ export const en = {
   'settings.lanlinkUnavailable': 'LanLink needs the wmux daemon — unavailable in local-only mode. It will appear once the daemon connects.',
   // LanLink pairing (PR-5)
   'settings.lanlinkPair': 'Pairing',
-  'settings.lanlinkPairDisabled': 'Enable LanLink above to pair with another machine.',
+  'settings.lanlinkPairDisabled': 'Enable LanLink and select a network interface above to pair with another machine.',
   'settings.lanlinkPairStart': 'Pair this machine',
   'settings.lanlinkPairStartDesc': 'Generate a one-time PIN, then enter it on the other machine within 2 minutes.',
   'settings.lanlinkPairStartButton': 'Generate PIN',

@@ -292,7 +292,8 @@ remote 카드/배지=미래 cross-PC 방(channels × LanLink) 원격 멤버 표�
 ### 11.5 pre-merge review (2026-06-21, PR #275)
 - **codex review(diff, 이번엔 hang 없이 작동) P2×2** — Claude 적대 diff review가 놓친 **진짜 user-visible 버그 2건 적발(cross-model 가치 입증)**: ①join host/PIN이 commit-on-blur(`SettingPathInput`)라 포커스 안 뺀 채 Join→stale 빈 값 제출(primary 경로 실패) ②`onCancelPair`가 실패해도 PIN 무조건 숨김→데몬 active인데 취소됨 표시. **둘 다 수정**(즉시-onChange 입력 / r.ok 가드).
 - **Claude 적대 diff review P2×4** — dead `send`(D6 의도 유지) · double daemon probe(minor follow-up) · null-deadline stall(가드 반영) · stale failCount(reset 반영). VERDICT: safe to merge, 보안 불변식 전부 holds.
-- **CI 전 green**: Baseline macos/ubuntu/windows ×2 · validate · bench · **CodeRabbit pass**(actionable 0).
+- **CI 전 green**: Baseline macos/ubuntu/windows ×2 · validate · bench · **CodeRabbit pass**.
+- **PR 인라인 리뷰 2차(codex P2×5+P3×1, CodeRabbit 7)**: 실제버그 수정=pairing status(enabled/nic)+peers **3s 폴링**(sibling 토글 sync+inbound peer 반영)·**NIC gate**(enabled&&nic)·failCount clear on cancel·`window.electronAPI?` optional-chain·assertReject **validation substring 강제**(transport 위장 차단)·empty catch→non-empty. ko 'remote peer' 배지 현지화('원격 피어'). **수용/오탐**: codex#1 advertise(`system.capabilities`가 ALL_RPC_METHODS를 필터없이 노출=**PR-3 status/configure 선례 동일**, wmux.internal로 plugin/MCP 도달불가→cross-cutting follow-up) · CR#2 real ESC(**오탐**: dogfood가 이미 `\x1b` byte 주입, ANSI 렌더가 숨김) · codex#5 effective port(UX follow-up).
 
 ### 11.4 outside voice 반영 (Claude subagent, codex 5min timeout 폴백)
 P0 두 건 CLEARED(D1 promotion 보안 무해 + no-paste/execute 벽 입증). 발견 6건 전부 plan 반영: ①gen-api GROUP_ORDER +lanlink(§4.1 #4) ②t() 명시맵(§5.2.3) ③dismiss approvals 미러(§5.3) ④electron.d.ts 근거교정+satisfies(§3.6) ⑤timeout 30s(§3.3) ⑥i18n parity/D4 톤(§6.4·§7.2). **cross-model tension 0** — locked 결정 전부 동의.

@@ -73,7 +73,7 @@ async function main() {
   await sleep(600);
   check('Fleet View open', await page.evaluate(() => !!document.querySelector('[role=dialog][aria-modal=true]')));
   check('remote tab empty state', await page.evaluate(() => (document.body.textContent || '').includes('No remote messages')));
-  await page.screenshot({ path: path.join(OUT_DIR, '1-remote-empty.png') }).catch(() => {});
+  await page.screenshot({ path: path.join(OUT_DIR, '1-remote-empty.png') }).catch(() => undefined);
 
   // Inject two remote items — one plain, one laden with control chars (ESC/CSI).
   await page.evaluate(() => {
@@ -100,7 +100,7 @@ async function main() {
   check('"remote peer" badge on every card', st1.everyBadge);
   check('both peerNames + body text rendered', st1.hasA && st1.hasB && st1.hasText);
   check('control-char message inert (RED visible as text, no synth color span)', st1.redVisible && st1.noSynthSpan);
-  await page.screenshot({ path: path.join(OUT_DIR, '2-remote-cards.png') }).catch(() => {});
+  await page.screenshot({ path: path.join(OUT_DIR, '2-remote-cards.png') }).catch(() => undefined);
 
   // Per-card dismiss removes exactly that card.
   await page.evaluate(() => window.__s.getState().dismissRemoteItem('dog-1'));
@@ -111,7 +111,7 @@ async function main() {
     return { count: rows.length, stillB: body.includes('Laptop-B'), goneA: !body.includes('Workstation-A') };
   });
   check('dismiss removes exactly the dismissed card', st2.count === 1 && st2.stillB && st2.goneA, `count=${st2.count}`);
-  await page.screenshot({ path: path.join(OUT_DIR, '3-after-dismiss.png') }).catch(() => {});
+  await page.screenshot({ path: path.join(OUT_DIR, '3-after-dismiss.png') }).catch(() => undefined);
 
   const passed = results.filter((r) => r.ok).length;
   console.log(`\n=== PR-5 renderer CDP: ${passed}/${results.length} ${passed === results.length ? 'ALL PASS' : 'SOME FAILED'} ===`);

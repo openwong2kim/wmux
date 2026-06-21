@@ -93,7 +93,7 @@ export const ko = {
 
   // Fleet View — 원격 탭 (LanLink PR-5 읽기 전용 원격 피어 인박스)
   'fleet.remote.empty': '원격 메시지 없음',
-  'fleet.remote.peerBadge': 'remote peer',
+  'fleet.remote.peerBadge': '원격 피어',
   'fleet.remote.dismiss': '메시지 닫기',
   'fleet.remote.delDismiss': '닫기',
 
@@ -224,7 +224,7 @@ export const ko = {
   'settings.lanlinkUnavailable': 'LanLink는 wmux 데몬이 필요합니다 — 로컬 전용 모드에서는 사용할 수 없습니다. 데몬이 연결되면 표시됩니다.',
   // LanLink 페어링 (PR-5)
   'settings.lanlinkPair': '페어링',
-  'settings.lanlinkPairDisabled': '다른 머신과 페어링하려면 위에서 LanLink를 먼저 켜세요.',
+  'settings.lanlinkPairDisabled': '다른 머신과 페어링하려면 위에서 LanLink를 켜고 네트워크 인터페이스를 선택하세요.',
   'settings.lanlinkPairStart': '이 머신 페어링',
   'settings.lanlinkPairStartDesc': '일회용 PIN을 생성한 뒤 2분 안에 다른 머신에 입력하세요.',
   'settings.lanlinkPairStartButton': 'PIN 생성',
@@ -243,7 +243,7 @@ export const ko = {
   'settings.lanlinkPairError': '페어링 실패 — 호스트·포트·PIN을 확인하고 다시 시도하세요.',
   'settings.lanlinkPeers': '페어링된 피어',
   'settings.lanlinkPeersEmpty': '아직 페어링된 머신이 없습니다.',
-  'settings.lanlinkPeerBadge': 'remote peer',
+  'settings.lanlinkPeerBadge': '원격 피어',
   'settings.lanlinkPeerBurned': '해제됨',
   'settings.lanlinkPeerRevoke': '해제',
   'settings.terminal': '터미널',

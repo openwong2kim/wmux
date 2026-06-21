@@ -1177,9 +1177,10 @@ export function LanLinkPairingView(props: LanLinkPairingViewProps) {
 function LanLinkPairingSection() {
   const t = useT();
   const { invoke: ipcInvoke } = useIpc({ silent: ['NOT_FOUND', 'UNKNOWN', 'DAEMON_DISCONNECTED'] });
-  const api = window.electronAPI.lanlink;
+  const api = window.electronAPI?.lanlink;
 
   const [enabled, setEnabled] = useState<boolean | null>(null);
+  const [nic, setNic] = useState<LanLinkNic | null>(null);
   const [unavailable, setUnavailable] = useState(false);
   const [pin, setPin] = useState<string | null>(null);
   const [deadline, setDeadline] = useState<number | null>(null);
@@ -1200,10 +1201,10 @@ function LanLinkPairingSection() {
     if (r.ok) setPeers(r.data.peers);
   }, [api, ipcInvoke]);
 
-  const refreshEnabled = useCallback(async () => {
+  const refreshStatus = useCallback(async () => {
     if (!api?.status) { setUnavailable(true); return; }
     const r = await ipcInvoke(() => api.status());
-    if (r.ok) { setEnabled(r.data.enabled); setUnavailable(false); }
+    if (r.ok) { setEnabled(r.data.enabled); setNic(r.data.nic); setUnavailable(false); }
     else setUnavailable(true);
   }, [api, ipcInvoke]);
 
@@ -1216,16 +1217,21 @@ function LanLinkPairingSection() {
     }
   }, [api, ipcInvoke]);
 
-  // Mount probe + daemon-reconnect re-probe (mirrors LanLinkSection PR-3 P3 fix).
+  // Mount probe + daemon-reconnect re-probe + a light 3s poll WHILE the Settings tab
+  // is open (this section is mounted only when the LanLink tab is active). The poll
+  // keeps enabled/nic in sync with a toggle in the sibling LanLinkSection AND surfaces
+  // an inbound peer (another machine joining our PIN, persisted daemon-side) without a
+  // manual refresh (codex P2 / CodeRabbit). Both RPCs are read-only.
   useEffect(() => {
-    void refreshEnabled();
+    void refreshStatus();
     void refreshPeers();
     const daemonApi = (
       window.electronAPI as unknown as { daemon?: { onConnected?: (cb: () => void) => () => void } }
     ).daemon;
-    const off = daemonApi?.onConnected?.(() => { void refreshEnabled(); void refreshPeers(); });
-    return () => { off?.(); };
-  }, [refreshEnabled, refreshPeers]);
+    const off = daemonApi?.onConnected?.(() => { void refreshStatus(); void refreshPeers(); });
+    const poll = setInterval(() => { void refreshStatus(); void refreshPeers(); }, 3000);
+    return () => { off?.(); clearInterval(poll); };
+  }, [refreshStatus, refreshPeers]);
 
   // Countdown + pairStatus poll ONLY while a pairing window is open (perf: no idle
   // interval). Cleared on unmount / window close.
@@ -1264,8 +1270,9 @@ function LanLinkPairingSection() {
     const r = await ipcInvoke(() => api.pairCancel());
     // Only hide the PIN if the daemon actually closed the window. On a failed cancel
     // the window may still be active — hiding it would mislead the user into thinking
-    // it was canceled (codex P2).
-    if (r.ok) { setPin(null); setDeadline(null); }
+    // it was canceled (codex P2). Also clear the stale fail-count warning, since the
+    // poll stops once the PIN is gone (codex P3).
+    if (r.ok) { setPin(null); setDeadline(null); setFailCount(0); }
   }, [api, ipcInvoke]);
 
   const onJoin = useCallback(async () => {
@@ -1308,7 +1315,7 @@ function LanLinkPairingSection() {
 
   return (
     <LanLinkPairingView
-      enabled={enabled === true}
+      enabled={enabled === true && nic !== null}
       pin={pin}
       countdownSec={countdownSec}
       failCount={failCount}

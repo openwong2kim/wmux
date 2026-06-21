@@ -84,17 +84,24 @@ async function waitReady(timeoutMs = 20000) {
   throw new Error('daemon did not become ready');
 }
 
-async function assertReject(method, params, msg) {
+async function assertReject(method, params, expectSubstr, msg) {
   try {
     await rpc(method, params);
     console.error(`  ✗ FAIL: ${msg} (expected a reject, got success)`);
     throw new Error(msg);
   } catch (e) {
-    if (String(e.message).startsWith('rpc timeout')) {
+    const m = String(e.message);
+    if (m.startsWith('rpc timeout')) {
       console.error(`  ✗ FAIL: ${msg} (timed out instead of rejecting)`);
       throw e;
     }
-    ok(`${msg} — rejected: "${e.message}"`);
+    // Require the daemon's VALIDATION error — not a transport/auth failure — so an
+    // infra error can't masquerade as a validation pass (CodeRabbit).
+    if (expectSubstr && !m.includes(expectSubstr)) {
+      console.error(`  ✗ FAIL: ${msg} (rejected, but not with the expected validation: "${m}")`);
+      throw new Error(msg);
+    }
+    ok(`${msg} — rejected: "${m}"`);
   }
 }
 
@@ -141,10 +148,10 @@ async function main() {
   assert(rm1 && rm1.ok === true, 'peers.remove(unknown uuid): {ok:true} silent no-op');
 
   // 5. pair.join / send — required-field rejection (real outbound needs a 2nd box).
-  await assertReject('lanlink.pair.join', {}, 'pair.join: rejects missing host/port/pin');
-  await assertReject('lanlink.pair.join', { host: '10.0.0.5', port: 0, pin: '123456' }, 'pair.join: rejects invalid port (coerced to 0)');
-  await assertReject('lanlink.send', {}, 'send: rejects missing host/port/peerUuid');
-  await assertReject('lanlink.send', { host: '10.0.0.5', port: 45000 }, 'send: rejects missing peerUuid');
+  await assertReject('lanlink.pair.join', {}, 'required', 'pair.join: rejects missing host/port/pin');
+  await assertReject('lanlink.pair.join', { host: '10.0.0.5', port: 0, pin: '123456' }, 'required', 'pair.join: rejects invalid port (coerced to 0)');
+  await assertReject('lanlink.send', {}, 'required', 'send: rejects missing host/port/peerUuid');
+  await assertReject('lanlink.send', { host: '10.0.0.5', port: 45000 }, 'required', 'send: rejects missing peerUuid');
 
   // 6. pair.cancel — window goes inactive.
   const pc = await rpc('lanlink.pair.cancel', {});
