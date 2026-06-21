@@ -155,6 +155,8 @@ export type RpcMethod =
   | 'daemon.superviseStop'
   | 'daemon.setResumeBinding'
   | 'daemon.inbox.poll'
+  | 'lanlink.status'
+  | 'lanlink.configure'
   | 'a2a.resolve.identity'
   | 'a2a.whoami'
   | 'a2a.discover'
@@ -260,6 +262,8 @@ export const ALL_RPC_METHODS = [
   'daemon.superviseStop',
   'daemon.setResumeBinding',
   'daemon.inbox.poll',
+  'lanlink.status',
+  'lanlink.configure',
   'a2a.resolve.identity',
   'a2a.whoami',
   'a2a.discover',

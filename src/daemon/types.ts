@@ -3,6 +3,7 @@
 import type { DaemonSupervisionPolicy } from '../shared/rpc';
 import type { AgentSlug } from '../shared/events';
 import type { ResumeBinding } from '../shared/agentResume';
+import type { LanLinkConfig } from '../shared/lanlink';
 
 /** Session lifecycle state */
 export type DaemonSessionState = 'detached' | 'attached' | 'dead' | 'suspended';
@@ -133,4 +134,13 @@ export interface DaemonConfig {
      */
     suspendedTtlHours: number;
   };
+  /**
+   * LanLink control-plane state (PR-3). OPTIONAL — old config.json files predate
+   * it and must keep loading, so `validateConfig` deliberately ignores this field
+   * and `loadConfig` backfills it per-field to OFF (default `{ enabled:false,
+   * nic:null }`) without resetting the rest of the file. `enabled` defaults OFF
+   * (explicit opt-in); the NIC is persisted as an identity (name+MAC), never a raw
+   * IP. Always present at runtime after `loadConfig` normalises it.
+   */
+  lanlink?: LanLinkConfig;
 }

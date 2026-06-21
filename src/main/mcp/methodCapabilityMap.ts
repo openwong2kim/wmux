@@ -304,6 +304,12 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // LanLink PR-2 — cursor-pull of the durable remote inbox. main↔daemon only
   // (DaemonClient → daemon control pipe); never an external MCP surface.
   'daemon.inbox.poll':       { capability: 'wmux.internal' },
+  // LanLink PR-3 — control-plane read/write (enable toggle + NIC selection).
+  // main↔daemon only (DaemonClient → daemon control pipe); never an external MCP
+  // surface — wmux.internal keeps a remote/MCP caller from enumerating the host's
+  // NICs or flipping the LAN listener on.
+  'lanlink.status':          { capability: 'wmux.internal' },
+  'lanlink.configure':       { capability: 'wmux.internal' },
 
   // --- A2A (agent-to-agent) ---
   'a2a.resolve.identity': { capability: 'a2a.read',    riskClass: 'a2a' },

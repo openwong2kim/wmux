@@ -1,5 +1,5 @@
 import type { ElectronAPI, McpTargetStatusPayload } from '../preload/preload';
-import type { RemoteInboxItem } from './lanlink';
+import type { RemoteInboxItem, LanLinkStatus, LanLinkConfigurePatch } from './lanlink';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -66,6 +66,10 @@ declare global {
         onRemote: (callback: (item: RemoteInboxItem) => void) => () => void;
         /** Renderer → main replay request; fire on mount after onRemote is set. */
         requestResync: () => void;
+        /** PR-3 control plane — read enable/NIC state + live NICs. */
+        status: () => Promise<LanLinkStatus>;
+        /** PR-3 control plane — apply a partial enable/NIC update; echoes new status. */
+        configure: (patch: LanLinkConfigurePatch) => Promise<LanLinkStatus>;
       };
     };
     clipboardAPI: {

@@ -4,6 +4,7 @@ import os from 'node:os';
 import type { DaemonConfig } from './types';
 import { getWindowsDefaultShell } from '../shared/shellResolution';
 import { dataSuffix } from '../shared/constants';
+import { coerceLanLinkConfig, defaultLanLinkConfig } from '../shared/lanlink';
 
 /** ~/.wmux directory (인스턴스 격리 suffix 반영 — main에서 상속된 WMUX_DATA_SUFFIX) */
 export function getWmuxDir(): string {
@@ -93,6 +94,9 @@ export function createDefaultConfig(): DaemonConfig {
       maxSessions: 200,
       suspendedTtlHours: 7 * 24,
     },
+    // LanLink control plane (PR-3) — OFF by default, explicit opt-in. NIC null
+    // until the user selects one; port omitted (PR-4 picks a default).
+    lanlink: defaultLanLinkConfig(),
   };
 }
 
@@ -185,6 +189,14 @@ export function loadConfig(): DaemonConfig {
     config.daemon.memWarnMb = memWarn;
     config.daemon.memReapMb = memReap;
     config.daemon.memBlockMb = memBlock;
+
+    // ── LanLink control plane (PR-3): per-field backfill ──
+    // Same discipline as the lifecycle knobs above. validateConfig deliberately
+    // never inspects `lanlink`, so an old config.json (no lanlink key) reaches
+    // here untouched; coerceLanLinkConfig degrades an absent/garbage slice to the
+    // OFF default WITHOUT touching any sibling field (a malformed lanlink must not
+    // nuke pipeName). enabled defaults OFF — explicit opt-in.
+    config.lanlink = coerceLanLinkConfig(config.lanlink, defaults.lanlink ?? defaultLanLinkConfig());
 
     return config;
   } catch (err) {

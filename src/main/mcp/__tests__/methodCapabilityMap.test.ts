@@ -55,6 +55,15 @@ describe('methodCapabilityMap capability validity', () => {
     expect(resolveRequiredCapability(METHOD_CAPABILITY['a2a.task.send'], { execute: true })).toBe('a2a.execute');
     expect(resolveRequiredCapability(METHOD_CAPABILITY['a2a.task.cancel'], {})).toBe('a2a.send');
   });
+
+  // Drift lock (LanLink PR-3): the control-plane RPCs must stay daemon-internal.
+  // wmux.internal is a reserved prefix no plugin can declare and never an external
+  // MCP surface — this pins them against an accidental downgrade to a
+  // plugin-grantable capability that would expose the host's NICs / LAN toggle.
+  it('lanlink.* control-plane RPCs are wmux.internal (never plugin-declarable)', () => {
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['lanlink.status'], {})).toBe('wmux.internal');
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['lanlink.configure'], {})).toBe('wmux.internal');
+  });
 });
 
 describe('methodCapabilityMap risk class wiring', () => {

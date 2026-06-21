@@ -129,6 +129,143 @@ export function clampText(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) : s;
 }
 
+// === LanLink control plane (PR-3: config-reload + bind guard + NIC/Settings) ===
+//
+// network-0: these shapes describe the CONTROL plane only. No listener, PAKE, or
+// AEAD is built in PR-3 — they are the contract a future LAN listener (PR-4) and
+// the Settings UI bind against. `enabled` defaults OFF; the NIC is persisted as
+// an IDENTITY (name + MAC), never a raw IP, so PR-4 re-resolves the live IPv4 via
+// os.networkInterfaces() at listen time (a stored IP would go stale on DHCP renew
+// and let the renderer dictate the bind address).
+
+/** Lowest valid LanLink listen port (privileged ports 1-1023 are rejected). */
+export const LANLINK_PORT_MIN = 1024;
+/** Highest valid LanLink listen port. */
+export const LANLINK_PORT_MAX = 65535;
+
+/**
+ * Persisted NIC identity. NOT a raw IP — the interface display name plus MAC, so
+ * the same physical NIC is re-resolvable across reboots / DHCP renewals (C2). The
+ * live IPv4 is recomputed from this identity at listen time by PR-4's bindGuard.
+ */
+export interface LanLinkNic {
+  name: string;
+  mac: string;
+}
+
+/**
+ * A LAN-capable network interface as surfaced to the Settings dropdown. `addresses`
+ * are the interface's external (non-internal) IPv4 strings — informational only;
+ * the persisted identity is the name+mac.
+ */
+export interface NicInfo {
+  name: string;
+  mac: string;
+  addresses: string[];
+}
+
+/**
+ * Persisted LanLink config slice (lives inside DaemonConfig.lanlink in config.json).
+ * `enabled` default false (explicit opt-in). `nic` null until the user picks one.
+ * `port` optional — PR-4 chooses a default when absent.
+ */
+export interface LanLinkConfig {
+  enabled: boolean;
+  nic: LanLinkNic | null;
+  port?: number;
+}
+
+/** Result of `lanlink.status` (and the echo of `lanlink.configure`). */
+export interface LanLinkStatus {
+  enabled: boolean;
+  nic: LanLinkNic | null;
+  port: number | null;
+  /** Live LAN-capable NICs (re-enumerated each call); drives the Settings dropdown. */
+  nics: NicInfo[];
+}
+
+/**
+ * Partial update for `lanlink.configure`. A field absent from the object means
+ * "leave unchanged"; `nic: null` explicitly clears the selection. The trust
+ * boundary (`coerceLanLinkPatch`) rejects malformed fields rather than silently
+ * dropping them, since this is renderer-supplied RPC input.
+ */
+export interface LanLinkConfigurePatch {
+  enabled?: boolean;
+  nic?: LanLinkNic | null;
+  port?: number;
+}
+
+/** Default (OFF) LanLink config. Single source the config backfill falls back to. */
+export function defaultLanLinkConfig(): LanLinkConfig {
+  return { enabled: false, nic: null };
+}
+
+/** Type guard for a persisted NIC identity. Array.isArray-first (#269 lesson). */
+export function isLanLinkNic(v: unknown): v is LanLinkNic {
+  if (Array.isArray(v) || typeof v !== 'object' || v === null) return false;
+  const o = v as Record<string, unknown>;
+  return typeof o['name'] === 'string' && o['name'].length > 0 && typeof o['mac'] === 'string';
+}
+
+/** True iff `n` is a finite integer within the valid LanLink port range. */
+function isValidPort(n: unknown): n is number {
+  return typeof n === 'number' && Number.isInteger(n) && n >= LANLINK_PORT_MIN && n <= LANLINK_PORT_MAX;
+}
+
+/**
+ * LENIENT backfill for config LOAD (mirrors clampLifecycle's tolerant fallback in
+ * config.ts). Never throws — a hand-edited/garbage `lanlink` slice degrades to the
+ * default WITHOUT touching sibling config fields. Each sub-field is coerced
+ * independently: a bad `port` does not nuke a good `enabled`. Array.isArray-first
+ * so an array-shaped value can't masquerade as an object.
+ */
+export function coerceLanLinkConfig(raw: unknown, def: LanLinkConfig): LanLinkConfig {
+  if (Array.isArray(raw) || typeof raw !== 'object' || raw === null) return { ...def };
+  const o = raw as Record<string, unknown>;
+  const out: LanLinkConfig = {
+    enabled: typeof o['enabled'] === 'boolean' ? o['enabled'] : def.enabled,
+    nic: isLanLinkNic(o['nic']) ? { name: o['nic'].name, mac: o['nic'].mac } : null,
+  };
+  if (isValidPort(o['port'])) out.port = o['port'];
+  return out;
+}
+
+/**
+ * STRICT validation for `lanlink.configure` RPC input (the renderer→main→daemon
+ * trust boundary). Returns a patch carrying ONLY the keys actually present in
+ * `raw`; throws on any malformed field so the renderer surfaces a clear error
+ * rather than persisting garbage. `nic: null` is preserved as an explicit clear;
+ * an absent `nic` key leaves the selection unchanged.
+ */
+export function coerceLanLinkPatch(raw: unknown): LanLinkConfigurePatch {
+  if (Array.isArray(raw) || typeof raw !== 'object' || raw === null) {
+    throw new Error('lanlink.configure: params must be an object');
+  }
+  const o = raw as Record<string, unknown>;
+  const patch: LanLinkConfigurePatch = {};
+  if ('enabled' in o) {
+    if (typeof o['enabled'] !== 'boolean') throw new Error('lanlink.configure: enabled must be boolean');
+    patch.enabled = o['enabled'];
+  }
+  if ('nic' in o) {
+    if (o['nic'] === null) {
+      patch.nic = null;
+    } else if (isLanLinkNic(o['nic'])) {
+      patch.nic = { name: o['nic'].name, mac: o['nic'].mac };
+    } else {
+      throw new Error('lanlink.configure: nic must be null or { name, mac }');
+    }
+  }
+  if ('port' in o) {
+    if (!isValidPort(o['port'])) {
+      throw new Error(`lanlink.configure: port must be an integer in [${LANLINK_PORT_MIN}, ${LANLINK_PORT_MAX}]`);
+    }
+    patch.port = o['port'];
+  }
+  return patch;
+}
+
 /**
  * Load-time validator / type guard for the inbox file.
  *

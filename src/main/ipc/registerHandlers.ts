@@ -21,6 +21,7 @@ import { registerClipboardHandlers } from './handlers/clipboard.handler';
 import { registerFsHandlers } from './handlers/fs.handler';
 import { registerToolbarHandlers } from './handlers/toolbar.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
+import { registerLanLinkHandlers } from './handlers/lanlink.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
 import { IPC } from '../../shared/constants';
 import { toastManager } from '../pipe/handlers/notify.rpc';
@@ -127,6 +128,10 @@ export function registerAllHandlers(
   const cleanupMcp = options.mcpRegistrar
     ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null))
     : null;
+  // LanLink PR-3 control plane — daemon-mode only (the enable/NIC state lives in
+  // the daemon). Without a DaemonClient there is no control pipe to forward to, so
+  // the handlers stay unregistered and the Settings section hides itself.
+  const cleanupLanLink = daemonClient ? registerLanLinkHandlers(daemonClient) : null;
 
   // X1 local-mode context watchers (git HEAD fs.watch + PID-tree ports).
   // Daemon mode gets the same data from the daemon process via
@@ -213,6 +218,7 @@ export function registerAllHandlers(
     cleanupFs();
     cleanupToolbar();
     if (cleanupMcp) cleanupMcp();
+    if (cleanupLanLink) cleanupLanLink();
     ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
     ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
     ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);

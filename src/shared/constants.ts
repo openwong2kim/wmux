@@ -146,6 +146,9 @@ export const IPC = {
   MCP_CHECK: 'mcp:check',
   MCP_REREGISTER: 'mcp:reregister',
   MCP_UNREGISTER: 'mcp:unregister',
+  // LanLink PR-3 control plane (renderer → main → daemon control pipe).
+  LANLINK_STATUS: 'lanlink:status',
+  LANLINK_CONFIGURE: 'lanlink:configure',
   // First-run wizard (Plan 1.15) — magical-moment onboarding flow
   FIRST_RUN_CHECK: 'first-run:check',
   FIRST_RUN_COMPLETE: 'first-run:complete',

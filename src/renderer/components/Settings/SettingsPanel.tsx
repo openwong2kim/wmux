@@ -20,6 +20,7 @@ import {
   type ContrastReport,
 } from '../../contrastSafety';
 import type { CustomThemeColors, XtermThemeColors } from '../../../shared/types';
+import type { NicInfo, LanLinkNic, LanLinkStatus } from '../../../shared/lanlink';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
@@ -29,7 +30,7 @@ import { FOCUS_RING } from '../focusRing';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type TabId = 'general' | 'appearance' | 'notifications' | 'shortcuts' | 'claude-integration' | 'first-run-setup' | 'about';
+type TabId = 'general' | 'appearance' | 'notifications' | 'shortcuts' | 'claude-integration' | 'lanlink' | 'first-run-setup' | 'about';
 type ShellInfo = { name: string; path: string; args?: string[] };
 
 // ─── Card primitive ────────────────────────────────────────────────────────────
@@ -241,6 +242,16 @@ function IconAbout() {
       <circle cx="7" cy="7" r="5" stroke="currentColor" strokeWidth="1.3" />
       <line x1="7" y1="6.4" x2="7" y2="9.8" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
       <line x1="7" y1="4.3" x2="7" y2="4.3" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconLanLink() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <rect x="1.5" y="2.2" width="5" height="3.4" rx="0.6" stroke="currentColor" strokeWidth="1.2" />
+      <rect x="7.5" y="8.4" width="5" height="3.4" rx="0.6" stroke="currentColor" strokeWidth="1.2" />
+      <path d="M4 5.6v1.7h6V8.4" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round" />
     </svg>
   );
 }
@@ -761,6 +772,189 @@ function McpStatusSection() {
         </div>
       )}
     </div>
+  );
+}
+
+// ─── LanLink control plane (PR-3) ───────────────────────────────────────────────
+//
+// Daemon-backed Settings section: an OFF-by-default enable toggle + a NIC picker.
+// The daemon is the source of truth — `lanlink.status` is read on mount, and the
+// toggle/picker write through `lanlink.configure`, updating from the response.
+// Network-0: nothing here opens a port; PR-4's listener subscribes to the daemon's
+// config-changed signal. The section hides itself when the control-plane RPC is
+// unavailable (local mode / no daemon).
+
+/** Sentinel select value meaning "no NIC selected". */
+export const LANLINK_NIC_NONE = '';
+
+/** Stable select-value key for a NIC identity (US separator can't appear in a name/MAC). */
+function nicKey(nic: LanLinkNic): string {
+  return `${nic.name}${nic.mac}`;
+}
+
+export interface NicOption {
+  value: string;
+  label: string;
+  nic: LanLinkNic | null;
+}
+
+/**
+ * Build the NIC dropdown options from the live NIC list plus the currently
+ * persisted selection. Pure (testable): always leads with a "none" option, lists
+ * each live NIC, and — crucially — keeps a persisted-but-currently-absent NIC
+ * visible as a labelled stale option so a momentarily-unplugged NIC doesn't
+ * silently vanish from the user's selection.
+ */
+export function nicOptions(
+  nics: NicInfo[],
+  selectedNic: LanLinkNic | null,
+  t: (key: string) => string,
+): NicOption[] {
+  const opts: NicOption[] = [{ value: LANLINK_NIC_NONE, label: t('settings.lanlinkNicNone'), nic: null }];
+  const seen = new Set<string>();
+  for (const n of nics) {
+    const value = nicKey(n);
+    seen.add(value);
+    const addrs = n.addresses.length > 0 ? ` (${n.addresses.join(', ')})` : '';
+    opts.push({ value, label: `${n.name}${addrs}`, nic: { name: n.name, mac: n.mac } });
+  }
+  if (selectedNic) {
+    const value = nicKey(selectedNic);
+    if (!seen.has(value)) {
+      opts.push({
+        value,
+        label: `${selectedNic.name} — ${t('settings.lanlinkNicUnavailable')}`,
+        nic: { name: selectedNic.name, mac: selectedNic.mac },
+      });
+    }
+  }
+  return opts;
+}
+
+export interface LanLinkViewProps {
+  enabled: boolean;
+  onToggleEnabled: (v: boolean) => void;
+  options: NicOption[];
+  selectedValue: string;
+  onChangeNic: (value: string) => void;
+  busy: boolean;
+  t: (key: string) => string;
+}
+
+/**
+ * Pure presentational view (node-env testable via renderToStaticMarkup). Holds no
+ * IPC/store wiring — the container passes derived props and setter callbacks.
+ */
+export function LanLinkView({
+  enabled,
+  onToggleEnabled,
+  options,
+  selectedValue,
+  onChangeNic,
+  busy,
+  t,
+}: LanLinkViewProps) {
+  return (
+    <div className="flex flex-col gap-3" data-testid="lanlink-section">
+      <SectionLabel label={t('settings.lanlink')} />
+      <SettingRow label={t('settings.lanlinkEnable')} description={t('settings.lanlinkEnableDesc')}>
+        <Toggle checked={enabled} onChange={onToggleEnabled} label={t('settings.lanlinkEnable')} />
+      </SettingRow>
+      <SettingRow label={t('settings.lanlinkNic')} description={t('settings.lanlinkNicDesc')}>
+        <SettingSelect
+          value={selectedValue}
+          onChange={onChangeNic}
+          options={options.map((o) => ({ value: o.value, label: o.label }))}
+          label={t('settings.lanlinkNic')}
+        />
+      </SettingRow>
+      <p className="text-[11px] text-[color:var(--text-muted)] leading-relaxed px-1" data-testid="lanlink-warning">
+        {t('settings.lanlinkWarning')}
+      </p>
+      {busy && (
+        <p className="text-[10px] text-[color:var(--text-subtle)] px-1">{t('settings.lanlinkApplying')}</p>
+      )}
+    </div>
+  );
+}
+
+function LanLinkSection() {
+  const t = useT();
+  const [status, setStatus] = useState<LanLinkStatus | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [unavailable, setUnavailable] = useState(false);
+  const [busy, setBusy] = useState(false);
+  // NOT_FOUND / DAEMON_DISCONNECTED are expected in local mode (no daemon control
+  // pipe) — silence those toasts and just hide the section.
+  const { invoke: ipcInvoke } = useIpc({ silent: ['NOT_FOUND', 'UNKNOWN', 'DAEMON_DISCONNECTED'] });
+
+  // Lazily access the API so the component is safe where preload hasn't exposed it.
+  const lanlinkApi = (
+    window.electronAPI as unknown as { lanlink?: { status: () => Promise<LanLinkStatus>; configure: (p: { enabled?: boolean; nic?: LanLinkNic | null }) => Promise<LanLinkStatus> } }
+  ).lanlink;
+
+  const refresh = useCallback(async () => {
+    if (!lanlinkApi?.status) {
+      setUnavailable(true);
+      setLoading(false);
+      return;
+    }
+    const result = await ipcInvoke(() => lanlinkApi.status());
+    if (result.ok) {
+      setStatus(result.data);
+    } else {
+      setUnavailable(true);
+    }
+    setLoading(false);
+  }, [ipcInvoke, lanlinkApi]);
+
+  useEffect(() => {
+    void refresh();
+  }, [refresh]);
+
+  const apply = useCallback(
+    async (patch: { enabled?: boolean; nic?: LanLinkNic | null }) => {
+      if (!lanlinkApi?.configure) return;
+      setBusy(true);
+      const result = await ipcInvoke(() => lanlinkApi.configure(patch));
+      if (result.ok) setStatus(result.data);
+      setBusy(false);
+    },
+    [ipcInvoke, lanlinkApi],
+  );
+
+  // Hidden entirely in local mode / when the daemon control plane is unreachable.
+  if (unavailable) return null;
+  if (loading || !status) {
+    return (
+      <div className="flex flex-col gap-3">
+        <SectionLabel label={t('settings.lanlink')} />
+        <div
+          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
+        >
+          {t('settings.lanlinkLoading')}
+        </div>
+      </div>
+    );
+  }
+
+  const options = nicOptions(status.nics, status.nic, t);
+  const selectedValue = status.nic ? nicKey(status.nic) : LANLINK_NIC_NONE;
+
+  return (
+    <LanLinkView
+      enabled={status.enabled}
+      onToggleEnabled={(v) => void apply({ enabled: v })}
+      options={options}
+      selectedValue={selectedValue}
+      onChangeNic={(value) => {
+        const picked = options.find((o) => o.value === value);
+        void apply({ nic: picked?.nic ?? null });
+      }}
+      busy={busy}
+      t={t}
+    />
   );
 }
 
@@ -3327,6 +3521,7 @@ export default function SettingsPanel() {
     { id: 'notifications',      label: t('settings.tabNotifications'),   icon: <IconNotifications /> },
     { id: 'shortcuts',          label: t('settings.tabShortcuts'),       icon: <IconShortcuts /> },
     { id: 'claude-integration', label: t('claudeIntegration.tab'),       icon: <IconClaude /> },
+    { id: 'lanlink',            label: t('settings.lanlinkTab'),         icon: <IconLanLink /> },
     { id: 'first-run-setup',    label: t('settings.firstRunSetup'),      icon: <IconFirstRun /> },
     { id: 'about',              label: t('settings.tabAbout'),           icon: <IconAbout /> },
   ];
@@ -3454,6 +3649,7 @@ export default function SettingsPanel() {
             {activeTab === 'notifications'      && <TabNotifications />}
             {activeTab === 'shortcuts'          && <TabShortcuts />}
             {activeTab === 'claude-integration' && <ClaudeIntegrationSection />}
+            {activeTab === 'lanlink'            && <LanLinkSection />}
             {activeTab === 'first-run-setup'    && <TabFirstRunSetup />}
             {activeTab === 'about'              && <TabAbout />}
           </div>

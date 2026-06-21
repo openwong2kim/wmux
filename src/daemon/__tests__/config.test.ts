@@ -246,3 +246,66 @@ describe('loadConfig — lifecycle backfill + clamp', () => {
     expect(c.daemon.memBlockMb).toBe(900); // raised to reap
   });
 });
+
+describe('createDefaultConfig — lanlink (PR-3)', () => {
+  it('includes the OFF-by-default lanlink slice', () => {
+    const c = createDefaultConfig();
+    expect(c.lanlink).toEqual({ enabled: false, nic: null });
+    expect(c.lanlink?.port).toBeUndefined();
+  });
+});
+
+describe('loadConfig — lanlink backfill (PR-3, non-destructive)', () => {
+  // The load-bearing backward-compat guarantee: an OLD config.json (predating the
+  // lanlink field) must keep loading, get backfilled to OFF, and NOT lose any
+  // sibling field — and a malformed lanlink must never trigger the whole-file
+  // reset (that path is reserved for core-structure breakage).
+
+  it('REGRESSION: old config.json with no lanlink → backfilled to OFF, all siblings preserved', () => {
+    const c0 = createDefaultConfig();
+    const sentinelPipe = '\\\\.\\pipe\\wmux-OLD-CONFIG-SENTINEL';
+    const old: Record<string, unknown> = {
+      ...c0,
+      daemon: { ...c0.daemon, pipeName: sentinelPipe },
+      session: { ...c0.session, maxSessions: 137 },
+    };
+    delete old.lanlink; // an old file simply has no lanlink key
+    writeRawConfig(old);
+
+    const c = loadConfig();
+    expect(c.lanlink).toEqual({ enabled: false, nic: null }); // backfilled OFF
+    expect(c.daemon.pipeName).toBe(sentinelPipe); // sibling preserved
+    expect(c.session.maxSessions).toBe(137); // sibling preserved
+  });
+
+  it('garbage lanlink (string) → default OFF, pipeName NOT nuked', () => {
+    const c0 = createDefaultConfig();
+    const sentinelPipe = '\\\\.\\pipe\\wmux-GARBAGE-SENTINEL';
+    writeRawConfig({ ...c0, daemon: { ...c0.daemon, pipeName: sentinelPipe }, lanlink: 'totally-not-an-object' });
+
+    const c = loadConfig();
+    expect(c.lanlink).toEqual({ enabled: false, nic: null });
+    expect(c.daemon.pipeName).toBe(sentinelPipe);
+  });
+
+  it('array-shaped lanlink is rejected (not treated as an object) → default OFF', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, lanlink: [] });
+    expect(loadConfig().lanlink).toEqual({ enabled: false, nic: null });
+  });
+
+  it('per-field coercion: a bad sub-field backfills ONLY itself', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, lanlink: { enabled: 'yes', nic: 12345, port: -1 } });
+    const c = loadConfig();
+    // enabled non-boolean → default false; nic non-object → null; port out of range → dropped
+    expect(c.lanlink).toEqual({ enabled: false, nic: null });
+  });
+
+  it('preserves a fully valid lanlink slice verbatim', () => {
+    const c0 = createDefaultConfig();
+    const lanlink = { enabled: true, nic: { name: 'Ethernet', mac: 'aa:bb:cc:dd:ee:ff' }, port: 41234 };
+    writeRawConfig({ ...c0, lanlink });
+    expect(loadConfig().lanlink).toEqual(lanlink);
+  });
+});

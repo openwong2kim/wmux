@@ -1,13 +1,15 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-import { loadConfig, getWmuxDir } from './config';
+import { loadConfig, saveConfig, getWmuxDir } from './config';
 import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
 import { StateWriter } from './StateWriter';
 import { LanLinkInbox } from './lanlink/inbox';
+import { LanLinkController } from './lanlink/controller';
+import { coerceLanLinkPatch } from '../shared/lanlink';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
@@ -964,6 +966,7 @@ function registerRpcHandlers(
   sessionManager: DaemonSessionManager,
   stateWriter: StateWriter,
   lanLinkInbox: LanLinkInbox,
+  lanLinkController: LanLinkController,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
   startTime: number,
@@ -1340,6 +1343,19 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.inbox.poll', async (params) => {
     const cursor = typeof params['cursor'] === 'number' ? params['cursor'] : 0;
     return lanLinkInbox.poll(cursor);
+  });
+
+  // LanLink PR-3 — control-plane read/write. Like inbox.poll these are NOT origin-
+  // gated: the daemon control pipe is machine-local (the future PR-4 LAN listener
+  // is a SEPARATE net.Server with its own allow-list router that never registers
+  // these). `lanlink.status` reads persisted state + live NICs; `lanlink.configure`
+  // validates the renderer-supplied patch (coerceLanLinkPatch — throws on garbage),
+  // persists, and fires the 'changed' seam. Network-0: no listener is started here.
+  pipeServer.onRpc('lanlink.status', async () => {
+    return lanLinkController.getStatus();
+  });
+  pipeServer.onRpc('lanlink.configure', async (params) => {
+    return lanLinkController.configure(coerceLanLinkPatch(params));
   });
 
   // __lanlink.inject — DEV/TEST ONLY synthetic inject (no real LAN peer). Gated
@@ -1977,6 +1993,11 @@ async function main(): Promise<void> {
   // so it survives main/renderer death (C3). Lives next to sessions.json under
   // the same suffix-aware wmuxDir; every append is synchronous + fsync'd.
   const lanLinkInbox = new LanLinkInbox(wmuxDir);
+  // LanLink PR-3 — control-plane state (enable toggle + NIC selection). Mutates
+  // config.lanlink IN PLACE on the boot `config` object (so every holder of that
+  // reference sees it) + persists via saveConfig, and emits 'changed' — the seam
+  // a future in-daemon LAN listener (PR-4) subscribes to. PR-3 builds no listener.
+  const lanLinkController = new LanLinkController({ config, persist: saveConfig });
   // A4 — sweep tmp dumps left behind by a previous crash. They are safe to
   // delete: tmp files only exist between the write and rename steps of an
   // atomic dump, so any tmp on disk now is from a daemon that died before
@@ -2104,6 +2125,7 @@ async function main(): Promise<void> {
     sessionManager,
     stateWriter,
     lanLinkInbox,
+    lanLinkController,
     sessionPipes,
     processMonitor,
     startTime,

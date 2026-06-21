@@ -2,7 +2,11 @@ import net from 'node:net';
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import type { RpcResponse, DaemonEvent } from '../shared/rpc';
-import type { LanLinkInboxPollResult } from '../shared/lanlink';
+import type {
+  LanLinkInboxPollResult,
+  LanLinkStatus,
+  LanLinkConfigurePatch,
+} from '../shared/lanlink';
 import { FLUSH_DONE_MARKER } from '../daemon/SessionPipe';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
 import { dataSuffix } from '../shared/constants';
@@ -318,6 +322,27 @@ export class DaemonClient extends EventEmitter {
   async inboxPoll(cursor: number): Promise<LanLinkInboxPollResult> {
     const result = await this.rpc('daemon.inbox.poll', { cursor });
     return result as LanLinkInboxPollResult;
+  }
+
+  /**
+   * LanLink PR-3 — read the control-plane status: persisted enable/NIC/port plus
+   * the live LAN-capable NIC list (re-enumerated daemon-side each call). The
+   * Settings UI reads this on mount; the daemon is the source of truth.
+   */
+  async lanlinkStatus(): Promise<LanLinkStatus> {
+    const result = await this.rpc('lanlink.status', {});
+    return result as LanLinkStatus;
+  }
+
+  /**
+   * LanLink PR-3 — apply a partial control-plane update (enable toggle / NIC
+   * selection). The daemon validates, persists to config.json, and echoes the new
+   * status. PR-3 builds no listener; this only flips persisted config + fires the
+   * daemon-internal change signal a future LAN listener (PR-4) subscribes to.
+   */
+  async lanlinkConfigure(patch: LanLinkConfigurePatch): Promise<LanLinkStatus> {
+    const result = await this.rpc('lanlink.configure', patch as Record<string, unknown>);
+    return result as LanLinkStatus;
   }
 
   /**

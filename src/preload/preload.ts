@@ -7,7 +7,7 @@ import type {
 } from '../shared/firstRun';
 import { isFileDrag } from '../shared/dragDrop';
 import type { ResumeBinding } from '../shared/agentResume';
-import type { RemoteInboxItem } from '../shared/lanlink';
+import type { RemoteInboxItem, LanLinkStatus, LanLinkConfigurePatch } from '../shared/lanlink';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -574,6 +574,12 @@ document.addEventListener('DOMContentLoaded', () => {
   requestResync: () => {
     ipcRenderer.send(IPC.LANLINK_RESYNC);
   },
+  // LanLink PR-3 control plane (Settings → LanLink section). Request/response via
+  // invoke (mirrors mcp). status reads daemon enable/NIC state + live NICs;
+  // configure applies a partial enable/NIC update and echoes the new status.
+  status: () => ipcRenderer.invoke(IPC.LANLINK_STATUS) as Promise<LanLinkStatus>,
+  configure: (patch: LanLinkConfigurePatch) =>
+    ipcRenderer.invoke(IPC.LANLINK_CONFIGURE, patch) as Promise<LanLinkStatus>,
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);
