@@ -213,6 +213,19 @@ Stable in v3.0. All A2A surfaces continue with the v2.7.3 execute-approval contr
 | `a2a.task.update` | Update task status. |
 | `a2a.task.cancel` | Cancel an in-flight task. |
 | `a2a.broadcast` | Send a typed broadcast to all discoverable agents. |
+| `a2a.channel.list` | List channels in the caller's company. Requires explicit `workspaceId` (Path D closed). |
+| `a2a.channel.create` | Create a channel; creator is auto-added as a member with `historyFromSeq: 0`. |
+| `a2a.channel.post` | Post a message; idempotent on `clientMsgId`; surfaces `PERSIST_FAILED` instead of swallowing. |
+| `a2a.channel.join` | Add a member; `includeHistory: false` sets `historyFromSeq` to current `nextSeq`. |
+| `a2a.channel.leave` | Remove a member; last member sets `emptySince`. |
+| `a2a.channel.archive` | Archive a channel (one-way); members retain history. |
+| `a2a.channel.get` | Read a channel row. |
+| `a2a.channel.getMessages` | Read messages, optionally filtered to `seq >= sinceSeq`. |
+| `a2a.channel.getMembers` | Read the member list. |
+
+The `a2a.channel.*` surface ships as stable in v3.0. New optional parameters and new fields may appear in minor releases (e.g. a future `channel.update` for renames/topics) but the existing field names and types will not change within v3.x. The `channel.message` event type is also frozen stable — the multi-party scoping rule (sender `workspaceId` plus every `recipientWorkspaceId`; zero visibility on an unscoped poll) is part of the contract.
+
+---
 
 ---
 
@@ -231,6 +244,8 @@ These can grow in minor releases; they cannot shrink within v3.x.
 | `RING_CAPACITY` (events) | 1024 | Event bus ring buffer size. |
 | `POLL_DEFAULT_MAX` | 256 | Default per-poll event cap. |
 | `MAX_CONNECTIONS` (Named Pipe) | 50 | Concurrent client connections. |
+| `CHANNEL_IDEMPOTENCY_CAP` | 1000 | Per-channel idempotency LRU cap (R13). Repeat posts with the same `clientMsgId` return the original `seq` instead of appending a duplicate. |
+| `CHANNEL_EMPTY_TTL_HOURS_DEFAULT` | 168 (7 days) | TTL after which an empty channel (no members, `emptySince` set) is pruned by the reaper on `load()`. Mirrors suspended-session retention. |
 
 ---
 
