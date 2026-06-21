@@ -160,8 +160,23 @@ export class ChannelStateWriter {
   }
 
   /**
-   * Load state from disk. Falls back to `.bak` on primary failure. Prunes
-   * channels that have been empty longer than `emptyChannelTtlHours`.
+   * Load state from disk and run the load-time reaper. Steps:
+   *   1. Read `channels.json` through the migrator + validator. A
+   *      parse failure or validator rejection falls through to `.bak`;
+   *      a `.bak` failure falls through to `EMPTY_CHANNEL_STATE`.
+   *   2. Reject prototype-chain keys (`__proto__`, `constructor`,
+   *      `prototype`) on both channel ids and map keys — defense in
+   *      depth on top of the JSON.parse reviver.
+   *   3. Prune channels whose empty-period has exceeded
+   *      `emptyChannelTtlHours`. The empty-period is `emptySince` if
+   *      set, otherwise `createdAt` (the "lost emptySince" recovery
+   *      case). Channels with members are never pruned here.
+   *   4. Prune members / messages / idempotency entries whose channel
+   *      did not survive. The pruned result is a null-prototype object
+   *      built with own-key checks so a corrupt entry cannot pollute
+   *      `Object.prototype`.
+   *
+   * @returns The loaded state, possibly empty.
    */
   load(): ChannelState {
     const migrator = createMigrator<ChannelState>(
@@ -259,7 +274,11 @@ export class ChannelStateWriter {
     }
   }
 
-  /** Clean up timers (daemon shutdown). Flushes pending state first. */
+  /**
+   * Clean up timers (daemon shutdown). Flushes any pending debounced
+   * state first so the on-disk file reflects the latest in-memory
+   * snapshot before the writer is released. Mirrors `StateWriter.dispose`.
+   */
   dispose(): void {
     this.flush();
   }
