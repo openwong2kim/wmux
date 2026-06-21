@@ -25,6 +25,23 @@
 import type { RpcRouter } from '../RpcRouter';
 import type { DaemonClient } from '../../DaemonClient';
 
+/**
+ * Register the seven `a2a.channel.*` pipe-RPC methods on the supplied
+ * router. Each handler is a thin pass-through to the daemon's
+ * `ChannelService` via the supplied `DaemonClient` — there is no
+ * renderer-side validation, caching, or projection here. The
+ * `a2a.channel.read` / `a2a.channel.send` capabilities gate these
+ * methods at dispatch time via `methodCapabilityMap.ts`; the router
+ * itself only knows about transport.
+ *
+ * Read methods (`list`, `get`, `getMessages`, `getMembers`) carry the
+ * `a2a.channel.read` capability; mutating methods (`create`, `archive`,
+ * `join`, `leave`, `post`) carry `a2a.channel.send`. The capability
+ * mapping lives in `src/main/mcp/methodCapabilityMap.ts`.
+ *
+ * Throws when the daemon is not connected; the pipe router surfaces
+ * this as a transport-layer error before the capability gate runs.
+ */
 export function registerA2aChannelRpc(router: RpcRouter, getDaemonClient: () => DaemonClient | null): void {
   // Read-only — capability 'a2a.channel.read'
   router.register('a2a.channel.list', (params) => {

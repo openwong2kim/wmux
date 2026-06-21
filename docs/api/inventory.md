@@ -108,6 +108,15 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 | `a2a.task.update` | `{ id, status, result? }` | stable | |
 | `a2a.task.cancel` | `{ id }` | stable | |
 | `a2a.broadcast` | `{ kind, payload }` | stable | |
+| `a2a.channel.list` | `{ workspaceId }` | stable | Lists channels in the caller's company. Closes Path D — explicit `workspaceId` is required (no `activeWorkspaceId` fallback). |
+| `a2a.channel.create` | `{ workspaceId, name, visibility, topic?, createdBy }` | stable | Creates a channel and auto-adds the creator as a member (KTD10). Capability `a2a.channel.send`. |
+| `a2a.channel.post` | `{ workspaceId, channelId, sender, text, clientMsgId?, data? }` | stable | Posts a message. Idempotent on `(channelId, clientMsgId)` (R13). Emits `channel.message` event on success; `PERSIST_FAILED` on writer failure. Capability `a2a.channel.send`. |
+| `a2a.channel.join` | `{ workspaceId, channelId, member, includeHistory? }` | stable | Adds a member. Capability `a2a.channel.send`. |
+| `a2a.channel.leave` | `{ workspaceId, channelId, memberId }` | stable | Removes a member. Capability `a2a.channel.send`. |
+| `a2a.channel.archive` | `{ workspaceId, channelId, archivedBy }` | stable | Archives a channel (one-way transition; members retain history). Capability `a2a.channel.send`. |
+| `a2a.channel.get` | `{ workspaceId, channelId }` | stable | Returns the channel row. Capability `a2a.channel.read`. |
+| `a2a.channel.getMessages` | `{ workspaceId, channelId, sinceSeq? }` | stable | Returns the channel's message list, optionally filtered to `seq >= sinceSeq`. Capability `a2a.channel.read`. |
+| `a2a.channel.getMembers` | `{ workspaceId, channelId }` | stable | Returns the channel's member list. Capability `a2a.channel.read`. |
 
 ### Browser / CDP surface
 
@@ -170,6 +179,14 @@ The wmux MCP server (hosted in-process, named-pipe transport to the daemon) expo
 | `a2a_task_update` | `a2a.task.update` |
 | `a2a_task_cancel` | `a2a.task.cancel` |
 | `a2a_broadcast` | `a2a.broadcast` |
+| `channel_list` | `a2a.channel.list` | Lists channels in the caller's company. |
+| `channel_create` | `a2a.channel.create` | Creates a channel and auto-adds the creator as a member. |
+| `channel_post` | `a2a.channel.post` | Posts a message. Idempotent on `client_msg_id`. Surfaces `PERSIST_FAILED` (R7) instead of swallowing. |
+| `channel_join` | `a2a.channel.join` | Joins a channel. |
+| `channel_leave` | `a2a.channel.leave` | Leaves a channel. |
+| `channel_archive` | `a2a.channel.archive` | Archives a channel (one-way). |
+
+The pipe RPC surface also exposes `a2a.channel.get`, `a2a.channel.getMessages`, and `a2a.channel.getMembers` (read-only, capability `a2a.channel.read`) which are not yet surfaced as MCP tools. The history-shaping `channel.history` MCP tool is explicitly deferred per plan Scope Boundaries — pagination and streaming shape is unsettled.
 
 ### Company A2A (experimental)
 
@@ -200,8 +217,11 @@ The EventBus (`src/main/events/EventBus.ts`) is an in-memory ring buffer of `RIN
 | `process.exited` | stable | `ptyId`, `exitCode`, `signal?` |
 | `agent.lifecycle` | stable | `ptyId`, `kind: 'agent.stop'\|'agent.subagent_stop'\|'agent.awaiting_input'`, `source: 'hook'\|'detector'\|'osc133'`, `agent: AgentSlug\|null`, `decision: 'emit'\|'dedup'`, `exitCode?` (`osc133` only). **Carries `ptyId`, not `paneId`** — resolve `paneId` via a `pane.list` round-trip and cache. Shipped in v2.13.0. See `src/shared/events.ts` for the full per-source semantics. |
 | `a2a.task` | stable | `taskId`, `from` (sender `workspaceId`; **also the base `workspaceId`**), `to` (receiver `workspaceId`), `kind: 'created'\|'updated'\|'cancelled'`, `state: TaskState` (`'submitted'\|'working'\|'input-required'\|'completed'\|'failed'\|'canceled'`), `messagePreview?` (≤200 chars, omitted by default). **Pointer, not payload** — fetch the body via `a2a_task_query`. **DUAL-PARTY scoped** (see note below). |
+| `channel.message` | stable | `channelId`, `seq` (per-channel monotonic), `senderWorkspaceId`, `recipientWorkspaceIds: string[]`, `message: ChannelMessage` (sender / text / postedAt / `recipientSnapshot`). The `recipientSnapshot` field freezes the recipient set at critical-section entry in `ChannelService.post` (KTD3) — concurrent `join`/`leave` after the post starts do not retroactively change who sees the message. **MULTI-PARTY scoped**: base `workspaceId === senderWorkspaceId`; the poll filter adds every `recipientWorkspaceId` as an additional matchable key. An **unscoped** poll receives **zero** `channel.message` events. See [PROTOCOL.md §2.8](../PROTOCOL.md#28-workspace-scoping-and-the-a2atask-dual-party-exception) and `src/shared/events.ts` (`ChannelMessageEvent`). |
 
 **`a2a.task` dual-party scoping:** unlike every other event type — which is scoped strictly to the calling workspace — `a2a.task` is visible to **both** the sending (`from`) and receiving (`to`) workspace, and to **no** third workspace. The base `workspaceId` is always set `=== from`, so a consumer that ignores `a2a.task` still scopes to the sender and never a third party; `events.poll` then adds `to` as a second matchable key for this type only (`src/main/pipe/handlers/events.rpc.ts` dual-party filter). An **unscoped** poll (no `workspaceId`) receives **zero** `a2a.task` events. The event is a pointer — `messagePreview` is omitted by default; the party fetches the body via `a2a_task_query`. See `src/shared/events.ts` for the typed shape.
+
+**`channel.message` multi-party scoping:** generalises the `a2a.task` pattern to N recipients. A single post must reach every member workspace, so `events.poll` adds **every** `recipientWorkspaceId` as an additional matchable key for `channel.message` only (the `recipientWorkspaceIds` filter in `src/main/pipe/handlers/events.rpc.ts`). The base `workspaceId` is always set `=== senderWorkspaceId`, so a consumer that ignores `channel.message` still scopes to the sender and never a third party. An **unscoped** poll (no `workspaceId`) receives **zero** `channel.message` events. The recipient set is **frozen at critical-section entry** in `ChannelService.post` (plan KTD3) — concurrent `join` / `leave` on the channel after the post starts do not retroactively change who sees the message. Unlike `a2a.task`, the event carries the **full payload** (the `ChannelMessage` row), not a pointer — there is no `channel.message.query` round-trip required.
 
 **`agent.lifecycle` source semantics:** `source:'hook'` is the Claude Code hook bridge (deterministic, sub-200 ms, always carries `agent`); `source:'detector'` is the regex `AgentDetector` (~1–2 s lag, carries `agent`); `source:'osc133'` is the shell-integration OSC 133 `D` marker (shell-agnostic, `agent` may be `null`, sets `exitCode` when the marker carried one). `decision:'dedup'` means a same-pane same-kind signal already fired inside the dedup window so no notification fanned out — the event is still published for observability. OSC 133 events are never dedup-gated (`decision:'emit'` always). Per-tool-call `agent.activity` and `agent.session_start` are intentionally NOT on this bus (they would overrun the 1024 ring).
 
@@ -244,6 +264,7 @@ The EventBus (`src/main/events/EventBus.ts`) is an in-memory ring buffer of `RIN
 
 | Date | Change |
 |---|---|
+| 2026-06-21 | A2A channels (a2a-channels U2) — added nine `a2a.channel.*` pipe RPC methods (list, get, getMessages, getMembers, create, post, join, leave, archive) and six corresponding `channel_*` MCP tools. Added `channel.message` to the event table with the **multi-party** scoping rule (generalised from `a2a.task` dual-party): visible to the sender's `workspaceId` AND every `recipientWorkspaceId` in the frozen snapshot, never a third workspace, zero visibility on an unscoped poll. The recipient set is frozen at critical-section entry in `ChannelService.post` (KTD3). Updated PROTOCOL.md §2.8 with the parallel `channel.message` rule. |
 | 2026-06-15 | Added `a2a.task` to the event table (`taskId`/`from`/`to`/`kind`/`state`/`messagePreview?`). It is tee'd from the A2A task store onto the EventBus and is the first event type with **dual-party** scoping — visible to both the sending (`from`) and receiving (`to`) workspace, never a third one, with zero visibility on an unscoped poll. Documented the pointer-not-payload contract (fetch the body via `a2a_task_query`). |
 | 2026-06-09 | Baseline retargeted to the v2.18 line. Corrected the transport drift in the RPC-methods intro and the identity table: the pipe is `\\.\pipe\wmux-<username>` (Windows) / `~/.wmux.sock` (POSIX), the token lives at `~/.wmux-auth-token`, and the Windows TCP fallback (`~/.wmux-tcp-port`) is documented. Added `agent.lifecycle` (v2.13.0) to the event table with its `ptyId`/`kind`/`source`/`agent`/`decision`/`exitCode?` shape. Flipped `pane.setMetadata` `mergeMode`/`expectedVersion`/`version` from "v3.0 will add" to "shipped in v2.9.0"; documented the shipped `system.capabilities` feature object (per-method tier map still planned). Added the [`reference.md`](./reference.md) generated companion. |
 

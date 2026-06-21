@@ -193,6 +193,15 @@ export class ChannelService {
 
   // ── Mutating (per-channel mutex) ──────────────────────────────────
 
+  /**
+   * Create a new channel. Canonicalizes the name, rejects duplicates
+   * within the same company, and auto-adds the creator as a member
+   * with `historyFromSeq: 0` (KTD10). Returns the authoritative
+   * `Channel` row on success; `INVALID_NAME` if the name fails
+   * validation; `PERSIST_FAILED` if the writer's `saveImmediate` returns
+   * `false`. The critical section is keyed on a sentinel (`__create__`)
+   * so two concurrent creates serialise on each other.
+   */
   async create(params: CreateChannelParams): Promise<Result<{ channel: Channel }>> {
     return this.withChannelLock('__create__', async () => {
       const name = canonicalizeChannelName(params.name);
@@ -239,6 +248,12 @@ export class ChannelService {
     });
   }
 
+  /**
+   * Archive a channel. Sets `status: 'archived'` and `archivedAt`.
+   * Members retain history access (KTD-G). Subsequent `post` calls
+   * return `CHANNEL_ARCHIVED`. `CHANNEL_NOT_FOUND` if the id is unknown;
+   * `PERSIST_FAILED` if the writer cannot save.
+   */
   async archive(params: ArchiveChannelParams): Promise<EmptyResult> {
     return this.withChannelLock(params.channelId, async () => {
       const channel = this.state.channels.find((c) => c.id === params.channelId);
@@ -260,6 +275,14 @@ export class ChannelService {
     });
   }
 
+  /**
+   * Add a member to a channel. `DUPLICATE_MEMBER` if already present.
+   * `includeHistory: false` (default) sets the new member's
+   * `historyFromSeq` to the channel's current `nextSeq` so they don't
+   * see older history; `includeHistory: true` sets it to `0` (full
+   * history). Members of an `emptySince`-tagged channel clear that
+   * tag on join so the empty-channel reaper stops counting it.
+   */
   async join(params: JoinChannelParams): Promise<EmptyResult> {
     return this.withChannelLock(params.channelId, async () => {
       const channel = this.state.channels.find((c) => c.id === params.channelId);
@@ -294,6 +317,13 @@ export class ChannelService {
     });
   }
 
+  /**
+   * Remove a member from a channel. `NOT_A_MEMBER` if absent. The
+   * last member leaving sets `emptySince` so the empty-channel reaper
+   * prunes the row after the TTL; a subsequent `join` clears
+   * `emptySince` (the `create` path is unaffected — a freshly created
+   * channel never has `emptySince`).
+   */
   async leave(params: LeaveChannelParams): Promise<EmptyResult> {
     return this.withChannelLock(params.channelId, async () => {
       const channel = this.state.channels.find((c) => c.id === params.channelId);
@@ -326,6 +356,18 @@ export class ChannelService {
     });
   }
 
+  /**
+   * Post a message to a channel. Validates membership, freezes the
+   * recipient snapshot at critical-section entry (KTD3 — a concurrent
+   * `join` that lands later will not retroactively target this post),
+   * allocates the next `seq`, and persists. Idempotency: a repeat
+   * post with the same `clientMsgId` returns the original message
+   * with `idempotent: true` (no new seq, no second emit). Errors:
+   * `CHANNEL_NOT_FOUND`, `CHANNEL_ARCHIVED`, `NOT_A_MEMBER`,
+   * `PERSIST_FAILED`. The `channel.message` event fires AFTER a
+   * successful persist — the message is durable on disk by the time
+   * consumers see it.
+   */
   async post(params: PostMessageParams): Promise<Result<{
     message: ChannelMessage;
     idempotent?: boolean;
