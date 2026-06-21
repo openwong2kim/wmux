@@ -1,4 +1,5 @@
 import type { ElectronAPI, McpTargetStatusPayload } from '../preload/preload';
+import type { RemoteInboxItem } from './lanlink';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -53,6 +54,18 @@ declare global {
         onClosed: (
           callback: (payload: { promptId: string }) => void,
         ) => () => void;
+      };
+      /**
+       * LanLink PR-2 — subscribe to materialized read-only REMOTE inbox items
+       * (origin:'remote', off-machine peer messages). Dedicated channel
+       * (mirrors permissionPrompt) so a remote message is structurally
+       * incapable of reaching the RPC_COMMAND → submitToPty paste path.
+       * Returns an unsubscribe fn.
+       */
+      lanlink?: {
+        onRemote: (callback: (item: RemoteInboxItem) => void) => () => void;
+        /** Renderer → main replay request; fire on mount after onRemote is set. */
+        requestResync: () => void;
       };
     };
     clipboardAPI: {

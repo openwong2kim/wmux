@@ -75,6 +75,20 @@ export const IPC = {
   // the pluginHost deadlock-break, or a coalesced sibling). Lets the renderer
   // approval-inbox remove the row. Payload: { promptId }.
   PERMISSION_PROMPT_CLOSED: 'permission:prompt-closed',
+  // LanLink PR-2 — main → renderer push of a materialized read-only REMOTE
+  // inbox item (origin:'remote', off-machine peer). RemoteInboxBridge sends it
+  // after a daemon.inbox.poll; the renderer's useRemoteInboxBridge projects it
+  // into the remoteInbox slice. Deliberately a DEDICATED channel (like
+  // permissionPrompt) — never the RPC_COMMAND path — so a remote message is
+  // structurally incapable of reaching submitToPty / the a2a execute funnel.
+  // Payload: RemoteInboxItem.
+  LANLINK_REMOTE: 'lanlink:remote',
+  // LanLink PR-2 — renderer → main replay request. Fired by useRemoteInboxBridge
+  // on mount (AFTER its onRemote listener is installed). Main resets the
+  // RemoteInboxBridge delivery cursor to 0 and re-pulls, so a reloaded or
+  // just-mounted renderer re-materializes the full live inbox (isNew dedups).
+  // Closes the renderer-reload / cold-start delivery gap.
+  LANLINK_RESYNC: 'lanlink:resync',
   // Shell
   SHELL_OPEN_EXTERNAL: 'shell:open-external',
   // Open an absolute filesystem path in the OS default app / explorer.

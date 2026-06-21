@@ -154,6 +154,7 @@ export type RpcMethod =
   | 'daemon.superviseRearm'
   | 'daemon.superviseStop'
   | 'daemon.setResumeBinding'
+  | 'daemon.inbox.poll'
   | 'a2a.resolve.identity'
   | 'a2a.whoami'
   | 'a2a.discover'
@@ -258,6 +259,7 @@ export const ALL_RPC_METHODS = [
   'daemon.superviseRearm',
   'daemon.superviseStop',
   'daemon.setResumeBinding',
+  'daemon.inbox.poll',
   'a2a.resolve.identity',
   'a2a.whoami',
   'a2a.discover',
@@ -339,7 +341,16 @@ export interface DaemonEvent {
     //   context.git   → { branch: string | null, isWorktree: boolean }
     //   context.ports → { ports: Array<{ port: number, pid: number }> }
     | 'context.git'
-    | 'context.ports';
+    | 'context.ports'
+    // LanLink PR-2 inbound durable inbox. FIRE-AND-FORGET NUDGE ONLY — the
+    // broadcast says "a remote message landed, re-pull"; it is NOT a delivery
+    // guarantee. Durability + exactly-once come from the disk inbox +
+    // daemon.inbox.poll cursor-pull (a message that arrives while main is dead
+    // survives on disk and replays on reconnect). `data` is
+    // LanLinkRemoteReceivedData ({ seq }); `sessionId` is the
+    // LANLINK_SENTINEL_SESSION_ID — no PTY session backs a remote message.
+    //   lanlink.remote.received → { seq: number }
+    | 'lanlink.remote.received';
   sessionId: string;
   data: unknown;
 }

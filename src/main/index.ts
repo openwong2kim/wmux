@@ -55,6 +55,7 @@ import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonCl
 import { raceDaemonShutdown } from './daemonShutdownRace';
 import { migrateScrollbackOnce } from './scrollback/legacyMigration';
 import { DaemonNotificationRouter } from './notification/DaemonNotificationRouter';
+import { RemoteInboxBridge } from './lanlink/RemoteInboxBridge';
 import { WorkspaceContextRouter } from './metadata/WorkspaceContextRouter';
 import { ensureDaemon, killDaemonByPidFile } from './daemon/launcher';
 import { DaemonRespawnController } from './daemon/DaemonRespawnController';
@@ -335,6 +336,7 @@ async function refreshTraySessionCount(): Promise<void> {
 // PTYBridge writes to in local mode. Without it, daemon mode would render
 // the notification pipeline 100% inert (Codex 2nd review #1).
 let daemonNotificationRouter: DaemonNotificationRouter | null = null;
+let remoteInboxBridge: RemoteInboxBridge | null = null;
 // X1 — folds daemon context.git/context.ports broadcasts into the sidebar
 // metadata channel (and drives the gh PR cache). Same lifecycle as the
 // notification router above.
@@ -535,6 +537,15 @@ const disposeUsagePollerListener = usagePoller.onStateChange((state) => {
     win.webContents.send(IPC.USAGE_UPDATE, state);
   }
 });
+// LanLink PR-2 — renderer requests a full inbox replay on mount (cold start /
+// reload). Reset the bridge cursor to 0 and re-pull so the (possibly just-
+// reloaded, empty) renderer re-materializes every live record; isNew dedups.
+// No-op when no daemon bridge is mounted yet (the bridge's own start() pull
+// will deliver once it connects).
+ipcMain.on(IPC.LANLINK_RESYNC, () => {
+  remoteInboxBridge?.resync();
+});
+
 ipcMain.on(IPC.USAGE_TOGGLE, (_event, enabled: unknown) => {
   if (enabled === true) {
     usagePoller.start();
@@ -798,6 +809,14 @@ app.on('ready', async () => {
       daemonNotificationRouter?.stop();
       daemonNotificationRouter = new DaemonNotificationRouter(client, () => mainWindow, () => hookSignalRouter);
       daemonNotificationRouter.start();
+      // LanLink PR-2 — mount the remote-inbox cursor-pull bridge. On every
+      // (re)connect it pulls the daemon's durable inbox from its retained cursor
+      // and materializes read-only remote items to the renderer over a dedicated
+      // IPC channel (never the PTY paste / a2a execute path). Re-created per
+      // install like the notification router; the cursor lives in module scope.
+      remoteInboxBridge?.stop();
+      remoteInboxBridge = new RemoteInboxBridge(() => mainWindow);
+      remoteInboxBridge.start(client);
       // X1 — context fold (git branch / worktree / ports / PR badge).
       workspaceContextRouter?.stop();
       workspaceContextRouter = new WorkspaceContextRouter(client, () => mainWindow);
@@ -831,6 +850,8 @@ app.on('ready', async () => {
       console.warn('[Main] Daemon disconnected, falling back to local PTY');
       daemonNotificationRouter?.stop();
       daemonNotificationRouter = null;
+      remoteInboxBridge?.stop();
+      remoteInboxBridge = null;
       workspaceContextRouter?.stop();
       workspaceContextRouter = null;
       daemonClient = null;

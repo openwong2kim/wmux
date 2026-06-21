@@ -7,6 +7,7 @@ import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
 import { StateWriter } from './StateWriter';
+import { LanLinkInbox } from './lanlink/inbox';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
@@ -23,6 +24,7 @@ import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalize
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import type { AgentSlug } from '../shared/events';
+import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 
 // X6 Feature ②: sessions RECOVERED this daemon boot that were running an
 // INTERACTIVE agent (non-exec, non-supervised) → ptyId → the agent slug to
@@ -961,6 +963,7 @@ function registerRpcHandlers(
   pipeServer: DaemonPipeServer,
   sessionManager: DaemonSessionManager,
   stateWriter: StateWriter,
+  lanLinkInbox: LanLinkInbox,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
   startTime: number,
@@ -1327,6 +1330,50 @@ function registerRpcHandlers(
       sessionFound: true,
     };
   });
+
+  // daemon.inbox.poll — LanLink PR-2 cursor-pull. Returns every inbox record
+  // with seq > cursor (the DELIVERY guarantee; the lanlink.remote.received
+  // broadcast is only a re-pull nudge). The store degrades gracefully (typed
+  // empty) on a bogus cursor. No origin gating — the daemon control pipe is
+  // machine-local; remote bytes never reach here (they land in the inbox via
+  // the PR-4 LAN listener, which this PR does not build).
+  pipeServer.onRpc('daemon.inbox.poll', async (params) => {
+    const cursor = typeof params['cursor'] === 'number' ? params['cursor'] : 0;
+    return lanLinkInbox.poll(cursor);
+  });
+
+  // __lanlink.inject — DEV/TEST ONLY synthetic inject (no real LAN peer). Gated
+  // so it never registers in a production build. Lets PR-2 be exercised end to
+  // end (durable append → nudge → main cursor-pull → renderer) independently of
+  // the PR-4 LAN transport. The future PR-4 receive path and the channels
+  // deliver() remote endpoint call the SAME LanLinkInbox.append() under the hood.
+  // Positive dev-detection (matches enforcementMode.detectIsDev). This codebase
+  // does NOT set NODE_ENV='production' for packaged builds — it judges prod via
+  // app.isPackaged — so a `!== 'production'` gate would WRONGLY register this in
+  // packaged production (NODE_ENV is unset there). Allowlist dev/test/explicit
+  // opt-in only, so the inject RPC is absent in a shipped build.
+  if (
+    process.env.NODE_ENV === 'development' ||
+    process.env.NODE_ENV === 'test' ||
+    process.env.WMUX_LANLINK_INJECT === '1'
+  ) {
+    pipeServer.onRpc('__lanlink.inject', async (params) => {
+      const { seq } = lanLinkInbox.injectSynthetic({
+        id: typeof params['id'] === 'string' ? params['id'] : undefined,
+        peerName: typeof params['peerName'] === 'string' ? params['peerName'] : 'peer',
+        text: typeof params['text'] === 'string' ? params['text'] : '',
+      });
+      // The durable write already completed (append is synchronous) BEFORE we
+      // broadcast — the nudge is best-effort and may be dropped; the cursor-pull
+      // is the delivery guarantee.
+      pipeServer.broadcast({
+        type: 'lanlink.remote.received',
+        sessionId: LANLINK_SENTINEL_SESSION_ID,
+        data: { seq },
+      });
+      return { ok: true, seq };
+    });
+  }
 
   // daemon.ping
   pipeServer.onRpc('daemon.ping', async () => {
@@ -1926,6 +1973,10 @@ async function main(): Promise<void> {
   // StateWriter (codex #2). The acquireLock() one-shot above runs pre-config
   // and only reads bootId, so the default there is harmless.
   const stateWriter = new StateWriter(wmuxDir, config.session.suspendedTtlHours);
+  // LanLink PR-2 — durable inbound inbox (remote peer messages). Daemon-owned
+  // so it survives main/renderer death (C3). Lives next to sessions.json under
+  // the same suffix-aware wmuxDir; every append is synchronous + fsync'd.
+  const lanLinkInbox = new LanLinkInbox(wmuxDir);
   // A4 — sweep tmp dumps left behind by a previous crash. They are safe to
   // delete: tmp files only exist between the write and rename steps of an
   // atomic dump, so any tmp on disk now is from a daemon that died before
@@ -2052,6 +2103,7 @@ async function main(): Promise<void> {
     pipeServer,
     sessionManager,
     stateWriter,
+    lanLinkInbox,
     sessionPipes,
     processMonitor,
     startTime,

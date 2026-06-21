@@ -301,6 +301,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // handler) after env-first ptyId resolution. External clients must never set a
   // pane's resume binding — same internal-only posture as supervision control.
   'daemon.setResumeBinding': { capability: 'wmux.internal' },
+  // LanLink PR-2 — cursor-pull of the durable remote inbox. main↔daemon only
+  // (DaemonClient → daemon control pipe); never an external MCP surface.
+  'daemon.inbox.poll':       { capability: 'wmux.internal' },
 
   // --- A2A (agent-to-agent) ---
   'a2a.resolve.identity': { capability: 'a2a.read',    riskClass: 'a2a' },

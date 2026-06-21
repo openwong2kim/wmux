@@ -2,6 +2,7 @@ import net from 'node:net';
 import { EventEmitter } from 'node:events';
 import crypto from 'node:crypto';
 import type { RpcResponse, DaemonEvent } from '../shared/rpc';
+import type { LanLinkInboxPollResult } from '../shared/lanlink';
 import { FLUSH_DONE_MARKER } from '../daemon/SessionPipe';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
 import { dataSuffix } from '../shared/constants';
@@ -309,6 +310,17 @@ export class DaemonClient extends EventEmitter {
   }
 
   /**
+   * LanLink PR-2 — cursor-pull the daemon's durable inbox. Returns every record
+   * with seq > cursor; `nextCursor` never rewinds. RemoteInboxBridge advances
+   * its retained cursor only after the pulled items are materialized, so a
+   * reconnect replay is exactly-once on the read side.
+   */
+  async inboxPoll(cursor: number): Promise<LanLinkInboxPollResult> {
+    const result = await this.rpc('daemon.inbox.poll', { cursor });
+    return result as LanLinkInboxPollResult;
+  }
+
+  /**
    * daemon AgentDetector가 gate로 확정한 에이전트 표시명을 조회한다(없으면 null).
    * renderer detection pull의 권위 소스 — session:agent emit 전파 race를 우회한다.
    */
@@ -513,6 +525,16 @@ export class DaemonClient extends EventEmitter {
           // X1 — PID-tree-scoped listening ports (10 s daemon poll).
           this.emit('session:ports', { sessionId: event.sessionId, data: event.data });
           break;
+        case 'lanlink.remote.received': {
+          // LanLink PR-2 — a remote message landed in the daemon's durable
+          // inbox. This broadcast is a FIRE-AND-FORGET NUDGE only ("re-pull"),
+          // NOT delivery. RemoteInboxBridge listens for 'lanlink:nudge' and
+          // pulls via daemon.inbox.poll — the cursor-pull is the guarantee, so a
+          // dropped nudge is recovered by the bridge's interval/reconnect pull.
+          const data = event.data as { seq?: number } | null;
+          this.emit('lanlink:nudge', { seq: data?.seq ?? 0 });
+          break;
+        }
         default:
           break;
       }

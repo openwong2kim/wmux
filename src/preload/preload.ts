@@ -7,6 +7,7 @@ import type {
 } from '../shared/firstRun';
 import { isFileDrag } from '../shared/dragDrop';
 import type { ResumeBinding } from '../shared/agentResume';
+import type { RemoteInboxItem } from '../shared/lanlink';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -551,6 +552,27 @@ document.addEventListener('DOMContentLoaded', () => {
     return () => {
       ipcRenderer.removeListener(IPC.PERMISSION_PROMPT_CLOSED, listener);
     };
+  },
+};
+
+// LanLink PR-2 — dedicated channel for materialized read-only REMOTE inbox
+// items. Mirrors the permissionPrompt bridge: main pushes over IPC.LANLINK_REMOTE
+// and the renderer's useRemoteInboxBridge projects into the remoteInbox slice.
+// A dedicated channel (NOT RPC_COMMAND) keeps a remote message structurally
+// unable to reach submitToPty / the a2a execute funnel.
+(electronAPI as Record<string, unknown>).lanlink = {
+  onRemote: (callback: (item: RemoteInboxItem) => void) => {
+    const listener = (_event: unknown, item: RemoteInboxItem) => callback(item);
+    ipcRenderer.on(IPC.LANLINK_REMOTE, listener);
+    return () => {
+      ipcRenderer.removeListener(IPC.LANLINK_REMOTE, listener);
+    };
+  },
+  // Renderer → main replay request. Fire AFTER the onRemote listener is
+  // installed so main re-pulls the full inbox from cursor 0 (reload / cold-start
+  // recovery; the renderer's isNew guard dedups).
+  requestResync: () => {
+    ipcRenderer.send(IPC.LANLINK_RESYNC);
   },
 };
 

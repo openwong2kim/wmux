@@ -31,6 +31,7 @@ import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
+import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
 import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
 import { useIpc } from '../../hooks/useIpc';
 import type { SessionData, PaneLeaf, Pane, Surface, Workspace } from '../../../shared/types';
@@ -296,6 +297,9 @@ export default function AppLayout() {
   // onClosed (guard #2). Always-on (not gated on fleetViewVisible) so MCP
   // prompts accumulate in the store before the cockpit's Approvals tab opens.
   useApprovalInboxBridge();
+  // LanLink PR-2 — own the remote-inbox subscription (always-on, mounted once)
+  // so remote peer messages accumulate in the store before any surface opens.
+  useRemoteInboxBridge();
   // Plugin host (B-1): ui.decoratePane push → uiSlice pane decorations.
   usePaneDecorationChannel();
   const { invoke: ipcInvoke } = useIpc();
