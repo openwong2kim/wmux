@@ -20,6 +20,14 @@ const FORBIDDEN: ReadonlyArray<{ pattern: RegExp; label: string }> = [
   { pattern: /from\s+['"][^'"]*\/RpcRouter['"]/, label: "import of RpcRouter" },
   { pattern: /from\s+['"][^'"]*a2a\.rpc['"]/, label: "import of a2a.rpc" },
   { pattern: /\bclaudeWorker\.execute\s*\(/, label: "call to claudeWorker.execute()" },
+  // LanLink PR-4 (C19): broaden the wall beyond the three named modules so the
+  // process boundary does not rest solely on the daemon tsconfig include list. The
+  // daemon legitimately imports pure helpers from src/main/pty (OSC/cwd/agent
+  // parsing), so a blanket src/main ban is impossible; instead we ban the execute
+  // MACHINERY trees — src/main/a2a (ClaudeWorker lives here) and src/main/pipe
+  // (RpcRouter + a2a.rpc live here). No daemon file imports from these today, and
+  // none ever should: that is exactly where a remote byte could reach execute.
+  { pattern: /from\s+['"][^'"]*\/main\/(a2a|pipe)\//, label: "import of src/main execute machinery (a2a/pipe)" },
 ];
 
 function collectTsFiles(dir: string): string[] {

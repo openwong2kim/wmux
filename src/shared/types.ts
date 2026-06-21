@@ -527,6 +527,27 @@ export interface Message {
 
 export type TaskState = 'submitted' | 'working' | 'input-required' | 'completed' | 'failed' | 'canceled';
 
+/** Every valid TaskState, in declaration order — the single source for isTaskState. */
+export const TASK_STATES: readonly TaskState[] = [
+  'submitted',
+  'working',
+  'input-required',
+  'completed',
+  'failed',
+  'canceled',
+];
+
+/**
+ * Runtime type guard for TaskState. Authored for LanLink PR-4 (C10): a `state`
+ * field decoded from an UNTRUSTED LAN wire message must be membership-validated
+ * before it is attached to a durable inbox record, so a hostile value can never
+ * become a `VALID_TRANSITIONS[state]` lookup key (prototype / type-confusion) on
+ * any downstream consumer. Rejects non-strings, objects, and `'constructor'` etc.
+ */
+export function isTaskState(v: unknown): v is TaskState {
+  return typeof v === 'string' && (TASK_STATES as readonly string[]).includes(v);
+}
+
 export interface TaskStatus {
   state: TaskState;
   message?: Message;

@@ -9,6 +9,8 @@ import { SessionPipe } from './SessionPipe';
 import { StateWriter } from './StateWriter';
 import { LanLinkInbox } from './lanlink/inbox';
 import { LanLinkController } from './lanlink/controller';
+import { LanLinkServer } from './lanlink/server';
+import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
@@ -967,6 +969,7 @@ function registerRpcHandlers(
   stateWriter: StateWriter,
   lanLinkInbox: LanLinkInbox,
   lanLinkController: LanLinkController,
+  lanLinkServer: LanLinkServer,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
   startTime: number,
@@ -1356,6 +1359,41 @@ function registerRpcHandlers(
   });
   pipeServer.onRpc('lanlink.configure', async (params) => {
     return lanLinkController.configure(coerceLanLinkPatch(params));
+  });
+
+  // LanLink PR-4 — pairing + peer control plane. Machine-local control-pipe RPCs
+  // (NOT origin-gated, NOT registered on the LAN net.Server, which carries framed
+  // bytes only). `pair.begin` mints a 6-digit PIN + arms the <=2min window;
+  // `pair.join`/`send` are the OUTBOUND initiator paths; `peers.remove` revokes a
+  // peer and destroys its live AEAD connection (C13). These are control-pipe RPCs,
+  // not RpcMethods — the renderer/Settings UI bridge for them is PR-5.
+  pipeServer.onRpc('lanlink.pair.begin', async () => lanLinkServer.beginPairing());
+  pipeServer.onRpc('lanlink.pair.status', async () => lanLinkServer.pairingStatus());
+  pipeServer.onRpc('lanlink.pair.cancel', async () => {
+    lanLinkServer.cancelPairing();
+    return { ok: true };
+  });
+  pipeServer.onRpc('lanlink.pair.join', async (params) => {
+    const host = typeof params['host'] === 'string' ? params['host'] : '';
+    const port = typeof params['port'] === 'number' ? params['port'] : 0;
+    const pin = typeof params['pin'] === 'string' ? params['pin'] : '';
+    if (!host || !port || !pin) throw new Error('lanlink.pair.join: host, port, and pin are required');
+    return lanLinkServer.joinPeer(host, port, pin);
+  });
+  pipeServer.onRpc('lanlink.send', async (params) => {
+    const host = typeof params['host'] === 'string' ? params['host'] : '';
+    const port = typeof params['port'] === 'number' ? params['port'] : 0;
+    const peerUuid = typeof params['peerUuid'] === 'string' ? params['peerUuid'] : '';
+    const text = typeof params['text'] === 'string' ? params['text'] : '';
+    if (!host || !port || !peerUuid) throw new Error('lanlink.send: host, port, and peerUuid are required');
+    await lanLinkServer.sendMessage(host, port, peerUuid, text);
+    return { ok: true };
+  });
+  pipeServer.onRpc('lanlink.peers.list', async () => ({ peers: lanLinkServer.listPeers() }));
+  pipeServer.onRpc('lanlink.peers.remove', async (params) => {
+    const peerUuid = typeof params['peerUuid'] === 'string' ? params['peerUuid'] : '';
+    if (peerUuid) lanLinkServer.revokePeer(peerUuid);
+    return { ok: true };
   });
 
   // __lanlink.inject — DEV/TEST ONLY synthetic inject (no real LAN peer). Gated
@@ -1792,6 +1830,9 @@ let disposeContextWatchers: (() => void) | null = null;
 
 /** X8: set in main(); shutdown() cancels pending supervised restarts through it. */
 let paneSupervisorRef: PaneSupervisor | null = null;
+// Module-level so the standalone shutdown() can dispose the LanLink listener
+// (close the net.Server, drop live connections, remove the firewall rules).
+let lanLinkServerRef: LanLinkServer | null = null;
 
 // === State builder ===
 
@@ -1874,6 +1915,10 @@ async function shutdown(
   // disposeAll. Policies stay persisted on the session meta; recovery
   // re-arms them on the next boot.
   try { paneSupervisorRef?.dispose(); } catch { /* best effort */ }
+
+  // LanLink PR-4: close the listener, drop live AEAD connections, remove firewall
+  // rules. Best-effort — must never block the shutdown path.
+  try { lanLinkServerRef?.dispose(); } catch { /* best effort */ }
   paneSupervisorRef = null;
 
   // Stop X1 context watchers (port poll timer + git fs.watch handles)
@@ -2011,6 +2056,32 @@ async function main(): Promise<void> {
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   const processMonitor = new ProcessMonitor();
 
+  // LanLink PR-4 — the network surface. An ISOLATED net.Server (its OWN admission
+  // counters, never the control pipe's = G1) bound to the configured NIC, with
+  // PIN-EKE pairing + AEAD + an allow-list router. `enabled` defaults OFF, so a
+  // listener exists only after the user opts in via Settings. Inbound messages
+  // decode -> sanitize -> LanLinkInbox.append (the PR-2 durable inbox) -> the SAME
+  // `lanlink.remote.received` nudge the dev __lanlink.inject fires. execute is
+  // physically impossible — the daemon imports 0 of the execute machinery
+  // (daemonExecuteWall.test.ts). The peer store's live-eviction guard reads back
+  // through the server lazily, to break the construction cycle.
+  const lanLinkPeers = new PeerStore(wmuxDir, {
+    isLive: (uuid) => lanLinkServerRef?.hasLiveConn(uuid) ?? false,
+  });
+  const lanLinkServer = new LanLinkServer({
+    inbox: lanLinkInbox,
+    controller: lanLinkController,
+    peers: lanLinkPeers,
+    selfName: os.hostname(),
+    nudge: (seq) =>
+      pipeServer.broadcast({
+        type: 'lanlink.remote.received',
+        sessionId: LANLINK_SENTINEL_SESSION_ID,
+        data: { seq },
+      }),
+  });
+  lanLinkServerRef = lanLinkServer;
+
   // Idle-shutdown config. Defaults: 5 min idle window + 60 s grace.
   // `WMUX_IDLE_SHUTDOWN_MS` and `WMUX_IDLE_GRACE_MS` env vars override
   // both — the dynamic test (scripts/daemon-idle-shutdown-dynamic.mjs)
@@ -2126,6 +2197,7 @@ async function main(): Promise<void> {
     stateWriter,
     lanLinkInbox,
     lanLinkController,
+    lanLinkServer,
     sessionPipes,
     processMonitor,
     startTime,

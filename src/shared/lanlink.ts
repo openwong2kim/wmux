@@ -12,7 +12,7 @@
 // `origin: 'remote'` and is treated as untrusted (G3): it is rendered as React
 // text and NEVER pasted into a PTY or routed to the a2a execute path.
 
-import type { TaskState } from './types';
+import { isTaskState, type TaskState } from './types';
 
 /**
  * Fixed non-session sentinel for the `lanlink.remote.received` DaemonEvent.
@@ -322,10 +322,11 @@ export function isInboxFile(v: unknown): v is InboxFile {
     if ((rec['seq'] as number) <= prevSeq) return false;
     // seq can never exceed the persisted counter.
     if ((rec['seq'] as number) > (o['nextSeq'] as number)) return false;
-    // NOTE: rec['state'] is intentionally NOT validated — in PR-2 it is never
-    // materialized to the renderer (RemoteInboxItem has no `state` field), so an
-    // unvalidated value is inert. If a future PR forwards record.state to any
-    // consumer, add an isTaskState guard for it here.
+    // PR-4 (C10): the LAN listener now attaches `state` from an UNTRUSTED wire
+    // message. A present-but-invalid state must reject the whole record at the
+    // disk boundary so a hostile value can never become a VALID_TRANSITIONS[state]
+    // lookup key on any downstream consumer. Absent state stays valid (optional).
+    if ('state' in rec && !isTaskState(rec['state'])) return false;
     prevSeq = rec['seq'] as number;
   }
   return true;
