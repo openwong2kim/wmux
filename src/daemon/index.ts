@@ -12,6 +12,7 @@ import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
+import { ChannelService, ChannelStateWriter } from './channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
@@ -970,6 +971,7 @@ function registerRpcHandlers(
   lanLinkInbox: LanLinkInbox,
   lanLinkController: LanLinkController,
   lanLinkServer: LanLinkServer,
+  channelStateWriter: ChannelStateWriter,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
   startTime: number,
@@ -1469,6 +1471,7 @@ function registerRpcHandlers(
       sessionManager,
       pipeServer,
       stateWriter,
+      channelStateWriter,
       sessionPipes,
       processMonitor,
       watchdog,
@@ -1877,6 +1880,7 @@ async function shutdown(
   sessionManager: DaemonSessionManager,
   pipeServer: DaemonPipeServer,
   stateWriter: StateWriter,
+  channelStateWriter: ChannelStateWriter,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
   watchdog: Watchdog,
@@ -1984,6 +1988,7 @@ async function shutdown(
   phaseLog('disposeAll', disposeStart, { count: disposedCount });
 
   stateWriter.dispose();
+  channelStateWriter.dispose();
 
   // Stop IPC server — skipped when the caller (e.g., daemon.shutdown RPC)
   // still needs the pipe to flush its ack.
@@ -2056,6 +2061,30 @@ async function main(): Promise<void> {
   const sessionManager = new DaemonSessionManager();
   sessionManager.setConfig(config);
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
+  // Channels (a2a-channels U3). Channels live in their own file
+  // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event
+  // cannot cascade into session-state failure. The service receives
+  // `pipeServer.broadcast` as its emit sink so a successful post is
+  // fanned out to every connected client before the next RPC turn.
+  // Company id is hardcoded to `'co-default'` until the company-mode
+  // config key lands; the channel state format already supports
+  // multi-company, so this is a single line to swap.
+  const channelStateWriter = new ChannelStateWriter(wmuxDir);
+  const channelService = new ChannelService({
+    writer: channelStateWriter,
+    companyId: 'co-default',
+    emit: (event) => {
+      try {
+        pipeServer.broadcast(event);
+      } catch (err) {
+        log('warn', `channel emit failed for ${event.channelId}#${event.seq}:`, err);
+      }
+    },
+  });
+  // `channelService` is reserved for U4 (a2a.channel.* RPC handlers).
+  // Touching it here silences the unused-var lint until the RPC layer
+  // wires the channel.* methods onto the pipe server.
+  void channelService;
   const processMonitor = new ProcessMonitor();
 
   // LanLink PR-4 — the network surface. An ISOLATED net.Server (its OWN admission
@@ -2200,6 +2229,7 @@ async function main(): Promise<void> {
     lanLinkInbox,
     lanLinkController,
     lanLinkServer,
+    channelStateWriter,
     sessionPipes,
     processMonitor,
     startTime,
@@ -2258,7 +2288,7 @@ async function main(): Promise<void> {
   // SIGTERM/SIGINT/daemon.shutdown — referenced from within the
   // Watchdog tick (always runs after this point in the boot order).
   const doShutdown = (sig: string): Promise<void> =>
-    shutdown(sig, sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, watchdog);
+    shutdown(sig, sessionManager, pipeServer, stateWriter, channelStateWriter, sessionPipes, processMonitor, watchdog);
 
   // 8. Start watchdog with escalation callbacks
   watchdog.setCallbacks({
