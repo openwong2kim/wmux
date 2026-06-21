@@ -219,3 +219,54 @@ export const CHANNEL_IDEMPOTENCY_CAP = 1000;
 
 /** Empty-channel retention. Plan KTD8. */
 export const CHANNEL_EMPTY_TTL_HOURS_DEFAULT = 7 * 24;
+
+/**
+ * Outcome of a single `ChannelDelivery.deliver` call. The transport fills in
+ * per-recipient `status` and `lastAttemptAt` on the snapshot it was given; the
+ * service layer (`ChannelService.post`) is responsible for writing the
+ * updated snapshot back onto the persisted message.
+ *
+ * `ok` is a coarse aggregate: `true` when at least one recipient was
+ * `delivered`; `false` when every recipient ended up `target_gone` (no PTY
+ * to deliver to). The transport never throws — a delivery that finds no
+ * targets is a normal "no-op success," not a failure.
+ */
+export interface DeliveryResult {
+  /**
+   * The same `snapshot` the transport was given, with each entry's `status`
+   * and `lastAttemptAt` updated. The transport may return the same
+   * reference if all deliveries are no-ops, or a fresh array; callers
+   * must not assume identity.
+   */
+  snapshot: ChannelRecipientStatus[];
+  /** True when at least one recipient was `delivered`. */
+  ok: boolean;
+}
+
+/**
+ * ChannelDelivery is the transport-agnostic interface that ships a posted
+ * message to the recipients in `snapshot`. The local transport wraps the
+ * existing `submitBracketedPasteToPty` and live-TUI nudge path
+ * (`src/renderer/channels/LocalPtyDelivery.ts`); future transports — LAN,
+ * headless, archive — can be slotted in as siblings without changing the
+ * service layer or the wire protocol.
+ *
+ * Plan KTD-A: this interface is the seam for fanout. It accepts the full
+ * recipient snapshot so transports that batch or batch-and-defer don't need
+ * a renderer round-trip.
+ *
+ * The transport must NOT mutate `ChannelState`. It returns the updated
+ * snapshot; `ChannelService.post` writes it back inside the per-channel
+ * mutex so the persisted message reflects the actual delivery outcome.
+ */
+export interface ChannelDelivery {
+  /**
+   * Deliver `message` to the recipients in `snapshot`. Resolves with a
+   * `DeliveryResult` whose `snapshot` has each entry's `status` updated
+   * (`pending` → `delivered` | `target_gone`).
+   */
+  deliver(
+    message: ChannelMessage,
+    snapshot: ChannelRecipientStatus[],
+  ): Promise<DeliveryResult>;
+}
