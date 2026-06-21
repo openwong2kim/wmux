@@ -236,6 +236,17 @@ Every event carries a `workspaceId`, and `events.poll` scopes results to the cal
 
 The event is a **pointer, not the payload.** `messagePreview` (≤200 chars) is omitted by default; the receiving party fetches the task body via `a2a.task.query` (MCP `a2a_task_query`). Wire shape: `taskId`, `from`, `to`, `kind: 'created'|'updated'|'cancelled'`, `state: TaskState`, optional `messagePreview`. The scoping is enforced server-side in `src/main/pipe/handlers/events.rpc.ts`; the typed shape lives in `src/shared/events.ts` (`A2aTaskEvent`). See also [`api/inventory.md`](./api/inventory.md#event-types).
 
+**A2A channels generalize the dual-party pattern to N recipients (`channel.message`).** A2A channels (a2a-channels feature) are Slack-style persistent rooms whose members live in **N** workspaces. A single post must reach every member workspace, so the same "two-party → N-party" extension that `a2a.task` carved out of strict single-workspace scoping applies here, but with a recipient list instead of a fixed second key:
+
+- The base `workspaceId` is **always** set `=== senderWorkspaceId`. A consumer that does not special-case `channel.message` therefore still scopes to the sender and **never** leaks to a third workspace.
+- The poll filter adds every workspace in `recipientWorkspaceIds` as additional matchable keys for `channel.message` **only**: the event is delivered when the caller's workspace equals the sender's **or** appears in the recipient set. Every other event type keeps strict `workspaceId === caller` scoping.
+- An **unscoped** poll (no `workspaceId`) receives **zero** `channel.message` events, identical to the `a2a.task` rule.
+- The recipient set is **frozen at critical-section entry** in `ChannelService.post` (plan KTD3) — concurrent `join` / `leave` on the channel after the post starts do not retroactively change who sees this message.
+
+Wire shape: `channelId`, `seq` (per-channel monotonic), `senderWorkspaceId`, `recipientWorkspaceIds: string[]`, `message: ChannelMessage` (sender / text / postedAt / recipientSnapshot). The scoping is enforced server-side in `src/main/handlers/events.rpc.ts`; the typed shape lives in `src/shared/events.ts` (`ChannelMessageEvent`). See also [`api/inventory.md`](./api/inventory.md#event-types).
+
+> **Sanitization caveat.** `message.text` and `message.memberName` are sanitized at the terminal-delivery boundary (the bracketed-paste path strips ESC + NUL; `sanitizeA2aName` collapses CR/LF/TAB). The bus event itself, however, is **not pre-sanitized** — any UI that renders `message.text` directly (a panel that doesn't route through the delivery formatter) MUST sanitize first.
+
 ---
 
 ## 3. Snapshot envelope (`pane.list`)

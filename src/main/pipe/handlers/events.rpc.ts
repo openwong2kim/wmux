@@ -6,6 +6,7 @@ import {
   POLL_DEFAULT_MAX,
   type WmuxEventType,
   type A2aTaskEvent,
+  type ChannelMessageEvent,
 } from '../../../shared/events';
 import type { PluginIdentityRecord } from '../../../shared/rpc';
 
@@ -87,21 +88,43 @@ export function registerEventsRpc(router: RpcRouter, trustLookup?: TrustLookup):
     // matching event is ever skipped.
     const result = eventBus.poll(cursor, { types, max: RING_CAPACITY });
 
-    // Dual-party + strict scoping post-filter. `caller` is the verified
-    // wsFilter (server-pinned for MCP via requireWorkspaceId), or undefined for
-    // an unscoped poll (e.g. the plugin-host forwarding poll).
+    // Dual-party + per-recipient + strict scoping post-filter. `caller` is the
+    // verified wsFilter (server-pinned for MCP via requireWorkspaceId), or
+    // undefined for an unscoped poll (e.g. the plugin-host forwarding poll).
+    //
+    // Three cases:
+    //   - a2a.task:  fixed 2 workspaces — visible to sender (`from`) and
+    //                receiver (`to`); dropped unscoped.
+    //   - channel.message: N recipients in M workspaces — visible to sender
+    //                (`workspaceId`) AND every member workspace in
+    //                `recipientWorkspaceIds`; dropped unscoped.
+    //                Generalizes the a2a.task pattern from 2 → N. Sender is
+    //                always in the recipient list (membership is a
+    //                precondition of post), so the dual-party code path
+    //                would have missed the recipient-other-than-sender case.
+    //   - everything else: strict `workspaceId === caller` (unchanged).
     const caller = workspaceId;
-    result.events = result.events.filter((e) =>
-      e.type !== 'a2a.task'
-        ? // every other type: strict scope, UNCHANGED from the old EventBus gate
-          (caller ? e.workspaceId === caller : true)
-        : // a2a.task: dual-party AND drop when unscoped. The `!!caller &&` clause
-          // is LOAD-BEARING — an unscoped poll (no workspaceId) must receive
-          // ZERO a2a.task events, else a bare `events.subscribe` plugin reads
-          // every pair's task.
-          (!!caller &&
-            ((e as A2aTaskEvent).from === caller || (e as A2aTaskEvent).to === caller)),
-    );
+    result.events = result.events.filter((e) => {
+      if (e.type === 'a2a.task') {
+        // The `!!caller &&` clause is LOAD-BEARING — an unscoped poll
+        // (no workspaceId) must receive ZERO a2a.task events, else a bare
+        // `events.subscribe` plugin reads every pair's task.
+        return !!caller &&
+          ((e as A2aTaskEvent).from === caller || (e as A2aTaskEvent).to === caller);
+      }
+      if (e.type === 'channel.message') {
+        // Per-recipient scoping: same load-bearing unscoped-drop as a2a.task.
+        // `e.workspaceId` is the sender (base scope); every member
+        // workspace appears in `recipientWorkspaceIds` so a post reaches
+        // its full set without leaking to third parties.
+        const ce = e as ChannelMessageEvent;
+        if (!caller) return false;
+        if (ce.workspaceId === caller) return true;
+        return ce.recipientWorkspaceIds.includes(caller);
+      }
+      // every other type: strict scope, UNCHANGED from the old EventBus gate
+      return caller ? e.workspaceId === caller : true;
+    });
 
     // Re-impose the caller's page size AFTER scoping (see the over-fetch note
     // above). EventBus drained the ring for us, so if the scoped page still
