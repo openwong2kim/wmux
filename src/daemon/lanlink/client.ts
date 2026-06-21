@@ -11,7 +11,7 @@
 import net from 'node:net';
 import type { EventEmitter } from 'node:events';
 import { FrameReader, encodeFrame, type FrameType } from './wire';
-import { PairingInitiator, ReconnectInitiator, type PairResult } from './pairing';
+import { PairingInitiator, ReconnectInitiator, deterministicUuid, type PairResult } from './pairing';
 import { AeadSealer, AeadOpener } from './aead';
 import type { PeerStore } from './peers';
 import type { TaskState } from '../../shared/types';
@@ -156,7 +156,21 @@ export async function sendToPeer(opts: SendOptions): Promise<{ delivered: boolea
     });
     socket.write(encodeFrame(AEAD_RECORD, sealer.seal(Buffer.from(appMsg, 'utf8'))));
     const ack = await stream.next(AEAD_RECORD);
-    opener.open(ack); // authenticate the ACK (throws on tamper)
+    const ackPlain = opener.open(ack); // authenticate the ACK (throws on tamper/replay)
+    // Confirm the ACK is FOR THIS message, not just any authentic frame (codex): the
+    // server ACKs with { ack: deterministicUuid(peerUuid:senderSeq) }. Only commit
+    // the send seq when the id matches, so a stray/other frame can't mark a failed
+    // delivery as confirmed.
+    const expectedId = deterministicUuid(`${opts.peerUuid}:${senderSeq}`);
+    let ackObj: unknown;
+    try {
+      ackObj = JSON.parse(ackPlain.toString('utf8'));
+    } catch {
+      throw new Error('LanLink sendToPeer: malformed ACK');
+    }
+    if (typeof ackObj !== 'object' || ackObj === null || (ackObj as Record<string, unknown>)['ack'] !== expectedId) {
+      throw new Error('LanLink sendToPeer: ACK does not match the sent message');
+    }
     opts.peers.commitSendSeq(opts.peerUuid, senderSeq); // delivery confirmed -> commit
     return { delivered: true };
   } finally {

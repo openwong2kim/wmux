@@ -592,10 +592,14 @@ export class LanLinkServer {
     if (hasResidualControl(text) || hasResidualControl(peerName)) {
       return; // C16 defense-in-depth: drop the record, keep the connection
     }
-    // C8 cross-connection dedup: drop a duplicate/replayed senderSeq (the AEAD
-    // counter is intra-connection only). Not an error — just don't re-deliver.
-    if (msg.senderSeq <= this.deps.peers.highWater(peerUuid)) return;
     const id = deterministicUuid(`${peerUuid}:${msg.senderSeq}`);
+    // C8 cross-connection dedup: a duplicate/replayed senderSeq is not re-delivered
+    // (the AEAD counter is intra-connection only). Re-ACK with the SAME id so a
+    // retrying sender (who didn't get the first ACK) still commits — idempotent.
+    if (msg.senderSeq <= this.deps.peers.highWater(peerUuid)) {
+      this.send(conn, AEAD_RECORD, conn.sealer!.seal(Buffer.from(JSON.stringify({ ack: id }), 'utf8')));
+      return;
+    }
     const rec: Omit<InboxRecord, 'seq'> = {
       id,
       origin: 'remote',
