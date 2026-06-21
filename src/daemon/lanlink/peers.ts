@@ -179,13 +179,22 @@ export class PeerStore {
     return rec;
   }
 
-  /** Mint the next monotonic send sequence for a peer (sender side of C8 dedup). */
-  nextSendSeq(peerUuid: string): number {
+  /** The last COMMITTED send sequence for a peer (sender side of C8 dedup). The
+   *  next message uses peekSendSeq()+1 and only commits it after delivery is ACKed
+   *  (commitSendSeq) — so a failed/retried send reuses the same senderSeq and the
+   *  receiver's high-water dedup makes the retry idempotent (codex). */
+  peekSendSeq(peerUuid: string): number {
+    return this.map.get(peerUuid)?.sendSeq ?? 0;
+  }
+
+  /** Commit a send sequence once its delivery was confirmed (monotonic, persisted). */
+  commitSendSeq(peerUuid: string, seq: number): void {
     const r = this.map.get(peerUuid);
-    if (!r) throw new Error(`nextSendSeq: unknown peer ${peerUuid}`);
-    r.sendSeq += 1;
-    this.persist();
-    return r.sendSeq;
+    if (!r) throw new Error(`commitSendSeq: unknown peer ${peerUuid}`);
+    if (seq > r.sendSeq) {
+      r.sendSeq = seq;
+      this.persist();
+    }
   }
 
   /** ++pinFailCount on an AEAD-authenticated failure; burn at the threshold (C6). */

@@ -143,7 +143,10 @@ export async function sendToPeer(opts: SendOptions): Promise<{ delivered: boolea
     const keys = recon.onReconnect2(r2);
     const sealer = new AeadSealer(keys.c2sKey, 1); // joiner -> host (c2s)
     const opener = new AeadOpener(keys.s2cKey, 2);
-    const senderSeq = opts.peers.nextSendSeq(opts.peerUuid);
+    // Peek the next senderSeq; commit it ONLY after the ACK confirms delivery, so a
+    // timeout/retry reuses the same senderSeq and the receiver's high-water dedup
+    // keeps the retry idempotent (no duplicate inbox row) (codex).
+    const senderSeq = opts.peers.peekSendSeq(opts.peerUuid) + 1;
     const appMsg = JSON.stringify({
       kind: opts.kind ?? 'msg.text',
       peerName: opts.selfName,
@@ -154,6 +157,7 @@ export async function sendToPeer(opts: SendOptions): Promise<{ delivered: boolea
     socket.write(encodeFrame(AEAD_RECORD, sealer.seal(Buffer.from(appMsg, 'utf8'))));
     const ack = await stream.next(AEAD_RECORD);
     opener.open(ack); // authenticate the ACK (throws on tamper)
+    opts.peers.commitSendSeq(opts.peerUuid, senderSeq); // delivery confirmed -> commit
     return { delivered: true };
   } finally {
     socket.destroy();

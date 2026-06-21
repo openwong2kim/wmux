@@ -58,15 +58,22 @@ describe('peers — per-peer store', () => {
     expect(store().get('u1')).toBeNull();
   });
 
-  it('high-water persists; sendSeq is monotonic and persists (C8)', () => {
+  it('high-water persists; send seq peek/commit is monotonic + idempotent on retry (C8)', () => {
     const s = store();
     s.upsertPaired(mkResult('u1'));
     s.bumpHighWater('u1', 5);
     expect(s.highWater('u1')).toBe(5);
     expect(store().highWater('u1')).toBe(5);
-    expect(s.nextSendSeq('u1')).toBe(1);
-    expect(s.nextSendSeq('u1')).toBe(2);
-    expect(store().nextSendSeq('u1')).toBe(3);
+    // peek does NOT burn the seq — a failed/retried send reuses it
+    expect(s.peekSendSeq('u1') + 1).toBe(1);
+    expect(s.peekSendSeq('u1') + 1).toBe(1); // still 1 (not committed)
+    s.commitSendSeq('u1', 1);
+    expect(s.peekSendSeq('u1') + 1).toBe(2);
+    s.commitSendSeq('u1', 2);
+    expect(store().peekSendSeq('u1') + 1).toBe(3); // persisted
+    // committing a stale seq is a no-op
+    s.commitSendSeq('u1', 1);
+    expect(s.peekSendSeq('u1')).toBe(2);
   });
 
   it('get(__proto__) is null (Map-backed, C20)', () => {

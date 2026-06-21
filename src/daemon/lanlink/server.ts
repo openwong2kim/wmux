@@ -478,6 +478,13 @@ export class LanLinkServer {
       this.noteWindowFailure();
       return;
     }
+    // Re-check the window AFTER the async scrypt (codex): it may have expired (TTL)
+    // or been disarmed while scrypt ran — don't continue a handshake into a closed
+    // window.
+    if (!this.isPairingActive()) {
+      this.destroy(conn);
+      return;
+    }
     this.send(conn, PAKE2, pake2);
   }
 
