@@ -289,6 +289,7 @@ export class ChannelStateWriter {
       if (typeof ch !== 'object' || ch === null) return false;
       const c = ch as Record<string, unknown>;
       if (typeof c['id'] !== 'string') return false;
+      if (!isSafeObjectKey(c['id'])) return false;
       if (typeof c['companyId'] !== 'string') return false;
       if (typeof c['name'] !== 'string') return false;
       if (c['visibility'] !== 'public' && c['visibility'] !== 'private') {
@@ -318,6 +319,21 @@ export class ChannelStateWriter {
       if (list.length === 0) continue;
       if (!isValidChannelMessageRow(list[0])) return false;
       break;
+    }
+    // Reject members/messages/idempotency keys that name the prototype
+    // chain. The JSON.parse guard upstream normally strips these, but we
+    // double-check so a custom-parsed file (e.g. from a future migration
+    // step) cannot smuggle `__proto__` past validation.
+    for (const key of Object.keys(obj['members'] as Record<string, unknown>)) {
+      if (!isSafeObjectKey(key)) return false;
+    }
+    for (const key of Object.keys(obj['messages'] as Record<string, unknown>)) {
+      if (!isSafeObjectKey(key)) return false;
+    }
+    for (const key of Object.keys(
+      obj['idempotency'] as Record<string, unknown>,
+    )) {
+      if (!isSafeObjectKey(key)) return false;
     }
 
     return true;
@@ -397,13 +413,39 @@ function isValidChannelMessageRow(row: unknown): boolean {
   );
 }
 
+/**
+ * Returns false for object keys that name the well-known JS prototype
+ * chain — `__proto__`, `constructor`, `prototype`. Used to guard
+ * `pruneKeys` and validator map lookups against a corrupt file that
+ * could otherwise leak prototype references into the running process.
+ */
+function isSafeObjectKey(s: unknown): s is string {
+  return (
+    typeof s === 'string' &&
+    s !== '__proto__' &&
+    s !== 'constructor' &&
+    s !== 'prototype'
+  );
+}
+
+/**
+ * Build a new record containing only the keys in `survivors`. Returns a
+ * null-prototype object and reads with own-key checks, so a corrupt
+ * `rec` with `__proto__` as a literal own property cannot pollute
+ * `Object.prototype`.
+ */
 function pruneKeys<T>(
   rec: Record<string, T>,
   survivors: Set<string>,
 ): Record<string, T> {
-  const out: Record<string, T> = {};
+  const out = Object.create(null) as Record<string, T>;
   for (const id of survivors) {
-    if (id in rec) out[id] = rec[id];
+    if (
+      Object.prototype.hasOwnProperty.call(rec, id) &&
+      isSafeObjectKey(id)
+    ) {
+      out[id] = rec[id];
+    }
   }
   return out;
 }

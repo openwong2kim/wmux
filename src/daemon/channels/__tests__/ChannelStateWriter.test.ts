@@ -555,4 +555,106 @@ describe('ChannelStateWriter', () => {
     const loaded = writer.load();
     expect(loaded.idempotency).toEqual({});
   });
+
+  // ── U2 prototype-pollution hardening ─────────────────────────────
+
+  it('load rejects a channel whose id is a prototype-chain key (__proto__)', () => {
+    // The id is a value (not a key), so the JSON.parse reviver does not
+    // strip it — the validator's isSafeObjectKey check is what catches
+    // it here.
+    const filePath = path.join(tmpDir, 'channels.json');
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        channels: [
+          {
+            id: '__proto__',
+            companyId: 'co-1',
+            name: 'x',
+            visibility: 'public',
+            status: 'active',
+            createdAt: 0,
+            createdBy: 'ws',
+            nextSeq: 1,
+          },
+        ],
+        members: {},
+        messages: {},
+        idempotency: {},
+      }),
+      'utf-8',
+    );
+    const loaded = writer.load();
+    expect(loaded.channels).toEqual([]);
+  });
+
+  it('load rejects a channel whose id is the constructor prototype key', () => {
+    const filePath = path.join(tmpDir, 'channels.json');
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        channels: [
+          {
+            id: 'constructor',
+            companyId: 'co-1',
+            name: 'x',
+            visibility: 'public',
+            status: 'active',
+            createdAt: 0,
+            createdBy: 'ws',
+            nextSeq: 1,
+          },
+        ],
+        members: {},
+        messages: {},
+        idempotency: {},
+      }),
+      'utf-8',
+    );
+    const loaded = writer.load();
+    expect(loaded.channels).toEqual([]);
+  });
+
+  it('load rejects a channel whose id is the prototype key', () => {
+    const filePath = path.join(tmpDir, 'channels.json');
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        channels: [
+          {
+            id: 'prototype',
+            companyId: 'co-1',
+            name: 'x',
+            visibility: 'public',
+            status: 'active',
+            createdAt: 0,
+            createdBy: 'ws',
+            nextSeq: 1,
+          },
+        ],
+        members: {},
+        messages: {},
+        idempotency: {},
+      }),
+      'utf-8',
+    );
+    const loaded = writer.load();
+    expect(loaded.channels).toEqual([]);
+  });
+
+  it('load returns a null-prototype members object via pruneKeys', () => {
+    // A channel with members survives pruning — the surviving members
+    // list is pruneKeys output, which uses Object.create(null).
+    const ch = makeChannel({ id: 'ch-live' });
+    const member = makeMember();
+    writer.saveImmediate(
+      makeState([ch], { 'ch-live': [member] }),
+    );
+    const loaded = writer.load();
+    expect(Object.getPrototypeOf(loaded.members)).toBeNull();
+    expect(loaded.members['ch-live']).toHaveLength(1);
+  });
 });
