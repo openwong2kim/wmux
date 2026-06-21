@@ -24,6 +24,7 @@ import type {
   ChannelRecipientStatus,
   DeliveryResult,
 } from '../../shared/channels';
+import { sanitizeA2aName } from '../utils/a2aFormat';
 
 /**
  * Resolved PTY target for a recipient. The renderer injects the
@@ -86,16 +87,16 @@ export interface LocalPtyDeps {
  *
  * CRITICAL: a nudge is delivered to a live TUI agent's input box
  * (see `deliverPtyNudge` in `src/renderer/hooks/useRpcBridge.ts:207`).
- * Embedded CR/LF/TAB in the member name would corrupt the input —
- * the formatter strips those defensively, mirroring the
- * `sanitizeA2aName` helper in `src/renderer/utils/a2aFormat.ts:30`.
- * The output has NO trailing newline — single line, period.
+ * Embedded CR/LF/TAB would corrupt the input, and raw ESC could forge
+ * terminal control sequences or break out of a bracketed-paste run.
+ * The formatter delegates to `sanitizeA2aName` (see
+ * `src/renderer/utils/a2aFormat.ts:30`) which strips ESC + NUL,
+ * collapses CR/LF/TAB to spaces, and caps the result length. The
+ * output has NO trailing newline — single line, period.
  */
 export const defaultChannelNudge: FormatChannelNudge = (message) => {
   const shortChannel = (message.channelId || '').replace(/^ch-/, '').slice(0, 8);
-  const shortMember = (message.memberName || '')
-    .replace(/[\r\n\t]/g, ' ')
-    .slice(0, 32);
+  const shortMember = sanitizeA2aName(message.memberName || '').slice(0, 32);
   return `[wmux-channel #${shortChannel} from ${shortMember} — see channel history (seq ${message.seq})]`;
 };
 
@@ -106,14 +107,24 @@ export const defaultChannelNudge: FormatChannelNudge = (message) => {
  *   [Alice] hello world
  *   ━━ END ━━
  *
- * Newlines inside the body are preserved verbatim; the bracketed-paste
- * wrapper in the production `writePty` keeps them as pasted data
- * instead of executing them as keystrokes.
+ * Name is sanitized via `sanitizeA2aName` (strips ESC + NUL, collapses
+ * CR/LF/TAB to spaces — the name appears on a single line). The body
+ * text is sanitized inline: ESC stripped, CR removed, NUL removed.
+ * LF is preserved so multi-line messages render as multi-line pasted
+ * data — the bracketed-paste wrapper in the production `writePty`
+ * keeps the LFs from being executed as keystrokes.
  */
 export const defaultChannelMessage: FormatChannelMessage = (message) => {
   const shortChannel = (message.channelId || '').replace(/^ch-/, '').slice(0, 32);
-  const safeName = (message.memberName || '').replace(/[\r\n\t]/g, ' ');
-  const safeText = (message.text || '').replace(/\r/g, '');
+  const safeName = sanitizeA2aName(message.memberName || '');
+  const safeText = (message.text || '')
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b\[[0-?]*[ -/]*[@-~]/g, '') // CSI escapes
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x1b[@-_]/g, '')                 // other ESC sequences
+    // eslint-disable-next-line no-control-regex
+    .replace(/\x00/g, '')                      // NUL
+    .replace(/\r/g, '');                       // CR (LF preserved)
   return [
     '',
     `━━━ WMUX CHANNEL #${shortChannel} ━━━`,

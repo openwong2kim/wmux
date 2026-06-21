@@ -268,13 +268,20 @@ describe('LocalPtyDelivery', () => {
   });
 
   it('default formatters strip control characters from the member name', () => {
-    // Adversarial member names must not break the line structure.
-    // The formatters collapse CR/LF/TAB to spaces (the same approach
-    // as `sanitizeA2aName` in `src/renderer/utils/a2aFormat.ts:30`).
-    // The body remains multi-line (envelope + content), but the
-    // `[Alice …]` line itself stays a single line — no embedded
-    // \r, \n, or \t.
-    const adversarial = 'Alice\r\n[INJECT]\tBob';
+    // Adversarial member names must not break the line structure, and
+    // raw ESC must not be allowed to forge terminal control sequences.
+    // The formatters delegate to `sanitizeA2aName` (in
+    // `src/renderer/utils/a2aFormat.ts:30`) for names — that helper
+    // strips ESC + NUL and collapses CR/LF/TAB to spaces. The body
+    // uses an inline sanitizer that strips ESC + NUL and CR but
+    // preserves LF (so multi-line posts stay multi-line inside the
+    // envelope; the bracketed-paste wrapper in production keeps the
+    // LFs from being executed as keystrokes).
+    //
+    // The test asserts the STRICTER contract — ESC, NUL, CR/LF/TAB are
+    // all stripped from the `[Alice ...]` line. If a future refactor
+    // weakens the strip, this test fails.
+    const adversarial = 'Alice\r\n[INJECT]\tBob\x1b[31m\x00';
     const body = defaultChannelMessage(
       makeMessage({ memberName: adversarial, text: 'safe text' }),
     );
@@ -283,17 +290,25 @@ describe('LocalPtyDelivery', () => {
     expect(aliceLine).not.toContain('\r');
     expect(aliceLine).not.toContain('\n');
     expect(aliceLine).not.toContain('\t');
+    // eslint-disable-next-line no-control-regex
+    expect(aliceLine).not.toMatch(/\x1b/);
+    expect(aliceLine).not.toContain('\x00');
     expect(body).toContain('safe text');
-    // The `[INJECT]` printable payload survives — only CR/LF/TAB are
-    // collapsed, matching the codebase's existing sanitization.
-    expect(aliceLine).toContain('[INJECT]');
+    // The body itself must not contain any of these control characters.
+    // eslint-disable-next-line no-control-regex
+    expect(body).not.toMatch(/\x1b/);
+    expect(body).not.toContain('\x00');
+    expect(body).not.toContain('\r');
     const nudge = defaultChannelNudge(
       makeMessage({ memberName: adversarial }),
     );
-    // The nudge is a single line — CR/LF/TAB are collapsed so a
-    // live-TUI input box doesn't get corrupted.
+    // The nudge is a single line — every line-breaking or control char
+    // is stripped so a live-TUI input box doesn't get corrupted.
     expect(nudge).not.toContain('\n');
     expect(nudge).not.toContain('\r');
     expect(nudge).not.toContain('\t');
+    // eslint-disable-next-line no-control-regex
+    expect(nudge).not.toMatch(/\x1b/);
+    expect(nudge).not.toContain('\x00');
   });
 });
