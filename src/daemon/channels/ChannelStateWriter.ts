@@ -184,17 +184,19 @@ export class ChannelStateWriter {
     }
 
     // Prune channels that have been empty longer than the TTL.
-    // Prune rules:
+    // Prune rules (applied per channel):
     //   - Has members: keep (always).
-    //   - No `emptySince`: never marked empty, so we don't know when it
-    //     became empty — keep it. (A channel with 0 members but no
-    //     emptySince is "real but never joined" and is NOT eligible for
-    //     the 7-day empty purge. A future leave/empty flow will set
-    //     `emptySince` and only THEN does the TTL clock start.)
-    //   - `emptySince` set AND within TTL: keep.
-    //   - `emptySince` set AND older than TTL: prune.
-    // Archived channels with zero members follow the same rule — once
-    // their TTL expires, the empty-channel reaper evicts them.
+    //   - 0 members AND emptySince set AND within TTL: keep.
+    //   - 0 members AND emptySince set AND older than TTL: prune.
+    //   - 0 members AND no emptySince AND `now - createdAt < TTL`: keep
+    //     (the never-joined case AND the recently-orphaned case).
+    //   - 0 members AND no emptySince AND `now - createdAt >= TTL`:
+    //     prune. The fallback to `createdAt` catches a channel that had
+    //     members, went empty, and lost its `emptySince` through a
+    //     crash-between-leave-and-persist window — without the
+    //     fallback, that channel would be immortal. The 7-day bound
+    //     applies from creation in that case, which is conservative.
+    // Archived channels with zero members follow the same rule.
     const now = Date.now();
     const cutoffMs = this.emptyChannelTtlHours * 60 * 60 * 1000;
     const survivingIds = new Set<string>();
@@ -204,12 +206,8 @@ export class ChannelStateWriter {
         survivingIds.add(ch.id);
         continue;
       }
-      const emptyStart = ch.emptySince;
-      if (emptyStart === undefined) {
-        survivingIds.add(ch.id);
-        continue;
-      }
-      if (now - emptyStart < cutoffMs) {
+      const effectiveEmptyStart = ch.emptySince ?? ch.createdAt;
+      if (now - effectiveEmptyStart < cutoffMs) {
         survivingIds.add(ch.id);
       }
       // else: prune.

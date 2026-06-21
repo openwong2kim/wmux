@@ -657,4 +657,88 @@ describe('ChannelStateWriter', () => {
     expect(Object.getPrototypeOf(loaded.members)).toBeNull();
     expect(loaded.members['ch-live']).toHaveLength(1);
   });
+
+  // ── U3 empty-channel GC createdAt fallback ───────────────────────
+
+  it('load prunes a never-joined channel whose createdAt is older than the TTL', () => {
+    const HOUR = 60 * 60 * 1000;
+    const ch = makeChannel({
+      id: 'ch-orphan-8d',
+      createdAt: Date.now() - 8 * 24 * HOUR,
+    });
+    writer.saveImmediate(makeState([ch]));
+
+    const ids = writer.load().channels.map((c) => c.id);
+    expect(ids).not.toContain('ch-orphan-8d');
+  });
+
+  it('load keeps a never-joined channel whose createdAt is within the TTL', () => {
+    const HOUR = 60 * 60 * 1000;
+    const ch = makeChannel({
+      id: 'ch-fresh-3d',
+      createdAt: Date.now() - 3 * 24 * HOUR,
+    });
+    writer.saveImmediate(makeState([ch]));
+
+    const ids = writer.load().channels.map((c) => c.id);
+    expect(ids).toContain('ch-fresh-3d');
+  });
+
+  it('load prunes a long-orphaned channel (lost emptySince, created 30d ago)', () => {
+    // The "lost emptySince" recovery case — without the createdAt
+    // fallback, this channel would be immortal.
+    const HOUR = 60 * 60 * 1000;
+    const ch = makeChannel({
+      id: 'ch-long-orphan',
+      createdAt: Date.now() - 30 * 24 * HOUR,
+    });
+    writer.saveImmediate(makeState([ch]));
+
+    const ids = writer.load().channels.map((c) => c.id);
+    expect(ids).not.toContain('ch-long-orphan');
+  });
+
+  it('honours a custom emptyChannelTtlHours for the createdAt fallback', () => {
+    const HOUR = 60 * 60 * 1000;
+    const customWriter = new ChannelStateWriter(tmpDir, 48);
+    const stale = makeChannel({
+      id: 'ch-stale-3d-fallback',
+      createdAt: Date.now() - 3 * 24 * HOUR,
+    });
+    const fresh = makeChannel({
+      id: 'ch-fresh-1d-fallback',
+      createdAt: Date.now() - 24 * HOUR,
+    });
+    customWriter.saveImmediate(makeState([stale, fresh]));
+
+    const ids = customWriter.load().channels.map((c) => c.id);
+    expect(ids).not.toContain('ch-stale-3d-fallback');
+    expect(ids).toContain('ch-fresh-1d-fallback');
+  });
+
+  it('load keeps a channel with an explicit emptySince within the TTL', () => {
+    // Regression: the explicit emptySince path still works.
+    const HOUR = 60 * 60 * 1000;
+    const ch = makeChannel({
+      id: 'ch-explicit-emptySince',
+      emptySince: Date.now() - 3 * 24 * HOUR,
+    });
+    writer.saveImmediate(makeState([ch]));
+
+    const ids = writer.load().channels.map((c) => c.id);
+    expect(ids).toContain('ch-explicit-emptySince');
+  });
+
+  it('load prunes a channel with an explicit emptySince older than the TTL', () => {
+    // Regression: the explicit emptySince path still prunes when stale.
+    const HOUR = 60 * 60 * 1000;
+    const ch = makeChannel({
+      id: 'ch-stale-emptySince',
+      emptySince: Date.now() - 8 * 24 * HOUR,
+    });
+    writer.saveImmediate(makeState([ch]));
+
+    const ids = writer.load().channels.map((c) => c.id);
+    expect(ids).not.toContain('ch-stale-emptySince');
+  });
 });

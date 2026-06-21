@@ -46,6 +46,13 @@ export interface Channel {
    * Epoch ms when the channel became empty (zero members). Set by
    * the last member's `leave` or `archive`+purge flow. Drives the
    * 7-day empty-channel purge (plan KTD8).
+   *
+   * When this field is missing on a zero-member channel at load time,
+   * the reaper falls back to `createdAt` as the effective empty-start.
+   * This catches the "lost emptySince" recovery case — a channel whose
+   * `emptySince` was never persisted (crash between leave and write) or
+   * was lost through a future migration — and applies the 7-day bound
+   * from creation in that case.
    */
   emptySince?: number;
 }
