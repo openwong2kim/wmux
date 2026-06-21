@@ -201,11 +201,29 @@ export function defaultLanLinkConfig(): LanLinkConfig {
   return { enabled: false, nic: null };
 }
 
-/** Type guard for a persisted NIC identity. Array.isArray-first (#269 lesson). */
+/**
+ * Canonical MAC-48 form as reported by os.networkInterfaces(): six colon-separated
+ * hex octets (e.g. 'aa:bb:cc:dd:ee:ff'). The all-zero placeholder of an internal
+ * NIC matches the shape but those interfaces are filtered out before enumeration.
+ */
+const MAC_RE = /^[0-9a-fA-F]{2}(:[0-9a-fA-F]{2}){5}$/;
+
+/**
+ * Type guard for a persisted NIC identity. Array.isArray-first (#269 lesson) and
+ * — crucially — the `mac` must be a well-formed MAC-48 string, not just any string:
+ * the identity is what PR-4 re-resolves the live IPv4 from, so a junk value like
+ * `{ name:'Ethernet', mac:'x' }` (hand-edited config or a hostile configure call)
+ * is rejected here rather than persisted as a seemingly-valid-but-unusable NIC.
+ */
 export function isLanLinkNic(v: unknown): v is LanLinkNic {
   if (Array.isArray(v) || typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
-  return typeof o['name'] === 'string' && o['name'].length > 0 && typeof o['mac'] === 'string';
+  return (
+    typeof o['name'] === 'string' &&
+    o['name'].length > 0 &&
+    typeof o['mac'] === 'string' &&
+    MAC_RE.test(o['mac'])
+  );
 }
 
 /** True iff `n` is a finite integer within the valid LanLink port range. */

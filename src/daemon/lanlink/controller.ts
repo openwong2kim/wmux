@@ -2,7 +2,6 @@ import { EventEmitter } from 'node:events';
 import os from 'node:os';
 import type { DaemonConfig } from '../types';
 import {
-  coerceLanLinkConfig,
   defaultLanLinkConfig,
   type LanLinkConfig,
   type LanLinkConfigurePatch,

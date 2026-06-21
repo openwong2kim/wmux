@@ -214,6 +214,7 @@ export const ko = {
     '켜면 선택한 인터페이스에서 LAN 포트를 엽니다 — Windows가 허용을 물을 수 있습니다. Private(개인) 네트워크 프로필에서만 동작하며, 공용 네트워크에는 절대 노출되지 않습니다.',
   'settings.lanlinkLoading': 'LanLink 상태 확인 중…',
   'settings.lanlinkApplying': '적용 중…',
+  'settings.lanlinkUnavailable': 'LanLink는 wmux 데몬이 필요합니다 — 로컬 전용 모드에서는 사용할 수 없습니다. 데몬이 연결되면 표시됩니다.',
   'settings.terminal': '터미널',
   'settings.defaultShell': '기본 셸',
   'settings.scrollbackLines': '스크롤백 줄 수',

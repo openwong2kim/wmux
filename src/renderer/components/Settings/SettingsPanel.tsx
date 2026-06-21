@@ -902,6 +902,7 @@ function LanLinkSection() {
     const result = await ipcInvoke(() => lanlinkApi.status());
     if (result.ok) {
       setStatus(result.data);
+      setUnavailable(false); // recover if a prior probe failed (daemon reconnected)
     } else {
       setUnavailable(true);
     }
@@ -910,6 +911,14 @@ function LanLinkSection() {
 
   useEffect(() => {
     void refresh();
+    // Re-probe when the daemon (re)connects — opening Settings mid-reconnect, or a
+    // disconnect after the section loaded, would otherwise leave the tab blank/stale
+    // until the user remounts it (codex PR-3 P3).
+    const daemonApi = (
+      window.electronAPI as unknown as { daemon?: { onConnected?: (cb: () => void) => () => void } }
+    ).daemon;
+    const off = daemonApi?.onConnected?.(() => void refresh());
+    return () => { off?.(); };
   }, [refresh]);
 
   const apply = useCallback(
@@ -923,8 +932,24 @@ function LanLinkSection() {
     [ipcInvoke, lanlinkApi],
   );
 
-  // Hidden entirely in local mode / when the daemon control plane is unreachable.
-  if (unavailable) return null;
+  // Local mode / daemon unreachable: the tab is always listed, so render an
+  // explanatory placeholder rather than a blank pane. The on-mount probe +
+  // daemon:onConnected re-probe above recover this automatically once a daemon
+  // connects; in persistent local-only mode (respawn budget exhausted) this
+  // message is the section's resting state instead of an empty panel.
+  if (unavailable) {
+    return (
+      <div className="flex flex-col gap-3">
+        <SectionLabel label={t('settings.lanlink')} />
+        <div
+          className="px-3 py-2 rounded-lg text-[11px] text-[color:var(--text-muted)]"
+          style={{ backgroundColor: 'var(--bg-mantle)', border: '1px solid var(--bg-surface)' }}
+        >
+          {t('settings.lanlinkUnavailable')}
+        </div>
+      </div>
+    );
+  }
   if (loading || !status) {
     return (
       <div className="flex flex-col gap-3">

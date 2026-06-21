@@ -14,13 +14,20 @@ const DEF: LanLinkConfig = { enabled: false, nic: null };
 describe('isLanLinkNic', () => {
   it('accepts a well-formed {name, mac}', () => {
     expect(isLanLinkNic({ name: 'Ethernet', mac: 'aa:bb:cc:dd:ee:ff' })).toBe(true);
+    expect(isLanLinkNic({ name: 'Wi-Fi', mac: '00:1A:2B:3C:4D:5E' })).toBe(true); // uppercase ok
   });
   it('rejects arrays, null, and missing/blank fields', () => {
     expect(isLanLinkNic([])).toBe(false); // Array.isArray-first
     expect(isLanLinkNic(null)).toBe(false);
-    expect(isLanLinkNic({ name: '', mac: 'x' })).toBe(false);
+    expect(isLanLinkNic({ name: '', mac: 'aa:bb:cc:dd:ee:ff' })).toBe(false);
     expect(isLanLinkNic({ name: 'Eth' })).toBe(false);
     expect(isLanLinkNic({ name: 1, mac: 2 })).toBe(false);
+  });
+  it('rejects a malformed MAC (not a real NIC identity PR-4 can re-resolve)', () => {
+    expect(isLanLinkNic({ name: 'Eth', mac: 'x' })).toBe(false);
+    expect(isLanLinkNic({ name: 'Eth', mac: 'aa:bb:cc:dd:ee' })).toBe(false); // 5 octets
+    expect(isLanLinkNic({ name: 'Eth', mac: 'gg:bb:cc:dd:ee:ff' })).toBe(false); // non-hex
+    expect(isLanLinkNic({ name: 'Eth', mac: '' })).toBe(false);
   });
 });
 
@@ -69,12 +76,14 @@ describe('coerceLanLinkPatch (STRICT RPC trust boundary — throws on garbage)',
   it('distinguishes an absent nic from an explicit null clear', () => {
     expect('nic' in coerceLanLinkPatch({ enabled: true })).toBe(false);
     expect(coerceLanLinkPatch({ nic: null })).toEqual({ nic: null });
-    expect(coerceLanLinkPatch({ nic: { name: 'Eth', mac: 'a' } })).toEqual({ nic: { name: 'Eth', mac: 'a' } });
+    const nic = { name: 'Eth', mac: 'aa:bb:cc:dd:ee:ff' };
+    expect(coerceLanLinkPatch({ nic })).toEqual({ nic });
   });
 
   it('throws on a malformed field rather than silently dropping it', () => {
     expect(() => coerceLanLinkPatch({ enabled: 'yes' })).toThrow();
     expect(() => coerceLanLinkPatch({ nic: 5 })).toThrow();
+    expect(() => coerceLanLinkPatch({ nic: { name: 'Eth', mac: 'not-a-mac' } })).toThrow(); // bad MAC format
     expect(() => coerceLanLinkPatch({ port: 80 })).toThrow(); // below LANLINK_PORT_MIN
     expect(() => coerceLanLinkPatch({ port: 70000 })).toThrow();
   });

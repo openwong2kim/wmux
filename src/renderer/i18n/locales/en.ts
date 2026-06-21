@@ -267,6 +267,7 @@ export const en = {
     'Enabling opens a LAN port on the selected interface — Windows may prompt you to allow it. Only the Private network profile is used; public networks are never exposed.',
   'settings.lanlinkLoading': 'Checking LanLink status…',
   'settings.lanlinkApplying': 'Applying…',
+  'settings.lanlinkUnavailable': 'LanLink needs the wmux daemon — unavailable in local-only mode. It will appear once the daemon connects.',
   'settings.terminal': 'Terminal',
   'settings.defaultShell': 'Default shell',
   'settings.scrollbackLines': 'Scrollback lines',
