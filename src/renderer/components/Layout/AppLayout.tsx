@@ -24,6 +24,7 @@ import KeyboardCheatSheet from '../KeyboardCheatSheet';
 import ToastContainer from '../Toast/ToastContainer';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
+import { ChannelView } from '../Channels/ChannelView';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { useActivePaneFocus } from '../../hooks/useActivePaneFocus';
@@ -1167,6 +1168,15 @@ export default function AppLayout() {
       )}
       <NotificationPanel />
       <MessageFeedPanel />
+      {/* A2A channel view (U8). Always mounted; returns null when no
+          channel is active, so the gate is internal (matches the
+          NotificationPanel pattern). The view docks to the right
+          edge of the main area when a channel is active. The wrapper
+          uses a fixed-position overlay so it stacks above the panes
+          but does not disturb the workspace layout — the panes
+          remain fully interactive when the channel view is hidden
+          (pointer-events: none on the wrapper). */}
+      <ChannelView />
       {/* Cross-pane search results panel (T-F). Mount-gated on
           searchPanelOpen at this level (I3) so the panel's 6-field zustand
           subscriptions don't run when closed. */}
