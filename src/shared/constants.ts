@@ -149,6 +149,16 @@ export const IPC = {
   // LanLink PR-3 control plane (renderer → main → daemon control pipe).
   LANLINK_STATUS: 'lanlink:status',
   LANLINK_CONFIGURE: 'lanlink:configure',
+  // LanLink PR-5 pairing/peer control plane (renderer → main → daemon control pipe).
+  // These bridge the PR-4 daemon control-pipe RPCs (machine-local, never on the LAN
+  // net.Server) to the Settings pairing UI. Outbound-only (pair/send); no PTY paste.
+  LANLINK_PAIR_BEGIN: 'lanlink:pair:begin',
+  LANLINK_PAIR_STATUS: 'lanlink:pair:status',
+  LANLINK_PAIR_CANCEL: 'lanlink:pair:cancel',
+  LANLINK_PAIR_JOIN: 'lanlink:pair:join',
+  LANLINK_SEND: 'lanlink:send',
+  LANLINK_PEERS_LIST: 'lanlink:peers:list',
+  LANLINK_PEERS_REMOVE: 'lanlink:peers:remove',
   // First-run wizard (Plan 1.15) — magical-moment onboarding flow
   FIRST_RUN_CHECK: 'first-run:check',
   FIRST_RUN_COMPLETE: 'first-run:complete',

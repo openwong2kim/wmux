@@ -37,8 +37,9 @@ type CustomThemeColorKey = Exclude<keyof CustomThemeColors, 'xtermOverrides'>;
 type XtermColorKey = keyof XtermThemeColors;
 
 // S-C2 — Fleet View cockpit tab. 'fleet' = the S-C1 agent grid; 'approvals' =
-// the S-C2 unified approval inbox.
-export type FleetTab = 'fleet' | 'approvals';
+// the S-C2 unified approval inbox; 'remote' = LanLink PR-5 read-only remote-peer
+// inbox (off-machine messages, rendered as text — never PTY-pasted).
+export type FleetTab = 'fleet' | 'approvals' | 'remote';
 
 export interface UISlice {
   // ─── Startup gate (Fix 0) ─────────────────────────────────────────────

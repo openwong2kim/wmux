@@ -63,4 +63,21 @@ describe('remoteInboxSlice', () => {
     expect(() => selectRemoteInbox(torn)).not.toThrow();
     expect(selectRemoteInbox(torn).map((i) => i.recordId)).toEqual(['r1', 'r2']);
   });
+
+  it('R3: dismissRemoteItem removes from both map and order, keeping siblings', () => {
+    store.getState().addRemoteItem(makeItem('r1'));
+    store.getState().addRemoteItem(makeItem('r2'));
+    store.getState().addRemoteItem(makeItem('r3'));
+
+    store.getState().dismissRemoteItem('r2');
+    expect(store.getState().remoteItemOrder).toEqual(['r1', 'r3']);
+    expect('r2' in store.getState().remoteItems).toBe(false);
+    expect(selectRemoteInbox(store.getState()).map((i) => i.recordId)).toEqual(['r1', 'r3']);
+  });
+
+  it('R4: dismissRemoteItem on an absent recordId is a no-op (no throw)', () => {
+    store.getState().addRemoteItem(makeItem('r1'));
+    expect(() => store.getState().dismissRemoteItem('ghost')).not.toThrow();
+    expect(store.getState().remoteItemOrder).toEqual(['r1']);
+  });
 });

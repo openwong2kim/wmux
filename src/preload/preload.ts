@@ -7,7 +7,17 @@ import type {
 } from '../shared/firstRun';
 import { isFileDrag } from '../shared/dragDrop';
 import type { ResumeBinding } from '../shared/agentResume';
-import type { RemoteInboxItem, LanLinkStatus, LanLinkConfigurePatch } from '../shared/lanlink';
+import type {
+  RemoteInboxItem,
+  LanLinkStatus,
+  LanLinkConfigurePatch,
+  LanLinkPairBeginResult,
+  LanLinkPairingStatus,
+  LanLinkPairJoinArgs,
+  LanLinkJoinResult,
+  LanLinkSendArgs,
+  LanLinkPeersListResult,
+} from '../shared/lanlink';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -580,6 +590,19 @@ document.addEventListener('DOMContentLoaded', () => {
   status: () => ipcRenderer.invoke(IPC.LANLINK_STATUS) as Promise<LanLinkStatus>,
   configure: (patch: LanLinkConfigurePatch) =>
     ipcRenderer.invoke(IPC.LANLINK_CONFIGURE, patch) as Promise<LanLinkStatus>,
+  // LanLink PR-5 pairing/peer control plane (Settings → LanLink pairing section).
+  // Outbound-only (pair/send) + read-only queries; structurally unable to reach a
+  // local PTY. Extends THIS literal in place (never a second .lanlink assignment).
+  pairBegin: () => ipcRenderer.invoke(IPC.LANLINK_PAIR_BEGIN) as Promise<LanLinkPairBeginResult>,
+  pairStatus: () => ipcRenderer.invoke(IPC.LANLINK_PAIR_STATUS) as Promise<LanLinkPairingStatus>,
+  pairCancel: () => ipcRenderer.invoke(IPC.LANLINK_PAIR_CANCEL) as Promise<{ ok: true }>,
+  pairJoin: (args: LanLinkPairJoinArgs) =>
+    ipcRenderer.invoke(IPC.LANLINK_PAIR_JOIN, args) as Promise<LanLinkJoinResult>,
+  send: (args: LanLinkSendArgs) =>
+    ipcRenderer.invoke(IPC.LANLINK_SEND, args) as Promise<{ ok: true }>,
+  peersList: () => ipcRenderer.invoke(IPC.LANLINK_PEERS_LIST) as Promise<LanLinkPeersListResult>,
+  peersRemove: (peerUuid: string) =>
+    ipcRenderer.invoke(IPC.LANLINK_PEERS_REMOVE, peerUuid) as Promise<{ ok: true }>,
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

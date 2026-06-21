@@ -234,6 +234,7 @@ const GROUP_ORDER = [
   { key: 'a2a.', title: 'a2a' },
   { key: 'company.a2a.', title: 'company.a2a' },
   { key: 'company.', title: 'company' },
+  { key: 'lanlink.', title: 'lanlink' },
   { key: 'daemon.', title: 'daemon' },
   { key: 'hooks.', title: 'hooks' },
 ];

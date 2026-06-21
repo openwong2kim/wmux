@@ -714,3 +714,56 @@ describe('DaemonClient', () => {
     });
   });
 });
+
+describe('DaemonClient — LanLink PR-5 pairing/peer bridge', () => {
+  const AUTH_TOKEN = 'test-token-lanlink';
+  let mockServer: ReturnType<typeof createMockDaemonServer>;
+  let client: DaemonClient;
+
+  afterEach(async () => {
+    try { await client?.disconnect(); } catch { /* ignore */ }
+    try { await mockServer?.stop(); } catch { /* ignore */ }
+  });
+
+  it('forwards all 7 control-pipe RPCs verbatim and returns daemon results', async () => {
+    const pipeName = testPipeName('lanlink');
+    const calls: Record<string, Record<string, unknown>> = {};
+    mockServer = createMockDaemonServer(pipeName, AUTH_TOKEN, {
+      'lanlink.pair.begin': (p) => { calls['begin'] = p; return { pin: '123456', expiresInMs: 120000 }; },
+      'lanlink.pair.status': (p) => { calls['status'] = p; return { active: true, expiresInMs: 90000, failCount: 1 }; },
+      'lanlink.pair.cancel': (p) => { calls['cancel'] = p; return { ok: true }; },
+      'lanlink.pair.join': (p) => { calls['join'] = p; return { peerUuid: 'uuid-1', peerName: 'Bob' }; },
+      'lanlink.send': (p) => { calls['send'] = p; return { ok: true }; },
+      'lanlink.peers.list': (p) => {
+        calls['list'] = p;
+        return { peers: [{ peerUuid: 'u', peerName: 'P', pairedAt: 1, lastSeenAt: 2, burned: false }] };
+      },
+      'lanlink.peers.remove': (p) => { calls['remove'] = p; return { ok: true }; },
+    });
+    await mockServer.start();
+    client = new DaemonClient(pipeName, AUTH_TOKEN);
+    await client.connect();
+
+    // No-param reads return the daemon result unwrapped.
+    expect(await client.lanlinkPairBegin()).toEqual({ pin: '123456', expiresInMs: 120000 });
+    expect(await client.lanlinkPairStatus()).toEqual({ active: true, expiresInMs: 90000, failCount: 1 });
+    expect(await client.lanlinkPairCancel()).toEqual({ ok: true });
+
+    // Write RPCs forward their params verbatim.
+    expect(await client.lanlinkPairJoin({ host: '10.0.0.5', port: 45000, pin: '654321' }))
+      .toEqual({ peerUuid: 'uuid-1', peerName: 'Bob' });
+    expect(calls['join']).toEqual({ host: '10.0.0.5', port: 45000, pin: '654321' });
+
+    expect(await client.lanlinkSend({ host: '10.0.0.5', port: 45000, peerUuid: 'uuid-1', text: 'hi' }))
+      .toEqual({ ok: true });
+    expect(calls['send']).toEqual({ host: '10.0.0.5', port: 45000, peerUuid: 'uuid-1', text: 'hi' });
+
+    // peers.list keeps the `peers` wrapper key.
+    const peers = await client.lanlinkPeersList();
+    expect(peers.peers).toHaveLength(1);
+    expect(peers.peers[0].peerName).toBe('P');
+
+    expect(await client.lanlinkPeersRemove('u')).toEqual({ ok: true });
+    expect(calls['remove']).toEqual({ peerUuid: 'u' });
+  });
+});

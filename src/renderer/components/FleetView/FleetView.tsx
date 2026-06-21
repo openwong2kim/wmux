@@ -8,6 +8,7 @@ import {
   type FleetPane,
 } from '../../stores/selectors/fleet';
 import { selectApprovalInbox } from '../../stores/selectors/approvalInbox';
+import { selectRemoteInbox } from '../../stores/selectors/remoteInbox';
 import { resolveInboxItem } from '../../utils/resolveInboxItem';
 import {
   focusPaneByPtyId,
@@ -19,6 +20,7 @@ import { tailForPty } from '../../utils/terminalTail';
 import { onTerminalRegistered } from '../../hooks/useTerminal';
 import FleetCard from './FleetCard';
 import ApprovalInboxList from './ApprovalInboxList';
+import RemoteInboxList from './RemoteInboxList';
 
 /**
  * S-C1 Fleet View — the cockpit. A full-screen overlay (Ctrl+Shift+A) that
@@ -54,6 +56,7 @@ export default function FleetView() {
 
   const [focusedIdx, setFocusedIdx] = useState(0);
   const [inboxIdx, setInboxIdx] = useState(0);
+  const [remoteIdx, setRemoteIdx] = useState(0);
   // S-C2 Phase 2 — live output tail. {ptyId: last-3-lines}. Filled by ONE
   // shared coarse poll below; passed down to terminal cards only.
   const [tails, setTails] = useState<Record<string, string[]>>({});
@@ -79,6 +82,17 @@ export default function FleetView() {
   const inbox = useMemo(
     () => selectApprovalInbox({ mcpPrompts, mcpPromptOrder, pendingExecuteApprovals, pendingExecuteApprovalOrder }),
     [mcpPrompts, mcpPromptOrder, pendingExecuteApprovals, pendingExecuteApprovalOrder],
+  );
+
+  // LanLink PR-5 remote inbox — pure derivation of off-machine peer messages
+  // (PR-2 built the slice + selector; this is the first consumer). dismissRemoteItem
+  // is a view action (per-card X / Delete key); it never touches peer trust state.
+  const remoteItems = useStore((s) => s.remoteItems);
+  const remoteItemOrder = useStore((s) => s.remoteItemOrder);
+  const dismissRemoteItem = useStore((s) => s.dismissRemoteItem);
+  const remoteInbox = useMemo(
+    () => selectRemoteInbox({ remoteItems, remoteItemOrder }),
+    [remoteItems, remoteItemOrder],
   );
 
   // S-C2 Phase 2 — live output tail. ONE shared coarse interval (the whole
@@ -168,6 +182,11 @@ export default function FleetView() {
     setInboxIdx((i) => Math.min(i, Math.max(inbox.length - 1, 0)));
   }, [inbox.length]);
 
+  // Same clamp for the remote inbox: dismissing a card shrinks the list.
+  useEffect(() => {
+    setRemoteIdx((i) => Math.min(i, Math.max(remoteInbox.length - 1, 0)));
+  }, [remoteInbox.length]);
+
   // Pull DOM focus INTO the overlay (the focused card, else the panel) so no
   // keystroke — arrows, Enter, or typed text — can leak to the background
   // pane's xterm textarea underneath the backdrop, and so the keyboard
@@ -183,12 +202,16 @@ export default function FleetView() {
         // xterm underneath the backdrop.
         const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
         (rows && rows[inboxIdx])?.focus();
+      } else if (tab === 'remote' && remoteInbox.length > 0) {
+        // Same roving-focus pull for the remote-peer listbox.
+        const rows = bodyRef.current?.querySelectorAll<HTMLElement>('[role=option]');
+        (rows && rows[remoteIdx])?.focus();
       } else {
         panelRef.current?.focus();
       }
     });
     return () => cancelAnimationFrame(raf);
-  }, [tab, focusedIdx, inboxIdx, panes.length, inbox.length]);
+  }, [tab, focusedIdx, inboxIdx, remoteIdx, panes.length, inbox.length, remoteInbox.length]);
 
   // Keyboard: Esc closes; unmodified arrows move card focus and are ALWAYS
   // swallowed (capture-phase) so they never reach the background xterm or
@@ -263,6 +286,18 @@ export default function FleetView() {
           return;
         }
       }
+      // Remote tab: read-only, so no Enter action — Backspace/Delete dismisses the
+      // focused card (mirrors approvals' deny-key path; same onDialogButton guard so
+      // a Tab-focused dismiss <button> keeps native activation).
+      if (tab === 'remote' && remoteInbox.length > 0 && !onDialogButton) {
+        if (e.key === 'Backspace' || e.key === 'Delete') {
+          e.preventDefault();
+          e.stopPropagation();
+          const it = remoteInbox[remoteIdx];
+          if (it) dismissRemoteItem(it.recordId);
+          return;
+        }
+      }
 
       const isArrow =
         e.key === 'ArrowDown' || e.key === 'ArrowUp' ||
@@ -284,11 +319,19 @@ export default function FleetView() {
         } else {
           setInboxIdx((i) => Math.max(i - 1, 0));
         }
+        return;
+      }
+      if (tab === 'remote' && remoteInbox.length > 0) {
+        if (e.key === 'ArrowDown' || e.key === 'ArrowRight') {
+          setRemoteIdx((i) => Math.min(i + 1, remoteInbox.length - 1));
+        } else {
+          setRemoteIdx((i) => Math.max(i - 1, 0));
+        }
       }
     };
     window.addEventListener('keydown', onKey, true);
     return () => window.removeEventListener('keydown', onKey, true);
-  }, [tab, panes.length, inbox, inboxIdx, setVisible]);
+  }, [tab, panes.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible]);
 
   return (
     <div
@@ -356,7 +399,7 @@ export default function FleetView() {
           role="tablist"
           style={{ borderBottom: '1px solid var(--bg-surface)' }}
         >
-          {(['fleet', 'approvals'] as FleetTab[]).map((id) => (
+          {(['fleet', 'approvals', 'remote'] as FleetTab[]).map((id) => (
             <button
               key={id}
               type="button"
@@ -369,7 +412,9 @@ export default function FleetView() {
                 borderBottom: tab === id ? '2px solid var(--accent-blue)' : '2px solid transparent',
               }}
             >
-              {t(id === 'fleet' ? 'fleet.tab.fleet' : 'fleet.tab.approvals')}
+              {/* Explicit per-tab key (NOT a `fleet.tab.${id}` template) so a missing
+                  key is a tsc error, not a raw-string render to the user. */}
+              {t(id === 'fleet' ? 'fleet.tab.fleet' : id === 'approvals' ? 'fleet.tab.approvals' : 'fleet.tab.remote')}
             </button>
           ))}
         </div>
@@ -382,6 +427,14 @@ export default function FleetView() {
             ) : (
               <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
                 {t('fleet.approvals.empty')}
+              </div>
+            )
+          ) : tab === 'remote' ? (
+            remoteInbox.length > 0 ? (
+              <RemoteInboxList items={remoteInbox} focusedIdx={remoteIdx} onDismiss={dismissRemoteItem} />
+            ) : (
+              <div className="flex items-center justify-center h-[200px] text-sm text-[var(--text-muted)]">
+                {t('fleet.remote.empty')}
               </div>
             )
           ) : panes.length === 0 ? (
@@ -444,6 +497,16 @@ export default function FleetView() {
                 {t('fleet.approvals.delDeny')}
               </span>
             </>
+          ) : tab === 'remote' ? (
+            <span className="text-xs text-[var(--text-muted)]">
+              <kbd
+                className="px-1 py-0.5 rounded mr-0.5"
+                style={{ border: '1px solid var(--bg-overlay)', fontFamily: 'monospace' }}
+              >
+                Del
+              </kbd>{' '}
+              {t('fleet.remote.delDismiss')}
+            </span>
           ) : (
             <span className="text-xs text-[var(--text-muted)]">
               <kbd

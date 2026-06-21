@@ -310,6 +310,18 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // NICs or flipping the LAN listener on.
   'lanlink.status':          { capability: 'wmux.internal' },
   'lanlink.configure':       { capability: 'wmux.internal' },
+  // LanLink PR-5 — pairing/peer control plane. SAME posture as PR-3 above: these
+  // ride the machine-local control pipe ONLY (DaemonClient → daemon control pipe),
+  // never RpcRouter and never the LAN net.Server. wmux.internal hard-blocks any
+  // plugin/MCP caller from enumerating peers or driving pairing — a structural
+  // marker, since RpcRouter has no `lanlink.*` registration to even reach these.
+  'lanlink.pair.begin':      { capability: 'wmux.internal' },
+  'lanlink.pair.status':     { capability: 'wmux.internal' },
+  'lanlink.pair.cancel':     { capability: 'wmux.internal' },
+  'lanlink.pair.join':       { capability: 'wmux.internal' },
+  'lanlink.send':            { capability: 'wmux.internal' },
+  'lanlink.peers.list':      { capability: 'wmux.internal' },
+  'lanlink.peers.remove':    { capability: 'wmux.internal' },
 
   // --- A2A (agent-to-agent) ---
   'a2a.resolve.identity': { capability: 'a2a.read',    riskClass: 'a2a' },

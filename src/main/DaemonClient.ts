@@ -6,6 +6,12 @@ import type {
   LanLinkInboxPollResult,
   LanLinkStatus,
   LanLinkConfigurePatch,
+  LanLinkPairBeginResult,
+  LanLinkPairingStatus,
+  LanLinkPairJoinArgs,
+  LanLinkJoinResult,
+  LanLinkSendArgs,
+  LanLinkPeersListResult,
 } from '../shared/lanlink';
 import { FLUSH_DONE_MARKER } from '../daemon/SessionPipe';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
@@ -343,6 +349,65 @@ export class DaemonClient extends EventEmitter {
   async lanlinkConfigure(patch: LanLinkConfigurePatch): Promise<LanLinkStatus> {
     const result = await this.rpc('lanlink.configure', patch as Record<string, unknown>);
     return result as LanLinkStatus;
+  }
+
+  // === LanLink PR-5 — pairing/peer control-pipe bridge ===
+  //
+  // Thin pass-throughs to the daemon's PR-4 control-pipe RPCs (the trust boundary
+  // and all validation live daemon-side: pair.join/send require host+port+pin/uuid
+  // and throw otherwise; peers.remove no-ops on an empty uuid). pair.join/send do a
+  // scrypt PIN-EKE PAKE + LAN round trip, so they override the default 10s RPC
+  // timeout to 30s — otherwise a slow first-connect surfaces as a confusing "RPC
+  // timeout" rather than a pairing/network error.
+
+  /** Mint a 6-digit PIN + arm the ≤2min pairing window. */
+  async lanlinkPairBegin(): Promise<LanLinkPairBeginResult> {
+    const result = await this.rpc('lanlink.pair.begin', {});
+    return result as LanLinkPairBeginResult;
+  }
+
+  /** Read-only poll of the pairing window (active / remaining ms / fail count). */
+  async lanlinkPairStatus(): Promise<LanLinkPairingStatus> {
+    const result = await this.rpc('lanlink.pair.status', {});
+    return result as LanLinkPairingStatus;
+  }
+
+  /** Disarm the pairing window immediately. */
+  async lanlinkPairCancel(): Promise<{ ok: true }> {
+    const result = await this.rpc('lanlink.pair.cancel', {});
+    return result as { ok: true };
+  }
+
+  /** Outbound join to a remote peer (all fields required; 30s for scrypt PAKE). */
+  async lanlinkPairJoin(args: LanLinkPairJoinArgs): Promise<LanLinkJoinResult> {
+    const result = await this.rpc(
+      'lanlink.pair.join',
+      args as unknown as Record<string, unknown>,
+      { timeoutMs: 30_000 },
+    );
+    return result as LanLinkJoinResult;
+  }
+
+  /** Outbound text message to a paired peer (host/port/peerUuid required). */
+  async lanlinkSend(args: LanLinkSendArgs): Promise<{ ok: true }> {
+    const result = await this.rpc(
+      'lanlink.send',
+      args as unknown as Record<string, unknown>,
+      { timeoutMs: 30_000 },
+    );
+    return result as { ok: true };
+  }
+
+  /** List paired peers (secrets stripped daemon-side; note the `peers` wrapper). */
+  async lanlinkPeersList(): Promise<LanLinkPeersListResult> {
+    const result = await this.rpc('lanlink.peers.list', {});
+    return result as LanLinkPeersListResult;
+  }
+
+  /** Revoke a peer (live: deletes record + destroys its AEAD connection). */
+  async lanlinkPeersRemove(peerUuid: string): Promise<{ ok: true }> {
+    const result = await this.rpc('lanlink.peers.remove', { peerUuid });
+    return result as { ok: true };
   }
 
   /**

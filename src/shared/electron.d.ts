@@ -1,5 +1,15 @@
 import type { ElectronAPI, McpTargetStatusPayload } from '../preload/preload';
-import type { RemoteInboxItem, LanLinkStatus, LanLinkConfigurePatch } from './lanlink';
+import type {
+  RemoteInboxItem,
+  LanLinkStatus,
+  LanLinkConfigurePatch,
+  LanLinkPairBeginResult,
+  LanLinkPairingStatus,
+  LanLinkPairJoinArgs,
+  LanLinkJoinResult,
+  LanLinkSendArgs,
+  LanLinkPeersListResult,
+} from './lanlink';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -70,6 +80,20 @@ declare global {
         status: () => Promise<LanLinkStatus>;
         /** PR-3 control plane — apply a partial enable/NIC update; echoes new status. */
         configure: (patch: LanLinkConfigurePatch) => Promise<LanLinkStatus>;
+        /** PR-5 pairing — mint a PIN + arm the ≤2min pairing window. */
+        pairBegin: () => Promise<LanLinkPairBeginResult>;
+        /** PR-5 pairing — read-only poll for the Settings countdown. */
+        pairStatus: () => Promise<LanLinkPairingStatus>;
+        /** PR-5 pairing — disarm the pairing window. */
+        pairCancel: () => Promise<{ ok: true }>;
+        /** PR-5 pairing — outbound join to a remote peer (all fields required). */
+        pairJoin: (args: LanLinkPairJoinArgs) => Promise<LanLinkJoinResult>;
+        /** PR-5 — outbound text message to a paired peer. */
+        send: (args: LanLinkSendArgs) => Promise<{ ok: true }>;
+        /** PR-5 — list paired peers (secrets stripped; `peers` wrapper). */
+        peersList: () => Promise<LanLinkPeersListResult>;
+        /** PR-5 — revoke a peer (live destroy of its AEAD connection). */
+        peersRemove: (peerUuid: string) => Promise<{ ok: true }>;
       };
     };
     clipboardAPI: {

@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **104** methods (`ALL_RPC_METHODS` in
+Total: **111** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -193,6 +193,20 @@ Total: **104** methods (`ALL_RPC_METHODS` in
 | `company.provisionAll` | `wmux.internal` |  |
 | `company.provisionCeo` | `wmux.internal` |  |
 
+### `lanlink`
+
+| Method | Capability | Risk class |
+|---|---|---|
+| `lanlink.status` | `wmux.internal` |  |
+| `lanlink.configure` | `wmux.internal` |  |
+| `lanlink.pair.begin` | `wmux.internal` |  |
+| `lanlink.pair.status` | `wmux.internal` |  |
+| `lanlink.pair.cancel` | `wmux.internal` |  |
+| `lanlink.pair.join` | `wmux.internal` |  |
+| `lanlink.send` | `wmux.internal` |  |
+| `lanlink.peers.list` | `wmux.internal` |  |
+| `lanlink.peers.remove` | `wmux.internal` |  |
+
 ### `daemon`
 
 | Method | Capability | Risk class |
@@ -223,8 +237,6 @@ Total: **104** methods (`ALL_RPC_METHODS` in
 | Method | Capability | Risk class |
 |---|---|---|
 | `ui.decoratePane` | `ui.pane-decoration` | `ui` |
-| `lanlink.status` | `wmux.internal` |  |
-| `lanlink.configure` | `wmux.internal` |  |
 
 ---
 

@@ -196,6 +196,66 @@ export interface LanLinkConfigurePatch {
   port?: number;
 }
 
+// === LanLink pairing/peer control plane (PR-5: renderer bridge for PR-4 RPCs) ===
+//
+// Renderer-facing result/arg shapes mirroring the daemon's inline return types
+// (src/daemon/lanlink/server.ts). The daemon, main bridge, and renderer all bind
+// against ONE shape here. These ride the machine-local control pipe ONLY — never
+// the LAN net.Server (router allow-list rejects them) — so adding them does NOT
+// widen the remote attack surface. `src/daemon/**` is unchanged; the daemon's
+// structural return types already satisfy these.
+
+/** Result of `lanlink.pair.begin` — mints a PIN + arms the ≤2min pairing window. */
+export interface LanLinkPairBeginResult {
+  /** Human 6-digit pairing PIN (display only; never crypto material). */
+  pin: string;
+  /** Relative ms until the window closes; `null` when not active. */
+  expiresInMs: number | null;
+}
+
+/** Result of `lanlink.pair.status` — read-only poll for the Settings countdown. */
+export interface LanLinkPairingStatus {
+  active: boolean;
+  expiresInMs: number | null;
+  /** Window-scoped wrong-PIN failures (burns the window at the threshold). */
+  failCount: number;
+}
+
+/** Args for `lanlink.pair.join` — outbound join to a remote peer (all required). */
+export interface LanLinkPairJoinArgs {
+  host: string;
+  port: number;
+  pin: string;
+}
+
+/** Result of `lanlink.pair.join` — the freshly paired peer identity. */
+export interface LanLinkJoinResult {
+  peerUuid: string;
+  peerName: string;
+}
+
+/** Args for `lanlink.send` — outbound text message to a paired peer. */
+export interface LanLinkSendArgs {
+  host: string;
+  port: number;
+  peerUuid: string;
+  text?: string;
+}
+
+/** One paired peer as surfaced to the Settings peers table (secrets stripped). */
+export interface LanLinkPeerSummary {
+  peerUuid: string;
+  peerName: string;
+  pairedAt: number;
+  lastSeenAt: number;
+  burned: boolean;
+}
+
+/** Result of `lanlink.peers.list` — note the `peers` wrapper key. */
+export interface LanLinkPeersListResult {
+  peers: LanLinkPeerSummary[];
+}
+
 /** Default (OFF) LanLink config. Single source the config backfill falls back to. */
 export function defaultLanLinkConfig(): LanLinkConfig {
   return { enabled: false, nic: null };

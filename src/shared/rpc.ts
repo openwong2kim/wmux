@@ -157,6 +157,13 @@ export type RpcMethod =
   | 'daemon.inbox.poll'
   | 'lanlink.status'
   | 'lanlink.configure'
+  | 'lanlink.pair.begin'
+  | 'lanlink.pair.status'
+  | 'lanlink.pair.cancel'
+  | 'lanlink.pair.join'
+  | 'lanlink.send'
+  | 'lanlink.peers.list'
+  | 'lanlink.peers.remove'
   | 'a2a.resolve.identity'
   | 'a2a.whoami'
   | 'a2a.discover'
@@ -264,6 +271,13 @@ export const ALL_RPC_METHODS = [
   'daemon.inbox.poll',
   'lanlink.status',
   'lanlink.configure',
+  'lanlink.pair.begin',
+  'lanlink.pair.status',
+  'lanlink.pair.cancel',
+  'lanlink.pair.join',
+  'lanlink.send',
+  'lanlink.peers.list',
+  'lanlink.peers.remove',
   'a2a.resolve.identity',
   'a2a.whoami',
   'a2a.discover',

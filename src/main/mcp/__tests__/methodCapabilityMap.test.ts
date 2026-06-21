@@ -63,6 +63,14 @@ describe('methodCapabilityMap capability validity', () => {
   it('lanlink.* control-plane RPCs are wmux.internal (never plugin-declarable)', () => {
     expect(resolveRequiredCapability(METHOD_CAPABILITY['lanlink.status'], {})).toBe('wmux.internal');
     expect(resolveRequiredCapability(METHOD_CAPABILITY['lanlink.configure'], {})).toBe('wmux.internal');
+    // PR-5 pairing/peer control plane — same daemon-internal posture.
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['lanlink.pair.begin'], {})).toBe('wmux.internal');
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['lanlink.pair.status'], {})).toBe('wmux.internal');
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['lanlink.pair.cancel'], {})).toBe('wmux.internal');
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['lanlink.pair.join'], {})).toBe('wmux.internal');
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['lanlink.send'], {})).toBe('wmux.internal');
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['lanlink.peers.list'], {})).toBe('wmux.internal');
+    expect(resolveRequiredCapability(METHOD_CAPABILITY['lanlink.peers.remove'], {})).toBe('wmux.internal');
   });
 });
 

@@ -25,6 +25,14 @@ export interface RemoteInboxSlice {
 
   /** Idempotent on recordId: overwrites the item, appends to order only once. */
   addRemoteItem: (item: RemoteInboxItem) => void;
+
+  /**
+   * PR-5: remove a single card from the renderer view (per-card dismiss). Keyed
+   * on recordId — NOT on peer — because RemoteInboxItem carries no peerUuid, so a
+   * peer revoke cannot join cards (and shouldn't: dismiss is a view action, revoke
+   * is a trust action). No-op if the recordId is absent (already dismissed).
+   */
+  dismissRemoteItem: (recordId: string) => void;
 }
 
 export const createRemoteInboxSlice: StateCreator<
@@ -45,5 +53,11 @@ export const createRemoteInboxSlice: StateCreator<
     if (isNew) {
       state.remoteItemOrder.push(item.recordId);
     }
+  }),
+
+  dismissRemoteItem: (recordId) => set((state: StoreState) => {
+    if (!(recordId in state.remoteItems)) return; // already gone — no-op
+    delete state.remoteItems[recordId];
+    state.remoteItemOrder = state.remoteItemOrder.filter((id) => id !== recordId);
   }),
 });
