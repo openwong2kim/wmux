@@ -152,16 +152,40 @@ export const EMPTY_CHANNEL_STATE: ChannelState = {
   idempotency: {},
 };
 
-/** Channel name canonicalization. Lowercase, hyphens, length-bounded. */
+/** Channel name length bounds. `CHANNEL_NAME_MIN` is the empty-length
+ *  floor; the regex below requires at least 1 character. */
 export const CHANNEL_NAME_MIN = 1;
 export const CHANNEL_NAME_MAX = 64;
-/** Allowed characters: lowercase letters, digits, hyphens. */
+/** Allowed characters: lowercase letters, digits, hyphens. The trailing
+ *  `{0,63}` is `CHANNEL_NAME_MAX - 1` since the leading char is fixed. */
 const CHANNEL_NAME_RE = /^[a-z0-9][a-z0-9-]{0,63}$/;
 
+/**
+ * Canonicalize a user-supplied channel name. Strips characters outside
+ * `[a-z0-9-]`, lowercases, drops a leading hyphen (so the result starts
+ * with a letter or digit), and clamps to `CHANNEL_NAME_MAX` characters.
+ *
+ * The result may still be invalid for adversarial inputs — e.g. an
+ * all-punctuation string canonicalizes to `"-"`, and an empty string
+ * canonicalizes to `""`. Both fail `isValidChannelName`. The caller is
+ * responsible for validating the result with `isValidChannelName` and
+ * rejecting invalid input at the boundary; the canonicalizer's job is
+ * to normalize, not to guarantee validity.
+ */
 export function canonicalizeChannelName(raw: string): string {
-  return raw.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+  const replaced = raw.trim().toLowerCase().replace(/[^a-z0-9-]+/g, '-');
+  // Strip a leading hyphen so the result starts with a letter or digit.
+  // (CHANNEL_NAME_RE requires this — without the strip, "-foo" would
+  // pass canonicalize but fail isValidChannelName.)
+  const stripped = replaced.replace(/^-+/, '');
+  // Clamp to CHANNEL_NAME_MAX. JS's String.prototype.slice handles
+  // surrogate pairs as code units, which is fine here — channel names
+  // are ASCII by construction (the regex above restricts to ASCII).
+  return stripped.slice(0, CHANNEL_NAME_MAX);
 }
 
+/** Returns true iff `name` matches the channel name pattern: 1-64
+ *  characters, lowercase letter/digit start, `[a-z0-9-]` body. */
 export function isValidChannelName(name: string): boolean {
   return CHANNEL_NAME_RE.test(name);
 }
