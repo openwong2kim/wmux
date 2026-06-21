@@ -246,6 +246,14 @@ export class LanLinkServer {
         // gone). Never a wildcard; bindOrThrow re-asserts the address (C2/C14).
         console.warn('[LanLinkServer] bound NIC address changed — reconciling');
         this.scheduleReconcile();
+        return;
+      }
+      // Re-evaluate the network category too (codex): a NIC can be re-classified
+      // Private -> Public while keeping the same IP. Reconcile so bindOrThrow's
+      // Public refusal stops the listener + removes the firewall rule.
+      if (this.netCategory(boundIp) === 'Public') {
+        console.warn('[LanLinkServer] bound NIC became Public — reconciling (will stay stopped)');
+        this.scheduleReconcile();
       }
     }, 10_000);
     this.livenessTimer.unref?.();
