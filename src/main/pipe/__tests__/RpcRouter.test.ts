@@ -25,6 +25,17 @@ function makeRouter() {
 }
 
 describe('RpcRouter dispatch envelope', () => {
+  it('stamps origin=local on the dispatched context (LanLink PR-1)', async () => {
+    const router = new RpcRouter();
+    const handler = vi.fn<HandlerSig>(async () => 'ok');
+    router.register('pane.list', handler);
+    await router.dispatch({ id: 'r-origin', method: 'pane.list', params: {} });
+    const [, ctx] = handler.mock.calls[0];
+    // The local pipe / loopback router is local by construction; a future
+    // LanLink listener is the only path that should ever stamp 'remote'.
+    expect(ctx?.origin).toBe('local');
+  });
+
   it('lifts clientName / clientVersion into the handler context', async () => {
     const router = new RpcRouter();
     const handler = vi.fn<HandlerSig>(async () => 'ok');

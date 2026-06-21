@@ -177,6 +177,11 @@ export class RpcRouter {
     // Lift the optional identity envelope into the per-request context so
     // handlers don't reach back into PipeServer internals.
     const ctx: RpcContext = {
+      // This router serves only the machine-local named pipe + loopback TCP, so
+      // every request it dispatches is local by construction. The LanLink LAN
+      // listener is a SEPARATE router that sets origin:'remote' (future PR), and
+      // origin is REQUIRED on RpcContext so that listener can't forget to.
+      origin: 'local',
       clientName:
         typeof request.clientName === 'string' && request.clientName.trim().length > 0
           ? request.clientName.trim()

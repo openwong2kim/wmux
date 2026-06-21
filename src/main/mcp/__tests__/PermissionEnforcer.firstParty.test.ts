@@ -17,7 +17,7 @@ function trust(
   return { firstSeen: 1000, lastSeen: 2000, ...overrides };
 }
 function ctx(clientName?: string): RpcContext {
-  return clientName ? { clientName } : {};
+  return clientName ? { origin: 'local', clientName } : { origin: 'local' };
 }
 
 const FP = 'claude-code';

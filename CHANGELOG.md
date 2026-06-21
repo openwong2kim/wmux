@@ -5,6 +5,12 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Changed
+
+- **Hardened the A2A execute path against off-machine callers.** Every internal RPC now carries a required trust-origin tag (`local` vs `remote`), and the agent-spawning `a2a.task.send` path only runs when the call provably came from this machine, a positive-allow gate that fails closed for anything else. A source-level test pins that the background daemon can never even import the code that spawns agents. Nothing changes for same-machine multi-agent use today; this is the foundation for cross-PC A2A where remote agents can exchange messages but never execute commands.
+
 ## [3.7.0] — 2026-06-20 — A2A execute approval hardened, and remote RPC that lands in the right workspace
 
 Headline: the A2A execute gate — the path that lets a remote agent spawn a `bypassPermissions` Claude CLI in your workspace — is reworked into a renderer-driven approval flow with `execute` as its own dedicated capability (no longer bundled with ordinary send), an `executeApproved` receipt the worker can't forge, fail-closed YOLO hydration, and a queue so concurrent requests don't clobber each other. Alongside it, the #236 RPC workspace-scoping sweep is finished: `surface.new`, `pane.close`, `pane.focus`, and `surface.focus` now all act on the workspace the caller names instead of whatever happens to be on screen — so a multi-agent orchestrator's "do this in MY workspace" finally lands where it should. Plus a per-pane activity line on Fleet View cards, and a browser-pane keyboard-focus fix.

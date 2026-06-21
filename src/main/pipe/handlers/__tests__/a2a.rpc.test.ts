@@ -3,6 +3,7 @@ import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerA2aRpc } from '../a2a.rpc';
 import type { ClaudeWorker } from '../../../a2a/ClaudeWorker';
+import type { RpcContext } from '../../../../shared/rpc';
 
 const { sendToRendererMock } = vi.hoisted(() => ({
   sendToRendererMock: vi.fn(),
@@ -31,6 +32,23 @@ function setupRouter(worker: ClaudeWorker): RpcRouter {
   const router = new RpcRouter();
   registerA2aRpc(router, () => fakeWindow, worker);
   return router;
+}
+
+// remote/undefined-origin cases can't go through router.dispatch (it hard-codes
+// origin:'local' at RpcRouter), so capture the registered a2a.task.send handler
+// and invoke it directly with a synthetic context.
+type TaskSendHandler = (params: Record<string, unknown>, ctx?: RpcContext) => Promise<unknown>;
+
+function captureTaskSend(worker: ClaudeWorker): TaskSendHandler {
+  let handler: TaskSendHandler | undefined;
+  const capturing = {
+    register: (method: string, fn: TaskSendHandler) => {
+      if (method === 'a2a.task.send') handler = fn;
+    },
+  };
+  registerA2aRpc(capturing as unknown as RpcRouter, () => fakeWindow, worker);
+  if (!handler) throw new Error('a2a.task.send handler was not registered');
+  return handler;
 }
 
 describe('a2a.rpc — execute confirmation gate', () => {
@@ -134,6 +152,32 @@ describe('a2a.rpc — execute confirmation gate', () => {
       method: 'a2a.task.send',
       params: { workspaceId: 'ws-from', to: 'ws-to', message: 'do not execute', execute: 'true' },
     });
+
+    expect(worker.execute).not.toHaveBeenCalled();
+  });
+
+  it('does NOT spawn for a remote-origin call even when approved (LanLink PR-1)', async () => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: true, taskId: 'task-remote', toWorkspaceId: 'ws-to', executeApproved: true });
+    const worker = makeWorker();
+    const handler = captureTaskSend(worker);
+
+    await handler(
+      { workspaceId: 'ws-from', to: 'ws-to', message: 'remote run', execute: true },
+      { origin: 'remote' },
+    );
+
+    expect(worker.execute).not.toHaveBeenCalled();
+  });
+
+  it('does NOT spawn when the origin context is absent (fail-closed)', async () => {
+    sendToRendererMock.mockResolvedValueOnce({ ok: true, taskId: 'task-noctx', toWorkspaceId: 'ws-to', executeApproved: true });
+    const worker = makeWorker();
+    const handler = captureTaskSend(worker);
+
+    await handler(
+      { workspaceId: 'ws-from', to: 'ws-to', message: 'no ctx', execute: true },
+      undefined,
+    );
 
     expect(worker.execute).not.toHaveBeenCalled();
   });

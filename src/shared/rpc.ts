@@ -29,6 +29,15 @@ export interface RpcRequest {
  * argument so legacy handlers `(params) => ...` keep compiling.
  */
 export interface RpcContext {
+  /**
+   * Trust boundary the request entered through. REQUIRED (no `?`) so any new
+   * transport that constructs a context MUST classify it — a forgotten origin
+   * is a tsc error, never a silent default. `'remote'` = off-machine (LAN),
+   * gated out of every local-only capability (e.g. the a2a execute spawn).
+   * Today the only constructor is RpcRouter (named pipe + loopback TCP) →
+   * always `'local'`; the LanLink LAN listener (future PR) sets `'remote'`.
+   */
+  origin: 'local' | 'remote';
   clientName?: string;
   clientVersion?: string;
 }

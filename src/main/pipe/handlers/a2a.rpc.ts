@@ -105,10 +105,17 @@ export function registerA2aRpc(router: RpcRouter, getWindow: GetWindow, claudeWo
   // task.send: renderer validates, approval-gates execute:true, then stores +
   // delivers. Main only spawns the background worker after renderer reports that
   // the pre-create execute approval succeeded.
-  router.register('a2a.task.send', async (params) => {
+  router.register('a2a.task.send', async (params, ctx) => {
     const result = await sendToRenderer(getWindow, 'a2a.task.send', params);
 
-    if (params.execute === true && !params.taskId) {
+    // execute → origin decision (LanLink PR-1, positive-allow):
+    //   local  + execute + !taskId + approved → claudeWorker.execute()  ← only spawn
+    //   remote / undefined / unknown          → drop (fail-closed; blocks remote RCE)
+    //   local  + (no execute | taskId | !approved) → message-only
+    // origin is a REQUIRED RpcContext field, so a future remote transport cannot
+    // silently inherit execute. The renderer-returned executeApproved is
+    // origin-blind, so it is only consulted once we know origin is local.
+    if (ctx?.origin === 'local' && params.execute === true && !params.taskId) {
       const record = result as Record<string, unknown> | null;
       const taskId = typeof record?.taskId === 'string' ? record.taskId : '';
       const receiverWsId = typeof record?.toWorkspaceId === 'string' ? record.toWorkspaceId : '';

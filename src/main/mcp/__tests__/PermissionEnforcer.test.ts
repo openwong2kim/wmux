@@ -13,7 +13,7 @@ function trust(
 }
 
 function ctx(clientName?: string): RpcContext {
-  return clientName ? { clientName } : {};
+  return clientName ? { origin: 'local', clientName } : { origin: 'local' };
 }
 
 describe('PermissionEnforcer.check — identity bootstrap', () => {
