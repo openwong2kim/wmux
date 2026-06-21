@@ -431,4 +431,67 @@ describe('StateWriter', () => {
       vi.useRealTimers();
     }
   });
+
+  // ── U2 (a2a-channels): saveImmediate boolean return parity ────────
+  // StateWriter.saveImmediate is changed for parity with
+  // ChannelStateWriter.saveImmediate (U2). The synchronous,
+  // non-throwing contract is preserved; the boolean is opt-in for
+  // callers that need the failure signal.
+  describe('saveImmediate return value (U2 boolean parity)', () => {
+    it('returns true on a successful write', () => {
+      const ret = writer.saveImmediate(makeState([makeSession()]));
+      expect(typeof ret).toBe('boolean');
+      expect(ret).toBe(true);
+      // Synchronous, non-throwing contract preserved: no Promise.
+      expect((ret as unknown as { then?: unknown })?.then).toBeUndefined();
+    });
+
+    it('returns false and logs the error when the target path is unwritable', () => {
+      // Force a real write failure by making the *parent* of the
+      // target file be a regular file. The writer constructs
+      // `path.join(baseDir, 'sessions.json')` and the atomic write's
+      // `fs.writeFileSync(tmp, ...)` fails because
+      // `<file>/sessions.json.tmp` cannot be created when the parent
+      // is a file, not a directory.
+      const blocker = path.join(tmpDir, 'blocker');
+      fs.writeFileSync(blocker, 'this is a regular file, not a directory');
+
+      const failingWriter = new StateWriter(blocker);
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const ret = failingWriter.saveImmediate(makeState([makeSession()]));
+
+      expect(ret).toBe(false);
+      expect(errSpy).toHaveBeenCalledWith(
+        '[StateWriter] Failed to save state:',
+        expect.any(Error),
+      );
+      errSpy.mockRestore();
+      failingWriter.dispose();
+    });
+
+    it('a load after a successful saveImmediate round-trips the data', () => {
+      const s = makeSession({ id: 's-roundtrip' });
+      const ret = writer.saveImmediate(makeState([s]));
+      expect(ret).toBe(true);
+
+      const loaded = writer.load();
+      expect(loaded.sessions).toHaveLength(1);
+      expect(loaded.sessions[0].id).toBe('s-roundtrip');
+    });
+
+    it('call sites that ignore the return value continue to work (no throw, file is written)', () => {
+      // Mirrors the existing call-site pattern: the 13+ call sites in
+      // src/daemon/index.ts and snapshotRunner.ts that don't capture
+      // the return value continue to work — TypeScript allows
+      // discarding return values.
+      const filePath = path.join(tmpDir, 'sessions.json');
+      expect(fs.existsSync(filePath)).toBe(false);
+
+      // Discard the return value explicitly.
+      void writer.saveImmediate(makeState([makeSession()]));
+
+      expect(fs.existsSync(filePath)).toBe(true);
+    });
+  });
 });

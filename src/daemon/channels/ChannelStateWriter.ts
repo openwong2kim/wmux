@@ -89,8 +89,18 @@ export class ChannelStateWriter {
     });
   }
 
-  /** Immediately write state to disk (channel create/destroy/post). */
-  saveImmediate(state: ChannelState): void {
+  /**
+   * Immediately write state to disk (channel create/destroy/post).
+   *
+   * @returns `true` when the synchronous write succeeded, `false` when
+   *   the write threw. The U2 post path (ChannelService.post) checks
+   *   the return value and surfaces a `PERSIST_FAILED` typed error to
+   *   the caller — without this signal, a write failure would be
+   *   silently lost (only `console.error`'d). Other call sites that
+   *   ignore the return value continue to work; the boolean is opt-in
+   *   for callers that need the failure signal.
+   */
+  saveImmediate(state: ChannelState): boolean {
     this.immediateEpoch++;
     this.lastImmediateState = state;
     this.queue.clear();
@@ -100,8 +110,10 @@ export class ChannelStateWriter {
         rotationEnabled: true,
       });
       this.pendingState = null;
+      return true;
     } catch (err) {
       console.error('[ChannelStateWriter] Failed to save state:', err);
+      return false;
     }
   }
 

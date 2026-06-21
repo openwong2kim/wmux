@@ -748,4 +748,67 @@ describe('ChannelStateWriter', () => {
     const ids = writer.load().channels.map((c) => c.id);
     expect(ids).not.toContain('ch-stale-emptySince');
   });
+
+  // ── U2 (a2a-channels): saveImmediate boolean return ──────────────
+  // The post path needs a real failure signal so the renderer can
+  // surface a typed PERSIST_FAILED error instead of silently losing
+  // the message. See docs/plans/2026-06-21-001-feat-a2a-channels-u2-plan.md
+  // U1 for the rationale.
+  describe('saveImmediate return value (U2 boolean contract)', () => {
+    it('returns true on a successful write', () => {
+      const ret = writer.saveImmediate(makeState([makeChannel()]));
+      expect(typeof ret).toBe('boolean');
+      expect(ret).toBe(true);
+      // Synchronous, non-throwing contract preserved: no Promise.
+      expect((ret as unknown as { then?: unknown })?.then).toBeUndefined();
+    });
+
+    it('returns false and logs the error when atomicWriteJSONSync throws', () => {
+      // Force a real write failure by making the *parent* of the
+      // target file be a regular file (not a directory). The writer
+      // constructs `path.join(baseDir, 'channels.json')` and the
+      // atomic write's `fs.writeFileSync(tmp, ...)` fails with
+      // ENOTDIR/ENOENT because `<file>/channels.json.tmp` cannot be
+      // created when the parent is a file. The writer must catch the
+      // throw and return `false` (not re-throw).
+      const blocker = path.join(tmpDir, 'blocker');
+      fs.writeFileSync(blocker, 'this is a regular file, not a directory');
+
+      const failingWriter = new ChannelStateWriter(blocker);
+      const errSpy = vi.spyOn(console, 'error').mockImplementation(() => undefined);
+
+      const ret = failingWriter.saveImmediate(makeState([makeChannel()]));
+
+      expect(ret).toBe(false);
+      expect(errSpy).toHaveBeenCalledWith(
+        '[ChannelStateWriter] Failed to save state:',
+        expect.any(Error),
+      );
+      errSpy.mockRestore();
+      failingWriter.dispose();
+    });
+
+    it('a load after a successful saveImmediate round-trips the data', () => {
+      const ch = makeChannel({ id: 'ch-roundtrip', name: 'rt' });
+      const ret = writer.saveImmediate(makeState([ch]));
+      expect(ret).toBe(true);
+
+      const loaded = writer.load();
+      expect(loaded.channels).toHaveLength(1);
+      expect(loaded.channels[0].id).toBe('ch-roundtrip');
+    });
+
+    it('call sites that ignore the return value continue to work (no throw, file is written)', () => {
+      // Mirrors the existing call-site pattern: callers that don't
+      // capture the return value (ChannelService.prePersist hook in
+      // U3 will explicitly check, but legacy call sites don't).
+      const filePath = path.join(tmpDir, 'channels.json');
+      expect(fs.existsSync(filePath)).toBe(false);
+
+      // Discard the return value explicitly.
+      void writer.saveImmediate(makeState([makeChannel()]));
+
+      expect(fs.existsSync(filePath)).toBe(true);
+    });
+  });
 });

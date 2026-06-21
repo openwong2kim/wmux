@@ -107,11 +107,19 @@ afterEach(() => {
 // ── Scenario 1: saveImmediate synchronous contract ───────────────────
 
 describe('crash-restore integration — saveImmediate synchronous contract', () => {
-  it('returns undefined (sync path, no Promise) — emergency exit handlers rely on this', () => {
+  it('returns boolean true on the sync path (no Promise) — emergency exit handlers rely on this', () => {
+    // U2 (a2a-channels): saveImmediate now returns `boolean` instead
+    // of `void` so the post path can surface PERSIST_FAILED. The
+    // synchronous, non-throwing contract is preserved — what matters
+    // here is that the return is NOT a Promise; the boolean type is
+    // a refinement that callers ignore unless they need the failure
+    // signal.
     const result: unknown = writer.saveImmediate(makeState([makeSession()]));
 
-    // Core contract: saveImmediate must return void, never a Promise.
-    expect(result).toBeUndefined();
+    // Core contract: saveImmediate must be synchronous and return a
+    // boolean on success — never a Promise.
+    expect(typeof result).toBe('boolean');
+    expect(result).toBe(true);
     // Defensive: even if result became truthy, it must not be
     // thenable. The daemon's signal handlers cannot await.
     expect(typeof (result as { then?: unknown })?.then).not.toBe('function');
