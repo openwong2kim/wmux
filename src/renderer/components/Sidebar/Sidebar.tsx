@@ -10,6 +10,7 @@ import { collapseDirection } from './sidebarGlyphs';
 import { IconPlus, IconChevronDir } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import PluginPanels from '../../plugins/PluginPanels';
+import { ChannelsPanel } from '../Channels/ChannelsPanel';
 
 // Pane 트리에서 모든 leaf의 PTY를 dispose
 function disposeAllPtys(pane: Pane) {
@@ -138,6 +139,11 @@ export default function Sidebar() {
 
       {/* Plugin sidebar panels (B-1 ui.sidebar contribution point) */}
       <PluginPanels />
+
+      {/* A2A channels panel — always-on, company-bounded. Mounted
+          between the workspace list and the footer so it sits at the
+          bottom of the sidebar like a permanent dock (U7). */}
+      <ChannelsPanel />
 
       {/* Footer — when docked right, mirror the row so the collapse arrow sits
           on the inner edge facing the content area (issue #151). */}

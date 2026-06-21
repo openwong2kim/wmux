@@ -19,6 +19,18 @@ export default function MiniSidebar() {
   const reorderWorkspace = useStore((s) => s.reorderWorkspace);
   const notifications = useStore((s) => s.notifications);
   const totalUnread = notifications.filter((n) => !n.read).length;
+  // A2A channels (U7) — aggregated unread across every channel the
+  // current renderer is a member of. The slice's `channelUnread` map
+  // is keyed by channelId; we sum here. Mirrors `sumUnread` in
+  // ChannelsPanel.tsx — duplicated rather than shared because the two
+  // surfaces have different store-read cadences (panel re-renders on
+  // every channel slice mutation, MiniSidebar only on its own
+  // selectors).
+  const channelUnread = useStore((s) => s.channelUnread);
+  const totalChannelUnread = Object.values(channelUnread).reduce(
+    (acc, n) => acc + (n > 0 ? n : 0),
+    0,
+  );
 
   const addWorkspace = useStore((s) => s.addWorkspace);
 
@@ -162,6 +174,31 @@ export default function MiniSidebar() {
 
       {/* Footer — expand + status */}
       <div className="flex flex-col items-center gap-2 py-2 border-t border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
+        {/* A2A channels aggregated unread (U7). Sits above the
+            notification badge so the channels icon gets first dibs
+            on user attention — a channel-message unread is a higher
+            signal than a generic terminal notification. */}
+        {totalChannelUnread > 0 && (
+          <button
+            className="w-8 h-8 rounded-md flex items-center justify-center bg-[rgba(var(--accent-green-rgb),0.18)] text-[var(--accent-green)] text-[10px] font-bold"
+            onClick={() => useStore.getState().toggleSidebar()}
+            title={
+              t('sidebar.channelUnreadCount', { count: totalChannelUnread }) ??
+              `${totalChannelUnread} unread channel ${totalChannelUnread === 1 ? 'message' : 'messages'}`
+            }
+            aria-label={
+              t('sidebar.channelUnreadCount', { count: totalChannelUnread }) ??
+              `${totalChannelUnread} unread channel ${totalChannelUnread === 1 ? 'message' : 'messages'}`
+            }
+            data-mini-channel-unread
+          >
+            <span aria-hidden="true">#</span>
+            <span className="ml-0.5" data-mini-channel-unread-count>
+              {totalChannelUnread > 99 ? '99+' : totalChannelUnread}
+            </span>
+          </button>
+        )}
+
         {/* Unread badge */}
         {totalUnread > 0 && (
           <button
