@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **111** methods (`ALL_RPC_METHODS` in
+Total: **120** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -157,6 +157,15 @@ Total: **111** methods (`ALL_RPC_METHODS` in
 | `a2a.task.update` | `a2a.send` | `a2a` |
 | `a2a.task.cancel` | `a2a.send` | `a2a` |
 | `a2a.broadcast` | `a2a.send` | `a2a` |
+| `a2a.channel.list` | `a2a.channel.read` | `a2a` |
+| `a2a.channel.get` | `a2a.channel.read` | `a2a` |
+| `a2a.channel.getMessages` | `a2a.channel.read` | `a2a` |
+| `a2a.channel.getMembers` | `a2a.channel.read` | `a2a` |
+| `a2a.channel.create` | `a2a.channel.send` | `a2a` |
+| `a2a.channel.archive` | `a2a.channel.send` | `a2a` |
+| `a2a.channel.join` | `a2a.channel.send` | `a2a` |
+| `a2a.channel.leave` | `a2a.channel.send` | `a2a` |
+| `a2a.channel.post` | `a2a.channel.send` | `a2a` |
 
 ### `company.a2a`
 
@@ -242,7 +251,7 @@ Total: **111** methods (`ALL_RPC_METHODS` in
 
 ## Event types
 
-The EventBus exposes **12** event types
+The EventBus exposes **13** event types
 (`WMUX_EVENT_TYPES` in `src/shared/events.ts`), polled via `events.poll`.
 Wire shapes (the fields beyond the common `seq` / `ts` / `workspaceId` /
 `type`) are documented in [`inventory.md`](./inventory.md#event-types) and
@@ -262,6 +271,7 @@ typed in `src/shared/events.ts`.
 | `pane.restarted` |
 | `pane.supervision` |
 | `a2a.task` |
+| `channel.message` |
 
 ---
 
