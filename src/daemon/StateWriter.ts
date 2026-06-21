@@ -87,8 +87,19 @@ export class StateWriter {
     });
   }
 
-  /** Immediately write state to disk (session create/destroy/state change). */
-  saveImmediate(state: DaemonState): void {
+  /**
+   * Immediately write state to disk (session create/destroy/state change).
+   *
+   * @returns `true` when the synchronous write succeeded, `false` when
+   *   the write threw. StateWriter.saveImmediate is changed for parity
+   *   with ChannelStateWriter.saveImmediate (U2). The boolean is
+   *   opt-in for callers that need the failure signal; existing
+   *   call sites that ignore the return value continue to work. The
+   *   synchronous, non-throwing contract is preserved — emergency
+   *   exit handlers (SIGINT/SIGTERM/session-end) still rely on it
+   *   running inline and not throwing.
+   */
+  saveImmediate(state: DaemonState): boolean {
     // Bump the epoch BEFORE the sync write so any debounced async task
     // already past its first await observes a newer epoch and can
     // restore this payload if its tail rename races us.
@@ -108,8 +119,10 @@ export class StateWriter {
 
       // Clear pending since we just saved
       this.pendingState = null;
+      return true;
     } catch (err) {
       console.error('[StateWriter] Failed to save state:', err);
+      return false;
     }
   }
 

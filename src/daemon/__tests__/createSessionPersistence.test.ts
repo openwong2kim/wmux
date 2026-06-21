@@ -71,11 +71,18 @@ describe('A1a invariant — saveImmediate persists synchronously', () => {
     };
   }
 
-  it('StateWriter.saveImmediate has synchronous void return (lock against async refactor)', () => {
+  it('StateWriter.saveImmediate has synchronous boolean return (lock against async refactor)', () => {
+    // U2 (a2a-channels): saveImmediate now returns `boolean` instead
+    // of `void` so the post path can surface PERSIST_FAILED. The
+    // synchronous, non-throwing contract is preserved — emergency
+    // exit handlers still rely on it. The original guard (no Promise
+    // return) is what matters here; the boolean type is a refinement.
     const ret = writer.saveImmediate({ version: 1, sessions: [] });
-    expect(ret).toBeUndefined();
-    // Defensive check: if a refactor returns a Promise, .then would exist.
-    expect((ret as unknown as { then?: unknown } | undefined)?.then).toBeUndefined();
+    expect(typeof ret).toBe('boolean');
+    expect(ret).toBe(true);
+    // Defensive check: even if the return type changed again, it must
+    // not become a Promise. The daemon's signal handlers cannot await.
+    expect((ret as unknown as { then?: unknown })?.then).toBeUndefined();
   });
 
   it('sessions.json exists synchronously after saveImmediate returns', () => {
