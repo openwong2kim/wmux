@@ -411,4 +411,148 @@ describe('ChannelStateWriter', () => {
     expect(EMPTY_CHANNEL_STATE.messages).toEqual({});
     expect(EMPTY_CHANNEL_STATE.idempotency).toEqual({});
   });
+
+  // ── U1 validator hardening ──────────────────────────────────────
+
+  it('load rejects channels.json where members is a top-level array', () => {
+    // typeof [] === 'object', so without the Array.isArray guard the
+    // validator would silently accept a corrupt file.
+    const filePath = path.join(tmpDir, 'channels.json');
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        channels: [],
+        members: [],
+        messages: {},
+        idempotency: {},
+      }),
+      'utf-8',
+    );
+    const loaded = writer.load();
+    expect(loaded.channels).toEqual([]);
+    expect(loaded.members).toEqual({});
+  });
+
+  it('load rejects channels.json where messages is a top-level array', () => {
+    const filePath = path.join(tmpDir, 'channels.json');
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        channels: [],
+        members: {},
+        messages: [],
+        idempotency: {},
+      }),
+      'utf-8',
+    );
+    const loaded = writer.load();
+    expect(loaded.messages).toEqual({});
+  });
+
+  it('load rejects channels.json where idempotency is a top-level array', () => {
+    const filePath = path.join(tmpDir, 'channels.json');
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        channels: [],
+        members: {},
+        messages: {},
+        idempotency: [],
+      }),
+      'utf-8',
+    );
+    const loaded = writer.load();
+    expect(loaded.idempotency).toEqual({});
+  });
+
+  it('load rejects channels.json with a malformed member row (workspaceId wrong type)', () => {
+    // Spot-check on the first non-empty member row catches uniform row
+    // corruption even though the channel list itself is valid.
+    const filePath = path.join(tmpDir, 'channels.json');
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        channels: [
+          {
+            id: 'ch-x',
+            companyId: 'co-1',
+            name: 'x',
+            visibility: 'public',
+            status: 'active',
+            createdAt: 0,
+            createdBy: 'ws',
+            nextSeq: 1,
+          },
+        ],
+        members: { 'ch-x': [{ workspaceId: 1, memberId: 'm-1', joinedAt: 0, historyFromSeq: 0 }] },
+        messages: {},
+        idempotency: {},
+      }),
+      'utf-8',
+    );
+    const loaded = writer.load();
+    expect(loaded.channels).toEqual([]);
+  });
+
+  it('load rejects channels.json with a malformed message row (bad deliveryStatus)', () => {
+    const filePath = path.join(tmpDir, 'channels.json');
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        channels: [
+          {
+            id: 'ch-x',
+            companyId: 'co-1',
+            name: 'x',
+            visibility: 'public',
+            status: 'active',
+            createdAt: 0,
+            createdBy: 'ws',
+            nextSeq: 1,
+          },
+        ],
+        members: {},
+        messages: {
+          'ch-x': [
+            {
+              channelId: 'ch-x',
+              seq: 1,
+              workspaceId: 'ws-1',
+              memberId: 'm-1',
+              memberName: 'Alice',
+              text: 'hi',
+              postedAt: 0,
+              deliveryStatus: 'weird',
+            },
+          ],
+        },
+        idempotency: {},
+      }),
+      'utf-8',
+    );
+    const loaded = writer.load();
+    expect(loaded.channels).toEqual([]);
+  });
+
+  it('load rejects channels.json where idempotency value is not a number', () => {
+    const filePath = path.join(tmpDir, 'channels.json');
+    fs.writeFileSync(
+      filePath,
+      JSON.stringify({
+        version: 1,
+        channels: [],
+        members: {},
+        messages: {},
+        idempotency: { 'ch-x': { 'k': 'not-a-number' } },
+      }),
+      'utf-8',
+    );
+    const loaded = writer.load();
+    expect(loaded.idempotency).toEqual({});
+  });
 });

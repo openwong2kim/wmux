@@ -59,6 +59,18 @@ export class ChannelStateWriter {
   private immediateEpoch = 0;
   private lastImmediateState: ChannelState | null = null;
 
+  /**
+   * Construct a `ChannelStateWriter` rooted at `baseDir`. The on-disk
+   * file is `<baseDir>/channels.json` (NOT `sessions.json`) so a channel
+   * loss event cannot cascade into session-state failure. Registers the
+   * synchronous fallback used by `flushSync` to drain pending writes
+   * from the per-channel queue during process exit.
+   *
+   * @param baseDir - Directory where `channels.json` lives.
+   * @param emptyChannelTtlHours - Hours an empty channel can survive
+   *   before the load-time reaper evicts it. Defaults to
+   *   `CHANNEL_EMPTY_TTL_HOURS_DEFAULT` (7d).
+   */
   constructor(
     baseDir: string,
     emptyChannelTtlHours: number = CHANNEL_EMPTY_TTL_HOURS_DEFAULT,
@@ -258,9 +270,10 @@ export class ChannelStateWriter {
 
   /**
    * Type guard. Mirrors the minimum-shape contract from StateWriter:
-   * validate version + top-level containers, then spot-check a
-   * channel row. Full schema validation lands when the schema
-   * stabilises.
+   * validate version + top-level containers (rejecting top-level arrays),
+   * then spot-check one row per nested map. A malformed row fails the
+   * whole validator, triggering `.bak` recovery. Full schema validation
+   * lands when the schema stabilises.
    */
   private static isChannelState(parsed: unknown): parsed is ChannelState {
     if (typeof parsed !== 'object' || parsed === null) return false;
@@ -286,29 +299,102 @@ export class ChannelStateWriter {
       }
     }
 
+    // Spot-check nested row shapes — one non-empty row per map. Catches
+    // realistic corruption modes (e.g. someone hand-edited the JSON and
+    // broke a row's shape) without paying for full schema validation on
+    // every load.
+    const memberLists = Object.values(
+      obj['members'] as Record<string, unknown[]>,
+    );
+    for (const list of memberLists) {
+      if (list.length === 0) continue;
+      if (!isValidChannelMemberRow(list[0])) return false;
+      break;
+    }
+    const messageLists = Object.values(
+      obj['messages'] as Record<string, unknown[]>,
+    );
+    for (const list of messageLists) {
+      if (list.length === 0) continue;
+      if (!isValidChannelMessageRow(list[0])) return false;
+      break;
+    }
+
     return true;
   }
 }
 
+/**
+ * Type guard: `v` is a non-array object whose values are arrays. Rejects
+ * arrays at the top level (since `typeof [] === 'object'`) so a corrupt
+ * `channels.json` with `members: []` cannot slip past validation.
+ */
 function isRecordOfArrays(v: unknown): v is Record<string, unknown[]> {
   if (typeof v !== 'object' || v === null) return false;
+  if (Array.isArray(v)) return false;
   for (const value of Object.values(v as Record<string, unknown>)) {
     if (!Array.isArray(value)) return false;
   }
   return true;
 }
 
+/**
+ * Type guard: `v` is a non-array object whose values are non-array objects
+ * whose values are numbers. Used for the idempotency map (channelId →
+ * clientMsgId → seq). Rejects arrays at any level.
+ */
 function isRecordOfRecords(
   v: unknown,
 ): v is Record<string, Record<string, number>> {
   if (typeof v !== 'object' || v === null) return false;
+  if (Array.isArray(v)) return false;
   for (const value of Object.values(v as Record<string, unknown>)) {
     if (typeof value !== 'object' || value === null) return false;
+    if (Array.isArray(value)) return false;
     for (const inner of Object.values(value as Record<string, unknown>)) {
       if (typeof inner !== 'number') return false;
     }
   }
   return true;
+}
+
+/**
+ * Spot-check: does `row` have the minimum required shape of a
+ * `ChannelMember`? Used as a sanity check on the members map during
+ * load-time validation.
+ */
+function isValidChannelMemberRow(row: unknown): boolean {
+  if (typeof row !== 'object' || row === null) return false;
+  const m = row as Record<string, unknown>;
+  return (
+    typeof m['workspaceId'] === 'string' &&
+    typeof m['memberId'] === 'string' &&
+    typeof m['joinedAt'] === 'number' &&
+    typeof m['historyFromSeq'] === 'number'
+  );
+}
+
+/**
+ * Spot-check: does `row` have the minimum required shape of a
+ * `ChannelMessage`? `data` and `clientMsgId` are optional and not checked
+ * here. Used as a sanity check on the messages map during load-time
+ * validation.
+ */
+function isValidChannelMessageRow(row: unknown): boolean {
+  if (typeof row !== 'object' || row === null) return false;
+  const m = row as Record<string, unknown>;
+  return (
+    typeof m['channelId'] === 'string' &&
+    typeof m['seq'] === 'number' &&
+    typeof m['workspaceId'] === 'string' &&
+    typeof m['memberId'] === 'string' &&
+    typeof m['memberName'] === 'string' &&
+    typeof m['text'] === 'string' &&
+    typeof m['postedAt'] === 'number' &&
+    (m['deliveryStatus'] === 'pending' ||
+      m['deliveryStatus'] === 'delivered' ||
+      m['deliveryStatus'] === 'target_gone')
+  );
 }
 
 function pruneKeys<T>(
