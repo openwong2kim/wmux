@@ -32,6 +32,7 @@ import { useRpcBridge } from '../../hooks/useRpcBridge';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
+import { useChannelsEventSubscription } from '../../hooks/useChannelsEventSubscription';
 import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
 import { useIpc } from '../../hooks/useIpc';
 import type { SessionData, PaneLeaf, Pane, Surface, Workspace } from '../../../shared/types';
@@ -300,6 +301,11 @@ export default function AppLayout() {
   // LanLink PR-2 — own the remote-inbox subscription (always-on, mounted once)
   // so remote peer messages accumulate in the store before any surface opens.
   useRemoteInboxBridge();
+  // U6 — channel.message subscription. Polls events.poll on a 1s cadence
+  // and dispatches into channelsSlice. Always-on (not gated on any
+  // panel visibility) so the unread badge stays accurate while the
+  // sidebar is collapsed.
+  useChannelsEventSubscription();
   // Plugin host (B-1): ui.decoratePane push → uiSlice pane decorations.
   usePaneDecorationChannel();
   const { invoke: ipcInvoke } = useIpc();
