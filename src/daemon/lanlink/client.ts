@@ -143,10 +143,9 @@ export async function sendToPeer(opts: SendOptions): Promise<{ delivered: boolea
     const keys = recon.onReconnect2(r2);
     const sealer = new AeadSealer(keys.c2sKey, 1); // joiner -> host (c2s)
     const opener = new AeadOpener(keys.s2cKey, 2);
-    // Peek the next senderSeq; commit it ONLY after the ACK confirms delivery, so a
-    // timeout/retry reuses the same senderSeq and the receiver's high-water dedup
-    // keeps the retry idempotent (no duplicate inbox row) (codex).
-    const senderSeq = opts.peers.peekSendSeq(opts.peerUuid) + 1;
+    // Reserve the senderSeq immediately so two concurrent sends can't collide on
+    // one seq (which the receiver's dedup would silently drop) — codex P1.
+    const senderSeq = opts.peers.nextSendSeq(opts.peerUuid);
     const appMsg = JSON.stringify({
       kind: opts.kind ?? 'msg.text',
       peerName: opts.selfName,
@@ -171,7 +170,6 @@ export async function sendToPeer(opts: SendOptions): Promise<{ delivered: boolea
     if (typeof ackObj !== 'object' || ackObj === null || (ackObj as Record<string, unknown>)['ack'] !== expectedId) {
       throw new Error('LanLink sendToPeer: ACK does not match the sent message');
     }
-    opts.peers.commitSendSeq(opts.peerUuid, senderSeq); // delivery confirmed -> commit
     return { delivered: true };
   } finally {
     socket.destroy();
