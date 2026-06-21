@@ -1367,6 +1367,8 @@ function registerRpcHandlers(
   // `pair.join`/`send` are the OUTBOUND initiator paths; `peers.remove` revokes a
   // peer and destroys its live AEAD connection (C13). These are control-pipe RPCs,
   // not RpcMethods — the renderer/Settings UI bridge for them is PR-5.
+  const coercePort = (v: unknown): number =>
+    typeof v === 'number' && Number.isInteger(v) && v >= 1 && v <= 65535 ? v : 0;
   pipeServer.onRpc('lanlink.pair.begin', async () => lanLinkServer.beginPairing());
   pipeServer.onRpc('lanlink.pair.status', async () => lanLinkServer.pairingStatus());
   pipeServer.onRpc('lanlink.pair.cancel', async () => {
@@ -1375,14 +1377,14 @@ function registerRpcHandlers(
   });
   pipeServer.onRpc('lanlink.pair.join', async (params) => {
     const host = typeof params['host'] === 'string' ? params['host'] : '';
-    const port = typeof params['port'] === 'number' ? params['port'] : 0;
+    const port = coercePort(params['port']);
     const pin = typeof params['pin'] === 'string' ? params['pin'] : '';
     if (!host || !port || !pin) throw new Error('lanlink.pair.join: host, port, and pin are required');
     return lanLinkServer.joinPeer(host, port, pin);
   });
   pipeServer.onRpc('lanlink.send', async (params) => {
     const host = typeof params['host'] === 'string' ? params['host'] : '';
-    const port = typeof params['port'] === 'number' ? params['port'] : 0;
+    const port = coercePort(params['port']);
     const peerUuid = typeof params['peerUuid'] === 'string' ? params['peerUuid'] : '';
     const text = typeof params['text'] === 'string' ? params['text'] : '';
     if (!host || !port || !peerUuid) throw new Error('lanlink.send: host, port, and peerUuid are required');

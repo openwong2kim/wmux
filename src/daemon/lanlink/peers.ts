@@ -296,7 +296,9 @@ export class PeerStore {
   private loadOrCreateMachineKey(): Buffer {
     try {
       const existing = fs.readFileSync(this.keyPath, 'utf8').trim();
-      if (existing) {
+      // Require exactly 32 bytes of hex — a malformed/truncated key would silently
+      // weaken every peer-file HMAC, so a bad value is discarded + regenerated.
+      if (existing && /^[0-9a-fA-F]{64}$/.test(existing)) {
         const ok = this.reHarden(this.keyPath);
         // Fail closed (codex P2): if the integrity key cannot be locked to owner-only
         // ACLs on win32, do NOT trust a broad-readable key (an attacker who reads it

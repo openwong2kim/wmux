@@ -179,6 +179,12 @@ export class LanLinkServer {
       console.warn('[LanLinkServer] bind aborted, staying stopped:', err instanceof Error ? err.message : err);
       await this.closeServer();
     }
+    // If we ended up with NO listener while enabled (no NIC / no live IP / Public /
+    // assert threw), remove any firewall rule a previous successful bind left behind
+    // so a stale ALLOW never outlives the listener (CodeRabbit).
+    if (!this.server) {
+      this.queueFirewall(() => this.fw.remove());
+    }
   }
 
   /** The ONLY place net.Server.listen() appears. One pinned ifaces snapshot (C14). */
@@ -208,6 +214,7 @@ export class LanLinkServer {
       // C14: wired BEFORE listen; any listen error -> stop, never wildcard/retry-loop.
       console.warn('[LanLinkServer] listen error, staying stopped:', err.message);
       void this.closeServer();
+      this.queueFirewall(() => this.fw.remove()); // don't leave a rule with no listener
     });
     server.listen(port, ip);
     this.server = server;

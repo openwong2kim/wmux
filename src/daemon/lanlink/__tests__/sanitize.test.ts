@@ -60,7 +60,7 @@ describe('sanitize — ingress sanitizer (C16)', () => {
     expect(sanitizeRemoteText('ok' + ch(0xd800))).toBe('ok');
   });
 
-  it('never throws on 2000 fuzzed inputs (incl. lone surrogates / full BMP+)', () => {
+  it('never throws on 2000 fuzzed inputs (incl. lone surrogates, across the BMP)', () => {
     for (let i = 0; i < 2000; i++) {
       const n = i % 60;
       let s = '';

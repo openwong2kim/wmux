@@ -22,7 +22,8 @@ function netshPath(): string {
 
 function run(file: string, args: string[]): Promise<boolean> {
   return new Promise((resolve) => {
-    execFile(file, args, { windowsHide: true }, (err) => {
+    // timeout so a hung netsh.exe cannot wedge the firewall op chain forever.
+    execFile(file, args, { windowsHide: true, timeout: 10_000 }, (err) => {
       if (err) {
         console.warn(`[lanlink-firewall] ${path.basename(file)} ${args.slice(0, 4).join(' ')} ... failed:`, err.message);
         resolve(false);

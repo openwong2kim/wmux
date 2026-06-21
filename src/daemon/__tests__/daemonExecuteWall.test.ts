@@ -27,7 +27,10 @@ const FORBIDDEN: ReadonlyArray<{ pattern: RegExp; label: string }> = [
   // MACHINERY trees — src/main/a2a (ClaudeWorker lives here) and src/main/pipe
   // (RpcRouter + a2a.rpc live here). No daemon file imports from these today, and
   // none ever should: that is exactly where a remote byte could reach execute.
-  { pattern: /from\s+['"][^'"]*\/main\/(a2a|pipe)\//, label: "import of src/main execute machinery (a2a/pipe)" },
+  // Match both a deeper import (.../main/a2a/ClaudeWorker) AND a directory-index
+  // import (.../main/a2a) by requiring a2a/pipe to be followed by a slash OR the
+  // closing quote.
+  { pattern: /from\s+['"][^'"]*\/main\/(a2a|pipe)(\/|['"])/, label: "import of src/main execute machinery (a2a/pipe)" },
 ];
 
 function collectTsFiles(dir: string): string[] {
