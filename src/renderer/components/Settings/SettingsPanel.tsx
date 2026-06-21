@@ -1093,10 +1093,35 @@ export function LanLinkPairingView(props: LanLinkPairingViewProps) {
           {t('settings.lanlinkPairJoinButton')}
         </Button>
       </SettingRow>
+      {/* Join inputs commit on EVERY keystroke (not commit-on-blur like SettingPathInput)
+          so clicking Join with focus still in a field submits the current value, not a
+          stale empty draft (codex P2). */}
       <div className="flex flex-wrap items-center gap-2 px-1">
-        <SettingPathInput value={joinHost} onCommit={onJoinHost} placeholder={t('settings.lanlinkPairJoinHostPlaceholder')} label={t('settings.lanlinkPairJoinHost')} />
+        <input
+          type="text"
+          value={joinHost}
+          placeholder={t('settings.lanlinkPairJoinHostPlaceholder')}
+          aria-label={t('settings.lanlinkPairJoinHost')}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          onChange={(e) => onJoinHost(e.target.value)}
+          className="text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono"
+          style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)', border: '1px solid var(--bg-overlay)', width: 180 }}
+        />
         <SettingNumberInput value={joinPort} onChange={onJoinPort} min={1} max={65535} label={t('settings.lanlinkPairJoinPort')} />
-        <SettingPathInput value={joinPin} onCommit={onJoinPin} placeholder={t('settings.lanlinkPairJoinPinPlaceholder')} label={t('settings.lanlinkPairJoinPin')} />
+        <input
+          type="text"
+          value={joinPin}
+          placeholder={t('settings.lanlinkPairJoinPinPlaceholder')}
+          aria-label={t('settings.lanlinkPairJoinPin')}
+          spellCheck={false}
+          autoCapitalize="off"
+          autoCorrect="off"
+          onChange={(e) => onJoinPin(e.target.value)}
+          className="text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono"
+          style={{ backgroundColor: 'var(--bg-surface)', color: 'var(--text-main)', border: '1px solid var(--bg-overlay)', width: 110 }}
+        />
       </div>
 
       {/* Paired peers + live revoke. */}
@@ -1221,19 +1246,26 @@ function LanLinkPairingSection() {
   const onBeginPair = useCallback(async () => {
     if (!api?.pairBegin) return;
     setPairBusy(true); setError(null);
+    setFailCount(0); // a fresh window starts at 0 — don't show the prior window's count
     const r = await ipcInvoke(() => api.pairBegin());
     setPairBusy(false);
     if (r.ok) {
       setPin(r.data.pin);
-      setDeadline(r.data.expiresInMs != null ? Date.now() + r.data.expiresInMs : null);
+      // expiresInMs is number|null. A null deadline would stall the countdown AND the
+      // auto-clear effects (both guard on deadline != null), so treat null as
+      // already-expired rather than a non-expiring PIN (Claude P2).
+      setDeadline(r.data.expiresInMs != null ? Date.now() + r.data.expiresInMs : Date.now());
       setNow(Date.now());
     }
   }, [api, ipcInvoke]);
 
   const onCancelPair = useCallback(async () => {
     if (!api?.pairCancel) return;
-    await ipcInvoke(() => api.pairCancel());
-    setPin(null); setDeadline(null);
+    const r = await ipcInvoke(() => api.pairCancel());
+    // Only hide the PIN if the daemon actually closed the window. On a failed cancel
+    // the window may still be active — hiding it would mislead the user into thinking
+    // it was canceled (codex P2).
+    if (r.ok) { setPin(null); setDeadline(null); }
   }, [api, ipcInvoke]);
 
   const onJoin = useCallback(async () => {

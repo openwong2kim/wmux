@@ -289,6 +289,11 @@ remote 카드/배지=미래 cross-PC 방(channels × LanLink) 원격 멤버 표�
 - **dev CDP 렌더러 픽셀 9/9** (`scripts/lanlink-pr5-cdp-dogfood.mjs` + PowerShell 래퍼, Start-Process dev 앱 + 포트스캔 18800-18899 + Vite store import): Fleet View 'remote' 탭 open + empty state · remote 카드 2개 + "remote peer" 배지 · peerName/text 렌더 · **제어문자 무해 픽셀 증명**(`←[31mRED←[0m`이 빨강 적용 0, inert 텍스트) · per-card dismiss 정확 1개 제거. 좀비 0(taskkill /T 정리). 스크린샷 `out-pr5-dogfood/`.
 - 교훈: 패키지 bundle은 useStore 미노출(s-c2:664)→dev Vite `import('/src/renderer/stores/index.ts')` 필수. dev 앱 spawn은 `node spawn(npm)` 실패→PowerShell `Start-Process`가 작동(forge child stdout 미전파→포트 스캔으로 CDP 발견). taskkill은 harness PowerShell 정적분석 차단→node spawn 풀패스로 우회. **물리 2머신 cross-PC 라이브는 사용자 몫(W-T2).**
 
+### 11.5 pre-merge review (2026-06-21, PR #275)
+- **codex review(diff, 이번엔 hang 없이 작동) P2×2** — Claude 적대 diff review가 놓친 **진짜 user-visible 버그 2건 적발(cross-model 가치 입증)**: ①join host/PIN이 commit-on-blur(`SettingPathInput`)라 포커스 안 뺀 채 Join→stale 빈 값 제출(primary 경로 실패) ②`onCancelPair`가 실패해도 PIN 무조건 숨김→데몬 active인데 취소됨 표시. **둘 다 수정**(즉시-onChange 입력 / r.ok 가드).
+- **Claude 적대 diff review P2×4** — dead `send`(D6 의도 유지) · double daemon probe(minor follow-up) · null-deadline stall(가드 반영) · stale failCount(reset 반영). VERDICT: safe to merge, 보안 불변식 전부 holds.
+- **CI 전 green**: Baseline macos/ubuntu/windows ×2 · validate · bench · **CodeRabbit pass**(actionable 0).
+
 ### 11.4 outside voice 반영 (Claude subagent, codex 5min timeout 폴백)
 P0 두 건 CLEARED(D1 promotion 보안 무해 + no-paste/execute 벽 입증). 발견 6건 전부 plan 반영: ①gen-api GROUP_ORDER +lanlink(§4.1 #4) ②t() 명시맵(§5.2.3) ③dismiss approvals 미러(§5.3) ④electron.d.ts 근거교정+satisfies(§3.6) ⑤timeout 30s(§3.3) ⑥i18n parity/D4 톤(§6.4·§7.2). **cross-model tension 0** — locked 결정 전부 동의.
 
