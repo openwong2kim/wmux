@@ -127,27 +127,34 @@ describe('ChannelStateWriter', () => {
 
   it('saveDebounced does not write immediately', async () => {
     vi.useFakeTimers();
-    writer.saveDebounced(makeState([makeChannel()]));
+    try {
+      writer.saveDebounced(makeState([makeChannel()]));
 
-    const filePath = path.join(tmpDir, 'channels.json');
-    expect(fs.existsSync(filePath)).toBe(false);
+      const filePath = path.join(tmpDir, 'channels.json');
+      expect(fs.existsSync(filePath)).toBe(false);
 
-    vi.advanceTimersByTime(30_000);
-    vi.useRealTimers();
+      vi.advanceTimersByTime(30_000);
+    } finally {
+      vi.useRealTimers();
+    }
     await new Promise((r) => setTimeout(r, 50));
 
+    const filePath = path.join(tmpDir, 'channels.json');
     expect(fs.existsSync(filePath)).toBe(true);
   });
 
   it('saveDebounced coalesces multiple calls within debounce window', async () => {
     vi.useFakeTimers();
-    writer.saveDebounced(makeState([makeChannel({ name: 'v1' })]));
-    vi.advanceTimersByTime(10_000);
-    writer.saveDebounced(makeState([makeChannel({ name: 'v2' })]));
-    vi.advanceTimersByTime(10_000);
-    writer.saveDebounced(makeState([makeChannel({ name: 'v3' })]));
-    vi.advanceTimersByTime(10_000);
-    vi.useRealTimers();
+    try {
+      writer.saveDebounced(makeState([makeChannel({ name: 'v1' })]));
+      vi.advanceTimersByTime(10_000);
+      writer.saveDebounced(makeState([makeChannel({ name: 'v2' })]));
+      vi.advanceTimersByTime(10_000);
+      writer.saveDebounced(makeState([makeChannel({ name: 'v3' })]));
+      vi.advanceTimersByTime(10_000);
+    } finally {
+      vi.useRealTimers();
+    }
     await new Promise((r) => setTimeout(r, 50));
 
     const filePath = path.join(tmpDir, 'channels.json');
