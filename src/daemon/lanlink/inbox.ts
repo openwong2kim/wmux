@@ -51,7 +51,14 @@ export class LanLinkInbox {
   /** In-memory authoritative copy, loaded at construction. */
   private file: InboxFile;
 
-  constructor(baseDir: string) {
+  /**
+   * @param baseDir suffix-aware wmux dir (the sessions.json sibling).
+   * @param cap     FIFO bound on retained records. Defaults to INBOX_CAP (512).
+   *                Tests inject a small cap so the FIFO-eviction invariant can be
+   *                exercised without thousands of synchronous disk writes — the
+   *                eviction logic itself is cap-agnostic.
+   */
+  constructor(baseDir: string, private readonly cap: number = INBOX_CAP) {
     this.filePath = path.join(baseDir, 'lanlink-inbox.json');
     this.file = this.load();
   }
@@ -65,8 +72,8 @@ export class LanLinkInbox {
     const seq = this.file.nextSeq + 1;
     const records = [...this.file.records, { ...rec, seq }];
     // FIFO bound. nextSeq keeps climbing so an evicted seq is never reused.
-    if (records.length > INBOX_CAP) {
-      records.splice(0, records.length - INBOX_CAP);
+    if (records.length > this.cap) {
+      records.splice(0, records.length - this.cap);
     }
     const next: InboxFile = { version: 1, nextSeq: seq, records };
     // SYNC atomic write (rename-atomic durability + `.bak` rotation) against the

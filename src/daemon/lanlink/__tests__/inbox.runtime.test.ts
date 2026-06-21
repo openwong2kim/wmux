@@ -4,7 +4,7 @@ import os from 'node:os';
 import path from 'node:path';
 import { LanLinkInbox } from '../inbox';
 import * as atomicWrite from '../../util/atomicWrite';
-import { INBOX_CAP, isInboxFile } from '../../../shared/lanlink';
+import { isInboxFile } from '../../../shared/lanlink';
 
 // Disk-IO tests → `.runtime.test.ts` so they run serially (vitest.runtime.config
 // sets fileParallelism:false) and temp-file rotations don't race.
@@ -106,14 +106,18 @@ describe('LanLinkInbox — durable store', () => {
     expect(got.items[0].text).toBe('first'); // recovered from .bak, not the array
   });
 
-  it('U6: FIFO bound at INBOX_CAP — oldest evicted, seq keeps climbing (never reused)', () => {
-    const ib = new LanLinkInbox(dir);
-    for (let i = 0; i < INBOX_CAP + 3; i++) ib.injectSynthetic({ peerName: 'A', text: `m${i}` });
-    expect(ib.size).toBe(INBOX_CAP);
+  it('U6: FIFO bound — oldest evicted, seq keeps climbing (never reused)', () => {
+    // Inject a small cap so the FIFO invariant is exercised without thousands of
+    // synchronous disk writes (515 appends timed out CI's 5s default). The prod
+    // cap is INBOX_CAP=512; the eviction logic under test is cap-agnostic.
+    const cap = 5;
+    const ib = new LanLinkInbox(dir, cap);
+    for (let i = 0; i < cap + 3; i++) ib.injectSynthetic({ peerName: 'A', text: `m${i}` });
+    expect(ib.size).toBe(cap);
     const items = ib.poll(0).items;
-    // oldest 3 evicted → first surviving seq is 4, last is INBOX_CAP+3
+    // oldest 3 (seq 1,2,3) evicted → first surviving seq is 4, last is cap+3
     expect(items[0].seq).toBe(4);
-    expect(items[items.length - 1].seq).toBe(INBOX_CAP + 3);
+    expect(items[items.length - 1].seq).toBe(cap + 3);
   });
 
   it('never persists a file it cannot load (own validator passes on the on-disk bytes)', () => {
