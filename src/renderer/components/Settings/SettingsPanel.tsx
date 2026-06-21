@@ -899,14 +899,19 @@ function LanLinkSection() {
       setLoading(false);
       return;
     }
-    const result = await ipcInvoke(() => lanlinkApi.status());
-    if (result.ok) {
-      setStatus(result.data);
-      setUnavailable(false); // recover if a prior probe failed (daemon reconnected)
-    } else {
-      setUnavailable(true);
+    // finally so a thrown probe never leaves the section stuck on "loading"
+    // (useIpc.invoke is non-throwing today, but the guard is cheap insurance).
+    try {
+      const result = await ipcInvoke(() => lanlinkApi.status());
+      if (result.ok) {
+        setStatus(result.data);
+        setUnavailable(false); // recover if a prior probe failed (daemon reconnected)
+      } else {
+        setUnavailable(true);
+      }
+    } finally {
+      setLoading(false);
     }
-    setLoading(false);
   }, [ipcInvoke, lanlinkApi]);
 
   useEffect(() => {
@@ -925,9 +930,12 @@ function LanLinkSection() {
     async (patch: { enabled?: boolean; nic?: LanLinkNic | null }) => {
       if (!lanlinkApi?.configure) return;
       setBusy(true);
-      const result = await ipcInvoke(() => lanlinkApi.configure(patch));
-      if (result.ok) setStatus(result.data);
-      setBusy(false);
+      try {
+        const result = await ipcInvoke(() => lanlinkApi.configure(patch));
+        if (result.ok) setStatus(result.data);
+      } finally {
+        setBusy(false);
+      }
     },
     [ipcInvoke, lanlinkApi],
   );

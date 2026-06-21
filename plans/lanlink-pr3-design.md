@@ -111,23 +111,30 @@ No origin gating (control pipe is machine-local, same as inbox.poll).
 - `src/main/ipc/handlers/lanlink.handler.ts`: `registerLanLinkHandlers(daemonClient)` →
   `ipcMain.handle(IPC.LANLINK_STATUS, wrapHandler(... daemonClient.lanlinkStatus()))` etc.
   (mirror `mcp.handler.ts`). Wire in `registerHandlers.ts:128`.
-- `src/preload/preload.ts`: `lanlink: { status, configure }` via `ipcRenderer.invoke` (mirror `mcp`).
-- `src/renderer/components/Settings/LanLinkSection.tsx`:
-  - container `LanLinkSection` — `useIpc({ silent:['NOT_FOUND','UNKNOWN'] })`, lazily reads
-    `window.electronAPI.lanlink`, hides if absent; reads `lanlink.status` on mount (daemon = SoT);
-    toggle/select call `lanlink.configure`, update component state from the response.
-  - exported pure `LanLinkView` (typed props) + exported `nicOptions(nics, selectedNic)` helper
+- `src/preload/preload.ts`: `status` + `configure` (`ipcRenderer.invoke`) are MERGED into PR-2's
+  existing post-hoc `(electronAPI as Record<…>).lanlink = { onRemote, requestResync, … }` assignment
+  (a second `lanlink:` literal would clobber it). `src/shared/electron.d.ts` extends the `lanlink?` type.
+- **Settings section is INLINE in `SettingsPanel.tsx`** (not a standalone file — the `Toggle`/
+  `SettingSelect`/`SettingRow`/`SectionLabel` primitives are module-local and unexported, so the
+  `McpStatusSection` inline pattern reuses them without a circular import):
+  - container `LanLinkSection` — `useIpc({ silent:['NOT_FOUND','UNKNOWN','DAEMON_DISCONNECTED'] })`,
+    lazily reads `window.electronAPI.lanlink`; reads `lanlink.status` on mount AND re-probes on
+    `daemon:onConnected` (daemon = SoT); toggle/select call `lanlink.configure`, update component state
+    from the response; in local-only mode (daemon unreachable) it renders an explanatory placeholder
+    rather than a blank pane.
+  - exported pure `LanLinkView` (typed props) + exported `nicOptions(nics, selectedNic, t)` helper
     (merges persisted-but-currently-absent NIC as a stale option) → node-env testable.
-  - primitives: `Toggle`(256) `SettingSelect`(298) `SettingRow`(276) `SectionLabel`(408).
-  - warning copy: i18n keys `settings.lanlinkWarning` ("opens this LAN port; Windows may prompt to
+  - primitives: `Toggle` `SettingSelect` `SettingRow` `SectionLabel` (all local to `SettingsPanel.tsx`).
+  - warning copy: i18n key `settings.lanlinkWarning` ("opens this LAN port; Windows may prompt to
     allow" + "Private profile only").
-- `SettingsPanel.tsx`: extend `TabId`(32), add `tabs` entry(3324) + `IconLanLink`, add
-  `activeTab==='lanlink' && <LanLinkSection/>` (3452).
-- `src/renderer/i18n/en.ts` (+ ko.ts): `settings.lanlink*` keys.
+- `SettingsPanel.tsx`: extend `TabId`, add a `tabs` entry + `IconLanLink`, add
+  `activeTab==='lanlink' && <LanLinkSection/>`.
+- `src/renderer/i18n/locales/en.ts` (+ ko.ts): `settings.lanlink*` keys.
 - **No uiSlice mirror / buildSessionData entry** — daemon status is the single source of truth (avoids
   the two-source divergence trap the settings reader flagged).
 
 ## 6. Adversarial analysis (design-time REFUTE pass)
+
 | Vector | Defense | Residual |
 |---|---|---|
 | **C2 bind bypass** (0.0.0.0 / '' / '::' / loopback / internal / absent NIC / IPv6-only) | `assertLanBindAddress` fail-closed: explicit wildcard/loopback rejects + membership in `family==='IPv4' && !internal` set. Unit-tests every reject case + a real LAN IPv4 pass. | RFC1918 deliberately out of scope (firewall profile, PR-4) — documented. |
@@ -138,17 +145,20 @@ No origin gating (control pipe is machine-local, same as inbox.poll).
 | **Dev-gate inversion** | No new dev-only RPC needed; if one is added, use the positive allowlist (`NODE_ENV dev/test \|\| WMUX_*`), never `!== 'production'`. | — |
 | **Validator array-bypass** | `coerceLanLink` checks `typeof === 'object' && !Array.isArray` before field reads (the #269 lesson). | — |
 
-## 7. File manifest
+## 7. File manifest (as shipped)
 **New:** `src/daemon/lanlink/bindGuard.ts`, `src/daemon/lanlink/controller.ts`,
 `src/daemon/lanlink/__tests__/bindGuard.test.ts`, `.../controller.test.ts`,
-`src/main/ipc/handlers/lanlink.handler.ts`, `src/renderer/components/Settings/LanLinkSection.tsx`,
+`src/main/ipc/handlers/lanlink.handler.ts`,
 `src/renderer/components/Settings/__tests__/LanLinkSection.test.tsx`,
-config backfill tests (in `src/daemon/__tests__/config.lanlink.test.ts`), `scripts/lanlink-pr3-dogfood.mjs`.
+`src/shared/__tests__/lanlink.pr3.test.ts`, `scripts/lanlink-pr3-dogfood.mjs`.
+(The LanLink Settings section ships INLINE in `SettingsPanel.tsx`, not as a separate file; config
+backfill tests are appended to the existing `src/daemon/__tests__/config.test.ts`.)
 **Modified:** `src/daemon/types.ts`, `src/daemon/config.ts`, `src/shared/lanlink.ts`, `src/shared/rpc.ts`,
-`src/main/mcp/methodCapabilityMap.ts`, `src/main/DaemonClient.ts`, `src/daemon/index.ts`,
-`src/main/ipc/registerHandlers.ts`, `src/shared/constants.ts`, `src/preload/preload.ts`,
-`src/renderer/components/Settings/SettingsPanel.tsx`, `src/renderer/i18n/en.ts` (+ko.ts),
-`docs/api/reference.md` (regen).
+`src/main/mcp/methodCapabilityMap.ts`, `src/main/mcp/__tests__/methodCapabilityMap.test.ts`,
+`src/main/DaemonClient.ts`, `src/daemon/index.ts`, `src/main/ipc/registerHandlers.ts`,
+`src/shared/constants.ts`, `src/preload/preload.ts`, `src/shared/electron.d.ts`,
+`src/renderer/components/Settings/SettingsPanel.tsx`,
+`src/renderer/i18n/locales/en.ts` (+ ko.ts), `docs/api/reference.md` (regen).
 
 ## 8. Verification
 - Unit: bindGuard reject/pass matrix + enumerateNics (family-string, excludes internal);
