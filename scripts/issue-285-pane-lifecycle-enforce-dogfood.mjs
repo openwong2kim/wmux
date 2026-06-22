@@ -108,7 +108,7 @@ const rpcResult = async (m, p, o) => { const r = await rpcCall(m, p, o); if (r &
 
 function spawnApp() {
   const proc = spawn(APP_EXE, [], { cwd: REPO_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'], detached: false });
-  proc.stdout.on('data', () => {}); proc.stderr.on('data', () => {});
+  proc.stdout.resume(); proc.stderr.resume(); // drain so the child's pipes never block
   return proc;
 }
 async function waitMainToken(timeoutMs) {
@@ -143,7 +143,7 @@ async function main() {
   // wsA is a background workspace exactly like another agent's session.
   const wsB = (await rpcResult('workspace.new', { name: 'focus-holder-B' })).id;
   await sleep(700);
-  await rpcResult('workspace.focus', { id: wsB }).catch(() => {});
+  await rpcResult('workspace.focus', { id: wsB }).catch(() => undefined);
   await sleep(400);
   const curBefore = await rpcResult('workspace.current', {});
   check('ws B is the on-screen workspace before the test', curBefore?.id === wsB, `current=${curBefore?.id}`);
@@ -224,7 +224,7 @@ async function main() {
 main()
   .catch((e) => { console.error('FATAL', e); check('harness completed without fatal error', false, e.message); })
   .finally(async () => {
-    try { await rpcResult('daemon.shutdown', {}).catch(() => {}); } catch { /* */ }
+    try { await rpcResult('daemon.shutdown', {}).catch(() => undefined); } catch { /* */ }
     try { if (app) app.kill(); } catch { /* */ }
     await sleep(800);
     const passed = results.filter((r) => r.ok).length;
