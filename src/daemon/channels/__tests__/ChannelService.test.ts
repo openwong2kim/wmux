@@ -96,6 +96,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-creator', memberId: 'm-creator', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-creator',
       });
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error(`expected ok, got ${result.error.code}: ${result.error.message}`);
@@ -118,6 +119,7 @@ describe('ChannelService', () => {
         name: '!!!',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(result.ok).toBe(false);
       if (result.ok) throw new Error('expected !ok');
@@ -130,6 +132,7 @@ describe('ChannelService', () => {
         name: 'persisted',
         visibility: 'private',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(writer.saveImmediate).toHaveBeenCalledTimes(1);
     });
@@ -142,6 +145,7 @@ describe('ChannelService', () => {
         name: 'archive-me',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       const archived = await svc.archive({
@@ -175,6 +179,7 @@ describe('ChannelService', () => {
         name: 'someone-elses',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       const r = await svc.archive({
@@ -201,6 +206,7 @@ describe('ChannelService', () => {
         name: 'team-room',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       const r = await svc.archive({
@@ -224,11 +230,13 @@ describe('ChannelService', () => {
         name: 'team',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       const r = await svc.join({
         channelId: created.channel.id,
         member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
       });
       expect(r.ok).toBe(true);
       const members = svc.getMembers(created.channel.id, 'ws-1');
@@ -242,6 +250,7 @@ describe('ChannelService', () => {
         name: 'team',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       // Bump nextSeq via a post
@@ -256,6 +265,7 @@ describe('ChannelService', () => {
         channelId: created.channel.id,
         member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
         includeHistory: false,
+        verifiedWorkspaceId: 'ws-2',
       });
       expect(r.ok).toBe(true);
       const m = svc
@@ -270,21 +280,25 @@ describe('ChannelService', () => {
         name: 'team',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       await svc.join({
         channelId: created.channel.id,
         member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
       });
       await svc.leave({
         channelId: created.channel.id,
         workspaceId: 'ws-2',
         memberId: 'm-2',
+        verifiedWorkspaceId: 'ws-2',
       });
       const r = await svc.leave({
         channelId: created.channel.id,
         workspaceId: 'ws-1',
         memberId: 'm-1',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(r.ok).toBe(true);
       const ch = svc.get(created.channel.id, 'ws-1');
@@ -299,6 +313,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       const result = await svc.post({
@@ -333,6 +348,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       const first = await svc.post({
@@ -369,6 +385,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       await svc.archive({
@@ -397,6 +414,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       const r = await svc.post({
@@ -421,6 +439,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       // Add the "spoofed" sender as a member of the channel so that
@@ -428,6 +447,7 @@ describe('ChannelService', () => {
       await svc.join({
         channelId: created.channel.id,
         member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Mallory' },
+        verifiedWorkspaceId: 'ws-2',
       });
       const writesBefore = writer.saveImmediate.mock.calls.length;
       const emitBefore = emit.mock.calls.length;
@@ -457,6 +477,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       writer.setFailNext();
@@ -481,6 +502,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
 
@@ -512,11 +534,13 @@ describe('ChannelService', () => {
         name: 'one',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       const c2 = await svc.create({
         name: 'two',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!c1.ok || !c2.ok) throw new Error('expected both create ok');
       const start = Date.now();
@@ -553,6 +577,7 @@ describe('ChannelService', () => {
         name: 'team',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       // The post is awaited to completion first; the second post races
@@ -572,6 +597,7 @@ describe('ChannelService', () => {
       await svc.join({
         channelId: created.channel.id,
         member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
       });
       const second = await svc.post({
         channelId: created.channel.id,
@@ -592,6 +618,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
       // Post 1001 distinct clientMsgIds. The 1st should be evicted;
@@ -638,11 +665,13 @@ describe('ChannelService', () => {
         name: 'a',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       await svc.create({
         name: 'b',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(svc.list('ws-1').map((c) => c.name).sort()).toEqual(['a', 'b']);
     });
@@ -661,11 +690,13 @@ describe('ChannelService', () => {
         name: 'public-room',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       const priv = await svc.create({
         name: 'private-room',
         visibility: 'private',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!pub.ok || !priv.ok) throw new Error('expected both create ok');
       // ws-9 is a stranger — must see the public channel but NOT the
@@ -683,11 +714,13 @@ describe('ChannelService', () => {
         name: 'secret',
         visibility: 'private',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!priv.ok) throw new Error('expected create ok');
       await svc.join({
         channelId: priv.channel.id,
         member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
       });
       // Bob — joined, so a member of the private channel — must see it.
       expect(svc.list('ws-2').map((c) => c.name)).toEqual(['secret']);
@@ -701,6 +734,7 @@ describe('ChannelService', () => {
         name: 'private',
         visibility: 'private',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!priv.ok) throw new Error('expected create ok');
       // Stranger
@@ -715,6 +749,7 @@ describe('ChannelService', () => {
         name: 'private',
         visibility: 'private',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!priv.ok) throw new Error('expected create ok');
       // Stranger — must not see the member list.
@@ -729,6 +764,7 @@ describe('ChannelService', () => {
         name: 'private',
         visibility: 'private',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!priv.ok) throw new Error('expected create ok');
       await svc.post({
@@ -753,6 +789,7 @@ describe('ChannelService', () => {
         name: 'team',
         visibility: 'private',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!priv.ok) throw new Error('expected create ok');
       // Post a few messages as Alice.
@@ -769,6 +806,7 @@ describe('ChannelService', () => {
         channelId: priv.channel.id,
         member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
         includeHistory: false,
+        verifiedWorkspaceId: 'ws-2',
       });
       expect(joinRes.ok).toBe(true);
       // Post a message after Bob's join.
@@ -792,6 +830,7 @@ describe('ChannelService', () => {
         name: 'public',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!pub.ok) throw new Error('expected create ok');
       await svc.post({
@@ -812,6 +851,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error('expected create ok');
       const writesBefore = writer.saveImmediate.mock.calls.length;
@@ -840,6 +880,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error('expected create ok');
       const r = await svc.post({
@@ -867,6 +908,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error('expected create ok');
       const r = await svc.post({
@@ -887,6 +929,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error('expected create ok');
       const writesBefore = writer.saveImmediate.mock.calls.length;
@@ -912,6 +955,7 @@ describe('ChannelService', () => {
         visibility: 'public',
         topic: 'a'.repeat(257),
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(r.ok).toBe(false);
       if (r.ok) throw new Error('expected !ok');
@@ -929,6 +973,7 @@ describe('ChannelService', () => {
         name: 'too-many',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-creator', memberId: 'm-creator', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-creator',
         members,
       });
       expect(r.ok).toBe(false);
@@ -942,6 +987,7 @@ describe('ChannelService', () => {
         name: 'team',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
         // Pass the creator again as a member — must be silently dropped
         // so the count does not skew and a duplicate is not created.
         members: [
@@ -973,6 +1019,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error('expected create ok');
       const first = await svc1.post({
@@ -1031,6 +1078,7 @@ describe('ChannelService', () => {
         name: 'general',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error('expected create ok');
       await svc1.post({
@@ -1073,6 +1121,7 @@ describe('ChannelService', () => {
         name: 'team',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error('expected create ok');
       // Have Alice (the sole member) leave, stamping emptySince.
@@ -1080,6 +1129,7 @@ describe('ChannelService', () => {
         channelId: created.channel.id,
         workspaceId: 'ws-1',
         memberId: 'm-1',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(leave.ok).toBe(true);
       // A stranger (ws-9) reads the public channel and sees the
@@ -1090,6 +1140,7 @@ describe('ChannelService', () => {
       const join = await svc.join({
         channelId: created.channel.id,
         member: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(join.ok).toBe(true);
       const ch2 = svc.get(created.channel.id, 'ws-9');
@@ -1116,6 +1167,7 @@ describe('ChannelService', () => {
         name: 'team',
         visibility: 'public',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       if (!created.ok) throw new Error('expected create ok');
       // Alice leaves — channel is now empty, emptySince is stamped.
@@ -1123,6 +1175,7 @@ describe('ChannelService', () => {
         channelId: created.channel.id,
         workspaceId: 'ws-1',
         memberId: 'm-1',
+        verifiedWorkspaceId: 'ws-1',
       });
       // ws-9 (a stranger) can read the public channel and observe
       // the emptySince tag.
@@ -1137,6 +1190,7 @@ describe('ChannelService', () => {
       const join = await svc.join({
         channelId: created.channel.id,
         member: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(join.ok).toBe(false);
       if (join.ok) throw new Error('expected !ok');
@@ -1145,6 +1199,150 @@ describe('ChannelService', () => {
       const chAfter = svc.get(created.channel.id, 'ws-9');
       expect(chAfter?.emptySince).toBe(originalEmptySince);
     });
+  });
+});
+
+describe('D5 caller-identity server-pin', () => {
+  // These tests prove that the daemon pins the authoritative workspace from
+  // `verifiedWorkspaceId`, NOT from the caller-supplied `member.workspaceId`
+  // or `createdBy.workspaceId`. A forged field in the request MUST NOT end up
+  // in the persisted state — only the server-resolved value does.
+
+  it('join pin wins: member.workspaceId is ignored when verifiedWorkspaceId differs', async () => {
+    // Arrange: create a channel as 'attacker' (the real, verified workspace).
+    const { svc } = makeService();
+    const channelResult = await svc.create({
+      name: 'pin-test',
+      visibility: 'public',
+      createdBy: { workspaceId: 'attacker', memberId: 'm-att-creator', memberName: 'Attacker' },
+      verifiedWorkspaceId: 'attacker',
+    });
+    expect(channelResult.ok).toBe(true);
+    if (!channelResult.ok) throw new Error('expected create ok');
+    const channelId = channelResult.channel.id;
+
+    // Act: join with a forged member.workspaceId:'victim' but
+    // verifiedWorkspaceId:'attacker'. The pin must win — the member
+    // must be stored as 'attacker', not 'victim'.
+    const joinResult = await svc.join({
+      channelId,
+      member: { workspaceId: 'victim', memberId: 'm-att', memberName: 'att' },
+      verifiedWorkspaceId: 'attacker',
+    });
+    expect(joinResult.ok).toBe(true);
+    if (!joinResult.ok) throw new Error('expected join ok');
+
+    // Assert: read back via 'attacker' — if the pin won, both the creator
+    // slot and the newly-joined slot show workspaceId='attacker'. The
+    // forged 'victim' must NOT appear anywhere in the member list.
+    const members = svc.getMembers(channelId, 'attacker');
+    const storedForJoined = members.find((m) => m.memberId === 'm-att');
+    expect(storedForJoined).toBeDefined();
+    // The pinned workspace, NOT the forged one.
+    expect(storedForJoined?.workspaceId).toBe('attacker');
+    // Confirm the forged workspace does not appear anywhere.
+    expect(members.every((m) => m.workspaceId !== 'victim')).toBe(true);
+  });
+
+  it('create pin wins: createdBy.workspaceId is ignored when verifiedWorkspaceId differs', async () => {
+    // Act: create a channel with a forged createdBy.workspaceId:'victim' but
+    // verifiedWorkspaceId:'attacker'. The pin must win — channel.createdBy and
+    // the creator member's workspaceId must both be stored as 'attacker'.
+    const { svc } = makeService();
+    const result = await svc.create({
+      name: 'create-pin-test',
+      visibility: 'public',
+      createdBy: { workspaceId: 'victim', memberId: 'm', memberName: 'n' },
+      verifiedWorkspaceId: 'attacker',
+    });
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error('expected create ok');
+    const { channel } = result;
+
+    // Assert: channel.createdBy is the server-resolved workspace, not the
+    // forged value. This protects the archive authz gate (KTD-F) — if the
+    // forged 'victim' were stored, an attacker could prevent the victim from
+    // archiving their own channels, or falsely attribute channels to them.
+    expect(channel.createdBy).toBe('attacker');
+    expect(channel.createdBy).not.toBe('victim');
+
+    // Assert: the creator's membership entry carries the pinned workspace.
+    // The channel is public so getMembers is visible to any caller — we
+    // inspect the returned rows directly to confirm no 'victim' entry exists.
+    const members = svc.getMembers(channel.id, 'attacker');
+    expect(members).toHaveLength(1);
+    expect(members[0].workspaceId).toBe('attacker');
+    // The forged workspaceId must not appear in any member row.
+    expect(members.every((m) => m.workspaceId !== 'victim')).toBe(true);
+  });
+
+  it('leave pin wins: a forged client workspaceId cannot redirect removal to another member', async () => {
+    // Two members — attacker (m-att) and victim (m-vic). The attacker calls
+    // leave with a forged client `workspaceId: 'victim'`. The daemon keys the
+    // removal on the server-resolved `verifiedWorkspaceId` ('attacker') + the
+    // memberId, so it can only remove the ATTACKER's OWN row — never the
+    // victim's. This proves a forger cannot kick a victim out of a channel via
+    // the (otherwise unused) client `workspaceId`.
+    const { svc } = makeService();
+    const created = await svc.create({
+      name: 'leave-pin-test',
+      visibility: 'public',
+      createdBy: { workspaceId: 'attacker', memberId: 'm-att', memberName: 'att' },
+      verifiedWorkspaceId: 'attacker',
+    });
+    if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}`);
+    const channelId = created.channel.id;
+    await svc.join({
+      channelId,
+      member: { workspaceId: 'victim', memberId: 'm-vic', memberName: 'vic' },
+      verifiedWorkspaceId: 'victim',
+    });
+
+    const r = await svc.leave({
+      channelId,
+      workspaceId: 'victim', // forged client field — must be IGNORED
+      memberId: 'm-att',
+      verifiedWorkspaceId: 'attacker',
+    });
+    expect(r.ok).toBe(true);
+
+    // The victim's membership survives; only the attacker's own row was removed.
+    const members = svc.getMembers(channelId, 'victim');
+    expect(members.some((m) => m.workspaceId === 'victim' && m.memberId === 'm-vic')).toBe(true);
+    expect(members.some((m) => m.workspaceId === 'attacker')).toBe(false);
+  });
+
+  it('archive pin wins: a forged archivedBy cannot satisfy the creator gate; verifiedWorkspaceId decides', async () => {
+    // The archive authz gate (KTD-F) must key on the server-resolved
+    // verifiedWorkspaceId, NOT the client-supplied `archivedBy`. An attacker who
+    // forges `archivedBy: 'ws-creator'` (to look like the creator) but whose
+    // verified identity is 'attacker' (not the creator, no CEO wired) must be
+    // REJECTED. Decoupling archivedBy from verifiedWorkspaceId here pins the
+    // gate to the unforgeable field, so a future regression to the forgeable
+    // archivedBy would fail this test.
+    const { svc } = makeService();
+    const created = await svc.create({
+      name: 'archive-pin-test',
+      visibility: 'public',
+      createdBy: { workspaceId: 'ws-creator', memberId: 'm', memberName: 'n' },
+      verifiedWorkspaceId: 'ws-creator',
+    });
+    if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}`);
+    const channelId = created.channel.id;
+
+    const r = await svc.archive({
+      channelId,
+      archivedBy: 'ws-creator', // forged to look like the creator
+      verifiedWorkspaceId: 'attacker', // but the verified caller is NOT the creator
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) throw new Error('expected archive rejected');
+    expect(r.error.code).toBe('NOT_AUTHORIZED');
+
+    // The channel stays active — the forged archivedBy did not satisfy the gate.
+    const ch = svc.get(channelId, 'ws-creator');
+    expect(ch?.status).toBe('active');
+    expect(ch?.archivedBy).toBeUndefined();
   });
 });
 

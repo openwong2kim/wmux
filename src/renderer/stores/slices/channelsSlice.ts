@@ -189,6 +189,10 @@ export interface ChannelsSlice {
           method: string,
           params: Record<string, unknown>,
         ) => Promise<unknown>;
+        mutateLocal: (
+          method: string,
+          params: Record<string, unknown>,
+        ) => Promise<unknown>;
       }
     | undefined;
   mapRpcError: (raw: unknown, fallbackMessage: string) => ChannelError;
@@ -370,10 +374,14 @@ export const createChannelsSlice: StateCreator<
   /** Bridge accessor. Returns the global installed by `useRpcBridge`,
    *  or `undefined` if the hook hasn't mounted yet. Mirrors
    *  `searchSlice.runSearch`'s bridge-missing handling. */
-  channelsRpc(): { rpc: (method: string, params: Record<string, unknown>) => Promise<unknown> } | undefined {
+  channelsRpc(): {
+    rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+    mutateLocal: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  } | undefined {
     return (window as unknown as {
       __wmuxChannelsRpc?: {
         rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+        mutateLocal: (method: string, params: Record<string, unknown>) => Promise<unknown>;
       };
     }).__wmuxChannelsRpc;
   },
@@ -439,11 +447,17 @@ export const createChannelsSlice: StateCreator<
     }
     let raw: unknown;
     try {
-      raw = await bridge.rpc('a2a.channel.create', {
+      // D5: route the renderer-only mutation IPC. `verifiedWorkspaceId` is the
+      // creator's own workspace (the human/CEO surface that owns this UI);
+      // main trusts it by the process boundary and the daemon pins
+      // `createdBy` to it. The pipe `a2a.channel.create` would fail this
+      // closed (no senderPtyId).
+      raw = await bridge.mutateLocal('a2a.channel.create', {
         name: params.name,
         visibility: params.visibility,
         topic: params.topic,
         createdBy: params.createdBy,
+        verifiedWorkspaceId: params.createdBy.workspaceId,
       });
     } catch (err) {
       return {
@@ -483,12 +497,17 @@ export const createChannelsSlice: StateCreator<
     }
     let raw: unknown;
     try {
-      raw = await bridge.rpc('a2a.channel.post', {
+      // D5: route the renderer-only mutation IPC. `verifiedWorkspaceId` is the
+      // sender's own workspace; the daemon's sender-pin gate requires
+      // `sender.workspaceId === verifiedWorkspaceId`, so they must match. The
+      // pipe `a2a.channel.post` would fail this closed (no senderPtyId).
+      raw = await bridge.mutateLocal('a2a.channel.post', {
         channelId,
         text: params.text,
         sender: params.sender,
         clientMsgId: params.clientMsgId,
         data: params.data,
+        verifiedWorkspaceId: params.sender.workspaceId,
       });
     } catch (err) {
       return {

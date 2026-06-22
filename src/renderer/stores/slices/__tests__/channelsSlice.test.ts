@@ -471,24 +471,31 @@ describe('channelsSlice — wiring (composed store)', () => {
 // `src/renderer/stores/slices/__tests__/searchSlice.test.ts:46-64`.
 type ChannelsRpcFn = (method: string, params: Record<string, unknown>) => Promise<unknown>;
 interface MockedWindow {
-  __wmuxChannelsRpc?: { rpc: ChannelsRpcFn };
+  __wmuxChannelsRpc?: { rpc: ChannelsRpcFn; mutateLocal: ChannelsRpcFn };
 }
 const g = globalThis as unknown as { window?: MockedWindow };
 
 /** Install a stub `__wmuxChannelsRpc` global for the duration of a
  *  test. The `respond` callback returns whatever the test wants the
  *  daemon to have replied with; the test then asserts state + result.
- *  Each test uses its own stub so they don't share call records. */
+ *  Each test uses its own stub so they don't share call records.
+ *
+ *  Both `rpc` (reads) and `mutateLocal` (D5 mutating path — create/post)
+ *  record to the same `calls` array and run the same `respond`, so a test
+ *  driving a *Daemon thunk asserts the method + params regardless of which
+ *  transport the slice picked. */
 function withChannelsRpc(
   respond: ChannelsRpcFn,
 ): { calls: Array<{ method: string; params: Record<string, unknown> }> } {
   const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  const record: ChannelsRpcFn = async (method, params) => {
+    calls.push({ method, params });
+    return respond(method, params);
+  };
   g.window = {
     __wmuxChannelsRpc: {
-      rpc: async (method, params) => {
-        calls.push({ method, params });
-        return respond(method, params);
-      },
+      rpc: record,
+      mutateLocal: record,
     },
   };
   return { calls };

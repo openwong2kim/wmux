@@ -1558,6 +1558,18 @@ function registerRpcHandlers(
     if (!p.name || !p.visibility || !p.createdBy) {
       return { ok: false, error: { code: 'INVALID_NAME', message: 'name, visibility, and createdBy are required' } };
     }
+    // D5: create is a mutating call whose server-pinned `createdBy` feeds the
+    // archive authz gate — require a server-resolved verifiedWorkspaceId and
+    // fail closed without one, identical to join/leave/post/archive below.
+    if (!p.verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'name, visibility, createdBy, and a server-resolved verifiedWorkspaceId are required',
+        },
+      };
+    }
     return channelService.create(p);
   });
 
@@ -1580,16 +1592,22 @@ function registerRpcHandlers(
 
   pipeServer.onRpc('a2a.channel.join', async (params) => {
     const p = params as unknown as import('./channels/ChannelService').JoinChannelParams;
-    if (!p.channelId || !p.member) {
-      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId and member are required' } };
+    if (!p.channelId || !p.member || !p.verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: { code: 'NOT_AUTHORIZED', message: 'channelId, member, and a server-resolved verifiedWorkspaceId are required' },
+      };
     }
     return channelService.join(p);
   });
 
   pipeServer.onRpc('a2a.channel.leave', async (params) => {
     const p = params as unknown as import('./channels/ChannelService').LeaveChannelParams;
-    if (!p.channelId || !p.workspaceId || !p.memberId) {
-      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId, workspaceId, and memberId are required' } };
+    if (!p.channelId || !p.workspaceId || !p.memberId || !p.verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: { code: 'NOT_AUTHORIZED', message: 'channelId, workspaceId, memberId, and a server-resolved verifiedWorkspaceId are required' },
+      };
     }
     return channelService.leave(p);
   });

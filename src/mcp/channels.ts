@@ -34,6 +34,12 @@ export interface ChannelToolDeps {
    *  fallback, or '' on miss — match the parent module's resolveWorkspaceId
    *  contract). */
   resolveWorkspaceId: () => Promise<string>;
+  /** Returns the MCP server's OWN verified senderPtyId (its PID-map-walked
+   *  ptyId, or '' on miss). The main-side a2a.channel handler resolves this
+   *  to the owning workspace and stamps `verifiedWorkspaceId` server-side
+   *  (D5) — so a forged client workspace id is ignored. Mutating channel
+   *  calls fail closed without a resolvable senderPtyId. */
+  getSenderPtyId?: () => string;
 }
 
 /** Channel name pattern matches `CHANNEL_NAME_RE` in src/shared/channels.ts:
@@ -64,12 +70,22 @@ const memberNameSchema = z.string().describe('Display name shown in the channel 
 /** Helper: convert the typed `{ ok, ... } | { ok: false, error }` envelope
  *  into an MCP tool result with `isError` set on the failure branch. The
  *  error code is embedded in the text so the agent can branch on it. */
+// Set by registerChannelTools so callChannelRpc can stamp the caller's
+// verified senderPtyId (D5) on every channel RPC without threading it through
+// each of the tool handlers.
+let resolveSenderPtyId: () => string = () => '';
+
 async function callChannelRpc(
   method: RpcMethod,
   params: Record<string, unknown>,
 ): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
+  // D5: attach the MCP server's verified senderPtyId so the main-side
+  // a2a.channel handler resolves the owning workspace and stamps
+  // verifiedWorkspaceId server-side (any client-supplied value is ignored).
+  const pty = resolveSenderPtyId();
+  const withPty = pty ? { ...params, senderPtyId: pty } : params;
   try {
-    const result = (await sendRpc(method, params)) as
+    const result = (await sendRpc(method, withPty)) as
       | { ok: true; [k: string]: unknown }
       | { ok: false; error: { code: string; message: string } }
       | undefined;
@@ -95,6 +111,8 @@ async function callChannelRpc(
  *  the same verification rules as the rest of the bundled server (verified
  *  PID-map hit first, env-hint fallback on miss). */
 export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): void {
+  // D5: capture the caller's verified-ptyId resolver for callChannelRpc.
+  resolveSenderPtyId = deps.getSenderPtyId ?? (() => '');
   // ── channel_list ──────────────────────────────────────────────────
   server.tool(
     'channel_list',

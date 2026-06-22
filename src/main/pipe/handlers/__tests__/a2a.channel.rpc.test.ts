@@ -74,6 +74,7 @@ vi.mock('../../../pty/AgentDetector', () => ({
 }));
 
 import { DaemonNotificationRouter } from '../../../notification/DaemonNotificationRouter';
+import { sendToRenderer } from '../../../pipe/handlers/_bridge';
 import type { DaemonClient } from '../../../DaemonClient';
 import type { ChannelMessage } from '../../../../shared/channels';
 
@@ -112,8 +113,19 @@ function makeFakeDaemon(rpcImpl: (method: string, params: unknown) => unknown): 
 }
 
 function setupHandlerRouter(daemon: DaemonClient): RpcRouter {
+  // D5: the handler resolves verifiedWorkspaceId from a verified senderPtyId
+  // via the renderer (input.findOwnerWorkspace). Stub it so a senderPtyId
+  // resolves to a deterministic owning workspace (`ws-of-<pty>`) and an absent
+  // ptyId resolves to null (no verifiable identity).
+  vi.mocked(sendToRenderer).mockImplementation((async (_gw: unknown, method: string, params: unknown) => {
+    if (method === 'input.findOwnerWorkspace') {
+      const pty = (params as Record<string, unknown> | null)?.ptyId;
+      return typeof pty === 'string' && pty ? { workspaceId: `ws-of-${pty}` } : null;
+    }
+    return null;
+  }) as unknown as typeof sendToRenderer);
   const router = new RpcRouter();
-  registerA2aChannelRpc(router, () => daemon);
+  registerA2aChannelRpc(router, () => daemon, () => ({}) as unknown as never);
   return router;
 }
 
@@ -199,7 +211,9 @@ describe('a2a.channel.rpc — mutating routing (capability a2a.channel.send)', (
     const expected = { ok: true, value: { id: CHANNEL_ID } };
     const daemon = makeFakeDaemon((method, params) => {
       expect(method).toBe(daemonMethod);
-      expect(params).toBeDefined();
+      // D5: the handler stamped a server-resolved verifiedWorkspaceId from the
+      // verified senderPtyId (pty-S → ws-of-pty-S), overwriting any client value.
+      expect((params as Record<string, unknown>).verifiedWorkspaceId).toBe('ws-of-pty-S');
       return expected;
     });
     const router = setupHandlerRouter(daemon);
@@ -207,7 +221,12 @@ describe('a2a.channel.rpc — mutating routing (capability a2a.channel.send)', (
     const res = await router.dispatch({
       id: `m-${rpcMethod}`,
       method: rpcMethod,
-      params: { channelId: CHANNEL_ID, sender: { workspaceId: SENDER_WS, memberId: 'm1', memberName: 'S' }, text: 'hi' },
+      params: {
+        channelId: CHANNEL_ID,
+        sender: { workspaceId: SENDER_WS, memberId: 'm1', memberName: 'S' },
+        text: 'hi',
+        senderPtyId: 'pty-S',
+      },
     });
     expect(res.ok).toBe(true);
     if (res.ok) expect(res.result).toBe(expected);
@@ -233,6 +252,75 @@ describe('a2a.channel.rpc — mutating routing (capability a2a.channel.send)', (
     });
     expect(res.ok).toBe(true);
     expect(receivedParams).toEqual({});
+  });
+});
+
+// =========================================================================
+// 2b. D5 — caller-identity server-pin (verifiedWorkspaceId is server-resolved)
+// =========================================================================
+
+describe('a2a.channel.rpc — D5 caller-identity server-pin', () => {
+  it('overwrites a forged client verifiedWorkspaceId with the senderPtyId-resolved one', async () => {
+    // Adversary sets BOTH sender.workspaceId and verifiedWorkspaceId to a
+    // victim's public ws-id (would satisfy a naive sender===verified gate).
+    // The handler MUST ignore the client value and stamp the workspace
+    // resolved from the verified senderPtyId.
+    let received: Record<string, unknown> = {};
+    const daemon = makeFakeDaemon((_method, params) => {
+      received = params as Record<string, unknown>;
+      return { ok: true, value: { id: CHANNEL_ID } };
+    });
+    const router = setupHandlerRouter(daemon);
+
+    const res = await router.dispatch({
+      id: 'd5-forge',
+      method: 'a2a.channel.post',
+      params: {
+        channelId: CHANNEL_ID,
+        sender: { workspaceId: 'victim-ws', memberId: 'm1', memberName: 'S' },
+        text: 'forged',
+        verifiedWorkspaceId: 'victim-ws',
+        senderPtyId: 'pty-attacker',
+      },
+    });
+    expect(res.ok).toBe(true);
+    // Server-resolved from senderPtyId, NOT the forged 'victim-ws'.
+    expect(received.verifiedWorkspaceId).toBe('ws-of-pty-attacker');
+  });
+
+  it('fails closed on a mutating call with no resolvable senderPtyId', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+
+    const res = await router.dispatch({
+      id: 'd5-no-pty',
+      method: 'a2a.channel.post',
+      params: { channelId: CHANNEL_ID, sender: { workspaceId: SENDER_WS, memberId: 'm1', memberName: 'S' }, text: 'hi' },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) {
+      const r = res.result as { ok: boolean; error?: { code: string } };
+      expect(r.ok).toBe(false);
+      expect(r.error?.code).toBe('NOT_AUTHORIZED');
+    }
+  });
+
+  it('leaves a read from a no-PTY caller as-is (process-boundary trust residual)', async () => {
+    let received: Record<string, unknown> = { sentinel: true };
+    const daemon = makeFakeDaemon((_method, params) => {
+      received = params as Record<string, unknown>;
+      return { ok: true, value: [] };
+    });
+    const router = setupHandlerRouter(daemon);
+
+    const res = await router.dispatch({
+      id: 'd5-read',
+      method: 'a2a.channel.list',
+      params: { verifiedWorkspaceId: 'ws-renderer' },
+    });
+    expect(res.ok).toBe(true);
+    // No senderPtyId → read keeps the caller-supplied scope (renderer residual).
+    expect(received.verifiedWorkspaceId).toBe('ws-renderer');
   });
 });
 
@@ -271,6 +359,7 @@ describe('a2a.channel.rpc — typed error propagation', () => {
         channelId: CHANNEL_ID,
         sender: { workspaceId: SENDER_WS, memberId: 'm1', memberName: 'S' },
         text: 'persistence-broke',
+        senderPtyId: 'pty-S',
       },
     });
     expect(res.ok).toBe(true);

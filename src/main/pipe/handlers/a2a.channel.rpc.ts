@@ -1,94 +1,123 @@
 // ─── a2a.channel.* RPC handler ─────────────────────────────────────────
-// Thin pass-throughs from the pipe RPC surface to the daemon. The daemon
-// owns the canonical channel state (ChannelService in src/daemon/channels/,
-// U3); the renderer reaches the daemon exclusively through these handlers,
-// which exist so the renderer can talk to one RPC router and the enforcer
-// can gate these methods against `a2a.channel.read` / `a2a.channel.send`
-// capabilities (a permission contract that lives on the pipe, not on the
-// daemon — see methodCapabilityMap.ts).
+// Pipe RPC surface → daemon ChannelService (which owns canonical channel
+// state, U3). The renderer reaches the daemon exclusively through these
+// handlers, which exist so the renderer talks to one RPC router and the
+// enforcer can gate them against `a2a.channel.read` / `a2a.channel.send`
+// capabilities (methodCapabilityMap.ts).
 //
-// Each handler is `(params) => daemonClient.rpc('a2a.channel.<method>', params)`
-// — there is NO renderer-side validation, state caching, or projection
-// here. The renderer's channelsSlice (U6) is responsible for re-validating
-// the typed service result; this layer's only job is transport +
-// capability enforcement.
+// D5 — caller-identity server-pin. The daemon trusts `verifiedWorkspaceId`
+// for every authz gate (post: sender===verified; archive: createdBy/CEO;
+// reads: membership/visibility). That field MUST NOT be a client-supplied
+// value, or a forger sets sender.workspaceId AND verifiedWorkspaceId to a
+// victim's (public) ws-id and sails through. So here, BEFORE forwarding to
+// the daemon, we OVERWRITE verifiedWorkspaceId with a value resolved from a
+// verified `senderPtyId` — the same anchor a2a.task.send uses (the MCP
+// server supplies its own PID-map-walked ptyId). We resolve ptyId → owning
+// workspace via the renderer (`input.findOwnerWorkspace`), exactly as
+// `a2a.resolve.identity` does (a2a.rpc.ts).
 //
-// The Post path's `channel.message` event emission is owned by ChannelService
-// (inside the daemon's per-channel critical section) — the bridge from
-// daemon to main's EventBus is in `src/main/DaemonClient.ts` and the
-// downstream EventBus-side projection is in `src/main/notification/
-// DaemonNotificationRouter.ts` (which tees daemon-sourced `channel.message`
-// broadcasts into the main-process `events.poll` EventBus). Handlers in
-// this file MUST NOT emit events themselves; doing so would race the
-// critical-section placement in ChannelService and break plan KTD3.
+// Mutating methods (create/archive/join/leave/post) REQUIRE a resolvable
+// senderPtyId and fail closed without one — so a renderer composer / headless
+// caller with no PTY cannot mutate (it is read-only). Read methods accept a
+// no-PTY caller and fall back to the caller-supplied scope: the renderer is
+// trusted by the process boundary, and this is the documented same-user
+// residual (a same-user process can already read every workspace's token —
+// see plans/trust-root-security-epic-plan.md F1). The genuine, unforgeable
+// improvement is that the verified-senderPtyId path no longer rides the
+// spoofable WMUX_WORKSPACE_ID env hint.
+//
+// Handlers MUST NOT emit events themselves; `channel.message` emission is
+// owned by ChannelService inside its per-channel critical section (plan KTD3),
+// bridged to the EventBus in DaemonClient.ts / DaemonNotificationRouter.ts.
 
+import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import type { DaemonClient } from '../../DaemonClient';
+import { sendToRenderer } from './_bridge';
+
+type GetWindow = () => BrowserWindow | null;
 
 /**
- * Register the nine `a2a.channel.*` pipe-RPC methods on the supplied
- * router. Each handler is a thin pass-through to the daemon's
- * `ChannelService` via the supplied `DaemonClient` — there is no
- * renderer-side validation, caching, or projection here. The
- * `a2a.channel.read` / `a2a.channel.send` capabilities gate these
- * methods at dispatch time via `methodCapabilityMap.ts`; the router
- * itself only knows about transport.
- *
- * Read methods (`list`, `get`, `getMessages`, `getMembers`) carry the
- * `a2a.channel.read` capability; mutating methods (`create`, `archive`,
- * `join`, `leave`, `post`) carry `a2a.channel.send`. The capability
- * mapping lives in `src/main/mcp/methodCapabilityMap.ts`.
- *
- * Throws when the daemon is not connected; the pipe router surfaces
- * this as a transport-layer error before the capability gate runs.
+ * Resolve the caller's VERIFIED workspace from a verified `senderPtyId`.
+ * The MCP server supplies its own PID-map-walked ptyId (the same anchor
+ * a2a.task.send threads); the renderer resolves which workspace owns that
+ * pty RIGHT NOW. Returns '' when there is no resolvable senderPtyId (a
+ * renderer/headless caller with no PTY, or the renderer being unavailable).
+ * Mirrors the resolution in a2a.resolve.identity (a2a.rpc.ts).
  */
-export function registerA2aChannelRpc(router: RpcRouter, getDaemonClient: () => DaemonClient | null): void {
-  // Read-only — capability 'a2a.channel.read'
-  router.register('a2a.channel.list', (params) => {
-    const dc = getDaemonClient();
-    if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('a2a.channel.list', params ?? {});
-  });
-  router.register('a2a.channel.get', (params) => {
-    const dc = getDaemonClient();
-    if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('a2a.channel.get', params ?? {});
-  });
-  router.register('a2a.channel.getMessages', (params) => {
-    const dc = getDaemonClient();
-    if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('a2a.channel.getMessages', params ?? {});
-  });
-  router.register('a2a.channel.getMembers', (params) => {
-    const dc = getDaemonClient();
-    if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('a2a.channel.getMembers', params ?? {});
-  });
+async function resolveCallerWorkspace(getWindow: GetWindow, params: unknown): Promise<string> {
+  const senderPtyId =
+    params && typeof params === 'object' && typeof (params as Record<string, unknown>).senderPtyId === 'string'
+      ? ((params as Record<string, unknown>).senderPtyId as string).trim()
+      : '';
+  if (!senderPtyId) return '';
+  try {
+    const owner = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId: senderPtyId });
+    const wsId =
+      owner && typeof owner === 'object' && 'workspaceId' in owner
+        ? (owner as Record<string, unknown>).workspaceId
+        : null;
+    return typeof wsId === 'string' && wsId ? wsId : '';
+  } catch {
+    // Renderer unavailable (early boot / reload) — treat as unresolvable.
+    return '';
+  }
+}
 
-  // Mutating — capability 'a2a.channel.send'
-  router.register('a2a.channel.create', (params) => {
+/**
+ * Register the nine `a2a.channel.*` pipe-RPC methods. Each forwards to the
+ * daemon's ChannelService via `DaemonClient`, but FIRST stamps a
+ * server-resolved `verifiedWorkspaceId` (D5) so the daemon's authz gates run
+ * against an identity the caller cannot forge.
+ */
+export function registerA2aChannelRpc(
+  router: RpcRouter,
+  getDaemonClient: () => DaemonClient | null,
+  getWindow: GetWindow,
+): void {
+  const forward = async (method: string, params: unknown, mutating: boolean): Promise<unknown> => {
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('a2a.channel.create', params ?? {});
-  });
-  router.register('a2a.channel.archive', (params) => {
-    const dc = getDaemonClient();
-    if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('a2a.channel.archive', params ?? {});
-  });
-  router.register('a2a.channel.join', (params) => {
-    const dc = getDaemonClient();
-    if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('a2a.channel.join', params ?? {});
-  });
-  router.register('a2a.channel.leave', (params) => {
-    const dc = getDaemonClient();
-    if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('a2a.channel.leave', params ?? {});
-  });
-  router.register('a2a.channel.post', (params) => {
-    const dc = getDaemonClient();
-    if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('a2a.channel.post', params ?? {});
-  });
+
+    const ws = await resolveCallerWorkspace(getWindow, params);
+    const base = (params && typeof params === 'object' ? { ...(params as Record<string, unknown>) } : {}) as Record<
+      string,
+      unknown
+    >;
+
+    if (ws) {
+      // Verified caller: stamp the server-resolved workspace over ANY
+      // client-supplied verifiedWorkspaceId (strip the forgeable copy).
+      base.verifiedWorkspaceId = ws;
+    } else {
+      if (mutating) {
+        // No verifiable caller identity → fail closed for state mutation.
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: 'channel mutation requires a verifiable caller (no resolvable senderPtyId)',
+          },
+        };
+      }
+      // Read with no senderPtyId (renderer/headless): leave the caller-supplied
+      // verifiedWorkspaceId in place — process-boundary trust, documented
+      // same-user residual (see file header).
+    }
+
+    return dc.rpc(method, base);
+  };
+
+  // Read-only — capability 'a2a.channel.read'
+  router.register('a2a.channel.list', (p) => forward('a2a.channel.list', p, false));
+  router.register('a2a.channel.get', (p) => forward('a2a.channel.get', p, false));
+  router.register('a2a.channel.getMessages', (p) => forward('a2a.channel.getMessages', p, false));
+  router.register('a2a.channel.getMembers', (p) => forward('a2a.channel.getMembers', p, false));
+
+  // Mutating — capability 'a2a.channel.send' (verifiable caller required)
+  router.register('a2a.channel.create', (p) => forward('a2a.channel.create', p, true));
+  router.register('a2a.channel.archive', (p) => forward('a2a.channel.archive', p, true));
+  router.register('a2a.channel.join', (p) => forward('a2a.channel.join', p, true));
+  router.register('a2a.channel.leave', (p) => forward('a2a.channel.leave', p, true));
+  router.register('a2a.channel.post', (p) => forward('a2a.channel.post', p, true));
 }

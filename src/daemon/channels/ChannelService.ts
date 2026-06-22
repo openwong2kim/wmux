@@ -121,6 +121,14 @@ export interface CreateChannelParams {
   visibility: ChannelVisibility;
   topic?: string;
   createdBy: SenderRef;
+  /** D5 — server-resolved caller workspace (resolved by the transport layer
+   *  from a verified `senderPtyId`). The channel's `createdBy` AND the creator
+   *  member's `workspaceId` are pinned to THIS, not the caller-supplied
+   *  `createdBy.workspaceId` — a forger must not be able to attribute a channel
+   *  to a victim, since `createdBy` feeds the archive authz gate (KTD-F).
+   *  Required and consistent with the other mutating params (Join/Leave/Post/
+   *  Archive); the daemon create handler fails closed without it. */
+  verifiedWorkspaceId: string;
   /** Initial members to auto-add alongside the creator (U6 member cap).
    *  The creator is always added regardless of this field. When omitted,
    *  the channel starts with only the creator (the historical default). */
@@ -144,12 +152,19 @@ export interface JoinChannelParams {
   /** When false, the new member's `historyFromSeq` is set to the
    *  channel's current `nextSeq` (so they don't see older history). */
   includeHistory?: boolean;
+  /** D5 — server-resolved caller workspace. The joining member's workspaceId
+   *  is pinned to THIS, not the caller-supplied `member.workspaceId`, so a
+   *  forger cannot join a channel as a victim workspace. */
+  verifiedWorkspaceId: string;
 }
 
 export interface LeaveChannelParams {
   channelId: string;
   workspaceId: string;
   memberId: string;
+  /** D5 — server-resolved caller workspace. A caller may only remove its OWN
+   *  membership: `workspaceId` must equal this, else NOT_AUTHORIZED. */
+  verifiedWorkspaceId: string;
 }
 
 export interface PostMessageParams {
@@ -391,7 +406,11 @@ export class ChannelService {
         visibility: params.visibility,
         status: 'active',
         createdAt: now,
-        createdBy: params.createdBy.workspaceId,
+        // D5: pin the creator to the server-resolved verifiedWorkspaceId, NOT
+        // the caller-supplied createdBy.workspaceId — a forger must not be able
+        // to attribute a channel to a victim, since createdBy feeds the archive
+        // authz gate below (L459).
+        createdBy: params.verifiedWorkspaceId,
         nextSeq: 1,
         ...(params.topic !== undefined ? { topic: params.topic } : {}),
       };
@@ -402,7 +421,9 @@ export class ChannelService {
       // double-stamp the creator and skew the count.
       const initialMembers: ChannelMember[] = [
         {
-          workspaceId: params.createdBy.workspaceId,
+          // D5: the creator's membership is keyed to the server-resolved
+          // verifiedWorkspaceId (same pin as createdBy above).
+          workspaceId: params.verifiedWorkspaceId,
           memberId: params.createdBy.memberId,
           joinedAt: now,
           historyFromSeq: 0,
@@ -495,8 +516,8 @@ export class ChannelService {
         return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
       }
       const members = this.state.members[channel.id] ?? [];
-      // Reject duplicate membership.
-      if (members.some((m) => m.workspaceId === params.member.workspaceId && m.memberId === params.member.memberId)) {
+      // Reject duplicate membership (keyed on the server-resolved workspace).
+      if (members.some((m) => m.workspaceId === params.verifiedWorkspaceId && m.memberId === params.member.memberId)) {
         return { ok: false, error: { code: 'DUPLICATE_MEMBER', message: 'Already a member' } };
       }
       // Snapshot emptySince so we can restore it on a saveOrFail
@@ -514,7 +535,9 @@ export class ChannelService {
       const now = this.now();
       const historyFromSeq = params.includeHistory === false ? channel.nextSeq : 0;
       members.push({
-        workspaceId: params.member.workspaceId,
+        // D5: pin the joining member to the server-resolved workspace, NOT the
+        // caller-supplied member.workspaceId — a forger must not join as a victim.
+        workspaceId: params.verifiedWorkspaceId,
         memberId: params.member.memberId,
         joinedAt: now,
         historyFromSeq,
@@ -545,7 +568,9 @@ export class ChannelService {
       }
       const members = this.state.members[channel.id] ?? [];
       const idx = members.findIndex(
-        (m) => m.workspaceId === params.workspaceId && m.memberId === params.memberId,
+        // D5: a caller may only remove its OWN membership (the server-resolved
+        // workspace), not an arbitrary caller-supplied workspaceId.
+        (m) => m.workspaceId === params.verifiedWorkspaceId && m.memberId === params.memberId,
       );
       if (idx < 0) {
         return { ok: false, error: { code: 'NOT_A_MEMBER', message: 'Not a member' } };

@@ -54,6 +54,16 @@ export const IPC = {
   // shape of the external pipe-client envelope: `{ method, params }`
   // in, the dispatch response out.
   RPC_INVOKE: 'rpc:invoke',
+  // Renderer → main: mutate a channel (create/post/join/leave/archive) from the
+  // first-party in-app channels UI (D5). Unlike RPC_INVOKE, this is a dedicated
+  // renderer-only ipcMain.handle surface — NOT exposed on the pipe RpcRouter —
+  // so a same-user pipe/MCP client cannot reach it (the same boundary
+  // project-config relies on). The in-app composer/create UI has no senderPtyId,
+  // so the pipe-facing a2a.channel.* handler would fail it closed; here the main
+  // process trusts the renderer-supplied verifiedWorkspaceId (the human/CEO
+  // workspace, sound by the Electron process boundary) and forwards to the
+  // daemon, whose authz gates run against it. See channelLocal.handler.ts.
+  CHANNEL_MUTATE_LOCAL: 'channels:mutate-local',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

@@ -234,6 +234,14 @@ const electronAPI = {
     // `{ events, nextCursor, resync? }`) the pipe router returns.
     invoke: (method: string, params: Record<string, unknown>) =>
       ipcRenderer.invoke(IPC.RPC_INVOKE, method, params),
+    // Renderer-only channel mutation (D5). Unlike `invoke` (which routes the
+    // pipe RpcRouter, where a no-senderPtyId channel mutation fails closed),
+    // this hits a dedicated ipcMain.handle that is unreachable from the pipe,
+    // so the first-party channels UI (create + composer post) can mutate as the
+    // renderer-supplied (process-boundary-trusted) workspace. See
+    // channelLocal.handler.ts.
+    mutateChannelLocal: (method: string, params: Record<string, unknown>) =>
+      ipcRenderer.invoke(IPC.CHANNEL_MUTATE_LOCAL, method, params),
   },
   browser: {
     registerWebview: (surfaceId: string, webContentsId: number) =>

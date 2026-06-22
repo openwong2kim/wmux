@@ -42,6 +42,7 @@ import { PluginHostLoader } from './plugins/PluginHostLoader';
 import { registerPluginSchemePrivileges, registerPluginProtocolHandler } from './plugins/pluginProtocol';
 import { registerPluginHostHandlers } from './ipc/handlers/pluginHost.handler';
 import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.handler';
+import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handler';
 import { registerUiPluginRpc } from './pipe/handlers/uiPlugin.rpc';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
@@ -530,7 +531,7 @@ registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager);
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker);
-registerA2aChannelRpc(rpcRouter, () => daemonClient);
+registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerCompanyRpc(rpcRouter, () => mainWindow);
 registerEventsRpc(rpcRouter, (clientName) => getPluginTrustStore().get(clientName));
 registerUiPluginRpc(rpcRouter, () => mainWindow);
@@ -543,6 +544,11 @@ registerPluginHostHandlers(rpcRouter, () => pluginHostLoader, () => approvalQueu
 // surface — never exposed on the pipe RPC (external clients must not be able
 // to read project files or grant trust). Registered once, like plugin host.
 registerProjectConfigHandlers();
+// Renderer-only channel-mutation surface (D5). Lets the in-app channels UI
+// (create + composer post) mutate channel state — the pipe-facing a2a.channel
+// handler fails a no-senderPtyId mutation closed, and this ipcMain.handle
+// channel is unreachable from the pipe. See channelLocal.handler.ts.
+registerChannelLocalHandlers(() => daemonClient);
 // Returns an unsubscribe for the signal-health push subscription. Called from
 // before-quit so HMR reload / shutdown does not leak the listener.
 const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient);

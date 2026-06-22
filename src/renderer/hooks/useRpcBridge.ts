@@ -214,10 +214,25 @@ export function useRpcBridge(): void {
             | 'a2a.channel.post',
           params: Record<string, unknown>,
         ) => Promise<RpcResult>;
+        // D5 — mutating channel ops from the first-party UI. Routes the
+        // renderer-only `channels:mutate-local` IPC (NOT the pipe RpcRouter),
+        // which trusts the renderer-supplied verifiedWorkspaceId and forwards
+        // to the daemon. Reads stay on `rpc` above.
+        mutateLocal: (
+          method:
+            | 'a2a.channel.create'
+            | 'a2a.channel.post'
+            | 'a2a.channel.join'
+            | 'a2a.channel.leave'
+            | 'a2a.channel.archive',
+          params: Record<string, unknown>,
+        ) => Promise<RpcResult>;
       };
     }).__wmuxChannelsRpc = {
       rpc: (method, params) =>
         window.electronAPI.rpc.invoke(method, params) as Promise<RpcResult>,
+      mutateLocal: (method, params) =>
+        window.electronAPI.rpc.mutateChannelLocal(method, params) as Promise<RpcResult>,
     };
 
     // A2A task garbage collection timer — prune terminal-state tasks every 5 min
