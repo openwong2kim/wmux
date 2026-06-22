@@ -16,24 +16,41 @@ import type {
 
 /** In-memory fake of ChannelStateWriter. Returns whatever the test sets
  *  via `failNext`; defaults to success. Captures every `saveImmediate`
- *  call so tests can inspect what was persisted. `load()` always returns
- *  a fresh empty state — tests that need a seeded state build it via the
- *  public service methods.
+ *  call so tests can inspect what was persisted. `load()` returns the
+ *  most recently saved state (deep-cloned) — that way a test can
+ *  simulate a daemon restart by constructing a second
+ *  `ChannelService` against the same writer and have it re-hydrate
+ *  from the persisted shape. Tests that need a clean slate build a
+ *  fresh writer per scenario.
  *
- *  Important: the returned `load()` MUST produce a fresh object graph on
- *  every call (channels/members/messages/idempotency each get a new
- *  array/object). Tests run in parallel within the file and share the
- *  closure scope, so a shared skeleton object would leak state across
- *  instances. */
+ *  Important: the returned `load()` MUST produce a fresh object graph
+ *  on every call (channels/members/messages/idempotency each get a
+ *  new array/object). Tests run in parallel within the file and
+ *  share the closure scope, so a shared skeleton object would leak
+ *  state across instances. */
 function makeFakeWriter(opts: { failNext?: boolean } = {}) {
   let failNext = opts.failNext ?? false;
   const saved: ChannelState[] = [];
+  let lastSaved: ChannelState | null = null;
   const freshState = (): ChannelState => ({
     version: 1,
     channels: [],
     members: {},
     messages: {},
     idempotency: {},
+  });
+  const clone = (state: ChannelState): ChannelState => ({
+    version: state.version,
+    channels: state.channels.map((c) => ({ ...c })),
+    members: Object.fromEntries(
+      Object.entries(state.members).map(([k, v]) => [k, v.map((m) => ({ ...m }))]),
+    ),
+    messages: Object.fromEntries(
+      Object.entries(state.messages).map(([k, v]) => [k, v.map((m) => ({ ...m }))]),
+    ),
+    idempotency: Object.fromEntries(
+      Object.entries(state.idempotency).map(([k, v]) => [k, { ...v }]),
+    ),
   });
   return {
     saveImmediate: vi.fn((state: ChannelState): boolean => {
@@ -42,9 +59,10 @@ function makeFakeWriter(opts: { failNext?: boolean } = {}) {
         return false;
       }
       saved.push(state);
+      lastSaved = state;
       return true;
     }),
-    load: vi.fn((): ChannelState => freshState()),
+    load: vi.fn((): ChannelState => (lastSaved ? clone(lastSaved) : freshState())),
     saved,
     setFailNext() { failNext = true; },
   };
@@ -935,6 +953,197 @@ describe('ChannelService', () => {
       if (!r.ok) throw new Error('expected ok');
       const members = svc.getMembers(r.channel.id, 'ws-1').map((m) => m.memberId).sort();
       expect(members).toEqual(['m-1', 'm-2']);
+    });
+  });
+
+  // ── U7: idempotency hydration + join rollback ────────────────────
+  describe('U7: idempotency hydration on startup', () => {
+    it('rebuilds this.idempotency from state.idempotency at construction', async () => {
+      // First service: create channel, post with clientMsgId 'cmid-1'.
+      // The state.idempotency map is persisted by the fake writer.
+      const writer1 = makeFakeWriter();
+      const now = () => 1_700_000_000_000;
+      const svc1 = new ChannelService({
+        writer: writer1 as unknown as ConstructorParameters<typeof ChannelService>[0]['writer'],
+        companyId: COMPANY,
+        emit: vi.fn<ChannelServiceEmit>(),
+        now,
+      });
+      const created = await svc1.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      });
+      if (!created.ok) throw new Error('expected create ok');
+      const first = await svc1.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'hello',
+        clientMsgId: 'cmid-1',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(first.ok).toBe(true);
+      if (!first.ok) throw new Error('expected first post ok');
+      const originalSeq = first.message.seq;
+      // The fake writer has captured every saveImmediate call. The
+      // last one is the post-persist state; its state.idempotency
+      // contains the clientMsgId → seq mapping.
+      const persisted = writer1.saved[writer1.saved.length - 1];
+      expect(persisted.idempotency[created.channel.id]).toEqual({ 'cmid-1': originalSeq });
+      // Second service: construct against the same writer (the writer
+      // is stateless here, so its load() returns the same shape on
+      // each call). This simulates a daemon restart that re-reads
+      // state from disk.
+      const svc2 = new ChannelService({
+        writer: writer1 as unknown as ConstructorParameters<typeof ChannelService>[0]['writer'],
+        companyId: COMPANY,
+        emit: vi.fn<ChannelServiceEmit>(),
+        now,
+      });
+      // Repeat the post with the same clientMsgId. The hydrated
+      // idempotency cache MUST hit and return the original seq.
+      const second = await svc2.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'hello (retry)',
+        clientMsgId: 'cmid-1',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(second.ok).toBe(true);
+      if (!second.ok) throw new Error('expected second post ok');
+      expect(second.idempotent).toBe(true);
+      expect(second.message.seq).toBe(originalSeq);
+      expect(second.message.text).toBe('hello'); // original, not retry
+    });
+
+    it('a fresh clientMsgId after restart gets a new seq (hydration does not over-match)', async () => {
+      // Distinct keys: cmid-1 was persisted, cmid-2 is new. The
+      // hydrated cache must NOT over-match cmid-2 onto cmid-1's seq.
+      const writer1 = makeFakeWriter();
+      const now = () => 1_700_000_000_000;
+      const svc1 = new ChannelService({
+        writer: writer1 as unknown as ConstructorParameters<typeof ChannelService>[0]['writer'],
+        companyId: COMPANY,
+        emit: vi.fn<ChannelServiceEmit>(),
+        now,
+      });
+      const created = await svc1.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      });
+      if (!created.ok) throw new Error('expected create ok');
+      await svc1.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'first',
+        clientMsgId: 'cmid-1',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      // Simulate restart.
+      const svc2 = new ChannelService({
+        writer: writer1 as unknown as ConstructorParameters<typeof ChannelService>[0]['writer'],
+        companyId: COMPANY,
+        emit: vi.fn<ChannelServiceEmit>(),
+        now,
+      });
+      const second = await svc2.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'second',
+        clientMsgId: 'cmid-2',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(second.ok).toBe(true);
+      if (!second.ok) throw new Error('expected ok');
+      expect(second.idempotent).toBeFalsy();
+      expect(second.message.seq).toBe(2); // fresh seq, not the hydrated one
+    });
+  });
+
+  describe('U7: join rollback restores emptySince', () => {
+    it('clears emptySince on a successful join (regression)', async () => {
+      // Set up a channel that is currently empty (emptySince tagged),
+      // then have a member re-join. The tag must clear so the
+      // empty-channel reaper stops counting it. Use a PUBLIC channel
+      // so the visibility gate does not hide the row from a stranger
+      // reader — we want to observe the tag on the channel itself.
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'team',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      });
+      if (!created.ok) throw new Error('expected create ok');
+      // Have Alice (the sole member) leave, stamping emptySince.
+      const leave = await svc.leave({
+        channelId: created.channel.id,
+        workspaceId: 'ws-1',
+        memberId: 'm-1',
+      });
+      expect(leave.ok).toBe(true);
+      // A stranger (ws-9) reads the public channel and sees the
+      // emptySince tag.
+      const ch1 = svc.get(created.channel.id, 'ws-9');
+      expect(ch1?.emptySince).toEqual(expect.any(Number));
+      // Alice re-joins — the tag must clear.
+      const join = await svc.join({
+        channelId: created.channel.id,
+        member: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      });
+      expect(join.ok).toBe(true);
+      const ch2 = svc.get(created.channel.id, 'ws-9');
+      expect(ch2?.emptySince).toBeUndefined();
+    });
+
+    it('restores emptySince when saveOrFail fails on join (so the reaper does not skip it)', async () => {
+      // R10: a failed saveOrFail in join() must restore the prior
+      // emptySince tag. Otherwise a transient save failure on a
+      // "revival" join would orphan the channel — the in-memory
+      // state would say "no emptySince" but the disk state (the
+      // failed save) is unchanged, so a future daemon restart would
+      // still see the tag, but a daemon that never restarts would
+      // forget it. Either way: bug. The snapshot/restore symmetry
+      // with leave() closes it.
+      //
+      // Setup: PUBLIC channel so the visibility gate does not hide
+      // the row from a non-member reader. Create, then have the
+      // sole member (the creator) leave, stamping emptySince. A
+      // fresh workspace (ws-9) can then read the channel and
+      // observe the emptySince tag directly.
+      const { svc, writer } = makeService();
+      const created = await svc.create({
+        name: 'team',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      });
+      if (!created.ok) throw new Error('expected create ok');
+      // Alice leaves — channel is now empty, emptySince is stamped.
+      await svc.leave({
+        channelId: created.channel.id,
+        workspaceId: 'ws-1',
+        memberId: 'm-1',
+      });
+      // ws-9 (a stranger) can read the public channel and observe
+      // the emptySince tag.
+      const chBefore = svc.get(created.channel.id, 'ws-9');
+      const originalEmptySince = chBefore?.emptySince;
+      expect(originalEmptySince).toEqual(expect.any(Number));
+      // Arm the next saveImmediate to fail.
+      writer.setFailNext();
+      // Alice tries to re-join — must fail with PERSIST_FAILED, AND
+      // the in-memory state must still carry the emptySince tag
+      // (the rollback restores it).
+      const join = await svc.join({
+        channelId: created.channel.id,
+        member: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      });
+      expect(join.ok).toBe(false);
+      if (join.ok) throw new Error('expected !ok');
+      expect(join.error.code).toBe('PERSIST_FAILED');
+      // Re-read via ws-9 — the emptySince tag must still be set.
+      const chAfter = svc.get(created.channel.id, 'ws-9');
+      expect(chAfter?.emptySince).toBe(originalEmptySince);
     });
   });
 });

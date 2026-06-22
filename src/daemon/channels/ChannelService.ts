@@ -200,6 +200,16 @@ export class ChannelService {
   private readonly ceoWorkspaceId: string | undefined;
   private readonly emit: ChannelServiceEmit;
   private readonly now: () => number;
+  /**
+   * Monotonic counter advanced once per persisted `clientMsgId` entry
+   * during hydration (U7). It seeds `lastUsedAt` so the first post on
+   * a saturated channel evicts the entry hydrated first — a
+   * deterministic FIFO of persisted entries — rather than a random
+   * one (which `Date.now()` would do when many entries share the same
+   * millisecond). After hydration is done, the counter is unused;
+   * live posts stamp `lastUsedAt` from `this.now()` as before.
+   */
+  private hydrationSeq = 0;
 
   constructor(deps: ChannelServiceDeps) {
     this.writer = deps.writer;
@@ -211,6 +221,21 @@ export class ChannelService {
     this.ceoWorkspaceId = deps.ceoWorkspaceId;
     this.emit = deps.emit;
     this.now = deps.now ?? (() => Date.now());
+    // Hydrate the idempotency LRU from persisted state (R9). Without
+    // this, a daemon restart loses every `clientMsgId → seq` mapping
+    // and a retry after restart silently allocates a fresh seq — the
+    // exact failure mode the U2 maintainer directive warned against.
+    // The persisted shape is `Record<channelId, Record<clientMsgId,
+    // number>>` (a plain object for JSON portability); the in-memory
+    // shape is `Map<channelId, Map<clientMsgId, {seq, lastUsedAt}>>`
+    // (an LRU map for O(1) lookup + O(n) eviction only on overflow).
+    for (const [channelId, clientMap] of Object.entries(this.state.idempotency)) {
+      const inner = new Map<string, IdempotencyEntry>();
+      for (const [clientMsgId, seq] of Object.entries(clientMap)) {
+        inner.set(clientMsgId, { seq, lastUsedAt: ++this.hydrationSeq });
+      }
+      this.idempotency.set(channelId, inner);
+    }
   }
 
   // ── Read-only ─────────────────────────────────────────────────────
@@ -474,6 +499,13 @@ export class ChannelService {
       if (members.some((m) => m.workspaceId === params.member.workspaceId && m.memberId === params.member.memberId)) {
         return { ok: false, error: { code: 'DUPLICATE_MEMBER', message: 'Already a member' } };
       }
+      // Snapshot emptySince so we can restore it on a saveOrFail
+      // rollback (R10). Without the snapshot, a failed persist would
+      // leave the channel with NO emptySince even though it should
+      // still be tagged for the reaper — the channel could end up
+      // living forever despite zero members. The symmetric
+      // snapshot/restore pattern lives in `leave()` below.
+      const previousEmptySince = channel.emptySince;
       // If the channel was empty (emptySince set), clear the empty marker —
       // the channel is alive again.
       if (channel.emptySince !== undefined) {
@@ -489,8 +521,9 @@ export class ChannelService {
       });
       this.state.members[channel.id] = members;
       if (!this.saveOrFail()) {
-        // Roll back the push.
+        // Roll back the push AND restore the prior emptySince tag.
         members.pop();
+        channel.emptySince = previousEmptySince;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel join' } };
       }
       return { ok: true };
