@@ -335,11 +335,11 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
 
   // --- A2A channels (a2a-channels) ---
   // Two-capability split. `read` covers the four read methods; `send`
-  // covers every mutation including post (the post path is the fan-out
-  // fan-out: one call hits N member workspaces via the channel.message
-  // bus event). Capability is the only gate — channels have no
-  // per-payload path glob today (the workspaceId is the bus-scoping
-  // anchor, not a permission boundary).
+  // covers every mutation including post (the post path is the fan-out:
+  // one call hits N member workspaces via the channel.message bus
+  // event). Capability is the only gate — channels have no per-payload
+  // path glob today (the workspaceId is the bus-scoping anchor, not a
+  // permission boundary).
   'a2a.channel.list':        { capability: 'a2a.channel.read', riskClass: 'a2a' },
   'a2a.channel.get':         { capability: 'a2a.channel.read', riskClass: 'a2a' },
   'a2a.channel.getMessages': { capability: 'a2a.channel.read', riskClass: 'a2a' },

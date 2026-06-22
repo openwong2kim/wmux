@@ -245,7 +245,7 @@ These can grow in minor releases; they cannot shrink within v3.x.
 | `POLL_DEFAULT_MAX` | 256 | Default per-poll event cap. |
 | `MAX_CONNECTIONS` (Named Pipe) | 50 | Concurrent client connections. |
 | `CHANNEL_IDEMPOTENCY_CAP` | 1000 | Per-channel idempotency LRU cap (R13). Repeat posts with the same `clientMsgId` return the original `seq` instead of appending a duplicate. |
-| `CHANNEL_EMPTY_TTL_HOURS_DEFAULT` | 168 (7 days) | TTL after which an empty channel (no members, `emptySince` set) is pruned by the reaper on `load()`. Mirrors suspended-session retention. |
+| `CHANNEL_EMPTY_TTL_HOURS_DEFAULT` | 168 (7 days) | TTL after which an empty channel (no members, `emptySince` set) is pruned by the reaper on `load()`. Channels with members are retained indefinitely — the TTL only applies to channels whose last member left (`emptySince` set) and remained unpopulated for the full window. |
 
 ---
 

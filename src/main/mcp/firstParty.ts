@@ -119,7 +119,7 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'a2a.task.update',
   'a2a.task.cancel',
   'a2a.broadcast',
-  // a2a channels — six standard channel_* MCP tools
+  // a2a channels — nine standard channel_* MCP tools
   'a2a.channel.list',
   'a2a.channel.get',
   'a2a.channel.getMessages',

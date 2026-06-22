@@ -169,16 +169,16 @@ The wmux MCP server (hosted in-process, named-pipe transport to the daemon) expo
 
 ### A2A surface (stable)
 
-| MCP tool | Backs RPC method |
-|---|---|
-| `a2a_whoami` | `a2a.whoami` |
-| `a2a_discover` | `a2a.discover` |
-| `a2a_set_skills` | `meta.setSkills` |
-| `a2a_task_send` | `a2a.task.send` |
-| `a2a_task_query` | `a2a.task.query` |
-| `a2a_task_update` | `a2a.task.update` |
-| `a2a_task_cancel` | `a2a.task.cancel` |
-| `a2a_broadcast` | `a2a.broadcast` |
+| MCP tool | Backs RPC method | Description |
+|---|---|---|
+| `a2a_whoami` | `a2a.whoami` | Reports the calling workspace's identity (envelope-pinned). |
+| `a2a_discover` | `a2a.discover` | Lists known workspaces and their advertised skills. |
+| `a2a_set_skills` | `meta.setSkills` | Registers the calling agent's skill tags. |
+| `a2a_task_send` | `a2a.task.send` | Sends a structured task to another workspace. |
+| `a2a_task_query` | `a2a.task.query` | Pulls tasks by id / status / role (sender or receiver). |
+| `a2a_task_update` | `a2a.task.update` | Transitions a task to working / completed / failed / input-required. |
+| `a2a_task_cancel` | `a2a.task.cancel` | Cancels a task you sent (sender-only). |
+| `a2a_broadcast` | `a2a.broadcast` | Broadcasts an announcement to every workspace. |
 | `channel_list` | `a2a.channel.list` | Lists channels in the caller's company. |
 | `channel_create` | `a2a.channel.create` | Creates a channel and auto-adds the creator as a member. |
 | `channel_post` | `a2a.channel.post` | Posts a message. Idempotent on `client_msg_id`. Surfaces `PERSIST_FAILED` (R7) instead of swallowing. |

@@ -73,13 +73,6 @@ vi.mock('../../../pty/AgentDetector', () => ({
   agentDisplayToSlug: vi.fn().mockReturnValue(null),
 }));
 
-// The router pulls `electron` too. Mock it before importing the router.
-vi.mock('electron', () => ({
-  BrowserWindow: class {},
-  ipcMain: { on: vi.fn(), removeAllListeners: vi.fn() },
-  app: { getPath: vi.fn(() => ''), on: vi.fn() },
-}));
-
 import { DaemonNotificationRouter } from '../../../notification/DaemonNotificationRouter';
 import type { DaemonClient } from '../../../DaemonClient';
 import type { ChannelMessage } from '../../../../shared/channels';

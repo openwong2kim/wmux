@@ -20,7 +20,7 @@
 //     pass it).
 //  6. Non-first-party client identity (no envelope) does NOT affect tool
 //     registration; the allowlist gate is upstream at the substrate enforcer.
-//  7. FIRST_PARTY_METHODS includes all seven a2a.channel.* methods
+//  7. FIRST_PARTY_METHODS includes all nine a2a.channel.* methods
 //     (list/get/getMessages/getMembers/create/archive/join/leave/post)
 //     so the bundled first-party MCP server isn't deadlocked under enforce
 //     mode (plans/first-party-mcp-trust.md §2).
@@ -382,7 +382,7 @@ describe('channel_archive', () => {
 });
 
 describe('FIRST_PARTY_METHODS allowlist (channel coverage)', () => {
-  it('grants the bundled first-party MCP server access to all seven a2a.channel.* methods', () => {
+  it('grants the bundled first-party MCP server access to all nine a2a.channel.* methods', () => {
     // Without these, the bundled Claude/Codex MCP server is deadlocked in
     // enforce mode (plans/first-party-mcp-trust.md §2).
     for (const m of [
