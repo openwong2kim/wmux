@@ -21,7 +21,12 @@
 import { randomUUID } from 'node:crypto';
 import {
   canonicalizeChannelName,
+  CHANNEL_BODY_MAX,
+  CHANNEL_DATA_MAX,
   CHANNEL_IDEMPOTENCY_CAP,
+  CHANNEL_MAX_COUNT,
+  CHANNEL_MAX_MEMBERS,
+  CHANNEL_TOPIC_MAX,
   isValidChannelName,
   type Channel,
   type ChannelMember,
@@ -67,7 +72,16 @@ export type ChannelErrorCode =
    *  bridge, etc.) as the authoritative caller identity. A mismatch with
    *  the client-supplied `sender.workspaceId` (post path) or a non-creator
    *  / non-CEO caller (archive path) yields this code. */
-  | 'NOT_AUTHORIZED';
+  | 'NOT_AUTHORIZED'
+  /** Post body over `CHANNEL_BODY_MAX` / topic over `CHANNEL_TOPIC_MAX`.
+   *  Enforced pre-persist so the writer never sees oversize content. */
+  | 'CHANNEL_BODY_TOO_LARGE'
+  /** Post `data` payload over `CHANNEL_DATA_MAX` (JSON-serialized length).
+   *  Same pre-persist enforcement as the body cap. */
+  | 'CHANNEL_DATA_TOO_LARGE'
+  /** Per-company channel count over `CHANNEL_MAX_COUNT` or per-channel
+   *  member count over `CHANNEL_MAX_MEMBERS`. Enforced in `create`. */
+  | 'CHANNEL_LIMIT_REACHED';
 
 export interface ChannelError {
   code: ChannelErrorCode;
@@ -107,6 +121,10 @@ export interface CreateChannelParams {
   visibility: ChannelVisibility;
   topic?: string;
   createdBy: SenderRef;
+  /** Initial members to auto-add alongside the creator (U6 member cap).
+   *  The creator is always added regardless of this field. When omitted,
+   *  the channel starts with only the creator (the historical default). */
+  members?: SenderRef[];
 }
 
 export interface ArchiveChannelParams {
@@ -197,26 +215,91 @@ export class ChannelService {
 
   // ── Read-only ─────────────────────────────────────────────────────
 
-  /** Return every channel, regardless of status. */
-  list(): Channel[] {
-    return this.state.channels;
+  /**
+   * List channels visible to the verified caller (U6 membership +
+   * visibility gate). Returns every public channel + every private
+   * channel the caller is a member of. Active AND archived rows are
+   * returned — the renderer decides how to render archived channels
+   * (collapsed group, badge, etc.).
+   *
+   * The membership gate runs per-channel: a public channel is always
+   * visible; a private channel is visible iff the caller's
+   * `verifiedWorkspaceId` appears in its member list.
+   */
+  list(verifiedWorkspaceId: string): Channel[] {
+    return this.state.channels.filter((channel) => this.isVisibleTo(channel, verifiedWorkspaceId));
   }
 
-  /** Return a channel by id, or null if not found. */
-  get(channelId: string): Channel | null {
-    return this.state.channels.find((c) => c.id === channelId) ?? null;
+  /**
+   * Return a channel by id, gated on visibility for the verified
+   * caller. A private channel that does not include the caller is
+   * indistinguishable from a missing channel from the caller's POV
+   * (returns null — same as a non-existent id). The renderer
+   * collapses null into "channel not found" UI without leaking the
+   * existence of a private room the caller cannot see.
+   */
+  get(channelId: string, verifiedWorkspaceId: string): Channel | null {
+    const channel = this.state.channels.find((c) => c.id === channelId);
+    if (!channel) return null;
+    if (!this.isVisibleTo(channel, verifiedWorkspaceId)) return null;
+    return channel;
   }
 
-  /** Return the members of a channel, or [] if not found. */
-  getMembers(channelId: string): ChannelMember[] {
+  /**
+   * Return the members of a channel, gated on the caller being a
+   * member (or the channel being public). Private channels do not
+   * expose their member list to non-members — the empty-array
+   * return is intentional; the renderer treats it as "no access."
+   */
+  getMembers(channelId: string, verifiedWorkspaceId: string): ChannelMember[] {
+    const channel = this.state.channels.find((c) => c.id === channelId);
+    if (!channel) return [];
+    if (!this.isVisibleTo(channel, verifiedWorkspaceId)) return [];
     return this.state.members[channelId] ?? [];
   }
 
-  /** Return messages for a channel, optionally filtered to `seq >= sinceSeq`. */
-  getMessages(channelId: string, sinceSeq?: number): ChannelMessage[] {
+  /**
+   * Return messages for a channel, gated on visibility + membership
+   * AND floored at the viewer's `historyFromSeq` for non-public
+   * channels. The seq-floor mirrors `isMessageVisibleToViewer` in
+   * `src/renderer/components/Channels/ChannelView.tsx` — a member
+   * who joined late (`historyFromSeq = nextSeq at join time`) cannot
+   * see earlier messages via this endpoint. Public channels have
+   * no floor (any verified caller sees the full history from `sinceSeq`).
+   *
+   * The seq-floor is `Math.max(sinceSeq ?? 0, viewer.historyFromSeq)`
+   * so a caller can still page with `sinceSeq` on top of the floor.
+   */
+  getMessages(channelId: string, sinceSeq: number | undefined, verifiedWorkspaceId: string): ChannelMessage[] {
+    const channel = this.state.channels.find((c) => c.id === channelId);
+    if (!channel) return [];
+    if (!this.isVisibleTo(channel, verifiedWorkspaceId)) return [];
     const all = this.state.messages[channelId] ?? [];
-    if (sinceSeq === undefined) return all;
-    return all.filter((m) => m.seq >= sinceSeq);
+    // Floor at the viewer's historyFromSeq for non-public channels.
+    // Public channels have no per-member history cap.
+    let floor = sinceSeq ?? 0;
+    if (channel.visibility !== 'public') {
+      const viewer = (this.state.members[channelId] ?? []).find(
+        (m) => m.workspaceId === verifiedWorkspaceId,
+      );
+      if (!viewer) {
+        // Should be unreachable given the isVisibleTo gate above (a
+        // non-public channel is only visible to its members), but
+        // guarded so a future visibility-rule change can't widen the
+        // hole.
+        return [];
+      }
+      floor = Math.max(floor, viewer.historyFromSeq);
+    }
+    return all.filter((m) => m.seq >= floor);
+  }
+
+  /** Per-channel visibility rule. A channel is visible to the caller
+   *  when it is public OR the caller is in its member list. */
+  private isVisibleTo(channel: Channel, verifiedWorkspaceId: string): boolean {
+    if (channel.visibility === 'public') return true;
+    const members = this.state.members[channel.id] ?? [];
+    return members.some((m) => m.workspaceId === verifiedWorkspaceId);
   }
 
   // ── Mutating (per-channel mutex) ──────────────────────────────────
@@ -236,6 +319,41 @@ export class ChannelService {
       if (!isValidChannelName(name)) {
         return { ok: false, error: { code: 'INVALID_NAME', message: `Invalid channel name: ${params.name}` } };
       }
+      // Topic length cap (U6). Measured on the trimmed form so a caller
+      // cannot pad with whitespace to bypass the cap.
+      if (params.topic !== undefined && params.topic.length > CHANNEL_TOPIC_MAX) {
+        return {
+          ok: false,
+          error: {
+            code: 'CHANNEL_BODY_TOO_LARGE',
+            message: `Topic exceeds ${CHANNEL_TOPIC_MAX} characters`,
+          },
+        };
+      }
+      // Per-company channel cap. Catches a runaway client before the
+      // in-memory state grows unbounded.
+      if (this.state.channels.filter((c) => c.companyId === this.companyId).length >= CHANNEL_MAX_COUNT) {
+        return {
+          ok: false,
+          error: {
+            code: 'CHANNEL_LIMIT_REACHED',
+            message: `Company channel limit reached (${CHANNEL_MAX_COUNT})`,
+          },
+        };
+      }
+      // Per-channel member cap (creator + initial members). Counts the
+      // creator explicitly so the cap cannot be silently exceeded when
+      // `members` is omitted (the creator is always added regardless).
+      const initialMemberCount = 1 + (params.members?.length ?? 0);
+      if (initialMemberCount > CHANNEL_MAX_MEMBERS) {
+        return {
+          ok: false,
+          error: {
+            code: 'CHANNEL_LIMIT_REACHED',
+            message: `Channel member limit reached (${CHANNEL_MAX_MEMBERS})`,
+          },
+        };
+      }
       // Reject duplicate names within the same company.
       if (this.state.channels.some((c) => c.companyId === this.companyId && c.name === name)) {
         return { ok: false, error: { code: 'INVALID_NAME', message: `Channel name already exists: ${name}` } };
@@ -253,8 +371,11 @@ export class ChannelService {
         ...(params.topic !== undefined ? { topic: params.topic } : {}),
       };
       this.state.channels.push(channel);
-      // Auto-add the creator as a member (plan KTD10).
-      this.state.members[channel.id] = [
+      // Auto-add the creator as a member (plan KTD10). Optional
+      // initial members (U6) are appended after the creator; duplicates
+      // against the creator are silently dropped so a caller cannot
+      // double-stamp the creator and skew the count.
+      const initialMembers: ChannelMember[] = [
         {
           workspaceId: params.createdBy.workspaceId,
           memberId: params.createdBy.memberId,
@@ -262,6 +383,22 @@ export class ChannelService {
           historyFromSeq: 0,
         },
       ];
+      for (const member of params.members ?? []) {
+        if (
+          initialMembers.some(
+            (m) => m.workspaceId === member.workspaceId && m.memberId === member.memberId,
+          )
+        ) {
+          continue;
+        }
+        initialMembers.push({
+          workspaceId: member.workspaceId,
+          memberId: member.memberId,
+          joinedAt: now,
+          historyFromSeq: 0,
+        });
+      }
+      this.state.members[channel.id] = initialMembers;
       this.state.messages[channel.id] = [];
       this.state.idempotency[channel.id] = {};
       if (!this.saveOrFail()) {
@@ -473,6 +610,49 @@ export class ChannelService {
       if (!isMember) {
         return { ok: false, error: { code: 'NOT_A_MEMBER', message: 'Not a channel member' } };
       }
+      // Body clamp (U6). Measure the post-canonicalized form (C0 strip +
+      // trim) so padding whitespace and zero-width characters cannot
+      // bypass the cap. Reject BEFORE allocating a seq so an oversize
+      // post does not consume an idempotency slot.
+      const sanitizedText = sanitizePostText(params.text);
+      if (sanitizedText.length > CHANNEL_BODY_MAX) {
+        return {
+          ok: false,
+          error: {
+            code: 'CHANNEL_BODY_TOO_LARGE',
+            message: `Post body exceeds ${CHANNEL_BODY_MAX} characters`,
+          },
+        };
+      }
+      // Data payload cap (U6). Measured as JSON-serialized length so a
+      // moderate JSON blob (~4 KiB) fits while a giant payload is
+      // caught without a deep object walk.
+      if (params.data !== undefined) {
+        let dataSize: number;
+        try {
+          dataSize = JSON.stringify(params.data).length;
+        } catch {
+          // Circular / non-serializable payload — surface as too-large
+          // so the caller retries with a serializable shape. We do not
+          // throw because the post envelope contract is `{ ok, error }`.
+          return {
+            ok: false,
+            error: {
+              code: 'CHANNEL_DATA_TOO_LARGE',
+              message: 'Post `data` payload is not JSON-serializable',
+            },
+          };
+        }
+        if (dataSize > CHANNEL_DATA_MAX) {
+          return {
+            ok: false,
+            error: {
+              code: 'CHANNEL_DATA_TOO_LARGE',
+              message: `Post \`data\` payload exceeds ${CHANNEL_DATA_MAX} bytes (JSON-serialized)`,
+            },
+          };
+        }
+      }
       // Freeze the recipient snapshot at critical-section entry (plan KTD3).
       // We deliberately do NOT re-read members after this point; a concurrent
       // `join` that lands later will not retroactively change the snapshot
@@ -490,7 +670,7 @@ export class ChannelService {
         workspaceId: params.sender.workspaceId,
         memberId: params.sender.memberId,
         memberName: params.sender.memberName,
-        text: params.text,
+        text: sanitizedText,
         postedAt: now,
         deliveryStatus: 'pending',
         recipientSnapshot: snapshot,
@@ -597,4 +777,30 @@ export class ChannelService {
   private saveOrFail(): boolean {
     return this.writer.saveImmediate(this.state);
   }
+}
+
+/**
+ * Canonicalize a post body for persistence. The rules are:
+ *
+ *  1. Strip C0 control characters (U+0000-U+001F) EXCEPT for the
+ *     whitespace pass-throughs: `\t` (0x09), `\n` (0x0A), `\r` (0x0D).
+ *     This catches terminal escape sequences (0x1B ESC), NULs, and
+ *     other bytes that could corrupt downstream TUI consumers when
+ *     the post is fanned out to a live PTY.
+ *  2. Trim leading/trailing whitespace so a padded body cannot
+ *     bypass the byte cap (`CHANNEL_BODY_MAX` is measured on this
+ *     sanitized form).
+ *
+ * Unicode whitespace beyond C0 (e.g. zero-width joiner U+200D,
+ * non-breaking space U+00A0) is intentionally NOT stripped here —
+ * the renderer / MCP tools treat it as content. If a future
+ * "normalize Unicode" rule is added it should land in a single
+ * shared helper, not in each transport.
+ */
+export function sanitizePostText(text: string): string {
+  // Strip C0 controls except tab/newline/CR. Use a single regex pass
+  // for speed — post bodies can be up to 8 KiB and we do this on the
+  // hot path.
+  // eslint-disable-next-line no-control-regex
+  return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').trim();
 }

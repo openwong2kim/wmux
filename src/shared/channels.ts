@@ -214,6 +214,36 @@ export function isValidChannelName(name: string): boolean {
 /** Topic bounds. */
 export const CHANNEL_TOPIC_MAX = 256;
 
+/** Per-message body cap (post path). 8 KiB is enough for ~2000 words
+ *  with formatting; longer posts should split. The cap is enforced
+ *  post-canonicalization in `ChannelService.post` and surfaces as
+ *  `CHANNEL_BODY_TOO_LARGE`. */
+export const CHANNEL_BODY_MAX = 8192;
+
+/** Per-message `data` payload cap (R10). 4 KiB holds a moderate JSON
+ *  blob (e.g. an MCP tool result, a structured card). Enforced in
+ *  `ChannelService.post` and surfaces as `CHANNEL_DATA_TOO_LARGE`.
+ *  The size is measured as the JSON-serialized string length, not
+ *  the in-memory object size — a cheap O(n) proxy that catches
+ *  obvious oversize payloads without deep object walks. */
+export const CHANNEL_DATA_MAX = 4096;
+
+/** Per-company channel cap. A company with N departments and
+ *  cross-cutting workflows typically needs ~tens of channels;
+ *  1000 leaves headroom for orgs that are channel-heavy without
+ *  making the in-memory `state.channels` array unbounded. Enforced
+ *  in `ChannelService.create` and surfaces as `CHANNEL_LIMIT_REACHED`. */
+export const CHANNEL_MAX_COUNT = 1000;
+
+/** Per-channel member cap. A single channel can hold at most
+ *  256 members — a workspace with cross-functional participation
+ *  caps at 256, larger audiences should split or use a one-to-many
+ *  broadcast mechanism. The cap includes the auto-added creator
+ *  and any initial members passed in `create({ members })`.
+ *  Enforced in `ChannelService.create` and surfaces as
+ *  `CHANNEL_LIMIT_REACHED`. */
+export const CHANNEL_MAX_MEMBERS = 256;
+
 /** Per-channel idempotency cap. See `ChannelState.idempotency`. */
 export const CHANNEL_IDEMPOTENCY_CAP = 1000;
 

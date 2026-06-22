@@ -1476,16 +1476,38 @@ function registerRpcHandlers(
   // covers the daemon transport, and finer-grained plugin permission will
   // land in the follow-up PR that introduces the permission enforcer for
   // method dispatch (mcp-plugin-spec).
-  pipeServer.onRpc('a2a.channel.list', async () => {
-    return { ok: true, channels: channelService.list() };
+  pipeServer.onRpc('a2a.channel.list', async (params) => {
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'verifiedWorkspaceId is required',
+        },
+      };
+    }
+    return { ok: true, channels: channelService.list(verifiedWorkspaceId) };
   });
 
   pipeServer.onRpc('a2a.channel.get', async (params) => {
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
     if (!channelId) {
       return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
     }
-    const channel = channelService.get(channelId);
+    if (!verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'verifiedWorkspaceId is required',
+        },
+      };
+    }
+    const channel = channelService.get(channelId, verifiedWorkspaceId);
     if (!channel) {
       return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${channelId}` } };
     }
@@ -1494,19 +1516,41 @@ function registerRpcHandlers(
 
   pipeServer.onRpc('a2a.channel.getMessages', async (params) => {
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
     if (!channelId) {
       return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
     }
+    if (!verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'verifiedWorkspaceId is required',
+        },
+      };
+    }
     const sinceSeq = typeof params['sinceSeq'] === 'number' ? params['sinceSeq'] : undefined;
-    return { ok: true, messages: channelService.getMessages(channelId, sinceSeq) };
+    return { ok: true, messages: channelService.getMessages(channelId, sinceSeq, verifiedWorkspaceId) };
   });
 
   pipeServer.onRpc('a2a.channel.getMembers', async (params) => {
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
     if (!channelId) {
       return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId is required' } };
     }
-    return { ok: true, members: channelService.getMembers(channelId) };
+    if (!verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'verifiedWorkspaceId is required',
+        },
+      };
+    }
+    return { ok: true, members: channelService.getMembers(channelId, verifiedWorkspaceId) };
   });
 
   pipeServer.onRpc('a2a.channel.create', async (params) => {
