@@ -56,6 +56,7 @@ import {
   type ParsedPermission,
 } from './permissionGrammar';
 import { FIRST_PARTY_METHODS, isFirstPartyClient } from './firstParty';
+import { WMUX_CLI_METHODS, isInternalCliClient } from './internalCli';
 
 export type EnforcerOutcome =
   | { kind: 'allow' }
@@ -205,6 +206,24 @@ export function check(input: EnforcerInput): EnforcerOutcome {
     !input.trustLookupFailed &&
     input.trust?.status !== 'denied' &&
     FIRST_PARTY_METHODS.has(input.method)
+  ) {
+    return { kind: 'allow' };
+  }
+
+  // Internal first-party CLI (`wmux <command>`, clientName 'wmux-cli'). The CLI
+  // ships inside wmux and is the one steady-state envelope-less mutating caller;
+  // Stage 2 of the grandfather deprecation gives it a stable clientName so the
+  // legacy grandfather can later be closed without breaking it. Grant exactly
+  // its curated method set (internalCli.ts), nothing more — a separate, narrower
+  // allowlist than FIRST_PARTY_METHODS. Same three guards as the first-party
+  // tier above: an explicit user `denied` wins, a failed trust lookup declines
+  // (fall through to fail-closed), and a method outside the curated set falls
+  // through to normal enforcement rather than silently widening CLI scope.
+  if (
+    isInternalCliClient(input.ctx.clientName) &&
+    !input.trustLookupFailed &&
+    input.trust?.status !== 'denied' &&
+    WMUX_CLI_METHODS.has(input.method)
   ) {
     return { kind: 'allow' };
   }

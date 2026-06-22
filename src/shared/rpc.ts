@@ -24,6 +24,16 @@ export interface RpcRequest {
 }
 
 /**
+ * Stable `clientName` reported by the bundled wmux CLI (`wmux <command>`,
+ * src/cli) so the permission enforcer can grant it a curated allowlist
+ * (src/main/mcp/internalCli.ts) instead of the envelope-less legacy grandfather.
+ * Defined in shared so the CLI (its own build) and the main-process enforcer
+ * agree on the exact string without a cross-build import. See the trust-root
+ * grandfather-deprecation plan (Stage 2).
+ */
+export const WMUX_CLI_CLIENT_NAME = 'wmux-cli';
+
+/**
  * Per-request context surfaced to RPC handlers — populated by PipeServer
  * from RpcRequest fields. Handlers receive this as an optional second
  * argument so legacy handlers `(params) => ...` keep compiling.

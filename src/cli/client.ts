@@ -4,6 +4,7 @@ import * as os from 'os';
 import * as path from 'path';
 import * as crypto from 'crypto';
 import type { RpcRequest, RpcResponse, RpcMethod } from '../shared/rpc';
+import { WMUX_CLI_CLIENT_NAME } from '../shared/rpc';
 import {
   getPipeName,
   getAuthTokenPath,
@@ -50,7 +51,11 @@ function attemptRequest(
 ): Promise<RpcResponse> {
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
-    const request: RpcRequest = { id, method, params, token };
+    // Report a stable clientName so the main-pipe enforcer grants the CLI its
+    // curated allowlist (internalCli.ts) instead of the envelope-less legacy
+    // grandfather (trust-root plan Stage 2). Harmless on the daemon control
+    // pipe, which is token-only and ignores the field.
+    const request: RpcRequest = { id, method, params, token, clientName: WMUX_CLI_CLIENT_NAME };
 
     const socket =
       typeof target === 'string' ? net.connect(target) : net.connect(target.port, target.host);
