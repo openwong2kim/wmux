@@ -101,6 +101,15 @@ export interface RegisterHandlersOptions {
   mcpRegistrar?: McpRegistrar;
   /** Lazy accessor for the live pipe-server auth token, used by mcp:reregister. */
   getMcpAuthToken?: () => string | null;
+  /**
+   * Renderer-initiated RPC entrypoint. Wired in main/index to the live
+   * `RpcRouter` so the in-renderer `__wmuxEventsPoll` /
+   * `__wmuxChannelsRpc` bridges (installed in `useRpcBridge.ts`) can
+   * reach the pipe dispatch layer. The renderer is a trusted
+   * first-party surface — no separate capability check runs here; the
+   * router's own PermissionEnforcer applies per-method.
+   */
+  invokeRendererRpc?: (method: string, params: Record<string, unknown>) => Promise<unknown>;
 }
 
 export function registerAllHandlers(
@@ -206,6 +215,35 @@ export function registerAllHandlers(
   };
   ipcMain.removeAllListeners(IPC.EVENTS_PUBLISH);
   ipcMain.on(IPC.EVENTS_PUBLISH, onEventsPublish);
+
+  // Renderer-initiated RPC bridge. The renderer is a trusted first-party
+  // surface (its preload is the same process the user is running) — the
+  // pipe RpcRouter's PermissionEnforcer runs on dispatch, so the
+  // capability gate is identical to what an external pipe client gets.
+  // Method/params are sanitized up front: an object-typed params is
+  // required (the router validates this too) and method must be a
+  // non-empty string. Returns the dispatch result verbatim so the
+  // renderer's bridge can project success/error the same way a pipe
+  // client would.
+  const onRpcInvoke = async (
+    _event: Electron.IpcMainInvokeEvent,
+    method: unknown,
+    params: unknown,
+  ): Promise<unknown> => {
+    if (typeof method !== 'string' || method.length === 0) {
+      return { ok: false, error: 'rpc:invoke: missing method' };
+    }
+    const safeParams =
+      params !== undefined && params !== null && typeof params === 'object'
+        ? (params as Record<string, unknown>)
+        : {};
+    if (!options.invokeRendererRpc) {
+      return { ok: false, error: 'rpc:invoke: renderer RPC bridge not wired' };
+    }
+    return options.invokeRendererRpc(method, safeParams);
+  };
+  ipcMain.removeAllListeners(IPC.RPC_INVOKE);
+  ipcMain.handle(IPC.RPC_INVOKE, onRpcInvoke);
 
   return () => {
     cleanupPty();

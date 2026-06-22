@@ -61,18 +61,17 @@ const EVENT_POLL_INTERVAL_MS = 1000;
 const EVENT_POLL_MAX = 64;
 
 /** Bridge global installed by `useRpcBridge` that forwards the
- *  `events.poll` call into the main process. Typed as a single-method
- *  facade because that's all this hook needs — the slice doesn't poll
- *  itself; events arrive exclusively through this hook. */
+ *  `events.poll` call into the main process. Single-method facade
+ *  matching the function-shaped global the bridge installs — the
+ *  slice doesn't poll itself; events arrive exclusively through this
+ *  hook. */
 interface EventsPollBridge {
-  poll: (
-    method: 'events.poll',
-    params: {
-      cursor: number;
-      types: ['channel.message'];
-      max?: number;
-    },
-  ) => Promise<EventsPollResponse | null>;
+  (params: {
+    cursor: number;
+    types: ['channel.message'];
+    max?: number;
+    workspaceId: string;
+  }): Promise<EventsPollResponse | null>;
 }
 
 interface EventsPollResponse {
@@ -116,6 +115,27 @@ export function useChannelsEventSubscription(): void {
       return;
     }
 
+    // Per-recipient scoping (plan U3, R3): the daemon's per-workspace
+    // filter at `events.rpc.ts:115-124` requires the caller to identify
+    // its own workspace or it silently drops every event. The
+    // renderer-side identity source is `company.ceoWorkspaceId` (the
+    // company workspace that owns the renderer instance — see
+    // `ChannelsPanel.tsx`). On a non-company render the field is
+    // undefined: send a literal `'unknown-workspace'` is NOT an option
+    // because the strict filter would silently drop every event and the
+    // UI would look identical to a healthy empty stream, so we skip the
+    // tick and warn once. Multi-workspace renderers (FIX-MULTI-WS
+    // follow-up) will iterate `company.departments[].members[].ptyId`
+    // here; for v1 the company CEO workspace is the only one we poll.
+    const company = useStore.getState().company;
+    const workspaceId = company?.ceoWorkspaceId;
+    if (!workspaceId) {
+      console.warn(
+        '[useChannelsEventSubscription] no company.ceoWorkspaceId — channel events will not auto-update (FIX-MULTI-WS follow-up)',
+      );
+      return;
+    }
+
     let disposed = false;
     let cursor = 0;
     let inFlight = false;
@@ -123,8 +143,7 @@ export function useChannelsEventSubscription(): void {
     const tick = () => {
       if (disposed || inFlight) return;
       inFlight = true;
-      bridge
-        .poll('events.poll', { cursor, types: ['channel.message'], max: EVENT_POLL_MAX })
+      bridge({ cursor, types: ['channel.message'], max: EVENT_POLL_MAX, workspaceId })
         .then((result) => {
           if (disposed || !result) return;
           cursor = result.nextCursor;

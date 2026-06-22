@@ -46,6 +46,14 @@ export const IPC = {
   // Phase 3: RPC bridge (Main ↔ Renderer)
   RPC_COMMAND: 'rpc:command',
   RPC_RESPONSE: 'rpc:response',
+  // Renderer → main: invoke the pipe RpcRouter from a renderer-side caller
+  // (used by the in-renderer `__wmuxEventsPoll` and `__wmuxChannelsRpc`
+  // bridges installed in `useRpcBridge.ts`). The renderer is a trusted
+  // first-party surface — no separate capability check happens here; the
+  // router's own PermissionEnforcer applies per-method. Mirrors the
+  // shape of the external pipe-client envelope: `{ method, params }`
+  // in, the dispatch response out.
+  RPC_INVOKE: 'rpc:invoke',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

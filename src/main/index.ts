@@ -19,6 +19,7 @@ import { PTYManager } from './pty/PTYManager';
 import { PTYBridge } from './pty/PTYBridge';
 import { registerAllHandlers } from './ipc/registerHandlers';
 import { RpcRouter } from './pipe/RpcRouter';
+import type { RpcMethod } from '../shared/rpc';
 import { PipeServer } from './pipe/PipeServer';
 import { registerWorkspaceRpc } from './pipe/handlers/workspace.rpc';
 import { registerSurfaceRpc } from './pipe/handlers/surface.rpc';
@@ -423,7 +424,24 @@ const mcpHandlerOptions = {
 // variable (no closure snapshot).
 registerSessionHandlers(() => daemonClient?.isConnected === true);
 
-let cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, mcpHandlerOptions);
+// Bridge the in-renderer `__wmuxEventsPoll` / `__wmuxChannelsRpc` globals
+// (installed in `src/renderer/hooks/useRpcBridge.ts`) into the live pipe
+// `RpcRouter`. A request id is synthesized per call because the
+// renderer-to-main IPC channel is request/response (no correlation id
+// echoed back), and the router only requires id+method+params to dispatch.
+// Used by every `registerAllHandlers` call site below; factoring it out
+// keeps the three swaps consistent.
+const invokeRendererRpc = (method: string, params: Record<string, unknown>): Promise<unknown> =>
+  rpcRouter.dispatch({
+    id: `renderer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+    method: method as RpcMethod,
+    params,
+  });
+
+let cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, {
+  ...mcpHandlerOptions,
+  invokeRendererRpc,
+});
 
 // First-run wizard orchestrator (Plan 1.15) — registered once and survives
 // crash-recovery handler-reload because it owns its own marker + IPC channels
@@ -802,7 +820,10 @@ app.on('ready', async () => {
       logLine('info', 'main', 'handler swap (daemon connect): cleanup begin');
       cleanupHandlers();
       logLine('info', 'main', 'handler swap (daemon connect): cleanup done, register begin');
-      cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient, mcpHandlerOptions);
+      cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, daemonClient, {
+        ...mcpHandlerOptions,
+        invokeRendererRpc,
+      });
       logLine('info', 'main', 'handler swap (daemon connect): register done');
       // Mount the notification router now that we have a live daemon
       // client. PTY data flows through daemon → DaemonClient events,
@@ -868,7 +889,10 @@ app.on('ready', async () => {
       logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup begin');
       cleanupHandlers();
       logLine('warn', 'main', 'handler swap (daemon disconnect): cleanup done, register begin');
-      cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, mcpHandlerOptions);
+      cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, {
+        ...mcpHandlerOptions,
+        invokeRendererRpc,
+      });
       logLine('warn', 'main', 'handler swap (daemon disconnect): register done');
     },
     emit: (event) => {

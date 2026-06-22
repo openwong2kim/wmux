@@ -165,6 +165,61 @@ export function useRpcBridge(): void {
       .__wmuxRunPaneSearch = (query: string, regex: boolean) =>
         handleRpcMethod('pane.search', { query, regex });
 
+    // ── In-renderer entry point for useChannelsEventSubscription ─────────
+    // The channel-message subscription hook (see
+    // src/renderer/hooks/useChannelsEventSubscription.ts) runs a 1 Hz
+    // events.poll loop — mirroring PluginFrame's forwardEvents cadence —
+    // and dispatches results into channelsSlice.appendMessageFromEvent. It
+    // needs to reach events.poll without the slice having to know about
+    // the IPC layer, so we expose a thin global here. The bridge calls
+    // `electronAPI.rpc.invoke('events.poll', params)` which routes
+    // through main into the live pipe RpcRouter → the daemon-side
+    // `events.poll` handler registered in `src/main/pipe/handlers/events.rpc.ts`.
+    // The renderer-side `useStore((s) => s.company)?.ceoWorkspaceId` is
+    // injected by the hook as the per-recipient scoping key (see plan
+    // U3); the daemon's per-workspace filter at events.rpc.ts:115-124
+    // admits the renderer's own workspace's events on that basis.
+    (window as unknown as {
+      __wmuxEventsPoll: (params: {
+        cursor: number;
+        types: string[];
+        max?: number;
+        workspaceId: string;
+      }) => Promise<RpcResult>;
+    }).__wmuxEventsPoll = (params) =>
+      window.electronAPI.rpc.invoke('events.poll', params) as Promise<RpcResult>;
+
+    // ── In-renderer entry point for channelsSlice *Daemon thunks ─────────
+    // The renderer's create/post/join/leave/archive actions (U4, R4+R11)
+    // round-trip through the pipe RpcRouter to reach
+    // ChannelService.create/post/join/leave/archive. Parallel to
+    // `__wmuxEventsPoll` — same `electronAPI.rpc.invoke` plumbing — but
+    // exposed as an object with a `rpc(method, params)` method so the
+    // slice can call `a2a.channel.<method>` without concatenating the
+    // namespace at every call site (events.poll is a single method, so
+    // the function-shaped global is enough; channels has 9 methods, so
+    // a per-method wrapper is cleaner).
+    (window as unknown as {
+      __wmuxChannelsRpc: {
+        rpc: (
+          method:
+            | 'a2a.channel.list'
+            | 'a2a.channel.get'
+            | 'a2a.channel.getMessages'
+            | 'a2a.channel.getMembers'
+            | 'a2a.channel.create'
+            | 'a2a.channel.archive'
+            | 'a2a.channel.join'
+            | 'a2a.channel.leave'
+            | 'a2a.channel.post',
+          params: Record<string, unknown>,
+        ) => Promise<RpcResult>;
+      };
+    }).__wmuxChannelsRpc = {
+      rpc: (method, params) =>
+        window.electronAPI.rpc.invoke(method, params) as Promise<RpcResult>,
+    };
+
     // A2A task garbage collection timer — prune terminal-state tasks every 5 min
     const gcTimer = setInterval(() => {
       useStore.getState().gcTerminalTasks();
@@ -174,6 +229,8 @@ export function useRpcBridge(): void {
       cleanupRpc();
       clearInterval(gcTimer);
       delete (window as unknown as { __wmuxRunPaneSearch?: unknown }).__wmuxRunPaneSearch;
+      delete (window as unknown as { __wmuxEventsPoll?: unknown }).__wmuxEventsPoll;
+      delete (window as unknown as { __wmuxChannelsRpc?: unknown }).__wmuxChannelsRpc;
     };
   }, []);
 }
