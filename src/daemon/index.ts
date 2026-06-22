@@ -1520,10 +1520,18 @@ function registerRpcHandlers(
   pipeServer.onRpc('a2a.channel.archive', async (params) => {
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const archivedBy = typeof params['archivedBy'] === 'string' ? params['archivedBy'] : '';
-    if (!channelId || !archivedBy) {
-      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId and archivedBy are required' } };
+    const verifiedWorkspaceId =
+      typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
+    if (!channelId || !archivedBy || !verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'channelId, archivedBy, and verifiedWorkspaceId are required',
+        },
+      };
     }
-    return channelService.archive({ channelId, archivedBy });
+    return channelService.archive({ channelId, archivedBy, verifiedWorkspaceId });
   });
 
   pipeServer.onRpc('a2a.channel.join', async (params) => {
@@ -1544,8 +1552,14 @@ function registerRpcHandlers(
 
   pipeServer.onRpc('a2a.channel.post', async (params) => {
     const p = params as unknown as import('./channels/ChannelService').PostMessageParams;
-    if (!p.channelId || !p.sender || typeof p.text !== 'string') {
-      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'channelId, sender, and text are required' } };
+    if (!p.channelId || !p.sender || typeof p.text !== 'string' || !p.verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message: 'channelId, sender, text, and verifiedWorkspaceId are required',
+        },
+      };
     }
     return channelService.post(p);
   });
@@ -2165,6 +2179,13 @@ async function main(): Promise<void> {
   const channelService = new ChannelService({
     writer: channelStateWriter,
     companyId: 'co-default',
+    // U5 archive-authz (KTD-F): the CEO override is gated on this field.
+    // The renderer owns `Company.ceoWorkspaceId` today; the daemon does
+    // not have a copy, so we pass `undefined` (creator-only archive)
+    // until the company-mode config key lands. The gate in
+    // `ChannelService.archive()` is already wired and will activate
+    // automatically once a real value is plumbed in.
+    ceoWorkspaceId: undefined,
     emit: (event) => {
       // Wrap the ChannelMessageEvent in the canonical DaemonEvent envelope
       // before broadcasting on the control pipe. The helper lives in

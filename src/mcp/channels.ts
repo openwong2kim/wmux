@@ -102,7 +102,13 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
     {},
     async () => {
       const workspaceId = await deps.resolveWorkspaceId();
-      return callChannelRpc('a2a.channel.list' as RpcMethod, { workspaceId });
+      // U5: `verifiedWorkspaceId` is the transport-resolved caller
+      // identity (PID-map hit + env-hint fallback). It is forwarded on
+      // every a2a.channel.* call so the daemon can authoritatively pin
+      // the sender / enforce archive authz (plan R5/R6). The daemon
+      // today reads it only on `post` and `archive`; including it on
+      // every call keeps the transport shape uniform.
+      return callChannelRpc('a2a.channel.list' as RpcMethod, { workspaceId, verifiedWorkspaceId: workspaceId });
     },
   );
 
@@ -121,6 +127,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
         workspaceId,
+        verifiedWorkspaceId: workspaceId,
         name,
         visibility: visibility as ChannelVisibility,
         createdBy: {
@@ -152,6 +159,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
         workspaceId,
+        verifiedWorkspaceId: workspaceId,
         channelId: channel_id,
         sender: {
           workspaceId,
@@ -182,6 +190,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
         workspaceId,
+        verifiedWorkspaceId: workspaceId,
         channelId: channel_id,
         member: {
           workspaceId,
@@ -206,6 +215,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       const workspaceId = await deps.resolveWorkspaceId();
       return callChannelRpc('a2a.channel.leave' as RpcMethod, {
         workspaceId,
+        verifiedWorkspaceId: workspaceId,
         channelId: channel_id,
         memberId: member_id,
       });
@@ -215,7 +225,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   // ── channel_archive ───────────────────────────────────────────────
   server.tool(
     'channel_archive',
-    'Archive a channel. Archive is one-way (R4); once archived the channel is read-only for new posts but existing members retain history access. The authz rule (plan KTD-F) is: caller is the creator (createdBy) or the company CEO.',
+    'Archive a channel. Archive is one-way (R4); once archived the channel is read-only for new posts but existing members retain history access. The authz rule (plan KTD-F) is: caller is the creator (createdBy) or the company CEO — both are checked against the verified workspaceId, not the client-supplied `archivedBy`.',
     {
       channel_id: z.string().describe('Target channel id.'),
     },
@@ -223,6 +233,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       const workspaceId = await deps.resolveWorkspaceId();
       return callChannelRpc('a2a.channel.archive' as RpcMethod, {
         workspaceId,
+        verifiedWorkspaceId: workspaceId,
         channelId: channel_id,
         archivedBy: workspaceId,
       });

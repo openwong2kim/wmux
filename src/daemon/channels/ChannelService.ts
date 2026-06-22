@@ -60,7 +60,14 @@ export type ChannelErrorCode =
   | 'CHANNEL_ARCHIVED'
   | 'NOT_A_MEMBER'
   | 'DUPLICATE_MEMBER'
-  | 'PERSIST_FAILED';
+  | 'PERSIST_FAILED'
+  /** Caller is not permitted to perform this action (server-pin sender,
+   *  archive authz). The server uses the verified workspaceId (resolved
+   *  by the transport layer — MCP `requireWorkspaceId`, the renderer's
+   *  bridge, etc.) as the authoritative caller identity. A mismatch with
+   *  the client-supplied `sender.workspaceId` (post path) or a non-creator
+   *  / non-CEO caller (archive path) yields this code. */
+  | 'NOT_AUTHORIZED';
 
 export interface ChannelError {
   code: ChannelErrorCode;
@@ -76,6 +83,12 @@ export interface ChannelServiceDeps {
   /** Company this daemon's channels belong to. Channels are company-bounded
    *  by design (see plan KTD10). */
   companyId: string;
+  /** Company CEO's workspaceId. Used as the override for the archive
+   *  authz gate (KTD-F): the CEO may archive any channel regardless of
+   *  who created it. When `undefined`, only the creator can archive.
+   *  Daemon-side this stays `undefined` until the company-mode config
+   *  key lands (the renderer owns `Company.ceoWorkspaceId` today). */
+  ceoWorkspaceId?: string;
   /** Event sink. Called once per successful post. */
   emit: ChannelServiceEmit;
   /** Time source. Defaults to `Date.now`. Override in tests for stable seq. */
@@ -99,6 +112,12 @@ export interface CreateChannelParams {
 export interface ArchiveChannelParams {
   channelId: string;
   archivedBy: string;
+  /** Server-verified workspaceId (resolved by the transport layer).
+   *  The archive authz gate (KTD-F) requires the caller to be the
+   *  channel's creator OR the company CEO; both are checked against
+   *  this field, not against `archivedBy` (which the client supplies
+   *  and could lie about). */
+  verifiedWorkspaceId: string;
 }
 
 export interface JoinChannelParams {
@@ -119,6 +138,13 @@ export interface PostMessageParams {
   channelId: string;
   sender: SenderRef;
   text: string;
+  /** Server-verified workspaceId (resolved by the transport layer —
+   *  MCP `requireWorkspaceId` for first-party tools, the renderer
+   *  bridge for the in-app composer). The post path pins the sender's
+   *  authoritative workspace from THIS field, not from
+   *  `sender.workspaceId` (which the client supplies and could lie
+   *  about). A mismatch yields `NOT_AUTHORIZED`. */
+  verifiedWorkspaceId: string;
   /** Idempotency key. Two posts with the same `clientMsgId` on the same
    *  channel return the original message; the second is a no-op. */
   clientMsgId?: string;
@@ -153,6 +179,7 @@ export class ChannelService {
   private readonly mutexes = new Map<string, Promise<void>>();
   private readonly idempotency = new Map<string, Map<string, IdempotencyEntry>>();
   private readonly companyId: string;
+  private readonly ceoWorkspaceId: string | undefined;
   private readonly emit: ChannelServiceEmit;
   private readonly now: () => number;
 
@@ -163,6 +190,7 @@ export class ChannelService {
     // the service can trust the shape.
     this.state = this.writer.load();
     this.companyId = deps.companyId;
+    this.ceoWorkspaceId = deps.ceoWorkspaceId;
     this.emit = deps.emit;
     this.now = deps.now ?? (() => Date.now());
   }
@@ -252,13 +280,28 @@ export class ChannelService {
    * Archive a channel. Sets `status: 'archived'` and `archivedAt`.
    * Members retain history access (KTD-G). Subsequent `post` calls
    * return `CHANNEL_ARCHIVED`. `CHANNEL_NOT_FOUND` if the id is unknown;
-   * `PERSIST_FAILED` if the writer cannot save.
+   * `NOT_AUTHORIZED` if the verified caller is neither the creator nor
+   * the company CEO; `PERSIST_FAILED` if the writer cannot save.
    */
   async archive(params: ArchiveChannelParams): Promise<EmptyResult> {
     return this.withChannelLock(params.channelId, async () => {
       const channel = this.state.channels.find((c) => c.id === params.channelId);
       if (!channel) {
         return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
+      }
+      // Authz gate (KTD-F): caller must be the creator OR the company CEO.
+      // Both checks use `verifiedWorkspaceId` (server-resolved) — the
+      // client-supplied `archivedBy` is recorded as metadata only, never
+      // trusted for the gate.
+      const isCeo = this.ceoWorkspaceId !== undefined && this.ceoWorkspaceId === params.verifiedWorkspaceId;
+      if (channel.createdBy !== params.verifiedWorkspaceId && !isCeo) {
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: 'Only the channel creator or the company CEO may archive this channel',
+          },
+        };
       }
       const now = this.now();
       channel.status = 'archived';
@@ -364,15 +407,38 @@ export class ChannelService {
    * post with the same `clientMsgId` returns the original message
    * with `idempotent: true` (no new seq, no second emit). Errors:
    * `CHANNEL_NOT_FOUND`, `CHANNEL_ARCHIVED`, `NOT_A_MEMBER`,
-   * `PERSIST_FAILED`. The `channel.message` event fires AFTER a
-   * successful persist — the message is durable on disk by the time
-   * consumers see it.
+   * `NOT_AUTHORIZED`, `PERSIST_FAILED`. The `channel.message` event
+   * fires AFTER a successful persist — the message is durable on disk
+   * by the time consumers see it.
+   *
+   * Sender pinning (R5/R6): the server uses `verifiedWorkspaceId` (the
+   * transport-resolved caller identity — MCP `requireWorkspaceId`, the
+   * renderer bridge) as the authoritative caller. A client-supplied
+   * `sender.workspaceId` that disagrees with `verifiedWorkspaceId` is
+   * rejected with `NOT_AUTHORIZED` before any state mutation. This
+   * stops a malicious or buggy caller from posting AS a different
+   * workspace — the persisted row's `workspaceId` is always the
+   * verified one, so downstream fan-out (recipient snapshot, event
+   * `senderWorkspaceId`) cannot be spoofed by the client.
    */
   async post(params: PostMessageParams): Promise<Result<{
     message: ChannelMessage;
     idempotent?: boolean;
   }>> {
     return this.withChannelLock(params.channelId, async () => {
+      // Sender-pin gate (R5). Must run BEFORE any state read or
+      // mutation — a forged sender must not even consume an idempotency
+      // cache lookup, since that would let the attacker probe seq
+      // values for channels they cannot post in.
+      if (params.sender.workspaceId !== params.verifiedWorkspaceId) {
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: 'sender.workspaceId does not match the verified caller identity',
+          },
+        };
+      }
       const channel = this.state.channels.find((c) => c.id === params.channelId);
       if (!channel) {
         return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };

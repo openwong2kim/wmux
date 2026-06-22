@@ -55,6 +55,7 @@ const COMPANY = 'co-test';
 function makeService(opts: {
   failNext?: boolean;
   now?: () => number;
+  ceoWorkspaceId?: string;
 } = {}) {
   const writer = makeFakeWriter({ failNext: opts.failNext });
   const emit = vi.fn<ChannelServiceEmit>();
@@ -62,6 +63,7 @@ function makeService(opts: {
   const svc = new ChannelService({
     writer: writer as unknown as ConstructorParameters<typeof ChannelService>[0]['writer'],
     companyId: COMPANY,
+    ceoWorkspaceId: opts.ceoWorkspaceId,
     emit,
     now,
   });
@@ -127,6 +129,7 @@ describe('ChannelService', () => {
       const archived = await svc.archive({
         channelId: created.channel.id,
         archivedBy: 'ws-1',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(archived.ok).toBe(true);
       const listed = svc.list().find((c) => c.id === created.channel.id);
@@ -138,10 +141,61 @@ describe('ChannelService', () => {
         channelId: created.channel.id,
         sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         text: 'after archive',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(post.ok).toBe(false);
       if (post.ok) throw new Error('expected !ok');
       expect(post.error.code).toBe('CHANNEL_ARCHIVED');
+    });
+
+    it('rejects archive by a non-creator, non-CEO workspace (NOT_AUTHORIZED)', async () => {
+      // The archive authz gate (KTD-F) lets the creator OR the company
+      // CEO archive. With no CEO wired (`ceoWorkspaceId` is undefined),
+      // a different workspace's verified id must be rejected.
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'someone-elses',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      });
+      if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
+      const r = await svc.archive({
+        channelId: created.channel.id,
+        archivedBy: 'ws-9',
+        verifiedWorkspaceId: 'ws-9',
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('expected !ok');
+      expect(r.error.code).toBe('NOT_AUTHORIZED');
+      // State must NOT have been mutated.
+      const ch = svc.get(created.channel.id);
+      expect(ch?.status).toBe('active');
+      expect(ch?.archivedAt).toBeUndefined();
+      expect(ch?.archivedBy).toBeUndefined();
+    });
+
+    it('lets the company CEO archive any channel (CEO authz override)', async () => {
+      // The CEO override is the second half of the KTD-F rule. With
+      // `ceoWorkspaceId: 'ws-ceo'` plumbed in, an archive call from
+      // the CEO must succeed even if they are NOT the creator.
+      const { svc } = makeService({ ceoWorkspaceId: 'ws-ceo' });
+      const created = await svc.create({
+        name: 'team-room',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      });
+      if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
+      const r = await svc.archive({
+        channelId: created.channel.id,
+        archivedBy: 'ws-ceo',
+        verifiedWorkspaceId: 'ws-ceo',
+      });
+      expect(r.ok).toBe(true);
+      if (r.ok) {
+        const ch = svc.get(created.channel.id);
+        expect(ch?.status).toBe('archived');
+        expect(ch?.archivedBy).toBe('ws-ceo');
+      }
     });
   });
 
@@ -177,6 +231,7 @@ describe('ChannelService', () => {
         channelId: created.channel.id,
         sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         text: 'hello',
+        verifiedWorkspaceId: 'ws-1',
       });
       const nextSeqAtJoin = svc.get(created.channel.id)?.nextSeq ?? 0;
       const r = await svc.join({
@@ -232,6 +287,7 @@ describe('ChannelService', () => {
         channelId: created.channel.id,
         sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         text: 'hello',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(result.ok).toBe(true);
       if (!result.ok) throw new Error('expected post ok');
@@ -266,6 +322,7 @@ describe('ChannelService', () => {
         sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         text: 'hello',
         clientMsgId: 'cmid-1',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(first.ok).toBe(true);
       if (!first.ok) throw new Error('expected first ok');
@@ -275,6 +332,7 @@ describe('ChannelService', () => {
         sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         text: 'hello (retry)',
         clientMsgId: 'cmid-1',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(second.ok).toBe(true);
       if (!second.ok) throw new Error('expected second ok');
@@ -295,13 +353,18 @@ describe('ChannelService', () => {
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
       });
       if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
-      await svc.archive({ channelId: created.channel.id, archivedBy: 'ws-1' });
+      await svc.archive({
+        channelId: created.channel.id,
+        archivedBy: 'ws-1',
+        verifiedWorkspaceId: 'ws-1',
+      });
       const writesBefore = writer.saveImmediate.mock.calls.length;
       const emitBefore = emit.mock.calls.length;
       const r = await svc.post({
         channelId: created.channel.id,
         sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         text: 'after archive',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(r.ok).toBe(false);
       if (r.ok) throw new Error('expected !ok');
@@ -322,10 +385,52 @@ describe('ChannelService', () => {
         channelId: created.channel.id,
         sender: { workspaceId: 'ws-9', memberId: 'm-9', memberName: 'Eve' },
         text: 'uninvited',
+        verifiedWorkspaceId: 'ws-9',
       });
       expect(r.ok).toBe(false);
       if (r.ok) throw new Error('expected !ok');
       expect(r.error.code).toBe('NOT_A_MEMBER');
+    });
+
+    it('rejects posts where sender.workspaceId disagrees with verifiedWorkspaceId (NOT_AUTHORIZED, no persist, no event)', async () => {
+      // Sender-pin gate (R5): the server pins the authoritative caller
+      // from `verifiedWorkspaceId`. A client that claims a different
+      // `sender.workspaceId` (e.g. tries to post AS a member of another
+      // workspace) is rejected with NOT_AUTHORIZED before any state
+      // mutation — no seq bump, no persist, no event.
+      const { svc, writer, emit } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+      });
+      if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
+      // Add the "spoofed" sender as a member of the channel so that
+      // bypassing the sender-pin gate would otherwise let them post.
+      await svc.join({
+        channelId: created.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Mallory' },
+      });
+      const writesBefore = writer.saveImmediate.mock.calls.length;
+      const emitBefore = emit.mock.calls.length;
+      // Mallory's transport says verifiedWorkspaceId='ws-2', but the
+      // client-supplied sender.workspaceId claims to be 'ws-1' (Alice's
+      // workspace). The server must reject: the verified id wins.
+      const r = await svc.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'spoofed',
+        verifiedWorkspaceId: 'ws-2',
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('expected !ok');
+      expect(r.error.code).toBe('NOT_AUTHORIZED');
+      // No state mutation.
+      expect(svc.getMessages(created.channel.id)).toHaveLength(0);
+      const ch = svc.get(created.channel.id);
+      expect(ch?.nextSeq).toBe(1);
+      expect(writer.saveImmediate.mock.calls.length).toBe(writesBefore);
+      expect(emit.mock.calls.length).toBe(emitBefore);
     });
 
     it('returns PERSIST_FAILED when writer.saveImmediate returns false (no event)', async () => {
@@ -342,6 +447,7 @@ describe('ChannelService', () => {
         channelId: created.channel.id,
         sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         text: 'lost write',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(r.ok).toBe(false);
       if (r.ok) throw new Error('expected !ok');
@@ -367,11 +473,13 @@ describe('ChannelService', () => {
           channelId: created.channel.id,
           sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
           text: 'first',
+          verifiedWorkspaceId: 'ws-1',
         }),
         svc.post({
           channelId: created.channel.id,
           sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
           text: 'second',
+          verifiedWorkspaceId: 'ws-1',
         }),
       ]);
       expect(a.ok && b.ok).toBe(true);
@@ -399,11 +507,13 @@ describe('ChannelService', () => {
           channelId: c1.channel.id,
           sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
           text: 'a',
+          verifiedWorkspaceId: 'ws-1',
         }),
         svc.post({
           channelId: c2.channel.id,
           sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
           text: 'b',
+          verifiedWorkspaceId: 'ws-1',
         }),
       ]);
       // If mutex were global, the second post would block on the first
@@ -435,6 +545,7 @@ describe('ChannelService', () => {
         channelId: created.channel.id,
         sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         text: 'pre-join',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(first.ok).toBe(true);
       if (!first.ok) throw new Error('expected first ok');
@@ -448,6 +559,7 @@ describe('ChannelService', () => {
         channelId: created.channel.id,
         sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         text: 'post-join',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(second.ok).toBe(true);
       if (!second.ok) throw new Error('expected second ok');
@@ -472,6 +584,7 @@ describe('ChannelService', () => {
           sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
           text: `msg-${i}`,
           clientMsgId: `cmid-${i}`,
+          verifiedWorkspaceId: 'ws-1',
         });
       }
       // Retry cmid-0 — should be a fresh post (evicted), not idempotent.
@@ -480,6 +593,7 @@ describe('ChannelService', () => {
         sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         text: 'retry-0',
         clientMsgId: 'cmid-0',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(retry0.ok).toBe(true);
       if (!retry0.ok) throw new Error('expected ok');
@@ -491,6 +605,7 @@ describe('ChannelService', () => {
         sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         text: 'retry-1000',
         clientMsgId: 'cmid-1000',
+        verifiedWorkspaceId: 'ws-1',
       });
       expect(retry1000.ok).toBe(true);
       if (!retry1000.ok) throw new Error('expected ok');

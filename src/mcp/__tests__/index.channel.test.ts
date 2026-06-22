@@ -110,10 +110,13 @@ describe('channel_* tools: registration', () => {
 });
 
 describe('channel_list', () => {
-  it('calls a2a.channel.list and forwards workspaceId', async () => {
+  it('calls a2a.channel.list and forwards workspaceId + verifiedWorkspaceId', async () => {
     mockSendRpc.mockResolvedValue({ ok: true, channels: [] });
     const res = await channelList({});
-    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.list', { workspaceId: 'ws-test' });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.list', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+    });
     expect(res.isError).toBeUndefined();
   });
 
@@ -128,7 +131,7 @@ describe('channel_list', () => {
 });
 
 describe('channel_create', () => {
-  it('forwards name/visibility/topic/createdBy to a2a.channel.create', async () => {
+  it('forwards name/visibility/topic/createdBy + verifiedWorkspaceId to a2a.channel.create', async () => {
     mockSendRpc.mockResolvedValue({ ok: true, channel: { id: 'ch-new' } });
     const res = await channelCreate({
       name: 'release-notes',
@@ -139,6 +142,7 @@ describe('channel_create', () => {
     });
     expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.create', {
       workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
       name: 'release-notes',
       visibility: 'public',
       topic: 'Per-release changelog',
@@ -177,7 +181,7 @@ describe('channel_create', () => {
 });
 
 describe('channel_post', () => {
-  it('forwards channelId/text/sender/client_msg_id to a2a.channel.post', async () => {
+  it('forwards channelId/text/sender/client_msg_id + verifiedWorkspaceId to a2a.channel.post', async () => {
     mockSendRpc.mockResolvedValue({ ok: true, message: { seq: 1 } });
     const res = await channelPost({
       channel_id: 'ch-1',
@@ -188,6 +192,7 @@ describe('channel_post', () => {
     });
     expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.post', {
       workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
       channelId: 'ch-1',
       sender: { workspaceId: 'ws-test', memberId: 'm-1', memberName: 'Lead' },
       text: 'hello channel',
@@ -224,6 +229,28 @@ describe('channel_post', () => {
     });
     expect(res.isError).toBe(true);
     expect(res.content[0].text).toContain('CHANNEL_ARCHIVED');
+  });
+
+  it('surfaces NOT_AUTHORIZED when the sender workspaceId disagrees with verifiedWorkspaceId', async () => {
+    // The sender-pin gate (R5) lives in the daemon. The MCP layer just
+    // forwards `verifiedWorkspaceId` from the resolver; if the daemon
+    // rejects the call as NOT_AUTHORIZED, the tool surfaces that to the
+    // agent verbatim. This test pins the contract end-to-end.
+    mockSendRpc.mockResolvedValue({
+      ok: false,
+      error: {
+        code: 'NOT_AUTHORIZED',
+        message: 'sender.workspaceId does not match the verified caller identity',
+      },
+    });
+    const res = await channelPost({
+      channel_id: 'ch-1',
+      text: 'spoofed',
+      member_id: 'm-1',
+      member_name: 'Lead',
+    });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('NOT_AUTHORIZED');
   });
 
   it('forwards client_msg_id unchanged on repeat calls (idempotency is end-to-end through the MCP layer)', async () => {
@@ -266,7 +293,7 @@ describe('channel_post', () => {
 });
 
 describe('channel_join', () => {
-  it('forwards channelId + member + include_history to a2a.channel.join', async () => {
+  it('forwards channelId + member + include_history + verifiedWorkspaceId to a2a.channel.join', async () => {
     mockSendRpc.mockResolvedValue({ ok: true });
     await channelJoin({
       channel_id: 'ch-1',
@@ -276,6 +303,7 @@ describe('channel_join', () => {
     });
     expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.join', {
       workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
       channelId: 'ch-1',
       member: { workspaceId: 'ws-test', memberId: 'm-2', memberName: 'Backend' },
       includeHistory: false,
@@ -295,7 +323,7 @@ describe('channel_join', () => {
 });
 
 describe('channel_leave', () => {
-  it('forwards channelId/workspaceId/memberId to a2a.channel.leave', async () => {
+  it('forwards channelId/workspaceId/memberId + verifiedWorkspaceId to a2a.channel.leave', async () => {
     mockSendRpc.mockResolvedValue({ ok: true });
     await channelLeave({
       channel_id: 'ch-1',
@@ -303,6 +331,7 @@ describe('channel_leave', () => {
     });
     expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.leave', {
       workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
       channelId: 'ch-1',
       memberId: 'm-2',
     });
@@ -323,14 +352,32 @@ describe('channel_leave', () => {
 });
 
 describe('channel_archive', () => {
-  it('forwards channelId + archivedBy to a2a.channel.archive', async () => {
+  it('forwards channelId + archivedBy + verifiedWorkspaceId to a2a.channel.archive', async () => {
     mockSendRpc.mockResolvedValue({ ok: true });
     await channelArchive({ channel_id: 'ch-1' });
     expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.archive', {
       workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
       channelId: 'ch-1',
       archivedBy: 'ws-test',
     });
+  });
+
+  it('surfaces NOT_AUTHORIZED from the daemon as isError (archive authz failure)', async () => {
+    // The archive authz gate (KTD-F) lives in the daemon. The MCP tool
+    // just forwards `verifiedWorkspaceId`; the daemon decides whether
+    // the caller is the creator or the company CEO. A rejection
+    // surfaces to the agent verbatim so it can branch on the code.
+    mockSendRpc.mockResolvedValue({
+      ok: false,
+      error: {
+        code: 'NOT_AUTHORIZED',
+        message: 'Only the channel creator or the company CEO may archive this channel',
+      },
+    });
+    const res = await channelArchive({ channel_id: 'ch-1' });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('NOT_AUTHORIZED');
   });
 });
 
