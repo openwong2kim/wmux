@@ -1,8 +1,7 @@
 // ─── A2A Channels renderer state ─────────────────────────────────────────
 //
 // Mirrors the daemon-side `ChannelState` in the renderer for the sidebar
-// (U7) + composer (U8) + unread-badge surfaces. The slice is a STATE MIRROR
-// only — it never calls the daemon directly.
+// (U7) + composer (U8) + unread-badge surfaces.
 //
 // Two paths drive mutations:
 //
@@ -16,17 +15,31 @@
 //      the relevant channel lifecycle and the slice reads the result
 //      back through `refreshChannels`.
 //
-//   2. User-initiated (optimistic): the sidebar/composer calls the slice
-//      actions (createChannel / postMessage / joinChannel /
-//      leaveChannel / archiveChannel) for optimistic local updates.
-//      The slice is intentionally agnostic to the transport that
-//      reaches the daemon — the higher-level component is expected to
-//      have already arranged the daemon round-trip (e.g. via an
-//      out-of-band MCP tool invocation) before mutating local state.
-//      The actions in this slice therefore focus on consistent local
-//      state: they accept an externally-resolved result and apply it
-//      to the mirror, returning the result so the caller can branch on
-//      the structured error code.
+//   2. User-initiated: the sidebar/composer calls the `*Daemon` thunks
+//      (`createChannelDaemon` / `postMessageDaemon`) for round-tripping
+//      to the daemon. The `*Daemon` thunks await the RPC result and,
+//      on success, call the matching `*Optimistic` thunk to apply the
+//      authoritative row to the local mirror. On failure, the `*Daemon`
+//      thunk returns the structured `ChannelError` envelope without
+//      mutating local state — the caller (sidebar/composer) branches on
+//      `result.error.code` for the user-visible error branch. The
+//      `*Optimistic` thunks stay as the state-mirror-only primitive for
+//      callers that arrange the daemon round-trip out of band (tests,
+//      out-of-band MCP flows).
+//
+// Why a separate `*Daemon` layer (vs. making `*Optimistic` async):
+//   - The `*Optimistic` primitives stay synchronous so tests can drive
+//     state without a bridge mock.
+//   - The `*Daemon` thunks are the wire-path entry points; their job is
+//     RPC + error-mapping, NOT state mutation. State mutation always
+//     goes through `*Optimistic` for one source of truth.
+//
+// Bridge access: `useRpcBridge` installs `window.__wmuxChannelsRpc` on
+// mount; the `*Daemon` thunks read it lazily (mirroring the
+// `searchSlice.runSearch` pattern at `src/renderer/stores/slices/
+// searchSlice.ts:122-130`). If the bridge isn't mounted, the thunk
+// warns and returns an `UNKNOWN` error rather than throwing — the
+// caller still gets a structured error to branch on.
 //
 // Per-recipient scoping: the event hook filters by `recipientWorkspaceIds`
 // before dispatching, so `appendMessageFromEvent` can trust that the
@@ -38,7 +51,7 @@
 // `error.code` (PERSIST_FAILED on the post path is the U2 maintainer
 // directive — surfaced verbatim, not swallowed).
 //
-// Plan reference: U6 (a2a-channels renderer integration).
+// Plan reference: U4 (create/post wire-up), U6 (state mirror).
 
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
@@ -150,6 +163,36 @@ export interface ChannelsSlice {
     archivedChannel: Channel,
   ) => ChannelActionResult<Channel>;
 
+  // ── Wire-path entry points (U4, R4 + R11) ────────────────────────
+  // The `*Daemon` thunks wrap the bridge RPC, await the daemon's
+  // response, and apply the matching `*Optimistic` thunk on success.
+  // On RPC failure or daemon-side error they return the structured
+  // `ChannelError` envelope (no throw) so the caller (sidebar/
+  // composer) can branch on `result.error.code`. They never mutate
+  // state on failure — the local mirror only advances when the
+  // daemon has the authoritative row in hand.
+  createChannelDaemon: (
+    params: ChannelCreateParams,
+  ) => Promise<ChannelActionResult<Channel>>;
+  postMessageDaemon: (
+    channelId: string,
+    params: ChannelPostParams,
+  ) => Promise<ChannelActionResult<ChannelMessage>>;
+
+  // Internal helpers — exposed on the slice so the `*Daemon` thunks
+  // can call them via `get()`, and so tests can drive the bridge-
+  // mount and error-mapping paths directly without re-implementing
+  // the same shape guard.
+  channelsRpc: () =>
+    | {
+        rpc: (
+          method: string,
+          params: Record<string, unknown>,
+        ) => Promise<unknown>;
+      }
+    | undefined;
+  mapRpcError: (raw: unknown, fallbackMessage: string) => ChannelError;
+
   // ── Catalog refresh (called on mount + after lifecycle events) ──
   setChannels: (
     channels: Channel[],
@@ -166,7 +209,7 @@ export const createChannelsSlice: StateCreator<
   [['zustand/immer', never]],
   [],
   ChannelsSlice
-> = (set) => ({
+> = (set, get) => ({
   channels: {},
   channelMembers: {},
   channelMessages: {},
@@ -321,4 +364,155 @@ export const createChannelsSlice: StateCreator<
           (state.channelUnread[channelId] ?? 0) + 1;
       }
     }),
+
+  // ── *Daemon thunks (U4) — wire-path entry points ───────────────────
+
+  /** Bridge accessor. Returns the global installed by `useRpcBridge`,
+   *  or `undefined` if the hook hasn't mounted yet. Mirrors
+   *  `searchSlice.runSearch`'s bridge-missing handling. */
+  channelsRpc(): { rpc: (method: string, params: Record<string, unknown>) => Promise<unknown> } | undefined {
+    return (window as unknown as {
+      __wmuxChannelsRpc?: {
+        rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+      };
+    }).__wmuxChannelsRpc;
+  },
+
+  /** Map a raw RPC result to the renderer's `ChannelError` envelope.
+   *  The daemon's `Result<T>` shape is `{ ok: true, ... } | { ok: false, error }`,
+   *  where `error: { code: ChannelErrorCode, message: string }`. Codes
+   *  the renderer doesn't know are bucketed as `UNKNOWN` so callers
+   *  can switch exhaustively without a runtime type guard at the call
+   *  site (U6 expands the union; new codes automatically get bucketed
+   *  to `UNKNOWN` until the union is widened). */
+  mapRpcError(raw: unknown, fallbackMessage: string): ChannelError {
+    if (
+      raw !== null &&
+      typeof raw === 'object' &&
+      'ok' in raw &&
+      (raw as { ok: unknown }).ok === false &&
+      'error' in raw
+    ) {
+      const err = (raw as { error: unknown }).error;
+      if (
+        err !== null &&
+        typeof err === 'object' &&
+        'code' in err &&
+        typeof (err as { code: unknown }).code === 'string'
+      ) {
+        const code = (err as { code: string }).code;
+        const message =
+          'message' in err && typeof (err as { message: unknown }).message === 'string'
+            ? (err as { message: string }).message
+            : fallbackMessage;
+        // Restrict the code to the renderer's known union. Codes the
+        // renderer doesn't model (e.g. NOT_A_MEMBER pre-U6, or future
+        // NOT_AUTHORIZED post-U5) are bucketed to UNKNOWN so the
+        // caller's switch remains exhaustive — the original `code`
+        // value travels in the `message` so the user-facing toast
+        // still surfaces the daemon's reason verbatim.
+        const KNOWN_CODES: ReadonlySet<ChannelError['code']> = new Set([
+          'INVALID_NAME',
+          'CHANNEL_NOT_FOUND',
+          'CHANNEL_ARCHIVED',
+          'NOT_A_MEMBER',
+          'PERSIST_FAILED',
+          'ALREADY_EXISTS',
+          'UNKNOWN',
+        ]);
+        if (KNOWN_CODES.has(code as ChannelError['code'])) {
+          return { code: code as ChannelError['code'], message };
+        }
+        return { code: 'UNKNOWN', message: `${code}: ${message}` };
+      }
+    }
+    return { code: 'UNKNOWN', message: fallbackMessage };
+  },
+
+  createChannelDaemon: async (params) => {
+    const bridge = get().channelsRpc();
+    if (!bridge) {
+      console.warn(
+        '[channelsSlice] createChannelDaemon invoked before bridge mounted — call ignored',
+      );
+      return { ok: false, error: { code: 'UNKNOWN', message: 'channels bridge not mounted' } };
+    }
+    let raw: unknown;
+    try {
+      raw = await bridge.rpc('a2a.channel.create', {
+        name: params.name,
+        visibility: params.visibility,
+        topic: params.topic,
+        createdBy: params.createdBy,
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        error: {
+          code: 'UNKNOWN',
+          message: err instanceof Error ? err.message : String(err),
+        },
+      };
+    }
+    if (raw === null || typeof raw !== 'object' || !('ok' in raw) || (raw as { ok: unknown }).ok !== true) {
+      return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.create failed') };
+    }
+    const channel = (raw as { channel?: unknown }).channel;
+    if (channel === null || typeof channel !== 'object') {
+      return { ok: false, error: { code: 'UNKNOWN', message: 'a2a.channel.create: missing channel' } };
+    }
+    // Apply through the state-mirror primitive. The `channel` field on
+    // the params is overwritten with the daemon's authoritative row
+    // (the synthesized row passed in by the caller is discarded — the
+    // optimistic insert was never applied because we waited for the
+    // RPC). This keeps the *Optimistic thunk as the single state-
+    // mutation entry point.
+    return get().createChannelOptimistic({
+      ...params,
+      channel: channel as Channel,
+    });
+  },
+
+  postMessageDaemon: async (channelId, params) => {
+    const bridge = get().channelsRpc();
+    if (!bridge) {
+      console.warn(
+        '[channelsSlice] postMessageDaemon invoked before bridge mounted — call ignored',
+      );
+      return { ok: false, error: { code: 'UNKNOWN', message: 'channels bridge not mounted' } };
+    }
+    let raw: unknown;
+    try {
+      raw = await bridge.rpc('a2a.channel.post', {
+        channelId,
+        text: params.text,
+        sender: params.sender,
+        clientMsgId: params.clientMsgId,
+        data: params.data,
+      });
+    } catch (err) {
+      return {
+        ok: false,
+        error: {
+          code: 'UNKNOWN',
+          message: err instanceof Error ? err.message : String(err),
+        },
+      };
+    }
+    if (raw === null || typeof raw !== 'object' || !('ok' in raw) || (raw as { ok: unknown }).ok !== true) {
+      return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.post failed') };
+    }
+    const message = (raw as { message?: unknown }).message;
+    if (message === null || typeof message !== 'object') {
+      return { ok: false, error: { code: 'UNKNOWN', message: 'a2a.channel.post: missing message' } };
+    }
+    // Daemon returned the authoritative message. The renderer's local
+    // mirror applies it through the *Optimistic primitive; the same-
+    // seq dedup in `appendMessageFromEvent` handles the case where
+    // the event-driven `channel.message` fan-out lands first.
+    return get().postMessageOptimistic(channelId, {
+      ...params,
+      message: message as ChannelMessage,
+    });
+  },
 });

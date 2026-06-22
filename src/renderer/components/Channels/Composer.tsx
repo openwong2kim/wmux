@@ -2,16 +2,17 @@
 //
 // Post input that ships a typed message into the channels slice and (on
 // success) clears itself. The composer is a thin shell over the slice's
-// `postMessageOptimistic` — the actual daemon round-trip is the caller's
-// concern (mirrors the U7 `synthesizeChannel` pattern: the renderer ships
-// a synthesized `ChannelMessage` so the UI updates immediately; the
-// authoritative row arrives via the `channel.message` event fan-out).
+// `postMessageDaemon` thunk (U4, R4 + R11), which round-trips to the
+// daemon via the `a2a.channel.post` RPC and applies the authoritative
+// row through `postMessageOptimistic` on success. The synthesized
+// `ChannelMessage` we construct here is the input shape — it is
+// overwritten by the daemon's authoritative row in the slice.
 //
 // Failure surfacing: PERSIST_FAILED → push toast + show inline error.
 // The slice never throws on failure; we branch on the structured
 // `result.error.code` per R7 / the U2 maintainer directive.
 //
-// Plan ref: U8, R7, R22, R26.
+// Plan ref: U4 (wire-path entry), U8 (UI surface), R7, R22, R26.
 
 import { useState, useRef, useCallback, type FormEvent, type KeyboardEvent } from 'react';
 import { useStore } from '../../stores';
@@ -192,7 +193,7 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
   const t = useT();
   const company = useStore((s) => s.company);
   const channel = useStore((s) => s.channels[channelId]);
-  const postMessageOptimistic = useStore((s) => s.postMessageOptimistic);
+  const postMessageDaemon = useStore((s) => s.postMessageDaemon);
 
   const handlePost = useCallback(
     async (text: string) => {
@@ -203,6 +204,11 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
       // channel create; the authoritative row from the daemon will
       // overwrite the auto-member with the real creator's id.
       const ceoWorkspaceId = company.ceoWorkspaceId ?? 'unknown-workspace';
+      // R11 idempotency: `clientMsgId` is the per-post idempotency
+      // key. The daemon returns the original `seq` on a repeat hit
+      // instead of appending a duplicate; we generate the key here
+      // so a network-retry from the user (same composer session)
+      // dedupes against the prior in-flight post.
       const clientMsgId = generateId('cmid');
       const nextSeq = channel.nextSeq;
       const message = synthesizeChannelMessage({
@@ -214,7 +220,7 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
         senderMemberName: 'local-ui',
         clientMsgId,
       });
-      const result = postMessageOptimistic(channelId, {
+      const result = await postMessageDaemon(channelId, {
         text,
         sender: {
           workspaceId: ceoWorkspaceId,
@@ -239,7 +245,7 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
       }
       return { ok: true };
     },
-    [channelId, channel, company, postMessageOptimistic, onError, t],
+    [channelId, channel, company, postMessageDaemon, onError, t],
   );
 
   // The composer is bound to a single channel; an archived channel is

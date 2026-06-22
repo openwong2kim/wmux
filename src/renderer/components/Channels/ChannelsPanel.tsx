@@ -8,9 +8,12 @@
 // State ownership:
 //   - The panel is a thin orchestrator over `channelsSlice` — every
 //     field (channels, members, active id, unread) is read from the
-//     store via `useStore`. The panel NEVER calls `a2a.channel.*`
-//     directly; that round-trip is owned by an out-of-band MCP tool
-//     invocation per slice design (see `channelsSlice.ts` header).
+//     store via `useStore`. Channel creation round-trips through the
+//     slice's `createChannelDaemon` thunk (U4, R4), which wraps the
+//     `a2a.channel.create` RPC and applies the authoritative row on
+//     success. On failure the thunk returns a structured
+//     `ChannelError`; the panel logs and the modal stays open (so
+//     the user can retry).
 //
 // Grouping:
 //   - `active` channels are sorted by name (case-insensitive) and
@@ -29,16 +32,14 @@
 // New-channel flow:
 //   - Clicking `+ New channel` opens the inline `CreateChannelModal`
 //     below.
-//   - On submit, the panel calls `createChannelOptimistic` with a
-//     synthesized channel row that mirrors what the daemon would
-//     return. The actual `a2a.channel.create` RPC round-trip is the
-//     caller's responsibility (the higher-level bridge that will be
-//     wired when MCP server emits its event back via the events.poll
-//     loop; U7 ships the UI surface, not the transport). The
-//     synthesis keeps U7 self-contained.
+//   - On submit, the panel calls `createChannelDaemon` with a
+//     synthesized channel row as the input shape. The thunk awaits
+//     the daemon's authoritative row and applies it through
+//     `createChannelOptimistic` on success. On failure, the modal
+//     stays open and the synthesized row is discarded.
 //
-// Plan ref: U7, R20 (grouping), R23 (creation modal), R29 (channel
-// scope to company).
+// Plan ref: U4 (wire-path entry), U7 (UI surface), R20 (grouping),
+// R23 (creation modal), R29 (channel scope to company).
 
 import { useState, useCallback, useMemo, useEffect, useRef } from 'react';
 import type { Channel, ChannelVisibility } from '../../../shared/channels';
@@ -93,7 +94,7 @@ interface CreateChannelModalProps {
   onCreate: (params: {
     name: string;
     visibility: ChannelVisibility;
-  }) => boolean;
+  }) => boolean | Promise<boolean>;
 }
 
 /** Side-effect-free: derive a `FieldState` from raw input. Lives at
@@ -154,11 +155,14 @@ function CreateChannelModal({
   }, [onClose]);
 
   const handleSubmit = useCallback(
-    (e: React.FormEvent) => {
+    async (e: React.FormEvent) => {
       e.preventDefault();
       setSubmitAttempted(true);
       if (!field.valid) return;
-      const ok = onCreate({ name: field.canonical, visibility });
+      // The panel-level `handleCreate` is async (it round-trips to
+      // the daemon via `createChannelDaemon`); we await so the modal
+      // stays open on failure and only closes on confirmed success.
+      const ok = await onCreate({ name: field.canonical, visibility });
       if (ok) onClose();
     },
     [field.canonical, field.valid, onCreate, onClose, visibility],
@@ -273,7 +277,7 @@ export interface ChannelsPanelViewProps {
   onCreate: (params: {
     name: string;
     visibility: ChannelVisibility;
-  }) => boolean;
+  }) => boolean | Promise<boolean>;
 }
 
 export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactElement {
@@ -439,27 +443,30 @@ export function ChannelsPanel(): React.ReactElement {
   const activeChannelId = useStore((s) => s.activeChannelId);
   const company = useStore((s) => s.company);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
-  const createChannelOptimistic = useStore(
-    (s) => s.createChannelOptimistic,
-  );
+  const createChannelDaemon = useStore((s) => s.createChannelDaemon);
 
   const handleCreate = useCallback(
-    (params: { name: string; visibility: ChannelVisibility }) => {
+    async (params: { name: string; visibility: ChannelVisibility }) => {
       if (!company) return false;
+      // Synthesize the row the slice would use as the optimistic
+      // insert. The `*Daemon` thunk will overwrite this with the
+      // daemon's authoritative row on success — the synthesized row
+      // is only used as the input shape so the thunk can call the
+      // matching `*Optimistic` primitive with the right field set.
       const channel = synthesizeChannel({
         companyId: company.id,
         name: params.name,
         visibility: params.visibility,
       });
-      // The slice's createChannelOptimistic needs a sender address.
-      // v1 has no concept of "the current renderer identity" — the
-      // U7 UI is company-scoped but workspace-agnostic. The CEO
-      // workspace (or the first workspace in the company, if CEO is
-      // not set) is used as a stable stand-in. The authoritative
-      // row that arrives from the daemon will overwrite the
-      // auto-member with the real creator's id.
+      // The slice's `*Daemon` thunks need a sender address. v1 has
+      // no concept of "the current renderer identity" — the U7 UI
+      // is company-scoped but workspace-agnostic. The CEO workspace
+      // (or the first workspace in the company, if CEO is not set)
+      // is used as a stable stand-in. The authoritative row that
+      // arrives from the daemon will overwrite the auto-member with
+      // the real creator's id.
       const ceoWorkspaceId = company.ceoWorkspaceId ?? 'unknown-workspace';
-      const result = createChannelOptimistic({
+      const result = await createChannelDaemon({
         name: params.name,
         visibility: params.visibility,
         createdBy: {
@@ -469,9 +476,21 @@ export function ChannelsPanel(): React.ReactElement {
         },
         channel,
       });
+      if (!result.ok) {
+        // U4 (R4) failure surfacing: log the structured error so the
+        // developer can see the daemon's reason in the console. The
+        // modal stays open (handleCreate returns false), so the user
+        // can retry. The slice never throws on a failed mutation;
+        // we branch on the structured `error.code` here so the U2
+        // maintainer directive on PERSIST_FAILED is preserved (no
+        // swallowing).
+        console.warn(
+          `[ChannelsPanel] createChannel failed: ${result.error.code}: ${result.error.message}`,
+        );
+      }
       return result.ok;
     },
-    [company, createChannelOptimistic],
+    [company, createChannelDaemon],
   );
 
   return (

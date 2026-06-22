@@ -18,9 +18,30 @@
 //   8. Wiring: the slice is registered in `src/renderer/stores/index.ts`
 //      and visible via `useStore` — smoke test on the composed store.
 //
-// The slice is bridge-free (no daemon RPCs of its own); transport-level
-// failure is the caller's concern, so the slice tests focus on
-// state-shape correctness.
+// Plus U4 coverage for the `*Daemon` wire-path entry points:
+//   9. `createChannelDaemon` on RPC success: `*Optimistic` runs, state
+//      has the daemon's authoritative row (NOT the synthesized input),
+//      `result.ok === true`.
+//  10. `createChannelDaemon` on RPC failure: `*Optimistic` does NOT
+//      run, `result.ok === false`, `result.error.code` matches the
+//      daemon's `ChannelError` code.
+//  11. `postMessageDaemon` on RPC success: optimistic message pushed
+//      with the daemon's authoritative row, `clientMsgId` propagated.
+//  12. `postMessageDaemon` on RPC failure: no optimistic message
+//      pushed, `result.error.code === 'PERSIST_FAILED'` propagates
+//      to the caller.
+//  13. `mapRpcError` buckets unknown daemon codes to `UNKNOWN` and
+//      prefixes the original code in the message for debuggability.
+//  14. Bridge-missing: `createChannelDaemon` returns an `UNKNOWN`
+//      error without mutating state when `__wmuxChannelsRpc` is not
+//      installed (the renderer mounting before the bridge effect).
+//  15. Regression: the slice's existing `*Optimistic` thunks are
+//      still callable directly (state-mirror-only use case).
+//
+// The slice is bridge-aware for the `*Daemon` thunks but the bridge
+// is read lazily from `window.__wmuxChannelsRpc`. Tests install a
+// mock global via `setChannelsRpc` to drive the success/failure
+// paths without a real `useRpcBridge` mount.
 
 import { describe, it, expect } from 'vitest';
 import { create } from 'zustand';
@@ -434,5 +455,370 @@ describe('channelsSlice — wiring (composed store)', () => {
       channel: makeChannel(),
     });
     expect(useStore.getState().channels['ch-1']).toBeDefined();
+  });
+});
+
+// ───────────────────────────────────────────────────────────────────────────
+// U4: *Daemon thunks — wire-path entry points
+// ───────────────────────────────────────────────────────────────────────────
+
+// vitest's default `node` environment doesn't define `window`. The
+// slice dereferences `window.__wmuxChannelsRpc` (and the *Optimistic
+// thunks reach it through `get().channelsRpc()`), so we install a
+// stub on globalThis to satisfy that lookup. The bridge-missing tests
+// delete the stub so the slice falls into its `UNKNOWN` branch.
+// Mirrors the searchSlice test pattern at
+// `src/renderer/stores/slices/__tests__/searchSlice.test.ts:46-64`.
+type ChannelsRpcFn = (method: string, params: Record<string, unknown>) => Promise<unknown>;
+interface MockedWindow {
+  __wmuxChannelsRpc?: { rpc: ChannelsRpcFn };
+}
+const g = globalThis as unknown as { window?: MockedWindow };
+
+/** Install a stub `__wmuxChannelsRpc` global for the duration of a
+ *  test. The `respond` callback returns whatever the test wants the
+ *  daemon to have replied with; the test then asserts state + result.
+ *  Each test uses its own stub so they don't share call records. */
+function withChannelsRpc(
+  respond: ChannelsRpcFn,
+): { calls: Array<{ method: string; params: Record<string, unknown> }> } {
+  const calls: Array<{ method: string; params: Record<string, unknown> }> = [];
+  g.window = {
+    __wmuxChannelsRpc: {
+      rpc: async (method, params) => {
+        calls.push({ method, params });
+        return respond(method, params);
+      },
+    },
+  };
+  return { calls };
+}
+
+function clearChannelsRpc() {
+  if (g.window) delete g.window.__wmuxChannelsRpc;
+}
+
+describe('channelsSlice — createChannelDaemon (U4, R4)', () => {
+  it('on RPC success: applies the daemon row, returns ok', async () => {
+    const { calls } = withChannelsRpc(async () => ({
+      ok: true,
+      channel: makeChannel({ id: 'ch-daemon-1', name: 'release-notes' }),
+    }));
+    try {
+      const store = createTestStore();
+      const synthesized = makeChannel({ id: 'ch-local-fake', name: 'release-notes' });
+
+      const res = await store.getState().createChannelDaemon({
+        name: 'release-notes',
+        visibility: 'public',
+        createdBy: sender,
+        channel: synthesized,
+      });
+
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.value.id).toBe('ch-daemon-1');
+
+      // The bridge was called with the a2a.channel.create method.
+      expect(calls).toHaveLength(1);
+      expect(calls[0].method).toBe('a2a.channel.create');
+      expect(calls[0].params).toMatchObject({
+        name: 'release-notes',
+        visibility: 'public',
+        createdBy: sender,
+      });
+
+      // The local mirror holds the DAEMON's row, not the synthesized
+      // input. The synthesized id must NOT appear; the daemon id MUST.
+      const s = store.getState();
+      expect(s.channels['ch-local-fake']).toBeUndefined();
+      expect(s.channels['ch-daemon-1']).toBeDefined();
+      expect(s.channels['ch-daemon-1'].name).toBe('release-notes');
+      // Auto-membership is applied by the *Optimistic primitive.
+      expect(s.channelMembers['ch-daemon-1']).toHaveLength(1);
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('on RPC failure: does NOT apply state, returns the structured error', async () => {
+    withChannelsRpc(async () => ({
+      ok: false,
+      error: { code: 'INVALID_NAME', message: 'bad name' },
+    }));
+    try {
+      const store = createTestStore();
+      const synthesized = makeChannel({ id: 'ch-local-fake' });
+
+      const res = await store.getState().createChannelDaemon({
+        name: 'bad name',
+        visibility: 'public',
+        createdBy: sender,
+        channel: synthesized,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.error.code).toBe('INVALID_NAME');
+        expect(res.error.message).toBe('bad name');
+      }
+      // The local mirror is unchanged — neither the synthesized nor
+      // the (nonexistent) daemon row lands in state.
+      const s = store.getState();
+      expect(s.channels['ch-local-fake']).toBeUndefined();
+      expect(Object.keys(s.channels)).toEqual([]);
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('on bridge throw: returns an UNKNOWN error without mutating state', async () => {
+    withChannelsRpc(async () => {
+      throw new Error('IPC pipe disconnected');
+    });
+    try {
+      const store = createTestStore();
+      const res = await store.getState().createChannelDaemon({
+        name: 'general',
+        visibility: 'public',
+        createdBy: sender,
+        channel: makeChannel(),
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.error.code).toBe('UNKNOWN');
+        expect(res.error.message).toContain('IPC pipe disconnected');
+      }
+      expect(Object.keys(store.getState().channels)).toEqual([]);
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+});
+
+describe('channelsSlice — postMessageDaemon (U4, R4 + R11)', () => {
+  it('on RPC success: applies the daemon row, returns ok, propagates clientMsgId', async () => {
+    const { calls } = withChannelsRpc(async (_method, params) => ({
+      ok: true,
+      message: makeMessage(String(params.channelId), 7, {
+        text: 'hello',
+        clientMsgId: String(params.clientMsgId),
+      }),
+    }));
+    try {
+      const store = createTestStore();
+      // Seed the channel via *Optimistic so the local mirror has a
+      // catalog entry for postMessageDaemon to find.
+      store.getState().createChannelOptimistic({
+        name: 'general',
+        visibility: 'public',
+        createdBy: sender,
+        channel: makeChannel({ id: 'ch-1' }),
+      });
+      // Reset to clear the create auto-member side effects from the
+      // assertion baseline.
+      const synthesized = makeMessage('ch-1', 1, {
+        text: 'optimistic-text',
+        clientMsgId: 'cmid-1',
+      });
+
+      const res = await store.getState().postMessageDaemon('ch-1', {
+        text: 'optimistic-text',
+        sender,
+        clientMsgId: 'cmid-1',
+        message: synthesized,
+      });
+
+      expect(res.ok).toBe(true);
+      if (res.ok) {
+        // The slice's *Optimistic applied the DAEMON's row, which
+        // uses seq 7 and the daemon's text. The synthesized seq 1
+        // is discarded.
+        expect(res.value.seq).toBe(7);
+        expect(res.value.text).toBe('hello');
+        expect(res.value.clientMsgId).toBe('cmid-1');
+      }
+
+      // The bridge was called with the a2a.channel.post method and
+      // the structured params (R11: clientMsgId propagated for
+      // daemon-side idempotency).
+      expect(calls).toHaveLength(1);
+      expect(calls[0].method).toBe('a2a.channel.post');
+      expect(calls[0].params).toMatchObject({
+        channelId: 'ch-1',
+        text: 'optimistic-text',
+        sender,
+        clientMsgId: 'cmid-1',
+      });
+
+      // The local mirror holds the DAEMON's row (seq 7), not the
+      // synthesized row (seq 1).
+      const list = store.getState().channelMessages['ch-1'];
+      expect(list).toHaveLength(1);
+      expect(list[0].seq).toBe(7);
+      expect(list[0].text).toBe('hello');
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('on RPC failure (PERSIST_FAILED): does NOT apply state, propagates code', async () => {
+    withChannelsRpc(async () => ({
+      ok: false,
+      error: { code: 'PERSIST_FAILED', message: 'disk full' },
+    }));
+    try {
+      const store = createTestStore();
+      store.getState().createChannelOptimistic({
+        name: 'general',
+        visibility: 'public',
+        createdBy: sender,
+        channel: makeChannel({ id: 'ch-1' }),
+      });
+      const synthesized = makeMessage('ch-1', 1, { text: 'hello' });
+
+      const res = await store.getState().postMessageDaemon('ch-1', {
+        text: 'hello',
+        sender,
+        message: synthesized,
+      });
+
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        expect(res.error.code).toBe('PERSIST_FAILED');
+        expect(res.error.message).toBe('disk full');
+      }
+      // The synthesized row is NOT appended — failure leaves the
+      // local mirror untouched (caller is responsible for surfacing
+      // the error to the user; the composer's onError slot handles it).
+      expect(store.getState().channelMessages['ch-1']).toEqual([]);
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('on RPC failure (NOT_A_MEMBER): propagates the code unchanged', async () => {
+    withChannelsRpc(async () => ({
+      ok: false,
+      error: { code: 'NOT_A_MEMBER', message: 'not a member' },
+    }));
+    try {
+      const store = createTestStore();
+      store.getState().createChannelOptimistic({
+        name: 'general',
+        visibility: 'public',
+        createdBy: sender,
+        channel: makeChannel({ id: 'ch-1' }),
+      });
+      const res = await store.getState().postMessageDaemon('ch-1', {
+        text: 'hi',
+        sender,
+        message: makeMessage('ch-1', 1),
+      });
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error.code).toBe('NOT_A_MEMBER');
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+});
+
+describe('channelsSlice — mapRpcError (U4 helper)', () => {
+  it('returns the structured error envelope for a daemon `{ok: false, error}` response', () => {
+    const store = createTestStore();
+    const err = store
+      .getState()
+      .mapRpcError({ ok: false, error: { code: 'PERSIST_FAILED', message: 'disk full' } }, 'fallback');
+    expect(err).toEqual({ code: 'PERSIST_FAILED', message: 'disk full' });
+  });
+
+  it('buckets unknown daemon codes to UNKNOWN and prefixes the original code in the message', () => {
+    const store = createTestStore();
+    // NOT_A_MEMBER is currently a daemon code but the renderer's
+    // union may not include it in older snapshots; this is the
+    // future-proofing path: every unrecognized code falls through
+    // to UNKNOWN with the original code name in the message so the
+    // developer can see what the daemon actually said.
+    const err = store
+      .getState()
+      .mapRpcError({ ok: false, error: { code: 'SOMETHING_NEW', message: 'x' } }, 'fallback');
+    expect(err.code).toBe('UNKNOWN');
+    expect(err.message).toBe('SOMETHING_NEW: x');
+  });
+
+  it('returns the fallback envelope when the response is not an error shape', () => {
+    const store = createTestStore();
+    const err = store.getState().mapRpcError(null, 'a2a.channel.create failed');
+    expect(err).toEqual({ code: 'UNKNOWN', message: 'a2a.channel.create failed' });
+  });
+});
+
+describe('channelsSlice — bridge-missing fallback (U4)', () => {
+  it('createChannelDaemon returns UNKNOWN without mutating state when __wmuxChannelsRpc is not installed', async () => {
+    clearChannelsRpc();
+    const store = createTestStore();
+    const res = await store.getState().createChannelDaemon({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: makeChannel(),
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) {
+      expect(res.error.code).toBe('UNKNOWN');
+      expect(res.error.message).toContain('bridge not mounted');
+    }
+    expect(Object.keys(store.getState().channels)).toEqual([]);
+  });
+
+  it('postMessageDaemon returns UNKNOWN without mutating state when __wmuxChannelsRpc is not installed', async () => {
+    clearChannelsRpc();
+    const store = createTestStore();
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: makeChannel({ id: 'ch-1' }),
+    });
+    const res = await store.getState().postMessageDaemon('ch-1', {
+      text: 'hi',
+      sender,
+      message: makeMessage('ch-1', 1),
+    });
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('UNKNOWN');
+    expect(store.getState().channelMessages['ch-1']).toEqual([]);
+  });
+});
+
+describe('channelsSlice — *Optimistic regression (U4)', () => {
+  it('createChannelOptimistic is still callable directly as a state-mirror primitive', () => {
+    const store = createTestStore();
+    const ch = makeChannel({ id: 'ch-direct' });
+    const res = store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: ch,
+    });
+    expect(res.ok).toBe(true);
+    expect(store.getState().channels['ch-direct']).toEqual(ch);
+  });
+
+  it('postMessageOptimistic is still callable directly as a state-mirror primitive', () => {
+    const store = createTestStore();
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: makeChannel({ id: 'ch-1' }),
+    });
+    const msg = makeMessage('ch-1', 1, { text: 'hello' });
+    const res = store.getState().postMessageOptimistic('ch-1', {
+      text: 'hello',
+      sender,
+      message: msg,
+    });
+    expect(res.ok).toBe(true);
+    expect(store.getState().channelMessages['ch-1']).toEqual([msg]);
   });
 });
