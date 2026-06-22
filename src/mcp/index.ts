@@ -17,6 +17,7 @@ import { registerFileTools } from './playwright/tools/file';
 import { registerUtilityTools } from './playwright/tools/utility';
 import { registerExtractionTools } from './playwright/tools/extraction';
 import { registerChannelTools } from './channels';
+import { registerPaneLifecycleTools } from './paneLifecycle';
 import { readFileSync } from 'fs';
 import { join } from 'path';
 
@@ -894,6 +895,22 @@ server.tool(
 registerChannelTools(server, {
   resolveWorkspaceId: requireWorkspaceId,
   getSenderPtyId: () => MY_PTY_ID,
+});
+
+// === Pane + surface lifecycle tools (issue #285) ===
+// Five MCP tools (pane_split / pane_close / pane_focus, surface_new /
+// surface_close) that mirror the workspace-scoped pane/surface lifecycle RPCs
+// (#236/#238/#256/#257), so an external supervisor agent can spawn + reap its
+// own panes through MCP instead of a hand-written daemon client. The CREATE
+// family (split/new) resolves the caller's OWN workspace when workspaceId is
+// omitted — resolveScopedReadWorkspaceId, the same fail-soft read resolver
+// pane_list / surface_list use, so an omitted id never lands on the on-screen
+// workspace by surprise. The ADDRESS family (close/focus) takes a
+// globally-unique id resolved across all workspaces. callRpc is injected so
+// paneLifecycle.test.ts can assert each handler's RPC mapping against a mock.
+registerPaneLifecycleTools(server, {
+  callRpc,
+  resolveCallerWorkspaceId: resolveScopedReadWorkspaceId,
 });
 
 // === Start server ===

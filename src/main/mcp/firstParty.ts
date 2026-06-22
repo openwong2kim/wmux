@@ -13,10 +13,10 @@
 // `plans/first-party-mcp-trust.md`.
 //
 // It can't go through the normal declare/approve flow either: several tools
-// it exposes map to `wmux.internal` methods (surface.list, company.a2a.*)
-// which `permissionGrammar` deliberately forbids from ever appearing in a
-// declaration (RESERVED_PREFIXES = ['wmux.']). No amount of user approval can
-// grant those.
+// it exposes map to `wmux.internal` methods (surface.list, surface.new/close
+// [issue #285], company.a2a.*) which `permissionGrammar` deliberately forbids
+// from ever appearing in a declaration (RESERVED_PREFIXES = ['wmux.']). No
+// amount of user approval can grant those — name-recognition is the only path.
 //
 // The fix: recognise the bundled server by the host clientName it reports and
 // allow exactly the method set it actually calls — nothing more. This is a
@@ -76,12 +76,23 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'mcp.claimWorkspace',
   'workspace.list',
   'surface.list',
+  // surface lifecycle (issue #285) — reserved wmux.internal, so these ALSO
+  // appear in ALLOWED_RESERVED_FIRST_PARTY (firstParty.test.ts). Granted to the
+  // bundled supervisor per the security review in
+  // plans/issue-285-pane-lifecycle-mcp-tools.md §6 (same-user ceiling; already
+  // reachable via the CLI tier + the still-open legacy grandfather).
+  'surface.new',
+  'surface.close',
   // panes + metadata
   'pane.list',
   'pane.search',
   'pane.getMetadata',
   'pane.setMetadata',
   'meta.setSkills',
+  // pane lifecycle (issue #285) — pane.create / pane.read, NOT reserved.
+  'pane.split',
+  'pane.close',
+  'pane.focus',
   // terminal IO
   'input.send',
   'input.sendKey',

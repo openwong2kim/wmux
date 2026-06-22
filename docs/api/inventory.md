@@ -45,10 +45,10 @@ The MCP host hosts these as tools (see [MCP tools](#mcp-tools) below). An *in-pa
 
 | Method | Params | Tier | Notes |
 |---|---|---|---|
-| `surface.list` | — | stable | All wmux windows. |
-| `surface.new` | — | stable | Opens a new wmux window. |
-| `surface.focus` | `{ id }` | stable | Focuses an existing window. |
-| `surface.close` | `{ id }` | stable | Closes a window. |
+| `surface.list` | `{ workspaceId? }` | stable | Surfaces (terminals/browsers) in a workspace. Omitted ⇒ active workspace. |
+| `surface.new` | `{ workspaceId?, shell?, cwd? }` | stable | Opens a new surface in the active pane. External MCP callers SHOULD pass `workspaceId` to target their own workspace (#236 family); omitted ⇒ active workspace. Fails closed on an explicit unknown id. |
+| `surface.focus` | `{ id }` | stable | Focuses a surface (resolved across all workspaces). |
+| `surface.close` | `{ id }` | stable | Closes a surface by globally-unique id (all-workspace). |
 
 ### Pane surface (the core substrate read/write)
 
@@ -56,7 +56,7 @@ The MCP host hosts these as tools (see [MCP tools](#mcp-tools) below). An *in-pa
 |---|---|---|---|
 | `pane.list` | `{ workspaceId? }` | stable | Returns `{ asOfSeq, bootId, panes }` envelope. `asOfSeq` is the EventBus seq at snapshot time; clients reconciling after `resync: true` drain events with `seq > asOfSeq`. `bootId` mismatch ⇒ drop all caches. |
 | `pane.focus` | `{ id }` | stable | Focuses a leaf pane. |
-| `pane.split` | `{ direction: 'horizontal' \| 'vertical' }` | stable | Splits the active pane. |
+| `pane.split` | `{ direction: 'horizontal' \| 'vertical', workspaceId? }` | stable | Splits a leaf pane. External MCP callers SHOULD pass `workspaceId` to target their own workspace (#236 family); omitted ⇒ active workspace. Fails closed on an explicit unknown id. |
 | `pane.setMetadata` | `{ paneId?, workspaceId?, label?, role?, status?, custom?, mergeMode?, merge?, expectedVersion? }` | stable | External MCP callers SHOULD pass `workspaceId` (see `mcp.claimWorkspace`). **Shipped in v2.9.0:** `mergeMode: 'merge'\|'replace'\|'replaceShared'` (default `'merge'`; `custom` deep-merges one level on `'merge'`), the `expectedVersion` optimistic-concurrency guard, and a post-commit `version` echoed in the reply. Legacy `merge: boolean` still works (`true`→`merge`, `false`→`replace`); `mergeMode` wins when both are present. An `expectedVersion` mismatch returns `{ ok:false, error }` whose message contains `VERSION_CONFLICT` (with `currentVersion`). See [`../PROTOCOL.md`](../PROTOCOL.md) §1.3–§1.4. |
 | `pane.getMetadata` | `{ paneId?, workspaceId? }` | stable | Reads metadata for a leaf pane. Returns `{ metadata, version }` — `version` is `0` when nothing was ever set (v2.9.0+). |
 | `pane.clearMetadata` | `{ paneId?, workspaceId? }` | stable | Drops all metadata for a leaf pane; reply echoes the post-clear `version` (bumped monotonically, v2.9.0+). |
@@ -159,6 +159,11 @@ The wmux MCP server (hosted in-process, named-pipe transport to the daemon) expo
 | `pane_set_metadata` | `pane.setMetadata` | The substrate write entrypoint. |
 | `workspace_list` | `workspace.list` | |
 | `surface_list` | `surface.list` | |
+| `pane_split` | `pane.split` | Split a leaf pane (CREATE family — optional `workspaceId`, defaults to the caller's own; `direction` defaults to `horizontal`). Issue #285. |
+| `pane_close` | `pane.close` | Close a leaf pane by globally-unique `paneId` (resolved across all workspaces). Rejects branch/root panes. Issue #285. |
+| `pane_focus` | `pane.focus` | Focus a leaf pane by `paneId` — **non-yank** (does not switch the on-screen workspace; use `workspace.focus` for that). Issue #285. |
+| `surface_new` | `surface.new` | Open a new surface (CREATE family — optional `workspaceId`/`shell`/`cwd`, defaults to the caller's own workspace). Issue #285. |
+| `surface_close` | `surface.close` | Close a surface by globally-unique `surfaceId` (resolved across all workspaces). Issue #285. |
 | `terminal_read` | `input.readScreen` | |
 | `terminal_read_events` | `terminal.readEvents` | Structured prompt-detected events. |
 | `terminal_send` | `input.send` | |
@@ -264,6 +269,7 @@ The EventBus (`src/main/events/EventBus.ts`) is an in-memory ring buffer of `RIN
 
 | Date | Change |
 |---|---|
+| 2026-06-23 | Pane + surface lifecycle MCP tools (issue #285) — exposed five tools (`pane_split`, `pane_close`, `pane_focus`, `surface_new`, `surface_close`) mirroring the workspace-scoped pane/surface RPCs (#236/#238/#256/#257). CREATE family (split/new) takes an optional `workspaceId` (defaults to the caller's own workspace); ADDRESS family (close/focus) takes a globally-unique id resolved across all workspaces. Added the five to `FIRST_PARTY_METHODS`; the reserved `wmux.internal` `surface.new`/`surface.close` also widen `ALLOWED_RESERVED_FIRST_PARTY` per the §2.4 first-party security review. No new RPC method or capability. |
 | 2026-06-21 | A2A channels (a2a-channels U2) — added nine `a2a.channel.*` pipe RPC methods (list, get, getMessages, getMembers, create, post, join, leave, archive) and six corresponding `channel_*` MCP tools. Added `channel.message` to the event table with the **multi-party** scoping rule (generalised from `a2a.task` dual-party): visible to the sender's `workspaceId` AND every `recipientWorkspaceId` in the frozen snapshot, never a third workspace, zero visibility on an unscoped poll. The recipient set is frozen at critical-section entry in `ChannelService.post` (KTD3). Updated PROTOCOL.md §2.8 with the parallel `channel.message` rule. |
 | 2026-06-15 | Added `a2a.task` to the event table (`taskId`/`from`/`to`/`kind`/`state`/`messagePreview?`). It is tee'd from the A2A task store onto the EventBus and is the first event type with **dual-party** scoping — visible to both the sending (`from`) and receiving (`to`) workspace, never a third one, with zero visibility on an unscoped poll. Documented the pointer-not-payload contract (fetch the body via `a2a_task_query`). |
 | 2026-06-09 | Baseline retargeted to the v2.18 line. Corrected the transport drift in the RPC-methods intro and the identity table: the pipe is `\\.\pipe\wmux-<username>` (Windows) / `~/.wmux.sock` (POSIX), the token lives at `~/.wmux-auth-token`, and the Windows TCP fallback (`~/.wmux-tcp-port`) is documented. Added `agent.lifecycle` (v2.13.0) to the event table with its `ptyId`/`kind`/`source`/`agent`/`decision`/`exitCode?` shape. Flipped `pane.setMetadata` `mergeMode`/`expectedVersion`/`version` from "v3.0 will add" to "shipped in v2.9.0"; documented the shipped `system.capabilities` feature object (per-method tier map still planned). Added the [`reference.md`](./reference.md) generated companion. |

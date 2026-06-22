@@ -180,4 +180,23 @@ describe('MCP workspace routing (source-level invariants)', () => {
     expect(block).not.toMatch(/requireWorkspaceId\(\)/);
     expect(block).not.toMatch(/resolveWorkspaceId\(\)/);
   });
+
+  it('pane/surface lifecycle tools are wired in with the fail-soft read resolver (#285)', () => {
+    // registerPaneLifecycleTools lives in paneLifecycle.ts; its behavioral
+    // coverage is in src/mcp/__tests__/paneLifecycle.test.ts. THIS guard catches
+    // the one thing the helper test can't (codex outside-voice finding): that
+    // index.ts actually WIRES the registration. A forgotten call would leave all
+    // five tools silently unregistered while every other test stayed green.
+    expect(src, 'index.ts must call registerPaneLifecycleTools(server, …)').toMatch(
+      /registerPaneLifecycleTools\(\s*server/,
+    );
+    // DR-1: the CREATE family (pane_split / surface_new) resolves the caller's
+    // OWN workspace via the fail-soft read resolver — never the weak
+    // resolveWorkspaceId() (counted by the invariant above) and never
+    // requireWorkspaceId (a create degrades to active-ws, it does not hard-fail).
+    // Pin the injected resolver at the wiring site.
+    expect(src, 'lifecycle CREATE family must inject resolveScopedReadWorkspaceId').toMatch(
+      /registerPaneLifecycleTools\([\s\S]*?resolveCallerWorkspaceId:\s*resolveScopedReadWorkspaceId/,
+    );
+  });
 });

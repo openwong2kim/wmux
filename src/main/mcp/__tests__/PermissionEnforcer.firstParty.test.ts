@@ -71,6 +71,29 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
     }
   });
 
+  it('allows the issue #285 pane/surface lifecycle methods (incl. reserved surface.new/close)', () => {
+    // pane.split/close/focus are pane.create / pane.read; surface.new/close are
+    // wmux.internal (reserved) and reachable ONLY via this first-party path (see
+    // firstParty.test.ts ALLOWED_RESERVED_FIRST_PARTY + the §6 security review in
+    // plans/issue-285-pane-lifecycle-mcp-tools.md). All five must be allowed so
+    // the bundled supervisor can spawn/reap its own panes under enforce mode.
+    for (const method of [
+      'pane.split',
+      'pane.close',
+      'pane.focus',
+      'surface.new',
+      'surface.close',
+    ] as const) {
+      const out = check({
+        method,
+        params: {},
+        ctx: ctx(FP),
+        trust: trust({ name: FP, status: 'unconfirmed' }),
+      });
+      expect(out, `${method} should be first-party-allowed`).toEqual({ kind: 'allow' });
+    }
+  });
+
   it('honors an explicit denied as an operator escape hatch (denied wins over first-party)', () => {
     const out = check({
       method: 'browser.open',

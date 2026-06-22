@@ -101,9 +101,10 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
   // plugin declaration, which means name-recognition is the only code path that
   // can ever reach one. So the security-relevant invariant is precisely: which
   // RESERVED methods may the bypass touch? Pin that to the curated read/observe +
-  // company-scoped agent-messaging set. Everything else reserved — daemon
-  // control, workspace/surface lifecycle, company mutation, hooks.signal, notify
-  // — must stay unreachable through the bypass. The reserved set is DERIVED from
+  // company-scoped agent-messaging set, plus surface lifecycle (new/close) for
+  // the issue #285 supervisor use case. Everything else reserved — daemon
+  // control, WORKSPACE lifecycle, company mutation, hooks.signal, notify — must
+  // stay unreachable through the bypass. The reserved set is DERIVED from
   // METHOD_CAPABILITY (not hand-listed), so a newly-added `wmux.internal` method
   // that someone also drops into FIRST_PARTY_METHODS trips this test unless it is
   // consciously added to the exception set below.
@@ -112,11 +113,19 @@ describe('FIRST_PARTY_METHODS source invariant', () => {
       (m) => resolveRequiredCapability(METHOD_CAPABILITY[m], {}) === 'wmux.internal',
     );
 
-    // The ONLY reserved methods the bundled first-party server legitimately
-    // calls: a workspace/window read and the company-scoped A2A messaging tools.
-    // These are observe/message surfaces, not lifecycle or mutation.
+    // The reserved methods the bundled first-party server legitimately calls:
+    // a workspace/window read, the company-scoped A2A messaging tools, and —
+    // per issue #285 (security review: plans/issue-285-pane-lifecycle-mcp-tools.md
+    // §6) — surface lifecycle (new/close), so a supervisor agent can spawn/reap
+    // its own terminals through MCP. The grant stays bounded to surface +
+    // observe + message; the bypass still never reaches WORKSPACE lifecycle,
+    // daemon control, or company mutation (asserted by the
+    // "reserved/destructive surface" test above).
     const ALLOWED_RESERVED_FIRST_PARTY = new Set<RpcMethod>([
       'surface.list',
+      // issue #285 — supervisor pane/surface lifecycle (reserved wmux.internal)
+      'surface.new',
+      'surface.close',
       'company.a2a.whoami',
       'company.a2a.send',
       'company.a2a.broadcast',
