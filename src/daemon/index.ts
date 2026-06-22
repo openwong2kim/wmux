@@ -12,7 +12,7 @@ import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { ChannelService, ChannelStateWriter } from './channels';
+import { ChannelService, ChannelStateWriter, wrapChannelMessageEnvelope } from './channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
@@ -2166,8 +2166,14 @@ async function main(): Promise<void> {
     writer: channelStateWriter,
     companyId: 'co-default',
     emit: (event) => {
+      // Wrap the ChannelMessageEvent in the canonical DaemonEvent envelope
+      // before broadcasting on the control pipe. The helper lives in
+      // `src/daemon/channels/channelEventEnvelope.ts` and is unit tested
+      // for shape stability — the prior producer emitted a raw event,
+      // which the main-side consumer never matched, silently dropping
+      // every channel.message fan-out (plan R2).
       try {
-        pipeServer.broadcast(event);
+        pipeServer.broadcast(wrapChannelMessageEnvelope(event));
       } catch (err) {
         log('warn', `channel emit failed for ${event.channelId}#${event.seq}:`, err);
       }

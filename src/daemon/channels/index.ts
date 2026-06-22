@@ -22,3 +22,7 @@ export {
 } from './ChannelService';
 
 export { ChannelStateWriter } from './ChannelStateWriter';
+export {
+  wrapChannelMessageEnvelope,
+  type ChannelMessageDaemonEvent,
+} from './channelEventEnvelope';
