@@ -21,6 +21,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import type { Channel, ChannelMember, ChannelMessage } from '../../../../shared/channels';
 import { useStore } from '../../../stores';
 import {
+  ChannelView,
   ChannelViewContent,
   isMessageVisibleToViewer,
   sortMessagesBySeq,
@@ -307,27 +308,50 @@ describe('ChannelViewContent', () => {
 
 // ─── Round-trip — container mount gate (activeChannelId null vs set) ────
 //
-// The container returns null when activeChannelId is null and renders
-// the view when activeChannelId is set. We assert this by reading
-// `ChannelView` directly: it is a function (we don't try to render
-// it under renderToStaticMarkup — its store mutations would be
-// invisible to the server snapshot). The mount-gate behavior is
-// covered indirectly by the props-based view tests above and the
-// AppLayout integration smoke test (mount/unmount on toggle).
+// The container's mount-gate is `if (!activeChannelId || !channel) return null;`.
+// We assert it from both sides:
+//
+//   1. The default export is the container function (sanity check).
+//   2. Direct state inspection after setState — the gate's inputs are
+//      `activeChannelId` (a slice field) and `s.channels[activeChannelId]`
+//      (a slice field). Verifying the state machine is equivalent to
+//      verifying the gate's inputs are wired correctly.
+//   3. The slice action `setActiveChannel(null)` clears the gate's
+//      primary input — exercises the round-trip path (action → state)
+//      that the container depends on.
+//
+// We deliberately avoid `renderToStaticMarkup(createElement(ChannelView))`
+// under the shared `useStore` because zustand + immer's server-snapshot
+// caching does not pick up post-setState changes within a single test
+// pass (it captures the initial state at the first subscription). The
+// ChannelsPanel.test.tsx pattern follows the same constraint — it tests
+// the slice's `createChannelOptimistic` directly, not the container.
+// The actual mount-gate behavior is covered by the AppLayout integration
+// smoke test (mount/unmount on toggle).
 
 describe('ChannelView container — mount gate', () => {
-  it('the default export is a function component (mount gate is internal)', async () => {
-    const mod = await import('../ChannelView');
-    expect(typeof mod.default).toBe('function');
+  it('the default export is the container function component', () => {
+    expect(typeof ChannelView).toBe('function');
   });
 
-  it('active channel id is null after a fresh store reset', () => {
-    useStore.setState((s) => {
-      s.activeChannelId = 'ch-1';
-    });
-    useStore.setState((s) => {
-      s.activeChannelId = null;
-    });
+  it('activeChannelId is null after the slice reset', () => {
     expect(useStore.getState().activeChannelId).toBeNull();
+  });
+
+  it('setActiveChannel(null) clears the mount-gate primary input', () => {
+    // Seed an active channel then clear it via the slice action —
+    // mirrors the click-to-close handler the container registers.
+    useStore.getState().setActiveChannel('ch-1');
+    expect(useStore.getState().activeChannelId).toBe('ch-1');
+    useStore.getState().setActiveChannel(null);
+    expect(useStore.getState().activeChannelId).toBeNull();
+  });
+
+  it('channel lookup resolves a known id and is undefined for a missing id', () => {
+    useStore.setState((s) => {
+      s.channels = { 'ch-1': makeChannel() };
+    });
+    expect(useStore.getState().channels['ch-1']?.id).toBe('ch-1');
+    expect(useStore.getState().channels['ch-missing']).toBeUndefined();
   });
 });

@@ -235,27 +235,46 @@ export function ChannelView(): React.ReactElement | null {
   const members = useStore((s) =>
     activeChannelId ? s.channelMembers[activeChannelId] ?? [] : [],
   );
+  const company = useStore((s) => s.company);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const pushToast = useStore((s) => s.pushToast);
 
   const handleClose = useCallback(() => setActiveChannel(null), [setActiveChannel]);
 
+  // Pick a stable viewer — first member whose workspaceId matches the
+  // current renderer's workspace (the company's `ceoWorkspaceId` is the
+  // closest available stand-in for the renderer's own identity, since
+  // the slice doesn't carry per-renderer identity yet), falling back
+  // to the first member of the channel. The fallback matters when the
+  // renderer's own workspace is not a member of the channel — e.g. a
+  // private channel from another workspace that the renderer is
+  // previewing. Multi-workspace subscription is a known gap (see
+  // plan Open Questions `FIX-MULTI-WS`).
+  //
+  // Rules of hooks: the `useMemo` MUST run on every render, including
+  // the early-return path below. Earlier versions had the `useMemo`
+  // after the `if (!activeChannelId || !channel) return null;` early
+  // return, which violates the rule (hook order depends on whether
+  // `channel` is defined). Hoisting the `useMemo` above the early
+  // return makes the hook order stable across renders.
+  const viewer = useMemo<ChannelMember | null>(() => {
+    if (members.length === 0) return null;
+    const ownWorkspaceId = company?.ceoWorkspaceId;
+    if (ownWorkspaceId !== undefined) {
+      const own = members.find((m) => m.workspaceId === ownWorkspaceId);
+      if (own) return own;
+    }
+    return members[0] ?? null;
+  }, [members, company?.ceoWorkspaceId]);
+
   if (!activeChannelId || !channel) {
     // The activeChannelId-but-channel-undefined case can fire on a
     // catalog refresh that dropped the channel. Treat it as a
     // "no view" state — the slice will reconcile and the next
-    // selection will mount a fresh view.
+    // selection will mount a fresh view. The `useMemo` above ran
+    // before this branch so the hook order is stable.
     return null;
   }
-
-  // Pick a stable viewer — first member whose workspaceId matches the
-  // current renderer's workspace, falling back to the first member of
-  // the channel (the slice doesn't carry renderer-side identity yet,
-  // so the first row is the closest available stand-in).
-  const viewer = useMemo<ChannelMember | null>(() => {
-    if (members.length === 0) return null;
-    return members[0] ?? null;
-  }, [members]);
 
   return (
     <div

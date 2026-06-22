@@ -123,6 +123,8 @@ export const defaultChannelMessage: FormatChannelMessage = (message) => {
     // eslint-disable-next-line no-control-regex
     .replace(/\x1b[@-_]/g, '')                 // other ESC sequences
     // eslint-disable-next-line no-control-regex
+    .replace(/\x1b/g, '')                      // lone ESC (defensive — no opener)
+    // eslint-disable-next-line no-control-regex
     .replace(/\x00/g, '')                      // NUL
     .replace(/\r/g, '');                       // CR (LF preserved)
   return [
@@ -159,21 +161,27 @@ export class LocalPtyDelivery implements ChannelDelivery {
   ): Promise<DeliveryResult> {
     const now = Date.now();
     const updated = snapshot.map((entry) => {
-      const resolved = this.deps.resolveRecipient(
-        entry.workspaceId,
-        entry.memberId,
-      );
-      if (resolved === null) {
-        return {
-          ...entry,
-          status: 'target_gone' as const,
-          lastAttemptAt: now,
-        };
-      }
-      const body = resolved.isLiveTui
-        ? this.deps.formatNudge(message)
-        : this.deps.formatMessage(message);
+      // Wrap the entire per-recipient operation. A bad PTY lookup, a
+      // formatter throw, OR a write throw must not abort the rest of
+      // the fanout — every recipient gets an independent verdict so
+      // one bad row cannot poison the whole delivery.
+      let resolvedPtyId: string | undefined;
       try {
+        const resolved = this.deps.resolveRecipient(
+          entry.workspaceId,
+          entry.memberId,
+        );
+        if (resolved === null) {
+          return {
+            ...entry,
+            status: 'target_gone' as const,
+            lastAttemptAt: now,
+          };
+        }
+        resolvedPtyId = resolved.ptyId;
+        const body = resolved.isLiveTui
+          ? this.deps.formatNudge(message)
+          : this.deps.formatMessage(message);
         this.deps.writePty(resolved.ptyId, body);
         return {
           ...entry,
@@ -182,11 +190,14 @@ export class LocalPtyDelivery implements ChannelDelivery {
           lastAttemptAt: now,
         };
       } catch {
-        // A bad PTY must not abort the rest of the fanout — keep the
-        // snapshot per-recipient accurate instead of throwing.
+        // Resolution / format / write failure all collapse to
+        // `target_gone` for this recipient. If resolution succeeded
+        // before the throw, the resolved `ptyId` is preserved so the
+        // snapshot keeps a stable handle on the surface for the next
+        // delivery attempt.
         return {
           ...entry,
-          ptyId: resolved.ptyId,
+          ptyId: resolvedPtyId ?? entry.ptyId,
           status: 'target_gone' as const,
           lastAttemptAt: now,
         };

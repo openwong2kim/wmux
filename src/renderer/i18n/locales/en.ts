@@ -633,6 +633,20 @@ export const en = {
   'settings.agentToolbarShow': 'Show agent toolbar',
   'settings.agentToolbarShowDesc': 'A bottom bar of quick tools that inject into the focused agent.',
   'settings.agentToolbarNewCommand': 'New-conversation command',
+
+  // Channels (a2a.channel.* RPC UI surface)
+  'channels.title': 'Channels',
+  'channels.archived': 'archived',
+  'channels.empty': 'No channels yet — click + to create one.',
+  'channels.emptyCompany': 'Channels are company-scoped — start a company to use them.',
+  'channels.emptyMessages': 'No messages yet — be the first to post.',
+  'channels.archivedReadOnly': 'Archived channels are read-only.',
+  'channels.closeTooltip': 'Close channel',
+  'channels.newChannelTooltip': 'New channel',
+  'channels.composerPlaceholder': 'Type a message…',
+  'channels.composerAriaLabel': 'Compose channel message',
+  'channels.sendTooltip': 'Send',
+  'channels.postFailed': 'Post failed',
 } as const;
 
 export type TranslationKey = keyof typeof en;

@@ -561,4 +561,18 @@ export const ko = {
   'settings.agentToolbarShow': '에이전트 도구 모음 표시',
   'settings.agentToolbarShowDesc': '포커스된 에이전트에 입력을 주입하는 하단 도구 모음입니다.',
   'settings.agentToolbarNewCommand': '새 대화 명령',
+
+  // Channels (a2a.channel.* RPC UI surface)
+  'channels.title': '채널',
+  'channels.archived': '보관됨',
+  'channels.empty': '아직 채널이 없습니다 — + 버튼으로 새로 만드세요.',
+  'channels.emptyCompany': '채널은 회사 범위입니다 — 회사를 시작해 사용하세요.',
+  'channels.emptyMessages': '아직 메시지가 없습니다 — 첫 메시지를 남겨보세요.',
+  'channels.archivedReadOnly': '보관된 채널은 읽기 전용입니다.',
+  'channels.closeTooltip': '채널 닫기',
+  'channels.newChannelTooltip': '새 채널',
+  'channels.composerPlaceholder': '메시지를 입력하세요…',
+  'channels.composerAriaLabel': '채널 메시지 작성',
+  'channels.sendTooltip': '보내기',
+  'channels.postFailed': '게시 실패',
 } as const;

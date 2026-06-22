@@ -66,14 +66,17 @@ export interface ComposerContentProps {
 
 /** Side-effect-free presentational surface. The test can call
  *  `onSubmit` directly to drive the success/failure paths without
- *  mounting the real `useStore` round-trip. */
+ *  mounting the real `useStore` round-trip. The `t` prop is the
+ *  translator — defaults to identity so tests can omit it; the
+ *  container passes the real `useT()` translator in production. */
 export function ComposerContent({
   channelId,
   onSubmit,
   placeholder,
   disabled,
+  t: tProp,
 }: ComposerContentProps): React.ReactElement {
-  const t = (key: string) => key;
+  const t = tProp ?? ((key: string) => key);
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [inFlight, setInFlight] = useState(false);
@@ -257,6 +260,7 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
       channelId={channelId}
       onSubmit={handlePost}
       disabled={!channel || channel.status === 'archived'}
+      t={t}
     />
   );
 }
