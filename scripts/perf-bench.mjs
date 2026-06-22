@@ -817,6 +817,62 @@ async function measureInputLatency(page, sampleTarget, label) {
   };
 }
 
+// === Scenario recovery: 1-pane input latency when the boot pane never echoes ===
+//
+// Issue #281: in headless CI the default boot pane's *self-created* pty (the one
+// Terminal.tsx spawns on mount for an empty-ptyId surface) can emit zero echo
+// for the entire ~2-minute scenario — the bench hook sees only `dataEvents:2`
+// (the last being the OSC 7 cwd report), so every typed sample drops and the
+// 1-pane scenario collapses to n=0. perf-compare then FAILs the whole run on a
+// "baseline present but current missing" metric (a deliberate fail-closed gate —
+// we must not soften it). The asymmetry is real: the 8-pane scenario types into
+// a pane created by `pane.split`, whose pty is spawned by the AppLayout
+// empty-leaf funnel, and that one echoes reliably.
+//
+// So when the boot pane produces no samples, split off a fresh (daemon-spawned)
+// sibling, close the dead boot pane so the survivor fills the window, and
+// re-measure — still a genuine single-pane measurement, just on the pane that
+// actually echoes. Locally the boot pane echoes and this path never runs, so
+// there is no behavior change and no baseline shift on the happy path. Either
+// way the layout ends at one pane, so the subsequent split-to-8 still lands on 8.
+async function recoverInputLatencyViaSplit(inst, sampleTarget) {
+  const tokenPath = path.join(inst.home, `.wmux${inst.suffix}-auth-token`);
+  const token = await waitFor('main auth token (recover)', () => {
+    try { return fs.readFileSync(tokenPath, 'utf8').trim() || null; } catch { return null; }
+  }, 5000, 100);
+  const client = new PipeClient(inst.mainPipe, token);
+  await client.connect();
+  try {
+    // The boot pane is the only pane right now — capture its id BEFORE splitting.
+    // pane.close rejects the root pane, so we can only close the boot pane once
+    // the split has wrapped it in a branch (i.e. made it a leaf sibling).
+    const before = await client.call('pane.list', {});
+    const bootPaneId =
+      Array.isArray(before?.panes) && typeof before.panes[0]?.id === 'string'
+        ? before.panes[0].id
+        : null;
+    // The new sibling's pty is spawned by the active-ws empty-leaf funnel — the
+    // same daemon-spawned pty the 8-pane scenario types into successfully.
+    await client.call('pane.split', { direction: 'horizontal' });
+    await waitFor('2 panes mounted (recover)', async () =>
+      (await inst.page.evaluate(() => document.querySelectorAll('.xterm').length)) >= 2,
+      30000, 250);
+    await sleep(3000);
+    // Close the dead boot pane so the survivor fills the window — back to a real
+    // single-pane layout, measured on the pane that echoes.
+    if (bootPaneId) {
+      await client.call('pane.close', { id: bootPaneId });
+      await waitFor('boot pane closed (recover)', async () =>
+        (await inst.page.evaluate(() => document.querySelectorAll('.xterm').length)) === 1,
+        10000, 200);
+      await sleep(1500);
+    }
+  } finally {
+    client.close(); // never leak the pipe socket, even on a mid-recovery throw
+  }
+  return measureInputLatency(inst.page, sampleTarget, 'input 1-pane (split-recovered)');
+}
+
 // === Scenario: RAM over the full process tree ===
 const POWERSHELL_EXE = path.join(
   process.env.SystemRoot ?? 'C:\\Windows',
@@ -1262,7 +1318,21 @@ process.on('exit', () => {
   // ---------- inputLatency: 1 pane ----------
   if (!ARGS.skipInput) {
     console.log(`--- inputLatency: 1 pane, ${ARGS.samples} samples ---`);
-    RESULTS.scenarios.inputLatency = await measureInputLatency(lastInst.page, ARGS.samples, 'input 1-pane');
+    let inputResult = await measureInputLatency(lastInst.page, ARGS.samples, 'input 1-pane');
+    // Issue #281: the headless-CI boot pane can echo nothing (n=0). Rather than
+    // letting the run FAIL on a missing metric, recover by measuring a fresh
+    // daemon-spawned split pane (see recoverInputLatencyViaSplit). One attempt
+    // only — if recovery also yields n=0 we keep the n=0 result (no worse than
+    // before, and perf-compare still flags it honestly).
+    if (inputResult.samples === 0) {
+      console.error('[input 1-pane] zero echo samples from the boot pane — recovering via a daemon-spawned split pane (issue #281)');
+      try {
+        inputResult = await recoverInputLatencyViaSplit(lastInst, ARGS.samples);
+      } catch (e) {
+        console.error(`[input 1-pane] split recovery failed (continuing with n=0): ${e.message}`);
+      }
+    }
+    RESULTS.scenarios.inputLatency = inputResult;
   }
 
   // ---------- split to 8 panes ----------
