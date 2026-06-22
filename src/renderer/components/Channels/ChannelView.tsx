@@ -26,6 +26,17 @@ import { FOCUS_RING } from '../focusRing';
 import { IconX } from '../icons';
 import { Composer } from './Composer';
 
+// Stable empty references for the store selectors below. A selector that
+// returns `s.channelMessages[id] ?? []` would mint a FRESH `[]` on every
+// render when the entry is undefined (active channel whose messages/members
+// aren't hydrated yet); Zustand's Object.is equality then sees a new
+// reference each render and re-renders forever → "Maximum update depth
+// exceeded". Returning these module-level singletons keeps the reference
+// stable so an unhydrated active channel renders an empty list instead of
+// looping.
+const EMPTY_MESSAGES: ChannelMessage[] = [];
+const EMPTY_MEMBERS: ChannelMember[] = [];
+
 // ─── Pure helpers (exported for tests) ───────────────────────────────────
 
 /** A message is visible to a viewer iff its `seq` is at or above the
@@ -230,10 +241,10 @@ export function ChannelView(): React.ReactElement | null {
   const activeChannelId = useStore((s) => s.activeChannelId);
   const channel = useStore((s) => (activeChannelId ? s.channels[activeChannelId] : undefined));
   const messages = useStore((s) =>
-    activeChannelId ? s.channelMessages[activeChannelId] ?? [] : [],
+    activeChannelId ? s.channelMessages[activeChannelId] ?? EMPTY_MESSAGES : EMPTY_MESSAGES,
   );
   const members = useStore((s) =>
-    activeChannelId ? s.channelMembers[activeChannelId] ?? [] : [],
+    activeChannelId ? s.channelMembers[activeChannelId] ?? EMPTY_MEMBERS : EMPTY_MEMBERS,
   );
   const company = useStore((s) => s.company);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
