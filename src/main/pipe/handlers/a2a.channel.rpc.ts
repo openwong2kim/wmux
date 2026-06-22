@@ -1,9 +1,14 @@
 // ─── a2a.channel.* RPC handler ─────────────────────────────────────────
 // Pipe RPC surface → daemon ChannelService (which owns canonical channel
-// state, U3). The renderer reaches the daemon exclusively through these
-// handlers, which exist so the renderer talks to one RPC router and the
-// enforcer can gate them against `a2a.channel.read` / `a2a.channel.send`
-// capabilities (methodCapabilityMap.ts).
+// state, U3). MCP/pipe clients use these handlers for ALL channel ops; the
+// renderer uses them for READS only (list/get/getMessages/getMembers).
+// Renderer MUTATIONS do NOT come through here — the in-app UI has no
+// senderPtyId, so a mutating call fails closed (D5, below), and instead rides
+// the dedicated renderer-only `channels:mutate-local` IPC
+// (src/main/ipc/handlers/channelLocal.handler.ts, pipe-unreachable). These
+// handlers exist so a caller talks to one RPC router and the enforcer can gate
+// them against `a2a.channel.read` / `a2a.channel.send` capabilities
+// (methodCapabilityMap.ts).
 //
 // D5 — caller-identity server-pin. The daemon trusts `verifiedWorkspaceId`
 // for every authz gate (post: sender===verified; archive: createdBy/CEO;
