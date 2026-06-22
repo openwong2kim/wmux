@@ -5,7 +5,7 @@
 // src/daemon/channels/. What this file pins:
 //
 //   1. Routing: each of the 9 RPC methods dispatches to the matching
-//      `channel.<method>` on the daemon client, and propagates a
+//      `a2a.channel.<method>` on the daemon client, and propagates a
 //      `params ?? {}` default so a missing body still goes through.
 //   2. Error propagation: typed `Result<T>` errors from the daemon flow
 //      back to the caller unchanged (CHANNEL_NOT_FOUND, PERSIST_FAILED,
@@ -129,10 +129,10 @@ function setupHandlerRouter(daemon: DaemonClient): RpcRouter {
 // =========================================================================
 
 describe('a2a.channel.rpc — read routing (capability a2a.channel.read)', () => {
-  it('a2a.channel.list dispatches to channel.list with no params and propagates the result', async () => {
+  it('a2a.channel.list dispatches to a2a.channel.list with no params and propagates the result', async () => {
     const expected = { ok: true, value: [{ id: 'ch-1' }] };
     const daemon = makeFakeDaemon((method, params) => {
-      expect(method).toBe('channel.list');
+      expect(method).toBe('a2a.channel.list');
       expect(params).toEqual({});
       return expected;
     });
@@ -143,10 +143,10 @@ describe('a2a.channel.rpc — read routing (capability a2a.channel.read)', () =>
     if (res.ok) expect(res.result).toBe(expected);
   });
 
-  it('a2a.channel.get dispatches to channel.get and forwards channelId', async () => {
+  it('a2a.channel.get dispatches to a2a.channel.get and forwards channelId', async () => {
     const expected = { ok: true, value: { id: CHANNEL_ID } };
     const daemon = makeFakeDaemon((method, params) => {
-      expect(method).toBe('channel.get');
+      expect(method).toBe('a2a.channel.get');
       expect((params as Record<string, unknown>).channelId).toBe(CHANNEL_ID);
       return expected;
     });
@@ -159,10 +159,10 @@ describe('a2a.channel.rpc — read routing (capability a2a.channel.read)', () =>
     if (res.ok) expect(res.result).toBe(expected);
   });
 
-  it('a2a.channel.getMessages dispatches to channel.getMessages and forwards sinceSeq', async () => {
+  it('a2a.channel.getMessages dispatches to a2a.channel.getMessages and forwards sinceSeq', async () => {
     const expected = { ok: true, value: [] };
     const daemon = makeFakeDaemon((method, params) => {
-      expect(method).toBe('channel.getMessages');
+      expect(method).toBe('a2a.channel.getMessages');
       const p = params as Record<string, unknown>;
       expect(p.channelId).toBe(CHANNEL_ID);
       expect(p.sinceSeq).toBe(5);
@@ -176,10 +176,10 @@ describe('a2a.channel.rpc — read routing (capability a2a.channel.read)', () =>
     expect(res.ok).toBe(true);
   });
 
-  it('a2a.channel.getMembers dispatches to channel.getMembers', async () => {
+  it('a2a.channel.getMembers dispatches to a2a.channel.getMembers', async () => {
     const expected = { ok: true, value: [] };
     const daemon = makeFakeDaemon((method) => {
-      expect(method).toBe('channel.getMembers');
+      expect(method).toBe('a2a.channel.getMembers');
       return expected;
     });
     const router = setupHandlerRouter(daemon);
@@ -192,16 +192,16 @@ describe('a2a.channel.rpc — read routing (capability a2a.channel.read)', () =>
 });
 
 // =========================================================================
-// 2. Routing — mutating methods dispatch to channel.<method>
+// 2. Routing — mutating methods dispatch to a2a.channel.<method>
 // =========================================================================
 
 describe('a2a.channel.rpc — mutating routing (capability a2a.channel.send)', () => {
   it.each([
-    ['a2a.channel.create', 'channel.create'],
-    ['a2a.channel.archive', 'channel.archive'],
-    ['a2a.channel.join', 'channel.join'],
-    ['a2a.channel.leave', 'channel.leave'],
-    ['a2a.channel.post', 'channel.post'],
+    ['a2a.channel.create', 'a2a.channel.create'],
+    ['a2a.channel.archive', 'a2a.channel.archive'],
+    ['a2a.channel.join', 'a2a.channel.join'],
+    ['a2a.channel.leave', 'a2a.channel.leave'],
+    ['a2a.channel.post', 'a2a.channel.post'],
   ] as const)('%s dispatches to %s', async (rpcMethod, daemonMethod) => {
     const expected = { ok: true, value: { id: CHANNEL_ID } };
     const daemon = makeFakeDaemon((method, params) => {

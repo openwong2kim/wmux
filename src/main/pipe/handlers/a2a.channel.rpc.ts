@@ -7,7 +7,7 @@
 // capabilities (a permission contract that lives on the pipe, not on the
 // daemon — see methodCapabilityMap.ts).
 //
-// Each handler is `(params) => daemonClient.rpc('channel.<method>', params)`
+// Each handler is `(params) => daemonClient.rpc('a2a.channel.<method>', params)`
 // — there is NO renderer-side validation, state caching, or projection
 // here. The renderer's channelsSlice (U6) is responsible for re-validating
 // the typed service result; this layer's only job is transport +
@@ -26,7 +26,7 @@ import type { RpcRouter } from '../RpcRouter';
 import type { DaemonClient } from '../../DaemonClient';
 
 /**
- * Register the seven `a2a.channel.*` pipe-RPC methods on the supplied
+ * Register the nine `a2a.channel.*` pipe-RPC methods on the supplied
  * router. Each handler is a thin pass-through to the daemon's
  * `ChannelService` via the supplied `DaemonClient` — there is no
  * renderer-side validation, caching, or projection here. The
@@ -47,48 +47,48 @@ export function registerA2aChannelRpc(router: RpcRouter, getDaemonClient: () => 
   router.register('a2a.channel.list', (params) => {
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('channel.list', params ?? {});
+    return dc.rpc('a2a.channel.list', params ?? {});
   });
   router.register('a2a.channel.get', (params) => {
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('channel.get', params ?? {});
+    return dc.rpc('a2a.channel.get', params ?? {});
   });
   router.register('a2a.channel.getMessages', (params) => {
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('channel.getMessages', params ?? {});
+    return dc.rpc('a2a.channel.getMessages', params ?? {});
   });
   router.register('a2a.channel.getMembers', (params) => {
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('channel.getMembers', params ?? {});
+    return dc.rpc('a2a.channel.getMembers', params ?? {});
   });
 
   // Mutating — capability 'a2a.channel.send'
   router.register('a2a.channel.create', (params) => {
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('channel.create', params ?? {});
+    return dc.rpc('a2a.channel.create', params ?? {});
   });
   router.register('a2a.channel.archive', (params) => {
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('channel.archive', params ?? {});
+    return dc.rpc('a2a.channel.archive', params ?? {});
   });
   router.register('a2a.channel.join', (params) => {
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('channel.join', params ?? {});
+    return dc.rpc('a2a.channel.join', params ?? {});
   });
   router.register('a2a.channel.leave', (params) => {
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('channel.leave', params ?? {});
+    return dc.rpc('a2a.channel.leave', params ?? {});
   });
   router.register('a2a.channel.post', (params) => {
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
-    return dc.rpc('channel.post', params ?? {});
+    return dc.rpc('a2a.channel.post', params ?? {});
   });
 }
