@@ -25,6 +25,7 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { IconX } from '../icons';
 import { Composer } from './Composer';
+import { ChannelMembersControl } from './ChannelMembers';
 
 // Stable empty references for the store selectors below. A selector that
 // returns `s.channelMessages[id] ?? []` would mint a FRESH `[]` on every
@@ -90,6 +91,9 @@ export interface ChannelViewContentProps {
   t?: (key: string) => string;
   /** Wrapper rendered after the message list; the composer lives here. */
   composerSlot: React.ReactNode;
+  /** Header control for the members roster (count + join/leave popover).
+   *  Slotted so the pure view stays store-free for the test harness. */
+  membersSlot?: React.ReactNode;
 }
 
 /** The presentational surface — all data comes via props, no store reads. */
@@ -99,6 +103,7 @@ export function ChannelViewContent({
   viewer,
   onClose,
   composerSlot,
+  membersSlot,
   t: tProp,
 }: ChannelViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -139,17 +144,20 @@ export function ChannelViewContent({
             </span>
           )}
         </div>
-        <button
-          type="button"
-          aria-label={t('channels.closeTooltip') || 'Close channel'}
-          title={t('channels.closeTooltip') || 'Close channel'}
-          onClick={onClose}
-          className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--accent-red)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
-          data-channel-view-close
-          {...tokenAttrs('textSub', 'text')}
-        >
-          <IconX size={11} />
-        </button>
+        <div className="flex items-center gap-1 flex-shrink-0">
+          {membersSlot}
+          <button
+            type="button"
+            aria-label={t('channels.closeTooltip') || 'Close channel'}
+            title={t('channels.closeTooltip') || 'Close channel'}
+            onClick={onClose}
+            className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-subtle)] hover:text-[var(--accent-red)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
+            data-channel-view-close
+            {...tokenAttrs('textSub', 'text')}
+          >
+            <IconX size={11} />
+          </button>
+        </div>
       </div>
 
       {/* Message list — scrollable. Empty-state copy when the channel
@@ -300,6 +308,7 @@ export function ChannelView(): React.ReactElement | null {
         messages={messages}
         viewer={viewer}
         onClose={handleClose}
+        membersSlot={<ChannelMembersControl channel={channel} />}
         composerSlot={
           channel.status === 'archived' ? (
             <div

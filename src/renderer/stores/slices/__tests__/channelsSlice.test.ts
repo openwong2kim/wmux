@@ -602,6 +602,121 @@ describe('channelsSlice — createChannelDaemon (U4, R4)', () => {
   });
 });
 
+describe('channelsSlice — joinChannelDaemon (membership)', () => {
+  const member = { workspaceId: 'ws-join', memberId: 'local-ui', memberName: 'alpha' };
+
+  it('on RPC success: calls a2a.channel.join with the pinned workspace and adds the member', async () => {
+    const { calls } = withChannelsRpc(async () => ({ ok: true }));
+    try {
+      const store = createTestStore();
+      const res = await store.getState().joinChannelDaemon('ch-1', member, 'ws-join');
+      expect(res.ok).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].method).toBe('a2a.channel.join');
+      expect(calls[0].params).toMatchObject({
+        channelId: 'ch-1',
+        member,
+        verifiedWorkspaceId: 'ws-join',
+        includeHistory: true,
+      });
+      expect(store.getState().channelMembers['ch-1']).toEqual([
+        expect.objectContaining({ workspaceId: 'ws-join', memberId: 'local-ui' }),
+      ]);
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('on DUPLICATE_MEMBER: returns the error and does not add a member', async () => {
+    withChannelsRpc(async () => ({ ok: false, error: { code: 'DUPLICATE_MEMBER', message: 'Already a member' } }));
+    try {
+      const store = createTestStore();
+      const res = await store.getState().joinChannelDaemon('ch-1', member, 'ws-join');
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error.message).toContain('DUPLICATE_MEMBER');
+      expect(store.getState().channelMembers['ch-1']).toBeUndefined();
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('bridge missing: returns UNKNOWN without mutating state', async () => {
+    clearChannelsRpc();
+    const store = createTestStore();
+    const res = await store.getState().joinChannelDaemon('ch-1', member, 'ws-join');
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('UNKNOWN');
+    expect(store.getState().channelMembers['ch-1']).toBeUndefined();
+  });
+});
+
+describe('channelsSlice — leaveChannelDaemon (membership, self-only)', () => {
+  it('on RPC success: calls a2a.channel.leave with self params and removes the member', async () => {
+    const { calls } = withChannelsRpc(async () => ({ ok: true }));
+    try {
+      const store = createTestStore();
+      // Seed membership: creator is auto-added as (ws-1, m-1).
+      store.getState().createChannelOptimistic({
+        name: 'general',
+        visibility: 'public',
+        createdBy: sender,
+        channel: makeChannel({ id: 'ch-1' }),
+      });
+      expect(store.getState().channelMembers['ch-1']).toHaveLength(1);
+
+      const res = await store.getState().leaveChannelDaemon('ch-1', 'm-1', 'ws-1');
+      expect(res.ok).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].method).toBe('a2a.channel.leave');
+      // Self-only: workspaceId === verifiedWorkspaceId, plus memberId.
+      expect(calls[0].params).toMatchObject({
+        channelId: 'ch-1',
+        workspaceId: 'ws-1',
+        memberId: 'm-1',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(store.getState().channelMembers['ch-1']).toHaveLength(0);
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('on NOT_A_MEMBER: returns the error and leaves membership untouched', async () => {
+    withChannelsRpc(async () => ({ ok: false, error: { code: 'NOT_A_MEMBER', message: 'not a member' } }));
+    try {
+      const store = createTestStore();
+      store.getState().createChannelOptimistic({
+        name: 'general',
+        visibility: 'public',
+        createdBy: sender,
+        channel: makeChannel({ id: 'ch-1' }),
+      });
+      const res = await store.getState().leaveChannelDaemon('ch-1', 'm-1', 'ws-1');
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error.code).toBe('NOT_A_MEMBER');
+      // Optimistic removal must NOT run on failure.
+      expect(store.getState().channelMembers['ch-1']).toHaveLength(1);
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('bridge missing: returns UNKNOWN without mutating state', async () => {
+    clearChannelsRpc();
+    const store = createTestStore();
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: makeChannel({ id: 'ch-1' }),
+    });
+    const res = await store.getState().leaveChannelDaemon('ch-1', 'm-1', 'ws-1');
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('UNKNOWN');
+    expect(store.getState().channelMembers['ch-1']).toHaveLength(1);
+  });
+});
+
 describe('channelsSlice — postMessageDaemon (U4, R4 + R11)', () => {
   it('on RPC success: applies the daemon row, returns ok, propagates clientMsgId', async () => {
     const { calls } = withChannelsRpc(async (_method, params) => ({
