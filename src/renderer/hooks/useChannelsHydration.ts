@@ -40,7 +40,7 @@
 
 import { useEffect } from 'react';
 import { useStore } from '../stores';
-import type { Channel, ChannelMember } from '../../shared/channels';
+import type { Channel, ChannelMember, ChannelMessage } from '../../shared/channels';
 
 /** Dependencies for the pure hydration routine. */
 export interface ChannelHydrationDeps {
@@ -133,6 +133,73 @@ export async function hydrateChannelsCatalog(deps: ChannelHydrationDeps): Promis
   if (!isCurrent()) return 0;
   setChannels(channels, members);
   return channels.length;
+}
+
+/** Recent-history load limit (P0). Channels have NO message cap (the daemon's
+ *  `ChannelService.post` pushes unbounded; only the idempotency map is
+ *  LRU-capped) and NO expiry (the 7-day TTL reaps only zero-member channels),
+ *  so a full `getMessages` would drag the entire unbounded history on open. We
+ *  load the most recent N by flooring `sinceSeq` at `nextSeq - N`; scroll-up
+ *  "load older" is deferred (P0.5). */
+export const CHANNEL_HISTORY_LOAD_LIMIT = 200;
+
+/** Dependencies for the pure channel-history load routine. */
+export interface ChannelHistoryDeps {
+  /** Read RPC bridge (`__wmuxChannelsRpc.rpc`). */
+  rpc: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+  channelId: string;
+  /** The channel's current `nextSeq` (from the hydrated catalog). Floors
+   *  `sinceSeq` so we only fetch the most recent `limit` messages. */
+  nextSeq: number;
+  /** Renderer "self" workspace (Company CEO ws, else active ws). */
+  workspaceId: string;
+  /** Store action that merges the fetched rows (`channelsSlice.hydrateChannelMessages`). */
+  apply: (channelId: string, messages: ChannelMessage[]) => void;
+  /** Max messages to load. Defaults to `CHANNEL_HISTORY_LOAD_LIMIT`. */
+  limit?: number;
+  /** Liveness guard (the caller passes `() => !disposed`). */
+  isCurrent?: () => boolean;
+}
+
+/**
+ * Load a channel's RECENT message history into the store on channel open (P0).
+ * `a2a.channel.getMessages` with `sinceSeq = max(0, nextSeq - limit)` →
+ * `hydrateChannelMessages`. Best-effort: any RPC error / non-ok envelope /
+ * malformed shape / missing identity / disposed guard short-circuits to a
+ * no-op. Returns the number of messages applied (0 on any early bail).
+ *
+ * Identity alignment (critical): `workspaceId` is stamped as BOTH the read
+ * scope and `verifiedWorkspaceId`, and MUST be the same workspace the
+ * ChannelView uses to pick its `viewer` (`company?.ceoWorkspaceId ??
+ * activeWorkspaceId`). Otherwise the daemon's per-member `historyFromSeq`
+ * floor and the view's visibility filter disagree and silently drop rows.
+ */
+export async function loadChannelHistory(deps: ChannelHistoryDeps): Promise<number> {
+  const { rpc, channelId, nextSeq, workspaceId, apply } = deps;
+  const isCurrent = deps.isCurrent ?? (() => true);
+  const limit = deps.limit ?? CHANNEL_HISTORY_LOAD_LIMIT;
+  if (!workspaceId || !channelId) return 0;
+  const sinceSeq = Math.max(0, nextSeq - limit);
+  let res: unknown;
+  try {
+    res = await rpc('a2a.channel.getMessages', {
+      channelId,
+      sinceSeq,
+      workspaceId,
+      verifiedWorkspaceId: workspaceId,
+    });
+  } catch {
+    // Daemon not connected / transient pipe failure — a later open or resync retries.
+    return 0;
+  }
+  if (!isCurrent()) return 0;
+  const env = unwrapRpc(res);
+  if (!isOkObject(env)) return 0;
+  const raw = (env as { messages?: unknown }).messages;
+  if (!Array.isArray(raw)) return 0;
+  const messages = raw as ChannelMessage[];
+  apply(channelId, messages);
+  return messages.length;
 }
 
 /** Single-method facade over the channels bridge `useRpcBridge` installs.

@@ -8,8 +8,8 @@
 // it with a mock `rpc` bridge and a spy `setChannels`.
 
 import { describe, it, expect, vi } from 'vitest';
-import { hydrateChannelsCatalog } from '../useChannelsHydration';
-import type { Channel, ChannelMember } from '../../../shared/channels';
+import { hydrateChannelsCatalog, loadChannelHistory } from '../useChannelsHydration';
+import type { Channel, ChannelMember, ChannelMessage } from '../../../shared/channels';
 
 function makeChannel(overrides: Partial<Channel> = {}): Channel {
   return {
@@ -29,6 +29,20 @@ function makeMember(overrides: Partial<ChannelMember> = {}): ChannelMember {
   return { workspaceId: 'ws-1', memberId: 'm-1', joinedAt: 1, historyFromSeq: 0, ...overrides };
 }
 
+function makeMsg(seq: number, overrides: Partial<ChannelMessage> = {}): ChannelMessage {
+  return {
+    channelId: 'ch-1',
+    seq,
+    workspaceId: 'ws-1',
+    memberId: 'm-1',
+    memberName: 'M',
+    text: `msg-${seq}`,
+    postedAt: seq,
+    deliveryStatus: 'delivered',
+    ...overrides,
+  };
+}
+
 /** Build a mock `rpc` that routes by method, with per-method handlers.
  *  The real renderer `rpc` bridge (electronAPI.rpc.invoke → pipe RpcRouter)
  *  wraps the daemon reply in the transport envelope `{ id, ok, result }` —
@@ -41,6 +55,7 @@ function wrap(daemonReply: unknown) {
 function makeRpc(handlers: {
   list?: (params: Record<string, unknown>) => unknown;
   getMembers?: (params: Record<string, unknown>) => unknown;
+  getMessages?: (params: Record<string, unknown>) => unknown;
 }) {
   return vi.fn(async (method: string, params: Record<string, unknown>) => {
     if (method === 'a2a.channel.list') {
@@ -48,6 +63,9 @@ function makeRpc(handlers: {
     }
     if (method === 'a2a.channel.getMembers') {
       return wrap(handlers.getMembers ? handlers.getMembers(params) : { ok: true, members: [] });
+    }
+    if (method === 'a2a.channel.getMessages') {
+      return wrap(handlers.getMessages ? handlers.getMessages(params) : { ok: true, messages: [] });
     }
     throw new Error(`unexpected method ${method}`);
   });
@@ -179,5 +197,74 @@ describe('hydrateChannelsCatalog', () => {
     });
     expect(n).toBe(0);
     expect(setChannels).not.toHaveBeenCalled();
+  });
+});
+
+describe('loadChannelHistory (P0 recent-history load)', () => {
+  it('floors sinceSeq at nextSeq - limit and applies the returned messages', async () => {
+    let captured: Record<string, unknown> | undefined;
+    const rpc = makeRpc({
+      getMessages: (p) => {
+        captured = p;
+        return { ok: true, messages: [makeMsg(298), makeMsg(299)] };
+      },
+    });
+    const apply = vi.fn();
+    const n = await loadChannelHistory({ rpc, channelId: 'ch-1', nextSeq: 300, workspaceId: 'ws-self', apply, limit: 200 });
+    expect(n).toBe(2);
+    expect(captured).toMatchObject({
+      channelId: 'ch-1',
+      sinceSeq: 100,
+      workspaceId: 'ws-self',
+      verifiedWorkspaceId: 'ws-self',
+    });
+    expect(apply).toHaveBeenCalledWith('ch-1', expect.arrayContaining([expect.objectContaining({ seq: 299 })]));
+  });
+
+  it('floors sinceSeq at 0 for a short channel (nextSeq < limit)', async () => {
+    let captured: Record<string, unknown> | undefined;
+    const rpc = makeRpc({
+      getMessages: (p) => {
+        captured = p;
+        return { ok: true, messages: [] };
+      },
+    });
+    await loadChannelHistory({ rpc, channelId: 'ch-1', nextSeq: 5, workspaceId: 'ws-self', apply: vi.fn(), limit: 200 });
+    expect(captured?.sinceSeq).toBe(0);
+  });
+
+  it('no-ops (no rpc, no apply) when workspaceId is empty', async () => {
+    const rpc = makeRpc({});
+    const apply = vi.fn();
+    const n = await loadChannelHistory({ rpc, channelId: 'ch-1', nextSeq: 10, workspaceId: '', apply });
+    expect(n).toBe(0);
+    expect(rpc).not.toHaveBeenCalled();
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('bails (no apply) when the RPC throws', async () => {
+    const rpc = vi.fn(async () => {
+      throw new Error('pipe down');
+    });
+    const apply = vi.fn();
+    const n = await loadChannelHistory({ rpc, channelId: 'ch-1', nextSeq: 10, workspaceId: 'ws-self', apply });
+    expect(n).toBe(0);
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('respects the disposed guard (no apply after dispose)', async () => {
+    const rpc = makeRpc({ getMessages: () => ({ ok: true, messages: [makeMsg(1)] }) });
+    const apply = vi.fn();
+    const n = await loadChannelHistory({ rpc, channelId: 'ch-1', nextSeq: 10, workspaceId: 'ws-self', apply, isCurrent: () => false });
+    expect(n).toBe(0);
+    expect(apply).not.toHaveBeenCalled();
+  });
+
+  it('does not apply on an ok:false envelope', async () => {
+    const rpc = makeRpc({ getMessages: () => ({ ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: 'x' } }) });
+    const apply = vi.fn();
+    const n = await loadChannelHistory({ rpc, channelId: 'ch-1', nextSeq: 10, workspaceId: 'ws-self', apply });
+    expect(n).toBe(0);
+    expect(apply).not.toHaveBeenCalled();
   });
 });

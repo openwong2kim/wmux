@@ -300,6 +300,39 @@ describe('channelsSlice — appendMessageFromEvent', () => {
   });
 });
 
+describe('channelsSlice — hydrateChannelMessages (P0)', () => {
+  it('merges history into the store, sorted by seq', () => {
+    const store = createTestStore();
+    store.getState().hydrateChannelMessages('ch-1', [
+      makeMessage('ch-1', 3),
+      makeMessage('ch-1', 1),
+      makeMessage('ch-1', 2),
+    ]);
+    expect(store.getState().channelMessages['ch-1'].map((m) => m.seq)).toEqual([1, 2, 3]);
+  });
+
+  it('dedups by seq; the existing (live) row wins on collision', () => {
+    const store = createTestStore();
+    store.getState().appendMessageFromEvent(makeMessage('ch-1', 2, { text: 'live' }));
+    store.getState().hydrateChannelMessages('ch-1', [
+      makeMessage('ch-1', 1, { text: 'hist-1' }),
+      makeMessage('ch-1', 2, { text: 'hist-2' }),
+    ]);
+    const list = store.getState().channelMessages['ch-1'];
+    expect(list.map((m) => m.seq)).toEqual([1, 2]);
+    // The live row already in the store wins the seq-2 collision (it may carry
+    // a fresher delivery snapshot than the persisted history row).
+    expect(list.find((m) => m.seq === 2)?.text).toBe('live');
+  });
+
+  it('does NOT bump channelUnread (loading history is not new unread)', () => {
+    const store = createTestStore();
+    // ch-1 is not the active channel, so a live append WOULD bump unread.
+    store.getState().hydrateChannelMessages('ch-1', [makeMessage('ch-1', 1), makeMessage('ch-1', 2)]);
+    expect(store.getState().channelUnread['ch-1'] ?? 0).toBe(0);
+  });
+});
+
 describe('channelsSlice — markChannelRead', () => {
   it('clears the unread count for the channel', () => {
     const store = createTestStore();

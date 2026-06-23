@@ -221,6 +221,13 @@ export interface ChannelsSlice {
   // ── Event-driven actions (dispatched from the subscription hook) ─
   markChannelRead: (channelId: string) => void;
   appendMessageFromEvent: (message: ChannelMessage) => void;
+  /** Hydrate a channel's message history (P0). Merges the daemon's
+   *  `getMessages` result with any live/optimistic rows already in the
+   *  store, deduped by `seq` (existing rows win — a live event may carry a
+   *  fresher delivery snapshot than the persisted history row). Result is
+   *  sorted by `seq`. Does NOT touch `channelUnread` — loading history is
+   *  not new unread. */
+  hydrateChannelMessages: (channelId: string, messages: ChannelMessage[]) => void;
 }
 
 export const createChannelsSlice: StateCreator<
@@ -385,6 +392,25 @@ export const createChannelsSlice: StateCreator<
         state.channelUnread[channelId] =
           (state.channelUnread[channelId] ?? 0) + 1;
       }
+    }),
+
+  hydrateChannelMessages: (channelId, messages) =>
+    set((state: StoreState) => {
+      const existing = state.channelMessages[channelId] ?? [];
+      // Merge history (from getMessages) with whatever live/optimistic rows
+      // are already in the store, deduped by seq. We seed the map with the
+      // history first, then overlay `existing` so a live event row WINS on a
+      // seq collision (it may carry a fresher delivery snapshot than the
+      // persisted history row — mirrors appendMessageFromEvent's overwrite).
+      const bySeq = new Map<number, ChannelMessage>();
+      for (const m of messages) bySeq.set(m.seq, m);
+      for (const m of existing) bySeq.set(m.seq, m);
+      state.channelMessages[channelId] = Array.from(bySeq.values()).sort(
+        (a, b) => a.seq - b.seq,
+      );
+      // channelUnread is intentionally NOT touched — loading history is not
+      // "new unread" (P0). Only live appends (appendMessageFromEvent /
+      // postMessageOptimistic) bump the badge.
     }),
 
   // ── *Daemon thunks (U4) — wire-path entry points ───────────────────

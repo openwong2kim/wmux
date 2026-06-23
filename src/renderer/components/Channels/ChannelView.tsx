@@ -13,13 +13,14 @@
 //
 // Plan ref: U8, R21, R22.
 
-import { useMemo, useCallback } from 'react';
+import { useEffect, useMemo, useCallback } from 'react';
 import type {
   Channel,
   ChannelMessage,
   ChannelMember,
 } from '../../../shared/channels';
 import { useStore } from '../../stores';
+import { loadChannelHistory } from '../../hooks/useChannelsHydration';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
@@ -289,6 +290,35 @@ export function ChannelView(): React.ReactElement | null {
     }
     return members[0] ?? null;
   }, [members, company?.ceoWorkspaceId, activeWorkspaceId]);
+
+  // P0: load RECENT message history into the store when a channel is opened.
+  // The view renders `store.channelMessages` only (it never calls getMessages
+  // itself), so without this an opened channel shows the empty-state even when
+  // it has history. `selfWs` MUST match the `viewer` workspace expression above
+  // so the daemon's per-member historyFromSeq floor and the view's filter agree.
+  // Hook order is stable — this runs on every render, before the early return.
+  useEffect(() => {
+    if (!activeChannelId) return;
+    const bridge = useStore.getState().channelsRpc();
+    if (!bridge) return;
+    const selfWs = company?.ceoWorkspaceId ?? activeWorkspaceId ?? '';
+    if (!selfWs) return;
+    // Read nextSeq fresh — the `channel` prop may be a render behind a
+    // just-arrived catalog refresh.
+    const nextSeq = useStore.getState().channels[activeChannelId]?.nextSeq ?? 1;
+    let disposed = false;
+    void loadChannelHistory({
+      rpc: bridge.rpc,
+      channelId: activeChannelId,
+      nextSeq,
+      workspaceId: selfWs,
+      apply: useStore.getState().hydrateChannelMessages,
+      isCurrent: () => !disposed,
+    });
+    return () => {
+      disposed = true;
+    };
+  }, [activeChannelId, company?.ceoWorkspaceId, activeWorkspaceId]);
 
   if (!activeChannelId || !channel) {
     // The activeChannelId-but-channel-undefined case can fire on a

@@ -46,6 +46,7 @@
 
 import { useEffect } from 'react';
 import { useStore } from '../stores';
+import { loadChannelHistory } from './useChannelsHydration';
 import type { WmuxEvent, ChannelMessageEvent } from '../../shared/events';
 
 /** Polling cadence. 1 Hz is the same as the PluginFrame forwardEvents
@@ -176,6 +177,25 @@ export function useChannelsEventSubscription(): void {
               s.channelMessages = {};
               s.channelUnread = {};
             });
+            // P0 (C1): the wipe just blanked the OPEN channel's hydrated
+            // history too, and nothing re-fetches it (history hydration
+            // triggers on activeChannelId change, not on resync). Re-load the
+            // active channel's recent history so the open view doesn't go
+            // blank mid-session. Best-effort — loadChannelHistory no-ops on any
+            // failure and a later event/open retries.
+            const st = useStore.getState();
+            const activeId = st.activeChannelId;
+            const activeCh = activeId ? st.channels[activeId] : undefined;
+            const rpcBridge = st.channelsRpc();
+            if (activeId && activeCh && rpcBridge && workspaceId) {
+              void loadChannelHistory({
+                rpc: rpcBridge.rpc,
+                channelId: activeId,
+                nextSeq: activeCh.nextSeq,
+                workspaceId,
+                apply: st.hydrateChannelMessages,
+              });
+            }
             return;
           }
           for (const event of result.events) {
