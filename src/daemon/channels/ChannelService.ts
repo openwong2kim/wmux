@@ -515,6 +515,24 @@ export class ChannelService {
       if (!channel) {
         return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
       }
+      // #288 — fail-closed visibility gate. You may JOIN a channel only if you
+      // may SEE it (the same `isVisibleTo` invariant the read paths use):
+      // public ⇒ always; private ⇒ the caller's verified workspace must already
+      // be a member (seeded at create time). Without this, any same-machine
+      // pipe/MCP caller that knows a private channel's id could self-join it and
+      // unlock its full history + LIVE fan-out (the joiner lands in every future
+      // post's recipientSnapshot + receives the channel.message event) and appear
+      // in the roster — reads are membership-scoped, so join was the escalation.
+      //
+      // We return CHANNEL_NOT_FOUND with the SAME message as a missing channel
+      // (NOT a distinct NOT_AUTHORIZED) so a non-member cannot distinguish a
+      // private channel they're locked out of from a non-existent id — symmetric
+      // with get()/getMembers()/getMessages(), which hide private existence from
+      // non-members. An existing member of a private channel passes this gate
+      // (they're visible) and falls through to the precise DUPLICATE_MEMBER below.
+      if (!this.isVisibleTo(channel, params.verifiedWorkspaceId)) {
+        return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
+      }
       const members = this.state.members[channel.id] ?? [];
       // Reject duplicate membership (keyed on the server-resolved workspace).
       if (members.some((m) => m.workspaceId === params.verifiedWorkspaceId && m.memberId === params.member.memberId)) {

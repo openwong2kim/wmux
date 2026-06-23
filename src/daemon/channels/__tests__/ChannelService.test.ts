@@ -710,21 +710,22 @@ describe('ChannelService', () => {
 
     it('list lets a non-creator member of a private channel see it (but strangers still cannot)', async () => {
       const { svc } = makeService();
+      // #288: Bob (ws-2) becomes a member of the private channel the ONLY
+      // legitimate way — seeded at create time via `members` (the create path
+      // bypasses the join visibility gate by design). A post-hoc stranger
+      // self-join is now rejected (see the join-gate tests below), so this
+      // test must seed membership rather than rely on the old hole.
       const priv = await svc.create({
         name: 'secret',
         visibility: 'private',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         verifiedWorkspaceId: 'ws-1',
+        members: [{ workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' }],
       });
       if (!priv.ok) throw new Error('expected create ok');
-      await svc.join({
-        channelId: priv.channel.id,
-        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
-        verifiedWorkspaceId: 'ws-2',
-      });
-      // Bob — joined, so a member of the private channel — must see it.
+      // Bob — a seeded member of the private channel — must see it.
       expect(svc.list('ws-2').map((c) => c.name)).toEqual(['secret']);
-      // Eve — never joined — must NOT see it.
+      // Eve — never a member — must NOT see it.
       expect(svc.list('ws-9').map((c) => c.name)).toEqual([]);
     });
 
@@ -779,17 +780,27 @@ describe('ChannelService', () => {
       expect(svc.getMessages(priv.channel.id, undefined, 'ws-1')).toHaveLength(1);
     });
 
-    it('getMessages on a private channel respects the viewer historyFromSeq floor (no past messages)', async () => {
-      // A member who joined late (includeHistory: false) must not be
-      // able to see messages posted before they joined, even via the
-      // public RPC. The seq-floor mirrors the renderer-side
-      // isMessageVisibleToViewer rule.
+    it('getMessages on a private channel returns full history to a create-seeded member', async () => {
+      // #288: after the join visibility gate, a workspace becomes a member of a
+      // PRIVATE channel only at create time (`members[]`), and create-seeded
+      // members always get historyFromSeq:0 — so they see the FULL history.
+      //
+      // The "late joiner sees no history" (historyFromSeq>0) scenario is no
+      // longer reachable for a private channel via the public API: a stranger
+      // can't self-join (gate), and the only includeHistory:false join that
+      // passes the gate is a 2nd agent of an ALREADY-member ws — whose floor is
+      // masked because getMessages finds the viewer by workspaceId (first match
+      // = the ws's create-seeded floor-0 member, ChannelService.ts:322). The
+      // getMessages floor-apply branch stays as defensive code for a future
+      // invite model; the historyFromSeq SET path is covered by the public
+      // includeHistory:false test in `describe('join / leave')`.
       const { svc } = makeService();
       const priv = await svc.create({
         name: 'team',
         visibility: 'private',
         createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
         verifiedWorkspaceId: 'ws-1',
+        members: [{ workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' }],
       });
       if (!priv.ok) throw new Error('expected create ok');
       // Post a few messages as Alice.
@@ -797,31 +808,15 @@ describe('ChannelService', () => {
         await svc.post({
           channelId: priv.channel.id,
           sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
-          text: `pre-join-${i}`,
+          text: `msg-${i}`,
           verifiedWorkspaceId: 'ws-1',
         });
       }
-      // Bob joins without history.
-      const joinRes = await svc.join({
-        channelId: priv.channel.id,
-        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
-        includeHistory: false,
-        verifiedWorkspaceId: 'ws-2',
-      });
-      expect(joinRes.ok).toBe(true);
-      // Post a message after Bob's join.
-      await svc.post({
-        channelId: priv.channel.id,
-        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
-        text: 'post-join',
-        verifiedWorkspaceId: 'ws-1',
-      });
-      // Alice (full history) sees all 4.
-      expect(svc.getMessages(priv.channel.id, undefined, 'ws-1')).toHaveLength(4);
-      // Bob (no history) sees only the post-join message.
-      const bobView = svc.getMessages(priv.channel.id, undefined, 'ws-2');
-      expect(bobView).toHaveLength(1);
-      expect(bobView[0].text).toBe('post-join');
+      // Alice (creator, floor 0) and Bob (seeded member, floor 0) both see all 3.
+      expect(svc.getMessages(priv.channel.id, undefined, 'ws-1')).toHaveLength(3);
+      expect(svc.getMessages(priv.channel.id, undefined, 'ws-2')).toHaveLength(3);
+      // A stranger still sees nothing (visibility gate on the read path).
+      expect(svc.getMessages(priv.channel.id, undefined, 'ws-9')).toEqual([]);
     });
 
     it('getMessages on a public channel has no per-member seq floor (any caller sees full history)', async () => {
@@ -841,6 +836,135 @@ describe('ChannelService', () => {
       });
       // Stranger — sees the message because the channel is public.
       expect(svc.getMessages(pub.channel.id, undefined, 'ws-9')).toHaveLength(1);
+    });
+  });
+
+  describe('#288: join visibility gate (fail-closed private join)', () => {
+    it('rejects a non-member self-join of a private channel with CHANNEL_NOT_FOUND (no membership, no persist)', async () => {
+      const { svc, writer } = makeService();
+      const priv = await svc.create({
+        name: 'secret',
+        visibility: 'private',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!priv.ok) throw new Error('expected create ok');
+      const callsBefore = writer.saveImmediate.mock.calls.length;
+      // ws-2 is NOT a member and was never invited — the escalation #288 closes.
+      const r = await svc.join({
+        channelId: priv.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('expected !ok');
+      // CHANNEL_NOT_FOUND (NOT NOT_AUTHORIZED) so a non-member cannot distinguish
+      // a private channel they're locked out of from a non-existent id —
+      // symmetric with get()/getMembers()/getMessages().
+      expect(r.error.code).toBe('CHANNEL_NOT_FOUND');
+      // No membership was written (verified from the creator's POV).
+      expect(svc.getMembers(priv.channel.id, 'ws-1').map((m) => m.workspaceId)).toEqual(['ws-1']);
+      // The gate returned before any mutation → no extra persist call.
+      expect(writer.saveImmediate.mock.calls.length).toBe(callsBefore);
+    });
+
+    it('still allows a non-member self-join of a PUBLIC channel (gate does not over-tighten)', async () => {
+      const { svc } = makeService();
+      const pub = await svc.create({
+        name: 'lobby',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!pub.ok) throw new Error('expected create ok');
+      const r = await svc.join({
+        channelId: pub.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      expect(r.ok).toBe(true);
+      expect(svc.getMembers(pub.channel.id, 'ws-2').map((m) => m.workspaceId).sort()).toEqual(['ws-1', 'ws-2']);
+    });
+
+    it('an existing member re-joining a private channel gets DUPLICATE_MEMBER (not CHANNEL_NOT_FOUND)', async () => {
+      const { svc } = makeService();
+      const priv = await svc.create({
+        name: 'team',
+        visibility: 'private',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!priv.ok) throw new Error('expected create ok');
+      // ws-1 is already a member (creator) → passes the visibility gate, then
+      // hits the precise DUPLICATE_MEMBER — proving the gate doesn't mask it.
+      const r = await svc.join({
+        channelId: priv.channel.id,
+        member: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('expected !ok');
+      expect(r.error.code).toBe('DUPLICATE_MEMBER');
+    });
+
+    it('allows a 2nd agent of an already-member workspace to join a private channel (read/join symmetry)', async () => {
+      // D1: the gate keys on workspaceId (isVisibleTo). If ws-2 already has an
+      // agent member, ws-2 can already READ the private channel, so a 2nd ws-2
+      // agent joining is consistent — not a new hole. Proves no over-rejection.
+      const { svc } = makeService();
+      const priv = await svc.create({
+        name: 'squad',
+        visibility: 'private',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+        members: [{ workspaceId: 'ws-2', memberId: 'lead', memberName: 'Lead' }],
+      });
+      if (!priv.ok) throw new Error('expected create ok');
+      // A different agent (memberId 'backend') of the SAME ws-2 joins.
+      const r = await svc.join({
+        channelId: priv.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'backend', memberName: 'Backend' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      expect(r.ok).toBe(true);
+      const ws2Members = svc
+        .getMembers(priv.channel.id, 'ws-2')
+        .filter((m) => m.workspaceId === 'ws-2')
+        .map((m) => m.memberId)
+        .sort();
+      expect(ws2Members).toEqual(['backend', 'lead']);
+    });
+
+    it('a rejected private join performs no mutation (empty private channel keeps emptySince)', async () => {
+      const { svc, writer } = makeService();
+      const priv = await svc.create({
+        name: 'ghost',
+        visibility: 'private',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!priv.ok) throw new Error('expected create ok');
+      // Creator leaves → channel is empty, emptySince stamped (reaper-eligible).
+      const left = await svc.leave({
+        channelId: priv.channel.id,
+        workspaceId: 'ws-1',
+        memberId: 'm-1',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(left.ok).toBe(true);
+      const callsBefore = writer.saveImmediate.mock.calls.length;
+      // A stranger tries to join the now-empty private channel. The gate must
+      // reject BEFORE the emptySince-clear so the channel stays reapable.
+      const r = await svc.join({
+        channelId: priv.channel.id,
+        member: { workspaceId: 'ws-9', memberId: 'm-9', memberName: 'Eve' },
+        verifiedWorkspaceId: 'ws-9',
+      });
+      expect(r.ok).toBe(false);
+      if (r.ok) throw new Error('expected !ok');
+      expect(r.error.code).toBe('CHANNEL_NOT_FOUND');
+      // No mutation happened → no extra persist (emptySince is untouched).
+      expect(writer.saveImmediate.mock.calls.length).toBe(callsBefore);
     });
   });
 
