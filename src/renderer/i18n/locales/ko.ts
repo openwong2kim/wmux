@@ -7,6 +7,8 @@ export const ko = {
   'sidebar.newWorkspace': '새 워크스페이스',
   'sidebar.newWorkspaceTooltip': '새 워크스페이스 (Ctrl+N)',
   'sidebar.hideTooltip': '사이드바 숨기기 (Ctrl+B)',
+  'sidebar.showCompany': '회사 보기',
+  'sidebar.showWorkspaces': '워크스페이스 보기',
   'sidebar.expandTooltip': '사이드바 펼치기 (Ctrl+B)',
   'sidebar.unreadCount': '읽지 않음 {count}개',
 

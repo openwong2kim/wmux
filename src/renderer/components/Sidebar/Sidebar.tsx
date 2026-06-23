@@ -11,6 +11,7 @@ import { IconPlus, IconChevronDir } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import PluginPanels from '../../plugins/PluginPanels';
 import { ChannelsPanel } from '../Channels/ChannelsPanel';
+import CompanyPanel from './CompanyPanel';
 
 // Pane 트리에서 모든 leaf의 PTY를 dispose
 function disposeAllPtys(pane: Pane) {
@@ -39,6 +40,13 @@ export default function Sidebar() {
   const toggleFileTree = useStore((s) => s.toggleFileTree);
   const fileTreeVisible = useStore((s) => s.fileTreeVisible);
   const company = useStore((s) => s.company);
+  // sidebarMode toggles the sidebar's central content between the workspace
+  // list and the company tree (CompanyPanel). The palette's "Company: …"
+  // commands flip this to 'company'; without a consumer here the flip was a
+  // no-op (the bug: company commands appeared to do nothing). The header
+  // toggle below is the UI entry/exit point.
+  const sidebarMode = useStore((s) => s.sidebarMode);
+  const setSidebarMode = useStore((s) => s.setSidebarMode);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
@@ -81,6 +89,36 @@ export default function Sidebar() {
       <div className="relative flex items-center justify-between px-4 py-3 border-b border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
         <span className="text-sm font-bold text-[var(--text-main)] tracking-widest font-mono" {...tokenAttrs('textMain', 'text')}>WMUX</span>
         <div className="flex items-center gap-1.5">
+          {/* Workspaces ⇄ Company toggle. Entry/exit for company mode — the
+              palette commands set sidebarMode but there was no UI affordance
+              to flip it back (or discover it). */}
+          <button
+            className={`flex items-center justify-center w-6 h-6 rounded-md transition-colors duration-150 hover:bg-[rgba(var(--bg-surface-rgb),0.6)] ${FOCUS_RING} ${
+              sidebarMode === 'company'
+                ? 'text-[var(--accent-blue)]'
+                : 'text-[var(--text-subtle)] hover:text-[var(--accent-blue)]'
+            }`}
+            onClick={() => setSidebarMode(sidebarMode === 'company' ? 'workspaces' : 'company')}
+            title={
+              sidebarMode === 'company'
+                ? (t('sidebar.showWorkspaces') || 'Show workspaces')
+                : (t('sidebar.showCompany') || 'Show company')
+            }
+            aria-label={
+              sidebarMode === 'company'
+                ? (t('sidebar.showWorkspaces') || 'Show workspaces')
+                : (t('sidebar.showCompany') || 'Show company')
+            }
+            aria-pressed={sidebarMode === 'company'}
+            data-company-toggle
+          >
+            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+              <circle cx="5.5" cy="5" r="2" />
+              <circle cx="11" cy="6" r="1.5" />
+              <path d="M2 13c0-2 1.6-3.3 3.5-3.3S9 11 9 13" />
+              <path d="M10 13c0-1.7.8-2.7 2-2.7s2 1 2 2.3" />
+            </svg>
+          </button>
           {/* File tree button hidden - feature unstable
           <button
             className={`text-sm leading-none transition-colors ${fileTreeVisible ? 'text-[var(--accent-blue)]' : 'text-[var(--text-subtle)] hover:text-[var(--accent-green)]'}`}
@@ -106,11 +144,17 @@ export default function Sidebar() {
         {pickerOpen && <PresetPicker onClose={closePicker} />}
       </div>
 
-      {/* Workspace list */}
-      {/* The list container absorbs dragover for sidebar-internal reorder
+      {/* Central content: company tree when in company mode, else the
+          workspace list. This is the consumer of `sidebarMode` that was
+          missing — CompanyPanel was orphaned (never rendered) so the
+          palette's company commands had no visible surface. */}
+      {sidebarMode === 'company' ? (
+        <CompanyPanel />
+      ) : (
+      /* The list container absorbs dragover for sidebar-internal reorder
           drags so the gaps between WorkspaceItem rows (and the empty area
           below the last row) don't paint a 🚫 cursor mid-drag. External
-          drags hover-through the container untouched. */}
+          drags hover-through the container untouched. */
       <div
         className="flex-1 overflow-y-auto py-2 space-y-0.5"
         onDragOver={(e) => {
@@ -136,6 +180,7 @@ export default function Sidebar() {
           />
         ))}
       </div>
+      )}
 
       {/* Plugin sidebar panels (B-1 ui.sidebar contribution point) */}
       <PluginPanels />

@@ -7,6 +7,8 @@ export const en = {
   'sidebar.newWorkspace': 'New workspace',
   'sidebar.newWorkspaceTooltip': 'New workspace (Ctrl+N)',
   'sidebar.hideTooltip': 'Hide sidebar (Ctrl+B)',
+  'sidebar.showCompany': 'Show company',
+  'sidebar.showWorkspaces': 'Show workspaces',
   'sidebar.expandTooltip': 'Expand sidebar (Ctrl+B)',
   'sidebar.unreadCount': '{count} unread',
 
