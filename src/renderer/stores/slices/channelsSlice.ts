@@ -178,6 +178,21 @@ export interface ChannelsSlice {
     channelId: string,
     params: ChannelPostParams,
   ) => Promise<ChannelActionResult<ChannelMessage>>;
+  // Membership (channel members roster UX). join adds `member` pinned to
+  // `workspaceId`; leave is SELF-ONLY (you can leave, not eject) so it takes
+  // just the memberId + the caller's own workspaceId — the daemon's leave()
+  // matches `m.workspaceId === verifiedWorkspaceId`, so workspaceId IS the
+  // verified self.
+  joinChannelDaemon: (
+    channelId: string,
+    member: ChannelMemberAddress,
+    workspaceId: string,
+  ) => Promise<ChannelActionResult<Record<string, never>>>;
+  leaveChannelDaemon: (
+    channelId: string,
+    memberId: string,
+    workspaceId: string,
+  ) => Promise<ChannelActionResult<Record<string, never>>>;
 
   // Internal helpers — exposed on the slice so the `*Daemon` thunks
   // can call them via `get()`, and so tests can drive the bridge-
@@ -536,5 +551,55 @@ export const createChannelsSlice: StateCreator<
       ...params,
       message: message as ChannelMessage,
     });
+  },
+
+  joinChannelDaemon: async (channelId, member, workspaceId) => {
+    const bridge = get().channelsRpc();
+    if (!bridge) {
+      console.warn('[channelsSlice] joinChannelDaemon invoked before bridge mounted — call ignored');
+      return { ok: false, error: { code: 'UNKNOWN', message: 'channels bridge not mounted' } };
+    }
+    let raw: unknown;
+    try {
+      // mutateLocal returns the daemon reply directly (no transport envelope).
+      // The daemon pins the joining member's workspaceId to verifiedWorkspaceId.
+      raw = await bridge.mutateLocal('a2a.channel.join', {
+        channelId,
+        member,
+        verifiedWorkspaceId: workspaceId,
+        includeHistory: true,
+      });
+    } catch (err) {
+      return { ok: false, error: { code: 'UNKNOWN', message: err instanceof Error ? err.message : String(err) } };
+    }
+    if (raw === null || typeof raw !== 'object' || !('ok' in raw) || (raw as { ok: unknown }).ok !== true) {
+      return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.join failed') };
+    }
+    return get().joinChannelOptimistic(channelId, member, workspaceId);
+  },
+
+  leaveChannelDaemon: async (channelId, memberId, workspaceId) => {
+    const bridge = get().channelsRpc();
+    if (!bridge) {
+      console.warn('[channelsSlice] leaveChannelDaemon invoked before bridge mounted — call ignored');
+      return { ok: false, error: { code: 'UNKNOWN', message: 'channels bridge not mounted' } };
+    }
+    let raw: unknown;
+    try {
+      // Self-only: workspaceId is BOTH the member's workspace and the verified
+      // caller — the daemon's leave() matches m.workspaceId === verifiedWorkspaceId.
+      raw = await bridge.mutateLocal('a2a.channel.leave', {
+        channelId,
+        workspaceId,
+        memberId,
+        verifiedWorkspaceId: workspaceId,
+      });
+    } catch (err) {
+      return { ok: false, error: { code: 'UNKNOWN', message: err instanceof Error ? err.message : String(err) } };
+    }
+    if (raw === null || typeof raw !== 'object' || !('ok' in raw) || (raw as { ok: unknown }).ok !== true) {
+      return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.leave failed') };
+    }
+    return get().leaveChannelOptimistic(channelId, memberId);
   },
 });
