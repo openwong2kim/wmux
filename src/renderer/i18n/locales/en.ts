@@ -243,6 +243,7 @@ export const en = {
   'statusBar.company': 'COMPANY',
   'statusBar.session': 'Session: {min}m',
   'statusBar.settingsTooltip': 'Settings (Ctrl+,)',
+  'statusBar.channelsTooltip': 'Toggle channels',
 
   // Settings
   'settings.title': 'Settings',
@@ -638,6 +639,8 @@ export const en = {
 
   // Channels (a2a.channel.* RPC UI surface)
   'channels.title': 'Channels',
+  'channels.dockTitle': 'Channels',
+  'channels.dockCollapse': 'Collapse channels',
   'channels.archived': 'archived',
   'channels.empty': 'No channels yet — click + to create one.',
   'channels.emptyCompany': 'Channels are company-scoped — start a company to use them.',

@@ -24,7 +24,7 @@ import KeyboardCheatSheet from '../KeyboardCheatSheet';
 import ToastContainer from '../Toast/ToastContainer';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
-import { ChannelView } from '../Channels/ChannelView';
+import ChannelDock from '../Channels/ChannelDock';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { useActivePaneFocus } from '../../hooks/useActivePaneFocus';
@@ -186,6 +186,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     })),
     activeWorkspaceId: state.activeWorkspaceId,
     sidebarVisible: state.sidebarVisible,
+    channelDockVisible: state.channelDockVisible,
     sidebarMode: state.sidebarMode,
     company: companySafe,
     memberCosts: state.memberCosts,
@@ -233,6 +234,7 @@ export default function AppLayout() {
   // Global guard: blocks webview pointer capture during panel separator drag
   useResizeGuard();
   const sidebarVisible = useStore((s) => s.sidebarVisible);
+  const channelDockVisible = useStore((s) => s.channelDockVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const fileTreeVisible = useStore((s) => s.fileTreeVisible);
   const companyViewVisible = useStore((s) => s.companyViewVisible);
@@ -1172,6 +1174,16 @@ export default function AppLayout() {
         )}
       </div>
       </ErrorBoundary>
+      {/* A2A channel dock (Approach A). A flex sibling on the OPPOSITE edge
+          from the workspace sidebar — the root row's flex-row-reverse (when
+          the sidebar is docked right) puts this on the correct edge, so it
+          reflows the panes instead of the old fixed overlay that covered them.
+          Holds the channel list + active conversation; collapsible. */}
+      {channelDockVisible && (
+        <ErrorBoundary name="ChannelDock">
+          <ChannelDock />
+        </ErrorBoundary>
+      )}
       {fileTreeVisible && (
         <ErrorBoundary name="FileTree">
           <FileTreePanel position={sidebarPosition === 'left' ? 'right' : 'left'} />
@@ -1179,15 +1191,6 @@ export default function AppLayout() {
       )}
       <NotificationPanel />
       <MessageFeedPanel />
-      {/* A2A channel view (U8). Always mounted; returns null when no
-          channel is active, so the gate is internal (matches the
-          NotificationPanel pattern). The view docks to the right
-          edge of the main area when a channel is active. The wrapper
-          uses a fixed-position overlay so it stacks above the panes
-          but does not disturb the workspace layout — the panes
-          remain fully interactive when the channel view is hidden
-          (pointer-events: none on the wrapper). */}
-      <ChannelView />
       {/* Cross-pane search results panel (T-F). Mount-gated on
           searchPanelOpen at this level (I3) so the panel's 6-field zustand
           subscriptions don't run when closed. */}

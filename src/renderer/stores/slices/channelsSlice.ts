@@ -229,6 +229,9 @@ export const createChannelsSlice: StateCreator<
       // here means a single source of truth (no double-bookkeeping).
       if (channelId !== null) {
         state.channelUnread[channelId] = 0;
+        // Auto-open the right channel dock so clicking a channel reveals the
+        // conversation (the dock is collapsed by default — uiSlice).
+        state.channelDockVisible = true;
       }
     }),
 

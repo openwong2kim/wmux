@@ -385,6 +385,9 @@ export interface SessionData {
   workspaces: Workspace[];
   activeWorkspaceId: string;
   sidebarVisible: boolean;
+  /** Right-side channel dock visibility. Optional for backward-compat with
+   *  pre-dock sessions (defaults to false on load). */
+  channelDockVisible?: boolean;
   // User preferences (persisted across restarts)
   theme?: string;
   locale?: string;

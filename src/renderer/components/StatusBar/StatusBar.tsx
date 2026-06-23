@@ -5,6 +5,7 @@ import type { Notification, Workspace } from '../../../shared/types';
 import { UsageWidgetView } from './UsageWidget';
 import { tokenAttrs } from '../../themes';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
+import { sumUnread } from '../Channels/ChannelsPanel';
 
 /**
  * Compute the unread notification count, excluding notifications whose
@@ -94,6 +95,14 @@ export default function StatusBar() {
   );
   const toggleNotificationPanel = useStore((s) => s.toggleNotificationPanel);
   const toggleSettingsPanel = useStore((s) => s.toggleSettingsPanel);
+
+  // Channel dock toggle + aggregate unread. The dock is the only home of the
+  // channel list now, so this StatusBar control is the reopen affordance when
+  // it's collapsed (and a quick toggle otherwise).
+  const channelUnread = useStore((s) => s.channelUnread);
+  const channelDockVisible = useStore((s) => s.channelDockVisible);
+  const toggleChannelDock = useStore((s) => s.toggleChannelDock);
+  const channelUnreadTotal = useMemo(() => sumUnread(channelUnread), [channelUnread]);
 
   // Prefix mode (tmux-style Ctrl+B)
   const prefixMode = useStore((s) => s.prefixMode);
@@ -194,6 +203,22 @@ export default function StatusBar() {
         />
         {/* Plugin status-bar widgets (B-1 ui.statusbar, right-aligned) */}
         <PluginStatusBarWidgets alignment="right" />
+        <button
+          type="button"
+          onClick={toggleChannelDock}
+          className={`flex items-center gap-1 transition-colors ${channelDockVisible ? 'text-[var(--accent-blue)]' : 'text-[var(--text-muted)] hover:text-[var(--text-main)]'}`}
+          title={t('statusBar.channelsTooltip') || 'Toggle channels'}
+          aria-label={t('statusBar.channelsTooltip') || 'Toggle channels'}
+          aria-pressed={channelDockVisible}
+          data-statusbar-channels
+        >
+          <span aria-hidden="true" className="font-mono">#</span>
+          {channelUnreadTotal > 0 && (
+            <span className="text-[var(--accent-blue)]" data-statusbar-channel-unread {...tokenAttrs('accent', 'text')}>
+              {channelUnreadTotal > 99 ? '99+' : channelUnreadTotal}
+            </span>
+          )}
+        </button>
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
         {memUsage && <span>{memUsage}</span>}
         <span>{timeStr}</span>

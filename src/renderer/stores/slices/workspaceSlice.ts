@@ -447,6 +447,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         window.electronAPI.settings.setAutoUpdateEnabled(data.autoUpdateEnabled);
       }
       if (data.sidebarMode) state.sidebarMode = data.sidebarMode;
+      if (data.channelDockVisible != null) state.channelDockVisible = data.channelDockVisible;
       if (data.company !== undefined) state.company = data.company ?? null;
       if (data.memberCosts) state.memberCosts = data.memberCosts;
       if (data.sessionStartTime != null) state.sessionStartTime = data.sessionStartTime;

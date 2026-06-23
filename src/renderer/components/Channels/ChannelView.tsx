@@ -291,32 +291,28 @@ export function ChannelView(): React.ReactElement | null {
     return null;
   }
 
+  // Dock content (not a fixed overlay anymore). The ChannelDock owns width +
+  // positioning; ChannelView fills the dock's remaining height below the list.
   return (
-    <div
-      className="fixed top-0 right-0 h-screen pointer-events-none"
-      style={{ width: 360, zIndex: 40 }}
-      data-channel-view-wrapper
-    >
-      <div className="h-full pointer-events-auto">
-        <ChannelViewContent
-          channel={channel}
-          messages={messages}
-          viewer={viewer}
-          onClose={handleClose}
-          composerSlot={
-            channel.status === 'archived' ? (
-              <div
-                data-channel-archived-composer
-                className="px-4 py-2 text-[10px] font-mono text-[var(--text-muted)]"
-              >
-                {t('channels.archivedReadOnly') || 'Archived channels are read-only.'}
-              </div>
-            ) : (
-              <Composer channelId={channel.id} onError={pushToast} />
-            )
-          }
-        />
-      </div>
+    <div className="flex flex-col flex-1 min-h-0" data-channel-view-wrapper>
+      <ChannelViewContent
+        channel={channel}
+        messages={messages}
+        viewer={viewer}
+        onClose={handleClose}
+        composerSlot={
+          channel.status === 'archived' ? (
+            <div
+              data-channel-archived-composer
+              className="px-4 py-2 text-[10px] font-mono text-[var(--text-muted)]"
+            >
+              {t('channels.archivedReadOnly') || 'Archived channels are read-only.'}
+            </div>
+          ) : (
+            <Composer channelId={channel.id} onError={pushToast} />
+          )
+        }
+      />
     </div>
   );
 }
