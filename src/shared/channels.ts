@@ -170,6 +170,20 @@ export const EMPTY_CHANNEL_STATE: ChannelState = {
   idempotency: {},
 };
 
+/**
+ * The single company every channel belongs to until in-app Company mode
+ * provides a real company id. The daemon's ChannelService is constructed
+ * with this id (it stamps every channel's `companyId`), so the renderer
+ * MUST use the same value when it synthesizes an optimistic row or resolves
+ * a "self" company context without an in-app Company — otherwise the
+ * optimistic row's companyId would disagree with the daemon's authoritative
+ * row. Channels are intentionally decoupled from in-app Company mode: they
+ * are always available, scoped to this default company, and the daemon is
+ * the authoritative catalog. When multi-company lands, this becomes a
+ * fallback rather than the only value.
+ */
+export const DEFAULT_COMPANY_ID = 'co-default';
+
 /** Channel name length bounds. `CHANNEL_NAME_MIN` is the empty-length
  *  floor; the regex below requires at least 1 character. */
 export const CHANNEL_NAME_MIN = 1;

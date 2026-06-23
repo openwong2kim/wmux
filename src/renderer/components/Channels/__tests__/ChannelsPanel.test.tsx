@@ -23,6 +23,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import type { Channel } from '../../../../shared/channels';
+import { DEFAULT_COMPANY_ID } from '../../../../shared/channels';
 import { useStore } from '../../../stores';
 import {
   ChannelsPanelView,
@@ -328,10 +329,26 @@ beforeEach(() => {
 });
 
 describe('ChannelsPanelView', () => {
-  it('renders the company-absent empty state when company is null', () => {
+  it('renders the full panel (not a dead-end) when company is null — channels are decoupled from Company mode', () => {
     const html = renderPanel({ company: null });
+    // Decoupled: `data-company-state` is now a diagnostic attribute, not a
+    // render gate. The panel renders its normal body so the daemon catalog is
+    // visible and the `+` affordance works without a company.
     expect(html).toContain('data-company-state="absent"');
     expect(html).toContain('data-channels-panel');
+    expect(html).toContain('data-channels-new');
+    // Empty catalog → friendly empty prompt (NOT the old company-scoped dead-end).
+    expect(html).toContain('data-channels-empty');
+  });
+
+  it('shows the daemon catalog when company is null but channels exist (gate relaxed)', () => {
+    const html = renderPanel({
+      company: null,
+      channels: { 'ch-1': makeChannel({ id: 'ch-1', name: 'general' }) },
+    });
+    expect(html).toContain('data-company-state="absent"');
+    expect(html).toContain('data-channel-count="1"');
+    expect(html).toContain('data-channel-id="ch-1"');
   });
 
   it('renders the empty-catalog prompt when company is set but no channels exist', () => {
@@ -466,11 +483,32 @@ describe('ChannelsPanel — createChannelOptimistic wiring', () => {
     expect(after.channelMessages[channel.id]).toEqual([]);
   });
 
-  it('does not add a channel when state.company is null (handleCreate short-circuits)', () => {
-    useStore.setState({ company: null });
-    // The panel's handleCreate returns false when company is null —
-    // mirroring the behavior, we simulate the early return by NOT
-    // calling createChannelOptimistic. The catalog stays empty.
-    expect(Object.keys(useStore.getState().channels)).toHaveLength(0);
+  it('adds a channel when state.company is null using the active-workspace identity (decoupled)', () => {
+    // New behavior: channels work without in-app Company mode. handleCreate
+    // resolves companyId → DEFAULT_COMPANY_ID and the creator workspace →
+    // active workspace. We mirror that resolution here (handleCreate itself
+    // needs the bridge; the slice round-trip is what we assert).
+    useStore.setState({ company: null, activeWorkspaceId: 'ws-active' });
+    const channel = synthesizeChannel({
+      companyId: DEFAULT_COMPANY_ID,
+      name: 'general',
+      visibility: 'public',
+    });
+    const result = useStore.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: {
+        workspaceId: 'ws-active',
+        memberId: 'local-ui',
+        memberName: 'local-ui',
+      },
+      channel,
+    });
+
+    expect(result.ok).toBe(true);
+    const after = useStore.getState();
+    expect(after.channels[channel.id]).toBeDefined();
+    expect(after.channels[channel.id].companyId).toBe(DEFAULT_COMPANY_ID);
+    expect(after.channelMembers[channel.id]).toHaveLength(1);
   });
 });

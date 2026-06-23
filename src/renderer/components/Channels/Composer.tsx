@@ -195,18 +195,26 @@ export interface ComposerProps {
 export function Composer({ channelId, onError }: ComposerProps): React.ReactElement {
   const t = useT();
   const company = useStore((s) => s.company);
+  // Channels are decoupled from in-app Company mode: the active workspace
+  // stands in as the sender identity when no company is set (mirrors
+  // ChannelsPanel / ChannelView / useChannelsHydration).
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const channel = useStore((s) => s.channels[channelId]);
   const postMessageDaemon = useStore((s) => s.postMessageDaemon);
 
   const handlePost = useCallback(
     async (text: string) => {
-      if (!company || !channel) {
-        return { ok: false, errorCode: 'UNKNOWN', errorMessage: 'No active company' };
+      // Sender identity: the CEO workspace when Company mode is active, else
+      // the active workspace. The daemon's post path requires
+      // sender.workspaceId === verifiedWorkspaceId AND membership; posting
+      // succeeds on channels this identity is a member of (e.g. ones it
+      // created here). A channel created by another client requires a join
+      // first — that is the daemon's membership rule (NOT_A_MEMBER), not a
+      // company gate.
+      const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId;
+      if (!channel || !selfWorkspaceId) {
+        return { ok: false, errorCode: 'UNKNOWN', errorMessage: 'No channel or workspace identity' };
       }
-      // The CEO-workspace stand-in is the same stand-in U7 uses for
-      // channel create; the authoritative row from the daemon will
-      // overwrite the auto-member with the real creator's id.
-      const ceoWorkspaceId = company.ceoWorkspaceId ?? 'unknown-workspace';
       // R11 idempotency: `clientMsgId` is the per-post idempotency
       // key. The daemon returns the original `seq` on a repeat hit
       // instead of appending a duplicate; we generate the key here
@@ -218,7 +226,7 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
         channelId,
         seq: nextSeq,
         text,
-        senderWorkspaceId: ceoWorkspaceId,
+        senderWorkspaceId: selfWorkspaceId,
         senderMemberId: 'local-ui',
         senderMemberName: 'local-ui',
         clientMsgId,
@@ -226,7 +234,7 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
       const result = await postMessageDaemon(channelId, {
         text,
         sender: {
-          workspaceId: ceoWorkspaceId,
+          workspaceId: selfWorkspaceId,
           memberId: 'local-ui',
           memberName: 'local-ui',
         },

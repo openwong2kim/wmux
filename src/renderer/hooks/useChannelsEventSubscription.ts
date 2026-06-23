@@ -71,13 +71,26 @@ interface EventsPollBridge {
     types: ['channel.message'];
     max?: number;
     workspaceId: string;
-  }): Promise<EventsPollResponse | null>;
+  }): Promise<EventsPollEnvelope | null>;
 }
 
 interface EventsPollResponse {
   events: WmuxEvent[];
   nextCursor: number;
   resync?: boolean;
+}
+
+/**
+ * The renderer rpc bridge (electronAPI.rpc.invoke → pipe RpcRouter) wraps the
+ * daemon reply in the RPC protocol envelope `{ id, ok, result }`, where
+ * `result` is the events.poll payload. Reading `result.events` directly (one
+ * level too shallow) silently dispatched NOTHING — the cursor stayed 0 and the
+ * `for…of` ran over `undefined`, swallowed by the catch. PluginFrame's
+ * forwardEvents loop reads `resp.result.events` correctly; we mirror it.
+ */
+interface EventsPollEnvelope {
+  ok?: boolean;
+  result?: EventsPollResponse;
 }
 
 interface BridgeWindow {
@@ -117,21 +130,20 @@ export function useChannelsEventSubscription(): void {
 
     // Per-recipient scoping (plan U3, R3): the daemon's per-workspace
     // filter at `events.rpc.ts:115-124` requires the caller to identify
-    // its own workspace or it silently drops every event. The
-    // renderer-side identity source is `company.ceoWorkspaceId` (the
-    // company workspace that owns the renderer instance — see
-    // `ChannelsPanel.tsx`). On a non-company render the field is
-    // undefined: send a literal `'unknown-workspace'` is NOT an option
-    // because the strict filter would silently drop every event and the
-    // UI would look identical to a healthy empty stream, so we skip the
-    // tick and warn once. Multi-workspace renderers (FIX-MULTI-WS
-    // follow-up) will iterate `company.departments[].members[].ptyId`
-    // here; for v1 the company CEO workspace is the only one we poll.
-    const company = useStore.getState().company;
-    const workspaceId = company?.ceoWorkspaceId;
+    // its own workspace or it silently drops every event. Channels are
+    // decoupled from in-app Company mode, so the identity source is the
+    // company CEO workspace when Company mode is active, else the active
+    // workspace (mirrors useChannelsHydration / ChannelsPanel). Sending a
+    // literal `'unknown-workspace'` is NOT an option — the strict filter
+    // would silently drop every event and the UI would look identical to a
+    // healthy empty stream — so we skip + warn only when there is no
+    // workspace at all. Multi-workspace renderers (FIX-MULTI-WS follow-up)
+    // will iterate every member workspace here; for v1 we poll one.
+    const state = useStore.getState();
+    const workspaceId = state.company?.ceoWorkspaceId ?? state.activeWorkspaceId;
     if (!workspaceId) {
       console.warn(
-        '[useChannelsEventSubscription] no company.ceoWorkspaceId — channel events will not auto-update (FIX-MULTI-WS follow-up)',
+        '[useChannelsEventSubscription] no resolvable workspace (no company + no active workspace) — channel events will not auto-update',
       );
       return;
     }
@@ -144,8 +156,13 @@ export function useChannelsEventSubscription(): void {
       if (disposed || inFlight) return;
       inFlight = true;
       bridge({ cursor, types: ['channel.message'], max: EVENT_POLL_MAX, workspaceId })
-        .then((result) => {
-          if (disposed || !result) return;
+        .then((raw) => {
+          if (disposed || !raw) return;
+          // Peel the RPC transport envelope { id, ok, result }. The daemon's
+          // events.poll payload lives at `.result` — reading the top level
+          // gave undefined and dispatched nothing.
+          if (raw.ok !== true || !raw.result) return;
+          const result = raw.result;
           cursor = result.nextCursor;
           if (result.resync) {
             // Drift past the ring window — drop the local message

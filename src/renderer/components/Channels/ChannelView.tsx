@@ -247,6 +247,10 @@ export function ChannelView(): React.ReactElement | null {
     activeChannelId ? s.channelMembers[activeChannelId] ?? EMPTY_MEMBERS : EMPTY_MEMBERS,
   );
   const company = useStore((s) => s.company);
+  // Channels are decoupled from in-app Company mode: the active workspace is
+  // the renderer's "self" identity when no company is set (mirrors
+  // useChannelsHydration / ChannelsPanel).
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const pushToast = useStore((s) => s.pushToast);
 
@@ -270,13 +274,13 @@ export function ChannelView(): React.ReactElement | null {
   // return makes the hook order stable across renders.
   const viewer = useMemo<ChannelMember | null>(() => {
     if (members.length === 0) return null;
-    const ownWorkspaceId = company?.ceoWorkspaceId;
-    if (ownWorkspaceId !== undefined) {
+    const ownWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId;
+    if (ownWorkspaceId) {
       const own = members.find((m) => m.workspaceId === ownWorkspaceId);
       if (own) return own;
     }
     return members[0] ?? null;
-  }, [members, company?.ceoWorkspaceId]);
+  }, [members, company?.ceoWorkspaceId, activeWorkspaceId]);
 
   if (!activeChannelId || !channel) {
     // The activeChannelId-but-channel-undefined case can fire on a

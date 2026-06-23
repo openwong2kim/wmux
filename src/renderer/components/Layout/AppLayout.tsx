@@ -34,6 +34,7 @@ import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
 import { useChannelsEventSubscription } from '../../hooks/useChannelsEventSubscription';
+import { useChannelsHydration } from '../../hooks/useChannelsHydration';
 import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
 import { useIpc } from '../../hooks/useIpc';
 import type { SessionData, PaneLeaf, Pane, Surface, Workspace } from '../../../shared/types';
@@ -307,6 +308,12 @@ export default function AppLayout() {
   // panel visibility) so the unread badge stays accurate while the
   // sidebar is collapsed.
   useChannelsEventSubscription();
+  // U6 follow-up — hydrate the channel catalog from the daemon's authoritative
+  // list on mount + daemon (re)connect. Without this the sidebar only ever
+  // showed channels created in THIS renderer session; channels created by MCP
+  // agents or persisted across restart were invisible. Decoupled from in-app
+  // Company mode (falls back to the active workspace for identity).
+  useChannelsHydration();
   // Plugin host (B-1): ui.decoratePane push → uiSlice pane decorations.
   usePaneDecorationChannel();
   const { invoke: ipcInvoke } = useIpc();

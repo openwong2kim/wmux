@@ -22,12 +22,19 @@
 //     shown inside a collapsible disclosure (collapsed by default —
 //     archived rooms are read-only and rarely useful in the sidebar).
 //
-// Empty states:
-//   - When `state.company === null`, channels are company-bounded by
-//     design, so we render a one-line prompt rather than an empty list.
-//   - When the company exists but the channel catalog is empty, we
-//     render a friendlier "no channels yet" prompt with the same
-//     `+ New channel` action.
+// Company decoupling:
+//   - Channels are NOT gated on in-app Company mode. The daemon scopes
+//     every channel to `DEFAULT_COMPANY_ID` until multi-company lands, and
+//     the renderer mirrors that catalog (hydrated by useChannelsHydration)
+//     regardless of `state.company`. When no in-app company exists, the
+//     active workspace stands in as the creator identity so `+ New channel`
+//     still works. `data-company-state` is a diagnostic attribute, not a
+//     render gate.
+//
+// Empty state:
+//   - When the channel catalog is empty, we render a friendly "no channels
+//     yet" prompt with the same `+ New channel` action (whether or not an
+//     in-app company exists).
 //
 // New-channel flow:
 //   - Clicking `+ New channel` opens the inline `CreateChannelModal`
@@ -47,6 +54,7 @@ import {
   canonicalizeChannelName,
   isValidChannelName,
   CHANNEL_NAME_MAX,
+  DEFAULT_COMPANY_ID,
 } from '../../../shared/channels';
 import type { Company } from '../../../company/types';
 import { useStore } from '../../stores';
@@ -304,25 +312,16 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
     [channelUnread],
   );
 
-  // R20/R29: company-bounded empty state.
-  if (!company) {
-    return (
-      <div
-        data-channels-panel
-        data-company-state="absent"
-        className="border-t border-[var(--bg-surface)] px-3 py-2 text-[10px] font-mono text-[var(--text-muted)]"
-        style={{ borderColor: 'var(--border-soft)' }}
-        {...tokenAttrs('textMuted', 'text')}
-      >
-        {t('channels.emptyCompany') ?? 'Channels are company-scoped — start a company to use them.'}
-      </div>
-    );
-  }
-
+  // Channels are decoupled from in-app Company mode (the daemon scopes every
+  // channel to DEFAULT_COMPANY_ID until multi-company lands). The panel always
+  // renders so the daemon's authoritative catalog is visible and the `+`
+  // affordance works without a company — `data-company-state` is now a
+  // diagnostic attribute, not a render gate. Empty catalog falls through to the
+  // friendly empty prompt below.
   return (
     <div
       data-channels-panel
-      data-company-state="present"
+      data-company-state={company ? 'present' : 'absent'}
       data-channel-count={channelList.length}
       data-total-unread={totalUnread}
       className="border-t border-[var(--bg-surface)] py-2"
@@ -442,35 +441,41 @@ export function ChannelsPanel(): React.ReactElement {
   const channelUnread = useStore((s) => s.channelUnread);
   const activeChannelId = useStore((s) => s.activeChannelId);
   const company = useStore((s) => s.company);
+  // Channels are decoupled from in-app Company mode: when no company is set,
+  // the active workspace stands in as the creator identity so the `+` button
+  // works without one (mirrors useChannelsHydration's identity resolution).
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const createChannelDaemon = useStore((s) => s.createChannelDaemon);
 
   const handleCreate = useCallback(
     async (params: { name: string; visibility: ChannelVisibility }) => {
-      if (!company) return false;
+      // companyId matches the daemon's DEFAULT_COMPANY_ID when no in-app
+      // company exists, so the optimistic row's companyId agrees with the
+      // daemon's authoritative row (the daemon ignores any client companyId
+      // and stamps its own — keeping them equal avoids a flicker on refresh).
+      const companyId = company?.id ?? DEFAULT_COMPANY_ID;
+      // Sender identity: the CEO workspace when Company mode is active, else
+      // the active workspace. The daemon pins `createdBy` to the verified
+      // (renderer-supplied, process-boundary-trusted) workspace anyway; this
+      // is the value it pins to. Bail only if there is no workspace at all.
+      const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId;
+      if (!selfWorkspaceId) return false;
       // Synthesize the row the slice would use as the optimistic
       // insert. The `*Daemon` thunk will overwrite this with the
       // daemon's authoritative row on success — the synthesized row
       // is only used as the input shape so the thunk can call the
       // matching `*Optimistic` primitive with the right field set.
       const channel = synthesizeChannel({
-        companyId: company.id,
+        companyId,
         name: params.name,
         visibility: params.visibility,
       });
-      // The slice's `*Daemon` thunks need a sender address. v1 has
-      // no concept of "the current renderer identity" — the U7 UI
-      // is company-scoped but workspace-agnostic. The CEO workspace
-      // (or the first workspace in the company, if CEO is not set)
-      // is used as a stable stand-in. The authoritative row that
-      // arrives from the daemon will overwrite the auto-member with
-      // the real creator's id.
-      const ceoWorkspaceId = company.ceoWorkspaceId ?? 'unknown-workspace';
       const result = await createChannelDaemon({
         name: params.name,
         visibility: params.visibility,
         createdBy: {
-          workspaceId: ceoWorkspaceId,
+          workspaceId: selfWorkspaceId,
           memberId: 'local-ui',
           memberName: 'local-ui',
         },

@@ -13,6 +13,7 @@ import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
 import { ChannelService, ChannelStateWriter, wrapChannelMessageEnvelope } from './channels';
+import { DEFAULT_COMPANY_ID } from '../shared/channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
@@ -2234,13 +2235,15 @@ async function main(): Promise<void> {
   // cannot cascade into session-state failure. The service receives
   // `pipeServer.broadcast` as its emit sink so a successful post is
   // fanned out to every connected client before the next RPC turn.
-  // Company id is hardcoded to `'co-default'` until the company-mode
+  // Company id is the shared `DEFAULT_COMPANY_ID` until the company-mode
   // config key lands; the channel state format already supports
-  // multi-company, so this is a single line to swap.
+  // multi-company, so this is a single line to swap. The renderer uses the
+  // SAME constant when it has no in-app Company, so optimistic rows and the
+  // daemon's authoritative rows share one companyId.
   const channelStateWriter = new ChannelStateWriter(wmuxDir);
   const channelService = new ChannelService({
     writer: channelStateWriter,
-    companyId: 'co-default',
+    companyId: DEFAULT_COMPANY_ID,
     // U5 archive-authz (KTD-F): the CEO override is gated on this field.
     // The renderer owns `Company.ceoWorkspaceId` today; the daemon does
     // not have a copy, so we pass `undefined` (creator-only archive)
