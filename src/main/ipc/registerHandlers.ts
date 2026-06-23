@@ -242,7 +242,15 @@ export function registerAllHandlers(
     }
     return options.invokeRendererRpc(method, safeParams);
   };
-  ipcMain.removeAllListeners(IPC.RPC_INVOKE);
+  // RPC_INVOKE is an ipcMain.handle() handler, NOT an .on() listener — it must
+  // be cleared with removeHandler(), not removeAllListeners() (which is a no-op
+  // for handle handlers). Without this, the SECOND registerAllHandlers() (on a
+  // daemon reconnect/respawn) threw "Attempted to register a second handler for
+  // 'rpc:invoke'", which aborted the connect bootstrap BEFORE it re-wired the
+  // DaemonNotificationRouter onto the new DaemonClient — silently killing every
+  // daemon→main EventBus tee (channel.message live delivery, agent.lifecycle, …)
+  // until an app restart.
+  ipcMain.removeHandler(IPC.RPC_INVOKE);
   ipcMain.handle(IPC.RPC_INVOKE, onRpcInvoke);
 
   return () => {
@@ -257,6 +265,9 @@ export function registerAllHandlers(
     cleanupToolbar();
     if (cleanupMcp) cleanupMcp();
     if (cleanupLanLink) cleanupLanLink();
+    // Mirror the register-side removeHandler so a teardown leaves no stale
+    // handle behind (handle handlers are not .on listeners — see above).
+    ipcMain.removeHandler(IPC.RPC_INVOKE);
     ipcMain.removeAllListeners(IPC.TOAST_ENABLED);
     ipcMain.removeAllListeners(IPC.WINDOW_HIDE);
     ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
