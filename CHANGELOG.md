@@ -5,11 +5,31 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [3.10.0] — 2026-06-24 — Channels grow a human UI
+
+Headline: the A2A channels that agents post into now have a **place a human can read and join.** v3.9.0 made channels multi-party with a server-verified sender; this release gives them a UI — a collapsible **right-side dock** that sits beside your terminals, a **member roster** to see who's in a room and join or leave it, and **recent history that loads when you open a channel** instead of a blank pane. Alongside the channel UI: copy/paste that survives a CJK IME, live channel delivery that survives a daemon reconnect, and a fail-closed gate on private-channel joins.
 
 ### Added
 
+- **Channels move into a right-side dock you can read beside your terminals ([#287](https://github.com/openwong2kim/wmux/pull/287)).** A2A channels were agent-only plumbing; now there's a place for a human to watch and join them. The channel list and the active conversation live in a collapsible dock on the opposite edge from the workspace sidebar — a flex column that *reflows* the panes instead of the old overlay that floated over them, so opening a channel narrows the terminals rather than covering them. Toggle it from the StatusBar `#`, and it persists across restart. Decoupled from in-app Company mode, so it works without setting up a company first.
+
+- **Channel member roster — see who's in a room, join and leave ([#291](https://github.com/openwong2kim/wmux/pull/291)).** The conversation header shows a member count that opens a roster popover: the workspaces currently in the channel, a self-only leave (the ✕ next to your own row), and an add-a-workspace picker for public channels. Fully keyboard-accessible — no drag-only paths. Leaving the channel you're viewing returns you to the list.
+
+- **Opening a channel loads its recent history ([#293](https://github.com/openwong2kim/wmux/pull/293)).** Channels used to stay blank until a new message arrived in the current session — open a room with a backlog and you'd see nothing. Opening a channel now hydrates its recent messages from the daemon, and a daemon reconnect re-hydrates, so the conversation is there when you look.
+
 - **Pane + surface lifecycle as MCP tools ([#285](https://github.com/openwong2kim/wmux/issues/285)).** Five new first-class MCP tools — `pane_split`, `pane_close`, `pane_focus`, `surface_new`, `surface_close` — so an external/headless orchestrator (e.g. a Claude Code supervisor that spawns a worker pane per task and reaps it once committed) can manage its panes through the official MCP instead of dropping down to the raw daemon JSON-RPC. They mirror the workspace-scoped lifecycle RPCs hardened in the #236 family (#238/#256/#257): the create tools (`pane_split`/`surface_new`) take an optional `workspaceId` and default to the caller's *own* workspace (never the on-screen one), failing closed on an explicit unknown id; the address tools (`pane_close`/`pane_focus`/`surface_close`) take a globally-unique id resolved across all workspaces, and `pane_focus` is non-yank (it won't steal the user's screen). No new daemon RPC or capability — the methods existed; this surfaces them and grants them to the bundled MCP server's first-party allowlist. Requested by @zhenzoo.
+
+### Changed
+
+- **Channel dock polish — one header, responsive width ([#295](https://github.com/openwong2kim/wmux/pull/295)).** The dock shipped with a duplicate "Channels" title (its own header plus the list panel's section header) and a hard 320px width that crushed the terminals to per-character wrapping on narrow windows. The title now renders once with the collapse control merged into it, and the width clamps (248–320px) so the dock yields space when the window is small and grows back when there's room.
+
+### Fixed
+
+- **Private channels are join-gated on the daemon ([#292](https://github.com/openwong2kim/wmux/pull/292)).** A same-machine caller that knew a private channel's id could join it directly through the daemon and read its history — `join()` had no visibility check. It now fails closed: a non-member can't join (or read) a private channel it wasn't invited to. Same-machine, same-user only; never remotely reachable.
+
+- **Live channel delivery survives a daemon reconnect ([#290](https://github.com/openwong2kim/wmux/pull/290)).** A leaked `rpc:invoke` handler registration meant that after the daemon respawned or reconnected, the main process stopped teeing channel messages (and other daemon→main events) to the renderer until a manual reload — so a channel only updated when you reopened it. The handler is now removed correctly on reconnect, so messages keep flowing live.
+
+- **Copy and paste survive a CJK IME ([#294](https://github.com/openwong2kim/wmux/pull/294)).** With a Korean/Japanese/Chinese IME mid-composition, the key event reports `keyCode` 229 / `key` "Process", so Ctrl+C and Ctrl+V silently did nothing while composing. wmux now falls back to the physical key code (`KeyC`/`KeyV`), so copy and paste work regardless of IME state.
 
 ## [3.9.0] — 2026-06-23 — Agent channels, with a verified sender on every message
 
