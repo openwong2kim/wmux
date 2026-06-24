@@ -11,6 +11,7 @@ import { IconPlus, IconChevronDir } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import PluginPanels from '../../plugins/PluginPanels';
 import CompanyPanel from './CompanyPanel';
+import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
 // Pane 트리에서 모든 leaf의 PTY를 dispose
 function disposeAllPtys(pane: Pane) {
@@ -91,6 +92,7 @@ export default function Sidebar() {
           {/* Workspaces ⇄ Company toggle. Entry/exit for company mode — the
               palette commands set sidebarMode but there was no UI affordance
               to flip it back (or discover it). */}
+          {COMPANY_MODE_ENABLED && (
           <button
             className={`flex items-center justify-center w-6 h-6 rounded-md transition-colors duration-150 hover:bg-[rgba(var(--bg-surface-rgb),0.6)] ${FOCUS_RING} ${
               sidebarMode === 'company'
@@ -118,6 +120,7 @@ export default function Sidebar() {
               <path d="M10 13c0-1.7.8-2.7 2-2.7s2 1 2 2.3" />
             </svg>
           </button>
+          )}
           {/* File tree button hidden - feature unstable
           <button
             className={`text-sm leading-none transition-colors ${fileTreeVisible ? 'text-[var(--accent-blue)]' : 'text-[var(--text-subtle)] hover:text-[var(--accent-green)]'}`}
@@ -147,7 +150,7 @@ export default function Sidebar() {
           workspace list. This is the consumer of `sidebarMode` that was
           missing — CompanyPanel was orphaned (never rendered) so the
           palette's company commands had no visible surface. */}
-      {sidebarMode === 'company' ? (
+      {COMPANY_MODE_ENABLED && sidebarMode === 'company' ? (
         <CompanyPanel />
       ) : (
       /* The list container absorbs dragover for sidebar-internal reorder

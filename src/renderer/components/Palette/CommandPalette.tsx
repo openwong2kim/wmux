@@ -11,6 +11,7 @@ import { usePlugins } from '../../plugins/usePlugins';
 import { postPluginCommand } from '../../plugins/pluginFrameRegistry';
 import { runProjectCommand } from '../../utils/projectCommands';
 import { applyProjectLayoutFresh } from '../../utils/projectConfigProbe';
+import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
 // ---------------------------------------------------------------------------
 // SVG Icons (inline, no external dependency)
@@ -273,7 +274,7 @@ export default function CommandPalette() {
     const state = useStore.getState();
     const hasCompany = !!state.company;
 
-    if (!hasCompany) {
+    if (COMPANY_MODE_ENABLED && !hasCompany) {
       const templates = [
         { name: 'Full-Stack Team', label: 'Company: Create Full-Stack Team' },
         { name: 'Startup MVP', label: 'Company: Create Startup MVP' },
@@ -339,7 +340,7 @@ export default function CommandPalette() {
           setVisible(false);
         },
       });
-    } else {
+    } else if (COMPANY_MODE_ENABLED) {
       items.push({
         id: 'company-provision-all',
         label: 'Company: Provision All Members',

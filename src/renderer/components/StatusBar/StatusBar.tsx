@@ -6,6 +6,7 @@ import { UsageWidgetView } from './UsageWidget';
 import { tokenAttrs } from '../../themes';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { sumUnread } from '../Channels/ChannelsPanel';
+import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
 /**
  * Compute the unread notification count, excluding notifications whose
@@ -148,7 +149,11 @@ export default function StatusBar() {
 
   const timeStr = time.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
   const branch = activeWs?.metadata?.gitBranch;
-  const isCompanyMode = sidebarMode === 'company';
+  // Company-mode UI is gated behind COMPANY_MODE_ENABLED (paid "wmux max").
+  // Even with a leftover persisted `sidebarMode === 'company'` (from a build
+  // where company mode was reachable), the status-bar badge + cost must stay
+  // hidden so the deactivated build shows zero company traces.
+  const isCompanyMode = COMPANY_MODE_ENABLED && sidebarMode === 'company';
 
   // Anthropic 5h/7d usage state. Hidden entirely when status === 'idle'
   // (Settings toggle off). `nowMs` is the existing per-second clock used
