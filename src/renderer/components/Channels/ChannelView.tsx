@@ -338,6 +338,7 @@ export function ChannelView(): React.ReactElement | null {
         messages={messages}
         viewer={viewer}
         onClose={handleClose}
+        t={t}
         membersSlot={<ChannelMembersControl channel={channel} />}
         composerSlot={
           channel.status === 'archived' ? (

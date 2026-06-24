@@ -62,6 +62,7 @@ import ChannelItem from './ChannelItem';
 import { IconPlus, IconChevron, IconChevronDir } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import { tokenAttrs } from '../../themes';
+import { useT } from '../../hooks/useT';
 
 // ─── Grouping / aggregation helpers (pure, exported for unit tests) ──────────
 
@@ -478,6 +479,7 @@ export function ChannelsPanel(): React.ReactElement {
   // edge so it points toward the screen edge it tucks into.
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
+  const t = useT();
 
   const handleCreate = useCallback(
     async (params: { name: string; visibility: ChannelVisibility }) => {
@@ -539,6 +541,7 @@ export function ChannelsPanel(): React.ReactElement {
       onCreate={handleCreate}
       onCollapse={() => setChannelDockVisible(false)}
       collapseDir={sidebarPosition !== 'right' ? 'right' : 'left'}
+      t={t}
     />
   );
 }
