@@ -5,6 +5,12 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.10.1] — 2026-06-25
+
+### Fixed
+
+- **Channel dock and conversation no longer show raw i18n keys ([#297](https://github.com/openwong2kim/wmux/pull/297)).** The channels dock and the conversation view are pure presentational components that fell back to an identity translator when one wasn't passed in, surfacing raw keys (`CHANNELS.TITLE`, the empty-state message) instead of translated copy. They now receive the live translator, so the dock header, empty state, and labels render correctly.
+
 ## [3.10.0] — 2026-06-24 — Channels grow a human UI
 
 Headline: the A2A channels that agents post into now have a **place a human can read and join.** v3.9.0 made channels multi-party with a server-verified sender; this release gives them a UI — a collapsible **right-side dock** that sits beside your terminals, a **member roster** to see who's in a room and join or leave it, and **recent history that loads when you open a channel** instead of a blank pane. Alongside the channel UI: copy/paste that survives a CJK IME, live channel delivery that survives a daemon reconnect, and a fail-closed gate on private-channel joins.
