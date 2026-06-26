@@ -160,7 +160,8 @@
 5. **defer:** 사이드카 파일/TTL/ACL/daemonBootId/disk-read — dogfood가 env 미전파 증명 시에만 복귀(§4 설계 보존).
 
 ### 11.3 테스트 커버리지
-```
+
+```text
 [+] src/main/pty/PTYManager.ts (create)
     └── identity에 WMUX_PTY_ID 포함 + forced-last 불변 ── [GAP→ADD] resolveSpawnEnv.test.ts / PTYManager 구조테스트
 [+] src/mcp/index.ts (resolver)
@@ -178,6 +179,7 @@
 ```
 
 ### 11.4 실패 모드
+
 | 모드 | 테스트 | 에러핸들링 | 사용자 체감 |
 |---|---|---|---|
 | env 미전파(WMUX_PTY_ID 부재) | weak='' 유닛 | degrade(현행 동일, 회귀0) | 데모 여전히 막힘 → **진단 로그가 노출** → dogfood가 잡음 → 사이드카/PROPER 에스컬레이트 |

@@ -209,10 +209,16 @@ async function main() {
     { channel_id: 'nonexistent', text: 'hi', member_id: 'm1', member_name: 'M1' },
     { WMUX_WORKSPACE_ID: ws1, WMUX_PTY_ID: panePtyId });
   const chanText = toolText(chan);
-  const chanErrored = chan.result?.isError === true || /NOT_AUTHORIZED|verifiable caller|no resolvable senderPtyId|not found|CHANNEL_NOT_FOUND/i.test(chanText);
+  // Codex/coderabbit P2: accepting `isError` or CHANNEL_NOT_FOUND made this green
+  // even on a regression that forwarded the weak hint — the nonexistent channel
+  // fails at lookup either way, masking the authz downgrade. The gate rejects on
+  // an unresolvable senderPtyId BEFORE the channel lookup, so require THAT
+  // authz-specific failure; a downgrade that reaches lookup (CHANNEL_NOT_FOUND)
+  // now FAILS the check.
+  const authzBlocked = /no resolvable senderPtyId|NOT_AUTHORIZED|verifiable caller/i.test(chanText);
   console.log(`  [C] channel_post(text)=${chanText.slice(0, 200)} isError=${chan.result?.isError}`);
   check('★ C: weak WMUX_PTY_ID does NOT unlock a verified-only channel mutation (provenance split holds)',
-    chanErrored, `channel_post should fail closed; got: ${chanText.slice(0, 160)}`);
+    authzBlocked, `must fail CLOSED on authz (no resolvable senderPtyId), NOT at channel lookup; got: ${chanText.slice(0, 160)}`);
 }
 
 main()
