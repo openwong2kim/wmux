@@ -41,14 +41,82 @@ function getVersion(): string {
 // via a2a.resolve.identity (which now maps our PID → live workspace) and
 // fall back to the env hint only when the live map is unavailable.
 const ENV_WORKSPACE_HINT = process.env.WMUX_WORKSPACE_ID || '';
+// Our OWN pane anchor from the spawn env (WMUX_PTY_ID). UNLIKE the workspace
+// hint, the ptyId is immutable for the pane's lifetime — it is never re-minted
+// by a daemon respawn / session restore — so it is a safe WEAK fallback for
+// senderPtyId when the verified PID-map walk misses (the common Windows case,
+// where the per-hop PowerShell process-tree walk is slow/flaky). It rides the
+// same spoofable env channel as WMUX_WORKSPACE_ID, though, so a same-user
+// process could forge it; see getTaskSenderPtyId for where this weak value is
+// (and is NOT) trusted. Empty when the agent launcher didn't propagate the env
+// to this MCP child — the case the diagnostic logging below exists to surface.
+const ENV_PTY_HINT = process.env.WMUX_PTY_ID || '';
 let MY_WORKSPACE_ID = '';
 // Our OWN pane anchor (ptyId), captured alongside MY_WORKSPACE_ID on a verified
-// PID-map hit. Threaded to a2a.task.send as `senderPtyId` so the renderer can
-// reject a true self-send (addressing our own pane). Empty when identity came
-// from the env-hint fallback (no PID match) — the renderer then fails closed by
-// suppressing the same-ws paste rather than trusting an absent guard.
+// PID-map hit. VERIFIED provenance: set only on a walk hit, where our process
+// tree provably owns that live pane (unforgeable). Threaded to a2a.task.send as
+// `senderPtyId` so the renderer can reject a true self-send (addressing our own
+// pane). Empty when no verified hit — getTaskSenderPtyId then falls back to the
+// weak env hint for the A2A task tools, while a2a.channel.* stays verified-only.
 let MY_PTY_ID = '';
 let workspaceResolved = false;
+
+/**
+ * The MCP server's OWN pane anchor (ptyId) for the A2A task + terminal tools.
+ *
+ * Provenance split (WI-002):
+ *   - MY_PTY_ID  — VERIFIED (PID-map walk hit). Unforgeable: our process tree
+ *                  provably owns that live pane.
+ *   - ENV_PTY_HINT — WEAK (WMUX_PTY_ID env). The spawn stamps the immutable
+ *                  ptyId on the shell env; it reaches here only if the launcher
+ *                  propagated it. Same spoofable channel as WMUX_WORKSPACE_ID.
+ *
+ * Prefer the verified value; fall back to the weak env hint so same-ws
+ * pane-level A2A works even when the walk misses. A forged weak value can at
+ * worst mislabel the SENDER's own pane (self-send guard / same-ws paste choice)
+ * or trip the terminal omitted-ptyId guard (which only REJECTS — never grants),
+ * all within the same-user trust ceiling (#113) the env hint already exposes.
+ *
+ * NOT used for a2a.channel.* — those mutation calls gate authz on a resolvable
+ * senderPtyId (a2a.channel.rpc.ts), and feeding a weak env value there would
+ * downgrade that gate from unforgeable PID-tree proof to a spoofable env var.
+ * Channels keep using MY_PTY_ID (verified-only) via getSenderPtyId below.
+ */
+function getTaskSenderPtyId(): string {
+  return MY_PTY_ID || ENV_PTY_HINT;
+}
+
+/**
+ * Diagnostic logging for identity resolution. MCP speaks its protocol over
+ * STDOUT, so diagnostics MUST go to stderr (Claude Code surfaces MCP stderr in
+ * its logs). Lets a failing launch-demo be diagnosed from the logs alone — most
+ * importantly whether WMUX_PTY_ID propagated to this child.
+ *
+ * Deduped: on the target Windows path the walk MISSES and the env-hint branch is
+ * intentionally NOT cached (so a re-minted workspace self-heals), meaning every
+ * A2A/terminal call re-resolves. Without dedup the same MISS + env-hint lines
+ * would repeat per call (review P2). The branch messages are stable for a pane's
+ * steady state, so logging each DISTINCT line once shows every transition while
+ * staying quiet on repeats. The set is bounded so a varying field (depth/pid)
+ * can't grow it without limit — on overflow it resets and re-logs (rare, cheap).
+ */
+const loggedIdentityMsgs = new Set<string>();
+function logIdentity(msg: string): void {
+  if (loggedIdentityMsgs.has(msg)) return;
+  if (loggedIdentityMsgs.size >= 50) loggedIdentityMsgs.clear();
+  loggedIdentityMsgs.add(msg);
+  console.error(`[wmux-mcp] identity: ${msg}`);
+}
+
+let identityEnvLogged = false;
+function logIdentityEnvOnce(): void {
+  if (identityEnvLogged) return;
+  identityEnvLogged = true;
+  logIdentity(
+    `env WMUX_WORKSPACE_ID=${ENV_WORKSPACE_HINT ? 'present' : 'absent'} ` +
+      `WMUX_PTY_ID=${ENV_PTY_HINT ? 'present' : 'absent'}`,
+  );
+}
 
 const server = new McpServer({
   name: 'wmux',
@@ -101,6 +169,7 @@ function invalidateWorkspaceId(): void {
  * terminal router (resolveTerminalRoute) so the walk lives in one place.
  */
 async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
+  logIdentityEnvOnce();
   let mappings: Record<string, string> | undefined;
   let entries: Array<{ pid: string; ptyId: string; workspaceId: string }> | undefined;
   try {
@@ -108,9 +177,11 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     mappings = (result as { mappings: Record<string, string> }).mappings;
     entries = (result as { entries?: Array<{ pid: string; ptyId: string; workspaceId: string }> }).entries;
   } catch {
+    logIdentity('resolve.identity rpc-down');
     return { status: 'rpc-down' };
   }
   if (!mappings || Object.keys(mappings).length === 0) {
+    logIdentity('resolve.identity empty-map');
     return { status: 'empty-map' };
   }
 
@@ -133,7 +204,8 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
 
   // Walk process tree upward: MCP server → Claude Code → shell(PTY)
   let currentPid = process.ppid;
-  for (let depth = 0; depth < 10; depth++) {
+  let depth = 0;
+  for (; depth < 10; depth++) {
     const match = knownPids.get(currentPid);
     if (match) {
       // Capture our OWN pane anchor on EVERY verified hit — including when a
@@ -142,12 +214,16 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
       // only there would leave it empty whenever a terminal op resolved identity
       // first (senderPtyId would then be silently absent on the next send).
       MY_PTY_ID = match.ptyId ?? '';
+      logIdentity(
+        `walk HIT ws=${match.wsId} pty=${match.ptyId ?? ''} depth=${depth} mapSize=${knownPids.size}`,
+      );
       return { status: 'hit', wsId: match.wsId, ptyId: match.ptyId };
     }
     const parentPid = await getParentPid(currentPid);
     if (!parentPid || parentPid === currentPid || parentPid <= 1) break;
     currentPid = parentPid;
   }
+  logIdentity(`walk MISS depth=${depth} lastPid=${currentPid} mapSize=${knownPids.size}`);
   return { status: 'miss' };
 }
 
@@ -185,7 +261,14 @@ async function resolveWorkspaceId(): Promise<string> {
   // RPC layer is briefly down. Not cached, so a later call re-checks once the
   // renderer is ready.
   if (ENV_WORKSPACE_HINT) {
-    if ((await isLiveWorkspace(ENV_WORKSPACE_HINT)) !== 'absent') return ENV_WORKSPACE_HINT;
+    if ((await isLiveWorkspace(ENV_WORKSPACE_HINT)) !== 'absent') {
+      // WI-002: the workspace resolved from the env hint (walk did not hit), so
+      // MY_PTY_ID is empty here — the A2A task tools recover senderPtyId from the
+      // weak WMUX_PTY_ID env hint via getTaskSenderPtyId. Surface that this is
+      // the path the launch demo depends on when the Windows walk is flaky.
+      logIdentity(`resolved ws via env-hint (walk missed) senderPty=${getTaskSenderPtyId() ? 'weak-env' : 'none'}`);
+      return ENV_WORKSPACE_HINT;
+    }
   }
 
   // Last-resort cached identity. invalidateWorkspaceId() clears the
@@ -463,11 +546,15 @@ server.tool(
     const route = await resolveTerminalRouteBound(ptyId);
     const base: Record<string, unknown> = { text, workspaceId: route.workspaceId };
     if (route.ptyId) base.ptyId = route.ptyId;
-    // Forward our OWN verified ptyId so main can reject an omitted-ptyId send
-    // from an agent (it would loop into its own pane or a non-deterministic
-    // sibling). Present only on a verified PID-map hit; absent for external
-    // callers, where omitting ptyId legitimately targets their pinned terminal.
-    if (MY_PTY_ID) base.senderPtyId = MY_PTY_ID;
+    // Forward our OWN ptyId so main can reject an omitted-ptyId send from an
+    // agent (it would loop into its own pane or a non-deterministic sibling).
+    // Verified PID-map hit preferred; falls back to the weak WMUX_PTY_ID env
+    // hint (WI-002) so the self-loop guard still arms when the walk missed —
+    // the guard only REJECTS, never grants, so a weak/forged value can't widen
+    // access. Absent for external callers, where omitting ptyId legitimately
+    // targets their pinned terminal.
+    const senderPtyId = getTaskSenderPtyId();
+    if (senderPtyId) base.senderPtyId = senderPtyId;
     if (submit) base.submit = true;
     return callRpc('input.send', base);
   },
@@ -486,9 +573,11 @@ server.tool(
     const route = await resolveTerminalRouteBound(ptyId);
     const params: Record<string, unknown> = { key, workspaceId: route.workspaceId };
     if (route.ptyId) params.ptyId = route.ptyId;
-    // See terminal_send: forward our verified ptyId so main can reject an
-    // omitted-ptyId key send from an agent (self-loop / sibling misroute).
-    if (MY_PTY_ID) params.senderPtyId = MY_PTY_ID;
+    // See terminal_send: forward our ptyId (verified hit, else weak WMUX_PTY_ID
+    // env hint — WI-002) so main can reject an omitted-ptyId key send from an
+    // agent (self-loop / sibling misroute).
+    const senderPtyId = getTaskSenderPtyId();
+    if (senderPtyId) params.senderPtyId = senderPtyId;
     return callRpc('input.sendKey', params);
   },
 );
@@ -633,11 +722,14 @@ server.tool(
   async () => {
     const wsId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId: wsId };
-    // Forward our OWN verified ptyId so the renderer can answer pane-level
-    // ("which agent am I in this multi-agent workspace?"), not just ws-level.
-    // Present only on a verified PID-map hit; absent → renderer degrades to the
-    // ws-level answer. Server-derived, never an agent-settable tool param.
-    if (MY_PTY_ID) params.senderPtyId = MY_PTY_ID;
+    // Forward our OWN ptyId so the renderer can answer pane-level ("which agent
+    // am I in this multi-agent workspace?"), not just ws-level. Verified PID-map
+    // hit preferred; falls back to the weak WMUX_PTY_ID env hint (WI-002) so
+    // whoami answers pane-level even when the walk missed. Read-only — a forged
+    // value only mislabels the caller's own pane. Server-derived, never an
+    // agent-settable tool param.
+    const senderPtyId = getTaskSenderPtyId();
+    if (senderPtyId) params.senderPtyId = senderPtyId;
     return callRpc('a2a.whoami', params);
   },
 );
@@ -660,12 +752,24 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
     workspaceId: wsId,
     message,
   };
-  // KS-1 (true self-send guard): include our OWN verified ptyId so the renderer
-  // can reject addressing our own pane (bracket-paste + forced submit into our
-  // own prompt = loop) and can safely allow a loud same-ws sibling paste.
-  // Best-effort: only present on a verified PID-map hit; absent on the env-hint
-  // fallback, where the renderer fails closed by suppressing the same-ws paste.
-  if (MY_PTY_ID) params.senderPtyId = MY_PTY_ID;
+  // KS-1 (true self-send guard): include our OWN ptyId so the renderer can
+  // reject addressing our own pane (bracket-paste + forced submit into our own
+  // prompt = loop) and can safely allow a loud same-ws sibling paste. Verified
+  // PID-map hit preferred; falls back to the weak WMUX_PTY_ID env hint (WI-002)
+  // — THIS is the same-machine multi-agent launch-demo unblock: without a
+  // senderPtyId the renderer fails closed and suppresses the same-ws paste, so a
+  // walk miss silently broke agent↔agent messaging.
+  //
+  // BLAST-RADIUS ACK (review P2-3): with the weak hint present, a same-ws send
+  // flips from suppressed (absent senderPtyId) to a LOUD pane-level bracket-paste.
+  // A same-user attacker forging BOTH WMUX_WORKSPACE_ID + WMUX_PTY_ID could thus
+  // paste loudly into an explicitly-addressed victim pane where ws-only forgery
+  // was previously suppressed. This stays within the #113 ceiling: the control
+  // pipe is auth-token-gated and a same-user process already holds that token, so
+  // it can input.send an explicit-ptyId paste into any pane directly — no new
+  // token-less attacker class, no escalation beyond the token already grants.
+  const senderPtyId = getTaskSenderPtyId();
+  if (senderPtyId) params.senderPtyId = senderPtyId;
   if (task_id) params.taskId = task_id;
   if (to) params.to = to;
   // Pane-level addressing: route delivery to a specific pane/surface inside the
@@ -740,11 +844,14 @@ server.tool(
   async ({ task_id, status, message, artifact_name, artifact_data }) => {
     const wsId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId: wsId, taskId: task_id, status };
-    // S-C2: include our OWN verified ptyId (best-effort — present only on a
-    // PID-map hit) so the renderer can compute per-pane role + pane-granular
-    // status authz for this update. Absent on the env-hint fallback / headless
-    // worker → the renderer falls back to ws-level role + ws authz (unchanged).
-    if (MY_PTY_ID) params.senderPtyId = MY_PTY_ID;
+    // S-C2: include our OWN ptyId so the renderer can compute per-pane role +
+    // pane-granular status authz for this update. Verified PID-map hit preferred;
+    // falls back to the weak WMUX_PTY_ID env hint (WI-002). Safe downgrade: an
+    // ABSENT senderPtyId already falls back to ws-level role + ws authz, so a
+    // weak (or forged) value resolves no stronger boundary than that existing
+    // fallback — it cannot grant a pane role the caller's own workspace lacks.
+    const senderPtyId = getTaskSenderPtyId();
+    if (senderPtyId) params.senderPtyId = senderPtyId;
     if (message) params.message = message;
     if (artifact_name) {
       params.artifact = {
@@ -892,6 +999,14 @@ server.tool(
 // D5: also expose the server's verified senderPtyId (MY_PTY_ID, the PID-map
 // walk result) so the main-side a2a.channel handler resolves + stamps the
 // workspace identity server-side, ignoring any client-supplied value.
+//
+// WI-002 PROVENANCE: this MUST stay MY_PTY_ID (VERIFIED walk only) — do NOT
+// switch it to getTaskSenderPtyId(). a2a.channel.rpc.ts gates mutating channel
+// calls (create/post/archive/join/leave) on a RESOLVABLE senderPtyId and fails
+// closed without one. Feeding the weak WMUX_PTY_ID env hint here would downgrade
+// that mutation authz from unforgeable PID-tree proof to a spoofable env var a
+// same-user process could set. Channels stay fail-closed on a walk miss (safe);
+// the PROPER fix (mcp.handshake) restores a verified ptyId that covers them too.
 registerChannelTools(server, {
   resolveWorkspaceId: requireWorkspaceId,
   getSenderPtyId: () => MY_PTY_ID,

@@ -151,6 +151,14 @@ export class PTYManager {
     const identity: Record<string, string> = { [ENV_KEYS.SOCKET_PATH]: getPipeName() };
     if (options?.workspaceId) identity[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
     if (options?.surfaceId) identity[ENV_KEYS.SURFACE_ID] = options.surfaceId;
+    // Stamp the pane's immutable ptyId on the shell env, matching daemon mode
+    // (DaemonSessionManager.createSession sets WMUX_PTY_ID = the session id).
+    // Local mode previously omitted it, so a bundled MCP server inside a
+    // local-mode pane had no walk-free way to recover its OWN ptyId when the
+    // PID-map process-tree walk missed — leaving senderPtyId empty and same-ws
+    // pane-level A2A fail-closed. The ptyId equals the pid-map content here, so
+    // the env hint and a verified walk resolve to the same logical pane (WI-002).
+    identity[ENV_KEYS.PTY_ID] = id;
     const env = resolveSpawnEnv(globalThis.process.env, options?.env, identity);
 
     // Detect shell type and inject hook

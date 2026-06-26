@@ -136,8 +136,11 @@ describe('mcp — A2A send threads the caller\'s own ptyId (KS-1 self-send guard
     // hit path records the caller's own pane anchor inside the PID-map walk, so
     // the terminal-route warm path populates it too …
     expect(src).toMatch(/MY_PTY_ID = match\.ptyId/);
-    // … and the send handler forwards it (best-effort: only when present).
-    expect(src).toMatch(/if \(MY_PTY_ID\) params\.senderPtyId = MY_PTY_ID/);
+    // … and the send handler forwards it via getTaskSenderPtyId, which prefers
+    // the verified MY_PTY_ID and falls back to the weak WMUX_PTY_ID env hint
+    // when the walk missed (WI-002). The deeper provenance split (channels stay
+    // verified-only) is locked in mcp/__tests__/senderProvenance.test.ts.
+    expect(src).toMatch(/const senderPtyId = getTaskSenderPtyId\(\);\s*\n\s*if \(senderPtyId\) params\.senderPtyId = senderPtyId;/);
   });
 });
 
