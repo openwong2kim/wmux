@@ -52,12 +52,14 @@ const ENV_WORKSPACE_HINT = process.env.WMUX_WORKSPACE_ID || '';
 // to this MCP child — the case the diagnostic logging below exists to surface.
 const ENV_PTY_HINT = process.env.WMUX_PTY_ID || '';
 let MY_WORKSPACE_ID = '';
-// Our OWN pane anchor (ptyId), captured alongside MY_WORKSPACE_ID on a verified
-// PID-map hit. VERIFIED provenance: set only on a walk hit, where our process
-// tree provably owns that live pane (unforgeable). Threaded to a2a.task.send as
-// `senderPtyId` so the renderer can reject a true self-send (addressing our own
-// pane). Empty when no verified hit — getTaskSenderPtyId then falls back to the
-// weak env hint for the A2A task tools, while a2a.channel.* stays verified-only.
+// Our OWN pane anchor (ptyId), captured alongside MY_WORKSPACE_ID on a PID-map
+// hit — set by EITHER our client-side walk (unforgeable: our own process tree
+// owns that live pane) OR main's server-side walk (main-correlated from a
+// caller-asserted pid; forgeable within the #113 same-user ceiling — see
+// a2a.rpc.ts). Threaded to a2a.task.send as `senderPtyId` so the renderer can
+// reject a true self-send. Empty when no hit — getTaskSenderPtyId then falls
+// back to the weak env hint for the A2A task tools, while a2a.channel.* stays
+// hit-only.
 let MY_PTY_ID = '';
 let workspaceResolved = false;
 
@@ -65,8 +67,10 @@ let workspaceResolved = false;
  * The MCP server's OWN pane anchor (ptyId) for the A2A task + terminal tools.
  *
  * Provenance split (WI-002):
- *   - MY_PTY_ID  — VERIFIED (PID-map walk hit). Unforgeable: our process tree
- *                  provably owns that live pane.
+ *   - MY_PTY_ID  — PID-map walk hit. Client-side walk is unforgeable (our own
+ *                  process tree owns that live pane); server-side walk is
+ *                  main-correlated from a caller-asserted pid (forgeable within
+ *                  the #113 same-user ceiling). Both name a pane main resolved.
  *   - ENV_PTY_HINT — WEAK (WMUX_PTY_ID env). The spawn stamps the immutable
  *                  ptyId on the shell env; it reaches here only if the launcher
  *                  propagated it. Same spoofable channel as WMUX_WORKSPACE_ID.
@@ -79,8 +83,10 @@ let workspaceResolved = false;
  *
  * NOT used for a2a.channel.* — those mutation calls gate authz on a resolvable
  * senderPtyId (a2a.channel.rpc.ts), and feeding a weak env value there would
- * downgrade that gate from unforgeable PID-tree proof to a spoofable env var.
- * Channels keep using MY_PTY_ID (verified-only) via getSenderPtyId below.
+ * downgrade that gate from a main-resolved PID-map hit to a spoofable env var.
+ * Channels keep using MY_PTY_ID (hit-only) via getSenderPtyId below — a
+ * reliability mechanism within the #113 same-user ceiling (server-walk is
+ * caller-asserted), not a same-user security boundary.
  */
 function getTaskSenderPtyId(): string {
   return MY_PTY_ID || ENV_PTY_HINT;
@@ -172,14 +178,47 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
   logIdentityEnvOnce();
   let mappings: Record<string, string> | undefined;
   let entries: Array<{ pid: string; ptyId: string; workspaceId: string }> | undefined;
+  let resolved: { workspaceId?: unknown; ptyId?: unknown } | null | undefined;
   try {
-    const result = await sendRpc('a2a.resolve.identity' as RpcMethod, {});
+    // callerPid lets main resolve our identity SERVER-SIDE: it walks our process
+    // tree on its end (unsandboxed, reusing the port-watcher's process snapshot)
+    // up to the owning shell's pid-map anchor. This is the PROPER fix for Codex,
+    // which sandboxes our own per-hop PowerShell walk below AND strips the env
+    // hints — leaving the client-side walk as its only, blocked, path. Older
+    // main builds ignore the field and omit `resolved`, so we fall through to
+    // the client-side walk unchanged (graceful degradation).
+    const result = await sendRpc('a2a.resolve.identity' as RpcMethod, { callerPid: process.pid });
     mappings = (result as { mappings: Record<string, string> }).mappings;
     entries = (result as { entries?: Array<{ pid: string; ptyId: string; workspaceId: string }> }).entries;
+    resolved = (result as { resolved?: { workspaceId?: unknown; ptyId?: unknown } | null }).resolved;
   } catch {
     logIdentity('resolve.identity rpc-down');
     return { status: 'rpc-down' };
   }
+
+  // Server-side walk HIT (PROPER fix). main correlated our process tree to a
+  // live pane on its side — env-independent and sandbox-independent, so this is
+  // the path that lets Codex (and any agent whose client-side walk is blocked)
+  // resolve identity at all.
+  //
+  // Provenance: main correlates from the LIVE process table, but the STARTING
+  // pid is caller-asserted — we send our own process.pid and the pipe does not
+  // bind the connection to a pid. So MY_PTY_ID set here is server-correlated, NOT
+  // as strong as the client walk's own-ancestry proof: a same-user caller could
+  // assert a foreign pid to adopt that pane's ptyId. This stays within the #113
+  // same-user trust ceiling (a same-user caller already holds the pipe token and
+  // is grandfathered allow-all), so the channel sender gate treats MY_PTY_ID as a
+  // reliability mechanism, not a same-user security boundary.
+  if (
+    resolved &&
+    typeof resolved.workspaceId === 'string' && resolved.workspaceId &&
+    typeof resolved.ptyId === 'string' && resolved.ptyId
+  ) {
+    MY_PTY_ID = resolved.ptyId;
+    logIdentity(`server-walk HIT ws=${resolved.workspaceId} pty=${resolved.ptyId}`);
+    return { status: 'hit', wsId: resolved.workspaceId, ptyId: resolved.ptyId };
+  }
+
   if (!mappings || Object.keys(mappings).length === 0) {
     logIdentity('resolve.identity empty-map');
     return { status: 'empty-map' };
@@ -1000,13 +1039,16 @@ server.tool(
 // walk result) so the main-side a2a.channel handler resolves + stamps the
 // workspace identity server-side, ignoring any client-supplied value.
 //
-// WI-002 PROVENANCE: this MUST stay MY_PTY_ID (VERIFIED walk only) — do NOT
-// switch it to getTaskSenderPtyId(). a2a.channel.rpc.ts gates mutating channel
-// calls (create/post/archive/join/leave) on a RESOLVABLE senderPtyId and fails
-// closed without one. Feeding the weak WMUX_PTY_ID env hint here would downgrade
-// that mutation authz from unforgeable PID-tree proof to a spoofable env var a
-// same-user process could set. Channels stay fail-closed on a walk miss (safe);
-// the PROPER fix (mcp.handshake) restores a verified ptyId that covers them too.
+// WI-002 PROVENANCE: this MUST stay MY_PTY_ID (walk-hit only) — do NOT switch it
+// to getTaskSenderPtyId(). a2a.channel.rpc.ts gates mutating channel calls
+// (create/post/archive/join/leave) on a RESOLVABLE senderPtyId and fails closed
+// without one. Feeding the weak WMUX_PTY_ID env hint here would downgrade that
+// authz from a main-resolved PID-map hit to a spoofable env var. The server-side
+// walk (PROPER fix) restores a ptyId on a client-walk miss — but it is
+// main-correlated from a caller-asserted pid, so within the #113 same-user
+// ceiling this gate is a reliability mechanism (a same-user caller could assert
+// a foreign pid), not a same-user security boundary. Still fail-closed when no
+// hit at all.
 registerChannelTools(server, {
   resolveWorkspaceId: requireWorkspaceId,
   getSenderPtyId: () => MY_PTY_ID,
