@@ -214,3 +214,26 @@
 - **CODEX:** 사이드카 → env-ptyId 최소 fix로 축소, diagnostic-first, ★채널 mutation authz 다운그레이드(provenance 분리로 차단).
 - **CROSS-MODEL:** codex vs 로드맵(파일 명시) 텐션 → 사용자가 Lean·증거우선 선택(codex 측).
 - **VERDICT:** ENG CLEARED — 구현 진행 가능. 핵심 게이트 = dogfood가 env 전파 증명.
+
+---
+
+## 12. 🔬 LIVE INVESTIGATION (2026-06-26, 사용자 GUI dogfood + 적대 규명)
+
+전 파이프라인 후 라이브 GUI dogfood에서 사용자의 프로덕션 wmux에 **실제 Codex 에이전트들의 채널 작업이 "Workspace identity unknown"으로 간헐 실패** 중인 것을 목격 → "증거우선"으로 끝까지 규명.
+
+### 12.1 실측 결과 (env 전파 split — [[reference_mcp_env_propagation_split]])
+마커 env + env-dump 스텁 MCP 서버로 직접 측정:
+- **Claude Code = 부모 env를 MCP 자식에 FULL 전파** (`WMUX_PTY_ID`/`WMUX_WORKSPACE_ID`/마커 전부 수신). → `pidMap.ts`의 "Claude는 env 전파 안 함" 주석은 **구식/오류**.
+- **Codex = MCP 자식에 env 완전 스트립** (마커조차 0). → Codex MCP 서버는 신원 env가 0이라 **검증 PID-walk 전용**.
+- (검증: 이 세션 자체는 wmux pane이 아니라[WindowsTerminal 조상] whoami 실패는 교란변수였음.)
+
+### 12.2 근본 원인 (확정)
+**화면의 Codex 채널 실패 = Codex env 스트립 → walk 전용 → walk miss → "identity unknown".** env 기반 신원 fix(WI-002 `WMUX_PTY_ID` 폴백, 기존 `WMUX_WORKSPACE_ID` 힌트)는 **Codex에 구조적 무력.** Claude는 env 전파되어 힌트로 해석 가능, 남는 실패는 ghost workspace(respawn 재발급).
+
+### 12.3 WI-002의 정직한 범위 (재명시)
+- ✅ **Claude same-ws A2A senderPtyId 하드닝** + **진단 로깅**(이 규명을 가능케 함).
+- ❌ Codex 채널 실패 **안 고침**(env 스트립). ❌ 워크스페이스 "identity unknown" **안 고침**(senderPtyId만). ❌ 채널 mutation은 verified walk 필요.
+- → 멀티에이전트(Codex 포함) 신원의 **robust fix = PROPER**: 서버측 상관(main이 파이프 연결 PID `GetNamedPipeClientProcessId`로 pane 해석 = **env·child-walk 독립**), 로드맵 W3.
+
+### 12.4 SHIP 근거 (사용자 결정: WI-002 ship → PROPER)
+WI-002를 ship하는 이유는 Codex fix가 아니라 **(a) Claude senderPtyId 하드닝(정확·검증) + (b) 진단 로깅을 프로덕션에 투입**해 다음 실패 시 walk hit/miss/depth·env 유무를 로그로 확보 → 그 데이터로 PROPER fix를 정확히 설계. **주의: 진단이 프로덕션에 보이려면 릴리스+사용자 업데이트 필요**(PR 머지만으론 설치본 미반영).
