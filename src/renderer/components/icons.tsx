@@ -34,6 +34,17 @@ export function IconCheck({ size = 14 }: { size?: number }) {
   return <Icon size={size}><polyline points="2.5,7.4 5.8,10.5 11.5,3.5" /></Icon>;
 }
 
+/** Archive — a lidded box with a handle. Channel archive (read-only, one-way). */
+export function IconArchive({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x="2" y="2.4" width="10" height="2.6" rx="0.6" />
+      <path d="M3 5 V11 a0.6 0.6 0 0 0 0.6 0.6 H10.4 a0.6 0.6 0 0 0 0.6 -0.6 V5" />
+      <line x1="5.6" y1="7.6" x2="8.4" y2="7.6" />
+    </Icon>
+  );
+}
+
 export function IconChevron({ size = 14 }: { size?: number }) {
   // Points right; rotate 90° via transform for an expanded/down state.
   return <Icon size={size}><polyline points="5.5,3 9.5,7 5.5,11" /></Icon>;

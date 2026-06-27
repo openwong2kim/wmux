@@ -157,6 +157,7 @@ function renderView(args: {
   messages?: ChannelMessage[];
   viewer?: ChannelMember | null;
   onClose?: () => void;
+  onArchive?: () => void;
   composerSlot?: React.ReactNode;
 } = {}): string {
   return renderToStaticMarkup(
@@ -165,6 +166,7 @@ function renderView(args: {
       messages: args.messages ?? [],
       viewer: args.viewer === undefined ? null : args.viewer,
       onClose: args.onClose ?? (() => undefined),
+      onArchive: args.onArchive,
       composerSlot: args.composerSlot ?? <div data-fake-composer />,
     }),
   );
@@ -274,6 +276,25 @@ describe('ChannelViewContent', () => {
       channel: makeChannel({ status: 'active' }),
     });
     expect(html).not.toContain('data-channel-archived-badge');
+  });
+
+  it('renders the archive affordance when onArchive is provided and the channel is active', () => {
+    const html = renderView({ onArchive: () => undefined });
+    expect(html).toContain('data-channel-view-archive');
+    expect(html).toContain('data-armed="false"'); // unarmed until first click
+  });
+
+  it('does NOT render the archive affordance when onArchive is absent (non-creator)', () => {
+    const html = renderView(); // no onArchive
+    expect(html).not.toContain('data-channel-view-archive');
+  });
+
+  it('does NOT render the archive affordance for an already-archived channel', () => {
+    const html = renderView({
+      channel: makeChannel({ status: 'archived' }),
+      onArchive: () => undefined,
+    });
+    expect(html).not.toContain('data-channel-view-archive');
   });
 
   it('mounts the composer slot at the bottom of the view', () => {

@@ -13,7 +13,7 @@
 //
 // Plan ref: U8, R21, R22.
 
-import { useEffect, useMemo, useCallback } from 'react';
+import { useEffect, useMemo, useCallback, useState } from 'react';
 import type {
   Channel,
   ChannelMessage,
@@ -24,7 +24,7 @@ import { loadChannelHistory } from '../../hooks/useChannelsHydration';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
-import { IconX } from '../icons';
+import { IconX, IconArchive, IconCheck } from '../icons';
 import { Composer } from './Composer';
 import { ChannelMembersControl } from './ChannelMembers';
 
@@ -88,6 +88,9 @@ export interface ChannelViewContentProps {
   messages: ChannelMessage[];
   viewer: ChannelMember | null;
   onClose: () => void;
+  /** Archive the channel (one-way). Provided only when the viewer may archive
+   *  it (the creator). Absent → no archive affordance is rendered. */
+  onArchive?: () => void;
   /** Translator — defaults to identity. Tests pass a stub. */
   t?: (key: string) => string;
   /** Wrapper rendered after the message list; the composer lives here. */
@@ -103,11 +106,15 @@ export function ChannelViewContent({
   messages,
   viewer,
   onClose,
+  onArchive,
   composerSlot,
   membersSlot,
   t: tProp,
 }: ChannelViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
+  // Two-click confirm for the one-way archive: first click arms (button turns
+  // red + shows a check), second commits; blur cancels.
+  const [archiveArmed, setArchiveArmed] = useState(false);
   const visible = useMemo(
     () => sortMessagesBySeq(messages).filter((m) => isMessageVisibleToViewer(m, viewer)),
     [messages, viewer],
@@ -147,6 +154,28 @@ export function ChannelViewContent({
         </div>
         <div className="flex items-center gap-1 flex-shrink-0">
           {membersSlot}
+          {onArchive && channel.status !== 'archived' && (
+            <button
+              type="button"
+              aria-label={archiveArmed ? (t('channels.archiveConfirm') || 'Confirm archive (read-only, one-way)') : (t('channels.archiveTooltip') || 'Archive channel')}
+              title={archiveArmed ? (t('channels.archiveConfirm') || 'Confirm archive — read-only, one-way') : (t('channels.archiveTooltip') || 'Archive channel (read-only, one-way)')}
+              onClick={() => {
+                if (archiveArmed) { setArchiveArmed(false); onArchive(); }
+                else { setArchiveArmed(true); }
+              }}
+              onBlur={() => setArchiveArmed(false)}
+              className={`flex items-center justify-center w-5 h-5 rounded transition-colors duration-150 ${FOCUS_RING} ${
+                archiveArmed
+                  ? 'text-[var(--accent-red)] bg-[rgba(var(--bg-surface-rgb),0.6)]'
+                  : 'text-[var(--text-subtle)] hover:text-[var(--text-sub)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)]'
+              }`}
+              data-channel-view-archive
+              data-armed={archiveArmed ? 'true' : 'false'}
+              {...tokenAttrs('textSub', 'text')}
+            >
+              {archiveArmed ? <IconCheck size={11} /> : <IconArchive size={11} />}
+            </button>
+          )}
           <button
             type="button"
             aria-label={t('channels.closeTooltip') || 'Close channel'}
@@ -262,8 +291,23 @@ export function ChannelView(): React.ReactElement | null {
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveChannel = useStore((s) => s.setActiveChannel);
   const pushToast = useStore((s) => s.pushToast);
+  const archiveChannelDaemon = useStore((s) => s.archiveChannelDaemon);
 
   const handleClose = useCallback(() => setActiveChannel(null), [setActiveChannel]);
+
+  // The renderer's "self" workspace — same expression as `viewer` below (the
+  // company CEO when set, else the active workspace).
+  const selfWs = company?.ceoWorkspaceId ?? activeWorkspaceId ?? '';
+  // Archive is creator-only (the daemon also enforces this). Offer the affordance
+  // only when this workspace created the channel, so a non-creator never sees a
+  // button that would just toast NOT_AUTHORIZED.
+  const canArchive = !!selfWs && !!channel && channel.createdBy === selfWs;
+  const handleArchive = useCallback(() => {
+    if (!activeChannelId || !selfWs) return;
+    void archiveChannelDaemon(activeChannelId, selfWs).then((res) => {
+      if (!res.ok) pushToast({ message: res.error.message, level: 'error' });
+    });
+  }, [activeChannelId, selfWs, archiveChannelDaemon, pushToast]);
 
   // Pick a stable viewer — first member whose workspaceId matches the
   // current renderer's workspace (the company's `ceoWorkspaceId` is the
@@ -338,6 +382,7 @@ export function ChannelView(): React.ReactElement | null {
         messages={messages}
         viewer={viewer}
         onClose={handleClose}
+        onArchive={canArchive ? handleArchive : undefined}
         t={t}
         membersSlot={<ChannelMembersControl channel={channel} />}
         composerSlot={

@@ -193,6 +193,15 @@ export interface ChannelsSlice {
     memberId: string,
     workspaceId: string,
   ) => Promise<ChannelActionResult<Record<string, never>>>;
+  // Archive a channel (one-way; read-only thereafter). Creator-only by the
+  // daemon's authz gate; `workspaceId` is the verified caller (the renderer's
+  // self). The daemon returns an empty result, so the thunk synthesizes the
+  // archived row for `archiveChannelOptimistic` — best-effort until the next
+  // catalog refresh corrects `archivedAt`.
+  archiveChannelDaemon: (
+    channelId: string,
+    workspaceId: string,
+  ) => Promise<ChannelActionResult<Channel>>;
 
   // Internal helpers — exposed on the slice so the `*Daemon` thunks
   // can call them via `get()`, and so tests can drive the bridge-
@@ -627,5 +636,41 @@ export const createChannelsSlice: StateCreator<
       return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.leave failed') };
     }
     return get().leaveChannelOptimistic(channelId, memberId);
+  },
+
+  archiveChannelDaemon: async (channelId, workspaceId) => {
+    const bridge = get().channelsRpc();
+    if (!bridge) {
+      console.warn('[channelsSlice] archiveChannelDaemon invoked before bridge mounted — call ignored');
+      return { ok: false, error: { code: 'UNKNOWN', message: 'channels bridge not mounted' } };
+    }
+    const existing = get().channels[channelId];
+    if (!existing) {
+      return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${channelId}` } };
+    }
+    let raw: unknown;
+    try {
+      // Archive authz is creator-or-CEO, gated daemon-side on verifiedWorkspaceId
+      // (the renderer's own/CEO workspace). `archivedBy` is metadata only.
+      raw = await bridge.mutateLocal('a2a.channel.archive', {
+        channelId,
+        verifiedWorkspaceId: workspaceId,
+        archivedBy: workspaceId,
+      });
+    } catch (err) {
+      return { ok: false, error: { code: 'UNKNOWN', message: err instanceof Error ? err.message : String(err) } };
+    }
+    if (raw === null || typeof raw !== 'object' || !('ok' in raw) || (raw as { ok: unknown }).ok !== true) {
+      return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.archive failed') };
+    }
+    // The daemon returns an empty result, not the row — synthesize the archived
+    // channel optimistically. The daemon is authoritative; the next catalog
+    // refresh overwrites `archivedAt` with the persisted value.
+    return get().archiveChannelOptimistic(channelId, {
+      ...existing,
+      status: 'archived',
+      archivedAt: Date.now(),
+      archivedBy: workspaceId,
+    });
   },
 });

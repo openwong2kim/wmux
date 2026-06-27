@@ -750,6 +750,94 @@ describe('channelsSlice — leaveChannelDaemon (membership, self-only)', () => {
   });
 });
 
+describe('channelsSlice — archiveChannelDaemon (lifecycle, creator-only)', () => {
+  it('on RPC success: calls a2a.channel.archive and marks the channel archived', async () => {
+    const { calls } = withChannelsRpc(async () => ({ ok: true })); // daemon returns EmptyResult
+    try {
+      const store = createTestStore();
+      store.getState().createChannelOptimistic({
+        name: 'general',
+        visibility: 'public',
+        createdBy: sender,
+        channel: makeChannel({ id: 'ch-1', status: 'active' }),
+      });
+
+      const res = await store.getState().archiveChannelDaemon('ch-1', 'ws-1');
+      expect(res.ok).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].method).toBe('a2a.channel.archive');
+      expect(calls[0].params).toMatchObject({
+        channelId: 'ch-1',
+        verifiedWorkspaceId: 'ws-1',
+        archivedBy: 'ws-1',
+      });
+      // Daemon returns no row → the thunk synthesizes the archived variant.
+      const ch = store.getState().channels['ch-1'];
+      expect(ch.status).toBe('archived');
+      expect(typeof ch.archivedAt).toBe('number');
+      expect(ch.archivedBy).toBe('ws-1');
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('on NOT_AUTHORIZED: returns the error and leaves the channel active', async () => {
+    withChannelsRpc(async () => ({
+      ok: false,
+      error: { code: 'NOT_AUTHORIZED', message: 'Only the channel creator or the company CEO may archive this channel' },
+    }));
+    try {
+      const store = createTestStore();
+      store.getState().createChannelOptimistic({
+        name: 'general',
+        visibility: 'public',
+        createdBy: sender,
+        channel: makeChannel({ id: 'ch-1', status: 'active' }),
+      });
+      const res = await store.getState().archiveChannelDaemon('ch-1', 'ws-other');
+      expect(res.ok).toBe(false);
+      if (!res.ok) {
+        // NOT_AUTHORIZED isn't in the renderer's known-code union → bucketed to
+        // UNKNOWN, with the daemon code preserved in the message.
+        expect(res.error.code).toBe('UNKNOWN');
+        expect(res.error.message).toContain('NOT_AUTHORIZED');
+      }
+      // No optimistic flip on failure.
+      expect(store.getState().channels['ch-1'].status).toBe('active');
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('channel not in the local mirror: returns CHANNEL_NOT_FOUND without calling the bridge', async () => {
+    const { calls } = withChannelsRpc(async () => ({ ok: true }));
+    try {
+      const store = createTestStore();
+      const res = await store.getState().archiveChannelDaemon('ch-missing', 'ws-1');
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error.code).toBe('CHANNEL_NOT_FOUND');
+      expect(calls).toHaveLength(0); // short-circuits before the RPC
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('bridge missing: returns UNKNOWN without mutating state', async () => {
+    clearChannelsRpc();
+    const store = createTestStore();
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: makeChannel({ id: 'ch-1', status: 'active' }),
+    });
+    const res = await store.getState().archiveChannelDaemon('ch-1', 'ws-1');
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('UNKNOWN');
+    expect(store.getState().channels['ch-1'].status).toBe('active');
+  });
+});
+
 describe('channelsSlice — postMessageDaemon (U4, R4 + R11)', () => {
   it('on RPC success: applies the daemon row, returns ok, propagates clientMsgId', async () => {
     const { calls } = withChannelsRpc(async (_method, params) => ({
