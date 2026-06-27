@@ -30,6 +30,7 @@ import {
   isValidChannelName,
   type Channel,
   type ChannelMember,
+  type ChannelMention,
   type ChannelMessage,
   type ChannelRecipientStatus,
   type ChannelState,
@@ -183,6 +184,12 @@ export interface PostMessageParams {
   clientMsgId?: string;
   /** Optional structured data (R10). */
   data?: unknown;
+  /** @-mentions from the composer/agent. Validated server-side: each entry is
+   *  kept only if its `workspaceId` is a CURRENT channel member (the same
+   *  membership set that gates posting), then deduped by workspace. Non-member
+   *  mentions are dropped — you cannot ping a workspace that isn't in the room.
+   *  This validated set is what Phase 2 inbox routing trusts. */
+  mentions?: ChannelMention[];
 }
 
 /** Discriminated success/failure envelope returned by every public method.
@@ -738,6 +745,25 @@ export class ChannelService {
         workspaceId: m.workspaceId,
         status: 'pending' as const,
       }));
+      // Validate @mentions against the FROZEN member set (the same snapshot the
+      // recipients use): keep only mentions of CURRENT members, deduped by
+      // workspace. A mention of a non-member is dropped — you cannot ping a
+      // workspace that isn't in the room. This bounded, member-verified set is
+      // exactly what Phase 2's inbox routing will ping; validating here (not in
+      // the renderer/MCP) keeps the trust on the server.
+      const mentionedWs = new Set<string>();
+      const mentions: ChannelMention[] = [];
+      for (const mn of params.mentions ?? []) {
+        if (!mn || typeof mn.workspaceId !== 'string') continue;
+        if (!members.some((m) => m.workspaceId === mn.workspaceId)) continue;
+        if (mentionedWs.has(mn.workspaceId)) continue;
+        mentionedWs.add(mn.workspaceId);
+        mentions.push({
+          workspaceId: mn.workspaceId,
+          name: typeof mn.name === 'string' && mn.name.length > 0 ? mn.name.slice(0, 80) : mn.workspaceId,
+          ...(typeof mn.memberId === 'string' ? { memberId: mn.memberId } : {}),
+        });
+      }
       const seq = channel.nextSeq++;
       const now = this.now();
       const message: ChannelMessage = {
@@ -752,6 +778,7 @@ export class ChannelService {
         recipientSnapshot: snapshot,
         ...(params.clientMsgId !== undefined ? { clientMsgId: params.clientMsgId } : {}),
         ...(params.data !== undefined ? { data: params.data } : {}),
+        ...(mentions.length > 0 ? { mentions } : {}),
       };
       (this.state.messages[channel.id] ??= []).push(message);
       // Update idempotency cache.

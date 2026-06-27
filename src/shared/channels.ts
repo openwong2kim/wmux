@@ -123,6 +123,28 @@ export interface ChannelMessage {
    * older persisted messages (pre-U2) won't have it.
    */
   recipientSnapshot?: ChannelRecipientStatus[];
+  /**
+   * @-mentions parsed from the composer at post time. Each entry pins the
+   * mentioned member's `workspaceId` — the key used both to highlight "you were
+   * mentioned" in the dock and (Phase 2) to route an agent ping to that
+   * workspace's a2a inbox — plus a `name` snapshot so the @token renders even
+   * after a name change or workspace removal. Optional: pre-mention messages
+   * won't have it.
+   */
+  mentions?: ChannelMention[];
+}
+
+/**
+ * A single @-mention carried on a {@link ChannelMessage}. The mentioned member
+ * is identified by `workspaceId` (the stable, forgery-resistant key the daemon
+ * already pins membership on); `memberId` narrows it to a specific member when
+ * one was targeted, else the mention is workspace-level. `name` is the display
+ * snapshot at post time.
+ */
+export interface ChannelMention {
+  workspaceId: string;
+  memberId?: string;
+  name: string;
 }
 
 /**

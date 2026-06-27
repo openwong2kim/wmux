@@ -495,6 +495,67 @@ describe('ChannelService', () => {
     });
   });
 
+  describe('post mentions (member-validated, deduped)', () => {
+    it('keeps member mentions, drops non-members, dedupes by workspace — on the message AND the event', async () => {
+      const { svc, emit } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error(`create failed: ${created.error.code}`);
+      const chId = created.channel.id;
+      // ws-2 joins so it is a valid mention target; ws-ghost never joins.
+      const joined = await svc.join({
+        channelId: chId,
+        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      if (!joined.ok) throw new Error(`join failed: ${joined.error.code}`);
+
+      const post = await svc.post({
+        channelId: chId,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'hey @Bob — see @Ghost',
+        verifiedWorkspaceId: 'ws-1',
+        mentions: [
+          { workspaceId: 'ws-2', name: 'Bob' }, // member → kept
+          { workspaceId: 'ws-2', name: 'Bob (dup)' }, // duplicate workspace → dropped
+          { workspaceId: 'ws-ghost', name: 'Ghost' }, // non-member → dropped
+        ],
+      });
+
+      expect(post.ok).toBe(true);
+      if (!post.ok) throw new Error(`post failed: ${post.error.code}`);
+      expect(post.message.mentions).toEqual([{ workspaceId: 'ws-2', name: 'Bob' }]);
+      // The emitted channel.message event carries the same validated set.
+      const evt = emit.mock.calls.at(-1)?.[0];
+      expect(evt?.message.mentions).toEqual([{ workspaceId: 'ws-2', name: 'Bob' }]);
+    });
+
+    it('omits the mentions field entirely when none are valid (no empty array)', async () => {
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error('create failed');
+      const post = await svc.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'no valid mentions',
+        verifiedWorkspaceId: 'ws-1',
+        mentions: [{ workspaceId: 'ws-ghost', name: 'Ghost' }], // non-member only
+      });
+      expect(post.ok).toBe(true);
+      if (!post.ok) throw new Error('post failed');
+      expect(post.message.mentions).toBeUndefined();
+    });
+  });
+
   describe('concurrency', () => {
     it('two posts on the same channel observe linear seq order', async () => {
       const { svc } = makeService();

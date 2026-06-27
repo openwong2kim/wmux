@@ -172,8 +172,18 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         .string()
         .optional()
         .describe('Optional idempotency key. Two posts with the same key on the same channel return the original seq instead of appending a duplicate.'),
+      mentions: z
+        .array(
+          z.object({
+            workspace_id: z.string().describe('Mentioned member workspace id. Dropped server-side unless it is a CURRENT channel member.'),
+            name: z.string().optional().describe('Display name for the @mention (defaults to the workspace id).'),
+            member_id: z.string().optional().describe('Narrow the mention to a specific member; omit for a workspace-level mention.'),
+          }),
+        )
+        .optional()
+        .describe('@-mentions to ping specific members. Each must be a current channel member (non-members dropped). Mentioned workspaces are notified via their a2a inbox.'),
     },
-    async ({ channel_id, text, member_id, member_name, client_msg_id }) => {
+    async ({ channel_id, text, member_id, member_name, client_msg_id, mentions }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
         workspaceId,
@@ -187,6 +197,13 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         text,
       };
       if (client_msg_id !== undefined) params['clientMsgId'] = client_msg_id;
+      if (mentions !== undefined) {
+        params['mentions'] = mentions.map((m) => ({
+          workspaceId: m.workspace_id,
+          name: m.name ?? m.workspace_id,
+          ...(m.member_id !== undefined ? { memberId: m.member_id } : {}),
+        }));
+      }
       return callChannelRpc('a2a.channel.post' as RpcMethod, params);
     },
   );
