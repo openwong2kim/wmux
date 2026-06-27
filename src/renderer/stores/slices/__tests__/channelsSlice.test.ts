@@ -444,6 +444,38 @@ describe('channelsSlice — leaveChannelOptimistic', () => {
   });
 });
 
+describe('channelsSlice — joinChannelOptimistic (composite-key dedup, invite fix)', () => {
+  it('adds a workspace that reuses an existing memberId (the roster shares one UI memberId across workspaces)', () => {
+    const store = createTestStore();
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender, // creator = (ws-1, m-1)
+      channel: makeChannel(),
+    });
+    expect(store.getState().channelMembers['ch-1']).toHaveLength(1);
+
+    // Add a DIFFERENT workspace that reuses the SAME memberId (m-1) — exactly
+    // what the members roster does (one constant UI_MEMBER_ID per add). Pre-fix
+    // this collapsed on memberId and the new member never appeared.
+    const res = store
+      .getState()
+      .joinChannelOptimistic('ch-1', { ...sender, workspaceId: 'ws-2' }, 'ws-2');
+
+    expect(res.ok).toBe(true);
+    const members = store.getState().channelMembers['ch-1'];
+    expect(members).toHaveLength(2); // pre-fix: 1 (wrongly deduped on memberId alone)
+    expect(members.map((m) => m.workspaceId).sort()).toEqual(['ws-1', 'ws-2']);
+  });
+
+  it('still dedups an exact (workspaceId, memberId) repeat', () => {
+    const store = createTestStore();
+    store.getState().joinChannelOptimistic('ch-1', { ...sender, workspaceId: 'ws-2' }, 'ws-2');
+    store.getState().joinChannelOptimistic('ch-1', { ...sender, workspaceId: 'ws-2' }, 'ws-2');
+    expect(store.getState().channelMembers['ch-1']).toHaveLength(1);
+  });
+});
+
 describe('channelsSlice — archiveChannelOptimistic', () => {
   it('replaces the catalog row with the archived variant', () => {
     const store = createTestStore();

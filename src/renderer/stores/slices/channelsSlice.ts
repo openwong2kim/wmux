@@ -338,7 +338,15 @@ export const createChannelsSlice: StateCreator<
   joinChannelOptimistic: (channelId, member, workspaceId) => {
     set((state: StoreState) => {
       const existing = state.channelMembers[channelId] ?? [];
-      const already = existing.some((m) => m.memberId === member.memberId);
+      // Dedup on (workspaceId, memberId) — the SAME composite key the daemon
+      // uses (ChannelService.join). The in-app roster reuses a single constant
+      // memberId (UI_MEMBER_ID) for every workspace it adds, so keying on
+      // memberId alone collapses distinct workspaces: the creator already holds
+      // UI_MEMBER_ID, so the first "Add a workspace" looked like a duplicate and
+      // the new member never appeared in the roster (daemon added it; UI didn't).
+      const already = existing.some(
+        (m) => m.workspaceId === workspaceId && m.memberId === member.memberId,
+      );
       if (!already) {
         state.channelMembers[channelId] = [
           ...existing,
