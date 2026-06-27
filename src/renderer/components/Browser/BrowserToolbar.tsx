@@ -120,11 +120,14 @@ export default function BrowserToolbar({
     }
   }, [currentUrl, isFocused]);
 
-  // Ctrl+L focuses the URL bar — only register when this browser panel is active
+  // Ctrl+L (⌘L on macOS) focuses the URL bar — only register when this browser
+  // panel is active.
   useEffect(() => {
     if (!isActive) return;
+    const isMac = window.electronAPI.platform === 'darwin';
     const handler = (e: KeyboardEvent) => {
-      if (e.ctrlKey && !e.shiftKey && !e.altKey && e.key === 'l') {
+      const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
+      if (cmdOrCtrl && !e.shiftKey && !e.altKey && e.key === 'l') {
         e.preventDefault();
         inputRef.current?.focus();
         inputRef.current?.select();

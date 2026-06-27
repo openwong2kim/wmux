@@ -635,6 +635,39 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }
       }
 
+      // macOS-native clipboard: ⌘C copies the selection, ⌘V pastes. The Ctrl
+      // handlers below stay intact, so Ctrl+C still sends SIGINT and the
+      // Windows/Linux flow is unchanged. Match physical `code` so it survives a
+      // CJK IME (e.key would be a composed jamo / 'Process', not 'c'/'v').
+      const isMac = window.electronAPI.platform === 'darwin';
+      if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
+        const sel = terminal.getSelection();
+        if (sel) {
+          void copySelectionWithFeedback(terminal, sel);
+          return false;
+        }
+        return true; // no selection → let the OS handle ⌘C
+      }
+      if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
+        e.preventDefault();
+        void (async () => {
+          const text = await window.clipboardAPI.readText();
+          if (text) {
+            const modes = (terminal as unknown as { modes?: { bracketedPasteMode?: boolean } }).modes;
+            await pastePtyChunked((d) => window.electronAPI.pty.write(ptyId, d), text, modes);
+            return;
+          }
+          if (window.clipboardAPI.readImage) {
+            const imagePath = await window.clipboardAPI.readImage();
+            if (imagePath) {
+              const quoted = imagePath.includes(' ') ? `"${imagePath}"` : imagePath;
+              window.electronAPI.pty.write(ptyId, quoted);
+            }
+          }
+        })().catch(() => {});
+        return false;
+      }
+
       // Ctrl+C: copy if selection exists, otherwise send SIGINT. Match physical
       // `code` (KeyC) too — under a CJK IME xterm derives Ctrl+<letter> from the
       // deprecated keyCode, which becomes 229 ("Process"), so `e.key` is the

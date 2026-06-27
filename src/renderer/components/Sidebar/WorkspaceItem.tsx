@@ -288,7 +288,11 @@ export default function WorkspaceItem({ workspace, isActive, isMultiview, index,
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
     // 드래그 직후 클릭 이벤트 무시 (200ms 이내)
     if (Date.now() - dragStartTimeRef.current < 200) return;
-    if (e.ctrlKey) {
+    // 멀티뷰 토글: 플랫폼 주 보조키 + 클릭 (useKeyboard의 cmdOrCtrl 패턴과 동일).
+    // macOS=⌘, Win/Linux=Ctrl. macOS에서 Ctrl+클릭은 OS 우클릭(컨텍스트 메뉴)으로
+    // 깔끔히 분리되고, Win/Linux에선 Super+클릭이 오작동하지 않는다.
+    const cmdOrCtrl = window.electronAPI.platform === 'darwin' ? e.metaKey : e.ctrlKey;
+    if (cmdOrCtrl) {
       e.preventDefault();
       onCtrlSelect();
     } else {

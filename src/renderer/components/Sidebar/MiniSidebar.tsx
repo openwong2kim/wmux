@@ -72,7 +72,10 @@ export default function MiniSidebar() {
           const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
             // Suppress click that fires immediately after a drag.
             if (Date.now() - dragStartTimeRef.current < 200) return;
-            if (e.ctrlKey) {
+            // 멀티뷰 토글: 플랫폼 주 보조키 + 클릭 (cmdOrCtrl 패턴, WorkspaceItem과 동일).
+            // macOS=⌘, Win/Linux=Ctrl.
+            const cmdOrCtrl = window.electronAPI.platform === 'darwin' ? e.metaKey : e.ctrlKey;
+            if (cmdOrCtrl) {
               e.preventDefault();
               toggleMultiviewWorkspace(ws.id);
             } else {

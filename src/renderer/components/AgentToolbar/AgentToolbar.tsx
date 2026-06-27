@@ -98,7 +98,7 @@ export default function AgentToolbar() {
         ★ {t('toolbar.snippets')}
       </button>
       <button className={`${btn} ${popover === 'rich' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('rich')}>
-        ⌨ {t('toolbar.richInput')} <span className="opacity-50">Ctrl G</span>
+        ⌨ {t('toolbar.richInput')} <span className="opacity-50">{window.electronAPI.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</span>
       </button>
       <div className="flex-1" />
       {disabled && <span className="text-[10px] text-[var(--text-muted)] font-mono">{t('toolbar.noTerminal')}</span>}
