@@ -19,6 +19,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import {
   ComposerContent,
   synthesizeChannelMessage,
+  detectMentionToken,
 } from '../Composer';
 
 // ─── synthesizeChannelMessage ───────────────────────────────────────────
@@ -119,5 +120,63 @@ describe('ComposerContent', () => {
     const html = renderComposer();
     // Plan U8 verification: no literal hex colors.
     expect(html).not.toMatch(/#[0-9a-fA-F]{3,8}(?=[^a-zA-Z0-9])/);
+  });
+});
+
+// ─── detectMentionToken (pure caret scanner) ────────────────────────────
+
+describe('detectMentionToken', () => {
+  it('detects @ at the start of the string', () => {
+    expect(detectMentionToken('@a', 2)).toEqual({ start: 0, query: 'a' });
+  });
+  it('detects @ after whitespace', () => {
+    expect(detectMentionToken('hi @bo', 6)).toEqual({ start: 3, query: 'bo' });
+  });
+  it('returns the empty query right after a bare @', () => {
+    expect(detectMentionToken('@', 1)).toEqual({ start: 0, query: '' });
+  });
+  it('returns null when there is no @ before the caret', () => {
+    expect(detectMentionToken('hello', 5)).toBeNull();
+  });
+  it('ignores @ that is not at a word boundary (emails)', () => {
+    expect(detectMentionToken('a@b', 3)).toBeNull();
+  });
+  it('does not cross a newline', () => {
+    expect(detectMentionToken('@a\nfoo', 6)).toBeNull();
+  });
+  it('picks the nearest @ on the caret line', () => {
+    expect(detectMentionToken('@x\n@y', 5)).toEqual({ start: 3, query: 'y' });
+  });
+  it('allows spaces in the query (multi-word workspace names)', () => {
+    expect(detectMentionToken('@John D', 7)).toEqual({ start: 0, query: 'John D' });
+  });
+});
+
+// ─── synthesizeChannelMessage mentions ──────────────────────────────────
+
+describe('synthesizeChannelMessage mentions', () => {
+  it('carries mentions when provided', () => {
+    const m = synthesizeChannelMessage({
+      channelId: 'ch-1',
+      seq: 1,
+      text: 'hi @bob',
+      senderWorkspaceId: 'ws-1',
+      senderMemberId: 'm-1',
+      senderMemberName: 'Lead',
+      mentions: [{ workspaceId: 'ws-2', name: 'bob' }],
+    });
+    expect(m.mentions).toEqual([{ workspaceId: 'ws-2', name: 'bob' }]);
+  });
+  it('omits the mentions field when the array is empty', () => {
+    const m = synthesizeChannelMessage({
+      channelId: 'ch-1',
+      seq: 1,
+      text: 'hi',
+      senderWorkspaceId: 'ws-1',
+      senderMemberId: 'm-1',
+      senderMemberName: 'Lead',
+      mentions: [],
+    });
+    expect(m.mentions).toBeUndefined();
   });
 });

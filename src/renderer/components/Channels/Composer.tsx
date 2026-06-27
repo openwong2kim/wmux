@@ -14,10 +14,17 @@
 //
 // Plan ref: U4 (wire-path entry), U8 (UI surface), R7, R22, R26.
 
-import { useState, useRef, useCallback, type FormEvent, type KeyboardEvent } from 'react';
+import {
+  useState,
+  useRef,
+  useCallback,
+  useMemo,
+  type FormEvent,
+  type KeyboardEvent,
+} from 'react';
 import { useStore } from '../../stores';
 import { generateId } from '../../../shared/types';
-import type { ChannelMessage } from '../../../shared/channels';
+import type { ChannelMember, ChannelMention, ChannelMessage } from '../../../shared/channels';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
@@ -37,6 +44,7 @@ export function synthesizeChannelMessage(params: {
   senderMemberId: string;
   senderMemberName: string;
   clientMsgId?: string;
+  mentions?: ChannelMention[];
 }): ChannelMessage {
   return {
     channelId: params.channelId,
@@ -48,14 +56,67 @@ export function synthesizeChannelMessage(params: {
     postedAt: Date.now(),
     deliveryStatus: 'pending',
     clientMsgId: params.clientMsgId,
+    // The daemon re-validates + overwrites this; carried so the optimistic
+    // local insert renders @tokens before the authoritative row lands.
+    ...(params.mentions && params.mentions.length > 0
+      ? { mentions: params.mentions }
+      : {}),
   };
+}
+
+// ─── @-mention token detection ──────────────────────────────────────────
+
+/** A member the composer can @-mention. The human UI participates as one
+ *  member per workspace (memberId `local-ui`), so the display label is the
+ *  workspace name. */
+export interface MentionCandidate {
+  workspaceId: string;
+  memberId: string;
+  name: string;
+}
+
+/**
+ * Detect an in-progress `@` mention token immediately left of the caret.
+ * Returns the `start` index of the `@` and the `query` typed after it, or
+ * `null` when the caret is not inside a mention token.
+ *
+ * Rules: the `@` must sit at a word boundary (string start or after
+ * whitespace) so emails like `a@b` don't trigger it, and the token does not
+ * cross a newline. The query MAY contain spaces (workspace names can), so a
+ * trailing-space query that no longer matches any candidate simply collapses
+ * the dropdown via the empty filter — there's no hard space terminator.
+ */
+export function detectMentionToken(
+  value: string,
+  caret: number,
+): { start: number; query: string } | null {
+  for (let i = caret - 1; i >= 0; i--) {
+    const ch = value[i];
+    if (ch === '\n' || ch === '\r') return null;
+    if (ch === '@') {
+      const prev = i > 0 ? value[i - 1] : '';
+      if (prev === '' || /\s/.test(prev)) {
+        return { start: i, query: value.slice(i + 1, caret) };
+      }
+      return null;
+    }
+  }
+  return null;
 }
 
 // ─── Pure view (props-driven) ───────────────────────────────────────────
 
+const EMPTY_CANDIDATES: MentionCandidate[] = [];
+
 export interface ComposerContentProps {
   channelId: string;
-  onSubmit: (text: string) => Promise<{ ok: boolean; errorCode?: string; errorMessage?: string }>;
+  onSubmit: (
+    text: string,
+    mentions: ChannelMention[],
+  ) => Promise<{ ok: boolean; errorCode?: string; errorMessage?: string }>;
+  /** Members this composer can @-mention. The sender is excluded upstream
+   *  (you can't ping yourself). Defaults to none (no dropdown). */
+  mentionCandidates?: MentionCandidate[];
   /** Translator — defaults to identity. Tests pass a stub. */
   t?: (key: string) => string;
   /** Override the placeholder when running in a test. */
@@ -72,18 +133,44 @@ export interface ComposerContentProps {
 export function ComposerContent({
   channelId,
   onSubmit,
+  mentionCandidates,
   placeholder,
   disabled,
   t: tProp,
 }: ComposerContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
+  const candidates = mentionCandidates ?? EMPTY_CANDIDATES;
   const [text, setText] = useState('');
   const [error, setError] = useState<string | null>(null);
   const [inFlight, setInFlight] = useState(false);
+  // The in-progress `@` token under the caret (null = dropdown closed) and
+  // the highlighted option within it.
+  const [token, setToken] = useState<{ start: number; query: string } | null>(null);
+  const [activeIdx, setActiveIdx] = useState(0);
+  // Mentions the user picked from the dropdown, keyed by workspace. Sent on
+  // submit only if the @name token still survives in the text (so deleting
+  // the token drops the ping).
+  const [picked, setPicked] = useState<ChannelMention[]>([]);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
   const trimmed = text.trim();
   const canSend = trimmed.length > 0 && !inFlight && !disabled;
+
+  // Candidates matching the active query (case-insensitive substring).
+  const matches = useMemo(() => {
+    if (!token) return EMPTY_CANDIDATES;
+    const q = token.query.toLowerCase();
+    return candidates.filter((c) => c.name.toLowerCase().includes(q));
+  }, [token, candidates]);
+
+  const dropdownOpen = token !== null && matches.length > 0 && !inFlight && !disabled;
+
+  const resetAfterSend = useCallback(() => {
+    setText('');
+    setPicked([]);
+    setToken(null);
+    setActiveIdx(0);
+  }, []);
 
   const handleSubmit = useCallback(
     async (e: FormEvent) => {
@@ -92,9 +179,12 @@ export function ComposerContent({
       setInFlight(true);
       setError(null);
       try {
-        const result = await onSubmit(trimmed);
+        // Attach only mentions whose @name token still survives in the body;
+        // the daemon re-validates against live membership.
+        const mentions = picked.filter((m) => text.includes(`@${m.name}`));
+        const result = await onSubmit(trimmed, mentions);
         if (result.ok) {
-          setText('');
+          resetAfterSend();
           inputRef.current?.focus();
         } else {
           setError(result.errorMessage ?? t('channels.postFailed') ?? 'Post failed');
@@ -105,11 +195,61 @@ export function ComposerContent({
         setInFlight(false);
       }
     },
-    [canSend, onSubmit, trimmed, t],
+    [canSend, onSubmit, trimmed, text, picked, resetAfterSend, t],
+  );
+
+  const applyMention = useCallback(
+    (c: MentionCandidate) => {
+      if (!token) return;
+      const before = text.slice(0, token.start);
+      const after = text.slice(token.start + 1 + token.query.length);
+      const insert = `@${c.name} `;
+      const caret = before.length + insert.length;
+      setText(before + insert + after);
+      setPicked((prev) =>
+        prev.some((p) => p.workspaceId === c.workspaceId)
+          ? prev
+          : [...prev, { workspaceId: c.workspaceId, memberId: c.memberId, name: c.name }],
+      );
+      setToken(null);
+      setActiveIdx(0);
+      // Restore focus + caret immediately after the inserted mention.
+      requestAnimationFrame(() => {
+        const el = inputRef.current;
+        if (el) {
+          el.focus();
+          el.setSelectionRange(caret, caret);
+        }
+      });
+    },
+    [token, text],
   );
 
   const handleKeyDown = useCallback(
     (e: KeyboardEvent<HTMLTextAreaElement>) => {
+      if (dropdownOpen) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          setActiveIdx((i) => (i + 1) % matches.length);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          setActiveIdx((i) => (i - 1 + matches.length) % matches.length);
+          return;
+        }
+        // Enter or Tab commits the highlighted mention instead of submitting.
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          applyMention(matches[activeIdx] ?? matches[0]);
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          setToken(null);
+          return;
+        }
+      }
       // Enter submits; Shift+Enter inserts a newline.
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
@@ -118,7 +258,18 @@ export function ComposerContent({
         }
       }
     },
-    [canSend, handleSubmit],
+    [dropdownOpen, matches, activeIdx, applyMention, canSend, handleSubmit],
+  );
+
+  const handleChange = useCallback(
+    (e: React.ChangeEvent<HTMLTextAreaElement>) => {
+      const value = e.target.value;
+      setText(value);
+      if (error) setError(null);
+      setToken(detectMentionToken(value, e.target.selectionStart ?? value.length));
+      setActiveIdx(0);
+    },
+    [error],
   );
 
   return (
@@ -139,7 +290,41 @@ export function ComposerContent({
           {error}
         </div>
       )}
-      <div className="flex items-end gap-2">
+      <div className="relative flex items-end gap-2">
+        {dropdownOpen && (
+          <div
+            data-channel-mention-dropdown
+            role="listbox"
+            className="absolute bottom-full left-0 mb-1 z-20 w-56 max-h-[40vh] overflow-y-auto rounded-md shadow-xl py-1 bg-[var(--bg-surface)]"
+            style={{ border: '1px solid var(--border-soft)' }}
+            {...tokenAttrs('bgSurface', 'bg')}
+          >
+            {matches.map((c, idx) => (
+              <button
+                type="button"
+                key={`${c.workspaceId}:${c.memberId}`}
+                data-channel-mention-option
+                data-workspace-id={c.workspaceId}
+                data-active={idx === activeIdx ? 'true' : undefined}
+                role="option"
+                aria-selected={idx === activeIdx}
+                // preventDefault on mousedown so the textarea doesn't blur
+                // (and tear down the dropdown) before the click lands.
+                onMouseDown={(ev) => ev.preventDefault()}
+                onClick={() => applyMention(c)}
+                className={`w-full flex items-center gap-1.5 px-3 py-1 text-left text-[11px] font-mono transition-colors ${FOCUS_RING} ${
+                  idx === activeIdx
+                    ? 'bg-[var(--bg-overlay)] text-[var(--text-main)]'
+                    : 'text-[var(--text-sub)] hover:bg-[var(--bg-overlay)]'
+                }`}
+                {...tokenAttrs('textSub', 'text')}
+              >
+                <span className="text-[var(--accent-blue)]" aria-hidden="true">@</span>
+                <span className="truncate">{c.name}</span>
+              </button>
+            ))}
+          </div>
+        )}
         <textarea
           ref={inputRef}
           rows={2}
@@ -147,10 +332,7 @@ export function ComposerContent({
           value={text}
           placeholder={placeholder ?? t('channels.composerPlaceholder') ?? 'Type a message…'}
           disabled={disabled || inFlight}
-          onChange={(e) => {
-            setText(e.target.value);
-            if (error) setError(null);
-          }}
+          onChange={handleChange}
           onKeyDown={handleKeyDown}
           className={`flex-1 min-w-0 resize-none bg-[var(--bg-base)] text-[var(--text-main)] text-[12px] font-mono px-2 py-1.5 rounded border border-[var(--bg-surface)] outline-none ${FOCUS_RING}`}
           aria-label={t('channels.composerAriaLabel') || 'Compose channel message'}
@@ -192,6 +374,8 @@ export interface ComposerProps {
   onError: (toast: { message: string; level: 'info' | 'warn' | 'error' }) => void;
 }
 
+const EMPTY_MEMBERS: ChannelMember[] = [];
+
 export function Composer({ channelId, onError }: ComposerProps): React.ReactElement {
   const t = useT();
   const company = useStore((s) => s.company);
@@ -200,18 +384,38 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
   // ChannelsPanel / ChannelView / useChannelsHydration).
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const channel = useStore((s) => s.channels[channelId]);
+  const members = useStore((s) => s.channelMembers[channelId] ?? EMPTY_MEMBERS);
+  const workspaces = useStore((s) => s.workspaces);
   const postMessageDaemon = useStore((s) => s.postMessageDaemon);
 
+  // Sender identity: the CEO workspace when Company mode is active, else the
+  // active workspace. The daemon's post path requires
+  // sender.workspaceId === verifiedWorkspaceId AND membership.
+  const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId ?? null;
+
+  // @-mention candidates: every member workspace except the sender's own (you
+  // can't ping yourself), deduped by workspace and labeled with the workspace
+  // name — members are workspace-level in the human UI (memberId `local-ui`).
+  const mentionCandidates = useMemo<MentionCandidate[]>(() => {
+    const seen = new Set<string>();
+    const out: MentionCandidate[] = [];
+    for (const m of members) {
+      if (m.workspaceId === selfWorkspaceId) continue;
+      if (seen.has(m.workspaceId)) continue;
+      seen.add(m.workspaceId);
+      out.push({
+        workspaceId: m.workspaceId,
+        memberId: m.memberId,
+        name: workspaces.find((w) => w.id === m.workspaceId)?.name ?? m.workspaceId,
+      });
+    }
+    return out;
+  }, [members, workspaces, selfWorkspaceId]);
+
   const handlePost = useCallback(
-    async (text: string) => {
-      // Sender identity: the CEO workspace when Company mode is active, else
-      // the active workspace. The daemon's post path requires
-      // sender.workspaceId === verifiedWorkspaceId AND membership; posting
-      // succeeds on channels this identity is a member of (e.g. ones it
-      // created here). A channel created by another client requires a join
-      // first — that is the daemon's membership rule (NOT_A_MEMBER), not a
-      // company gate.
-      const selfWorkspaceId = company?.ceoWorkspaceId ?? activeWorkspaceId;
+    async (text: string, mentions: ChannelMention[]) => {
+      // A channel created by another client requires a join first — that is
+      // the daemon's membership rule (NOT_A_MEMBER), not a company gate.
       if (!channel || !selfWorkspaceId) {
         return { ok: false, errorCode: 'UNKNOWN', errorMessage: 'No channel or workspace identity' };
       }
@@ -222,6 +426,10 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
       // dedupes against the prior in-flight post.
       const clientMsgId = generateId('cmid');
       const nextSeq = channel.nextSeq;
+      // The daemon re-validates mentions against live membership and drops any
+      // non-member / forged entry; we send our best-effort set and carry it on
+      // the optimistic row so @tokens render immediately.
+      const mentionsArg = mentions.length > 0 ? mentions : undefined;
       const message = synthesizeChannelMessage({
         channelId,
         seq: nextSeq,
@@ -230,6 +438,7 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
         senderMemberId: 'local-ui',
         senderMemberName: 'local-ui',
         clientMsgId,
+        mentions: mentionsArg,
       });
       const result = await postMessageDaemon(channelId, {
         text,
@@ -239,6 +448,7 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
           memberName: 'local-ui',
         },
         clientMsgId,
+        mentions: mentionsArg,
         message,
       });
       if (!result.ok) {
@@ -256,7 +466,7 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
       }
       return { ok: true };
     },
-    [channelId, channel, company, postMessageDaemon, onError, t],
+    [channelId, channel, selfWorkspaceId, postMessageDaemon, onError, t],
   );
 
   // The composer is bound to a single channel; an archived channel is
@@ -267,6 +477,7 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
     <ComposerContent
       channelId={channelId}
       onSubmit={handlePost}
+      mentionCandidates={mentionCandidates}
       disabled={!channel || channel.status === 'archived'}
       t={t}
     />

@@ -58,6 +58,7 @@ import type { StoreState } from '../index';
 import type {
   Channel,
   ChannelMember,
+  ChannelMention,
   ChannelMessage,
   ChannelVisibility,
 } from '../../../shared/channels';
@@ -91,6 +92,11 @@ export interface ChannelPostParams {
   sender: ChannelMemberAddress;
   clientMsgId?: string;
   data?: unknown;
+  /** @-mentions selected in the composer. Forwarded to the daemon, which
+   *  re-validates them against current membership (the server is the source
+   *  of truth — a forged/stale mention is dropped there). The optimistic row
+   *  carries them only so the local insert renders the @tokens immediately. */
+  mentions?: ChannelMention[];
   /** The daemon's authoritative message after post. */
   message: ChannelMessage;
 }
@@ -560,6 +566,7 @@ export const createChannelsSlice: StateCreator<
         sender: params.sender,
         clientMsgId: params.clientMsgId,
         data: params.data,
+        mentions: params.mentions,
         verifiedWorkspaceId: params.sender.workspaceId,
       });
     } catch (err) {
