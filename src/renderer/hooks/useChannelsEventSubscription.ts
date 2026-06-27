@@ -116,7 +116,27 @@ function readEventsPollBridge(): EventsPollBridge | undefined {
  *     `refreshChannels` rebuilds from authoritative state.
  */
 export function useChannelsEventSubscription(): void {
+  // Per-recipient scoping (plan U3, R3): the daemon's per-workspace filter at
+  // `events.rpc.ts:115-124` requires the caller to identify its own workspace
+  // or it silently drops every event. Channels are decoupled from in-app
+  // Company mode, so the identity is the company CEO workspace when set, else
+  // the active workspace (mirrors useChannelsHydration / ChannelsPanel).
+  //
+  // SUBSCRIBE to this (not getState() inside a []-deps effect): a prior bug read
+  // it once at mount, and if this hook mounted before `activeWorkspaceId` was
+  // set (boot race), self was null, the effect early-returned, and events.poll
+  // NEVER started — so live channel messages, the unread/mention dock badges,
+  // AND the mention→a2a inbox routing all silently no-op'd. Keying the effect on
+  // `workspaceId` re-runs it the moment self lands, starting the poll then.
+  // Multi-workspace renderers (FIX-MULTI-WS follow-up) will iterate every member
+  // workspace here; for v1 we poll one.
+  const workspaceId = useStore((s) => s.company?.ceoWorkspaceId ?? s.activeWorkspaceId);
   useEffect(() => {
+    if (!workspaceId) {
+      // No resolvable self yet (pre-boot). The selector above re-runs this
+      // effect once `activeWorkspaceId` is set — a wait, not a dead end.
+      return;
+    }
     const bridge = readEventsPollBridge();
     if (!bridge) {
       // The renderer should never reach this state — `useRpcBridge`
@@ -127,26 +147,6 @@ export function useChannelsEventSubscription(): void {
       // sentinel-erroring the user-visible state.
       console.warn(
         '[useChannelsEventSubscription] events.poll bridge not mounted — channel events will not auto-update',
-      );
-      return;
-    }
-
-    // Per-recipient scoping (plan U3, R3): the daemon's per-workspace
-    // filter at `events.rpc.ts:115-124` requires the caller to identify
-    // its own workspace or it silently drops every event. Channels are
-    // decoupled from in-app Company mode, so the identity source is the
-    // company CEO workspace when Company mode is active, else the active
-    // workspace (mirrors useChannelsHydration / ChannelsPanel). Sending a
-    // literal `'unknown-workspace'` is NOT an option — the strict filter
-    // would silently drop every event and the UI would look identical to a
-    // healthy empty stream — so we skip + warn only when there is no
-    // workspace at all. Multi-workspace renderers (FIX-MULTI-WS follow-up)
-    // will iterate every member workspace here; for v1 we poll one.
-    const state = useStore.getState();
-    const workspaceId = state.company?.ceoWorkspaceId ?? state.activeWorkspaceId;
-    if (!workspaceId) {
-      console.warn(
-        '[useChannelsEventSubscription] no resolvable workspace (no company + no active workspace) — channel events will not auto-update',
       );
       return;
     }
@@ -245,5 +245,5 @@ export function useChannelsEventSubscription(): void {
       disposed = true;
       clearInterval(timer);
     };
-  }, []);
+  }, [workspaceId]);
 }
