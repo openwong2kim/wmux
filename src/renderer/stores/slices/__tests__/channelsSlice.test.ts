@@ -298,6 +298,72 @@ describe('channelsSlice — appendMessageFromEvent', () => {
     store.getState().appendMessageFromEvent(makeMessage('ch-1', 1));
     expect(store.getState().channelUnread['ch-1']).toBe(0);
   });
+
+  it('bumps channelMentions when an unseen message @-mentions self', () => {
+    const store = createTestStore();
+    // The self identity lives on sibling slices (company / activeWorkspaceId);
+    // inject it into the minimal channels-only test store.
+    store.setState((s) => {
+      (s as unknown as { activeWorkspaceId: string }).activeWorkspaceId = 'ws-me';
+    });
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: makeChannel(),
+    });
+    store.getState().appendMessageFromEvent(
+      makeMessage('ch-1', 1, { mentions: [{ workspaceId: 'ws-me', name: 'me' }] }),
+    );
+    expect(store.getState().channelMentions['ch-1']).toBe(1);
+    expect(store.getState().channelUnread['ch-1']).toBe(1);
+  });
+
+  it('does NOT bump channelMentions for a mention of another workspace', () => {
+    const store = createTestStore();
+    store.setState((s) => {
+      (s as unknown as { activeWorkspaceId: string }).activeWorkspaceId = 'ws-me';
+    });
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: makeChannel(),
+    });
+    store.getState().appendMessageFromEvent(
+      makeMessage('ch-1', 1, { mentions: [{ workspaceId: 'ws-other', name: 'other' }] }),
+    );
+    expect(store.getState().channelMentions['ch-1'] ?? 0).toBe(0);
+    expect(store.getState().channelUnread['ch-1']).toBe(1);
+  });
+
+  it('setActiveChannel and markChannelRead clear channelMentions', () => {
+    const store = createTestStore();
+    store.setState((s) => {
+      (s as unknown as { activeWorkspaceId: string }).activeWorkspaceId = 'ws-me';
+    });
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: makeChannel(),
+    });
+    const mention = { mentions: [{ workspaceId: 'ws-me', name: 'me' }] };
+    store.getState().appendMessageFromEvent(makeMessage('ch-1', 1, mention));
+    expect(store.getState().channelMentions['ch-1']).toBe(1);
+
+    store.getState().setActiveChannel('ch-1');
+    expect(store.getState().channelMentions['ch-1']).toBe(0);
+
+    // Re-bump (channel no longer active) then clear via markChannelRead.
+    store.setState((s) => {
+      (s as unknown as { activeChannelId: string | null }).activeChannelId = null;
+    });
+    store.getState().appendMessageFromEvent(makeMessage('ch-1', 2, mention));
+    expect(store.getState().channelMentions['ch-1']).toBe(1);
+    store.getState().markChannelRead('ch-1');
+    expect(store.getState().channelMentions['ch-1']).toBe(0);
+  });
 });
 
 describe('channelsSlice — hydrateChannelMessages (P0)', () => {

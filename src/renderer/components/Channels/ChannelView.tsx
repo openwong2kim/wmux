@@ -18,6 +18,7 @@ import type {
   Channel,
   ChannelMessage,
   ChannelMember,
+  ChannelMention,
 } from '../../../shared/channels';
 import { useStore } from '../../stores';
 import { loadChannelHistory } from '../../hooks/useChannelsHydration';
@@ -79,6 +80,49 @@ export function viewerDeliveryStatus(
   if (!snap) return message.deliveryStatus;
   const me = snap.find((s) => s.memberId === viewerMemberId);
   return me?.status;
+}
+
+/** Render message text with its @mention tokens highlighted. Splits on the
+ *  validated `mentions[].name` snapshots and wraps each `@name` occurrence in
+ *  an accent span; longest names first so "@John Doe" wins over "@John".
+ *  Returns the plain string when there are no mentions (the common case). */
+export function renderMessageText(
+  text: string,
+  mentions?: ChannelMention[],
+): React.ReactNode {
+  if (!mentions || mentions.length === 0) return text;
+  const names = Array.from(new Set(mentions.map((m) => m.name)))
+    .filter((n) => n.length > 0)
+    .sort((a, b) => b.length - a.length);
+  if (names.length === 0) return text;
+  const parts: React.ReactNode[] = [];
+  let i = 0;
+  let key = 0;
+  while (i < text.length) {
+    if (text[i] === '@') {
+      const matched = names.find((n) => text.startsWith(n, i + 1));
+      if (matched) {
+        parts.push(
+          <span
+            key={key++}
+            data-channel-mention-token
+            className="font-bold text-[var(--accent-blue)]"
+            {...tokenAttrs('accent', 'text')}
+          >
+            @{matched}
+          </span>,
+        );
+        i += 1 + matched.length;
+        continue;
+      }
+    }
+    // Accumulate plain text up to the next '@' (or end of string).
+    let j = i + 1;
+    while (j < text.length && text[j] !== '@') j++;
+    parts.push(text.slice(i, j));
+    i = j;
+  }
+  return parts;
 }
 
 // ─── Pure view ──────────────────────────────────────────────────────────
@@ -207,6 +251,8 @@ export function ChannelViewContent({
         ) : (
           visible.map((m) => {
             const myStatus = viewerDeliveryStatus(m, viewer?.memberId ?? null);
+            const mentionsMe =
+              !!viewer && !!m.mentions?.some((mn) => mn.workspaceId === viewer.workspaceId);
             return (
               <div
                 key={`${channel.id}:${m.seq}`}
@@ -214,7 +260,10 @@ export function ChannelViewContent({
                 data-seq={m.seq}
                 data-member-id={m.memberId}
                 data-delivery={myStatus ?? 'unknown'}
-                className="flex flex-col gap-0.5"
+                data-mentions-me={mentionsMe ? 'true' : undefined}
+                className={`flex flex-col gap-0.5 ${
+                  mentionsMe ? 'border-l-2 border-[var(--accent-blue)] pl-1.5' : ''
+                }`}
               >
                 <div className="flex items-baseline gap-2">
                   <span
@@ -237,7 +286,7 @@ export function ChannelViewContent({
                   data-channel-message-text
                   {...tokenAttrs('textMain', 'text')}
                 >
-                  {m.text}
+                  {renderMessageText(m.text, m.mentions)}
                 </div>
                 {myStatus && (
                   <div

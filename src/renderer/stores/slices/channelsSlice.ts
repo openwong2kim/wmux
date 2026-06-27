@@ -139,6 +139,10 @@ export interface ChannelsSlice {
   channelMessages: Record<string, ChannelMessage[]>;
   activeChannelId: string | null;
   channelUnread: Record<string, number>;
+  /** Per-channel count of unseen messages that @-mention THIS renderer's
+   *  workspace — a strict subset of `channelUnread`, surfaced as a stronger
+   *  dock badge. Cleared with unread by `markChannelRead` / `setActiveChannel`. */
+  channelMentions: Record<string, number>;
 
   // ── User-initiated actions (optimistic local mutations) ─────────
   // Each action takes the daemon-resolved result as a parameter so the
@@ -256,6 +260,7 @@ export const createChannelsSlice: StateCreator<
   channelMessages: {},
   activeChannelId: null,
   channelUnread: {},
+  channelMentions: {},
 
   setActiveChannel: (channelId) =>
     set((state: StoreState) => {
@@ -266,6 +271,7 @@ export const createChannelsSlice: StateCreator<
       // here means a single source of truth (no double-bookkeeping).
       if (channelId !== null) {
         state.channelUnread[channelId] = 0;
+        state.channelMentions[channelId] = 0;
         // Auto-open the right channel dock so clicking a channel reveals the
         // conversation (the dock is collapsed by default — uiSlice).
         state.channelDockVisible = true;
@@ -275,6 +281,7 @@ export const createChannelsSlice: StateCreator<
   markChannelRead: (channelId) =>
     set((state: StoreState) => {
       state.channelUnread[channelId] = 0;
+      state.channelMentions[channelId] = 0;
     }),
 
   setChannels: (channels, members) =>
@@ -406,6 +413,15 @@ export const createChannelsSlice: StateCreator<
       if (isNew && state.activeChannelId !== channelId) {
         state.channelUnread[channelId] =
           (state.channelUnread[channelId] ?? 0) + 1;
+        // A message that @-mentions this renderer's own workspace bumps the
+        // mention counter too (the dock then shows a stronger red @ badge).
+        // `self` = the company CEO workspace when set, else the active
+        // workspace — mirrors ChannelView/Composer identity resolution.
+        const selfWs = state.company?.ceoWorkspaceId ?? state.activeWorkspaceId;
+        if (selfWs && message.mentions?.some((mn) => mn.workspaceId === selfWs)) {
+          state.channelMentions[channelId] =
+            (state.channelMentions[channelId] ?? 0) + 1;
+        }
       }
     }),
 

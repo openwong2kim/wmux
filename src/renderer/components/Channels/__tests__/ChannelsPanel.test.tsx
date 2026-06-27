@@ -70,6 +70,7 @@ function resetStore() {
     s.channelMessages = {};
     s.activeChannelId = null;
     s.channelUnread = {};
+    s.channelMentions = {};
     s.company = null;
   });
 }
@@ -169,6 +170,7 @@ function renderItem(props: {
   name: string;
   isActive: boolean;
   unreadCount: number;
+  mentioned?: boolean;
   onSelect?: (id: string) => void;
 }): string {
   return renderToStaticMarkup(
@@ -176,6 +178,7 @@ function renderItem(props: {
       channel: makeChannel({ id: props.id, name: props.name }),
       isActive: props.isActive,
       unreadCount: props.unreadCount,
+      mentioned: props.mentioned,
       onSelect: props.onSelect ?? (() => undefined),
     }),
   );
@@ -244,6 +247,25 @@ describe('ChannelItemView', () => {
     expect(html).toContain('tabindex="0"');
     expect(html).toContain('data-channel-id="ch-7"');
   });
+
+  it('promotes the badge to a red @ mention badge when mentioned', () => {
+    const html = renderItem({ id: 'ch-1', name: 'general', isActive: false, unreadCount: 2, mentioned: true });
+    expect(html).toContain('data-channel-mention="true"');
+    expect(html).toContain('var(--accent-red)');
+    expect(html).toContain('@');
+  });
+
+  it('shows the mention badge even when unreadCount is 0', () => {
+    const html = renderItem({ id: 'ch-1', name: 'general', isActive: false, unreadCount: 0, mentioned: true });
+    expect(html).toContain('data-channel-mention="true"');
+    expect(html).toContain('@');
+  });
+
+  it('leaves a plain unread badge unmarked (blue, no @)', () => {
+    const html = renderItem({ id: 'ch-1', name: 'general', isActive: false, unreadCount: 3, mentioned: false });
+    expect(html).not.toContain('data-channel-mention');
+    expect(html).toContain('var(--accent-blue)');
+  });
 });
 
 describe('ChannelsPanel — click + create wiring', () => {
@@ -296,6 +318,7 @@ describe('ChannelsPanel — click + create wiring', () => {
 interface RenderPanelArgs {
   channels?: Record<string, Channel>;
   channelUnread?: Record<string, number>;
+  channelMentions?: Record<string, number>;
   activeChannelId?: string | null;
   company?: Company | null;
   onSelect?: (id: string) => void;
@@ -307,6 +330,7 @@ function renderPanel(args: RenderPanelArgs = {}): string {
     createElement(ChannelsPanelView, {
       channels: args.channels ?? {},
       channelUnread: args.channelUnread ?? {},
+      channelMentions: args.channelMentions ?? {},
       activeChannelId: args.activeChannelId ?? null,
       company: args.company === undefined ? makeCompany() : args.company,
       onSelect: args.onSelect ?? ((id) => recordedSelects.push(id)),
@@ -429,6 +453,24 @@ describe('ChannelsPanelView', () => {
     });
     // Plan U7 verification: no literal hex colors.
     expect(html).not.toMatch(/#[0-9a-fA-F]{3,8}(?=[^a-zA-Z0-9])/);
+  });
+
+  it('surfaces a mention badge on a row whose channelMentions count is positive', () => {
+    const html = renderPanel({
+      channels: { 'ch-1': makeChannel({ id: 'ch-1', name: 'general' }) },
+      channelUnread: { 'ch-1': 2 },
+      channelMentions: { 'ch-1': 1 },
+    });
+    expect(html).toContain('data-channel-mention="true"');
+  });
+
+  it('does not mark a row as mentioned when its channelMentions count is 0', () => {
+    const html = renderPanel({
+      channels: { 'ch-1': makeChannel({ id: 'ch-1', name: 'general' }) },
+      channelUnread: { 'ch-1': 2 },
+      channelMentions: {},
+    });
+    expect(html).not.toContain('data-channel-mention');
   });
 });
 

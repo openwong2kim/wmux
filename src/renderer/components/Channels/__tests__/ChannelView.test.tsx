@@ -26,6 +26,7 @@ import {
   isMessageVisibleToViewer,
   sortMessagesBySeq,
   viewerDeliveryStatus,
+  renderMessageText,
 } from '../ChannelView';
 
 // ─── Test fixtures ──────────────────────────────────────────────────────
@@ -73,6 +74,64 @@ function makeMessage(
 }
 
 // ─── Pure helper tests ──────────────────────────────────────────────────
+
+describe('renderMessageText', () => {
+  it('returns the plain string when there are no mentions', () => {
+    expect(renderMessageText('hello world')).toBe('hello world');
+    expect(renderMessageText('hello', [])).toBe('hello');
+  });
+
+  it('wraps an @name token in a highlight span', () => {
+    const out = renderMessageText('hi @bob bye', [{ workspaceId: 'ws-2', name: 'bob' }]);
+    const html = renderToStaticMarkup(createElement('div', null, out));
+    expect(html).toContain('data-channel-mention-token');
+    expect(html).toContain('@bob');
+  });
+
+  it('prefers the longer name when two mentions share a prefix', () => {
+    const out = renderMessageText('ping @john doe!', [
+      { workspaceId: 'ws-2', name: 'john' },
+      { workspaceId: 'ws-3', name: 'john doe' },
+    ]);
+    const html = renderToStaticMarkup(createElement('div', null, out));
+    expect(html).toContain('@john doe');
+  });
+
+  it('leaves a bare @ that matches no member as plain text', () => {
+    const out = renderMessageText('email a@b.com', [{ workspaceId: 'ws-2', name: 'bob' }]);
+    const html = renderToStaticMarkup(createElement('div', null, out));
+    expect(html).not.toContain('data-channel-mention-token');
+  });
+});
+
+describe('ChannelViewContent — mention highlight', () => {
+  it('flags a message that mentions the viewer with data-mentions-me', () => {
+    const html = renderToStaticMarkup(
+      createElement(ChannelViewContent, {
+        channel: makeChannel(),
+        messages: [makeMessage('ch-1', 1, { text: 'hey @me', mentions: [{ workspaceId: 'ws-me', name: 'me' }] })],
+        viewer: makeMember({ workspaceId: 'ws-me' }),
+        onClose: () => undefined,
+        composerSlot: createElement('div'),
+      }),
+    );
+    expect(html).toContain('data-mentions-me="true"');
+    expect(html).toContain('data-channel-mention-token');
+  });
+
+  it('does not flag a message that mentions another workspace', () => {
+    const html = renderToStaticMarkup(
+      createElement(ChannelViewContent, {
+        channel: makeChannel(),
+        messages: [makeMessage('ch-1', 1, { mentions: [{ workspaceId: 'ws-other', name: 'other' }] })],
+        viewer: makeMember({ workspaceId: 'ws-me' }),
+        onClose: () => undefined,
+        composerSlot: createElement('div'),
+      }),
+    );
+    expect(html).not.toContain('data-mentions-me');
+  });
+});
 
 describe('isMessageVisibleToViewer', () => {
   it('returns false when viewer is null', () => {

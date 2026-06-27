@@ -277,6 +277,7 @@ export function synthesizeChannel(params: {
 export interface ChannelsPanelViewProps {
   channels: Record<string, Channel>;
   channelUnread: Record<string, number>;
+  channelMentions: Record<string, number>;
   activeChannelId: string | null;
   company: Company | null;
   /** Translates `channels.*` keys; defaults to identity if omitted so
@@ -300,6 +301,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
   const {
     channels,
     channelUnread,
+    channelMentions,
     activeChannelId,
     company,
     onSelect,
@@ -411,6 +413,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                 channel={ch}
                 isActive={activeChannelId === ch.id}
                 unreadCount={channelUnread[ch.id] ?? 0}
+                mentioned={(channelMentions[ch.id] ?? 0) > 0}
                 onSelect={onSelect}
               />
             ))}
@@ -447,6 +450,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                       channel={ch}
                       isActive={activeChannelId === ch.id}
                       unreadCount={channelUnread[ch.id] ?? 0}
+                      mentioned={(channelMentions[ch.id] ?? 0) > 0}
                       onSelect={onSelect}
                     />
                   ))}
@@ -465,6 +469,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
 export function ChannelsPanel(): React.ReactElement {
   const channels = useStore((s) => s.channels);
   const channelUnread = useStore((s) => s.channelUnread);
+  const channelMentions = useStore((s) => s.channelMentions);
   const activeChannelId = useStore((s) => s.activeChannelId);
   const company = useStore((s) => s.company);
   // Channels are decoupled from in-app Company mode: when no company is set,
@@ -535,6 +540,7 @@ export function ChannelsPanel(): React.ReactElement {
     <ChannelsPanelView
       channels={channels}
       channelUnread={channelUnread}
+      channelMentions={channelMentions}
       activeChannelId={activeChannelId}
       company={company}
       onSelect={setActiveChannel}

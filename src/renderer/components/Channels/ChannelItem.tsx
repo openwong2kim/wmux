@@ -20,6 +20,9 @@ export interface ChannelItemViewProps {
   channel: Channel;
   isActive: boolean;
   unreadCount: number;
+  /** True when at least one unseen message @-mentions this workspace. Promotes
+   *  the unread badge to a stronger red `@` badge. */
+  mentioned?: boolean;
   onSelect: (channelId: string) => void;
 }
 
@@ -32,9 +35,10 @@ export function ChannelItemView({
   channel,
   isActive,
   unreadCount,
+  mentioned = false,
   onSelect,
 }: ChannelItemViewProps): React.ReactElement {
-  const showBadge = unreadCount > 0;
+  const showBadge = unreadCount > 0 || mentioned;
   return (
     <div
       role="button"
@@ -62,11 +66,15 @@ export function ChannelItemView({
       <span className="text-[11px] font-mono truncate flex-1 min-w-0">{channel.name}</span>
       {showBadge && (
         <span
-          className="bg-[var(--accent-blue)] text-[var(--bg-base)] text-[9px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0"
-          {...tokenAttrs('accent', 'accent')}
+          data-channel-mention={mentioned ? 'true' : undefined}
+          className={`text-[var(--bg-base)] text-[9px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0 ${
+            mentioned ? 'bg-[var(--accent-red)]' : 'bg-[var(--accent-blue)]'
+          }`}
+          {...tokenAttrs(mentioned ? 'danger' : 'accent', 'accent')}
           {...tokenAttrs('bgBase', 'bg')}
         >
-          {unreadCount > 99 ? '99+' : unreadCount}
+          {mentioned && <span aria-hidden="true">@</span>}
+          {unreadCount > 0 ? (unreadCount > 99 ? '99+' : unreadCount) : ''}
         </span>
       )}
     </div>
