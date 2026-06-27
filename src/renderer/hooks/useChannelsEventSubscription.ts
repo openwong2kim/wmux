@@ -47,6 +47,8 @@
 import { useEffect } from 'react';
 import { useStore } from '../stores';
 import { loadChannelHistory } from './useChannelsHydration';
+import { routeChannelMentionToInbox } from './channelMentionInbox';
+import { publishA2aTask } from '../events/publisher';
 import type { WmuxEvent, ChannelMessageEvent } from '../../shared/events';
 
 /** Polling cadence. 1 Hz is the same as the PluginFrame forwardEvents
@@ -205,7 +207,21 @@ export function useChannelsEventSubscription(): void {
             // re-filter needed — the slice trusts the dispatch.
             if (event.type === 'channel.message') {
               const channelEvent = event as ChannelMessageEvent;
-              useStore.getState().appendMessageFromEvent(channelEvent.message);
+              const st = useStore.getState();
+              st.appendMessageFromEvent(channelEvent.message);
+              // #7 Phase 2: a post that @-mentions THIS workspace becomes an
+              // a2a inbox task so the workspace's agent receives it through its
+              // normal poll (a2a_task_query / wmux_events_poll), bridging the
+              // deferred channel-read gap. Workspace-level (no pane pin);
+              // idempotent by deterministic task id.
+              routeChannelMentionToInbox(channelEvent.message, workspaceId, {
+                getTask: st.getTask,
+                createA2aTask: st.createA2aTask,
+                channelName: (id) => useStore.getState().channels[id]?.name ?? id,
+                workspaceName: (id) =>
+                  useStore.getState().workspaces.find((w) => w.id === id)?.name ?? id,
+                publish: publishA2aTask,
+              });
             }
           }
         })
