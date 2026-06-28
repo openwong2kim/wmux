@@ -685,6 +685,18 @@ app.on('ready', async () => {
   logLine('info', 'main', 'app.on(ready) fired');
   console.log('[Main] App ready, creating window...');
 
+  // Dev Dock 아이콘: dev에선 패키징 안 된 제네릭 Electron 바이너리로 실행돼
+  // macOS Dock에 기본 원자 아이콘이 뜬다. 패키지 빌드는 packagerConfig.icon으로
+  // 실제 아이콘이 박히지만 dev는 그게 없으므로, 개발 편의상 실제 아이콘으로 교체.
+  // packaged 빌드는 이미 올바른 아이콘이라 건드리지 않는다(!app.isPackaged 가드).
+  if (!app.isPackaged && process.platform === 'darwin') {
+    try {
+      app.dock?.setIcon(path.join(app.getAppPath(), 'assets', 'icon.png'));
+    } catch (err) {
+      console.warn('[Main] dev Dock 아이콘 설정 실패(무시):', err);
+    }
+  }
+
   // Populate the native About panel (macOS shows this automatically in
   // the app menu; Windows/Linux render it when `app.showAboutPanel()`
   // is called from the tray). Including copyright + website here is
