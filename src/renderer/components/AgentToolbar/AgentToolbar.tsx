@@ -100,7 +100,7 @@ export default function AgentToolbar() {
       </button>
       <button className={`${btn} ${popover === 'rich' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('rich')}>
         <IconKeyboard size={13} /> {t('toolbar.richInput')}
-        <kbd className="ml-1 px-1 rounded border border-[var(--bg-overlay)] text-[9px] leading-tight opacity-60 font-sans">{window.electronAPI.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</kbd>
+        <kbd className="ml-1 px-1 rounded border border-[var(--bg-overlay)] text-[9px] leading-tight opacity-60 font-sans">{window.electronAPI?.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</kbd>
       </button>
       <div className="flex-1" />
       {disabled && <span className="text-[10px] text-[var(--text-muted)]">{t('toolbar.noTerminal')}</span>}

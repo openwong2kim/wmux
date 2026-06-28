@@ -639,7 +639,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // handlers below stay intact, so Ctrl+C still sends SIGINT and the
       // Windows/Linux flow is unchanged. Match physical `code` so it survives a
       // CJK IME (e.key would be a composed jamo / 'Process', not 'c'/'v').
-      const isMac = window.electronAPI.platform === 'darwin';
+      const isMac = window.electronAPI?.platform === 'darwin';
       if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
         const sel = terminal.getSelection();
         if (sel) {

@@ -74,7 +74,7 @@ export default function MiniSidebar() {
             if (Date.now() - dragStartTimeRef.current < 200) return;
             // 멀티뷰 토글: 플랫폼 주 보조키 + 클릭 (cmdOrCtrl 패턴, WorkspaceItem과 동일).
             // macOS=⌘, Win/Linux=Ctrl.
-            const cmdOrCtrl = window.electronAPI.platform === 'darwin' ? e.metaKey : e.ctrlKey;
+            const cmdOrCtrl = window.electronAPI?.platform === 'darwin' ? e.metaKey : e.ctrlKey;
             if (cmdOrCtrl) {
               e.preventDefault();
               toggleMultiviewWorkspace(ws.id);
