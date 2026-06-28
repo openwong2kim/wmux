@@ -124,7 +124,7 @@ export default function BrowserToolbar({
   // panel is active.
   useEffect(() => {
     if (!isActive) return;
-    const isMac = window.electronAPI.platform === 'darwin';
+    const isMac = window.electronAPI?.platform === 'darwin';
     const handler = (e: KeyboardEvent) => {
       const cmdOrCtrl = isMac ? e.metaKey : e.ctrlKey;
       if (cmdOrCtrl && !e.shiftKey && !e.altKey && e.key === 'l') {
