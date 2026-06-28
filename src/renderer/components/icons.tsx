@@ -106,3 +106,49 @@ export function IconPlay({ size = 14 }: { size?: number }) {
 export function IconPause({ size = 14 }: { size?: number }) {
   return <Icon size={size}><line x1="5" y1="3.5" x2="5" y2="10.5" /><line x1="9" y1="3.5" x2="9" y2="10.5" /></Icon>;
 }
+
+/** Paperclip — attach file. Replaces the ＋ glyph on the toolbar attach button. */
+export function IconPaperclip({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M10.7 6.2 L6 10.9 a2.4 2.4 0 0 1 -3.4 -3.4 L7.6 2.5 a1.6 1.6 0 0 1 2.3 2.3 L5.2 9.6 a0.8 0.8 0 0 1 -1.2 -1.2 L8.3 4" />
+    </Icon>
+  );
+}
+
+/** Folder — file explorer. Replaces the 📁 emoji. */
+export function IconFolder({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M2 3.6 h3.1 l1.1 1.4 H12 v6 a0.6 0.6 0 0 1 -0.6 0.6 H2.6 a0.6 0.6 0 0 1 -0.6 -0.6 Z" />
+    </Icon>
+  );
+}
+
+/** Star — snippets. Replaces the ★ glyph. */
+export function IconStar({ size = 14 }: { size?: number }) {
+  return <Icon size={size}><polygon points="7,1.8 8.6,5.2 12.2,5.6 9.5,8.1 10.3,11.7 7,9.8 3.7,11.7 4.5,8.1 1.8,5.6 5.4,5.2" /></Icon>;
+}
+
+/** Keyboard — rich input. Replaces the ⌨ emoji (same class as issue #145). */
+export function IconKeyboard({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x="1.5" y="3.8" width="11" height="6.4" rx="1" />
+      <line x1="3.4" y1="6" x2="4" y2="6" />
+      <line x1="6.2" y1="6" x2="6.8" y2="6" />
+      <line x1="9" y1="6" x2="9.6" y2="6" />
+      <line x1="4.6" y1="8.4" x2="9.4" y2="8.4" />
+    </Icon>
+  );
+}
+
+/** Sparkles — start a new (AI) conversation. Replaces the ⊕ glyph. */
+export function IconSparkles({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M6 2 L6.9 4.6 L9.5 5.5 L6.9 6.4 L6 9 L5.1 6.4 L2.5 5.5 L5.1 4.6 Z" />
+      <path d="M10 8 L10.5 9.5 L12 10 L10.5 10.5 L10 12 L9.5 10.5 L8 10 L9.5 9.5 Z" />
+    </Icon>
+  );
+}

@@ -6,6 +6,7 @@ import { injectText, quotePathsForPrompt } from './inject';
 import RichInput from './RichInput';
 import SnippetsMenu from './SnippetsMenu';
 import FileExplorerPopover from './FileExplorerPopover';
+import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconSparkles } from '../icons';
 
 export default function AgentToolbar() {
   const t = useT();
@@ -78,7 +79,7 @@ export default function AgentToolbar() {
     return () => document.removeEventListener('keydown', handler);
   }, [setPopover]);
 
-  const btn = 'px-2.5 py-1 rounded border text-[11px] font-mono transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
+  const btn = 'inline-flex items-center gap-1.5 px-2.5 py-1 rounded border text-[11px] transition-colors disabled:opacity-40 disabled:cursor-not-allowed';
   const idle = 'bg-[var(--bg-surface)] border-[var(--bg-overlay)] text-[var(--text-sub)] hover:text-[var(--text-main)]';
   const active = 'bg-[var(--bg-overlay)] border-[var(--accent-blue)] text-[var(--accent-blue)]';
 
@@ -89,21 +90,22 @@ export default function AgentToolbar() {
       data-testid="agent-toolbar"
     >
       <button className={`${btn} ${idle}`} disabled={disabled} onClick={handleAttach} title={t('toolbar.attach')}>
-        ＋ {t('toolbar.attach')}
+        <IconPaperclip size={13} /> {t('toolbar.attach')}
       </button>
       <button className={`${btn} ${popover === 'explorer' ? active : idle}`} onClick={() => togglePopover('explorer')}>
-        📁 {t('toolbar.fileExplorer')}
+        <IconFolder size={13} /> {t('toolbar.fileExplorer')}
       </button>
       <button className={`${btn} ${popover === 'snippets' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('snippets')}>
-        ★ {t('toolbar.snippets')}
+        <IconStar size={13} /> {t('toolbar.snippets')}
       </button>
       <button className={`${btn} ${popover === 'rich' ? active : idle}`} disabled={disabled} onClick={() => togglePopover('rich')}>
-        ⌨ {t('toolbar.richInput')} <span className="opacity-50">{window.electronAPI.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</span>
+        <IconKeyboard size={13} /> {t('toolbar.richInput')}
+        <kbd className="ml-1 px-1 rounded border border-[var(--bg-overlay)] text-[9px] leading-tight opacity-60 font-sans">{window.electronAPI.platform === 'darwin' ? '⌘G' : 'Ctrl G'}</kbd>
       </button>
       <div className="flex-1" />
-      {disabled && <span className="text-[10px] text-[var(--text-muted)] font-mono">{t('toolbar.noTerminal')}</span>}
+      {disabled && <span className="text-[10px] text-[var(--text-muted)]">{t('toolbar.noTerminal')}</span>}
       <button className={`${btn} ${idle}`} disabled={disabled} onClick={handleNew} title={t('toolbar.new')}>
-        ⊕ {t('toolbar.new')}
+        <IconSparkles size={13} /> {t('toolbar.new')}
       </button>
 
       {popover === 'explorer' && <FileExplorerPopover />}
