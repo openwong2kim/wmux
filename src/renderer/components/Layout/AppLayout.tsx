@@ -28,6 +28,7 @@ import ChannelDock from '../Channels/ChannelDock';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { useActivePaneFocus } from '../../hooks/useActivePaneFocus';
+import { useTerminalCopyShortcut } from '../../hooks/useTerminalCopyShortcut';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
@@ -296,6 +297,12 @@ export default function AppLayout() {
   // surface switches — without this the red active border moves but typing
   // stays in the previously focused pane (see useActivePaneFocus).
   useActivePaneFocus();
+  // Focus-independent terminal Ctrl+C copy: when the channel dock / composer
+  // owns DOM focus, xterm's own Ctrl+C handler never runs (it requires the
+  // terminal textarea to be focused), so a selected-then-Ctrl+C goes silent.
+  // This document capture-phase listener copies the selected terminal's text
+  // while yielding to composer copy / SIGINT (see useTerminalCopyShortcut).
+  useTerminalCopyShortcut();
   useNotificationListener();
   useRpcBridge();
   // S-C2 Approval Inbox bridge: the SINGLE owner of permissionPrompt.onOpen /

@@ -241,6 +241,14 @@ html, body, #root {
   font-family: 'Inter', 'Segoe UI', system-ui, -apple-system, sans-serif;
 }
 
+/* 네이티브 버튼 외형 제거: macOS에서 <button>이 Aqua 그라데이션·베벨·그림자를
+   직접 그려 평평한 커스텀 테마 위로 새어나오는 문제를 막는다. checkbox/radio/
+   select는 네이티브 외형(체크표시·드롭다운 화살표)이 필요하므로 건드리지 않는다. */
+button {
+  -webkit-appearance: none;
+  appearance: none;
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;
