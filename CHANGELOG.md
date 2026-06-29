@@ -5,6 +5,12 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.1] — 2026-06-29
+
+### Fixed
+
+- **Copy from full-screen TUI apps reaches the clipboard (OSC 52) ([#314](https://github.com/openwong2kim/wmux/pull/314)).** Full-screen TUI apps (Claude Code, vim, tmux, neovim) take over the mouse, so a drag no longer lands an xterm-native selection. On copy they emit an OSC 52 escape asking the terminal to set the clipboard, but xterm disables OSC 52 by default and wmux never registered a handler. The app showed "copied" while the system clipboard never changed, which looked like a corporate clipboard lockdown. wmux now honors OSC 52 for writes (clipboard reads, clears, oversized, and malformed payloads are refused) and routes the text through the existing clipboard path.
+
 ## [3.11.0] — 2026-06-29 — Channels become a two-way agent surface
 
 Headline: v3.10.0 gave channels a place a **human** can read; v3.11.0 closes the loop on the **agent** side. An agent can now *read* a channel instead of only posting into it, *discover* and join public rooms, *invite* another workspace into a private one, and get *pulled in by an @-mention* that arrives as an inbox task and a one-line nudge in its terminal. The conversation view grows up alongside: markdown rendering, a scrollback window that pages older history in from the daemon, and in-channel search. Plus more accurate MCP agent identity and a batch of macOS keyboard and appearance fixes.
