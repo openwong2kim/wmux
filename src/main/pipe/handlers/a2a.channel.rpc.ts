@@ -27,9 +27,16 @@
 // no-PTY caller and fall back to the caller-supplied scope: the renderer is
 // trusted by the process boundary, and this is the documented same-user
 // residual (a same-user process can already read every workspace's token —
-// see plans/trust-root-security-epic-plan.md F1). The genuine, unforgeable
-// improvement is that the verified-senderPtyId path no longer rides the
-// spoofable WMUX_WORKSPACE_ID env hint.
+// see plans/trust-root-security-epic-plan.md F1). NOTE (audit B1 — naming
+// honesty): `senderPtyId` arrives in the request PARAMS and is NOT bound to the
+// pipe connection's PID, so a same-user pipe client can forge it (a victim's
+// live ptyId is enumerable via a2a.discover). Treat the resulting
+// `verifiedWorkspaceId` as ADVISORY attribution under the #113 same-user ceiling
+// — NOT an unforgeable cross-user boundary. The only real improvement over the
+// old path is that it no longer rides the spoofable WMUX_WORKSPACE_ID env hint;
+// a true fix derives identity from the connection peer PID
+// (GetNamedPipeClientProcessId) — see plans/channels-fix-plan-2026-06-29.md
+// strategy track (B1/B2/B3).
 //
 // Handlers MUST NOT emit events themselves; `channel.message` emission is
 // owned by ChannelService inside its per-channel critical section (plan KTD3),

@@ -12,7 +12,7 @@ import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
 import { PeerStore } from './lanlink/peers';
 import { coerceLanLinkPatch } from '../shared/lanlink';
-import { ChannelService, ChannelStateWriter, wrapChannelMessageEnvelope } from './channels';
+import { ChannelService, ChannelStateWriter, wrapChannelMessageEnvelope, wrapChannelCatalogEnvelope } from './channels';
 import { DEFAULT_COMPANY_ID } from '../shared/channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
@@ -2324,9 +2324,16 @@ async function main(): Promise<void> {
       // which the main-side consumer never matched, silently dropping
       // every channel.message fan-out (plan R2).
       try {
-        pipeServer.broadcast(wrapChannelMessageEnvelope(event));
+        if (event.type === 'channel.catalog') {
+          // A1 — catalog/membership lifecycle rides the same bridge as a posted
+          // message; the main-side DaemonClient switch routes each by `type`.
+          pipeServer.broadcast(wrapChannelCatalogEnvelope(event));
+        } else {
+          pipeServer.broadcast(wrapChannelMessageEnvelope(event));
+        }
       } catch (err) {
-        log('warn', `channel emit failed for ${event.channelId}#${event.seq}:`, err);
+        const ref = event.type === 'channel.catalog' ? event.channelId : `${event.channelId}#${event.seq}`;
+        log('warn', `channel emit failed for ${ref}:`, err);
       }
     },
   });

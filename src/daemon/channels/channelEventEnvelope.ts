@@ -18,7 +18,7 @@
 // which the main-side consumer never matched — production was silently
 // dropping every channel.message fan-out.
 
-import type { ChannelMessageEvent } from './ChannelService';
+import type { ChannelMessageEvent, ChannelCatalogEvent } from './ChannelService';
 
 /** Canonical DaemonEvent envelope for a channel.message broadcast. */
 export interface ChannelMessageDaemonEvent {
@@ -37,6 +37,26 @@ export function wrapChannelMessageEnvelope(
 ): ChannelMessageDaemonEvent {
   return {
     type: 'channel.message',
+    sessionId: '',
+    data: event,
+  };
+}
+
+/** Canonical DaemonEvent envelope for a channel.catalog broadcast (A1). Mirrors
+ *  wrapChannelMessageEnvelope — the catalog/membership lifecycle signal rides
+ *  the same control-pipe bridge (DaemonClient `case 'channel.catalog'` →
+ *  re-emit `channel:catalog` → DaemonNotificationRouter tee). */
+export interface ChannelCatalogDaemonEvent {
+  type: 'channel.catalog';
+  sessionId: '';
+  data: ChannelCatalogEvent;
+}
+
+export function wrapChannelCatalogEnvelope(
+  event: ChannelCatalogEvent,
+): ChannelCatalogDaemonEvent {
+  return {
+    type: 'channel.catalog',
     sessionId: '',
     data: event,
   };

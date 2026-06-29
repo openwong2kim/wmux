@@ -678,6 +678,7 @@ export const en = {
   'channels.composerAriaLabel': 'Compose channel message',
   'channels.sendTooltip': 'Send',
   'channels.postFailed': 'Post failed',
+  'channels.mentionDropped': 'These @mentions did not land (not a channel member): {names}',
 } as const;
 
 export type TranslationKey = keyof typeof en;

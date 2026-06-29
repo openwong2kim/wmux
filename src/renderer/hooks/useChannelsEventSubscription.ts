@@ -47,7 +47,7 @@
 
 import { useEffect } from 'react';
 import { useStore } from '../stores';
-import { loadChannelHistory } from './useChannelsHydration';
+import { loadChannelHistory, hydrateChannelsCatalog } from './useChannelsHydration';
 import { routeChannelMentionToInbox } from './channelMentionInbox';
 import { isChannelMentionHandled, markChannelMentionHandled } from './channelMentionHandled';
 import { isNudgeRateLimited, recordNudge } from './channelMentionRateLimit';
@@ -86,7 +86,7 @@ function isBusyStatus(status: string | undefined): boolean {
 interface EventsPollBridge {
   (params: {
     cursor: number;
-    types: readonly ('channel.message' | 'agent.lifecycle')[];
+    types: readonly ('channel.message' | 'agent.lifecycle' | 'channel.catalog')[];
     max?: number;
     workspaceId: string;
   }): Promise<EventsPollEnvelope | null>;
@@ -166,15 +166,27 @@ export function useChannelsEventSubscription(): void {
       return;
     }
 
+    // A4: stamp the mount time so the first poll can keep events that arrived
+    // AFTER mount (live) while skipping pre-mount ring history (see `tick`).
+    const mountTs = Date.now();
     let disposed = false;
     let cursor = 0;
     let inFlight = false;
+    // A4: the first poll establishes a ring-head baseline (see the guard in
+    // `tick`) instead of replaying still-in-ring history as if it were new.
+    let primed = false;
 
     // Drain queued channel mentions into their target panes' PTYs. Reads live
     // store state on each call (no stale closure). Stop path pins onlyPtyId +
     // requireIdle:false; arrival path scans all targets + requireIdle:true.
     const runFlush = (opts: FlushOpts) => {
       const st = useStore.getState();
+      // A3 sweep: runFlush now fires EVERY poll (not only on a new message) so a
+      // mention queued for a pane that read as 'unknown' (fail-closed busy) at
+      // arrival is retried once that pane's status resolves to idle. Cheap
+      // early-out when nothing is queued so the per-poll sweep skips the
+      // findLeafPanes DFS on an empty queue.
+      if (st.getUndeliveredChannelMentionTasks(workspaceId).length === 0) return;
       const selfWs = st.workspaces.find((w) => w.id === workspaceId);
       if (!selfWs) return;
       const selfLeaves = findLeafPanes(selfWs.rootPane);
@@ -184,7 +196,16 @@ export function useChannelsEventSubscription(): void {
         // is attention-only and DELETES running/idle entries (paneSlice.setSurfaceAgentStatus),
         // so a running agent would read as undefined→idle and get pasted mid-turn (codex P1).
         // surfaceAgent retains the live status for the PTY's lifetime.
-        isBusy: (ptyId) => isBusyStatus(st.surfaceAgent[ptyId]?.status),
+        // A3: fail-CLOSED on unknown agent state. A missing surfaceAgent entry
+        // (a pty whose status broadcast hasn't landed yet, or a cleanup/reattach
+        // window) must NOT read as idle — pasting a nudge into a running agent
+        // corrupts its turn / fires an unintended submit. Treat unknown as busy
+        // and let the agent's Stop event flush the queued mention instead.
+        isBusy: (ptyId) => {
+          const status = st.surfaceAgent[ptyId]?.status;
+          if (status == null) return true;
+          return isBusyStatus(status);
+        },
         deliverNudge: (ptyId, text) => submitBracketedPasteToPty(ptyId, text),
         markDelivered: st.markChannelMentionDelivered,
         isRateLimited: isNudgeRateLimited,
@@ -195,7 +216,7 @@ export function useChannelsEventSubscription(): void {
     const tick = () => {
       if (disposed || inFlight) return;
       inFlight = true;
-      bridge({ cursor, types: ['channel.message', 'agent.lifecycle'], max: EVENT_POLL_MAX, workspaceId })
+      bridge({ cursor, types: ['channel.message', 'agent.lifecycle', 'channel.catalog'], max: EVENT_POLL_MAX, workspaceId })
         .then((raw) => {
           if (disposed || !raw) return;
           // Peel the RPC transport envelope { id, ok, result }. The daemon's
@@ -203,6 +224,19 @@ export function useChannelsEventSubscription(): void {
           // gave undefined and dispatched nothing.
           if (raw.ok !== true || !raw.result) return;
           const result = raw.result;
+          // A4: the first poll starts at cursor 0, which replays every event
+          // still in the 1024-entry ring. Replaying PRE-mount history as "new"
+          // inflates unread badges AND re-routes already-completed @mentions into
+          // the a2a inbox (task resurrection). But we must NOT drop the whole
+          // first batch (codex+GLM P1): an event that arrived between mount and
+          // this first poll resolving is genuinely live. So on the first batch,
+          // keep only events stamped at/after mount and process them normally;
+          // pre-mount history is skipped (durable history is shown by the
+          // open-channel hydration path, not by ring replay).
+          if (!primed) {
+            primed = true;
+            result.events = result.events.filter((e) => e.ts >= mountTs);
+          }
           cursor = result.nextCursor;
           if (result.resync) {
             // Drift past the ring window — drop the local message
@@ -215,6 +249,10 @@ export function useChannelsEventSubscription(): void {
             useStore.setState((s) => {
               s.channelMessages = {};
               s.channelUnread = {};
+              // A17: channelMentions is a subset of channelUnread — clearing
+              // unread without it leaves stale red @-badges floating over the
+              // wiped messages until the channel is opened.
+              s.channelMentions = {};
             });
             // P0 (C1): the wipe just blanked the OPEN channel's hydrated
             // history too, and nothing re-fetches it (history hydration
@@ -235,9 +273,27 @@ export function useChannelsEventSubscription(): void {
                 apply: st.hydrateChannelMessages,
               });
             }
+            // C3 (codex P2): catalog/membership changes are delivered ONLY via
+            // channel.catalog now, so a ring drift can have dropped create/
+            // archive/join/leave/kick/invite signals. Re-hydrate the FULL catalog
+            // (channels + members), not just messages, so the sidebar + roster
+            // don't stay stale indefinitely after a long pause / saturated ring.
+            if (rpcBridge && workspaceId) {
+              void hydrateChannelsCatalog({
+                rpc: rpcBridge.rpc,
+                workspaceId,
+                setChannels: useStore.getState().setChannels,
+                isCurrent: () => !disposed,
+              });
+            }
             return;
           }
-          let sawChannelMessage = false;
+          let sawCatalog = false;
+          // A16: compute this workspace's leaf set ONCE per poll batch — it can't
+          // change mid-batch, and findLeafPanes is a DFS that a busy poll (many
+          // channel.message events) would otherwise re-walk per message.
+          const batchSelfWs = useStore.getState().workspaces.find((w) => w.id === workspaceId);
+          const batchSelfLeaves = batchSelfWs ? findLeafPanes(batchSelfWs.rootPane) : [];
           for (const event of result.events) {
             // The daemon already scoped by `events.poll`'s base
             // workspaceId + per-recipient fan-out, so every event
@@ -262,9 +318,7 @@ export function useChannelsEventSubscription(): void {
               // EXACTLY the mentioned agent; a miss falls back to a ws-level task
               // (any live agent picks it up via role:agent query). Idempotent by
               // per-target deterministic task id.
-              const selfWs = st.workspaces.find((w) => w.id === workspaceId);
-              const selfLeaves = selfWs ? findLeafPanes(selfWs.rootPane) : [];
-              routeChannelMentionToInbox(channelEvent.message, workspaceId, selfLeaves, {
+              routeChannelMentionToInbox(channelEvent.message, workspaceId, batchSelfLeaves, {
                 getTask: st.getTask,
                 createA2aTask: st.createA2aTask,
                 channelName: (id) => useStore.getState().channels[id]?.name ?? id,
@@ -274,9 +328,6 @@ export function useChannelsEventSubscription(): void {
                 isHandled: isChannelMentionHandled,
                 markHandled: markChannelMentionHandled,
               });
-              // Trigger the idle-immediate flush; requireIdle:true means only
-              // now-idle target panes receive — busy panes wait for their Stop.
-              sawChannelMessage = true;
             } else if (event.type === 'agent.lifecycle') {
               // P1 autoresponse: agent.stop is the flush trigger, but only the
               // RIGHT kind+source is a paste-safe idle boundary.
@@ -306,13 +357,38 @@ export function useChannelsEventSubscription(): void {
               if (ev.kind === 'agent.stop') {
                 runFlush({ onlyPtyId: ev.ptyId });
               }
+            } else if (event.type === 'channel.catalog') {
+              // A1: a channel's catalog/membership changed (create/archive/join/
+              // leave/kick/invite — by us or another client). Flag a one-shot
+              // re-hydrate after the batch so the sidebar + roster re-sync
+              // instead of going silently stale (the audit's top structural gap:
+              // 6 of 7 mutations used to emit nothing).
+              sawCatalog = true;
             }
           }
-          // Idle-immediate: a mention that just arrived for an already-idle pane
-          // is delivered now; busy panes are skipped by the flush's busy check
-          // and wait for their own Stop (handled above).
-          if (sawChannelMessage) {
-            runFlush({});
+          // Idle-immediate + A3 sweep: deliver any queued mention to a now-idle
+          // pane. Runs EVERY poll (not only on a new message) so a mention queued
+          // while its target pane read as 'unknown' (fail-closed busy) is retried
+          // once that pane resolves to idle — without this, A3's fail-closed left
+          // such mentions undelivered forever (GLM P2). The early-out in runFlush
+          // keeps an empty-queue tick cheap.
+          runFlush({});
+          // A1: re-hydrate the catalog once per batch when any channel.catalog
+          // event arrived. The six non-post mutations now emit this signal; the
+          // receiver re-fetches list+members (daemon = source of truth), so a
+          // channel created/archived elsewhere appears, a kicked/left member's
+          // mirror drops it, and rosters stay consistent without a manual refresh.
+          if (sawCatalog) {
+            const st = useStore.getState();
+            const rpcBridge = st.channelsRpc();
+            if (rpcBridge && workspaceId) {
+              void hydrateChannelsCatalog({
+                rpc: rpcBridge.rpc,
+                workspaceId,
+                setChannels: st.setChannels,
+                isCurrent: () => !disposed,
+              });
+            }
           }
         })
         .catch(() => {

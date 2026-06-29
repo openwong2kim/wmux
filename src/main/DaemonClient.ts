@@ -637,6 +637,12 @@ export class DaemonClient extends EventEmitter {
           // only `data`.
           this.emit('channel:message', { data: event.data });
           break;
+        case 'channel.catalog':
+          // A1 — catalog/membership lifecycle (create/archive/join/leave/kick/
+          // invite). Same bridge as channel.message; DaemonNotificationRouter
+          // tees it onto the main EventBus as a WmuxEvent `channel.catalog`.
+          this.emit('channel:catalog', { data: event.data });
+          break;
         default:
           break;
       }

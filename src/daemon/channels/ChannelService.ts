@@ -27,6 +27,7 @@ import {
   CHANNEL_IDEMPOTENCY_CAP,
   CHANNEL_MAX_COUNT,
   CHANNEL_MAX_MEMBERS,
+  CHANNEL_MESSAGES_MAX,
   CHANNEL_TOPIC_MAX,
   isValidChannelName,
   type Channel,
@@ -58,8 +59,34 @@ export interface ChannelMessageEvent {
   workspaceId: string;
 }
 
-/** Shape of the `emit` callback injected by the daemon. */
-export type ChannelServiceEmit = (event: ChannelMessageEvent) => void;
+/**
+ * A2A channels catalog/membership lifecycle event (A1). Unlike
+ * ChannelMessageEvent (a posted message), this signals that a channel's CATALOG
+ * row or MEMBERSHIP changed (create/archive/join/leave/kick/invite) so other
+ * renderers re-sync their mirror instead of going silently stale. It is a
+ * SIGNAL — the receiver re-hydrates the channel by id; no row is embedded, so
+ * the daemon stays authoritative and a removed member that re-fetches finds the
+ * channel gone and drops it. The wiring layer projects this to the EventBus
+ * `channel.catalog` (DaemonNotificationRouter), scoped per-recipient by
+ * events.poll exactly like channel.message.
+ */
+export interface ChannelCatalogEvent {
+  type: 'channel.catalog';
+  channelId: string;
+  /** The workspace that performed the mutation (becomes the base workspaceId). */
+  actorWorkspaceId: string;
+  /** Every workspace that must re-sync: the post-change member set PLUS any
+   *  workspace removed by this change (so a kicked/left member also drops the
+   *  channel from its mirror). */
+  recipientWorkspaceIds: string[];
+  /** What changed — advisory only; the receiver re-hydrates regardless. */
+  reason: 'created' | 'archived' | 'membership';
+}
+
+/** Shape of the `emit` callback injected by the daemon. Carries either a posted
+ *  message (channel.message) or a catalog/membership lifecycle signal
+ *  (channel.catalog). */
+export type ChannelServiceEmit = (event: ChannelMessageEvent | ChannelCatalogEvent) => void;
 
 /** Typed error codes surfaced from the service to the caller. */
 export type ChannelErrorCode =
@@ -304,8 +331,15 @@ export class ChannelService {
     // (an LRU map for O(1) lookup + O(n) eviction only on overflow).
     for (const [channelId, clientMap] of Object.entries(this.state.idempotency)) {
       const inner = new Map<string, IdempotencyEntry>();
-      for (const [clientMsgId, seq] of Object.entries(clientMap)) {
-        inner.set(clientMsgId, { seq, lastUsedAt: ++this.hydrationSeq });
+      for (const [key, seq] of Object.entries(clientMap)) {
+        // A11 (codex+GLM): only hydrate composite-format keys (JSON
+        // [workspaceId, clientMsgId]). A pre-upgrade `channels.json` stored bare
+        // `clientMsgId` keys that can't be migrated (no sender was recorded); the
+        // post path now looks up the composite key and would miss them anyway, so
+        // skip them rather than seed dead LRU slots. Worst case is one duplicate
+        // on a cross-restart retry of a single pre-upgrade post.
+        if (!key.startsWith('[')) continue;
+        inner.set(key, { seq, lastUsedAt: ++this.hydrationSeq });
       }
       this.idempotency.set(channelId, inner);
     }
@@ -532,6 +566,17 @@ export class ChannelService {
         delete this.state.idempotency[channel.id];
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel create' } };
       }
+      // A1: catalog changed (created) — fan out to the initial member set so
+      // their sidebars show the new channel without a manual refresh.
+      this.emitCatalog(
+        channel.id,
+        params.verifiedWorkspaceId,
+        // A1 (codex+GLM P2): a public channel is discoverable by EVERY workspace
+        // (list() shows it to all), so broadcast its creation with the '*'
+        // sentinel; a private channel notifies only its initial members.
+        channel.visibility === 'public' ? ['*'] : initialMembers.map((m) => m.workspaceId),
+        'created',
+      );
       return { ok: true, channel };
     });
   }
@@ -574,6 +619,14 @@ export class ChannelService {
         delete channel.archivedBy;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel archive' } };
       }
+      // A1: catalog changed (archived) — fan out to current members so other
+      // renderers flip to read-only instead of offering a post that will fail.
+      this.emitCatalog(
+        channel.id,
+        params.verifiedWorkspaceId,
+        (this.state.members[channel.id] ?? []).map((m) => m.workspaceId),
+        'archived',
+      );
       return { ok: true };
     });
   }
@@ -610,6 +663,13 @@ export class ChannelService {
       if (!this.isVisibleTo(channel, params.verifiedWorkspaceId)) {
         return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
       }
+      // A10: reject join on a read-only (archived) channel — mirrors invite()'s
+      // and kick()'s archived gate. Without this, join was the one membership
+      // mutation that ignored lifecycle, letting a caller be added to a frozen
+      // channel and slip past the read-only contract.
+      if (channel.status === 'archived') {
+        return { ok: false, error: { code: 'CHANNEL_ARCHIVED', message: 'Cannot join an archived channel' } };
+      }
       const members = this.state.members[channel.id] ?? [];
       // Reject duplicate membership (keyed on the server-resolved workspace).
       if (members.some((m) => m.workspaceId === params.verifiedWorkspaceId && m.memberId === params.member.memberId)) {
@@ -644,6 +704,14 @@ export class ChannelService {
         channel.emptySince = previousEmptySince;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel join' } };
       }
+      // A1: membership changed (join) — fan out to the post-join member set
+      // (includes the new member) so every roster + sidebar re-syncs.
+      this.emitCatalog(
+        channel.id,
+        params.verifiedWorkspaceId,
+        members.map((m) => m.workspaceId),
+        'membership',
+      );
       return { ok: true };
     });
   }
@@ -685,6 +753,14 @@ export class ChannelService {
         if (members.length === 1) delete channel.emptySince;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel leave' } };
       }
+      // A1: membership changed (leave) — fan out to the remaining members AND
+      // the workspace that just left (so its own mirror drops the channel).
+      this.emitCatalog(
+        channel.id,
+        params.verifiedWorkspaceId,
+        [...members.map((m) => m.workspaceId), removed.workspaceId],
+        'membership',
+      );
       return { ok: true };
     });
   }
@@ -719,6 +795,24 @@ export class ChannelService {
         return { ok: false, error: { code: 'CHANNEL_ARCHIVED', message: 'Cannot kick from an archived channel' } };
       }
       const members = this.state.members[channel.id] ?? [];
+      // B5: the actor must be a current member OR the company CEO (mirrors
+      // archive()'s CEO override — GLM flagged kick had no override, so a
+      // non-member CEO moderating a channel would be wrongly blocked). A
+      // non-member non-CEO must not eject members. The humans-only TRANSPORT
+      // boundary already blocks agents from reaching kick; this closes the "any
+      // member-less caller can kick" hole within that boundary (audit SE-B5c:
+      // kick had zero actor gate).
+      const kickIsCeo =
+        this.ceoWorkspaceId !== undefined && this.ceoWorkspaceId === params.verifiedWorkspaceId;
+      if (!kickIsCeo && !members.some((m) => m.workspaceId === params.verifiedWorkspaceId)) {
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: 'Only a member or the company CEO may kick from this channel',
+          },
+        };
+      }
       const idx = members.findIndex(
         // Target match (NOT self-pinned, unlike leave) — eject the exact
         // (targetWorkspaceId, targetMemberId) row the human picked in the roster.
@@ -741,6 +835,14 @@ export class ChannelService {
         if (members.length === 1) delete channel.emptySince;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel kick' } };
       }
+      // A1: membership changed (kick) — fan out to the remaining members AND the
+      // ejected workspace (so the kicked member's mirror drops the channel).
+      this.emitCatalog(
+        channel.id,
+        params.verifiedWorkspaceId,
+        [...members.map((m) => m.workspaceId), removed.workspaceId],
+        'membership',
+      );
       return { ok: true };
     });
   }
@@ -811,6 +913,15 @@ export class ChannelService {
         channel.emptySince = previousEmptySince;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel invite' } };
       }
+      // A1: membership changed (invite) — fan out to the post-invite member set
+      // (includes the invitee) so the invited workspace's mirror picks up the
+      // channel and the existing members' rosters re-sync.
+      this.emitCatalog(
+        channel.id,
+        params.verifiedWorkspaceId,
+        members.map((m) => m.workspaceId),
+        'membership',
+      );
       return { ok: true };
     });
   }
@@ -872,7 +983,10 @@ export class ChannelService {
       // on the same channel see consistent state.
       if (params.clientMsgId) {
         const channelIdMap = this.idempotency.get(channel.id) ?? new Map();
-        const existing = channelIdMap.get(params.clientMsgId);
+        // A11: sender-scoped key so a predictable clientMsgId can't collide
+        // across senders (pre-seed suppression / wrong-sender replay).
+        const idemKey = idempotencyKey(params.sender.workspaceId, params.clientMsgId);
+        const existing = channelIdMap.get(idemKey);
         if (existing) {
           // Refresh LRU timestamp on hit.
           existing.lastUsedAt = this.now();
@@ -1054,7 +1168,8 @@ export class ChannelService {
       // Update idempotency cache.
       if (params.clientMsgId) {
         const channelIdMap = this.idempotency.get(channel.id) ?? new Map();
-        channelIdMap.set(params.clientMsgId, {
+        const idemKey = idempotencyKey(params.sender.workspaceId, params.clientMsgId);
+        channelIdMap.set(idemKey, {
           seq,
           lastUsedAt: now,
           // Store a COPY so a same-process caller mutating the returned array
@@ -1078,7 +1193,9 @@ export class ChannelService {
         if (msgs) msgs.pop();
         if (params.clientMsgId) {
           const channelIdMap = this.idempotency.get(channel.id);
-          if (channelIdMap) channelIdMap.delete(params.clientMsgId);
+          if (channelIdMap) {
+            channelIdMap.delete(idempotencyKey(params.sender.workspaceId, params.clientMsgId));
+          }
         }
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist post' } };
       }
@@ -1104,6 +1221,39 @@ export class ChannelService {
         // post. The next tryDeliver cycle (U3.5 wiring) re-fans-out from
         // the persisted recipientSnapshot.
         console.error('[ChannelService] emit failed:', err);
+      }
+      // A2: tail-evict the per-channel history above CHANNEL_MESSAGES_MAX. Done
+      // AFTER a successful persist (memory only — the NEXT post's saveOrFail
+      // flushes the trimmed array; a transient extra row on disk between posts is
+      // harmless, and doing it pre-persist would lose evicted rows on a rollback).
+      // Bounds the unbounded-growth DoS the audit found: saveImmediate
+      // re-serializes the WHOLE state per post, so an uncapped history makes every
+      // post O(total history). The idempotency map's pointer to an evicted seq is
+      // already handled — the post path falls through to a fresh post (see above).
+      const msgs2 = this.state.messages[channel.id];
+      if (msgs2 && msgs2.length > CHANNEL_MESSAGES_MAX) {
+        const trimmed = msgs2.slice(msgs2.length - CHANNEL_MESSAGES_MAX);
+        this.state.messages[channel.id] = trimmed;
+        // A2 (GLM P3): drop idempotency entries pointing at now-evicted seqs so
+        // dead pointers don't occupy LRU slots forever (the post path already
+        // falls through to a fresh post when an entry's seq is gone). Keep the
+        // in-memory map and the persisted shape in sync.
+        const minSeq = trimmed.length > 0 ? trimmed[0].seq : 0;
+        const idemMap = this.idempotency.get(channel.id);
+        if (idemMap) {
+          let pruned = false;
+          for (const [k, v] of idemMap) {
+            if (v.seq < minSeq) {
+              idemMap.delete(k);
+              pruned = true;
+            }
+          }
+          if (pruned) {
+            this.state.idempotency[channel.id] = Object.fromEntries(
+              Array.from(idemMap.entries()).map(([k, v]) => [k, v.seq]),
+            );
+          }
+        }
       }
       return {
         ok: true,
@@ -1235,6 +1385,30 @@ export class ChannelService {
     }
   }
 
+  /**
+   * Emit a channel.catalog lifecycle signal (A1) after a successful catalog or
+   * membership mutation. Best-effort — a throwing emit must not roll back the
+   * mutation (mirrors post()'s emit contract). The recipient set is deduped.
+   */
+  private emitCatalog(
+    channelId: string,
+    actorWorkspaceId: string,
+    recipientWorkspaceIds: string[],
+    reason: ChannelCatalogEvent['reason'],
+  ): void {
+    try {
+      this.emit({
+        type: 'channel.catalog',
+        channelId,
+        actorWorkspaceId,
+        recipientWorkspaceIds: [...new Set(recipientWorkspaceIds)],
+        reason,
+      });
+    } catch (err) {
+      console.error('[ChannelService] catalog emit failed:', err);
+    }
+  }
+
   /** Save the current state via the writer. Returns true on success. */
   private saveOrFail(): boolean {
     return this.writer.saveImmediate(this.state);
@@ -1265,4 +1439,16 @@ export function sanitizePostText(text: string): string {
   // hot path.
   // eslint-disable-next-line no-control-regex
   return text.replace(/[\x00-\x08\x0B\x0C\x0E-\x1F]/g, '').trim();
+}
+
+/**
+ * A11: sender-scoped idempotency key. Keying only by clientMsgId let a
+ * predictable id collide ACROSS senders — an attacker could pre-seed a key to
+ * suppress another sender's post, or a retry could return the wrong sender's
+ * message. JSON-encode the (workspaceId, clientMsgId) pair (collision-free,
+ * same rationale as the mention dedup key). The persisted shape keys by this
+ * composite string too, so hydration round-trips unchanged.
+ */
+function idempotencyKey(workspaceId: string, clientMsgId: string): string {
+  return JSON.stringify([workspaceId, clientMsgId]);
 }

@@ -606,4 +606,5 @@ export const ko = {
   'channels.composerAriaLabel': '채널 메시지 작성',
   'channels.sendTooltip': '보내기',
   'channels.postFailed': '게시 실패',
+  'channels.mentionDropped': '이 @멘션은 전달되지 않았습니다(채널 멤버 아님): {names}',
 } as const;

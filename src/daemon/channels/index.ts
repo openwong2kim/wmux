@@ -11,6 +11,7 @@ export {
   type ChannelError,
   type ChannelErrorCode,
   type ChannelMessageEvent,
+  type ChannelCatalogEvent,
   type ChannelServiceDeps,
   type ChannelServiceEmit,
   type ArchiveChannelParams,
@@ -24,5 +25,7 @@ export {
 export { ChannelStateWriter } from './ChannelStateWriter';
 export {
   wrapChannelMessageEnvelope,
+  wrapChannelCatalogEnvelope,
   type ChannelMessageDaemonEvent,
+  type ChannelCatalogDaemonEvent,
 } from './channelEventEnvelope';

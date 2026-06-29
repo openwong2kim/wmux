@@ -395,6 +395,57 @@ export class DaemonNotificationRouter {
     }
   }
 
+  /**
+   * A1 — tee a daemon-broadcast `channel.catalog` onto the main EventBus. Like
+   * emitChannelMessage, the scope is the event's own fields (actorWorkspaceId +
+   * recipientWorkspaceIds), re-imposed per-recipient by `events.poll` — no
+   * resolveWorkspaceIdForPty needed. A malformed payload is dropped, not thrown.
+   */
+  private emitChannelCatalog(event: {
+    channelId?: string;
+    actorWorkspaceId?: string;
+    recipientWorkspaceIds?: unknown;
+    reason?: unknown;
+  }): void {
+    try {
+      if (
+        typeof event.channelId !== 'string' ||
+        event.channelId.length === 0 ||
+        typeof event.actorWorkspaceId !== 'string' ||
+        event.actorWorkspaceId.length === 0 ||
+        !Array.isArray(event.recipientWorkspaceIds)
+      ) {
+        console.warn(
+          '[DaemonNotificationRouter] channel.catalog payload missing required fields; dropping',
+          event,
+        );
+        return;
+      }
+      const recipientWorkspaceIds = (event.recipientWorkspaceIds as unknown[]).filter(
+        (w): w is string => typeof w === 'string' && w.length > 0,
+      );
+      // The actor is always in scope (it performed the change and must see the
+      // result), mirroring emitChannelMessage's sender-always-included rule.
+      if (!recipientWorkspaceIds.includes(event.actorWorkspaceId)) {
+        recipientWorkspaceIds.push(event.actorWorkspaceId);
+      }
+      const reason =
+        event.reason === 'created' || event.reason === 'archived' || event.reason === 'membership'
+          ? event.reason
+          : 'membership';
+      eventBus.emit({
+        type: 'channel.catalog',
+        channelId: event.channelId,
+        actorWorkspaceId: event.actorWorkspaceId,
+        recipientWorkspaceIds,
+        reason,
+        workspaceId: event.actorWorkspaceId,
+      });
+    } catch (err) {
+      console.warn('[DaemonNotificationRouter] emitChannelCatalog error:', err);
+    }
+  }
+
   start(): void {
     const onAgent = (payload: { sessionId: string; event: unknown }) => {
       try {
@@ -625,6 +676,18 @@ export class DaemonNotificationRouter {
       }
     };
 
+    // A1 — catalog/membership lifecycle tee. Same bridge contract as
+    // onChannelMessage; see emitChannelCatalog for the projection.
+    const onChannelCatalog = (payload: { data: unknown }) => {
+      try {
+        const ev = payload.data as Parameters<typeof this.emitChannelCatalog>[0] | null;
+        if (!ev || typeof ev !== 'object') return;
+        this.emitChannelCatalog(ev);
+      } catch (err) {
+        console.warn('[DaemonNotificationRouter] channel:catalog error:', err);
+      }
+    };
+
     this.daemonClient.on('session:agent', onAgent);
     this.daemonClient.on('session:active', onActive);
     this.daemonClient.on('session:idle', onIdle);
@@ -644,6 +707,7 @@ export class DaemonNotificationRouter {
     // projection is sync. Per-recipient scope is `events.poll`'s job
     // (events.rpc.ts), NOT this tee's.
     this.daemonClient.on('channel:message', onChannelMessage);
+    this.daemonClient.on('channel:catalog', onChannelCatalog);
 
     // Invalidate the workspace.list cache whenever a workspace's metadata
     // mutates. Workspace creation/deletion does not currently publish to
@@ -667,6 +731,7 @@ export class DaemonNotificationRouter {
       () => this.daemonClient.off('session:restarted', onRestarted),
       () => this.daemonClient.off('supervision:changed', onSupervisionChanged),
       () => this.daemonClient.off('channel:message', onChannelMessage),
+      () => this.daemonClient.off('channel:catalog', onChannelCatalog),
       unsubscribeMeta,
     );
   }

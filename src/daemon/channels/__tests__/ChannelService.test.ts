@@ -90,6 +90,71 @@ function makeService(opts: {
 }
 
 describe('ChannelService', () => {
+  describe('catalog events (A1)', () => {
+    it('create emits channel.catalog (created); a PUBLIC channel broadcasts via "*"', async () => {
+      const { svc, emit } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(created.ok).toBe(true);
+      const evt = emit.mock.calls.at(-1)?.[0];
+      expect(evt?.type).toBe('channel.catalog');
+      if (evt?.type === 'channel.catalog') {
+        expect(evt.reason).toBe('created');
+        // A1: a public channel is discoverable by all → '*' broadcast sentinel.
+        expect(evt.recipientWorkspaceIds).toContain('*');
+      }
+    });
+
+    it('create emits channel.catalog (created); a PRIVATE channel notifies only members', async () => {
+      const { svc, emit } = makeService();
+      const created = await svc.create({
+        name: 'secret',
+        visibility: 'private',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(created.ok).toBe(true);
+      const evt = emit.mock.calls.at(-1)?.[0];
+      if (evt?.type === 'channel.catalog') {
+        expect(evt.recipientWorkspaceIds).toContain('ws-1');
+        expect(evt.recipientWorkspaceIds).not.toContain('*');
+      }
+    });
+
+    it('kick emits channel.catalog (membership) including the ejected workspace', async () => {
+      const { svc, emit } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error('create failed');
+      await svc.join({
+        channelId: created.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      await svc.kick({
+        channelId: created.channel.id,
+        targetWorkspaceId: 'ws-2',
+        targetMemberId: 'm-2',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      const evt = emit.mock.calls.at(-1)?.[0];
+      expect(evt?.type).toBe('channel.catalog');
+      if (evt?.type === 'channel.catalog') {
+        expect(evt.reason).toBe('membership');
+        // the ejected ws-2 is included so its own mirror can drop the channel.
+        expect(evt.recipientWorkspaceIds).toContain('ws-2');
+      }
+    });
+  });
+
   describe('create', () => {
     it('returns a channel with nextSeq: 1 and the creator in members', async () => {
       const { svc } = makeService();
@@ -243,6 +308,33 @@ describe('ChannelService', () => {
       const members = svc.getMembers(created.channel.id, 'ws-1');
       expect(members).toHaveLength(2);
       expect(members.find((m) => m.memberId === 'm-2')?.historyFromSeq).toBe(0);
+    });
+
+    it('rejects a join on an archived channel (CHANNEL_ARCHIVED) — read-only, mirrors invite/kick (A10)', async () => {
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'team',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
+      const arch = await svc.archive({
+        channelId: created.channel.id,
+        archivedBy: 'ws-1',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(arch.ok).toBe(true);
+      const r = await svc.join({
+        channelId: created.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('CHANNEL_ARCHIVED');
+      // The archived gate rejects before any mutation — ws-2 never joined.
+      const members = svc.getMembers(created.channel.id, 'ws-1');
+      expect(members.some((m) => m.workspaceId === 'ws-2')).toBe(false);
     });
 
     it('join with includeHistory:false sets historyFromSeq to current nextSeq', async () => {
@@ -426,6 +518,21 @@ describe('ChannelService', () => {
       const members = svc.getMembers(channelId, 'ws-1');
       expect(members.some((m) => m.workspaceId === 'ws-2' && m.memberId === 'm-2')).toBe(true);
     });
+
+    it('B5: a non-member cannot kick (actor must be a member)', async () => {
+      const { svc, channelId } = await makeChannelWith([{ ws: 'ws-2', m: 'm-2' }]);
+      // ws-9 is NOT a member; it must not be able to eject ws-2.
+      const r = await svc.kick({
+        channelId,
+        targetWorkspaceId: 'ws-2',
+        targetMemberId: 'm-2',
+        verifiedWorkspaceId: 'ws-9',
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('NOT_AUTHORIZED');
+      // ws-2 survives — the actor gate rejected before any mutation.
+      expect(svc.getMembers(channelId, 'ws-1').some((m) => m.workspaceId === 'ws-2')).toBe(true);
+    });
   });
 
   describe('post', () => {
@@ -462,6 +569,44 @@ describe('ChannelService', () => {
           seq: 1,
         }),
       );
+    });
+
+    it('A11: same clientMsgId from different senders does not collide', async () => {
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'general',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error('expected create ok');
+      await svc.join({
+        channelId: created.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      const p1 = await svc.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        text: 'from ws-1',
+        clientMsgId: 'shared',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      const p2 = await svc.post({
+        channelId: created.channel.id,
+        sender: { workspaceId: 'ws-2', memberId: 'm-2', memberName: 'Bob' },
+        text: 'from ws-2',
+        clientMsgId: 'shared',
+        verifiedWorkspaceId: 'ws-2',
+      });
+      expect(p1.ok).toBe(true);
+      expect(p2.ok).toBe(true);
+      if (p1.ok && p2.ok) {
+        // ws-2's post is NOT idempotent-suppressed by ws-1's identical clientMsgId.
+        expect(p2.message.seq).not.toBe(p1.message.seq);
+        expect(p2.message.text).toBe('from ws-2');
+        expect(p2.idempotent).toBeUndefined();
+      }
     });
 
     it('returns the original seq on idempotent re-post with same clientMsgId', async () => {
@@ -681,7 +826,9 @@ describe('ChannelService', () => {
       expect(post.message.mentions).toEqual([{ workspaceId: 'ws-2', name: 'Bob' }]);
       // The emitted channel.message event carries the same validated set.
       const evt = emit.mock.calls.at(-1)?.[0];
-      expect(evt?.message.mentions).toEqual([{ workspaceId: 'ws-2', name: 'Bob' }]);
+      // post emits channel.message (the six non-post mutations emit channel.catalog).
+      if (evt?.type !== 'channel.message') throw new Error(`expected channel.message emit, got ${evt?.type}`);
+      expect(evt.message.mentions).toEqual([{ workspaceId: 'ws-2', name: 'Bob' }]);
       // A2: the non-member mention is reported back to the sender (not silently
       // dropped). The deduped member mention (ws-2 dup) is NOT a drop.
       expect(post.droppedMentions).toEqual([
@@ -1630,7 +1777,8 @@ describe('ChannelService', () => {
       // last one is the post-persist state; its state.idempotency
       // contains the clientMsgId → seq mapping.
       const persisted = writer1.saved[writer1.saved.length - 1];
-      expect(persisted.idempotency[created.channel.id]).toEqual({ 'cmid-1': originalSeq });
+      // A11: the persisted idempotency key is sender-scoped (JSON [ws, clientMsgId]).
+      expect(persisted.idempotency[created.channel.id]).toEqual({ '["ws-1","cmid-1"]': originalSeq });
       // Second service: construct against the same writer (the writer
       // is stateless here, so its load() returns the same shape on
       // each call). This simulates a daemon restart that re-reads

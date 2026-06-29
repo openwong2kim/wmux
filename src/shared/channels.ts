@@ -313,6 +313,14 @@ export const CHANNEL_MAX_MEMBERS = 256;
 /** Per-channel idempotency cap. See `ChannelState.idempotency`. */
 export const CHANNEL_IDEMPOTENCY_CAP = 1000;
 
+/** Per-channel message cap (A2 — DoS bound). `ChannelService.post` tail-evicts
+ *  the oldest messages above this so a runaway poster cannot grow `channels.json`
+ *  / the in-memory array (and the per-post `saveImmediate` whole-state
+ *  re-serialization cost) without bound. Older history drops; the recent window —
+ *  what `getMessages` / `ChannelView` actually read — stays. Large enough (5000)
+ *  that normal use never trims. */
+export const CHANNEL_MESSAGES_MAX = 5000;
+
 /** Empty-channel retention. Plan KTD8. */
 export const CHANNEL_EMPTY_TTL_HOURS_DEFAULT = 7 * 24;
 

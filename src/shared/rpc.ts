@@ -413,7 +413,13 @@ export interface DaemonEvent {
     // WmuxEvent `channel.message`, which `events.poll` then scopes per-
     // recipient (see events.rpc.ts). Naming matches the WmuxEvent
     // counterpart 1:1; do not invent a new shape here.
-    | 'channel.message';
+    | 'channel.message'
+    // A2A channels (a2a-channels A1) — daemon broadcasts catalog/membership
+    // lifecycle (create/archive/join/leave/kick/invite). `sessionId` is '' and
+    // `data` carries the ChannelCatalogEvent; main tees it onto the in-process
+    // EventBus as a WmuxEvent `channel.catalog`, scoped per-recipient by
+    // `events.poll` exactly like channel.message.
+    | 'channel.catalog';
   sessionId: string;
   data: unknown;
 }

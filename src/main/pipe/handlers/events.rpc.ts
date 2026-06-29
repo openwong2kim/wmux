@@ -7,6 +7,7 @@ import {
   type WmuxEventType,
   type A2aTaskEvent,
   type ChannelMessageEvent,
+  type ChannelCatalogEvent,
 } from '../../../shared/events';
 import type { PluginIdentityRecord } from '../../../shared/rpc';
 
@@ -119,6 +120,19 @@ export function registerEventsRpc(router: RpcRouter, trustLookup?: TrustLookup):
         // its full set without leaking to third parties.
         const ce = e as ChannelMessageEvent;
         if (!caller) return false;
+        if (ce.workspaceId === caller) return true;
+        return ce.recipientWorkspaceIds.includes(caller);
+      }
+      if (e.type === 'channel.catalog') {
+        // A1 — same per-recipient scoping as channel.message: base workspaceId
+        // is the actor; recipientWorkspaceIds is the member set + any removed ws.
+        const ce = e as ChannelCatalogEvent;
+        if (!caller) return false;
+        // '*' sentinel = broadcast to every workspace. A public channel's
+        // creation is discoverable by all, but the member-scoped recipient list
+        // wouldn't reach non-members (codex+GLM P2), so create() emits '*' for
+        // public channels.
+        if (ce.recipientWorkspaceIds.includes('*')) return true;
         if (ce.workspaceId === caller) return true;
         return ce.recipientWorkspaceIds.includes(caller);
       }

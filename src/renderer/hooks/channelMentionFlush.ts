@@ -62,9 +62,17 @@ function singleLine(s: string): string {
 export function buildChannelMentionNudge(
   tasks: Array<Pick<Task, 'id'> & { metadata: Pick<Task['metadata'], 'title'> }>,
 ): string {
+  // B7: the nudge is pasted into a live agent's prompt and AUTO-SUBMITTED (the
+  // trailing \r in submitBracketedPasteToPty), so it must NOT interpolate
+  // sender-controlled free text (memberName) — a crafted name is a prompt-
+  // injection vector into another agent. Carry only the channel name (validated
+  // [a-z0-9-]) extracted from the task title; the sender + body live in the task
+  // and are read via the a2a_task_query the nudge points at, where they are
+  // treated as untrusted channel content rather than as the nudge command line.
+  const channelLabel = tasks[0].metadata.title.split(' — mention from ')[0];
   if (tasks.length === 1) {
     return singleLine(
-      `[wmux-channel] ${tasks[0].metadata.title} — run a2a_task_query role:agent to read`,
+      `[wmux-channel] new mention in ${channelLabel} — run a2a_task_query role:agent to read`,
     );
   }
   return singleLine(

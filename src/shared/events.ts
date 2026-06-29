@@ -68,7 +68,13 @@ export type WmuxEventType =
   // out to every workspace in `recipientWorkspaceIds` plus the sender, with
   // the post-scoping done in `events.poll` (parallel to a2a.task's dual-party
   // filter) — see `src/main/pipe/handlers/events.rpc.ts`.
-  | 'channel.message';
+  | 'channel.message'
+  // A2A channels catalog/membership lifecycle (A1). Signals that a channel's
+  // catalog row or member set changed (create/archive/join/leave/kick/invite)
+  // so other renderers re-sync instead of going silently stale. Same
+  // per-recipient scoping as channel.message — fanned to every member ws plus
+  // any ws this change removed (so a kicked/left member also drops its mirror).
+  | 'channel.catalog';
 
 export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.created',
@@ -84,6 +90,7 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.supervision',
   'a2a.task',
   'channel.message',
+  'channel.catalog',
 ] as const;
 
 export interface WmuxEventBase {
@@ -352,6 +359,29 @@ export interface ChannelMessageEvent extends WmuxEventBase {
   message: ChannelMessage;
 }
 
+/**
+ * A2A channels catalog/membership lifecycle (A1). Unlike ChannelMessageEvent (a
+ * posted message), this signals that a channel's CATALOG row or MEMBERSHIP
+ * changed — create/archive/join/leave/kick/invite — so a renderer that already
+ * mirrors the catalog re-syncs instead of going silently stale (the audit's
+ * top structural gap: 6 of 7 mutations emitted nothing). It is a SIGNAL: the
+ * receiver re-hydrates the channel by id; no authoritative row is embedded, so
+ * the daemon stays the single source of truth and a kicked/left member that
+ * re-fetches simply finds the channel gone and drops it. Scoped per-recipient
+ * by `events.poll` exactly like channel.message.
+ */
+export interface ChannelCatalogEvent extends WmuxEventBase {
+  type: 'channel.catalog';
+  channelId: string;
+  /** Workspace that performed the change; also equals the base `workspaceId`. */
+  actorWorkspaceId: string;
+  /** Every workspace that must re-sync this channel: the post-change member set
+   *  PLUS any workspace removed by this change. `events.poll` fans out to each. */
+  recipientWorkspaceIds: string[];
+  /** What changed — advisory; the receiver re-hydrates regardless. */
+  reason: 'created' | 'archived' | 'membership';
+}
+
 export type WmuxEvent =
   | PaneCreatedEvent
   | PaneClosedEvent
@@ -365,7 +395,8 @@ export type WmuxEvent =
   | PaneRestartedEvent
   | PaneSupervisionEvent
   | A2aTaskEvent
-  | ChannelMessageEvent;
+  | ChannelMessageEvent
+  | ChannelCatalogEvent;
 
 export const RING_CAPACITY = 1024;
 export const POLL_DEFAULT_MAX = 256;

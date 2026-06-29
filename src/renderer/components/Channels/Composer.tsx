@@ -541,6 +541,21 @@ export function Composer({ channelId, onError }: ComposerProps): React.ReactElem
           errorMessage: result.error.message,
         };
       }
+      // A6: the post succeeded, but the daemon may have DROPPED some @mentions
+      // whose target workspace is not a channel member. Surface that to the
+      // sender as a warning — previously the renderer discarded it, so a ping
+      // that never reached anyone looked like a clean send (the silent-failure
+      // A2 set out to kill).
+      if (result.droppedMentions && result.droppedMentions.length > 0) {
+        const names = result.droppedMentions.map((d) => d.name ?? d.workspaceId).join(', ');
+        onError({
+          level: 'warn',
+          message: (
+            t('channels.mentionDropped') ||
+            'These @mentions did not land (not a channel member): {names}'
+          ).replace('{names}', names),
+        });
+      }
       return { ok: true };
     },
     [channelId, channel, selfWorkspaceId, postMessageDaemon, onError, t],

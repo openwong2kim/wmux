@@ -57,11 +57,19 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import type {
   Channel,
+  ChannelDroppedMention,
   ChannelMember,
   ChannelMention,
   ChannelMessage,
   ChannelVisibility,
 } from '../../../shared/channels';
+
+/** A19: per-channel render cap. `channelMessages` is otherwise append-only and
+ *  unbounded — a busy channel would grow the store until the panel re-render +
+ *  search scan freezes the UI. Keep the most recent N in the renderer mirror;
+ *  older history stays durable in the daemon and is re-loadable via getMessages.
+ *  Set above CHANNEL_HISTORY_LOAD_LIMIT (200) so a fresh hydrate never trims. */
+const CHANNEL_MESSAGES_RENDER_CAP = 500;
 
 /** Caller identity the slice carries in optimistic mutations. Mirrors
  *  the daemon's `Member` row (workspaceId + memberId + display name). */
@@ -112,6 +120,7 @@ export interface ChannelError {
     | 'NOT_A_MEMBER'
     | 'PERSIST_FAILED'
     | 'ALREADY_EXISTS'
+    | 'NOT_AUTHORIZED'
     | 'UNKNOWN';
   message: string;
 }
@@ -167,6 +176,7 @@ export interface ChannelsSlice {
   leaveChannelOptimistic: (
     channelId: string,
     memberId: string,
+    workspaceId: string,
   ) => ChannelActionResult<Record<string, never>>;
   // Kick removes a SPECIFIC other member — matches BOTH workspace + member so a
   // same-memberId row in a different workspace is never evicted by mistake.
@@ -191,10 +201,17 @@ export interface ChannelsSlice {
   createChannelDaemon: (
     params: ChannelCreateParams,
   ) => Promise<ChannelActionResult<Channel>>;
+  // A6: the success branch carries the daemon's `droppedMentions` (non-member
+  // @mentions that did not land) so the composer can warn the sender instead of
+  // discarding the feedback — a strict superset of ChannelActionResult, so
+  // existing callers that only read `value` are unaffected.
   postMessageDaemon: (
     channelId: string,
     params: ChannelPostParams,
-  ) => Promise<ChannelActionResult<ChannelMessage>>;
+  ) => Promise<
+    | { ok: true; value: ChannelMessage; droppedMentions?: ChannelDroppedMention[] }
+    | { ok: false; error: ChannelError }
+  >;
   // Membership (channel members roster UX). join adds `member` pinned to
   // `workspaceId`; leave is SELF-ONLY (you can leave, not eject) so it takes
   // just the memberId + the caller's own workspaceId — the daemon's leave()
@@ -312,8 +329,10 @@ export const createChannelsSlice: StateCreator<
   setChannels: (channels, members) =>
     set((state: StoreState) => {
       const next: Record<string, Channel> = {};
+      const liveIds = new Set<string>();
       for (const ch of channels) {
         next[ch.id] = ch;
+        liveIds.add(ch.id);
         // Preserve any messages we've already accumulated locally for
         // this channel. If the daemon truncated (very rare — only on
         // a future migration), the local copy is at least a
@@ -324,6 +343,19 @@ export const createChannelsSlice: StateCreator<
       }
       state.channels = next;
       state.channelMembers = members;
+      // A19: drop caches for channels no longer in the catalog (archived out of
+      // view, a private channel we were removed from, etc.) — channelMessages was
+      // otherwise append-only and leaked these forever. setChannels is the
+      // authoritative catalog refresh, so a channel absent here is gone for us.
+      for (const id of Object.keys(state.channelMessages)) {
+        if (!liveIds.has(id)) delete state.channelMessages[id];
+      }
+      for (const id of Object.keys(state.channelUnread)) {
+        if (!liveIds.has(id)) delete state.channelUnread[id];
+      }
+      for (const id of Object.keys(state.channelMentions)) {
+        if (!liveIds.has(id)) delete state.channelMentions[id];
+      }
     }),
 
   createChannelOptimistic: (params) => {
@@ -403,11 +435,15 @@ export const createChannelsSlice: StateCreator<
     return { ok: true, value: {} as Record<string, never> };
   },
 
-  leaveChannelOptimistic: (channelId, memberId) => {
+  leaveChannelOptimistic: (channelId, memberId, workspaceId) => {
     set((state: StoreState) => {
       const list = state.channelMembers[channelId] ?? [];
+      // A7: match the composite (workspaceId, memberId) key — join/kick already
+      // do. Every in-app UI member shares one `local-ui` memberId, so a
+      // memberId-only filter wiped OTHER workspaces' rows on a leave, desyncing
+      // the mirror from the daemon (which removes only the caller's own row).
       state.channelMembers[channelId] = list.filter(
-        (m) => m.memberId !== memberId,
+        (m) => !(m.memberId === memberId && m.workspaceId === workspaceId),
       );
     });
     return { ok: true, value: {} as Record<string, never> };
@@ -450,7 +486,13 @@ export const createChannelsSlice: StateCreator<
       const idx = list.findIndex((m) => m.seq === message.seq);
       const isNew = idx === -1;
       if (isNew) {
-        state.channelMessages[channelId] = [...list, message];
+        // A19: cap the per-channel render mirror so a busy channel can't grow the
+        // store unbounded (older rows stay durable in the daemon).
+        const appended = [...list, message];
+        state.channelMessages[channelId] =
+          appended.length > CHANNEL_MESSAGES_RENDER_CAP
+            ? appended.slice(appended.length - CHANNEL_MESSAGES_RENDER_CAP)
+            : appended;
       } else {
         const next = list.slice();
         next[idx] = message;
@@ -487,16 +529,42 @@ export const createChannelsSlice: StateCreator<
     set((state: StoreState) => {
       const existing = state.channelMessages[channelId] ?? [];
       // Merge history (from getMessages) with whatever live/optimistic rows
-      // are already in the store, deduped by seq. We seed the map with the
-      // history first, then overlay `existing` so a live event row WINS on a
-      // seq collision (it may carry a fresher delivery snapshot than the
-      // persisted history row — mirrors appendMessageFromEvent's overwrite).
+      // are already in the store, deduped by seq. Seed with history first, then
+      // overlay `existing` so a live event row generally WINS on a seq collision
+      // (it may carry a fresher payload than the persisted row).
+      //
+      // A8 exception: deliveryStatus/recipientSnapshot only advance via `ack`,
+      // which emits NO event — so the live row's status can be a STALE 'pending'
+      // while the persisted history row already reads 'delivered'. On a collision
+      // we therefore adopt the higher-information delivery status (delivered beats
+      // pending) from the fetched row, keeping the live row otherwise. Without
+      // this, reopening a channel left deliveryStatus stuck at pending forever
+      // (the "make deliveryStatus real" feature silently no-op'd on reopen).
       const bySeq = new Map<number, ChannelMessage>();
       for (const m of messages) bySeq.set(m.seq, m);
-      for (const m of existing) bySeq.set(m.seq, m);
-      state.channelMessages[channelId] = Array.from(bySeq.values()).sort(
-        (a, b) => a.seq - b.seq,
-      );
+      for (const m of existing) {
+        const fetched = bySeq.get(m.seq);
+        // Only promote pending→delivered. A live `target_gone` row (delivery
+        // failed / dead PTY) is HIGHER information than a stale persisted
+        // `delivered`, so it must NOT be promoted — promoting it would disguise a
+        // failure as success and overwrite recipientSnapshot with stale data
+        // (GLM P2). The live row wins in that case.
+        if (fetched && m.deliveryStatus === 'pending' && fetched.deliveryStatus === 'delivered') {
+          bySeq.set(m.seq, {
+            ...m,
+            deliveryStatus: fetched.deliveryStatus,
+            ...(fetched.recipientSnapshot ? { recipientSnapshot: fetched.recipientSnapshot } : {}),
+          });
+        } else {
+          bySeq.set(m.seq, m);
+        }
+      }
+      // A19: cap the merged mirror (keep the most recent N).
+      const merged = Array.from(bySeq.values()).sort((a, b) => a.seq - b.seq);
+      state.channelMessages[channelId] =
+        merged.length > CHANNEL_MESSAGES_RENDER_CAP
+          ? merged.slice(merged.length - CHANNEL_MESSAGES_RENDER_CAP)
+          : merged;
       // channelUnread is intentionally NOT touched — loading history is not
       // "new unread" (P0). Only live appends (appendMessageFromEvent /
       // postMessageOptimistic) bump the badge.
@@ -559,6 +627,10 @@ export const createChannelsSlice: StateCreator<
           'NOT_A_MEMBER',
           'PERSIST_FAILED',
           'ALREADY_EXISTS',
+          // B5/archive: kick + archive surface NOT_AUTHORIZED (non-member kick,
+          // non-creator archive). Model it so the toast shows the real reason
+          // instead of bucketing to UNKNOWN with the code mangled into the text.
+          'NOT_AUTHORIZED',
           'UNKNOWN',
         ]);
         if (KNOWN_CODES.has(code as ChannelError['code'])) {
@@ -663,10 +735,18 @@ export const createChannelsSlice: StateCreator<
     // mirror applies it through the *Optimistic primitive; the same-
     // seq dedup in `appendMessageFromEvent` handles the case where
     // the event-driven `channel.message` fan-out lands first.
-    return get().postMessageOptimistic(channelId, {
+    const applied = get().postMessageOptimistic(channelId, {
       ...params,
       message: message as ChannelMessage,
     });
+    // A6: thread the daemon's droppedMentions (non-member @mentions) through to
+    // the caller. Previously discarded here, which made A2's "mention did not
+    // land" feedback dead on the human composer path.
+    const dropped = (raw as { droppedMentions?: ChannelDroppedMention[] }).droppedMentions;
+    if (applied.ok && dropped && dropped.length > 0) {
+      return { ok: true, value: applied.value, droppedMentions: dropped };
+    }
+    return applied;
   },
 
   joinChannelDaemon: async (channelId, member, workspaceId) => {
@@ -743,7 +823,7 @@ export const createChannelsSlice: StateCreator<
     if (raw === null || typeof raw !== 'object' || !('ok' in raw) || (raw as { ok: unknown }).ok !== true) {
       return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.leave failed') };
     }
-    return get().leaveChannelOptimistic(channelId, memberId);
+    return get().leaveChannelOptimistic(channelId, memberId, workspaceId);
   },
 
   kickChannelDaemon: async (channelId, targetMemberId, targetWorkspaceId, callerWorkspaceId) => {
