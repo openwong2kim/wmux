@@ -15,6 +15,7 @@ import { openTerminalUrl } from '../utils/browserPaneActions';
 import { runCopyWithFeedback } from '../utils/copyWithFeedback';
 import { shouldFitWhilePreservingSelection } from '../utils/fitGuard';
 import { createAutoSelectionCopy } from '../utils/autoSelectionCopy';
+import { decodeOsc52Write } from '../utils/osc52Clipboard';
 import { terminalFontFamilyCss } from '../utils/terminalFont';
 import { createPathLinkProvider } from '../terminal/pathLinkProvider';
 import { resolveNewlineKeyByte } from '../terminal/newlineKeys';
@@ -351,6 +352,29 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         });
       }, window.electronAPI.platform),
     );
+
+    // OSC 52 clipboard-write bridge. Full-screen TUI apps (Claude Code, vim,
+    // tmux, neovim) grab the mouse, so a drag no longer leaves an xterm-native
+    // selection; when the user copies, the app emits OSC 52 asking the terminal
+    // to set the clipboard. xterm disables OSC 52 by default (its read half
+    // leaks clipboard contents), so without this the request is silently dropped
+    // — the app says "copied" but the system clipboard never changes. We open
+    // the WRITE half only (decodeOsc52Write refuses reads/clears/oversize) and
+    // route through the existing clipboard IPC (1 MB cap + lock handling).
+    const osc52Disposable = terminal.parser.registerOscHandler(52, (payload) => {
+      const text = decodeOsc52Write(payload);
+      // Consume the sequence either way (return true): a refused read/clear must
+      // not fall through to another handler. Only a decoded write is forwarded.
+      if (text !== null) {
+        void window.clipboardAPI.writeText(text).catch(() => {
+          // OSC 52 is fire-and-forget from the app's view (it already drew its
+          // own "copied" UI); a size-cap/lock rejection has no app-visible
+          // channel, so swallow it rather than surfacing a wmux toast the user
+          // didn't trigger.
+        });
+      }
+      return true;
+    });
     // Activate Unicode 11 width tables — required for correct CJK / emoji
     // width. Without this, xterm defaults to v6 and TUI apps that use cursor
     // positioning (Claude Code, vim, etc.) collide frames over Korean text.
@@ -1193,6 +1217,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       autoCopy.dispose();
       selectionDisposable.dispose();
       pathLinkDisposable.dispose();
+      osc52Disposable.dispose();
       resizeObserver.disconnect();
       removeDataListener?.();
       removeExitListener?.();
