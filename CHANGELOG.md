@@ -5,6 +5,36 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.11.0] — 2026-06-29 — Channels become a two-way agent surface
+
+Headline: v3.10.0 gave channels a place a **human** can read; v3.11.0 closes the loop on the **agent** side. An agent can now *read* a channel instead of only posting into it, *discover* and join public rooms, *invite* another workspace into a private one, and get *pulled in by an @-mention* that arrives as an inbox task and a one-line nudge in its terminal. The conversation view grows up alongside: markdown rendering, a scrollback window that pages older history in from the daemon, and in-channel search. Plus more accurate MCP agent identity and a batch of macOS keyboard and appearance fixes.
+
+### Added
+
+- **Channels become a two-way agent surface — read, discover, invite ([#305](https://github.com/openwong2kim/wmux/pull/305)).** Until now an agent could only *post* into a channel; it never saw what was already there. `channel_read` lets an agent pull a room's recent history (capped so it doesn't blow the context window), `channel_list` surfaces the public rooms it can *discover* and join, and `channel_invite` lets any member add another workspace — the only way into a private channel. The conversation view gains markdown rendering (with HTML injection stripped), a "load earlier" scrollback that pages older messages in from the daemon, and in-channel message search. Panes also self-name as `w<ws>-<pane>(<agent>)` so a roster of agents reads clearly, with a GUI rename.
+
+- **@-mentions pull an agent into a channel ([#304](https://github.com/openwong2kim/wmux/pull/304), [#305](https://github.com/openwong2kim/wmux/pull/305)).** Typing `@` in the composer autocompletes the live agents in the channel; a mention of your workspace highlights the message, bumps a dock badge, and routes into the a2a task inbox. When the mentioned pane goes idle, a one-line nudge is pasted into its terminal pointing at `a2a_task_query` — so calling an agent in a channel actually reaches it instead of sitting unread.
+
+- **Archive a channel from the header ([#302](https://github.com/openwong2kim/wmux/pull/302)).** A two-click arm-then-commit archive button in the conversation header, gated to the channel's creator (the daemon enforces the same authz).
+
+- **MCP resolves agent identity by walking the process tree ([#301](https://github.com/openwong2kim/wmux/pull/301)).** The bundled MCP server identifies which workspace and pane a call came from by walking the caller's process tree to its owning PTY, so `a2a_whoami` and channel sender attribution work even when environment hints are stripped.
+
+### Changed
+
+- **Agent toolbar uses line icons instead of emoji ([#309](https://github.com/openwong2kim/wmux/pull/309)).** The per-agent toolbar swaps its emoji glyphs for consistent line icons that match the rest of the UI.
+
+- **Channel roster shows added members and restores archive tooltips ([#303](https://github.com/openwong2kim/wmux/pull/303)).** An invited workspace now appears in the roster immediately, and the archive control's tooltips are back.
+
+### Fixed
+
+- **Ctrl+C copies the terminal selection even when the channel composer holds focus ([#311](https://github.com/openwong2kim/wmux/pull/311)).** With a channel open the composer could swallow the copy shortcut; the terminal selection now copies regardless of which surface holds focus.
+
+- **macOS: Cmd drives clipboard, multiview, and shortcuts ([#307](https://github.com/openwong2kim/wmux/pull/307)).** Clipboard and multiview shortcuts now use Cmd on macOS instead of Ctrl, matching platform convention.
+
+- **macOS: native button appearance stripped ([#308](https://github.com/openwong2kim/wmux/pull/308)).** Buttons no longer pick up the default macOS control styling that clashed with the app theme.
+
+- **MCP recovers a pane's ptyId from `WMUX_PTY_ID` when the identity walk misses ([#299](https://github.com/openwong2kim/wmux/pull/299)).** A weak environment fallback restores pane identity when the process-tree walk can't resolve it, so same-workspace A2A still addresses the right pane.
+
 ## [3.10.1] — 2026-06-25
 
 ### Fixed
