@@ -131,4 +131,13 @@ export function registerA2aChannelRpc(
   router.register('a2a.channel.leave', (p) => forward('a2a.channel.leave', p, true));
   router.register('a2a.channel.post', (p) => forward('a2a.channel.post', p, true));
   router.register('a2a.channel.invite', (p) => forward('a2a.channel.invite', p, true));
+
+  // NOTE: a2a.channel.kick is intentionally NOT registered here. Ejecting ANOTHER
+  // member is a HUMANS-ONLY action (product decision): agents must never kick each
+  // other. Same-machine agent identity is forgeable (#113, accepted ceiling), so an
+  // agent-level kick capability would let any agent eject any other. Like ack, kick
+  // rides the renderer-only channels:mutate-local path (channelLocal.handler) — a
+  // first-party GUI surface reachable only across the Electron process boundary and
+  // unreachable from the pipe/MCP. Registering it here would silently re-open the
+  // exact agent-eject hole this design closes.
 }

@@ -1672,6 +1672,26 @@ function registerRpcHandlers(
     return channelService.invite(p);
   });
 
+  // a2a.channel.kick — eject another member. HUMANS-ONLY: this handler lives on
+  // the DAEMON pipe (both renderer and pipe callers ultimately land here), but the
+  // MAIN-process pipe router (a2a.channel.rpc.ts) deliberately does NOT register
+  // 'a2a.channel.kick', so no MCP/agent client can reach it — only the renderer-only
+  // channels:mutate-local IPC forwards it. See KickChannelParams for the rationale.
+  pipeServer.onRpc('a2a.channel.kick', async (params) => {
+    const p = params as unknown as import('./channels/ChannelService').KickChannelParams;
+    if (!p.channelId || !p.targetWorkspaceId || !p.targetMemberId || !p.verifiedWorkspaceId) {
+      return {
+        ok: false,
+        error: {
+          code: 'NOT_AUTHORIZED',
+          message:
+            'channelId, targetWorkspaceId, targetMemberId, and a server-resolved verifiedWorkspaceId are required',
+        },
+      };
+    }
+    return channelService.kick(p);
+  });
+
   // daemon.shutdown — gracefully terminate the daemon process. A2 makes
   // this RPC awaitable: the handler runs the full shutdown body (dumps,
   // state save, dispose) before returning, then defers the pipe stop and

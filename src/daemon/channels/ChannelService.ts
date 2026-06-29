@@ -174,6 +174,29 @@ export interface LeaveChannelParams {
   verifiedWorkspaceId: string;
 }
 
+export interface KickChannelParams {
+  channelId: string;
+  /** The workspace being EJECTED. Unlike leave() — which self-pins so a caller
+   *  can only remove ITSELF — kick() removes a DIFFERENT, caller-supplied member.
+   *  This is the one membership removal that is not self-pinned. */
+  targetWorkspaceId: string;
+  /** The specific member row to eject. A workspace may hold several member rows
+   *  (one per agent), so kick removes the exact (targetWorkspaceId, targetMemberId)
+   *  row — mirrors leave()'s precise (workspace, member) match. */
+  targetMemberId: string;
+  /** Server-resolved workspace of the HUMAN performing the kick, recorded for
+   *  attribution. NOTE: kick has NO ChannelService-level authz gate beyond
+   *  channel/member existence — the daemon cannot tell a renderer call from a
+   *  pipe call, so it does not try. The "humans only" policy is enforced one
+   *  layer up by TRANSPORT: kick rides ONLY the renderer-only
+   *  `channels:mutate-local` IPC (pipe-unreachable) and is deliberately NOT
+   *  registered on the `a2a.channel.*` pipe router, so no MCP/agent caller can
+   *  reach this method (mirrors the `a2a.channel.ack` precedent). Reaching the
+   *  daemon control pipe directly is the documented same-user residual (F1),
+   *  identical to every other channel mutation. */
+  verifiedWorkspaceId: string;
+}
+
 export interface InviteChannelParams {
   channelId: string;
   /** The workspace/agent being ADDED. Unlike join(), the invitee is NOT the
@@ -661,6 +684,62 @@ export class ChannelService {
         // Clear the emptySince stamp we just set.
         if (members.length === 1) delete channel.emptySince;
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel leave' } };
+      }
+      return { ok: true };
+    });
+  }
+
+  /**
+   * Eject ANOTHER member from a channel (humans-only — see KickChannelParams).
+   * The mirror of leave(): leave() self-pins so a caller can only remove ITSELF;
+   * kick() removes the caller-supplied (targetWorkspaceId, targetMemberId) row.
+   *
+   * Authz is NOT gated in this method — the daemon cannot distinguish a renderer
+   * call from a pipe call, so the "humans only" boundary lives in the TRANSPORT
+   * layer (renderer-only `channels:mutate-local` IPC + deliberately absent from
+   * the `a2a.channel.*` pipe router, mirroring `a2a.channel.ack`). Within the
+   * daemon we only enforce existence: `CHANNEL_NOT_FOUND` for an unknown id,
+   * `NOT_A_MEMBER` when the target row is absent, `PERSIST_FAILED` on a writer
+   * failure (rolled back). The last member removed stamps `emptySince` so the
+   * empty-channel reaper prunes the row after the TTL — identical to leave().
+   */
+  async kick(params: KickChannelParams): Promise<EmptyResult> {
+    return this.withChannelLock(params.channelId, async () => {
+      const channel = this.state.channels.find((c) => c.id === params.channelId);
+      if (!channel) {
+        return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
+      }
+      // Reject membership mutation on a read-only (archived) channel — mirrors
+      // invite()'s archived gate. kick is the eject-mirror of invite (managing
+      // OTHERS' membership), so it must honor the same read-only contract: a
+      // roster click that races a concurrent archive, or stale renderer state,
+      // must not slip a removal past the lifecycle (review-team: codex P2). The
+      // UI's `canKick` gate is local-only and therefore not authoritative.
+      if (channel.status === 'archived') {
+        return { ok: false, error: { code: 'CHANNEL_ARCHIVED', message: 'Cannot kick from an archived channel' } };
+      }
+      const members = this.state.members[channel.id] ?? [];
+      const idx = members.findIndex(
+        // Target match (NOT self-pinned, unlike leave) — eject the exact
+        // (targetWorkspaceId, targetMemberId) row the human picked in the roster.
+        (m) => m.workspaceId === params.targetWorkspaceId && m.memberId === params.targetMemberId,
+      );
+      if (idx < 0) {
+        return { ok: false, error: { code: 'NOT_A_MEMBER', message: 'Target is not a member' } };
+      }
+      // Snapshot the removed member so we can put them back on rollback (mirrors leave).
+      const removed = members[idx];
+      members.splice(idx, 1);
+      // If the channel is now empty, stamp `emptySince` (plan KTD8) — same as leave.
+      if (members.length === 0 && channel.emptySince === undefined) {
+        channel.emptySince = this.now();
+      }
+      this.state.members[channel.id] = members;
+      if (!this.saveOrFail()) {
+        // Roll back: re-insert at the original index, clear the emptySince we set.
+        members.splice(idx, 0, removed);
+        if (members.length === 1) delete channel.emptySince;
+        return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel kick' } };
       }
       return { ok: true };
     });

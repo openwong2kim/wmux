@@ -350,6 +350,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.channel.leave':       { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.post':        { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.invite':      { capability: 'a2a.channel.send', riskClass: 'a2a' },
+  // kick is humans-only and NOT routed on the pipe (a2a.channel.rpc.ts), so an
+  // agent can never reach it — this entry exists only for RpcMethod completeness.
+  'a2a.channel.kick':        { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.ack':         { capability: 'a2a.channel.read', riskClass: 'a2a' },
 
   // --- Company subsystem (substrate-internal team/orchestration). All

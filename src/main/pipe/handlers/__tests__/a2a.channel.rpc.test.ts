@@ -256,6 +256,35 @@ describe('a2a.channel.rpc — mutating routing (capability a2a.channel.send)', (
 });
 
 // =========================================================================
+// 2a. kick is HUMANS-ONLY — deliberately NOT routed on the pipe
+// =========================================================================
+
+describe('a2a.channel.rpc — kick is unregistered (agents cannot eject)', () => {
+  it('rejects a2a.channel.kick with Unknown method and never reaches the daemon', async () => {
+    const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
+    const router = setupHandlerRouter(daemon);
+    const rpcSpy = (daemon as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+
+    const res = await router.dispatch({
+      id: 'kick-unreg',
+      method: 'a2a.channel.kick',
+      params: {
+        channelId: CHANNEL_ID,
+        targetWorkspaceId: 'ws-victim',
+        targetMemberId: 'm-victim',
+        // Even a fully-resolvable agent identity must not get through — the
+        // method simply isn't on this router (humans-only, renderer IPC path).
+        senderPtyId: 'pty-attacker',
+      },
+    });
+
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error).toMatch(/Unknown method/);
+    expect(rpcSpy).not.toHaveBeenCalled();
+  });
+});
+
+// =========================================================================
 // 2b. D5 — caller-identity server-pin (verifiedWorkspaceId is server-resolved)
 // =========================================================================
 

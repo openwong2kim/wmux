@@ -86,6 +86,25 @@ describe('ChannelMembers — wiring regression guard', () => {
     expect(members).toContain('leaveChannelDaemon');
   });
 
+  it('container wires kick (humans-only eject) via kickChannelDaemon, gated by canKick', () => {
+    expect(members).toContain('kickChannelDaemon');
+    expect(members).toMatch(/const canKick =/);
+    // kick is gated on a resolvable human identity + a non-archived channel.
+    expect(members).toMatch(/!!selfWorkspaceId && channel\.status !== 'archived'/);
+  });
+
+  it('view renders kick on NON-self rows and leave on the self row (the popover lives in source)', () => {
+    // The roster rows sit behind a useState-gated popover, so renderToStaticMarkup
+    // can't reach them — pin the per-row branch in source instead (same lockstep
+    // pattern as the self-only-leave guard above).
+    expect(members).toContain('data-channel-member-leave');
+    expect(members).toContain('data-channel-member-kick');
+    // self ? <leave> : (onKick && <kick>) — the leave affordance is self-only and
+    // kick only renders for OTHER members, and only when onKick was provided.
+    expect(members).toMatch(/\{self \?/);
+    expect(members).toMatch(/onKick && \(/);
+  });
+
   it('self-leave of the active channel clears the view (no dead pane)', () => {
     expect(members).toContain('setActiveChannel(null)');
     expect(members).toMatch(/activeChannelId === channel\.id/);

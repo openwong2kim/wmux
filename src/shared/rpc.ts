@@ -219,6 +219,7 @@ export type RpcMethod =
   | 'a2a.channel.leave'
   | 'a2a.channel.post'
   | 'a2a.channel.invite'
+  | 'a2a.channel.kick'
   | 'a2a.channel.ack';
 
 // All available methods as array (for system.capabilities)
@@ -344,6 +345,7 @@ export const ALL_RPC_METHODS = [
   'a2a.channel.leave',
   'a2a.channel.post',
   'a2a.channel.invite',
+  'a2a.channel.kick',
   'a2a.channel.ack',
 ] as const satisfies readonly RpcMethod[];
 

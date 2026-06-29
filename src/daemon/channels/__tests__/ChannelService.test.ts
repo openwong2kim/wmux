@@ -307,6 +307,127 @@ describe('ChannelService', () => {
     });
   });
 
+  describe('kick (humans-only eject of another member)', () => {
+    async function makeChannelWith(extra: Array<{ ws: string; m: string }>) {
+      const { svc, writer } = makeService();
+      const created = await svc.create({
+        name: 'team',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}`);
+      for (const e of extra) {
+        const j = await svc.join({
+          channelId: created.channel.id,
+          member: { workspaceId: e.ws, memberId: e.m, memberName: e.m },
+          verifiedWorkspaceId: e.ws,
+        });
+        if (!j.ok) throw new Error(`join failed: ${j.error.code}`);
+      }
+      return { svc, writer, channelId: created.channel.id };
+    }
+
+    it('removes the target member row (not self-pinned, unlike leave)', async () => {
+      const { svc, channelId } = await makeChannelWith([{ ws: 'ws-2', m: 'm-2' }]);
+      const r = await svc.kick({
+        channelId,
+        targetWorkspaceId: 'ws-2',
+        targetMemberId: 'm-2',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(true);
+      const members = svc.getMembers(channelId, 'ws-1');
+      expect(members.some((m) => m.workspaceId === 'ws-2')).toBe(false);
+      expect(members).toHaveLength(1);
+    });
+
+    it('stamps emptySince when the last member is kicked', async () => {
+      const { svc, channelId } = await makeChannelWith([]);
+      const r = await svc.kick({
+        channelId,
+        targetWorkspaceId: 'ws-1',
+        targetMemberId: 'm-1',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(true);
+      expect(svc.get(channelId, 'ws-1')?.emptySince).toEqual(expect.any(Number));
+    });
+
+    it('returns NOT_A_MEMBER when the target is absent', async () => {
+      const { svc, channelId } = await makeChannelWith([]);
+      const r = await svc.kick({
+        channelId,
+        targetWorkspaceId: 'ws-ghost',
+        targetMemberId: 'm-ghost',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('NOT_A_MEMBER');
+    });
+
+    it('returns CHANNEL_NOT_FOUND for an unknown channel', async () => {
+      const { svc } = makeService();
+      const r = await svc.kick({
+        channelId: 'ch-nope',
+        targetWorkspaceId: 'ws-2',
+        targetMemberId: 'm-2',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('CHANNEL_NOT_FOUND');
+    });
+
+    it('removes the EXACT (workspace, member) row — a same-memberId sibling in another workspace survives', async () => {
+      const { svc, channelId } = await makeChannelWith([
+        { ws: 'ws-2', m: 'agent' },
+        { ws: 'ws-3', m: 'agent' },
+      ]);
+      const r = await svc.kick({
+        channelId,
+        targetWorkspaceId: 'ws-2',
+        targetMemberId: 'agent',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(true);
+      const members = svc.getMembers(channelId, 'ws-1');
+      expect(members.some((m) => m.workspaceId === 'ws-2' && m.memberId === 'agent')).toBe(false);
+      expect(members.some((m) => m.workspaceId === 'ws-3' && m.memberId === 'agent')).toBe(true);
+    });
+
+    it('PERSIST_FAILED rolls back the removal', async () => {
+      const { svc, writer, channelId } = await makeChannelWith([{ ws: 'ws-2', m: 'm-2' }]);
+      writer.setFailNext();
+      const r = await svc.kick({
+        channelId,
+        targetWorkspaceId: 'ws-2',
+        targetMemberId: 'm-2',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('PERSIST_FAILED');
+      const members = svc.getMembers(channelId, 'ws-1');
+      expect(members.some((m) => m.workspaceId === 'ws-2' && m.memberId === 'm-2')).toBe(true);
+    });
+
+    it('rejects a kick on an archived channel (CHANNEL_ARCHIVED) — read-only, mirrors invite', async () => {
+      const { svc, channelId } = await makeChannelWith([{ ws: 'ws-2', m: 'm-2' }]);
+      const arch = await svc.archive({ channelId, archivedBy: 'ws-1', verifiedWorkspaceId: 'ws-1' });
+      expect(arch.ok).toBe(true);
+      const r = await svc.kick({
+        channelId,
+        targetWorkspaceId: 'ws-2',
+        targetMemberId: 'm-2',
+        verifiedWorkspaceId: 'ws-1',
+      });
+      expect(r.ok).toBe(false);
+      if (!r.ok) expect(r.error.code).toBe('CHANNEL_ARCHIVED');
+      // The member survives — the archived gate rejected before any mutation.
+      const members = svc.getMembers(channelId, 'ws-1');
+      expect(members.some((m) => m.workspaceId === 'ws-2' && m.memberId === 'm-2')).toBe(true);
+    });
+  });
+
   describe('post', () => {
     it('assigns monotonic seq, appends message, persists, emits channel.message', async () => {
       const { svc, writer, emit } = makeService();

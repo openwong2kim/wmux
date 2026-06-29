@@ -81,7 +81,7 @@ describe('channelLocal.handler — CHANNEL_MUTATE_LOCAL', () => {
     expect(result).toMatchObject({ ok: true });
   });
 
-  it('accepts all five mutating methods', async () => {
+  it('accepts all mutating methods (create/post/join/leave/archive/invite/kick/ack)', async () => {
     installHandler();
     const handler = getHandler(IPC.CHANNEL_MUTATE_LOCAL);
     for (const method of [
@@ -90,6 +90,12 @@ describe('channelLocal.handler — CHANNEL_MUTATE_LOCAL', () => {
       'a2a.channel.join',
       'a2a.channel.leave',
       'a2a.channel.archive',
+      'a2a.channel.invite',
+      // kick is HUMANS-ONLY: it is allow-listed HERE (renderer IPC, pipe-unreachable)
+      // and deliberately absent from the a2a.channel.* pipe router, so only a human
+      // in the first-party GUI can eject another member.
+      'a2a.channel.kick',
+      'a2a.channel.ack',
     ]) {
       rpc.mockClear();
       const r = await handler(fakeEvent, method, { verifiedWorkspaceId: 'ws-ceo' });

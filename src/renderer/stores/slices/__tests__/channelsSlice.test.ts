@@ -885,6 +885,72 @@ describe('channelsSlice — leaveChannelDaemon (membership, self-only)', () => {
   });
 });
 
+describe('channelsSlice — kickChannelDaemon (membership, humans-only eject)', () => {
+  it('on RPC success: calls a2a.channel.kick with target + caller params and removes the member', async () => {
+    const { calls } = withChannelsRpc(async () => ({ ok: true }));
+    try {
+      const store = createTestStore();
+      store.getState().createChannelOptimistic({
+        name: 'general',
+        visibility: 'public',
+        createdBy: sender,
+        channel: makeChannel({ id: 'ch-1' }),
+      });
+      expect(store.getState().channelMembers['ch-1']).toHaveLength(1);
+
+      // kickChannelDaemon(channelId, targetMemberId, targetWorkspaceId, callerWorkspaceId).
+      // The human caller (ws-ceo) ejects a DIFFERENT member (ws-1, m-1).
+      const res = await store.getState().kickChannelDaemon('ch-1', 'm-1', 'ws-1', 'ws-ceo');
+      expect(res.ok).toBe(true);
+      expect(calls).toHaveLength(1);
+      expect(calls[0].method).toBe('a2a.channel.kick');
+      expect(calls[0].params).toMatchObject({
+        channelId: 'ch-1',
+        targetWorkspaceId: 'ws-1',
+        targetMemberId: 'm-1',
+        verifiedWorkspaceId: 'ws-ceo', // the human caller, NOT the target
+      });
+      expect(store.getState().channelMembers['ch-1']).toHaveLength(0);
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('on failure: returns the error and leaves membership untouched (no optimistic removal)', async () => {
+    withChannelsRpc(async () => ({ ok: false, error: { code: 'NOT_A_MEMBER', message: 'not a member' } }));
+    try {
+      const store = createTestStore();
+      store.getState().createChannelOptimistic({
+        name: 'general',
+        visibility: 'public',
+        createdBy: sender,
+        channel: makeChannel({ id: 'ch-1' }),
+      });
+      const res = await store.getState().kickChannelDaemon('ch-1', 'm-1', 'ws-1', 'ws-ceo');
+      expect(res.ok).toBe(false);
+      if (!res.ok) expect(res.error.code).toBe('NOT_A_MEMBER');
+      expect(store.getState().channelMembers['ch-1']).toHaveLength(1);
+    } finally {
+      clearChannelsRpc();
+    }
+  });
+
+  it('bridge missing: returns UNKNOWN without mutating state', async () => {
+    clearChannelsRpc();
+    const store = createTestStore();
+    store.getState().createChannelOptimistic({
+      name: 'general',
+      visibility: 'public',
+      createdBy: sender,
+      channel: makeChannel({ id: 'ch-1' }),
+    });
+    const res = await store.getState().kickChannelDaemon('ch-1', 'm-1', 'ws-1', 'ws-ceo');
+    expect(res.ok).toBe(false);
+    if (!res.ok) expect(res.error.code).toBe('UNKNOWN');
+    expect(store.getState().channelMembers['ch-1']).toHaveLength(1);
+  });
+});
+
 describe('channelsSlice — archiveChannelDaemon (lifecycle, creator-only)', () => {
   it('on RPC success: calls a2a.channel.archive and marks the channel archived', async () => {
     const { calls } = withChannelsRpc(async () => ({ ok: true })); // daemon returns EmptyResult

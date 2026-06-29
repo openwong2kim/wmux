@@ -30,6 +30,19 @@ export function IconX({ size = 14 }: { size?: number }) {
   return <Icon size={size}><line x1="3" y1="3" x2="11" y2="11" /><line x1="11" y1="3" x2="3" y2="11" /></Icon>;
 }
 
+/** Two overlapping figures — channel member roster count. Replaces the 👥 glyph
+ *  (the Unicode members emoji that issue #145 set out to eliminate). */
+export function IconUsers({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <circle cx="5.1" cy="4.5" r="2.2" />
+      <path d="M1.6 11.4 a3.6 3.6 0 0 1 7 0" />
+      <path d="M9.2 2.6 a2.2 2.2 0 0 1 0 4" />
+      <path d="M10 7.4 a3.6 3.6 0 0 1 2.4 4" />
+    </Icon>
+  );
+}
+
 export function IconCheck({ size = 14 }: { size?: number }) {
   return <Icon size={size}><polyline points="2.5,7.4 5.8,10.5 11.5,3.5" /></Icon>;
 }

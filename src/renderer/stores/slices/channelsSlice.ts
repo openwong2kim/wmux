@@ -168,6 +168,13 @@ export interface ChannelsSlice {
     channelId: string,
     memberId: string,
   ) => ChannelActionResult<Record<string, never>>;
+  // Kick removes a SPECIFIC other member — matches BOTH workspace + member so a
+  // same-memberId row in a different workspace is never evicted by mistake.
+  kickChannelOptimistic: (
+    channelId: string,
+    targetMemberId: string,
+    targetWorkspaceId: string,
+  ) => ChannelActionResult<Record<string, never>>;
   archiveChannelOptimistic: (
     channelId: string,
     archivedChannel: Channel,
@@ -210,6 +217,16 @@ export interface ChannelsSlice {
     channelId: string,
     memberId: string,
     workspaceId: string,
+  ) => Promise<ChannelActionResult<Record<string, never>>>;
+  // Eject ANOTHER member (HUMANS-ONLY). `callerWorkspaceId` is the verified human
+  // performing the kick; `target*` identify the member row to remove. Unlike leave
+  // (self-only), kick removes a different member — gated NOT by daemon authz but by
+  // TRANSPORT: it rides the renderer-only mutateLocal path, unreachable from agents.
+  kickChannelDaemon: (
+    channelId: string,
+    targetMemberId: string,
+    targetWorkspaceId: string,
+    callerWorkspaceId: string,
   ) => Promise<ChannelActionResult<Record<string, never>>>;
   // Archive a channel (one-way; read-only thereafter). Creator-only by the
   // daemon's authz gate; `workspaceId` is the verified caller (the renderer's
@@ -391,6 +408,19 @@ export const createChannelsSlice: StateCreator<
       const list = state.channelMembers[channelId] ?? [];
       state.channelMembers[channelId] = list.filter(
         (m) => m.memberId !== memberId,
+      );
+    });
+    return { ok: true, value: {} as Record<string, never> };
+  },
+
+  kickChannelOptimistic: (channelId, targetMemberId, targetWorkspaceId) => {
+    set((state: StoreState) => {
+      const list = state.channelMembers[channelId] ?? [];
+      // Remove the EXACT (workspace, member) row — unlike leave (memberId only),
+      // kick targets a specific OTHER member, so match both keys to avoid evicting
+      // a same-memberId row that belongs to a different workspace.
+      state.channelMembers[channelId] = list.filter(
+        (m) => !(m.workspaceId === targetWorkspaceId && m.memberId === targetMemberId),
       );
     });
     return { ok: true, value: {} as Record<string, never> };
@@ -714,6 +744,33 @@ export const createChannelsSlice: StateCreator<
       return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.leave failed') };
     }
     return get().leaveChannelOptimistic(channelId, memberId);
+  },
+
+  kickChannelDaemon: async (channelId, targetMemberId, targetWorkspaceId, callerWorkspaceId) => {
+    const bridge = get().channelsRpc();
+    if (!bridge) {
+      console.warn('[channelsSlice] kickChannelDaemon invoked before bridge mounted — call ignored');
+      return { ok: false, error: { code: 'UNKNOWN', message: 'channels bridge not mounted' } };
+    }
+    let raw: unknown;
+    try {
+      // Humans-only eject: callerWorkspaceId is the verified human (renderer
+      // process-boundary trust); target* identify the member row to remove. Rides
+      // the renderer-only mutateLocal path — the daemon's kick() is pipe-unreachable,
+      // so no agent can eject anyone.
+      raw = await bridge.mutateLocal('a2a.channel.kick', {
+        channelId,
+        targetWorkspaceId,
+        targetMemberId,
+        verifiedWorkspaceId: callerWorkspaceId,
+      });
+    } catch (err) {
+      return { ok: false, error: { code: 'UNKNOWN', message: err instanceof Error ? err.message : String(err) } };
+    }
+    if (raw === null || typeof raw !== 'object' || !('ok' in raw) || (raw as { ok: unknown }).ok !== true) {
+      return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.kick failed') };
+    }
+    return get().kickChannelOptimistic(channelId, targetMemberId, targetWorkspaceId);
   },
 
   archiveChannelDaemon: async (channelId, workspaceId) => {

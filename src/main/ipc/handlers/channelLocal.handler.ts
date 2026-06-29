@@ -53,6 +53,13 @@ const CHANNEL_MUTATING_METHODS: ReadonlySet<string> = new Set<string>([
   // (caller must be a current member) and the renderer-trusted verifiedWorkspaceId
   // is the inviter; without it here every GUI invite returns NOT_AUTHORIZED.
   'a2a.channel.invite',
+  // kick is HUMANS-ONLY: a human in the roster ejects another member. It rides
+  // this renderer-only path EXCLUSIVELY and is deliberately absent from the
+  // a2a.channel.* pipe router (a2a.channel.rpc.ts), so no agent/MCP caller can
+  // eject anyone — same-machine agent identity is forgeable (#113), so an
+  // agent-level kick would let any agent eject any other. The process boundary
+  // (Electron IPC, pipe-unreachable) is what makes "humans only" real.
+  'a2a.channel.kick',
   // A1: receipt ack mutates recipientSnapshot/deliveryStatus, so it must NOT ride
   // the pipe (where a no-PTY caller's verifiedWorkspaceId would be unpinned and a
   // same-user pipe client could forge another member's receipt). The renderer
