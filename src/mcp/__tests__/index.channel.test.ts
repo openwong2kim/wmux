@@ -1,9 +1,11 @@
-// Tests for the six standard `channel_*` MCP tools that expose the
+// Tests for the standard `channel_*` MCP tools that expose the
 // `a2a.channel.*` pipe RPC surface to first-party MCP clients.
 //
 // Coverage:
-//  1. All six tools register (channel_create / channel_post / channel_join /
-//     channel_leave / channel_archive / channel_list).
+//  1. All eight tools register (channel_create / channel_post / channel_join /
+//     channel_leave / channel_list / channel_read / channel_invite /
+//     channel_get_members). There is deliberately NO channel_archive tool —
+//     archive is humans-only (renderer-IPC), like kick.
 //  2. Each tool's params are forwarded to the right `a2a.channel.*` RPC and
 //     the typed `{ ok, ... }` / `{ ok: false, error }` envelope is reflected
 //     in `isError`.
@@ -20,10 +22,11 @@
 //     pass it).
 //  6. Non-first-party client identity (no envelope) does NOT affect tool
 //     registration; the allowlist gate is upstream at the substrate enforcer.
-//  7. FIRST_PARTY_METHODS includes all nine a2a.channel.* methods
-//     (list/get/getMessages/getMembers/create/archive/join/leave/post)
+//  7. FIRST_PARTY_METHODS includes all nine AGENT-REACHABLE a2a.channel.*
+//     methods (list/get/getMessages/getMembers/create/join/leave/post/invite)
 //     so the bundled first-party MCP server isn't deadlocked under enforce
-//     mode (plans/first-party-mcp-trust.md §2).
+//     mode (plans/first-party-mcp-trust.md §2) — and excludes archive + kick,
+//     which are humans-only.
 //
 // The `a2a.channel.send` capability is enforced upstream in RpcRouter via
 // methodCapabilityMap.ts; the MCP tool layer is a thin pass-through. The
@@ -74,7 +77,6 @@ const channelCreate = tools.get('channel_create');
 const channelPost = tools.get('channel_post');
 const channelJoin = tools.get('channel_join');
 const channelLeave = tools.get('channel_leave');
-const channelArchive = tools.get('channel_archive');
 const channelList = tools.get('channel_list');
 const channelRead = tools.get('channel_read');
 const channelInvite = tools.get('channel_invite');
@@ -85,7 +87,6 @@ if (
   !channelPost ||
   !channelJoin ||
   !channelLeave ||
-  !channelArchive ||
   !channelList ||
   !channelRead ||
   !channelInvite ||
@@ -99,7 +100,7 @@ beforeEach(() => {
 });
 
 describe('channel_* tools: registration', () => {
-  it('registers all nine standard tools', () => {
+  it('registers all eight standard tools', () => {
     // channel_read exposes message history; channel_invite adds another
     // workspace (the only path into a private channel); channel_get_members
     // exposes the roster (who is in the channel).
@@ -107,7 +108,6 @@ describe('channel_* tools: registration', () => {
     expect(channelPost).toBeDefined();
     expect(channelJoin).toBeDefined();
     expect(channelLeave).toBeDefined();
-    expect(channelArchive).toBeDefined();
     expect(channelList).toBeDefined();
     expect(channelRead).toBeDefined();
     expect(channelInvite).toBeDefined();
@@ -116,6 +116,12 @@ describe('channel_* tools: registration', () => {
 
   it('does not register a channel_history tool (history is exposed via channel_read)', () => {
     expect(tools.get('channel_history')).toBeUndefined();
+  });
+
+  it('does not register a channel_archive tool (archive is humans-only, renderer-IPC path)', () => {
+    // Archiving tears a channel down for everyone — like kick it is a humans-only
+    // action that never reaches the agent/MCP surface (see a2a.channel.rpc.ts).
+    expect(tools.get('channel_archive')).toBeUndefined();
   });
 });
 
@@ -397,35 +403,10 @@ describe('channel_leave', () => {
   });
 });
 
-describe('channel_archive', () => {
-  it('forwards channelId + archivedBy + verifiedWorkspaceId to a2a.channel.archive', async () => {
-    mockSendRpc.mockResolvedValue({ ok: true });
-    await channelArchive({ channel_id: 'ch-1' });
-    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.archive', {
-      workspaceId: 'ws-test',
-      verifiedWorkspaceId: 'ws-test',
-      channelId: 'ch-1',
-      archivedBy: 'ws-test',
-    });
-  });
-
-  it('surfaces NOT_AUTHORIZED from the daemon as isError (archive authz failure)', async () => {
-    // The archive authz gate (KTD-F) lives in the daemon. The MCP tool
-    // just forwards `verifiedWorkspaceId`; the daemon decides whether
-    // the caller is the creator or the company CEO. A rejection
-    // surfaces to the agent verbatim so it can branch on the code.
-    mockSendRpc.mockResolvedValue({
-      ok: false,
-      error: {
-        code: 'NOT_AUTHORIZED',
-        message: 'Only the channel creator or the company CEO may archive this channel',
-      },
-    });
-    const res = await channelArchive({ channel_id: 'ch-1' });
-    expect(res.isError).toBe(true);
-    expect(res.content[0].text).toContain('NOT_AUTHORIZED');
-  });
-});
+// NOTE: there is no channel_archive tool to test — archive is humans-only and
+// rides the renderer-only channels:mutate-local IPC, never the MCP surface (see
+// the registration test above + a2a.channel.rpc.ts). The daemon-side archive
+// authz (member/CEO) is covered in ChannelService.test.ts.
 
 describe('channel_invite', () => {
   it('forwards channelId + invitedMember + verifiedWorkspaceId to a2a.channel.invite (include_history default true)', async () => {
@@ -497,16 +478,17 @@ describe('channel_get_members', () => {
 });
 
 describe('FIRST_PARTY_METHODS allowlist (channel coverage)', () => {
-  it('grants the bundled first-party MCP server access to all ten a2a.channel.* methods', () => {
+  it('grants the bundled first-party MCP server access to all nine agent-reachable a2a.channel.* methods', () => {
     // Without these, the bundled Claude/Codex MCP server is deadlocked in
-    // enforce mode (plans/first-party-mcp-trust.md §2).
+    // enforce mode (plans/first-party-mcp-trust.md §2). archive + kick are
+    // humans-only (renderer-IPC, never the pipe/MCP) so they are deliberately
+    // absent — see the negative assertion below.
     for (const m of [
       'a2a.channel.list',
       'a2a.channel.get',
       'a2a.channel.getMessages',
       'a2a.channel.getMembers',
       'a2a.channel.create',
-      'a2a.channel.archive',
       'a2a.channel.join',
       'a2a.channel.leave',
       'a2a.channel.post',
@@ -517,5 +499,10 @@ describe('FIRST_PARTY_METHODS allowlist (channel coverage)', () => {
         `${m} is missing from FIRST_PARTY_METHODS — add it or the bundled MCP server will deadlock under enforce mode`,
       ).toBe(true);
     }
+  });
+
+  it('does NOT grant archive or kick (humans-only — must never be agent-reachable)', () => {
+    expect(FIRST_PARTY_METHODS.has('a2a.channel.archive')).toBe(false);
+    expect(FIRST_PARTY_METHODS.has('a2a.channel.kick')).toBe(false);
   });
 });

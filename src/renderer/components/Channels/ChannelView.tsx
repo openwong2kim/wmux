@@ -634,10 +634,11 @@ export function ChannelView(): React.ReactElement | null {
       }
     });
   }, [activeChannelId, selfWs, leaveChannelDaemon, setActiveChannel, pushToast, t, channel?.name]);
-  // Archive is creator-only (the daemon also enforces this). Offer the affordance
-  // only when this workspace created the channel, so a non-creator never sees a
-  // button that would just toast NOT_AUTHORIZED.
-  const canArchive = !!selfWs && !!channel && channel.createdBy === selfWs;
+  // Archive is a member action (the daemon gates on membership, mirroring kick —
+  // there is no privileged "creator"). Offer the affordance only when this
+  // workspace is a member, so a non-member preview never shows a button that would
+  // just toast NOT_AUTHORIZED.
+  const canArchive = !!channel && selfIsMember;
   const handleArchive = useCallback(() => {
     if (!activeChannelId || !selfWs) return;
     void archiveChannelDaemon(activeChannelId, selfWs).then((res) => {

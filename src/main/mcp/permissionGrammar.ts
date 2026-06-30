@@ -51,7 +51,8 @@ const KNOWN_CAPABILITIES = new Set<string>([
   'a2a.read',
   // A2A channels (a2a-channels). Two-capability split mirrors the read/send
   // pattern above: `read` covers list/get/getMessages/getMembers, `send`
-  // covers create/post/join/leave/archive. A channel post is a
+  // covers create/post/join/leave/invite (archive + kick are humans-only and
+  // never reach the pipe/MCP). A channel post is a
   // fan-out operation that hits every member workspace, so the gate must
   // not be sneaked in through a permissive a2a.send — that capability
   // is bounded to a single peer (a2a.task.send) and a different shape

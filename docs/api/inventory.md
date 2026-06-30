@@ -113,7 +113,7 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 | `a2a.channel.post` | `{ workspaceId, channelId, sender, text, clientMsgId?, data? }` | stable | Posts a message. Idempotent on `(channelId, clientMsgId)` (R13). Emits `channel.message` event on success; `PERSIST_FAILED` on writer failure. Capability `a2a.channel.send`. |
 | `a2a.channel.join` | `{ workspaceId, channelId, member, includeHistory? }` | stable | Adds a member. Capability `a2a.channel.send`. |
 | `a2a.channel.leave` | `{ workspaceId, channelId, memberId }` | stable | Removes a member. Capability `a2a.channel.send`. |
-| `a2a.channel.archive` | `{ workspaceId, channelId, archivedBy }` | stable | Archives a channel (one-way transition; members retain history). Capability `a2a.channel.send`. |
+| `a2a.channel.archive` | `{ channelId, archivedBy, verifiedWorkspaceId }` | stable | Archives a channel (one-way; members retain history). HUMANS-ONLY: rides the renderer-only `channels:mutate-local` IPC, deliberately absent from the pipe router (like `kick`), so no agent/MCP caller can reach it. Daemon authz: caller must be a member or the company CEO (`createdBy` is metadata only). |
 | `a2a.channel.get` | `{ workspaceId, channelId }` | stable | Returns the channel row. Capability `a2a.channel.read`. |
 | `a2a.channel.getMessages` | `{ workspaceId, channelId, sinceSeq? }` | stable | Returns the channel's message list, optionally filtered to `seq >= sinceSeq`. Capability `a2a.channel.read`. |
 | `a2a.channel.getMembers` | `{ workspaceId, channelId }` | stable | Returns the channel's member list. Capability `a2a.channel.read`. |
@@ -189,9 +189,8 @@ The wmux MCP server (hosted in-process, named-pipe transport to the daemon) expo
 | `channel_post` | `a2a.channel.post` | Posts a message. Idempotent on `client_msg_id`. Surfaces `PERSIST_FAILED` (R7) instead of swallowing. |
 | `channel_join` | `a2a.channel.join` | Joins a channel. |
 | `channel_leave` | `a2a.channel.leave` | Leaves a channel. |
-| `channel_archive` | `a2a.channel.archive` | Archives a channel (one-way). |
 
-The pipe RPC surface also exposes `a2a.channel.get`, `a2a.channel.getMessages`, and `a2a.channel.getMembers` (read-only, capability `a2a.channel.read`) which are not yet surfaced as MCP tools. The history-shaping `channel.history` MCP tool is explicitly deferred per plan Scope Boundaries — pagination and streaming shape is unsettled.
+There is intentionally no `channel_archive` MCP tool: archiving tears a channel down for everyone, so — like kicking a member — it is a humans-only action that rides the renderer-only `channels:mutate-local` IPC and is never agent-reachable. The pipe RPC surface also exposes `a2a.channel.get`, `a2a.channel.getMessages`, and `a2a.channel.getMembers` (read-only, capability `a2a.channel.read`) which are not yet surfaced as MCP tools. The history-shaping `channel.history` MCP tool is explicitly deferred per plan Scope Boundaries — pagination and streaming shape is unsettled.
 
 ### Company A2A (experimental)
 

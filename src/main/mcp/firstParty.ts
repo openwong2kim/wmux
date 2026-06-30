@@ -136,7 +136,9 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'a2a.channel.getMessages',
   'a2a.channel.getMembers',
   'a2a.channel.create',
-  'a2a.channel.archive',
+  // NOTE: a2a.channel.archive is NOT here (nor is kick). Both are humans-only —
+  // routed via the renderer-only channels:mutate-local IPC, never the MCP/pipe
+  // surface — so a first-party agent is not granted them.
   'a2a.channel.join',
   'a2a.channel.leave',
   'a2a.channel.post',

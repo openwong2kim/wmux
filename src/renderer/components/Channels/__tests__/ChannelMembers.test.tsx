@@ -14,7 +14,7 @@ import { describe, it, expect } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { readFileSync } from 'node:fs';
 import { resolve } from 'node:path';
-import { ChannelMembersView, rosterParticipants } from '../ChannelMembers';
+import { ChannelMembersView } from '../ChannelMembers';
 import type { ChannelMember } from '../../../../shared/channels';
 
 const SRC = resolve(process.cwd(), 'src/renderer/components/Channels');
@@ -47,32 +47,25 @@ describe('ChannelMembersView — pure view', () => {
   });
 });
 
-describe('rosterParticipants (owner is not a roster member)', () => {
-  it('drops the owner UI entry so a freshly created channel reads as 0 members', () => {
-    // create() auto-adds the creator as (ownerWs, local-ui). That is the owner,
-    // not a participant — the roster should be empty until agents are invited.
-    const out = rosterParticipants([member('ws-owner', 'local-ui')], 'ws-owner');
-    expect(out).toEqual([]);
-  });
-
-  it('keeps agents — including agents in the owner workspace — and other workspaces', () => {
-    const members = [
-      member('ws-owner', 'local-ui'), // owner human placeholder → dropped
-      member('ws-owner', 'backend'), // an AGENT in the owner ws → kept
-      member('ws-2', 'local-ui'), // another workspace explicitly added → kept
-      member('ws-3', 'lead'), // an agent elsewhere → kept
-    ];
-    const out = rosterParticipants(members, 'ws-owner');
-    expect(out.map((m) => `${m.workspaceId}:${m.memberId}`)).toEqual([
-      'ws-owner:backend',
-      'ws-2:local-ui',
-      'ws-3:lead',
-    ]);
-  });
-
-  it('is a no-op when the owner is not a UI member of the channel', () => {
-    const members = [member('ws-9', 'lead')];
-    expect(rosterParticipants(members, 'ws-owner')).toEqual(members);
+describe('ChannelMembersView — every member counts (pure view)', () => {
+  it('counts the creating workspace as a member (no more "0 members" lie)', () => {
+    // The creating workspace's human placeholder used to be hidden, so an
+    // owner-only channel read as "0 members". The roster now shows every member
+    // with no privileged owner, so the same channel reads as 1.
+    const html = renderToStaticMarkup(
+      <ChannelMembersView
+        members={[member('ws-owner', 'local-ui')]}
+        workspaceLabel={(id) => id}
+        selfWorkspaceId="ws-2"
+        selfMemberId="local-ui"
+        joinableWorkspaces={[]}
+        canJoin={false}
+        onJoin={() => undefined}
+        onLeave={() => undefined}
+        t={(k) => k}
+      />,
+    );
+    expect(html).toContain('>1<');
   });
 });
 
@@ -89,18 +82,20 @@ describe('ChannelMembers — wiring regression guard', () => {
   it('container wires kick (humans-only eject) via kickChannelDaemon, gated by canKick', () => {
     expect(members).toContain('kickChannelDaemon');
     expect(members).toMatch(/const canKick =/);
-    // kick is gated on a resolvable human identity + a non-archived channel.
-    expect(members).toMatch(/!!selfWorkspaceId && channel\.status !== 'archived'/);
+    // kick is gated on the actor being a member (or company CEO) + non-archived,
+    // mirroring the daemon kick() authz so non-members don't see dead buttons.
+    expect(members).toMatch(/const canKick = \(selfIsMember \|\| isCeo\) && channel\.status !== 'archived'/);
   });
 
-  it('view renders kick on NON-self rows and leave on the self row (the popover lives in source)', () => {
+  it('view renders kick on NON-self rows and leave on the self row', () => {
     // The roster rows sit behind a useState-gated popover, so renderToStaticMarkup
     // can't reach them — pin the per-row branch in source instead (same lockstep
-    // pattern as the self-only-leave guard above).
+    // pattern as the self-only-leave guard above). Every member is treated the
+    // same — there is no privileged owner row.
     expect(members).toContain('data-channel-member-leave');
     expect(members).toContain('data-channel-member-kick');
-    // self ? <leave> : (onKick && <kick>) — the leave affordance is self-only and
-    // kick only renders for OTHER members, and only when onKick was provided.
+    // self ? <leave> : (onKick && <kick>) — leave is self-only, kick renders for
+    // any OTHER member when onKick was provided.
     expect(members).toMatch(/\{self \?/);
     expect(members).toMatch(/onKick && \(/);
   });
@@ -114,14 +109,29 @@ describe('ChannelMembers — wiring regression guard', () => {
     expect(members).toMatch(/m\.workspaceId === selfWorkspaceId && m\.memberId === selfMemberId/);
   });
 
-  it('P1b: a member may invite another workspace (incl. private); join no longer public-only', () => {
-    // canJoin no longer gates on visibility==='public' — a member can invite to
-    // a private channel too. The picker still excludes archived channels.
-    expect(members).not.toMatch(/visibility === 'public'/);
-    expect(members).toMatch(/status !== 'archived'/);
-    // self-join vs invite branch: adding ANOTHER workspace routes through invite.
+  it('operator model: the picker offers EVERY non-member workspace (not self-only)', () => {
+    // The human GUI operates every local workspace, so the picker is no longer
+    // gated to the active workspace. The old self-only filter is gone, and the
+    // joinable list starts from the full workspace set.
+    expect(members).not.toContain('w.id === selfWorkspaceId');
+    expect(members).toMatch(/const joinableWorkspaces: JoinableWorkspace\[\] = workspaces/);
+  });
+
+  it('add routes by channel visibility: public → self-join, private → invite', () => {
+    expect(members).toMatch(/channel\.visibility === 'public'/);
+    expect(members).toContain('joinChannelDaemon');
     expect(members).toContain('inviteChannelDaemon');
-    expect(members).toMatch(/workspaceId === selfWorkspaceId/);
+    // The picker still excludes archived channels.
+    expect(members).toMatch(/status !== 'archived'/);
+  });
+
+  it('operator model: roster shows every member, no privileged owner (count no longer lies)', () => {
+    // The owner-hiding rosterParticipants helper is gone; rosterMembers === members
+    // and there is no special owner concept in the panel.
+    expect(members).toMatch(/const rosterMembers = members;/);
+    expect(members).not.toContain('rosterParticipants');
+    expect(members).not.toContain('data-channel-member-owner');
+    expect(members).not.toContain('ownerWorkspaceId');
   });
 
   it('ChannelView mounts the members control in the header slot', () => {

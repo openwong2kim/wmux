@@ -258,23 +258,13 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
     },
   );
 
-  // ── channel_archive ───────────────────────────────────────────────
-  server.tool(
-    'channel_archive',
-    'Archive a channel. Archive is one-way (R4); once archived the channel is read-only for new posts but existing members retain history access. The authz rule (plan KTD-F) is: caller is the creator (createdBy) or the company CEO — both are checked against the verified workspaceId, not the client-supplied `archivedBy`.',
-    {
-      channel_id: z.string().describe('Target channel id.'),
-    },
-    async ({ channel_id }) => {
-      const workspaceId = await deps.resolveWorkspaceId();
-      return callChannelRpc('a2a.channel.archive' as RpcMethod, {
-        workspaceId,
-        verifiedWorkspaceId: workspaceId,
-        channelId: channel_id,
-        archivedBy: workspaceId,
-      });
-    },
-  );
+  // NOTE: there is intentionally NO channel_archive MCP tool. Archiving tears a
+  // channel down for everyone, so — like kicking a member — it is a HUMANS-ONLY
+  // action that rides the renderer-only `channels:mutate-local` IPC and is absent
+  // from the `a2a.channel.*` pipe router. Same-machine agent identity is forgeable
+  // (#113), so an agent-reachable archive would let any member-workspace agent
+  // destroy any channel. Agents do not need it: an abandoned channel is pruned by
+  // the empty-channel reaper once every member has left.
 
   // ── channel_read ──────────────────────────────────────────────────
   // The pull half of the channel attention model: agents are pushed only

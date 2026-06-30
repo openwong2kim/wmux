@@ -11,8 +11,8 @@
 // (methodCapabilityMap.ts).
 //
 // D5 — caller-identity server-pin. The daemon trusts `verifiedWorkspaceId`
-// for every authz gate (post: sender===verified; archive: createdBy/CEO;
-// reads: membership/visibility). That field MUST NOT be a client-supplied
+// for every authz gate (post: sender===verified; reads: membership/
+// visibility). That field MUST NOT be a client-supplied
 // value, or a forger sets sender.workspaceId AND verifiedWorkspaceId to a
 // victim's (public) ws-id and sails through. So here, BEFORE forwarding to
 // the daemon, we OVERWRITE verifiedWorkspaceId with a value resolved from a
@@ -21,9 +21,10 @@
 // workspace via the renderer (`input.findOwnerWorkspace`), exactly as
 // `a2a.resolve.identity` does (a2a.rpc.ts).
 //
-// Mutating methods (create/archive/join/leave/post) REQUIRE a resolvable
+// Mutating methods (create/join/leave/post/invite) REQUIRE a resolvable
 // senderPtyId and fail closed without one — so a renderer composer / headless
-// caller with no PTY cannot mutate (it is read-only). Read methods accept a
+// caller with no PTY cannot mutate (it is read-only). (archive + kick are
+// humans-only and not registered here at all — see the NOTE in the registrar.) Read methods accept a
 // no-PTY caller and fall back to the caller-supplied scope: the renderer is
 // trusted by the process boundary, and this is the documented same-user
 // residual (a same-user process can already read every workspace's token —
@@ -133,18 +134,17 @@ export function registerA2aChannelRpc(
 
   // Mutating — capability 'a2a.channel.send' (verifiable caller required)
   router.register('a2a.channel.create', (p) => forward('a2a.channel.create', p, true));
-  router.register('a2a.channel.archive', (p) => forward('a2a.channel.archive', p, true));
   router.register('a2a.channel.join', (p) => forward('a2a.channel.join', p, true));
   router.register('a2a.channel.leave', (p) => forward('a2a.channel.leave', p, true));
   router.register('a2a.channel.post', (p) => forward('a2a.channel.post', p, true));
   router.register('a2a.channel.invite', (p) => forward('a2a.channel.invite', p, true));
 
-  // NOTE: a2a.channel.kick is intentionally NOT registered here. Ejecting ANOTHER
-  // member is a HUMANS-ONLY action (product decision): agents must never kick each
-  // other. Same-machine agent identity is forgeable (#113, accepted ceiling), so an
-  // agent-level kick capability would let any agent eject any other. Like ack, kick
-  // rides the renderer-only channels:mutate-local path (channelLocal.handler) — a
-  // first-party GUI surface reachable only across the Electron process boundary and
-  // unreachable from the pipe/MCP. Registering it here would silently re-open the
-  // exact agent-eject hole this design closes.
+  // NOTE: a2a.channel.archive and a2a.channel.kick are intentionally NOT registered
+  // here. BOTH are HUMANS-ONLY actions (product decision): archiving tears a channel
+  // down for EVERYONE, kicking ejects another member. Same-machine agent identity is
+  // forgeable (#113, accepted ceiling), so an agent-reachable archive/kick would let
+  // any member-workspace agent destroy a channel or eject anyone. Like ack, they ride
+  // the renderer-only channels:mutate-local path (channelLocal.handler) — a first-party
+  // GUI surface reachable only across the Electron process boundary and unreachable
+  // from the pipe/MCP. Registering either here would silently re-open that hole.
 }

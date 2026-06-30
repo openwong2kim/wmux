@@ -585,8 +585,16 @@ export class ChannelService {
    * Archive a channel. Sets `status: 'archived'` and `archivedAt`.
    * Members retain history access (KTD-G). Subsequent `post` calls
    * return `CHANNEL_ARCHIVED`. `CHANNEL_NOT_FOUND` if the id is unknown;
-   * `NOT_AUTHORIZED` if the verified caller is neither the creator nor
-   * the company CEO; `PERSIST_FAILED` if the writer cannot save.
+   * `NOT_AUTHORIZED` if the verified caller is not a member (or the company
+   * CEO); `PERSIST_FAILED` if the writer cannot save.
+   *
+   * Authz mirrors kick(): a member (or the CEO) may archive. There is no
+   * privileged "creator" — `createdBy` is metadata (audit trail) only, never an
+   * authz input. Like kick, archive is HUMANS-ONLY at the TRANSPORT layer
+   * (renderer-only `channels:mutate-local`; deliberately absent from the
+   * `a2a.channel.*` pipe router), so no agent/MCP caller can reach it — a
+   * same-machine agent identity is forgeable (#113), so an agent-reachable
+   * archive would let any member-workspace agent tear a channel down for everyone.
    */
   async archive(params: ArchiveChannelParams): Promise<EmptyResult> {
     return this.withChannelLock(params.channelId, async () => {
@@ -594,17 +602,19 @@ export class ChannelService {
       if (!channel) {
         return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
       }
-      // Authz gate (KTD-F): caller must be the creator OR the company CEO.
-      // Both checks use `verifiedWorkspaceId` (server-resolved) — the
-      // client-supplied `archivedBy` is recorded as metadata only, never
-      // trusted for the gate.
+      // Authz: caller must be a current member OR the company CEO (mirrors
+      // kick()). `verifiedWorkspaceId` is server-resolved; the client-supplied
+      // `archivedBy` is recorded as metadata only, never trusted for the gate.
       const isCeo = this.ceoWorkspaceId !== undefined && this.ceoWorkspaceId === params.verifiedWorkspaceId;
-      if (channel.createdBy !== params.verifiedWorkspaceId && !isCeo) {
+      const isMember = (this.state.members[channel.id] ?? []).some(
+        (m) => m.workspaceId === params.verifiedWorkspaceId,
+      );
+      if (!isMember && !isCeo) {
         return {
           ok: false,
           error: {
             code: 'NOT_AUTHORIZED',
-            message: 'Only the channel creator or the company CEO may archive this channel',
+            message: 'Only a member or the company CEO may archive this channel',
           },
         };
       }

@@ -16,7 +16,7 @@
 //  - The renderer is the first-party GUI and the source of truth for the
 //    company/CEO identity, so the renderer-supplied `verifiedWorkspaceId` (the
 //    active human/CEO workspace) is trusted HERE and forwarded to the daemon.
-//    The daemon's authz gates (sender-pin, membership, archive creator/CEO) are
+//    The daemon's authz gates (sender-pin, membership, archive member/CEO) are
 //    identical to the MCP path — but the TRUST BASIS of `verifiedWorkspaceId`
 //    differs and is weaker: the MCP path resolves it from an unforgeable
 //    `senderPtyId` (input.findOwnerWorkspace), whereas this path has no PTY and

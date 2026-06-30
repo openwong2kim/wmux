@@ -236,10 +236,10 @@ describe('ChannelService', () => {
       expect(post.error.code).toBe('CHANNEL_ARCHIVED');
     });
 
-    it('rejects archive by a non-creator, non-CEO workspace (NOT_AUTHORIZED)', async () => {
-      // The archive authz gate (KTD-F) lets the creator OR the company
-      // CEO archive. With no CEO wired (`ceoWorkspaceId` is undefined),
-      // a different workspace's verified id must be rejected.
+    it('rejects archive by a NON-MEMBER, non-CEO workspace (NOT_AUTHORIZED)', async () => {
+      // Archive is membership-gated (mirrors kick), not creator-only. ws-9 is
+      // neither a member (only ws-1 is, added by create) nor the CEO (none
+      // wired), so its verified id must be rejected.
       const { svc } = makeService();
       const created = await svc.create({
         name: 'someone-elses',
@@ -261,6 +261,35 @@ describe('ChannelService', () => {
       expect(ch?.status).toBe('active');
       expect(ch?.archivedAt).toBeUndefined();
       expect(ch?.archivedBy).toBeUndefined();
+    });
+
+    it('lets a non-creator MEMBER archive (membership-gated, not creator-only)', async () => {
+      // Operator-model rule: archive is gated on MEMBERSHIP, not authorship.
+      // createdBy is metadata only — any member may archive. Here ws-2 joins a
+      // channel ws-1 created, then archives it successfully.
+      const { svc } = makeService();
+      const created = await svc.create({
+        name: 'shared-room',
+        visibility: 'public',
+        createdBy: { workspaceId: 'ws-1', memberId: 'm-1', memberName: 'Alice' },
+        verifiedWorkspaceId: 'ws-1',
+      });
+      if (!created.ok) throw new Error(`expected create ok, got ${created.error.code}: ${created.error.message}`);
+      const joined = await svc.join({
+        channelId: created.channel.id,
+        member: { workspaceId: 'ws-2', memberId: 'local-ui', memberName: 'Bob' },
+        verifiedWorkspaceId: 'ws-2',
+      });
+      if (!joined.ok) throw new Error(`expected join ok, got ${joined.error.code}: ${joined.error.message}`);
+      const r = await svc.archive({
+        channelId: created.channel.id,
+        archivedBy: 'ws-2',
+        verifiedWorkspaceId: 'ws-2',
+      });
+      expect(r.ok).toBe(true);
+      const ch = svc.get(created.channel.id, 'ws-2');
+      expect(ch?.status).toBe('archived');
+      expect(ch?.archivedBy).toBe('ws-2');
     });
 
     it('lets the company CEO archive any channel (CEO authz override)', async () => {

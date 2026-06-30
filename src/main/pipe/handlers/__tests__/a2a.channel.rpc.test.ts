@@ -203,7 +203,6 @@ describe('a2a.channel.rpc — read routing (capability a2a.channel.read)', () =>
 describe('a2a.channel.rpc — mutating routing (capability a2a.channel.send)', () => {
   it.each([
     ['a2a.channel.create', 'a2a.channel.create'],
-    ['a2a.channel.archive', 'a2a.channel.archive'],
     ['a2a.channel.join', 'a2a.channel.join'],
     ['a2a.channel.leave', 'a2a.channel.leave'],
     ['a2a.channel.post', 'a2a.channel.post'],
@@ -256,27 +255,29 @@ describe('a2a.channel.rpc — mutating routing (capability a2a.channel.send)', (
 });
 
 // =========================================================================
-// 2a. kick is HUMANS-ONLY — deliberately NOT routed on the pipe
+// 2a. archive + kick are HUMANS-ONLY — deliberately NOT routed on the pipe
 // =========================================================================
 
-describe('a2a.channel.rpc — kick is unregistered (agents cannot eject)', () => {
-  it('rejects a2a.channel.kick with Unknown method and never reaches the daemon', async () => {
+describe('a2a.channel.rpc — archive + kick are unregistered (agents cannot reach them)', () => {
+  it.each([
+    [
+      'a2a.channel.archive',
+      { channelId: CHANNEL_ID, archivedBy: 'ws-attacker', senderPtyId: 'pty-attacker' },
+    ],
+    [
+      'a2a.channel.kick',
+      { channelId: CHANNEL_ID, targetWorkspaceId: 'ws-victim', targetMemberId: 'm-victim', senderPtyId: 'pty-attacker' },
+    ],
+  ] as const)('rejects %s with Unknown method and never reaches the daemon', async (method, params) => {
     const daemon = makeFakeDaemon(() => ({ ok: true, value: null }));
     const router = setupHandlerRouter(daemon);
     const rpcSpy = (daemon as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
 
-    const res = await router.dispatch({
-      id: 'kick-unreg',
-      method: 'a2a.channel.kick',
-      params: {
-        channelId: CHANNEL_ID,
-        targetWorkspaceId: 'ws-victim',
-        targetMemberId: 'm-victim',
-        // Even a fully-resolvable agent identity must not get through — the
-        // method simply isn't on this router (humans-only, renderer IPC path).
-        senderPtyId: 'pty-attacker',
-      },
-    });
+    // Even a fully-resolvable agent identity must not get through — these methods
+    // simply aren't on this router (humans-only, renderer IPC path). Archiving
+    // tears a channel down for everyone; kicking ejects a member. Neither is an
+    // agent-reachable capability.
+    const res = await router.dispatch({ id: `unreg-${method}`, method, params });
 
     expect(res.ok).toBe(false);
     if (!res.ok) expect(res.error).toMatch(/Unknown method/);
