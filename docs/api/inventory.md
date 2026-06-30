@@ -190,7 +190,7 @@ The wmux MCP server (hosted in-process, named-pipe transport to the daemon) expo
 | `channel_join` | `a2a.channel.join` | Joins a channel. |
 | `channel_leave` | `a2a.channel.leave` | Leaves a channel. |
 
-There is intentionally no `channel_archive` MCP tool: archiving tears a channel down for everyone, so — like kicking a member — it is a humans-only action that rides the renderer-only `channels:mutate-local` IPC and is never agent-reachable. The pipe RPC surface also exposes `a2a.channel.get`, `a2a.channel.getMessages`, and `a2a.channel.getMembers` (read-only, capability `a2a.channel.read`) which are not yet surfaced as MCP tools. The history-shaping `channel.history` MCP tool is explicitly deferred per plan Scope Boundaries — pagination and streaming shape is unsettled.
+There is intentionally no `channel_archive` MCP tool: archiving tears a channel down for everyone, so — like kicking a member — it is a humans-only action that rides the renderer-only `channels:mutate-local` IPC and is never agent-reachable. Of the read-only pipe RPCs (capability `a2a.channel.read`), `a2a.channel.getMessages` and `a2a.channel.getMembers` are already surfaced as the `channel_read` and `channel_get_members` MCP tools; only `a2a.channel.get` is not yet exposed as an MCP tool. The history-shaping `channel.history` MCP tool is explicitly deferred per plan Scope Boundaries — pagination and streaming shape is unsettled.
 
 ### Company A2A (experimental)
 

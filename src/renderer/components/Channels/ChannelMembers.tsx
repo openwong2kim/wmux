@@ -251,8 +251,16 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
     .filter((w) => !members.some((m) => m.workspaceId === w.id))
     .map((w) => ({ id: w.id, name: w.name }));
 
-  // Show the picker for any non-archived channel with a resolvable self ws.
-  const canJoin = channel.status !== 'archived' && !!selfWorkspaceId;
+  // Show the picker only when the self ws can actually act on the channel: a
+  // public channel anyone can self-join, but a private channel can only be
+  // invited into by a current member (the daemon gates invite on the inviter
+  // being a member). Without the membership clause, a private-channel preview
+  // from a NON-member ws (the multi-workspace subscription path documented in
+  // ChannelView) would show a dead picker that only toasts NOT_AUTHORIZED.
+  const canJoin =
+    channel.status !== 'archived' &&
+    !!selfWorkspaceId &&
+    (channel.visibility === 'public' || selfIsMember);
 
   const handleJoin = (workspaceId: string): void => {
     const label = workspaceLabel(workspaceId);
