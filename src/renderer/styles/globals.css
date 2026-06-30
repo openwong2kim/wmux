@@ -268,6 +268,38 @@ button {
   background: transparent;
 }
 
+/* xterm 6 moved the terminal to a Monaco/VS Code scrollbar that AUTO-HIDES when
+   idle via an INLINE `visibility: hidden` on `.scrollbar` (NOT opacity — that was
+   a red herring), and xterm no longer paints the old `.xterm-viewport` native bar
+   that the `::-webkit-scrollbar` rules above target. Net effect: the terminal had
+   NO visible scrollbar while every other panel showed a persistent one (scrollback
+   itself worked fine). Force the scrollbar always-visible and paint the slider to
+   match the theme so it's consistent with the rest of the UI. */
+.xterm .xterm-scrollable-element > .scrollbar {
+  /* Monaco sets an INLINE `visibility: hidden` on the scrollbar when idle (the
+     real auto-hide mechanism — opacity alone was a red herring). Force it. */
+  visibility: visible !important;
+}
+/* Thin the Monaco bar (default 14px) down to the 6px the rest of the UI uses. */
+.xterm .xterm-scrollable-element > .scrollbar.vertical,
+.xterm .xterm-scrollable-element > .scrollbar.vertical > .slider {
+  width: 6px !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar.invisible {
+  opacity: 1 !important;
+  pointer-events: auto !important;
+}
+.xterm .xterm-scrollable-element > .scrollbar > .slider {
+  /* Same colour as the rest of the UI's scrollbar (the ::-webkit-scrollbar above).
+     The real bug was the inline visibility:hidden, NOT the colour. */
+  visibility: visible !important;
+  background: var(--bg-surface) !important;
+  border-radius: 3px;
+}
+.xterm .xterm-scrollable-element > .scrollbar > .slider:hover {
+  background: var(--bg-overlay) !important;
+}
+
 /* Notification ring pulse on inactive panes with unread notifications */
 @keyframes notification-ring-pulse {
   0%, 100% { box-shadow: 0 0 0 0 rgba(var(--accent-blue-rgb), 0.4); }
