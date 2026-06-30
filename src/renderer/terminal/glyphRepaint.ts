@@ -26,6 +26,15 @@
 //                 (quiet for burstQuietMs). This is the "watching agent output
 //                 garble live" case where neither focus nor visibility changes.
 //
+// Mid-stream flush (issue #318): the trailing burst repaint only fires once the
+// stream goes quiet for burstQuietMs. A full-screen TUI (Claude Code, vim)
+// repaints frames continuously during a long answer, so that quiet gap never
+// arrives and the burst repaint never fires until output finally stops — the
+// dirty-region staleness then sits on screen for the entire stream (the user's
+// "old output overlays new during long conversations" report). So once a burst
+// has qualified, we ALSO repaint every burstStreamFlushMs of continuous output,
+// not just at the trailing settle.
+//
 // All three reasons run the same full-range refresh; the caller does not vary
 // repaint cost per reason. The refresh never mutates the shared glyph atlas
 // (#191), so it cannot corrupt sibling panes — the burst-visibility gate aside,
@@ -59,6 +68,10 @@ export interface GlyphRepaintOptions {
   /** Minimum interval between focus-triggered repaints. Focus fires on every
    *  click into the pane; the atlas clear behind it should not. */
   focusThrottleMs?: number;
+  /** During a sustained burst that never goes quiet (continuous TUI repaint),
+   *  repaint at most this often. Bounds the mid-stream flush cadence so a busy
+   *  stream stays fresh without churning a full refresh on every write. */
+  burstStreamFlushMs?: number;
   /** Injectable clock for tests. */
   now?: () => number;
 }
@@ -66,6 +79,10 @@ export interface GlyphRepaintOptions {
 export const BURST_BYTES_DEFAULT = 32 * 1024;
 export const BURST_QUIET_MS_DEFAULT = 300;
 export const FOCUS_THROTTLE_MS_DEFAULT = 1000;
+// Mid-stream flush cadence (issue #318). ~2 repaints/sec during heavy streaming
+// — frequent enough that corruption never lingers visibly, infrequent enough
+// that the extra full-range refreshes are not measurable GPU churn.
+export const BURST_STREAM_FLUSH_MS_DEFAULT = 500;
 
 export function createGlyphRepaintScheduler(
   options: GlyphRepaintOptions,
@@ -75,18 +92,43 @@ export function createGlyphRepaintScheduler(
     burstBytes = BURST_BYTES_DEFAULT,
     burstQuietMs = BURST_QUIET_MS_DEFAULT,
     focusThrottleMs = FOCUS_THROTTLE_MS_DEFAULT,
+    burstStreamFlushMs: burstStreamFlushMsRaw = BURST_STREAM_FLUSH_MS_DEFAULT,
     now = Date.now,
   } = options;
+  // Floor the mid-stream cadence at 1ms so a 0/negative value can't turn the
+  // flush into a full-range refresh on every single write (the GPU churn the
+  // cadence exists to avoid). Infinity is preserved (Math.max(1, Infinity) =
+  // Infinity), so passing Infinity still disables the mid-stream flush entirely.
+  const burstStreamFlushMs = Math.max(1, burstStreamFlushMsRaw);
 
   let disposed = false;
   let burstAccum = 0;
   let quietTimer: ReturnType<typeof setTimeout> | null = null;
   let lastFocusRepaintAt = -Infinity;
+  // Burst-start / last mid-stream-flush timestamp, used by the #318 mid-stream
+  // flush so it measures from the start of the current continuous burst.
+  let lastStreamFlushAt = -Infinity;
 
   return {
     onData(byteLength: number): void {
       if (disposed || byteLength <= 0) return;
+      const t = now();
+      // A new burst begins whenever no quiet timer is pending (the previous
+      // burst already settled, or this is the first write ever). Stamp the
+      // burst start so the mid-stream flush measures from here — a short burst
+      // that settles before burstStreamFlushMs never mid-flushes, only the
+      // trailing repaint runs (unchanged behavior for interactive output).
+      if (quietTimer === null) lastStreamFlushAt = t;
       burstAccum += byteLength;
+      // Mid-stream flush (issue #318): once the burst has qualified, repaint
+      // every burstStreamFlushMs of CONTINUOUS output so a non-stop stream
+      // self-repairs instead of waiting for a quiet gap that never comes.
+      // burstAccum is deliberately NOT reset here — the burst is still open, so
+      // it keeps qualifying and the trailing repaint still runs at settle.
+      if (burstAccum >= burstBytes && t - lastStreamFlushAt >= burstStreamFlushMs) {
+        lastStreamFlushAt = t;
+        repaint('burst');
+      }
       if (quietTimer) clearTimeout(quietTimer);
       quietTimer = setTimeout(() => {
         quietTimer = null;
