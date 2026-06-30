@@ -392,7 +392,15 @@ export const createChannelsSlice: StateCreator<
       const list = state.channelMessages[channelId] ?? [];
       const existing = list.find((m) => m.seq === params.message.seq);
       if (!existing) {
-        state.channelMessages[channelId] = [...list, params.message];
+        // A19: cap the optimistic append too — the event-driven path
+        // (appendMessageFromEvent) trims, but a user posting repeatedly through
+        // postMessageDaemon → here would otherwise grow the mirror unbounded
+        // until a hydrate/resync (CodeRabbit). Older rows stay durable in the daemon.
+        const appended = [...list, params.message];
+        state.channelMessages[channelId] =
+          appended.length > CHANNEL_MESSAGES_RENDER_CAP
+            ? appended.slice(appended.length - CHANNEL_MESSAGES_RENDER_CAP)
+            : appended;
         if (state.activeChannelId !== channelId) {
           state.channelUnread[channelId] =
             (state.channelUnread[channelId] ?? 0) + 1;

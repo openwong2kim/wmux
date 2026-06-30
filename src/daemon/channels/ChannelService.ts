@@ -1205,6 +1205,13 @@ export class ChannelService {
           const channelIdMap = this.idempotency.get(channel.id);
           if (channelIdMap) {
             channelIdMap.delete(idempotencyKey(params.sender.workspaceId, params.clientMsgId));
+            // Rebuild the persisted snapshot from the reverted map — `state.idempotency`
+            // was already overwritten with the new key above, so without this the
+            // NEXT successful save would flush an orphaned composite key for a
+            // message that never existed (CodeRabbit).
+            this.state.idempotency[channel.id] = Object.fromEntries(
+              Array.from(channelIdMap.entries()).map(([k, v]) => [k, v.seq]),
+            );
           }
         }
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist post' } };
@@ -1233,9 +1240,9 @@ export class ChannelService {
         console.error('[ChannelService] emit failed:', err);
       }
       // A2: tail-evict the per-channel history above CHANNEL_MESSAGES_MAX. Done
-      // AFTER a successful persist (memory only — the NEXT post's saveOrFail
-      // flushes the trimmed array; a transient extra row on disk between posts is
-      // harmless, and doing it pre-persist would lose evicted rows on a rollback).
+      // AFTER the successful persist above (pre-persist would lose evicted rows on
+      // a rollback), then flushed immediately (below) so a restart before the next
+      // post can't rehydrate the oversized history above the cap (CodeRabbit).
       // Bounds the unbounded-growth DoS the audit found: saveImmediate
       // re-serializes the WHOLE state per post, so an uncapped history makes every
       // post O(total history). The idempotency map's pointer to an evicted seq is
@@ -1264,6 +1271,10 @@ export class ChannelService {
             );
           }
         }
+        // Persist the trim now so the durable cap stays bounded even if the daemon
+        // restarts before the next post. Best-effort: on failure the in-memory copy
+        // is still trimmed and the next post's saveOrFail re-flushes (CodeRabbit).
+        void this.saveOrFail();
       }
       return {
         ok: true,

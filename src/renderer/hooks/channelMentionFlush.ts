@@ -69,7 +69,11 @@ export function buildChannelMentionNudge(
   // [a-z0-9-]) extracted from the task title; the sender + body live in the task
   // and are read via the a2a_task_query the nudge points at, where they are
   // treated as untrusted channel content rather than as the nudge command line.
-  const channelLabel = tasks[0].metadata.title.split(' — mention from ')[0];
+  // Splitting strips memberName only for well-formed titles. A persisted/malformed
+  // title without the delimiter would otherwise paste the WHOLE title into the
+  // auto-submitted nudge — re-validate the `#channel` shape and fall back safely.
+  const rawChannelLabel = tasks[0]?.metadata.title.split(' — mention from ')[0] ?? '';
+  const channelLabel = /^#[a-z0-9-]+$/u.test(rawChannelLabel) ? rawChannelLabel : '`#channel`';
   if (tasks.length === 1) {
     return singleLine(
       `[wmux-channel] new mention in ${channelLabel} — run a2a_task_query role:agent to read`,

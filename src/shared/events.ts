@@ -74,6 +74,8 @@ export type WmuxEventType =
   // so other renderers re-sync instead of going silently stale. Same
   // per-recipient scoping as channel.message — fanned to every member ws plus
   // any ws this change removed (so a kicked/left member also drops its mirror).
+  // Public-channel creation may instead use the `'*'` sentinel in
+  // `recipientWorkspaceIds` to broadcast discoverability to EVERY workspace.
   | 'channel.catalog';
 
 export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
@@ -376,7 +378,9 @@ export interface ChannelCatalogEvent extends WmuxEventBase {
   /** Workspace that performed the change; also equals the base `workspaceId`. */
   actorWorkspaceId: string;
   /** Every workspace that must re-sync this channel: the post-change member set
-   *  PLUS any workspace removed by this change. `events.poll` fans out to each. */
+   *  PLUS any workspace removed by this change. Public-channel creation may
+   *  instead carry the single `'*'` sentinel = "broadcast to every workspace"
+   *  (discoverability). `events.poll` fans out accordingly. */
   recipientWorkspaceIds: string[];
   /** What changed — advisory; the receiver re-hydrates regardless. */
   reason: 'created' | 'archived' | 'membership';

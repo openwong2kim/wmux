@@ -175,6 +175,11 @@ export function useChannelsEventSubscription(): void {
     // A4: the first poll establishes a ring-head baseline (see the guard in
     // `tick`) instead of replaying still-in-ring history as if it were new.
     let primed = false;
+    // Generation guard for catalog re-hydration: hydrateChannelsCatalog awaits
+    // list/member RPCs before setChannels, so a slower OLDER hydrate could land
+    // after a newer one and overwrite the sidebar/roster with stale membership.
+    // Both hydrate paths bump this; only the latest run may commit (CodeRabbit).
+    let catalogHydrationRun = 0;
 
     // Drain queued channel mentions into their target panes' PTYs. Reads live
     // store state on each call (no stale closure). Stop path pins onlyPtyId +
@@ -279,11 +284,12 @@ export function useChannelsEventSubscription(): void {
             // (channels + members), not just messages, so the sidebar + roster
             // don't stay stale indefinitely after a long pause / saturated ring.
             if (rpcBridge && workspaceId) {
+              const hydrationRun = ++catalogHydrationRun;
               void hydrateChannelsCatalog({
                 rpc: rpcBridge.rpc,
                 workspaceId,
                 setChannels: useStore.getState().setChannels,
-                isCurrent: () => !disposed,
+                isCurrent: () => !disposed && hydrationRun === catalogHydrationRun,
               });
             }
             return;
@@ -382,11 +388,12 @@ export function useChannelsEventSubscription(): void {
             const st = useStore.getState();
             const rpcBridge = st.channelsRpc();
             if (rpcBridge && workspaceId) {
+              const hydrationRun = ++catalogHydrationRun;
               void hydrateChannelsCatalog({
                 rpc: rpcBridge.rpc,
                 workspaceId,
                 setChannels: st.setChannels,
-                isCurrent: () => !disposed,
+                isCurrent: () => !disposed && hydrationRun === catalogHydrationRun,
               });
             }
           }

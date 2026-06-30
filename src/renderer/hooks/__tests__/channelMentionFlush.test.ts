@@ -111,12 +111,16 @@ describe('buildChannelMentionNudge', () => {
     expect(n).toBe('[wmux-channel] 2 new channel mentions — run a2a_task_query role:agent to read');
   });
 
-  it('strips CR/LF/control chars so the nudge stays one line', () => {
+  it('falls back to a safe #channel label for a malformed/control-laden title (B7 guard)', () => {
+    // A title without the `#channel — mention from …` shape (here: raw control
+    // chars, no delimiter) must NOT paste its raw contents into the auto-submitted
+    // nudge — the label is re-validated to #[a-z0-9-] and falls back otherwise.
     // eslint-disable-next-line no-control-regex
     const n = buildChannelMentionNudge([{ id: 'chmention-x', metadata: { title: 'a\r\nb\tc\x1b' } }]);
     // eslint-disable-next-line no-control-regex
-    expect(n).not.toMatch(/[\r\n\t\x1b]/);
-    expect(n).toContain('a b c');
+    expect(n).not.toMatch(/[\r\n\t\x1b]/); // singleLine still strips — defense in depth
+    expect(n).toContain('`#channel`'); // safe placeholder, not the raw title
+    expect(n).not.toContain('a b c');
   });
 });
 

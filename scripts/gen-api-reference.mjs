@@ -327,6 +327,11 @@ function buildMarkdown() {
   p('  `wmux.internal` methods.');
   p('');
 
+  // archive + kick are humans-only: present in the cap map for RpcMethod
+  // completeness but NOT registered on the pipe router (a2a.channel.rpc.ts), so
+  // no agent/MCP caller can reach them. Flag that in the table so readers don't
+  // treat them as publicly callable A2A RPCs (CodeRabbit).
+  const HUMANS_ONLY_RPC = new Set(['a2a.channel.archive', 'a2a.channel.kick']);
   // Group methods, preserving ALL_RPC_METHODS order within each group.
   const grouped = new Map();
   for (const method of methods) {
@@ -350,7 +355,10 @@ function buildMarkdown() {
       // Totality asserted above — every method has an entry.
       const entry = capMap.get(method);
       const cap = entry.capability === null ? '`null`' : `\`${entry.capability}\``;
-      const risk = entry.riskClass ? `\`${entry.riskClass}\`` : '';
+      let risk = entry.riskClass ? `\`${entry.riskClass}\`` : '';
+      if (HUMANS_ONLY_RPC.has(method)) {
+        risk = `${risk} *(renderer-only; not routed on the main pipe/MCP path)*`.trim();
+      }
       p(`| \`${mdEscape(method)}\` | ${cap} | ${risk} |`);
     }
     p('');
