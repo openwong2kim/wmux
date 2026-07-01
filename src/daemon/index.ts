@@ -1047,7 +1047,15 @@ function registerRpcHandlers(
       // a persisted 'stopped' only ever enters through recovery replay.
       exec: p.exec,
       supervision: p.supervision
-        ? { restart: p.supervision.restart, limit: p.supervision.limit, status: 'armed' }
+        ? {
+            restart: p.supervision.restart,
+            limit: p.supervision.limit,
+            status: 'armed',
+            // U-PERM: preserve the consent-gated restore bit through the create
+            // RPC — a field-by-field copy silently dropped it (tsc-invisible:
+            // the field is optional on the target).
+            ...(p.supervision.restorePermissionMode === true ? { restorePermissionMode: true } : {}),
+          }
         : undefined,
     });
     if (session.supervision) {

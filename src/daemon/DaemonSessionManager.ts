@@ -370,6 +370,10 @@ export class DaemonSessionManager extends EventEmitter {
         restart: params.supervision.restart,
         limit: { ...params.supervision.limit },
         status: params.supervision.status,
+        // U-PERM: carry the consent-gated restore bit into the persisted meta so
+        // recovery/restart replay can honor it. Omitted from the own-copy above
+        // would silently disable the whole feature (tsc-invisible: optional field).
+        ...(params.supervision.restorePermissionMode === true ? { restorePermissionMode: true } : {}),
       };
     }
 

@@ -66,6 +66,10 @@ function isAllowedShell(shell: string): boolean {
 interface PtyCreateSupervisionInput {
   restart: 'on-failure' | 'always';
   limit?: { burst?: number; healthyUptimeSec?: number };
+  /** U-PERM: the consent-gated permission-restore bit computed by the layout
+   * funnel. Forwarded to the daemon so a reboot replay can restore the pane's
+   * captured permission mode. Daemon-only (like the rest of supervision). */
+  restorePermissionMode?: boolean;
 }
 
 type PtyCreateOptions = {
@@ -108,6 +112,9 @@ function resolveSupervisionPolicy(input: PtyCreateSupervisionInput): DaemonSuper
         PROJECT_SUPERVISION_HEALTHY_UPTIME_SEC_MAX,
       ),
     },
+    // U-PERM: forward the consent-gated restore bit (strict opt-in). Dropping it
+    // here would silently disable reboot permission restore end-to-end.
+    ...(input.restorePermissionMode === true ? { restorePermissionMode: true } : {}),
   };
 }
 

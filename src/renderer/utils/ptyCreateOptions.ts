@@ -31,6 +31,9 @@ export interface PtyCreateOptions {
   supervision?: {
     restart: 'on-failure' | 'always';
     limit?: { burst?: number; healthyUptimeSec?: number };
+    /** U-PERM: consent-gated permission-restore bit (funnel-computed). Daemon
+     * mode only; forwarded through pty.create to the daemon's supervision policy. */
+    restorePermissionMode?: boolean;
   };
 }
 

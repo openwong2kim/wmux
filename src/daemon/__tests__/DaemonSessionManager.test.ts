@@ -858,6 +858,33 @@ describe('DaemonSessionManager', () => {
       expect(session.supervision?.status).toBe('stopped');
     });
 
+    it('persists supervision.restorePermissionMode through the owned copy (U-PERM)', () => {
+      const session = manager.createSession({
+        id: 'sup-restore',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude' },
+        supervision: { restart: 'on-failure', limit: { burst: 5, healthyUptimeSec: 300 }, status: 'armed', restorePermissionMode: true },
+      });
+      // The consent-gated bit must survive the field-by-field own-copy — a plain
+      // {restart,limit,status} rebuild silently dropped it (tsc-invisible: the
+      // field is optional on the target). Covers the persist half; the create RPC
+      // handler + recovery replay halves are covered by scripts/u-perm-restore-probe.mjs.
+      expect(session.supervision?.restorePermissionMode).toBe(true);
+      expect(manager.getSession('sup-restore')?.meta.supervision?.restorePermissionMode).toBe(true);
+    });
+
+    it('omits restorePermissionMode when consent is off', () => {
+      const session = manager.createSession({
+        id: 'sup-norestore',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude' },
+        supervision: { restart: 'on-failure', limit: { burst: 5, healthyUptimeSec: 300 }, status: 'armed', restorePermissionMode: false },
+      });
+      expect(session.supervision?.restorePermissionMode).toBeUndefined();
+    });
+
     describe('removeTombstone', () => {
       it('removes a dead tombstone silently so the same id can be re-created', () => {
         manager.createSession({ id: 'tomb', cmd: 'pwsh.exe', cwd: '.', exec: { command: 'claude /loop' } });
