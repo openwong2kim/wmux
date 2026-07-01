@@ -280,8 +280,8 @@ const electronAPI = {
   projectConfig: {
     get: (cwd: string) =>
       ipcRenderer.invoke(IPC.PROJECT_CONFIG_GET, cwd) as Promise<import('../shared/wmuxProjectConfig').ProjectConfigState>,
-    setTrust: (root: string, decision: 'trusted' | 'denied' | 'clear', contentHash?: string) =>
-      ipcRenderer.invoke(IPC.PROJECT_CONFIG_SET_TRUST, root, decision, contentHash) as Promise<{ ok: boolean }>,
+    setTrust: (root: string, decision: 'trusted' | 'denied' | 'clear', contentHash?: string, unattended?: boolean) =>
+      ipcRenderer.invoke(IPC.PROJECT_CONFIG_SET_TRUST, root, decision, contentHash, unattended === true) as Promise<{ ok: boolean }>,
   },
   // Plugin host (B-1). `list` returns loaded UI plugin summaries + load
   // failures; `rpc` forwards a host-validated bridge request from a plugin

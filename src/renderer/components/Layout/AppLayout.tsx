@@ -965,6 +965,9 @@ export default function AppLayout() {
                   healthyUptimeSec:
                     projectSeed?.restartLimit?.healthyUptimeSec ?? PROJECT_SUPERVISION_DEFAULT_HEALTHY_UPTIME_SEC,
                 },
+                // U-PERM: consent-gated at layout-apply (buildTree). Included only
+                // when true so unsupervised/unconsented panes persist no bit.
+                ...(projectSeed?.restorePermissionMode === true ? { restorePermissionMode: true } : {}),
               },
             }
           : (seedCommand !== undefined ? { initialCommand: seedCommand } : {});

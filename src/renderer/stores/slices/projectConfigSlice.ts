@@ -28,6 +28,14 @@ export interface ProjectPaneSeed {
    * pty.create instead of an `initialCommand`. */
   restart?: 'on-failure' | 'always';
   restartLimit?: { burst?: number; healthyUptimeSec?: number };
+  /**
+   * U-PERM: the EFFECTIVE unattended permission-restore decision — the leaf's
+   * `restorePermissionMode` intent AND the project's explicit unattended consent
+   * (ProjectConfigState.unattended), computed at layout-apply time. The funnel
+   * passes this into the supervised pty.create's supervision policy; the daemon
+   * honors it verbatim at replay. Only ever set alongside `restart`.
+   */
+  restorePermissionMode?: boolean;
 }
 
 export interface ApplyProjectLayoutResult {
@@ -89,11 +97,15 @@ function joinProjectCwd(root: string, relative: string | undefined): string {
   return `${base}${sep}${cleaned.replace(/[/\\]+/g, sep)}`;
 }
 
-/** Build an empty pane tree from the layout, recording one seed per leaf. */
+/** Build an empty pane tree from the layout, recording one seed per leaf.
+ * `unattendedConsented` gates the per-leaf permission-restore bit: an unattended
+ * leaf only restores its captured permission mode on reboot when the user gave
+ * explicit unattended consent for this project (Minimal design 2026-07-01). */
 function buildTree(
   node: WmuxProjectLayoutNode,
   root: string,
   seeds: Record<string, ProjectPaneSeed>,
+  unattendedConsented: boolean,
 ): Pane {
   if (node.type === 'leaf') {
     const leaf = createLeafPane();
@@ -111,6 +123,12 @@ function buildTree(
       if (node.restart !== undefined) {
         seed.restart = node.restart;
         if (node.restartLimit !== undefined) seed.restartLimit = node.restartLimit;
+        // U-PERM: turn on captured-permission restore only when BOTH the leaf
+        // declared `unattended` (normalized to restorePermissionMode) AND the
+        // user consented. No consent → omitted → daemon D6 fail-safe on reboot.
+        if (node.restorePermissionMode === true && unattendedConsented) {
+          seed.restorePermissionMode = true;
+        }
       }
     }
     seeds[leaf.id] = seed;
@@ -120,7 +138,7 @@ function buildTree(
     id: generateId('pane'),
     type: 'branch',
     direction: node.direction,
-    children: node.children.map((child) => buildTree(child, root, seeds)),
+    children: node.children.map((child) => buildTree(child, root, seeds, unattendedConsented)),
     ...(node.sizes ? { sizes: node.sizes } : {}),
   };
   return branch;
@@ -174,7 +192,9 @@ export const createProjectConfigSlice: StateCreator<
       if (!ws) return;
       disposedPtyIds = collectPtyIds(ws.rootPane);
       const seeds: Record<string, ProjectPaneSeed> = {};
-      const newRoot = buildTree(layout, project.root as string, seeds);
+      // Consent is re-read from the (trusted) project state here, so revoking it
+      // (re-trust without the checkbox) makes the next layout-apply omit restore.
+      const newRoot = buildTree(layout, project.root as string, seeds, project.unattended === true);
       // P2: full-tree replace → number leaves fresh 1..n (parallels applyLayoutTemplate).
       ws.nextPaneOrdinal = assignPaneOrdinals(newRoot, 1);
       ws.rootPane = newRoot;

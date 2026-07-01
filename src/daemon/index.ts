@@ -201,11 +201,16 @@ function log(level: string, msg: string, ...args: unknown[]): void {
 //
 // X6 ③: with a captured resumeBinding whose cwd still matches, the rewrite
 // targets the EXACT session (`claude --resume <id>`); otherwise it falls back to
-// `--continue` (latest-in-cwd). The permission mode is deliberately NOT restored
-// here — supervised auto-run has no human in the loop, so re-granting
-// `--dangerously-skip-permissions` silently every reboot is unsafe (D6
-// fail-safe). Permission restore happens ONLY on the pill path (explicit user
-// Enter); the trust-gated supervised auto-restore is a deferred follow-up.
+// `--continue` (latest-in-cwd). Permission-mode restore (re-applying the
+// captured `--dangerously-skip-permissions` etc.) is OPT-IN via the persisted
+// `supervision.restorePermissionMode` bit (U-PERM): main sets it at CREATION
+// only when the leaf declared `unattended` AND the user gave explicit unattended
+// consent for the project (ProjectTrustRecord.unattended). The daemon honors
+// that bit verbatim here — no trust file is read at replay (Minimal design-lock
+// 2026-07-01: trust is gated at creation, consistent with how every other
+// supervised replay is unconditional post-creation). Absent/false → D6 fail-safe
+// (plain --resume/--continue, NO bypass flag). The pill path (explicit user
+// Enter) still opts in via permissionFlagFor separately.
 // X6 ③ (D5): a binding is usable for an EXACT-session resume only when its
 // origin transcript still exists. A purged id turns `--resume` into a silent
 // "No conversation found." (F8 — exit 0, so no exit-code fallback). We probe the
@@ -219,7 +224,13 @@ function bindingTranscriptLives(binding: ResumeBinding | undefined): boolean {
 }
 
 function resumeLaunchCommand(
-  session: { id: string; exec?: { command: string }; cwd: string; resumeBinding?: ResumeBinding },
+  session: {
+    id: string;
+    exec?: { command: string };
+    cwd: string;
+    resumeBinding?: ResumeBinding;
+    supervision?: { restorePermissionMode?: boolean };
+  },
   spoolBinding?: ResumeBinding,
 ): string | undefined {
   if (!session.exec) return undefined;
@@ -237,9 +248,24 @@ function resumeLaunchCommand(
   }
   // D5: drop to `--continue` when the exact transcript is gone (pass no binding).
   const usableBinding = bindingTranscriptLives(binding) ? binding : undefined;
-  const rewritten = toResumeCommand(session.exec.command, usableBinding, session.cwd);
+  // U-PERM: honor the persisted, consent-gated restore bit (set by main at
+  // creation). When ON, toResumeCommand appends the captured permission flag
+  // (e.g. --dangerously-skip-permissions) — but ONLY inside its binding+cwd-match
+  // branch, so a purged transcript (usableBinding undefined) still yields a plain
+  // --continue with no bypass (fail-safe). No trust file is read here.
+  const restorePermissionMode = session.supervision?.restorePermissionMode === true;
+  const rewritten = toResumeCommand(
+    session.exec.command,
+    usableBinding,
+    session.cwd,
+    restorePermissionMode ? { restorePermissionMode: true } : undefined,
+  );
   if (rewritten === session.exec.command) return undefined; // not a known agent launcher / already resuming
-  log('info', `X6 resume: replaying session ${session.id} as resume form in ${session.cwd}`);
+  log(
+    'info',
+    `X6 resume: replaying session ${session.id} as resume form in ${session.cwd}` +
+      (restorePermissionMode ? ' (unattended permission-mode restore ON)' : ''),
+  );
   return rewritten;
 }
 

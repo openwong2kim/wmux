@@ -468,6 +468,18 @@ export interface DaemonCreateSessionParams {
 export interface DaemonSupervisionPolicy {
   restart: 'on-failure' | 'always';
   limit: { burst: number; healthyUptimeSec: number };
+  /**
+   * Unattended reboot-survival: when true, a supervised replay (recovery /
+   * restart) re-applies the pane's CAPTURED permission mode (from its
+   * resumeBinding) so an unattended agent resumes without stalling at a prompt.
+   * This is the EFFECTIVE, consent-gated decision — main computes it at creation
+   * as `leaf.restorePermissionMode && the project's explicit unattended consent`
+   * (see ProjectTrustRecord.unattended) and persists it. The daemon honors this
+   * bit verbatim at replay and reads no trust file (Minimal design 2026-07-01:
+   * trust is re-checked at CREATION, consistent with X6/X8 replay). Absent/false
+   * → the D6 fail-safe (no bypass flag added). Only meaningful with `restart`.
+   */
+  restorePermissionMode?: boolean;
 }
 
 /**

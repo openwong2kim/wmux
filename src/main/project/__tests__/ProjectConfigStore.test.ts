@@ -106,7 +106,7 @@ describe('getState — config + trust evaluation', () => {
     writeConfig(proj, VALID);
     const store = makeStore();
     const s1 = await store.getState(proj);
-    await store.setDecision(s1.root!, 'trusted', s1.contentHash!);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false);
     const s2 = await store.getState(proj);
     expect(s2.trust).toBe('trusted');
   });
@@ -116,7 +116,7 @@ describe('getState — config + trust evaluation', () => {
     writeConfig(proj, VALID);
     const store = makeStore();
     const s1 = await store.getState(proj);
-    await store.setDecision(s1.root!, 'trusted', s1.contentHash!);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false);
     // Edit the file — e.g. a malicious PR changed a command.
     writeConfig(proj, { ...VALID, commands: [{ id: 'dev', title: 'Dev', command: 'evil.exe' }] });
     const s2 = await store.getState(proj);
@@ -128,7 +128,7 @@ describe('getState — config + trust evaluation', () => {
     writeConfig(proj, VALID);
     const store = makeStore();
     const s1 = await store.getState(proj);
-    await store.setDecision(s1.root!, 'denied', s1.contentHash!);
+    await store.setDecision(s1.root!, 'denied', s1.contentHash!, false);
     writeConfig(proj, { ...VALID, commands: [{ id: 'x', title: 'X', command: 'other' }] });
     const s2 = await store.getState(proj);
     expect(s2.trust).toBe('denied');
@@ -139,7 +139,7 @@ describe('getState — config + trust evaluation', () => {
     writeConfig(proj, VALID);
     const store = makeStore();
     const s1 = await store.getState(proj);
-    await store.setDecision(s1.root!, 'trusted', s1.contentHash!);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false);
     await store.clearDecision(s1.root!);
     const s2 = await store.getState(proj);
     expect(s2.trust).toBe('untrusted');
@@ -153,7 +153,7 @@ describe('getState — config + trust evaluation', () => {
     // File changes while the approval dialog is open…
     writeConfig(proj, { ...VALID, commands: [{ id: 'dev', title: 'Dev', command: 'evil.exe' }] });
     // …user approves what they SAW (old hash).
-    await store.setDecision(s1.root!, 'trusted', s1.contentHash!);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false);
     const s2 = await store.getState(proj);
     expect(s2.trust).toBe('stale'); // live bytes ≠ reviewed bytes
   });
@@ -163,14 +163,14 @@ describe('getState — config + trust evaluation', () => {
     writeConfig(proj, VALID);
     const store = makeStore();
     const s1 = await store.getState(proj);
-    await store.setDecision(s1.root!, 'trusted', s1.contentHash!);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false);
     const fresh = makeStore();
     const s2 = await fresh.getState(proj);
     expect(s2.trust).toBe('trusted');
   });
 
   it('rejects malformed content hashes', async () => {
-    await expect(makeStore().setDecision(tmpRoot, 'trusted', 'nope')).rejects.toThrow();
+    await expect(makeStore().setDecision(tmpRoot, 'trusted', 'nope', false)).rejects.toThrow();
   });
 
   it('refuses NEW roots past the entry cap but allows updates', async () => {
@@ -179,11 +179,11 @@ describe('getState — config + trust evaluation', () => {
     const store = new ProjectConfigStore(trustPath, { entryCap: 4 });
     const hash = createHash('sha256').update('x').digest('hex');
     for (let i = 0; i < 4; i++) {
-      await store.setDecision(path.join(tmpRoot, `p${i}`), 'trusted', hash);
+      await store.setDecision(path.join(tmpRoot, `p${i}`), 'trusted', hash, false);
     }
-    await expect(store.setDecision(path.join(tmpRoot, 'overflow'), 'trusted', hash)).rejects.toThrow(/full/);
+    await expect(store.setDecision(path.join(tmpRoot, 'overflow'), 'trusted', hash, false)).rejects.toThrow(/full/);
     // Existing root stays updatable.
-    await expect(store.setDecision(path.join(tmpRoot, 'p0'), 'denied', hash)).resolves.toBeUndefined();
+    await expect(store.setDecision(path.join(tmpRoot, 'p0'), 'denied', hash, false)).resolves.toBeUndefined();
   });
 
   it('survives a corrupt trust file', async () => {
@@ -215,5 +215,71 @@ describe('normalizeProjectRoot', () => {
     if (process.platform === 'win32') {
       expect(normalizeProjectRoot(tmpRoot.toUpperCase())).toBe(b);
     }
+  });
+});
+
+describe('setDecision — unattended reboot-survival consent (U-PERM)', () => {
+  it('persists and surfaces unattended consent for trusted bytes', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    writeConfig(proj, VALID);
+    const store = makeStore();
+    const s1 = await store.getState(proj);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, true);
+    const s2 = await store.getState(proj);
+    expect(s2.trust).toBe('trusted');
+    expect(s2.unattended).toBe(true);
+  });
+
+  it('omits unattended when the checkbox was not ticked', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    writeConfig(proj, VALID);
+    const store = makeStore();
+    const s1 = await store.getState(proj);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false);
+    expect((await store.getState(proj)).unattended).toBe(false);
+  });
+
+  it('re-trust with consent OFF clears a prior grant — no silent carry-forward (codex P2)', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    writeConfig(proj, VALID);
+    const store = makeStore();
+    const s1 = await store.getState(proj);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, true);
+    expect((await store.getState(proj)).unattended).toBe(true);
+    // Same bytes, re-trusted WITHOUT the checkbox → full-record replace drops it.
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, false);
+    expect((await store.getState(proj)).unattended).toBe(false);
+  });
+
+  it('does not surface unattended while the file is stale (consent bound to old bytes)', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    writeConfig(proj, VALID);
+    const store = makeStore();
+    const s1 = await store.getState(proj);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, true);
+    writeConfig(proj, { ...VALID, commands: [{ id: 'dev', title: 'Dev', command: 'other' }] });
+    const s2 = await store.getState(proj);
+    expect(s2.trust).toBe('stale');
+    expect(s2.unattended).toBe(false); // must not apply to un-reviewed bytes
+  });
+
+  it('a denied decision forces unattended false even when requested', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    writeConfig(proj, VALID);
+    const store = makeStore();
+    const s1 = await store.getState(proj);
+    await store.setDecision(s1.root!, 'denied', s1.contentHash!, true);
+    const s2 = await store.getState(proj);
+    expect(s2.trust).toBe('denied');
+    expect(s2.unattended ?? false).toBe(false);
+  });
+
+  it('persists unattended across store instances', async () => {
+    const proj = path.join(tmpRoot, 'proj');
+    writeConfig(proj, VALID);
+    const store = makeStore();
+    const s1 = await store.getState(proj);
+    await store.setDecision(s1.root!, 'trusted', s1.contentHash!, true);
+    expect((await makeStore().getState(proj)).unattended).toBe(true);
   });
 });

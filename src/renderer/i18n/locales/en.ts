@@ -184,6 +184,11 @@ export const en = {
   // as a process that wmux auto-restarts. {restart}=on-failure|always,
   // {burst}=consecutive-failure cap before the runaway guard stops it.
   'project.supervisionBadge': '↻ auto-restarts ({restart}, up to {burst} consecutive)',
+  // Unattended reboot-survival consent — a SEPARATE opt-in from base trust. The
+  // checkbox restores each unattended pane's last-used permission mode on reboot
+  // (may include --dangerously-skip-permissions), so it is surfaced explicitly.
+  'project.unattendedHeading': 'Unattended (skip permission prompts after reboot)',
+  'project.unattendedConsent': 'Allow reboots to auto-run these {count} pane(s) without permission prompts. Each restores its last-used permission mode, which may include --dangerously-skip-permissions.',
   'palette.catWorkspace': 'Workspace',
   'palette.catSurface': 'Surface',
   'palette.catCommand': 'Command',

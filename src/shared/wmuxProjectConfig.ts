@@ -130,6 +130,13 @@ export interface ProjectConfigState {
   invalid?: boolean;
   contentHash?: string;
   trust?: ProjectTrustState;
+  /**
+   * Unattended reboot-survival consent for THESE bytes (surfaced only when
+   * `trust === 'trusted'`). Drives the layout funnel's per-leaf
+   * `restorePermissionMode` gate: an unattended leaf restores its captured
+   * permission mode on reboot ONLY when the user gave this explicit consent.
+   */
+  unattended?: boolean;
 }
 
 // ── Field validators ─────────────────────────────────────────────────────────
