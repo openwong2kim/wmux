@@ -10,6 +10,7 @@ import { IPC, ENV_KEYS } from '../../../shared/constants';
 import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';
 import { sanitizePtyText } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
+import { getShellUtf8Locale } from '../../pty/shellLocale';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
 import { updateCwd } from './metadata.handler';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
@@ -343,7 +344,7 @@ export function registerPTYHandlers(
       const identity: Record<string, string> = {};
       if (options?.workspaceId) identity[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
       if (options?.surfaceId) identity[ENV_KEYS.SURFACE_ID] = options.surfaceId;
-      const resolvedEnv = resolveSpawnEnv(globalThis.process.env, options?.env, identity);
+      const resolvedEnv = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale());
 
       // Create session via daemon RPC. `env` is the FULLY-RESOLVED child env;
       // the daemon replays it verbatim (see DaemonCreateSessionParams.env).
