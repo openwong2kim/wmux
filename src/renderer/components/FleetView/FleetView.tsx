@@ -40,6 +40,9 @@ export default function FleetView() {
   // here so the selector re-runs when an agent's PostToolUse activity changes.
   const surfaceActivity = useStore((s) => s.surfaceActivity);
   const paneLabel = useStore((s) => s.paneLabel);
+  // X8 supervision mirror — subscribed here so the selector re-runs when a
+  // supervised pane arms/stops or its restart count changes.
+  const supervisionByPtyId = useStore((s) => s.supervisionByPtyId);
 
   // S-C2: tab lives in uiSlice (not FleetView-local) so the A2A / MCP approval
   // modals can suppress themselves while the inbox tab is open (AppLayout delta
@@ -69,8 +72,8 @@ export default function FleetView() {
   // trees or the per-pty attention map change (the two inputs the selector
   // reads), not on every unrelated store mutation.
   const panes = useMemo(
-    () => sortFleetPanes(selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel }), fleetSortMode),
-    [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, fleetSortMode],
+    () => sortFleetPanes(selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId }), fleetSortMode),
+    [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId, fleetSortMode],
   );
   const needsCount = useMemo(() => countNeedsAttention(panes), [panes]);
 

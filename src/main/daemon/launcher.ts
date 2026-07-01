@@ -8,6 +8,7 @@ import { getWmuxDir } from '../../daemon/config';
 import { getDaemonPipeName, readDaemonAuthToken } from '../DaemonClient';
 import { DAEMON_EXIT_ALREADY_RUNNING } from '../../shared/constants';
 import { markBoot } from '../util/bootTrace';
+import { classifyTasklistOutput, classifyKillOutcome, type ProcessLiveness } from '../../shared/processLiveness';
 
 export interface DaemonInfo {
   pid: number;
@@ -63,31 +64,12 @@ function askUserToRecoverFromStalePid(opts: {
   return choice === 0;
 }
 
-export type ProcessLiveness = 'alive' | 'dead' | 'unknown';
-
-/**
- * Classify a Windows `tasklist` probe result. `stdout === null` means the
- * probe itself failed (timeout under Defender realtime scan, CPU/WMI
- * pressure, exec error) — that is `unknown`, NOT `dead`. Only an
- * authoritative empty listing (exec succeeded, PID absent) is `dead`.
- */
-export function classifyTasklistOutput(pid: number, stdout: string | null): ProcessLiveness {
-  if (stdout === null) return 'unknown';
-  return stdout.includes(`"${pid}"`) ? 'alive' : 'dead';
-}
-
-/**
- * Classify a POSIX `process.kill(pid, 0)` outcome. No error → the signal
- * reached a live process (`alive`). `ESRCH` → authoritative "no such
- * process" (`dead`). `EPERM` → the process exists but we may not signal it
- * (`alive`). Anything else → `unknown`.
- */
-export function classifyKillOutcome(code: string | undefined): ProcessLiveness {
-  if (code === undefined) return 'alive';
-  if (code === 'ESRCH') return 'dead';
-  if (code === 'EPERM') return 'alive';
-  return 'unknown';
-}
+// `ProcessLiveness` + the pure classifiers now live in shared/processLiveness so
+// the daemon (a bare Node process that must NOT import this electron-dependent
+// module) shares the exact same contract. Re-exported here so existing importers
+// (launcher.liveness.test.ts) keep resolving them from '../launcher'.
+export { classifyTasklistOutput, classifyKillOutcome };
+export type { ProcessLiveness };
 
 /**
  * Three-state liveness probe. A probe FAILURE (timeout / exec error) is

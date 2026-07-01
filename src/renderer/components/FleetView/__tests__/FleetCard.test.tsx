@@ -88,3 +88,29 @@ describe('FleetCard — activity line vs tail fallback', () => {
     expect(html).toContain('browser'); // capitalized via CSS, raw text is 'browser'
   });
 });
+
+describe('FleetCard — X8 supervision chip', () => {
+  it('renders an armed chip with the restart count', () => {
+    const html = render({ card: card({ supervision: { status: 'armed', restartCount: 3 } }) });
+    expect(html).toContain('data-fleet-supervision');
+    expect(html).toContain('data-supervision-status="armed"');
+    expect(html).toContain('⟳ 3');
+  });
+
+  it('omits the count on an armed pane with zero restarts', () => {
+    const html = render({ card: card({ supervision: { status: 'armed', restartCount: 0 } }) });
+    expect(html).toContain('data-fleet-supervision');
+    expect(html).not.toContain('⟳ 0');
+  });
+
+  it('renders a stopped (guard-tripped) chip in red', () => {
+    const html = render({ card: card({ supervision: { status: 'stopped', restartCount: 5 } }) });
+    expect(html).toContain('data-supervision-status="stopped"');
+    expect(html).toContain('⟳!');
+    expect(html).toContain('var(--accent-red)');
+  });
+
+  it('renders no supervision chip when the pane is unsupervised', () => {
+    expect(render({ card: card() })).not.toContain('data-fleet-supervision');
+  });
+});

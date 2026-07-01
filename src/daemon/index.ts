@@ -31,6 +31,7 @@ import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
+import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
 
 // X6 Feature ②: sessions RECOVERED this daemon boot that were running an
 // INTERACTIVE agent (non-exec, non-supervised) → ptyId → the agent slug to
@@ -398,31 +399,44 @@ function ingestResumeSpool(
 
 // === PID / Lock helpers ===
 
-async function isProcessRunning(pid: number): Promise<boolean> {
+/**
+ * Three-state liveness probe for the daemon lock (Defect-1 of the split-brain
+ * chain). A probe FAILURE — `tasklist` stalling under Defender/CPU/WMI load, or
+ * an exec error — is `unknown`, NEVER `dead`. The prior boolean form read that
+ * flaky failure as "process absent" (catch → false), letting a second daemon
+ * treat a LIVE daemon's lock as stale and stomp it (duplicate-daemon →
+ * session-pipe EADDRINUSE → terminal reset). Only positive confirmation of death
+ * authorizes reclaiming the lock (see lockOwnerIsReclaimable). Mirrors the
+ * launcher-side checkProcessLiveness so both processes share one contract
+ * (src/shared/processLiveness).
+ */
+async function processLiveness(pid: number): Promise<ProcessLiveness> {
   if (process.platform === 'win32') {
-    // process.kill(pid, 0) is unreliable on Windows — always succeeds for stale PIDs.
+    // process.kill(pid, 0) is unreliable on Windows — it succeeds for stale PIDs
+    // — so probe with tasklist. A thrown probe leaves stdout null → unknown.
+    let stdout: string | null = null;
     try {
       const { execFile } = require('child_process');
       const { promisify } = require('util');
       const execFileAsync = promisify(execFile);
-      const pathMod = require('path');
       const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      const tasklist = pathMod.join(systemRoot, 'System32', 'tasklist.exe');
-      const { stdout } = await execFileAsync(
+      const tasklist = path.join(systemRoot, 'System32', 'tasklist.exe');
+      const res = await execFileAsync(
         tasklist,
         ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'],
         { encoding: 'utf-8', timeout: 3000, windowsHide: true },
       );
-      return (stdout as string).includes(`"${pid}"`);
+      stdout = res.stdout as string;
     } catch {
-      return false;
+      stdout = null; // timeout / exec failure → unknown (NOT dead)
     }
+    return classifyTasklistOutput(pid, stdout);
   }
   try {
     process.kill(pid, 0);
-    return true;
-  } catch {
-    return false;
+    return classifyKillOutcome(undefined);
+  } catch (err: unknown) {
+    return classifyKillOutcome((err as NodeJS.ErrnoException | undefined)?.code);
   }
 }
 
@@ -483,9 +497,13 @@ async function acquireLock(): Promise<boolean> {
       try {
         const existingPid = parseInt(fs.readFileSync(LOCK_FILE, 'utf-8').trim(), 10);
         if (!isNaN(existingPid)) {
-          const running = await isProcessRunning(existingPid);
-          if (running) {
-            log('error', `Another daemon is already running (PID ${existingPid})`);
+          // 3-state liveness (Defect-1 fix): a probe FAILURE is `unknown`, never
+          // `dead`. The lock is reclaimable ONLY on positive confirmation of
+          // death — `alive` OR `unknown` (a flaky tasklist) means "assume a live
+          // daemon holds it, do not stomp its lock and spawn a second daemon."
+          const liveness = await processLiveness(existingPid);
+          if (!lockOwnerIsReclaimable(liveness)) {
+            log('error', `Another daemon holds the lock (PID ${existingPid}, liveness=${liveness})`);
             return false;
           }
           // tasklist says not running — but could be a tasklist failure.

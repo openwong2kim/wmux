@@ -109,6 +109,14 @@
      vi.waitFor budget. Verified stable across 5 consecutive full-suite runs. -->
 
 ## Duplicate-daemon / split-brain on "Quit (keep sessions)" → relaunch (P1)
+> **STATUS 2026-07-01 — RESOLVED (pending live re-verify):** the launcher 3-defect chain SHIPPED in
+> v2.16.2 (PR #93: `checkProcessLiveness` 3-state, `tryEscalatedReping`, `classifyReclaimProbe` live-owner
+> fail-fast + exit 75). The residual daemon-side sibling — `src/daemon/index.ts` `isProcessRunning`
+> `catch → false` — is fixed on branch `feat/unattended-supervisor` (U-SPLIT: pure 3-state classifiers
+> extracted to `src/shared/processLiveness.ts`; a probe `unknown` no longer reclaims a live daemon's lock,
+> via `lockOwnerIsReclaimable`). Remaining: the dynamic autostart-triggered 2-instance race probe (live).
+> The stale "Defect 1 = `isProcessAlive catch→false`" detail below refers to the LAUNCHER site,
+> already superseded by v2.16.2.
 - **What:** "Quit (keep sessions running)" 후 `npm start` 재실행 시 둘째 데몬이 `wmux-daemon-rizz-1` 폴백 파이프로 기동 → 첫 데몬의 세션 파이프 EADDRINUSE → reattach 실패 → 새 세션 → 터미널 초기화. persistence가 깨짐 + 데몬 중복(RAM 낭비).
 - **Why:** (1) `ensureDaemon`이 살아있는 데몬에 재접속 안 하고 spawn. 유력 가설: 느린 OS probe(tasklist/WMI 타임아웃 머신)로 verify-ping 타임아웃→"데몬 없음" 오판 (false-death PR #87과 같은 근원 패턴). (2) `DaemonPipeServer.start()`(`src/daemon/DaemonPipeServer.ts:108-145`)의 `-N` 폴백이 *크래시 zombie*용인데 *살아있는 owner*와 구분 못 해 split-brain 허용.
 - **Pros:** 영속성(핵심 기능) 정상화 + 중복 데몬 제거.
@@ -148,6 +156,10 @@
 - **Priority:** P2 (renderer symptom resolved; transport-layer option deferred)
 
 ## Cross-platform liveness/probe 신뢰성 일반화 (P3, follow-up of PR #87)
+> **STATUS 2026-07-01:** the one confirmed BAD site (`isProcessAlive` / `isProcessRunning`
+> `catch → false`) is now closed on BOTH processes — launcher via v2.16.2 (`checkProcessLiveness`),
+> daemon via U-SPLIT (`feat/unattended-supervisor`, shared `processLiveness`). A broader sweep for any
+> other latent sites is still open.
 - **What:** Windows OS probe(tasklist/WMI)가 타임아웃하는 머신에서 "probe 실패=부재/죽음" 오해 패턴을 코드 전반에서 제거. PR #87이 ProcessMonitor kill 게이트는 고침. 같은 안티패턴이 남아있는지 audit(특히 데몬 verify, launcher PID 체크 — split-brain와 연결).
 - **Why:** 동일 근원 버그(느린 probe→오판)가 여러 곳에 잠복. 원칙: probe 실패는 "unknown"이지 "absent/dead"가 아님.
 - **Pros:** 느린/부하 머신에서 전반적 안정성.

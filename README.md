@@ -40,8 +40,8 @@ winget install openwong2kim.wmux
 | 🤝 **Agents coordinate, not just coexist** | Agent-to-agent messaging + task delegation. One agent hands a job to another, addressed by pane — and an **execute approval gate** stops any agent from running code in your workspace without your OK. This is the multi-agent moat. |
 | 🌐 **Agents drive a *real* browser** | Built-in Chrome over CDP. Say *"search Google for this"* and your agent actually clicks, types, and screenshots. Works with React inputs and CJK text. |
 | 🧭 **Fleet View cockpit** | `Ctrl+Shift+A` — every agent across every workspace on one screen, blocked ones floated to the top with a live activity line. Clear every stuck approval from one **inbox**; click any card to jump straight there. |
-| 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` before they run. |
-| 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots, resuming the *exact* Claude conversation it was on. |
+| 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` for your approval. |
+| 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* Claude conversation it was on. |
 | 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — browser + terminal tools register automatically. |
 
 ---
@@ -103,7 +103,7 @@ winget install openwong2kim.wmux
 
 **Plugins** — sandboxed iframe plugin host with a bridge + explicit permission model and pane decorations.
 
-**Daemon** — background session management (survives app restart), scrollback dump + auto-recovery, Windows startup registration (survives reboot), dead-session TTL reaping.
+**Daemon** — background session management (survives app restart), scrollback dump + auto-recovery, Windows startup registration (relaunches at login after reboot), dead-session TTL reaping.
 
 **MCP tools** — `browser_*` (open / navigate / screenshot / snapshot / click / fill / type / evaluate / press_key), `terminal_read` / `terminal_read_events` (OSC 133) / `terminal_send`, `workspace_list` / `surface_list` / `pane_list`, `a2a_*` agent-to-agent + task delegation, `company_a2a_*` coordination. Every browser tool takes a `surfaceId` so each session drives its own browser.
 
