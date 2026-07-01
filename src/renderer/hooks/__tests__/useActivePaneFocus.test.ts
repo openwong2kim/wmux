@@ -13,6 +13,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   resolveActivePanePtyId,
+  computeFocusKey,
   driveFocusToTerminal,
   isFocusOrphaned,
   reassertFocusIfOrphaned,
@@ -67,6 +68,46 @@ describe('resolveActivePanePtyId', () => {
   it('returns null for a browser surface (no xterm to focus)', () => {
     const root = leaf('p1', [surface('s1', 'pty-1', 'browser')], 's1');
     expect(resolveActivePanePtyId({ workspaces: [ws('w1', root, 'p1')], activeWorkspaceId: 'w1' })).toBeNull();
+  });
+
+  // ─── computeFocusKey — input-dead (multiview remount) regression ────────────
+  describe('computeFocusKey', () => {
+    const root = leaf('p1', [surface('s1', 'pty-1')], 's1');
+    const base = { workspaces: [ws('w1', root, 'p1')], activeWorkspaceId: 'w1', multiviewIds: [] as string[] };
+
+    it('encodes ws + pane + surface + pty', () => {
+      const key = computeFocusKey(base);
+      expect(key).toContain('w1');
+      expect(key).toContain('p1');
+      expect(key).toContain('s1');
+      expect(key).toContain('pty-1');
+    });
+
+    it('CHANGES when the active workspace enters/leaves the multiview grid', () => {
+      // Single view vs grid remounts the active terminal, but leaves the focus
+      // target (ws/pane/surface/pty) unchanged. The key MUST differ so the focus
+      // effect re-runs and re-focuses the freshly remounted xterm — otherwise
+      // typing is dead until a click.
+      const single = computeFocusKey({ ...base, multiviewIds: [] });
+      const grid = computeFocusKey({ ...base, multiviewIds: ['w1', 'w2'] }); // active w1 ∈ grid
+      expect(single).not.toBe(grid);
+    });
+
+    it('does NOT change for edits to OTHER workspaces while the active one stays gridded', () => {
+      // Adding/removing an unrelated workspace does not remount the active
+      // terminal, so it must not re-run the focus effect (no needless focus steal).
+      const two = computeFocusKey({ ...base, multiviewIds: ['w1', 'w2'] });
+      const three = computeFocusKey({ ...base, multiviewIds: ['w1', 'w2', 'w3'] });
+      expect(two).toBe(three);
+    });
+
+    it('is stable when nothing changes', () => {
+      expect(computeFocusKey(base)).toBe(computeFocusKey({ ...base, workspaces: [ws('w1', root, 'p1')] }));
+    });
+
+    it('returns empty string when no active workspace resolves', () => {
+      expect(computeFocusKey({ workspaces: [], activeWorkspaceId: 'nope', multiviewIds: [] })).toBe('');
+    });
   });
 
   it('returns null for an editor surface', () => {

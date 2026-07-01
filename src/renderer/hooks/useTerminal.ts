@@ -24,6 +24,7 @@ import { attachImeStormGuard } from '../terminal/imeStormGuard';
 import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
+import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 
 // Module-level terminal registry for scrollback persistence
@@ -413,6 +414,35 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       },
     });
 
+    // Diagnostic-only dead-input watchdog for the intermittent "typing dead
+    // until remount (multiview toggle)" field bug. It attempts NO recovery — it
+    // logs the discriminating evidence the next time input dies in the wild so
+    // the machine/IME-dependent cause can be confirmed from a user log instead
+    // of a local repro that has never triggered. keyCodes all 229 => IME claim
+    // storm; activeElement tells orphaned-focus (body/other) apart from an
+    // IME-layer death (focus still on the xterm textarea). console.warn is
+    // mirrored into the main-side log by src/main/index.ts's console-message
+    // listener, so it lands in the file the user can share.
+    const deadInputWatchdog = createDeadInputWatchdog({
+      report: ({ keydownCount, keyCodes, codes, spanMs }) => {
+        const active = document.activeElement;
+        const activeDesc = active
+          ? `${active.tagName.toLowerCase()}.${(active.className || '').toString().slice(0, 40)}`
+          : 'null';
+        // ptyIdRef.current, not the captured ptyId, so a reconnect that swaps
+        // the pty still attributes the log to the live session.
+        console.warn(
+          `[wmux:dead-input] pty=${ptyIdRef.current} ${keydownCount} keys in ${spanMs}ms reached no onData ` +
+          `keyCodes=[${keyCodes.join(',')}] codes=[${codes.join(',')}] activeElement=${activeDesc}`,
+        );
+      },
+    });
+    const onWatchdogKeyDown = (e: Event): void => {
+      const ke = e as KeyboardEvent;
+      deadInputWatchdog.onKeyDown({ keyCode: ke.keyCode, isComposing: ke.isComposing, code: ke.code });
+    };
+    terminal.textarea?.addEventListener('keydown', onWatchdogKeyDown);
+
     // Paint the container backdrop with the xterm theme background so the 4px
     // padding (and the sub-cell rounding gap xterm leaves around its grid) fades
     // into the terminal content instead of exposing the app's --bg-base behind
@@ -584,6 +614,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (newlineByte !== null) {
         e.preventDefault();
         window.electronAPI.pty.write(ptyId, newlineByte);
+        deadInputWatchdog.onData(); // direct write bypasses terminal.onData
         return false;
       }
 
@@ -602,6 +633,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (e.code === 'Escape' && !e.isComposing && e.keyCode === 229) {
         e.preventDefault();
         window.electronAPI.pty.write(ptyId, '\x1b');
+        deadInputWatchdog.onData(); // direct write bypasses terminal.onData
         return false;
       }
 
@@ -910,6 +942,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // pastes, and IME commits all still clear as intended.
       if (data !== '\x1b[I' && data !== '\x1b[O') {
         useStore.getState().clearResumeHint(ptyId);
+        // Real user input reached the app — clear the dead-input watchdog.
+        deadInputWatchdog.onData();
       }
       void chunkOnDataIfNeeded(
         (d) => window.electronAPI.pty.write(ptyId, d),
@@ -1210,10 +1244,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     return () => {
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
+      terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
       glyphRepaint.dispose();
       glyphRepaintRef.current = null;
       imeResidueGuard?.dispose();
       imeStormGuard.dispose();
+      deadInputWatchdog.dispose();
       autoCopy.dispose();
       selectionDisposable.dispose();
       pathLinkDisposable.dispose();

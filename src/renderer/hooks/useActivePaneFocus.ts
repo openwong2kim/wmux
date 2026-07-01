@@ -35,6 +35,42 @@ export function resolveActivePanePtyId(
   return surface.ptyId;
 }
 
+/**
+ * Compact signature of the current focus target: active workspace + pane +
+ * surface + its pty, PLUS the multiview set. The focus effect keys on this so it
+ * re-runs whenever any of them changes. Pure (no DOM) for unit testing.
+ *
+ * ptyId matters for boot reconcile: a restored surface's stale ptyId is cleared
+ * then re-created (same ws/pane/surface, new pty), and focus must follow it.
+ *
+ * The active-workspace-in-grid flag matters because toggling multiview swaps
+ * AppLayout's render branch (single view vs grid), which REMOUNTS the pane
+ * subtree and its terminals with the SAME ws/pane/surface/pty. Without a term
+ * that captures that flip the effect would not re-run, driveFocusToTerminal's
+ * one-shot subscription would stay disarmed, and the freshly remounted xterm
+ * would never get DOM focus (typing goes nowhere until a click). We key on the
+ * boolean, not the raw multiviewIds set, so edits to OTHER workspaces do not
+ * needlessly re-run the effect (input-dead investigation, sibling to #318).
+ *
+ * The space separator can't appear in an id, so distinct targets never collide.
+ */
+export function computeFocusKey(
+  state: { workspaces: Workspace[]; activeWorkspaceId: string; multiviewIds: string[] },
+): string {
+  const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
+  if (!ws) return '';
+  const leaf = findLeaf(ws.rootPane, ws.activePaneId);
+  const surface = leaf?.surfaces.find((x) => x.id === leaf.activeSurfaceId);
+  // Only whether the ACTIVE workspace renders in the multiview grid (vs single
+  // view) — that boolean is what flips its render branch and remounts its
+  // terminal (AppLayout gate: multiviewIds.length >= 2 && includes(active)).
+  // Keying on the full multiviewIds set would also re-run the effect for
+  // unrelated edits (adding/removing OTHER workspaces) and needlessly re-steal
+  // focus to the terminal.
+  const activeInGrid = state.multiviewIds.length >= 2 && state.multiviewIds.includes(state.activeWorkspaceId);
+  return `${state.activeWorkspaceId} ${ws.activePaneId} ${leaf?.activeSurfaceId ?? ''} ${surface?.ptyId ?? ''} ${activeInGrid ? 'grid' : 'single'}`;
+}
+
 export interface FocusDriverDeps {
   getTerminal: (ptyId: string) => { focus(): void } | undefined;
   /** Subscribe to terminal registrations; returns an unsubscribe fn. */
@@ -179,20 +215,10 @@ export function reassertFocusIfOrphaned(deps: FocusReassertDeps): void {
  * bridge, and the boot-time session restore (late xterm registration).
  */
 export function useActivePaneFocus(): void {
-  // Subscribe to a compact signature of the focus target so the effect only
-  // re-runs when the active workspace, pane, surface OR its bound pty
-  // actually changes. The ptyId term matters for boot reconcile: a restored
-  // surface whose stale ptyId is cleared and then re-created by Terminal's
-  // self-create path keeps the same ws/pane/surface ids — only the ptyId
-  // changes, and the focus must follow it. The space separator can't appear
-  // in an id, so distinct targets never collide into the same key.
-  const focusKey = useStore((s) => {
-    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
-    if (!ws) return '';
-    const leaf = findLeaf(ws.rootPane, ws.activePaneId);
-    const surface = leaf?.surfaces.find((x) => x.id === leaf.activeSurfaceId);
-    return `${s.activeWorkspaceId} ${ws.activePaneId} ${leaf?.activeSurfaceId ?? ''} ${surface?.ptyId ?? ''}`;
-  });
+  // Re-run the focus effect whenever the focus target OR the multiview set
+  // changes. Logic + rationale (why multiviewIds is in the key) live in
+  // computeFocusKey.
+  const focusKey = useStore(computeFocusKey);
 
   useEffect(() => {
     const ptyId = resolveActivePanePtyId(useStore.getState());
