@@ -5,6 +5,22 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.0] — 2026-07-02 — Sessions survive a reboot
+
+Headline: panes that were mid-conversation before an OS reboot now come back exactly as they were — same session id, same scrollback, same permission mode — instead of resetting to a blank terminal. Alongside that, an opt-in unattended supervisor lets a trusted pane restart itself after a crash and, with explicit consent, resume without stalling at a permission prompt.
+
+### Added
+
+- **Unattended supervisor: opt-in crash restart + consent-gated permission restore.** A layout leaf can declare `unattended: true` in `wmux.json`, which restarts it on failure (a clean exit is treated as "task finished," not a crash to relaunch) and, only with a separate explicit consent given in the trust dialog, restores the permission mode it was running under before a restart. Fleet View surfaces each pane's supervision state — armed with a restart count, or a guard-tripped marker when the runaway guard stopped it.
+- **Daemon liveness moves to a three-state probe.** Replaces the old "probe failed → assume dead" pattern (the same anti-pattern behind earlier false-death and duplicate-daemon reports) with an explicit unknown/alive/dead classification, shared between the daemon and the launcher, so a slow OS probe can no longer make one daemon reclaim another live daemon's lock.
+
+### Fixed
+
+- **Terminal sessions survive an OS reboot instead of resetting.** Windows kills the daemon's PTY children before the daemon itself during a shutdown/reboot, and the daemon couldn't tell that apart from a user typing `exit` — it tombstoned the session as dead, and recovery skips dead sessions, purging exactly the ones that were in use. The daemon now recognizes the Windows shutdown-teardown exit code and suspends those sessions instead, so recovery replays them under the same id after reboot.
+- **session.json no longer loses the latest layout on shutdown.** The Windows session-end handler used to reload the on-disk snapshot and save it straight back, which never captured the renderer's newest layout. Session data is now persisted the instant a pane's terminal id changes (not just every 5 seconds), so a reboot can no longer land in the gap between a new pane and the next periodic save.
+- **A recovered session's scrollback replay no longer dismisses its own resume prompt.** Replaying a dead agent's buffered output could re-arm mouse tracking in the terminal, so simply moving the mouse toward the "resume" prompt looked like the user typing and silently dismissed it. Leaked input-reporting modes are now reset after a replay.
+- **Claude Code's permission mode is read reliably from long transcripts.** The extractor only recognized permission-mode stamps on user turns, which a large attachment record could push out of the read window; it now also recognizes the dedicated permission-mode record Claude Code writes near the end of every prompt.
+
 ## [3.11.1] — 2026-06-29
 
 ### Fixed
