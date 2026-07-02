@@ -139,6 +139,14 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     void ipcInvokeRef.current<{ id: string }>(() =>
       window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ shell, cwd, cols, rows, workspaceId, surfaceId }, defaultShell), profile))
     ).then((result) => {
+      // v2 RCA fix (adversarial review): release the latch once this create
+      // settles. It guards against DOUBLE-create within one attempt, but as a
+      // one-shot it permanently bricked any LATER self-create on the same
+      // mounted Terminal — a designed cycle now that reconcile rebind can land
+      // on a session that dies (rebind → reconnect fails → clear → '' → this
+      // effect must run again). Without the reset, the pane stays blank until
+      // a remount.
+      creatingRef.current = false;
       if (!result.ok) {
         // Toast surfaced by useIpc (e.g. DAEMON_DISCONNECTED). Nothing to do.
         return;

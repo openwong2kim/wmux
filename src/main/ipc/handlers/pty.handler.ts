@@ -661,6 +661,13 @@ export function registerPTYHandlers(
         id: string;
         cmd: string;
         state: string;
+        // v2 RCA fix (reboot-reattach, axis B-lite): the daemon's listSessions
+        // returns the full session incl. `env`, which carries WMUX_SURFACE_ID on
+        // Terminal-self-create-originated sessions. Surface it to the renderer so
+        // reconcile can rebind-by-surfaceId before clearing a stale ptyId. Daemon
+        // stays unchanged (it already returns env verbatim).
+        env?: Record<string, string>;
+        createdAt?: string;
         // X8 — supervised sessions carry the sticky policy/status on meta and an
         // additive volatile runtime joined by the daemon's listSessions handler.
         supervision?: { restart: string; limit: unknown; status: 'armed' | 'stopped' };
@@ -681,6 +688,22 @@ export function registerPTYHandlers(
         .map(s => ({
           id: s.id,
           shell: s.cmd,
+          // v2 RCA fix (axis B-lite): expose WMUX_SURFACE_ID (env) so the
+          // renderer's reconcile can rebind a stale ptyId to the live session on
+          // the SAME surface instead of clearing → self-create. Present only on
+          // Terminal-self-create-originated sessions (empty-pane funnel mints the
+          // surface after pty.create, so those carry no surfaceId — axis A's
+          // immediate save covers that path instead). `suspended` sessions are
+          // excluded from rebind targets: they hold NO live PTY (recovery
+          // tombstones), and actively binding a surface INTO one yields a blank,
+          // inputless pane (adversarial review). They stay in the id list so the
+          // non-destructive clear guards still see them.
+          ...(s.env?.[ENV_KEYS.SURFACE_ID] && s.state !== 'suspended'
+            ? { surfaceId: s.env[ENV_KEYS.SURFACE_ID] }
+            : {}),
+          // v2 RCA fix (axis B-lite): create time for newest-wins duplicate
+          // resolution in the renderer's rebind decision.
+          ...(s.createdAt ? { createdAt: s.createdAt } : {}),
           ...(s.supervision
             ? {
                 supervision: {
