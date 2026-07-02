@@ -586,7 +586,12 @@ export class DaemonSessionManager extends EventEmitter {
   attachSession(id: string): void {
     const managed = this.sessions.get(id);
     if (!managed) throw new Error(`Session '${id}' not found`);
+    // 'suspended' holds no live ptyProcess (shutdown-kill classification —
+    // see shutdownKill.ts): the RPC handler would wire a fresh SessionPipe
+    // straight into a destroyed process. Reject like 'dead' so the caller's
+    // existing retry/backoff path handles it instead of crashing the daemon.
     if (managed.meta.state === 'dead') throw new Error(`Session '${id}' is dead`);
+    if (managed.meta.state === 'suspended') throw new Error(`Session '${id}' is suspended`);
 
     managed.meta.state = 'attached';
     this.emit('session:stateChanged', { id, state: 'attached' as DaemonSessionState });
@@ -605,6 +610,8 @@ export class DaemonSessionManager extends EventEmitter {
     const managed = this.sessions.get(id);
     if (!managed) throw new Error(`Session '${id}' not found`);
     if (managed.meta.state === 'dead') throw new Error(`Session '${id}' is dead`);
+    // Same rationale as attachSession — no live ptyProcess to resize.
+    if (managed.meta.state === 'suspended') throw new Error(`Session '${id}' is suspended`);
 
     managed.ptyProcess.resize(cols, rows);
     managed.meta.cols = cols;

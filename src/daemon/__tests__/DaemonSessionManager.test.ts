@@ -1003,5 +1003,30 @@ describe('DaemonSessionManager', () => {
       // Not a live PTY holder — Watchdog idle-shutdown must not be held by it.
       expect(manager.listLiveSessions().find((s) => s.id === 'susp-list')).toBeUndefined();
     });
+
+    // Adversarial review (2026-07-02): attachSession/resizeSession only
+    // guarded 'dead', so an RPC against a 'suspended' session (renderer
+    // reconnect during the misclassification window) would flip it to
+    // 'attached' or resize a destroyed ptyProcess — a real crash risk, since
+    // the caller (daemon/index.ts) then wires a fresh SessionPipe straight
+    // into a socket that no longer has a live process behind it.
+    it('attachSession rejects a suspended session (no live ptyProcess to wire)', () => {
+      manager.setInvoluntaryExitClassifier(() => true);
+      manager.createSession({ id: 'susp-attach', cmd: 'cmd.exe', cwd: '.' });
+      lastMockPty?.simulateExit(1073807364);
+      expect(manager.getSession('susp-attach')?.meta.state).toBe('suspended');
+
+      expect(() => manager.attachSession('susp-attach')).toThrow(/suspended/i);
+      // Rejection must not have side-effected the state.
+      expect(manager.getSession('susp-attach')?.meta.state).toBe('suspended');
+    });
+
+    it('resizeSession rejects a suspended session (no live ptyProcess to resize)', () => {
+      manager.setInvoluntaryExitClassifier(() => true);
+      manager.createSession({ id: 'susp-resize', cmd: 'cmd.exe', cwd: '.' });
+      lastMockPty?.simulateExit(1073807364);
+
+      expect(() => manager.resizeSession('susp-resize', 100, 40)).toThrow(/suspended/i);
+    });
   });
 });

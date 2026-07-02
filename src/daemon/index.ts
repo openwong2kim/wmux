@@ -1898,6 +1898,19 @@ function wireEvents(
   // Misclassification safety net: if the daemon is still alive after
   // SHUTDOWN_KILL_RECLASSIFY_MS (cancelled shutdown / isolated conhost kill),
   // reclassify as a genuine death and run the standard died flow.
+  //
+  // Pipe/listener cleanup IS done here (adversarial review), unlike the other
+  // died-only steps above: an isolated conhost kill (the exact case the
+  // reclassify timer exists for) leaves the daemon AND a still-connected
+  // renderer alive for up to SHUTDOWN_KILL_RECLASSIFY_MS. Without stopping the
+  // SessionPipe, its `onInput` closure keeps forwarding client keystrokes
+  // straight into the now-destroyed `ptyProcess.write()` — an unhandled
+  // socket 'error' with no listener, which the daemon's own uncaughtException
+  // handler treats as fatal after 3 repeats, killing every OTHER session as
+  // collateral. Stopping the pipe destroys the client's connection for THIS
+  // session only (the renderer's own reconnect-with-retry handles that as a
+  // transient failure) without broadcasting session.died or touching the
+  // renderer's saved binding.
   sessionManager.on('session:interrupted', (payload: { id: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number }) => {
     log('info', `[lifecycle] session:interrupted id=${payload.id} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} — shutdown-kill classified, suspending for recovery (reclassify in ${SHUTDOWN_KILL_RECLASSIFY_MS}ms if daemon survives)`);
     // The PTY is gone — stop the liveness poll BEFORE it can observe the dead
@@ -1909,9 +1922,36 @@ function wireEvents(
       log('warn', `session:interrupted unwatch failed for ${payload.id}:`, err);
     }
     // Graceful-shutdown race (posix SIGTERM fan-out / mid-suspend deaths): the
-    // shutdown loop is already dumping every non-dead session and persisting
-    // the suspend state — doing it again here would just race the same file.
+    // shutdown loop already stops every session's pipe (see `pipeStops` above)
+    // and is dumping every non-dead session's buffer — doing either again here
+    // would just race the same pipe/file.
     if (shuttingDown) return;
+
+    // Remove the PTY→client data listener to prevent a leak (mirrors
+    // session:died) — the bridge is dead and will emit nothing more, but the
+    // map entry would otherwise dangle.
+    try {
+      const tracked = sessionDataListeners.get(payload.id);
+      if (tracked) {
+        tracked.bridge.removeListener('data', tracked.listener);
+        sessionDataListeners.delete(payload.id);
+      }
+    } catch (err) {
+      log('warn', `session:interrupted data-listener cleanup failed for ${payload.id}:`, err);
+    }
+
+    // Stop the SessionPipe so its onInput closure can never write another
+    // keystroke into the destroyed ptyProcess (see comment above the
+    // listener). This is the crash-prevention step.
+    try {
+      const pipe = sessionPipes.get(payload.id);
+      if (pipe) {
+        pipe.stop().catch(() => {});
+        sessionPipes.delete(payload.id);
+      }
+    } catch (err) {
+      log('warn', `session:interrupted pipe stop failed for ${payload.id}:`, err);
+    }
 
     const managed = sessionManager.getSession(payload.id);
     if (!managed) return;

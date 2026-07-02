@@ -22,6 +22,12 @@
  *   P4  the dead control session is NOT resurrected
  *   P5  reclassification: a 0x40010004 exit with the daemon left ALIVE past
  *       the 15s window flips to 'dead' (cancelled-shutdown false positive)
+ *   P6  adversarial-review finding: a client reconnect attempt against a
+ *       'suspended' session (renderer retry during the misclassification
+ *       window, before it knows the pty died) must reject gracefully — NOT
+ *       wire a fresh SessionPipe into the destroyed ptyProcess and crash the
+ *       daemon. Asserted by attaching, then confirming the daemon is still
+ *       alive and answering RPCs afterward.
  */
 import { spawn } from 'node:child_process';
 import net from 'node:net';
@@ -176,6 +182,24 @@ async function main() {
   check('P1 0x40010004 exit → suspended (not dead)', p1);
   const p2 = await waitForState(sock, authToken, 'sess-voluntary', 'dead', 15_000);
   check('P2 voluntary exit 42 → dead (no over-suspend)', p2);
+
+  // P6 — reconnect attempt against the suspended session must reject, not
+  // wire a pipe into the destroyed ptyProcess and crash the daemon.
+  let p6AttachRejected = false;
+  let p6AttachErr = '';
+  try {
+    await rpc(sock, 'daemon.attachSession', { id: 'sess-shutkill' }, authToken, 5_000);
+  } catch (err) {
+    p6AttachRejected = true;
+    p6AttachErr = err.message ?? String(err);
+  }
+  check('P6a attachSession on suspended session rejects', p6AttachRejected, p6AttachErr);
+  let p6DaemonAlive = false;
+  try {
+    await rpc(sock, 'daemon.listSessions', {}, authToken, 5_000);
+    p6DaemonAlive = true;
+  } catch { /* daemon crashed or hung */ }
+  check('P6b daemon still alive/responsive after rejected attach', p6DaemonAlive);
 
   // Give the interrupted handler's dump+saveImmediate a beat to land, then
   // simulate the OS killing the daemon BEFORE the 15s reclassify window.
