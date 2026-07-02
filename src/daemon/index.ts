@@ -17,6 +17,7 @@ import { DEFAULT_COMPANY_ID } from '../shared/channels';
 import { ProcessMonitor } from './ProcessMonitor';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
+import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
 import { createSnapshotRunner } from './snapshotRunner';
 import { RingBuffer } from './RingBuffer';
 import { GitContextWatcher } from '../main/pty/gitContextWatch';
@@ -734,7 +735,7 @@ async function recoverSessions(
         // Start process monitoring for the new PTY
         processMonitor.watch(recovered.id, recovered.pid, () => {
           const managed = sessionManager.getSession(recovered.id);
-          if (managed && managed.meta.state !== 'dead') {
+          if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
             managed.meta.state = 'dead';
             sessionManager.emit('session:died', { id: recovered.id, exitCode: null, reason: 'recovery' });
           }
@@ -793,7 +794,7 @@ async function recoverSessions(
 
           processMonitor.watch(recovered.id, recovered.pid, () => {
             const managed = sessionManager.getSession(recovered.id);
-            if (managed && managed.meta.state !== 'dead') {
+            if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
               managed.meta.state = 'dead';
               sessionManager.emit('session:died', { id: recovered.id, exitCode: null, reason: 'recovery' });
             }
@@ -836,7 +837,7 @@ async function recoverSessions(
 
         processMonitor.watch(recovered.id, recovered.pid, () => {
           const managed = sessionManager.getSession(recovered.id);
-          if (managed && managed.meta.state !== 'dead') {
+          if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
             managed.meta.state = 'dead';
             sessionManager.emit('session:died', { id: recovered.id, exitCode: null, reason: 'recovery' });
           }
@@ -997,7 +998,7 @@ function restartSupervisedSession(
   // Same external-death safety net as the create/recovery paths.
   processMonitor.watch(recovered.id, recovered.pid, () => {
     const current = sessionManager.getSession(recovered.id);
-    if (current && current.meta.state !== 'dead') {
+    if (current && current.meta.state !== 'dead' && current.meta.state !== 'suspended') {
       current.meta.state = 'dead';
       sessionManager.emit('session:died', { id: recovered.id, exitCode: null, reason: 'process-monitor' });
     }
@@ -1071,7 +1072,7 @@ function registerRpcHandlers(
       // Process died externally — session manager's bridge exit handler
       // should already handle this via PTY onExit, but this is a safety net
       const managed = sessionManager.getSession(session.id);
-      if (managed && managed.meta.state !== 'dead') {
+      if (managed && managed.meta.state !== 'dead' && managed.meta.state !== 'suspended') {
         managed.meta.state = 'dead';
         sessionManager.emit('session:died', { id: session.id, exitCode: null, reason: 'process-monitor' });
       }
@@ -1884,6 +1885,85 @@ function wireEvents(
     }
   });
 
+  // session:interrupted → shutdown-kill path (reboot-reattach RCA 2026-07-02).
+  // The PTY was torn down by the OS (system shutdown/logoff), not by the user.
+  // Suspend-in-place: dump the ring buffer, persist state 'suspended' so the
+  // post-reboot recovery replays the SAME session id and the renderer's saved
+  // ptyId binding reconnects. Deliberately NOT done here (vs session:died):
+  //  - no `session.died` broadcast — a still-alive renderer must not clear its
+  //    binding during the shutdown window;
+  //  - no buffer-dump deletion — the dump IS the recovery payload;
+  //  - no supervisor restart — spawning processes during OS shutdown just
+  //    yields 0xC0000142 corpses; recovery replays supervision after reboot.
+  // Misclassification safety net: if the daemon is still alive after
+  // SHUTDOWN_KILL_RECLASSIFY_MS (cancelled shutdown / isolated conhost kill),
+  // reclassify as a genuine death and run the standard died flow.
+  sessionManager.on('session:interrupted', (payload: { id: string; exitCode: number | null; signal?: number; cmd?: string; lastActivityMsAgo?: number }) => {
+    log('info', `[lifecycle] session:interrupted id=${payload.id} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} — shutdown-kill classified, suspending for recovery (reclassify in ${SHUTDOWN_KILL_RECLASSIFY_MS}ms if daemon survives)`);
+    // The PTY is gone — stop the liveness poll BEFORE it can observe the dead
+    // pid and re-emit session:died (which would resurrect the purge this fix
+    // removes). The watch closures also skip 'suspended' as defense in depth.
+    try {
+      processMonitor.unwatch(payload.id);
+    } catch (err) {
+      log('warn', `session:interrupted unwatch failed for ${payload.id}:`, err);
+    }
+    // Graceful-shutdown race (posix SIGTERM fan-out / mid-suspend deaths): the
+    // shutdown loop is already dumping every non-dead session and persisting
+    // the suspend state — doing it again here would just race the same file.
+    if (shuttingDown) return;
+
+    const managed = sessionManager.getSession(payload.id);
+    if (!managed) return;
+    try {
+      stateWriter.ensureBufferDir();
+      const dumpPath = stateWriter.getBufferDumpPath(payload.id);
+      managed.ringBuffer
+        .dumpToFile(dumpPath)
+        .then(() => {
+          managed.meta.bufferDumpPath = dumpPath;
+        })
+        .catch((err) => {
+          // Dump failed — recovery still replays via the 30s snapshot (or
+          // empty scrollback); losing scrollback beats losing the session.
+          log('warn', `session:interrupted buffer dump failed for ${payload.id}:`, err);
+        })
+        .finally(() => {
+          // Persistence anchor: the 'suspended' record MUST land before the
+          // OS kills us. saveImmediate is synchronous-atomic on the state file.
+          try {
+            stateWriter.saveImmediate(buildState(sessionManager));
+          } catch (err) {
+            log('error', `session:interrupted state save failed for ${payload.id}:`, err);
+          }
+        });
+    } catch (err) {
+      log('error', `session:interrupted suspend failed for ${payload.id}:`, err);
+    }
+
+    const timer = setTimeout(() => {
+      interruptedTimers.delete(payload.id);
+      const current = sessionManager.getSession(payload.id);
+      // Destroyed/replayed meanwhile → nothing to reclassify.
+      if (!current || current.meta.state !== 'suspended') return;
+      log('info', `[lifecycle] session:interrupted id=${payload.id} — daemon survived ${SHUTDOWN_KILL_RECLASSIFY_MS}ms, no shutdown happened → reclassifying as death`);
+      current.meta.state = 'dead';
+      sessionManager.emit('session:died', { ...payload, reason: 'interrupted-timeout' });
+      sessionManager.emit('session:stateChanged', { id: payload.id, state: 'dead' });
+    }, SHUTDOWN_KILL_RECLASSIFY_MS);
+    interruptedTimers.set(payload.id, timer);
+  });
+
+  // A pane the user closes while a reclassification is pending must not get a
+  // ghost died event 15s later.
+  sessionManager.on('session:destroyed', (payload: { id: string }) => {
+    const t = interruptedTimers.get(payload.id);
+    if (t) {
+      clearTimeout(t);
+      interruptedTimers.delete(payload.id);
+    }
+  });
+
   // session:created → save state (debounced since saveImmediate is called in RPC handler)
   sessionManager.on('session:created', () => {
     const state = buildState(sessionManager);
@@ -2161,6 +2241,12 @@ let shuttingDown = false;
 // even when the async path was interrupted mid-dump.
 let dumpsCompleted = false;
 
+// Pending shutdown-kill reclassification timers, keyed by session id (see the
+// session:interrupted listener in wireEvents). Module-level so shutdown() can
+// cancel them — a reclassify-to-dead firing mid-graceful-shutdown would race
+// the suspend loop's own state save.
+const interruptedTimers = new Map<string, NodeJS.Timeout>();
+
 async function shutdown(
   signal: string,
   sessionManager: DaemonSessionManager,
@@ -2175,6 +2261,11 @@ async function shutdown(
   if (shuttingDown) return;
   shuttingDown = true;
   log('info', `Received ${signal} — shutting down gracefully`);
+
+  // Cancel pending shutdown-kill reclassifications — the suspend loop below is
+  // now the single owner of every non-dead session's persisted state.
+  for (const t of interruptedTimers.values()) clearTimeout(t);
+  interruptedTimers.clear();
 
   // Hard timeout guard — force exit if shutdown hangs
   const shutdownTimeout = setTimeout(() => {
@@ -2346,6 +2437,13 @@ async function main(): Promise<void> {
 
   const sessionManager = new DaemonSessionManager();
   sessionManager.setConfig(config);
+  // Shutdown-kill classification (reboot-reattach RCA 2026-07-02): a PTY exit
+  // with the Windows console-teardown code, or ANY exit while our own graceful
+  // shutdown is in flight, is an involuntary kill — suspend for recovery
+  // instead of persisting a dead tombstone. See shutdownKill.ts for the RCA.
+  sessionManager.setInvoluntaryExitClassifier((exitCode) =>
+    isShutdownKillExit(exitCode, { platform: process.platform, shuttingDown }),
+  );
   const pipeServer = new DaemonPipeServer(config.daemon.pipeName);
   // Channels (a2a-channels U3). Channels live in their own file
   // (`channels.json`, see ChannelStateWriter doc) so a channel-loss event

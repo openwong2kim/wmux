@@ -934,4 +934,74 @@ describe('DaemonSessionManager', () => {
       });
     });
   });
+
+  // Shutdown-kill classification (reboot-reattach RCA 2026-07-02): an exit the
+  // injected classifier marks involuntary must SUSPEND the session (recovery
+  // replays it under the same id) instead of marking it dead (recovery purges
+  // it — which is how every in-use session vanished across an OS reboot).
+  describe('involuntary exit classification (shutdown-kill)', () => {
+    it('default classifier: exits keep the pre-fix died flow', () => {
+      manager.createSession({ id: 'default-die', cmd: 'cmd.exe', cwd: '.' });
+      const died = vi.fn();
+      const interrupted = vi.fn();
+      manager.on('session:died', died);
+      manager.on('session:interrupted', interrupted);
+
+      lastMockPty?.simulateExit(1073807364); // even the shutdown code — unwired = unchanged
+
+      expect(died).toHaveBeenCalledTimes(1);
+      expect(interrupted).not.toHaveBeenCalled();
+      expect(manager.getSession('default-die')?.meta.state).toBe('dead');
+    });
+
+    it('classified exit → suspended + session:interrupted, NO session:died', () => {
+      manager.setInvoluntaryExitClassifier((exitCode) => exitCode === 1073807364);
+      manager.createSession({ id: 'shutdown-kill', cmd: 'cmd.exe', cwd: '.' });
+      const died = vi.fn();
+      const interrupted = vi.fn();
+      const stateChanged = vi.fn();
+      manager.on('session:died', died);
+      manager.on('session:interrupted', interrupted);
+      manager.on('session:stateChanged', stateChanged);
+
+      lastMockPty?.simulateExit(1073807364);
+
+      expect(died).not.toHaveBeenCalled();
+      // Same forensics contract as session:died — daemon logging depends on it.
+      expect(interrupted).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'shutdown-kill', exitCode: 1073807364 }),
+      );
+      expect(stateChanged).toHaveBeenCalledWith({ id: 'shutdown-kill', state: 'suspended' });
+      const managed = manager.getSession('shutdown-kill');
+      expect(managed?.meta.state).toBe('suspended');
+      // exitCode still recorded for forensics even on the suspend path.
+      expect(managed?.meta.exitCode).toBe(1073807364);
+    });
+
+    it('classifier false → normal death even when wired', () => {
+      manager.setInvoluntaryExitClassifier((exitCode) => exitCode === 1073807364);
+      manager.createSession({ id: 'user-exit', cmd: 'cmd.exe', cwd: '.' });
+      const died = vi.fn();
+      const interrupted = vi.fn();
+      manager.on('session:died', died);
+      manager.on('session:interrupted', interrupted);
+
+      lastMockPty?.simulateExit(0); // user typed `exit`
+
+      expect(died).toHaveBeenCalledWith(expect.objectContaining({ id: 'user-exit', exitCode: 0 }));
+      expect(interrupted).not.toHaveBeenCalled();
+      expect(manager.getSession('user-exit')?.meta.state).toBe('dead');
+    });
+
+    it('interrupted-suspended session survives in listSessions but is not live', () => {
+      manager.setInvoluntaryExitClassifier(() => true);
+      manager.createSession({ id: 'susp-list', cmd: 'cmd.exe', cwd: '.' });
+      lastMockPty?.simulateExit(1073807364);
+
+      // Persisted via listSessions (buildState) — this is the recovery payload.
+      expect(manager.listSessions().find((s) => s.id === 'susp-list')?.state).toBe('suspended');
+      // Not a live PTY holder — Watchdog idle-shutdown must not be held by it.
+      expect(manager.listLiveSessions().find((s) => s.id === 'susp-list')).toBeUndefined();
+    });
+  });
 });
