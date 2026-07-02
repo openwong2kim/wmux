@@ -1401,17 +1401,24 @@ app.on('before-quit', async (e) => {
 // handler may not complete in time, so we do a synchronous emergency save here.
 if (process.platform === 'win32') {
   app.on('session-end' as any, async () => {
-    console.log('[Main] session-end received — emergency sync save + daemon race');
+    console.log('[Main] session-end received — flush pending session write + daemon race');
     try {
-      // Import SessionManager lazily to avoid circular deps
-      const { SessionManager } = require('./session/SessionManager');
-      const sm = new SessionManager();
-      const existing = sm.load();
-      if (existing) {
-        sm.save(existing); // ensure last periodic save is flushed to disk
-      }
+      // v2 RCA fix (reboot-reattach): the previous block built a FRESH
+      // `new SessionManager()`, `load()`ed the on-disk snapshot, and `save()`d
+      // it back. That did NOT capture the renderer's latest layout — it merely
+      // re-confirmed whatever stale (possibly `.bak`-fallback fossil) snapshot
+      // was already on disk, overwriting nothing useful and resurrecting fossils.
+      // The renderer now persists ptyId changes the instant they happen
+      // (event-driven session.save → synchronous main-side write), so disk
+      // already holds the latest layout here. Flush the LIVE singleton's
+      // pending debounced write as a safety net — a no-op today (saveDebounced
+      // has no production callers; SESSION_SAVE goes through sync save()), but
+      // it keeps this path correct if a debounced producer ever appears. Never
+      // reload-and-resave stale state.
+      const { sessionManager } = require('./ipc/handlers/session.handler');
+      sessionManager.flushSync();
     } catch (err) {
-      console.error('[Main] Emergency session save failed:', err);
+      console.error('[Main] session-end flushSync failed:', err);
     }
 
     if (daemonClient?.isConnected) {
