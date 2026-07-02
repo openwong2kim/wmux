@@ -25,6 +25,7 @@ import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
+import { STALE_REPLAY_INPUT_MODE_RESETS } from '../terminal/staleReplayModeReset';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 
 // Module-level terminal registry for scrollback persistence
@@ -996,6 +997,28 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     let pendingFlushReset = false;
     let lastFlushRecoveredBytes: number | null = null;
     let removeFlushListener: (() => void) | null = null;
+    // Stale-replay mode reset (see ../terminal/staleReplayModeReset.ts): a
+    // recovered session's ring replay re-executes the dead agent's DECSET
+    // arming (mouse/focus/paste reporting) into xterm, so the fresh shell's
+    // pane emits mouse reports that both dismiss the resume pill (onData
+    // "user typed" heuristic) and land in the shell as junk input. After a
+    // replaying flush, ask the daemon whether this pane is a recovered agent
+    // shell (`resumeAgent` — set ONLY for sessions recovered this boot whose
+    // agent has NOT been re-detected) and if so disable the leaked modes,
+    // terminal-side only. The pty.list round-trip doubles as ordering: by the
+    // time it resolves, the replay bytes are already queued into xterm, so
+    // the resets always land after the sequences they cancel. Gating on the
+    // daemon (not the renderer's resumeHint slice) avoids the boot race where
+    // the flush completes before AppLayout has hydrated the hint.
+    const resetStaleReplayModes = (recoveredBytes: number) => {
+      if (recoveredBytes <= 0) return;
+      void window.electronAPI.pty.list().then((sessions) => {
+        if (terminalRef.current !== terminal) return;
+        if (sessions.find((s) => s.id === ptyId)?.resumeAgent) {
+          terminal.write(STALE_REPLAY_INPUT_MODE_RESETS);
+        }
+      }).catch(() => { /* best-effort — a transient list failure just skips the reset */ });
+    };
     let firstDataFired = false;
     const fireFirstData = () => {
       if (!firstDataFired) {
@@ -1068,6 +1091,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           pendingFlushReset = false;
           if (recoveredBytes > 0) terminal.reset();
         }
+        resetStaleReplayModes(recoveredBytes);
       });
 
       // Fix 0 (round 3) — all listeners (pty.onData, pty.onFlushComplete,
@@ -1169,6 +1193,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Fix D — daemon (re)attach is owned by the daemon-mode effect below
       // (fires at mount if active, or on a later daemon:connected). connectPty
       // above has already registered pty.onData/onExit, so replay lands safely.
+      // The daemon flush replays the ring buffer even when there is no .txt to
+      // restore (scrollback-restore toggle off), so the stale-mode reset must
+      // listen here too — the leaked DECSET arming rides the replay, not the
+      // .txt cache.
+      removeFlushListener = window.electronAPI.pty.onFlushComplete((id, recoveredBytes) => {
+        if (id !== ptyId) return;
+        if (terminalRef.current !== terminal) return;
+        resetStaleReplayModes(recoveredBytes);
+      });
     }
 
     // Resize PTY on initial fit — only when we actually have valid dimensions.
