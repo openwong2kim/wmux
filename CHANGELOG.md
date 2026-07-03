@@ -5,6 +5,18 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [3.12.1] — 2026-07-03
+
+Headline: the built-in F7 shortcut that launches Claude now works out of the box on a Mac, instead of doing nothing until you dug into macOS keyboard settings.
+
+### Fixed
+
+- **The default "launch Claude" shortcut works on macOS without touching system settings.** macOS treats F1–F12 as media keys by default, so a bare F7 press never reached wmux — the shipped F7 keybinding looked dead on a Mac. macOS now uses **Ctrl+F7** (a modifier makes macOS deliver it as a function key), while Windows and Linux keep the single-tap F7. Existing macOS users are migrated automatically on next launch: an untouched default F7 is upgraded to Ctrl+F7, but a keybinding you deliberately changed (different command) is left exactly as-is.
+
+### Added
+
+- **Custom-keybinding settings warn when a bare F-key won't fire on macOS.** If you bind a lone F-key (like F7) on a Mac, the settings panel now explains that macOS is intercepting it as a media key and how to reach it (hold Fn, or turn on "Use F1, F2, etc. keys as standard function keys"). The hint only appears for bare F-keys — a modifier combo like Ctrl+F7 is left alone because it already works.
+
 ## [3.12.0] — 2026-07-02 — Sessions survive a reboot
 
 Headline: panes that were mid-conversation before an OS reboot now come back exactly as they were — same session id, same scrollback, same permission mode — instead of resetting to a blank terminal. Alongside that, an opt-in unattended supervisor lets a trusted pane restart itself after a crash and, with explicit consent, resume without stalling at a permission prompt.
