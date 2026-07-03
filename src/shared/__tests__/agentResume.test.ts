@@ -244,6 +244,13 @@ describe('toResumeCommand (X6)', () => {
       expect(toResumeCommand('codex e "run"')).toBe('codex e "run"');
     });
 
+    it('a codex `-c` config override is NOT a resume flag — still rewritten (CodeRabbit)', () => {
+      // Codex `-c key=value` is a config override, unlike claude `-c` (=continue).
+      // The claude SKIP_TOKENS / short-flag heuristic must not short-circuit it.
+      expect(toResumeCommand('codex -c model="o3"')).toBe('codex resume --last -c model="o3"');
+      expect(toResumeCommand('codex -c model=o3', cbind(), CWD)).toBe('codex resume uuid-1 -c model=o3');
+    });
+
     it('a quoted `resume` in a codex prompt is NOT the subcommand', () => {
       expect(toResumeCommand('codex "resume the task"')).toBe('codex resume --last "resume the task"');
     });

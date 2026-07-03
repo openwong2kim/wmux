@@ -306,24 +306,29 @@ export function toResumeCommand(
   const grammar = RESUME_BY_LAUNCHER[stem];
   if (!grammar) return command;
 
-  // Already resuming / one-shot? Check UNQUOTED tokens only, exact match plus
-  // short-flag clusters that contain c/r/p (e.g. `-cp`). Errs toward skipping.
-  for (const t of tokens) {
-    if (t.quoted) continue;
-    if (SKIP_TOKENS.has(t.value)) return command;
-    if (/^-[a-z]*[crp][a-z]*$/.test(t.value)) return command;
-  }
-
-  // Codex subcommand form: `codex resume ...` already resumes, `codex exec|e ...`
-  // is a non-interactive one-shot (Codex's analogue of claude `-p`). Leave
-  // either unchanged — the subcommand is the token right after the launcher.
-  if (
-    stem === 'codex' &&
-    tokens.length > 1 &&
-    !tokens[1].quoted &&
-    (tokens[1].value === 'resume' || tokens[1].value === 'exec' || tokens[1].value === 'e')
-  ) {
-    return command;
+  // Already resuming / one-shot? The detection is grammar-specific:
+  //   - Codex (subcommand form): `codex resume ...` already resumes, `codex
+  //     exec|e ...` is a non-interactive one-shot (Codex's analogue of claude
+  //     `-p`). Codex's `-c`/`-r`/`-p` are config/other flags, NOT resume flags,
+  //     so the Claude flag heuristic must NOT apply to it — otherwise a valid
+  //     `codex -c model=o3` is wrongly left un-resumed (CodeRabbit).
+  //   - Claude (flag form): exact SKIP_TOKENS plus short-flag clusters that
+  //     contain c/r/p (e.g. `-cp`). Errs toward skipping. Checked on UNQUOTED
+  //     tokens only.
+  if (stem === 'codex') {
+    if (
+      tokens.length > 1 &&
+      !tokens[1].quoted &&
+      (tokens[1].value === 'resume' || tokens[1].value === 'exec' || tokens[1].value === 'e')
+    ) {
+      return command;
+    }
+  } else {
+    for (const t of tokens) {
+      if (t.quoted) continue;
+      if (SKIP_TOKENS.has(t.value)) return command;
+      if (/^-[a-z]*[crp][a-z]*$/.test(t.value)) return command;
+    }
   }
 
   // Insert the resume tokens immediately after the launcher token, preserving

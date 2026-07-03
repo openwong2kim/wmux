@@ -6,6 +6,7 @@ import { secureWriteTokenFile } from '../../shared/security';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 import { MCP_TARGETS } from '../../shared/mcpTargets';
+import { CODEX_NOTIFY_BASENAME } from '../../shared/configIO';
 import {
   readAllTargetStatuses,
   registerTarget,
@@ -236,7 +237,7 @@ export class McpRegistrar {
    * packaged/dev/walk-up strategy.
    */
   private getCodexNotifySourcePath(): string | null {
-    const BASENAME = 'wmux-codex-notify.mjs';
+    const BASENAME = CODEX_NOTIFY_BASENAME;
     if (app.isPackaged) {
       const p = path.join(process.resourcesPath, 'cli-bundle', BASENAME);
       return fs.existsSync(p) ? p : null;
@@ -272,7 +273,7 @@ export class McpRegistrar {
       console.warn('[McpRegistrar] Codex notify script not found — skipping notify registration.');
       return;
     }
-    const dest = path.join(this.home, '.wmux', 'hooks', 'wmux-codex-notify.mjs');
+    const dest = path.join(this.home, '.wmux', 'hooks', CODEX_NOTIFY_BASENAME);
     try {
       const destDir = path.dirname(dest);
       if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
