@@ -10,7 +10,7 @@
 // Visual language mirrors PermissionApprovalDialog (centered modal, accent
 // border, right-rail actions).
 
-import { useEffect } from 'react';
+import { useEffect, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { countLayoutLeaves, PROJECT_SUPERVISION_DEFAULT_BURST } from '../../../shared/wmuxProjectConfig';
@@ -25,6 +25,10 @@ interface LayoutRow {
    * approval screen surfaces it so the user sees the autonomous behavior they
    * are about to trust (auto-restart). */
   supervision?: { restart: 'on-failure' | 'always'; burst: number };
+  /** U-PERM — this leaf declared `unattended` (restorePermissionMode), so it
+   * would restore its captured permission mode on reboot IF the user gives the
+   * separate unattended consent below. */
+  unattended?: boolean;
 }
 
 /** Layout startup commands with their pane position, depth-first. */
@@ -41,6 +45,7 @@ function layoutRows(node: WmuxProjectLayoutNode, acc: LayoutRow[] = []): LayoutR
           // applies the same fallback).
           row.supervision = { restart: n.restart, burst: n.restartLimit?.burst ?? PROJECT_SUPERVISION_DEFAULT_BURST };
         }
+        if (n.restorePermissionMode === true) row.unattended = true;
         acc.push(row);
       }
       return;
@@ -56,11 +61,16 @@ export default function ProjectConfigDialog() {
   const wsId = useStore((s) => s.projectDialogWsId);
   const setWsId = useStore((s) => s.setProjectDialogWsId);
   const project = useStore((s) => (wsId ? s.projectConfigs[wsId] : undefined));
+  // U-PERM: unattended reboot-survival consent — a SEPARATE opt-in from base
+  // trust. Defaults UNCHECKED on every open (incl. re-trust of new/stale bytes)
+  // so consent is re-affirmed for exactly the bytes shown, never carried forward.
+  const [unattendedConsent, setUnattendedConsent] = useState(false);
 
   // Re-probe on open so the dialog reflects the LIVE file — a wmux.json
   // edited since the last probe shows as 'stale' here, not as still-trusted.
   useEffect(() => {
     if (wsId) void probeProjectConfig(wsId);
+    setUnattendedConsent(false);
   }, [wsId]);
 
   if (!wsId || !project || !project.found) return null;
@@ -70,6 +80,10 @@ export default function ProjectConfigDialog() {
   const isTrusted = trust === 'trusted';
   const commands = project.config?.commands ?? [];
   const layout = project.config?.layout;
+  const rows = layout ? layoutRows(layout) : [];
+  // Leaves that would restore their captured permission mode on reboot — the
+  // subject of the separate unattended consent below (review mode only).
+  const unattendedRows = rows.filter((r) => r.unattended);
 
   const notice = project.invalid
     ? t('project.invalid')
@@ -170,7 +184,7 @@ export default function ProjectConfigDialog() {
               )}
             </div>
             <ul className="text-[11px] font-mono mt-1" style={{ color: 'var(--text-sub2)' }}>
-              {layoutRows(layout).map((row) => (
+              {rows.map((row) => (
                 <li key={row.index} className="break-all">
                   · {t('project.pane')} {row.index}: {row.label}
                   {row.supervision && (
@@ -182,6 +196,32 @@ export default function ProjectConfigDialog() {
               ))}
             </ul>
           </div>
+        )}
+
+        {!isTrusted && !project.invalid && unattendedRows.length > 0 && (
+          <label
+            className="flex flex-col gap-2 p-3 rounded-md cursor-pointer"
+            style={{ backgroundColor: 'var(--bg-surface)', borderLeft: '3px solid var(--accent-yellow)' }}
+          >
+            <div className="text-xs font-semibold" style={{ color: 'var(--accent-yellow)' }}>
+              {t('project.unattendedHeading')}
+            </div>
+            <ul className="text-[11px] font-mono flex flex-col gap-0.5" style={{ color: 'var(--text-sub2)' }}>
+              {unattendedRows.map((row) => (
+                <li key={row.index} className="break-all">· {t('project.pane')} {row.index}: {row.label}</li>
+              ))}
+            </ul>
+            <div className="flex items-start gap-2 text-[11px]" style={{ color: 'var(--text-sub)' }}>
+              <input
+                type="checkbox"
+                checked={unattendedConsent}
+                onChange={(e) => setUnattendedConsent(e.target.checked)}
+                className="mt-0.5 shrink-0"
+                aria-label={t('project.unattendedHeading')}
+              />
+              <span>{t('project.unattendedConsent', { count: unattendedRows.length })}</span>
+            </div>
+          </label>
         )}
 
         <div className="flex items-center justify-end gap-2">
@@ -222,7 +262,7 @@ export default function ProjectConfigDialog() {
               </button>
               {!project.invalid && (
                 <button
-                  onClick={() => { void decideProjectTrust(wsId, 'trusted'); close(); }}
+                  onClick={() => { void decideProjectTrust(wsId, 'trusted', unattendedConsent); close(); }}
                   className="px-4 py-1.5 rounded-lg text-xs font-medium"
                   style={{ backgroundColor: 'var(--accent-yellow)', color: 'var(--bg-base)' }}
                 >

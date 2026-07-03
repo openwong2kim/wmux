@@ -76,7 +76,14 @@ export type WmuxEventType =
   // any ws this change removed (so a kicked/left member also drops its mirror).
   // Public-channel creation may instead use the `'*'` sentinel in
   // `recipientWorkspaceIds` to broadcast discoverability to EVERY workspace.
-  | 'channel.catalog';
+  | 'channel.catalog'
+  // Channels v2 wake worker: the mention-nudge budget for one (channel,
+  // member) episode is exhausted — the worker stops re-nudging and hands the
+  // episode to HUMANS. Tee'd from the daemon broadcast so orchestrator
+  // clients can observe stranded mentions; the primary human surface is the
+  // in-app toast + OS notification (DaemonNotificationRouter). Scoped to the
+  // affected member's workspace (base workspaceId).
+  | 'channel.nudgeExhausted';
 
 export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.created',
@@ -93,6 +100,7 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'a2a.task',
   'channel.message',
   'channel.catalog',
+  'channel.nudgeExhausted',
 ] as const;
 
 export interface WmuxEventBase {
@@ -382,8 +390,27 @@ export interface ChannelCatalogEvent extends WmuxEventBase {
    *  instead carry the single `'*'` sentinel = "broadcast to every workspace"
    *  (discoverability). `events.poll` fans out accordingly. */
   recipientWorkspaceIds: string[];
-  /** What changed — advisory; the receiver re-hydrates regardless. */
-  reason: 'created' | 'archived' | 'membership';
+  /** What changed — advisory; the receiver re-hydrates regardless. 'cursor' =
+   *  a member's read cursor advanced (agent ack): the roster's "N behind"
+   *  badges hydrate from the same catalog fetch, so a cursor move must
+   *  re-sync it too (Codex re-review). */
+  reason: 'created' | 'archived' | 'membership' | 'cursor';
+}
+
+/**
+ * Channels v2 wake worker — the mention-nudge budget for one (channel,
+ * member) episode ran out (backoff ladder exhausted, mentions still
+ * unread). The worker will NOT re-nudge again until an ack resets the
+ * episode; a human must look. Base `workspaceId` = the affected member's
+ * workspace.
+ */
+export interface ChannelNudgeExhaustedEvent extends WmuxEventBase {
+  type: 'channel.nudgeExhausted';
+  channelId: string;
+  channelName: string;
+  memberId: string;
+  unread: number;
+  mentionUnread: number;
 }
 
 export type WmuxEvent =
@@ -400,7 +427,8 @@ export type WmuxEvent =
   | PaneSupervisionEvent
   | A2aTaskEvent
   | ChannelMessageEvent
-  | ChannelCatalogEvent;
+  | ChannelCatalogEvent
+  | ChannelNudgeExhaustedEvent;
 
 export const RING_CAPACITY = 1024;
 export const POLL_DEFAULT_MAX = 256;

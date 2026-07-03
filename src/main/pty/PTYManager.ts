@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
+import { getShellUtf8Locale } from './shellLocale';
 import { isWindows } from '../../shared/platform';
 import { ShellDetector } from '../../shared/ShellDetector';
 
@@ -159,7 +160,7 @@ export class PTYManager {
     // pane-level A2A fail-closed. The ptyId equals the pid-map content here, so
     // the env hint and a verified walk resolve to the same logical pane (WI-002).
     identity[ENV_KEYS.PTY_ID] = id;
-    const env = resolveSpawnEnv(globalThis.process.env, options?.env, identity);
+    const env = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale());
 
     // Detect shell type and inject hook
     const shellType = this.detectShellType(shell);

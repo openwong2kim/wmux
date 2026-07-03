@@ -11,26 +11,57 @@
  * replay sites pass the rewritten string as a NON-persisted launch command
  * (see DaemonSessionManager.createSession `execLaunchCommand`).
  *
- * Mechanism, per agent: append the agent's "continue latest session in this
- * cwd" flag. For Claude Code that is `--continue` (verified 2026-06-13: it
- * resumes the latest session for the cwd with zero captured state, and is a
- * graceful fresh start when there is nothing to continue). Resume is
- * cwd-scoped, so the caller MUST only apply this when the original cwd still
- * exists — otherwise it would resume an unrelated homedir session.
+ * Mechanism, per agent (see RESUME_BY_LAUNCHER): resume the latest / an exact
+ * session in the pane's cwd. Two grammars:
+ *   - flag form (Claude Code): `--continue` (latest-in-cwd) / `--resume <id>`
+ *     (exact). Verified 2026-06-13: `--continue` resumes the latest session for
+ *     the cwd with zero captured state and is a graceful fresh start when there
+ *     is nothing to continue.
+ *   - subcommand form (Codex): `resume --last` (most recent recorded) /
+ *     `resume <id>` (exact; UUID takes precedence). Verified via
+ *     `codex resume --help` (v0.142.2).
+ * Resume is cwd-scoped, so the caller MUST only apply this when the original
+ * cwd still exists — otherwise it would resume an unrelated session.
  *
- * v1 covers `claude` only. cmux supports 16 agents; codex/opencode/gemini
- * resume forms are a deliberate follow-up (their resume ergonomics differ and
- * none is needed for the reboot-survival headline).
+ * v1 covers `claude` and `codex`. opencode/gemini/aider/copilot are a
+ * deliberate follow-up (their resume ergonomics differ); their absence from
+ * RESUME_BY_LAUNCHER also gates the resume pill (resumeOfferForRecovered) so we
+ * never offer a resume we cannot actually perform.
  *
  * This module lives in src/shared so the daemon (tsconfig.daemon.json scopes
  * to src/daemon + src/shared) can import it WITHOUT reaching into
  * integrations/shared (out of the daemon's tsconfig).
  */
 
-/** Agent launcher executable stems we know how to resume → the resume flag. */
-const RESUME_FLAG_BY_LAUNCHER: Readonly<Record<string, string>> = {
-  claude: '--continue',
+/**
+ * Per-launcher resume grammar. Two shapes, expressed uniformly as
+ * {fallback, withId} so the insertion logic stays agent-agnostic:
+ *   - flag form (Claude): fallback `--continue`, exact `--resume <id>`.
+ *   - subcommand form (Codex): fallback `resume --last`, exact `resume <id>`.
+ * `withId` returns the tokens inserted right after the launcher token;
+ * `fallback` is used when no exact binding applies (no capture, cwd mismatch,
+ * or a purged/dead transcript). Membership here also gates the resume pill.
+ */
+interface ResumeGrammar {
+  /** Insertion when no exact-session binding applies (latest-in-cwd). */
+  readonly fallback: string;
+  /** Insertion that resumes the EXACT origin session id. */
+  readonly withId: (sessionId: string) => string;
+}
+
+const RESUME_BY_LAUNCHER: Readonly<Record<string, ResumeGrammar>> = {
+  claude: { fallback: '--continue', withId: (id) => `--resume ${id}` },
+  codex: { fallback: 'resume --last', withId: (id) => `resume ${id}` },
 };
+
+/**
+ * The resume grammar for an agent slug, or undefined if wmux cannot resume it.
+ * Exported for the resume pill, which assembles its command progressively
+ * (permission stage) rather than via {@link toResumeCommand}.
+ */
+export function resumeGrammarFor(agent: string): ResumeGrammar | undefined {
+  return RESUME_BY_LAUNCHER[agent];
+}
 
 /**
  * X6 ③: Claude Code's per-invocation permission mode, as stamped on every user
@@ -207,20 +238,22 @@ export function mergeResumeBinding(
 }
 
 /**
- * Decide what to insert after the launcher token: an id-aware
- * `--resume <id> [permFlag]` when a valid binding exists for THIS launcher and
- * its origin cwd still matches the pane (F7: `--resume` is cwd-scoped), or the
- * launcher's plain `--continue` fallback otherwise.
+ * Decide what to insert after the launcher token: the grammar's id-aware
+ * insertion (`grammar.withId(id)` + optional permFlag) when a valid binding
+ * exists for THIS launcher and its origin cwd still matches the pane (F7:
+ * `--resume`/`resume <id>` are cwd-scoped), or the grammar's plain `fallback`
+ * (`--continue` / `resume --last`) otherwise.
  *
  * The permission flag is OPT-IN (`options.restorePermissionMode`) and OFF by
  * default. The only auto-run consumer is the supervised replay path, which must
  * be fail-safe per D6 — never silently re-grant `--dangerously-skip-permissions`
  * with no human in the loop. The resume pill (explicit user Enter) opts in via
- * {@link permissionFlagFor} instead of this builder.
+ * {@link permissionFlagFor} instead of this builder. Codex has no such flag
+ * (permissionMode is never captured for it), so permFlag is always empty there.
  */
 function resumeInsertion(
   stem: string,
-  resumeFlag: string,
+  grammar: ResumeGrammar,
   binding: ResumeBinding | undefined,
   paneCwd: string | undefined,
   options: { restorePermissionMode?: boolean } | undefined,
@@ -233,14 +266,14 @@ function resumeInsertion(
     paneCwd &&
     normalizeResumeCwd(binding.cwd) === normalizeResumeCwd(paneCwd)
   ) {
-    const parts = ['--resume', binding.sessionId];
+    let insertion = grammar.withId(binding.sessionId);
     if (options?.restorePermissionMode) {
       const permFlag = permissionFlagFor(binding.permissionMode);
-      if (permFlag) parts.push(permFlag);
+      if (permFlag) insertion += ` ${permFlag}`;
     }
-    return parts.join(' ');
+    return insertion;
   }
-  return resumeFlag;
+  return grammar.fallback;
 }
 
 /**
@@ -270,20 +303,37 @@ export function toResumeCommand(
   // assignment (`FOO=bar`) or a path that doesn't basename to a known launcher
   // falls through unchanged.
   const stem = launcherStem(tokens[0].value);
-  const resumeFlag = RESUME_FLAG_BY_LAUNCHER[stem];
-  if (!resumeFlag) return command;
+  const grammar = RESUME_BY_LAUNCHER[stem];
+  if (!grammar) return command;
 
-  // Already resuming / one-shot? Check UNQUOTED tokens only, exact match plus
-  // short-flag clusters that contain c/r/p (e.g. `-cp`). Errs toward skipping.
-  for (const t of tokens) {
-    if (t.quoted) continue;
-    if (SKIP_TOKENS.has(t.value)) return command;
-    if (/^-[a-z]*[crp][a-z]*$/.test(t.value)) return command;
+  // Already resuming / one-shot? The detection is grammar-specific:
+  //   - Codex (subcommand form): `codex resume ...` already resumes, `codex
+  //     exec|e ...` is a non-interactive one-shot (Codex's analogue of claude
+  //     `-p`). Codex's `-c`/`-r`/`-p` are config/other flags, NOT resume flags,
+  //     so the Claude flag heuristic must NOT apply to it — otherwise a valid
+  //     `codex -c model=o3` is wrongly left un-resumed (CodeRabbit).
+  //   - Claude (flag form): exact SKIP_TOKENS plus short-flag clusters that
+  //     contain c/r/p (e.g. `-cp`). Errs toward skipping. Checked on UNQUOTED
+  //     tokens only.
+  if (stem === 'codex') {
+    if (
+      tokens.length > 1 &&
+      !tokens[1].quoted &&
+      (tokens[1].value === 'resume' || tokens[1].value === 'exec' || tokens[1].value === 'e')
+    ) {
+      return command;
+    }
+  } else {
+    for (const t of tokens) {
+      if (t.quoted) continue;
+      if (SKIP_TOKENS.has(t.value)) return command;
+      if (/^-[a-z]*[crp][a-z]*$/.test(t.value)) return command;
+    }
   }
 
   // Insert the resume tokens immediately after the launcher token, preserving
   // the rest of the command (and its spacing/quoting) verbatim.
-  const insert = resumeInsertion(stem, resumeFlag, binding, paneCwd, options);
+  const insert = resumeInsertion(stem, grammar, binding, paneCwd, options);
   const at = tokens[0].end;
   return `${command.slice(0, at)} ${insert}${command.slice(at)}`;
 }
@@ -296,12 +346,15 @@ export function isResumableLaunchCommand(command: string): boolean {
 /**
  * X6 Feature ②: does a RECOVERED session qualify for the one-click resume pill?
  *
- * Only INTERACTIVE agent shells do: the user typed `claude` in a plain pane and
- * a reboot replayed the SHELL (the agent is gone — the pill offers to bring it
- * back). Excluded:
+ * Only INTERACTIVE agent shells do: the user typed `claude`/`codex` in a plain
+ * pane and a reboot replayed the SHELL (the agent is gone — the pill offers to
+ * bring it back). Excluded:
  *   - exec/supervised units — they already auto-resume via execLaunchCommand
  *     (Feature ①); a pill would be a redundant second resume.
  *   - panes that never ran a detectable agent (no lastDetectedAgent).
+ *   - agents wmux cannot actually resume (absent from RESUME_BY_LAUNCHER, e.g.
+ *     gemini/aider) — offering one would surface a pill that types a broken
+ *     command (the generalized form of the codex `--continue` bug).
  *
  * Returns the agent slug to offer, or undefined. The caller is responsible for
  * the "recovered THIS boot" half of the gate — a live reconnect must never
@@ -313,5 +366,7 @@ export function resumeOfferForRecovered(session: {
   lastDetectedAgent?: string;
 }): string | undefined {
   if (session.exec || session.supervision) return undefined;
-  return session.lastDetectedAgent || undefined;
+  const agent = session.lastDetectedAgent;
+  if (!agent || !RESUME_BY_LAUNCHER[agent]) return undefined;
+  return agent;
 }

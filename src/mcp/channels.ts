@@ -1,6 +1,7 @@
 // ─── Channel tools for the bundled MCP server ───────────────────────────
 //
-// Nine standard MCP tools that expose the `a2a.channel.*` pipe RPC surface to
+// Standard MCP tools (eleven — Channels v2 added channel_ack/channel_unread)
+// that expose the `a2a.channel.*` pipe RPC surface to
 // first-party MCP clients (Claude Code, Codex CLI). Each tool is a thin
 // pass-through over `sendRpc` plus a per-call workspaceId resolved by the
 // caller (index.ts injects `resolveWorkspaceId` so tests can stub it
@@ -107,7 +108,7 @@ async function callChannelRpc(
   }
 }
 
-/** Register the nine standard channel tools on the given MCP server. The
+/** Register the standard channel tools on the given MCP server. The
  *  parent module injects `resolveWorkspaceId` so workspace identity follows
  *  the same verification rules as the rest of the bundled server (verified
  *  PID-map hit first, env-hint fallback on miss). */
@@ -273,11 +274,13 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   // the agent's context window — reading a busy channel is a token cost.
   server.tool(
     'channel_read',
-    'Read recent messages from a channel you can see (public, or private if you are a member). ' +
-      'Returns the most recent `limit` messages (default 50, newest last); use `since_seq` to page ' +
-      'forward from a known seq. Reading consumes your context window, so prefer a small `limit` and ' +
-      'read deliberately. A private channel you are not a member of returns an empty list; a missing ' +
-      'channel returns an error.',
+    'Read messages from a channel you can see (public, or private if you are a member). ' +
+      'With `since_seq` (pass your cursor + 1 from channel_unread) it returns the OLDEST `limit` ' +
+      'messages from that point — contiguous pages, so ack the highest seq you read and repeat ' +
+      'until fewer than `limit` return to drain safely. Without `since_seq` it returns the most ' +
+      'recent `limit` messages (display). Reading consumes your context window, so prefer a small ' +
+      '`limit`. A private channel you are not a member of returns an empty list; a missing channel ' +
+      'returns an error.',
     {
       channel_id: z.string().describe('Target channel id.'),
       since_seq: z
@@ -363,6 +366,64 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         workspaceId,
         verifiedWorkspaceId: workspaceId,
         channelId: channel_id,
+      });
+    },
+  );
+
+  // ── channel_ack (Channels v2) ─────────────────────────────────────
+  // The consume signal of the durable inbox: advances the caller's
+  // per-member read cursor (lastReadSeq). The wake worker re-nudges a
+  // member while it has unread mentions and STOPS on ack — so an agent
+  // that reads a channel should ack the highest seq it processed, or it
+  // will be re-pinged about the same messages.
+  server.tool(
+    'channel_ack',
+    'Acknowledge channel messages up to a seq (inclusive) as consumed. Call this after channel_read with the highest seq you actually processed (read oldest-first via since_seq and repeat until drained — do not ack past messages you have not seen). Advances your durable read cursor, clears your unread count, and stops re-nudges. Advance-only (acking an older seq never rewinds) and clamped to the channel head. Requires member_id to move a cursor; an unknown member_id is an error, and omitting it records read receipts only.',
+    {
+      channel_id: z.string().describe('Target channel id.'),
+      upto_seq: z
+        .number()
+        .int()
+        .min(0)
+        .describe('Highest message seq you have consumed (inclusive) — the last seq returned by the channel_read page you just processed.'),
+      member_id: z
+        .string()
+        .optional()
+        .describe('YOUR member row in this channel (e.g. "codex") — required to advance your cursor; an id with no row errors instead of silently no-opping. Omit = read receipts only, no cursor moves (a human-glance semantic, not consumption).'),
+    },
+    async ({ channel_id, upto_seq, member_id }) => {
+      const workspaceId = await deps.resolveWorkspaceId();
+      return callChannelRpc('a2a.channel.ack' as RpcMethod, {
+        workspaceId,
+        verifiedWorkspaceId: workspaceId,
+        channelId: channel_id,
+        uptoSeq: upto_seq,
+        ...(member_id !== undefined ? { memberId: member_id } : {}),
+      });
+    },
+  );
+
+  // ── channel_unread (Channels v2) ──────────────────────────────────
+  // The cheap "do I owe anything?" poll: per-channel unread + mention-unread
+  // counts derived from the durable cursor. Reading this does NOT consume
+  // messages (only channel_ack advances the cursor). `trimmedBeforeCursor`
+  // > 0 means retention removed messages before you read them — the gap is
+  // reported, never silently swallowed.
+  server.tool(
+    'channel_unread',
+    'Summarize your unread channel messages: per-channel unread count, mention-unread count (messages that @-mention you), your cursor (lastReadSeq), the channel head seq, and trimmedBeforeCursor (messages lost to retention before you read them — never silently dropped). Cheap to call; does not consume messages. Follow up with channel_read + channel_ack.',
+    {
+      member_id: z
+        .string()
+        .optional()
+        .describe('Narrow the summary to one of your member rows. Omit for every row your workspace holds.'),
+    },
+    async ({ member_id }) => {
+      const workspaceId = await deps.resolveWorkspaceId();
+      return callChannelRpc('a2a.channel.unread' as RpcMethod, {
+        workspaceId,
+        verifiedWorkspaceId: workspaceId,
+        ...(member_id !== undefined ? { memberId: member_id } : {}),
       });
     },
   );

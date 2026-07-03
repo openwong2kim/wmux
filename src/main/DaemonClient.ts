@@ -15,7 +15,11 @@ import type {
 } from '../shared/lanlink';
 import { FLUSH_DONE_MARKER } from '../daemon/SessionPipe';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
-import { dataSuffix } from '../shared/constants';
+import {
+  dataSuffix,
+  getDaemonAuthTokenPath,
+  getLegacyDaemonAuthTokenPath,
+} from '../shared/constants';
 import { connectWithRetry, type ConnectAttemptResult } from './daemonConnectRetry';
 
 // RCA A2 — single source of truth in shared/timeouts.ts so the renderer's
@@ -643,6 +647,12 @@ export class DaemonClient extends EventEmitter {
           // tees it onto the main EventBus as a WmuxEvent `channel.catalog`.
           this.emit('channel:catalog', { data: event.data });
           break;
+        case 'channel.nudgeExhausted':
+          // Channels v2 wake worker — a mention episode ran out of nudge
+          // budget; humans must look. DaemonNotificationRouter surfaces it
+          // (toast + OS notification) and tees it onto the EventBus.
+          this.emit('channel:nudgeExhausted', { data: event.data });
+          break;
         default:
           break;
       }
@@ -736,15 +746,27 @@ export function getDaemonPipeName(): string {
   return path.join(os.homedir(), `.wmux-daemon${dataSuffix()}.sock`);
 }
 
-/** Read the daemon auth token from disk. Returns empty string if not found. */
+/**
+ * Read the daemon auth token from disk. Returns empty string if not found.
+ *
+ * Reads the suffix-aware path (getDaemonAuthTokenPath) first, then the legacy
+ * unsuffixed path as a migration fallback so a suffixed ('-dev'/dogfood)
+ * instance upgrading over a still-running older daemon can still authenticate
+ * — see getDaemonAuthTokenPath / getLegacyDaemonAuthTokenPath in
+ * shared/constants. MUST stay in lockstep with the daemon writer
+ * (DaemonPipeServer.getTokenPath) and the CLI reader
+ * (cli/client.resolveDaemonAuthToken): if they compute different paths, nothing
+ * authenticates.
+ */
 export function readDaemonAuthToken(): string {
-  const os = require('os');
-  const path = require('path');
   const fs = require('fs');
-  const tokenPath = path.join(os.homedir(), '.wmux', 'daemon-auth-token');
-  try {
-    return fs.readFileSync(tokenPath, 'utf8').trim();
-  } catch {
-    return '';
+  for (const tokenPath of [getDaemonAuthTokenPath(), getLegacyDaemonAuthTokenPath()]) {
+    try {
+      const token = fs.readFileSync(tokenPath, 'utf8').trim();
+      if (token) return token;
+    } catch {
+      // candidate absent/unreadable — try the next one
+    }
   }
+  return '';
 }

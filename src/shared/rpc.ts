@@ -220,7 +220,8 @@ export type RpcMethod =
   | 'a2a.channel.post'
   | 'a2a.channel.invite'
   | 'a2a.channel.kick'
-  | 'a2a.channel.ack';
+  | 'a2a.channel.ack'
+  | 'a2a.channel.unread';
 
 // All available methods as array (for system.capabilities)
 export const ALL_RPC_METHODS = [
@@ -347,6 +348,7 @@ export const ALL_RPC_METHODS = [
   'a2a.channel.invite',
   'a2a.channel.kick',
   'a2a.channel.ack',
+  'a2a.channel.unread',
 ] as const satisfies readonly RpcMethod[];
 
 // === RPC Parameter Types ===
@@ -419,7 +421,14 @@ export interface DaemonEvent {
     // `data` carries the ChannelCatalogEvent; main tees it onto the in-process
     // EventBus as a WmuxEvent `channel.catalog`, scoped per-recipient by
     // `events.poll` exactly like channel.message.
-    | 'channel.catalog';
+    | 'channel.catalog'
+    // Channels v2 wake worker — a (channel, member) mention episode ran out
+    // of nudge budget; the worker stops and HUMANS must look. `sessionId` is
+    // '' and `data` carries the flat payload (channelId, channelName,
+    // workspaceId = affected member ws, memberId, unread, mentionUnread).
+    // Main surfaces it directly (toast + OS notification) AND tees it onto
+    // the EventBus as WmuxEvent `channel.nudgeExhausted` for orchestrators.
+    | 'channel.nudgeExhausted';
   sessionId: string;
   data: unknown;
 }
@@ -468,6 +477,18 @@ export interface DaemonCreateSessionParams {
 export interface DaemonSupervisionPolicy {
   restart: 'on-failure' | 'always';
   limit: { burst: number; healthyUptimeSec: number };
+  /**
+   * Unattended reboot-survival: when true, a supervised replay (recovery /
+   * restart) re-applies the pane's CAPTURED permission mode (from its
+   * resumeBinding) so an unattended agent resumes without stalling at a prompt.
+   * This is the EFFECTIVE, consent-gated decision — main computes it at creation
+   * as `leaf.restorePermissionMode && the project's explicit unattended consent`
+   * (see ProjectTrustRecord.unattended) and persists it. The daemon honors this
+   * bit verbatim at replay and reads no trust file (Minimal design 2026-07-01:
+   * trust is re-checked at CREATION, consistent with X6/X8 replay). Absent/false
+   * → the D6 fail-safe (no bypass flag added). Only meaningful with `restart`.
+   */
+  restorePermissionMode?: boolean;
 }
 
 /**

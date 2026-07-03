@@ -6,12 +6,17 @@ import { secureWriteTokenFile } from '../../shared/security';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 import { MCP_TARGETS } from '../../shared/mcpTargets';
+import { CODEX_NOTIFY_BASENAME } from '../../shared/configIO';
 import {
   readAllTargetStatuses,
   registerTarget,
   unregisterTarget,
+  registerCodexNotify,
+  unregisterCodexNotify,
+  readCodexNotifyStatus,
   type TargetRegStatus,
   type ServerRegState,
+  type CodexNotifyStatus,
 } from '../../shared/mcpRegistration';
 
 /** Per-server registration state surfaced via getStatus(). */
@@ -22,6 +27,8 @@ export type McpTargetStatus = TargetRegStatus;
 /** Aggregate snapshot of MCP integration state for CLI / Settings UI. */
 export interface McpRegistrarStatus {
   targets: McpTargetStatus[];
+  /** Codex resume-capture `notify` registration (X6 codex resume). */
+  codexNotify: CodexNotifyStatus;
 }
 
 /**
@@ -79,7 +86,10 @@ export class McpRegistrar {
    * registered".
    */
   getStatus(): McpRegistrarStatus {
-    return { targets: readAllTargetStatuses(this.home) };
+    return {
+      targets: readAllTargetStatuses(this.home),
+      codexNotify: readCodexNotifyStatus(this.home),
+    };
   }
 
   /**
@@ -99,6 +109,12 @@ export class McpRegistrar {
       } catch (err) {
         console.error(`[McpRegistrar] Failed to force-unregister ${target.displayName}:`, err);
       }
+    }
+    try {
+      const { removed, configPath } = unregisterCodexNotify(this.home);
+      if (removed) console.log(`[McpRegistrar] Unregistered Codex notify from ${configPath}`);
+    } catch (err) {
+      console.error('[McpRegistrar] Failed to unregister Codex notify:', err);
     }
     this.registered = false;
   }
@@ -148,6 +164,15 @@ export class McpRegistrar {
             console.error('\n' + formatMacosError(MACOS_ERRORS.mcpPermissionDenied));
           }
         }
+      }
+
+      // X6 codex resume: register the Codex resume-capture `notify` bridge in the
+      // SAME codex config.toml. Isolated so a notify failure never aborts MCP
+      // registration (and vice-versa).
+      try {
+        this.installAndRegisterCodexNotify();
+      } catch (err) {
+        console.error('[McpRegistrar] Codex notify registration failed:', err);
       }
 
       this.registered = true;
@@ -202,5 +227,72 @@ export class McpRegistrar {
     }
 
     return null;
+  }
+
+  /**
+   * Locate the Codex resume-capture notify script SOURCE (before install).
+   * Packaged: ships next to the CLI bundle as an extraResource
+   * (resources/cli-bundle/). Dev: the repo `integrations/codex/bin/` file, or the
+   * `dist/cli-bundle/` copy after `build:cli`. Mirrors getMcpScriptPath's
+   * packaged/dev/walk-up strategy.
+   */
+  private getCodexNotifySourcePath(): string | null {
+    const BASENAME = CODEX_NOTIFY_BASENAME;
+    if (app.isPackaged) {
+      const p = path.join(process.resourcesPath, 'cli-bundle', BASENAME);
+      return fs.existsSync(p) ? p : null;
+    }
+    const appPath = app.getAppPath();
+    const rels = [
+      ['integrations', 'codex', 'bin', BASENAME],
+      ['dist', 'cli-bundle', BASENAME],
+    ];
+    let current = appPath;
+    for (let i = 0; i < 6; i++) {
+      for (const rel of rels) {
+        const candidate = path.join(current, ...rel);
+        if (fs.existsSync(candidate)) return candidate;
+      }
+      const parent = path.resolve(current, '..');
+      if (parent === current) break;
+      current = parent;
+    }
+    return null;
+  }
+
+  /**
+   * Install the Codex notify bridge to a STABLE, version-free location
+   * (`~/.wmux/hooks/wmux-codex-notify.mjs`) and register it as Codex's `notify`
+   * program. Copying fresh on every boot keeps the installed script in lock-step
+   * with the running app version while the config path never goes stale (unlike
+   * the versioned resources path). Skip-if-foreign lives in registerCodexNotify.
+   */
+  private installAndRegisterCodexNotify(): void {
+    const src = this.getCodexNotifySourcePath();
+    if (!src) {
+      console.warn('[McpRegistrar] Codex notify script not found — skipping notify registration.');
+      return;
+    }
+    const dest = path.join(this.home, '.wmux', 'hooks', CODEX_NOTIFY_BASENAME);
+    try {
+      const destDir = path.dirname(dest);
+      if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+      fs.copyFileSync(src, dest);
+    } catch (err) {
+      console.error('[McpRegistrar] Failed to install Codex notify script:', err);
+      return;
+    }
+    const result = registerCodexNotify(this.home, dest);
+    if (result.skipped === 'foreign') {
+      // Surface the skip (GLM outside-voice: don't silently downgrade). The
+      // user's own notify is preserved; Codex resume falls back to the pill's
+      // `codex resume --last`. Also queryable via getStatus().codexNotify.
+      console.warn(
+        `[McpRegistrar] Codex notify: skipped — a foreign notify occupies the slot in ${result.configPath}. ` +
+        'Codex resume auto-capture is OFF; the resume pill falls back to `codex resume --last`.',
+      );
+    } else if (result.wrote) {
+      console.log(`[McpRegistrar] Codex notify → ${dest}`);
+    }
   }
 }

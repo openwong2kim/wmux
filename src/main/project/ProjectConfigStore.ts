@@ -48,6 +48,18 @@ export interface ProjectTrustRecord {
   /** sha256 (hex) of the wmux.json bytes the user reviewed when deciding. */
   contentHash: string;
   decidedAt: number;
+  /**
+   * Unattended reboot-survival consent (Minimal design 2026-07-01). The user
+   * gave a SEPARATE, explicit approval (a distinct checkbox in the trust dialog)
+   * for this project's declared unattended panes to restore their captured
+   * permission mode on reboot — up to and including `--dangerously-skip-permissions`.
+   * Bound to THESE bytes (same record, same contentHash): a changed file goes
+   * 'stale' and this no longer applies. Only meaningful when status='trusted';
+   * a 'denied' record forces this false. Absent on old records → false.
+   */
+  unattended?: boolean;
+  /** When the unattended consent was last set (audit; ms). */
+  unattendedDecidedAt?: number;
 }
 
 export interface ProjectTrustDb {
@@ -90,7 +102,16 @@ function normalizeRecord(raw: unknown): ProjectTrustRecord | undefined {
   if (r.status !== 'trusted' && r.status !== 'denied') return undefined;
   if (typeof r.contentHash !== 'string' || !/^[0-9a-f]{64}$/.test(r.contentHash)) return undefined;
   const decidedAt = typeof r.decidedAt === 'number' && Number.isFinite(r.decidedAt) ? r.decidedAt : 0;
-  return { status: r.status, contentHash: r.contentHash, decidedAt };
+  const rec: ProjectTrustRecord = { status: r.status, contentHash: r.contentHash, decidedAt };
+  // Unattended consent only survives on a 'trusted' record and only as a strict
+  // boolean true — a denied record or a garbage value can never grant it.
+  if (r.status === 'trusted' && r.unattended === true) {
+    rec.unattended = true;
+    if (typeof r.unattendedDecidedAt === 'number' && Number.isFinite(r.unattendedDecidedAt)) {
+      rec.unattendedDecidedAt = r.unattendedDecidedAt;
+    }
+  }
+  return rec;
 }
 
 interface ConfigCacheEntry {
@@ -212,7 +233,12 @@ export class ProjectConfigStore {
     else if (record.status === 'denied') trust = 'denied';
     else trust = record.contentHash === read.contentHash ? 'trusted' : 'stale';
 
-    return { found: true, root, configPath, config: read.config, contentHash: read.contentHash, trust };
+    // Surface the unattended consent ONLY when the live bytes are currently
+    // trusted — a 'stale' record's consent was for old content, so the funnel
+    // must not restore permissions against a file the user hasn't re-reviewed.
+    const unattended = trust === 'trusted' && record?.unattended === true;
+
+    return { found: true, root, configPath, config: read.config, contentHash: read.contentHash, trust, unattended };
   }
 
   // ── Trust DB ───────────────────────────────────────────────────────────────
@@ -255,16 +281,33 @@ export class ProjectConfigStore {
    * DISPLAYED — if the file changed while the dialog was open, the grant
    * binds to the reviewed bytes and the live file evaluates as 'stale',
    * never silently approving unseen content.
+   *
+   * `unattended` is the EXPLICIT (required) unattended reboot-survival consent.
+   * It is written as part of the SAME record (full replace, never a merge) so a
+   * re-trust of new/changed bytes can never carry a prior unattended grant
+   * forward silently — the caller must pass the checkbox's current value every
+   * time. A 'denied' decision forces it false.
    */
-  async setDecision(root: string, status: 'trusted' | 'denied', contentHash: string): Promise<void> {
+  async setDecision(
+    root: string,
+    status: 'trusted' | 'denied',
+    contentHash: string,
+    unattended: boolean,
+  ): Promise<void> {
     if (!/^[0-9a-f]{64}$/.test(contentHash)) throw new Error('Invalid content hash');
     const key = normalizeProjectRoot(root);
+    const now = Date.now();
     await this.mutate((db) => {
       const exists = Object.prototype.hasOwnProperty.call(db.projects, key);
       if (!exists && Object.keys(db.projects).length >= this.entryCap) {
         throw new Error('Project trust DB is full');
       }
-      db.projects[key] = { status, contentHash, decidedAt: Date.now() };
+      const record: ProjectTrustRecord = { status, contentHash, decidedAt: now };
+      if (status === 'trusted' && unattended === true) {
+        record.unattended = true;
+        record.unattendedDecidedAt = now;
+      }
+      db.projects[key] = record;
     });
   }
 

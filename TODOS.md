@@ -109,6 +109,14 @@
      vi.waitFor budget. Verified stable across 5 consecutive full-suite runs. -->
 
 ## Duplicate-daemon / split-brain on "Quit (keep sessions)" → relaunch (P1)
+> **STATUS 2026-07-01 — RESOLVED (pending live re-verify):** the launcher 3-defect chain SHIPPED in
+> v2.16.2 (PR #93: `checkProcessLiveness` 3-state, `tryEscalatedReping`, `classifyReclaimProbe` live-owner
+> fail-fast + exit 75). The residual daemon-side sibling — `src/daemon/index.ts` `isProcessRunning`
+> `catch → false` — is fixed on branch `feat/unattended-supervisor` (U-SPLIT: pure 3-state classifiers
+> extracted to `src/shared/processLiveness.ts`; a probe `unknown` no longer reclaims a live daemon's lock,
+> via `lockOwnerIsReclaimable`). Remaining: the dynamic autostart-triggered 2-instance race probe (live).
+> The stale "Defect 1 = `isProcessAlive catch→false`" detail below refers to the LAUNCHER site,
+> already superseded by v2.16.2.
 - **What:** "Quit (keep sessions running)" 후 `npm start` 재실행 시 둘째 데몬이 `wmux-daemon-rizz-1` 폴백 파이프로 기동 → 첫 데몬의 세션 파이프 EADDRINUSE → reattach 실패 → 새 세션 → 터미널 초기화. persistence가 깨짐 + 데몬 중복(RAM 낭비).
 - **Why:** (1) `ensureDaemon`이 살아있는 데몬에 재접속 안 하고 spawn. 유력 가설: 느린 OS probe(tasklist/WMI 타임아웃 머신)로 verify-ping 타임아웃→"데몬 없음" 오판 (false-death PR #87과 같은 근원 패턴). (2) `DaemonPipeServer.start()`(`src/daemon/DaemonPipeServer.ts:108-145`)의 `-N` 폴백이 *크래시 zombie*용인데 *살아있는 owner*와 구분 못 해 split-brain 허용.
 - **Pros:** 영속성(핵심 기능) 정상화 + 중복 데몬 제거.
@@ -148,6 +156,10 @@
 - **Priority:** P2 (renderer symptom resolved; transport-layer option deferred)
 
 ## Cross-platform liveness/probe 신뢰성 일반화 (P3, follow-up of PR #87)
+> **STATUS 2026-07-01:** the one confirmed BAD site (`isProcessAlive` / `isProcessRunning`
+> `catch → false`) is now closed on BOTH processes — launcher via v2.16.2 (`checkProcessLiveness`),
+> daemon via U-SPLIT (`feat/unattended-supervisor`, shared `processLiveness`). A broader sweep for any
+> other latent sites is still open.
 - **What:** Windows OS probe(tasklist/WMI)가 타임아웃하는 머신에서 "probe 실패=부재/죽음" 오해 패턴을 코드 전반에서 제거. PR #87이 ProcessMonitor kill 게이트는 고침. 같은 안티패턴이 남아있는지 audit(특히 데몬 verify, launcher PID 체크 — split-brain와 연결).
 - **Why:** 동일 근원 버그(느린 probe→오판)가 여러 곳에 잠복. 원칙: probe 실패는 "unknown"이지 "absent/dead"가 아님.
 - **Pros:** 느린/부하 머신에서 전반적 안정성.
@@ -230,5 +242,14 @@
 - **Cons:** `LanLinkSection`을 props 받게 리팩터(PR-5 "LanLinkView 0편집" 원칙은 follow-up서 완화 가능).
 - **Context:** `SettingsPanel.tsx` activeTab==='lanlink' 렌더(`<LanLinkSection/><LanLinkPairingSection/>`) → 상위 LanLinkTab 컨테이너로 status lift.
 - **Depends on:** —
+- **Priority:** P3
+
+## Codex notify chaining when a foreign notify already exists (P3)
+- **What:** codex resume 캡처(`wmux-codex-notify`) 등록 시 `~/.codex/config.toml`에 이미 사용자/외부 `notify`가 있으면, 현재는 SKIP(미등록 + `wmux mcp` status에 "codex notify: skipped (foreign present)" 노출)한다. 이를 프록시 체인으로 승격: 기존 notify를 wmux-owned 위치에 백업 → wmux notify가 캡처 후 백업한 원래 명령을 동일 argv 페이로드로 이어 실행(exit code 포워딩) → unregister 시 원복.
+- **Why:** codex `notify`는 단일 슬롯이라 사용자가 이미 자기 notify(데스크톱 알림/로깅 등)를 쓰면 SKIP은 그 유저의 codex 자동 resume 캡처를 조용히 포기시킨다(pill `resume --last` 폴백은 유지되므로 break은 아님, soft downgrade). GLM-5.2 outside voice(P0)가 지적. 체인이면 100% 캡처 + 사용자 훅 둘 다 보존.
+- **Pros:** foreign-notify 유저도 정확-id codex resume 획득. SKIP의 유일한 약점(침묵적 다운그레이드) 완전 해소.
+- **Cons:** 매 턴 두 프로그램 스폰 + argv 중계 + exit code 포워딩 + 이중래핑 감지(이미 wmux-wrapped인 notify를 또 감싸는 버그 방지) + 백업/복원 생명주기. **P1#1(notify 실행 지연/실패→codex 턴 stall) 리스크를 두 배로 넓힘** — 그래서 self-contained JS 미러 대신 더 무거운 조율 필요.
+- **Context:** 착수점 = `src/shared/mcpRegistration.ts`의 foreign-notify 분기(현재 SKIP+로그). codex 캡처는 `integrations/codex/bin/wmux-codex-notify.mjs`(self-contained JS, claude bridge 미러). 백업 저장 위치는 wmux-owned 파일(config.toml 주석은 TOML RMW로 소실되기 쉬움).
+- **Depends on:** ★V1(codex notify가 fire-and-forget인가 await+timeout인가) 실측 선행 — await 모델이면 체인이 턴 지연/정지를 유발하는지부터 판단해야 함. 그리고 실제 foreign-notify wmux 유저 발생 시.
 - **Priority:** P3
 

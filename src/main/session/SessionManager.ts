@@ -1,4 +1,5 @@
 import { app } from 'electron';
+import fs from 'node:fs';
 import path from 'node:path';
 import type { SessionData } from '../../shared/types';
 import type { PersistedShape } from '../metadata/MetadataStore';
@@ -77,6 +78,9 @@ export class SessionManager {
         rotationEnabled: true,
       });
       this.pendingData = null;
+      // v2 RCA fix (axis A ③): log exactly which ptyIds this snapshot commits so
+      // a fossil-vs-fresh persistence question is answerable from the log alone.
+      console.log(`[SessionManager] save: ${SessionManager.summarizePtyIds(data)}`);
     } catch (err) {
       console.error('[SessionManager] Failed to save session:', err);
     }
@@ -156,6 +160,10 @@ export class SessionManager {
           validate: SessionManager.isSessionData,
           rotationEnabled: true,
         });
+        // v2 RCA fix (axis A ③): session-end's LAST write must be observable too
+        // — same ptyId summary as save()/load() so a reboot postmortem can see
+        // exactly what hit disk last.
+        console.log(`[SessionManager] flushSync: ${SessionManager.summarizePtyIds(data)}`);
       } catch (err) {
         console.error('[SessionManager] flushSync immediate write failed:', err);
       }
@@ -163,6 +171,16 @@ export class SessionManager {
   }
 
   load(): SessionData | null {
+    // v2 RCA fix (adversarial review): distinguish "no session file" (true
+    // first launch → null) from "file exists but unreadable" (transient AV/
+    // indexer lock at boot). The old catch collapsed both to null; the renderer
+    // treats null as FIRST LAUNCH, sets sessionLoadedRef=true, and the very
+    // next event-driven save would overwrite the user's good session.json with
+    // the default empty workspace. Rethrowing instead makes the IPC reject →
+    // the renderer's startup catch runs the clearAllPtyState fallback with
+    // sessionLoadedRef=false, which gates ALL saves — the on-disk layout
+    // survives for the next boot.
+    const hadFile = fs.existsSync(this.filePath);
     try {
       // T7: wire the lazy-migration hook. Production registry ships
       // as identity (v1, no steps) and `createMigrator` safely
@@ -174,14 +192,64 @@ export class SessionManager {
         SESSION_DATA_REGISTRY,
         this.filePath,
       );
-      return atomicReadJSONSync<SessionData>(this.filePath, {
+      const loaded = atomicReadJSONSync<SessionData>(this.filePath, {
         validate: SessionManager.isSessionData,
         migrator,
       });
+      // The atomic-read helper swallows read/validate failures internally
+      // (falls through the .bak chain, then returns null) — so a locked or
+      // fully-corrupt-with-backups file surfaces as null, indistinguishable
+      // from first launch. Promote that to an error when the file EXISTS:
+      // refusing to load is recoverable (next boot retries; the file is
+      // preserved for salvage), silently treating it as first launch is not
+      // (the next save overwrites the user's layout with the default).
+      if (loaded === null && hadFile) {
+        throw new Error('session.json exists but could not be read/validated — refusing to treat as first launch');
+      }
+      // v2 RCA fix (axis A ③): log which ptyIds we actually loaded. Correlated
+      // with the daemon's recovery log, a mismatch here is the fossil-reattach
+      // signature (session.json holds a ptyId the daemon no longer has).
+      console.log(`[SessionManager] load from ${path.basename(this.filePath)}: ${loaded ? SessionManager.summarizePtyIds(loaded) : '(no session file)'}`);
+      return loaded;
     } catch (err) {
       console.error('[SessionManager] Failed to load session:', err);
+      if (hadFile) throw err;
       return null;
     }
+  }
+
+  /** Truncation caps for the ptyId log summary — one knob, three call sites
+   *  (save/load/flushSync) so the correlated log lines can never drift. */
+  private static readonly LOG_MAX_IDS = 6;
+  private static readonly LOG_ID_PREFIX = 16;
+
+  /** One-line ptyId summary shared by save()/load()/flushSync() logging. */
+  private static summarizePtyIds(data: SessionData): string {
+    const ids = SessionManager.collectPtyIds(data);
+    const shown = ids.slice(0, SessionManager.LOG_MAX_IDS).map((i) => i.slice(0, SessionManager.LOG_ID_PREFIX)).join(', ');
+    return `${ids.length} pty [${shown}${ids.length > SessionManager.LOG_MAX_IDS ? ', …' : ''}]`;
+  }
+
+  /**
+   * v2 RCA fix (axis A ③): enumerate every persisted surface ptyId in a
+   * SessionData snapshot. Used only for save/load logging so fossil-ptyId
+   * persistence and `.bak`-fallback resurrection are observable in the log.
+   */
+  private static collectPtyIds(data: SessionData): string[] {
+    const ids: string[] = [];
+    const walk = (pane: unknown): void => {
+      if (!pane || typeof pane !== 'object') return;
+      const p = pane as { type?: string; surfaces?: Array<{ ptyId?: string }>; children?: unknown[] };
+      if (p.type === 'leaf') {
+        for (const s of p.surfaces ?? []) if (s.ptyId) ids.push(s.ptyId);
+      } else if (Array.isArray(p.children)) {
+        for (const c of p.children) walk(c);
+      }
+    };
+    for (const ws of data.workspaces ?? []) {
+      walk((ws as { rootPane?: unknown }).rootPane);
+    }
+    return ids;
   }
 
   /**

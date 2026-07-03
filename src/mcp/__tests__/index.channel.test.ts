@@ -81,6 +81,8 @@ const channelList = tools.get('channel_list');
 const channelRead = tools.get('channel_read');
 const channelInvite = tools.get('channel_invite');
 const channelGetMembers = tools.get('channel_get_members');
+const channelAck = tools.get('channel_ack');
+const channelUnread = tools.get('channel_unread');
 
 if (
   !channelCreate ||
@@ -90,7 +92,9 @@ if (
   !channelList ||
   !channelRead ||
   !channelInvite ||
-  !channelGetMembers
+  !channelGetMembers ||
+  !channelAck ||
+  !channelUnread
 ) {
   throw new Error('channel tools failed to register');
 }
@@ -100,10 +104,11 @@ beforeEach(() => {
 });
 
 describe('channel_* tools: registration', () => {
-  it('registers all eight standard tools', () => {
+  it('registers all ten standard tools', () => {
     // channel_read exposes message history; channel_invite adds another
     // workspace (the only path into a private channel); channel_get_members
-    // exposes the roster (who is in the channel).
+    // exposes the roster (who is in the channel). Channels v2 adds
+    // channel_ack (durable-inbox consume signal) + channel_unread (cheap poll).
     expect(channelCreate).toBeDefined();
     expect(channelPost).toBeDefined();
     expect(channelJoin).toBeDefined();
@@ -112,6 +117,8 @@ describe('channel_* tools: registration', () => {
     expect(channelRead).toBeDefined();
     expect(channelInvite).toBeDefined();
     expect(channelGetMembers).toBeDefined();
+    expect(channelAck).toBeDefined();
+    expect(channelUnread).toBeDefined();
   });
 
   it('does not register a channel_history tool (history is exposed via channel_read)', () => {
@@ -478,11 +485,13 @@ describe('channel_get_members', () => {
 });
 
 describe('FIRST_PARTY_METHODS allowlist (channel coverage)', () => {
-  it('grants the bundled first-party MCP server access to all nine agent-reachable a2a.channel.* methods', () => {
+  it('grants the bundled first-party MCP server access to all eleven agent-reachable a2a.channel.* methods', () => {
     // Without these, the bundled Claude/Codex MCP server is deadlocked in
     // enforce mode (plans/first-party-mcp-trust.md §2). archive + kick are
     // humans-only (renderer-IPC, never the pipe/MCP) so they are deliberately
-    // absent — see the negative assertion below.
+    // absent — see the negative assertion below. v2 adds ack + unread: ack is
+    // the durable-inbox consume signal, so denying it to agents would leave
+    // the wake worker re-pinging them forever.
     for (const m of [
       'a2a.channel.list',
       'a2a.channel.get',
@@ -493,6 +502,8 @@ describe('FIRST_PARTY_METHODS allowlist (channel coverage)', () => {
       'a2a.channel.leave',
       'a2a.channel.post',
       'a2a.channel.invite',
+      'a2a.channel.ack',
+      'a2a.channel.unread',
     ] as const) {
       expect(
         FIRST_PARTY_METHODS.has(m),
@@ -504,5 +515,80 @@ describe('FIRST_PARTY_METHODS allowlist (channel coverage)', () => {
   it('does NOT grant archive or kick (humans-only — must never be agent-reachable)', () => {
     expect(FIRST_PARTY_METHODS.has('a2a.channel.archive')).toBe(false);
     expect(FIRST_PARTY_METHODS.has('a2a.channel.kick')).toBe(false);
+  });
+});
+
+describe('channel_ack (Channels v2)', () => {
+  it('forwards channelId/uptoSeq/memberId + verifiedWorkspaceId to a2a.channel.ack', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, acked: 0, lastReadSeq: 7 });
+    const res = await channelAck({ channel_id: 'ch-1', upto_seq: 7, member_id: 'codex' });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.ack', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      channelId: 'ch-1',
+      uptoSeq: 7,
+      memberId: 'codex',
+    });
+    expect(res.isError).toBeUndefined();
+  });
+
+  it('omits memberId when not provided (workspace-wide ack)', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, acked: 2, lastReadSeq: 3 });
+    await channelAck({ channel_id: 'ch-1', upto_seq: 3 });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.ack', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      channelId: 'ch-1',
+      uptoSeq: 3,
+    });
+  });
+
+  it('surfaces CHANNEL_NOT_FOUND as isError', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: false,
+      error: { code: 'CHANNEL_NOT_FOUND', message: 'No such channel' },
+    });
+    const res = await channelAck({ channel_id: 'ch-ghost', upto_seq: 1 });
+    expect(res.isError).toBe(true);
+    expect(res.content[0].text).toContain('CHANNEL_NOT_FOUND');
+  });
+});
+
+describe('channel_unread (Channels v2)', () => {
+  it('forwards verifiedWorkspaceId (+ optional memberId) to a2a.channel.unread', async () => {
+    mockSendRpc.mockResolvedValue({ ok: true, entries: [] });
+    await channelUnread({ member_id: 'codex' });
+    expect(mockSendRpc).toHaveBeenCalledWith('a2a.channel.unread', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+      memberId: 'codex',
+    });
+    await channelUnread({});
+    expect(mockSendRpc).toHaveBeenLastCalledWith('a2a.channel.unread', {
+      workspaceId: 'ws-test',
+      verifiedWorkspaceId: 'ws-test',
+    });
+  });
+
+  it('passes through the entries envelope', async () => {
+    mockSendRpc.mockResolvedValue({
+      ok: true,
+      entries: [
+        {
+          channelId: 'ch-1',
+          name: 'general',
+          memberId: 'codex',
+          lastReadSeq: 3,
+          headSeq: 5,
+          unread: 2,
+          mentionUnread: 1,
+          trimmedBeforeCursor: 0,
+        },
+      ],
+    });
+    const res = await channelUnread({});
+    expect(res.isError).toBeUndefined();
+    expect(res.content[0].text).toContain('"unread": 2');
+    expect(res.content[0].text).toContain('"trimmedBeforeCursor": 0');
   });
 });

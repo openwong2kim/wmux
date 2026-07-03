@@ -10,6 +10,8 @@ import {
   getAuthTokenPath,
   getTcpPortPath,
   getWmuxHomeDir,
+  getDaemonAuthTokenPath,
+  getLegacyDaemonAuthTokenPath,
   dataSuffix,
 } from '../shared/constants';
 
@@ -189,8 +191,10 @@ export async function sendRequest(
 //   - daemon pipe file  → src/main/daemon/launcher.ts readPipeNameFromFile
 //                          (reads `${getWmuxDir()}/daemon-pipe`)
 //   - daemon pipe name  → src/main/DaemonClient.ts getDaemonPipeName
-//   - daemon auth token → src/main/DaemonClient.ts readDaemonAuthToken
-//                          (and src/daemon/DaemonPipeServer.ts getTokenPath)
+//   - daemon auth token → src/shared/constants.ts getDaemonAuthTokenPath
+//                          (suffix-aware; written by DaemonPipeServer.getTokenPath,
+//                          read here + by DaemonClient.readDaemonAuthToken, with a
+//                          getLegacyDaemonAuthTokenPath fallback on both readers)
 // Keep these in lockstep with those modules if the daemon transport changes.
 // ---------------------------------------------------------------------------
 
@@ -229,20 +233,22 @@ export function resolveDaemonPipeName(): string {
 }
 
 /**
- * Read the daemon auth token. NOTE: unlike the main-pipe token
- * (getAuthTokenPath, suffix-aware), the daemon token path is NOT suffix-aware
- * — both the daemon (src/daemon/DaemonPipeServer.ts getTokenPath) and the
- * launcher (src/main/DaemonClient.ts readDaemonAuthToken) hardcode
- * `~/.wmux/daemon-auth-token`. Returns undefined if absent.
+ * Read the daemon auth token. Suffix-aware via getDaemonAuthTokenPath, mirroring
+ * the daemon writer (src/daemon/DaemonPipeServer.ts getTokenPath) and the
+ * launcher reader (src/main/DaemonClient.ts readDaemonAuthToken) — all three
+ * MUST resolve the same path or nothing authenticates. Falls back to the legacy
+ * unsuffixed `~/.wmux/daemon-auth-token` when the suffix-aware path is absent,
+ * so a suffixed ('-dev'/dogfood) instance upgrading over a still-running older
+ * daemon still authenticates. Returns undefined if absent.
  */
 export function resolveDaemonAuthToken(): string | undefined {
-  try {
-    const fromFile = fs
-      .readFileSync(path.join(os.homedir(), '.wmux', 'daemon-auth-token'), 'utf8')
-      .trim();
-    if (fromFile) return fromFile;
-  } catch {
-    // file absent/unreadable
+  for (const tokenPath of [getDaemonAuthTokenPath(), getLegacyDaemonAuthTokenPath()]) {
+    try {
+      const fromFile = fs.readFileSync(tokenPath, 'utf8').trim();
+      if (fromFile) return fromFile;
+    } catch {
+      // candidate absent/unreadable — try the next one
+    }
   }
   return undefined;
 }

@@ -7,6 +7,10 @@ import {
   upsertMcpServer,
   removeMcpServers,
   ConfigParseError,
+  getNotify,
+  isWmuxOwnedNotify,
+  upsertNotifyToml,
+  removeNotifyToml,
 } from '../configIO';
 
 // ── TOML (Codex) — surgical block, must preserve every other byte ────────────
@@ -188,5 +192,66 @@ describe('configIO — read helpers', () => {
   it('getMcpServerEntry returns null for absent / malformed', () => {
     expect(getMcpServerEntry({}, 'toml', 'wmux')).toBeNull();
     expect(getMcpServerEntry({ mcp_servers: { wmux: 'nope' } }, 'toml', 'wmux')).toBeNull();
+  });
+});
+
+// ── Codex notify (root-level array) ──────────────────────────────────────────
+
+describe('configIO — codex notify', () => {
+  const SCRIPT = 'C:\\Users\\u\\.wmux\\hooks\\wmux-codex-notify.mjs';
+
+  it('isWmuxOwnedNotify recognizes ours (node + our basename), rejects foreign', () => {
+    expect(isWmuxOwnedNotify(['node', SCRIPT])).toBe(true);
+    expect(isWmuxOwnedNotify(['node', '/home/u/.wmux/hooks/wmux-codex-notify.mjs'])).toBe(true);
+    expect(isWmuxOwnedNotify(['notify-send', 'Codex'])).toBe(false);
+    expect(isWmuxOwnedNotify(['node', '/some/other-script.mjs'])).toBe(false);
+    expect(isWmuxOwnedNotify(['node'])).toBe(false);
+    expect(isWmuxOwnedNotify(null)).toBe(false);
+  });
+
+  it('getNotify reads the root array; null when absent / non-array', () => {
+    expect(getNotify(parseConfig('notify = ["a", "b"]\n', 'toml'))).toEqual(['a', 'b']);
+    expect(getNotify(parseConfig('model = "x"\n', 'toml'))).toBeNull();
+  });
+
+  it('inserts notify as a root key BEFORE the first table (valid TOML)', () => {
+    const input = `model = "gpt-5.5"\n[projects.'d:\\wmux']\ntrust_level = "trusted"\n`;
+    const out = upsertNotifyToml(input, SCRIPT);
+    // Re-parse: notify must be a ROOT key, and the project table must survive.
+    const parsed = parseConfig(out, 'toml');
+    expect(isWmuxOwnedNotify(getNotify(parsed))).toBe(true);
+    expect((parsed['projects'] as Record<string, unknown>)['d:\\wmux']).toEqual({ trust_level: 'trusted' });
+    // notify line sits before the table header in the text.
+    expect(out.indexOf('notify =')).toBeLessThan(out.indexOf('[projects'));
+  });
+
+  it('replaces an existing wmux notify in place (idempotent path preserved order)', () => {
+    const input = `model = "x"\nnotify = ["node", "OLD.mjs"]\n[t]\nk = 1\n`;
+    const out = upsertNotifyToml(input, SCRIPT);
+    expect(getNotify(parseConfig(out, 'toml'))![1]).toBe(SCRIPT);
+    expect(out.split('notify =').length).toBe(2); // exactly one notify line
+  });
+
+  it('appends notify when there are no tables', () => {
+    const out = upsertNotifyToml('model = "x"\n', SCRIPT);
+    expect(isWmuxOwnedNotify(getNotify(parseConfig(out, 'toml')))).toBe(true);
+  });
+
+  it('preserves Windows literal-key project tables (no backslash corruption)', () => {
+    const input = `[projects.'d:\\wmux']\ntrust_level = "trusted"\n`;
+    const out = upsertNotifyToml(input, SCRIPT);
+    expect(out).toContain(`[projects.'d:\\wmux']`);
+    expect(parseConfig(out, 'toml')['projects']).toBeDefined();
+  });
+
+  it('removeNotifyToml removes ours, leaves a foreign notify untouched', () => {
+    const ours = `notify = ["node", ${JSON.stringify(SCRIPT)}]\n[t]\nk = 1\n`;
+    expect(getNotify(parseConfig(removeNotifyToml(ours), 'toml'))).toBeNull();
+    const foreign = `notify = ["notify-send", "Codex"]\n`;
+    expect(removeNotifyToml(foreign)).toBe(foreign); // untouched
+  });
+
+  it('throws on malformed TOML rather than appending to garbage', () => {
+    expect(() => upsertNotifyToml('this is = = not toml [[', SCRIPT)).toThrow(ConfigParseError);
   });
 });

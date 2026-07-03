@@ -355,6 +355,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'a2a.channel.archive':     { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.kick':        { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.ack':         { capability: 'a2a.channel.read', riskClass: 'a2a' },
+  'a2a.channel.unread':      { capability: 'a2a.channel.read', riskClass: 'a2a' },
 
   // --- Company subsystem (substrate-internal team/orchestration). All
   //     internal for v3.0; can be re-classified once spec covers a2a teams.

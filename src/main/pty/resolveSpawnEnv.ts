@@ -29,6 +29,7 @@ export function resolveSpawnEnv(
   baseEnv: NodeJS.ProcessEnv,
   profileEnv: Record<string, string> | undefined,
   identity: Record<string, string>,
+  fallbackLocale?: string,
 ): Record<string, string> {
   const env = buildSafeChildEnv(baseEnv);
   // Capture the instance-isolation suffix from the SPAWNING process's own env
@@ -64,5 +65,12 @@ export function resolveSpawnEnv(
   // process.env (never a persisted blob), so a simple presence check is enough —
   // the daemon recovery path scrubs a stale blob suffix separately.
   if (typeof dataSuffix === 'string' && dataSuffix) env[ENV_KEYS.DATA_SUFFIX] = dataSuffix;
+  // 로케일 폴백 (issue #321): 셸이 UTF-8 로케일을 하나도 못 받으면 C/POSIX로 떨어져
+  // zsh ZLE가 한글·CJK 멀티바이트 입력을 조합하지 못하고 `<0085>` 식으로 깨진다.
+  // macOS를 Dock/Finder로 실행하면 `LANG`이 상속되지 않는 게 대표적 트리거. 사용자가
+  // 프로필/rc로 이미 로케일을 지정했으면(아래 셋 중 하나라도) 절대 덮어쓰지 않는다.
+  if (fallbackLocale && !env.LANG && !env.LC_ALL && !env.LC_CTYPE) {
+    env.LANG = fallbackLocale;
+  }
   return env;
 }

@@ -315,3 +315,106 @@ export function removeMcpServers(
   parseConfig(text, format);
   return format === 'json' ? removeJson(text, keys) : removeToml(text, keys);
 }
+
+// ── Codex `notify` (root-level array) read/write ─────────────────────────────
+//
+// Codex's `notify` is a SINGLE root-level slot (`notify = ["prog", "args"...]`)
+// spawned on agent-turn-complete. wmux registers its resume-capture bridge here.
+// Unlike `mcp_servers.<key>` (a namespaced table where wmux and the user coexist),
+// there is exactly one notify — so wmux only ever writes it when it is ABSENT or
+// already wmux-owned, never over a foreign one (codex-resume-support eng review,
+// decision 1: skip-if-foreign). Root keys must precede tables in TOML, so the
+// insert lands before the first table header.
+
+/** Basename of the wmux Codex notify bridge — how we recognize our own entry. */
+export const CODEX_NOTIFY_BASENAME = 'wmux-codex-notify.mjs';
+
+/** Read the root `notify` value (array of string tokens), or null when absent /
+ *  not an array. Non-string elements are dropped (a shape we don't own). */
+export function getNotify(parsed: Record<string, unknown>): string[] | null {
+  const n = parsed['notify'];
+  if (!Array.isArray(n)) return null;
+  return n.filter((x): x is string => typeof x === 'string');
+}
+
+/** True when the notify entry is wmux-owned: `["node", "<…/wmux-codex-notify.mjs>"]`.
+ *  A foreign notify (user's own program) returns false so we leave it untouched. */
+export function isWmuxOwnedNotify(notify: string[] | null): boolean {
+  return (
+    !!notify &&
+    notify.length >= 2 &&
+    notify[0] === 'node' &&
+    notify[1].replace(/\\/g, '/').endsWith(CODEX_NOTIFY_BASENAME)
+  );
+}
+
+/** The canonical wmux notify line for a script path. JSON.stringify yields a
+ *  valid TOML basic string (escapes \ and " like TOML), so Windows backslash
+ *  paths round-trip. */
+function notifyLineText(scriptPath: string): string {
+  return `notify = ["node", ${JSON.stringify(scriptPath)}]`;
+}
+
+/**
+ * Return new TOML text with a root-level `notify = ["node", <script>]`, replacing
+ * an existing ROOT `notify = …` line in place, or inserting one before the first
+ * table header (TOML requires root keys before tables). Every other byte —
+ * comments, ordering, quoted project keys — is preserved. Caller has already
+ * decided the slot is ours-or-absent (skip-if-foreign lives in registerCodexNotify).
+ */
+export function upsertNotifyToml(text: string, scriptPath: string): string {
+  parseConfig(text, 'toml'); // abort on malformed rather than append to garbage
+  const eol = detectEol(text);
+  const lines = text.split(/\r?\n/);
+  const line = notifyLineText(scriptPath);
+
+  let firstTable = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    if (isAnyTableHeader(lines[i])) { firstTable = i; break; }
+  }
+  // Replace an existing ROOT notify (only searched before the first table — a
+  // `notify` under a table belongs to that table's namespace, not the root).
+  for (let i = 0; i < firstTable; i++) {
+    if (/^\s*notify\s*=/.test(lines[i])) {
+      lines[i] = line;
+      const out = lines.join(eol);
+      parseConfig(out, 'toml'); // never return unparseable TOML
+      return out;
+    }
+  }
+  let out: string;
+  if (firstTable < lines.length) {
+    lines.splice(firstTable, 0, line); // insert as the last root key, before the first table
+    out = lines.join(eol);
+  } else {
+    // No tables — append as the last root key with exactly one trailing newline.
+    const trimmed = [...lines];
+    while (trimmed.length && trimmed[trimmed.length - 1].trim() === '') trimmed.pop();
+    trimmed.push(line);
+    out = trimmed.join(eol) + eol;
+  }
+  parseConfig(out, 'toml');
+  return out;
+}
+
+/** Return new TOML text with a wmux-owned root `notify` line removed. Leaves a
+ *  foreign notify untouched. No-op (returns input) when absent/foreign. */
+export function removeNotifyToml(text: string): string {
+  const parsed = parseConfig(text, 'toml');
+  if (!isWmuxOwnedNotify(getNotify(parsed))) return text;
+  const eol = detectEol(text);
+  const lines = text.split(/\r?\n/);
+  let firstTable = lines.length;
+  for (let i = 0; i < lines.length; i++) {
+    if (isAnyTableHeader(lines[i])) { firstTable = i; break; }
+  }
+  for (let i = 0; i < firstTable; i++) {
+    if (/^\s*notify\s*=/.test(lines[i])) {
+      lines.splice(i, 1);
+      const out = lines.join(eol);
+      parseConfig(out, 'toml');
+      return out;
+    }
+  }
+  return text;
+}

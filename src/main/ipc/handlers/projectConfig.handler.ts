@@ -29,6 +29,7 @@ export function registerProjectConfigHandlers(): () => void {
     root: unknown,
     decision: unknown,
     contentHash: unknown,
+    unattended: unknown,
   ): Promise<{ ok: boolean }> => {
     if (typeof root !== 'string' || root.length === 0 || root.length > MAX_PATH_LEN) {
       throw new Error('Invalid project root');
@@ -42,7 +43,9 @@ export function registerProjectConfigHandlers(): () => void {
       throw new Error('Invalid trust decision');
     }
     if (typeof contentHash !== 'string') throw new Error('Invalid content hash');
-    await store.setDecision(root, decision, contentHash);
+    // Unattended reboot-survival consent is a strict opt-in boolean; anything
+    // that isn't literally true (absent, non-boolean) is treated as no consent.
+    await store.setDecision(root, decision, contentHash, unattended === true);
     return { ok: true };
   }));
 

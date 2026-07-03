@@ -42,13 +42,24 @@ export default function FleetCard({ card, focused, onJump, tail }: FleetCardProp
   const activity = card.activity?.trim() || undefined;
   const showTail =
     !activity && card.surfaceType === 'terminal' && !!tail && tail.length > 0;
+  // X8 supervision chip: a declared/unattended agent shows it's armed (⟳, plus
+  // the restart count once it has restarted) or that the runaway guard tripped
+  // (⟳! red — the supervisor gave up, a human is needed). Mirrors the pane badge
+  // so the cockpit reads the same as the pane header. Absent → no chip.
+  const supervision = card.supervision;
+  const supervisionStopped = supervision?.status === 'stopped';
+  const supervisionLabel = supervision
+    ? `${supervisionStopped ? 'supervision stopped' : 'supervised'}, ${supervision.restartCount} restart${
+        supervision.restartCount === 1 ? '' : 's'
+      }`
+    : '';
 
   return (
     <button
       type="button"
       role="option"
       aria-selected={focused}
-      aria-label={`${displayName}, ${t(icon.labelKey)}, ${card.workspaceName}`}
+      aria-label={`${displayName}, ${t(icon.labelKey)}, ${card.workspaceName}${supervision ? `, ${supervisionLabel}` : ''}`}
       tabIndex={focused ? 0 : -1}
       onClick={onJump}
       data-fleet-card
@@ -76,6 +87,17 @@ export default function FleetCard({ card, focused, onJump, tail }: FleetCardProp
         <span className="flex-1 min-w-0 truncate text-[13px] font-medium text-[var(--text-main)]">
           {displayName}
         </span>
+        {supervision && (
+          <span
+            data-fleet-supervision
+            data-supervision-status={supervision.status}
+            className="flex-shrink-0 text-[10px] font-mono"
+            style={{ color: supervisionStopped ? 'var(--accent-red)' : 'var(--text-subtle)' }}
+            title={supervisionLabel}
+          >
+            {`${supervisionStopped ? '⟳!' : '⟳'}${supervision.restartCount > 0 ? ` ${supervision.restartCount}` : ''}`}
+          </span>
+        )}
         <span className="flex-shrink-0 text-[10px] font-mono" style={{ color: icon.dotVar }}>
           {t(icon.labelKey)}
         </span>

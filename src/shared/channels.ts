@@ -84,6 +84,22 @@ export interface ChannelMember {
    * here.
    */
   historyFromSeq: number;
+  /**
+   * Channels v2 (durable inbox): highest `seq` this member has CONSUMED.
+   * Advance-only (`a2a.channel.ack` clamps to the channel head and never
+   * moves backwards); `unread = messages with historyFromSeq ≤ seq >
+   * lastReadSeq`. This is the delivery substrate — the wake worker re-nudges
+   * a member while it has unread mentions, and stops on ack.
+   *
+   * OPTIONAL for backward compat (additive field, `ChannelState.version`
+   * stays 1): rows persisted before v2 lack it and are backfilled to the
+   * channel HEAD at ChannelService construction ("start reading from now"),
+   * NOT to 0 — a 0 default would mark the entire history unread on upgrade
+   * and set off a re-nudge storm. Same rule at join/create seeding time.
+   * Multiple panes acking the same (workspaceId, memberId) row = last-ack-wins
+   * (documented v1 simplification).
+   */
+  lastReadSeq?: number;
 }
 
 /**

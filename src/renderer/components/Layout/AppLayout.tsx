@@ -6,6 +6,8 @@ import { useT } from '../../hooks/useT';
 import Sidebar from '../Sidebar/Sidebar';
 import MiniSidebar from '../Sidebar/MiniSidebar';
 import PaneContainer from '../Pane/PaneContainer';
+import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
+import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import StatusBar from '../StatusBar/StatusBar';
 import NotificationPanel from '../Notification/NotificationPanel';
 import CommandPalette from '../Palette/CommandPalette';
@@ -449,7 +451,7 @@ export default function AppLayout() {
     }
     const run = (async () => {
       try {
-        const listResult = await ipcInvoke<{ id: string }[]>(() =>
+        const listResult = await ipcInvoke<{ id: string; surfaceId?: string; createdAt?: string }[]>(() =>
           window.electronAPI.pty.list()
         );
         if (!listResult.ok) {
@@ -556,9 +558,15 @@ export default function AppLayout() {
         // correlated with the daemon's pty.list count.
         if (absentCandidates.length > 0 && !signal?.aborted) {
           const firstAbsent = absentCandidates.map((c) => c.ptyId);
+          // v2 RCA fix (axis B-lite hardening): capture the re-query's FULL
+          // payload. Rebind targets must come from the freshest snapshot — a
+          // session that died between the two snapshots must not be picked
+          // (review consensus: codex P2 + testing + adversarial).
+          let secondSnapshot: { id: string; surfaceId?: string; createdAt?: string }[] | null = null;
           const toClear = await resolvePtyIdsToClear(firstAbsent, {
             reList: async () => {
-              const r = await ipcInvoke<{ id: string }[]>(() => window.electronAPI.pty.list());
+              const r = await ipcInvoke<{ id: string; surfaceId?: string; createdAt?: string }[]>(() => window.electronAPI.pty.list());
+              if (r.ok) secondSnapshot = r.data;
               return r.ok
                 ? { ok: true, ids: new Set(r.data.map((p: { id: string }) => p.id)) }
                 : { ok: false };
@@ -566,12 +574,46 @@ export default function AppLayout() {
             isCurrent: () => !signal?.aborted,
             log: (level, message) => (level === 'warn' ? console.warn(message) : console.log(message)),
           });
-          for (const c of absentCandidates) {
+          // v2 RCA fix (axis B-lite): decide clear-vs-rebind per candidate (pure,
+          // unit-tested in resolveReconcileRebind.test.ts). Acts ONLY on ptyIds
+          // already judged dead (in toClear), so it never swaps a live-attached
+          // ptyId (codex #5). A live session on the SAME surfaceId → rebind
+          // (recovers the reboot case where the session survived under a new
+          // ptyId); no match → clear→self-create (axis A's immediate save covers
+          // empty-pane-origin sessions that carry no surfaceId). Rebind targets
+          // come from the SECOND snapshot when the re-query succeeded.
+          const rebindActions = resolveReconcileRebind(absentCandidates, toClear, secondSnapshot ?? activePtys);
+          for (const a of rebindActions) {
             if (signal?.aborted) break;
-            if (toClear.has(c.ptyId)) {
-              console.warn(`[lifecycle] reconcile clearing ptyId=${c.ptyId} surface=${c.surfaceId} (absent from TWO daemon snapshots) → Terminal self-create`);
-              useStore.getState().updateSurfacePtyId(c.paneId, c.surfaceId, '');
+            // CAS guard (adversarial review): the decision was computed from a
+            // snapshot ≥600ms old. On a late reconcile, useTerminal's own
+            // reattach path may have already cleared this surface and
+            // self-created a FRESH ptyId — stomping it would orphan a live
+            // session (or wrong-bind). Apply only if the surface still holds
+            // the exact stale ptyId the decision was made against.
+            const wsNow = useStore.getState().workspaces;
+            let currentPtyId: string | undefined;
+            for (const ws of wsNow) {
+              const walk = (p: Pane): boolean => {
+                if (p.type === 'leaf') {
+                  if (p.id !== a.paneId) return false;
+                  currentPtyId = p.surfaces.find((s) => s.id === a.surfaceId)?.ptyId;
+                  return true;
+                }
+                return p.children.some(walk);
+              };
+              if (walk(ws.rootPane)) break;
             }
+            if (currentPtyId !== a.stalePtyId) {
+              console.warn(`[lifecycle] reconcile ${a.kind} SKIPPED surface=${a.surfaceId}: ptyId moved (${a.stalePtyId} → ${currentPtyId ?? 'gone'}) since snapshot`);
+              continue;
+            }
+            if (a.kind === 'rebind') {
+              console.warn(`[lifecycle] reconcile REBIND surface=${a.surfaceId} stale=${a.stalePtyId} → live=${a.newPtyId} (surfaceId match, dead ptyId recovered)`);
+            } else {
+              console.warn(`[lifecycle] reconcile clearing ptyId=${a.stalePtyId} surface=${a.surfaceId} (absent from TWO daemon snapshots, no surface match) → Terminal self-create`);
+            }
+            useStore.getState().updateSurfacePtyId(a.paneId, a.surfaceId, a.newPtyId);
           }
         }
         console.log('[AppLayout] Reconciliation complete');
@@ -674,6 +716,16 @@ export default function AppLayout() {
             }, RECONCILE_TIMEOUT_MS)
           ),
         ]);
+        // v2 RCA fix (axis A): persist the reconciled layout ON SUCCESS ONLY.
+        // Rebinds/clears from a completed reconcile must reach disk now — not
+        // wait for the 5s tick a reboot could pre-empt. Deliberately NOT in the
+        // finally: the catch path just ran clearAllPtyState() as a blank-slate
+        // fallback, and persisting THAT would wipe good ptyIds from disk. Left
+        // unsaved, the old on-disk ptyIds can still reattach next boot (daemon
+        // recovery replays the same ids) — strictly better (codex P1).
+        // Gen-guarded like clearAllPtyState: a superseded startup must not
+        // persist a snapshot the fresher run is still reconciling.
+        if (gen === startupGenRef.current) saveSessionNow();
       } catch (err) {
         // Fix 0 explicit fallback. Reconcile aborted, timed out, session.load
         // rejected, daemon.whenReady rejected, or any other startup throw.
@@ -838,7 +890,9 @@ export default function AppLayout() {
     };
   }, []);
 
-  // Save session on beforeunload (with scrollback dump — sync fire-and-forget)
+  // Session saver: registered on the sessionSaveBridge (event-driven immediate
+  // saves — the axis-A reboot fix) + bound to beforeunload (scrollback dump,
+  // sync fire-and-forget legacy exit save).
   useEffect(() => {
     const saveSession = () => {
       const dumped = dumpScrollbackBuffersSync();
@@ -846,8 +900,32 @@ export default function AppLayout() {
       window.electronAPI.session.save(data);
     };
 
-    window.addEventListener('beforeunload', saveSession);
-    return () => window.removeEventListener('beforeunload', saveSession);
+    // v2 RCA fix (axis A): register the saver for event-driven immediate
+    // persistence. beforeunload is unreliable on OS reboot (the process is
+    // force-killed before it fires), so ptyId-changing sites (self-create,
+    // addSurface, reconcile completion) call saveSessionNow() to flush right away
+    // — closing the "vulnerable 5s window" between a self-create and the next
+    // periodic tick, which is exactly where a reboot loses the new ptyId.
+    //
+    // GUARDED like the 5s periodic save: if session.load() failed at startup,
+    // the store still holds the DEFAULT empty workspace — an event-driven save
+    // (failed startup also flips paneGate and self-creates panes) would sync-
+    // overwrite the user's good session.json with that default. Same data-loss
+    // class the periodic tick's sessionLoadedRef guard exists to prevent.
+    const saveSessionGuarded = () => {
+      if (!sessionLoadedRef.current) return;
+      saveSession();
+    };
+    registerSessionSaver(saveSessionGuarded);
+    // beforeunload gets the SAME guard (adversarial review): an exit while
+    // session.load() is in flight / failed must not overwrite a good
+    // session.json with the default workspace either. First launch is safe —
+    // load()===null sets sessionLoadedRef=true before any unload can fire.
+    window.addEventListener('beforeunload', saveSessionGuarded);
+    return () => {
+      window.removeEventListener('beforeunload', saveSessionGuarded);
+      registerSessionSaver(null);
+    };
   }, []);
 
   // Periodic session save — protects against crashes.
@@ -965,6 +1043,9 @@ export default function AppLayout() {
                   healthyUptimeSec:
                     projectSeed?.restartLimit?.healthyUptimeSec ?? PROJECT_SUPERVISION_DEFAULT_HEALTHY_UPTIME_SEC,
                 },
+                // U-PERM: consent-gated at layout-apply (buildTree). Included only
+                // when true so unsupervised/unconsented panes persist no bit.
+                ...(projectSeed?.restorePermissionMode === true ? { restorePermissionMode: true } : {}),
               },
             }
           : (seedCommand !== undefined ? { initialCommand: seedCommand } : {});
@@ -998,6 +1079,8 @@ export default function AppLayout() {
           return;
         }
         const shellName = created.shell ? shellDisplayName(created.shell) : 'Terminal';
+        // v2 RCA fix (axis A): the immediate persist now lives INSIDE addSurface
+        // (surfaceSlice centralization) so every binding call site gets it.
         addSurface(paneId, created.id, shellName, created.cwd || '');
         // Set initial CWD in workspace metadata from first pane
         if (created.cwd) {

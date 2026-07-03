@@ -226,11 +226,22 @@ function extractUsageFromTranscript(transcriptPath) {
 }
 
 // X6 ③: the permission mode the session is CURRENTLY in, read from the
-// transcript. Claude Code stamps `"permissionMode"` on every USER turn
-// (F5, verified live 2026-06-14). Walk lines from the END for the most
-// recent user turn — that's the live mode. Mirrors extractUsageFromTranscript's
-// parse-tolerant tail read (last 64KB). Returns one of the four known modes,
-// or null (file absent, no user turn yet, or an unrecognized value).
+// transcript. Two record shapes carry it (walk lines from the END; the most
+// recent of either wins — that's the live mode):
+//  - `{"type":"permission-mode","permissionMode":"..."}` — dedicated record,
+//    written near the transcript tail with each prompt's metadata block
+//    (observed live 2026-07-02; format the current Claude Code emits).
+//  - `{"type":"user",...,"permissionMode":"..."}` — inline stamp on user turns
+//    (F5, verified live 2026-06-14; older format, kept for back-compat).
+// Recognizing the dedicated record matters: user-turn stamps are sparse, and a
+// single large attachment/tool record can push the last stamped user turn out
+// of the 64KB tail window — the exact miss that left a bypassPermissions
+// session's binding without a mode in the 2026-07-02 incident (U-PERM dogfood:
+// resume pill could not re-offer bypass). The dedicated record sits within a
+// few KB of the tail, so it survives the bounded read.
+// Mirrors extractUsageFromTranscript's parse-tolerant tail read (last 64KB).
+// Returns one of the four known modes, or null (file absent, no record yet, or
+// an unrecognized value).
 const VALID_PERMISSION_MODES = new Set(['bypassPermissions', 'acceptEdits', 'plan', 'default']);
 function extractPermissionModeFromTranscript(transcriptPath) {
   try {
@@ -258,7 +269,8 @@ function extractPermissionModeFromTranscript(transcriptPath) {
       } catch {
         continue;
       }
-      if (entry && entry.type === 'user' && typeof entry.permissionMode === 'string'
+      if (entry && (entry.type === 'user' || entry.type === 'permission-mode')
+          && typeof entry.permissionMode === 'string'
           && VALID_PERMISSION_MODES.has(entry.permissionMode)) {
         return entry.permissionMode;
       }

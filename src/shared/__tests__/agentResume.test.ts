@@ -197,6 +197,81 @@ describe('toResumeCommand (X6)', () => {
     });
   });
 
+  describe('codex — subcommand resume grammar (resume <id> / resume --last)', () => {
+    const cbind = (over: Partial<ResumeBinding> = {}): ResumeBinding => ({
+      agent: 'codex',
+      sessionId: 'uuid-1',
+      cwd: CWD,
+      ts: 1,
+      ...over,
+    });
+
+    it('codex → codex resume --last (fallback, no binding)', () => {
+      expect(toResumeCommand('codex')).toBe('codex resume --last');
+    });
+
+    it('preserves a trailing prompt after the fallback', () => {
+      expect(toResumeCommand('codex "do it"')).toBe('codex resume --last "do it"');
+    });
+
+    it('binding + cwd match → codex resume <id> (exact)', () => {
+      expect(toResumeCommand('codex', cbind(), CWD)).toBe('codex resume uuid-1');
+    });
+
+    it('preserves trailing args after the exact resume', () => {
+      expect(toResumeCommand('codex --model gpt-5.5', cbind(), CWD)).toBe(
+        'codex resume uuid-1 --model gpt-5.5',
+      );
+    });
+
+    it('cwd MISMATCH → falls back to resume --last (F7: cwd-scoped)', () => {
+      expect(toResumeCommand('codex', cbind({ cwd: 'C:\\other' }), CWD)).toBe('codex resume --last');
+    });
+
+    it('codex.exe / codex.cmd basename resumes', () => {
+      expect(toResumeCommand('codex.exe')).toBe('codex.exe resume --last');
+      expect(toResumeCommand('codex.cmd --foo')).toBe('codex.cmd resume --last --foo');
+    });
+
+    it('already `codex resume ...` → unchanged (no double-resume), even with a binding', () => {
+      expect(toResumeCommand('codex resume uuid-9')).toBe('codex resume uuid-9');
+      expect(toResumeCommand('codex resume --last')).toBe('codex resume --last');
+      expect(toResumeCommand('codex resume uuid-9', cbind(), CWD)).toBe('codex resume uuid-9');
+    });
+
+    it('`codex exec|e ...` one-shot → unchanged', () => {
+      expect(toResumeCommand('codex exec "run"')).toBe('codex exec "run"');
+      expect(toResumeCommand('codex e "run"')).toBe('codex e "run"');
+    });
+
+    it('a codex `-c` config override is NOT a resume flag — still rewritten (CodeRabbit)', () => {
+      // Codex `-c key=value` is a config override, unlike claude `-c` (=continue).
+      // The claude SKIP_TOKENS / short-flag heuristic must not short-circuit it.
+      expect(toResumeCommand('codex -c model="o3"')).toBe('codex resume --last -c model="o3"');
+      expect(toResumeCommand('codex -c model=o3', cbind(), CWD)).toBe('codex resume uuid-1 -c model=o3');
+    });
+
+    it('a quoted `resume` in a codex prompt is NOT the subcommand', () => {
+      expect(toResumeCommand('codex "resume the task"')).toBe('codex resume --last "resume the task"');
+    });
+
+    it('codex has no permission mode → opt-in restore is a no-op', () => {
+      expect(toResumeCommand('codex', cbind(), CWD, { restorePermissionMode: true })).toBe(
+        'codex resume uuid-1',
+      );
+    });
+
+    it('claude binding on a codex launcher → fallback (agent mismatch)', () => {
+      expect(toResumeCommand('codex', binding({ agent: 'claude' }), CWD)).toBe('codex resume --last');
+    });
+
+    it('isResumableLaunchCommand: true for bare codex, false once resuming / one-shot', () => {
+      expect(isResumableLaunchCommand('codex')).toBe(true);
+      expect(isResumableLaunchCommand('codex resume --last')).toBe(false);
+      expect(isResumableLaunchCommand('codex exec "x"')).toBe(false);
+    });
+  });
+
   describe('mergeResumeBinding — sticky permissionMode / transcriptPath (codex P2)', () => {
     it('keeps a prior permissionMode when the new capture lacks one (tail miss)', () => {
       const prev = binding({ permissionMode: 'bypassPermissions' });
@@ -282,6 +357,13 @@ describe('toResumeCommand (X6)', () => {
   describe('resumeOfferForRecovered (Feature ② EC4 gate)', () => {
     it('offers the slug for an interactive agent shell', () => {
       expect(resumeOfferForRecovered({ lastDetectedAgent: 'claude' })).toBe('claude');
+    });
+    it('offers codex (subcommand resume grammar)', () => {
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'codex' })).toBe('codex');
+    });
+    it('does NOT offer an agent wmux cannot resume (no dead pill for gemini/aider)', () => {
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'gemini' })).toBeUndefined();
+      expect(resumeOfferForRecovered({ lastDetectedAgent: 'aider' })).toBeUndefined();
     });
     it('no offer when no agent was detected', () => {
       expect(resumeOfferForRecovered({})).toBeUndefined();

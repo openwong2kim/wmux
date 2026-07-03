@@ -106,13 +106,53 @@ describe('resolveDaemonPipeName', () => {
 });
 
 describe('resolveDaemonAuthToken', () => {
-  it('returns the trimmed token from ~/.wmux/daemon-auth-token', () => {
+  // getDaemonAuthTokenPath / getLegacyDaemonAuthTokenPath resolve home from
+  // USERPROFILE||HOME (not os.homedir), so pin them for a deterministic path.
+  const ORIGINAL_USERPROFILE = process.env.USERPROFILE;
+  const ORIGINAL_HOME = process.env.HOME;
+
+  beforeEach(() => {
+    process.env.USERPROFILE = '/home/u';
+    process.env.HOME = '/home/u';
+  });
+
+  afterEach(() => {
+    if (ORIGINAL_USERPROFILE === undefined) delete process.env.USERPROFILE;
+    else process.env.USERPROFILE = ORIGINAL_USERPROFILE;
+    if (ORIGINAL_HOME === undefined) delete process.env.HOME;
+    else process.env.HOME = ORIGINAL_HOME;
+  });
+
+  it('returns the trimmed token; default (no suffix) reads ~/.wmux/daemon-auth-token', () => {
     readFileSyncMock.mockReturnValue('  SECRET123\n');
     expect(resolveDaemonAuthToken()).toBe('SECRET123');
-    // NOTE: the daemon token path is NOT suffix-aware (hardcoded ~/.wmux).
-    const readPath = String(readFileSyncMock.mock.calls[0][0]);
-    expect(readPath).toContain('.wmux');
-    expect(readPath).toContain('daemon-auth-token');
+    const readPath = String(readFileSyncMock.mock.calls[0][0]).replace(/\\/g, '/');
+    expect(readPath).toBe('/home/u/.wmux/daemon-auth-token');
+  });
+
+  it('reads the SUFFIXED path first when WMUX_DATA_SUFFIX is set (isolation)', () => {
+    process.env.WMUX_DATA_SUFFIX = '-dev';
+    readFileSyncMock.mockReturnValue('DEVTOKEN\n');
+    expect(resolveDaemonAuthToken()).toBe('DEVTOKEN');
+    const readPath = String(readFileSyncMock.mock.calls[0][0]).replace(/\\/g, '/');
+    expect(readPath).toBe('/home/u/.wmux-dev/daemon-auth-token');
+  });
+
+  it('falls back to the legacy unsuffixed path when the suffixed path is absent', () => {
+    process.env.WMUX_DATA_SUFFIX = '-dev';
+    // First candidate (suffixed) missing, second candidate (legacy) present —
+    // a suffixed instance upgrading over a still-running older daemon.
+    readFileSyncMock
+      .mockImplementationOnce(() => {
+        throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
+      })
+      .mockReturnValueOnce('LEGACYTOKEN\n');
+    expect(resolveDaemonAuthToken()).toBe('LEGACYTOKEN');
+    expect(readFileSyncMock).toHaveBeenCalledTimes(2);
+    const first = String(readFileSyncMock.mock.calls[0][0]).replace(/\\/g, '/');
+    const second = String(readFileSyncMock.mock.calls[1][0]).replace(/\\/g, '/');
+    expect(first).toBe('/home/u/.wmux-dev/daemon-auth-token');
+    expect(second).toBe('/home/u/.wmux/daemon-auth-token');
   });
 
   it('returns undefined when the token file is absent', () => {

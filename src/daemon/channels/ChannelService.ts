@@ -79,8 +79,10 @@ export interface ChannelCatalogEvent {
    *  workspace removed by this change (so a kicked/left member also drops the
    *  channel from its mirror). */
   recipientWorkspaceIds: string[];
-  /** What changed — advisory only; the receiver re-hydrates regardless. */
-  reason: 'created' | 'archived' | 'membership';
+  /** What changed — advisory only; the receiver re-hydrates regardless.
+   *  'cursor' = a member's read cursor advanced (agent ack): roster "N
+   *  behind" badges hydrate from the same catalog fetch (Codex re-review). */
+  reason: 'created' | 'archived' | 'membership' | 'cursor';
 }
 
 /** Shape of the `emit` callback injected by the daemon. Carries either a posted
@@ -321,6 +323,20 @@ export class ChannelService {
     this.ceoWorkspaceId = deps.ceoWorkspaceId;
     this.emit = deps.emit;
     this.now = deps.now ?? (() => Date.now());
+    // Channels v2 cursor backfill — member rows persisted before the
+    // `lastReadSeq` field existed get the channel HEAD ("start reading from
+    // now"), NOT 0: a 0 default would flag the entire history unread on
+    // upgrade and trigger a re-nudge storm (design doc, spec-review issue 4).
+    // Deterministic on every construction, so a crash before the next persist
+    // simply re-derives the same values.
+    for (const channel of this.state.channels) {
+      const head = channel.nextSeq - 1;
+      for (const member of this.state.members[channel.id] ?? []) {
+        if (typeof member.lastReadSeq !== 'number' || !Number.isFinite(member.lastReadSeq)) {
+          member.lastReadSeq = head;
+        }
+      }
+    }
     // Hydrate the idempotency LRU from persisted state (R9). Without
     // this, a daemon restart loses every `clientMsgId → seq` mapping
     // and a retry after restart silently allocates a fresh seq — the
@@ -436,10 +452,23 @@ export class ChannelService {
       floor = Math.max(floor, viewer.historyFromSeq);
     }
     const filtered = all.filter((m) => m.seq >= floor);
-    // Tail-slice to the most recent `limit` when a cap is requested.
-    // `Math.max(0, …)` keeps limit=0 → [] and limit>length → full list
-    // correct (a bare `.slice(-0)` would return the whole array).
     if (limit !== undefined && limit >= 0) {
+      // Two paging modes (Codex re-review P1):
+      //  - sinceSeq given → the caller is CONSUMING forward from a cursor:
+      //    return the OLDEST `limit` rows at/after it. Tail-slicing here made
+      //    the unread→read→ack loop lossy past `limit` unread — the page
+      //    showed the newest rows, acking its head seq then jumped the cursor
+      //    over everything between the cursor and the page (silent loss).
+      //    Oldest-first pages are contiguous, so "ack the highest seq you
+      //    read, repeat until drained" is always safe.
+      //  - no sinceSeq → display semantics: the most recent `limit` rows.
+      // The renderer never passes `limit` (it floors sinceSeq instead —
+      // loadChannelHistory), so the split touches only the CLI/MCP consume
+      // path. `Math.max(0, …)` keeps limit=0 → [] and limit>length → full
+      // list correct (a bare `.slice(-0)` would return the whole array).
+      if (sinceSeq !== undefined) {
+        return filtered.slice(0, limit);
+      }
       return filtered.slice(Math.max(0, filtered.length - limit));
     }
     return filtered;
@@ -538,6 +567,9 @@ export class ChannelService {
           memberId: params.createdBy.memberId,
           joinedAt: now,
           historyFromSeq: 0,
+          // v2 cursor seeded at head (nextSeq-1 = 0 on a fresh channel):
+          // a brand-new channel starts with zero unread.
+          lastReadSeq: 0,
         },
       ];
       for (const member of params.members ?? []) {
@@ -553,6 +585,7 @@ export class ChannelService {
           memberId: member.memberId,
           joinedAt: now,
           historyFromSeq: 0,
+          lastReadSeq: 0,
         });
       }
       this.state.members[channel.id] = initialMembers;
@@ -706,6 +739,10 @@ export class ChannelService {
         memberId: params.member.memberId,
         joinedAt: now,
         historyFromSeq,
+        // v2 cursor: "start reading from now" — a joiner may SEE history
+        // (historyFromSeq) but does not owe an ack for the backlog; unread
+        // starts at 0 so the wake worker never nudge-storms a fresh member.
+        lastReadSeq: channel.nextSeq - 1,
       });
       this.state.members[channel.id] = members;
       if (!this.saveOrFail()) {
@@ -916,6 +953,13 @@ export class ChannelService {
         memberId: invitee.memberId,
         joinedAt: now,
         historyFromSeq,
+        // v2 cursor — seed like join() (Codex review P1): the invitee may SEE
+        // history but owes unread only from the invite onward. Without this
+        // the row had NO cursor and unreadFor's missing-cursor fallback pinned
+        // it to the LIVE head on every query — messages posted after the
+        // invite looked pre-consumed, the wake worker never fired for invited
+        // members, and the load-time backfill cemented the loss on restart.
+        lastReadSeq: channel.nextSeq - 1,
       });
       this.state.members[channel.id] = members;
       if (!this.saveOrFail()) {
@@ -1175,6 +1219,19 @@ export class ChannelService {
         ...(mentions.length > 0 ? { mentions } : {}),
       };
       (this.state.messages[channel.id] ??= []).push(message);
+      // Channels v2 (Codex review): a poster has, by definition, seen the
+      // channel up to its own message. When the sender's row was fully
+      // caught up before this post, ride the cursor over the new seq —
+      // roster badges stay honest ("behind" never counts your own reply)
+      // and `read --since` doesn't replay your own words. A sender with
+      // OLDER unread keeps its cursor: the backlog is still owed
+      // (unreadFor additionally exempts self-authored messages, so even
+      // that sender is never re-nudged about itself).
+      const senderRow = members.find(
+        (m) => m.workspaceId === params.sender.workspaceId && m.memberId === params.sender.memberId,
+      );
+      const senderRowRode = senderRow !== undefined && senderRow.lastReadSeq === seq - 1;
+      if (senderRow && senderRowRode) senderRow.lastReadSeq = seq;
       // Update idempotency cache.
       if (params.clientMsgId) {
         const channelIdMap = this.idempotency.get(channel.id) ?? new Map();
@@ -1197,10 +1254,12 @@ export class ChannelService {
         );
       }
       if (!this.saveOrFail()) {
-        // Roll back: un-bump nextSeq, pop the message, drop idempotency entry.
+        // Roll back: un-bump nextSeq, pop the message, drop idempotency entry,
+        // and un-ride the sender cursor.
         channel.nextSeq--;
         const msgs = this.state.messages[channel.id];
         if (msgs) msgs.pop();
+        if (senderRow && senderRowRode) senderRow.lastReadSeq = seq - 1;
         if (params.clientMsgId) {
           const channelIdMap = this.idempotency.get(channel.id);
           if (channelIdMap) {
@@ -1215,6 +1274,22 @@ export class ChannelService {
           }
         }
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist post' } };
+      }
+      // The cursor ride above advanced a PERSISTED member cursor — badge
+      // honesty needs the same catalog signal an explicit ack emits (Codex
+      // round-4): the channel.message event raises the head in open rosters
+      // while the cached member row's lastReadSeq stays stale, so a
+      // caught-up poster would show "1 behind" its own message until an
+      // unrelated catalog event lands. Emitted BEFORE channel.message so
+      // that event stays the LAST emit of a post (consumers are order-
+      // agnostic; tests pin the message event's tail position).
+      if (senderRowRode) {
+        this.emitCatalog(
+          channel.id,
+          params.sender.workspaceId,
+          members.map((m) => m.workspaceId),
+          'cursor',
+        );
       }
       // Emit AFTER successful persist — the post is durable on disk by the
       // time consumers see it. A failed emit does not block the post
@@ -1299,7 +1374,15 @@ export class ChannelService {
     channelId: string;
     verifiedWorkspaceId: string;
     uptoSeq: number;
-  }): Promise<Result<{ acked: number }>> {
+    /**
+     * Channels v2: narrow the cursor advance to ONE member row (agent
+     * CLI/MCP path). Absent = READ RECEIPT ONLY — recipientSnapshot flips
+     * for the workspace (legacy delivery bookkeeping, the renderer's
+     * open-channel ack) but NO cursor moves: a human glancing at a channel
+     * must never mark an agent's inbox consumed (Codex re-review P1).
+     */
+    memberId?: string;
+  }): Promise<Result<{ acked: number; lastReadSeq?: number }>> {
     return this.withChannelLock(params.channelId, async () => {
       const channel = this.state.channels.find((c) => c.id === params.channelId);
       // Symmetric existence-hiding with get/getMessages: a non-member of a
@@ -1341,6 +1424,43 @@ export class ChannelService {
           }
         }
       }
+      // Channels v2 — advance the durable per-member read cursor alongside the
+      // legacy recipientSnapshot flips. Advance-only, clamped to the channel
+      // head: an ack can never mark the future read nor move backwards.
+      //
+      // Cursor advance is MEMBER-SCOPED ONLY (Codex re-review P1): the
+      // renderer's open-channel ack carries no memberId — it is a human READ
+      // RECEIPT (deliveryStatus), never an agent's consumption claim.
+      // Advancing every workspace row on it let a human's glance clear an
+      // agent's cursor: unread hit zero, the wake worker went silent, and the
+      // agent's work was silently dropped. No memberId ⇒ receipts only.
+      const cursorTarget = Math.min(params.uptoSeq, channel.nextSeq - 1);
+      const cursorFlips: Array<{ row: ChannelMember; prev: number | undefined }> = [];
+      if (params.memberId !== undefined) {
+        const wsRows = (this.state.members[params.channelId] ?? []).filter(
+          (m) => m.workspaceId === params.verifiedWorkspaceId,
+        );
+        // A narrowed ack that matches NO row is a caller bug (stale
+        // $WMUX_MEMBER_ID, typo) — fail loudly instead of returning a
+        // success that consumed nothing while the wake worker keeps
+        // re-nudging (Codex re-review).
+        if (!wsRows.some((m) => m.memberId === params.memberId)) {
+          return {
+            ok: false,
+            error: {
+              code: 'NOT_A_MEMBER',
+              message: `No member row "${params.memberId}" for this workspace in the channel`,
+            },
+          };
+        }
+        for (const row of wsRows) {
+          if (row.memberId !== params.memberId) continue;
+          const current = typeof row.lastReadSeq === 'number' ? row.lastReadSeq : -1;
+          if (cursorTarget > current) {
+            cursorFlips.push({ row, prev: row.lastReadSeq });
+          }
+        }
+      }
       const now = this.now();
       for (const f of flips) {
         f.entry.status = 'delivered';
@@ -1350,17 +1470,151 @@ export class ChannelService {
         // per-recipient detail remains in recipientSnapshot for callers who need it).
         if (f.msg.deliveryStatus !== 'delivered') f.msg.deliveryStatus = 'delivered';
       }
-      if (flips.length > 0 && !this.saveOrFail()) {
+      for (const f of cursorFlips) {
+        f.row.lastReadSeq = cursorTarget;
+      }
+      if ((flips.length > 0 || cursorFlips.length > 0) && !this.saveOrFail()) {
         // Roll back the in-memory flips so memory ↔ disk stay consistent.
         for (const f of flips) {
           f.entry.status = f.prevEntryStatus;
           f.entry.lastAttemptAt = f.prevLastAttemptAt;
           f.msg.deliveryStatus = f.prevMsgStatus;
         }
+        for (const f of cursorFlips) {
+          f.row.lastReadSeq = f.prev;
+        }
         return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
       }
-      return { ok: true, acked: flips.length };
+      // A cursor advance changes the roster's "N behind" badges, which
+      // hydrate from the catalog — without a signal an agent's ack leaves
+      // every open roster stale until some unrelated membership event lands
+      // (Codex re-review). Reason 'cursor' is advisory; receivers re-hydrate
+      // regardless. Receipt-only acks (no cursor movement) stay silent — the
+      // renderer fires one on every channel open.
+      if (cursorFlips.length > 0) {
+        this.emitCatalog(
+          params.channelId,
+          params.verifiedWorkspaceId,
+          (this.state.members[params.channelId] ?? []).map((m) => m.workspaceId),
+          'cursor',
+        );
+      }
+      // Echo the row's ACTUAL post-ack cursor, not the clamped request
+      // target: a stale/backward ack (row already past uptoSeq) performs no
+      // flip and must not report a rewind it never did — cursors are
+      // advance-only and clients trust this echo (Codex round-3). Only
+      // meaningful for a member-scoped ack (receipt-only moves no cursor).
+      let echoedCursor: number | undefined;
+      if (params.memberId !== undefined) {
+        const row = (this.state.members[params.channelId] ?? []).find(
+          (m) => m.workspaceId === params.verifiedWorkspaceId && m.memberId === params.memberId,
+        );
+        echoedCursor = row && typeof row.lastReadSeq === 'number' ? row.lastReadSeq : cursorTarget;
+      }
+      return {
+        ok: true,
+        acked: flips.length,
+        ...(echoedCursor !== undefined ? { lastReadSeq: echoedCursor } : {}),
+      };
     });
+  }
+
+  /**
+   * Channels v2 — per-member unread summary for the verified caller.
+   * `unread` counts retained messages this member may see (seq ≥
+   * historyFromSeq) beyond its cursor; `mentionUnread` narrows that to
+   * messages that @-mention the caller (workspace-level mention, or a
+   * memberId-targeted mention matching this row). `trimmedBeforeCursor`
+   * reports messages that retention removed BEFORE the member consumed
+   * them — silent loss is the one thing this subsystem must never do, so
+   * the gap is surfaced, not swallowed (design doc, spec-review issue 5).
+   * Today nothing trims the log, so it is 0; the field exists so the cap
+   * work lights it up instead of adding a new wire shape.
+   */
+  /**
+   * Distinct workspaces that hold ≥1 member row in any non-archived channel.
+   * The wake worker sweeps these — it must not invent recipients, only serve
+   * the membership the daemon already persists.
+   */
+  memberWorkspaces(): string[] {
+    const out = new Set<string>();
+    for (const channel of this.state.channels) {
+      if (channel.status === 'archived') continue;
+      for (const m of this.state.members[channel.id] ?? []) out.add(m.workspaceId);
+    }
+    return Array.from(out);
+  }
+
+  unreadFor(
+    verifiedWorkspaceId: string,
+    memberId?: string,
+  ): Array<{
+    channelId: string;
+    name: string;
+    memberId: string;
+    lastReadSeq: number;
+    headSeq: number;
+    unread: number;
+    mentionUnread: number;
+    trimmedBeforeCursor: number;
+  }> {
+    const out: Array<{
+      channelId: string;
+      name: string;
+      memberId: string;
+      lastReadSeq: number;
+      headSeq: number;
+      unread: number;
+      mentionUnread: number;
+      trimmedBeforeCursor: number;
+    }> = [];
+    for (const channel of this.state.channels) {
+      if (channel.status === 'archived') continue;
+      const rows = (this.state.members[channel.id] ?? []).filter(
+        (m) => m.workspaceId === verifiedWorkspaceId && (memberId === undefined || m.memberId === memberId),
+      );
+      if (rows.length === 0) continue;
+      const msgs = this.state.messages[channel.id] ?? [];
+      const headSeq = channel.nextSeq - 1;
+      for (const row of rows) {
+        const cursor = typeof row.lastReadSeq === 'number' ? row.lastReadSeq : headSeq;
+        const visibleFloor = row.historyFromSeq;
+        let unread = 0;
+        let mentionUnread = 0;
+        for (const m of msgs) {
+          if (m.seq <= cursor || m.seq < visibleFloor) continue;
+          // Self-authored messages are never owed (Codex review): a reply
+          // must not turn into the replier's own unread — the wake worker
+          // would nudge the pane about the message it just sent. Keyed on
+          // the full row identity (workspaceId AND memberId) so a same-ws
+          // SIBLING agent still owes it (same-ws A2A stays a conversation).
+          if (m.workspaceId === row.workspaceId && m.memberId === row.memberId) continue;
+          unread += 1;
+          const mentioned = (m.mentions ?? []).some(
+            (men) =>
+              men.workspaceId === verifiedWorkspaceId &&
+              (men.memberId === undefined || men.memberId === row.memberId),
+          );
+          if (mentioned) mentionUnread += 1;
+        }
+        // Retained-log gap: messages between the cursor and the first retained
+        // seq were trimmed before this member read them.
+        const firstRetainedSeq = msgs.length > 0 ? msgs[0].seq : headSeq + 1;
+        const firstUnconsumed = Math.max(cursor + 1, visibleFloor);
+        const trimmedBeforeCursor = Math.max(0, firstRetainedSeq - firstUnconsumed);
+        out.push({
+          channelId: channel.id,
+          name: channel.name,
+          memberId: row.memberId,
+          lastReadSeq: cursor,
+          headSeq,
+          unread,
+          mentionUnread,
+          trimmedBeforeCursor,
+        });
+      }
+    }
+    return out;
   }
 
   // ── Internals ──────────────────────────────────────────────────────

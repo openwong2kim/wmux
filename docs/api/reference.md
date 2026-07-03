@@ -7,7 +7,7 @@
 
 # wmux API Reference (generated)
 
-> **Generated from wmux v3.11.1 sources.** This file is produced by
+> **Generated from wmux v3.12.0 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
@@ -26,7 +26,7 @@ returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ## RPC methods
 
-Total: **123** methods (`ALL_RPC_METHODS` in
+Total: **124** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -169,6 +169,7 @@ Total: **123** methods (`ALL_RPC_METHODS` in
 | `a2a.channel.invite` | `a2a.channel.send` | `a2a` |
 | `a2a.channel.kick` | `a2a.channel.send` | `a2a` *(renderer-only; not routed on the main pipe/MCP path)* |
 | `a2a.channel.ack` | `a2a.channel.read` | `a2a` |
+| `a2a.channel.unread` | `a2a.channel.read` | `a2a` |
 
 ### `company.a2a`
 
@@ -254,7 +255,7 @@ Total: **123** methods (`ALL_RPC_METHODS` in
 
 ## Event types
 
-The EventBus exposes **14** event types
+The EventBus exposes **15** event types
 (`WMUX_EVENT_TYPES` in `src/shared/events.ts`), polled via `events.poll`.
 Wire shapes (the fields beyond the common `seq` / `ts` / `workspaceId` /
 `type`) are documented in [`inventory.md`](./inventory.md#event-types) and
@@ -276,6 +277,7 @@ typed in `src/shared/events.ts`.
 | `a2a.task` |
 | `channel.message` |
 | `channel.catalog` |
+| `channel.nudgeExhausted` |
 
 ---
 

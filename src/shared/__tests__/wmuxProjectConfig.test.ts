@@ -294,6 +294,107 @@ describe('normalizeWmuxProjectConfig — X8 supervision (strict, decision ⑪)',
   });
 });
 
+describe('normalizeWmuxProjectConfig — unattended sugar + restorePermissionMode (decision ⑨/⑩)', () => {
+  function layoutWith(leaf: Record<string, unknown>) {
+    return { direction: 'horizontal', panes: [{ command: 'claude', ...leaf }, { command: 'echo sibling' }] };
+  }
+  function firstLeaf(input: Record<string, unknown>) {
+    const config = normalizeWmuxProjectConfig({ layout: layoutWith(input) });
+    const layout = config?.layout;
+    if (!layout || layout.type !== 'branch') return undefined;
+    return layout.children[0];
+  }
+
+  it('expands `unattended: true` to restart:on-failure + restorePermissionMode', () => {
+    expect(firstLeaf({ unattended: true })).toEqual({
+      type: 'leaf',
+      command: 'claude',
+      restart: 'on-failure',
+      restorePermissionMode: true,
+    });
+  });
+
+  it('lets an explicit restart override the sugar default (keeps restore)', () => {
+    expect(firstLeaf({ unattended: true, restart: 'always' })).toEqual({
+      type: 'leaf',
+      command: 'claude',
+      restart: 'always',
+      restorePermissionMode: true,
+    });
+  });
+
+  it('lets explicit restorePermissionMode:false opt out of restore while staying supervised', () => {
+    const leaf = firstLeaf({ unattended: true, restorePermissionMode: false });
+    expect(leaf).toEqual({ type: 'leaf', command: 'claude', restart: 'on-failure' });
+    expect(leaf && 'restorePermissionMode' in leaf).toBe(false);
+  });
+
+  it('accepts the explicit (non-sugar) restart + restorePermissionMode form', () => {
+    expect(firstLeaf({ restart: 'always', restorePermissionMode: true })).toEqual({
+      type: 'leaf',
+      command: 'claude',
+      restart: 'always',
+      restorePermissionMode: true,
+    });
+  });
+
+  it('carries restartLimit alongside the unattended expansion', () => {
+    expect(firstLeaf({ unattended: true, restartLimit: { burst: 3 } })).toEqual({
+      type: 'leaf',
+      command: 'claude',
+      restart: 'on-failure',
+      restartLimit: { burst: 3 },
+      restorePermissionMode: true,
+    });
+  });
+
+  it('treats `unattended: false` as a no-op', () => {
+    expect(firstLeaf({ unattended: false })).toEqual({ type: 'leaf', command: 'claude' });
+  });
+
+  it('treats a bare `restorePermissionMode: false` as a no-op', () => {
+    expect(firstLeaf({ restorePermissionMode: false })).toEqual({ type: 'leaf', command: 'claude' });
+  });
+
+  it('rejects restore-without-supervision: unattended:true + restart:never (conflict guard)', () => {
+    expect(
+      normalizeWmuxProjectConfig({ layout: layoutWith({ unattended: true, restart: 'never' }) }),
+    ).toBeUndefined();
+  });
+
+  it('rejects a bare restorePermissionMode:true with no restart (conflict guard)', () => {
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ restorePermissionMode: true }) })).toBeUndefined();
+  });
+
+  it('rejects unattended:true on a leaf with no command (restart needs a unit)', () => {
+    expect(
+      normalizeWmuxProjectConfig({ layout: { direction: 'horizontal', panes: [{ unattended: true }, { command: 'x' }] } }),
+    ).toBeUndefined();
+  });
+
+  it('rejects unattended:true alongside a url', () => {
+    expect(
+      normalizeWmuxProjectConfig({
+        layout: { direction: 'horizontal', panes: [{ url: 'http://localhost:3000', unattended: true }, { command: 'x' }] },
+      }),
+    ).toBeUndefined();
+  });
+
+  it('drops the layout on a non-boolean unattended (no silent downgrade)', () => {
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ unattended: 'yes' }) })).toBeUndefined();
+    expect(normalizeWmuxProjectConfig({ layout: layoutWith({ unattended: 1 }) })).toBeUndefined();
+  });
+
+  it('drops the layout on a non-boolean restorePermissionMode', () => {
+    expect(
+      normalizeWmuxProjectConfig({ layout: layoutWith({ restart: 'always', restorePermissionMode: 'true' }) }),
+    ).toBeUndefined();
+    expect(
+      normalizeWmuxProjectConfig({ layout: layoutWith({ restart: 'always', restorePermissionMode: 1 }) }),
+    ).toBeUndefined();
+  });
+});
+
 describe('isValidProjectRelativeCwd', () => {
   it('accepts plain relative segments', () => {
     expect(isValidProjectRelativeCwd('src')).toBe(true);

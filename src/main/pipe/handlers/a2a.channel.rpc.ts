@@ -78,10 +78,10 @@ async function resolveCallerWorkspace(getWindow: GetWindow, params: unknown): Pr
 }
 
 /**
- * Register the nine `a2a.channel.*` pipe-RPC methods. Each forwards to the
- * daemon's ChannelService via `DaemonClient`, but FIRST stamps a
- * server-resolved `verifiedWorkspaceId` (D5) so the daemon's authz gates run
- * against an identity the caller cannot forge.
+ * Register the eleven `a2a.channel.*` pipe-RPC methods (v2 added ack +
+ * unread). Each forwards to the daemon's ChannelService via `DaemonClient`,
+ * but FIRST stamps a server-resolved `verifiedWorkspaceId` (D5) so the
+ * daemon's authz gates run against an identity the caller cannot forge.
  */
 export function registerA2aChannelRpc(
   router: RpcRouter,
@@ -126,11 +126,17 @@ export function registerA2aChannelRpc(
   router.register('a2a.channel.get', (p) => forward('a2a.channel.get', p, false));
   router.register('a2a.channel.getMessages', (p) => forward('a2a.channel.getMessages', p, false));
   router.register('a2a.channel.getMembers', (p) => forward('a2a.channel.getMembers', p, false));
-  // NOTE: a2a.channel.ack is intentionally NOT registered here. It mutates
-  // (recipientSnapshot/deliveryStatus) but has no senderPtyId (renderer-driven on
-  // read), so the pipe path would leave its verifiedWorkspaceId unpinned →
-  // forgeable receipts. It rides the renderer-only channels:mutate-local path
-  // (channelLocal.handler) instead, pinned + pipe-unreachable.
+  router.register('a2a.channel.unread', (p) => forward('a2a.channel.unread', p, false));
+  // Channels v2: a2a.channel.ack IS now agent-reachable — registered as
+  // MUTATING, so it requires a resolvable senderPtyId and gets a server-pinned
+  // verifiedWorkspaceId (D5), unlike the historical renderer-driven ack that
+  // had no senderPtyId and would have left receipts forgeable (the reason it
+  // was previously kept off this router). The renderer keeps its own
+  // channels:mutate-local path (channelLocal.handler) — both routes land on
+  // the same daemon handler, which additionally stamps headless callers
+  // (channelCallerIdentity.ts). The cursor this advances (lastReadSeq) is the
+  // durable-inbox consume signal: the wake worker stops re-nudging on ack.
+  router.register('a2a.channel.ack', (p) => forward('a2a.channel.ack', p, true));
 
   // Mutating — capability 'a2a.channel.send' (verifiable caller required)
   router.register('a2a.channel.create', (p) => forward('a2a.channel.create', p, true));

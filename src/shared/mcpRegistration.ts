@@ -17,6 +17,7 @@ import {
   MCP_TARGETS,
   WMUX_SERVER_KEY,
   WMUX_SERVER_KEYS,
+  getMcpTarget,
   type McpTarget,
   type McpConfigFormat,
 } from './mcpTargets';
@@ -27,6 +28,10 @@ import {
   isWmuxOwnedEntry,
   upsertMcpServer,
   removeMcpServers,
+  getNotify,
+  isWmuxOwnedNotify,
+  upsertNotifyToml,
+  removeNotifyToml,
 } from './configIO';
 
 export interface ServerRegState {
@@ -235,4 +240,117 @@ export function unregisterTarget(target: McpTarget, home: string): UnregisterTar
   // one was removed.
   const removed = toRemove.filter((k) => getMcpServerEntry(reparsed, target.format, k) === null);
   return { configPath, removed, configExisted: true };
+}
+
+// ── Codex `notify` resume-capture registration ───────────────────────────────
+//
+// Registers wmux's Codex resume-capture bridge (integrations/codex/bin/
+// wmux-codex-notify.mjs) as Codex's `notify` program so a turn-complete captures
+// the resume binding. Rides the same TOML-safe / only-if-installed / idempotent
+// discipline as the MCP registration, plus skip-if-foreign (eng review decision
+// 1: never clobber a user's own notify — a single root slot, unlike namespaced
+// mcp_servers). Main-process only for v1 (McpRegistrar); the `wmux mcp` CLI does
+// not resolve the packaged notify path, and the capture only functions while the
+// wmux daemon is up anyway — the next boot registers it.
+
+export interface RegisterNotifyResult {
+  configPath: string;
+  /** 'absent' = Codex not installed; 'malformed' = unparseable; 'foreign' = a
+   *  user notify occupies the slot (left untouched); null = ours/absent. */
+  skipped: 'absent' | 'malformed' | 'foreign' | null;
+  wrote: boolean;
+}
+
+const norm = (p: string): string => p.replace(/\\/g, '/');
+
+export function registerCodexNotify(home: string, notifyScript: string): RegisterNotifyResult {
+  const target = getMcpTarget('codex');
+  if (!target) return { configPath: '', skipped: 'absent', wrote: false };
+  const configPath = target.configPath(home);
+  if (!fs.existsSync(configPath)) return { configPath, skipped: 'absent', wrote: false };
+
+  let text: string;
+  try {
+    text = fs.readFileSync(configPath, 'utf8');
+  } catch {
+    return { configPath, skipped: 'malformed', wrote: false };
+  }
+  let parsed: Record<string, unknown>;
+  try {
+    parsed = parseConfig(text, 'toml');
+  } catch {
+    return { configPath, skipped: 'malformed', wrote: false };
+  }
+
+  const notify = getNotify(parsed);
+  if (notify && !isWmuxOwnedNotify(notify)) {
+    return { configPath, skipped: 'foreign', wrote: false }; // never clobber
+  }
+  if (isWmuxOwnedNotify(notify) && norm(notify![1]) === norm(notifyScript)) {
+    return { configPath, skipped: null, wrote: false }; // already current — idempotent
+  }
+
+  let newText: string;
+  try {
+    newText = upsertNotifyToml(text, notifyScript);
+  } catch {
+    return { configPath, skipped: 'malformed', wrote: false };
+  }
+  if (newText !== text) writeFileAtomic(configPath, newText); // write errors propagate
+  return { configPath, skipped: null, wrote: newText !== text };
+}
+
+/** Remove wmux's own notify entry from Codex config (foreign notify untouched). */
+export function unregisterCodexNotify(home: string): { configPath: string; removed: boolean } {
+  const target = getMcpTarget('codex');
+  if (!target) return { configPath: '', removed: false };
+  const configPath = target.configPath(home);
+  if (!fs.existsSync(configPath)) return { configPath, removed: false };
+  let text: string;
+  try {
+    text = fs.readFileSync(configPath, 'utf8');
+  } catch {
+    return { configPath, removed: false };
+  }
+  let newText: string;
+  try {
+    newText = removeNotifyToml(text);
+  } catch {
+    return { configPath, removed: false };
+  }
+  if (newText === text) return { configPath, removed: false };
+  writeFileAtomic(configPath, newText);
+  return { configPath, removed: true };
+}
+
+export interface CodexNotifyStatus {
+  configPath: string;
+  configExists: boolean;
+  /** 'wmux' = our bridge is registered; 'foreign' = a user notify occupies the
+   *  slot (capture off — surfaced so the skip isn't silent); 'none' = no notify. */
+  state: 'wmux' | 'foreign' | 'none';
+  /** Our script path when state === 'wmux'. */
+  path: string | null;
+}
+
+/** Read-only snapshot of Codex notify registration. Never creates / throws. */
+export function readCodexNotifyStatus(home: string): CodexNotifyStatus {
+  const target = getMcpTarget('codex');
+  const configPath = target ? target.configPath(home) : '';
+  let configExists = false;
+  try {
+    configExists = fs.statSync(configPath).isFile();
+  } catch {
+    configExists = false;
+  }
+  if (!configExists) return { configPath, configExists, state: 'none', path: null };
+  try {
+    const parsed = parseConfig(fs.readFileSync(configPath, 'utf8'), 'toml');
+    const notify = getNotify(parsed);
+    if (!notify) return { configPath, configExists, state: 'none', path: null };
+    if (isWmuxOwnedNotify(notify)) return { configPath, configExists, state: 'wmux', path: notify[1] };
+    return { configPath, configExists, state: 'foreign', path: null };
+  } catch {
+    return { configPath, configExists, state: 'none', path: null };
+  }
 }

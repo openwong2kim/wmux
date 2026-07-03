@@ -10,7 +10,7 @@ import EditorPanel from '../Editor/EditorPanel';
 import SurfaceTabs from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
-import { permissionFlagFor } from '../../../shared/agentResume';
+import { permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
 import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
 
@@ -215,9 +215,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // gets a resume offer. Clickable only once the pane is interactive (first PTY
   // data — EI6) so the paste can't land before the recovered pipe is writable.
   // X6 ③: the pill TYPES the command (no Enter) and assembles progressively —
-  // click 1 restores the permission mode, an optional click 2 appends
-  // `--resume <id>` for the EXACT session; the user presses Enter to run. With
-  // no binding it falls back to cwd-relative `--continue`.
+  // click 1 restores the permission mode (Claude only), an optional click 2
+  // appends the EXACT-session resume; the user presses Enter to run. With no
+  // binding it falls back to the agent's cwd-relative form (Claude `--continue`,
+  // Codex `resume --last`).
   const resumeHint = useStore((s) =>
     activeSurfacePtyId ? s.resumeHintByPtyId[activeSurfacePtyId] : undefined,
   );
@@ -364,8 +365,12 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       )}
       {resumeHint && resumePtyReady && !supervision && activeSurfacePtyId && (() => {
         const ptyId = activeSurfacePtyId;
-        const launcher = resumeHint; // slug doubles as the launcher stem ('claude')
+        const launcher = resumeHint; // slug doubles as the launcher stem ('claude'/'codex')
         const agentName = launcher.charAt(0).toUpperCase() + launcher.slice(1);
+        // Resume grammar for this agent (Claude flag form / Codex subcommand
+        // form). The pill is only offered for resumable agents, so this is
+        // present in practice; guarded below regardless.
+        const grammar = resumeGrammarFor(launcher);
         // cwd-match guard (F7): `--resume <id>` is cwd-scoped, so only offer the
         // exact-session resume when the binding's origin cwd still matches the
         // pane's LIVE cwd. The daemon checks this at recovery, but the shell can
@@ -402,17 +407,18 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
 
         const onPrimary = (e: React.MouseEvent) => {
           e.stopPropagation();
+          if (!grammar) return; // not resumable — pill shouldn't have shown (defensive)
           if (!sessionId) {
             // No binding (hook absent / purged / cwd mismatch) → cwd-relative
-            // --continue (today's behavior, minus the auto-submit).
-            typeAndClear(`${launcher} --continue`);
+            // fallback (Claude `--continue`, Codex `resume --last`); no auto-submit.
+            typeAndClear(`${launcher} ${grammar.fallback}`);
             return;
           }
           if (resumeStage === 0 && permFlag) {
-            // Click 1: permission-restore only. Stop + Enter = a fresh session in
-            // the restored mode; click again to also resume the exact session.
-            // The two flags MUST land on ONE line (F6) — that's why we don't
-            // submit between clicks.
+            // Click 1: permission-restore only (Claude). Stop + Enter = a fresh
+            // session in the restored mode; click again to also resume the exact
+            // session. Both flags MUST land on ONE line (F6) — hence no submit
+            // between clicks. Codex has no permFlag, so it never enters this stage.
             type(`${launcher} ${permFlag}`);
             setResumeStage(1);
             return;
@@ -420,10 +426,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           if (resumeStage === 0) {
             // Default mode (no permission flag) → one click types the full
             // id-resume; no pointless permission-only stop.
-            typeAndClear(`${launcher} --resume ${sessionId}`);
+            typeAndClear(`${launcher} ${grammar.withId(sessionId)}`);
           } else {
-            // Click 2: append the session resume to the already-typed base.
-            typeAndClear(` --resume ${sessionId}`);
+            // Click 2: append the exact-session resume to the already-typed base.
+            typeAndClear(` ${grammar.withId(sessionId)}`);
           }
         };
 

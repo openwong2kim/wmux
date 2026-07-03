@@ -138,4 +138,18 @@ describe('ChannelMembers — wiring regression guard', () => {
     expect(view).toContain('membersSlot');
     expect(view).toMatch(/<ChannelMembersControl\s+channel=\{channel\}\s*\/>/);
   });
+
+  it('Channels v2: agent rows show a cursor-derived "behind" badge, never a fabricated one', () => {
+    // The badge exists and is derived from the durable cursor vs the head…
+    expect(members).toContain('data-channel-member-behind');
+    expect(members).toMatch(/headSeq - m\.lastReadSeq/);
+    // …only for agent rows (humans advance the ws cursor by reading the dock)…
+    expect(members).toMatch(/!self && m\.memberId !== selfMemberId/);
+    // …and NEVER invented: a pre-v2 row without lastReadSeq shows no badge.
+    expect(members).toMatch(/typeof m\.lastReadSeq === 'number'/);
+    // Container derives the head from the loaded message tail (render-capped
+    // array, last element = highest seq the renderer knows).
+    expect(members).toMatch(/channelMessages\[channel\.id\]/);
+    expect(members).toMatch(/msgs\[msgs\.length - 1\]\.seq/);
+  });
 });

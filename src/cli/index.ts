@@ -15,6 +15,7 @@ import { handleBrowser, handleOpen } from './commands/browser';
 import { handleMcp } from './commands/mcp';
 import { handleSetupHooks } from './commands/setupHooks';
 import { handleDoctor } from './commands/doctor';
+import { handleChannel } from './commands/channel';
 
 const HELP_TEXT = `
 wmux CLI
@@ -61,6 +62,17 @@ SYSTEM COMMANDS
   set-progress <0-100>              Set a progress value on the active workspace
   identify                          Show wmux app info
   capabilities                      List all supported RPC methods
+
+CHANNEL COMMANDS (agent messaging — Channels v2 durable inbox)
+  channel unread                    Your per-channel unread + mention counts
+  channel read <ch> [--since <seq>] Print messages (id or name; oldest first)
+  channel post <ch> <text…>         Post a message [--member <id>]
+  channel ack <ch> <uptoSeq|all>    Mark consumed — clears unread, stops re-nudges
+  channel join <ch>                 Join a public channel [--member <id>]
+  channel list                      Channels visible to your workspace
+
+  Works headless (talks to the daemon directly). Typical nudged-agent loop:
+  unread → read → work → post → ack. Run 'wmux channel help' for details.
 
 DIAGNOSTICS
   doctor                            Run health checks (env, daemon, boot phases,
@@ -168,6 +180,8 @@ async function main(): Promise<void> {
       await handleSetupHooks(rest, jsonMode);
     } else if (cmd === 'doctor') {
       await handleDoctor(rest, jsonMode);
+    } else if (cmd === 'channel') {
+      await handleChannel(rest[0], rest.slice(1), jsonMode);
     } else {
       console.error(`Unknown command: "${cmd}". Run 'wmux --help' for usage.`);
       process.exit(1);

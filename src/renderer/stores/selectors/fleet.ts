@@ -38,6 +38,15 @@ export interface FleetPane {
    * when absent. Reflects the most recent FINISHED tool, not the live one.
    */
   activity?: string;
+  /**
+   * X8 supervision mirror for this pane's active-surface PTY, from the per-ptyId
+   * `supervisionByPtyId` slice (daemon PaneSupervisor sticky status + restart
+   * count). Undefined when the pane is unsupervised. Lets the cockpit show that
+   * a declared/unattended agent is armed (and how many times it has restarted)
+   * or that its runaway guard tripped (`stopped` — the supervisor gave up and a
+   * human is needed).
+   */
+  supervision?: { status: 'armed' | 'stopped'; restartCount: number };
 }
 
 /** Minimal store surface the selector reads — keeps the fixture trivial and the
@@ -46,6 +55,9 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
   /** P2 — pane rename mirror. Optional so existing fixtures stay terse; the
    *  live FleetView always passes the real map. */
   paneLabel?: StoreState['paneLabel'];
+  /** X8 supervision mirror (per-ptyId). Optional so existing fixtures stay
+   *  terse; the live FleetView always passes the real map. */
+  supervisionByPtyId?: StoreState['supervisionByPtyId'];
 };
 
 // Priority of each status for "which one wants the user most". Lower = more
@@ -112,6 +124,10 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
         // itself). Undefined when the agent emits no PostToolUse hook — the
         // card then shows the raw tail. Empty ptyId never has an entry.
         activity: ptyId ? state.surfaceActivity[ptyId] : undefined,
+        // X8 supervision mirror for the active surface's PTY (same key as the
+        // pane badge). Only supervised panes have an entry; unsupervised →
+        // undefined. An unspawned surface (empty ptyId) never carries one.
+        supervision: ptyId ? state.supervisionByPtyId?.[ptyId] : undefined,
       });
     }
   }

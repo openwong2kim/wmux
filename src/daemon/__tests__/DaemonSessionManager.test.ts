@@ -858,6 +858,33 @@ describe('DaemonSessionManager', () => {
       expect(session.supervision?.status).toBe('stopped');
     });
 
+    it('persists supervision.restorePermissionMode through the owned copy (U-PERM)', () => {
+      const session = manager.createSession({
+        id: 'sup-restore',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude' },
+        supervision: { restart: 'on-failure', limit: { burst: 5, healthyUptimeSec: 300 }, status: 'armed', restorePermissionMode: true },
+      });
+      // The consent-gated bit must survive the field-by-field own-copy — a plain
+      // {restart,limit,status} rebuild silently dropped it (tsc-invisible: the
+      // field is optional on the target). Covers the persist half; the create RPC
+      // handler + recovery replay halves are covered by scripts/u-perm-restore-probe.mjs.
+      expect(session.supervision?.restorePermissionMode).toBe(true);
+      expect(manager.getSession('sup-restore')?.meta.supervision?.restorePermissionMode).toBe(true);
+    });
+
+    it('omits restorePermissionMode when consent is off', () => {
+      const session = manager.createSession({
+        id: 'sup-norestore',
+        cmd: 'pwsh.exe',
+        cwd: '.',
+        exec: { command: 'claude' },
+        supervision: { restart: 'on-failure', limit: { burst: 5, healthyUptimeSec: 300 }, status: 'armed', restorePermissionMode: false },
+      });
+      expect(session.supervision?.restorePermissionMode).toBeUndefined();
+    });
+
     describe('removeTombstone', () => {
       it('removes a dead tombstone silently so the same id can be re-created', () => {
         manager.createSession({ id: 'tomb', cmd: 'pwsh.exe', cwd: '.', exec: { command: 'claude /loop' } });
@@ -905,6 +932,101 @@ describe('DaemonSessionManager', () => {
         const live = manager.getSession('live-guard')!;
         expect(() => manager.reinsertSession(live)).toThrow(/not 'dead'/);
       });
+    });
+  });
+
+  // Shutdown-kill classification (reboot-reattach RCA 2026-07-02): an exit the
+  // injected classifier marks involuntary must SUSPEND the session (recovery
+  // replays it under the same id) instead of marking it dead (recovery purges
+  // it — which is how every in-use session vanished across an OS reboot).
+  describe('involuntary exit classification (shutdown-kill)', () => {
+    it('default classifier: exits keep the pre-fix died flow', () => {
+      manager.createSession({ id: 'default-die', cmd: 'cmd.exe', cwd: '.' });
+      const died = vi.fn();
+      const interrupted = vi.fn();
+      manager.on('session:died', died);
+      manager.on('session:interrupted', interrupted);
+
+      lastMockPty?.simulateExit(1073807364); // even the shutdown code — unwired = unchanged
+
+      expect(died).toHaveBeenCalledTimes(1);
+      expect(interrupted).not.toHaveBeenCalled();
+      expect(manager.getSession('default-die')?.meta.state).toBe('dead');
+    });
+
+    it('classified exit → suspended + session:interrupted, NO session:died', () => {
+      manager.setInvoluntaryExitClassifier((exitCode) => exitCode === 1073807364);
+      manager.createSession({ id: 'shutdown-kill', cmd: 'cmd.exe', cwd: '.' });
+      const died = vi.fn();
+      const interrupted = vi.fn();
+      const stateChanged = vi.fn();
+      manager.on('session:died', died);
+      manager.on('session:interrupted', interrupted);
+      manager.on('session:stateChanged', stateChanged);
+
+      lastMockPty?.simulateExit(1073807364);
+
+      expect(died).not.toHaveBeenCalled();
+      // Same forensics contract as session:died — daemon logging depends on it.
+      expect(interrupted).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'shutdown-kill', exitCode: 1073807364 }),
+      );
+      expect(stateChanged).toHaveBeenCalledWith({ id: 'shutdown-kill', state: 'suspended' });
+      const managed = manager.getSession('shutdown-kill');
+      expect(managed?.meta.state).toBe('suspended');
+      // exitCode still recorded for forensics even on the suspend path.
+      expect(managed?.meta.exitCode).toBe(1073807364);
+    });
+
+    it('classifier false → normal death even when wired', () => {
+      manager.setInvoluntaryExitClassifier((exitCode) => exitCode === 1073807364);
+      manager.createSession({ id: 'user-exit', cmd: 'cmd.exe', cwd: '.' });
+      const died = vi.fn();
+      const interrupted = vi.fn();
+      manager.on('session:died', died);
+      manager.on('session:interrupted', interrupted);
+
+      lastMockPty?.simulateExit(0); // user typed `exit`
+
+      expect(died).toHaveBeenCalledWith(expect.objectContaining({ id: 'user-exit', exitCode: 0 }));
+      expect(interrupted).not.toHaveBeenCalled();
+      expect(manager.getSession('user-exit')?.meta.state).toBe('dead');
+    });
+
+    it('interrupted-suspended session survives in listSessions but is not live', () => {
+      manager.setInvoluntaryExitClassifier(() => true);
+      manager.createSession({ id: 'susp-list', cmd: 'cmd.exe', cwd: '.' });
+      lastMockPty?.simulateExit(1073807364);
+
+      // Persisted via listSessions (buildState) — this is the recovery payload.
+      expect(manager.listSessions().find((s) => s.id === 'susp-list')?.state).toBe('suspended');
+      // Not a live PTY holder — Watchdog idle-shutdown must not be held by it.
+      expect(manager.listLiveSessions().find((s) => s.id === 'susp-list')).toBeUndefined();
+    });
+
+    // Adversarial review (2026-07-02): attachSession/resizeSession only
+    // guarded 'dead', so an RPC against a 'suspended' session (renderer
+    // reconnect during the misclassification window) would flip it to
+    // 'attached' or resize a destroyed ptyProcess — a real crash risk, since
+    // the caller (daemon/index.ts) then wires a fresh SessionPipe straight
+    // into a socket that no longer has a live process behind it.
+    it('attachSession rejects a suspended session (no live ptyProcess to wire)', () => {
+      manager.setInvoluntaryExitClassifier(() => true);
+      manager.createSession({ id: 'susp-attach', cmd: 'cmd.exe', cwd: '.' });
+      lastMockPty?.simulateExit(1073807364);
+      expect(manager.getSession('susp-attach')?.meta.state).toBe('suspended');
+
+      expect(() => manager.attachSession('susp-attach')).toThrow(/suspended/i);
+      // Rejection must not have side-effected the state.
+      expect(manager.getSession('susp-attach')?.meta.state).toBe('suspended');
+    });
+
+    it('resizeSession rejects a suspended session (no live ptyProcess to resize)', () => {
+      manager.setInvoluntaryExitClassifier(() => true);
+      manager.createSession({ id: 'susp-resize', cmd: 'cmd.exe', cwd: '.' });
+      lastMockPty?.simulateExit(1073807364);
+
+      expect(() => manager.resizeSession('susp-resize', 100, 40)).toThrow(/suspended/i);
     });
   });
 });

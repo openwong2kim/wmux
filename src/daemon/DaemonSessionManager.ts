@@ -93,11 +93,28 @@ const DEFERRED_UNMUTE_DELAY_MS = 100;
  *  - 'session:created'      → { session: DaemonSession }
  *  - 'session:destroyed'    → { id: string }
  *  - 'session:died'         → { id: string, exitCode: number | null }
+ *  - 'session:interrupted'  → { id, exitCode, signal, cmd, lastActivityMsAgo }
+ *      A PTY exit classified as involuntary (OS shutdown killing children —
+ *      see shutdownKill.ts). The session is SUSPENDED, not dead: daemon/index
+ *      dumps the buffer + persists so post-reboot recovery replays the same id.
  *  - 'session:stateChanged' → { id: string, state: DaemonSessionState }
  */
 export class DaemonSessionManager extends EventEmitter {
   private sessions = new Map<string, ManagedSession>();
   private config: DaemonConfig | null = null;
+
+  /**
+   * Injected by daemon/index.ts (keeps this class free of platform/shutdown
+   * knowledge). Returns true when a PTY exit is an involuntary teardown
+   * (system shutdown) → suspend for recovery instead of marking dead.
+   * Default: never — behavior identical to pre-fix unless wired.
+   */
+  private involuntaryExitClassifier: (exitCode: number | null, signal?: number) => boolean =
+    () => false;
+
+  setInvoluntaryExitClassifier(fn: (exitCode: number | null, signal?: number) => boolean): void {
+    this.involuntaryExitClassifier = fn;
+  }
 
   /** Optionally set config so that session.bufferSizeMb is respected. */
   setConfig(config: DaemonConfig): void {
@@ -370,6 +387,10 @@ export class DaemonSessionManager extends EventEmitter {
         restart: params.supervision.restart,
         limit: { ...params.supervision.limit },
         status: params.supervision.status,
+        // U-PERM: carry the consent-gated restore bit into the persisted meta so
+        // recovery/restart replay can honor it. Omitted from the own-copy above
+        // would silently disable the whole feature (tsc-invisible: optional field).
+        ...(params.supervision.restorePermissionMode === true ? { restorePermissionMode: true } : {}),
       };
     }
 
@@ -466,7 +487,12 @@ export class DaemonSessionManager extends EventEmitter {
     });
 
     bridge.on('exit', (payload: { sessionId: string; exitCode: number | null; signal?: number }) => {
-      meta.state = 'dead';
+      // Shutdown-kill classification (reboot-reattach RCA 2026-07-02): an OS
+      // shutdown kills PTY children before the daemon. Persisting those exits
+      // as 'dead' purged exactly the in-use sessions from recovery. Classified
+      // exits suspend instead — recovery replays them under the same id.
+      const involuntary = this.involuntaryExitClassifier(payload.exitCode, payload.signal);
+      meta.state = involuntary ? 'suspended' : 'dead';
       meta.exitCode = payload.exitCode;
       // Clean up bridge timers/listeners to prevent leaks when sessions die naturally
       managed.bridge.cleanup();
@@ -475,13 +501,19 @@ export class DaemonSessionManager extends EventEmitter {
       // dying. Silent PTY deaths (no log, no recorded exitCode) made the
       // "powershell exits -1 under claude" report undiagnosable.
       const lastActivityMsAgo = Date.now() - new Date(meta.lastActivity).getTime();
-      this.emit('session:died', {
+      const forensics = {
         id: params.id,
         exitCode: payload.exitCode,
         signal: payload.signal,
         cmd: meta.cmd,
         lastActivityMsAgo,
-      });
+      };
+      if (involuntary) {
+        this.emit('session:interrupted', forensics);
+        this.emit('session:stateChanged', { id: params.id, state: 'suspended' as DaemonSessionState });
+        return;
+      }
+      this.emit('session:died', forensics);
       this.emit('session:stateChanged', { id: params.id, state: 'dead' as DaemonSessionState });
     });
 
@@ -554,7 +586,12 @@ export class DaemonSessionManager extends EventEmitter {
   attachSession(id: string): void {
     const managed = this.sessions.get(id);
     if (!managed) throw new Error(`Session '${id}' not found`);
+    // 'suspended' holds no live ptyProcess (shutdown-kill classification —
+    // see shutdownKill.ts): the RPC handler would wire a fresh SessionPipe
+    // straight into a destroyed process. Reject like 'dead' so the caller's
+    // existing retry/backoff path handles it instead of crashing the daemon.
     if (managed.meta.state === 'dead') throw new Error(`Session '${id}' is dead`);
+    if (managed.meta.state === 'suspended') throw new Error(`Session '${id}' is suspended`);
 
     managed.meta.state = 'attached';
     this.emit('session:stateChanged', { id, state: 'attached' as DaemonSessionState });
@@ -573,6 +610,8 @@ export class DaemonSessionManager extends EventEmitter {
     const managed = this.sessions.get(id);
     if (!managed) throw new Error(`Session '${id}' not found`);
     if (managed.meta.state === 'dead') throw new Error(`Session '${id}' is dead`);
+    // Same rationale as attachSession — no live ptyProcess to resize.
+    if (managed.meta.state === 'suspended') throw new Error(`Session '${id}' is suspended`);
 
     managed.ptyProcess.resize(cols, rows);
     managed.meta.cols = cols;

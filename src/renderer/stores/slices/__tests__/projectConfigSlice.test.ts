@@ -235,4 +235,48 @@ describe('projectConfigSlice', () => {
       expect(store.getState().projectLayoutAutoApplied['other']).toBeUndefined();
     });
   });
+
+  describe('U-PERM — restorePermissionMode consent gating (buildTree)', () => {
+    // A trusted project whose first leaf is a declared unattended supervised
+    // agent; the sibling is a plain supervised command (no restore intent).
+    function unattendedState(unattended: boolean): ProjectConfigState {
+      return trustedState({
+        unattended,
+        config: {
+          version: 1,
+          layout: {
+            type: 'branch',
+            direction: 'horizontal',
+            children: [
+              { type: 'leaf', command: 'claude', restart: 'on-failure', restorePermissionMode: true },
+              { type: 'leaf', command: 'npm run dev' },
+            ],
+          },
+        },
+      });
+    }
+
+    it('sets the seed bit on the unattended leaf only when the user consented', () => {
+      store.getState().setProjectConfig(wsId, unattendedState(true));
+      store.getState().applyProjectLayout(wsId);
+      const leaves = collectLeaves(store.getState().workspaces[0].rootPane);
+      const seeds = store.getState().projectPaneSeed;
+      expect(seeds[leaves[0].id]).toMatchObject({
+        command: 'claude',
+        restart: 'on-failure',
+        restorePermissionMode: true,
+      });
+      // The non-unattended sibling never carries the bit.
+      expect(seeds[leaves[1].id]?.restorePermissionMode).toBeUndefined();
+    });
+
+    it('omits the bit when declared but not consented (still supervised, no bypass)', () => {
+      store.getState().setProjectConfig(wsId, unattendedState(false));
+      store.getState().applyProjectLayout(wsId);
+      const leaves = collectLeaves(store.getState().workspaces[0].rootPane);
+      const seeds = store.getState().projectPaneSeed;
+      expect(seeds[leaves[0].id]?.restart).toBe('on-failure'); // supervision stays on
+      expect(seeds[leaves[0].id]?.restorePermissionMode).toBeUndefined(); // but no permission restore
+    });
+  });
 });

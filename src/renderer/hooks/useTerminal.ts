@@ -25,6 +25,7 @@ import { webglContextPool } from '../terminal/webglContextPool';
 import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
+import { STALE_REPLAY_INPUT_MODE_RESETS } from '../terminal/staleReplayModeReset';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 
 // Module-level terminal registry for scrollback persistence
@@ -382,6 +383,41 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminal.unicode.activeVersion = '11';
     terminal.open(container);
 
+    // xterm 자체 네이티브 'paste' 리스너(terminal.element/textarea에 직접 붙어있음)가
+    // 아래 Cmd+V/Ctrl+V/Ctrl+Shift+V 핸들러와 겹칠 때만 캡처 단계에서 차단한다. wmux는
+    // Menu.setApplicationMenu()를 호출하지 않아 Electron 기본 메뉴가 깔리는데, macOS는
+    // Cmd+V가 NSMenu key equivalent로 처리되어 keydown의 preventDefault()로도 못 막는다
+    // — 그 결과 xterm 자체 paste 경로와 아래 커스텀 비동기 IPC 경로가 같은 pty에 동시에
+    // 써서 붙여넣기 앞부분이 유실/손상되는 레이스가 생긴다. 이 레이스는 macOS 한정이다:
+    // 독립 리서치 2패스(Electron/Chromium 소스·공식 문서·GitHub 이슈 1차 출처)로 확인.
+    // Windows/Linux는 액셀러레이터 디스패치가 렌더러 우선이라 preventDefault로 억제되고,
+    // Electron 기본 paste role이 registerAccelerator:false(Electron 소스 lib/browser/api/
+    // menu-item-roles.ts)라 Ctrl+V 라벨이 OS 단축키로 등록조차 안 된다 → 여기서 레이스할
+    // 두 번째 네이티브 writer 자체가 존재하지 않는다(이전 주석의 "이론상 플랫폼 무관하게
+    // 방어" 추정은 오답이었다). 오히려 Linux에서 이 가드를 켜두면 X11 middle-click
+    // PRIMARY-selection 붙여넣기(Chromium이 진짜 DOM 'paste'를 쏨)를 CLIPBOARD paste와
+    // 구분 못 해 300ms 창 안에서 잘못 취소하는 오검출 위험이 생긴다(clipboardChunk.ts도
+    // middle-click은 xterm onData로 무방해 통과한다고 가정). 그래서 아래 등록을 isMac으로
+    // 게이트한다. 또 macOS에서도 무조건 차단하면 안 된다 — 메뉴바 Edit>Paste를 마우스로
+    // 클릭하거나 VoiceOver/UI 자동화가 keydown 없이 합성 paste 이벤트만 보내는 경로는 아래
+    // keydown 핸들러가 전혀 안 돌기 때문에 xterm 자체 파이프라인이 유일한 처리 경로다
+    // (팀 리뷰 발견: 무조건 차단하면 그 경로가 조용히 무동작해진다). 그래서 keydown 핸들러가
+    // 막 시작한 직후(NATIVE_PASTE_RACE_WINDOW_MS 이내)에만 "레이스 중"으로 보고 차단하고,
+    // 그 밖의 native paste는 그대로 흘려보내 xterm 자체 처리에 맡긴다. 윈도우 크기는 이
+    // 파일의 기존 RIGHT_CLICK_PASTE_SUPPRESS_MS와 동일한 관례(최근 이벤트 판별용 300ms)를 따른다.
+    const isMac = window.electronAPI?.platform === 'darwin';
+    let lastPasteKeydownAt = 0;
+    const NATIVE_PASTE_RACE_WINDOW_MS = 300;
+    const blockNativePaste = (e: Event): void => {
+      if (Date.now() - lastPasteKeydownAt > NATIVE_PASTE_RACE_WINDOW_MS) return;
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    // macOS 한정 게이트: 레이스(NSMenu key equivalent)는 여기서만 발생한다. Windows/Linux엔
+    // 레이스할 두 번째 네이티브 writer가 없고(Electron paste role registerAccelerator:false),
+    // Linux는 middle-click PRIMARY-selection paste 오검출 위험까지 있어 등록에서 제외한다.
+    if (isMac) { container.addEventListener('paste', blockNativePaste, true); }
+
     // Issue #167: keep the hidden IME textarea empty while idle. xterm only
     // clears it on blur, so IME-committed text accumulates there after it was
     // already sent to the PTY, and external field-replacing injectors (voice
@@ -706,6 +742,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
         e.preventDefault();
+        lastPasteKeydownAt = Date.now(); // blockNativePaste 위: 곧 같이 뜰 native paste를 레이스로 잡는다
         void (async () => {
           const text = await window.clipboardAPI.readText();
           if (text) {
@@ -746,6 +783,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // so xterm doesn't also paste via browser's native paste event)
       if (e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
         e.preventDefault();
+        // isMac 게이트: blockNativePaste 리스너가 비-macOS에선 등록조차 안 되므로(위 참고)
+        // 스탬프도 macOS에서만 찍는다 — 안 그러면 나중에 등록 게이트를 넓힐 때 값이 이미
+        // 차 있어 X11 middle-click 오검출 위험이 조용히 되살아난다(review-team GLM 발견).
+        if (isMac) lastPasteKeydownAt = Date.now();
         void (async () => {
           // Try text first
           const text = await window.clipboardAPI.readText();
@@ -787,6 +828,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Ctrl+Shift+V: paste fallback
       if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.code === 'KeyV')) {
         e.preventDefault();
+        if (isMac) lastPasteKeydownAt = Date.now(); // isMac 게이트 이유는 Ctrl+V 분기 주석 참고
         void (async () => {
           const text = await window.clipboardAPI.readText();
           if (text) {
@@ -996,6 +1038,28 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     let pendingFlushReset = false;
     let lastFlushRecoveredBytes: number | null = null;
     let removeFlushListener: (() => void) | null = null;
+    // Stale-replay mode reset (see ../terminal/staleReplayModeReset.ts): a
+    // recovered session's ring replay re-executes the dead agent's DECSET
+    // arming (mouse/focus/paste reporting) into xterm, so the fresh shell's
+    // pane emits mouse reports that both dismiss the resume pill (onData
+    // "user typed" heuristic) and land in the shell as junk input. After a
+    // replaying flush, ask the daemon whether this pane is a recovered agent
+    // shell (`resumeAgent` — set ONLY for sessions recovered this boot whose
+    // agent has NOT been re-detected) and if so disable the leaked modes,
+    // terminal-side only. The pty.list round-trip doubles as ordering: by the
+    // time it resolves, the replay bytes are already queued into xterm, so
+    // the resets always land after the sequences they cancel. Gating on the
+    // daemon (not the renderer's resumeHint slice) avoids the boot race where
+    // the flush completes before AppLayout has hydrated the hint.
+    const resetStaleReplayModes = (recoveredBytes: number) => {
+      if (recoveredBytes <= 0) return;
+      void window.electronAPI.pty.list().then((sessions) => {
+        if (terminalRef.current !== terminal) return;
+        if (sessions.find((s) => s.id === ptyId)?.resumeAgent) {
+          terminal.write(STALE_REPLAY_INPUT_MODE_RESETS);
+        }
+      }).catch(() => { /* best-effort — a transient list failure just skips the reset */ });
+    };
     let firstDataFired = false;
     const fireFirstData = () => {
       if (!firstDataFired) {
@@ -1068,6 +1132,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           pendingFlushReset = false;
           if (recoveredBytes > 0) terminal.reset();
         }
+        resetStaleReplayModes(recoveredBytes);
       });
 
       // Fix 0 (round 3) — all listeners (pty.onData, pty.onFlushComplete,
@@ -1169,6 +1234,15 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Fix D — daemon (re)attach is owned by the daemon-mode effect below
       // (fires at mount if active, or on a later daemon:connected). connectPty
       // above has already registered pty.onData/onExit, so replay lands safely.
+      // The daemon flush replays the ring buffer even when there is no .txt to
+      // restore (scrollback-restore toggle off), so the stale-mode reset must
+      // listen here too — the leaked DECSET arming rides the replay, not the
+      // .txt cache.
+      removeFlushListener = window.electronAPI.pty.onFlushComplete((id, recoveredBytes) => {
+        if (id !== ptyId) return;
+        if (terminalRef.current !== terminal) return;
+        resetStaleReplayModes(recoveredBytes);
+      });
     }
 
     // Resize PTY on initial fit — only when we actually have valid dimensions.
@@ -1243,6 +1317,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
     return () => {
       if (resizeDebounceTimer) clearTimeout(resizeDebounceTimer);
+      if (isMac) { container.removeEventListener('paste', blockNativePaste, true); }
       terminal.textarea?.removeEventListener('focus', onTextareaFocus);
       terminal.textarea?.removeEventListener('keydown', onWatchdogKeyDown);
       glyphRepaint.dispose();

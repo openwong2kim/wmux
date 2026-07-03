@@ -272,3 +272,34 @@ describe('countNeedsAttention', () => {
     expect(countNeedsAttention(panes)).toBe(2);
   });
 });
+
+describe('selectFleetPanes — X8 supervision mirror', () => {
+  const wsSup = workspace('ws-s', 'sup', leaf('ps', [surface('ss', 'pty-s')]), 'ps');
+  const base = { workspaces: [wsSup], surfaceAgentStatus: {}, surfaceActivity: {} };
+
+  it('surfaces supervision for a supervised pane (keyed by active-surface ptyId)', () => {
+    const [pane] = selectFleetPanes({ ...base, supervisionByPtyId: { 'pty-s': { status: 'armed', restartCount: 3 } } });
+    expect(pane.supervision).toEqual({ status: 'armed', restartCount: 3 });
+  });
+
+  it('carries a guard-tripped (stopped) verdict through', () => {
+    const [pane] = selectFleetPanes({ ...base, supervisionByPtyId: { 'pty-s': { status: 'stopped', restartCount: 5 } } });
+    expect(pane.supervision).toEqual({ status: 'stopped', restartCount: 5 });
+  });
+
+  it('leaves supervision undefined for an unsupervised pane (empty map or omitted)', () => {
+    expect(selectFleetPanes({ ...base, supervisionByPtyId: {} })[0].supervision).toBeUndefined();
+    expect(selectFleetPanes(base)[0].supervision).toBeUndefined();
+  });
+
+  it('never attaches supervision to an unspawned surface (empty ptyId)', () => {
+    const wsNoPty = workspace('ws-n', 'nopty', leaf('pn', [surface('sn', '')]), 'pn');
+    const [pane] = selectFleetPanes({
+      workspaces: [wsNoPty],
+      surfaceAgentStatus: {},
+      surfaceActivity: {},
+      supervisionByPtyId: { '': { status: 'armed', restartCount: 1 } },
+    });
+    expect(pane.supervision).toBeUndefined();
+  });
+});

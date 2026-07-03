@@ -76,6 +76,20 @@ export interface WmuxProjectLayoutLeaf {
   /** X8 runaway-guard bounds. Partial by design: only author-written fields
    * survive normalization; omitted ones default at the funnel (SSOT consts). */
   restartLimit?: { burst?: number; healthyUptimeSec?: number };
+  /**
+   * Unattended reboot-survival opt-in (the normalized, EXPANDED flag). When
+   * true, a reboot/crash replay re-applies the agent's captured permission mode
+   * (e.g. `--dangerously-skip-permissions`) so an unattended agent resumes
+   * without stalling at a prompt. This is only an INTENT: the daemon honors it
+   * at replay ONLY against a matching, still-trusted per-session grant (live
+   * content-hash + trust-epoch re-check — see the unattended-supervisor plan).
+   * Requires an effective `restart` (a bare restore with no supervision is a
+   * contradiction and rejects the layout). Authors usually write the
+   * `unattended: true` sugar, which expands to `restart: 'on-failure'` (exit 0
+   * = task done, only crashes relaunch) + this flag; explicit `restart` /
+   * `restorePermissionMode` override the expansion.
+   */
+  restorePermissionMode?: boolean;
 }
 
 export interface WmuxProjectLayoutBranch {
@@ -116,6 +130,13 @@ export interface ProjectConfigState {
   invalid?: boolean;
   contentHash?: string;
   trust?: ProjectTrustState;
+  /**
+   * Unattended reboot-survival consent for THESE bytes (surfaced only when
+   * `trust === 'trusted'`). Drives the layout funnel's per-leaf
+   * `restorePermissionMode` gate: an unattended leaf restores its captured
+   * permission mode on reboot ONLY when the user gave this explicit consent.
+   */
+  unattended?: boolean;
 }
 
 // ── Field validators ─────────────────────────────────────────────────────────
@@ -221,14 +242,31 @@ function clampSupervisionBound(value: number, min: number, max: number): number 
  */
 type NormalizedSupervision =
   | 'invalid'
-  | { restart?: 'on-failure' | 'always'; restartLimit?: { burst?: number; healthyUptimeSec?: number } };
+  | {
+      restart?: 'on-failure' | 'always';
+      restartLimit?: { burst?: number; healthyUptimeSec?: number };
+      restorePermissionMode?: boolean;
+    };
 
 function normalizeSupervision(
   rawRestart: unknown,
   rawLimit: unknown,
   command: string | undefined,
   url: string | undefined,
+  rawUnattended: unknown,
+  rawRestorePermissionMode: unknown,
 ): NormalizedSupervision {
+  // `unattended: true` sugar (decision ⑨/⑩): one word to declare a
+  // reboot-surviving unattended agent. Expands to `restart: 'on-failure'`
+  // (exit 0 = task done → respected; only crashes relaunch) + permission-mode
+  // restore on reboot. Explicit `restart` / `restorePermissionMode` override the
+  // expansion. Strict: a non-boolean `unattended` is a typo, not a downgrade.
+  let sugar = false;
+  if (rawUnattended !== undefined) {
+    if (typeof rawUnattended !== 'boolean') return 'invalid';
+    sugar = rawUnattended;
+  }
+
   // restart enum. Accept exactly 'on-failure' | 'always' | 'never'; 'never'
   // normalizes to "field omitted" (documented no-op alias). Any other defined
   // value is a typo we refuse to silently downgrade → invalid.
@@ -241,6 +279,21 @@ function normalizeSupervision(
     } else {
       return 'invalid';
     }
+  } else if (sugar) {
+    // Sugar fills restart ONLY when the author didn't write one. An explicit
+    // `restart: 'never'` stays "unsupervised" and collides with the sugar's
+    // permission-restore intent below (rejected — decision ⑨ conflict guard).
+    restart = 'on-failure';
+  }
+
+  // restorePermissionMode: explicit boolean, or true via `unattended` sugar
+  // (unless the author explicitly set it false). Strict on non-boolean.
+  let restorePermissionMode: boolean | undefined;
+  if (rawRestorePermissionMode !== undefined) {
+    if (typeof rawRestorePermissionMode !== 'boolean') return 'invalid';
+    if (rawRestorePermissionMode) restorePermissionMode = true;
+  } else if (sugar) {
+    restorePermissionMode = true;
   }
 
   // An effective restart needs a command (the process IS the unit) and cannot
@@ -249,6 +302,12 @@ function normalizeSupervision(
     if (command === undefined) return 'invalid';
     if (url !== undefined) return 'invalid';
   }
+
+  // Permission-mode restore is meaningless — and contradictory — without
+  // supervision: only a replayed exec unit can have anything restored on
+  // reboot. Reject `unattended:true` + `restart:'never'`, or a bare
+  // `restorePermissionMode:true` with no restart (decision ⑨ conflict guard).
+  if (restorePermissionMode === true && restart === undefined) return 'invalid';
 
   // restartLimit: present fields must validate; missing fields stay absent and
   // are defaulted at the funnel. Accept a partial object (only one field).
@@ -277,9 +336,17 @@ function normalizeSupervision(
   }
 
   // A restartLimit with no effective restart is a cosmetic orphan — drop it
-  // silently (it changes nothing) rather than reject the layout.
+  // silently (it changes nothing) rather than reject the layout. (restorePermission
+  // is guaranteed absent here — the conflict guard above already rejected it.)
   if (restart === undefined) return {};
-  return restartLimit !== undefined ? { restart, restartLimit } : { restart };
+  const result: {
+    restart: 'on-failure' | 'always';
+    restartLimit?: { burst?: number; healthyUptimeSec?: number };
+    restorePermissionMode?: boolean;
+  } = { restart };
+  if (restartLimit !== undefined) result.restartLimit = restartLimit;
+  if (restorePermissionMode === true) result.restorePermissionMode = true;
+  return result;
 }
 
 /** Returns the normalized node, or null when ANY part is invalid — layout is
@@ -296,6 +363,8 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
     url?: unknown;
     restart?: unknown;
     restartLimit?: unknown;
+    unattended?: unknown;
+    restorePermissionMode?: unknown;
   };
 
   // Branch: presence of `panes` is the discriminator.
@@ -336,7 +405,14 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
 
   // X8 supervision (decision ⑪ — STRICT; a bad value drops the whole layout
   // rather than silently downgrading to unsupervised).
-  const supervision = normalizeSupervision(src.restart, src.restartLimit, command, url);
+  const supervision = normalizeSupervision(
+    src.restart,
+    src.restartLimit,
+    command,
+    url,
+    src.unattended,
+    src.restorePermissionMode,
+  );
   if (supervision === 'invalid') return null;
 
   const leaf: WmuxProjectLayoutLeaf = { type: 'leaf' };
@@ -345,6 +421,7 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
   if (url !== undefined) leaf.url = url;
   if (supervision.restart !== undefined) leaf.restart = supervision.restart;
   if (supervision.restartLimit !== undefined) leaf.restartLimit = supervision.restartLimit;
+  if (supervision.restorePermissionMode === true) leaf.restorePermissionMode = true;
   return leaf;
 }
 

@@ -1,10 +1,9 @@
 import net from 'node:net';
 import fs from 'node:fs';
 import crypto from 'node:crypto';
-import os from 'node:os';
-import path from 'node:path';
 import type { RpcRequest, RpcResponse } from '../shared/rpc';
 import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../shared/security';
+import { getDaemonAuthTokenPath } from '../shared/constants';
 
 const MAX_LINE_BUFFER = 1024 * 1024; // 1 MB — prevent OOM from malicious clients
 
@@ -374,10 +373,13 @@ export class DaemonPipeServer {
     });
   }
 
+  // Suffix-aware daemon token path (single source of truth in shared/constants).
+  // The daemon WRITER deliberately never falls back to the legacy unsuffixed
+  // path — a suffixed ('-dev'/dogfood) instance must mint its OWN token instead
+  // of adopting production's, which is the whole point of the isolation.
   private getTokenPath(): string {
     if (this.tokenPathOverride) return this.tokenPathOverride;
-    const home = os.homedir();
-    return path.join(home, '.wmux', 'daemon-auth-token');
+    return getDaemonAuthTokenPath();
   }
 
   private handleConnection(socket: net.Socket): void {

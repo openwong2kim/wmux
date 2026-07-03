@@ -45,6 +45,14 @@ export interface JoinableWorkspace {
 
 export interface ChannelMembersViewProps {
   members: ChannelMember[];
+  /**
+   * Channels v2 — highest message seq the renderer has loaded for this
+   * channel. Drives the per-member "N behind" badge derived from the durable
+   * read cursor (`member.lastReadSeq`): the roster shows how far each AGENT
+   * member's consumption lags, from persisted fact rather than guesswork.
+   * Omit (or 0) → no badges (e.g. roster opened before messages hydrate).
+   */
+  headSeq?: number;
   /** workspaceId → human-readable label (workspace name, falls back to id). */
   workspaceLabel: (workspaceId: string) => string;
   /** The human's own workspace (null when none resolvable). */
@@ -68,6 +76,7 @@ export interface ChannelMembersViewProps {
  *  per-row self-leave, humans-only kick of other members, and a "+ member" picker. */
 export function ChannelMembersView({
   members,
+  headSeq,
   workspaceLabel,
   selfWorkspaceId,
   selfMemberId,
@@ -130,6 +139,15 @@ export function ChannelMembersView({
           ) : (
             members.map((m) => {
               const self = isSelf(m);
+              // Channels v2 — consumption lag from the durable cursor. Only
+              // meaningful for agent rows (humans advance the ws-wide cursor
+              // just by reading the dock) and only when the head is known.
+              // A pre-v2 row without lastReadSeq shows no badge (never a
+              // fabricated number).
+              const behind =
+                !self && m.memberId !== selfMemberId && typeof headSeq === 'number' && headSeq > 0 && typeof m.lastReadSeq === 'number'
+                  ? Math.max(0, headSeq - m.lastReadSeq)
+                  : 0;
               return (
                 <div
                   key={`${m.workspaceId}:${m.memberId}`}
@@ -147,6 +165,16 @@ export function ChannelMembersView({
                       <span className="text-[var(--text-muted)]"> · {m.memberId}</span>
                     )}
                   </span>
+                  {behind > 0 && (
+                    <span
+                      data-channel-member-behind
+                      className="flex-shrink-0 text-[9px] text-[var(--text-muted)]"
+                      title={t('channels.memberBehindTitle') || 'Unread messages this member has not consumed (durable cursor)'}
+                      {...tokenAttrs('textMuted', 'text')}
+                    >
+                      {behind} {t('channels.memberBehind') || 'behind'}
+                    </span>
+                  )}
                   {self ? (
                     <button
                       type="button"
@@ -218,6 +246,13 @@ export function ChannelMembersView({
 export function ChannelMembersControl({ channel }: { channel: Channel }): React.ReactElement {
   const t = useT();
   const members = useStore((s) => s.channelMembers[channel.id] ?? EMPTY_MEMBERS);
+  // Channels v2 — head seq for the "N behind" cursor badges, derived from the
+  // loaded message tail (the render cap keeps the array bounded; the LAST
+  // element carries the highest seq the renderer knows).
+  const headSeq = useStore((s) => {
+    const msgs = s.channelMessages[channel.id];
+    return msgs && msgs.length > 0 ? msgs[msgs.length - 1].seq : 0;
+  });
   const workspaces = useStore((s) => s.workspaces);
   const company = useStore((s) => s.company);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
@@ -340,6 +375,7 @@ export function ChannelMembersControl({ channel }: { channel: Channel }): React.
   return (
     <ChannelMembersView
       members={rosterMembers}
+      headSeq={headSeq}
       workspaceLabel={workspaceLabel}
       selfWorkspaceId={selfWorkspaceId}
       selfMemberId={UI_MEMBER_ID}

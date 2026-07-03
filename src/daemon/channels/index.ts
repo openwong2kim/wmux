@@ -24,6 +24,22 @@ export {
 
 export { ChannelStateWriter } from './ChannelStateWriter';
 export {
+  stampChannelCaller,
+  type CallerFieldSpec,
+  type ResolveSessionWorkspace,
+} from './channelCallerIdentity';
+export {
+  ChannelWakeWorker,
+  pickTarget,
+  WAKE_TICK_MS,
+  WAKE_QUIET_MS,
+  MENTION_NUDGE_BACKOFF_MS,
+  MENTION_NUDGE_CAP,
+  type ChannelWakeWorkerDeps,
+  type WakeSessionView,
+  type WakeUnreadEntry,
+} from './channelWakeWorker';
+export {
   wrapChannelMessageEnvelope,
   wrapChannelCatalogEnvelope,
   type ChannelMessageDaemonEvent,

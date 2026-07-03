@@ -107,4 +107,28 @@ describe('resolveSpawnEnv', () => {
     const env = resolveSpawnEnv({ PATH: '/usr/bin' }, undefined, {});
     expect(env.WMUX_DATA_SUFFIX).toBeUndefined();
   });
+
+  // issue #321 — Dock-launched macOS 앱은 LANG을 상속하지 않아 셸이 C 로케일로
+  // 떨어지고 한글 입력이 <0085> 식으로 깨진다. 폴백 주입을 검증한다.
+  it('injects the fallback locale as LANG when no locale var is set', () => {
+    const env = resolveSpawnEnv({ PATH: '/usr/bin' }, undefined, {}, 'ko_KR.UTF-8');
+    expect(env.LANG).toBe('ko_KR.UTF-8');
+  });
+
+  it('never overrides a LANG/LC_ALL/LC_CTYPE the user already set', () => {
+    const withLang = resolveSpawnEnv({ LANG: 'ja_JP.UTF-8' }, undefined, {}, 'ko_KR.UTF-8');
+    expect(withLang.LANG).toBe('ja_JP.UTF-8');
+
+    const withLcAll = resolveSpawnEnv({ LC_ALL: 'en_GB.UTF-8' }, undefined, {}, 'ko_KR.UTF-8');
+    expect(withLcAll.LANG).toBeUndefined();
+    expect(withLcAll.LC_ALL).toBe('en_GB.UTF-8');
+
+    const withCtype = resolveSpawnEnv({ LC_CTYPE: 'en_US.UTF-8' }, undefined, {}, 'ko_KR.UTF-8');
+    expect(withCtype.LANG).toBeUndefined();
+  });
+
+  it('does not touch locale when no fallback is provided (Windows / opt-out)', () => {
+    const env = resolveSpawnEnv({ PATH: '/usr/bin' }, undefined, {});
+    expect(env.LANG).toBeUndefined();
+  });
 });

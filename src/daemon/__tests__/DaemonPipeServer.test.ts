@@ -7,6 +7,10 @@ import fs from 'node:fs';
 import { DaemonPipeServer } from '../DaemonPipeServer';
 import { SessionPipe, FLUSH_DONE_MARKER } from '../SessionPipe';
 import { RingBuffer } from '../RingBuffer';
+import {
+  getDaemonAuthTokenPath,
+  getLegacyDaemonAuthTokenPath,
+} from '../../shared/constants';
 
 // Helper: generate unique pipe name for each test to avoid conflicts
 function testPipeName(suffix: string): string {
@@ -325,6 +329,50 @@ describe('DaemonPipeServer', () => {
 
     // Cleanup tmp token file.
     try { fs.unlinkSync(tmpTokenPath); } catch { /* ignore */ }
+  });
+
+  it('loadOrCreateToken writes to the suffix-aware shared path (getDaemonAuthTokenPath), isolated from prod', async () => {
+    // Point HOME at a fresh temp dir and set a UNIQUE data suffix so the writer
+    // lands in an ISOLATED dir, never the developer's real ~/.wmux. Crucially,
+    // NO setTokenPathForTest override here — this exercises the REAL
+    // getTokenPath → getDaemonAuthTokenPath resolution that the launcher
+    // (DaemonClient.readDaemonAuthToken) and CLI (client.resolveDaemonAuthToken)
+    // readers must compute identically. Same-path lockstep is the critical
+    // invariant: if writer and readers diverge, nothing authenticates.
+    const tmpHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-tokhome-'));
+    const suffix = `-tok${crypto.randomUUID().slice(0, 6)}`;
+    const saved = {
+      up: process.env.USERPROFILE,
+      home: process.env.HOME,
+      suf: process.env.WMUX_DATA_SUFFIX,
+    };
+    process.env.USERPROFILE = tmpHome;
+    process.env.HOME = tmpHome;
+    process.env.WMUX_DATA_SUFFIX = suffix;
+    try {
+      const writer = new DaemonPipeServer(testPipeName('tokwrite'));
+      const token = await writer.loadOrCreateToken();
+      expect(token.length).toBeGreaterThan(0);
+
+      // The daemon wrote exactly where the shared helper resolves — and the
+      // readers resolve via the SAME helper, so read ↔ write agree by
+      // construction. Assert the on-disk file at that path carries the token.
+      const writtenPath = getDaemonAuthTokenPath();
+      expect(writtenPath.replace(/\\/g, '/')).toContain(`.wmux${suffix}/daemon-auth-token`);
+      expect(fs.readFileSync(writtenPath, 'utf8').trim()).toBe(token);
+
+      // Isolation: the suffixed instance did NOT pollute the shared, unsuffixed
+      // production location (the old collision site).
+      expect(fs.existsSync(getLegacyDaemonAuthTokenPath())).toBe(false);
+    } finally {
+      if (saved.up === undefined) delete process.env.USERPROFILE;
+      else process.env.USERPROFILE = saved.up;
+      if (saved.home === undefined) delete process.env.HOME;
+      else process.env.HOME = saved.home;
+      if (saved.suf === undefined) delete process.env.WMUX_DATA_SUFFIX;
+      else process.env.WMUX_DATA_SUFFIX = saved.suf;
+      try { fs.rmSync(tmpHome, { recursive: true, force: true }); } catch { /* ignore */ }
+    }
   });
 
   it('should reject new connections past the per-second cap', async () => {

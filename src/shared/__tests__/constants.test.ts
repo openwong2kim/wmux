@@ -6,6 +6,8 @@ import {
   getWmuxHomeDir,
   getPidMapDir,
   getTcpPortPath,
+  getDaemonAuthTokenPath,
+  getLegacyDaemonAuthTokenPath,
 } from '../constants';
 
 // WMUX_DATA_SUFFIX 기반 인스턴스 격리. dev 빌드와 packaged 빌드(또는 다른
@@ -52,5 +54,37 @@ describe('dataSuffix 인스턴스 격리', () => {
     expect(getPipeName()).not.toBe(packagedPipe);
     expect(getWmuxHomeDir()).not.toBe(packagedHome);
     expect(getAuthTokenPath()).not.toBe(packagedToken);
+  });
+});
+
+// The daemon control-pipe auth token. Unlike the main token (a
+// ~/.wmux${suffix}-auth-token FILE) this lives INSIDE the ~/.wmux dir, so the
+// suffix rides on the DIRECTORY. The daemon WRITES it, the launcher + CLI READ
+// it — all three route through getDaemonAuthTokenPath so they cannot drift.
+describe('daemon auth token path (suffix-aware, 3-way lockstep)', () => {
+  const orig = process.env.WMUX_DATA_SUFFIX;
+  afterEach(() => {
+    if (orig === undefined) delete process.env.WMUX_DATA_SUFFIX;
+    else process.env.WMUX_DATA_SUFFIX = orig;
+  });
+
+  it('default (no suffix) is byte-identical to the legacy path — no stranding on upgrade', () => {
+    delete process.env.WMUX_DATA_SUFFIX;
+    expect(getDaemonAuthTokenPath()).toBe(getLegacyDaemonAuthTokenPath());
+    expect(getDaemonAuthTokenPath()).toMatch(/\.wmux[\\/]daemon-auth-token$/);
+  });
+
+  it('lives inside the suffix-aware home dir (co-located with config.json / daemon pipe)', () => {
+    delete process.env.WMUX_DATA_SUFFIX;
+    expect(getDaemonAuthTokenPath()).toBe(`${getWmuxHomeDir()}/daemon-auth-token`);
+  });
+
+  it('a suffix isolates the token from production; the legacy fallback stays unsuffixed', () => {
+    process.env.WMUX_DATA_SUFFIX = '-dev';
+    expect(getDaemonAuthTokenPath()).toMatch(/\.wmux-dev[\\/]daemon-auth-token$/);
+    // Isolation: a suffixed instance must NOT resolve to the shared prod file.
+    expect(getDaemonAuthTokenPath()).not.toBe(getLegacyDaemonAuthTokenPath());
+    expect(getLegacyDaemonAuthTokenPath()).toMatch(/\.wmux[\\/]daemon-auth-token$/);
+    expect(getLegacyDaemonAuthTokenPath()).not.toContain('.wmux-dev');
   });
 });

@@ -294,6 +294,54 @@ export function getWmuxHomeDir(): string {
   return `${home}/.wmux${dataSuffix()}`;
 }
 
+// Daemon control-pipe auth token. Unlike the main-pipe token (getAuthTokenPath,
+// a `~/.wmux${suffix}-auth-token` FILE), the daemon token has ALWAYS lived
+// INSIDE the ~/.wmux directory next to config.json — so we make the *directory*
+// suffix-aware (getWmuxHomeDir) rather than the filename. This mirrors the
+// already-suffix-aware daemon control pipe (`wmux-daemon${suffix}-user`): a dev
+// / dogfood instance ('-dev') gets its own `~/.wmux-dev/daemon-auth-token`
+// instead of colliding with production's token on the shared `~/.wmux/` file
+// (concurrent dev+packaged daemons run on different pipes but historically wrote
+// the SAME token file — a cold-start race or rotateToken could then brick one
+// instance's auth). Crucially, with the default empty suffix the path resolves
+// to exactly `~/.wmux/daemon-auth-token` — byte-identical to older versions, so
+// existing installs are never stranded.
+//
+// THREE-SIDED LOCKSTEP — this is the single source of truth. The daemon WRITES
+// here (DaemonPipeServer.getTokenPath → loadOrCreateToken/rotateToken); the
+// launcher (main/DaemonClient.readDaemonAuthToken) and the CLI
+// (cli/client.resolveDaemonAuthToken) READ it. All three MUST call this helper
+// — if they compute different paths, nothing authenticates and wmux is bricked.
+//
+// Home source (GLM review): getWmuxHomeDir() uses USERPROFILE||HOME, like every
+// other wmux path helper (getAuthTokenPath / getTcpPortPath). Before this change
+// the daemon token used os.homedir() — the ONE outlier. Aligning it with
+// USERPROFILE||HOME is precisely what keeps the WRITER in lockstep with the
+// launcher+CLI READERS (which resolve through this helper). The daemon's OTHER
+// ~/.wmux files (config.json, daemon-pipe) still resolve via src/daemon/config.ts
+// getWmuxDir → os.homedir(); on every real platform os.homedir() === USERPROFILE
+// (Windows) / HOME (*nix) so token and config co-locate, but unifying getWmuxDir
+// onto getWmuxHomeDir so the whole daemon shares ONE home source is a separate
+// follow-up (it also touches config/pipe paths, out of scope for the auth fix).
+export function getDaemonAuthTokenPath(): string {
+  return `${getWmuxHomeDir()}/daemon-auth-token`;
+}
+
+// Legacy (pre-suffix) daemon token location: the ALWAYS-unsuffixed
+// `~/.wmux/daemon-auth-token`, exactly as older wmux versions wrote it. READERS
+// (launcher, CLI) fall back to this when the suffix-aware path is absent, so a
+// suffixed instance upgrading OVER a still-running older daemon (which wrote
+// here) can still authenticate during the transition. It is a read-only
+// migration shim: the daemon WRITER never consults it (that would re-establish
+// the cross-instance collision for the suffixed case). With the default empty
+// suffix getDaemonAuthTokenPath() resolves to this exact string, so the fallback
+// is a no-op for production. (Same USERPROFILE/HOME base as getWmuxHomeDir,
+// which equals os.homedir() — where older versions wrote — on Windows.)
+export function getLegacyDaemonAuthTokenPath(): string {
+  const home = process.env.USERPROFILE || process.env.HOME || '';
+  return `${home}/.wmux/daemon-auth-token`;
+}
+
 // Plugin trust database — see `docs/api/mcp-plugin-spec.md`. Written by main
 // process via `PluginTrustStore` (atomicWriteJSON). NOT a secret — it stores
 // declared identities and user-issued trust grants, not credentials.

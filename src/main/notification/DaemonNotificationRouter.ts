@@ -430,7 +430,8 @@ export class DaemonNotificationRouter {
         recipientWorkspaceIds.push(event.actorWorkspaceId);
       }
       const reason =
-        event.reason === 'created' || event.reason === 'archived' || event.reason === 'membership'
+        event.reason === 'created' || event.reason === 'archived' || event.reason === 'membership' ||
+        event.reason === 'cursor'
           ? event.reason
           : 'membership';
       eventBus.emit({
@@ -443,6 +444,65 @@ export class DaemonNotificationRouter {
       });
     } catch (err) {
       console.warn('[DaemonNotificationRouter] emitChannelCatalog error:', err);
+    }
+  }
+
+  /**
+   * Channels v2 wake worker — the mention-nudge budget for one (channel,
+   * member) episode is exhausted; the worker stopped re-nudging and the
+   * episode is HANDED TO HUMANS. This is the promise the wake worker's
+   * `channel.nudgeExhausted` broadcast makes, and this handler is where it
+   * is kept: an in-app toast + OS notification for the operator, plus an
+   * EventBus tee so orchestrator clients (`wmux_events_poll`) can observe
+   * stranded mentions. A malformed payload is dropped, not thrown.
+   */
+  private emitChannelNudgeExhausted(event: {
+    channelId?: string;
+    channelName?: unknown;
+    workspaceId?: unknown;
+    memberId?: unknown;
+    unread?: unknown;
+    mentionUnread?: unknown;
+  }): void {
+    try {
+      if (
+        typeof event.channelId !== 'string' ||
+        event.channelId.length === 0 ||
+        typeof event.workspaceId !== 'string' ||
+        event.workspaceId.length === 0 ||
+        typeof event.memberId !== 'string' ||
+        event.memberId.length === 0
+      ) {
+        console.warn(
+          '[DaemonNotificationRouter] channel.nudgeExhausted payload missing required fields; dropping',
+          event,
+        );
+        return;
+      }
+      const channelName =
+        typeof event.channelName === 'string' && event.channelName.length > 0
+          ? event.channelName
+          : event.channelId;
+      const unread = typeof event.unread === 'number' ? event.unread : 0;
+      const mentionUnread = typeof event.mentionUnread === 'number' ? event.mentionUnread : 0;
+      const title = `#${channelName}: ${event.memberId} is not responding`;
+      const body = `${mentionUnread} mention${mentionUnread === 1 ? '' : 's'} unanswered after repeated nudges — needs a human`;
+      const win = this.getWindow();
+      sendNotification(win, null, { type: 'agent', title, body });
+      // workspaceId makes the OS toast clickable — click jumps to the
+      // affected member's workspace (same contract as notify.rpc).
+      toastManager.show(title, body, { workspaceId: event.workspaceId });
+      eventBus.emit({
+        type: 'channel.nudgeExhausted',
+        channelId: event.channelId,
+        channelName,
+        memberId: event.memberId,
+        unread,
+        mentionUnread,
+        workspaceId: event.workspaceId,
+      });
+    } catch (err) {
+      console.warn('[DaemonNotificationRouter] emitChannelNudgeExhausted error:', err);
     }
   }
 
@@ -688,6 +748,19 @@ export class DaemonNotificationRouter {
       }
     };
 
+    // Channels v2 — wake-worker nudge exhaustion: the human handoff. See
+    // emitChannelNudgeExhausted for the surfaces (toast + OS notification +
+    // EventBus tee).
+    const onChannelNudgeExhausted = (payload: { data: unknown }) => {
+      try {
+        const ev = payload.data as Parameters<typeof this.emitChannelNudgeExhausted>[0] | null;
+        if (!ev || typeof ev !== 'object') return;
+        this.emitChannelNudgeExhausted(ev);
+      } catch (err) {
+        console.warn('[DaemonNotificationRouter] channel:nudgeExhausted error:', err);
+      }
+    };
+
     this.daemonClient.on('session:agent', onAgent);
     this.daemonClient.on('session:active', onActive);
     this.daemonClient.on('session:idle', onIdle);
@@ -708,6 +781,7 @@ export class DaemonNotificationRouter {
     // (events.rpc.ts), NOT this tee's.
     this.daemonClient.on('channel:message', onChannelMessage);
     this.daemonClient.on('channel:catalog', onChannelCatalog);
+    this.daemonClient.on('channel:nudgeExhausted', onChannelNudgeExhausted);
 
     // Invalidate the workspace.list cache whenever a workspace's metadata
     // mutates. Workspace creation/deletion does not currently publish to
@@ -732,6 +806,7 @@ export class DaemonNotificationRouter {
       () => this.daemonClient.off('supervision:changed', onSupervisionChanged),
       () => this.daemonClient.off('channel:message', onChannelMessage),
       () => this.daemonClient.off('channel:catalog', onChannelCatalog),
+      () => this.daemonClient.off('channel:nudgeExhausted', onChannelNudgeExhausted),
       unsubscribeMeta,
     );
   }

@@ -39,9 +39,16 @@ describe('A5 — session-end (WM_ENDSESSION) handler invariants', () => {
     expect(handler).toMatch(/'session-end'\s+as\s+any[\s\S]{0,40}async\s*\(\s*\)\s*=>/);
   });
 
-  it('emergency sync SessionManager.save still runs', () => {
+  it('flushes the live singleton via flushSync (no stale reload-resave)', () => {
     const handler = extractHandler();
-    expect(handler).toMatch(/sm\.save\(existing\)/);
+    // v2 RCA fix (reboot-reattach): the previous `new SessionManager().load() ->
+    // save(existing)` re-confirmed a STALE on-disk snapshot (and could resurrect a
+    // .bak fossil), overwriting the renderer's newest layout. The renderer now
+    // persists ptyId changes synchronously (event-driven session.save), so
+    // session-end only flushes the LIVE singleton's pending debounced write.
+    expect(handler).toMatch(/sessionManager\.flushSync\(\)/);
+    // Guard against the stale reload-resave pattern ever coming back.
+    expect(handler).not.toMatch(/sm\.save\(existing\)/);
   });
 
   it('races daemon.shutdown via raceDaemonShutdown before disconnectSync', () => {

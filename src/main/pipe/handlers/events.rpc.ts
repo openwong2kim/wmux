@@ -136,6 +136,12 @@ export function registerEventsRpc(router: RpcRouter, trustLookup?: TrustLookup):
         if (ce.workspaceId === caller) return true;
         return ce.recipientWorkspaceIds.includes(caller);
       }
+      if (e.type === 'channel.nudgeExhausted') {
+        // Channels v2 — same unscoped-drop discipline as the other channel.*
+        // events (channel existence must not leak to a bare subscribe). Base
+        // workspaceId is the affected member's workspace; only it sees the event.
+        return !!caller && e.workspaceId === caller;
+      }
       // every other type: strict scope, UNCHANGED from the old EventBus gate
       return caller ? e.workspaceId === caller : true;
     });

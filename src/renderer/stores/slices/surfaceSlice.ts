@@ -4,6 +4,7 @@ import type { Pane, PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import { createSurface, generateId } from '../../../shared/types';
 import { isSafeBrowserUrl } from '../../utils/browserPane';
 import { clearNudgesFor } from '../../hooks/channelMentionRateLimit';
+import { saveSessionNow } from '../../utils/sessionSaveBridge';
 
 export interface SurfaceSlice {
   /** Add a terminal surface to a pane. `workspaceId` lets RPC / eager-spawn
@@ -59,17 +60,40 @@ function findLeafPane(root: Pane, id: string): PaneLeaf | null {
   return null;
 }
 
-export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], SurfaceSlice> = (set) => ({
-  addSurface: (paneId, ptyId, shell, cwd, workspaceId) => set((state: StoreState) => {
-    const targetWsId = workspaceId || state.activeWorkspaceId;
-    const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
-    if (!ws) return;
-    const pane = findLeafPane(ws.rootPane, paneId);
-    if (!pane) return;
-    const surface = createSurface(ptyId, shell, cwd);
-    pane.surfaces.push(surface);
-    pane.activeSurfaceId = surface.id;
-  }),
+/**
+ * v2 RCA fix (reboot-reattach, axis A): centralized immediate persistence for
+ * surface↔ptyId bindings. EVERY caller of addSurface / updateSurfacePtyId
+ * (Terminal self-create, '+' tab, palette, keyboard split, project commands,
+ * MCP surface_new / pane_split, reconcile rebind/clear, …) gets the flush for
+ * free — call-site-by-call-site saveSessionNow() sprinkling covered only 2 of
+ * 9 binding sites (codex P2 + maintainability review).
+ *
+ * Gated on paneGate==='ready': startup-reconcile mutations (clears/rebinds
+ * while the gate is still 'pending') are deliberately NOT persisted here — the
+ * startup path saves once on SUCCESSFUL reconcile completion, and persisting a
+ * mid-reconcile snapshot is exactly the half-reconciled-garbage class the 5s
+ * periodic tick's own gate guards against. The registered saver additionally
+ * no-ops until session.load() succeeded (sessionLoadedRef guard in AppLayout).
+ */
+function persistBindingNow(get: () => StoreState): void {
+  if (get().paneGate !== 'ready') return;
+  saveSessionNow();
+}
+
+export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', never]], [], SurfaceSlice> = (set, get) => ({
+  addSurface: (paneId, ptyId, shell, cwd, workspaceId) => {
+    set((state: StoreState) => {
+      const targetWsId = workspaceId || state.activeWorkspaceId;
+      const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
+      if (!ws) return;
+      const pane = findLeafPane(ws.rootPane, paneId);
+      if (!pane) return;
+      const surface = createSurface(ptyId, shell, cwd);
+      pane.surfaces.push(surface);
+      pane.activeSurfaceId = surface.id;
+    });
+    persistBindingNow(get);
+  },
 
   addBrowserSurface: (paneId, url, partition, workspaceId) => set((state: StoreState) => {
     const targetWsId = workspaceId || state.activeWorkspaceId;
@@ -171,17 +195,20 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     pane.activeSurfaceId = pane.surfaces[(idx - 1 + pane.surfaces.length) % pane.surfaces.length].id;
   }),
 
-  updateSurfacePtyId: (paneId, surfaceId, ptyId) => set((state: StoreState) => {
-    for (const ws of state.workspaces) {
-      const pane = findLeafPane(ws.rootPane, paneId);
-      if (!pane) continue;
-      const surface = pane.surfaces.find((s) => s.id === surfaceId);
-      if (surface) {
-        surface.ptyId = ptyId;
-        return;
+  updateSurfacePtyId: (paneId, surfaceId, ptyId) => {
+    set((state: StoreState) => {
+      for (const ws of state.workspaces) {
+        const pane = findLeafPane(ws.rootPane, paneId);
+        if (!pane) continue;
+        const surface = pane.surfaces.find((s) => s.id === surfaceId);
+        if (surface) {
+          surface.ptyId = ptyId;
+          return;
+        }
       }
-    }
-  }),
+    });
+    persistBindingNow(get);
+  },
 
   updateSurfaceTitle: (surfaceId, title) => set((state: StoreState) => {
     for (const ws of state.workspaces) {
