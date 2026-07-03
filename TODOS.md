@@ -244,3 +244,12 @@
 - **Depends on:** —
 - **Priority:** P3
 
+## Codex notify chaining when a foreign notify already exists (P3)
+- **What:** codex resume 캡처(`wmux-codex-notify`) 등록 시 `~/.codex/config.toml`에 이미 사용자/외부 `notify`가 있으면, 현재는 SKIP(미등록 + `wmux mcp` status에 "codex notify: skipped (foreign present)" 노출)한다. 이를 프록시 체인으로 승격: 기존 notify를 wmux-owned 위치에 백업 → wmux notify가 캡처 후 백업한 원래 명령을 동일 argv 페이로드로 이어 실행(exit code 포워딩) → unregister 시 원복.
+- **Why:** codex `notify`는 단일 슬롯이라 사용자가 이미 자기 notify(데스크톱 알림/로깅 등)를 쓰면 SKIP은 그 유저의 codex 자동 resume 캡처를 조용히 포기시킨다(pill `resume --last` 폴백은 유지되므로 break은 아님, soft downgrade). GLM-5.2 outside voice(P0)가 지적. 체인이면 100% 캡처 + 사용자 훅 둘 다 보존.
+- **Pros:** foreign-notify 유저도 정확-id codex resume 획득. SKIP의 유일한 약점(침묵적 다운그레이드) 완전 해소.
+- **Cons:** 매 턴 두 프로그램 스폰 + argv 중계 + exit code 포워딩 + 이중래핑 감지(이미 wmux-wrapped인 notify를 또 감싸는 버그 방지) + 백업/복원 생명주기. **P1#1(notify 실행 지연/실패→codex 턴 stall) 리스크를 두 배로 넓힘** — 그래서 self-contained JS 미러 대신 더 무거운 조율 필요.
+- **Context:** 착수점 = `src/shared/mcpRegistration.ts`의 foreign-notify 분기(현재 SKIP+로그). codex 캡처는 `integrations/codex/bin/wmux-codex-notify.mjs`(self-contained JS, claude bridge 미러). 백업 저장 위치는 wmux-owned 파일(config.toml 주석은 TOML RMW로 소실되기 쉬움).
+- **Depends on:** ★V1(codex notify가 fire-and-forget인가 await+timeout인가) 실측 선행 — await 모델이면 체인이 턴 지연/정지를 유발하는지부터 판단해야 함. 그리고 실제 foreign-notify wmux 유저 발생 시.
+- **Priority:** P3
+

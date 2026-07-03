@@ -7,6 +7,9 @@ import {
   readTargetStatus,
   registerTarget,
   unregisterTarget,
+  registerCodexNotify,
+  unregisterCodexNotify,
+  readCodexNotifyStatus,
 } from '../mcpRegistration';
 
 let home = '';
@@ -107,6 +110,80 @@ describe('registerTarget — Codex (toml, only if installed)', () => {
     expect(r.wrote).toEqual([]);
     expect(fs.readFileSync(p, 'utf8')).toBe(inline);
     expect(() => readTargetStatus(codexTarget, home)).not.toThrow();
+  });
+});
+
+describe('registerCodexNotify — resume-capture notify (skip-if-foreign)', () => {
+  const NOTIFY = 'C:\\Users\\u\\.wmux\\hooks\\wmux-codex-notify.mjs';
+  const writeCodex = (text: string): string => {
+    const p = codexTarget.configPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(p, text, 'utf8');
+    return p;
+  };
+
+  it('SKIPS when ~/.codex/config.toml does not exist (never created)', () => {
+    const r = registerCodexNotify(home, NOTIFY);
+    expect(r.skipped).toBe('absent');
+    expect(r.wrote).toBe(false);
+    expect(fs.existsSync(codexTarget.configPath(home))).toBe(false);
+  });
+
+  it('writes notify into an existing config, preserving foreign tables/comments', () => {
+    const p = writeCodex(`# hand-written\nmodel = "gpt-5.5"\n\n[projects.'d:\\wmux']\ntrust_level = "trusted"\n`);
+    const r = registerCodexNotify(home, NOTIFY);
+    expect(r.skipped).toBeNull();
+    expect(r.wrote).toBe(true);
+    const after = fs.readFileSync(p, 'utf8');
+    expect(after).toContain('# hand-written');
+    expect(after).toContain(`[projects.'d:\\wmux']`);
+    expect(readCodexNotifyStatus(home)).toMatchObject({ state: 'wmux', path: NOTIFY });
+  });
+
+  it('is idempotent — re-register writes nothing the second time', () => {
+    writeCodex('model = "x"\n');
+    registerCodexNotify(home, NOTIFY);
+    const r2 = registerCodexNotify(home, NOTIFY);
+    expect(r2.wrote).toBe(false);
+    expect(r2.skipped).toBeNull();
+  });
+
+  it('updates a stale path written by a prior session', () => {
+    writeCodex('model = "x"\n');
+    registerCodexNotify(home, 'C:\\old\\wmux-codex-notify.mjs');
+    const r = registerCodexNotify(home, NOTIFY);
+    expect(r.wrote).toBe(true);
+    expect(readCodexNotifyStatus(home).path).toBe(NOTIFY);
+  });
+
+  it('SKIPS a foreign notify — never clobbers the user’s program', () => {
+    const p = writeCodex('model = "x"\nnotify = ["notify-send", "Codex"]\n');
+    const r = registerCodexNotify(home, NOTIFY);
+    expect(r.skipped).toBe('foreign');
+    expect(r.wrote).toBe(false);
+    expect(fs.readFileSync(p, 'utf8')).toContain('notify-send'); // untouched
+    expect(readCodexNotifyStatus(home).state).toBe('foreign');
+  });
+
+  it('leaves a malformed config.toml untouched (never clobbers)', () => {
+    const p = writeCodex('this = = broken [[');
+    const r = registerCodexNotify(home, NOTIFY);
+    expect(r.skipped).toBe('malformed');
+    expect(fs.readFileSync(p, 'utf8')).toBe('this = = broken [[');
+  });
+
+  it('unregisterCodexNotify removes ours, reports removed', () => {
+    writeCodex('model = "x"\n');
+    registerCodexNotify(home, NOTIFY);
+    const r = unregisterCodexNotify(home);
+    expect(r.removed).toBe(true);
+    expect(readCodexNotifyStatus(home).state).toBe('none');
+  });
+
+  it('readCodexNotifyStatus reports none when no notify / config absent', () => {
+    expect(readCodexNotifyStatus(home).state).toBe('none');
+    writeCodex('model = "x"\n');
+    expect(readCodexNotifyStatus(home).state).toBe('none');
   });
 });
 

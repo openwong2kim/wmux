@@ -13,15 +13,23 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
-const src = join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-bridge.mjs');
 const destDir = join(repoRoot, 'dist', 'cli-bundle');
-const dest = join(destDir, 'wmux-bridge.mjs');
 
-if (!existsSync(src)) {
-  console.error(`copy-bridge: source not found: ${src}`);
-  process.exit(1);
-}
+// Self-contained agent bridges shipped in the CLI bundle (extraResource):
+//   - Claude Code hook bridge (installed to ~/.wmux/hooks by `wmux setup-hooks`)
+//   - Codex resume-capture notify bridge (installed + registered by McpRegistrar)
+const bridges = [
+  join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-bridge.mjs'),
+  join(repoRoot, 'integrations', 'codex', 'bin', 'wmux-codex-notify.mjs'),
+];
 
 mkdirSync(destDir, { recursive: true });
-copyFileSync(src, dest);
-console.log(`copy-bridge: ${src} -> ${dest}`);
+for (const src of bridges) {
+  if (!existsSync(src)) {
+    console.error(`copy-bridge: source not found: ${src}`);
+    process.exit(1);
+  }
+  const dest = join(destDir, src.split(/[\\/]/).pop());
+  copyFileSync(src, dest);
+  console.log(`copy-bridge: ${src} -> ${dest}`);
+}
