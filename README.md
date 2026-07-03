@@ -41,14 +41,8 @@ winget install openwong2kim.wmux
 | 🌐 **Agents drive a *real* browser** | Built-in Chrome over CDP. Say *"search Google for this"* and your agent actually clicks, types, and screenshots. Works with React inputs and CJK text. |
 | 🧭 **Fleet View cockpit** | `Ctrl+Shift+A` — every agent across every workspace on one screen, blocked ones floated to the top with a live activity line. Clear every stuck approval from one **inbox**; click any card to jump straight there. |
 | 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` for your approval. |
-| 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* **Claude or Codex** conversation it was on. |
+| 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* Claude conversation it was on. |
 | 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — browser + terminal tools register automatically. |
-
-<div align="center">
-<br>
-<img width="900" alt="Codex resume pill after reboot" src="docs/codex-resume.png" />
-<br><sub>After a reboot, wmux offers a one-click pill to resume your <b>Codex</b> (and Claude) session — it types <code>codex resume</code>, picking up the exact conversation, not a fresh start.</sub>
-</div>
 
 ---
 
