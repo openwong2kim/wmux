@@ -528,4 +528,39 @@ describe('WorkspaceSlice.loadSession — config merge (forward-compat)', () => {
     expect(f7[0].label).toBe('Edited'); // saved edit wins over the built-in default
     expect(DEFAULT_CUSTOM_KEYBINDINGS[0].command).toBe('claude --dangerously-skip-permissions');
   });
+
+  it('upgrades an existing macOS user\'s untouched F7 default to Ctrl+F7 on load', () => {
+    // 기존 Mac 사용자(Ctrl+F7 기본값 이전 설치)의 저장된 원본 F7을 로드 시 승격한다.
+    // platform을 darwin으로 세팅해 시드/백필/승격의 macOS 분기를 실제로 태운다.
+    const prevPlatform = (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform;
+    (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform = 'darwin';
+    try {
+      const store = createTestStore();
+      store.getState().loadSession(
+        makeSession({ customKeybindings: [{ id: 'kb-default-f7', key: 'F7', label: 'Claude (skip permissions)', command: 'claude --dangerously-skip-permissions', sendEnter: true }] })
+      );
+      const kbs = store.getState().customKeybindings as { id: string; key: string }[];
+      const def = kbs.filter((k) => k.id === 'kb-default-f7');
+      expect(def).toHaveLength(1); // 중복 백필 없음
+      expect(def[0].key).toBe('Ctrl+F7'); // 승격됨
+    } finally {
+      (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform = prevPlatform;
+    }
+  });
+
+  it('does NOT upgrade a macOS user\'s deliberately repurposed F7 (different command)', () => {
+    const prevPlatform = (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform;
+    (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform = 'darwin';
+    try {
+      const store = createTestStore();
+      store.getState().loadSession(
+        makeSession({ customKeybindings: [{ id: 'kb-default-f7', key: 'F7', label: 'Edited', command: 'vim', sendEnter: true }] })
+      );
+      const kbs = store.getState().customKeybindings as { id: string; key: string }[];
+      const def = kbs.filter((k) => k.id === 'kb-default-f7');
+      expect(def[0].key).toBe('F7'); // 사용자 편집 → 승격 안 함
+    } finally {
+      (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform = prevPlatform;
+    }
+  });
 });

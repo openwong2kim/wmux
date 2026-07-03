@@ -412,6 +412,36 @@ export function buildDefaultCustomKeybindings(platform?: string): CustomKeybindi
  */
 export const DEFAULT_CUSTOM_KEYBINDINGS: CustomKeybinding[] = buildDefaultCustomKeybindings();
 
+/**
+ * 저장 세션 로드 시, "손 안 댄 원본 F7 기본값"을 현재 플랫폼의 기본 키로 1회 승격한다.
+ *
+ * 배경: Mac 기본값이 Ctrl+F7로 바뀌기 전에 설치한 기존 사용자는 저장 세션에 원본
+ * F7 기본값을 갖고 있다. 백필은 id로 이를 "사용자 편집"처럼 보존하므로, 승격이 없으면
+ * 정작 F7이 macOS 미디어 키에 먹혀 안 뜨던 그 사용자들은 계속 깨진 채 남는다.
+ *
+ * 오작동 방지: 사용자가 F7을 "의도적으로 다른 용도"로 바꿨을 수 있으므로, id·key뿐
+ * 아니라 command·label·sendEnter까지 원본 shipped 기본값과 **완전히 동일**할 때만
+ * 승격한다. 조금이라도 편집한 항목은 command 등이 달라 여기 걸리지 않는다.
+ * 비-Mac이거나 이미 승격된 경우엔 그대로 반환(idempotent).
+ */
+export function upgradeDefaultKeybindingsForPlatform(
+  saved: CustomKeybinding[],
+  platform?: string,
+): CustomKeybinding[] {
+  const shipped = buildDefaultCustomKeybindings(undefined)[0]; // 과거 전 플랫폼 공통 기본값(F7)
+  const platformDefault = buildDefaultCustomKeybindings(platform)[0];
+  if (platformDefault.key === shipped.key) return saved; // 승격 불필요(비-Mac)
+  return saved.map((kb) =>
+    kb.id === shipped.id &&
+    kb.key === shipped.key &&
+    kb.command === shipped.command &&
+    kb.label === shipped.label &&
+    kb.sendEnter === shipped.sendEnter
+      ? { ...kb, key: platformDefault.key }
+      : kb,
+  );
+}
+
 // === Prefix mode bindings ===
 export interface PrefixConfig {
   key: string;  // e.code value for the prefix trigger, e.g. 'KeyB'
