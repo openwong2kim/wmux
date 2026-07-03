@@ -17,7 +17,7 @@ import {
   type PrefixConfig,
   BUILTIN_TEMPLATES,
   DEFAULT_PREFIX_CONFIG,
-  DEFAULT_CUSTOM_KEYBINDINGS,
+  buildDefaultCustomKeybindings,
 } from '../../../shared/types';
 import {
   applyCustomCssVars,
@@ -992,10 +992,16 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
   // ─── Custom keybindings ──────────────────────────────────────────────
-  // Seed from the shared DEFAULT_CUSTOM_KEYBINDINGS constant (single source of
-  // truth shared with the workspaceSlice load-merge). Deep-copy each entry so
-  // the module-level constant can never be mutated through store state.
-  customKeybindings: DEFAULT_CUSTOM_KEYBINDINGS.map((kb) => ({ ...kb })),
+  // Seed from the shared factory (single source of truth shared with the
+  // workspaceSlice load-merge). Pass the current platform so macOS gets the
+  // Ctrl+F7 default — bare F7 is swallowed by macOS media keys. The `typeof
+  // window` guard keeps the store constructable in the node test env where
+  // `window` is undefined (platform → undefined → F7 fallback); a bare `window`
+  // reference would throw ReferenceError. Deep-copy each entry so the factory
+  // output can never be mutated through store state.
+  customKeybindings: buildDefaultCustomKeybindings(
+    typeof window !== 'undefined' ? window.electronAPI?.platform : undefined,
+  ).map((kb) => ({ ...kb })),
 
   addKeybinding: (kb) => set((state) => {
     state.customKeybindings.push({

@@ -1,6 +1,6 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
-import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, DEFAULT_CUSTOM_KEYBINDINGS, TERMINAL_STATES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
+import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, TERMINAL_STATES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
@@ -540,7 +540,11 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // until a removed-defaults tombstone schema exists.
         const savedIds = new Set(data.customKeybindings.map((k) => k.id));
         const savedKeys = new Set(data.customKeybindings.map((k) => k.key));
-        const missingDefaults = DEFAULT_CUSTOM_KEYBINDINGS.filter(
+        // 플랫폼별 기본값으로 백필 — Mac은 Ctrl+F7, 그 외 F7. 기존 사용자의
+        // 저장된 F7은 id/key 매칭에 걸려 아래 filter에서 제외되므로 보존된다.
+        // `typeof window` 가드는 node 테스트 환경(window 미정의)에서 ReferenceError를 막는다.
+        const platform = typeof window !== 'undefined' ? window.electronAPI?.platform : undefined;
+        const missingDefaults = buildDefaultCustomKeybindings(platform).filter(
           (k) => !savedIds.has(k.id) && !savedKeys.has(k.key),
         );
         state.customKeybindings = [...data.customKeybindings, ...missingDefaults.map((k) => ({ ...k }))];

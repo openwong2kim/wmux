@@ -383,16 +383,34 @@ export interface CustomKeybinding {
  * Entries are identified by their `kb-default-*` id; user edits to a default
  * win on load (saved entry kept), while a default missing from an older saved
  * session is back-filled so shipping a new built-in never silently drops it.
+ *
+ * 플랫폼 인자를 받는 순수 팩토리다. macOS 기본 설정
+ * (`com.apple.keyboard.fnState` = 0)에서는 F1–F12가 미디어 키로 소비돼
+ * 단독 F7 keydown이 앱에 전달되지 않는다. 수정자(Ctrl)를 함께 누르면
+ * 기능 키로 전달되므로 Mac 신규 설치에는 `Ctrl+F7`로 시드한다. Win/Linux는
+ * 단타 F7을 그대로 유지한다. 기존 Mac 사용자의 저장된 `F7`은 백필의
+ * id/key 매칭이 보존하므로(사용자 편집 우선 원칙) 여기서 덮어쓰지 않는다.
+ * `window` 같은 전역에 접근하지 않아 main/renderer 양쪽에서 안전하다.
  */
-export const DEFAULT_CUSTOM_KEYBINDINGS: CustomKeybinding[] = [
-  {
-    id: 'kb-default-f7',
-    key: 'F7',
-    label: 'Claude (skip permissions)',
-    command: 'claude --dangerously-skip-permissions',
-    sendEnter: true,
-  },
-];
+export function buildDefaultCustomKeybindings(platform?: string): CustomKeybinding[] {
+  const isMac = platform === 'darwin';
+  return [
+    {
+      id: 'kb-default-f7',
+      key: isMac ? 'Ctrl+F7' : 'F7',
+      label: 'Claude (skip permissions)',
+      command: 'claude --dangerously-skip-permissions',
+      sendEnter: true,
+    },
+  ];
+}
+
+/**
+ * 플랫폼 무관 기본값(F7). 팩토리를 인자 없이 호출한 결과와 동일하며,
+ * 플랫폼을 알 필요 없는 참조·테스트용 폴백으로 유지한다. 실제 시드/백필은
+ * {@link buildDefaultCustomKeybindings}에 플랫폼을 넘겨 호출한다.
+ */
+export const DEFAULT_CUSTOM_KEYBINDINGS: CustomKeybinding[] = buildDefaultCustomKeybindings();
 
 // === Prefix mode bindings ===
 export interface PrefixConfig {

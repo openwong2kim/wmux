@@ -17,9 +17,10 @@ describe('isBareFunctionKeyCombo', () => {
     expect(isBareFunctionKeyCombo('F12')).toBe(true);
   });
 
-  it('matches when the function key is the last part of a combo', () => {
-    expect(isBareFunctionKeyCombo('Ctrl+F7')).toBe(true);
-    expect(isBareFunctionKeyCombo('Ctrl+Shift+F5')).toBe(true);
+  it('does NOT match a function key carrying modifiers (Ctrl+F7 reaches the app)', () => {
+    // macOS는 수정자가 붙은 F키를 기능 키로 전달하므로 안내가 필요 없다.
+    expect(isBareFunctionKeyCombo('Ctrl+F7')).toBe(false);
+    expect(isBareFunctionKeyCombo('Ctrl+Shift+F5')).toBe(false);
   });
 
   it('does not match non-function keys', () => {
@@ -31,9 +32,10 @@ describe('isBareFunctionKeyCombo', () => {
 });
 
 describe('hasBareFunctionKeyBinding', () => {
-  it('returns true when any binding uses a function key', () => {
+  it('returns true only when a binding uses a BARE function key', () => {
     expect(hasBareFunctionKeyBinding([kb('Ctrl+Shift+1'), kb('F7')])).toBe(true);
-    expect(hasBareFunctionKeyBinding([kb('Ctrl+F7')])).toBe(true);
+    // Ctrl+F7(Mac 기본값)은 정상 동작하므로 안내 대상이 아니다.
+    expect(hasBareFunctionKeyBinding([kb('Ctrl+F7')])).toBe(false);
   });
 
   it('returns false when no binding uses a function key', () => {
