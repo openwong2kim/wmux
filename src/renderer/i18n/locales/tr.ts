@@ -212,6 +212,7 @@ export const tr = {
   'settings.kb.conflict': 'Yerleşik kısayolla çakışıyor',
   'settings.kb.delete': 'Sil',
   'settings.kb.noBindings': 'Henüz özel tuş bağlaması yok',
+  'settings.kb.macFnHint': 'macOS, işlev tuşlarını (F1–F12) varsayılan olarak medya tuşları olarak kullanır; bu nedenle yalnızca F tuşu ataması çalışmaz. Fn tuşunu da basılı tutun (örn. Fn+F7) veya Sistem Ayarları > Klavye > "F1, F2 vb. tuşları standart işlev tuşları olarak kullan" seçeneğini açın.',
 
   // Tutorial
   'settings.tutorial': 'Eğitim',

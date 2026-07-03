@@ -212,6 +212,7 @@ export const ptBR = {
   'settings.kb.conflict': 'Conflita com atalho integrado',
   'settings.kb.delete': 'Excluir',
   'settings.kb.noBindings': 'Nenhum atalho personalizado ainda',
+  'settings.kb.macFnHint': 'O macOS usa as teclas de função (F1–F12) como teclas de mídia por padrão, então uma atribuição só com a tecla F não será acionada. Segure também Fn (ex.: Fn+F7) ou ative Ajustes do Sistema > Teclado > "Usar as teclas F1, F2 etc. como teclas de função padrão".',
 
   // Tutorial
   'settings.tutorial': 'Tutorial',

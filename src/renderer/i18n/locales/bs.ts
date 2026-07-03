@@ -212,6 +212,7 @@ export const bs = {
   'settings.kb.conflict': 'Sukob s ugrađenom prečicom',
   'settings.kb.delete': 'Obriši',
   'settings.kb.noBindings': 'Još nema prilagođenih vezivanja tipki',
+  'settings.kb.macFnHint': 'macOS podrazumijevano koristi funkcijske tipke (F1–F12) kao medijske tipke, pa vezivanje same F-tipke neće raditi. Držite i Fn (npr. Fn+F7) ili uključite Postavke sistema > Tastatura > "Koristi tipke F1, F2 itd. kao standardne funkcijske tipke".',
 
   // Tutorial
   'settings.tutorial': 'Vodič',

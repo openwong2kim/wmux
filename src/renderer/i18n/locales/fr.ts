@@ -212,6 +212,7 @@ export const fr = {
   'settings.kb.conflict': 'Conflit avec un raccourci intégré',
   'settings.kb.delete': 'Supprimer',
   'settings.kb.noBindings': 'Aucun raccourci personnalisé',
+  'settings.kb.macFnHint': 'macOS utilise par défaut les touches de fonction (F1–F12) comme touches multimédias, donc un raccourci utilisant seulement une touche F ne se déclenchera pas. Maintenez aussi Fn (p. ex. Fn+F7) ou activez Réglages Système > Clavier > "Utiliser les touches F1, F2, etc. comme touches de fonction standard".',
 
   // Tutorial
   'settings.tutorial': 'Tutoriel',

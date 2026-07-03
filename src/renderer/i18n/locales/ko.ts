@@ -351,6 +351,7 @@ export const ko = {
   'settings.kb.conflict': '내장 단축키와 충돌',
   'settings.kb.delete': '삭제',
   'settings.kb.noBindings': '커스텀 키바인딩 없음',
+  'settings.kb.macFnHint': 'macOS는 기본적으로 F1–F12를 미디어 키로 사용하므로 F키 단독 바인딩은 작동하지 않습니다. Fn을 함께 누르거나(예: Fn+F7), 시스템 설정 > 키보드에서 "F1, F2 등의 키를 표준 기능 키로 사용"을 켜세요.',
 
   // Tutorial
   'settings.tutorial': '튜토리얼',

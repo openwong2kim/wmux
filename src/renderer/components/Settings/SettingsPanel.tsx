@@ -25,6 +25,7 @@ import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
+import { hasBareFunctionKeyBinding } from '../../utils/functionKeyBinding';
 import { Icon, IconX, IconCheck, IconChevron, IconExternalLink } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 
@@ -3451,6 +3452,11 @@ function TabShortcuts() {
 
       {/* Custom keybindings */}
       <SectionLabel label={t('settings.customKeybindings')} />
+
+      {/* macOS 기본 설정에서 F1–F12는 미디어 키로 동작해 F키 단독 바인딩이 발동하지 않음 → 안내 */}
+      {window.electronAPI.platform === 'darwin' && hasBareFunctionKeyBinding(customKeybindings) && (
+        <p className="text-[11px] text-[color:var(--text-muted)] px-1">{t('settings.kb.macFnHint')}</p>
+      )}
 
       {customKeybindings.length === 0 ? (
         <p className="text-[11px] text-[color:var(--text-muted)] px-1">{t('settings.kb.noBindings')}</p>

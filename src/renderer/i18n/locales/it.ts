@@ -212,6 +212,7 @@ export const it = {
   'settings.kb.conflict': 'Conflitto con scorciatoia integrata',
   'settings.kb.delete': 'Elimina',
   'settings.kb.noBindings': 'Nessuna associazione tasti personalizzata',
+  'settings.kb.macFnHint': 'macOS usa i tasti funzione (F1–F12) come tasti multimediali per impostazione predefinita, quindi un\'associazione con il solo tasto F non si attiverà. Tieni premuto anche Fn (es. Fn+F7) o attiva Impostazioni di Sistema > Tastiera > "Usa i tasti F1, F2, ecc. come tasti funzione standard".',
 
   // Tutorial
   'settings.tutorial': 'Tutorial',

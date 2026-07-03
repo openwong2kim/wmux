@@ -212,6 +212,7 @@ export const pl = {
   'settings.kb.conflict': 'Konflikt z wbudowanym skrótem',
   'settings.kb.delete': 'Usuń',
   'settings.kb.noBindings': 'Brak niestandardowych przypisań klawiszy',
+  'settings.kb.macFnHint': 'macOS domyślnie używa klawiszy funkcyjnych (F1–F12) jako klawiszy multimedialnych, więc samo przypisanie klawisza F nie zadziała. Przytrzymaj też Fn (np. Fn+F7) lub włącz Ustawienia systemowe > Klawiatura > "Używaj klawiszy F1, F2 itd. jako standardowych klawiszy funkcyjnych".',
 
   // Tutorial
   'settings.tutorial': 'Samouczek',

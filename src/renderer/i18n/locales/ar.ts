@@ -212,6 +212,7 @@ export const ar = {
   'settings.kb.conflict': 'تعارض مع اختصار مدمج',
   'settings.kb.delete': 'حذف',
   'settings.kb.noBindings': 'لا توجد ارتباطات مفاتيح مخصصة بعد',
+  'settings.kb.macFnHint': 'يستخدم macOS مفاتيح الوظائف (F1–F12) كمفاتيح وسائط افتراضيًا، لذا لن يعمل ربط مفتاح F بمفرده. اضغط Fn أيضًا (مثل Fn+F7)، أو فعّل إعدادات النظام > لوحة المفاتيح > "استخدام مفاتيح F1 وF2 وغيرها كمفاتيح وظائف قياسية".',
 
   // Tutorial
   'settings.tutorial': 'البرنامج التعليمي',

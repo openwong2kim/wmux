@@ -212,6 +212,7 @@ export const hi = {
   'settings.kb.conflict': 'अंतर्निहित शॉर्टकट से टकराव',
   'settings.kb.delete': 'हटाएँ',
   'settings.kb.noBindings': 'अभी तक कोई कस्टम कीबाइंडिंग नहीं',
+  'settings.kb.macFnHint': 'macOS डिफ़ॉल्ट रूप से फ़ंक्शन कीज़ (F1–F12) को मीडिया कीज़ के रूप में उपयोग करता है, इसलिए केवल F-की बाइंडिंग काम नहीं करेगी। Fn भी दबाए रखें (जैसे Fn+F7), या System Settings > Keyboard में "Use F1, F2, etc. keys as standard function keys" चालू करें।',
 
   // Tutorial
   'settings.tutorial': 'ट्यूटोरियल',

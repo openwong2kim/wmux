@@ -211,6 +211,7 @@ export const zh = {
   'settings.kb.conflict': '与内置快捷键冲突',
   'settings.kb.delete': '删除',
   'settings.kb.noBindings': '暂无自定义快捷键',
+  'settings.kb.macFnHint': 'macOS 默认将 F1–F12 用作媒体键，因此单独的 F 键绑定不会触发。请同时按住 Fn（例如 Fn+F7），或在“系统设置 > 键盘”中开启“将 F1、F2 等键用作标准功能键”。',
 
   // Tutorial
   'settings.tutorial': '教程',

@@ -212,6 +212,7 @@ export const ms = {
   'settings.kb.conflict': 'Bertentangan dengan pintasan terbina dalam',
   'settings.kb.delete': 'Padam',
   'settings.kb.noBindings': 'Belum ada pengikatan kekunci tersuai',
+  'settings.kb.macFnHint': 'macOS menggunakan kekunci fungsi (F1–F12) sebagai kekunci media secara lalai, jadi pengikatan kekunci F sahaja tidak akan berfungsi. Tekan Fn juga (cth. Fn+F7), atau hidupkan Tetapan Sistem > Papan Kekunci > "Gunakan kekunci F1, F2, dll. sebagai kekunci fungsi standard".',
 
   // Tutorial
   'settings.tutorial': 'Tutorial',

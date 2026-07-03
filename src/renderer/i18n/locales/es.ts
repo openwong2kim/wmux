@@ -212,6 +212,7 @@ export const es = {
   'settings.kb.conflict': 'Conflicto con atajo integrado',
   'settings.kb.delete': 'Eliminar',
   'settings.kb.noBindings': 'Aún no hay atajos personalizados',
+  'settings.kb.macFnHint': 'macOS usa las teclas de función (F1–F12) como teclas multimedia de forma predeterminada, por lo que una asignación con solo la tecla F no se activará. Mantén pulsada también Fn (p. ej. Fn+F7) o activa Ajustes del Sistema > Teclado > "Usar las teclas F1, F2, etc. como teclas de función estándar".',
 
   // Tutorial
   'settings.tutorial': 'Tutorial',

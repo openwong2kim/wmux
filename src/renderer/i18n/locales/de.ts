@@ -212,6 +212,7 @@ export const de = {
   'settings.kb.conflict': 'Konflikt mit integriertem Kürzel',
   'settings.kb.delete': 'Löschen',
   'settings.kb.noBindings': 'Noch keine benutzerdefinierten Tastenbindungen',
+  'settings.kb.macFnHint': 'macOS verwendet die Funktionstasten (F1–F12) standardmäßig als Medientasten, daher funktioniert eine reine F-Tasten-Belegung nicht. Halte zusätzlich Fn gedrückt (z. B. Fn+F7) oder aktiviere Systemeinstellungen > Tastatur > "F1, F2 usw. als Standard-Funktionstasten verwenden".',
 
   // Tutorial
   'settings.tutorial': 'Tutorial',

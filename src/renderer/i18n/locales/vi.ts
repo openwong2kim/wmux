@@ -212,6 +212,7 @@ export const vi = {
   'settings.kb.conflict': 'Xung đột với phím tắt tích hợp',
   'settings.kb.delete': 'Xoá',
   'settings.kb.noBindings': 'Chưa có ràng buộc phím tuỳ chỉnh',
+  'settings.kb.macFnHint': 'macOS mặc định dùng các phím chức năng (F1–F12) làm phím media, nên ràng buộc chỉ với phím F sẽ không hoạt động. Hãy giữ thêm Fn (ví dụ Fn+F7), hoặc bật Cài đặt Hệ thống > Bàn phím > "Dùng các phím F1, F2, v.v. làm phím chức năng tiêu chuẩn".',
 
   // Tutorial
   'settings.tutorial': 'Hướng dẫn',

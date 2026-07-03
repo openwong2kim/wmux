@@ -211,6 +211,7 @@ export const ja = {
   'settings.kb.conflict': '組み込みショートカットと競合',
   'settings.kb.delete': '削除',
   'settings.kb.noBindings': 'カスタムキーバインドなし',
+  'settings.kb.macFnHint': 'macOSはデフォルトでF1〜F12をメディアキーとして使うため、Fキー単独のバインドは動作しません。Fnも一緒に押すか（例: Fn+F7）、システム設定 > キーボードで「F1、F2などのキーを標準のファンクションキーとして使用」をオンにしてください。',
 
   // Tutorial
   'settings.tutorial': 'チュートリアル',

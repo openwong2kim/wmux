@@ -212,6 +212,7 @@ export const nb = {
   'settings.kb.conflict': 'Konflikt med innebygd snarvei',
   'settings.kb.delete': 'Slett',
   'settings.kb.noBindings': 'Ingen egendefinerte tastebindinger ennå',
+  'settings.kb.macFnHint': 'macOS bruker funksjonstastene (F1–F12) som medietaster som standard, så en ren F-tastbinding vil ikke utløses. Hold også Fn (f.eks. Fn+F7), eller slå på Systeminnstillinger > Tastatur > "Bruk F1, F2 osv. som standard funksjonstaster".',
 
   // Tutorial
   'settings.tutorial': 'Veiledning',

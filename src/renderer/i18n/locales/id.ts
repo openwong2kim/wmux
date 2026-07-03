@@ -212,6 +212,7 @@ export const id = {
   'settings.kb.conflict': 'Bertabrakan dengan pintasan bawaan',
   'settings.kb.delete': 'Hapus',
   'settings.kb.noBindings': 'Belum ada pengikatan tombol kustom',
+  'settings.kb.macFnHint': 'macOS menggunakan tombol fungsi (F1–F12) sebagai tombol media secara bawaan, jadi pengikatan tombol F saja tidak akan aktif. Tahan juga Fn (mis. Fn+F7), atau aktifkan Pengaturan Sistem > Keyboard > "Gunakan tombol F1, F2, dll. sebagai tombol fungsi standar".',
 
   // Tutorial
   'settings.tutorial': 'Tutorial',

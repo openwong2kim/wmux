@@ -212,6 +212,7 @@ export const zhTW = {
   'settings.kb.conflict': '與內建快速鍵衝突',
   'settings.kb.delete': '刪除',
   'settings.kb.noBindings': '尚無自訂按鍵繫結',
+  'settings.kb.macFnHint': 'macOS 預設將 F1–F12 用作媒體鍵，因此單獨的 F 鍵繫結不會觸發。請同時按住 Fn（例如 Fn+F7），或在「系統設定 > 鍵盤」中開啟「將 F1、F2 等按鍵用作標準功能鍵」。',
 
   // Tutorial
   'settings.tutorial': '教學',

@@ -419,6 +419,7 @@ export const en = {
   'settings.kb.conflict': 'Conflicts with built-in shortcut',
   'settings.kb.delete': 'Delete',
   'settings.kb.noBindings': 'No custom keybindings yet',
+  'settings.kb.macFnHint': 'macOS uses the function keys (F1–F12) as media keys by default, so a bare F-key binding won\'t fire. Hold Fn as well (e.g. Fn+F7), or turn on System Settings > Keyboard > "Use F1, F2, etc. keys as standard function keys".',
 
   // Tutorial
   'settings.tutorial': 'Tutorial',
