@@ -51,10 +51,23 @@
 // trailing). It is the "has enough NEW output arrived to be worth a refresh?"
 // counter, reset to 0 at every flush — NOT a running burst total.
 //
+// The trailing settle additionally fires whenever ANY mid-stream flush happened
+// since the last settle, even if windowAccum is back under the floor. Reason: a
+// mid-stream flush runs synchronously inside the caller's pty.onData handler —
+// after `terminal.write(data)` was CALLED but before xterm has PARSED it (xterm
+// write is async). So a flush triggered by a stream's FINAL chunk repaints the
+// previous frame, and that chunk's post-parse rendering would otherwise never
+// get a repaint (the flush reset windowAccum, so the settle would skip). The
+// settle fires >= burstQuietMs after the last write — after xterm has parsed
+// it — so any stream that ever flushed now always ends with one guaranteed
+// post-parse repaint. Cost: exactly +1 refresh per real stream; noise streams
+// (never crossed the floor, never flushed) are unchanged.
+//
 // Resulting invariant: on a VISIBLE pane, render staleness cannot outlive
-// roughly `burstStreamFlushMs + burstQuietMs` while output flows, and is
-// repaired once more when the stream settles. (Old gate: staleness could
-// persist for the entire multi-second stream — the #318 report.)
+// roughly `burstStreamFlushMs + burstQuietMs` while output flows, and every
+// stream that ever flushed ends with one guaranteed post-parse settle repaint.
+// (Old gate: staleness could persist for the entire multi-second stream — the
+// #318 report.)
 //
 // All three reasons run the same full-range refresh; the caller does not vary
 // repaint cost per reason. The refresh never mutates the shared glyph atlas
@@ -134,6 +147,10 @@ export function createGlyphRepaintScheduler(
   let disposed = false;
   // Units written since the last flush of any kind. Reset to 0 at every flush.
   let windowAccum = 0;
+  // True once a mid-stream flush has fired since the last settle. Guarantees
+  // the settle repaint even when the stream's final chunk consumed windowAccum
+  // in a mid flush (that flush ran pre-parse; see the header rationale).
+  let flushedSinceSettle = false;
   let quietTimer: ReturnType<typeof setTimeout> | null = null;
   let lastFocusRepaintAt = -Infinity;
   // Timestamp of the last real flush (mid or trailing). Seeded to -Infinity so
@@ -159,6 +176,7 @@ export function createGlyphRepaintScheduler(
       ) {
         lastFlushAt = t;
         windowAccum = 0;
+        flushedSinceSettle = true;
         repaint('burst');
       }
       // Re-arm the quiet timer on every write. When it finally elapses the
@@ -167,15 +185,24 @@ export function createGlyphRepaintScheduler(
       if (quietTimer) clearTimeout(quietTimer);
       quietTimer = setTimeout(() => {
         quietTimer = null;
-        if (windowAccum >= activityBytes) {
+        // Flush on fresh output past the floor, OR because a mid-stream flush
+        // fired since the last settle: mid flushes run pre-parse (inside the
+        // pty.onData handler, before xterm's async write parses the data), so
+        // the settle — firing >= burstQuietMs after the last write, safely
+        // post-parse — is the one guaranteed repaint of the stream's final
+        // frame. Without this, a stream whose LAST chunk mid-flushed would
+        // never get its final rendering repaired.
+        if (windowAccum >= activityBytes || flushedSinceSettle) {
           lastFlushAt = now();
           windowAccum = 0;
+          flushedSinceSettle = false;
           repaint('burst');
         } else {
-          // Sub-threshold tail: drop it so a stale trickle can't leak into a
-          // later unrelated stream's first-flush timing. No flush happened, so
-          // lastFlushAt is left untouched.
+          // Sub-threshold noise that never flushed: drop it so a stale trickle
+          // can't leak into a later unrelated stream's first-flush timing. No
+          // flush happened, so lastFlushAt is left untouched.
           windowAccum = 0;
+          flushedSinceSettle = false;
         }
       }, burstQuietMs);
     },
@@ -200,6 +227,7 @@ export function createGlyphRepaintScheduler(
         quietTimer = null;
       }
       windowAccum = 0;
+      flushedSinceSettle = false;
     },
   };
 }

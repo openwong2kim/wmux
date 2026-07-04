@@ -527,7 +527,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         // this pane's dirty-region staleness without mutating the shared atlas.
         try {
           // Diagnostic (#318): lets a future reporter log distinguish "flush
-          // fired but didn't repair" from "flush never fired".
+          // fired but didn't repair" from "flush never fired". console.debug
+          // maps to the Verbose level (hidden by default, dropped when DevTools
+          // is closed). Remove once #318 is confirmed fixed in the reporter's
+          // environment.
           console.debug('[wmux:glyph-repaint]', reason);
           terminal.refresh(0, terminal.rows - 1);
         } catch {

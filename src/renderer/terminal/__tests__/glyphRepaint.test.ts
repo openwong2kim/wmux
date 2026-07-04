@@ -136,23 +136,56 @@ describe('glyphRepaint scheduler', () => {
       expect(flushT).toEqual([0, 400]);
     });
 
-    it('drops a sub-threshold tail and starts the next stream with a clean window', () => {
+    it('guarantees a post-parse settle flush when the final chunk itself mid-flushed (review P2)', () => {
+      // A mid flush runs synchronously inside pty.onData — AFTER terminal.write
+      // was called but BEFORE xterm parsed it (write is async). If the stream's
+      // last chunk mid-flushes, that flush repaints the previous frame and
+      // windowAccum is 0 at settle — without flushedSinceSettle the final
+      // chunk's rendering would never be repaired.
+      let t = 0;
+      const s = createGlyphRepaintScheduler({
+        repaint, activityBytes: 256, burstQuietMs: 300, burstStreamFlushMs: 500, now: () => t,
+      });
+      s.onData(300);           // t=0: single over-floor chunk → immediate mid flush (pre-parse)
+      expect(repaints).toEqual(['burst']);
+      t += 300; vi.advanceTimersByTime(300); // settle at +burstQuietMs: post-parse
+      expect(repaints).toEqual(['burst', 'burst']); // guaranteed final repaint
+    });
+
+    it('settle still fires when a drip stream ends exactly on a mid flush', () => {
       let t = 0;
       const s = createGlyphRepaintScheduler({
         repaint, activityBytes: 256, burstQuietMs: 300, burstStreamFlushMs: 500, now: () => t,
       });
       const tick = (ms: number) => { t += ms; vi.advanceTimersByTime(ms); };
-      s.onData(1000);          // t=0 flush → windowAccum=0, lastFlushAt=0
+      // 100 units every 100ms: mid flushes at t=200 (accum 300 >= 256, first
+      // flush) and t=700 (accum 500, cadence satisfied). The t=700 write is the
+      // FINAL chunk — its own flush consumed the accumulation (windowAccum=0).
+      s.onData(100);
+      for (let i = 0; i < 7; i++) { tick(100); s.onData(100); }
+      expect(repaints).toEqual(['burst', 'burst']);
+      tick(300);               // settle: windowAccum=0 but flushedSinceSettle → fires
+      expect(repaints).toEqual(['burst', 'burst', 'burst']);
+    });
+
+    it('resets both the window and the settle flag so the next sub-floor stream stays silent', () => {
+      let t = 0;
+      const s = createGlyphRepaintScheduler({
+        repaint, activityBytes: 256, burstQuietMs: 300, burstStreamFlushMs: 500, now: () => t,
+      });
+      const tick = (ms: number) => { t += ms; vi.advanceTimersByTime(ms); };
+      s.onData(1000);          // t=0 mid flush → windowAccum=0, flushedSinceSettle=true
       tick(100);
-      s.onData(100);           // sub-threshold tail (100 < 256)
-      tick(300);               // quiet: 100 < 256 → NO trailing flush, windowAccum reset to 0
-      expect(repaints).toEqual(['burst']); // still just the one mid flush
-      // Fresh stream: 200 units. If the dropped 100 had leaked, 100+200=300 >= 256
-      // would flush. A clean window means 200 < 256 → no flush.
+      s.onData(100);           // sub-floor tail (100 < 256)
+      tick(300);               // settle: flushedSinceSettle → guaranteed post-parse flush
+      expect(repaints).toEqual(['burst', 'burst']);
+      // Next unrelated stream: 200 sub-floor units, no mid flush. If either the
+      // 100-unit tail or the settle flag had leaked past the settle, this would
+      // flush. Clean window + cleared flag means total silence.
       tick(1600);              // t=2000, well past the 500ms cadence
       s.onData(200);
-      tick(300);               // quiet
-      expect(repaints).toEqual(['burst']); // unchanged → tail did not leak
+      tick(300);               // settle: 200 < 256 and nothing flushed this stream → silent
+      expect(repaints).toEqual(['burst', 'burst']); // unchanged → nothing leaked
     });
 
     it('Infinity cadence disables mid-stream flushes but the trailing settle still fires', () => {
@@ -271,6 +304,20 @@ describe('glyphRepaint scheduler', () => {
       .map((l) => l.trim())
       .filter(Boolean)
       .map((l) => JSON.parse(l) as [number, number]);
+    if (rows.length === 0) {
+      throw new Error('claude-stream-trace.jsonl fixture is empty or failed to parse');
+    }
+
+    // Assertion thresholds, tuned to what the trace actually yields:
+    // - MIN_FLUSHES: the old 32KB gate scored 38 on this trace; the activity
+    //   cadence measured 231 (incl. the guaranteed post-parse settle flushes),
+    //   so 100 cleanly separates the two while leaving headroom for tuning.
+    const MIN_FLUSHES = 100;
+    // - ACTIVE_WINDOW_MS / ACTIVE_WINDOW_MIN_UNITS: a span counts as "active"
+    //   when it sustains >= 512 units/s (1024 units over 2s) — real streaming,
+    //   not keystroke echo noise.
+    const ACTIVE_WINDOW_MS = 2000;
+    const ACTIVE_WINDOW_MIN_UNITS = 1024;
 
     it('covers the whole active stream — the drip the old 32KB gate went blind on', () => {
       const flushTimes: number[] = [];
@@ -285,21 +332,21 @@ describe('glyphRepaint scheduler', () => {
       vi.advanceTimersByTime(rows[rows.length - 1][0] + 5000 - Date.now()); // drain trailing timer
       s.dispose();
 
-      // (a) The old gate fired 38; the activity cadence fires >= 100 (measured 203).
-      expect(flushTimes.length).toBeGreaterThanOrEqual(100);
+      // (a) The old gate fired 38; the activity cadence fires >= MIN_FLUSHES
+      // (measured 231).
+      expect(flushTimes.length).toBeGreaterThanOrEqual(MIN_FLUSHES);
 
-      // (b) No blind active phase: every 2-second span carrying >= 1024 units of
-      // output contains at least one flush. The old gate left a 39s ramp (5470
-      // units in its worst 2s window) with zero flushes — this fails there.
-      const W = 2000;
+      // (b) No blind active phase: every active window contains at least one
+      // flush. The old gate left a 39s ramp (5470 units in its worst 2s window)
+      // with zero flushes — this fails there.
       let worstUnflushedUnits = 0;
       let worstAt = -1;
       for (let i = 0; i < rows.length; i++) {
         const a = rows[i][0];
-        const b = a + W;
+        const b = a + ACTIVE_WINDOW_MS;
         let units = 0;
         for (let j = i; j < rows.length && rows[j][0] < b; j++) units += rows[j][1];
-        if (units < 1024) continue; // not an "active" window
+        if (units < ACTIVE_WINDOW_MIN_UNITS) continue; // not an "active" window
         const covered = flushTimes.some((f) => f >= a && f < b);
         if (!covered && units > worstUnflushedUnits) {
           worstUnflushedUnits = units;
