@@ -7,8 +7,62 @@ import {
   atomicWriteJSONSync,
   createMigrator,
   DAEMON_STATE_REGISTRY,
+  BACKUP_SUFFIXES,
 } from './util/atomicWrite';
 import { AsyncQueue } from './util/AsyncQueue';
+import { stripCredentialValues } from '../shared/envFilter';
+
+/**
+ * 영속 직전 자격증명 *값*을 제거한 DaemonState fresh 사본. 모든 sessions.json write
+ * 경로(saveImmediate·saveDebounced·flushSync·race-recovery)가 이걸 거치므로, 자격증명은
+ * 인메모리 meta.env에만 존재하고 디스크에는 절대 도달하지 않는다. 세션의 다른 필드와
+ * 비자격 env(PATH·identity 등)는 보존. **fresh 사본** — live 인메모리 meta를 오염시키지
+ * 않는다(스폰/supervised-restart는 인메모리 env를 그대로 씀).
+ */
+function toPersistable(state: DaemonState): DaemonState {
+  return {
+    ...state,
+    sessions: state.sessions.map((s) => ({ ...s, env: stripCredentialValues(s.env) })),
+  };
+}
+
+/**
+ * 부팅 1회 레거시 스크럽: 기존 sessions.json 주 파일 + 모든 .bak 슬롯에서 자격증명
+ * 값을 제거한다. PR1 이후 사용자 셸(passthrough)의 자격증명이 평문으로 남은 레거시
+ * 파일을 정리 — recovery(load) 전에 호출해 이후 로드가 스크럽본을 읽게 한다.
+ * total·non-throwing: 읽기/파싱 실패한 슬롯은 건너뛰고, 세션 목록은 절대 드롭하지 않는다.
+ * rotation 없이 임시파일→rename으로 슬롯 자체를 제자리 스크럽(백업의 백업을 만들지 않음).
+ */
+export function scrubPersistedCredentials(baseDir: string): void {
+  const primary = path.join(baseDir, 'sessions.json');
+  const targets = [primary, ...BACKUP_SUFFIXES.map((suffix) => `${primary}${suffix}`)];
+  for (const file of targets) {
+    try {
+      if (!fs.existsSync(file)) continue;
+      const parsed = JSON.parse(fs.readFileSync(file, 'utf-8')) as {
+        sessions?: Array<{ env?: unknown }>;
+      } | null;
+      if (!parsed || !Array.isArray(parsed.sessions)) continue;
+      let changed = false;
+      for (const session of parsed.sessions) {
+        if (!session || typeof session.env !== 'object' || session.env === null) continue;
+        const before = Object.keys(session.env as Record<string, string>).length;
+        const stripped = stripCredentialValues(session.env as Record<string, string>);
+        if (Object.keys(stripped).length !== before) {
+          session.env = stripped;
+          changed = true;
+        }
+      }
+      if (!changed) continue;
+      const tmp = `${file}.scrub.tmp`;
+      fs.writeFileSync(tmp, JSON.stringify(parsed), { encoding: 'utf-8', mode: 0o600 });
+      fs.renameSync(tmp, file);
+    } catch (err) {
+      // total·non-throwing — 한 슬롯 실패가 다른 슬롯이나 부팅을 막지 않는다.
+      console.warn(`[StateWriter] credential scrub skipped ${file}:`, (err as Error)?.message ?? err);
+    }
+  }
+}
 
 const DEBOUNCE_MS = 30_000;
 const QUEUE_KEY = 'state';
@@ -78,7 +132,7 @@ export class StateWriter {
     // synchronous atomic-write helper.
     this.queue.setSyncFallback(QUEUE_KEY, () => {
       if (this.pendingState !== null) {
-        atomicWriteJSONSync(this.filePath, this.pendingState, {
+        atomicWriteJSONSync(this.filePath, toPersistable(this.pendingState), {
           validate: StateWriter.isDaemonState,
           rotationEnabled: true,
         });
@@ -112,7 +166,7 @@ export class StateWriter {
     // handles that case.)
     this.queue.clear();
     try {
-      atomicWriteJSONSync(this.filePath, state, {
+      atomicWriteJSONSync(this.filePath, toPersistable(state), {
         validate: StateWriter.isDaemonState,
         rotationEnabled: true,
       });
@@ -152,7 +206,7 @@ export class StateWriter {
         // that fires while atomicWriteJSON is mid-flight.
         const epochAtStart = this.immediateEpoch;
         try {
-          await atomicWriteJSON(this.filePath, payload, {
+          await atomicWriteJSON(this.filePath, toPersistable(payload), {
             validate: StateWriter.isDaemonState,
             rotationEnabled: true,
           });
@@ -165,7 +219,7 @@ export class StateWriter {
             this.lastImmediateState !== null
           ) {
             try {
-              atomicWriteJSONSync(this.filePath, this.lastImmediateState, {
+              atomicWriteJSONSync(this.filePath, toPersistable(this.lastImmediateState), {
                 validate: StateWriter.isDaemonState,
                 rotationEnabled: true,
               });
@@ -291,7 +345,7 @@ export class StateWriter {
       const state = this.pendingState;
       this.pendingState = null;
       try {
-        atomicWriteJSONSync(this.filePath, state, {
+        atomicWriteJSONSync(this.filePath, toPersistable(state), {
           validate: StateWriter.isDaemonState,
           rotationEnabled: true,
         });

@@ -7,6 +7,7 @@ import {
   withheldCredentialNames,
   isInternalEnvKey,
   isCredentialEnvKey,
+  stripCredentialValues,
 } from '../envFilter';
 
 describe('isSensitiveEnvKey', () => {
@@ -173,5 +174,36 @@ describe('withheldCredentialNames', () => {
 
   it('is empty when no credentials are present', () => {
     expect(withheldCredentialNames({ PATH: '/p', HOME: '/h' })).toEqual([]);
+  });
+});
+
+describe('stripCredentialValues (직렬화 경계 — 디스크/RPC)', () => {
+  it('자격증명 값만 제거하고 비자격 env(PATH·identity)는 보존', () => {
+    const stripped = stripCredentialValues({
+      PATH: '/usr/bin',
+      WMUX_SURFACE_ID: 'surf-1',      // identity — 보존 (pty:list 복원 의존)
+      KAD_GATEWAY_KEY: 'secret',       // 자격증명 — 제거
+      GITHUB_TOKEN: 'ghp',             // 자격증명 — 제거
+      SSH_AUTH_SOCK: '/s',             // safe-passthrough — 보존
+    });
+    expect(stripped.PATH).toBe('/usr/bin');
+    expect(stripped.WMUX_SURFACE_ID).toBe('surf-1');
+    expect(stripped.SSH_AUTH_SOCK).toBe('/s');
+    expect(stripped.KAD_GATEWAY_KEY).toBeUndefined();
+    expect(stripped.GITHUB_TOKEN).toBeUndefined();
+  });
+
+  it('fresh 사본을 반환 — 입력을 in-place 수정하지 않음(live meta.env 오염 방지)', () => {
+    const live = { PATH: '/p', GITHUB_TOKEN: 'ghp' };
+    const stripped = stripCredentialValues(live);
+    expect(live.GITHUB_TOKEN).toBe('ghp'); // 원본 불변
+    expect(stripped.GITHUB_TOKEN).toBeUndefined();
+    expect(stripped).not.toBe(live);
+  });
+
+  it('env가 undefined/null/비객체면 빈 객체(마이그레이션 total·non-throwing)', () => {
+    expect(stripCredentialValues(undefined)).toEqual({});
+    expect(stripCredentialValues(null)).toEqual({});
+    expect(stripCredentialValues('not-an-object' as unknown as Record<string, string>)).toEqual({});
   });
 });
