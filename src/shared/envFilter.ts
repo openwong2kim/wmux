@@ -45,13 +45,25 @@ const CREDENTIAL_PATTERNS: ReadonlyArray<RegExp> = [
 const CREDENTIAL_EXACT: ReadonlySet<string> = new Set([
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',
+  'AWS_ACCESS_KEY_ID',  // _ID로 끝나 _KEY$ 패턴에 안 걸림 (AWS 자격증명)
   'ANTHROPIC_API_KEY',
   'OPENAI_API_KEY',
   'GITHUB_TOKEN',
   'GH_TOKEN',
   'NPM_TOKEN',
   'DOCKER_PASSWORD',
-  'DATABASE_URL',       // 종종 자격증명을 임베드
+  // 선행 밑줄이 없어 패턴(`_PASSWORD$`/`_SECRET$` 등)에 안 걸리는 well-known 비밀
+  // (3모델 리뷰 확정). `/PASSWORD$/`로 패턴을 넓히면 ENABLE_PASSWORD 같은 비자격
+  // 키를 오탐하므로, exact 이름으로만 추가한다.
+  'PGPASSWORD',
+  'MYSQL_PWD',
+  'SECRET_KEY_BASE',
+  'LDAPPASSWORD',
+  // URL/URI에 자격증명을 임베드하는 연결 문자열 (DATABASE_URL과 동류)
+  'DATABASE_URL',
+  'REDIS_URL',
+  'MONGO_URL',
+  'MONGODB_URI',
 ]);
 
 const SAFE_PASSTHROUGH: ReadonlySet<string> = new Set([

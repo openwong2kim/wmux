@@ -48,20 +48,24 @@ describe('scrubPersistedCredentials', () => {
     expect(readSessions(bak)[0].env!.PATH).toBe('/p');
   });
 
-  it('env가 non-object인 세션도 드롭하지 않음(non-throwing)', () => {
+  it('비객체 env는 {}로 교체하되 세션은 드롭하지 않음(자격증명 문자열 은닉 차단)', () => {
     fs.writeFileSync(primary(), JSON.stringify({
       version: 1,
       sessions: [
-        { id: 'a', env: null },
-        { id: 'b' },                    // env 없음
-        { id: 'c', env: { API_KEY: 'x', PATH: '/p' } },
+        { id: 'a', env: null },                       // null → {}
+        { id: 'b' },                                  // env 없음 → 그대로
+        { id: 'c', env: 'GITHUB_TOKEN=ghp_leak' },    // 문자열(자격증명 은닉) → {}
+        { id: 'd', env: { API_KEY: 'x', PATH: '/p' } },
       ],
     }));
     expect(() => scrubPersistedCredentials(dir)).not.toThrow();
     const sessions = readSessions(primary());
-    expect(sessions.map((s) => s.id)).toEqual(['a', 'b', 'c']); // 전부 보존
-    expect(sessions[2].env!.API_KEY).toBeUndefined();
-    expect(sessions[2].env!.PATH).toBe('/p');
+    expect(sessions.map((s) => s.id)).toEqual(['a', 'b', 'c', 'd']); // 전부 보존
+    expect(sessions[0].env).toEqual({});              // null → {}
+    expect('env' in sessions[1]).toBe(false);         // env 없던 세션은 그대로
+    expect(sessions[2].env).toEqual({});              // 자격증명 문자열 제거
+    expect(sessions[3].env!.API_KEY).toBeUndefined();
+    expect(sessions[3].env!.PATH).toBe('/p');
   });
 
   it('파일 부재·손상 JSON에서 throw하지 않고 다른 슬롯은 계속 처리', () => {
