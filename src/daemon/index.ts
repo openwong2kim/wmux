@@ -6,7 +6,8 @@ import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
-import { StateWriter } from './StateWriter';
+import { StateWriter, scrubPersistedCredentials } from './StateWriter';
+import { stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
 import { LanLinkController } from './lanlink/controller';
 import { LanLinkServer } from './lanlink/server';
@@ -1119,7 +1120,8 @@ function registerRpcHandlers(
     // recoverable trace instead of losing the brand-new pane entirely.
     triggerSnapshot();
 
-    return session;
+    // 응답에서 자격증명 값 제거(main은 pid 등만 사용). fresh env 교체 — live meta 불변.
+    return { ...session, env: stripCredentialValues(session.env) };
   });
 
   // daemon.destroySession
@@ -1288,7 +1290,10 @@ function registerRpcHandlers(
       // cwd + existence guards). Strip the meta field, then re-attach the
       // guarded transient one. Without this strip, the carry-forward would
       // bypass the D5/F7 guards (caught by x6-resume-binding-dogfood D/E).
-      const base = { ...s };
+      // 자격증명 값을 뺀 fresh env로 교체 — 데몬 토큰 보유 클라이언트가 RPC로 세션
+      // 자격증명을 읽지 못하게. s.env는 live 인메모리 meta.env와 동일 참조라 in-place
+      // 수정 금지(스폰이 깨짐); stripCredentialValues는 fresh를 반환하므로 교체만 한다.
+      const base = { ...s, env: stripCredentialValues(s.env) };
       delete base.resumeBinding;
       const withRuntime = base.supervision
         ? { ...base, supervisionRuntime: paneSupervisor.getRuntime(s.id) }
@@ -3246,6 +3251,11 @@ async function main(): Promise<void> {
   });
   paneSupervisorRef = paneSupervisor;
 
+  // PR2 레거시 마이그레이션: recovery(load) 전에 기존 sessions.json 주 파일 + 모든
+  // .bak 슬롯에서 자격증명 값을 1회 스크럽. PR1이 사용자 셸 자격증명 투과를 열며 그
+  // 값이 평문으로 영속되기 시작했으므로, 재기동 시 at-rest 자격증명을 제거한다.
+  // (이후 정상 write는 StateWriter의 toPersistable로 자동 clean 유지.)
+  scrubPersistedCredentials(wmuxDir);
   const maxRecover = Math.min(config.session.maxSessions, MAX_RECOVER_SESSIONS);
   await recoverSessions(stateWriter, sessionManager, processMonitor, maxRecover);
   markDaemonBoot('recovery-done');

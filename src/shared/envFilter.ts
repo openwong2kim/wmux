@@ -147,3 +147,29 @@ export function withheldCredentialNames(
   }
   return names;
 }
+
+/**
+ * 자격증명 *값*을 뺀 **fresh** env 사본 — 디스크/RPC 직렬화 경계에서 쓴다
+ * (sessions.json 영속, daemon.listSessions/createSession 응답). INTERNAL 키는
+ * 건드리지 않고(스폰에서 이미 처리) 자격증명 이름만 제거하며, 비자격 env(PATH·LANG·
+ * WMUX_* identity)는 보존한다.
+ *
+ * env가 없거나 객체가 아니면 빈 객체를 돌려준다 — 레거시/손상 sessions.json 스크럽이
+ * total·non-throwing이어야 세션을 잃지 않는다.
+ *
+ * **반드시 반환값으로 교체할 것.** 입력 객체를 in-place로 수정하지 않으므로, 호출부는
+ * `{ ...s, env: stripCredentialValues(s.env) }`처럼 참조를 교체해야 한다. listSessions가
+ * 넘기는 env는 live 인메모리 meta.env와 동일 참조라, in-place 삭제 시 스폰이 깨진다.
+ */
+export function stripCredentialValues(
+  env: Record<string, string> | undefined | null,
+): Record<string, string> {
+  const out: Record<string, string> = {};
+  if (!env || typeof env !== 'object') return out;
+  for (const [key, value] of Object.entries(env)) {
+    if (value === undefined) continue;
+    if (isCredentialEnvKey(key)) continue;
+    out[key] = value as string;
+  }
+  return out;
+}

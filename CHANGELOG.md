@@ -22,6 +22,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **환경변수 정책이 pane 종류에 따라 달라진다 — 사용자가 직접 연 셸은 이제 자격증명 변수를 그대로 물려받는다 (env-passthrough PR1).** 이전에는 `*_KEY`·`*_TOKEN`·`*_SECRET`·`*_PASSWORD`류 이름의 환경변수가 모든 pane에서 일괄 제거되어, 사용자가 wmux 셸에서 손수 실행한 Claude Code·MCP 서버가 `${KAD_GATEWAY_KEY}` 같은 변수를 빈 값으로 치환하고 "Missing environment variables"로 연결에 실패했다. 이제 정책은 변수 이름이 아니라 **스폰 출처(실행 컨텍스트)** 로 갈린다: 사용자가 UI로 직접 연 인터랙티브 셸 pane은 다른 터미널(tmux·Windows Terminal)처럼 OS 자격증명 변수를 투과받고(단 wmux/Electron 내부 auth는 계속 차단), wmux가 자율 스폰한 에이전트·감독 exec pane은 종전대로 자격증명을 차단한다. 분류는 fail-closed — 출처가 불명확한 스폰은 자격증명이 새는 방향이 아니라 차단되는 방향으로 떨어진다. 에이전트 pane에서 자격증명이 차단되면 어떤 변수가 제외됐는지 로컬 로그 한 줄로 남겨 "왜 없지?"를 즉시 답한다. (secret 값의 디스크 비영속화·명시적 grant 통로·Windows 레지스트리 신선 병합은 후속 PR2·PR3.)
 
+### Security
+
+- **세션 환경변수의 자격증명 값이 더 이상 디스크·RPC에 남지 않는다 (env-passthrough PR2).** PR1이 사용자 셸에 자격증명 변수를 투과시키면서, 그 값이 데몬 세션 메타를 통해 `~/.wmux/sessions.json`에 평문으로 저장되고 `daemon.listSessions` RPC로 노출되기 시작했다. 이제 데몬은 세션 상태를 디스크에 쓰거나 RPC로 반환하는 **모든 직렬화 경계**(정상 저장·30초 스냅샷·종료 시 suspend 저장·Windows 동기 종료 폴백·`daemon.listSessions`·`daemon.createSession` 응답)에서 자격증명 이름의 변수 **값**을 제거한다. 값은 자식 프로세스를 스폰하는 인메모리 환경에만 존재하고(스폰·감독 재시작은 영향 없음), 비자격 변수(`PATH`·로케일·wmux identity)는 그대로 보존된다. 부팅 시 기존 `sessions.json`과 모든 `.bak` 백업 슬롯을 1회 스크럽해 과거에 저장된 자격증명을 제거하며, 이 마이그레이션은 total·non-throwing이라 손상된 항목이 있어도 세션을 잃지 않는다. 한계: 데몬 재기동으로 복구된 pane은 재기동 후 자격증명을 다시 받지 못한다(새 pane을 열면 반영 — 명시적 grant 통로와 라이브 재해석은 PR3).
+
 ## [3.17.0] — 2026-07-06
 
 ### Added
