@@ -206,4 +206,27 @@ describe('stripCredentialValues (직렬화 경계 — 디스크/RPC)', () => {
     expect(stripCredentialValues(null)).toEqual({});
     expect(stripCredentialValues('not-an-object' as unknown as Record<string, string>)).toEqual({});
   });
+
+  it('선행 밑줄 없는 well-known 비밀도 제거 (3모델 리뷰 확정)', () => {
+    // `_PASSWORD$`/`_KEY$` 패턴에 안 걸리지만 자격증명인 exact 이름들.
+    for (const name of ['PGPASSWORD', 'MYSQL_PWD', 'SECRET_KEY_BASE', 'LDAPPASSWORD',
+      'AWS_ACCESS_KEY_ID', 'REDIS_URL', 'MONGO_URL', 'MONGODB_URI']) {
+      expect(isCredentialEnvKey(name)).toBe(true);
+    }
+    const stripped = stripCredentialValues({
+      PATH: '/p', PGPASSWORD: 'pg', SECRET_KEY_BASE: 'rails', REDIS_URL: 'redis://u:p@h',
+    });
+    expect(stripped.PATH).toBe('/p');
+    expect(stripped.PGPASSWORD).toBeUndefined();
+    expect(stripped.SECRET_KEY_BASE).toBeUndefined();
+    expect(stripped.REDIS_URL).toBeUndefined();
+  });
+
+  it('exact 추가는 유사 비자격 키를 오탐하지 않음', () => {
+    // exact 이름으로만 넓혔으므로(광역 패턴 아님), 비슷하지만 비밀이 아닌 키는 통과.
+    expect(isCredentialEnvKey('PGPASSFILE')).toBe(false);  // passfile 경로(값이 비밀 아님)
+    expect(isCredentialEnvKey('PGHOST')).toBe(false);
+    expect(isCredentialEnvKey('MYSQL_HOST')).toBe(false);
+    expect(isCredentialEnvKey('REDIS_HOST')).toBe(false);  // REDIS_URL이 아님
+  });
 });

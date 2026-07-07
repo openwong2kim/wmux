@@ -31,7 +31,12 @@ function toPersistable(state: DaemonState): DaemonState {
  * 값을 제거한다. PR1 이후 사용자 셸(passthrough)의 자격증명이 평문으로 남은 레거시
  * 파일을 정리 — recovery(load) 전에 호출해 이후 로드가 스크럽본을 읽게 한다.
  * total·non-throwing: 읽기/파싱 실패한 슬롯은 건너뛰고, 세션 목록은 절대 드롭하지 않는다.
- * rotation 없이 임시파일→rename으로 슬롯 자체를 제자리 스크럽(백업의 백업을 만들지 않음).
+ * rotation 없이 임시파일→fsync→rename으로 슬롯 자체를 제자리 스크럽(백업의 백업 없음).
+ *
+ * 범위: 주 파일 + rotation 백업(.bak~.bak.3)만. `*.premigrate.bak`(migrate)·`corrupted/`
+ * (quarantine) 사본은 대상 아님 — 현재 DAEMON_STATE_REGISTRY가 identity라 premigrate
+ * 스냅샷이 생성되지 않고, quarantine은 파싱 불가 파일만 격리하므로 오늘은 무해. 실제
+ * daemon-state 마이그레이션 스텝을 추가하면 그때 이 두 경로도 스크럽 대상에 포함해야 한다.
  */
 export function scrubPersistedCredentials(baseDir: string): void {
   const primary = path.join(baseDir, 'sessions.json');
@@ -45,17 +50,35 @@ export function scrubPersistedCredentials(baseDir: string): void {
       if (!parsed || !Array.isArray(parsed.sessions)) continue;
       let changed = false;
       for (const session of parsed.sessions) {
-        if (!session || typeof session.env !== 'object' || session.env === null) continue;
-        const before = Object.keys(session.env as Record<string, string>).length;
-        const stripped = stripCredentialValues(session.env as Record<string, string>);
+        if (!session || !('env' in session)) continue; // env 없는 세션은 그대로 보존
+        const env = session.env;
+        if (env === null || typeof env !== 'object') {
+          // 비객체 env(예: 손상/수기편집으로 문자열 "GITHUB_TOKEN=ghp...")는 자격증명을
+          // 숨길 수 있으므로 빈 객체로 교체 — skip하면 그 문자열이 그대로 남는다(Codex
+          // 리뷰). stripCredentialValues의 non-object→{} 계약과 일치.
+          session.env = {};
+          changed = true;
+          continue;
+        }
+        const before = Object.keys(env as Record<string, string>).length;
+        const stripped = stripCredentialValues(env as Record<string, string>);
         if (Object.keys(stripped).length !== before) {
           session.env = stripped;
           changed = true;
         }
       }
       if (!changed) continue;
+      // fsync 후 rename — 부팅 배치 스크럽이 여러 슬롯(주+.bak.N)을 연달아 다시 쓰는데,
+      // 플러시 없이 rename만 하면 전원 손실 시 모든 슬롯이 동시에 찢겨 load가 유효 슬롯을
+      // 못 찾는다(3모델 리뷰 F2). 슬롯당 1회 부팅 비용이라 fsync 오버헤드는 무시 가능.
       const tmp = `${file}.scrub.tmp`;
-      fs.writeFileSync(tmp, JSON.stringify(parsed), { encoding: 'utf-8', mode: 0o600 });
+      const fd = fs.openSync(tmp, 'w', 0o600);
+      try {
+        fs.writeSync(fd, JSON.stringify(parsed));
+        fs.fsyncSync(fd);
+      } finally {
+        fs.closeSync(fd);
+      }
       fs.renameSync(tmp, file);
     } catch (err) {
       // total·non-throwing — 한 슬롯 실패가 다른 슬롯이나 부팅을 막지 않는다.
