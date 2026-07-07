@@ -39,7 +39,7 @@ export default function FloatingPane() {
 
     creatingRef.current = true;
     void ipcInvoke<{ id: string }>(() =>
-      window.electronAPI.pty.create(withDefaultShell({}, defaultShell))
+      window.electronAPI.pty.create(withDefaultShell({ spawnKind: 'user-shell' }, defaultShell))
     ).then((result) => {
       if (result.ok) {
         setFloatingPanePtyId(result.data.id);

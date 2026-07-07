@@ -1,42 +1,48 @@
 /**
- * Build a "safe" copy of an environment for spawning child processes
- * (PTY shells, daemon-spawned shells, etc.).
+ * 자식 프로세스(PTY 셸, 데몬 스폰 셸 등) env를 만드는 필터.
  *
- * Strips three classes of variables:
- *   1. Build/runtime tooling internals (ELECTRON_*, VITE_*, NODE_OPTIONS,
- *      ELECTRON_RUN_AS_NODE, ORIGINAL_XDG_*) — leak Electron detection
- *      and let attackers re-enter the wmux process with custom flags.
- *   2. wmux's own auth surface (WMUX_AUTH*) — the daemon RPC token must
- *      never reach a child shell where untrusted npm scripts run.
- *   3. Common credential names — pattern-matched (`*_TOKEN`, `*_SECRET`,
- *      `*_PASSWORD`, `*_CREDENTIALS`, `*_KEY`) plus exact matches for
- *      well-known providers that don't follow the suffix convention
- *      (DATABASE_URL embeds creds, AWS_SESSION_TOKEN, etc.).
+ * env 개입은 두 클래스로 나뉜다 (실행 컨텍스트 정책, spawnKind 참조):
  *
- * The SAFE_PASSTHROUGH set carves out variables that match a sensitive
- * pattern but are known to be harmless (e.g. SSH_AUTH_SOCK is a socket
- * path, COLORTERM is a terminal capability flag).
+ *   INTERNAL — wmux/Electron/빌드 툴링 내부 변수. 사람 셸이든 에이전트든
+ *     **무조건** strip. (ELECTRON_*, VITE_*, WMUX_AUTH*, ORIGINAL_XDG_*,
+ *     NODE_OPTIONS, ELECTRON_RUN_AS_NODE) — Electron 감지 누설·RPC 토큰 유출·
+ *     커스텀 플래그로의 재진입을 막는다.
  *
- * Both PTYManager (main process) and DaemonSessionManager (daemon) call
- * into this so that hardening evolves in lockstep — historically the two
- * filter lists drifted and PTYManager was missing WMUX_AUTH stripping.
+ *   CREDENTIAL — 자격증명 이름(`*_TOKEN`/`*_SECRET`/`*_PASSWORD`/`*_CREDENTIALS`/
+ *     `*_KEY` + well-known 정확 이름). **gated(에이전트/자동화) 스폰에서만** strip;
+ *     사용자가 직접 연 셸(passthrough)에서는 투과한다 — 타 터미널과 동형.
+ *
+ * SAFE_PASSTHROUGH는 자격증명 패턴에 걸리지만 값이 아닌 소켓 경로/터미널 능력
+ * 플래그라 안전한 이름(SSH_AUTH_SOCK, COLORTERM).
+ *
+ * 두 스폰 경로(main PTYManager · daemon DaemonSessionManager)가 이 모듈을 공유해
+ * 하드닝이 lockstep으로 진화한다. 정책 선택(어느 빌더를 쓸지)은 resolveSpawnEnv가
+ * spawnKind로 결정한다.
  */
 
-const SENSITIVE_PATTERNS: ReadonlyArray<RegExp> = [
+// ── INTERNAL: 항상 strip ──────────────────────────────────────────────────
+const INTERNAL_PATTERNS: ReadonlyArray<RegExp> = [
   /^ELECTRON_/,
   /^VITE_/,
-  /^WMUX_AUTH/,         // internal auth tokens (daemon RPC)
-  /^ORIGINAL_XDG_/,     // Electron-injected XDG overrides
-  /_TOKEN$/,            // GITHUB_TOKEN, NPM_TOKEN, …
-  /_SECRET$/,           // *_CLIENT_SECRET, …
-  /_PASSWORD$/,
-  /_CREDENTIALS$/,
-  /_KEY$/,              // ANTHROPIC_API_KEY, OPENAI_API_KEY, …
+  /^WMUX_AUTH/,     // 데몬 RPC 토큰
+  /^ORIGINAL_XDG_/, // Electron 주입 XDG override
 ];
 
-const SENSITIVE_EXACT: ReadonlySet<string> = new Set([
+const INTERNAL_EXACT: ReadonlySet<string> = new Set([
   'NODE_OPTIONS',
   'ELECTRON_RUN_AS_NODE',
+]);
+
+// ── CREDENTIAL: gated 스폰에서만 strip ───────────────────────────────────
+const CREDENTIAL_PATTERNS: ReadonlyArray<RegExp> = [
+  /_TOKEN$/,        // GITHUB_TOKEN, NPM_TOKEN, …
+  /_SECRET$/,       // *_CLIENT_SECRET, …
+  /_PASSWORD$/,
+  /_CREDENTIALS$/,
+  /_KEY$/,          // ANTHROPIC_API_KEY, OPENAI_API_KEY, …
+];
+
+const CREDENTIAL_EXACT: ReadonlySet<string> = new Set([
   'AWS_SECRET_ACCESS_KEY',
   'AWS_SESSION_TOKEN',
   'ANTHROPIC_API_KEY',
@@ -45,38 +51,99 @@ const SENSITIVE_EXACT: ReadonlySet<string> = new Set([
   'GH_TOKEN',
   'NPM_TOKEN',
   'DOCKER_PASSWORD',
-  'DATABASE_URL',       // often embeds credentials
+  'DATABASE_URL',       // 종종 자격증명을 임베드
 ]);
 
 const SAFE_PASSTHROUGH: ReadonlySet<string> = new Set([
-  'SSH_AUTH_SOCK',      // SSH agent socket path — not a secret
-  'COLORTERM',          // terminal capability hint
+  'SSH_AUTH_SOCK',      // SSH agent 소켓 경로 — 비밀 아님
+  'COLORTERM',          // 터미널 능력 힌트
 ]);
 
 /**
- * Return whether a given environment variable name should be blocked
- * from inheriting into a child process. Exposed for tests.
+ * wmux/Electron/빌드 내부 변수인가 — 두 정책 모두에서 strip 대상.
+ * 매칭은 case-insensitive(키를 대문자화) — 소문자 우회를 막는다.
  */
-export function isSensitiveEnvKey(key: string): boolean {
-  if (SAFE_PASSTHROUGH.has(key)) return false;
-  if (SENSITIVE_EXACT.has(key)) return true;
-  return SENSITIVE_PATTERNS.some((re) => re.test(key));
+export function isInternalEnvKey(key: string): boolean {
+  const k = key.toUpperCase();
+  if (INTERNAL_EXACT.has(k)) return true;
+  return INTERNAL_PATTERNS.some((re) => re.test(k));
 }
 
 /**
- * Build a child-process environment from a base env (defaults to
- * process.env). Values that are undefined or whose key is sensitive are
- * dropped. The returned object is a fresh shallow copy — callers can
- * safely mutate it (e.g. inject WMUX_SOCKET_PATH).
+ * 자격증명 이름인가 — gated(에이전트/자동화) 스폰에서만 strip 대상.
+ * SAFE_PASSTHROUGH는 이름이 패턴에 걸려도 통과. case-insensitive.
  */
-export function buildSafeChildEnv(
-  baseEnv: NodeJS.ProcessEnv = globalThis.process.env,
+export function isCredentialEnvKey(key: string): boolean {
+  const k = key.toUpperCase();
+  if (SAFE_PASSTHROUGH.has(k)) return false;
+  if (CREDENTIAL_EXACT.has(k)) return true;
+  return CREDENTIAL_PATTERNS.some((re) => re.test(k));
+}
+
+/**
+ * 자식 프로세스로의 상속을 막아야 하는 키인가 (INTERNAL ∪ CREDENTIAL).
+ * gated 정책의 strip 술어이자, 하위호환 술어(기존 호출부·workspaceProfile
+ * dropSecretKeys가 이 의미에 의존). 테스트용으로 노출.
+ */
+export function isSensitiveEnvKey(key: string): boolean {
+  return isInternalEnvKey(key) || isCredentialEnvKey(key);
+}
+
+/** baseEnv에서 `drop(key)`가 참인 키와 undefined 값을 뺀 fresh 사본. */
+function buildFilteredEnv(
+  baseEnv: NodeJS.ProcessEnv,
+  drop: (key: string) => boolean,
 ): Record<string, string> {
   const out: Record<string, string> = {};
   for (const [key, value] of Object.entries(baseEnv)) {
     if (value === undefined) continue;
-    if (isSensitiveEnvKey(key)) continue;
+    if (drop(key)) continue;
     out[key] = value;
   }
   return out;
+}
+
+/**
+ * 사람이 연 인터랙티브 셸용 env: wmux/Electron 내부만 strip하고 자격증명은
+ * **투과**한다 (tmux/Windows Terminal 동형). 신고 사건 — 사용자가 자기 셸에서
+ * 손수 돌린 Claude Code/MCP가 `${KAD_GATEWAY_KEY}`를 빈 값으로 치환하던 문제 —
+ * 는 이 빌더가 자격증명을 안 지우므로 사라진다.
+ */
+export function buildInteractiveShellEnv(
+  baseEnv: NodeJS.ProcessEnv = globalThis.process.env,
+): Record<string, string> {
+  return buildFilteredEnv(baseEnv, isInternalEnvKey);
+}
+
+/**
+ * 에이전트/자동화 스폰용 env: 내부 + 자격증명을 모두 strip한다. wmux가 자율
+ * 스폰한 반신뢰 에이전트 pane 안 임의 코드로 자격증명이 ambient하게 새는 걸 막는다.
+ */
+export function buildGatedAutomationEnv(
+  baseEnv: NodeJS.ProcessEnv = globalThis.process.env,
+): Record<string, string> {
+  return buildFilteredEnv(baseEnv, isSensitiveEnvKey);
+}
+
+/**
+ * 하위호환 별칭 — 기존 호출부(resolveSpawnEnv 폴백, DaemonSessionManager
+ * process.env 폴백)가 이 이름으로 gated 동작을 기대한다. fail-closed 기본값과도
+ * 일치: 정책 미지정 시 gated로 떨어진다.
+ */
+export const buildSafeChildEnv = buildGatedAutomationEnv;
+
+/**
+ * gated 스폰에서 제거될 자격증명 **이름** 목록 (값이 아님 — 관측/진단용).
+ * INTERNAL 키는 제외한다: 사용자가 기대하지 않는 wmux 내부 변수를 "withheld
+ * 자격증명"으로 보고하면 노이즈다. "왜 없지?"를 5분 안에 끝내기 위한 신호.
+ */
+export function withheldCredentialNames(
+  baseEnv: NodeJS.ProcessEnv = globalThis.process.env,
+): string[] {
+  const names: string[] = [];
+  for (const [key, value] of Object.entries(baseEnv)) {
+    if (value === undefined) continue;
+    if (!isInternalEnvKey(key) && isCredentialEnvKey(key)) names.push(key);
+  }
+  return names;
 }

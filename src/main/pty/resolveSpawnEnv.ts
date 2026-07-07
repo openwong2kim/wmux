@@ -1,6 +1,7 @@
-import { buildSafeChildEnv } from '../../shared/envFilter';
+import { buildGatedAutomationEnv, buildInteractiveShellEnv } from '../../shared/envFilter';
 import { applyProfileEnv } from '../../shared/workspaceProfile';
 import { ENV_KEYS } from '../../shared/constants';
+import type { EnvPolicy } from '../../shared/spawnKind';
 
 /**
  * Resolve the environment for a NEW child PTY, in the single canonical order
@@ -8,8 +9,11 @@ import { ENV_KEYS } from '../../shared/constants';
  * pty.handler). Extracted as a pure function so the security-critical merge
  * order has direct regression coverage and the two callsites can't drift.
  *
- *   1. buildSafeChildEnv(baseEnv) — strip the control process's own inherited
- *      secrets / build-tooling vars from the child baseline.
+ *   1. baseline — `policy`가 결정한다 (실행 컨텍스트 정책):
+ *        'gated'(기본, fail-closed)  → buildGatedAutomationEnv: 내부 + 자격증명
+ *          strip. 에이전트/자동화 pane. 기존 동작과 동일(하위호환).
+ *        'passthrough'               → buildInteractiveShellEnv: 내부만 strip,
+ *          자격증명 투과. 사용자가 직접 연 셸 (타 터미널 동형).
  *   2. applyProfileEnv(...)       — overlay the workspace profile AFTER the
  *      denylist, so a configured profile key is applied verbatim and not
  *      re-stripped; reserved WMUX_* keys are skipped. NOTE: this is the spawn
@@ -22,6 +26,10 @@ import { ENV_KEYS } from '../../shared/constants';
  *      decides which identity vars apply (local mode also sets the socket
  *      path; daemon mode does not).
  *
+ * `policy`는 기본 'gated'라 인자를 안 주는 기존 호출부/테스트는 이전과 동일하게
+ * 동작한다(fail-closed). WMUX_* 네임스페이스 clear + identity 강제는 정책과
+ * 무관하게 항상 적용되므로, passthrough여도 상속된 WMUX 정체성은 스푸핑 불가.
+ *
  * The result is a fresh object the caller may further mutate (e.g. shell-
  * integration injection layered on top).
  */
@@ -30,8 +38,11 @@ export function resolveSpawnEnv(
   profileEnv: Record<string, string> | undefined,
   identity: Record<string, string>,
   fallbackLocale?: string,
+  policy: EnvPolicy = 'gated',
 ): Record<string, string> {
-  const env = buildSafeChildEnv(baseEnv);
+  const env = policy === 'passthrough'
+    ? buildInteractiveShellEnv(baseEnv)
+    : buildGatedAutomationEnv(baseEnv);
   // Capture the instance-isolation suffix from the SPAWNING process's own env
   // BEFORE the blanket WMUX_* strip below, and re-apply it last (like identity).
   // It is NOT an ownership claim — it only selects which instance a child joins —

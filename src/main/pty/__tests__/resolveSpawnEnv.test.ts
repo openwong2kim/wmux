@@ -132,3 +132,44 @@ describe('resolveSpawnEnv', () => {
     expect(env.LANG).toBeUndefined();
   });
 });
+
+describe('resolveSpawnEnv — execution-context policy', () => {
+  it('passthrough keeps credential-named vars (reported KAD_GATEWAY_KEY case)', () => {
+    // 사용자가 직접 연 셸: 자격증명 투과(tmux 동형). 신고 사건 해결 경로.
+    const env = resolveSpawnEnv(
+      { PATH: '/usr/bin', KAD_GATEWAY_KEY: 'secret', GITHUB_TOKEN: 'ghp', WMUX_AUTH_TOKEN: 't' },
+      undefined,
+      {},
+      undefined,
+      'passthrough',
+    );
+    expect(env.KAD_GATEWAY_KEY).toBe('secret');
+    expect(env.GITHUB_TOKEN).toBe('ghp');
+    expect(env.PATH).toBe('/usr/bin');
+    // 내부 auth는 passthrough여도 무조건 strip.
+    expect(env.WMUX_AUTH_TOKEN).toBeUndefined();
+  });
+
+  it('gated strips credential-named vars — and is the default (fail-closed)', () => {
+    const base = { PATH: '/usr/bin', KAD_GATEWAY_KEY: 'secret', GITHUB_TOKEN: 'ghp' };
+    const explicitGated = resolveSpawnEnv(base, undefined, {}, undefined, 'gated');
+    const defaultGated = resolveSpawnEnv(base, undefined, {}); // 정책 미지정 → gated
+    for (const env of [explicitGated, defaultGated]) {
+      expect(env.KAD_GATEWAY_KEY).toBeUndefined();
+      expect(env.GITHUB_TOKEN).toBeUndefined();
+      expect(env.PATH).toBe('/usr/bin');
+    }
+  });
+
+  it('passthrough still forces identity + drops stale WMUX_* (policy only swaps the credential baseline)', () => {
+    const env = resolveSpawnEnv(
+      { PATH: '/p', WMUX_WORKSPACE_ID: 'stale', API_KEY: 'k' },
+      undefined,
+      { WMUX_WORKSPACE_ID: 'real' },
+      undefined,
+      'passthrough',
+    );
+    expect(env.API_KEY).toBe('k');               // 자격증명 투과
+    expect(env.WMUX_WORKSPACE_ID).toBe('real');  // 정체성은 여전히 강제
+  });
+});

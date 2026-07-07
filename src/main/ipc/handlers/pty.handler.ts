@@ -10,6 +10,8 @@ import { IPC, ENV_KEYS } from '../../../shared/constants';
 import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';
 import { sanitizePtyText } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
+import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
+import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
 import { updateCwd } from './metadata.handler';
@@ -84,6 +86,9 @@ type PtyCreateOptions = {
   initialCommand?: string;
   exec?: string;
   supervision?: PtyCreateSupervisionInput;
+  /** 스폰 출처 (실행 컨텍스트 정책). 'user-shell'만 env 투과; exec/supervision이
+   * 있으면 스탬프와 무관하게 gated. 미지정은 fail-closed gated. */
+  spawnKind?: SpawnKind;
 };
 
 /** Clamp one runaway-guard bound to its cap; falls back to `def` when absent.
@@ -355,7 +360,26 @@ export function registerPTYHandlers(
       // daemon's WMUX_PTY_ID stamp). Forced identity, so a profile cannot
       // spoof another pane's member id.
       identity[ENV_KEYS.MEMBER_ID] = sessionId;
-      const resolvedEnv = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale());
+      // 실행 컨텍스트 정책. exec/supervision이 있으면 감독 리프(자동화)라 스탬프와
+      // 무관하게 gated; 그 외엔 'user-shell' 스탬프만 passthrough, 나머지는
+      // fail-closed gated. 정책은 baseline 빌더만 바꾼다 — WMUX_* clear·identity
+      // 강제·프로필 overlay 순서는 불변(resolveSpawnEnv).
+      const envPolicy = resolveEnvPolicy({
+        spawnKind: options?.spawnKind,
+        hasExec: execCommand !== undefined,
+        hasSupervision: supervisionPolicy !== undefined,
+      });
+      const resolvedEnv = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale(), envPolicy);
+      // 관측 floor: gated pane에서 자격증명을 withheld하면 로컬 로그 1줄.
+      if (envPolicy === 'gated') {
+        const withheld = withheldCredentialNames(globalThis.process.env);
+        if (withheld.length > 0) {
+          console.log(
+            `[env] pane ${sessionId} gated (agent/automation): withheld ${withheld.length} credential-named var(s): ` +
+            `${withheld.join(', ')} — a user-opened shell pane inherits these; set them in the workspace profile if this pane needs them.`,
+          );
+        }
+      }
 
       // Create session via daemon RPC. `env` is the FULLY-RESOLVED child env;
       // the daemon replays it verbatim (see DaemonCreateSessionParams.env).
@@ -453,8 +477,8 @@ export function registerPTYHandlers(
       // a spawn option. exec/supervision are daemon-only (handled above) and
       // must not reach ptyManager.create, so build a clean spawn-options object
       // from only the local-relevant fields instead of spreading the payload.
-      const { initialCommand, shell, cols, rows, workspaceId, surfaceId, env } = options ?? {};
-      const instance = ptyManager.create({ shell, cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd });
+      const { initialCommand, shell, cols, rows, workspaceId, surfaceId, env, spawnKind } = options ?? {};
+      const instance = ptyManager.create({ shell, cols, rows, workspaceId, surfaceId, env, cwd: effectiveCwd, spawnKind });
       ptyBridge.setupDataForwarding(instance.id);
       const actualCwd = effectiveCwd || require('os').homedir();
       updateCwd(instance.id, actualCwd);

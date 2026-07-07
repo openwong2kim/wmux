@@ -483,7 +483,7 @@ export function useKeyboard() {
           // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.
           const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: state.startupDirectory });
           void ipcInvokeRef.current<{ id: string }>(() =>
-            window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: ws.id, cwd }, state.defaultShell), ws.profile))
+            window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: ws.id, cwd, spawnKind: 'user-shell' }, state.defaultShell), ws.profile))
           ).then((result) => {
             if (result.ok) {
               store.getState().addSurface(ws.activePaneId, result.data.id, 'Terminal', '');

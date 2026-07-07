@@ -137,7 +137,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     const profile = useStore.getState().workspaces.find((w) => w.id === workspaceId)?.profile;
     console.log(`[Terminal] Creating new PTY: shell=${shell}, cwd=${cwd}, cols=${cols}, rows=${rows}, ws=${workspaceId}, surface=${surfaceId ?? '-'}`);
     void ipcInvokeRef.current<{ id: string }>(() =>
-      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ shell, cwd, cols, rows, workspaceId, surfaceId }, defaultShell), profile))
+      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ shell, cwd, cols, rows, workspaceId, surfaceId, spawnKind: 'user-shell' }, defaultShell), profile))
     ).then((result) => {
       // v2 RCA fix (adversarial review): release the latch once this create
       // settles. It guards against DOUBLE-create within one attempt, but as a

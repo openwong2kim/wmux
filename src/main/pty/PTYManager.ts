@@ -4,6 +4,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
+import { resolveEnvPolicy, type SpawnKind } from '../../shared/spawnKind';
+import { withheldCredentialNames } from '../../shared/envFilter';
 import { getShellUtf8Locale } from './shellLocale';
 import { isWindows } from '../../shared/platform';
 import { ShellDetector } from '../../shared/ShellDetector';
@@ -130,6 +132,12 @@ export class PTYManager {
     surfaceId?: string;
     /** Workspace profile env overlay (see PtyCreateOptions.env). */
     env?: Record<string, string>;
+    /**
+     * 스폰 출처 (실행 컨텍스트 정책). 로컬 모드는 exec/supervision을 지원하지
+     * 않으므로(pty.handler가 로컬 분기 전에 drop) 정책은 이 값만으로 결정된다:
+     * 'user-shell'만 env 투과, 나머지·미지정은 fail-closed로 gated.
+     */
+    spawnKind?: SpawnKind;
   }): PTYInstance {
     if (this.instances.size >= MAX_PTY_INSTANCES) {
       throw new Error('Maximum PTY instances reached');
@@ -163,7 +171,21 @@ export class PTYManager {
     // 1d: default channel member id = the pane's ptyId, symmetric with the
     // daemon-mode stamp in pty.handler (see ENV_KEYS.MEMBER_ID rationale).
     identity[ENV_KEYS.MEMBER_ID] = id;
-    const env = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale());
+    // 실행 컨텍스트 정책. 로컬 모드는 exec/supervision이 없으므로 spawnKind만으로
+    // 결정 — 'user-shell'이면 자격증명 투과, 아니면 fail-closed gated.
+    const policy = resolveEnvPolicy({ spawnKind: options?.spawnKind });
+    const env = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale(), policy);
+    // 관측 floor: gated pane에서 자격증명을 withheld하면 로컬 로그 1줄로 남긴다.
+    // 침묵이 신고 사건의 실제 원인이었다 — "왜 없지?"를 로그로 즉시 답한다.
+    if (policy === 'gated') {
+      const withheld = withheldCredentialNames(globalThis.process.env);
+      if (withheld.length > 0) {
+        console.log(
+          `[env] pane ${id} gated (agent/automation): withheld ${withheld.length} credential-named var(s): ` +
+          `${withheld.join(', ')} — a user-opened shell pane inherits these; set them in the workspace profile if this pane needs them.`,
+        );
+      }
+    }
 
     // Detect shell type and inject hook
     const shellType = this.detectShellType(shell);

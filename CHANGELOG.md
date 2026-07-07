@@ -15,6 +15,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A2A 태스크가 데몬 이벤트 로그로 내구화 (envelope PR4).** A2A 태스크 정본이 렌더러 인메모리(30분 GC, 재시작 시 전손)에서 데몬 `A2aTaskService`(append-only 로그의 `domain:'a2a'` envelope)로 이동 — 생성·상태 전이·취소가 fsync 커밋으로 로그에 도달하고, 앱 재시작 후에도 태스크가 projection replay로 복원된다. `VALID_TRANSITIONS`를 데몬측에서 강제하고(그래프 밖 전이는 정본에서 거부), 백그라운드 ClaudeWorker의 전이(working/completed/failed)도 렌더러 직행 대신 데몬을 경유하며(완료증거 동반), 렌더러 `a2aSlice`는 데몬 커밋을 재검증 없이 그대로 반영하는 캐시로 강등됐다(데몬 미가용 시엔 기존 렌더러 검증 경로로 자동 폴백 — 동작 저하 없음). 완료증거는 재검증(sanitize) 후 로그에 수용만 하며 거부 게이트는 여전히 없다(게이트 활성은 Q1-4b PR-B). 실행자 생애(executor-lifecycle) envelope는 스키마 슬롯만 예약(기록·펜싱은 §6.F). 워크스페이스를 닫으면 그 워크스페이스로 향하던 미완료 태스크가 정본(로그)에서도 실패 처리되어 재시작 후 되살아나지 않고, 완료된 태스크는 주기적으로 정리되어 무한 축적되지 않으며, 앱이 태스크 상태를 물으면 데몬 정본이 더 최신일 때 그 상태가 우선한다(재시작 직후에도 최신 상태가 stale 캐시에 가려지지 않음).
 - **이벤트 로그 마이그레이션 엔진 (envelope PR2).** 레거시 `channels.json`을 이벤트 로그 모드로 옮기는 무중단 부팅 게이트(`daemon/eventlog/migrateToEventLog`)와 manifest(`EventLogManifest` — durable 전용, 마이그레이션 완료의 원자적 표지)·projection 스냅샷 스토어(`SnapshotStore` — 최신→`.bak`→reseed→genesis 폴백 체인)를 도입. 감지 3분기(설명 불가 상태는 `quarantine/` 격리 후 재시도 — 조용히 로그 모드로 진행하지 않음), 변환 실패 시 레거시 무손상·재시도 멱등, 다운그레이드 감지 워터마크(lamport+stateHash — 구 데몬이 쓴 흔적을 내용 해시로 판별해 reseed 스냅샷 생성), 컴팩션 안전 가드(durable 확정 전 절단 금지·genesis/reseed 비절단) 포함. 아직 데몬 부팅에 배선되지 않음(배선은 후속 PR).
 
+### Changed
+
+- **환경변수 정책이 pane 종류에 따라 달라진다 — 사용자가 직접 연 셸은 이제 자격증명 변수를 그대로 물려받는다 (env-passthrough PR1).** 이전에는 `*_KEY`·`*_TOKEN`·`*_SECRET`·`*_PASSWORD`류 이름의 환경변수가 모든 pane에서 일괄 제거되어, 사용자가 wmux 셸에서 손수 실행한 Claude Code·MCP 서버가 `${KAD_GATEWAY_KEY}` 같은 변수를 빈 값으로 치환하고 "Missing environment variables"로 연결에 실패했다. 이제 정책은 변수 이름이 아니라 **스폰 출처(실행 컨텍스트)** 로 갈린다: 사용자가 UI로 직접 연 인터랙티브 셸 pane은 다른 터미널(tmux·Windows Terminal)처럼 OS 자격증명 변수를 투과받고(단 wmux/Electron 내부 auth는 계속 차단), wmux가 자율 스폰한 에이전트·감독 exec pane은 종전대로 자격증명을 차단한다. 분류는 fail-closed — 출처가 불명확한 스폰은 자격증명이 새는 방향이 아니라 차단되는 방향으로 떨어진다. 에이전트 pane에서 자격증명이 차단되면 어떤 변수가 제외됐는지 로컬 로그 한 줄로 남겨 "왜 없지?"를 즉시 답한다. (secret 값의 디스크 비영속화·명시적 grant 통로·Windows 레지스트리 신선 병합은 후속 PR2·PR3.)
+
 ## [3.17.0] — 2026-07-06
 
 ### Added

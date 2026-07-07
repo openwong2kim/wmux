@@ -189,7 +189,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.
     const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile, startupDirectory: useStore.getState().startupDirectory });
     const result = await ipcInvoke<{ id: string }>(() =>
-      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: workspace.id, cwd }, defaultShell), profile))
+      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: workspace.id, cwd, spawnKind: 'user-shell' }, defaultShell), profile))
     );
     if (result.ok) {
       addSurface(pane.id, result.data.id, 'Terminal', '');
