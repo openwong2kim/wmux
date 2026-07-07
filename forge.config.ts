@@ -125,11 +125,21 @@ async function signMacAppIfConfigured(appPath: string): Promise<void> {
 }
 
 const config: ForgeConfig = {
+  // node-pty is copied from its shipped prebuilds in postPackage; rebuilding it
+  // here only adds a local Visual Studio toolchain dependency.
+  rebuildConfig: {
+    ignoreModules: ['node-pty'],
+  },
   packagerConfig: {
     asar: {
       unpack: '**/node_modules/node-pty/**',
     },
     icon: './assets/icon',
+    ignore: (file) => {
+      if (!file) return false;
+      if (file === '/mcps' || file.startsWith('/mcps/')) return true;
+      return !file.startsWith('/.vite');
+    },
     // LICENSE + THIRD_PARTY_NOTICES ship to <exe>/resources/ so the MIT
     // "include this notice in all copies" obligation is satisfied for
     // wmux itself and every bundled npm dep. Electron's own LICENSE
