@@ -12,6 +12,7 @@ import { HumanBehavior } from '../../browser-session/HumanBehavior';
 import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
 import { BrowserCaptureManager } from '../../browser-session/BrowserCaptureManager';
 import { validateResolvedNavigationUrl } from '../../security/navigationPolicy';
+import { parseKeyPress } from './cdpKeys';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -532,32 +533,13 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.press.cdp: WebContents unavailable');
 
-    // Map key names to CDP key descriptors
-    const keyMap: Record<string, { key: string; code: string; windowsVirtualKeyCode: number; nativeVirtualKeyCode: number }> = {
-      'Enter': { key: 'Enter', code: 'Enter', windowsVirtualKeyCode: 13, nativeVirtualKeyCode: 13 },
-      'Tab': { key: 'Tab', code: 'Tab', windowsVirtualKeyCode: 9, nativeVirtualKeyCode: 9 },
-      'Escape': { key: 'Escape', code: 'Escape', windowsVirtualKeyCode: 27, nativeVirtualKeyCode: 27 },
-      'Backspace': { key: 'Backspace', code: 'Backspace', windowsVirtualKeyCode: 8, nativeVirtualKeyCode: 8 },
-      'ArrowDown': { key: 'ArrowDown', code: 'ArrowDown', windowsVirtualKeyCode: 40, nativeVirtualKeyCode: 40 },
-      'ArrowUp': { key: 'ArrowUp', code: 'ArrowUp', windowsVirtualKeyCode: 38, nativeVirtualKeyCode: 38 },
-      'ArrowLeft': { key: 'ArrowLeft', code: 'ArrowLeft', windowsVirtualKeyCode: 37, nativeVirtualKeyCode: 37 },
-      'ArrowRight': { key: 'ArrowRight', code: 'ArrowRight', windowsVirtualKeyCode: 39, nativeVirtualKeyCode: 39 },
-    };
-
-    const mapped = keyMap[key];
-    if (mapped) {
-      await wc.debugger.sendCommand('Input.dispatchKeyEvent', {
-        type: 'keyDown', ...mapped,
-      });
-      await wc.debugger.sendCommand('Input.dispatchKeyEvent', {
-        type: 'keyUp', ...mapped,
-      });
-    } else {
-      // For text characters, use char event
-      await wc.debugger.sendCommand('Input.dispatchKeyEvent', {
-        type: 'char', text: key, unmodifiedText: key,
-      });
-    }
+    // Build real keyDown/keyUp descriptors (printable chars, named keys, and
+    // modifier combos). Unlike the old `char`-only path this synthesizes DOM
+    // keydown, and rejects multi-char text with a pointer to browser.type.cdp
+    // (issue #353). parseKeyPress throwing surfaces as the RPC error.
+    const { keyDown, keyUp } = parseKeyPress(key);
+    await wc.debugger.sendCommand('Input.dispatchKeyEvent', keyDown);
+    await wc.debugger.sendCommand('Input.dispatchKeyEvent', keyUp);
 
     return { ok: true, key };
   });

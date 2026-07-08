@@ -333,4 +333,66 @@ describe('registerBrowserRpc', () => {
       expect(response.error).toContain('no webview target registered');
     }
   });
+
+  // browser.press.cdp regression coverage (#353). The old handler dispatched
+  // non-named keys as CDP type:'char', which inserts text but fires NO keydown.
+  // Assert the handler now dispatches real keyDown/keyUp descriptors.
+  function keyEventCalls(): unknown[][] {
+    return (mockWebContents.debugger.sendCommand.mock.calls as unknown[][]).filter(
+      (c) => c[0] === 'Input.dispatchKeyEvent',
+    );
+  }
+
+  it("browser.press.cdp {key:'z'} synthesizes keyDown (with text) + keyUp", async () => {
+    const router = register();
+    const response = await router.dispatch({
+      id: '12',
+      method: 'browser.press.cdp',
+      params: { key: 'z' },
+    });
+
+    expect(response.ok).toBe(true);
+    const calls = keyEventCalls();
+    expect(calls).toHaveLength(2);
+    expect(calls[0][1]).toMatchObject({
+      type: 'keyDown',
+      key: 'z',
+      code: 'KeyZ',
+      text: 'z',
+      windowsVirtualKeyCode: 90,
+    });
+    expect(calls[1][1]).toMatchObject({ type: 'keyUp', key: 'z' });
+    // keyUp must not re-insert the character.
+    expect(calls[1][1]).not.toHaveProperty('text');
+  });
+
+  it("browser.press.cdp {key:'Control+a'} sets the modifier bitmask and suppresses text", async () => {
+    const router = register();
+    const response = await router.dispatch({
+      id: '13',
+      method: 'browser.press.cdp',
+      params: { key: 'Control+a' },
+    });
+
+    expect(response.ok).toBe(true);
+    const calls = keyEventCalls();
+    expect(calls[0][1]).toMatchObject({ type: 'keyDown', key: 'a', code: 'KeyA', modifiers: 2 });
+    // Shortcut semantics: no text insertion (Control+a selects all, not types "a").
+    expect(calls[0][1]).not.toHaveProperty('text');
+  });
+
+  it("browser.press.cdp rejects multi-character text with a pointer to browser.type.cdp", async () => {
+    const router = register();
+    const response = await router.dispatch({
+      id: '14',
+      method: 'browser.press.cdp',
+      params: { key: 'abc' },
+    });
+
+    expect(response.ok).toBe(false);
+    if (!response.ok) {
+      expect(response.error).toContain('browser.type.cdp');
+    }
+    expect(keyEventCalls()).toHaveLength(0);
+  });
 });

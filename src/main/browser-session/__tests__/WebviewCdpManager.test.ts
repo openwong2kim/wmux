@@ -1,7 +1,7 @@
 import { describe, it, expect, vi, beforeEach } from 'vitest';
 import { WebviewCdpManager } from '../WebviewCdpManager';
 
-const mockDebugger = { attach: vi.fn(), detach: vi.fn() };
+const mockDebugger = { attach: vi.fn(), detach: vi.fn(), sendCommand: vi.fn(async () => ({})) };
 const mockWebContents = {
   debugger: mockDebugger,
   isDestroyed: vi.fn(() => false),
@@ -9,6 +9,7 @@ const mockWebContents = {
   getURL: vi.fn(() => 'https://example.com'),
   getTitle: vi.fn(() => 'Example Page'),
   loadURL: vi.fn(),
+  setBackgroundThrottling: vi.fn(),
 };
 
 vi.mock('electron', () => ({
@@ -45,6 +46,16 @@ describe('WebviewCdpManager', () => {
     expect(target).not.toBeNull();
     expect(target?.targetId).toBe('target-abc');
     expect(target?.wsUrl).toContain('ws://');
+  });
+
+  it('register enables focus emulation and disables background throttling (#353)', async () => {
+    await manager.register('surface-1', 42);
+    // Background surfaces (display:none guest) must behave focused for input/a11y.
+    expect(mockDebugger.sendCommand).toHaveBeenCalledWith('Emulation.setFocusEmulationEnabled', {
+      enabled: true,
+    });
+    // And keep running full-speed so background screenshots / evaluate don't stall.
+    expect(mockWebContents.setBackgroundThrottling).toHaveBeenCalledWith(false);
   });
 
   it('unregister detaches debugger and removes session', async () => {

@@ -46,6 +46,24 @@ export class WebviewCdpManager {
       }
     }
 
+    // Emulate focus so a background surface (the browser panel is rendered
+    // display:none when not foregrounded) still behaves focused for input,
+    // accessibility, and document.hasFocus(). Without this, key events dispatched
+    // into an unfocused guest can be dropped before reaching the focused node
+    // (issue #353). Best-effort — non-fatal if the domain rejects the command.
+    try {
+      await wc.debugger.sendCommand('Emulation.setFocusEmulationEnabled', { enabled: true });
+    } catch (err) {
+      console.warn(`[WebviewCdpManager] setFocusEmulationEnabled failed:`, err);
+    }
+    // Keep a background guest running full-speed: background timer/rAF throttling
+    // otherwise stalls background screenshots and evaluate-driven flows (#353).
+    try {
+      wc.setBackgroundThrottling(false);
+    } catch (err) {
+      console.warn(`[WebviewCdpManager] setBackgroundThrottling failed:`, err);
+    }
+
     let targetId = `wc-${webContentsId}`;
     let wsUrl = `ws://127.0.0.1:${this.cdpPort}/devtools/page/${targetId}`;
 
