@@ -3,7 +3,7 @@ import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { generateSnapshot, resolveRef } from '../snapshot';
-import { INTERACTIVE_SELECTOR } from '../dom-intelligence';
+import { buildDomSnapshotExpression } from '../dom-intelligence';
 import { evaluateWithGesture } from '../anti-detection';
 import { detectDangerousPatterns } from '../security';
 import { sanitizeRef } from './interaction';
@@ -252,41 +252,12 @@ export function registerInspectionTools(server: McpServer): void {
           };
         }
 
-        // Fallback: extract page structure via RPC evaluation
-        // Tags interactive elements with data-wmux-ref so interaction tools can resolve them
+        // Fallback: extract page structure via RPC evaluation. Tags interactive
+        // elements with data-wmux-ref so interaction tools can resolve them.
+        // Same expression the page-mode root-only fallthrough runs (snapshot.ts),
+        // via the shared buildDomSnapshotExpression() helper.
         const result = await sendRpc('browser.evaluate', {
-          expression: `(() => {
-            const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
-            const interactives = [...document.querySelectorAll(sel)].slice(0, 100);
-            interactives.forEach((el, i) => el.setAttribute('data-wmux-ref', String(i)));
-            const title = document.title;
-            const url = location.href;
-            const lines = ['Page: ' + title, 'URL: ' + url, ''];
-            document.querySelectorAll('h1,h2,h3').forEach(h => {
-              lines.push(h.tagName + ': ' + (h.textContent || '').trim().substring(0, 80));
-            });
-            lines.push('', 'Interactive elements (use ref number for click/fill/type):');
-            interactives.forEach((el, i) => {
-              const tag = el.tagName.toLowerCase();
-              const role = el.getAttribute('role') || '';
-              const text = (el.textContent || '').trim().substring(0, 60);
-              const label = el.getAttribute('aria-label') || '';
-              const name = el.getAttribute('name') || '';
-              const type = el.getAttribute('type') || '';
-              const placeholder = el.getAttribute('placeholder') || '';
-              const href = el.getAttribute('href') || '';
-              let desc = '  [ref=' + i + '] ' + tag;
-              if (type) desc += '[type=' + type + ']';
-              if (role) desc += '[role=' + role + ']';
-              if (name) desc += ' name="' + name + '"';
-              if (label) desc += ' "' + label + '"';
-              else if (text) desc += ' "' + text + '"';
-              if (placeholder) desc += ' placeholder="' + placeholder + '"';
-              if (href) desc += ' -> ' + href.substring(0, 60);
-              lines.push(desc);
-            });
-            return lines.join('\\n');
-          })()`,
+          expression: buildDomSnapshotExpression(),
           ...(surfaceId && { surfaceId }),
         }) as { value: string };
 

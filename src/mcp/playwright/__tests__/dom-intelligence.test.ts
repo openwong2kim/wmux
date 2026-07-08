@@ -4,6 +4,7 @@ import {
   getLocatorByRef,
   clearElementCache,
   INTERACTIVE_SELECTOR,
+  buildDomSnapshotExpression,
 } from '../dom-intelligence';
 
 describe('INTERACTIVE_SELECTOR', () => {
@@ -11,6 +12,18 @@ describe('INTERACTIVE_SELECTOR', () => {
     expect(typeof INTERACTIVE_SELECTOR).toBe('string');
     expect(INTERACTIVE_SELECTOR).toContain('button');
     expect(INTERACTIVE_SELECTOR).toContain('[contenteditable="true"]');
+  });
+});
+
+describe('buildDomSnapshotExpression', () => {
+  it('is a self-contained expression that tags data-wmux-ref off the shared selector', () => {
+    const expr = buildDomSnapshotExpression();
+    expect(typeof expr).toBe('string');
+    // Runs the shared interactive selector and 0-based data-wmux-ref tagging.
+    expect(expr).toContain(JSON.stringify(INTERACTIVE_SELECTOR));
+    expect(expr).toContain('data-wmux-ref');
+    // Clears stale tags before re-numbering so two snapshots can't share a ref (#353).
+    expect(expr).toContain("removeAttribute('data-wmux-ref')");
   });
 });
 

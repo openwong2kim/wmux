@@ -16,6 +16,61 @@ import type { JsonEvaluator } from './page-eval';
 export const INTERACTIVE_SELECTOR =
   'a[href], button, input:not([type="hidden"]), textarea, select, [role="button"], [role="link"], [role="textbox"], [role="checkbox"], [role="radio"], [role="combobox"], [role="searchbox"], [role="tab"], [contenteditable="true"]';
 
+/**
+ * DOM-based snapshot expression (single source of truth).
+ *
+ * Returns a self-contained IIFE string that, run in the page, tags every
+ * INTERACTIVE_SELECTOR match with a 0-based `data-wmux-ref` and returns a text
+ * listing (`[ref=N] tag "text"`). Two call sites share it:
+ *   - browser_snapshot's RPC fallback (inspection.ts) — no Playwright Page.
+ *   - generateSnapshot()'s root-only fallthrough (snapshot.ts) — via
+ *     page.evaluate, when the a11y tree collapses on a background surface.
+ *
+ * The listing needs no layout (selector queries work on `display:none`
+ * documents), which is exactly why it covers background surfaces where the
+ * CDP accessibility tree returns root-only.
+ *
+ * Stale-tag hygiene: prior `data-wmux-ref` attributes are removed before
+ * re-numbering from 0. Without this, a shrunk interactive set between two
+ * snapshots would leave two elements sharing one ref, and resolveRef's
+ * `.first()` data-attr fallback (snapshot.ts) could pick the wrong one.
+ */
+export function buildDomSnapshotExpression(): string {
+  return `(() => {
+    const sel = ${JSON.stringify(INTERACTIVE_SELECTOR)};
+    document.querySelectorAll('[data-wmux-ref]').forEach(el => el.removeAttribute('data-wmux-ref'));
+    const interactives = [...document.querySelectorAll(sel)].slice(0, 100);
+    interactives.forEach((el, i) => el.setAttribute('data-wmux-ref', String(i)));
+    const title = document.title;
+    const url = location.href;
+    const lines = ['Page: ' + title, 'URL: ' + url, ''];
+    document.querySelectorAll('h1,h2,h3').forEach(h => {
+      lines.push(h.tagName + ': ' + (h.textContent || '').trim().substring(0, 80));
+    });
+    lines.push('', 'Interactive elements (use ref number for click/fill/type):');
+    interactives.forEach((el, i) => {
+      const tag = el.tagName.toLowerCase();
+      const role = el.getAttribute('role') || '';
+      const text = (el.textContent || '').trim().substring(0, 60);
+      const label = el.getAttribute('aria-label') || '';
+      const name = el.getAttribute('name') || '';
+      const type = el.getAttribute('type') || '';
+      const placeholder = el.getAttribute('placeholder') || '';
+      const href = el.getAttribute('href') || '';
+      let desc = '  [ref=' + i + '] ' + tag;
+      if (type) desc += '[type=' + type + ']';
+      if (role) desc += '[role=' + role + ']';
+      if (name) desc += ' name="' + name + '"';
+      if (label) desc += ' "' + label + '"';
+      else if (text) desc += ' "' + text + '"';
+      if (placeholder) desc += ' placeholder="' + placeholder + '"';
+      if (href) desc += ' -> ' + href.substring(0, 60);
+      lines.push(desc);
+    });
+    return lines.join('\\n');
+  })()`;
+}
+
 // ---------------------------------------------------------------------------
 // Types
 // ---------------------------------------------------------------------------
