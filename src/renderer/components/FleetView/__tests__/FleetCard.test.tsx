@@ -14,8 +14,9 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
-import FleetCard from '../FleetCard';
+import FleetCard, { FleetCardMissionLine } from '../FleetCard';
 import type { FleetPane } from '../../../stores/selectors/fleet';
+import type { WorkTask } from '../../../../shared/workTask';
 
 const noop = () => undefined;
 
@@ -112,5 +113,40 @@ describe('FleetCard — X8 supervision chip', () => {
 
   it('renders no supervision chip when the pane is unsupervised', () => {
     expect(render({ card: card() })).not.toContain('data-fleet-supervision');
+  });
+});
+
+describe('FleetCard — 사이클 C mission line', () => {
+  function mission(over: Partial<WorkTask> & Pick<WorkTask, 'id' | 'title' | 'status'>): WorkTask {
+    const ref = { principalId: 'p', verifiedWorkspaceId: 'parent-a' };
+    return {
+      missionChannelId: `chan-${over.id}`,
+      createdAt: 0,
+      createdBy: ref,
+      owner: ref,
+      ...over,
+    } as WorkTask;
+  }
+  const renderLine = (m: WorkTask | undefined): string =>
+    renderToStaticMarkup(createElement(FleetCardMissionLine, { mission: m }));
+
+  it('renders nothing when the card has no matching mission', () => {
+    expect(renderLine(undefined)).toBe('');
+    // 미션 캐시가 비어 있으면(생성 시점) 카드 본체에도 미션 라인이 없다.
+    expect(render({ card: card() })).not.toContain('data-fleet-mission');
+  });
+
+  it('shows an open mission title + status', () => {
+    const html = renderLine(mission({ id: 'w1', title: 'Refactor auth', status: 'open' }));
+    expect(html).toContain('data-fleet-mission');
+    expect(html).toContain('data-mission-status="open"');
+    expect(html).toContain('Refactor auth');
+    expect(html).not.toContain('line-through');
+  });
+
+  it('strikes through a closed mission', () => {
+    const html = renderLine(mission({ id: 'w2', title: 'Add tests', status: 'closed' }));
+    expect(html).toContain('data-mission-status="closed"');
+    expect(html).toContain('line-through');
   });
 });

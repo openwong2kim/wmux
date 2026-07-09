@@ -1,7 +1,9 @@
 import { memo } from 'react';
 import type { FleetPane } from '../../stores/selectors/fleet';
+import type { WorkTask } from '../../../shared/workTask';
 import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { useT } from '../../hooks/useT';
+import { useStore } from '../../stores';
 
 // Compact, scan-friendly cwd: keep the last two path segments. Mirrors the
 // sidebar's shortenPath so the cockpit reads the same as the workspace rows.
@@ -24,6 +26,31 @@ interface FleetCardProps {
 }
 
 /**
+ * 사이클 C — fan-out 미션 라인(순수 prop-구동, 테스트 가능). 매칭 미션이 없으면
+ * null(기존 카드 확장 — 신규 UI 표면 아님). status로 색·취소선을 인코딩한다.
+ */
+export function FleetCardMissionLine({ mission }: { mission: WorkTask | undefined }): React.ReactElement | null {
+  if (!mission) return null;
+  const isOpen = mission.status === 'open';
+  return (
+    <div
+      className="flex items-center gap-1.5 min-w-0 text-caption font-mono"
+      data-fleet-mission
+      data-mission-status={mission.status}
+      title={`Mission: ${mission.title} (${mission.status})`}
+    >
+      <span
+        className="w-1.5 h-1.5 rounded-full flex-shrink-0"
+        style={{ backgroundColor: isOpen ? 'var(--accent-green)' : 'var(--text-muted)' }}
+      />
+      <span className={`truncate ${isOpen ? 'text-[var(--text-sub)]' : 'text-[var(--text-muted)] line-through'}`}>
+        {mission.title}
+      </span>
+    </div>
+  );
+}
+
+/**
  * One agent in the Fleet View grid. Status badge reuses AGENT_STATUS_ICON so the
  * cockpit stays in lockstep with the sidebar dots. awaiting_input — the
  * unattended-loop money state — gets a yellow border + "needs your input"
@@ -32,6 +59,11 @@ interface FleetCardProps {
 function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
   const t = useT();
   const icon = AGENT_STATUS_ICON[card.agentStatus];
+  // 사이클 C — 이 카드의 워크스페이스가 fan-out 태스크의 전용 워크스페이스
+  // (paneGroupId)면 미션 title·status를 부가 표시한다. 좁은 셀렉터(자기
+  // paneGroupId 항목만)라 다른 미션 변경엔 리렌더되지 않고, 매칭이 없으면
+  // undefined(신규 UI 표면 없음 — 기존 카드 확장).
+  const mission = useStore((s) => s.missionByPaneGroup[card.workspaceId]);
   const isAwaitingInput = card.agentStatus === 'awaiting_input';
   const isIdle = card.agentStatus === 'idle';
   // P2: a user rename wins so the cockpit reflects the same name as the composer
@@ -116,6 +148,10 @@ function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
           </>
         )}
       </div>
+
+      {/* 사이클 C — 미션 라인(순수 prop-구동 서브컴포넌트). 이 카드가 fan-out
+          태스크의 워크스페이스면 title + status를 부가 표시(매칭 없으면 null). */}
+      <FleetCardMissionLine mission={mission} />
 
       {/* Affordance row — only when there is something worth a third line. */}
       {isAwaitingInput ? (
