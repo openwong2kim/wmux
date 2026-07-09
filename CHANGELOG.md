@@ -9,6 +9,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Operators can now join private agent-made channels.** The channels panel grows a collapsed discovery section listing every channel on the daemon — including private rooms agents created without inviting the human, and archived rooms for audit visibility — with a one-click join. Joining seats the operator as a regular member with full history, and appends a server-published, viewpoint-neutral system marker ("Operator joined this channel") to the channel as an audit row; the marker consumes a sequence number but owes no member an unread, so agents are not nudged by it. The join surface is strictly human-side: the RPC methods are unreachable from agent transports (pipe router unregistered, first-party MCP exclusion), pinned by boundary tests.
+
 - **Fan-out missions are now visible in the sidebar and fleet panel.** Workspaces created by a J1 fan-out now show up under a "Missions" group at the top of the sidebar (title, open/closed status, and a link into the mission's channel) — the group only appears when a workspace has fanned out, so ordinary workspaces are unaffected. The fleet panel's cards also grow a mission line when they belong to a fan-out task. The existing worktree badge (⊕) is untouched — it marks the low-level "this is a git worktree" fact, while the new Missions section marks the higher-level "this is a fan-out task" fact, and a workspace can carry both. Mission data is read-only and pulled (mount + workspace-set changes + a 15s background poll for status drift + an immediate refetch right after a fan-out completes), since the daemon doesn't push mission updates.
 
 ### Changed
