@@ -704,11 +704,15 @@ export function useNotificationListener() {
                   void (async () => {
                     const api = window.electronAPI.workTask;
                     if (!api) return;
-                    const res = await api.refire({ ptyId, worktreePath: worktreePath as string, initialCommand: initialCommand as string });
-                    if (res.ok) {
-                      useStore.getState().pushToast({ level: 'info', message: `태스크 "${entry.title}": 프롬프트를 재발사했습니다.` });
-                    } else {
-                      useStore.getState().pushToast({ level: 'error', message: `재발사 불가: ${res.error}` });
+                    try {
+                      const res = await api.refire({ ptyId, worktreePath: worktreePath as string, initialCommand: initialCommand as string });
+                      if (res.ok) {
+                        useStore.getState().pushToast({ level: 'info', message: `태스크 "${entry.title}": 프롬프트를 재발사했습니다.` });
+                      } else {
+                        useStore.getState().pushToast({ level: 'error', message: `재발사 불가: ${res.error}` });
+                      }
+                    } catch (e) {
+                      useStore.getState().pushToast({ level: 'error', message: `재발사 불가: ${e instanceof Error ? e.message : String(e)}` });
                     }
                   })();
                 },

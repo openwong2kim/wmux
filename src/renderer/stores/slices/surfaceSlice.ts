@@ -149,9 +149,14 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane) return;
-    // 같은 태스크 diff가 이미 열려 있으면 그 탭으로 전환.
+    // 같은 태스크 diff가 이미 열려 있으면 그 탭으로 전환. F1 backfill: J3 이전에
+    // 만들어진 서피스는 diffOwnerWorkspaceId가 없다 — 재사용 시 이번에 전달된
+    // owner를 채워 owner 스코프 RPC(close/PR/meta)가 자식 ws로 폴백하지 않게 한다.
     const existing = pane.surfaces.find((s) => s.surfaceType === 'diff' && s.diffTaskId === taskId);
     if (existing) {
+      if (ownerWorkspaceId && !existing.diffOwnerWorkspaceId) {
+        existing.diffOwnerWorkspaceId = ownerWorkspaceId;
+      }
       pane.activeSurfaceId = existing.id;
       return;
     }

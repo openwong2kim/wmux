@@ -341,6 +341,9 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
     try {
       const res = await api.workTask.close(taskId, verifiedWorkspaceId);
       if (res.ok) {
+        // F11과 정합: close가 커밋됐으니 로컬 meta도 closed로 — PR/닫기 버튼이
+        // 제거된 worktree를 상대로 다시 눌리지 않게 즉시 숨긴다.
+        setMeta((m) => (m ? { ...m, status: 'closed' } : m));
         pushToast({
           level: res.archivePending ? 'warn' : 'info',
           message: res.unmaterialized

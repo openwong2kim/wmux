@@ -189,9 +189,9 @@ export class FanOutService {
     // 전체를 선검증한다 — 부적격이 하나라도 있으면 mission.start 전에 N개 전부 거부해
     // "부적격이면 태스크 생성 0" 계약을 이행한다. 실 taskId는 아직 없으므로 인덱스별
     // 자리표시자로 slug/경로/branch를 파생·검증한다.
-    for (let k = 0; k < n; k++) {
+    for (const [k, preflightTitle] of titles.entries()) {
       const placeholder = `wtask-preflight-${String(k).padStart(8, '0')}`;
-      const pf = await this.worktrees.preflight(req.repoPath, titles[k]!, placeholder, {
+      const pf = await this.worktrees.preflight(req.repoPath, preflightTitle, placeholder, {
         checkBranchConflict: true,
       });
       if (!pf.ok) {
@@ -201,8 +201,7 @@ export class FanOutService {
 
     // ── 태스크 순차 처리(직렬 큐가 이미 강제하지만, 스폰 부하도 직렬로) ──
     const tasks: FanOutTaskResult[] = [];
-    for (let k = 0; k < n; k++) {
-      const title = titles[k]!;
+    for (const [k, title] of titles.entries()) {
       const missionIdemKey = `${req.idempotencyKey}-${k}`;
       const r = await this.spawnOne({
         index: k,
@@ -257,13 +256,12 @@ export class FanOutService {
 
     // ② worktree 생성(전용 루트·직렬 큐). 프리플라이트를 태스크별 taskId로 재실행해
     //    실 slug·경로를 확정한다(bare/submodule/LFS는 이미 ⓪에서 걸렸으니 재확인은 저렴).
-    let plan: TaskWorktreePlan;
     const pf = await this.worktrees.preflight(ctx.repoPath, ctx.title, taskId);
     if (!pf.ok) {
       await this.compensate(taskId, ctx.verifiedWorkspaceId);
       return { ...base, error: `worktree preflight failed: ${pf.error}` };
     }
-    plan = pf.plan;
+    const plan: TaskWorktreePlan = pf.plan;
     const created = await this.worktrees.createWorktree(plan);
     if (!created.ok) {
       await this.compensate(taskId, ctx.verifiedWorkspaceId);

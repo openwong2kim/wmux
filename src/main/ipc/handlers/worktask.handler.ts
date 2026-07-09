@@ -214,10 +214,12 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
   };
 }
 
-/** F7 — worktreePath 정규화 후 전용 루트({wmux home}/worktrees) 하위 여부. */
+/** F7 — worktreePath 정규화 후 전용 루트({wmux home}/worktrees) 하위 여부.
+ *  path.resolve로 `..`를 먼저 붕괴시킨다 — normalizeWorktreePath는 구분자/대소문자만
+ *  다루므로 그것만으로는 `{root}/worktrees/../../etc`가 prefix 검사를 통과한다. */
 function isUnderWorktreeRoot(worktreePath: string): boolean {
-  const root = normalizeWorktreePath(path.join(getWmuxHomeDir(), 'worktrees'));
-  const p = normalizeWorktreePath(worktreePath);
+  const root = normalizeWorktreePath(path.resolve(getWmuxHomeDir(), 'worktrees'));
+  const p = normalizeWorktreePath(path.resolve(worktreePath));
   return p === root || p.startsWith(root + '/');
 }
 

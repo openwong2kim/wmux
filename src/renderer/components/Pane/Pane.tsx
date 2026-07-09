@@ -686,7 +686,7 @@ function SplitSurfaceView({
             taskId={surface.diffTaskId || ''}
             isActive={surface.id === activeSurfaceId}
             surfaceId={surface.id}
-            verifiedWorkspaceId={workspaceId}
+            verifiedWorkspaceId={surface.diffOwnerWorkspaceId || workspaceId}
           />
         ) : (
           <EditorPanel

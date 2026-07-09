@@ -142,6 +142,22 @@ describe('worktask:refire (§3·F2 — 원래 initialCommand 재전송)', () => 
     const res = (await call(IPC.WORKTASK_REFIRE, { ptyId: 'p' })) as { ok: boolean };
     expect(res.ok).toBe(false);
   });
+
+  it('F7 — `..` 트래버설로 루트를 탈출하는 worktreePath는 거부(prefix 검사 우회 차단)', async () => {
+    daemon = makeDaemon([]);
+    dispose = registerWorktaskHandlers(() => daemon.client);
+    // 문자열 prefix로는 루트 하위처럼 보이지만 resolve하면 밖으로 나가는 경로.
+    // join()은 `..`를 미리 접으므로 원시 문자열로 구성해야 우회가 재현된다.
+    const traversal = `${join(base, 'worktrees')}/../../escaped`;
+    mkdirSync(join(base, '..', 'escaped'), { recursive: true });
+    const res = (await call(IPC.WORKTASK_REFIRE, { ptyId: 'p', worktreePath: traversal, initialCommand: 'claude x' })) as {
+      ok: boolean;
+      error?: string;
+    };
+    expect(res.ok).toBe(false);
+    expect(res.error).toContain('전용 루트');
+    expect(daemon.writes).toHaveLength(0);
+  });
 });
 
 describe('task:close owner 스코프(F1 E2E — 자식 실패·owner 성공)', () => {
