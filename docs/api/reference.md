@@ -7,7 +7,7 @@
 
 # wmux API Reference (generated)
 
-> **Generated from wmux v3.18.0 sources.** This file is produced by
+> **Generated from wmux v3.19.0 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
