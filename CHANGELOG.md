@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Fan-out missions are now visible in the sidebar and fleet panel.** Workspaces created by a J1 fan-out now show up under a "Missions" group at the top of the sidebar (title, open/closed status, and a link into the mission's channel) — the group only appears when a workspace has fanned out, so ordinary workspaces are unaffected. The fleet panel's cards also grow a mission line when they belong to a fan-out task. The existing worktree badge (⊕) is untouched — it marks the low-level "this is a git worktree" fact, while the new Missions section marks the higher-level "this is a fan-out task" fact, and a workspace can carry both. Mission data is read-only and pulled (mount + workspace-set changes + a 15s background poll for status drift + an immediate refetch right after a fan-out completes), since the daemon doesn't push mission updates.
+
 ### Changed
 
 - **Fleet view is now always-on chrome instead of a full-screen modal.** `Ctrl+Shift+A` still toggles it, but it now mounts as a fixed-width panel alongside the workspace sidebar and channel dock (mirroring the channel dock's existing flex-sibling layout) rather than a `fixed` overlay with a backdrop — other panes stay visible and interactive while it's open, and closing it no longer drops keyboard focus into `<body>`: the element that had focus when it opened is restored. The fleet/approvals/remote tabs, keyboard row-navigation, and approve/deny shortcuts are unchanged; the card grid narrows to fit the panel's width instead of a full-screen layout. Two focus bugs found in review were fixed before this landed: opening the panel now lands real DOM focus on the active card/row (not just the panel container, which used to leave keyboard users unable to reach any card when only one was present), and row shortcuts (Enter=approve, Backspace/Delete=deny) now only fire when the option row itself is focused — previously an auto-approve checkbox could steal focus and cause those keys to mis-fire as an approval/denial.
