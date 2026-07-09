@@ -187,7 +187,7 @@ export function ChannelMembersView({
                   data-channel-member-row
                   data-self={self ? 'true' : undefined}
                   data-liveness={liveness}
-                  className={`group flex items-center gap-2 px-3 py-1 text-[11px] font-mono ${liveness === 'stale' ? 'opacity-60' : ''}`}
+                  className={`group flex items-center gap-2 px-3 py-1 text-caption font-mono ${liveness === 'stale' ? 'opacity-60' : ''}`}
                 >
                   {liveness && (
                     <span
@@ -266,7 +266,7 @@ export function ChannelMembersView({
                     type="button"
                     data-channel-pane-add
                     onClick={() => onJoinPane(p)}
-                    className={`w-full flex items-center gap-1.5 px-3 py-1 text-left text-[11px] font-mono text-[var(--text-sub)] hover:bg-[var(--bg-overlay)] transition-colors ${FOCUS_RING}`}
+                    className={`w-full flex items-center gap-1.5 px-3 py-1 text-left text-caption font-mono text-[var(--text-sub)] hover:bg-[var(--bg-overlay)] transition-colors ${FOCUS_RING}`}
                     {...tokenAttrs('textSub', 'text')}
                   >
                     <span className="text-[var(--accent-blue)]" aria-hidden="true">+</span>
@@ -292,7 +292,7 @@ export function ChannelMembersView({
                     type="button"
                     data-channel-member-add
                     onClick={() => onJoin(w.id)}
-                    className={`w-full flex items-center gap-1.5 px-3 py-1 text-left text-[11px] font-mono text-[var(--text-sub)] hover:bg-[var(--bg-overlay)] transition-colors ${FOCUS_RING}`}
+                    className={`w-full flex items-center gap-1.5 px-3 py-1 text-left text-caption font-mono text-[var(--text-sub)] hover:bg-[var(--bg-overlay)] transition-colors ${FOCUS_RING}`}
                     {...tokenAttrs('textSub', 'text')}
                   >
                     <span className="text-[var(--accent-blue)]" aria-hidden="true">+</span>

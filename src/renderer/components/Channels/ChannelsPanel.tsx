@@ -277,7 +277,7 @@ function CreateChannelModal({
             type="text"
             autoFocus
             data-create-channel-name
-            className={`bg-[var(--bg-base)] text-[var(--text-main)] text-[11px] px-2 py-1 rounded border outline-none ${FOCUS_RING} ${
+            className={`bg-[var(--bg-base)] text-[var(--text-main)] text-caption px-2 py-1 rounded border outline-none ${FOCUS_RING} ${
               showInlineError
                 ? 'border-[var(--accent-red)]'
                 : 'border-[var(--bg-surface)]'
@@ -322,7 +322,7 @@ function CreateChannelModal({
         <div className="flex items-center justify-end gap-2 pt-1">
           <button
             type="button"
-            className={`px-2 py-0.5 text-[11px] rounded text-[var(--text-subtle)] hover:bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+            className={`px-2 py-0.5 text-caption rounded text-[var(--text-subtle)] hover:bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
             onClick={onClose}
           >
             Cancel
@@ -330,7 +330,7 @@ function CreateChannelModal({
           <button
             type="submit"
             data-create-channel-submit
-            className={`px-2 py-0.5 text-[11px] rounded bg-[var(--accent-green)] text-[var(--bg-base)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed ${FOCUS_RING}`}
+            className={`px-2 py-0.5 text-caption rounded bg-[var(--accent-green)] text-[var(--bg-base)] hover:opacity-90 transition-opacity disabled:opacity-50 disabled:cursor-not-allowed ${FOCUS_RING}`}
             disabled={!field.valid || creating}
           >
             {creating ? 'Creating…' : 'Create'}
@@ -613,7 +613,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                     >
                       <button
                         type="button"
-                        className={`flex-1 min-w-0 text-left truncate text-[11px] font-mono text-[var(--text-subtle)] hover:text-[var(--text-main)] transition-colors ${FOCUS_RING}`}
+                        className={`flex-1 min-w-0 text-left truncate text-caption font-mono text-[var(--text-subtle)] hover:text-[var(--text-main)] transition-colors ${FOCUS_RING}`}
                         onClick={() => onSelect(ch.id)}
                         title={`#${ch.name}`}
                       >

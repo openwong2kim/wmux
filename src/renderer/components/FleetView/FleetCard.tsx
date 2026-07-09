@@ -87,7 +87,7 @@ function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
           className={`w-2 h-2 rounded-full flex-shrink-0 ${icon.glowClass}`}
           style={{ backgroundColor: icon.dotVar }}
         />
-        <span className="flex-1 min-w-0 truncate text-[13px] font-medium text-[var(--text-main)]">
+        <span className="flex-1 min-w-0 truncate text-body font-medium text-[var(--text-main)]">
           {displayName}
         </span>
         {supervision && (
@@ -107,7 +107,7 @@ function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
       </div>
 
       {/* Context line: workspace · cwd */}
-      <div className="flex items-center gap-1.5 min-w-0 text-[11px] font-mono text-[var(--text-muted)]">
+      <div className="flex items-center gap-1.5 min-w-0 text-caption font-mono text-[var(--text-muted)]">
         <span className="truncate max-w-[48%]" title={card.workspaceName}>{card.workspaceName}</span>
         {card.cwd && (
           <>
@@ -119,11 +119,11 @@ function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
 
       {/* Affordance row — only when there is something worth a third line. */}
       {isAwaitingInput ? (
-        <div className="text-[11px] font-medium" style={{ color: 'var(--accent-yellow)' }}>
+        <div className="text-caption font-medium" style={{ color: 'var(--accent-yellow)' }}>
           ⏸ {t('fleet.needsYourInput')}
         </div>
       ) : card.surfaceType !== 'terminal' ? (
-        <div className="text-[11px] font-mono text-[var(--text-subtle)] capitalize">
+        <div className="text-caption font-mono text-[var(--text-subtle)] capitalize">
           {card.surfaceType}
         </div>
       ) : null}
@@ -137,7 +137,7 @@ function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
       {!isAwaitingInput && activity && (
         <div
           data-fleet-activity
-          className="block truncate font-mono text-[11px] leading-tight"
+          className="block truncate font-mono text-caption leading-tight"
           style={{ color: 'var(--text-subtle)' }}
           title={activity}
         >

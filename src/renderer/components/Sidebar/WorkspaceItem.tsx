@@ -402,7 +402,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           {editing ? (
             <input
               ref={inputRef}
-              className="w-full bg-[var(--bg-base)] text-[var(--text-main)] text-[11px] font-mono px-1 py-0 rounded border border-[var(--text-muted)] outline-none"
+              className="w-full bg-[var(--bg-base)] text-[var(--text-main)] text-caption font-mono px-1 py-0 rounded border border-[var(--text-muted)] outline-none"
               value={editName}
               onChange={(e) => setEditName(e.target.value)}
               onBlur={commitRename}
@@ -415,7 +415,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           ) : (
             <>
               <div className="flex items-center gap-1">
-                <span className="text-[11px] font-mono truncate">{workspace.name}</span>
+                <span className="text-caption font-mono truncate">{workspace.name}</span>
                 {hasProfile && (
                   <span
                     className="text-[8px] leading-none flex-shrink-0 text-[var(--accent-blue)]"
@@ -566,7 +566,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     return (
                       <div key={s.id} className="flex items-center gap-2 px-3 py-1 text-xs">
                         <span className="font-medium text-[var(--accent-blue)] truncate max-w-[110px] shrink-0" title={label}>{label}</span>
-                        <span className="text-[var(--text-subtle)] truncate flex-1 font-mono text-[11px]" title={path}>{path}</span>
+                        <span className="text-[var(--text-subtle)] truncate flex-1 font-mono text-caption" title={path}>{path}</span>
                         <button
                           className="text-[var(--text-subtle)] hover:text-[var(--accent-blue)] shrink-0 transition-colors disabled:opacity-30 disabled:hover:text-[var(--text-subtle)]"
                           disabled={!s.cwd}
@@ -605,20 +605,20 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             const count = collectTerminalSurfaces(workspace.rootPane).length;
             if (count === 0) return null;
             return (
-              <div className="px-3 pb-2 text-[11px] text-[var(--text-muted)]">
+              <div className="px-3 pb-2 text-caption text-[var(--text-muted)]">
                 {t('workspace.closeConfirmDetail', { count })}
               </div>
             );
           })()}
           <div className="flex justify-end gap-2 px-3 pt-1">
             <button
-              className="px-2 py-0.5 text-[11px] rounded transition-colors text-[var(--text-subtle)] hover:bg-[var(--bg-overlay)]"
+              className="px-2 py-0.5 text-caption rounded transition-colors text-[var(--text-subtle)] hover:bg-[var(--bg-overlay)]"
               onClick={() => setCloseConfirmPos(null)}
             >
               {t('workspace.closeCancel')}
             </button>
             <button
-              className="px-2 py-0.5 text-[11px] rounded transition-colors text-[var(--accent-red)] hover:bg-[var(--bg-overlay)]"
+              className="px-2 py-0.5 text-caption rounded transition-colors text-[var(--accent-red)] hover:bg-[var(--bg-overlay)]"
               onClick={() => { setCloseConfirmPos(null); onClose(workspaceId); }}
             >
               {t('workspace.closeConfirmYes')}

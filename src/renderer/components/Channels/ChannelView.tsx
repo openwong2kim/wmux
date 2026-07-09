@@ -231,7 +231,7 @@ export function renderMessageBody(
       <pre
         key={`blk${idx}`}
         data-channel-code-block
-        className="my-1 px-2 py-1 rounded bg-[var(--bg-surface)] overflow-x-auto text-[11px] whitespace-pre"
+        className="my-1 px-2 py-1 rounded bg-[var(--bg-surface)] overflow-x-auto text-caption whitespace-pre"
         {...tokenAttrs('bgSurface', 'bg')}
       >
         <code>{s.content}</code>
@@ -364,7 +364,7 @@ export function ChannelViewContent({
         {...tokenAttrs('bgSurface', 'border')}
       >
         <div className="flex items-center gap-2 min-w-0">
-          <span className="text-[var(--text-muted)] font-mono text-[11px]" aria-hidden="true">#</span>
+          <span className="text-[var(--text-muted)] font-mono text-caption" aria-hidden="true">#</span>
           <span className="text-[var(--text-main)] font-mono text-[12px] truncate" {...tokenAttrs('textMain', 'text')}>
             {channel.name}
           </span>
@@ -397,7 +397,7 @@ export function ChannelViewContent({
             data-channel-search-toggle
             {...tokenAttrs('textSub', 'text')}
           >
-            <span aria-hidden="true" className="text-[11px]">🔍</span>
+            <span aria-hidden="true" className="text-caption">🔍</span>
           </button>
           {membersSlot}
           {onArchive && channel.status !== 'archived' && (
@@ -472,7 +472,7 @@ export function ChannelViewContent({
             onChange={(e) => setQuery(e.target.value)}
             placeholder={t('channels.searchPlaceholder') || 'Search messages…'}
             aria-label={t('channels.searchPlaceholder') || 'Search messages'}
-            className={`w-full bg-[var(--bg-base)] text-[var(--text-main)] text-[11px] font-mono px-2 py-1 rounded border border-[var(--bg-surface)] outline-none ${FOCUS_RING}`}
+            className={`w-full bg-[var(--bg-base)] text-[var(--text-main)] text-caption font-mono px-2 py-1 rounded border border-[var(--bg-surface)] outline-none ${FOCUS_RING}`}
             {...tokenAttrs('bgBase', 'bg')}
           />
         </div>
@@ -488,7 +488,7 @@ export function ChannelViewContent({
           matched !== null ? (
             <div
               data-channel-search-empty
-              className="text-[11px] font-mono text-[var(--text-muted)] text-center py-8"
+              className="text-caption font-mono text-[var(--text-muted)] text-center py-8"
               {...tokenAttrs('textMuted', 'text')}
             >
               {t('channels.searchEmpty') || 'No messages match your search.'}
@@ -496,7 +496,7 @@ export function ChannelViewContent({
           ) : (
             <div
               data-channel-view-empty
-              className="text-[11px] font-mono text-[var(--text-muted)] text-center py-8"
+              className="text-caption font-mono text-[var(--text-muted)] text-center py-8"
               {...tokenAttrs('textMuted', 'text')}
             >
               {t('channels.emptyMessages') || 'No messages yet — be the first to post.'}
@@ -552,7 +552,7 @@ export function ChannelViewContent({
                     }}
                   />
                   <span
-                    className="text-[11px] font-mono font-bold text-[var(--text-main)]"
+                    className="text-caption font-mono font-bold text-[var(--text-main)]"
                     data-channel-message-author
                     {...tokenAttrs('textMain', 'text')}
                   >

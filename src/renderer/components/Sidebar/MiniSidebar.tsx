@@ -219,7 +219,7 @@ export default function MiniSidebar() {
 
         {/* Expand sidebar button — same position as collapse button in full sidebar */}
         <button
-          className={`w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 font-mono text-[11px] ${FOCUS_RING}`}
+          className={`w-8 h-8 rounded-md flex items-center justify-center text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 font-mono text-caption ${FOCUS_RING}`}
           onClick={toggleSidebar}
           title={t('sidebar.expandTooltip')}
           aria-label={t('sidebar.expandTooltip')}
