@@ -232,6 +232,24 @@ export function useRpcBridge(): void {
         window.electronAPI.rpc.mutateChannelLocal(method, params) as Promise<RpcResult>,
     };
 
+    // ── In-renderer entry point for workTaskSlice / useMissionsPolling ────
+    // Mission (WorkTask) reads for the sidebar "Missions" section + FleetCard
+    // mission line. `task.mission.list` is owner-scoped (the daemon returns
+    // only tasks whose owner == the passed workspace), so the parent workspace
+    // that fanned out queries its own children. Read-only, same `rpc.invoke`
+    // plumbing as `__wmuxEventsPoll` — a no-senderPtyId renderer read keeps its
+    // caller-supplied verifiedWorkspaceId (process-boundary trust; see the
+    // header of src/main/pipe/handlers/a2a.channel.rpc.ts). No mission mutation
+    // ever rides this bridge (materialization is FanOutService's internal path).
+    (window as unknown as {
+      __wmuxMissionRpc: {
+        list: (params: { verifiedWorkspaceId: string }) => Promise<RpcResult>;
+      };
+    }).__wmuxMissionRpc = {
+      list: (params) =>
+        window.electronAPI.rpc.invoke('task.mission.list', params) as Promise<RpcResult>,
+    };
+
     // A2A task garbage collection timer — prune terminal-state tasks every 5 min
     const gcTimer = setInterval(() => {
       useStore.getState().gcTerminalTasks();
@@ -243,6 +261,7 @@ export function useRpcBridge(): void {
       delete (window as unknown as { __wmuxRunPaneSearch?: unknown }).__wmuxRunPaneSearch;
       delete (window as unknown as { __wmuxEventsPoll?: unknown }).__wmuxEventsPoll;
       delete (window as unknown as { __wmuxChannelsRpc?: unknown }).__wmuxChannelsRpc;
+      delete (window as unknown as { __wmuxMissionRpc?: unknown }).__wmuxMissionRpc;
     };
   }, []);
 }

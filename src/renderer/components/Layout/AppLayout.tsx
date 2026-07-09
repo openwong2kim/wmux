@@ -38,6 +38,7 @@ import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
 import { useChannelsEventSubscription } from '../../hooks/useChannelsEventSubscription';
 import { useChannelsHydration } from '../../hooks/useChannelsHydration';
+import { useMissionsPolling } from '../../hooks/useMissionsPolling';
 import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
 import { useIpc } from '../../hooks/useIpc';
 import type { SessionData, PaneLeaf, Pane, Surface, Workspace } from '../../../shared/types';
@@ -337,6 +338,10 @@ export default function AppLayout() {
   // agents or persisted across restart were invisible. Decoupled from in-app
   // Company mode (falls back to the active workspace for identity).
   useChannelsHydration();
+  // 사이클 C — 미션(WorkTask) 캐시. task.mission.list를 owner-scoped로 폴링해
+  // 사이드바 "Missions" 섹션 + FleetCard 미션 라인을 채운다(순수 pull, 성긴 폴링 —
+  // useMissionsPolling 헤더 참조).
+  useMissionsPolling();
   // Plugin host (B-1): ui.decoratePane push → uiSlice pane decorations.
   usePaneDecorationChannel();
   const { invoke: ipcInvoke } = useIpc();

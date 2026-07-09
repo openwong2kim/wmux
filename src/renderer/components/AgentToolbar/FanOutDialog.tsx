@@ -113,6 +113,10 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
         verifiedWorkspaceId: activeWorkspace?.id ?? '',
       });
       reportResult(res, pushToast);
+      // fan-out 완료 직후 미션 캐시 즉시 refetch(순수 pull이라 push가 없다 —
+      // 배경 폴링을 기다리지 않고 사이드바 "Missions" 섹션을 바로 채운다).
+      const parentId = activeWorkspace?.id;
+      if (parentId) void useStore.getState().refreshMissions(parentId);
       onClose();
     } catch (err) {
       pushToast({ level: 'error', message: `fan-out 실패: ${err instanceof Error ? err.message : String(err)}` });
