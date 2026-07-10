@@ -285,7 +285,7 @@ export const ko = {
   'settings.imeResidueGuard': 'IME 잔여 텍스트 자동 비우기',
   'settings.imeResidueGuardDesc': '잔여 IME 텍스트를 파괴적으로 덮어쓰는 음성 입력 도구로부터 보호합니다. 해당 도구를 쓰지 않으면 꺼 두세요 — 일부 입력기와 충돌할 수 있습니다.',
   'settings.hiddenPaneRetention': '숨겨진 패널 렌더링 생략 (실험적)',
-  'settings.hiddenPaneRetentionDesc': '숨겨진 워크스페이스의 에이전트 출력을 백그라운드에서 파싱하지 않고, 다시 표시될 때 데몬에서 재동기화합니다. 바쁜 에이전트가 많아도 보이는 패널이 부드럽게 유지됩니다. 데몬 세션 전용.',
+  'settings.hiddenPaneRetentionDesc': '숨겨진 패널의 에이전트 출력을 백그라운드에서 파싱하지 않고, 다시 표시될 때 데몬에서 재동기화합니다. 바쁜 에이전트가 많아도 보이는 패널이 부드럽게 유지됩니다. 데몬 세션 전용.',
   'settings.updates': '업데이트',
   'settings.wmuxUpdates': 'wmux 업데이트',
   'settings.updateFailed': '업데이트 확인 실패',

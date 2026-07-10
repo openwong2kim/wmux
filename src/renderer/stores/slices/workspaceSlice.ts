@@ -539,7 +539,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (data.defaultShell) state.defaultShell = data.defaultShell;
       if (data.splitInheritsCwd != null) state.splitInheritsCwd = data.splitInheritsCwd;
       if (data.imeResidueGuardEnabled != null) state.imeResidueGuardEnabled = data.imeResidueGuardEnabled;
-      if (data.hiddenPaneRetentionEnabled != null) state.hiddenPaneRetentionEnabled = data.hiddenPaneRetentionEnabled;
+      // Fail closed: only an explicit boolean enables retention. A corrupted /
+      // hand-edited value (e.g. the string "false") must not become truthy and
+      // silently activate the still-experimental resync path.
+      if (typeof data.hiddenPaneRetentionEnabled === 'boolean') {
+        state.hiddenPaneRetentionEnabled = data.hiddenPaneRetentionEnabled;
+      }
       if (typeof data.startupDirectory === 'string') state.startupDirectory = data.startupDirectory.trim();
       if (data.scrollbackLines != null) state.scrollbackLines = data.scrollbackLines;
       if (data.scrollbackRestoreEnabled != null) state.scrollbackRestoreEnabled = data.scrollbackRestoreEnabled;
