@@ -111,6 +111,50 @@ export const GATES = [
     absMargin: 8, // ms
     unit: 'ms',
   },
+  // Hidden-flood typing — N agents stream in hidden workspaces while the
+  // visible pane is typed into (the multi-workspace multi-agent shape;
+  // perf-bench measureHiddenFlood). Two axes per N: focused echo latency
+  // (user-perceived typing) and the visible pane's rAF cadence (paint
+  // smoothness). Margins are generous — the scenario measures the app under
+  // deliberate saturation, so per-run variance is higher than the idle
+  // scenarios. Like the frameBudget gates, each N gates against its OWN
+  // blessed baseline entry; until a baseline records these they report NEW.
+  {
+    key: 'hiddenFloodEchoP95Ms_N4',
+    label: 'hiddenFlood.N4.echoMs.p95',
+    path: 'scenarios.hiddenFlood.N4.echoMs.p95',
+    scenarioPath: 'scenarios.hiddenFlood.N4',
+    ratio: 2.0,
+    absMargin: 15, // ms
+    unit: 'ms',
+  },
+  {
+    key: 'hiddenFloodFrameDeltaP95Ms_N4',
+    label: 'hiddenFlood.N4.frameDeltaMs.p95',
+    path: 'scenarios.hiddenFlood.N4.frameDeltaMs.p95',
+    scenarioPath: 'scenarios.hiddenFlood.N4',
+    ratio: 2.0,
+    absMargin: 8, // ms
+    unit: 'ms',
+  },
+  {
+    key: 'hiddenFloodEchoP95Ms_N8',
+    label: 'hiddenFlood.N8.echoMs.p95',
+    path: 'scenarios.hiddenFlood.N8.echoMs.p95',
+    scenarioPath: 'scenarios.hiddenFlood.N8',
+    ratio: 2.0,
+    absMargin: 15, // ms
+    unit: 'ms',
+  },
+  {
+    key: 'hiddenFloodFrameDeltaP95Ms_N8',
+    label: 'hiddenFlood.N8.frameDeltaMs.p95',
+    path: 'scenarios.hiddenFlood.N8.frameDeltaMs.p95',
+    scenarioPath: 'scenarios.hiddenFlood.N8',
+    ratio: 2.0,
+    absMargin: 8, // ms
+    unit: 'ms',
+  },
 ];
 
 // W2 — boolean consistency gates (design §3). Unlike GATES (numeric regression

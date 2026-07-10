@@ -17,6 +17,13 @@
  *                  frame in which xterm draws the glyph. CDP/websocket
  *                  transport overhead is therefore EXCLUDED from the numbers.
  *                  Run at 1 pane and again at 8 panes (focused pane).
+ *   hiddenFlood    N agents streaming in HIDDEN (inactive, display:none but
+ *                  mounted) workspaces while the visible pane is typed into —
+ *                  the real multi-workspace multi-agent shape. Records the
+ *                  focused key→echo/key→frame latencies AND the visible-pane
+ *                  rAF cadence under that background load. This is the metric
+ *                  the renderer output scheduler (PR #388 phase 1) and any
+ *                  daemon headless-mirror work (phase 3) are meant to move.
  *   ram            Working set + commit charge summed over the FULL process
  *                  tree: main exe + Chromium children + the detached daemon
  *                  (read from its pid file) + its ConPTY/conhost children.
@@ -111,6 +118,18 @@ function parseArgs(argv) {
     // sweep (measured incrementally on one instance).
     frameBudgetPanes: [4, 8, 16],
     skipFrameBudget: false, skipIme: false, skipWebglRecovery: false,
+    // hiddenFlood: N hidden-workspace agents flood while the user types into
+    // the single visible pane — the real "multi-workspace multi-agent" shape
+    // (plans/terminal-render-stutter-handoff-2026-07-10.md §3). frameBudget
+    // floods VISIBLE panes and inputLatency8 keeps siblings idle; this
+    // scenario is the gap between them and the one the renderer output
+    // scheduler (phase 1) / daemon headless mirror (phase 3) must move.
+    hiddenFloodAgents: [4, 8],
+    skipHiddenFlood: false,
+    // Phase 3 A/B leg: seed session.json with hiddenPaneRetentionEnabled=true
+    // so every measured pane runs the hidden-pane retention policy (PR-A).
+    // Two runs (with/without) form the phase-3 A/B on the hiddenFlood scenario.
+    hiddenRetention: false,
   };
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i];
@@ -145,6 +164,19 @@ function parseArgs(argv) {
         out.frameBudgetPanes = [...new Set(nums)].sort((a, b) => a - b);
       }
     }
+    else if (a === '--hidden-flood-agents') {
+      // Same contract as --frame-budget-panes: comma-separated positive ints.
+      const parts = String(argv[++i] ?? '').split(',').map((s) => s.trim()).filter(Boolean);
+      const nums = parts.map(Number);
+      if (nums.length === 0 || nums.some((n) => !Number.isInteger(n) || n < 1)) {
+        console.error(`--hidden-flood-agents expects comma-separated positive integers, got: ${argv[i]}`);
+        out.help = true;
+      } else {
+        out.hiddenFloodAgents = [...new Set(nums)].sort((a, b) => a - b);
+      }
+    }
+    else if (a === '--skip-hidden-flood') out.skipHiddenFlood = true;
+    else if (a === '--hidden-retention') out.hiddenRetention = true;
     else if (a === '--skip-frame-budget') out.skipFrameBudget = true;
     else if (a === '--skip-ime') out.skipIme = true;
     else if (a === '--skip-webgl-recovery') out.skipWebglRecovery = true;
@@ -187,8 +219,17 @@ W2 N-pane instrumentation (run by default on a dedicated instance):
   --skip-frame-budget          skip the frame-budget sweep.
   --skip-ime                   skip the Korean IME composition scenario.
   --skip-webgl-recovery        skip the WebGL context-loss/restore scenario.
-scenarios.frameBudget.N{n}.frameDeltaMs, scenarios.ime.pass, and
-scenarios.webglContextLoss.pass feed perf-compare's numeric + BOOL gates.`);
+
+Hidden-flood typing (dedicated instance; the multi-workspace agent shape):
+  --hidden-flood-agents 4,8   N-values for hidden-workspace flood agents while
+                              typing into the visible pane (default 4,8).
+  --skip-hidden-flood         skip the hidden-flood typing scenario.
+  --hidden-retention          seed hiddenPaneRetentionEnabled=true into every
+                              instance (phase-3 A/B leg; run once with and
+                              once without and diff the hiddenFlood numbers).
+scenarios.frameBudget.N{n}.frameDeltaMs, scenarios.hiddenFlood.N{n}.*,
+scenarios.ime.pass, and scenarios.webglContextLoss.pass feed perf-compare's
+numeric + BOOL gates.`);
   process.exit(0);
 }
 if (!fs.existsSync(APP_EXE)) {
@@ -382,7 +423,7 @@ function makeInstance() {
   // scrollbackLines preference BEFORE any terminal mounts (see
   // buildScrollbackSeedSession for why this beats CDP store-injection). Only
   // when --scrollback-lines is supplied; otherwise the app boots untouched.
-  if (ARGS.scrollbackLines != null) {
+  if (ARGS.scrollbackLines != null || ARGS.hiddenRetention) {
     fs.writeFileSync(
       path.join(userDataDir, 'session.json'),
       JSON.stringify(buildScrollbackSeedSession(ARGS.scrollbackLines)),
@@ -1040,8 +1081,11 @@ function buildScrollbackSeedSession(lines) {
     ],
     activeWorkspaceId: wsId,
     sidebarVisible: true,
-    // The field under test.
-    scrollbackLines: lines,
+    // The fields under test. scrollbackLines is omitted when not requested so
+    // the app default (10000) holds on a retention-only seed; the retention
+    // flag rides the same seed session (phase-3 A/B leg).
+    ...(lines != null ? { scrollbackLines: lines } : {}),
+    ...(ARGS.hiddenRetention ? { hiddenPaneRetentionEnabled: true } : {}),
     // Match the bench's regular-boot assumptions: skip onboarding / first-run
     // overlays that would otherwise steal the pane-focus click.
     onboardingCompleted: true,
@@ -1229,6 +1273,182 @@ async function measureFrameBudget(inst, paneCounts) {
     client.close();
   }
   return byN;
+}
+
+// === Scenario 2.5: hidden-workspace flood + focused typing ===
+//
+// The real-world "multi-workspace multi-agent" shape (handoff plans/terminal-
+// render-stutter-handoff-2026-07-10.md §3): N agents stream continuously in
+// OTHER workspaces while the user types into the single visible pane.
+// frameBudget floods VISIBLE panes (no typing); inputLatency8 types with
+// siblings idle — this scenario is the gap between them, and the metric the
+// renderer output scheduler (phase 1) and a daemon headless mirror (phase 3)
+// are supposed to move.
+//
+// Mechanism: `mcp.claimWorkspace` spawns a workspace + PTY WITHOUT stealing
+// focus (the renderer restores the previously-active workspace), and
+// AppLayout renders every workspace's pane tree with `display:none` when
+// inactive — so the hidden panes are MOUNTED and their PTY output still
+// reaches the renderer (the exact contention being measured). display:none
+// also zeroes their bounding rects, so the largest-visible-pane click logic
+// below can never target a hidden pane.
+//
+// Pin discipline: the visible pane's ptyId is pinned BEFORE any hidden
+// workspace exists. Under flood the pin is never reset — the flood line is
+// 'x' * 80 and CHARS_SAMPLE contains 'x', so an unpinned matcher would
+// instantly re-pin onto a flooding hidden pane and corrupt every sample.
+const HIDDEN_FLOOD_SAMPLES = 24;
+async function measureHiddenFlood(inst, agentCounts) {
+  const page = inst.page;
+  const client = await openMainClient(inst);
+  const byN = {};
+  let idleBaseline = null;
+
+  const clickFocusVisiblePane = async () => {
+    const box = await page.evaluate(() => {
+      let best = null;
+      for (const el of document.querySelectorAll('.xterm-screen')) {
+        const r = el.getBoundingClientRect();
+        const area = r.width * r.height;
+        if (r.width >= 80 && r.height >= 60 && (!best || area > best.area)) {
+          best = { x: r.x, y: r.y, width: r.width, height: r.height, area };
+        }
+      }
+      return best;
+    });
+    if (!box) throw new Error('hiddenFlood: no usable visible .xterm-screen');
+    for (let attempt = 0; attempt < 4; attempt++) {
+      await page.mouse.click(box.x + box.width / 2, box.y + box.height / 2);
+      await sleep(300);
+      const focused = await page.evaluate(() =>
+        !!document.activeElement?.classList?.contains('xterm-helper-textarea'));
+      if (focused) return;
+      console.error(`[hiddenFlood] click did not focus the terminal (attempt ${attempt + 1}/4)`);
+      await dismissOverlays(page);
+    }
+    throw new Error('hiddenFlood: terminal never took focus after 4 click attempts');
+  };
+
+  try {
+    // --- Pin the visible pane's ptyId (no hidden workspaces exist yet) ---
+    await clickFocusVisiblePane();
+    await page.evaluate(() => {
+      const H = window.__wmuxBenchHook;
+      H.samples.length = 0; H.pending = null; H.pinnedId = null; H.pinCandidates.length = 0;
+    });
+    for (let p = 0; p < 6; p++) {
+      const ch = CHARS_PRIME[p % CHARS_PRIME.length];
+      await page.evaluate((c) => { window.__wmuxBenchHook.pending = { ch: c, tKeydown: null, prime: true }; }, ch);
+      await page.keyboard.press(ch);
+      await sleep(250);
+      const pin = await page.evaluate(() => {
+        const c = window.__wmuxBenchHook.pinCandidates;
+        if (c.length >= 2 && c[c.length - 1] === c[c.length - 2]) {
+          window.__wmuxBenchHook.pinnedId = c[c.length - 1];
+          return c[c.length - 1];
+        }
+        return null;
+      });
+      if (pin) break;
+    }
+    let pinnedId = await page.evaluate(() => window.__wmuxBenchHook.pinnedId);
+    if (!pinnedId) {
+      // Boot-pane-never-echoes recovery (same asymmetry as issue #281): split
+      // once — the daemon-spawned sibling echoes reliably — and re-pin there.
+      console.error('[hiddenFlood] boot pane pin failed — splitting a fresh pane and re-pinning');
+      await client.call('pane.split', { direction: 'horizontal' });
+      await sleep(1200);
+      await clickFocusVisiblePane();
+      for (let p = 0; p < 6 && !pinnedId; p++) {
+        const ch = CHARS_PRIME[p % CHARS_PRIME.length];
+        await page.evaluate((c) => { window.__wmuxBenchHook.pending = { ch: c, tKeydown: null, prime: true }; }, ch);
+        await page.keyboard.press(ch);
+        await sleep(250);
+        pinnedId = await page.evaluate(() => {
+          const c = window.__wmuxBenchHook.pinCandidates;
+          if (c.length >= 2 && c[c.length - 1] === c[c.length - 2]) {
+            window.__wmuxBenchHook.pinnedId = c[c.length - 1];
+            return c[c.length - 1];
+          }
+          return null;
+        });
+      }
+      if (!pinnedId) throw new Error('hiddenFlood: could not pin the visible pane ptyId');
+    }
+
+    // Idle-cadence control, sampled BEFORE any hidden workspace exists: if
+    // this is already >50ms the window is occluded/OS-throttled and every
+    // per-N frameDeltaMs below measures the throttle, not the load. Recorded
+    // so a reader can tell "load-induced 116ms" from "occluded 116ms".
+    const baselineDeltas = await sampleRafDeltas(page, 60);
+    const baselineFrameDeltaMs = summarizeSamples(baselineDeltas);
+    const baselineThrottled = (baselineFrameDeltaMs.p50 ?? 999) > 50;
+    idleBaseline = { frameDeltaMs: baselineFrameDeltaMs, throttled: baselineThrottled };
+    console.log(`[hiddenFlood] idle baseline rAF p50=${baselineFrameDeltaMs.p50}ms p95=${baselineFrameDeltaMs.p95}ms${baselineThrottled ? ' (WINDOW THROTTLED — per-N cadence untrustworthy)' : ''}`);
+
+    // --- Sweep hidden-agent counts (incremental, like frameBudget) ---
+    const hidden = []; // hidden-workspace ptyIds, claimed once, reused per N
+    const sorted = [...agentCounts].sort((a, b) => a - b);
+    for (const n of sorted) {
+      while (hidden.length < n) {
+        const res = await client.call('mcp.claimWorkspace', { name: `hf-flood-${hidden.length + 1}` });
+        if (!res || typeof res.ptyId !== 'string' || res.error) {
+          throw new Error(`hiddenFlood: mcp.claimWorkspace failed — ${res?.error ?? JSON.stringify(res)}`);
+        }
+        hidden.push(res.ptyId);
+        await sleep(200);
+      }
+      // Let the freshly-claimed hidden panes mount + their shells reach a
+      // prompt, then re-assert focus (workspace add/restore churn can move
+      // DOM focus off the visible textarea).
+      await sleep(1500);
+      await clickFocusVisiblePane();
+
+      const mountedXterms = await page.evaluate(() => document.querySelectorAll('.xterm').length);
+      await startFlood(client, hidden);
+      await sleep(800);
+      // Visible-pane compositor cadence while the hidden agents stream.
+      const deltas = await sampleRafDeltas(page, 60);
+
+      // Focused typing under hidden load. No pin-reset self-heal here (see
+      // the pin-discipline note above) — timeouts just count as drops.
+      let dropped = 0;
+      let collected = await page.evaluate(() => window.__wmuxBenchHook.samples.length);
+      for (let i = 0; i < HIDDEN_FLOOD_SAMPLES; i++) {
+        const ch = CHARS_SAMPLE[i % CHARS_SAMPLE.length];
+        await page.evaluate((c) => { window.__wmuxBenchHook.pending = { ch: c, tKeydown: null }; }, ch);
+        await page.keyboard.press(ch);
+        try {
+          await page.waitForFunction((m) => window.__wmuxBenchHook.samples.length > m, collected, { timeout: 3000 });
+          collected++;
+        } catch {
+          dropped++;
+          await page.evaluate(() => { window.__wmuxBenchHook.pending = null; });
+        }
+        await sleep(50);
+      }
+      await stopFlood(client, hidden);
+      await sleep(600); // drain Ctrl+C before the next N grows the fleet
+
+      const samples = await page.evaluate(() => window.__wmuxBenchHook.samples.splice(0));
+      const frameDelta = summarizeSamples(deltas);
+      const throttled = (frameDelta.p50 ?? 999) > 50;
+      byN[`N${n}`] = {
+        hiddenAgents: hidden.length,
+        mountedXterms,
+        throttled,
+        frameDeltaMs: frameDelta,
+        echoMs: summarize(samples.map((s) => s.echoMs)),
+        frameMs: summarize(samples.map((s) => s.frameMs)),
+        samples: samples.length,
+        dropped,
+      };
+      console.log(`[hiddenFlood N${n}] hidden=${hidden.length} mounted=${mountedXterms} echo p50=${byN[`N${n}`].echoMs.p50}ms p95=${byN[`N${n}`].echoMs.p95}ms | frame p50=${byN[`N${n}`].frameMs.p50}ms | rAF p50=${frameDelta.p50}ms p95=${frameDelta.p95}ms (n=${samples.length}, dropped=${dropped})${throttled ? ' (THROTTLED)' : ''}`);
+    }
+  } finally {
+    client.close();
+  }
+  return { idleBaseline, ...byN };
 }
 
 // === Scenario 2.2: Korean IME composition ===
@@ -1448,6 +1668,10 @@ const RESULTS = {
       scrollbackLines: ARGS.scrollbackLines,
       // W2: which N-pane counts the frame-budget sweep measured this run.
       frameBudgetPanes: ARGS.frameBudgetPanes,
+      // Hidden-flood typing: which hidden-agent counts this run measured.
+      hiddenFloodAgents: ARGS.hiddenFloodAgents,
+      // Phase 3 A/B leg identity: was hidden-pane retention seeded on?
+      hiddenRetention: ARGS.hiddenRetention,
     },
   },
   scenarios: {},
@@ -1805,6 +2029,25 @@ process.on('exit', () => {
       console.error(`[W2] dedicated instance boot/scenarios failed (continuing to write results): ${e.message}`);
     } finally {
       if (w2) { try { await shutdownInstance(w2); } catch { /* best effort */ } }
+    }
+  }
+
+  // ---------- hiddenFlood: hidden-workspace agents + focused typing ----------
+  // Runs on its OWN instance: it must start from the clean 1-visible-pane boot
+  // layout (the W2 instance ends at max(frameBudgetPanes) panes with a forced
+  // GPU context loss), and its hidden workspaces/floods must not perturb any
+  // other scenario's numbers.
+  if (!ARGS.skipHiddenFlood && !ARGS.keepApp) {
+    console.log(`--- hiddenFlood: booting dedicated instance (agents=${ARGS.hiddenFloodAgents.join(',')}) ---`);
+    let hf = null;
+    try {
+      hf = await bootFreshInstance();
+      await dismissOverlays(hf.page);
+      RESULTS.scenarios.hiddenFlood = await measureHiddenFlood(hf, ARGS.hiddenFloodAgents);
+    } catch (e) {
+      console.error(`[hiddenFlood] scenario failed (continuing to write results): ${e.message}`);
+    } finally {
+      if (hf) { try { await shutdownInstance(hf); } catch { /* best effort */ } }
     }
   }
 

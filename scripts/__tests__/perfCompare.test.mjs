@@ -26,6 +26,11 @@ function makeResult(overrides = {}) {
     frameBudgetN4: 20,
     frameBudgetN8: 28,
     frameBudgetN16: 40,
+    // hiddenFlood (hidden-workspace agents + focused typing) — same invariant.
+    hiddenFloodEchoN4: 15,
+    hiddenFloodFrameDeltaN4: 20,
+    hiddenFloodEchoN8: 25,
+    hiddenFloodFrameDeltaN8: 30,
     schemaVersion: SCHEMA_VERSION,
     throttled: false,
     throttled8: false,
@@ -54,6 +59,16 @@ function makeResult(overrides = {}) {
         N4: { frameDeltaMs: { p95: o.frameBudgetN4 } },
         N8: { frameDeltaMs: { p95: o.frameBudgetN8 } },
         N16: { frameDeltaMs: { p95: o.frameBudgetN16 } },
+      },
+      hiddenFlood: {
+        N4: {
+          echoMs: { p95: o.hiddenFloodEchoN4 },
+          frameDeltaMs: { p95: o.hiddenFloodFrameDeltaN4 },
+        },
+        N8: {
+          echoMs: { p95: o.hiddenFloodEchoN8 },
+          frameDeltaMs: { p95: o.hiddenFloodFrameDeltaN8 },
+        },
       },
     },
   };
