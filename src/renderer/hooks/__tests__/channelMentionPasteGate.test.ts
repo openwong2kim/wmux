@@ -18,6 +18,24 @@ describe('isMentionPasteBusy', () => {
     expect(isMentionPasteBusy('awaiting_input', 'p', 0, s)).toBe(true);
   });
 
+  // Message-latency epic (2026-07-10): a mid-turn-safe agent (claude) queues
+  // input while running, so a running turn is NOT a hold — deliver immediately.
+  it('mid-turn-safe agent (claude): running is NOT busy — immediate deliver', () => {
+    const s = createPasteGateState();
+    const d = [UNKNOWN_STATUS_GRACE_MS, OUTPUT_QUIET_MS, MAX_UNKNOWN_HOLD_MS, RUNNING_STALE_MS, KNOWN_STABLE_MS] as const;
+    expect(isMentionPasteBusy('running', 'p', 0, s, ...d, 'claude')).toBe(false);
+    // awaiting_input still holds even for a mid-turn-safe agent (a live prompt).
+    expect(isMentionPasteBusy('awaiting_input', 'p', 0, s, ...d, 'claude')).toBe(true);
+  });
+
+  it('non-listed agent (codex/unknown): running still holds', () => {
+    const s = createPasteGateState();
+    const d = [UNKNOWN_STATUS_GRACE_MS, OUTPUT_QUIET_MS, MAX_UNKNOWN_HOLD_MS, RUNNING_STALE_MS, KNOWN_STABLE_MS] as const;
+    expect(isMentionPasteBusy('running', 'p', 0, s, ...d, 'codex')).toBe(true);
+    // No slug at all = classic behavior (unchanged default).
+    expect(isMentionPasteBusy('running', 'q', 0, s)).toBe(true);
+  });
+
   it('not busy for waiting / complete / idle / any other known status', () => {
     const s = createPasteGateState();
     expect(isMentionPasteBusy('waiting', 'p', 0, s)).toBe(false);

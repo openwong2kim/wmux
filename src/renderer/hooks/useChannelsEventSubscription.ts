@@ -293,7 +293,16 @@ export function useChannelsEventSubscription(): void {
         // ~1 output burst, so an unknown status that persists past the grace
         // window is quiet/idle = paste-safe. See channelMentionPasteGate.
         isBusy: (ptyId) =>
-          isMentionPasteBusy(st.surfaceAgent[ptyId]?.status, ptyId, Date.now(), pasteGate),
+          isMentionPasteBusy(
+            st.surfaceAgent[ptyId]?.status,
+            ptyId,
+            Date.now(),
+            pasteGate,
+            undefined, undefined, undefined, undefined, undefined,
+            // Mid-turn-safe agents (Claude) skip the running-hold — the mention
+            // pastes immediately and the TUI queues it (message-latency epic).
+            st.surfaceAgent[ptyId]?.slug,
+          ),
         deliverNudge: (ptyId, text) => submitBracketedPasteToPty(ptyId, text),
         markDelivered: st.markChannelMentionDelivered,
         // 2f: rate cap unchanged; the first capped observation per window also

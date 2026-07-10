@@ -69,6 +69,23 @@ export const PASTE_UNSAFE_STATUSES: ReadonlySet<string> = new Set([
   'awaiting_input',
 ]);
 
+/**
+ * Agent slugs whose TUI queues mid-turn input safely (message-latency epic,
+ * 2026-07-10). Current Claude Code buffers text typed while a turn is running
+ * and consumes it at the next tool-call boundary WITHOUT corrupting the turn —
+ * proven end-to-end (scripts/midturn-inject-probe.mjs, both raw and
+ * bracketed-paste production paths). For these agents a channel mention is
+ * delivered IMMEDIATELY instead of waiting out the whole turn, which was the
+ * dominant "messages arrive late" latency (a long turn = minutes of hold).
+ *
+ * Conservative by construction: only 'running' becomes safe, and ONLY for
+ * listed agents. 'awaiting_input' stays a hard hold for everyone (pasting would
+ * answer a live confirmation prompt / menu), and unlisted agents (codex,
+ * opencode, unknown) keep the classic Stop-wait until their mid-turn behavior
+ * is separately proven.
+ */
+export const MIDTURN_QUEUE_AGENT_SLUGS: ReadonlySet<string> = new Set(['claude']);
+
 /** Default grace window before a persistently-unknown status is treated as idle.
  *  Comfortably longer than the ~1-2s post-attach window in which a running
  *  agent's first 'running' broadcast lands, short enough that a real idle-pane
@@ -207,6 +224,11 @@ export function isMentionPasteBusy(
   maxHoldMs: number = MAX_UNKNOWN_HOLD_MS,
   staleMs: number = RUNNING_STALE_MS,
   knownStableMs: number = KNOWN_STABLE_MS,
+  /** Agent slug in this pane. When it queues mid-turn input safely
+   *  (MIDTURN_QUEUE_AGENT_SLUGS), a 'running' status is NOT busy — the mention
+   *  is pasted immediately and the TUI queues it to the next tool boundary.
+   *  Only 'running' is affected; 'awaiting_input' still holds for everyone. */
+  agentSlug: string | undefined = undefined,
 ): boolean {
   if (status != null) {
     // A known-status tick. Flap guard: do NOT clear the unknown clock on a
@@ -233,6 +255,10 @@ export function isMentionPasteBusy(
     // output-quiet for `staleMs`. A real thinking agent repaints its ~1s status
     // line, so notePtyOutput keeps the anchor fresh and it never crosses the bar.
     if (status === 'running') {
+      // Mid-turn-safe agents (Claude): a running turn is NOT a hold — paste now,
+      // the TUI queues it to the next tool boundary (proven, message-latency
+      // epic). This removes the turn-length delay that dominated "late mentions".
+      if (agentSlug != null && MIDTURN_QUEUE_AGENT_SLUGS.has(agentSlug)) return false;
       const lastOut = state.lastOutputAt.get(ptyId);
       if (lastOut == null) {
         state.lastOutputAt.set(ptyId, now);
