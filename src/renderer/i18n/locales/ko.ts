@@ -656,4 +656,7 @@ export const ko = {
   // 서버-발행 operator-join 시스템 메시지의 표시 문자열. 모든 멤버 뷰에
   // 동일하게 렌더되므로 2인칭이 아닌 시점 중립 문구를 쓴다.
   'channels.systemOperatorJoin': '오퍼레이터가 이 채널에 참여했습니다',
+  // J4 — diff 코멘트를 미션 채널에 발사. {count} = @멘션된 태스크 에이전트 수
+  // (에이전트가 전원 채널을 떠났으면 0).
+  'diff.commentFired': '코멘트를 미션 채널에 발사했습니다 — {count}개 에이전트 호출',
 } as const;

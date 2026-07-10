@@ -11,7 +11,10 @@ import type {
   DiffApplyResult,
   DiffTargetSnapshot,
 } from '../../../shared/diffParse';
+import type { ChannelMention } from '../../../shared/channels';
+import { HUMAN_WORKSPACE_ID, CHANNEL_MENTIONS_MAX } from '../../../shared/channels';
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
 
 interface DiffPanelProps {
   taskId: string;
@@ -61,6 +64,53 @@ export function extractDiffComments(
     });
   }
   return out;
+}
+
+// J4 §S2 — diff 주석 포스트에 부착할 텍스트 앵커. CLI/MCP read가 data payload를
+// 렌더하지 않아도 에이전트가 어느 파일·hunk에 대한 코멘트인지 본문만으로 알 수 있게
+// 한다. hunkHeader는 text 쪽만 절단하고(data 앵커는 원형 유지 — extractDiffComments가
+// 그걸 읽는다), 비어 있으면 `@ ...` 파트를 생략한다.
+export const DIFF_COMMENT_HEADER_MAX = 80;
+
+export function formatDiffCommentText(file: string, hunkHeader: string, comment: string): string {
+  const head =
+    hunkHeader.length > DIFF_COMMENT_HEADER_MAX
+      ? hunkHeader.slice(0, DIFF_COMMENT_HEADER_MAX)
+      : hunkHeader;
+  const anchor = head ? `[diff: ${file} @ ${head}]` : `[diff: ${file}]`;
+  return `${anchor} ${comment}`;
+}
+
+// J4 §S1 — diff 주석 포스트의 자동 멘션 대상을 해석한다. 미션 채널 멤버 중 사람
+// (HUMAN_WORKSPACE_ID)과 코멘터 자신(selfWorkspaceId — 미션 채널의 createdBy는 owner
+// 워크스페이스라 항상 멤버다)을 제외한 나머지를 워크스페이스 단위로 하나씩 멘션한다.
+//
+// memberId를 붙이지 않는(=워크스페이스-레벨) 것이 의도적이다: 데몬의 mentionUnread
+// 집계(ChannelService.unreadFor)는 memberId 없는 멘션을 그 워크스페이스의 모든 멤버
+// 행에 대해 카운트하므로, 한 워크스페이스에 에이전트 팬이 여럿(예: 같은 WS의
+// Claude+Codex)이어도 전원이 깨어난다. 반대로 memberId를 붙이면 post RPC의 dedup 키가
+// (workspaceId, paneId)라 memberId만 다른 형제 멘션이 collapse되어 첫 행만 살아남고
+// 나머지는 조용히 유실된다. CHANNEL_MENTIONS_MAX로 사전 절단한다(초과분은 post RPC가
+// 어차피 CHANNEL_MENTIONS_TOO_MANY로 거부).
+export function resolveDiffMentionTargets(
+  members: ReadonlyArray<{ workspaceId?: string; memberId?: string; memberName?: string }>,
+  selfWorkspaceId: string,
+): ChannelMention[] {
+  const byWorkspace = new Map<string, ChannelMention>();
+  for (const m of members) {
+    const workspaceId = typeof m.workspaceId === 'string' ? m.workspaceId : '';
+    if (!workspaceId) continue;
+    if (workspaceId === HUMAN_WORKSPACE_ID) continue;
+    if (workspaceId === selfWorkspaceId) continue;
+    if (byWorkspace.has(workspaceId)) continue;
+    const memberId = typeof m.memberId === 'string' ? m.memberId : '';
+    const name =
+      typeof m.memberName === 'string' && m.memberName.length > 0
+        ? m.memberName
+        : memberId || workspaceId;
+    byWorkspace.set(workspaceId, { workspaceId, name });
+  }
+  return [...byWorkspace.values()].slice(0, CHANNEL_MENTIONS_MAX);
 }
 
 // diff.read/applyHunks 브릿지(preload 노출).
@@ -147,6 +197,51 @@ async function loadDiffComments(
   }
 }
 
+// 미션 채널 로스터 행(멘션 대상 해석 + 코멘터 자신의 sender 신원 파생에 쓰는 최소 필드).
+interface MissionMemberRow {
+  workspaceId: string;
+  memberId: string;
+  memberName?: string;
+}
+
+// J4 §S1 — 미션 채널 로스터를 조회한다. 기존 채널 멤버 read RPC(a2a.channel.getMembers)를
+// 재사용 — loadDiffComments와 동일 트랜스포트·신원(verifiedWorkspaceId). 한 번 조회한
+// 로스터에서 멘션 대상(resolveDiffMentionTargets)과 sender 자기-행(post 신원)을 함께
+// 파생한다. 실패·비가시(사설 채널 비멤버 → 빈 로스터)는 빈 배열 → 멘션 없이 포스트하고
+// (자기-행 없음 → post는 데몬 멤버십 게이트에서 실패하고 F9가 사유를 표면화).
+async function loadMissionRoster(
+  channelId: string,
+  verifiedWorkspaceId: string,
+): Promise<MissionMemberRow[]> {
+  if (!channelId) return [];
+  const api = (window as unknown as {
+    electronAPI?: { rpc?: { invoke: (m: string, p: Record<string, unknown>) => Promise<unknown> } };
+  }).electronAPI;
+  if (!api?.rpc) return [];
+  try {
+    const res = (await api.rpc.invoke('a2a.channel.getMembers', {
+      verifiedWorkspaceId,
+      channelId,
+    })) as {
+      ok?: boolean;
+      members?: Array<{ workspaceId?: string; memberId?: string; memberName?: string }>;
+    };
+    if (!res || res.ok !== true || !Array.isArray(res.members)) return [];
+    const out: MissionMemberRow[] = [];
+    for (const m of res.members) {
+      if (typeof m.workspaceId !== 'string' || typeof m.memberId !== 'string') continue;
+      out.push({
+        workspaceId: m.workspaceId,
+        memberId: m.memberId,
+        ...(typeof m.memberName === 'string' ? { memberName: m.memberName } : {}),
+      });
+    }
+    return out;
+  } catch {
+    return [];
+  }
+}
+
 // F10 — 코멘트 목록 렌더(작성자·본문·시각 — 최소).
 function CommentList({ comments }: { comments: DiffComment[] }) {
   if (comments.length === 0) return null;
@@ -203,6 +298,7 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
   // J3 §1·§2: close·PR 진행 상태(중복 클릭 방지).
   const [lifecycleBusy, setLifecycleBusy] = useState<'close' | 'pr' | null>(null);
   const pushToast = useStore((s) => s.pushToast);
+  const t = useT();
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -297,36 +393,60 @@ export default function DiffPanel({ taskId, isActive, surfaceId, verifiedWorkspa
     }
   }, [meta, data, selection, taskId, load]);
 
-  // 코멘트 발사(§4): 미션 채널에 diff-comment 앵커 포스트(렌더러 channelLocal 경로).
+  // 코멘트 발사(§4·J4): 미션 채널에 diff-comment 앵커 포스트(렌더러 channelLocal 경로).
   const handleComment = useCallback(
     async (file: string, hunkHeader: string) => {
       if (!meta || meta.channelArchived || !meta.missionChannelId) return;
-      const text = window.prompt(`코멘트 (${file})`);
-      if (!text) return;
+      const comment = window.prompt(`코멘트 (${file})`);
+      if (!comment) return;
       const api = (window as unknown as {
         electronAPI?: { rpc?: { mutateChannelLocal: (m: string, p: Record<string, unknown>) => Promise<unknown> } };
       }).electronAPI;
       if (!api?.rpc) return;
+      // 미션 채널 로스터를 한 번 조회해 멘션 대상과 sender 자기-행을 함께 파생한다.
+      const roster = await loadMissionRoster(meta.missionChannelId, verifiedWorkspaceId);
+      // J4 §S1: hunk에 코멘트를 다는 행위 자체가 "에이전트야 이거 반영해"이므로 미션
+      // 채널의 태스크 에이전트(사람·자신 제외 멤버 전원)를 항상 멘션한다 — 이 멘션이
+      // 기존 mention→wake 루프를 타고 에이전트를 깨워 피드백을 전달한다. 대상 0
+      // (에이전트 전원 leave/kick)이면 멘션 없이 포스트한다(주석 기록 자체는 유효).
+      const mentions = resolveDiffMentionTargets(roster, verifiedWorkspaceId);
+      // sender 신원 = 코멘터 자신의 로스터 행. 데몬 post 게이트가 sender.workspaceId ===
+      // verifiedWorkspaceId를 핀하고 비멤버를 거부하므로, 미션 채널의 owner(=diff owner
+      // 워크스페이스, 항상 멤버)인 verifiedWorkspaceId로 sender를 구성한다. memberName은
+      // 데몬이 로스터 행에서 재도출하므로 표시용 폴백일 뿐이다.
+      const self = roster.find((m) => m.workspaceId === verifiedWorkspaceId);
+      const sender = {
+        workspaceId: verifiedWorkspaceId,
+        memberId: self?.memberId ?? '',
+        memberName: self?.memberName ?? self?.memberId ?? '',
+      };
+      // J4 §S2: 앵커를 본문에도 각인 — CLI/MCP read가 data를 렌더 안 해도 문맥이 남는다.
+      const text = formatDiffCommentText(file, hunkHeader, comment);
       // F9: post 실패(채널 소실·권한·IPC 오류)를 삼키지 않고 에러 메시지로 표면화.
       try {
         const res = (await api.rpc.mutateChannelLocal('a2a.channel.post', {
           verifiedWorkspaceId,
           channelId: meta.missionChannelId,
+          // sender: 데몬 post는 sender(+ sender.workspaceId===verifiedWorkspaceId 핀)를
+          // 요구한다. 이 필드가 없으면 NOT_AUTHORIZED로 거부된다(발견된 J2 갭 보강).
+          sender,
           text,
+          // data 앵커는 렌더러 인라인 매핑용 — hunkHeader는 원형 유지(§S2, text만 절단).
           data: { kind: 'diff-comment', taskId, file, hunkHeader, side: 'new', line: 0 },
+          ...(mentions.length > 0 ? { mentions } : {}),
         })) as { ok?: boolean; error?: string } | undefined;
         if (res && res.ok === false) {
           setApplyMsg(`코멘트 발사 실패: ${res.error ?? '알 수 없는 오류'}`);
           return;
         }
-        setApplyMsg('코멘트를 미션 채널에 발사했습니다.');
+        setApplyMsg(t('diff.commentFired', { count: mentions.length }));
         // F10: 발사 직후 역조회 갱신 — 방금 단 코멘트가 인라인에 바로 뜬다.
         setComments(await loadDiffComments(meta.missionChannelId, taskId, verifiedWorkspaceId));
       } catch (e) {
         setApplyMsg(`코멘트 발사 실패: ${e instanceof Error ? e.message : String(e)}`);
       }
     },
-    [meta, taskId, verifiedWorkspaceId],
+    [meta, taskId, verifiedWorkspaceId, t],
   );
 
   // J3 §1 — close(remove 성공→close 순서). 확인 1회 후 결과를 토스트로 구분

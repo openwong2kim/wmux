@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Diff comments now wake the task agent (J4).** Commenting on a hunk in a fan-out task's diff surface no longer just records a note — it @-mentions the task's agents on the mission-channel post, so the existing mention→wake loop nudges them to read and act on the feedback. Every non-human member of the mission channel (excluding you, the commenter) is mentioned at the workspace level, so multiple agent panes sharing one workspace all get woken; if every agent has left the channel the comment still posts, just without a mention. The post's body also carries a `[diff: <file> @ <hunk>] <comment>` prefix so an agent reading the channel over the CLI or MCP (which don't render the structured anchor) still sees which file and hunk the comment is about. The success message reports how many agents were pinged.
+
+### Fixed
+
+- **Diff-panel comments now actually post to the mission channel.** The diff comment post omitted the `sender` identity the daemon requires, so every comment was rejected with a "코멘트 발사 실패" authorization error instead of being recorded. The comment now posts as the diff's owner workspace (its own mission-channel member row), which is also what lets the new @-mention wake the agent.
+
 ## [3.19.0] — 2026-07-10
 
 ### Added
