@@ -720,6 +720,14 @@ export const en = {
   'channels.mentionDropped': 'These @mentions did not land (not a channel member): {names}',
   'channels.mentionUnmatched': 'These @mentions matched no one — not delivered: {names}',
   'channels.mentionNoMatch': 'No agents to mention',
+  // Command Deck (Phase 1) — the tabbed dock + LLM-less command composer.
+  'deck.tabsAriaLabel': 'Command deck tabs',
+  'deck.tabCommander': 'Commander',
+  'deck.tabChannels': 'Channels',
+  'deck.commanderPlaceholder': 'Command your fleet — @mention panes…',
+  'deck.commanderEmpty':
+    'Mention agent panes with @ to command your fleet from here. Their replies land in this thread.',
+  'deck.jumpToPane': 'Jump to this pane',
   // operator-join (design §3) — collapsed-by-default discovery section + the
   // join-confirm dialog. The collapse IS the intent gate: private channel names
   // do not exist on screen until the section is expanded.

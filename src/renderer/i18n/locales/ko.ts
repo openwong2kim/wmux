@@ -644,6 +644,14 @@ export const ko = {
   'channels.mentionDropped': '이 @멘션은 전달되지 않았습니다(채널 멤버 아님): {names}',
   'channels.mentionUnmatched': '이 @멘션은 일치하는 대상이 없어 전달되지 않았습니다: {names}',
   'channels.mentionNoMatch': '멘션할 에이전트가 없습니다',
+  // Command Deck (Phase 1) — 탭형 도크 + LLM 없는 지휘 composer.
+  'deck.tabsAriaLabel': '커맨드 데크 탭',
+  'deck.tabCommander': '지휘',
+  'deck.tabChannels': '채널',
+  'deck.commanderPlaceholder': '함대에 지시 — @로 pane 멘션…',
+  'deck.commanderEmpty':
+    '@로 에이전트 pane을 멘션해 여기서 함대를 지휘하세요. 회신이 이 스레드로 모입니다.',
+  'deck.jumpToPane': '이 pane으로 이동',
   // operator-join (설계 §3) — 접힘 기본 발견 섹션 + join 확인 다이얼로그. 이 접힘이
   // 의도 게이트다: 펼치기 전에는 비공개 채널명이 화면에 존재하지 않는다.
   'channels.operatorSection': '모든 채널',

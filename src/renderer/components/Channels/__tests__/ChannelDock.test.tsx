@@ -27,6 +27,16 @@ describe('channel dock — wiring regression guard', () => {
     expect(dock).toContain('data-channel-dock');
   });
 
+  it('ChannelDock is a Command Deck: tab bar + Commander tab (default) over the channels tab', () => {
+    // Phase 1 P1a — the dock gained a [Commander] [Channels] tab bar; Commander
+    // is the default and the classic list/conversation moved under the channels
+    // tab (conditional render, code otherwise unchanged).
+    expect(dock).toMatch(/<DeckTabs\b/);
+    expect(dock).toMatch(/<CommanderView\s*\/>/);
+    expect(dock).toContain('activeDeckTab');
+    expect(dock).toMatch(/activeDeckTab === 'commander'/);
+  });
+
   it('ChannelView is dock content, NOT a fixed covering overlay', () => {
     // The old overlay used `fixed top-0 right-0 ... pointer-events-none`. The
     // dock content must be a flex column instead.

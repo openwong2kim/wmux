@@ -25,11 +25,26 @@
 
 import { useStore } from '../../stores';
 import { tokenAttrs } from '../../themes';
-import { ChannelsPanel } from './ChannelsPanel';
+import { useT } from '../../hooks/useT';
+import { ChannelsPanel, sumUnread } from './ChannelsPanel';
 import { ChannelView } from './ChannelView';
+import { DeckTabs } from '../Deck/DeckTabs';
+import { CommanderView } from '../Deck/CommanderView';
+
+// ─── Command Deck (Phase 1 P1a) ───────────────────────────────────────────────
+//
+// The dock is now a tabbed Command Deck. Its DEFAULT tab, `commander`, is the
+// LLM-less command composer (fan-out @mentions to the fleet from one thread);
+// the `channels` tab holds the classic list + conversation exactly as before
+// (the code below is unchanged, just wrapped in a conditional). Phase 2's
+// orchestrator chat reuses the Commander tab + composer skeleton wholesale.
 
 export default function ChannelDock(): React.ReactElement {
   const sidebarPosition = useStore((s) => s.sidebarPosition);
+  const activeDeckTab = useStore((s) => s.activeDeckTab);
+  const setActiveDeckTab = useStore((s) => s.setActiveDeckTab);
+  const channelUnread = useStore((s) => s.channelUnread);
+  const t = useT();
 
   // Workspace sidebar is on `sidebarPosition`; the dock is on the opposite
   // edge. When the sidebar is on the LEFT (default), the dock is on the RIGHT,
@@ -44,17 +59,32 @@ export default function ChannelDock(): React.ReactElement {
       {...tokenAttrs('bgMantle', 'bg')}
       {...tokenAttrs('bgSurface', 'border')}
     >
-      {/* Channel list — its own header now carries the collapse affordance
-          (merged from the old dock header to kill the duplicate "Channels"
-          title). Capped so a long catalog can't crowd out the conversation;
-          scrolls within its share. */}
-      <div className="shrink-0 max-h-[45%] overflow-y-auto">
-        <ChannelsPanel />
-      </div>
+      <DeckTabs
+        active={activeDeckTab}
+        onSelect={setActiveDeckTab}
+        channelsUnread={sumUnread(channelUnread)}
+        t={t}
+      />
 
-      {/* Active conversation — fills the remaining height. Renders null when no
-          channel is active (you still see the list above). */}
-      <ChannelView />
+      {activeDeckTab === 'commander' ? (
+        // Commander tab — the LLM-less command composer + fan-out thread.
+        <CommanderView />
+      ) : (
+        // Channels tab — the classic list + conversation (unchanged).
+        <>
+          {/* Channel list — its own header now carries the collapse affordance
+              (merged from the old dock header to kill the duplicate "Channels"
+              title). Capped so a long catalog can't crowd out the conversation;
+              scrolls within its share. */}
+          <div className="shrink-0 max-h-[45%] overflow-y-auto">
+            <ChannelsPanel />
+          </div>
+
+          {/* Active conversation — fills the remaining height. Renders null when
+              no channel is active (you still see the list above). */}
+          <ChannelView />
+        </>
+      )}
     </div>
   );
 }
