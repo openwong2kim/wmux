@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Revealing a stale hidden pane now repaints from a compact daemon-side snapshot instead of replaying the raw session history.** With "Skip hidden pane rendering" on, revealing a pane whose backlog overflowed used to tear down its data socket and replay up to 8 MB of raw bytes for the renderer to re-parse — a visible multi-second repaint (and a brief input dead-zone) at the exact moment you switch to the pane. The daemon now parses the session history itself in a headless terminal and re-flushes a serialized screen — typically dozens of times smaller — **over the live socket**, so input keeps flowing throughout and the pane paints its true current state (scrollback, colors, cursor, and input modes like bracketed paste included) near-instantly. Anything a snapshot cannot reproduce faithfully — full-screen TUIs on the alternate screen, active scroll margins, a pathologically slow parse — automatically falls back to the old raw replay, and legacy daemons fall back to the old reconnect: worst case is the previous behavior, never a wrong screen. Revealing a *dead* session's stale pane now also paints its final screen (read-only snapshot) instead of leaving whatever was last drawn.
+
 ## [3.20.0] — 2026-07-10
 
 ### Added

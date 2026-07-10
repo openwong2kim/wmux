@@ -8,6 +8,12 @@ export const IPC = {
   PTY_EXIT: 'pty:exit',
   PTY_LIST: 'pty:list',
   PTY_RECONNECT: 'pty:reconnect',
+  // Phase 3 PR-B — live-pipe re-flush. Re-runs the daemon SessionPipe flush on
+  // the EXISTING connected socket (no teardown / re-auth), so a hidden pane can
+  // be rehydrated from a headless snapshot without an input dead-zone. Distinct
+  // from PTY_RECONNECT, which opens a fresh socket. Renderer degrades to
+  // reconnect against legacy daemons (code:'legacy-daemon').
+  PTY_RESYNC: 'pty:resync',
   // X8 pane supervision. PTY_RESTARTED fires when the daemon's PaneSupervisor
   // re-created a session under the SAME id with a fresh PTY (a supervised
   // restart). Distinct from PTY_EXIT — the renderer must re-attach the

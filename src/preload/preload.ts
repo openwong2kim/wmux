@@ -67,6 +67,18 @@ const electronAPI = {
       // one (session genuinely dead). The renderer retries transient failures
       // instead of immediately clearing the ptyId and replacing the session.
       ipcRenderer.invoke(IPC.PTY_RECONNECT, id) as Promise<{ success: boolean; id?: string; shell?: string; error?: string; code?: string; transient?: boolean }>,
+    // Phase 3 PR-B — live-pipe re-flush. Unlike `reconnect` (opens a fresh
+    // socket), this re-runs the flush on the EXISTING session socket, so input
+    // never pauses. Three success shapes: a live re-flush ('snapshot'|'raw'), a
+    // read-only snapshot of a dead/suspended session ('dead-snapshot', carries
+    // the payload to paint), or a coded failure. `code:'legacy-daemon'` means
+    // the daemon predates PR-B — the caller should fall back to `reconnect`.
+    resync: (id: string, opts?: { scrollback?: number }) =>
+      ipcRenderer.invoke(IPC.PTY_RESYNC, id, opts) as Promise<
+        | { success: true; mode: 'snapshot' | 'raw' }
+        | { success: true; mode: 'dead-snapshot'; payloadBase64: string; cols: number; rows: number }
+        | { success: false; code: string; reason?: string; transient?: boolean }
+      >,
     onData: (callback: (id: string, data: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, id: string, data: string) => callback(id, data);
       ipcRenderer.on(IPC.PTY_DATA, listener);

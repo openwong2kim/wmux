@@ -8,6 +8,16 @@ import type { RingBuffer } from './RingBuffer';
 export const FLUSH_DONE_MARKER = Buffer.from('\x00WMUX_FLUSH_DONE\x00');
 
 /**
+ * In-band announcement that a live-pipe re-flush is starting (phase 3 PR-B).
+ * Written on the ALREADY-FLUSHED stream right before live output is
+ * suppressed; everything after it up to the next FLUSH_DONE_MARKER is replay
+ * (snapshot or raw) that the client must accumulate exactly like the initial
+ * flush. Carrying the state transition in the stream itself is what makes the
+ * protocol race-free: no RPC-vs-stream ordering can misclassify bytes.
+ */
+export const RESYNC_BEGIN_MARKER = Buffer.from('\x00WMUX_RESYNC_BEGIN\x00');
+
+/**
  * Per-session data pipe for raw byte streaming.
  * Created on attach, destroyed on detach.
  *
@@ -23,6 +33,7 @@ export class SessionPipe {
   private client: net.Socket | null = null;
   private inputCallback: ((data: Buffer) => void) | null = null;
   private flushed = false;
+  private reflushInFlight = false;
   private connectionRate = { count: 0, resetAt: 0 };
 
   // A single session pipe is legitimately consumed by at most one renderer at a time.
@@ -181,6 +192,139 @@ export class SessionPipe {
   /** Whether a client is currently connected. */
   get isConnected(): boolean {
     return this.client !== null && !this.client.destroyed;
+  }
+
+  /** Whether the connected client has completed its initial flush (live mode). */
+  get isFlushed(): boolean {
+    return this.isConnected && this.flushed;
+  }
+
+  /**
+   * Live-pipe re-flush (phase 3 PR-B): re-run the flush sequence on the
+   * EXISTING connected socket — no teardown, no re-auth, so the input path
+   * (which never checks `flushed`, see handleClient step 3) keeps flowing and
+   * there is no input dead-zone and no dead-pane replacement.
+   *
+   * Gap-free byte accounting: every PTY byte lands in exactly one of
+   *   - pre-T0  — ring buffer readAll, parsed into the snapshot,
+   *   - T0..T1  — tee'd from the bridge while the snapshot is generated;
+   *               drained into the snapshot, with any post-last-drain
+   *               leftovers written verbatim AFTER the marker (they are live
+   *               bytes the headless parser never saw),
+   *   - post-T1 — normal live writes (flushed=true again).
+   * T0 and T1 are single synchronous blocks, so no 'data' event can interleave
+   * with the capture or the finalize.
+   *
+   * Degrade ladder ("slower, never wrong"): when the generator declines
+   * (alt-screen, margins, budget, error), fall back to a classic raw
+   * ring-buffer replay — the exact bytes the initial flush would send.
+   */
+  async reflush(opts: {
+    /** The session's PTY bridge — tee source for bytes arriving mid-generation. */
+    bridge: {
+      on(event: 'data', listener: (data: Buffer) => void): unknown;
+      removeListener(event: 'data', listener: (data: Buffer) => void): unknown;
+    };
+    cols: number;
+    rows: number;
+    scrollback?: number;
+    generate: (req: {
+      cols: number;
+      rows: number;
+      scrollback?: number;
+      initial: Buffer;
+      drainQueue: () => Buffer[];
+    }) => Promise<
+      | { ok: true; payload: Buffer; bytesIn: number; durationMs: number }
+      | { ok: false; reason: string; detail?: string }
+    >;
+  }): Promise<{ mode: 'snapshot' | 'raw'; fallbackReason?: string }> {
+    const socket = this.client;
+    if (!socket || socket.destroyed || !this.flushed) {
+      throw new Error('RESYNC_UNAVAILABLE: no flushed client on session pipe');
+    }
+    if (this.reflushInFlight) {
+      throw new Error('RESYNC_BUSY: a re-flush is already in progress');
+    }
+    this.reflushInFlight = true;
+    const teeQueue: Buffer[] = [];
+    const tee = (data: Buffer) => {
+      teeQueue.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
+    };
+    try {
+      // T0 — one synchronous block: announce, suppress live writes, capture
+      // the ring, arm the tee. Nothing can arrive between these statements.
+      socket.write(RESYNC_BEGIN_MARKER);
+      this.flushed = false;
+      const initial = this.ringBuffer.readAll();
+      opts.bridge.on('data', tee);
+
+      let outcome: Awaited<ReturnType<typeof opts.generate>>;
+      try {
+        outcome = await opts.generate({
+          cols: opts.cols,
+          rows: opts.rows,
+          scrollback: opts.scrollback,
+          initial,
+          drainQueue: () => teeQueue.splice(0),
+        });
+      } catch (err) {
+        outcome = {
+          ok: false,
+          reason: 'error',
+          detail: err instanceof Error ? err.message : String(err),
+        };
+      }
+
+      // T1 — finalize. MUST stay synchronous through `flushed = true`: a
+      // 'data' event firing between tee removal and re-enable would be lost.
+      opts.bridge.removeListener('data', tee);
+      if (this.client !== socket || socket.destroyed) {
+        // Client vanished (or reconnected fresh) mid-generation — the new
+        // connection runs its own initial flush; abort without touching it.
+        throw new Error('RESYNC_DISCONNECTED: client changed during re-flush');
+      }
+      // RIS prefix: live bytes that raced ahead of RESYNC_BEGIN were buffered
+      // by the renderer's pending-resync state and get written BEFORE this
+      // replay — but they are pre-T0 bytes the snapshot (or raw readAll)
+      // already contains. A full reset first makes the replay idempotent
+      // against that duplicated prefix instead of appending misaligned.
+      const RIS = Buffer.from('\x1bc');
+      if (outcome.ok) {
+        const tailRaw = teeQueue.length > 0 ? Buffer.concat(teeQueue.splice(0)) : null;
+        socket.write(RIS);
+        socket.write(outcome.payload);
+        socket.write(FLUSH_DONE_MARKER);
+        this.flushed = true;
+        if (tailRaw && tailRaw.length > 0) {
+          socket.write(tailRaw);
+        }
+        // eslint-disable-next-line no-console
+        console.log(
+          `[SessionPipe.reflush] sessionId=${this.sessionId} mode=snapshot payload=${outcome.payload.length} parsed=${outcome.bytesIn} durationMs=${outcome.durationMs}`,
+        );
+        return { mode: 'snapshot' };
+      }
+      // Raw degrade: the ring keeps being written by the session manager
+      // independent of this pipe, so a fresh readAll here already contains
+      // every tee'd byte — the classic replay, gap-free because this block
+      // is synchronous.
+      teeQueue.length = 0;
+      const raw = this.ringBuffer.readAll();
+      socket.write(RIS);
+      socket.write(raw);
+      socket.write(FLUSH_DONE_MARKER);
+      this.flushed = true;
+      // A3 rollout metric: fallback-rate by reason.
+      // eslint-disable-next-line no-console
+      console.log(
+        `[SessionPipe.reflush] sessionId=${this.sessionId} mode=raw fallbackReason=${outcome.reason}${outcome.detail ? ` detail=${outcome.detail}` : ''} bytes=${raw.length}`,
+      );
+      return { mode: 'raw', fallbackReason: outcome.reason };
+    } finally {
+      opts.bridge.removeListener('data', tee);
+      this.reflushInFlight = false;
+    }
   }
 
   private handleClient(socket: net.Socket): void {

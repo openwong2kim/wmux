@@ -98,3 +98,61 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
     expect(exitWrites.length).toBe(2);
   });
 });
+
+// Phase 3 PR-B — snapshot resync ladder wiring. The behavioral halves live in
+// the daemon suites (HeadlessSnapshot / SessionPipe.reflush) and the main
+// scanner suite; this pins the renderer's ladder ordering the same way the
+// PR-A block above pins retention wiring.
+describe('Phase 3 PR-B — useTerminal snapshot-resync ladder (source-level)', () => {
+  const hookPath = path.join(__dirname, '..', 'useTerminal.ts');
+  const src = fs.readFileSync(hookPath, 'utf-8');
+  const startIdx = src.indexOf('const startResync');
+  const body = src.slice(startIdx, startIdx + 3200);
+
+  it('prefers the non-disruptive pty.resync, guarded against stale preloads', () => {
+    // A packaged app updated under a running renderer may lack pty.resync —
+    // the typeof guard degrades straight to the PR-A reconnect path.
+    expect(body).toMatch(/typeof window\.electronAPI\.pty\.resync !== 'function'/);
+    expect(body).toMatch(/window\.electronAPI\.pty\.resync\(id,\s*\{\s*scrollback:\s*scrollbackLines\s*\}\)/);
+  });
+
+  it('falls back to reconnect ONLY for transport-shaped failures', () => {
+    // legacy-daemon / pipe-not-writable / rpc-error / local-mode → the raw
+    // reconnect ladder; session-gone & serialize-unavailable mean no better
+    // screen exists, so they degrade in place instead of tearing the socket.
+    expect(body).toMatch(/'legacy-daemon'/);
+    expect(body).toMatch(/'pipe-not-writable'/);
+    expect(body).toMatch(/'rpc-error'/);
+    expect(body).toMatch(/'local-mode'/);
+    expect(body).toMatch(/abortResync\(`resync-failed:\$\{code\}`\)/);
+    // The RPC rejecting entirely (IPC failure) also lands on reconnect.
+    expect(body).toMatch(/\.catch\(\(\)\s*=>\s*\{\s*fallbackReconnect\(\);\s*\}\)/);
+  });
+
+  it('a live resync leaves settlement to the flush-complete handler (timer stays armed)', () => {
+    // No paint and no settle on {success, mode: snapshot|raw} — the replay is
+    // in flight on the session pipe; RESYNC_TIMEOUT still guards a wedge.
+    const successBranch = body.slice(body.indexOf("res.mode === 'dead-snapshot'"));
+    expect(successBranch).toMatch(/if \(res\?\.success\) \{[\s\S]{0,400}?return;/);
+  });
+
+  it('dead-snapshot paint mirrors the flush-complete contract', () => {
+    const idx = src.indexOf('const paintDeadSnapshot');
+    expect(idx).toBeGreaterThan(0);
+    const paint = src.slice(idx, idx + 1600);
+    // discard stale backlog → reset → write payload → write held bytes → clean.
+    const discard = paint.indexOf('discardTerminalOutput(term)');
+    const reset = paint.indexOf('term.reset()');
+    const write = paint.indexOf('term.write(bytes)');
+    const clean = paint.indexOf('markTerminalClean(term)');
+    expect(discard).toBeGreaterThan(0);
+    expect(reset).toBeGreaterThan(discard);
+    expect(write).toBeGreaterThan(reset);
+    expect(clean).toBeGreaterThan(write);
+    // A dead process cannot own input-reporting modes — always neutralize
+    // (same rationale as staleReplayModeReset, without the resumeAgent gate).
+    expect(paint).toMatch(/STALE_REPLAY_INPUT_MODE_RESETS/);
+    // No flush marker is coming: it settles the resync state itself.
+    expect(paint).toMatch(/st\.resolvers\.splice\(0\)\.forEach/);
+  });
+});

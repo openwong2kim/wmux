@@ -854,6 +854,92 @@ export function registerPTYHandlers(
     }));
   }
 
+  // pty:resync (phase 3 PR-B) — live-pipe re-flush. Rehydrates a pane WITHOUT
+  // tearing down its session socket (no input dead-zone, no dead-pane swap):
+  //   - live session  → arm the stream scanner for the in-band RESYNC_BEGIN,
+  //     then daemon.resyncSession re-runs the flush (snapshot, or raw degrade).
+  //   - dead/suspended → daemon.serializeSession returns a read-only snapshot
+  //     over the control RPC ('dead-snapshot') that paints the final screen
+  //     without resurrecting the session.
+  // Legacy daemons (pre-PR-B) lack these RPCs; the 'legacy-daemon' code tells
+  // the renderer to fall back to the classic pty:reconnect. Renderer keys off
+  // `transient` to decide retry-vs-give-up exactly as pty:reconnect does.
+  ipcMain.removeHandler(IPC.PTY_RESYNC);
+  ipcMain.handle(IPC.PTY_RESYNC, wrapHandler(IPC.PTY_RESYNC, async (_event: Electron.IpcMainInvokeEvent, id: string, opts?: { scrollback?: number }) => {
+    if (!useDaemon || !daemonClient) {
+      // Local mode has no daemon SessionPipe to re-flush — the renderer keeps
+      // its live buffer as-is (never wrong). Permanent, do not retry.
+      return { success: false, code: 'local-mode', transient: false };
+    }
+    const scrollback = opts?.scrollback;
+    try {
+      const sessions = await daemonClient.rpc('daemon.listSessions', {}) as Array<{ id: string; state: string }>;
+      const session = sessions.find(s => s.id === id);
+      if (!session) {
+        return { success: false, code: 'session-gone', transient: false };
+      }
+
+      if (session.state === 'dead' || session.state === 'suspended') {
+        // No live pipe to re-flush — pull a read-only snapshot instead. This
+        // never resurrects or replaces the session (daemon-side F2 guarantee).
+        const snap = await daemonClient.rpc('daemon.serializeSession', { id, scrollback }) as {
+          mode: 'snapshot' | 'unavailable';
+          payloadBase64?: string;
+          cols?: number;
+          rows?: number;
+          reason?: string;
+        };
+        if (snap.mode === 'snapshot') {
+          return {
+            success: true,
+            mode: 'dead-snapshot',
+            payloadBase64: snap.payloadBase64,
+            cols: snap.cols,
+            rows: snap.rows,
+          };
+        }
+        // Snapshot generator declined (alt-screen, too-large, ...). The renderer
+        // keeps its current stale screen — status quo, never wrong.
+        return { success: false, code: 'serialize-unavailable', reason: snap.reason, transient: false };
+      }
+
+      // Live session — the re-flush rides the existing connected socket.
+      if (!daemonClient.isSessionPipeWritable(id)) {
+        // Pipe not (yet) writable — the socket may be mid-replacement. Retry.
+        return { success: false, code: 'pipe-not-writable', transient: true };
+      }
+      if (!daemonClient.armSessionResync(id)) {
+        // No live scanner (pipe absent or still doing its initial flush). Retry.
+        return { success: false, code: 'pipe-not-writable', transient: true };
+      }
+      try {
+        const res = await daemonClient.rpc('daemon.resyncSession', { id, scrollback }) as {
+          mode: 'snapshot' | 'raw';
+        };
+        // The scanner disarms itself when it consumes the in-band RESYNC_BEGIN
+        // the daemon just wrote, so no disarm is needed on the success path.
+        return { success: true, mode: res.mode };
+      } catch (err) {
+        // RPC failed AFTER arming — the scanner is still watching for a BEGIN
+        // marker that will now never come. Disarm so it doesn't misclassify a
+        // future coincidental byte run (harmless but must not linger).
+        daemonClient.disarmSessionResync(id);
+        const msg = err instanceof Error ? err.message : String(err);
+        if (msg.includes('Unknown method')) {
+          // Pre-PR-B daemon: no daemon.resyncSession. Renderer degrades to the
+          // classic pty:reconnect. Permanent for THIS daemon build.
+          return { success: false, code: 'legacy-daemon', transient: false };
+        }
+        return { success: false, code: 'rpc-error', reason: msg, transient: true };
+      }
+    } catch (err) {
+      // listSessions / serializeSession threw (timeout, ECONNRESET, or a legacy
+      // daemon missing serializeSession). No scanner was armed on this path.
+      const msg = err instanceof Error ? err.message : String(err);
+      return { success: false, code: 'rpc-error', reason: msg, transient: true };
+    }
+  }));
+
   // X8 supervision control — rearm a tripped runaway guard / stop supervision.
   // Renderer-only by design (decision ⑥): only the user re-arms a guard, never
   // an external MCP/CLI client (the daemon RPCs are 'wmux.internal'-gated). Both
@@ -967,6 +1053,7 @@ export function registerPTYHandlers(
     ipcMain.removeHandler(IPC.PTY_DISPOSE);
     ipcMain.removeHandler(IPC.PTY_LIST);
     ipcMain.removeHandler(IPC.PTY_RECONNECT);
+    ipcMain.removeHandler(IPC.PTY_RESYNC);
     ipcMain.removeHandler(IPC.SUPERVISE_REARM);
     ipcMain.removeHandler(IPC.SUPERVISE_STOP);
 

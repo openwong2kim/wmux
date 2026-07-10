@@ -13,8 +13,8 @@ import type {
   LanLinkSendArgs,
   LanLinkPeersListResult,
 } from '../shared/lanlink';
-import { FLUSH_DONE_MARKER } from '../daemon/SessionPipe';
 import { stripReplayQuerySequences } from '../shared/replayQuerySanitizer';
+import { SessionPipeStreamScanner } from './daemon/sessionPipeStreamScanner';
 import { DAEMON_RPC_TIMEOUT_MS } from '../shared/timeouts';
 import {
   dataSuffix,
@@ -47,6 +47,10 @@ interface PendingRequest {
 export class DaemonClient extends EventEmitter {
   private controlPipe: net.Socket | null = null;
   private sessionPipes: Map<string, net.Socket> = new Map();
+  // Per-session stream state machine (marker scanning + flush accounting).
+  // Keyed by sessionId, lifecycle-bound to the socket in sessionPipes: created
+  // in setupSessionPipe, dropped on socket close/error/disconnect.
+  private sessionScanners: Map<string, SessionPipeStreamScanner> = new Map();
   private connected: boolean = false;
   private requestId: number = 0;
   private pendingRequests: Map<string, PendingRequest> = new Map();
@@ -151,6 +155,7 @@ export class DaemonClient extends EventEmitter {
       try { socket.destroy(); } catch { /* ignore */ }
     }
     this.sessionPipes.clear();
+    this.sessionScanners.clear();
 
     // Reject pending requests so in-flight RPC promises settle instead
     // of dangling. The async `disconnect()` already does this; the sync
@@ -265,6 +270,7 @@ export class DaemonClient extends EventEmitter {
       socket.destroy();
       this.sessionPipes.delete(sessionId);
     }
+    this.sessionScanners.delete(sessionId);
   }
 
   /**
@@ -661,88 +667,70 @@ export class DaemonClient extends EventEmitter {
   }
 
   private setupSessionPipe(sessionId: string, socket: net.Socket): void {
-    let flushed = false;
-    let pendingChunks: Buffer[] = [];
-    let pendingBytes = 0;
-    const MAX_PENDING_BYTES = 10 * 1024 * 1024; // 10 MB safety cap
+    // The marker scanning / flush accounting lives in a pure state machine so
+    // it can be unit-tested in isolation (see sessionPipeStreamScanner.ts). The
+    // scanner returns ordered events; this closure only fans them out onto the
+    // EventBus, preserving the original emit signatures and ordering.
+    const scanner = new SessionPipeStreamScanner({
+      stripReplay: stripReplayQuerySequences,
+    });
+    this.sessionScanners.set(sessionId, scanner);
+
+    const drain = (events: ReturnType<SessionPipeStreamScanner['feed']>) => {
+      for (const ev of events) {
+        if (ev.type === 'data') {
+          this.emit('session:data', { sessionId, data: ev.data });
+        } else {
+          this.emit('session:flushComplete', { sessionId, recoveredBytes: ev.recoveredBytes });
+        }
+      }
+    };
 
     socket.on('data', (chunk: Buffer) => {
-      const buf = Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk);
-
-      if (!flushed) {
-        pendingChunks.push(buf);
-        pendingBytes += buf.length;
-
-        // Prevent unbounded accumulation if flush marker never arrives
-        if (pendingBytes > MAX_PENDING_BYTES) {
-          flushed = true;
-          pendingChunks = [];
-          pendingBytes = 0;
-          return;
-        }
-
-        // Accumulate until we see the FLUSH_DONE_MARKER
-        const combined = Buffer.concat(pendingChunks);
-        const markerIndex = combined.indexOf(FLUSH_DONE_MARKER);
-
-        if (markerIndex !== -1) {
-          flushed = true;
-          // markerIndex is exactly the count of replayed scrollback bytes:
-          // 0 when the daemon's ringBuffer was empty (mismatch case from
-          // the scrollback-restore-sync design — recovery cap dropped this
-          // session, or it was created fresh by reconcile fallback). The
-          // renderer uses this to decide whether to wipe its .txt cache.
-          // NOTE: pre-strip length on purpose — recoveredBytes answers "did
-          // the daemon have authoritative scrollback", which the renderer's
-          // reset-or-keep decision depends on, not the sanitized byte count.
-          const recoveredBytes = markerIndex;
-
-          // Emit data before marker (ring buffer replay). Queries stored in
-          // the ring (DSR/CPR, DA, DECRQM, ...) are stripped first: xterm.js
-          // re-executes replayed bytes, so a stored query would fire a live
-          // auto-reply into the fresh shell's stdin — the CPR feedback storm
-          // of 2026-07-04 (see shared/replayQuerySanitizer.ts). Live bytes
-          // after the marker are never sanitized.
-          if (markerIndex > 0) {
-            const replay = stripReplayQuerySequences(
-              combined.subarray(0, markerIndex),
-            );
-            if (replay.length > 0) {
-              this.emit('session:data', { sessionId, data: replay });
-            }
-          }
-
-          // Fire flush-complete BEFORE the post-marker data so the
-          // renderer's reset-or-keep decision lands before any live PTY
-          // bytes start composing on the buffer.
-          this.emit('session:flushComplete', { sessionId, recoveredBytes });
-
-          // Emit data after marker (if any real-time data arrived in same chunk)
-          const afterMarker = combined.subarray(markerIndex + FLUSH_DONE_MARKER.length);
-          if (afterMarker.length > 0) {
-            this.emit('session:data', { sessionId, data: afterMarker });
-          }
-
-          pendingChunks = [];
-          pendingBytes = 0;
-        }
-      } else {
-        // Real-time mode — emit directly
-        this.emit('session:data', { sessionId, data: buf });
-      }
+      drain(scanner.feed(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     });
 
     socket.on('close', () => {
-      pendingChunks = [];
-      pendingBytes = 0;
+      this.sessionScanners.delete(sessionId);
       this.sessionPipes.delete(sessionId);
     });
 
     socket.on('error', () => {
-      pendingChunks = [];
-      pendingBytes = 0;
+      this.sessionScanners.delete(sessionId);
       this.sessionPipes.delete(sessionId);
     });
+  }
+
+  /**
+   * Arm the session's live stream scanner to watch for the in-band
+   * RESYNC_BEGIN_MARKER (phase 3 PR-B). Returns true only when a live scanner
+   * exists for the session; a missing or still-accumulating scanner returns
+   * false so the caller can degrade (the session pipe is not ready for a live
+   * re-flush). MUST be paired with a matching disarm on the failure path so a
+   * scanner left armed does not sit watching a normal live stream for a marker
+   * that will never come.
+   */
+  armSessionResync(sessionId: string): boolean {
+    const scanner = this.sessionScanners.get(sessionId);
+    if (!scanner || scanner.mode !== 'live') return false;
+    scanner.armResync();
+    return true;
+  }
+
+  /**
+   * Disarm the session's resync scanner and flush any bytes it was holding back
+   * as a possible marker prefix (those are real live output). Safe to call when
+   * no scanner exists or it was never armed.
+   */
+  disarmSessionResync(sessionId: string): void {
+    const scanner = this.sessionScanners.get(sessionId);
+    if (!scanner) return;
+    const events = scanner.disarmResync();
+    for (const ev of events) {
+      if (ev.type === 'data') {
+        this.emit('session:data', { sessionId, data: ev.data });
+      }
+    }
   }
 }
 

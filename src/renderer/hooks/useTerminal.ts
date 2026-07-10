@@ -360,12 +360,47 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     st.resolvers.splice(0).forEach((r) => r());
   }, []);
 
-  /** Re-synchronize a dirty pane's full screen state from the daemon: trigger
-   *  a reconnect (SessionPipe replay of the RingBuffer) while holding incoming
-   *  bytes out of xterm; the flush-complete handler then resets the stale
-   *  buffer and writes the replay onto the clean one. Resolves when the resync
-   *  settles (replayed OR degraded). Never clears the ptyId — a dead session's
-   *  last screen must survive reveal (unlike reconnectPtyWithRetry). */
+  /** PR-B: paint a dead session's serialized last screen. There is no flush
+   *  marker coming (the payload rode the control RPC, not the session pipe),
+   *  so this settles the resync state itself, mirroring the flush-complete
+   *  contract: discard stale backlog → reset → write → clean. The dead
+   *  process cannot own input-reporting modes, so the stale-replay resets are
+   *  always appended (same rationale as staleReplayModeReset.ts, without the
+   *  resumeAgent round-trip — dead is dead). */
+  const paintDeadSnapshot = useCallback((payloadBase64: string) => {
+    const st = resyncRef.current;
+    if (!st.pending) return; // timed out or cancelled while the RPC ran
+    st.pending = false;
+    if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+    const term = terminalRef.current;
+    if (term) {
+      try {
+        const bytes = Uint8Array.from(atob(payloadBase64), (c) => c.charCodeAt(0));
+        console.log(`[wmux:hidden-retention] dead-snapshot paint ptyId=${ptyIdRef.current} payload=${bytes.length}`);
+        discardTerminalOutput(term);
+        term.reset();
+        term.write(bytes);
+        term.write(STALE_REPLAY_INPUT_MODE_RESETS);
+        for (const chunk of st.buffer) term.write(chunk);
+        markTerminalClean(term);
+      } catch { /* disposed mid-paint — teardown owns cleanup */ }
+    }
+    st.buffer.length = 0;
+    st.bufferedChars = 0;
+    st.resolvers.splice(0).forEach((r) => r());
+  }, []);
+
+  /** Re-synchronize a dirty pane's full screen state from the daemon while
+   *  holding incoming bytes out of xterm; the flush-complete handler then
+   *  resets the stale buffer and writes the replay onto the clean one.
+   *  Resolves when the resync settles (replayed OR degraded). Never clears
+   *  the ptyId — a dead session's last screen must survive reveal (unlike
+   *  reconnectPtyWithRetry).
+   *
+   *  PR-B ladder: live-pipe snapshot reflush (pty.resync — no socket
+   *  teardown, no input dead-zone) → legacy reconnect (raw replay over a
+   *  fresh socket, PR-A behavior) → degrade to the stale-but-unstuck screen.
+   *  Dead sessions short-circuit to a read-only serialized snapshot. */
   const startResync = useCallback((reason: string): Promise<void> => {
     const term = terminalRef.current;
     const id = ptyIdRef.current;
@@ -378,13 +413,43 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     st.bufferedChars = 0;
     console.log(`[useTerminal] hidden-pane resync ptyId=${id} (${reason})`);
     st.timer = setTimeout(() => abortResync('timeout'), RESYNC_TIMEOUT_MS);
-    window.electronAPI.pty.reconnect(id).then((res) => {
-      if (!res?.success) abortResync(`reconnect-failed${res?.code ? `:${res.code}` : ''}`);
-    }).catch((err: unknown) => {
-      abortResync(`reconnect-error:${err instanceof Error ? err.message : String(err)}`);
+    const fallbackReconnect = () => {
+      window.electronAPI.pty.reconnect(id).then((res) => {
+        if (!res?.success) abortResync(`reconnect-failed${res?.code ? `:${res.code}` : ''}`);
+      }).catch((err: unknown) => {
+        abortResync(`reconnect-error:${err instanceof Error ? err.message : String(err)}`);
+      });
+    };
+    // Optional-chain style guard: a stale preload (packaged app updated under
+    // a running renderer) may not expose resync yet.
+    if (typeof window.electronAPI.pty.resync !== 'function') {
+      fallbackReconnect();
+      return done;
+    }
+    window.electronAPI.pty.resync(id, { scrollback: scrollbackLines }).then((res) => {
+      if (res?.success && res.mode === 'dead-snapshot') {
+        paintDeadSnapshot(res.payloadBase64);
+        return;
+      }
+      if (res?.success) {
+        // snapshot | raw — the replay is in flight on the live pipe; the
+        // flush-complete handler settles the resync (timeout still armed).
+        return;
+      }
+      const code = res && !res.success ? res.code : 'no-response';
+      if (code === 'legacy-daemon' || code === 'pipe-not-writable' || code === 'rpc-error' || code === 'local-mode') {
+        console.log(`[wmux:hidden-retention] resync fallback to reconnect ptyId=${id} code=${code}`);
+        fallbackReconnect();
+        return;
+      }
+      // session-gone / serialize-unavailable: nothing better than the current
+      // screen exists — degrade in place (status quo, never stuck).
+      abortResync(`resync-failed:${code}`);
+    }).catch(() => {
+      fallbackReconnect();
     });
     return done;
-  }, [abortResync]);
+  }, [abortResync, paintDeadSnapshot, scrollbackLines]);
 
   const fit = useCallback(() => {
     const container = containerRef.current;

@@ -6,6 +6,7 @@ import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
+import { generateSnapshot } from './HeadlessSnapshot';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
@@ -1269,6 +1270,76 @@ function registerRpcHandlers(
     const p = params as unknown as DaemonResizeParams;
     sessionManager.resizeSession(p.id, p.cols, p.rows);
     return { ok: true };
+  });
+
+  // daemon.resyncSession (phase 3 PR-B) — re-run the flush sequence on the
+  // live, already-connected session pipe: RESYNC_BEGIN marker → headless
+  // snapshot (or raw-replay degrade) → FLUSH_DONE marker. The socket is never
+  // torn down, so input keeps flowing throughout ("무단절 reflush").
+  pipeServer.onRpc('daemon.resyncSession', async (params) => {
+    const p = params as unknown as { id: string; scrollback?: number };
+    const managed = sessionManager.getSession(p.id);
+    if (!managed) {
+      throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
+    }
+    if (managed.meta.state === 'dead' || managed.meta.state === 'suspended') {
+      throw new Error(`SESSION_DEAD: ${p.id} is ${managed.meta.state} — use daemon.serializeSession`);
+    }
+    const pipe = sessionPipes.get(p.id);
+    if (!pipe || !pipe.isFlushed) {
+      throw new Error(`NO_PIPE: session ${p.id} has no flushed client pipe`);
+    }
+    const result = await pipe.reflush({
+      bridge: managed.bridge,
+      cols: managed.meta.cols,
+      rows: managed.meta.rows,
+      scrollback: typeof p.scrollback === 'number' ? p.scrollback : undefined,
+      generate: generateSnapshot,
+    });
+    log('info', `[resync] session=${p.id} mode=${result.mode}${result.fallbackReason ? ` fallback=${result.fallbackReason}` : ''}`);
+    return { ok: true, mode: result.mode, fallbackReason: result.fallbackReason };
+  });
+
+  // daemon.serializeSession (phase 3 PR-B) — read-only snapshot of a session
+  // that has NO live pipe (dead/suspended), returned over the control RPC so
+  // a dirty reveal can paint the final screen. NEVER clears or replaces the
+  // session (F2: a dead pane's last screen must survive reveal). Payload is
+  // size-capped for the 1 MB control-pipe line limit: an oversized snapshot
+  // retries viewport-only, then reports 'unavailable' (renderer keeps its
+  // current stale screen — status quo, never wrong).
+  pipeServer.onRpc('daemon.serializeSession', async (params) => {
+    const p = params as unknown as { id: string; scrollback?: number };
+    const managed = sessionManager.getSession(p.id);
+    if (!managed) {
+      throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
+    }
+    const MAX_RPC_PAYLOAD_BYTES = 512 * 1024; // base64 ×1.37 + JSON stays < 1 MB
+    const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 2000, 10_000);
+    const base = {
+      cols: managed.meta.cols,
+      rows: managed.meta.rows,
+      initial: managed.ringBuffer.readAll(),
+    };
+    let outcome = await generateSnapshot({ ...base, scrollback });
+    if (outcome.ok && outcome.payload.length > MAX_RPC_PAYLOAD_BYTES) {
+      outcome = await generateSnapshot({ ...base, scrollback: 0 });
+    }
+    if (!outcome.ok) {
+      log('info', `[serialize] session=${p.id} unavailable reason=${outcome.reason}`);
+      return { ok: true, mode: 'unavailable', reason: outcome.reason };
+    }
+    if (outcome.payload.length > MAX_RPC_PAYLOAD_BYTES) {
+      log('info', `[serialize] session=${p.id} unavailable reason=too-large bytes=${outcome.payload.length}`);
+      return { ok: true, mode: 'unavailable', reason: 'too-large' };
+    }
+    log('info', `[serialize] session=${p.id} mode=snapshot payload=${outcome.payload.length}`);
+    return {
+      ok: true,
+      mode: 'snapshot',
+      payloadBase64: outcome.payload.toString('base64'),
+      cols: managed.meta.cols,
+      rows: managed.meta.rows,
+    };
   });
 
   // daemon.listSessions
