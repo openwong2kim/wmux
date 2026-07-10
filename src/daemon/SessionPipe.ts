@@ -239,12 +239,15 @@ export class SessionPipe {
       | { ok: false; reason: string; detail?: string }
     >;
   }): Promise<{ mode: 'snapshot' | 'raw'; fallbackReason?: string }> {
+    // Order matters: an in-flight reflush holds `flushed=false` from its T0
+    // block, so the busy check must run BEFORE the flushed check or a
+    // concurrent call would always misreport as UNAVAILABLE.
+    if (this.reflushInFlight) {
+      throw new Error('RESYNC_BUSY: a re-flush is already in progress');
+    }
     const socket = this.client;
     if (!socket || socket.destroyed || !this.flushed) {
       throw new Error('RESYNC_UNAVAILABLE: no flushed client on session pipe');
-    }
-    if (this.reflushInFlight) {
-      throw new Error('RESYNC_BUSY: a re-flush is already in progress');
     }
     this.reflushInFlight = true;
     const teeQueue: Buffer[] = [];
