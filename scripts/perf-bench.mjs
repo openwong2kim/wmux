@@ -1391,9 +1391,22 @@ async function measureHiddenFlood(inst, agentCounts) {
     const sorted = [...agentCounts].sort((a, b) => a - b);
     for (const n of sorted) {
       while (hidden.length < n) {
-        const res = await client.call('mcp.claimWorkspace', { name: `hf-flood-${hidden.length + 1}` });
-        if (!res || typeof res.ptyId !== 'string' || res.error) {
-          throw new Error(`hiddenFlood: mcp.claimWorkspace failed — ${res?.error ?? JSON.stringify(res)}`);
+        // Retry rate-limited claims: pty:create shares the daemon's per-socket
+        // RPC budget with everything else on the pipe, and on a fast runner
+        // the N8 top-up can land inside a still-hot window (observed on CI:
+        // "[RESOURCE_EXHAUSTED] rate limited" killed the whole scenario, which
+        // the perf gate then flags as scenario-missing). The window resets
+        // every 1s, so a short backoff always clears it.
+        let res = null;
+        for (let attempt = 1; attempt <= 5; attempt++) {
+          res = await client.call('mcp.claimWorkspace', { name: `hf-flood-${hidden.length + 1}` });
+          const msg = res?.error ?? '';
+          if (res && typeof res.ptyId === 'string' && !res.error) break;
+          if (!/rate limited|RESOURCE_EXHAUSTED/i.test(String(msg)) || attempt === 5) {
+            throw new Error(`hiddenFlood: mcp.claimWorkspace failed — ${msg || JSON.stringify(res)}`);
+          }
+          console.log(`[hiddenFlood] claimWorkspace rate-limited — retry ${attempt}/5 in 1.2s`);
+          await sleep(1200);
         }
         hidden.push(res.ptyId);
         await sleep(200);
