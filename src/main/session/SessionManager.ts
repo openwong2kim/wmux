@@ -17,7 +17,23 @@ const DEBOUNCE_MS = 30_000;
 const QUEUE_KEY = 'session';
 
 export class SessionManager {
-  private filePath: string;
+  /**
+   * Resolved LAZILY (first use), never in the constructor. This class is
+   * instantiated as a module-level singleton (session.handler.ts) — module
+   * evaluation runs BEFORE index.ts applies WMUX_DATA_SUFFIX via
+   * app.setPath('userData', …), so a constructor-captured path pins
+   * session.json/metadata.json to the UN-suffixed userData dir. Every other
+   * suffixed surface (pipes, daemon home, logs, tokens) is isolated, so a
+   * suffixed instance (dev '-dev', bench/probe isolation, multi-instance)
+   * silently reads/writes ANOTHER instance's session state — the same
+   * hardcoded-shared-path class as the daemon auth-token bug fixed in #325.
+   * First use is always an IPC handler or save path, well after the suffix
+   * is applied, so lazy resolution is sufficient (no re-resolve needed).
+   */
+  private filePathCached: string | null = null;
+  private get filePath(): string {
+    return (this.filePathCached ??= path.join(app.getPath('userData'), 'session.json'));
+  }
   /**
    * Separate file for the MetadataStore's `PersistedShape` (M0-e).
    *
@@ -34,7 +50,11 @@ export class SessionManager {
    *   - schema_version (M0-a + M0-f) lives inside the metadata envelope,
    *     so its evolution does not pull session.json migrations along.
    */
-  private metadataFilePath: string;
+  /** Lazy for the same suffix-isolation reason as {@link filePath}. */
+  private metadataFilePathCached: string | null = null;
+  private get metadataFilePath(): string {
+    return (this.metadataFilePathCached ??= path.join(app.getPath('userData'), 'metadata.json'));
+  }
   private debounceTimer: NodeJS.Timeout | null = null;
   private pendingData: SessionData | null = null;
   private readonly queue = new AsyncQueue();
@@ -54,8 +74,7 @@ export class SessionManager {
   private lastSyncCommit: { epoch: number; data: SessionData } | null = null;
 
   constructor() {
-    this.filePath = path.join(app.getPath('userData'), 'session.json');
-    this.metadataFilePath = path.join(app.getPath('userData'), 'metadata.json');
+    // Paths deliberately NOT captured here — see the filePath getter.
 
     // Sync fallback for `flushSync()` on emergency exit paths
     // (Windows session-end, process crash handlers, etc.).
