@@ -705,6 +705,9 @@ export const en = {
   'channels.searchPlaceholder': 'Search messages…',
   'channels.searchEmpty': 'No messages match your search.',
   'channels.archivedReadOnly': 'Archived channels are read-only.',
+  // W1 (operator observation) — read-only visibility of private agent channels.
+  'channels.observedBadge': 'observed',
+  'channels.observedReadOnly': "You're observing this channel (read-only). Join to participate.",
   'channels.closeTooltip': 'Close channel',
   'channels.closeViewTooltip': 'Close conversation (channel stays in your list)',
   'channels.refreshTooltip': 'Refresh channels',

@@ -83,18 +83,25 @@ async function makePrivateAgentChannel(svc: ChannelService): Promise<string> {
 }
 
 describe('ChannelService.operatorJoin', () => {
-  it('joins a PRIVATE channel that is invisible to the human (bypasses #288 gate)', async () => {
+  it('joins a PRIVATE channel the human OBSERVES but is not a member of (adds a roster seat)', async () => {
     const { svc } = makeService();
     const channelId = await makePrivateAgentChannel(svc);
-    // 사전조건: 사람은 이 비공개 채널을 볼 수 없다(list/get 비가시).
-    expect(svc.get(channelId, HUMAN_WORKSPACE_ID)).toBeNull();
+    // W1: 사전조건 — 사람은 이 비공개 채널을 read-only로 관전한다(get 가시). 하지만
+    // 아직 멤버는 아니다(roster에 ws-human 없음). operatorJoin이 좌석을 심는다.
+    expect(svc.get(channelId, HUMAN_WORKSPACE_ID)).not.toBeNull();
+    expect(
+      svc.getMembers(channelId, HUMAN_WORKSPACE_ID).some((m) => m.workspaceId === HUMAN_WORKSPACE_ID),
+    ).toBe(false);
 
     const res = await svc.operatorJoin({ channelId, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error(res.error.code);
     expect(res.memberId).toBe(HUMAN_MEMBER_ID);
-    // 사후조건: 이제 사람에게 보인다.
+    // 사후조건: 이제 사람이 멤버다(관전 → 참여).
     expect(svc.get(channelId, HUMAN_WORKSPACE_ID)).not.toBeNull();
+    expect(
+      svc.getMembers(channelId, HUMAN_WORKSPACE_ID).some((m) => m.workspaceId === HUMAN_WORKSPACE_ID),
+    ).toBe(true);
   });
 
   it('rejects an archived channel with CHANNEL_ARCHIVED', async () => {

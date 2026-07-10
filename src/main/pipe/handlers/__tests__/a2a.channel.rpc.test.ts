@@ -197,6 +197,88 @@ describe('a2a.channel.rpc — read routing (capability a2a.channel.read)', () =>
 });
 
 // =========================================================================
+// 1b. W1 hardening — reserved human workspace reads are first-party only
+// =========================================================================
+//
+// W1's operator observation widens the ws-human read scope daemon-side to
+// EVERY private channel with full history (ChannelService.isObservableBy), so
+// a wire client self-claiming verifiedWorkspaceId=ws-human on a read would
+// hold a skeleton key. The forwarder gates that claim on ctx.firstParty (set
+// only by trusted in-process dispatch — renderer bridge / plugin host; the
+// wire's PipeServer never passes it). Non-human self-claimed read scopes keep
+// the documented same-user residual (unchanged behavior, pinned below).
+
+describe('a2a.channel.rpc — ws-human read scope is first-party only (W1)', () => {
+  const HUMAN_WS = 'ws-human'; // HUMAN_WORKSPACE_ID (shared/channels)
+
+  it.each(['a2a.channel.list', 'a2a.channel.getMessages'] as const)(
+    'wire (non-firstParty) %s self-claiming ws-human is NOT_AUTHORIZED and never reaches the daemon',
+    async (method) => {
+      const daemon = makeFakeDaemon(() => ({ ok: true, value: [] }));
+      const router = setupHandlerRouter(daemon);
+      const rpcSpy = (daemon as unknown as { rpc: ReturnType<typeof vi.fn> }).rpc;
+
+      // No opts on dispatch = the wire path (PipeServer never sets firstParty).
+      const res = await router.dispatch({
+        id: `w1-${method}`,
+        method,
+        params: { channelId: CHANNEL_ID, verifiedWorkspaceId: HUMAN_WS, workspaceId: HUMAN_WS },
+      });
+      expect(res.ok).toBe(true); // transport envelope; the Result inside is the gate
+      if (res.ok) {
+        const r = res.result as { ok: boolean; error?: { code: string } };
+        expect(r.ok).toBe(false);
+        expect(r.error?.code).toBe('NOT_AUTHORIZED');
+      }
+      expect(rpcSpy).not.toHaveBeenCalled();
+    },
+  );
+
+  it.each(['a2a.channel.list', 'a2a.channel.getMessages'] as const)(
+    'first-party %s scoped to ws-human passes through (the renderer/plugin-host read path)',
+    async (method) => {
+      const expected = { ok: true, value: [] };
+      const daemon = makeFakeDaemon((m, params) => {
+        expect(m).toBe(method);
+        // The caller-supplied ws-human scope survives for the trusted surface.
+        expect((params as Record<string, unknown>).verifiedWorkspaceId).toBe(HUMAN_WS);
+        return expected;
+      });
+      const router = setupHandlerRouter(daemon);
+
+      const res = await router.dispatch(
+        {
+          id: `fp-${method}`,
+          method,
+          params: { channelId: CHANNEL_ID, verifiedWorkspaceId: HUMAN_WS, workspaceId: HUMAN_WS },
+        },
+        { firstParty: true },
+      );
+      expect(res.ok).toBe(true);
+      if (res.ok) expect(res.result).toBe(expected);
+    },
+  );
+
+  it('wire read self-claiming an ORDINARY workspace still passes (documented same-user residual, unchanged)', async () => {
+    const expected = { ok: true, value: [] };
+    const daemon = makeFakeDaemon((m, params) => {
+      expect(m).toBe('a2a.channel.list');
+      expect((params as Record<string, unknown>).verifiedWorkspaceId).toBe(SENDER_WS);
+      return expected;
+    });
+    const router = setupHandlerRouter(daemon);
+
+    const res = await router.dispatch({
+      id: 'w1-ordinary',
+      method: 'a2a.channel.list',
+      params: { verifiedWorkspaceId: SENDER_WS, workspaceId: SENDER_WS },
+    });
+    expect(res.ok).toBe(true);
+    if (res.ok) expect(res.result).toBe(expected);
+  });
+});
+
+// =========================================================================
 // 2. Routing — mutating methods dispatch to a2a.channel.<method>
 // =========================================================================
 
@@ -809,18 +891,27 @@ describe('a2a.channel.rpc — P5 reserved human workspace (ws-human) guard', () 
     expect(daemon.rpc).not.toHaveBeenCalled();
   });
 
-  it('ALLOWS a no-PTY read scoped to ws-human (the renderer reads ride this router)', async () => {
+  it('ALLOWS a no-PTY read scoped to ws-human ONLY first-party (W1 tightened: the renderer reads ride this router as firstParty)', async () => {
+    // Pre-W1 this pinned the bare-wire allowance ("documented same-user
+    // residual"). W1's operator observation turned the ws-human read scope into
+    // a skeleton key for every private channel's full history, so the wire
+    // claim is now gated on ctx.firstParty — see the W1 describe block above
+    // for the wire-rejection cases; here we pin that the RENDERER path (which
+    // dispatches firstParty) still works.
     let received: Record<string, unknown> = {};
     const daemon = makeFakeDaemon((_m, params) => {
       received = params as Record<string, unknown>;
       return { ok: true, value: [] };
     });
     const router = setupHandlerRouter(daemon);
-    const res = await router.dispatch({
-      id: 'p5-read-human',
-      method: 'a2a.channel.list',
-      params: { verifiedWorkspaceId: 'ws-human' },
-    });
+    const res = await router.dispatch(
+      {
+        id: 'p5-read-human',
+        method: 'a2a.channel.list',
+        params: { verifiedWorkspaceId: 'ws-human' },
+      },
+      { firstParty: true },
+    );
     expect(res.ok).toBe(true);
     expect(received.verifiedWorkspaceId).toBe('ws-human');
   });

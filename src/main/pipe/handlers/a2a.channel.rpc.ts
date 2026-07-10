@@ -28,7 +28,10 @@
 // no-PTY caller and fall back to the caller-supplied scope: the renderer is
 // trusted by the process boundary, and this is the documented same-user
 // residual (a same-user process can already read every workspace's token —
-// see plans/trust-root-security-epic-plan.md F1). NOTE (audit B1 — naming
+// see plans/trust-root-security-epic-plan.md F1) — EXCEPT the reserved human
+// workspace: a ws-human read scope is first-party only (ctx.firstParty),
+// since W1's operator observation makes it a skeleton key to every private
+// channel's full history (see the gate in forward()). NOTE (audit B1 — naming
 // honesty): `senderPtyId` arrives in the request PARAMS and is NOT bound to the
 // pipe connection's PID, so a same-user pipe client can forge it (a victim's
 // live ptyId is enumerable via a2a.discover). Treat the resulting
@@ -45,6 +48,7 @@
 
 import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
+import type { RpcContext } from '../../../shared/rpc';
 import type { DaemonClient } from '../../DaemonClient';
 import { HUMAN_WORKSPACE_ID } from '../../../shared/channels';
 import { sendToRenderer } from './_bridge';
@@ -89,7 +93,12 @@ export function registerA2aChannelRpc(
   getDaemonClient: () => DaemonClient | null,
   getWindow: GetWindow,
 ): void {
-  const forward = async (method: string, params: unknown, mutating: boolean): Promise<unknown> => {
+  const forward = async (
+    method: string,
+    params: unknown,
+    mutating: boolean,
+    ctx?: RpcContext,
+  ): Promise<unknown> => {
     const dc = getDaemonClient();
     if (!dc) throw new Error('DaemonClient not connected');
 
@@ -205,6 +214,33 @@ export function registerA2aChannelRpc(
           },
         };
       }
+      // W1 hardening (Codex P1) — a wire client must not self-claim the reserved
+      // human workspace on READS. The identityRefs guards above reject ws-human
+      // as a caller/target ref but deliberately exempt the bare
+      // `verifiedWorkspaceId` read scope, because the renderer's OWN reads ride
+      // this router scoped to ws-human. Pre-W1 that residual let a wire caller
+      // read the channels the human was a MEMBER of; W1's operator observation
+      // (ChannelService.isObservableBy) widens the ws-human read scope to EVERY
+      // private channel with FULL history, so the self-claim must now be gated.
+      // `ctx.firstParty` is set only by trusted in-process dispatch (the
+      // renderer IPC bridge in main/index.ts, the plugin host) and is a
+      // dispatch() argument, never a request field — the wire (PipeServer)
+      // cannot forge it (see RpcContext.firstParty / audit B3 events.poll
+      // precedent). There is no legitimate wire client that reads as ws-human:
+      // the CLI/MCP read as their own resolved workspace. Note ws-human owns no
+      // panes, so no senderPtyId can resolve into it via the `if (ws)` branch
+      // above either. This also closes the PRE-W1 residual (wire reads of
+      // human-member channels); other self-claimed workspace reads keep the
+      // documented same-user residual (out of scope here).
+      if (base.verifiedWorkspaceId === HUMAN_WORKSPACE_ID && !ctx?.firstParty) {
+        return {
+          ok: false,
+          error: {
+            code: 'NOT_AUTHORIZED',
+            message: `reserved human workspace ('${HUMAN_WORKSPACE_ID}') reads are first-party only`,
+          },
+        };
+      }
       // Read with no senderPtyId (renderer/headless): leave the caller-supplied
       // verifiedWorkspaceId in place — process-boundary trust, documented
       // same-user residual (see file header).
@@ -213,12 +249,14 @@ export function registerA2aChannelRpc(
     return dc.rpc(method, base);
   };
 
-  // Read-only — capability 'a2a.channel.read'
-  router.register('a2a.channel.list', (p) => forward('a2a.channel.list', p, false));
-  router.register('a2a.channel.get', (p) => forward('a2a.channel.get', p, false));
-  router.register('a2a.channel.getMessages', (p) => forward('a2a.channel.getMessages', p, false));
-  router.register('a2a.channel.getMembers', (p) => forward('a2a.channel.getMembers', p, false));
-  router.register('a2a.channel.unread', (p) => forward('a2a.channel.unread', p, false));
+  // Read-only — capability 'a2a.channel.read'. ctx is threaded so the forwarder
+  // can distinguish the first-party operator (renderer bridge / plugin host)
+  // from the wire for the reserved-human-workspace read gate above.
+  router.register('a2a.channel.list', (p, ctx) => forward('a2a.channel.list', p, false, ctx));
+  router.register('a2a.channel.get', (p, ctx) => forward('a2a.channel.get', p, false, ctx));
+  router.register('a2a.channel.getMessages', (p, ctx) => forward('a2a.channel.getMessages', p, false, ctx));
+  router.register('a2a.channel.getMembers', (p, ctx) => forward('a2a.channel.getMembers', p, false, ctx));
+  router.register('a2a.channel.unread', (p, ctx) => forward('a2a.channel.unread', p, false, ctx));
   // Channels v2: a2a.channel.ack IS now agent-reachable — registered as
   // MUTATING, so it requires a resolvable senderPtyId and gets a server-pinned
   // verifiedWorkspaceId (D5), unlike the historical renderer-driven ack that
@@ -246,7 +284,7 @@ export function registerA2aChannelRpc(
   // methods but the router forward was the missing link).
   router.register('task.mission.start', (p) => forward('task.mission.start', p, true));
   router.register('task.mission.close', (p) => forward('task.mission.close', p, true));
-  router.register('task.mission.list', (p) => forward('task.mission.list', p, false));
+  router.register('task.mission.list', (p, ctx) => forward('task.mission.list', p, false, ctx));
   // task.mission.update(J1 §5) — 물질화 커밋. 변이라 verifiable caller 필수(start/
   // close와 동일 forwarder·스탬프 규율). MCP 도구 표면은 없지만(FanOutService 내부
   // 경로), 이 router 등록으로 first-party 파이프 클라이언트는 도달 가능하다 — "도구

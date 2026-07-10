@@ -110,12 +110,31 @@ const EVENT_POLL_MAX = 64;
  *   - `routeWorkspaces`: the LOCAL workspaces this post @-mentions — each gets
  *     an a2a inbox task (active OR background: the cross-workspace fix). A
  *     workspace mentioned but not local is skipped (its own renderer routes it).
+ *
+ * W1 (operator observation): `isObservedChannel` widens the display append to
+ * private agent channels the human OBSERVES read-only. The human is NOT a
+ * recipient of such a channel (no member row), so the P5 human-membership check
+ * alone would drop its live messages; the caller passes `true` ONLY when the
+ * catalog mirror row carries the daemon's `observed` flag (a private channel
+ * ws-human watches without membership). NOT mere mirror presence: the ws-human
+ * mirror also holds every PUBLIC channel — including unjoined/discoverable ones
+ * — and appending those would leak non-member public traffic into the dock and
+ * pile unread badges onto discoverable rows (GLM P2). Member channels are
+ * already covered by the recipient check. This flag only ungates the human's
+ * DISPLAY — message plumbing is unchanged: the post reaches this renderer via
+ * the local-workspace poll scope as long as at least one member workspace is
+ * LOCAL. Known gap (documented, unmanifested): if EVERY member of an observed
+ * channel is REMOTE (LAN A2A), its posts never enter the local poll scope, so
+ * the observed view silently updates only on the next hydration/refresh. LAN
+ * A2A is not live today; a poll-scope fallback for observed channels is a
+ * follow-up.
  */
 export function planChannelMessageDelivery(
   senderWorkspaceId: string,
   recipientWorkspaceIds: readonly string[],
   mentionWorkspaceIds: readonly string[],
   localIds: readonly string[],
+  isObservedChannel = false,
 ): { appendToDisplay: boolean; routeWorkspaces: string[] } {
   // P5: display exactly the channels the unified HUMAN is a member of, and
   // ONLY those — the human's view is workspace-independent. The old
@@ -126,7 +145,12 @@ export function planChannelMessageDelivery(
   // ROUTING still fans out to every real local workspace (routeWorkspaces) so
   // agents are pinged; only the human's DISPLAY is scoped to their membership.
   void senderWorkspaceId; // retained for signature stability / future use
-  const appendToDisplay = recipientWorkspaceIds.includes(HUMAN_WORKSPACE_ID);
+  // W1: OR in observation — a private agent channel the human observes read-only
+  // has no ws-human recipient row, so append its live messages when its mirror
+  // row is daemon-flagged `observed` (the caller resolves that flag; see the
+  // JSDoc for why mirror PRESENCE alone would over-append).
+  const appendToDisplay =
+    recipientWorkspaceIds.includes(HUMAN_WORKSPACE_ID) || isObservedChannel;
   const mentionWs = new Set(mentionWorkspaceIds);
   const routeWorkspaces = localIds.filter((id) => mentionWs.has(id));
   return { appendToDisplay, routeWorkspaces };
@@ -523,6 +547,13 @@ export function useChannelsEventSubscription(): void {
                 channelEvent.recipientWorkspaceIds,
                 (channelEvent.message.mentions ?? []).map((m) => m.workspaceId),
                 localIds,
+                // W1: append-without-recipient ONLY for a mirror row the daemon
+                // flagged `observed` (private channel ws-human watches read-only).
+                // Mere mirror presence is NOT enough — the ws-human mirror holds
+                // every public channel too, and matching on presence leaked
+                // non-member public traffic into the dock (GLM P2). Member
+                // channels don't need this: the recipient check above covers them.
+                st.channels[channelEvent.channelId]?.observed === true,
               );
               // Display cache / unread / mention badges: ACTIVE workspace only,
               // and never for pre-mount ring history (A4 — badge inflation).

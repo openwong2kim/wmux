@@ -73,6 +73,30 @@ describe('planChannelMessageDelivery — mention routing (all local workspaces)'
   });
 });
 
+describe('planChannelMessageDelivery — W1 operator observation', () => {
+  it('appends an OBSERVED private agent channel even without a ws-human recipient', () => {
+    // The human is not a recipient (no member row), but observes the channel:
+    // the caller passes isObservedChannel=true — resolved from the mirror row's
+    // daemon-stamped `observed` flag, NOT mere mirror presence (a non-member
+    // public channel sits in the ws-human mirror too and must not append — GLM P2).
+    const plan = planChannelMessageDelivery('ws-agent', [ACTIVE, BG], [], LOCAL, true);
+    expect(plan.appendToDisplay).toBe(true);
+  });
+
+  it('does NOT append a non-observed agent channel (no observed flag → false)', () => {
+    // Covers a channel absent from the mirror AND a mirror row without the
+    // observed flag (e.g. an unjoined public channel) — the caller derives the
+    // flag as `channels[id]?.observed === true`.
+    const plan = planChannelMessageDelivery('ws-agent', [ACTIVE, BG], [], LOCAL, false);
+    expect(plan.appendToDisplay).toBe(false);
+  });
+
+  it('observation does not affect mention routing (still real local workspaces only)', () => {
+    const plan = planChannelMessageDelivery('ws-agent', [ACTIVE, BG], [BG], LOCAL, true);
+    expect(plan.routeWorkspaces).toEqual([BG]);
+  });
+});
+
 describe('planChannelMessageDelivery — P5 invariants', () => {
   it('a mention of the virtual human seat is NEVER a routing target (ws-human owns no panes)', () => {
     // Display appends (human is a recipient) but routing must stay empty — the
