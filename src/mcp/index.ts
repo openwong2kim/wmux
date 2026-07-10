@@ -744,6 +744,18 @@ server.tool(
   async ({ cursor, types, max }) => {
     const workspaceId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId };
+    // Forward our OWN PID-walked senderPtyId so the main-side events.poll handler
+    // can server-resolve this agent's workspace and scope the PRIVATE event types
+    // (a2a.task, channel.*) to it — the caller-supplied `workspaceId` above is
+    // self-asserted and no longer gates those over the wire (audit B3). Same
+    // anchor a2a_whoami / a2a.task.send thread; whenever requireWorkspaceId()
+    // resolves at all, getTaskSenderPtyId() is non-empty too (a PID-map-walk hit
+    // sets MY_PTY_ID, and the env-hint fallback rides the same WMUX_* channel as
+    // WMUX_WORKSPACE_ID), so a legitimately-placed agent never loses its own
+    // private events. Absent ⇒ private types fail closed; lifecycle events still
+    // flow (they honor the workspaceId scope).
+    const senderPtyId = getTaskSenderPtyId();
+    if (senderPtyId) params.senderPtyId = senderPtyId;
     if (cursor !== undefined) params['cursor'] = cursor;
     if (types !== undefined) params['types'] = types;
     if (max !== undefined) params['max'] = max;

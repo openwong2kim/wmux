@@ -1,3 +1,4 @@
+import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { eventBus } from '../../events/EventBus';
 import {
@@ -10,8 +11,59 @@ import {
   type ChannelCatalogEvent,
 } from '../../../shared/events';
 import type { PluginIdentityRecord } from '../../../shared/rpc';
+import { sendToRenderer } from './_bridge';
+
+type GetWindow = () => BrowserWindow | null;
 
 const TYPE_SET = new Set<WmuxEventType>(WMUX_EVENT_TYPES);
+
+/**
+ * The confidentiality-sensitive event types whose per-recipient / dual-party
+ * workspace scope IS a real boundary: each is DROPPED entirely for an unscoped
+ * poll, so the caller-supplied `workspaceId` is the only thing gating another
+ * workspace's private task pointer / channel conversation (audit B3). Every
+ * OTHER (lifecycle) type falls through to an all-workspace firehose on an
+ * unscoped poll — already reachable by any `events.subscribe` caller — so its
+ * workspace scope is a convenience filter, not a confidentiality boundary.
+ */
+const PRIVATE_EVENT_TYPES: ReadonlySet<WmuxEventType> = new Set<WmuxEventType>([
+  'a2a.task',
+  'channel.message',
+  'channel.catalog',
+  'channel.nudgeExhausted',
+]);
+
+/**
+ * Resolve the caller's OWN workspace from a verified `senderPtyId` — the same
+ * anchor a2a.channel.* mutations use (resolved via the renderer's
+ * `input.findOwnerWorkspace`, which owns the authoritative pane→workspace map).
+ * Returns '' when there is no resolvable senderPtyId (no PTY identity, or the
+ * renderer is unavailable), so the agent-transport private scope fails closed.
+ * NOT bound to the pipe connection's PID, so it remains ADVISORY attribution
+ * under the #113 same-user ceiling — but it raises events.poll's bar from
+ * "name any workspace id" (B3) to "hold a live pane's ptyId", matching the
+ * a2a.channel.* write/read forge bar. A true unforgeable fix is peer-PID
+ * (GetNamedPipeClientProcessId), deferred with the rest of the #113 track.
+ */
+async function resolveCallerWorkspace(
+  getWindow: GetWindow,
+  params: Record<string, unknown>,
+): Promise<string> {
+  const raw = params['senderPtyId'];
+  const senderPtyId = typeof raw === 'string' ? raw.trim() : '';
+  if (!senderPtyId) return '';
+  try {
+    const owner = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId: senderPtyId });
+    const wsId =
+      owner && typeof owner === 'object' && 'workspaceId' in owner
+        ? (owner as Record<string, unknown>).workspaceId
+        : null;
+    return typeof wsId === 'string' && wsId ? wsId : '';
+  } catch {
+    // Renderer unavailable (early boot / reload) — treat as unresolvable.
+    return '';
+  }
+}
 
 /**
  * Async trust lookup, wired by main/index.ts to PluginTrustStore.get.
@@ -76,16 +128,26 @@ function parseWorkspaceIds(raw: unknown): string[] | undefined {
   return out.length > 0 ? out : undefined;
 }
 
-export function registerEventsRpc(router: RpcRouter, trustLookup?: TrustLookup): void {
+export function registerEventsRpc(
+  router: RpcRouter,
+  getWindow: GetWindow,
+  trustLookup?: TrustLookup,
+): void {
   /**
    * events.poll — pull events newer than `cursor`.
    * params: { cursor?: number, types?: WmuxEventType[], workspaceId?: string,
-   *           workspaceIds?: string[], max?: number }
+   *           workspaceIds?: string[], senderPtyId?: string, max?: number }
    *
-   * Default cursor is 0 (replay from oldest in the ring). External callers
-   * SHOULD scope to their own `workspaceId` so they don't see other
-   * workspaces' lifecycle. The renderer hop is bypassed — main answers
-   * directly from the in-process ring.
+   * Default cursor is 0 (replay from oldest in the ring). The renderer hop is
+   * bypassed — main answers directly from the in-process ring.
+   *
+   * Scoping is split by trust (audit B3 — see the scope-resolution block below):
+   * LIFECYCLE events honor the caller-supplied `workspaceId` scope, but PRIVATE
+   * events (a2a.task, channel.*) are gated by a SERVER-RESOLVED workspace for an
+   * agent transport (from a verified `senderPtyId`) — the caller-supplied
+   * workspaceId cannot open another workspace's channels over the wire. The
+   * first-party operator (renderer bridge / plugin host, `ctx.firstParty`) keeps
+   * scoping every local workspace it names.
    */
   router.register('events.poll', async (params, ctx) => {
     const cursor = typeof params['cursor'] === 'number' && Number.isFinite(params['cursor'])
@@ -124,69 +186,104 @@ export function registerEventsRpc(router: RpcRouter, trustLookup?: TrustLookup):
     // matching event is ever skipped.
     const result = eventBus.poll(cursor, { types, max: RING_CAPACITY });
 
-    // Dual-party + per-recipient + strict scoping post-filter. `caller` is the
-    // verified wsFilter (server-pinned for MCP via requireWorkspaceId), or
-    // undefined for an unscoped poll (e.g. the plugin-host forwarding poll).
+    // ── Caller scope resolution (audit B3 — events.poll identity) ─────────────
     //
-    // Three cases:
-    //   - a2a.task:  fixed 2 workspaces — visible to sender (`from`) and
-    //                receiver (`to`); dropped unscoped.
-    //   - channel.message: N recipients in M workspaces — visible to sender
-    //                (`workspaceId`) AND every member workspace in
-    //                `recipientWorkspaceIds`; dropped unscoped.
-    //                Generalizes the a2a.task pattern from 2 → N. Sender is
-    //                always in the recipient list (membership is a
-    //                precondition of post), so the dual-party code path
-    //                would have missed the recipient-other-than-sender case.
-    //   - everything else: strict `workspaceId === caller` (unchanged).
-    // FIX-MULTI-WS: the caller scope is a SET — the single `workspaceId` plus
-    // the optional `workspaceIds` union. `scoped === false` (empty set) keeps
-    // the exact pre-existing unscoped semantics; a single-id set is
-    // behaviorally identical to the old `caller` equality checks.
-    const callerSet = new Set<string>(workspaceIds ?? []);
-    if (workspaceId) callerSet.add(workspaceId);
-    const scoped = callerSet.size > 0;
+    // Two scopes, because the ring carries two classes of event with different
+    // trust properties:
+    //
+    //   • PRIVATE types (a2a.task, channel.*) are DROPPED entirely for an
+    //     unscoped poll, so their workspace scope IS the confidentiality
+    //     boundary — a caller-supplied `workspaceId` is the only thing gating
+    //     another workspace's private task pointer / channel conversation.
+    //   • LIFECYCLE types (pane.*, process.*, agent.lifecycle,
+    //     workspace.metadata.changed, notification.received) fall through to an
+    //     all-workspace firehose on an unscoped poll, so their workspace scope
+    //     is a CONVENIENCE filter — every events.subscribe caller can already
+    //     read them unscoped, so tightening it would close no leak.
+    //
+    // clientScope = the caller-supplied workspaceId/workspaceIds union. Trusted
+    // for LIFECYCLE always, and for PRIVATE too WHEN the caller is the
+    // first-party operator (the renderer bridge / plugin host — a human operates
+    // every local workspace; ctx.firstParty is set only by those trusted
+    // in-process dispatch entry points, never by the external wire).
+    //
+    // For an AGENT transport (pipe/MCP off the external wire) the caller-supplied
+    // workspaceId is self-asserted and MUST NOT gate a private conversation
+    // (B3: a same-user pipe client could poll any workspace's channels by naming
+    // its id). privateScope is instead SERVER-RESOLVED from a verified
+    // senderPtyId and the caller-supplied workspaceId is IGNORED for private
+    // types. No resolvable identity ⇒ empty privateScope ⇒ every private event
+    // fails closed (exactly the unscoped-drop that already applied, so no honest
+    // lifecycle subscriber regresses). The MCP `wmux_events_poll` tool forwards
+    // its own PID-walked senderPtyId, so a legitimately-placed agent resolves to
+    // its OWN workspace.
+    // FIX-MULTI-WS: clientScope is a SET — the single `workspaceId` plus the
+    // optional `workspaceIds` union. Empty set keeps the pre-existing unscoped
+    // lifecycle semantics.
+    const clientSet = new Set<string>(workspaceIds ?? []);
+    if (workspaceId) clientSet.add(workspaceId);
+    const clientScoped = clientSet.size > 0;
+
+    // Resolve privateScope only when a private type could actually appear in the
+    // page (types omitted ⇒ all types) — a lifecycle-only poll never pays the
+    // renderer round-trip. First-party operators reuse clientSet; the agent path
+    // resolves server-side ('' ⇒ empty set ⇒ private types fail closed).
+    const wantsPrivate = !types || types.some((t) => PRIVATE_EVENT_TYPES.has(t));
+    let privateSet: Set<string>;
+    if (ctx?.firstParty) {
+      privateSet = clientSet;
+    } else if (wantsPrivate) {
+      const resolved = await resolveCallerWorkspace(getWindow, params);
+      privateSet = resolved ? new Set<string>([resolved]) : new Set<string>();
+    } else {
+      privateSet = new Set<string>();
+    }
+    const privateScoped = privateSet.size > 0;
+
     result.events = result.events.filter((e) => {
       if (e.type === 'a2a.task') {
-        // The `scoped &&` clause is LOAD-BEARING — an unscoped poll
-        // (no workspaceId/workspaceIds) must receive ZERO a2a.task events,
-        // else a bare `events.subscribe` plugin reads every pair's task.
-        return scoped &&
-          (callerSet.has((e as A2aTaskEvent).from) || callerSet.has((e as A2aTaskEvent).to));
+        // Dual-party: visible to sender (`from`) and receiver (`to`) ONLY. The
+        // `privateScoped &&` clause is LOAD-BEARING — an unresolved / unscoped
+        // caller must receive ZERO a2a.task events, else a bare events.subscribe
+        // plugin (or a workspaceId-forging pipe client) reads every pair's task.
+        return privateScoped &&
+          (privateSet.has((e as A2aTaskEvent).from) || privateSet.has((e as A2aTaskEvent).to));
       }
       if (e.type === 'channel.message') {
-        // Per-recipient scoping: same load-bearing unscoped-drop as a2a.task.
-        // `e.workspaceId` is the sender (base scope); every member
-        // workspace appears in `recipientWorkspaceIds` so a post reaches
-        // its full set without leaking to third parties. Union scope: the
-        // event is visible when ANY caller workspace is sender or recipient.
+        // Per-recipient scoping: same load-bearing drop as a2a.task.
+        // `e.workspaceId` is the sender (base scope); every member workspace
+        // appears in `recipientWorkspaceIds` so a post reaches its full set
+        // without leaking to third parties. Gated on privateSet — the
+        // caller-supplied workspaceId never gates this for an agent transport.
         const ce = e as ChannelMessageEvent;
-        if (!scoped) return false;
-        if (callerSet.has(ce.workspaceId)) return true;
-        return ce.recipientWorkspaceIds.some((r) => callerSet.has(r));
+        if (!privateScoped) return false;
+        if (privateSet.has(ce.workspaceId)) return true;
+        return ce.recipientWorkspaceIds.some((r) => privateSet.has(r));
       }
       if (e.type === 'channel.catalog') {
         // A1 — same per-recipient scoping as channel.message: base workspaceId
         // is the actor; recipientWorkspaceIds is the member set + any removed ws.
         const ce = e as ChannelCatalogEvent;
-        if (!scoped) return false;
+        if (!privateScoped) return false;
         // '*' sentinel = broadcast to every workspace. A public channel's
-        // creation is discoverable by all, but the member-scoped recipient list
-        // wouldn't reach non-members (codex+GLM P2), so create() emits '*' for
-        // public channels.
+        // creation is discoverable by all scoped callers, but the member-scoped
+        // recipient list wouldn't reach non-members (codex+GLM P2), so create()
+        // emits '*' for public channels.
         if (ce.recipientWorkspaceIds.includes('*')) return true;
-        if (callerSet.has(ce.workspaceId)) return true;
-        return ce.recipientWorkspaceIds.some((r) => callerSet.has(r));
+        if (privateSet.has(ce.workspaceId)) return true;
+        return ce.recipientWorkspaceIds.some((r) => privateSet.has(r));
       }
       if (e.type === 'channel.nudgeExhausted') {
-        // Channels v2 — same unscoped-drop discipline as the other channel.*
-        // events (channel existence must not leak to a bare subscribe). Base
-        // workspaceId is the affected member's workspace; only it sees the event.
-        return scoped && callerSet.has(e.workspaceId);
+        // Channels v2 — same drop discipline as the other channel.* events
+        // (channel existence must not leak to a bare / unresolved subscribe).
+        // Base workspaceId is the affected member's workspace; only it sees it.
+        return privateScoped && privateSet.has(e.workspaceId);
       }
-      // every other type: strict scope, UNCHANGED from the old EventBus gate
-      // (generalized to set membership for the union case)
-      return scoped ? callerSet.has(e.workspaceId) : true;
+      // Lifecycle types: caller-supplied scope (UNCHANGED). Not a confidentiality
+      // boundary — an unscoped poll already returns the all-workspace firehose to
+      // any events.subscribe caller — so honoring the client's workspaceId here
+      // is a convenience filter and preserves external lifecycle subscribers.
+      return clientScoped ? clientSet.has(e.workspaceId) : true;
     });
 
     // Re-impose the caller's page size AFTER scoping (see the over-fetch note

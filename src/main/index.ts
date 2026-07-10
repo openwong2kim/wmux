@@ -439,11 +439,17 @@ registerSessionHandlers(() => daemonClient?.isConnected === true);
 // Used by every `registerAllHandlers` call site below; factoring it out
 // keeps the three swaps consistent.
 const invokeRendererRpc = (method: string, params: Record<string, unknown>): Promise<unknown> =>
-  rpcRouter.dispatch({
-    id: `renderer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
-    method: method as RpcMethod,
-    params,
-  });
+  rpcRouter.dispatch(
+    {
+      id: `renderer-${Date.now()}-${Math.random().toString(36).slice(2, 8)}`,
+      method: method as RpcMethod,
+      params,
+    },
+    // The renderer IPC bridge is the trusted first-party operator surface —
+    // unreachable from the external wire. events.poll uses this to honor the
+    // operator's cross-workspace scope (audit B3) instead of server-resolving it.
+    { firstParty: true },
+  );
 
 let cleanupHandlers = registerAllHandlers(ptyManager, ptyBridge, () => mainWindow, undefined, {
   ...mcpHandlerOptions,
@@ -539,7 +545,7 @@ registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager);
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerCompanyRpc(rpcRouter, () => mainWindow);
-registerEventsRpc(rpcRouter, (clientName) => getPluginTrustStore().get(clientName));
+registerEventsRpc(rpcRouter, () => mainWindow, (clientName) => getPluginTrustStore().get(clientName));
 registerUiPluginRpc(rpcRouter, () => mainWindow);
 registerMcpPluginRpc(rpcRouter);
 // Plugin host IPC (B-1): plugins:list + the iframe bridge forwarder. Same

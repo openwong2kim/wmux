@@ -48,6 +48,19 @@ export interface RpcContext {
    * always `'local'`; the LanLink LAN listener (future PR) sets `'remote'`.
    */
   origin: 'local' | 'remote';
+  /**
+   * True when the request entered through a TRUSTED in-process first-party
+   * surface (the renderer IPC bridge / plugin host), NOT the external local
+   * wire (named pipe + loopback TCP). Set ONLY by the in-process dispatch
+   * callers via `RpcRouter.dispatch(request, { firstParty: true })`; PipeServer
+   * dispatches the wire request WITHOUT this option, so a wire client can never
+   * obtain it (the flag is a function argument, not a forgeable request field —
+   * PipeServer forwards the parsed JSON verbatim, so a request-body marker would
+   * be spoofable). Handlers use it to distinguish the human operator (who
+   * legitimately scopes across all local workspaces) from a same-user agent
+   * transport whose workspace must be server-resolved (audit B3 — events.poll).
+   */
+  firstParty?: boolean;
   clientName?: string;
   clientVersion?: string;
 }

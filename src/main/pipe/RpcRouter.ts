@@ -167,7 +167,14 @@ export class RpcRouter {
     this.approvalQueue = queue;
   }
 
-  async dispatch(request: RpcRequest): Promise<RpcResponse> {
+  /**
+   * @param opts.firstParty — set ONLY by trusted in-process dispatch callers
+   * (the renderer IPC bridge in main/index.ts, the plugin host). PipeServer,
+   * the sole wire entry, never passes it, so a wire client cannot forge the
+   * flag: it is a function argument here, not a field of the (verbatim-forwarded)
+   * wire request. Threaded onto RpcContext.firstParty for handlers.
+   */
+  async dispatch(request: RpcRequest, opts?: { firstParty?: boolean }): Promise<RpcResponse> {
     if (!request || typeof request.id !== 'string' || typeof request.method !== 'string') {
       return { id: (request as RpcRequest)?.id || '', ok: false, error: 'Invalid RPC request: missing id or method' };
     }
@@ -193,6 +200,9 @@ export class RpcRouter {
       // listener is a SEPARATE router that sets origin:'remote' (future PR), and
       // origin is REQUIRED on RpcContext so that listener can't forget to.
       origin: 'local',
+      // Trusted in-process surface (renderer bridge / plugin host) — opt-in only;
+      // the wire (PipeServer) never sets it. See the dispatch() doc + RpcContext.
+      firstParty: opts?.firstParty === true,
       clientName:
         typeof request.clientName === 'string' && request.clientName.trim().length > 0
           ? request.clientName.trim()

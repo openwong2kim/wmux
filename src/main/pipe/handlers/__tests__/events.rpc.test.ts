@@ -13,12 +13,25 @@ vi.mock('electron', () => ({
   app: { getPath: vi.fn(() => ''), on: vi.fn() },
 }));
 
+// events.poll now server-resolves an agent transport's workspace from a verified
+// senderPtyId via the renderer bridge (input.findOwnerWorkspace) — mock it so the
+// B3 agent-path suite can resolve a ptyId to a deterministic owning workspace.
+// The first-party / lifecycle suites never reach it (no senderPtyId).
+vi.mock('../_bridge', () => ({ sendToRenderer: vi.fn() }));
+
 import { buildA2aTaskEmitInput } from '../../../ipc/registerHandlers';
 import type { A2aTaskEvent } from '../../../../shared/events';
+import { sendToRenderer } from '../_bridge';
 
+const nullWindow = () => null;
+
+// The renderer IPC bridge is the trusted first-party operator surface; it scopes
+// every event class by the caller-supplied workspaceId (operator model). The bare
+// helpers below dispatch as first-party so the scoping-filter suites keep asserting
+// that behavior; the B3 suite dispatches WITHOUT it to exercise the agent path.
 function setupRouter(): RpcRouter {
   const router = new RpcRouter();
-  registerEventsRpc(router);
+  registerEventsRpc(router, nullWindow);
   return router;
 }
 
@@ -40,7 +53,7 @@ async function pollEvents(
   router: RpcRouter,
   params: Record<string, unknown>,
 ): Promise<Array<{ type: string; kind?: string; from?: string; to?: string }>> {
-  const res = await router.dispatch({ id: 'p', method: 'events.poll', params });
+  const res = await router.dispatch({ id: 'p', method: 'events.poll', params }, { firstParty: true });
   if (!res.ok) throw new Error('poll dispatch failed');
   return (res.result as { events: Array<{ type: string; kind?: string }> }).events;
 }
@@ -373,7 +386,7 @@ describe('events.rpc — a2a.task dual-party scoping', () => {
         id: `B${iterations}`,
         method: 'events.poll',
         params: { workspaceId: X, max: 1, cursor },
-      });
+      }, { firstParty: true });
       expect(res.ok).toBe(true);
       if (!res.ok) break;
       const result = res.result as {
@@ -434,7 +447,7 @@ describe('events.rpc — a2a.task dual-party scoping', () => {
     const router = setupRouter();
     const res = await router.dispatch({
       id: 'B2', method: 'events.poll', params: { workspaceId: X, max: 1, cursor: 0 },
-    });
+    }, { firstParty: true });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const result = res.result as { events: A2aTaskEvent[] };
@@ -464,7 +477,7 @@ describe('events.rpc — a2a.task dual-party scoping', () => {
     for (let i = 0; i < 5; i++) {
       const res = await router.dispatch({
         id: `B3-${i}`, method: 'events.poll', params: { workspaceId: X, max: 1, cursor },
-      });
+      }, { firstParty: true });
       expect(res.ok).toBe(true);
       if (!res.ok) break;
       const result = res.result as { events: A2aTaskEvent[]; nextCursor: number };
@@ -605,7 +618,7 @@ describe('events.rpc — notifications.read opt-in gate', () => {
 
   function routerWithTrust(declared: string[] | undefined): RpcRouter {
     const router = new RpcRouter();
-    registerEventsRpc(router, async (name) =>
+    registerEventsRpc(router, nullWindow, async (name) =>
       name === 'declared-plugin'
         ? {
             name, status: 'trusted' as const, firstSeen: 1, lastSeen: 1,
@@ -818,5 +831,123 @@ describe('events.rpc — workspaceIds union scoping (FIX-MULTI-WS)', () => {
       types: ['channel.message'],
     });
     expect(events).toHaveLength(0);
+  });
+});
+
+// === Agent transport identity scoping (audit B3) ===
+//
+// The confidentiality-sensitive PRIVATE types (a2a.task, channel.*) must be
+// scoped to the caller's SERVER-RESOLVED workspace for an agent transport (any
+// events.poll NOT dispatched with `firstParty`), NOT the caller-supplied
+// `workspaceId` — a same-user pipe client could otherwise eavesdrop on any
+// workspace's channels by naming its id (B3). Identity is resolved from a
+// verified senderPtyId via the renderer bridge (input.findOwnerWorkspace).
+// LIFECYCLE types keep honoring the caller-supplied scope: their all-workspace
+// firehose is already reachable by any unscoped events.subscribe caller, so it
+// is a convenience filter, not a boundary.
+describe('events.rpc — agent transport identity scoping (audit B3)', () => {
+  const VICTIM = 'ws-victim';
+
+  beforeEach(() => {
+    eventBus.reset();
+    // Reset call history (vitest is not configured to auto-clear) so the
+    // first-party "resolver never consulted" assertion sees only this test's calls.
+    // senderPtyId 'pty-<x>' resolves to owning workspace 'ws-<x>'. An absent or
+    // unknown ptyId resolves to null (no verifiable identity → fail closed).
+    vi.mocked(sendToRenderer).mockReset();
+    vi.mocked(sendToRenderer).mockImplementation((async (_gw: unknown, method: string, params: unknown) => {
+      if (method === 'input.findOwnerWorkspace') {
+        const pty = (params as Record<string, unknown> | null)?.ptyId;
+        return typeof pty === 'string' && pty.startsWith('pty-')
+          ? { workspaceId: `ws-${pty.slice('pty-'.length)}` }
+          : null;
+      }
+      return null;
+    }) as unknown as typeof sendToRenderer);
+  });
+
+  function emitChannelMessage(senderWs: string, recipients: string[], channelId = 'ch-1'): void {
+    eventBus.emit({
+      type: 'channel.message', workspaceId: senderWs, channelId, seq: 1,
+      senderWorkspaceId: senderWs, recipientWorkspaceIds: recipients, message: {} as never,
+    } as never);
+  }
+
+  /** Agent-transport poll — dispatched WITHOUT firstParty (the wire path). */
+  async function agentPoll(
+    router: RpcRouter,
+    params: Record<string, unknown>,
+  ): Promise<Array<{ type: string; taskId?: string }>> {
+    const res = await router.dispatch({ id: 'agent', method: 'events.poll', params });
+    if (!res.ok) throw new Error('poll dispatch failed');
+    return (res.result as { events: Array<{ type: string; taskId?: string }> }).events;
+  }
+
+  it('scopes channel.message to the senderPtyId-resolved workspace, IGNORING a forged workspaceId (B3 core)', async () => {
+    // A private channel between VICTIM and a peer; the attacker is NOT a member.
+    emitChannelMessage(VICTIM, [VICTIM, 'ws-peer'], 'ch-victim');
+    const router = setupRouter();
+    // The attacker's MCP resolves to ws-attacker, but it FORGES workspaceId=VICTIM.
+    const events = await agentPoll(router, {
+      workspaceId: VICTIM, senderPtyId: 'pty-attacker', types: ['channel.message'],
+    });
+    // The forged workspaceId is ignored; scope is the resolved ws-attacker (not a
+    // member) → zero leak.
+    expect(events).toHaveLength(0);
+  });
+
+  it('delivers a channel.message to the senderPtyId-resolved member workspace (no workspaceId param needed)', async () => {
+    emitChannelMessage('ws-peer', ['ws-peer', 'ws-member']);
+    const router = setupRouter();
+    const events = await agentPoll(router, { senderPtyId: 'pty-member', types: ['channel.message'] });
+    expect(events).toHaveLength(1);
+  });
+
+  it('scopes a2a.task dual-party to the resolved workspace, ignoring a forged workspaceId', async () => {
+    publishA2aTask({ type: 'a2a.task', from: VICTIM, to: 'ws-peer', taskId: 'tv', state: 'submitted', kind: 'created' });
+    publishA2aTask({ type: 'a2a.task', from: 'ws-peer', to: 'ws-agent', taskId: 'ta', state: 'submitted', kind: 'created' });
+    const router = setupRouter();
+    const events = await agentPoll(router, { workspaceId: VICTIM, senderPtyId: 'pty-agent', types: ['a2a.task'] });
+    const a2a = events.filter((e) => e.type === 'a2a.task');
+    // Only the task addressed to the RESOLVED ws-agent — the forged VICTIM scope
+    // never surfaces VICTIM's task.
+    expect(a2a).toHaveLength(1);
+    expect(a2a[0].taskId).toBe('ta');
+  });
+
+  it('fails closed on an unresolvable identity: private types dropped even with a workspaceId', async () => {
+    emitChannelMessage(VICTIM, [VICTIM]);
+    publishA2aTask({ type: 'a2a.task', from: VICTIM, to: 'ws-peer', taskId: 'tv', state: 'submitted', kind: 'created' });
+    const router = setupRouter();
+    // No senderPtyId (with a forged workspaceId) → no resolvable identity → every
+    // private event withheld.
+    const noPty = await agentPoll(router, { workspaceId: VICTIM, types: ['channel.message', 'a2a.task'] });
+    expect(noPty).toHaveLength(0);
+    // An unknown ptyId (renderer resolves null) fails closed the same way.
+    const badPty = await agentPoll(router, { workspaceId: VICTIM, senderPtyId: 'unknown-pty', types: ['channel.message'] });
+    expect(badPty).toHaveLength(0);
+  });
+
+  it('still delivers LIFECYCLE events scoped by the caller-supplied workspaceId (not a confidentiality boundary)', async () => {
+    eventBus.emit({ type: 'pane.created', workspaceId: 'ws-agent', paneId: 'p1' });
+    eventBus.emit({ type: 'pane.created', workspaceId: VICTIM, paneId: 'p2' });
+    const router = setupRouter();
+    const own = await agentPoll(router, { workspaceId: 'ws-agent', senderPtyId: 'pty-agent', types: ['pane.created'] });
+    expect(own).toHaveLength(1);
+  });
+
+  it('a first-party operator poll STILL trusts the caller-supplied workspaceId for private types (operator model preserved)', async () => {
+    emitChannelMessage(VICTIM, [VICTIM]);
+    const router = setupRouter();
+    // firstParty=true (renderer / plugin host) → the operator legitimately scopes
+    // to any local workspace by id; no senderPtyId is needed or consulted.
+    const res = await router.dispatch(
+      { id: 'fp', method: 'events.poll', params: { workspaceId: VICTIM, types: ['channel.message'] } },
+      { firstParty: true },
+    );
+    expect(res.ok).toBe(true);
+    if (res.ok) expect((res.result as { events: unknown[] }).events).toHaveLength(1);
+    // And the resolver was never consulted on the first-party path.
+    expect(vi.mocked(sendToRenderer)).not.toHaveBeenCalled();
   });
 });

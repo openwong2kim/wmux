@@ -639,7 +639,7 @@ describe('a2a.channel.rpc — events.poll per-recipient scoping (PROTOCOL §2.8)
 
   function setupEventsRouter(): RpcRouter {
     const router = new RpcRouter();
-    registerEventsRpc(router);
+    registerEventsRpc(router, () => null);
     return router;
   }
 
@@ -660,7 +660,7 @@ describe('a2a.channel.rpc — events.poll per-recipient scoping (PROTOCOL §2.8)
   it('case 1: the sender (poll workspaceId === sender) receives the event', async () => {
     seedChannelMessage();
     const router = setupEventsRouter();
-    const res = await router.dispatch({ id: 's1', method: 'events.poll', params: { workspaceId: SENDER_WS } });
+    const res = await router.dispatch({ id: 's1', method: 'events.poll', params: { workspaceId: SENDER_WS } }, { firstParty: true });
     expect(res.ok).toBe(true);
     if (res.ok) {
       const events = (res.result as { events: Array<{ type: string }> }).events;
@@ -671,7 +671,7 @@ describe('a2a.channel.rpc — events.poll per-recipient scoping (PROTOCOL §2.8)
   it('case 2: a recipient (poll workspaceId ∈ recipientWorkspaceIds) receives the event', async () => {
     seedChannelMessage();
     const router = setupEventsRouter();
-    const res = await router.dispatch({ id: 'r1', method: 'events.poll', params: { workspaceId: RECIPIENT_A } });
+    const res = await router.dispatch({ id: 'r1', method: 'events.poll', params: { workspaceId: RECIPIENT_A } }, { firstParty: true });
     expect(res.ok).toBe(true);
     if (res.ok) {
       const events = (res.result as { events: Array<{ type: string }> }).events;
@@ -682,7 +682,7 @@ describe('a2a.channel.rpc — events.poll per-recipient scoping (PROTOCOL §2.8)
   it('case 3: a third party (poll workspaceId not in recipients, ≠ sender) receives NOTHING', async () => {
     seedChannelMessage();
     const router = setupEventsRouter();
-    const res = await router.dispatch({ id: 't1', method: 'events.poll', params: { workspaceId: THIRD_WS } });
+    const res = await router.dispatch({ id: 't1', method: 'events.poll', params: { workspaceId: THIRD_WS } }, { firstParty: true });
     expect(res.ok).toBe(true);
     if (res.ok) {
       const events = (res.result as { events: Array<{ type: string }> }).events;
@@ -697,7 +697,7 @@ describe('a2a.channel.rpc — events.poll per-recipient scoping (PROTOCOL §2.8)
     // caller is identified.
     seedChannelMessage();
     const router = setupEventsRouter();
-    const res = await router.dispatch({ id: 'u1', method: 'events.poll', params: {} });
+    const res = await router.dispatch({ id: 'u1', method: 'events.poll', params: {} }, { firstParty: true });
     expect(res.ok).toBe(true);
     if (res.ok) {
       const events = (res.result as { events: Array<{ type: string }> }).events;
@@ -729,7 +729,7 @@ describe('a2a.channel.rpc — events.poll per-recipient scoping (PROTOCOL §2.8)
     });
 
     const router = setupEventsRouter();
-    const res = await router.dispatch({ id: 'd1', method: 'events.poll', params: { workspaceId: THIRD_WS } });
+    const res = await router.dispatch({ id: 'd1', method: 'events.poll', params: { workspaceId: THIRD_WS } }, { firstParty: true });
     expect(res.ok).toBe(true);
     if (!res.ok) return;
     const events = (res.result as { events: Array<{ type: string; channelId?: string }> }).events;

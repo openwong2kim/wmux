@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Security
+
+- **`events.poll` no longer lets an agent eavesdrop on another workspace's channels (audit B3).** The event-poll RPC previously scoped its results by a caller-supplied `workspaceId`, so a same-user pipe/MCP client could live-subscribe to any workspace's private channel messages, channel lifecycle, and A2A task pointers just by naming that workspace's id — no pane identity required. Those confidentiality-sensitive event types are now scoped to a **server-resolved** workspace derived from the caller's verified `senderPtyId` (the same identity anchor the `a2a.channel.*` mutations already use), and the caller-supplied `workspaceId` is ignored for them; an unresolvable caller receives none of these events (fail-closed). The bundled MCP `wmux_events_poll` tool forwards its own PID-walked `senderPtyId`, so a legitimately-placed agent still sees its own channels and tasks unchanged. The first-party operator surface (the app's own renderer/plugin host) keeps scoping across the local workspaces it names. Ordinary lifecycle events (pane/process/agent/workspace metadata) are unaffected — their all-workspace firehose was already reachable by any `events.subscribe` subscriber, so their workspace scope was never a confidentiality boundary and external lifecycle subscribers keep working.
+
 ## [3.19.0] — 2026-07-10
 
 ### Added
