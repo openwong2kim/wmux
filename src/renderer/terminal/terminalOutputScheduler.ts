@@ -10,10 +10,14 @@
 //
 // This module serializes all pane writes through a single budgeted drain:
 //
-//   - Visible pane, empty queue  → DIRECT write (byte-identical to the old
-//     path; the focused pane pays zero added latency in steady state).
-//   - Visible pane, queued bytes → enqueue as priority + drain(0), so
-//     per-terminal byte order is never violated by the fast path.
+//   - Visible pane, empty queue, bounded chunk → DIRECT write (byte-identical
+//     to the old path; the focused pane pays zero added latency in steady
+//     state).
+//   - Visible pane, queued bytes OR one oversized chunk → enqueue as priority
+//     + drain(0), so per-terminal byte order is never violated AND a visible
+//     pane's OWN output flood (e.g. the agent you are watching printing a
+//     torrent) is chunked under the drain budget instead of blocking the
+//     renderer in a single parse.
 //   - Hidden pane → enqueue; drained in the background cadence.
 //   - Drain tick: at most MAX_WRITES_PER_DRAIN hand-offs of CHUNK_CHARS each
 //     under a hard DRAIN_TIME_BUDGET_MS wall-clock budget, priority entries
@@ -61,6 +65,12 @@ const BACKGROUND_FLUSH_DELAY_MS = 50;
 const DRAIN_INTERVAL_MS = 16;
 const PRIORITY_DRAIN_INTERVAL_MS = 4;
 const CHUNK_CHARS = 16 * 1024;
+// A single foreground write larger than this is routed through the batch path
+// (chunked under the drain budget) rather than written directly, so a visible
+// pane's own output flood cannot pin the renderer in one oversized parse.
+// Sized above ordinary keystroke echo and TUI redraws so those keep the
+// zero-latency direct path; only genuine torrents cross it.
+const FOREGROUND_DIRECT_MAX_CHARS = 64 * 1024;
 const MAX_WRITES_PER_DRAIN = 2;
 const DRAIN_TIME_BUDGET_MS = 8;
 /** Backlogs past this promote the drain to the priority cadence so a single
@@ -225,7 +235,17 @@ export function writeTerminalOutput(
 
   const existing = queue.get(terminal);
 
-  if (options.foreground && (!existing || !hasQueuedChunks(existing))) {
+  // Direct path only for a bounded chunk with nothing already queued. An
+  // oversized foreground chunk falls through to the priority-enqueue path
+  // below so it is handed to xterm in CHUNK_CHARS slices under the drain
+  // budget — a visible pane's own flood no longer blocks the renderer in one
+  // parse, while byte order stays intact (nothing was queued, so this chunk
+  // is first in line and drains at the priority cadence).
+  if (
+    options.foreground &&
+    (!existing || !hasQueuedChunks(existing)) &&
+    data.length <= FOREGROUND_DIRECT_MAX_CHARS
+  ) {
     try {
       terminal.write(data);
       options.onWritten?.(data.length);

@@ -54,6 +54,28 @@ describe('terminalOutputScheduler', () => {
     expect(getQueuedCharCount(t)).toBe(0);
   });
 
+  it('an oversized foreground chunk is batch-chunked, not written in one parse', () => {
+    const t = makeTerminal();
+    const flood = 'F'.repeat(100 * 1024); // > 64KB foreground-direct threshold
+    writeTerminalOutput(t, flood, { foreground: true });
+    // Not handed over in one giant write — routed through the drain instead.
+    expect(t.writes).toEqual([]);
+    expect(getQueuedCharCount(t)).toBe(flood.length);
+    vi.runAllTimers();
+    // Delivered in bounded slices, in order, in full.
+    expect(joined(t)).toBe(flood);
+    for (const w of t.writes) expect(w.length).toBeLessThanOrEqual(16 * 1024);
+    expect(t.writes.length).toBeGreaterThan(1);
+  });
+
+  it('a foreground chunk at the threshold still takes the direct path', () => {
+    const t = makeTerminal();
+    const atLimit = 'G'.repeat(64 * 1024); // == threshold, still direct
+    writeTerminalOutput(t, atLimit, { foreground: true });
+    expect(t.writes).toEqual([atLimit]);
+    expect(getQueuedCharCount(t)).toBe(0);
+  });
+
   it('foreground write behind a queued backlog preserves per-terminal order', () => {
     const t = makeTerminal();
     writeTerminalOutput(t, 'hidden', { foreground: false });
