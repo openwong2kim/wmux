@@ -6,7 +6,7 @@ import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
-import { generateSnapshot } from './HeadlessSnapshot';
+import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob } from './HeadlessSnapshot';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
@@ -1294,7 +1294,12 @@ function registerRpcHandlers(
       cols: managed.meta.cols,
       rows: managed.meta.rows,
       scrollback: typeof p.scrollback === 'number' ? p.scrollback : undefined,
-      generate: generateSnapshot,
+      // The reflush owns the global snapshot slot for its whole
+      // suppress→finalize window (Codex P2: announcing RESYNC_BEGIN while
+      // queued would suppress the pane for N×budget under concurrent
+      // reveals), so it takes the slot-acquirer and the unqueued generator.
+      generate: generateSnapshotUnqueued,
+      enqueue: enqueueSnapshotJob,
     });
     log('info', `[resync] session=${p.id} mode=${result.mode}${result.fallbackReason ? ` fallback=${result.fallbackReason}` : ''}`);
     return { ok: true, mode: result.mode, fallbackReason: result.fallbackReason };

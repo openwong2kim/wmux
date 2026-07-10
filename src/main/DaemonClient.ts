@@ -690,15 +690,18 @@ export class DaemonClient extends EventEmitter {
       drain(scanner.feed(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk)));
     });
 
-    socket.on('close', () => {
-      this.sessionScanners.delete(sessionId);
-      this.sessionPipes.delete(sessionId);
-    });
-
-    socket.on('error', () => {
-      this.sessionScanners.delete(sessionId);
-      this.sessionPipes.delete(sessionId);
-    });
+    // Identity-guarded teardown (CodeRabbit): a forceFresh reconnect installs
+    // a replacement socket+scanner under the same sessionId BEFORE the old
+    // socket's async close/error callbacks run — an unconditional delete here
+    // would evict the LIVE replacement and leave the session's stream dead.
+    const teardownIfCurrent = () => {
+      if (this.sessionPipes.get(sessionId) === socket) {
+        this.sessionScanners.delete(sessionId);
+        this.sessionPipes.delete(sessionId);
+      }
+    };
+    socket.on('close', teardownIfCurrent);
+    socket.on('error', teardownIfCurrent);
   }
 
   /**

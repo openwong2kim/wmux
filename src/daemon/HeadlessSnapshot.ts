@@ -73,8 +73,9 @@ const DEFAULT_BUDGET_MS = 4000;
 const DEFAULT_SCROLLBACK = 5000;
 const MAX_SCROLLBACK = 50_000;
 /** Feed slice size — keeps each synchronous parse burst bounded so the daemon
- * event loop (input forwarding!) never stalls behind an 8 MB write. */
-const FEED_SLICE_BYTES = 256 * 1024;
+ * event loop (input forwarding!) never stalls behind an 8 MB write.
+ * Exported for the slice-boundary regression test. */
+export const FEED_SLICE_BYTES = 256 * 1024;
 
 /**
  * Global serialization queue (concurrency 1). Simultaneous reveals across
@@ -83,12 +84,33 @@ const FEED_SLICE_BYTES = 256 * 1024;
  */
 let queueTail: Promise<unknown> = Promise.resolve();
 
-export function generateSnapshot(req: SnapshotRequest): Promise<SnapshotOutcome> {
-  const run = queueTail.then(() => generateInner(req));
-  // The queue must survive a rejected run (generateInner never rejects by
-  // design, but a defensive catch keeps one bug from wedging all snapshots).
+/**
+ * Acquire the global snapshot slot and run `job` while holding it. Exposed so
+ * SessionPipe.reflush can put its ENTIRE suppress→snapshot→finalize window
+ * inside the slot: a reflush that queued AFTER announcing RESYNC_BEGIN would
+ * suppress its pane's live output for the whole queue wait (N×budget under
+ * concurrent reveals) and blow past the renderer's resync timeout — the
+ * suppression window must equal the work window, not the wait window.
+ */
+export function enqueueSnapshotJob<T>(job: () => Promise<T>): Promise<T> {
+  const run = queueTail.then(job);
+  // The queue must survive a rejected job (a defensive catch keeps one bug
+  // from wedging all snapshots).
   queueTail = run.catch(() => undefined);
   return run;
+}
+
+export function generateSnapshot(req: SnapshotRequest): Promise<SnapshotOutcome> {
+  return enqueueSnapshotJob(() => generateInner(req));
+}
+
+/**
+ * Non-queued variant for callers that already hold the slot via
+ * enqueueSnapshotJob (SessionPipe.reflush). Calling this without the slot
+ * forfeits the memory/event-loop serialization the queue exists for.
+ */
+export function generateSnapshotUnqueued(req: SnapshotRequest): Promise<SnapshotOutcome> {
+  return generateInner(req);
 }
 
 async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
@@ -125,15 +147,26 @@ async function generateInner(req: SnapshotRequest): Promise<SnapshotOutcome> {
       bytesIn += raw.length;
       const buf = utf8Carry.length > 0 ? Buffer.concat([utf8Carry, raw]) : raw;
       utf8Carry = Buffer.alloc(0);
-      for (let off = 0; off < buf.length; off += FEED_SLICE_BYTES) {
+      for (let off = 0; off < buf.length; ) {
         const end = Math.min(off + FEED_SLICE_BYTES, buf.length);
+        const isFinal = end === buf.length;
         let slice = buf.subarray(off, end);
-        if (end === buf.length) {
-          const pending = incompleteUtf8SuffixLength(slice);
-          if (pending > 0) {
-            utf8Carry = Buffer.from(slice.subarray(slice.length - pending));
-            slice = slice.subarray(0, slice.length - pending);
+        // EVERY slice end can split a multibyte char, not just the buffer end:
+        // an interior 256 KB boundary through a CJK/emoji char would decode
+        // both halves as U+FFFD. Interior boundaries simply retreat past the
+        // incomplete lead so the next slice re-reads it whole; only bytes
+        // pending at the END of the buffer leave via the cross-feed carry.
+        const pending = incompleteUtf8SuffixLength(slice);
+        if (pending > 0) {
+          slice = slice.subarray(0, slice.length - pending);
+          if (isFinal) {
+            utf8Carry = Buffer.from(buf.subarray(end - pending, end));
+            off = end;
+          } else {
+            off = end - pending; // interior retreat: strictly > previous off (slice ≫ 3 bytes)
           }
+        } else {
+          off = end;
         }
         if (slice.length === 0) continue;
         const text = slice.toString('utf8');

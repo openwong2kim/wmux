@@ -412,8 +412,31 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     st.buffer.length = 0;
     st.bufferedChars = 0;
     console.log(`[useTerminal] hidden-pane resync ptyId=${id} (${reason})`);
-    st.timer = setTimeout(() => abortResync('timeout'), RESYNC_TIMEOUT_MS);
+    // Timeout with bounded re-arm: the daemon serializes snapshot work behind
+    // a global slot, so under concurrent dirty-pane reveals this pane's RPC
+    // can legitimately wait several budgets before its replay even starts. A
+    // fixed timer would abort mid-queue and the late replay would then arrive
+    // on a settled pane (Codex P2). While the RPC is still in flight the
+    // daemon is alive and working — re-arm instead of aborting, up to a hard
+    // cap; a truly wedged daemon is caught by the RPC's own timeout, which
+    // settles the promise and stops the re-arms.
+    let rpcSettled = false;
+    let timerRearms = 0;
+    const armResyncTimer = () => {
+      st.timer = setTimeout(() => {
+        if (!rpcSettled && timerRearms < 3) {
+          timerRearms++;
+          armResyncTimer();
+          return;
+        }
+        abortResync('timeout');
+      }, RESYNC_TIMEOUT_MS);
+    };
+    armResyncTimer();
     const fallbackReconnect = () => {
+      // The reconnect path never waits on the daemon's snapshot slot — stop
+      // the timer re-arms so a hung reconnect aborts on the normal window.
+      rpcSettled = true;
       window.electronAPI.pty.reconnect(id).then((res) => {
         if (!res?.success) abortResync(`reconnect-failed${res?.code ? `:${res.code}` : ''}`);
       }).catch((err: unknown) => {
@@ -427,6 +450,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       return done;
     }
     window.electronAPI.pty.resync(id, { scrollback: scrollbackLines }).then((res) => {
+      rpcSettled = true;
       if (res?.success && res.mode === 'dead-snapshot') {
         paintDeadSnapshot(res.payloadBase64);
         return;
@@ -446,6 +470,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // screen exists — degrade in place (status quo, never stuck).
       abortResync(`resync-failed:${code}`);
     }).catch(() => {
+      rpcSettled = true;
       fallbackReconnect();
     });
     return done;

@@ -73,7 +73,7 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
     // must not: it calls pty.reconnect directly and aborts into markClean.
     const idx = src.indexOf('const startResync');
     expect(idx).toBeGreaterThan(0);
-    const body = src.slice(idx, idx + 1600);
+    const body = src.slice(idx, idx + 3000);
     expect(body).toMatch(/window\.electronAPI\.pty\.reconnect\(id\)/);
     expect(body).not.toMatch(/clearSurfacePtyIdByPty|reconnectPtyWithRetry/);
     const abortIdx = src.indexOf('const abortResync');
@@ -107,7 +107,7 @@ describe('Phase 3 PR-B — useTerminal snapshot-resync ladder (source-level)', (
   const hookPath = path.join(__dirname, '..', 'useTerminal.ts');
   const src = fs.readFileSync(hookPath, 'utf-8');
   const startIdx = src.indexOf('const startResync');
-  const body = src.slice(startIdx, startIdx + 3200);
+  const body = src.slice(startIdx, startIdx + 4600);
 
   it('prefers the non-disruptive pty.resync, guarded against stale preloads', () => {
     // A packaged app updated under a running renderer may lack pty.resync —
@@ -126,7 +126,7 @@ describe('Phase 3 PR-B — useTerminal snapshot-resync ladder (source-level)', (
     expect(body).toMatch(/'local-mode'/);
     expect(body).toMatch(/abortResync\(`resync-failed:\$\{code\}`\)/);
     // The RPC rejecting entirely (IPC failure) also lands on reconnect.
-    expect(body).toMatch(/\.catch\(\(\)\s*=>\s*\{\s*fallbackReconnect\(\);\s*\}\)/);
+    expect(body).toMatch(/\.catch\(\(\)\s*=>\s*\{\s*rpcSettled = true;\s*fallbackReconnect\(\);\s*\}\)/);
   });
 
   it('a live resync leaves settlement to the flush-complete handler (timer stays armed)', () => {

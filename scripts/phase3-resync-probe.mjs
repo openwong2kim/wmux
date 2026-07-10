@@ -105,6 +105,7 @@ class RendererSim {
     this.terminal.unicode.activeVersion = '11';
     this.mode = 'accumulating'; // initial flush
     this.pendingChunks = [];
+    this.liveCarry = Buffer.alloc(0);
     this.lastByteAt = Date.now();
     this.flushCount = 0;
   }
@@ -134,15 +135,25 @@ class RendererSim {
         continue;
       }
       // live: watch for RESYNC_BEGIN (probe always "armed" — simpler than main,
-      // and marker bytes never legitimately appear in PTY output)
-      const bIdx = rest.indexOf(RESYNC_BEGIN);
+      // and marker bytes never legitimately appear in PTY output). Carry a
+      // possible marker-prefix tail across chunk boundaries so a BEGIN split
+      // over two socket reads is still detected (mirrors the main scanner).
+      const scan = this.liveCarry.length > 0 ? Buffer.concat([this.liveCarry, rest]) : rest;
+      this.liveCarry = Buffer.alloc(0);
+      const bIdx = scan.indexOf(RESYNC_BEGIN);
       if (bIdx === -1) {
-        await this.write(rest);
+        let hold = 0;
+        const maxK = Math.min(RESYNC_BEGIN.length - 1, scan.length);
+        for (let k = maxK; k >= 1; k--) {
+          if (scan.subarray(scan.length - k).equals(RESYNC_BEGIN.subarray(0, k))) { hold = k; break; }
+        }
+        this.liveCarry = Buffer.from(scan.subarray(scan.length - hold));
+        await this.write(scan.subarray(0, scan.length - hold));
         return;
       }
-      await this.write(rest.subarray(0, bIdx));
+      await this.write(scan.subarray(0, bIdx));
       this.mode = 'accumulating';
-      rest = Buffer.from(rest.subarray(bIdx + RESYNC_BEGIN.length));
+      rest = Buffer.from(scan.subarray(bIdx + RESYNC_BEGIN.length));
       if (rest.length === 0) return;
     }
   }
@@ -281,8 +292,8 @@ async function main() {
     console.log(`[probe] daemon reflush log lines: ${reflushLogs.length}`);
     for (const l of reflushLogs) console.log('  ' + l.trim());
 
-    await control.rpc('daemon.destroySession', { id: sessionId }).catch(() => {});
-    await control.rpc('daemon.shutdown', {}).catch(() => {});
+    await control.rpc('daemon.destroySession', { id: sessionId }).catch(() => { /* teardown is best-effort */ });
+    await control.rpc('daemon.shutdown', {}).catch(() => { /* daemon may already be exiting */ });
     control.close();
     sessSock.destroy();
   } finally {

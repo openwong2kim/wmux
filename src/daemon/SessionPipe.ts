@@ -238,18 +238,61 @@ export class SessionPipe {
       | { ok: true; payload: Buffer; bytesIn: number; durationMs: number }
       | { ok: false; reason: string; detail?: string }
     >;
+    /**
+     * Global snapshot-slot acquisition (HeadlessSnapshot.enqueueSnapshotJob).
+     * The ENTIRE suppress→snapshot→finalize window runs inside the slot so
+     * that under concurrent reveals a queued pane keeps streaming live until
+     * its work can actually start — announcing RESYNC_BEGIN before holding
+     * the slot would suppress it for N×budget and outlive the renderer's
+     * resync timeout (Codex P2). Omitted (tests) → run immediately.
+     */
+    enqueue?: <T>(job: () => Promise<T>) => Promise<T>;
   }): Promise<{ mode: 'snapshot' | 'raw'; fallbackReason?: string }> {
     // Order matters: an in-flight reflush holds `flushed=false` from its T0
     // block, so the busy check must run BEFORE the flushed check or a
-    // concurrent call would always misreport as UNAVAILABLE.
+    // concurrent call would always misreport as UNAVAILABLE. The busy window
+    // covers the queue wait too (reflushInFlight is set before enqueue).
     if (this.reflushInFlight) {
       throw new Error('RESYNC_BUSY: a re-flush is already in progress');
     }
+    if (!this.isFlushed) {
+      throw new Error('RESYNC_UNAVAILABLE: no flushed client on session pipe');
+    }
+    this.reflushInFlight = true;
+    try {
+      const enqueue = opts.enqueue ?? (<T>(job: () => Promise<T>) => job());
+      return await enqueue(() => this.reflushInSlot(opts));
+    } finally {
+      this.reflushInFlight = false;
+    }
+  }
+
+  /** The slot-holding body of {@link reflush} — see the protocol notes there. */
+  private async reflushInSlot(opts: {
+    bridge: {
+      on(event: 'data', listener: (data: Buffer) => void): unknown;
+      removeListener(event: 'data', listener: (data: Buffer) => void): unknown;
+    };
+    cols: number;
+    rows: number;
+    scrollback?: number;
+    generate: (req: {
+      cols: number;
+      rows: number;
+      scrollback?: number;
+      initial: Buffer;
+      drainQueue: () => Buffer[];
+    }) => Promise<
+      | { ok: true; payload: Buffer; bytesIn: number; durationMs: number }
+      | { ok: false; reason: string; detail?: string }
+    >;
+  }): Promise<{ mode: 'snapshot' | 'raw'; fallbackReason?: string }> {
+    // Re-validate under the slot: the client can disconnect (or be replaced
+    // by a fresh connection mid-initial-flush) during the queue wait.
     const socket = this.client;
     if (!socket || socket.destroyed || !this.flushed) {
       throw new Error('RESYNC_UNAVAILABLE: no flushed client on session pipe');
     }
-    this.reflushInFlight = true;
     const teeQueue: Buffer[] = [];
     const tee = (data: Buffer) => {
       teeQueue.push(Buffer.isBuffer(data) ? data : Buffer.from(data));
@@ -326,7 +369,6 @@ export class SessionPipe {
       return { mode: 'raw', fallbackReason: outcome.reason };
     } finally {
       opts.bridge.removeListener('data', tee);
-      this.reflushInFlight = false;
     }
   }
 

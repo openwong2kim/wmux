@@ -332,4 +332,60 @@ describe('SessionPipe.reflush — gap-free live re-flush', () => {
     const parsed = parseWire(client2.wire());
     expect(parsed?.replay1.equals(seed)).toBe(true);
   }, 20000);
+
+  // Codex P2 regression: a reflush queued behind the global snapshot slot
+  // must NOT announce RESYNC_BEGIN (and suppress live output) until its work
+  // can actually start — under concurrent dirty-pane reveals the queue wait
+  // is N×budget, which would outlive the renderer's resync timeout while the
+  // pane sits suppressed.
+  it('a queued reflush keeps the pane live until its snapshot slot starts', async () => {
+    const ring = new RingBuffer(1024 * 1024);
+    const bridge = new EventEmitter();
+    const pipe = new SessionPipe(uniqueSessionId('slotwait'), ring, TOKEN);
+    cleanups.push(() => pipe.stop());
+    await pipe.start();
+
+    const seed = Buffer.from('seed$ \r\n');
+    ring.write(seed);
+    // Mirror the daemon's attachSession wiring: bridge data → client socket.
+    bridge.on('data', (d: Buffer) => pipe.writeToClient(d));
+    const client = await connectClient(pipe.getPipeName(), TOKEN);
+    cleanups.push(() => { client.socket.destroy(); });
+    await waitFor(() => pipe.isFlushed, 3000);
+
+    // A slot that does not open until we say so — simulates another pane's
+    // snapshot holding the global queue.
+    let releaseSlot!: () => void;
+    const gate = new Promise<void>((r) => { releaseSlot = r; });
+    const enqueue = async <T,>(job: () => Promise<T>): Promise<T> => {
+      await gate;
+      return job();
+    };
+
+    const reflushDone = pipe.reflush({
+      bridge: bridge as never,
+      cols: 80,
+      rows: 24,
+      generate: generateSnapshot,
+      enqueue,
+    });
+    // Belt: the busy window covers the queue wait too.
+    await expect(
+      pipe.reflush({ bridge: bridge as never, cols: 80, rows: 24, generate: generateSnapshot, enqueue }),
+    ).rejects.toThrow(/RESYNC_BUSY/);
+
+    // While queued: no BEGIN on the wire, and live bytes still flow.
+    const liveDuringWait = Buffer.from('typed-while-queued\r\n');
+    ring.write(liveDuringWait);
+    bridge.emit('data', liveDuringWait);
+    await waitFor(() => client.wire().includes(liveDuringWait), 3000);
+    expect(client.wire().indexOf(RESYNC_BEGIN_MARKER)).toBe(-1);
+
+    releaseSlot();
+    const result = await reflushDone;
+    expect(result.mode).toBe('snapshot');
+    await waitFor(() => parseWire(client.wire())?.resynced === true, 3000);
+    const parsed = parseWire(client.wire());
+    expect(parsed?.live1.includes(liveDuringWait)).toBe(true);
+  }, 20000);
 });

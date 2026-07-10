@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { Terminal } from '@xterm/headless';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
-import { generateSnapshot } from '../HeadlessSnapshot';
+import { generateSnapshot, FEED_SLICE_BYTES } from '../HeadlessSnapshot';
 
 // ── Round-trip harness ──────────────────────────────────────────────
 //
@@ -225,4 +225,30 @@ describe('HeadlessSnapshot — fidelity round-trips', () => {
       console.log(`[HeadlessSnapshot smoke] bytesIn=${res.bytesIn} durationMs=${res.durationMs}`);
     }
   }, 60000);
+
+  // CodeRabbit critical regression: an INTERIOR 256 KB feed-slice boundary
+  // used to split multibyte chars (only the final slice carried its tail),
+  // decoding both halves as U+FFFD.
+  it('keeps a multibyte char intact across an interior feed-slice boundary', async () => {
+    const cols = 120;
+    const rows = 10;
+    // Pad so the 3-byte '한' straddles the FEED_SLICE_BYTES boundary
+    // (1 byte in slice 0, 2 bytes in slice 1), then end with a marker line.
+    const pad = 'x'.repeat(64) + '\r\n'; // 66 ASCII bytes
+    let s = '';
+    while (s.length + pad.length <= FEED_SLICE_BYTES - 1) s += pad;
+    s += 'x'.repeat(FEED_SLICE_BYTES - 1 - s.length); // exactly SLICE-1 bytes
+    const bytes = Buffer.concat([
+      Buffer.from(s),
+      Buffer.from('한글 boundary check\r\nend-marker$ '),
+    ]);
+    expect(bytes[FEED_SLICE_BYTES - 1]).toBe(Buffer.from('한')[0]); // straddles
+    const res = await generateSnapshot({ cols, rows, initial: bytes });
+    expect(res.ok).toBe(true);
+    if (!res.ok) return;
+    const restored = await restoredTerminal(res.payload, cols, rows);
+    const text = bufferText(restored).join('\n');
+    expect(text).toContain('한글 boundary check');
+    expect(text).not.toContain('�');
+  }, 30000);
 });
