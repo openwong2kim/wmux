@@ -3,162 +3,173 @@
   "meta": {
     "tool": "perf-bench.mjs",
     "mode": "ci",
-    "appVersion": "3.2.0",
-    "commit": "69d1e6e",
-    "startedAt": "2026-06-12T17:31:40.017Z",
-    "finishedAt": "2026-06-12T17:32:44.881Z",
+    "appVersion": "3.20.0",
+    "commit": "2395e5e",
+    "startedAt": "2026-07-10T08:42:16.313Z",
+    "finishedAt": "2026-07-10T08:44:49.002Z",
     "platform": "win32",
     "arch": "x64",
-    "cpuModel": "AMD EPYC 9V74 80-Core Processor                ",
+    "cpuModel": "AMD EPYC 7763 64-Core Processor                ",
     "cpuCount": 4,
     "totalMemBytes": 17174360064,
     "osRelease": "10.0.26100",
-    "nodeVersion": "v22.22.3",
+    "nodeVersion": "v22.23.1",
     "config": {
       "coldRuns": 3,
       "inputSamples": 80,
-      "inputSamples8": 40
+      "inputSamples8": 40,
+      "scrollbackLines": null,
+      "frameBudgetPanes": [
+        4,
+        8,
+        16
+      ],
+      "hiddenFloodAgents": [
+        4,
+        8
+      ],
+      "hiddenRetention": false
     }
   },
   "scenarios": {
     "coldStart": {
       "runs": [
         {
-          "cdpReadyMs": 117,
-          "pipeReadyMs": 642,
-          "rendererReadyMs": 717,
-          "firstPtyDataMs": 766,
-          "fcpMs": 484,
+          "cdpReadyMs": 179,
+          "pipeReadyMs": 1110,
+          "rendererReadyMs": 1144,
+          "firstPtyDataMs": 1375,
+          "fcpMs": 704.1,
           "marks": {
-            "js-start": 113,
-            "imports-done": 117,
-            "lock-acquired": 118,
-            "construction-start": 118,
-            "pre-pipe-server-ctor": 118,
-            "pipe-server-ctor-done": 153,
-            "module-eval-end": 156,
-            "ready-fired": 179,
-            "plugins-loaded": 188,
-            "window-created": 235,
-            "daemon-bootstrap-start": 247,
-            "daemon-ensure-start": 248,
-            "daemon-liveness-checked": 250,
-            "daemon-spawn-start": 251,
-            "daemon-spawned": 261,
-            "renderer-load-triggered": 269,
-            "daemon-pipe-file-seen": 581,
-            "daemon-first-ping-ok": 586,
-            "daemon-bootstrap-end": 591,
-            "ready-end": 597
+            "js-start": 175,
+            "imports-done": 178,
+            "lock-acquired": 183,
+            "construction-start": 183,
+            "pre-pipe-server-ctor": 183,
+            "pipe-server-ctor-done": 226,
+            "module-eval-end": 232,
+            "ready-fired": 263,
+            "plugins-loaded": 273,
+            "window-created": 335,
+            "daemon-bootstrap-start": 350,
+            "daemon-ensure-start": 351,
+            "daemon-liveness-checked": 353,
+            "daemon-spawn-start": 354,
+            "daemon-spawned": 366,
+            "renderer-load-triggered": 377,
+            "daemon-pipe-file-seen": 1037,
+            "daemon-first-ping-ok": 1056,
+            "daemon-bootstrap-end": 1067,
+            "ready-end": 1076
           },
           "daemonBoot": {
-            "jsStartMs": 418,
+            "jsStartMs": 588,
             "marks": {
-              "main-start": 458,
-              "lock-acquired": 461,
-              "bootid-done": 465,
-              "config-loaded": 483,
-              "recovery-done": 487,
-              "pre-pipe-start": 488,
-              "pipe-listening": 550,
-              "pipe-file-written": 550,
-              "ready": 551
+              "main-start": 595,
+              "lock-acquired": 597,
+              "bootid-done": 602,
+              "config-loaded": 609,
+              "recovery-done": 821,
+              "pre-pipe-start": 824,
+              "pipe-listening": 996,
+              "pipe-file-written": 997,
+              "ready": 1003
             }
           }
         },
         {
-          "cdpReadyMs": 123,
-          "pipeReadyMs": 679,
-          "rendererReadyMs": 829,
-          "firstPtyDataMs": 990,
-          "fcpMs": 557.1,
+          "cdpReadyMs": 154,
+          "pipeReadyMs": 840,
+          "rendererReadyMs": 975,
+          "firstPtyDataMs": 1207,
+          "fcpMs": 665.2,
           "marks": {
-            "js-start": 119,
-            "imports-done": 123,
-            "lock-acquired": 125,
-            "construction-start": 125,
-            "pre-pipe-server-ctor": 125,
-            "pipe-server-ctor-done": 162,
-            "module-eval-end": 166,
-            "ready-fired": 190,
-            "plugins-loaded": 212,
-            "window-created": 260,
-            "daemon-bootstrap-start": 274,
-            "daemon-ensure-start": 275,
-            "daemon-liveness-checked": 277,
-            "daemon-spawn-start": 278,
-            "daemon-spawned": 290,
-            "renderer-load-triggered": 299,
-            "daemon-pipe-file-seen": 631,
-            "daemon-first-ping-ok": 648,
-            "daemon-bootstrap-end": 666,
-            "ready-end": 674
+            "js-start": 149,
+            "imports-done": 152,
+            "lock-acquired": 157,
+            "construction-start": 157,
+            "pre-pipe-server-ctor": 157,
+            "pipe-server-ctor-done": 200,
+            "module-eval-end": 206,
+            "ready-fired": 239,
+            "plugins-loaded": 250,
+            "window-created": 313,
+            "daemon-bootstrap-start": 327,
+            "daemon-ensure-start": 328,
+            "daemon-liveness-checked": 330,
+            "daemon-spawn-start": 331,
+            "daemon-spawned": 342,
+            "renderer-load-triggered": 354,
+            "daemon-pipe-file-seen": 807,
+            "daemon-first-ping-ok": 812,
+            "daemon-bootstrap-end": 820,
+            "ready-end": 830
           },
           "daemonBoot": {
-            "jsStartMs": 488,
+            "jsStartMs": 561,
             "marks": {
-              "main-start": 509,
-              "lock-acquired": 511,
-              "bootid-done": 516,
-              "config-loaded": 533,
-              "recovery-done": 537,
-              "pre-pipe-start": 537,
-              "pipe-listening": 622,
-              "pipe-file-written": 623,
-              "ready": 623
+              "main-start": 568,
+              "lock-acquired": 570,
+              "bootid-done": 575,
+              "config-loaded": 580,
+              "recovery-done": 713,
+              "pre-pipe-start": 714,
+              "pipe-listening": 803,
+              "pipe-file-written": 804,
+              "ready": 804
             }
           }
         },
         {
-          "cdpReadyMs": 127,
-          "pipeReadyMs": 687,
-          "rendererReadyMs": 775,
-          "firstPtyDataMs": 989,
-          "fcpMs": 543,
+          "cdpReadyMs": 150,
+          "pipeReadyMs": 892,
+          "rendererReadyMs": 1015,
+          "firstPtyDataMs": 1134,
+          "fcpMs": 653.6,
           "marks": {
-            "js-start": 123,
-            "imports-done": 127,
-            "lock-acquired": 129,
-            "construction-start": 129,
-            "pre-pipe-server-ctor": 129,
-            "pipe-server-ctor-done": 166,
-            "module-eval-end": 170,
-            "ready-fired": 195,
-            "plugins-loaded": 204,
-            "window-created": 252,
-            "daemon-bootstrap-start": 282,
-            "daemon-ensure-start": 283,
-            "daemon-liveness-checked": 285,
-            "daemon-spawn-start": 286,
-            "daemon-spawned": 296,
-            "renderer-load-triggered": 306,
-            "daemon-pipe-file-seen": 657,
-            "daemon-first-ping-ok": 665,
-            "daemon-bootstrap-end": 676,
-            "ready-end": 682
+            "js-start": 145,
+            "imports-done": 148,
+            "lock-acquired": 153,
+            "construction-start": 153,
+            "pre-pipe-server-ctor": 153,
+            "pipe-server-ctor-done": 195,
+            "module-eval-end": 200,
+            "ready-fired": 233,
+            "plugins-loaded": 243,
+            "window-created": 309,
+            "daemon-bootstrap-start": 322,
+            "daemon-ensure-start": 323,
+            "daemon-liveness-checked": 325,
+            "daemon-spawn-start": 326,
+            "daemon-spawned": 338,
+            "renderer-load-triggered": 349,
+            "daemon-pipe-file-seen": 826,
+            "daemon-first-ping-ok": 831,
+            "daemon-bootstrap-end": 840,
+            "ready-end": 850
           },
           "daemonBoot": {
-            "jsStartMs": 482,
+            "jsStartMs": 556,
             "marks": {
-              "main-start": 513,
-              "lock-acquired": 517,
-              "bootid-done": 522,
-              "config-loaded": 543,
-              "recovery-done": 547,
-              "pre-pipe-start": 548,
-              "pipe-listening": 645,
-              "pipe-file-written": 646,
-              "ready": 646
+              "main-start": 564,
+              "lock-acquired": 566,
+              "bootid-done": 572,
+              "config-loaded": 579,
+              "recovery-done": 706,
+              "pre-pipe-start": 707,
+              "pipe-listening": 799,
+              "pipe-file-written": 799,
+              "ready": 800
             }
           }
         }
       ],
       "median": {
-        "cdpReadyMs": 123,
-        "pipeReadyMs": 679,
-        "rendererReadyMs": 775,
-        "firstPtyDataMs": 989,
-        "fcpMs": 543
+        "cdpReadyMs": 154,
+        "pipeReadyMs": 892,
+        "rendererReadyMs": 1015,
+        "firstPtyDataMs": 1207,
+        "fcpMs": 665.2
       },
       "medianRunCounts": {
         "cdpReadyMs": 3,
@@ -168,51 +179,134 @@
         "fcpMs": 3
       },
       "medianMarks": {
-        "js-start": 119,
-        "imports-done": 123,
-        "lock-acquired": 125,
-        "construction-start": 125,
-        "pre-pipe-server-ctor": 125,
-        "pipe-server-ctor-done": 162,
-        "module-eval-end": 166,
-        "ready-fired": 190,
-        "plugins-loaded": 204,
-        "window-created": 252,
-        "daemon-bootstrap-start": 274,
-        "daemon-ensure-start": 275,
-        "daemon-liveness-checked": 277,
-        "daemon-spawn-start": 278,
-        "daemon-spawned": 290,
-        "renderer-load-triggered": 299,
-        "daemon-pipe-file-seen": 631,
-        "daemon-first-ping-ok": 648,
-        "daemon-bootstrap-end": 666,
-        "ready-end": 674
+        "js-start": 149,
+        "imports-done": 152,
+        "lock-acquired": 157,
+        "construction-start": 157,
+        "pre-pipe-server-ctor": 157,
+        "pipe-server-ctor-done": 200,
+        "module-eval-end": 206,
+        "ready-fired": 239,
+        "plugins-loaded": 250,
+        "window-created": 313,
+        "daemon-bootstrap-start": 327,
+        "daemon-ensure-start": 328,
+        "daemon-liveness-checked": 330,
+        "daemon-spawn-start": 331,
+        "daemon-spawned": 342,
+        "renderer-load-triggered": 354,
+        "daemon-pipe-file-seen": 826,
+        "daemon-first-ping-ok": 831,
+        "daemon-bootstrap-end": 840,
+        "ready-end": 850
       },
       "medianDaemonMarks": {
-        "main-start": 509,
-        "lock-acquired": 511,
-        "bootid-done": 516,
-        "config-loaded": 533,
-        "recovery-done": 537,
-        "pre-pipe-start": 537,
-        "pipe-listening": 622,
-        "pipe-file-written": 623,
-        "ready": 623
+        "main-start": 568,
+        "lock-acquired": 570,
+        "bootid-done": 575,
+        "config-loaded": 580,
+        "recovery-done": 713,
+        "pre-pipe-start": 714,
+        "pipe-listening": 803,
+        "pipe-file-written": 804,
+        "ready": 804
       }
     },
     "ram": {
       "idle1Pane": {
-        "workingSetBytes": 804937728,
-        "commitBytes": 473767936,
-        "processCount": 11,
-        "appMetricsRaw": 413372416
+        "workingSetBytes": 719380480,
+        "commitBytes": 402370560,
+        "processCount": 9,
+        "breakdown": {
+          "main": {
+            "workingSetBytes": 118431744,
+            "commitBytes": 98672640,
+            "processCount": 1
+          },
+          "renderer": {
+            "workingSetBytes": 167161856,
+            "commitBytes": 88092672,
+            "processCount": 1
+          },
+          "gpu": {
+            "workingSetBytes": 95993856,
+            "commitBytes": 34029568,
+            "processCount": 1
+          },
+          "utility": {
+            "workingSetBytes": 46071808,
+            "commitBytes": 14106624,
+            "processCount": 1
+          },
+          "daemon": {
+            "workingSetBytes": 76316672,
+            "commitBytes": 81088512,
+            "processCount": 1
+          },
+          "conhost": {
+            "workingSetBytes": 16310272,
+            "commitBytes": 3137536,
+            "processCount": 2
+          },
+          "other": {
+            "workingSetBytes": 199094272,
+            "commitBytes": 83243008,
+            "processCount": 2
+          },
+          "commandLineNullCount": 0
+        },
+        "appMetricsRaw": 427712512
       },
       "panes8": {
-        "workingSetBytes": 1625706496,
-        "commitBytes": 904777728,
-        "processCount": 23,
-        "appMetricsRaw": 467456000
+        "workingSetBytes": 1777463296,
+        "commitBytes": 939311104,
+        "processCount": 27,
+        "breakdown": {
+          "main": {
+            "workingSetBytes": 121311232,
+            "commitBytes": 96251904,
+            "processCount": 1
+          },
+          "renderer": {
+            "workingSetBytes": 187006976,
+            "commitBytes": 94187520,
+            "processCount": 1
+          },
+          "gpu": {
+            "workingSetBytes": 127373312,
+            "commitBytes": 55095296,
+            "processCount": 1
+          },
+          "utility": {
+            "workingSetBytes": 46522368,
+            "commitBytes": 14536704,
+            "processCount": 1
+          },
+          "daemon": {
+            "workingSetBytes": 126763008,
+            "commitBytes": 166322176,
+            "processCount": 1
+          },
+          "conhost": {
+            "workingSetBytes": 87977984,
+            "commitBytes": 16637952,
+            "processCount": 11
+          },
+          "other": {
+            "workingSetBytes": 1080508416,
+            "commitBytes": 496279552,
+            "processCount": 11
+          },
+          "commandLineNullCount": 0
+        },
+        "appMetricsRaw": 480473088
+      },
+      "webglOccupancy8": {
+        "method": "dom-canvas-approximation",
+        "xtermScreens": 8,
+        "webglCanvases": 16,
+        "liveWebglContexts": 8,
+        "note": "DOM proxy for webglContextPool.grantedCount(); pool is not exposed on window (no product debug hook added per PR D). May diverge during the 10s deferred-dispose window."
       }
     },
     "inputLatency": {
@@ -222,21 +316,21 @@
       "throttled": false,
       "echoMs": {
         "count": 80,
-        "p50": 11.1,
-        "p95": 12.5,
-        "p99": 14.2,
-        "min": 1.8,
-        "max": 14.2,
-        "mean": 10.644
+        "p50": 11.5,
+        "p95": 13.2,
+        "p99": 18.3,
+        "min": 2.3,
+        "max": 18.3,
+        "mean": 11.12
       },
       "frameMs": {
         "count": 80,
-        "p50": 24.3,
-        "p95": 26.2,
-        "p99": 27,
-        "min": 7.2,
-        "max": 27,
-        "mean": 22.892
+        "p50": 23.8,
+        "p95": 25.4,
+        "p99": 26.1,
+        "min": 7.4,
+        "max": 26.1,
+        "mean": 22.365
       },
       "rafCadenceMs": {
         "p50": 15.6,
@@ -250,25 +344,176 @@
       "throttled": false,
       "echoMs": {
         "count": 40,
-        "p50": 10.9,
-        "p95": 12,
-        "p99": 12.9,
-        "min": 1.7,
-        "max": 12.9,
-        "mean": 10.092
+        "p50": 4.6,
+        "p95": 11.7,
+        "p99": 12.4,
+        "min": 2.1,
+        "max": 12.4,
+        "mean": 6.488
       },
       "frameMs": {
         "count": 40,
-        "p50": 24.6,
-        "p95": 25.8,
-        "p99": 26.3,
-        "min": 6,
-        "max": 26.3,
-        "mean": 21.81
+        "p50": 8,
+        "p95": 24.7,
+        "p99": 24.8,
+        "min": 5.2,
+        "max": 24.8,
+        "mean": 12.967
       },
       "rafCadenceMs": {
         "p50": 15.6,
         "p95": 15.7
+      }
+    },
+    "ime": {
+      "pass": true,
+      "expected": "안녕하세요",
+      "echoMatch": true,
+      "echoedSanitized": "안녕하세요",
+      "echoReason": "echo contains the composed string byte-for-byte",
+      "frameStalled": false,
+      "stallReason": "within budget",
+      "baselineFrameP95Ms": 15.7,
+      "duringFrameP95Ms": 15.7,
+      "method": "synthetic-dom-composition",
+      "note": "Synthesized compositionstart/update/end + input on .xterm-helper-textarea; reproduces the DOM contract xterm keys off, not OS TSF timing. Self-validating via PTY echo."
+    },
+    "frameBudget": {
+      "N4": {
+        "paneCount": 4,
+        "flooded": 4,
+        "throttled": false,
+        "frameDeltaMs": {
+          "count": 59,
+          "p50": 15.6,
+          "p95": 15.7,
+          "p99": 15.8,
+          "min": 15.5,
+          "max": 15.8,
+          "mean": 15.625
+        }
+      },
+      "N8": {
+        "paneCount": 8,
+        "flooded": 8,
+        "throttled": false,
+        "frameDeltaMs": {
+          "count": 59,
+          "p50": 15.6,
+          "p95": 15.7,
+          "p99": 15.7,
+          "min": 15.5,
+          "max": 15.7,
+          "mean": 15.624
+        }
+      },
+      "N16": {
+        "paneCount": 16,
+        "flooded": 16,
+        "throttled": false,
+        "frameDeltaMs": {
+          "count": 59,
+          "p50": 15.6,
+          "p95": 15.7,
+          "p99": 15.7,
+          "min": 15.5,
+          "max": 15.7,
+          "mean": 15.624
+        }
+      }
+    },
+    "webglContextLoss": {
+      "pass": true,
+      "recovered": true,
+      "lostFired": true,
+      "restoredFired": true,
+      "contextNotLost": true,
+      "liveCanvasCountAfter": 12,
+      "recoveryMs": 22,
+      "reason": "context restored (webglcontextrestored fired + !isContextLost)",
+      "method": "WEBGL_lose_context + webglcontextrestored/isContextLost",
+      "note": "Measures the GPU context lifecycle recovery, not a pixel-diff redraw proof (see design §2.4 / measureWebglContextLoss)."
+    },
+    "hiddenFlood": {
+      "idleBaseline": {
+        "frameDeltaMs": {
+          "count": 59,
+          "p50": 15.6,
+          "p95": 15.7,
+          "p99": 15.7,
+          "min": 15.5,
+          "max": 15.7,
+          "mean": 15.625
+        },
+        "throttled": false
+      },
+      "N4": {
+        "hiddenAgents": 4,
+        "mountedXterms": 5,
+        "throttled": false,
+        "frameDeltaMs": {
+          "count": 59,
+          "p50": 15.6,
+          "p95": 15.7,
+          "p99": 15.7,
+          "min": 15.5,
+          "max": 15.7,
+          "mean": 15.625
+        },
+        "echoMs": {
+          "count": 24,
+          "p50": 36.7,
+          "p95": 85.5,
+          "p99": 269,
+          "min": 9.4,
+          "max": 269,
+          "mean": 52.85
+        },
+        "frameMs": {
+          "count": 24,
+          "p50": 52,
+          "p95": 86.6,
+          "p99": 282.4,
+          "min": 25,
+          "max": 282.4,
+          "mean": 64.467
+        },
+        "samples": 24,
+        "dropped": 0
+      },
+      "N8": {
+        "hiddenAgents": 8,
+        "mountedXterms": 9,
+        "throttled": false,
+        "frameDeltaMs": {
+          "count": 59,
+          "p50": 15.6,
+          "p95": 15.7,
+          "p99": 15.7,
+          "min": 14.534,
+          "max": 15.7,
+          "mean": 15.607
+        },
+        "echoMs": {
+          "count": 24,
+          "p50": 52.8,
+          "p95": 126.8,
+          "p99": 164.3,
+          "min": 31.3,
+          "max": 164.3,
+          "mean": 58.546
+        },
+        "frameMs": {
+          "count": 24,
+          "p50": 64.1,
+          "p95": 135.2,
+          "p99": 186.5,
+          "min": 35.9,
+          "max": 186.5,
+          "mean": 70.137
+        },
+        "samples": 24,
+        "dropped": 0
       }
     }
   }

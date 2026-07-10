@@ -78,19 +78,19 @@ export const GATES = [
     unit: 'bytes',
   },
   // W2 — N-pane concurrent-streaming frame budget (design §2.1/§3). ratio 2.0
-  // encodes the strategy doc's "예산 2배" trigger directly. absMargin is a
-  // CONSERVATIVE placeholder (this worktree is macOS; the packaged bench only
-  // runs on the Windows CI target, so no local frame-delta measurement was
-  // possible to calibrate it — the owner refreshes it when the first blessed
-  // CI baseline lands, exactly like the other gates). Each N gates against its
-  // OWN baseline entry (no single 16.7ms budget across N).
+  // encodes the strategy doc's "예산 2배" trigger directly. Calibrated against
+  // real CI runs (2026-07-10, 4 runs): frameDeltaMs.p95 is vsync-pinned at
+  // 15.7ms for every N with zero run-to-run spread, so a single dropped-frame
+  // step (33.3ms) trips the 2.0x + 8ms double condition exactly as designed.
+  // Each N gates against its OWN baseline entry (no single 16.7ms budget
+  // across N).
   {
     key: 'frameBudgetP95Ms_N4',
     label: 'frameBudget.N4.frameDeltaMs.p95',
     path: 'scenarios.frameBudget.N4.frameDeltaMs.p95',
     scenarioPath: 'scenarios.frameBudget.N4',
     ratio: 2.0,
-    absMargin: 8, // ms (conservative; see note above)
+    absMargin: 8, // ms (see calibration note above)
     unit: 'ms',
   },
   {
@@ -115,17 +115,22 @@ export const GATES = [
   // visible pane is typed into (the multi-workspace multi-agent shape;
   // perf-bench measureHiddenFlood). Two axes per N: focused echo latency
   // (user-perceived typing) and the visible pane's rAF cadence (paint
-  // smoothness). Margins are generous — the scenario measures the app under
-  // deliberate saturation, so per-run variance is higher than the idle
-  // scenarios. Like the frameBudget gates, each N gates against its OWN
-  // blessed baseline entry; until a baseline records these they report NEW.
+  // smoothness). echoMs.p95 is the noisiest gated metric — observed CI
+  // spread across 4 runs (2026-07-10) was 2.3x (N4 37.1–85.5ms, N8
+  // 56.4–126.8ms) because the scenario deliberately saturates the app and
+  // runner load dominates. absMargin 50ms keeps the gate from flaking if a
+  // future baseline is blessed from a low-noise run, while a real regression
+  // (scheduler/retention broken → several hundred ms, 526ms measured locally)
+  // still clears both conditions. frameDeltaMs is vsync-pinned like
+  // frameBudget, so the tight 8ms margin applies. Each N gates against its
+  // OWN blessed baseline entry.
   {
     key: 'hiddenFloodEchoP95Ms_N4',
     label: 'hiddenFlood.N4.echoMs.p95',
     path: 'scenarios.hiddenFlood.N4.echoMs.p95',
     scenarioPath: 'scenarios.hiddenFlood.N4',
     ratio: 2.0,
-    absMargin: 15, // ms
+    absMargin: 50, // ms (see hidden-flood calibration note above)
     unit: 'ms',
   },
   {
@@ -143,7 +148,7 @@ export const GATES = [
     path: 'scenarios.hiddenFlood.N8.echoMs.p95',
     scenarioPath: 'scenarios.hiddenFlood.N8',
     ratio: 2.0,
-    absMargin: 15, // ms
+    absMargin: 50, // ms (see hidden-flood calibration note above)
     unit: 'ms',
   },
   {
