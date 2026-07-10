@@ -2,9 +2,9 @@
 
 # wmux
 
-### The Windows terminal built for AI agents.
+### The agent fleet that survives a reboot.
 
-Run **Claude Code**, **Codex CLI**, and **Gemini CLI** side by side — split panes, agents that **hand work to each other**, a browser they can actually drive, and zero-config MCP. **No WSL.**
+Fan out one prompt into **N isolated agents** — each in its own git worktree — review their work **hunk by hunk**, and walk away: after a quit, crash, or **full OS reboot**, your agents come back mid-conversation. A native Windows terminal for **Claude Code**, **Codex CLI**, and **Gemini CLI**, with **verified sender identity**, **human approval gates**, and a real browser agents can drive.
 
 <img width="924" alt="wmux" src="https://github.com/user-attachments/assets/6ad876f5-1f41-409a-b949-8ca78471cd4f" />
 
@@ -36,10 +36,11 @@ winget install openwong2kim.wmux
 
 |   |   |
 |---|---|
+| 🧵 **One prompt → N agents → merge the best** | Fan out a prompt into up to 8 tasks, each in an **isolated git worktree** with its own agent pane and a private mission channel. Review each task's diff side by side, **adopt hunks all-or-nothing**, then close it or open a **PR in one click** — leftovers land in a cleanup list, never as mystery folders. |
 | 🪟 **Many agents, one window** | Split panes + workspaces. Claude on the left, Codex on the right, Gemini running tests below — simultaneously. |
 | 🤝 **Agents coordinate, not just coexist** | Agent-to-agent messaging + task delegation, plus **channels** — Slack-style rooms several agents read, post, and get @-mentioned into. An **execute approval gate** stops any agent running code in your workspace without your OK. This is the multi-agent moat. |
 | 🌐 **Agents drive a *real* browser** | Built-in Chrome over CDP. Say *"search Google for this"* and your agent actually clicks, types, and screenshots. Works with React inputs and CJK text. |
-| 🧭 **Fleet View cockpit** | `Ctrl+Shift+A` — every agent across every workspace on one screen, blocked ones floated to the top with a live activity line. Clear every stuck approval from one **inbox**; click any card to jump straight there. |
+| 🧭 **Fleet View cockpit** | `Ctrl+Shift+A` — every agent across every workspace in an **always-on side panel** (other panes stay live), blocked ones floated to the top with a live activity line. Clear every stuck approval from one **inbox**; click any card to jump straight there. |
 | 🔔 **Knows when an agent finishes** | Desktop notification + taskbar flash on completion. Flags `rm -rf`, `git push --force`, `DROP TABLE` for your approval. |
 | 💾 **Survives quit, crash & reboot** | A tmux-style daemon owns every PTY. Reopen and your sessions are **still running — processes and all.** A pane declared in `wmux.json` is **supervised like an init system** — auto-restarted across crashes and reboots (the app relaunches at login), resuming the *exact* Claude conversation it was on. |
 | 🤖 **Zero-config MCP** | Launch wmux and Claude Code just works — browser + terminal tools register automatically. |
@@ -53,8 +54,9 @@ winget install openwong2kim.wmux
 
 ## ✨ Highlights
 
+- 🧵 **Task fan-out & harvest** — one prompt → N worktree-isolated tasks (idempotent, per-task compensation) · side-by-side diff with **hunk adoption** (all-or-nothing `git apply`) · close / one-click PR / cleanup list · mission channels record every decision
 - 🤝 **A2A multi-agent** — agents message + delegate tasks by pane, gated by a per-pane execute approval, with a pollable task inbox + symmetric reply
-- 💬 **Channels** — Slack-style rooms agents read, post, and get @-mentioned into · server-verified sender · durable per-agent inbox · `wmux channel` CLI
+- 💬 **Channels** — Slack-style rooms agents read, post, and get @-mentioned into · server-verified sender · durable per-agent inbox · `wmux channel` CLI · operators can self-join private agent rooms (audited)
 - 🤖 **Agent supervision** — declare a pane in `wmux.json` (trust-gated) and the daemon keeps it alive: restart policy, backoff, reboot survival
 - 🖥️ **ConPTY + xterm.js WebGL** rendering · 999K-line scrollback · Unicode 11 (correct CJK / emoji)
 - ⌨️ **Tmux-style prefix** (`Ctrl+B` + key, 13 actions) · **floating pane** (`` Ctrl+` ``) · scroll bookmarks
@@ -107,6 +109,8 @@ winget install openwong2kim.wmux
 **Notifications** — output-throughput activity detection (not pattern matching, works with any agent), taskbar flash + Windows toasts, process-exit alerts, notification panel (`Ctrl+I`), Web Audio cues.
 
 **Agent detection** — Claude Code, Codex CLI, Gemini CLI, Aider, OpenCode, GitHub Copilot CLI. Detects start → activates monitoring, warns on critical actions.
+
+**Task journey (fan-out → diff → PR)** — spawn up to 8 `WorkTask` missions from one prompt, each with a dedicated git worktree on a fresh `wtask/*` branch, its own task workspace, a private mission channel, and a file-backed initial prompt. Idempotency-keyed end to end; per-task failures compensate individually, and worktrees are preserved — never force-deleted. Harvest through a diff surface (file tree, unified diff, per-hunk checkboxes; adoption is a single all-or-nothing `git apply` gated by a target snapshot so the target is fully changed or fully untouched), comment straight into the mission channel, then close the task (the worktree is removed only after a clean check — dirty output is preserved and the close is held) or open a PR with one click (`gh`-gated, idempotent re-entry). A palette cleanup list scans the worktree root for leftovers, and missions show up in the sidebar and fleet panel.
 
 **Multi-agent (A2A)** — agent-to-agent messaging + task delegation addressed by pane/surface, same-workspace and cross-workspace. Per-pane **execute approval gate** (a remote agent can't spawn a `bypassPermissions` worker in your workspace without your approval). Symmetric reply (a reply returns to the exact pane that asked), pollable task inbox on the EventBus, broadcast, and a unified approval inbox in Fleet View.
 
@@ -198,7 +202,7 @@ Built on [xterm.js](https://xtermjs.org/), [node-pty](https://github.com/microso
 
 [MIT](LICENSE)
 
-<sub>**Keywords:** Windows tmux · tmux for Windows · terminal multiplexer · AI agent terminal · cmux alternative · Claude Code Windows · Codex CLI · Gemini CLI · MCP server · Chrome DevTools Protocol · split terminal · multi-agent · browser automation · ConPTY · xterm.js · Electron terminal</sub>
+<sub>**Keywords:** Windows tmux · tmux for Windows · terminal multiplexer · AI agent terminal · agent fleet · git worktree fan-out · cmux alternative · Claude Code Windows · Codex CLI · Gemini CLI · MCP server · Chrome DevTools Protocol · split terminal · multi-agent · browser automation · ConPTY · xterm.js · Electron terminal</sub>
 
 <div align="center"><sub>⭐ Star history</sub><br>
 

@@ -1,6 +1,9 @@
 import { memo } from 'react';
 import type { FleetPane } from '../../stores/selectors/fleet';
+import { selectLatestCompletionEvidenceTask } from '../../stores/selectors/fleet';
 import type { WorkTask } from '../../../shared/workTask';
+import type { Task } from '../../../shared/types';
+import { isVerifiedItem } from '../../../shared/completionEvidence';
 import { AGENT_STATUS_ICON } from '../Sidebar/agentStatusIcon';
 import { useT } from '../../hooks/useT';
 import { useStore } from '../../stores';
@@ -51,6 +54,46 @@ export function FleetCardMissionLine({ mission }: { mission: WorkTask | undefine
 }
 
 /**
+ * NB3 trust surface — completion-evidence badge (pure, prop-driven, testable).
+ * Given the most recent COMPLETED A2A task addressed to this pane (resolved by
+ * selectLatestCompletionEvidenceTask), it shows `✓ evidence n/m` where n is the
+ * verified-item count (verifiedItemCount) and m the total evidence items — the
+ * durable proof the agent left when it finished, made legible on the card. The
+ * tooltip carries the detail (task title + evidence summary) so the on-card text
+ * stays a single compact token. Renders null when the pane has no such task or
+ * the task carries no evidence items (additive — never a new empty row).
+ */
+export function FleetCardEvidenceBadge({ task }: { task: Task | undefined }): React.ReactElement | null {
+  if (!task) return null;
+  const evidence = task.status.evidence;
+  if (!evidence || evidence.items.length === 0) return null;
+  const total = evidence.items.length;
+  const verified = evidence.items.filter(isVerifiedItem).length;
+  return (
+    <div
+      className="flex items-center gap-1 min-w-0 text-caption font-mono"
+      data-fleet-evidence
+      data-evidence-verified={verified}
+      data-evidence-total={total}
+      title={`Completion evidence — ${task.metadata.title}: ${evidence.summary} (${verified}/${total} verified)`}
+    >
+      {/* The check is green only when at least one item is actually verified —
+          verified is a GRADE, not a gate (completionEvidence E9), so an all-
+          unverified proof reads muted, not falsely reassuring. */}
+      <span
+        className="flex-shrink-0"
+        style={{ color: verified > 0 ? 'var(--accent-green)' : 'var(--text-muted)' }}
+      >
+        ✓
+      </span>
+      <span className="truncate text-[var(--text-muted)]">
+        evidence {verified}/{total}
+      </span>
+    </div>
+  );
+}
+
+/**
  * One agent in the Fleet View grid. Status badge reuses AGENT_STATUS_ICON so the
  * cockpit stays in lockstep with the sidebar dots. awaiting_input — the
  * unattended-loop money state — gets a yellow border + "needs your input"
@@ -64,6 +107,13 @@ function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
   // paneGroupId 항목만)라 다른 미션 변경엔 리렌더되지 않고, 매칭이 없으면
   // undefined(신규 UI 표면 없음 — 기존 카드 확장).
   const mission = useStore((s) => s.missionByPaneGroup[card.workspaceId]);
+  // NB3 trust surface — the most recent completed A2A task with evidence
+  // addressed to this pane (narrow, reference-stable read: the selector returns
+  // the store's own Task object, so an unchanged winner is Object.is-equal and
+  // never re-renders this memoized card). Undefined ⇒ no badge.
+  const evidenceTask = useStore((s) =>
+    selectLatestCompletionEvidenceTask(s.a2aTasks, card.workspaceId, card.paneId, card.isActivePane),
+  );
   const isAwaitingInput = card.agentStatus === 'awaiting_input';
   const isIdle = card.agentStatus === 'idle';
   // P2: a user rename wins so the cockpit reflects the same name as the composer
@@ -152,6 +202,11 @@ function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
       {/* 사이클 C — 미션 라인(순수 prop-구동 서브컴포넌트). 이 카드가 fan-out
           태스크의 워크스페이스면 title + status를 부가 표시(매칭 없으면 null). */}
       <FleetCardMissionLine mission={mission} />
+
+      {/* NB3 trust surface — completion-evidence badge for the pane's most
+          recent completed A2A task (null when none). Sits under the mission line
+          because both describe delegated work; subordinate to the header. */}
+      <FleetCardEvidenceBadge task={evidenceTask} />
 
       {/* Affordance row — only when there is something worth a third line. */}
       {isAwaitingInput ? (
