@@ -69,6 +69,17 @@ function hiddenRetentionActive(): boolean {
   return isDaemonModeActive() && useStore.getState().hiddenPaneRetentionEnabled;
 }
 
+/** One-shot diagnostic latch: logged at the first data event that arrives for
+ *  a HIDDEN pane (the earliest moment the retention decision matters), with
+ *  every gate input — the dogfood answer to "why is retention (not) engaging
+ *  in this session". Mirrored into the main log. */
+let retentionGateLogged = false;
+function logRetentionGateOnce(retain: boolean): void {
+  if (retentionGateLogged) return;
+  retentionGateLogged = true;
+  console.log(`[wmux:hidden-retention] first hidden-pane data event: retain=${retain} daemonMode=${isDaemonModeActive()} settingsFlag=${useStore.getState().hiddenPaneRetentionEnabled}`);
+}
+
 /** Resync must settle within this budget or we degrade to the stale screen
  *  (never a stuck pane, never a cleared ptyId). */
 const RESYNC_TIMEOUT_MS = 8_000;
@@ -1188,6 +1199,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (!st.pending) return false;
       st.pending = false;
       if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+      console.log(`[wmux:hidden-retention] resync complete ptyId=${ptyId}: recoveredBytes=${recoveredBytes} buffered=${st.bufferedChars} chunks=${st.buffer.length}`);
       discardTerminalOutput(terminal); // stale retained backlog + dirty flag
       terminal.reset();
       for (const chunk of st.buffer) terminal.write(chunk);
@@ -1230,9 +1242,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // or, with retention on (daemon sessions), queued without ever being
       // parsed. glyphRepaint counts bytes at actual hand-off (its contract is
       // "terminal.write was CALLED"), not at IPC receipt.
+      const retain = hiddenRetentionActive();
+      if (!isVisibleRef.current) logRetentionGateOnce(retain);
       writeTerminalOutput(terminal, data, {
         foreground: isVisibleRef.current,
-        retainWhenHidden: hiddenRetentionActive(),
+        retainWhenHidden: retain,
         onWritten: (chars) => glyphRepaint.onData(chars),
       });
     };

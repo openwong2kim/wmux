@@ -112,6 +112,8 @@ const queue = new Map<SchedulableTerminal, QueueEntry>();
 const dirtyTerminals = new Set<SchedulableTerminal>();
 let drainTimer: ReturnType<typeof setTimeout> | null = null;
 let drainDelayMs: number | null = null;
+/** One-shot diagnostic latch — see the retention branch in writeTerminalOutput. */
+let retentionEngagedLogged = false;
 
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
@@ -282,12 +284,22 @@ export function writeTerminalOutput(
   if (!options.foreground && options.retainWhenHidden) {
     if (dirtyTerminals.has(terminal)) return;
     const entry = getOrCreateEntry(terminal, options);
-    entry.retained = true;
+    if (!entry.retained) {
+      entry.retained = true;
+      if (!retentionEngagedLogged) {
+        retentionEngagedLogged = true;
+        // One-shot diagnostic (mirrored into the main log): confirms the
+        // retention policy is live in this session — the dogfood signal that
+        // hidden bytes are being held, not parsed.
+        console.log('[wmux:hidden-retention] engaged — hidden pane output retained without parsing');
+      }
+    }
     entry.chunks.push(data);
     entry.queuedChars += data.length;
     if (entry.queuedChars > MAX_QUEUE_CHARS) {
       queue.delete(terminal);
       dirtyTerminals.add(terminal);
+      console.log(`[wmux:hidden-retention] backlog overflow (${entry.queuedChars} chars) — pane marked dirty, will resync from daemon on reveal`);
     }
     return;
   }
@@ -404,4 +416,5 @@ export function __resetTerminalOutputSchedulerForTests(): void {
   drainDelayMs = null;
   queue.clear();
   dirtyTerminals.clear();
+  retentionEngagedLogged = false;
 }

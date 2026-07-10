@@ -26,8 +26,12 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
     // In-flight resync buffers bytes out of xterm entirely…
     expect(body).toMatch(/st\.buffer\.push\(data\)/);
     expect(body).toMatch(/RESYNC_BUFFER_MAX_CHARS/);
-    // …otherwise the scheduler write carries the retention option.
-    expect(body).toMatch(/retainWhenHidden:\s*hiddenRetentionActive\(\)/);
+    // …otherwise the scheduler write carries the retention option (evaluated
+    // per event, logged once for the first hidden pane — the dogfood gate
+    // diagnostic).
+    expect(body).toMatch(/const retain = hiddenRetentionActive\(\)/);
+    expect(body).toMatch(/retainWhenHidden:\s*retain/);
+    expect(body).toMatch(/logRetentionGateOnce\(retain\)/);
   });
 
   it('both pty.onData listener sites use the shared routing', () => {
