@@ -1,4 +1,4 @@
-import type { AgentStatus } from '../../../shared/types';
+import type { AgentStatus, Task } from '../../../shared/types';
 import { getLeafPanes } from '../../../shared/paneUtils';
 import type { StoreState } from '../index';
 
@@ -164,6 +164,50 @@ export function sortFleetPanes(
       return a.index - b.index;
     })
     .map((entry) => entry.pane);
+}
+
+// ─── NB3 trust surface — completion-evidence badge source ────────────────────
+//
+// The Fleet cockpit's promise is "trust an agent to run unattended". Completion
+// evidence (§6.M) is the durable proof an agent left when it finished a
+// delegated A2A task; surfacing it on the card is what makes that trust
+// legible. This selector answers, per card, "what is the most recent COMPLETED
+// A2A task addressed to this pane that carries evidence?" — read straight off
+// the existing a2aTasks store (no new store/RPC).
+//
+// It returns the STORE's own Task reference (never a fresh object) so a
+// card-local `useStore` subscription stays reference-stable across unrelated
+// store writes: Object.is holds when the winning task is unchanged, so the
+// memoized FleetCard does not re-render on every a2a mutation — only when THIS
+// pane's latest evidence task actually changes. The card derives the display
+// counts from the returned task (see FleetCardEvidenceBadge).
+//
+// Addressing mirrors the selector's active-pane fidelity rule for `agentName`:
+// a pane-pinned task (to.paneId) matches only that exact pane; a workspace-only
+// task matches the workspace's ACTIVE pane, so a ws-level completion is not
+// duplicated across background sibling panes.
+export function selectLatestCompletionEvidenceTask(
+  a2aTasks: Record<string, Task>,
+  workspaceId: string,
+  paneId: string,
+  isActivePane: boolean,
+): Task | undefined {
+  let best: Task | undefined;
+  for (const task of Object.values(a2aTasks)) {
+    if (task.status.state !== 'completed') continue;
+    const evidence = task.status.evidence;
+    if (!evidence || evidence.items.length === 0) continue;
+    const to = task.metadata.to;
+    if (to.workspaceId !== workspaceId) continue;
+    // Pane precision: a pinned receiver pane must BE this card; an unpinned
+    // (ws-only) task lands on the active pane only.
+    if (to.paneId ? to.paneId !== paneId : !isActivePane) continue;
+    // "Most recent" = latest completion timestamp (status.timestamp is stamped
+    // at the completed transition). Lexicographic compare is chronological for
+    // canonical ISO-8601 UTC strings (both produced by isoNow()).
+    if (!best || task.status.timestamp > best.status.timestamp) best = task;
+  }
+  return best;
 }
 
 // Statuses that count toward the "N need you" header chip: awaiting_input is the
