@@ -26,7 +26,14 @@ import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { STALE_REPLAY_INPUT_MODE_RESETS } from '../terminal/staleReplayModeReset';
-import { writeTerminalOutput, flushTerminalOutput, discardTerminalOutput } from '../terminal/terminalOutputScheduler';
+import {
+  writeTerminalOutput,
+  flushTerminalOutput,
+  discardTerminalOutput,
+  isTerminalDirty,
+  markTerminalDirty,
+  markTerminalClean,
+} from '../terminal/terminalOutputScheduler';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 
 // Module-level terminal registry for scrollback persistence
@@ -46,6 +53,46 @@ export function onTerminalRegistered(listener: (ptyId: string) => void): () => v
 function registerTerminal(ptyId: string, terminal: Terminal): void {
   terminalRegistry.set(ptyId, terminal);
   for (const listener of [...terminalRegistrationListeners]) listener(ptyId);
+}
+
+// === Phase 3: hidden-pane retention (PR-A) ==================================
+// When enabled (settings toggle, daemon mode only), hidden panes' PTY output
+// is queued by the scheduler but never parsed. A pane whose backlog overflowed
+// is DIRTY — its xterm buffer is stale — and must be re-synchronized before it
+// is shown (reveal) or read (MCP pane.search / input.readScreen). PR-A resyncs
+// via the existing raw reconnect replay; PR-B swaps the replay payload for a
+// daemon-side parsed snapshot without touching this protocol.
+
+/** Retention applies only to daemon-backed sessions: dirtiness is recoverable
+ *  precisely because the daemon RingBuffer retains the authoritative bytes. */
+function hiddenRetentionActive(): boolean {
+  return isDaemonModeActive() && useStore.getState().hiddenPaneRetentionEnabled;
+}
+
+/** Resync must settle within this budget or we degrade to the stale screen
+ *  (never a stuck pane, never a cleared ptyId). */
+const RESYNC_TIMEOUT_MS = 8_000;
+/** Hard cap on bytes buffered while a resync replay is in flight (the ring is
+ *  ≤8MB; anything past this means the flush marker is not coming). */
+const RESYNC_BUFFER_MAX_CHARS = 32 * 1024 * 1024;
+
+interface ResyncState {
+  pending: boolean;
+  /** pty:data received while the resync replay is in flight — held out of
+   *  xterm so the reset below cannot race half-parsed replay bytes. */
+  buffer: string[];
+  bufferedChars: number;
+  resolvers: Array<() => void>;
+  timer: ReturnType<typeof setTimeout> | null;
+}
+
+// Read-path hydration (MCP pane.search / input.readScreen): a dirty hidden
+// pane must be re-synced before its buffer is scanned, or agents silently read
+// stale output. Keyed by ptyId; registered per mounted terminal.
+const hydrateRegistry = new Map<string, () => Promise<void>>();
+export async function hydrateTerminalForRead(ptyId: string): Promise<void> {
+  const fn = hydrateRegistry.get(ptyId);
+  if (fn) await fn();
 }
 
 // Monotonic token source so each useTerminal instance gets a stable, unique key
@@ -263,6 +310,70 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }, 1100);
     });
   }, []);
+
+  // Phase 3 resync state — shared between the mount effect (pty listeners),
+  // the visibility effect (dirty reveal) and the hydrate registry entry.
+  const resyncRef = useRef<ResyncState>({
+    pending: false, buffer: [], bufferedChars: 0, resolvers: [], timer: null,
+  });
+
+  /** Degrade: release whatever was buffered as-is (no reset — no replay came)
+   *  and mark clean so the pane does not resync-loop. The screen may be stale
+   *  (that is the pre-retention baseline for an unrecoverable session), but it
+   *  is never stuck and the ptyId is never cleared. */
+  const abortResync = useCallback((why: string) => {
+    const st = resyncRef.current;
+    if (!st.pending) return;
+    st.pending = false;
+    if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+    console.warn(`[useTerminal] resync degraded (${why}) ptyId=${ptyIdRef.current}`);
+    const term = terminalRef.current;
+    if (term) {
+      try {
+        for (const chunk of st.buffer) term.write(chunk);
+        markTerminalClean(term);
+      } catch { /* disposed mid-abort — teardown owns cleanup */ }
+    }
+    st.buffer.length = 0;
+    st.bufferedChars = 0;
+    st.resolvers.splice(0).forEach((r) => r());
+  }, []);
+
+  /** Silent cancel for teardown/ptyId swap: no writes into a dying terminal. */
+  const cancelResync = useCallback(() => {
+    const st = resyncRef.current;
+    if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+    st.pending = false;
+    st.buffer.length = 0;
+    st.bufferedChars = 0;
+    st.resolvers.splice(0).forEach((r) => r());
+  }, []);
+
+  /** Re-synchronize a dirty pane's full screen state from the daemon: trigger
+   *  a reconnect (SessionPipe replay of the RingBuffer) while holding incoming
+   *  bytes out of xterm; the flush-complete handler then resets the stale
+   *  buffer and writes the replay onto the clean one. Resolves when the resync
+   *  settles (replayed OR degraded). Never clears the ptyId — a dead session's
+   *  last screen must survive reveal (unlike reconnectPtyWithRetry). */
+  const startResync = useCallback((reason: string): Promise<void> => {
+    const term = terminalRef.current;
+    const id = ptyIdRef.current;
+    const st = resyncRef.current;
+    if (!term || !id) return Promise.resolve();
+    const done = new Promise<void>((resolve) => st.resolvers.push(resolve));
+    if (st.pending) return done; // in flight — piggyback on its settlement
+    st.pending = true;
+    st.buffer.length = 0;
+    st.bufferedChars = 0;
+    console.log(`[useTerminal] hidden-pane resync ptyId=${id} (${reason})`);
+    st.timer = setTimeout(() => abortResync('timeout'), RESYNC_TIMEOUT_MS);
+    window.electronAPI.pty.reconnect(id).then((res) => {
+      if (!res?.success) abortResync(`reconnect-failed${res?.code ? `:${res.code}` : ''}`);
+    }).catch((err: unknown) => {
+      abortResync(`reconnect-error:${err instanceof Error ? err.message : String(err)}`);
+    });
+    return done;
+  }, [abortResync]);
 
   const fit = useCallback(() => {
     const container = containerRef.current;
@@ -1067,6 +1178,25 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }
       }).catch(() => { /* best-effort — a transient list failure just skips the reset */ });
     };
+    // Phase 3: settle an in-flight resync when its replay flush completes.
+    // reset() runs FIRST — synchronous, and the replay bytes were held in the
+    // resync buffer (never handed to xterm), so nothing can parse ahead of it
+    // — then the held replay lands on the clean buffer. Returns true when the
+    // flush belonged to a resync (callers skip their normal verdict logic).
+    const completeResyncFromFlush = (recoveredBytes: number): boolean => {
+      const st = resyncRef.current;
+      if (!st.pending) return false;
+      st.pending = false;
+      if (st.timer) { clearTimeout(st.timer); st.timer = null; }
+      discardTerminalOutput(terminal); // stale retained backlog + dirty flag
+      terminal.reset();
+      for (const chunk of st.buffer) terminal.write(chunk);
+      st.buffer.length = 0;
+      st.bufferedChars = 0;
+      resetStaleReplayModes(recoveredBytes);
+      st.resolvers.splice(0).forEach((r) => r());
+      return true;
+    };
     let firstDataFired = false;
     const fireFirstData = () => {
       if (!firstDataFired) {
@@ -1083,19 +1213,34 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Restore scrollback from previous session, then connect PTY data listener.
     // Scrollback must be written BEFORE PTY data listener is connected so new
     // output appends after restored content rather than interleaving.
+    // Phase 3: route one pty:data event. While a resync replay is in flight
+    // the bytes are held out of xterm entirely (the flush-complete handler
+    // resets the stale buffer FIRST, then writes them onto the clean one — a
+    // direct write here could parse ahead of that reset and be wiped).
+    const routePtyData = (data: string) => {
+      const st = resyncRef.current;
+      if (st.pending) {
+        st.buffer.push(data);
+        st.bufferedChars += data.length;
+        if (st.bufferedChars > RESYNC_BUFFER_MAX_CHARS) abortResync('buffer-overflow');
+        return;
+      }
+      // Output scheduler (multi-workspace stutter fix): visible panes write
+      // directly (old path, zero added latency); hidden panes are batched —
+      // or, with retention on (daemon sessions), queued without ever being
+      // parsed. glyphRepaint counts bytes at actual hand-off (its contract is
+      // "terminal.write was CALLED"), not at IPC receipt.
+      writeTerminalOutput(terminal, data, {
+        foreground: isVisibleRef.current,
+        retainWhenHidden: hiddenRetentionActive(),
+        onWritten: (chars) => glyphRepaint.onData(chars),
+      });
+    };
+
     const connectPty = () => {
       removeDataListener = window.electronAPI.pty.onData((id, data) => {
         if (id === ptyId) {
-          // Output scheduler (multi-workspace stutter fix): visible panes
-          // write directly (old path, zero added latency); hidden panes are
-          // batched through the shared budgeted drain so N background agents
-          // cannot starve the focused pane's input echo and paint.
-          // glyphRepaint counts bytes at actual hand-off (its contract is
-          // "terminal.write was CALLED"), not at IPC receipt.
-          writeTerminalOutput(terminal, data, {
-            foreground: isVisibleRef.current,
-            onWritten: (chars) => glyphRepaint.onData(chars),
-          });
+          routePtyData(data);
           fireFirstData();
           markPaneLive();
         }
@@ -1107,6 +1252,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // still queued for this (possibly hidden) pane.
           writeTerminalOutput(terminal, `\r\n${t('terminal.exitedBracket', { code: exitCode })}\r\n`, {
             foreground: isVisibleRef.current,
+            retainWhenHidden: hiddenRetentionActive(),
           });
         }
       });
@@ -1126,11 +1272,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           pendingData.push(data);
           return;
         }
-        // Same scheduler routing as connectPty (see comment there).
-        writeTerminalOutput(terminal, data, {
-          foreground: isVisibleRef.current,
-          onWritten: (chars) => glyphRepaint.onData(chars),
-        });
+        // Same routing as connectPty (resync hold-out + scheduler).
+        routePtyData(data);
         fireFirstData();
         markPaneLive();
       });
@@ -1139,6 +1282,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         if (id === ptyId) {
           writeTerminalOutput(terminal, `\r\n${t('terminal.exitedBracket', { code: exitCode })}\r\n`, {
             foreground: isVisibleRef.current,
+            retainWhenHidden: hiddenRetentionActive(),
           });
         }
       });
@@ -1151,6 +1295,19 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       removeFlushListener = window.electronAPI.pty.onFlushComplete((id, recoveredBytes) => {
         if (id !== ptyId) return;
         if (terminalRef.current !== terminal) return;
+        if (completeResyncFromFlush(recoveredBytes)) return;
+        // Phase 3 deferral: hidden + retention means the replay just rode
+        // pty.onData into the retained queue — flushing it here is exactly
+        // the boot flood retention exists to remove. recoveredBytes>0 →
+        // discard + dirty (the reveal resync replays a clean copy over a
+        // reset buffer, which also subsumes the .txt verdict below);
+        // recoveredBytes=0 → nothing replayed, nothing to do until reveal.
+        if (!isVisibleRef.current && hiddenRetentionActive()) {
+          lastFlushRecoveredBytes = recoveredBytes;
+          pendingFlushReset = false;
+          if (recoveredBytes > 0) markTerminalDirty(terminal);
+          return;
+        }
         // Restore the pre-scheduler precondition: replay bytes that arrived
         // via pty.onData may still sit in the output scheduler (hidden pane).
         // reset()/resetStaleReplayModes assume they were already handed to
@@ -1275,6 +1432,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       removeFlushListener = window.electronAPI.pty.onFlushComplete((id, recoveredBytes) => {
         if (id !== ptyId) return;
         if (terminalRef.current !== terminal) return;
+        if (completeResyncFromFlush(recoveredBytes)) return;
+        // Phase 3 deferral — see the scrollback-branch handler above.
+        if (!isVisibleRef.current && hiddenRetentionActive()) {
+          if (recoveredBytes > 0) markTerminalDirty(terminal);
+          return;
+        }
         // Parity flush — see the scrollback-branch onFlushComplete above.
         flushTerminalOutput(terminal);
         resetStaleReplayModes(recoveredBytes);
@@ -1296,6 +1459,25 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminalRef.current = terminal;
     fitAddonRef.current = fitAddon;
     searchAddonRef.current = searchAddon;
+
+    // Phase 3 hydrate-before-read: MCP buffer reads (pane.search /
+    // input.readScreen) must not scan a stale hidden pane. Dirty → full
+    // daemon resync; otherwise hand over any retained backlog. The trailing
+    // empty write is a parse barrier — its callback runs only after xterm
+    // has parsed everything handed above, so the caller reads a settled
+    // buffer.
+    const hydrateForRead = async (): Promise<void> => {
+      if (terminalRef.current !== terminal) return;
+      if (isTerminalDirty(terminal)) {
+        await startResync('hydrate-read');
+      } else {
+        flushTerminalOutput(terminal);
+      }
+      await new Promise<void>((resolve) => {
+        try { terminal.write('', resolve); } catch { resolve(); }
+      });
+    };
+    if (ptyId) hydrateRegistry.set(ptyId, hydrateForRead);
 
     // ResizeObserver for auto-fit — preserves user scroll position across resize.
     // IMPORTANT: skip when the container has zero dimensions (display:none workspace).
@@ -1387,6 +1569,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       loadWebglRef.current = null;
       disposeWebglRef.current = null;
+      // Phase 3: silence any in-flight resync (its buffered bytes die with
+      // the terminal) and drop this mount's hydrate entry — a remount on the
+      // same ptyId registers its own.
+      cancelResync();
+      if (ptyId && hydrateRegistry.get(ptyId) === hydrateForRead) {
+        hydrateRegistry.delete(ptyId);
+      }
       // Drop any output still queued in the shared scheduler — the terminal
       // is being disposed, parsing the backlog would be wasted work and a
       // post-dispose drain write would throw.
@@ -1511,7 +1700,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Reveal catch-up: hand over any output batched while this pane was
       // hidden BEFORE the repaint/fit below — the reveal repaint must paint
       // the pane's current state, not a stale frame with bytes still queued.
-      if (terminalRef.current) flushTerminalOutput(terminalRef.current);
+      // Phase 3: a DIRTY pane (retained backlog overflowed / replay deferred)
+      // has nothing valid to flush — re-synchronize the full screen from the
+      // daemon instead. The stale frame stays up until the resync's reset +
+      // replay lands (sub-second), which beats parsing a discarded backlog.
+      if (terminalRef.current) {
+        if (isTerminalDirty(terminalRef.current)) {
+          void startResync('dirty-reveal');
+        } else {
+          flushTerminalOutput(terminalRef.current);
+        }
+      }
       // Cancel any pending deferred release — the terminal is visible again
       // (fast workspace switch / multiview<->single toggle), so keep our slot
       // instead of freeing and rebuilding it. This is the de-thrash that
@@ -1562,7 +1761,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         }, WEBGL_HIDDEN_DISPOSE_DELAY_MS);
       }
     }
-  }, [isVisible, fit]);
+  }, [isVisible, fit, startResync]);
 
   const getSearchDecorations = useCallback(() => {
     const y = getComputedStyle(document.documentElement).getPropertyValue('--accent-yellow').trim();

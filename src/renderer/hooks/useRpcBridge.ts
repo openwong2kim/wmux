@@ -13,7 +13,7 @@ import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/
 import type { A2aPriority } from '../utils/a2aFormat';
 import { requestExecuteApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
-import { terminalRegistry } from './useTerminal';
+import { terminalRegistry, hydrateTerminalForRead } from './useTerminal';
 import { readPtyBufferLines } from '../utils/terminalTail';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
@@ -1095,6 +1095,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // Keep only ptyIds that belong to the resolved workspace so the
     // "panes-left" check below is meaningful.
     const scannablePtyIds = ptyIds.filter((id) => ptyToPaneId.has(id));
+    // Phase 3 hydrate-before-read: with hidden-pane retention on, a hidden
+    // pane's xterm buffer can lag its PTY stream (retained backlog) or be
+    // stale outright (dirty after overflow). Searching it would silently
+    // return old output to agents. Hydration is a no-op for clean visible
+    // panes and bounded for dirty ones (daemon resync ≤ scrollback lines).
+    await Promise.all(scannablePtyIds.map((id) => hydrateTerminalForRead(id).catch(() => { /* per-pane best effort */ })));
     for (let pIdx = 0; pIdx < scannablePtyIds.length; pIdx++) {
       const ptyId = scannablePtyIds[pIdx];
       if (remainingBudget <= 0) {
@@ -1218,6 +1224,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
 
     const terminal = terminalRegistry.get(ptyId);
     if (!terminal) return { ptyId, text: '' };
+
+    // Phase 3 hydrate-before-read — see pane.search above. Agents reading a
+    // hidden pane must see its live state, not a retention-stale buffer.
+    await hydrateTerminalForRead(ptyId).catch(() => { /* best effort */ });
 
     // Single buffer-read path shared with the Fleet View tail. Behaviour is
     // identical to the prior inline loop (walk 0..baseY+cursorY,

@@ -89,8 +89,15 @@ describe('useTerminal stale-replay reset wiring (source-level lock)', () => {
     expect(body).not.toMatch(/pty\.write/);
   });
 
-  it('runs after the flush in BOTH branches (.txt restore present and absent)', () => {
+  it('runs after the flush in BOTH branches (.txt restore present and absent) and after a resync replay', () => {
+    // 2 = the two onFlushComplete branches (with/without a .txt restore).
+    // 3rd = Phase 3 completeResyncFromFlush: a hidden-pane resync replays the
+    // ring too, so the same leaked-DECSET disarm must follow that replay.
     const calls = src.match(/resetStaleReplayModes\(recoveredBytes\)/g) ?? [];
-    expect(calls).toHaveLength(2);
+    expect(calls).toHaveLength(3);
+    // The resync completion path must include it (regression lock for PR-A).
+    const resyncIdx = src.indexOf('const completeResyncFromFlush');
+    expect(resyncIdx).toBeGreaterThan(-1);
+    expect(src.slice(resyncIdx, resyncIdx + 1200)).toMatch(/resetStaleReplayModes\(recoveredBytes\)/);
   });
 });

@@ -139,6 +139,13 @@ export interface UISlice {
   imeResidueGuardEnabled: boolean;
   setImeResidueGuardEnabled: (enabled: boolean) => void;
 
+  // Phase 3 (hidden-pane retention, default OFF while dogfooding): hidden
+  // panes' PTY output is queued but never parsed; overflowed panes are
+  // re-synchronized from the daemon RingBuffer on reveal. Daemon-backed
+  // sessions only — the flag is ignored in local PTY mode.
+  hiddenPaneRetentionEnabled: boolean;
+  setHiddenPaneRetentionEnabled: (enabled: boolean) => void;
+
   // Issue #175: global default starting directory for new terminals.
   // '' = unset → os.homedir() fallback in the spawn layer.
   startupDirectory: string;
@@ -740,6 +747,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setImeResidueGuardEnabled: (enabled) => set((state) => {
     state.imeResidueGuardEnabled = enabled;
+  }),
+
+  hiddenPaneRetentionEnabled: false,
+
+  setHiddenPaneRetentionEnabled: (enabled) => set((state) => {
+    state.hiddenPaneRetentionEnabled = enabled;
   }),
 
   startupDirectory: '',

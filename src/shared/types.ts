@@ -509,6 +509,12 @@ export interface SessionData {
    */
   imeResidueGuardEnabled?: boolean;
   /**
+   * Phase 3 hidden-pane retention: hidden panes' PTY output is queued but
+   * never parsed by the renderer; overflowed panes re-synchronize from the
+   * daemon RingBuffer on reveal. Default false while dogfooding.
+   */
+  hiddenPaneRetentionEnabled?: boolean;
+  /**
    * Issue #175: global default starting directory for new terminals.
    * Empty/unset → os.homedir(). Per-workspace profile.startupCwd overrides.
    */

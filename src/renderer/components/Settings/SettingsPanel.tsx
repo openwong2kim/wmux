@@ -1507,6 +1507,8 @@ function TabGeneral() {
   const setSplitInheritsCwd = useStore((s) => s.setSplitInheritsCwd);
   const imeResidueGuardEnabled = useStore((s) => s.imeResidueGuardEnabled);
   const setImeResidueGuardEnabled = useStore((s) => s.setImeResidueGuardEnabled);
+  const hiddenPaneRetentionEnabled = useStore((s) => s.hiddenPaneRetentionEnabled);
+  const setHiddenPaneRetentionEnabled = useStore((s) => s.setHiddenPaneRetentionEnabled);
   const startupDirectory = useStore((s) => s.startupDirectory);
   const setStartupDirectory = useStore((s) => s.setStartupDirectory);
   const autoUpdateEnabled = useStore((s) => s.autoUpdateEnabled);
@@ -1594,6 +1596,13 @@ function TabGeneral() {
             checked={imeResidueGuardEnabled}
             onChange={setImeResidueGuardEnabled}
             label={t('settings.imeResidueGuard')}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.hiddenPaneRetention')} description={t('settings.hiddenPaneRetentionDesc')}>
+          <Toggle
+            checked={hiddenPaneRetentionEnabled}
+            onChange={setHiddenPaneRetentionEnabled}
+            label={t('settings.hiddenPaneRetention')}
           />
         </SettingRow>
         <SettingRow label={t('settings.scrollbackLines')} description={t('settings.scrollbackDesc')}>

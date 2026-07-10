@@ -341,6 +341,8 @@ export const en = {
   'settings.splitInheritsCwdDesc': 'A pane created by splitting starts in the original pane\'s current directory.',
   'settings.imeResidueGuard': 'Clear IME residue while idle',
   'settings.imeResidueGuardDesc': 'Protects against voice-input tools that replace leftover IME text destructively. Leave off unless you use such a tool — the clearing can confuse some IMEs.',
+  'settings.hiddenPaneRetention': 'Skip hidden pane rendering (experimental)',
+  'settings.hiddenPaneRetentionDesc': 'Stops parsing background agent output in hidden workspaces and re-syncs from the daemon on reveal. Keeps the visible pane smooth with many busy agents. Daemon sessions only.',
   'settings.updates': 'Updates',
   'settings.wmuxUpdates': 'wmux updates',
   'settings.updateFailed': 'Failed to check for updates',

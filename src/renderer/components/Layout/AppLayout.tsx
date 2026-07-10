@@ -216,6 +216,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     defaultShell: state.defaultShell,
     splitInheritsCwd: state.splitInheritsCwd,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,
+    hiddenPaneRetentionEnabled: state.hiddenPaneRetentionEnabled,
     startupDirectory: state.startupDirectory || undefined,
     scrollbackLines: state.scrollbackLines,
     scrollbackRestoreEnabled: state.scrollbackRestoreEnabled,

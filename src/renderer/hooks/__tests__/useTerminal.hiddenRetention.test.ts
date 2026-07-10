@@ -1,0 +1,96 @@
+import { describe, it, expect } from 'vitest';
+import fs from 'node:fs';
+import path from 'node:path';
+
+// Phase 3 PR-A — hidden-pane retention wiring in useTerminal. Like the other
+// useTerminal suites, this verifies the load-bearing wiring at the source
+// level (the hook needs a full xterm/electron bootstrap for behavioral tests);
+// the retention POLICY itself is behaviorally covered by
+// terminalOutputScheduler.retention.test.ts, and the end-to-end resync is a
+// packaged-app dogfood + perf-bench (hiddenFlood) gate.
+describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-level)', () => {
+  const hookPath = path.join(__dirname, '..', 'useTerminal.ts');
+  const src = fs.readFileSync(hookPath, 'utf-8');
+
+  it('gates retention on daemon mode AND the settings flag', () => {
+    // Retention without a daemon RingBuffer would make dirtiness unrecoverable.
+    expect(src).toMatch(
+      /function\s+hiddenRetentionActive\(\)[\s\S]{0,200}isDaemonModeActive\(\)\s*&&\s*useStore\.getState\(\)\.hiddenPaneRetentionEnabled/,
+    );
+  });
+
+  it('routes pty:data through the resync hold-out before the scheduler', () => {
+    const idx = src.indexOf('const routePtyData');
+    expect(idx).toBeGreaterThan(0);
+    const body = src.slice(idx, idx + 1500);
+    // In-flight resync buffers bytes out of xterm entirely…
+    expect(body).toMatch(/st\.buffer\.push\(data\)/);
+    expect(body).toMatch(/RESYNC_BUFFER_MAX_CHARS/);
+    // …otherwise the scheduler write carries the retention option.
+    expect(body).toMatch(/retainWhenHidden:\s*hiddenRetentionActive\(\)/);
+  });
+
+  it('both pty.onData listener sites use the shared routing', () => {
+    const matches = src.match(/routePtyData\(data\)/g) ?? [];
+    expect(matches.length).toBeGreaterThanOrEqual(2);
+  });
+
+  it('resync completion resets BEFORE writing the held replay (no early-parse race)', () => {
+    const idx = src.indexOf('const completeResyncFromFlush');
+    expect(idx).toBeGreaterThan(0);
+    const body = src.slice(idx, idx + 1200);
+    const resetIdx = body.indexOf('terminal.reset()');
+    const writeIdx = body.indexOf('for (const chunk of st.buffer) terminal.write(chunk)');
+    expect(resetIdx).toBeGreaterThan(0);
+    expect(writeIdx).toBeGreaterThan(resetIdx);
+    // Stale retained backlog + dirty flag die with the old screen state.
+    expect(body).toMatch(/discardTerminalOutput\(terminal\)/);
+  });
+
+  it('both flush-complete handlers settle a resync first, then defer when hidden', () => {
+    const settles = src.match(/if\s*\(completeResyncFromFlush\(recoveredBytes\)\)\s*return;/g) ?? [];
+    expect(settles.length).toBe(2);
+    const deferrals = src.match(/!isVisibleRef\.current\s*&&\s*hiddenRetentionActive\(\)/g) ?? [];
+    expect(deferrals.length).toBe(2);
+    // The deferral marks dirty ONLY when the daemon actually replayed bytes.
+    expect(src).toMatch(/if\s*\(recoveredBytes\s*>\s*0\)\s*markTerminalDirty\(terminal\);/);
+  });
+
+  it('reveal branches on dirtiness: resync for dirty, flush for clean', () => {
+    const idx = src.indexOf('if (isTerminalDirty(terminalRef.current))');
+    expect(idx).toBeGreaterThan(0);
+    const body = src.slice(idx, idx + 300);
+    expect(body).toMatch(/startResync\('dirty-reveal'\)/);
+    expect(body).toMatch(/flushTerminalOutput\(terminalRef\.current\)/);
+  });
+
+  it('resync degrades without ever clearing the ptyId (dead pane keeps its last screen)', () => {
+    // reconnectPtyWithRetry clears ptyIds on fatal errors — the resync path
+    // must not: it calls pty.reconnect directly and aborts into markClean.
+    const idx = src.indexOf('const startResync');
+    expect(idx).toBeGreaterThan(0);
+    const body = src.slice(idx, idx + 1600);
+    expect(body).toMatch(/window\.electronAPI\.pty\.reconnect\(id\)/);
+    expect(body).not.toMatch(/clearSurfacePtyIdByPty|reconnectPtyWithRetry/);
+    const abortIdx = src.indexOf('const abortResync');
+    const abortBody = src.slice(abortIdx, abortIdx + 1200);
+    expect(abortBody).toMatch(/markTerminalClean\(term\)/);
+  });
+
+  it('exposes hydrate-before-read and cleans it up on unmount', () => {
+    expect(src).toMatch(/export\s+async\s+function\s+hydrateTerminalForRead/);
+    expect(src).toMatch(/hydrateRegistry\.set\(ptyId,\s*hydrateForRead\)/);
+    expect(src).toMatch(/hydrateRegistry\.get\(ptyId\)\s*===\s*hydrateForRead[\s\S]{0,120}hydrateRegistry\.delete\(ptyId\)/);
+    // Hydration ends with a parse barrier so callers read a settled buffer.
+    const idx = src.indexOf('const hydrateForRead');
+    const body = src.slice(idx, idx + 900);
+    expect(body).toMatch(/terminal\.write\(''\s*,\s*resolve\)/);
+    // Teardown silences any in-flight resync.
+    expect(src).toMatch(/cancelResync\(\);/);
+  });
+
+  it('exit markers ride the retention policy too (no hidden parse via onExit)', () => {
+    const exitWrites = src.match(/terminal\.exitedBracket[\s\S]{0,220}?retainWhenHidden:\s*hiddenRetentionActive\(\)/g) ?? [];
+    expect(exitWrites.length).toBe(2);
+  });
+});
