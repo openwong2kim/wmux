@@ -75,9 +75,13 @@ import { useT } from '../../hooks/useT';
  *  vs "joinable" (discoverable): a public channel the caller is NOT a member
  *  of goes to `discoverable` so the panel can surface a Join affordance
  *  instead of mixing it into the member list. A private channel the caller
- *  isn't in is omitted (it isn't readable, so we never leak it into a group).
- *  When `isMember` is omitted, every non-archived channel stays in `active`
- *  — the pre-discovery behaviour, so existing callers/tests are unaffected. */
+ *  isn't in is omitted (it isn't readable, so we never leak it into a group)
+ *  UNLESS it carries the W1 `observed` flag — a private agent channel the local
+ *  human operator observes read-only (the daemon only sets `observed` for
+ *  ws-human), which belongs in the normal `active` list with an "observed"
+ *  badge. When `isMember` is omitted, every non-archived channel stays in
+ *  `active` — the pre-discovery behaviour, so existing callers/tests are
+ *  unaffected. */
 export function groupChannels(
   channels: Channel[],
   isMember?: (channel: Channel) => boolean,
@@ -95,8 +99,19 @@ export function groupChannels(
       continue;
     }
     if (isMember && !isMember(c)) {
-      if (c.visibility === 'public') discoverable.push(c);
-      // private non-member → omit (unreadable; never leak into a group)
+      if (c.visibility === 'public') {
+        discoverable.push(c);
+        continue;
+      }
+      // W1 (operator observation): a private channel the human is NOT a member of
+      // but the daemon returned as observable (list() sets `observed` only for the
+      // ws-human operator) belongs in the normal list with a read-only badge — the
+      // owner-approved "it just appears" behaviour. A private non-member channel
+      // WITHOUT the flag stays omitted (unreadable; never leaked into a group).
+      if (c.observed) {
+        active.push(c);
+        continue;
+      }
       continue;
     }
     active.push(c);
@@ -465,14 +480,22 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
   // private (joinable) room or archived (shown with a badge, not joinable). Public
   // active non-members already appear in the Discover group above, so exclude them
   // here. Order follows the daemon's deterministic createdAt sort.
+  //
+  // W1 (operator observation): also exclude any channel already present in the
+  // catalog mirror — those render in the NORMAL groups (active/observed, archived,
+  // discoverable), so listing them here again would double-expose them. Since
+  // list() now returns every channel the operator can observe, this section is
+  // reduced to a fallback for channels the mirror doesn't hold yet (e.g. a stale
+  // hydration or a pre-W1 daemon that still hides private non-member rows).
   const operatorItems = useMemo<OperatorChannelSummary[]>(() => {
     if (!operatorChannels) return [];
     return operatorChannels.filter((c) => {
+      if (channels[c.id]) return false;
       if (memberChannelIds?.has(c.id)) return false;
       if (c.status === 'archived') return true;
       return c.visibility === 'private';
     });
-  }, [operatorChannels, memberChannelIds]);
+  }, [operatorChannels, memberChannelIds, channels]);
 
   const channelList = useMemo(() => Object.values(channels), [channels]);
   const isMember = useMemo(
@@ -613,6 +636,7 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
                 isActive={activeChannelId === ch.id}
                 unreadCount={channelUnread[ch.id] ?? 0}
                 mentioned={(channelMentions[ch.id] ?? 0) > 0}
+                observedLabel={t('channels.observedBadge') || 'observed'}
                 onSelect={onSelect}
               />
             ))}

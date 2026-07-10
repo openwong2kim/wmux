@@ -65,6 +65,16 @@ export interface Channel {
    * from creation in that case.
    */
   emptySince?: number;
+  /**
+   * W1 (operator observation) — caller-relative, NOT persisted. Set true by
+   * `ChannelService.list()` on a private channel the calling workspace can
+   * OBSERVE but is not a member of (only the reserved human workspace, ws-human,
+   * ever reaches this). The renderer uses it to place the channel in the normal
+   * dock list with a read-only "observed" badge and to hide the composer (join
+   * to participate). Absent for member channels and every agent caller — the
+   * field never lands in `channels.json` (list stamps it on a shallow copy).
+   */
+  observed?: boolean;
 }
 
 /**

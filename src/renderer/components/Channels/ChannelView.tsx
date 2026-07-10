@@ -21,7 +21,7 @@ import type {
   ChannelMention,
 } from '../../../shared/channels';
 import { useStore } from '../../stores';
-import { loadChannelHistory } from '../../hooks/useChannelsHydration';
+import { loadChannelHistory, hydrateChannelsCatalog } from '../../hooks/useChannelsHydration';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
@@ -674,6 +674,7 @@ export function ChannelView(): React.ReactElement | null {
   const pushToast = useStore((s) => s.pushToast);
   const archiveChannelDaemon = useStore((s) => s.archiveChannelDaemon);
   const leaveChannelDaemon = useStore((s) => s.leaveChannelDaemon);
+  const operatorJoinDaemon = useStore((s) => s.operatorJoinDaemon);
 
   // Close the conversation view only (deselect) — the channel stays + you stay a member.
   const handleClose = useCallback(() => setActiveChannel(null), [setActiveChannel]);
@@ -738,6 +739,37 @@ export function ChannelView(): React.ReactElement | null {
     [selfWs, activeChannelId],
   );
 
+  // W1 (operator observation): join a channel the human is currently OBSERVING
+  // read-only. Reuses the operator-join path (the daemon seats the human + leaves
+  // a durable system message, §2.1.1), then re-pulls the catalog so the fresh
+  // member row lands and `observed` clears — the composer then replaces the
+  // read-only banner. DUPLICATE_MEMBER (already joined in another window) is
+  // treated as success.
+  const handleObserverJoin = useCallback(() => {
+    if (!activeChannelId) return;
+    void operatorJoinDaemon(activeChannelId).then((res) => {
+      if (res.ok || res.error.code === 'DUPLICATE_MEMBER') {
+        const bridge = useStore.getState().channelsRpc();
+        if (bridge) {
+          void hydrateChannelsCatalog({
+            rpc: bridge.rpc,
+            workspaceId: HUMAN_WORKSPACE_ID,
+            setChannels: useStore.getState().setChannels,
+          }).catch(() => undefined);
+        }
+        pushToast({
+          level: 'info',
+          message: t('channels.operatorJoinedToast', { channel: channel?.name ?? activeChannelId }),
+        });
+      } else {
+        pushToast({
+          level: 'error',
+          message: t('channels.operatorJoinFailedToast', { channel: channel?.name ?? activeChannelId }),
+        });
+      }
+    });
+  }, [activeChannelId, operatorJoinDaemon, pushToast, t, channel?.name]);
+
   // Pick a stable viewer — the unified human (ws-human) member row when the
   // human is in this channel; members[0] fallback for previewing a channel the
   // human is not in (the code keys on HUMAN_WORKSPACE_ID below).
@@ -749,13 +781,21 @@ export function ChannelView(): React.ReactElement | null {
   // `channel` is defined). Hoisting the `useMemo` above the early
   // return makes the hook order stable across renders.
   const viewer = useMemo<ChannelMember | null>(() => {
-    if (members.length === 0) return null;
-    // P5: the viewer is the unified human row when present; the members[0]
-    // fallback remains for previewing channels the human is not in.
+    // P5: the viewer is the unified human row when present.
     const own = members.find((m) => m.workspaceId === HUMAN_WORKSPACE_ID);
     if (own) return own;
+    // W1 (operator observation): observing a private agent channel read-only —
+    // the human has no member row, so synthesize a floor-0 viewer to render the
+    // FULL observed history (the daemon already returns it unfloored for
+    // ws-human). Display-only: leave/archive are gated on the real `selfIsMember`
+    // (false here), and delivery-status never matches this synthetic memberId.
+    if (channel?.observed) {
+      return { workspaceId: HUMAN_WORKSPACE_ID, memberId: HUMAN_MEMBER_ID, joinedAt: 0, historyFromSeq: 0 };
+    }
+    if (members.length === 0) return null;
+    // members[0] fallback remains for previewing public channels the human is not in.
     return members[0] ?? null;
-  }, [members]);
+  }, [members, channel?.observed]);
 
   // P0: load RECENT message history into the store when a channel is opened.
   // The view renders `store.channelMessages` only (it never calls getMessages
@@ -789,6 +829,9 @@ export function ChannelView(): React.ReactElement | null {
       // doesn't mark messages received. NOTE: the flip is persisted on the daemon
       // and visible to the sender's NEXT poll/reopen (agents poll getMessages, so
       // they see it); live push to an already-open sender view is a follow-up.
+      // W1: on an OBSERVED channel this ack is an intentional no-op (ws-human has
+      // no member row → the daemon rejects it, swallowed by the catch below); the
+      // local unread badge still clears via setActiveChannel, so nothing piles up.
       if (disposed || !loaded) return;
       // Compute uptoSeq from the messages ACTUALLY in the store, not the catalog
       // row's nextSeq: appendMessageFromEvent/hydrateChannelMessages never advance
@@ -844,6 +887,29 @@ export function ChannelView(): React.ReactElement | null {
               className="px-4 py-2 text-[10px] font-mono text-[var(--text-muted)]"
             >
               {t('channels.archivedReadOnly') || 'Archived channels are read-only.'}
+            </div>
+          ) : channel.observed ? (
+            // W1 (operator observation): the human is watching this private agent
+            // channel read-only (no member row) — hide the composer and offer an
+            // explicit Join to participate (operator-join leaves a durable record).
+            <div
+              data-channel-observed-composer
+              className="flex items-center justify-between gap-2 px-4 py-2 text-[10px] font-mono text-[var(--text-muted)]"
+            >
+              <span {...tokenAttrs('textMuted', 'text')}>
+                {t('channels.observedReadOnly') ||
+                  "You're observing this channel (read-only)."}
+              </span>
+              <button
+                type="button"
+                className={`shrink-0 px-2 py-0.5 text-[10px] rounded text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors ${FOCUS_RING}`}
+                onClick={handleObserverJoin}
+                data-channel-observed-join
+                aria-label={`${t('channels.operatorJoinConfirmCta') || 'Join'} #${channel.name}`}
+                {...tokenAttrs('success', 'accent')}
+              >
+                {t('channels.operatorJoinConfirmCta') || 'Join'}
+              </button>
             </div>
           ) : (
             <Composer channelId={channel.id} onError={pushToast} />

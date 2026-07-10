@@ -572,7 +572,9 @@ export class ChannelService {
    * `verifiedWorkspaceId` appears in its member list.
    */
   list(verifiedWorkspaceId: string): Channel[] {
-    return this.state.channels.filter((channel) => this.isVisibleTo(channel, verifiedWorkspaceId));
+    return this.state.channels
+      .filter((channel) => this.isObservableBy(channel, verifiedWorkspaceId))
+      .map((channel) => this.withObservedFlag(channel, verifiedWorkspaceId));
   }
 
   /**
@@ -586,8 +588,13 @@ export class ChannelService {
   get(channelId: string, verifiedWorkspaceId: string): Channel | null {
     const channel = this.state.channels.find((c) => c.id === channelId);
     if (!channel) return null;
-    if (!this.isVisibleTo(channel, verifiedWorkspaceId)) return null;
-    return channel;
+    // W1: read gate — members/public, plus the local human operator observing
+    // read-only. A private channel remains indistinguishable from a missing one
+    // for every OTHER non-member caller. The observed stamp matches list() (GLM
+    // P3): a renderer path that fills its mirror from get() must see the same
+    // caller-relative flag, or the read-only banner would silently vanish.
+    if (!this.isObservableBy(channel, verifiedWorkspaceId)) return null;
+    return this.withObservedFlag(channel, verifiedWorkspaceId);
   }
 
   /**
@@ -629,7 +636,9 @@ export class ChannelService {
   getMembers(channelId: string, verifiedWorkspaceId: string): ChannelMember[] {
     const channel = this.state.channels.find((c) => c.id === channelId);
     if (!channel) return [];
-    if (!this.isVisibleTo(channel, verifiedWorkspaceId)) return [];
+    // W1: read gate — the local human operator sees the roster of an observed
+    // private channel (read-only; it is not itself in that roster).
+    if (!this.isObservableBy(channel, verifiedWorkspaceId)) return [];
     return this.state.members[channelId] ?? [];
   }
 
@@ -660,7 +669,8 @@ export class ChannelService {
   ): ChannelMessage[] {
     const channel = this.state.channels.find((c) => c.id === channelId);
     if (!channel) return [];
-    if (!this.isVisibleTo(channel, verifiedWorkspaceId)) return [];
+    // W1: read gate — members/public, plus the local human operator observing.
+    if (!this.isObservableBy(channel, verifiedWorkspaceId)) return [];
     const all = this.state.messages[channelId] ?? [];
     // Floor at the viewer's historyFromSeq for non-public channels.
     // Public channels have no per-member history cap.
@@ -670,13 +680,17 @@ export class ChannelService {
         (m) => m.workspaceId === verifiedWorkspaceId,
       );
       if (!viewer) {
-        // Should be unreachable given the isVisibleTo gate above (a
-        // non-public channel is only visible to its members), but
-        // guarded so a future visibility-rule change can't widen the
-        // hole.
-        return [];
+        // W1 (operator observation): the local human operator observes a private
+        // agent channel read-only WITHOUT a member row, so there is no per-member
+        // historyFromSeq floor to apply — return the FULL history (audit-
+        // equivalent, matching operator-join's historyFromSeq=0). Any OTHER
+        // non-member is unreachable here (isObservableBy gated the read above to
+        // members + ws-human only); the guard keeps a future visibility-rule
+        // change fail-closed for non-humans.
+        if (verifiedWorkspaceId !== HUMAN_WORKSPACE_ID) return [];
+      } else {
+        floor = Math.max(floor, viewer.historyFromSeq);
       }
-      floor = Math.max(floor, viewer.historyFromSeq);
     }
     const filtered = all.filter((m) => m.seq >= floor);
     if (limit !== undefined && limit >= 0) {
@@ -702,11 +716,58 @@ export class ChannelService {
   }
 
   /** Per-channel visibility rule. A channel is visible to the caller
-   *  when it is public OR the caller is in its member list. */
+   *  when it is public OR the caller is in its member list. This is the
+   *  MEMBERSHIP gate — it backs every WRITE path (join's #288 gate, the
+   *  post membership check) and stays strict so observation can never
+   *  unlock speaking or a roster seat. */
   private isVisibleTo(channel: Channel, verifiedWorkspaceId: string): boolean {
     if (channel.visibility === 'public') return true;
     const members = this.state.members[channel.id] ?? [];
     return members.some((m) => m.workspaceId === verifiedWorkspaceId);
+  }
+
+  /**
+   * W1 (operator observation) — READ visibility for the local human operator.
+   * A channel is observable when it is visible (member or public) OR the caller
+   * is the reserved human workspace: the local human observes agent channels
+   * read-only. Intentionally WIDER than isVisibleTo and used ONLY by the read
+   * paths (list/get/getMembers/getMessages) — write/membership gates keep using
+   * isVisibleTo, so observation grants no post and no roster seat (participation
+   * still requires an explicit operator-join, which leaves a durable system
+   * message). Security: a wire (pipe/MCP) caller cannot present the ws-human
+   * identity — the pipe router rejects the reserved workspace as a caller/
+   * target ref AND, since W1, rejects a bare self-claimed ws-human READ scope
+   * unless the request came through trusted in-process dispatch
+   * (ctx.firstParty — the renderer bridge / plugin host; see the gate in
+   * a2a.channel.rpc.ts forward()). That router gate is what makes this
+   * assertion true: without it, an unresolved-senderPtyId wire read passed the
+   * caller-supplied verifiedWorkspaceId through verbatim. So only a real local
+   * human (the app itself) reaches this branch; an agent can never obtain it.
+   * The only NEW exposure is a private agent channel's message CONTENT to the
+   * local human operator — consistent with the operator model (a human owns
+   * every local workspace) and with operatorList, which already exposes
+   * private channel metadata.
+   */
+  private isObservableBy(channel: Channel, verifiedWorkspaceId: string): boolean {
+    if (this.isVisibleTo(channel, verifiedWorkspaceId)) return true;
+    return verifiedWorkspaceId === HUMAN_WORKSPACE_ID;
+  }
+
+  /**
+   * W1 (operator observation) — stamp `observed: true` on a private channel the
+   * caller can observe but is NOT a member of (only the reserved human
+   * workspace ever reaches this — every other caller is filtered out upstream
+   * by isObservableBy). Caller-relative + additive, stamped on a SHALLOW COPY
+   * so the live `state.channels` row is never mutated (and the flag never
+   * persists). Shared by list() AND get() so any renderer path that fills its
+   * mirror sees a consistent flag — the renderer classifies observed rows into
+   * the normal dock list with a read-only badge and hides the composer.
+   */
+  private withObservedFlag(channel: Channel, verifiedWorkspaceId: string): Channel {
+    if (channel.visibility !== 'public' && !this.isVisibleTo(channel, verifiedWorkspaceId)) {
+      return { ...channel, observed: true };
+    }
+    return channel;
   }
 
   // ── Mutating (per-channel mutex) ──────────────────────────────────
@@ -2670,11 +2731,26 @@ export class ChannelService {
     reason: ChannelCatalogEvent['reason'],
   ): void {
     try {
+      const recipients = [...recipientWorkspaceIds];
+      // W1 (operator observation) — root fix for the catalog fan-out gap. A
+      // private channel's catalog/membership changes (create/archive/membership/
+      // cursor) must reach the local human operator's dock LIVE, but the human
+      // observes read-only WITHOUT a member row, so it is never in the caller-
+      // supplied recipient set. Add ws-human for every private channel so a newly
+      // created (or mutated) private agent channel appears live in the human dock
+      // instead of only on the next manual refresh. NEVER '*': a broadcast leaks
+      // the private channel's EXISTENCE to every agent poller (events.rpc passes
+      // '*' to all). A public channel is already discoverable by everyone (and
+      // fans out via '*'), so it needs nothing here.
+      const channel = this.state.channels.find((c) => c.id === channelId);
+      if (channel && channel.visibility !== 'public' && !recipients.includes('*')) {
+        recipients.push(HUMAN_WORKSPACE_ID);
+      }
       this.emit({
         type: 'channel.catalog',
         channelId,
         actorWorkspaceId,
-        recipientWorkspaceIds: [...new Set(recipientWorkspaceIds)],
+        recipientWorkspaceIds: [...new Set(recipients)],
         reason,
       });
     } catch (err) {

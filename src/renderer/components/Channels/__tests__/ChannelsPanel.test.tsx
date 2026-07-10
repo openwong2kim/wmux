@@ -131,6 +131,23 @@ describe('groupChannels', () => {
     expect(out.active.some((c) => c.id === 'priv')).toBe(false);
     expect(out.archived.map((c) => c.id)).toEqual(['arch']);
   });
+
+  it('W1: an OBSERVED private non-member channel lands in active (read-only operator visibility)', () => {
+    const isMember = (c: Channel): boolean => c.id === 'mine';
+    const out = groupChannels(
+      [
+        makeChannel({ id: 'mine', name: 'joined', visibility: 'public' }),
+        // observed=true marks a private agent channel the human watches read-only.
+        makeChannel({ id: 'obs', name: 'agent-room', visibility: 'private', observed: true }),
+        // a private non-member WITHOUT the flag is still omitted (no leak).
+        makeChannel({ id: 'priv', name: 'secret', visibility: 'private' }),
+      ],
+      isMember,
+    );
+    expect(out.active.map((c) => c.id).sort()).toEqual(['mine', 'obs']);
+    expect(out.discoverable).toEqual([]);
+    expect(out.active.some((c) => c.id === 'priv')).toBe(false);
+  });
 });
 
 describe('sumUnread', () => {

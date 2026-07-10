@@ -629,6 +629,9 @@ export const ko = {
   'channels.searchPlaceholder': '메시지 검색…',
   'channels.searchEmpty': '검색과 일치하는 메시지가 없습니다.',
   'channels.archivedReadOnly': '보관된 채널은 읽기 전용입니다.',
+  // W1 (운영자 관전) — 비공개 에이전트 채널 읽기 전용 가시성.
+  'channels.observedBadge': '관전',
+  'channels.observedReadOnly': '이 채널을 관전 중입니다 (읽기 전용). 참여하려면 조인하세요.',
   'channels.closeTooltip': '채널 닫기',
   'channels.closeViewTooltip': '대화 닫기 (채널은 목록에 남음)',
   'channels.refreshTooltip': '채널 새로고침',

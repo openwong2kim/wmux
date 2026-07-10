@@ -12,7 +12,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import type { Channel } from '../../../../shared/channels';
+import type { Channel, OperatorChannelSummary } from '../../../../shared/channels';
 import { ChannelsPanelView } from '../ChannelsPanel';
 
 function makeChannel(overrides: Partial<Channel> = {}): Channel {
@@ -139,6 +139,53 @@ describe('ChannelsPanelView — discovery group (jsdom)', () => {
       );
     });
     expect(q('[data-channels-discover-group]')).toBeNull();
+  });
+});
+
+describe('ChannelsPanelView — operator section vs observed channels (W1, jsdom)', () => {
+  const makeSummary = (overrides: Partial<OperatorChannelSummary> = {}): OperatorChannelSummary => ({
+    id: 'op-1',
+    name: 'agent-room',
+    visibility: 'private',
+    status: 'active',
+    memberCount: 1,
+    createdAt: 1_700_000_000_000,
+    ...overrides,
+  });
+
+  it('an OBSERVED channel already in the mirror is NOT duplicated in the operator section', () => {
+    act(() => {
+      root.render(
+        createElement(ChannelsPanelView, {
+          channels: {
+            // Present in the catalog mirror → renders in the normal (active,
+            // observed-badged) list, so the operator section must exclude it.
+            obs: makeChannel({ id: 'obs', name: 'agent-room', visibility: 'private', observed: true }),
+          },
+          channelUnread: {},
+          channelMentions: {},
+          activeChannelId: null,
+          company: null,
+          memberChannelIds: new Set<string>(),
+          onSelect: () => undefined,
+          onCreate: () => true,
+          operatorChannels: [
+            // Same channel as the mirror row above → excluded (no double-show).
+            makeSummary({ id: 'obs', name: 'agent-room' }),
+            // NOT in the mirror (stale hydration / pre-W1 daemon) → still listed.
+            makeSummary({ id: 'hidden', name: 'not-hydrated' }),
+          ],
+          onOperatorToggle: () => undefined,
+          onOperatorJoin: () => undefined,
+        }),
+      );
+    });
+    // The observed channel shows ONCE, in the normal active group.
+    expect(q('[data-channels-active-group] [data-channel-id="obs"]')).not.toBeNull();
+    click(must('[data-channels-operator-toggle]', 'operator toggle')); // expand
+    // ...and never again in the operator section; the un-mirrored one remains.
+    expect(q('[data-channels-operator-item][data-channel-id="obs"]')).toBeNull();
+    expect(q('[data-channels-operator-item][data-channel-id="hidden"]')).not.toBeNull();
   });
 });
 

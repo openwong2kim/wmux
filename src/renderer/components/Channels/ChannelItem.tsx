@@ -23,6 +23,10 @@ export interface ChannelItemViewProps {
   /** True when at least one unseen message @-mentions this workspace. Promotes
    *  the unread badge to a stronger red `@` badge. */
   mentioned?: boolean;
+  /** W1 (operator observation) — localized label for the read-only "observed"
+   *  badge shown when `channel.observed` is set (a private agent channel the
+   *  local human operator watches but has not joined). Defaults to 'observed'. */
+  observedLabel?: string;
   onSelect: (channelId: string) => void;
 }
 
@@ -36,9 +40,11 @@ export function ChannelItemView({
   isActive,
   unreadCount,
   mentioned = false,
+  observedLabel = 'observed',
   onSelect,
 }: ChannelItemViewProps): React.ReactElement {
   const showBadge = unreadCount > 0 || mentioned;
+  const observed = channel.observed === true;
   return (
     <div
       role="button"
@@ -53,6 +59,7 @@ export function ChannelItemView({
           onSelect(channel.id);
         }
       }}
+      data-channel-observed={observed ? 'true' : undefined}
       {...tokenAttrs('bgSurface', 'bg')}
       className={`group flex items-center gap-2 px-3 py-1.5 cursor-pointer rounded-md select-none ${
         isActive
@@ -64,6 +71,16 @@ export function ChannelItemView({
         #
       </span>
       <span className="text-[11px] font-mono truncate flex-1 min-w-0">{channel.name}</span>
+      {observed && (
+        <span
+          data-channel-observed-badge
+          title={observedLabel}
+          className="flex-shrink-0 text-[8px] font-mono uppercase tracking-wide px-1 py-0.5 rounded text-[var(--text-muted)] bg-[rgba(var(--bg-surface-rgb),0.6)]"
+          {...tokenAttrs('textMuted', 'text')}
+        >
+          {observedLabel}
+        </span>
+      )}
       {showBadge && (
         <span
           data-channel-mention={mentioned ? 'true' : undefined}
