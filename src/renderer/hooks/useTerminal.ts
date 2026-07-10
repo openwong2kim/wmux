@@ -26,6 +26,7 @@ import { teardownWebglAddon } from '../terminal/webglTeardown';
 import { createGlyphRepaintScheduler, type GlyphRepaintScheduler } from '../terminal/glyphRepaint';
 import { createDeadInputWatchdog } from '../terminal/deadInputWatchdog';
 import { STALE_REPLAY_INPUT_MODE_RESETS } from '../terminal/staleReplayModeReset';
+import { writeTerminalOutput, flushTerminalOutput, discardTerminalOutput } from '../terminal/terminalOutputScheduler';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 
 // Module-level terminal registry for scrollback persistence
@@ -1085,8 +1086,16 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const connectPty = () => {
       removeDataListener = window.electronAPI.pty.onData((id, data) => {
         if (id === ptyId) {
-          terminal.write(data);
-          glyphRepaint.onData(data.length);
+          // Output scheduler (multi-workspace stutter fix): visible panes
+          // write directly (old path, zero added latency); hidden panes are
+          // batched through the shared budgeted drain so N background agents
+          // cannot starve the focused pane's input echo and paint.
+          // glyphRepaint counts bytes at actual hand-off (its contract is
+          // "terminal.write was CALLED"), not at IPC receipt.
+          writeTerminalOutput(terminal, data, {
+            foreground: isVisibleRef.current,
+            onWritten: (chars) => glyphRepaint.onData(chars),
+          });
           fireFirstData();
           markPaneLive();
         }
@@ -1094,7 +1103,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
       removeExitListener = window.electronAPI.pty.onExit((id, exitCode) => {
         if (id === ptyId) {
-          terminal.writeln(`\r\n${t('terminal.exitedBracket', { code: exitCode })}`);
+          // Through the scheduler so the exit marker cannot overtake output
+          // still queued for this (possibly hidden) pane.
+          writeTerminalOutput(terminal, `\r\n${t('terminal.exitedBracket', { code: exitCode })}\r\n`, {
+            foreground: isVisibleRef.current,
+          });
         }
       });
     };
@@ -1113,15 +1126,20 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           pendingData.push(data);
           return;
         }
-        terminal.write(data);
-        glyphRepaint.onData(data.length);
+        // Same scheduler routing as connectPty (see comment there).
+        writeTerminalOutput(terminal, data, {
+          foreground: isVisibleRef.current,
+          onWritten: (chars) => glyphRepaint.onData(chars),
+        });
         fireFirstData();
         markPaneLive();
       });
 
       removeExitListener = window.electronAPI.pty.onExit((id, exitCode) => {
         if (id === ptyId) {
-          terminal.writeln(`\r\n${t('terminal.exitedBracket', { code: exitCode })}`);
+          writeTerminalOutput(terminal, `\r\n${t('terminal.exitedBracket', { code: exitCode })}\r\n`, {
+            foreground: isVisibleRef.current,
+          });
         }
       });
 
@@ -1133,6 +1151,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       removeFlushListener = window.electronAPI.pty.onFlushComplete((id, recoveredBytes) => {
         if (id !== ptyId) return;
         if (terminalRef.current !== terminal) return;
+        // Restore the pre-scheduler precondition: replay bytes that arrived
+        // via pty.onData may still sit in the output scheduler (hidden pane).
+        // reset()/resetStaleReplayModes assume they were already handed to
+        // xterm — hand them over now, in order, exactly as the old direct
+        // write path did.
+        flushTerminalOutput(terminal);
         lastFlushRecoveredBytes = recoveredBytes;
         if (pendingFlushReset) {
           pendingFlushReset = false;
@@ -1193,6 +1217,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
             if (terminalRef.current !== terminal) return;
             didRestoreTxt = false;
             if (lastFlushRecoveredBytes !== null) {
+              // Same parity flush as onFlushComplete: hand any scheduler-queued
+              // bytes to xterm before reset() so the byte order xterm sees is
+              // identical to the old direct-write path.
+              flushTerminalOutput(terminal);
               if (lastFlushRecoveredBytes > 0) terminal.reset();
             } else {
               pendingFlushReset = true;
@@ -1247,6 +1275,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       removeFlushListener = window.electronAPI.pty.onFlushComplete((id, recoveredBytes) => {
         if (id !== ptyId) return;
         if (terminalRef.current !== terminal) return;
+        // Parity flush — see the scrollback-branch onFlushComplete above.
+        flushTerminalOutput(terminal);
         resetStaleReplayModes(recoveredBytes);
       });
     }
@@ -1357,6 +1387,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       loadWebglRef.current = null;
       disposeWebglRef.current = null;
+      // Drop any output still queued in the shared scheduler — the terminal
+      // is being disposed, parsing the backlog would be wasted work and a
+      // post-dispose drain write would throw.
+      discardTerminalOutput(terminal);
       terminal.dispose();
       terminalRef.current = null;
       fitAddonRef.current = null;
@@ -1474,6 +1508,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   useEffect(() => {
     const token = webglTokenRef.current;
     if (isVisible) {
+      // Reveal catch-up: hand over any output batched while this pane was
+      // hidden BEFORE the repaint/fit below — the reveal repaint must paint
+      // the pane's current state, not a stale frame with bytes still queued.
+      if (terminalRef.current) flushTerminalOutput(terminalRef.current);
       // Cancel any pending deferred release — the terminal is visible again
       // (fast workspace switch / multiview<->single toggle), so keep our slot
       // instead of freeing and rebuilding it. This is the de-thrash that
