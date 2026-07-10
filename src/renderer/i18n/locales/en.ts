@@ -734,6 +734,9 @@ export const en = {
   // Viewpoint-neutral on purpose: the marker fans out to every member's view,
   // so a second-person "You joined" would be wrong for non-operator viewers.
   'channels.systemOperatorJoin': 'Operator joined this channel',
+  // J4 — diff comment fired to the mission channel. {count} = number of task
+  // agents @-mentioned (0 when every agent has left the channel).
+  'diff.commentFired': 'Comment posted to the mission channel — pinged {count} agent(s)',
 } as const;
 
 export type TranslationKey = keyof typeof en;

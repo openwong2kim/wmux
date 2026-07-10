@@ -9,11 +9,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Diff comments now wake the task agent (J4).** Commenting on a hunk in a fan-out task's diff surface no longer just records a note — it @-mentions the task's agents on the mission-channel post, so the existing mention→wake loop nudges them to read and act on the feedback. Every non-human member of the mission channel (excluding you, the commenter) is mentioned at the workspace level, so multiple agent panes sharing one workspace all get woken; if every agent has left the channel the comment still posts, just without a mention. The post's body also carries a `[diff: <file> @ <hunk>] <comment>` prefix so an agent reading the channel over the CLI or MCP (which don't render the structured anchor) still sees which file and hunk the comment is about. The success message reports how many agents were pinged.
+
 - **Fleet cards surface an agent's completion evidence.** A fleet card now shows a small `✓ evidence n/m` badge when the pane's most recently completed A2A task carries structured completion evidence — `n` is how many of the `m` evidence items are actually verified (a passed command, or a verified inspection/artifact). It's the "trust it ran unattended" proof made legible on the card: the check reads green once at least one item is verified and stays muted when nothing is (verified is a grade, not a claim), and the task title plus the evidence summary live in the badge's tooltip so the on-card text stays a single compact token. The badge reads existing task state only (no new store or round-trip), is addressed per-pane (a pane-pinned task shows on exactly that pane; a workspace-level task shows on the workspace's active pane), and simply isn't drawn when there's no such task.
+
+### Fixed
+
+- **Diff-panel comments now actually post to the mission channel.** The diff comment post omitted the `sender` identity the daemon requires, so every comment was rejected with a "코멘트 발사 실패" authorization error instead of being recorded. The comment now posts as the diff's owner workspace (its own mission-channel member row), which is also what lets the new @-mention wake the agent.
 
 ### Security
 
 - **`events.poll` no longer lets an agent eavesdrop on another workspace's channels (audit B3).** The event-poll RPC previously scoped its results by a caller-supplied `workspaceId`, so a same-user pipe/MCP client could live-subscribe to any workspace's private channel messages, channel lifecycle, and A2A task pointers just by naming that workspace's id — no pane identity required. Those confidentiality-sensitive event types are now scoped to a **server-resolved** workspace derived from the caller's verified `senderPtyId` (the same identity anchor the `a2a.channel.*` mutations already use), and the caller-supplied `workspaceId` is ignored for them; an unresolvable caller receives none of these events (fail-closed). The bundled MCP `wmux_events_poll` tool forwards its own PID-walked `senderPtyId`, so a legitimately-placed agent still sees its own channels and tasks unchanged. The first-party operator surface (the app's own renderer/plugin host) keeps scoping across the local workspaces it names. Ordinary lifecycle events (pane/process/agent/workspace metadata) are unaffected — their all-workspace firehose was already reachable by any `events.subscribe` subscriber, so their workspace scope was never a confidentiality boundary and external lifecycle subscribers keep working.
+
+## [3.19.0] — 2026-07-10
 
 ### Added
 
