@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.19.0] — 2026-07-10
+### Added
+
+- **Fleet cards surface an agent's completion evidence.** A fleet card now shows a small `✓ evidence n/m` badge when the pane's most recently completed A2A task carries structured completion evidence — `n` is how many of the `m` evidence items are actually verified (a passed command, or a verified inspection/artifact). It's the "trust it ran unattended" proof made legible on the card: the check reads green once at least one item is verified and stays muted when nothing is (verified is a grade, not a claim), and the task title plus the evidence summary live in the badge's tooltip so the on-card text stays a single compact token. The badge reads existing task state only (no new store or round-trip), is addressed per-pane (a pane-pinned task shows on exactly that pane; a workspace-level task shows on the workspace's active pane), and simply isn't drawn when there's no such task.
 
 ### Added
 

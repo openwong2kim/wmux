@@ -14,9 +14,10 @@
 import { describe, expect, it } from 'vitest';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { createElement } from 'react';
-import FleetCard, { FleetCardMissionLine } from '../FleetCard';
+import FleetCard, { FleetCardMissionLine, FleetCardEvidenceBadge } from '../FleetCard';
 import type { FleetPane } from '../../../stores/selectors/fleet';
 import type { WorkTask } from '../../../../shared/workTask';
+import type { EvidenceItem, Task } from '../../../../shared/types';
 
 const noop = () => undefined;
 
@@ -148,5 +149,81 @@ describe('FleetCard — 사이클 C mission line', () => {
     const html = renderLine(mission({ id: 'w2', title: 'Add tests', status: 'closed' }));
     expect(html).toContain('data-mission-status="closed"');
     expect(html).toContain('line-through');
+  });
+});
+
+describe('FleetCard — NB3 completion-evidence badge', () => {
+  // Pure sub-component (like FleetCardMissionLine): takes the already-resolved
+  // Task and renders the badge or null. Addressing / "which task" is the
+  // selector's job (see selectLatestCompletionEvidenceTask in fleet.test.ts) —
+  // a store-seeded full-card render can't exercise it here because
+  // renderToStaticMarkup reads zustand's INITIAL snapshot, not live state.
+  function taskWithEvidence(
+    items: EvidenceItem[],
+    over: { title?: string; summary?: string } = {},
+  ): Task {
+    return {
+      kind: 'task',
+      id: 't-evidence',
+      status: {
+        state: 'completed',
+        timestamp: '2026-07-10T00:00:00.000Z',
+        evidence: { summary: over.summary ?? 'shipped the fix', items },
+      },
+      history: [],
+      artifacts: [],
+      metadata: {
+        title: over.title ?? 'Refactor auth',
+        from: { workspaceId: 'ws-2', name: 'sender' },
+        to: { workspaceId: 'ws-1', name: 'receiver' },
+        createdAt: '2026-07-10T00:00:00.000Z',
+        updatedAt: '2026-07-10T00:00:00.000Z',
+      },
+    };
+  }
+  const passed: EvidenceItem = { kind: 'command', status: 'passed', summary: 'tsc', command: 'tsc --noEmit' };
+  const failed: EvidenceItem = { kind: 'command', status: 'failed', summary: 'lint', command: 'eslint .' };
+  const verified: EvidenceItem = { kind: 'inspection', status: 'verified', summary: 'read the diff' };
+  const unverified: EvidenceItem = { kind: 'artifact', status: 'unverified', summary: 'built a page' };
+
+  const renderBadge = (task: Task | undefined): string =>
+    renderToStaticMarkup(createElement(FleetCardEvidenceBadge, { task }));
+
+  it('renders nothing when there is no evidence task', () => {
+    expect(renderBadge(undefined)).toBe('');
+  });
+
+  it('renders nothing when the completed task carries no evidence items', () => {
+    // A well-formed completed task always has ≥1 item, but the badge must be
+    // defensive: an empty items array is not a badge.
+    expect(renderBadge(taskWithEvidence([]))).toBe('');
+  });
+
+  it('shows ✓ evidence verified/total from the evidence items', () => {
+    const html = renderBadge(taskWithEvidence([passed, failed, verified]));
+    expect(html).toContain('data-fleet-evidence');
+    expect(html).toContain('data-evidence-verified="2"');
+    expect(html).toContain('data-evidence-total="3"');
+    expect(html).toContain('evidence 2/3');
+    // Detail (title + summary) lives in the tooltip, not on-card micro-text.
+    expect(html).toContain('Refactor auth');
+    expect(html).toContain('shipped the fix');
+  });
+
+  it('paints the check green when at least one item is verified', () => {
+    const html = renderBadge(taskWithEvidence([passed, unverified]));
+    expect(html).toContain('var(--accent-green)');
+  });
+
+  it('mutes the check (no green) when nothing is verified — verified is a grade, not a claim', () => {
+    const html = renderBadge(taskWithEvidence([failed, unverified]));
+    expect(html).toContain('data-evidence-verified="0"');
+    expect(html).not.toContain('var(--accent-green)');
+  });
+
+  it('the full card has no evidence badge when the store holds no matching task', () => {
+    // The default (initial) store has empty a2aTasks — the card's own store read
+    // resolves to undefined, so no badge row is added.
+    expect(render({ card: card() })).not.toContain('data-fleet-evidence');
   });
 });

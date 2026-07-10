@@ -3,9 +3,10 @@ import {
   selectFleetPanes,
   sortFleetPanes,
   countNeedsAttention,
+  selectLatestCompletionEvidenceTask,
   type FleetPane,
 } from '../fleet';
-import type { Workspace, Pane, Surface, AgentStatus } from '../../../../shared/types';
+import type { Workspace, Pane, Surface, AgentStatus, Task, TaskState, EvidenceItem } from '../../../../shared/types';
 
 // ─── Fixtures ──────────────────────────────────────────────────────────────
 
@@ -301,5 +302,89 @@ describe('selectFleetPanes — X8 supervision mirror', () => {
       supervisionByPtyId: { '': { status: 'armed', restartCount: 1 } },
     });
     expect(pane.supervision).toBeUndefined();
+  });
+});
+
+// ─── selectLatestCompletionEvidenceTask (NB3 trust surface) ──────────────────
+
+describe('selectLatestCompletionEvidenceTask', () => {
+  const item = (over: Partial<EvidenceItem> = {}): EvidenceItem =>
+    ({ kind: 'command', status: 'passed', summary: 'tsc', command: 'tsc', ...over } as EvidenceItem);
+
+  function task(
+    id: string,
+    over: {
+      state?: TaskState;
+      to?: { workspaceId: string; name: string; paneId?: string };
+      items?: EvidenceItem[] | undefined;
+      timestamp?: string;
+      noEvidence?: boolean;
+    } = {},
+  ): Task {
+    return {
+      kind: 'task',
+      id,
+      status: {
+        state: over.state ?? 'completed',
+        timestamp: over.timestamp ?? '2026-07-10T00:00:00.000Z',
+        ...(over.noEvidence ? {} : { evidence: { summary: 's', items: over.items ?? [item()] } }),
+      },
+      history: [],
+      artifacts: [],
+      metadata: {
+        title: `title-${id}`,
+        from: { workspaceId: 'ws-sender', name: 'from' },
+        to: over.to ?? { workspaceId: 'ws-1', name: 'to' },
+        createdAt: '2026-07-10T00:00:00.000Z',
+        updatedAt: '2026-07-10T00:00:00.000Z',
+      },
+    };
+  }
+  const store = (...tasks: Task[]): Record<string, Task> =>
+    Object.fromEntries(tasks.map((t) => [t.id, t]));
+
+  it('returns undefined when no task is addressed to the workspace', () => {
+    const s = store(task('t1', { to: { workspaceId: 'ws-OTHER', name: 'x' } }));
+    expect(selectLatestCompletionEvidenceTask(s, 'ws-1', 'p1', true)).toBeUndefined();
+  });
+
+  it('matches a ws-only (unpinned) task on the ACTIVE pane only', () => {
+    const s = store(task('t1')); // to = ws-1, no paneId
+    expect(selectLatestCompletionEvidenceTask(s, 'ws-1', 'p1', true)?.id).toBe('t1');
+    // background sibling pane of the same ws must NOT inherit a ws-level completion
+    expect(selectLatestCompletionEvidenceTask(s, 'ws-1', 'p2', false)).toBeUndefined();
+  });
+
+  it('matches a pane-pinned task on exactly that pane (active flag irrelevant)', () => {
+    const s = store(task('t1', { to: { workspaceId: 'ws-1', name: 'to', paneId: 'p2' } }));
+    expect(selectLatestCompletionEvidenceTask(s, 'ws-1', 'p2', false)?.id).toBe('t1');
+    expect(selectLatestCompletionEvidenceTask(s, 'ws-1', 'p1', true)).toBeUndefined();
+  });
+
+  it('ignores non-completed tasks even when they carry evidence', () => {
+    const s = store(task('t1', { state: 'working' }), task('t2', { state: 'failed' }));
+    expect(selectLatestCompletionEvidenceTask(s, 'ws-1', 'p1', true)).toBeUndefined();
+  });
+
+  it('ignores a completed task with no evidence or empty items', () => {
+    const none = store(task('t1', { noEvidence: true }));
+    expect(selectLatestCompletionEvidenceTask(none, 'ws-1', 'p1', true)).toBeUndefined();
+    const empty = store(task('t2', { items: [] }));
+    expect(selectLatestCompletionEvidenceTask(empty, 'ws-1', 'p1', true)).toBeUndefined();
+  });
+
+  it('picks the most recently completed task by status timestamp', () => {
+    const s = store(
+      task('old', { timestamp: '2026-07-10T00:00:00.000Z' }),
+      task('new', { timestamp: '2026-07-10T09:00:00.000Z' }),
+      task('mid', { timestamp: '2026-07-10T03:00:00.000Z' }),
+    );
+    expect(selectLatestCompletionEvidenceTask(s, 'ws-1', 'p1', true)?.id).toBe('new');
+  });
+
+  it('returns the store Task reference (not a copy) so a card read stays stable', () => {
+    const t = task('t1');
+    const s = store(t);
+    expect(selectLatestCompletionEvidenceTask(s, 'ws-1', 'p1', true)).toBe(t);
   });
 });
