@@ -7,6 +7,7 @@ import { PTYBridge } from '../../pty/PTYBridge';
 import { ShellDetector } from '../../../shared/ShellDetector';
 import { DaemonClient } from '../../DaemonClient';
 import { IPC, ENV_KEYS } from '../../../shared/constants';
+import { DAEMON_RESYNC_RPC_TIMEOUT_MS } from '../../../shared/timeouts';
 import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';
 import { sanitizePtyText } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
@@ -882,7 +883,9 @@ export function registerPTYHandlers(
       if (session.state === 'dead' || session.state === 'suspended') {
         // No live pipe to re-flush — pull a read-only snapshot instead. This
         // never resurrects or replaces the session (daemon-side F2 guarantee).
-        const snap = await daemonClient.rpc('daemon.serializeSession', { id, scrollback }) as {
+        // Extended timeout: serialization queues behind the same global
+        // daemon-side snapshot slot as live reflushes (shared/timeouts.ts).
+        const snap = await daemonClient.rpc('daemon.serializeSession', { id, scrollback }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS }) as {
           mode: 'snapshot' | 'unavailable';
           payloadBase64?: string;
           cols?: number;
@@ -913,7 +916,12 @@ export function registerPTYHandlers(
         return { success: false, code: 'pipe-not-writable', transient: true };
       }
       try {
-        const res = await daemonClient.rpc('daemon.resyncSession', { id, scrollback }) as {
+        // Extended timeout (Codex round-2 P2): the reflush legitimately waits
+        // behind the global snapshot slot under concurrent reveals — the
+        // default 10s RPC ceiling would disarm the scanner and tear the
+        // socket via reconnect while the daemon still writes the in-band
+        // replay. Must stay below the renderer's 32s resync-abort ceiling.
+        const res = await daemonClient.rpc('daemon.resyncSession', { id, scrollback }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS }) as {
           mode: 'snapshot' | 'raw';
         };
         // The scanner disarms itself when it consumes the in-band RESYNC_BEGIN
