@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.20.0] — 2026-07-10
+
 ### Added
 
 - **Experimental: hidden panes can skip output parsing (Settings → "Skip hidden pane rendering").** Even with the shared output scheduler, hidden agents' output was still *parsed* eventually — and measurement showed that parsing total is what drags the visible pane once several background agents stream at once (4 hidden flooders pulled the visible pane down to ~10–20fps). With this toggle on (daemon sessions only, default off), hidden panes' output is queued but never parsed: the renderer does no parsing work for panes you aren't looking at. A pane whose backlog outgrows its cap is marked stale and transparently re-synchronized from the daemon's session buffer when revealed — the daemon replays the authoritative bytes onto a reset terminal, so what you see on reveal is the pane's true current state, never a duplicate or a half-parsed frame. Agent-facing buffer reads (`wmux_search_panes`, `terminal_read`) hydrate a stale pane before reading so orchestrating agents never see old output. If a re-sync can't complete (dead session, legacy daemon), the pane degrades to its last-known screen instead of sticking or losing its identity.
