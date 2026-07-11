@@ -98,6 +98,10 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   'input.sendKey',
   'input.readScreen',
   'terminal.readEvents',
+  // command deck (P3b) — commander-brain pane routing. The method carries its
+  // own auth (per-spawn token, commanderTrust.ts): listing it here only lets
+  // the bundled server ATTEMPT the call; without a live token it fails closed.
+  'deck.resolvePaneRoute',
   // events
   'events.poll',
   // browser (Playwright + packaged CDP/RPC fallbacks)
