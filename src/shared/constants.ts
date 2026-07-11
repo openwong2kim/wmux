@@ -98,6 +98,24 @@ export const IPC = {
   TASK_CREATE_PR: 'task:create-pr',
   WORKTASK_SCAN: 'worktask:scan',
   WORKTASK_REFIRE: 'worktask:refire',
+  // Command Deck Phase 2 — the Commander brain (an Agent-SDK orchestrator that
+  // runs in MAIN and drives the fleet via wmux MCP). Renderer-only surface, same
+  // trust basis as channelLocal/fanout (Electron process boundary, pipe-
+  // unreachable):
+  //   DECK_SEND       (invoke) renderer → main: run one brain turn. Payload
+  //                   { text, fleetContext? }. Resolves with the accept/reject
+  //                   result ({ ok, code? }); the turn's content streams over
+  //                   DECK_STREAM, it is not the invoke's return value.
+  //   DECK_STREAM     (push)   main → renderer: one normalized BrainEvent per
+  //                   send (text-delta | tool-start | tool-end | turn-end |
+  //                   error). Dedicated channel — a brain stream is NOT channel
+  //                   semantics, so it never rides the channels plumbing.
+  //   DECK_INTERRUPT  (invoke) renderer → main: abort the in-flight turn.
+  //   DECK_STATUS     (invoke) renderer → main: { status, sessionId } snapshot.
+  DECK_SEND: 'deck:send',
+  DECK_STREAM: 'deck:stream',
+  DECK_INTERRUPT: 'deck:interrupt',
+  DECK_STATUS: 'deck:status',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

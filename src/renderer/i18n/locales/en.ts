@@ -726,8 +726,15 @@ export const en = {
   'deck.tabChannels': 'Channels',
   'deck.commanderPlaceholder': 'Command your fleet — @mention panes…',
   'deck.commanderEmpty':
-    'Mention agent panes with @ to command your fleet from here. Their replies land in this thread.',
+    'Ask the commander to run your fleet, or @mention agent panes to command them directly.',
   'deck.jumpToPane': 'Jump to this pane',
+  // Command Deck Phase 2 — the Commander brain (an Agent-SDK orchestrator).
+  'deck.commander': 'Commander',
+  'deck.commanderThinking': 'Commander is working…',
+  'deck.commanderStop': 'Stop',
+  'deck.commanderUnavailable': 'Commander is unavailable',
+  'deck.commanderBusy': 'A command is already running.',
+  'deck.commanderFailed': 'The command could not run.',
   // operator-join (design §3) — collapsed-by-default discovery section + the
   // join-confirm dialog. The collapse IS the intent gate: private channel names
   // do not exist on screen until the section is expanded.

@@ -45,6 +45,7 @@ import { registerProjectConfigHandlers } from './ipc/handlers/projectConfig.hand
 import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handler';
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { registerWorktaskHandlers } from './ipc/handlers/worktask.handler';
+import { registerDeckHandler } from './ipc/handlers/deck.handler';
 import { registerUiPluginRpc } from './pipe/handlers/uiPlugin.rpc';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
@@ -569,6 +570,11 @@ registerFanOutHandler(() => daemonClient, () => mainWindow);
 // (디스크 정본)·미발사 재발사(prompt.md 읽기). 물질화 필드는 데몬 projection에서
 // 역참조하므로 렌더러는 taskId만 싣는다(단일 정본). 파이프 미노출(renderer-trusted).
 registerWorktaskHandlers(() => daemonClient);
+// Command Deck Phase 2 — the Commander brain. Renderer-only surface (same
+// process-boundary trust basis as channelLocal/fanout, pipe-unreachable): the
+// Agent-SDK orchestrator session runs in MAIN and drives the fleet via the wmux
+// MCP bundle. Lazily spawned on the first deck:send; disposed on before-quit.
+const disposeDeckHandler = registerDeckHandler(() => mainWindow);
 // Returns an unsubscribe for the signal-health push subscription. Called from
 // before-quit so HMR reload / shutdown does not leak the listener.
 const disposeHooksRpc = registerHooksRpc(rpcRouter, () => mainWindow, hookSignalRouter, () => daemonClient);
@@ -1316,6 +1322,7 @@ app.on('before-quit', async (e) => {
 
   cleanupHandlers();
   disposeFirstRunHandlers();
+  disposeDeckHandler();
   disposeHooksRpc();
   disposeUsagePollerListener();
   usagePoller.dispose();

@@ -48,6 +48,11 @@ import {
   groupCommanderThreads,
   type CommanderThread,
 } from './commanderThread';
+import {
+  buildFleetContextSummary,
+  type DeckBrainMessage,
+  type DeckToolChip,
+} from './deckBrain';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
 
@@ -55,9 +60,20 @@ const EMPTY_MESSAGES: ChannelMessage[] = [];
 
 export interface CommanderViewContentProps {
   threads: CommanderThread[];
+  /** The Commander BRAIN conversation (Phase 2) — orchestrator turns streamed
+   *  from the main-process Agent SDK session. Distinct from `threads` (the
+   *  Phase 1 @-mention fan-out into #commander). */
+  brainMessages: DeckBrainMessage[];
+  /** True while a brain turn streams: the composer disables and an interrupt
+   *  affordance shows. */
+  brainBusy: boolean;
+  /** Abort the in-flight brain turn. */
+  onInterrupt: () => void;
   /** Members this composer can @-mention (every live agent pane, fleet-wide). */
   mentionCandidates: MentionCandidate[];
-  /** Fan-out send: ensures #commander, invites mentioned workspaces, posts. */
+  /** Unified send: NO @mention → the Commander brain (deck:send); WITH @mentions
+   *  → the Phase 1 fan-out (ensures #commander, invites, posts). The container
+   *  routes on `mentions.length`. */
   onSubmit: (
     text: string,
     mentions: ChannelMention[],
@@ -75,6 +91,9 @@ export interface CommanderViewContentProps {
  *  ChannelViewContent split so the render is testable without the store). */
 export function CommanderViewContent({
   threads,
+  brainMessages,
+  brainBusy,
+  onInterrupt,
   mentionCandidates,
   onSubmit,
   onJumpToPane,
@@ -83,44 +102,81 @@ export function CommanderViewContent({
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
+  const isEmpty = threads.length === 0 && brainMessages.length === 0;
   return (
     <div
       data-commander-view
       className="flex flex-col flex-1 min-h-0 bg-[var(--bg-base)]"
       {...tokenAttrs('bgBase', 'bg')}
     >
-      {/* Message list — grouped into "dispatch + replies" threads. */}
+      {/* Message list — the brain conversation (Phase 2) plus the Phase 1
+          @-mention fan-out threads. */}
       <div
         className="flex-1 min-h-0 overflow-y-auto px-4 py-3 space-y-3"
         data-commander-threads
       >
-        {threads.length === 0 ? (
+        {isEmpty && (
           <div
             data-commander-empty
             className="text-caption font-mono text-[var(--text-muted)] text-center py-8 leading-relaxed"
             {...tokenAttrs('textMuted', 'text')}
           >
             {t('deck.commanderEmpty') ||
-              'Mention agent panes with @ to command your fleet from here. Replies land in this thread.'}
+              'Ask the commander to run your fleet, or @mention agent panes to command them directly.'}
           </div>
-        ) : (
-          threads.map((thread, idx) => (
-            <CommanderThreadItem
-              key={thread.dispatch ? `d-${thread.dispatch.seq}` : `r-${idx}`}
-              thread={thread}
-              onJumpToPane={onJumpToPane}
-              resolvePtyPane={resolvePtyPane}
-              workspaceName={workspaceName}
-              t={t}
-            />
-          ))
         )}
+
+        {/* Brain conversation — orchestrator turns (text bubbles + tool chips). */}
+        {brainMessages.map((m) => (
+          <CommanderBrainItem key={m.id} message={m} onJumpToPane={onJumpToPane} t={t} />
+        ))}
+
+        {/* Fan-out threads — "dispatch + replies" groups (Phase 1). */}
+        {threads.map((thread, idx) => (
+          <CommanderThreadItem
+            key={thread.dispatch ? `d-${thread.dispatch.seq}` : `r-${idx}`}
+            thread={thread}
+            onJumpToPane={onJumpToPane}
+            resolvePtyPane={resolvePtyPane}
+            workspaceName={workspaceName}
+            t={t}
+          />
+        ))}
       </div>
 
-      {/* Composer — the SAME pure shell the channel composer uses, wired to the
-            fan-out onSubmit. Its @-candidates are every live agent pane, so a
-            fan-out can address panes whose workspace is not yet a #commander
-            member (invite-before-post handles that). */}
+      {/* Busy bar — spinner + interrupt while a brain turn streams. */}
+      {brainBusy && (
+        <div
+          data-commander-busy
+          className="flex items-center gap-2 px-4 py-1.5 border-t border-[var(--bg-surface)] shrink-0"
+          style={{ borderColor: 'var(--border-soft)' }}
+          {...tokenAttrs('bgSurface', 'border')}
+        >
+          <span
+            aria-hidden="true"
+            className="inline-block w-3 h-3 rounded-full border-2 border-[var(--accent-blue)] border-t-transparent animate-spin"
+          />
+          <span
+            className="text-[10px] font-mono text-[var(--text-sub)] flex-1"
+            {...tokenAttrs('textSub', 'text')}
+          >
+            {t('deck.commanderThinking') || 'Commander is working…'}
+          </span>
+          <button
+            type="button"
+            data-commander-interrupt
+            onClick={onInterrupt}
+            className={`px-2 py-0.5 rounded text-[10px] font-mono text-[var(--accent-red)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:opacity-80 transition-opacity ${FOCUS_RING}`}
+            {...tokenAttrs('danger', 'text')}
+          >
+            {t('deck.commanderStop') || 'Stop'}
+          </button>
+        </div>
+      )}
+
+      {/* Composer — the SAME pure shell the channel composer uses. No @mention →
+            the Commander brain; @mention → the Phase 1 fan-out. Disabled while a
+            brain turn streams (the one-turn-at-a-time contract). */}
       <div
         className="border-t border-[var(--bg-surface)] shrink-0"
         style={{ borderColor: 'var(--border-soft)' }}
@@ -130,11 +186,130 @@ export function CommanderViewContent({
           channelId={COMMANDER_CHANNEL_NAME}
           onSubmit={onSubmit}
           mentionCandidates={mentionCandidates}
+          disabled={brainBusy}
           placeholder={t('deck.commanderPlaceholder') || 'Command your fleet — @mention panes…'}
           t={t}
         />
       </div>
     </div>
+  );
+}
+
+/** One brain turn message: a human prompt bubble, or an assistant response
+ *  (streamed prose + the tool chips it fired). Tool chips that targeted a pane
+ *  carry a jump button — every action in the chat is one click from its
+ *  evidence (the litmus test). */
+function CommanderBrainItem({
+  message,
+  onJumpToPane,
+  t,
+}: {
+  message: DeckBrainMessage;
+  onJumpToPane: (workspaceId: string, paneId: string) => void;
+  t: (key: string) => string;
+}): React.ReactElement {
+  const isUser = message.role === 'user';
+  return (
+    <div
+      data-commander-brain-message
+      data-role={message.role}
+      className="flex flex-col gap-1"
+    >
+      <span
+        className={`text-caption font-mono font-bold ${isUser ? 'text-[var(--text-main)]' : 'text-[var(--accent-blue)]'}`}
+        {...(isUser ? tokenAttrs('textMain', 'text') : tokenAttrs('accent', 'text'))}
+      >
+        {isUser ? t('channels.me') || 'Me' : t('deck.commander') || 'Commander'}
+      </span>
+      {message.text && (
+        <div
+          className="text-[12px] font-mono text-[var(--text-main)] whitespace-pre-wrap break-words"
+          data-commander-brain-text
+          {...tokenAttrs('textMain', 'text')}
+        >
+          {message.text}
+        </div>
+      )}
+      {/* Tool chips — one per fleet action, in call order. */}
+      {message.tools && message.tools.length > 0 && (
+        <div className="flex flex-wrap gap-1 pt-0.5" data-commander-brain-tools>
+          {message.tools.map((chip, i) => (
+            <CommanderToolChip key={chip.toolId ?? `${chip.name}-${i}`} chip={chip} onJumpToPane={onJumpToPane} t={t} />
+          ))}
+        </div>
+      )}
+      {message.status === 'error' && message.errorText && (
+        <div
+          role="alert"
+          data-commander-brain-error
+          className="text-[10px] font-mono text-[var(--accent-red)]"
+          {...tokenAttrs('danger', 'text')}
+        >
+          {message.errorText}
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** A single tool-call chip. Shows the tool name + a compact input summary and a
+ *  status dot (running / ok / failed); when the tool targeted a pane, the whole
+ *  chip is a jump button. */
+function CommanderToolChip({
+  chip,
+  onJumpToPane,
+  t,
+}: {
+  chip: DeckToolChip;
+  onJumpToPane: (workspaceId: string, paneId: string) => void;
+  t: (key: string) => string;
+}): React.ReactElement {
+  const dot =
+    chip.ok === undefined
+      ? 'var(--text-muted)'
+      : chip.ok
+        ? 'var(--accent-green)'
+        : 'var(--accent-red)';
+  const canJump = !!chip.paneId && !!chip.workspaceId;
+  const label = (
+    <>
+      <span
+        aria-hidden="true"
+        className="inline-block w-1.5 h-1.5 rounded-full shrink-0"
+        style={{ backgroundColor: dot }}
+      />
+      <span className="font-bold">{chip.name}</span>
+      {chip.inputSummary && <span className="opacity-70 truncate max-w-[160px]">{chip.inputSummary}</span>}
+    </>
+  );
+  const base =
+    'inline-flex items-center gap-1 px-1.5 py-0.5 rounded text-[10px] font-mono bg-[rgba(var(--bg-surface-rgb),0.6)]';
+  if (canJump) {
+    return (
+      <button
+        type="button"
+        data-commander-tool-chip
+        data-tool-name={chip.name}
+        data-pane-id={chip.paneId}
+        data-workspace-id={chip.workspaceId}
+        onClick={() => onJumpToPane(chip.workspaceId!, chip.paneId!)}
+        title={t('deck.jumpToPane') || 'Jump to this pane'}
+        className={`${base} text-[var(--accent-blue)] hover:opacity-80 transition-opacity ${FOCUS_RING}`}
+        {...tokenAttrs('accent', 'text')}
+      >
+        {label}
+      </button>
+    );
+  }
+  return (
+    <span
+      data-commander-tool-chip
+      data-tool-name={chip.name}
+      className={`${base} text-[var(--text-sub)]`}
+      {...tokenAttrs('textSub', 'text')}
+    >
+      {label}
+    </span>
   );
 }
 
@@ -286,6 +461,11 @@ export function CommanderView(): React.ReactElement {
   const setActivePane = useStore((s) => s.setActivePane);
   const pushToast = useStore((s) => s.pushToast);
   const company = useStore((s) => s.company);
+  // Commander brain (Phase 2).
+  const brainMessages = useStore((s) => s.brainMessages);
+  const brainStatus = useStore((s) => s.brainStatus);
+  const startDeckBrainTurn = useStore((s) => s.startDeckBrainTurn);
+  const failDeckBrainTurn = useStore((s) => s.failDeckBrainTurn);
 
   const commanderChannel = useMemo(() => findCommanderChannel(channels), [channels]);
   const messages = useStore((s) =>
@@ -447,11 +627,66 @@ export function CommanderView(): React.ReactElement {
     [company, createChannelDaemon, inviteChannelDaemon, postMessageDaemon, pushToast, t],
   );
 
+  // Brain send (P2d): NO @mention → the main-process Agent SDK commander. Push
+  // the optimistic human + streaming-assistant messages, then invoke deck:send.
+  // The turn's content streams back over deck:onStream (useDeckStream → the
+  // deckSlice reducer); deck:send resolves only with the accept/reject verdict.
+  const handleBrainSend = useCallback(
+    async (text: string): Promise<{ ok: boolean; errorCode?: string; errorMessage?: string }> => {
+      const api = window.electronAPI?.deck;
+      if (!api) {
+        pushToast({ level: 'error', message: t('deck.commanderUnavailable') || 'Commander is unavailable' });
+        return { ok: false, errorCode: 'UNAVAILABLE' };
+      }
+      startDeckBrainTurn(text);
+      // One-shot fleet snapshot for the system prompt (main injects it on the
+      // first turn only and re-caps to its own budget).
+      const fleetContext = buildFleetContextSummary({
+        workspaces,
+        surfaceAgent,
+        paneLabel,
+        channels,
+      });
+      try {
+        const res = await api.send(text, fleetContext);
+        if (!res.ok) {
+          // Rejected before any stream event (busy race / disposed): close the
+          // open turn with an error so the placeholder doesn't spin forever.
+          failDeckBrainTurn(
+            res.code === 'busy'
+              ? t('deck.commanderBusy') || 'A command is already running.'
+              : t('deck.commanderFailed') || 'The command could not run.',
+          );
+          return { ok: false, errorCode: res.code };
+        }
+        return { ok: true };
+      } catch (err) {
+        failDeckBrainTurn(err instanceof Error ? err.message : String(err));
+        return { ok: false, errorMessage: err instanceof Error ? err.message : String(err) };
+      }
+    },
+    [workspaces, surfaceAgent, paneLabel, channels, startDeckBrainTurn, failDeckBrainTurn, pushToast, t],
+  );
+
+  // Unified composer submit: route on whether the message @-mentions panes.
+  const handleSubmit = useCallback(
+    (text: string, mentions: ChannelMention[]) =>
+      mentions.length > 0 ? handleFanout(text, mentions) : handleBrainSend(text),
+    [handleFanout, handleBrainSend],
+  );
+
+  const onInterrupt = useCallback(() => {
+    window.electronAPI?.deck?.interrupt();
+  }, []);
+
   return (
     <CommanderViewContent
       threads={threads}
+      brainMessages={brainMessages}
+      brainBusy={brainStatus === 'busy'}
+      onInterrupt={onInterrupt}
       mentionCandidates={mentionCandidates}
-      onSubmit={handleFanout}
+      onSubmit={handleSubmit}
       onJumpToPane={onJumpToPane}
       resolvePtyPane={resolvePtyPane}
       workspaceName={workspaceName}

@@ -18,10 +18,21 @@
 
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
+import type { BrainEvent } from '../../../main/deck/BrainAdapter';
+import {
+  applyBrainEvent,
+  type DeckBrainMessage,
+} from '../../components/Deck/deckBrain';
+import { generateId } from '../../../shared/types';
 
 /** Which dock tab is showing. `commander` is the default (the LLM-less
  *  command composer); `channels` is the classic channel list + conversation. */
 export type DeckTab = 'commander' | 'channels';
+
+/** The Commander BRAIN turn state (Phase 2). Distinct from the Phase 1 fan-out
+ *  threads (which live in the `#commander` channel): the brain stream is an
+ *  orchestrator turn, not channel semantics, so it is deck-owned state. */
+export type DeckBrainStatus = 'idle' | 'busy';
 
 export interface DeckSlice {
   /** Active dock tab. Defaults to `commander` — the deck opens on the command
@@ -29,6 +40,22 @@ export interface DeckSlice {
    *  persisted): the deck always opens on Commander on a fresh load. */
   activeDeckTab: DeckTab;
   setActiveDeckTab: (tab: DeckTab) => void;
+
+  /** The Commander brain conversation (this-session only — resume is P3). */
+  brainMessages: DeckBrainMessage[];
+  /** `busy` while a brain turn streams; the composer disables to enforce the
+   *  one-turn-at-a-time contract the session manager also guards. */
+  brainStatus: DeckBrainStatus;
+
+  /** Open a new brain turn: push the human message + a streaming assistant
+   *  placeholder, and mark the deck busy. */
+  startDeckBrainTurn: (text: string) => void;
+  /** Apply one normalized brain stream event to the open turn. `turn-end` /
+   *  `error` flip the deck back to idle. */
+  applyDeckBrainEvent: (event: BrainEvent) => void;
+  /** Mark the open turn failed (used when deck.send is REJECTED before any
+   *  stream event — e.g. a busy race). */
+  failDeckBrainTurn: (message: string) => void;
 }
 
 export const createDeckSlice: StateCreator<
@@ -42,5 +69,35 @@ export const createDeckSlice: StateCreator<
   setActiveDeckTab: (tab) =>
     set((state: StoreState) => {
       state.activeDeckTab = tab;
+    }),
+
+  brainMessages: [],
+  brainStatus: 'idle',
+
+  startDeckBrainTurn: (text) =>
+    set((state: StoreState) => {
+      state.brainMessages.push({ id: generateId('dbu'), role: 'user', text });
+      state.brainMessages.push({
+        id: generateId('dba'),
+        role: 'assistant',
+        text: '',
+        tools: [],
+        status: 'streaming',
+      });
+      state.brainStatus = 'busy';
+    }),
+
+  applyDeckBrainEvent: (event) =>
+    set((state: StoreState) => {
+      state.brainMessages = applyBrainEvent(state.brainMessages, event);
+      if (event.type === 'turn-end' || event.type === 'error') {
+        state.brainStatus = 'idle';
+      }
+    }),
+
+  failDeckBrainTurn: (message) =>
+    set((state: StoreState) => {
+      state.brainMessages = applyBrainEvent(state.brainMessages, { type: 'error', message });
+      state.brainStatus = 'idle';
     }),
 });

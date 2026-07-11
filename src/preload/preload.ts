@@ -281,6 +281,35 @@ const electronAPI = {
   fanout: {
     start: (req: Record<string, unknown>) => ipcRenderer.invoke(IPC.FANOUT_START, req),
   },
+  // Command Deck Phase 2 — the Commander brain. `send` runs one orchestrator
+  // turn (resolves with the accept/reject verdict; the turn's content streams
+  // over `onStream`). Renderer-trusted, pipe-unreachable — same boundary as
+  // fanout. A brain stream is NOT channel semantics, so it rides a dedicated
+  // push channel, never the channels plumbing.
+  deck: {
+    send: (text: string, fleetContext?: string) =>
+      ipcRenderer.invoke(IPC.DECK_SEND, { text, fleetContext }) as Promise<{
+        ok: boolean;
+        code?: 'busy' | 'disposed' | 'empty';
+      }>,
+    interrupt: () => ipcRenderer.invoke(IPC.DECK_INTERRUPT) as Promise<{ ok: true }>,
+    status: () =>
+      ipcRenderer.invoke(IPC.DECK_STATUS) as Promise<{
+        status: 'idle' | 'busy' | 'disposed';
+        sessionId: string | null;
+      }>,
+    // Normalized BrainEvent push (see BrainAdapter.BrainEvent).
+    onStream: (
+      callback: (event: import('../main/deck/BrainAdapter').BrainEvent) => void,
+    ) => {
+      const listener = (
+        _e: Electron.IpcRendererEvent,
+        event: import('../main/deck/BrainAdapter').BrainEvent,
+      ) => callback(event);
+      ipcRenderer.on(IPC.DECK_STREAM, listener);
+      return () => { ipcRenderer.removeListener(IPC.DECK_STREAM, listener); };
+    },
+  },
   browser: {
     registerWebview: (surfaceId: string, webContentsId: number) =>
       ipcRenderer.invoke('browser:register-webview', surfaceId, webContentsId),

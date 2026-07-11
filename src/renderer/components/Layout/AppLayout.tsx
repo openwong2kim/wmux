@@ -37,6 +37,7 @@ import { useRpcBridge } from '../../hooks/useRpcBridge';
 import { useResizeGuard } from '../../hooks/useResizeGuard';
 import { useApprovalInboxBridge } from '../../hooks/useApprovalInboxBridge';
 import { useRemoteInboxBridge } from '../../hooks/useRemoteInboxBridge';
+import { useDeckStream } from '../../hooks/useDeckStream';
 import { useChannelsEventSubscription } from '../../hooks/useChannelsEventSubscription';
 import { useChannelsHydration } from '../../hooks/useChannelsHydration';
 import { useMissionsPolling } from '../../hooks/useMissionsPolling';
@@ -329,6 +330,10 @@ export default function AppLayout() {
   // LanLink PR-2 — own the remote-inbox subscription (always-on, mounted once)
   // so remote peer messages accumulate in the store before any surface opens.
   useRemoteInboxBridge();
+  // Command Deck Phase 2 — own the Commander brain stream subscription
+  // (always-on, mounted once) so orchestrator turn events land in deckSlice even
+  // when the dock or the Commander tab is not visible.
+  useDeckStream();
   // U6 — channel.message subscription. Polls events.poll on a 1s cadence
   // and dispatches into channelsSlice. Always-on (not gated on any
   // panel visibility) so the unread badge stays accurate while the

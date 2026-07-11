@@ -650,8 +650,15 @@ export const ko = {
   'deck.tabChannels': '채널',
   'deck.commanderPlaceholder': '함대에 지시 — @로 pane 멘션…',
   'deck.commanderEmpty':
-    '@로 에이전트 pane을 멘션해 여기서 함대를 지휘하세요. 회신이 이 스레드로 모입니다.',
+    '커맨더에게 함대 운영을 맡기거나, @로 에이전트 pane을 멘션해 직접 지시하세요.',
   'deck.jumpToPane': '이 pane으로 이동',
+  // 커맨드 데크 Phase 2 — 커맨더 두뇌(Agent SDK 오케스트레이터).
+  'deck.commander': '커맨더',
+  'deck.commanderThinking': '커맨더가 작업 중…',
+  'deck.commanderStop': '중지',
+  'deck.commanderUnavailable': '커맨더를 사용할 수 없습니다',
+  'deck.commanderBusy': '이미 실행 중인 명령이 있습니다.',
+  'deck.commanderFailed': '명령을 실행하지 못했습니다.',
   // operator-join (설계 §3) — 접힘 기본 발견 섹션 + join 확인 다이얼로그. 이 접힘이
   // 의도 게이트다: 펼치기 전에는 비공개 채널명이 화면에 존재하지 않는다.
   'channels.operatorSection': '모든 채널',
