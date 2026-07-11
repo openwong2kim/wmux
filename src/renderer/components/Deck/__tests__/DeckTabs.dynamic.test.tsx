@@ -20,7 +20,7 @@ function mount(props: { active: DeckTab; onSelect?: (t: DeckTab) => void; channe
     root.render(
       createElement(DeckTabs, {
         active: props.active,
-        onSelect: props.onSelect ?? (() => {}),
+        onSelect: props.onSelect ?? vi.fn(),
         channelsUnread: props.channelsUnread,
         t: (k: string) => k,
       }),
