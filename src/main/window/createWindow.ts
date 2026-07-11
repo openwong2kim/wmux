@@ -84,7 +84,33 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     icon: app.isPackaged
       ? path.join(process.resourcesPath, iconFile)
       : path.join(__dirname, '../../assets', iconFile),
-    backgroundColor: '#1e1e2e',
+    // Bridge redesign chrome (DESIGN.md "Window Chrome"). The default-frame +
+    // visible File/Edit menu strip was the #1 "web page in an OS window"
+    // offender. The renderer draws a 36px custom titlebar (Titlebar.tsx);
+    // the OS keeps drawing its own window controls:
+    //   - Windows: titleBarOverlay → native, snap-layout-capable min/max/close
+    //     drawn over the custom bar. Colors follow the theme via the
+    //     window:setTitleBarOverlay IPC (registerHandlers.ts).
+    //   - macOS: 'hidden' keeps the traffic lights, nudged to center in 36px.
+    //   - Linux: keep the native frame (titleBarStyle is ignored there; a
+    //     frameless window would lose drag/resize with no replacement).
+    // The menu itself is NOT removed — autoHideMenuBar keeps every
+    // accelerator working and Alt still reveals the menu on demand.
+    autoHideMenuBar: true,
+    ...platformChoice<Partial<Electron.BrowserWindowConstructorOptions>>({
+      win: {
+        titleBarStyle: 'hidden',
+        titleBarOverlay: { color: '#19191C', symbolColor: '#A5A29C', height: 36 },
+      },
+      mac: {
+        titleBarStyle: 'hidden',
+        trafficLightPosition: { x: 12, y: 11 },
+      },
+      default: {},
+    }),
+    // Matches the amber (default) theme's bgBase so the first paint doesn't
+    // flash a foreign color behind the renderer (was catppuccin '#1e1e2e').
+    backgroundColor: '#151517',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

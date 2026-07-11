@@ -1,0 +1,386 @@
+<!doctype html>
+<html lang="ko" data-theme="dark" data-accent="mono" data-density="cozy" data-layout="unified" data-hue="amber">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>wmux — redesign mockup</title>
+<style>
+  :root{
+    /* warm graphite + single amber (amber theme tokens) */
+    --bg-base:#151517; --bg-mantle:#19191C; --bg-surface:#202024;
+    --text-main:#EFEEEC; --text-sub:#A5A29C; --text-muted:#66645F;
+    --amber:#E8A33D; --success:#8FBF7F; --danger:#D96C6C;
+    --border-soft:color-mix(in srgb,var(--bg-surface) 60%,transparent);
+    --hair:rgba(255,255,255,.06);
+    --ai:var(--amber); /* AI-action accent, overridden when data-accent=ai */
+    --radius-btn:4px; --radius-card:7px;
+    --sans:'Inter','Segoe UI',system-ui,sans-serif;
+    --mono:'Cascadia Code','JetBrains Mono','Consolas',monospace;
+    --row-h:30px; --pad:12px; --fs-body:13px; --fs-meta:11px;
+  }
+  :root[data-accent="ai"]{ --ai:#6FB7C9; } /* cool cyan reserved for "talks to AI" */
+  /* focus/accent HUE picker — swaps the single accent token, everything follows */
+  :root[data-hue="amber"]{ --amber:#E8A33D; }
+  :root[data-hue="copper"]{ --amber:#E08A57; }
+  :root[data-hue="violet"]{ --amber:#9E8CFF; }
+  :root[data-hue="cyan"]{ --amber:#5FB6C9; }
+  :root[data-hue="green"]{ --amber:#8FBF7F; }
+  :root[data-density="compact"]{ --row-h:26px; --pad:9px; --fs-body:12px; --fs-meta:10px; }
+  /* layout: unified = agents move into the right mission-control column */
+  .side-agents{display:block}
+  .deck-fleet{display:none}
+  .deck-seclabel{display:none}
+  :root[data-layout="unified"] .side-agents{display:none}
+  :root[data-layout="unified"] .deck-fleet{display:flex; flex-direction:column; gap:1px}
+  :root[data-layout="unified"] .deck-seclabel{display:flex}
+  :root[data-layout="unified"] .deck{width:326px; flex-basis:326px}
+  :root[data-theme="light"]{
+    --bg-base:#FAF8F5; --bg-mantle:#F1EEE9; --bg-surface:#FFFFFF;
+    --text-main:#20201E; --text-sub:#5C5A55; --text-muted:#93908A;
+    --hair:rgba(0,0,0,.08);
+    --border-soft:color-mix(in srgb,#000 8%,transparent);
+  }
+  *{box-sizing:border-box; margin:0; padding:0}
+  html,body{height:100%}
+  body{
+    background:#0d0d0f; color:var(--text-main); font-family:var(--sans);
+    display:flex; flex-direction:column; align-items:center; gap:14px;
+    padding:22px 16px 40px; min-height:100%;
+    -webkit-font-smoothing:antialiased;
+  }
+  :root[data-theme="light"] body{background:#e7e3dd}
+
+  /* ---- toggle bar (not part of app, just the compare control) ---- */
+  .controls{display:flex; gap:18px; flex-wrap:wrap; align-items:center; justify-content:center;
+    font-size:12px; color:#9a978f}
+  .ctl{display:flex; gap:6px; align-items:center}
+  .ctl b{color:#c9c6bf; font-weight:600; margin-right:2px}
+  .seg{display:inline-flex; border:1px solid #333; border-radius:6px; overflow:hidden}
+  .seg button{background:transparent; color:#9a978f; border:0; padding:5px 11px; font:inherit; cursor:pointer}
+  .seg button[aria-pressed="true"]{background:#E8A33D; color:#151517; font-weight:600}
+  .hint{font-size:11.5px; color:#75726b; text-align:center; max-width:640px; line-height:1.5}
+
+  /* ---- the app window ---- */
+  .win{
+    width:min(1180px,96vw); height:720px; background:var(--bg-base);
+    border-radius:11px; overflow:hidden; display:flex; flex-direction:column;
+    border:1px solid var(--hair);
+    box-shadow:0 24px 60px rgba(0,0,0,.55), 0 2px 0 rgba(255,255,255,.02) inset;
+  }
+
+  /* titlebar */
+  .titlebar{height:36px; display:flex; align-items:stretch; flex:0 0 36px;
+    background:var(--bg-base); box-shadow:inset 0 -1px 0 var(--hair)}
+  .tb-left{display:flex; align-items:center; gap:9px; padding:0 12px; width:240px;
+    background:var(--bg-mantle); box-shadow:inset -1px 0 0 var(--hair)} /* tinted like sidebar */
+  .mark{width:15px;height:15px;border-radius:4px;background:var(--bg-surface);
+    display:grid;place-items:center;color:var(--amber);font-weight:800;font-size:10px;flex:0 0 auto;
+    border:1px solid var(--hair)}
+  .ws-pill{font-size:12px; color:var(--text-sub); font-weight:500; white-space:nowrap;
+    overflow:hidden; text-overflow:ellipsis}
+  .ws-pill b{color:var(--text-main); font-weight:600}
+  .tb-center{flex:1; display:flex; align-items:center; justify-content:center}
+  .cmdk{display:flex; align-items:center; gap:8px; font-size:11.5px; color:var(--text-muted);
+    background:color-mix(in srgb,var(--bg-surface) 55%,transparent); border:1px solid var(--hair);
+    padding:4px 10px; border-radius:6px; min-width:230px; justify-content:center}
+  .cmdk kbd{font-family:var(--mono); font-size:10px; background:var(--bg-surface);
+    border:1px solid var(--hair); border-radius:3px; padding:1px 5px; color:var(--text-sub)}
+  .tb-right{display:flex; align-items:stretch}
+  .wc{width:46px; display:grid; place-items:center; color:var(--text-sub); cursor:default; font-size:12px}
+  .wc:hover{background:var(--bg-surface)}
+  .wc.close:hover{background:#c42b1c; color:#fff}
+
+  /* body split */
+  .body{flex:1; display:flex; min-height:0}
+
+  /* sidebar */
+  .side{width:240px; flex:0 0 240px; background:var(--bg-mantle);
+    box-shadow:inset -1px 0 0 var(--hair); display:flex; flex-direction:column; overflow:hidden}
+  .sec{padding:12px 10px 4px; font-size:10px; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--text-muted); font-weight:600; display:flex; justify-content:space-between}
+  .srow{height:var(--row-h); display:flex; align-items:center; gap:9px; padding:0 12px; position:relative;
+    color:var(--text-sub); font-size:var(--fs-body); cursor:default; border-radius:0}
+  .srow:hover{background:color-mix(in srgb,var(--bg-surface) 50%,transparent)}
+  .srow.active{color:var(--text-main); background:color-mix(in srgb,var(--bg-surface) 70%,transparent)}
+  .srow.active::before{content:"";position:absolute;left:0;top:5px;bottom:5px;width:2.5px;
+    background:var(--amber);border-radius:0 2px 2px 0}
+  .dot{width:7px;height:7px;border-radius:50%;flex:0 0 auto;background:var(--text-muted)}
+  .dot.run{background:var(--amber)}
+  .dot.ok{background:var(--success)} .dot.idle{background:var(--text-muted)}
+  .dot.wait{background:var(--danger); box-shadow:0 0 0 3px color-mix(in srgb,var(--danger) 22%,transparent)}
+  .srow .sub{margin-left:auto; font-family:var(--mono); font-size:10px; color:var(--text-muted);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis; max-width:96px}
+  .agentline{font-family:var(--mono); font-size:10px; color:var(--text-muted); padding:0 12px 6px 33px;
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .spacer{flex:1}
+  .side-foot{padding:9px 12px; box-shadow:inset 0 1px 0 var(--hair); font-size:11px; color:var(--text-muted);
+    display:flex; align-items:center; gap:8px}
+
+  /* center */
+  .center{flex:1; min-width:0; display:flex; flex-direction:column; background:var(--bg-base)}
+  .tabs{height:34px; display:flex; align-items:stretch; box-shadow:inset 0 -1px 0 var(--hair); padding:0 4px}
+  .tab{display:flex; align-items:center; gap:7px; padding:0 13px; font-size:12px; color:var(--text-sub);
+    position:relative; cursor:default}
+  .tab:hover{color:var(--text-main)}
+  .tab.on{color:var(--text-main)}
+  .tab.on::after{content:"";position:absolute;left:8px;right:8px;bottom:0;height:2px;background:var(--amber);border-radius:2px}
+  .tab .x{color:var(--text-muted); font-size:12px}
+  .newpane{margin-left:auto; display:flex; align-items:center; padding:0 12px; color:var(--text-muted); font-size:15px}
+
+  .grid{flex:1; display:grid; grid-template-columns:1.35fr 1fr; gap:1px; background:var(--hair); min-height:0}
+  .pane{background:var(--bg-base); display:flex; flex-direction:column; min-height:0; position:relative}
+  .pane.focus{box-shadow:inset 0 2px 0 var(--amber)}
+  .pane-hd{height:24px; display:flex; align-items:center; gap:8px; padding:0 10px; font-family:var(--mono);
+    font-size:10.5px; color:var(--text-muted); box-shadow:inset 0 -1px 0 var(--hair)}
+  .pane-hd .nm{color:var(--text-sub)}
+  .term{flex:1; overflow:hidden; padding:9px 11px; font-family:var(--mono); font-size:11.5px; line-height:1.55;
+    color:var(--text-sub); white-space:pre-wrap}
+  .term .p{color:var(--success)} .term .a{color:var(--success)} .term .m{color:var(--text-muted)}
+  .term .r{color:var(--danger)} .term .w{color:var(--text-main)}
+  .cur{display:inline-block;width:7px;height:14px;background:var(--amber);vertical-align:-2px;
+    animation:blink 1.1s steps(1) infinite}
+  @keyframes blink{50%{opacity:0}}
+
+  .toolbar{height:36px; display:flex; align-items:center; gap:2px; padding:0 8px;
+    box-shadow:inset 0 1px 0 var(--hair)}
+  .tbtn{display:flex; align-items:center; gap:6px; padding:5px 9px; border-radius:var(--radius-btn);
+    color:var(--text-sub); font-size:12px; cursor:default}
+  .tbtn:hover{background:var(--bg-surface); color:var(--text-main)}
+  .tbtn.ai{color:var(--text-sub)} /* neutral at rest — accent only on hover */
+  .tbtn.ai:hover{background:color-mix(in srgb,var(--ai) 14%,transparent); color:var(--ai)}
+  .tbtn .g{font-family:var(--mono); font-size:13px}
+  .tb-sep{width:1px; height:18px; background:var(--hair); margin:0 6px}
+
+  /* right deck */
+  .deck{width:308px; flex:0 0 308px; background:var(--bg-mantle);
+    box-shadow:inset 1px 0 0 var(--hair); display:flex; flex-direction:column; min-height:0}
+  .deck-tabs{height:34px; display:flex; align-items:stretch; box-shadow:inset 0 -1px 0 var(--hair); padding:0 4px}
+  .dtab{display:flex; align-items:center; padding:0 12px; font-size:12px; color:var(--text-sub); position:relative; cursor:default}
+  .dtab.on{color:var(--text-main)}
+  .dtab.on::after{content:"";position:absolute;left:8px;right:8px;bottom:0;height:2px;background:var(--amber);border-radius:2px}
+  .deck-body{flex:1; overflow:hidden; padding:12px 13px; display:flex; flex-direction:column; gap:14px}
+  .turn{display:flex; flex-direction:column; gap:7px}
+  .author{font-size:11px; font-weight:700; color:var(--text-main); letter-spacing:.02em}
+  .author.you{color:var(--text-muted); font-weight:600}
+  .prose{font-size:var(--fs-body); line-height:1.5; color:var(--text-main)}
+  .prose.you{color:var(--text-sub)}
+  .toollines{display:flex; flex-direction:column; gap:3px; margin-top:1px}
+  .tl{display:flex; align-items:baseline; gap:8px; font-family:var(--mono); font-size:11px; color:var(--text-muted)}
+  .tl .gl{width:9px; flex:0 0 auto; text-align:center}
+  .tl .gl.run{color:var(--amber)} .tl .gl.ok{color:var(--success)} .tl .gl.err{color:var(--danger)}
+  .tl .nm{color:var(--text-sub)}
+  .tl .arg{overflow:hidden; text-overflow:ellipsis; white-space:nowrap}
+  .tl .jump{margin-left:auto; font-family:var(--sans); font-size:10.5px; color:var(--text-muted);
+    text-decoration:underline; text-underline-offset:2px; flex:0 0 auto}
+  .tl:hover .jump{color:var(--ai)}
+  .deck-seclabel{display:flex; align-items:center; font-size:10px; letter-spacing:.09em; text-transform:uppercase;
+    color:var(--text-muted); font-weight:600}
+  .deck-fleet .fl{height:26px; display:flex; align-items:center; gap:8px; padding:0 8px; border-radius:5px;
+    font-size:12px; color:var(--text-sub); position:relative}
+  .deck-fleet .fl:hover{background:color-mix(in srgb,var(--bg-surface) 55%,transparent)}
+  .deck-fleet .fl.wait{background:color-mix(in srgb,var(--danger) 9%,transparent)}
+  .deck-fleet .fnm{color:var(--text-main); font-weight:500; white-space:nowrap}
+  .deck-fleet .fact{margin-left:10px; font-family:var(--mono); font-size:10px; color:var(--text-muted);
+    white-space:nowrap; overflow:hidden; text-overflow:ellipsis}
+  .deck-fleet .fj{margin-left:auto; color:var(--ai); font-family:var(--mono); flex:0 0 auto}
+  .busy{display:flex; align-items:center; gap:9px; margin-top:auto; padding:9px 11px;
+    background:color-mix(in srgb,var(--bg-surface) 75%,transparent); border-radius:var(--radius-card);
+    font-size:12px; color:var(--text-sub)}
+  .spin{width:11px;height:11px;border-radius:50%;border:2px solid color-mix(in srgb,var(--amber) 35%,transparent);
+    border-top-color:var(--amber); animation:sp .7s linear infinite; flex:0 0 auto}
+  @keyframes sp{to{transform:rotate(360deg)}}
+  .stopbtn{margin-left:auto; font-size:11px; color:var(--danger); border:1px solid color-mix(in srgb,var(--danger) 45%,transparent);
+    border-radius:var(--radius-btn); padding:3px 9px}
+
+  /* status footer */
+  .foot{height:24px; flex:0 0 24px; display:flex; align-items:center; gap:0;
+    background:var(--bg-mantle); box-shadow:inset 0 1px 0 var(--hair);
+    font-family:var(--mono); font-size:10.5px; color:var(--text-muted)}
+  .fi{display:flex; align-items:center; gap:6px; padding:0 12px; box-shadow:inset -1px 0 0 var(--hair)}
+  .fi b{color:var(--text-sub); font-weight:500}
+  .fi.amber b{color:var(--amber)}
+  .fi.push{margin-left:auto; box-shadow:inset 1px 0 0 var(--hair)}
+  .miniSpin{width:8px;height:8px;border-radius:50%;border:1.5px solid color-mix(in srgb,var(--amber) 35%,transparent);
+    border-top-color:var(--amber); animation:sp .7s linear infinite}
+</style>
+</head>
+<body>
+
+  <div class="controls">
+    <div class="ctl"><b>레이아웃</b>
+      <span class="seg" id="seg-layout">
+        <button data-v="unified" aria-pressed="true">통합(미션컨트롤)</button>
+        <button data-v="split">분리(현재)</button>
+      </span>
+    </div>
+    <div class="ctl"><b>포커스 색</b>
+      <span class="seg" id="seg-hue">
+        <button data-v="amber" aria-pressed="true">앰버</button>
+        <button data-v="copper">코퍼</button>
+        <button data-v="violet">바이올렛</button>
+        <button data-v="cyan">시안</button>
+        <button data-v="green">그린</button>
+      </span>
+    </div>
+    <div class="ctl"><b>액센트</b>
+      <span class="seg" id="seg-accent">
+        <button data-v="mono" aria-pressed="true">앰버 단독</button>
+        <button data-v="ai">+ AI 쿨액센트</button>
+      </span>
+    </div>
+    <div class="ctl"><b>밀도</b>
+      <span class="seg" id="seg-density">
+        <button data-v="cozy" aria-pressed="true">여유</button>
+        <button data-v="compact">촘촘</button>
+      </span>
+    </div>
+    <div class="ctl"><b>테마</b>
+      <span class="seg" id="seg-theme">
+        <button data-v="dark" aria-pressed="true">다크</button>
+        <button data-v="light">라이트</button>
+      </span>
+    </div>
+  </div>
+  <div class="hint">터미널이 주인공(가운데 가장 큼) · 커스텀 타이틀바(File/Edit 없음) · 웜 그래파이트 + 앰버 하나 · deck의 tool은 박스 아닌 flat 로그 라인 · 하단 계기 스트립. 위 토글로 결정들을 직접 비교하세요.</div>
+
+  <div class="win">
+    <!-- titlebar -->
+    <div class="titlebar">
+      <div class="tb-left">
+        <div class="mark">w</div>
+        <div class="ws-pill"><b>wmux</b> · openwong2kim</div>
+      </div>
+      <div class="tb-center"></div>
+      <div class="tb-right">
+        <div class="wc">─</div><div class="wc">▢</div><div class="wc close">✕</div>
+      </div>
+    </div>
+
+    <div class="body">
+      <!-- sidebar -->
+      <div class="side">
+        <div class="sec">Workspaces</div>
+        <div class="srow active"><span class="dot run"></span>wmux <span class="sub">3 panes</span></div>
+        <div class="srow"><span class="dot ok"></span>wmux-site <span class="sub">idle</span></div>
+        <div class="srow"><span class="dot idle"></span>orchestrator <span class="sub">idle</span></div>
+        <div class="side-agents">
+          <div class="sec" style="margin-top:6px">Agents <span style="color:var(--danger)">1 need you</span></div>
+          <div class="srow"><span class="dot run"></span>claude · main</div>
+          <div class="agentline">✎ createWindow.ts</div>
+          <div class="srow"><span class="dot run"></span>codex · api</div>
+          <div class="agentline">$ npm run build</div>
+          <div class="srow"><span class="dot wait"></span>claude · deck</div>
+          <div class="agentline" style="color:var(--danger)">⏸ needs your input</div>
+        </div>
+        <div class="spacer"></div>
+        <div class="side-foot"><span class="dot run"></span> daemon · 4 agents live</div>
+      </div>
+
+      <!-- center: terminals = hero -->
+      <div class="center">
+        <div class="tabs">
+          <div class="tab on">main <span class="x">✕</span></div>
+          <div class="tab">api <span class="x">✕</span></div>
+          <div class="tab">deck <span class="x">✕</span></div>
+          <div class="newpane">＋</div>
+        </div>
+        <div class="grid">
+          <div class="pane focus">
+            <div class="pane-hd"><span class="nm">claude · main</span> · ~/wmux <span style="margin-left:auto;color:var(--amber)">● running</span></div>
+            <div class="term"><span class="m">● Update(src/main/window/createWindow.ts)</span>
+  <span class="a">⎿</span> <span class="w">Updated createWindow.ts with 6 additions</span>
+     <span class="p">75</span>   export function createWindow() {
+     <span class="p">76</span> <span class="a">+   titleBarStyle: 'hidden',</span>
+     <span class="p">77</span> <span class="a">+   autoHideMenuBar: true,</span>
+     <span class="p">78</span> <span class="a">+   titleBarOverlay: { color: '#19191C' },</span>
+
+<span class="p">›</span> <span class="w">now wiring the custom titlebar component</span><span class="cur"></span></div>
+          </div>
+          <div class="pane">
+            <div class="pane-hd"><span class="nm">codex · api</span> · ~/wmux <span style="margin-left:auto">building</span></div>
+            <div class="term"><span class="m">$ npm run build</span>
+<span class="m">vite v6.0 building for production...</span>
+<span class="p">✓</span> 412 modules transformed
+<span class="p">✓</span> built in 3.14s
+<span class="m">$ npm run typecheck</span>
+tsc --noEmit
+<span class="r">src/renderer/deck.tsx:88</span> <span class="m">TS2345</span>
+<span class="w">argument of type 'string'...</span><span class="cur"></span></div>
+          </div>
+        </div>
+        <div class="toolbar">
+          <div class="tbtn"><span class="g">＋</span>New</div>
+          <div class="tbtn"><span class="g">⎘</span>Attach</div>
+          <div class="tb-sep"></div>
+          <div class="tbtn ai"><span class="g">⤳</span>Fan-out</div>
+          <div class="tbtn ai"><span class="g">⇶</span>Broadcast</div>
+          <div style="margin-left:auto"></div>
+          <div class="tbtn"><span class="g">⌨</span>Rich input</div>
+        </div>
+      </div>
+
+      <!-- right deck -->
+      <div class="deck">
+        <div class="deck-tabs">
+          <div class="dtab on">Orchestrator</div>
+          <div class="dtab">Channels <span style="color:var(--text-sub);margin-left:6px;font-size:10.5px">2</span></div>
+        </div>
+        <div class="deck-body">
+          <div class="deck-seclabel">Fleet · 4 live</div>
+          <div class="deck-fleet">
+            <div class="fl"><span class="dot run"></span><span class="fnm">claude · main</span><span class="fact">✎ createWindow.ts</span><span class="fj">→</span></div>
+            <div class="fl"><span class="dot run"></span><span class="fnm">codex · api</span><span class="fact">$ npm run build</span><span class="fj">→</span></div>
+            <div class="fl wait"><span class="dot wait"></span><span class="fnm">claude · deck</span><span class="fact" style="color:var(--danger)">⏸ needs input</span><span class="fj">→</span></div>
+            <div class="fl"><span class="dot ok"></span><span class="fnm">claude · site</span><span class="fact">idle</span><span class="fj">→</span></div>
+          </div>
+          <div class="deck-seclabel" style="margin-top:4px">Orchestrator</div>
+          <div class="turn">
+            <div class="author you">You</div>
+            <div class="prose you">3개 pane에 타이틀바 리디자인 붙이고 빌드 통과시켜줘</div>
+          </div>
+          <div class="turn">
+            <div class="author">Orchestrator</div>
+            <div class="prose">main에 커스텀 타이틀바를 넣고, api는 빌드/타입체크 돌리는 중입니다. deck 타입 에러 하나가 남아서 확인 요청했어요.</div>
+            <div class="toollines">
+              <div class="tl"><span class="gl ok">✓</span><span class="nm">send_message</span><span class="arg">→ claude·main "타이틀바 작업"</span><span class="jump">→ 이동</span></div>
+              <div class="tl"><span class="gl ok">✓</span><span class="nm">send_message</span><span class="arg">→ codex·api "빌드"</span><span class="jump">→ 이동</span></div>
+              <div class="tl"><span class="gl run">●</span><span class="nm">terminal_read</span><span class="arg">codex·api 출력 폴링</span><span class="jump">→ 이동</span></div>
+              <div class="tl"><span class="gl err">✕</span><span class="nm">send_message</span><span class="arg">→ claude·deck (awaiting input)</span><span class="jump">→ 이동</span></div>
+            </div>
+          </div>
+          <div class="busy">
+            <span class="spin"></span> Orchestrator 작동 중…
+            <span class="stopbtn">■ Stop</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- status footer -->
+    <div class="foot">
+      <div class="fi amber"><b>opus-4.8</b></div>
+      <div class="fi">approval <b>auto</b></div>
+      <div class="fi">ctx <b>34%</b></div>
+      <div class="fi">~/wmux</div>
+      <div class="fi push"><span class="miniSpin"></span> <b>3 agents running</b></div>
+      <div class="fi"><span style="color:var(--danger)">●</span> 1 need you</div>
+    </div>
+  </div>
+
+<script>
+  function wire(id, attr){
+    const seg=document.getElementById(id);
+    seg.addEventListener('click',e=>{
+      const b=e.target.closest('button'); if(!b) return;
+      seg.querySelectorAll('button').forEach(x=>x.setAttribute('aria-pressed', x===b));
+      document.documentElement.setAttribute(attr, b.dataset.v);
+    });
+  }
+  wire('seg-layout','data-layout');
+  wire('seg-hue','data-hue');
+  wire('seg-accent','data-accent');
+  wire('seg-density','data-density');
+  wire('seg-theme','data-theme');
+</script>
+</body>
+</html>

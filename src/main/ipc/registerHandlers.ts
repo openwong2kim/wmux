@@ -197,6 +197,32 @@ export function registerAllHandlers(
   ipcMain.removeAllListeners(IPC.WINDOW_FLASH_FRAME);
   ipcMain.on(IPC.WINDOW_FLASH_FRAME, onFlashFrame);
 
+  // Bridge redesign — theme-following titleBarOverlay restyle. The custom
+  // titlebar (renderer) sends the active theme's mantle/sub colors whenever
+  // the theme changes so the native Windows window controls stay coherent
+  // with the chrome. Trust boundary: only #RGB/#RRGGBB strings pass — a
+  // malformed payload must never reach the native call (it throws).
+  // setTitleBarOverlay exists only when the window was created with
+  // titleBarOverlay (Windows); guarded so macOS/Linux are silent no-ops.
+  const HEX_COLOR = /^#(?:[0-9a-fA-F]{3}|[0-9a-fA-F]{6})$/;
+  const onSetTitleBarOverlay = (_event: Electron.IpcMainEvent, opts: unknown): void => {
+    if (process.platform !== 'win32') return;
+    if (!opts || typeof opts !== 'object') return;
+    const { color, symbolColor } = opts as { color?: unknown; symbolColor?: unknown };
+    if (typeof color !== 'string' || !HEX_COLOR.test(color)) return;
+    if (typeof symbolColor !== 'string' || !HEX_COLOR.test(symbolColor)) return;
+    const win = getWindow();
+    if (!win || win.isDestroyed()) return;
+    try {
+      win.setTitleBarOverlay({ color, symbolColor, height: 36 });
+    } catch {
+      // Window created without titleBarOverlay (e.g. future flag/rollback) —
+      // restyling is cosmetic, never let it crash main.
+    }
+  };
+  ipcMain.removeAllListeners(IPC.WINDOW_SET_TITLEBAR_OVERLAY);
+  ipcMain.on(IPC.WINDOW_SET_TITLEBAR_OVERLAY, onSetTitleBarOverlay);
+
   // EventBus publish from renderer (one-way). Validates the event type and
   // workspaceId at the trust boundary so a misbehaving renderer can't poison
   // the ring with arbitrary shapes; type-specific fields ride through as-is.

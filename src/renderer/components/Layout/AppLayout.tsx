@@ -62,6 +62,7 @@ import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode
 import { planAgentCandidateSeed, asAgentSlug, markSeedAttempted } from '../../channels/agentCandidateSeed';
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import AgentToolbar from '../AgentToolbar/AgentToolbar';
+import Titlebar from '../Titlebar/Titlebar';
 
 /**
  * Fix 0 — startup reconcile timeout.
@@ -1206,7 +1207,7 @@ export default function AppLayout() {
   return (
     <ErrorBoundary name="AppLayout">
     <div
-      className={`flex h-screen w-screen bg-[var(--bg-base)] overflow-hidden ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}
+      className="flex flex-col h-screen w-screen bg-[var(--bg-base)] overflow-hidden"
       style={{
         ...(prefixMode ? {
           boxShadow: 'inset 0 0 0 2px var(--accent-red)',
@@ -1217,6 +1218,13 @@ export default function AppLayout() {
         }),
       }}
     >
+      {/* Bridge redesign — custom 36px titlebar spans the FULL window width,
+          above the sidebar|main|dock row. The BrowserWindow is frameless
+          (titleBarStyle:'hidden'), so this bar owns window dragging. */}
+      <ErrorBoundary name="Titlebar">
+        <Titlebar />
+      </ErrorBoundary>
+      <div className={`flex flex-1 min-h-0 ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`}>
       <ErrorBoundary name="Sidebar">
         {sidebarVisible ? <Sidebar /> : <MiniSidebar />}
       </ErrorBoundary>
@@ -1477,6 +1485,7 @@ export default function AppLayout() {
       )}
       <FloatingPane />
       <ToastContainer />
+      </div>
     </div>
     </ErrorBoundary>
   );

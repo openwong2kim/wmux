@@ -16,6 +16,14 @@ Key routing rules:
 - Visual audit, design polish → invoke design-review
 - Architecture review → invoke plan-eng-review
 
+## Design System
+
+Always read DESIGN.md before making any visual or UI decisions.
+All chrome/layout contracts, color grammar (amber = alive + focus, 5±2
+points per screen, no washes), typography, and aesthetic direction are
+defined there. Do not deviate without explicit user approval.
+In QA/design-review mode, flag any code that doesn't match DESIGN.md.
+
 ## Versioning & release (owner decision, 2026-07-05)
 
 - **PRs never bump the version.** `package.json` stays at the last released

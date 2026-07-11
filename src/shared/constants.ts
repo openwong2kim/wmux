@@ -222,6 +222,12 @@ export const IPC = {
   // `'focus'` event so a user clicking the window dismisses the flash
   // even if the renderer never sends `false`.
   WINDOW_FLASH_FRAME: 'window:flashFrame',
+  // Bridge redesign — theme-following native window controls. The custom
+  // titlebar renderer reads the active theme's --bg-mantle/--text-sub and
+  // asks main to restyle the Windows titleBarOverlay (snap-layout-capable
+  // native min/max/close) so the controls never clash with the theme.
+  // Windows-only no-op elsewhere (see registerHandlers).
+  WINDOW_SET_TITLEBAR_OVERLAY: 'window:setTitleBarOverlay',
   // MCP integration status / management (Settings panel + CLI parity)
   MCP_CHECK: 'mcp:check',
   MCP_REREGISTER: 'mcp:reregister',

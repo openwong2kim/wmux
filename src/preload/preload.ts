@@ -603,6 +603,12 @@ const electronAPI = {
     flashFrame: (on: boolean) => {
       ipcRenderer.send(IPC.WINDOW_FLASH_FRAME, on);
     },
+    // Bridge redesign — restyle the Windows titleBarOverlay (native window
+    // controls drawn over the custom titlebar) to match the active theme.
+    // Main validates the payload and no-ops on non-Windows platforms.
+    setTitleBarOverlay: (opts: { color: string; symbolColor: string }) => {
+      ipcRenderer.send(IPC.WINDOW_SET_TITLEBAR_OVERLAY, opts);
+    },
   },
   events: {
     /**
