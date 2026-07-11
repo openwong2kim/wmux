@@ -81,8 +81,16 @@ describe('ClaudeSdkAdapter', () => {
     expect(opts1.resume).toBeUndefined();
     expect(calls[0].prompt).toContain('FLEET');
     expect(calls[0].prompt).toContain('first');
-    // wmux MCP mounted + allow-list applied.
-    expect(opts1.mcpServers).toEqual({ wmux: { type: 'stdio', command: 'node', args: ['/fake/mcp.js'] } });
+    // wmux MCP mounted + allow-list applied. The bundle is spawned with wmux's
+    // OWN binary in Node mode (never a PATH `node` — end users may not have one).
+    expect(opts1.mcpServers).toEqual({
+      wmux: {
+        type: 'stdio',
+        command: process.execPath,
+        args: ['/fake/mcp.js'],
+        env: { ELECTRON_RUN_AS_NODE: '1' },
+      },
+    });
     expect(opts1.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
 
     await collect(adapter.send('second'));

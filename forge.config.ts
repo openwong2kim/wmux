@@ -145,7 +145,13 @@ const config: ForgeConfig = {
     // wmux itself and every bundled npm dep. Electron's own LICENSE
     // (covering Chromium / V8 / Node) is emitted automatically by
     // electron-packager next to wmux.exe, so we don't duplicate it here.
-    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './dist/cli-bundle', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
+    // claude-agent-sdk: the Command Deck brain (main process) loads it from
+    // resources/claude-agent-sdk at runtime — the packaged app ships no
+    // node_modules, and the SDK must stay unbundled because it locates its
+    // sibling files by its own path. 3.8 MB of pure JS, zero runtime deps; the
+    // ~240 MB platform binary package is deliberately NOT shipped (the deck
+    // targets the user's own claude install via pathToClaudeCodeExecutable).
+    extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './dist/cli-bundle', './node_modules/@anthropic-ai/claude-agent-sdk', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
     // macOS 서명/노타라이즈는 packagerConfig가 아니라 postPackage hook 끝에서
     // 수행한다(signMacAppIfConfigured 주석 참고). 여기서 서명하면 postPackage의
     // node-pty 복사가 서명을 깨뜨리기 때문이다.

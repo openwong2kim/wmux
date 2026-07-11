@@ -22,8 +22,9 @@
 
 import * as fs from 'fs';
 import * as path from 'path';
+import * as os from 'os';
+import { pathToFileURL } from 'url';
 import { app } from 'electron';
-import { query as sdkQuery } from '@anthropic-ai/claude-agent-sdk';
 import {
   type BrainAdapter,
   type BrainEvent,
@@ -46,6 +47,69 @@ export type SdkQueryFn = (params: {
   prompt: string;
   options?: Record<string, unknown>;
 }) => SdkQueryHandle;
+
+// ─── SDK loading (dev vs packaged) ───────────────────────────────────────────
+//
+// The packaged app ships NO node_modules (forge `ignore` keeps only /.vite), so
+// a static import of the SDK — marked `external` in vite.main.config because it
+// self-spawns a CLI — would crash the main bundle at load. Instead the SDK is
+// copied to resources/claude-agent-sdk via forge extraResource (3.8 MB of pure
+// JS, zero runtime deps) and loaded lazily:
+//   dev      → import('@anthropic-ai/claude-agent-sdk') resolves from
+//              node_modules as usual;
+//   packaged → dynamic import of resources/claude-agent-sdk/sdk.mjs.
+// Lazy also means the deck costs nothing until the first brain turn.
+let cachedSdkQueryFn: SdkQueryFn | null = null;
+
+export async function loadSdkQueryFn(): Promise<SdkQueryFn> {
+  if (cachedSdkQueryFn) return cachedSdkQueryFn;
+  if (app.isPackaged) {
+    const sdkPath = path.join(process.resourcesPath, 'claude-agent-sdk', 'sdk.mjs');
+    const mod = (await import(pathToFileURL(sdkPath).href)) as { query: SdkQueryFn };
+    cachedSdkQueryFn = mod.query;
+    return cachedSdkQueryFn;
+  }
+  const mod = (await import('@anthropic-ai/claude-agent-sdk')) as unknown as { query: SdkQueryFn };
+  cachedSdkQueryFn = mod.query;
+  return cachedSdkQueryFn;
+}
+
+// ─── claude executable resolution ────────────────────────────────────────────
+//
+// The SDK's platform package (claude-agent-sdk-win32-x64 et al.) vendors a
+// ~240 MB claude binary — far too heavy to ship inside the wmux installer. The
+// deck instead targets the USER'S OWN claude install (the zero-API premise
+// already assumes one: the fleet's worker panes run it). Verified end-to-end in
+// Phase 0 probe #4: `pathToClaudeCodeExecutable` pointed at the installed
+// claude.exe runs on subscription auth with no platform package present.
+//
+// NOTE: a `claude.cmd` npm shim is NOT spawnable (Node 20+ EINVAL without
+// shell:true) — only real executables or JS entrypoints (SDK runs .js via
+// node) may be returned here.
+export function resolveClaudeExecutable(): string | null {
+  const home = os.homedir();
+  const candidates: string[] = [
+    // Native installer (preferred — self-updating).
+    path.join(home, '.local', 'bin', 'claude.exe'),
+    path.join(home, '.local', 'bin', 'claude'),
+  ];
+  const appData = process.env.APPDATA;
+  if (appData) {
+    // npm global: modern versions ship a native exe; older ones a JS cli.
+    candidates.push(
+      path.join(appData, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'bin', 'claude.exe'),
+      path.join(appData, 'npm', 'node_modules', '@anthropic-ai', 'claude-code', 'cli.js'),
+    );
+  }
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(c)) return c;
+    } catch {
+      /* inaccessible path — keep scanning */
+    }
+  }
+  return null;
+}
 
 /** GLM / Z.ai (or any Anthropic-compatible) endpoint profile. When set, the
  *  same adapter targets a different backend purely via env — the review-team
@@ -191,7 +255,7 @@ export function buildCommanderSystemPrompt(spawnCap = DEFAULT_SPAWN_CAP): string
 // ─── Adapter ─────────────────────────────────────────────────────────────────
 
 export class ClaudeSdkAdapter implements BrainAdapter {
-  private readonly queryFn: SdkQueryFn;
+  private readonly queryFn: SdkQueryFn | null;
   private readonly mcpBundlePath: string | null;
   private readonly allowedTools: string[];
   private readonly model?: string;
@@ -206,7 +270,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   private _disposed = false;
 
   constructor(deps: ClaudeSdkAdapterDeps = {}) {
-    this.queryFn = deps.queryFn ?? (sdkQuery as unknown as SdkQueryFn);
+    this.queryFn = deps.queryFn ?? null;
     this.mcpBundlePath =
       deps.mcpBundlePath !== undefined ? deps.mcpBundlePath : resolveMcpBundlePath();
     this.allowedTools = deps.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
@@ -257,8 +321,17 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     if (this._systemPrompt) options.systemPrompt = this._systemPrompt;
     if (this.model) options.model = this.model;
     if (this.mcpBundlePath) {
+      // Spawn the MCP bundle with wmux's own Electron binary in Node mode
+      // (ELECTRON_RUN_AS_NODE) instead of assuming a `node` on the END USER'S
+      // PATH — the packaged app cannot rely on one existing. Works identically
+      // in dev (execPath = the dev electron binary).
       options.mcpServers = {
-        wmux: { type: 'stdio', command: 'node', args: [this.mcpBundlePath] },
+        wmux: {
+          type: 'stdio',
+          command: process.execPath,
+          args: [this.mcpBundlePath],
+          env: { ELECTRON_RUN_AS_NODE: '1' },
+        },
       };
     }
     // Resume threads later turns onto the same transcript.
@@ -284,7 +357,26 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     state.sessionId = this._sessionId;
     let handle: SdkQueryHandle;
     try {
-      handle = this.queryFn({ prompt: this.composePrompt(text), options: this.buildOptions() });
+      const queryFn = this.queryFn ?? (await loadSdkQueryFn());
+      const options = this.buildOptions();
+      // Packaged builds must target the user's own claude install (the SDK's
+      // default resolution needs its 240 MB platform package, which we do not
+      // ship). Dev keeps the SDK default (platform package in node_modules)
+      // unless the user install is present.
+      if (options.pathToClaudeCodeExecutable === undefined) {
+        const exe = resolveClaudeExecutable();
+        if (exe) {
+          options.pathToClaudeCodeExecutable = exe;
+        } else if (app.isPackaged) {
+          yield {
+            type: 'error',
+            message:
+              'Claude Code not found — the commander needs a claude install (native installer or npm global). Install it, then retry.',
+          };
+          return;
+        }
+      }
+      handle = queryFn({ prompt: this.composePrompt(text), options });
     } catch (err) {
       yield { type: 'error', message: err instanceof Error ? err.message : String(err) };
       return;
