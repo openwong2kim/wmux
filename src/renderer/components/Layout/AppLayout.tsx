@@ -62,7 +62,6 @@ import { planAgentCandidateSeed, asAgentSlug, markSeedAttempted } from '../../ch
 import { RECONCILE_TIMEOUT_MS } from '../../../shared/timeouts';
 import AgentToolbar from '../AgentToolbar/AgentToolbar';
 import Titlebar from '../Titlebar/Titlebar';
-import InstrumentStrip from './InstrumentStrip';
 
 /**
  * Fix 0 — startup reconcile timeout.
@@ -1488,10 +1487,6 @@ export default function AppLayout() {
       <FloatingPane />
       <ToastContainer />
       </div>
-      {/* P2② — bottom instrument strip (fleet vitals, full width). */}
-      <ErrorBoundary name="InstrumentStrip">
-        <InstrumentStrip />
-      </ErrorBoundary>
     </div>
     </ErrorBoundary>
   );

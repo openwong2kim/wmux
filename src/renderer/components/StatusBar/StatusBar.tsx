@@ -6,6 +6,7 @@ import type { Notification, Workspace } from '../../../shared/types';
 import { StatusClockUsage, StatusClockTime } from './StatusClock';
 import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
+import { selectFleetPanes, sortFleetPanes, countNeedsAttention } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { sumUnread } from '../Channels/ChannelsPanel';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
@@ -92,6 +93,40 @@ export default function StatusBar() {
   //    number 반환이라 zustand 기본 Object.is 비교로 값이 바뀔 때만 리렌더된다.
   const activeWs = useStore(useShallow(selectActiveWorkspaceSummary));
   const unreadCount = useStore((s) => computeUnreadCount(s.notifications, s.workspaces));
+  // Bridge P2 rev2 — fleet vitals as APPEARING chips (owner call: the always-on
+  // bottom instrument strip read as dead chrome at "0 running", so it's gone;
+  // the signal moved here and renders ONLY when nonzero). Derived-number
+  // subscription (useShallow on two counters) keeps the A1 no-whole-tree rule:
+  // re-render only when a count actually changes.
+  const fleetVitals = useStore(
+    useShallow((s) => {
+      const panes = selectFleetPanes({
+        workspaces: s.workspaces,
+        surfaceAgentStatus: s.surfaceAgentStatus,
+        surfaceActivity: s.surfaceActivity,
+      }).filter((p) => p.ptyId !== '' && p.surfaceType === 'terminal');
+      return {
+        running: panes.filter((p) => p.agentStatus === 'running').length,
+        needsYou: countNeedsAttention(panes),
+      };
+    }),
+  );
+  // Jump to the most urgent pane — computed at click time (no subscription).
+  const jumpToUrgent = () => {
+    const s = useStore.getState();
+    const panes = sortFleetPanes(
+      selectFleetPanes({
+        workspaces: s.workspaces,
+        surfaceAgentStatus: s.surfaceAgentStatus,
+        surfaceActivity: s.surfaceActivity,
+      }).filter((p) => p.ptyId !== '' && p.surfaceType === 'terminal'),
+      'attention',
+    );
+    const target = panes[0];
+    if (!target) return;
+    s.setActiveWorkspace(target.workspaceId);
+    s.setActivePane(target.paneId);
+  };
   const toggleNotificationPanel = useStore((s) => s.toggleNotificationPanel);
   const toggleSettingsPanel = useStore((s) => s.toggleSettingsPanel);
 
@@ -164,6 +199,29 @@ export default function StatusBar() {
 
       {/* Right: status indicators */}
       <div className="flex items-center gap-3" style={noDrag}>
+        {/* Fleet vitals — render only when there is signal (no dead gauges). */}
+        {fleetVitals.running > 0 && (
+          <span className="flex items-center gap-1.5" data-statusbar-running>
+            <span
+              aria-hidden="true"
+              className="w-[6px] h-[6px] rounded-full bg-[var(--accent-cursor)]"
+            />
+            {(t('strip.running') || '{count} running').replace('{count}', String(fleetVitals.running))}
+          </span>
+        )}
+        {fleetVitals.needsYou > 0 && (
+          <button
+            type="button"
+            data-statusbar-needs
+            onClick={jumpToUrgent}
+            className="flex items-center gap-1.5 font-semibold text-[var(--accent-red)] hover:opacity-80 transition-opacity"
+            title={t('strip.needsYouTooltip') || 'Jump to the pane that needs you'}
+            {...tokenAttrs('danger', 'text')}
+          >
+            <span aria-hidden="true" className="w-[6px] h-[6px] rounded-full bg-[var(--accent-red)]" />
+            {(t('strip.needsYou') || '{count} need you').replace('{count}', String(fleetVitals.needsYou))}
+          </button>
+        )}
         {/* A5: company 비용 + 사용량 위젯(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockUsage isCompanyMode={isCompanyMode} />
         {/* Plugin status-bar widgets (B-1 ui.statusbar, right-aligned) */}

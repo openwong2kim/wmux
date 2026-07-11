@@ -96,7 +96,7 @@ export default function DeckFleet({
         >
           {(t('deck.fleetLabel') || 'Fleet')} · {panes.length}
         </span>
-        {/* Needs-attention summary lives on the P2② instrument strip; here the
+        {/* Needs-attention summary lives on the titlebar vitals chip; here the
             row wash is the rendition (attention = max 2 per DESIGN.md). */}
       </div>
       <div className="max-h-44 overflow-y-auto">

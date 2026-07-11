@@ -56,9 +56,7 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 │           │                                  │ ├ Fleet ───┤ │
 │           │                                  │ ├ Orch ────┤ │
 │           │  [agent toolbar, text-first]     │ └ busy bar ┘ │
-├───────────┴──────────────────────────────────┴──────────────┤
-│ status footer 24px: model·approval·ctx%·cwd | running·needs │
-└──────────────────────────────────────────────────────────────┘
+└───────────┴──────────────────────────────────┴──────────────┘
 ```
 
 - **Left sidebar = navigation only** (workspaces). Agents do NOT live here.
@@ -67,9 +65,11 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   thread, busy bar at bottom. Channels is a sibling tab. Rationale: agents ↔
   the brain that commands them ↔ their channels are ONE system; splitting them
   across both edges made them feel unrelated (owner feedback, 2026-07-11).
-- **Bottom status footer = instrument strip** (Codex pattern): mono 10.5px
-  segments — model (amber) · approval mode · context % · cwd · «N agents
-  running» (spinner) · «N need you» (danger).
+- **Fleet vitals = appearing chips in the titlebar status strip** («N running»
+  amber dot · «N need you» danger, click = jump to the most urgent pane).
+  They render ONLY when nonzero — no dead gauges, no extra chrome row.
+  (Owner decision 2026-07-12: the always-on bottom instrument strip read as
+  dead chrome at "0 running" and was removed the same day it landed.)
 - The terminal grid always gets the largest area. Any new surface must justify
   itself against "does this shrink the hero?"
 
