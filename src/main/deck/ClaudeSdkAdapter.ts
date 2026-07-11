@@ -325,12 +325,20 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       // (ELECTRON_RUN_AS_NODE) instead of assuming a `node` on the END USER'S
       // PATH — the packaged app cannot rely on one existing. Works identically
       // in dev (execPath = the dev electron binary).
+      // WMUX_DATA_SUFFIX must be threaded EXPLICITLY: the MCP subprocess is
+      // spawned by the claude CLI, whose stdio-server spawner only inherits a
+      // fixed default env list on win32 — the suffix is not on it. Without
+      // this, a suffix-isolated wmux instance's brain would resolve the
+      // DEFAULT pipe name and drive the wrong (or a dead) instance.
+      const suffixEnv = process.env.WMUX_DATA_SUFFIX
+        ? { WMUX_DATA_SUFFIX: process.env.WMUX_DATA_SUFFIX }
+        : {};
       options.mcpServers = {
         wmux: {
           type: 'stdio',
           command: process.execPath,
           args: [this.mcpBundlePath],
-          env: { ELECTRON_RUN_AS_NODE: '1' },
+          env: { ELECTRON_RUN_AS_NODE: '1', ...suffixEnv },
         },
       };
     }
