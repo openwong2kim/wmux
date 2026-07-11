@@ -129,7 +129,7 @@ export default function StatusBar() {
   // — rendering it here again would duplicate it 20px away.
   const noDrag = { WebkitAppRegion: 'no-drag' } as CSSProperties;
   return (
-    <div className="flex items-center flex-1 min-w-0 h-full px-3 text-[10px] text-[var(--text-muted)] select-none font-mono" data-onboarding-target="status-bar" {...tokenAttrs('textMuted', 'text')}>
+    <div className="flex items-center flex-1 min-w-0 h-full px-3 text-[11px] text-[var(--text-muted)] select-none font-mono" data-onboarding-target="status-bar" {...tokenAttrs('textMuted', 'text')}>
       {/* Left: transient indicators (prefix mode, branch, company badge) */}
       <div className="flex items-center gap-3" style={noDrag}>
         {prefixMode && (

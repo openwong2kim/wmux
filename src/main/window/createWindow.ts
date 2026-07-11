@@ -100,7 +100,10 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
     ...platformChoice<Partial<Electron.BrowserWindowConstructorOptions>>({
       win: {
         titleBarStyle: 'hidden',
-        titleBarOverlay: { color: '#19191C', symbolColor: '#A5A29C', height: 36 },
+        // bgBase (not mantle): the overlay strip sits on the titlebar's right
+        // half, which is bgBase — the renderer re-pushes the live theme's
+        // value on boot/theme-change via window:setTitleBarOverlay anyway.
+        titleBarOverlay: { color: '#151517', symbolColor: '#A5A29C', height: 36 },
       },
       mac: {
         titleBarStyle: 'hidden',

@@ -45,7 +45,10 @@ function useTitleBarOverlaySync(): void {
     if (!send) return;
     const push = () => {
       const cs = getComputedStyle(document.documentElement);
-      const color = cs.getPropertyValue('--bg-mantle').trim();
+      // MUST be --bg-base: the overlay strip sits on the titlebar's right,
+      // which is bgBase — pushing bgMantle (the left-segment tint) made the
+      // window buttons read as a mismatched block (owner-reported on light).
+      const color = cs.getPropertyValue('--bg-base').trim();
       const symbolColor = cs.getPropertyValue('--text-sub').trim();
       // Main validates #RGB/#RRGGBB; skip empty reads during first paint.
       if (color && symbolColor) send({ color, symbolColor });
@@ -116,7 +119,7 @@ export default function Titlebar() {
           w
         </div>
         {(sidebarVisible || !leftSegmentWidth) && (
-          <span className="text-xs truncate text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
+          <span className="text-[13px] truncate text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
             <span className="font-semibold text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>wmux</span>
             {activeWorkspace ? ` · ${activeWorkspace.name}` : ''}
           </span>
