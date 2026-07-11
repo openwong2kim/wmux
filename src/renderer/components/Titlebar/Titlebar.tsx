@@ -1,6 +1,7 @@
 import { useEffect, type CSSProperties } from 'react';
 import { useStore } from '../../stores';
 import { tokenAttrs } from '../../themes';
+import StatusBar from '../StatusBar/StatusBar';
 
 /**
  * Bridge redesign — custom 36px titlebar (DESIGN.md "Window Chrome").
@@ -121,9 +122,12 @@ export default function Titlebar() {
           </span>
         )}
       </div>
-      {/* Empty center = the drag surface. Deliberately no search box here
+      {/* The status strip (P1.5) fills the rest of the bar: transient
+          indicators on the left, the status/clock/settings cluster pinned
+          against the native-controls reserve on the right. Its own flex-1
+          gap remains the drag surface. Deliberately no search box here
           (owner decision, DESIGN.md) — ⌘K stays a shortcut. */}
-      <div className="flex-1" />
+      <StatusBar />
     </header>
   );
 }

@@ -1,4 +1,4 @@
-import { useMemo } from 'react';
+import { useMemo, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -119,11 +119,19 @@ export default function StatusBar() {
   // hidden so the deactivated build shows zero company traces.
   const isCompanyMode = COMPANY_MODE_ENABLED && sidebarMode === 'company';
 
+  // Bridge redesign P1.5 — the status strip lives INSIDE the custom titlebar
+  // now (owner feedback: the empty titlebar center read as wasted space, and
+  // the separate status row doubled the top chrome). The component renders a
+  // transparent, full-height flex strip: the titlebar supplies bg + height +
+  // the drag region; the two content clusters opt OUT of dragging so their
+  // buttons stay clickable, and the flex-1 gap between them stays draggable.
+  // The workspace NAME moved to the titlebar's mantle segment (Titlebar.tsx)
+  // — rendering it here again would duplicate it 20px away.
+  const noDrag = { WebkitAppRegion: 'no-drag' } as CSSProperties;
   return (
-    <div className="flex items-center justify-between h-6 px-3 border-b border-[var(--bg-surface)] text-[10px] text-[var(--text-muted)] shrink-0 select-none font-mono" style={{ backgroundColor: 'var(--bg-mantle)' }} data-onboarding-target="status-bar" {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')} {...tokenAttrs('textMuted', 'text')}>
-      {/* Left: workspace + branch */}
-      <div className="flex items-center gap-3">
-        <span className="text-[var(--text-main)] font-medium" {...tokenAttrs('textMain', 'text')}>{activeWs.name || 'wmux'}</span>
+    <div className="flex items-center flex-1 min-w-0 h-full px-3 text-[10px] text-[var(--text-muted)] select-none font-mono" data-onboarding-target="status-bar" {...tokenAttrs('textMuted', 'text')}>
+      {/* Left: transient indicators (prefix mode, branch, company badge) */}
+      <div className="flex items-center gap-3" style={noDrag}>
         {prefixMode && (
           <span className="text-[var(--accent-red)] font-bold animate-pulse" {...tokenAttrs('danger', 'accent')}>
             [PREFIX]
@@ -149,8 +157,11 @@ export default function StatusBar() {
         <PluginStatusBarWidgets alignment="left" />
       </div>
 
+      {/* Draggable gap — the titlebar's remaining grab surface. */}
+      <div className="flex-1" />
+
       {/* Right: status indicators */}
-      <div className="flex items-center gap-3">
+      <div className="flex items-center gap-3" style={noDrag}>
         {/* A5: company 비용 + 사용량 위젯(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockUsage isCompanyMode={isCompanyMode} />
         {/* Plugin status-bar widgets (B-1 ui.statusbar, right-aligned) */}

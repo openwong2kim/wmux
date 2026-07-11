@@ -8,7 +8,6 @@ import MiniSidebar from '../Sidebar/MiniSidebar';
 import PaneContainer from '../Pane/PaneContainer';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
-import StatusBar from '../StatusBar/StatusBar';
 import NotificationPanel from '../Notification/NotificationPanel';
 import CommandPalette from '../Palette/CommandPalette';
 import WorktaskCleanupView from '../WorkTask/WorktaskCleanupView';
@@ -1230,7 +1229,9 @@ export default function AppLayout() {
       </ErrorBoundary>
       <ErrorBoundary name="Main">
       <div className="flex-1 min-w-0 flex flex-col">
-        <StatusBar />
+        {/* P1.5 — the status strip moved into the Titlebar (owner feedback:
+            the empty titlebar center + a second status row doubled the top
+            chrome). This column now starts directly with the pane area. */}
         {/* Render workspaces: single view or multiview grid (Ctrl+click selected).
             Grid renders only when the active workspace is a member of the saved
             multiview group, so clicking outside the group shows that workspace's
