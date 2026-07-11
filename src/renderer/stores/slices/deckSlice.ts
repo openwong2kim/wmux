@@ -82,11 +82,12 @@ export const createDeckSlice: StateCreator<
 
   startDeckBrainTurn: (text) =>
     set((state: StoreState) => {
-      state.brainMessages.push({ id: generateId('dbu'), role: 'user', text });
+      state.brainMessages.push({ id: generateId('dbu'), role: 'user', text, ts: Date.now() });
       state.brainMessages.push({
         id: generateId('dba'),
         role: 'assistant',
         text: '',
+        ts: Date.now(),
         tools: [],
         status: 'streaming',
       });
@@ -99,11 +100,12 @@ export const createDeckSlice: StateCreator<
       // `turn-start` — open the turn exactly like startDeckBrainTurn so the
       // scheduled run renders as visibly as a typed one.
       if (event.type === 'turn-start') {
-        state.brainMessages.push({ id: generateId('dbu'), role: 'user', text: event.prompt });
+        state.brainMessages.push({ id: generateId('dbu'), role: 'user', text: event.prompt, ts: Date.now() });
         state.brainMessages.push({
           id: generateId('dba'),
           role: 'assistant',
           text: '',
+          ts: Date.now(),
           tools: [],
           status: 'streaming',
         });

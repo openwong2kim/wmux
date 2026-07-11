@@ -37,12 +37,22 @@ export interface DeckBrainMessage {
   id: string;
   role: DeckBrainRole;
   text: string;
+  /** Epoch ms when the message was created (turn open). Optional because
+   *  messages from before this field existed carry none — render guards. */
+  ts?: number;
   /** Assistant only: the tool chips for this turn, in call order. */
   tools?: DeckToolChip[];
   /** Assistant only. */
   status?: DeckBrainStatus;
   /** Assistant only: populated on an `error` event. */
   errorText?: string;
+}
+
+/** Chat timestamp — LOCAL wall-clock HH:MM (chat convention). The thread
+ *  timestamps previously rendered `toISOString().slice(11,19)` = UTC, which
+ *  reads 9h off on a KST machine — always go through this instead. */
+export function formatChatTime(epochMs: number): string {
+  return new Date(epochMs).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', hour12: false });
 }
 
 /** Strip the `mcp__wmux__` (or any `mcp__x__`) prefix for a compact chip label. */
