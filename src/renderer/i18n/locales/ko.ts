@@ -660,6 +660,10 @@ export const ko = {
   'deck.commanderEmpty':
     '오케스트레이터에게 에이전트 운영을 맡기거나, @로 에이전트 pane을 멘션해 직접 지시하세요.',
   'deck.jumpToPane': '이 pane으로 이동',
+  // Bridge P2① — 오케스트레이터 스레드 위에 고정되는 에이전트 명단.
+  'deck.fleetLabel': '에이전트',
+  'deck.fleetNeedsYou': '{count}개 응답 필요',
+  'deck.fleetNeedsInput': '입력 필요',
   // 커맨드 데크 Phase 2 — 오케스트레이터 두뇌(Agent SDK).
   'deck.commander': '오케스트레이터',
   'deck.commanderThinking': '오케스트레이터가 작업 중…',

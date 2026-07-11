@@ -24,6 +24,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
+import DeckFleet from './DeckFleet';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { generateId } from '../../../shared/types';
 import type { ChannelMention, ChannelMessage } from '../../../shared/channels';
@@ -103,6 +104,9 @@ export interface CommanderViewContentProps {
   quickActions?: DeckQuickAction[];
   /** Fire a quick action (sends its canned prompt to the brain). */
   onQuickAction?: (action: DeckQuickAction) => void;
+  /** P2① mission control — the Fleet roster slot, pinned above the thread.
+   *  Injected as a node so this surface stays presentational/store-free. */
+  fleetSlot?: React.ReactNode;
   t?: (key: string) => string;
 }
 
@@ -123,6 +127,7 @@ export function CommanderViewContent({
   onDismissRecovery,
   quickActions = [],
   onQuickAction,
+  fleetSlot,
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -133,6 +138,8 @@ export function CommanderViewContent({
       className="flex flex-col flex-1 min-h-0 bg-[var(--bg-base)]"
       {...tokenAttrs('bgBase', 'bg')}
     >
+      {/* P2① — Fleet roster pinned above the thread (does not scroll with it). */}
+      {fleetSlot}
       {/* Message list — the brain conversation (Phase 2) plus the Phase 1
           @-mention fan-out threads. */}
       <div
@@ -848,6 +855,7 @@ export function CommanderView(): React.ReactElement {
       onDismissRecovery={dismissRecoveryCard}
       quickActions={quickActions}
       onQuickAction={handleQuickAction}
+      fleetSlot={<DeckFleet onJumpToPane={onJumpToPane} />}
       t={t}
     />
   );

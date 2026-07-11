@@ -737,6 +737,10 @@ export const en = {
   'deck.commanderEmpty':
     'Ask the orchestrator to run your agents, or @mention agent panes to command them directly.',
   'deck.jumpToPane': 'Jump to this pane',
+  // Bridge P2① — Fleet roster pinned above the orchestrator thread.
+  'deck.fleetLabel': 'Fleet',
+  'deck.fleetNeedsYou': '{count} need you',
+  'deck.fleetNeedsInput': 'needs your input',
   // Command Deck Phase 2 — the Orchestrator brain (Agent SDK).
   'deck.commander': 'Orchestrator',
   'deck.commanderThinking': 'Orchestrator is working…',
