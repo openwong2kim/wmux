@@ -66,9 +66,6 @@ function useTitleBarOverlaySync(): void {
 export default function Titlebar() {
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  const workspaces = useStore((s) => s.workspaces);
-  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
   const platform = rendererPlatform();
   const isMac = platform === 'darwin';
   const isWin = platform === 'win32';
@@ -118,12 +115,9 @@ export default function Titlebar() {
         >
           w
         </div>
-        {(sidebarVisible || !leftSegmentWidth) && (
-          <span className="text-[13px] truncate text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
-            <span className="font-semibold text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>wmux</span>
-            {activeWorkspace ? ` · ${activeWorkspace.name}` : ''}
-          </span>
-        )}
+        {/* Mark only — the sidebar header right below already says WMUX, and
+            the workspace name lives at the status strip's far left (its
+            original status-row spot). Owner call: no duplicated wordmarks. */}
       </div>
       {/* The status strip (P1.5) fills the rest of the bar: transient
           indicators on the left, the status/clock/settings cluster pinned

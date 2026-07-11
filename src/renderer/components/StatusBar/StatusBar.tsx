@@ -130,8 +130,10 @@ export default function StatusBar() {
   const noDrag = { WebkitAppRegion: 'no-drag' } as CSSProperties;
   return (
     <div className="flex items-center flex-1 min-w-0 h-full px-3 text-[11px] text-[var(--text-muted)] select-none font-mono" data-onboarding-target="status-bar" {...tokenAttrs('textMuted', 'text')}>
-      {/* Left: transient indicators (prefix mode, branch, company badge) */}
+      {/* Left: current workspace (back at its original status-row spot —
+          owner call) + transient indicators (prefix mode, branch, badge) */}
       <div className="flex items-center gap-3" style={noDrag}>
+        <span className="text-[12px] text-[var(--text-main)] font-medium" {...tokenAttrs('textMain', 'text')}>{activeWs.name || 'wmux'}</span>
         {prefixMode && (
           <span className="text-[var(--accent-red)] font-bold animate-pulse" {...tokenAttrs('danger', 'accent')}>
             [PREFIX]
