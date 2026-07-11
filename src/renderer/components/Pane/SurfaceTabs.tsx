@@ -168,7 +168,9 @@ export default function SurfaceTabs({
 
   return (
     <div
-      className="flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-7 overflow-x-auto"
+      // Bridge P1.6 — h-9 (36px chrome module): matches sidebar header/footer,
+      // deck tabs, and the agent toolbar so all top/bottom hairlines align.
+      className="flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-9 overflow-x-auto"
       // Focused pane = amber underline under the strip (inset so it never
       // shifts layout) — the single focus signal in the design system.
       style={paneActive ? { boxShadow: 'inset 0 -2px 0 var(--accent-cursor)' } : undefined}

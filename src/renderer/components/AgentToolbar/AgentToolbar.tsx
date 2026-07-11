@@ -114,7 +114,7 @@ export default function AgentToolbar() {
       // wmux-toolbar is a CSS size container: below the width threshold the
       // label spans hide and the bar collapses to icon-only (titles keep the
       // affordances discoverable). See globals.css.
-      className="wmux-toolbar relative flex items-center gap-2 px-2.5 py-1.5 shrink-0 border-t border-[var(--bg-surface)] bg-[var(--bg-mantle)]"
+      className="wmux-toolbar relative flex items-center gap-2 h-9 px-2.5 shrink-0 border-t border-[var(--bg-surface)] bg-[var(--bg-mantle)]"
       data-testid="agent-toolbar"
     >
       <button className={`${btn} ${idle}`} disabled={disabled} onClick={handleAttach} title={t('toolbar.attach')}>

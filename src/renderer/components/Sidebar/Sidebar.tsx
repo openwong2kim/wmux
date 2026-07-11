@@ -90,7 +90,10 @@ export default function Sidebar() {
       {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}
     >
       {/* Header */}
-      <div className="relative flex items-center justify-between px-4 py-3 border-b border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
+      {/* Bridge P1.6 — 36px chrome module: header/tab-strip/footer rows across
+          all three columns share the titlebar's 36px height so their hairlines
+          land on the same y (owner-reported seam mismatch). */}
+      <div className="relative flex items-center justify-between h-9 shrink-0 px-4 border-b border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
         <span className="text-sm font-bold text-[var(--text-main)] tracking-widest font-mono" {...tokenAttrs('textMain', 'text')}>WMUX</span>
         <div className="flex items-center gap-1.5">
           {/* Workspaces ⇄ Company toggle. Entry/exit for company mode — the
@@ -204,7 +207,7 @@ export default function Sidebar() {
 
       {/* Footer — when docked right, mirror the row so the collapse arrow sits
           on the inner edge facing the content area (issue #151). */}
-      <div className={`flex items-center justify-between px-4 py-2 border-t border-[var(--bg-surface)] text-[10px] font-mono text-[var(--text-muted)] ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`} style={{ borderColor: 'var(--border-soft)' }} {...tokenAttrs('textMuted', 'text')}>
+      <div className={`flex items-center justify-between h-9 shrink-0 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono text-[var(--text-muted)] ${sidebarPosition === 'right' ? 'flex-row-reverse' : ''}`} style={{ borderColor: 'var(--border-soft)' }} {...tokenAttrs('textMuted', 'text')}>
         <span>{workspaces.length} {t('sidebar.workspaces')}</span>
         <button
           className={`flex items-center justify-center w-5 h-5 rounded text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
