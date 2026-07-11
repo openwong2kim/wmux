@@ -676,7 +676,9 @@ export function CommanderView(): React.ReactElement {
   );
 
   const onInterrupt = useCallback(() => {
-    window.electronAPI?.deck?.interrupt();
+    window.electronAPI?.deck?.interrupt().catch(() => {
+      /* best-effort — the turn may already be over */
+    });
   }, []);
 
   return (

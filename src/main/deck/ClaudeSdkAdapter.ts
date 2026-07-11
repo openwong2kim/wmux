@@ -411,7 +411,11 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     const h = this._active;
     if (h?.interrupt) {
       try {
-        void h.interrupt();
+        // interrupt() may reject asynchronously (e.g. subprocess already
+        // exited) — an unobserved rejection would crash the main process.
+        void Promise.resolve(h.interrupt()).catch(() => {
+          /* best-effort — the turn may already be tearing down */
+        });
       } catch {
         /* best-effort — the turn may already be tearing down */
       }
