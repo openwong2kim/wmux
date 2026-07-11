@@ -73,15 +73,43 @@ describe('buildRecoveryPanes', () => {
     expect(panes[0].command).toBe('codex resume cx-9');
   });
 
-  it('never emits permission flags even when the binding carries a mode (D6)', () => {
-    const panes = buildRecoveryPanes({
+  it('restores the recorded permission mode on the exact-session form (one line, F6)', () => {
+    const bypass = buildRecoveryPanes({
       resumeHintByPtyId: { p1: 'claude' },
       resumeBindingByPtyId: { p1: binding({ permissionMode: 'bypassPermissions' }) },
       workspaces: [workspaceWith('p1', 'D:/repo')],
       paneLabel: {},
     });
-    expect(panes[0].command).toBe('claude --resume sess-1');
-    expect(panes[0].command).not.toContain('bypass');
+    expect(bypass[0].command).toBe('claude --dangerously-skip-permissions --resume sess-1');
+
+    const plan = buildRecoveryPanes({
+      resumeHintByPtyId: { p1: 'claude' },
+      resumeBindingByPtyId: { p1: binding({ permissionMode: 'plan' }) },
+      workspaces: [workspaceWith('p1', 'D:/repo')],
+      paneLabel: {},
+    });
+    expect(plan[0].command).toBe('claude --permission-mode plan --resume sess-1');
+
+    // No recorded mode → no flag.
+    const none = buildRecoveryPanes({
+      resumeHintByPtyId: { p1: 'claude' },
+      resumeBindingByPtyId: { p1: binding() },
+      workspaces: [workspaceWith('p1', 'D:/repo')],
+      paneLabel: {},
+    });
+    expect(none[0].command).toBe('claude --resume sess-1');
+  });
+
+  it('the fallback form never carries a permission flag (nothing trusted to restore)', () => {
+    const panes = buildRecoveryPanes({
+      resumeHintByPtyId: { p1: 'claude' },
+      resumeBindingByPtyId: {
+        p1: binding({ cwd: 'D:\\other', permissionMode: 'bypassPermissions' }),
+      },
+      workspaces: [workspaceWith('p1', 'D:/repo')],
+      paneLabel: {},
+    });
+    expect(panes[0].command).toBe('claude --continue');
   });
 
   it('skips hints whose ptyId maps to no live pane, and empty hints entirely', () => {
@@ -117,7 +145,7 @@ describe('buildRecoveryPrompt / buildRecoveryContextLines', () => {
     expect(prompt).toContain('ptyId p1');
     expect(prompt).toContain('claude --resume sess-1');
     expect(prompt).toContain('terminal_send');
-    expect(prompt).toContain('Do not add any permission');
+    expect(prompt).toContain('EXACTLY as');
   });
 
   it('context lines are empty with no panes, populated otherwise', () => {

@@ -9,10 +9,15 @@
 //
 // Policy split (substrate neutrality): wmux only computes the FACTS — which
 // panes are recoverable and the exact resume command each one needs (the same
-// gates the pill applies: resumable grammar, agent↔binding match, cwd match,
-// NO permission flags — D6). Executing and narrating the recovery is the
-// brain's job, through the same terminal_send any agent gets. There is no
-// deterministic "recover all" engine in app code.
+// gates the pill applies: resumable grammar, agent↔binding match, cwd match).
+// The exact-session form also restores the RECORDED permission mode (e.g.
+// `--dangerously-skip-permissions`) — without it a bypass-mode fleet comes back
+// stuck on prompts, which isn't a recovery. D6 ("permission restore only on
+// explicit user intent") is satisfied by the card's button click / the typed
+// recovery request — both are the human explicitly asking for their fleet
+// back as it was. Executing and narrating the recovery is the brain's job,
+// through the same terminal_send any agent gets. There is no deterministic
+// "recover all" engine in app code.
 //
 // Pure + store-free so every piece is unit-testable with plain objects.
 
@@ -21,6 +26,7 @@ import type { AgentSlug } from '../../../shared/events';
 import {
   type ResumeBinding,
   normalizeResumeCwd,
+  permissionFlagFor,
   resumeGrammarFor,
 } from '../../../shared/agentResume';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
@@ -36,8 +42,9 @@ export interface RecoveryPane {
   label: string;
   workspaceName: string;
   agent: string;
-  /** The exact shell command to type into the pane (no permission flags — D6:
-   *  a mode like bypass is only ever re-granted by explicit user action). */
+  /** The exact shell command to type into the pane. The exact-session form
+   *  includes the binding's recorded permission-mode flag (the button click /
+   *  typed request is the explicit user intent D6 requires). */
   command: string;
   /** Whether the command resumes the EXACT origin conversation (`--resume <id>`)
    *  or falls back to the cwd-relative form (`--continue` / `resume --last`). */
@@ -83,8 +90,13 @@ export function buildRecoveryPanes(args: {
           normalizeResumeCwd(binding.cwd) === normalizeResumeCwd(surface.cwd)
         );
         const exact = cwdMatches && binding?.agent === agent;
+        // Exact-session form restores the recorded permission mode on the SAME
+        // line as the resume flag (F6 — both must land in one command). The
+        // fallback carries no mode: with no trusted binding there is nothing
+        // recorded to restore.
+        const permFlag = exact ? permissionFlagFor(binding?.permissionMode) : '';
         const command = exact
-          ? `${agent} ${grammar.withId(binding.sessionId)}`
+          ? `${agent}${permFlag ? ` ${permFlag}` : ''} ${grammar.withId(binding.sessionId)}`
           : `${agent} ${grammar.fallback}`;
 
         const autoName = computePaneAutoName(wsOrdinal, leaf.ordinal ?? 0, agent);
@@ -113,9 +125,9 @@ export function buildRecoveryPrompt(panes: RecoveryPane[]): string {
   const lines = [
     'Recover my fleet after the reboot. For EACH pane below, type its resume',
     'command into it with terminal_send (submit: true), then read the pane with',
-    'terminal_read to confirm the agent came back. Do not add any permission',
-    'flags. When done, summarize per pane: did it resume, and what was it',
-    'working on (from its restored conversation).',
+    'terminal_read to confirm the agent came back. Run each command EXACTLY as',
+    'given — never add or remove flags. When done, summarize per pane: did it',
+    'resume, and what was it working on (from its restored conversation).',
     '',
     ...panes.map(
       (p) =>
@@ -134,7 +146,7 @@ export function buildRecoveryContextLines(panes: RecoveryPane[]): string {
   return [
     `Reboot recovery: ${panes.length} pane(s) had agents running before the last`,
     'shutdown; each can be brought back by typing its resume command into it',
-    '(terminal_send with submit: true, no permission flags):',
+    '(terminal_send with submit: true, run the command exactly as given):',
     ...panes.map((p) => `- ${p.autoName} — ptyId ${p.ptyId} — ${p.command}`),
   ].join('\n');
 }
