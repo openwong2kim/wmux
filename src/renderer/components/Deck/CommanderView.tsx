@@ -53,6 +53,12 @@ import {
   type DeckBrainMessage,
   type DeckToolChip,
 } from './deckBrain';
+import {
+  buildRecoveryPanes,
+  buildRecoveryPrompt,
+  buildRecoveryContextLines,
+  type RecoveryPane,
+} from './deckRecovery';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
 
@@ -84,6 +90,13 @@ export interface CommanderViewContentProps {
    *  author label can be clicked to jump. Returns null when the pane is gone. */
   resolvePtyPane: (ptyId: string) => { workspaceId: string; paneId: string } | null;
   workspaceName?: (workspaceId: string) => string | undefined;
+  /** P3b: recoverable panes after a reboot. Non-empty → the greeting card shows
+   *  with a one-click "Recover fleet" button. */
+  recoveryPanes?: RecoveryPane[];
+  /** Send the canned recovery prompt to the brain (the card's button). */
+  onRecoverFleet?: () => void;
+  /** Hide the greeting card without recovering. */
+  onDismissRecovery?: () => void;
   t?: (key: string) => string;
 }
 
@@ -99,6 +112,9 @@ export function CommanderViewContent({
   onJumpToPane,
   resolvePtyPane,
   workspaceName = () => undefined,
+  recoveryPanes = [],
+  onRecoverFleet,
+  onDismissRecovery,
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -123,6 +139,53 @@ export function CommanderViewContent({
           >
             {t('deck.commanderEmpty') ||
               'Ask the commander to run your fleet, or @mention agent panes to command them directly.'}
+          </div>
+        )}
+
+        {/* Reboot-recovery greeting card (P3b) — shown while recoverable panes
+            exist and the card wasn't dismissed. One click sends the canned
+            recovery prompt to the brain. */}
+        {recoveryPanes.length > 0 && (
+          <div
+            data-commander-recovery
+            className="rounded-md border px-3 py-2.5 space-y-2 bg-[rgba(var(--bg-surface-rgb),0.5)]"
+            style={{ borderColor: 'var(--border-soft)' }}
+            {...tokenAttrs('bgSurface', 'bg')}
+          >
+            <div
+              className="text-[11px] font-mono text-[var(--text-main)] leading-relaxed"
+              {...tokenAttrs('textMain', 'text')}
+            >
+              {(t('deck.recoveryTitle') ||
+                '{count} agent pane(s) were running before the last shutdown and can be recovered.'
+              ).replace('{count}', String(recoveryPanes.length))}
+            </div>
+            <div
+              className="text-[10px] font-mono text-[var(--text-sub)] leading-relaxed"
+              {...tokenAttrs('textSub', 'text')}
+            >
+              {recoveryPanes.map((p) => p.label).join(' · ')}
+            </div>
+            <div className="flex items-center gap-2">
+              <button
+                type="button"
+                data-recovery-run
+                disabled={brainBusy}
+                onClick={onRecoverFleet}
+                className={`px-2.5 py-1 rounded text-[11px] font-mono text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:opacity-80 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
+              >
+                {t('deck.recoveryRun') || 'Recover fleet'}
+              </button>
+              <button
+                type="button"
+                data-recovery-dismiss
+                onClick={onDismissRecovery}
+                className={`px-2 py-1 rounded text-[10px] font-mono text-[var(--text-muted)] hover:opacity-80 transition-opacity ${FOCUS_RING}`}
+                {...tokenAttrs('textMuted', 'text')}
+              >
+                {t('deck.recoveryDismiss') || 'Dismiss'}
+              </button>
+            </div>
           </div>
         )}
 
@@ -466,6 +529,23 @@ export function CommanderView(): React.ReactElement {
   const brainStatus = useStore((s) => s.brainStatus);
   const startDeckBrainTurn = useStore((s) => s.startDeckBrainTurn);
   const failDeckBrainTurn = useStore((s) => s.failDeckBrainTurn);
+  // Reboot recovery (P3b) — the resume hints the daemon surfaces only for
+  // panes recovered this boot (the same signal the per-pane pill uses).
+  const resumeHintByPtyId = useStore((s) => s.resumeHintByPtyId);
+  const resumeBindingByPtyId = useStore((s) => s.resumeBindingByPtyId);
+  const recoveryCardDismissed = useStore((s) => s.recoveryCardDismissed);
+  const dismissRecoveryCard = useStore((s) => s.dismissRecoveryCard);
+
+  const recoveryPanes = useMemo(
+    () =>
+      buildRecoveryPanes({
+        resumeHintByPtyId,
+        resumeBindingByPtyId,
+        workspaces,
+        paneLabel,
+      }),
+    [resumeHintByPtyId, resumeBindingByPtyId, workspaces, paneLabel],
+  );
 
   const commanderChannel = useMemo(() => findCommanderChannel(channels), [channels]);
   const messages = useStore((s) =>
@@ -640,13 +720,16 @@ export function CommanderView(): React.ReactElement {
       }
       startDeckBrainTurn(text);
       // One-shot fleet snapshot for the system prompt (main injects it on the
-      // first turn only and re-caps to its own budget).
-      const fleetContext = buildFleetContextSummary({
+      // first turn only and re-caps to its own budget). Recovery facts (P3b)
+      // ride along so a typed "recover the fleet" works without the card.
+      const fleetSummary = buildFleetContextSummary({
         workspaces,
         surfaceAgent,
         paneLabel,
         channels,
       });
+      const recoveryLines = buildRecoveryContextLines(recoveryPanes);
+      const fleetContext = recoveryLines ? `${fleetSummary}\n\n${recoveryLines}` : fleetSummary;
       try {
         const res = await api.send(text, fleetContext);
         if (!res.ok) {
@@ -665,8 +748,16 @@ export function CommanderView(): React.ReactElement {
         return { ok: false, errorMessage: err instanceof Error ? err.message : String(err) };
       }
     },
-    [workspaces, surfaceAgent, paneLabel, channels, startDeckBrainTurn, failDeckBrainTurn, pushToast, t],
+    [workspaces, surfaceAgent, paneLabel, channels, recoveryPanes, startDeckBrainTurn, failDeckBrainTurn, pushToast, t],
   );
+
+  // P3b: the greeting card's one-click recovery — send the canned prompt to the
+  // brain and retire the card (the per-pane pills self-clear as agents return).
+  const handleRecoverFleet = useCallback(() => {
+    if (recoveryPanes.length === 0) return;
+    dismissRecoveryCard();
+    void handleBrainSend(buildRecoveryPrompt(recoveryPanes));
+  }, [recoveryPanes, dismissRecoveryCard, handleBrainSend]);
 
   // Unified composer submit: route on whether the message @-mentions panes.
   const handleSubmit = useCallback(
@@ -692,6 +783,9 @@ export function CommanderView(): React.ReactElement {
       onJumpToPane={onJumpToPane}
       resolvePtyPane={resolvePtyPane}
       workspaceName={workspaceName}
+      recoveryPanes={recoveryCardDismissed ? [] : recoveryPanes}
+      onRecoverFleet={handleRecoverFleet}
+      onDismissRecovery={dismissRecoveryCard}
       t={t}
     />
   );

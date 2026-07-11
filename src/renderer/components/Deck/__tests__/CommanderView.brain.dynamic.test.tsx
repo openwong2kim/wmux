@@ -111,4 +111,58 @@ describe('CommanderViewContent — brain surface', () => {
     const err = container.querySelector('[data-commander-brain-error]');
     expect(err?.textContent).toContain('auth failed');
   });
+
+  it('shows the recovery greeting card and its buttons fire (P3b)', () => {
+    const onRecoverFleet = vi.fn();
+    const onDismissRecovery = vi.fn();
+    const panes = [
+      {
+        ptyId: 'p1',
+        autoName: 'w1-1(claude)',
+        label: 'api worker',
+        workspaceName: 'Backend',
+        agent: 'claude',
+        command: 'claude --resume sess-1',
+        exact: true,
+      },
+    ];
+    mount({ recoveryPanes: panes, onRecoverFleet, onDismissRecovery });
+
+    const card = container.querySelector('[data-commander-recovery]');
+    expect(card).not.toBeNull();
+    expect(card?.textContent).toContain('api worker');
+
+    const run = container.querySelector('[data-recovery-run]') as HTMLButtonElement;
+    act(() => run.click());
+    expect(onRecoverFleet).toHaveBeenCalled();
+
+    const dismiss = container.querySelector('[data-recovery-dismiss]') as HTMLButtonElement;
+    act(() => dismiss.click());
+    expect(onDismissRecovery).toHaveBeenCalled();
+  });
+
+  it('disables the recovery button while a brain turn streams', () => {
+    mount({
+      recoveryPanes: [
+        {
+          ptyId: 'p1',
+          autoName: 'w1-1(claude)',
+          label: 'w1-1(claude)',
+          workspaceName: 'Backend',
+          agent: 'claude',
+          command: 'claude --continue',
+          exact: false,
+        },
+      ],
+      brainBusy: true,
+      brainMessages: brainTurn(),
+    });
+    const run = container.querySelector('[data-recovery-run]') as HTMLButtonElement;
+    expect(run.disabled).toBe(true);
+  });
+
+  it('hides the card when there are no recoverable panes', () => {
+    mount({ recoveryPanes: [] });
+    expect(container.querySelector('[data-commander-recovery]')).toBeNull();
+  });
 });

@@ -56,6 +56,12 @@ export interface DeckSlice {
   /** Mark the open turn failed (used when deck.send is REJECTED before any
    *  stream event — e.g. a busy race). */
   failDeckBrainTurn: (message: string) => void;
+
+  /** P3b: the reboot-recovery greeting card was dismissed (or its recovery was
+   *  launched) this session. Transient — a fresh launch re-evaluates from the
+   *  resume hints, which self-clear as agents come back. */
+  recoveryCardDismissed: boolean;
+  dismissRecoveryCard: () => void;
 }
 
 export const createDeckSlice: StateCreator<
@@ -99,5 +105,11 @@ export const createDeckSlice: StateCreator<
     set((state: StoreState) => {
       state.brainMessages = applyBrainEvent(state.brainMessages, { type: 'error', message });
       state.brainStatus = 'idle';
+    }),
+
+  recoveryCardDismissed: false,
+  dismissRecoveryCard: () =>
+    set((state: StoreState) => {
+      state.recoveryCardDismissed = true;
     }),
 });

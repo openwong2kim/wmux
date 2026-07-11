@@ -735,6 +735,10 @@ export const en = {
   'deck.commanderUnavailable': 'Commander is unavailable',
   'deck.commanderBusy': 'A command is already running.',
   'deck.commanderFailed': 'The command could not run.',
+  // Command Deck P3b — the reboot-recovery greeting card.
+  'deck.recoveryTitle': '{count} agent pane(s) were running before the last shutdown and can be recovered.',
+  'deck.recoveryRun': 'Recover fleet',
+  'deck.recoveryDismiss': 'Dismiss',
   // operator-join (design §3) — collapsed-by-default discovery section + the
   // join-confirm dialog. The collapse IS the intent gate: private channel names
   // do not exist on screen until the section is expanded.
