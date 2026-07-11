@@ -741,6 +741,10 @@ export const en = {
   'deck.fleetLabel': 'Fleet',
   'deck.fleetNeedsYou': '{count} need you',
   'deck.fleetNeedsInput': 'needs your input',
+  // Bridge P2② — bottom instrument strip.
+  'strip.running': '{count} running',
+  'strip.needsYou': '{count} need you',
+  'strip.needsYouTooltip': 'Jump to the pane that needs you',
   // Command Deck Phase 2 — the Orchestrator brain (Agent SDK).
   'deck.commander': 'Orchestrator',
   'deck.commanderThinking': 'Orchestrator is working…',

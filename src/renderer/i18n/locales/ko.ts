@@ -664,6 +664,10 @@ export const ko = {
   'deck.fleetLabel': '에이전트',
   'deck.fleetNeedsYou': '{count}개 응답 필요',
   'deck.fleetNeedsInput': '입력 필요',
+  // Bridge P2② — 하단 계기 스트립.
+  'strip.running': '{count}개 실행 중',
+  'strip.needsYou': '{count}개 응답 필요',
+  'strip.needsYouTooltip': '응답이 필요한 pane으로 이동',
   // 커맨드 데크 Phase 2 — 오케스트레이터 두뇌(Agent SDK).
   'deck.commander': '오케스트레이터',
   'deck.commanderThinking': '오케스트레이터가 작업 중…',

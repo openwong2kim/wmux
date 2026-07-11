@@ -5,7 +5,6 @@ import { tokenAttrs } from '../../themes';
 import {
   selectFleetPanes,
   sortFleetPanes,
-  countNeedsAttention,
   type FleetPane,
 } from '../../stores/selectors/fleet';
 import type { AgentStatus } from '../../../shared/types';
@@ -81,7 +80,6 @@ export default function DeckFleet({
     );
   }, [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel]);
 
-  const needsYou = countNeedsAttention(panes);
   if (panes.length === 0) return null;
 
   return (
@@ -98,17 +96,8 @@ export default function DeckFleet({
         >
           {(t('deck.fleetLabel') || 'Fleet')} · {panes.length}
         </span>
-        {/* Interim summary until the P2② instrument strip lands (then this
-            moves there — attention stays at max 2 renditions per DESIGN.md). */}
-        {needsYou > 0 && (
-          <span
-            data-deck-fleet-needs
-            className="ml-auto text-[10px] font-semibold text-[var(--accent-red)]"
-            {...tokenAttrs('danger', 'text')}
-          >
-            {(t('deck.fleetNeedsYou') || '{count} need you').replace('{count}', String(needsYou))}
-          </span>
-        )}
+        {/* Needs-attention summary lives on the P2② instrument strip; here the
+            row wash is the rendition (attention = max 2 per DESIGN.md). */}
       </div>
       <div className="max-h-44 overflow-y-auto">
         {panes.map((p) => {
