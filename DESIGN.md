@@ -109,6 +109,10 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
 
 ## Spacing & Geometry
 
+- **36px chrome module.** Every horizontal chrome row — titlebar, sidebar
+  header/footer, pane tab strip, deck tabs, agent toolbar — is exactly 36px
+  (`h-9`) so hairlines across the three columns land on the same y. A new
+  chrome row must justify deviating from the module.
 - Base unit 4px. Density: compact-leaning (rows 26–30px).
 - Radii: **4px buttons · 7px cards/panels**. Never larger on chrome. Full-round
   only for status dots.
