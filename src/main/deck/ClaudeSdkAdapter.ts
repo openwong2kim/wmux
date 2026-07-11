@@ -25,6 +25,7 @@ import * as path from 'path';
 import * as os from 'os';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
+import { getWmuxDir } from '../../daemon/config';
 import {
   type BrainAdapter,
   type BrainEvent,
@@ -263,6 +264,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   private readonly profile?: BrainEndpointProfile;
 
   private _sessionId: string | null = null;
+  private _resumeUnvalidated = false;
   private _systemPrompt?: string;
   private _fleetContext?: string;
   private _fleetContextInjected = false;
@@ -293,6 +295,14 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     this._systemPrompt = opts.systemPrompt ?? buildCommanderSystemPrompt();
     this._fleetContext = opts.fleetContext;
     this._fleetContextInjected = false;
+    // P3a: seed a persisted session id so the FIRST turn already resumes. The
+    // id is unvalidated until a turn completes against it — send() falls back
+    // to a fresh session when the claude side no longer knows it (transcript
+    // GC'd, different machine, …) instead of bricking the commander.
+    if (opts.resumeSessionId) {
+      this._sessionId = opts.resumeSessionId;
+      this._resumeUnvalidated = true;
+    }
   }
 
   /**
@@ -317,6 +327,12 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       allowedTools: this.allowedTools,
       // Only the wmux MCP server; no ambient project/user MCP config is loaded.
       strictMcpConfig: true,
+      // P3a: claude keys its session transcripts by cwd, and a packaged
+      // Electron app's process.cwd() is the per-version install folder
+      // (Squirrel app-x.y.z) — resume would silently break on every update.
+      // Pin the brain to the wmux data dir so session storage is stable across
+      // app updates, reboots, and launch locations.
+      cwd: getWmuxDir(),
     };
     if (this._systemPrompt) options.systemPrompt = this._systemPrompt;
     if (this.model) options.model = this.model;
@@ -361,50 +377,115 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       yield { type: 'error', message: 'commander session disposed' };
       return;
     }
-    const state = createNormalizeState();
-    state.sessionId = this._sessionId;
-    let handle: SdkQueryHandle;
+    let queryFn: SdkQueryFn;
     try {
-      const queryFn = this.queryFn ?? (await loadSdkQueryFn());
-      const options = this.buildOptions();
-      // Packaged builds must target the user's own claude install (the SDK's
-      // default resolution needs its 240 MB platform package, which we do not
-      // ship). Dev keeps the SDK default (platform package in node_modules)
-      // unless the user install is present.
-      if (options.pathToClaudeCodeExecutable === undefined) {
-        const exe = resolveClaudeExecutable();
-        if (exe) {
-          options.pathToClaudeCodeExecutable = exe;
-        } else if (app.isPackaged) {
-          yield {
-            type: 'error',
-            message:
-              'Claude Code not found — the commander needs a claude install (native installer or npm global). Install it, then retry.',
-          };
-          return;
-        }
-      }
-      handle = queryFn({ prompt: this.composePrompt(text), options });
+      queryFn = this.queryFn ?? (await loadSdkQueryFn());
     } catch (err) {
       yield { type: 'error', message: err instanceof Error ? err.message : String(err) };
       return;
     }
-    this._active = handle;
-    try {
-      for await (const msg of handle) {
-        for (const ev of normalizeSdkMessage(msg as RawSdkMessage, state)) {
-          if (ev.type === 'turn-end' && ev.sessionId) this._sessionId = ev.sessionId;
-          yield ev;
+    // Composed ONCE — a resume-fallback retry re-sends the same prompt (the
+    // fleet-context injection must not double up).
+    const prompt = this.composePrompt(text);
+
+    // At most two attempts: the first may run against a DISK-SEEDED session id
+    // (P3a) that the claude side no longer knows (transcript GC'd, moved
+    // machine, corrupt store). When that turn dies before producing ANY event,
+    // drop the dead id and retry once fresh instead of surfacing an opaque
+    // error for every send.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const resumingUnvalidated = this._resumeUnvalidated && !!this._sessionId;
+      const state = createNormalizeState();
+      state.sessionId = this._sessionId;
+      let handle: SdkQueryHandle;
+      try {
+        const options = this.buildOptions();
+        // Packaged builds must target the user's own claude install (the SDK's
+        // default resolution needs its 240 MB platform package, which we do not
+        // ship). Dev keeps the SDK default (platform package in node_modules)
+        // unless the user install is present.
+        if (options.pathToClaudeCodeExecutable === undefined) {
+          const exe = resolveClaudeExecutable();
+          if (exe) {
+            options.pathToClaudeCodeExecutable = exe;
+          } else if (app.isPackaged) {
+            yield {
+              type: 'error',
+              message:
+                'Claude Code not found — the commander needs a claude install (native installer or npm global). Install it, then retry.',
+            };
+            return;
+          }
+        }
+        handle = queryFn({ prompt, options });
+      } catch (err) {
+        if (resumingUnvalidated && attempt === 0) {
+          this.dropSeededResume('spawn threw', err);
+          continue;
+        }
+        yield { type: 'error', message: err instanceof Error ? err.message : String(err) };
+        return;
+      }
+      this._active = handle;
+      let yielded = false;
+      let retryFresh = false;
+      try {
+        outer: for await (const msg of handle) {
+          for (const ev of normalizeSdkMessage(msg as RawSdkMessage, state)) {
+            // A turn that errors before ANYTHING reached the renderer, on the
+            // first attempt against an unvalidated disk id → treat the id as
+            // dead and swallow the error in favor of a fresh retry.
+            if (ev.type === 'error' && resumingUnvalidated && attempt === 0 && !yielded) {
+              retryFresh = true;
+              break outer;
+            }
+            if (ev.type === 'turn-end') {
+              if (ev.sessionId) this._sessionId = ev.sessionId;
+              // The resumed transcript answered — the id is real.
+              this._resumeUnvalidated = false;
+            }
+            yielded = true;
+            yield ev;
+          }
+        }
+        // Some SDK error paths end the stream without a `result` frame; make
+        // sure the session id captured mid-stream survives for resume.
+        if (!retryFresh && state.sessionId) this._sessionId = state.sessionId;
+      } catch (err) {
+        if (resumingUnvalidated && attempt === 0 && !yielded) {
+          retryFresh = true;
+          this.dropSeededResume('stream threw', err);
+        } else {
+          yield { type: 'error', message: err instanceof Error ? err.message : String(err) };
+        }
+      } finally {
+        if (this._active === handle) this._active = null;
+      }
+      if (!retryFresh) return;
+      // Best-effort teardown of the dead attempt's subprocess before retrying.
+      if (handle.interrupt) {
+        try {
+          void Promise.resolve(handle.interrupt()).catch(() => {
+            /* already dead */
+          });
+        } catch {
+          /* already dead */
         }
       }
-      // Some SDK error paths end the stream without a `result` frame; make sure
-      // the session id captured mid-stream is persisted for resume regardless.
-      if (state.sessionId) this._sessionId = state.sessionId;
-    } catch (err) {
-      yield { type: 'error', message: err instanceof Error ? err.message : String(err) };
-    } finally {
-      if (this._active === handle) this._active = null;
+      this.dropSeededResume('turn errored before first event');
     }
+  }
+
+  /** Forget a disk-seeded session id that turned out to be dead (P3a fallback). */
+  private dropSeededResume(reason: string, err?: unknown): void {
+    if (!this._sessionId) return;
+    // eslint-disable-next-line no-console
+    console.warn(
+      `[deck] persisted commander session ${this._sessionId} did not resume (${reason}) — starting fresh`,
+      err ?? '',
+    );
+    this._sessionId = null;
+    this._resumeUnvalidated = false;
   }
 
   interrupt(): void {

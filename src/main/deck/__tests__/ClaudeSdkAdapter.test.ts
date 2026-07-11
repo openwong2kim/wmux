@@ -137,6 +137,105 @@ describe('ClaudeSdkAdapter', () => {
     expect(events).toEqual([{ type: 'error', message: 'spawn failed' }]);
   });
 
+  it('resumes on the FIRST turn from a persisted session id (P3a) and pins a stable cwd', async () => {
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 'sess-live' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ systemPrompt: 'SYS', resumeSessionId: 'sess-disk' });
+    const events = await collect(adapter.send('hello again'));
+    expect(events.map((e) => e.type)).toEqual(['turn-end']);
+    expect(calls).toHaveLength(1);
+    expect(calls[0].options.resume).toBe('sess-disk');
+    // Session storage must not key on the (per-version) process cwd.
+    expect(calls[0].options.cwd).toContain('.wmux');
+    expect(adapter.sessionId).toBe('sess-live');
+  });
+
+  it('falls back to a fresh session when the seeded resume id is dead (error frame)', async () => {
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        return calls.length === 1
+          ? fakeHandle([{ type: 'result', subtype: 'error_during_execution' }])
+          : fakeHandle([
+              { type: 'assistant', message: { content: [{ type: 'text', text: 'fresh' }] } },
+              { type: 'result', subtype: 'success', session_id: 'sess-new' },
+            ]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ resumeSessionId: 'sess-dead' });
+    const events = await collect(adapter.send('go'));
+    // The dead attempt's error is swallowed; only the fresh turn surfaces.
+    expect(events.map((e) => e.type)).toEqual(['text-delta', 'turn-end']);
+    expect(calls).toHaveLength(2);
+    expect(calls[0].options.resume).toBe('sess-dead');
+    expect(calls[1].options.resume).toBeUndefined();
+    expect(adapter.sessionId).toBe('sess-new');
+  });
+
+  it('falls back to a fresh session when the resumed spawn throws', async () => {
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        if (calls.length === 1) throw new Error('no conversation with that id');
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 'sess-new' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ resumeSessionId: 'sess-dead' });
+    const events = await collect(adapter.send('go'));
+    expect(events.map((e) => e.type)).toEqual(['turn-end']);
+    expect(calls).toHaveLength(2);
+    expect(adapter.sessionId).toBe('sess-new');
+  });
+
+  it('does NOT retry when the error arrives after content already streamed', async () => {
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        return fakeHandle([
+          { type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } },
+          { type: 'result', subtype: 'error_during_execution' },
+        ]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ resumeSessionId: 'sess-disk' });
+    const events = await collect(adapter.send('go'));
+    // A mid-turn failure is a REAL turn failure, not a dead resume id.
+    expect(events.map((e) => e.type)).toEqual(['text-delta', 'error']);
+    expect(calls).toHaveLength(1);
+  });
+
+  it('does NOT retry once the resumed id was validated by a completed turn', async () => {
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        return calls.length === 1
+          ? fakeHandle([{ type: 'result', subtype: 'success', session_id: 'sess-disk' }])
+          : fakeHandle([{ type: 'result', subtype: 'error_during_execution' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ resumeSessionId: 'sess-disk' });
+    await collect(adapter.send('first'));
+    const events = await collect(adapter.send('second'));
+    // The second turn's error surfaces as-is: one call per turn, no fallback.
+    expect(events).toEqual([{ type: 'error', message: 'error_during_execution' }]);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].options.resume).toBe('sess-disk');
+  });
+
   it('interrupt() forwards to the active query handle', async () => {
     const onInterrupt = vi.fn();
     let released!: () => void;

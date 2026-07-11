@@ -44,19 +44,29 @@ export interface CommanderSessionManagerDeps {
   /** One-shot start options (system prompt + fleet context). Applied on the
    *  first send via adapter.start(). */
   startOptions?: BrainStartOptions;
+  /** Fired whenever a completed turn reports a session id DIFFERENT from the
+   *  last one observed (P3a persistence hook). Failures inside the callback are
+   *  swallowed — persistence must never break a live turn. */
+  onSessionId?: (sessionId: string) => void;
 }
 
 export class CommanderSessionManager {
   private readonly adapter: BrainAdapter;
   private readonly sink: BrainEventSink;
   private readonly startOptions: BrainStartOptions;
+  private readonly onSessionId?: (sessionId: string) => void;
   private _status: CommanderStatus = 'idle';
   private _started = false;
+  private _lastReportedSessionId: string | null = null;
 
   constructor(deps: CommanderSessionManagerDeps) {
     this.adapter = deps.adapter;
     this.sink = deps.sink;
     this.startOptions = deps.startOptions ?? {};
+    this.onSessionId = deps.onSessionId;
+    // The seed counts as already-reported: resuming the same id unchanged
+    // should not trigger a redundant persist.
+    this._lastReportedSessionId = deps.startOptions?.resumeSessionId ?? null;
   }
 
   getStatus(): CommanderStatusSnapshot {
@@ -95,6 +105,18 @@ export class CommanderSessionManager {
         // cast — TS narrows the field to 'busy' here, but dispose() can flip it
         // to 'disposed' during the await.
         if ((this._status as CommanderStatus) === 'disposed') break;
+        if (
+          ev.type === 'turn-end' &&
+          ev.sessionId &&
+          ev.sessionId !== this._lastReportedSessionId
+        ) {
+          this._lastReportedSessionId = ev.sessionId;
+          try {
+            this.onSessionId?.(ev.sessionId);
+          } catch {
+            /* persistence is best-effort — never fail the live turn */
+          }
+        }
         this.sink(ev);
       }
       return { ok: true };

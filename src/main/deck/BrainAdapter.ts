@@ -73,6 +73,11 @@ export interface BrainStartOptions {
   /** A compact fleet snapshot (pane list / channel catalog summary). Injected
    *  once, ahead of the first user message, capped to a small token budget. */
   fleetContext?: string;
+  /** A persisted session id from a previous app run (P3a). When set, the first
+   *  turn resumes that conversation instead of starting fresh. Adapters must
+   *  treat a dead/unknown id as soft: fall back to a fresh session rather than
+   *  failing the turn. */
+  resumeSessionId?: string;
 }
 
 /**

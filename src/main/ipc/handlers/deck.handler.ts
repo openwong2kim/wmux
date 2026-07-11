@@ -22,6 +22,7 @@ import {
   type CommanderSendResult,
   type CommanderStatusSnapshot,
 } from '../../deck/CommanderSessionManager';
+import { loadCommanderSession, saveCommanderSession } from '../../deck/commanderSessionStore';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -51,12 +52,23 @@ export function registerDeckHandler(
 
   const ensureManager = (fleetContext?: string): CommanderSessionManager => {
     if (!manager) {
+      // P3a: resume the persisted conversation from the previous app run. A
+      // dead id is soft — the adapter falls back to a fresh session.
+      const persisted = loadCommanderSession();
       manager = new CommanderSessionManager({
         adapter: createAdapter(),
         sink: emit,
         startOptions: {
           systemPrompt: buildCommanderSystemPrompt(),
           ...(fleetContext ? { fleetContext } : {}),
+          ...(persisted ? { resumeSessionId: persisted.sessionId } : {}),
+        },
+        onSessionId: (sessionId) => {
+          // Fire-and-forget: a failed persist only costs continuity next run.
+          void saveCommanderSession(sessionId).catch((err) => {
+            // eslint-disable-next-line no-console
+            console.warn('[deck] failed to persist commander session id:', err);
+          });
         },
       });
     }

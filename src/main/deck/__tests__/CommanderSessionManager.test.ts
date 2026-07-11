@@ -113,6 +113,59 @@ describe('CommanderSessionManager', () => {
     await turn;
   });
 
+  it('fires onSessionId once per NEW session id (P3a persistence hook)', async () => {
+    const adapter = new FakeAdapter();
+    const onSessionId = vi.fn();
+    const mgr = new CommanderSessionManager({ adapter, sink: vi.fn(), onSessionId });
+
+    adapter.setScript([{ type: 'turn-end', sessionId: 'sess-1' }]);
+    await mgr.send('one');
+    expect(onSessionId).toHaveBeenCalledTimes(1);
+    expect(onSessionId).toHaveBeenCalledWith('sess-1');
+
+    // Same id again → deduped, no redundant persist.
+    await mgr.send('two');
+    expect(onSessionId).toHaveBeenCalledTimes(1);
+
+    // A rotated id → fires again.
+    adapter.setScript([{ type: 'turn-end', sessionId: 'sess-2' }]);
+    await mgr.send('three');
+    expect(onSessionId).toHaveBeenCalledTimes(2);
+    expect(onSessionId).toHaveBeenLastCalledWith('sess-2');
+  });
+
+  it('does not re-persist the seed id it was constructed with', async () => {
+    const adapter = new FakeAdapter();
+    const onSessionId = vi.fn();
+    const mgr = new CommanderSessionManager({
+      adapter,
+      sink: vi.fn(),
+      startOptions: { resumeSessionId: 'sess-disk' },
+      onSessionId,
+    });
+    adapter.setScript([{ type: 'turn-end', sessionId: 'sess-disk' }]);
+    await mgr.send('resumed turn');
+    expect(onSessionId).not.toHaveBeenCalled();
+  });
+
+  it('a throwing onSessionId never breaks the live turn', async () => {
+    const adapter = new FakeAdapter();
+    adapter.setScript([
+      { type: 'turn-end', sessionId: 'sess-1' },
+    ]);
+    const sink = vi.fn();
+    const mgr = new CommanderSessionManager({
+      adapter,
+      sink,
+      onSessionId: () => {
+        throw new Error('disk full');
+      },
+    });
+    const res = await mgr.send('go');
+    expect(res).toEqual({ ok: true });
+    expect(sink.mock.calls.map((c) => (c[0] as BrainEvent).type)).toEqual(['turn-end']);
+  });
+
   it('dispose() tears down the adapter and rejects further sends', async () => {
     const adapter = new FakeAdapter();
     const sink = vi.fn();
