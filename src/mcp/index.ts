@@ -5,7 +5,7 @@ import { z } from 'zod';
 import { clearClientIdentity, sendRpc, setClientIdentity } from './wmux-client';
 import type { RpcMethod } from '../shared/rpc';
 import { claimPinnedRoute, getPinnedRoute } from './paneResolver';
-import { resolveTerminalRoute, type PidMapLookup } from './terminalRouting';
+import { resolveTerminalRoute, resolveCommanderRoute, type PidMapLookup } from './terminalRouting';
 import { classifyWorkspaceListResult, type WorkspaceLiveness } from './workspaceIdentity';
 import { PlaywrightEngine } from './playwright/PlaywrightEngine';
 import { registerNavigationTools } from './playwright/tools/navigation';
@@ -426,7 +426,18 @@ async function resolveScopedReadWorkspaceId(): Promise<string> {
 // it to a victim workspace and read/write that workspace's terminal
 // (issue #163). The cache getter honors workspaceResolved so a stale identity
 // invalidated by callRpc re-resolves instead of being served from cache.
-function resolveTerminalRouteBound(explicitPtyId?: string) {
+async function resolveTerminalRouteBound(explicitPtyId?: string) {
+  // Commander brain (P3b): a live WMUX_COMMANDER_TOKEN grants fleet-wide
+  // explicit-ptyId targeting via main's deck.resolvePaneRoute — the brain's
+  // subprocess has no pane ancestry, so the ordinary rules below would
+  // confine it to its claimed workspace. Falls through on any failure.
+  const commanderRoute = await resolveCommanderRoute({
+    token: process.env.WMUX_COMMANDER_TOKEN,
+    explicitPtyId,
+    sendRpc: (method, params) => sendRpc(method as RpcMethod, params),
+  });
+  if (commanderRoute) return commanderRoute;
+
   return resolveTerminalRoute(
     {
       lookupPidMapWorkspace,

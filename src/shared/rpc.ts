@@ -142,6 +142,7 @@ export type RpcMethod =
   | 'ui.decoratePane'
   | 'system.identify'
   | 'system.capabilities'
+  | 'deck.resolvePaneRoute'
   | 'browser.open'
   | 'browser.navigate'
   | 'browser.goBack'
@@ -292,6 +293,7 @@ export const ALL_RPC_METHODS = [
   'ui.decoratePane',
   'system.identify',
   'system.capabilities',
+  'deck.resolvePaneRoute',
   'browser.open',
   'browser.navigate',
   'browser.goBack',

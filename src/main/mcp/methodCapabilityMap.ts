@@ -244,6 +244,13 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'system.identify':     { capability: null },
   'system.capabilities': { capability: null },
 
+  // --- Command Deck. Route resolution for the commander brain's MCP; the
+  //     method carries its OWN auth (a per-spawn token minted by main and
+  //     injected only into the brain subprocess's env — commanderTrust.ts).
+  //     A caller without a live token is rejected inside the handler, so a
+  //     capability gate here would be redundant.
+  'deck.resolvePaneRoute': { capability: null },
+
   // --- Browser (Playwright). Plugins declaring these get the browser
   //     risk-class prompt; all are gated against KNOWN_CAPABILITIES entries.
   'browser.open':              { capability: 'browser.navigate', riskClass: 'browser' },

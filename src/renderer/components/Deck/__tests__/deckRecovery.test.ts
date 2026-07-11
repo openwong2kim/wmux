@@ -30,6 +30,7 @@ describe('buildRecoveryPanes', () => {
   it('builds the exact-session resume command when agent + cwd match', () => {
     const panes = buildRecoveryPanes({
       resumeHintByPtyId: { p1: 'claude' },
+      ptyReadyByPtyId: { p1: true },
       resumeBindingByPtyId: { p1: binding() },
       workspaces: [workspaceWith('p1', 'D:/repo/')],
       paneLabel: {},
@@ -47,6 +48,7 @@ describe('buildRecoveryPanes', () => {
   it('falls back to --continue on a cwd mismatch or an agent mismatch', () => {
     const cwdMismatch = buildRecoveryPanes({
       resumeHintByPtyId: { p1: 'claude' },
+      ptyReadyByPtyId: { p1: true },
       resumeBindingByPtyId: { p1: binding({ cwd: 'D:\\other' }) },
       workspaces: [workspaceWith('p1', 'D:/repo')],
       paneLabel: {},
@@ -56,6 +58,7 @@ describe('buildRecoveryPanes', () => {
 
     const agentMismatch = buildRecoveryPanes({
       resumeHintByPtyId: { p1: 'claude' },
+      ptyReadyByPtyId: { p1: true },
       resumeBindingByPtyId: { p1: binding({ agent: 'codex' }) },
       workspaces: [workspaceWith('p1', 'D:/repo')],
       paneLabel: {},
@@ -66,6 +69,7 @@ describe('buildRecoveryPanes', () => {
   it('uses the codex subcommand grammar', () => {
     const panes = buildRecoveryPanes({
       resumeHintByPtyId: { p1: 'codex' },
+      ptyReadyByPtyId: { p1: true },
       resumeBindingByPtyId: { p1: binding({ agent: 'codex', sessionId: 'cx-9' }) },
       workspaces: [workspaceWith('p1', 'D:/repo')],
       paneLabel: {},
@@ -76,6 +80,7 @@ describe('buildRecoveryPanes', () => {
   it('restores the recorded permission mode on the exact-session form (one line, F6)', () => {
     const bypass = buildRecoveryPanes({
       resumeHintByPtyId: { p1: 'claude' },
+      ptyReadyByPtyId: { p1: true },
       resumeBindingByPtyId: { p1: binding({ permissionMode: 'bypassPermissions' }) },
       workspaces: [workspaceWith('p1', 'D:/repo')],
       paneLabel: {},
@@ -84,6 +89,7 @@ describe('buildRecoveryPanes', () => {
 
     const plan = buildRecoveryPanes({
       resumeHintByPtyId: { p1: 'claude' },
+      ptyReadyByPtyId: { p1: true },
       resumeBindingByPtyId: { p1: binding({ permissionMode: 'plan' }) },
       workspaces: [workspaceWith('p1', 'D:/repo')],
       paneLabel: {},
@@ -93,6 +99,7 @@ describe('buildRecoveryPanes', () => {
     // No recorded mode → no flag.
     const none = buildRecoveryPanes({
       resumeHintByPtyId: { p1: 'claude' },
+      ptyReadyByPtyId: { p1: true },
       resumeBindingByPtyId: { p1: binding() },
       workspaces: [workspaceWith('p1', 'D:/repo')],
       paneLabel: {},
@@ -103,6 +110,7 @@ describe('buildRecoveryPanes', () => {
   it('the fallback form never carries a permission flag (nothing trusted to restore)', () => {
     const panes = buildRecoveryPanes({
       resumeHintByPtyId: { p1: 'claude' },
+      ptyReadyByPtyId: { p1: true },
       resumeBindingByPtyId: {
         p1: binding({ cwd: 'D:\\other', permissionMode: 'bypassPermissions' }),
       },
@@ -112,11 +120,23 @@ describe('buildRecoveryPanes', () => {
     expect(panes[0].command).toBe('claude --continue');
   });
 
+  it('excludes a pane whose recovered PTY is not writable yet (EI6 gate)', () => {
+    const notReady = buildRecoveryPanes({
+      resumeHintByPtyId: { p1: 'claude' },
+      ptyReadyByPtyId: {},
+      resumeBindingByPtyId: { p1: binding() },
+      workspaces: [workspaceWith('p1', 'D:/repo')],
+      paneLabel: {},
+    });
+    expect(notReady).toEqual([]);
+  });
+
   it('skips hints whose ptyId maps to no live pane, and empty hints entirely', () => {
     expect(
       buildRecoveryPanes({
         resumeHintByPtyId: { ghost: 'claude' },
-        resumeBindingByPtyId: {},
+        ptyReadyByPtyId: { p1: true },
+      resumeBindingByPtyId: {},
         workspaces: [workspaceWith('p1', 'D:/repo')],
         paneLabel: {},
       }),
@@ -124,7 +144,8 @@ describe('buildRecoveryPanes', () => {
     expect(
       buildRecoveryPanes({
         resumeHintByPtyId: {},
-        resumeBindingByPtyId: {},
+        ptyReadyByPtyId: { p1: true },
+      resumeBindingByPtyId: {},
         workspaces: [workspaceWith('p1', 'D:/repo')],
         paneLabel: {},
       }),
@@ -135,6 +156,7 @@ describe('buildRecoveryPanes', () => {
 describe('buildRecoveryPrompt / buildRecoveryContextLines', () => {
   const panes = buildRecoveryPanes({
     resumeHintByPtyId: { p1: 'claude' },
+    ptyReadyByPtyId: { p1: true },
     resumeBindingByPtyId: { p1: binding() },
     workspaces: [workspaceWith('p1', 'D:/repo')],
     paneLabel: {},

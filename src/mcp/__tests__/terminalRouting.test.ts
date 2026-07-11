@@ -1,5 +1,5 @@
 import { describe, it, expect, vi } from 'vitest';
-import { resolveTerminalRoute } from '../terminalRouting';
+import { resolveTerminalRoute, resolveCommanderRoute } from '../terminalRouting';
 import type { PidMapLookup, TerminalRoutingDeps } from '../terminalRouting';
 import type { PinnedRoute } from '../paneResolver';
 
@@ -221,5 +221,53 @@ describe('resolveTerminalRoute', () => {
       expect(route.workspaceId).toBeTruthy();
       expect(typeof route.workspaceId).toBe('string');
     }
+  });
+});
+
+// ─── Commander-brain routing (P3b, codex P1) ─────────────────────────────────
+
+describe('resolveCommanderRoute', () => {
+  it('resolves the true owning workspace for a live token + explicit ptyId', async () => {
+    const sendRpc = vi.fn(async () => ({ workspaceId: 'ws-owner' }));
+    const route = await resolveCommanderRoute({
+      token: 'tok',
+      explicitPtyId: 'pty-9',
+      sendRpc,
+    });
+    expect(route).toEqual({ workspaceId: 'ws-owner', ptyId: 'pty-9' });
+    expect(sendRpc).toHaveBeenCalledWith('deck.resolvePaneRoute', {
+      token: 'tok',
+      ptyId: 'pty-9',
+    });
+  });
+
+  it('returns null without a token or without an explicit ptyId — no RPC fired', async () => {
+    const sendRpc = vi.fn();
+    expect(
+      await resolveCommanderRoute({ token: undefined, explicitPtyId: 'p', sendRpc }),
+    ).toBeNull();
+    expect(
+      await resolveCommanderRoute({ token: 'tok', explicitPtyId: undefined, sendRpc }),
+    ).toBeNull();
+    expect(sendRpc).not.toHaveBeenCalled();
+  });
+
+  it('falls back to null when the RPC rejects (stale token) or returns no workspace', async () => {
+    expect(
+      await resolveCommanderRoute({
+        token: 'stale',
+        explicitPtyId: 'p',
+        sendRpc: vi.fn(async () => {
+          throw new Error('not a live commander session');
+        }),
+      }),
+    ).toBeNull();
+    expect(
+      await resolveCommanderRoute({
+        token: 'tok',
+        explicitPtyId: 'p',
+        sendRpc: vi.fn(async () => ({ workspaceId: '' })),
+      }),
+    ).toBeNull();
   });
 });

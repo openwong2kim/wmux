@@ -56,6 +56,11 @@ export interface RecoveryPane {
  * and produce the recoverable-pane list. Mirrors the pill's gates:
  *   - the agent must have a resume grammar (non-resumable agents are excluded
  *     daemon-side already; re-checked here defensively);
+ *   - the pane's recovered PTY must have emitted its first data
+ *     (`ptyReadyByPtyId`) — the pill waits for the same signal before typing,
+ *     because a write into a not-yet-interactive recovered pipe is silently
+ *     lost (EI6 / codex P2). The map is reactive, so a not-ready pane simply
+ *     appears on the card once it comes up.
  *   - the exact-session form additionally requires the binding to be for the
  *     SAME agent and the pane's live cwd to still match the binding's origin
  *     cwd (`--resume` is cwd-scoped) — otherwise the cwd-relative fallback.
@@ -64,10 +69,11 @@ export interface RecoveryPane {
 export function buildRecoveryPanes(args: {
   resumeHintByPtyId: Record<string, AgentSlug>;
   resumeBindingByPtyId: Record<string, ResumeBinding>;
+  ptyReadyByPtyId: Record<string, true>;
   workspaces: Workspace[];
   paneLabel: Record<string, string>;
 }): RecoveryPane[] {
-  const { resumeHintByPtyId, resumeBindingByPtyId, workspaces, paneLabel } = args;
+  const { resumeHintByPtyId, resumeBindingByPtyId, ptyReadyByPtyId, workspaces, paneLabel } = args;
   const hintPtyIds = Object.keys(resumeHintByPtyId);
   if (hintPtyIds.length === 0) return [];
 
@@ -80,6 +86,7 @@ export function buildRecoveryPanes(args: {
         if (!ptyId) continue;
         const agent = resumeHintByPtyId[ptyId];
         if (!agent) continue;
+        if (!ptyReadyByPtyId[ptyId]) continue; // recovered pipe not writable yet (EI6)
         const grammar = resumeGrammarFor(agent);
         if (!grammar) continue; // not resumable — hint shouldn't exist (defensive)
 

@@ -182,3 +182,39 @@ async function resolveExternal(
   const route = pin ?? (await deps.claimPinnedRoute());
   return { workspaceId: route.workspaceId, ptyId: route.ptyId };
 }
+
+/**
+ * Commander-brain routing (P3b, codex P1). The commander's MCP subprocess is
+ * spawned by the wmux MAIN process — it has no pane ancestry, so the pid-map
+ * resolves it as confirmed-external and the rules above confine it to a
+ * claimed "MCP" workspace. But the commander's whole job is driving the
+ * EXISTING fleet, so main injects a per-spawn token (WMUX_COMMANDER_TOKEN)
+ * into ONLY this subprocess's env, and `deck.resolvePaneRoute` resolves any
+ * pane's true owning workspaceId for a live token.
+ *
+ * Returns null when there is no token / no explicit ptyId / the RPC rejects
+ * (stale token after an app restart, unknown pane) — the caller then falls
+ * through to the ordinary routing rules, so a broken token degrades to the
+ * plain external behavior instead of erroring every terminal tool.
+ */
+export async function resolveCommanderRoute(args: {
+  token: string | undefined;
+  explicitPtyId: string | undefined;
+  sendRpc: (method: string, params: Record<string, unknown>) => Promise<unknown>;
+}): Promise<TerminalRoute | null> {
+  const { token, explicitPtyId, sendRpc } = args;
+  if (!token || !explicitPtyId) return null;
+  try {
+    const result = await sendRpc('deck.resolvePaneRoute', { token, ptyId: explicitPtyId });
+    const workspaceId =
+      result && typeof result === 'object' && 'workspaceId' in result
+        ? (result as Record<string, unknown>)['workspaceId']
+        : undefined;
+    if (typeof workspaceId === 'string' && workspaceId.length > 0) {
+      return { workspaceId, ptyId: explicitPtyId };
+    }
+  } catch {
+    /* not a live commander / pane unowned — fall back to normal routing */
+  }
+  return null;
+}

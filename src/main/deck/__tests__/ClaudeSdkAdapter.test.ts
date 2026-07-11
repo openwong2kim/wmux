@@ -82,15 +82,16 @@ describe('ClaudeSdkAdapter', () => {
     expect(calls[0].prompt).toContain('FLEET');
     expect(calls[0].prompt).toContain('first');
     // wmux MCP mounted + allow-list applied. The bundle is spawned with wmux's
-    // OWN binary in Node mode (never a PATH `node` — end users may not have one).
-    expect(opts1.mcpServers).toEqual({
-      wmux: {
-        type: 'stdio',
-        command: process.execPath,
-        args: ['/fake/mcp.js'],
-        env: { ELECTRON_RUN_AS_NODE: '1' },
-      },
-    });
+    // OWN binary in Node mode (never a PATH `node` — end users may not have one),
+    // and carries the per-spawn commander token (fleet-wide routing — codex P1).
+    const mcpServers = opts1.mcpServers as {
+      wmux: { type: string; command: string; args: string[]; env: Record<string, string> };
+    };
+    expect(mcpServers.wmux.type).toBe('stdio');
+    expect(mcpServers.wmux.command).toBe(process.execPath);
+    expect(mcpServers.wmux.args).toEqual(['/fake/mcp.js']);
+    expect(mcpServers.wmux.env.ELECTRON_RUN_AS_NODE).toBe('1');
+    expect(mcpServers.wmux.env.WMUX_COMMANDER_TOKEN?.length).toBeGreaterThanOrEqual(64);
     expect(opts1.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
 
     await collect(adapter.send('second'));
@@ -214,6 +215,37 @@ describe('ClaudeSdkAdapter', () => {
     // A mid-turn failure is a REAL turn failure, not a dead resume id.
     expect(events.map((e) => e.type)).toEqual(['text-delta', 'error']);
     expect(calls).toHaveLength(1);
+  });
+
+  it('validates the resumed id on FIRST streamed content — a later pre-content error keeps the session (codex P2)', async () => {
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        if (calls.length === 1) {
+          // Turn 1: streams REAL content, then dies before any turn-end —
+          // the id is proven valid by the content alone.
+          return fakeHandle([
+            { type: 'assistant', message: { content: [{ type: 'text', text: 'partial' }] } },
+            { type: 'result', subtype: 'error_during_execution' },
+          ]);
+        }
+        // Turn 2: pre-content error. With the flag still set this would be
+        // misread as a dead persisted id and the conversation dropped.
+        return fakeHandle([{ type: 'result', subtype: 'error_during_execution' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ resumeSessionId: 'sess-disk' });
+    await collect(adapter.send('first'));
+    expect(adapter.sessionId).toBe('sess-disk'); // kept after the mid-turn failure
+
+    const events = await collect(adapter.send('second'));
+    // Surfaces the error as-is: ONE attempt, no dead-id fallback, id retained.
+    expect(events).toEqual([{ type: 'error', message: 'error_during_execution' }]);
+    expect(calls).toHaveLength(2);
+    expect(calls[1].options.resume).toBe('sess-disk');
+    expect(adapter.sessionId).toBe('sess-disk');
   });
 
   it('does NOT retry once the resumed id was validated by a completed turn', async () => {

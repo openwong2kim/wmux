@@ -26,6 +26,7 @@ import * as os from 'os';
 import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
+import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import {
   type BrainAdapter,
   type BrainEvent,
@@ -270,6 +271,9 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   private _fleetContextInjected = false;
   private _active: SdkQueryHandle | null = null;
   private _disposed = false;
+  /** Per-spawn trust token (commanderTrust) — injected into the MCP env so
+   *  terminal routing can grant this brain fleet-wide pane targeting. */
+  private readonly _commanderToken = mintCommanderToken();
 
   constructor(deps: ClaudeSdkAdapterDeps = {}) {
     this.queryFn = deps.queryFn ?? null;
@@ -354,7 +358,16 @@ export class ClaudeSdkAdapter implements BrainAdapter {
           type: 'stdio',
           command: process.execPath,
           args: [this.mcpBundlePath],
-          env: { ELECTRON_RUN_AS_NODE: '1', ...suffixEnv },
+          // WMUX_COMMANDER_TOKEN marks this MCP as the commander's hands: the
+          // deck.resolvePaneRoute RPC accepts it and resolves any pane's true
+          // owning workspace, so terminal_send/read can target the WHOLE
+          // fleet. External callers without the token keep the #163
+          // fail-closed routing unchanged (codex P1).
+          env: {
+            ELECTRON_RUN_AS_NODE: '1',
+            WMUX_COMMANDER_TOKEN: this._commanderToken,
+            ...suffixEnv,
+          },
         },
       };
     }
@@ -439,12 +452,16 @@ export class ClaudeSdkAdapter implements BrainAdapter {
               retryFresh = true;
               break outer;
             }
-            if (ev.type === 'turn-end') {
-              if (ev.sessionId) this._sessionId = ev.sessionId;
-              // The resumed transcript answered — the id is real.
-              this._resumeUnvalidated = false;
-            }
+            if (ev.type === 'turn-end' && ev.sessionId) this._sessionId = ev.sessionId;
             yielded = true;
+            // Any REAL content out of a resumed turn proves the id (codex P2:
+            // validating only on turn-end let a mid-stream failure after
+            // content leave the flag set, and a LATER pre-content error would
+            // then wrongly drop a proven-valid conversation). The error case
+            // never reaches here on the unvalidated first attempt (retry
+            // branch above), and a later attempt's error doesn't validate —
+            // by then the flag only clears through this same content path.
+            if (ev.type !== 'error') this._resumeUnvalidated = false;
             yield ev;
           }
         }
@@ -507,5 +524,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     this._disposed = true;
     this.interrupt();
     this._active = null;
+    // A dead brain's token must not be replayable by a later process.
+    revokeCommanderToken(this._commanderToken);
   }
 }

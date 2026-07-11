@@ -533,6 +533,7 @@ export function CommanderView(): React.ReactElement {
   // panes recovered this boot (the same signal the per-pane pill uses).
   const resumeHintByPtyId = useStore((s) => s.resumeHintByPtyId);
   const resumeBindingByPtyId = useStore((s) => s.resumeBindingByPtyId);
+  const ptyReadyByPtyId = useStore((s) => s.ptyReadyByPtyId);
   const recoveryCardDismissed = useStore((s) => s.recoveryCardDismissed);
   const dismissRecoveryCard = useStore((s) => s.dismissRecoveryCard);
 
@@ -541,10 +542,11 @@ export function CommanderView(): React.ReactElement {
       buildRecoveryPanes({
         resumeHintByPtyId,
         resumeBindingByPtyId,
+        ptyReadyByPtyId,
         workspaces,
         paneLabel,
       }),
-    [resumeHintByPtyId, resumeBindingByPtyId, workspaces, paneLabel],
+    [resumeHintByPtyId, resumeBindingByPtyId, ptyReadyByPtyId, workspaces, paneLabel],
   );
 
   const commanderChannel = useMemo(() => findCommanderChannel(channels), [channels]);
@@ -720,16 +722,20 @@ export function CommanderView(): React.ReactElement {
       }
       startDeckBrainTurn(text);
       // One-shot fleet snapshot for the system prompt (main injects it on the
-      // first turn only and re-caps to its own budget). Recovery facts (P3b)
-      // ride along so a typed "recover the fleet" works without the card.
+      // first turn only and re-caps to 2048 chars). Recovery facts (P3b) ride
+      // along so a typed "recover the fleet" works without the card — placed
+      // FIRST and with the summary's budget shrunk to fit, because main's cap
+      // truncates the TAIL: appended recovery lines would be exactly what a
+      // large fleet cuts off (codex P2).
+      const recoveryLines = buildRecoveryContextLines(recoveryPanes);
       const fleetSummary = buildFleetContextSummary({
         workspaces,
         surfaceAgent,
         paneLabel,
         channels,
+        ...(recoveryLines ? { maxChars: Math.max(400, 2000 - recoveryLines.length) } : {}),
       });
-      const recoveryLines = buildRecoveryContextLines(recoveryPanes);
-      const fleetContext = recoveryLines ? `${fleetSummary}\n\n${recoveryLines}` : fleetSummary;
+      const fleetContext = recoveryLines ? `${recoveryLines}\n\n${fleetSummary}` : fleetSummary;
       try {
         const res = await api.send(text, fleetContext);
         if (!res.ok) {
@@ -751,12 +757,15 @@ export function CommanderView(): React.ReactElement {
     [workspaces, surfaceAgent, paneLabel, channels, recoveryPanes, startDeckBrainTurn, failDeckBrainTurn, pushToast, t],
   );
 
-  // P3b: the greeting card's one-click recovery — send the canned prompt to the
-  // brain and retire the card (the per-pane pills self-clear as agents return).
+  // P3b: the greeting card's one-click recovery — send the canned prompt to
+  // the brain, and retire the card only once the send was ACCEPTED (a busy
+  // race / disposed session / missing bridge must not eat the one-click
+  // affordance — CodeRabbit). The per-pane pills self-clear as agents return.
   const handleRecoverFleet = useCallback(() => {
     if (recoveryPanes.length === 0) return;
-    dismissRecoveryCard();
-    void handleBrainSend(buildRecoveryPrompt(recoveryPanes));
+    void handleBrainSend(buildRecoveryPrompt(recoveryPanes)).then((res) => {
+      if (res.ok) dismissRecoveryCard();
+    });
   }, [recoveryPanes, dismissRecoveryCard, handleBrainSend]);
 
   // Unified composer submit: route on whether the message @-mentions panes.
