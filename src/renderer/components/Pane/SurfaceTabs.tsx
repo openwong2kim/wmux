@@ -172,9 +172,16 @@ export default function SurfaceTabs({
       // Bridge P1.6 — h-9 (36px chrome module): matches sidebar header/footer,
       // deck tabs, and the agent toolbar so all top/bottom hairlines align.
       className="flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-9 overflow-x-auto"
-      // Focused pane = amber underline under the strip (inset so it never
-      // shifts layout) — the single focus signal in the design system.
-      style={paneActive ? { boxShadow: 'inset 0 -2px 0 var(--accent-cursor)' } : undefined}
+      // borderColor → --border-soft so this strip's bottom hairline matches the
+      // deck tabs / sidebar / titlebar seams (they all override to border-soft;
+      // this one was left on the opaque --bg-surface, so the top-chrome line
+      // changed color at the pane↔deck seam). Focused pane adds the amber
+      // underline on top (inset so it never shifts layout) — the single focus
+      // signal in the design system.
+      style={{
+        borderColor: 'var(--border-soft)',
+        ...(paneActive ? { boxShadow: 'inset 0 -2px 0 var(--accent-cursor)' } : {}),
+      }}
       data-pane-tabs-active={paneActive ? 'true' : undefined}
       {...tokenAttrs('bgMantle', 'bg')}
       {...tokenAttrs('bgSurface', 'border')}

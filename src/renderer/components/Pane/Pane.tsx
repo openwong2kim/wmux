@@ -273,6 +273,13 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         // focus is signaled by the amber underline on the tab strip (mock's
         // .pane.focused .pane-head treatment), not a loud full border box.
         border: `1px solid ${isActive ? 'var(--bg-overlay)' : 'var(--border-soft)'}`,
+        // No TOP border: it sat redundantly under the 36px titlebar's own bottom
+        // hairline (a double line) AND pushed the tab strip down 1px, so the
+        // pane's bottom-hairline seam landed 1px below the deck tabs' — the
+        // "the top line doesn't connect" report. Content now starts at the
+        // column top, aligned with the deck. The attention ring keeps its other
+        // three sides (its border-color override still applies).
+        borderTopWidth: 0,
       }}
       onClick={handleClick}
       data-onboarding-target="pane-area"

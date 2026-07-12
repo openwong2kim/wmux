@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The hairline across the top of the window now lines up.** The pane tab strip's bottom border used a slightly different (more opaque) tone than the deck tabs beside it, and sat 1px lower — so the thin line under the tabs looked like it changed color and broke where the terminal meets the orchestrator panel. Both now share the same soft hairline at the same height (and a redundant double-line under each pane's top edge is gone); the focused pane still gets its amber underline on top.
+
 ### Changed
 
 - **Color-discipline pass across the shell: one amber, and it only ever means "here."** The status lights now speak one consistent language everywhere (sidebar, pane tabs, Fleet roster): amber = running, green = done, **red = needs you** (this last one was wrongly amber before), gray = idle — and a running agent is no longer the same green as a finished one. Amber stopped leaking onto things that aren't "live or focused": notification/unread counts, the git-branch glyph, the orchestrator's name label, fan-out and reply chips, and the reboot "resume" pill are all quiet now, with the accent appearing on hover instead. A couple of stray emoji in the chrome (the 🔔 on a workspace's last-notification line, the ⚙ settings button) became crisp monochrome icons, and popover corners were tightened to match the design system. The result is calmer: on a busy multi-agent screen, the few amber marks left are the ones that actually tell you where to look.
