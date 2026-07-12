@@ -122,7 +122,7 @@ export default function Titlebar() {
           type="button"
           onClick={togglePicker}
           className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ml-auto ${FOCUS_RING}`}
-          style={{ WebkitAppRegion: 'no-drag' }}
+          style={{ WebkitAppRegion: 'no-drag' } as CSSProperties}
           title={t('sidebar.newWorkspaceTooltip')}
           aria-label={t('sidebar.newWorkspaceTooltip')}
           data-onboarding-target="add-workspace"
