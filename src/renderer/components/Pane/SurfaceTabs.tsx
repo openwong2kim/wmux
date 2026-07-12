@@ -10,9 +10,10 @@ import { tokenAttrs } from '../../themes';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 
-/** B8: dot color for a completed/awaiting surface tab. */
+/** B8: dot color for a completed/awaiting surface tab. Status-dot vocabulary
+ *  (DESIGN.md): green = complete, red = needs-you (awaiting/waiting). */
 function statusDotColor(status: AgentStatus): string {
-  return status === 'complete' ? 'var(--accent-green)' : 'var(--accent-yellow)';
+  return status === 'complete' ? 'var(--accent-green)' : 'var(--accent-red)';
 }
 
 interface SurfaceTabsProps {

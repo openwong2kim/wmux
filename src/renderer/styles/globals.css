@@ -643,11 +643,11 @@ button {
   50%      { box-shadow: 0 0 7px 1px var(--sidebar-dot-glow, transparent); }
 }
 .sidebar-dot-running {
-  --sidebar-dot-glow: color-mix(in srgb, var(--accent-green) 70%, transparent);
+  --sidebar-dot-glow: color-mix(in srgb, var(--accent-cursor) 70%, transparent);
   animation: sidebar-dot-breathe 2s ease-in-out infinite;
 }
 .sidebar-dot-waiting {
-  --sidebar-dot-glow: color-mix(in srgb, var(--accent-yellow) 70%, transparent);
+  --sidebar-dot-glow: color-mix(in srgb, var(--accent-red) 70%, transparent);
   animation: sidebar-dot-breathe 1.2s ease-in-out infinite;
 }
 .sidebar-dot-error {
