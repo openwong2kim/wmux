@@ -37,11 +37,13 @@ describe('Sidebar — company mode wiring (regression guard)', () => {
     expect(sidebarSrc).toMatch(/<CompanyPanel\s*\/>/);
   });
 
-  it('provides a UI affordance to toggle modes (entry + exit)', () => {
-    // Without a toggle the only entry was the palette and there was no exit.
-    expect(sidebarSrc).toContain('data-company-toggle');
-    expect(sidebarSrc).toMatch(/setSidebarMode\(\s*sidebarMode === 'company'\s*\?\s*'workspaces'\s*:\s*'company'\s*\)/);
-  });
+  // NOTE: the Workspaces⇄Company sidebar toggle (data-company-toggle) was
+  // intentionally removed in the titlebar refactor (1bbf3f8) — the WMUX wordmark
+  // and workspace button took that spot. Company mode is a held/paid track, so
+  // its entry stays in the command palette rather than a sidebar affordance;
+  // this guard therefore no longer asserts a sidebar toggle. The rendering
+  // wiring above (sidebarMode → <CompanyPanel />) is still pinned so the mode
+  // can't silently regress to orphaned again.
 
   it('CompanyPanel still exposes its no-company empty state (the surface that was invisible)', () => {
     expect(companyPanelSrc).toContain('No company created yet');
