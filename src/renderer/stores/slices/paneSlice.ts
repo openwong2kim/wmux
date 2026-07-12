@@ -118,6 +118,19 @@ export interface PaneSlice {
   // (buildSessionData is an allowlist and deliberately omits it).
   surfaceActivity: Record<string, string>;
   setSurfaceActivity: (ptyId: string, activity: string | null) => void;
+  // Hook-driven "running" (orca-style): epoch-ms of each pane's last PostToolUse
+  // activity, stamped alongside surfaceActivity. The fleet selector treats a
+  // fresh stamp (within HOOK_RUNNING_TTL_MS) as 'running' even when the terminal
+  // has gone quiet — so a Claude agent thinking mid-turn (no output, no new
+  // tool) is not misread as idle by the 5s byte-silence path. Cleared with the
+  // activity string (new-idle broadcast / pane disposal).
+  surfaceActivityAt: Record<string, number>;
+  // A coarse clock the status derivation re-reads so a fresh stamp DECAYS to
+  // idle on its own with no new store event. Bumped ~every 2s by
+  // useAgentActivityClock while any pane is recently active; membership in
+  // state (not a raw Date.now() in the selector) keeps selectFleetPanes pure.
+  agentClockMs: number;
+  bumpAgentClock: () => void;
   // Issue #173: transient map of pane id → cwd inherited from the pane that
   // was split. Written by splitPane, consumed (and cleared) by the AppLayout
   // empty-leaf PTY funnel. Deliberately NOT persisted — buildSessionData's
@@ -243,6 +256,12 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   }),
 
   surfaceActivity: {},
+  surfaceActivityAt: {},
+  agentClockMs: Date.now(),
+
+  bumpAgentClock: () => set((state: StoreState) => {
+    state.agentClockMs = Date.now();
+  }),
 
   setSurfaceActivity: (ptyId, activity) => set((state: StoreState) => {
     if (!ptyId) return;
@@ -251,8 +270,13 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // keeps the existing reference (immer), so React shallow-compares it away.
     if (activity) {
       state.surfaceActivity[ptyId] = activity;
+      // Stamp the arrival time for the hook-driven 'running' derivation. Always
+      // updated (even on a same-string tool repeat) so the freshness window
+      // tracks the LATEST tool, not the first.
+      state.surfaceActivityAt[ptyId] = Date.now();
     } else {
       delete state.surfaceActivity[ptyId];
+      delete state.surfaceActivityAt[ptyId];
     }
   }),
 
@@ -444,6 +468,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
           if (s.ptyId) {
             delete state.surfaceAgent[s.ptyId];
             delete state.surfaceActivity[s.ptyId];
+            delete state.surfaceActivityAt[s.ptyId];
             clearNudgesFor(s.ptyId); // A5: don't let a reused ptyId inherit this pane's nudge cap
             // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict.
             if (state.taskPtyRegistry) delete state.taskPtyRegistry[s.ptyId];

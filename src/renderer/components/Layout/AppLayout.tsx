@@ -30,6 +30,7 @@ import ChannelDock from '../Channels/ChannelDock';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
 import { useActivePaneFocus } from '../../hooks/useActivePaneFocus';
+import { useAgentActivityClock } from '../../hooks/useAgentActivityClock';
 import { useTerminalCopyShortcut } from '../../hooks/useTerminalCopyShortcut';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
 import { useRpcBridge } from '../../hooks/useRpcBridge';
@@ -316,6 +317,9 @@ export default function AppLayout() {
   // surface switches — without this the red active border moves but typing
   // stays in the previously focused pane (see useActivePaneFocus).
   useActivePaneFocus();
+  // Ticks agentClockMs while any agent is recently active so hook-driven
+  // 'running' decays to idle on its own (see useAgentActivityClock / fleet.ts).
+  useAgentActivityClock();
   // Focus-independent terminal Ctrl+C copy: when the channel dock / composer
   // owns DOM focus, xterm's own Ctrl+C handler never runs (it requires the
   // terminal textarea to be focused), so a selected-then-Ctrl+C goes silent.

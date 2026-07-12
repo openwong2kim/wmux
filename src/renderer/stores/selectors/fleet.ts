@@ -58,7 +58,24 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
   /** X8 supervision mirror (per-ptyId). Optional so existing fixtures stay
    *  terse; the live FleetView always passes the real map. */
   supervisionByPtyId?: StoreState['supervisionByPtyId'];
+  /** Hook-driven 'running' inputs (orca-style). Both optional so existing
+   *  fixtures/tests get the pre-existing behavior (no hook-freshness); the live
+   *  store always provides them. `agentClockMs` is the read-time clock so a
+   *  stale stamp decays without a new event (bumped by useAgentActivityClock). */
+  surfaceActivityAt?: StoreState['surfaceActivityAt'];
+  agentClockMs?: StoreState['agentClockMs'];
 };
+
+/**
+ * How long after a pane's last PostToolUse hook it still counts as 'running'
+ * with no further signal. Generous on purpose (orca uses a 30-min safety net):
+ * a real Claude turn ends via the Stop hook → 'complete' (an attention status
+ * that outranks this), so this window only governs the "agent is thinking
+ * between tools / a hook-less agent is working" case. Long enough to survive a
+ * quiet reasoning gap or a multi-second tool, short enough that a crashed agent
+ * (no Stop) settles to idle promptly.
+ */
+export const HOOK_RUNNING_TTL_MS = 120_000;
 
 // Priority of each status for "which one wants the user most". Lower = more
 // urgent. Drives both the per-leaf attention scan (a background tab can be
@@ -103,9 +120,26 @@ export function selectFleetPanes(state: FleetSelectorState): FleetPane[] {
           attention = st;
         }
       }
+      // Resolution order (most → least authoritative):
+      //   1. a retained ATTENTION status on any surface (waiting/complete/…)
+      //   2. the active pane's workspace-level status, when it's a live non-idle
+      //      state (e.g. detector/byte 'running')
+      //   3. hook-driven 'running' — a PostToolUse fired within the TTL, so the
+      //      agent is working even if the terminal is quiet (fixes "thinking
+      //      mid-turn read as idle"; also lights BACKGROUND running panes, which
+      //      never reached workspace metadata). Uses the in-state clock so it
+      //      decays on its own. Absent inputs → skipped (legacy behavior).
+      //   4. idle.
+      const metaStatus = isActivePane ? wsMeta?.agentStatus : undefined;
+      const activityAt = ptyId ? state.surfaceActivityAt?.[ptyId] : undefined;
+      const hookRunning =
+        activityAt !== undefined &&
+        state.agentClockMs !== undefined &&
+        state.agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS;
       const status: AgentStatus =
         attention
-        ?? (isActivePane ? wsMeta?.agentStatus : undefined)
+        ?? (metaStatus && metaStatus !== 'idle' ? metaStatus : undefined)
+        ?? (hookRunning ? 'running' : undefined)
         ?? 'idle';
       result.push({
         workspaceId: ws.id,

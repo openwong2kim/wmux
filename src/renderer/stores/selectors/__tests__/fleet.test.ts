@@ -6,6 +6,7 @@ import {
   selectLatestCompletionEvidenceTask,
   selectWorkspaceAgentStatus,
   selectAllWorkspaceAgentStatus,
+  HOOK_RUNNING_TTL_MS,
   type FleetPane,
 } from '../fleet';
 import type { Workspace, Pane, Surface, AgentStatus, Task, TaskState, EvidenceItem } from '../../../../shared/types';
@@ -449,5 +450,56 @@ describe('selectAllWorkspaceAgentStatus', () => {
     for (const ws of fx.workspaces) {
       expect(map[ws.id] ?? 'idle').toBe(selectWorkspaceAgentStatus(fx, ws.id));
     }
+  });
+});
+
+// ─── hook-driven 'running' (orca-style TTL) ──────────────────────────────────
+
+describe('selectFleetPanes hook-driven running', () => {
+  const NOW = 1_000_000_000_000;
+  // One quiet background pane (no attention, no active-metadata running) whose
+  // only signal is a PostToolUse stamp — the "thinking mid-turn / background
+  // running" case the byte-silence path misread as idle.
+  const wq = workspace('ws-q', 'quiet', leaf('pq', [surface('sq', 'pty-q')]), 'other-pane');
+  const base = { workspaces: [wq], surfaceAgentStatus: {}, surfaceActivity: {} };
+
+  it('is idle with no clock/stamp (legacy behavior preserved)', () => {
+    expect(byPane(selectFleetPanes(base), 'pq').agentStatus).toBe('idle');
+  });
+
+  it('reads running when the last PostToolUse is within the TTL', () => {
+    const fx = { ...base, surfaceActivityAt: { 'pty-q': NOW - 30_000 }, agentClockMs: NOW };
+    expect(byPane(selectFleetPanes(fx), 'pq').agentStatus).toBe('running');
+  });
+
+  it('decays to idle once the stamp ages past the TTL', () => {
+    const fx = { ...base, surfaceActivityAt: { 'pty-q': NOW - (HOOK_RUNNING_TTL_MS + 1) }, agentClockMs: NOW };
+    expect(byPane(selectFleetPanes(fx), 'pq').agentStatus).toBe('idle');
+  });
+
+  it('lets a retained attention status OUTRANK a fresh hook stamp', () => {
+    // Same pane both awaiting_input (retained) AND freshly active — the user-
+    // facing "needs you" must win over "running".
+    const fx = {
+      ...base,
+      surfaceAgentStatus: { 'pty-q': 'awaiting_input' as AgentStatus },
+      surfaceActivityAt: { 'pty-q': NOW },
+      agentClockMs: NOW,
+    };
+    expect(byPane(selectFleetPanes(fx), 'pq').agentStatus).toBe('awaiting_input');
+  });
+
+  it('lets a fresh hook stamp override a stale active-pane idle (the byte-silence miss)', () => {
+    // Active pane, workspace metadata cleared to 'idle' by the 5s byte-silence
+    // path, but a tool fired 10s ago → still running.
+    const wActive = workspace(
+      'ws-a', 'active', leaf('pa', [surface('sa', 'pty-a')]), 'pa',
+      { agentStatus: 'idle' },
+    );
+    const fx = {
+      workspaces: [wActive], surfaceAgentStatus: {}, surfaceActivity: {},
+      surfaceActivityAt: { 'pty-a': NOW - 10_000 }, agentClockMs: NOW,
+    };
+    expect(byPane(selectFleetPanes(fx), 'pa').agentStatus).toBe('running');
   });
 });
