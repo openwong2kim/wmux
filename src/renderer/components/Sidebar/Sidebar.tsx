@@ -89,69 +89,7 @@ export default function Sidebar() {
       style={{ width: 240, borderColor: 'var(--border-soft)' }}
       {...tokenAttrs('bgMantle', 'bg')} {...tokenAttrs('bgSurface', 'border')}
     >
-      {/* Header */}
-      {/* Bridge P1.6 — 36px chrome module: header/tab-strip/footer rows across
-          all three columns share the titlebar's 36px height so their hairlines
-          land on the same y (owner-reported seam mismatch). */}
-      <div className="relative flex items-center justify-between h-9 shrink-0 px-4 border-b border-[var(--bg-surface)]" style={{ borderColor: 'var(--border-soft)' }}>
-        <span className="text-sm font-bold text-[var(--text-main)] tracking-widest font-mono" {...tokenAttrs('textMain', 'text')}>WMUX</span>
-        <div className="flex items-center gap-1.5">
-          {/* Workspaces ⇄ Company toggle. Entry/exit for company mode — the
-              palette commands set sidebarMode but there was no UI affordance
-              to flip it back (or discover it). */}
-          {COMPANY_MODE_ENABLED && (
-          <button
-            className={`flex items-center justify-center w-6 h-6 rounded-md transition-colors duration-150 hover:bg-[rgba(var(--bg-surface-rgb),0.6)] ${FOCUS_RING} ${
-              sidebarMode === 'company'
-                ? 'text-[var(--accent-blue)]'
-                : 'text-[var(--text-subtle)] hover:text-[var(--accent-blue)]'
-            }`}
-            onClick={() => setSidebarMode(sidebarMode === 'company' ? 'workspaces' : 'company')}
-            title={
-              sidebarMode === 'company'
-                ? (t('sidebar.showWorkspaces') || 'Show workspaces')
-                : (t('sidebar.showCompany') || 'Show company')
-            }
-            aria-label={
-              sidebarMode === 'company'
-                ? (t('sidebar.showWorkspaces') || 'Show workspaces')
-                : (t('sidebar.showCompany') || 'Show company')
-            }
-            aria-pressed={sidebarMode === 'company'}
-            data-company-toggle
-          >
-            <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.4" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-              <circle cx="5.5" cy="5" r="2" />
-              <circle cx="11" cy="6" r="1.5" />
-              <path d="M2 13c0-2 1.6-3.3 3.5-3.3S9 11 9 13" />
-              <path d="M10 13c0-1.7.8-2.7 2-2.7s2 1 2 2.3" />
-            </svg>
-          </button>
-          )}
-          {/* File tree button hidden - feature unstable
-          <button
-            className={`text-sm leading-none transition-colors ${fileTreeVisible ? 'text-[var(--accent-blue)]' : 'text-[var(--text-subtle)] hover:text-[var(--accent-green)]'}`}
-            onClick={() => toggleFileTree()}
-            title={t('sidebar.fileTreeTooltip') || 'Toggle file tree'}
-          >
-            {'\u{1F4C1}'}
-          </button>
-          */}
-          <button
-            className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-subtle)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
-            onClick={togglePicker}
-            title={t('sidebar.newWorkspaceTooltip')}
-            aria-label={t('sidebar.newWorkspaceTooltip')}
-            data-onboarding-target="add-workspace"
-            {...tokenAttrs('textSub', 'text')}
-            {...tokenAttrs('success', 'accent')}
-            data-derived="textSubtle"
-          >
-            <IconPlus size={13} />
-          </button>
-        </div>
-        {pickerOpen && <PresetPicker onClose={closePicker} />}
-      </div>
+      {pickerOpen && <PresetPicker onClose={closePicker} />}
 
       {/* Central content: company tree when in company mode, else the
           workspace list. This is the consumer of `sidebarMode` that was

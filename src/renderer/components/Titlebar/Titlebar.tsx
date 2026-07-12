@@ -1,7 +1,11 @@
-import { useEffect, type CSSProperties } from 'react';
+import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { useStore } from '../../stores';
 import { tokenAttrs } from '../../themes';
 import StatusBar from '../StatusBar/StatusBar';
+import { useT } from '../../hooks/useT';
+import { FOCUS_RING } from '../focusRing';
+import { IconPlus } from '../icons';
+import PresetPicker from '../Sidebar/PresetPicker';
 
 /**
  * Bridge redesign — custom 36px titlebar (DESIGN.md "Window Chrome").
@@ -64,11 +68,15 @@ function useTitleBarOverlaySync(): void {
 }
 
 export default function Titlebar() {
+  const t = useT();
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const platform = rendererPlatform();
   const isMac = platform === 'darwin';
   const isWin = platform === 'win32';
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
+  const closePicker = useCallback(() => setPickerOpen(false), []);
 
   useTitleBarOverlaySync();
 
@@ -107,17 +115,22 @@ export default function Titlebar() {
         }}
         {...tokenAttrs('bgMantle', 'bg')}
       >
-        <div
-          aria-hidden
-          className="grid place-items-center rounded shrink-0 text-[10px] font-extrabold text-[var(--accent-blue)] bg-[var(--bg-surface)]"
-          style={{ width: 15, height: 15, border: '1px solid var(--border-soft)' }}
-          {...tokenAttrs('accent', 'text')}
+        <span className="text-xs font-bold text-[var(--text-main)] tracking-widest font-mono" {...tokenAttrs('textMain', 'text')}>
+          WMUX
+        </span>
+        <button
+          className={`flex items-center justify-center w-5 h-5 rounded-md text-[var(--text-subtle)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
+          onClick={togglePicker}
+          style={{ WebkitAppRegion: 'no-drag' }}
+          title={t('sidebar.newWorkspaceTooltip')}
+          aria-label={t('sidebar.newWorkspaceTooltip')}
+          data-onboarding-target="add-workspace"
+          {...tokenAttrs('textSub', 'text')}
+          {...tokenAttrs('success', 'accent')}
         >
-          w
-        </div>
-        {/* Mark only — the sidebar header right below already says WMUX, and
-            the workspace name lives at the status strip's far left (its
-            original status-row spot). Owner call: no duplicated wordmarks. */}
+          <IconPlus size={12} />
+        </button>
+        {pickerOpen && <PresetPicker onClose={closePicker} />}
       </div>
       {/* The status strip (P1.5) fills the rest of the bar: transient
           indicators on the left, the status/clock/settings cluster pinned
