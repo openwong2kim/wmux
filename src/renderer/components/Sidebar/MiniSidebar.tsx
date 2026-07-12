@@ -2,6 +2,7 @@ import { useRef, useState } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceRailSummary } from '../../stores/selectors/workspaceProjections';
+import { selectAllWorkspaceAgentStatus } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { tokenAttrs } from '../../themes';
@@ -15,6 +16,9 @@ export default function MiniSidebar() {
   // A1: 레일은 id/name + 에이전트 상태만 그린다 — 요약 투영만 구독해 cwd/git/
   // port 변경에는 리렌더되지 않게 한다.
   const workspaces = useStore(useShallow(selectWorkspaceRailSummary));
+  // Dot source (agent-status-dot fix): whole-workspace roll-up, same derivation
+  // as WorkspaceItem — not the active-pane-only `ws.agentStatus` projection.
+  const agentStatusById = useStore(useShallow(selectAllWorkspaceAgentStatus));
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
   const toggleSidebar = useStore((s) => s.toggleSidebar);
@@ -67,8 +71,8 @@ export default function MiniSidebar() {
           const isMultiview = multiviewIds.includes(ws.id);
           const isDragging = draggingIndex === i;
           const unreadCount = notifications.filter((n) => !n.read && n.workspaceId === ws.id).length;
-          const agentStatus = ws.agentStatus;
-          const agentIcon = agentStatus && agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
+          const agentStatus = agentStatusById[ws.id] ?? 'idle';
+          const agentIcon = agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
           // Initial + position so workspaces with identical prefixes (W, W, W…)
           // remain distinguishable in the 48px rail.
           const label = `${ws.name.charAt(0).toUpperCase()}${i + 1}`;

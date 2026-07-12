@@ -4,6 +4,8 @@ import {
   sortFleetPanes,
   countNeedsAttention,
   selectLatestCompletionEvidenceTask,
+  selectWorkspaceAgentStatus,
+  selectAllWorkspaceAgentStatus,
   type FleetPane,
 } from '../fleet';
 import type { Workspace, Pane, Surface, AgentStatus, Task, TaskState, EvidenceItem } from '../../../../shared/types';
@@ -386,5 +388,66 @@ describe('selectLatestCompletionEvidenceTask', () => {
     const t = task('t1');
     const s = store(t);
     expect(selectLatestCompletionEvidenceTask(s, 'ws-1', 'p1', true)).toBe(t);
+  });
+});
+
+// ─── selectWorkspaceAgentStatus (sidebar dot source) ─────────────────────────
+
+describe('selectWorkspaceAgentStatus', () => {
+  it('surfaces a workspace pane attention status (ws-1: awaiting_input)', () => {
+    // w1's only pane has pty-1 = awaiting_input, which must win over the
+    // workspace-metadata 'running' — the dot shows the most-urgent real state.
+    expect(selectWorkspaceAgentStatus(fixture(), 'ws-1')).toBe('awaiting_input');
+  });
+
+  it('sees a BACKGROUND pane attention status (ws-2 p2b: complete, not active)', () => {
+    // p2b is the non-active pane; its pty-2b=complete must still light the ws
+    // dot even though the active pane p2a is running-per-metadata. This is the
+    // exact background-blindness the old active-pane-only read could not show.
+    expect(selectWorkspaceAgentStatus(fixture(), 'ws-2')).toBe('complete');
+  });
+
+  it('returns idle for an all-idle / unspawned workspace (ws-3)', () => {
+    expect(selectWorkspaceAgentStatus(fixture(), 'ws-3')).toBe('idle');
+  });
+
+  it('returns idle for an unknown workspaceId', () => {
+    expect(selectWorkspaceAgentStatus(fixture(), 'nope')).toBe('idle');
+  });
+
+  it('picks the MOST-URGENT status across sibling panes (awaiting_input > complete)', () => {
+    const s = workspace(
+      'ws-x', 'x',
+      branch('bx', [
+        leaf('pa', [surface('sa', 'pa-pty')]),
+        leaf('pb', [surface('sb', 'pb-pty')]),
+      ]),
+      'pa',
+    );
+    const st = selectWorkspaceAgentStatus(
+      { workspaces: [s], surfaceAgentStatus: { 'pa-pty': 'complete', 'pb-pty': 'awaiting_input' }, surfaceActivity: {} },
+      'ws-x',
+    );
+    expect(st).toBe('awaiting_input');
+  });
+});
+
+// ─── selectAllWorkspaceAgentStatus (MiniSidebar map) ─────────────────────────
+
+describe('selectAllWorkspaceAgentStatus', () => {
+  it('rolls every workspace up in one pass, omitting idle-only workspaces', () => {
+    const map = selectAllWorkspaceAgentStatus(fixture());
+    expect(map['ws-1']).toBe('awaiting_input');
+    expect(map['ws-2']).toBe('complete');
+    // ws-3 is all-idle → omitted (caller defaults missing → idle).
+    expect(map['ws-3']).toBeUndefined();
+  });
+
+  it('agrees with the single-workspace selector for every workspace', () => {
+    const fx = fixture();
+    const map = selectAllWorkspaceAgentStatus(fx);
+    for (const ws of fx.workspaces) {
+      expect(map[ws.id] ?? 'idle').toBe(selectWorkspaceAgentStatus(fx, ws.id));
+    }
   });
 });

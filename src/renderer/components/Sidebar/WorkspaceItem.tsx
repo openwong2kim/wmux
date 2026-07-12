@@ -2,6 +2,7 @@ import { useState, useRef, useEffect, memo } from 'react';
 import type { PrStatus, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
+import { selectWorkspaceAgentStatus } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
 import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron } from '../icons';
@@ -171,6 +172,13 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
 
   const metadata = workspace?.metadata;
+
+  // Sidebar dot source (agent-status-dot fix): the WHOLE workspace's most-urgent
+  // agent status, rolled up over every pane's every surface — the same
+  // derivation the deck Fleet roster + titlebar vitals use. Reading
+  // `metadata.agentStatus` directly only ever saw the active pane and never
+  // self-healed. Scalar return → Object.is subscription re-renders only on change.
+  const agentStatus = useStore((s) => selectWorkspaceAgentStatus(s, workspaceId));
   // X5 wmux.json badge state for this workspace (transient, probe-driven).
   const projectState = useStore((s) => s.projectConfigs[workspaceId]);
   // J3 §4 — 태스크 워크스페이스의 페인 cwd가 worktree 경계 밖으로 이탈했는지(경고만).
@@ -390,7 +398,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       >
         {/* Status indicator */}
         {(() => {
-          const st = metadata?.agentStatus && metadata.agentStatus !== 'idle' ? AGENT_STATUS_ICON[metadata.agentStatus] : null;
+          const st = agentStatus !== 'idle' ? AGENT_STATUS_ICON[agentStatus] : null;
           return (
             <div
               className={`sidebar-dot w-1.5 h-1.5 rounded-full flex-shrink-0 mt-1.5 ${st ? st.glowClass : ''}`}
@@ -472,7 +480,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
 
         {/* Agent status mark (play/pause), right-aligned. */}
         {(() => {
-          const st = metadata?.agentStatus ? AGENT_STATUS_ICON[metadata.agentStatus] : null;
+          const st = AGENT_STATUS_ICON[agentStatus];
           if (!st?.mark) return null;
           return (
             <span className={`flex-shrink-0 mt-1 ${st.className}`} title={t(st.labelKey)}>
