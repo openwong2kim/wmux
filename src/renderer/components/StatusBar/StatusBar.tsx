@@ -252,13 +252,14 @@ export default function StatusBar() {
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockTime />
         <button
+          type="button"
           onClick={togglePicker}
-          className={`flex items-center justify-center w-5 h-5 rounded-md text-[var(--text-muted)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
+          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
           title={t('sidebar.newWorkspaceTooltip')}
           aria-label={t('sidebar.newWorkspaceTooltip')}
           data-onboarding-target="add-workspace"
         >
-          <IconPlus size={12} />
+          <IconPlus size={14} />
         </button>
         <button
           onClick={toggleSettingsPanel}
