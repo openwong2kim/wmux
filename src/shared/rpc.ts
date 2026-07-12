@@ -143,6 +143,7 @@ export type RpcMethod =
   | 'system.identify'
   | 'system.capabilities'
   | 'deck.resolvePaneRoute'
+  | 'deck.resolveCommanderWorkspace'
   | 'browser.open'
   | 'browser.navigate'
   | 'browser.goBack'
@@ -294,6 +295,7 @@ export const ALL_RPC_METHODS = [
   'system.identify',
   'system.capabilities',
   'deck.resolvePaneRoute',
+  'deck.resolveCommanderWorkspace',
   'browser.open',
   'browser.navigate',
   'browser.goBack',

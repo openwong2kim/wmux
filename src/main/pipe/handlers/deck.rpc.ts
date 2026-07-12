@@ -53,4 +53,22 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
     }
     return { workspaceId: owner };
   });
+
+  // `deck.resolveCommanderWorkspace` gives the brain its OWN sender identity —
+  // the home workspace its token is bound to — with no pane needed. The brain's
+  // MCP subprocess has no pane ancestry and no WMUX_WORKSPACE_ID env hint, so
+  // the A2A identity resolver (resolveWorkspaceId) otherwise misses on every
+  // path and every A2A tool (send_message / a2a_task_send / a2a_broadcast …)
+  // throws "Workspace identity unknown". Auth is the same per-spawn token as
+  // resolvePaneRoute; a missing/stale token throws and the MCP client falls
+  // through to the ordinary (external) resolution, so non-commander callers are
+  // unchanged. Unlike resolvePaneRoute this needs no ptyId and no renderer
+  // round-trip — it is a pure token→workspace lookup in main's trust registry.
+  router.register('deck.resolveCommanderWorkspace', async (params) => {
+    const tokenWorkspaceId = commanderTokenWorkspace(params['token']);
+    if (!tokenWorkspaceId) {
+      throw new Error('deck.resolveCommanderWorkspace: not a live commander session');
+    }
+    return { workspaceId: tokenWorkspaceId };
+  });
 }

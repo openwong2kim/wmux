@@ -250,6 +250,7 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   //     A caller without a live token is rejected inside the handler, so a
   //     capability gate here would be redundant.
   'deck.resolvePaneRoute': { capability: null },
+  'deck.resolveCommanderWorkspace': { capability: null },
 
   // --- Browser (Playwright). Plugins declaring these get the browser
   //     risk-class prompt; all are gated against KNOWN_CAPABILITIES entries.

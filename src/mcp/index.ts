@@ -277,6 +277,27 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
  * fallback below is the bypass that fix closes for terminal IO; it remains
  * for A2A tools, which carry no PTY-ownership assertion.
  */
+/**
+ * Commander-brain self-identity: token → the home workspace main bound it to.
+ * Returns '' for a non-commander caller (no token) or a stale/rejected token,
+ * so the caller falls through to the ordinary resolution paths. See the call
+ * site in resolveWorkspaceId for the full rationale.
+ */
+async function resolveCommanderWorkspaceId(): Promise<string> {
+  const token = process.env.WMUX_COMMANDER_TOKEN;
+  if (!token) return '';
+  try {
+    const result = await sendRpc('deck.resolveCommanderWorkspace' as RpcMethod, { token });
+    const wsId =
+      result && typeof result === 'object' && 'workspaceId' in result
+        ? (result as Record<string, unknown>)['workspaceId']
+        : undefined;
+    return typeof wsId === 'string' && wsId.length > 0 ? wsId : '';
+  } catch {
+    return '';
+  }
+}
+
 async function resolveWorkspaceId(): Promise<string> {
   if (workspaceResolved && MY_WORKSPACE_ID) return MY_WORKSPACE_ID;
 
@@ -285,6 +306,25 @@ async function resolveWorkspaceId(): Promise<string> {
     MY_WORKSPACE_ID = lookup.wsId;
     // MY_PTY_ID is set inside lookupPidMapWorkspace on the hit (so the
     // terminal-route warm path populates it too — see there).
+    workspaceResolved = true;
+    return MY_WORKSPACE_ID;
+  }
+
+  // Commander brain: the subprocess main spawns for a workspace's orchestrator
+  // has no pane ancestry (the PID-map walk above always misses) and no
+  // WMUX_WORKSPACE_ID env hint — main injects a per-spawn WMUX_COMMANDER_TOKEN
+  // instead. Ask main for the home workspace the token is bound to, so the
+  // brain has an A2A sender identity (send_message / a2a_task_send / broadcast)
+  // rather than throwing "Workspace identity unknown" on every A2A call. The
+  // token is main-minted and only ever in main's in-memory trust registry, so
+  // it cannot be spoofed; a missing/stale token yields '' and we fall through
+  // to the ordinary paths, leaving non-commander callers unaffected. Cached
+  // like a walk hit — a brain's home workspace is fixed for its process life.
+  // (MY_PTY_ID stays empty: the brain has no PTY. A2A sender-pane attribution
+  // for the commander is a separate follow-up.)
+  const commanderWs = await resolveCommanderWorkspaceId();
+  if (commanderWs) {
+    MY_WORKSPACE_ID = commanderWs;
     workspaceResolved = true;
     return MY_WORKSPACE_ID;
   }

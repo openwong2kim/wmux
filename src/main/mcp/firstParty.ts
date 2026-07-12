@@ -102,6 +102,9 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // own auth (per-spawn token, commanderTrust.ts): listing it here only lets
   // the bundled server ATTEMPT the call; without a live token it fails closed.
   'deck.resolvePaneRoute',
+  // commander-brain self-identity (token→home workspace) for A2A sender
+  // resolution — same per-spawn-token auth, fails closed without a live token.
+  'deck.resolveCommanderWorkspace',
   // events
   'events.poll',
   // browser (Playwright + packaged CDP/RPC fallbacks)
