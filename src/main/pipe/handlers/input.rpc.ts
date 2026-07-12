@@ -8,6 +8,19 @@ import { sanitizePtyText } from '../../../shared/types';
 type GetWindow = () => BrowserWindow | null;
 
 /**
+ * Delay between the text write and the trailing carriage return on a submit.
+ * See the two-write rationale in the input.send handler. Small but non-zero so
+ * the PTY slave gets its OWN read for the text before the Enter arrives — a
+ * fused `text\r` chunk is read as a multi-line PASTE by TUI editors (Claude
+ * Code / ink) and lands the \r as a soft newline instead of submitting.
+ * Live-tunable if a TUI still coalesces at 20ms on a slow host.
+ */
+const SUBMIT_ENTER_DELAY_MS = 20;
+
+const delay = (ms: number): Promise<void> =>
+  new Promise((resolve) => setTimeout(resolve, ms));
+
+/**
  * Key sequence mapping table for input.sendKey
  */
 const KEY_MAP: Readonly<Record<string, string>> = {
@@ -149,27 +162,40 @@ export function registerInputRpc(
     await assertWorkspaceOwnsPty(getWindow, ptyId, callerWs, 'input.send');
 
     const safeText = params['raw'] === true ? text : sanitizePtyText(text);
-    // submit=true appends \r so the text is committed (Enter pressed). We do
-    // not append when the sanitized text already ends in \r to avoid a stray
-    // empty submit. Carriage return is the canonical commit byte for both
-    // line-mode shells and TUI input widgets (xterm/Claude Code/REPLs); \n
-    // would land as a soft newline in the input widget instead.
-    const payload =
-      params['submit'] === true && !safeText.endsWith('\r')
-        ? safeText + '\r'
-        : safeText;
 
-    // Try local PTYManager first, then daemon
-    const instance = ptyManager.get(ptyId);
-    if (instance) {
-      ptyManager.write(ptyId, payload);
-    } else {
-      const dc = getDaemonClient?.();
-      if (dc?.isConnected) {
-        dc.writeToSession(ptyId, payload);
+    // Route one chunk to the local PTYManager, else the daemon. Shared by the
+    // text write and the trailing-\r submit so both hit the same session.
+    const writeChunk = (data: string): void => {
+      const instance = ptyManager.get(ptyId);
+      if (instance) {
+        ptyManager.write(ptyId, data);
       } else {
-        throw new Error(`input.send: PTY not found — id="${ptyId}"`);
+        const dc = getDaemonClient?.();
+        if (dc?.isConnected) {
+          dc.writeToSession(ptyId, data);
+        } else {
+          throw new Error(`input.send: PTY not found — id="${ptyId}"`);
+        }
       }
+    };
+
+    // submit=true commits the text with an Enter (carriage return — the
+    // canonical commit byte for line-mode shells and TUI input widgets alike;
+    // \n would land as a soft newline). CRUCIALLY, the \r is a SEPARATE write
+    // from the text, with a tick between them: a fused `text\r` chunk is read
+    // by a TUI editor (Claude Code / ink) as a multi-line paste and does NOT
+    // submit — the \r becomes a soft newline in the composer. A lone \r
+    // arriving in its own read cycle is an unambiguous Enter keypress. This is
+    // exactly why the two-step terminal_send + terminal_send_key('enter')
+    // workaround succeeded where submit:true did not. We skip the extra write
+    // when the text already ends in \r (avoids a stray empty submit).
+    const wantsSubmit = params['submit'] === true && !safeText.endsWith('\r');
+    if (wantsSubmit) {
+      writeChunk(safeText);
+      await delay(SUBMIT_ENTER_DELAY_MS);
+      writeChunk('\r');
+    } else {
+      writeChunk(safeText);
     }
 
     return { ok: true, ptyId, submitted: params['submit'] === true };

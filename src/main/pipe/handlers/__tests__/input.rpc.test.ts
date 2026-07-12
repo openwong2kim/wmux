@@ -262,3 +262,73 @@ describe('input.send / input.sendKey — omitted-target self-loop guard (P0)', (
     expect(writeMock).not.toHaveBeenCalled();
   });
 });
+
+// submit=true must commit the text with a SEPARATE trailing-\r write, not a
+// single fused `text\r` chunk. A fused chunk is read by a TUI editor (Claude
+// Code / ink) as a multi-line paste and does not submit — the orchestrator
+// dogfood bug where `terminal_send` text landed in the composer but Enter was
+// never pressed. The two-write shape mirrors the terminal_send +
+// terminal_send_key('enter') workaround that actually worked.
+describe('input.send — submit sends text and Enter as two separate writes', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function setupWithWrite(): { router: RpcRouter; writeMock: ReturnType<typeof vi.fn> } {
+    const writeMock = vi.fn();
+    const pty = { get: vi.fn(() => ({ id: 'x' })), write: writeMock } as unknown as PTYManager;
+    const router = new RpcRouter();
+    registerInputRpc(router, pty, () => fakeWindow);
+    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
+      if (method === 'input.findOwnerWorkspace') return Promise.resolve({ workspaceId: 'ws-self' });
+      return Promise.resolve(null);
+    });
+    return { router, writeMock };
+  }
+
+  it('writes the text, then a lone \\r as a distinct write, in order', async () => {
+    const { router, writeMock } = setupWithWrite();
+    const res = await router.dispatch({
+      id: '1',
+      method: 'input.send',
+      params: { text: 'make a calculator', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(res.ok).toBe(true);
+    // Two writes: the text, then a bare carriage return (never fused).
+    expect(writeMock.mock.calls).toEqual([
+      ['pty-a', 'make a calculator'],
+      ['pty-a', '\r'],
+    ]);
+  });
+
+  it('does not fuse text and \\r into one chunk', async () => {
+    const { router, writeMock } = setupWithWrite();
+    await router.dispatch({
+      id: '2',
+      method: 'input.send',
+      params: { text: 'hi', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    // No single write carries both the text and the CR.
+    for (const [, data] of writeMock.mock.calls) {
+      expect(data).not.toBe('hi\r');
+    }
+  });
+
+  it('submits only once when the text already ends in \\r', async () => {
+    const { router, writeMock } = setupWithWrite();
+    await router.dispatch({
+      id: '3',
+      method: 'input.send',
+      params: { text: 'already\r', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls).toEqual([['pty-a', 'already\r']]);
+  });
+
+  it('writes a single chunk with no \\r when submit is not set', async () => {
+    const { router, writeMock } = setupWithWrite();
+    await router.dispatch({
+      id: '4',
+      method: 'input.send',
+      params: { text: 'no submit', ptyId: 'pty-a', workspaceId: 'ws-self' },
+    });
+    expect(writeMock.mock.calls).toEqual([['pty-a', 'no submit']]);
+  });
+});
