@@ -87,15 +87,16 @@ export class PTYBridge {
       if (recentlySuppressed(ptyId, now)) return;
       try {
         const win = this.getWindow();
-        // Clear stale 'running' before emitting the generic notification.
+        // Clear stale 'running' → 'idle' so the sidebar dot self-heals when a
+        // burst-then-quiet PTY has no precise event. This is the ONLY job kept:
+        // the byte-silence heuristic must NOT raise a toast — it can't tell a
+        // finished turn from a mid-turn tool call / web search / long bash, and
+        // fired on plain shells too (the "Task may have finished" false-positive
+        // the owner reported). Neither orca nor amirlehmam/wmux has any
+        // silence-based completion notification; genuine completions come from
+        // the precise Stop/awaiting_input hook + AgentDetector paths, which are
+        // untouched. See plans/agent-status-dot-quiet-notifications-2026-07-12.md.
         broadcastMetadataUpdate(win, { ptyId, agentStatus: 'idle', agentName: '' });
-        const notification = {
-          type: 'agent' as const,
-          title: 'Task may have finished',
-          body: 'Terminal output stopped after active period',
-        };
-        sendNotification(win, ptyId, notification);
-        toastManager.show(notification.title, notification.body, { ptyId });
       } catch (err) {
         console.warn('[PTYBridge] onActiveToIdle callback error:', err);
       }

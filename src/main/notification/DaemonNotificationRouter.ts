@@ -648,20 +648,17 @@ export class DaemonNotificationRouter {
       if (recentlySuppressed(payload.sessionId, now)) return;
       try {
         const win = this.getWindow();
-        // Clear stale 'running' alongside the fallback toast, mirroring
-        // PTYBridge.onActiveToIdle behavior.
+        // Daemon-mode twin of PTYBridge.onActiveToIdle: keep the stale-'running'
+        // → 'idle' clear (sidebar dot self-heal) but DROP the byte-silence
+        // toast — it's the "Task may have finished" false-positive (fires
+        // mid-turn and on plain shells). Precise completions still come from the
+        // Stop/awaiting_input hook + detector paths. See
+        // plans/agent-status-dot-quiet-notifications-2026-07-12.md.
         broadcastMetadataUpdate(win, {
           ptyId: payload.sessionId,
           agentStatus: 'idle',
           agentName: '',
         });
-        const notification = {
-          type: 'agent' as const,
-          title: 'Task may have finished',
-          body: 'Terminal output stopped after active period',
-        };
-        sendNotification(win, payload.sessionId, notification);
-        toastManager.show(notification.title, notification.body, { ptyId: payload.sessionId });
       } catch (err) {
         console.warn('[DaemonNotificationRouter] session:idle error:', err);
       }

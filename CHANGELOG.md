@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The sidebar workspace light now actually tells the truth about your agents — and the nagging "task may have finished" popups are gone.** The little status dot on each workspace row used to read only the *active* pane's state and never self-corrected, so an agent waiting for you in a background split, or one that finished while you were looking elsewhere, left the dot wrong or dark. It now reflects the whole workspace — the most urgent state across every pane — the same source that powers the Fleet roster and the titlebar "N running / N need you" chips, so all three finally agree. Separately, the toast that fired "Task may have finished / output stopped after active period" whenever any terminal went quiet for a few seconds is removed: it fired mid-turn (while an agent was just running a tool or a web search) and even for plain shell commands. Genuine completions still notify precisely (the Claude Code Stop hook fires once when a turn really ends); the reliable dot carries everything else, quietly.
+
 ### Added
 
 - **Mission control: your agents, the orchestrator, and their vitals now live in one place.** The Orchestrator tab opens with a **Fleet roster** pinned above the thread — one row per live terminal pane showing a status dot (amber running, red needs-input, gray idle), the pane's name, and what it's doing right now (the same hook-driven activity line the cockpit cards use); click any row to jump straight to that pane. And the window frame itself now carries the fleet's vitals: when agents are actually working, an amber "N running" chip appears in the titlebar's status area, and an agent blocked on you shows a red "N need you" chip — visible from any workspace, any tab, and one click jumps to the most urgent pane. When nothing needs attention, the chips disappear entirely — no dead gauges.
