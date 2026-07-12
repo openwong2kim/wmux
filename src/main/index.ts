@@ -1322,104 +1322,124 @@ app.on('before-quit', async (e) => {
     }
   }
 
-  cleanupHandlers();
-  disposeFirstRunHandlers();
-  disposeDeckHandler();
-  disposeHooksRpc();
-  disposeUsagePollerListener();
-  usagePoller.dispose();
-  // Tear down the respawn controller BEFORE the daemon-shutdown race so
-  // a daemon close during the race window can't trigger a respawn attempt
-  // while the rest of the app is exiting. `dispose()` only stops timers
-  // and detaches listeners — it does NOT call `onUninstall()`, so the
-  // shutdown-race path below remains the single authority for taking the
-  // client offline cleanly.
-  daemonRespawnController?.dispose();
-  daemonRespawnController = null;
+  // The entire teardown sequence below (through destroyTray()) is wrapped in
+  // try/catch as a single unit. Without it, an exception thrown by ANY of
+  // these dispose/stop calls would leave this async handler's promise
+  // rejected mid-sequence — meaning `app.quit()` below and the 1.5s
+  // force-exit fallback timer are never reached. Because `isQuitting` was
+  // already flipped to `true` above, the app would then be stuck forever:
+  // the 'second-instance' and 'activate' handlers both gate their
+  // window-recreate/focus logic on `if (isQuitting) return`, so a Dock
+  // click, a relaunch, or a taskbar click would silently no-op against a
+  // process that is alive but has zero windows and no way back — the only
+  // recovery is `kill -9`. Observed 2026-07-12 (macOS): the process sat
+  // wedged with 0 windows, unresponsive to `app.on('activate')`.
+  try {
+    cleanupHandlers();
+    disposeFirstRunHandlers();
+    disposeDeckHandler();
+    disposeHooksRpc();
+    disposeUsagePollerListener();
+    usagePoller.dispose();
+    // Tear down the respawn controller BEFORE the daemon-shutdown race so
+    // a daemon close during the race window can't trigger a respawn attempt
+    // while the rest of the app is exiting. `dispose()` only stops timers
+    // and detaches listeners — it does NOT call `onUninstall()`, so the
+    // shutdown-race path below remains the single authority for taking the
+    // client offline cleanly.
+    daemonRespawnController?.dispose();
+    daemonRespawnController = null;
 
-  // tmux-style persistence (the entire reason the daemon exists): a normal
-  // Quit must NOT kill the daemon. We DETACH — close our control socket and
-  // leave every live PTY session running inside the daemon. Watchdog keeps the
-  // daemon alive while sessions>0 (idle-shutdown only fires once the last pane
-  // is closed AND no client is attached — Watchdog.ts:159), and the next
-  // launch reconnects via ensureDaemon (ping → spawned:false) and
-  // AppLayout.reconcilePtys() reattaches each pane to its still-live session,
-  // running processes and all.
-  //
-  // Only an explicit "Shut down wmux (close all sessions)" from the tray flips
-  // fullShutdownRequested → the teardown branch: ask the daemon to shut down
-  // gracefully (it dumps RingBuffers + saves state), and if that RPC doesn't
-  // land in time, pid-kill it so a wedged daemon can't survive a teardown the
-  // user explicitly asked for.
-  //
-  // `clientAtQuit` captures the reference BEFORE any await: the daemon may
-  // close its socket mid-teardown, firing the module-level 'disconnected'
-  // handler that nulls `daemonClient`. Without a local capture the later
-  // `disconnect()` would deref null and the unhandled rejection could stall
-  // app.quit().
-  const clientAtQuit = daemonClient;
-  if (clientAtQuit?.isConnected) {
-    if (fullShutdownRequested) {
-      // Daemon-side hard timeout guard is 10 s; 8 s keeps us safely under it
-      // while giving large-session daemons room to flush RingBuffers.
-      const FULL_SHUTDOWN_TIMEOUT_MS = 8_000;
-      console.log(
-        `[Main] Full shutdown — racing daemon.shutdown (${FULL_SHUTDOWN_TIMEOUT_MS}ms budget)`,
-      );
-      logLine('info', 'main', 'full-shutdown: racing daemon.shutdown');
-      const shutdownStart = Date.now();
-      const race = await raceDaemonShutdown(clientAtQuit, FULL_SHUTDOWN_TIMEOUT_MS);
-      const elapsed = Date.now() - shutdownStart;
-      if (race.ok) {
-        console.log(`[Main] daemon.shutdown ack received (elapsed=${elapsed}ms)`);
-      } else {
-        console.warn(
-          `[Main] daemon.shutdown did not complete (elapsed=${elapsed}ms): ${race.error} — pid-kill backstop`,
+    // tmux-style persistence (the entire reason the daemon exists): a normal
+    // Quit must NOT kill the daemon. We DETACH — close our control socket and
+    // leave every live PTY session running inside the daemon. Watchdog keeps the
+    // daemon alive while sessions>0 (idle-shutdown only fires once the last pane
+    // is closed AND no client is attached — Watchdog.ts:159), and the next
+    // launch reconnects via ensureDaemon (ping → spawned:false) and
+    // AppLayout.reconcilePtys() reattaches each pane to its still-live session,
+    // running processes and all.
+    //
+    // Only an explicit "Shut down wmux (close all sessions)" from the tray flips
+    // fullShutdownRequested → the teardown branch: ask the daemon to shut down
+    // gracefully (it dumps RingBuffers + saves state), and if that RPC doesn't
+    // land in time, pid-kill it so a wedged daemon can't survive a teardown the
+    // user explicitly asked for.
+    //
+    // `clientAtQuit` captures the reference BEFORE any await: the daemon may
+    // close its socket mid-teardown, firing the module-level 'disconnected'
+    // handler that nulls `daemonClient`. Without a local capture the later
+    // `disconnect()` would deref null and the unhandled rejection could stall
+    // app.quit().
+    const clientAtQuit = daemonClient;
+    if (clientAtQuit?.isConnected) {
+      if (fullShutdownRequested) {
+        // Daemon-side hard timeout guard is 10 s; 8 s keeps us safely under it
+        // while giving large-session daemons room to flush RingBuffers.
+        const FULL_SHUTDOWN_TIMEOUT_MS = 8_000;
+        console.log(
+          `[Main] Full shutdown — racing daemon.shutdown (${FULL_SHUTDOWN_TIMEOUT_MS}ms budget)`,
         );
-        logLine('warn', 'main', `full-shutdown: daemon.shutdown timed out (${race.error}); invoking pid-kill backstop`);
-        const killed = killDaemonByPidFile();
-        logLine('warn', 'main', `full-shutdown: pid-kill backstop ${killed ? 'killed the daemon' : 'found no verified daemon to kill'}`);
+        logLine('info', 'main', 'full-shutdown: racing daemon.shutdown');
+        const shutdownStart = Date.now();
+        const race = await raceDaemonShutdown(clientAtQuit, FULL_SHUTDOWN_TIMEOUT_MS);
+        const elapsed = Date.now() - shutdownStart;
+        if (race.ok) {
+          console.log(`[Main] daemon.shutdown ack received (elapsed=${elapsed}ms)`);
+        } else {
+          console.warn(
+            `[Main] daemon.shutdown did not complete (elapsed=${elapsed}ms): ${race.error} — pid-kill backstop`,
+          );
+          logLine('warn', 'main', `full-shutdown: daemon.shutdown timed out (${race.error}); invoking pid-kill backstop`);
+          const killed = killDaemonByPidFile();
+          logLine('warn', 'main', `full-shutdown: pid-kill backstop ${killed ? 'killed the daemon' : 'found no verified daemon to kill'}`);
+        }
+      } else {
+        console.log('[Main] Quit — detaching from daemon; live sessions stay alive (tmux-style persistence)');
+        logLine('info', 'main', 'quit: detaching from daemon, sessions remain live (persistence)');
       }
+      // Detach our half of the control pipe in BOTH branches. In full-shutdown
+      // the daemon is already gone (RPC ack) or killed (backstop), so this just
+      // cleans up our socket; in the detach branch it is the whole operation.
+      // Best-effort — if the 'disconnected' handler already tore the socket
+      // down, disconnect() may throw; swallow it so the quit sequence proceeds.
+      try {
+        await clientAtQuit.disconnect();
+      } catch (err) {
+        console.warn('[Main] daemon disconnect threw (likely already torn down):', err);
+      }
+      daemonClient = null;
     } else {
-      console.log('[Main] Quit — detaching from daemon; live sessions stay alive (tmux-style persistence)');
-      logLine('info', 'main', 'quit: detaching from daemon, sessions remain live (persistence)');
+      // Local mode (daemon never connected): PTYs are children of main and die
+      // with us regardless — dispose explicitly for a clean exit. There is no
+      // persistence in local mode; that is the cost of running without a daemon.
+      ptyManager.disposeAll();
+      // Codex P2: an explicit "Shut down wmux (close all sessions)" must still
+      // tear down a daemon that is alive on disk even when main has NO live
+      // client to it — the daemon dropped/respawn-exhausted into local mode while
+      // daemon.pid still points at a live daemon. Without this the user's
+      // close-all request silently leaves that daemon and its PTYs running. The
+      // pid-kill is verify-before-kill (image + cmdline), so a recycled PID is
+      // never signalled. A normal Quit (fullShutdownRequested=false) still leaves
+      // any such daemon alone — that is the persistence promise.
+      if (fullShutdownRequested) {
+        const killed = killDaemonByPidFile();
+        logLine('warn', 'main', `full-shutdown (no live client): pid-kill backstop ${killed ? 'killed the daemon' : 'found no verified daemon to kill'}`);
+      }
     }
-    // Detach our half of the control pipe in BOTH branches. In full-shutdown
-    // the daemon is already gone (RPC ack) or killed (backstop), so this just
-    // cleans up our socket; in the detach branch it is the whole operation.
-    // Best-effort — if the 'disconnected' handler already tore the socket
-    // down, disconnect() may throw; swallow it so the quit sequence proceeds.
-    try {
-      await clientAtQuit.disconnect();
-    } catch (err) {
-      console.warn('[Main] daemon disconnect threw (likely already torn down):', err);
-    }
-    daemonClient = null;
-  } else {
-    // Local mode (daemon never connected): PTYs are children of main and die
-    // with us regardless — dispose explicitly for a clean exit. There is no
-    // persistence in local mode; that is the cost of running without a daemon.
-    ptyManager.disposeAll();
-    // Codex P2: an explicit "Shut down wmux (close all sessions)" must still
-    // tear down a daemon that is alive on disk even when main has NO live
-    // client to it — the daemon dropped/respawn-exhausted into local mode while
-    // daemon.pid still points at a live daemon. Without this the user's
-    // close-all request silently leaves that daemon and its PTYs running. The
-    // pid-kill is verify-before-kill (image + cmdline), so a recycled PID is
-    // never signalled. A normal Quit (fullShutdownRequested=false) still leaves
-    // any such daemon alone — that is the persistence promise.
-    if (fullShutdownRequested) {
-      const killed = killDaemonByPidFile();
-      logLine('warn', 'main', `full-shutdown (no live client): pid-kill backstop ${killed ? 'killed the daemon' : 'found no verified daemon to kill'}`);
-    }
-  }
 
-  claudeWorker.stop();
-  webviewCdpManager.disposeAll();
-  pipeServer.stop();
-  mcpRegistrar.unregister();
-  autoUpdater.stop();
-  destroyTray();
+    claudeWorker.stop();
+    webviewCdpManager.disposeAll();
+    pipeServer.stop();
+    mcpRegistrar.unregister();
+    autoUpdater.stop();
+    destroyTray();
+  } catch (err) {
+    // Whatever failed above, we still must reach app.quit() below — see the
+    // comment at the top of this try block for why a stuck teardown is
+    // unrecoverable without it.
+    console.error('[Main] before-quit teardown threw — continuing to quit anyway:', err);
+    logLine('error', 'main', `before-quit teardown threw: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+  }
 
   app.quit(); // re-trigger quit — isQuitting flag skips preventDefault
 

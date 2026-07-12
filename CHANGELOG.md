@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **Quitting no longer permanently freezes wmux (macOS).** If any step in the quit teardown (daemon disconnect, tray/pipe cleanup, etc.) threw, the app got stuck with zero windows and stopped responding to the Dock icon, relaunching, or `⌘⇥`-style activation — the only fix was `kill -9`. The teardown is now wrapped so a failure in one step can't block the rest of quitting.
 - **The hairline across the top of the window now lines up.** The pane tab strip's bottom border used a slightly different (more opaque) tone than the deck tabs beside it, and sat 1px lower — so the thin line under the tabs looked like it changed color and broke where the terminal meets the orchestrator panel. Both now share the same soft hairline at the same height (and a redundant double-line under each pane's top edge is gone); the focused pane still gets its amber underline on top.
 
 ### Changed
