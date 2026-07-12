@@ -6,6 +6,7 @@ import type { Notification, Workspace } from '../../../shared/types';
 import { StatusClockUsage, StatusClockTime } from './StatusClock';
 import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
+import { IconGear } from '../icons';
 import { selectFleetPanes, sortFleetPanes, countNeedsAttention } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { sumUnread } from '../Channels/ChannelsPanel';
@@ -76,8 +77,8 @@ export function NotificationBellBadgeView({ unreadCount, onActivate }: Notificat
       aria-label={ariaLabel}
       title={ariaLabel}
       data-testid="statusbar-notification-bell"
-      className="text-[var(--accent-blue)] hover:opacity-80 focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent-blue)] focus-visible:outline-offset-1 transition-colors px-1.5 py-0.5 min-w-[24px] min-h-[24px] inline-flex items-center justify-center rounded-sm"
-      {...tokenAttrs('accent', 'accent')}
+      className="text-[var(--text-sub)] hover:text-[var(--text-main)] focus-visible:outline focus-visible:outline-2 focus-visible:outline-[var(--accent-blue)] focus-visible:outline-offset-1 transition-colors px-1.5 py-0.5 min-w-[24px] min-h-[24px] inline-flex items-center justify-center rounded-sm"
+      {...tokenAttrs('textSub', 'text')}
     >
       {label}
     </button>
@@ -181,7 +182,7 @@ export default function StatusBar() {
         )}
         {branch && (
           <span>
-            <span className="text-[var(--accent-yellow)]" {...tokenAttrs('warning', 'accent')}>⎇</span> {branch}
+            <span className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>⎇</span> {branch}
           </span>
         )}
         {/* Company 모드 배지 */}
@@ -237,7 +238,7 @@ export default function StatusBar() {
         >
           <span aria-hidden="true" className="font-mono">#</span>
           {channelUnreadTotal > 0 && (
-            <span className="text-[var(--accent-blue)]" data-statusbar-channel-unread {...tokenAttrs('accentSecondary', 'text')}>
+            <span className="text-[var(--text-sub)]" data-statusbar-channel-unread {...tokenAttrs('textSub', 'text')}>
               {channelUnreadTotal > 99 ? '99+' : channelUnreadTotal}
             </span>
           )}
@@ -251,7 +252,7 @@ export default function StatusBar() {
           title={t('statusBar.settingsTooltip')}
           data-onboarding-target="settings-button"
         >
-          ⚙
+          <IconGear size={13} />
         </button>
       </div>
     </div>

@@ -164,7 +164,7 @@ export function CommanderViewContent({
         {recoveryPanes.length > 0 && (
           <div
             data-commander-recovery
-            className="rounded-lg px-4 py-3 space-y-2 bg-[rgba(var(--bg-surface-rgb),0.55)]"
+            className="rounded-[7px] px-4 py-3 space-y-2 bg-[rgba(var(--bg-surface-rgb),0.55)]"
             {...tokenAttrs('bgSurface', 'bg')}
           >
             <div
@@ -187,7 +187,7 @@ export function CommanderViewContent({
                 data-recovery-run
                 disabled={brainBusy}
                 onClick={onRecoverFleet}
-                className={`px-2.5 py-1 rounded-md text-[12px] font-semibold text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:opacity-80 transition-opacity disabled:opacity-40 ${FOCUS_RING}`}
+                className={`px-2.5 py-1 rounded-[4px] text-[12px] font-semibold text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.8)] hover:text-[var(--accent-blue)] transition-colors disabled:opacity-40 ${FOCUS_RING}`}
               >
                 {t('deck.recoveryRun') || 'Recover agents'}
               </button>
@@ -352,8 +352,8 @@ function CommanderBrainItem({
     >
       <span className="flex items-baseline gap-2">
         <span
-          className="text-[12px] font-bold text-[var(--accent-blue)]"
-          {...tokenAttrs('accent', 'text')}
+          className="text-[12px] font-bold text-[var(--text-main)]"
+          {...tokenAttrs('textMain', 'text')}
         >
           {t('deck.commander') || 'Orchestrator'}
         </span>
@@ -496,8 +496,8 @@ function CommanderThreadItem({
                   disabled={!m.paneId}
                   onClick={() => m.paneId && onJumpToPane(m.workspaceId, m.paneId)}
                   title={t('deck.jumpToPane') || 'Jump to this pane'}
-                  className={`px-2 py-0.5 rounded-md text-[11.5px] text-[var(--accent-blue)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:opacity-80 transition-opacity disabled:opacity-50 disabled:cursor-default ${FOCUS_RING}`}
-                  {...tokenAttrs('accent', 'text')}
+                  className={`px-2 py-0.5 rounded-[4px] text-[11.5px] text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:text-[var(--accent-blue)] transition-colors disabled:opacity-50 disabled:cursor-default ${FOCUS_RING}`}
+                  {...tokenAttrs('textSub', 'text')}
                 >
                   @{m.name}
                 </button>
@@ -530,8 +530,8 @@ function CommanderThreadItem({
                       data-commander-reply-author
                       onClick={() => onJumpToPane(pane.workspaceId, pane.paneId)}
                       title={t('deck.jumpToPane') || 'Jump to this pane'}
-                      className={`text-[12px] font-bold text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`}
-                      {...tokenAttrs('accent', 'text')}
+                      className={`text-[12px] font-bold text-[var(--text-main)] hover:text-[var(--accent-blue)] hover:underline ${FOCUS_RING}`}
+                      {...tokenAttrs('textMain', 'text')}
                     >
                       {author.primary}
                     </button>

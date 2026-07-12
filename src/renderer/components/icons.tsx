@@ -164,6 +164,16 @@ export function IconStar({ size = 14 }: { size?: number }) {
   return <Icon size={size}><polygon points="7,1.8 8.6,5.2 12.2,5.6 9.5,8.1 10.3,11.7 7,9.8 3.7,11.7 4.5,8.1 1.8,5.6 5.4,5.2" /></Icon>;
 }
 
+/** Bell — last-notification line. Replaces the 🔔 emoji (monochrome chrome). */
+export function IconBell({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <path d="M7 1.6a3.4 3.4 0 0 0-3.4 3.4c0 3.2-1.1 4.2-1.1 4.2h9c0 0-1.1-1-1.1-4.2A3.4 3.4 0 0 0 7 1.6Z" />
+      <path d="M5.9 11.4a1.2 1.2 0 0 0 2.2 0" />
+    </Icon>
+  );
+}
+
 /** Keyboard — rich input. Replaces the ⌨ emoji (same class as issue #145). */
 export function IconKeyboard({ size = 14 }: { size?: number }) {
   return (

@@ -557,9 +557,9 @@ export function ChannelsPanelView(props: ChannelsPanelViewProps): React.ReactEle
           {t('channels.title') ?? 'Channels'}
           {totalUnread > 0 && (
             <span
-              className="ml-1 text-[var(--accent-blue)]"
+              className="ml-1 text-[var(--text-sub)]"
               data-channels-total-unread
-              {...tokenAttrs('accent', 'text')}
+              {...tokenAttrs('textSub', 'text')}
             >
               ({totalUnread > 99 ? '99+' : totalUnread})
             </span>

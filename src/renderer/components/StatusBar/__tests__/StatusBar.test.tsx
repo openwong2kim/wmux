@@ -252,9 +252,13 @@ describe('NotificationBellBadgeView', () => {
     expect(html).toMatch(/<button[^>]*type="button"/);
   });
 
-  it('uses the accent-blue color token for text', () => {
+  it('renders a NEUTRAL badge at rest (DESIGN.md amber grammar — a count is not "alive/focus")', () => {
+    // Bridge P3 color-discipline pass: the bell used to be always-on accent
+    // (amber in the amber theme) in the persistent titlebar. It is now neutral
+    // text-sub at rest; accent stays only on the focus-visible ring below.
     const html = renderBell({ unreadCount: 5 });
-    expect(html).toContain('text-[var(--accent-blue)]');
+    expect(html).toContain('text-[var(--text-sub)]');
+    expect(html).not.toContain('text-[var(--accent-blue)] hover');
   });
 
   it('has a focus-visible outline ring using var(--accent-blue) (2px)', () => {

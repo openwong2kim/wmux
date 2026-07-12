@@ -158,10 +158,10 @@ export default function MiniSidebar() {
                 {label}
                 {unreadCount > 0 && (
                   <span
-                    className="absolute -top-0.5 -right-0.5 bg-[var(--accent-blue)] text-[var(--bg-base)] text-[8px] font-bold rounded-full min-w-[12px] h-3 flex items-center justify-center px-0.5 leading-none"
+                    className="absolute -top-0.5 -right-0.5 bg-[var(--bg-surface)] text-[var(--text-main)] text-[8px] font-bold rounded-full min-w-[12px] h-3 flex items-center justify-center px-0.5 leading-none ring-1 ring-[var(--border-soft)]"
                     title={t('sidebar.unreadCount', { count: unreadCount })}
-                    {...tokenAttrs('accent', 'accent')}
-                    {...tokenAttrs('bgBase', 'bg')}
+                    {...tokenAttrs('bgSurface', 'bg')}
+                    {...tokenAttrs('textMain', 'text')}
                   >
                     {unreadCount > 9 ? '9+' : unreadCount}
                   </span>
@@ -191,7 +191,7 @@ export default function MiniSidebar() {
             signal than a generic terminal notification. */}
         {totalChannelUnread > 0 && (
           <button
-            className="w-8 h-8 rounded-md flex items-center justify-center bg-[rgba(var(--accent-green-rgb),0.18)] text-[var(--accent-green)] text-[10px] font-bold"
+            className="w-8 h-8 rounded-[4px] flex items-center justify-center bg-[var(--bg-surface)] text-[var(--text-sub)] text-[10px] font-bold"
             onClick={() => useStore.getState().toggleSidebar()}
             title={
               t('sidebar.channelUnreadCount', { count: totalChannelUnread }) ??
@@ -213,7 +213,7 @@ export default function MiniSidebar() {
         {/* Unread badge */}
         {totalUnread > 0 && (
           <button
-            className="w-8 h-8 rounded-md flex items-center justify-center bg-[rgba(var(--accent-blue-rgb),0.2)] text-[var(--accent-blue)] text-[10px] font-bold"
+            className="w-8 h-8 rounded-[4px] flex items-center justify-center bg-[var(--bg-surface)] text-[var(--text-sub)] text-[10px] font-bold"
             onClick={() => useStore.getState().toggleNotificationPanel()}
             title={t('sidebar.unreadCount', { count: totalUnread })}
           >

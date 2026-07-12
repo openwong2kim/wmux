@@ -469,12 +469,16 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
               gap: 6,
               fontSize: 10,
               fontFamily: 'ui-monospace, monospace',
-              fontWeight: 700,
+              fontWeight: 600,
               letterSpacing: '0.04em',
-              color: 'var(--bg-main)',
-              backgroundColor: 'var(--accent-cursor)',
-              borderRadius: 3,
-              opacity: 0.9,
+              // DESIGN.md: amber never FILLS an area — neutral surface pill with
+              // a thin amber edge (accent as an outline, not a wash) over the
+              // terminal. Was a solid amber block.
+              color: 'var(--text-main)',
+              backgroundColor: 'var(--bg-surface)',
+              border: '1px solid color-mix(in srgb, var(--accent-cursor) 55%, transparent)',
+              borderRadius: 4,
+              boxShadow: 'var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.25))',
               overflow: 'hidden',
             }}
           >

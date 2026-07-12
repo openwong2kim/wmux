@@ -62,8 +62,8 @@ export function DeckTabs({
             {tab.id === 'channels' && channelsUnread > 0 && (
               <span
                 data-deck-tab-unread
-                className="text-[var(--accent-blue)]"
-                {...tokenAttrs('accent', 'text')}
+                className="text-[var(--text-sub)]"
+                {...tokenAttrs('textSub', 'text')}
               >
                 ({channelsUnread > 99 ? '99+' : channelsUnread})
               </span>

@@ -5,7 +5,7 @@ import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections
 import { selectWorkspaceAgentStatus } from '../../stores/selectors/fleet';
 import { useT } from '../../hooks/useT';
 import { AGENT_STATUS_ICON } from './agentStatusIcon';
-import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron } from '../icons';
+import { IconCopy, IconX, IconGear, IconPlay, IconPause, IconChevron, IconBell } from '../icons';
 import { tokenAttrs } from '../../themes';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { collectTerminalSurfaces } from '../../utils/paneTraversal';
@@ -124,10 +124,11 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
       )}
       {note && (
         <div
-          className="mt-0.5 text-[9px] text-[var(--text-muted)] truncate"
+          className="mt-0.5 flex items-center gap-1 text-[9px] text-[var(--text-muted)] truncate"
           title={`${t('workspace.lastNotification')}: ${note.title ? `${note.title} — ` : ''}${note.body}`}
         >
-          🔔 {note.title ? `${note.title}: ` : ''}{note.body}
+          <span className="shrink-0 opacity-70"><IconBell size={9} /></span>
+          <span className="truncate">{note.title ? `${note.title}: ` : ''}{note.body}</span>
         </div>
       )}
     </>
@@ -460,7 +461,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   </button>
                 )}
                 {unreadCount > 0 && (
-                  <span className="bg-[var(--accent-blue)] text-[var(--bg-base)] text-[9px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0">
+                  <span className="bg-[var(--bg-surface)] text-[var(--text-sub)] ring-1 ring-[var(--border-soft)] text-[9px] font-bold min-w-[16px] h-4 flex items-center justify-center rounded-full px-1 flex-shrink-0">
                     {unreadCount}
                   </span>
                 )}
@@ -524,7 +525,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       {/* Right-click context menu */}
       {menuPos && (
         <div
-          className="fixed z-[var(--z-popover-top)] w-max flex flex-col py-1 rounded-lg shadow-xl sidebar-popover-enter"
+          className="fixed z-[var(--z-popover-top)] w-max flex flex-col py-1 rounded-[7px] shadow-xl sidebar-popover-enter"
           style={{ left: menuPos.x, top: menuPos.y, background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
           onMouseDown={(e) => e.stopPropagation()}
         >
@@ -566,7 +567,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
             </button>
             {wdOpen && (
               <div
-                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[240px] max-w-[420px] py-1 rounded-lg shadow-xl sidebar-popover-enter`}
+                className={`absolute top-0 ${menuPos.x > window.innerWidth * 0.6 ? 'right-full mr-0.5' : 'left-full ml-0.5'} min-w-[240px] max-w-[420px] py-1 rounded-[7px] shadow-xl sidebar-popover-enter`}
                 style={{ background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
               >
                 {(() => {
@@ -612,7 +613,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
       {/* Close-workspace confirmation (anti-misclick). */}
       {closeConfirmPos && (
         <div
-          className="fixed z-[var(--z-popover-top)] w-[220px] py-2 rounded-lg shadow-xl sidebar-popover-enter"
+          className="fixed z-[var(--z-popover-top)] w-[220px] py-2 rounded-[7px] shadow-xl sidebar-popover-enter"
           style={{ left: Math.min(closeConfirmPos.x, window.innerWidth - 232), top: closeConfirmPos.y, background: 'var(--bg-surface)', border: '1px solid color-mix(in srgb, var(--bg-overlay) 70%, transparent)' }}
           onMouseDown={(e) => e.stopPropagation()}
         >
