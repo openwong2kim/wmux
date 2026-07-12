@@ -1,4 +1,4 @@
-import { useMemo, useState, useCallback, type CSSProperties } from 'react';
+import { useMemo, type CSSProperties } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
@@ -6,13 +6,11 @@ import type { Notification, Workspace } from '../../../shared/types';
 import { StatusClockUsage, StatusClockTime } from './StatusClock';
 import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
-import { IconGear, IconPlus } from '../icons';
+import { IconGear } from '../icons';
 import { selectFleetPanes, sortFleetPanes, countNeedsAttention } from '../../stores/selectors/fleet';
 import PluginStatusBarWidgets from '../../plugins/PluginStatusBarWidgets';
 import { sumUnread } from '../Channels/ChannelsPanel';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
-import { FOCUS_RING } from '../focusRing';
-import PresetPicker from '../Sidebar/PresetPicker';
 
 /**
  * Compute the unread notification count, excluding notifications whose
@@ -89,9 +87,6 @@ export function NotificationBellBadgeView({ unreadCount, onActivate }: Notificat
 
 export default function StatusBar() {
   const t = useT();
-  const [pickerOpen, setPickerOpen] = useState(false);
-  const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
-  const closePicker = useCallback(() => setPickerOpen(false), []);
   // A1: 통트리 구독 해체. StatusBar는 활성 ws의 name/branch 요약과 unreadCount
   // 파생값만 필요하다 — workspaces 전체를 구독하지 않는다.
   //  - activeWs 요약: 활성 ws의 name/gitBranch가 바뀔 때만 리렌더(useShallow).
@@ -252,16 +247,6 @@ export default function StatusBar() {
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
         <StatusClockTime />
         <button
-          type="button"
-          onClick={togglePicker}
-          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
-          title={t('sidebar.newWorkspaceTooltip')}
-          aria-label={t('sidebar.newWorkspaceTooltip')}
-          data-onboarding-target="add-workspace"
-        >
-          <IconPlus size={14} />
-        </button>
-        <button
           onClick={toggleSettingsPanel}
           className="text-[var(--text-muted)] hover:text-[var(--text-main)] transition-colors ml-1"
           title={t('statusBar.settingsTooltip')}
@@ -270,7 +255,6 @@ export default function StatusBar() {
           <IconGear size={13} />
         </button>
       </div>
-      {pickerOpen && <PresetPicker onClose={closePicker} />}
     </div>
   );
 }

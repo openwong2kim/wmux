@@ -1,7 +1,11 @@
-import { useEffect, type CSSProperties } from 'react';
+import { useEffect, useState, useCallback, type CSSProperties } from 'react';
 import { useStore } from '../../stores';
 import { tokenAttrs } from '../../themes';
 import StatusBar from '../StatusBar/StatusBar';
+import { useT } from '../../hooks/useT';
+import { FOCUS_RING } from '../focusRing';
+import { IconPlus } from '../icons';
+import PresetPicker from '../Sidebar/PresetPicker';
 
 /**
  * Bridge redesign — custom 36px titlebar (DESIGN.md "Window Chrome").
@@ -64,11 +68,15 @@ function useTitleBarOverlaySync(): void {
 }
 
 export default function Titlebar() {
+  const t = useT();
   const sidebarVisible = useStore((s) => s.sidebarVisible);
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const platform = rendererPlatform();
   const isMac = platform === 'darwin';
   const isWin = platform === 'win32';
+  const [pickerOpen, setPickerOpen] = useState(false);
+  const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
+  const closePicker = useCallback(() => setPickerOpen(false), []);
 
   useTitleBarOverlaySync();
 
@@ -99,7 +107,7 @@ export default function Titlebar() {
       {...tokenAttrs('bgBase', 'bg')}
     >
       <div
-        className={`flex items-center px-3 overflow-hidden ${leftSegmentWidth ? 'bg-[var(--bg-mantle)]' : ''}`}
+        className={`flex items-center gap-2 px-3 overflow-hidden ${leftSegmentWidth ? 'bg-[var(--bg-mantle)]' : ''}`}
         style={{
           width: leftSegmentWidth || undefined,
           // Fuse with the sidebar below via the same inset hairline seam.
@@ -110,6 +118,18 @@ export default function Titlebar() {
         <span className="text-sm font-bold text-[var(--text-main)] tracking-widest font-mono" {...tokenAttrs('textMain', 'text')}>
           WMUX
         </span>
+        <button
+          type="button"
+          onClick={togglePicker}
+          className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ${FOCUS_RING}`}
+          style={{ WebkitAppRegion: 'no-drag' }}
+          title={t('sidebar.newWorkspaceTooltip')}
+          aria-label={t('sidebar.newWorkspaceTooltip')}
+          data-onboarding-target="add-workspace"
+        >
+          <IconPlus size={14} />
+        </button>
+        {pickerOpen && <PresetPicker onClose={closePicker} />}
       </div>
       {/* The status strip (P1.5) fills the rest of the bar: transient
           indicators on the left, the status/clock/settings cluster pinned
