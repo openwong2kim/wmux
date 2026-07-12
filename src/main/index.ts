@@ -1322,55 +1322,73 @@ app.on('before-quit', async (e) => {
     }
   }
 
-  // The entire teardown sequence below (through destroyTray()) is wrapped in
-  // try/catch as a single unit. Without it, an exception thrown by ANY of
-  // these dispose/stop calls would leave this async handler's promise
-  // rejected mid-sequence — meaning `app.quit()` below and the 1.5s
-  // force-exit fallback timer are never reached. Because `isQuitting` was
-  // already flipped to `true` above, the app would then be stuck forever:
-  // the 'second-instance' and 'activate' handlers both gate their
-  // window-recreate/focus logic on `if (isQuitting) return`, so a Dock
-  // click, a relaunch, or a taskbar click would silently no-op against a
-  // process that is alive but has zero windows and no way back — the only
-  // recovery is `kill -9`. Observed 2026-07-12 (macOS): the process sat
-  // wedged with 0 windows, unresponsive to `app.on('activate')`.
-  try {
-    cleanupHandlers();
-    disposeFirstRunHandlers();
-    disposeDeckHandler();
-    disposeHooksRpc();
-    disposeUsagePollerListener();
-    usagePoller.dispose();
-    // Tear down the respawn controller BEFORE the daemon-shutdown race so
-    // a daemon close during the race window can't trigger a respawn attempt
-    // while the rest of the app is exiting. `dispose()` only stops timers
-    // and detaches listeners — it does NOT call `onUninstall()`, so the
-    // shutdown-race path below remains the single authority for taking the
-    // client offline cleanly.
+  // Every teardown step below is ISOLATED in its own try/catch. Two guarantees
+  // ride on this:
+  //
+  //  1. app.quit() below and the 1.5s force-exit fallback timer must ALWAYS be
+  //     reached. If this async handler's promise rejected mid-sequence while
+  //     `isQuitting` is already `true`, the app wedges forever: the
+  //     'second-instance' and 'activate' handlers both early-return on
+  //     `if (isQuitting) return`, so a Dock click, relaunch, or taskbar click
+  //     silently no-ops against a process that is alive but has zero windows
+  //     and no way back — only `kill -9` recovers. Observed 2026-07-12 (macOS):
+  //     0 windows, unresponsive to `app.on('activate')`.
+  //
+  //  2. A single earlier disposer failure must NOT skip the daemon-shutdown /
+  //     pid-kill branch (Codex P1). An earlier version wrapped the whole
+  //     sequence in ONE try, so a throw from e.g. cleanupHandlers() jumped
+  //     straight to the catch and skipped daemon shutdown — an explicit
+  //     "Shut down wmux (close all sessions)" would then let the app exit with
+  //     the daemon + PTYs still running. Per-step isolation keeps the daemon
+  //     branch reachable no matter what the best-effort disposers do.
+  const safeStep = (label: string, fn: () => void): void => {
+    try {
+      fn();
+    } catch (err) {
+      console.error(`[Main] before-quit step "${label}" threw — continuing:`, err);
+      logLine('error', 'main', `before-quit step ${label} threw: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+    }
+  };
+
+  safeStep('cleanupHandlers', () => cleanupHandlers());
+  safeStep('disposeFirstRunHandlers', () => disposeFirstRunHandlers());
+  safeStep('disposeDeckHandler', () => disposeDeckHandler());
+  safeStep('disposeHooksRpc', () => disposeHooksRpc());
+  safeStep('disposeUsagePollerListener', () => disposeUsagePollerListener());
+  safeStep('usagePoller.dispose', () => usagePoller.dispose());
+  // Tear down the respawn controller BEFORE the daemon-shutdown race so
+  // a daemon close during the race window can't trigger a respawn attempt
+  // while the rest of the app is exiting. `dispose()` only stops timers
+  // and detaches listeners — it does NOT call `onUninstall()`, so the
+  // shutdown-race path below remains the single authority for taking the
+  // client offline cleanly.
+  safeStep('daemonRespawnController.dispose', () => {
     daemonRespawnController?.dispose();
     daemonRespawnController = null;
+  });
 
-    // tmux-style persistence (the entire reason the daemon exists): a normal
-    // Quit must NOT kill the daemon. We DETACH — close our control socket and
-    // leave every live PTY session running inside the daemon. Watchdog keeps the
-    // daemon alive while sessions>0 (idle-shutdown only fires once the last pane
-    // is closed AND no client is attached — Watchdog.ts:159), and the next
-    // launch reconnects via ensureDaemon (ping → spawned:false) and
-    // AppLayout.reconcilePtys() reattaches each pane to its still-live session,
-    // running processes and all.
-    //
-    // Only an explicit "Shut down wmux (close all sessions)" from the tray flips
-    // fullShutdownRequested → the teardown branch: ask the daemon to shut down
-    // gracefully (it dumps RingBuffers + saves state), and if that RPC doesn't
-    // land in time, pid-kill it so a wedged daemon can't survive a teardown the
-    // user explicitly asked for.
-    //
-    // `clientAtQuit` captures the reference BEFORE any await: the daemon may
-    // close its socket mid-teardown, firing the module-level 'disconnected'
-    // handler that nulls `daemonClient`. Without a local capture the later
-    // `disconnect()` would deref null and the unhandled rejection could stall
-    // app.quit().
-    const clientAtQuit = daemonClient;
+  // tmux-style persistence (the entire reason the daemon exists): a normal
+  // Quit must NOT kill the daemon. We DETACH — close our control socket and
+  // leave every live PTY session running inside the daemon. Watchdog keeps the
+  // daemon alive while sessions>0 (idle-shutdown only fires once the last pane
+  // is closed AND no client is attached — Watchdog.ts:159), and the next
+  // launch reconnects via ensureDaemon (ping → spawned:false) and
+  // AppLayout.reconcilePtys() reattaches each pane to its still-live session,
+  // running processes and all.
+  //
+  // Only an explicit "Shut down wmux (close all sessions)" from the tray flips
+  // fullShutdownRequested → the teardown branch: ask the daemon to shut down
+  // gracefully (it dumps RingBuffers + saves state), and if that RPC doesn't
+  // land in time, pid-kill it so a wedged daemon can't survive a teardown the
+  // user explicitly asked for.
+  //
+  // `clientAtQuit` captures the reference BEFORE any await: the daemon may
+  // close its socket mid-teardown, firing the module-level 'disconnected'
+  // handler that nulls `daemonClient`. Without a local capture the later
+  // `disconnect()` would deref null and the unhandled rejection could stall
+  // app.quit().
+  const clientAtQuit = daemonClient;
+  try {
     if (clientAtQuit?.isConnected) {
       if (fullShutdownRequested) {
         // Daemon-side hard timeout guard is 10 s; 8 s keeps us safely under it
@@ -1426,20 +1444,27 @@ app.on('before-quit', async (e) => {
         logLine('warn', 'main', `full-shutdown (no live client): pid-kill backstop ${killed ? 'killed the daemon' : 'found no verified daemon to kill'}`);
       }
     }
-
-    claudeWorker.stop();
-    webviewCdpManager.disposeAll();
-    pipeServer.stop();
-    mcpRegistrar.unregister();
-    autoUpdater.stop();
-    destroyTray();
   } catch (err) {
-    // Whatever failed above, we still must reach app.quit() below — see the
-    // comment at the top of this try block for why a stuck teardown is
-    // unrecoverable without it.
-    console.error('[Main] before-quit teardown threw — continuing to quit anyway:', err);
-    logLine('error', 'main', `before-quit teardown threw: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+    console.error('[Main] before-quit daemon teardown threw — continuing to quit:', err);
+    logLine('error', 'main', `before-quit daemon teardown threw: ${err instanceof Error ? (err.stack ?? err.message) : String(err)}`);
+    // Close-all must still complete even if the graceful path above threw: a
+    // verified pid-kill is the last-resort backstop so an explicit shutdown
+    // can't leave the daemon + PTYs running. verify-before-kill (image +
+    // cmdline), and a normal Quit skips this entirely.
+    if (fullShutdownRequested) {
+      safeStep('full-shutdown pid-kill (post-throw backstop)', () => {
+        const killed = killDaemonByPidFile();
+        logLine('warn', 'main', `full-shutdown: post-throw pid-kill backstop ${killed ? 'killed the daemon' : 'found no verified daemon to kill'}`);
+      });
+    }
   }
+
+  safeStep('claudeWorker.stop', () => claudeWorker.stop());
+  safeStep('webviewCdpManager.disposeAll', () => webviewCdpManager.disposeAll());
+  safeStep('pipeServer.stop', () => pipeServer.stop());
+  safeStep('mcpRegistrar.unregister', () => mcpRegistrar.unregister());
+  safeStep('autoUpdater.stop', () => autoUpdater.stop());
+  safeStep('destroyTray', () => destroyTray());
 
   app.quit(); // re-trigger quit — isQuitting flag skips preventDefault
 
