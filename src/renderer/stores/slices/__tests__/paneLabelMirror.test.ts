@@ -54,6 +54,35 @@ describe('paneLabel mirror (P2)', () => {
   });
 });
 
+describe('paneRole mirror (orchestrator role)', () => {
+  it('stores a trimmed role and clears on empty / whitespace / undefined', () => {
+    const store = createTestStore(createWorkspace('W', 1));
+
+    store.getState().setPaneRole('p1', '  Reviewer  ');
+    expect(store.getState().paneRole.p1).toBe('Reviewer');
+
+    store.getState().setPaneRole('p1', ''); // unassigned sentinel → clear
+    expect(store.getState().paneRole.p1).toBeUndefined();
+
+    store.getState().setPaneRole('p2', 'Builder');
+    store.getState().setPaneRole('p2', undefined); // relay tombstone
+    expect(store.getState().paneRole.p2).toBeUndefined();
+  });
+
+  it('drops a closed pane role from the mirror', () => {
+    const ws = createWorkspace('W', 1);
+    const store = createTestStore(ws);
+    store.getState().splitPane(ws.rootPane.id, 'horizontal');
+    const target = getLeafPanes(store.getState().workspaces[0].rootPane)[1];
+
+    store.getState().setPaneRole(target.id, 'Tester');
+    expect(store.getState().paneRole[target.id]).toBe('Tester');
+
+    store.getState().closePane(target.id);
+    expect(store.getState().paneRole[target.id]).toBeUndefined();
+  });
+});
+
 describe('surfaceAgent slug retention (P2)', () => {
   it('stores the slug and retains it across a status-only update', () => {
     const store = createTestStore(createWorkspace('W', 1));

@@ -133,6 +133,42 @@ describe('buildWorkspaceContextSummary', () => {
     expect(summary).not.toContain('w3-1');
   });
 
+  it('injects an operator-assigned role onto the matching pane line, and only when set', () => {
+    const { ws, pty } = workspace();
+    const paneId = ws.activePaneId; // single-leaf workspace → activePaneId is the leaf
+    const withRole = buildWorkspaceContextSummary({
+      workspaces: [ws],
+      activeWorkspaceId: 'ws-1',
+      surfaceAgent: { [pty]: CLAUDE },
+      paneLabel: {},
+      paneRole: { [paneId]: 'Reviewer' },
+      channels: {},
+    });
+    // Role rides on the same pane line as its autoName, as a "— role: X" suffix.
+    expect(withRole).toContain('w1-1(claude) [Claude Code] — role: Reviewer');
+
+    const withoutRole = buildWorkspaceContextSummary({
+      workspaces: [ws],
+      activeWorkspaceId: 'ws-1',
+      surfaceAgent: { [pty]: CLAUDE },
+      paneLabel: {},
+      channels: {},
+    });
+    expect(withoutRole).toContain('w1-1(claude)');
+    expect(withoutRole).not.toContain('role:'); // no dangling suffix when unset
+
+    // Empty-string sentinel (unassigned) must NOT emit a role suffix.
+    const emptyRole = buildWorkspaceContextSummary({
+      workspaces: [ws],
+      activeWorkspaceId: 'ws-1',
+      surfaceAgent: { [pty]: CLAUDE },
+      paneLabel: {},
+      paneRole: { [paneId]: '' },
+      channels: {},
+    });
+    expect(emptyRole).not.toContain('role:');
+  });
+
   it('reports no panes when the workspace has none, and honors the char cap', () => {
     const summary = buildWorkspaceContextSummary({
       workspaces: [], activeWorkspaceId: 'ws-x', surfaceAgent: {}, paneLabel: {}, channels: {},

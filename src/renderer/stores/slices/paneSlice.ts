@@ -99,6 +99,14 @@ export interface PaneSlice {
   // displayName = paneLabel[paneId] ?? autoName.
   paneLabel: Record<string, string>;
   setPaneLabel: (paneId: string, label: string | undefined) => void;
+  // Orchestrator pane role (operator-assigned "preferred role") mirror, keyed
+  // by paneId. Same volatile/never-persisted contract as paneLabel: fed by the
+  // pane.metadata.changed relay (METADATA_UPDATE.paneRole) + the boot snapshot.
+  // MetadataStore/metadata.json (custom['orchestrator.role']) is the durable
+  // source; this mirror only feeds the Fleet dropdown + the orchestrator's
+  // per-turn workspace snapshot (deckBrain.buildWorkspaceContextSummary).
+  paneRole: Record<string, string>;
+  setPaneRole: (paneId: string, role: string | undefined) => void;
   // X1: per-surface listening ports keyed by ptyId. Main emits ports per PTY
   // (PID-tree scoped); the workspace-level sidebar value is the UNION over
   // the workspace's surfaces, computed at write time in
@@ -253,6 +261,20 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
       // Empty/whitespace/undefined clears the entry (rename-to-empty, clear,
       // or the onPaneDeleted tombstone relayed as paneLabel='').
       delete state.paneLabel[paneId];
+    }
+  }),
+
+  paneRole: {},
+
+  setPaneRole: (paneId, role) => set((state: StoreState) => {
+    if (!paneId) return;
+    const trimmed = role?.trim();
+    if (trimmed && trimmed.length > 0) {
+      state.paneRole[paneId] = trimmed;
+    } else {
+      // Empty/whitespace/undefined clears the entry (unassigned sentinel or
+      // the onPaneDeleted tombstone relayed as paneRole='').
+      delete state.paneRole[paneId];
     }
   }),
 
@@ -483,6 +505,8 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
         // onPaneDeleted relay also clears it, but this keeps the renderer
         // consistent without waiting for the round-trip.
         delete state.paneLabel[leaf.id];
+        // Drop the orchestrator-role mirror on the same teardown (mirrors label).
+        delete state.paneRole[leaf.id];
         for (const s of leaf.surfaces) {
           if (s.ptyId) {
             delete state.surfaceAgent[s.ptyId];

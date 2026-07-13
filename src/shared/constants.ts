@@ -62,6 +62,9 @@ export const IPC = {
   METADATA_SNAPSHOT: 'metadata:snapshot',
   // P2 — renderer GUI pane rename → MetadataStore.set (the only non-MCP writer).
   METADATA_SET: 'metadata:set',
+  // Renderer Fleet dropdown → set a pane's operator-assigned orchestrator role
+  // (custom['orchestrator.role']) via MetadataStore.set (custom deep-merge).
+  METADATA_SET_ROLE: 'metadata:set-role',
   // Phase 3: RPC bridge (Main ↔ Renderer)
   RPC_COMMAND: 'rpc:command',
   RPC_RESPONSE: 'rpc:response',

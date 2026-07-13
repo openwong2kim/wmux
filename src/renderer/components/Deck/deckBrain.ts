@@ -147,10 +147,13 @@ export function buildWorkspaceContextSummary(args: {
   activeWorkspaceId: string;
   surfaceAgent: Record<string, { name: string; slug?: AgentSlug } | undefined>;
   paneLabel: Record<string, string>;
+  /** Operator-assigned pane roles (paneId → role), the orchestrator-role mirror.
+   *  Optional so existing callers/tests stay terse; omitted → no role hints. */
+  paneRole?: Record<string, string>;
   channels: Record<string, Channel>;
   maxChars?: number;
 }): string {
-  const { workspaces, activeWorkspaceId, surfaceAgent, paneLabel, channels, maxChars = 2000 } = args;
+  const { workspaces, activeWorkspaceId, surfaceAgent, paneLabel, paneRole, channels, maxChars = 2000 } = args;
   const own = workspaces.find((w) => w.id === activeWorkspaceId);
   const lines: string[] = [
     own
@@ -182,7 +185,10 @@ export function buildWorkspaceContextSummary(args: {
       const autoName = computePaneAutoName(wsOrdinal, leaf.ordinal ?? 0, surfaceAgent[repr.ptyId]?.slug);
       const label = paneDisplayName(paneLabel[leaf.id], autoName);
       const agent = surfaceAgent[repr.ptyId]?.name ?? 'agent';
-      paneLines.push(`- ${autoName} [${agent}]${label !== autoName ? ` (${label})` : ''}`);
+      const role = paneRole?.[leaf.id]?.trim();
+      paneLines.push(
+        `- ${autoName} [${agent}]${label !== autoName ? ` (${label})` : ''}${role ? ` — role: ${role}` : ''}`,
+      );
     }
   }
   if (paneLines.length > 0) {

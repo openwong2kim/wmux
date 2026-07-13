@@ -9,6 +9,7 @@ import {
 } from '../../stores/selectors/fleet';
 import type { AgentStatus } from '../../../shared/types';
 import { shellDisplayName } from '../../utils/ptyCreateOptions';
+import { ORCH_ROLES } from '../../../shared/orchestratorRole';
 
 /**
  * Bridge P2① — the Fleet roster inside the deck's Orchestrator tab.
@@ -70,6 +71,7 @@ export default function DeckFleet({
   const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
   const surfaceActivity = useStore((s) => s.surfaceActivity);
   const paneLabel = useStore((s) => s.paneLabel);
+  const paneRole = useStore((s) => s.paneRole);
 
   const panes = useMemo(() => {
     const all = selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel });
@@ -108,45 +110,76 @@ export default function DeckFleet({
       <div className="max-h-44 overflow-y-auto">
         {panes.map((p) => {
           const attention = p.agentStatus === 'awaiting_input' || p.agentStatus === 'waiting';
+          // Operator-assigned role (soft). A value set via MCP may be outside the
+          // built-in vocabulary; surface it as an extra option so the <select>
+          // never renders blank for a known-but-custom role.
+          const role = paneRole[p.paneId] ?? '';
+          const roleOptions = role && !(ORCH_ROLES as readonly string[]).includes(role)
+            ? [role, ...ORCH_ROLES]
+            : [...ORCH_ROLES];
           return (
-            <button
+            // Row = flex container so the jump button and the role <select> are
+            // SIBLINGS (a <select> cannot nest inside a <button>). No parent click
+            // handler, so no stopPropagation needed — the select handles its own.
+            <div
               key={`${p.workspaceId}:${p.paneId}`}
-              type="button"
               data-deck-fleet-row
-              onClick={() => onJumpToPane(p.workspaceId, p.paneId)}
-              title={`${rowLabel(p)} — ${p.workspaceName}`}
-              className="group w-full flex items-center gap-2 h-[26px] px-1 rounded-[4px] text-left transition-colors hover:bg-[rgba(var(--bg-surface-rgb),0.6)]"
+              className="group flex items-center gap-1 h-[26px] px-1 rounded-[4px]"
               // The needs-input wash is the ONE permitted area wash (DESIGN.md
               // attention grammar). color-mix so every theme's danger hue works.
               style={attention ? { backgroundColor: 'color-mix(in srgb, var(--accent-red) 9%, transparent)' } : undefined}
             >
-              <span
-                aria-hidden="true"
-                className="w-[7px] h-[7px] rounded-full shrink-0"
-                style={{ backgroundColor: dotColor(p.agentStatus) }}
-              />
-              <span
-                className="text-[12px] font-medium text-[var(--text-main)] shrink-0 max-w-[45%] truncate"
-                {...tokenAttrs('textMain', 'text')}
+              <button
+                type="button"
+                onClick={() => onJumpToPane(p.workspaceId, p.paneId)}
+                title={`${rowLabel(p)} — ${p.workspaceName}`}
+                className="flex-1 min-w-0 flex items-center gap-2 h-full text-left rounded-[4px] transition-colors hover:bg-[rgba(var(--bg-surface-rgb),0.6)]"
               >
-                {rowLabel(p)}
-              </span>
-              <span
-                className={`flex-1 min-w-0 truncate font-mono text-[10px] ${
-                  attention ? 'text-[var(--accent-red)]' : 'text-[var(--text-muted)]'
-                }`}
+                <span
+                  aria-hidden="true"
+                  className="w-[7px] h-[7px] rounded-full shrink-0"
+                  style={{ backgroundColor: dotColor(p.agentStatus) }}
+                />
+                <span
+                  className="text-[12px] font-medium text-[var(--text-main)] shrink-0 max-w-[45%] truncate"
+                  {...tokenAttrs('textMain', 'text')}
+                >
+                  {rowLabel(p)}
+                </span>
+                <span
+                  className={`flex-1 min-w-0 truncate font-mono text-[10px] ${
+                    attention ? 'text-[var(--accent-red)]' : 'text-[var(--text-muted)]'
+                  }`}
+                  {...tokenAttrs('textMuted', 'text')}
+                >
+                  {activityLine(p, t)}
+                </span>
+                {/* Jump affordance — muted at rest, accent on hover (DESIGN.md). */}
+                <span
+                  aria-hidden="true"
+                  className="shrink-0 font-mono text-[11px] text-[var(--text-muted)] group-hover:text-[var(--accent-blue)]"
+                >
+                  →
+                </span>
+              </button>
+              {/* Operator-assigned role — soft routing hint the orchestrator reads.
+                  Writes through MetadataStore (setRole) so it relays to the brain. */}
+              <select
+                aria-label={`${rowLabel(p)} role`}
+                value={role}
+                onChange={(e) => {
+                  void window.electronAPI?.metadata?.setRole?.(p.paneId, p.workspaceId, e.target.value);
+                }}
+                className="shrink-0 h-[18px] max-w-[84px] bg-transparent text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)] focus:text-[var(--text-main)] rounded-[3px] outline-none cursor-pointer"
                 {...tokenAttrs('textMuted', 'text')}
+                title="Preferred role — the orchestrator routes matching work here"
               >
-                {activityLine(p, t)}
-              </span>
-              {/* Jump affordance — muted at rest, accent on hover (DESIGN.md). */}
-              <span
-                aria-hidden="true"
-                className="shrink-0 font-mono text-[11px] text-[var(--text-muted)] group-hover:text-[var(--accent-blue)]"
-              >
-                →
-              </span>
-            </button>
+                <option value="">role…</option>
+                {roleOptions.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
+            </div>
           );
         })}
       </div>

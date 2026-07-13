@@ -313,6 +313,10 @@ export interface MetadataUpdatePayload {
   // label mirror, so these never leak into workspace metadata.
   paneId?: string;
   paneLabel?: string;
+  // Orchestrator pane role relay — teed alongside paneLabel on the same
+  // paneId-only METADATA_UPDATE (from MetadataStore's custom['orchestrator.role']).
+  // '' clears the renderer's per-pane role mirror (unassigned / tombstone).
+  paneRole?: string;
   // P2 — agent slug ('claude'/'codex'/…), computed in main next to agentName so
   // the renderer can build a pane's `(<agent>)` auto-name suffix without
   // importing the main-only display→slug map.

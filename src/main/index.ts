@@ -77,6 +77,7 @@ import { collectLegacyMetadata } from './metadata/legacyMigration';
 import { sessionManager, registerSessionHandlers } from './ipc/handlers/session.handler';
 import { eventBus } from './events/EventBus';
 import { broadcastMetadataUpdate } from './ipc/handlers/metadata.handler';
+import { readOrchRole } from '../shared/orchestratorRole';
 import { initLogSink, logLine } from './util/logSink';
 
 markBoot('imports-done');
@@ -1218,8 +1219,16 @@ app.on('ready', async () => {
     if (!mainWindow || mainWindow.isDestroyed()) return;
     for (const entry of metadataStore.snapshot().entries) {
       const label = entry.metadata.label;
-      if (typeof label === 'string' && label.length > 0) {
-        broadcastMetadataUpdate(mainWindow, { paneId: entry.paneId, paneLabel: label });
+      const role = readOrchRole(entry.metadata.custom);
+      // Re-push a pane on boot if it carries EITHER a label or a role, so both
+      // volatile mirrors re-seed after restart. Send '' for the absent one so
+      // the corresponding mirror entry is dropped rather than left stale.
+      if ((typeof label === 'string' && label.length > 0) || role) {
+        broadcastMetadataUpdate(mainWindow, {
+          paneId: entry.paneId,
+          paneLabel: typeof label === 'string' ? label : '',
+          paneRole: role ?? '',
+        });
       }
     }
   };
@@ -1267,6 +1276,7 @@ app.on('ready', async () => {
     broadcastMetadataUpdate(mainWindow, {
       paneId: event.paneId,
       paneLabel: event.metadata.label ?? '',
+      paneRole: readOrchRole(event.metadata.custom) ?? '',
     });
   });
 

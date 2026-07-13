@@ -7,6 +7,7 @@ import { prStatusCache } from '../../metadata/PrStatusCache';
 import { PTYManager } from '../../pty/PTYManager';
 import { wrapHandler } from '../wrapHandler';
 import { metadataStore } from '../../metadata/MetadataStore';
+import { ORCH_ROLE_KEY } from '../../../shared/orchestratorRole';
 
 /**
  * Single source for IPC.METADATA_UPDATE outgoing messages. All metadata-like
@@ -140,6 +141,24 @@ export function registerMetadataHandlers(
     label: string,
   ) => {
     metadataStore.set(paneId, { label }, { workspaceId });
+    return { ok: true };
+  }));
+
+  // Fleet dropdown → set a pane's operator-assigned orchestrator role. Writes
+  // custom['orchestrator.role'] through the SAME MetadataStore authority as the
+  // MCP pane_set_metadata tool (custom deep-merge, so a role write never clobbers
+  // the pane's label or other tools' custom keys), so it persists (metadata.json)
+  // and relays to every renderer + the orchestrator via pane.metadata.changed.
+  // An empty string is the "unassigned" sentinel (additive merge has no
+  // delete-one-key op); readOrchRole normalizes '' → undefined on read.
+  ipcMain.removeHandler(IPC.METADATA_SET_ROLE);
+  ipcMain.handle(IPC.METADATA_SET_ROLE, wrapHandler(IPC.METADATA_SET_ROLE, async (
+    _event: Electron.IpcMainInvokeEvent,
+    paneId: string,
+    workspaceId: string,
+    role: string,
+  ) => {
+    metadataStore.set(paneId, { custom: { [ORCH_ROLE_KEY]: role } }, { workspaceId, mergeMode: 'merge' });
     return { ok: true };
   }));
 

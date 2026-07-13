@@ -500,14 +500,16 @@ export function useNotificationListener() {
       // workspace metadata — pull it OUT here, alongside ptyId, so it can never
       // flow into `...rest` and get written into updateWorkspaceMetadata by
       // applyToWorkspace's spread.
-      const { ptyId, workspaceId: payloadWsId, activity, paneId, paneLabel, agentSlug, ...rest } = payload;
+      const { ptyId, workspaceId: payloadWsId, activity, paneId, paneLabel, paneRole, agentSlug, ...rest } = payload;
 
       // P2 (checklist D): a paneId-only payload is the pane-label relay from
-      // MetadataStore. Route it to the per-pane label mirror and return so
-      // paneId/paneLabel never reach applyToWorkspace (whose spread would
-      // mis-record them onto the active workspace's metadata).
+      // MetadataStore. Route it to the per-pane label + role mirrors and return
+      // so paneId/paneLabel/paneRole never reach applyToWorkspace (whose spread
+      // would mis-record them onto the active workspace's metadata).
       if (paneId !== undefined) {
         state.setPaneLabel(paneId, typeof paneLabel === 'string' ? paneLabel : undefined);
+        // paneRole is teed on the same relay; '' clears the mirror entry.
+        state.setPaneRole(paneId, typeof paneRole === 'string' ? paneRole : undefined);
         return;
       }
 

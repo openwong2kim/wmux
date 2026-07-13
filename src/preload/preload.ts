@@ -222,8 +222,8 @@ const electronAPI = {
     // progress) flow through this one shape. Renderer routes by ptyId
     // (preferred) or workspaceId (for surface-less updates like
     // meta.setStatus on the active workspace).
-    onUpdate: (callback: (payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number; gitIsWorktree?: boolean; pr?: { number: number; state: 'open' | 'draft' | 'merged' | 'closed'; checks: 'pending' | 'passing' | 'failing' | null; url: string } | null; lastNotificationText?: { ts: number; title: string | null; body: string; source: 'osc9' | 'osc777' | 'osc99' }; activity?: string; paneId?: string; paneLabel?: string; agentSlug?: string | null }) => void) => {
-      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number; gitIsWorktree?: boolean; pr?: { number: number; state: 'open' | 'draft' | 'merged' | 'closed'; checks: 'pending' | 'passing' | 'failing' | null; url: string } | null; lastNotificationText?: { ts: number; title: string | null; body: string; source: 'osc9' | 'osc777' | 'osc99' }; activity?: string; paneId?: string; paneLabel?: string; agentSlug?: string | null }) =>
+    onUpdate: (callback: (payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number; gitIsWorktree?: boolean; pr?: { number: number; state: 'open' | 'draft' | 'merged' | 'closed'; checks: 'pending' | 'passing' | 'failing' | null; url: string } | null; lastNotificationText?: { ts: number; title: string | null; body: string; source: 'osc9' | 'osc777' | 'osc99' }; activity?: string; paneId?: string; paneLabel?: string; paneRole?: string; agentSlug?: string | null }) => void) => {
+      const listener = (_event: Electron.IpcRendererEvent, payload: { ptyId?: string; workspaceId?: string; gitBranch?: string; cwd?: string; listeningPorts?: number[]; agentStatus?: string; agentName?: string; status?: string; progress?: number; gitIsWorktree?: boolean; pr?: { number: number; state: 'open' | 'draft' | 'merged' | 'closed'; checks: 'pending' | 'passing' | 'failing' | null; url: string } | null; lastNotificationText?: { ts: number; title: string | null; body: string; source: 'osc9' | 'osc777' | 'osc99' }; activity?: string; paneId?: string; paneLabel?: string; paneRole?: string; agentSlug?: string | null }) =>
         callback(payload);
       ipcRenderer.on(IPC.METADATA_UPDATE, listener);
       return () => { ipcRenderer.removeListener(IPC.METADATA_UPDATE, listener); };
@@ -237,6 +237,11 @@ const electronAPI = {
     // so the change persists + relays back to every renderer via METADATA_UPDATE.
     setLabel: (paneId: string, workspaceId: string, label: string) =>
       ipcRenderer.invoke(IPC.METADATA_SET, paneId, workspaceId, label) as Promise<{ ok: boolean }>,
+    // Fleet dropdown → set a pane's operator-assigned orchestrator role. Routes
+    // through MetadataStore (custom deep-merge) so it persists + relays back via
+    // METADATA_UPDATE.paneRole. '' clears the assignment (unassigned sentinel).
+    setRole: (paneId: string, workspaceId: string, role: string) =>
+      ipcRenderer.invoke(IPC.METADATA_SET_ROLE, paneId, workspaceId, role) as Promise<{ ok: boolean }>,
     // gate로 확정된 agentName을 main 캐시에서 pull. running 수신 시 agentName이
     // 비어 있으면 호출해, 매핑 준비 전에 놓친 1회성 session:agent emit을 메운다.
     resolveAgent: (ptyId: string) =>

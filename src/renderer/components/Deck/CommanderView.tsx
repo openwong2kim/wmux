@@ -699,6 +699,7 @@ export function CommanderView(): React.ReactElement {
   const workspaces = useStore((s) => s.workspaces);
   const surfaceAgent = useStore((s) => s.surfaceAgent);
   const paneLabel = useStore((s) => s.paneLabel);
+  const paneRole = useStore((s) => s.paneRole);
   const createChannelDaemon = useStore((s) => s.createChannelDaemon);
   const inviteChannelDaemon = useStore((s) => s.inviteChannelDaemon);
   const postMessageDaemon = useStore((s) => s.postMessageDaemon);
@@ -948,6 +949,7 @@ export function CommanderView(): React.ReactElement {
         activeWorkspaceId: workspaceId,
         surfaceAgent,
         paneLabel,
+        paneRole,
         channels,
         ...(recoveryLines ? { maxChars: Math.max(400, 2000 - recoveryLines.length) } : {}),
       });
@@ -981,7 +983,7 @@ export function CommanderView(): React.ReactElement {
         });
       return { ok: true };
     },
-    [activeWorkspaceId, workspaces, surfaceAgent, paneLabel, channels, recoveryPanes, startDeckBrainTurn, failDeckBrainTurn, pushToast, t],
+    [activeWorkspaceId, workspaces, surfaceAgent, paneLabel, paneRole, channels, recoveryPanes, startDeckBrainTurn, failDeckBrainTurn, pushToast, t],
   );
 
   // diff→오케스트레이터 질문 릴레이(deckSlice.pendingBrainPrompt) — DiffPanel이
