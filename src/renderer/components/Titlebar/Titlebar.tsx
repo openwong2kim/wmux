@@ -1,4 +1,4 @@
-import { useEffect, useState, useCallback, type CSSProperties } from 'react';
+import { useEffect, useState, useCallback, useRef, type CSSProperties } from 'react';
 import { useStore } from '../../stores';
 import { tokenAttrs } from '../../themes';
 import StatusBar from '../StatusBar/StatusBar';
@@ -75,7 +75,22 @@ export default function Titlebar() {
   const isMac = platform === 'darwin';
   const isWin = platform === 'win32';
   const [pickerOpen, setPickerOpen] = useState(false);
-  const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
+  // Anchor the preset dropdown UNDER the + button. Measured at open time
+  // (the button's viewport rect), clamped so the 208px menu never overflows
+  // the window — without this the picker's legacy sidebar anchor (`right-2`)
+  // resolved against the full-width header and opened at the far right edge.
+  const plusBtnRef = useRef<HTMLButtonElement | null>(null);
+  const [pickerLeft, setPickerLeft] = useState(8);
+  const togglePicker = useCallback(() => {
+    setPickerOpen((v) => {
+      if (!v) {
+        const r = plusBtnRef.current?.getBoundingClientRect();
+        const menuWidth = 208; // w-52
+        if (r) setPickerLeft(Math.max(8, Math.min(r.left, window.innerWidth - menuWidth - 8)));
+      }
+      return !v;
+    });
+  }, []);
   const closePicker = useCallback(() => setPickerOpen(false), []);
 
   useTitleBarOverlaySync();
@@ -119,6 +134,7 @@ export default function Titlebar() {
           WMUX
         </span>
         <button
+          ref={plusBtnRef}
           type="button"
           onClick={togglePicker}
           className={`flex items-center justify-center w-6 h-6 rounded-md text-[var(--text-muted)] hover:text-[var(--accent-green)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)] transition-colors duration-150 ml-auto ${FOCUS_RING}`}
@@ -129,7 +145,12 @@ export default function Titlebar() {
         >
           <IconPlus size={14} />
         </button>
-        {pickerOpen && <PresetPicker onClose={closePicker} />}
+        {pickerOpen && (
+          <PresetPicker
+            onClose={closePicker}
+            anchorStyle={{ left: pickerLeft, top: TITLEBAR_HEIGHT + 4 }}
+          />
+        )}
       </div>
       {/* The status strip (P1.5) fills the rest of the bar: transient
           indicators on the left, the status/clock/settings cluster pinned

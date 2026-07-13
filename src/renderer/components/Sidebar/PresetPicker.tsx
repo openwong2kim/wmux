@@ -1,12 +1,19 @@
-import { useEffect, useRef, useCallback } from 'react';
+import { useEffect, useRef, useCallback, type CSSProperties } from 'react';
 import { LAYOUT_PRESETS } from '../../../shared/layoutPresets';
 import { useStore } from '../../stores';
 
 interface PresetPickerProps {
   onClose: () => void;
+  /** Viewport-fixed anchor (left/top px). The default `absolute right-2
+   *  top-10` placement predates the Bridge titlebar (#409) and only works
+   *  inside the sidebar's positioning context — rendered from the titlebar
+   *  it resolved against the full-width header and the menu opened at the
+   *  far RIGHT edge of the window (owner-reported). The titlebar measures
+   *  its + button and passes the anchor instead. */
+  anchorStyle?: CSSProperties;
 }
 
-export default function PresetPicker({ onClose }: PresetPickerProps) {
+export default function PresetPicker({ onClose, anchorStyle }: PresetPickerProps) {
   const addWorkspace = useStore((s) => s.addWorkspace);
   const addWorkspaceWithPreset = useStore((s) => s.addWorkspaceWithPreset);
   const ref = useRef<HTMLDivElement>(null);
@@ -50,7 +57,8 @@ export default function PresetPicker({ onClose }: PresetPickerProps) {
   return (
     <div
       ref={ref}
-      className="absolute right-2 top-10 z-50 w-52 bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-md shadow-lg py-1 text-xs font-mono"
+      style={anchorStyle}
+      className={`${anchorStyle ? 'fixed' : 'absolute right-2 top-10'} z-50 w-52 bg-[var(--bg-overlay)] border border-[var(--bg-surface)] rounded-md shadow-lg py-1 text-xs font-mono`}
     >
       {/* Empty workspace option */}
       <button
