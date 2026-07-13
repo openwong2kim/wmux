@@ -29,6 +29,7 @@ import { STALE_REPLAY_INPUT_MODE_RESETS } from '../terminal/staleReplayModeReset
 import {
   writeTerminalOutput,
   flushTerminalOutput,
+  noteTerminalInput,
   discardTerminalOutput,
   isTerminalDirty,
   markTerminalDirty,
@@ -1205,6 +1206,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
         useStore.getState().clearResumeHint(ptyId);
         // Real user input reached the app — clear the dead-input watchdog.
         deadInputWatchdog.onData();
+        // Open the interactive window so this terminal's imminent echo / redraw
+        // takes the zero-latency direct-write path in the output scheduler.
+        // (Focus reports above are excluded — they are not user input.)
+        noteTerminalInput(terminal);
       }
       void chunkOnDataIfNeeded(
         (d) => window.electronAPI.pty.write(ptyId, d),

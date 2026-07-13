@@ -2,6 +2,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
+  noteTerminalInput,
   discardTerminalOutput,
   getQueuedCharCount,
   __resetTerminalOutputSchedulerForTests,
@@ -36,10 +37,22 @@ describe('terminalOutputScheduler', () => {
     vi.useRealTimers();
   });
 
-  it('foreground write with empty queue writes directly (old-path parity)', () => {
+  it('foreground write inside the interactive window writes directly (echo parity)', () => {
     const t = makeTerminal();
+    noteTerminalInput(t); // user just typed → echo takes the direct path
     writeTerminalOutput(t, 'abc', { foreground: true });
     expect(t.writes).toEqual(['abc']);
+    expect(getQueuedCharCount(t)).toBe(0);
+  });
+
+  it('foreground streaming with NO recent input is queued + coordinated, not direct', () => {
+    const t = makeTerminal();
+    // No noteTerminalInput → this is streaming output (agent torrent), not echo.
+    writeTerminalOutput(t, 'stream', { foreground: true });
+    expect(t.writes).toEqual([]); // did NOT pin the thread with a direct write
+    expect(getQueuedCharCount(t)).toBe(6); // queued for coordinated drain
+    vi.runAllTimers();
+    expect(joined(t)).toBe('stream'); // delivered in order via the drain
     expect(getQueuedCharCount(t)).toBe(0);
   });
 
@@ -68,8 +81,9 @@ describe('terminalOutputScheduler', () => {
     expect(t.writes.length).toBeGreaterThan(1);
   });
 
-  it('a foreground chunk at the threshold still takes the direct path', () => {
+  it('a foreground chunk at the threshold still takes the direct path (in-window)', () => {
     const t = makeTerminal();
+    noteTerminalInput(t);
     const atLimit = 'G'.repeat(64 * 1024); // == threshold, still direct
     writeTerminalOutput(t, atLimit, { foreground: true });
     expect(t.writes).toEqual([atLimit]);
@@ -89,6 +103,7 @@ describe('terminalOutputScheduler', () => {
   it('onWritten fires with the handed-off char count (direct and drained)', () => {
     const t = makeTerminal();
     const written: number[] = [];
+    noteTerminalInput(t); // direct-path write (in interactive window)
     writeTerminalOutput(t, 'abcd', { foreground: true, onWritten: (n) => written.push(n) });
     expect(written).toEqual([4]);
     writeTerminalOutput(t, 'ef', { foreground: false, onWritten: (n) => written.push(n) });
@@ -194,12 +209,13 @@ describe('terminalOutputScheduler', () => {
     expect(getQueuedCharCount(t)).toBe(0);
   });
 
-  it('foreground direct write resumes once the backlog fully drains', () => {
+  it('foreground direct write resumes once the backlog fully drains (in-window)', () => {
     const t = makeTerminal();
     writeTerminalOutput(t, 'queued', { foreground: false });
     vi.runAllTimers();
     expect(joined(t)).toBe('queued');
-    // Queue is empty again → back on the direct path.
+    // Queue is empty again AND the user typed → back on the direct path.
+    noteTerminalInput(t);
     writeTerminalOutput(t, '!', { foreground: true });
     expect(joined(t)).toBe('queued!');
   });

@@ -93,7 +93,21 @@ const CHUNK_CHARS = 16 * 1024;
 // zero-latency direct path; only genuine torrents cross it.
 const FOREGROUND_DIRECT_MAX_CHARS = 64 * 1024;
 const MAX_WRITES_PER_DRAIN = 2;
+// A visible pane with queued output gets a higher per-drain write budget so its
+// backlog (streaming that fell outside the interactive window) catches up fast
+// under the SAME 8ms wall-clock ceiling — matching orca's high-priority budget
+// (8 × 16KB = 128KB/tick). Without this, foreground streaming demoted into the
+// queue would drain at only 2 writes/tick and lag.
+const PRIORITY_MAX_WRITES_PER_DRAIN = 8;
 const DRAIN_TIME_BUDGET_MS = 8;
+// Interactive window: keystroke echo and input-driven TUI redraws arrive within
+// a short window after the user types. ONLY output inside this window keeps the
+// zero-latency DIRECT write. Streaming output with no recent input (an agent
+// printing a torrent, a log tail) is queued and budget-coordinated so multiple
+// active terminals can't each pin the renderer thread in an unbudgeted parse and
+// starve input/switch/paint — the "switching lags when terminals are active,
+// smooth when idle" symptom. Sized above ordinary echo round-trip latency.
+const INTERACTIVE_WINDOW_MS = 150;
 /** Backlogs past this promote the drain to the priority cadence so a single
  *  chatty hidden pane cannot sit on a growing queue for seconds. */
 const LARGE_BACKLOG_CHARS = 512 * 1024;
@@ -104,6 +118,10 @@ const MAX_QUEUE_CHARS = 2 * 1024 * 1024;
 const COMPACT_THRESHOLD = 64;
 
 const queue = new Map<SchedulableTerminal, QueueEntry>();
+/** Last user-input timestamp per terminal. The interactive window after this
+ *  keeps the terminal's foreground output on the direct-write path (echo /
+ *  input-driven redraw); output with no recent input is queued + coordinated. */
+const lastInputAt = new Map<SchedulableTerminal, number>();
 /** Terminals whose retained backlog overflowed and was discarded — their
  *  parsed buffer no longer reflects the PTY stream. The owner (useTerminal)
  *  re-synchronizes from the daemon and calls markTerminalClean. While dirty,
@@ -117,6 +135,22 @@ let retentionEngagedLogged = false;
 
 function now(): number {
   return typeof performance !== 'undefined' ? performance.now() : Date.now();
+}
+
+/** Record user input for a terminal. Call from the xterm onData handler. The
+ *  interactive window after this keeps the terminal's foreground output on the
+ *  zero-latency direct path (keystroke echo, input-driven TUI redraw); output
+ *  with no recent input is queued and budget-coordinated so active terminals
+ *  don't starve input/switch/paint. */
+export function noteTerminalInput(terminal: SchedulableTerminal): void {
+  lastInputAt.set(terminal, now());
+}
+
+/** True when the user typed into this terminal within the interactive window —
+ *  i.e. this foreground output is likely echo/redraw and should stay direct. */
+function withinInteractiveWindow(terminal: SchedulableTerminal): boolean {
+  const t = lastInputAt.get(terminal);
+  return t !== undefined && now() - t < INTERACTIVE_WINDOW_MS;
 }
 
 function scheduleDrain(delayMs: number): void {
@@ -238,8 +272,11 @@ function drainQueuedOutput(): void {
   drainDelayMs = null;
   const startedAt = now();
   let writes = 0;
+  // Foreground/priority backlog drains at the higher write budget so demoted
+  // visible streaming catches up fast; background stays at the small budget.
+  const maxWrites = hasPriorityBacklog() ? PRIORITY_MAX_WRITES_PER_DRAIN : MAX_WRITES_PER_DRAIN;
 
-  while (hasDrainableEntries() && writes < MAX_WRITES_PER_DRAIN) {
+  while (hasDrainableEntries() && writes < maxWrites) {
     const entry = takeNextEntry();
     if (!entry) break;
     if (writeQueuedChunk(entry)) {
@@ -306,16 +343,21 @@ export function writeTerminalOutput(
 
   const existing = queue.get(terminal);
 
-  // Direct path only for a bounded chunk with nothing already queued. An
-  // oversized foreground chunk falls through to the priority-enqueue path
-  // below so it is handed to xterm in CHUNK_CHARS slices under the drain
-  // budget — a visible pane's own flood no longer blocks the renderer in one
-  // parse, while byte order stays intact (nothing was queued, so this chunk
-  // is first in line and drains at the priority cadence).
+  // Direct path only for a bounded chunk with nothing already queued AND recent
+  // user input (interactive window) — keystroke echo / input-driven TUI redraw,
+  // which must stay zero-latency. Streaming output with no recent input (agent
+  // torrents, log tails) falls through to the priority-enqueue path so it is
+  // handed to xterm in CHUNK_CHARS slices under the shared drain budget. This is
+  // the fix for multi-active-terminal starvation: without the interactive gate,
+  // every visible streaming pane wrote synchronously with no shared budget, so
+  // N busy visible panes pinned the renderer thread and starved input/switch.
+  // Byte order stays intact — nothing was queued, so this chunk is first in line
+  // and drains at the priority cadence.
   if (
     options.foreground &&
     (!existing || !hasQueuedChunks(existing)) &&
-    data.length <= FOREGROUND_DIRECT_MAX_CHARS
+    data.length <= FOREGROUND_DIRECT_MAX_CHARS &&
+    withinInteractiveWindow(terminal)
   ) {
     try {
       terminal.write(data);
@@ -379,6 +421,7 @@ export function flushTerminalOutput(terminal: SchedulableTerminal): void {
 export function discardTerminalOutput(terminal: SchedulableTerminal): void {
   queue.delete(terminal);
   dirtyTerminals.delete(terminal);
+  lastInputAt.delete(terminal);
 }
 
 /** Phase 3: true when this terminal's retained backlog overflowed and was
@@ -416,5 +459,6 @@ export function __resetTerminalOutputSchedulerForTests(): void {
   drainDelayMs = null;
   queue.clear();
   dirtyTerminals.clear();
+  lastInputAt.clear();
   retentionEngagedLogged = false;
 }

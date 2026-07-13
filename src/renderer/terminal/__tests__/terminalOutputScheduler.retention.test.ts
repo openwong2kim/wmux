@@ -6,6 +6,7 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import {
   writeTerminalOutput,
   flushTerminalOutput,
+  noteTerminalInput,
   discardTerminalOutput,
   getQueuedCharCount,
   isTerminalDirty,
@@ -149,8 +150,9 @@ describe('terminalOutputScheduler — hidden-pane retention', () => {
     expect(isTerminalDirty(t)).toBe(false);
   });
 
-  it('foreground direct path is unaffected by the retention option', () => {
+  it('foreground direct path is unaffected by the retention option (in-window)', () => {
     const t = makeTerminal();
+    noteTerminalInput(t); // interactive window → direct path (retention is hidden-only)
     writeTerminalOutput(t, 'echo', { foreground: true, retainWhenHidden: true });
     expect(t.writes).toEqual(['echo']);
   });
