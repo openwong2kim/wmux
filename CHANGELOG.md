@@ -7,6 +7,20 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Auto-wake is now a switch you own.** The orchestrator's event-push wakes (the automatic "here's what your agents just did" summaries) each spend a real model turn — and until now there was no way to turn them off. Settings grows an "Auto-wake on pane events" toggle: switch it off and unrequested summary turns stop entirely, saving the tokens. Loops are unaffected — a running loop keeps waking through its own iteration budget, because you explicitly started it. The switch lives next to the orchestrator's other settings and applies immediately, no restart needed.
+
+### Fixed
+
+- **The new-workspace layout menu opens under the + button again — not across the window.** Since the + button moved into the titlebar, its layout dropdown (Empty / Horizontal Split / …) kept its old sidebar anchoring and opened at the far right edge of the window, floating over the orchestrator dock. It now anchors directly beneath the + button, clamped to stay inside the window.
+
+- **The orchestrator no longer re-fires your own hooks on every tool call — a major source of background CPU churn.** The orchestrator's turns silently loaded your user-level Claude settings, including the wmux plugin's own hooks — so each tool call inside an orchestrator turn spawned an extra bridge process (~110ms of CPU each), and the orchestrator's turn-end looked like a phantom agent event. With auto-wake summaries running, this compounded into a steady process storm that could make the whole app stutter. Orchestrator turns now load no filesystem settings at all; their behavior was always defined explicitly in code, so nothing else changes.
+
+### Changed
+
+- **Korean UI: "오케스트레이터" is now just "agent".** The transliterated word overflowed tabs and labels; the Korean locale now uses the untranslated term "agent" everywhere the orchestrator is named (pane agents remain "에이전트").
+
 ## [3.21.0] — 2026-07-13
 
 ### Added

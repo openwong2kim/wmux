@@ -230,15 +230,21 @@ export const ko = {
   'settings.tabNotifications': '알림',
   'settings.tabShortcuts': '단축키',
   'settings.tabAbout': '정보',
-  // 오케스트레이터 (커맨드 데크 브레인) 설정
-  'settings.orchestrator': '오케스트레이터',
-  'settings.orchestratorModel': '오케스트레이터 모델',
+  // agent (커맨드 데크 브레인) 설정 — 명칭은 영문 "agent" 고정(번역·한글화
+  // 금지, 오너 결정 2026-07-13: "오케스트레이터"는 한글 UI에서 넘침).
+  'settings.orchestrator': 'agent',
+  'settings.orchestratorModel': 'agent 모델',
   'settings.orchestratorModelDesc':
-    '커맨드 데크 오케스트레이터가 사용할 Claude 모델. 변경은 다음 지시부터 적용되고 대화는 이어집니다.',
+    '커맨드 데크 agent가 사용할 Claude 모델. 변경은 다음 지시부터 적용되고 대화는 이어집니다.',
   'settings.orchestratorModelDefault': '기본 (구독 기본 모델)',
+  // 이벤트 자동 깨우기 킬스위치: 끄면 요청하지 않은 자동 요약 턴(토큰 소비)이
+  // 멈춘다. 실행 중인 루프는 계속 깨운다.
+  'settings.autoWake': 'pane 이벤트 자동 깨우기',
+  'settings.autoWakeDesc':
+    'pane이 멈추거나 입력을 기다릴 때 agent를 깨워 요약합니다. 깨울 때마다 토큰을 쓰는 실제 턴이 돌아갑니다 — 요청하지 않은 요약이 싫으면 끄세요. 실행 중인 루프는 꺼도 계속 동작합니다.',
   'settings.channelsTabVisible': '채널 탭 표시',
   'settings.channelsTabVisibleDesc':
-    '도크에 채널 탭(사람용 채널 UI)을 표시합니다. 꺼도 에이전트·오케스트레이터의 채널 통신은 그대로 동작합니다 — 원문을 직접 확인하고 싶을 때만 켜세요.',
+    '도크에 채널 탭(사람용 채널 UI)을 표시합니다. 꺼도 에이전트·agent의 채널 통신은 그대로 동작합니다 — 원문을 직접 확인하고 싶을 때만 켜세요.',
   // LanLink 제어 평면 (PR-3)
   'settings.lanlinkTab': 'LanLink',
   'settings.lanlink': 'LanLink (LAN 에이전트 메시징)',
@@ -655,10 +661,11 @@ export const ko = {
   'channels.mentionUnmatched': '이 @멘션은 일치하는 대상이 없어 전달되지 않았습니다: {names}',
   'channels.mentionNoMatch': '멘션할 에이전트가 없습니다',
   // Command Deck (Phase 1) — 탭형 도크 + LLM 없는 지휘 composer.
-  // 명명 규칙(오너 결정 2026-07-11): 두뇌/기능 = "오케스트레이터", pane 집합 = "에이전트".
+  // 명명 규칙(오너 결정 2026-07-13 개정): 두뇌/기능 = "agent"(영문 고정, 번역
+  // 안 함 — "오케스트레이터"는 한글 UI에서 넘침), pane 집합 = "에이전트".
   // "함대(fleet)" 어휘는 사용자 표면에서 쓰지 않는다.
   'deck.tabsAriaLabel': '커맨드 데크 탭',
-  'deck.tabCommander': '오케스트레이터',
+  'deck.tabCommander': 'agent',
   'deck.tabChannels': '채널',
   'deck.tabGit': 'Git',
   // Deck Git 탭 — 워크트리 표면(v1).
@@ -697,11 +704,11 @@ export const ko = {
   'settings.gitTabVisibleDesc':
     '우측 도크에 Git 탭(워크트리)을 표시합니다. 정보성 표면 — 최소 크롬을 원하면 숨기세요.',
   'deck.collapseDock': '도크 접기',
-  'deck.commanderPlaceholder': '오케스트레이터에 지시하거나 @로 pane을 멘션…',
+  'deck.commanderPlaceholder': 'agent에 지시하거나 @로 pane을 멘션…',
   'deck.commanderEmpty':
-    '오케스트레이터에게 에이전트 운영을 맡기거나, @로 에이전트 pane을 멘션해 직접 지시하세요.',
+    'agent에게 에이전트 운영을 맡기거나, @로 에이전트 pane을 멘션해 직접 지시하세요.',
   'deck.jumpToPane': '이 pane으로 이동',
-  // Bridge P2① — 오케스트레이터 스레드 위에 고정되는 에이전트 명단.
+  // Bridge P2① — agent 스레드 위에 고정되는 에이전트 명단.
   'deck.fleetLabel': '에이전트',
   'deck.fleetNeedsYou': '{count}개 응답 필요',
   'deck.fleetNeedsInput': '입력 필요',
@@ -709,11 +716,11 @@ export const ko = {
   'strip.running': '{count}개 실행 중',
   'strip.needsYou': '{count}개 응답 필요',
   'strip.needsYouTooltip': '응답이 필요한 pane으로 이동',
-  // 커맨드 데크 Phase 2 — 오케스트레이터 두뇌(Agent SDK).
-  'deck.commander': '오케스트레이터',
-  'deck.commanderThinking': '오케스트레이터가 작업 중…',
+  // 커맨드 데크 Phase 2 — agent 두뇌(Agent SDK).
+  'deck.commander': 'agent',
+  'deck.commanderThinking': 'agent가 작업 중…',
   'deck.commanderStop': '중지',
-  'deck.commanderUnavailable': '오케스트레이터를 사용할 수 없습니다',
+  'deck.commanderUnavailable': 'agent를 사용할 수 없습니다',
   'deck.commanderBusy': '이미 실행 중인 명령이 있습니다.',
   'deck.commanderFailed': '명령을 실행하지 못했습니다.',
   // 커맨드 데크 P3b — 재부팅 복구 인사 카드.
@@ -723,10 +730,10 @@ export const ko = {
   // 커맨드 데크 P3c — composer 위 퀵액션 칩.
   'deck.qaFleetStatus': '에이전트 상태',
   'deck.qaPrStatus': 'PR 상태',
-  // 커맨드 데크 P3d — 오케스트레이터 예약(재부팅 생존).
+  // 커맨드 데크 P3d — agent 예약(재부팅 생존).
   'deck.schedules': '예약',
-  'deck.schedulesEmpty': '예약이 없습니다. 예약은 재부팅 후에도 유지되고, 시간이 되면 오케스트레이터가 실행합니다.',
-  'deck.schedulePromptPlaceholder': '오케스트레이터가 무엇을 하면 될까요?',
+  'deck.schedulesEmpty': '예약이 없습니다. 예약은 재부팅 후에도 유지되고, 시간이 되면 agent가 실행합니다.',
+  'deck.schedulePromptPlaceholder': 'agent가 무엇을 하면 될까요?',
   'deck.scheduleRepeat': '반복',
   'deck.scheduleRepeatNone': '한 번',
   'deck.scheduleRepeat30m': '30분마다',
@@ -739,7 +746,7 @@ export const ko = {
   'deck.scheduleDelete': '삭제',
   'deck.scheduleInvalid': '지시 내용과 유효한 시간을 입력하세요.',
   'deck.scheduleLimit': '예약 개수 한도에 도달했습니다.',
-  // M1.5 — 워크스페이스별 오케스트레이터: 예약은 워크스페이스에 귀속된다.
+  // M1.5 — 워크스페이스별 agent: 예약은 워크스페이스에 귀속된다.
   'deck.scheduleNoWorkspace': '먼저 워크스페이스를 여세요 — 예약은 워크스페이스에 속합니다.',
   'deck.scheduleNeedsWorkspace': '워크스페이스 지정 필요',
   'deck.scheduleAdoptHere': '이 워크스페이스로',
@@ -775,7 +782,7 @@ export const ko = {
   'deck.loopStepAdd': '단계 추가',
   'deck.loopStepRemove': '단계 제거',
   'deck.loopStepsHint':
-    '"/"로 시작하는 단계는 pane 에이전트의 스킬에서 고릅니다 — 실행은 오케스트레이터가 그 커맨드를 pane에 타이핑하는 것입니다.',
+    '"/"로 시작하는 단계는 pane 에이전트의 스킬에서 고릅니다 — 실행은 agent가 그 커맨드를 pane에 타이핑하는 것입니다.',
   'deck.loopDoneWhen': '완료 조건 (선택)',
   'deck.loopIterationsLabel': '반복',
   'deck.loopSkillProject': '프로젝트',
@@ -805,8 +812,8 @@ export const ko = {
   'diff.commentFired': '코멘트를 미션 채널에 발사했습니다 — {count}개 에이전트 호출',
   // 워크스페이스 git diff — 팔레트 진입 거부: 활성 pane cwd가 git repo가 아님.
   'diff.noRepo': 'git 저장소가 아닙니다 — repo 안의 pane에서 실행하세요',
-  // diff → 오케스트레이터 질문 (컨텍스트 블록 + 질문 단일 메시지).
+  // diff → agent 질문 (컨텍스트 블록 + 질문 단일 메시지).
   'diff.ask': '질문',
-  'diff.askOrchestrator': '이 hunk에 대해 오케스트레이터에게 질문',
-  'diff.askPrompt': '오케스트레이터에게 질문 (hunk 컨텍스트는 자동 첨부됩니다):',
+  'diff.askOrchestrator': '이 hunk에 대해 agent에게 질문',
+  'diff.askPrompt': 'agent에게 질문 (hunk 컨텍스트는 자동 첨부됩니다):',
 } as const;
