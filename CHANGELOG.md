@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.21.1] — 2026-07-13
+
 ### Added
 
 - **Auto-wake is now a switch you own.** The orchestrator's event-push wakes (the automatic "here's what your agents just did" summaries) each spend a real model turn — and until now there was no way to turn them off. Settings grows an "Auto-wake on pane events" toggle: switch it off and unrequested summary turns stop entirely, saving the tokens. Loops are unaffected — a running loop keeps waking through its own iteration budget, because you explicitly started it. The switch lives next to the orchestrator's other settings and applies immediately, no restart needed.
