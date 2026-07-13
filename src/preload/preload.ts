@@ -232,7 +232,7 @@ const electronAPI = {
     // so the renderer's volatile mirror is seeded on mount after a restart
     // (MetadataStore.hydrate emits no events).
     snapshot: () =>
-      ipcRenderer.invoke(IPC.METADATA_SNAPSHOT) as Promise<Array<{ paneId: string; label: string }>>,
+      ipcRenderer.invoke(IPC.METADATA_SNAPSHOT) as Promise<Array<{ paneId: string; label: string; role: string }>>,
     // P2 GUI pane rename. Routes through MetadataStore (the sole label authority)
     // so the change persists + relays back to every renderer via METADATA_UPDATE.
     setLabel: (paneId: string, workspaceId: string, label: string) =>

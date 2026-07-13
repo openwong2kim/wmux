@@ -508,8 +508,13 @@ export function useNotificationListener() {
       // would mis-record them onto the active workspace's metadata).
       if (paneId !== undefined) {
         state.setPaneLabel(paneId, typeof paneLabel === 'string' ? paneLabel : undefined);
-        // paneRole is teed on the same relay; '' clears the mirror entry.
-        state.setPaneRole(paneId, typeof paneRole === 'string' ? paneRole : undefined);
+        // paneRole is teed on the same relay. Only touch the role mirror when the
+        // payload actually carries it (a string, incl. '' as the clear tombstone);
+        // an omitted paneRole must NOT wipe an existing role, in case some other
+        // emitter ever sends a label-only paneId payload.
+        if (typeof paneRole === 'string') {
+          state.setPaneRole(paneId, paneRole);
+        }
         return;
       }
 
@@ -667,7 +672,12 @@ export function useNotificationListener() {
         if (snapCancelled) return;
         if (entries.length > 0) {
           const s = useStore.getState();
-          for (const e of entries) s.setPaneLabel(e.paneId, e.label);
+          for (const e of entries) {
+            s.setPaneLabel(e.paneId, e.label);
+            // Seed the role mirror too so a persisted role shows after restart
+            // even if the boot push raced the listener subscription.
+            s.setPaneRole(e.paneId, e.role);
+          }
         } else if (snapAttempts < 5) {
           snapAttempts += 1;
           snapTimer = setTimeout(seedPaneLabels, 300);

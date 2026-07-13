@@ -7,7 +7,7 @@ import { prStatusCache } from '../../metadata/PrStatusCache';
 import { PTYManager } from '../../pty/PTYManager';
 import { wrapHandler } from '../wrapHandler';
 import { metadataStore } from '../../metadata/MetadataStore';
-import { ORCH_ROLE_KEY } from '../../../shared/orchestratorRole';
+import { ORCH_ROLE_KEY, readOrchRole } from '../../../shared/orchestratorRole';
 
 /**
  * Single source for IPC.METADATA_UPDATE outgoing messages. All metadata-like
@@ -122,12 +122,20 @@ export function registerMetadataHandlers(
   // live renames then flow via the pane.metadata.changed relay.
   ipcMain.removeHandler(IPC.METADATA_SNAPSHOT);
   ipcMain.handle(IPC.METADATA_SNAPSHOT, wrapHandler(IPC.METADATA_SNAPSHOT, async () => {
+    // Seed BOTH the label and the orchestrator-role mirrors on mount. The
+    // boot-time push (index.ts) can land before useNotificationListener
+    // subscribes, so this pull is the reliable complement — and it must carry
+    // role too, or a persisted role stays invisible after restart until the
+    // next metadata change (CodeRabbit review). Include a pane if it has EITHER
+    // a label or a role; send '' for the absent field. Non-empty gate matches
+    // the live relay so a cleared value never resurrects from the snapshot.
     return metadataStore.snapshot().entries
-      // Match the live relay (src/main/index.ts): seed only NON-EMPTY labels, else
-      // a cleared ('') label would be re-applied from the restart snapshot and
-      // resurrect a label the user removed (CodeRabbit review).
-      .filter((e) => typeof e.metadata.label === 'string' && (e.metadata.label as string).length > 0)
-      .map((e) => ({ paneId: e.paneId, label: e.metadata.label as string }));
+      .map((e) => ({
+        paneId: e.paneId,
+        label: typeof e.metadata.label === 'string' ? e.metadata.label : '',
+        role: readOrchRole(e.metadata.custom) ?? '',
+      }))
+      .filter((e) => e.label.length > 0 || e.role.length > 0);
   }));
 
   // P2 GUI pane rename: the renderer is the only non-MCP writer of pane labels.
@@ -198,6 +206,7 @@ export function registerMetadataHandlers(
     ipcMain.removeHandler(IPC.METADATA_REQUEST);
     ipcMain.removeHandler(IPC.METADATA_SNAPSHOT);
     ipcMain.removeHandler(IPC.METADATA_SET);
+    ipcMain.removeHandler(IPC.METADATA_SET_ROLE);
   };
 }
 
