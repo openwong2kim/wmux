@@ -7,7 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-## [3.21.3] — 2026-07-13
+### Fixed
+
+- **Switching between workspaces is smooth again, even with many open.** v3.21.3 stopped terminal churn from re-rendering the whole app, but *switching* workspaces was a separate path it didn't cover: every switch still re-rendered the entire ~1300-line window chrome (titlebar, sidebar, dock, toolbar). The direct cause was subtle — the chrome no longer subscribed to the active-workspace id directly, but a focus hook it hosted did (to move keyboard focus onto the newly active pane), and that hook re-rendering dragged the whole chrome with it. Measured on a live 5-workspace app: the chrome re-rendered on 12/12 switches before, 0/12 after. Now a switch only re-renders the pane viewport (which genuinely changed) and two tiny logic-only components, never the chrome. Focus-follows-switch and empty-pane shell auto-creation are unchanged (verified 5/5).
 
 ### Fixed
 

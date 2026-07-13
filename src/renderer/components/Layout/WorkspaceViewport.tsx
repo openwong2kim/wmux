@@ -15,6 +15,7 @@
 
 import { memo } from 'react';
 import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
 import PaneContainer from '../Pane/PaneContainer';
 import type { Workspace } from '../../../shared/types';
 
@@ -105,24 +106,19 @@ const MultiviewWorkspaceSlot = memo(function MultiviewWorkspaceSlot({
   );
 });
 
-export function WorkspaceViewport({
-  activeWorkspaceId,
-  multiviewIds,
-  paneGate,
-  t,
-  setActiveWorkspace,
-  removeMultiviewWorkspace,
-}: {
-  activeWorkspaceId: string;
-  multiviewIds: string[];
-  paneGate: 'pending' | 'ready' | string;
-  t: (key: string) => string;
-  setActiveWorkspace: (id: string) => void;
-  removeMultiviewWorkspace: (id: string) => void;
-}) {
+export function WorkspaceViewport() {
   // The ONE workspaces subscription. Confined here so the chrome (AppLayout)
-  // stays out of the metadata-churn re-render path.
+  // stays out of the metadata-churn re-render path. `activeWorkspaceId` is
+  // subscribed HERE too (not passed from AppLayout) so a workspace SWITCH
+  // re-renders only this viewport — the chrome no longer subscribes to it
+  // (2026-07-13 switch-lag fix; #437 covered the array but not the switch axis).
   const workspaces = useStore((s) => s.workspaces);
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  const multiviewIds = useStore((s) => s.multiviewIds);
+  const paneGate = useStore((s) => s.paneGate);
+  const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
+  const removeMultiviewWorkspace = useStore((s) => s.removeMultiviewWorkspace);
+  const t = useT();
 
   // Close a multiview tile. If closing the ACTIVE tile with others remaining,
   // hand focus to a neighbor first — otherwise the grid gate

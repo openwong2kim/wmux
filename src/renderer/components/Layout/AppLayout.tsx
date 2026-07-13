@@ -6,7 +6,8 @@ import { useT } from '../../hooks/useT';
 import Sidebar from '../Sidebar/Sidebar';
 import MiniSidebar from '../Sidebar/MiniSidebar';
 import { WorkspaceViewport } from './WorkspaceViewport';
-import { selectActiveEmptyLeafIdsKey, selectProjectCwdSignature } from '../../stores/selectors/appLayout';
+import { EmptyLeafFunnel } from './EmptyLeafFunnel';
+import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import NotificationPanel from '../Notification/NotificationPanel';
@@ -30,7 +31,7 @@ import SearchResultsPanel from '../Search/SearchResultsPanel';
 import ChannelDock from '../Channels/ChannelDock';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { useKeyboard } from '../../hooks/useKeyboard';
-import { useActivePaneFocus } from '../../hooks/useActivePaneFocus';
+import { FocusManager } from './LayoutLogicMounts';
 import { useAgentActivityClock } from '../../hooks/useAgentActivityClock';
 import { useTerminalCopyShortcut } from '../../hooks/useTerminalCopyShortcut';
 import { useNotificationListener } from '../../hooks/useNotificationListener';
@@ -50,13 +51,8 @@ import { isFileDrag } from '../../../shared/dragDrop';
 import { terminalRegistry } from '../../hooks/useTerminal';
 import { resolvePtyIdsToClear } from '../../hooks/reconcileWithReQuery';
 import { createLateReconcileOnConnect } from '../../hooks/lateReconcileOnConnect';
-import { resolveStartupCwd, shellDisplayName, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import ProjectConfigDialog from '../Project/ProjectConfigDialog';
 import { probeProjectConfig, maybeAutoApplyProjectLayout, workspaceProbeCwd } from '../../utils/projectConfigProbe';
-import {
-  PROJECT_SUPERVISION_DEFAULT_BURST,
-  PROJECT_SUPERVISION_DEFAULT_HEALTHY_UPTIME_SEC,
-} from '../../../shared/wmuxProjectConfig';
 import { serializeTerminalBuffer } from '../../utils/scrollbackDump';
 import { pastePtyChunked } from '../../utils/clipboardChunk';
 import { isDaemonModeActive, setDaemonModeActive } from '../../daemon/daemonMode';
@@ -263,25 +259,20 @@ export default function AppLayout() {
   const fileTreeVisible = useStore((s) => s.fileTreeVisible);
   const companyViewVisible = useStore((s) => s.companyViewVisible);
   const setCompanyViewVisible = useStore((s) => s.setCompanyViewVisible);
-  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
   // PERF (2026-07-13): AppLayout does NOT subscribe to the whole `workspaces`
-  // array — that re-rendered its ~1300-line chrome on every pane metadata/
-  // surface update (53% CPU at 5 workspaces). The `workspaces` subscription
-  // lives in <WorkspaceViewport> now; here we read only DERIVED-STABLE values
-  // (see stores/selectors/appLayout.ts) that don't change on churn.
+  // array NOR to `activeWorkspaceId` — those re-rendered its ~1300-line chrome
+  // on every pane metadata/surface update (53% CPU at 5 workspaces) and on every
+  // workspace SWITCH respectively. Both subscriptions live in <WorkspaceViewport>
+  // now; the empty-leaf funnel (which also needs activeWorkspaceId) lives in
+  // <EmptyLeafFunnel>. Here we read only DERIVED-STABLE values (see
+  // stores/selectors/appLayout.ts) that don't change on churn or switch.
   const hasActiveWorkspace = useStore((s) => s.workspaces.some((w) => w.id === s.activeWorkspaceId));
-  const emptyLeafIdsKey = useStore(selectActiveEmptyLeafIdsKey);
   const projectCwdSignature = useStore(selectProjectCwdSignature);
   const workspaceCount = useStore((s) => s.workspaces.length);
-  const addSurface = useStore((s) => s.addSurface);
   // Fix 0 startup gate. See state machine diagram at top of file.
   const paneGate = useStore((s) => s.paneGate);
   const setPaneGate = useStore((s) => s.setPaneGate);
   const clearAllPtyState = useStore((s) => s.clearAllPtyState);
-
-  const multiviewIds = useStore((s) => s.multiviewIds);
-  const removeMultiviewWorkspace = useStore((s) => s.removeMultiviewWorkspace);
-  const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
 
   const prefixMode = useStore((s) => s.prefixMode);
   const agentToolbarEnabled = useStore((s) => s.agentToolbarEnabled);
@@ -323,10 +314,10 @@ export default function AppLayout() {
   const t = useT();
 
   useKeyboard();
-  // Pull DOM focus onto the active pane's xterm after keyboard/RPC pane &
-  // surface switches — without this the red active border moves but typing
-  // stays in the previously focused pane (see useActivePaneFocus).
-  useActivePaneFocus();
+  // NOTE: useActivePaneFocus() now runs inside <FocusManager> (a render-null
+  // child), NOT here. Its focusKey subscription embeds activeWorkspaceId and
+  // re-renders its host on every switch; hosting it in AppLayout dragged the
+  // whole chrome through a re-render per switch (2026-07-13 switch-lag fix).
   // Ticks agentClockMs while any agent is recently active so hook-driven
   // 'running' decays to idle on its own (see useAgentActivityClock / fleet.ts).
   useAgentActivityClock();
@@ -1018,170 +1009,6 @@ export default function AppLayout() {
     return () => { clearInterval(interval); };
   }, []);
 
-  // Auto-create initial surface for empty leaf panes (supports both single-leaf and preset branch roots)
-  // 세션 복원된 경우: surfaces가 이미 있으므로 이 effect는 실행되지 않음
-  // 브라우저 surface만 있는 pane: surfaceType이 'browser'이면 PTY 생성 스킵
-  // Deps include the joined empty-leaf id signature so that splitPane (which adds
-  // a new empty leaf without changing the workspace id) re-triggers PTY creation.
-  // Without this, a freshly split pane stays as the "빈 창" placeholder forever.
-  type LeafPane = import('../../../shared/types').PaneLeaf;
-  const collectEmptyLeaves = (pane: import('../../../shared/types').Pane): LeafPane[] => {
-    if (pane.type === 'leaf') {
-      return pane.surfaces.length === 0 ? [pane] : [];
-    }
-    return pane.children.flatMap(collectEmptyLeaves);
-  };
-  // `emptyLeafIdsKey` is now a DERIVED-STABLE subscription (selectActiveEmptyLeafIdsKey,
-  // read at the top of AppLayout) — stable across surface title/cwd churn, so it
-  // no longer forces an AppLayout re-render on every terminal OSC update.
-
-  // Panes with a pty.create in flight. Guards double-creation when the effect
-  // re-runs while an earlier run's create hasn't resolved yet — which happens
-  // EVERY multi-pane project-layout apply: the browser-leaf branch below
-  // mutates the store synchronously, re-rendering and re-running the effect
-  // mid-loop. (The old `cancelled` cleanup flag disposed the in-flight PTYs on
-  // any re-run, and since their one-shot seeds were already consumed, the
-  // re-run recreated them WITHOUT their startup commands — X5 dogfood S4c.)
-  const ptyCreateInFlightRef = useRef<Set<string>>(new Set());
-
-  useEffect(() => {
-    // Read the FULL active workspace fresh (getState) — AppLayout no longer
-    // subscribes to it as a render value. Look up the CAPTURED activeWorkspaceId
-    // (the dep this run fired for), not the live global, so a switch that raced
-    // the effect targets the workspace this run was scheduled for (eng review).
-    const activeWorkspace = useStore.getState().workspaces.find((w) => w.id === activeWorkspaceId);
-    if (!activeWorkspace) return;
-    // Fix 0: wait until startup reconcile finishes before auto-creating
-    // PTYs for empty leaves. Without this guard, the default workspace
-    // (which has an empty leaf at app construction time) would spawn a
-    // PTY before session.load() replaces it with the saved workspace —
-    // leaking an orphaned daemon session and racing the user's restored
-    // surfaces (codex outside-voice hole #4).
-    if (paneGate !== 'ready') return;
-
-    const emptyLeaves = collectEmptyLeaves(activeWorkspace.rootPane);
-    if (emptyLeaves.length === 0) return;
-    // Version-skew guard: bail if fresh state's empty-leaf set no longer matches
-    // the key this run fired for (a structural change raced the effect).
-    if (emptyLeaves.map((l) => l.id).join('|') !== emptyLeafIdsKey) return;
-
-    const wsId = activeWorkspace.id;
-
-    const findLiveLeaf = (pane: import('../../../shared/types').Pane, id: string): LeafPane | null => {
-      if (pane.type === 'leaf') return pane.id === id ? pane : null;
-      for (const child of pane.children) {
-        const found = findLiveLeaf(child, id);
-        if (found) return found;
-      }
-      return null;
-    };
-
-    for (const leaf of emptyLeaves) {
-      const paneId = leaf.id;
-      if (ptyCreateInFlightRef.current.has(paneId)) continue;
-      // Issues #173/#174/#175: split-inherited cwd > profile.startupCwd >
-      // global startupDirectory > homedir (main-side fallback). The seed is
-      // consumed immediately so a later effect re-run (e.g. PTY create failed
-      // at the session cap) can't replay a stale directory.
-      const storeState = useStore.getState();
-      // X5: a project-layout seed outranks everything — applyProjectLayout
-      // pinned this pane's bootstrap (command/cwd/browser url) to the trusted
-      // wmux.json. Consumed immediately, same replay rule as splitCwdSeed.
-      const projectSeed = storeState.projectPaneSeed[paneId];
-      if (projectSeed) storeState.clearProjectPaneSeed(paneId);
-      if (projectSeed?.url) {
-        // Browser leaf (X3 surface) — no PTY at all. NOTE: this synchronous
-        // store write re-renders and re-runs this effect before the loop's
-        // other iterations' creates resolve — see ptyCreateInFlightRef above.
-        useStore.getState().addBrowserSurface(paneId, projectSeed.url, undefined, wsId);
-        continue;
-      }
-      const startupCwd = projectSeed?.cwd ?? resolveStartupCwd({
-        splitSeed: storeState.splitCwdSeed[paneId],
-        splitInheritsCwd: storeState.splitInheritsCwd,
-        profile: activeWorkspace.profile,
-        startupDirectory: storeState.startupDirectory,
-      });
-      if (storeState.splitCwdSeed[paneId]) storeState.clearSplitCwdSeed(paneId);
-      ptyCreateInFlightRef.current.add(paneId);
-      // X8: a supervised seed (restart set, terminal leaf only) becomes an
-      // exec-style supervised create — the command runs as the pane's ROOT
-      // process under the daemon's PaneSupervisor, NOT typed in as an
-      // initialCommand. Omitted restartLimit fields fall back to the SSOT
-      // defaults here at the funnel. Unsupervised seeds keep the exact prior
-      // behavior (initialCommand pasted into the shell).
-      const seedRestart = projectSeed?.restart;
-      const seedCommand = projectSeed?.command;
-      const bootstrapOptions =
-        seedRestart !== undefined && seedCommand !== undefined
-          ? {
-              exec: seedCommand,
-              supervision: {
-                restart: seedRestart,
-                limit: {
-                  burst: projectSeed?.restartLimit?.burst ?? PROJECT_SUPERVISION_DEFAULT_BURST,
-                  healthyUptimeSec:
-                    projectSeed?.restartLimit?.healthyUptimeSec ?? PROJECT_SUPERVISION_DEFAULT_HEALTHY_UPTIME_SEC,
-                },
-                // U-PERM: consent-gated at layout-apply (buildTree). Included only
-                // when true so unsupervised/unconsented panes persist no bit.
-                ...(projectSeed?.restorePermissionMode === true ? { restorePermissionMode: true } : {}),
-              },
-            }
-          : (seedCommand !== undefined ? { initialCommand: seedCommand } : {});
-      // Wrap through ipcInvoke so a rejected pty.create (e.g.
-      // RESOURCE_EXHAUSTED when the daemon session cap is hit during a
-      // Ctrl+D split) surfaces an actionable toast instead of leaving the
-      // split as a permanent empty-leaf placeholder.
-      void ipcInvoke<{ id: string; shell?: string; cwd?: string }>(() =>
-        window.electronAPI.pty.create(
-          withWorkspaceProfile(
-            withDefaultShell(
-              // 순수 빈 리프(사용자가 split으로 연 셸)만 user-shell로 스탬프해 env
-              // 투과. project seed(seedCommand 존재 — initialCommand/exec 브랜치)는
-              // 자동화라 미스탬프 → main이 fail-closed로 gated 처리.
-              {
-                workspaceId: wsId,
-                cwd: startupCwd,
-                ...bootstrapOptions,
-                ...(seedCommand === undefined ? { spawnKind: 'user-shell' as const } : {}),
-              },
-              useStore.getState().defaultShell,
-            ),
-            activeWorkspace.profile,
-          )
-        )
-      ).then((result) => {
-        ptyCreateInFlightRef.current.delete(paneId);
-        if (!result.ok) return; // toast surfaced by useIpc
-        const created = result.data;
-        // Orphan guard, replacing the old effect-cleanup `cancelled` flag:
-        // adopt the PTY only if the target pane still exists in this
-        // workspace AND is still empty. A live-tree check survives benign
-        // effect re-runs (which the cancelled flag did not) while keeping
-        // the protection against leaking a PTY into a closed/replaced pane.
-        const liveWs = useStore.getState().workspaces.find((w) => w.id === wsId);
-        const livePane = liveWs ? findLiveLeaf(liveWs.rootPane, paneId) : null;
-        if (!livePane || livePane.surfaces.length > 0) {
-          window.electronAPI.pty.dispose(created.id);
-          return;
-        }
-        const shellName = created.shell ? shellDisplayName(created.shell) : 'Terminal';
-        // v2 RCA fix (axis A): the immediate persist now lives INSIDE addSurface
-        // (surfaceSlice centralization) so every binding call site gets it.
-        addSurface(paneId, created.id, shellName, created.cwd || '');
-        // Set initial CWD in workspace metadata from first pane
-        if (created.cwd) {
-          const currentMeta = useStore.getState().workspaces.find((w) => w.id === wsId)?.metadata;
-          if (!currentMeta?.cwd) {
-            useStore.getState().updateWorkspaceMetadata(wsId, { cwd: created.cwd });
-          }
-        }
-      });
-    }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- collectEmptyLeaves & addSurface & ipcInvoke are stable; activeWorkspaceId + emptyLeafIdsKey + paneGate are the meaningful triggers
-  }, [activeWorkspaceId, emptyLeafIdsKey, paneGate]);
-
   // X5 wmux.json discovery. Probes main whenever a workspace's effective cwd
   // (X1 metadata.cwd, seeded by the first pane) appears or changes; the probe
   // caches the result in projectConfigs and runs the auto-apply policy
@@ -1260,14 +1087,14 @@ export default function AppLayout() {
             churn re-renders only the viewport (memoized slots), not AppLayout's
             chrome. Single view or multiview grid; the paneGate placeholder while
             startup reconcile is in flight. */}
-        <WorkspaceViewport
-          activeWorkspaceId={activeWorkspaceId}
-          multiviewIds={multiviewIds}
-          paneGate={paneGate}
-          t={t}
-          setActiveWorkspace={setActiveWorkspace}
-          removeMultiviewWorkspace={removeMultiviewWorkspace}
-        />
+        <WorkspaceViewport />
+        {/* Render-null logic mounts. Both own subscriptions that change on a
+            workspace switch (EmptyLeafFunnel: activeWorkspaceId + empty-leaf
+            key; FocusManager: focusKey with activeWorkspaceId) — hosted here,
+            NOT in AppLayout, so the switch re-renders these tiny components
+            instead of the ~1300-line chrome (2026-07-13 switch-lag fix). */}
+        <EmptyLeafFunnel />
+        <FocusManager />
         {agentToolbarEnabled && (
           <ErrorBoundary name="AgentToolbar">
             <AgentToolbar />
