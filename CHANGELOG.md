@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.21.2] — 2026-07-13
+
 ### Added
 
 - **Per-workspace agent modes — one knob for how autonomous the agent is.** Each workspace gets a mode chip (next to the loop and schedule chips) with four levels. **Off**: no autonomy at all, and it stops any running loop and schedule for that workspace (you can still type to it). **Manual**: replies only when you type, never wakes itself on agent events. **Assist** (the default): wakes only when a pane is actually blocked waiting for input, or to drive a loop you started — a plain "a turn finished" no longer triggers a summary, which is the token-burning spam this removes. **Orchestrate**: wakes on every agent event and may drive panes and press approvals. The current mode is always visible, so "why is it quiet?" and "why is it talking?" are both answered on screen. The global auto-wake switch from 3.21.1 stays as a master override on top of the per-workspace modes.
