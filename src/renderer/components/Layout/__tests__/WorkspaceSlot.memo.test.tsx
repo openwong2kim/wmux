@@ -32,7 +32,7 @@ vi.mock('../../Pane/PaneContainer', () => ({
 }));
 
 // vi.mock is hoisted above imports, so this static import gets the mock.
-import { WorkspaceSlot } from '../AppLayout';
+import { WorkspaceSlot } from '../WorkspaceViewport';
 
 function ws(id: string, agentName?: string): Workspace {
   return {

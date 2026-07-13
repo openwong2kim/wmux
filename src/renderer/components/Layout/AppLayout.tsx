@@ -1,11 +1,12 @@
-import { useEffect, useState, useRef, useCallback, memo } from 'react';
+import { useEffect, useState, useRef, useCallback } from 'react';
 import type { AgentSlug } from '../../../shared/events';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import Sidebar from '../Sidebar/Sidebar';
 import MiniSidebar from '../Sidebar/MiniSidebar';
-import PaneContainer from '../Pane/PaneContainer';
+import { WorkspaceViewport } from './WorkspaceViewport';
+import { selectActiveEmptyLeafIdsKey, selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import NotificationPanel from '../Notification/NotificationPanel';
@@ -43,7 +44,7 @@ import { useChannelsHydration } from '../../hooks/useChannelsHydration';
 import { useMissionsPolling } from '../../hooks/useMissionsPolling';
 import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
 import { useIpc } from '../../hooks/useIpc';
-import type { SessionData, PaneLeaf, Pane, Surface, Workspace } from '../../../shared/types';
+import type { SessionData, PaneLeaf, Pane, Surface } from '../../../shared/types';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
 import { isFileDrag } from '../../../shared/dragDrop';
 import { terminalRegistry } from '../../hooks/useTerminal';
@@ -253,42 +254,6 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
   };
 }
 
-// One mounted workspace's pane subtree (all workspaces stay mounted; inactive
-// ones are display:none so their terminals keep their scrollback/PTY state).
-//
-// PERF (2026-07-13, measured): AppLayout subscribes to the whole `workspaces`
-// array, so ANY pane's metadata update (title / cwd / agentStatus / byte
-// 'running' — frequent during terminal activity) produces a new `workspaces`
-// array and re-renders AppLayout. Without this memo boundary the .map re-ran
-// every workspace's PaneContainer subtree on every such update — a single
-// title change re-rendered ~104 fibers PER workspace, so cost scaled linearly
-// with workspace count (5 workspaces = 5× the churn, felt as lag + slow
-// switching). immer keeps an UNCHANGED workspace referentially stable, so
-// React.memo here lets the N-1 untouched workspaces bail: a metadata update
-// to workspace X now re-renders only X's slot, not all of them. `isActive`
-// (a bool) flips for exactly two slots on a switch, so switching re-renders
-// just the outgoing + incoming workspace.
-export const WorkspaceSlot = memo(function WorkspaceSlot({
-  workspace,
-  isActive,
-}: {
-  workspace: Workspace;
-  isActive: boolean;
-}) {
-  return (
-    <div
-      style={{
-        position: 'absolute',
-        inset: 0,
-        display: isActive ? 'flex' : 'none',
-        flexDirection: 'column',
-      }}
-    >
-      <PaneContainer pane={workspace.rootPane} workspace={workspace} isWorkspaceVisible={isActive} />
-    </div>
-  );
-});
-
 export default function AppLayout() {
   // Global guard: blocks webview pointer capture during panel separator drag
   useResizeGuard();
@@ -299,7 +264,15 @@ export default function AppLayout() {
   const companyViewVisible = useStore((s) => s.companyViewVisible);
   const setCompanyViewVisible = useStore((s) => s.setCompanyViewVisible);
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  const workspaces = useStore((s) => s.workspaces);
+  // PERF (2026-07-13): AppLayout does NOT subscribe to the whole `workspaces`
+  // array — that re-rendered its ~1300-line chrome on every pane metadata/
+  // surface update (53% CPU at 5 workspaces). The `workspaces` subscription
+  // lives in <WorkspaceViewport> now; here we read only DERIVED-STABLE values
+  // (see stores/selectors/appLayout.ts) that don't change on churn.
+  const hasActiveWorkspace = useStore((s) => s.workspaces.some((w) => w.id === s.activeWorkspaceId));
+  const emptyLeafIdsKey = useStore(selectActiveEmptyLeafIdsKey);
+  const projectCwdSignature = useStore(selectProjectCwdSignature);
+  const workspaceCount = useStore((s) => s.workspaces.length);
   const addSurface = useStore((s) => s.addSurface);
   // Fix 0 startup gate. See state machine diagram at top of file.
   const paneGate = useStore((s) => s.paneGate);
@@ -309,7 +282,6 @@ export default function AppLayout() {
   const multiviewIds = useStore((s) => s.multiviewIds);
   const removeMultiviewWorkspace = useStore((s) => s.removeMultiviewWorkspace);
   const setActiveWorkspace = useStore((s) => s.setActiveWorkspace);
-  const activeWorkspace = workspaces.find((w) => w.id === activeWorkspaceId);
 
   const prefixMode = useStore((s) => s.prefixMode);
   const agentToolbarEnabled = useStore((s) => s.agentToolbarEnabled);
@@ -854,10 +826,10 @@ export default function AppLayout() {
   // spotlight tutorial picks up the UI tour for single-workspace users.
   useEffect(() => {
     if (!sessionLoadedRef.current) return;
-    if (firstRunCompleted && !onboardingCompleted && workspaces.length === 1) {
+    if (firstRunCompleted && !onboardingCompleted && workspaceCount === 1) {
       startOnboarding();
     }
-  }, [firstRunCompleted, onboardingCompleted, workspaces.length, startOnboarding]);
+  }, [firstRunCompleted, onboardingCompleted, workspaceCount, startOnboarding]);
 
   // Re-reconcile when daemon connects late (respawn/reconnect after the
   // startup reconcile already ran). Gating + abort/timeout/preserve logic
@@ -1059,9 +1031,9 @@ export default function AppLayout() {
     }
     return pane.children.flatMap(collectEmptyLeaves);
   };
-  const emptyLeafIdsKey = activeWorkspace
-    ? collectEmptyLeaves(activeWorkspace.rootPane).map((l) => l.id).join('|')
-    : '';
+  // `emptyLeafIdsKey` is now a DERIVED-STABLE subscription (selectActiveEmptyLeafIdsKey,
+  // read at the top of AppLayout) — stable across surface title/cwd churn, so it
+  // no longer forces an AppLayout re-render on every terminal OSC update.
 
   // Panes with a pty.create in flight. Guards double-creation when the effect
   // re-runs while an earlier run's create hasn't resolved yet — which happens
@@ -1073,6 +1045,11 @@ export default function AppLayout() {
   const ptyCreateInFlightRef = useRef<Set<string>>(new Set());
 
   useEffect(() => {
+    // Read the FULL active workspace fresh (getState) — AppLayout no longer
+    // subscribes to it as a render value. Look up the CAPTURED activeWorkspaceId
+    // (the dep this run fired for), not the live global, so a switch that raced
+    // the effect targets the workspace this run was scheduled for (eng review).
+    const activeWorkspace = useStore.getState().workspaces.find((w) => w.id === activeWorkspaceId);
     if (!activeWorkspace) return;
     // Fix 0: wait until startup reconcile finishes before auto-creating
     // PTYs for empty leaves. Without this guard, the default workspace
@@ -1084,6 +1061,9 @@ export default function AppLayout() {
 
     const emptyLeaves = collectEmptyLeaves(activeWorkspace.rootPane);
     if (emptyLeaves.length === 0) return;
+    // Version-skew guard: bail if fresh state's empty-leaf set no longer matches
+    // the key this run fired for (a structural change raced the effect).
+    if (emptyLeaves.map((l) => l.id).join('|') !== emptyLeafIdsKey) return;
 
     const wsId = activeWorkspace.id;
 
@@ -1199,8 +1179,8 @@ export default function AppLayout() {
         }
       });
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps -- collectEmptyLeaves & addSurface & ipcInvoke are stable; emptyLeafIdsKey + paneGate are the meaningful triggers
-  }, [activeWorkspace?.id, emptyLeafIdsKey, paneGate]);
+    // eslint-disable-next-line react-hooks/exhaustive-deps -- collectEmptyLeaves & addSurface & ipcInvoke are stable; activeWorkspaceId + emptyLeafIdsKey + paneGate are the meaningful triggers
+  }, [activeWorkspaceId, emptyLeafIdsKey, paneGate]);
 
   // X5 wmux.json discovery. Probes main whenever a workspace's effective cwd
   // (X1 metadata.cwd, seeded by the first pane) appears or changes; the probe
@@ -1210,12 +1190,13 @@ export default function AppLayout() {
   // file never executes anything without the explicit trust grant.
   const probedCwdRef = useRef<Map<string, string>>(new Map());
   const discoveryToastedRef = useRef<Set<string>>(new Set());
-  const projectCwdSignature = workspaces
-    .map((w) => `${w.id}:${workspaceProbeCwd(w) ?? ''}`)
-    .join('|');
+  // `projectCwdSignature` is a DERIVED-STABLE subscription (selectProjectCwdSignature,
+  // read at the top) — it changes only when a workspace's cwd first appears, which
+  // is the effect's trigger. It MUST be a subscribed value: a getState read here
+  // would never schedule the effect, silently breaking wmux.json auto-discovery.
   useEffect(() => {
     if (paneGate !== 'ready') return;
-    for (const ws of workspaces) {
+    for (const ws of useStore.getState().workspaces) {
       const cwd = workspaceProbeCwd(ws);
       if (!cwd) continue;
       if (probedCwdRef.current.get(ws.id) === cwd) continue;
@@ -1243,7 +1224,7 @@ export default function AppLayout() {
     setFirstRunCompleted(true);
   }, [setFirstRunCompleted]);
 
-  if (!activeWorkspace) return null;
+  if (!hasActiveWorkspace) return null;
 
   return (
     <ErrorBoundary name="AppLayout">
@@ -1274,107 +1255,19 @@ export default function AppLayout() {
         {/* P1.5 — the status strip moved into the Titlebar (owner feedback:
             the empty titlebar center + a second status row doubled the top
             chrome). This column now starts directly with the pane area. */}
-        {/* Render workspaces: single view or multiview grid (Ctrl+click selected).
-            Grid renders only when the active workspace is a member of the saved
-            multiview group, so clicking outside the group shows that workspace's
-            single view while the group is preserved for later restoration.
-
-            Fix 0 — paneGate gate: while the startup reconcile is in flight, the
-            PaneContainer area shows a "Restoring panes…" placeholder. Chrome
-            (Sidebar, StatusBar) stays mounted so the user has immediate visual
-            feedback that wmux is alive. Once reconcile resolves (success,
-            timeout, or thrown), paneGate flips to 'ready' and the real panes
-            mount with their final ptyId. */}
-        {paneGate === 'pending' ? (
-          <div className="flex-1 min-h-0 flex items-center justify-center text-sm" style={{ color: 'var(--text-sub2)' }}>
-            {t('app.restoringPanes') || 'Restoring panes…'}
-          </div>
-        ) : multiviewIds.length >= 2 && multiviewIds.includes(activeWorkspaceId) ? (
-          <div
-            className="flex-1 min-h-0"
-            style={{
-              display: 'grid',
-              gridTemplateColumns: multiviewIds.length === 2 ? '1fr 1fr'
-                : multiviewIds.length <= 4 ? '1fr 1fr'
-                : 'repeat(3, 1fr)',
-              gridAutoRows: '1fr',
-              gap: '2px',
-              backgroundColor: 'var(--bg-surface)',
-            }}
-          >
-            {multiviewIds
-              .map((id) => workspaces.find((w) => w.id === id))
-              .filter((ws): ws is Workspace => ws !== undefined)
-              .map((ws) => (
-              <div
-                key={ws.id}
-                className="relative flex flex-col min-w-0 min-h-0 overflow-hidden cursor-pointer"
-                style={{
-                  border: ws.id === activeWorkspaceId
-                    ? '2px solid var(--accent-blue)'
-                    : '2px solid transparent',
-                  backgroundColor: 'var(--bg-base)',
-                }}
-                onClick={() => setActiveWorkspace(ws.id)}
-              >
-                {/* Workspace label */}
-                <div
-                  className="flex items-center gap-1.5 px-2 py-0.5 shrink-0 text-xs"
-                  style={{
-                    backgroundColor: ws.id === activeWorkspaceId ? 'var(--accent-blue)' : 'var(--bg-mantle)',
-                    color: ws.id === activeWorkspaceId ? 'var(--bg-base)' : 'var(--text-sub2)',
-                    fontFamily: 'ui-monospace, monospace',
-                  }}
-                >
-                  <span className="flex-1">{ws.name}</span>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      // If we're closing the active tile and other members
-                      // remain, hand focus to a neighbor first. Otherwise the
-                      // grid render gate (multiviewIds.includes(activeId))
-                      // fails the next render and the user sees the whole
-                      // multiview collapse to the workspace they just closed,
-                      // which reads as "the window reset" (codex P1).
-                      if (ws.id === activeWorkspaceId && multiviewIds.length > 2) {
-                        const removedIdx = multiviewIds.indexOf(ws.id);
-                        const nextActive =
-                          multiviewIds[removedIdx + 1] ?? multiviewIds[removedIdx - 1];
-                        if (nextActive) setActiveWorkspace(nextActive);
-                      }
-                      removeMultiviewWorkspace(ws.id);
-                    }}
-                    className="ml-auto opacity-60 hover:opacity-100"
-                    style={{
-                      background: 'none',
-                      border: 'none',
-                      color: 'inherit',
-                      cursor: 'pointer',
-                      padding: '0 2px',
-                      fontSize: 14,
-                      lineHeight: 1,
-                    }}
-                    title="Remove from multiview"
-                    aria-label={`Remove ${ws.name} from multiview`}
-                  >
-                    ✕
-                  </button>
-                </div>
-                <div className="flex-1 min-h-0 relative">
-                  <div style={{ position: 'absolute', inset: 0, display: 'flex', flexDirection: 'column' }}>
-                    <PaneContainer pane={ws.rootPane} workspace={ws} isWorkspaceVisible={true} />
-                  </div>
-                </div>
-              </div>
-            ))}
-          </div>
-        ) : (
-          <div className="flex-1 min-h-0 relative">
-            {workspaces.map((ws) => (
-              <WorkspaceSlot key={ws.id} workspace={ws} isActive={ws.id === activeWorkspaceId} />
-            ))}
-          </div>
-        )}
+        {/* Workspace panes. Extracted into its own component that owns the
+            `workspaces` subscription (PERF 2026-07-13) so pane metadata/surface
+            churn re-renders only the viewport (memoized slots), not AppLayout's
+            chrome. Single view or multiview grid; the paneGate placeholder while
+            startup reconcile is in flight. */}
+        <WorkspaceViewport
+          activeWorkspaceId={activeWorkspaceId}
+          multiviewIds={multiviewIds}
+          paneGate={paneGate}
+          t={t}
+          setActiveWorkspace={setActiveWorkspace}
+          removeMultiviewWorkspace={removeMultiviewWorkspace}
+        />
         {agentToolbarEnabled && (
           <ErrorBoundary name="AgentToolbar">
             <AgentToolbar />
