@@ -38,6 +38,7 @@ import {
   setWorkspaceAutonomy,
   DEFAULT_AUTONOMY,
 } from '../../deck/deckAutonomyStore';
+import { loadAutoWakeEnabled, setAutoWakeEnabled } from '../../deck/deckAutoWakeStore';
 import {
   loadWorkspaceLoopState,
   renderLoopStateBlock,
@@ -303,6 +304,9 @@ export function registerDeckHandler(
       const loop = loadWorkspaceLoopState(workspaceId);
       return loop ? { running: loop.status === 'running', iterations: loop.iterations } : null;
     },
+    // Global kill switch (Settings): OFF drops ambient wakes; running loops
+    // still wake. Read fresh at every flush so the toggle applies immediately.
+    isAutoWakeEnabled: () => loadAutoWakeEnabled(),
   });
   const offBus = eventBus.subscribe((ev) => {
     if (ev.type !== 'agent.lifecycle') return;
@@ -654,6 +658,30 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── Global auto-wake switch (Settings toggle) ─────────────────────────────
+  ipcMain.removeHandler(IPC.DECK_AUTOWAKE_GET);
+  ipcMain.handle(
+    IPC.DECK_AUTOWAKE_GET,
+    wrapHandler(IPC.DECK_AUTOWAKE_GET, async (): Promise<{ enabled: boolean }> => {
+      return { enabled: loadAutoWakeEnabled() };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_AUTOWAKE_SET);
+  ipcMain.handle(
+    IPC.DECK_AUTOWAKE_SET,
+    wrapHandler(IPC.DECK_AUTOWAKE_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ enabled: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const enabled = await setAutoWakeEnabled(req.enabled === true);
+      return { enabled };
+    }),
+  );
+
   const disposeAll = (): void => {
     for (const { manager } of managers.values()) manager.dispose();
     managers.clear();
@@ -683,5 +711,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_LOOP_RESUME);
     ipcMain.removeHandler(IPC.DECK_LOOP_TASK);
     ipcMain.removeHandler(IPC.DECK_LOOP_SKILLS);
+    ipcMain.removeHandler(IPC.DECK_AUTOWAKE_GET);
+    ipcMain.removeHandler(IPC.DECK_AUTOWAKE_SET);
   };
 }

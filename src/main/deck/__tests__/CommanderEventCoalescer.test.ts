@@ -34,6 +34,8 @@ function mk(opts: {
   debounceMs?: number;
   autonomy?: WorkspaceAutonomy;
   loop?: { running: boolean; iterations: number } | null;
+  /** Global auto-wake switch dep — omitted = enabled (shipped behavior). */
+  isAutoWakeEnabled?: () => boolean;
 }): Harness {
   let busy = false;
   let runResult: { ok: boolean; code?: string } = { ok: true };
@@ -47,6 +49,7 @@ function mk(opts: {
     isBusy: () => busy,
     getAutonomy: () => opts.autonomy ?? { ...DEFAULT_AUTONOMY },
     getLoop: () => loop,
+    ...(opts.isAutoWakeEnabled ? { isAutoWakeEnabled: opts.isAutoWakeEnabled } : {}),
     debounceMs: opts.debounceMs ?? 1_000,
     wakeBudget: opts.wakeBudget ?? 5,
   });
@@ -377,5 +380,74 @@ describe('buildEventPrompt — untrusted structured block + fail-closed approval
       budget,
     );
     expect(on).toContain('follow-up instruction');
+  });
+});
+
+describe('CommanderEventCoalescer — global auto-wake switch', () => {
+  it('switch OFF (no loop) → no wake; events are CONSUMED (watermark advanced)', async () => {
+    const h = makeHarness({ isAutoWakeEnabled: () => false });
+    h.c.push(stop(7, 'ptyA'));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(0);
+    expect(h.c.getPhase('ws-1')).toBe('idle');
+    // Consumed, not held: re-enabling must not replay a stale backlog.
+    expect(h.c.getWatermark('ws-1')).toBe(7);
+  });
+
+  it('switch OFF but a loop is RUNNING → the wake still fires (explicit opt-in)', async () => {
+    const h = makeHarness({
+      isAutoWakeEnabled: () => false,
+      loop: { running: true, iterations: 10 },
+    });
+    h.c.push(stop(1));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('loop-mode: ACTIVE');
+  });
+
+  it('switch OFF with a PAUSED loop → suppressed like ambient', async () => {
+    const h = makeHarness({
+      isAutoWakeEnabled: () => false,
+      loop: { running: false, iterations: 10 },
+    });
+    h.c.push(stop(1));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(0);
+  });
+
+  it('a THROWING switch read resolves to enabled (shipped behavior)', async () => {
+    const h = makeHarness({
+      isAutoWakeEnabled: () => {
+        throw new Error('torn read');
+      },
+    });
+    h.c.push(stop(1));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+  });
+
+  it('turning the switch back ON wakes only for NEW events', async () => {
+    let enabled = false;
+    const h = makeHarness({ isAutoWakeEnabled: () => enabled });
+    h.c.push(stop(3));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(0);
+
+    enabled = true;
+    h.c.push(stop(3)); // same seq — at/below watermark, dropped
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(0);
+
+    h.c.push(stop(4));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('seq=4');
   });
 });

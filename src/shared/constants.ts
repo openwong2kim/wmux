@@ -142,6 +142,11 @@ export const IPC = {
   //   수 있는 스킬/커맨드 카탈로그를 디스크(.claude/skills|commands)에서 스캔.
   //   읽기 전용, 렌더러 전용.
   DECK_LOOP_SKILLS: 'deck:loop:skills',
+  //   DECK_AUTOWAKE_* — the global event-push kill switch (Settings toggle).
+  //   OFF suppresses ambient wake-turns (the unrequested summaries); a
+  //   running loop still wakes. Same renderer-only trust boundary.
+  DECK_AUTOWAKE_GET: 'deck:autowake:get',
+  DECK_AUTOWAKE_SET: 'deck:autowake:set',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

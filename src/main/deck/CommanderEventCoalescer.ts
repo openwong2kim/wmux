@@ -108,6 +108,11 @@ export interface CoalescerDeps {
    *  loop needs dozens of iterations, not the small ambient default. Read
    *  fresh at every flush so start/stop applies immediately. */
   getLoop?: (workspaceId: string) => CoalescerLoopHint | null;
+  /** Global auto-wake switch (deck-autowake.json). When it reads false, an
+   *  AMBIENT flush is suppressed and its events consumed — but a RUNNING loop
+   *  still wakes (explicit opt-in, bounded by its own iteration budget).
+   *  Absent/throwing resolves to enabled (the shipped behavior). */
+  isAutoWakeEnabled?: () => boolean;
   now?: () => number;
   setTimeoutFn?: typeof setTimeout;
   clearTimeoutFn?: typeof clearTimeout;
@@ -299,6 +304,15 @@ export class CommanderEventCoalescer {
     }
   }
 
+  /** The global switch, never-throw. Missing dep or a throwing read = enabled. */
+  private safeAutoWakeEnabled(): boolean {
+    try {
+      return this.deps.isAutoWakeEnabled?.() ?? true;
+    } catch {
+      return true;
+    }
+  }
+
   private safeAutonomy(workspaceId: string): WorkspaceAutonomy {
     try {
       return this.deps.getAutonomy(workspaceId);
@@ -312,6 +326,19 @@ export class CommanderEventCoalescer {
     this.clearDebounce(st);
     const events = this.collectBuffer(st);
     if (events.length === 0) {
+      st.phase = 'idle';
+      return;
+    }
+    // Global auto-wake switch: OFF suppresses AMBIENT wakes. The buffered
+    // events are CONSUMED (watermark advanced) rather than held, so turning
+    // the switch back on later never replays a stale backlog. A RUNNING loop
+    // overrides the switch — the loop is an explicit opt-in that depends on
+    // these wakes and is already bounded by its own iteration budget.
+    const loopHint = this.safeGetLoop(workspaceId);
+    if (!this.safeAutoWakeEnabled() && loopHint?.running !== true) {
+      const maxSeq = events[events.length - 1].seq;
+      if (maxSeq > st.watermark) st.watermark = maxSeq;
+      this.pruneBuffer(st, maxSeq);
       st.phase = 'idle';
       return;
     }
@@ -332,12 +359,11 @@ export class CommanderEventCoalescer {
     // until the send is ACCEPTED — a busy reject must not lose events.
     const snapshotMaxSeq = events[events.length - 1].seq;
     const autonomy = this.safeAutonomy(workspaceId);
-    const loop = this.safeGetLoop(workspaceId);
     const prompt = buildEventPrompt(
       events,
       autonomy,
       { remaining: budget - st.autoWakesUsed, total: budget },
-      { loopRunning: loop?.running === true },
+      { loopRunning: loopHint?.running === true },
     );
     st.phase = 'send-pending';
 

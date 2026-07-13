@@ -293,6 +293,11 @@ export const en = {
   'settings.orchestratorModelDesc':
     'The Claude model the Command Deck orchestrator runs on. Changes apply from your next command; the conversation carries over.',
   'settings.orchestratorModelDefault': 'Default (subscription model)',
+  // Global event-push kill switch: OFF stops the unrequested wake-turns
+  // (each one is a real token-spending SDK turn); a running loop still wakes.
+  'settings.autoWake': 'Auto-wake on pane events',
+  'settings.autoWakeDesc':
+    'Wake the orchestrator to summarize when a pane stops or awaits input. Each wake is a real turn that spends tokens — turn this off to stop the unrequested summaries. A running loop keeps waking either way.',
   'settings.channelsTabVisible': 'Show Channels tab',
   'settings.channelsTabVisibleDesc':
     'Show the Channels tab (the human channel UI) in the dock. Agent and orchestrator channel traffic keeps working either way — turn this on only when you want to inspect the raw messages.',

@@ -372,6 +372,15 @@ const electronAPI = {
           skills: import('../main/deck/skillCatalogScan').SkillCatalogEntry[];
         }>,
     },
+    // Global auto-wake switch — the event-push kill switch (Settings toggle).
+    // OFF suppresses the ambient wake-turns (unrequested event summaries);
+    // a running loop still wakes.
+    autoWake: {
+      get: () =>
+        ipcRenderer.invoke(IPC.DECK_AUTOWAKE_GET) as Promise<{ enabled: boolean }>,
+      set: (enabled: boolean) =>
+        ipcRenderer.invoke(IPC.DECK_AUTOWAKE_SET, { enabled }) as Promise<{ enabled: boolean }>,
+    },
     // Normalized BrainEvent push, enveloped with the workspace whose
     // orchestrator produced it (see BrainAdapter.BrainEvent).
     onStream: (

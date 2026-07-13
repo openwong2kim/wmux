@@ -596,6 +596,25 @@ function OrchestratorSection() {
   const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
   const gitTabVisible = useStore((s) => s.gitTabVisible);
   const setGitTabVisible = useStore((s) => s.setGitTabVisible);
+  // Global auto-wake switch — persisted in MAIN (deck-autowake.json) because
+  // the event-push coalescer that spends the tokens lives there. Read on
+  // mount; optimistic toggle with echo reconciliation.
+  const [autoWake, setAutoWake] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.deck?.autoWake
+      ?.get()
+      .then((r) => { if (!cancelled) setAutoWake(r.enabled); })
+      .catch(() => undefined); // keep the default-on rendering
+    return () => { cancelled = true; };
+  }, []);
+  const onAutoWakeChange = (enabled: boolean) => {
+    setAutoWake(enabled);
+    window.electronAPI.deck?.autoWake
+      ?.set(enabled)
+      .then((r) => setAutoWake(r.enabled))
+      .catch(() => setAutoWake(!enabled));
+  };
   const options = ORCHESTRATOR_MODEL_OPTIONS.map((o) => ({
     value: o.value,
     label: o.labelKey
@@ -614,6 +633,16 @@ function OrchestratorSection() {
           onChange={setDeckBrainModel}
           options={options}
           label={t('settings.orchestratorModel')}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('settings.autoWake')}
+        description={t('settings.autoWakeDesc')}
+      >
+        <Toggle
+          checked={autoWake}
+          onChange={onAutoWakeChange}
+          label={t('settings.autoWake')}
         />
       </SettingRow>
       <SettingRow
