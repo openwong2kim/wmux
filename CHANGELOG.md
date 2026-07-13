@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Settings opens full-bleed instead of a small floating dialog.** The Settings panel now fills the whole area under the titlebar — no dim scrim, no rounded floating card — so it reads as an app screen rather than a modal stacked on top of your terminals. Content stays centered at a readable width so full-width doesn't stretch every toggle description across the screen.
+
 ### Added
 
 - **Manage multiple AI subscription accounts as first-class, and bind one per workspace.** If you keep more than one Claude (or Codex) subscription — a work seat and a personal Max, say — you no longer hand-edit `CLAUDE_CONFIG_DIR` into a profile. Settings → Claude Integration → Accounts lets you add named accounts through a guided flow: it provisions an isolated config directory (your MCP servers, skills, and plugins are shared from your default account so you don't reinstall anything; only the login stays separate), hands you a one-line command to log in there, and registers the account automatically once login lands — wmux never sees or stores your token. Then right-click any workspace → *Claude account* / *Codex account* to bind an account to it: new terminals in that workspace launch on that account (a manually set `CLAUDE_CONFIG_DIR` in the workspace profile still wins). Binding applies to newly opened terminals; already-running ones keep the account they started with. Windows and Linux (macOS reads its credential from the keychain, which can't be partitioned per account).

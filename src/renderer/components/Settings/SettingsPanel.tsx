@@ -4099,26 +4099,20 @@ export default function SettingsPanel() {
   };
 
   return (
-    // Backdrop
+    // Full-bleed surface under the 36px custom titlebar (DESIGN.md Window
+    // Chrome). Settings fills the whole terminal area instead of floating as a
+    // small centered modal: no scrim, no rounding/shadow/border, opaque
+    // bg-base — it reads as an app screen, not a dialog stacked on top. Closed
+    // via Esc (keydown handler above) or the header X / footer Close.
     <div
-      className="fixed inset-0 z-50 flex items-start justify-center pt-[8vh]"
-      style={{ backgroundColor: 'var(--backdrop-modal)' }}
-      onMouseDown={(e) => {
-        if (e.target === e.currentTarget) handleClose();
-      }}
+      className="fixed inset-x-0 bottom-0 z-50 flex flex-col"
+      style={{ top: 36, backgroundColor: 'var(--bg-base)' }}
     >
-      {/* Panel — 800x560 */}
+      {/* Panel — fills the full-bleed surface */}
       <div
         ref={panelRef}
-        className="flex flex-col rounded-xl overflow-hidden shadow-2xl"
-        style={{
-          width: 800,
-          height: 560,
-          backgroundColor: 'var(--bg-base)',
-          border: '1px solid var(--bg-surface)',
-          boxShadow: 'var(--shadow-modal)',
-        }}
-        onMouseDown={(e) => e.stopPropagation()}
+        className="flex flex-col flex-1 min-h-0 overflow-hidden"
+        style={{ backgroundColor: 'var(--bg-base)' }}
       >
         {/* Header */}
         <div
@@ -4169,16 +4163,20 @@ export default function SettingsPanel() {
             })}
           </nav>
 
-          {/* Right content */}
+          {/* Right content — scrolls full-width, but the content column is
+              centered at a readable max-width so full-bleed doesn't stretch
+              toggle rows across the whole screen. */}
           <div className="flex-1 overflow-y-auto px-5 py-4">
-            {activeTab === 'general'            && <TabGeneral />}
-            {activeTab === 'appearance'         && <TabAppearance />}
-            {activeTab === 'notifications'      && <TabNotifications />}
-            {activeTab === 'shortcuts'          && <TabShortcuts />}
-            {activeTab === 'claude-integration' && <><ClaudeIntegrationSection /><AccountsSection /><OrchestratorSection /></>}
-            {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
-            {activeTab === 'first-run-setup'    && <TabFirstRunSetup />}
-            {activeTab === 'about'              && <TabAbout />}
+            <div className="mx-auto w-full max-w-[820px]">
+              {activeTab === 'general'            && <TabGeneral />}
+              {activeTab === 'appearance'         && <TabAppearance />}
+              {activeTab === 'notifications'      && <TabNotifications />}
+              {activeTab === 'shortcuts'          && <TabShortcuts />}
+              {activeTab === 'claude-integration' && <><ClaudeIntegrationSection /><AccountsSection /><OrchestratorSection /></>}
+              {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
+              {activeTab === 'first-run-setup'    && <TabFirstRunSetup />}
+              {activeTab === 'about'              && <TabAbout />}
+            </div>
           </div>
         </div>
 
