@@ -7,13 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.22.0] — 2026-07-13
+
 ### Fixed
 
 - **Typing and switching stay smooth even when several terminals are actively producing output.** Before, a visible terminal's output was handed to the screen immediately with no shared budget — so when multiple visible panes (a split, or a workspace with several terminals) were all streaming at once (agents printing, logs tailing), they competed for the renderer thread and starved keystrokes and workspace switches. The result was lag exactly when terminals were busy, and smoothness when they were idle. Now only keystroke echo and input-driven redraws keep the zero-latency immediate path (via a short interactive window right after you type); streaming output with no recent input is coordinated through the shared output scheduler under an 8ms frame budget with a higher catch-up rate, so no busy terminal can pin the renderer. Byte order and total output are unchanged.
 
 - **Switching between workspaces is smooth again, even with many open.** v3.21.3 stopped terminal churn from re-rendering the whole app, but *switching* workspaces was a separate path it didn't cover: every switch still re-rendered the entire ~1300-line window chrome (titlebar, sidebar, dock, toolbar). The direct cause was subtle — the chrome no longer subscribed to the active-workspace id directly, but a focus hook it hosted did (to move keyboard focus onto the newly active pane), and that hook re-rendering dragged the whole chrome with it. Measured on a live 5-workspace app: the chrome re-rendered on 12/12 switches before, 0/12 after. Now a switch only re-renders the pane viewport (which genuinely changed) and two tiny logic-only components, never the chrome. Focus-follows-switch and empty-pane shell auto-creation are unchanged (verified 5/5).
-
-### Fixed
 
 - **Big responsiveness fix with several workspaces open: switching and typing are smooth again.** With more than one workspace open, any small status update on one terminal (its title, working directory, or "running" indicator changing) re-rendered the *entire* app, plus every open workspace's terminal view, not just the one that changed. Since those updates fire constantly while a terminal is active, the cost piled up in direct proportion to how many workspaces you had open, so five workspaces felt roughly five times heavier than one, and even switching between them dragged. On a live 5-workspace app a single title change was pushing CPU past 50%, half of it React re-rendering the whole window chrome. This is fixed on two levels: each workspace's panes only re-render when that workspace actually changes, and the main window chrome (titlebar, sidebar, dock, toolbar) no longer re-renders on terminal churn at all. Now an update only touches the workspace it affects.
 
