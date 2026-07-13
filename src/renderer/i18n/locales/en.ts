@@ -283,9 +283,11 @@ export const en = {
   'settings.close': 'Close',
   'settings.shortcuts': 'Keyboard Shortcuts',
   'settings.tabGeneral': 'General',
+  'settings.tabTerminal': 'Terminal',
   'settings.tabAppearance': 'Appearance',
   'settings.tabNotifications': 'Notifications',
   'settings.tabShortcuts': 'Shortcuts',
+  'settings.tabAgents': 'Agents',
   'settings.tabAbout': 'About',
   // Orchestrator (command deck brain) settings
   'settings.orchestrator': 'Orchestrator',

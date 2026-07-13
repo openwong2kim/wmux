@@ -34,7 +34,7 @@ import { FOCUS_RING } from '../focusRing';
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
-type TabId = 'general' | 'appearance' | 'notifications' | 'shortcuts' | 'claude-integration' | 'lanlink' | 'first-run-setup' | 'about';
+type TabId = 'general' | 'terminal' | 'appearance' | 'notifications' | 'shortcuts' | 'claude-integration' | 'agents' | 'lanlink' | 'about';
 type ShellInfo = { name: string; path: string; args?: string[] };
 
 // ─── Card primitive ────────────────────────────────────────────────────────────
@@ -231,11 +231,24 @@ function IconClaude() {
   );
 }
 
-function IconFirstRun() {
+function IconTerminal() {
   return (
     <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
-      <line x1="3.5" y1="1.8" x2="3.5" y2="12.2" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
-      <path d="M3.5 2.5h6.7l-1.7 2.3 1.7 2.3H3.5z" stroke="currentColor" strokeWidth="1.3" strokeLinejoin="round" />
+      <rect x="1.5" y="2.5" width="11" height="9" rx="1.5" stroke="currentColor" strokeWidth="1.3" />
+      <path d="M4 5.5 5.8 7 4 8.5" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+      <line x1="7.2" y1="8.7" x2="10" y2="8.7" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+    </svg>
+  );
+}
+
+function IconAgents() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 14 14" fill="none" aria-hidden="true" xmlns="http://www.w3.org/2000/svg">
+      <line x1="7" y1="4.2" x2="4" y2="9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <line x1="7" y1="4.2" x2="10" y2="9" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+      <circle cx="7" cy="3.2" r="1.7" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="3.5" cy="10.2" r="1.7" stroke="currentColor" strokeWidth="1.3" />
+      <circle cx="10.5" cy="10.2" r="1.7" stroke="currentColor" strokeWidth="1.3" />
     </svg>
   );
 }
@@ -1508,7 +1521,7 @@ function UpdateStatus() {
   };
 
   const handleInstall = () => {
-    window.electronAPI.updater.installUpdate().catch(() => {});
+    window.electronAPI.updater.installUpdate().catch(() => { /* best-effort — updater surfaces its own errors */ });
   };
 
   const statusText = (() => {
@@ -1590,52 +1603,12 @@ function TabGeneral() {
   const t = useT();
   const locale = useStore((s) => s.locale);
   const setLocale = useStore((s) => s.setLocale);
-
-  const defaultShell = useStore((s) => s.defaultShell);
-  const setDefaultShell = useStore((s) => s.setDefaultShell);
-  const scrollbackLines = useStore((s) => s.scrollbackLines);
-  const setScrollbackLines = useStore((s) => s.setScrollbackLines);
-  const scrollbackRestoreEnabled = useStore((s) => s.scrollbackRestoreEnabled);
-  const setScrollbackRestoreEnabled = useStore((s) => s.setScrollbackRestoreEnabled);
-  const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
-  const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
-  const splitInheritsCwd = useStore((s) => s.splitInheritsCwd);
-  const setSplitInheritsCwd = useStore((s) => s.setSplitInheritsCwd);
-  const imeResidueGuardEnabled = useStore((s) => s.imeResidueGuardEnabled);
-  const setImeResidueGuardEnabled = useStore((s) => s.setImeResidueGuardEnabled);
-  const hiddenPaneRetentionEnabled = useStore((s) => s.hiddenPaneRetentionEnabled);
-  const setHiddenPaneRetentionEnabled = useStore((s) => s.setHiddenPaneRetentionEnabled);
-  const startupDirectory = useStore((s) => s.startupDirectory);
-  const setStartupDirectory = useStore((s) => s.setStartupDirectory);
   const autoUpdateEnabled = useStore((s) => s.autoUpdateEnabled);
-  const agentToolbarEnabled = useStore((s) => s.agentToolbarEnabled);
-  const setAgentToolbarEnabled = useStore((s) => s.setAgentToolbarEnabled);
-  const newConversationCommand = useStore((s) => s.newConversationCommand);
-  const setNewConversationCommand = useStore((s) => s.setNewConversationCommand);
-  const [detectedShells, setDetectedShells] = useState<ShellInfo[]>([]);
   const storeSetAutoUpdate = useStore((s) => s.setAutoUpdateEnabled);
   const setAutoUpdateEnabled = (enabled: boolean) => {
     storeSetAutoUpdate(enabled);
     window.electronAPI.settings.setAutoUpdateEnabled(enabled);
   };
-  const shellOptions = detectedShells.map((shell) => ({ value: shell.path, label: shell.name }));
-
-  useEffect(() => {
-    let cancelled = false;
-    window.electronAPI.shell.list()
-      .then((shells) => {
-        if (cancelled) return;
-        setDetectedShells(shells);
-        const shellPaths = new Set(shells.map((shell) => shell.path));
-        if (shells.length > 0 && !shellPaths.has(useStore.getState().defaultShell)) {
-          setDefaultShell(resolveDefaultShellPath(useStore.getState().defaultShell, shells));
-        }
-      })
-      .catch(() => {
-        if (!cancelled) setDetectedShells([]);
-      });
-    return () => { cancelled = true; };
-  }, [setDefaultShell]);
 
   return (
     <div className="flex flex-col gap-4">
@@ -1661,7 +1634,82 @@ function TabGeneral() {
         </div>
       </div>
 
-      {/* Shell & scrollback */}
+      {/* Updates */}
+      <div className="flex flex-col gap-2">
+        <SectionLabel label={t('settings.updates')} />
+        <SettingRow label={t('settings.autoUpdate')} description={t('settings.autoUpdateDesc')}>
+          <Toggle
+            checked={autoUpdateEnabled}
+            onChange={setAutoUpdateEnabled}
+            label={t('settings.autoUpdate')}
+          />
+        </SettingRow>
+        <UpdateStatus />
+      </div>
+
+      {/* Tutorial */}
+      <div className="flex flex-col gap-2">
+        <SectionLabel label={t('settings.tutorial')} />
+        <SettingRow label={t('settings.restartTutorial')} description={t('settings.restartTutorialDesc')}>
+          <Button
+            variant="secondary"
+            className="shrink-0"
+            style={{ color: 'var(--text-subtle)' }}
+            onClick={() => {
+              useStore.getState().startOnboarding();
+              useStore.getState().setSettingsPanelVisible(false);
+            }}
+          >
+            {t('settings.restartTutorial')}
+          </Button>
+        </SettingRow>
+      </div>
+
+      {/* Reset */}
+      <ResetSection />
+    </div>
+  );
+}
+
+// ─── Terminal tab — shell, cwd, scrollback, pane behavior ────────────────────
+function TabTerminal() {
+  const t = useT();
+  const defaultShell = useStore((s) => s.defaultShell);
+  const setDefaultShell = useStore((s) => s.setDefaultShell);
+  const scrollbackLines = useStore((s) => s.scrollbackLines);
+  const setScrollbackLines = useStore((s) => s.setScrollbackLines);
+  const scrollbackRestoreEnabled = useStore((s) => s.scrollbackRestoreEnabled);
+  const setScrollbackRestoreEnabled = useStore((s) => s.setScrollbackRestoreEnabled);
+  const splitInheritsCwd = useStore((s) => s.splitInheritsCwd);
+  const setSplitInheritsCwd = useStore((s) => s.setSplitInheritsCwd);
+  const imeResidueGuardEnabled = useStore((s) => s.imeResidueGuardEnabled);
+  const setImeResidueGuardEnabled = useStore((s) => s.setImeResidueGuardEnabled);
+  const hiddenPaneRetentionEnabled = useStore((s) => s.hiddenPaneRetentionEnabled);
+  const setHiddenPaneRetentionEnabled = useStore((s) => s.setHiddenPaneRetentionEnabled);
+  const startupDirectory = useStore((s) => s.startupDirectory);
+  const setStartupDirectory = useStore((s) => s.setStartupDirectory);
+  const [detectedShells, setDetectedShells] = useState<ShellInfo[]>([]);
+  const shellOptions = detectedShells.map((shell) => ({ value: shell.path, label: shell.name }));
+
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.shell.list()
+      .then((shells) => {
+        if (cancelled) return;
+        setDetectedShells(shells);
+        const shellPaths = new Set(shells.map((shell) => shell.path));
+        if (shells.length > 0 && !shellPaths.has(useStore.getState().defaultShell)) {
+          setDefaultShell(resolveDefaultShellPath(useStore.getState().defaultShell, shells));
+        }
+      })
+      .catch(() => {
+        if (!cancelled) setDetectedShells([]);
+      });
+    return () => { cancelled = true; };
+  }, [setDefaultShell]);
+
+  return (
+    <div className="flex flex-col gap-4">
       <div className="flex flex-col gap-2">
         <SectionLabel label={t('settings.terminal')} />
         <SettingRow label={t('settings.defaultShell')}>
@@ -1718,6 +1766,24 @@ function TabGeneral() {
           />
         </SettingRow>
       </div>
+    </div>
+  );
+}
+
+// ─── Agents tab — orchestrator, A2A, agent toolbar, MCP ──────────────────────
+function TabAgents() {
+  const t = useT();
+  const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
+  const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);
+  const agentToolbarEnabled = useStore((s) => s.agentToolbarEnabled);
+  const setAgentToolbarEnabled = useStore((s) => s.setAgentToolbarEnabled);
+  const newConversationCommand = useStore((s) => s.newConversationCommand);
+  const setNewConversationCommand = useStore((s) => s.setNewConversationCommand);
+
+  return (
+    <div className="flex flex-col gap-4">
+      {/* Orchestrator (moved out of Claude integration) */}
+      <OrchestratorSection />
 
       {/* A2A execution */}
       <div className="flex flex-col gap-2">
@@ -1728,37 +1794,6 @@ function TabGeneral() {
             onChange={setA2aAutoApproveExecute}
             label={t('settings.a2aAutoApproveExecute')}
           />
-        </SettingRow>
-      </div>
-
-      {/* Updates */}
-      <div className="flex flex-col gap-2">
-        <SectionLabel label={t('settings.updates')} />
-        <SettingRow label={t('settings.autoUpdate')} description={t('settings.autoUpdateDesc')}>
-          <Toggle
-            checked={autoUpdateEnabled}
-            onChange={setAutoUpdateEnabled}
-            label={t('settings.autoUpdate')}
-          />
-        </SettingRow>
-        <UpdateStatus />
-      </div>
-
-      {/* Tutorial */}
-      <div className="flex flex-col gap-2">
-        <SectionLabel label={t('settings.tutorial')} />
-        <SettingRow label={t('settings.restartTutorial')} description={t('settings.restartTutorialDesc')}>
-          <Button
-            variant="secondary"
-            className="shrink-0"
-            style={{ color: 'var(--text-subtle)' }}
-            onClick={() => {
-              useStore.getState().startOnboarding();
-              useStore.getState().setSettingsPanelVisible(false);
-            }}
-          >
-            {t('settings.restartTutorial')}
-          </Button>
         </SettingRow>
       </div>
 
@@ -1790,9 +1825,6 @@ function TabGeneral() {
 
       {/* MCP integration */}
       <McpStatusSection />
-
-      {/* Reset */}
-      <ResetSection />
     </div>
   );
 }
@@ -4044,12 +4076,13 @@ export default function SettingsPanel() {
 
   const tabs: { id: TabId; label: string; icon: ReactNode }[] = [
     { id: 'general',            label: t('settings.tabGeneral'),         icon: <IconGeneral /> },
+    { id: 'terminal',           label: t('settings.tabTerminal'),        icon: <IconTerminal /> },
     { id: 'appearance',         label: t('settings.tabAppearance'),      icon: <IconAppearance /> },
     { id: 'notifications',      label: t('settings.tabNotifications'),   icon: <IconNotifications /> },
     { id: 'shortcuts',          label: t('settings.tabShortcuts'),       icon: <IconShortcuts /> },
     { id: 'claude-integration', label: t('claudeIntegration.tab'),       icon: <IconClaude /> },
+    { id: 'agents',             label: t('settings.tabAgents'),          icon: <IconAgents /> },
     { id: 'lanlink',            label: t('settings.lanlinkTab'),         icon: <IconLanLink /> },
-    { id: 'first-run-setup',    label: t('settings.firstRunSetup'),      icon: <IconFirstRun /> },
     { id: 'about',              label: t('settings.tabAbout'),           icon: <IconAbout /> },
   ];
 
@@ -4169,13 +4202,14 @@ export default function SettingsPanel() {
           <div className="flex-1 overflow-y-auto px-5 py-4">
             <div className="mx-auto w-full max-w-[820px]">
               {activeTab === 'general'            && <TabGeneral />}
+              {activeTab === 'terminal'           && <TabTerminal />}
               {activeTab === 'appearance'         && <TabAppearance />}
               {activeTab === 'notifications'      && <TabNotifications />}
               {activeTab === 'shortcuts'          && <TabShortcuts />}
-              {activeTab === 'claude-integration' && <><ClaudeIntegrationSection /><AccountsSection /><OrchestratorSection /></>}
+              {activeTab === 'claude-integration' && <><ClaudeIntegrationSection /><AccountsSection /></>}
+              {activeTab === 'agents'             && <TabAgents />}
               {activeTab === 'lanlink'            && <><LanLinkSection /><LanLinkPairingSection /></>}
-              {activeTab === 'first-run-setup'    && <TabFirstRunSetup />}
-              {activeTab === 'about'              && <TabAbout />}
+              {activeTab === 'about'              && <><TabAbout /><TabFirstRunSetup /></>}
             </div>
           </div>
         </div>

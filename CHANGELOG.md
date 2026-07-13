@@ -9,6 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
+- **Settings categories reorganized so General isn't a catch-all.** The old General tab mixed language, terminal behavior, A2A, agent toolbar, MCP, updates, tutorial, and reset all in one place. Now: **General** keeps just language/updates/tutorial/reset; a new **Terminal** tab holds shell, startup directory, split cwd, IME guard, hidden-pane retention, and scrollback; a new **Agents** tab groups the orchestrator model/auto-wake, A2A execution, the agent toolbar, and MCP together (the orchestrator settings moved out of Claude integration, which now focuses on the plugin, usage meter, and accounts). First-run setup folded into About.
 - **Settings opens full-bleed instead of a small floating dialog.** The Settings panel now fills the whole area under the titlebar — no dim scrim, no rounded floating card — so it reads as an app screen rather than a modal stacked on top of your terminals. Content stays centered at a readable width so full-width doesn't stretch every toggle description across the screen.
 
 ### Added

@@ -226,9 +226,11 @@ export const ko = {
   'settings.close': '닫기',
   'settings.shortcuts': '단축키',
   'settings.tabGeneral': '일반',
+  'settings.tabTerminal': '터미널',
   'settings.tabAppearance': '외관',
   'settings.tabNotifications': '알림',
   'settings.tabShortcuts': '단축키',
+  'settings.tabAgents': '에이전트',
   'settings.tabAbout': '정보',
   // agent (커맨드 데크 브레인) 설정 — 명칭은 영문 "agent" 고정(번역·한글화
   // 금지, 오너 결정 2026-07-13: "오케스트레이터"는 한글 UI에서 넘침).
