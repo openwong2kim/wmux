@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Give each agent a role, and the orchestrator routes work by it.** Every agent in the Fleet roster (the orchestrator's Orchestrator tab) now has a small role dropdown — Builder, Reviewer, Tester, or Planner. Pick one and the orchestrator sees it in its workspace snapshot and prefers to send matching work to the matching pane (build work to a Builder, reviews to a Reviewer) instead of spawning a fresh pane for it. It is a preference, not a lock: an explicit instruction from you always wins, and the orchestrator falls back to any pane when none fits. Roles persist with the pane and are the operator's to set — the orchestrator reads them but never changes them. A role only matters on a pane that is actually running an agent; setting one on a plain shell is harmless and simply inert until an agent runs there.
+
 ## [3.22.0] — 2026-07-13
 
 ### Fixed
