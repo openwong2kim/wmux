@@ -485,6 +485,18 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       },
       // Only the wmux MCP server; no ambient project/user MCP config is loaded.
       strictMcpConfig: true,
+      // Load NO filesystem settings. The SDK default is
+      // ['user','project','local'] (verified in sdk.mjs), which made every
+      // brain turn inherit the USER'S hooks — including the wmux Claude
+      // plugin's own PostToolUse/Stop bridge. Net effect: each orchestrator
+      // tool call spawned a ~110ms node bridge process (hook storm, CPU
+      // stutter under event-push wakes), the brain's Stop re-entered
+      // hooks.signal as a phantom agent event (self-wake feedback risk when
+      // main inherits WMUX_* env in dev), and the owner's personal hooks ran
+      // inside brain turns. The brain's contract is fully explicit already:
+      // systemPrompt is injected manually, tools via allowedTools/
+      // disallowedTools/canUseTool, MCP via strictMcpConfig.
+      settingSources: [],
       // P3a: claude keys its session transcripts by cwd, and a packaged
       // Electron app's process.cwd() is the per-version install folder
       // (Squirrel app-x.y.z) — resume would silently break on every update.

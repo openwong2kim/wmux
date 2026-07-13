@@ -158,6 +158,28 @@ describe('ClaudeSdkAdapter', () => {
     }
   });
 
+  it('loads NO filesystem settings (settingSources: []) — brain turns must not inherit user hooks', async () => {
+    // RCA 2026-07-13 (stutter report): the SDK default is
+    // ['user','project','local'], so every brain turn loaded the user's
+    // ~/.claude settings INCLUDING the wmux plugin's PostToolUse/Stop hooks —
+    // each brain tool call spawned a ~110ms node bridge process and the
+    // brain's own Stop re-entered hooks.signal as a phantom agent event.
+    // The brain's contract is fully explicit (systemPrompt / allowedTools /
+    // canUseTool / strictMcpConfig); it must load nothing from disk.
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 's' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      loadMemory: () => '',
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('go'));
+    expect(calls[0].options.settingSources).toEqual([]);
+  });
+
   it('installs a canUseTool sandbox that allows own-memory Write and denies the rest', async () => {
     const calls: Array<{ options: Record<string, unknown> }> = [];
     // Inject a hermetic memory root so the sandbox never touches ~/.wmux.
