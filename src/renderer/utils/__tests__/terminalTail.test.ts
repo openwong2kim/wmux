@@ -20,7 +20,7 @@ vi.mock('../../hooks/useTerminal', () => ({
 }));
 
 import { terminalRegistry } from '../../hooks/useTerminal';
-import { readPtyBufferLines, tailForPty } from '../terminalTail';
+import { readPtyBufferLines, readPtyBufferTail, tailForPty, DEFAULT_READ_TAIL_LINES } from '../terminalTail';
 
 /** Build a fake Terminal whose buffer yields `lines` (+ optional trailing
  *  empties). `elementOffsetWidth` / `elementConnected` model a display:none
@@ -83,6 +83,89 @@ describe('readPtyBufferLines', () => {
       makeTerminal({ lines: ['real', 'output'], trailingEmpty: 4 }),
     );
     expect(readPtyBufferLines('p1')).toEqual(['real', 'output']);
+  });
+});
+
+describe('readPtyBufferTail', () => {
+  // The bounded read path behind terminal_read's default (RCA 2026-07-14
+  // orchestrator lag). Must return the last N buffer rows, pop trailing empties,
+  // and — the load-bearing property — read in O(N), NEVER walking the whole
+  // scrollback the way readPtyBufferLines does.
+
+  it('returns [] for a ptyId not in the registry', () => {
+    expect(readPtyBufferTail('missing', 100)).toEqual([]);
+  });
+
+  it('returns [] for a non-positive cap', () => {
+    (terminalRegistry as Map<string, unknown>).set(
+      'p1',
+      makeTerminal({ lines: ['a', 'b'] }),
+    );
+    expect(readPtyBufferTail('p1', 0)).toEqual([]);
+    expect(readPtyBufferTail('p1', -5)).toEqual([]);
+  });
+
+  it('returns the whole buffer when it is shorter than the cap', () => {
+    (terminalRegistry as Map<string, unknown>).set(
+      'p1',
+      makeTerminal({ lines: ['l1', 'l2', 'l3'] }),
+    );
+    expect(readPtyBufferTail('p1', 300)).toEqual(['l1', 'l2', 'l3']);
+  });
+
+  it('returns only the last N rows when the buffer exceeds the cap', () => {
+    (terminalRegistry as Map<string, unknown>).set(
+      'p1',
+      makeTerminal({ lines: ['l1', 'l2', 'l3', 'l4', 'l5'] }),
+    );
+    expect(readPtyBufferTail('p1', 3)).toEqual(['l3', 'l4', 'l5']);
+  });
+
+  it('pops trailing empties (cursor padding past the last content row)', () => {
+    (terminalRegistry as Map<string, unknown>).set(
+      'p1',
+      makeTerminal({ lines: ['real', 'output'], trailingEmpty: 4 }),
+    );
+    expect(readPtyBufferTail('p1', 300)).toEqual(['real', 'output']);
+  });
+
+  it('matches the full read when the cap covers the whole buffer', () => {
+    (terminalRegistry as Map<string, unknown>).set(
+      'p1',
+      makeTerminal({ lines: ['top', 'mid', '', 'last'] }),
+    );
+    expect(readPtyBufferTail('p1', 300)).toEqual(readPtyBufferLines('p1'));
+  });
+
+  it('is O(cap), not O(scrollback): a 10k-row buffer reads ~cap lines, not all', () => {
+    // This is the whole point of the fix. readPtyBufferLines would call getLine
+    // 10000 times (and pin the renderer thread); readPtyBufferTail must read at
+    // most ~cap rows regardless of how deep the scrollback is.
+    const calls: number[] = [];
+    const big = Array.from({ length: 10000 }, (_, i) => `row-${i}`);
+    (terminalRegistry as Map<string, unknown>).set(
+      'huge',
+      makeTerminal({ lines: big, onGetLine: (idx) => calls.push(idx) }),
+    );
+    const out = readPtyBufferTail('huge', DEFAULT_READ_TAIL_LINES);
+    expect(out.length).toBe(DEFAULT_READ_TAIL_LINES);
+    expect(out[out.length - 1]).toBe('row-9999');
+    expect(out[0]).toBe(`row-${10000 - DEFAULT_READ_TAIL_LINES}`);
+    // The load-bearing assertion: it read the window, not the whole buffer.
+    expect(calls.length).toBe(DEFAULT_READ_TAIL_LINES);
+    expect(calls.length).toBeLessThan(10000);
+  });
+
+  it('still reads a display:none / offsetWidth-0 background pane', () => {
+    (terminalRegistry as Map<string, unknown>).set(
+      'bg',
+      makeTerminal({
+        lines: ['background', 'pane', 'output'],
+        elementOffsetWidth: 0,
+        elementConnected: false,
+      }),
+    );
+    expect(readPtyBufferTail('bg', 300)).toEqual(['background', 'pane', 'output']);
   });
 });
 

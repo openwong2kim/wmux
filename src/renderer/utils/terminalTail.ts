@@ -28,6 +28,49 @@ export function readPtyBufferLines(ptyId: string): string[] {
   return lines;
 }
 
+/** The default cap for an `input.readScreen` (terminal_read) that names no
+ *  explicit bound. Reads only the last N buffer rows in O(N) instead of walking
+ *  the whole scrollback (up to 10,000 rows by default) on the renderer thread.
+ *  RCA (2026-07-14 orchestrator lag): terminal_read went through
+ *  readPtyBufferLines (0..baseY+cursorY, a full-scrollback synchronous walk with
+ *  no bound). An orchestrator that bursts reads pinned the renderer thread —
+ *  input/switch/paint starved ("terminal read 폭발할때"). The write path (#440
+ *  terminalOutputScheduler) is budgeted; reads bypassed it entirely. Bounding
+ *  the default to recent output aligns with the tool's own headline ("read the
+ *  current visible text") and cuts per-read cost from O(scrollback) to O(N).
+ *  Sized well above a viewport so an agent's recent turn is captured whole; a
+ *  caller that genuinely needs the full backlog passes full_scrollback. */
+export const DEFAULT_READ_TAIL_LINES = 300;
+
+/**
+ * The last `maxLines` buffer rows of a pane, trailing empty lines popped —
+ * O(maxLines), NOT O(scrollback). This is the bounded read path behind
+ * `input.readScreen`'s default (and its explicit `tail_lines`): we read only a
+ * window ending at the cursor line rather than walking the whole buffer, so a
+ * burst of reads (an orchestrator observing its fleet) cannot pin the renderer
+ * thread parsing 10k-row backlogs. Interior empty lines between content are
+ * preserved (matching the full read's semantics for the last N rows). A pane
+ * whose cursor sits more than `maxLines` blank rows below its last content
+ * yields a short/empty result — the same bounded-scan trade-off tailForPty
+ * accepts; a caller that needs exactness reads with full_scrollback.
+ */
+export function readPtyBufferTail(ptyId: string, maxLines: number): string[] {
+  const terminal = terminalRegistry.get(ptyId);
+  if (!terminal) return [];
+  if (maxLines <= 0) return [];
+  const buffer = terminal.buffer.active;
+  const lastLine = Math.min(buffer.baseY + buffer.cursorY, buffer.length - 1);
+  if (lastLine < 0) return [];
+  const start = Math.max(0, lastLine - maxLines + 1);
+  const lines: string[] = [];
+  for (let i = start; i <= lastLine; i++) {
+    const line = buffer.getLine(i);
+    if (line) lines.push(line.translateToString(true));
+  }
+  while (lines.length > 0 && lines[lines.length - 1] === '') lines.pop();
+  return lines;
+}
+
 /**
  * Last `n` lines of a pane's live buffer (the Fleet View tail), trailing empty
  * lines skipped. A ptyId not in the registry yields `[]`.

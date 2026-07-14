@@ -5,6 +5,17 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Fixed
+
+- **Orchestrator mode stays smooth even while it observes a busy fleet.** Reading a pane's text (`terminal_read`) used to walk the terminal's *entire* backlog — up to 10,000 lines — synchronously on the render thread, every call, and an explicit line cap only trimmed the result *after* the full walk. The orchestrator reads panes in bursts, so those reads pinned the render thread and starved typing, switching, and paint — the "everything lags when the orchestrator is working, especially when it's reading terminals" symptom. Now a read returns a bounded recent tail by default (read in proportion to the lines returned, not the whole scrollback), an explicit `tail_lines` is genuinely cheap, and the full backlog is an opt-in (`full_scrollback`) for the rare case the tail isn't enough. A 10,000-line pane now costs the same to read as a fresh one.
+- **The orchestrator now knows when an OpenCode agent finishes a turn.** The orchestrator wakes on agents' completion signals; Claude Code and Codex send them (hook / notify bridges), but OpenCode had no bridge, and its full-screen TUI matches none of the fallback detectors — so work handed to an OpenCode pane looked like it never finished. A new OpenCode plugin (`integrations/opencode/`) forwards OpenCode's `session.idle` event to wmux as a completion signal, on the same deterministic path Claude and Codex use. Install it from `integrations/opencode/README.md`.
+
+### Changed
+
+- **The orchestrator reads terminals on completion, not by polling.** Its guidance now says to rely on the automatic wake it gets when an agent finishes or pauses (rather than repeatedly reading a pane to check "is it done yet?"), to read the finished pane once, and to widen a read deliberately (larger `tail_lines`, then `full_scrollback`) only when the recent tail isn't enough to judge what happened. Fewer, cheaper reads — which is also what keeps the UI responsive while it works.
+
 ## [3.23.0] — 2026-07-14
 
 ### Changed

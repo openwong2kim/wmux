@@ -14,7 +14,7 @@ import type { A2aPriority } from '../utils/a2aFormat';
 import { requestExecuteApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import { terminalRegistry, hydrateTerminalForRead } from './useTerminal';
-import { readPtyBufferLines } from '../utils/terminalTail';
+import { readPtyBufferLines, readPtyBufferTail, DEFAULT_READ_TAIL_LINES } from '../utils/terminalTail';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
 import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
@@ -1229,22 +1229,31 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // hidden pane must see its live state, not a retention-stale buffer.
     await hydrateTerminalForRead(ptyId).catch(() => { /* best effort */ });
 
-    // Single buffer-read path shared with the Fleet View tail. Behaviour is
-    // identical to the prior inline loop (walk 0..baseY+cursorY,
-    // translateToString(true), pop trailing empties) — see terminalTail.ts.
-    const lines = readPtyBufferLines(ptyId);
-
-    // Optional tail_lines cap — return only the last N non-empty lines.
-    // Useful for AI agents that don't need the full viewport and want to
-    // bound token cost per read.
-    const rawTail = (params as Record<string, unknown>).tail_lines;
-    if (typeof rawTail === 'number' && Number.isFinite(rawTail) && rawTail > 0) {
-      const cap = Math.floor(rawTail);
-      if (lines.length > cap) {
-        return { ptyId, text: lines.slice(-cap).join('\n') };
-      }
+    // Read cost is bounded by DEFAULT unless the caller opts into the full
+    // scrollback. RCA (2026-07-14 orchestrator lag): the old path always walked
+    // the WHOLE buffer (0..baseY+cursorY, up to scrollbackLines=10,000 rows)
+    // synchronously on the renderer thread, and even an explicit `tail_lines`
+    // only trimmed the RESULT — the expensive walk still ran. An orchestrator
+    // that bursts terminal_read then pinned the render thread and starved
+    // input/switch/paint ("terminal read 폭발할때"). Now:
+    //   - full_scrollback:true → the exact whole-buffer read (old behavior),
+    //   - tail_lines:N         → the last N rows, read in O(N),
+    //   - neither              → the last DEFAULT rows, read in O(DEFAULT).
+    // The bounded reader never walks past its window, so a 10k-row backlog costs
+    // the same as a fresh pane.
+    const raw = params as Record<string, unknown>;
+    const fullScrollback = raw.full_scrollback === true;
+    if (fullScrollback) {
+      // Explicit opt-in to the exact, unbounded read (walk 0..baseY+cursorY).
+      const lines = readPtyBufferLines(ptyId);
+      return { ptyId, text: lines.join('\n') };
     }
-
+    const rawTail = raw.tail_lines;
+    const cap =
+      typeof rawTail === 'number' && Number.isFinite(rawTail) && rawTail > 0
+        ? Math.floor(rawTail)
+        : DEFAULT_READ_TAIL_LINES;
+    const lines = readPtyBufferTail(ptyId, cap);
     return { ptyId, text: lines.join('\n') };
   }
 
