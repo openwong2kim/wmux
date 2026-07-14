@@ -1,7 +1,10 @@
 // @vitest-environment jsdom
 //
-// Dynamic verification for the pane-header action cluster (new terminal /
-// split right / split down / new browser).
+// Dynamic verification for the pane-header action cluster (split right /
+// split down / new browser / zoom).
+//
+// The "new terminal (tab in this pane)" button was removed by owner decision
+// (one pane = one terminal); Ctrl+T still adds a surface via the keyboard path.
 //
 // Mounts the REAL SurfaceTabs against the REAL zustand store, wiring the
 // action callbacks to the same store actions Pane.tsx wires them to, then
@@ -13,11 +16,9 @@
 //     (stacked rows).
 //   • New browser → addBrowserSurface           → a browser surface tab is added
 //     to this pane.
-//   • New terminal→ onAdd fires (terminal creation needs a real PTY, so the
-//     handler is spied rather than exercised end-to-end).
 //   • Zoom        → togglePaneZoom → zoomedPaneId toggles this pane on/off.
 //   • The Settings toggle (paneActionsVisible=false) hides the whole cluster.
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import React, { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 
@@ -30,7 +31,6 @@ import type { Pane, Workspace } from '../../../../shared/types';
 
 let container: HTMLDivElement;
 let root: Root;
-const onAdd = vi.fn();
 
 function activeWs(): Workspace {
   return useStore
@@ -61,7 +61,6 @@ function mount(paneId: string): void {
         paneActive: true,
         onSelect: () => undefined,
         onClose: () => undefined,
-        onAdd,
         onSplitHorizontal: () => useStore.getState().splitPane(paneId, 'horizontal', ws.id),
         onSplitVertical: () => useStore.getState().splitPane(paneId, 'vertical', ws.id),
         onAddBrowser: () => useStore.getState().addBrowserSurface(paneId, undefined, undefined, ws.id),
@@ -79,7 +78,6 @@ function click(action: string): void {
 }
 
 beforeEach(() => {
-  onAdd.mockClear();
   const state = useStore.getState();
   for (const w of [...state.workspaces]) state.removeWorkspace(w.id);
   state.addWorkspace();
@@ -94,18 +92,19 @@ afterEach(() => {
 });
 
 describe('SurfaceTabs pane action cluster', () => {
-  it('renders all five action buttons in order', () => {
+  it('renders the four action buttons in order (no new-terminal button)', () => {
     mount(rootLeafId());
     const actions = Array.from(
       container.querySelectorAll('[data-pane-action]'),
     ).map((el) => el.getAttribute('data-pane-action'));
     expect(actions).toEqual([
-      'new-terminal',
       'split-right',
       'split-down',
       'new-browser',
       'zoom',
     ]);
+    // The removed "new terminal" button must not reappear.
+    expect(container.querySelector('[data-pane-action="new-terminal"]')).toBeNull();
   });
 
   it('Split right splits the pane horizontally (side-by-side columns)', () => {
@@ -139,14 +138,6 @@ describe('SurfaceTabs pane action cluster', () => {
     const browsers = leaf.surfaces.filter((s) => s.surfaceType === 'browser');
     expect(browsers).toHaveLength(1);
     expect(leaf.activeSurfaceId).toBe(browsers[0].id);
-  });
-
-  it('New terminal invokes the onAdd handler', () => {
-    mount(rootLeafId());
-
-    click('new-terminal');
-
-    expect(onAdd).toHaveBeenCalledTimes(1);
   });
 
   it('Zoom toggles this pane in zoomedPaneId (maximize ⇄ restore)', () => {

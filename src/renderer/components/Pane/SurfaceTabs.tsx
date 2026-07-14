@@ -10,22 +10,24 @@ import { tokenAttrs } from '../../themes';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import { FOCUS_RING } from '../focusRing';
-import { IconTerminal, IconSplitRight, IconSplitDown, IconBrowser } from '../icons';
+import { IconSplitRight, IconSplitDown, IconBrowser } from '../icons';
 
 /** Rendered width (px) of the pane action cluster when `paneActionsVisible`.
- *  Deterministic because every child is fixed-size. Tracing the markup below:
+ *  Deterministic because every child is fixed-size. Tracing the markup below
+ *  (4 buttons after the new-terminal button was removed — split-right,
+ *  split-down, new-browser, zoom):
  *    outer div  border-l 1 + pl-1 4 ................................. 5
- *    5 × w-6 buttons (24 each) ..................................... 120
- *    4 × gap-0.5 (2 each, between the 5 flex children) ............... 8
+ *    4 × w-6 buttons (24 each) ...................................... 96
+ *    3 × gap-0.5 (2 each, between the 4 flex children) ............... 6
  *    zoom wrapper  ml-0.5 2 + border-l 1 + pl-1 4 ................... 7
  *    outer div  pr-0.5 2 ............................................. 2
- *                                                             total = 142
- *  (The four button gaps + the wrapper's own ml-0.5 both apply between the
- *  browser button and the divider — flex `gap` and `margin` stack.) Exported so
+ *                                                             total = 116
+ *  (The button gaps + the wrapper's own ml-0.5 both apply between the browser
+ *  button and the divider — flex `gap` and `margin` stack.) Exported so
  *  Pane.tsx can offset the absolute supervision badge just left of the cluster
  *  instead of hardcoding a magic pixel guess. Keep in sync with the cluster
  *  markup below if the button count, padding, or divider spacing changes. */
-export const PANE_ACTIONS_CLUSTER_WIDTH = 142;
+export const PANE_ACTIONS_CLUSTER_WIDTH = 116;
 
 /** Ctrl on Windows/Linux, ⌘ on macOS — mirrors the OS-aware mapping in
  *  useKeyboard.ts so a tooltip advertises the shortcut the user can actually
@@ -35,7 +37,6 @@ const IS_MAC = typeof window !== 'undefined' && window.electronAPI?.platform ===
 function withShortcut(label: string, keys: string): string {
   return `${label} (${keys})`;
 }
-const SC_NEW_TERMINAL = IS_MAC ? '⌘T' : 'Ctrl+T';
 const SC_SPLIT_RIGHT = IS_MAC ? '⌘D' : 'Ctrl+D';
 const SC_SPLIT_DOWN = IS_MAC ? '⇧⌘D' : 'Ctrl+Shift+D';
 
@@ -60,8 +61,6 @@ interface SurfaceTabsProps {
   paneId: string;
   onSelect: (surfaceId: string) => void;
   onClose: (surfaceId: string) => void;
-  /** New terminal surface (tab) in this pane. */
-  onAdd: () => void;
   /** Split this pane side-by-side (a new pane to the right — 'horizontal'). */
   onSplitHorizontal: () => void;
   /** Split this pane stacked (a new pane below — 'vertical'). */
@@ -78,7 +77,6 @@ export default function SurfaceTabs({
   paneActive = false,
   onSelect,
   onClose,
-  onAdd,
   onSplitHorizontal,
   onSplitVertical,
   onAddBrowser,
@@ -344,15 +342,11 @@ export default function SurfaceTabs({
           className="flex items-center shrink-0 h-full pl-1 pr-0.5 gap-0.5 border-l border-[var(--border-soft)]"
           data-pane-actions
         >
-          <button
-            className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
-            onClick={(e) => { e.stopPropagation(); onAdd(); }}
-            title={withShortcut(t('pane.newTerminal'), SC_NEW_TERMINAL)}
-            aria-label={t('pane.newTerminal')}
-            data-pane-action="new-terminal"
-          >
-            <IconTerminal size={14} />
-          </button>
+          {/* The "new terminal (tab in this pane)" button was removed by owner
+              decision: one pane = one terminal is the product concept, so adding
+              a second terminal surface to the same pane doesn't belong in the
+              header. The Ctrl+T keyboard path is intentionally kept (power-user
+              escape hatch); only the discoverable button is gone. */}
           <button
             className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
             onClick={(e) => { e.stopPropagation(); onSplitHorizontal(); }}

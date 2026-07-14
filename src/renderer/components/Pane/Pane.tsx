@@ -3,14 +3,12 @@ import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf, Workspace } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
-import { useIpc } from '../../hooks/useIpc';
 import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
 import SurfaceTabs, { PANE_ACTIONS_CLUSTER_WIDTH } from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
-import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
 import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
@@ -111,7 +109,6 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const [flashing, setFlashing] = useState(false);
   const setActivePane = useStore((s) => s.setActivePane);
   const setActiveSurface = useStore((s) => s.setActiveSurface);
-  const addSurface = useStore((s) => s.addSurface);
   const addBrowserSurface = useStore((s) => s.addBrowserSurface);
   const splitPane = useStore((s) => s.splitPane);
   const closeSurface = useStore((s) => s.closeSurface);
@@ -190,30 +187,9 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     }
   }, [pane.id, pane.surfaces, setActivePane, markRead, setPaneNotificationRing]);
 
-  const defaultShell = useStore((s) => s.defaultShell);
-  const { invoke: ipcInvoke } = useIpc();
-  const handleAddSurface = useCallback(async () => {
-    // Use the owning workspace id from the prop, NOT global activeWorkspaceId
-    // — multiview can leave this Pane mounted while a different tile holds
-    // focus, and the global value would tag the new PTY with the wrong
-    // workspace. Codex P1 fix 2026-05-24.
-    //
-    // Read the profile FRESH from the store rather than closing over
-    // `workspace.profile`: this callback is memoized on workspace.id, so after
-    // the user saves a profile the stale closure would spawn the "+" terminal
-    // with the OLD profile, violating the "applies to new panes" contract.
-    // Mirrors Terminal.tsx's create path, which also reads the live profile.
-    const profile = useStore.getState().workspaces.find((w) => w.id === workspace.id)?.profile;
-    // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.
-    const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile, startupDirectory: useStore.getState().startupDirectory });
-    const result = await ipcInvoke<{ id: string }>(() =>
-      window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: workspace.id, cwd, spawnKind: 'user-shell' }, defaultShell), profile))
-    );
-    if (result.ok) {
-      addSurface(pane.id, result.data.id, 'Terminal', '');
-    }
-    // On failure, useIpc already surfaced a toast. No-op here.
-  }, [pane.id, addSurface, workspace.id, defaultShell, ipcInvoke]);
+  // (handleAddSurface removed with the pane-header "new terminal" button —
+  // one pane = one terminal is the concept. Ctrl+T still adds a surface via
+  // the keyboard path in useKeyboard.ts → store.addSurface.)
 
   // Pane header actions (SurfaceTabs cluster). Split direction semantics match
   // the store + keyboard: 'horizontal' → side-by-side columns (Ctrl+D, the new
@@ -572,7 +548,6 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         paneActive={isActive}
         onSelect={(surfaceId) => setActiveSurface(pane.id, surfaceId)}
         onClose={handleCloseSurface}
-        onAdd={handleAddSurface}
         onSplitHorizontal={handleSplitHorizontal}
         onSplitVertical={handleSplitVertical}
         onAddBrowser={handleAddBrowser}
