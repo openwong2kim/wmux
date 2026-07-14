@@ -87,22 +87,22 @@ export default function WorktaskCleanupView() {
       try {
         const res = await api.close(taskId, closeAs);
         if (res.ok) {
-          pushToast({ level: 'info', message: '태스크를 닫았습니다.' });
+          pushToast({ level: 'info', message: t('worktask.cleanup.closed') });
         } else if (res.reason === 'dirty') {
-          pushToast({ level: 'warn', message: '미커밋 산출물 보존 — diff에서 커밋/PR 또는 폐기 후 다시 닫으세요.' });
+          pushToast({ level: 'warn', message: t('worktask.cleanup.preserved') });
         } else if (res.reason === 'unpushed') {
-          pushToast({ level: 'warn', message: `push되지 않은 커밋 ${res.aheadCount ?? ''}개 — PR/push 후 다시 닫으세요.` });
+          pushToast({ level: 'warn', message: t('worktask.cleanup.unpushed', { count: res.aheadCount ?? '' }) });
         } else {
-          pushToast({ level: 'error', message: `close 실패: ${res.error}` });
+          pushToast({ level: 'error', message: t('worktask.cleanup.closeFailed', { error: res.error ?? '' }) });
         }
       } catch (e) {
-        pushToast({ level: 'error', message: `close 실패: ${e instanceof Error ? e.message : String(e)}` });
+        pushToast({ level: 'error', message: t('worktask.cleanup.closeFailed', { error: e instanceof Error ? e.message : String(e) }) });
       } finally {
         setBusyTaskId(null);
         void runScan();
       }
     },
-    [activeWorkspaceId, pushToast, runScan],
+    [activeWorkspaceId, pushToast, runScan, t],
   );
 
   if (!visible) return null;
