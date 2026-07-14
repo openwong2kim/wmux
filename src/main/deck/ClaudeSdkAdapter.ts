@@ -663,15 +663,23 @@ export class ClaudeSdkAdapter implements BrainAdapter {
               break outer;
             }
             if (ev.type === 'turn-end' && ev.sessionId) this._sessionId = ev.sessionId;
-            yielded = true;
-            // Any REAL content out of a resumed turn proves the id (codex P2:
-            // validating only on turn-end let a mid-stream failure after
-            // content leave the flag set, and a LATER pre-content error would
-            // then wrongly drop a proven-valid conversation). The error case
-            // never reaches here on the unvalidated first attempt (retry
-            // branch above), and a later attempt's error doesn't validate —
-            // by then the flag only clears through this same content path.
-            if (ev.type !== 'error') this._resumeUnvalidated = false;
+            // A `limit` event is ambient subscription status (SDK rate_limit_event)
+            // that can fire regardless of whether the SEEDED resume id was valid —
+            // it is neither user content we'd lose on a fresh retry nor proof the
+            // resume worked. Keep it transparent to the resume-validation
+            // bookkeeping so a dead-id turn that happens to emit a limit first
+            // still falls back to a fresh session (below).
+            if (ev.type !== 'limit') {
+              yielded = true;
+              // Any REAL content out of a resumed turn proves the id (codex P2:
+              // validating only on turn-end let a mid-stream failure after
+              // content leave the flag set, and a LATER pre-content error would
+              // then wrongly drop a proven-valid conversation). The error case
+              // never reaches here on the unvalidated first attempt (retry
+              // branch above), and a later attempt's error doesn't validate —
+              // by then the flag only clears through this same content path.
+              if (ev.type !== 'error') this._resumeUnvalidated = false;
+            }
             yield ev;
           }
         }

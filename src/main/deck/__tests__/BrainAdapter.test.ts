@@ -7,6 +7,7 @@ import {
   createNormalizeState,
   summarizeToolInput,
   extractToolTarget,
+  normalizeResetToMs,
   type RawSdkMessage,
 } from '../BrainAdapter';
 
@@ -110,6 +111,97 @@ describe('normalizeSdkMessage', () => {
   it('ignores unknown frame types', () => {
     const state = createNormalizeState();
     expect(normalizeSdkMessage({ type: 'stream_event' }, state)).toEqual([]);
+  });
+
+  // ── rate_limit_event → limit (multi-account M3 detection) ──────────────────
+  //
+  // The whole reason this branch exists: a plan rate limit is delivered as a
+  // first-class `rate_limit_event` frame, NOT a `result` error (whose subtype
+  // union has no rate-limit member). Without this mapping the signal M3 hangs
+  // off is silently dropped.
+
+  it('maps a rejected rate_limit_event to a hard limit event with window + reset', () => {
+    const state = createNormalizeState();
+    const events = normalizeSdkMessage(
+      {
+        type: 'rate_limit_event',
+        session_id: 's-rl',
+        rate_limit_info: {
+          status: 'rejected',
+          rateLimitType: 'five_hour',
+          resetsAt: 1_700_000_000, // epoch SECONDS
+          utilization: 100,
+        },
+      } as RawSdkMessage,
+      state,
+    );
+    expect(events).toEqual([
+      { type: 'limit', status: 'rejected', window: 'five_hour', utilization: 100, resetsAtMs: 1_700_000_000_000 },
+    ]);
+  });
+
+  it('maps allowed_warning to a soft (approaching) limit event', () => {
+    const state = createNormalizeState();
+    const events = normalizeSdkMessage(
+      {
+        type: 'rate_limit_event',
+        rate_limit_info: { status: 'allowed_warning', rateLimitType: 'seven_day', utilization: 85 },
+      } as RawSdkMessage,
+      state,
+    );
+    expect(events).toEqual([{ type: 'limit', status: 'allowed_warning', window: 'seven_day', utilization: 85 }]);
+  });
+
+  it('emits nothing for status allowed (the normal case)', () => {
+    const state = createNormalizeState();
+    expect(
+      normalizeSdkMessage(
+        { type: 'rate_limit_event', rate_limit_info: { status: 'allowed', utilization: 12 } } as RawSdkMessage,
+        state,
+      ),
+    ).toEqual([]);
+  });
+
+  it('emits nothing when rate_limit_info is missing', () => {
+    const state = createNormalizeState();
+    expect(normalizeSdkMessage({ type: 'rate_limit_event' } as RawSdkMessage, state)).toEqual([]);
+  });
+
+  it('omits reset/window/utilization fields the SDK did not provide', () => {
+    const state = createNormalizeState();
+    const events = normalizeSdkMessage(
+      { type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } } as RawSdkMessage,
+      state,
+    );
+    // No resetsAtMs, window, or utilization keys — just the status.
+    expect(events).toEqual([{ type: 'limit', status: 'rejected' }]);
+  });
+
+  it('passes an unknown rateLimitType through as a raw string (forward-compat)', () => {
+    const state = createNormalizeState();
+    const events = normalizeSdkMessage(
+      { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'monthly_future' } } as RawSdkMessage,
+      state,
+    );
+    expect(events[0]).toMatchObject({ type: 'limit', window: 'monthly_future' });
+  });
+});
+
+describe('normalizeResetToMs', () => {
+  it('scales an epoch-seconds value up to milliseconds', () => {
+    expect(normalizeResetToMs(1_700_000_000)).toBe(1_700_000_000_000);
+  });
+
+  it('passes an epoch-milliseconds value through unchanged', () => {
+    expect(normalizeResetToMs(1_700_000_000_000)).toBe(1_700_000_000_000);
+  });
+
+  it('returns null for missing / non-finite / non-positive input', () => {
+    expect(normalizeResetToMs(undefined)).toBeNull();
+    expect(normalizeResetToMs(0)).toBeNull();
+    expect(normalizeResetToMs(-5)).toBeNull();
+    expect(normalizeResetToMs(Number.NaN)).toBeNull();
+    expect(normalizeResetToMs(Number.POSITIVE_INFINITY)).toBeNull();
   });
 });
 

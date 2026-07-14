@@ -48,6 +48,12 @@ export interface BrainUsage {
  *                   optional usage. Exactly one per completed turn.
  *   - `error`       a turn-fatal problem (auth failure, spawn error). Terminal
  *                   for the turn — no `turn-end` follows an `error`.
+ *   - `limit`       the SUBSCRIPTION hit (or is approaching) a plan rate limit.
+ *                   Sourced from the SDK's first-class `rate_limit_event` frame
+ *                   (NOT a `result` error), so it carries a typed window kind and
+ *                   a reset time. Informational within the turn — it does not by
+ *                   itself end the turn (the SDK still emits its own result/error
+ *                   frame); it is the signal the multi-account M3 switch hangs off.
  */
 export type BrainEvent =
   // Emitted ONLY for turns the MAIN process originates (P3d scheduled runs):
@@ -69,7 +75,26 @@ export type BrainEvent =
     }
   | { type: 'tool-end'; name: string; ok: boolean; toolId?: string }
   | { type: 'turn-end'; sessionId: string | null; usage?: BrainUsage }
-  | { type: 'error'; message: string };
+  | { type: 'error'; message: string }
+  | {
+      type: 'limit';
+      /** 'rejected' = the window is exhausted (hard limit hit); 'allowed_warning'
+       *  = approaching the limit (pre-exhaustion nudge). We do NOT surface plain
+       *  'allowed' as a limit event — that's the normal case. */
+      status: 'rejected' | 'allowed_warning';
+      /** Which plan window the limit belongs to, verbatim from the SDK's
+       *  `SDKRateLimitInfo.rateLimitType`. Known values: `five_hour`,
+       *  `seven_day`, `seven_day_opus`, `seven_day_sonnet`,
+       *  `seven_day_overage_included`, `overage`. Kept as a plain string (not a
+       *  closed union) so a future SDK window passes through instead of breaking
+       *  normalization. Undefined when the SDK omitted it. */
+      window?: string;
+      /** Epoch ms when the window resets, when the SDK provided it. Optional
+       *  because a hook-sourced limit (M3 additive path) can't supply one. */
+      resetsAtMs?: number;
+      /** 0–100 window utilization when reported. */
+      utilization?: number;
+    };
 
 /** One-time startup context for the brain. The fleet snapshot is injected ONCE
  *  (token-budgeted) at the first turn — see ClaudeSdkAdapter. */
@@ -131,6 +156,16 @@ interface RawToolResultBlock {
 }
 type RawContentBlock = RawTextBlock | RawToolUseBlock | RawToolResultBlock | { type: string };
 
+/** Shape of the SDK's `rate_limit_event` payload we consume — a subset of the
+ *  SDK's `SDKRateLimitInfo`. `resetsAt` is EPOCH SECONDS in the SDK; we convert
+ *  to ms at normalization. All fields optional: the SDK omits them per plan/state. */
+interface RawRateLimitInfo {
+  status?: 'allowed' | 'allowed_warning' | 'rejected';
+  resetsAt?: number;
+  rateLimitType?: string;
+  utilization?: number;
+}
+
 /** The subset of SDK message frames the deck reacts to. Unknown frame types are
  *  ignored (the SDK stream carries dozens of ancillary event kinds). */
 export interface RawSdkMessage {
@@ -145,6 +180,8 @@ export interface RawSdkMessage {
   errors?: string[];
   message?: { content?: RawContentBlock[]; usage?: { input_tokens?: number; output_tokens?: number } };
   usage?: { input_tokens?: number; output_tokens?: number };
+  /** Present on `type:'rate_limit_event'` frames (SDKRateLimitEvent). */
+  rate_limit_info?: RawRateLimitInfo;
 }
 
 /** Mutable per-turn state threaded across `normalizeSdkMessage` calls: maps a
@@ -209,6 +246,22 @@ export function extractToolTarget(input: unknown): { paneId?: string; workspaceI
 }
 
 /**
+ * Coerce the SDK's `resetsAt` (a bare number with no documented unit) to epoch
+ * MILLISECONDS. The SDK type annotates only `number`, and a live limit wasn't
+ * available to confirm sec vs ms at authoring time, so we disambiguate by
+ * magnitude: an epoch in SECONDS is ~1.7e9 while epoch MS is ~1.7e12, three
+ * orders of magnitude apart with no overlap for any realistic date — a value
+ * below this threshold is treated as seconds and scaled up. Returns null for
+ * missing / non-finite / non-positive input (caller then omits resetsAtMs).
+ * Exported for unit testing.
+ */
+const RESET_SECONDS_MAX = 1e11; // ~year 5138 in seconds; anything below = seconds
+export function normalizeResetToMs(resetsAt: number | undefined): number | null {
+  if (typeof resetsAt !== 'number' || !Number.isFinite(resetsAt) || resetsAt <= 0) return null;
+  return resetsAt < RESET_SECONDS_MAX ? Math.round(resetsAt * 1000) : Math.round(resetsAt);
+}
+
+/**
  * Map one raw SDK message to zero or more normalized brain events, mutating
  * `state` (tool-name table + latest session id). Pure aside from that state:
  * same input → same output. This is the whole SDK-coupling surface of the deck,
@@ -222,6 +275,9 @@ export function extractToolTarget(input: unknown): { paneId?: string; workspaceI
  *   - user (tool_result)     → a `tool-end` per tool_result block, ok = !is_error.
  *   - result                 → a `turn-end` (success) or an `error` then no
  *                              turn-end (error_* subtypes / is_error).
+ *   - rate_limit_event       → a `limit` for status 'rejected' / 'allowed_warning'
+ *                              (nothing for plain 'allowed'). NOT terminal — the
+ *                              turn still ends via its own result/error frame.
  */
 export function normalizeSdkMessage(msg: RawSdkMessage, state: NormalizeState): BrainEvent[] {
   const out: BrainEvent[] = [];
@@ -271,6 +327,30 @@ export function normalizeSdkMessage(msg: RawSdkMessage, state: NormalizeState): 
           });
         }
       }
+      return out;
+    }
+
+    case 'rate_limit_event': {
+      // First-class subscription rate-limit signal (SDKRateLimitEvent). The
+      // whole reason this case exists: a plan limit is NOT delivered as a
+      // `result` error (its subtype union has no rate-limit member), so without
+      // this branch the event is silently dropped and M3 can never react.
+      const info = msg.rate_limit_info;
+      if (!info) return out;
+      // Only 'rejected' (hard hit) and 'allowed_warning' (approaching) are
+      // actionable; 'allowed'/absent is the normal case and emits nothing.
+      if (info.status !== 'rejected' && info.status !== 'allowed_warning') return out;
+      const ev: Extract<BrainEvent, { type: 'limit' }> = {
+        type: 'limit',
+        status: info.status,
+      };
+      if (typeof info.rateLimitType === 'string' && info.rateLimitType) ev.window = info.rateLimitType;
+      if (typeof info.utilization === 'number' && Number.isFinite(info.utilization)) {
+        ev.utilization = info.utilization;
+      }
+      const resetMs = normalizeResetToMs(info.resetsAt);
+      if (resetMs != null) ev.resetsAtMs = resetMs;
+      out.push(ev);
       return out;
     }
 
