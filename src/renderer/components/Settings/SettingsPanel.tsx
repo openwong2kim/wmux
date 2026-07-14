@@ -2955,6 +2955,9 @@ function TabAppearance() {
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const setSidebarPosition = useStore((s) => s.setSidebarPosition);
 
+  const paneActionsVisible = useStore((s) => s.paneActionsVisible);
+  const setPaneActionsVisible = useStore((s) => s.setPaneActionsVisible);
+
   const currentTheme = useStore((s) => s.theme);
   const setTheme = useStore((s) => s.setTheme);
 
@@ -3024,6 +3027,13 @@ function TabAppearance() {
               </button>
             ))}
           </div>
+        </SettingRow>
+        <SettingRow label={t('settings.paneActionsVisible')} description={t('settings.paneActionsVisibleDesc')}>
+          <Toggle
+            checked={paneActionsVisible}
+            onChange={setPaneActionsVisible}
+            label={t('settings.paneActionsVisible')}
+          />
         </SettingRow>
       </div>
     </div>

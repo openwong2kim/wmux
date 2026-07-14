@@ -112,6 +112,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const setActivePane = useStore((s) => s.setActivePane);
   const setActiveSurface = useStore((s) => s.setActiveSurface);
   const addSurface = useStore((s) => s.addSurface);
+  const addBrowserSurface = useStore((s) => s.addBrowserSurface);
+  const splitPane = useStore((s) => s.splitPane);
   const closeSurface = useStore((s) => s.closeSurface);
   const updateSurfacePtyId = useStore((s) => s.updateSurfacePtyId);
   const markRead = useStore((s) => s.markRead);
@@ -212,6 +214,21 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     }
     // On failure, useIpc already surfaced a toast. No-op here.
   }, [pane.id, addSurface, workspace.id, defaultShell, ipcInvoke]);
+
+  // Pane header actions (SurfaceTabs cluster). Split direction semantics match
+  // the store + keyboard: 'horizontal' → side-by-side columns (Ctrl+D, the new
+  // pane opens right); 'vertical' → stacked rows (Ctrl+Shift+D, new pane below).
+  // Pass workspace.id explicitly (not global active) so multiview targets the
+  // owning workspace — same reasoning as handleAddSurface above.
+  const handleSplitHorizontal = useCallback(() => {
+    splitPane(pane.id, 'horizontal', workspace.id);
+  }, [splitPane, pane.id, workspace.id]);
+  const handleSplitVertical = useCallback(() => {
+    splitPane(pane.id, 'vertical', workspace.id);
+  }, [splitPane, pane.id, workspace.id]);
+  const handleAddBrowser = useCallback(() => {
+    addBrowserSurface(pane.id, undefined, undefined, workspace.id);
+  }, [addBrowserSurface, pane.id, workspace.id]);
 
   const closePane = useStore((s) => s.closePane);
 
@@ -535,6 +552,9 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         onSelect={(surfaceId) => setActiveSurface(pane.id, surfaceId)}
         onClose={handleCloseSurface}
         onAdd={handleAddSurface}
+        onSplitHorizontal={handleSplitHorizontal}
+        onSplitVertical={handleSplitVertical}
+        onAddBrowser={handleAddBrowser}
       />
 
       <SplitSurfaceView

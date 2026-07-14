@@ -9,6 +9,20 @@ import {
 import { tokenAttrs } from '../../themes';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
+import { FOCUS_RING } from '../focusRing';
+import { IconTerminal, IconSplitRight, IconSplitDown, IconBrowser } from '../icons';
+
+/** Ctrl on Windows/Linux, ⌘ on macOS — mirrors the OS-aware mapping in
+ *  useKeyboard.ts so a tooltip advertises the shortcut the user can actually
+ *  press. Read lazily (electronAPI is absent under jsdom tests). */
+const IS_MAC = typeof window !== 'undefined' && window.electronAPI?.platform === 'darwin';
+/** Append a keyboard hint to a tooltip label, e.g. "New terminal (Ctrl+T)". */
+function withShortcut(label: string, keys: string): string {
+  return `${label} (${keys})`;
+}
+const SC_NEW_TERMINAL = IS_MAC ? '⌘T' : 'Ctrl+T';
+const SC_SPLIT_RIGHT = IS_MAC ? '⌘D' : 'Ctrl+D';
+const SC_SPLIT_DOWN = IS_MAC ? '⇧⌘D' : 'Ctrl+Shift+D';
 
 /** B8: dot color for a completed/awaiting surface tab. Status-dot vocabulary
  *  (DESIGN.md): green = complete, red = needs-you (awaiting/waiting). */
@@ -31,7 +45,14 @@ interface SurfaceTabsProps {
   paneId: string;
   onSelect: (surfaceId: string) => void;
   onClose: (surfaceId: string) => void;
+  /** New terminal surface (tab) in this pane. */
   onAdd: () => void;
+  /** Split this pane side-by-side (a new pane to the right — 'horizontal'). */
+  onSplitHorizontal: () => void;
+  /** Split this pane stacked (a new pane below — 'vertical'). */
+  onSplitVertical: () => void;
+  /** New browser surface (tab) in this pane. */
+  onAddBrowser: () => void;
 }
 
 export default function SurfaceTabs({
@@ -42,6 +63,10 @@ export default function SurfaceTabs({
   paneActive = false,
   onSelect,
   onClose,
+  onAdd,
+  onSplitHorizontal,
+  onSplitVertical,
+  onAddBrowser,
 }: SurfaceTabsProps) {
   const t = useT();
   // Same 200ms threshold pattern WorkspaceItem uses so a fast click never
@@ -53,6 +78,9 @@ export default function SurfaceTabs({
   // active surface's completion is conveyed by the pane border blink instead.
   const surfaceAgentStatus = useStore((s) => s.surfaceAgentStatus);
   const setTerminalTextDropDragActive = useStore((s) => s.setTerminalTextDropDragActive);
+  // Right-aligned pane action cluster (new terminal / split / new browser).
+  // Gated by a Settings toggle (default ON) for minimal-chrome setups.
+  const paneActionsVisible = useStore((s) => s.paneActionsVisible);
   // P2: pane-level identity + rename (distinct from the per-surface tab rename
   // below). The pane's display name is its user label (paneLabel mirror) or the
   // stable auto coordinate `w<ws>-<pane>(<agent>)`.
@@ -171,7 +199,7 @@ export default function SurfaceTabs({
     <div
       // Bridge P1.6 — h-9 (36px chrome module): matches sidebar header/footer,
       // deck tabs, and the agent toolbar so all top/bottom hairlines align.
-      className="flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-9 overflow-x-auto"
+      className="flex items-center bg-[var(--bg-mantle)] border-b border-[var(--bg-surface)] h-9"
       // borderColor → --border-soft so this strip's bottom hairline matches the
       // deck tabs / sidebar / titlebar seams (they all override to border-soft;
       // this one was left on the opaque --bg-surface, so the top-chrome line
@@ -186,6 +214,9 @@ export default function SurfaceTabs({
       {...tokenAttrs('bgMantle', 'bg')}
       {...tokenAttrs('bgSurface', 'border')}
     >
+      {/* Scroll region: pane label + tabs share the horizontal overflow so the
+          action cluster below stays pinned to the right on narrow panes. */}
+      <div className="flex items-center flex-1 min-w-0 overflow-x-auto h-full">
       {/* P2 — pane identity + double-click rename. A distinct element/handler
           from the surface tabs (different store: pane label via MetadataStore vs
           surface.title), so the two renames never collide. */}
@@ -282,6 +313,56 @@ export default function SurfaceTabs({
           </button>
         </div>
       ))}
+      </div>
+
+      {/* Right-aligned pane action cluster. Native next to the per-tab close
+          button (same quiet chrome): boxless at rest, a subtle surface lift on
+          hover, a keyboard-focus ring, and monochrome line icons from the
+          shared system. Each button drives an EXISTING store action and its
+          tooltip carries the same shortcut the keyboard already binds. */}
+      {paneActionsVisible && (
+        <div
+          className="flex items-center shrink-0 h-full pl-1 pr-0.5 gap-0.5 border-l border-[var(--border-soft)]"
+          data-pane-actions
+        >
+          <button
+            className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+            onClick={(e) => { e.stopPropagation(); onAdd(); }}
+            title={withShortcut(t('pane.newTerminal'), SC_NEW_TERMINAL)}
+            aria-label={t('pane.newTerminal')}
+            data-pane-action="new-terminal"
+          >
+            <IconTerminal size={14} />
+          </button>
+          <button
+            className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+            onClick={(e) => { e.stopPropagation(); onSplitHorizontal(); }}
+            title={withShortcut(t('pane.splitRight'), SC_SPLIT_RIGHT)}
+            aria-label={t('pane.splitRight')}
+            data-pane-action="split-right"
+          >
+            <IconSplitRight size={14} />
+          </button>
+          <button
+            className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+            onClick={(e) => { e.stopPropagation(); onSplitVertical(); }}
+            title={withShortcut(t('pane.splitDown'), SC_SPLIT_DOWN)}
+            aria-label={t('pane.splitDown')}
+            data-pane-action="split-down"
+          >
+            <IconSplitDown size={14} />
+          </button>
+          <button
+            className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)] transition-colors ${FOCUS_RING}`}
+            onClick={(e) => { e.stopPropagation(); onAddBrowser(); }}
+            title={t('pane.newBrowser')}
+            aria-label={t('pane.newBrowser')}
+            data-pane-action="new-browser"
+          >
+            <IconBrowser size={14} />
+          </button>
+        </div>
+      )}
     </div>
   );
 }

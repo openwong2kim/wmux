@@ -516,6 +516,10 @@ export interface SessionData {
   /** Whether the deck shows the Git tab (worktrees / PRs). Default true —
    *  informational surface; hideable for minimal-chrome setups. */
   gitTabVisible?: boolean;
+  /** Whether each pane's tab strip shows the action-button cluster (new
+   *  terminal / split right / split down / new browser). Default true —
+   *  hideable for minimal-chrome setups. */
+  paneActionsVisible?: boolean;
   scrollbackLines?: number;
   /**
    * Issue #174: whether a pane created by splitting inherits the splitting

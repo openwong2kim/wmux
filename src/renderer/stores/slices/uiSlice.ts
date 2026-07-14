@@ -147,6 +147,13 @@ export interface UISlice {
   gitTabVisible: boolean;
   setGitTabVisible: (visible: boolean) => void;
 
+  // Whether each pane's tab strip shows the right-aligned action cluster
+  // (new terminal / split right / split down / new browser). Default ON —
+  // discoverable mouse affordances for the same actions the keyboard already
+  // has; hideable for minimal-chrome, keyboard-only setups.
+  paneActionsVisible: boolean;
+  setPaneActionsVisible: (visible: boolean) => void;
+
   // Issue #174: split panes inherit the splitting pane's cwd (default on).
   splitInheritsCwd: boolean;
   setSplitInheritsCwd: (enabled: boolean) => void;
@@ -781,6 +788,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (!visible && state.activeDeckTab === 'git') {
       state.activeDeckTab = 'commander';
     }
+  }),
+
+  paneActionsVisible: true,
+
+  setPaneActionsVisible: (visible) => set((state) => {
+    state.paneActionsVisible = visible;
   }),
 
   splitInheritsCwd: true,

@@ -72,6 +72,8 @@ export const en = {
   'pane.empty': 'Empty pane',
   'pane.splitRight': 'Split right',
   'pane.splitDown': 'Split down',
+  'pane.newTerminal': 'New terminal',
+  'pane.newBrowser': 'New browser',
   'pane.maxLeavesReached': 'Pane limit reached ({count}). Close a pane before splitting again.',
 
   // Surface
@@ -392,6 +394,8 @@ export const en = {
   'settings.sidebarPositionDesc': 'Left or right of the terminal area',
   'settings.sidebarLeft': 'Left',
   'settings.sidebarRight': 'Right',
+  'settings.paneActionsVisible': 'Pane action buttons',
+  'settings.paneActionsVisibleDesc': 'Show new-terminal, split, and new-browser buttons in each pane\'s tab strip.',
   'settings.updateReady': 'Update ready',
   'settings.checkFailed': 'Check failed',
   'settings.unknownError': 'Unknown error',

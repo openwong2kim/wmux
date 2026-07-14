@@ -547,6 +547,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.gitTabVisible === 'boolean') {
         state.gitTabVisible = data.gitTabVisible;
       }
+      // Pane action cluster — default ON; only an explicit false hides it.
+      if (typeof data.paneActionsVisible === 'boolean') {
+        state.paneActionsVisible = data.paneActionsVisible;
+      }
       if (data.splitInheritsCwd != null) state.splitInheritsCwd = data.splitInheritsCwd;
       if (data.imeResidueGuardEnabled != null) state.imeResidueGuardEnabled = data.imeResidueGuardEnabled;
       // Fail closed: only an explicit boolean enables retention. A corrupted /

@@ -5,6 +5,12 @@ All notable changes to wmux are documented in this file.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### Added
+
+- **Every pane header now has quick action buttons.** The pane tab strip gained a small right-aligned cluster of four icon buttons — new terminal, split right, split down, and new browser — so the actions that were previously keyboard-only (Ctrl+T, Ctrl+D, Ctrl+Shift+D) are now discoverable with the mouse, right next to the tabs and the close button. Each button drives the same store action the keyboard already does (no new behavior), carries a tooltip with its shortcut, and stays pinned to the right while the tabs scroll on narrow panes. The cluster can be hidden in Settings → Appearance → Layout for a minimal, keyboard-only chrome (default on).
+
 ## [3.23.0] — 2026-07-14
 
 ### Changed
