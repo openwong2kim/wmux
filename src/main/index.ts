@@ -596,6 +596,17 @@ const disposeAccountUsageListener = accountUsageService.onChange((entry) => {
 const onClaudeTurnEnd = (workspaceId: string): void => {
   // Resolve the workspace's bound claude account; only registered accounts probe
   // (an unbound workspace uses the default credential, covered by usagePoller).
+  //
+  // KNOWN M2 LIMITATION (Codex review 2026-07-14, accepted — defer to M3 §4c):
+  // this follows the workspace's CURRENT claude binding, not the ending pane's
+  // spawn-time account. Binding is a per-PTY generation (plan §2): a "bind-only"
+  // change leaves running terminals on their spawn-time account. So a pane that
+  // outlived a rebind refreshes the NEW binding's card on turn-end, and the
+  // account it actually runs on refreshes only on its next spawn or a manual ↻.
+  // No wrong NUMBER is ever shown (each probe reads the probed account's real
+  // quota) and it self-heals — but the trigger routing is imprecise until M3
+  // persists a per-pane resolved accountId (plan §4c) that this can key on via
+  // the hook's ptyId instead of the workspace binding.
   const accountId = getAccountStore().getBinding(workspaceId, 'claude');
   if (accountId) void accountUsageService.maybeProbe(accountId);
 };

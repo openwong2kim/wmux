@@ -278,6 +278,17 @@ export function AccountsSection(): React.ReactElement | null {
     return off;
   }, []);
 
+  // M2 (Claude+Codex review): the "Nm ago" age is computed at render time, so
+  // without a rerender it would freeze between usage pushes. Tick every 30s
+  // while any usage entry is shown so the freshness label advances. `ageTick`
+  // is intentionally unused as a value — bumping it just forces the rerender.
+  const [, setAgeTick] = useState(0);
+  useEffect(() => {
+    if (usage.size === 0) return;
+    const t = setInterval(() => setAgeTick((n) => n + 1), 30_000);
+    return () => clearInterval(t);
+  }, [usage.size]);
+
   // Hidden when the preload predates multi-account.
   if (!window.electronAPI?.accounts) return null;
 
