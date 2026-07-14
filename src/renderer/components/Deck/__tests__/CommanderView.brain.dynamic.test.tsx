@@ -6,11 +6,12 @@
 // busy bar's Stop button interrupts. The packaged Electron UI can't be
 // automated, so the pure content component is the render seam.
 
-import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, afterAll, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { CommanderViewContent, type CommanderViewContentProps } from '../CommanderView';
-import type { DeckBrainMessage } from '../deckBrain';
+import { applyBrainEvent, type DeckBrainMessage } from '../deckBrain';
+import { t, setLocale } from '../../../i18n';
 
 let container: HTMLDivElement;
 let root: Root;
@@ -236,5 +237,70 @@ describe('CommanderViewContent — brain surface', () => {
     mount({ brainMessages: [{ id: 'u1', role: 'user', text: 'hello there' }] });
     expect(container.querySelector('[data-commander-wake-badge]')).toBeNull();
     expect(container.textContent).toContain('hello there');
+  });
+});
+
+describe('CommanderViewContent — surfaced rate-limit notices (real locale)', () => {
+  // The suite above stubs t as (k) => k, which would happily render a MISSING
+  // locale key as itself. These mount with the REAL translator so a raw
+  // `deck.limit.*` key leaking to the UI (the #452 placeholder class) fails here,
+  // and the notices are built through the REAL reducer so escalation + dedupe
+  // (fix 5) are exercised end-to-end, not just the leaf formatter.
+  afterAll(() => setLocale('en'));
+
+  function limitTurn(): DeckBrainMessage[] {
+    const reset = Date.now() + 2 * 3_600_000 + 13 * 60_000; // ~2h13m out
+    let msgs: DeckBrainMessage[] = [
+      { id: 'u1', role: 'user', text: 'go' },
+      { id: 'a1', role: 'assistant', text: '', status: 'streaming', tools: [] },
+    ];
+    const ep = { window: 'five_hour', resetsAtMs: reset, accountId: 'a', accountName: 'Work Max' } as const;
+    msgs = applyBrainEvent(msgs, { type: 'limit', status: 'allowed_warning', ...ep, utilization: 85 });
+    msgs = applyBrainEvent(msgs, { type: 'limit', status: 'rejected', ...ep }); // escalation → shows
+    msgs = applyBrainEvent(msgs, { type: 'limit', status: 'rejected', ...ep }); // duplicate → suppressed
+    return msgs;
+  }
+
+  it('en: real copy renders (no raw keys / placeholders), escalation kept, dup suppressed', () => {
+    setLocale('en');
+    mount({ brainMessages: limitTurn(), t });
+    const box = container.querySelector('[data-commander-brain-limits]')!;
+    const lines = box.querySelectorAll('[data-limit-status]');
+    expect(lines).toHaveLength(2); // warning + rejected; the duplicate rejected was deduped
+    const txt = box.textContent!;
+    expect(txt).not.toMatch(/deck\.limit\./); // no raw i18n key leaked
+    expect(txt).not.toMatch(/\{[a-zA-Z]+\}/); // no unresolved {placeholder}
+    expect(txt).toContain('Approaching');
+    expect(txt).toContain('limit reached');
+    expect(txt).toContain('Work Max');
+    expect(txt).toContain('85% used');
+    expect(txt).toContain('resets in 2h13m');
+  });
+
+  it('ko: Korean copy renders, not raw keys', () => {
+    setLocale('ko');
+    mount({ brainMessages: limitTurn(), t });
+    const box = container.querySelector('[data-commander-brain-limits]')!;
+    expect(box.querySelectorAll('[data-limit-status]')).toHaveLength(2);
+    const txt = box.textContent!;
+    expect(txt).not.toMatch(/deck\.limit\./);
+    expect(txt).not.toMatch(/\{[a-zA-Z]+\}/);
+    expect(txt).toContain('한도 도달'); // rejected
+    expect(txt).toContain('근접'); // approaching
+    expect(txt).toContain('Work Max');
+    expect(txt).toContain('사용'); // utilization suffix
+  });
+
+  it('fix 5: two same account+window warnings with NO reset both render (not deduped)', () => {
+    setLocale('en');
+    let msgs: DeckBrainMessage[] = [
+      { id: 'u1', role: 'user', text: 'go' },
+      { id: 'a1', role: 'assistant', text: '', status: 'streaming', tools: [] },
+    ];
+    const ep = { window: 'five_hour', accountId: 'a' } as const; // no resetsAtMs
+    msgs = applyBrainEvent(msgs, { type: 'limit', status: 'allowed_warning', ...ep });
+    msgs = applyBrainEvent(msgs, { type: 'limit', status: 'allowed_warning', ...ep });
+    mount({ brainMessages: msgs, t });
+    expect(container.querySelectorAll('[data-commander-brain-limits] [data-limit-status]')).toHaveLength(2);
   });
 });
