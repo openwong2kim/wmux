@@ -233,6 +233,34 @@ export function IconBrowser({ size = 14 }: { size?: number }) {
   );
 }
 
+/** Maximize — four outward corner brackets (expand to fullscreen). Zoom the
+ *  pane to fill the workspace. Matches wmux `togglePaneZoom` (issue #182). The
+ *  SVG line form replaces the ⤢ glyph so it sits on the same grid/weight as the
+ *  other pane-header actions (issue #145 rationale). */
+export function IconMaximize({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <polyline points="2.5,5 2.5,2.5 5,2.5" />
+      <polyline points="9,2.5 11.5,2.5 11.5,5" />
+      <polyline points="11.5,9 11.5,11.5 9,11.5" />
+      <polyline points="5,11.5 2.5,11.5 2.5,9" />
+    </Icon>
+  );
+}
+
+/** Restore — four inward corner brackets (exit fullscreen). Un-zoom a zoomed
+ *  pane. Mirror of IconMaximize; replaces the ⤡ glyph. */
+export function IconRestore({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <polyline points="2.5,5 5,5 5,2.5" />
+      <polyline points="11.5,5 9,5 9,2.5" />
+      <polyline points="11.5,9 9,9 9,11.5" />
+      <polyline points="2.5,9 5,9 5,11.5" />
+    </Icon>
+  );
+}
+
 /** Sparkles — start a new (AI) conversation. Replaces the ⊕ glyph. */
 export function IconSparkles({ size = 14 }: { size?: number }) {
   return (
