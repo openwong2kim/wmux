@@ -48,7 +48,9 @@ export type RegisterMcpResult =
 export type SampleTaskOutcome = 'ok' | 'timeout' | 'aborted';
 
 // Renderer → main payload for firstRun:start-sample-task.
-// `ptyId` is the upper-left Claude pane id (D3 strict OSC133).
+// `ptyId` is the upper-left pane's shell — the sample task launches `claude`
+// there once the shell emits OSC133 prompt-ready (D3). It is a plain shell,
+// not a pre-running Claude pane (#452).
 export interface SampleTaskStartPayload {
   ptyId: string;
 }

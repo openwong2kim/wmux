@@ -3,7 +3,8 @@
  *
  * Magical-moment onboarding modal. Detects Claude Code, offers 1-click
  * MCP registration, and runs a deterministic sample task that splits the
- * window 2x2 and injects a command into the upper-left Claude pane.
+ * window 2x2 and launches Claude in the upper-left pane's shell — that pane
+ * is a plain shell, so the sample task runs `claude` there (#452).
  *
  * See:
  *   - progress.md (T6 spec)
