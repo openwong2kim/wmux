@@ -588,18 +588,26 @@ server.tool(
 
 // === Terminal tools ===
 
+// The bounded default for terminal_read when the caller names no explicit cap.
+// SSOT is the renderer's DEFAULT_READ_TAIL_LINES (src/renderer/utils/terminalTail.ts);
+// mirrored here (the MCP bundle must not import renderer/xterm code) purely so
+// the tool description states the real number. Keep the two in lockstep.
+const DEFAULT_READ_TAIL_LINES = 300;
+
 server.tool(
   'terminal_read',
-  'Read the current visible text from a terminal. Omit ptyId to read the active terminal. Pass tail_lines to cap the response to the last N non-empty lines (saves tokens when the full viewport is not needed). For structured command boundaries / exit codes, use terminal_read_events instead.',
+  `Read the recent text from a terminal. By default returns the last ${DEFAULT_READ_TAIL_LINES} lines of output — the recent screen plus a little history, which is what you want for observing an agent's latest turn. Omit ptyId to read the active terminal. Reading is intentionally bounded and cheap; escalate on purpose when the default is not enough to judge what happened: pass a larger tail_lines (e.g. 800) to widen the window, or full_scrollback:true as a last resort to pull the ENTIRE backlog (far more expensive — avoid by reflex). Read cost scales with the number of lines returned. For structured command boundaries / exit codes, use terminal_read_events instead.`,
   {
     ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
-    tail_lines: z.number().int().positive().optional().describe('Return only the last N non-empty lines of the viewport. Omit to return everything the terminal buffer knows about.'),
+    tail_lines: z.number().int().positive().optional().describe(`Return only the last N lines. Omit for the default (${DEFAULT_READ_TAIL_LINES}). Read cost is O(N), so a small N is both cheaper and fewer tokens.`),
+    full_scrollback: z.boolean().optional().describe('Return the ENTIRE terminal backlog (up to the scrollback limit, ~10k lines) instead of a bounded tail. Expensive — walks the whole buffer. Use only when the recent tail is genuinely insufficient.'),
   },
-  async ({ ptyId, tail_lines }) => {
+  async ({ ptyId, tail_lines, full_scrollback }) => {
     const route = await resolveTerminalRouteBound(ptyId);
     const params: Record<string, unknown> = { workspaceId: route.workspaceId };
     if (route.ptyId) params.ptyId = route.ptyId;
     if (tail_lines !== undefined) params.tail_lines = tail_lines;
+    if (full_scrollback) params.full_scrollback = true;
     return callRpc('input.readScreen', params);
   },
 );

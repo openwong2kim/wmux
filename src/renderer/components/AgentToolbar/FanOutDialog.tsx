@@ -10,6 +10,8 @@ import { selectActiveWorkspace } from '../../stores/selectors/workspaceProjectio
 import { findLeafPanes } from '../../hooks/a2aAddressing';
 import { generateId } from '../../../shared/types';
 import { FANOUT_MAX_TASKS, FANOUT_PROMPT_MAX_BYTES } from '../../../shared/workTask';
+import { useT } from '../../hooks/useT';
+import { t } from '../../i18n';
 
 /** title 자동 파생: "{프롬프트 앞 24자} #k"(§7 G6). */
 function deriveTitle(prompt: string, k: number): string {
@@ -32,6 +34,7 @@ interface FanOutDialogProps {
 }
 
 export default function FanOutDialog({ onClose }: FanOutDialogProps) {
+  const t = useT();
   const activeWorkspace = useStore(selectActiveWorkspace);
   const pushToast = useStore((s) => s.pushToast);
 
@@ -87,15 +90,15 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
   const handleSubmit = useCallback(async () => {
     if (submitting) return;
     if (prompt.trim().length === 0) {
-      pushToast({ level: 'warn', message: 'fan-out: 프롬프트를 입력하세요' });
+      pushToast({ level: 'warn', message: t('fanout.errPromptRequired') });
       return;
     }
     if (promptOverCap) {
-      pushToast({ level: 'warn', message: `fan-out: 프롬프트가 ${FANOUT_PROMPT_MAX_BYTES}바이트를 초과합니다` });
+      pushToast({ level: 'warn', message: t('fanout.errPromptTooLarge', { max: FANOUT_PROMPT_MAX_BYTES }) });
       return;
     }
     if (!repoPath.trim()) {
-      pushToast({ level: 'warn', message: 'fan-out: repo 경로가 필요합니다' });
+      pushToast({ level: 'warn', message: t('fanout.errRepoRequired') });
       return;
     }
     setSubmitting(true);
@@ -121,32 +124,32 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
       if (parentId) void useStore.getState().refreshMissions(parentId);
       onClose();
     } catch (err) {
-      pushToast({ level: 'error', message: `fan-out 실패: ${err instanceof Error ? err.message : String(err)}` });
+      pushToast({ level: 'error', message: t('fanout.failed', { error: err instanceof Error ? err.message : String(err) }) });
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, prompt, promptOverCap, repoPath, titles, n, agentCmd, activeWorkspace, pushToast, onClose]);
+  }, [submitting, prompt, promptOverCap, repoPath, titles, n, agentCmd, activeWorkspace, pushToast, t]);
 
   const field = 'w-full px-2 py-1 rounded border border-[var(--bg-overlay)] bg-[var(--bg-surface)] text-[12px] text-[var(--text-main)]';
   const label = 'text-[11px] text-[var(--text-sub)] mb-1 block';
 
   return (
     <div className="absolute bottom-full mb-2 left-2 z-50 w-[420px] max-h-[70vh] overflow-y-auto rounded-lg border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl" data-testid="fanout-dialog">
-      <div className="text-[12px] font-semibold text-[var(--text-main)] mb-2">Fan-out — 프롬프트 1개 → N 격리 태스크</div>
+      <div className="text-[12px] font-semibold text-[var(--text-main)] mb-2">{t('fanout.title')}</div>
 
-      <label className={label}>프롬프트</label>
+      <label className={label}>{t('fanout.promptLabel')}</label>
       <textarea
         className={`${field} h-24 resize-none font-mono`}
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
-        placeholder="모든 태스크가 받을 프롬프트…"
+        placeholder={t('fanout.promptPlaceholder')}
         data-testid="fanout-prompt"
       />
       <div className={`text-[10px] mb-2 ${promptOverCap ? 'text-[var(--accent-red)]' : 'text-[var(--text-muted)]'}`}>
-        {promptBytes} / {FANOUT_PROMPT_MAX_BYTES} bytes
+        {t('fanout.bytes', { bytes: promptBytes, max: FANOUT_PROMPT_MAX_BYTES })}
       </div>
 
-      <label className={label}>태스크 수 (N): {n}</label>
+      <label className={label}>{t('fanout.taskCount', { n })}</label>
       <input
         type="range"
         min={1}
@@ -157,7 +160,7 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
         data-testid="fanout-n"
       />
 
-      <label className={label}>태스크별 제목 (편집 가능 — 브랜치·slug 식별)</label>
+      <label className={label}>{t('fanout.titlesLabel')}</label>
       <div className="space-y-1 mb-2">
         {Array.from({ length: n }, (_, k) => (
           <div key={k} className="flex items-center gap-2">
@@ -174,15 +177,15 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
         ))}
       </div>
 
-      <label className={label}>repo 경로</label>
+      <label className={label}>{t('fanout.repoLabel')}</label>
       <input className={`${field} mb-2 font-mono`} value={repoPath} onChange={(e) => setRepoPath(e.target.value)} data-testid="fanout-repo" />
 
-      <label className={label}>agent 명령</label>
+      <label className={label}>{t('fanout.agentLabel')}</label>
       <input className={`${field} mb-3 font-mono`} value={agentCmd} onChange={(e) => setAgentCmd(e.target.value)} data-testid="fanout-agent" />
 
       <div className="flex items-center justify-end gap-2">
         <button className="px-3 py-1 rounded text-[11px] text-[var(--text-sub)] hover:text-[var(--text-main)]" onClick={onClose}>
-          취소
+          {t('fanout.cancel')}
         </button>
         <button
           className="px-3 py-1 rounded text-[11px] bg-[var(--accent-blue)] text-white disabled:opacity-40"
@@ -190,7 +193,7 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
           onClick={handleSubmit}
           data-testid="fanout-submit"
         >
-          {submitting ? '스폰 중…' : `${n}개 스폰`}
+          {submitting ? t('fanout.spawning') : t('fanout.spawn', { n })}
         </button>
       </div>
     </div>
@@ -241,7 +244,7 @@ function openTaskDiff(taskId: string, workspaceId: string, title: string, ownerW
 function reportResult(res: unknown, pushToast: PushToast, ownerWorkspaceId: string): void {
   const r = (res ?? {}) as FanOutResultLike;
   if (r.error) {
-    pushToast({ level: 'error', message: `fan-out 거부: ${r.error}` });
+    pushToast({ level: 'error', message: t('fanout.rejected', { error: r.error }) });
     return;
   }
   const tasks = r.tasks ?? [];
@@ -266,9 +269,9 @@ function reportResult(res: unknown, pushToast: PushToast, ownerWorkspaceId: stri
   const unmaterialized = tasks.filter((t) => t.unmaterialized).length;
   const disconnected = tasks.filter((t) => t.ok && t.channelDisconnected).length;
 
-  const parts: string[] = [`fan-out: 성공 ${ok}` + (fail > 0 ? ` · 실패 ${fail}` : '')];
-  if (unmaterialized > 0) parts.push(`미물질화 ${unmaterialized}`);
-  if (disconnected > 0) parts.push(`채널 미연결 ${disconnected}`);
+  const parts: string[] = [t('fanout.summarySuccess', { ok }) + (fail > 0 ? ` · ${t('fanout.summaryFailed', { fail })}` : '')];
+  if (unmaterialized > 0) parts.push(t('fanout.summaryUnmaterialized', { count: unmaterialized }));
+  if (disconnected > 0) parts.push(t('fanout.summaryDisconnected', { count: disconnected }));
   pushToast({
     level: fail > 0 ? 'error' : disconnected > 0 || unmaterialized > 0 ? 'warn' : 'info',
     message: parts.join(' · '),
@@ -276,16 +279,16 @@ function reportResult(res: unknown, pushToast: PushToast, ownerWorkspaceId: stri
 
   // F5 — 물질화된 성공 태스크마다 "diff 열기" 액션 토스트. 워크스페이스가 있어야
   // 서피스를 열 수 있으므로 workspaceId·taskId가 채워진 태스크만 대상.
-  for (const t of tasks) {
-    if (!t.ok || !t.taskId || !t.workspaceId) continue;
-    const taskId = t.taskId;
-    const workspaceId = t.workspaceId;
-    const title = t.title ?? taskId;
+  for (const task of tasks) {
+    if (!task.ok || !task.taskId || !task.workspaceId) continue;
+    const taskId = task.taskId;
+    const workspaceId = task.workspaceId;
+    const title = task.title ?? taskId;
     pushToast({
       level: 'info',
-      message: `태스크 "${title}" 준비됨`,
+      message: t('fanout.taskReady', { title }),
       action: {
-        label: 'diff 열기',
+        label: t('fanout.openDiff'),
         onClick: () => openTaskDiff(taskId, workspaceId, title, ownerWorkspaceId),
       },
     });

@@ -31,7 +31,7 @@ export default function AgentToolbar() {
   // C10의 격리 해제 옵션을 fan-out에 두지 않고 별도 진입으로 봉쇄한다. 최소 구현(§6 재량).
   const handleBroadcast = useCallback(async () => {
     if (!activeWorkspace) return;
-    const text = window.prompt('broadcast — 현재 워크스페이스의 모든 터미널 페인에 전송');
+    const text = window.prompt(t('toolbar.broadcastPrompt'));
     if (!text || text.trim().length === 0) return;
     const ptyIds: string[] = [];
     for (const leaf of findLeafPanes(activeWorkspace.rootPane)) {
@@ -42,7 +42,7 @@ export default function AgentToolbar() {
     for (const id of ptyIds) {
       await injectText(id, text, true);
     }
-  }, [activeWorkspace]);
+  }, [activeWorkspace, t]);
 
   const handleAttach = useCallback(async () => {
     if (!ptyId) return;
@@ -133,18 +133,18 @@ export default function AgentToolbar() {
       <button
         className={`${btn} ${showFanOut ? active : idle}`}
         onClick={() => setShowFanOut((v) => !v)}
-        title="Fan-out — 프롬프트 1개 → N 격리 태스크"
+        title={t('fanout.title')}
         data-testid="fanout-button"
       >
-        <IconSparkles size={13} /> <span className="wmux-toolbar-label">Fan-out</span>
+        <IconSparkles size={13} /> <span className="wmux-toolbar-label">{t('toolbar.fanOut')}</span>
       </button>
       <button
         className={`${btn} ${idle}`}
         onClick={handleBroadcast}
-        title="Broadcast — 현재 워크스페이스의 모든 터미널 페인에 같은 텍스트(격리 없음)"
+        title={t('toolbar.broadcastTooltip')}
         data-testid="broadcast-button"
       >
-        <IconUsers size={13} /> <span className="wmux-toolbar-label">Broadcast</span>
+        <IconUsers size={13} /> <span className="wmux-toolbar-label">{t('toolbar.broadcast')}</span>
       </button>
       <div className="flex-1" />
       {disabled && <span className="text-[10px] text-[var(--text-muted)]">{t('toolbar.noTerminal')}</span>}

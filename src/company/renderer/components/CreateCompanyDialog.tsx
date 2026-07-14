@@ -18,25 +18,25 @@ const DIALOG_TEMPLATES: DialogTemplate[] = [
   {
     id: 'fullstack',
     icon: '\u2699\uFE0F',
-    description: 'Engineering + Security — 개발 + 보안 감사',
+    description: 'Engineering + Security — development + security audit',
     template: BUILTIN_TEMPLATES[0]!,
   },
   {
     id: 'startup',
     icon: '\uD83D\uDE80',
-    description: 'Product + Design — 빠른 프로토타이핑',
+    description: 'Product + Design — rapid prototyping',
     template: BUILTIN_TEMPLATES[1]!,
   },
   {
     id: 'review',
     icon: '\uD83D\uDD0D',
-    description: 'Review + QA — 코드 품질 집중',
+    description: 'Review + QA — code-quality focus',
     template: BUILTIN_TEMPLATES[2]!,
   },
   {
     id: 'enterprise',
     icon: '\uD83C\uDFE2',
-    description: 'Engineering + Design + QA + DevOps — 대규모 프로젝트',
+    description: 'Engineering + Design + QA + DevOps — large-scale project',
     template: {
       name: 'Enterprise Team',
       departments: [
@@ -77,7 +77,7 @@ const DIALOG_TEMPLATES: DialogTemplate[] = [
   {
     id: 'empty',
     icon: '\uD83D\uDCDD',
-    description: 'CEO만 생성 — 직접 부서 추가',
+    description: 'CEO only — add departments yourself',
     template: {
       name: 'Empty Company',
       departments: [],

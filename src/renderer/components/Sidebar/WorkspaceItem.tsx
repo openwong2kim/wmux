@@ -469,9 +469,9 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                 {departedCwd && (
                   <span
                     className="text-[9px] text-[var(--accent-yellow,#f9e2af)] flex-shrink-0"
-                    title={`페인 cwd가 태스크 worktree 경계 밖으로 이탈: ${departedCwd}`}
+                    title={t('workspace.cwdDeparted', { cwd: departedCwd })}
                   >
-                    ⚠ 이탈
+                    ⚠ {t('workspace.departed')}
                   </span>
                 )}
               </div>

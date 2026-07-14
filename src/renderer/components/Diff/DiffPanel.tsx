@@ -344,7 +344,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     if (isTask) {
       const m = await resolveTaskMeta(taskId, verifiedWorkspaceId);
       if (!m) {
-        setError('태스크를 찾을 수 없음 — worktree 소실 또는 손상');
+        setError(t('diff.taskNotFound'));
         setLoading(false);
         return;
       }
@@ -359,7 +359,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     }
     const bridge = getDiffBridge();
     if (!bridge) {
-      setError('diff 브릿지 미가용');
+      setError(t('diff.bridgeUnavailable'));
       setLoading(false);
       return;
     }
@@ -374,7 +374,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
       if (res.files.length > 0) setSelectedFile(res.files[0].path);
     }
     setLoading(false);
-  }, [isTask, taskId, repoPath, verifiedWorkspaceId]);
+  }, [isTask, taskId, repoPath, verifiedWorkspaceId, t]);
 
   useEffect(() => {
     void load();
@@ -418,7 +418,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
       .filter(([, set]) => set.size > 0)
       .map(([path, set]) => ({ path, hunkIndices: [...set].sort((a, b) => a - b) }));
     if (selections.length === 0) {
-      setApplyMsg('선택된 hunk가 없습니다');
+      setApplyMsg(t('diff.noHunksSelected'));
       return;
     }
     setApplying(true);
@@ -429,28 +429,28 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     const res = await bridge.applyHunks(req, meta.worktreePath);
     setApplying(false);
     if (res.ok) {
-      setApplyMsg(`채택 완료 — 타겟 워킹트리에 반영됨(${res.appliedFiles.length}파일). 커밋은 직접 하세요.`);
+      setApplyMsg(t('diff.adopted', { count: res.appliedFiles.length }));
       // 재열람: 채택분은 여전히 태스크 worktree diff에 보이며 "적용됨" 뱃지로 표시됨.
       void load();
     } else {
       if (res.code === 'probe' && res.failedProbes) {
         setFailedProbes(new Set(res.failedProbes.map((p) => `${p.path}#${p.hunkIndex}`)));
-        setApplyMsg('일부 hunk가 적용 불가 — 표시된 hunk를 해제하고 재시도하세요.');
+        setApplyMsg(t('diff.someHunksFailed'));
       } else if (res.code === 'drift') {
-        setApplyMsg('타겟이 이동됨 — diff를 재열람하세요.');
+        setApplyMsg(t('diff.targetMoved'));
       } else if (res.code === 'dirty') {
         setApplyMsg(res.error);
       } else {
         setApplyMsg(res.error);
       }
     }
-  }, [meta, data, selection, taskId, load]);
+  }, [meta, data, selection, taskId, load, t]);
 
   // 코멘트 발사(§4·J4): 미션 채널에 diff-comment 앵커 포스트(렌더러 channelLocal 경로).
   const handleComment = useCallback(
     async (file: string, hunkHeader: string) => {
       if (!meta || meta.channelArchived || !meta.missionChannelId) return;
-      const comment = window.prompt(`코멘트 (${file})`);
+      const comment = window.prompt(t('diff.commentPrompt', { file }));
       if (!comment) return;
       const api = (window as unknown as {
         electronAPI?: { rpc?: { mutateChannelLocal: (m: string, p: Record<string, unknown>) => Promise<unknown> } };
@@ -489,14 +489,14 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
           ...(mentions.length > 0 ? { mentions } : {}),
         })) as { ok?: boolean; error?: string } | undefined;
         if (res && res.ok === false) {
-          setApplyMsg(`코멘트 발사 실패: ${res.error ?? '알 수 없는 오류'}`);
+          setApplyMsg(t('diff.commentFailed', { error: res.error ?? t('diff.unknownError') }));
           return;
         }
         setApplyMsg(t('diff.commentFired', { count: mentions.length }));
         // F10: 발사 직후 역조회 갱신 — 방금 단 코멘트가 인라인에 바로 뜬다.
         setComments(await loadDiffComments(meta.missionChannelId, taskId, verifiedWorkspaceId));
       } catch (e) {
-        setApplyMsg(`코멘트 발사 실패: ${e instanceof Error ? e.message : String(e)}`);
+        setApplyMsg(t('diff.commentFailed', { error: e instanceof Error ? e.message : String(e) }));
       }
     },
     [meta, taskId, verifiedWorkspaceId, t],
@@ -509,7 +509,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     if (lifecycleBusy) return;
     const api = (window as unknown as { electronAPI?: { workTask?: import('../../../preload/preload').ElectronAPI['workTask'] } }).electronAPI;
     if (!api?.workTask) return;
-    if (!window.confirm('이 태스크를 닫습니다. clean이면 worktree를 제거하고 미션 채널을 아카이브합니다. 계속할까요?')) return;
+    if (!window.confirm(t('diff.closeConfirm'))) return;
     setLifecycleBusy('close');
     try {
       const res = await api.workTask.close(taskId, verifiedWorkspaceId);
@@ -520,30 +520,30 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         pushToast({
           level: res.archivePending ? 'warn' : 'info',
           message: res.unmaterialized
-            ? '태스크를 닫았습니다(미물질화 — worktree 없음).'
+            ? t('diff.closedUnmaterialized')
             : res.archivePending
-              ? '태스크를 닫았습니다 — 채널 아카이브는 보류(부트 reconcile이 수렴).'
-              : '태스크를 닫았습니다 — worktree 제거·채널 아카이브 완료.',
+              ? t('diff.closedArchiveDeferred')
+              : t('diff.closedFull'),
         });
       } else if (res.reason === 'dirty') {
         pushToast({
           level: 'warn',
-          message: '미커밋 산출물이 있어 보존했습니다 — diff를 확인해 커밋/PR 또는 폐기하세요(태스크는 열린 채 유지).',
+          message: t('diff.closePreserved'),
         });
       } else if (res.reason === 'unpushed') {
         pushToast({
           level: 'warn',
-          message: `push되지 않은 커밋 ${res.aheadCount ?? ''}개가 있습니다 — PR 생성 또는 push 후 다시 닫으세요.`,
+          message: t('diff.closeUnpushed', { count: res.aheadCount ?? '' }),
         });
       } else {
-        pushToast({ level: 'error', message: `close 실패: ${res.error}` });
+        pushToast({ level: 'error', message: t('diff.closeFailed', { error: res.error ?? '' }) });
       }
     } catch (e) {
-      pushToast({ level: 'error', message: `close 실패: ${e instanceof Error ? e.message : String(e)}` });
+      pushToast({ level: 'error', message: t('diff.closeFailed', { error: e instanceof Error ? e.message : String(e) }) });
     } finally {
       setLifecycleBusy(null);
     }
-  }, [lifecycleBusy, taskId, verifiedWorkspaceId, pushToast]);
+  }, [lifecycleBusy, taskId, verifiedWorkspaceId, pushToast, t]);
 
   // diff→오케스트레이터 질문: hunk 컨텍스트 블록 + 질문을 단일 메시지로
   // 조립해 pendingBrainPrompt 릴레이에 싣고 Orchestrator 탭으로 전환한다
@@ -580,10 +580,10 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     if (lifecycleBusy) return;
     const api = (window as unknown as { electronAPI?: { workTask?: import('../../../preload/preload').ElectronAPI['workTask'] } }).electronAPI;
     if (!api?.workTask) return;
-    const branchHint = meta?.branch ? `\n브랜치: ${meta.branch}` : '';
+    const branchHint = meta?.branch ? `\n${t('diff.branchLine', { branch: meta.branch })}` : '';
     if (
       !window.confirm(
-        `origin에 push하고 PR을 생성합니다.${branchHint}\npre-push hook이 실행될 수 있습니다. 계속할까요?`,
+        t('diff.prConfirm', { branchHint }),
       )
     ) {
       return;
@@ -595,23 +595,23 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         pushToast({
           level: res.commitPending ? 'warn' : 'info',
           message: res.recovered
-            ? `기존 PR을 회수했습니다: ${res.prUrl}`
-            : `PR을 생성했습니다: ${res.prUrl}${res.commitPending ? ' (prUrl 기록 보류)' : ''}`,
-          action: { label: 'PR 열기', onClick: () => window.open(res.prUrl, '_blank') },
+            ? t('diff.prRecovered', { url: res.prUrl ?? '' })
+            : t('diff.prCreated', { url: res.prUrl ?? '' }) + (res.commitPending ? t('diff.prUrlPending') : ''),
+          action: { label: t('diff.openPr'), onClick: () => window.open(res.prUrl, '_blank') },
         });
       } else if (res.reason === 'gh-missing' || res.reason === 'gh-unauth') {
         pushToast({ level: 'warn', message: `${res.error}${res.browseFallback ? ` — ${res.browseFallback}` : ''}` });
       } else if (res.reason === 'dirty') {
         pushToast({ level: 'warn', message: res.error });
       } else {
-        pushToast({ level: 'error', message: `PR 생성 실패: ${res.error}` });
+        pushToast({ level: 'error', message: t('diff.prFailed', { error: res.error ?? '' }) });
       }
     } catch (e) {
-      pushToast({ level: 'error', message: `PR 생성 실패: ${e instanceof Error ? e.message : String(e)}` });
+      pushToast({ level: 'error', message: t('diff.prFailed', { error: e instanceof Error ? e.message : String(e) }) });
     } finally {
       setLifecycleBusy(null);
     }
-  }, [lifecycleBusy, taskId, verifiedWorkspaceId, meta, pushToast]);
+  }, [lifecycleBusy, taskId, verifiedWorkspaceId, meta, pushToast, t]);
 
   const activeFile = selectedFile ? filesByPath.get(selectedFile) : null;
 
@@ -680,9 +680,9 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
             className="px-2 py-0.5 rounded text-[10px] bg-[var(--accent-blue,#3b82f6)] text-white disabled:opacity-40"
             onClick={() => void handleAdopt()}
             disabled={applying || selectedCount === 0}
-            title="선택한 hunk를 타겟 워킹트리에 채택"
+            title={t('diff.adoptTitle')}
           >
-            {applying ? '채택 중...' : `채택 (${selectedCount})`}
+            {applying ? t('diff.adopting') : t('diff.adopt', { count: selectedCount })}
           </button>
         )}
         {/* J3 §2·§1 — 1클릭 PR·close. F11: closed 태스크에선 숨긴다(worktree 제거됨). */}
@@ -692,17 +692,17 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
               className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--text-main)] border border-[var(--bg-mantle)] disabled:opacity-40"
               onClick={() => void handleCreatePr()}
               disabled={lifecycleBusy !== null}
-              title="push + PR 생성(gh 4중 게이트·멱등 재진입)"
+              title={t('diff.prTitle')}
             >
-              {lifecycleBusy === 'pr' ? 'PR 중...' : 'PR'}
+              {lifecycleBusy === 'pr' ? t('diff.prBusy') : 'PR'}
             </button>
             <button
               className="px-2 py-0.5 rounded text-[10px] bg-[var(--bg-base)] text-[var(--text-sub)] hover:text-[var(--accent-red,#f87171)] border border-[var(--bg-mantle)] disabled:opacity-40"
               onClick={() => void handleClose()}
               disabled={lifecycleBusy !== null}
-              title="태스크 닫기(clean이면 worktree 제거·채널 아카이브)"
+              title={t('diff.closeTitle')}
             >
-              {lifecycleBusy === 'close' ? '닫는 중...' : '닫기'}
+              {lifecycleBusy === 'close' ? t('diff.closing') : t('diff.close')}
             </button>
           </>
         )}
@@ -728,7 +728,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         )}
         {!loading && !error && data && !hasAnyChange && (
           <div className="flex items-center justify-center w-full text-[var(--text-muted)] text-sm">
-            변경사항 없음 — 워킹트리가 clean합니다
+            {t('diff.noChanges')}
           </div>
         )}
         {!loading && !error && data && hasAnyChange && (
@@ -759,10 +759,10 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                       </span>
                     )}
                     {f && !f.hunkSelectable && (
-                      <span className="ml-1 text-[9px] text-[var(--text-muted)]">[{f.kind}·채택불가]</span>
+                      <span className="ml-1 text-[9px] text-[var(--text-muted)]">[{f.kind}·{t('diff.nonAdoptable')}]</span>
                     )}
                     {(isTrunc || isUnsupported || !f) && (
-                      <span className="ml-1 text-[9px] text-[var(--text-muted)]">[표시전용]</span>
+                      <span className="ml-1 text-[9px] text-[var(--text-muted)]">[{t('diff.displayOnlyTag')}]</span>
                     )}
                   </button>
                 );
@@ -773,15 +773,15 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
             <div className="flex-1 overflow-auto p-2">
               {!activeFile && selectedFile && (
                 <div className="text-[var(--text-muted)] text-xs">
-                  표시 전용 — 바이너리·대형·비정규 변경(diff 미표시)
+                  {t('diff.displayOnly')}
                 </div>
               )}
               {!activeFile && !selectedFile && (
-                <div className="text-[var(--text-muted)] text-sm">파일을 선택하세요</div>
+                <div className="text-[var(--text-muted)] text-sm">{t('diff.selectFile')}</div>
               )}
               {activeFile && activeFile.hunks.length === 0 && (
                 <div className="text-[var(--text-muted)] text-xs">
-                  {activeFile.kind} — 표시 전용(hunk 없음 또는 채택 불가)
+                  {activeFile.kind} {t('diff.displayOnlySuffix')}
                 </div>
               )}
               {activeFile &&
@@ -797,12 +797,12 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                             type="checkbox"
                             checked={checked}
                             onChange={() => toggleHunk(activeFile.path, idx)}
-                            title="이 hunk를 채택 대상으로 선택"
+                            title={t('diff.selectHunk')}
                           />
                         )}
                         <span className="font-mono text-[var(--text-sub)] truncate">{hunk.header}</span>
                         {failed && (
-                          <span className="text-[9px] text-[var(--accent-red,#f87171)]">채택불가</span>
+                          <span className="text-[9px] text-[var(--accent-red,#f87171)]">{t('diff.nonAdoptable')}</span>
                         )}
                         <div className="flex-1" />
                         {/* diff→오케스트레이터 질문 — 양 모드 공통(hunk 컨텍스트 동봉). */}
@@ -821,14 +821,14 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                           <button
                             className="text-[9px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
                             onClick={() => void handleComment(activeFile.path, hunk.header)}
-                            title="이 hunk에 코멘트"
+                            title={t('diff.commentHunk')}
                           >
                             <IconComment />
                           </button>
                         )}
                         {meta?.channelArchived && (
-                          <span className="text-[9px] text-[var(--text-muted)]" title="채널 아카이브됨">
-                            코멘트 비활성
+                          <span className="text-[9px] text-[var(--text-muted)]" title={t('diff.channelArchived')}>
+                            {t('diff.commentDisabled')}
                           </span>
                         )}
                       </div>
@@ -880,7 +880,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
               {activeFile && fileComments.moved.length > 0 && (
                 <div className="mb-2 border border-[var(--accent-red,#f87171)] rounded overflow-hidden">
                   <div className="px-2 py-1 bg-[var(--bg-surface)] text-[10px] text-[var(--text-muted)]">
-                    위치 이동됨 — 코멘트 앵커의 hunk가 현재 diff와 불일치({fileComments.moved.length})
+                    {t('diff.commentMoved', { count: fileComments.moved.length })}
                   </div>
                   <CommentList comments={fileComments.moved} />
                 </div>
