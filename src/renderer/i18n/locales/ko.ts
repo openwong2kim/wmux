@@ -242,6 +242,11 @@ export const ko = {
   // 워크스페이스별 agent 모드 — 단일 자율성 노브(off/manual/assist/orchestrate).
   'deck.limit.window': '사용량',
   'deck.limit.resetsSoon': '곧 초기화됨',
+  'deck.limit.resetsIn': '{rel} 후 초기화',
+  'deck.limit.onAccount': ' · {account}',
+  'deck.limit.utilSuffix': ' ({util}% 사용)',
+  'deck.limit.rejected': '⚠ Claude {window} 한도 도달{on}{reset}. 전환하기 전까지 새 턴은 이 계정을 계속 사용합니다.',
+  'deck.limit.approaching': '{window} 한도에 근접{on}{util}{reset}.',
   // agent 패널에 칩으로 표시.
   'deck.mode.label': '모드',
   'deck.mode.off': 'Off',

@@ -75,9 +75,10 @@ function limitSeverity(status: 'rejected' | 'allowed_warning' | 'retrying'): num
 }
 
 /** Two notices belong to the SAME rate-limit episode when their account, window,
- *  AND reset time match. A new `resetsAtMs` = a new episode (shows again). Absent
- *  fields are compared as empty — but see applyBrainEvent: a fully-absent key set
- *  is never treated as a dup of an unrelated episode. */
+ *  AND reset time match. A new `resetsAtMs` = a new episode (shows again). The
+ *  caller only reaches here when the INCOMING notice has a `resetsAtMs` (see
+ *  applyBrainEvent — a notice without one is never deduped), so the `?? 0`
+ *  sentinel below can never collide two reset-less notices into a false match. */
 function sameLimitEpisode(a: DeckLimitNotice, b: DeckLimitNotice): boolean {
   return (a.accountId ?? '') === (b.accountId ?? '')
     && (a.window ?? '') === (b.window ?? '')
@@ -168,11 +169,15 @@ export function applyBrainEvent(
       const existing = target.limitNotices ?? [];
       // Dedupe WITH escalation: suppress only when a same-or-higher severity
       // notice for the SAME episode was already shown. A `rejected` after an
-      // `allowed_warning` for the same episode still shows. A notice with no
-      // identifying fields at all (no account/window/reset) is never treated as
-      // a dup of an unrelated episode — it just appends.
-      const hasKey = incoming.accountId != null || incoming.window != null || incoming.resetsAtMs != null;
-      if (hasKey) {
+      // `allowed_warning` for the same episode still shows (escalation).
+      //
+      // `resetsAtMs` is the ONLY reliable episode discriminator — two limits on
+      // the same account+window are the same episode iff they reset at the same
+      // time. Without it we can't tell a repeat from a genuinely new/worse limit,
+      // and hiding a real limit is worse than a duplicate line, so a notice with
+      // no reset time never dedupes — it just appends (3-way review fix 5). This
+      // also subsumes the fully-keyless case (no account/window/reset either).
+      if (incoming.resetsAtMs != null) {
         const covered = existing.some(
           (n) => sameLimitEpisode(n, incoming) && limitSeverity(n.status) >= limitSeverity(incoming.status),
         );

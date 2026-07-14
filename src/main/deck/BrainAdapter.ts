@@ -285,6 +285,23 @@ export function normalizeResetToMs(resetsAt: number | undefined): number | null 
 }
 
 /**
+ * Normalize the SDK's `utilization` to a 0–100 PERCENT. The SDK type annotates
+ * it only as `number` with no documented unit, and a live limit wasn't available
+ * to confirm whether it is a fraction (0.0–1.0, like the rate-limit HTTP headers
+ * M2 reads) or an already-scaled percent (0–100, like the get_usage control
+ * response). Codex review flagged that a fraction (0.85) would render as "1%".
+ * Disambiguate by magnitude: a rate-limit event only fires at HIGH utilization
+ * (rejected = exhausted ~100%, allowed_warning = approaching), so `<= 1` is
+ * unambiguously a fraction (scale up) and `> 1` is already a percent. Clamped to
+ * [0,100]. Returns null for missing/non-finite. Exported for unit testing.
+ */
+export function normalizeUtilization(utilization: number | undefined): number | null {
+  if (typeof utilization !== 'number' || !Number.isFinite(utilization) || utilization < 0) return null;
+  const pct = utilization <= 1 ? utilization * 100 : utilization;
+  return Math.max(0, Math.min(100, pct));
+}
+
+/**
  * Map one raw SDK message to zero or more normalized brain events, mutating
  * `state` (tool-name table + latest session id). Pure aside from that state:
  * same input → same output. This is the whole SDK-coupling surface of the deck,
@@ -382,9 +399,8 @@ export function normalizeSdkMessage(msg: RawSdkMessage, state: NormalizeState): 
         status: info.status,
       };
       if (typeof info.rateLimitType === 'string' && info.rateLimitType) ev.window = info.rateLimitType;
-      if (typeof info.utilization === 'number' && Number.isFinite(info.utilization)) {
-        ev.utilization = info.utilization;
-      }
+      const util = normalizeUtilization(info.utilization);
+      if (util != null) ev.utilization = util;
       const resetMs = normalizeResetToMs(info.resetsAt);
       if (resetMs != null) ev.resetsAtMs = resetMs;
       out.push(ev);

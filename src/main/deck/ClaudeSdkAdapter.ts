@@ -666,8 +666,15 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       const state = createNormalizeState();
       state.sessionId = this._sessionId;
       let handle: SdkQueryHandle;
+      // Snapshot the launch account into a TURN-LOCAL const right after
+      // buildOptions()/buildEnv() set it (GLM review): _launchAccountId is an
+      // instance field, and although the session manager serializes turns,
+      // binding the value to this turn's closure means even a hypothetical
+      // overlapping send() can't reattribute this turn's limit events.
+      let turnLaunchAccountId: string | null = null;
       try {
         const options = this.buildOptions();
+        turnLaunchAccountId = this._launchAccountId;
         // Packaged builds must target the user's own claude install (the SDK's
         // default resolution needs its 240 MB platform package, which we do not
         // ship). Dev keeps the SDK default (platform package in node_modules)

@@ -126,6 +126,19 @@ describe('applyBrainEvent', () => {
     expect(m[1].limitNotices).toHaveLength(2);
   });
 
+  it('does NOT dedupe without resetsAtMs — account+window alone is not an episode key (fix 5)', () => {
+    let m = openTurn();
+    // Same account + window + severity, but NO reset time on either notice.
+    // resetsAtMs is the episode discriminator; absent it we can't prove these are
+    // the same episode, so both must show (hiding a real limit > a duplicate line).
+    // The pre-fix `sameLimitEpisode` compared `resetsAtMs ?? 0`, collapsing both
+    // to 0 and wrongly suppressing the second.
+    const ep = { window: 'five_hour', accountId: 'a' } as const;
+    m = applyBrainEvent(m, { type: 'limit', status: 'allowed_warning', ...ep });
+    m = applyBrainEvent(m, { type: 'limit', status: 'allowed_warning', ...ep });
+    expect(m[1].limitNotices).toHaveLength(2);
+  });
+
   it('REGRESSION: an unknown event type still hits default (no crash)', () => {
     const m = openTurn();
     expect(applyBrainEvent(m, { type: 'mystery' } as never)).toBe(m);

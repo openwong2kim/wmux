@@ -298,8 +298,15 @@ export const en = {
     'The Claude model the Command Deck orchestrator runs on. Changes apply from your next command; the conversation carries over.',
   'settings.orchestratorModelDefault': 'Default (subscription model)',
   // M3: surfaced subscription rate-limit notices in the orchestrator thread.
+  // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
+  // formatLimitNotice blanks when the field is absent — keep the leading spaces.
   'deck.limit.window': 'usage',
   'deck.limit.resetsSoon': 'resets soon',
+  'deck.limit.resetsIn': 'resets in {rel}',
+  'deck.limit.onAccount': ' on {account}',
+  'deck.limit.utilSuffix': ' ({util}% used)',
+  'deck.limit.rejected': '⚠ Claude {window} limit reached{on}{reset}. New turns keep using this account until you switch.',
+  'deck.limit.approaching': 'Approaching the {window} limit{on}{util}{reset}.',
   // Per-workspace agent mode — the single autonomy knob (off/manual/assist/
   // orchestrate). Shown as a chip in the agent panel.
   'deck.mode.label': 'Mode',
