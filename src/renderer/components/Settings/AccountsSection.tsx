@@ -270,7 +270,19 @@ export function AccountsSection(): React.ReactElement | null {
     const api = window.electronAPI?.accounts;
     if (!api?.usageList) return;
     void api.usageList().then((entries) => {
-      setUsage(new Map(entries.map((e) => [e.accountId, e])));
+      // Merge, don't overwrite: onUsageUpdate is subscribed synchronously but
+      // usageList resolves after an IPC round-trip, so a live push can land
+      // FIRST. A blind `new Map(entries)` would clobber that fresher push with
+      // the older initial snapshot (CodeRabbit). Keep whichever entry was
+      // fetched more recently per account. (fetchedAtMs is monotone per push.)
+      setUsage((prev) => {
+        const next = new Map(prev);
+        for (const e of entries) {
+          const cur = next.get(e.accountId);
+          if (!cur || (e.fetchedAtMs ?? 0) >= (cur.fetchedAtMs ?? 0)) next.set(e.accountId, e);
+        }
+        return next;
+      });
     }).catch(() => { /* usage is best-effort — the registry still renders */ });
     const off = api.onUsageUpdate?.((entry) => {
       setUsage((prev) => new Map(prev).set(entry.accountId, entry));
