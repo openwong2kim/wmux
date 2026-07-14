@@ -187,6 +187,52 @@ export function IconKeyboard({ size = 14 }: { size?: number }) {
   );
 }
 
+/** Terminal — a shell window with a prompt. New-terminal pane header action. */
+export function IconTerminal({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x="1.8" y="2.6" width="10.4" height="8.8" rx="1" />
+      <polyline points="4,6 5.7,7.6 4,9.2" />
+      <line x1="7.2" y1="9.2" x2="9.6" y2="9.2" />
+    </Icon>
+  );
+}
+
+/** Split right — a pane divided by a vertical seam into two side-by-side
+ *  columns. Matches wmux `splitPane(_, 'horizontal')` (the new pane opens to
+ *  the right; PaneContainer maps 'horizontal' → a row of columns). */
+export function IconSplitRight({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x="1.8" y="2.6" width="10.4" height="8.8" rx="1" />
+      <line x1="7" y1="2.6" x2="7" y2="11.4" />
+    </Icon>
+  );
+}
+
+/** Split down — a pane divided by a horizontal seam into two stacked rows.
+ *  Matches wmux `splitPane(_, 'vertical')` (the new pane opens below;
+ *  PaneContainer maps 'vertical' → a column of rows). */
+export function IconSplitDown({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <rect x="1.8" y="2.6" width="10.4" height="8.8" rx="1" />
+      <line x1="1.8" y1="7" x2="12.2" y2="7" />
+    </Icon>
+  );
+}
+
+/** Globe — a browser surface. New-browser pane header action. */
+export function IconBrowser({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      <circle cx="7" cy="7" r="5.2" />
+      <ellipse cx="7" cy="7" rx="2.1" ry="5.2" />
+      <line x1="1.8" y1="7" x2="12.2" y2="7" />
+    </Icon>
+  );
+}
+
 /** Sparkles — start a new (AI) conversation. Replaces the ⊕ glyph. */
 export function IconSparkles({ size = 14 }: { size?: number }) {
   return (
