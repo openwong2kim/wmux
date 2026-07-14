@@ -240,6 +240,8 @@ export const ko = {
     '커맨드 데크 agent가 사용할 Claude 모델. 변경은 다음 지시부터 적용되고 대화는 이어집니다.',
   'settings.orchestratorModelDefault': '기본 (구독 기본 모델)',
   // 워크스페이스별 agent 모드 — 단일 자율성 노브(off/manual/assist/orchestrate).
+  'deck.limit.window': '사용량',
+  'deck.limit.resetsSoon': '곧 초기화됨',
   // agent 패널에 칩으로 표시.
   'deck.mode.label': '모드',
   'deck.mode.off': 'Off',

@@ -185,6 +185,51 @@ describe('normalizeSdkMessage', () => {
     );
     expect(events[0]).toMatchObject({ type: 'limit', window: 'monthly_future' });
   });
+
+  // ── api_retry → limit status:'retrying' (rate_limit ONLY) ──────────────────
+  //
+  // 3-way design review P1: only `error:'rate_limit'` is a limit. billing_error
+  // (payment, not auto-recoverable) and overloaded (server capacity, account-
+  // independent) must NOT become limit events — they'd mislead a future auto-switch.
+
+  it('maps api_retry with error rate_limit to a retrying limit with counters', () => {
+    const state = createNormalizeState();
+    const events = normalizeSdkMessage(
+      { type: 'system', subtype: 'api_retry', error: 'rate_limit', attempt: 2, max_retries: 5, retry_delay_ms: 4000 } as RawSdkMessage,
+      state,
+    );
+    expect(events).toEqual([
+      { type: 'limit', status: 'retrying', attempt: 2, maxRetries: 5, retryDelayMs: 4000 },
+    ]);
+  });
+
+  it('emits NOTHING for api_retry with error billing_error or overloaded', () => {
+    const state = createNormalizeState();
+    for (const error of ['billing_error', 'overloaded', 'server_error', 'authentication_failed']) {
+      expect(
+        normalizeSdkMessage({ type: 'system', subtype: 'api_retry', error, attempt: 1 } as RawSdkMessage, state),
+      ).toEqual([]);
+    }
+  });
+
+  it('handles api_retry with missing counters gracefully', () => {
+    const state = createNormalizeState();
+    const events = normalizeSdkMessage(
+      { type: 'system', subtype: 'api_retry', error: 'rate_limit' } as RawSdkMessage,
+      state,
+    );
+    expect(events).toEqual([{ type: 'limit', status: 'retrying' }]);
+  });
+
+  it('REGRESSION: a plain system/init frame still captures session_id and emits nothing', () => {
+    const state = createNormalizeState();
+    const events = normalizeSdkMessage(
+      { type: 'system', subtype: 'init', session_id: 's-init', apiKeySource: 'none' } as RawSdkMessage,
+      state,
+    );
+    expect(events).toEqual([]);
+    expect(state.sessionId).toBe('s-init');
+  });
 });
 
 describe('normalizeResetToMs', () => {

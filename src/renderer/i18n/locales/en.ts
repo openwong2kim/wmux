@@ -297,6 +297,9 @@ export const en = {
   'settings.orchestratorModelDesc':
     'The Claude model the Command Deck orchestrator runs on. Changes apply from your next command; the conversation carries over.',
   'settings.orchestratorModelDefault': 'Default (subscription model)',
+  // M3: surfaced subscription rate-limit notices in the orchestrator thread.
+  'deck.limit.window': 'usage',
+  'deck.limit.resetsSoon': 'resets soon',
   // Per-workspace agent mode — the single autonomy knob (off/manual/assist/
   // orchestrate). Shown as a chip in the agent panel.
   'deck.mode.label': 'Mode',

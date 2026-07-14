@@ -31,11 +31,39 @@ vi.mock('../commanderMemory', () => ({
   getMemoryRootDir: vi.fn(() => '/fake/mem'),
 }));
 
+// Controllable account store (M3 launch-accountId attribution). Hoisted so the
+// vi.mock factory can reference it. Only exercised by tests that pass a
+// workspaceId; buildEnv's `if (this._workspaceId)` guard skips it otherwise, so
+// the existing (workspaceId-less) tests are unaffected by this mock.
+const acctMock = vi.hoisted(() => {
+  const state: {
+    binding: string | null;
+    accounts: Record<string, { id: string; name: string; vendor: string; configDir: string }>;
+  } = {
+    binding: 'acc-1',
+    accounts: { 'acc-1': { id: 'acc-1', name: 'Work Max', vendor: 'claude', configDir: 'C:/dirs/acc-1' } },
+  };
+  return { state };
+});
+vi.mock('../../account/accountStore', () => ({
+  VENDOR_ENV_KEYS: { claude: 'CLAUDE_CONFIG_DIR', codex: 'CODEX_HOME' },
+  getAccountStore: () => ({
+    resolveAccountEnv: (_ws: string, _vendor: string) => {
+      const id = acctMock.state.binding;
+      const acc = id ? acctMock.state.accounts[id] : undefined;
+      return acc ? { CLAUDE_CONFIG_DIR: acc.configDir } : {};
+    },
+    getBinding: () => acctMock.state.binding ?? undefined,
+    getAccount: (id: string) => acctMock.state.accounts[id],
+  }),
+}));
+
 import {
   ClaudeSdkAdapter,
   DEFAULT_ALLOWED_TOOLS,
   DISALLOWED_TOOLS,
   buildCommanderSystemPrompt,
+  __resetLimitShapeLogForTests,
   type SdkQueryHandle,
 } from '../ClaudeSdkAdapter';
 import { loadCommanderMemory } from '../commanderMemory';
@@ -522,5 +550,113 @@ describe('ClaudeSdkAdapter', () => {
     // Same composed prompt on both attempts — one MEMORY-BLOCK each, not two.
     expect(calls[0].prompt).toBe(calls[1].prompt);
     expect(calls[1].prompt.match(/MEMORY-BLOCK/g)?.length).toBe(1);
+  });
+
+  // ── M3: limit-event account attribution (launch-time capture) ──────────────
+
+  it('stamps a limit event with the account the session LAUNCHED on', async () => {
+    acctMock.state.binding = 'acc-1';
+    const adapter = new ClaudeSdkAdapter({
+      workspaceId: 'ws-9',
+      queryFn: () =>
+        fakeHandle([
+          { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour', resetsAt: 1_700_000_000 } } as RawSdkMessage,
+          { type: 'result', subtype: 'success', session_id: 's' },
+        ]),
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    const events = await collect(adapter.send('go'));
+    const limit = events.find((e) => e.type === 'limit');
+    expect(limit).toMatchObject({ type: 'limit', status: 'rejected', accountId: 'acc-1', accountName: 'Work Max' });
+  });
+
+  it('carries the LAUNCH account even if the binding changes mid-session (Codex P1)', async () => {
+    acctMock.state.binding = 'acc-1';
+    const adapter = new ClaudeSdkAdapter({
+      workspaceId: 'ws-9',
+      queryFn: () => {
+        // Simulate a rebind that lands AFTER this turn's buildEnv already ran.
+        acctMock.state.binding = 'acc-2';
+        acctMock.state.accounts['acc-2'] = { id: 'acc-2', name: 'Personal', vendor: 'claude', configDir: 'C:/dirs/acc-2' };
+        return fakeHandle([
+          { type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } } as RawSdkMessage,
+          { type: 'result', subtype: 'success', session_id: 's' },
+        ]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    const events = await collect(adapter.send('go'));
+    const limit = events.find((e) => e.type === 'limit');
+    // buildEnv captured acc-1 at launch — the mid-turn rebind to acc-2 must NOT win.
+    expect(limit).toMatchObject({ accountId: 'acc-1', accountName: 'Work Max' });
+  });
+
+  it('omits the account name when the launch account was since removed (existence gate)', async () => {
+    acctMock.state.binding = 'acc-1';
+    const adapter = new ClaudeSdkAdapter({
+      workspaceId: 'ws-9',
+      queryFn: () => {
+        // Account removed after launch: getBinding still returns the id (dangling)
+        // but getAccount is now null → id kept, name omitted.
+        delete acctMock.state.accounts['acc-1'];
+        return fakeHandle([
+          { type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } } as RawSdkMessage,
+          { type: 'result', subtype: 'success', session_id: 's' },
+        ]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    const events = await collect(adapter.send('go'));
+    const limit = events.find((e) => e.type === 'limit') as Extract<BrainEvent, { type: 'limit' }>;
+    expect(limit.accountId).toBe('acc-1');
+    expect(limit.accountName).toBeUndefined();
+  });
+
+  it('no account binding → limit event carries no accountId (default credential)', async () => {
+    acctMock.state.binding = null;
+    acctMock.state.accounts['acc-1'] = { id: 'acc-1', name: 'Work Max', vendor: 'claude', configDir: 'C:/dirs/acc-1' };
+    const adapter = new ClaudeSdkAdapter({
+      workspaceId: 'ws-9',
+      queryFn: () =>
+        fakeHandle([
+          { type: 'rate_limit_event', rate_limit_info: { status: 'rejected' } } as RawSdkMessage,
+          { type: 'result', subtype: 'success', session_id: 's' },
+        ]),
+      mcpBundlePath: '/fake/mcp.js',
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    const events = await collect(adapter.send('go'));
+    const limit = events.find((e) => e.type === 'limit') as Extract<BrainEvent, { type: 'limit' }>;
+    expect(limit.accountId).toBeUndefined();
+    expect(limit.accountName).toBeUndefined();
+  });
+
+  it('logs the first limit-event shape ONCE per process, then stays silent (#2b)', async () => {
+    __resetLimitShapeLogForTests();
+    acctMock.state.binding = null;
+    const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+    try {
+      const mk = () =>
+        new ClaudeSdkAdapter({
+          workspaceId: 'ws-9',
+          queryFn: () =>
+            fakeHandle([
+              { type: 'rate_limit_event', rate_limit_info: { status: 'rejected', rateLimitType: 'five_hour' } } as RawSdkMessage,
+              { type: 'result', subtype: 'success', session_id: 's' },
+            ]),
+          mcpBundlePath: '/fake/mcp.js',
+        });
+      const a = mk(); a.start({ systemPrompt: 'S' }); await collect(a.send('1'));
+      const b = mk(); b.start({ systemPrompt: 'S' }); await collect(b.send('2'));
+      const limitLogs = logSpy.mock.calls.filter((c) => String(c[0]).includes('rate-limit event observed'));
+      expect(limitLogs).toHaveLength(1); // one-shot guard: second event is silent
+      // And the log line never carries a token-shaped field.
+      expect(JSON.stringify(limitLogs[0])).not.toMatch(/accessToken|Bearer|sk-/);
+    } finally {
+      logSpy.mockRestore();
+    }
   });
 });

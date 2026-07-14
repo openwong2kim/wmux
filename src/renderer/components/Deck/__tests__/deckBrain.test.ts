@@ -68,6 +68,68 @@ describe('applyBrainEvent', () => {
     const msgs: DeckBrainMessage[] = [{ id: 'u1', role: 'user', text: 'hi' }];
     expect(applyBrainEvent(msgs, { type: 'text-delta', text: 'x' })).toBe(msgs);
   });
+
+  // ── limit events → surfaced notices (M3) ──────────────────────────────────
+
+  it('surfaces a rejected limit as an amber notice (not spliced into text)', () => {
+    let m = openTurn();
+    m = applyBrainEvent(m, { type: 'limit', status: 'rejected', window: 'five_hour', resetsAtMs: 1_700_000_000_000, accountId: 'a', accountName: 'Work Max' });
+    expect(m[1].text).toBe(''); // streaming text untouched
+    expect(m[1].limitNotices).toHaveLength(1);
+    expect(m[1].limitNotices![0]).toMatchObject({ status: 'rejected', window: 'five_hour', accountName: 'Work Max' });
+  });
+
+  it('surfaces allowed_warning too', () => {
+    let m = openTurn();
+    m = applyBrainEvent(m, { type: 'limit', status: 'allowed_warning', window: 'seven_day', utilization: 85, accountId: 'a' });
+    expect(m[1].limitNotices![0]).toMatchObject({ status: 'allowed_warning', utilization: 85 });
+  });
+
+  it('NEVER surfaces a retrying limit (SDK auto-recovers)', () => {
+    const before = openTurn();
+    const after = applyBrainEvent(before, { type: 'limit', status: 'retrying', attempt: 2, maxRetries: 5 } as never);
+    expect(after).toBe(before); // true no-op — same array reference, nothing inserted
+    expect(after[1].limitNotices).toBeUndefined();
+  });
+
+  it('ESCALATION: rejected after allowed_warning for the same episode still shows', () => {
+    let m = openTurn();
+    const ep = { window: 'five_hour', resetsAtMs: 1_700_000_000_000, accountId: 'a' };
+    m = applyBrainEvent(m, { type: 'limit', status: 'allowed_warning', ...ep });
+    m = applyBrainEvent(m, { type: 'limit', status: 'rejected', ...ep });
+    expect(m[1].limitNotices).toHaveLength(2);
+    expect(m[1].limitNotices!.map((n) => n.status)).toEqual(['allowed_warning', 'rejected']);
+  });
+
+  it('dedupes a same-or-lower severity repeat for the same episode', () => {
+    let m = openTurn();
+    const ep = { status: 'rejected' as const, window: 'five_hour', resetsAtMs: 1_700_000_000_000, accountId: 'a' };
+    m = applyBrainEvent(m, { type: 'limit', ...ep });
+    const after = applyBrainEvent(m, { type: 'limit', ...ep }); // duplicate rejected
+    expect(after).toBe(m); // suppressed, no new array
+    // and a lower-severity warning after a rejected is also suppressed
+    const afterWarn = applyBrainEvent(m, { type: 'limit', status: 'allowed_warning', window: 'five_hour', resetsAtMs: 1_700_000_000_000, accountId: 'a' });
+    expect(afterWarn).toBe(m);
+  });
+
+  it('a new resetsAtMs is a new episode (shows again for the same account/window)', () => {
+    let m = openTurn();
+    m = applyBrainEvent(m, { type: 'limit', status: 'rejected', window: 'five_hour', resetsAtMs: 1_700_000_000_000, accountId: 'a' });
+    m = applyBrainEvent(m, { type: 'limit', status: 'rejected', window: 'five_hour', resetsAtMs: 1_700_099_999_000, accountId: 'a' });
+    expect(m[1].limitNotices).toHaveLength(2);
+  });
+
+  it('a keyless limit (no account/window/reset) is never treated as a dup', () => {
+    let m = openTurn();
+    m = applyBrainEvent(m, { type: 'limit', status: 'rejected' });
+    m = applyBrainEvent(m, { type: 'limit', status: 'rejected' });
+    expect(m[1].limitNotices).toHaveLength(2);
+  });
+
+  it('REGRESSION: an unknown event type still hits default (no crash)', () => {
+    const m = openTurn();
+    expect(applyBrainEvent(m, { type: 'mystery' } as never)).toBe(m);
+  });
 });
 
 describe('shortToolName', () => {

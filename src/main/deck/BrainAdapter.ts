@@ -78,10 +78,15 @@ export type BrainEvent =
   | { type: 'error'; message: string }
   | {
       type: 'limit';
-      /** 'rejected' = the window is exhausted (hard limit hit); 'allowed_warning'
-       *  = approaching the limit (pre-exhaustion nudge). We do NOT surface plain
-       *  'allowed' as a limit event — that's the normal case. */
-      status: 'rejected' | 'allowed_warning';
+      /** 'rejected' = the window is exhausted (hard limit hit, from the SDK's
+       *  `rate_limit_event`); 'allowed_warning' = approaching the limit
+       *  (pre-exhaustion nudge, same source); 'retrying' = a transient 429 the
+       *  SDK is auto-retrying (from an `api_retry` frame with `error:'rate_limit'`
+       *  ONLY — `billing_error`/`overloaded` are deliberately NOT limits). Plain
+       *  'allowed' is the normal case and is never emitted. The renderer surfaces
+       *  rejected/allowed_warning; `retrying` exists for a future M3 consumer and
+       *  is silent in the UI (the SDK recovers on its own). */
+      status: 'rejected' | 'allowed_warning' | 'retrying';
       /** Which plan window the limit belongs to, verbatim from the SDK's
        *  `SDKRateLimitInfo.rateLimitType`. Known values: `five_hour`,
        *  `seven_day`, `seven_day_opus`, `seven_day_sonnet`,
@@ -94,6 +99,17 @@ export type BrainEvent =
       resetsAtMs?: number;
       /** 0–100 window utilization when reported. */
       utilization?: number;
+      /** `retrying` only: the SDK's auto-retry counters (SDKAPIRetryMessage). */
+      attempt?: number;
+      maxRetries?: number;
+      retryDelayMs?: number;
+      /** Stamped by ClaudeSdkAdapter (main-side) AFTER normalization: the account
+       *  the SDK session LAUNCHED on (captured at spawn, immutable for the turn —
+       *  NOT re-resolved at emit, so a mid-turn rebind can't misattribute). The
+       *  pure normalizer never sets these. `accountName` is omitted when the
+       *  account was since removed (id kept for forensics). */
+      accountId?: string;
+      accountName?: string;
     };
 
 /** One-time startup context for the brain. The fleet snapshot is injected ONCE
@@ -182,6 +198,13 @@ export interface RawSdkMessage {
   usage?: { input_tokens?: number; output_tokens?: number };
   /** Present on `type:'rate_limit_event'` frames (SDKRateLimitEvent). */
   rate_limit_info?: RawRateLimitInfo;
+  /** Present on `type:'system', subtype:'api_retry'` frames (SDKAPIRetryMessage):
+   *  a typed error enum + the SDK's auto-retry counters. `error:'rate_limit'` is
+   *  the only value we treat as a limit (see normalizeSdkMessage). */
+  error?: string;
+  attempt?: number;
+  max_retries?: number;
+  retry_delay_ms?: number;
 }
 
 /** Mutable per-turn state threaded across `normalizeSdkMessage` calls: maps a
@@ -284,9 +307,23 @@ export function normalizeSdkMessage(msg: RawSdkMessage, state: NormalizeState): 
   if (msg.session_id) state.sessionId = msg.session_id;
 
   switch (msg.type) {
-    case 'system':
-      // init carries session_id (captured above) + apiKeySource; nothing to render.
+    case 'system': {
+      // `api_retry` (SDKAPIRetryMessage) fires when the SDK auto-retries a failed
+      // request BELOW the stream. Only `error:'rate_limit'` is a rate limit — a
+      // transient 429 the SDK will recover from. `billing_error` (payment, not
+      // auto-recoverable) and `overloaded` (Anthropic server capacity, account-
+      // independent) are DELIBERATELY excluded: encoding them as `limit` would
+      // mislead a future M3 auto-switch (3-way design review P1). They stay on
+      // the existing result/error path. init frames (no api_retry) render nothing.
+      if (msg.subtype === 'api_retry' && msg.error === 'rate_limit') {
+        const ev: Extract<BrainEvent, { type: 'limit' }> = { type: 'limit', status: 'retrying' };
+        if (typeof msg.attempt === 'number' && Number.isFinite(msg.attempt)) ev.attempt = msg.attempt;
+        if (typeof msg.max_retries === 'number' && Number.isFinite(msg.max_retries)) ev.maxRetries = msg.max_retries;
+        if (typeof msg.retry_delay_ms === 'number' && Number.isFinite(msg.retry_delay_ms)) ev.retryDelayMs = msg.retry_delay_ms;
+        out.push(ev);
+      }
       return out;
+    }
 
     case 'assistant': {
       const blocks = msg.message?.content ?? [];

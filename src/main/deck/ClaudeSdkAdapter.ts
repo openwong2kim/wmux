@@ -27,7 +27,7 @@ import { pathToFileURL } from 'url';
 import { app } from 'electron';
 import { getWmuxDir } from '../../daemon/config';
 import { loadCommanderMemory, getMemoryRootDir } from './commanderMemory';
-import { getAccountStore } from '../account/accountStore';
+import { getAccountStore, VENDOR_ENV_KEYS } from '../account/accountStore';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { evaluateCommanderToolPermission } from './commanderToolSandbox';
 import {
@@ -46,6 +46,36 @@ import {
  *  this; a test passes a fake. */
 export interface SdkQueryHandle extends AsyncIterable<RawSdkMessage> {
   interrupt?: () => Promise<unknown> | void;
+}
+
+/** One-shot-per-PROCESS guard for the M3 capability log (#2b): the FIRST
+ *  rate-limit event of the process logs an allowlisted shape (never a token) so
+ *  we can empirically confirm the owner's claude build emits these frames + their
+ *  runtime shape; every later limit event is silent, so an api_retry burst never
+ *  floods the main log. Module scope = per process, exactly the intent. */
+let loggedFirstLimitShape = false;
+/** Test-only reset so the one-shot guard doesn't leak across suites. */
+export function __resetLimitShapeLogForTests(): void {
+  loggedFirstLimitShape = false;
+}
+
+/** Log the FIRST limit event's shape once per process (the §6-4 capability
+ *  proof). Allowlisted fields only — every field here is a safe enum/number,
+ *  never a token, and we never log the raw SDK frame. */
+function logFirstLimitShape(ev: Extract<BrainEvent, { type: 'limit' }>): void {
+  if (loggedFirstLimitShape) return;
+  loggedFirstLimitShape = true;
+  console.log(
+    '[deck] first rate-limit event observed (capability confirmation):',
+    JSON.stringify({
+      status: ev.status,
+      window: ev.window ?? null,
+      resetsAtMs: ev.resetsAtMs ?? null,
+      utilization: ev.utilization ?? null,
+      attempt: ev.attempt ?? null,
+      maxRetries: ev.maxRetries ?? null,
+    }),
+  );
 }
 
 export type SdkQueryFn = (params: {
@@ -405,6 +435,12 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   private readonly _memoryRoot?: string;
 
   private _sessionId: string | null = null;
+  /** M3: the account this session's CURRENT turn launched on — captured in
+   *  buildEnv (per-turn spawn) so a `limit` event is stamped with the account the
+   *  subprocess actually runs on, not whatever the binding says at emit time (a
+   *  mid-turn rebind can't misattribute — 3-way review P1). Null when the session
+   *  runs on the default credential (no bound account, or its dir was missing). */
+  private _launchAccountId: string | null = null;
   private _resumeUnvalidated = false;
   private _systemPrompt?: string;
   private _fleetContext?: string;
@@ -484,6 +520,15 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         ),
       );
       Object.assign(env, accountEnv);
+      // Capture the account the session ACTUALLY launches on for this turn. Only
+      // when the env was applied (accountEnv carries CLAUDE_CONFIG_DIR): a bound
+      // account whose dir was missing fell back to the default credential above,
+      // so it is NOT the launch account. Used to stamp limit events (M3 §1a).
+      this._launchAccountId = accountEnv[VENDOR_ENV_KEYS.claude]
+        ? getAccountStore().getBinding(this._workspaceId, 'claude') ?? null
+        : null;
+    } else {
+      this._launchAccountId = null;
     }
     if (this.profile?.baseUrl) env.ANTHROPIC_BASE_URL = this.profile.baseUrl;
     if (this.profile?.authToken) env.ANTHROPIC_AUTH_TOKEN = this.profile.authToken;
@@ -663,6 +708,19 @@ export class ClaudeSdkAdapter implements BrainAdapter {
               break outer;
             }
             if (ev.type === 'turn-end' && ev.sessionId) this._sessionId = ev.sessionId;
+            // M3 §1a: stamp the limit event with the account THIS turn's session
+            // launched on (captured immutably in buildEnv), + its display name via
+            // an existence gate (a since-removed account keeps its id for forensics
+            // but gets no name). Done here in the adapter (main-side, has the store)
+            // so the renderer never resolves accounts (trust boundary).
+            if (ev.type === 'limit') {
+              if (this._launchAccountId) {
+                ev.accountId = this._launchAccountId;
+                const acc = getAccountStore().getAccount(this._launchAccountId);
+                if (acc) ev.accountName = acc.name;
+              }
+              logFirstLimitShape(ev);
+            }
             // A `limit` event is ambient subscription status (SDK rate_limit_event)
             // that can fire regardless of whether the SEEDED resume id was valid —
             // it is neither user content we'd lose on a fresh retry nor proof the
