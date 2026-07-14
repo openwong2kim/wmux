@@ -15,6 +15,7 @@
 //     to this pane.
 //   • New terminal→ onAdd fires (terminal creation needs a real PTY, so the
 //     handler is spied rather than exercised end-to-end).
+//   • Zoom        → togglePaneZoom → zoomedPaneId toggles this pane on/off.
 //   • The Settings toggle (paneActionsVisible=false) hides the whole cluster.
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import React, { act } from 'react';
@@ -93,12 +94,18 @@ afterEach(() => {
 });
 
 describe('SurfaceTabs pane action cluster', () => {
-  it('renders all four action buttons in order', () => {
+  it('renders all five action buttons in order', () => {
     mount(rootLeafId());
     const actions = Array.from(
       container.querySelectorAll('[data-pane-action]'),
     ).map((el) => el.getAttribute('data-pane-action'));
-    expect(actions).toEqual(['new-terminal', 'split-right', 'split-down', 'new-browser']);
+    expect(actions).toEqual([
+      'new-terminal',
+      'split-right',
+      'split-down',
+      'new-browser',
+      'zoom',
+    ]);
   });
 
   it('Split right splits the pane horizontally (side-by-side columns)', () => {
@@ -142,6 +149,18 @@ describe('SurfaceTabs pane action cluster', () => {
     expect(onAdd).toHaveBeenCalledTimes(1);
   });
 
+  it('Zoom toggles this pane in zoomedPaneId (maximize ⇄ restore)', () => {
+    const paneId = rootLeafId();
+    mount(paneId);
+    expect(useStore.getState().zoomedPaneId).toBeNull();
+
+    click('zoom');
+    expect(useStore.getState().zoomedPaneId).toBe(paneId);
+
+    click('zoom');
+    expect(useStore.getState().zoomedPaneId).toBeNull();
+  });
+
   it('hides the cluster when the Settings toggle is off', () => {
     act(() => {
       useStore.getState().setPaneActionsVisible(false);
@@ -150,5 +169,11 @@ describe('SurfaceTabs pane action cluster', () => {
 
     expect(container.querySelector('[data-pane-actions]')).toBeNull();
     expect(container.querySelectorAll('[data-pane-action]')).toHaveLength(0);
+    // NOTE: when the cluster is off, Pane.tsx falls back to its absolute corner
+    // maximize/restore control. That lives on Pane.tsx (not SurfaceTabs), and
+    // mounting the full Pane pulls in Terminal/xterm + the SplitSurfaceView tree
+    // — too heavy for this focused SurfaceTabs unit. The fallback's render
+    // condition (`!paneActionsVisible && …`) is verified by code review; the
+    // PaneContainer.zoom.test.tsx suite covers the zoom state machine itself.
   });
 });

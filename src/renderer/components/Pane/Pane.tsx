@@ -8,7 +8,7 @@ import TerminalComponent from '../Terminal/Terminal';
 import BrowserPanel from '../Browser/BrowserPanel';
 import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
-import SurfaceTabs from './SurfaceTabs';
+import SurfaceTabs, { PANE_ACTIONS_CLUSTER_WIDTH } from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../../utils/ptyCreateOptions';
 import { permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
@@ -236,6 +236,12 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // "all my other panes vanished" — mirror tmux's status-line Z marker.
   const isZoomed = useStore((s) => s.zoomedPaneId === pane.id);
 
+  // When the pane action cluster is shown (SurfaceTabs), zoom/maximize lives as
+  // the cluster's fifth button. The absolute corner maximize/restore controls
+  // below are then redundant AND overlap the cluster, so they render only when
+  // the cluster is absent. Subscribe the same way SurfaceTabs does.
+  const paneActionsVisible = useStore((s) => s.paneActionsVisible);
+
   // X8 supervision badge. Resolve the pane's active-surface ptyId → supervision
   // slice. `⟳` when armed (auto-restarting); `⟳!` in a warning colour when the
   // runaway guard tripped and stopped it. Absent for unsupervised panes. As
@@ -289,7 +295,11 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         // Design-system cohesion: panes keep a QUIET hairline in both states —
         // focus is signaled by the amber underline on the tab strip (mock's
         // .pane.focused .pane-head treatment), not a loud full border box.
-        border: `1px solid ${isActive ? 'var(--bg-overlay)' : 'var(--border-soft)'}`,
+        // Longhand (not the `border` shorthand) so this can coexist with the
+        // per-side borderTopWidth override below without React's "mixing
+        // shorthand and non-shorthand" dev warning firing on re-render.
+        borderStyle: 'solid',
+        borderColor: isActive ? 'var(--bg-overlay)' : 'var(--border-soft)',
         // No TOP border: it sat redundantly under the 36px titlebar's own bottom
         // hairline (a double line) AND pushed the tab strip down 1px, so the
         // pane's bottom-hairline seam landed 1px below the deck tabs' — the
@@ -297,6 +307,9 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         // column top, aligned with the deck. The attention ring keeps its other
         // three sides (its border-color override still applies).
         borderTopWidth: 0,
+        borderRightWidth: 1,
+        borderBottomWidth: 1,
+        borderLeftWidth: 1,
       }}
       onClick={handleClick}
       data-onboarding-target="pane-area"
@@ -307,7 +320,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       <ErrorBoundary name="pane">
       {/* Plugin badges (B-1 ui.pane-decoration) — host-rendered data only */}
       <PaneDecorations paneId={pane.id} />
-      {isZoomed && (
+      {!paneActionsVisible && isZoomed && (
         <button
           onClick={(e) => {
             e.stopPropagation();
@@ -339,7 +352,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           button (hover-revealed via .wmux-pane-maximize-btn in globals.css) so
           the zoom feature isn't keyboard-only. Clicking it zooms the pane; once
           zoomed, the always-visible ZOOM badge above takes over as the toggle. */}
-      {!isZoomed && (
+      {!paneActionsVisible && !isZoomed && (
         <button
           className="wmux-pane-maximize-btn"
           onClick={(e) => {
@@ -385,8 +398,16 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           style={{
             position: 'absolute',
             top: 4,
-            // Sit to the left of the ZOOM badge when both are present.
-            right: isZoomed ? 54 : 6,
+            // When the action cluster is shown it owns the strip's top-right, so
+            // anchor the badge just left of it (cluster width + a small gap) to
+            // avoid overlap — using the exported constant beside the cluster
+            // rather than a hardcoded pixel guess. Cluster-off keeps the prior
+            // behaviour: sit left of the ZOOM badge when both are present.
+            right: paneActionsVisible
+              ? PANE_ACTIONS_CLUSTER_WIDTH + 6
+              : isZoomed
+                ? 54
+                : 6,
             zIndex: 20,
             padding: '1px 6px',
             fontSize: 10,

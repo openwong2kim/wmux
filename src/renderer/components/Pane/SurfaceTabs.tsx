@@ -10,7 +10,15 @@ import { tokenAttrs } from '../../themes';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import { FOCUS_RING } from '../focusRing';
-import { IconTerminal, IconSplitRight, IconSplitDown, IconBrowser } from '../icons';
+import { IconTerminal, IconSplitRight, IconSplitDown, IconBrowser, IconMaximize, IconRestore } from '../icons';
+
+/** Rendered width (px) of the pane action cluster when `paneActionsVisible`.
+ *  Deterministic because every child is fixed-size: border-l (1) + pl-1 (4) +
+ *  five 24px buttons + four 2px gaps (gap-0.5) + the zoom button's own border-l
+ *  divider group (border 1 + pl-1 4) + pr-0.5 (2) ≈ 140px. Exported so Pane.tsx
+ *  can offset the absolute supervision badge just left of the cluster instead of
+ *  hardcoding a magic pixel guess. Keep in sync if the button count changes. */
+export const PANE_ACTIONS_CLUSTER_WIDTH = 140;
 
 /** Ctrl on Windows/Linux, ⌘ on macOS — mirrors the OS-aware mapping in
  *  useKeyboard.ts so a tooltip advertises the shortcut the user can actually
@@ -81,6 +89,10 @@ export default function SurfaceTabs({
   // Right-aligned pane action cluster (new terminal / split / new browser).
   // Gated by a Settings toggle (default ON) for minimal-chrome setups.
   const paneActionsVisible = useStore((s) => s.paneActionsVisible);
+  // Zoom/maximize state for this pane — the cluster's fifth button toggles it
+  // and reflects the current state (pressed when zoomed). Subscribing here (same
+  // pattern as Pane.tsx) keeps the button in sync without prop threading.
+  const isZoomed = useStore((s) => s.zoomedPaneId === paneId);
   // P2: pane-level identity + rename (distinct from the per-surface tab rename
   // below). The pane's display name is its user label (paneLabel mirror) or the
   // stable auto coordinate `w<ws>-<pane>(<agent>)`.
@@ -361,6 +373,27 @@ export default function SurfaceTabs({
           >
             <IconBrowser size={14} />
           </button>
+          {/* Zoom/maximize — fifth action, visually separated from the surface
+              actions by the same border-l divider the cluster uses against the
+              tabs. Consolidates the old absolute-positioned corner maximize/
+              restore controls (Pane.tsx) that overlapped this cluster. Pressed
+              (accent) styling + aria-pressed convey the zoomed state. */}
+          <div className="flex items-center border-l border-[var(--border-soft)] ml-0.5 pl-1">
+            <button
+              className={`flex items-center justify-center w-6 h-6 rounded transition-colors ${FOCUS_RING} ${
+                isZoomed
+                  ? 'text-[var(--accent-cursor)] bg-[var(--bg-surface)]'
+                  : 'text-[var(--text-subtle)] hover:text-[var(--text-main)] hover:bg-[var(--bg-surface)]'
+              }`}
+              onClick={(e) => { e.stopPropagation(); useStore.getState().togglePaneZoom(paneId); }}
+              title={t('settings.prefix.toggleZoom')}
+              aria-label={t('settings.prefix.toggleZoom')}
+              aria-pressed={isZoomed}
+              data-pane-action="zoom"
+            >
+              {isZoomed ? <IconRestore size={14} /> : <IconMaximize size={14} />}
+            </button>
+          </div>
         </div>
       )}
     </div>

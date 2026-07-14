@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- **Every pane header now has quick action buttons.** The pane tab strip gained a small right-aligned cluster of four icon buttons — new terminal, split right, split down, and new browser — so the actions that were previously keyboard-only (Ctrl+T, Ctrl+D, Ctrl+Shift+D) are now discoverable with the mouse, right next to the tabs and the close button. Each button drives the same store action the keyboard already does (no new behavior), carries a tooltip with its shortcut, and stays pinned to the right while the tabs scroll on narrow panes. The cluster can be hidden in Settings → Appearance → Layout for a minimal, keyboard-only chrome (default on).
+- **Every pane header now has quick action buttons.** The pane tab strip gained a small right-aligned cluster of five icon buttons — new terminal, split right, split down, new browser, and maximize/zoom — so the actions that were previously keyboard-only (Ctrl+T, Ctrl+D, Ctrl+Shift+D, Ctrl+B Z) are now discoverable with the mouse, right next to the tabs and the close button. Each button drives the same store action the keyboard already does (no new behavior), carries a tooltip with its shortcut, and stays pinned to the right while the tabs scroll on narrow panes. The maximize button (divider-separated at the end of the cluster) shows a pressed/restore state while the pane is zoomed; it replaces the old hover-revealed corner maximize control, which used to overlap the cluster. The cluster can be hidden in Settings → Appearance → Layout for a minimal, keyboard-only chrome (default on) — hiding it restores the corner maximize control.
 
 ## [3.23.0] — 2026-07-14
 
