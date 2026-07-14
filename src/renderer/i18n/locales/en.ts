@@ -614,6 +614,20 @@ export const en = {
   'firstRunWizard.error.UNKNOWN.cause': 'An unexpected error occurred.',
   'firstRunWizard.error.UNKNOWN.fix': 'Try again, or run `wmux mcp register` from the terminal.',
 
+  // Onboarding spotlight tour (steps.ts / OnboardingOverlay) — shown after the
+  // first-run wizard completes (AppLayout gates on firstRunCompleted). Missing
+  // these keys is what surfaced raw "onboarding.stepN.title" placeholders (#452).
+  'onboarding.step1.title': 'Your terminal',
+  'onboarding.step1.description': 'This pane is a full terminal. Split it into more panes to run several sessions side by side.',
+  'onboarding.step2.title': 'Add a workspace',
+  'onboarding.step2.description': 'Click + to create a workspace. Each one keeps its own panes, layout, and running agents.',
+  'onboarding.step3.title': 'Status bar',
+  'onboarding.step3.description': 'Running agents, channels, and notifications all surface down here at a glance.',
+  'onboarding.step4.title': 'Settings',
+  'onboarding.step4.description': 'Open settings to change your theme, language, shell, and keybindings.',
+  'onboarding.step5.title': 'Notifications',
+  'onboarding.step5.description': 'When an agent needs you or finishes a task, it shows up here.',
+
   // Keyboard cheat sheet (Plan 1.18, D11)
   'cheatSheet.title': 'Keyboard shortcuts',
   'cheatSheet.splitHorizontal': 'Split horizontal',

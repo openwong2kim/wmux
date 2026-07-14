@@ -200,3 +200,14 @@ describe('SampleTaskRunner', () => {
     expect(source.getWrites()).toEqual([]);
   });
 });
+
+describe('SAMPLE_TASK_COMMAND (#452)', () => {
+  it('launches claude with the sample prompt instead of pasting a bare prompt', () => {
+    // The OSC133 prompt-ready we scan for is emitted by the *shell* (e.g. pwsh
+    // shell integration), not by Claude — nothing spawns Claude in the pane on
+    // its own. So the injected command must invoke `claude`; a bare prompt
+    // would be run as a shell command and land in PowerShell (the #452 bug).
+    expect(SAMPLE_TASK_COMMAND).toMatch(/^claude\s+"/);
+    expect(SAMPLE_TASK_COMMAND).toContain('browser_open');
+  });
+});
