@@ -168,6 +168,13 @@ export const IPC = {
   ACCOUNT_REMOVE: 'account:remove',
   ACCOUNT_SET_BINDING: 'account:set-binding',
   ACCOUNT_CREDENTIAL_STATUS: 'account:credential-status',
+  // M2 — per-account usage (hook-gated, opt-in). LIST pulls the current cache on
+  // Settings mount; REFRESH (renderer → main) forces a manual probe for one
+  // account (explicit user action, bypasses the opt-in/cooldown gates); UPDATE
+  // (main → renderer) pushes a single account's entry when its cache changes.
+  ACCOUNT_USAGE_LIST: 'account:usage:list',
+  ACCOUNT_USAGE_REFRESH: 'account:usage:refresh',
+  ACCOUNT_USAGE_UPDATE: 'account:usage:update',
   // Clipboard (main process bridge)
   CLIPBOARD_WRITE: 'clipboard:write',
   CLIPBOARD_READ: 'clipboard:read',

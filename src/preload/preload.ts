@@ -322,6 +322,24 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.ACCOUNT_CREDENTIAL_STATUS, args) as Promise<
         import('../main/ipc/handlers/account.handler').CredentialStatus
       >,
+    // M2 — per-account usage (hook-gated, opt-in). usageList() pulls the current
+    // cache on mount; usageRefresh(accountId) forces a manual probe (explicit
+    // user action); onUsageUpdate() subscribes to per-account pushes.
+    usageList: () =>
+      ipcRenderer.invoke(IPC.ACCOUNT_USAGE_LIST) as Promise<
+        import('../main/account/AccountUsageService').AccountUsageEntry[]
+      >,
+    usageRefresh: (accountId: string) => ipcRenderer.send(IPC.ACCOUNT_USAGE_REFRESH, accountId),
+    onUsageUpdate: (
+      callback: (entry: import('../main/account/AccountUsageService').AccountUsageEntry) => void,
+    ) => {
+      const listener = (
+        _event: Electron.IpcRendererEvent,
+        entry: import('../main/account/AccountUsageService').AccountUsageEntry,
+      ) => callback(entry);
+      ipcRenderer.on(IPC.ACCOUNT_USAGE_UPDATE, listener);
+      return () => { ipcRenderer.removeListener(IPC.ACCOUNT_USAGE_UPDATE, listener); };
+    },
   },
   deck: {
     // M1.5: one orchestrator per workspace — every call names the workspace

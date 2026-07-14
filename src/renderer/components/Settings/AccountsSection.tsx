@@ -1,9 +1,73 @@
 import { useState, useEffect, useCallback, useRef } from 'react';
 import type { Account } from '../../../main/account/accountStore';
 import type { CredentialStatus } from '../../../main/ipc/handlers/account.handler';
+import type { AccountUsageEntry } from '../../../main/account/AccountUsageService';
 
 type Vendor = 'claude' | 'codex';
 type AccountRow = Account & { status: CredentialStatus };
+
+// ─── M2 — per-account usage (hook-gated) ─────────────────────────────────────
+// The 5h/7d numbers are populated in the background when a claude turn ends in a
+// pane bound to this account (and the usage toggle is on). The ↻ button forces a
+// manual probe regardless of the toggle — an explicit user action spends one
+// 1-token request against that account's quota.
+
+function fmtAge(fetchedAtMs: number | null): string {
+  if (fetchedAtMs == null) return '';
+  const secs = Math.max(0, Math.round((Date.now() - fetchedAtMs) / 1000));
+  if (secs < 60) return `${secs}s ago`;
+  const mins = Math.round(secs / 60);
+  if (mins < 60) return `${mins}m ago`;
+  return `${Math.round(mins / 60)}h ago`;
+}
+
+/** Amber once a window crosses 80% — the "getting close" cue (DESIGN.md: amber =
+ *  alive + focus). Below that it stays muted so the panel isn't a wall of color. */
+function pctColor(pct: number): string {
+  return pct >= 80 ? 'var(--accent-amber)' : 'var(--text-subtle)';
+}
+
+function UsageBit({ entry, onRefresh }: {
+  entry: AccountUsageEntry | undefined;
+  onRefresh: () => void;
+}): React.ReactElement {
+  const refreshBtn = (
+    <button
+      className="text-[10px] px-1 rounded text-[var(--text-subtle)] hover:text-[var(--accent-amber)] hover:bg-[var(--bg-overlay)]"
+      onClick={onRefresh}
+      title="Refresh usage now (spends one request against this account's quota)"
+    >
+      ↻
+    </button>
+  );
+  if (!entry) return refreshBtn;
+  if (entry.status === 'ok' && entry.snapshot) {
+    const s = entry.snapshot;
+    return (
+      <span className="flex items-center gap-1 text-[10px] text-[var(--text-muted)]">
+        <span style={{ color: pctColor(s.sessionPct) }}>5h {s.sessionPct}%</span>
+        <span className="text-[var(--text-subtle)]">·</span>
+        <span style={{ color: pctColor(s.weeklyPct) }}>7d {s.weeklyPct}%</span>
+        <span className="text-[var(--text-subtle)]" title={`Updated ${fmtAge(entry.fetchedAtMs)}`}>· {fmtAge(entry.fetchedAtMs)}</span>
+        {refreshBtn}
+      </span>
+    );
+  }
+  // Non-ok: keep the last-known snapshot visible (stale) if we have one, plus a
+  // small reason. Otherwise just the refresh affordance.
+  const reason = entry.status === 'unauthorized' ? 'auth expired'
+    : entry.status === 'token-missing' ? '' // logged-out badge already conveys this
+    : 'unavailable';
+  return (
+    <span className="flex items-center gap-1 text-[10px] text-[var(--text-subtle)]">
+      {entry.snapshot && (
+        <span title="Last known, refresh failed">5h {entry.snapshot.sessionPct}% · 7d {entry.snapshot.weeklyPct}% (stale)</span>
+      )}
+      {reason && <span>{reason}</span>}
+      {refreshBtn}
+    </span>
+  );
+}
 
 // ─── Settings → Accounts (M1) ────────────────────────────────────────────────
 //
@@ -191,6 +255,7 @@ export function AccountsSection(): React.ReactElement | null {
   const [editName, setEditName] = useState('');
   const [confirmRemove, setConfirmRemove] = useState<string | null>(null);
   const [removeNotice, setRemoveNotice] = useState<string | null>(null);
+  const [usage, setUsage] = useState<Map<string, AccountUsageEntry>>(new Map());
 
   const reload = useCallback(() => {
     const api = window.electronAPI?.accounts;
@@ -199,6 +264,19 @@ export function AccountsSection(): React.ReactElement | null {
   }, []);
 
   useEffect(() => { reload(); }, [reload]);
+
+  // M2: seed the usage cache on mount, then live-update on per-account pushes.
+  useEffect(() => {
+    const api = window.electronAPI?.accounts;
+    if (!api?.usageList) return;
+    void api.usageList().then((entries) => {
+      setUsage(new Map(entries.map((e) => [e.accountId, e])));
+    }).catch(() => { /* usage is best-effort — the registry still renders */ });
+    const off = api.onUsageUpdate?.((entry) => {
+      setUsage((prev) => new Map(prev).set(entry.accountId, entry));
+    });
+    return off;
+  }, []);
 
   // Hidden when the preload predates multi-account.
   if (!window.electronAPI?.accounts) return null;
@@ -250,6 +328,12 @@ export function AccountsSection(): React.ReactElement | null {
             </button>
           )}
           {statusBadge(r.status)}
+          {r.vendor === 'claude' && (
+            <UsageBit
+              entry={usage.get(r.id)}
+              onRefresh={() => window.electronAPI?.accounts?.usageRefresh?.(r.id)}
+            />
+          )}
           {confirmRemove === r.id ? (
             <>
               <button className="text-[10px] text-[var(--accent-red)]" onClick={() => remove(r.id)}>Remove</button>

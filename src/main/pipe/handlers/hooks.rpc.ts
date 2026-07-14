@@ -179,6 +179,10 @@ export function registerHooksRpc(
   getWindow: GetWindow,
   hookRouter: HookSignalRouter,
   getDaemonClient?: () => DaemonClient | null,
+  // M2: fired once per resolved claude `agent.stop`, carrying the workspace that
+  // owns the pane. main resolves it to the bound account and hook-gates a usage
+  // probe. Kept as a decoupled callback so this handler stays account-agnostic.
+  onClaudeTurnEnd?: (workspaceId: string) => void,
 ): () => void {
   const meter = hookRouter.getLatencyMeter();
   // Short-TTL, coalescing cache so a burst of hooks in one turn collapses to
@@ -368,6 +372,13 @@ export function registerHooksRpc(
         agent: signal.agent,
         decision,
       });
+      // M2: a claude turn just ended in this workspace — the usage number for its
+      // bound account may have moved. Hook-gate a per-account probe (main applies
+      // the enabled/cooldown/inflight gates). Fires on BOTH emit and dedup: the
+      // turn genuinely ended regardless of which signal source won the toast.
+      if (signal.kind === 'agent.stop' && signal.agent === 'claude') {
+        onClaudeTurnEnd?.(workspaceId);
+      }
     }
 
     if (decision === 'dedup') {
