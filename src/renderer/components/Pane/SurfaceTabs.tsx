@@ -13,12 +13,19 @@ import { FOCUS_RING } from '../focusRing';
 import { IconTerminal, IconSplitRight, IconSplitDown, IconBrowser, IconMaximize, IconRestore } from '../icons';
 
 /** Rendered width (px) of the pane action cluster when `paneActionsVisible`.
- *  Deterministic because every child is fixed-size: border-l (1) + pl-1 (4) +
- *  five 24px buttons + four 2px gaps (gap-0.5) + the zoom button's own border-l
- *  divider group (border 1 + pl-1 4) + pr-0.5 (2) ≈ 140px. Exported so Pane.tsx
- *  can offset the absolute supervision badge just left of the cluster instead of
- *  hardcoding a magic pixel guess. Keep in sync if the button count changes. */
-export const PANE_ACTIONS_CLUSTER_WIDTH = 140;
+ *  Deterministic because every child is fixed-size. Tracing the markup below:
+ *    outer div  border-l 1 + pl-1 4 ................................. 5
+ *    5 × w-6 buttons (24 each) ..................................... 120
+ *    4 × gap-0.5 (2 each, between the 5 flex children) ............... 8
+ *    zoom wrapper  ml-0.5 2 + border-l 1 + pl-1 4 ................... 7
+ *    outer div  pr-0.5 2 ............................................. 2
+ *                                                             total = 142
+ *  (The four button gaps + the wrapper's own ml-0.5 both apply between the
+ *  browser button and the divider — flex `gap` and `margin` stack.) Exported so
+ *  Pane.tsx can offset the absolute supervision badge just left of the cluster
+ *  instead of hardcoding a magic pixel guess. Keep in sync with the cluster
+ *  markup below if the button count, padding, or divider spacing changes. */
+export const PANE_ACTIONS_CLUSTER_WIDTH = 142;
 
 /** Ctrl on Windows/Linux, ⌘ on macOS — mirrors the OS-aware mapping in
  *  useKeyboard.ts so a tooltip advertises the shortcut the user can actually
