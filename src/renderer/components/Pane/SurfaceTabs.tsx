@@ -10,7 +10,7 @@ import { tokenAttrs } from '../../themes';
 import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import { FOCUS_RING } from '../focusRing';
-import { IconTerminal, IconSplitRight, IconSplitDown, IconBrowser, IconMaximize, IconRestore } from '../icons';
+import { IconTerminal, IconSplitRight, IconSplitDown, IconBrowser } from '../icons';
 
 /** Rendered width (px) of the pane action cluster when `paneActionsVisible`.
  *  Deterministic because every child is fixed-size. Tracing the markup below:
@@ -398,7 +398,11 @@ export default function SurfaceTabs({
               aria-pressed={isZoomed}
               data-pane-action="zoom"
             >
-              {isZoomed ? <IconRestore size={14} /> : <IconMaximize size={14} />}
+              {/* Same ⤢/⤡ glyphs as the corner controls in Pane.tsx so zoom keeps
+                  one visual identity whether the cluster is shown or hidden. */}
+              <span aria-hidden="true" className="font-mono text-[13px] leading-none">
+                {isZoomed ? '⤡' : '⤢'}
+              </span>
             </button>
           </div>
         </div>
