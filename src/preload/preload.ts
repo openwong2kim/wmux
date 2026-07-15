@@ -168,6 +168,13 @@ const electronAPI = {
     setToastEnabled: (enabled: boolean) => ipcRenderer.send(IPC.TOAST_ENABLED, enabled),
     setAutoUpdateEnabled: (enabled: boolean) => ipcRenderer.send(IPC.AUTO_UPDATE_ENABLED, enabled),
   },
+  // Windows "start on login" toggle (issue #460). Backed by the per-user Run
+  // registry key. `get`/`set` resolve to the live state; off-Windows both
+  // report { enabled: false } so the Settings toggle simply stays hidden.
+  autostart: {
+    get: () => ipcRenderer.invoke(IPC.AUTOSTART_GET) as Promise<{ enabled: boolean }>,
+    set: (enabled: boolean) => ipcRenderer.invoke(IPC.AUTOSTART_SET, enabled) as Promise<{ enabled: boolean }>,
+  },
   notification: {
     // ptyId may be null for app-level notifications (e.g. external MCP
     // `notify` RPC, where no PTY originates the message). When null, the

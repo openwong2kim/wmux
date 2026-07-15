@@ -3,6 +3,7 @@ import * as path from 'path';
 import { ShellDetector } from '../../../shared/ShellDetector';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
+import { isAutostartEnabled, setAutostartEnabled } from '../../autostart';
 
 // Hard cap on the path string the renderer can send. Long enough for
 // Windows long-path (\\?\ prefix + ~32k) callers but small enough that a
@@ -108,10 +109,38 @@ export function registerShellHandlers(): () => void {
     return totalKB * 1024; // bytes
   }));
 
+  // Windows "start on login" toggle (issue #460). The per-user Run registry
+  // key is the source of truth; GET reads it, SET writes it and echoes back
+  // the resulting state so an optimistic renderer can reconcile. Both are
+  // no-ops returning { enabled: false } on non-Windows platforms.
+  //
+  // Gated on app.isPackaged: under `electron-forge start`, process.execPath is
+  // the dev electron.exe but the Run value name (`wmux`) is SHARED with the
+  // installed app. Writing it would overwrite the installed app's entry with
+  // an unlaunchable bare-electron command, and disabling would delete the real
+  // one. So in dev the toggle is inert (reports off, writes nothing) — only
+  // the packaged app, whose execPath is the true install target, may touch it.
+  ipcMain.removeHandler(IPC.AUTOSTART_GET);
+  ipcMain.handle(IPC.AUTOSTART_GET, wrapHandler(IPC.AUTOSTART_GET, (_event: Electron.IpcMainInvokeEvent) => {
+    if (!app.isPackaged) return { enabled: false };
+    return { enabled: isAutostartEnabled() };
+  }));
+
+  ipcMain.removeHandler(IPC.AUTOSTART_SET);
+  ipcMain.handle(IPC.AUTOSTART_SET, wrapHandler(IPC.AUTOSTART_SET, (_event: Electron.IpcMainInvokeEvent, enabled: unknown) => {
+    if (typeof enabled !== 'boolean') {
+      throw new Error('enabled must be a boolean');
+    }
+    if (!app.isPackaged) return { enabled: false };
+    return { enabled: setAutostartEnabled(enabled) };
+  }));
+
   return () => {
     ipcMain.removeHandler(IPC.SHELL_LIST);
     ipcMain.removeHandler(IPC.SHELL_OPEN_EXTERNAL);
     ipcMain.removeHandler(IPC.SHELL_OPEN_PATH);
     ipcMain.removeHandler(IPC.APP_MEMORY);
+    ipcMain.removeHandler(IPC.AUTOSTART_GET);
+    ipcMain.removeHandler(IPC.AUTOSTART_SET);
   };
 }

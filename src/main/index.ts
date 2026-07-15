@@ -74,6 +74,12 @@ import { createTray, destroyTray, updateTraySessionCount } from './tray';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
+// Static import (NOT require('./autostart')) so rollup inlines it into the
+// single .vite/build/index.js bundle. A dynamic require left literal in the
+// bundle has no adjacent autostart.js to resolve at runtime and throws
+// MODULE_NOT_FOUND — silently swallowed by the best-effort catches below,
+// which would break autostart registration during Squirrel events entirely.
+import * as autostart from './autostart';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
@@ -129,16 +135,11 @@ if (process.platform === 'win32') {
     const target = path.basename(process.execPath);
 
     if (squirrelCmd === '--squirrel-install') {
-      // Register Windows startup entry so wmux survives reboot
-      try {
-        const { execFileSync } = require('child_process');
-        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-        const reg = path.join(systemRoot, 'System32', 'reg.exe');
-        execFileSync(reg, [
-          'add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
-          '/v', 'wmux', '/t', 'REG_SZ', '/d', `"${process.execPath}"`, '/f',
-        ], { windowsHide: true });
-      } catch { /* best-effort */ }
+      // Register Windows startup entry so wmux survives reboot. Autostart
+      // defaults ON at install time; users can turn it off in Settings →
+      // General (Settings toggle + squirrel-updated both go through
+      // ./autostart, which treats the Run key as the source of truth).
+      try { autostart.enableAutostart(process.execPath); } catch { /* best-effort */ }
 
       // X4: drop the `wmux` CLI shim into <root>\bin and register it on the
       // user PATH. Internally best-effort — never blocks the install.
@@ -152,16 +153,10 @@ if (process.platform === 'win32') {
         });
       app.quit();
     } else if (squirrelCmd === '--squirrel-updated') {
-      // Re-register startup entry with current exe path (may change after update)
-      try {
-        const { execFileSync } = require('child_process');
-        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-        const reg = path.join(systemRoot, 'System32', 'reg.exe');
-        execFileSync(reg, [
-          'add', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
-          '/v', 'wmux', '/t', 'REG_SZ', '/d', `"${process.execPath}"`, '/f',
-        ], { windowsHide: true });
-      } catch { /* best-effort */ }
+      // Refresh the startup entry's exe path (it changes on every update) —
+      // but ONLY if autostart is still on. Re-adding unconditionally would
+      // silently re-enable it for a user who turned it off. See ./autostart.
+      try { autostart.refreshAutostartEntry(process.execPath); } catch { /* best-effort */ }
 
       // X4: regenerate the CLI shim — it embeds the absolute app-X.Y.Z path,
       // which changes on every update.
@@ -172,15 +167,7 @@ if (process.platform === 'win32') {
       app.quit();
     } else if (squirrelCmd === '--squirrel-uninstall') {
       // Remove startup registry entry
-      try {
-        const { execFileSync } = require('child_process');
-        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-        const reg = path.join(systemRoot, 'System32', 'reg.exe');
-        execFileSync(reg, [
-          'delete', 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run',
-          '/v', 'wmux', '/f',
-        ], { windowsHide: true });
-      } catch { /* best-effort */ }
+      try { autostart.disableAutostart(); } catch { /* best-effort */ }
 
       // X4: remove the CLI shim + strip <root>\bin from the user PATH.
       try { require('./cliShim').uninstallCliShim(process.execPath); } catch { /* best-effort */ }
