@@ -102,6 +102,40 @@ export function isLight(hex: string): boolean {
   return luminance(hex) > 0.5;
 }
 
+// WCAG AA body text (4.5:1) — same bar useTerminal.ts already enforces on
+// light xterm themes (#74: Claude Code emits true-color white that bypasses
+// the palette and goes invisible on a cream background).
+export const XTERM_MIN_CONTRAST_LIGHT = 4.5;
+
+// Dark xterm themes get a lower floor, not zero. The SAME true-color-bypass
+// mechanism as #74 runs in reverse: Claude Code (and other TUI apps) also
+// emit near-black true-color foreground for de-emphasized/secondary text,
+// and it renders exactly as literally specified — invisible against a near-
+// black background, regardless of how the theme's INDEXED ansi black is
+// tuned (true-color escapes never consult the palette at all). Every
+// built-in dark xterm palette's indexed ANSI black also independently sits
+// at ~1.0–1.8:1 against its own background (verified 2026-07-15), because
+// ANSI black is conventionally reserved for cell backgrounds / reverse
+// video, not literal readable foreground — so the same failure mode is
+// reachable via plain SGR 30 too, not just true-color.
+//
+// 2.5 is deliberately well under the light-theme's 4.5: it rescues
+// genuinely-invisible text (the ~1.0–1.8 range above) without forcing every
+// dark theme's intentionally-muted secondary/comment-like text up to full
+// body-text contrast — it lands close to where each theme's own "bright
+// black" dim tier already sits, not brighter.
+export const XTERM_MIN_CONTRAST_DARK = 2.5;
+
+/**
+ * Resolve xterm's `minimumContrastRatio` option for a given xterm theme
+ * background. Extracted from useTerminal.ts so the light/dark split (and
+ * its rationale) is unit-testable without mounting a Terminal instance.
+ */
+export function resolveMinimumContrastRatio(background: string | undefined): number {
+  if (!background) return 1; // xterm default — no theme background to compare against.
+  return isLight(background) ? XTERM_MIN_CONTRAST_LIGHT : XTERM_MIN_CONTRAST_DARK;
+}
+
 /**
  * WCAG contrast ratio between two colors. Order-independent: returns the same
  * value whether `fg`/`bg` are swapped. Range is 1 (identical luminance) to 21

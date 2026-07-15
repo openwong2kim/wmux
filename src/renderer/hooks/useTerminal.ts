@@ -8,7 +8,7 @@ import { WebLinksAddon } from '@xterm/addon-web-links';
 import { useStore } from '../stores';
 import { t } from '../i18n';
 import { XTERM_THEMES, extractXtermColors, type ThemeId, type BuiltinThemeId } from '../themes';
-import { isLight } from '../tailwindPalette';
+import { resolveMinimumContrastRatio } from '../tailwindPalette';
 import { isDaemonModeActive } from '../daemon/daemonMode';
 import { pastePtyChunked, chunkOnDataIfNeeded } from '../utils/clipboardChunk';
 import { openTerminalUrl } from '../utils/browserPaneActions';
@@ -288,13 +288,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   const xtermTheme = theme === 'custom' && customThemeColors
     ? extractXtermColors(customThemeColors)
     : XTERM_THEMES[theme as BuiltinThemeId] ?? XTERM_THEMES['catppuccin-mocha'];
-  // On light backgrounds (hinomaru, taegeuk, light custom palettes), apps that
-  // emit true-color white text (e.g. Claude Code, some TUI tools) bypass our
-  // palette mapping and render as literally #FFFFFF — invisible on a cream
-  // background. Enforce WCAG AA contrast (4.5:1) on light themes so xterm
-  // auto-darkens those foregrounds. Dark themes keep the default (1 = no
-  // enforcement) to preserve intentionally subtle dimmed text.
-  const minimumContrastRatio = xtermTheme.background && isLight(xtermTheme.background) ? 4.5 : 1;
+  // Apps that emit true-color RGB foreground text (e.g. Claude Code, some
+  // TUI tools) bypass our indexed ANSI palette mapping entirely — the color
+  // renders exactly as specified, in BOTH directions: literal white on a
+  // light theme's cream background (#74), and literal near-black on a dark
+  // theme's near-black background (2026-07-15 dogfood report — "text turns
+  // black while using Claude" on Amber). xterm's minimumContrastRatio nudges
+  // just the offending cell's foreground until it clears the floor; see
+  // resolveMinimumContrastRatio for why dark themes get a lower (2.5, not
+  // 4.5) floor — it rescues genuinely-invisible text without forcing every
+  // dark theme's intentionally-muted secondary text up to full AA.
+  const minimumContrastRatio = resolveMinimumContrastRatio(xtermTheme.background);
 
   // Resize the daemon PTY without letting a rejected RPC float as an
   // "Uncaught (in promise)". Two transient daemon errors are expected here and
