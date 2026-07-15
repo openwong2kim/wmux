@@ -27,8 +27,14 @@ const GIT_BASH = `${PF}\\Git\\bin\\bash.exe`;
 const hasPowerShell = process.platform === 'win32' && fs.existsSync(POWERSHELL);
 const hasGitBash = process.platform === 'win32' && fs.existsSync(GIT_BASH);
 
-// Allow ConPTY boot + prompt render + command echo round trip.
-const EVENT_TIMEOUT_MS = 8000;
+// Allow ConPTY boot + prompt render + command echo round trip. Generous
+// because a loaded GitHub Windows runner can be slow to cold-start
+// powershell.exe and flush its first OSC 133 markers — at 8s this test
+// intermittently timed out with "captured after baseline: []" (nothing
+// emitted yet), a pure runner-speed flake, not a real regression. The happy
+// path still resolves the instant the event arrives, so the higher ceiling
+// only costs wall-clock on genuine failures.
+const EVENT_TIMEOUT_MS = 30000;
 
 /**
  * Wait for a PromptEvent that was recorded AFTER `baselineLength` events.

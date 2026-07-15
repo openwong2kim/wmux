@@ -5,7 +5,7 @@
 //
 // 케이스(스펙 §6 tests 행): no-newline·CRLF·untracked new-file·앞 hunk 생략·
 // 중복 컨텍스트.
-import { describe, it, expect, beforeAll } from 'vitest';
+import { describe, it, expect, beforeAll, vi } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, readFileSync, mkdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -16,6 +16,14 @@ import {
   reassemblePatch,
   synthesizeNewFileDiff,
 } from '../diffParse';
+
+// Every case spins a real temp git repo and shells out to git many times
+// (init, config×2, add, commit, apply, …). On a loaded GitHub Windows runner
+// that serial spawn chain can exceed vitest's 5s default per-test timeout,
+// flaking with "Test timed out in 5000ms" — a runner-speed artifact, not a
+// logic failure (the suite passes locally and on faster runners). Raise the
+// ceiling file-wide so slow spawns get room without masking real hangs.
+vi.setConfig({ testTimeout: 30000 });
 
 // 임시 git repo에서 base 콘텐츠를 커밋하고, 주어진 패치를 `git apply`로 적용해
 // 적용 후 파일 내용을 반환한다. git이 오라클.
