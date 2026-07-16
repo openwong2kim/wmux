@@ -244,6 +244,11 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'system.identify':     { capability: null },
   'system.capabilities': { capability: null },
 
+  // --- Performance diagnostics (P0-5c, `wmux doctor --performance`). Same
+  //     introspection posture as system.*: aggregate reveal-mechanism
+  //     counters + the last event's ptyId — never terminal content.
+  'perf.status':         { capability: null },
+
   // --- Command Deck. Route resolution for the commander brain's MCP; the
   //     method carries its OWN auth (a per-spawn token minted by main and
   //     injected only into the brain subprocess's env — commanderTrust.ts).

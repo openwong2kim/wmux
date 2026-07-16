@@ -1,11 +1,19 @@
 /**
- * `wmux doctor [--json]` — one-shot diagnostic for a wmux install.
+ * `wmux doctor [--json] [--performance]` — one-shot diagnostic for a wmux
+ * install.
  *
  * Prints section-by-section health (OK / WARN / FAIL / SKIP) covering the
  * environment, daemon liveness, the boot-phase breakdown, an antivirus-tax
  * hint, and pointers to the on-disk logs. Designed to run even when the
  * daemon is dead: the environment and log sections need no RPC, so a user
  * whose app won't start still gets actionable output.
+ *
+ * `--performance` (P0-5c) appends a reveal-mechanism section sourced from
+ * the main process's `perf.status` RPC: the last reveal event plus 5-minute
+ * and since-boot per-mechanism counters aggregated from the renderer's
+ * `[wmux:reveal]` diagnostics. Degrades gracefully — a dead main process or
+ * a pre-P0 build (unknown method) prints an "unavailable" line instead of
+ * failing the doctor run.
  *
  * Testability: `buildDoctorReport()` is a pure function over an injected
  * `DoctorDeps` bundle (RPC sender, file readers, path resolvers, env, clock).
@@ -431,6 +439,87 @@ function buildLogs(deps: DoctorDeps): DoctorReport['logs'] {
   return { verdict: worst(lines.map((l) => l.verdict)), lines };
 }
 
+// --- performance section (--performance, P0-5c) -------------------------------
+
+/** Wire shape of the `perf.status` RPC result (src/main/pipe/handlers/perf.rpc.ts). */
+export interface PerfStatusRetention {
+  last: { ageMs: number; ptyId: string | null; mechanism: string } | null;
+  last5m: Record<string, number>;
+  sinceBoot: Record<string, number>;
+}
+
+export interface PerformanceSection {
+  /** false = main unreachable or pre-P0 build (unknown method / bad shape). */
+  available: boolean;
+  retention?: PerfStatusRetention;
+}
+
+/** Canonical render order for the reveal mechanism codes (docs/performance.md);
+ *  mechanisms outside this list are appended alphabetically so a new code
+ *  still shows up without a CLI update. */
+export const REVEAL_MECHANISM_ORDER = [
+  'retained-catchup',
+  'dirty-snapshot',
+  'dirty-raw-fallback',
+  'resync-degraded',
+  'dead-snapshot',
+] as const;
+
+/**
+ * Fetch + validate the perf.status result. Every failure mode — main pipe
+ * unreachable, RPC error envelope (e.g. "Unknown method: perf.status" from a
+ * pre-P0 main), or an unexpected result shape — collapses to
+ * `{ available: false }`; the performance section must never break doctor.
+ */
+export async function fetchPerformanceSection(
+  send: () => Promise<RpcResponse>,
+): Promise<PerformanceSection> {
+  try {
+    const resp = await send();
+    if (!resp.ok) return { available: false };
+    const retention = (resp.result as { retention?: unknown } | null)?.retention;
+    if (
+      retention !== null &&
+      typeof retention === 'object' &&
+      typeof (retention as PerfStatusRetention).last5m === 'object' &&
+      typeof (retention as PerfStatusRetention).sinceBoot === 'object'
+    ) {
+      return { available: true, retention: retention as PerfStatusRetention };
+    }
+    return { available: false };
+  } catch {
+    return { available: false };
+  }
+}
+
+/** `mech=N mech=N ...` in canonical order, unknown mechanisms appended. */
+function formatMechanismCounts(counts: Record<string, number>): string {
+  const known: string[] = REVEAL_MECHANISM_ORDER.map((m) => `${m}=${counts[m] ?? 0}`);
+  const extra = Object.keys(counts)
+    .filter((m) => !(REVEAL_MECHANISM_ORDER as readonly string[]).includes(m))
+    .sort()
+    .map((m) => `${m}=${counts[m]}`);
+  return [...known, ...extra].join(' ');
+}
+
+export function renderPerformanceSection(perf: PerformanceSection): string {
+  const out: string[] = ['Performance (reveal mechanisms)'];
+  if (!perf.available || !perf.retention) {
+    out.push('  performance stats unavailable (app not running or pre-P0 build)');
+    return out.join('\n');
+  }
+  const { last, last5m, sinceBoot } = perf.retention;
+  if (last) {
+    const age = Math.round(last.ageMs / 1000);
+    out.push(`  last reveal: ${last.mechanism} ptyId=${last.ptyId ?? '?'} ${age}s ago`);
+  } else {
+    out.push('  last reveal: none since app start');
+  }
+  out.push(`  last 5 min:  ${formatMechanismCounts(last5m)}`);
+  out.push(`  since boot:  ${formatMechanismCounts(sinceBoot)}`);
+  return out.join('\n');
+}
+
 // --- helpers -----------------------------------------------------------------
 
 function phaseRows(defs: readonly PhaseDef[], marks: Record<string, number>): PhaseRow[] {
@@ -631,7 +720,8 @@ export function renderReport(report: DoctorReport): string {
 
 // --- CLI entry point ---------------------------------------------------------
 
-export async function handleDoctor(_args: string[], jsonMode: boolean): Promise<void> {
+export async function handleDoctor(args: string[], jsonMode: boolean): Promise<void> {
+  const performanceMode = args.includes('--performance');
   const date = todayUtc();
 
   // Resolve the app version: prefer a live daemon.identify-equivalent (the ping
@@ -660,10 +750,19 @@ export async function handleDoctor(_args: string[], jsonMode: boolean): Promise<
 
   const report = await buildDoctorReport(deps);
 
+  // --performance: query the main process for reveal-mechanism counters.
+  // Rides the same main-pipe client the app-pipe probe uses; a dead main or a
+  // pre-P0 build renders an "unavailable" line rather than failing doctor.
+  const perf = performanceMode
+    ? await fetchPerformanceSection(() => sendRequest('perf.status', {}))
+    : null;
+
   if (jsonMode) {
-    console.log(JSON.stringify(report, null, 2));
+    const payload = perf ? { ...report, performance: perf } : report;
+    console.log(JSON.stringify(payload, null, 2));
   } else {
     console.log(renderReport(report));
+    if (perf) console.log(renderPerformanceSection(perf));
   }
 
   // Exit code reflects health so scripts can gate on it. FAIL → 1; WARN/SKIP/OK

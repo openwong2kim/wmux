@@ -29,6 +29,8 @@ import { registerDeckRpc } from './pipe/handlers/deck.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
 import { registerMetaRpc } from './pipe/handlers/meta.rpc';
 import { registerSystemRpc } from './pipe/handlers/system.rpc';
+import { registerPerfRpc } from './pipe/handlers/perf.rpc';
+import { revealStatsAggregator } from './perf/revealStatsAggregator';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { UsagePoller } from './claude/UsagePoller';
 import { AccountUsageService } from './account/AccountUsageService';
@@ -537,6 +539,7 @@ registerDeckRpc(rpcRouter, () => mainWindow);
 registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
+registerPerfRpc(rpcRouter);
 registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager);
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
@@ -821,6 +824,9 @@ app.on('ready', async () => {
     // Per-level routing preserved so warn/error keep their own bucket.
     const lvl: 'info' | 'warn' | 'error' = level === 3 ? 'error' : level === 2 ? 'warn' : 'info';
     const where = sourceId ? `${sourceId}:${line}` : 'renderer';
+    // P0-5c: feed the reveal-stats aggregator (`wmux doctor --performance`).
+    // Cheap prefix check inside — non-`[wmux:reveal]` lines return immediately.
+    revealStatsAggregator.ingest(message);
     logLine(lvl, 'renderer', `${where} — ${message}`);
   });
 

@@ -142,6 +142,9 @@ export type RpcMethod =
   | 'ui.decoratePane'
   | 'system.identify'
   | 'system.capabilities'
+  // Performance diagnostics (P0-5c) — aggregate reveal-mechanism counters
+  // for `wmux doctor --performance`. Read-only, no terminal content.
+  | 'perf.status'
   | 'deck.resolvePaneRoute'
   | 'deck.resolveCommanderWorkspace'
   | 'deck.requestDecision'
@@ -295,6 +298,7 @@ export const ALL_RPC_METHODS = [
   'ui.decoratePane',
   'system.identify',
   'system.capabilities',
+  'perf.status',
   'deck.resolvePaneRoute',
   'deck.resolveCommanderWorkspace',
   'deck.requestDecision',

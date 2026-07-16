@@ -78,6 +78,9 @@ DIAGNOSTICS
   doctor                            Run health checks (env, daemon, boot phases,
                                     AV-tax hint, log pointers). Works even when
                                     the daemon is down.
+         [--performance]            Also print reveal-mechanism performance
+                                    stats (last reveal, 5-min + since-boot
+                                    counters) from the running app.
 
 BROWSER COMMANDS
   browser navigate <url>            Navigate the browser surface to a URL
@@ -112,6 +115,7 @@ EXAMPLES
   wmux browser close
   wmux doctor
   wmux doctor --json
+  wmux doctor --performance
 `.trimStart();
 
 const WORKSPACE_CMDS = new Set([
