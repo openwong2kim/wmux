@@ -196,6 +196,11 @@ interface ResyncState {
    *  a polling agent cannot storm a struggling daemon with back-to-back
    *  resync attempts. */
   degradedUntil: number;
+  /** P0-5: the in-flight resync fell back from pty.resync to the raw
+   *  pty.reconnect path — the settlement log must report
+   *  mechanism=dirty-raw-fallback, not dirty-snapshot, or doctor's counters
+   *  mask fallback regressions (codex, PR #470). */
+  viaRawFallback: boolean;
 }
 
 /** Cooldown between resync retries after a degrade. Long enough to ride out a
@@ -436,7 +441,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
   // the visibility effect (dirty reveal) and the hydrate registry entry.
   const resyncRef = useRef<ResyncState>({
     pending: false, buffer: [], bufferedChars: 0, resolvers: [], timer: null,
-    degradedUntil: 0,
+    degradedUntil: 0, viaRawFallback: false,
   });
 
   /** Degrade: release whatever was buffered as-is (no reset — no replay came).
@@ -465,15 +470,19 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     st.resolvers.splice(0).forEach((r) => r());
   }, []);
 
-  /** Silent cancel for teardown/ptyId swap: no writes into a dying terminal. */
-  const cancelResync = useCallback(() => {
+  /** Silent cancel for teardown/ptyId swap: no writes into a dying terminal.
+   *  Takes the effect's CAPTURED ptyId — `ptyIdRef.current` may already hold
+   *  the NEW pane's id when the previous effect's cleanup runs, which would
+   *  clear the new pane's badge and strand the old one (CodeRabbit, PR #470). */
+  const cancelResync = useCallback((cancelledPtyId: string | null) => {
     const st = resyncRef.current;
     if (st.timer) { clearTimeout(st.timer); st.timer = null; }
     st.pending = false;
     st.buffer.length = 0;
     st.bufferedChars = 0;
     st.degradedUntil = 0;
-    setPaneSyncUi(ptyIdRef.current ?? '', null);
+    st.viaRawFallback = false;
+    setPaneSyncUi(cancelledPtyId ?? '', null);
     st.resolvers.splice(0).forEach((r) => r());
   }, []);
 
@@ -538,6 +547,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     st.pending = true;
     st.buffer.length = 0;
     st.bufferedChars = 0;
+    st.viaRawFallback = false;
     setPaneSyncUi(id, 'syncing');
     console.log(`[useTerminal] hidden-pane resync ptyId=${id} (${reason})`);
     // Timeout with bounded re-arm: the daemon serializes snapshot work behind
@@ -564,8 +574,11 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     const fallbackReconnect = () => {
       // The reconnect path never waits on the daemon's snapshot slot — stop
       // the timer re-arms so a hung reconnect aborts on the normal window.
+      // No reveal-mechanism log here — a successful reconnect still settles
+      // via completeResyncFromFlush, which emits exactly ONE mechanism event
+      // (dirty-raw-fallback via the flag) so doctor never double-counts.
       rpcSettled = true;
-      console.log(`[wmux:reveal] ptyId=${id} mechanism=dirty-raw-fallback`);
+      st.viaRawFallback = true;
       window.electronAPI.pty.reconnect(id).then((res) => {
         if (!res?.success) abortResync(`reconnect-failed${res?.code ? `:${res.code}` : ''}`);
       }).catch((err: unknown) => {
@@ -1424,7 +1437,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (st.timer) { clearTimeout(st.timer); st.timer = null; }
       st.degradedUntil = 0;
       setPaneSyncUi(ptyId, null);
-      console.log(`[wmux:reveal] ptyId=${ptyId} mechanism=dirty-snapshot recoveredBytes=${recoveredBytes} buffered=${st.bufferedChars} chunks=${st.buffer.length}`);
+      // One settlement event per resync, labelled by the path that actually
+      // delivered it: 'dirty-raw-fallback' when pty.resync fell back to the
+      // raw pty.reconnect replay, 'dirty-snapshot' otherwise.
+      const mechanism = st.viaRawFallback ? 'dirty-raw-fallback' : 'dirty-snapshot';
+      st.viaRawFallback = false;
+      console.log(`[wmux:reveal] ptyId=${ptyId} mechanism=${mechanism} recoveredBytes=${recoveredBytes} buffered=${st.bufferedChars} chunks=${st.buffer.length}`);
       discardTerminalOutput(terminal); // stale retained backlog + dirty flag
       terminal.reset();
       for (const chunk of st.buffer) terminal.write(chunk);
@@ -1807,8 +1825,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       disposeWebglRef.current = null;
       // Phase 3: silence any in-flight resync (its buffered bytes die with
       // the terminal) and drop this mount's hydrate entry — a remount on the
-      // same ptyId registers its own.
-      cancelResync();
+      // same ptyId registers its own. Pass the effect's captured ptyId, not
+      // the ref (which may already point at the swapped-in pane).
+      cancelResync(ptyId);
       if (ptyId && hydrateRegistry.get(ptyId) === hydrateForRead) {
         hydrateRegistry.delete(ptyId);
       }

@@ -96,7 +96,9 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
     const body = src.slice(idx, idx + 900);
     expect(body).toMatch(/terminal\.write\(''\s*,\s*resolve\)/);
     // Teardown silences any in-flight resync.
-    expect(src).toMatch(/cancelResync\(\);/);
+    // Cleanup cancels with the effect's CAPTURED ptyId (not the mutable ref —
+    // a PTY swap could clear the wrong pane's badge; CodeRabbit PR #470).
+    expect(src).toMatch(/cancelResync\(ptyId\);/);
   });
 
   it('exit markers ride the retention policy too (no hidden parse via onExit)', () => {

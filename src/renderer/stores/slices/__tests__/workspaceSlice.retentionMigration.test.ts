@@ -37,9 +37,15 @@ describe('retention default flip — migration wiring (source-level)', () => {
     );
   });
 
-  it('loadSession stamps the ledger unconditionally after processing', () => {
+  it('loadSession stamps the ledger — deferred past the first save when a flip was just applied (codex PR #470)', () => {
     const idx = workspaceSrc.indexOf('data.hiddenPaneRetentionEnabled === false');
-    expect(workspaceSrc.slice(idx, idx + 2200)).toMatch(/markRetentionMigrationDone\(\)/);
+    const window = workspaceSrc.slice(idx, idx + 3600);
+    // A crash between the in-memory flip and the first session save must NOT
+    // leave the ledger stamped with disk still saying false (the flip would
+    // be permanently lost) — the migration path defers the stamp; the
+    // no-migration path stamps immediately.
+    expect(window).toMatch(/if \(retentionMigrationApplied\) \{\s*\n\s*setTimeout\(\(\) => markRetentionMigrationDone\(\), 30_000\);/);
+    expect(window).toMatch(/\} else \{\s*\n\s*markRetentionMigrationDone\(\);/);
   });
 
   it('the migration announces itself with a one-time toast (post-upgrade notice)', () => {

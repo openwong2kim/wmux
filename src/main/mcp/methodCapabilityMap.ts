@@ -244,10 +244,14 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'system.identify':     { capability: null },
   'system.capabilities': { capability: null },
 
-  // --- Performance diagnostics (P0-5c, `wmux doctor --performance`). Same
-  //     introspection posture as system.*: aggregate reveal-mechanism
-  //     counters + the last event's ptyId — never terminal content.
-  'perf.status':         { capability: null },
+  // --- Performance diagnostics (P0-5c, `wmux doctor --performance`).
+  //     Aggregate reveal-mechanism counters + the last event's ptyId — never
+  //     terminal content. Gated on pane.read (NOT capability:null): the
+  //     response carries a global ptyId, and a foreign ptyId is exactly the
+  //     cross-workspace access primitive the terminal IO layer guards, so an
+  //     undeclared plugin must not receive it (PR #470 codex review). The CLI
+  //     (`wmux doctor`) is unaffected — it rides the WMUX_CLI_METHODS tier.
+  'perf.status':         { capability: 'pane.read' },
 
   // --- Command Deck. Route resolution for the commander brain's MCP; the
   //     method carries its OWN auth (a per-spawn token minted by main and

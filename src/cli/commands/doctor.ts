@@ -477,12 +477,27 @@ export async function fetchPerformanceSection(
   try {
     const resp = await send();
     if (!resp.ok) return { available: false };
+    // Strict shape validation: `typeof null === 'object'`, so a malformed
+    // payload like { last5m: null } would otherwise crash Object.keys() in
+    // the renderer instead of degrading to unavailable (CodeRabbit, PR #470).
+    const isCounterMap = (value: unknown): value is Record<string, number> =>
+      value !== null &&
+      typeof value === 'object' &&
+      !Array.isArray(value) &&
+      Object.values(value).every(
+        (count) => typeof count === 'number' && Number.isFinite(count) && count >= 0,
+      );
     const retention = (resp.result as { retention?: unknown } | null)?.retention;
     if (
       retention !== null &&
       typeof retention === 'object' &&
-      typeof (retention as PerfStatusRetention).last5m === 'object' &&
-      typeof (retention as PerfStatusRetention).sinceBoot === 'object'
+      !Array.isArray(retention) &&
+      isCounterMap((retention as PerfStatusRetention).last5m) &&
+      isCounterMap((retention as PerfStatusRetention).sinceBoot) &&
+      (() => {
+        const last = (retention as PerfStatusRetention).last;
+        return last === null || (typeof last === 'object' && last !== null && !Array.isArray(last));
+      })()
     ) {
       return { available: true, retention: retention as PerfStatusRetention };
     }

@@ -113,9 +113,28 @@ describe('P0-3 — dispatcher behavior (dual-mount overlap, Eng F5)', () => {
 });
 
 describe('P0-5 — reveal mechanism codes reach the persisted main log', () => {
-  it('every non-live reveal path logs a [wmux:reveal] mechanism code', () => {
-    for (const code of ['retained-catchup', 'dirty-snapshot', 'dirty-raw-fallback', 'dead-snapshot', 'resync-degraded']) {
+  it('static-mechanism reveal paths log a [wmux:reveal] code', () => {
+    for (const code of ['retained-catchup', 'dead-snapshot', 'resync-degraded']) {
       expect(src).toMatch(new RegExp(`\\[wmux:reveal\\][^\`]*mechanism=${code}`));
     }
+  });
+
+  it('resync settlement emits exactly ONE event, labelled by the delivering path (codex PR #470)', () => {
+    const flush = src.slice(src.indexOf('const completeResyncFromFlush'), src.indexOf('const completeResyncFromFlush') + 1400);
+    // Single settlement log, mechanism chosen by the raw-fallback flag…
+    expect(flush).toMatch(/viaRawFallback \? 'dirty-raw-fallback' : 'dirty-snapshot'/);
+    expect(flush).toMatch(/\[wmux:reveal\][^`]*mechanism=\$\{mechanism\}/);
+    // …and the fallback path itself must NOT emit its own [wmux:reveal] event
+    // (that would double-count a single reveal in doctor's aggregator).
+    const fb = src.slice(src.indexOf('const fallbackReconnect'), src.indexOf('const fallbackReconnect') + 900);
+    expect(fb).not.toMatch(/\[wmux:reveal\]/);
+    expect(fb).toMatch(/viaRawFallback = true/);
+  });
+
+  it('cancelResync clears the CAPTURED ptyId, not the mutable ref (CodeRabbit PR #470)', () => {
+    const body = src.slice(src.indexOf('const cancelResync'), src.indexOf('const cancelResync') + 1200);
+    expect(body).toMatch(/cancelledPtyId/);
+    expect(body).not.toMatch(/setPaneSyncUi\(ptyIdRef\.current/);
+    expect(src).toMatch(/cancelResync\(ptyId\)/);
   });
 });

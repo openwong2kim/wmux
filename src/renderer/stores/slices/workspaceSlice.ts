@@ -557,6 +557,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // Fail closed: only an explicit boolean is applied. A corrupted /
       // hand-edited value (e.g. the string "false") must not toggle the
       // retention/resync path either way.
+      let retentionMigrationApplied = false;
       if (typeof data.hiddenPaneRetentionEnabled === 'boolean') {
         if (data.hiddenPaneRetentionEnabled === false && !retentionMigrationDone()) {
           // One-shot default-flip migration (app-weight P0-1, 2026-07-16):
@@ -570,6 +571,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           // release note cover it.
           console.log('[wmux:hidden-retention] one-shot default-ON migration applied (persisted false, no ledger marker)');
           state.hiddenPaneRetentionEnabled = true;
+          retentionMigrationApplied = true;
           // One-time post-upgrade notice (DX review): the flip must be
           // announced, not discovered through a confusing reveal. setTimeout
           // escapes the immer set(); the action button is the escape hatch.
@@ -587,10 +589,21 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           state.hiddenPaneRetentionEnabled = data.hiddenPaneRetentionEnabled;
         }
       }
-      // Stamp the ledger unconditionally after a session load has been
-      // processed by a default-ON build — from here on, persisted values are
-      // authoritative user state.
-      markRetentionMigrationDone();
+      // Stamp the ledger after a session load has been processed by a
+      // default-ON build — from here on, persisted values are authoritative
+      // user state. When a migration flip was applied JUST NOW, the flipped
+      // value only exists in memory until the first session save lands (5 s
+      // autosave / reconcile save); stamping immediately would make a crash
+      // in that window lose the flip forever — disk still says false, ledger
+      // says migrated (codex, PR #470). Defer the stamp past the first save
+      // with wide margin; a crash inside the window simply re-runs the
+      // idempotent migration next boot. A deliberate OFF inside the window is
+      // protected regardless — the Settings setter stamps immediately.
+      if (retentionMigrationApplied) {
+        setTimeout(() => markRetentionMigrationDone(), 30_000);
+      } else {
+        markRetentionMigrationDone();
+      }
       if (typeof data.startupDirectory === 'string') state.startupDirectory = data.startupDirectory.trim();
       if (data.scrollbackLines != null) state.scrollbackLines = data.scrollbackLines;
       if (data.scrollbackRestoreEnabled != null) state.scrollbackRestoreEnabled = data.scrollbackRestoreEnabled;

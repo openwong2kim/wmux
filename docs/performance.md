@@ -107,6 +107,7 @@ a mechanism code saying which path the reveal took:
 | `dirty-snapshot` | Backlog was too large to replay; restored from a daemon snapshot. Expected for a long-hidden busy pane. |
 | `dirty-raw-fallback` | Snapshot path unavailable; fell back to replaying the raw buffered bytes. Slower — occasional is fine, constant is not. |
 | `resync-degraded` | The resync failed; the pane is marked stale and will retry. Repeated occurrences are a bug. |
+| `dead-snapshot` | The session's process has exited; the pane painted its last serialized screen. Normal for dead panes. |
 
 These lines are persisted to the on-disk logs (not just the DevTools
 console): the daemon log lives at `~/.wmux/logs/daemon-YYYY-MM-DD.log`, and
