@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.24.0] — 2026-07-16
+
 ### Added
 
 - **You can turn off "start wmux when Windows starts."** wmux registers itself to launch at login on install, but that was never optional — if you didn't want it running every boot, there was no switch. Settings → General now has a **Startup** toggle that flips it on or off live (it reads and writes the actual Windows startup entry, so it always reflects the real state). Turning it off sticks across app updates — an update no longer silently re-enables autostart behind your back. Windows only; the toggle is hidden on other platforms. (#460)
