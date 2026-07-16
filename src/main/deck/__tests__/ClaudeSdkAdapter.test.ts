@@ -206,6 +206,37 @@ describe('ClaudeSdkAdapter', () => {
     adapter.start({ systemPrompt: 'SYS' });
     await collect(adapter.send('go'));
     expect(calls[0].options.settingSources).toEqual([]);
+    // Raw mode keeps the plain string system prompt and the base allow-list.
+    expect(calls[0].options.systemPrompt).toBe('SYS');
+    expect(calls[0].options.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);
+  });
+
+  it('full-power mode loads user+project settings, presets the system prompt, and allows Skill (BYOB A)', async () => {
+    // The opt-in reverse of the raw-mode contract above: the user explicitly
+    // accepts hooks-in-brain-turns to get their skill ecosystem. Everything
+    // conservative stays: DISALLOWED_TOOLS, the canUseTool sandbox, and
+    // strictMcpConfig are asserted unchanged so full power can never silently
+    // widen the brain's hands beyond Skill invocation.
+    const calls: Array<{ options: Record<string, unknown> }> = [];
+    const adapter = new ClaudeSdkAdapter({
+      queryFn: (p) => {
+        calls.push(p as { options: Record<string, unknown> });
+        return fakeHandle([{ type: 'result', subtype: 'success', session_id: 's' }]);
+      },
+      mcpBundlePath: '/fake/mcp.js',
+      loadMemory: () => '',
+      fullPower: true,
+    });
+    adapter.start({ systemPrompt: 'SYS' });
+    await collect(adapter.send('go'));
+    const opts = calls[0].options;
+    expect(opts.settingSources).toEqual(['user', 'project']);
+    expect(opts.systemPrompt).toEqual({ type: 'preset', preset: 'claude_code', append: 'SYS' });
+    expect(opts.allowedTools).toEqual([...DEFAULT_ALLOWED_TOOLS, 'Skill']);
+    // v1-conservative invariants — the sandbox does NOT relax with the toggle.
+    expect(opts.disallowedTools).toEqual(DISALLOWED_TOOLS);
+    expect(opts.strictMcpConfig).toBe(true);
+    expect(typeof opts.canUseTool).toBe('function');
   });
 
   it('installs a canUseTool sandbox that allows own-memory Write and denies the rest', async () => {

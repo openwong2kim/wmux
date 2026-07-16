@@ -606,6 +606,8 @@ function OrchestratorSection() {
   const t = useT();
   const deckBrainModel = useStore((s) => s.deckBrainModel);
   const setDeckBrainModel = useStore((s) => s.setDeckBrainModel);
+  const deckBrainFullPower = useStore((s) => s.deckBrainFullPower);
+  const setDeckBrainFullPower = useStore((s) => s.setDeckBrainFullPower);
   const channelsTabVisible = useStore((s) => s.channelsTabVisible);
   const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
   const gitTabVisible = useStore((s) => s.gitTabVisible);
@@ -647,6 +649,16 @@ function OrchestratorSection() {
           onChange={setDeckBrainModel}
           options={options}
           label={t('settings.orchestratorModel')}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('settings.orchestratorFullPower')}
+        description={t('settings.orchestratorFullPowerDesc')}
+      >
+        <Toggle
+          checked={deckBrainFullPower}
+          onChange={setDeckBrainFullPower}
+          label={t('settings.orchestratorFullPower')}
         />
       </SettingRow>
       <SettingRow

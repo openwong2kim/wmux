@@ -248,6 +248,9 @@ export const ko = {
   'settings.orchestratorModelDesc':
     '커맨드 데크 agent가 사용할 Claude 모델. 변경은 다음 지시부터 적용되고 대화는 이어집니다.',
   'settings.orchestratorModelDefault': '기본 (구독 기본 모델)',
+  'settings.orchestratorFullPower': '풀파워 모드',
+  'settings.orchestratorFullPowerDesc':
+    'Claude Code의 스킬·CLAUDE.md·훅을 agent 턴에 로드합니다. 개인 훅이 agent 턴 안에서 실행되고 툴 호출이 느려질 수 있습니다 — 스킬 생태계가 필요할 때만 켜세요. 다음 지시부터 적용됩니다.',
   // 워크스페이스별 agent 모드 — 단일 자율성 노브(off/manual/assist/orchestrate).
   'deck.limit.window': '사용량',
   'deck.limit.resetsSoon': '곧 초기화됨',

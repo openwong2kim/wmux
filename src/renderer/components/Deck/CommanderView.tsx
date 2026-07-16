@@ -1036,6 +1036,7 @@ export function CommanderView(): React.ReactElement {
           text,
           fleetContext,
           ...(useStore.getState().deckBrainModel ? { model: useStore.getState().deckBrainModel } : {}),
+          ...(useStore.getState().deckBrainFullPower ? { fullPower: true } : {}),
         })
         .then((res) => {
           if (!res.ok) {

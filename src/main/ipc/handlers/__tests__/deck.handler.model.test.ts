@@ -36,6 +36,7 @@ class FakeAdapter implements BrainAdapter {
   constructor(
     public readonly model: string | undefined,
     public readonly workspaceId: string,
+    public readonly fullPower: boolean | undefined = undefined,
   ) {}
   start(opts: BrainStartOptions): void {
     this.started = opts;
@@ -64,13 +65,13 @@ const fakeWindow = {
 } as unknown as import('electron').BrowserWindow;
 
 function register(
-  createAdapter?: (opts: { model?: string; workspaceId: string }) => BrainAdapter,
+  createAdapter?: (opts: { model?: string; workspaceId: string; fullPower?: boolean }) => BrainAdapter,
 ): void {
   cleanup = registerDeckHandler(() => fakeWindow, {
     createAdapter:
       createAdapter ??
       ((opts) => {
-        const a = new FakeAdapter(opts.model, opts.workspaceId);
+        const a = new FakeAdapter(opts.model, opts.workspaceId, opts.fullPower);
         adapters.push(a);
         return a;
       }),
@@ -157,6 +158,36 @@ describe('deck:send — orchestrator model override', () => {
     await send({ text: 'hi', model: 'opus; rm -rf /' });
     expect(adapters).toHaveLength(1);
     expect(adapters[0].model).toBeUndefined();
+  });
+});
+
+describe('deck:send — full-power mode (BYOB approach A)', () => {
+  it('rides on send, adapter created with it, reused while unchanged', async () => {
+    await send({ text: 'hi', fullPower: true });
+    await send({ text: 'again', fullPower: true });
+    expect(adapters).toHaveLength(1);
+    expect(adapters[0].fullPower).toBe(true);
+  });
+
+  it('defaults to raw mode, and only a strict boolean true enables it', async () => {
+    await send({ text: 'hi' });
+    expect(adapters[0].fullPower).toBeUndefined();
+    // A truthy-but-not-true value must NOT enable full power (fail closed) —
+    // and since it reads as false, the existing raw-mode brain is reused.
+    await send({ text: 'again', fullPower: 'yes' });
+    expect(adapters).toHaveLength(1);
+  });
+
+  it('toggle change between turns swaps the brain (both directions)', async () => {
+    await send({ text: 'hi' });
+    await send({ text: 'on', fullPower: true });
+    expect(adapters).toHaveLength(2);
+    expect(adapters[0].disposed).toBe(true);
+    expect(adapters[1].fullPower).toBe(true);
+    await send({ text: 'off' });
+    expect(adapters).toHaveLength(3);
+    expect(adapters[1].disposed).toBe(true);
+    expect(adapters[2].fullPower).toBeUndefined();
   });
 });
 

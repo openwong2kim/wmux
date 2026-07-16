@@ -135,6 +135,14 @@ export interface UISlice {
   deckBrainModel: string;
   setDeckBrainModel: (model: string) => void;
 
+  // Orchestrator full-power mode (BYOB approach A): load the user's Claude
+  // Code ecosystem (skills, CLAUDE.md, hooks) into brain turns. Default OFF —
+  // raw mode is the documented safe default (hook storms, personal hooks in
+  // brain turns); this is a deliberate opt-in. Applied between turns like the
+  // model override — see deck.handler.
+  deckBrainFullPower: boolean;
+  setDeckBrainFullPower: (enabled: boolean) => void;
+
   // Whether the deck shows the Channels tab (the human channel UI). Default
   // OFF: the orchestrator is the single interface and channels are its
   // internal wiring (PRD §4.1 — human channel UI frozen); the tab stays
@@ -768,6 +776,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setDeckBrainModel: (model) => set((state) => {
     state.deckBrainModel = model;
+  }),
+
+  deckBrainFullPower: false,
+
+  setDeckBrainFullPower: (enabled) => set((state) => {
+    state.deckBrainFullPower = enabled;
   }),
 
   channelsTabVisible: false,

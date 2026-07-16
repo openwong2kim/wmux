@@ -214,6 +214,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalFontFamily: state.terminalFontFamily,
     defaultShell: state.defaultShell,
     deckBrainModel: state.deckBrainModel || undefined,
+    deckBrainFullPower: state.deckBrainFullPower || undefined,
     channelsTabVisible: state.channelsTabVisible,
     gitTabVisible: state.gitTabVisible,
     paneActionsVisible: state.paneActionsVisible,

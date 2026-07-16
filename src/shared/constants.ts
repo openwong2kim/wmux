@@ -120,9 +120,10 @@ export const IPC = {
   // trust basis as channelLocal/fanout (Electron process boundary, pipe-
   // unreachable):
   //   DECK_SEND       (invoke) renderer → main: run one brain turn. Payload
-  //                   { text, fleetContext? }. Resolves with the accept/reject
-  //                   result ({ ok, code? }); the turn's content streams over
-  //                   DECK_STREAM, it is not the invoke's return value.
+  //                   { text, fleetContext?, model?, fullPower? }. Resolves
+  //                   with the accept/reject result ({ ok, code? }); the
+  //                   turn's content streams over DECK_STREAM, it is not the
+  //                   invoke's return value.
   //   DECK_STREAM     (push)   main → renderer: one normalized BrainEvent per
   //                   send (text-delta | tool-start | tool-end | turn-end |
   //                   error). Dedicated channel — a brain stream is NOT channel

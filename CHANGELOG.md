@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Orchestrator full-power mode (opt-in): your Claude Code skills, CLAUDE.md and hooks, inside brain turns.** By default the Command Deck orchestrator runs "raw" — a fully explicit contract that deliberately loads nothing from your `~/.claude` setup, because personal hooks firing inside every brain tool call cost real latency and can feed events back into wmux itself. A new toggle in **Settings → Orchestrator** opts a workspace's brain into the full Claude Code ecosystem: skills become invocable, your CLAUDE.md applies, and your hooks run. The safety posture does not widen with it — the brain still cannot close panes, spawn subagents, or write outside its own memory folders, and skills that need `Bash`/`Write` are denied by the same guardrails as before (a conservative first cut; relaxing that is a separate decision). Applies from your next command; the conversation carries over, and scheduled runs follow the live setting.
+
 ### Changed
 
 - **Agent panes get ~50 MB lighter each — the browser engine now loads only when used.** Every agent pane (Claude Code, Codex, Gemini) runs a small wmux helper that exposes wmux's tools over MCP; it used to initialize the entire browser-automation library at startup, costing ~80 MB of private memory per pane whether or not the pane ever touched a browser tool. The library now ships as a separate lazy chunk that loads on the first `browser_*` call: an idle helper measures ~32 MB, and only panes that actually drive the browser pay the full cost. Nothing changes functionally — same tools, same behavior, pay for what you use.

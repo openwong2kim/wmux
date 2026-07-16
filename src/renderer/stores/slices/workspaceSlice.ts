@@ -539,6 +539,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (data.defaultShell) state.defaultShell = data.defaultShell;
       if (typeof data.deckBrainModel === 'string') state.deckBrainModel = data.deckBrainModel;
+      // Fail closed to raw mode: only an explicit true enables full power.
+      state.deckBrainFullPower = data.deckBrainFullPower === true;
       // Fail closed to hidden: only an explicit boolean shows the (frozen)
       // human channel UI.
       if (typeof data.channelsTabVisible === 'boolean') {

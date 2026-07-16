@@ -514,6 +514,10 @@ export interface SessionData {
   /** Orchestrator (deck brain) model override — '' / absent = the
    *  subscription's default model. A claude model alias or full id. */
   deckBrainModel?: string;
+  /** Orchestrator full-power mode (BYOB approach A) — load the user's Claude
+   *  Code ecosystem (skills/CLAUDE.md/hooks) into brain turns. Absent/false =
+   *  raw mode (the safe default). */
+  deckBrainFullPower?: boolean;
   /** Whether the deck shows the Channels tab (human channel UI). Default
    *  false — the orchestrator is the single interface; the tab is an
    *  opt-in inspection surface (Settings). */

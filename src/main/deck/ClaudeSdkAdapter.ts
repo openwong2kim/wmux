@@ -186,6 +186,16 @@ export interface ClaudeSdkAdapterDeps {
    *  defaults to commanderMemory.getMemoryRootDir(), resolved lazily only when
    *  the permission callback actually fires. */
   memoryRoot?: string;
+  /** Full-power mode (BYOB design 2026-07-16, approach A): load the user's
+   *  Claude Code ecosystem — skills, CLAUDE.md, hooks — into brain turns via
+   *  `settingSources` + the claude_code system-prompt preset. Default false
+   *  (raw mode): every cost documented on `settingSources: []` (hook storms,
+   *  self-wake feedback, personal hooks in brain turns) comes back when this
+   *  is on, which is why it is a per-user OPT-IN toggle, never a default.
+   *  v1 is conservative: the canUseTool Write sandbox, DISALLOWED_TOOLS, and
+   *  strictMcpConfig all stay in force — skills that need Bash/Write/other
+   *  MCP servers will be denied by the same gates as before. */
+  fullPower?: boolean;
 }
 
 // ─── Permission defaults (D2) ────────────────────────────────────────────────
@@ -433,6 +443,8 @@ export class ClaudeSdkAdapter implements BrainAdapter {
   private readonly queryFn: SdkQueryFn | null;
   private readonly mcpBundlePath: string | null;
   private readonly allowedTools: string[];
+  /** BYOB approach A — see ClaudeSdkAdapterDeps.fullPower. */
+  private readonly fullPower: boolean;
   private readonly model?: string;
   private readonly maxTurns: number;
   private readonly profile?: BrainEndpointProfile;
@@ -470,6 +482,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     this.queryFn = deps.queryFn ?? null;
     this.mcpBundlePath =
       deps.mcpBundlePath !== undefined ? deps.mcpBundlePath : resolveMcpBundlePath();
+    this.fullPower = deps.fullPower ?? false;
     this.allowedTools = deps.allowedTools ?? DEFAULT_ALLOWED_TOOLS;
     this.model = deps.model;
     this.maxTurns = deps.maxTurns ?? DEFAULT_MAX_TURNS;
@@ -550,7 +563,11 @@ export class ClaudeSdkAdapter implements BrainAdapter {
     const options: Record<string, unknown> = {
       env: this.buildEnv(),
       maxTurns: this.maxTurns,
-      allowedTools: this.allowedTools,
+      // Full power additionally auto-allows the Skill tool — invoking a skill
+      // is the point of the mode, and the skill's INNER tool calls still hit
+      // the same gates as everything else (disallowedTools kills Agent/Task,
+      // canUseTool sandboxes Write, Bash stays deny-by-default).
+      allowedTools: this.fullPower ? [...this.allowedTools, 'Skill'] : this.allowedTools,
       // Hard-remove the built-in subagent/file/shell tools (see
       // DISALLOWED_TOOLS): allowedTools alone only skips permission prompts,
       // and Agent/Task run WITHOUT one.
@@ -575,7 +592,7 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       },
       // Only the wmux MCP server; no ambient project/user MCP config is loaded.
       strictMcpConfig: true,
-      // Load NO filesystem settings. The SDK default is
+      // RAW MODE (default): load NO filesystem settings. The SDK default is
       // ['user','project','local'] (verified in sdk.mjs), which made every
       // brain turn inherit the USER'S hooks — including the wmux Claude
       // plugin's own PostToolUse/Stop bridge. Net effect: each orchestrator
@@ -586,7 +603,14 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       // inside brain turns. The brain's contract is fully explicit already:
       // systemPrompt is injected manually, tools via allowedTools/
       // disallowedTools/canUseTool, MCP via strictMcpConfig.
-      settingSources: [],
+      //
+      // FULL POWER (opt-in toggle, BYOB approach A): the user explicitly
+      // accepts those costs to get their skills/CLAUDE.md/hooks in brain
+      // turns. 'user' + 'project' only — never 'local'; and note the brain's
+      // cwd is pinned to the wmux data dir below, so 'project' resolves
+      // THERE (usually empty), not to any user repo: effectively this loads
+      // the user-level (~/.claude) ecosystem, which is the feature.
+      settingSources: this.fullPower ? ['user', 'project'] : [],
       // P3a: claude keys its session transcripts by cwd, and a packaged
       // Electron app's process.cwd() is the per-version install folder
       // (Squirrel app-x.y.z) — resume would silently break on every update.
@@ -594,7 +618,15 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       // app updates, reboots, and launch locations.
       cwd: getWmuxDir(),
     };
-    if (this._systemPrompt) options.systemPrompt = this._systemPrompt;
+    if (this._systemPrompt) {
+      // Full power rides the claude_code preset (required for the loaded
+      // CLAUDE.md/skill machinery to engage) with the commander identity
+      // APPENDED — the brain keeps its policy either way. Raw mode keeps the
+      // plain string prompt (no preset, nothing else loads).
+      options.systemPrompt = this.fullPower
+        ? { type: 'preset', preset: 'claude_code', append: this._systemPrompt }
+        : this._systemPrompt;
+    }
     if (this.model) options.model = this.model;
     if (this.mcpBundlePath) {
       // Spawn the MCP bundle with wmux's own Electron binary in Node mode

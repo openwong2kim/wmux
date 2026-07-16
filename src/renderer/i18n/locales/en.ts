@@ -306,6 +306,9 @@ export const en = {
   'settings.orchestratorModelDesc':
     'The Claude model the Command Deck orchestrator runs on. Changes apply from your next command; the conversation carries over.',
   'settings.orchestratorModelDefault': 'Default (subscription model)',
+  'settings.orchestratorFullPower': 'Full-power mode',
+  'settings.orchestratorFullPowerDesc':
+    'Load your Claude Code skills, CLAUDE.md and hooks into orchestrator turns. Your hooks will run inside brain turns and each tool call may get slower — leave off unless you want your skill ecosystem in the deck. Applies from your next command.',
   // M3: surfaced subscription rate-limit notices in the orchestrator thread.
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.
