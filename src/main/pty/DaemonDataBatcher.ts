@@ -37,9 +37,13 @@ export class DaemonDataBatcher {
   push(sessionId: string, text: string): void {
     if (!text) return;
     if (this.disposed) {
-      // Late chunk after dispose (handler swap raced a pipe read) — deliver
-      // directly rather than dropping bytes or buffering forever.
-      this.send(sessionId, text);
+      // Late chunk after dispose (handler swap raced a pipe read): DROP it.
+      // The daemon RingBuffer is the byte SSOT and the new generation's
+      // reattach replays authoritative content, so nothing is lost end-to-end
+      // — while delivering old-generation bytes here could land AFTER the new
+      // generation's resync markers and parse as live output (exactly the
+      // corruption the flush-before-marker rules exist to prevent; GLM
+      // review, PR #471).
       return;
     }
     const buf = this.pending.get(sessionId);

@@ -149,3 +149,19 @@ describe('runMetadataPollTick payload diff', () => {
     removeCwd('pty-diff-5');
   });
 });
+
+// codex review (PR #471): the poll dedup means a pane switch must be able to
+// PULL unchanged context — METADATA_REQUEST re-broadcasts through the normal
+// METADATA_UPDATE path so the renderer's active-surface apply logic runs.
+describe('METADATA_REQUEST re-broadcast (active-surface pull)', () => {
+  it('the request handler broadcasts the payload in addition to returning it', async () => {
+    const fs = await import('node:fs');
+    const path = await import('node:path');
+    const src = fs.readFileSync(
+      path.join(__dirname, '..', 'metadata.handler.ts'), 'utf-8');
+    const idx = src.indexOf('ipcMain.handle(IPC.METADATA_REQUEST');
+    expect(idx).toBeGreaterThan(0);
+    const body = src.slice(idx, idx + 900);
+    expect(body).toMatch(/broadcastMetadataUpdate\(win, payload\)/);
+  });
+});

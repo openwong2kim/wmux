@@ -345,9 +345,9 @@ describe('loadConfig — P1 idle-CPU knobs backfill + clamp', () => {
 
   it('garbage in a knob backfills only that field', () => {
     const c0 = createDefaultConfig();
-    writeRawConfig({ ...c0, daemon: { ...c0.daemon, livenessIntervalSec: 'fast' as unknown as number, pipeName: '\\.\pipe\keepme2' } });
+    writeRawConfig({ ...c0, daemon: { ...c0.daemon, livenessIntervalSec: 'fast' as unknown as number, pipeName: '\\\\.\\pipe\\keepme2' } });
     const c = loadConfig();
     expect(c.daemon.livenessIntervalSec).toBe(15);
-    expect(c.daemon.pipeName).toBe('\\.\pipe\keepme2');
+    expect(c.daemon.pipeName).toBe('\\\\.\\pipe\\keepme2');
   });
 });

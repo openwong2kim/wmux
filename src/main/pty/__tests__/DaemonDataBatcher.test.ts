@@ -67,14 +67,18 @@ describe('DaemonDataBatcher', () => {
     expect(sent).toEqual([]);
   });
 
-  it('dispose flushes everything pending, and late pushes pass straight through', () => {
+  it('dispose flushes everything pending, and late pushes are DROPPED (old generation)', () => {
     const b = new DaemonDataBatcher(send, 8);
     b.push('s1', 'tail');
     b.dispose();
     expect(sent).toEqual([['s1', 'tail']]);
-    // A pipe read racing the handler swap must not lose bytes or buffer forever.
+    // A pipe read racing the handler swap: the daemon ring is the byte SSOT
+    // and the new generation replays it — delivering here could interleave
+    // old-generation bytes after the new generation's resync markers.
     b.push('s1', 'late');
-    expect(sent).toEqual([['s1', 'tail'], ['s1', 'late']]);
+    expect(sent).toEqual([['s1', 'tail']]);
+    vi.advanceTimersByTime(20);
+    expect(sent).toEqual([['s1', 'tail']]);
   });
 
   it('empty text is a no-op', () => {

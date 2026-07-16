@@ -548,6 +548,28 @@ export function useNotificationListener() {
       titleCoalescer.push(ptyId, title);
     });
 
+    // codex review (PR #471): with the main-side poll dedup, an UNCHANGED
+    // payload is never re-broadcast — but exclusive workspace context
+    // (cwd/git/PR) only applies from the surface that is ACTIVE at receipt
+    // time. Switching panes therefore has to PULL the newly active surface's
+    // context explicitly; pre-dedup, the every-5s re-broadcast covered this
+    // implicitly. The request handler broadcasts the payload back through
+    // the normal METADATA_UPDATE path below.
+    let lastActivePtyId: string | null = null;
+    const pullActiveContext = (s: ReturnType<typeof useStore.getState>) => {
+      const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+      const leaf = ws ? findActiveLeaf(ws.rootPane, ws.activePaneId) : null;
+      const surf = leaf?.surfaces.find((x) => x.id === leaf.activeSurfaceId);
+      const ptyId = surf?.ptyId ?? null;
+      if (ptyId === lastActivePtyId) return;
+      lastActivePtyId = ptyId;
+      // Optional-chained: a stale preload (packaged update under a running
+      // renderer) or a partial test mock may not expose request.
+      if (ptyId) void window.electronAPI.metadata.request?.(ptyId);
+    };
+    const unsubActivePull = useStore.subscribe(pullActiveContext);
+    pullActiveContext(useStore.getState());
+
     const unsubMeta = window.electronAPI.metadata.onUpdate((payload) => {
       const state = useStore.getState();
       // Discriminator: ptyId routes to its workspace; workspaceId is direct;
@@ -826,6 +848,7 @@ export function useNotificationListener() {
       unsubCwd();
       unsubTitle();
       unsubMeta();
+      unsubActivePull();
       unsubGitBranch();
       unsubExhausted();
       unsubSignalHealth();

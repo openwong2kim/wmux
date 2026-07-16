@@ -5,6 +5,17 @@
  * Uses a single batched tasklist call (on Windows) to check all watched PIDs
  * at once, instead of spawning one process per session.
  */
+import { execFile } from 'child_process';
+import { promisify } from 'util';
+import path from 'path';
+
+const execFileAsync = promisify(execFile);
+
+function tasklistPath(): string {
+  const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+  return path.join(systemRoot, 'System32', 'tasklist.exe');
+}
+
 export class ProcessMonitor {
   private watchedPids: Map<string, { pid: number; onDead: () => void; imageName?: string }> = new Map();
   private batchInterval: NodeJS.Timeout | null = null;
@@ -30,14 +41,8 @@ export class ProcessMonitor {
       // process.kill(pid, 0) is unreliable on Windows — always returns true.
       // Use tasklist which is available on all Windows versions.
       try {
-        const { execFile } = require('child_process');
-        const { promisify } = require('util');
-        const execFileAsync = promisify(execFile);
-        const pathMod = require('path');
-        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-        const tasklist = pathMod.join(systemRoot, 'System32', 'tasklist.exe');
         const { stdout } = await execFileAsync(
-          tasklist,
+          tasklistPath(),
           ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'],
           { encoding: 'utf-8', timeout: 3000, windowsHide: true },
         );
@@ -92,14 +97,8 @@ export class ProcessMonitor {
    * principle (PR #87) applies to reuse detection exactly as to death.
    */
   static async probeWindowsPid(pid: number): Promise<{ present: boolean; imageName?: string }> {
-    const { execFile } = require('child_process');
-    const { promisify } = require('util');
-    const execFileAsync = promisify(execFile);
-    const pathMod = require('path');
-    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-    const tasklist = pathMod.join(systemRoot, 'System32', 'tasklist.exe');
     const { stdout } = await execFileAsync(
-      tasklist,
+      tasklistPath(),
       ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'],
       { encoding: 'utf-8', timeout: 3000, windowsHide: true },
     );
@@ -155,29 +154,33 @@ export class ProcessMonitor {
 
     if (process.platform === 'win32') {
       try {
-        const { execFile } = require('child_process');
-        const { promisify } = require('util');
-        const execFileAsync = promisify(execFile);
-        const pathMod = require('path');
-        const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-        const tasklist = pathMod.join(systemRoot, 'System32', 'tasklist.exe');
         // Single call: get full process list in CSV format (no filter)
         const { stdout } = await execFileAsync(
-          tasklist,
+          tasklistPath(),
           ['/fo', 'csv', '/nh'],
           { encoding: 'utf-8', timeout: 10000, windowsHide: true },
         );
         return ProcessMonitor.parseTasklistCsv(stdout as string, new Set(pids));
       } catch {
-        // On failure, fall back to individual checks (no image names — the
-        // reuse check simply skips this cycle rather than guessing).
+        // On failure, fall back to per-PID probes. probeWindowsPid returns
+        // the image name too, so the PID-reuse check keeps working exactly
+        // when it matters most — a loaded machine where the full-list
+        // tasklist timed out is also where the OS recycles PIDs fastest
+        // (GLM review, PR #471). A per-PID probe failure marks the pid
+        // not-alive here, same as the old isAlive fallback; the watch loop's
+        // isDefinitelyDead re-verify still gates any actual death.
         const alive = new Set<number>();
+        const images = new Map<number, string>();
         for (const pid of pids) {
-          if (await ProcessMonitor.isAlive(pid)) {
-            alive.add(pid);
-          }
+          try {
+            const probe = await ProcessMonitor.probeWindowsPid(pid);
+            if (probe.present) {
+              alive.add(pid);
+              if (probe.imageName) images.set(pid, probe.imageName);
+            }
+          } catch { /* unknown — not added; re-verify gates death */ }
         }
-        return { alive, images: new Map() };
+        return { alive, images };
       }
     }
     // Non-Windows: use process.kill(pid, 0) for each

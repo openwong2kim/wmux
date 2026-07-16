@@ -103,7 +103,18 @@ async function buildMetadataPayload(ptyId: string): Promise<MetadataUpdatePayloa
 // broadcastMetadataUpdate call sites elsewhere are never suppressed. The map
 // is rebuilt from live panes each tick, so entries for closed panes are
 // pruned automatically (leak-free without a separate cleanup hook).
+// Known, accepted duplicate: an event-driven broadcast (OSC cwd etc.) does
+// not update this cache, so the next poll tick re-sends once — self-healing
+// and still strictly better than the old every-tick broadcast.
 let lastPolledPayloads = new Map<string, string>();
+
+/** Reset the poll dedup cache. Called on (re)registration: a recreated
+ *  window's renderer starts with empty state, and a stale cache would
+ *  suppress the first poll payload it actually needs (GLM review, PR #471).
+ *  Cost: one duplicate burst per re-registration. */
+export function resetMetadataPollCache(): void {
+  lastPolledPayloads = new Map();
+}
 
 /**
  * One tick of the metadata poll. Exported for unit tests; production calls it
@@ -165,6 +176,14 @@ export function registerMetadataHandlers(
   ipcMain.handle(IPC.METADATA_REQUEST, wrapHandler(IPC.METADATA_REQUEST, async (_event: Electron.IpcMainInvokeEvent, ptyId: string) => {
     const payload = await buildMetadataPayload(ptyId);
     if (!payload) return {};
+    // Also broadcast (codex review, PR #471): the poll dedup never re-sends
+    // an unchanged payload, but the renderer applies exclusive context
+    // (cwd/git/PR) only from the surface that is ACTIVE at receipt time —
+    // so a pane switch pulls via this request and the broadcast feeds the
+    // renderer's normal METADATA_UPDATE apply path. Requests are explicitly
+    // exempt from the dedup cache.
+    const win = getWindow();
+    if (win && !win.isDestroyed()) broadcastMetadataUpdate(win, payload);
     const rest = { ...payload };
     delete rest.ptyId;
     return rest;
@@ -224,11 +243,26 @@ export function registerMetadataHandlers(
     return { ok: true };
   }));
 
-  // Periodic metadata polling (every 5 seconds)
+  // Fresh dedup cache per registration — see resetMetadataPollCache.
+  resetMetadataPollCache();
+
+  // Periodic metadata polling (every 5 seconds). Re-entrancy guard
+  // (CodeRabbit, PR #471): buildMetadataPayload awaits git/PR work that can
+  // outlast the interval under load, and an older tick's final cache swap
+  // would overwrite a newer tick's snapshot — a stale cache entry could then
+  // suppress a legitimate change. Overlapping ticks are skipped (the next
+  // 5 s tick covers), same discipline as snapshotRunner's `running` flag.
+  let pollRunning = false;
   const pollingInterval = setInterval(async () => {
+    if (pollRunning) return;
     const win = getWindow();
     if (!win || !shouldPollMetadata(win)) return;
-    await runMetadataPollTick(ptyManager, win, localPtyOwnership);
+    pollRunning = true;
+    try {
+      await runMetadataPollTick(ptyManager, win, localPtyOwnership);
+    } finally {
+      pollRunning = false;
+    }
   }, 5000);
 
   // cleanup 함수 반환 — 앱 종료 시 호출
