@@ -161,10 +161,17 @@ describe('deck:send — orchestrator model override', () => {
   });
 });
 
-describe('deck:send — full-power mode (BYOB approach A)', () => {
-  it('rides on send, adapter created with it, reused while unchanged', async () => {
-    await send({ text: 'hi', fullPower: true });
-    await send({ text: 'again', fullPower: true });
+describe('deck full-power mode (BYOB approach A) — MAIN-side authority', () => {
+  const setFullPower = (enabled: unknown) =>
+    captured.get(IPC.DECK_FULLPOWER_SET)!({}, { enabled }) as Promise<{
+      ok: true;
+      enabled: boolean;
+    }>;
+
+  it('applies to sends after the set, reused while unchanged', async () => {
+    await setFullPower(true);
+    await send({ text: 'hi' });
+    await send({ text: 'again' });
     expect(adapters).toHaveLength(1);
     expect(adapters[0].fullPower).toBe(true);
   });
@@ -172,22 +179,59 @@ describe('deck:send — full-power mode (BYOB approach A)', () => {
   it('defaults to raw mode, and only a strict boolean true enables it', async () => {
     await send({ text: 'hi' });
     expect(adapters[0].fullPower).toBeUndefined();
-    // A truthy-but-not-true value must NOT enable full power (fail closed) —
-    // and since it reads as false, the existing raw-mode brain is reused.
-    await send({ text: 'again', fullPower: 'yes' });
+    // Fail closed: a truthy-but-not-true value must NOT enable full power.
+    expect((await setFullPower('yes')).enabled).toBe(false);
+    await send({ text: 'again' });
     expect(adapters).toHaveLength(1);
   });
 
-  it('toggle change between turns swaps the brain (both directions)', async () => {
+  it('toggling retires the IDLE stale-mode brain immediately (both directions)', async () => {
     await send({ text: 'hi' });
-    await send({ text: 'on', fullPower: true });
-    expect(adapters).toHaveLength(2);
+    // ON: the idle raw-mode manager is disposed by the set itself, so even an
+    // autonomous turn (no deck:send) would spawn on the new mode.
+    await setFullPower(true);
     expect(adapters[0].disposed).toBe(true);
+    await send({ text: 'on' });
+    expect(adapters).toHaveLength(2);
     expect(adapters[1].fullPower).toBe(true);
+    // OFF: hooks must stop running on the very next turn of any path.
+    await setFullPower(false);
+    expect(adapters[1].disposed).toBe(true);
     await send({ text: 'off' });
     expect(adapters).toHaveLength(3);
-    expect(adapters[1].disposed).toBe(true);
     expect(adapters[2].fullPower).toBeUndefined();
+  });
+
+  it('never retires a BUSY brain mid-turn; it swaps on its next turn', async () => {
+    let release!: () => void;
+    const gate = new Promise<void>((r) => { release = r; });
+    class SlowAdapter extends FakeAdapter {
+      async *send(): AsyncIterable<BrainEvent> {
+        await gate;
+        yield { type: 'turn-end', sessionId: 'sess-slow' } as BrainEvent;
+      }
+    }
+    captured.clear();
+    cleanup?.();
+    adapters = [];
+    register((opts) => {
+      const a =
+        adapters.length === 0
+          ? new SlowAdapter(opts.model, opts.workspaceId, opts.fullPower)
+          : new FakeAdapter(opts.model, opts.workspaceId, opts.fullPower);
+      adapters.push(a);
+      return a;
+    });
+
+    const turn = send({ text: 'long turn' });
+    await setFullPower(true);
+    expect(adapters[0].disposed).toBe(false); // in-flight turn survives
+    release();
+    await expect(turn).resolves.toEqual({ ok: true });
+    // Next turn spawns on the new mode.
+    await send({ text: 'after' });
+    expect(adapters).toHaveLength(2);
+    expect(adapters[1].fullPower).toBe(true);
   });
 });
 

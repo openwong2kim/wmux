@@ -813,6 +813,16 @@ export default function AppLayout() {
     return () => window.removeEventListener(FIRST_RUN_REOPEN_EVENT, handler);
   }, []);
 
+  // Sync the orchestrator full-power toggle to MAIN, which is the authority
+  // every brain-turn path consults (typed, scheduled, event-woken). Fires on
+  // change AND once after session hydration flips the persisted value in, so
+  // a restart restores the mode for autonomous turns without a typed command.
+  // Fire-and-forget: a failed sync leaves main on the safe default (raw).
+  const deckBrainFullPowerLive = useStore((s) => s.deckBrainFullPower);
+  useEffect(() => {
+    void window.electronAPI?.deck?.fullPowerSet?.(deckBrainFullPowerLive);
+  }, [deckBrainFullPowerLive]);
+
   // ─── First-run onboarding (spotlight) detection ─────────────────────
   // D8: spotlight stays gated behind firstRunCompleted so the wizard always
   // wins the first impression. Once the wizard completes/dismisses, the

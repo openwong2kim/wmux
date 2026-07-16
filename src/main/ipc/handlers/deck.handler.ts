@@ -120,6 +120,13 @@ export function registerDeckHandler(
   }
   const managers = new Map<string, ManagedCommander>();
 
+  // Full-power toggle (BYOB approach A) — MAIN-side authority so scheduled /
+  // event-woken turns and toggle changes between typed commands all see the
+  // live value (Codex/GLM review round 1: a send-carried flag left autonomous
+  // turns on the stale mode, and a restart silently dropped a persisted ON).
+  // Synced by DECK_FULLPOWER_SET: on change and once after session hydration.
+  let fullPowerEnabled = false;
+
   // Event-push coalescer. Declared here, constructed below once
   // runTurnForWorkspace exists — the manager's onIdle closure references it
   // lazily (only invoked at runtime, long after construction), so the cyclic
@@ -141,7 +148,6 @@ export function registerDeckHandler(
     workspaceId: string,
     fleetContext?: string,
     model = '',
-    fullPower = false,
   ): CommanderSessionManager => {
     // Model or full-power mode changed in Settings: swap that workspace's
     // brain between turns. The adapter pins both at spawn (--model /
@@ -149,7 +155,10 @@ export function registerDeckHandler(
     // resumes the persisted session id, so this is a switch mid-thread, not a
     // new thread. Never swap while a turn streams: the busy manager keeps
     // running and the send below gets the normal `busy` reject; the new
-    // setting applies on the next send.
+    // setting applies on the next turn. Full power is read from the MAIN-side
+    // authority (fullPowerEnabled), never from the caller — every turn path
+    // gets the same answer.
+    const fullPower = fullPowerEnabled;
     const existing = managers.get(workspaceId);
     if (
       existing &&
@@ -246,10 +255,7 @@ export function registerDeckHandler(
       // the SDK subprocess command line, so reject anything but [A-Za-z0-9._-].
       const rawModel = typeof req.model === 'string' ? req.model.trim() : '';
       const model = /^[A-Za-z0-9._-]{1,64}$/.test(rawModel) ? rawModel : '';
-      // Full power (BYOB approach A): strictly-true boolean, everything else
-      // stays raw mode — the fail-closed reading for an opt-in capability.
-      const fullPower = req.fullPower === true;
-      const mgr = ensureManager(workspaceId, fleetContext, model, fullPower);
+      const mgr = ensureManager(workspaceId, fleetContext, model);
       // Human input resets this workspace's auto-wake budget and subsumes any
       // buffered push events (the human's own turn re-observes live state) —
       // but ONLY when the send will actually be accepted. A busy reject (e.g.
@@ -307,6 +313,36 @@ export function registerDeckHandler(
     }),
   );
 
+  ipcMain.removeHandler(IPC.DECK_FULLPOWER_SET);
+  ipcMain.handle(
+    IPC.DECK_FULLPOWER_SET,
+    wrapHandler(IPC.DECK_FULLPOWER_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: true; enabled: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      // Fail closed: only a strict boolean true enables full power.
+      const enabled = req.enabled === true;
+      if (enabled !== fullPowerEnabled) {
+        fullPowerEnabled = enabled;
+        // Retire IDLE managers on the stale mode now, so the next turn on any
+        // path (typed, scheduled, event-woken) spawns on the new mode — the
+        // OFF direction especially must not keep running hooks. Busy managers
+        // finish their in-flight turn; ensureManager swaps them on their next
+        // turn (same never-swap-mid-turn rule as the model override).
+        for (const [workspaceId, entry] of [...managers]) {
+          if (entry.fullPower !== enabled && entry.manager.getStatus().status !== 'busy') {
+            entry.manager.dispose();
+            managers.delete(workspaceId);
+          }
+        }
+      }
+      return { ok: true, enabled };
+    }),
+  );
+
   // Fire ONE main-originated brain turn on a workspace's orchestrator. Shared
   // by the P3d scheduler AND the event-push coalescer — both need the identical
   // "announce-then-send, skip-if-busy" sequence. A main-originated turn has no
@@ -322,16 +358,11 @@ export function registerDeckHandler(
     if (!WORKSPACE_ID_RE.test(workspaceId)) {
       return { ok: false, code: 'invalid_workspace' as const };
     }
-    // Scheduled/event-woken turns reuse the live manager's settings (model +
-    // full power) — a lazily created one starts with the defaults, exactly
-    // like a first deck:send with no overrides.
-    const existingSettings = managers.get(workspaceId);
-    const mgr = ensureManager(
-      workspaceId,
-      undefined,
-      existingSettings?.model ?? '',
-      existingSettings?.fullPower ?? false,
-    );
+    // Scheduled/event-woken turns reuse the live manager's model (a lazily
+    // created one starts with the default). Full power always comes from the
+    // main-side authority inside ensureManager — the live toggle applies to
+    // autonomous turns too.
+    const mgr = ensureManager(workspaceId, undefined, managers.get(workspaceId)?.model ?? '');
     if (mgr.getStatus().status !== 'idle') {
       return { ok: false, code: 'busy' as const };
     }
@@ -965,6 +996,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_SEND);
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);
     ipcMain.removeHandler(IPC.DECK_STATUS);
+    ipcMain.removeHandler(IPC.DECK_FULLPOWER_SET);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_LIST);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_CREATE);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_UPDATE);

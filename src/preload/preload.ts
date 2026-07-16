@@ -364,13 +364,18 @@ const electronAPI = {
     // ('' / undefined = the subscription's default). Passed on every send;
     // main swaps that workspace's brain adapter between turns when it changes
     // (the conversation itself survives via the persisted session id).
-    send: (args: { workspaceId: string; text: string; fleetContext?: string; model?: string; fullPower?: boolean }) =>
+    send: (args: { workspaceId: string; text: string; fleetContext?: string; model?: string }) =>
       ipcRenderer.invoke(IPC.DECK_SEND, args) as Promise<{
         ok: boolean;
         code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace';
       }>,
     interrupt: (workspaceId: string) =>
       ipcRenderer.invoke(IPC.DECK_INTERRUPT, { workspaceId }) as Promise<{ ok: true }>,
+    fullPowerSet: (enabled: boolean) =>
+      ipcRenderer.invoke(IPC.DECK_FULLPOWER_SET, { enabled }) as Promise<{
+        ok: true;
+        enabled: boolean;
+      }>,
     status: (workspaceId: string) =>
       ipcRenderer.invoke(IPC.DECK_STATUS, { workspaceId }) as Promise<{
         status: 'idle' | 'busy' | 'disposed';

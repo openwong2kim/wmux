@@ -196,14 +196,17 @@ export interface ClaudeSdkAdapterDeps {
    *  strictMcpConfig all stay in force — skills that need Bash/Write/other
    *  MCP servers will be denied by the same gates as before.
    *
-   *  Known, accepted boundary: loading the user's settings also loads their
-   *  OWN permission allow-rules, and an allow-rule is decided BEFORE the
-   *  canUseTool callback — so e.g. a personal `Write(...)` allow-rule applies
-   *  inside brain turns and preempts the memory-folder sandbox for those
-   *  paths. That is the toggle's semantic (your Claude Code config applies),
-   *  it requires the user to have granted the rule to themselves already,
-   *  and the hard-disallowed tools (Bash/Edit/Agent/Task/…) stay impossible
-   *  regardless — disallowedTools outranks any allow-rule. */
+   *  Boundary analysis (review round 1): loading the user's settings also
+   *  loads their OWN permission allow-rules, decided BEFORE the canUseTool
+   *  callback — an allow-rule can therefore preempt the sandbox for any tool
+   *  that is not hard-disallowed. Consequences baked into buildOptions:
+   *  full power hard-disallows Write (memory persistence is unavailable
+   *  while the toggle is ON — the one layer settings cannot shadow) and sets
+   *  disableSkillShellExecution so a skill's inline-shell syntax cannot
+   *  execute outside the tool gates. Remaining allow-rule surface is the
+   *  read-only tool family — the user's own explicit grant to themselves.
+   *  Hooks are the user's own code and run outside any wmux sandbox, exactly
+   *  as in their own Claude Code sessions — stated in the toggle copy. */
   fullPower?: boolean;
 }
 
@@ -580,7 +583,16 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       // Hard-remove the built-in subagent/file/shell tools (see
       // DISALLOWED_TOOLS): allowedTools alone only skips permission prompts,
       // and Agent/Task run WITHOUT one.
-      disallowedTools: DISALLOWED_TOOLS,
+      //
+      // Full power additionally hard-disallows Write (Codex/self review,
+      // round 1): loading the user's settings loads their permission
+      // allow-rules, and an allow-rule is decided BEFORE canUseTool — so a
+      // personal `Write(...)` rule would silently preempt the memory-folder
+      // sandbox. disallowedTools outranks any allow-rule, so this is the one
+      // layer filesystem settings cannot shadow. The accepted cost: the brain
+      // cannot persist memory notes while full power is ON (documented; the
+      // raw-mode sandbox path is unchanged).
+      disallowedTools: this.fullPower ? [...DISALLOWED_TOOLS, 'Write'] : DISALLOWED_TOOLS,
       // M1b: the ONE gate for the brain's Write hand. Fires for every tool not
       // auto-allowed via allowedTools; the sandbox permits Write only into the
       // brain's own `.md` memory folders and denies everything else. Wrapped in
@@ -620,6 +632,13 @@ export class ClaudeSdkAdapter implements BrainAdapter {
       // THERE (usually empty), not to any user repo: effectively this loads
       // the user-level (~/.claude) ecosystem, which is the feature.
       settingSources: this.fullPower ? ['user', 'project'] : [],
+      // Full power: skills/commands may carry Claude Code's inline-shell
+      // syntax, which executes DIRECTLY (no Bash tool call) and would bypass
+      // disallowedTools/canUseTool entirely (Codex review, round 1). The SDK
+      // replaces those commands with a placeholder when this is set — skills
+      // stay invocable, their embedded shell does not run. Harmless in raw
+      // mode (no skills load), so set unconditionally for defense in depth.
+      disableSkillShellExecution: true,
       // P3a: claude keys its session transcripts by cwd, and a packaged
       // Electron app's process.cwd() is the per-version install folder
       // (Squirrel app-x.y.z) — resume would silently break on every update.

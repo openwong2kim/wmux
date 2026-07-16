@@ -130,10 +130,18 @@ export const IPC = {
   //                   semantics, so it never rides the channels plumbing.
   //   DECK_INTERRUPT  (invoke) renderer → main: abort the in-flight turn.
   //   DECK_STATUS     (invoke) renderer → main: { status, sessionId } snapshot.
+  //   DECK_FULLPOWER_SET (invoke) renderer → main: sync the full-power toggle
+  //                   (BYOB approach A). Main is the authority consulted by
+  //                   EVERY turn path (send / scheduled / event-woken), so a
+  //                   toggle change applies to autonomous turns immediately —
+  //                   not only after the next typed command. The renderer
+  //                   pushes on change and once after session hydration
+  //                   (restart restore).
   DECK_SEND: 'deck:send',
   DECK_STREAM: 'deck:stream',
   DECK_INTERRUPT: 'deck:interrupt',
   DECK_STATUS: 'deck:status',
+  DECK_FULLPOWER_SET: 'deck:fullpower:set',
   //   DECK_SCHEDULES_* (invoke) renderer → main: CRUD over the persisted
   //                    orchestrator schedules (P3d). Same renderer-only trust
   //                    boundary as DECK_SEND.

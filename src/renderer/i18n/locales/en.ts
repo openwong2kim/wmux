@@ -308,7 +308,7 @@ export const en = {
   'settings.orchestratorModelDefault': 'Default (subscription model)',
   'settings.orchestratorFullPower': 'Full-power mode',
   'settings.orchestratorFullPowerDesc':
-    'Load your Claude Code skills, CLAUDE.md and hooks into orchestrator turns. Your hooks will run inside brain turns and each tool call may get slower — leave off unless you want your skill ecosystem in the deck. Applies from your next command.',
+    'Load your Claude Code skills, CLAUDE.md and hooks into orchestrator turns. Your hooks run inside brain turns (your own code, outside any wmux sandbox), tool calls may get slower, and the brain cannot write its memory notes while this is on. Applies from the next brain turn.',
   // M3: surfaced subscription rate-limit notices in the orchestrator thread.
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.
