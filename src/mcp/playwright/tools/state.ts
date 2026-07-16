@@ -1,7 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Page } from 'playwright-core';
 import { z } from 'zod';
-import { devices } from 'playwright-core';
+import { loadPlaywright } from '../lazyPlaywright';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { matchSensitiveDomain } from '../security';
 import { evalFunctionOrRpc } from '../page-eval';
@@ -381,7 +381,8 @@ export function registerStateTools(server: McpServer): void {
         // Resolve a device preset (if any) up front: both transports need its
         // viewport + user agent, and the lookup throws on an unknown name before
         // any partial emulation is applied.
-        const deviceDescriptor = device ? devices[device] : undefined;
+        // B0: devices lives in the lazy playwright chunk (first use loads it).
+        const deviceDescriptor = device ? loadPlaywright().devices[device] : undefined;
         if (device && !deviceDescriptor) {
           throw new Error(
             `Unknown device "${device}". Use a name from Playwright's device list (e.g. "iPhone 13", "Pixel 5").`,

@@ -1,4 +1,5 @@
-import { chromium, type Browser, type BrowserContext, type Page, type CDPSession } from 'playwright-core';
+import type { Browser, BrowserContext, Page, CDPSession } from 'playwright-core';
+import { loadPlaywright } from './lazyPlaywright';
 import { sendRpc } from '../wmux-client';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
@@ -180,6 +181,8 @@ export class PlaywrightEngine {
       return;
     }
     await this.disconnect();
+    // B0: first real use — initialize playwright-core's module graph now.
+    const { chromium } = loadPlaywright();
     this.browser = await chromium.connectOverCDP(`http://localhost:${cdpPort}`);
     this.cdpPort = cdpPort;
     console.error(`[PlaywrightEngine] Connected to CDP on port ${cdpPort}`);

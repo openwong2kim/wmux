@@ -3,37 +3,66 @@ const fs = require('fs');
 const path = require('path');
 
 /**
- * Build MCP bundle with playwright-core included.
+ * Build the MCP bundle as TWO files (B0, app-weight P2 —
+ * plans/mcp-broker-design-2026-07-16.md):
+ *
+ *   index.js            — the MCP server. playwright-core is EXTERNAL here,
+ *                         so the idle child pays ~8-30 MB instead of ~80 MB.
+ *   playwright-chunk.js — playwright-core bundled alone. Loaded at runtime by
+ *                         src/mcp/playwright/lazyPlaywright.ts on the first
+ *                         browser_* call that actually needs the library
+ *                         (require path computed at runtime, so esbuild can't
+ *                         re-inline it).
  *
  * playwright-core uses require.resolve("../../../package.json") to find its
  * root directory. In a single-file bundle, this relative path breaks.
  * Since we only use connectOverCDP (never launch browsers), we patch the
- * bundled output to stub the resolve with inline package metadata.
+ * bundled output to stub the resolve with inline package metadata — the
+ * patch now applies to the CHUNK (where the library lives).
  */
-const outfile = 'dist/mcp-bundle/index.js';
+const outdir = 'dist/mcp-bundle';
+const outfile = path.join(outdir, 'index.js');
+const chunkFile = path.join(outdir, 'playwright-chunk.js');
+const chunkEntry = path.join(outdir, '.pw-chunk-entry.js');
 
-esbuild.build({
-  entryPoints: ['dist/mcp/mcp/index.js'],
-  bundle: true,
-  platform: 'node',
-  outfile,
-  external: ['electron', 'chromium-bidi'],
-  logLevel: 'error',
-}).then(() => {
-  let code = fs.readFileSync(outfile, 'utf8');
+async function main() {
+  // 1. Main bundle — playwright-core external (lives in the chunk).
+  await esbuild.build({
+    entryPoints: ['dist/mcp/mcp/index.js'],
+    bundle: true,
+    platform: 'node',
+    outfile,
+    external: ['electron', 'chromium-bidi', 'playwright-core'],
+    logLevel: 'error',
+  });
 
-  // Stub require.resolve("../../../package.json") → inline path to a
-  // virtual package.json we write next to the bundle.
+  // 2. Lazy chunk — playwright-core bundled alone behind a re-export shim.
+  fs.mkdirSync(outdir, { recursive: true });
+  fs.writeFileSync(chunkEntry, "module.exports = require('playwright-core');\n");
+  await esbuild.build({
+    entryPoints: [chunkEntry],
+    bundle: true,
+    platform: 'node',
+    outfile: chunkFile,
+    external: ['electron', 'chromium-bidi'],
+    logLevel: 'error',
+  });
+  fs.rmSync(chunkEntry, { force: true });
+
+  // 3. Patch playwright's package.json self-resolve inside the chunk.
+  let code = fs.readFileSync(chunkFile, 'utf8');
   code = code.replace(
     /require\.resolve\("\.\.\/\.\.\/\.\.\/package\.json"\)/g,
     '__dirname + "/playwright-core-package.json"'
   );
+  fs.writeFileSync(chunkFile, code);
 
-  fs.writeFileSync(outfile, code);
-
-  // Write a minimal package.json for playwright-core's version detection.
+  // Minimal package.json for playwright-core's version detection (same dir
+  // as the chunk, __dirname-relative).
   fs.writeFileSync(
-    path.join(path.dirname(outfile), 'playwright-core-package.json'),
+    path.join(outdir, 'playwright-core-package.json'),
     JSON.stringify({ name: 'playwright-core', version: '1.58.2' })
   );
-}).catch(() => process.exit(1));
+}
+
+main().catch((err) => { console.error(err); process.exit(1); });
