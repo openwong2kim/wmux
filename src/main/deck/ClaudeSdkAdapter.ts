@@ -194,7 +194,16 @@ export interface ClaudeSdkAdapterDeps {
    *  is on, which is why it is a per-user OPT-IN toggle, never a default.
    *  v1 is conservative: the canUseTool Write sandbox, DISALLOWED_TOOLS, and
    *  strictMcpConfig all stay in force — skills that need Bash/Write/other
-   *  MCP servers will be denied by the same gates as before. */
+   *  MCP servers will be denied by the same gates as before.
+   *
+   *  Known, accepted boundary: loading the user's settings also loads their
+   *  OWN permission allow-rules, and an allow-rule is decided BEFORE the
+   *  canUseTool callback — so e.g. a personal `Write(...)` allow-rule applies
+   *  inside brain turns and preempts the memory-folder sandbox for those
+   *  paths. That is the toggle's semantic (your Claude Code config applies),
+   *  it requires the user to have granted the rule to themselves already,
+   *  and the hard-disallowed tools (Bash/Edit/Agent/Task/…) stay impossible
+   *  regardless — disallowedTools outranks any allow-rule. */
   fullPower?: boolean;
 }
 
