@@ -74,12 +74,14 @@ import { createTray, destroyTray, updateTraySessionCount } from './tray';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
-// Static import (NOT require('./autostart')) so rollup inlines it into the
+// Static imports (NOT require('./...')) so rollup inlines these into the
 // single .vite/build/index.js bundle. A dynamic require left literal in the
-// bundle has no adjacent autostart.js to resolve at runtime and throws
+// bundle has no adjacent chunk to resolve at runtime and throws
 // MODULE_NOT_FOUND — silently swallowed by the best-effort catches below,
-// which would break autostart registration during Squirrel events entirely.
+// which would break autostart registration / CLI-shim install during
+// Squirrel events entirely (issue #463).
 import * as autostart from './autostart';
+import * as cliShim from './cliShim';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
@@ -143,7 +145,7 @@ if (process.platform === 'win32') {
 
       // X4: drop the `wmux` CLI shim into <root>\bin and register it on the
       // user PATH. Internally best-effort — never blocks the install.
-      try { require('./cliShim').installCliShim(process.execPath); } catch { /* best-effort */ }
+      try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
 
       spawn(updateExe, ['--createShortcut', target, '--shortcut-locations', 'Desktop,StartMenu'], { detached: true, windowsHide: true })
         .on('close', () => {
@@ -160,7 +162,7 @@ if (process.platform === 'win32') {
 
       // X4: regenerate the CLI shim — it embeds the absolute app-X.Y.Z path,
       // which changes on every update.
-      try { require('./cliShim').installCliShim(process.execPath); } catch { /* best-effort */ }
+      try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
 
       spawn(updateExe, ['--createShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
@@ -170,7 +172,7 @@ if (process.platform === 'win32') {
       try { autostart.disableAutostart(); } catch { /* best-effort */ }
 
       // X4: remove the CLI shim + strip <root>\bin from the user PATH.
-      try { require('./cliShim').uninstallCliShim(process.execPath); } catch { /* best-effort */ }
+      try { cliShim.uninstallCliShim(process.execPath); } catch { /* best-effort */ }
 
       spawn(updateExe, ['--removeShortcut', target], { detached: true, windowsHide: true })
         .on('close', () => process.exit(0));
@@ -1569,7 +1571,11 @@ if (process.platform === 'win32') {
       // has no production callers; SESSION_SAVE goes through sync save()), but
       // it keeps this path correct if a debounced producer ever appears. Never
       // reload-and-resave stale state.
-      const { sessionManager } = require('./ipc/handlers/session.handler');
+      //
+      // Use the module-level `sessionManager` (imported at top) directly — the
+      // former `require('./ipc/handlers/session.handler')` here was left literal
+      // in the bundle and threw MODULE_NOT_FOUND at runtime (same bundling bug
+      // as #463), silently failing this flush on every shutdown.
       sessionManager.flushSync();
     } catch (err) {
       console.error('[Main] session-end flushSync failed:', err);
