@@ -143,6 +143,12 @@ export interface UISlice {
   deckBrainFullPower: boolean;
   setDeckBrainFullPower: (enabled: boolean) => void;
 
+  // Orchestrator brain vendor (BYOB M0): which runtime the Command Deck brain
+  // runs on. 'claude' (default) = Claude Agent SDK; 'hermes' = the generic
+  // ACP adapter. Main-authoritative like fullPower — AppLayout syncs it.
+  deckBrainVendor: 'claude' | 'hermes';
+  setDeckBrainVendor: (vendor: 'claude' | 'hermes') => void;
+
   // Whether the deck shows the Channels tab (the human channel UI). Default
   // OFF: the orchestrator is the single interface and channels are its
   // internal wiring (PRD §4.1 — human channel UI frozen); the tab stays
@@ -782,6 +788,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setDeckBrainFullPower: (enabled) => set((state) => {
     state.deckBrainFullPower = enabled;
+  }),
+
+  deckBrainVendor: 'claude',
+
+  setDeckBrainVendor: (vendor) => set((state) => {
+    state.deckBrainVendor = vendor;
   }),
 
   channelsTabVisible: false,

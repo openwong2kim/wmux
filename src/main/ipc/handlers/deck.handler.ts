@@ -23,7 +23,9 @@ import { ipcMain, app, type BrowserWindow } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import type { BrainAdapter, BrainEvent } from '../../deck/BrainAdapter';
-import { ClaudeSdkAdapter, buildCommanderSystemPrompt } from '../../deck/ClaudeSdkAdapter';
+import { ClaudeSdkAdapter, buildCommanderSystemPrompt, resolveMcpBundlePath } from '../../deck/ClaudeSdkAdapter';
+import { AcpBrainAdapter } from '../../deck/AcpBrainAdapter';
+import type { BrainVendor } from '../../../shared/types';
 import { getMemoryRootDir } from '../../deck/commanderMemory';
 import {
   CommanderSessionManager,
@@ -81,7 +83,12 @@ export interface RegisterDeckHandlerOptions {
    *  `model` is the orchestrator model override ('' → SDK default);
    *  `workspaceId` binds the commander token to the one workspace this brain
    *  serves. */
-  createAdapter?: (opts: { model?: string; workspaceId: string; fullPower?: boolean }) => BrainAdapter;
+  createAdapter?: (opts: {
+    model?: string;
+    workspaceId: string;
+    fullPower?: boolean;
+    vendor?: BrainVendor;
+  }) => BrainAdapter;
   /** M2 startup-reconcile delay (ms) before resolved-but-unconsumed decisions
    *  are resumed headlessly. Deferred so daemon/session recovery settles first;
    *  injected small in tests. */
@@ -102,12 +109,25 @@ export function registerDeckHandler(
 ): () => void {
   const createAdapter =
     opts.createAdapter ??
-    ((adapterOpts: { model?: string; workspaceId: string; fullPower?: boolean }) =>
-      new ClaudeSdkAdapter({
+    ((adapterOpts: { model?: string; workspaceId: string; fullPower?: boolean; vendor?: BrainVendor }) => {
+      // BYOB M0: the vendor picker decides which brain runtime serves this
+      // workspace. 'hermes' rides the generic ACP adapter (any ACP agent
+      // could — Hermes is simply the first configured spawn spec); everything
+      // else is the Claude SDK default. Model/fullPower are Claude-specific
+      // and deliberately not forwarded to ACP brains.
+      if (adapterOpts.vendor === 'hermes') {
+        return new AcpBrainAdapter({
+          spawnSpec: { command: 'hermes', args: ['acp'] },
+          workspaceId: adapterOpts.workspaceId,
+          mcpBundlePath: resolveMcpBundlePath(),
+        });
+      }
+      return new ClaudeSdkAdapter({
         workspaceId: adapterOpts.workspaceId,
         ...(adapterOpts.model ? { model: adapterOpts.model } : {}),
         ...(adapterOpts.fullPower ? { fullPower: true } : {}),
-      }));
+      });
+    });
 
   // One Commander session per workspace (M1.5), created lazily on that
   // workspace's first send.
@@ -117,6 +137,8 @@ export function registerDeckHandler(
     model: string;
     /** Whether the adapter was created in full-power mode (BYOB approach A). */
     fullPower: boolean;
+    /** The brain vendor the adapter was created for (BYOB M0). */
+    vendor: BrainVendor;
   }
   const managers = new Map<string, ManagedCommander>();
 
@@ -126,6 +148,9 @@ export function registerDeckHandler(
   // turns on the stale mode, and a restart silently dropped a persisted ON).
   // Synced by DECK_FULLPOWER_SET: on change and once after session hydration.
   let fullPowerEnabled = false;
+
+  // Brain vendor (BYOB M0) — same main-authority contract as full power.
+  let brainVendor: BrainVendor = 'claude';
 
   // Event-push coalescer. Declared here, constructed below once
   // runTurnForWorkspace exists — the manager's onIdle closure references it
@@ -159,10 +184,11 @@ export function registerDeckHandler(
     // authority (fullPowerEnabled), never from the caller — every turn path
     // gets the same answer.
     const fullPower = fullPowerEnabled;
+    const vendor = brainVendor;
     const existing = managers.get(workspaceId);
     if (
       existing &&
-      (model !== existing.model || fullPower !== existing.fullPower) &&
+      (model !== existing.model || fullPower !== existing.fullPower || vendor !== existing.vendor) &&
       existing.manager.getStatus().status !== 'busy'
     ) {
       existing.manager.dispose();
@@ -172,10 +198,15 @@ export function registerDeckHandler(
     if (current) return current.manager;
     // P3a: resume this workspace's persisted conversation from the previous
     // app run. A dead id is soft — the adapter falls back to a fresh session.
-    const persisted = loadCommanderSession(workspaceId);
+    // BYOB M0: each vendor keeps its OWN conversation thread — a composite
+    // store key for non-default vendors, the bare wsId for Claude so existing
+    // persisted sessions keep resuming across this change.
+    const sessionKey = vendor === 'claude' ? workspaceId : `${workspaceId}::${vendor}`;
+    const persisted = loadCommanderSession(sessionKey);
     const manager = new CommanderSessionManager({
       adapter: createAdapter({
         workspaceId,
+        vendor,
         ...(model ? { model } : {}),
         ...(fullPower ? { fullPower: true } : {}),
       }),
@@ -192,7 +223,7 @@ export function registerDeckHandler(
       },
       onSessionId: (sessionId) => {
         // Fire-and-forget: a failed persist only costs continuity next run.
-        void saveCommanderSession(workspaceId, sessionId).catch((err) => {
+        void saveCommanderSession(sessionKey, sessionId).catch((err) => {
           // eslint-disable-next-line no-console
           console.warn('[deck] failed to persist commander session id:', err);
         });
@@ -202,7 +233,7 @@ export function registerDeckHandler(
       // flush into the next one.
       onIdle: () => coalescer?.notifyIdle(workspaceId),
     });
-    managers.set(workspaceId, { manager, model, fullPower });
+    managers.set(workspaceId, { manager, model, fullPower, vendor });
     return manager;
   };
 
@@ -340,6 +371,34 @@ export function registerDeckHandler(
         }
       }
       return { ok: true, enabled };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_BRAIN_VENDOR_SET);
+  ipcMain.handle(
+    IPC.DECK_BRAIN_VENDOR_SET,
+    wrapHandler(IPC.DECK_BRAIN_VENDOR_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: true; vendor: BrainVendor }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      // Fail closed to the default: only known vendor ids are accepted.
+      const vendor: BrainVendor = req.vendor === 'hermes' ? 'hermes' : 'claude';
+      if (vendor !== brainVendor) {
+        brainVendor = vendor;
+        // Retire IDLE stale-vendor brains now (same contract as full power):
+        // the next turn on ANY path spawns on the new vendor; busy managers
+        // finish their in-flight turn and swap on their next one.
+        for (const [workspaceId, entry] of [...managers]) {
+          if (entry.vendor !== vendor && entry.manager.getStatus().status !== 'busy') {
+            entry.manager.dispose();
+            managers.delete(workspaceId);
+          }
+        }
+      }
+      return { ok: true, vendor };
     }),
   );
 
@@ -997,6 +1056,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);
     ipcMain.removeHandler(IPC.DECK_STATUS);
     ipcMain.removeHandler(IPC.DECK_FULLPOWER_SET);
+    ipcMain.removeHandler(IPC.DECK_BRAIN_VENDOR_SET);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_LIST);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_CREATE);
     ipcMain.removeHandler(IPC.DECK_SCHEDULES_UPDATE);

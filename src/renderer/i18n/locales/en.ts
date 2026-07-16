@@ -302,6 +302,11 @@ export const en = {
   'settings.tabAbout': 'About',
   // Orchestrator (command deck brain) settings
   'settings.orchestrator': 'Orchestrator',
+  'settings.orchestratorBrain': 'Orchestrator brain',
+  'settings.orchestratorBrainDesc':
+    'Which agent runtime drives the Command Deck. Claude Code is the default; Hermes (ACP) requires the Hermes Agent CLI installed and authenticated on this machine — run its own setup first. Applies from the next brain turn; each brain keeps its own conversation history.',
+  'settings.orchestratorBrainClaude': 'Claude Code (default)',
+  'settings.orchestratorBrainHermes': 'Hermes Agent (ACP)',
   'settings.orchestratorModel': 'Orchestrator model',
   'settings.orchestratorModelDesc':
     'The Claude model the Command Deck orchestrator runs on. Changes apply from your next command; the conversation carries over.',

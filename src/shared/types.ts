@@ -21,6 +21,12 @@ import { MAX_INBOX_SIZE as _MAX_INBOX_SIZE } from '../company/types';
 import type { AgentSlug } from './events';
 
 // Re-export for backward compatibility
+/** BYOB M0 — which runtime serves as a workspace's orchestrator brain.
+ *  'claude' = the Claude Agent SDK (default); 'hermes' = the generic ACP
+ *  adapter with the Hermes Agent spawn spec. New ACP vendors extend this
+ *  union + a spawn spec — no new adapter code. */
+export type BrainVendor = 'claude' | 'hermes';
+
 export type AgentPreset = _AgentPreset;
 export type MemberStatus = _MemberStatus;
 export type TeamMember = _TeamMember;
@@ -518,6 +524,9 @@ export interface SessionData {
    *  Code ecosystem (skills/CLAUDE.md/hooks) into brain turns. Absent/false =
    *  raw mode (the safe default). */
   deckBrainFullPower?: boolean;
+  /** Orchestrator brain vendor (BYOB M0). Absent/'claude' = the Claude SDK
+   *  brain; 'hermes' = the generic ACP adapter configured for Hermes Agent. */
+  deckBrainVendor?: BrainVendor;
   /** Whether the deck shows the Channels tab (human channel UI). Default
    *  false — the orchestrator is the single interface; the tab is an
    *  opt-in inspection surface (Settings). */

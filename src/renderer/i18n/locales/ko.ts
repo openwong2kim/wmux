@@ -244,6 +244,11 @@ export const ko = {
   // agent (커맨드 데크 브레인) 설정 — 명칭은 영문 "agent" 고정(번역·한글화
   // 금지, 오너 결정 2026-07-13: "오케스트레이터"는 한글 UI에서 넘침).
   'settings.orchestrator': 'agent',
+  'settings.orchestratorBrain': 'agent 브레인',
+  'settings.orchestratorBrainDesc':
+    '커맨드 데크를 구동할 에이전트 런타임. 기본은 Claude Code, Hermes(ACP)는 이 PC에 Hermes Agent CLI 설치·인증이 필요합니다(자체 setup 먼저). 다음 agent 턴부터 적용되며 브레인별로 대화 이력이 따로 유지됩니다.',
+  'settings.orchestratorBrainClaude': 'Claude Code (기본)',
+  'settings.orchestratorBrainHermes': 'Hermes Agent (ACP)',
   'settings.orchestratorModel': 'agent 모델',
   'settings.orchestratorModelDesc':
     '커맨드 데크 agent가 사용할 Claude 모델. 변경은 다음 지시부터 적용되고 대화는 이어집니다.',

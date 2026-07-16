@@ -376,6 +376,11 @@ const electronAPI = {
         ok: true;
         enabled: boolean;
       }>,
+    brainVendorSet: (vendor: 'claude' | 'hermes') =>
+      ipcRenderer.invoke(IPC.DECK_BRAIN_VENDOR_SET, { vendor }) as Promise<{
+        ok: true;
+        vendor: 'claude' | 'hermes';
+      }>,
     status: (workspaceId: string) =>
       ipcRenderer.invoke(IPC.DECK_STATUS, { workspaceId }) as Promise<{
         status: 'idle' | 'busy' | 'disposed';

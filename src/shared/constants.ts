@@ -142,6 +142,12 @@ export const IPC = {
   DECK_INTERRUPT: 'deck:interrupt',
   DECK_STATUS: 'deck:status',
   DECK_FULLPOWER_SET: 'deck:fullpower:set',
+  //   DECK_BRAIN_VENDOR_SET (invoke) renderer → main: sync the orchestrator
+  //                   brain vendor (BYOB M0 — 'claude' | 'hermes'). Same
+  //                   main-authority contract as DECK_FULLPOWER_SET: every
+  //                   turn path consults it, idle stale-vendor brains retire
+  //                   on change, renderer pushes on change + after hydration.
+  DECK_BRAIN_VENDOR_SET: 'deck:brainvendor:set',
   //   DECK_SCHEDULES_* (invoke) renderer → main: CRUD over the persisted
   //                    orchestrator schedules (P3d). Same renderer-only trust
   //                    boundary as DECK_SEND.
