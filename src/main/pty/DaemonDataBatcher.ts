@@ -25,6 +25,7 @@ export class DaemonDataBatcher {
   private pending = new Map<string, string[]>();
   private pendingChars = new Map<string, number>();
   private timers = new Map<string, ReturnType<typeof setTimeout>>();
+  private lastSentAt = new Map<string, number>();
   private disposed = false;
 
   constructor(
@@ -46,7 +47,24 @@ export class DaemonDataBatcher {
       // review, PR #471).
       return;
     }
+    // Leading-edge flush: a chunk arriving on an idle session (nothing
+    // buffered, no timer, ≥intervalMs since the last send) goes out
+    // immediately. This keeps interactive keystroke echo at 0 ms added
+    // latency — the CI bench caught the always-trailing version adding the
+    // full 8 ms to echoMs.p95 (13.9 → 21.5 ms) — while agent torrents still
+    // coalesce: only the FIRST chunk of a burst bypasses the batch window.
+    // Ordering is safe: the bypass requires an empty buffer.
+    const now = Date.now();
     const buf = this.pending.get(sessionId);
+    if (
+      !buf &&
+      !this.timers.has(sessionId) &&
+      now - (this.lastSentAt.get(sessionId) ?? 0) >= this.intervalMs
+    ) {
+      this.lastSentAt.set(sessionId, now);
+      this.send(sessionId, text);
+      return;
+    }
     if (buf) {
       buf.push(text);
     } else {
@@ -78,6 +96,7 @@ export class DaemonDataBatcher {
     if (!buf || buf.length === 0) return;
     this.pending.delete(sessionId);
     this.pendingChars.delete(sessionId);
+    this.lastSentAt.set(sessionId, Date.now());
     this.send(sessionId, buf.join(''));
   }
 
@@ -90,6 +109,7 @@ export class DaemonDataBatcher {
     }
     this.pending.delete(sessionId);
     this.pendingChars.delete(sessionId);
+    this.lastSentAt.delete(sessionId);
   }
 
   /** Flush every session (handler swap / shutdown) and stop accepting timers. */

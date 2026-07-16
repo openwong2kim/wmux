@@ -19,24 +19,42 @@ describe('DaemonDataBatcher', () => {
     vi.useRealTimers();
   });
 
-  it('coalesces chunks within the window into one in-order send', () => {
+  it('leading-edge: a chunk on an idle session is delivered immediately', () => {
+    // Interactive keystroke echo must not pay the batch window — the CI
+    // bench caught the always-trailing version adding the full 8 ms to
+    // echoMs.p95 (13.9 → 21.5 ms).
     const b = new DaemonDataBatcher(send, 8);
-    b.push('s1', 'a');
+    b.push('s1', 'k');
+    expect(sent).toEqual([['s1', 'k']]);
+    // Typing cadence (> window between keys): every echo is immediate.
+    vi.advanceTimersByTime(50);
+    b.push('s1', 'e');
+    expect(sent).toEqual([['s1', 'k'], ['s1', 'e']]);
+  });
+
+  it('coalesces burst chunks after the leading edge into one in-order send', () => {
+    const b = new DaemonDataBatcher(send, 8);
+    b.push('s1', 'a'); // leading edge — immediate
     b.push('s1', 'b');
     b.push('s1', 'c');
-    expect(sent).toEqual([]); // nothing until the window closes
+    expect(sent).toEqual([['s1', 'a']]); // rest waits for the window
     vi.advanceTimersByTime(8);
-    expect(sent).toEqual([['s1', 'abc']]);
+    expect(sent).toEqual([['s1', 'a'], ['s1', 'bc']]);
   });
 
   it('keeps sessions independent (per-session buffers and timers)', () => {
     const b = new DaemonDataBatcher(send, 8);
-    b.push('s1', 'x');
+    b.push('s1', 'x'); // leading edge each — immediate, per session
     b.push('s2', 'y');
-    vi.advanceTimersByTime(8);
     expect(sent).toHaveLength(2);
     expect(new Map(sent).get('s1')).toBe('x');
     expect(new Map(sent).get('s2')).toBe('y');
+    // Follow-ups inside each window coalesce per session.
+    b.push('s1', 'x2');
+    b.push('s2', 'y2');
+    expect(sent).toHaveLength(2);
+    vi.advanceTimersByTime(8);
+    expect(sent).toHaveLength(4);
   });
 
   it('flushSession delivers synchronously — data always precedes a marker', () => {
@@ -53,18 +71,20 @@ describe('DaemonDataBatcher', () => {
 
   it('bounds per-session memory: exceeding the cap flushes immediately', () => {
     const b = new DaemonDataBatcher(send, 8, 10 /* tiny cap */);
+    b.push('s1', 'lead'); // leading edge — immediate, bypasses the buffer
     b.push('s1', '123456');
-    expect(sent).toEqual([]);
-    b.push('s1', '7890X'); // 11 chars total ≥ cap
-    expect(sent).toEqual([['s1', '1234567890X']]);
+    expect(sent).toEqual([['s1', 'lead']]);
+    b.push('s1', '7890X'); // 11 buffered chars ≥ cap
+    expect(sent).toEqual([['s1', 'lead'], ['s1', '1234567890X']]);
   });
 
-  it('drop discards without sending', () => {
+  it('drop discards buffered data without sending', () => {
     const b = new DaemonDataBatcher(send, 8);
-    b.push('s1', 'doomed');
+    b.push('s1', 'lead'); // leading edge — already delivered
+    b.push('s1', 'doomed'); // buffered
     b.drop('s1');
     vi.advanceTimersByTime(20);
-    expect(sent).toEqual([]);
+    expect(sent).toEqual([['s1', 'lead']]);
   });
 
   it('dispose flushes everything pending, and late pushes are DROPPED (old generation)', () => {
