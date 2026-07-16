@@ -11,6 +11,8 @@ export const ko = {
   'sidebar.showWorkspaces': '워크스페이스 보기',
   'sidebar.expandTooltip': '사이드바 펼치기 (Ctrl+B)',
   'sidebar.unreadCount': '읽지 않음 {count}개',
+  'sidebar.agent': '에이전트',
+  'sidebar.agentTooltip': '에이전트 패널 토글',
 
   // Workspace
   'workspace.agentRunning': '에이전트 실행 중',

@@ -1,4 +1,4 @@
-import { useState, useCallback } from 'react';
+import { useState, useCallback, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import { useStore } from '../../stores';
 import { selectWorkspaceIdName } from '../../stores/selectors/workspaceProjections';
@@ -10,10 +10,11 @@ import { useT } from '../../hooks/useT';
 import { buildWorkspaceMarkdown } from '../../utils/sessionInfoMarkdown';
 import { tokenAttrs } from '../../themes';
 import { collapseDirection } from './sidebarGlyphs';
-import { IconPlus, IconChevronDir } from '../icons';
+import { IconPlus, IconChevronDir, IconRobot } from '../icons';
 import { FOCUS_RING } from '../focusRing';
 import PluginPanels from '../../plugins/PluginPanels';
 import CompanyPanel from './CompanyPanel';
+import { sumUnread } from '../Channels/ChannelsPanel';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
 // Pane 트리에서 모든 leaf의 PTY를 dispose
@@ -54,6 +55,15 @@ export default function Sidebar() {
   const sidebarMode = useStore((s) => s.sidebarMode);
   const setSidebarMode = useStore((s) => s.setSidebarMode);
   const pushToast = useStore((s) => s.pushToast);
+
+  // Channels toggle — relocated from the status bar to the sidebar foot (owner
+  // 2026-07-16: the bare `#` glyph in the status strip was too easy to miss).
+  // It now sits at the bottom of the workspace list as a labeled, full-width
+  // affordance.
+  const channelUnread = useStore((s) => s.channelUnread);
+  const channelDockVisible = useStore((s) => s.channelDockVisible);
+  const toggleChannelDock = useStore((s) => s.toggleChannelDock);
+  const channelUnreadTotal = useMemo(() => sumUnread(channelUnread), [channelUnread]);
 
   const [pickerOpen, setPickerOpen] = useState(false);
   const togglePicker = useCallback(() => setPickerOpen((v) => !v), []);
@@ -140,8 +150,32 @@ export default function Sidebar() {
       {/* Plugin sidebar panels (B-1 ui.sidebar contribution point) */}
       <PluginPanels />
 
-      {/* Channels moved to the right-side ChannelDock (Approach A) — the list
-          + conversation now live together opposite the workspace sidebar. */}
+      {/* Agent toggle — the reopen affordance for the right-side ChannelDock
+          (agents + their channels), moved here from the status bar so it lives at
+          the foot of the workspace list. Steel-blue when the dock is open
+          (DESIGN.md: navigation = cool accent); a full-width labeled row so it
+          reads as an obvious control. */}
+      <button
+        type="button"
+        onClick={toggleChannelDock}
+        aria-pressed={channelDockVisible}
+        title={t('sidebar.agentTooltip') || 'Toggle agent panel'}
+        className={`flex items-center gap-2 shrink-0 h-9 px-4 border-t border-[var(--bg-surface)] text-[11px] font-mono transition-colors ${FOCUS_RING} ${
+          channelDockVisible
+            ? 'text-[var(--accent-blue)]'
+            : 'text-[var(--text-muted)] hover:text-[var(--text-main)] hover:bg-[rgba(var(--bg-surface-rgb),0.6)]'
+        }`}
+        style={{ borderColor: 'var(--border-soft)' }}
+        data-sidebar-agent
+      >
+        <IconRobot size={14} />
+        <span>{t('sidebar.agent') || 'Agent'}</span>
+        {channelUnreadTotal > 0 && (
+          <span className="ml-auto text-[var(--text-sub)]" data-sidebar-agent-unread {...tokenAttrs('textSub', 'text')}>
+            {channelUnreadTotal > 99 ? '99+' : channelUnreadTotal}
+          </span>
+        )}
+      </button>
 
       {/* Footer — when docked right, mirror the row so the collapse arrow sits
           on the inner edge facing the content area (issue #151). */}

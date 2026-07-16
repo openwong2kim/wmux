@@ -47,6 +47,28 @@ export function IconCheck({ size = 14 }: { size?: number }) {
   return <Icon size={size}><polyline points="2.5,7.4 5.8,10.5 11.5,3.5" /></Icon>;
 }
 
+/** A friendly little robot — the agent panel toggle. Antenna + rounded head +
+ *  two dot eyes + a small smile; ears nudge it toward "cute" over "clinical". */
+export function IconRobot({ size = 14 }: { size?: number }) {
+  return (
+    <Icon size={size}>
+      {/* antenna */}
+      <line x1="7" y1="1.4" x2="7" y2="3" />
+      <circle cx="7" cy="1.1" r="0.75" fill="currentColor" stroke="none" />
+      {/* head */}
+      <rect x="2.4" y="3" width="9.2" height="8" rx="2.4" />
+      {/* ears */}
+      <line x1="2.4" y1="6.4" x2="1.3" y2="6.4" />
+      <line x1="11.6" y1="6.4" x2="12.7" y2="6.4" />
+      {/* eyes */}
+      <circle cx="5.3" cy="6.3" r="0.85" fill="currentColor" stroke="none" />
+      <circle cx="8.7" cy="6.3" r="0.85" fill="currentColor" stroke="none" />
+      {/* smile */}
+      <path d="M5.4 8.6 Q7 9.9 8.6 8.6" />
+    </Icon>
+  );
+}
+
 /** Archive — a lidded box with a handle. Channel archive (read-only, one-way). */
 export function IconArchive({ size = 14 }: { size?: number }) {
   return (

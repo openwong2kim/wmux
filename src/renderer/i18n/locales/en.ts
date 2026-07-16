@@ -11,6 +11,8 @@ export const en = {
   'sidebar.showWorkspaces': 'Show workspaces',
   'sidebar.expandTooltip': 'Expand sidebar (Ctrl+B)',
   'sidebar.unreadCount': '{count} unread',
+  'sidebar.agent': 'Agent',
+  'sidebar.agentTooltip': 'Toggle agent panel',
 
   // Workspace
   'workspace.agentRunning': 'Agent running',
