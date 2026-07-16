@@ -33,7 +33,18 @@ function wireEnforced(): void {
     seenCtx = ctx;
     return { panes: [] };
   });
-  router.register('pane.split', async () => ({ ok: true, paneId: 'p2' }));
+  // Real confinement logic (mirrors pane.rpc): explicit foreign workspace
+  // refused, omitted pinned to the commander's own.
+  router.register('pane.split', async (params, ctx) => {
+    let workspaceId = params['workspaceId'] as string | undefined;
+    if (ctx?.commanderWorkspace) {
+      if (workspaceId !== undefined && workspaceId !== ctx.commanderWorkspace) {
+        throw new Error("pane.split: workspace is outside the commander's workspace");
+      }
+      workspaceId = ctx.commanderWorkspace;
+    }
+    return { ok: true, paneId: 'p2', workspaceId };
+  });
   router.register('pane.close', async () => ({ ok: true }));
   router.register('surface.close', async () => ({ ok: true }));
   router.register('workspace.new', async () => ({ ok: true, id: 'ws-9' }));
@@ -76,6 +87,33 @@ describe('commander role gate — validated token (the external-brain enable)', 
       }
       // The validated binding is on ctx for handlers (ownership confinement).
       expect(seenCtx?.commanderWorkspace).toBe('ws-brain');
+    } finally {
+      revokeCommanderToken(token);
+    }
+  });
+
+  it('confines mutating creates to the commander workspace (explicit foreign id refused, omitted pinned)', async () => {
+    const token = mintCommanderToken('ws-brain');
+    try {
+      const foreign = await router.dispatch({
+        id: 't-split-foreign',
+        method: 'pane.split',
+        params: { direction: 'horizontal', workspaceId: 'ws-other' },
+        clientName: HERMES,
+        commanderToken: token,
+      });
+      expect(foreign.ok).toBe(false);
+      expect(String((foreign as { error?: string }).error)).toMatch(/outside the commander/);
+
+      const pinned = await router.dispatch({
+        id: 't-split-pinned',
+        method: 'pane.split',
+        params: { direction: 'horizontal' },
+        clientName: HERMES,
+        commanderToken: token,
+      });
+      expect(pinned.ok).toBe(true);
+      expect((pinned as { result?: { workspaceId?: string } }).result?.workspaceId).toBe('ws-brain');
     } finally {
       revokeCommanderToken(token);
     }

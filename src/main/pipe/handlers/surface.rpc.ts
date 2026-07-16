@@ -29,10 +29,20 @@ export function registerSurfaceRpc(router: RpcRouter, getWindow: GetWindow): voi
    * terminal in ITS OWN workspace; the renderer fails closed on an unknown
    * explicit workspaceId.
    */
-  router.register('surface.new', (params) => {
-    const workspaceId = params['workspaceId'];
+  router.register('surface.new', (params, ctx) => {
+    let workspaceId = params['workspaceId'];
     if (workspaceId !== undefined && typeof workspaceId !== 'string') {
       return Promise.reject(new Error('surface.new: "workspaceId" must be a string if provided'));
+    }
+    // BYOB P4: same commander confinement as pane.split — explicit mismatch
+    // refused, omitted pinned to the commander's own workspace.
+    if (ctx?.commanderWorkspace) {
+      if (workspaceId !== undefined && workspaceId !== ctx.commanderWorkspace) {
+        return Promise.reject(
+          new Error('surface.new: workspace is outside the commander\'s workspace'),
+        );
+      }
+      workspaceId = ctx.commanderWorkspace;
     }
     return sendToRenderer(getWindow, 'surface.new', {
       ...(workspaceId !== undefined && { workspaceId }),

@@ -30,7 +30,20 @@
 /** wmux MCP tool names (no `mcp__wmux__` prefix) a commander brain may hold.
  *  Mirrors D2: the whole read/observe family, pane spawn + drive (NEVER
  *  close/teardown), the channel/A2A comms bus, and the decision gate.
- *  browser_* and company_* are deliberately absent (out of commander scope). */
+ *  browser_* and company_* are deliberately absent (out of commander scope).
+ *
+ *  Scope decision (GLM review, PR #475): READS are fleet-global, WRITES are
+ *  confined to the commander's workspace. The brain legitimately reads other
+ *  workspaces (fleet context, recovery, cross-workspace awareness) but every
+ *  mutating path — terminal IO (deck.resolvePaneRoute token binding),
+ *  pane.focus / pane.split / surface.new (ctx.commanderWorkspace pinning) —
+ *  is server-confined to its own workspace. Same-user reads are already
+ *  inside the #113 ceiling.
+ *
+ *  channel_mission_close is deliberately IN scope (not teardown): missions
+ *  are the commander's own work objects — starting and closing them is the
+ *  orchestration loop itself, unlike pane/surface teardown which destroys
+ *  human terminal state. */
 export const COMMANDER_TOOL_SURFACE: readonly string[] = [
   // Read / observe.
   'pane_list',
