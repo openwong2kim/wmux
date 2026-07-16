@@ -40,6 +40,31 @@ export function createSnapshotRunner(
 ): () => Promise<void> {
   let running = false;
   let pendingRerun = false;
+  // ── app-weight P1-5: dirty-only dumps ────────────────────────────────────
+  // `.buf` dumps used to rewrite EVERY live session's ring (up to 8 MB each)
+  // every tick even when nothing changed — pure SSD churn at idle. Track the
+  // ring's monotonic byte counter per session and skip clean ones, with two
+  // conservative guards because this loop is the crash-recovery substrate:
+  //   • TOCTOU rule (codex #9 / eng F8): the counter is captured BEFORE
+  //     dumpToFile() snapshots the ring (its readAll() runs synchronously at
+  //     call entry), and recorded only AFTER the dump resolves (atomic
+  //     rename). Bytes that arrive mid-dump keep the session dirty next tick.
+  //     A failed dump records nothing, so the session stays dirty.
+  //   • Forced cadence: every FORCE_DUMP_EVERY_N_TICKS ticks a session dumps
+  //     regardless of dirty state — a bounded backstop against any counter
+  //     bookkeeping bug silently starving recovery freshness.
+  //   • Bookkeeping is keyed by RING IDENTITY (WeakMap), not session id: a
+  //     destroyed-and-recreated session id gets a FRESH ring whose byte count
+  //     can collide with the old ring's recorded value (same-length output),
+  //     which an id-keyed map would misread as "clean" and skip the first
+  //     dump of the new life. A WeakMap can't confuse two ring objects, and
+  //     dead rings garbage-collect their entries — no pruning pass needed.
+  // The Windows process-exit sync dump (daemon/index.ts) is a separate path
+  // and remains unconditional. sessions.json below also stays unconditional —
+  // metadata (lastActivity/cwd/state) changes without ring bytes.
+  const FORCE_DUMP_EVERY_N_TICKS = 10;
+  const lastDumpedBytes = new WeakMap<object, number>();
+  const ticksSinceDump = new WeakMap<object, number>();
   return async function runSnapshotOnce(): Promise<void> {
     // Pending-rerun pattern (codex review P2, session 019e2af8): if a
     // concurrent trigger arrives while the previous run is mid-dump, mark a
@@ -59,13 +84,33 @@ export function createSnapshotRunner(
         if (live.length === 0) break;
 
         stateWriter.ensureBufferDir();
+        let dumped = 0; let skipped = 0; let forced = 0;
         for (const m of live) {
           const dumpPath = stateWriter.getBufferDumpPath(m.meta.id);
+          const ring = m.ringBuffer as unknown as object & { totalBytesWritten: number; dumpToFile: (p: string) => Promise<void> };
+          // Capture BEFORE dumpToFile — see the TOCTOU note above.
+          const writtenAtStart = ring.totalBytesWritten;
+          const ticks = (ticksSinceDump.get(ring) ?? 0) + 1;
+          const clean = lastDumpedBytes.get(ring) === writtenAtStart;
+          const forceDue = ticks >= FORCE_DUMP_EVERY_N_TICKS;
+          if (clean && !forceDue) {
+            ticksSinceDump.set(ring, ticks);
+            skipped++;
+            continue;
+          }
           try {
             await m.ringBuffer.dumpToFile(dumpPath);
+            lastDumpedBytes.set(ring, writtenAtStart);
+            ticksSinceDump.set(ring, 0);
+            if (clean && forceDue) forced++; else dumped++;
           } catch (err) {
+            // Nothing recorded — the session stays dirty and retries next tick.
+            ticksSinceDump.set(ring, ticks);
             snapshotLog('warn', `Snapshot dump failed for ${m.meta.id}:`, err);
           }
+        }
+        if (dumped > 0 || forced > 0) {
+          snapshotLog('info', `Snapshot: dumped=${dumped} forced=${forced} skipped-clean=${skipped} of ${live.length} live`);
         }
         try {
           const liveSessions = sessionManager.listSessions();

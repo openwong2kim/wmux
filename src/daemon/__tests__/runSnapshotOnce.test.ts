@@ -201,6 +201,12 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     await runSnapshotOnce();
     expect(dumpSpy).toHaveBeenCalledTimes(1);
 
+    // New bytes arrive while the first dump is still in flight (P1-5: the
+    // rerun only re-dumps DIRTY sessions — a rerun over an unchanged ring is
+    // exactly the churn dirty-tracking removes; a session created or written
+    // during the in-flight window is what the rerun exists to cover).
+    session.ringBuffer.write(Buffer.from('mid-flight bytes'));
+
     // Release the first dump. The runner sees pendingRerun and re-loops,
     // which calls dumpToFile a second time on the next iteration.
     resolveCurrent!();
@@ -212,7 +218,9 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     await first;
     expect(dumpSpy).toHaveBeenCalledTimes(2);
 
-    // After the run fully completes, a fresh call works normally.
+    // After the run fully completes, a fresh call works normally (dirty
+    // again — P1-5 skips clean rings by design).
+    session.ringBuffer.write(Buffer.from('post-run bytes'));
     const third = runSnapshotOnce();
     await new Promise<void>((resolve) => setImmediate(resolve));
     expect(dumpSpy).toHaveBeenCalledTimes(3);
@@ -233,5 +241,125 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
 
     expect(aliveDumpSpy).toHaveBeenCalledTimes(1);
     expect(deadDumpSpy).not.toHaveBeenCalled();
+  });
+});
+
+// ── app-weight P1-5: dirty-only dumps ──────────────────────────────────────
+describe('createSnapshotRunner — dirty-only dumps (P1-5)', () => {
+  let tmpDir: string;
+  let manager: DaemonSessionManager;
+  let writer: StateWriter;
+  let runSnapshotOnce: () => Promise<void>;
+
+  beforeEach(() => {
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-p15-test-'));
+    manager = new DaemonSessionManager();
+    writer = new StateWriter(tmpDir);
+    runSnapshotOnce = createSnapshotRunner(manager, writer, {
+      getBootId: () => 'p15-test-boot',
+    });
+  });
+
+  afterEach(() => {
+    manager.disposeAll();
+    writer.dispose();
+    fs.rmSync(tmpDir, { recursive: true, force: true });
+    vi.restoreAllMocks();
+  });
+
+  function ring(id: string) {
+    const m = manager.listManagedSessions().find((s) => s.meta.id === id);
+    if (!m) throw new Error(`no managed session ${id}`);
+    return m.ringBuffer;
+  }
+
+  it('skips a clean session on the next tick, dumps again after new bytes', async () => {
+    manager.createSession({ id: 's1', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    ring('s1').write(Buffer.from('hello'));
+    const spy = vi.spyOn(ring('s1'), 'dumpToFile');
+
+    await runSnapshotOnce(); // dirty (never dumped) → dumps
+    expect(spy).toHaveBeenCalledTimes(1);
+    await runSnapshotOnce(); // clean → skipped
+    expect(spy).toHaveBeenCalledTimes(1);
+    ring('s1').write(Buffer.from('more'));
+    await runSnapshotOnce(); // dirty again → dumps
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('TOCTOU: bytes written DURING a dump keep the session dirty next tick', async () => {
+    manager.createSession({ id: 's1', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    const r = ring('s1');
+    r.write(Buffer.from('initial'));
+    const original = r.dumpToFile.bind(r);
+    let injectOnce = true;
+    const spy = vi.spyOn(r, 'dumpToFile').mockImplementation(async (p: string) => {
+      const result = await original(p);
+      if (injectOnce) {
+        injectOnce = false;
+        // Arrives while the dump's disk write is in flight (post-readAll).
+        r.write(Buffer.from('mid-dump bytes'));
+      }
+      return result;
+    });
+
+    await runSnapshotOnce(); // dumps 'initial'; mid-dump bytes arrive after capture
+    expect(spy).toHaveBeenCalledTimes(1);
+    await runSnapshotOnce(); // counter was captured BEFORE the dump → still dirty
+    expect(spy).toHaveBeenCalledTimes(2);
+    await runSnapshotOnce(); // now clean
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('a failed dump records nothing — the session retries next tick', async () => {
+    manager.createSession({ id: 's1', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    const r = ring('s1');
+    r.write(Buffer.from('data'));
+    const original = r.dumpToFile.bind(r);
+    const spy = vi.spyOn(r, 'dumpToFile')
+      .mockRejectedValueOnce(new Error('EIO: simulated disk failure'));
+
+    await runSnapshotOnce(); // fails — nothing recorded
+    expect(spy).toHaveBeenCalledTimes(1);
+    spy.mockImplementation(original);
+    await runSnapshotOnce(); // still dirty → retries and succeeds
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('forces a dump every Nth tick even when clean (freshness backstop)', async () => {
+    manager.createSession({ id: 's1', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    ring('s1').write(Buffer.from('x'));
+    const spy = vi.spyOn(ring('s1'), 'dumpToFile');
+
+    await runSnapshotOnce(); // dump #1 (dirty)
+    for (let i = 0; i < 9; i++) await runSnapshotOnce(); // 9 clean ticks — skipped
+    expect(spy).toHaveBeenCalledTimes(1);
+    await runSnapshotOnce(); // 10th clean tick → forced
+    expect(spy).toHaveBeenCalledTimes(2);
+  });
+
+  it('sessions.json is saved even when every dump was skipped (metadata freshness)', async () => {
+    manager.createSession({ id: 's1', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    ring('s1').write(Buffer.from('x'));
+    const saveSpy = vi.spyOn(writer, 'saveImmediate');
+    await runSnapshotOnce();
+    await runSnapshotOnce(); // all-clean tick
+    expect(saveSpy).toHaveBeenCalledTimes(2); // unconditional both times
+  });
+
+  it('session-id REUSE with a fresh ring dumps immediately — even on a byte-count collision', async () => {
+    // 'old life' and 'new life' are deliberately the SAME length: an id-keyed
+    // counter map would read the fresh ring as "clean" and skip its first
+    // dump. Ring-identity (WeakMap) keying makes the collision impossible.
+    manager.createSession({ id: 's1', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    ring('s1').write(Buffer.from('old life'));
+    await runSnapshotOnce();
+    manager.destroySession('s1');
+
+    manager.createSession({ id: 's1', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    const spy = vi.spyOn(ring('s1'), 'dumpToFile');
+    ring('s1').write(Buffer.from('new life'));
+    await runSnapshotOnce();
+    expect(spy).toHaveBeenCalledTimes(1);
   });
 });
