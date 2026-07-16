@@ -137,7 +137,9 @@ describe('ClaudeSdkAdapter', () => {
     };
     expect(mcpServers.wmux.type).toBe('stdio');
     expect(mcpServers.wmux.command).toBe(process.execPath);
-    expect(mcpServers.wmux.args).toEqual(['/fake/mcp.js']);
+    // P4 role gate: the brain's MCP child always runs in commander mode — an
+    // ARG (not env) so a brain host that strips env can't widen the surface.
+    expect(mcpServers.wmux.args).toEqual(['/fake/mcp.js', '--commander']);
     expect(mcpServers.wmux.env.ELECTRON_RUN_AS_NODE).toBe('1');
     expect(mcpServers.wmux.env.WMUX_COMMANDER_TOKEN?.length).toBeGreaterThanOrEqual(64);
     expect(opts1.allowedTools).toEqual(DEFAULT_ALLOWED_TOOLS);

@@ -39,6 +39,18 @@ export function getClientIdentity(): { name?: string; version?: string } {
   return { name: CLIENT_NAME, version: CLIENT_VERSION };
 }
 
+// BYOB P4: commander role claim. Set once at startup by index.ts when the
+// process runs with --commander. The value (may be '' when the token env was
+// lost) is stamped on EVERY outbound envelope — presence of the field is the
+// role claim, and the router fails a claimed-but-invalid token closed. Kept
+// separate from the auth token: WMUX_AUTH_TOKEN authenticates the pipe,
+// commanderToken narrows the role.
+let COMMANDER_TOKEN: string | undefined;
+
+export function setCommanderRole(token: string): void {
+  COMMANDER_TOKEN = token;
+}
+
 function readAuthToken(): string | undefined {
   // File takes priority — always read the latest token from disk.
   // Env vars may be stale (Claude Code caches them across MCP restarts).
@@ -69,6 +81,7 @@ function attemptRpc(
     const envelope: Record<string, unknown> = { id, method, params, token };
     if (CLIENT_NAME) envelope.clientName = CLIENT_NAME;
     if (CLIENT_VERSION) envelope.clientVersion = CLIENT_VERSION;
+    if (COMMANDER_TOKEN !== undefined) envelope.commanderToken = COMMANDER_TOKEN;
     const request = JSON.stringify(envelope) + '\n';
 
     const socket = typeof target === 'string' ? net.connect(target) : net.connect(target);

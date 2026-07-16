@@ -2,7 +2,8 @@
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { clearClientIdentity, sendRpc, setClientIdentity } from './wmux-client';
+import { clearClientIdentity, sendRpc, setClientIdentity, setCommanderRole } from './wmux-client';
+import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
 import type { RpcMethod } from '../shared/rpc';
 import { claimPinnedRoute, getPinnedRoute } from './paneResolver';
 import { resolveTerminalRoute, resolveCommanderRoute, type PidMapLookup } from './terminalRouting';
@@ -128,6 +129,37 @@ const server = new McpServer({
   name: 'wmux',
   version: getVersion(),
 });
+
+// ── BYOB P4 Layer 1: commander tool-surface filter ──────────────────────────
+// `--commander` on the command line (NOT an env var — the brain adapter
+// declares it in the MCP server config args, so an env-stripping brain host
+// cannot silently widen the surface; arg and token fail independently)
+// switches this process to the commander surface: only the tools in
+// COMMANDER_TOOL_SURFACE register, so a brain's tools/list simply does not
+// contain pane_close / surface_close / browser_* / company_* — unregistered
+// tools cannot be called by ANY brain runtime (SDK, ACP, gateway). Ordinary
+// pane agents (no arg) keep the full surface, unchanged.
+const COMMANDER_MODE = process.argv.includes(COMMANDER_MODE_ARG);
+if (COMMANDER_MODE) {
+  // Layer 2 pairing: every outbound RPC from a commander-mode child carries
+  // the per-spawn token as a role CLAIM — the router validates it and fails
+  // the request closed when it is missing/stale, so a commander child whose
+  // token env was lost degrades to "no fleet hands at all", never to an
+  // ordinary external caller with the wider surface.
+  setCommanderRole(process.env.WMUX_COMMANDER_TOKEN ?? '');
+  const surface = new Set(COMMANDER_TOOL_SURFACE);
+  const registerTool = server.tool.bind(server);
+  // Single gate for every registration site (index.ts + channels +
+  // paneLifecycle + playwright modules all register through this instance).
+  (server as { tool: typeof server.tool }).tool = ((name: string, ...rest: unknown[]) => {
+    if (!surface.has(name)) {
+      // Skipped registration — return a inert handle-shaped object for the
+      // few call sites that keep the return value.
+      return undefined as unknown as ReturnType<typeof registerTool>;
+    }
+    return (registerTool as (...a: unknown[]) => ReturnType<typeof registerTool>)(name, ...rest);
+  }) as typeof server.tool;
+}
 
 // Detect an RPC outcome that means our cached workspace identity is stale
 // (workspace id re-minted). Matches both error-shaped results and thrown

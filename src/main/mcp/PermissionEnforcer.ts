@@ -56,6 +56,7 @@ import {
   type ParsedPermission,
 } from './permissionGrammar';
 import { FIRST_PARTY_METHODS, isFirstPartyClient } from './firstParty';
+import { COMMANDER_RPC_METHODS } from '../../shared/commanderSurface';
 import { WMUX_CLI_METHODS, isInternalCliClient } from './internalCli';
 
 export type EnforcerOutcome =
@@ -179,6 +180,22 @@ export function check(input: EnforcerInput): EnforcerOutcome {
   // Legacy: caller didn't send a clientName envelope, RpcRouter is already
   // grandfathering them via the legacy recorder. Allow at this layer.
   if (!input.ctx.clientName) {
+    return { kind: 'allow' };
+  }
+
+  // Commander brain lane (BYOB P4). ctx.commanderWorkspace is set ONLY by
+  // RpcRouter after validating the per-spawn commander token
+  // (commanderTrust.ts) — it cannot arrive from a raw envelope field. The
+  // token is the auth here, NOT the self-declared clientName: an external
+  // brain host (Hermes/OpenClaw) reports its own clientInfo name, which will
+  // never be first-party, so without this lane a non-Claude brain is dead on
+  // arrival under production enforce mode (eng review P0-1). Least
+  // privilege: exactly the RPC methods the commander tool surface invokes
+  // (commanderSurface.ts, invariant-tested), teardown methods already
+  // rejected by the router before this runs. A method outside the set falls
+  // through to normal enforcement — a coverage gap surfaces as a rejection,
+  // never as silent widening.
+  if (input.ctx.commanderWorkspace && COMMANDER_RPC_METHODS.has(input.method)) {
     return { kind: 'allow' };
   }
 

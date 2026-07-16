@@ -850,6 +850,18 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const paneId = String(params.id ?? '');
     const ownerWs = findOwningWorkspace(store.workspaces, paneId);
     if (!ownerWs) return { error: `pane.focus: pane ${paneId} not found` };
+    // BYOB P4: an orchestrator brain is confined to its own workspace (the
+    // §4.0 blast-radius invariant, generalized server-side — eng review P1).
+    // `confineWorkspaceId` is stamped by MAIN from the VALIDATED commander
+    // token binding (never caller-supplied): a brain focusing a pane it does
+    // not own is refused instead of mutating another workspace's focus state.
+    const confine =
+      typeof params.confineWorkspaceId === 'string' && params.confineWorkspaceId.length > 0
+        ? params.confineWorkspaceId
+        : null;
+    if (confine && ownerWs.id !== confine) {
+      return { error: `pane.focus: pane ${paneId} is outside the commander's workspace` };
+    }
     const ok = store.focusPaneSurface(ownerWs.id, paneId);
     if (!ok) return { error: `pane.focus: pane ${paneId} is not a focusable leaf` };
     return { ok: true };

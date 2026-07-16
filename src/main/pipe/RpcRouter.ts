@@ -7,6 +7,8 @@ import type {
   RpcResponse,
 } from '../../shared/rpc';
 import { check as enforcerCheck } from '../mcp/PermissionEnforcer';
+import { commanderTokenWorkspace } from '../deck/commanderTrust';
+import { COMMANDER_TEARDOWN_DENY } from '../../shared/commanderSurface';
 import type { EnforcementMode } from '../mcp/enforcementMode';
 import type { ApprovalQueue } from '../mcp/ApprovalQueue';
 
@@ -212,6 +214,34 @@ export class RpcRouter {
           ? request.clientVersion.trim()
           : undefined,
     };
+
+    // ── BYOB P4: commander role gate ─────────────────────────────────────
+    // Runs UNCONDITIONALLY before trust lookup / permission enforcement
+    // (including shadow mode) — this is the Layer-2 backstop and must never
+    // ride the shadow semantics. The role claim is the PRESENCE of the
+    // envelope field: an invalid/stale token rejects the whole request
+    // instead of demoting to an ordinary external caller (a demotion would
+    // reopen teardown tools and let a disposed brain's child claim a fresh
+    // MCP workspace — eng review P1). A validated token pins the commander's
+    // one workspace onto ctx and refuses teardown-effect methods outright.
+    if ('commanderToken' in request && request.commanderToken !== undefined) {
+      const boundWorkspace = commanderTokenWorkspace(request.commanderToken);
+      if (!boundWorkspace) {
+        return {
+          id: request.id,
+          ok: false,
+          error: 'commander token invalid or revoked — brain requests fail closed',
+        };
+      }
+      ctx.commanderWorkspace = boundWorkspace;
+      if (COMMANDER_TEARDOWN_DENY.has(request.method)) {
+        return {
+          id: request.id,
+          ok: false,
+          error: `method ${request.method} is denied for orchestrator brains (teardown gate)`,
+        };
+      }
+    }
 
     // Spec §2.2: requests without `clientName` are recorded as `legacy`.
     // Two side-channels fire here:

@@ -30,6 +30,7 @@ import { loadCommanderMemory, getMemoryRootDir } from './commanderMemory';
 import { getAccountStore, VENDOR_ENV_KEYS } from '../account/accountStore';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { evaluateCommanderToolPermission } from './commanderToolSandbox';
+import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../../shared/commanderSurface';
 import {
   type BrainAdapter,
   type BrainEvent,
@@ -224,6 +225,14 @@ export interface ClaudeSdkAdapterDeps {
 // scope and intentionally excluded — the deck orchestrates the terminal fleet,
 // not the paid company surface or headless browsers.
 const WMUX = (t: string): string => `mcp__wmux__${t}`;
+
+// BYOB P4: derived from the commander surface SSOT (shared/commanderSurface),
+// which is the SAME list the MCP child registers in --commander mode and the
+// PermissionEnforcer's allow lane is invariant-tested against — the SDK
+// auto-allow list and the actually-registered surface cannot drift. The
+// literal list below is retained as documentation + a change-review speed
+// bump: the test suite asserts it equals the derivation.
+export const DEFAULT_ALLOWED_TOOLS_FROM_SURFACE: string[] = COMMANDER_TOOL_SURFACE.map(WMUX);
 
 export const DEFAULT_ALLOWED_TOOLS: string[] = [
   // Read / observe — the whole family.
@@ -673,7 +682,10 @@ export class ClaudeSdkAdapter implements BrainAdapter {
         wmux: {
           type: 'stdio',
           command: process.execPath,
-          args: [this.mcpBundlePath],
+          // COMMANDER_MODE_ARG switches the child to the commander tool
+          // surface (P4 Layer 1) — an ARG so it cannot be lost to env
+          // stripping; the env token below stays the workspace binding.
+          args: [this.mcpBundlePath, COMMANDER_MODE_ARG],
           // WMUX_COMMANDER_TOKEN marks this MCP as the commander's hands: the
           // deck.resolvePaneRoute RPC accepts it and resolves a pane's true
           // owning workspace — but ONLY within the workspace the token is

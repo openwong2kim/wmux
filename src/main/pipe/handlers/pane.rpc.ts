@@ -181,11 +181,18 @@ export function registerPaneRpc(
    * pane.focus — focuses a specific pane
    * params: { id: string }
    */
-  router.register('pane.focus', (params) => {
+  router.register('pane.focus', (params, ctx) => {
     if (typeof params['id'] !== 'string') {
       return Promise.reject(new Error('pane.focus: missing required param "id"'));
     }
-    return sendToRenderer(getWindow, 'pane.focus', { id: params['id'] });
+    // BYOB P4: a validated commander caller (ctx stamped by the router from
+    // its per-spawn token — never from the wire) is confined to its own
+    // workspace. The confinement id rides to the renderer bridge, which
+    // resolves the pane's true owner and refuses a mismatch.
+    return sendToRenderer(getWindow, 'pane.focus', {
+      id: params['id'],
+      ...(ctx?.commanderWorkspace ? { confineWorkspaceId: ctx.commanderWorkspace } : {}),
+    });
   });
 
   /**
