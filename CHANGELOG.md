@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Hidden panes stop rendering in the background — the CPU your invisible agents were burning comes back.** Until now, every pane in every workspace kept parsing its output byte-for-byte even while hidden behind another workspace: one busy hidden agent cost roughly a fifth of the render thread, so the app felt heavier the more workspaces you kept around. The optimization that pauses this (previously an experimental opt-in in Settings) is now **on by default**: while a pane is hidden, the daemon keeps capturing its output but the pane stops painting it — the process runs at full speed and no output is ever lost. What you may notice, once per long-hidden busy pane: **the first switch to it after updating may briefly catch up** — large backlogs restore from the daemon's snapshot, and the pane says so while it happens. That's the pane painting what it skipped, not missing output and not a regression. Daemon-backed sessions only; local-mode panes are untouched. If you'd rather pay the background CPU for always-instant reveals, one toggle in **Settings → Terminal** turns it back off — and that choice sticks permanently; no later update will flip it back on you.
+
+- **A pane now tells you while it's catching up, and slow switches leave evidence.** A revealed pane with a large backlog shows a per-pane catching-up state instead of silently presenting stale content — what's on screen is either current or visibly refreshing. Every reveal also writes one `[wmux:reveal]` line with a mechanism code (`live` / `retained-catchup` / `dirty-snapshot` / `dirty-raw-fallback` / `resync-degraded`) to the on-disk logs, and `wmux doctor --performance` summarizes retention state, pane counts, and recent resync counters — so a "my pane looks frozen" report can arrive with its own diagnosis attached. The new [docs/performance.md](docs/performance.md) covers what keeps running while a pane is hidden, expected reveal behavior, the `~/.wmux/config.json` daemon knobs, and how to read those log lines.
+
 ## [3.24.1] — 2026-07-16
 
 ### Fixed
