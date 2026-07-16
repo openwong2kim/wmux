@@ -1,5 +1,5 @@
 import { useRef, useEffect, useState, useCallback, useMemo } from 'react';
-import { useTerminal, copySelectionWithFeedback, type ContextMenuEvent } from '../../hooks/useTerminal';
+import { useTerminal, copySelectionWithFeedback, getPaneSyncUi, subscribePaneSyncUi, type ContextMenuEvent, type PaneSyncUiState } from '../../hooks/useTerminal';
 import { useStore } from '../../stores';
 import { t } from '../../i18n';
 import { useIpc } from '../../hooks/useIpc';
@@ -70,6 +70,17 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
   const supervisionStatus = useStore((s) =>
     ptyId ? s.supervisionByPtyId[ptyId]?.status : undefined,
   );
+
+  // P0-5 freshness chip: 'syncing' while a daemon resync is in flight,
+  // 'stale' after a degraded resync (screen may lag until the retry).
+  // Silent stale display failed the app-weight review's DX gate — the pane
+  // must identify itself whenever its content is not current.
+  const [syncState, setSyncState] = useState<PaneSyncUiState>(null);
+  useEffect(() => {
+    if (!ptyId) { setSyncState(null); return; }
+    setSyncState(getPaneSyncUi(ptyId));
+    return subscribePaneSyncUi(ptyId, setSyncState);
+  }, [ptyId]);
 
   // Hide restoring overlay when first data arrives
   const handleFirstData = useCallback(() => setRestoring(false), []);
@@ -315,6 +326,15 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
       {restoring && (
         <div className="absolute inset-0 flex items-center justify-center text-[var(--text-muted)] text-sm font-mono z-10 pointer-events-none">
           Restoring session...
+        </div>
+      )}
+
+      {/* P0-5 freshness chip — non-blocking corner badge while the pane is
+          catching up from the daemon, or after a degraded resync left it
+          potentially stale. Muted per the color grammar (status, not action). */}
+      {syncState && (
+        <div className="absolute top-1 right-2 z-10 pointer-events-none px-1.5 py-0.5 rounded text-[10px] font-mono bg-[var(--bg-secondary)] text-[var(--text-muted)] border border-[var(--border)] opacity-90">
+          {syncState === 'syncing' ? t('terminal.catchingUp') : t('terminal.staleScreen')}
         </div>
       )}
 

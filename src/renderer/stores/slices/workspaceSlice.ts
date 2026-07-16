@@ -3,11 +3,12 @@ import type { StoreState } from '../index';
 import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
 import { getPresetById } from '../../../shared/layoutPresets';
-import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
+import { setLocale as i18nSetLocale, t as i18nT, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
 import { resetInspectState } from './uiSlice';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
 import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
+import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
 
 /** Collect all leaf panes from a pane tree */
 function collectLeafPanes(pane: Pane): PaneLeaf[] {
@@ -553,12 +554,43 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (data.splitInheritsCwd != null) state.splitInheritsCwd = data.splitInheritsCwd;
       if (data.imeResidueGuardEnabled != null) state.imeResidueGuardEnabled = data.imeResidueGuardEnabled;
-      // Fail closed: only an explicit boolean enables retention. A corrupted /
-      // hand-edited value (e.g. the string "false") must not become truthy and
-      // silently activate the still-experimental resync path.
+      // Fail closed: only an explicit boolean is applied. A corrupted /
+      // hand-edited value (e.g. the string "false") must not toggle the
+      // retention/resync path either way.
       if (typeof data.hiddenPaneRetentionEnabled === 'boolean') {
-        state.hiddenPaneRetentionEnabled = data.hiddenPaneRetentionEnabled;
+        if (data.hiddenPaneRetentionEnabled === false && !retentionMigrationDone()) {
+          // One-shot default-flip migration (app-weight P0-1, 2026-07-16):
+          // every pre-flip build persisted the old `false` DEFAULT into
+          // session.json, so a bare default change reaches nobody. A persisted
+          // `false` without the ledger marker is treated as that old default
+          // and flipped ON exactly once; the ledger (localStorage — survives
+          // old-build session rewrites, see retentionMigration.ts) then makes
+          // any later OFF permanent. Accepted, documented ambiguity: a
+          // deliberate pre-flip OFF is flipped once too — Settings hatch +
+          // release note cover it.
+          console.log('[wmux:hidden-retention] one-shot default-ON migration applied (persisted false, no ledger marker)');
+          state.hiddenPaneRetentionEnabled = true;
+          // One-time post-upgrade notice (DX review): the flip must be
+          // announced, not discovered through a confusing reveal. setTimeout
+          // escapes the immer set(); the action button is the escape hatch.
+          setTimeout(() => {
+            get().pushToast({
+              message: i18nT('retention.migratedNotice'),
+              level: 'info',
+              action: {
+                label: i18nT('retention.migratedNoticeTurnOff'),
+                onClick: () => get().setHiddenPaneRetentionEnabled(false),
+              },
+            });
+          }, 0);
+        } else {
+          state.hiddenPaneRetentionEnabled = data.hiddenPaneRetentionEnabled;
+        }
       }
+      // Stamp the ledger unconditionally after a session load has been
+      // processed by a default-ON build — from here on, persisted values are
+      // authoritative user state.
+      markRetentionMigrationDone();
       if (typeof data.startupDirectory === 'string') state.startupDirectory = data.startupDirectory.trim();
       if (data.scrollbackLines != null) state.scrollbackLines = data.scrollbackLines;
       if (data.scrollbackRestoreEnabled != null) state.scrollbackRestoreEnabled = data.scrollbackRestoreEnabled;

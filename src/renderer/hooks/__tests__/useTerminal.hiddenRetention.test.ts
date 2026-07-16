@@ -63,22 +63,28 @@ describe('Phase 3 PR-A — useTerminal hidden-pane retention wiring (source-leve
   it('reveal branches on dirtiness: resync for dirty, flush for clean', () => {
     const idx = src.indexOf('if (isTerminalDirty(terminalRef.current))');
     expect(idx).toBeGreaterThan(0);
-    const body = src.slice(idx, idx + 300);
+    // Window widened for the P0-5 retained-catchup mechanism log between the
+    // branch and the flush.
+    const body = src.slice(idx, idx + 800);
     expect(body).toMatch(/startResync\('dirty-reveal'\)/);
     expect(body).toMatch(/flushTerminalOutput\(terminalRef\.current\)/);
   });
 
   it('resync degrades without ever clearing the ptyId (dead pane keeps its last screen)', () => {
     // reconnectPtyWithRetry clears ptyIds on fatal errors — the resync path
-    // must not: it calls pty.reconnect directly and aborts into markClean.
+    // must not: it calls pty.reconnect directly. App-weight P0-2 changed the
+    // degrade contract: abortResync now KEEPS the pane dirty (stale is never
+    // blessed as clean) and rate-limits retries via degradedUntil — see
+    // useTerminal.appWeightP0.test.ts for the full P0-2 assertions.
     const idx = src.indexOf('const startResync');
     expect(idx).toBeGreaterThan(0);
-    const body = src.slice(idx, idx + 3000);
+    const body = src.slice(idx, idx + 3600);
     expect(body).toMatch(/window\.electronAPI\.pty\.reconnect\(id\)/);
     expect(body).not.toMatch(/clearSurfacePtyIdByPty|reconnectPtyWithRetry/);
     const abortIdx = src.indexOf('const abortResync');
-    const abortBody = src.slice(abortIdx, abortIdx + 1200);
-    expect(abortBody).toMatch(/markTerminalClean\(term\)/);
+    const abortBody = src.slice(abortIdx, abortIdx + 1600);
+    expect(abortBody).not.toMatch(/markTerminalClean\(term\)/);
+    expect(abortBody).toMatch(/degradedUntil/);
   });
 
   it('exposes hydrate-before-read and cleans it up on unmount', () => {

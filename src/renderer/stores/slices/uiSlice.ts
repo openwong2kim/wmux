@@ -1,6 +1,7 @@
 import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
+import { markRetentionMigrationDone } from '../retentionMigration';
 import type { FleetSortMode } from '../selectors/fleet';
 import {
   generateId,
@@ -808,10 +809,19 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.imeResidueGuardEnabled = enabled;
   }),
 
-  hiddenPaneRetentionEnabled: false,
+  // Default ON since the app-weight P0 (2026-07-16): hidden panes queue PTY
+  // output without parsing and re-sync from the daemon on reveal. The Settings
+  // toggle remains the escape hatch; see retentionMigration.ts for how
+  // pre-flip profiles (which persisted the old `false` default) are migrated
+  // exactly once.
+  hiddenPaneRetentionEnabled: true,
 
   setHiddenPaneRetentionEnabled: (enabled) => set((state) => {
     state.hiddenPaneRetentionEnabled = enabled;
+    // Explicit user intent — stamp the migration ledger so this choice is
+    // never overridden by the one-shot default-flip migration (covers the
+    // fresh-install case where loadSession never ran a migration).
+    markRetentionMigrationDone();
   }),
 
   startupDirectory: '',

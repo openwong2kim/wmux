@@ -219,6 +219,10 @@ export const en = {
   // Terminal
   'terminal.exited': 'Process exited with code {code}',
   'terminal.exitedBracket': '[Process exited with code {code}]',
+  'terminal.catchingUp': 'catching up…',
+  'terminal.staleScreen': 'screen may be stale — will retry',
+  'retention.migratedNotice': 'This update pauses rendering for hidden panes (everything keeps running; panes catch up when shown). You can turn it off in Settings → Terminal.',
+  'retention.migratedNoticeTurnOff': 'Turn off',
   // X8 — in-pane supervised-restart marker. The trailing hint is the Ctrl+C
   // escape hatch disclosure (decision ⑨): the user can stop auto-restart from
   // the pane menu. Two variants: with/without the dead process's exit code.
@@ -386,8 +390,8 @@ export const en = {
   'settings.splitInheritsCwdDesc': 'A pane created by splitting starts in the original pane\'s current directory.',
   'settings.imeResidueGuard': 'Clear IME residue while idle',
   'settings.imeResidueGuardDesc': 'Protects against voice-input tools that replace leftover IME text destructively. Leave off unless you use such a tool — the clearing can confuse some IMEs.',
-  'settings.hiddenPaneRetention': 'Skip hidden pane rendering (experimental)',
-  'settings.hiddenPaneRetentionDesc': 'Stops parsing background agent output in hidden panes and re-syncs from the daemon on reveal. Keeps the visible pane smooth with many busy agents. Daemon sessions only.',
+  'settings.hiddenPaneRetention': 'Pause hidden pane rendering',
+  'settings.hiddenPaneRetentionDesc': 'Default on. Hidden panes pause screen rendering while everything keeps running — output is captured by the daemon and the pane catches up when you switch back (briefly shown as "catching up"). Turn off to render every hidden pane continuously; that costs real CPU per busy hidden pane. Daemon sessions only; local-mode sessions always render.',
   'settings.updates': 'Updates',
   'settings.wmuxUpdates': 'wmux updates',
   'settings.updateFailed': 'Failed to check for updates',
