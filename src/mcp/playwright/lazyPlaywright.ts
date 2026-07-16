@@ -13,6 +13,7 @@
 //      node_modules is available. playwright-core is marked external in the
 //      MAIN bundle build, so this literal stays a runtime require and can
 //      never re-inline the library.
+import fs from 'node:fs';
 import path from 'node:path';
 import type * as PlaywrightCore from 'playwright-core';
 
@@ -21,10 +22,17 @@ let mod: typeof PlaywrightCore | null = null;
 export function loadPlaywright(): typeof PlaywrightCore {
   if (mod) return mod;
   const chunk = path.join(__dirname, 'playwright-chunk.js');
-  try {
+  // Fall back to node_modules ONLY when the chunk file itself is absent
+  // (dev/tsc/vitest layouts). A chunk that exists but fails to load is a
+  // build regression — falling back would mask the real error behind a
+  // "Cannot find module 'playwright-core'" in the packaged layout. Presence
+  // is checked on disk rather than by classifying the require error: a
+  // MODULE_NOT_FOUND from a missing transitive dep also names the chunk in
+  // its Require stack, so message sniffing misclassifies broken as absent.
+  if (fs.existsSync(chunk)) {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     mod = require(chunk) as typeof PlaywrightCore;
-  } catch {
+  } else {
     // eslint-disable-next-line @typescript-eslint/no-var-requires
     mod = require('playwright-core') as typeof PlaywrightCore;
   }

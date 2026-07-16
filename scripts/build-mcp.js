@@ -51,17 +51,27 @@ async function main() {
 
   // 3. Patch playwright's package.json self-resolve inside the chunk.
   let code = fs.readFileSync(chunkFile, 'utf8');
+  let patched = 0;
   code = code.replace(
     /require\.resolve\("\.\.\/\.\.\/\.\.\/package\.json"\)/g,
-    '__dirname + "/playwright-core-package.json"'
+    () => { patched++; return '__dirname + "/playwright-core-package.json"'; }
   );
+  if (patched === 0) {
+    throw new Error(
+      'playwright-core self-resolve pattern not found in the chunk — the ' +
+      'library changed its package.json resolution; update the patch in ' +
+      'scripts/build-mcp.js'
+    );
+  }
   fs.writeFileSync(chunkFile, code);
 
   // Minimal package.json for playwright-core's version detection (same dir
-  // as the chunk, __dirname-relative).
+  // as the chunk, __dirname-relative). Version mirrors the INSTALLED
+  // library — the one actually bundled into the chunk.
+  const pwVersion = require('playwright-core/package.json').version;
   fs.writeFileSync(
     path.join(outdir, 'playwright-core-package.json'),
-    JSON.stringify({ name: 'playwright-core', version: '1.58.2' })
+    JSON.stringify({ name: 'playwright-core', version: pwVersion })
   );
 }
 

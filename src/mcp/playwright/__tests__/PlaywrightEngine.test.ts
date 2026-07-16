@@ -34,6 +34,9 @@ vi.mock('../lazyPlaywright', () => ({
     chromium: {
       connectOverCDP: (...args: unknown[]) => mockConnectOverCDP(...args),
     },
+    // Mirror the seam's real surface: state.ts reads devices[name] for
+    // emulation, and an absent key here would greenlight a broken path.
+    devices: {},
   }),
 }));
 
