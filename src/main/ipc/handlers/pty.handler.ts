@@ -9,6 +9,7 @@ import { DaemonClient } from '../../DaemonClient';
 import { IPC, ENV_KEYS } from '../../../shared/constants';
 import { DAEMON_RESYNC_RPC_TIMEOUT_MS } from '../../../shared/timeouts';
 import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';
+import { DaemonDataBatcher } from '../../pty/DaemonDataBatcher';
 import { sanitizePtyText } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
 import { getAccountStore } from '../../account/accountStore';
@@ -219,6 +220,10 @@ export function registerPTYHandlers(
     if (!daemonClient) return;
     const existing = daemonSessionListeners.get(sessionId);
     if (existing) {
+      // P1-3: deliver anything the OLD listener generation buffered before
+      // the swap — identical ordering to the pre-batching path, and no
+      // old-generation bytes can interleave into the new stream.
+      dataBatcher.flushSession(sessionId);
       daemonClient.removeListener('session:data', existing);
     }
     daemonClient.on('session:data', listener);
@@ -230,6 +235,7 @@ export function registerPTYHandlers(
     if (!daemonClient) return;
     const existing = daemonSessionListeners.get(sessionId);
     if (!existing) return;
+    dataBatcher.flushSession(sessionId); // P1-3: no bytes stranded in the batch
     daemonClient.removeListener('session:data', existing);
     daemonSessionListeners.delete(sessionId);
   }
@@ -244,6 +250,20 @@ export function registerPTYHandlers(
     }
     return decoder.write(data);
   }
+
+  // app-weight P1-3: 8 ms micro-batching for daemon-mode PTY data (parity
+  // with local-mode PTYBridge). One batcher per handler registration = per
+  // daemon generation; the cleanup below disposes it, so old-generation bytes
+  // can never leak into a re-registered handler's stream. Decoding happens
+  // BEFORE push() (see decodeSessionData above), so batching can't split a
+  // multi-byte sequence. Ordering markers (flushComplete/exit/restarted)
+  // flush the session first — see each forwarder.
+  const dataBatcher = new DaemonDataBatcher((sessionId, text) => {
+    const win = getWindow?.();
+    if (win && !win.isDestroyed()) {
+      win.webContents.send(IPC.PTY_DATA, sessionId, text);
+    }
+  });
 
   // Forward daemon flush-complete events to the renderer so useTerminal can
   // decide whether to wipe its .txt-cache replay. recoveredBytes>0 means the
@@ -270,6 +290,11 @@ export function registerPTYHandlers(
   let onDaemonTitle: ((payload: { sessionId: string; title: string }) => void) | null = null;
   if (useDaemon && daemonClient) {
     onDaemonFlushComplete = (payload: { sessionId: string; recoveredBytes: number }) => {
+      // P1-3 ordering rule: the flush-complete marker must never overtake
+      // batched data — the renderer resets + settles its resync on this
+      // marker, and a late chunk would parse as live output onto the fresh
+      // buffer (partial-replay corruption).
+      dataBatcher.flushSession(payload.sessionId);
       const win = getWindow?.();
       if (win && !win.isDestroyed()) {
         win.webContents.send(
@@ -447,11 +472,10 @@ export function registerPTYHandlers(
       const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
         if (payload.sessionId !== sessionId) return;
         initialCmd.onFirstData();
-        const win = getWindow?.();
-        if (win && !win.isDestroyed()) {
-          const text = decodeSessionData(sessionId, payload.data);
-          if (text) win.webContents.send(IPC.PTY_DATA, sessionId, text);
-        }
+        // P1-3: decode (stateful, upstream of batching) then micro-batch —
+        // the batcher's send does the window-alive check at flush time.
+        const text = decodeSessionData(sessionId, payload.data);
+        if (text) dataBatcher.push(sessionId, text);
       };
       setSessionDataListener(sessionId, onSessionData as (...args: unknown[]) => void);
 
@@ -841,11 +865,9 @@ export function registerPTYHandlers(
         // of stacking a duplicate that doubles every byte the PTY emits.
         const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
           if (payload.sessionId !== id) return;
-          const win = getWindow?.();
-          if (win && !win.isDestroyed()) {
-            const text = decodeSessionData(id, payload.data);
-            if (text) win.webContents.send(IPC.PTY_DATA, id, text);
-          }
+          // P1-3: same decode-then-batch as the create path.
+          const text = decodeSessionData(id, payload.data);
+          if (text) dataBatcher.push(id, text);
         };
         setSessionDataListener(id, onSessionData as (...args: unknown[]) => void);
 
@@ -990,6 +1012,10 @@ export function registerPTYHandlers(
   let onDaemonSessionDied: ((payload: { sessionId: string; exitCode: number | null }) => void) | null = null;
   if (useDaemon && daemonClient) {
     onDaemonSessionDied = (payload: { sessionId: string; exitCode: number | null }) => {
+      // P1-3 ordering rule: drain buffered output before the exit marker so
+      // the shell's final lines land ahead of "[Process exited...]" (same
+      // drain-before-exit contract as local-mode PTYBridge).
+      dataBatcher.flushSession(payload.sessionId);
       const win = getWindow?.();
       if (win && !win.isDestroyed()) {
         win.webContents.send(IPC.PTY_EXIT, payload.sessionId, payload.exitCode ?? -1);
@@ -1032,6 +1058,9 @@ export function registerPTYHandlers(
     | null = null;
   if (useDaemon && daemonClient) {
     onDaemonSessionRestarted = (payload) => {
+      // P1-3 ordering rule: the old PTY's trailing output must precede the
+      // restart marker (the renderer re-attaches on it).
+      dataBatcher.flushSession(payload.sessionId);
       const win = getWindow?.();
       if (win && !win.isDestroyed()) {
         win.webContents.send(IPC.PTY_RESTARTED, {
@@ -1082,6 +1111,10 @@ export function registerPTYHandlers(
 
     // Clean up daemon listeners
     if (daemonClient) {
+      // P1-3: deliver any buffered bytes while this handler generation still
+      // owns the window, then stop batching — a re-registered handler gets a
+      // fresh batcher, so generations can never interleave.
+      dataBatcher.dispose();
       for (const listener of daemonSessionListeners.values()) {
         daemonClient.removeListener('session:data', listener);
       }
