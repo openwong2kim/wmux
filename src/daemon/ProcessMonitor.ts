@@ -6,11 +6,23 @@
  * at once, instead of spawning one process per session.
  */
 export class ProcessMonitor {
-  private watchedPids: Map<string, { pid: number; onDead: () => void }> = new Map();
+  private watchedPids: Map<string, { pid: number; onDead: () => void; imageName?: string }> = new Map();
   private batchInterval: NodeJS.Timeout | null = null;
   private batchRunning = false;
 
-  private static readonly CHECK_INTERVAL_MS = 5000;
+  /** Default batch cadence. app-weight P1-1: 5 s → 15 s — each Windows tick
+   *  spawns a tasklist.exe (1–6 s of CPU on a contended machine), and at 5 s
+   *  that spawn train was the single largest contributor to the daemon's
+   *  measured 3.1% idle CPU. Worst-case death detection is now
+   *  ~interval + 10 s batch timeout + 3 s re-verify ≈ 28 s (the supervision
+   *  restart SLA — documented in docs/performance.md). Overridable per
+   *  instance via the constructor (config.daemon.livenessIntervalSec). */
+  private static readonly CHECK_INTERVAL_MS = 15_000;
+
+  /** @param intervalMs batch cadence override (config knob); falls back to
+   *  the static default at interval-creation time so tests can still stub
+   *  `CHECK_INTERVAL_MS` before the first watch(). */
+  constructor(private readonly intervalMs?: number) {}
 
   /** Check whether a process with the given PID is still alive (individual check). */
   static async isAlive(pid: number): Promise<boolean> {
@@ -57,21 +69,11 @@ export class ProcessMonitor {
    */
   static async isDefinitelyDead(pid: number): Promise<boolean> {
     if (process.platform === 'win32') {
-      const { execFile } = require('child_process');
-      const { promisify } = require('util');
-      const execFileAsync = promisify(execFile);
-      const pathMod = require('path');
-      const systemRoot = process.env.SystemRoot || 'C:\\Windows';
-      const tasklist = pathMod.join(systemRoot, 'System32', 'tasklist.exe');
       // No catch: a timeout/error rejects, and the caller treats a rejection
       // as "unknown — do not kill". A clean run that lacks the PID is the only
       // path to a confirmed death.
-      const { stdout } = await execFileAsync(
-        tasklist,
-        ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'],
-        { encoding: 'utf-8', timeout: 3000, windowsHide: true },
-      );
-      return !(stdout as string).includes(`"${pid}"`);
+      const probe = await ProcessMonitor.probeWindowsPid(pid);
+      return !probe.present;
     }
     // POSIX: kill(pid, 0) is reliable. ESRCH ⇒ dead; EPERM ⇒ alive (not ours).
     try {
@@ -84,12 +86,72 @@ export class ProcessMonitor {
   }
 
   /**
+   * Windows per-PID probe: presence + image name from a filtered tasklist
+   * call. THROWS on exec failure (timeout, spawn error) so callers can tell
+   * "confirmed state" from "couldn't check" — the unknown-is-never-dead
+   * principle (PR #87) applies to reuse detection exactly as to death.
+   */
+  static async probeWindowsPid(pid: number): Promise<{ present: boolean; imageName?: string }> {
+    const { execFile } = require('child_process');
+    const { promisify } = require('util');
+    const execFileAsync = promisify(execFile);
+    const pathMod = require('path');
+    const systemRoot = process.env.SystemRoot || 'C:\\Windows';
+    const tasklist = pathMod.join(systemRoot, 'System32', 'tasklist.exe');
+    const { stdout } = await execFileAsync(
+      tasklist,
+      ['/fi', `PID eq ${pid}`, '/fo', 'csv', '/nh'],
+      { encoding: 'utf-8', timeout: 3000, windowsHide: true },
+    );
+    const parsed = ProcessMonitor.parseTasklistCsv(stdout as string, new Set([pid]));
+    return parsed.alive.has(pid)
+      ? { present: true, imageName: parsed.images.get(pid) }
+      : { present: false };
+  }
+
+  /**
+   * Parse `tasklist /fo csv` output into (alive PIDs ∩ pidSet) plus their
+   * image names. Pure — exported for unit tests. Lines that don't match the
+   * CSV shape (headers, locale banners like "INFO: No tasks...") are ignored.
+   */
+  static parseTasklistCsv(
+    stdout: string,
+    pidSet: ReadonlySet<number>,
+  ): { alive: Set<number>; images: Map<number, string> } {
+    const alive = new Set<number>();
+    const images = new Map<number, string>();
+    for (const line of stdout.split('\n')) {
+      // CSV format: "Image Name","PID","Session Name","Session#","Mem Usage"
+      const match = line.match(/^"([^"]*)","(\d+)"/);
+      if (!match) continue;
+      const runningPid = parseInt(match[2], 10);
+      if (!pidSet.has(runningPid)) continue;
+      alive.add(runningPid);
+      images.set(runningPid, match[1]);
+    }
+    return { alive, images };
+  }
+
+  /**
    * Batch-check all given PIDs in a single tasklist call (Windows).
    * Returns the set of PIDs that are alive.
    */
   static async batchCheckAlive(pids: number[]): Promise<Set<number>> {
-    const alive = new Set<number>();
-    if (pids.length === 0) return alive;
+    return (await ProcessMonitor.batchCheckAliveDetailed(pids)).alive;
+  }
+
+  /**
+   * Batch liveness plus image names (Windows). Image names feed the PID-reuse
+   * check in the watch loop (app-weight P1-1): a ghost "alive" from a reused
+   * PID keeps `listLiveSessions() > 0`, which blocks the daemon's idle
+   * self-shutdown and pins the session's RingBuffer. POSIX returns an empty
+   * image map (kill(0) carries no identity — reuse detection is Windows-only).
+   */
+  static async batchCheckAliveDetailed(
+    pids: number[],
+  ): Promise<{ alive: Set<number>; images: Map<number, string> }> {
+    const empty = { alive: new Set<number>(), images: new Map<number, string>() };
+    if (pids.length === 0) return empty;
 
     if (process.platform === 'win32') {
       try {
@@ -105,39 +167,30 @@ export class ProcessMonitor {
           ['/fo', 'csv', '/nh'],
           { encoding: 'utf-8', timeout: 10000, windowsHide: true },
         );
-        // Build a set of all running PIDs from the output
-        const pidSet = new Set(pids);
-        const lines = (stdout as string).split('\n');
-        for (const line of lines) {
-          // CSV format: "Image Name","PID","Session Name","Session#","Mem Usage"
-          const match = line.match(/^"[^"]*","(\d+)"/);
-          if (match) {
-            const runningPid = parseInt(match[1], 10);
-            if (pidSet.has(runningPid)) {
-              alive.add(runningPid);
-            }
-          }
-        }
+        return ProcessMonitor.parseTasklistCsv(stdout as string, new Set(pids));
       } catch {
-        // On failure, fall back to individual checks
+        // On failure, fall back to individual checks (no image names — the
+        // reuse check simply skips this cycle rather than guessing).
+        const alive = new Set<number>();
         for (const pid of pids) {
           if (await ProcessMonitor.isAlive(pid)) {
             alive.add(pid);
           }
         }
-      }
-    } else {
-      // Non-Windows: use process.kill(pid, 0) for each
-      for (const pid of pids) {
-        try {
-          process.kill(pid, 0);
-          alive.add(pid);
-        } catch {
-          // not alive
-        }
+        return { alive, images: new Map() };
       }
     }
-    return alive;
+    // Non-Windows: use process.kill(pid, 0) for each
+    const alive = new Set<number>();
+    for (const pid of pids) {
+      try {
+        process.kill(pid, 0);
+        alive.add(pid);
+      } catch {
+        // not alive
+      }
+    }
+    return { alive, images: new Map() };
   }
 
   /** Start monitoring a process. Calls onDead when the process is no longer alive. */
@@ -172,12 +225,14 @@ export class ProcessMonitor {
     this.batchRunning = false;
   }
 
-  /** Ensure a single batch interval is running. */
+  /** Ensure a single batch interval is running. The cadence is resolved at
+   *  creation time (instance override → static default) so tests that stub
+   *  `CHECK_INTERVAL_MS` before the first watch() keep working. */
   private ensureBatchInterval(): void {
     if (this.batchInterval) return;
     this.batchInterval = setInterval(() => {
       this.runBatchCheck();
-    }, ProcessMonitor.CHECK_INTERVAL_MS);
+    }, this.intervalMs ?? (ProcessMonitor as unknown as { CHECK_INTERVAL_MS: number }).CHECK_INTERVAL_MS);
     if (this.batchInterval.unref) {
       this.batchInterval.unref();
     }
@@ -194,8 +249,8 @@ export class ProcessMonitor {
     const entries = Array.from(this.watchedPids.entries());
     const pids = entries.map(([, v]) => v.pid);
 
-    void ProcessMonitor.batchCheckAlive(pids)
-      .then(async (aliveSet) => {
+    void ProcessMonitor.batchCheckAliveDetailed(pids)
+      .then(async ({ alive: aliveSet, images }) => {
         // Collect every session the batch reports dead, then re-verify each one
         // via a second, independent `tasklist /fi PID eq <pid>` call. The batch
         // path uses the unfiltered process list (`tasklist /fo csv /nh`); any
@@ -205,11 +260,59 @@ export class ProcessMonitor {
         // re-verify uses different command arguments and an independent
         // execFile invocation, so a parse failure in one is highly unlikely
         // to repeat in the other.
-        const apparentlyDead: Array<[string, { pid: number; onDead: () => void }]> = [];
+        const apparentlyDead: Array<[string, { pid: number; onDead: () => void; imageName?: string }]> = [];
+        // PID-reuse suspects (app-weight P1-1): the PID answered the batch,
+        // but under a DIFFERENT image name than when we first observed it —
+        // the watched process died and the OS handed its PID to something
+        // else. Without this check the ghost stays "alive" forever, blocking
+        // idle self-shutdown and pinning the session's RingBuffer.
+        const reuseSuspects: Array<[string, { pid: number; onDead: () => void; imageName?: string }]> = [];
         for (const entry of entries) {
           const [sessionId, info] = entry;
           if (!this.watchedPids.has(sessionId)) continue;
-          if (!aliveSet.has(info.pid)) apparentlyDead.push(entry);
+          if (!aliveSet.has(info.pid)) {
+            apparentlyDead.push(entry);
+            continue;
+          }
+          const seenImage = images.get(info.pid);
+          if (!seenImage) continue; // POSIX / fallback path — no identity info
+          if (!info.imageName) {
+            // First observation: bind the identity. Best-effort — if the PID
+            // was already reused before we ever saw it, this binds the new
+            // occupant, which is no worse than the pre-P1 behavior.
+            info.imageName = seenImage;
+            continue;
+          }
+          if (info.imageName.toLowerCase() !== seenImage.toLowerCase()) {
+            reuseSuspects.push(entry);
+          }
+        }
+
+        // Re-verify reuse suspects with an independent per-PID probe before
+        // declaring death — same unknown-is-never-dead discipline as below.
+        for (const [sessionId, info] of reuseSuspects) {
+          if (!this.watchedPids.has(sessionId)) continue;
+          try {
+            const probe = await ProcessMonitor.probeWindowsPid(info.pid);
+            if (!probe.present) {
+              apparentlyDead.push([sessionId, info]); // died between calls
+              continue;
+            }
+            if (
+              probe.imageName &&
+              info.imageName &&
+              probe.imageName.toLowerCase() !== info.imageName.toLowerCase()
+            ) {
+              // Confirmed: same PID, different process. The watched process
+              // is gone — fire onDead exactly as a confirmed death.
+              if (!this.watchedPids.has(sessionId)) continue;
+              this.unwatch(sessionId);
+              info.onDead();
+            }
+            // Same image on re-probe → the batch parse glitched; leave it.
+          } catch {
+            // Probe failed: unknown, never dead. Defer to the next cycle.
+          }
         }
 
         if (apparentlyDead.length === 0) return;

@@ -107,6 +107,16 @@ export interface DaemonConfig {
     memWarnMb: number;
     memReapMb: number;
     memBlockMb: number;
+    /**
+     * app-weight P1 idle-CPU knobs (clamped + backfilled like the lifecycle
+     * floors above). `livenessIntervalSec`: cadence of the batched tasklist
+     * liveness sweep — raising it lowers idle CPU but raises the worst-case
+     * supervision death-detection latency (~interval + 13 s of probe
+     * budgets). `snapshotIntervalSec`: cadence of the periodic RingBuffer
+     * `.buf` dump + sessions.json snapshot (crash-recovery freshness bound).
+     */
+    livenessIntervalSec?: number;
+    snapshotIntervalSec?: number;
   };
   session: {
     defaultShell: string;

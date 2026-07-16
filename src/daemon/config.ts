@@ -51,6 +51,14 @@ const SUSPENDED_TTL_CAP_HOURS = 24 * 365; // 1 year — "permanent" = large, not
 const MEM_WARN_FLOOR_MB = 128;
 const MEM_REAP_FLOOR_MB = 192;
 const MEM_BLOCK_FLOOR_MB = 256;
+// app-weight P1 idle-CPU knobs. Liveness floor 5 s = the pre-P1 cadence (a
+// lower value would only add tasklist spawn load); cap 120 s keeps the
+// supervision death-detection SLA within ~2 min. Snapshot floor 10 s guards
+// disk churn; cap 10 min bounds crash-recovery staleness.
+const LIVENESS_INTERVAL_FLOOR_SEC = 5;
+const LIVENESS_INTERVAL_CAP_SEC = 120;
+const SNAPSHOT_INTERVAL_FLOOR_SEC = 10;
+const SNAPSHOT_INTERVAL_CAP_SEC = 600;
 
 /**
  * Coerce a lifecycle knob to a finite integer within `[min, max]`. An
@@ -82,6 +90,8 @@ export function createDefaultConfig(): DaemonConfig {
       memWarnMb: 500,
       memReapMb: 750,
       memBlockMb: 1024,
+      livenessIntervalSec: 15,
+      snapshotIntervalSec: 30,
     },
     session: {
       defaultShell: getDefaultShell(),
@@ -156,6 +166,15 @@ export function loadConfig(): DaemonConfig {
     config.session.suspendedTtlHours = clampLifecycle(
       config.session.suspendedTtlHours, defaults.session.suspendedTtlHours,
       SUSPENDED_TTL_FLOOR_HOURS, SUSPENDED_TTL_CAP_HOURS,
+    );
+    // app-weight P1 idle-CPU knobs — same per-field backfill + clamp.
+    config.daemon.livenessIntervalSec = clampLifecycle(
+      config.daemon.livenessIntervalSec, defaults.daemon.livenessIntervalSec!,
+      LIVENESS_INTERVAL_FLOOR_SEC, LIVENESS_INTERVAL_CAP_SEC,
+    );
+    config.daemon.snapshotIntervalSec = clampLifecycle(
+      config.daemon.snapshotIntervalSec, defaults.daemon.snapshotIntervalSec!,
+      SNAPSHOT_INTERVAL_FLOOR_SEC, SNAPSHOT_INTERVAL_CAP_SEC,
     );
 
     // Memory triple: floor + absolute upper cap (physical RAM). A threshold

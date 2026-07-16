@@ -309,3 +309,45 @@ describe('loadConfig — lanlink backfill (PR-3, non-destructive)', () => {
     expect(loadConfig().lanlink).toEqual(lanlink);
   });
 });
+
+// ── app-weight P1-6: idle-CPU knobs (livenessIntervalSec / snapshotIntervalSec) ──
+describe('loadConfig — P1 idle-CPU knobs backfill + clamp', () => {
+  it('defaults: liveness 15 s, snapshot 30 s', () => {
+    const c = createDefaultConfig();
+    expect(c.daemon.livenessIntervalSec).toBe(15);
+    expect(c.daemon.snapshotIntervalSec).toBe(30);
+  });
+
+  it('old config.json without the knobs → backfilled, siblings preserved', () => {
+    const c0 = createDefaultConfig();
+    const daemonNoKnobs = { ...c0.daemon, idleShutdownMinutes: 12 } as Record<string, unknown>;
+    delete daemonNoKnobs.livenessIntervalSec;
+    delete daemonNoKnobs.snapshotIntervalSec;
+    writeRawConfig({ ...c0, daemon: daemonNoKnobs });
+    const c = loadConfig();
+    expect(c.daemon.livenessIntervalSec).toBe(15);
+    expect(c.daemon.snapshotIntervalSec).toBe(30);
+    expect(c.daemon.idleShutdownMinutes).toBe(12);
+  });
+
+  it('valid values pass through; out-of-range clamp to [5,120] / [10,600]', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, daemon: { ...c0.daemon, livenessIntervalSec: 30, snapshotIntervalSec: 60 } });
+    let c = loadConfig();
+    expect(c.daemon.livenessIntervalSec).toBe(30);
+    expect(c.daemon.snapshotIntervalSec).toBe(60);
+
+    writeRawConfig({ ...c0, daemon: { ...c0.daemon, livenessIntervalSec: 0, snapshotIntervalSec: 100000 } });
+    c = loadConfig();
+    expect(c.daemon.livenessIntervalSec).toBe(5);   // floor — no "off"
+    expect(c.daemon.snapshotIntervalSec).toBe(600); // cap — recovery staleness bound
+  });
+
+  it('garbage in a knob backfills only that field', () => {
+    const c0 = createDefaultConfig();
+    writeRawConfig({ ...c0, daemon: { ...c0.daemon, livenessIntervalSec: 'fast' as unknown as number, pipeName: '\\.\pipe\keepme2' } });
+    const c = loadConfig();
+    expect(c.daemon.livenessIntervalSec).toBe(15);
+    expect(c.daemon.pipeName).toBe('\\.\pipe\keepme2');
+  });
+});

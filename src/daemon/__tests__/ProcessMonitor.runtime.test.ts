@@ -109,13 +109,14 @@ describe('ProcessMonitor', () => {
 
   it('re-entrancy guard prevents overlapping batch checks', async () => {
     monitor = new ProcessMonitor();
-    const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAlive');
+    // P1-1: the watch loop consumes batchCheckAliveDetailed (alive + images).
+    const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAliveDetailed');
 
-    // Make batchCheckAlive slow to simulate overlapping
+    // Make the batch slow to simulate overlapping
     let resolveFirst: ((value: Set<number>) => void) | undefined;
     batchSpy.mockImplementationOnce(() => {
-      return new Promise<Set<number>>((resolve) => {
-        resolveFirst = (v) => resolve(v);
+      return new Promise<{ alive: Set<number>; images: Map<number, string> }>((resolve) => {
+        resolveFirst = (v) => resolve({ alive: v, images: new Map() });
       });
     });
 
@@ -153,12 +154,12 @@ describe('ProcessMonitor', () => {
   // firing onDead.
   it('does not cascade-fire onDead when batch returns empty set but PIDs are alive', async () => {
     monitor = new ProcessMonitor();
-    const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAlive');
+    const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAliveDetailed');
     const deadSpy = vi.spyOn(ProcessMonitor, 'isDefinitelyDead');
 
     // Simulate the failure mode: batch reports nobody alive (parse failure),
     // but the per-PID re-verify confirms they are NOT dead (still alive).
-    batchSpy.mockResolvedValue(new Set<number>());
+    batchSpy.mockResolvedValue({ alive: new Set<number>(), images: new Map<number, string>() });
     deadSpy.mockResolvedValue(false);
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
@@ -194,11 +195,11 @@ describe('ProcessMonitor', () => {
 
   it('still fires onDead when both batch and per-PID confirm death', async () => {
     monitor = new ProcessMonitor();
-    const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAlive');
+    const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAliveDetailed');
     const deadSpy = vi.spyOn(ProcessMonitor, 'isDefinitelyDead');
 
     // Both layers agree this PID is gone — fire onDead.
-    batchSpy.mockResolvedValue(new Set<number>());
+    batchSpy.mockResolvedValue({ alive: new Set<number>(), images: new Map<number, string>() });
     deadSpy.mockResolvedValue(true);
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
@@ -226,12 +227,12 @@ describe('ProcessMonitor', () => {
   // catch that and defer, never firing onDead.
   it('does NOT fire onDead when the death probe times out (live session survives a slow tasklist)', async () => {
     monitor = new ProcessMonitor();
-    const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAlive');
+    const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAliveDetailed');
     const deadSpy = vi.spyOn(ProcessMonitor, 'isDefinitelyDead');
 
     // Batch can't see the PID (timed out → empty), and the per-PID confirm
     // probe also fails (tasklist timeout). The process is actually ALIVE.
-    batchSpy.mockResolvedValue(new Set<number>());
+    batchSpy.mockResolvedValue({ alive: new Set<number>(), images: new Map<number, string>() });
     deadSpy.mockRejectedValue(Object.assign(new Error('tasklist ETIMEDOUT'), { code: 'ETIMEDOUT' }));
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;
@@ -257,11 +258,11 @@ describe('ProcessMonitor', () => {
 
   it('only re-verifies the apparent-dead subset, not the whole watch list', async () => {
     monitor = new ProcessMonitor();
-    const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAlive');
+    const batchSpy = vi.spyOn(ProcessMonitor, 'batchCheckAliveDetailed');
     const deadSpy = vi.spyOn(ProcessMonitor, 'isDefinitelyDead');
 
     // Three watched, one missing from batch result.
-    batchSpy.mockResolvedValue(new Set<number>([11111, 22222]));
+    batchSpy.mockResolvedValue({ alive: new Set<number>([11111, 22222]), images: new Map<number, string>() });
     deadSpy.mockResolvedValue(true);
 
     const origInterval = (ProcessMonitor as any).CHECK_INTERVAL_MS;

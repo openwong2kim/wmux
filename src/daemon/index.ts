@@ -3443,7 +3443,8 @@ async function main(): Promise<void> {
     log: (level, message) => log(level, message),
     now: () => Date.now(),
   });
-  const processMonitor = new ProcessMonitor();
+  // app-weight P1-1: cadence from config (default 15 s; clamped 5–120 s).
+  const processMonitor = new ProcessMonitor((config.daemon.livenessIntervalSec ?? 15) * 1000);
 
   // LanLink PR-4 — the network surface. An ISOLATED net.Server (its OWN admission
   // counters, never the control pipe's = G1) bound to the configured NIC, with
@@ -3768,7 +3769,7 @@ async function main(): Promise<void> {
   runSnapshotOnceRef = runSnapshotOnce;
   const snapshotInterval = setInterval(() => {
     void runSnapshotOnce();
-  }, 30_000);
+  }, (config.daemon.snapshotIntervalSec ?? 30) * 1000); // app-weight P1 knob (clamped 10–600 s)
   snapshotInterval.unref();
 
   // A1b — fire an initial snapshot at spawn so a crash within the first
