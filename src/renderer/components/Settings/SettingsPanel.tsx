@@ -608,6 +608,8 @@ function OrchestratorSection() {
   const setDeckBrainModel = useStore((s) => s.setDeckBrainModel);
   const deckBrainFullPower = useStore((s) => s.deckBrainFullPower);
   const setDeckBrainFullPower = useStore((s) => s.setDeckBrainFullPower);
+  const deckBrainVendor = useStore((s) => s.deckBrainVendor);
+  const setDeckBrainVendor = useStore((s) => s.setDeckBrainVendor);
   const channelsTabVisible = useStore((s) => s.channelsTabVisible);
   const setChannelsTabVisible = useStore((s) => s.setChannelsTabVisible);
   const gitTabVisible = useStore((s) => s.gitTabVisible);
@@ -640,6 +642,20 @@ function OrchestratorSection() {
   return (
     <div className="flex flex-col gap-3 mt-4" data-testid="orchestrator-section">
       <SectionLabel label={t('settings.orchestrator')} />
+      <SettingRow
+        label={t('settings.orchestratorBrain')}
+        description={t('settings.orchestratorBrainDesc')}
+      >
+        <SettingSelect
+          value={deckBrainVendor}
+          onChange={(v) => setDeckBrainVendor(v === 'hermes' ? 'hermes' : 'claude')}
+          options={[
+            { value: 'claude', label: t('settings.orchestratorBrainClaude') },
+            { value: 'hermes', label: t('settings.orchestratorBrainHermes') },
+          ]}
+          label={t('settings.orchestratorBrain')}
+        />
+      </SettingRow>
       <SettingRow
         label={t('settings.orchestratorModel')}
         description={t('settings.orchestratorModelDesc')}

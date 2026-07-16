@@ -131,6 +131,16 @@ export class AcpBrainAdapter implements BrainAdapter {
     this._initialized = false;
     this.stdoutBuf = '';
     child.stdout.on('data', (d: Buffer) => this.onStdout(d.toString('utf8')));
+    child.on('error', (err: Error) => {
+      // Spawn failure (agent binary not installed / not on PATH) must surface
+      // as a fast, readable error — not a 30s request timeout. The connect UX
+      // keys its "not installed" hint off this message.
+      for (const [, entry] of this.pending) {
+        clearTimeout(entry.timer);
+        entry.resolve({ error: { message: `failed to launch ${this.deps.spawnSpec.command}: ${err.message}` } });
+      }
+      this.pending.clear();
+    });
     child.on('exit', () => {
       // Fail every in-flight request so a crashed agent surfaces as an error
       // event instead of a hung turn.

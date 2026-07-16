@@ -541,6 +541,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.deckBrainModel === 'string') state.deckBrainModel = data.deckBrainModel;
       // Fail closed to raw mode: only an explicit true enables full power.
       state.deckBrainFullPower = data.deckBrainFullPower === true;
+      // Fail closed to the default brain: only known vendor ids are restored.
+      state.deckBrainVendor = data.deckBrainVendor === 'hermes' ? 'hermes' : 'claude';
       // Fail closed to hidden: only an explicit boolean shows the (frozen)
       // human channel UI.
       if (typeof data.channelsTabVisible === 'boolean') {

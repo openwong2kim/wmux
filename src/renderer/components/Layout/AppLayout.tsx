@@ -218,6 +218,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     // serialization, so a future default flip can't resurrect full power for
     // a user who deliberately turned it off (CodeRabbit, PR #474).
     deckBrainFullPower: state.deckBrainFullPower,
+    deckBrainVendor: state.deckBrainVendor,
     channelsTabVisible: state.channelsTabVisible,
     gitTabVisible: state.gitTabVisible,
     paneActionsVisible: state.paneActionsVisible,
@@ -825,6 +826,12 @@ export default function AppLayout() {
   useEffect(() => {
     void window.electronAPI?.deck?.fullPowerSet?.(deckBrainFullPowerLive);
   }, [deckBrainFullPowerLive]);
+
+  // Same main-authority sync for the brain vendor (BYOB M0).
+  const deckBrainVendorLive = useStore((s) => s.deckBrainVendor);
+  useEffect(() => {
+    void window.electronAPI?.deck?.brainVendorSet?.(deckBrainVendorLive);
+  }, [deckBrainVendorLive]);
 
   // ─── First-run onboarding (spotlight) detection ─────────────────────
   // D8: spotlight stays gated behind firstRunCompleted so the wizard always
