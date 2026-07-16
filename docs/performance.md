@@ -87,6 +87,8 @@ resets the whole file to defaults.)
 | `session.bufferSizeMb` † | `8` | ≤ min(`bufferMaxMb`, 256) | Per-session output ring buffer the daemon captures — the source for scrollback restore and hidden-pane catch-up. |
 | `session.bufferMaxMb` † | `64` | hard cap 256 | Ceiling for `bufferSizeMb`. |
 | `session.deadSessionTtlHours` † | `24` | — | How long a dead (exited) session and its buffer are kept before reaping. Stamped per session at creation; changing it affects new sessions only. |
+| `daemon.livenessIntervalSec` | `15` | 5–120 | Cadence of the batched process-liveness sweep (one `tasklist` per tick on Windows). Raising it lowers idle CPU; the trade-off is supervision death-detection latency — worst case ≈ interval + 13 s of probe budgets (~28 s at the default). |
+| `daemon.snapshotIntervalSec` | `30` | 10–600 | Cadence of the crash-recovery snapshot (per-session `.buf` dump + `sessions.json`). Only sessions with NEW output since their last dump are written (plus a forced dump every 10th tick as a freshness backstop), so an idle fleet writes almost nothing. Raising it increases how much recent output a hard crash could lose. |
 | `session.maxSessions` | `200` | 1 – 10,000 | Ceiling on concurrent daemon sessions. At the ceiling, creation is refused — existing sessions are never evicted. |
 | `session.suspendedTtlHours` | `168` (7 days) | 1 – 8,760 | TTL after which an idle suspended-session tombstone is garbage-collected. |
 
