@@ -22,15 +22,22 @@ import * as path from 'path';
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8')) as { version: string };
 const SQUIRREL_SETUP_EXE = `wmux-${pkg.version}.Setup.exe`;
 
-function copyDirSync(src: string, dest: string): void {
+function copyDirSync(src: string, dest: string, skipFile?: (name: string) => boolean): void {
   fs.mkdirSync(dest, { recursive: true });
   for (const entry of fs.readdirSync(src, { withFileTypes: true })) {
+    if (!entry.isDirectory() && skipFile?.(entry.name)) continue;
     const srcPath = path.join(src, entry.name);
     const destPath = path.join(dest, entry.name);
-    if (entry.isDirectory()) copyDirSync(srcPath, destPath);
+    if (entry.isDirectory()) copyDirSync(srcPath, destPath, skipFile);
     else fs.copyFileSync(srcPath, destPath);
   }
 }
+
+// node-pty's Windows prebuilds ship ~27 MB of MSVC debug symbols (*.pdb) that
+// are never loaded at runtime. Exclude them from BOTH packaged copies (app.asar
+// + daemon-bundle); they stay in node_modules for local crash symbolization and
+// are archived per release tag.
+const isDebugSymbol = (name: string): boolean => name.toLowerCase().endsWith('.pdb');
 
 // node-pty ships prebuilt native binaries for every platform/arch under
 // prebuilds/<platform>-<arch>/. The Windows ConPTY prebuilds are ~30 MB EACH
@@ -192,7 +199,7 @@ const config: ForgeConfig = {
       // 2. Copy node-pty into extracted app
       const destNodePty = path.join(tempDir, 'node_modules', 'node-pty');
       console.log(`[postPackage] Copying node-pty...`);
-      copyDirSync(path.join(__dirname, 'node_modules', 'node-pty'), destNodePty);
+      copyDirSync(path.join(__dirname, 'node_modules', 'node-pty'), destNodePty, isDebugSymbol);
       if (canPrune) pruneForeignPrebuilds(destNodePty, targetPlatform!, targetArch!);
       const srcAddonApi = path.join(__dirname, 'node_modules', 'node-addon-api');
       if (fs.existsSync(srcAddonApi)) {
@@ -247,7 +254,7 @@ const config: ForgeConfig = {
       if (fs.existsSync(daemonBundleDir)) {
         const daemonNodePty = path.join(daemonBundleDir, 'node_modules', 'node-pty');
         console.log('[postPackage] Copying node-pty for daemon-bundle...');
-        copyDirSync(path.join(__dirname, 'node_modules', 'node-pty'), daemonNodePty);
+        copyDirSync(path.join(__dirname, 'node_modules', 'node-pty'), daemonNodePty, isDebugSymbol);
         if (canPrune) pruneForeignPrebuilds(daemonNodePty, targetPlatform!, targetArch!);
         console.log('[postPackage] Done — node-pty available for daemon.');
       }
