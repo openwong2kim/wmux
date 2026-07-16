@@ -278,3 +278,27 @@
 - **Depends on:** ★V1(codex notify가 fire-and-forget인가 await+timeout인가) 실측 선행 — await 모델이면 체인이 턴 지연/정지를 유발하는지부터 판단해야 함. 그리고 실제 foreign-notify wmux 유저 발생 시.
 - **Priority:** P3
 
+
+## Resource budget as a product contract (P3, from app-weight autoplan 2026-07-16)
+- **What:** Explicit budgets: baseline RAM, incremental RAM per interactive pane / background job, max background CPU, recovery SLA — enforced or at least asserted in perf-bench.
+- **Why:** Without a contract every subsystem (plugins, browser, Fleet, channels) consumes freely and "weight reduction" epics recur (codex CEO voice #16).
+- **Context:** plans/app-weight-reduction-2026-07-16.md CEO review. Needs corrected private-WS baseline (P0-0) first.
+- **Effort:** M (human) → S (CC). **Priority:** P3.
+
+## Battery/power-aware polling (P3, from app-weight autoplan 2026-07-16)
+- **What:** Slow daemon/main polls (liveness, portWatch, metadata) on battery / power-saver mode.
+- **Why:** Laptop users pay idle CPU in battery life; Windows exposes power status events.
+- **Context:** plans/app-weight-reduction-2026-07-16.md P1. Do after P1 lands (needs the knob plumbing from P1-6).
+- **Effort:** S. **Priority:** P3.
+
+## Default-shell weight surfaced at onboarding/Settings (P3, from app-weight autoplan 2026-07-16)
+- **What:** Surface per-shell memory cost where the default shell is chosen (pwsh ≈ 95 MB WS / ~22 MB private per pane vs cmd ≈ 10 MB); optionally offer a lighter default.
+- **Why:** Users multiply shell weight by pane count without knowing; informed choice beats silent policy.
+- **Context:** plans/app-weight-reduction-2026-07-16.md CEO expansion scan. UX-facing → needs design pass.
+- **Effort:** S-M. **Priority:** P3.
+
+## Per-pane resource badge / footprint attribution (P2-P3, from app-weight autoplan 2026-07-16, owner-deferred at final gate)
+- **What:** Pane-level RAM/CPU badge ("this Claude session: 1.2 GB") + kill/park affordance; possibly a Settings footprint panel.
+- **Why:** Corrected private-WS measurement will likely show agent CLI processes dominate — weight wmux cannot shrink. Attribution converts "wmux is heavy" complaints into correct blame + user action. No competitor has it (CEO voice F15).
+- **Context:** plans/app-weight-reduction-2026-07-16.md. Re-evaluate AFTER P0-0 corrected measurements land; needs its own design pass (UI surface).
+- **Depends on:** P0-0 measurement fixes. **Effort:** M → S-M (CC). **Priority:** P2-P3.
