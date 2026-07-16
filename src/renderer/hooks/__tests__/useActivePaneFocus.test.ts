@@ -271,7 +271,11 @@ describe('isFocusOrphaned', () => {
 // be re-focused — but only when focus is genuinely orphaned.
 
 /** Drives the heal with a controllable activeElement sequence + manual defer. */
-function makeReassertHarness(seq: Array<'body' | 'real' | 'null'>, target: string | null) {
+function makeReassertHarness(
+  seq: Array<'body' | 'real' | 'null'>,
+  target: string | null,
+  focusSucceeds = true,
+) {
   const body = {} as Element;
   const real = {} as Element;
   const resolve = { body, real, null: null } as const;
@@ -279,6 +283,7 @@ function makeReassertHarness(seq: Array<'body' | 'real' | 'null'>, target: strin
   let i = 0;
   const focused: string[] = [];
   const healed: string[] = [];
+  const culprits: Array<string | null> = [];
   const deferQueue: Array<() => void> = [];
 
   const deps: FocusReassertDeps = {
@@ -287,15 +292,19 @@ function makeReassertHarness(seq: Array<'body' | 'real' | 'null'>, target: strin
     // heal that reads activeElement twice (sync + deferred) sees both stages.
     getActiveElement: () => active[Math.min(i++, active.length - 1)],
     getBody: () => body,
-    focusTerminal: (id) => focused.push(id),
+    // Returns whether focus actually landed. focusSucceeds=false models an
+    // invisible / mid-remount terminal whose focus() is a silent no-op.
+    focusTerminal: (id) => { focused.push(id); return focusSucceeds; },
     defer: (cb) => deferQueue.push(cb),
-    onHeal: (id) => healed.push(id),
+    describeCulprit: () => 'textarea.xterm-helper-textarea',
+    onHeal: (id, culprit) => { healed.push(id); culprits.push(culprit); },
   };
 
   return {
     deps,
     focused,
     healed,
+    culprits,
     deferredCount: () => deferQueue.length,
     drain: () => { while (deferQueue.length) { const cb = deferQueue.shift(); if (cb) cb(); } },
   };
@@ -326,6 +335,26 @@ describe('reassertFocusIfOrphaned', () => {
     h.drain();
     expect(h.focused).toEqual([]);
     expect(h.healed).toEqual([]);
+  });
+
+  it('records the orphaning culprit on a real heal', () => {
+    const h = makeReassertHarness(['body', 'body'], 'pty-1');
+    reassertFocusIfOrphaned(h.deps);
+    h.drain();
+    expect(h.healed).toEqual(['pty-1']);
+    expect(h.culprits).toEqual(['textarea.xterm-helper-textarea']);
+  });
+
+  it('does NOT count a heal when focus() fails to land (invisible / mid-remount terminal)', () => {
+    // The reclaim↔orphan thrash: focus target resolves and we attempt it, but
+    // the terminal is invisible so focus() is a no-op and DOM focus stays on
+    // <body>. focusTerminal returns false → no heal fires, so the loop can't
+    // spin and the log isn't spammed.
+    const h = makeReassertHarness(['body', 'body'], 'pty-1', false);
+    reassertFocusIfOrphaned(h.deps);
+    h.drain();
+    expect(h.focused).toEqual(['pty-1']); // we DID attempt it
+    expect(h.healed).toEqual([]);         // but it was not a heal
   });
 
   it('does NOT yank focus when a real element claims it before the deferred frame', () => {

@@ -162,12 +162,25 @@ export interface FocusReassertDeps {
   resolveTarget: () => string | null;
   getActiveElement: () => Element | null;
   getBody: () => Element | null;
-  /** Pull DOM focus onto a terminal's xterm by ptyId. No-op if unregistered. */
-  focusTerminal: (ptyId: string) => void;
+  /** Pull DOM focus onto a terminal's xterm by ptyId. Returns true ONLY when
+   *  the terminal exists, is actually focusable (visible in layout), AND focus
+   *  landed on a real element. Returns false for a missing / invisible / still-
+   *  mounting terminal — focusing such a terminal is a silent no-op that leaves
+   *  DOM focus on <body>, and treating that as a heal is exactly what let the
+   *  reclaim↔orphan thrash spin (focusout → reclaim → focus() bounces back to
+   *  body → focusout → ...), the intermittent "typing dead until I make a new
+   *  pane" bug. */
+  focusTerminal: (ptyId: string) => boolean;
   /** Defer one frame so we read activeElement AFTER the focus change settles. */
   defer: (cb: () => void) => void;
-  /** Instrumentation: called with the ptyId whenever a heal actually fires. */
-  onHeal?: (ptyId: string) => void;
+  /** Instrumentation: the element that just lost focus (focusout target), or
+   *  null when the signal was not a focusout (keydown / window-focus). Logged
+   *  on a real heal so the NEXT dead-input episode NAMES what dropped focus to
+   *  <body> instead of leaving the orphaning source a guess. */
+  describeCulprit?: () => string | null;
+  /** Instrumentation: called with the ptyId (and culprit, if known) whenever a
+   *  heal actually fires. */
+  onHeal?: (ptyId: string, culprit: string | null) => void;
 }
 
 /**
@@ -193,8 +206,12 @@ export function reassertFocusIfOrphaned(deps: FocusReassertDeps): void {
     if (!isFocusOrphaned(deps.getActiveElement(), deps.getBody())) return;
     const ptyId = deps.resolveTarget();
     if (!ptyId) return;
-    deps.focusTerminal(ptyId);
-    deps.onHeal?.(ptyId);
+    // Only count it as a heal if focus actually LANDED. A no-op focus() on an
+    // invisible / mid-remount terminal leaves DOM focus on <body>; healing
+    // "successfully" onto it would re-fire on the next focusout and thrash.
+    const healed = deps.focusTerminal(ptyId);
+    if (!healed) return;
+    deps.onHeal?.(ptyId, deps.describeCulprit?.() ?? null);
   });
 }
 
@@ -244,16 +261,45 @@ export function useActivePaneFocus(): void {
     // keydown landing right before unmount could otherwise leave a queued rAF
     // that refocuses a terminal from a torn-down effect instance.
     const pending = new Set<number>();
-    const onSignal = (): void => reassertFocusIfOrphaned({
+    const onSignal = (ev?: Event): void => reassertFocusIfOrphaned({
       resolveTarget: () => resolveActivePanePtyId(useStore.getState()),
       getActiveElement: () => document.activeElement,
       getBody: () => document.body,
-      focusTerminal: (id) => terminalRegistry.get(id)?.focus(),
+      focusTerminal: (id) => {
+        const term = terminalRegistry.get(id);
+        if (!term) return false;
+        // An invisible / mid-remount terminal (display:none ancestor during a
+        // workspace-switch or hidden-pane window) can't hold focus. offsetParent
+        // is null iff the element or an ancestor is display:none — exactly that
+        // case. Skip it so we don't focus() into the void and spin the
+        // reclaim↔orphan thrash loop (see focusTerminal doc on FocusReassertDeps).
+        const el = (term as unknown as { element?: HTMLElement }).element;
+        if (el && el.offsetParent === null) return false;
+        term.focus();
+        // Confirm focus actually landed on a real element. If the terminal was
+        // not focusable after all, activeElement is still <body> and this is not
+        // a real heal — report failure so the caller neither loops nor logs it.
+        return !isFocusOrphaned(document.activeElement, document.body);
+      },
       defer: (cb) => {
         const handle = requestAnimationFrame(() => { pending.delete(handle); cb(); });
         pending.add(handle);
       },
-      onHeal: (id) => console.debug(`[useActivePaneFocus] reclaimed orphaned focus → pty=${id}`),
+      // For a focusout, the event target is the element that just RELINQUISHED
+      // focus to <body> — i.e. the orphaning culprit. Snapshot it here (the
+      // event is stale by the deferred frame). keydown / window-focus carry no
+      // meaningful culprit.
+      describeCulprit: () => {
+        const t = ev && ev.type === 'focusout' ? (ev.target as Element | null) : null;
+        if (!t || !(t instanceof Element)) return null;
+        const cls = typeof t.className === 'string' && t.className ? `.${t.className.trim().split(/\s+/).join('.')}` : '';
+        const id = t.id ? `#${t.id}` : '';
+        return `${t.tagName.toLowerCase()}${id}${cls}`;
+      },
+      onHeal: (id, culprit) => console.debug(
+        `[useActivePaneFocus] reclaimed orphaned focus → pty=${id}` +
+        (culprit ? ` (lost-from=${culprit})` : ''),
+      ),
     });
     // window 'focus': OS focus returns (alt-tab back) onto <body>.
     // 'focusout': an element (overlay input) just relinquished / was unmounted;

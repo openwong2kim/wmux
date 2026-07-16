@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Typing no longer intermittently goes dead in a pane until you open a new one.** On some machines, keystrokes would sporadically stop reaching the terminal — you'd type and nothing happened, and the only way back was to split off a fresh pane. The cause was a focus tug-of-war: when the pane that should hold keyboard focus was momentarily off-screen (mid workspace-switch or a re-mounting terminal), the focus self-heal kept shoving focus at it, focus bounced straight back to nothing, and the loop spun — dropping the keystrokes caught in between. The self-heal now refuses to hand focus to a terminal that isn't actually visible and confirms focus truly landed before counting it as recovered, which breaks the loop. It also now records which element dropped focus, so any remaining cases name their own cause in the logs. (This is a distinct bug from the earlier IME "claim-storm" — the field logs ruled that out.)
+
 ## [3.24.0] — 2026-07-16
 
 ### Added
