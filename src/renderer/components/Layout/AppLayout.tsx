@@ -214,7 +214,10 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalFontFamily: state.terminalFontFamily,
     defaultShell: state.defaultShell,
     deckBrainModel: state.deckBrainModel || undefined,
-    deckBrainFullPower: state.deckBrainFullPower || undefined,
+    // Persisted explicitly (not `|| undefined`): an explicit false survives
+    // serialization, so a future default flip can't resurrect full power for
+    // a user who deliberately turned it off (CodeRabbit, PR #474).
+    deckBrainFullPower: state.deckBrainFullPower,
     channelsTabVisible: state.channelsTabVisible,
     gitTabVisible: state.gitTabVisible,
     paneActionsVisible: state.paneActionsVisible,
