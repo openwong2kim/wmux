@@ -257,7 +257,7 @@ Total: **139** methods (`ALL_RPC_METHODS` in
 | Method | Capability | Risk class |
 |---|---|---|
 | `ui.decoratePane` | `ui.pane-decoration` | `ui` |
-| `perf.status` | `null` |  |
+| `perf.status` | `pane.read` |  |
 | `deck.resolvePaneRoute` | `null` |  |
 | `deck.resolveCommanderWorkspace` | `null` |  |
 | `deck.requestDecision` | `null` |  |
