@@ -58,6 +58,14 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private lastResizeAtMs = 0;
 
+  /**
+   * app-weight P1-4: last cwd emitted from the OSC 7 path. Starts null so
+   * the first OSC 7 after spawn always emits; a bridge instance is strictly
+   * per-PTY-lifetime (setupDataForwarding once, cleanup on teardown), so a
+   * plain field is sufficient. Cleared in cleanup() for hygiene.
+   */
+  private lastEmittedOscCwd: string | null = null;
+
   /** Called by DaemonSessionManager.resizeSession on every applied resize. */
   noteResize(): void {
     this.lastResizeAtMs = Date.now();
@@ -144,8 +152,16 @@ export class DaemonPTYBridge extends EventEmitter {
         return;
       }
       if (event.code === 7) {
+        // app-weight P1-4: dedup identical OSC 7 emissions. Shells re-emit
+        // OSC 7 on every prompt redraw, so an idle pane would otherwise spam
+        // the same cwd across daemon→main→renderer on each redraw. Mirrors
+        // the prompt-detect guard (lastDetectedCwd) below; the first OSC 7
+        // after spawn always emits because the cache starts null.
         const cwd = parseOsc7Cwd(event.data);
-        this.emit('cwd', { sessionId, cwd });
+        if (cwd !== this.lastEmittedOscCwd) {
+          this.lastEmittedOscCwd = cwd;
+          this.emit('cwd', { sessionId, cwd });
+        }
         return;
       }
       if (event.code === 9 || event.code === 99 || event.code === 777) {
@@ -289,6 +305,7 @@ export class DaemonPTYBridge extends EventEmitter {
       this.activityMonitor.stop(this.sessionId);
     }
 
+    this.lastEmittedOscCwd = null;
     this.oscParser = null;
     this.agentDetector = null;
     this.activityMonitor = null;
