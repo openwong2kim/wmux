@@ -67,6 +67,34 @@ describe('AgentDetector', () => {
     });
   });
 
+  describe('OSC-title gate (live incident 2026-07-17, Fable-era Claude Code)', () => {
+    it('opens the Claude gate from the OSC 0 window-title sequence alone', () => {
+      // The current TUI renders no visible "Claude Code" text — the name only
+      // appears in the window title escape, which ANSI_STRIP removes. The gate
+      // must therefore also be checked against the raw line.
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('\x1b]0;✳ Claude Code\x07\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'running' });
+      // Approval detection now works even though no visible banner ever appeared.
+      cb.mockClear();
+      det.feed('│ Do you want to overwrite calculator.html? │\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({ status: 'awaiting_input' });
+    });
+
+    it('opens the gate from an OSC title stuck in an incomplete line (no newline)', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('\x1b]0;⠂ Claude Code\x07'); // no newline — tail path
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'running' });
+    });
+  });
+
   describe('Claude file-edit approval prompts (live incident 2026-07-17)', () => {
     const gated = () => {
       const det = new AgentDetector();

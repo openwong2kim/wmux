@@ -379,6 +379,9 @@ export class AgentDetector {
     // 뿐이라 미완성 라인에서 미리 봐도 안전하다.
     const tail = this.lineBuffer.replace(ANSI_STRIP, '').trim();
     if (tail) this.checkGates(tail);
+    // Raw-tail gate check — see processLine: current Claude Code only carries
+    // its name inside the OSC window-title escape, which the strip removes.
+    if (this.lineBuffer) this.checkGates(this.lineBuffer);
   }
 
   /**
@@ -399,6 +402,17 @@ export class AgentDetector {
   }
 
   private processLine(line: string): void {
+    // RAW-line gate check BEFORE the empty-clean bail. Live incident
+    // 2026-07-17 (Fable-era Claude Code): the TUI renders no visible
+    // "Claude Code" text — the name only appears in the OSC 0 window-title
+    // sequence (`ESC ]0;✳ Claude Code BEL`), which ANSI_STRIP removes
+    // wholesale; a title-only line then strips to empty and used to return
+    // before any gate check, leaving the gate permanently closed and every
+    // Claude pattern (including approval awaiting_input) dead. Gates are
+    // activation-only signals, so matching inside escape payloads is safe;
+    // status patterns still run on cleaned lines only.
+    this.checkGates(line);
+
     const clean = line.replace(ANSI_STRIP, '').trim();
     if (!clean) return;
 
