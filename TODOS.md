@@ -158,12 +158,23 @@
      vi.waitFor budget. Verified stable across 5 consecutive full-suite runs. -->
 
 ## Duplicate-daemon / split-brain on "Quit (keep sessions)" → relaunch (P1)
-> **STATUS 2026-07-01 — RESOLVED (pending live re-verify):** the launcher 3-defect chain SHIPPED in
-> v2.16.2 (PR #93: `checkProcessLiveness` 3-state, `tryEscalatedReping`, `classifyReclaimProbe` live-owner
-> fail-fast + exit 75). The residual daemon-side sibling — `src/daemon/index.ts` `isProcessRunning`
-> `catch → false` — is fixed on branch `feat/unattended-supervisor` (U-SPLIT: pure 3-state classifiers
-> extracted to `src/shared/processLiveness.ts`; a probe `unknown` no longer reclaims a live daemon's lock,
-> via `lockOwnerIsReclaimable`). Remaining: the dynamic autostart-triggered 2-instance race probe (live).
+> **STATUS 2026-07-17 — CODE SHIPPED; only a live probe is left.** The launcher 3-defect chain
+> shipped in v2.16.2 (PR #93: `checkProcessLiveness` 3-state, `tryEscalatedReping`,
+> `classifyReclaimProbe` live-owner fail-fast + exit 75). The residual daemon-side sibling
+> (`src/daemon/index.ts` `isProcessRunning` `catch → false`) shipped too — **`10c8a4b`, PR #323
+> "feat: unattended supervisor + reboot-reattach RCA fix", 2026-07-02.** Verified on main today:
+> `lockOwnerIsReclaimable` lives in `src/shared/processLiveness.ts` and is imported by
+> `src/daemon/index.ts`, `classifyReclaimProbe` is in `DaemonPipeServer.ts`, and the old
+> `isProcessRunning` is gone.
+>
+> Corrects the previous status block, which said the fix was "on branch `feat/unattended-supervisor`".
+> That branch was merged by #323 the day after it was written and its ref deleted; nothing was ever
+> stranded on it. (The 2026-07-17 direction review inherited the same stale claim and had it queued
+> as a "revive or retire?" owner decision — there was nothing to revive.)
+>
+> **Remaining: the dynamic autostart-triggered 2-instance race probe (live).** That is a
+> verification, not code.
+>
 > The stale "Defect 1 = `isProcessAlive catch→false`" detail below refers to the LAUNCHER site,
 > already superseded by v2.16.2.
 - **What:** "Quit (keep sessions running)" 후 `npm start` 재실행 시 둘째 데몬이 `wmux-daemon-rizz-1` 폴백 파이프로 기동 → 첫 데몬의 세션 파이프 EADDRINUSE → reattach 실패 → 새 세션 → 터미널 초기화. persistence가 깨짐 + 데몬 중복(RAM 낭비).
