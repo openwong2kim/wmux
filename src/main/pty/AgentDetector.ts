@@ -161,6 +161,27 @@ const AGENT_PATTERNS: AgentPattern[] = [
       //     non-canonical single-`__` names like `mcp__github_create_issue`.
       { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do you want to proceed\?[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,                                                                                  status: 'awaiting_input',   message: 'Approval requested' },
       { regex: /^[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Allow tool use for (?:[A-Z][A-Za-z]+|mcp__[A-Za-z0-9-]+__[A-Za-z0-9_-]+)\??[\s│║┃═━─┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Tool approval requested' },
+      // File-edit approval prompts (`Do you want to create/overwrite/make this
+      // edit to <file>?`). Live incident 2026-07-17: a worker pane sat on
+      // `Do you want to overwrite calculator.html?` for 100 minutes because
+      // only the `proceed`/`Allow tool use` forms were matched, so no
+      // awaiting_input ever fired and the orchestrator was never woken.
+      //
+      // Two rendering hazards, both observed in that pane's buffer:
+      //   1. The TUI draws prompt words with cursor moves, so after ANSI strip
+      //      the spaces can vanish (`Doyouwanttooverwrite`) — same phenomenon
+      //      as the `ClaudeCode` gate note above. Hence `\s*` between words.
+      //   2. In a narrow pane the prompt WRAPS after the verb, putting the
+      //      filename on the next rendered line — so a filename-bearing
+      //      one-line pattern alone can never match. The second pattern
+      //      accepts the verb ending the line on its own.
+      // Both stay whole-line anchored (leading + trailing frame class), same
+      // false-positive discipline as the patterns above.
+      // (`╌╍` — light/heavy double-dash horizontals — appear in the observed
+      // buffer's separator rule but are missing from the frame class the
+      // older patterns use, so the new class includes them.)
+      { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)\s*\S[^?]*\?[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/, status: 'awaiting_input',   message: 'Edit approval requested' },
+      { regex: /^[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*Do\s*you\s*want\s*to\s*(?:create|overwrite|make\s*this\s*edit\s*to)[\s│║┃═━─╌╍┄┅┆┇┈┉╭╮╯╰╔╗╝╚┌┐┘└·]*$/,             status: 'awaiting_input',   message: 'Edit approval requested' },
     ],
   },
 
