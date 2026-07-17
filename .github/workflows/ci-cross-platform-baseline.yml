@@ -7,16 +7,26 @@ name: CI Cross-Platform Baseline
 # the unix sides have never been executed). Failures get triaged via the
 # cross-platform fix budget, not by blocking merges.
 
+# Branch pushes are covered by the pull_request trigger. Listing 'feat/**' /
+# 'feature/**' under push as well ran this whole 3-OS matrix TWICE for every
+# push to a branch with an open PR — double the minutes and double the exposure
+# to runner flakes, with the push-event copy painting a red X on the commit even
+# when the PR's own copy was green. ci.yml already uses push-on-main + PR; this
+# now matches it.
 on:
   push:
     branches:
       - main
-      - 'feature/**'
-      - 'feat/**'
   pull_request:
     branches:
       - main
   workflow_dispatch:
+
+concurrency:
+  group: baseline-${{ github.ref }}
+  # Safe to cancel anywhere: this workflow is informational and writes nothing
+  # (unlike perf.yml, whose main runs append to the history file at the end).
+  cancel-in-progress: true
 
 jobs:
   baseline:
@@ -49,7 +59,15 @@ jobs:
       - name: Install Linux native build deps
         if: runner.os == 'Linux'
         run: |
-          sudo apt-get update
+          # GitHub's Ubuntu images preconfigure packages.microsoft.com, which
+          # this job never installs from — build-essential and libxss1 come from
+          # the Ubuntu archives. But a bare `apt-get update` fails hard on ANY
+          # configured repo, so when that host broke (403 Forbidden on jammy
+          # InRelease, seen 2026-07-17) update exited 100 and killed the job over
+          # a repo we don't use. Drop it first, then retry the ones we need so a
+          # transient mirror hiccup doesn't read as a wmux failure.
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list /etc/apt/sources.list.d/microsoft*.sources
+          sudo apt-get -o Acquire::Retries=3 update
           sudo apt-get install -y build-essential libxss1
 
       # macos-14 (Apple Silicon) ships with Xcode Command Line Tools preinstalled.

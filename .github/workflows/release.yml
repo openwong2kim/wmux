@@ -346,9 +346,17 @@ jobs:
 
       # build-essential + libxss1 for node-pty/Electron (matches the baseline CI);
       # rpm + fakeroot are required by @electron-forge/maker-rpm.
+      #
+      # The microsoft-prod repo is preconfigured on GitHub's Ubuntu images and
+      # nothing here installs from it, but `apt-get update` fails hard on ANY
+      # configured repo — when that host 403'd on 2026-07-17 it exited 100 and
+      # took the baseline job with it. On this path the cost is higher: the .deb,
+      # .rpm and .AppImage would silently go missing from a release over a repo
+      # we don't use. Drop it, then retry the archives we do need.
       - name: Install Linux build dependencies
         run: |
-          sudo apt-get update
+          sudo rm -f /etc/apt/sources.list.d/microsoft*.list /etc/apt/sources.list.d/microsoft*.sources
+          sudo apt-get -o Acquire::Retries=3 update
           sudo apt-get install -y build-essential libxss1 rpm fakeroot
 
       - name: Install dependencies
