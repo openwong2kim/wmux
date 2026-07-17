@@ -1,5 +1,29 @@
 # TODOS
 
+## 커맨더 원격 제어 — OpenClaw 2호 어댑터 + 메신저 채널 브리지 (BYOB C, P2)
+- **What:** 데크 커맨더를 폰/외부에서 제어하는 경로. OpenClaw를 두 번째 ACP... 정확히는
+  Gateway WS 어댑터(`chat.send`→`agent` 이벤트: deltaText/tool_call/tool_result/finish,
+  sessionKey=resume 핸들)로 붙이고, OpenClaw에 내장된 메신저 채널(텔레그램/WhatsApp 등)을
+  통해 같은 커맨더 세션에 밖에서 말을 걸 수 있게 한다.
+- **Why:** 오너 요구 "커맨더를 언제 어디서든(RC처럼) 제어". Claude Code RC 직결은 구조적
+  불가(RC=대화형 세션 전용·폐쇄 프로토콜, 데크 브레인=headless 스트림), wmux 자체 원격
+  표면(웹/모바일)은 에픽급 → 게이트웨이형 에이전트의 채널 기능을 얻어 타는 것이
+  비용 대비 최적 경로(2026-07-17 결정, C안 채택·나중 진행).
+- **Pros:** "텔레그램에서 함대 지휘" 데모 가치 큼(경쟁 차별), 어댑터 인프라(BrainAdapter·
+  P4 role-gate·벤더 픽커) 전부 재사용, OpenClaw 스파이크 완료 상태(프로토콜 1:1 매핑 확인).
+- **Cons:** 상주 게이트웨이 유휴 400–800MB(앱 무거움 에픽과 상충 — **온디맨드 기동/정지
+  설계가 선행 조건**), challenge/nonce+deviceToken 핸드셰이크, 일일 세션 리셋 정책 핀 필요,
+  구독 과금 정책이 "현재로서는" 조건부(zai/anthropic 재사용 모드).
+- **Context:** 스파이크 리포트는 메모리 project-byob-brain-design-2026-07-16 + BYOB 설계
+  문서(~/.gstack/.../rizz-main-design-20260716-233233-byob-brain.md)의 "B 스파이크 결과"
+  섹션. 어댑터 계약/게이트는 #475(role-gate)·#477(AcpBrainAdapter — 구조 참고용 템플릿).
+  OpenClaw Gateway 프로토콜 v4: 포트 18789 localhost, connect.challenge→hello-ok,
+  `openclaw models status --json --check`로 인증 감지. 채널 브리지의 신뢰 모델(외부 메신저
+  발화자=오너 검증)은 착수 시 별도 보안 리뷰 필수.
+- **Depends on / blocked by:** 온디맨드 게이트웨이 수명주기 설계(선행), P4 role-gate(완료),
+  벤더 픽커(완료). Hermes 업스트림 fix(hermes-agent#66038)와는 독립.
+- **Priority:** P2 (오너 지시로 이연 — "나중에 진행")
+
 ## ✅ 채널 멘션: 크로스-워크스페이스 전달 — DONE v3.14.0 (2026-07-05)
 - 데몬 `events.poll` union scope(`workspaceIds` 집합 필터, ea36425) + 렌더러 단일 폴 fan-out(`planChannelMessageDelivery` 순수함수 유닛테스트, 7a108ea)으로 구현. 1차 N-루프 시도의 same-ws 회귀는 이 재설계(TODO의 "더 나은 방향")로 회피. idle-since-attach 전달 차단은 grace+output-quiet paste 게이트로 해결(c8b3bf9, 941a639). 3모델 리뷰(Claude·Codex·GLM) 통과. 아래는 이력 보존:
 
