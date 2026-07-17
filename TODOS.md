@@ -326,9 +326,3 @@
 - **Why:** Corrected private-WS measurement will likely show agent CLI processes dominate — weight wmux cannot shrink. Attribution converts "wmux is heavy" complaints into correct blame + user action. No competitor has it (CEO voice F15).
 - **Context:** plans/app-weight-reduction-2026-07-16.md. Re-evaluate AFTER P0-0 corrected measurements land; needs its own design pass (UI surface).
 - **Depends on:** P0-0 measurement fixes. **Effort:** M → S-M (CC). **Priority:** P2-P3.
-
-## Release pipeline: archive node-pty PDBs per release tag (P2, from PR #470 review)
-- **What:** Add a release-workflow step that uploads `node_modules/node-pty/**/*.pdb` as a release artifact (or a dedicated symbols archive) when a `v*` tag builds.
-- **Why:** PR #470 excludes PDBs from the package (~54 MB installed). Without an archived copy per release, a native conpty/winpty crash dump from a shipped build cannot be symbolized. The forge.config.ts comment promises this archive; the pipeline does not exist yet (GLM-5.2 review caught the gap).
-- **Context:** `forge.config.ts` `isDebugSymbol` filter; `release.yml` is the natural home. Effort: S.
-- **Priority:** P2 (before the next release tag ideally).
