@@ -75,6 +75,8 @@ const PROMPT_TIMEOUT_MS = 10 * 60_000;
  *  ensureSession. Empirically sufficient on the dogfood machine (probes with
  *  a gap always passed; immediate prompts always wedged). */
 const NEW_SESSION_SETTLE_MS = 5_000;
+/** stdout framing cap — see onStdout. */
+const MAX_STDOUT_BUFFER_CHARS = 8 * 1024 * 1024;
 
 /** Extract the plain-text pieces of an ACP content block array. */
 function textOfContent(content: unknown): string {
@@ -105,6 +107,15 @@ export class AcpBrainAdapter implements BrainAdapter {
   /** tool_call id → name, so tool_call_update can emit a named tool-end. */
   private toolNames = new Map<string, string>();
   private _sessionId: string | null = null;
+  /** Whether _sessionId is attached to the CURRENT child process. Reset on
+   *  respawn — session/load runs once per child, never per send (a load
+   *  replays the whole transcript on some agents; re-loading every turn made
+   *  latency grow with history — Codex review P2). */
+  private _sessionAttached = false;
+  /** A disk-seeded resume id is unvalidated until a prompt succeeds against
+   *  it; some agents report an unknown id as a SUCCESSFUL empty load, so the
+   *  failure only surfaces at prompt time (Codex review P2). */
+  private _resumeUnvalidated = false;
   private _startOptions: BrainStartOptions = {};
   private _initialized = false;
   private _disposed = false;
@@ -122,7 +133,10 @@ export class AcpBrainAdapter implements BrainAdapter {
 
   start(opts: BrainStartOptions): void {
     this._startOptions = opts;
-    if (opts.resumeSessionId) this._sessionId = opts.resumeSessionId;
+    if (opts.resumeSessionId) {
+      this._sessionId = opts.resumeSessionId;
+      this._resumeUnvalidated = true;
+    }
   }
 
   // ── subprocess + JSON-RPC plumbing ─────────────────────────────────────
@@ -146,6 +160,7 @@ export class AcpBrainAdapter implements BrainAdapter {
     const child = spawnFn(this.deps.spawnSpec.command, this.deps.spawnSpec.args);
     this.child = child;
     this._initialized = false;
+    this._sessionAttached = false;
     this.stdoutBuf = '';
     child.stdout.on('data', (d: Buffer) => this.onStdout(d.toString('utf8')));
     // The agent's stderr is its diagnostic channel (ACP reserves stdout for
@@ -158,10 +173,21 @@ export class AcpBrainAdapter implements BrainAdapter {
         const t = line.trim();
         if (!t) continue;
         stderrLines++;
-        if (stderrLines <= 400) console.warn(`[acp-brain:${this.deps.spawnSpec.command}] ${t.slice(0, 300)}`);
+        if (stderrLines <= 400) {
+          console.warn(`[acp-brain:${this.deps.spawnSpec.command}] ${t.slice(0, 300)}`);
+        } else if (stderrLines === 401) {
+          // In-loop cap check so a single huge chunk can't blow past the
+          // limit, and the truncation is visible instead of silent.
+          console.warn(`[acp-brain:${this.deps.spawnSpec.command}] (stderr mirror capped at 400 lines)`);
+          break;
+        }
       }
     });
     child.on('error', (err: Error) => {
+      // Spawn/IO error: mark the child unusable so the next turn respawns
+      // deterministically (an 'error' without 'exit' would otherwise leave a
+      // half-alive handle that ensureChild considers healthy).
+      if (this.child === child) this.child = null;
       // Spawn failure (agent binary not installed / not on PATH) must surface
       // as a fast, readable error — not a 30s request timeout. The connect UX
       // keys its "not installed" hint off this message.
@@ -185,6 +211,19 @@ export class AcpBrainAdapter implements BrainAdapter {
 
   private onStdout(chunk: string): void {
     this.stdoutBuf += chunk;
+    // Framing-edge guard: a buggy agent emitting an enormous newline-less
+    // line (or binary noise) must not grow main-process memory unboundedly —
+    // the orchestrator brain must never be able to OOM the whole app (GLM
+    // review). Well past any legitimate ACP frame.
+    if (this.stdoutBuf.length > MAX_STDOUT_BUFFER_CHARS) {
+      this.stdoutBuf = '';
+      console.error(
+        `[acp-brain:${this.deps.spawnSpec.command}] stdout frame exceeded ` +
+        `${MAX_STDOUT_BUFFER_CHARS} chars without a newline — killing the agent (protocol violation)`,
+      );
+      this.killChildTree();
+      return;
+    }
     let idx: number;
     while ((idx = this.stdoutBuf.indexOf('\n')) >= 0) {
       const line = this.stdoutBuf.slice(0, idx).trim();
@@ -201,8 +240,15 @@ export class AcpBrainAdapter implements BrainAdapter {
   }
 
   private onMessage(msg: JsonRpcMessage): void {
-    // Response to one of our requests.
-    if (msg.id !== undefined && msg.method === undefined) {
+    // Response to one of our requests: judged by result/error presence AND a
+    // matching pending id — never by the absence of `method` (some agents
+    // echo it on responses, which would misroute the response as a
+    // notification and hang the turn until the prompt timeout — GLM review).
+    if (
+      msg.id !== undefined &&
+      (msg.result !== undefined || msg.error !== undefined) &&
+      this.pending.has(msg.id)
+    ) {
       const entry = this.pending.get(msg.id);
       if (entry) {
         this.pending.delete(msg.id);
@@ -212,18 +258,26 @@ export class AcpBrainAdapter implements BrainAdapter {
       return;
     }
     // Agent → client REQUEST (has id + method): answer the small surface we
-    // support; refuse the rest. Permission prompts for the agent's own tools
-    // are its product's domain (wmux gates its OWN tools server-side, P4), so
-    // a blanket allow here cannot widen wmux's surface.
+    // support; refuse the rest. Permission prompts are DENIED: an ACP agent
+    // asks permission precisely when IT considers an action dangerous (its
+    // own terminal/process/file tools, delegation), and this brain runs
+    // headless — there is no human on this channel to consent, and a blanket
+    // allow would let pane-output prompt injection reach the agent's native
+    // shell outside every wmux gate (Codex review P1). The wmux fleet tools
+    // ride MCP, which does not pass through here — denying costs the brain
+    // nothing it is supposed to have.
     if (msg.id !== undefined && msg.method !== undefined) {
       if (msg.method === 'session/request_permission') {
         const options = (msg.params?.options ?? []) as Array<Record<string, unknown>>;
-        const allow = options.find((o) => o.kind === 'allow_once' || o.kind === 'allow_always');
+        const reject = options.find((o) => o.kind === 'reject_once' || o.kind === 'reject_always');
+        console.warn(
+          `[acp-brain:${this.deps.spawnSpec.command}] denied a native-tool permission request (headless commander)`,
+        );
         this.writeMessage({
           jsonrpc: '2.0',
           id: msg.id,
-          result: allow
-            ? { outcome: { outcome: 'selected', optionId: allow.optionId } }
+          result: reject
+            ? { outcome: { outcome: 'selected', optionId: reject.optionId } }
             : { outcome: { outcome: 'cancelled' } },
         });
       } else {
@@ -344,16 +398,22 @@ export class AcpBrainAdapter implements BrainAdapter {
       if (init.error) return { error: `ACP initialize failed: ${init.error.message ?? 'unknown'}` };
       this._initialized = true;
     }
+    if (this._sessionId && this._sessionAttached) return this._sessionId;
     if (this._sessionId) {
-      // Resume the persisted conversation; a dead/unknown id falls back to a
-      // fresh session rather than bricking the commander (same soft-resume
-      // contract as ClaudeSdkAdapter P3a).
+      // Resume the persisted conversation ONCE per child; a dead/unknown id
+      // falls back to a fresh session rather than bricking the commander
+      // (same soft-resume contract as ClaudeSdkAdapter P3a). Some agents
+      // report an unknown id as a successful empty load — that case is
+      // caught at prompt time via _resumeUnvalidated (send()'s retry).
       const loaded = await this.request('session/load', {
         sessionId: this._sessionId,
         cwd: getWmuxDir(),
         mcpServers: this.mcpServersParam(),
       });
-      if (!loaded.error) return this._sessionId;
+      if (!loaded.error) {
+        this._sessionAttached = true;
+        return this._sessionId;
+      }
       this._sessionId = null;
     }
     // cwd is pinned to the wmux DATA dir, mirroring ClaudeSdkAdapter's P3a
@@ -375,6 +435,8 @@ export class AcpBrainAdapter implements BrainAdapter {
       return { error: `ACP session/new failed: ${created.error?.message ?? 'no sessionId'}` };
     }
     this._sessionId = sid;
+    this._sessionAttached = true;
+    this._resumeUnvalidated = false;
     // Windows spawn-race guard (live-debug finding, py-spy 2026-07-17): at
     // session start the agent boots its own MCP server subprocesses; a prompt
     // arriving IMMEDIATELY makes the agent's first-turn context gathering
@@ -398,14 +460,10 @@ export class AcpBrainAdapter implements BrainAdapter {
       yield { type: 'error', message: 'commander session disposed' };
       return;
     }
-    const session = await this.ensureSession();
-    if (typeof session !== 'string') {
-      yield { type: 'error', message: session.error };
-      return;
-    }
 
     // One-shot context injection on the first turn (system prompt + fleet
     // snapshot ride the prompt — ACP has no separate system-prompt channel).
+    // Composed ONCE: the resume-fallback retry re-sends the same prompt.
     const parts: string[] = [];
     if (this._startOptions.systemPrompt) {
       parts.push(this._startOptions.systemPrompt);
@@ -417,59 +475,128 @@ export class AcpBrainAdapter implements BrainAdapter {
     }
     const prompt = parts.length > 0 ? `${parts.join('\n\n---\n\n')}\n\n---\n\n${text}` : text;
 
-    // Buffer + pull: session/update notifications arrive on the socket while
-    // we await the prompt response; queue them and drain into the generator.
-    const queue: BrainEvent[] = [];
-    let wake: (() => void) | null = null;
-    this.turnSink = (ev) => {
-      queue.push(ev);
-      wake?.();
-    };
-    const promptDone = this.request(
-      'session/prompt',
-      { sessionId: session, prompt: [{ type: 'text', text: prompt }] },
-      PROMPT_TIMEOUT_MS,
-    ).finally(() => {
-      wake?.();
-    });
-    let settled = false;
-    void promptDone.then(() => {
-      settled = true;
-      wake?.();
-    });
+    // At most two attempts: the first may run against a disk-seeded session
+    // id that the agent no longer knows. Some agents report an unknown id as
+    // a SUCCESSFUL empty load, so the failure only surfaces when the prompt
+    // errors (Codex review P2) — mirror ClaudeSdkAdapter's resume fallback:
+    // when an UNVALIDATED resume dies before producing any event, drop the
+    // dead id and retry once on a fresh session.
+    for (let attempt = 0; attempt < 2; attempt++) {
+      const resumingUnvalidated = this._resumeUnvalidated && !!this._sessionId;
+      const session = await this.ensureSession();
+      if (typeof session !== 'string') {
+        yield { type: 'error', message: session.error };
+        return;
+      }
 
-    try {
-      while (!settled || queue.length > 0) {
-        if (queue.length === 0) {
-          await new Promise<void>((r) => {
-            wake = r;
-          });
-          wake = null;
-          continue;
-        }
-        yield queue.shift() as BrainEvent;
-      }
-      const response = await promptDone;
-      if (response.error) {
-        yield { type: 'error', message: response.error.message ?? 'ACP prompt failed' };
-        return;
-      }
-      const stopReason = response.result?.stopReason;
-      if (stopReason === 'refusal') {
-        yield { type: 'error', message: 'the brain refused the turn' };
-        return;
-      }
-      const usage: BrainUsage = {};
-      const u = response.result?.usage as Record<string, unknown> | undefined;
-      if (typeof u?.inputTokens === 'number') usage.inputTokens = u.inputTokens;
-      if (typeof u?.outputTokens === 'number') usage.outputTokens = u.outputTokens;
-      yield {
-        type: 'turn-end',
-        sessionId: this._sessionId,
-        ...(Object.keys(usage).length > 0 ? { usage } : {}),
+      // Buffer + pull: session/update notifications arrive on the socket
+      // while we await the prompt response; queue them and drain into the
+      // generator.
+      const queue: BrainEvent[] = [];
+      let wake: (() => void) | null = null;
+      let producedContent = false;
+      this.turnSink = (ev) => {
+        queue.push(ev);
+        wake?.();
       };
-    } finally {
-      this.turnSink = null;
+      const promptDone = this.request(
+        'session/prompt',
+        { sessionId: session, prompt: [{ type: 'text', text: prompt }] },
+        PROMPT_TIMEOUT_MS,
+      ).finally(() => {
+        wake?.();
+      });
+      let settled = false;
+      void promptDone.then(() => {
+        settled = true;
+        wake?.();
+      });
+
+      try {
+        while (!settled || queue.length > 0) {
+          if (queue.length === 0) {
+            await new Promise<void>((r) => {
+              wake = r;
+            });
+            wake = null;
+            continue;
+          }
+          producedContent = true;
+          yield queue.shift() as BrainEvent;
+        }
+        const response = await promptDone;
+        // Late-arrival drain: an agent that emits updates after (or racing)
+        // its prompt response must not lose them silently (GLM review).
+        while (queue.length > 0) {
+          producedContent = true;
+          yield queue.shift() as BrainEvent;
+        }
+        if (response.error) {
+          const message = response.error.message ?? 'ACP prompt failed';
+          if (resumingUnvalidated && !producedContent && attempt === 0) {
+            // Dead persisted session (possibly reported as a successful
+            // empty load): drop it and retry once on a fresh session.
+            this._sessionId = null;
+            this._sessionAttached = false;
+            this._resumeUnvalidated = false;
+            continue;
+          }
+          // A timed-out prompt means the agent-side turn may STILL be
+          // running: cancel it and kill the process tree so it cannot keep
+          // burning model budget as a zombie — the next turn respawns
+          // cleanly (GLM review).
+          if (/timed out/i.test(message)) {
+            this.interrupt();
+            this.killChildTree();
+          }
+          yield { type: 'error', message };
+          return;
+        }
+        // A completed turn validates whatever session it ran on.
+        this._resumeUnvalidated = false;
+        const stopReason = response.result?.stopReason;
+        if (stopReason === 'refusal') {
+          yield { type: 'error', message: 'the brain refused the turn' };
+          return;
+        }
+        const usage: BrainUsage = {};
+        const u = response.result?.usage as Record<string, unknown> | undefined;
+        if (typeof u?.inputTokens === 'number') usage.inputTokens = u.inputTokens;
+        if (typeof u?.outputTokens === 'number') usage.outputTokens = u.outputTokens;
+        yield {
+          type: 'turn-end',
+          sessionId: this._sessionId,
+          ...(Object.keys(usage).length > 0 ? { usage } : {}),
+        };
+        return;
+      } finally {
+        this.turnSink = null;
+        // Per-turn tool-call id table: agents may reuse ids across turns, and
+        // a stale entry would mislabel a later tool-end chip (GLM review).
+        this.toolNames.clear();
+      }
+    }
+  }
+
+  /** Kill the agent AND its process tree. Windows `kill()` (TerminateProcess
+   *  on the root) leaves grandchildren (the agent's own MCP subprocesses,
+   *  probes) alive — exactly the population whose leaked pipe handles caused
+   *  the dogfood deadlock — so use a tree kill there (GLM review). */
+  private killChildTree(): void {
+    const child = this.child;
+    this.child = null;
+    if (!child || child.exitCode !== null) return;
+    try {
+      if (process.platform === 'win32' && child.pid) {
+        spawn('taskkill', ['/pid', String(child.pid), '/T', '/F'], {
+          stdio: 'ignore',
+          windowsHide: true,
+        }).on('error', () => child.kill());
+      } else {
+        child.kill();
+      }
+    } catch {
+      /* already dead */
     }
   }
 
@@ -495,11 +622,6 @@ export class AcpBrainAdapter implements BrainAdapter {
       entry.resolve({ error: { message: 'adapter disposed' } });
     }
     this.pending.clear();
-    try {
-      this.child?.kill();
-    } catch {
-      /* already dead */
-    }
-    this.child = null;
+    this.killChildTree();
   }
 }

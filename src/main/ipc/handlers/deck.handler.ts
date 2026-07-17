@@ -186,9 +186,16 @@ export function registerDeckHandler(
     const fullPower = fullPowerEnabled;
     const vendor = brainVendor;
     const existing = managers.get(workspaceId);
+    // model/fullPower are Claude-specific — an ACP brain ignores them, so a
+    // change must not needlessly dispose+respawn a non-Claude brain (GLM
+    // review): only vendor-relevant settings participate in the swap check.
+    const claudeSettingsChanged =
+      vendor === 'claude' && existing
+        ? model !== existing.model || fullPower !== existing.fullPower
+        : false;
     if (
       existing &&
-      (model !== existing.model || fullPower !== existing.fullPower || vendor !== existing.vendor) &&
+      (vendor !== existing.vendor || claudeSettingsChanged) &&
       existing.manager.getStatus().status !== 'busy'
     ) {
       existing.manager.dispose();

@@ -204,7 +204,103 @@ describe('AcpBrainAdapter', () => {
     adapter.dispose();
   });
 
-  it('answers session/request_permission with the allow option (agent-side tools are its domain)', async () => {
+  it('loads a persisted session ONCE per child — later sends skip session/load (Codex P2)', async () => {
+    const { spawnFn, children } = scriptedAgent();
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
+    adapter.start({ resumeSessionId: 'persisted-1' });
+    await collect(adapter.send('one'));
+    await collect(adapter.send('two'));
+    await collect(adapter.send('three'));
+    // Re-loading every turn replays the whole transcript on some agents —
+    // latency would grow with history.
+    expect(children[0].sent.filter((s) => s.msg.method === 'session/load')).toHaveLength(1);
+    expect(children[0].sent.filter((s) => s.msg.method === 'session/prompt')).toHaveLength(3);
+    adapter.dispose();
+  });
+
+  it('retries once on a fresh session when an UNVALIDATED resume dies at prompt time (Codex P2)', async () => {
+    // Agent reports the unknown persisted id as a SUCCESSFUL empty load, then
+    // errors the prompt — the adapter must drop the dead id and retry fresh.
+    const children: FakeChild[] = [];
+    const spawnFn = () => {
+      const child = new FakeChild((c, msg) => {
+        const id = msg.id as number;
+        if (msg.method === 'initialize') c.emitLine({ jsonrpc: '2.0', id, result: {} });
+        else if (msg.method === 'session/load') c.emitLine({ jsonrpc: '2.0', id, result: {} }); // "success"
+        else if (msg.method === 'session/new') c.emitLine({ jsonrpc: '2.0', id, result: { sessionId: 'fresh-1' } });
+        else if (msg.method === 'session/prompt') {
+          const sid = (msg.params as Record<string, unknown>).sessionId;
+          if (sid === 'gc-ed') c.emitLine({ jsonrpc: '2.0', id, error: { code: -32000, message: 'unknown session' } });
+          else {
+            c.emitLine({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: sid, update: { sessionUpdate: 'agent_message_chunk', content: [{ type: 'text', text: 'ok' }] } } });
+            c.emitLine({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } });
+          }
+        }
+      });
+      children.push(child);
+      return child as unknown as ChildProcessWithoutNullStreams;
+    };
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
+    adapter.start({ resumeSessionId: 'gc-ed' });
+    const events = await collect(adapter.send('go'));
+    expect(events.map((e) => e.type)).toEqual(['text-delta', 'turn-end']);
+    expect(adapter.sessionId).toBe('fresh-1');
+    adapter.dispose();
+  });
+
+  it('correlates a response even when the agent echoes `method` on it (GLM P2)', async () => {
+    const children: FakeChild[] = [];
+    const spawnFn = () => {
+      const child = new FakeChild((c, msg) => {
+        const id = msg.id as number;
+        // Echo the method on every response — still a response, not a
+        // notification.
+        if (msg.method === 'initialize') c.emitLine({ jsonrpc: '2.0', id, method: 'initialize', result: {} });
+        else if (msg.method === 'session/new') c.emitLine({ jsonrpc: '2.0', id, method: 'session/new', result: { sessionId: 's' } });
+        else if (msg.method === 'session/prompt') c.emitLine({ jsonrpc: '2.0', id, method: 'session/prompt', result: { stopReason: 'end_turn' } });
+      });
+      children.push(child);
+      return child as unknown as ChildProcessWithoutNullStreams;
+    };
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
+    adapter.start({});
+    const events = await collect(adapter.send('go'));
+    expect(events.at(-1)?.type).toBe('turn-end');
+    adapter.dispose();
+  });
+
+  it('reassembles ndjson lines split across stdout chunks (framing edge)', async () => {
+    const children: FakeChild[] = [];
+    const spawnFn = () => {
+      const child = new FakeChild((c, msg) => {
+        const id = msg.id as number;
+        if (msg.method === 'initialize') {
+          // Split the response across two data events, plus two messages in
+          // one chunk later.
+          const line = JSON.stringify({ jsonrpc: '2.0', id, result: {} }) + '\n';
+          c.stdout.emit('data', Buffer.from(line.slice(0, 10)));
+          c.stdout.emit('data', Buffer.from(line.slice(10)));
+        } else if (msg.method === 'session/new') {
+          const l1 = JSON.stringify({ jsonrpc: '2.0', id, result: { sessionId: 's' } });
+          c.stdout.emit('data', Buffer.from(l1 + '\n'));
+        } else if (msg.method === 'session/prompt') {
+          const sid = (msg.params as Record<string, unknown>).sessionId;
+          const upd = JSON.stringify({ jsonrpc: '2.0', method: 'session/update', params: { sessionId: sid, update: { sessionUpdate: 'agent_message_chunk', content: [{ type: 'text', text: 'hi' }] } } });
+          const res = JSON.stringify({ jsonrpc: '2.0', id, result: { stopReason: 'end_turn' } });
+          c.stdout.emit('data', Buffer.from(upd + '\n' + res + '\n')); // two lines, one chunk
+        }
+      });
+      children.push(child);
+      return child as unknown as ChildProcessWithoutNullStreams;
+    };
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
+    adapter.start({});
+    const events = await collect(adapter.send('go'));
+    expect(events.map((e) => e.type)).toEqual(['text-delta', 'turn-end']);
+    adapter.dispose();
+  });
+
+  it('DENIES session/request_permission — a headless commander has no consenting human (Codex P1)', async () => {
     const children: FakeChild[] = [];
     const spawnFn = () => {
       const child = new FakeChild((c, msg) => {
@@ -229,9 +325,12 @@ describe('AcpBrainAdapter', () => {
     adapter.start({});
     await collect(adapter.send('go'));
     const reply = children[0].sent.find((s) => s.msg.id === 'agent-req-1');
+    // The agent asks permission precisely when IT considers the action
+    // dangerous; a blanket allow would hand pane-output prompt injection the
+    // agent's native shell. Deny is the only fail-closed answer.
     expect((reply?.msg.result as Record<string, unknown>).outcome).toEqual({
       outcome: 'selected',
-      optionId: 'opt-allow',
+      optionId: 'opt-deny',
     });
     adapter.dispose();
   });
