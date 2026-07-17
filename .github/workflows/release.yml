@@ -151,8 +151,14 @@ jobs:
       # symbols failure must not fail a release that otherwise built.
       - name: Archive node-pty debug symbols
         continue-on-error: true
+        # The version reaches the script through env rather than direct `${{ }}`
+        # interpolation, so a crafted package.json version string is data to
+        # PowerShell instead of script text. (The surrounding steps still
+        # interpolate directly — pre-existing, out of scope for a release PR.)
+        env:
+          PKG_VERSION: ${{ steps.pkg.outputs.version }}
         run: |
-          $version = "${{ steps.pkg.outputs.version }}"
+          $version = $env:PKG_VERSION
           $root = "node_modules/node-pty"
           $pdbs = Get-ChildItem -Path $root -Recurse -Filter *.pdb -ErrorAction SilentlyContinue
           if (-not $pdbs) {
