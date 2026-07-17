@@ -43,13 +43,14 @@ export function parseOsc7Cwd(data: string): string {
   if (/^\/\/\//.test(p)) {
     return p.slice(1).replace(/\//g, '\\');
   }
-  // NFC-normalize POSIX paths: macOS shells report $PWD in the filesystem's
-  // NFD form, so a Korean folder arrives as decomposed jamo and renders
-  // broken in the tab tooltip / working-directories menu, and comparisons
-  // against NFC strings fail. Identity for already-NFC input (VS Code does
-  // the same at its fs boundary — see base/node/pfs.ts). Display/comparison
-  // boundary only: nothing here is written back to the shell.
-  return p.normalize('NFC');
+  // Deliberately NOT NFC-normalized here: this value doubles as the split-
+  // inheritance spawn seed, and on normalization-SENSITIVE filesystems
+  // (Linux ext4; NFS/macFUSE mounts on macOS) the NFC spelling may not name
+  // the real directory — validateCwd would reject it and the new pane would
+  // fall back to home (Codex review, PR #479). Raw spelling is kept for
+  // state/spawning; the DISPLAY boundary (tab tooltip / working-directories
+  // menu) normalizes for rendering instead — see displayPath().
+  return p;
 }
 
 /**

@@ -12,6 +12,7 @@ import { collectTerminalSurfaces } from '../../utils/paneTraversal';
 import { openUrlInBrowserPane } from '../../utils/browserPaneActions';
 import WorkspaceProfileModal from './WorkspaceProfileModal';
 import WorkspaceAccountMenu from './WorkspaceAccountMenu';
+import { displayPath } from '../../utils/displayPath';
 
 interface WorkspaceItemProps {
   /** A1: 부모(Sidebar)는 id만 내리고, 이 컴포넌트가 자기 ws를 self-subscribe해
@@ -586,7 +587,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                   }
                   return terminals.map((s) => {
                     const label = s.title || t('surface.terminal');
-                    const path = s.cwd || '—';
+                    // Display-only NFC (macOS NFD jamo) — copy/spawn keep s.cwd raw.
+                    const path = displayPath(s.cwd) || '—';
                     return (
                       <div key={s.id} className="flex items-center gap-2 px-3 py-1 text-xs">
                         <span className="font-medium text-[var(--accent-blue)] truncate max-w-[110px] shrink-0" title={label}>{label}</span>

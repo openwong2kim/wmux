@@ -11,6 +11,7 @@ import { computePaneAutoName, paneDisplayName } from '../../utils/paneNaming';
 import { findPane } from '../../../shared/paneUtils';
 import { FOCUS_RING } from '../focusRing';
 import { IconSplitRight, IconSplitDown, IconBrowser } from '../icons';
+import { displayPath } from '../../utils/displayPath';
 
 /** Rendered width (px) of the pane action cluster when `paneActionsVisible`.
  *  Deterministic because every child is fixed-size. Tracing the markup below
@@ -288,7 +289,7 @@ export default function SurfaceTabs({
           onDoubleClick={() => startRename(s)}
           // Hover shows the terminal's working directory (cwd is always present
           // once the shell renders its first prompt; before that, the name).
-          title={editingId === s.id ? undefined : (s.cwd || s.title || t('surface.terminal'))}
+          title={editingId === s.id ? undefined : (displayPath(s.cwd) || s.title || t('surface.terminal'))}
         >
           {(() => {
             const status = s.ptyId ? surfaceAgentStatus[s.ptyId] : undefined;

@@ -82,7 +82,23 @@ const OPAQUE_FILE_URL = Symbol('opaque-file-url');
 
 function readFileUrlFromPasteboard(): string | typeof OPAQUE_FILE_URL | null {
   try {
-    const raw = clipboard.read('public.file-url');
+    // Electron's string `read()` is restricted to MIME-like formats on some
+    // versions, while the pasteboard slot is a native UTI — `readBuffer` is
+    // the reliable accessor (Codex review, PR #479). Try both; a failure on
+    // either is just a fall-through, never an exception out of this helper.
+    let raw = '';
+    try {
+      raw = clipboard.readBuffer('public.file-url').toString('utf8');
+    } catch {
+      /* fall through to read() */
+    }
+    if (!raw) {
+      try {
+        raw = clipboard.read('public.file-url');
+      } catch {
+        /* not readable as string either */
+      }
+    }
     if (!raw || typeof raw !== 'string') return null;
     const url = raw.trim();
     if (!url.startsWith('file://')) return null;
@@ -182,10 +198,19 @@ export function registerClipboardHandlers(): void {
       // keeps ordinary Finder path pastes instant instead of paying an
       // osascript SPAWN (the reported multi-hundred-ms paste delay).
       const fromPasteboard = readFileUrlFromPasteboard();
+      // osascript fallback fires for the opaque bookmark form AND when the
+      // native reads yielded nothing but the pasteboard demonstrably holds a
+      // file (uri-list present) — e.g. an Electron version whose clipboard
+      // APIs can't surface the UTI (Codex review: never regress a file paste
+      // to Finder's basename-only readText). The enumeration gate is only
+      // reached on that fallback path; successful native reads skip it.
       const filePath =
-        fromPasteboard === OPAQUE_FILE_URL
-          ? await resolveFinderFilePath()
-          : fromPasteboard;
+        typeof fromPasteboard === 'string'
+          ? fromPasteboard
+          : fromPasteboard === OPAQUE_FILE_URL ||
+              clipboard.availableFormats().includes('text/uri-list')
+            ? await resolveFinderFilePath()
+            : null;
       if (filePath) {
         // 이 값을 소비하는 렌더러 호출부는 전부 터미널 붙여넣기 사이트라 문자열을
         // 그대로 pty에 쓴다(Terminal.tsx handlePaste, useTerminal.ts의 Cmd+V/
@@ -196,11 +221,19 @@ export function registerClipboardHandlers(): void {
       // 해석 실패(비파일 furl, 타임아웃, 빈 출력 등) → 아래 readText() 폴백.
     }
     const text = clipboard.readText();
-    // darwin 한정 NFC 정규화: Finder의 "경로명 복사"(Option+Cmd+C) 등 macOS가
-    // 만드는 텍스트는 NFD(자모 분해)라, 그대로 pty에 붙이면 한글이 깨져 보이고
-    // 셸에서 NFC로 타이핑한 경로와 매칭도 실패한다. 이 IPC의 소비처는 전부
-    // 터미널 붙여넣기 사이트(위 주석)라 터미널 paste 의미론으로 한정된 변경이다.
-    return process.platform === 'darwin' ? text.normalize('NFC') : text;
+    // darwin + "경로처럼 생긴 단일행 텍스트"만 NFC 정규화: Finder의 "경로명
+    // 복사"(Option+Cmd+C)가 NFD(자모 분해)를 내놓는 케이스를 잡는다. 임의
+    // 텍스트를 전부 정규화하면 의도적으로 NFD인 소스 스니펫/테스트 벡터/
+    // 정규화-민감 원격 fs의 파일명이 훼손되므로(Codex 리뷰), 절대경로 형태로
+    // 판별되는 것만 좁게 적용한다.
+    if (
+      process.platform === 'darwin' &&
+      /^(\/|~\/)/.test(text) &&
+      !text.includes('\n')
+    ) {
+      return text.normalize('NFC');
+    }
+    return text;
   }));
 
   ipcMain.handle(IPC.CLIPBOARD_READ_IMAGE, wrapHandler(IPC.CLIPBOARD_READ_IMAGE, (_event: Electron.IpcMainInvokeEvent) => {

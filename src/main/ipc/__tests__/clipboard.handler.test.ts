@@ -285,14 +285,15 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
-  it('darwin plain text copy (no file-url slot) → readText, no spawn, no format enumeration', async () => {
+  it('darwin plain text copy (no file-url slot) → readText, no osascript spawn', async () => {
     setPlatform('darwin');
     pasteboardRead.mockReturnValue('');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
     await expect(handler({} as never)).resolves.toBe('hello');
+    // 열거(availableFormats)는 "네이티브 read가 빈손일 때 파일 여부 확인"용으로
+    // 남는다(Codex: 클립보드 API가 UTI를 못 읽는 버전에서 파일 paste가 basename
+    // 텍스트로 퇴행하면 안 됨). 보장하는 건 스폰 없음 — 지연의 원흉은 osascript다.
     expect(execFileMock).not.toHaveBeenCalled();
-    // 포맷 열거 자체가 macOS에서 느린 경로 — 일반 텍스트 paste는 그 비용도 안 낸다.
-    expect(availableFormats).not.toHaveBeenCalled();
   });
 });
