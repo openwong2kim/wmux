@@ -632,7 +632,7 @@ export function registerDeckHandler(
     });
   };
   // Loop-stop restores caps to the workspace's CURRENT MODE, not the global
-  // DEFAULT — otherwise stopping a loop in an `orchestrate` workspace would
+  // DEFAULT — otherwise stopping a loop in an `auto` workspace would
   // silently downgrade it to the default mode's caps. The mode is the source
   // of truth; the loop only ever transiently overrode the caps.
   const dropCaps = async (workspaceId: string): Promise<void> => {
@@ -911,8 +911,8 @@ export function registerDeckHandler(
     }),
   );
 
-  // ── Per-workspace agent mode (off/manual/assist/orchestrate) ──────────────
-  const VALID_MODES: ReadonlySet<string> = new Set(['off', 'manual', 'assist', 'orchestrate']);
+  // ── Per-workspace agent mode (off/assist/auto) ─────────────────────────────
+  const VALID_MODES: ReadonlySet<string> = new Set(['off', 'assist', 'auto']);
 
   ipcMain.removeHandler(IPC.DECK_MODE_GET);
   ipcMain.handle(

@@ -41,12 +41,12 @@ function fakeApi(initial: AgentMode): { api: AgentModeApi; sets: AgentMode[] } {
 
 describe('AgentModeChip', () => {
   it('renders the current mode label after the initial read', async () => {
-    const { api } = fakeApi('manual');
+    const { api } = fakeApi('auto');
     const { container, cleanup } = render(<AgentModeChip api={api} workspaceId="ws-1" t={t} />);
     cleanups.push(cleanup);
     await flush();
     const chip = container.querySelector('[data-agent-mode-chip] button')!;
-    expect(chip.textContent).toContain('deck.mode.manual');
+    expect(chip.textContent).toContain('deck.mode.auto');
   });
 
   it('opens the dropdown and sets a new mode (optimistic + persisted)', async () => {

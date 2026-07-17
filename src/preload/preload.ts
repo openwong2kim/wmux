@@ -463,7 +463,7 @@ const electronAPI = {
       set: (enabled: boolean) =>
         ipcRenderer.invoke(IPC.DECK_AUTOWAKE_SET, { enabled }) as Promise<{ enabled: boolean }>,
     },
-    // Per-workspace agent mode — off/manual/assist/orchestrate. The single
+    // Per-workspace agent mode — off/assist/auto. The single
     // autonomy knob; 'off' also tears down running loops + schedules.
     mode: {
       get: (workspaceId: string) =>

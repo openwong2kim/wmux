@@ -179,8 +179,8 @@ export const IPC = {
   //   running loop still wakes. Same renderer-only trust boundary.
   DECK_AUTOWAKE_GET: 'deck:autowake:get',
   DECK_AUTOWAKE_SET: 'deck:autowake:set',
-  //   DECK_MODE_* — the per-workspace agent mode (off/manual/assist/
-  //   orchestrate). Mode is the single user-facing autonomy knob; the raw caps
+  //   DECK_MODE_* — the per-workspace agent mode (off/assist/auto).
+  //   Mode is the single user-facing autonomy knob; the raw caps
   //   are derived from it. `set` with mode='off' also tears down running loops
   //   + schedules. Same renderer-only trust boundary.
   DECK_MODE_GET: 'deck:mode:get',

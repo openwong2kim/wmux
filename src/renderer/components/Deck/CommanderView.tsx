@@ -304,7 +304,7 @@ export function CommanderViewContent({
 
       {/* Orchestrator control bar — the persistent automation controls, right
           above the composer where the hand already is. Mode is the master
-          autonomy switch (off/manual/assist/orchestrate; 'off' even tears down
+          autonomy switch (off/assist/auto; 'off' even tears down
           running loops + schedules), so it anchors the left and a hairline
           separates it from the two automations it governs — Loop and Schedules.
           The reboot-recovery re-entry chip, when present, trails on the right so

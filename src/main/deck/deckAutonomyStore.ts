@@ -18,11 +18,13 @@
 // This mirrors channelsTabVisible (#413): the safe posture is the one you fall
 // back to when anything is uncertain.
 //
-// HARD RULE ENFORCED ELSEWHERE (CommanderEventCoalescer): a `regex`-source
-// awaiting_input is NEVER auto-approvable regardless of approvalPress — only a
-// deterministic hook-source block may drive a press. This store only says
-// whether the CAPABILITY is on; the coalescer's prompt builder still refuses a
-// detector-sourced approval.
+// APPROVAL RULE ENFORCED ELSEWHERE (CommanderEventCoalescer): with approvalPress
+// on, a hook-source awaiting_input may be pressed directly; a `detector`-source
+// (regex) one must be VERIFIED on screen first (terminal_read) before pressing
+// (owner decision 2026-07-17 — detector events are the only awaiting_input
+// source, so a hook-only rule made approval-press dead code). This store only
+// says whether the CAPABILITY is on; the coalescer's prompt builder carries the
+// verify-then-press instruction.
 //
 // One JSON file (`deck-autonomy.json`) in the wmux data dir, atomic-written and
 // WMUX_DATA_SUFFIX-isolated — the same storage shape as deck-schedules.json /
@@ -32,37 +34,40 @@ import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
 
-// ─── Agent mode (per-workspace, owner design 2026-07-13) ─────────────────────
+// ─── Agent mode (per-workspace, owner design 2026-07-13, revised 2026-07-17) ──
 //
-// The user-facing control. One of four levels; the three raw caps below are
+// The user-facing control. One of three levels; the three raw caps below are
 // DERIVED from it (modeToCaps) and the coalescer reads `mode` for its wake
 // policy. This is the single knob; caps are the mechanism.
 //
-//   off          no wake; the handler ALSO tears down running loops + disables
-//                cadence schedules (kill switch). Human can still type.
-//   manual       no ambient wake (stop/awaiting events consumed silently). A
-//                loop the user explicitly started still wakes (override).
-//   assist       value-filtered wake: ambient wakes ONLY on awaiting_input
-//                (a pane blocked on input) — plain agent.stop is dropped, which
-//                is the summary-spam we are killing. A running loop wakes on
-//                everything (override) and its turns may drive panes.
-//   orchestrate  wake on every lifecycle event; may drive + press approvals.
+//   off      no ambient wake; the handler ALSO tears down running loops +
+//            disables cadence schedules (kill switch). Human can still type,
+//            and a loop the user explicitly starts still wakes (override).
+//   assist   value-filtered wake: ambient wakes ONLY on awaiting_input
+//            (a pane blocked on input) — plain agent.stop is dropped, which
+//            is the summary-spam we are killing. Notify/report posture; never
+//            presses approvals.
+//   auto     DANGER: wake on every lifecycle event; drives panes and presses
+//            approvals on its own judgment (verify-then-press for regex-
+//            detected prompts), running work to completion unattended.
 //
-//   wake policy:  off/manual → 'none'   assist → 'value-filtered'   orch → 'all'
+//   wake policy:  off → 'none'   assist → 'value-filtered'   auto → 'all'
 //   (a RUNNING loop overrides to 'all' in every mode except off, mirroring the
 //    global auto-wake switch's loop carve-out.)
-export type AgentMode = 'off' | 'manual' | 'assist' | 'orchestrate';
+//
+// Legacy values from the four-mode era are mapped on read: 'manual' → 'off',
+// 'orchestrate' → 'auto' (sanitizeEntry).
+export type AgentMode = 'off' | 'assist' | 'auto';
 
 export type WakePolicy = 'none' | 'value-filtered' | 'all';
 
 /** The wake policy a mode implies (before the running-loop override). */
 export function modeToWakePolicy(mode: AgentMode): WakePolicy {
   switch (mode) {
-    case 'orchestrate':
+    case 'auto':
       return 'all';
     case 'assist':
       return 'value-filtered';
-    case 'manual':
     case 'off':
       return 'none';
   }
@@ -81,20 +86,25 @@ export interface WorkspaceAutonomy {
   approvalPress: boolean;
 }
 
-const ALL_MODES: readonly AgentMode[] = ['off', 'manual', 'assist', 'orchestrate'];
+const ALL_MODES: readonly AgentMode[] = ['off', 'assist', 'auto'];
 
-/** Derive the three raw caps from a mode. The dangerous caps (approvalPress)
- *  stay OFF except in `orchestrate`, so a fresh/corrupt workspace never gains
- *  auto-approval. `continueInstruction` is on for assist/orchestrate but only
+/** Legacy four-mode values (pre-2026-07-17 files) mapped to the new three. */
+const LEGACY_MODE_MAP: Readonly<Record<string, AgentMode>> = {
+  manual: 'off',
+  orchestrate: 'auto',
+};
+
+/** Derive the three raw caps from a mode. The dangerous cap (approvalPress)
+ *  stays OFF except in `auto`, so a fresh/corrupt workspace never gains
+ *  auto-approval. `continueInstruction` is on for assist/auto but only
  *  bites under a running loop (ambient assist drops plain stops via the value
  *  filter), so an ambient assist workspace is a notifier, not a driver. */
 export function modeToCaps(mode: AgentMode): Omit<WorkspaceAutonomy, 'mode'> {
   switch (mode) {
-    case 'orchestrate':
+    case 'auto':
       return { summarize: true, continueInstruction: true, approvalPress: true };
     case 'assist':
       return { summarize: true, continueInstruction: true, approvalPress: false };
-    case 'manual':
     case 'off':
       return { summarize: false, continueInstruction: false, approvalPress: false };
   }
@@ -102,21 +112,21 @@ export function modeToCaps(mode: AgentMode): Omit<WorkspaceAutonomy, 'mode'> {
 
 /** Back-derive a mode from raw caps — used ONLY for legacy files written before
  *  the `mode` field existed (after that the mode is always stored). Maps by the
- *  dangerous caps: approval → orchestrate; continue → assist; else → the product
- *  default (the pre-mode "report only" default becomes assist + value filter,
- *  which is exactly the summary-spam fix applied to existing users). */
+ *  dangerous caps: approval → auto; continue → assist; else → the product
+ *  default (off — fail-closed, owner decision 2026-07-17). */
 export function deriveMode(caps: Omit<WorkspaceAutonomy, 'mode'>): AgentMode {
-  if (caps.approvalPress) return 'orchestrate';
+  if (caps.approvalPress) return 'auto';
   if (caps.continueInstruction) return 'assist';
   return DEFAULT_MODE;
 }
 
-/** Product default for a workspace with no entry (owner decision 2026-07-13). */
-export const DEFAULT_MODE: AgentMode = 'assist';
+/** Product default for a workspace with no entry: OFF (owner decision
+ *  2026-07-17 — autonomy is strictly opt-in; the previous default was assist). */
+export const DEFAULT_MODE: AgentMode = 'off';
 
-/** Product default entry. NOTE: the only truly dangerous cap (approvalPress)
- *  stays false here, so this doubles as the fail-closed fallback on a torn
- *  file — a fresh/corrupt workspace can notify but never auto-approve. */
+/** Product default entry. Mode `off` means every cap is false, so this doubles
+ *  as the fail-closed fallback on a torn file — a fresh/corrupt workspace has
+ *  no autonomy at all until the operator opts in. */
 export const DEFAULT_AUTONOMY: Readonly<WorkspaceAutonomy> = {
   mode: DEFAULT_MODE,
   ...modeToCaps(DEFAULT_MODE),
@@ -145,7 +155,9 @@ function sanitizeEntry(raw: unknown): WorkspaceAutonomy {
   const mode: AgentMode =
     typeof o.mode === 'string' && (ALL_MODES as readonly string[]).includes(o.mode)
       ? (o.mode as AgentMode)
-      : deriveMode(caps);
+      : typeof o.mode === 'string' && o.mode in LEGACY_MODE_MAP
+        ? LEGACY_MODE_MAP[o.mode]
+        : deriveMode(caps);
   return { mode, ...caps };
 }
 

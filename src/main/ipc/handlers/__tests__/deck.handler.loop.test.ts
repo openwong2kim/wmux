@@ -83,7 +83,7 @@ vi.mock('../../../deck/deckLoopStateStore', () => ({
 // Autonomy store: record every cap write. Pure functions (modeToCaps /
 // modeToWakePolicy / deriveMode) use the REAL implementation via importOriginal
 // — only the IO reads/writes are stubbed. The workspace's resting mode is
-// 'assist' (the product default), so loop-stop restores to assist caps.
+// 'assist' (explicit, not the default — default is now off), so loop-stop restores to assist caps.
 const capWrites: { ws: string; patch: Record<string, unknown> }[] = [];
 vi.mock('../../../deck/deckAutonomyStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../deck/deckAutonomyStore')>();

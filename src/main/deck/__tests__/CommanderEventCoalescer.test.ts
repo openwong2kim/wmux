@@ -11,10 +11,10 @@ import {
 } from '../CommanderEventCoalescer';
 import { DEFAULT_AUTONOMY, type WorkspaceAutonomy } from '../deckAutonomyStore';
 
-/** Wake-on-everything autonomy (mode=orchestrate) — the harness default so the
+/** Wake-on-everything autonomy (mode=auto) — the harness default so the
  *  plumbing tests aren't affected by the assist value filter. */
-const ORCHESTRATE_AUTONOMY: WorkspaceAutonomy = {
-  mode: 'orchestrate',
+const AUTO_AUTONOMY: WorkspaceAutonomy = {
+  mode: 'auto',
   summarize: true,
   continueInstruction: true,
   approvalPress: true,
@@ -56,10 +56,10 @@ function mk(opts: {
       return runResult;
     },
     isBusy: () => busy,
-    // Default to ORCHESTRATE (wake on every event) so the plumbing tests below
+    // Default to AUTO (wake on every event) so the plumbing tests below
     // — coalescing, budget, watermark — exercise the wake path regardless of
     // the new mode value filter. The value-filter behavior gets its own block.
-    getAutonomy: () => opts.autonomy ?? { ...ORCHESTRATE_AUTONOMY },
+    getAutonomy: () => opts.autonomy ?? { ...AUTO_AUTONOMY },
     getLoop: () => loop,
     ...(opts.isAutoWakeEnabled ? { isAutoWakeEnabled: opts.isAutoWakeEnabled } : {}),
     debounceMs: opts.debounceMs ?? 1_000,
@@ -282,7 +282,7 @@ describe('CommanderEventCoalescer — loop iteration budget (Ralph max-iteration
     // continue tier
     const drive = makeHarness({
       loop: { running: true, iterations: 10 },
-      autonomy: { mode: 'orchestrate', summarize: true, continueInstruction: true, approvalPress: false },
+      autonomy: { mode: 'auto', summarize: true, continueInstruction: true, approvalPress: false },
     });
     drive.c.push(stop(1, 'ptyA'));
     drive.c.notifyIdle('ws-1');
@@ -293,7 +293,7 @@ describe('CommanderEventCoalescer — loop iteration budget (Ralph max-iteration
     // report tier — a running loop with continueInstruction OFF (report-only).
     const report = makeHarness({
       loop: { running: true, iterations: 10 },
-      autonomy: { mode: 'manual', summarize: false, continueInstruction: false, approvalPress: false },
+      autonomy: { mode: 'off', summarize: false, continueInstruction: false, approvalPress: false },
     });
     report.c.push(stop(1, 'ptyA'));
     report.c.notifyIdle('ws-1');
@@ -352,20 +352,32 @@ describe('buildEventPrompt — untrusted structured block + fail-closed approval
     expect(p).toContain('wake-budget: 3/5');
   });
 
-  it('CRITICAL: a detector-source awaiting_input is NEVER approvable, even with approvalPress on', () => {
+  it('detector-source awaiting_input + approvalPress on → VERIFY THEN PRESS (never a blind press)', () => {
     const p = buildEventPrompt(
       [buf({ source: 'detector', kind: 'agent.awaiting_input' })],
-      { mode: 'orchestrate', summarize: true, continueInstruction: true, approvalPress: true },
+      { mode: 'auto', summarize: true, continueInstruction: true, approvalPress: true },
+      budget,
+    );
+    expect(p).toContain('VERIFY THEN PRESS');
+    expect(p).toContain('terminal_read');
+    // The direct (hook-only) authorization phrasing must not leak in.
+    expect(p).not.toContain('MAY press the approval per policy');
+  });
+
+  it('detector-source awaiting_input + approvalPress OFF → NOTIFY ONLY', () => {
+    const p = buildEventPrompt(
+      [buf({ source: 'detector', kind: 'agent.awaiting_input' })],
+      { mode: 'assist', summarize: true, continueInstruction: true, approvalPress: false },
       budget,
     );
     expect(p).toContain('NOTIFY ONLY');
-    expect(p).not.toContain('MAY press the approval');
+    expect(p).not.toContain('VERIFY THEN PRESS');
   });
 
   it('approvalPress off → a hook awaiting_input is NOTIFY ONLY', () => {
     const off = buildEventPrompt(
       [buf({ source: 'hook', kind: 'agent.awaiting_input' })],
-      { mode: 'orchestrate', summarize: true, continueInstruction: false, approvalPress: false },
+      { mode: 'auto', summarize: true, continueInstruction: false, approvalPress: false },
       budget,
     );
     expect(off).toContain('NOTIFY ONLY');
@@ -375,7 +387,7 @@ describe('buildEventPrompt — untrusted structured block + fail-closed approval
   it('approvalPress on + hook source → the press is authorized', () => {
     const on = buildEventPrompt(
       [buf({ source: 'hook', kind: 'agent.awaiting_input' })],
-      { mode: 'orchestrate', summarize: true, continueInstruction: false, approvalPress: true },
+      { mode: 'auto', summarize: true, continueInstruction: false, approvalPress: true },
       budget,
     );
     expect(on).toContain('MAY press the approval');
@@ -384,14 +396,14 @@ describe('buildEventPrompt — untrusted structured block + fail-closed approval
   it('a stop is summarize-only unless continueInstruction is on', () => {
     const off = buildEventPrompt(
       [buf({ source: 'hook', kind: 'agent.stop' })],
-      { mode: 'orchestrate', summarize: true, continueInstruction: false, approvalPress: false },
+      { mode: 'auto', summarize: true, continueInstruction: false, approvalPress: false },
       budget,
     );
     expect(off).toContain('summarize only');
 
     const on = buildEventPrompt(
       [buf({ source: 'hook', kind: 'agent.stop' })],
-      { mode: 'orchestrate', summarize: true, continueInstruction: true, approvalPress: false },
+      { mode: 'auto', summarize: true, continueInstruction: true, approvalPress: false },
       budget,
     );
     expect(on).toContain('follow-up instruction');
@@ -471,8 +483,8 @@ describe('CommanderEventCoalescer — mode wake policy (value filter)', () => {
   const assist: WorkspaceAutonomy = {
     mode: 'assist', summarize: true, continueInstruction: true, approvalPress: false,
   };
-  const manual: WorkspaceAutonomy = {
-    mode: 'manual', summarize: false, continueInstruction: false, approvalPress: false,
+  const offMode: WorkspaceAutonomy = {
+    mode: 'off', summarize: false, continueInstruction: false, approvalPress: false,
   };
 
   it('assist DROPS a plain stop (consumed, no turn) — the summary-spam fix', async () => {
@@ -519,8 +531,8 @@ describe('CommanderEventCoalescer — mode wake policy (value filter)', () => {
     expect(h.prompts[0].prompt).toContain('loop-mode: ACTIVE');
   });
 
-  it('manual consumes EVERYTHING (stop AND awaiting), no turn', async () => {
-    const h = makeHarness({ autonomy: manual });
+  it('off-mode consumes EVERYTHING (stop AND awaiting), no turn', async () => {
+    const h = makeHarness({ autonomy: offMode });
     h.c.push(stop(1));
     h.c.push(awaiting(2, { ptyId: 'ptyB' }));
     await vi.advanceTimersByTimeAsync(5_000);
@@ -529,16 +541,16 @@ describe('CommanderEventCoalescer — mode wake policy (value filter)', () => {
     expect(h.c.getWatermark('ws-1')).toBe(2);
   });
 
-  it('manual + a RUNNING loop still wakes (explicit opt-in override)', async () => {
-    const h = makeHarness({ autonomy: manual, loop: { running: true, iterations: 5 } });
+  it('off-mode + a RUNNING loop still wakes (explicit opt-in override)', async () => {
+    const h = makeHarness({ autonomy: offMode, loop: { running: true, iterations: 5 } });
     h.c.push(stop(1));
     await vi.advanceTimersByTimeAsync(5_000);
     await settle();
     expect(h.prompts).toHaveLength(1);
   });
 
-  it('global auto-wake OFF overrides even mode=orchestrate', async () => {
-    const h = makeHarness({ autonomy: ORCHESTRATE_AUTONOMY, isAutoWakeEnabled: () => false });
+  it('global auto-wake OFF overrides even mode=auto', async () => {
+    const h = makeHarness({ autonomy: AUTO_AUTONOMY, isAutoWakeEnabled: () => false });
     h.c.push(awaiting(1));
     await vi.advanceTimersByTimeAsync(5_000);
     await settle();

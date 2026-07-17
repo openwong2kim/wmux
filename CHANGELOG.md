@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **The agent mode knob is now three honest positions — Off, Assist, Auto (danger) — and the default is Off.** The previous four modes (off/manual/assist/orchestrate) collapsed into three that mean what they say: **Off** (the new default) gives the orchestrator no autonomy at all until you opt in; **Assist** wakes it only when a pane is blocked on input, to notify you — it never approves anything; **Auto (danger)** wakes it on every agent event and lets it drive work to completion on its own judgment, including pressing approval prompts. Existing workspaces keep working: a stored `manual` mode reads as Off, `orchestrate` as Auto.
+
+- **Auto mode actually presses approvals now.** The orchestrator was told "regex-detected prompts are notify-only, never approve" while the only source of approval events *was* the regex detector — so even the most permissive mode never pressed anything, silently. In Auto mode the brain is now instructed to verify first (read the pane and confirm a real approval prompt is on screen) and then press it, so a stray "y/N" in ordinary output still can't trigger a blind keystroke. Assist mode remains notify-only.
+
+- **The orchestrator now reuses your existing panes before spawning new ones.** Its standing instructions gained a reuse-before-spawn rule: check the pane list for an idle shell or a finished agent and send work there, spawning a fresh pane only when nothing is free or the work genuinely needs to run in parallel. Previously it happily split a new pane while a suitable one sat idle next to it.
+
 ## [3.25.0] — 2026-07-17
 
 ### Added

@@ -256,7 +256,7 @@ export const ko = {
   'settings.orchestratorFullPower': '풀파워 모드',
   'settings.orchestratorFullPowerDesc':
     'Claude Code의 스킬·CLAUDE.md·훅을 agent 턴에 로드합니다. 개인 훅이 agent 턴 안에서 실행되고(wmux 샌드박스 밖의 본인 코드), 툴 호출이 느려질 수 있으며, 켜져 있는 동안 agent는 메모리 노트를 쓸 수 없습니다. 다음 agent 턴부터 적용됩니다.',
-  // 워크스페이스별 agent 모드 — 단일 자율성 노브(off/manual/assist/orchestrate).
+  // 워크스페이스별 agent 모드 — 단일 자율성 노브(off/assist/auto).
   'deck.limit.window': '사용량',
   'deck.limit.resetsSoon': '곧 초기화됨',
   'deck.limit.resetsIn': '{rel} 후 초기화',
@@ -267,13 +267,11 @@ export const ko = {
   // agent 패널에 칩으로 표시.
   'deck.mode.label': '모드',
   'deck.mode.off': 'Off',
-  'deck.mode.offDesc': '자율 동작 없음. 실행 중인 루프·예약도 정지. 직접 타이핑은 여전히 가능.',
-  'deck.mode.manual': 'Manual',
-  'deck.mode.manualDesc': '직접 물을 때만 대답. agent 이벤트로 스스로 깨어나지 않음.',
+  'deck.mode.offDesc': '자율 동작 없음(기본값). 실행 중인 루프·예약도 정지. 직접 타이핑은 여전히 가능.',
   'deck.mode.assist': 'Assist',
-  'deck.mode.assistDesc': 'pane이 입력을 기다릴 때, 또는 실행 중인 루프를 진행할 때만 깨어남. 요약 스팸 없음.',
-  'deck.mode.orchestrate': 'Orchestrate',
-  'deck.mode.orchestrateDesc': '모든 agent 이벤트에 깨어남. pane 조작·승인 押下까지 가능.',
+  'deck.mode.assistDesc': 'pane이 입력을 기다릴 때, 또는 실행 중인 루프를 진행할 때만 깨어남. 알림만, 승인은 안 누름.',
+  'deck.mode.auto': 'Auto (위험)',
+  'deck.mode.autoDesc': '모든 agent 이벤트에 깨어나 스스로 판단해 승인까지 누르며 작업을 끝까지 진행.',
   // 이벤트 자동 깨우기 킬스위치: 끄면 요청하지 않은 자동 요약 턴(토큰 소비)이
   // 멈춘다. 실행 중인 루프는 계속 깨운다.
   'settings.autoWake': 'pane 이벤트 자동 깨우기',

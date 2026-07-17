@@ -13,9 +13,11 @@
 //      lifecycle event from the brain (the stop it's waiting for must reach it).
 //      Runaway is bounded by a per-workspace budget of CONSECUTIVE auto-wakes
 //      that resets on human input (notifyHumanSend).
-//   2. AUTONOMY is fail-closed and a `detector`-source awaiting_input is NEVER
-//      surfaced as approvable — the prompt builder stamps it NOTIFY ONLY
-//      regardless of the approvalPress capability. Enforced in buildEventPrompt.
+//   2. AUTONOMY is fail-closed: without the approvalPress capability every
+//      awaiting_input is stamped NOTIFY ONLY. With it, a hook-source event may
+//      be pressed directly; a `detector`-source (regex) event must be VERIFIED
+//      on screen (terminal_read) before pressing — regexes can false-positive
+//      (owner decision 2026-07-17). Enforced in buildEventPrompt.
 //   3. COALESCING is an explicit state machine keyed by ptyId, preserving the
 //      last event PER KIND (a stop AND a later awaiting_input for the same pane
 //      both survive the flush).
@@ -476,10 +478,10 @@ function pad(s: string, width: number): string {
  * events. This is where the fail-closed approval policy is ENFORCED, not merely
  * described:
  *
- *   - a `detector`-source awaiting_input is ALWAYS "NOTIFY ONLY, do not approve",
- *     no matter what approvalPress says (the CRITICAL hard rule);
- *   - any awaiting_input is NOTIFY-ONLY unless approvalPress is on AND the source
- *     is the deterministic `hook`;
+ *   - every awaiting_input is NOTIFY-ONLY unless approvalPress is on;
+ *   - with approvalPress on, a `hook`-source awaiting_input may be pressed
+ *     directly, while a `detector`-source (regex) one must be verified on
+ *     screen via terminal_read before pressing (false-positive guard);
  *   - a stop invites a follow-up instruction only when continueInstruction is on;
  *     otherwise it is summarize-only.
  *
@@ -512,13 +514,18 @@ export function buildEventPrompt(
         : '(summarize only — do not send anything to this pane)';
     } else {
       // awaiting_input
-      const approvable = autonomy.approvalPress && e.source === 'hook';
-      if (e.source === 'detector') {
-        verdict = '(regex-detected — NOTIFY ONLY, do NOT approve)';
-      } else if (approvable) {
+      if (!autonomy.approvalPress) {
+        verdict = '(NOTIFY ONLY, do NOT approve)';
+      } else if (e.source === 'hook') {
         verdict = '(hook-verified — you MAY press the approval per policy)';
       } else {
-        verdict = '(NOTIFY ONLY, do NOT approve)';
+        // detector (regex) source — the ONLY source that emits awaiting_input
+        // today. Approval-press is allowed but must be verified on screen first
+        // (owner decision 2026-07-17): regex matches can be false positives.
+        verdict =
+          '(regex-detected — VERIFY THEN PRESS: terminal_read this pane first; ' +
+          'if a real approval prompt is on screen, you MAY press it with ' +
+          'terminal_send_key; if not, notify only)';
       }
     }
     return `  seq=${pad(String(e.seq), 6)} ${pad(paneLabel, 22)} kind=${pad(kindLabel, 8)} source=${pad(e.source, 8)} ${verdict}`;
