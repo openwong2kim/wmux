@@ -141,6 +141,39 @@ jobs:
           Write-Host "--- release-notes.md (head) ---"; Get-Content out/release-notes.md | Select-Object -First 6
         shell: pwsh
 
+      # node-pty's Windows prebuilds carry ~27 MB of MSVC debug symbols that
+      # forge.config.ts strips from both packaged copies (they are never loaded
+      # at runtime — see its isDebugSymbol filter, which promises they "are
+      # archived per release tag"). This is that archive: without a copy pinned
+      # to the tag, a native conpty/winpty crash dump from a shipped build can
+      # never be symbolized. Relative paths are preserved so same-named PDBs
+      # from different prebuild dirs don't collide. Non-fatal by design — a
+      # symbols failure must not fail a release that otherwise built.
+      - name: Archive node-pty debug symbols
+        continue-on-error: true
+        run: |
+          $version = "${{ steps.pkg.outputs.version }}"
+          $root = "node_modules/node-pty"
+          $pdbs = Get-ChildItem -Path $root -Recurse -Filter *.pdb -ErrorAction SilentlyContinue
+          if (-not $pdbs) {
+            Write-Host "::warning::no node-pty PDBs found under $root — nothing to archive"
+            exit 0
+          }
+          $stage = "out/symbols/stage"
+          New-Item -ItemType Directory -Force -Path $stage | Out-Null
+          $rootFull = (Resolve-Path $root).Path
+          foreach ($p in $pdbs) {
+            $rel = $p.FullName.Substring($rootFull.Length).TrimStart('\', '/')
+            $dest = Join-Path $stage $rel
+            New-Item -ItemType Directory -Force -Path (Split-Path $dest -Parent) | Out-Null
+            Copy-Item $p.FullName $dest
+            Write-Host "  + $rel"
+          }
+          Compress-Archive -Path "$stage/*" -DestinationPath "out/symbols/wmux-symbols-$version.zip" -Force
+          Remove-Item -Recurse -Force $stage
+          Get-Item "out/symbols/wmux-symbols-$version.zip" | Select-Object Name, Length
+        shell: pwsh
+
       - name: Upload artifacts
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
         with:
@@ -155,6 +188,7 @@ jobs:
             out/make/squirrel.windows/x64/*.nupkg
             out/make/squirrel.windows/x64/RELEASES
             out/make/squirrel.windows/x64/update-manifest.json
+            out/symbols/wmux-symbols-*.zip
           body_path: out/release-notes.md
           generate_release_notes: true
           draft: false
