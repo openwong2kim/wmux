@@ -112,7 +112,7 @@ describe('AcpBrainAdapter', () => {
       ],
       usage: { inputTokens: 10, outputTokens: 5 },
     });
-    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
     adapter.start({ systemPrompt: 'SYS' });
     const events = await collect(adapter.send('go'));
     expect(events.map((e) => e.type)).toEqual([
@@ -134,7 +134,7 @@ describe('AcpBrainAdapter', () => {
   it('injects the wmux MCP server per session with --commander arg + token env (P4)', async () => {
     const { spawnFn, children } = scriptedAgent();
     const adapter = new AcpBrainAdapter({
-      spawnSpec: SPEC,
+      spawnSpec: SPEC, newSessionSettleMs: 0,
       workspaceId: 'ws-1',
       mcpBundlePath: '/fake/mcp.js',
       spawnFn,
@@ -160,7 +160,7 @@ describe('AcpBrainAdapter', () => {
 
   it('system prompt + fleet context ride the FIRST prompt only', async () => {
     const { spawnFn, children } = scriptedAgent();
-    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
     adapter.start({ systemPrompt: 'SYS', fleetContext: 'FLEET' });
     await collect(adapter.send('first'));
     await collect(adapter.send('second'));
@@ -176,7 +176,7 @@ describe('AcpBrainAdapter', () => {
 
   it('resumes via session/load, and falls back to a fresh session on a dead id', async () => {
     const ok = scriptedAgent();
-    const a1 = new AcpBrainAdapter({ spawnSpec: SPEC, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn: ok.spawnFn });
+    const a1 = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn: ok.spawnFn });
     a1.start({ resumeSessionId: 'persisted-1' });
     await collect(a1.send('go'));
     const loads = ok.children[0].sent.filter((s) => s.msg.method === 'session/load');
@@ -186,7 +186,7 @@ describe('AcpBrainAdapter', () => {
     a1.dispose();
 
     const dead = scriptedAgent({ failLoad: true });
-    const a2 = new AcpBrainAdapter({ spawnSpec: SPEC, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn: dead.spawnFn });
+    const a2 = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn: dead.spawnFn });
     a2.start({ resumeSessionId: 'gc-ed' });
     const events = await collect(a2.send('go'));
     expect(events.at(-1)?.type).toBe('turn-end');
@@ -196,7 +196,7 @@ describe('AcpBrainAdapter', () => {
 
   it('a refusal stop reason surfaces as an error event (no turn-end)', async () => {
     const { spawnFn } = scriptedAgent({ stopReason: 'refusal' });
-    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
     adapter.start({});
     const events = await collect(adapter.send('go'));
     expect(events.at(-1)?.type).toBe('error');
@@ -225,7 +225,7 @@ describe('AcpBrainAdapter', () => {
       children.push(child);
       return child as unknown as ChildProcessWithoutNullStreams;
     };
-    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
     adapter.start({});
     await collect(adapter.send('go'));
     const reply = children[0].sent.find((s) => s.msg.id === 'agent-req-1');
@@ -248,7 +248,7 @@ describe('AcpBrainAdapter', () => {
       children.push(child);
       return child as unknown as ChildProcessWithoutNullStreams;
     };
-    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
     adapter.start({});
     const events = await collect(adapter.send('go'));
     expect(events.at(-1)?.type).toBe('error');
@@ -257,7 +257,7 @@ describe('AcpBrainAdapter', () => {
 
   it('interrupt sends the session/cancel notification', async () => {
     const { spawnFn, children } = scriptedAgent();
-    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
     adapter.start({});
     await collect(adapter.send('go'));
     adapter.interrupt();
@@ -270,7 +270,7 @@ describe('AcpBrainAdapter', () => {
 
   it('send after dispose yields a terminal error', async () => {
     const { spawnFn } = scriptedAgent();
-    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
+    const adapter = new AcpBrainAdapter({ spawnSpec: SPEC, newSessionSettleMs: 0, workspaceId: 'ws-1', mcpBundlePath: null, spawnFn });
     adapter.start({});
     adapter.dispose();
     const events = await collect(adapter.send('go'));
