@@ -1008,6 +1008,28 @@ export function CommanderView(): React.ReactElement {
         return { ok: false, errorCode: 'UNAVAILABLE' };
       }
       const workspaceId = activeWorkspaceId;
+      // The operator's `/clear` (alias `/reset`) — a command, not a message:
+      // reset the brain's context instead of sending a turn. The transcript
+      // stays (audit trail); the next turn starts a fresh SDK conversation.
+      const trimmed = text.trim();
+      if (trimmed === '/clear' || trimmed === '/reset') {
+        const clear = api.conversation?.clear;
+        if (!clear) {
+          pushToast({ level: 'error', message: t('deck.commanderUnavailable') || 'The orchestrator is unavailable' });
+          return { ok: false, errorCode: 'UNAVAILABLE' };
+        }
+        try {
+          const r = await clear(workspaceId);
+          pushToast(
+            r.ok
+              ? { level: 'info', message: t('deck.contextCleared') || 'Orchestrator context cleared — the next turn starts fresh.' }
+              : { level: 'error', message: t('deck.contextClearFailed') || 'Could not clear the orchestrator context.' },
+          );
+        } catch {
+          pushToast({ level: 'error', message: t('deck.contextClearFailed') || 'Could not clear the orchestrator context.' });
+        }
+        return { ok: true }; // composer clears; nothing was sent
+      }
       startDeckBrainTurn(workspaceId, text);
       // One-shot workspace snapshot for the system prompt (main injects it on
       // the first turn only and re-caps to 2048 chars). Recovery facts (P3b)

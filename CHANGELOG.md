@@ -13,6 +13,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Auto mode actually presses approvals now.** The orchestrator was told "regex-detected prompts are notify-only, never approve" while the only source of approval events *was* the regex detector — so even the most permissive mode never pressed anything, silently. In Auto mode the brain is now instructed to verify first (read the pane and confirm a real approval prompt is on screen) and then press it, so a stray "y/N" in ordinary output still can't trigger a blind keystroke. Assist mode remains notify-only.
 
+- **Type `/clear` to the orchestrator to reset its context.** The brain's conversation memory (and its persisted resume session) is dropped, so the next turn starts completely fresh — useful when it has accumulated stale instructions or gone down a wrong path. The visible transcript stays as your audit trail; `/reset` works as an alias. An in-flight turn is interrupted first.
+
+- **wmux now offers to install its Claude Code hooks — and tells you when you're missing them.** Agent completion and approval detection is hook-primary, but the hook bridge previously required knowing the `wmux setup-hooks` CLI existed; without it, every signal silently degraded to screen-reading. A prompt now appears at launch when hooks are missing, and again when you raise a workspace's agent mode — with an Install button that does the same idempotent install as the CLI. wmux still never edits your Claude settings without that explicit click.
+
+- **The orchestrator treats your pane roles as a workflow, not just labels.** With Planner / Builder / Reviewer panes set up, non-trivial work now flows through them unprompted — plan first when the task is ambiguous, and review before reporting "done" — instead of one pane doing everything while the team you assembled sits idle.
+
 - **The orchestrator now reuses your existing panes before spawning new ones.** Its standing instructions gained a reuse-before-spawn rule: check the pane list for an idle shell or a finished agent and send work there, spawning a fresh pane only when nothing is free or the work genuinely needs to run in parallel. Previously it happily split a new pane while a suitable one sat idle next to it.
 
 ## [3.25.0] — 2026-07-17

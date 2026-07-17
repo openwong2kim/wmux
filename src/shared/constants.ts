@@ -193,6 +193,12 @@ export const IPC = {
   //   2026-07-17). Renderer-only trust boundary.
   HOOKS_BRIDGE_STATUS: 'hooks:bridge:status',
   HOOKS_BRIDGE_INSTALL: 'hooks:bridge:install',
+  //   DECK_CONVERSATION_CLEAR — the operator's `/clear` for one workspace's
+  //   orchestrator: disposes the live brain (interrupting an in-flight turn)
+  //   and drops the persisted session id, so the next turn starts a FRESH SDK
+  //   conversation. The channel transcript deliberately stays — history is
+  //   the audit trail; only the brain's context resets.
+  DECK_CONVERSATION_CLEAR: 'deck:conversation:clear',
   //   DECK_DECISION_* — the brain-raised decision gate. The orchestrator brain
   //   calls the deck_ask_decision MCP tool to PAUSE its loop and ask the human
   //   a decision; GET hydrates that pending decision on mount (so it shows

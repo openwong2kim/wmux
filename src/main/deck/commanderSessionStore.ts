@@ -89,3 +89,18 @@ export async function saveCommanderSession(
   const record: CommanderSessionsFile = { sessions };
   await atomicWriteJSON(getCommanderSessionPath(dir), record);
 }
+
+/** Drop one workspace orchestrator's persisted session (the `/clear` reset).
+ *  The next turn then starts a FRESH SDK conversation instead of resuming.
+ *  Missing entry / missing file are fine — clearing twice is a no-op. */
+export async function clearCommanderSession(
+  workspaceId: string,
+  dir?: string,
+): Promise<void> {
+  if (!workspaceId) return;
+  const sessions = readSessionsFile(dir);
+  if (!(workspaceId in sessions)) return;
+  delete sessions[workspaceId];
+  const record: CommanderSessionsFile = { sessions };
+  await atomicWriteJSON(getCommanderSessionPath(dir), record);
+}

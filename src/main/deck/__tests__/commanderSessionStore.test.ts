@@ -10,6 +10,7 @@ import {
   getCommanderSessionPath,
   loadCommanderSession,
   saveCommanderSession,
+  clearCommanderSession,
 } from '../commanderSessionStore';
 
 function withTempDir(fn: (dir: string) => Promise<void> | void): Promise<void> | void {
@@ -31,6 +32,19 @@ describe('commanderSessionStore (per-workspace)', () => {
       expect(loaded?.updatedAt).toMatch(/^\d{4}-\d{2}-\d{2}T/);
       // Another workspace has no entry.
       expect(loadCommanderSession('ws-2', dir)).toBeNull();
+    }));
+
+  it('clearCommanderSession drops only that workspace; clearing twice / missing file is a no-op', () =>
+    withTempDir(async (dir) => {
+      await saveCommanderSession('ws-1', 'sess-1', dir);
+      await saveCommanderSession('ws-2', 'sess-2', dir);
+      await clearCommanderSession('ws-1', dir);
+      expect(loadCommanderSession('ws-1', dir)).toBeNull();
+      expect(loadCommanderSession('ws-2', dir)?.sessionId).toBe('sess-2');
+      // Idempotent — and a clear against a dir with no file must not create one.
+      await clearCommanderSession('ws-1', dir);
+      await clearCommanderSession('ws-absent', dir);
+      expect(loadCommanderSession('ws-2', dir)?.sessionId).toBe('sess-2');
     }));
 
   it('workspaces persist independently — saving one never clobbers another', () =>

@@ -331,6 +331,9 @@ export const en = {
   'deck.mode.offDesc': 'No autonomy (default). Stops any running loop and schedule. You can still type.',
   'deck.mode.assist': 'Assist',
   'deck.mode.assistDesc': 'Wakes only when a pane needs input, or to drive a running loop. Notifies, never approves.',
+  // `/clear` — orchestrator context reset (transcript stays).
+  'deck.contextCleared': 'Orchestrator context cleared — the next turn starts fresh.',
+  'deck.contextClearFailed': 'Could not clear the orchestrator context.',
   // Claude Code hook-bridge install prompt (launch + mode-raise nudge).
   'hooks.prompt.title': 'Install wmux hooks for accurate agent signals',
   'hooks.prompt.body': 'Without hooks, wmux falls back to screen-reading to guess when an agent finishes — it can miss completions and approvals. Installing the hook bridge into your Claude Code settings makes these signals exact.',

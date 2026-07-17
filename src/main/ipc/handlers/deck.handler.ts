@@ -32,7 +32,7 @@ import {
   type CommanderSendResult,
   type CommanderStatusSnapshot,
 } from '../../deck/CommanderSessionManager';
-import { loadCommanderSession, saveCommanderSession } from '../../deck/commanderSessionStore';
+import { loadCommanderSession, saveCommanderSession, clearCommanderSession } from '../../deck/commanderSessionStore';
 import { DeckScheduler } from '../../deck/DeckScheduler';
 import { CommanderEventCoalescer } from '../../deck/CommanderEventCoalescer';
 import {
@@ -331,6 +331,35 @@ export function registerDeckHandler(
         : {};
       const workspaceId = readWorkspaceId(req);
       if (workspaceId) managers.get(workspaceId)?.manager.interrupt();
+      return { ok: true };
+    }),
+  );
+
+  // The operator's `/clear`: dispose the live brain (interrupt + retire) and
+  // drop the persisted session id so the next turn on ANY path (typed, event
+  // wake, schedule) starts a fresh SDK conversation. The channel transcript
+  // stays — history is the audit trail; only the brain's context resets. The
+  // vendor-composite session key mirrors ensureManager exactly.
+  ipcMain.removeHandler(IPC.DECK_CONVERSATION_CLEAR);
+  ipcMain.handle(
+    IPC.DECK_CONVERSATION_CLEAR,
+    wrapHandler(IPC.DECK_CONVERSATION_CLEAR, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean; code?: string }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false, code: 'invalid_workspace' };
+      const entry = managers.get(workspaceId);
+      if (entry) {
+        entry.manager.dispose(); // interrupts an in-flight turn, flips to disposed
+        managers.delete(workspaceId);
+      }
+      const vendor = brainVendor;
+      const sessionKey = vendor === 'claude' ? workspaceId : `${workspaceId}::${vendor}`;
+      await clearCommanderSession(sessionKey);
       return { ok: true };
     }),
   );

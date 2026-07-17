@@ -270,6 +270,9 @@ export const ko = {
   'deck.mode.offDesc': '자율 동작 없음(기본값). 실행 중인 루프·예약도 정지. 직접 타이핑은 여전히 가능.',
   'deck.mode.assist': 'Assist',
   'deck.mode.assistDesc': 'pane이 입력을 기다릴 때, 또는 실행 중인 루프를 진행할 때만 깨어남. 알림만, 승인은 안 누름.',
+  // `/clear` — 오케 컨텍스트 리셋(대화 기록은 유지).
+  'deck.contextCleared': '오케스트레이터 컨텍스트를 지웠습니다 — 다음 턴은 새 대화로 시작합니다.',
+  'deck.contextClearFailed': '오케스트레이터 컨텍스트를 지우지 못했습니다.',
   // Claude Code hook 브리지 설치 유도(실행 시 + 모드 상향 시).
   'hooks.prompt.title': '정확한 agent 신호를 위해 wmux hook을 설치하세요',
   'hooks.prompt.body': 'hook이 없으면 wmux는 화면 텍스트를 읽어 agent 완료를 추측합니다 — 완료·승인 신호를 놓칠 수 있습니다. Claude Code 설정에 hook 브리지를 설치하면 신호가 정확해집니다.',

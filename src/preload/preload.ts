@@ -477,6 +477,15 @@ const electronAPI = {
           code?: string;
         }>,
     },
+    // The operator's `/clear` — resets one workspace orchestrator's brain
+    // context (fresh SDK conversation on the next turn). Transcript stays.
+    conversation: {
+      clear: (workspaceId: string) =>
+        ipcRenderer.invoke(IPC.DECK_CONVERSATION_CLEAR, { workspaceId }) as Promise<{
+          ok: boolean;
+          code?: string;
+        }>,
+    },
     // Claude Code hook bridge (in-app `wmux setup-hooks`). STATUS feeds the
     // install prompt (launch + off→assist/auto mode switch); INSTALL is the
     // explicit user-clicked install — never auto-run.
