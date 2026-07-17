@@ -472,6 +472,18 @@ export function upgradeDefaultKeybindingsForPlatform(
 ): CustomKeybinding[] {
   const shipped = buildDefaultCustomKeybindings(undefined)[0]; // 플랫폼 무관 원본(F7) — 비교 기준
   const platformDefault = buildDefaultCustomKeybindings(platform)[0];
+  // 플랫폼 기본이 원본과 같으면(비-Mac·platform 미상) 엄격 no-op. 이 가드가 없으면
+  // (a) win/linux에서 사용자가 의도적으로 기본 바인딩을 Ctrl+F7로 재지정한 편집이
+  // F7로 되돌려지고, (b) mac에서 platform이 일시적으로 undefined일 때(preload
+  // race) 멀쩡한 Ctrl+F7이 mac 최악의 키인 F7로 "역승격"돼 저장된다.
+  if (platformDefault.key === shipped.key) return saved;
+  // 승격 목적지 키를 다른 바인딩이 이미 쓰고 있으면 승격하지 않는다 — 키 매칭은
+  // first-match라 기본 바인딩(항상 배열 앞쪽)이 사용자 바인딩을 소리 없이
+  // 가려버린다. 이 경우 죽은 레거시 키를 그대로 두는 쪽이 안전하다.
+  const keyTaken = saved.some(
+    (kb) => kb.id !== shipped.id && kb.key === platformDefault.key,
+  );
+  if (keyTaken) return saved;
   return saved.map((kb) =>
     kb.id === shipped.id &&
     kb.key !== platformDefault.key &&

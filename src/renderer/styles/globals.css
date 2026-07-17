@@ -567,6 +567,18 @@ select option {
   box-shadow: 0 0 0 2px var(--accent-green) inset;
   animation: pane-complete-blink 1.2s ease-in-out infinite;
 }
+/* pane-flash와 동시 활성 시(공존 지원 — Pane.notificationRing.test) 단일-클래스
+ * 규칙끼리는 속성이 병합돼 flash의 background만 남고 blink의 무한 애니메이션이
+ * 도는 최악 조합(불투명 오버레이 깜빡임)이 된다. 2-클래스 복합 규칙로 flash
+ * 상태를 완전 재기술해 우선시키고, .pane-flash 클래스가 제거되면(500ms 타이머)
+ * 위의 blink 규칙이 복귀한다. */
+.pane-complete-blink.pane-flash::after {
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: none;
+  z-index: 100;
+  animation: pane-flash 0.5s ease-out forwards;
+}
 
 /* Small blinking status dot on a background surface tab whose terminal
  * completed (SurfaceTabs). Opacity-only so it works regardless of dot color. */
