@@ -32,6 +32,7 @@ import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
 import type { BrainAdapter, BrainEvent, BrainStartOptions, BrainUsage } from './BrainAdapter';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { COMMANDER_MODE_ARG } from '../../shared/commanderSurface';
+import { getWmuxDir } from '../../daemon/config';
 
 // ── wire types (structural subset of ACP; validated defensively) ────────────
 
@@ -63,11 +64,17 @@ export interface AcpBrainAdapterDeps {
   spawnFn?: (command: string, args: string[]) => ChildProcessWithoutNullStreams;
   /** Per-request timeout (initialize / session lifecycle), ms. */
   requestTimeoutMs?: number;
+  /** Fresh-session settle override (tests: 0). See NEW_SESSION_SETTLE_MS. */
+  newSessionSettleMs?: number;
 }
 
 const DEFAULT_REQUEST_TIMEOUT_MS = 30_000;
 /** A prompt turn can legitimately run for minutes (agentic tool loops). */
 const PROMPT_TIMEOUT_MS = 10 * 60_000;
+/** Fresh-session settle before the first prompt — see the spawn-race note in
+ *  ensureSession. Empirically sufficient on the dogfood machine (probes with
+ *  a gap always passed; immediate prompts always wedged). */
+const NEW_SESSION_SETTLE_MS = 5_000;
 
 /** Extract the plain-text pieces of an ACP content block array. */
 function textOfContent(content: unknown): string {
@@ -125,12 +132,35 @@ export class AcpBrainAdapter implements BrainAdapter {
     const spawnFn =
       this.deps.spawnFn ??
       ((cmd: string, args: string[]) =>
-        spawn(cmd, args, { stdio: ['pipe', 'pipe', 'pipe'], windowsHide: true }));
+        spawn(cmd, args, {
+          stdio: ['pipe', 'pipe', 'pipe'],
+          windowsHide: true,
+          // The agent's PROCESS cwd, not just the ACP session cwd: agents
+          // gather workspace context (git probes) from their own cwd, and
+          // inheriting electron main's cwd hands them the wmux repo — where
+          // a git probe raced hermes's own spawn handling into a permanent
+          // post-kill communicate() deadlock (py-spy, 2026-07-17). A non-repo
+          // data-dir cwd makes the workspace probe a no-op.
+          cwd: getWmuxDir(),
+        }));
     const child = spawnFn(this.deps.spawnSpec.command, this.deps.spawnSpec.args);
     this.child = child;
     this._initialized = false;
     this.stdoutBuf = '';
     child.stdout.on('data', (d: Buffer) => this.onStdout(d.toString('utf8')));
+    // The agent's stderr is its diagnostic channel (ACP reserves stdout for
+    // JSON-RPC). Mirror it into the main log, truncated + line-capped, so a
+    // wedged brain leaves evidence instead of a silent 10-minute timeout.
+    let stderrLines = 0;
+    child.stderr.on('data', (d: Buffer) => {
+      if (stderrLines > 400) return;
+      for (const line of d.toString('utf8').split('\n')) {
+        const t = line.trim();
+        if (!t) continue;
+        stderrLines++;
+        if (stderrLines <= 400) console.warn(`[acp-brain:${this.deps.spawnSpec.command}] ${t.slice(0, 300)}`);
+      }
+    });
     child.on('error', (err: Error) => {
       // Spawn failure (agent binary not installed / not on PATH) must surface
       // as a fast, readable error — not a 30s request timeout. The connect UX
@@ -320,14 +350,24 @@ export class AcpBrainAdapter implements BrainAdapter {
       // contract as ClaudeSdkAdapter P3a).
       const loaded = await this.request('session/load', {
         sessionId: this._sessionId,
-        cwd: process.cwd(),
+        cwd: getWmuxDir(),
         mcpServers: this.mcpServersParam(),
       });
       if (!loaded.error) return this._sessionId;
       this._sessionId = null;
     }
+    // cwd is pinned to the wmux DATA dir, mirroring ClaudeSdkAdapter's P3a
+    // stable-cwd rationale — and deliberately NOT a git repo. Live-debug
+    // finding (py-spy, 2026-07-17): an ACP agent that gathers git "coding
+    // workspace" context at prompt time can deadlock on Windows when its git
+    // subprocess races the MCP child spawn (pipe handle inherited by the
+    // concurrently-spawned child → git exits but its stdout never EOFs, the
+    // agent joins that reader thread forever). A non-repo cwd ends the git
+    // probe in milliseconds, closing the race window — and the brain's
+    // workspace is the wmux FLEET, not whatever directory main happens to
+    // run from.
     const created = await this.request('session/new', {
-      cwd: process.cwd(),
+      cwd: getWmuxDir(),
       mcpServers: this.mcpServersParam(),
     });
     const sid = created.result?.sessionId;
@@ -335,6 +375,19 @@ export class AcpBrainAdapter implements BrainAdapter {
       return { error: `ACP session/new failed: ${created.error?.message ?? 'no sessionId'}` };
     }
     this._sessionId = sid;
+    // Windows spawn-race guard (live-debug finding, py-spy 2026-07-17): at
+    // session start the agent boots its own MCP server subprocesses; a prompt
+    // arriving IMMEDIATELY makes the agent's first-turn context gathering
+    // (e.g. a `git` probe) spawn concurrently with those still-starting
+    // long-lived children, and CPython's Windows Popen handle-inheritance
+    // race can leak the short-lived probe's pipe handle into one of them —
+    // the probe exits but its stdout never EOFs and the agent's turn thread
+    // joins that reader forever (observed stack: coding_context._git →
+    // communicate → join). Letting the spawn burst settle before the first
+    // prompt closes the observed window; later turns reuse the session and
+    // never hit it. Cost: one-time +settle on a brand-new brain session.
+    const settle = this.deps.newSessionSettleMs ?? NEW_SESSION_SETTLE_MS;
+    if (settle > 0) await new Promise((r) => setTimeout(r, settle));
     return sid;
   }
 
