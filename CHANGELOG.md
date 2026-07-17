@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **File-edit approval prompts no longer strand a pane (and the orchestrator) for hours.** The screen-reading detector only recognized Claude Code's `Do you want to proceed?` and `Allow tool use for …` prompts, so a `Do you want to overwrite <file>?` / `create` / `make this edit to` approval never emitted an awaiting-input event — in a live run a worker sat on one for 100 minutes while the orchestrator was never woken. The detector now matches the file-edit prompt family, including two rendering hazards observed in that pane: cursor-move drawing that eats the spaces between words, and narrow-pane wrapping that puts the filename on the next line.
+
+- **The orchestrator no longer delegates pipeline routing to workers that can't route.** It used to tell a pane "hand off to the Builder when ready" — an instruction a worker pane cannot follow (panes can't see or message each other), so the first pane quietly did the whole job while the Builder and Reviewer sat as bare shells. Its standing instructions now make the brain the only router: scope each dispatch to one role's stage, wait for the result, and carry it to the next role's pane itself — launching the agent CLI there first if the pane is still a bare shell.
+
 ## [3.26.0] — 2026-07-17
 
 ### Added
