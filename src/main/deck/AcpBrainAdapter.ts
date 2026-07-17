@@ -29,6 +29,7 @@
 // (the connect UX opens a pane for that).
 
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
+import { StringDecoder } from 'node:string_decoder';
 import type { BrainAdapter, BrainEvent, BrainStartOptions, BrainUsage } from './BrainAdapter';
 import { mintCommanderToken, revokeCommanderToken } from './commanderTrust';
 import { COMMANDER_MODE_ARG } from '../../shared/commanderSurface';
@@ -162,7 +163,11 @@ export class AcpBrainAdapter implements BrainAdapter {
     this._initialized = false;
     this._sessionAttached = false;
     this.stdoutBuf = '';
-    child.stdout.on('data', (d: Buffer) => this.onStdout(d.toString('utf8')));
+    // StringDecoder keeps a multi-byte UTF-8 character split across chunk
+    // boundaries intact (Buffer.toString would emit replacement chars and
+    // corrupt the JSON frame — CodeRabbit, PR #477).
+    const decoder = new StringDecoder('utf8');
+    child.stdout.on('data', (d: Buffer) => this.onStdout(decoder.write(d)));
     // The agent's stderr is its diagnostic channel (ACP reserves stdout for
     // JSON-RPC). Mirror it into the main log, truncated + line-capped, so a
     // wedged brain leaves evidence instead of a silent 10-minute timeout.
@@ -199,7 +204,12 @@ export class AcpBrainAdapter implements BrainAdapter {
     });
     child.on('exit', () => {
       // Fail every in-flight request so a crashed agent surfaces as an error
-      // event instead of a hung turn.
+      // event instead of a hung turn — but ONLY while this child is still the
+      // current one. A killed/replaced child's DELAYED exit must not clear
+      // the replacement's pending requests (CodeRabbit, PR #477); after
+      // killChildTree detached it, its stragglers are already handled.
+      if (this.child !== child) return;
+      this.child = null;
       for (const [, entry] of this.pending) {
         clearTimeout(entry.timer);
         entry.resolve({ error: { message: 'ACP agent process exited' } });
@@ -231,7 +241,12 @@ export class AcpBrainAdapter implements BrainAdapter {
       if (!line) continue;
       let msg: JsonRpcMessage;
       try {
-        msg = JSON.parse(line) as JsonRpcMessage;
+        const parsed: unknown = JSON.parse(line);
+        // JSON.parse happily returns null / numbers / arrays — dereferencing
+        // those as a message object would throw inside the stdout data
+        // handler and crash main (CodeRabbit, PR #477).
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) continue;
+        msg = parsed as JsonRpcMessage;
       } catch {
         continue; // non-protocol noise on stdout — ignore defensively
       }
@@ -461,18 +476,15 @@ export class AcpBrainAdapter implements BrainAdapter {
       return;
     }
 
-    // One-shot context injection on the first turn (system prompt + fleet
-    // snapshot ride the prompt — ACP has no separate system-prompt channel).
-    // Composed ONCE: the resume-fallback retry re-sends the same prompt.
+    // One-shot context injection on the first SUCCESSFUL turn (system prompt
+    // + fleet snapshot ride the prompt — ACP has no separate system-prompt
+    // channel). Composed once here; CONSUMED only when the turn completes,
+    // so a failed first turn (agent not installed, spawn error, dead resume)
+    // doesn't strip the brain of its policy for the next attempt
+    // (CodeRabbit, PR #477).
     const parts: string[] = [];
-    if (this._startOptions.systemPrompt) {
-      parts.push(this._startOptions.systemPrompt);
-      this._startOptions = { ...this._startOptions, systemPrompt: undefined };
-    }
-    if (this._startOptions.fleetContext) {
-      parts.push(this._startOptions.fleetContext);
-      this._startOptions = { ...this._startOptions, fleetContext: undefined };
-    }
+    if (this._startOptions.systemPrompt) parts.push(this._startOptions.systemPrompt);
+    if (this._startOptions.fleetContext) parts.push(this._startOptions.fleetContext);
     const prompt = parts.length > 0 ? `${parts.join('\n\n---\n\n')}\n\n---\n\n${text}` : text;
 
     // At most two attempts: the first may run against a disk-seeded session
@@ -552,8 +564,14 @@ export class AcpBrainAdapter implements BrainAdapter {
           yield { type: 'error', message };
           return;
         }
-        // A completed turn validates whatever session it ran on.
+        // A completed turn validates whatever session it ran on, and consumes
+        // the one-shot bootstrap context (it is now part of the transcript).
         this._resumeUnvalidated = false;
+        this._startOptions = {
+          ...this._startOptions,
+          systemPrompt: undefined,
+          fleetContext: undefined,
+        };
         const stopReason = response.result?.stopReason;
         if (stopReason === 'refusal') {
           yield { type: 'error', message: 'the brain refused the turn' };
