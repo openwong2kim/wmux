@@ -270,6 +270,16 @@ export const ko = {
   'deck.mode.offDesc': '자율 동작 없음(기본값). 실행 중인 루프·예약도 정지. 직접 타이핑은 여전히 가능.',
   'deck.mode.assist': 'Assist',
   'deck.mode.assistDesc': 'pane이 입력을 기다릴 때, 또는 실행 중인 루프를 진행할 때만 깨어남. 알림만, 승인은 안 누름.',
+  // Claude Code hook 브리지 설치 유도(실행 시 + 모드 상향 시).
+  'hooks.prompt.title': '정확한 agent 신호를 위해 wmux hook을 설치하세요',
+  'hooks.prompt.body': 'hook이 없으면 wmux는 화면 텍스트를 읽어 agent 완료를 추측합니다 — 완료·승인 신호를 놓칠 수 있습니다. Claude Code 설정에 hook 브리지를 설치하면 신호가 정확해집니다.',
+  'hooks.prompt.install': 'hook 설치',
+  'hooks.prompt.installing': '설치 중…',
+  'hooks.prompt.later': '나중에',
+  'hooks.prompt.error': '설치에 실패했습니다.',
+  'hooks.prompt.doneTitle': 'hook 설치 완료',
+  'hooks.prompt.doneBody': 'pane에서 실행 중인 Claude 세션을 재시작하면 hook이 적용됩니다.',
+  'hooks.prompt.close': '닫기',
   'deck.mode.auto': 'Auto (위험)',
   'deck.mode.autoDesc': '모든 agent 이벤트에 깨어나 스스로 판단해 승인까지 누르며 작업을 끝까지 진행.',
   // 이벤트 자동 깨우기 킬스위치: 끄면 요청하지 않은 자동 요약 턴(토큰 소비)이

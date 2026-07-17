@@ -19,6 +19,7 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
+import { requestHooksInstallPrompt } from './HooksInstallPrompt';
 
 export interface AgentModeApi {
   get: (workspaceId: string) => Promise<{ mode: AgentMode | null }>;
@@ -85,6 +86,10 @@ export function AgentModeChip({
         .set(workspaceId, next)
         .then((r) => { if (r.ok && r.mode) setMode(r.mode); else setMode(prev); })
         .catch(() => setMode(prev));
+      // Raising autonomy means the orchestrator is about to rely on lifecycle
+      // signals — if the hook bridge is missing, this is the moment to say so.
+      // The prompt re-checks install status itself (no-op when installed).
+      if (next !== 'off') requestHooksInstallPrompt();
     },
     [api, workspaceId, mode],
   );

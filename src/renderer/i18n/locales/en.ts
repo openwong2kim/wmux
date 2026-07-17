@@ -331,6 +331,16 @@ export const en = {
   'deck.mode.offDesc': 'No autonomy (default). Stops any running loop and schedule. You can still type.',
   'deck.mode.assist': 'Assist',
   'deck.mode.assistDesc': 'Wakes only when a pane needs input, or to drive a running loop. Notifies, never approves.',
+  // Claude Code hook-bridge install prompt (launch + mode-raise nudge).
+  'hooks.prompt.title': 'Install wmux hooks for accurate agent signals',
+  'hooks.prompt.body': 'Without hooks, wmux falls back to screen-reading to guess when an agent finishes — it can miss completions and approvals. Installing the hook bridge into your Claude Code settings makes these signals exact.',
+  'hooks.prompt.install': 'Install hooks',
+  'hooks.prompt.installing': 'Installing…',
+  'hooks.prompt.later': 'Later',
+  'hooks.prompt.error': 'Install failed.',
+  'hooks.prompt.doneTitle': 'Hooks installed',
+  'hooks.prompt.doneBody': 'Restart the Claude sessions in your panes to activate the hooks.',
+  'hooks.prompt.close': 'Close',
   'deck.mode.auto': 'Auto (danger)',
   'deck.mode.autoDesc': 'Wakes on every agent event; drives panes and presses approvals on its own judgment, running work to completion.',
   // Global event-push kill switch: OFF stops the unrequested wake-turns

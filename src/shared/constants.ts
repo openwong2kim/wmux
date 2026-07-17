@@ -185,6 +185,14 @@ export const IPC = {
   //   + schedules. Same renderer-only trust boundary.
   DECK_MODE_GET: 'deck:mode:get',
   DECK_MODE_SET: 'deck:mode:set',
+  //   HOOKS_BRIDGE_* — the Claude Code hook bridge (wmux setup-hooks, in-app).
+  //   STATUS reports whether the wmux hook entries are installed in
+  //   ~/.claude/settings.json; INSTALL performs the same idempotent install as
+  //   the CLI. Explicitly user-triggered from the install prompt — wmux never
+  //   edits Claude settings behind the operator's back (owner decision
+  //   2026-07-17). Renderer-only trust boundary.
+  HOOKS_BRIDGE_STATUS: 'hooks:bridge:status',
+  HOOKS_BRIDGE_INSTALL: 'hooks:bridge:install',
   //   DECK_DECISION_* — the brain-raised decision gate. The orchestrator brain
   //   calls the deck_ask_decision MCP tool to PAUSE its loop and ask the human
   //   a decision; GET hydrates that pending decision on mount (so it shows

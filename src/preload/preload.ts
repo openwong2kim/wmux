@@ -477,6 +477,19 @@ const electronAPI = {
           code?: string;
         }>,
     },
+    // Claude Code hook bridge (in-app `wmux setup-hooks`). STATUS feeds the
+    // install prompt (launch + off→assist/auto mode switch); INSTALL is the
+    // explicit user-clicked install — never auto-run.
+    hooksBridge: {
+      status: () =>
+        ipcRenderer.invoke(IPC.HOOKS_BRIDGE_STATUS) as Promise<
+          import('../main/ipc/handlers/hooksBridge.handler').HooksBridgeStatus
+        >,
+      install: () =>
+        ipcRenderer.invoke(IPC.HOOKS_BRIDGE_INSTALL) as Promise<
+          import('../cli/commands/setupHooks').InstallOutcome
+        >,
+    },
     // Brain-raised decision gate. GET hydrates the pending decision on mount (so
     // it shows after a reboot); RESOLVE is the human's answer, which clears the
     // block and resumes the loop.

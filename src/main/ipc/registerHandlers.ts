@@ -18,6 +18,7 @@ import { registerFontHandlers } from './handlers/fonts.handler';
 import { registerMetadataHandlers } from './handlers/metadata.handler';
 import { startLocalContextWatch } from '../metadata/localContextWatch';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
+import { registerHooksBridgeHandlers } from './handlers/hooksBridge.handler';
 import { registerFsHandlers } from './handlers/fs.handler';
 import { registerToolbarHandlers } from './handlers/toolbar.handler';
 import { registerDiffHandlers } from './handlers/diff.handler';
@@ -154,6 +155,7 @@ export function registerAllHandlers(
     localPtyOwnership: !daemonClient,
   });
   registerClipboardHandlers();
+  registerHooksBridgeHandlers();
   const cleanupFs = registerFsHandlers();
   const cleanupToolbar = registerToolbarHandlers();
   // J2 — diff:read / diff:applyHunks. git 전용(데몬 무관) — 항상 등록.

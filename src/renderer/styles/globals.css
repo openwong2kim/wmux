@@ -384,6 +384,15 @@ button {
   appearance: none;
 }
 
+/* 네이티브 <select> 팝업: Chromium이 option 목록을 OS 기본(흰색) 배경으로
+   그리는데 글자색은 테마의 밝은 텍스트를 상속받아 다크 테마에서 흰배경+흰글씨가
+   된다. 팝업에 테마 색을 명시한다(닫힌 컨트롤은 각 컴포넌트가 스타일링 —
+   이 규칙은 펼쳐진 목록에만 영향). */
+select option {
+  background-color: var(--bg-overlay);
+  color: var(--text-main);
+}
+
 /* Custom scrollbar */
 ::-webkit-scrollbar {
   width: 6px;

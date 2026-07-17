@@ -26,6 +26,7 @@ import OnboardingOverlay from '../Onboarding/OnboardingOverlay';
 import FirstRunWizard from '../FirstRunWizard';
 import KeyboardCheatSheet from '../KeyboardCheatSheet';
 import ToastContainer from '../Toast/ToastContainer';
+import { HooksInstallPromptContainer } from '../Deck/HooksInstallPrompt';
 import FloatingPane from '../Terminal/FloatingPane';
 import SearchResultsPanel from '../Search/SearchResultsPanel';
 import ChannelDock from '../Channels/ChannelDock';
@@ -1258,6 +1259,7 @@ export default function AppLayout() {
       )}
       <FloatingPane />
       <ToastContainer />
+      <HooksInstallPromptContainer t={t} />
       </div>
     </div>
     </ErrorBoundary>
