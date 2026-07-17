@@ -332,6 +332,13 @@ export const IPC = {
   // native min/max/close) so the controls never clash with the theme.
   // Windows-only no-op elsewhere (see registerHandlers).
   WINDOW_SET_TITLEBAR_OVERLAY: 'window:setTitleBarOverlay',
+  // macOS: native fullscreen hides the traffic lights, so the renderer's
+  // 72px titlebar reserve must collapse (and come back on exit) — the same
+  // enter/leave-full-screen → class toggle pattern VS Code/Hyper use. Push
+  // (main → renderer) on the window events + a pull (invoke) for the mount-
+  // time initial state.
+  WINDOW_FULLSCREEN_CHANGED: 'window:fullscreen-changed',
+  WINDOW_IS_FULLSCREEN: 'window:isFullScreen',
   // MCP integration status / management (Settings panel + CLI parity)
   MCP_CHECK: 'mcp:check',
   MCP_REREGISTER: 'mcp:reregister',

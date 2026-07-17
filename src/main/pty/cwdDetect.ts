@@ -43,7 +43,13 @@ export function parseOsc7Cwd(data: string): string {
   if (/^\/\/\//.test(p)) {
     return p.slice(1).replace(/\//g, '\\');
   }
-  return p;
+  // NFC-normalize POSIX paths: macOS shells report $PWD in the filesystem's
+  // NFD form, so a Korean folder arrives as decomposed jamo and renders
+  // broken in the tab tooltip / working-directories menu, and comparisons
+  // against NFC strings fail. Identity for already-NFC input (VS Code does
+  // the same at its fs boundary — see base/node/pfs.ts). Display/comparison
+  // boundary only: nothing here is written back to the shell.
+  return p.normalize('NFC');
 }
 
 /**

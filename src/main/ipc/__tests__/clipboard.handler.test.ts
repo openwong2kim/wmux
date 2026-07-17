@@ -17,6 +17,7 @@ vi.mock('electron', () => {
   const writeText = vi.fn();
   const readText = vi.fn(() => 'hello');
   const availableFormats = vi.fn(() => [] as string[]);
+  const read = vi.fn(() => '' as string);
   const ipcMain = {
     handle: vi.fn((channel: string, fn: (...args: unknown[]) => unknown) => {
       handlers.set(channel, fn);
@@ -32,6 +33,7 @@ vi.mock('electron', () => {
       readText,
       readImage: vi.fn(() => ({ isEmpty: () => true, toPNG: () => Buffer.from([]) })),
       availableFormats,
+      read,
     },
     app: { getPath: vi.fn(() => '/tmp') },
     // Expose registered handlers + clipboard.writeText for tests
@@ -39,6 +41,7 @@ vi.mock('electron', () => {
     __writeText: writeText,
     __readText: readText,
     __availableFormats: availableFormats,
+    __read: read,
   };
 });
 
@@ -64,6 +67,7 @@ const handlers = (electron as unknown as { __handlers: Map<string, (...a: unknow
 const writeText = (electron as unknown as { __writeText: ReturnType<typeof vi.fn> }).__writeText;
 const readText = (electron as unknown as { __readText: ReturnType<typeof vi.fn> }).__readText;
 const availableFormats = (electron as unknown as { __availableFormats: ReturnType<typeof vi.fn> }).__availableFormats;
+const pasteboardRead = (electron as unknown as { __read: ReturnType<typeof vi.fn> }).__read;
 const execFileMock = execFile as unknown as ReturnType<typeof vi.fn>;
 
 // execFile(file, args, opts, cb) 콜백 시그니처
@@ -99,6 +103,8 @@ beforeEach(() => {
   readText.mockReturnValue('hello');
   availableFormats.mockReset();
   availableFormats.mockReturnValue([] as string[]);
+  pasteboardRead.mockReset();
+  pasteboardRead.mockReturnValue('');
   execFileMock.mockReset();
   stderrSpy = vi.spyOn(process.stderr, 'write').mockImplementation(() => true);
   registerClipboardHandlers();
@@ -163,24 +169,51 @@ describe('CLIPBOARD_WRITE — error surfacing', () => {
 });
 
 describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
-  it('darwin + text/uri-list + resolver success → returns absolute POSIX path (newline trimmed)', async () => {
+  it('darwin fast path: public.file-url resolves WITHOUT osascript (the paste-delay fix)', async () => {
     setPlatform('darwin');
-    availableFormats.mockReturnValue(['text/plain', 'text/uri-list']);
-    mockResolverStdout('/Users/foo/project/out/wmux-darwin-arm64/\n');
+    pasteboardRead.mockReturnValue('file:///Users/foo/project/out/wmux-darwin-arm64/');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
     // 디렉터리 trailing slash는 macOS가 준 그대로 유지된다
     await expect(handler({} as never)).resolves.toBe('/Users/foo/project/out/wmux-darwin-arm64/');
-    // osascript는 절대경로 + 셸 인터폴레이션 없는 execFile로만 호출된다
+    // 빠른 경로: osascript 스폰이 없어야 한다 (매 paste 스폰이 지연의 원흉)
+    expect(execFileMock).not.toHaveBeenCalled();
+    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('darwin opaque bookmark (file:///.file/id=) falls back to the osascript resolver', async () => {
+    setPlatform('darwin');
+    pasteboardRead.mockReturnValue('file:///.file/id=6571367.8927864');
+    mockResolverStdout('/Users/foo/project/out/wmux-darwin-arm64/\n');
+
+    const handler = getHandler(IPC.CLIPBOARD_READ);
+    await expect(handler({} as never)).resolves.toBe('/Users/foo/project/out/wmux-darwin-arm64/');
     expect(execFileMock).toHaveBeenCalledTimes(1);
     expect(execFileMock.mock.calls[0][0]).toBe('/usr/bin/osascript');
-    // 경로가 해석됐으므로 이름만 주는 readText는 쓰이지 않는다
-    expect(readText).not.toHaveBeenCalled();
+  });
+
+  it('darwin fast path NFC-normalizes NFD Korean folder names (한글 경로 깨짐)', async () => {
+    setPlatform('darwin');
+    const nfd = '한글'.normalize('NFD');
+    pasteboardRead.mockReturnValue('file:///Users/foo/' + encodeURIComponent(nfd));
+
+    const handler = getHandler(IPC.CLIPBOARD_READ);
+    // 한글은 SAFE_PATH_RE 밖 → pty용 단일따옴표 인용. 핵심 단언은 따옴표 안이
+    // NFC(완성형 '한글')이라는 것 — NFD였다면 자모가 분해돼 다른 문자열이 된다.
+    await expect(handler({} as never)).resolves.toBe("'/Users/foo/한글'");
+  });
+
+  it('darwin readText fallback NFC-normalizes NFD text (Finder "경로명 복사")', async () => {
+    setPlatform('darwin');
+    readText.mockReturnValue('/Users/foo/한글'.normalize('NFD'));
+
+    const handler = getHandler(IPC.CLIPBOARD_READ);
+    await expect(handler({} as never)).resolves.toBe('/Users/foo/한글');
   });
 
   it('single-quotes the resolved path when it contains spaces', async () => {
     setPlatform('darwin');
-    availableFormats.mockReturnValue(['text/uri-list']);
+    pasteboardRead.mockReturnValue('file:///.file/id=1');
     mockResolverStdout('/Users/foo/My Folder/file.txt\n');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -191,7 +224,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
     // Finder 파일명은 사용자 통제 밖 입력이 셸로 들어가는 경계 — 큰따옴표는 $·백틱을
     // 여전히 해석하므로 부족하다(CodeRabbit 지적). 단일따옴표 안은 전부 리터럴.
     setPlatform('darwin');
-    availableFormats.mockReturnValue(['text/uri-list']);
+    pasteboardRead.mockReturnValue('file:///.file/id=1');
     mockResolverStdout('/Users/foo/we$ird `name";dir\n');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -200,7 +233,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it("escapes embedded single quotes with the POSIX '\\'' idiom", async () => {
     setPlatform('darwin');
-    availableFormats.mockReturnValue(['text/uri-list']);
+    pasteboardRead.mockReturnValue('file:///.file/id=1');
     mockResolverStdout("/Users/foo/it's here\n");
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -210,7 +243,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('falls back to readText when the resolver fails (non-zero exit / timeout)', async () => {
     setPlatform('darwin');
-    availableFormats.mockReturnValue(['text/uri-list']);
+    pasteboardRead.mockReturnValue('file:///.file/id=1');
     execFileMock.mockImplementation(
       (_file: unknown, _args: unknown, _opts: unknown, cb: unknown) => {
         (cb as ExecFileCb)(new Error('osascript timed out'), '', '');
@@ -224,7 +257,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('falls back to readText when output is empty (browser URL exposes uri-list but no «class furl»)', async () => {
     setPlatform('darwin');
-    availableFormats.mockReturnValue(['text/uri-list']);
+    pasteboardRead.mockReturnValue('file:///.file/id=1');
     // furl 가드 스크립트는 비파일 클립보드(브라우저 URL 복사 등)에서 빈 문자열을 낸다
     mockResolverStdout('\n');
 
@@ -235,7 +268,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('falls back to readText when output is not an absolute path', async () => {
     setPlatform('darwin');
-    availableFormats.mockReturnValue(['text/uri-list']);
+    pasteboardRead.mockReturnValue('file:///.file/id=1');
     mockResolverStdout('garbage-not-a-path\n');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -244,20 +277,22 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('non-darwin → readText untouched and resolver is never spawned', async () => {
     setPlatform('linux');
-    // uri-list가 있어도 darwin 게이트가 먼저 컷한다
-    availableFormats.mockReturnValue(['text/uri-list']);
+    // file-url 슬롯이 있어도 darwin 게이트가 먼저 컷한다
+    pasteboardRead.mockReturnValue('file:///home/foo/x');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
     await expect(handler({} as never)).resolves.toBe('hello');
     expect(execFileMock).not.toHaveBeenCalled();
   });
 
-  it('darwin without text/uri-list (plain text copy) → readText, no spawn', async () => {
+  it('darwin plain text copy (no file-url slot) → readText, no spawn, no format enumeration', async () => {
     setPlatform('darwin');
-    availableFormats.mockReturnValue(['text/plain']);
+    pasteboardRead.mockReturnValue('');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
     await expect(handler({} as never)).resolves.toBe('hello');
     expect(execFileMock).not.toHaveBeenCalled();
+    // 포맷 열거 자체가 macOS에서 느린 경로 — 일반 텍스트 paste는 그 비용도 안 낸다.
+    expect(availableFormats).not.toHaveBeenCalled();
   });
 });

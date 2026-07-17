@@ -277,6 +277,16 @@ export function registerAllHandlers(
   ipcMain.removeAllListeners(IPC.WINDOW_SET_TITLEBAR_OVERLAY);
   ipcMain.on(IPC.WINDOW_SET_TITLEBAR_OVERLAY, onSetTitleBarOverlay);
 
+  // macOS fullscreen ↔ traffic-light reserve (Titlebar.tsx paddingLeft).
+  // Pull for mount-time state; the push lives in createWindow (the window
+  // events exist there). Harmless on other platforms (renderer only consults
+  // it when isMac).
+  ipcMain.removeHandler(IPC.WINDOW_IS_FULLSCREEN);
+  ipcMain.handle(IPC.WINDOW_IS_FULLSCREEN, () => {
+    const win = getWindow();
+    return !!win && !win.isDestroyed() && win.isFullScreen();
+  });
+
   // EventBus publish from renderer (one-way). Validates the event type and
   // workspaceId at the trust boundary so a misbehaving renderer can't poison
   // the ring with arbitrary shapes; type-specific fields ride through as-is.

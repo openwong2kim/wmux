@@ -67,6 +67,32 @@ function useTitleBarOverlaySync(): void {
   }, []);
 }
 
+/**
+ * macOS: whether the window is in native fullscreen — the traffic lights are
+ * hidden there, so the 72px left reserve must collapse (a fixed reserve in
+ * fullscreen is exactly the "top chrome shifted right for no reason" bug).
+ * Push (enter/leave-full-screen from main) + one mount-time pull for the
+ * initial state; the VS Code/Hyper pattern — there is no reliable pure-
+ * renderer fullscreen signal on mac.
+ */
+function useMacFullscreen(isMac: boolean): boolean {
+  const [fullscreen, setFullscreen] = useState(false);
+  useEffect(() => {
+    if (!isMac) return;
+    const api = window.electronAPI?.window;
+    let alive = true;
+    void api?.isFullScreen?.().then((fs: boolean) => {
+      if (alive) setFullscreen(fs);
+    }).catch(() => {});
+    const off = api?.onFullscreenChanged?.((fs: boolean) => setFullscreen(fs));
+    return () => {
+      alive = false;
+      off?.();
+    };
+  }, [isMac]);
+  return fullscreen;
+}
+
 export default function Titlebar() {
   const t = useT();
   const sidebarVisible = useStore((s) => s.sidebarVisible);
@@ -74,6 +100,7 @@ export default function Titlebar() {
   const platform = rendererPlatform();
   const isMac = platform === 'darwin';
   const isWin = platform === 'win32';
+  const macFullscreen = useMacFullscreen(isMac);
   const [pickerOpen, setPickerOpen] = useState(false);
   // Anchor the preset dropdown UNDER the + button. Measured at open time
   // (the button's viewport rect), clamped so the 208px menu never overflows
@@ -115,8 +142,11 @@ export default function Titlebar() {
         paddingRight: isWin
           ? 'calc(100vw - env(titlebar-area-x, 0px) - env(titlebar-area-width, 100vw))'
           : 0,
-        // macOS traffic lights sit top-left (trafficLightPosition, createWindow).
-        paddingLeft: isMac ? 72 : 0,
+        // macOS traffic lights sit top-left (trafficLightPosition,
+        // createWindow) — reserve 72px for them, EXCEPT in native fullscreen
+        // where the lights are hidden and a fixed reserve just shifts the
+        // whole top row right (owner-reported on mac).
+        paddingLeft: isMac && !macFullscreen ? 72 : 0,
       } as CSSProperties}
       data-testid="titlebar"
       {...tokenAttrs('bgBase', 'bg')}

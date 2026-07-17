@@ -822,6 +822,15 @@ const electronAPI = {
     setTitleBarOverlay: (opts: { color: string; symbolColor: string }) => {
       ipcRenderer.send(IPC.WINDOW_SET_TITLEBAR_OVERLAY, opts);
     },
+    /** macOS titlebar reserve: mount-time fullscreen state (pull). */
+    isFullScreen: () => ipcRenderer.invoke(IPC.WINDOW_IS_FULLSCREEN) as Promise<boolean>,
+    /** macOS titlebar reserve: live fullscreen transitions (push). */
+    onFullscreenChanged: (cb: (fullscreen: boolean) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, payload: { fullscreen?: boolean }) =>
+        cb(payload?.fullscreen === true);
+      ipcRenderer.on(IPC.WINDOW_FULLSCREEN_CHANGED, listener);
+      return () => ipcRenderer.removeListener(IPC.WINDOW_FULLSCREEN_CHANGED, listener);
+    },
   },
   events: {
     /**

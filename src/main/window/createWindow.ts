@@ -1,6 +1,7 @@
 import { app, BrowserWindow, shell } from 'electron';
 import path from 'node:path';
 import { platformChoice } from '../../shared/platform';
+import { IPC } from '../../shared/constants';
 import { attachFlashFrameAutoClear } from './flashFrame';
 
 // OS-aware window-icon extension. Mirrors tray.ts so the same generated asset
@@ -121,6 +122,19 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
       webviewTag: true,
     },
   });
+
+  // macOS: native fullscreen hides the traffic lights, so the renderer's
+  // titlebar must drop its 72px left reserve (and restore it on exit) — the
+  // enter/leave-full-screen → push pattern VS Code and Hyper use (there is
+  // no reliable renderer-side signal for this on mac). Registered on all
+  // platforms; the renderer only consults it when isMac.
+  const pushFullscreen = (fullscreen: boolean): void => {
+    if (!mainWindow.isDestroyed()) {
+      mainWindow.webContents.send(IPC.WINDOW_FULLSCREEN_CHANGED, { fullscreen });
+    }
+  };
+  mainWindow.on('enter-full-screen', () => pushFullscreen(true));
+  mainWindow.on('leave-full-screen', () => pushFullscreen(false));
 
   if (!opts.deferLoad) {
     loadMainRenderer(mainWindow);
