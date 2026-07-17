@@ -83,7 +83,9 @@ function useMacFullscreen(isMac: boolean): boolean {
     let alive = true;
     void api?.isFullScreen?.().then((fs: boolean) => {
       if (alive) setFullscreen(fs);
-    }).catch(() => {});
+    }).catch(() => {
+      /* mount-time pull is best-effort — the push listener corrects state */
+    });
     const off = api?.onFullscreenChanged?.((fs: boolean) => setFullscreen(fs));
     return () => {
       alive = false;
