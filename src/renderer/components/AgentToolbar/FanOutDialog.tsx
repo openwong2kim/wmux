@@ -20,6 +20,12 @@ import { t } from '../../i18n';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 
+// 리뷰 발견(Codex+GLM+Claude 3/3 합의) — compete 모드에서 `mode === 'parallel' ?
+// taskPrompts : []`처럼 인라인 배열 리터럴을 useEffect 의존성에 넣으면 매 렌더마다
+// 새 참조가 생겨 이펙트가 무한 재실행된다(effect→setState(새 배열)→리렌더→새 []→
+// effect... "Maximum update depth exceeded"). 모듈 상수로 참조를 고정해 방지.
+const EMPTY_TASK_PROMPTS: readonly string[] = [];
+
 /** title 자동 파생: "{프롬프트 앞 24자} #k"(§7 G6). */
 function deriveTitle(prompt: string, k: number): string {
   const head = prompt.trim().slice(0, 24).replace(/\s+/g, ' ').trim();
@@ -66,8 +72,9 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
   }, [defaultRepo, repoPath]);
 
   // 경쟁 모드에선 태스크별 필드를 숨기므로 서비스에도 보내지 않는다(사용자가 이전에
-  // 병렬 모드에서 입력해둔 값은 state에 보존 — 다시 전환하면 되살아난다).
-  const effectiveTaskPrompts = mode === 'parallel' ? taskPrompts : [];
+  // 병렬 모드에서 입력해둔 값은 state에 보존 — 다시 전환하면 되살아난다). 리뷰 발견
+  // (3/3 합의): 매 렌더 새 []를 만들면 안 되므로 안정 참조(EMPTY_TASK_PROMPTS)로 고정.
+  const effectiveTaskPrompts = mode === 'parallel' ? taskPrompts : EMPTY_TASK_PROMPTS;
 
   // N·프롬프트 변경 시 미편집 title만 자동 파생(편집분은 보존). 태스크별 프롬프트가
   // 있으면 그쪽에서 파생(개별 작업의 정체성은 개별 프롬프트가 정본).

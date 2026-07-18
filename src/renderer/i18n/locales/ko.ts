@@ -903,7 +903,6 @@ export const ko = {
   'fanout.cancel': '취소',
   'fanout.spawning': '스폰 중…',
   'fanout.spawn': '{n}개 스폰',
-  'fanout.errPromptRequired': '병렬 작업: 모든 태스크에 프롬프트가 필요합니다 (공통 또는 개별)',
   'fanout.errPromptTooLarge': 'fan-out: 프롬프트가 {max}바이트를 초과합니다',
   'fanout.errRepoRequired': 'fan-out: repo 경로가 필요합니다',
   'fanout.failed': 'fan-out 실패: {error}',

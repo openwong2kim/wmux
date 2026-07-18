@@ -989,7 +989,6 @@ export const en = {
   'fanout.cancel': 'Cancel',
   'fanout.spawning': 'Spawning…',
   'fanout.spawn': 'Spawn {n}',
-  'fanout.errPromptRequired': 'multi task: every task needs a prompt (shared or its own)',
   'fanout.errPromptTooLarge': 'fan-out: prompt exceeds {max} bytes',
   'fanout.errRepoRequired': 'fan-out: repo path required',
   'fanout.failed': 'fan-out failed: {error}',
