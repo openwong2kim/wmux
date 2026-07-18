@@ -35,6 +35,7 @@ export interface DeckTabsProps {
 const TABS: { id: DeckTab; labelKey: string; fallback: string }[] = [
   { id: 'commander', labelKey: 'deck.tabCommander', fallback: 'Orchestrator' },
   { id: 'git', labelKey: 'deck.tabGit', fallback: 'Git' },
+  { id: 'review', labelKey: 'deck.tabReview', fallback: 'Review' },
   { id: 'channels', labelKey: 'deck.tabChannels', fallback: 'Channels' },
 ];
 
