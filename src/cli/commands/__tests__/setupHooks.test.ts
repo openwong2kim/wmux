@@ -6,6 +6,7 @@ import {
   installHooks,
   removeHooks,
   statusHooks,
+  findBridgeSourceFrom,
   type SetupHooksPaths,
 } from '../setupHooks';
 
@@ -266,5 +267,34 @@ describe('statusHooks', () => {
     fs.mkdirSync(pluginDir, { recursive: true });
     const s = statusHooks(paths());
     expect(s.pluginAlsoInstalled).toBe(true);
+  });
+});
+
+describe('findBridgeSourceFrom', () => {
+  // 패키징 앱의 메인 프로세스 레이아웃 재현: __dirname이 app.asar/.vite/build일 때
+  // walk-up으로 Resources/cli-bundle/wmux-bridge.mjs를 찾아야 한다 (인앱 "hook 설치"
+  // 버튼이 이 경로로 호출됨 — cli-bundle/ 후보 누락 시 설치가 항상 실패하던 회귀 방지).
+  it('resolves Resources/cli-bundle from the packaged main bundle dir', () => {
+    const resources = path.join(tmpDir, 'Resources');
+    const mainDir = path.join(resources, 'app.asar', '.vite', 'build');
+    fs.mkdirSync(mainDir, { recursive: true });
+    const bundled = path.join(resources, 'cli-bundle', 'wmux-bridge.mjs');
+    fs.mkdirSync(path.dirname(bundled), { recursive: true });
+    fs.writeFileSync(bundled, 'BRIDGE\n', 'utf8');
+    expect(findBridgeSourceFrom(mainDir)).toBe(bundled);
+  });
+
+  it('resolves the bridge sitting next to the CLI bundle', () => {
+    const cliDir = path.join(tmpDir, 'cli-bundle');
+    fs.mkdirSync(cliDir, { recursive: true });
+    const bundled = path.join(cliDir, 'wmux-bridge.mjs');
+    fs.writeFileSync(bundled, 'BRIDGE\n', 'utf8');
+    expect(findBridgeSourceFrom(cliDir)).toBe(bundled);
+  });
+
+  it('returns null when nothing is found within the walk budget', () => {
+    const deep = path.join(tmpDir, 'a', 'b', 'c');
+    fs.mkdirSync(deep, { recursive: true });
+    expect(findBridgeSourceFrom(deep)).toBeNull();
   });
 });

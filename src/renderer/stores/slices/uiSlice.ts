@@ -1115,7 +1115,8 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   // ─── Custom keybindings ──────────────────────────────────────────────
   // Seed from the shared factory (single source of truth shared with the
   // workspaceSlice load-merge). Pass the current platform so macOS gets the
-  // Ctrl+F7 default — bare F7 is swallowed by macOS media keys. The `typeof
+  // Ctrl+7 default — F7-based combos are swallowed by macOS (media keys /
+  // the ^F7 system shortcut). The `typeof
   // window` guard keeps the store constructable in the node test env where
   // `window` is undefined (platform → undefined → F7 fallback); a bare `window`
   // reference would throw ReferenceError. Deep-copy each entry so the factory

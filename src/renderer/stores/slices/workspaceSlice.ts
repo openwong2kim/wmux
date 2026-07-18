@@ -641,12 +641,12 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // until a removed-defaults tombstone schema exists.
         // `typeof window` 가드는 node 테스트 환경(window 미정의)에서 ReferenceError를 막는다.
         const platform = typeof window !== 'undefined' ? window.electronAPI?.platform : undefined;
-        // 손 안 댄 원본 F7 기본값을 현재 플랫폼 기본 키(Mac=Ctrl+F7)로 1회 승격.
-        // macOS 미디어 키에 먹혀 안 뜨던 기존 사용자의 F7을 실제로 고친다.
+        // 손 안 댄 원본 F7/Ctrl+F7 기본값을 현재 플랫폼 기본 키(Mac=Ctrl+7)로 1회 승격.
+        // macOS 미디어 키(F7)·시스템 단축키(^F7)에 먹혀 안 뜨던 바인딩을 실제로 고친다.
         const migrated = upgradeDefaultKeybindingsForPlatform(data.customKeybindings, platform);
         const savedIds = new Set(migrated.map((k) => k.id));
         const savedKeys = new Set(migrated.map((k) => k.key));
-        // 플랫폼별 기본값으로 백필 — Mac은 Ctrl+F7, 그 외 F7. 저장된 기본값은
+        // 플랫폼별 기본값으로 백필 — Mac은 Ctrl+7, 그 외 F7. 저장된 기본값은
         // id/key 매칭에 걸려 아래 filter에서 제외되므로 중복 추가되지 않는다.
         const missingDefaults = buildDefaultCustomKeybindings(platform).filter(
           (k) => !savedIds.has(k.id) && !savedKeys.has(k.key),

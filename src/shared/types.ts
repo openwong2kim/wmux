@@ -416,10 +416,13 @@ export interface CustomKeybinding {
  *
  * 플랫폼 인자를 받는 순수 팩토리다. macOS 기본 설정
  * (`com.apple.keyboard.fnState` = 0)에서는 F1–F12가 미디어 키로 소비돼
- * 단독 F7 keydown이 앱에 전달되지 않는다. 수정자(Ctrl)를 함께 누르면
- * 기능 키로 전달되므로 Mac 신규 설치에는 `Ctrl+F7`로 시드한다. Win/Linux는
- * 단타 F7을 그대로 유지한다. 기존 Mac 사용자의 저장된 `F7`은 백필의
- * id/key 매칭이 보존하므로(사용자 편집 우선 원칙) 여기서 덮어쓰지 않는다.
+ * 단독 F7 keydown이 앱에 전달되지 않고, 이전 시도였던 `Ctrl+F7`은 macOS
+ * 시스템 단축키("Tab 키 이동 방식 변경", 기본 활성)가 OS 레벨에서 먼저
+ * 소비한다 — 즉 Mac에서 F7 기반 조합은 전부 함정이다. 그래서 Mac은
+ * F키가 아닌 `Ctrl+7`(F7의 7)로 시드한다. Win/Linux는 단타 F7 유지.
+ * (`Ctrl+Shift+7` 류는 불가 — 매처가 e.key 기준이라 Shift+7이 레이아웃에
+ * 따라 '&' 등으로 들어온다.) 기존 Mac 사용자의 저장된 F7·Ctrl+F7 원본은
+ * {@link upgradeDefaultKeybindingsForPlatform}이 승격한다.
  * `window` 같은 전역에 접근하지 않아 main/renderer 양쪽에서 안전하다.
  */
 export function buildDefaultCustomKeybindings(platform?: string): CustomKeybinding[] {
@@ -427,7 +430,7 @@ export function buildDefaultCustomKeybindings(platform?: string): CustomKeybindi
   return [
     {
       id: 'kb-default-f7',
-      key: isMac ? 'Ctrl+F7' : 'F7',
+      key: isMac ? 'Ctrl+7' : 'F7',
       label: 'Claude (skip permissions)',
       command: 'claude --dangerously-skip-permissions',
       sendEnter: true,
@@ -443,27 +446,48 @@ export function buildDefaultCustomKeybindings(platform?: string): CustomKeybindi
 export const DEFAULT_CUSTOM_KEYBINDINGS: CustomKeybinding[] = buildDefaultCustomKeybindings();
 
 /**
- * 저장 세션 로드 시, "손 안 댄 원본 F7 기본값"을 현재 플랫폼의 기본 키로 1회 승격한다.
+ * 이 기본 바인딩이 과거 버전들에서 출하됐던 키 이력. 저장 세션에 이 중 하나가
+ * "손 안 댄 원본" 상태로 남아 있으면 현 플랫폼 기본 키로 승격 대상이 된다.
+ *   F7      — 초기 전 플랫폼 공통 기본값 (Mac 미디어 키에 먹힘)
+ *   Ctrl+F7 — v3.26 Mac 기본값 (macOS 시스템 단축키 ^F7이 가로챔)
+ */
+const LEGACY_DEFAULT_F7_KEYS = ['F7', 'Ctrl+F7'];
+
+/**
+ * 저장 세션 로드 시, "손 안 댄 원본 기본값"(키가 과거 출하 이력 중 하나)을 현재
+ * 플랫폼의 기본 키로 1회 승격한다.
  *
- * 배경: Mac 기본값이 Ctrl+F7로 바뀌기 전에 설치한 기존 사용자는 저장 세션에 원본
- * F7 기본값을 갖고 있다. 백필은 id로 이를 "사용자 편집"처럼 보존하므로, 승격이 없으면
- * 정작 F7이 macOS 미디어 키에 먹혀 안 뜨던 그 사용자들은 계속 깨진 채 남는다.
+ * 배경: 기본 키가 바뀌기 전에 설치한 기존 사용자는 저장 세션에 옛 기본 키를 갖고
+ * 있다. 백필은 id로 이를 "사용자 편집"처럼 보존하므로, 승격이 없으면 정작 옛 키가
+ * macOS에 먹혀 안 뜨던 그 사용자들은 계속 깨진 채 남는다.
  *
- * 오작동 방지: 사용자가 F7을 "의도적으로 다른 용도"로 바꿨을 수 있으므로, id·key뿐
- * 아니라 command·label·sendEnter까지 원본 shipped 기본값과 **완전히 동일**할 때만
- * 승격한다. 조금이라도 편집한 항목은 command 등이 달라 여기 걸리지 않는다.
- * 비-Mac이거나 이미 승격된 경우엔 그대로 반환(idempotent).
+ * 오작동 방지: 사용자가 해당 키를 "의도적으로 다른 용도"로 바꿨을 수 있으므로,
+ * id·키 이력뿐 아니라 command·label·sendEnter까지 원본 shipped 기본값과 **완전히
+ * 동일**할 때만 승격한다. 조금이라도 편집한 항목은 command 등이 달라 여기 걸리지
+ * 않는다. 키가 이미 현 플랫폼 기본이거나 이력에 없으면 그대로 반환(idempotent).
  */
 export function upgradeDefaultKeybindingsForPlatform(
   saved: CustomKeybinding[],
   platform?: string,
 ): CustomKeybinding[] {
-  const shipped = buildDefaultCustomKeybindings(undefined)[0]; // 과거 전 플랫폼 공통 기본값(F7)
+  const shipped = buildDefaultCustomKeybindings(undefined)[0]; // 플랫폼 무관 원본(F7) — 비교 기준
   const platformDefault = buildDefaultCustomKeybindings(platform)[0];
-  if (platformDefault.key === shipped.key) return saved; // 승격 불필요(비-Mac)
+  // 플랫폼 기본이 원본과 같으면(비-Mac·platform 미상) 엄격 no-op. 이 가드가 없으면
+  // (a) win/linux에서 사용자가 의도적으로 기본 바인딩을 Ctrl+F7로 재지정한 편집이
+  // F7로 되돌려지고, (b) mac에서 platform이 일시적으로 undefined일 때(preload
+  // race) 멀쩡한 Ctrl+F7이 mac 최악의 키인 F7로 "역승격"돼 저장된다.
+  if (platformDefault.key === shipped.key) return saved;
+  // 승격 목적지 키를 다른 바인딩이 이미 쓰고 있으면 승격하지 않는다 — 키 매칭은
+  // first-match라 기본 바인딩(항상 배열 앞쪽)이 사용자 바인딩을 소리 없이
+  // 가려버린다. 이 경우 죽은 레거시 키를 그대로 두는 쪽이 안전하다.
+  const keyTaken = saved.some(
+    (kb) => kb.id !== shipped.id && kb.key === platformDefault.key,
+  );
+  if (keyTaken) return saved;
   return saved.map((kb) =>
     kb.id === shipped.id &&
-    kb.key === shipped.key &&
+    kb.key !== platformDefault.key &&
+    LEGACY_DEFAULT_F7_KEYS.includes(kb.key) &&
     kb.command === shipped.command &&
     kb.label === shipped.label &&
     kb.sendEnter === shipped.sendEnter
