@@ -76,20 +76,26 @@ export function defaultPaths(): SetupHooksPaths {
 }
 
 /**
- * Locate the bundled bridge script. Walks up from the bundled CLI's directory
- * (same approach as mcp.ts findScript) trying, in order:
- *   - `wmux-bridge.mjs`                        (next to the bundled CLI — packaged app)
+ * Locate the bundled bridge script. Walks up from the calling module's
+ * directory (same approach as mcp.ts findScript) trying, in order:
+ *   - `wmux-bridge.mjs`                        (next to the bundled CLI — CLI 실행 시)
+ *   - `cli-bundle/wmux-bridge.mjs`             (패키징 앱의 메인 프로세스 — __dirname이
+ *                                               app.asar/.vite/build라 walk-up이
+ *                                               Resources에 닿았을 때 cli-bundle/로 진입)
  *   - `dist/cli-bundle/wmux-bridge.mjs`        (repo dist after `build:cli`)
  *   - `integrations/claude/bin/wmux-bridge.mjs` (dev fallback — repo checkout)
  * Returns null when none exist, in which case install aborts with guidance.
+ * 주의: 이 함수는 CLI뿐 아니라 hooksBridge.handler(메인 프로세스, 인앱 "hook 설치"
+ * 버튼)에서도 호출된다 — cli-bundle/ 후보가 없으면 인앱 설치가 항상 실패한다(#489 후속).
  */
-function findBridgeSource(): string | null {
+export function findBridgeSourceFrom(startDir: string): string | null {
   const candidates = [
     'wmux-bridge.mjs',
+    path.join('cli-bundle', 'wmux-bridge.mjs'),
     path.join('dist', 'cli-bundle', 'wmux-bridge.mjs'),
     path.join('integrations', 'claude', 'bin', 'wmux-bridge.mjs'),
   ];
-  let dir = __dirname;
+  let dir = startDir;
   for (let i = 0; i < 6; i++) {
     for (const rel of candidates) {
       const candidate = path.join(dir, rel);
@@ -100,6 +106,10 @@ function findBridgeSource(): string | null {
     dir = parent;
   }
   return null;
+}
+
+function findBridgeSource(): string | null {
+  return findBridgeSourceFrom(__dirname);
 }
 
 /**

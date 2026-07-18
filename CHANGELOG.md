@@ -16,6 +16,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ### Fixed
 
 - **The orchestrator control bar no longer strands the "Recover agents" button off to the right.** The reboot-recovery quick action was pinned with `ml-auto` in a wrapping flex row; in the narrow dock the bar wraps, so the button was shoved alone to the far right of its own line with a wide gap after Schedules. It now flows inline with the other controls.
+- **In-app "Install hooks" no longer fails with "Could not locate the bundled wmux-bridge.mjs".** The bridge locator only knew the CLI's layout; when the install button called it from the packaged app's main process, it walked right past `Resources/cli-bundle/` where the bridge actually lives. The packaged path is now a search candidate, so the one-click install works.
 - **macOS titlebar no longer shifts the WMUX segment 72px right.** The traffic-light reserve now lives inside the mantle segment, so the logo, + button, and segment seam line up with the sidebar edge below again.
 - **Idle CPU/GPU drain from perpetual UI animations.** The sidebar status-dot breathe, unread notification ring, and completed-pane blink animated `box-shadow`/`border-color`, forcing a style recalc and repaint every frame (~86 recalcs/s measured, renderer + GPU ≈ 30% CPU while idle). The glows are now static shadows on pseudo-elements with compositor-only opacity animation — same look, near-zero main-thread cost. Reduced-motion now also stills the sidebar dots.
 
