@@ -1495,10 +1495,21 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     };
 
     const connectPty = () => {
+      // Sidebar idle badge: stamp "this surface produced output" at most once
+      // per 30 s. Plain-shell output never trips the daemon ActivityMonitor's
+      // 2000-bytes/3s 'running' gate, so without this a shell-only workspace
+      // would read as idle-forever. Throttled with a closure timestamp so the
+      // zustand write (and its subscriber re-renders) stays off the hot path.
+      let lastOutputStampAt = 0;
       removeDataListener = ptyDataDispatcher.register(ptyId, (data) => {
         routePtyData(data);
         fireFirstData();
         markPaneLive();
+        const now = Date.now();
+        if (now - lastOutputStampAt >= 30_000) {
+          lastOutputStampAt = now;
+          useStore.getState().stampSurfaceOutput(ptyId);
+        }
       });
 
       removeExitListener = ptyExitDispatcher.register(ptyId, (exitCode) => {

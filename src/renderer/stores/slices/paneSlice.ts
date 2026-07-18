@@ -151,6 +151,14 @@ export interface PaneSlice {
   // state (not a raw Date.now() in the selector) keeps selectFleetPanes pure.
   agentClockMs: number;
   bumpAgentClock: () => void;
+  // Last raw PTY output per surface, throttled at the useTerminal IPC seam
+  // (~30 s). Deliberately SEPARATE from surfaceActivityAt: that map feeds the
+  // fleet hook-'running' derivation, and folding plain shell bytes into it
+  // would light status dots amber for a `ls` in a quiet pane. Only the sidebar
+  // idle badge reads this (max with surfaceActivityAt). Transient — never
+  // persisted; cleared on the same surface-teardown paths as surfaceActivity.
+  surfaceOutputAt: Record<string, number>;
+  stampSurfaceOutput: (ptyId: string) => void;
   // Issue #173: transient map of pane id → cwd inherited from the pane that
   // was split. Written by splitPane, consumed (and cleared) by the AppLayout
   // empty-leaf PTY funnel. Deliberately NOT persisted — buildSessionData's
@@ -319,6 +327,13 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
     // Byte-based 'running' with no tool name: stamp only the freshness clock,
     // NOT the activity string (leave the card's raw-tail fallback in place).
     state.surfaceActivityAt[ptyId] = Date.now();
+  }),
+
+  surfaceOutputAt: {},
+
+  stampSurfaceOutput: (ptyId) => set((state: StoreState) => {
+    if (!ptyId) return;
+    state.surfaceOutputAt[ptyId] = Date.now();
   }),
 
   splitCwdSeed: {},
@@ -512,6 +527,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
             delete state.surfaceAgent[s.ptyId];
             delete state.surfaceActivity[s.ptyId];
             delete state.surfaceActivityAt[s.ptyId];
+            delete state.surfaceOutputAt[s.ptyId];
             clearNudgesFor(s.ptyId); // A5: don't let a reused ptyId inherit this pane's nudge cap
             // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict.
             if (state.taskPtyRegistry) delete state.taskPtyRegistry[s.ptyId];

@@ -227,8 +227,10 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const departedCwd = useStore((s) => s.departedPaneGroups[workspaceId]);
 
   // Idle badge — how long since ANY of this workspace's surfaces last showed
-  // agent activity (the same surfaceActivityAt stamps the fleet 'running'
-  // derivation uses). Scalar subscription: re-renders only when the max moves.
+  // life: agent activity (surfaceActivityAt, same stamps the fleet 'running'
+  // derivation uses) OR raw terminal output (surfaceOutputAt, the throttled
+  // useTerminal stamp — covers plain-shell panes that never trip the agent
+  // gates). Scalar subscription: re-renders only when the max moves.
   // 0 = no stamp this session (fresh restart) → badge stays hidden rather
   // than lying with a fake "just now".
   const lastActivityAt = useStore((s) => {
@@ -236,7 +238,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     if (!ws) return 0;
     let last = 0;
     for (const surf of collectTerminalSurfaces(ws.rootPane)) {
-      const at = surf.ptyId ? (s.surfaceActivityAt[surf.ptyId] ?? 0) : 0;
+      if (!surf.ptyId) continue;
+      const at = Math.max(s.surfaceActivityAt[surf.ptyId] ?? 0, s.surfaceOutputAt[surf.ptyId] ?? 0);
       if (at > last) last = at;
     }
     return last;
