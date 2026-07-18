@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A workspace's orchestrator now wakes when its PR turns red, and can drive the fix.** When a pane's pull-request CI checks flip from passing/pending to failing, wmux fires a one-shot signal that wakes the owning workspace's brain through the same event-push path as a stopped pane — so a broken build routes straight back to the agent that owns it instead of waiting for you to notice the red badge. It is edge-triggered (fires once per red transition, re-arms after the PR goes green again, never spams while it stays red) and inherits the workspace's autonomy policy exactly: `auto` may send the pane one instruction to investigate and fix the failing checks, `assist` surfaces it as a report, and `off` stays silent. The wake prompt carries the PR number and URL so the brain acts without a poll. Closes the "detect → route back to the responsible worker" loop that competing multi-agent orchestrators ship.
+
 ### Changed
 
 - **A driving loop now proposes its own completion instead of idling to the budget.** When an autonomous (Continue) loop judges its objective met — the done-when checklist all passing, or the goal plainly achieved with no checklist — it now raises a confirm-completion decision (`Mark done` / `Keep going`) and stops, rather than continuing to auto-wake until the iteration budget runs out. Because a pending decision halts every wake, a finished overnight loop pauses for your confirmation instead of burning the rest of its budget doing nothing. You still have the final say; the brain never marks itself done.

@@ -83,7 +83,14 @@ export type WmuxEventType =
   // clients can observe stranded mentions; the primary human surface is the
   // in-app toast + OS notification (DaemonNotificationRouter). Scoped to the
   // affected member's workspace (base workspaceId).
-  | 'channel.nudgeExhausted';
+  | 'channel.nudgeExhausted'
+  // AO-style CI feedback routing (owner decision 2026-07-18). Edge-triggered by
+  // the main-process metadata poll when a pane's PR checks flip to FAILING
+  // (passing/pending → failing). Scoped to the owning workspace (base
+  // workspaceId), dropped when the workspace can't be resolved — same isolation
+  // rule as agent.lifecycle. The deck's event-push coalescer wakes the owning
+  // orchestrator so it can drive the pane to a fix (gated by continueInstruction).
+  | 'pr.ci';
 
 export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.created',
@@ -101,6 +108,7 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'channel.message',
   'channel.catalog',
   'channel.nudgeExhausted',
+  'pr.ci',
 ] as const;
 
 export interface WmuxEventBase {
@@ -418,6 +426,23 @@ export interface ChannelNudgeExhaustedEvent extends WmuxEventBase {
   mentionUnread: number;
 }
 
+/**
+ * AO-style CI feedback (owner decision 2026-07-18). Emitted ONCE per red
+ * transition: the metadata poll (PrCiRouter) tracks the last-seen checks state
+ * per pty and fires only on passing/pending → failing, never repeatedly while
+ * the PR stays red. `checks` is always 'failing' (the event only exists for
+ * that transition); `prNumber`/`url` point the woken brain at the PR without a
+ * poll. Scoped to the owning workspace (base workspaceId); dropped when it
+ * can't be resolved (workspace isolation, same as agent.lifecycle).
+ */
+export interface PrCiEvent extends WmuxEventBase {
+  type: 'pr.ci';
+  ptyId: string;
+  prNumber: number;
+  url: string;
+  checks: 'failing';
+}
+
 export type WmuxEvent =
   | PaneCreatedEvent
   | PaneClosedEvent
@@ -433,7 +458,8 @@ export type WmuxEvent =
   | A2aTaskEvent
   | ChannelMessageEvent
   | ChannelCatalogEvent
-  | ChannelNudgeExhaustedEvent;
+  | ChannelNudgeExhaustedEvent
+  | PrCiEvent;
 
 export const RING_CAPACITY = 1024;
 export const POLL_DEFAULT_MAX = 256;

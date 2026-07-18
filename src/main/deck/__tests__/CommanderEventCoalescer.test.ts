@@ -103,6 +103,20 @@ const awaiting = (
   ts: seq * 1000,
 });
 
+const ci = (
+  seq: number,
+  o: { ptyId?: string; ws?: string; prNumber?: number; url?: string } = {},
+): CoalescerInput => ({
+  workspaceId: o.ws ?? 'ws-1',
+  ptyId: o.ptyId ?? 'ptyA',
+  kind: 'pr.ci_failed',
+  source: 'pr',
+  agent: null,
+  seq,
+  ts: seq * 1000,
+  detail: { prNumber: o.prNumber ?? 42, url: o.url ?? 'https://github.com/o/r/pull/42' },
+});
+
 const buf = (over: Partial<BufferedEvent> = {}): BufferedEvent => ({
   ptyId: 'ptyA',
   kind: 'agent.awaiting_input',
@@ -559,5 +573,66 @@ describe('CommanderEventCoalescer — mode wake policy (value filter)', () => {
     await vi.advanceTimersByTimeAsync(5_000);
     await settle();
     expect(h.prompts).toHaveLength(0);
+  });
+});
+
+describe('CommanderEventCoalescer — pr.ci_failed (AO CI feedback)', () => {
+  const assist: WorkspaceAutonomy = {
+    mode: 'assist', summarize: true, continueInstruction: true, approvalPress: false,
+  };
+  const offMode: WorkspaceAutonomy = {
+    mode: 'off', summarize: false, continueInstruction: false, approvalPress: false,
+  };
+
+  it('auto wakes on a red CI and surfaces the PR pointer + fix verdict', async () => {
+    const h = makeHarness({ autonomy: AUTO_AUTONOMY });
+    h.c.push(ci(1, { prNumber: 494, url: 'https://github.com/o/r/pull/494' }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('kind=ci-failed');
+    expect(h.prompts[0].prompt).toContain('PR #494');
+    expect(h.prompts[0].prompt).toContain('you MAY send ONE instruction');
+  });
+
+  it('assist WAKES on a red CI (high-value, unlike a plain stop)', async () => {
+    const h = makeHarness({ autonomy: assist });
+    h.c.push(ci(2));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('kind=ci-failed');
+  });
+
+  it('assist surfaces the red CI but consumes a co-buffered plain stop', async () => {
+    const h = makeHarness({ autonomy: assist, debounceMs: 1_000 });
+    h.c.push(stop(5, 'ptyA'));
+    await vi.advanceTimersByTimeAsync(400);
+    h.c.push(ci(6, { ptyId: 'ptyB' }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('seq=6');
+    expect(h.prompts[0].prompt).not.toContain('seq=5');
+    expect(h.c.getWatermark('ws-1')).toBe(6);
+  });
+
+  it('off-mode consumes a red CI without a turn', async () => {
+    const h = makeHarness({ autonomy: offMode });
+    h.c.push(ci(3));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(0);
+    expect(h.c.getWatermark('ws-1')).toBe(3);
+  });
+
+  it('continueInstruction OFF (assist w/o drive) frames CI as report-only', () => {
+    const p = buildEventPrompt(
+      [buf({ seq: 7, kind: 'pr.ci_failed', source: 'pr', agent: null, detail: { prNumber: 9, url: 'u' } })],
+      { mode: 'assist', summarize: true, continueInstruction: false, approvalPress: false },
+      { remaining: 5, total: 5 },
+    );
+    expect(p).toContain('report only');
+    expect(p).not.toContain('you MAY send ONE instruction');
   });
 });
