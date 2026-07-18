@@ -63,17 +63,32 @@ export function registerFanOutHandler(
   };
 }
 
-/** wire 방어적 파싱 — 렌더러 신뢰이나 형태는 검증한다. */
-function normalizeRequest(raw: unknown): FanOutRequest | { error: string } {
+/** wire 방어적 파싱 — 렌더러 신뢰이나 형태는 검증한다. export=테스트 전용(리뷰 발견
+ *  — titles·taskPrompts 인덱스 정렬 회귀 방지, Codex 리뷰). */
+export function normalizeRequest(raw: unknown): FanOutRequest | { error: string } {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return { error: 'fanout:start: request object required' };
   }
   const r = raw as Record<string, unknown>;
   const idempotencyKey = typeof r['idempotencyKey'] === 'string' ? r['idempotencyKey'] : '';
   const prompt = typeof r['prompt'] === 'string' ? r['prompt'] : '';
-  const titles = Array.isArray(r['titles'])
-    ? (r['titles'] as unknown[]).filter((t): t is string => typeof t === 'string')
-    : [];
+  // titles·taskPrompts는 인덱스로 정렬된 쌍이다(FanOutService.run()이 같은 인덱스로
+  // 재결합). 리뷰 발견(Codex) — 예전엔 titles만 .filter()로 비문자열 항목을 압축(구멍
+  // 제거)하고 taskPrompts는 .map()으로 원본 인덱스를 그대로 보존해, titles에 비문자열
+  // 항목이 섞이면 압축으로 인덱스가 밀려 다른 태스크의 프롬프트가 오배달됐다
+  // (예: titles=['A',null,'B'], taskPrompts=['pa','ignored','pb'] → 압축 후
+  // titles=['A','B']가 taskPrompts[0,1]=['pa','ignored']와 페어링돼 B가 'pb' 대신
+  // 'ignored'를 받음). 페어링 후에 필터링해 인덱스를 함께 유지한다.
+  const rawTitles = Array.isArray(r['titles']) ? (r['titles'] as unknown[]) : [];
+  const rawTaskPrompts = Array.isArray(r['taskPrompts']) ? (r['taskPrompts'] as unknown[]) : [];
+  const pairedEntries = rawTitles
+    .map((rt, k) => ({
+      title: rt,
+      taskPrompt: typeof rawTaskPrompts[k] === 'string' ? (rawTaskPrompts[k] as string) : '',
+    }))
+    .filter((e): e is { title: string; taskPrompt: string } => typeof e.title === 'string');
+  const titles = pairedEntries.map((e) => e.title);
+  const taskPrompts = Array.isArray(r['taskPrompts']) ? pairedEntries.map((e) => e.taskPrompt) : undefined;
   const repoPath = typeof r['repoPath'] === 'string' ? r['repoPath'] : '';
   const agentCmd = typeof r['agentCmd'] === 'string' ? r['agentCmd'] : 'claude';
   const verifiedWorkspaceId = typeof r['verifiedWorkspaceId'] === 'string' ? r['verifiedWorkspaceId'] : '';
@@ -83,6 +98,7 @@ function normalizeRequest(raw: unknown): FanOutRequest | { error: string } {
     idempotencyKey,
     prompt,
     titles,
+    ...(taskPrompts ? { taskPrompts } : {}),
     repoPath,
     agentCmd,
     verifiedWorkspaceId,

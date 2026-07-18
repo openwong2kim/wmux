@@ -59,10 +59,16 @@ export interface FanOutRendererPort {
 export interface FanOutRequest {
   /** 호출 단위 멱등키(렌더러가 제출 시 1회 발급 — §2 G1). */
   idempotencyKey: string;
-  /** 프롬프트 본문(캡 FANOUT_PROMPT_MAX_BYTES). */
+  /** 공통 프롬프트 본문(캡 FANOUT_PROMPT_MAX_BYTES). 옵셔널 — 비워도 된다. */
   prompt: string;
   /** 태스크별 title(길이 = N). N은 title 배열 길이로 결정한다. */
   titles: string[];
+  /** 태스크별 개별 프롬프트(titles와 인덱스 정렬, 옵셔널). 유효 프롬프트는
+   *  `공통 + "\n\n" + 개별`(빈 쪽 생략)로 결합된다. **공통·개별이 둘 다 비어도
+   *  거부하지 않는다** — worktree·브랜치·에이전트 페인만 열고(환경만 조성) 프롬프트는
+   *  사람이 직접 입력하는 사용도 정당하다(§7). 결합 결과가 캡을 넘으면만 전체 거부
+   *  (부분 스폰 없음). */
+  taskPrompts?: string[];
   /** repo 경로(활성 워크스페이스 cwd 기본 — 렌더러가 채움). */
   repoPath: string;
   /** 에이전트 명령(기본 'claude'). */
@@ -157,25 +163,40 @@ export class FanOutService {
 
   private async run(req: FanOutRequest): Promise<FanOutResult> {
     // ── 입력 검증 ──
-    const titles = req.titles.map((t) => (typeof t === 'string' ? t.trim() : '')).filter((t) => t.length > 0);
-    const n = titles.length;
+    // title·개별 프롬프트는 인덱스로 정렬된 쌍이다 — 빈 title 필터 전에 먼저 묶어
+    // 정렬이 어긋나지 않게 한다(개별 프롬프트가 다른 태스크에 오배달되면 치명).
+    const rawPrompts = Array.isArray(req.taskPrompts) ? req.taskPrompts : [];
+    const entries = req.titles
+      .map((t, k) => ({
+        title: typeof t === 'string' ? t.trim() : '',
+        taskPrompt: typeof rawPrompts[k] === 'string' ? rawPrompts[k].trim() : '',
+      }))
+      .filter((e) => e.title.length > 0);
+    const n = entries.length;
     if (n === 0) {
       return { ok: false, error: 'fanout:start: at least one task title is required', tasks: [] };
     }
     if (n > FANOUT_MAX_TASKS) {
       return { ok: false, error: `fanout:start: task count ${n} exceeds cap ${FANOUT_MAX_TASKS}`, tasks: [] };
     }
-    const prompt = typeof req.prompt === 'string' ? req.prompt : '';
-    if (prompt.trim().length === 0) {
-      return { ok: false, error: 'fanout:start: prompt is required', tasks: [] };
+    const sharedPrompt = (typeof req.prompt === 'string' ? req.prompt : '').trim();
+    // 태스크 유효 프롬프트 = 공통 + 개별(빈 쪽 생략). 둘 다 비어도 거부하지 않는다 —
+    // "환경만 조성"(worktree·브랜치·워크스페이스만 열고 프롬프트는 사람이 직접 입력)도
+    // 정당한 사용이다(§7 리뷰). 캡 초과만 전체 거부(부분 스폰 없음 — 프리플라이트
+    // "태스크 생성 0" 계약과 동형).
+    const effectivePrompts: string[] = [];
+    for (const [k, e] of entries.entries()) {
+      const combined = [sharedPrompt, e.taskPrompt].filter((p) => p.length > 0).join('\n\n');
+      if (Buffer.byteLength(combined, 'utf8') > FANOUT_PROMPT_MAX_BYTES) {
+        return {
+          ok: false,
+          error: `fanout:start: task ${k + 1} prompt exceeds ${FANOUT_PROMPT_MAX_BYTES} bytes; shorten it and reference details from a file path`,
+          tasks: [],
+        };
+      }
+      effectivePrompts.push(combined);
     }
-    if (Buffer.byteLength(prompt, 'utf8') > FANOUT_PROMPT_MAX_BYTES) {
-      return {
-        ok: false,
-        error: `fanout:start: prompt exceeds ${FANOUT_PROMPT_MAX_BYTES} bytes; shorten it and reference details from a file path`,
-        tasks: [],
-      };
-    }
+    const titles = entries.map((e) => e.title);
     const verifiedWorkspaceId = typeof req.verifiedWorkspaceId === 'string' ? req.verifiedWorkspaceId.trim() : '';
     if (!verifiedWorkspaceId) {
       return { ok: false, error: 'fanout:start: verifiedWorkspaceId is required', tasks: [] };
@@ -206,7 +227,7 @@ export class FanOutService {
       const r = await this.spawnOne({
         index: k,
         title,
-        prompt,
+        prompt: effectivePrompts[k],
         agentCmd,
         repoPath: req.repoPath,
         verifiedWorkspaceId,
@@ -270,14 +291,17 @@ export class FanOutService {
     base.worktreePath = plan.worktreePath;
     base.branch = plan.branch;
 
-    // 프롬프트 파일 + task.json 스탬프를 태스크 메타 디렉토리(worktree 밖 — diff
-    // 청정성 §4)에 쓴다. task.json(J3 §1 CL5)은 projection GC 이후에도 전용 루트의
-    // worktree를 taskId·title로 역추적하게 하는 디스크 정본 사이드카다.
-    let promptPath: string;
+    // 프롬프트 파일(비었으면 생략 — §7 "환경만 조성") + task.json 스탬프를 태스크 메타
+    // 디렉토리(worktree 밖 — diff 청정성 §4)에 쓴다. task.json(J3 §1 CL5)은 projection
+    // GC 이후에도 전용 루트의 worktree를 taskId·title로 역추적하게 하는 디스크 정본
+    // 사이드카다.
+    let promptPath: string | undefined;
     try {
       fs.mkdirSync(plan.metaDir, { recursive: true });
-      promptPath = path.join(plan.metaDir, 'prompt.md');
-      fs.writeFileSync(promptPath, ctx.prompt, 'utf8');
+      if (ctx.prompt.length > 0) {
+        promptPath = path.join(plan.metaDir, 'prompt.md');
+        fs.writeFileSync(promptPath, ctx.prompt, 'utf8');
+      }
       const stamp: WorkTaskMetaStamp = { taskId, title: ctx.title, createdAt: Date.now() };
       fs.writeFileSync(path.join(plan.metaDir, WORKTASK_META_FILENAME), JSON.stringify(stamp), 'utf8');
     } catch (err) {
@@ -286,7 +310,8 @@ export class FanOutService {
     }
 
     // ③ 렌더러 spawn — 전용 워크스페이스 + 에이전트 페인. cwd=worktreePath,
-    //    initialCommand=`{agentCmd} "$(cat '{promptPath}')"`(경로 쿼팅). 실제 workspaceId 회수.
+    //    initialCommand=`{agentCmd} "$(cat '{promptPath}')"`(경로 쿼팅) — 프롬프트가
+    //    없으면 인자 없이 agentCmd만(사람이 페인에서 직접 입력). 실제 workspaceId 회수.
     const initialCommand = buildInitialCommand(ctx.agentCmd, promptPath);
     base.initialCommand = initialCommand; // F2 재발사 재료(맨 셸 오배선 방지).
     const wsName = `wtask: ${ctx.title.slice(0, 32)}`;
@@ -392,8 +417,14 @@ function describeErr(err: unknown): string {
  * 쿼팅 표면이 경로에 한정된다 — 경로를 셸 단일따옴표로 감싸 공백·`$`·백틱·따옴표가
  * 셸에 재해석되지 않게 한다(F1 3모델 리뷰 conf10). sanitizePtyText가 `$()`·따옴표를
  * 보존함은 §4 C9 테스트로 확정.
+ *
+ * `promptPath`가 undefined면(§7 "환경만 조성" — 프롬프트 없이 worktree·에이전트만 연다)
+ * agentCmd만 그대로 반환한다. 빈 문자열 인자(`agentCmd ""`)로 발사하지 않는 이유: CLI마다
+ * 빈 인자 처리(무시/에러/빈 프롬프트 전송)가 달라 불확정적이므로, "인자 없음"을 명시적으로
+ * 만들어 에이전트가 평소 인터랙티브 기동과 동일하게 뜨도록 한다.
  */
-export function buildInitialCommand(agentCmd: string, promptPath: string): string {
+export function buildInitialCommand(agentCmd: string, promptPath?: string): string {
+  if (promptPath === undefined) return agentCmd;
   if (process.platform === 'win32') {
     // PowerShell 단일따옴표 리터럴: 내부 `'`는 `''`로 이스케이프. -LiteralPath로
     // glob·경로 특수문자 해석까지 봉쇄.

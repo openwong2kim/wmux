@@ -1,8 +1,13 @@
-// J1 §7 fan-out 다이얼로그. 프롬프트 1개 → N(1~8) 격리 태스크.
+// J1 §7 Multi Task(병렬 작업) 다이얼로그. N(1~8) 격리 태스크를 동시에 연다.
 //
-// 입력: 프롬프트(textarea), N, 태스크별 title(자동 파생 + 편집), repo 경로(기본:
-// 활성 ws cwd), agentCmd(기본 claude), 브랜치 접두 미리보기, 멱등키 발급(제출 1회).
-// 격리 해제 토글은 두지 않는다(§6 C10 — broadcast는 별개 진입).
+// mode 토글(경쟁/병렬)은 순수 UI 강조 스위치다 — 서비스는 항상 공통+개별 프롬프트를
+// 결합해서 발사하므로(compete는 개별 필드를 숨길 뿐 결합 규칙 자체는 동일), 토글이
+// 상태 기계를 늘리지 않는다. 프롬프트가 전부 비어도 거부하지 않는다(§7 "환경만
+// 조성" — worktree·에이전트 페인만 열고 사람이 직접 입력).
+//
+// 입력: 공통 프롬프트, 태스크별 title+프롬프트(자동 파생 + 편집), N(클릭형 1~8),
+// repo 경로(기본: 활성 ws cwd), agentCmd(기본 claude), 브랜치 접두 미리보기, 멱등키
+// 발급(제출 1회). 격리 해제 토글은 두지 않는다(§6 C10 — broadcast는 별개 진입).
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../stores';
@@ -14,6 +19,12 @@ import { useT } from '../../hooks/useT';
 import { t } from '../../i18n';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
+
+// 리뷰 발견(Codex+GLM+Claude 3/3 합의) — compete 모드에서 `mode === 'parallel' ?
+// taskPrompts : []`처럼 인라인 배열 리터럴을 useEffect 의존성에 넣으면 매 렌더마다
+// 새 참조가 생겨 이펙트가 무한 재실행된다(effect→setState(새 배열)→리렌더→새 []→
+// effect... "Maximum update depth exceeded"). 모듈 상수로 참조를 고정해 방지.
+const EMPTY_TASK_PROMPTS: readonly string[] = [];
 
 /** title 자동 파생: "{프롬프트 앞 24자} #k"(§7 G6). */
 function deriveTitle(prompt: string, k: number): string {
@@ -42,10 +53,15 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
 
   const defaultRepo = activeWorkspace?.metadata?.cwd ?? '';
 
+  // 'compete' = 같은 작업 N번(경쟁 — 공통 프롬프트만), 'parallel' = 서로 다른 작업
+  // N개(병렬 — 태스크별 프롬프트). 상호배타 UI는 아니고(서비스는 항상 공통+개별을
+  // 결합) 다이얼로그가 어느 필드를 강조·노출할지만 바꾼다(§7 리뷰).
+  const [mode, setMode] = useState<'compete' | 'parallel'>('parallel');
   const [prompt, setPrompt] = useState('');
   const [n, setN] = useState(2);
   const [titles, setTitles] = useState<string[]>([]);
   const [titlesEdited, setTitlesEdited] = useState<boolean[]>([]);
+  const [taskPrompts, setTaskPrompts] = useState<string[]>([]);
   const [repoPath, setRepoPath] = useState(defaultRepo);
   const [agentCmd, setAgentCmd] = useState('claude');
   const [submitting, setSubmitting] = useState(false);
@@ -55,13 +71,22 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
     if (!repoPath && defaultRepo) setRepoPath(defaultRepo);
   }, [defaultRepo, repoPath]);
 
-  // N·프롬프트 변경 시 미편집 title만 자동 파생(편집분은 보존).
+  // 경쟁 모드에선 태스크별 필드를 숨기므로 서비스에도 보내지 않는다(사용자가 이전에
+  // 병렬 모드에서 입력해둔 값은 state에 보존 — 다시 전환하면 되살아난다). 리뷰 발견
+  // (3/3 합의): 매 렌더 새 []를 만들면 안 되므로 안정 참조(EMPTY_TASK_PROMPTS)로 고정.
+  const effectiveTaskPrompts = mode === 'parallel' ? taskPrompts : EMPTY_TASK_PROMPTS;
+
+  // N·프롬프트 변경 시 미편집 title만 자동 파생(편집분은 보존). 태스크별 프롬프트가
+  // 있으면 그쪽에서 파생(개별 작업의 정체성은 개별 프롬프트가 정본).
   useEffect(() => {
     setTitles((prev) => {
       const next = [...prev];
       const edited = titlesEdited;
       for (let k = 0; k < n; k++) {
-        if (!edited[k] || next[k] === undefined) next[k] = deriveTitle(prompt, k);
+        if (!edited[k] || next[k] === undefined) {
+          const src = (effectiveTaskPrompts[k] ?? '').trim().length > 0 ? effectiveTaskPrompts[k] : prompt;
+          next[k] = deriveTitle(src, k);
+        }
       }
       next.length = n;
       return next;
@@ -71,10 +96,20 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
       next.length = n;
       return next.map((v) => v ?? false);
     });
-  }, [n, prompt]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [n, prompt, effectiveTaskPrompts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const promptBytes = useMemo(() => new TextEncoder().encode(prompt).length, [prompt]);
-  const promptOverCap = promptBytes > FANOUT_PROMPT_MAX_BYTES;
+  // 태스크 유효 프롬프트 = 공통 + 개별(빈 쪽 생략) — FanOutService 결합 규칙과 동형.
+  const effectiveBytes = useMemo(() => {
+    const enc = new TextEncoder();
+    return Array.from({ length: n }, (_, k) => {
+      const combined = [prompt.trim(), (effectiveTaskPrompts[k] ?? '').trim()].filter((p) => p.length > 0).join('\n\n');
+      return enc.encode(combined).length;
+    });
+  }, [n, prompt, effectiveTaskPrompts]);
+  const promptOverCap = effectiveBytes.some((b) => b > FANOUT_PROMPT_MAX_BYTES);
+  // 정보성 힌트일 뿐 제출을 막지 않는다(§7 — 환경만 조성도 정당한 사용).
+  const promptAllEmpty = effectiveBytes.every((b) => b === 0);
 
   const setTitleAt = useCallback((k: number, v: string) => {
     setTitles((prev) => {
@@ -89,12 +124,18 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
     });
   }, []);
 
+  const setTaskPromptAt = useCallback((k: number, v: string) => {
+    setTaskPrompts((prev) => {
+      const next = [...prev];
+      next[k] = v;
+      return next;
+    });
+  }, []);
+
   const handleSubmit = useCallback(async () => {
     if (submitting) return;
-    if (prompt.trim().length === 0) {
-      pushToast({ level: 'warn', message: t('fanout.errPromptRequired') });
-      return;
-    }
+    // §7: 프롬프트가 전부 비어도 거부하지 않는다 — "환경만 조성"(worktree·에이전트
+    // 페인만 열고 사람이 직접 입력)도 정당한 사용이다. 캡 초과만 클라에서도 막는다.
     if (promptOverCap) {
       pushToast({ level: 'warn', message: t('fanout.errPromptTooLarge', { max: FANOUT_PROMPT_MAX_BYTES }) });
       return;
@@ -111,6 +152,7 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
         idempotencyKey,
         prompt,
         titles: titles.slice(0, n),
+        taskPrompts: Array.from({ length: n }, (_, k) => effectiveTaskPrompts[k] ?? ''),
         repoPath: repoPath.trim(),
         agentCmd: agentCmd.trim() || 'claude',
         // 렌더러 신뢰 신원(§2 — channelLocal과 동일 trust basis). owner = 생성자
@@ -130,7 +172,7 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, prompt, promptOverCap, repoPath, titles, n, agentCmd, activeWorkspace, pushToast, t]);
+  }, [submitting, prompt, promptOverCap, repoPath, titles, effectiveTaskPrompts, n, agentCmd, activeWorkspace, pushToast, t]);
 
   const label = 'text-[11px] text-[var(--text-sub)] mb-1 block';
 
@@ -138,9 +180,35 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
     <div className="absolute bottom-full mb-2 left-2 z-50 w-[420px] max-h-[70vh] overflow-y-auto rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl" data-testid="fanout-dialog">
       <div className="text-[12px] font-semibold text-[var(--text-main)] mb-2">{t('fanout.title')}</div>
 
+      <div className="flex rounded-[5px] border border-[var(--bg-overlay)] p-0.5 mb-2" role="tablist" data-testid="fanout-mode">
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'compete'}
+          className={`flex-1 text-[11px] rounded-[4px] py-1 transition-colors ${mode === 'compete' ? 'bg-[var(--bg-overlay)] text-[var(--text-main)]' : 'text-[var(--text-sub)]'}`}
+          onClick={() => setMode('compete')}
+          data-testid="fanout-mode-compete"
+        >
+          {t('fanout.modeCompete')}
+        </button>
+        <button
+          type="button"
+          role="tab"
+          aria-selected={mode === 'parallel'}
+          className={`flex-1 text-[11px] rounded-[4px] py-1 transition-colors ${mode === 'parallel' ? 'bg-[var(--bg-overlay)] text-[var(--text-main)]' : 'text-[var(--text-sub)]'}`}
+          onClick={() => setMode('parallel')}
+          data-testid="fanout-mode-parallel"
+        >
+          {t('fanout.modeParallel')}
+        </button>
+      </div>
+      <div className="text-[10px] text-[var(--text-muted)] mb-2">
+        {mode === 'compete' ? t('fanout.modeCompeteHint') : t('fanout.modeParallelHint')}
+      </div>
+
       <label className={label}>{t('fanout.promptLabel')}</label>
       <textarea
-        className="ui-input h-24 resize-none font-mono text-[12px]"
+        className="ui-input h-20 resize-none font-mono text-[12px]"
         value={prompt}
         onChange={(e) => setPrompt(e.target.value)}
         placeholder={t('fanout.promptPlaceholder')}
@@ -151,32 +219,65 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
       </div>
 
       <label className={label}>{t('fanout.taskCount', { n })}</label>
-      <input
-        type="range"
-        min={1}
-        max={FANOUT_MAX_TASKS}
-        value={n}
-        onChange={(e) => setN(Number(e.target.value))}
-        className="w-full mb-2"
-        data-testid="fanout-n"
-      />
+      <div className="flex gap-1 mb-2" data-testid="fanout-n">
+        {Array.from({ length: FANOUT_MAX_TASKS }, (_, i) => i + 1).map((count) => (
+          <button
+            key={count}
+            type="button"
+            aria-pressed={n === count}
+            className={`flex-1 h-7 rounded-[4px] text-[11px] border transition-colors ${
+              n === count
+                ? 'border-[var(--accent)] bg-[var(--accent)] text-[var(--bg-base)]'
+                : 'border-[var(--bg-overlay)] text-[var(--text-sub)] hover:border-[var(--text-muted)]'
+            }`}
+            onClick={() => setN(count)}
+            data-testid={`fanout-n-${count}`}
+          >
+            {count}
+          </button>
+        ))}
+      </div>
 
       <label className={label}>{t('fanout.titlesLabel')}</label>
-      <div className="space-y-1 mb-2">
+      <div className="space-y-2 mb-2">
         {Array.from({ length: n }, (_, k) => (
-          <div key={k} className="flex items-center gap-2">
-            <Input
-              className="flex-1 text-[12px]"
-              value={titles[k] ?? ''}
-              onChange={(e) => setTitleAt(k, e.target.value)}
-              data-testid={`fanout-title-${k}`}
-            />
-            <span className="text-[9px] text-[var(--text-muted)] font-mono shrink-0">
-              wtask/{previewSlug(titles[k] ?? '') || '…'}
-            </span>
+          <div key={k} className="rounded-[5px] border border-[var(--bg-overlay)] p-1.5">
+            <div className="flex items-center gap-2 mb-1">
+              <Input
+                className="flex-1 text-[12px]"
+                value={titles[k] ?? ''}
+                onChange={(e) => setTitleAt(k, e.target.value)}
+                data-testid={`fanout-title-${k}`}
+              />
+              <span className="text-[9px] text-[var(--text-muted)] font-mono shrink-0">
+                wtask/{previewSlug(titles[k] ?? '') || '…'}
+              </span>
+            </div>
+            {mode === 'parallel' && (
+              <>
+                <textarea
+                  className="ui-input h-14 resize-none font-mono text-[11px]"
+                  value={taskPrompts[k] ?? ''}
+                  onChange={(e) => setTaskPromptAt(k, e.target.value)}
+                  placeholder={t('fanout.taskPromptPlaceholder', { k: k + 1 })}
+                  data-testid={`fanout-task-prompt-${k}`}
+                />
+                {effectiveBytes[k] > FANOUT_PROMPT_MAX_BYTES && (
+                  <div className="text-[10px] text-[var(--accent-red)]">
+                    {t('fanout.bytes', { bytes: effectiveBytes[k], max: FANOUT_PROMPT_MAX_BYTES })}
+                  </div>
+                )}
+              </>
+            )}
           </div>
         ))}
       </div>
+
+      {promptAllEmpty && (
+        <div className="text-[10px] text-[var(--text-muted)] mb-2" data-testid="fanout-empty-hint">
+          {t('fanout.envOnlyHint')}
+        </div>
+      )}
 
       <label className={label}>{t('fanout.repoLabel')}</label>
       <Input className="mb-2 font-mono text-[12px]" value={repoPath} onChange={(e) => setRepoPath(e.target.value)} data-testid="fanout-repo" />

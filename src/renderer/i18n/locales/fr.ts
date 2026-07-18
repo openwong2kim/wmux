@@ -325,7 +325,7 @@ export const fr = {
   'settings.inspect.proxyLabel': 'Modifier {token} ({role})',
 
   // ─── Barre d'outils agent : boutons fan-out / broadcast ───
-  'toolbar.fanOut': 'Fan-out',
+  'toolbar.fanOut': 'Multi Task',
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': "Broadcast — même texte envoyé à chaque panneau de terminal de l'espace de travail actuel (sans isolation)",
   'toolbar.broadcastPrompt': "Broadcast — envoyer à chaque panneau de terminal de l'espace de travail actuel",

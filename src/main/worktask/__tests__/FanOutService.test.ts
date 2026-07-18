@@ -120,6 +120,11 @@ function baseReq(overrides?: Partial<Parameters<FanOutService['start']>[0]>) {
 }
 
 describe('buildInitialCommand (§4 D4)', () => {
+  it('§7: promptPath 없으면 agentCmd만 그대로(빈 인자로 발사하지 않는다)', () => {
+    expect(buildInitialCommand('claude', undefined)).toBe('claude');
+    expect(buildInitialCommand('claude')).toBe('claude');
+  });
+
   it('POSIX 경로 치환 명령을 만든다(경로 단일따옴표 쿼팅)', () => {
     // process.platform이 win32가 아닌 CI/로컬 기준.
     if (process.platform !== 'win32') {
@@ -209,6 +214,41 @@ describe('§0 E2E 정상 — N=2 전부 성공', () => {
       expect(promptFile && fs.existsSync(promptFile)).toBeTruthy();
       expect(promptFile?.replace(/\\/g, '/')).toContain('/meta/'); // worktree 밖
     }
+  });
+
+  it('태스크별 프롬프트가 공통 프롬프트와 결합돼 태스크마다 다른 prompt.md로 쓰인다', async () => {
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+    });
+    const res = await svc.start(
+      baseReq({ prompt: 'SHARED CONTEXT', taskPrompts: ['do login page', 'do settings page'] }),
+    );
+    expect(res.ok).toBe(true);
+    const bodies = renderer.spawned.map((s) => {
+      const promptFile = s.initialCommand.match(/'([^']*prompt\.md)'/)?.[1];
+      return fs.readFileSync(promptFile!, 'utf8');
+    });
+    expect(bodies[0]).toBe('SHARED CONTEXT\n\ndo login page');
+    expect(bodies[1]).toBe('SHARED CONTEXT\n\ndo settings page');
+  });
+
+  it('공통 프롬프트가 비어도 태스크별 프롬프트만으로 스폰된다', async () => {
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+    });
+    const res = await svc.start(baseReq({ prompt: '', taskPrompts: ['task A only', 'task B only'] }));
+    expect(res.ok).toBe(true);
+    const bodies = renderer.spawned.map((s) => {
+      const promptFile = s.initialCommand.match(/'([^']*prompt\.md)'/)?.[1];
+      return fs.readFileSync(promptFile!, 'utf8');
+    });
+    expect(bodies).toEqual(['task A only', 'task B only']);
   });
 
   it('하위 mission 멱등키가 {fanout키}-{k}로 파생된다', async () => {
@@ -374,6 +414,46 @@ describe('프리플라이트 거부 — 태스크 생성 0', () => {
     const res = await svc.start(baseReq({ prompt: 'x'.repeat(9000) }));
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/exceeds/);
+  });
+
+  it('§7: 공통·개별 프롬프트가 둘 다 빈 태스크도 거부하지 않는다(환경만 조성)', async () => {
+    const daemon = makeDaemonFake();
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({ daemon: daemon.port, renderer: renderer.port, worktrees: makeWorktreesFake() });
+    const res = await svc.start(baseReq({ prompt: '', taskPrompts: ['only A has one', ''] }));
+    expect(res.ok).toBe(true);
+    expect(daemon.calls.filter((c) => c.method === 'task.mission.start')).toHaveLength(2);
+    // 태스크 2(프롬프트 없음)는 prompt.md 없이 agentCmd만 그대로 발사된다.
+    const barePane = renderer.spawned.find((s) => !s.initialCommand.includes('prompt.md'));
+    expect(barePane?.initialCommand).toBe('claude');
+  });
+
+  it('§7: 프롬프트 없는 태스크는 prompt.md를 아예 쓰지 않는다', async () => {
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+    });
+    const res = await svc.start(baseReq({ prompt: '', titles: ['Task A'], taskPrompts: [''] }));
+    expect(res.ok).toBe(true);
+    expect(res.tasks[0]?.worktreePath).toBeTruthy();
+    const metaDir = path.join(metaRoot, 'meta', res.tasks[0]!.taskId!.slice(-8));
+    expect(fs.existsSync(path.join(metaDir, 'prompt.md'))).toBe(false);
+    expect(fs.existsSync(path.join(metaDir, 'task.json'))).toBe(true);
+  });
+
+  it('공통+개별 결합이 8KB를 넘는 태스크가 있으면 전체 거부', async () => {
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: makeRendererFake().port,
+      worktrees: makeWorktreesFake(),
+    });
+    const res = await svc.start(
+      baseReq({ prompt: 'x'.repeat(5000), taskPrompts: ['short', 'y'.repeat(5000)] }),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/task 2 prompt exceeds/);
   });
 
   it('N > 8 거부', async () => {

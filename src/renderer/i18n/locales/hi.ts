@@ -321,7 +321,7 @@ export const hi = {
   'settings.inspect.proxyLabel': '{token} संपादित करें ({role})',
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
-  'toolbar.fanOut': 'Fan-out',
+  'toolbar.fanOut': 'Multi Task',
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': 'Broadcast — वर्तमान कार्यक्षेत्र के हर टर्मिनल पैनल में वही टेक्स्ट (कोई पृथक्करण नहीं)',
   'toolbar.broadcastPrompt': 'Broadcast — वर्तमान कार्यक्षेत्र के हर टर्मिनल पैनल में भेजें',

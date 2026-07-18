@@ -326,7 +326,7 @@ export const ru = {
   'settings.inspect.proxyLabel': 'Изменить {token} ({role})',
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
-  'toolbar.fanOut': 'Fan-out',
+  'toolbar.fanOut': 'Multi Task',
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': 'Broadcast — один и тот же текст во все панели терминала в текущем рабочем пространстве (без изоляции)',
   'toolbar.broadcastPrompt': 'Broadcast — отправить во все панели терминала в текущем рабочем пространстве',

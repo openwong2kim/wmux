@@ -326,7 +326,7 @@ export const tr = {
   'settings.inspect.proxyLabel': '{token} düzenle ({role})',
 
   // ─── Aracı araç çubuğu: fan-out / broadcast düğmeleri ───
-  'toolbar.fanOut': 'Fan-out',
+  'toolbar.fanOut': 'Multi Task',
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': 'Broadcast — geçerli çalışma alanındaki her terminal bölmesine aynı metin (izolasyon yok)',
   'toolbar.broadcastPrompt': 'Broadcast — geçerli çalışma alanındaki her terminal bölmesine gönder',

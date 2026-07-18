@@ -367,7 +367,7 @@ export const ja = {
   'settings.inspect.proxyLabel': '{token} を編集 ({role})',
 
   // ─── エージェントツールバー: fan-out / broadcast ボタン ───
-  'toolbar.fanOut': 'Fan-out',
+  'toolbar.fanOut': 'Multi Task',
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': 'Broadcast — 現在のワークスペースのすべてのターミナルペインに同じテキストを送信（隔離なし）',
   'toolbar.broadcastPrompt': 'Broadcast — 現在のワークスペースのすべてのターミナルペインに送信',
