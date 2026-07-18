@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Sidebar workspaces now show git sync state next to the branch name** — `↑2 ↓1 ●3` for commits ahead/behind the upstream and uncommitted changed paths. A clean, synced checkout shows nothing (only trouble earns pixels), everything renders in the muted context color, and the tooltip spells the numbers out. Fed by one `git --no-optional-locks status` per repo per 15 s riding the existing metadata poll; a branch switch invalidates immediately.
+- **Sidebar workspaces now show how long they've been idle** — a muted `· 3m` next to the name once a workspace has gone a minute without agent activity, counting up through minutes/hours/days. The status dot already said *what* a workspace is doing; this says *how long it's been waiting for you*, which is what matters when running several unattended agents. Hidden while an agent is running and until the first activity of the session.
+
 ### Changed
 
 - **A driving loop now proposes its own completion instead of idling to the budget.** When an autonomous (Continue) loop judges its objective met — the done-when checklist all passing, or the goal plainly achieved with no checklist — it now raises a confirm-completion decision (`Mark done` / `Keep going`) and stops, rather than continuing to auto-wake until the iteration budget runs out. Because a pending decision halts every wake, a finished overnight loop pauses for your confirmation instead of burning the rest of its budget doing nothing. You still have the final say; the brain never marks itself done.

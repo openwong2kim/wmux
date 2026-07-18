@@ -4,6 +4,7 @@ import { IPC } from '../../../shared/constants';
 import type { MetadataUpdatePayload } from '../../../shared/types';
 import { MetadataCollector } from '../../metadata/MetadataCollector';
 import { prStatusCache } from '../../metadata/PrStatusCache';
+import { gitSyncStatusCache } from '../../metadata/GitSyncStatusCache';
 import { PTYManager } from '../../pty/PTYManager';
 import { wrapHandler } from '../wrapHandler';
 import { metadataStore } from '../../metadata/MetadataStore';
@@ -88,8 +89,12 @@ async function buildMetadataPayload(ptyId: string): Promise<MetadataUpdatePayloa
   if (ports !== undefined) payload.listeningPorts = ports;
   if (gitBranch) {
     payload.pr = await prStatusCache.get(cwd, gitBranch);
+    // Rides the same 5 s tick behind a 15 s TTL — one git subprocess per
+    // repo per TTL window (same cost discipline as the gh cache above).
+    payload.gitSync = await gitSyncStatusCache.get(cwd);
   } else {
     payload.pr = null;
+    payload.gitSync = null;
   }
   return payload;
 }

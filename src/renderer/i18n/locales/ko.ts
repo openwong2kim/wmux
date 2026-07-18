@@ -24,6 +24,8 @@ export const ko = {
   'workspace.close': '워크스페이스 닫기',
   'workspace.copyInfo': '세션 정보 복사',
   'workspace.copied': '복사됨!',
+  'workspace.gitSyncTooltip': 'ahead {ahead} · behind {behind} · 커밋 안 된 변경 {dirty}',
+  'workspace.idleTooltip': '{time} 동안 에이전트 활동 없음',
 
   // Pane
   'pane.empty': '빈 창',

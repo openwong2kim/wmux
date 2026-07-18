@@ -38,6 +38,8 @@ export const en = {
   // X1 workspace-context sidebar (git branch / PR / ports / notification)
   'workspace.gitBranch': 'Git branch',
   'workspace.gitWorktree': 'Linked worktree',
+  'workspace.gitSyncTooltip': '{ahead} ahead · {behind} behind · {dirty} uncommitted',
+  'workspace.idleTooltip': 'No agent activity for {time}',
   'workspace.prState.open': 'Open',
   'workspace.prState.draft': 'Draft',
   'workspace.prState.merged': 'Merged',

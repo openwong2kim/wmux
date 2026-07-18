@@ -1,5 +1,5 @@
 import { useState, useRef, useEffect, memo } from 'react';
-import type { PrStatus, WorkspaceMetadata } from '../../../shared/types';
+import type { GitSyncStatus, PrStatus, WorkspaceMetadata } from '../../../shared/types';
 import { useStore } from '../../stores';
 import { selectWorkspaceById } from '../../stores/selectors/workspaceProjections';
 import { selectWorkspaceAgentStatus } from '../../stores/selectors/fleet';
@@ -72,6 +72,30 @@ function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
 }
 
 /**
+ * Git sync badge next to the branch name: `↑N ↓N ●N` (ahead / behind /
+ * uncommitted paths). Decay rule (DESIGN.md amber budget): a clean, synced
+ * checkout renders NOTHING — only non-zero counts appear, all in the muted
+ * context-line color. Arrows always carry their number (bare arrows are
+ * ambiguous — GitHub Desktop #9282).
+ */
+function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElement | null {
+  const t = useT();
+  const ahead = sync.hasUpstream ? sync.ahead : 0;
+  const behind = sync.hasUpstream ? sync.behind : 0;
+  if (ahead === 0 && behind === 0 && sync.dirty === 0) return null;
+  return (
+    <span
+      className="flex items-center gap-1 flex-shrink-0"
+      title={t('workspace.gitSyncTooltip', { ahead, behind, dirty: sync.dirty })}
+    >
+      {ahead > 0 && <span>↑{ahead}</span>}
+      {behind > 0 && <span>↓{behind}</span>}
+      {sync.dirty > 0 && <span>●{sync.dirty}</span>}
+    </span>
+  );
+}
+
+/**
  * X1 — one-line live context under the workspace name: git branch
  * (worktree-aware), PR badge, PID-tree-scoped listening ports, and the
  * latest terminal notification. Renders nothing until metadata arrives —
@@ -100,6 +124,7 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
               {metadata.gitIsWorktree ? <span className="text-[var(--accent-blue)]">⊕</span> : null}
             </span>
           )}
+          {metadata.gitBranch && metadata.gitSync && <GitSyncBadge sync={metadata.gitSync} />}
           {metadata.pr && <PrBadge pr={metadata.pr} />}
           {ports.length > 0 && (
             <span className="flex items-center gap-1 flex-shrink-0">
@@ -145,6 +170,20 @@ function showCopyToast(text: string): void {
   useStore.getState().pushToast({ level: 'info', message: text });
 }
 
+/** Idle-duration label: minutes under an hour, then hours, then days. */
+function formatIdle(ms: number): string {
+  const m = Math.floor(ms / 60_000);
+  if (m < 60) return `${m}m`;
+  const h = Math.floor(m / 60);
+  if (h < 24) return `${h}h`;
+  return `${Math.floor(h / 24)}d`;
+}
+
+/** Idle badge threshold — under a minute is "just now", not neglect. */
+const IDLE_SHOW_AFTER_MS = 60_000;
+/** Re-render cadence for the idle label; minute granularity needs no more. */
+const IDLE_TICK_MS = 30_000;
+
 function shortenPath(path: string, maxLen = 25): string {
   if (!path || path.length <= maxLen) return path;
   const parts = path.replace(/\\/g, '/').split('/');
@@ -186,6 +225,36 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const projectState = useStore((s) => s.projectConfigs[workspaceId]);
   // J3 §4 — 태스크 워크스페이스의 페인 cwd가 worktree 경계 밖으로 이탈했는지(경고만).
   const departedCwd = useStore((s) => s.departedPaneGroups[workspaceId]);
+
+  // Idle badge — how long since ANY of this workspace's surfaces last showed
+  // agent activity (the same surfaceActivityAt stamps the fleet 'running'
+  // derivation uses). Scalar subscription: re-renders only when the max moves.
+  // 0 = no stamp this session (fresh restart) → badge stays hidden rather
+  // than lying with a fake "just now".
+  const lastActivityAt = useStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === workspaceId);
+    if (!ws) return 0;
+    let last = 0;
+    for (const surf of collectTerminalSurfaces(ws.rootPane)) {
+      const at = surf.ptyId ? (s.surfaceActivityAt[surf.ptyId] ?? 0) : 0;
+      if (at > last) last = at;
+    }
+    return last;
+  });
+  // Local 30 s ticker instead of the store-wide agentClockMs: that clock
+  // deliberately stops bumping once every agent decays to idle (rest-state
+  // perf), which is exactly when this badge must keep counting. Per-row
+  // interval re-renders only this row, and only while the badge can show.
+  const [idleNow, setIdleNow] = useState(() => Date.now());
+  const idleTicking = lastActivityAt > 0 && agentStatus !== 'running';
+  useEffect(() => {
+    if (!idleTicking) return;
+    setIdleNow(Date.now());
+    const id = setInterval(() => setIdleNow(Date.now()), IDLE_TICK_MS);
+    return () => clearInterval(id);
+  }, [idleTicking, lastActivityAt]);
+  const idleMs = idleTicking ? idleNow - lastActivityAt : 0;
+  const idleLabel = idleMs >= IDLE_SHOW_AFTER_MS ? formatIdle(idleMs) : null;
 
   // X1→X3 bridge: a listening-port badge click jumps to the workspace and
   // shows http://localhost:<port> in its browser pane (reusing one if the
@@ -473,6 +542,14 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
                     title={t('workspace.cwdDeparted', { cwd: departedCwd })}
                   >
                     ⚠ {t('workspace.departed')}
+                  </span>
+                )}
+                {idleLabel && (
+                  <span
+                    className="text-[9px] font-mono text-[var(--text-muted)] flex-shrink-0"
+                    title={t('workspace.idleTooltip', { time: idleLabel })}
+                  >
+                    · {idleLabel}
                   </span>
                 )}
               </div>
