@@ -16,6 +16,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A failed legacy-state migration retry can no longer silently lose channel data.** When the daemon detected that an older daemon had written channel state directly to disk but failed to fold that state into the canonical event log, it logged a warning and kept booting — and the very first write afterwards erased the marker the promised next-boot retry depended on, silently dropping the old daemon's data. The daemon now refuses to boot in that state, leaving everything on disk intact so the next boot re-detects the condition and completes the retry.
+
 - **The orchestrator control bar no longer strands the "Recover agents" button off to the right.** The reboot-recovery quick action was pinned with `ml-auto` in a wrapping flex row; in the narrow dock the bar wraps, so the button was shoved alone to the far right of its own line with a wide gap after Schedules. It now flows inline with the other controls.
 - **In-app "Install hooks" no longer fails with "Could not locate the bundled wmux-bridge.mjs".** The bridge locator only knew the CLI's layout; when the install button called it from the packaged app's main process, it walked right past `Resources/cli-bundle/` where the bridge actually lives. The packaged path is now a search candidate, so the one-click install works.
 - **macOS titlebar no longer shifts the WMUX segment 72px right.** The traffic-light reserve now lives inside the mantle segment, so the logo, + button, and segment seam line up with the sidebar edge below again.
