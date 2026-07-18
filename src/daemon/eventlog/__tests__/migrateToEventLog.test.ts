@@ -40,6 +40,9 @@ beforeEach(() => {
 
 afterEach(() => {
   fs.rmSync(wmuxDir, { recursive: true, force: true });
+  // Restore console.warn spies (and any other) so they never leak into a
+  // later test file sharing this worker.
+  vi.restoreAllMocks();
 });
 
 // ── 헬퍼 ──────────────────────────────────────────────────────────────

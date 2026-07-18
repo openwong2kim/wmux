@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { waitForCondition } from '../../__tests__/_waitForFile';
 import { ChannelStateWriter } from '../ChannelStateWriter';
 import {
   EMPTY_CHANNEL_STATE,
@@ -137,9 +138,9 @@ describe('ChannelStateWriter', () => {
     } finally {
       vi.useRealTimers();
     }
-    await new Promise((r) => setTimeout(r, 50));
-
     const filePath = path.join(tmpDir, 'channels.json');
+    await waitForCondition(() => fs.existsSync(filePath));
+
     expect(fs.existsSync(filePath)).toBe(true);
   });
 
@@ -155,9 +156,11 @@ describe('ChannelStateWriter', () => {
     } finally {
       vi.useRealTimers();
     }
-    await new Promise((r) => setTimeout(r, 50));
-
     const filePath = path.join(tmpDir, 'channels.json');
+    await waitForCondition(
+      () => fs.existsSync(filePath) && JSON.parse(fs.readFileSync(filePath, 'utf-8')).channels[0].name === 'v3',
+    );
+
     expect(fs.existsSync(filePath)).toBe(true);
 
     const loaded = JSON.parse(fs.readFileSync(filePath, 'utf-8'));

@@ -38,6 +38,7 @@ import fsp from 'node:fs/promises';
 import path from 'node:path';
 import os from 'node:os';
 import { StateWriter } from '../StateWriter';
+import { waitForCondition } from './_waitForFile';
 import { atomicWriteJSON } from '../util/atomicWrite';
 import type { DaemonState, DaemonSession } from '../types';
 
@@ -186,7 +187,9 @@ describe('crash-restore integration — saveImmediate synchronous contract', () 
     // Yield to drain microtasks. The coalesced task must resolve
     // without touching the file again.
     vi.useRealTimers();
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForCondition(
+      () => fs.existsSync(statePath) && JSON.parse(fs.readFileSync(statePath, 'utf-8')).sessions[0].id === 'immediate-winner',
+    );
 
     const loaded = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
     expect(loaded.sessions[0].id).toBe('immediate-winner');
@@ -226,7 +229,9 @@ describe('crash-restore integration — flushSync drains pending state', () => {
 
     vi.advanceTimersByTime(30_000);
     vi.useRealTimers();
-    await new Promise((r) => setTimeout(r, 50));
+    await waitForCondition(
+      () => fs.existsSync(statePath) && JSON.parse(fs.readFileSync(statePath, 'utf-8')).sessions[0].id === 'second',
+    );
 
     const loaded = JSON.parse(fs.readFileSync(statePath, 'utf-8'));
     expect(loaded.sessions[0].id).toBe('second');

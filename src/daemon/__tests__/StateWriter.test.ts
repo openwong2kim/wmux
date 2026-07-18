@@ -4,6 +4,7 @@ import path from 'node:path';
 import os from 'node:os';
 import { StateWriter } from '../StateWriter';
 import type { DaemonState, DaemonSession } from '../types';
+import { waitForCondition } from './_waitForFile';
 
 let tmpDir: string;
 let writer: StateWriter;
@@ -96,8 +97,9 @@ describe('StateWriter', () => {
     // the real async file I/O to complete.
     vi.advanceTimersByTime(30_000);
     vi.useRealTimers();
-    // Give the event loop a few ticks for fsp.writeFile/rename to run.
-    await new Promise((r) => setTimeout(r, 50));
+    // Wait for the real fsp.writeFile/rename to land (poll, not a fixed guess —
+    // a fixed wait flakes under parallel-fork fs contention).
+    await waitForCondition(() => fs.existsSync(filePath));
 
     expect(fs.existsSync(filePath)).toBe(true);
   });
@@ -115,10 +117,12 @@ describe('StateWriter', () => {
     // Timer from first call fires at 30s.
     vi.advanceTimersByTime(10_000);
     vi.useRealTimers();
-    // Let the async write settle on the real event loop.
-    await new Promise((r) => setTimeout(r, 50));
-
     const filePath = path.join(tmpDir, 'sessions.json');
+    // Wait for the coalesced write to land with the latest value.
+    await waitForCondition(
+      () => fs.existsSync(filePath) && JSON.parse(fs.readFileSync(filePath, 'utf-8')).sessions[0].id === 'v3',
+    );
+
     expect(fs.existsSync(filePath)).toBe(true);
 
     const loaded = JSON.parse(fs.readFileSync(filePath, 'utf-8'));
