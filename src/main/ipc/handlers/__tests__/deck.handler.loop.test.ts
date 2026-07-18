@@ -85,22 +85,23 @@ vi.mock('../../../deck/deckLoopStateStore', () => ({
 // — only the IO reads/writes are stubbed. The workspace's resting mode is
 // 'assist' (explicit, not the default — default is now off), so loop-stop restores to assist caps.
 const capWrites: { ws: string; patch: Record<string, unknown> }[] = [];
+// The workspace's resting MODE, mutable so tests can dial the trust ceiling
+// (loop caps compose as min(modeCeiling, tier); default 'assist' — the historic
+// resting mode these suites were written against). setWorkspaceMode updates it
+// so a mode switch mid-loop re-derives caps the way the real store does.
+let mockMode: import('../../../deck/deckAutonomyStore').AgentMode = 'assist';
 vi.mock('../../../deck/deckAutonomyStore', async (importOriginal) => {
   const actual = await importOriginal<typeof import('../../../deck/deckAutonomyStore')>();
   return {
     ...actual,
-    loadWorkspaceAutonomy: vi.fn(() => ({
-      mode: 'assist' as const,
-      summarize: true,
-      continueInstruction: true,
-      approvalPress: false,
-    })),
-    loadWorkspaceMode: vi.fn(() => 'assist' as const),
+    loadWorkspaceAutonomy: vi.fn(() => ({ mode: mockMode, ...actual.modeToCaps(mockMode) })),
+    loadWorkspaceMode: vi.fn(() => mockMode),
     setWorkspaceAutonomy: vi.fn(async (ws: string, patch: Record<string, unknown>) => {
       capWrites.push({ ws, patch });
       return patch;
     }),
     setWorkspaceMode: vi.fn(async (ws: string, mode: string) => {
+      mockMode = mode as import('../../../deck/deckAutonomyStore').AgentMode;
       capWrites.push({ ws, patch: { mode } });
       return { mode, ...actual.modeToCaps(mode as import('../../../deck/deckAutonomyStore').AgentMode) };
     }),
@@ -224,6 +225,7 @@ beforeEach(() => {
   loops.clear();
   decisions.clear();
   capWrites.length = 0;
+  mockMode = 'assist';
   schedules = [];
   scheduleSeq = 0;
   adapters = [];
@@ -295,6 +297,74 @@ describe('deck:loop:start — the one click', () => {
     await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'b', intervalMinutes: 60 });
     expect(schedules).toHaveLength(1);
     expect(schedules[0].id).not.toBe(firstId);
+  });
+});
+
+describe('deck:loop:start × mode ceiling — caps compose as min(modeCeiling, tier)', () => {
+  it('FLAGSHIP: auto + continue loop UNLOCKS approval-press (the unattended supervisor)', async () => {
+    mockMode = 'auto';
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'ship it', tier: 'continue' });
+    expect(capWrites).toContainEqual({
+      ws: 'ws-1',
+      patch: { summarize: true, continueInstruction: true, approvalPress: true },
+    });
+  });
+
+  it('auto + report loop stays observe-only — the tier narrows the ceiling back down', async () => {
+    mockMode = 'auto';
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'watch', tier: 'report' });
+    expect(capWrites).toContainEqual({
+      ws: 'ws-1',
+      patch: { summarize: true, continueInstruction: false, approvalPress: false },
+    });
+  });
+
+  it('assist + continue loop drives but NEVER presses (assist ceiling has no press)', async () => {
+    mockMode = 'assist';
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'o', tier: 'continue' });
+    expect(capWrites).toContainEqual({
+      ws: 'ws-1',
+      patch: { summarize: true, continueInstruction: true, approvalPress: false },
+    });
+  });
+});
+
+describe('deck:mode:set × a running loop — the ceiling moves, the mission stays capped', () => {
+  it('raising assist→auto mid-continue-loop re-overlays the tier and grants press', async () => {
+    mockMode = 'assist';
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'o', tier: 'continue' });
+    capWrites.length = 0;
+    const res = await invoke(IPC.DECK_MODE_SET, { workspaceId: 'ws-1', mode: 'auto' });
+    expect(res.ok).toBe(true);
+    // Last write is the tier re-overlay under the new auto ceiling: press ON.
+    expect(capWrites.at(-1)).toEqual({
+      ws: 'ws-1',
+      patch: { summarize: true, continueInstruction: true, approvalPress: true },
+    });
+  });
+
+  it('raising assist→auto mid-REPORT-loop does NOT grant drive/press (report stays observe-only)', async () => {
+    mockMode = 'assist';
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'o', tier: 'report' });
+    capWrites.length = 0;
+    await invoke(IPC.DECK_MODE_SET, { workspaceId: 'ws-1', mode: 'auto' });
+    expect(capWrites.at(-1)).toEqual({
+      ws: 'ws-1',
+      patch: { summarize: true, continueInstruction: false, approvalPress: false },
+    });
+  });
+
+  it('switching to off tears the loop down (kill switch) — no tier overlay survives', async () => {
+    mockMode = 'assist';
+    await invoke(IPC.DECK_LOOP_START, {
+      workspaceId: 'ws-1',
+      objective: 'o',
+      tier: 'continue',
+      intervalMinutes: 30,
+    });
+    await invoke(IPC.DECK_MODE_SET, { workspaceId: 'ws-1', mode: 'off' });
+    expect(loops.has('ws-1')).toBe(false);
+    expect(schedules).toHaveLength(0);
   });
 });
 

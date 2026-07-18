@@ -9,8 +9,11 @@
 // OFF contract buttons ([pause]/[resume]/[stop] — caps drop to DEFAULT,
 // schedule cleaned up, all main-side).
 //
-// v1 posture (plans/loop-engineering-adoption-2026-07-12.md): tier caps at
-// `continue` — Full-auto/approval-press is NOT offered here; the checklist is
+// v1 posture (plans/loop-engineering-adoption-2026-07-12.md): the tier dropdown
+// caps at `continue` — a per-loop "full-auto" tier is NOT offered here. Approval-
+// press is not a loop knob at all; it composes from the workspace MODE ceiling
+// (auto), so a `continue` loop presses only when the workspace is in auto —
+// see deck.handler's applyTierCaps (min(modeCeiling, tier)). The checklist is
 // HUMAN-authored, read-only context for the brain (no self-scoring); `done`
 // never suppresses wakes — the human stops the loop with these buttons.
 //

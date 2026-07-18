@@ -649,15 +649,29 @@ export function registerDeckHandler(
   // ── Loop engineering v1: the one-click loop ────────────────────────────
   // START is the one click: loop-state + autonomy caps + optional cadence
   // schedule written in a single action. STOP/PAUSE are the OFF contract —
-  // caps drop to DEFAULT (fail-closed) and the cadence schedule is deleted/
-  // disabled, so a stopped loop never leaves the brain with Continue authority
-  // and no objective, nor a pending schedule that fires later. v1 tiers cap at
-  // 'continue'; approval-press is NOT reachable from this surface.
+  // caps drop to the workspace MODE (fail-closed) and the cadence schedule is
+  // deleted/disabled, so a stopped loop never leaves the brain with Continue
+  // authority and no objective, nor a pending schedule that fires later.
+  //
+  // Cap composition (2026-07-18): a loop's caps are the workspace MODE ceiling
+  // NARROWED by the loop tier — `min(modeCeiling, tier)` — never a blanket
+  // override. The mode is the standing trust envelope; the loop is a mission
+  // that runs INSIDE it:
+  //   - `report`   → observe + summarize only (no drive, no press) at any mode.
+  //   - `continue` → may drive panes (continueInstruction) AND, only when the
+  //                  mode ceiling is `auto`, press approvals — so auto+loop is
+  //                  the true unattended supervisor while assist+loop stays
+  //                  notify-on-approval.
+  // The dangerous press capability therefore stays gated on the MODE (a
+  // deliberate, standing, workspace-level choice), never on a per-loop tier
+  // dropdown that is easy to fat-finger. off never reaches here (teardown).
   const applyTierCaps = async (workspaceId: string, tier: LoopTier): Promise<void> => {
+    const ceiling = modeToCaps(loadWorkspaceMode(workspaceId));
+    const driving = tier === 'continue';
     await setWorkspaceAutonomy(workspaceId, {
-      summarize: true,
-      continueInstruction: tier === 'continue',
-      approvalPress: false,
+      summarize: ceiling.summarize,
+      continueInstruction: ceiling.continueInstruction && driving,
+      approvalPress: ceiling.approvalPress && driving,
     });
   };
   // Loop-stop restores caps to the workspace's CURRENT MODE, not the global
@@ -979,6 +993,15 @@ export function registerDeckHandler(
       // the mode+caps, so a stopped loop can't race a final wake in between.
       if (mode === 'off') await tearDownAutomation(workspaceId);
       const next = await setWorkspaceMode(workspaceId, mode as AgentMode);
+      // setWorkspaceMode reset caps to the pure mode ceiling. If a loop is still
+      // running, re-narrow that new ceiling by the loop tier — otherwise raising
+      // the mode mid-loop would silently grant a `report` mission drive/press
+      // authority it never asked for (and lowering it would strand stale caps).
+      // The mode is the ceiling; the running mission stays capped within it.
+      if (mode !== 'off') {
+        const loop = loadWorkspaceLoopState(workspaceId);
+        if (loop?.status === 'running') await applyTierCaps(workspaceId, loop.tier);
+      }
       return { ok: true, mode: next.mode };
     }),
   );
