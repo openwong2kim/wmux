@@ -325,7 +325,7 @@ export const nb = {
   'settings.inspect.proxyLabel': 'Rediger {token} ({role})',
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
-  'toolbar.fanOut': 'Fan-out',
+  'toolbar.fanOut': 'Multi Task',
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': 'Broadcast — samme tekst til hvert terminalpanel i det gjeldende arbeidsområdet (ingen isolering)',
   'toolbar.broadcastPrompt': 'Broadcast — send til hvert terminalpanel i det gjeldende arbeidsområdet',

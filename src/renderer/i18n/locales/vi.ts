@@ -320,7 +320,7 @@ export const vi = {
   'settings.inspect.proxyLabel': 'Chỉnh {token} ({role})',
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
-  'toolbar.fanOut': 'Fan-out',
+  'toolbar.fanOut': 'Multi Task',
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': 'Broadcast — cùng một văn bản tới mọi khung terminal trong không gian làm việc hiện tại (không cô lập)',
   'toolbar.broadcastPrompt': 'Broadcast — gửi tới mọi khung terminal trong không gian làm việc hiện tại',

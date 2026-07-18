@@ -74,6 +74,11 @@ function normalizeRequest(raw: unknown): FanOutRequest | { error: string } {
   const titles = Array.isArray(r['titles'])
     ? (r['titles'] as unknown[]).filter((t): t is string => typeof t === 'string')
     : [];
+  // 태스크별 개별 프롬프트 — titles와 인덱스 정렬이라 filter로 구멍을 내면 안 된다.
+  // 비문자열 항목은 빈 문자열로 접어 정렬을 보존한다.
+  const taskPrompts = Array.isArray(r['taskPrompts'])
+    ? (r['taskPrompts'] as unknown[]).map((p) => (typeof p === 'string' ? p : ''))
+    : undefined;
   const repoPath = typeof r['repoPath'] === 'string' ? r['repoPath'] : '';
   const agentCmd = typeof r['agentCmd'] === 'string' ? r['agentCmd'] : 'claude';
   const verifiedWorkspaceId = typeof r['verifiedWorkspaceId'] === 'string' ? r['verifiedWorkspaceId'] : '';
@@ -83,6 +88,7 @@ function normalizeRequest(raw: unknown): FanOutRequest | { error: string } {
     idempotencyKey,
     prompt,
     titles,
+    ...(taskPrompts ? { taskPrompts } : {}),
     repoPath,
     agentCmd,
     verifiedWorkspaceId,

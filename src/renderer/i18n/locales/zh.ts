@@ -362,7 +362,7 @@ export const zh = {
   'settings.inspect.proxyLabel': '编辑 {token}（{role}）',
 
   // ─── 智能体工具栏: fan-out / broadcast 按钮 ───
-  'toolbar.fanOut': 'Fan-out',
+  'toolbar.fanOut': 'Multi Task',
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': 'Broadcast — 向当前工作区的每个终端面板发送相同文本（无隔离）',
   'toolbar.broadcastPrompt': 'Broadcast — 发送到当前工作区的每个终端面板',

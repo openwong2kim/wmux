@@ -211,6 +211,41 @@ describe('§0 E2E 정상 — N=2 전부 성공', () => {
     }
   });
 
+  it('태스크별 프롬프트가 공통 프롬프트와 결합돼 태스크마다 다른 prompt.md로 쓰인다', async () => {
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+    });
+    const res = await svc.start(
+      baseReq({ prompt: 'SHARED CONTEXT', taskPrompts: ['do login page', 'do settings page'] }),
+    );
+    expect(res.ok).toBe(true);
+    const bodies = renderer.spawned.map((s) => {
+      const promptFile = s.initialCommand.match(/'([^']*prompt\.md)'/)?.[1];
+      return fs.readFileSync(promptFile!, 'utf8');
+    });
+    expect(bodies[0]).toBe('SHARED CONTEXT\n\ndo login page');
+    expect(bodies[1]).toBe('SHARED CONTEXT\n\ndo settings page');
+  });
+
+  it('공통 프롬프트가 비어도 태스크별 프롬프트만으로 스폰된다', async () => {
+    const renderer = makeRendererFake();
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: renderer.port,
+      worktrees: makeWorktreesFake(),
+    });
+    const res = await svc.start(baseReq({ prompt: '', taskPrompts: ['task A only', 'task B only'] }));
+    expect(res.ok).toBe(true);
+    const bodies = renderer.spawned.map((s) => {
+      const promptFile = s.initialCommand.match(/'([^']*prompt\.md)'/)?.[1];
+      return fs.readFileSync(promptFile!, 'utf8');
+    });
+    expect(bodies).toEqual(['task A only', 'task B only']);
+  });
+
   it('하위 mission 멱등키가 {fanout키}-{k}로 파생된다', async () => {
     const daemon = makeDaemonFake();
     const svc = new FanOutService({
@@ -374,6 +409,32 @@ describe('프리플라이트 거부 — 태스크 생성 0', () => {
     const res = await svc.start(baseReq({ prompt: 'x'.repeat(9000) }));
     expect(res.ok).toBe(false);
     expect(res.error).toMatch(/exceeds/);
+  });
+
+  it('공통·개별 프롬프트가 둘 다 빈 태스크가 있으면 전체 거부', async () => {
+    const daemon = makeDaemonFake();
+    const svc = new FanOutService({
+      daemon: daemon.port,
+      renderer: makeRendererFake().port,
+      worktrees: makeWorktreesFake(),
+    });
+    const res = await svc.start(baseReq({ prompt: '', taskPrompts: ['only A has one', ''] }));
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/task 2 has no prompt/);
+    expect(daemon.calls.filter((c) => c.method === 'task.mission.start')).toHaveLength(0);
+  });
+
+  it('공통+개별 결합이 8KB를 넘는 태스크가 있으면 전체 거부', async () => {
+    const svc = new FanOutService({
+      daemon: makeDaemonFake().port,
+      renderer: makeRendererFake().port,
+      worktrees: makeWorktreesFake(),
+    });
+    const res = await svc.start(
+      baseReq({ prompt: 'x'.repeat(5000), taskPrompts: ['short', 'y'.repeat(5000)] }),
+    );
+    expect(res.ok).toBe(false);
+    expect(res.error).toMatch(/task 2 prompt exceeds/);
   });
 
   it('N > 8 거부', async () => {

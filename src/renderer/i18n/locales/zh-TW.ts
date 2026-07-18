@@ -324,7 +324,7 @@ export const zhTW = {
   'settings.inspect.proxyLabel': '編輯 {token}（{role}）',
 
   // ─── 代理工具列: fan-out / broadcast 按鈕 ───
-  'toolbar.fanOut': 'Fan-out',
+  'toolbar.fanOut': 'Multi Task',
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': 'Broadcast — 向目前工作區的每個終端機面板傳送相同文字（無隔離）',
   'toolbar.broadcastPrompt': 'Broadcast — 傳送到目前工作區的每個終端機面板',

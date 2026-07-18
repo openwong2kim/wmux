@@ -59,10 +59,15 @@ export interface FanOutRendererPort {
 export interface FanOutRequest {
   /** 호출 단위 멱등키(렌더러가 제출 시 1회 발급 — §2 G1). */
   idempotencyKey: string;
-  /** 프롬프트 본문(캡 FANOUT_PROMPT_MAX_BYTES). */
+  /** 공통 프롬프트 본문(캡 FANOUT_PROMPT_MAX_BYTES). 태스크별 프롬프트가 전부
+   *  채워졌다면 비워도 된다 — 태스크 유효 프롬프트(공통+개별 결합)만 비면 안 된다. */
   prompt: string;
   /** 태스크별 title(길이 = N). N은 title 배열 길이로 결정한다. */
   titles: string[];
+  /** 태스크별 개별 프롬프트(titles와 인덱스 정렬, 옵셔널). 유효 프롬프트는
+   *  `공통 + "\n\n" + 개별`(빈 쪽 생략)로 결합되며, 결합 결과가 캡을 넘거나
+   *  비면 프리플라이트에서 전체 거부한다(부분 스폰 없음). */
+  taskPrompts?: string[];
   /** repo 경로(활성 워크스페이스 cwd 기본 — 렌더러가 채움). */
   repoPath: string;
   /** 에이전트 명령(기본 'claude'). */
@@ -157,25 +162,41 @@ export class FanOutService {
 
   private async run(req: FanOutRequest): Promise<FanOutResult> {
     // ── 입력 검증 ──
-    const titles = req.titles.map((t) => (typeof t === 'string' ? t.trim() : '')).filter((t) => t.length > 0);
-    const n = titles.length;
+    // title·개별 프롬프트는 인덱스로 정렬된 쌍이다 — 빈 title 필터 전에 먼저 묶어
+    // 정렬이 어긋나지 않게 한다(개별 프롬프트가 다른 태스크에 오배달되면 치명).
+    const rawPrompts = Array.isArray(req.taskPrompts) ? req.taskPrompts : [];
+    const entries = req.titles
+      .map((t, k) => ({
+        title: typeof t === 'string' ? t.trim() : '',
+        taskPrompt: typeof rawPrompts[k] === 'string' ? rawPrompts[k].trim() : '',
+      }))
+      .filter((e) => e.title.length > 0);
+    const n = entries.length;
     if (n === 0) {
       return { ok: false, error: 'fanout:start: at least one task title is required', tasks: [] };
     }
     if (n > FANOUT_MAX_TASKS) {
       return { ok: false, error: `fanout:start: task count ${n} exceeds cap ${FANOUT_MAX_TASKS}`, tasks: [] };
     }
-    const prompt = typeof req.prompt === 'string' ? req.prompt : '';
-    if (prompt.trim().length === 0) {
-      return { ok: false, error: 'fanout:start: prompt is required', tasks: [] };
+    const sharedPrompt = (typeof req.prompt === 'string' ? req.prompt : '').trim();
+    // 태스크 유효 프롬프트 = 공통 + 개별(빈 쪽 생략). 하나라도 비거나 캡 초과면
+    // 전체 거부(부분 스폰 없음 — 프리플라이트 "태스크 생성 0" 계약과 동형).
+    const effectivePrompts: string[] = [];
+    for (const [k, e] of entries.entries()) {
+      const combined = [sharedPrompt, e.taskPrompt].filter((p) => p.length > 0).join('\n\n');
+      if (combined.length === 0) {
+        return { ok: false, error: `fanout:start: task ${k + 1} has no prompt (fill the shared prompt or its own)`, tasks: [] };
+      }
+      if (Buffer.byteLength(combined, 'utf8') > FANOUT_PROMPT_MAX_BYTES) {
+        return {
+          ok: false,
+          error: `fanout:start: task ${k + 1} prompt exceeds ${FANOUT_PROMPT_MAX_BYTES} bytes; shorten it and reference details from a file path`,
+          tasks: [],
+        };
+      }
+      effectivePrompts.push(combined);
     }
-    if (Buffer.byteLength(prompt, 'utf8') > FANOUT_PROMPT_MAX_BYTES) {
-      return {
-        ok: false,
-        error: `fanout:start: prompt exceeds ${FANOUT_PROMPT_MAX_BYTES} bytes; shorten it and reference details from a file path`,
-        tasks: [],
-      };
-    }
+    const titles = entries.map((e) => e.title);
     const verifiedWorkspaceId = typeof req.verifiedWorkspaceId === 'string' ? req.verifiedWorkspaceId.trim() : '';
     if (!verifiedWorkspaceId) {
       return { ok: false, error: 'fanout:start: verifiedWorkspaceId is required', tasks: [] };
@@ -206,7 +227,7 @@ export class FanOutService {
       const r = await this.spawnOne({
         index: k,
         title,
-        prompt,
+        prompt: effectivePrompts[k],
         agentCmd,
         repoPath: req.repoPath,
         verifiedWorkspaceId,

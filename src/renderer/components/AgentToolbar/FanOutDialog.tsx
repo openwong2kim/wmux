@@ -46,6 +46,7 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
   const [n, setN] = useState(2);
   const [titles, setTitles] = useState<string[]>([]);
   const [titlesEdited, setTitlesEdited] = useState<boolean[]>([]);
+  const [taskPrompts, setTaskPrompts] = useState<string[]>([]);
   const [repoPath, setRepoPath] = useState(defaultRepo);
   const [agentCmd, setAgentCmd] = useState('claude');
   const [submitting, setSubmitting] = useState(false);
@@ -55,13 +56,17 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
     if (!repoPath && defaultRepo) setRepoPath(defaultRepo);
   }, [defaultRepo, repoPath]);
 
-  // N·프롬프트 변경 시 미편집 title만 자동 파생(편집분은 보존).
+  // N·프롬프트 변경 시 미편집 title만 자동 파생(편집분은 보존). 태스크별 프롬프트가
+  // 있으면 그쪽에서 파생(개별 작업의 정체성은 개별 프롬프트가 정본).
   useEffect(() => {
     setTitles((prev) => {
       const next = [...prev];
       const edited = titlesEdited;
       for (let k = 0; k < n; k++) {
-        if (!edited[k] || next[k] === undefined) next[k] = deriveTitle(prompt, k);
+        if (!edited[k] || next[k] === undefined) {
+          const src = (taskPrompts[k] ?? '').trim().length > 0 ? taskPrompts[k] : prompt;
+          next[k] = deriveTitle(src, k);
+        }
       }
       next.length = n;
       return next;
@@ -71,10 +76,19 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
       next.length = n;
       return next.map((v) => v ?? false);
     });
-  }, [n, prompt]); // eslint-disable-line react-hooks/exhaustive-deps
+  }, [n, prompt, taskPrompts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const promptBytes = useMemo(() => new TextEncoder().encode(prompt).length, [prompt]);
-  const promptOverCap = promptBytes > FANOUT_PROMPT_MAX_BYTES;
+  // 태스크 유효 프롬프트 = 공통 + 개별(빈 쪽 생략) — FanOutService 결합 규칙과 동형.
+  const effectiveBytes = useMemo(() => {
+    const enc = new TextEncoder();
+    return Array.from({ length: n }, (_, k) => {
+      const combined = [prompt.trim(), (taskPrompts[k] ?? '').trim()].filter((p) => p.length > 0).join('\n\n');
+      return enc.encode(combined).length;
+    });
+  }, [n, prompt, taskPrompts]);
+  const promptOverCap = effectiveBytes.some((b) => b > FANOUT_PROMPT_MAX_BYTES);
+  const promptAllEmpty = effectiveBytes.some((b) => b === 0);
 
   const setTitleAt = useCallback((k: number, v: string) => {
     setTitles((prev) => {
@@ -89,9 +103,17 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
     });
   }, []);
 
+  const setTaskPromptAt = useCallback((k: number, v: string) => {
+    setTaskPrompts((prev) => {
+      const next = [...prev];
+      next[k] = v;
+      return next;
+    });
+  }, []);
+
   const handleSubmit = useCallback(async () => {
     if (submitting) return;
-    if (prompt.trim().length === 0) {
+    if (promptAllEmpty) {
       pushToast({ level: 'warn', message: t('fanout.errPromptRequired') });
       return;
     }
@@ -111,6 +133,7 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
         idempotencyKey,
         prompt,
         titles: titles.slice(0, n),
+        taskPrompts: Array.from({ length: n }, (_, k) => taskPrompts[k] ?? ''),
         repoPath: repoPath.trim(),
         agentCmd: agentCmd.trim() || 'claude',
         // 렌더러 신뢰 신원(§2 — channelLocal과 동일 trust basis). owner = 생성자
@@ -130,7 +153,7 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
     } finally {
       setSubmitting(false);
     }
-  }, [submitting, prompt, promptOverCap, repoPath, titles, n, agentCmd, activeWorkspace, pushToast, t]);
+  }, [submitting, prompt, promptAllEmpty, promptOverCap, repoPath, titles, taskPrompts, n, agentCmd, activeWorkspace, pushToast, t]);
 
   const label = 'text-[11px] text-[var(--text-sub)] mb-1 block';
 
@@ -162,18 +185,32 @@ export default function FanOutDialog({ onClose }: FanOutDialogProps) {
       />
 
       <label className={label}>{t('fanout.titlesLabel')}</label>
-      <div className="space-y-1 mb-2">
+      <div className="space-y-2 mb-2">
         {Array.from({ length: n }, (_, k) => (
-          <div key={k} className="flex items-center gap-2">
-            <Input
-              className="flex-1 text-[12px]"
-              value={titles[k] ?? ''}
-              onChange={(e) => setTitleAt(k, e.target.value)}
-              data-testid={`fanout-title-${k}`}
+          <div key={k} className="rounded-[5px] border border-[var(--bg-overlay)] p-1.5">
+            <div className="flex items-center gap-2 mb-1">
+              <Input
+                className="flex-1 text-[12px]"
+                value={titles[k] ?? ''}
+                onChange={(e) => setTitleAt(k, e.target.value)}
+                data-testid={`fanout-title-${k}`}
+              />
+              <span className="text-[9px] text-[var(--text-muted)] font-mono shrink-0">
+                wtask/{previewSlug(titles[k] ?? '') || '…'}
+              </span>
+            </div>
+            <textarea
+              className="ui-input h-14 resize-none font-mono text-[11px]"
+              value={taskPrompts[k] ?? ''}
+              onChange={(e) => setTaskPromptAt(k, e.target.value)}
+              placeholder={t('fanout.taskPromptPlaceholder', { k: k + 1 })}
+              data-testid={`fanout-task-prompt-${k}`}
             />
-            <span className="text-[9px] text-[var(--text-muted)] font-mono shrink-0">
-              wtask/{previewSlug(titles[k] ?? '') || '…'}
-            </span>
+            {effectiveBytes[k] > FANOUT_PROMPT_MAX_BYTES && (
+              <div className="text-[10px] text-[var(--accent-red)]">
+                {t('fanout.bytes', { bytes: effectiveBytes[k], max: FANOUT_PROMPT_MAX_BYTES })}
+              </div>
+            )}
           </div>
         ))}
       </div>

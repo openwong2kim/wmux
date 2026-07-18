@@ -320,7 +320,7 @@ export const th = {
   'settings.inspect.proxyLabel': 'แก้ไข {token} ({role})',
 
   // ─── Agent toolbar: fan-out / broadcast buttons ───
-  'toolbar.fanOut': 'Fan-out',
+  'toolbar.fanOut': 'Multi Task',
   'toolbar.broadcast': 'Broadcast',
   'toolbar.broadcastTooltip': 'Broadcast — ข้อความเดียวกันไปยังทุกพาเนลเทอร์มินัลในพื้นที่ทำงานปัจจุบัน (ไม่มีการแยก)',
   'toolbar.broadcastPrompt': 'Broadcast — ส่งไปยังทุกพาเนลเทอร์มินัลในพื้นที่ทำงานปัจจุบัน',
