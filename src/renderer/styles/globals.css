@@ -444,14 +444,26 @@ select option {
   background: var(--bg-overlay) !important;
 }
 
-/* Notification ring pulse on inactive panes with unread notifications */
+/* Notification ring pulse on inactive panes with unread notifications.
+ * 성능: box-shadow 자체를 애니메이션하면 매 프레임 스타일 재계산+리페인트가
+ * 발생해 유휴 상태에서도 CPU/GPU를 상시 소모한다(macOS 실측: 렌더러+GPU
+ * ~30%). 그림자는 ::before에 정적으로 그리고 opacity만 애니메이션 —
+ * 컴포지터 전용이라 메인 스레드 비용이 0이다. ::after는 pane-flash가
+ * 선점하고 있어 ::before를 쓴다(두 채널 동시 활성 가능). */
 @keyframes notification-ring-pulse {
-  /* Attention ring = warm accent (2-accent grammar: alive/attention is warm). */
-  0%, 100% { box-shadow: 0 0 0 0 rgba(var(--accent-rgb), 0.4); }
-  50% { box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.2); }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.35; }
 }
 
-.notification-ring {
+.notification-ring::before {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 50;
+  /* Attention ring = warm accent (2-accent grammar: alive/attention is warm). */
+  box-shadow: 0 0 0 3px rgba(var(--accent-rgb), 0.3);
   animation: notification-ring-pulse 2s ease-in-out infinite;
 }
 
@@ -534,23 +546,38 @@ select option {
  * A pane whose active surface's agent reached complete / waiting /
  * awaiting_input blinks its border (green) while the pane is NOT focused,
  * until the user visits it (paneSlice.surfaceAgentStatus drives the class via
- * Pane.composePaneClassName). CSS animations sit ABOVE inline normal styles in
- * the cascade, so the keyframe's border-color overrides Pane.tsx's inline
- * `border` without !important (which is ignored inside @keyframes anyway). The
- * inset box-shadow gives the blink a second, color-fast channel that doesn't
- * fight the inline border at all. */
+ * Pane.composePaneClassName). */
+/* 성능(2026-07-17): border-color/box-shadow 키프레임은 매 프레임 스타일
+ * 재계산+리페인트를 유발한다. 녹색 링을 ::after에 정적으로 그리고 opacity만
+ * 깜빡인다(컴포지터 전용, 메인 스레드 비용 0). ::after는 pane-flash와
+ * 공유되지만 flash는 500ms 일회성 — 겹치는 순간만 flash가 이기고(뒤 규칙
+ * 우선) 끝나면 블링크가 복귀한다. 링이 꺼진 상태에서는 Pane.tsx의 인라인
+ * 보더가 그대로 보인다(기존 50% border-color:var(--bg-surface) 상태와 동등). */
 @keyframes pane-complete-blink {
-  0%, 100% {
-    border-color: var(--accent-green);
-    box-shadow: 0 0 0 2px var(--accent-green) inset;
-  }
-  50% {
-    border-color: var(--bg-surface);
-    box-shadow: 0 0 0 2px transparent inset;
-  }
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0; }
 }
-.pane-complete-blink {
+.pane-complete-blink::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  pointer-events: none;
+  z-index: 50;
+  box-shadow: 0 0 0 2px var(--accent-green) inset;
   animation: pane-complete-blink 1.2s ease-in-out infinite;
+}
+/* pane-flash와 동시 활성 시(공존 지원 — Pane.notificationRing.test) 단일-클래스
+ * 규칙끼리는 속성이 병합돼 flash의 background만 남고 blink의 무한 애니메이션이
+ * 도는 최악 조합(불투명 오버레이 깜빡임)이 된다. 2-클래스 복합 규칙로 flash
+ * 상태를 완전 재기술해 우선시키고, .pane-flash 클래스가 제거되면(500ms 타이머)
+ * 위의 blink 규칙이 복귀한다. */
+.pane-complete-blink.pane-flash::after {
+  border-radius: 2px;
+  background: var(--accent);
+  box-shadow: none;
+  z-index: 100;
+  animation: pane-flash 0.5s ease-out forwards;
 }
 
 /* Small blinking status dot on a background surface tab whose terminal
@@ -563,15 +590,17 @@ select option {
   animation: tab-status-blink 1.2s ease-in-out infinite;
 }
 
-/* Reduced motion: no flashing. Convey completion with a steady green border /
- * full-opacity dot instead of animation. !important is needed for the static
- * border-color to beat Pane.tsx's inline border (a static rule, unlike the
- * animation above, does not outrank inline). */
+/* Reduced motion: no flashing. Convey completion with a steady green ring /
+ * full-opacity dot instead of animation (링은 이제 ::after에 있으므로 거기서
+ * 애니메이션만 끄면 정적 링이 남는다). */
 @media (prefers-reduced-motion: reduce) {
-  .pane-complete-blink {
+  .pane-complete-blink::after {
     animation: none;
-    border-color: var(--accent-green) !important;
-    box-shadow: 0 0 0 2px var(--accent-green) inset;
+    opacity: 1;
+  }
+  .notification-ring::before {
+    animation: none;
+    opacity: 1;
   }
   .tab-status-blink {
     animation: none;
@@ -579,12 +608,20 @@ select option {
   }
 }
 
-/* Forced-colors (Windows high-contrast): the green border/box-shadow is
+/* Forced-colors (Windows high-contrast): the green ring's box-shadow is
  * system-overridden, so fall back to a thicker border to stay visible. */
 @media (forced-colors: active) {
   .pane-complete-blink {
-    animation: none;
     border-width: 2px !important;
+  }
+  .pane-complete-blink::after {
+    animation: none;
+  }
+  /* box-shadow는 forced-colors에서 제거되므로 미읽음 링은 outline으로 대체. */
+  .notification-ring::before {
+    animation: none;
+    outline: 2px solid Highlight;
+    outline-offset: 1px;
   }
 }
 
@@ -663,24 +700,65 @@ select option {
 
 /* Status dots. Color comes from the inline background (set per status in
  * the component); these classes add the glow channel. */
+/* 성능(2026-07-17): box-shadow 반경을 애니메이션하면 매 프레임 스타일
+ * 재계산+리페인트가 발생한다(점 3개만 살아 있어도 유휴 CPU 상시 소모).
+ * 글로우는 ::after에 정적 그림자로 그리고 opacity만 숨쉬게 한다(컴포지터
+ * 전용). 반경 4→7px 펄스 대신 고정 6px 글로우의 밝기 펄스 — 같은 인상. */
 .sidebar-dot {
-  transition: background-color 150ms ease, box-shadow 150ms ease;
+  position: relative;
+  transition: background-color 150ms ease;
+}
+.sidebar-dot::after {
+  content: '';
+  position: absolute;
+  inset: 0;
+  border-radius: inherit;
+  box-shadow: 0 0 6px 1px var(--sidebar-dot-glow, transparent);
+  opacity: 0;
+  transition: opacity 150ms ease;
 }
 @keyframes sidebar-dot-breathe {
-  0%, 100% { box-shadow: 0 0 4px 0 var(--sidebar-dot-glow, transparent); }
-  50%      { box-shadow: 0 0 7px 1px var(--sidebar-dot-glow, transparent); }
+  0%, 100% { opacity: 0.4; }
+  50%      { opacity: 1; }
 }
 .sidebar-dot-running {
   --sidebar-dot-glow: color-mix(in srgb, var(--accent-cursor) 70%, transparent);
+}
+.sidebar-dot-running::after {
   animation: sidebar-dot-breathe 2s ease-in-out infinite;
 }
 .sidebar-dot-waiting {
   --sidebar-dot-glow: color-mix(in srgb, var(--accent-red) 70%, transparent);
+}
+.sidebar-dot-waiting::after {
   animation: sidebar-dot-breathe 1.2s ease-in-out infinite;
 }
 .sidebar-dot-error {
   --sidebar-dot-glow: color-mix(in srgb, var(--accent-red) 70%, transparent);
+}
+.sidebar-dot-error::after {
+  opacity: 1;
   box-shadow: 0 0 5px 0 var(--sidebar-dot-glow);
+}
+/* Reduced motion: 숨쉬기 대신 정적 글로우로 상태만 전달. */
+@media (prefers-reduced-motion: reduce) {
+  .sidebar-dot-running::after,
+  .sidebar-dot-waiting::after {
+    animation: none;
+    opacity: 1;
+  }
+}
+/* Forced-colors: 상태 색(running=amber, needs-you=red 등)이 시스템 색으로
+ * 덮이면 상태 구분이 사라지므로 점의 배경색을 보존한다. 글로우(box-shadow)는
+ * 어차피 제거되니 애니메이션만 끈다. */
+@media (forced-colors: active) {
+  .sidebar-dot {
+    forced-color-adjust: none;
+  }
+  .sidebar-dot-running::after,
+  .sidebar-dot-waiting::after {
+    animation: none;
+  }
 }
 
 /* New workspace rows ease in; popovers/menus fade-scale in. */

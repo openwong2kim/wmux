@@ -129,6 +129,13 @@ export default function Titlebar() {
   // docked right there is no panel below the top-left corner to fuse with.
   const leftSegmentWidth = sidebarPosition === 'left' ? (sidebarVisible ? 240 : 48) : 0;
 
+  // macOS 트래픽 라이트 예약(72px): 세그먼트가 충분히 넓으면(확장 240px) 세그먼트
+  // "안쪽" 패딩으로 품는다 — 헤더에 걸면 세그먼트 전체가 72px 밀려 아래
+  // 사이드바 경계와 어긋난다(owner-reported). 미니(48px)·세그먼트 없음일 때만
+  // 기존처럼 헤더에 예약.
+  const macReserve = isMac && !macFullscreen ? 72 : 0;
+  const reserveInSegment = macReserve > 0 && leftSegmentWidth > macReserve;
+
   return (
     <header
       className="flex items-stretch shrink-0 select-none bg-[var(--bg-base)]"
@@ -147,8 +154,9 @@ export default function Titlebar() {
         // macOS traffic lights sit top-left (trafficLightPosition,
         // createWindow) — reserve 72px for them, EXCEPT in native fullscreen
         // where the lights are hidden and a fixed reserve just shifts the
-        // whole top row right (owner-reported on mac).
-        paddingLeft: isMac && !macFullscreen ? 72 : 0,
+        // whole top row right (owner-reported on mac). 세그먼트가 예약을
+        // 품는 경우엔 헤더 예약 0 (위 reserveInSegment 참조).
+        paddingLeft: reserveInSegment ? 0 : macReserve,
       } as CSSProperties}
       data-testid="titlebar"
       {...tokenAttrs('bgBase', 'bg')}
@@ -157,6 +165,8 @@ export default function Titlebar() {
         className={`flex items-center gap-2 px-3 overflow-hidden ${leftSegmentWidth ? 'bg-[var(--bg-mantle)]' : ''}`}
         style={{
           width: leftSegmentWidth || undefined,
+          // 트래픽 라이트를 세그먼트 안에 품을 때는 px-3 대신 72px 안쪽 패딩.
+          paddingLeft: reserveInSegment ? 72 : undefined,
           // Fuse with the sidebar below via the same inset hairline seam.
           boxShadow: leftSegmentWidth ? 'inset -1px 0 0 var(--border-soft)' : undefined,
         }}

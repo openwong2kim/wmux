@@ -67,6 +67,89 @@ describe('AgentDetector', () => {
     });
   });
 
+  describe('OSC-title gate (live incident 2026-07-17, Fable-era Claude Code)', () => {
+    it('opens the Claude gate from the OSC 0 window-title sequence alone', () => {
+      // The current TUI renders no visible "Claude Code" text — the name only
+      // appears in the window title escape, which ANSI_STRIP removes. The gate
+      // must therefore also be checked against the raw line.
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('\x1b]0;✳ Claude Code\x07\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'running' });
+      // Approval detection now works even though no visible banner ever appeared.
+      cb.mockClear();
+      det.feed('│ Do you want to overwrite calculator.html? │\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({ status: 'awaiting_input' });
+    });
+
+    it('opens the gate from an OSC title stuck in an incomplete line (no newline)', () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('\x1b]0;⠂ Claude Code\x07'); // no newline — tail path
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({ agent: 'Claude Code', status: 'running' });
+    });
+  });
+
+  describe('Claude file-edit approval prompts (live incident 2026-07-17)', () => {
+    const gated = () => {
+      const det = new AgentDetector();
+      const cb = vi.fn();
+      det.onEvent(cb);
+      det.feed('Claude Code v2.1.172\n');
+      cb.mockClear();
+      return { det, cb };
+    };
+
+    it('emits awaiting_input for a one-line overwrite prompt with filename', () => {
+      const { det, cb } = gated();
+      det.feed('│ Do you want to overwrite calculator.html? │\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({
+        agent: 'Claude Code', status: 'awaiting_input', message: 'Edit approval requested',
+      });
+    });
+
+    it('emits awaiting_input for create and make-this-edit variants', () => {
+      const { det, cb } = gated();
+      det.feed('  Do you want to create src/app.ts?\n');
+      det.feed('  Do you want to make this edit to src/app.ts?\n');
+      const statuses = cb.mock.calls.map((c) => c[0].status);
+      expect(statuses).toEqual(['awaiting_input', 'awaiting_input']);
+    });
+
+    it('space-collapsed rendering still matches (cursor-move drawing eats spaces)', () => {
+      // Observed in the 2026-07-17 pane buffer: after ANSI strip the prompt
+      // read `Doyouwanttooverwrite` — same phenomenon as the `ClaudeCode`
+      // banner gate note.
+      const { det, cb } = gated();
+      det.feed('Doyouwanttooverwrite calculator.html?\n');
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({ status: 'awaiting_input' });
+    });
+
+    it('narrow-pane wrap (verb ends the line, filename on next line) still matches', () => {
+      const { det, cb } = gated();
+      det.feed('╌╌ Do you want to overwrite\n');
+      det.feed(' calculator.html?\n');
+      // The verb-terminated first line alone must fire; the orphan filename
+      // line emits nothing on its own.
+      expect(cb).toHaveBeenCalledTimes(1);
+      expect(cb.mock.calls[0][0]).toMatchObject({ status: 'awaiting_input' });
+    });
+
+    it('does NOT match conversational mentions (whole-line anchored)', () => {
+      const { det, cb } = gated();
+      det.feed('  If it asks "Do you want to overwrite calculator.html?" pick no and stop.\n');
+      det.feed('  Do you want to overwrite it, or should I keep the old file around instead\n');
+      expect(cb).not.toHaveBeenCalled();
+    });
+  });
+
   describe('Codex approval prompts (Phase 2 — clean-room transcribed from Codex CLI 0.145.0)', () => {
     const gated = () => {
       const det = new AgentDetector();
