@@ -11,6 +11,7 @@ import {
   evaluateWatermark,
   performReseed,
   MigrationError,
+  type ReseedOptions,
 } from '../migrateToEventLog';
 import {
   SnapshotStore,
@@ -636,6 +637,96 @@ describe('T-다운그레이드 워터마크', () => {
     );
     expect(stampedWrites).toHaveLength(0);
     expect(reseed.legacyStamped).toBeUndefined();
+  });
+
+  it('D(reseed 재시도 사이클): 1차 append 실패 → channels.json 신호 무손상 → 2차 재시도로 다운그레이드 데이터 무손실 복구', async () => {
+    // 이 테스트는 index.ts 부트 게이트의 fail-closed 결정이 의존하는 불변식을 못박는다:
+    // active 부트에서 reseed가 미완이면 그 부트는 fail-closed로 중단되어 dual-write가
+    // channels.json을 재-스탬프하지 못하고, 그 결과 다운그레이드 신호(stale 워터마크)가
+    // 다음 부트까지 살아남아 재시도가 다운그레이드 데이터를 손실 없이 로그에 편입한다.
+    fs.writeFileSync(channelsPath, JSON.stringify(legacyWithMembers()));
+    const writer = new ChannelStateWriter(wmuxDir);
+    const migrated = runMigration(migrateOpts(() => writer.load()));
+
+    // 신 데몬 lamport 0 dual-write 후 구-데몬이 채널을 추가한(다운그레이드) channels.json.
+    const stamped = stampWatermark(writer.load(), 0);
+    const downgrade = {
+      ...stamped,
+      channels: [
+        ...stamped.channels,
+        {
+          id: 'ch-old',
+          companyId: 'co-default',
+          name: 'old-daemon',
+          visibility: 'public',
+          status: 'active',
+          createdAt: 1_700_000_000_001,
+          createdBy: 'ws-x',
+          nextSeq: 1,
+        },
+      ],
+    } as unknown as ChannelState;
+    expect(evaluateWatermark(downgrade).kind).toBe('downgrade-write');
+
+    const log = new AppendOnlyLog({ dir: eventsDir, fsync: syncOk });
+    log.open();
+
+    // 1차: 마커 append 실패 주입 → reseed 미완(부트라면 여기서 fail-closed 중단).
+    let appendEnabled = false;
+    const stampedWrites: unknown[] = [];
+    const reseedOpts = (): ReseedOptions => ({
+      eventsDir,
+      manifest: migrated.manifest,
+      downgradeState: downgrade,
+      append: async (d) => (appendEnabled ? log.append(d) : false),
+      lamportHwm: () => log.lamportHwm,
+      origin: { machineId: migrated.machineId, daemonEpoch: 1 },
+      authContext: {
+        principalId: 'p',
+        verifiedWorkspaceId: 'ws-a',
+        trustTier: 'trusted',
+      },
+      validateProjection: isChannelStateLike,
+      writeLegacyStamped: (s) => {
+        stampedWrites.push(s);
+      },
+    });
+
+    const first = await performReseed(reseedOpts());
+    expect(first.ok).toBe(false);
+    expect(first.failReason).toBe('append-failed');
+    // 핵심 불변식: 훅 미호출 → channels.json 되쓰기 없음 → 다운그레이드 신호 무손상.
+    // (index.ts fail-closed가 dual-write를 막아 이 신호를 다음 부트까지 보존한다.)
+    expect(stampedWrites).toHaveLength(0);
+    expect(evaluateWatermark(downgrade).kind).toBe('downgrade-write');
+
+    // 2차(다음 부트 재시도 등가): append 정상 → reseed 완결.
+    appendEnabled = true;
+    const second = await performReseed(reseedOpts());
+    expect(second.ok).toBe(true);
+    expect(second.markerLamport).toBe(1);
+    // 구-데몬이 추가한 채널이 reseed로 로그에 편입되어 무손실 복구된다.
+    expect(
+      second.legacyStamped!.channels.some((c) => c.id === 'ch-old'),
+    ).toBe(true);
+
+    // 폴백 체인 확인: 활성 스냅샷 손상 시 reseed에서 구-데몬 데이터 복구.
+    const store = new SnapshotStore(path.join(eventsDir, SNAPSHOT_DIRNAME));
+    fs.writeFileSync(store.snapshotPath(CHANNEL_PROJECTION_REF), 'CORRUPT{');
+    fs.rmSync(`${store.snapshotPath(CHANNEL_PROJECTION_REF)}.bak`, {
+      force: true,
+    });
+    const fallback = store.loadWithFallback<ChannelState>({
+      activeRef: CHANNEL_PROJECTION_REF,
+      genesisRef: second.manifest.genesisRef,
+      reseedRefs: second.manifest.reseedRefs,
+      validateProjection: isChannelStateLike,
+    });
+    expect(fallback!.source).toBe('reseed');
+    expect(fallback!.projection.channels.some((c) => c.id === 'ch-old')).toBe(
+      true,
+    );
+    log.close();
   });
 
   it('D(lamport race): hwm이 before+1이 아니면 중단(부트-단독 전제 위반) — 부작용 0', async () => {

@@ -3204,8 +3204,28 @@ async function main(): Promise<void> {
             channelStateWriter.saveImmediate(stamped, { durable: true });
           },
         });
-        if (reseed.ok) manifest = reseed.manifest;
-        else log('warn', `legacy-reseed 미완(${reseed.failReason ?? 'unknown'}) — 다음 부트 재시도`);
+        if (reseed.ok) {
+          manifest = reseed.manifest;
+        } else {
+          // fail-closed (패널 CL-1): 다운그레이드(구-데몬이 channels.json에 직접 쓴 상태)를
+          // 감지했으나 reseed가 완결되지 못했다 — 그 상태는 정본인 로그에 실리지 못했다.
+          // 여기서 그대로 enableEventLogDualWrite로 진행하면 두 가지가 동시에 터진다:
+          //   (1) 데몬이 다운그레이드 데이터가 빠진 로그 projection 위에서 구동되고
+          //       (ChannelService는 channels.json이 아니라 로그에서 시드한다),
+          //   (2) 직후 첫 dual-write가 channels.json을 fresh 워터마크로 되쓰며 그 안의
+          //       다운그레이드 데이터까지 로그-파생 상태로 덮어써, "다음 부트 재시도"가
+          //       의존하는 downgrade 신호(stale 워터마크)를 소거한다 — 조용한 split-brain
+          //       + 데이터 유실. 부트를 실패시키면 channels.json은 stale 워터마크·데이터가
+          //       무손상으로 남아 다음 부트가 downgrade를 재감지·reseed 재시도한다.
+          //   append-failed는 디스크 결함이라 삼킬 수 없고, lamport-race는 single-instance
+          //   부트 락 하에서 발생 불가하다. logCanonical=true이므로 아래 catch가 fail-closed
+          //   재-throw한다(§6.1-4 활성 이후 실패 = 부트 중단).
+          throw new Error(
+            `legacy-reseed incomplete (${reseed.failReason ?? 'unknown'}) — fail-closed: ` +
+              `log is canonical but downgrade state was not committed to the log ` +
+              `(channels.json left untouched for next-boot retry)`,
+          );
+        }
       }
     }
     // 이후 모든 dual-write가 write-시점 워터마크(lamport+stateHash)를 싣고(§6.4c),
