@@ -334,10 +334,13 @@ export function CommanderViewContent({
           <DeckSchedulesPanel t={t} workspaceId={activeWorkspaceId} workspaceName={workspaceName} />
 
           {/* Reboot-recovery re-entry (post-reboot only) — the canned one-click
-              recovery, trailing right. Neutral at rest, accent on hover (the
-              DESIGN.md AI-action grammar), disabled while a turn streams. */}
+              recovery. Flows inline after the always-on controls (no ml-auto:
+              the dock is narrow enough that the bar wraps, and pushing this to
+              the trailing edge stranded it alone on its own line with a gap).
+              Neutral at rest, accent on hover (the DESIGN.md AI-action
+              grammar), disabled while a turn streams. */}
           {quickActions.length > 0 && (
-            <div data-deck-quick-actions className="flex flex-wrap gap-1.5 ml-auto">
+            <div data-deck-quick-actions className="flex flex-wrap gap-1.5">
               {quickActions.map((action) => (
                 <button
                   key={action.id}

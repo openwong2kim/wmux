@@ -32,6 +32,30 @@ export interface AgentModeApi {
 /** Order shown in the dropdown, least → most autonomous. */
 const MODE_ORDER: readonly AgentMode[] = ['off', 'assist', 'auto'];
 
+// Per-mode chip skin so the CURRENT autonomy state reads at a glance (the chip
+// is the one always-visible answer to "why is it quiet/talking?"). Colors map
+// straight onto the DESIGN.md grammar, no new accents:
+//   off     nothing alive → neutral graphite + gray idle dot
+//   assist  alive, safe   → warm --accent (alive/attention) + subtle warm tint
+//   auto    alive + destructive → red --accent-red outline (destructive = red
+//           tint at rest, never a fill/wash) + red dot, bold for weight
+// `border` is kept on every state (transparent when off) so switching modes
+// never shifts the bar's layout by a pixel.
+const MODE_SKIN: Record<AgentMode, { btn: string; dot: string }> = {
+  off: {
+    btn: 'border border-transparent text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)]',
+    dot: 'bg-[var(--text-muted)]',
+  },
+  assist: {
+    btn: 'border border-[rgba(var(--accent-rgb),0.45)] text-[var(--accent)] bg-[rgba(var(--accent-rgb),0.12)] font-medium',
+    dot: 'bg-[var(--accent)]',
+  },
+  auto: {
+    btn: 'border border-[var(--accent-red)] text-[var(--accent-red)] bg-[rgba(var(--bg-surface-rgb),0.6)] font-semibold',
+    dot: 'bg-[var(--accent-red)]',
+  },
+};
+
 function modeLabel(t: (k: string) => string, mode: AgentMode): string {
   return t(`deck.mode.${mode}`) || mode;
 }
@@ -103,10 +127,14 @@ export function AgentModeChip({
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}
-        className={`px-2.5 py-1 rounded-md text-[12px] text-[var(--text-sub)] bg-[rgba(var(--bg-surface-rgb),0.6)] hover:opacity-80 transition-opacity ${FOCUS_RING}`}
+        className={`inline-flex items-center gap-1.5 px-2.5 py-1 rounded-md text-[12px] hover:opacity-80 transition-opacity ${MODE_SKIN[mode].btn} ${FOCUS_RING}`}
         title={modeDesc(t, mode)}
-        {...tokenAttrs('textSub', 'text')}
       >
+        <span
+          aria-hidden="true"
+          data-agent-mode-dot
+          className={`inline-block w-1.5 h-1.5 rounded-full shrink-0 ${MODE_SKIN[mode].dot}`}
+        />
         {t('deck.mode.label') || 'Mode'}: {modeLabel(t, mode)}
       </button>
       {open && (
