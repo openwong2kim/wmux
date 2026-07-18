@@ -533,6 +533,44 @@ export function registerDeckHandler(
     hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
   });
   const offBus = eventBus.subscribe((ev) => {
+    // AO-style CI feedback (owner decision 2026-07-18): a pane's PR went red.
+    // Route it into the SAME coalescer as lifecycle events so it inherits the
+    // mode/budget/decision-gate policy — auto drives a fix, assist reports, off
+    // stays silent. The PR pointer rides through as `detail`.
+    if (ev.type === 'pr.ci') {
+      coalescer?.push({
+        workspaceId: ev.workspaceId,
+        ptyId: ev.ptyId,
+        kind: 'pr.ci_failed',
+        source: 'pr',
+        agent: null,
+        seq: ev.seq,
+        ts: ev.ts,
+        detail: { prNumber: ev.prNumber, url: ev.url },
+      });
+      return;
+    }
+    // Slice 2: fresh review feedback on a pane's PR — same coalescer, same
+    // policy inheritance, review context riding through as detail.
+    if (ev.type === 'pr.review') {
+      coalescer?.push({
+        workspaceId: ev.workspaceId,
+        ptyId: ev.ptyId,
+        kind: 'pr.review_comment',
+        source: 'pr',
+        agent: null,
+        seq: ev.seq,
+        ts: ev.ts,
+        detail: {
+          prNumber: ev.prNumber,
+          url: ev.url,
+          count: ev.count,
+          author: ev.author,
+          snippet: ev.snippet,
+        },
+      });
+      return;
+    }
     if (ev.type !== 'agent.lifecycle') return;
     if (ev.kind !== 'agent.stop' && ev.kind !== 'agent.awaiting_input') return;
     coalescer?.push({

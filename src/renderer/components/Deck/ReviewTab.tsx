@@ -1,0 +1,309 @@
+// ─── Deck Review tab — diff-first review across ALL workspaces (P1) ──────────
+//
+// Conductor-style review surface (owner decision 2026-07-18): one place that
+// answers "which of my parallel agents changed what, and where do I review it?"
+// One row per open workspace: name, branch, PR badge, and the workspace's
+// uncommitted diff stat (files / +adds / −dels) — with one-click entry into the
+// EXISTING DiffPanel surface for that workspace's repo. This tab aggregates and
+// routes; the hunk-level review/adopt machinery stays in DiffPanel (J2).
+//
+// Pull-only, like GitTab: stats load on mount / tab focus / manual refresh —
+// no polling, no daemon involvement. Each row resolves its repo from the
+// workspace's active pane cwd (falling back to profile.startupCwd), the same
+// rule the palette's Show Git Diff uses, then reads `diff:read` in 'workspace'
+// mode and sums the numstat.
+//
+// Design contract (DESIGN.md): monochrome glyphs, mono paths/counts, and at
+// most ONE amber point — the dot marking the ACTIVE workspace's row.
+
+import { useCallback, useEffect, useRef, useState } from 'react';
+import { useStore } from '../../stores';
+import { useT } from '../../hooks/useT';
+import { tokenAttrs } from '../../themes';
+import { FOCUS_RING } from '../focusRing';
+import type { Pane, PaneLeaf, PrStatus } from '../../../shared/types';
+import type { DiffReadResult, DiffReadError } from '../../../shared/diffParse';
+
+// A workspace's review row — resolved repo + summed numstat, or the reason
+// there is nothing to review (no repo / clean / read error).
+interface ReviewRow {
+  workspaceId: string;
+  name: string;
+  branch: string;
+  pr: PrStatus | null;
+  repoPath: string | null;
+  files: number;
+  additions: number;
+  deletions: number;
+  error: string | null;
+}
+
+function findActiveLeaf(root: Pane, activePaneId: string): PaneLeaf | null {
+  if (root.type === 'leaf') return root.id === activePaneId ? root : null;
+  for (const child of root.children) {
+    const found = findActiveLeaf(child, activePaneId);
+    if (found) return found;
+  }
+  return null;
+}
+
+/** First leaf fallback — a diff surface needs SOME leaf to mount on when the
+ *  workspace's activePaneId is stale (e.g. points at a just-closed pane). */
+function findFirstLeaf(root: Pane): PaneLeaf | null {
+  if (root.type === 'leaf') return root;
+  for (const child of root.children) {
+    const found = findFirstLeaf(child);
+    if (found) return found;
+  }
+  return null;
+}
+
+function pathLeaf(p: string): string {
+  return p.split(/[/\\]/).filter(Boolean).pop() || p;
+}
+
+interface DiffBridge {
+  resolveRepo: (cwd: string) => Promise<{ ok: true; repoPath: string } | { ok: false }>;
+  read: (
+    worktreePath: string,
+    targetHeadOid: string,
+    mode: 'task' | 'workspace',
+  ) => Promise<DiffReadResult | DiffReadError>;
+}
+
+function getDiffBridge(): DiffBridge | null {
+  const api = (window as unknown as { electronAPI?: { diff?: DiffBridge } }).electronAPI;
+  return api?.diff ?? null;
+}
+
+/** PR badge colors — same grammar as the sidebar's PrBadge (WorkspaceItem). */
+function prColor(pr: PrStatus): string {
+  return pr.state === 'open' ? 'var(--accent-green)'
+    : pr.state === 'merged' ? 'var(--accent-blue)'
+    : pr.state === 'closed' ? 'var(--accent-red)'
+    : 'var(--text-muted)';
+}
+
+export function ReviewTab(): React.ReactElement {
+  const t = useT();
+  const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
+  // Row identity only — name/metadata are re-read inside load() so a rename
+  // or branch switch shows up on the next refresh without a live subscription.
+  const workspaceIds = useStore((s) => s.workspaces.map((w) => w.id).join('\0'));
+  const [rows, setRows] = useState<ReviewRow[]>([]);
+  const [loading, setLoading] = useState(true);
+  // Monotonic load token — a slower earlier refresh must not overwrite a newer
+  // roster (CodeRabbit, PR #496). Only the latest load() commits.
+  const loadSeq = useRef(0);
+
+  const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
+    setLoading(true);
+    const bridge = getDiffBridge();
+    const state = useStore.getState();
+    const out: ReviewRow[] = [];
+    for (const ws of state.workspaces) {
+      const leaf = findActiveLeaf(ws.rootPane, ws.activePaneId) ?? findFirstLeaf(ws.rootPane);
+      const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+      const cwd = surface?.cwd || ws.profile?.startupCwd || state.startupDirectory || '';
+      const row: ReviewRow = {
+        workspaceId: ws.id,
+        name: ws.name,
+        branch: ws.metadata?.gitBranch ?? '',
+        pr: ws.metadata?.pr ?? null,
+        repoPath: null,
+        files: 0,
+        additions: 0,
+        deletions: 0,
+        error: null,
+      };
+      if (bridge && cwd) {
+        try {
+          const resolved = await bridge.resolveRepo(cwd);
+          if (resolved.ok) {
+            row.repoPath = resolved.repoPath;
+            const diff = await bridge.read(resolved.repoPath, '', 'workspace');
+            if (diff.ok) {
+              row.files = diff.numstat.length;
+              for (const n of diff.numstat) {
+                row.additions += n.additions ?? 0;
+                row.deletions += n.deletions ?? 0;
+              }
+              if (!row.branch) row.branch = diff.snapshot.targetBranch;
+            } else {
+              row.error = diff.error;
+            }
+          }
+        } catch (e) {
+          row.error = e instanceof Error ? e.message : String(e);
+        }
+      }
+      out.push(row);
+    }
+    if (seq !== loadSeq.current) return; // superseded by a newer load
+    setRows(out);
+    setLoading(false);
+  }, []);
+
+  useEffect(() => {
+    void load();
+  }, [load, workspaceIds]);
+
+  // Jump into the review: activate the workspace and open the existing
+  // DiffPanel surface on its active leaf (same dedup as the palette command —
+  // an existing diff tab for the same repo is re-focused, not duplicated).
+  const openDiff = useCallback((row: ReviewRow) => {
+    if (!row.repoPath) return;
+    const st = useStore.getState();
+    st.setActiveWorkspace(row.workspaceId);
+    const fresh = useStore.getState();
+    const ws = fresh.workspaces.find((w) => w.id === row.workspaceId);
+    if (!ws) return;
+    const leaf = findActiveLeaf(ws.rootPane, ws.activePaneId) ?? findFirstLeaf(ws.rootPane);
+    if (!leaf) return;
+    fresh.addWorkspaceDiffSurface(leaf.id, row.repoPath, `diff: ${pathLeaf(row.repoPath)}`);
+  }, []);
+
+  const goTo = useCallback((workspaceId: string) => {
+    useStore.getState().setActiveWorkspace(workspaceId);
+  }, []);
+
+  const dirty = rows.filter((r) => r.files > 0);
+  const clean = rows.filter((r) => r.files === 0);
+
+  const renderRow = (row: ReviewRow) => {
+    const isActive = row.workspaceId === activeWorkspaceId;
+    return (
+      <li
+        key={row.workspaceId}
+        className="group flex items-center gap-2 px-3 h-10 border-b border-[var(--bg-surface)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)]"
+        style={{ borderColor: 'var(--border-soft)' }}
+      >
+        {/* ONE amber point per screen: the active workspace's dot. */}
+        <span
+          aria-hidden="true"
+          className={`w-1.5 h-1.5 rounded-full shrink-0 ${
+            isActive ? 'bg-[var(--accent)]' : 'bg-[var(--bg-overlay)]'
+          }`}
+          {...(isActive ? tokenAttrs('accent', 'bg') : {})}
+        />
+        <div className="flex flex-col min-w-0 flex-1 leading-tight">
+          <span className="text-[var(--text-main)] truncate" {...tokenAttrs('textMain', 'text')}>
+            {row.name}
+          </span>
+          <span
+            className="font-mono text-[10px] text-[var(--text-muted)] truncate"
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            {/* Branch renders only WITH a resolved repo — stale workspace
+                metadata must not mask the missing-repo state (CodeRabbit). */}
+            {row.repoPath ? (row.branch ? `⎇ ${row.branch}` : pathLeaf(row.repoPath)) : t('review.noRepo') || 'no repo'}
+            {row.pr && (
+              <span style={{ color: prColor(row.pr) }}> #{row.pr.number}</span>
+            )}
+          </span>
+        </div>
+        {/* Diff stat — mono, monochrome; error degrades to a title tooltip.
+            No repo → no stat cell at all (dogfood: "clean" on a no-repo row
+            read as a false verdict). */}
+        {!row.repoPath ? null : row.error ? (
+          <span
+            className="font-mono text-[10px] text-[var(--text-muted)]"
+            title={row.error}
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            —
+          </span>
+        ) : row.files > 0 ? (
+          <span className="font-mono text-[10.5px] text-[var(--text-sub)] shrink-0" {...tokenAttrs('textSub', 'text')}>
+            {row.files}{' '}
+            <span className="text-[var(--text-muted)]">{t('review.files') || 'files'}</span>
+            {' '}+{row.additions}{' '}−{row.deletions}
+          </span>
+        ) : (
+          <span className="font-mono text-[10px] text-[var(--text-muted)] shrink-0" {...tokenAttrs('textMuted', 'text')}>
+            {t('review.clean') || 'clean'}
+          </span>
+        )}
+        {row.repoPath && (
+          <button
+            type="button"
+            onClick={() => openDiff(row)}
+            className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${FOCUS_RING}`}
+            title={t('review.openDiffDesc') || 'Open this workspace and review its diff'}
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            {t('review.diff') || 'Diff'}
+          </button>
+        )}
+        {!isActive && (
+          <button
+            type="button"
+            onClick={() => goTo(row.workspaceId)}
+            className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${FOCUS_RING}`}
+            title={t('review.goDesc') || 'Switch to this workspace'}
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            {t('review.go') || 'Go'}
+          </button>
+        )}
+      </li>
+    );
+  };
+
+  return (
+    <div data-review-tab className="flex flex-col flex-1 min-h-0 text-[12px]">
+      {/* Header — 36px chrome row, mirrors GitTab's. */}
+      <div
+        className="flex items-center gap-2 h-9 px-3 shrink-0 border-b border-[var(--bg-surface)]"
+        style={{ borderColor: 'var(--border-soft)' }}
+        {...tokenAttrs('bgSurface', 'border')}
+      >
+        <span className="font-semibold text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>
+          {t('review.title') || 'Review'}
+        </span>
+        {!loading && (
+          <span className="font-mono text-[10.5px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+            {dirty.length}/{rows.length} {t('review.dirtySuffix') || 'with changes'}
+          </span>
+        )}
+        <div className="flex-1" />
+        <button
+          type="button"
+          onClick={() => void load()}
+          title={t('review.refresh') || 'Refresh'}
+          aria-label={t('review.refresh') || 'Refresh'}
+          className={`flex items-center justify-center w-6 h-6 rounded text-[var(--text-muted)] hover:text-[var(--text-sub)] transition-colors ${FOCUS_RING}`}
+          {...tokenAttrs('textMuted', 'text')}
+        >
+          <svg width="12" height="12" viewBox="0 0 14 14" fill="none" aria-hidden="true">
+            <path d="M12 7a5 5 0 11-1.5-3.6" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" />
+            <path d="M12 1v2.6H9.4" stroke="currentColor" strokeWidth="1.3" strokeLinecap="round" strokeLinejoin="round" />
+          </svg>
+        </button>
+      </div>
+
+      <div className="flex-1 min-h-0 overflow-y-auto">
+        {loading && (
+          <div className="px-3 py-4 text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+            {t('review.loading') || 'Reading diffs…'}
+          </div>
+        )}
+        {!loading && rows.length === 0 && (
+          <div className="px-3 py-4 text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+            {t('review.empty') || 'No workspaces.'}
+          </div>
+        )}
+        {!loading && (
+          <ul data-review-list>
+            {/* Dirty first — the rows you came here to review. */}
+            {dirty.map(renderRow)}
+            {clean.map(renderRow)}
+          </ul>
+        )}
+      </div>
+    </div>
+  );
+}
+
+export default ReviewTab;

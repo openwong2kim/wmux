@@ -31,6 +31,7 @@ import { ChannelView } from './ChannelView';
 import { DeckTabs } from '../Deck/DeckTabs';
 import { CommanderView } from '../Deck/CommanderView';
 import { GitTab } from '../Deck/GitTab';
+import { ReviewTab } from '../Deck/ReviewTab';
 import { OrchestratorModelChip } from '../Deck/OrchestratorModelChip';
 import { FOCUS_RING } from '../focusRing';
 
@@ -58,6 +59,8 @@ export default function ChannelDock(): React.ReactElement {
   const showChannelsView = activeDeckTab === 'channels' && channelsTabVisible;
   // 채널과 동일 가드: 토글 OFF 상태의 stale 'git' 탭은 렌더 불가(커맨더 폴백).
   const showGitView = activeDeckTab === 'git' && gitTabVisible;
+  // Review 탭 — 항상 가용(정보성 diff 로스터, 토글 없음).
+  const showReviewView = activeDeckTab === 'review';
 
   // Workspace sidebar is on `sidebarPosition`; the dock is on the opposite
   // edge. When the sidebar is on the LEFT (default), the dock is on the RIGHT,
@@ -73,7 +76,7 @@ export default function ChannelDock(): React.ReactElement {
       {...tokenAttrs('bgSurface', 'border')}
     >
       <DeckTabs
-        active={showChannelsView ? 'channels' : showGitView ? 'git' : 'commander'}
+        active={showChannelsView ? 'channels' : showGitView ? 'git' : showReviewView ? 'review' : 'commander'}
         onSelect={setActiveDeckTab}
         channelsUnread={sumUnread(channelUnread)}
         showChannels={channelsTabVisible}
@@ -82,7 +85,7 @@ export default function ChannelDock(): React.ReactElement {
           <>
             {/* Orchestrator model — visible + switchable next to its name,
                 only on the Commander tab (it's the brain's setting). */}
-            {!showChannelsView && !showGitView && <OrchestratorModelChip />}
+            {!showChannelsView && !showGitView && !showReviewView && <OrchestratorModelChip />}
             {/* Collapse the whole dock (terminals reclaim the width); reopen
                 from the StatusBar dock toggle. Arrow points toward the edge the
                 dock sits on. */}
@@ -104,7 +107,10 @@ export default function ChannelDock(): React.ReactElement {
         t={t}
       />
 
-      {showGitView ? (
+      {showReviewView ? (
+        // Review tab — diff-first roster across all workspaces (P1).
+        <ReviewTab />
+      ) : showGitView ? (
         // Git tab — the workspace's git surface (worktrees; PRs next PR).
         <GitTab />
       ) : !showChannelsView ? (

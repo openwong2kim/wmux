@@ -38,19 +38,50 @@
 import type { WorkspaceAutonomy, WakePolicy } from './deckAutonomyStore';
 import { DEFAULT_AUTONOMY, modeToWakePolicy } from './deckAutonomyStore';
 
-/** The two lifecycle kinds we wake on (decision 7 — subagent_stop /
- *  notification excluded). */
-export type CoalescedKind = 'agent.stop' | 'agent.awaiting_input';
+/** The kinds we wake on:
+ *   - agent.stop / agent.awaiting_input — pane lifecycle (decision 7 —
+ *     subagent_stop / notification excluded).
+ *   - pr.ci_failed — this workspace's PR checks flipped to FAILING (AO-style
+ *     CI feedback routing, owner decision 2026-07-18). Edge-triggered by the
+ *     metadata poll (PrCiRouter): fires ONCE on the passing/pending→failing
+ *     transition, never repeatedly while red. Woken so the brain can drive the
+ *     owning pane to a fix (gated by continueInstruction, exactly like a stop).
+ *   - pr.review_comment — NEW review feedback landed on this pane's PR
+ *     (PrReviewRouter, watermarked batch — slice 2 of the same decision).
+ *     Same wake + drive gating as pr.ci_failed.
+ */
+export type CoalescedKind =
+  | 'agent.stop'
+  | 'agent.awaiting_input'
+  | 'pr.ci_failed'
+  | 'pr.review_comment';
+
+/** PR context carried by the pr.* kinds (absent for the two lifecycle kinds).
+ *  Surfaced verbatim in the wake prompt so the brain knows WHICH PR. The
+ *  review fields are set only for pr.review_comment. */
+export interface PrCiDetail {
+  prNumber: number;
+  url: string;
+  /** pr.review_comment only: strictly-new comments in the batch. */
+  count?: number;
+  /** pr.review_comment only: author of the latest comment. */
+  author?: string;
+  /** pr.review_comment only: sanitized snippet of the latest comment. */
+  snippet?: string;
+}
 
 /** The minimal slice of an AgentLifecycleEvent the coalescer needs. */
 export interface CoalescerInput {
   workspaceId: string;
   ptyId: string;
   kind: CoalescedKind;
-  source: 'hook' | 'detector' | 'osc133';
+  /** 'pr' is the synthetic source of a pr.ci_failed event (metadata poll). */
+  source: 'hook' | 'detector' | 'osc133' | 'pr';
   agent: string | null;
   seq: number;
   ts: number;
+  /** Only set for kind === 'pr.ci_failed'. */
+  detail?: PrCiDetail;
 }
 
 /** One buffered event: the last seen per (ptyId, kind). Exported so the pure
@@ -58,10 +89,12 @@ export interface CoalescerInput {
 export interface BufferedEvent {
   ptyId: string;
   kind: CoalescedKind;
-  source: 'hook' | 'detector' | 'osc133';
+  source: 'hook' | 'detector' | 'osc133' | 'pr';
   agent: string | null;
   seq: number;
   ts: number;
+  /** Only set for kind === 'pr.ci_failed'. */
+  detail?: PrCiDetail;
 }
 
 /** Internal per-workspace phase — surfaced only for tests/observability. The
@@ -158,7 +191,12 @@ export class CommanderEventCoalescer {
    *  (idle) or holds (busy) until a flush point. */
   push(ev: CoalescerInput): void {
     if (this.disposed) return;
-    if (ev.kind !== 'agent.stop' && ev.kind !== 'agent.awaiting_input') return;
+    if (
+      ev.kind !== 'agent.stop' &&
+      ev.kind !== 'agent.awaiting_input' &&
+      ev.kind !== 'pr.ci_failed' &&
+      ev.kind !== 'pr.review_comment'
+    ) return;
     const st = this.ensureState(ev.workspaceId);
     if (ev.seq <= st.watermark) return; // idempotency — already delivered/consumed
     const byKind = st.buffer.get(ev.ptyId) ?? new Map<CoalescedKind, BufferedEvent>();
@@ -169,6 +207,7 @@ export class CommanderEventCoalescer {
       agent: ev.agent,
       seq: ev.seq,
       ts: ev.ts,
+      ...(ev.detail ? { detail: ev.detail } : {}),
     });
     st.buffer.set(ev.ptyId, byKind);
 
@@ -394,7 +433,15 @@ export class CommanderEventCoalescer {
     }
     let flushEvents = events;
     if (policy === 'value-filtered') {
-      const worthy = events.filter((e) => e.kind === 'agent.awaiting_input');
+      // assist surfaces the HIGH-VALUE kinds: a pane blocked on input, a PR
+      // that just went red, and fresh review feedback. Plain agent.stop is the
+      // summary-spam we drop.
+      const worthy = events.filter(
+        (e) =>
+          e.kind === 'agent.awaiting_input' ||
+          e.kind === 'pr.ci_failed' ||
+          e.kind === 'pr.review_comment',
+      );
       if (worthy.length === 0) {
         // Only plain stops buffered — consume them, no turn. THIS is the fix
         // for "the agent summarizes every unit of work".
@@ -506,9 +553,42 @@ export function buildEventPrompt(
 
   const lines = shown.map((e) => {
     const paneLabel = `pane=${e.ptyId}(${e.agent ?? 'shell'})`;
-    const kindLabel = e.kind === 'agent.stop' ? 'stop' : 'awaiting';
+    const kindLabel =
+      e.kind === 'agent.stop' ? 'stop'
+      : e.kind === 'pr.ci_failed' ? 'ci-failed'
+      : e.kind === 'pr.review_comment' ? 'review'
+      : 'awaiting';
     let verdict: string;
-    if (e.kind === 'agent.stop') {
+    if (e.kind === 'pr.review_comment') {
+      // Fresh review feedback on this pane's PR. Same drive re-gate as
+      // ci_failed (auto || loop) — ambient assist reports, never drives. The
+      // snippet is reviewer-authored text: it rides inside the untrusted fenced
+      // block, quoted as evidence, never as an order.
+      const d = e.detail;
+      const prRef = d ? ` PR #${d.prNumber} (${d.url})` : '';
+      const who = d?.author ? ` from ${d.author}` : '';
+      const more = d?.count && d.count > 1 ? ` (+${d.count - 1} more)` : '';
+      const quote = d?.snippet ? `: "${d.snippet}"` : '';
+      const mayDrive =
+        autonomy.continueInstruction && (autonomy.mode === 'auto' || opts.loopRunning === true);
+      verdict = mayDrive
+        ? `(NEW REVIEW FEEDBACK on${prRef}${who}${more}${quote} — you MAY send ONE instruction to this pane to address the review feedback)`
+        : `(NEW REVIEW FEEDBACK on${prRef}${who}${more}${quote} — report only, do not send anything to this pane)`;
+    } else if (e.kind === 'pr.ci_failed') {
+      // CI on this pane's PR just went red. Unlike agent.stop (which is
+      // value-filtered OUT of ambient assist, so its continueInstruction gate
+      // never fires there), ci_failed DOES wake ambient assist — so the drive
+      // verdict must be re-gated to preserve the "ambient assist = notifier,
+      // not driver" invariant. The brain may drive the pane to a fix ONLY when
+      // the workspace is `auto` OR a loop is running (the explicit opt-ins to
+      // act ambiently); assist without a loop is report-only. The PR pointer is
+      // appended so the brain knows which PR without a poll.
+      const prRef = e.detail ? ` PR #${e.detail.prNumber} (${e.detail.url})` : '';
+      const mayDrive = autonomy.continueInstruction && (autonomy.mode === 'auto' || opts.loopRunning === true);
+      verdict = mayDrive
+        ? `(CI FAILING on${prRef} — you MAY send ONE instruction to this pane to investigate and fix the failing checks)`
+        : `(CI FAILING on${prRef} — report only, do not send anything to this pane)`;
+    } else if (e.kind === 'agent.stop') {
       verdict = autonomy.continueInstruction
         ? '(you MAY send ONE follow-up instruction to this pane)'
         : '(summarize only — do not send anything to this pane)';
