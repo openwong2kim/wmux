@@ -103,6 +103,20 @@ const awaiting = (
   ts: seq * 1000,
 });
 
+const ci = (
+  seq: number,
+  o: { ptyId?: string; ws?: string; prNumber?: number; url?: string } = {},
+): CoalescerInput => ({
+  workspaceId: o.ws ?? 'ws-1',
+  ptyId: o.ptyId ?? 'ptyA',
+  kind: 'pr.ci_failed',
+  source: 'pr',
+  agent: null,
+  seq,
+  ts: seq * 1000,
+  detail: { prNumber: o.prNumber ?? 42, url: o.url ?? 'https://github.com/o/r/pull/42' },
+});
+
 const buf = (over: Partial<BufferedEvent> = {}): BufferedEvent => ({
   ptyId: 'ptyA',
   kind: 'agent.awaiting_input',
@@ -289,6 +303,10 @@ describe('CommanderEventCoalescer — loop iteration budget (Ralph max-iteration
     await settle();
     expect(drive.prompts[0].prompt).toContain('loop-mode: ACTIVE —');
     expect(drive.prompts[0].prompt).toContain('NEXT CONCRETE STEP');
+    // Autonomous done-detection: a driving loop is told to PROPOSE completion via
+    // the decision gate (which halts the wake-burn) instead of idling to budget.
+    expect(drive.prompts[0].prompt).toContain('COMPLETION');
+    expect(drive.prompts[0].prompt).toContain('deck_ask_decision');
 
     // report tier — a running loop with continueInstruction OFF (report-only).
     const report = makeHarness({
@@ -555,5 +573,139 @@ describe('CommanderEventCoalescer — mode wake policy (value filter)', () => {
     await vi.advanceTimersByTimeAsync(5_000);
     await settle();
     expect(h.prompts).toHaveLength(0);
+  });
+});
+
+describe('CommanderEventCoalescer — pr.ci_failed (AO CI feedback)', () => {
+  const assist: WorkspaceAutonomy = {
+    mode: 'assist', summarize: true, continueInstruction: true, approvalPress: false,
+  };
+  const offMode: WorkspaceAutonomy = {
+    mode: 'off', summarize: false, continueInstruction: false, approvalPress: false,
+  };
+
+  it('auto wakes on a red CI and surfaces the PR pointer + fix verdict', async () => {
+    const h = makeHarness({ autonomy: AUTO_AUTONOMY });
+    h.c.push(ci(1, { prNumber: 494, url: 'https://github.com/o/r/pull/494' }));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('kind=ci-failed');
+    expect(h.prompts[0].prompt).toContain('PR #494');
+    expect(h.prompts[0].prompt).toContain('you MAY send ONE instruction');
+  });
+
+  it('assist WAKES on a red CI (high-value, unlike a plain stop)', async () => {
+    const h = makeHarness({ autonomy: assist });
+    h.c.push(ci(2));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('kind=ci-failed');
+  });
+
+  it('assist surfaces the red CI but consumes a co-buffered plain stop', async () => {
+    const h = makeHarness({ autonomy: assist, debounceMs: 1_000 });
+    h.c.push(stop(5, 'ptyA'));
+    await vi.advanceTimersByTimeAsync(400);
+    h.c.push(ci(6, { ptyId: 'ptyB' }));
+    await vi.advanceTimersByTimeAsync(1_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('seq=6');
+    expect(h.prompts[0].prompt).not.toContain('seq=5');
+    expect(h.c.getWatermark('ws-1')).toBe(6);
+  });
+
+  it('off-mode consumes a red CI without a turn', async () => {
+    const h = makeHarness({ autonomy: offMode });
+    h.c.push(ci(3));
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(0);
+    expect(h.c.getWatermark('ws-1')).toBe(3);
+  });
+
+  it('auto wakes on review feedback with author, snippet and drive verdict', async () => {
+    const h = makeHarness({ autonomy: AUTO_AUTONOMY });
+    h.c.push({
+      workspaceId: 'ws-1', ptyId: 'ptyA', kind: 'pr.review_comment', source: 'pr',
+      agent: null, seq: 1, ts: 1000,
+      detail: { prNumber: 496, url: 'https://x/pull/496', count: 3, author: 'codex', snippet: 'fix the guard' },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    const p = h.prompts[0].prompt;
+    expect(p).toContain('kind=review');
+    expect(p).toContain('PR #496');
+    expect(p).toContain('from codex');
+    expect(p).toContain('(+2 more)');
+    expect(p).toContain('"fix the guard"');
+    expect(p).toContain('address the review feedback');
+  });
+
+  it('ambient assist wakes on review feedback but report-only', async () => {
+    const h = makeHarness({ autonomy: assist });
+    h.c.push({
+      workspaceId: 'ws-1', ptyId: 'ptyA', kind: 'pr.review_comment', source: 'pr',
+      agent: null, seq: 2, ts: 2000,
+      detail: { prNumber: 1, url: 'u', count: 1, author: 'r', snippet: 's' },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('report only');
+  });
+
+  it('off-mode consumes review feedback silently', async () => {
+    const h = makeHarness({ autonomy: offMode });
+    h.c.push({
+      workspaceId: 'ws-1', ptyId: 'ptyA', kind: 'pr.review_comment', source: 'pr',
+      agent: null, seq: 3, ts: 3000,
+      detail: { prNumber: 1, url: 'u', count: 1, author: 'r', snippet: 's' },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(0);
+    expect(h.c.getWatermark('ws-1')).toBe(3);
+  });
+
+  it('auto wakes on a merge conflict with a resolve-the-conflict verdict', async () => {
+    const h = makeHarness({ autonomy: AUTO_AUTONOMY });
+    h.c.push({
+      workspaceId: 'ws-1', ptyId: 'ptyA', kind: 'pr.merge_conflict', source: 'pr',
+      agent: null, seq: 1, ts: 1000,
+      detail: { prNumber: 496, url: 'https://x/pull/496' },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    const p = h.prompts[0].prompt;
+    expect(p).toContain('kind=conflict');
+    expect(p).toContain('MERGE CONFLICT on PR #496');
+    expect(p).toContain('rebase/merge its base branch');
+  });
+
+  it('ambient assist reports a merge conflict but does not drive', async () => {
+    const h = makeHarness({ autonomy: assist });
+    h.c.push({
+      workspaceId: 'ws-1', ptyId: 'ptyA', kind: 'pr.merge_conflict', source: 'pr',
+      agent: null, seq: 2, ts: 2000, detail: { prNumber: 1, url: 'u' },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('report only');
+  });
+
+  it('continueInstruction OFF (assist w/o drive) frames CI as report-only', () => {
+    const p = buildEventPrompt(
+      [buf({ seq: 7, kind: 'pr.ci_failed', source: 'pr', agent: null, detail: { prNumber: 9, url: 'u' } })],
+      { mode: 'assist', summarize: true, continueInstruction: false, approvalPress: false },
+      { remaining: 5, total: 5 },
+    );
+    expect(p).toContain('report only');
+    expect(p).not.toContain('you MAY send ONE instruction');
   });
 });

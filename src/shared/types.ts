@@ -253,6 +253,9 @@ export interface WorkspaceMetadata {
   /** PR for the current branch, from `gh pr view --json` (5 min TTL cache).
    *  Absent when gh is not installed or no PR exists. `null` clears. */
   pr?: PrStatus | null;
+  /** Dirty count + ahead/behind vs upstream (git status --porcelain=v2,
+   *  15 s TTL cache). Absent outside a repo. `null` clears. */
+  gitSync?: GitSyncStatus | null;
   /** Latest notification.received summary for the sidebar line. */
   lastNotificationText?: LastNotificationText;
 }
@@ -263,6 +266,17 @@ export interface PrStatus {
   state: 'open' | 'draft' | 'merged' | 'closed';
   checks: 'pending' | 'passing' | 'failing' | null;
   url: string;
+}
+
+/** Sidebar git sync badge — dirty count + ahead/behind vs upstream
+ *  (schema-freeze §2, additive). `hasUpstream=false` means ahead/behind are
+ *  meaningless (no tracking branch) and only `dirty` carries information. */
+export interface GitSyncStatus {
+  /** Changed-path count: staged + unstaged + unmerged + untracked. */
+  dirty: number;
+  ahead: number;
+  behind: number;
+  hasUpstream: boolean;
 }
 
 /** X1 — latest terminal notification summary (schema-freeze §2). */
@@ -310,6 +324,7 @@ export interface MetadataUpdatePayload {
   // that no longer applies (branch switched, PR closed without successor).
   gitIsWorktree?: boolean;
   pr?: PrStatus | null;
+  gitSync?: GitSyncStatus | null;
   lastNotificationText?: LastNotificationText;
   // Fleet View per-pane activity line (fleet-activity-line-hook.md). Derived in
   // hooks.rpc from a PostToolUse hook's tool_name/tool_input via

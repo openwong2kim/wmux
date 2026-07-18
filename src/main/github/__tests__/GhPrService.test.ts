@@ -33,6 +33,7 @@ const LIST_JSON = JSON.stringify([
     updatedAt: '2026-07-12T15:00:00Z',
     url: 'https://github.com/o/r/pull/423',
     reviewDecision: 'REVIEW_REQUIRED',
+    mergeable: 'CONFLICTING',
     statusCheckRollup: [
       { status: 'COMPLETED', conclusion: 'SUCCESS' },
       { status: 'IN_PROGRESS', conclusion: '' },
@@ -59,7 +60,8 @@ describe('mapGhListItem / mapGhDetail — 매핑 계약', () => {
       reviewDecision: 'REVIEW_REQUIRED',
       checks: 'pending', // IN_PROGRESS가 있으니 pending 우선.
     });
-    expect(mapGhListItem(arr[1])!).toMatchObject({ state: 'merged', checks: 'failing' });
+    expect(a.mergeable).toBe('CONFLICTING'); // uppercased from the gh payload.
+    expect(mapGhListItem(arr[1])!).toMatchObject({ state: 'merged', checks: 'failing', mergeable: '' });
     expect(mapGhListItem(arr[2])).toBeNull();
     expect(mapGhListItem({ number: 2, url: 'u', isDraft: true, state: 'OPEN' })!.state).toBe('draft');
     expect(mapGhListItem({ number: 3, url: 'u', statusCheckRollup: [] })!.checks).toBeNull();

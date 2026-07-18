@@ -16,6 +16,9 @@ export interface PrSummary {
   readonly reviewDecision: string;
   /** CI 롤업 — 3상. 체크 없으면 null. */
   readonly checks: 'passing' | 'pending' | 'failing' | null;
+  /** 머지 가능성 — 호스트 원문 유지(gh: MERGEABLE/CONFLICTING/UNKNOWN).
+   *  구현체가 미지원이면 ''. 충돌 라우팅(PrReviewRouter)의 엣지 소스. */
+  readonly mergeable: string;
 }
 
 /** 정규화된 코멘트/리뷰 한 건. 리뷰는 state(APPROVED 등)를 함께 담는다. */

@@ -62,6 +62,7 @@ interface GlabMrItem {
   source_branch?: string;
   updated_at?: string;
   web_url?: string;
+  has_conflicts?: boolean;
 }
 
 export function mapGlabMrItem(json: GlabMrItem): PrSummary | null {
@@ -86,6 +87,8 @@ export function mapGlabMrItem(json: GlabMrItem): PrSummary | null {
     reviewDecision: '',
     // REST 목록엔 파이프라인 롤업이 없다 — v1은 정직한 null(무색 dot).
     checks: null,
+    // GitLab의 has_conflicts를 gh 계약(CONFLICTING) 어휘로 정규화. 부재는 ''.
+    mergeable: json.has_conflicts === true ? 'CONFLICTING' : '',
   };
 }
 

@@ -67,6 +67,7 @@ interface GhListItem {
   updatedAt?: string;
   url?: string;
   reviewDecision?: string;
+  mergeable?: string;
   statusCheckRollup?: Array<{ status?: string; conclusion?: string; state?: string }> | null;
 }
 
@@ -108,6 +109,7 @@ export function mapGhListItem(json: GhListItem): PrSummary | null {
     url: json.url,
     reviewDecision: json.reviewDecision ?? '',
     checks: mapChecks(json.statusCheckRollup),
+    mergeable: (json.mergeable ?? '').toUpperCase(),
   };
 }
 
@@ -288,7 +290,7 @@ export class GhPrService implements PrProvider {
           '--limit',
           String(LIST_LIMIT),
           '--json',
-          'number,title,state,isDraft,author,headRefName,updatedAt,url,reviewDecision,statusCheckRollup',
+          'number,title,state,isDraft,author,headRefName,updatedAt,url,reviewDecision,mergeable,statusCheckRollup',
         ],
         repoPath,
       );

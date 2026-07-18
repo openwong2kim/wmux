@@ -12,6 +12,7 @@ import {
   removeWorktree,
 } from '../ipc/handlers/metadata.handler';
 import { prStatusCache } from './PrStatusCache';
+import { gitSyncStatusCache } from './GitSyncStatusCache';
 
 /**
  * X1 workspace-context sidebar — daemon-mode fold of `context.git` /
@@ -61,6 +62,10 @@ export class WorkspaceContextRouter {
         else removeBranch(payload.sessionId);
         updateWorktree(payload.sessionId, isWorktree);
         this.branchByPty.set(payload.sessionId, branch);
+        // HEAD moved (branch switch, commit, reset) — the cached dirty/
+        // ahead-behind is stale; drop it so the next 5 s poll refetches.
+        const cwd = getCwd(payload.sessionId);
+        if (cwd) gitSyncStatusCache.invalidate(cwd);
         broadcastMetadataUpdate(this.getWindow(), {
           ptyId: payload.sessionId,
           gitBranch: branch,

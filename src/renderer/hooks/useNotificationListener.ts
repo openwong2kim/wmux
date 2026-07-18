@@ -613,6 +613,7 @@ export function useNotificationListener() {
           delete passthrough.gitBranch;
           delete passthrough.gitIsWorktree;
           delete passthrough.pr;
+          delete passthrough.gitSync;
           return passthrough;
         })() : rest;
         if (Object.keys(data).length > 0) {

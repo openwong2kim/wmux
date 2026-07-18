@@ -83,7 +83,23 @@ export type WmuxEventType =
   // clients can observe stranded mentions; the primary human surface is the
   // in-app toast + OS notification (DaemonNotificationRouter). Scoped to the
   // affected member's workspace (base workspaceId).
-  | 'channel.nudgeExhausted';
+  | 'channel.nudgeExhausted'
+  // AO-style CI feedback routing (owner decision 2026-07-18). Edge-triggered by
+  // the main-process metadata poll when a pane's PR checks flip to FAILING
+  // (passing/pending → failing). Scoped to the owning workspace (base
+  // workspaceId), dropped when the workspace can't be resolved — same isolation
+  // rule as agent.lifecycle. The deck's event-push coalescer wakes the owning
+  // orchestrator so it can drive the pane to a fix (gated by continueInstruction).
+  | 'pr.ci'
+  // AO-style review-feedback routing, slice 2. Fired once per batch of NEW
+  // review comments on a pane's PR (watermark on comment createdAt; the first
+  // observation arms silently so old history never wakes anyone). Same scoping
+  // and drop rule as pr.ci.
+  | 'pr.review'
+  // Slice 3: a pane's PR became CONFLICTING (merge conflict against its base).
+  // Edge-triggered per episode (fires once, re-arms when the conflict clears),
+  // riding PrReviewRouter's throttled list read. Same scoping/drop rule.
+  | 'pr.conflict';
 
 export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.created',
@@ -101,6 +117,9 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'channel.message',
   'channel.catalog',
   'channel.nudgeExhausted',
+  'pr.ci',
+  'pr.review',
+  'pr.conflict',
 ] as const;
 
 export interface WmuxEventBase {
@@ -418,6 +437,60 @@ export interface ChannelNudgeExhaustedEvent extends WmuxEventBase {
   mentionUnread: number;
 }
 
+/**
+ * AO-style CI feedback (owner decision 2026-07-18). Emitted ONCE per red
+ * transition: the metadata poll (PrCiRouter) tracks the last-seen checks state
+ * per pty and fires only on passing/pending → failing, never repeatedly while
+ * the PR stays red. `checks` is always 'failing' (the event only exists for
+ * that transition); `prNumber`/`url` point the woken brain at the PR without a
+ * poll. Scoped to the owning workspace (base workspaceId); dropped when it
+ * can't be resolved (workspace isolation, same as agent.lifecycle).
+ */
+export interface PrCiEvent extends WmuxEventBase {
+  type: 'pr.ci';
+  ptyId: string;
+  prNumber: number;
+  url: string;
+  checks: 'failing';
+}
+
+/**
+ * AO-style review-feedback routing, slice 2 (owner decision 2026-07-18).
+ * Fired once per BATCH of strictly-new review comments on a pane's PR —
+ * conversation comments, review verdicts, and inline review comments alike
+ * (everything GhPrService.prDetail normalizes). Watermarked on comment
+ * `createdAt`, and the first observation of a PR arms silently, so checking
+ * out a branch with existing review history never wakes anyone.
+ *
+ * SANITIZATION: `snippet` is control-stripped + capped at emit time
+ * (sanitizeSnippet) but remains reviewer-authored text — any surface that
+ * renders it MUST keep treating it as data, never as instructions.
+ */
+export interface PrReviewEvent extends WmuxEventBase {
+  type: 'pr.review';
+  ptyId: string;
+  prNumber: number;
+  url: string;
+  /** Strictly-new comments in this batch. */
+  count: number;
+  /** Author + sanitized snippet of the latest comment in the batch. */
+  author: string;
+  snippet: string;
+}
+
+/**
+ * Slice 3 — a pane's PR went CONFLICTING against its base. Edge-triggered per
+ * episode by PrReviewRouter (fires once — including on first observation of an
+ * already-conflicted PR — and re-arms when the conflict clears). Same
+ * workspace scoping and unresolved-drop rule as pr.ci / pr.review.
+ */
+export interface PrConflictEvent extends WmuxEventBase {
+  type: 'pr.conflict';
+  ptyId: string;
+  prNumber: number;
+  url: string;
+}
+
 export type WmuxEvent =
   | PaneCreatedEvent
   | PaneClosedEvent
@@ -433,7 +506,10 @@ export type WmuxEvent =
   | A2aTaskEvent
   | ChannelMessageEvent
   | ChannelCatalogEvent
-  | ChannelNudgeExhaustedEvent;
+  | ChannelNudgeExhaustedEvent
+  | PrCiEvent
+  | PrReviewEvent
+  | PrConflictEvent;
 
 export const RING_CAPACITY = 1024;
 export const POLL_DEFAULT_MAX = 256;
