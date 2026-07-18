@@ -61,6 +61,29 @@ describe('PrCiRouter — edge-triggered CI failure', () => {
     expect(emits).toHaveLength(0);
   });
 
+  it('fires again when the pane jumps from failing PR A straight to failing PR B', async () => {
+    const { router, emits } = mk();
+    await router.note('ptyA', pr('failing', { number: 1 }));
+    await router.note('ptyA', pr('failing', { number: 2 }));
+    expect(emits.map((e) => e.prNumber)).toEqual([1, 2]);
+  });
+
+  it('a transient resolve failure retries on the next tick instead of eating the red', async () => {
+    let fail = true;
+    const emits: PrCiEmit[] = [];
+    const router = new PrCiRouter(
+      () => (fail ? null : 'ws-1'),
+      (e) => emits.push(e),
+    );
+    await router.note('ptyA', pr('failing')); // resolver down — state restored
+    expect(emits).toHaveLength(0);
+    fail = false;
+    await router.note('ptyA', pr('failing')); // same red, next tick — retried edge fires
+    expect(emits).toHaveLength(1);
+    await router.note('ptyA', pr('failing')); // still red — no re-fire after success
+    expect(emits).toHaveLength(1);
+  });
+
   it('tracks each pane independently', async () => {
     const { router, emits } = mk((ptyId) => (ptyId === 'ptyA' ? 'ws-A' : 'ws-B'));
     await router.note('ptyA', pr('failing', { number: 1 }));

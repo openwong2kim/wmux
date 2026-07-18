@@ -39,11 +39,11 @@ function mk(opts: {
         ? ({ ok: false as const, error: 'x' })
         : ({
             ok: true as const,
-            prs: [{
-              number: 42, title: 't', state: 'open' as const, author: 'a',
-              headRefName: 'b', updatedAt: `u${comments.length}`, url: 'https://x/pull/42',
+            prs: [42, 43].map((number) => ({
+              number, title: 't', state: 'open' as const, author: 'a',
+              headRefName: 'b', updatedAt: `u${comments.length}`, url: `https://x/pull/${number}`,
               reviewDecision: '', checks: null,
-            }],
+            })),
           }),
     prDetail: async () => ({ ok: true as const, detail: { number: 42, comments } }),
   };
@@ -107,12 +107,41 @@ describe('PrReviewRouter — watermark batch routing', () => {
     expect(h.emits).toHaveLength(1);
   });
 
-  it('a PR-number change resets the watermark (branch switch)', async () => {
+  it('a PR-number change resets the watermark (branch switch) and the new PR arms', async () => {
     const h = mk({ comments: [comment('2026-07-01T00:00:00Z')] });
     await h.router.note('ptyA', CWD, pr(42)); // arm for 42
     h.tick(60_000);
-    await h.router.note('ptyA', CWD, pr(43)); // different PR — re-arms silently
+    await h.router.note('ptyA', CWD, pr(43)); // different PR — re-arms silently on 43's history
     expect(h.emits).toHaveLength(0);
+    // …and a strictly-new comment on PR 43 now fires, proving 43 actually armed.
+    h.setComments([comment('2026-07-01T00:00:00Z'), comment('2026-07-05T00:00:00Z')]);
+    h.tick(60_000);
+    await h.router.note('ptyA', CWD, pr(43));
+    expect(h.emits).toHaveLength(1);
+    expect(h.emits[0].prNumber).toBe(43);
+  });
+
+  it('an EMPTY initial history still arms — the first future comment fires', async () => {
+    const h = mk({ comments: [] });
+    await h.router.note('ptyA', CWD, pr()); // empty history — arms at ''
+    h.setComments([comment('2026-07-02T00:00:00Z')]);
+    h.tick(60_000);
+    await h.router.note('ptyA', CWD, pr());
+    expect(h.emits).toHaveLength(1);
+  });
+
+  it('watermark advances only after a successful emit — unresolved ws retries the batch', async () => {
+    let resolveOk = false;
+    const h = mk({ comments: [comment('2026-07-01T00:00:00Z')], resolve: () => (resolveOk ? 'ws-1' : null) });
+    await h.router.note('ptyA', CWD, pr()); // arm
+    h.setComments([comment('2026-07-01T00:00:00Z'), comment('2026-07-02T00:00:00Z')]);
+    h.tick(60_000);
+    await h.router.note('ptyA', CWD, pr()); // resolver down — batch NOT consumed
+    expect(h.emits).toHaveLength(0);
+    resolveOk = true;
+    h.tick(60_000);
+    await h.router.note('ptyA', CWD, pr()); // same batch re-fires
+    expect(h.emits).toHaveLength(1);
   });
 
   it('no PR drops the pane state', async () => {

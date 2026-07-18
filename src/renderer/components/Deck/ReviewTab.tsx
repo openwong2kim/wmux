@@ -16,7 +16,7 @@
 // Design contract (DESIGN.md): monochrome glyphs, mono paths/counts, and at
 // most ONE amber point — the dot marking the ACTIVE workspace's row.
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
@@ -92,8 +92,12 @@ export function ReviewTab(): React.ReactElement {
   const workspaceIds = useStore((s) => s.workspaces.map((w) => w.id).join('\0'));
   const [rows, setRows] = useState<ReviewRow[]>([]);
   const [loading, setLoading] = useState(true);
+  // Monotonic load token — a slower earlier refresh must not overwrite a newer
+  // roster (CodeRabbit, PR #496). Only the latest load() commits.
+  const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
+    const seq = ++loadSeq.current;
     setLoading(true);
     const bridge = getDiffBridge();
     const state = useStore.getState();
@@ -136,6 +140,7 @@ export function ReviewTab(): React.ReactElement {
       }
       out.push(row);
     }
+    if (seq !== loadSeq.current) return; // superseded by a newer load
     setRows(out);
     setLoading(false);
   }, []);
@@ -190,7 +195,9 @@ export function ReviewTab(): React.ReactElement {
             className="font-mono text-[10px] text-[var(--text-muted)] truncate"
             {...tokenAttrs('textMuted', 'text')}
           >
-            {row.branch ? `⎇ ${row.branch}` : row.repoPath ? pathLeaf(row.repoPath) : t('review.noRepo') || 'no repo'}
+            {/* Branch renders only WITH a resolved repo — stale workspace
+                metadata must not mask the missing-repo state (CodeRabbit). */}
+            {row.repoPath ? (row.branch ? `⎇ ${row.branch}` : pathLeaf(row.repoPath)) : t('review.noRepo') || 'no repo'}
             {row.pr && (
               <span style={{ color: prColor(row.pr) }}> #{row.pr.number}</span>
             )}
@@ -222,7 +229,7 @@ export function ReviewTab(): React.ReactElement {
           <button
             type="button"
             onClick={() => openDiff(row)}
-            className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity ${FOCUS_RING}`}
+            className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${FOCUS_RING}`}
             title={t('review.openDiffDesc') || 'Open this workspace and review its diff'}
             {...tokenAttrs('textMuted', 'text')}
           >
@@ -233,7 +240,7 @@ export function ReviewTab(): React.ReactElement {
           <button
             type="button"
             onClick={() => goTo(row.workspaceId)}
-            className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 transition-opacity ${FOCUS_RING}`}
+            className={`px-1.5 py-0.5 rounded text-[10.5px] text-[var(--text-muted)] hover:text-[var(--text-main)] border border-[var(--bg-surface)] opacity-0 group-hover:opacity-100 focus-visible:opacity-100 transition-opacity ${FOCUS_RING}`}
             title={t('review.goDesc') || 'Switch to this workspace'}
             {...tokenAttrs('textMuted', 'text')}
           >

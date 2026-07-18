@@ -108,20 +108,20 @@ export class PrReviewRouter {
       const detail = await this.provider.prDetail(cwd, pr.number, summary.updatedAt);
       if (!detail.ok) return;
       const comments = detail.detail.comments;
-      if (comments.length === 0) return;
       let maxCreated = '';
       for (const c of comments) if (c.createdAt > maxCreated) maxCreated = c.createdAt;
       if (st.watermark === null) {
-        // First sighting: arm past the existing history, fire nothing.
+        // First sighting: arm past the existing history, fire nothing. An
+        // EMPTY history arms at '' (CodeRabbit, PR #496) — leaving it null
+        // would make the first future comment another silent "first sighting".
         st.watermark = maxCreated;
         return;
       }
       const fresh = comments.filter((c) => c.createdAt > (st!.watermark as string));
       if (fresh.length === 0) return;
-      st.watermark = maxCreated;
       const latest = fresh[fresh.length - 1];
       const workspaceId = await this.resolveWorkspaceId(ptyId);
-      if (!workspaceId) return; // unresolved → drop (workspace isolation)
+      if (!workspaceId) return; // unresolved → drop; watermark NOT advanced → next interval retries
       this.emit({
         workspaceId,
         ptyId,
@@ -131,6 +131,10 @@ export class PrReviewRouter {
         author: latest.author,
         snippet: sanitizeSnippet(latest.body),
       });
+      // Advance ONLY after a successful emit (CodeRabbit, PR #496) — a resolve
+      // failure or emit throw above leaves the watermark put, so the same
+      // batch re-fires on the next interval instead of being lost.
+      st.watermark = maxCreated;
     } catch {
       /* provider/resolver failure must never break the metadata poll. The
          watermark was NOT advanced on this path, so the batch re-fires on the

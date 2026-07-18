@@ -36,8 +36,11 @@ export interface PrCiEmit {
 }
 
 export class PrCiRouter {
-  /** Last-seen checks state per ptyId (the edge-trigger memory). */
-  private last = new Map<string, Checks>();
+  /** Last-seen checks state + PR identity per ptyId (the edge-trigger memory).
+   *  The PR number is part of the edge (CodeRabbit, PR #496): a pane that jumps
+   *  straight from failing PR A to failing PR B is a NEW red PR and must fire,
+   *  even though the checks state never left 'failing'. */
+  private last = new Map<string, { checks: Checks; prNumber: number | null }>();
 
   constructor(
     private readonly resolveWorkspaceId: WorkspaceResolver,
@@ -46,29 +49,37 @@ export class PrCiRouter {
 
   /**
    * Record this pane's current PR status. Fires a `pr.ci` emit exactly once when
-   * the checks state crosses INTO 'failing' from anything else (including the
-   * first observation being red). A missing PR or absent checks re-arms the pane
-   * without firing. Never throws — a resolver/emit error is swallowed so the
-   * metadata poll is never disrupted.
+   * the checks state crosses INTO 'failing' — from anything else, from no PR, or
+   * from a DIFFERENT PR that was also failing. A missing PR or absent checks
+   * re-arms the pane without firing. Never throws — a resolver/emit error is
+   * swallowed so the metadata poll is never disrupted; on failure the previous
+   * state is RESTORED so the next poll tick retries the same transition
+   * (a transient renderer-resolution hiccup must not permanently eat the red).
    */
   async note(ptyId: string, pr: PrStatus | null): Promise<void> {
     const next: Checks = pr?.checks ?? 'none';
-    const prev = this.last.get(ptyId) ?? 'none';
+    const nextNumber = typeof pr?.number === 'number' ? pr.number : null;
+    const prevEntry = this.last.get(ptyId);
+    const prev = prevEntry?.checks ?? 'none';
     // Write the new state FIRST (sync) so a concurrent/next tick sees 'failing'
     // and does not re-fire while the async resolve below is in flight.
-    this.last.set(ptyId, next);
-    if (next !== 'failing' || prev === 'failing') return;
+    this.last.set(ptyId, { checks: next, prNumber: nextNumber });
+    const samePr = prevEntry !== undefined && prevEntry.prNumber === nextNumber;
+    if (next !== 'failing' || (prev === 'failing' && samePr)) return;
     // A red PR needs a number + url to be actionable; the poll only ever yields
     // checks alongside a real PR, but guard anyway.
     if (!pr || typeof pr.number !== 'number' || !pr.url) return;
     try {
       const workspaceId = await this.resolveWorkspaceId(ptyId);
-      if (!workspaceId) return; // unresolved → drop (isolation)
+      if (!workspaceId) throw new Error('unresolved');
       this.emit({ workspaceId, ptyId, prNumber: pr.number, url: pr.url });
     } catch {
-      /* resolver/emit failure must not break the poll — re-arm is undesirable
-         (would spam on the next tick), so we keep `next` recorded and simply
-         skip this emit. The transition is lost, not repeated. */
+      // Restore the pre-transition state so the next tick re-attempts the SAME
+      // edge instead of the red being permanently lost to a transient failure.
+      // Bounded: each retry is one (cached) workspace.list resolve per 5 s
+      // tick, and emits never duplicate because the edge only fires on success.
+      if (prevEntry) this.last.set(ptyId, prevEntry);
+      else this.last.delete(ptyId);
     }
   }
 
@@ -79,6 +90,6 @@ export class PrCiRouter {
 
   /** Test/observability peek. */
   lastChecks(ptyId: string): Checks {
-    return this.last.get(ptyId) ?? 'none';
+    return this.last.get(ptyId)?.checks ?? 'none';
   }
 }
