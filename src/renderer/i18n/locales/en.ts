@@ -973,6 +973,11 @@ export const en = {
 
   // ─── Fan-out dialog (1 prompt → N isolated tasks) ────────────────────────
   'fanout.title': 'Multi Task — N parallel isolated tasks',
+  'fanout.modeCompete': 'Compete',
+  'fanout.modeParallel': 'Parallel',
+  'fanout.modeCompeteHint': 'Same job, N attempts — every task gets the shared prompt below. Pick the best result.',
+  'fanout.modeParallelHint': 'Different jobs, N tasks — give each one its own prompt below.',
+  'fanout.envOnlyHint': 'No prompt yet — tasks will open with just the worktree and an idle agent pane; type into each one yourself.',
   'fanout.promptLabel': 'Shared prompt (optional — common context for every task)',
   'fanout.promptPlaceholder': 'Common context every task receives… (optional when each task has its own prompt)',
   'fanout.bytes': '{bytes} / {max} bytes',

@@ -887,6 +887,11 @@ export const ko = {
 
   // ─── Fan-out dialog (1 prompt → N isolated tasks) ────────────────────────
   'fanout.title': '병렬 작업 — N개 격리 태스크 동시 실행',
+  'fanout.modeCompete': '경쟁',
+  'fanout.modeParallel': '병렬',
+  'fanout.modeCompeteHint': '같은 작업을 N번 — 모든 태스크가 아래 공통 프롬프트를 받습니다. 결과 중 베스트를 고르세요.',
+  'fanout.modeParallelHint': '서로 다른 작업을 N개 — 태스크마다 아래에 개별 프롬프트를 입력하세요.',
+  'fanout.envOnlyHint': '프롬프트가 없습니다 — worktree와 대기 중인 에이전트 페인만 열립니다. 각 태스크에서 직접 입력하세요.',
   'fanout.promptLabel': '공통 프롬프트 (선택 — 모든 태스크 공통 컨텍스트)',
   'fanout.promptPlaceholder': '모든 태스크가 공통으로 받을 컨텍스트… (태스크별 프롬프트를 채우면 비워도 됨)',
   'fanout.bytes': '{bytes} / {max} 바이트',
