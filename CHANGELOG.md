@@ -9,7 +9,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Changed
 
-- **Fan-out is now Multi Task (한국어: 병렬 작업) — and it can run N *different* jobs in parallel.** The dialog previously sent one shared prompt to every spawned task, which only covered the "same work, N attempts" scenario. Each task row now has its own prompt field: fill the shared prompt for common context, the per-task prompt for that task's actual job, or both (they're combined). A task with neither is rejected before anything is spawned, so a misconfigured submit never leaves half a fleet behind.
+- **Fan-out is now Multi Task (한국어: 병렬 작업) — and it can run N *different* jobs in parallel.** The dialog previously sent one shared prompt to every spawned task, which only covered the "same work, N attempts" scenario. Each task row now has its own prompt field: fill the shared prompt for common context, the per-task prompt for that task's actual job, or both (they're combined). A Compete/Parallel toggle makes the two use cases explicit — Compete collapses the dialog to just the shared prompt, Parallel shows per-task fields. Task count is now a row of click targets (1–8) instead of a slider. A task can also have no prompt at all: it opens with just the worktree and an idle agent pane for you to type into by hand, instead of being rejected.
 
 ### Fixed
 
