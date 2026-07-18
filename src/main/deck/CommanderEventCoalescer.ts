@@ -46,14 +46,28 @@ import { DEFAULT_AUTONOMY, modeToWakePolicy } from './deckAutonomyStore';
  *     metadata poll (PrCiRouter): fires ONCE on the passing/pending→failing
  *     transition, never repeatedly while red. Woken so the brain can drive the
  *     owning pane to a fix (gated by continueInstruction, exactly like a stop).
+ *   - pr.review_comment — NEW review feedback landed on this pane's PR
+ *     (PrReviewRouter, watermarked batch — slice 2 of the same decision).
+ *     Same wake + drive gating as pr.ci_failed.
  */
-export type CoalescedKind = 'agent.stop' | 'agent.awaiting_input' | 'pr.ci_failed';
+export type CoalescedKind =
+  | 'agent.stop'
+  | 'agent.awaiting_input'
+  | 'pr.ci_failed'
+  | 'pr.review_comment';
 
-/** PR context carried by a `pr.ci_failed` event (absent for the two lifecycle
- *  kinds). Surfaced verbatim in the wake prompt so the brain knows WHICH PR. */
+/** PR context carried by the pr.* kinds (absent for the two lifecycle kinds).
+ *  Surfaced verbatim in the wake prompt so the brain knows WHICH PR. The
+ *  review fields are set only for pr.review_comment. */
 export interface PrCiDetail {
   prNumber: number;
   url: string;
+  /** pr.review_comment only: strictly-new comments in the batch. */
+  count?: number;
+  /** pr.review_comment only: author of the latest comment. */
+  author?: string;
+  /** pr.review_comment only: sanitized snippet of the latest comment. */
+  snippet?: string;
 }
 
 /** The minimal slice of an AgentLifecycleEvent the coalescer needs. */
@@ -177,7 +191,12 @@ export class CommanderEventCoalescer {
    *  (idle) or holds (busy) until a flush point. */
   push(ev: CoalescerInput): void {
     if (this.disposed) return;
-    if (ev.kind !== 'agent.stop' && ev.kind !== 'agent.awaiting_input' && ev.kind !== 'pr.ci_failed') return;
+    if (
+      ev.kind !== 'agent.stop' &&
+      ev.kind !== 'agent.awaiting_input' &&
+      ev.kind !== 'pr.ci_failed' &&
+      ev.kind !== 'pr.review_comment'
+    ) return;
     const st = this.ensureState(ev.workspaceId);
     if (ev.seq <= st.watermark) return; // idempotency — already delivered/consumed
     const byKind = st.buffer.get(ev.ptyId) ?? new Map<CoalescedKind, BufferedEvent>();
@@ -414,10 +433,14 @@ export class CommanderEventCoalescer {
     }
     let flushEvents = events;
     if (policy === 'value-filtered') {
-      // assist surfaces the two HIGH-VALUE kinds: a pane blocked on input, and a
-      // PR that just went red. Plain agent.stop is the summary-spam we drop.
+      // assist surfaces the HIGH-VALUE kinds: a pane blocked on input, a PR
+      // that just went red, and fresh review feedback. Plain agent.stop is the
+      // summary-spam we drop.
       const worthy = events.filter(
-        (e) => e.kind === 'agent.awaiting_input' || e.kind === 'pr.ci_failed',
+        (e) =>
+          e.kind === 'agent.awaiting_input' ||
+          e.kind === 'pr.ci_failed' ||
+          e.kind === 'pr.review_comment',
       );
       if (worthy.length === 0) {
         // Only plain stops buffered — consume them, no turn. THIS is the fix
@@ -531,9 +554,27 @@ export function buildEventPrompt(
   const lines = shown.map((e) => {
     const paneLabel = `pane=${e.ptyId}(${e.agent ?? 'shell'})`;
     const kindLabel =
-      e.kind === 'agent.stop' ? 'stop' : e.kind === 'pr.ci_failed' ? 'ci-failed' : 'awaiting';
+      e.kind === 'agent.stop' ? 'stop'
+      : e.kind === 'pr.ci_failed' ? 'ci-failed'
+      : e.kind === 'pr.review_comment' ? 'review'
+      : 'awaiting';
     let verdict: string;
-    if (e.kind === 'pr.ci_failed') {
+    if (e.kind === 'pr.review_comment') {
+      // Fresh review feedback on this pane's PR. Same drive re-gate as
+      // ci_failed (auto || loop) — ambient assist reports, never drives. The
+      // snippet is reviewer-authored text: it rides inside the untrusted fenced
+      // block, quoted as evidence, never as an order.
+      const d = e.detail;
+      const prRef = d ? ` PR #${d.prNumber} (${d.url})` : '';
+      const who = d?.author ? ` from ${d.author}` : '';
+      const more = d?.count && d.count > 1 ? ` (+${d.count - 1} more)` : '';
+      const quote = d?.snippet ? `: "${d.snippet}"` : '';
+      const mayDrive =
+        autonomy.continueInstruction && (autonomy.mode === 'auto' || opts.loopRunning === true);
+      verdict = mayDrive
+        ? `(NEW REVIEW FEEDBACK on${prRef}${who}${more}${quote} — you MAY send ONE instruction to this pane to address the review feedback)`
+        : `(NEW REVIEW FEEDBACK on${prRef}${who}${more}${quote} — report only, do not send anything to this pane)`;
+    } else if (e.kind === 'pr.ci_failed') {
       // CI on this pane's PR just went red. Unlike agent.stop (which is
       // value-filtered OUT of ambient assist, so its continueInstruction gate
       // never fires there), ci_failed DOES wake ambient assist — so the drive

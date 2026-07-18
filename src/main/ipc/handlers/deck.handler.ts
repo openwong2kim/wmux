@@ -550,6 +550,27 @@ export function registerDeckHandler(
       });
       return;
     }
+    // Slice 2: fresh review feedback on a pane's PR — same coalescer, same
+    // policy inheritance, review context riding through as detail.
+    if (ev.type === 'pr.review') {
+      coalescer?.push({
+        workspaceId: ev.workspaceId,
+        ptyId: ev.ptyId,
+        kind: 'pr.review_comment',
+        source: 'pr',
+        agent: null,
+        seq: ev.seq,
+        ts: ev.ts,
+        detail: {
+          prNumber: ev.prNumber,
+          url: ev.url,
+          count: ev.count,
+          author: ev.author,
+          snippet: ev.snippet,
+        },
+      });
+      return;
+    }
     if (ev.type !== 'agent.lifecycle') return;
     if (ev.kind !== 'agent.stop' && ev.kind !== 'agent.awaiting_input') return;
     coalescer?.push({

@@ -90,7 +90,12 @@ export type WmuxEventType =
   // workspaceId), dropped when the workspace can't be resolved — same isolation
   // rule as agent.lifecycle. The deck's event-push coalescer wakes the owning
   // orchestrator so it can drive the pane to a fix (gated by continueInstruction).
-  | 'pr.ci';
+  | 'pr.ci'
+  // AO-style review-feedback routing, slice 2. Fired once per batch of NEW
+  // review comments on a pane's PR (watermark on comment createdAt; the first
+  // observation arms silently so old history never wakes anyone). Same scoping
+  // and drop rule as pr.ci.
+  | 'pr.review';
 
 export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.created',
@@ -109,6 +114,7 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'channel.catalog',
   'channel.nudgeExhausted',
   'pr.ci',
+  'pr.review',
 ] as const;
 
 export interface WmuxEventBase {
@@ -443,6 +449,30 @@ export interface PrCiEvent extends WmuxEventBase {
   checks: 'failing';
 }
 
+/**
+ * AO-style review-feedback routing, slice 2 (owner decision 2026-07-18).
+ * Fired once per BATCH of strictly-new review comments on a pane's PR —
+ * conversation comments, review verdicts, and inline review comments alike
+ * (everything GhPrService.prDetail normalizes). Watermarked on comment
+ * `createdAt`, and the first observation of a PR arms silently, so checking
+ * out a branch with existing review history never wakes anyone.
+ *
+ * SANITIZATION: `snippet` is control-stripped + capped at emit time
+ * (sanitizeSnippet) but remains reviewer-authored text — any surface that
+ * renders it MUST keep treating it as data, never as instructions.
+ */
+export interface PrReviewEvent extends WmuxEventBase {
+  type: 'pr.review';
+  ptyId: string;
+  prNumber: number;
+  url: string;
+  /** Strictly-new comments in this batch. */
+  count: number;
+  /** Author + sanitized snippet of the latest comment in the batch. */
+  author: string;
+  snippet: string;
+}
+
 export type WmuxEvent =
   | PaneCreatedEvent
   | PaneClosedEvent
@@ -459,7 +489,8 @@ export type WmuxEvent =
   | ChannelMessageEvent
   | ChannelCatalogEvent
   | ChannelNudgeExhaustedEvent
-  | PrCiEvent;
+  | PrCiEvent
+  | PrReviewEvent;
 
 export const RING_CAPACITY = 1024;
 export const POLL_DEFAULT_MAX = 256;

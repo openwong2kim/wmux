@@ -12,13 +12,17 @@ import { eventBus } from '../../events/EventBus';
 import { findWorkspaceIdForPty } from '../../pipe/handlers/hooks.rpc';
 import { sendToRenderer } from '../../pipe/handlers/_bridge';
 import { PrCiRouter } from '../../metadata/PrCiRouter';
+import { PrReviewRouter } from '../../metadata/PrReviewRouter';
+import { ghPrService } from '../../github/GhPrService';
 
-// AO-style CI feedback (owner decision 2026-07-18). Module singleton set at
-// registration (it needs getWindow for workspace resolution). The poll feeds it
-// each pane's PR status; it fires a one-shot `pr.ci` bus event on the red
-// transition. Null until registered, so the exported poll tick stays usable in
-// unit tests that don't wire it.
+// AO-style CI feedback (owner decision 2026-07-18). Module singletons set at
+// registration (they need getWindow for workspace resolution). The poll feeds
+// them each pane's PR status; PrCiRouter fires a one-shot `pr.ci` bus event on
+// the red transition, PrReviewRouter a `pr.review` per batch of new comments.
+// Null until registered, so the exported poll tick stays usable in unit tests
+// that don't wire them.
 let prCiRouter: PrCiRouter | null = null;
+let prReviewRouter: PrReviewRouter | null = null;
 
 // Minimal shape findWorkspaceIdForPty reads from the renderer's workspace.list.
 interface WorkspaceListEntry {
@@ -153,6 +157,7 @@ export async function runMetadataPollTick(
       worktreeMap.delete(ptyId);
       portsMap.delete(ptyId);
       prCiRouter?.forget(ptyId);
+      prReviewRouter?.forget(ptyId);
       continue;
     }
 
@@ -168,10 +173,11 @@ export async function runMetadataPollTick(
 
     const payload = await buildMetadataPayload(ptyId);
     if (!payload) continue;
-    // AO-style CI feedback: fire a one-shot pr.ci event on the red transition.
-    // Fire-and-forget — the router is edge-triggered and never throws, so it
-    // must not gate the metadata broadcast below.
+    // AO-style CI + review feedback: fire-and-forget — both routers are
+    // edge/watermark-triggered and never throw, so they must not gate the
+    // metadata broadcast below.
     void prCiRouter?.note(ptyId, payload.pr ?? null);
+    if (payload.cwd) void prReviewRouter?.note(ptyId, payload.cwd, payload.pr ?? null);
     const serialized = JSON.stringify(payload);
     // First payload for a pane always sends (no cache entry); a value that
     // reverts after a change also sends (cache holds the last SENT payload).
@@ -200,27 +206,40 @@ export function registerMetadataHandlers(
   // (a red transition is rare, so one lookup per fire is negligible); an
   // unresolved pty drops the event (workspace isolation). Sink: eventBus, whose
   // deck subscription routes pr.ci → the event-push coalescer.
-  prCiRouter = new PrCiRouter(
-    async (ptyId: string): Promise<string | null> => {
-      try {
-        const result = await sendToRenderer(getWindow, 'workspace.list');
-        if (!Array.isArray(result)) return null;
-        return findWorkspaceIdForPty(ptyId, result as WorkspaceListEntry[]);
-      } catch {
-        return null;
-      }
-    },
-    (e) => {
-      eventBus.emit({
-        type: 'pr.ci',
-        workspaceId: e.workspaceId,
-        ptyId: e.ptyId,
-        prNumber: e.prNumber,
-        url: e.url,
-        checks: 'failing',
-      });
-    },
-  );
+  const resolvePtyWorkspace = async (ptyId: string): Promise<string | null> => {
+    try {
+      const result = await sendToRenderer(getWindow, 'workspace.list');
+      if (!Array.isArray(result)) return null;
+      return findWorkspaceIdForPty(ptyId, result as WorkspaceListEntry[]);
+    } catch {
+      return null;
+    }
+  };
+  prCiRouter = new PrCiRouter(resolvePtyWorkspace, (e) => {
+    eventBus.emit({
+      type: 'pr.ci',
+      workspaceId: e.workspaceId,
+      ptyId: e.ptyId,
+      prNumber: e.prNumber,
+      url: e.url,
+      checks: 'failing',
+    });
+  });
+  // Slice 2: new review comments on a pane's PR → `pr.review`. Rides the
+  // GhPrService caches (30 s list TTL + updatedAt-keyed detail), throttled
+  // per pane inside the router.
+  prReviewRouter = new PrReviewRouter(ghPrService, resolvePtyWorkspace, (e) => {
+    eventBus.emit({
+      type: 'pr.review',
+      workspaceId: e.workspaceId,
+      ptyId: e.ptyId,
+      prNumber: e.prNumber,
+      url: e.url,
+      count: e.count,
+      author: e.author,
+      snippet: e.snippet,
+    });
+  });
 
   // Handle metadata request from renderer
   ipcMain.removeHandler(IPC.METADATA_REQUEST);

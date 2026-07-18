@@ -626,6 +626,51 @@ describe('CommanderEventCoalescer — pr.ci_failed (AO CI feedback)', () => {
     expect(h.c.getWatermark('ws-1')).toBe(3);
   });
 
+  it('auto wakes on review feedback with author, snippet and drive verdict', async () => {
+    const h = makeHarness({ autonomy: AUTO_AUTONOMY });
+    h.c.push({
+      workspaceId: 'ws-1', ptyId: 'ptyA', kind: 'pr.review_comment', source: 'pr',
+      agent: null, seq: 1, ts: 1000,
+      detail: { prNumber: 496, url: 'https://x/pull/496', count: 3, author: 'codex', snippet: 'fix the guard' },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    const p = h.prompts[0].prompt;
+    expect(p).toContain('kind=review');
+    expect(p).toContain('PR #496');
+    expect(p).toContain('from codex');
+    expect(p).toContain('(+2 more)');
+    expect(p).toContain('"fix the guard"');
+    expect(p).toContain('address the review feedback');
+  });
+
+  it('ambient assist wakes on review feedback but report-only', async () => {
+    const h = makeHarness({ autonomy: assist });
+    h.c.push({
+      workspaceId: 'ws-1', ptyId: 'ptyA', kind: 'pr.review_comment', source: 'pr',
+      agent: null, seq: 2, ts: 2000,
+      detail: { prNumber: 1, url: 'u', count: 1, author: 'r', snippet: 's' },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('report only');
+  });
+
+  it('off-mode consumes review feedback silently', async () => {
+    const h = makeHarness({ autonomy: offMode });
+    h.c.push({
+      workspaceId: 'ws-1', ptyId: 'ptyA', kind: 'pr.review_comment', source: 'pr',
+      agent: null, seq: 3, ts: 3000,
+      detail: { prNumber: 1, url: 'u', count: 1, author: 'r', snippet: 's' },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(0);
+    expect(h.c.getWatermark('ws-1')).toBe(3);
+  });
+
   it('continueInstruction OFF (assist w/o drive) frames CI as report-only', () => {
     const p = buildEventPrompt(
       [buf({ seq: 7, kind: 'pr.ci_failed', source: 'pr', agent: null, detail: { prNumber: 9, url: 'u' } })],

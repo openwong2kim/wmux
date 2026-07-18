@@ -21,8 +21,10 @@ import path from 'node:path';
 import { eventBus } from '../../events/EventBus';
 import { CommanderEventCoalescer } from '../CommanderEventCoalescer';
 import { PrCiRouter } from '../../metadata/PrCiRouter';
+import { PrReviewRouter } from '../../metadata/PrReviewRouter';
 import { loadWorkspaceAutonomy, setWorkspaceMode, type AgentMode } from '../deckAutonomyStore';
 import type { PrStatus } from '../../../shared/types';
+import type { PrComment } from '../../../shared/prSurface';
 import type { WmuxEvent } from '../../../shared/events';
 
 const WS = 'ws-dogfood';
@@ -53,7 +55,7 @@ function bootChain(autonomyDir: string) {
     wakeBudget: 5,
   });
 
-  // Real eventBus subscription, mirroring deck.handler's pr.ci routing verbatim.
+  // Real eventBus subscription, mirroring deck.handler's pr.* routing verbatim.
   const off = eventBus.subscribe((ev: WmuxEvent) => {
     if (ev.type === 'pr.ci') {
       coalescer.push({
@@ -65,6 +67,24 @@ function bootChain(autonomyDir: string) {
         seq: ev.seq,
         ts: ev.ts,
         detail: { prNumber: ev.prNumber, url: ev.url },
+      });
+    }
+    if (ev.type === 'pr.review') {
+      coalescer.push({
+        workspaceId: ev.workspaceId,
+        ptyId: ev.ptyId,
+        kind: 'pr.review_comment',
+        source: 'pr',
+        agent: null,
+        seq: ev.seq,
+        ts: ev.ts,
+        detail: {
+          prNumber: ev.prNumber,
+          url: ev.url,
+          count: ev.count,
+          author: ev.author,
+          snippet: ev.snippet,
+        },
       });
     }
   });
@@ -132,6 +152,61 @@ describe('DOGFOOD — PR-CI feedback full chain (real modules)', () => {
   it('off: a red PR is consumed silently — no brain wake', async () => {
     const chain = await drive('off');
     expect(chain.prompts).toHaveLength(0);
+    chain.dispose();
+  });
+
+  it('review slice: a fresh reviewer comment wakes the auto brain through the real bus', async () => {
+    await setWorkspaceMode(WS, 'auto', dir);
+    const chain = bootChain(dir);
+
+    // Real PrReviewRouter, wired like metadata.handler: fake gh provider only.
+    const mkComment = (createdAt: string, body: string): PrComment => ({
+      author: 'codex-reviewer', body, createdAt, url: 'https://x/c/1',
+      kind: 'comment', reviewState: '', truncated: false,
+    });
+    let comments: PrComment[] = [mkComment('2026-07-01T00:00:00Z', 'old history')];
+    let clock = 0;
+    const reviewRouter = new PrReviewRouter(
+      {
+        listPrs: async () => ({
+          ok: true as const,
+          prs: [{
+            number: 494, title: 't', state: 'open' as const, author: 'a',
+            headRefName: 'b', updatedAt: `u${comments.length}`,
+            url: failingPr.url, reviewDecision: '', checks: null,
+          }],
+        }),
+        prDetail: async () => ({ ok: true as const, detail: { number: 494, comments } }),
+      },
+      () => WS,
+      (e) =>
+        eventBus.emit({
+          type: 'pr.review',
+          workspaceId: e.workspaceId,
+          ptyId: e.ptyId,
+          prNumber: e.prNumber,
+          url: e.url,
+          count: e.count,
+          author: e.author,
+          snippet: e.snippet,
+        }),
+      () => clock,
+    );
+
+    await reviewRouter.note(PTY, 'D:/repo', failingPr); // arms on existing history
+    comments = [...comments, mkComment('2026-07-02T00:00:00Z', 'please rename this')];
+    clock += 60_000;
+    await reviewRouter.note(PTY, 'D:/repo', failingPr); // fresh comment — fires
+    await vi.advanceTimersByTimeAsync(600);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(chain.prompts).toHaveLength(1);
+    const p = chain.prompts[0].prompt;
+    expect(p).toContain('kind=review');
+    expect(p).toContain('from codex-reviewer');
+    expect(p).toContain('"please rename this"');
+    expect(p).toContain('address the review feedback');
     chain.dispose();
   });
 
