@@ -557,8 +557,13 @@ export function buildEventPrompt(
         ? 'loop-mode: ACTIVE — you are running a loop toward the [loop] objective above. ' +
             'Take the NEXT CONCRETE STEP your caps allow now (e.g. send the next instruction ' +
             'to a stopped pane with terminal_send), then end the turn — the next pane event ' +
-            'wakes you again. Keep iterating; only stop driving when the checklist is complete ' +
-            'or you are blocked, and say which.'
+            'wakes you again. COMPLETION: when you judge the objective is fully met (the ' +
+            'done-when checklist all passing, or — with no checklist — the goal is plainly ' +
+            'achieved), do NOT keep iterating. Call deck_ask_decision({question, options}) ' +
+            'to have the operator confirm completion (e.g. options ["Mark done","Keep going"]) ' +
+            'and END YOUR TURN — raising it pauses the loop, so a finished objective stops ' +
+            'burning auto-wakes instead of idling until the budget runs out. If instead you ' +
+            'are blocked, say what you need and end the turn.'
         : 'loop-mode: ACTIVE (report-only) — assess progress toward the [loop] objective ' +
             'above and report succinctly; your caps do not allow driving panes.',
     );

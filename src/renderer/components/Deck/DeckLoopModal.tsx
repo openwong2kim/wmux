@@ -336,8 +336,12 @@ export function DeckLoopModal({
             <option value="report">{t('deck.loopTierReport') || 'Report only'}</option>
             <option value="continue">{t('deck.loopTierContinue') || 'Continue (may nudge panes)'}</option>
           </select>
-          <label className="flex items-center gap-1 text-[11px] text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
-            {t('deck.loopIterationsLabel') || 'iterations'}
+          <label
+            className="flex items-center gap-1 text-[11px] text-[var(--text-muted)]"
+            title={t('deck.loopIterations') || 'How many times the loop may auto-wake to work before it pauses for you (one wake ≈ one iteration). Raise it for long unattended runs.'}
+            {...tokenAttrs('textMuted', 'text')}
+          >
+            {t('deck.loopIterationsLabel') || 'pause after'}
             <input
               type="number"
               data-deck-loop-iterations
@@ -345,10 +349,10 @@ export function DeckLoopModal({
               min={1}
               max={100}
               onChange={(e) => setIterations(Number(e.target.value))}
-              title={t('deck.loopIterations') || 'Iterations — auto-wakes allowed before the loop pauses for you'}
               className="w-[56px] text-[11px] font-mono rounded-[4px] px-1.5 py-1 bg-[var(--bg-base)] text-[var(--text-main)] border focus:outline-none"
               style={{ borderColor: 'var(--border-soft)' }}
             />
+            {t('deck.loopIterationsUnit') || 'auto-wakes'}
           </label>
           <select
             data-deck-loop-cadence

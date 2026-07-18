@@ -828,7 +828,7 @@ export const ko = {
   'deck.loopAuthRaiseAuto': '워크스페이스를 Auto로 올리면 승인까지 무인으로 눌러줍니다.',
   'deck.loopAuthReport': '보고만 — 관찰·요약만 하고 pane은 건드리지 않습니다.',
   'deck.loopCadence': '주기',
-  'deck.loopIterations': '반복 예산 — 루프가 멈추고 사람을 기다리기 전까지 허용되는 자동 wake 수',
+  'deck.loopIterations': '루프가 멈추고 사람을 기다리기 전까지 자동으로 깨어나 일할 횟수 (1 wake ≈ 1 iteration). 무인 장시간 실행이면 높이세요.',
   'deck.loopCadenceOff': '이벤트만',
   'deck.loopCadence30m': '30분마다',
   'deck.loopCadence1h': '1시간마다',
@@ -852,7 +852,8 @@ export const ko = {
   'deck.loopStepsHint':
     '"/"로 시작하는 단계는 pane 에이전트의 스킬에서 고릅니다 — 실행은 agent가 그 커맨드를 pane에 타이핑하는 것입니다.',
   'deck.loopDoneWhen': '완료 조건 (선택)',
-  'deck.loopIterationsLabel': '반복',
+  'deck.loopIterationsLabel': '일시정지까지',
+  'deck.loopIterationsUnit': '회 자동 wake',
   'deck.loopSkillProject': '프로젝트',
   'deck.loopSkillUser': '사용자',
   'deck.wokenByEvents': '에이전트 이벤트로 깨어남',

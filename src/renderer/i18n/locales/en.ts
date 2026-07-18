@@ -912,7 +912,7 @@ export const en = {
   'deck.loopAuthRaiseAuto': 'Raise the workspace to Auto to let it press approvals unattended.',
   'deck.loopAuthReport': 'Report only — it observes and summarizes; it won’t touch panes.',
   'deck.loopCadence': 'Cadence',
-  'deck.loopIterations': 'Iterations — auto-wakes allowed before the loop pauses for you',
+  'deck.loopIterations': 'How many times the loop may auto-wake to work before it pauses for you (one wake ≈ one iteration). Raise it for long unattended runs.',
   'deck.loopCadenceOff': 'Events only',
   'deck.loopCadence30m': 'Every 30 min',
   'deck.loopCadence1h': 'Every hour',
@@ -936,7 +936,8 @@ export const en = {
   'deck.loopStepsHint':
     'Steps starting with "/" pick from the pane agent\'s skills — running one means the orchestrator types it into the pane.',
   'deck.loopDoneWhen': 'Done when (optional)',
-  'deck.loopIterationsLabel': 'iterations',
+  'deck.loopIterationsLabel': 'pause after',
+  'deck.loopIterationsUnit': 'auto-wakes',
   'deck.loopSkillProject': 'project',
   'deck.loopSkillUser': 'user',
   'deck.wokenByEvents': 'Woken by agent events',

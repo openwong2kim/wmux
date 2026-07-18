@@ -289,6 +289,10 @@ describe('CommanderEventCoalescer — loop iteration budget (Ralph max-iteration
     await settle();
     expect(drive.prompts[0].prompt).toContain('loop-mode: ACTIVE —');
     expect(drive.prompts[0].prompt).toContain('NEXT CONCRETE STEP');
+    // Autonomous done-detection: a driving loop is told to PROPOSE completion via
+    // the decision gate (which halts the wake-burn) instead of idling to budget.
+    expect(drive.prompts[0].prompt).toContain('COMPLETION');
+    expect(drive.prompts[0].prompt).toContain('deck_ask_decision');
 
     // report tier — a running loop with continueInstruction OFF (report-only).
     const report = makeHarness({
