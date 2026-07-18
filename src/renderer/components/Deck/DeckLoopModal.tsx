@@ -20,6 +20,8 @@ import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import type { LoopTier } from '../../../main/deck/deckLoopStateStore';
 import type { SkillCatalogEntry } from '../../../main/deck/skillCatalogScan';
+import type { AgentMode } from '../../../main/deck/deckAutonomyStore';
+import type { AgentModeApi } from './AgentModeChip';
 import type { DeckLoopApi } from './DeckLoopPanel';
 
 const CADENCE_OPTIONS: { minutes: number; labelKey: string; fallback: string }[] = [
@@ -48,6 +50,7 @@ export function DeckLoopModal({
   api,
   workspaceId,
   cwd,
+  modeApi,
   onClose,
   onStarted,
   t: tProp,
@@ -56,6 +59,11 @@ export function DeckLoopModal({
   workspaceId?: string;
   /** 스킬 카탈로그 스캔 기준 cwd(활성 pane) — 없으면 사용자 전역만 나온다. */
   cwd?: string;
+  /** Workspace agent-mode reader (same bridge AgentModeChip uses). Injected so
+   *  the modal can PREVIEW the loop's effective authority — a loop's real caps
+   *  are min(modeCeiling, tier), and the press capability lives on the mode, not
+   *  this dialog. Absent (older container / pure jsdom parent) → no preview. */
+  modeApi?: AgentModeApi;
   onClose: () => void;
   /** START 성공 후(도크 상태카드 갱신용). */
   onStarted: () => void;
@@ -65,14 +73,32 @@ export function DeckLoopModal({
   const [objective, setObjective] = useState('');
   const [steps, setSteps] = useState<string[]>([]);
   const [doneWhen, setDoneWhen] = useState('');
-  const [tier, setTier] = useState<LoopTier>('report');
+  // Default to `continue`: "Start a loop" is an action verb, and a report-only
+  // loop reads as inert on first use ("it did nothing"). Safe to default active
+  // because the dangerous caps are gated on the workspace MODE, not this tier
+  // (min(modeCeiling, tier)) — a continue loop presses only under an auto mode.
+  const [tier, setTier] = useState<LoopTier>('continue');
   const [cadence, setCadence] = useState(0);
   const [iterations, setIterations] = useState(25);
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<SkillCatalogEntry[]>([]);
   /** 자동완성이 열려 있는 step index (없으면 -1). */
   const [suggestFor, setSuggestFor] = useState(-1);
+  /** Workspace agent mode — snapshot at open, for the authority preview. */
+  const [mode, setMode] = useState<AgentMode | null>(null);
   const objectiveRef = useRef<HTMLInputElement>(null);
+
+  // Read the workspace mode once so the preview can show the loop's real reach
+  // (caps compose as min(modeCeiling, tier)). Fail-soft: no api → no preview.
+  useEffect(() => {
+    if (!modeApi || !workspaceId) return;
+    let alive = true;
+    modeApi
+      .get(workspaceId)
+      .then((r) => { if (alive) setMode(r.mode ?? 'off'); })
+      .catch(() => { if (alive) setMode(null); });
+    return () => { alive = false; };
+  }, [modeApi, workspaceId]);
 
   // 스킬 카탈로그 — 모달 열릴 때 1회 스캔(읽기 전용, fail-soft 빈 목록).
   useEffect(() => {
@@ -349,6 +375,61 @@ export function DeckLoopModal({
             {t('deck.loopStart') || 'Start loop'}
           </button>
         </div>
+
+        {/* Effective-authority preview — a loop's real caps are
+            min(modeCeiling, tier), and press lives on the workspace MODE, not
+            this dialog. Spell out what THIS loop will actually be allowed to do
+            so the mode↔loop dependency isn't invisible (dogfood: users set up a
+            "continue" loop expecting unattended approvals, then it stalled on
+            the first prompt because the workspace was only Assist). */}
+        {mode && (() => {
+          const driving = tier === 'continue';
+          const drivePanes = driving && (mode === 'assist' || mode === 'auto');
+          const pressApprovals = driving && mode === 'auto';
+          const mark = (on: boolean) => (
+            <span
+              aria-hidden="true"
+              className={on ? 'text-[var(--accent)]' : 'text-[var(--text-muted)]'}
+              {...(on ? tokenAttrs('accent', 'text') : tokenAttrs('textMuted', 'text'))}
+            >
+              {on ? '✓' : '✗'}
+            </span>
+          );
+          return (
+            <div
+              data-deck-loop-authority
+              data-mode={mode}
+              className="rounded-[5px] px-2.5 py-2 text-[11px] space-y-1 bg-[rgba(var(--bg-surface-rgb),0.5)]"
+            >
+              <div className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+                {t('deck.loopAuthorityIntro') || 'This loop will'} · {t('deck.mode.label') || 'Mode'}: {t(`deck.mode.${mode}`) || mode}
+              </div>
+              <div className="flex items-center gap-4 font-mono text-[var(--text-sub)]" {...tokenAttrs('textSub', 'text')}>
+                <span className="flex items-center gap-1" data-deck-loop-auth-drive={drivePanes ? 'on' : 'off'}>
+                  {mark(drivePanes)} {t('deck.loopAuthDrive') || 'drive panes'}
+                </span>
+                <span className="flex items-center gap-1" data-deck-loop-auth-press={pressApprovals ? 'on' : 'off'}>
+                  {mark(pressApprovals)} {t('deck.loopAuthPress') || 'press approvals'}
+                </span>
+              </div>
+              {mode === 'off' ? (
+                <div className="text-[var(--accent)]" {...tokenAttrs('accent', 'text')}>
+                  {t('deck.loopAuthModeOff') ||
+                    'Workspace mode is Off — raise it to Assist or Auto, or the loop stays idle.'}
+                </div>
+              ) : !driving ? (
+                <div className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+                  {t('deck.loopAuthReport') || 'Report only — it observes and summarizes; it won’t touch panes.'}
+                </div>
+              ) : mode !== 'auto' ? (
+                <div className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
+                  {t('deck.loopAuthRaiseAuto') ||
+                    'Raise the workspace to Auto to let it press approvals unattended.'}
+                </div>
+              ) : null}
+            </div>
+          );
+        })()}
 
         {error && (
           <div role="alert" data-deck-loop-error className="text-[11.5px] text-[var(--accent-red)]" {...tokenAttrs('danger', 'text')}>

@@ -42,6 +42,10 @@ function fakeApi(): DeckLoopApi & { started: unknown[] } {
   };
 }
 
+function fakeModeApi(mode: 'off' | 'assist' | 'auto') {
+  return { get: async () => ({ mode }), set: async () => ({ ok: true, mode }) };
+}
+
 function setValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): void {
   const proto = el instanceof HTMLTextAreaElement ? HTMLTextAreaElement.prototype : HTMLInputElement.prototype;
   const setter = Object.getOwnPropertyDescriptor(proto, 'value')!.set!;
@@ -115,8 +119,49 @@ describe('DeckLoopModal', () => {
       objective: 'keep CI green',
       steps: ['/qa', '실패 수정'],
       taskTexts: ['tests pass', 'lint clean'],
-      tier: 'report',
+      tier: 'continue', // default is now `continue` (report read as inert on first use)
       iterations: 25,
+    });
+  });
+
+  describe('effective-authority preview (mode↔loop dependency made visible)', () => {
+    const flush = async () => { await act(async () => { await Promise.resolve(); }); };
+
+    it('auto + default continue → drive ON, press ON (the unattended supervisor)', async () => {
+      const api = fakeApi();
+      await mount(api, { modeApi: fakeModeApi('auto') });
+      await flush();
+      const box = container.querySelector('[data-deck-loop-authority]');
+      expect(box).not.toBeNull();
+      expect(box!.getAttribute('data-mode')).toBe('auto');
+      expect(container.querySelector('[data-deck-loop-auth-drive="on"]')).not.toBeNull();
+      expect(container.querySelector('[data-deck-loop-auth-press="on"]')).not.toBeNull();
+    });
+
+    it('assist + continue → drive ON, press OFF, with a raise-to-Auto hint', async () => {
+      const api = fakeApi();
+      await mount(api, { modeApi: fakeModeApi('assist') });
+      await flush();
+      expect(container.querySelector('[data-deck-loop-auth-drive="on"]')).not.toBeNull();
+      expect(container.querySelector('[data-deck-loop-auth-press="off"]')).not.toBeNull();
+      // The hint tells the user where the press capability actually lives.
+      expect(container.querySelector('[data-deck-loop-authority]')!.textContent).toContain('Auto');
+    });
+
+    it('off → both OFF, with the kill-switch warning', async () => {
+      const api = fakeApi();
+      await mount(api, { modeApi: fakeModeApi('off') });
+      await flush();
+      expect(container.querySelector('[data-deck-loop-auth-drive="off"]')).not.toBeNull();
+      expect(container.querySelector('[data-deck-loop-auth-press="off"]')).not.toBeNull();
+      expect(container.querySelector('[data-deck-loop-authority]')!.textContent).toContain('Off');
+    });
+
+    it('no modeApi (older preload / pure parent) → no preview at all', async () => {
+      const api = fakeApi();
+      await mount(api);
+      await flush();
+      expect(container.querySelector('[data-deck-loop-authority]')).toBeNull();
     });
   });
 

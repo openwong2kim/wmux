@@ -243,6 +243,10 @@ export function DeckLoopPanel({
           api={resolvedApi}
           workspaceId={workspaceId}
           cwd={cwd}
+          modeApi={
+            (window.electronAPI as unknown as { deck?: { mode?: import('./AgentModeChip').AgentModeApi } } | undefined)
+              ?.deck?.mode
+          }
           t={t}
           onClose={() => setModalOpen(false)}
           onStarted={() => {
