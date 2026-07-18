@@ -228,18 +228,33 @@ export function registerMetadataHandlers(
   // Slice 2: new review comments on a pane's PR → `pr.review`. Rides the
   // GhPrService caches (30 s list TTL + updatedAt-keyed detail), throttled
   // per pane inside the router.
-  prReviewRouter = new PrReviewRouter(ghPrService, resolvePtyWorkspace, (e) => {
-    eventBus.emit({
-      type: 'pr.review',
-      workspaceId: e.workspaceId,
-      ptyId: e.ptyId,
-      prNumber: e.prNumber,
-      url: e.url,
-      count: e.count,
-      author: e.author,
-      snippet: e.snippet,
-    });
-  });
+  prReviewRouter = new PrReviewRouter(
+    ghPrService,
+    resolvePtyWorkspace,
+    (e) => {
+      eventBus.emit({
+        type: 'pr.review',
+        workspaceId: e.workspaceId,
+        ptyId: e.ptyId,
+        prNumber: e.prNumber,
+        url: e.url,
+        count: e.count,
+        author: e.author,
+        snippet: e.snippet,
+      });
+    },
+    Date.now,
+    // Slice 3: merge-conflict edge, riding the same throttled read.
+    (e) => {
+      eventBus.emit({
+        type: 'pr.conflict',
+        workspaceId: e.workspaceId,
+        ptyId: e.ptyId,
+        prNumber: e.prNumber,
+        url: e.url,
+      });
+    },
+  );
 
   // Handle metadata request from renderer
   ipcMain.removeHandler(IPC.METADATA_REQUEST);

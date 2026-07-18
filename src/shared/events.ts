@@ -95,7 +95,11 @@ export type WmuxEventType =
   // review comments on a pane's PR (watermark on comment createdAt; the first
   // observation arms silently so old history never wakes anyone). Same scoping
   // and drop rule as pr.ci.
-  | 'pr.review';
+  | 'pr.review'
+  // Slice 3: a pane's PR became CONFLICTING (merge conflict against its base).
+  // Edge-triggered per episode (fires once, re-arms when the conflict clears),
+  // riding PrReviewRouter's throttled list read. Same scoping/drop rule.
+  | 'pr.conflict';
 
 export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'pane.created',
@@ -115,6 +119,7 @@ export const WMUX_EVENT_TYPES: readonly WmuxEventType[] = [
   'channel.nudgeExhausted',
   'pr.ci',
   'pr.review',
+  'pr.conflict',
 ] as const;
 
 export interface WmuxEventBase {
@@ -473,6 +478,19 @@ export interface PrReviewEvent extends WmuxEventBase {
   snippet: string;
 }
 
+/**
+ * Slice 3 — a pane's PR went CONFLICTING against its base. Edge-triggered per
+ * episode by PrReviewRouter (fires once — including on first observation of an
+ * already-conflicted PR — and re-arms when the conflict clears). Same
+ * workspace scoping and unresolved-drop rule as pr.ci / pr.review.
+ */
+export interface PrConflictEvent extends WmuxEventBase {
+  type: 'pr.conflict';
+  ptyId: string;
+  prNumber: number;
+  url: string;
+}
+
 export type WmuxEvent =
   | PaneCreatedEvent
   | PaneClosedEvent
@@ -490,7 +508,8 @@ export type WmuxEvent =
   | ChannelCatalogEvent
   | ChannelNudgeExhaustedEvent
   | PrCiEvent
-  | PrReviewEvent;
+  | PrReviewEvent
+  | PrConflictEvent;
 
 export const RING_CAPACITY = 1024;
 export const POLL_DEFAULT_MAX = 256;

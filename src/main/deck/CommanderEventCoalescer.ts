@@ -49,12 +49,15 @@ import { DEFAULT_AUTONOMY, modeToWakePolicy } from './deckAutonomyStore';
  *   - pr.review_comment — NEW review feedback landed on this pane's PR
  *     (PrReviewRouter, watermarked batch — slice 2 of the same decision).
  *     Same wake + drive gating as pr.ci_failed.
+ *   - pr.merge_conflict — this pane's PR went CONFLICTING against its base
+ *     (slice 3, same router's throttled read). Same wake + drive gating.
  */
 export type CoalescedKind =
   | 'agent.stop'
   | 'agent.awaiting_input'
   | 'pr.ci_failed'
-  | 'pr.review_comment';
+  | 'pr.review_comment'
+  | 'pr.merge_conflict';
 
 /** PR context carried by the pr.* kinds (absent for the two lifecycle kinds).
  *  Surfaced verbatim in the wake prompt so the brain knows WHICH PR. The
@@ -195,7 +198,8 @@ export class CommanderEventCoalescer {
       ev.kind !== 'agent.stop' &&
       ev.kind !== 'agent.awaiting_input' &&
       ev.kind !== 'pr.ci_failed' &&
-      ev.kind !== 'pr.review_comment'
+      ev.kind !== 'pr.review_comment' &&
+      ev.kind !== 'pr.merge_conflict'
     ) return;
     const st = this.ensureState(ev.workspaceId);
     if (ev.seq <= st.watermark) return; // idempotency — already delivered/consumed
@@ -440,7 +444,8 @@ export class CommanderEventCoalescer {
         (e) =>
           e.kind === 'agent.awaiting_input' ||
           e.kind === 'pr.ci_failed' ||
-          e.kind === 'pr.review_comment',
+          e.kind === 'pr.review_comment' ||
+          e.kind === 'pr.merge_conflict',
       );
       if (worthy.length === 0) {
         // Only plain stops buffered — consume them, no turn. THIS is the fix
@@ -557,9 +562,20 @@ export function buildEventPrompt(
       e.kind === 'agent.stop' ? 'stop'
       : e.kind === 'pr.ci_failed' ? 'ci-failed'
       : e.kind === 'pr.review_comment' ? 'review'
+      : e.kind === 'pr.merge_conflict' ? 'conflict'
       : 'awaiting';
     let verdict: string;
-    if (e.kind === 'pr.review_comment') {
+    if (e.kind === 'pr.merge_conflict') {
+      // The pane's PR conflicts with its base. Same drive re-gate as the other
+      // pr.* kinds (auto || loop); the instruction the brain may send is to
+      // rebase/merge the base branch and resolve the conflict.
+      const prRef = e.detail ? ` PR #${e.detail.prNumber} (${e.detail.url})` : '';
+      const mayDrive =
+        autonomy.continueInstruction && (autonomy.mode === 'auto' || opts.loopRunning === true);
+      verdict = mayDrive
+        ? `(MERGE CONFLICT on${prRef} — you MAY send ONE instruction to this pane to rebase/merge its base branch and resolve the conflict)`
+        : `(MERGE CONFLICT on${prRef} — report only, do not send anything to this pane)`;
+    } else if (e.kind === 'pr.review_comment') {
       // Fresh review feedback on this pane's PR. Same drive re-gate as
       // ci_failed (auto || loop) — ambient assist reports, never drives. The
       // snippet is reviewer-authored text: it rides inside the untrusted fenced

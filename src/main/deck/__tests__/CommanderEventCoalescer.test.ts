@@ -671,6 +671,34 @@ describe('CommanderEventCoalescer — pr.ci_failed (AO CI feedback)', () => {
     expect(h.c.getWatermark('ws-1')).toBe(3);
   });
 
+  it('auto wakes on a merge conflict with a resolve-the-conflict verdict', async () => {
+    const h = makeHarness({ autonomy: AUTO_AUTONOMY });
+    h.c.push({
+      workspaceId: 'ws-1', ptyId: 'ptyA', kind: 'pr.merge_conflict', source: 'pr',
+      agent: null, seq: 1, ts: 1000,
+      detail: { prNumber: 496, url: 'https://x/pull/496' },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    const p = h.prompts[0].prompt;
+    expect(p).toContain('kind=conflict');
+    expect(p).toContain('MERGE CONFLICT on PR #496');
+    expect(p).toContain('rebase/merge its base branch');
+  });
+
+  it('ambient assist reports a merge conflict but does not drive', async () => {
+    const h = makeHarness({ autonomy: assist });
+    h.c.push({
+      workspaceId: 'ws-1', ptyId: 'ptyA', kind: 'pr.merge_conflict', source: 'pr',
+      agent: null, seq: 2, ts: 2000, detail: { prNumber: 1, url: 'u' },
+    });
+    await vi.advanceTimersByTimeAsync(5_000);
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('report only');
+  });
+
   it('continueInstruction OFF (assist w/o drive) frames CI as report-only', () => {
     const p = buildEventPrompt(
       [buf({ seq: 7, kind: 'pr.ci_failed', source: 'pr', agent: null, detail: { prNumber: 9, url: 'u' } })],

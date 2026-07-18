@@ -173,7 +173,7 @@ describe('DOGFOOD — PR-CI feedback full chain (real modules)', () => {
           prs: [{
             number: 494, title: 't', state: 'open' as const, author: 'a',
             headRefName: 'b', updatedAt: `u${comments.length}`,
-            url: failingPr.url, reviewDecision: '', checks: null,
+            url: failingPr.url, reviewDecision: '', checks: null, mergeable: '',
           }],
         }),
         prDetail: async () => ({ ok: true as const, detail: { number: 494, comments } }),

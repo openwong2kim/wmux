@@ -550,6 +550,20 @@ export function registerDeckHandler(
       });
       return;
     }
+    // Slice 3: the pane's PR went CONFLICTING — same coalescer, same policy.
+    if (ev.type === 'pr.conflict') {
+      coalescer?.push({
+        workspaceId: ev.workspaceId,
+        ptyId: ev.ptyId,
+        kind: 'pr.merge_conflict',
+        source: 'pr',
+        agent: null,
+        seq: ev.seq,
+        ts: ev.ts,
+        detail: { prNumber: ev.prNumber, url: ev.url },
+      });
+      return;
+    }
     // Slice 2: fresh review feedback on a pane's PR — same coalescer, same
     // policy inheritance, review context riding through as detail.
     if (ev.type === 'pr.review') {

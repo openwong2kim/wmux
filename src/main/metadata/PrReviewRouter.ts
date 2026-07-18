@@ -51,6 +51,15 @@ export interface PrReviewEmit {
   snippet: string;
 }
 
+/** Merge-conflict edge (slice 3) — fired once when a pane's PR becomes
+ *  CONFLICTING (including first observation), re-armed when it leaves. */
+export interface PrConflictEmit {
+  workspaceId: string;
+  ptyId: string;
+  prNumber: number;
+  url: string;
+}
+
 /** Display-safe snippet: control chars and newlines stripped, hard cap. The
  *  coalescer prompt already fences pane-derived text as untrusted data; this
  *  strip keeps a comment from smuggling escapes into the terminal render. */
@@ -68,6 +77,9 @@ interface PaneState {
   watermark: string | null;
   /** Last provider check (throttle), ms epoch. */
   lastCheck: number;
+  /** Whether we already fired for this PR being CONFLICTING (edge memory —
+   *  re-armed when mergeable leaves CONFLICTING; reset with the PR). */
+  conflictFired: boolean;
 }
 
 export class PrReviewRouter {
@@ -78,6 +90,8 @@ export class PrReviewRouter {
     private readonly resolveWorkspaceId: WorkspaceResolver,
     private readonly emit: (e: PrReviewEmit) => void,
     private readonly now: () => number = Date.now,
+    /** Optional merge-conflict sink (slice 3). Absent → conflicts ignored. */
+    private readonly emitConflict?: (e: PrConflictEmit) => void,
   ) {}
 
   /**
@@ -93,7 +107,7 @@ export class PrReviewRouter {
     if (!st || st.prNumber !== pr.number) {
       // NEGATIVE_INFINITY, not 0: the first check must always pass the
       // throttle regardless of the clock's epoch (a fake clock starts at 0).
-      st = { prNumber: pr.number, watermark: null, lastCheck: Number.NEGATIVE_INFINITY };
+      st = { prNumber: pr.number, watermark: null, lastCheck: Number.NEGATIVE_INFINITY, conflictFired: false };
       this.panes.set(ptyId, st);
     }
     const now = this.now();
@@ -105,6 +119,23 @@ export class PrReviewRouter {
       if (!list.ok) return;
       const summary = list.prs.find((p) => p.number === pr.number);
       if (!summary) return; // PR closed/merged out of the open list — nothing to route
+
+      // Slice 3 — merge-conflict edge, riding the SAME throttled read. Fires
+      // once per CONFLICTING episode (including first observation — an already-
+      // conflicted PR you check out is actionable, matching PrCiRouter's rule),
+      // re-arms when mergeable leaves CONFLICTING. `conflictFired` flips back
+      // only on success so a transient resolve failure retries next interval.
+      if (this.emitConflict) {
+        if (summary.mergeable !== 'CONFLICTING') {
+          st.conflictFired = false;
+        } else if (!st.conflictFired) {
+          const ws = await this.resolveWorkspaceId(ptyId);
+          if (ws) {
+            this.emitConflict({ workspaceId: ws, ptyId, prNumber: pr.number, url: pr.url });
+            st.conflictFired = true;
+          }
+        }
+      }
       const detail = await this.provider.prDetail(cwd, pr.number, summary.updatedAt);
       if (!detail.ok) return;
       const comments = detail.detail.comments;
