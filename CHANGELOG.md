@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Fan-out is now Multi Task (한국어: 병렬 작업) — and it can run N *different* jobs in parallel.** The dialog previously sent one shared prompt to every spawned task, which only covered the "same work, N attempts" scenario. Each task row now has its own prompt field: fill the shared prompt for common context, the per-task prompt for that task's actual job, or both (they're combined). A task with neither is rejected before anything is spawned, so a misconfigured submit never leaves half a fleet behind.
+
 ### Fixed
 
 - **File-edit approval prompts no longer strand a pane (and the orchestrator) for hours.** The screen-reading detector only recognized Claude Code's `Do you want to proceed?` and `Allow tool use for …` prompts, so a `Do you want to overwrite <file>?` / `create` / `make this edit to` approval never emitted an awaiting-input event — in a live run a worker sat on one for 100 minutes while the orchestrator was never woken. The detector now matches the file-edit prompt family, including two rendering hazards observed in that pane: cursor-move drawing that eats the spaces between words, and narrow-pane wrapping that puts the filename on the next line.
