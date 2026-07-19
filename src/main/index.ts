@@ -76,6 +76,7 @@ import { createTray, destroyTray, updateTraySessionCount } from './tray';
 import { FirstRunOrchestrator } from './firstRun/FirstRunOrchestrator';
 import { registerFirstRunHandlers } from './firstRun';
 import { isSquirrelInstallerEvent } from './squirrel';
+import { terminateRunningAppInstances } from './squirrelTeardown';
 // Static imports (NOT require('./...')) so rollup inlines these into the
 // single .vite/build/index.js bundle. A dynamic require left literal in the
 // bundle has no adjacent chunk to resolve at runtime and throws
@@ -138,6 +139,26 @@ if (process.platform === 'win32') {
     const updateExe = path.resolve(path.dirname(process.execPath), '..', 'Update.exe');
     const target = path.basename(process.execPath);
 
+    // #502: running Setup.exe while wmux was still open crashed the update —
+    // Update.exe's shortcut/old-version work collides with the live
+    // instance, and the post-install relaunch dies on its single-instance
+    // lock (silently leaving the user on the OLD version). This hook process
+    // runs the NEW exe's code, so take the running instance down FIRST,
+    // before any Update.exe work. Helpers, the daemon (live sessions — the
+    // persistence promise), and concurrent hook processes are all spared;
+    // see squirrelTeardown.ts. Skipped for --squirrel-obsolete: that fires
+    // mid-update on the version being superseded, where the NEWER version's
+    // install/updated hook owns the takeover. Best-effort — a kill failure
+    // must never block the install itself.
+    if (squirrelCmd !== '--squirrel-obsolete') {
+      try {
+        const killed = terminateRunningAppInstances();
+        if (killed.length > 0) {
+          console.log(`[Squirrel] terminated running wmux instance(s) before install work: ${killed.join(', ')}`);
+        }
+      } catch { /* best-effort */ }
+    }
+
     if (squirrelCmd === '--squirrel-install') {
       // Register Windows startup entry so wmux survives reboot. Autostart
       // defaults ON at install time; users can turn it off in Settings →
@@ -167,7 +188,14 @@ if (process.platform === 'win32') {
       try { cliShim.installCliShim(process.execPath); } catch { /* best-effort */ }
 
       spawn(updateExe, ['--createShortcut', target], { detached: true, windowsHide: true })
-        .on('close', () => process.exit(0));
+        .on('close', () => {
+          // #502: relaunch the updated app — the pre-update instance was
+          // taken down above (or quit itself in the in-app "Restart to
+          // install" flow), and the single-instance lock dedupes if
+          // Squirrel also launches one itself.
+          spawn(process.execPath, [], { detached: true, stdio: 'ignore', windowsHide: true }).unref();
+          process.exit(0);
+        });
       app.quit();
     } else if (squirrelCmd === '--squirrel-uninstall') {
       // Remove startup registry entry

@@ -79,6 +79,43 @@ describe('Squirrel firstrun fix — index.ts wiring invariants', () => {
     expect([...SQUIRREL_INSTALLER_EVENTS]).not.toContain('--squirrel-firstrun');
   });
 
+  // #502 — installer-time takeover of a running instance. Same rationale as
+  // the invariants above: the behavior lives in index.ts's module-load-time
+  // squirrel branch, which cannot be imported in tests, so pin the wiring at
+  // source level. The kill semantics themselves are unit-tested in
+  // squirrelTeardown.test.ts.
+  it('#502: terminates running app instances inside the squirrel branch, before any Update.exe work', () => {
+    const gatePos = indexSrc.indexOf('if (isSquirrelInstallerEvent(squirrelCmd))');
+    const killPos = indexSrc.indexOf('terminateRunningAppInstances()');
+    const shortcutPos = indexSrc.indexOf("'--createShortcut'");
+    expect(gatePos).toBeGreaterThan(0);
+    // The kill runs inside the installer-event branch (after the gate)…
+    expect(killPos).toBeGreaterThan(gatePos);
+    // …and BEFORE the first Update.exe shortcut spawn, so old-version locks
+    // are released before Squirrel's remaining install work touches them.
+    expect(shortcutPos).toBeGreaterThan(killPos);
+  });
+
+  it('#502: --squirrel-obsolete never runs the takeover (the newer version\'s hook owns it)', () => {
+    // The kill is gated on `squirrelCmd !== '--squirrel-obsolete'` — obsolete
+    // fires on the version being superseded mid-update, and killing from
+    // there would race the newer version's own hook.
+    expect(indexSrc).toMatch(/if\s*\(\s*squirrelCmd\s*!==\s*'--squirrel-obsolete'\s*\)\s*\{[\s\S]{0,600}?terminateRunningAppInstances\(\)/);
+  });
+
+  it('#502: the --squirrel-updated branch relaunches the app after its shortcut work', () => {
+    const updatedPos = indexSrc.indexOf("squirrelCmd === '--squirrel-updated'");
+    const uninstallPos = indexSrc.indexOf("squirrelCmd === '--squirrel-uninstall'");
+    expect(updatedPos).toBeGreaterThan(0);
+    expect(uninstallPos).toBeGreaterThan(updatedPos);
+    const updatedBranch = indexSrc.slice(updatedPos, uninstallPos);
+    // Same relaunch shape the --squirrel-install branch uses; the
+    // single-instance lock dedupes any double-launch.
+    expect(updatedBranch).toMatch(
+      /spawn\(process\.execPath, \[\], \{ detached: true, stdio: 'ignore', windowsHide: true \}\)\.unref\(\)/,
+    );
+  });
+
   it('the predicate classifies by exact membership, never a startsWith prefix', () => {
     // The most realistic regression is moving the logic into squirrel.ts and
     // using `startsWith('--squirrel-')` there — which would re-swallow firstrun.

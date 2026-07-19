@@ -350,7 +350,16 @@ export class AutoUpdater {
           status: 'error',
           message: `failed to launch verified installer: ${openErr}`,
         });
+        return;
       }
+      // #502: Squirrel's installer crashes when it runs against a live
+      // instance (locked old-version files + a single-instance collision on
+      // the post-install relaunch). "Restart to install" means restart: quit
+      // NOW — a normal quit only detaches, so the daemon and every live
+      // session persist — and the --squirrel-updated/-install hook relaunches
+      // the updated app once the install completes.
+      console.log('[AutoUpdater] Installer launched — quitting so Squirrel can install (sessions persist in the daemon)');
+      app.quit();
     });
   }
 
