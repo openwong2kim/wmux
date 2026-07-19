@@ -84,9 +84,12 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   }));
   vi.doMock('node:fs/promises', () => ({ unlink: vi.fn(async () => undefined) }));
 
+  // #502: UPDATE_INSTALL now calls app.quit() after a successful launch so
+  // Squirrel never installs against a live instance — the mock must provide it.
+  const quit = vi.fn();
   vi.doMock('electron', () => ({
     autoUpdater: {},
-    app: { getVersion: () => FAKE_VERSION, getPath: () => '/tmp' },
+    app: { getVersion: () => FAKE_VERSION, getPath: () => '/tmp', quit },
     ipcMain: {
       on: vi.fn(),
       handle: (ch: string, cb: (...a: unknown[]) => unknown) => { ipcHandlers.set(ch, cb); },
@@ -98,7 +101,7 @@ async function loadWin32({ sha = GOOD_SHA }: { sha?: string } = {}) {
   }));
 
   const mod = await import('../AutoUpdater');
-  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, sent, openPath, win };
+  return { AutoUpdater: mod.AutoUpdater, requestUrls, ipcHandlers, sent, openPath, quit, win };
 }
 
 /** Flush queued microtasks so the chained net responses (feed→manifest→download) settle. */
@@ -124,8 +127,8 @@ describe('AutoUpdater two-step flow (win32)', () => {
     expect(progress.data.percent).toBe(100);
   });
 
-  it('UPDATE_INSTALL launches the downloaded file without re-fetching the manifest', async () => {
-    const { AutoUpdater, ipcHandlers, requestUrls, openPath, win } = await loadWin32();
+  it('UPDATE_INSTALL launches the downloaded file without re-fetching the manifest, then quits', async () => {
+    const { AutoUpdater, ipcHandlers, requestUrls, openPath, quit, win } = await loadWin32();
     const updater = new AutoUpdater(() => win as never);
     updater.start();
 
@@ -140,11 +143,13 @@ describe('AutoUpdater two-step flow (win32)', () => {
     expect(openPath).toHaveBeenCalledTimes(1);
     expect(openPath.mock.calls[0][0]).toContain('wmux-update-');
     expect(requestUrls.length).toBe(urlsAfterDownload);
+    // #502: quit after launch so Squirrel installs against a dead instance.
+    expect(quit).toHaveBeenCalledTimes(1);
   });
 
   it('rejects on sha256 mismatch: emits error, no downloaded path, install is a no-op', async () => {
     const BAD_SHA = 'a'.repeat(64);
-    const { AutoUpdater, ipcHandlers, sent, openPath, win } = await loadWin32({ sha: BAD_SHA });
+    const { AutoUpdater, ipcHandlers, sent, openPath, quit, win } = await loadWin32({ sha: BAD_SHA });
     const updater = new AutoUpdater(() => win as never);
     updater.start();
 
@@ -159,5 +164,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
     await ipcHandlers.get(IPC.UPDATE_INSTALL)!();
     await flush();
     expect(openPath).not.toHaveBeenCalled();
+    // #502: no launch → no quit (the app must not close with nothing installing).
+    expect(quit).not.toHaveBeenCalled();
   });
 });
