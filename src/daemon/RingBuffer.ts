@@ -14,6 +14,25 @@ import crypto from 'node:crypto';
 // these; they may exist briefly between the tmp write and the rename.
 const TMP_SUFFIX_RE = /\.tmp\.[0-9a-f]+$/;
 
+// Windows-only: an antivirus real-time scan or a concurrent reader can hold a
+// transient handle on the destination `.buf`, making the final rename fail
+// EPERM / EACCES / EBUSY. The lock releases within tens of ms, so a bounded
+// backoff retry clears it instead of leaving the session dirty (which would
+// re-dump the full multi-MB ring every 30 s tick — pure churn). POSIX rename is
+// atomic and never hits this, so the retry is gated on win32.
+const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
+const RENAME_RETRY_BACKOFFS_MS = [20, 50, 100, 200]; // ≤ +370 ms, trivial vs the 30 s tick
+
+// Per-DESTINATION serialization for async dumps (codex #4). The rename retry
+// widens a pre-existing race: three call sites — the 30 s snapshot tick, the
+// interrupted-session dump, and the shutdown dump — can each dump the SAME
+// session path, and a retry-delayed older dump could otherwise rename AFTER a
+// newer one and restore stale scrollback. Atomic rename guarantees integrity,
+// not freshness. Chaining dumps to the same path (keyed by the destination, the
+// actual shared resource) makes the newest-enqueued dump land last. The map
+// entry is deleted once the chain tail resolves, so it never grows unbounded.
+const dumpChains = new Map<string, Promise<void>>();
+
 /**
  * Fixed-size circular byte buffer for storing ConPTY output per session.
  * Preserves raw bytes including ANSI escape sequences without any filtering.
@@ -181,15 +200,64 @@ export class RingBuffer {
    * also sweeps stale tmps via {@link cleanupStaleTmpFiles}.
    */
   async dumpToFile(filePath: string): Promise<void> {
+    // Serialize on the destination path so a retry-delayed older dump can never
+    // rename after a newer one (codex #4). A prior dump's rejection must NOT
+    // skip this dump, so we chain off a swallowed copy of the previous promise.
+    const prev = dumpChains.get(filePath) ?? Promise.resolve();
+    const run = prev
+      .catch(() => { /* a prior dump's failure must not skip this one */ })
+      .then(() => this.doDumpToFile(filePath));
+    dumpChains.set(filePath, run);
+    try {
+      await run;
+    } finally {
+      // Only clear when we are still the chain tail — a dump enqueued after us
+      // owns the entry now, and deleting it would break its serialization.
+      if (dumpChains.get(filePath) === run) dumpChains.delete(filePath);
+    }
+  }
+
+  /** The actual tmp-write + atomic-rename, run inside the per-path chain. */
+  private async doDumpToFile(filePath: string): Promise<void> {
+    // Captured here (inside the chain) rather than at enqueue time: a slightly
+    // fresher snapshot is never wrong for recovery, and the snapshotRunner's
+    // dirty-tracking captures totalBytesWritten BEFORE calling us, so a fresher
+    // readAll at worst leaves the session marked dirty for one extra tick.
     const data = this.readAll();
     const tmpPath = `${filePath}.tmp.${crypto.randomBytes(6).toString('hex')}`;
     try {
       // mode is a no-op on Windows; use icacls for NTFS ACLs.
       await writeFile(tmpPath, data, { mode: 0o600 });
-      await rename(tmpPath, filePath);
+      await RingBuffer.renameWithRetry(tmpPath, filePath);
     } catch (err) {
       try { await unlink(tmpPath); } catch { /* tmp may already be gone */ }
       throw err;
+    }
+  }
+
+  /**
+   * rename with a bounded win32-only backoff retry for transient handle-lock
+   * failures (AV scan / concurrent reader). Non-win32, non-transient codes, and
+   * exhausted retries all throw exactly as a bare rename would — the caller's
+   * catch still runs (tmp cleanup + rethrow), so the dirty-retry contract holds.
+   */
+  private static async renameWithRetry(from: string, to: string): Promise<void> {
+    for (let attempt = 0; ; attempt++) {
+      try {
+        await rename(from, to);
+        return;
+      } catch (err) {
+        const code = (err as NodeJS.ErrnoException)?.code ?? '';
+        if (
+          process.platform === 'win32' &&
+          RENAME_RETRY_CODES.has(code) &&
+          attempt < RENAME_RETRY_BACKOFFS_MS.length
+        ) {
+          await new Promise((r) => setTimeout(r, RENAME_RETRY_BACKOFFS_MS[attempt]));
+          continue;
+        }
+        throw err;
+      }
     }
   }
 

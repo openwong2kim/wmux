@@ -1,8 +1,10 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi } from 'vitest';
 import {
   resolvePtyIdForCwd,
   resolvePtyIdForSignal,
   findWorkspaceIdForPty,
+  resolveWorkspacesForSignal,
+  STALE_TRUST_MS,
 } from '../hooks.rpc';
 import type { AgentSignal } from '../../../../../integrations/shared/signal-types';
 
@@ -242,6 +244,86 @@ describe('isAgentSignal (re-export check)', () => {
   // sure the public API surface is exported.
   it('module exports resolvePtyIdForCwd', () => {
     expect(typeof resolvePtyIdForCwd).toBe('function');
+  });
+});
+
+describe('resolveWorkspacesForSignal — env-routed fast path (Fix B)', () => {
+  type WS = {
+    id: string;
+    name: string;
+    metadata?: { cwd?: string | null };
+    activePtyId?: string | null;
+    ptyIds?: string[];
+  };
+  // Cache double: peek() returns a fixed snapshot, get() returns a fixed list.
+  // Spies let us assert WHICH path the resolver took.
+  function fakeCache(opts: { peek: { list: WS[]; ageMs: number } | null; get: WS[] | null }) {
+    return {
+      get: vi.fn(async () => opts.get),
+      peek: vi.fn(() => opts.peek),
+      prime: vi.fn(() => { /* spy only */ }),
+    };
+  }
+  const paneList: WS[] = [
+    { id: 'w1', name: 'W1', metadata: { cwd: '/repo' }, activePtyId: 'p1', ptyIds: ['p1'] },
+  ];
+
+  it('env ptyId + fresh warm cache that resolves → serves peek, NO fetch, primes', async () => {
+    const cache = fakeCache({ peek: { list: paneList, ageMs: 500 }, get: [] });
+    const { workspaces, fetchMs } = await resolveWorkspacesForSignal(
+      signal({ ptyId: 'p1', workspaceId: 'w1', cwd: '/repo' }),
+      cache,
+    );
+    expect(workspaces).toBe(paneList); // served from the cached snapshot
+    expect(fetchMs).toBe(0); // no round-trip
+    expect(cache.get).not.toHaveBeenCalled(); // <-- the core regression guard
+    expect(cache.prime).toHaveBeenCalledTimes(1); // kept warm in the background
+  });
+
+  it('env ptyId but cache staler than STALE_TRUST_MS → blocking fetch', async () => {
+    const cache = fakeCache({ peek: { list: paneList, ageMs: STALE_TRUST_MS + 1 }, get: paneList });
+    const { workspaces } = await resolveWorkspacesForSignal(
+      signal({ ptyId: 'p1', workspaceId: 'w1', cwd: '/repo' }),
+      cache,
+    );
+    expect(cache.get).toHaveBeenCalledTimes(1); // stale beyond trust → fetch
+    expect(cache.prime).not.toHaveBeenCalled();
+    expect(workspaces).toBe(paneList);
+  });
+
+  it('env ptyId that does NOT resolve in the cached list → fallback fetch', async () => {
+    // Unknown ptyId, no workspaceId, cwd matches nothing in the peeked list.
+    const cache = fakeCache({
+      peek: { list: [{ id: 'w9', name: 'W9', metadata: { cwd: '/other' }, activePtyId: 'p9', ptyIds: ['p9'] }], ageMs: 100 },
+      get: paneList,
+    });
+    const { workspaces } = await resolveWorkspacesForSignal(
+      signal({ ptyId: 'p-unknown', cwd: '/nomatch' }),
+      cache,
+    );
+    expect(cache.get).toHaveBeenCalledTimes(1); // peek miss → authoritative fetch
+    expect(workspaces).toBe(paneList);
+  });
+
+  it('workspaceId-only hook (no ptyId) NEVER takes the fast path — focus-sensitive activePtyId', async () => {
+    const cache = fakeCache({ peek: { list: paneList, ageMs: 100 }, get: paneList });
+    await resolveWorkspacesForSignal(signal({ workspaceId: 'w1', cwd: '/repo' }), cache);
+    expect(cache.peek).not.toHaveBeenCalled(); // gated on signal.ptyId
+    expect(cache.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('cwd-only hook → fetch (never fast path)', async () => {
+    const cache = fakeCache({ peek: { list: paneList, ageMs: 100 }, get: paneList });
+    await resolveWorkspacesForSignal(signal({ cwd: '/repo' }), cache);
+    expect(cache.peek).not.toHaveBeenCalled();
+    expect(cache.get).toHaveBeenCalledTimes(1);
+  });
+
+  it('env ptyId + cold cache (peek null) → fetch once', async () => {
+    const cache = fakeCache({ peek: null, get: paneList });
+    await resolveWorkspacesForSignal(signal({ ptyId: 'p1', workspaceId: 'w1', cwd: '/repo' }), cache);
+    expect(cache.get).toHaveBeenCalledTimes(1);
+    expect(cache.prime).not.toHaveBeenCalled();
   });
 });
 

@@ -142,6 +142,14 @@ export const WORKSPACE_LIST_CACHE_TTL_MS = 2_000;
 // miss against a slow renderer still returns (stale) before the bridge bails.
 const WORKSPACE_LIST_FETCH_TIMEOUT_MS = 1_500;
 
+// Env-routed fast path (Fix B): the longest a peeked (un-refreshed) workspace
+// list may be trusted for routing a hook that carries WMUX_PTY_ID. Beyond it,
+// the handler falls back to a blocking fetch rather than routing off an
+// arbitrarily stale map (codex P0 #3). Comfortably above the TTL so the fast
+// path stays hot under normal load (prime() refreshes at ~TTL); only a renderer
+// unresponsive for >STALE_TRUST_MS forces the blocking path.
+export const STALE_TRUST_MS = 10_000;
+
 // Observability (HookFloodMeter): a hook is "degraded" when its workspace.list
 // resolution took longer than this — i.e. it missed the cache and the renderer
 // was slow to answer (the flood precursor). Logged in a rolling summary.
@@ -229,9 +237,12 @@ export function registerHooksRpc(
     //    a wmux pane. The workspace list comes from a short-TTL coalescing
     //    cache (NOT a fresh round-trip per hook — that flooded the bridge
     //    with 2s timeouts under load; see the cache note above).
-    const fetchStart = Date.now();
-    const workspaces = await workspaceCache.get();
-    const fetchMs = Date.now() - fetchStart;
+    // Env-routed fast path (Fix B) lives in resolveWorkspacesForSignal: an
+    // in-pane hook carrying WMUX_PTY_ID routes from a fresh-enough last-known
+    // list without a renderer round-trip (that round-trip is exactly what a
+    // large-buffer flush storm starves, timing out the bridge's 2s cap). See
+    // that function for the topology-stability + bounded-staleness rules.
+    const { workspaces, fetchMs } = await resolveWorkspacesForSignal(signal, workspaceCache);
     floodMeter.record({ degraded: fetchMs > HOOK_DEGRADED_FETCH_MS || !workspaces, fetchMs });
     if (!workspaces) {
       // Record as a miss because we couldn't determine match either
@@ -562,6 +573,18 @@ interface WorkspaceListCache {
    * out (renderer throttled), or null if nothing has ever been fetched.
    */
   get(): Promise<WorkspaceListEntry[] | null>;
+  /**
+   * Env-routed fast path (Fix B): the last-known list plus its age in ms,
+   * WITHOUT triggering a fetch. null when nothing has ever been cached (cold
+   * start — the caller must `get()` once). Never blocks on the renderer.
+   */
+  peek(): { list: WorkspaceListEntry[]; ageMs: number } | null;
+  /**
+   * Fire-and-forget refresh to keep the cache warm for `peek()` consumers.
+   * No-op when already fresh or a refresh is in flight; coalesces with `get()`.
+   * Never throws into the caller and never blocks it.
+   */
+  prime(): void;
 }
 
 /**
@@ -580,27 +603,96 @@ export function createWorkspaceListCache(
   let cachedAt = 0;
   let inFlight: Promise<WorkspaceListEntry[] | null> | null = null;
 
-  return {
-    async get(): Promise<WorkspaceListEntry[] | null> {
-      if (cached && now() - cachedAt < WORKSPACE_LIST_CACHE_TTL_MS) {
-        return cached; // fresh hit — no renderer round-trip
-      }
-      if (inFlight) return inFlight; // coalesce a burst into one round-trip
-      inFlight = (async () => {
+  const isFresh = (): boolean =>
+    cached !== null && now() - cachedAt < WORKSPACE_LIST_CACHE_TTL_MS;
+
+  // Single coalesced renderer round-trip. `inFlight` is cleared in `finally`
+  // so an unexpected rejection can never permanently wedge coalescing (codex
+  // #3) — a wedged inFlight would freeze the cache at boot state forever.
+  const refresh = (): Promise<WorkspaceListEntry[] | null> => {
+    if (inFlight) return inFlight; // coalesce a burst into one round-trip
+    inFlight = (async () => {
+      try {
         const fresh = await fetchList();
         if (fresh) {
           cached = fresh;
           cachedAt = now();
         }
-        inFlight = null;
         // On a failed/timed-out refresh, serve the last-known list rather than
-        // dropping the hook — a ≤2s-stale workspace map routes the toast/token
-        // correctly in the overwhelmingly common case (tree rarely changes).
+        // dropping the hook — a stale workspace map routes correctly in the
+        // overwhelmingly common case (tree rarely changes).
         return fresh ?? cached;
-      })();
-      return inFlight;
+      } finally {
+        inFlight = null;
+      }
+    })();
+    return inFlight;
+  };
+
+  return {
+    async get(): Promise<WorkspaceListEntry[] | null> {
+      if (isFresh()) return cached; // fresh hit — no renderer round-trip
+      return refresh();
+    },
+    peek(): { list: WorkspaceListEntry[]; ageMs: number } | null {
+      if (cached === null) return null;
+      return { list: cached, ageMs: now() - cachedAt };
+    },
+    prime(): void {
+      // Keep the cache warm for the env-routed fast path without blocking the
+      // caller. No-op when already fresh or a refresh is already in flight.
+      // The catch keeps a rejected background refresh from surfacing as an
+      // unhandled rejection (codex #3); refresh() already swallows fetch
+      // failures, so this is belt-and-suspenders.
+      if (isFresh() || inFlight) return;
+      void refresh().catch(() => { /* background refresh failure is non-fatal */ });
     },
   };
+}
+
+/**
+ * Env-routed fast path (Fix B). Decide whether this signal can be routed from
+ * the cache's last-known workspace list WITHOUT a renderer round-trip.
+ *
+ * The round-trip (`workspace.list` → renderer) is what a large-buffer flush
+ * storm starves: while the renderer is pegged parsing a multi-MB terminal
+ * flush, it can't answer, the fetch times out, and the bridge's 2s hard cap
+ * trips (~24% of hooks in the v3.24.0 dogfood). We remove that dependency for
+ * the common case.
+ *
+ * Fast path is taken ONLY when ALL hold:
+ *   - the signal carries WMUX_PTY_ID. A pane's daemon session id is
+ *     topology-STABLE: it does not change when the active surface switches, so
+ *     resolving it against a slightly stale list is safe. A `workspaceId`-only
+ *     hook resolves to the workspace's `activePtyId`, which IS focus-sensitive —
+ *     a stale value would misroute hook authority / dedup / lifecycle, not just
+ *     a toast — so those keep the authoritative fetch.
+ *   - the last-known list is younger than STALE_TRUST_MS. Beyond that we stop
+ *     trusting an arbitrarily old map and block on a fresh fetch (a renderer
+ *     dead >10s is exactly when we SHOULD wait for it).
+ *   - that list actually resolves the ptyId. A miss means the pane is newer
+ *     than the cache; fall back to one authoritative fetch.
+ *
+ * On the fast path we `prime()` the cache (fire-and-forget) so it stays warm
+ * for the next hook without blocking this one. `fetchMs` is 0 on the fast path
+ * (no round-trip) so the flood meter records it as non-degraded.
+ */
+export async function resolveWorkspacesForSignal(
+  signal: AgentSignal,
+  cache: Pick<WorkspaceListCache, 'get' | 'peek' | 'prime'>,
+): Promise<{ workspaces: WorkspaceListEntry[] | null; fetchMs: number }> {
+  const peeked = signal.ptyId ? cache.peek() : null;
+  if (
+    peeked &&
+    peeked.ageMs < STALE_TRUST_MS &&
+    resolvePtyIdForSignal(signal, peeked.list)
+  ) {
+    cache.prime(); // keep the cache warm without blocking this hook
+    return { workspaces: peeked.list, fetchMs: 0 };
+  }
+  const fetchStart = Date.now();
+  const workspaces = await cache.get();
+  return { workspaces, fetchMs: Date.now() - fetchStart };
 }
 
 /**
