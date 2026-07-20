@@ -201,6 +201,25 @@ describe('ReviewTab — diff-first roster', () => {
     expect(rows).toHaveLength(2); // 폴백: 둘 다 표시
   });
 
+  // Regression (2026-07-21): agent pane whose SHELL sits outside the repo —
+  // surface.cwd is the shell home, the agent's repo lives in metadata.cwd
+  // (hook-reported, already trusted by the sidebar). The row must resolve via
+  // the metadata.cwd fallback instead of degrading to "no repo".
+  it('falls back to metadata.cwd when the surface cwd is not a repo', async () => {
+    seed(
+      [workspace('ws-agent', 'agent-ws', 'C:/not-a-repo', {
+        metadata: { cwd: 'D:/repo-dirty' },
+      } as Partial<Workspace>)],
+      'ws-agent',
+    );
+    await mount();
+    const row = container.querySelector('[data-review-list] li')!;
+    expect(row.textContent).toContain('agent-ws');
+    expect(row.textContent).not.toContain('no repo');
+    // Resolved to the dirty repo → summed numstat renders.
+    expect(row.textContent).toContain('+15');
+  });
+
   it('branch from workspace metadata and PR number render in the row', async () => {
     seed(
       [workspace('ws-dirty', 'meta-ws', 'D:/repo-dirty', {

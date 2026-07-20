@@ -32,9 +32,15 @@ type MergeStart = { ok: true; status: MergeSessionStatus } | { ok: false; error:
 type MergeStatus = { ok: true; status: MergeSessionStatus | null } | { ok: false; error: string };
 type MergeAction = { ok: true } | { ok: false; error: string };
 
-// 활성 워크스페이스의 활성 pane → 활성 surface cwd (팔레트 Show Git Diff와 동일 규칙).
+// 활성 워크스페이스의 활성 pane → repo-base cwd 후보 목록(우선순위 순).
 // 셀렉터로도 재사용(store 상태에서 원시 문자열로 수렴 — 리렌더 최소화).
-function selectActivePaneCwd(state: StoreState): string {
+//
+// 왜 목록인가(2026-07-21 실측): 에이전트 TUI pane은 surface.cwd(셸의 cwd)가
+// repo 밖일 수 있다 — 셸은 홈에 앉아 있고 에이전트만 repo에서 작업하는 경우
+// (관측: surface.cwd=C:\Users\me, metadata.cwd=D:\wmux). metadata.cwd는 hook이
+// 보고한 에이전트 cwd로 사이드바 브랜치가 이미 신뢰하는 값이므로 두 번째
+// 후보로 넣는다. load()가 순서대로 resolveRepo를 시도해 첫 성공을 채택한다.
+function selectActivePaneCwdCandidates(state: StoreState): string {
   const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
   if (!ws) return '';
   const findLeaf = (pane: Pane): PaneLeaf | null => {
@@ -48,8 +54,17 @@ function selectActivePaneCwd(state: StoreState): string {
   const leaf = findLeaf(ws.rootPane);
   const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
   // 오염된 cwd(스크래핑 오탐으로 저장된 불가능한 모양)는 건너뛰고 폴백 사용.
-  const cwd = surface?.cwd && isPlausibleCwd(surface.cwd) ? surface.cwd : '';
-  return cwd || ws.profile?.startupCwd || state.startupDirectory || '';
+  // platform은 호스트 OS 기준(ReviewTab.normRepo와 동일 소스) — 렌더러의
+  // process.platform 기본값은 CI POSIX 러너에서 Windows 경로를 오거부한다.
+  const plat = (window as unknown as { electronAPI?: { platform?: string } }).electronAPI?.platform;
+  const surfaceCwd = surface?.cwd && isPlausibleCwd(surface.cwd, plat ?? undefined) ? surface.cwd : '';
+  const candidates = [
+    surfaceCwd,
+    ws.metadata?.cwd ?? '',
+    ws.profile?.startupCwd ?? '',
+    state.startupDirectory || '',
+  ].filter(Boolean);
+  return [...new Set(candidates)].join('\0');
 }
 
 function pathLeaf(p: string): string {
@@ -90,9 +105,11 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
   // 포커스가 옮겨가도 재조회되도록 load의 dep으로 쓴다(Codex P2). 단 중앙 surface로
   // 렌더될 땐 prop cwd(생성 시 캡처된 surface.cwd)가 repo base로 우선한다 — 자기
   // 빈 cwd를 활성 pane에서 읽어 repo가 틀어지는 문제를 막는다. prop 미제공(덱 하위
-  // 호환) 시에만 selectActivePaneCwd 폴백.
-  const activePaneCwd = useStore(selectActivePaneCwd);
-  const activeCwd = cwd ?? activePaneCwd;
+  // 호환) 시에만 selectActivePaneCwdCandidates 폴백.
+  const activePaneCwdCandidates = useStore(selectActivePaneCwdCandidates);
+  // prop cwd(중앙 surface 생성 시 캡처)가 있으면 그것만 시도 — 활성 pane 폴백 금지
+  // (자기 빈 cwd를 활성 pane에서 읽어 repo가 틀어지는 문제, GitTab.cwdProp 테스트).
+  const activeCwdCandidates = cwd != null ? cwd : activePaneCwdCandidates;
   const pushToast = useStore((s) => s.pushToast);
   const [repoPath, setRepoPath] = useState<string | null>(null);
   // 본(main) 워크트리 경로 — "main" 배지·Remove 숨김 기준. 현재 워크트리
@@ -122,9 +139,14 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
       setLoading(false);
       return;
     }
-    const cwd = activeCwd;
-    const resolved = cwd ? await resolveRepo(cwd) : ({ ok: false } as const);
-    if (seq !== loadSeq.current) return; // superseded by a newer load
+    // 후보를 순서대로 시도해 첫 git-resolve 성공을 채택한다(에이전트 pane의
+    // 셸 cwd가 repo 밖이어도 metadata.cwd 폴백이 잡는다 — 2026-07-21).
+    let resolved: { ok: true; repoPath: string } | { ok: false } = { ok: false };
+    for (const candidate of activeCwdCandidates.split('\0').filter(Boolean)) {
+      resolved = await resolveRepo(candidate);
+      if (seq !== loadSeq.current) return; // superseded by a newer load
+      if (resolved.ok) break;
+    }
     if (!resolved.ok) {
       setRepoPath(null);
       setWorktrees([]);
@@ -151,7 +173,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
       if (seq !== loadSeq.current) return; // superseded by a newer load
       if (ms.ok) setSession(ms.status);
     }
-  }, [activeCwd]);
+  }, [activeCwdCandidates]);
 
   // 탭 마운트 시 + 활성 워크스페이스/pane cwd 변경 시 재조회(pull-only).
   // load가 activeCwd에 의존하므로 pane 포커스 전환도 여기서 재조회된다.

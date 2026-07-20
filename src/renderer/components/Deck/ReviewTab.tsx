@@ -25,6 +25,7 @@ import { useT } from '../../hooks/useT';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import type { Pane, PaneLeaf, PrStatus } from '../../../shared/types';
+import { isPlausibleCwd } from '../../../shared/cwdShape';
 import type { DiffReadResult, DiffReadError } from '../../../shared/diffParse';
 
 // A workspace's review row — resolved repo + summed numstat, or the reason
@@ -63,6 +64,41 @@ function findFirstLeaf(root: Pane): PaneLeaf | null {
 
 function pathLeaf(p: string): string {
   return p.split(/[/\\]/).filter(Boolean).pop() || p;
+}
+
+// 워크스페이스의 repo-base cwd 후보(우선순위 순) — GitTab과 동일 규칙(2026-07-21).
+// 에이전트 TUI pane은 surface.cwd(셸 cwd)가 repo 밖일 수 있어(셸=홈, 에이전트=repo)
+// hook이 보고한 metadata.cwd를 두 번째 후보로 넣고, 호출부가 순서대로
+// resolveRepo를 시도해 첫 성공을 채택한다.
+function repoCwdCandidates(
+  ws: { rootPane: Pane; activePaneId: string; metadata?: { cwd?: string }; profile?: { startupCwd?: string } },
+  startupDirectory: string,
+): string[] {
+  const leaf = findActiveLeaf(ws.rootPane, ws.activePaneId) ?? findFirstLeaf(ws.rootPane);
+  const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
+  // platform은 호스트 OS 기준(normRepo와 동일 소스) — 렌더러의 process.platform
+  // 기본값은 CI POSIX 러너에서 Windows 경로를 오거부한다.
+  const plat = (window as unknown as { electronAPI?: { platform?: string } }).electronAPI?.platform;
+  const surfaceCwd = surface?.cwd && isPlausibleCwd(surface.cwd, plat ?? undefined) ? surface.cwd : '';
+  const candidates = [
+    surfaceCwd,
+    ws.metadata?.cwd ?? '',
+    ws.profile?.startupCwd ?? '',
+    startupDirectory,
+  ].filter(Boolean);
+  return [...new Set(candidates)];
+}
+
+/** 후보를 순서대로 resolveRepo에 넣어 첫 성공을 반환(없으면 null). */
+async function resolveFirstRepo(
+  bridge: DiffBridge,
+  candidates: string[],
+): Promise<string | null> {
+  for (const cwd of candidates) {
+    const r = await bridge.resolveRepo(cwd);
+    if (r.ok) return r.repoPath;
+  }
+  return null;
 }
 
 interface DiffBridge {
@@ -129,14 +165,12 @@ export function ReviewTab(): React.ReactElement {
     let scope: Set<string> | null = null;
     const active = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
     if (bridge && wtList && active) {
-      const leaf = findActiveLeaf(active.rootPane, active.activePaneId) ?? findFirstLeaf(active.rootPane);
-      const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-      const cwd = surface?.cwd || active.profile?.startupCwd || state.startupDirectory || '';
-      if (cwd) {
+      const candidates = repoCwdCandidates(active, state.startupDirectory || '');
+      if (candidates.length > 0) {
         try {
-          const r = await bridge.resolveRepo(cwd);
-          if (r.ok) {
-            const wl = await wtList(r.repoPath);
+          const repoPath = await resolveFirstRepo(bridge, candidates);
+          if (repoPath !== null) {
+            const wl = await wtList(repoPath);
             if (wl.ok) scope = new Set(wl.worktrees.map((w) => normRepo(w.path)));
           }
         } catch {
@@ -147,9 +181,7 @@ export function ReviewTab(): React.ReactElement {
 
     const out: ReviewRow[] = [];
     for (const ws of state.workspaces) {
-      const leaf = findActiveLeaf(ws.rootPane, ws.activePaneId) ?? findFirstLeaf(ws.rootPane);
-      const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-      const cwd = surface?.cwd || ws.profile?.startupCwd || state.startupDirectory || '';
+      const candidates = repoCwdCandidates(ws, state.startupDirectory || '');
       const row: ReviewRow = {
         workspaceId: ws.id,
         name: ws.name,
@@ -161,12 +193,12 @@ export function ReviewTab(): React.ReactElement {
         deletions: 0,
         error: null,
       };
-      if (bridge && cwd) {
+      if (bridge && candidates.length > 0) {
         try {
-          const resolved = await bridge.resolveRepo(cwd);
-          if (resolved.ok) {
-            row.repoPath = resolved.repoPath;
-            const diff = await bridge.read(resolved.repoPath, '', 'workspace');
+          const repoPath = await resolveFirstRepo(bridge, candidates);
+          if (repoPath !== null) {
+            row.repoPath = repoPath;
+            const diff = await bridge.read(repoPath, '', 'workspace');
             if (diff.ok) {
               row.files = diff.numstat.length;
               for (const n of diff.numstat) {
