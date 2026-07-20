@@ -65,3 +65,45 @@ describe('DaemonPTYBridge OSC 7 cwd dedup (app-weight P1-4)', () => {
     expect(cwdEvents.map((e) => e.cwd)).toEqual(['C:\\a', 'C:\\b', 'C:\\a']);
   });
 });
+
+// OSC 7-sticky (2026-07-21): once the shell has proven it runs the integration
+// hook, prompt scraping must be permanently off for the session — screen text
+// shaped like a prompt (agent TUI output printing "user@host:path$") was
+// observed live overriding the hook's cwd with the literal token "path".
+describe('DaemonPTYBridge OSC 7-sticky scrape disable', () => {
+  let bridge: DaemonPTYBridge;
+  let feed: (data: string) => void;
+  let cwdEvents: Array<{ sessionId: string; cwd: string }>;
+
+  beforeEach(() => {
+    bridge = new DaemonPTYBridge();
+    const fake = makeFakePty();
+    feed = fake.feed;
+    cwdEvents = [];
+    bridge.on('cwd', (e) => cwdEvents.push(e));
+    bridge.setupDataForwarding(fake.pty, new RingBuffer(4096), 'sess-1');
+  });
+
+  afterEach(() => {
+    bridge.cleanup();
+  });
+
+  it('prompt scraping works before any OSC 7 (un-hooked shell fallback)', () => {
+    feed('me@host:/home/me/work$');
+    expect(cwdEvents.map((e) => e.cwd)).toEqual(['/home/me/work']);
+  });
+
+  it('after an OSC 7, prompt-shaped screen text no longer emits a cwd', () => {
+    feed(osc7('C:/repo'));
+    // Agent TUI prints something the bash-prompt regex would match.
+    feed('me@host:/some/fake$');
+    expect(cwdEvents.map((e) => e.cwd)).toEqual(['C:\\repo']);
+  });
+
+  it('the hook keeps reporting cwd changes after scraping is disabled', () => {
+    feed(osc7('C:/repo'));
+    feed('me@host:/some/fake$');
+    feed(osc7('C:/other'));
+    expect(cwdEvents.map((e) => e.cwd)).toEqual(['C:\\repo', 'C:\\other']);
+  });
+});

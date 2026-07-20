@@ -66,6 +66,14 @@ export class DaemonPTYBridge extends EventEmitter {
    */
   private lastEmittedOscCwd: string | null = null;
 
+  /**
+   * OSC 7-sticky: set on the first OSC 7 from this session's shell and never
+   * cleared. While true, prompt-scrape cwd detection is skipped entirely — the
+   * hook is the authoritative source, and the scraper's only remaining effect
+   * would be false positives from screen text shaped like a prompt.
+   */
+  private oscCwdSeen = false;
+
   /** Called by DaemonSessionManager.resizeSession on every applied resize. */
   noteResize(): void {
     this.lastResizeAtMs = Date.now();
@@ -158,6 +166,12 @@ export class DaemonPTYBridge extends EventEmitter {
         // the prompt-detect guard (lastDetectedCwd) below; the first OSC 7
         // after spawn always emits because the cache starts null.
         const cwd = parseOsc7Cwd(event.data);
+        // OSC 7-sticky (2026-07-21): this shell has the integration hook — the
+        // authoritative cwd source. Disable prompt scraping for the session's
+        // lifetime so screen text that happens to match a prompt regex (agent
+        // TUI output printing "user@host:path$"-shaped strings — observed live
+        // as a pane cwd stored as the literal "path") can never override it.
+        this.oscCwdSeen = true;
         if (cwd !== this.lastEmittedOscCwd) {
           this.lastEmittedOscCwd = cwd;
           this.emit('cwd', { sessionId, cwd });
@@ -218,18 +232,23 @@ export class DaemonPTYBridge extends EventEmitter {
         activityMonitor.feed(sessionId, buf.length);
         oscParser.process(data);
 
-        // Prompt-based CWD detection
-        promptBuffer += data;
-        if (promptBuffer.length > 1024) promptBuffer = promptBuffer.slice(-512);
+        // Prompt-based CWD detection — fallback for shells WITHOUT the
+        // integration hook only. Once OSC 7 has been seen (oscCwdSeen), the
+        // scraper is permanently off for this session: the hook re-emits on
+        // every prompt, so scraping can only ever add false positives.
+        if (!this.oscCwdSeen) {
+          promptBuffer += data;
+          if (promptBuffer.length > 1024) promptBuffer = promptBuffer.slice(-512);
 
-        const clean = promptBuffer.replace(DaemonPTYBridge.ANSI_STRIP, '');
-        const detectedCwd = detectPromptCwd(clean);
-        if (detectedCwd !== null) {
-          if (detectedCwd !== lastDetectedCwd) {
-            lastDetectedCwd = detectedCwd;
-            this.emit('cwd', { sessionId, cwd: detectedCwd });
+          const clean = promptBuffer.replace(DaemonPTYBridge.ANSI_STRIP, '');
+          const detectedCwd = detectPromptCwd(clean);
+          if (detectedCwd !== null) {
+            if (detectedCwd !== lastDetectedCwd) {
+              lastDetectedCwd = detectedCwd;
+              this.emit('cwd', { sessionId, cwd: detectedCwd });
+            }
+            promptBuffer = '';
           }
-          promptBuffer = '';
         }
 
         this.emit('data', buf);

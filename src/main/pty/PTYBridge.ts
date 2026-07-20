@@ -243,6 +243,12 @@ export class PTYBridge {
     const oscParser = new OscParser();
     this.oscParsers.set(ptyId, oscParser);
 
+    // OSC 7-sticky: flips true on the first OSC 7 from this PTY's shell and
+    // never resets — from then on the prompt-scrape fallback below is skipped
+    // (the hook re-emits on every prompt; scraping could only add false
+    // positives, e.g. agent TUI output shaped like "user@host:path$").
+    let oscCwdSeen = false;
+
     // Desktop-notification sequences (OSC 9/777/99). Stateful for OSC 99
     // chunk assembly, so it lives per-PTY alongside the OscParser. Captured
     // by the onOsc closure below; no separate cleanup needed — it dies with
@@ -267,6 +273,11 @@ export class PTYBridge {
           break;
         }
         case 7: {
+          // OSC 7-sticky (2026-07-21): the hook is the authoritative cwd
+          // source — permanently disable prompt scraping for this PTY so
+          // screen text shaped like a prompt can never override it (twin of
+          // the DaemonPTYBridge guard).
+          oscCwdSeen = true;
           const cwd = parseOsc7Cwd(event.data);
           updateCwd(ptyId, cwd);
           win.webContents.send(IPC.CWD_CHANGED, ptyId, cwd);
@@ -560,8 +571,10 @@ export class PTYBridge {
       agentDetector.feed(data);
     });
 
-    // 4. Prompt buffer + CWD detection
+    // 4. Prompt buffer + CWD detection — fallback for shells WITHOUT the
+    // integration hook only (see oscCwdSeen above).
     this.addMiddleware(ptyId, (data) => {
+      if (oscCwdSeen) return;
       const win = this.getWindow();
       if (!win || win.isDestroyed()) return;
 
