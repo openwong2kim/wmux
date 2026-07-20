@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.28.0] — 2026-07-20
+
 ### Added
 
 - **Resume a pane's agent conversation right from the pane.** After an agent (Claude / Codex) exits back to a shell, the pane header shows a quiet `↩ Resume <agent>` chip whenever wmux captured that conversation's session. Clicking it reveals the conversation UUID (with a copy button) and a preview of the exact command it will type; **Resume** types `claude --dangerously-skip-permissions --resume <id>` into that pane — the recorded permission mode is restored, and the exact-session form is used only while the pane's directory still matches the origin (otherwise it falls back to `--continue`). Nothing auto-runs; you press Enter. The chip stays hidden while an agent is actually running in the pane: OSC 133 shell state is the authoritative gate (a foreground command owns the PTY), with an agent-activity heuristic as fallback when shell integration is off — so a resume command can never land in a live agent's input. Available on any agent pane anytime, not only right after a reboot.
