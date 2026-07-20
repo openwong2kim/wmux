@@ -133,20 +133,21 @@ export function createTray(mainWindow: BrowserWindow, callbacks: TrayCallbacks):
   // The actual non-Windows image files are produced by a separate asset pipeline
   // (Phase 1.1 generate-icon.js). If the resolved file is missing on a given
   // platform, Electron falls back to a default tray image rather than throwing.
+  // macOS gets a dedicated menu bar asset instead of the app icon: trayTemplate.png
+  // (22x22, with an @2x sibling Electron picks up automatically) is alpha-only, so
+  // the OS paints it black on a light menu bar and white on a dark one. Reusing
+  // icon.icns here — a 1024px art board with an opaque black plate — collapsed into
+  // a black blob once downscaled (owner-reported 2026-07-20).
   const iconExt = platformChoice<string>({ win: 'ico', mac: 'icns', linux: 'png', default: 'png' });
-  const iconFile = `icon.${iconExt}`;
+  const isMac = process.platform === 'darwin';
+  const iconFile = isMac ? 'trayTemplate.png' : `icon.${iconExt}`;
   const iconPath = app.isPackaged
     ? path.join(process.resourcesPath, iconFile)
     : path.join(__dirname, '..', '..', 'assets', iconFile);
 
-  let trayImage = nativeImage.createFromPath(iconPath);
-  // macOS 메뉴바는 ~18~22pt 아이콘을 기대한다 — icon.icns(Dock/Finder용
-  // 1024px 기반)를 원본 그대로 넣으면 비정상적으로 크게 렌더된다
-  // (owner-reported 2026-07-19). 로고가 다색이라 setTemplateImage()는 검은
-  // 실루엣으로 뭉개질 위험이 있어(전용 모노크롬 에셋 없음) 쓰지 않고, 크기만
-  // 표준 메뉴바 치수로 맞춘다. Windows/Linux는 원본 크기 유지.
-  if (process.platform === 'darwin') {
-    trayImage = trayImage.resize({ width: 22, height: 22 });
+  const trayImage = nativeImage.createFromPath(iconPath);
+  if (isMac) {
+    trayImage.setTemplateImage(true);
   }
   tray = new Tray(trayImage);
   trayWindow = mainWindow;
