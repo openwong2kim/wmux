@@ -120,3 +120,37 @@ describe('PromptEventLog', () => {
     expect(log.size).toBe(0);
   });
 });
+
+describe('isCommandRunning (OSC 133 resume-chip gate)', () => {
+  const A = { type: 'prompt_start' as const, ts: 1, byteOffset: 0 };
+  const C = { type: 'command_start' as const, ts: 2, byteOffset: 10 };
+  const D = { type: 'command_end' as const, ts: 3, byteOffset: 20, exitCode: 0 };
+
+  it('empty log → false (no decisive marker; caller treats size 0 as unknown)', () => {
+    expect(new PromptEventLog().isCommandRunning()).toBe(false);
+  });
+
+  it('command_start with no matching end → true (foreground command up)', () => {
+    const log = new PromptEventLog();
+    log.append(A); log.append(C);
+    expect(log.isCommandRunning()).toBe(true);
+  });
+
+  it('command_start then command_end → false (back at prompt)', () => {
+    const log = new PromptEventLog();
+    log.append(A); log.append(C); log.append(D);
+    expect(log.isCommandRunning()).toBe(false);
+  });
+
+  it('prompt_start after a finished command → false (shell ready for input)', () => {
+    const log = new PromptEventLog();
+    log.append(C); log.append(D); log.append(A);
+    expect(log.isCommandRunning()).toBe(false);
+  });
+
+  it('re-launch (…D, A, C) → true again (second command running)', () => {
+    const log = new PromptEventLog();
+    log.append(C); log.append(D); log.append(A); log.append(C);
+    expect(log.isCommandRunning()).toBe(true);
+  });
+});

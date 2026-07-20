@@ -77,6 +77,57 @@ export type FleetSelectorState = Pick<StoreState, 'workspaces' | 'surfaceAgentSt
  */
 export const HOOK_RUNNING_TTL_MS = 120_000;
 
+/**
+ * Whether an agent is actively occupying a pane's active surface — the gate the
+ * persistent resume chip (ResumeInfoChip) uses to stay hidden while a live agent
+ * TUI owns the pane. Typing a resume command into a running agent would land in
+ * the agent's input, not a shell, so the chip only surfaces once the agent has
+ * settled or exited.
+ *
+ * Two tiers:
+ *   1. AUTHORITATIVE — the OSC 133 shell-integration signal (`commandRunning`),
+ *      when the pane's shell emits markers. `true` = a foreground command owns
+ *      the PTY (busy); `false` = at a shell prompt (idle). This closes the gap
+ *      the heuristic can't: a `claude` that sits idle past the activity TTL is
+ *      still `commandRunning: true`, so the chip stays hidden the whole time it
+ *      is up, and reappears the moment the shell is back at a prompt.
+ *   2. HEURISTIC FALLBACK (no shell integration, `commandRunning` undefined) —
+ *      recent hook activity within the TTL (focus-safe — `surfaceActivityAt` is
+ *      NOT cleared on focus the way `surfaceAgentStatus` is) OR a live attention
+ *      status still carried on a non-focused pane. `agentClockMs` freezes at
+ *      `activityAt + TTL + grace` once every agent settles, so
+ *      `agentClockMs - activityAt` exceeds the TTL and this flips false.
+ */
+export function isPaneAgentBusy(args: {
+  /** `surfaceActivityAt[ptyId] ?? 0` — last agent-activity stamp (ms). */
+  activityAt: number;
+  /** The reactive decay clock (`state.agentClockMs`). */
+  agentClockMs: number;
+  /** `surfaceAgentStatus[ptyId]` — the pane's live attention status, if any. */
+  status: AgentStatus | undefined;
+  /**
+   * `commandRunningByPtyId[ptyId]` — OSC 133 shell state. `true`/`false` is
+   * authoritative and short-circuits; `undefined` (no shell integration) falls
+   * through to the heuristic.
+   */
+  commandRunning?: boolean;
+}): boolean {
+  const { activityAt, agentClockMs, status, commandRunning } = args;
+  // Tier 1 — authoritative OSC 133 signal.
+  if (commandRunning === true) return true;
+  if (commandRunning === false) return false;
+  // Tier 2 — activity heuristic.
+  const hookRunning =
+    activityAt > 0 && agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS;
+  return (
+    hookRunning ||
+    status === 'running' ||
+    status === 'waiting' ||
+    status === 'awaiting_input' ||
+    status === 'error'
+  );
+}
+
 // Priority of each status for "which one wants the user most". Lower = more
 // urgent. Drives both the per-leaf attention scan (a background tab can be
 // awaiting_input while the active tab is idle) and the grid sort.

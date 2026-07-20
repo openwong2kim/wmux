@@ -205,10 +205,46 @@ function getBootIdSync(): string {
 const PID_FILE = path.join(wmuxDir, 'daemon.pid');
 const LOCK_FILE = path.join(wmuxDir, 'daemon.lock');
 
-// === Logging (console-based) ===
+// === Logging (console + durable file) ===
+// The daemon is spawned with stdio:'ignore' (see src/main/daemon/launcher.ts),
+// so console output is discarded on EVERY platform — there is no way to see
+// what a running daemon did after the fact. Mirror every line to a rotating
+// file so post-hoc debugging is possible; the recovery decisions taken right
+// after an OS reboot are the case this exists for. Best-effort: a logging
+// failure must never crash the daemon.
+const DAEMON_LOG_PATH = path.join(wmuxDir, 'daemon.log');
+const DAEMON_LOG_MAX_BYTES = 5 * 1024 * 1024; // rotate at 5 MB, keep one .1 backup
+// In-memory byte counter so we don't statSync on every write. -1 = uninitialised
+// (seeded from the existing file size on the first line this process writes).
+let daemonLogBytes = -1;
 function log(level: string, msg: string, ...args: unknown[]): void {
   const ts = new Date().toISOString();
   console.log(`[${ts}] [daemon/${level}] ${msg}`, ...args);
+  try {
+    const extra = args.length
+      ? ' ' + args
+          .map((a) => {
+            if (a instanceof Error) return a.stack ?? a.message;
+            if (typeof a === 'object' && a !== null) {
+              try { return JSON.stringify(a); } catch { return String(a); }
+            }
+            return String(a);
+          })
+          .join(' ')
+      : '';
+    const line = `[${ts}] [daemon/${level}] ${msg}${extra}\n`;
+    if (daemonLogBytes < 0) {
+      try { daemonLogBytes = fs.statSync(DAEMON_LOG_PATH).size; } catch { daemonLogBytes = 0; }
+    }
+    if (daemonLogBytes > DAEMON_LOG_MAX_BYTES) {
+      try { fs.renameSync(DAEMON_LOG_PATH, `${DAEMON_LOG_PATH}.1`); } catch { /* ignore */ }
+      daemonLogBytes = 0;
+    }
+    fs.appendFileSync(DAEMON_LOG_PATH, line);
+    daemonLogBytes += Buffer.byteLength(line);
+  } catch {
+    // Logging must never crash the daemon.
+  }
 }
 
 // === X6 resume on replay ===
@@ -645,6 +681,20 @@ async function recoverSessions(
     log('info', `Boot ID changed (${state.bootId} → ${currentBootId}) — reboot detected, skipping PID kills`);
   }
 
+  // Recovery summary up front so the daemon log makes the outcome legible after
+  // an OS reboot: how many sessions the state file carried and their states.
+  // "loaded 0 session(s)" here means the state file was empty/lost (persistence
+  // failure) — distinct from sessions loading but failing to spawn below.
+  {
+    const byState: Record<string, number> = {};
+    for (const s of state.sessions) byState[s.state] = (byState[s.state] ?? 0) + 1;
+    log(
+      'info',
+      `[recovery] loaded ${state.sessions.length} session(s) from state ` +
+        `(${JSON.stringify(byState)}), rebooted=${rebooted}, bootId=${currentBootId}`,
+    );
+  }
+
   // Pick the MAX_RECOVER_SESSIONS most recently active sessions and skip
   // the rest. Skipped sessions stay in state.sessions verbatim and can be
   // recovered on a later launch once the live count drops, or get reaped
@@ -947,6 +997,16 @@ async function recoverSessions(
     }
   }
   stateWriter.cleanOrphanedBuffers(preservedBufferIds);
+
+  // Completion summary — pairs with the "[recovery] loaded N" line above so the
+  // daemon log tells the whole story: N loaded → M respawned. M=0 while N>0 means
+  // every spawn failed (see the per-session error lines); the daemon has the
+  // sessions but the renderer will show nothing.
+  log(
+    'info',
+    `[recovery] complete: recovered ${recoveredIds.size} of ${state.sessions.length} ` +
+      `loaded; ${recoveredAgentShellIds.size} agent pane(s) flagged for resume pill`,
+  );
 }
 
 // === X8 supervised restart ===
@@ -1373,12 +1433,44 @@ function registerRpcHandlers(
       // 자격증명을 읽지 못하게. s.env는 live 인메모리 meta.env와 동일 참조라 in-place
       // 수정 금지(스폰이 깨짐); stripCredentialValues는 fresh를 반환하므로 교체만 한다.
       const base = { ...s, env: stripCredentialValues(s.env) };
+      // Capture the durable meta binding before stripping it — reused below to
+      // surface a guard-passed binding for LIVE agent panes too, so the per-pane
+      // resume affordance (Inspect/pane-header UUID + 복구) works ANY time, not
+      // only right after a reboot.
+      const durableBinding = base.resumeBinding;
       delete base.resumeBinding;
       const withRuntime = base.supervision
         ? { ...base, supervisionRuntime: paneSupervisor.getRuntime(s.id) }
         : base;
       const withAgent = resumeAgent ? { ...withRuntime, resumeAgent } : withRuntime;
-      return resumeBinding ? { ...withAgent, resumeBinding } : withAgent;
+      // Binding to SURFACE: the recovery-transient one (recovered-this-boot,
+      // cwd+transcript guarded) OR the durable meta binding re-probed for
+      // transcript existence (D5). The cwd guard (F7) is deliberately NOT applied
+      // here — the renderer re-checks cwd against the LIVE surface cwd when it
+      // assembles the command (exact `--resume` vs. cwd-relative `--continue`),
+      // exactly like the recovery pill — so the UUID stays viewable after a `cd`
+      // while an EXACT resume never fires against a mismatched directory. The
+      // existsSync is a per-poll stat but only for agent panes that carry a
+      // binding, and it is what keeps a purged conversation from surfacing a
+      // dead `--resume` (F8).
+      const surfacedBinding =
+        resumeBinding ??
+        (durableBinding && bindingTranscriptLives(durableBinding) ? durableBinding : undefined);
+      // OSC 133 shell-integration state — the AUTHORITATIVE resume-chip gate.
+      // Only surfaced when this pane's shell actually emits markers (size > 0);
+      // an empty log means shell integration is off, so we send `undefined` and
+      // the renderer falls back to its activity heuristic. `true` = a foreground
+      // command (e.g. a live `claude`) owns the PTY, so the chip stays hidden
+      // even while the agent sits idle past the activity TTL — the exact gap the
+      // heuristic alone can't close.
+      const managedForPrompt = sessionManager.getSession(s.id);
+      const commandRunning =
+        managedForPrompt && managedForPrompt.promptLog.size > 0
+          ? managedForPrompt.promptLog.isCommandRunning()
+          : undefined;
+      const withPrompt =
+        commandRunning === undefined ? withAgent : { ...withAgent, commandRunning };
+      return surfacedBinding ? { ...withPrompt, resumeBinding: surfacedBinding } : withPrompt;
     });
   });
 
@@ -3801,11 +3893,21 @@ async function main(): Promise<void> {
   process.on('SIGTERM', () => doShutdown('SIGTERM'));
   process.on('SIGINT', () => doShutdown('SIGINT'));
 
-  // Windows-specific: handle OS shutdown/logoff/restart.
-  // Detached Node processes on Windows don't receive SIGTERM on shutdown.
-  // 'beforeExit' won't fire either. We use the 'exit' event as a last-resort
-  // synchronous save, and also periodic state saves to minimize data loss.
-  if (process.platform === 'win32') {
+  // Last-resort synchronous save on process exit — registered on ALL platforms.
+  //
+  // Windows: detached Node processes don't receive SIGTERM on OS shutdown and
+  // 'beforeExit' won't fire, so 'exit' is the ONLY hook that runs; it is the
+  // primary shutdown-save path there.
+  //
+  // macOS/Linux: the SIGTERM handler above runs the async shutdown() (demote to
+  // suspended + fresh scrollback dump), and the 30s snapshot persists the
+  // session list continuously. This 'exit' handler is a backstop for the paths
+  // that DO reach a clean exit with dumps unfinished (process.exit() from the
+  // shutdown timeout / uncaughtException, or an event-loop drain) — it does NOT
+  // fire on an uncatchable SIGKILL, so on a hard reboot the async SIGTERM path
+  // and the periodic snapshot remain the real durability guarantees. The
+  // dumpsCompleted guard makes it a no-op when the async path already finished.
+  {
     process.on('exit', () => {
       // Phase A — A4. Precise guard: skip the sync save only if the async
       // shutdown body actually finished its dumps. If the async path was

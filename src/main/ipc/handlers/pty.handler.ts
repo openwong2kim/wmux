@@ -755,6 +755,10 @@ export function registerPTYHandlers(
         // X6 ③ — the captured resume binding (origin id + cwd + permission mode),
         // surfaced alongside resumeAgent (recovery-only, cwd-matched) for the pill.
         resumeBinding?: ResumeBinding;
+        // OSC 133 — true = a foreground command owns the PTY, false = at a shell
+        // prompt, undefined = no shell integration. The resume chip's authoritative
+        // gate (Pane.tsx / isPaneAgentBusy).
+        commandRunning?: boolean;
       }>;
       // Map to same shape as local PTYManager.getActiveInstances(), plus an
       // additive `supervision` summary for the renderer's supervision slice
@@ -794,6 +798,10 @@ export function registerPTYHandlers(
           ...(s.resumeAgent ? { resumeAgent: s.resumeAgent } : {}),
           // X6 ③ — carry the binding so the pill can build `--resume <id>`.
           ...(s.resumeBinding ? { resumeBinding: s.resumeBinding } : {}),
+          // OSC 133 shell state — the resume chip's authoritative gate. Only
+          // present when shell integration emits markers (else undefined → the
+          // renderer falls back to its activity heuristic).
+          ...(s.commandRunning !== undefined ? { commandRunning: s.commandRunning } : {}),
         }));
       // RCA A8 — log the count the renderer's reconcile will act on. An empty
       // or short list here, correlated with a renderer ptyId-clear, is the

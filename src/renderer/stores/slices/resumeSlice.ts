@@ -54,6 +54,17 @@ export interface ResumeSlice {
 
   /** Replace the binding map from a `pty.list` snapshot (parallel to hydrateResume). */
   hydrateResumeBindings: (snapshot: Record<string, ResumeBinding>) => void;
+
+  /**
+   * OSC 133 shell state per ptyId — true = a foreground command owns the PTY
+   * (e.g. a live `claude`), false = at a shell prompt. Absent key = the daemon
+   * sent no value (shell integration off) → the resume chip falls back to its
+   * activity heuristic. The AUTHORITATIVE gate for the persistent resume chip.
+   */
+  commandRunningByPtyId: Record<string, boolean>;
+
+  /** Replace the OSC 133 map from a `pty.list` snapshot. */
+  hydrateCommandRunning: (snapshot: Record<string, boolean>) => void;
 }
 
 export const createResumeSlice: StateCreator<
@@ -64,6 +75,7 @@ export const createResumeSlice: StateCreator<
 > = (set) => ({
   resumeHintByPtyId: {},
   resumeBindingByPtyId: {},
+  commandRunningByPtyId: {},
   ptyReadyByPtyId: {},
 
   markPtyReady: (ptyId) => set((draft: StoreState) => {
@@ -87,5 +99,9 @@ export const createResumeSlice: StateCreator<
 
   hydrateResumeBindings: (snapshot) => set((draft: StoreState) => {
     draft.resumeBindingByPtyId = { ...snapshot };
+  }),
+
+  hydrateCommandRunning: (snapshot) => set((draft: StoreState) => {
+    draft.commandRunningByPtyId = { ...snapshot };
   }),
 });

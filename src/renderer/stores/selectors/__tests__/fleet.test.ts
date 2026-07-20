@@ -6,6 +6,7 @@ import {
   selectLatestCompletionEvidenceTask,
   selectWorkspaceAgentStatus,
   selectAllWorkspaceAgentStatus,
+  isPaneAgentBusy,
   HOOK_RUNNING_TTL_MS,
   type FleetPane,
 } from '../fleet';
@@ -503,5 +504,73 @@ describe('selectFleetPanes hook-driven running', () => {
       surfaceActivityAt: { 'pty-a': NOW - 10_000 }, agentClockMs: NOW,
     };
     expect(byPane(selectFleetPanes(fx), 'pa').agentStatus).toBe('running');
+  });
+});
+
+// ─── isPaneAgentBusy — the resume-chip suppression gate ──────────────────────
+describe('isPaneAgentBusy', () => {
+  const NOW = 1_000_000_000;
+
+  it('recent agent activity (within TTL) → busy (chip hidden)', () => {
+    expect(isPaneAgentBusy({
+      activityAt: NOW - 10_000, agentClockMs: NOW, status: undefined,
+    })).toBe(true);
+  });
+
+  it('stale agent activity (past TTL) + no status → idle (chip shown)', () => {
+    expect(isPaneAgentBusy({
+      activityAt: NOW - (HOOK_RUNNING_TTL_MS + 5_000), agentClockMs: NOW, status: undefined,
+    })).toBe(false);
+  });
+
+  it('never-active pane (activityAt 0) + no status → idle', () => {
+    expect(isPaneAgentBusy({ activityAt: 0, agentClockMs: NOW, status: undefined })).toBe(false);
+  });
+
+  it.each(['running', 'waiting', 'awaiting_input', 'error'] as AgentStatus[])(
+    'live attention status %s → busy even with stale activity',
+    (status) => {
+      expect(isPaneAgentBusy({
+        activityAt: NOW - (HOOK_RUNNING_TTL_MS + 5_000), agentClockMs: NOW, status,
+      })).toBe(true);
+    },
+  );
+
+  it.each(['complete', 'idle'] as AgentStatus[])(
+    'settled status %s + stale activity → idle (chip returns)',
+    (status) => {
+      expect(isPaneAgentBusy({
+        activityAt: NOW - (HOOK_RUNNING_TTL_MS + 5_000), agentClockMs: NOW, status,
+      })).toBe(false);
+    },
+  );
+});
+
+// ─── isPaneAgentBusy — OSC 133 authoritative short-circuit ───────────────────
+describe('isPaneAgentBusy — OSC 133 commandRunning', () => {
+  const NOW = 1_000_000_000;
+  const staleActivity = NOW - (HOOK_RUNNING_TTL_MS + 5_000);
+
+  it('commandRunning=true → busy even with NO activity and no status (closes the idle-TUI gap)', () => {
+    expect(isPaneAgentBusy({
+      activityAt: 0, agentClockMs: NOW, status: undefined, commandRunning: true,
+    })).toBe(true);
+  });
+
+  it('commandRunning=false → idle even if the heuristic would say busy (authoritative at-prompt)', () => {
+    // Recent activity AND a running status would both trip the heuristic, but the
+    // shell is provably at a prompt → chip must show.
+    expect(isPaneAgentBusy({
+      activityAt: NOW, agentClockMs: NOW, status: 'running', commandRunning: false,
+    })).toBe(false);
+  });
+
+  it('commandRunning=undefined → falls through to the activity heuristic', () => {
+    expect(isPaneAgentBusy({
+      activityAt: NOW, agentClockMs: NOW, status: undefined, commandRunning: undefined,
+    })).toBe(true);
+    expect(isPaneAgentBusy({
+      activityAt: staleActivity, agentClockMs: NOW, status: undefined, commandRunning: undefined,
+    })).toBe(false);
   });
 });

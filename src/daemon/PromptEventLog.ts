@@ -82,6 +82,28 @@ export class PromptEventLog {
     return null;
   }
 
+  /**
+   * Whether a FOREGROUND command is currently running in the shell (OSC 133).
+   * True between a `command_start` (C) and its `command_end` (D) — i.e. an
+   * interactive agent like `claude` is up, or any other command is executing.
+   * False when the shell is at a prompt waiting for input (last decisive marker
+   * is `command_end` / `prompt_start` / `prompt_end`).
+   *
+   * Used as the AUTHORITATIVE resume-chip gate: typing a resume command while a
+   * foreground command owns the PTY would land in that command's stdin, not a
+   * shell, so the chip must stay hidden until we are back at a prompt. Only
+   * meaningful when shell integration actually emits markers — callers check
+   * `size > 0` first and treat an empty log as "unknown" (heuristic fallback).
+   */
+  isCommandRunning(): boolean {
+    for (let i = this.events.length - 1; i >= 0; i--) {
+      const t = this.events[i].type;
+      if (t === 'command_start') return true;
+      if (t === 'command_end' || t === 'prompt_start' || t === 'prompt_end') return false;
+    }
+    return false; // no decisive marker yet → assume at prompt
+  }
+
   get size(): number {
     return this.events.length;
   }

@@ -915,14 +915,18 @@ export default function AppLayout() {
         const resumeSnapshot: Record<string, AgentSlug> = {};
         // X6 ③: the captured binding (id + cwd + permission mode) for the pill.
         const resumeBindingSnapshot: Record<string, ResumeBinding> = {};
+        // OSC 133 shell state per ptyId — the resume chip's authoritative gate.
+        const commandRunningSnapshot: Record<string, boolean> = {};
         for (const s of sessions) {
           if (s.supervision) snapshot[s.id] = s.supervision;
           if (s.resumeAgent) resumeSnapshot[s.id] = s.resumeAgent as AgentSlug;
           if (s.resumeBinding) resumeBindingSnapshot[s.id] = s.resumeBinding;
+          if (s.commandRunning !== undefined) commandRunningSnapshot[s.id] = s.commandRunning;
         }
         useStore.getState().hydrateSupervision(snapshot);
         useStore.getState().hydrateResume(resumeSnapshot);
         useStore.getState().hydrateResumeBindings(resumeBindingSnapshot);
+        useStore.getState().hydrateCommandRunning(commandRunningSnapshot);
         // 4d (channels): seed agent identity for panes the user has NOT
         // visited yet, so recovered agents show up as invite/mention
         // candidates right after boot instead of only after a visit.
@@ -967,6 +971,31 @@ export default function AppLayout() {
       offChanged();
       offRestarted();
     };
+  }, []);
+
+  // "Anytime" freshness for the per-pane resume affordance (ResumeInfoChip): the
+  // hydrate above only runs on mount + daemon:connected, so a conversation started
+  // AFTER mount wouldn't surface its UUID until a reconnect. A light 15s poll keeps
+  // ONLY the binding map fresh. It deliberately never re-hydrates resume HINTS —
+  // that would resurrect a reboot-recovery pill the user dismissed (resumeSlice
+  // note). One in-memory list RPC per 15s; negligible against the daemon idle diet.
+  useEffect(() => {
+    const refreshBindings = () => {
+      void window.electronAPI.pty.list().then((sessions) => {
+        const snapshot: Record<string, ResumeBinding> = {};
+        // OSC 133 shell state rides the same poll — keeps the chip's authoritative
+        // gate fresh (a foreground command that started/ended since the last tick).
+        const cmdSnapshot: Record<string, boolean> = {};
+        for (const s of sessions) {
+          if (s.resumeBinding) snapshot[s.id] = s.resumeBinding;
+          if (s.commandRunning !== undefined) cmdSnapshot[s.id] = s.commandRunning;
+        }
+        useStore.getState().hydrateResumeBindings(snapshot);
+        useStore.getState().hydrateCommandRunning(cmdSnapshot);
+      }).catch(() => { /* transient list failure — the next tick self-heals */ });
+    };
+    const id = window.setInterval(refreshBindings, 15_000);
+    return () => window.clearInterval(id);
   }, []);
 
   // Session saver: registered on the sessionSaveBridge (event-driven immediate
