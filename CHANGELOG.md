@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **The Git tab (worktrees + review roster) now finds the repo an agent is working in, even when the shell it runs in sits elsewhere.** Repo context used to come only from the pane's shell working directory — but for an agent pane (Claude / Codex TUI) that is typically the directory the shell was *started* in (often the home dir), while the agent works in a repo somewhere else. Result: the sidebar showed the branch just fine, yet the Git tab said "not a git repository". Repo resolution now falls back to the hook-reported agent directory (the same value the sidebar branch badge already trusts) when the shell's own directory doesn't resolve to a repo.
+- **Resume no longer silently downgrades to `--continue` when the pane's tracked directory is stale.** The resume chip/pill only offers the exact `--resume <uuid>` form (with the recorded permission flag) when the conversation's origin directory matches the pane's live directory — but it compared against the shell's tracked cwd, which goes stale across `cd X; claude` one-liners (no prompt render in between, so the shell never reports the new directory). A legitimate exact resume was then downgraded to `--continue`, dropping the permission flag and possibly resuming a different conversation. The match now also accepts the hook-reported agent directory (the same value the sidebar branch badge trusts). Nothing auto-runs either way — the command is only typed, and you press Enter.
+- **A pane's tracked working directory can no longer be corrupted by terminal output that looks like a shell prompt.** Two guards, observed live (a pane's directory stored as the literal token `path`, which then broke Git-tab repo resolution): once a shell has proven it runs the wmux integration hook (it emitted an OSC 7), prompt-scrape directory detection is permanently disabled for that session — the hook is authoritative, so scraping could only ever add false positives; and scraped values must now be absolute (or `~`-anchored) paths on every platform — a bare relative token is never a real working directory.
 ## [3.28.0] — 2026-07-20
 
 ### Added

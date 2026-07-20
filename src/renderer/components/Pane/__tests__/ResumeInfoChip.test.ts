@@ -19,7 +19,7 @@ describe('buildPaneResumeCommand', () => {
   it('cwd match + bypassPermissions → exact resume with the skip-permissions flag', () => {
     const out = buildPaneResumeCommand(
       claude({ permissionMode: 'bypassPermissions' }),
-      '/Users/me/proj',
+      ['/Users/me/proj'],
     );
     expect(out).toEqual({
       command: 'claude --dangerously-skip-permissions --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
@@ -28,7 +28,7 @@ describe('buildPaneResumeCommand', () => {
   });
 
   it('cwd match + default mode → exact resume, no permission flag', () => {
-    const out = buildPaneResumeCommand(claude(), '/Users/me/proj');
+    const out = buildPaneResumeCommand(claude(), ['/Users/me/proj']);
     expect(out).toEqual({
       command: 'claude --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
       exact: true,
@@ -38,34 +38,59 @@ describe('buildPaneResumeCommand', () => {
   it('cwd mismatch → cwd-relative fallback, never an exact resume against the wrong dir', () => {
     const out = buildPaneResumeCommand(
       claude({ permissionMode: 'bypassPermissions' }),
-      '/Users/me/OTHER',
+      ['/Users/me/OTHER'],
     );
     // Fallback carries NO recorded permission mode and no --resume <id>.
     expect(out).toEqual({ command: 'claude --continue', exact: false });
   });
 
   it('missing live cwd → fallback (cannot confirm the cwd-scoped resume)', () => {
-    const out = buildPaneResumeCommand(claude(), undefined);
+    const out = buildPaneResumeCommand(claude(), [undefined]);
     expect(out).toEqual({ command: 'claude --continue', exact: false });
   });
 
   it('codex uses the subcommand grammar', () => {
     const out = buildPaneResumeCommand(
       claude({ agent: 'codex', sessionId: 'sess-77' }),
-      '/Users/me/proj',
+      ['/Users/me/proj'],
     );
     expect(out).toEqual({ command: 'codex resume sess-77', exact: true });
   });
 
   it('trailing-slash / Windows drive-letter case differences still count as a match', () => {
-    expect(buildPaneResumeCommand(claude({ cwd: '/Users/me/proj/' }), '/Users/me/proj')?.exact).toBe(true);
+    expect(buildPaneResumeCommand(claude({ cwd: '/Users/me/proj/' }), ['/Users/me/proj'])?.exact).toBe(true);
     expect(
-      buildPaneResumeCommand(claude({ cwd: 'D:\\repo' }), 'd:/repo')?.exact,
+      buildPaneResumeCommand(claude({ cwd: 'D:\\repo' }), ['d:/repo'])?.exact,
     ).toBe(true);
   });
 
+  // Regression (2026-07-21, live-observed): surface.cwd stale at the shell's
+  // spawn dir (`cd X; claude` one-liner → no prompt render → no OSC 7) while
+  // the hook-reported workspace cwd (metadata.cwd) matched the binding — the
+  // gate wrongly downgraded to `--continue`, dropping the permission flag.
+  it('stale first candidate + matching second candidate (metadata.cwd) → exact resume', () => {
+    const out = buildPaneResumeCommand(
+      claude({ cwd: 'D:\\wmux', permissionMode: 'bypassPermissions' }),
+      ['C:\\Users\\me', 'D:\\wmux'],
+    );
+    expect(out).toEqual({
+      command: 'claude --dangerously-skip-permissions --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
+      exact: true,
+    });
+  });
+
+  it('no candidate matches → fallback', () => {
+    const out = buildPaneResumeCommand(claude(), ['C:\\Users\\me', 'D:\\other']);
+    expect(out).toEqual({ command: 'claude --continue', exact: false });
+  });
+
+  it('empty candidate list → fallback', () => {
+    const out = buildPaneResumeCommand(claude(), []);
+    expect(out).toEqual({ command: 'claude --continue', exact: false });
+  });
+
   it('non-resumable agent → null (no affordance)', () => {
-    expect(buildPaneResumeCommand(claude({ agent: 'gemini' }), '/Users/me/proj')).toBeNull();
+    expect(buildPaneResumeCommand(claude({ agent: 'gemini' }), ['/Users/me/proj'])).toBeNull();
   });
 });
 
@@ -85,7 +110,7 @@ describe('ResumeInfoChip render smoke', () => {
 
   it('mounts and renders the collapsed resume trigger without throwing', () => {
     const html = renderToStaticMarkup(
-      createElement(ResumeInfoChip, { ptyId: 'pty-1', binding, paneCwd: '/Users/me/proj' }),
+      createElement(ResumeInfoChip, { ptyId: 'pty-1', binding, paneCwds: ['/Users/me/proj'] }),
     );
     expect(html).toContain('Resume'); // trigger label (t('resume.label'))
     // Collapsed by default → the UUID is NOT in the initial markup.
@@ -95,7 +120,7 @@ describe('ResumeInfoChip render smoke', () => {
   it('renders nothing for a non-resumable agent', () => {
     const html = renderToStaticMarkup(
       createElement(ResumeInfoChip, {
-        ptyId: 'pty-1', binding: { ...binding, agent: 'gemini' }, paneCwd: '/Users/me/proj',
+        ptyId: 'pty-1', binding: { ...binding, agent: 'gemini' }, paneCwds: ['/Users/me/proj'],
       }),
     );
     expect(html).toBe('');

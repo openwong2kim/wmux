@@ -453,8 +453,17 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           if (/^[A-Za-z]:\//.test(out)) out = out[0].toLowerCase() + out.slice(1);
           return out;
         };
-        const paneCwd = pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd;
-        const cwdMatches = !!(resumeBinding && paneCwd && normCwd(resumeBinding.cwd) === normCwd(paneCwd));
+        // Candidates, not a single cwd (2026-07-21): surface.cwd goes stale
+        // across `cd X; claude` one-liners (no prompt render → no OSC 7), which
+        // wrongly downgraded a legitimate exact resume to `--continue`. The
+        // workspace's hook-reported agent cwd (metadata.cwd) is the second
+        // candidate — same rationale as buildPaneResumeCommand (ResumeInfoChip).
+        const paneCwdCandidates = [
+          pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd,
+          workspace.metadata?.cwd,
+        ];
+        const cwdMatches = !!resumeBinding &&
+          paneCwdCandidates.some((c) => !!c && normCwd(resumeBinding.cwd) === normCwd(c));
         // The binding must be for THIS launcher's agent. The pill's slug
         // (resumeHint) and the binding are surfaced independently, and the daemon
         // only fills lastDetectedAgent when empty — so a stale hint for one agent
@@ -577,7 +586,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         <ResumeInfoChip
           ptyId={activeSurfacePtyId}
           binding={resumeBinding}
-          paneCwd={pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd}
+          paneCwds={[
+            pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd,
+            workspace.metadata?.cwd,
+          ]}
         />
       )}
       <SurfaceTabs

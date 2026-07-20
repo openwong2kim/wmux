@@ -7,20 +7,32 @@ import {
 } from '../../../shared/agentResume';
 
 /**
- * Assemble the resume command for a pane from its binding + LIVE cwd. Mirrors
- * the reboot-recovery pill's gates (Pane.tsx) so the two never diverge:
+ * Assemble the resume command for a pane from its binding + LIVE cwd
+ * candidates. Mirrors the reboot-recovery pill's gates (Pane.tsx) so the two
+ * never diverge:
  *   - exact form (`--resume <id>` + the recorded permission flag) ONLY when the
- *     binding's origin cwd still matches the pane's live cwd (`--resume` is
- *     cwd-scoped); the permission flag rides the SAME line (both must land
- *     together);
+ *     binding's origin cwd still matches one of the pane's cwd candidates
+ *     (`--resume` is cwd-scoped); the permission flag rides the SAME line
+ *     (both must land together);
  *   - otherwise the cwd-relative fallback (Claude `--continue` / Codex
  *     `resume --last`), which carries no recorded mode.
+ *
+ * Why candidates, not a single cwd (2026-07-21, live-observed): surface.cwd is
+ * the SHELL's tracked cwd and goes stale across `cd X; claude` one-liners (no
+ * prompt render → no OSC 7) — the shell truly sat in the binding's cwd, yet the
+ * gate compared against the stale value and wrongly downgraded a legitimate
+ * exact resume to `--continue` (dropping the permission flag with it). The
+ * workspace's hook-reported agent cwd (metadata.cwd) is the second candidate.
+ * A false positive types a `--resume` that claude rejects visibly (nothing
+ * auto-runs — the user presses Enter); a false negative silently resumes the
+ * WRONG conversation. Loud beats silent.
+ *
  * Returns `null` for a non-resumable agent (no grammar). Pure + exported so the
  * exact-vs-fallback decision is unit-testable without rendering.
  */
 export function buildPaneResumeCommand(
   binding: ResumeBinding,
-  paneCwd: string | undefined,
+  paneCwds: ReadonlyArray<string | undefined>,
 ): { command: string; exact: boolean } | null {
   const grammar = resumeGrammarFor(binding.agent);
   if (!grammar) return null;
@@ -30,7 +42,8 @@ export function buildPaneResumeCommand(
     if (/^[A-Za-z]:\//.test(out)) out = out[0].toLowerCase() + out.slice(1);
     return out;
   };
-  const exact = !!(paneCwd && normCwd(binding.cwd) === normCwd(paneCwd));
+  const target = normCwd(binding.cwd);
+  const exact = paneCwds.some((c) => !!c && normCwd(c) === target);
   const permFlag = exact ? permissionFlagFor(binding.permissionMode) : '';
   const command = exact
     ? `${binding.agent}${permFlag ? ` ${permFlag}` : ''} ${grammar.withId(binding.sessionId)}`
@@ -53,15 +66,17 @@ export function buildPaneResumeCommand(
 export default function ResumeInfoChip(props: {
   ptyId: string;
   binding: ResumeBinding;
-  /** The pane's live surface cwd (OSC 7-updated) for the cwd-match re-guard. */
-  paneCwd: string | undefined;
+  /** Live cwd candidates for the cwd-match re-guard, in trust order:
+   *  surface.cwd (OSC 7-tracked shell cwd), then the workspace's hook-reported
+   *  agent cwd (metadata.cwd) — see buildPaneResumeCommand. */
+  paneCwds: ReadonlyArray<string | undefined>;
 }): React.ReactElement | null {
-  const { ptyId, binding, paneCwd } = props;
+  const { ptyId, binding, paneCwds } = props;
   const t = useT();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
 
-  const built = buildPaneResumeCommand(binding, paneCwd);
+  const built = buildPaneResumeCommand(binding, paneCwds);
   if (!built) return null; // not a resumable agent — nothing to offer
   const { command } = built;
 
