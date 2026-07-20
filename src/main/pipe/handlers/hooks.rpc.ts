@@ -242,8 +242,8 @@ export function registerHooksRpc(
     // list without a renderer round-trip (that round-trip is exactly what a
     // large-buffer flush storm starves, timing out the bridge's 2s cap). See
     // that function for the topology-stability + bounded-staleness rules.
-    const { workspaces, fetchMs } = await resolveWorkspacesForSignal(signal, workspaceCache);
-    floodMeter.record({ degraded: fetchMs > HOOK_DEGRADED_FETCH_MS || !workspaces, fetchMs });
+    const { workspaces, fetchMs, fastPathed } = await resolveWorkspacesForSignal(signal, workspaceCache);
+    floodMeter.record({ degraded: fetchMs > HOOK_DEGRADED_FETCH_MS || !workspaces, fetchMs, fastPathed });
     if (!workspaces) {
       // Record as a miss because we couldn't determine match either
       // way — better than silently skewing the counter to "matched".
@@ -670,29 +670,40 @@ export function createWorkspaceListCache(
  *   - the last-known list is younger than STALE_TRUST_MS. Beyond that we stop
  *     trusting an arbitrarily old map and block on a fresh fetch (a renderer
  *     dead >10s is exactly when we SHOULD wait for it).
- *   - that list actually resolves the ptyId. A miss means the pane is newer
- *     than the cache; fall back to one authoritative fetch.
+ *   - the cached list contains the pane's OWN id — checked via
+ *     `resolvePtyIdForSignal(...) === signal.ptyId`. This is the load-bearing
+ *     guard (codex + GLM P1/P2): it must NOT be a bare truthiness check on the
+ *     resolver, because the resolver's workspaceId/cwd FALLBACK would resolve a
+ *     newly-created pane (whose ptyId isn't cached yet) to some OTHER pane's id.
+ *     Fast-pathing on that would route the new pane's authority / resume-binding
+ *     / dedup to the wrong pane until the next refresh — the exact cross-pane
+ *     resume-binding clobber the X6③ exact-ptyId routing was added to prevent.
+ *     The resolver returns EXACTLY `signal.ptyId` only when its exact-ptyId
+ *     branch fires (id present in the list + workspace cross-check), which is
+ *     the topology-stable case; any fallback returns a different id.
  *
  * On the fast path we `prime()` the cache (fire-and-forget) so it stays warm
- * for the next hook without blocking this one. `fetchMs` is 0 on the fast path
- * (no round-trip) so the flood meter records it as non-degraded.
+ * for the next hook without blocking this one. `fetchMs` is 0 (no round-trip)
+ * and `fastPathed` is true so the flood meter can report how many hooks the
+ * cache absorbed — a green "0 degraded" during a real flush storm would
+ * otherwise hide the saturation (GLM P2).
  */
 export async function resolveWorkspacesForSignal(
   signal: AgentSignal,
   cache: Pick<WorkspaceListCache, 'get' | 'peek' | 'prime'>,
-): Promise<{ workspaces: WorkspaceListEntry[] | null; fetchMs: number }> {
+): Promise<{ workspaces: WorkspaceListEntry[] | null; fetchMs: number; fastPathed: boolean }> {
   const peeked = signal.ptyId ? cache.peek() : null;
   if (
     peeked &&
     peeked.ageMs < STALE_TRUST_MS &&
-    resolvePtyIdForSignal(signal, peeked.list)
+    resolvePtyIdForSignal(signal, peeked.list) === signal.ptyId
   ) {
     cache.prime(); // keep the cache warm without blocking this hook
-    return { workspaces: peeked.list, fetchMs: 0 };
+    return { workspaces: peeked.list, fetchMs: 0, fastPathed: true };
   }
   const fetchStart = Date.now();
   const workspaces = await cache.get();
-  return { workspaces, fetchMs: Date.now() - fetchStart };
+  return { workspaces, fetchMs: Date.now() - fetchStart, fastPathed: false };
 }
 
 /**

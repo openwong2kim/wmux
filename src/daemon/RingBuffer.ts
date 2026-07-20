@@ -23,14 +23,21 @@ const TMP_SUFFIX_RE = /\.tmp\.[0-9a-f]+$/;
 const RENAME_RETRY_CODES = new Set(['EPERM', 'EACCES', 'EBUSY']);
 const RENAME_RETRY_BACKOFFS_MS = [20, 50, 100, 200]; // ≤ +370 ms, trivial vs the 30 s tick
 
-// Per-DESTINATION serialization for async dumps (codex #4). The rename retry
-// widens a pre-existing race: three call sites — the 30 s snapshot tick, the
-// interrupted-session dump, and the shutdown dump — can each dump the SAME
-// session path, and a retry-delayed older dump could otherwise rename AFTER a
-// newer one and restore stale scrollback. Atomic rename guarantees integrity,
-// not freshness. Chaining dumps to the same path (keyed by the destination, the
-// actual shared resource) makes the newest-enqueued dump land last. The map
-// entry is deleted once the chain tail resolves, so it never grows unbounded.
+// Per-DESTINATION serialization for the ASYNC dumps (codex #4). The rename
+// retry widens a pre-existing race: the async call sites — the 30 s snapshot
+// tick, the interrupted-session dump, and the async shutdown dump — can each
+// dump the SAME session path, and a retry-delayed older dump could otherwise
+// rename AFTER a newer one and restore stale scrollback. Atomic rename
+// guarantees integrity, not freshness. Chaining dumps to the same path (keyed
+// by the destination, the actual shared resource) makes the newest-enqueued
+// dump land last. The map entry is deleted once the chain tail resolves, so it
+// never grows unbounded.
+//
+// The SYNC exit path (dumpToFileSyncAtomic) is deliberately NOT chained: it is
+// the terminal last-word write in the Windows process.on('exit') handler, where
+// no event loop is left to await a chain, and it runs after the async shutdown
+// body has settled — so it is already the freshest, final write by construction
+// (GLM P3: this is a doc clarification, not a gap).
 const dumpChains = new Map<string, Promise<void>>();
 
 /**

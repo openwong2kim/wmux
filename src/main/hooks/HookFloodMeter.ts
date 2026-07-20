@@ -19,6 +19,14 @@ export interface HookFloodSample {
   degraded: boolean;
   /** Wall-clock ms the workspace.list resolution took for this signal. */
   fetchMs: number;
+  /**
+   * True when the signal was served from the env-routed cache fast path (Fix B)
+   * with NO renderer round-trip. Without counting these, a real flush storm
+   * reads as "0 degraded" because the ptyId hooks bypass the fetch entirely —
+   * the meter would go green precisely when the renderer is most saturated
+   * (GLM P2). Surfacing the count keeps that visible.
+   */
+  fastPathed?: boolean;
 }
 
 export interface HookFloodSummary {
@@ -26,17 +34,20 @@ export interface HookFloodSummary {
   total: number;
   degraded: number;
   maxFetchMs: number;
+  fastPathed: number;
 }
 
 export class HookFloodMeter {
   private total = 0;
   private degraded = 0;
   private maxFetchMs = 0;
+  private fastPathed = 0;
 
   record(sample: HookFloodSample): void {
     this.total++;
     if (sample.degraded) this.degraded++;
     if (sample.fetchMs > this.maxFetchMs) this.maxFetchMs = sample.fetchMs;
+    if (sample.fastPathed) this.fastPathed++;
   }
 
   /**
@@ -51,10 +62,12 @@ export class HookFloodMeter {
       total: this.total,
       degraded: this.degraded,
       maxFetchMs: this.maxFetchMs,
+      fastPathed: this.fastPathed,
     };
     this.total = 0;
     this.degraded = 0;
     this.maxFetchMs = 0;
+    this.fastPathed = 0;
     return summary;
   }
 }
@@ -66,7 +79,7 @@ export class HookFloodMeter {
 export function describeHookFlood(s: HookFloodSummary): { level: 'info' | 'warn'; message: string } {
   const secs = Math.round(s.windowMs / 1000);
   const pct = s.total > 0 ? Math.round((s.degraded / s.total) * 100) : 0;
-  const base = `[hooks] last ${secs}s: ${s.total} signals, ${s.degraded} degraded (${pct}% slow/failed workspace.list), maxFetch ${s.maxFetchMs}ms`;
+  const base = `[hooks] last ${secs}s: ${s.total} signals, ${s.degraded} degraded (${pct}% slow/failed workspace.list), ${s.fastPathed} fast-pathed (cache, no renderer RTT), maxFetch ${s.maxFetchMs}ms`;
   // Flood = a non-trivial sample AND ≥10% degraded. Below that, a stray slow
   // fetch is noise, not a pattern worth a warning.
   const isFlood = s.total >= 10 && s.degraded / s.total >= 0.1;

@@ -270,14 +270,32 @@ describe('resolveWorkspacesForSignal — env-routed fast path (Fix B)', () => {
 
   it('env ptyId + fresh warm cache that resolves → serves peek, NO fetch, primes', async () => {
     const cache = fakeCache({ peek: { list: paneList, ageMs: 500 }, get: [] });
-    const { workspaces, fetchMs } = await resolveWorkspacesForSignal(
+    const { workspaces, fetchMs, fastPathed } = await resolveWorkspacesForSignal(
       signal({ ptyId: 'p1', workspaceId: 'w1', cwd: '/repo' }),
       cache,
     );
     expect(workspaces).toBe(paneList); // served from the cached snapshot
     expect(fetchMs).toBe(0); // no round-trip
+    expect(fastPathed).toBe(true); // surfaced to the flood meter
     expect(cache.get).not.toHaveBeenCalled(); // <-- the core regression guard
     expect(cache.prime).toHaveBeenCalledTimes(1); // kept warm in the background
+  });
+
+  it('env ptyId NOT in cache but workspaceId matches → does NOT fast-path (regression: codex + GLM P1)', async () => {
+    // The pane is newer than the cache: its ptyId 'p-new' is absent from
+    // paneList, but its workspaceId 'w1' matches, so resolvePtyIdForSignal falls
+    // back to w1's activePtyId 'p1'. A bare-truthiness gate would fast-path and
+    // route the NEW pane's hook (authority / resume-binding / dedup) to p1 — the
+    // wrong pane — until the next refresh. Exact-membership (`=== signal.ptyId`)
+    // must reject the fallback and take the authoritative fetch instead.
+    const cache = fakeCache({ peek: { list: paneList, ageMs: 100 }, get: paneList });
+    const { fastPathed } = await resolveWorkspacesForSignal(
+      signal({ ptyId: 'p-new', workspaceId: 'w1', cwd: '/repo' }),
+      cache,
+    );
+    expect(fastPathed).toBe(false); // did NOT trust the fallback resolution
+    expect(cache.get).toHaveBeenCalledTimes(1); // authoritative fetch instead
+    expect(cache.prime).not.toHaveBeenCalled();
   });
 
   it('env ptyId but cache staler than STALE_TRUST_MS → blocking fetch', async () => {
