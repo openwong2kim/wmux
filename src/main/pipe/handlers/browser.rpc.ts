@@ -72,7 +72,10 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       // Memory relief (#517 slice C): automation targeting a discarded guest
       // wakes it (renderer remounts + page reloads) before taking the lease,
       // so hidden-guest automation keeps working instead of "no target".
-      if (!resolved && surfaceId) {
+      // Also with NO surfaceId: ensureAwake falls back to any discarded
+      // surface, matching getTarget()'s default-target contract (codex P1 —
+      // otherwise the default MCP path fails once the only pane is discarded).
+      if (!resolved) {
         resolved = (await webviewCdpManager.ensureAwake(surfaceId))?.surfaceId;
       }
       if (!resolved) return handler(params);
@@ -89,8 +92,9 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     let resolved = webviewCdpManager.getTarget(surfaceId)?.surfaceId;
     // Wake a discarded guest so out-of-process (Playwright) automation gets a
-    // live target under its lease (#517 slice C).
-    if (!resolved && surfaceId) {
+    // live target under its lease (#517 slice C). Works without surfaceId too
+    // (defaults to any discarded surface, matching getTarget's contract).
+    if (!resolved) {
       resolved = (await webviewCdpManager.ensureAwake(surfaceId))?.surfaceId;
     }
     if (!resolved) return { token: null };

@@ -82,6 +82,11 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
   const [discarded, setDiscarded] = useState(false);
   const [mountSrc, setMountSrc] = useState(initialUrl);
   const currentUrlRef = useRef(initialUrl);
+  // Mirrors `discarded` for the restore guard — a state-updater must stay
+  // pure (no setMountSrc inside it; StrictMode double-invokes updaters), so
+  // restoreFromDiscard reads/writes this ref and then sets state plainly
+  // (Claude+GLM review).
+  const discardedRef = useRef(false);
   const [inspecting, setInspecting] = useState(false);
   const [inspectInfo, setInspectInfo] = useState<string | null>(null);
 
@@ -104,11 +109,10 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
   }, [currentUrl]);
 
   const restoreFromDiscard = useCallback(() => {
-    setDiscarded((wasDiscarded) => {
-      if (!wasDiscarded) return wasDiscarded;
-      setMountSrc(currentUrlRef.current);
-      return false;
-    });
+    if (!discardedRef.current) return;
+    discardedRef.current = false;
+    setMountSrc(currentUrlRef.current);
+    setDiscarded(false);
   }, []);
 
   // Discard/wake signals from main (#517 slice C). Discard unmounts the
@@ -118,6 +122,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
     const api = (window as any).electronAPI?.browser;
     const offDiscard = api?.onDiscarded?.((sid: string) => {
       if (sid !== surfaceId) return;
+      discardedRef.current = true;
       setIsReady(false);
       setDiscarded(true);
     });
@@ -263,6 +268,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
     if (!isSafeBrowserUrl(url)) return;
     if (discarded) {
       // Navigating a discarded pane restores it directly onto the target URL.
+      discardedRef.current = false;
       setMountSrc(url);
       setCurrentUrl(url);
       setDiscarded(false);

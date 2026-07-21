@@ -80,6 +80,10 @@ export class WebviewCdpManager {
   // Renderer signalling hooks, injected by main/index.ts.
   private onDiscard?: (surfaceId: string) => void;
   private onWake?: (surfaceId: string) => void;
+  // In-flight wake promises, keyed by surfaceId — concurrent automation
+  // targeting the same discarded surface must share ONE wake (a duplicate
+  // browser:wake would remount/reload the page twice) (GLM review).
+  private waking = new Map<string, Promise<CdpTargetInfo | null>>();
   // Keyed by surfaceId; survives register/unregister so a visibility signal
   // that arrives before register() still applies.
   private guestState = new Map<string, GuestState>();
@@ -292,11 +296,20 @@ export class WebviewCdpManager {
       this.recomputeThrottle(surfaceId);
     }
     if (!enabled) {
-      // Cancel pending dwell timers for surfaces without a live session too.
-      for (const gs of this.guestState.values()) {
+      // Cancel pending dwell timers for surfaces without a live session too,
+      // and restore already-discarded panes — turning the option off must not
+      // leave panes stranded on the placeholder (GLM review).
+      for (const [sid, gs] of this.guestState) {
         if (gs.discardTimer) {
           clearTimeout(gs.discardTimer);
           gs.discardTimer = null;
+        }
+        if (gs.discarded) {
+          try {
+            this.onWake?.(sid);
+          } catch (err) {
+            console.warn(`[WebviewCdpManager] restore-on-disable failed:`, err);
+          }
         }
       }
     }
@@ -317,27 +330,52 @@ export class WebviewCdpManager {
   }
 
   /**
-   * Resolve a live CDP target for a surface, waking it first if it was
-   * discarded. Returns null when the surface is neither registered nor
-   * discarded (nothing to wake), or when the wake reload times out.
+   * Resolve a live CDP target, waking a discarded surface first. With no
+   * surfaceId, falls back to any live session and then to any discarded
+   * surface — mirroring getTarget()'s default-target behavior, so automation
+   * that omits surfaceId keeps working after the only browser pane was
+   * discarded (codex review P1). Returns null when there is nothing live and
+   * nothing to wake, or when the wake reload times out. Concurrent calls for
+   * the same surface share one in-flight wake.
    */
-  async ensureAwake(surfaceId: string): Promise<CdpTargetInfo | null> {
-    const existing = this.sessions.get(surfaceId);
-    if (existing) return existing;
-    const gs = this.guestState.get(surfaceId);
-    if (!gs?.discarded) return null;
-    console.log(`[WebviewCdpManager] waking discarded surface=${surfaceId}`);
-    try {
-      this.onWake?.(surfaceId);
-    } catch (err) {
-      console.warn(`[WebviewCdpManager] wake signal failed:`, err);
-      return null;
+  async ensureAwake(surfaceId?: string): Promise<CdpTargetInfo | null> {
+    let resolved = surfaceId;
+    if (!resolved) {
+      const first = this.sessions.values().next();
+      if (!first.done) return first.value;
+      // No live session — wake the first discarded surface, if any.
+      for (const [sid, gs] of this.guestState) {
+        if (gs.discarded) { resolved = sid; break; }
+      }
+      if (!resolved) return null;
     }
+    const existing = this.sessions.get(resolved);
+    if (existing) return existing;
+    const gs = this.guestState.get(resolved);
+    if (!gs?.discarded) return null;
+    const inFlight = this.waking.get(resolved);
+    if (inFlight) return inFlight;
+    const sid = resolved;
+    const wake = (async (): Promise<CdpTargetInfo | null> => {
+      console.log(`[WebviewCdpManager] waking discarded surface=${sid}`);
+      try {
+        this.onWake?.(sid);
+      } catch (err) {
+        console.warn(`[WebviewCdpManager] wake signal failed:`, err);
+        return null;
+      }
+      try {
+        return await this.waitForTarget(sid, WAKE_TIMEOUT_MS);
+      } catch {
+        console.warn(`[WebviewCdpManager] wake timed out for surface=${sid}`);
+        return null;
+      }
+    })();
+    this.waking.set(sid, wake);
     try {
-      return await this.waitForTarget(surfaceId, WAKE_TIMEOUT_MS);
-    } catch {
-      console.warn(`[WebviewCdpManager] wake timed out for surface=${surfaceId}`);
-      return null;
+      return await wake;
+    } finally {
+      this.waking.delete(sid);
     }
   }
 
@@ -545,6 +583,15 @@ export class WebviewCdpManager {
     } catch { /* audible check is best-effort */ }
     gs.discarded = true;
     console.log(`[WebviewCdpManager] discarding surface=${surfaceId}`);
+    // Retire the session SYNCHRONOUSLY, before the renderer signal. The
+    // actual <webview> unmount is an async renderer round-trip; if the
+    // session stayed published during that window, getTarget()/the leased RPC
+    // wrapper would hand automation a target that the already-queued unmount
+    // is about to destroy mid-op (3-way review consensus). With the session
+    // gone first, that automation resolves no target and takes the
+    // ensureAwake path instead — and IPC ordering guarantees the renderer
+    // sees discard before the wake, so it unmounts then remounts cleanly.
+    this.unregister(surfaceId);
     try {
       this.onDiscard?.(surfaceId);
     } catch (err) {

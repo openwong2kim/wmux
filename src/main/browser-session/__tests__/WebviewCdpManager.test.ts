@@ -474,3 +474,71 @@ describe('WebviewCdpManager discard mode (#517 slice C)', () => {
     expect(manager.isDiscarded('s1')).toBe(false);
   });
 });
+
+// ── #517 slice C — review-team fixes ────────────────────────────────────────
+
+describe('WebviewCdpManager discard fixes (3-way review)', () => {
+  let manager: WebviewCdpManager;
+  const DWELL = 5 * 60_000;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    (mockWebContents as any).isCurrentlyAudible = vi.fn(() => false);
+    manager = new WebviewCdpManager(18800);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const discardOne = async (surfaceId = 's1', wcId = 42) => {
+    await manager.register(surfaceId, wcId);
+    manager.setLightweightMode(true);
+    manager.setDiscardMode(true);
+    manager.setVisibility(surfaceId, false);
+    vi.advanceTimersByTime(DWELL);
+  };
+
+  it('fireDiscard retires the session BEFORE signalling the renderer (doomed-guest race)', async () => {
+    let targetAtSignal: unknown = 'unset';
+    manager.setDiscardHooks({
+      onDiscard: () => { targetAtSignal = manager.getTarget('s1'); },
+    });
+    await discardOne();
+    // Automation racing the renderer unmount must already see no target —
+    // otherwise it leases a guest the queued unmount destroys mid-op.
+    expect(targetAtSignal).toBeNull();
+    expect(manager.isDiscarded('s1')).toBe(true);
+  });
+
+  it('concurrent ensureAwake calls share a single wake signal', async () => {
+    const onWake = vi.fn((sid: string) => { void manager.register(sid, 43); });
+    manager.setDiscardHooks({ onWake });
+    await discardOne();
+    const [a, b] = [manager.ensureAwake('s1'), manager.ensureAwake('s1')];
+    await vi.advanceTimersByTimeAsync(100);
+    expect(await a).not.toBeNull();
+    expect(await b).not.toBeNull();
+    expect(onWake).toHaveBeenCalledTimes(1);
+  });
+
+  it('ensureAwake without surfaceId wakes a discarded surface (codex P1)', async () => {
+    const onWake = vi.fn((sid: string) => { void manager.register(sid, 43); });
+    manager.setDiscardHooks({ onWake });
+    await discardOne();
+    const awake = manager.ensureAwake();
+    await vi.advanceTimersByTimeAsync(100);
+    expect((await awake)?.surfaceId).toBe('s1');
+    expect(onWake).toHaveBeenCalledWith('s1');
+  });
+
+  it('turning discard mode off restores already-discarded panes', async () => {
+    const onWake = vi.fn();
+    manager.setDiscardHooks({ onWake });
+    await discardOne();
+    expect(manager.isDiscarded('s1')).toBe(true);
+    manager.setDiscardMode(false);
+    expect(onWake).toHaveBeenCalledWith('s1');
+  });
+});

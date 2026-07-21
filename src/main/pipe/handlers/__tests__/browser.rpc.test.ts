@@ -55,6 +55,7 @@ describe('registerBrowserRpc', () => {
       listTargets: vi.fn(() => [{ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/target-1' }]),
       getCdpPort: vi.fn(() => 18800),
       waitForTarget: vi.fn(),
+      ensureAwake: vi.fn(async () => null),
       setCaptureCleanup: vi.fn(),
       // #517: automation ops run through the per-op lease wrapper.
       withAutomationLease: vi.fn(async (_surfaceId: string, fn: () => Promise<unknown>) => fn()),
@@ -329,6 +330,7 @@ describe('registerBrowserRpc', () => {
       listTargets: vi.fn(() => []),
       getCdpPort: vi.fn(() => 18800),
       waitForTarget: vi.fn(),
+      ensureAwake: vi.fn(async () => null),
       setCaptureCleanup: vi.fn(),
       // #517: no registered target → registerLeased runs the handler unleased.
       withAutomationLease: vi.fn(async (_surfaceId: string, fn: () => Promise<unknown>) => fn()),
