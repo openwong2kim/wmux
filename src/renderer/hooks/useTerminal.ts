@@ -32,9 +32,11 @@ import {
   noteTerminalInput,
   discardTerminalOutput,
   isTerminalDirty,
+  isTerminalRetained,
   markTerminalDirty,
   markTerminalClean,
   getQueuedCharCount,
+  promoteTerminalToPriorityDrain,
 } from '../terminal/terminalOutputScheduler';
 import { reconnectPtyWithRetry as reconnectPtyWithRetryImpl } from './reconnectPtyWithRetry';
 
@@ -164,6 +166,22 @@ export function subscribePaneSyncUi(ptyId: string, listener: (s: PaneSyncUiState
 function hiddenRetentionActive(): boolean {
   return isDaemonModeActive() && useStore.getState().hiddenPaneRetentionEnabled;
 }
+
+/** Reveal-time flush cap (GPU repaint-burst fix, 2026-07-21). A retained
+ *  backlog handed to xterm in one shot on reveal is a single giant parse that
+ *  dirties the whole viewport and rasters it across many consecutive frames —
+ *  the measured workspace-switch burst. Above this size we discard the backlog
+ *  and re-synchronize a bounded screen snapshot from the daemon instead, which
+ *  is cheaper than parsing to reconstruct a screen the daemon can serialize in
+ *  a few KB (one clean repaint vs. a multi-frame raster storm).
+ *
+ *  Threshold: xterm parses ~5–35 MB/s (xterm.js flow-control docs), so 256 KB
+ *  is ~7–50 ms of parse — the point where a reveal starts spanning multiple
+ *  frames and the raster becomes perceptible. This is the SOFT (perf) cap;
+ *  MAX_QUEUE_CHARS (2 MB, scheduler) is the HARD (memory) cap that force-
+ *  discards. Both use the identical discard→dirty→resync mechanism and safety;
+ *  they differ only in trigger (perceptible parse vs. unbounded memory). */
+const REVEAL_FLUSH_MAX_CHARS = 256 * 1024;
 
 /** One-shot diagnostic latch: logged at the first data event that arrives for
  *  a HIDDEN pane (the earliest moment the retention decision matters), with
@@ -1994,10 +2012,51 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
           // to keep the main log usable; anything that had retained backlog
           // logs the catch-up size.
           const queued = getQueuedCharCount(terminalRef.current);
-          if (queued > 0) {
-            console.log(`[wmux:reveal] ptyId=${ptyIdRef.current} mechanism=retained-catchup queuedChars=${queued}`);
+          // Reveal-backlog-cap: a large RETAINED backlog handed to xterm in one
+          // shot is the workspace-switch raster burst. Above the cap, discard it
+          // and re-synchronize a bounded snapshot from the daemon — identical
+          // mechanism and safety to the retention overflow→dirty path, just at a
+          // lower (perf, not memory) threshold.
+          //
+          // Two-part gate (review-team 2026-07-21):
+          //  - isTerminalRetained (per-pane): a retained entry is only ever
+          //    produced by the retainWhenHidden write path, so its bytes came
+          //    from the daemon and are in the RingBuffer. A non-retained backlog
+          //    (background drain / a local pane) is NEVER capped — discarding it
+          //    could lose the pane's only copy (GLM+Codex round-1 P1).
+          //  - isDaemonModeActive (current reachability): `retained` is
+          //    historical — the daemon could have disconnected AFTER the bytes
+          //    were retained. Without this the reveal would discard the only
+          //    copy while resync fails with local-mode/session-gone (Codex
+          //    round-2 P1). Requiring the daemon to be live NOW means resync can
+          //    actually replace what we discard; on resync failure the pane
+          //    stays dirty and retries, and the daemon still holds the bytes.
+          // Caveat: a renderer-only exit marker (terminal.exitedBracket) in the
+          // backlog is dropped — the same tradeoff as the overflow path, now
+          // more frequent at the 256KB cap; the daemon resync replays the PTY's
+          // real final screen, which conveys the exit, just not the localized
+          // bracket.
+          if (
+            queued > REVEAL_FLUSH_MAX_CHARS &&
+            isTerminalRetained(terminalRef.current) &&
+            isDaemonModeActive()
+          ) {
+            console.log(`[wmux:reveal] ptyId=${ptyIdRef.current} mechanism=reveal-backlog-cap queuedChars=${queued}`);
+            markTerminalDirty(terminalRef.current);
+            void startResync('reveal-backlog-cap');
+          } else if (queued > REVEAL_FLUSH_MAX_CHARS) {
+            // Large but NON-retained (or daemon down): we can't discard it (the
+            // queue is the only copy), but flushing it inline would burst. Hand
+            // it to the budgeted priority drain so it catches up over frames
+            // instead of one giant parse — data-loss-safe, order preserved.
+            console.log(`[wmux:reveal] ptyId=${ptyIdRef.current} mechanism=reveal-budgeted-catchup queuedChars=${queued}`);
+            promoteTerminalToPriorityDrain(terminalRef.current);
+          } else {
+            if (queued > 0) {
+              console.log(`[wmux:reveal] ptyId=${ptyIdRef.current} mechanism=retained-catchup queuedChars=${queued}`);
+            }
+            flushTerminalOutput(terminalRef.current);
           }
-          flushTerminalOutput(terminalRef.current);
         }
       }
       // Cancel any pending deferred release — the terminal is visible again

@@ -76,6 +76,11 @@ interface QueueEntry {
    *  the background cadence. Cleared the moment a foreground write arrives
    *  (pane became visible → normal priority catch-up drains the backlog). */
   retained: boolean;
+  /** True while this entry's chunks are held behind an open DEC 2026
+   *  synchronized-output frame. Like `retained`, held entries are invisible to
+   *  the drain loop — they are released (drained once) on the frame's END
+   *  marker or the hold safety timeout, never by another terminal's drain. */
+  heldForSync: boolean;
   onWritten?: (chars: number) => void;
 }
 
@@ -117,6 +122,28 @@ const MAX_QUEUE_CHARS = 2 * 1024 * 1024;
 /** Compact consumed chunk slots once the dead prefix grows past this. */
 const COMPACT_THRESHOLD = 64;
 
+// DEC private mode 2026 — synchronized output. A TUI (Claude Code, Codex,
+// anything on Ratatui/Textual) wraps a full-screen repaint in BEGIN…END so a
+// conforming terminal presents the frame atomically instead of painting every
+// intermediate cursor move. Public spec:
+//   https://gist.github.com/christianparpart/d8a62cc1ab659194337d73e399004036
+// We hold a visible pane's foreground output OUT of xterm while a frame is open
+// (no parse, no raster) and release it once on END, so Chromium rasters once
+// per TUI frame instead of once per intermediate chunk. This is the fix for the
+// GPU repaint-burst that starves input under an agent flood (typing lag, Hangul
+// IME composition truncation, paste truncation).
+const SYNC_OUTPUT_BEGIN = '\x1b[?2026h';
+const SYNC_OUTPUT_END = '\x1b[?2026l';
+// If the END marker never lands (ConPTY can split it across PTY deliveries, or
+// an agent can simply misbehave) the hold is released anyway after a bounded
+// safety window so a pane can never wedge mid-frame.
+const SYNC_HOLD_SAFETY_MS = 250;
+// A frame opened right after a keystroke is echo / input-driven redraw the user
+// is waiting on. Release it on a near-frame deadline so typing and IME
+// composition never queue behind a held frame — this is what keeps input
+// responsive while an agent's autonomous output coalesces on the slow window.
+const SYNC_HOLD_INTERACTIVE_SAFETY_MS = 32;
+
 const queue = new Map<SchedulableTerminal, QueueEntry>();
 /** Last user-input timestamp per terminal. The interactive window after this
  *  keeps the terminal's foreground output on the direct-write path (echo /
@@ -128,6 +155,16 @@ const lastInputAt = new Map<SchedulableTerminal, number>();
  *  further retained bytes are dropped outright (they are re-obtainable from
  *  the daemon RingBuffer; queueing them would just re-overflow). */
 const dirtyTerminals = new Set<SchedulableTerminal>();
+/** Per-terminal DEC 2026 synchronized-output frame state. Present only while a
+ *  frame is open or its release is pending. `interactive` is latched at the
+ *  open transition so the safety deadline reflects whether the user was typing
+ *  when the frame began, not when it (maybe never) closes. */
+interface SyncFrameState {
+  open: boolean;
+  interactive: boolean;
+  safetyTimer: ReturnType<typeof setTimeout> | null;
+}
+const syncFrames = new Map<SchedulableTerminal, SyncFrameState>();
 let drainTimer: ReturnType<typeof setTimeout> | null = null;
 let drainDelayMs: number | null = null;
 /** One-shot diagnostic latch — see the retention branch in writeTerminalOutput. */
@@ -169,7 +206,7 @@ function getOrCreateEntry(
 ): QueueEntry {
   let entry = queue.get(terminal);
   if (!entry) {
-    entry = { terminal, chunks: [], chunkIndex: 0, queuedChars: 0, priority: false, retained: false };
+    entry = { terminal, chunks: [], chunkIndex: 0, queuedChars: 0, priority: false, retained: false, heldForSync: false };
     queue.set(terminal, entry);
   }
   // Latest registration wins — the hook closure belongs to the current mount.
@@ -232,31 +269,38 @@ function writeQueuedChunk(entry: QueueEntry): boolean {
   }
 }
 
+/** An entry the drain loop must ignore: retained (hidden, never parsed) or
+ *  held behind an open DEC 2026 synchronized-output frame. Both sit in the
+ *  queue only to preserve byte order until their own release path drains them. */
+function isUndrainable(entry: QueueEntry): boolean {
+  return entry.retained || entry.heldForSync;
+}
+
 function hasPriorityBacklog(): boolean {
   for (const entry of queue.values()) {
-    if (entry.retained) continue; // never drained — must not drive the cadence
+    if (isUndrainable(entry)) continue; // never drained — must not drive the cadence
     if (entry.priority || entry.queuedChars > LARGE_BACKLOG_CHARS) return true;
   }
   return false;
 }
 
-/** True when at least one entry is eligible for the drain loop. Retained
- *  entries sit in the queue for ordering purposes only. */
+/** True when at least one entry is eligible for the drain loop. Retained /
+ *  sync-held entries sit in the queue for ordering purposes only. */
 function hasDrainableEntries(): boolean {
   for (const entry of queue.values()) {
-    if (!entry.retained) return true;
+    if (!isUndrainable(entry)) return true;
   }
   return false;
 }
 
 /** Pick the next entry to drain: priority entries first, otherwise Map
  *  insertion order. Removing + re-inserting after a partial drain rotates the
- *  entry to the tail, which is what gives round-robin fairness. Retained
- *  entries are invisible to the drain loop. */
+ *  entry to the tail, which is what gives round-robin fairness. Retained /
+ *  sync-held entries are invisible to the drain loop. */
 function takeNextEntry(): QueueEntry | null {
   let fallback: QueueEntry | null = null;
   for (const entry of queue.values()) {
-    if (entry.retained) continue;
+    if (isUndrainable(entry)) continue;
     if (entry.priority) {
       queue.delete(entry.terminal);
       return entry;
@@ -297,6 +341,123 @@ function drainQueuedOutput(): void {
   }
 }
 
+/** Resolve a terminal's DEC 2026 frame state after one foreground chunk.
+ *  Multiple markers in a chunk are resolved by honoring the LAST one.
+ *
+ *  Split-marker behavior (both benign, neither corrupts output):
+ *  - A BEGIN split across a chunk boundary is not matched here, so the frame
+ *    never engages the hold and that frame simply renders un-coalesced — the
+ *    pre-feature behavior, no worse than today.
+ *  - An END split while a frame is open is likewise not matched, but the hold
+ *    is bounded by the absolute safety deadline (armed at open, never pushed
+ *    back), so the pane is released regardless. */
+function resolveSyncOpen(prevOpen: boolean, data: string): boolean {
+  const lastBegin = data.lastIndexOf(SYNC_OUTPUT_BEGIN);
+  const lastEnd = data.lastIndexOf(SYNC_OUTPUT_END);
+  if (lastBegin === -1 && lastEnd === -1) return prevOpen;
+  return lastBegin > lastEnd;
+}
+
+/** Tear down a terminal's sync-frame tracking (state + safety timer). */
+function clearSyncFrame(terminal: SchedulableTerminal): void {
+  const state = syncFrames.get(terminal);
+  if (!state) return;
+  if (state.safetyTimer) clearTimeout(state.safetyTimer);
+  syncFrames.delete(terminal);
+}
+
+/** Release a held frame that has NO END in the stream (safety timeout or
+ *  overflow). The held bytes carry an unmatched BEGIN; xterm.js honors DEC 2026
+ *  natively, so without a close it would stay in its own synchronized-output
+ *  hold and never present the frame — defeating the whole point of the safety
+ *  release. Append the matching close so the partial frame paints, then drain.
+ *  A later real END arriving as an unmatched close is a harmless no-op. */
+function releaseHeldWithSyntheticEnd(terminal: SchedulableTerminal, entry: QueueEntry): void {
+  clearSyncFrame(terminal);
+  entry.heldForSync = false;
+  entry.priority = true;
+  entry.chunks.push(SYNC_OUTPUT_END);
+  entry.queuedChars += SYNC_OUTPUT_END.length;
+  scheduleDrain(0);
+}
+
+/** Arm the bounded safety timer ONCE, at frame open. The deadline is absolute
+ *  from open (never pushed back by body chunks — otherwise a frame that streams
+ *  faster than the deadline would never time out and the pane could stay blank
+ *  until the overflow cap) and short when the frame opened while the user was
+ *  typing (echo/redraw must not wait) and longer otherwise. */
+function armSyncSafety(terminal: SchedulableTerminal): void {
+  const state = syncFrames.get(terminal);
+  if (!state) return;
+  if (state.safetyTimer) clearTimeout(state.safetyTimer);
+  const delay = state.interactive ? SYNC_HOLD_INTERACTIVE_SAFETY_MS : SYNC_HOLD_SAFETY_MS;
+  state.safetyTimer = setTimeout(() => {
+    // END never landed within the window (split marker, streaming inside an
+    // unclosed frame, or a misbehaving agent). Release so the pane can never
+    // wedge mid-frame, and close xterm's sync mode with a synthetic END.
+    const entry = queue.get(terminal);
+    if (!entry) {
+      clearSyncFrame(terminal);
+      return;
+    }
+    releaseHeldWithSyntheticEnd(terminal, entry);
+  }, delay);
+}
+
+/** Queue a chunk behind an open synchronized frame without draining it. */
+function holdForSyncFrame(
+  terminal: SchedulableTerminal,
+  data: string,
+  options: WriteOptions,
+  justOpened: boolean,
+): void {
+  if (justOpened) {
+    clearSyncFrame(terminal);
+    syncFrames.set(terminal, {
+      open: true,
+      interactive: withinInteractiveWindow(terminal),
+      safetyTimer: null,
+    });
+  }
+  const entry = getOrCreateEntry(terminal, options);
+  entry.retained = false;
+  entry.priority = true;
+  entry.heldForSync = true;
+  entry.chunks.push(data);
+  entry.queuedChars += data.length;
+  if (entry.queuedChars > MAX_QUEUE_CHARS) {
+    // A single frame ballooned past the cap (never-closing frame / runaway
+    // agent). Stop holding and hand everything to xterm now (bounded memory
+    // over perfect coalescing) — closing xterm's sync mode with a synthetic
+    // END so the unmatched BEGIN cannot leave it held.
+    releaseHeldWithSyntheticEnd(terminal, entry);
+    return;
+  }
+  // Absolute deadline: arm exactly once, at open. Body chunks must NOT re-arm.
+  if (justOpened) armSyncSafety(terminal);
+}
+
+/** Frame closed: enqueue the closing chunk and drain the held backlog once, so
+ *  xterm rasters the completed frame a single time. */
+function releaseSyncFrame(
+  terminal: SchedulableTerminal,
+  data: string,
+  options: WriteOptions,
+): void {
+  clearSyncFrame(terminal);
+  const entry = getOrCreateEntry(terminal, options);
+  entry.retained = false;
+  entry.heldForSync = false;
+  entry.priority = true;
+  entry.chunks.push(data);
+  entry.queuedChars += data.length;
+  if (entry.queuedChars > MAX_QUEUE_CHARS) {
+    flushTerminalOutput(terminal);
+    return;
+  }
+  scheduleDrain(0);
+}
+
 /**
  * Route one PTY data event into a terminal.
  *
@@ -320,7 +481,12 @@ export function writeTerminalOutput(
   // real final output instead.
   if (!options.foreground && options.retainWhenHidden) {
     if (dirtyTerminals.has(terminal)) return;
+    // A pane going hidden mid-frame abandons any open sync hold: retention now
+    // owns its bytes, and the safety timer would otherwise fire into a hidden
+    // pane.
+    clearSyncFrame(terminal);
     const entry = getOrCreateEntry(terminal, options);
+    entry.heldForSync = false;
     if (!entry.retained) {
       entry.retained = true;
       if (!retentionEngagedLogged) {
@@ -339,6 +505,30 @@ export function writeTerminalOutput(
       console.log(`[wmux:hidden-retention] backlog overflow (${entry.queuedChars} chars) — pane marked dirty, will resync from daemon on reveal`);
     }
     return;
+  }
+
+  // DEC 2026 synchronized-output coalescing for VISIBLE panes. While a frame is
+  // open, hold the pane's chunks out of xterm (no parse, no raster); release
+  // once on END so Chromium rasters the completed frame a single time instead
+  // of once per intermediate cursor move. A complete BEGIN…END inside one chunk
+  // falls through (already one write / one parse) and needs no special casing.
+  if (options.foreground) {
+    const prevOpen = syncFrames.get(terminal)?.open ?? false;
+    // Cheap gate before the two marker scans: they only matter when a frame is
+    // already open (watching for END) or the chunk could contain a marker at
+    // all. `includes('\x1b')` stops at the first ESC, so the common markerless
+    // echo/stream chunk skips both full lastIndexOf scans.
+    if (prevOpen || data.includes('\x1b')) {
+      const nowOpen = resolveSyncOpen(prevOpen, data);
+      if (nowOpen) {
+        holdForSyncFrame(terminal, data, options, !prevOpen);
+        return;
+      }
+      if (prevOpen) {
+        releaseSyncFrame(terminal, data, options);
+        return;
+      }
+    }
   }
 
   const existing = queue.get(terminal);
@@ -407,8 +597,20 @@ export function writeTerminalOutput(
  * parses asynchronously, exactly as it did when useTerminal wrote directly.
  */
 export function flushTerminalOutput(terminal: SchedulableTerminal): void {
+  // A forced full hand-off ends any open sync frame: its bytes are about to
+  // reach xterm now, so a lingering hold state (and its safety timer) would be
+  // stale.
+  const hadOpenFrame = syncFrames.has(terminal);
+  clearSyncFrame(terminal);
   const entry = queue.get(terminal);
   if (!entry) return;
+  entry.heldForSync = false;
+  if (hadOpenFrame) {
+    // The held bytes carry an unmatched BEGIN; close xterm's sync mode so the
+    // handed-over frame paints (twin of the safety-timeout release).
+    entry.chunks.push(SYNC_OUTPUT_END);
+    entry.queuedChars += SYNC_OUTPUT_END.length;
+  }
   queue.delete(terminal);
   while (hasQueuedChunks(entry)) {
     if (!writeQueuedChunk(entry)) return;
@@ -416,9 +618,26 @@ export function flushTerminalOutput(terminal: SchedulableTerminal): void {
   entry.priority = false;
 }
 
+/** Promote a queued terminal's backlog to the PRIORITY drain cadence without a
+ *  synchronous full flush. Used on reveal for a large NON-retained backlog that
+ *  cannot be discarded (no daemon authority to resync from) but would burst if
+ *  parsed in one shot: the budgeted drain (8 writes/tick under an 8ms
+ *  wall-clock ceiling) spreads it across frames instead of pinning the renderer
+ *  in one giant parse. Byte order is preserved and nothing is dropped — this is
+ *  the data-loss-safe counterpart to the reveal-backlog-cap's discard+resync.
+ *  No-op for a retained entry (that path is the resync cap) or an empty queue. */
+export function promoteTerminalToPriorityDrain(terminal: SchedulableTerminal): void {
+  const entry = queue.get(terminal);
+  if (!entry || entry.retained || entry.heldForSync) return;
+  if (!hasQueuedChunks(entry)) return;
+  entry.priority = true;
+  scheduleDrain(0);
+}
+
 /** Drop everything queued for this terminal (teardown path — the terminal is
  *  being disposed, parsing the backlog would be wasted work). */
 export function discardTerminalOutput(terminal: SchedulableTerminal): void {
+  clearSyncFrame(terminal);
   queue.delete(terminal);
   dirtyTerminals.delete(terminal);
   lastInputAt.delete(terminal);
@@ -431,10 +650,27 @@ export function isTerminalDirty(terminal: SchedulableTerminal): boolean {
   return dirtyTerminals.has(terminal);
 }
 
+/** True when this terminal currently holds a RETAINED (hidden, never-parsed)
+ *  backlog. Retention is only ever set via the retainWhenHidden write path, so
+ *  a retained entry tells the caller the queued bytes are daemon-SOURCED (they
+ *  arrived over the session pipe and are in the RingBuffer) — a per-pane
+ *  provenance signal a non-retained background/local backlog does not carry.
+ *
+ *  NOTE: this is byte PROVENANCE, not current daemon REACHABILITY — the flag is
+ *  historical and stays true if the daemon later disconnects. A caller using
+ *  this to justify discarding the backlog must ALSO confirm the daemon is live
+ *  now (isDaemonModeActive) so resync can replace what it discards. The
+ *  scheduler stays daemon-agnostic on purpose; that check lives at the call
+ *  site (useTerminal reveal-backlog-cap). */
+export function isTerminalRetained(terminal: SchedulableTerminal): boolean {
+  return queue.get(terminal)?.retained === true;
+}
+
 /** Phase 3: owner-driven — mark dirty without an overflow (e.g. a daemon
  *  replay arrived while hidden; parsing it would duplicate content already on
  *  screen, so the owner discards and defers to a reveal-time resync). */
 export function markTerminalDirty(terminal: SchedulableTerminal): void {
+  clearSyncFrame(terminal);
   queue.delete(terminal);
   dirtyTerminals.add(terminal);
 }
@@ -457,6 +693,10 @@ export function __resetTerminalOutputSchedulerForTests(): void {
     drainTimer = null;
   }
   drainDelayMs = null;
+  for (const state of syncFrames.values()) {
+    if (state.safetyTimer) clearTimeout(state.safetyTimer);
+  }
+  syncFrames.clear();
   queue.clear();
   dirtyTerminals.clear();
   lastInputAt.clear();

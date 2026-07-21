@@ -10,6 +10,7 @@ import {
   discardTerminalOutput,
   getQueuedCharCount,
   isTerminalDirty,
+  isTerminalRetained,
   markTerminalDirty,
   markTerminalClean,
   __resetTerminalOutputSchedulerForTests,
@@ -140,6 +141,23 @@ describe('terminalOutputScheduler — hidden-pane retention', () => {
     markTerminalDirty(t);
     discardTerminalOutput(t);
     expect(isTerminalDirty(t)).toBe(false);
+  });
+
+  it('isTerminalRetained gates the reveal-backlog-cap: true only for a retained (daemon-backed) queue', () => {
+    // A retained hidden write (daemon-backed) → recoverable → safe to cap.
+    const daemon = makeTerminal();
+    writeTerminalOutput(daemon, 'retained', { foreground: false, retainWhenHidden: true });
+    expect(isTerminalRetained(daemon)).toBe(true);
+
+    // A NON-retained background write (possibly a local pane) → the queue is the
+    // only copy → must NOT be discarded by the reveal cap.
+    const local = makeTerminal();
+    writeTerminalOutput(local, 'background', { foreground: false });
+    expect(isTerminalRetained(local)).toBe(false);
+
+    // Absent terminal → false.
+    const untouched = makeTerminal();
+    expect(isTerminalRetained(untouched)).toBe(false);
   });
 
   it('without retainWhenHidden the hidden path behaves exactly as before (batched drain)', () => {

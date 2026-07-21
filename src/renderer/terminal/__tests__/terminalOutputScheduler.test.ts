@@ -5,6 +5,7 @@ import {
   noteTerminalInput,
   discardTerminalOutput,
   getQueuedCharCount,
+  promoteTerminalToPriorityDrain,
   __resetTerminalOutputSchedulerForTests,
   type SchedulableTerminal,
 } from '../terminalOutputScheduler';
@@ -65,6 +66,26 @@ describe('terminalOutputScheduler', () => {
     vi.runAllTimers();
     expect(joined(t)).toBe('onetwo');
     expect(getQueuedCharCount(t)).toBe(0);
+  });
+
+  it('promoteTerminalToPriorityDrain drains a non-retained backlog in order, no data loss', () => {
+    const t = makeTerminal();
+    // A non-retained hidden backlog (reveal-budgeted-catchup case): can't be
+    // discarded, must be drained without a synchronous burst.
+    writeTerminalOutput(t, 'alpha', { foreground: false });
+    writeTerminalOutput(t, 'beta', { foreground: false });
+    expect(t.writes).toEqual([]);
+    promoteTerminalToPriorityDrain(t);
+    vi.runAllTimers();
+    expect(joined(t)).toBe('alphabeta'); // all bytes delivered, order preserved
+    expect(getQueuedCharCount(t)).toBe(0);
+  });
+
+  it('promoteTerminalToPriorityDrain is a no-op on an empty queue', () => {
+    const t = makeTerminal();
+    promoteTerminalToPriorityDrain(t); // nothing queued
+    vi.runAllTimers();
+    expect(t.writes).toEqual([]);
   });
 
   it('an oversized foreground chunk is batch-chunked, not written in one parse', () => {
