@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.29.0] — 2026-07-21
+
 ### Fixed
 
 - **Typing stays responsive — and Hangul/CJK composition no longer truncates — while an agent floods a visible pane.** A TUI redraw is a burst of tiny cursor-move writes, and handing each one to the terminal separately made the GPU re-rasterize the whole grid dozens of times a second; while a frame was held for paint, keystrokes and IME composition events queued behind it, so fast typing dropped characters and "했습니다" could land as "했". wmux now honors the terminal's own frame markers (DEC mode 2026 synchronized output, which Claude Code and Codex emit): it holds a frame's intermediate writes out of the renderer and releases them in one shot when the frame closes, so the GPU paints once per redraw instead of once per fragment. A frame that opened right after a keystroke is treated as latency-sensitive and released within a frame or two, so your own echo always paints ahead of an agent's autonomous output. Windows ConPTY only for now.
