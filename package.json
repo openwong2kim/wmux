@@ -1,7 +1,7 @@
 {
   "name": "wmux",
   "productName": "wmux",
-  "version": "3.29.0",
+  "version": "3.30.0",
   "description": "cmux for Windows — run multiple AI CLI agents (Claude Code, Codex, Gemini) side-by-side with an MCP bridge and browser automation",
   "private": true,
   "main": ".vite/build/index.js",
