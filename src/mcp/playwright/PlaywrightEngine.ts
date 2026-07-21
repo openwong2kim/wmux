@@ -180,17 +180,34 @@ export class PlaywrightEngine {
    * Resolve the Playwright Page for an explicitly pinned CDP target (codex
    * P2, PR #528): two panes can share a URL (duplicated tabs, default
    * new-browser URL), so URL equality alone can hand back the WRONG guest
-   * while the lease is held for the requested one. Prefer playwright-core's
-   * internal targetId (CRPage delegate) and fall back to the URL only when it
-   * is unambiguous; ambiguous → null (fail rather than drive the wrong pane).
+   * while the lease is held for the requested one.
+   *
+   * Client-side Page objects expose no targetId, so an unambiguous URL match
+   * resolves directly, and only ambiguous candidates pay for a real
+   * Target.getTargetInfo round-trip over a throwaway CDP session (codex round
+   * 4 — the earlier `_delegate._targetId` probe never matched). Ambiguity
+   * that cannot be resolved → null (fail rather than drive the wrong pane).
    */
-  private matchPinnedPage(pages: Page[], targetId: string, url: string): Page | null {
-    for (const p of pages) {
-      const tid = (p as unknown as { _delegate?: { _targetId?: string } })._delegate?._targetId;
-      if (tid && tid === targetId) return p;
-    }
+  private async matchPinnedPage(pages: Page[], targetId: string, url: string): Promise<Page | null> {
     const byUrl = pages.filter((p) => p.url() === url);
-    return byUrl.length === 1 ? byUrl[0] : null;
+    if (byUrl.length === 1) return byUrl[0];
+    const candidates = byUrl.length > 1 ? byUrl : pages;
+    for (const p of candidates) {
+      try {
+        const session = await p.context().newCDPSession(p);
+        try {
+          const { targetInfo } = (await session.send('Target.getTargetInfo')) as {
+            targetInfo: { targetId: string };
+          };
+          if (targetInfo?.targetId === targetId) return p;
+        } finally {
+          await session.detach().catch(() => { /* best-effort */ });
+        }
+      } catch {
+        /* page may be mid-navigation or gone — try the next candidate */
+      }
+    }
+    return null;
   }
 
   async connect(cdpPort: number): Promise<void> {
@@ -529,7 +546,7 @@ export class PlaywrightEngine {
         // the attached page by the pinned targetId (URL only as an unambiguous
         // fallback) instead of "any non-shell page".
         const matchedPage = surfaceId
-          ? this.matchPinnedPage(newPages, webviewTarget.targetId, webviewTarget.url)
+          ? await this.matchPinnedPage(newPages, webviewTarget.targetId, webviewTarget.url)
           : newPages.find((p) => !this.isShellPage(p.url()));
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page after attach: ${matchedPage.url()}`);
@@ -619,7 +636,7 @@ export class PlaywrightEngine {
         // Strict surface targeting (#517): pinned surface matches by targetId
         // (URL only when unambiguous) — never "any non-shell page".
         const matchedPage = surfaceId
-          ? this.matchPinnedPage(pages, jsonTarget.id, jsonTarget.url)
+          ? await this.matchPinnedPage(pages, jsonTarget.id, jsonTarget.url)
           : pages.find((p) => !this.isShellPage(p.url()));
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page via /json attach: ${matchedPage.url()}`);

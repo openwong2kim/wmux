@@ -167,8 +167,11 @@ export class WebviewCdpManager {
     // would starve that first attach/op. Give a newly registered guest the
     // same idle grace a released lease gets; the renderer's visibility signal
     // and later leases take over from there.
+    // Only for a NEW or replaced guest (codex round 4): a same-guest dom-ready
+    // re-register fires on every navigation, and re-arming grace there would
+    // let a hidden page that reloads periodically stay unthrottled forever.
     const gs = this.ensureGuestState(surfaceId);
-    if (this.lightweightMode && !gs.visible && gs.leases === 0) {
+    if (!sameGuestReregister && this.lightweightMode && !gs.visible && gs.leases === 0) {
       gs.inGrace = true;
       if (gs.idleTimer) clearTimeout(gs.idleTimer);
       gs.idleTimer = setTimeout(() => {
