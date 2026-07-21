@@ -43,6 +43,10 @@ interface GuestState {
   inGrace: boolean;
   /** Last throttle decision actually applied (for transition logging). */
   appliedThrottle?: boolean;
+  /** Lease generation — bumped when unregister() zeroes the lease count, so a
+   *  stale release from a pre-unregister op cannot decrement a replacement
+   *  guest's fresh leases (CodeRabbit, PR #528). */
+  gen: number;
 }
 
 export class WebviewCdpManager {
@@ -58,7 +62,7 @@ export class WebviewCdpManager {
   private guestState = new Map<string, GuestState>();
   // RPC-held leases (token → expiry timer + surfaceId), for automation that
   // drives the guest outside main (Playwright in the MCP process).
-  private rpcLeases = new Map<string, { surfaceId: string; timer: NodeJS.Timeout }>();
+  private rpcLeases = new Map<string, { surfaceId: string; gen: number; timer: NodeJS.Timeout }>();
   private rpcLeaseSeq = 0;
   // Optional hook so a CDP event-capture layer (BrowserCaptureManager, #106) can
   // tear down its debugger listeners when a surface is unregistered — manual
@@ -188,6 +192,9 @@ export class WebviewCdpManager {
       gs.idleTimer = null;
       gs.leases = 0;
       gs.inGrace = false;
+      // Invalidate outstanding lease handles: an op that acquired before this
+      // unregister must not decrement a replacement guest's fresh lease count.
+      gs.gen += 1;
     }
     for (const [token, lease] of this.rpcLeases) {
       if (lease.surfaceId === surfaceId) {
@@ -230,9 +237,11 @@ export class WebviewCdpManager {
    * Acquire an automation lease: while at least one lease is held, the guest
    * is never throttled regardless of visibility (#353 — background automation
    * must run full-speed). Ref-counted; call releaseAutomationLease exactly
-   * once per acquire.
+   * once per acquire, passing back the returned generation so a release that
+   * straddles an unregister/re-register cycle becomes a no-op instead of
+   * decrementing the replacement guest's fresh lease count.
    */
-  acquireAutomationLease(surfaceId: string): void {
+  acquireAutomationLease(surfaceId: string): number {
     const gs = this.ensureGuestState(surfaceId);
     gs.leases += 1;
     if (gs.idleTimer) {
@@ -241,11 +250,14 @@ export class WebviewCdpManager {
     }
     gs.inGrace = false;
     this.recomputeThrottle(surfaceId);
+    return gs.gen;
   }
 
-  releaseAutomationLease(surfaceId: string): void {
+  releaseAutomationLease(surfaceId: string, gen?: number): void {
     const gs = this.guestState.get(surfaceId);
     if (!gs || gs.leases === 0) return;
+    // Stale handle from before an unregister — the count was already zeroed.
+    if (gen !== undefined && gen !== gs.gen) return;
     gs.leases -= 1;
     if (gs.leases > 0) return;
     // Idle grace: stay unthrottled briefly so back-to-back ops don't flap.
@@ -264,12 +276,12 @@ export class WebviewCdpManager {
    *  release so a hung op cannot pin the lease forever (see
    *  OP_LEASE_FAILSAFE_MS). */
   async withAutomationLease<T>(surfaceId: string, fn: () => Promise<T>): Promise<T> {
-    this.acquireAutomationLease(surfaceId);
+    const gen = this.acquireAutomationLease(surfaceId);
     let released = false;
     const releaseOnce = () => {
       if (released) return;
       released = true;
-      this.releaseAutomationLease(surfaceId);
+      this.releaseAutomationLease(surfaceId, gen);
     };
     const failsafe = setTimeout(() => {
       console.warn(`[WebviewCdpManager] op lease failsafe fired for ${surfaceId} (op hung > ${OP_LEASE_FAILSAFE_MS}ms)`);
@@ -291,10 +303,10 @@ export class WebviewCdpManager {
    */
   acquireRpcLease(surfaceId: string): string {
     const token = `lease-${++this.rpcLeaseSeq}`;
-    this.acquireAutomationLease(surfaceId);
+    const gen = this.acquireAutomationLease(surfaceId);
     const timer = setTimeout(() => this.releaseRpcLease(token), RPC_LEASE_TTL_MS);
     timer.unref?.();
-    this.rpcLeases.set(token, { surfaceId, timer });
+    this.rpcLeases.set(token, { surfaceId, gen, timer });
     return token;
   }
 
@@ -312,7 +324,7 @@ export class WebviewCdpManager {
     if (!lease) return false;
     clearTimeout(lease.timer);
     this.rpcLeases.delete(token);
-    this.releaseAutomationLease(lease.surfaceId);
+    this.releaseAutomationLease(lease.surfaceId, lease.gen);
     return true;
   }
 
@@ -321,7 +333,7 @@ export class WebviewCdpManager {
     if (!gs) {
       // Unknown surfaces default to visible — fail open (never throttle a
       // guest we have no visibility signal for).
-      gs = { visible: true, leases: 0, idleTimer: null, inGrace: false };
+      gs = { visible: true, leases: 0, idleTimer: null, inGrace: false, gen: 0 };
       this.guestState.set(surfaceId, gs);
     }
     return gs;

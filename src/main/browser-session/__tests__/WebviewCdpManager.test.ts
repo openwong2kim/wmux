@@ -283,6 +283,20 @@ describe('WebviewCdpManager lightweight mode (#517)', () => {
     expect(lastThrottle()).toBe(true);
   });
 
+  it('stale release across unregister/re-register cannot strip a fresh op\'s lease', async () => {
+    await manager.register('s1', 42);
+    manager.setLightweightMode(true);
+    manager.setVisibility('s1', false);
+    const staleGen = manager.acquireAutomationLease('s1'); // op A
+    manager.unregister('s1'); // zeroes leases, bumps generation
+    await manager.register('s1', 43);
+    manager.acquireAutomationLease('s1'); // op B on the replacement guest
+    expect(lastThrottle()).toBe(false);
+    // Op A's late release must be a no-op — B still holds its lease.
+    manager.releaseAutomationLease('s1', staleGen);
+    expect(lastThrottle()).toBe(false);
+  });
+
   it('stale destroyed callback does not unregister a replacement guest', async () => {
     await manager.register('s1', 42);
     // Grab the destroyed handler registered by the FIRST guest.
