@@ -314,7 +314,10 @@ export class WebviewCdpManager {
           clearTimeout(gs.discardTimer);
           gs.discardTimer = null;
         }
-        if (gs.discarded) {
+        // Skip a surface ensureAwake() is already waking — it has had its
+        // signal, and a second one would ask the renderer to remount twice
+        // (CodeRabbit, PR #530).
+        if (gs.discarded && !this.waking.has(sid)) {
           try {
             this.onWake?.(sid);
           } catch (err) {

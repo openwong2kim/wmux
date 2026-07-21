@@ -571,3 +571,40 @@ describe('WebviewCdpManager register resilience (live dogfood)', () => {
     expect(manager.getTarget('s1')).toBeNull();
   });
 });
+
+describe('WebviewCdpManager restore-on-disable dedup (CodeRabbit, PR #530)', () => {
+  let manager: WebviewCdpManager;
+  const DWELL = 5 * 60_000;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    (mockWebContents as any).isCurrentlyAudible = vi.fn(() => false);
+    manager = new WebviewCdpManager(18800);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  it('does not re-signal a surface that ensureAwake is already waking', async () => {
+    const onWake = vi.fn(); // never registers → the wake stays in flight
+    manager.setDiscardHooks({ onDiscard: (sid) => manager.unregister(sid), onWake });
+    await manager.register('s1', 42);
+    manager.setLightweightMode(true);
+    manager.setDiscardMode(true);
+    manager.setVisibility('s1', false);
+    vi.advanceTimersByTime(DWELL);
+    expect(manager.isDiscarded('s1')).toBe(true);
+
+    const pending = manager.ensureAwake('s1'); // wake in flight
+    await Promise.resolve();
+    expect(onWake).toHaveBeenCalledTimes(1);
+
+    manager.setDiscardMode(false); // must NOT emit a second wake
+    expect(onWake).toHaveBeenCalledTimes(1);
+
+    vi.advanceTimersByTime(20_000); // let the in-flight wake time out
+    await pending;
+  });
+});
