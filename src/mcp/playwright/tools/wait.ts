@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { withAutomationLease } from '../automationLease';
 import { detectDangerousPatterns } from '../security';
 import { rpcEvaluator } from '../page-eval';
 
@@ -124,7 +125,7 @@ export function registerWaitTools(server: McpServer): void {
         .describe('Maximum wait time in milliseconds. Defaults to 30000.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ url, selector, text, fn, timeout, surfaceId }) => {
+    async ({ url, selector, text, fn, timeout, surfaceId }) => withAutomationLease(surfaceId, async () => {
       const resolvedTimeout = timeout ?? 30000;
 
       try {
@@ -292,6 +293,6 @@ export function registerWaitTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 }

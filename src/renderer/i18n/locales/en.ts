@@ -420,6 +420,8 @@ export const en = {
   'settings.imeResidueGuardDesc': 'Protects against voice-input tools that replace leftover IME text destructively. Leave off unless you use such a tool — the clearing can confuse some IMEs.',
   'settings.hiddenPaneRetention': 'Pause hidden pane rendering',
   'settings.hiddenPaneRetentionDesc': 'Default on. Hidden panes pause screen rendering while everything keeps running — output is captured by the daemon and the pane catches up when you switch back (briefly shown as "catching up"). Turn off to render every hidden pane continuously; that costs real CPU per busy hidden pane. Daemon sessions only; local-mode sessions always render.',
+  'settings.browserLightweight': 'Lightweight background browsers',
+  'settings.browserLightweightDesc': 'Throttle CPU usage of built-in browser panes that are not visible (hidden workspaces, zoomed-away panes, minimized window). Automation (MCP/screenshots) still runs full-speed. Reduces CPU only, not memory.',
   'settings.updates': 'Updates',
   'settings.wmuxUpdates': 'wmux updates',
   'settings.updateFailed': 'Failed to check for updates',

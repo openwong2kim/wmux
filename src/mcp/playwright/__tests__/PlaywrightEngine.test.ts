@@ -342,6 +342,42 @@ describe('PlaywrightEngine runtime shell-URL handling (B)', () => {
     // The shell URL was learned from cdp.info during discovery.
     expect(priv(engine).shellUrl).toBe(shellUrl);
   });
+
+  it('strict surface targeting (#517): explicit surfaceId never falls back to another guest', async () => {
+    const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
+    const otherGuest: FakePage = {
+      url: vi.fn().mockReturnValue('https://other-guest.example/'),
+      context: vi.fn(),
+    };
+    const ctx = {
+      pages: vi.fn().mockReturnValue([otherGuest]),
+      newCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+    };
+    otherGuest.context.mockReturnValue(ctx);
+    const browser = {
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+      contexts: vi.fn().mockReturnValue([ctx]),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    mockConnectOverCDP.mockResolvedValue(browser);
+    // cdp.info knows about NO target for the requested surface — the pinned
+    // lookup fails, and the "first non-shell page" fallback must NOT hand
+    // back the other guest (that would drive surface B while the caller — and
+    // the automation lease — point at surface A).
+    mockSendRpc.mockImplementation((method: string) => {
+      if (method === 'browser.cdp.info') {
+        return Promise.resolve({ cdpPort: 9222, shellUrl, targets: [] });
+      }
+      return Promise.resolve({});
+    });
+
+    const engine = PlaywrightEngine.getInstance();
+    await engine.connect(9222);
+
+    const page = await engine.getPage('surface-pinned');
+    expect(page).toBeNull();
+  }, 20_000);
 });
 
 /*

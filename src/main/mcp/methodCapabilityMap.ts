@@ -300,6 +300,12 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'browser.cookies':           { capability: 'browser.cookies',  riskClass: 'browser' },
   'browser.resize':            { capability: 'browser.evaluate', riskClass: 'browser' },
   'browser.emulate':           { capability: 'browser.emulate',  riskClass: 'browser' },
+  // Lease methods only toggle background-throttling exemption for a guest the
+  // caller is already driving; they expose no page data or input capability,
+  // so they ride on the lowest browser capability.
+  'browser.lease.acquire':     { capability: 'browser.read',     riskClass: 'browser' },
+  'browser.lease.renew':       { capability: 'browser.read',     riskClass: 'browser' },
+  'browser.lease.release':     { capability: 'browser.read',     riskClass: 'browser' },
 
   // --- Daemon control. Internal-only; reserved capability.
   'daemon.createSession':    { capability: 'wmux.internal' },

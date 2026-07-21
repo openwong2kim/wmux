@@ -3,6 +3,7 @@ import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { loadPlaywright } from '../lazyPlaywright';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { withAutomationLease } from '../automationLease';
 import { matchSensitiveDomain } from '../security';
 import { evalFunctionOrRpc } from '../page-eval';
 import { sendRpc } from '../../wmux-client';
@@ -84,7 +85,7 @@ export function registerStateTools(server: McpServer): void {
         .describe('Allow reading cookies from sensitive domains (email, banking, auth). Default false.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ action, url, cookies, allowSensitiveDomains, surfaceId }) => {
+    async ({ action, url, cookies, allowSensitiveDomains, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // Playwright Page when available (dev), else CDP over RPC (packaged, #111).
         const page = await engine.getPage(surfaceId).catch(() => null);
@@ -184,7 +185,7 @@ export function registerStateTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -214,7 +215,7 @@ export function registerStateTools(server: McpServer): void {
         .describe('Allow reading storage on sensitive domains. Default false.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ type, action, key, value, allowSensitiveDomains, surfaceId }) => {
+    async ({ type, action, key, value, allowSensitiveDomains, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // browser_storage is pure page.evaluate, so it unifies over the same
         // evaluate transport the extraction tools use: a Playwright Page when
@@ -316,7 +317,7 @@ export function registerStateTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -373,7 +374,7 @@ export function registerStateTools(server: McpServer): void {
         .describe('Device preset name from Playwright devices (e.g. "iPhone 13"). Pass null to reset.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ offline, headers, credentials, geo, media, timezone, locale, device, surfaceId }) => {
+    async ({ offline, headers, credentials, geo, media, timezone, locale, device, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
         const applied: string[] = [];
@@ -533,7 +534,7 @@ export function registerStateTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -547,7 +548,7 @@ export function registerStateTools(server: McpServer): void {
       height: z.number().describe('Viewport height in pixels.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ width, height, surfaceId }) => {
+    async ({ width, height, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
 
@@ -577,6 +578,6 @@ export function registerStateTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 }

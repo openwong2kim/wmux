@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { withAutomationLease } from '../automationLease';
 import { getSmartSnapshot, getSmartSnapshotViaEval } from '../dom-intelligence';
 import { extractMarkdown, extractStructuredData } from '../markdown-extractor';
 import { resolveEvaluator, rpcEvaluator } from '../page-eval';
@@ -35,7 +36,7 @@ export function registerExtractionTools(server: McpServer): void {
         .describe('Maximum length of the content summary in characters (default 3000).'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ maxContentLength, surfaceId }) => {
+    async ({ maxContentLength, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // Playwright path uses the CDP accessibility tree; when no Page is
         // available (packaged builds, issue #105) fall back to a DOM-based
@@ -74,7 +75,7 @@ export function registerExtractionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -98,7 +99,7 @@ export function registerExtractionTools(server: McpServer): void {
         .describe('If true, preserve hyperlinks in the markdown output (default false).'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ selector, maxLength, includeLinks, surfaceId }) => {
+    async ({ selector, maxLength, includeLinks, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // resolveEvaluator picks the Playwright page when available, else the
         // RPC channel (packaged builds, issue #105). extract_text's in-page work
@@ -121,7 +122,7 @@ export function registerExtractionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -139,7 +140,7 @@ export function registerExtractionTools(server: McpServer): void {
         .describe('Map of field names to their expected types (e.g. { name: "string", price: "number", url: "string" }).'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ goal, fields, surfaceId }) => {
+    async ({ goal, fields, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // Native page.evaluate(fn, arg) when a Page exists (unchanged dev path);
         // RPC fallback when not (packaged builds, issue #105).
@@ -162,6 +163,6 @@ export function registerExtractionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 }

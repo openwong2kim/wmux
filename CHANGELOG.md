@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Lightweight mode for built-in browsers (opt-in).** With many workspaces open, every embedded browser pane kept its Chromium renderer running full-speed even when its workspace was hidden — that CPU was burned on purpose so background automation (MCP screenshots, `evaluate`) never stalled. A new Settings → Terminal toggle ("Lightweight background browsers", default off) background-throttles a browser guest only while it is *effectively* invisible — hidden workspace, pane hidden behind another pane's zoom, unselected tab, or minimized window — and any automation touching a guest takes a short-lived lease that runs it full-speed for the duration, so background screenshots stay correct. This reclaims CPU only; renderer memory is unchanged. (#517)
+
 ## [3.29.0] — 2026-07-21
 
 ### Fixed

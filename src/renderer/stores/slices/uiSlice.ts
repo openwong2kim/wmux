@@ -182,6 +182,13 @@ export interface UISlice {
   hiddenPaneRetentionEnabled: boolean;
   setHiddenPaneRetentionEnabled: (enabled: boolean) => void;
 
+  // #517 browser lightweight mode (default OFF while dogfooding): CPU-throttle
+  // embedded browser guests that are effectively invisible (hidden workspace /
+  // zoom-hidden / minimized window) and not under automation. CPU-only — does
+  // NOT reduce memory. AppLayout mirrors this flag to main on every change.
+  browserLightweightMode: boolean;
+  setBrowserLightweightMode: (enabled: boolean) => void;
+
   // Issue #175: global default starting directory for new terminals.
   // '' = unset → os.homedir() fallback in the spawn layer.
   startupDirectory: string;
@@ -844,6 +851,15 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     // never overridden by the one-shot default-flip migration (covers the
     // fresh-install case where loadSession never ran a migration).
     markRetentionMigrationDone();
+  }),
+
+  // #517 — ship OFF, flip after Windows dogfood proves the automation-lease
+  // path holds (a default-ON lease gap would be a silent blank-screenshot
+  // regression, #353).
+  browserLightweightMode: false,
+
+  setBrowserLightweightMode: (enabled) => set((state) => {
+    state.browserLightweightMode = enabled;
   }),
 
   startupDirectory: '',

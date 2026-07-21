@@ -581,6 +581,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // Fail closed: only an explicit boolean is applied. A corrupted /
       // hand-edited value (e.g. the string "false") must not toggle the
       // retention/resync path either way.
+      // #517 — fail closed like the retention flag: only an explicit boolean.
+      if (typeof data.browserLightweightMode === 'boolean') {
+        state.browserLightweightMode = data.browserLightweightMode;
+      }
       let retentionMigrationApplied = false;
       if (typeof data.hiddenPaneRetentionEnabled === 'boolean') {
         if (data.hiddenPaneRetentionEnabled === false && !retentionMigrationDone()) {

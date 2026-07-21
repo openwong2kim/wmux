@@ -95,3 +95,170 @@ describe('WebviewCdpManager', () => {
     await expect(manager.waitForTarget('nonexistent', 100)).rejects.toThrow('timeout');
   });
 });
+
+// ── #517 lightweight mode ────────────────────────────────────────────────────
+
+describe('WebviewCdpManager lightweight mode (#517)', () => {
+  let manager: WebviewCdpManager;
+
+  const lastThrottle = (): boolean | undefined => {
+    const calls = mockWebContents.setBackgroundThrottling.mock.calls;
+    return calls.length ? calls[calls.length - 1][0] : undefined;
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    manager = new WebviewCdpManager(18800);
+  });
+
+  it('lightweight OFF: hidden guest is never throttled', async () => {
+    await manager.register('s1', 42);
+    manager.setVisibility('s1', false);
+    expect(lastThrottle()).toBe(false);
+  });
+
+  it('lightweight ON: hidden guest is throttled, visible guest is not', async () => {
+    await manager.register('s1', 42);
+    manager.setLightweightMode(true);
+    manager.setVisibility('s1', false);
+    expect(lastThrottle()).toBe(true);
+    manager.setVisibility('s1', true);
+    expect(lastThrottle()).toBe(false);
+  });
+
+  it('toggling lightweight recomputes ALL registered guests immediately', async () => {
+    await manager.register('s1', 42);
+    manager.setVisibility('s1', false);
+    expect(lastThrottle()).toBe(false); // mode still off
+    manager.setLightweightMode(true);
+    expect(lastThrottle()).toBe(true);
+    manager.setLightweightMode(false);
+    expect(lastThrottle()).toBe(false);
+  });
+
+  it('visibility signal arriving BEFORE register still applies on register', async () => {
+    manager.setLightweightMode(true);
+    manager.setVisibility('s1', false);
+    await manager.register('s1', 42);
+    expect(lastThrottle()).toBe(true);
+  });
+
+  it('CRITICAL (#353 regression): hidden guest with a held lease stays unthrottled', async () => {
+    await manager.register('s1', 42);
+    manager.setLightweightMode(true);
+    manager.setVisibility('s1', false);
+    expect(lastThrottle()).toBe(true);
+    manager.acquireAutomationLease('s1');
+    expect(lastThrottle()).toBe(false);
+    // Second concurrent op: still unthrottled after one release (ref-count).
+    manager.acquireAutomationLease('s1');
+    manager.releaseAutomationLease('s1');
+    expect(lastThrottle()).toBe(false);
+  });
+
+  it('idle grace: after final release the guest stays unthrottled until grace elapses', async () => {
+    vi.useFakeTimers();
+    try {
+      await manager.register('s1', 42);
+      manager.setLightweightMode(true);
+      manager.setVisibility('s1', false);
+      manager.acquireAutomationLease('s1');
+      manager.releaseAutomationLease('s1');
+      expect(lastThrottle()).toBe(false); // in grace window
+      vi.advanceTimersByTime(5_100);
+      expect(lastThrottle()).toBe(true); // re-throttled after grace
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('re-acquire during grace cancels the pending re-throttle', async () => {
+    vi.useFakeTimers();
+    try {
+      await manager.register('s1', 42);
+      manager.setLightweightMode(true);
+      manager.setVisibility('s1', false);
+      manager.acquireAutomationLease('s1');
+      manager.releaseAutomationLease('s1');
+      manager.acquireAutomationLease('s1'); // back-to-back op
+      vi.advanceTimersByTime(10_000);
+      expect(lastThrottle()).toBe(false); // lease held — no flap
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('withAutomationLease releases on throw', async () => {
+    vi.useFakeTimers();
+    try {
+      await manager.register('s1', 42);
+      manager.setLightweightMode(true);
+      manager.setVisibility('s1', false);
+      await expect(
+        manager.withAutomationLease('s1', async () => { throw new Error('boom'); }),
+      ).rejects.toThrow('boom');
+      vi.advanceTimersByTime(5_100);
+      expect(lastThrottle()).toBe(true); // lease released → grace → throttled
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('RPC lease: acquire/release round-trip and TTL auto-expiry', async () => {
+    vi.useFakeTimers();
+    try {
+      await manager.register('s1', 42);
+      manager.setLightweightMode(true);
+      manager.setVisibility('s1', false);
+      const token = manager.acquireRpcLease('s1');
+      expect(lastThrottle()).toBe(false);
+      // TTL expiry (30s) auto-releases, then idle grace (5s) re-throttles.
+      vi.advanceTimersByTime(30_100 + 5_100);
+      expect(lastThrottle()).toBe(true);
+      // Token already expired — release is a no-op returning false.
+      expect(manager.releaseRpcLease(token)).toBe(false);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('RPC lease renew extends the TTL', async () => {
+    vi.useFakeTimers();
+    try {
+      await manager.register('s1', 42);
+      manager.setLightweightMode(true);
+      manager.setVisibility('s1', false);
+      const token = manager.acquireRpcLease('s1');
+      vi.advanceTimersByTime(20_000);
+      expect(manager.renewRpcLease(token)).toBe(true);
+      vi.advanceTimersByTime(20_000); // 40s total, but renewed at 20s
+      expect(lastThrottle()).toBe(false);
+      expect(manager.releaseRpcLease(token)).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('unregister clears leases and idle timers for the surface', async () => {
+    await manager.register('s1', 42);
+    manager.setLightweightMode(true);
+    manager.acquireAutomationLease('s1');
+    manager.unregister('s1');
+    // Re-register: previous lease must not linger (visible defaults kept).
+    manager.setVisibility('s1', false);
+    await manager.register('s1', 42);
+    expect(lastThrottle()).toBe(true);
+  });
+
+  it('stale destroyed callback does not unregister a replacement guest', async () => {
+    await manager.register('s1', 42);
+    // Grab the destroyed handler registered by the FIRST guest.
+    const destroyedHandler = mockWebContents.on.mock.calls.find(
+      (c: unknown[]) => c[0] === 'destroyed',
+    )?.[1] as () => void;
+    // Replacement guest re-registers under the same surfaceId with a new wcId.
+    await manager.register('s1', 43);
+    destroyedHandler(); // stale guest (wcId 42) fires destroyed
+    expect(manager.getTarget('s1')).not.toBeNull(); // replacement survives
+  });
+});

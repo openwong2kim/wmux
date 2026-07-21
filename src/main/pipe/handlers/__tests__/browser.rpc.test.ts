@@ -56,6 +56,11 @@ describe('registerBrowserRpc', () => {
       getCdpPort: vi.fn(() => 18800),
       waitForTarget: vi.fn(),
       setCaptureCleanup: vi.fn(),
+      // #517: automation ops run through the per-op lease wrapper.
+      withAutomationLease: vi.fn(async (_surfaceId: string, fn: () => Promise<unknown>) => fn()),
+      acquireRpcLease: vi.fn(() => 'lease-1'),
+      renewRpcLease: vi.fn(() => true),
+      releaseRpcLease: vi.fn(() => true),
     };
 
     registerBrowserRpc(router, getWindow, webviewCdpManager as never);
@@ -325,6 +330,11 @@ describe('registerBrowserRpc', () => {
       getCdpPort: vi.fn(() => 18800),
       waitForTarget: vi.fn(),
       setCaptureCleanup: vi.fn(),
+      // #517: no registered target → registerLeased runs the handler unleased.
+      withAutomationLease: vi.fn(async (_surfaceId: string, fn: () => Promise<unknown>) => fn()),
+      acquireRpcLease: vi.fn(() => 'lease-1'),
+      renewRpcLease: vi.fn(() => true),
+      releaseRpcLease: vi.fn(() => true),
     };
     registerBrowserRpc(router, () => null, webviewCdpManager as never);
     const response = await router.dispatch({ id: '11', method: 'browser.console.get', params: {} });

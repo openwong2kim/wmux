@@ -3,6 +3,7 @@ import * as path from 'node:path';
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { withAutomationLease } from '../automationLease';
 import { resolveRef } from '../snapshot';
 import { getWmuxDir } from '../../../daemon/config';
 
@@ -78,7 +79,7 @@ export function registerFileTools(server: McpServer): void {
         .describe('Ref number of the file input element (from browser_snapshot).'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ paths, ref, surfaceId }) => {
+    async ({ paths, ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
@@ -117,7 +118,7 @@ export function registerFileTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -136,7 +137,7 @@ export function registerFileTools(server: McpServer): void {
         .describe('Optional filename to save the download as.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ ref, filename, surfaceId }) => {
+    async ({ ref, filename, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
@@ -188,7 +189,7 @@ export function registerFileTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -208,7 +209,7 @@ export function registerFileTools(server: McpServer): void {
         .describe('Maximum wait time in milliseconds. Defaults to 30000.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ filename, timeout, surfaceId }) => {
+    async ({ filename, timeout, surfaceId }) => withAutomationLease(surfaceId, async () => {
       const resolvedTimeout = timeout ?? 30000;
 
       try {
@@ -271,7 +272,7 @@ export function registerFileTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -290,7 +291,7 @@ export function registerFileTools(server: McpServer): void {
         .describe('Text to enter in a prompt dialog before accepting.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ accept, text, surfaceId }) => {
+    async ({ accept, text, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
@@ -321,6 +322,6 @@ export function registerFileTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 }

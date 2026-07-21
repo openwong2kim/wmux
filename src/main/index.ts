@@ -767,6 +767,19 @@ ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, web
   return { ok: true };
 });
 
+// #517 lightweight mode: the renderer reports each browser surface's effective
+// visibility (workspace ∧ window ∧ ¬zoom ∧ selected) and the global setting.
+ipcMain.handle('browser:set-visibility', (_event, surfaceId: string, visible: boolean) => {
+  if (typeof surfaceId !== 'string' || typeof visible !== 'boolean') return { ok: false };
+  webviewCdpManager.setVisibility(surfaceId, visible);
+  return { ok: true };
+});
+ipcMain.handle('browser:set-lightweight', (_event, enabled: boolean) => {
+  if (typeof enabled !== 'boolean') return { ok: false };
+  webviewCdpManager.setLightweightMode(enabled);
+  return { ok: true };
+});
+
 console.log('[DEBUG] registering app.on(ready)');
 app.on('ready', async () => {
   markBoot('ready-fired');

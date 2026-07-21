@@ -539,6 +539,11 @@ const electronAPI = {
   browser: {
     registerWebview: (surfaceId: string, webContentsId: number) =>
       ipcRenderer.invoke('browser:register-webview', surfaceId, webContentsId),
+    // #517 lightweight mode signals
+    setVisibility: (surfaceId: string, visible: boolean) =>
+      ipcRenderer.invoke('browser:set-visibility', surfaceId, visible),
+    setLightweight: (enabled: boolean) =>
+      ipcRenderer.invoke('browser:set-lightweight', enabled),
   },
   fs: {
     readDir: (dirPath: string) => ipcRenderer.invoke(IPC.FS_READ_DIR, dirPath),

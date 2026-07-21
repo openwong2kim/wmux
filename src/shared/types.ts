@@ -643,6 +643,11 @@ export interface SessionData {
    */
   hiddenPaneRetentionEnabled?: boolean;
   /**
+   * #517 browser lightweight mode: CPU-throttle effectively-invisible embedded
+   * browser guests (automation-leased guests stay full-speed). Default false.
+   */
+  browserLightweightMode?: boolean;
+  /**
    * Issue #175: global default starting directory for new terminals.
    * Empty/unset → os.homedir(). Per-workspace profile.startupCwd overrides.
    */

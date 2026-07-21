@@ -682,6 +682,8 @@ function SplitSurfaceView({
               initialUrl={surface.browserUrl || 'https://google.com'}
               partition={surface.browserPartition || 'persist:wmux-default'}
               isActive={surface.id === activeSurfaceId}
+              paneId={pane.id}
+              isWorkspaceVisible={isWorkspaceVisible}
               onClose={() => onCloseSurface(surface.id)}
             />
           ) : surface.surfaceType === 'diff' ? (
@@ -759,6 +761,8 @@ function SplitSurfaceView({
                 partition={surface.browserPartition || 'persist:wmux-default'}
                 isActive={surface.id === activeSurfaceId}
                 visible={surface.id === shownBrowserId}
+                paneId={pane.id}
+                isWorkspaceVisible={isWorkspaceVisible}
                 onClose={() => onCloseSurface(surface.id)}
               />
             ))}

@@ -225,6 +225,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     splitInheritsCwd: state.splitInheritsCwd,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,
     hiddenPaneRetentionEnabled: state.hiddenPaneRetentionEnabled,
+    browserLightweightMode: state.browserLightweightMode,
     startupDirectory: state.startupDirectory || undefined,
     scrollbackLines: state.scrollbackLines,
     scrollbackRestoreEnabled: state.scrollbackRestoreEnabled,
@@ -365,6 +366,16 @@ export default function AppLayout() {
   // Plugin host (B-1): ui.decoratePane push → uiSlice pane decorations.
   usePaneDecorationChannel();
   const { invoke: ipcInvoke } = useIpc();
+
+  // #517 — mirror the browser lightweight-mode setting to main whenever it
+  // changes (Settings toggle or session load), so main immediately recomputes
+  // throttling for EVERY registered guest, not just newly registered ones.
+  const browserLightweightMode = useStore((s) => s.browserLightweightMode);
+  useEffect(() => {
+    try {
+      (window as any).electronAPI?.browser?.setLightweight?.(browserLightweightMode);
+    } catch { /* older main without the handler — setting stays inert */ }
+  }, [browserLightweightMode]);
 
   // ─── File drop — handled in preload where File.path is accessible ──────
   const [isDragging, setIsDragging] = useState(false);

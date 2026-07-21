@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { withAutomationLease } from '../automationLease';
 import { resolveRef } from '../snapshot';
 import { getLocatorByRef } from '../dom-intelligence';
 import { typeHumanlike } from '../human-typing';
@@ -109,7 +110,7 @@ export function registerInteractionTools(server: McpServer): void {
         .describe('If true, perform a double-click instead of a single click.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ ref, smartRef, double, surfaceId }) => {
+    async ({ ref, smartRef, double, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // Try Playwright first
         const page = await engine.getPage(surfaceId).catch(() => null);
@@ -155,7 +156,7 @@ export function registerInteractionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -177,7 +178,7 @@ export function registerInteractionTools(server: McpServer): void {
         .describe('If true, type with randomised human-like delays.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ ref, text, submit, humanlike, surfaceId }) => {
+    async ({ ref, text, submit, humanlike, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
 
@@ -212,7 +213,7 @@ export function registerInteractionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -232,7 +233,7 @@ export function registerInteractionTools(server: McpServer): void {
         .describe('Array of {ref, value} pairs to fill'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ fields, surfaceId }) => {
+    async ({ fields, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
 
@@ -270,7 +271,7 @@ export function registerInteractionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -287,7 +288,7 @@ export function registerInteractionTools(server: McpServer): void {
         ),
       surfaceId: optionalSurfaceId,
     },
-    async ({ key, surfaceId }) => {
+    async ({ key, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
 
@@ -307,7 +308,7 @@ export function registerInteractionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -320,7 +321,7 @@ export function registerInteractionTools(server: McpServer): void {
       ref: z.string().describe('Element ref number from browser_snapshot'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ ref, surfaceId }) => {
+    async ({ ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
 
@@ -352,7 +353,7 @@ export function registerInteractionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -368,7 +369,7 @@ export function registerInteractionTools(server: McpServer): void {
       targetRef: z.string().describe('Ref number of the element to drop onto'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ sourceRef, targetRef, surfaceId }) => {
+    async ({ sourceRef, targetRef, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
 
@@ -423,7 +424,7 @@ export function registerInteractionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -439,7 +440,7 @@ export function registerInteractionTools(server: McpServer): void {
         .describe('Array of option values to select'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ ref, values, surfaceId }) => {
+    async ({ ref, values, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
 
@@ -471,7 +472,7 @@ export function registerInteractionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -484,7 +485,7 @@ export function registerInteractionTools(server: McpServer): void {
       ref: z.string().describe('Element ref number from browser_snapshot'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ ref, surfaceId }) => {
+    async ({ ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
 
@@ -513,7 +514,7 @@ export function registerInteractionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -536,7 +537,7 @@ export function registerInteractionTools(server: McpServer): void {
         .describe('Element ref to scroll inside (e.g. a scrollable container). Omit to scroll the page.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ direction, amount, ref, surfaceId }) => {
+    async ({ direction, amount, ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
       const px = amount ?? 500;
       const deltaX = direction === 'right' ? px : direction === 'left' ? -px : 0;
       const deltaY = direction === 'down' ? px : direction === 'up' ? -px : 0;
@@ -585,7 +586,7 @@ export function registerInteractionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
 }

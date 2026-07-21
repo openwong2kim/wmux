@@ -189,6 +189,9 @@ export type RpcMethod =
   | 'browser.cookies'
   | 'browser.resize'
   | 'browser.emulate'
+  | 'browser.lease.acquire'
+  | 'browser.lease.renew'
+  | 'browser.lease.release'
   | 'daemon.createSession'
   | 'daemon.destroySession'
   | 'daemon.attachSession'
@@ -343,6 +346,9 @@ export const ALL_RPC_METHODS = [
   'browser.cookies',
   'browser.resize',
   'browser.emulate',
+  'browser.lease.acquire',
+  'browser.lease.renew',
+  'browser.lease.release',
   'daemon.createSession',
   'daemon.destroySession',
   'daemon.attachSession',

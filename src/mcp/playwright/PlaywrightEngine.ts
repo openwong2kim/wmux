@@ -324,13 +324,20 @@ export class PlaywrightEngine {
         // the app shell. Used when positive targetId matching didn't yield a
         // page (e.g. target not registered yet). isShellPage() prefers the
         // runtime shell URL and falls back to the static heuristic.
-        const allPages = this.getAllPages();
-        console.error(`[PlaywrightEngine] Attempt ${attempt}: ${allPages.length} pages in ${this.browser?.contexts().length ?? 0} contexts`);
+        //
+        // Strict surface targeting (#517): when the caller pinned an explicit
+        // surfaceId, this heuristic is SKIPPED — returning "some other guest"
+        // would silently drive surface B while the automation lease (and the
+        // caller's intent) points at surface A.
+        if (!surfaceId) {
+          const allPages = this.getAllPages();
+          console.error(`[PlaywrightEngine] Attempt ${attempt}: ${allPages.length} pages in ${this.browser?.contexts().length ?? 0} contexts`);
 
-        const safePage = allPages.find((p) => !this.isShellPage(p.url()));
-        if (safePage) {
-          console.error(`[PlaywrightEngine] Found page via contexts: ${safePage.url()}`);
-          return safePage;
+          const safePage = allPages.find((p) => !this.isShellPage(p.url()));
+          if (safePage) {
+            console.error(`[PlaywrightEngine] Found page via contexts: ${safePage.url()}`);
+            return safePage;
+          }
         }
 
         // Strategy 3: Use /json endpoint + match registered targets
@@ -467,8 +474,10 @@ export class PlaywrightEngine {
           ? targetInfos.find((t) => t.targetId === wmuxTarget.targetId)
           : undefined;
 
-        // Fallback: find any page target that isn't the Electron shell
-        if (!webviewTarget) {
+        // Fallback: find any page target that isn't the Electron shell.
+        // Strict surface targeting (#517): only when NO explicit surfaceId was
+        // requested — an explicit surface must match by targetId or fail.
+        if (!webviewTarget && !surfaceId) {
           webviewTarget = targetInfos.find(
             (t) => t.type === 'page' && !this.isShellPage(t.url) && t.url !== 'about:blank',
           );
@@ -496,7 +505,12 @@ export class PlaywrightEngine {
         const newPages = this.getAllPages();
         console.error(`[PlaywrightEngine] After attach: ${newPages.length} pages`);
 
-        const matchedPage = newPages.find((p) => !this.isShellPage(p.url()));
+        // Strict surface targeting (#517): with an explicit surfaceId, match
+        // the attached page by the pinned target's URL instead of "any
+        // non-shell page" (which could hand back a different guest).
+        const matchedPage = surfaceId
+          ? newPages.find((p) => p.url() === webviewTarget.url)
+          : newPages.find((p) => !this.isShellPage(p.url()));
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page after attach: ${matchedPage.url()}`);
           return matchedPage;
@@ -547,7 +561,9 @@ export class PlaywrightEngine {
         ? targets.find((t) => t.id === wmuxTarget.targetId)
         : undefined;
 
-      if (!jsonTarget) {
+      // Strict surface targeting (#517): the any-non-shell fallback only runs
+      // when no explicit surfaceId was requested.
+      if (!jsonTarget && !surfaceId) {
         jsonTarget = targets.find(
           (t) => t.type === 'page' && !this.isShellPage(t.url) && t.url !== 'about:blank',
         );
@@ -580,7 +596,11 @@ export class PlaywrightEngine {
         const pages = this.getAllPages();
         console.error(`[PlaywrightEngine] After /json attach: ${pages.length} pages`);
 
-        const matchedPage = pages.find((p) => !this.isShellPage(p.url()));
+        // Strict surface targeting (#517): pinned surface matches by URL of
+        // the pinned target only — never "any non-shell page".
+        const matchedPage = surfaceId
+          ? pages.find((p) => p.url() === jsonTarget.url)
+          : pages.find((p) => !this.isShellPage(p.url()));
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page via /json attach: ${matchedPage.url()}`);
           return matchedPage;

@@ -55,6 +55,45 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
   // Tear down capture listeners whenever a surface's CDP session is unregistered.
   webviewCdpManager.setCaptureCleanup((webContentsId) => captureManager.drop(webContentsId));
 
+  // #517 lightweight mode: every automation op that drives the guest must hold
+  // an AutomationLease for its duration so a hidden, throttled guest runs
+  // full-speed while being automated (#353 — otherwise background screenshots
+  // come back stale/blank with no error). registerLeased wraps a handler with
+  // a per-op lease on the RESOLVED target surface. When no target is
+  // registered yet, the handler runs unleased and fails with its own
+  // "no webview target" error as before.
+  const registerLeased = (
+    method: Parameters<RpcRouter['register']>[0],
+    handler: (params: Record<string, unknown>) => Promise<unknown>,
+  ): void => {
+    router.register(method, (params) => {
+      const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+      const resolved = webviewCdpManager.getTarget(surfaceId)?.surfaceId;
+      if (!resolved) return handler(params);
+      return webviewCdpManager.withAutomationLease(resolved, () => handler(params));
+    });
+  };
+
+  // ── Automation lease RPC (#517) ─────────────────────────────────────────
+  // Out-of-process automation (Playwright in the MCP process) drives the guest
+  // directly over CDP, bypassing the browser.* handlers above — it takes a
+  // TTL-bounded lease around each tool invocation instead, renewing during
+  // long waits.
+  router.register('browser.lease.acquire', async (params) => {
+    const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
+    const resolved = webviewCdpManager.getTarget(surfaceId)?.surfaceId;
+    if (!resolved) return { token: null };
+    return { token: webviewCdpManager.acquireRpcLease(resolved) };
+  });
+  router.register('browser.lease.renew', async (params) => {
+    const token = typeof params['token'] === 'string' ? params['token'] : '';
+    return { ok: webviewCdpManager.renewRpcLease(token) };
+  });
+  router.register('browser.lease.release', async (params) => {
+    const token = typeof params['token'] === 'string' ? params['token'] : '';
+    return { ok: webviewCdpManager.releaseRpcLease(token) };
+  });
+
   /**
    * browser.open
    * Opens a new browser surface in the active pane.
@@ -100,7 +139,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * Tries CDP direct navigation first, falls back to renderer bridge.
    * params: { url: string, surfaceId?: string }
    */
-  router.register('browser.navigate', async (params) => {
+  registerLeased('browser.navigate', async (params) => {
     if (typeof params['url'] !== 'string' || params['url'].length === 0) {
       throw new Error('browser.navigate: missing required param "url"');
     }
@@ -133,7 +172,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * Navigate the active browser Surface back by one history entry.
    * params: { surfaceId?: string }
    */
-  router.register('browser.goBack', async (params) => {
+  registerLeased('browser.goBack', async (params) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
     const target = webviewCdpManager.getTarget(surfaceId);
@@ -316,7 +355,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * Capture a screenshot of the webview.
    * params: { surfaceId?: string, fullPage?: boolean }
    */
-  router.register('browser.screenshot', async (params) => {
+  registerLeased('browser.screenshot', async (params) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const fullPage = params['fullPage'] === true;
 
@@ -339,7 +378,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * Execute JavaScript in the webview and return the result.
    * params: { expression: string, surfaceId?: string }
    */
-  router.register('browser.evaluate', async (params) => {
+  registerLeased('browser.evaluate', async (params) => {
     const expression = typeof params['expression'] === 'string' ? params['expression'] : '';
     if (!expression) throw new Error('browser.evaluate: missing "expression"');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
@@ -384,7 +423,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * the MCP browser_console tool, #106). Capture is enabled lazily on first call.
    * params: { surfaceId?: string, clear?: boolean }
    */
-  router.register('browser.console.get', async (params) => {
+  registerLeased('browser.console.get', async (params) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const clear = params['clear'] === true;
 
@@ -405,7 +444,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * fetched separately via browser.responseBody.get to keep this payload small.
    * params: { surfaceId?: string, clear?: boolean }
    */
-  router.register('browser.network.get', async (params) => {
+  registerLeased('browser.network.get', async (params) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const clear = params['clear'] === true;
 
@@ -425,7 +464,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * Return the last captured response body whose URL matches the glob (#106).
    * params: { surfaceId?: string, urlPattern: string }
    */
-  router.register('browser.responseBody.get', async (params) => {
+  registerLeased('browser.responseBody.get', async (params) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const urlPattern = typeof params['urlPattern'] === 'string' ? params['urlPattern'] : '';
     if (!urlPattern) throw new Error('browser.responseBody.get: missing "urlPattern"');
@@ -446,7 +485,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * This simulates real keyboard input, which works with React/controlled inputs.
    * params: { text: string, surfaceId?: string }
    */
-  router.register('browser.type.cdp', async (params) => {
+  registerLeased('browser.type.cdp', async (params) => {
     const text = typeof params['text'] === 'string' ? params['text'] : '';
     if (!text) throw new Error('browser.type.cdp: missing "text"');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
@@ -467,7 +506,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * Click at coordinates or on the focused element via CDP Input events.
    * params: { x?: number, y?: number, selector?: string, surfaceId?: string }
    */
-  router.register('browser.click.cdp', async (params) => {
+  registerLeased('browser.click.cdp', async (params) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const selector = typeof params['selector'] === 'string' ? params['selector'] : undefined;
 
@@ -522,7 +561,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * Press a keyboard key via CDP Input events.
    * params: { key: string, surfaceId?: string }
    */
-  router.register('browser.press.cdp', async (params) => {
+  registerLeased('browser.press.cdp', async (params) => {
     const key = typeof params['key'] === 'string' ? params['key'] : '';
     if (!key) throw new Error('browser.press.cdp: missing "key"');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
@@ -589,7 +628,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * params: { action, urls?, cookies?, surfaceId? }
    * Sensitive-domain redaction stays in the MCP tool (state.ts), not here.
    */
-  router.register('browser.cookies', async (params) => {
+  registerLeased('browser.cookies', async (params) => {
     const action = params['action'];
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const wc = resolveWc(surfaceId, 'browser.cookies');
@@ -642,7 +681,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * Override the viewport size via CDP Emulation.setDeviceMetricsOverride.
    * params: { width: number, height: number, surfaceId? }
    */
-  router.register('browser.resize', async (params) => {
+  registerLeased('browser.resize', async (params) => {
     const width = typeof params['width'] === 'number' ? params['width'] : NaN;
     const height = typeof params['height'] === 'number' ? params['height'] : NaN;
     if (!Number.isFinite(width) || !Number.isFinite(height)) {
@@ -669,7 +708,7 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    *   surfaceId?
    * }
    */
-  router.register('browser.emulate', async (params) => {
+  registerLeased('browser.emulate', async (params) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
     const wc = resolveWc(surfaceId, 'browser.emulate');
     const send = (method: string, p?: Record<string, unknown>): Promise<unknown> =>

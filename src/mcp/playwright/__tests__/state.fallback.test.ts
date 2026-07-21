@@ -7,7 +7,18 @@ import { describe, expect, it, vi, beforeEach } from 'vitest';
 
 // Mock the RPC transport. __tests__/ -> playwright/ -> mcp/, so ../../wmux-client
 // resolves to src/mcp/wmux-client.
-vi.mock('../../wmux-client', () => ({ sendRpc: vi.fn() }));
+// #517: tool handlers are wrapped in withAutomationLease, which issues
+// browser.lease.* RPCs around the real operation. Keep those transparent to
+// this suite's call-sequence assertions: lease traffic is answered inline
+// ({ token: null } → the helper proceeds unleased, no renew/release) and only
+// non-lease methods reach the recorded mock.
+const { mockSendRpc } = vi.hoisted(() => ({ mockSendRpc: vi.fn() }));
+vi.mock('../../wmux-client', () => ({
+  sendRpc: (method: string, ...args: unknown[]) =>
+    typeof method === 'string' && method.startsWith('browser.lease.')
+      ? Promise.resolve({ token: null })
+      : mockSendRpc(method, ...args),
+}));
 
 // Mock PlaywrightEngine so getPage() is controllable per test.
 const getPage = vi.fn();
@@ -15,10 +26,7 @@ vi.mock('../PlaywrightEngine', () => ({
   PlaywrightEngine: { getInstance: () => ({ getPage }) },
 }));
 
-import { sendRpc } from '../../wmux-client';
 import { registerStateTools } from '../tools/state';
-
-const mockSendRpc = sendRpc as unknown as ReturnType<typeof vi.fn>;
 
 type ToolHandler = (args: Record<string, unknown>) => Promise<{
   content: { type: 'text'; text: string }[];

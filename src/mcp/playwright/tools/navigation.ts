@@ -1,6 +1,7 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { withAutomationLease } from '../automationLease';
 import { validateNavigationUrl } from '../../../shared/types';
 import { sendRpc } from '../../wmux-client';
 
@@ -112,7 +113,7 @@ export function registerNavigationTools(server: McpServer): void {
         .optional()
         .describe('URL to open when action is "new".'),
     },
-    async ({ action, tabId, url }) => {
+    async ({ action, tabId, url }) => withAutomationLease(undefined, async () => {
       try {
         const browser = await engine.getBrowser();
         if (!browser) {
@@ -228,6 +229,6 @@ export function registerNavigationTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 }

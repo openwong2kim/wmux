@@ -4,6 +4,7 @@ import * as fs from 'fs';
 import * as os from 'os';
 import * as path from 'path';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { withAutomationLease } from '../automationLease';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -95,7 +96,7 @@ export function registerUtilityTools(server: McpServer): void {
         .describe('Relative output path under ~/.wmux/exports. Defaults to "output.pdf".'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ path: outputPath, surfaceId }) => {
+    async ({ path: outputPath, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const resolvedPath = resolveBrowserExportPath(outputPath, 'output.pdf');
         await ensureExportDir(resolvedPath);
@@ -150,7 +151,7 @@ export function registerUtilityTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -169,7 +170,7 @@ export function registerUtilityTools(server: McpServer): void {
         .describe('Relative output path under ~/.wmux/exports (used with "stop"). Defaults to "trace.zip".'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ action, path: outputPath, surfaceId }) => {
+    async ({ action, path: outputPath, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId);
         if (!page) {
@@ -209,6 +210,6 @@ export function registerUtilityTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 }

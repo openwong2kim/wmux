@@ -2,6 +2,7 @@ import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import type { Page } from 'playwright-core';
 import { z } from 'zod';
 import { PlaywrightEngine } from '../PlaywrightEngine';
+import { withAutomationLease } from '../automationLease';
 import { generateSnapshot, resolveRef } from '../snapshot';
 import { buildDomSnapshotExpression } from '../dom-intelligence';
 import { evaluateWithGesture } from '../anti-detection';
@@ -241,7 +242,7 @@ export function registerInspectionTools(server: McpServer): void {
         .describe('Reserved for future use: ref number to scope the snapshot to a subtree.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ format, surfaceId }) => {
+    async ({ format, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // Try Playwright for full snapshot
         const page = await engine.getPage(surfaceId).catch(() => null);
@@ -271,7 +272,7 @@ export function registerInspectionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -291,7 +292,7 @@ export function registerInspectionTools(server: McpServer): void {
         .describe('Ref number of an element to screenshot (from browser_snapshot). Omit for full page.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ fullPage, ref, surfaceId }) => {
+    async ({ fullPage, ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // Try Playwright for element-level screenshots (ref)
         if (ref) {
@@ -330,7 +331,7 @@ export function registerInspectionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -347,7 +348,7 @@ export function registerInspectionTools(server: McpServer): void {
         .describe('Allow execution even if the expression contains dangerous patterns (fetch, cookies, storage, eval). Default false. Use only with trusted input.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ expression, allowDangerous, surfaceId }) => {
+    async ({ expression, allowDangerous, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const warnings = detectDangerousPatterns(expression);
         if (warnings.length > 0 && !allowDangerous) {
@@ -391,7 +392,7 @@ export function registerInspectionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -411,7 +412,7 @@ export function registerInspectionTools(server: McpServer): void {
         .describe('Clear collected messages after returning them.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ level, clear, surfaceId }) => {
+    async ({ level, clear, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
 
@@ -441,7 +442,7 @@ export function registerInspectionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -461,7 +462,7 @@ export function registerInspectionTools(server: McpServer): void {
         .describe('Clear collected requests (and any retained response bodies) after returning them.'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ filter, clear, surfaceId }) => {
+    async ({ filter, clear, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
 
@@ -491,7 +492,7 @@ export function registerInspectionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -506,7 +507,7 @@ export function registerInspectionTools(server: McpServer): void {
         .describe('URL glob pattern to match (e.g. "*api/users*").'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ urlPattern, surfaceId }) => {
+    async ({ urlPattern, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
 
@@ -558,7 +559,7 @@ export function registerInspectionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 
   // -----------------------------------------------------------------------
@@ -571,7 +572,7 @@ export function registerInspectionTools(server: McpServer): void {
       ref: z.string().describe('Ref number of the element to highlight (from browser_snapshot).'),
       surfaceId: optionalSurfaceId,
     },
-    async ({ ref, surfaceId }) => {
+    async ({ ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
 
@@ -616,6 +617,6 @@ export function registerInspectionTools(server: McpServer): void {
           isError: true,
         };
       }
-    },
+    }),
   );
 }
