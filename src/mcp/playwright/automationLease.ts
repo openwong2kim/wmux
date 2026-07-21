@@ -45,7 +45,10 @@ export async function withAutomationLease<T>(
         .then((r) => {
           const tok = (r as { token: string | null })?.token ?? null;
           if (!tok) return;
-          if (done) {
+          if (done || lateToken) {
+            // Op already ended, or a slower earlier acquire raced us and a
+            // token is already held — release this duplicate immediately so
+            // it cannot pin the guest unthrottled until TTL expiry.
             sendRpc('browser.lease.release', { token: tok }).catch(() => {});
             return;
           }

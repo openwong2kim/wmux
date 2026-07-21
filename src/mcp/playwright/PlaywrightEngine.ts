@@ -364,8 +364,11 @@ export class PlaywrightEngine {
         }
 
         // Strategy 4: No browser surface exists — auto-open one via RPC.
-        // This eliminates the requirement for callers to call browser_open first.
-        if (attempt === 1 && !this.autoOpenAttempted) {
+        // This eliminates the requirement for callers to call browser_open
+        // first. Skipped for an explicitly pinned surfaceId (codex P3, PR
+        // #528): a fresh surface gets a DIFFERENT id, so the pinned lookup
+        // would still fail while the user is left with an unexpected pane.
+        if (attempt === 1 && !this.autoOpenAttempted && !surfaceId) {
           console.error('[PlaywrightEngine] No page found — auto-opening browser surface');
           try {
             if (await this.attemptAutoOpen()) {

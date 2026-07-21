@@ -331,6 +331,19 @@ describe('WebviewCdpManager lightweight mode (#517)', () => {
     expect(lastThrottle()).toBe(false);
   });
 
+  it('same-guest re-registration (hidden navigation) preserves an in-flight lease', async () => {
+    await manager.register('s1', 42);
+    manager.setLightweightMode(true);
+    manager.setVisibility('s1', false);
+    const gen = manager.acquireAutomationLease('s1'); // op in flight
+    expect(lastThrottle()).toBe(false);
+    // dom-ready re-register for the SAME webContents (page navigated/reloaded)
+    await manager.register('s1', 42);
+    expect(lastThrottle()).toBe(false); // lease survived — no mid-op throttle
+    manager.releaseAutomationLease('s1', gen); // generation unchanged
+    expect(lastThrottle()).toBe(false); // idle grace
+  });
+
   it('stale destroyed callback does not unregister a replacement guest', async () => {
     await manager.register('s1', 42);
     // Grab the destroyed handler registered by the FIRST guest.

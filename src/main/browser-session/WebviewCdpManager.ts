@@ -80,7 +80,14 @@ export class WebviewCdpManager {
   }
 
   async register(surfaceId: string, webContentsId: number): Promise<void> {
-    if (this.sessions.has(surfaceId)) {
+    // Same-guest re-registration (codex P2, PR #528): BrowserPanel re-calls
+    // register() on every dom-ready, so a hidden navigation/reload would
+    // otherwise round-trip through unregister() — zeroing lease counts and
+    // invalidating tokens held by an in-flight op. Only a DIFFERENT guest
+    // replacing this surface goes through the full unregister.
+    const prev = this.sessions.get(surfaceId);
+    const sameGuestReregister = prev?.webContentsId === webContentsId;
+    if (prev && !sameGuestReregister) {
       this.unregister(surfaceId);
     }
 
@@ -142,13 +149,17 @@ export class WebviewCdpManager {
     const info: CdpTargetInfo = { surfaceId, webContentsId, targetId, wsUrl };
     this.sessions.set(surfaceId, info);
 
-    wc.on('destroyed', () => {
-      // Stale-destroyed guard: a replacement guest may have re-registered under
-      // the same surfaceId. Only unregister if WE are still the current guest.
-      if (this.sessions.get(surfaceId)?.webContentsId === webContentsId) {
-        this.unregister(surfaceId);
-      }
-    });
+    // Same-guest re-registration keeps the existing destroyed listener —
+    // adding another would fire unregister twice.
+    if (!sameGuestReregister) {
+      wc.on('destroyed', () => {
+        // Stale-destroyed guard: a replacement guest may have re-registered
+        // under the same surfaceId. Only unregister if WE are still current.
+        if (this.sessions.get(surfaceId)?.webContentsId === webContentsId) {
+          this.unregister(surfaceId);
+        }
+      });
+    }
 
     // Fresh-registration grace (codex P2, PR #528): a tool invoked before any
     // target existed runs unleased (lease.acquire returned null) and may have
