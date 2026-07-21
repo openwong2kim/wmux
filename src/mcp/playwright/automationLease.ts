@@ -31,7 +31,44 @@ export async function withAutomationLease<T>(
     /* lease unavailable — proceed unleased */
   }
 
-  if (!token) return fn();
+  if (!token) {
+    // No target registered yet (codex P2, PR #528): the tool body may
+    // auto-open a browser via getPage(); once that guest registers, this op
+    // must not run against a throttled guest. Main grants a fresh-registration
+    // grace, and this late-acquire loop picks up a real lease as soon as a
+    // target exists, holding it for the remainder of the op.
+    let lateToken: string | null = null;
+    let done = false;
+    const lateTimer = setInterval(() => {
+      if (done || lateToken) return;
+      sendRpc('browser.lease.acquire', { ...(surfaceId && { surfaceId }) })
+        .then((r) => {
+          const tok = (r as { token: string | null })?.token ?? null;
+          if (!tok) return;
+          if (done) {
+            sendRpc('browser.lease.release', { token: tok }).catch(() => {});
+            return;
+          }
+          lateToken = tok;
+        })
+        .catch(() => { /* keep trying until the op ends */ });
+    }, 2_000);
+    (lateTimer as { unref?: () => void }).unref?.();
+    const lateRenew = setInterval(() => {
+      if (lateToken) sendRpc('browser.lease.renew', { token: lateToken }).catch(() => {});
+    }, RENEW_INTERVAL_MS);
+    (lateRenew as { unref?: () => void }).unref?.();
+    try {
+      return await fn();
+    } finally {
+      done = true;
+      clearInterval(lateTimer);
+      clearInterval(lateRenew);
+      if (lateToken) {
+        sendRpc('browser.lease.release', { token: lateToken }).catch(() => {});
+      }
+    }
+  }
 
   const heldToken = token;
   const renewTimer = setInterval(() => {

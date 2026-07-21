@@ -150,6 +150,24 @@ export class WebviewCdpManager {
       }
     });
 
+    // Fresh-registration grace (codex P2, PR #528): a tool invoked before any
+    // target existed runs unleased (lease.acquire returned null) and may have
+    // just auto-opened this guest — throttling it the instant it registers
+    // would starve that first attach/op. Give a newly registered guest the
+    // same idle grace a released lease gets; the renderer's visibility signal
+    // and later leases take over from there.
+    const gs = this.ensureGuestState(surfaceId);
+    if (this.lightweightMode && !gs.visible && gs.leases === 0) {
+      gs.inGrace = true;
+      if (gs.idleTimer) clearTimeout(gs.idleTimer);
+      gs.idleTimer = setTimeout(() => {
+        gs.idleTimer = null;
+        gs.inGrace = false;
+        this.recomputeThrottle(surfaceId);
+      }, LEASE_IDLE_GRACE_MS);
+      gs.idleTimer.unref?.();
+    }
+
     // Apply lightweight throttling if this guest is already known-invisible.
     this.recomputeThrottle(surfaceId);
 

@@ -152,11 +152,20 @@ describe('WebviewCdpManager lightweight mode (#517)', () => {
     expect(lastThrottle()).toBe(false);
   });
 
-  it('visibility signal arriving BEFORE register still applies on register', async () => {
-    manager.setLightweightMode(true);
-    manager.setVisibility('s1', false);
-    await manager.register('s1', 42);
-    expect(lastThrottle()).toBe(true);
+  it('visibility signal arriving BEFORE register applies after the registration grace', async () => {
+    vi.useFakeTimers();
+    try {
+      manager.setLightweightMode(true);
+      manager.setVisibility('s1', false);
+      await manager.register('s1', 42);
+      // Fresh-registration grace (codex P2): a just-registered hidden guest is
+      // NOT throttled immediately — an unleased first op may be attaching.
+      expect(lastThrottle()).toBe(false);
+      vi.advanceTimersByTime(5_100);
+      expect(lastThrottle()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('CRITICAL (#353 regression): hidden guest with a held lease stays unthrottled', async () => {
@@ -220,6 +229,25 @@ describe('WebviewCdpManager lightweight mode (#517)', () => {
     }
   });
 
+  it('fresh-registration grace: an acquired lease during grace takes over cleanly', async () => {
+    vi.useFakeTimers();
+    try {
+      manager.setLightweightMode(true);
+      manager.setVisibility('s1', false);
+      await manager.register('s1', 42); // auto-opened hidden guest — grace armed
+      expect(lastThrottle()).toBe(false);
+      vi.advanceTimersByTime(2_000);
+      const gen = manager.acquireAutomationLease('s1'); // late-acquire loop lands
+      vi.advanceTimersByTime(10_000);
+      expect(lastThrottle()).toBe(false); // leased — grace expiry is irrelevant
+      manager.releaseAutomationLease('s1', gen);
+      vi.advanceTimersByTime(5_100);
+      expect(lastThrottle()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('op-lease failsafe: a hung op cannot pin the lease forever', async () => {
     vi.useFakeTimers();
     try {
@@ -273,14 +301,20 @@ describe('WebviewCdpManager lightweight mode (#517)', () => {
   });
 
   it('unregister clears leases and idle timers for the surface', async () => {
-    await manager.register('s1', 42);
-    manager.setLightweightMode(true);
-    manager.acquireAutomationLease('s1');
-    manager.unregister('s1');
-    // Re-register: previous lease must not linger (visible defaults kept).
-    manager.setVisibility('s1', false);
-    await manager.register('s1', 42);
-    expect(lastThrottle()).toBe(true);
+    vi.useFakeTimers();
+    try {
+      await manager.register('s1', 42);
+      manager.setLightweightMode(true);
+      manager.acquireAutomationLease('s1');
+      manager.unregister('s1');
+      // Re-register: previous lease must not linger (visible defaults kept).
+      manager.setVisibility('s1', false);
+      await manager.register('s1', 42);
+      vi.advanceTimersByTime(5_100); // past the fresh-registration grace
+      expect(lastThrottle()).toBe(true);
+    } finally {
+      vi.useRealTimers();
+    }
   });
 
   it('stale release across unregister/re-register cannot strip a fresh op\'s lease', async () => {

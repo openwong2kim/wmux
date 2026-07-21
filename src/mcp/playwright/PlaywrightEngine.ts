@@ -176,6 +176,23 @@ export class PlaywrightEngine {
     return isElectronShellUrl(url);
   }
 
+  /**
+   * Resolve the Playwright Page for an explicitly pinned CDP target (codex
+   * P2, PR #528): two panes can share a URL (duplicated tabs, default
+   * new-browser URL), so URL equality alone can hand back the WRONG guest
+   * while the lease is held for the requested one. Prefer playwright-core's
+   * internal targetId (CRPage delegate) and fall back to the URL only when it
+   * is unambiguous; ambiguous → null (fail rather than drive the wrong pane).
+   */
+  private matchPinnedPage(pages: Page[], targetId: string, url: string): Page | null {
+    for (const p of pages) {
+      const tid = (p as unknown as { _delegate?: { _targetId?: string } })._delegate?._targetId;
+      if (tid && tid === targetId) return p;
+    }
+    const byUrl = pages.filter((p) => p.url() === url);
+    return byUrl.length === 1 ? byUrl[0] : null;
+  }
+
   async connect(cdpPort: number): Promise<void> {
     if (this.browser && this.cdpPort === cdpPort && this.browser.isConnected()) {
       return;
@@ -506,10 +523,10 @@ export class PlaywrightEngine {
         console.error(`[PlaywrightEngine] After attach: ${newPages.length} pages`);
 
         // Strict surface targeting (#517): with an explicit surfaceId, match
-        // the attached page by the pinned target's URL instead of "any
-        // non-shell page" (which could hand back a different guest).
+        // the attached page by the pinned targetId (URL only as an unambiguous
+        // fallback) instead of "any non-shell page".
         const matchedPage = surfaceId
-          ? newPages.find((p) => p.url() === webviewTarget.url)
+          ? this.matchPinnedPage(newPages, webviewTarget.targetId, webviewTarget.url)
           : newPages.find((p) => !this.isShellPage(p.url()));
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page after attach: ${matchedPage.url()}`);
@@ -596,10 +613,10 @@ export class PlaywrightEngine {
         const pages = this.getAllPages();
         console.error(`[PlaywrightEngine] After /json attach: ${pages.length} pages`);
 
-        // Strict surface targeting (#517): pinned surface matches by URL of
-        // the pinned target only — never "any non-shell page".
+        // Strict surface targeting (#517): pinned surface matches by targetId
+        // (URL only when unambiguous) — never "any non-shell page".
         const matchedPage = surfaceId
-          ? pages.find((p) => p.url() === jsonTarget.url)
+          ? this.matchPinnedPage(pages, jsonTarget.id, jsonTarget.url)
           : pages.find((p) => !this.isShellPage(p.url()));
         if (matchedPage) {
           console.error(`[PlaywrightEngine] Found page via /json attach: ${matchedPage.url()}`);

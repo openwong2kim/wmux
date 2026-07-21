@@ -29,6 +29,10 @@ interface BrowserPanelProps {
   visible?: boolean;
   /** Owning pane id — used to detect zoom-hidden state (#517). */
   paneId?: string;
+  /** True when a full-pane overlay (active diff/editor surface) covers this
+   *  browser in the terminal+browser split (#517, codex P3): the panel stays
+   *  rendered underneath, but the user cannot see it. */
+  occluded?: boolean;
   /** Whether the owning workspace is the visible one (#517). The pane-local
    *  `visible` flag cannot see hidden workspaces — exactly the case
    *  lightweight mode exists for. Defaults true for callers that don't
@@ -47,17 +51,18 @@ export function computeEffectiveVisibility(input: {
   windowVisible: boolean;
   zoomedPaneId: string | null;
   paneId?: string;
+  occluded?: boolean;
 }): boolean {
-  const { shown, isWorkspaceVisible, windowVisible, zoomedPaneId, paneId } = input;
+  const { shown, isWorkspaceVisible, windowVisible, zoomedPaneId, paneId, occluded } = input;
   const zoomHidden = zoomedPaneId !== null && zoomedPaneId !== paneId;
-  return shown && isWorkspaceVisible && windowVisible && !zoomHidden;
+  return shown && isWorkspaceVisible && windowVisible && !zoomHidden && !occluded;
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export default function BrowserPanel({ surfaceId, initialUrl, partition, isActive, visible, paneId, isWorkspaceVisible, onClose }: BrowserPanelProps) {
+export default function BrowserPanel({ surfaceId, initialUrl, partition, isActive, visible, paneId, isWorkspaceVisible, occluded, onClose }: BrowserPanelProps) {
   const t = useT();
   const updateBrowserUrl = useStore((s) => s.updateBrowserUrl);
   const zoomedPaneId = useStore((s) => s.zoomedPaneId);
@@ -200,6 +205,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
     windowVisible,
     zoomedPaneId,
     paneId,
+    occluded,
   });
   useEffect(() => {
     try {

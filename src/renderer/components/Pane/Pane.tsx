@@ -725,6 +725,10 @@ function SplitSurfaceView({
   // activeSurfaceId (which now only drives focus), else focusing one side
   // display:none'd the other (blank-pane bug).
   const { shownTerminalId, shownBrowserId } = pickSplitShownSurfaces(terminals, browsers, activeSurfaceId);
+  // #517 (codex P3): when a diff/editor overlay is the ACTIVE surface it
+  // covers the whole split, so the browser underneath is not actually visible
+  // — report it occluded so lightweight mode can throttle it.
+  const overlayActive = others.some((s) => s.id === activeSurfaceId);
   return (
     <div className="flex-1 relative overflow-hidden">
       <Group orientation="horizontal" className="h-full w-full" resizeTargetMinimumSize={{ coarse: 37, fine: 16 }}>
@@ -763,6 +767,7 @@ function SplitSurfaceView({
                 visible={surface.id === shownBrowserId}
                 paneId={pane.id}
                 isWorkspaceVisible={isWorkspaceVisible}
+                occluded={overlayActive}
                 onClose={() => onCloseSurface(surface.id)}
               />
             ))}
