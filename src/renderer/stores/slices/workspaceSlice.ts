@@ -585,6 +585,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       if (typeof data.browserLightweightMode === 'boolean') {
         state.browserLightweightMode = data.browserLightweightMode;
       }
+      if (typeof data.browserDiscardHidden === 'boolean') {
+        state.browserDiscardHidden = data.browserDiscardHidden;
+      }
       let retentionMigrationApplied = false;
       if (typeof data.hiddenPaneRetentionEnabled === 'boolean') {
         if (data.hiddenPaneRetentionEnabled === false && !retentionMigrationDone()) {

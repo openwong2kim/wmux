@@ -215,6 +215,7 @@ export const ko = {
   'browser.close': '닫기',
   'browser.devToolsTooltip': '개발자 도구 열기 (F12)',
   'browser.title': '브라우저',
+  'browser.discarded': '메모리 절약을 위해 내려갔습니다 — 클릭하면 다시 로드됩니다',
 
   // VI copy mode
   'viCopy.mode': '-- 복사 모드 --',
@@ -373,6 +374,8 @@ export const ko = {
   'settings.hiddenPaneRetentionDesc': '기본 켜짐. 숨겨진 패널은 화면 렌더링만 멈추고 모든 것은 계속 실행됩니다 — 출력은 데몬이 보관하며 다시 표시될 때 따라잡습니다("동기화 중" 표시). 끄면 숨겨진 패널도 항상 렌더링하지만, 바쁜 패널마다 실제 CPU 비용이 듭니다. 데몬 세션 전용 — 로컬 모드 세션은 항상 렌더링됩니다.',
   'settings.browserLightweight': '백그라운드 브라우저 경량 모드',
   'settings.browserLightweightDesc': '보이지 않는 내장 브라우저 패널(숨은 워크스페이스, 줌으로 가려진 패널, 최소화된 창)의 CPU 사용을 제한합니다. 자동화(MCP/스크린샷)는 계속 전속력으로 동작합니다. CPU만 절감되며 메모리는 줄지 않습니다.',
+  'settings.browserDiscard': '숨은 브라우저 내리기 (메모리 절감)',
+  'settings.browserDiscardDesc': '브라우저 패널이 5분 동안 보이지 않으면 완전히 내려 메모리를 회수합니다. 돌아오면 페이지가 다시 로드됩니다(스크롤 위치와 저장하지 않은 입력은 사라집니다). 오디오 재생 중인 패널은 내리지 않으며, 자동화는 내려간 패널을 자동으로 깨웁니다.',
   'settings.updates': '업데이트',
   'settings.wmuxUpdates': 'wmux 업데이트',
   'settings.updateFailed': '업데이트 확인 실패',

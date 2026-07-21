@@ -226,6 +226,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,
     hiddenPaneRetentionEnabled: state.hiddenPaneRetentionEnabled,
     browserLightweightMode: state.browserLightweightMode,
+    browserDiscardHidden: state.browserDiscardHidden,
     startupDirectory: state.startupDirectory || undefined,
     scrollbackLines: state.scrollbackLines,
     scrollbackRestoreEnabled: state.scrollbackRestoreEnabled,
@@ -376,6 +377,15 @@ export default function AppLayout() {
       (window as any).electronAPI?.browser?.setLightweight?.(browserLightweightMode);
     } catch { /* older main without the handler — setting stays inert */ }
   }, [browserLightweightMode]);
+
+  // #517 slice C — discard mode mirrors the same way. Effective only while
+  // lightweight mode is also on (belt-and-braces: main enforces this too).
+  const browserDiscardHidden = useStore((s) => s.browserDiscardHidden);
+  useEffect(() => {
+    try {
+      (window as any).electronAPI?.browser?.setDiscard?.(browserDiscardHidden && browserLightweightMode);
+    } catch { /* older main without the handler — setting stays inert */ }
+  }, [browserDiscardHidden, browserLightweightMode]);
 
   // ─── File drop — handled in preload where File.path is accessible ──────
   const [isDragging, setIsDragging] = useState(false);

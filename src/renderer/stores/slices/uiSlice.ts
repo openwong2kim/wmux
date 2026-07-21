@@ -189,6 +189,13 @@ export interface UISlice {
   browserLightweightMode: boolean;
   setBrowserLightweightMode: (enabled: boolean) => void;
 
+  // #517 slice C (default OFF): additionally DISCARD a guest that stays
+  // invisible for several minutes — the <webview> unmounts, its renderer
+  // process dies and memory is reclaimed; the page reloads on return.
+  // Only effective while browserLightweightMode is also on.
+  browserDiscardHidden: boolean;
+  setBrowserDiscardHidden: (enabled: boolean) => void;
+
   // Issue #175: global default starting directory for new terminals.
   // '' = unset → os.homedir() fallback in the spawn layer.
   startupDirectory: string;
@@ -860,6 +867,12 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setBrowserLightweightMode: (enabled) => set((state) => {
     state.browserLightweightMode = enabled;
+  }),
+
+  browserDiscardHidden: false,
+
+  setBrowserDiscardHidden: (enabled) => set((state) => {
+    state.browserDiscardHidden = enabled;
   }),
 
   startupDirectory: '',

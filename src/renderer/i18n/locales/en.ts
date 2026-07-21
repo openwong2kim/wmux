@@ -274,6 +274,7 @@ export const en = {
   'browser.close': 'Close',
   'browser.devToolsTooltip': 'Open DevTools (F12)',
   'browser.title': 'Browser',
+  'browser.discarded': 'Suspended to save memory — click to reload',
 
   // VI copy mode
   'viCopy.mode': '-- COPY MODE --',
@@ -422,6 +423,8 @@ export const en = {
   'settings.hiddenPaneRetentionDesc': 'Default on. Hidden panes pause screen rendering while everything keeps running — output is captured by the daemon and the pane catches up when you switch back (briefly shown as "catching up"). Turn off to render every hidden pane continuously; that costs real CPU per busy hidden pane. Daemon sessions only; local-mode sessions always render.',
   'settings.browserLightweight': 'Lightweight background browsers',
   'settings.browserLightweightDesc': 'Throttle CPU usage of built-in browser panes that are not visible (hidden workspaces, zoomed-away panes, minimized window). Automation (MCP/screenshots) still runs full-speed. Reduces CPU only, not memory.',
+  'settings.browserDiscard': 'Discard hidden browsers (frees memory)',
+  'settings.browserDiscardDesc': 'After a browser pane stays invisible for 5 minutes, unload it entirely to reclaim its memory. The page reloads when you return (scroll position and unsaved form input are lost). Panes playing audio are never discarded; automation wakes a discarded pane automatically.',
   'settings.updates': 'Updates',
   'settings.wmuxUpdates': 'wmux updates',
   'settings.updateFailed': 'Failed to check for updates',

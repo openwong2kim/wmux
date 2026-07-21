@@ -32,6 +32,14 @@ const BACKGROUND_CPU_THROTTLE_RATE = 20;
 // lightweight mode. After this bound the lease is force-released; the hung op
 // keeps running (it is hung anyway) and may be re-throttled.
 const OP_LEASE_FAILSAFE_MS = 60_000;
+// Memory relief (#517 slice C): how long a guest must stay continuously
+// invisible, unleased and out of grace before its renderer is discarded
+// (the renderer unmounts the <webview>, destroying the guest process).
+const DISCARD_AFTER_MS = 5 * 60_000;
+// How long ensureAwake() waits for a discarded guest to remount + register
+// after the wake signal. Longer than waitForTarget's default 5s because the
+// page has to fully reload before dom-ready re-registers it.
+const WAKE_TIMEOUT_MS = 15_000;
 
 interface GuestState {
   /** Effective visibility reported by the renderer (workspace ∧ window ∧ ¬zoom ∧ selected). */
@@ -48,6 +56,11 @@ interface GuestState {
    *  stale release from a pre-unregister op cannot decrement a replacement
    *  guest's fresh leases (CodeRabbit, PR #528). */
   gen: number;
+  /** Renderer discarded this guest's <webview> to free memory (#517 slice C).
+   *  Cleared when the surface re-registers. */
+  discarded: boolean;
+  /** Dwell timer armed while the guest is throttle-eligible; fires a discard. */
+  discardTimer: NodeJS.Timeout | null;
 }
 
 export class WebviewCdpManager {
@@ -58,6 +71,15 @@ export class WebviewCdpManager {
   // and not under automation is background-throttled (CPU relief only — the
   // renderer stays resident; this is NOT a memory mode).
   private lightweightMode = false;
+  // Memory relief (#517 slice C, default OFF): when ON — and only alongside
+  // lightweight mode — a guest that stays throttle-eligible for
+  // DISCARD_AFTER_MS is discarded: main signals the renderer, which unmounts
+  // the <webview> (destroying the guest renderer process and freeing its
+  // memory) and shows a placeholder. The page reloads on wake.
+  private discardMode = false;
+  // Renderer signalling hooks, injected by main/index.ts.
+  private onDiscard?: (surfaceId: string) => void;
+  private onWake?: (surfaceId: string) => void;
   // Keyed by surfaceId; survives register/unregister so a visibility signal
   // that arrives before register() still applies.
   private guestState = new Map<string, GuestState>();
@@ -171,6 +193,9 @@ export class WebviewCdpManager {
     // re-register fires on every navigation, and re-arming grace there would
     // let a hidden page that reloads periodically stay unthrottled forever.
     const gs = this.ensureGuestState(surfaceId);
+    // A registration IS the wake: the renderer remounted the webview (wake
+    // signal, user click, or surface became visible again).
+    gs.discarded = false;
     if (!sameGuestReregister && this.lightweightMode && !gs.visible && gs.leases === 0) {
       gs.inGrace = true;
       if (gs.idleTimer) clearTimeout(gs.idleTimer);
@@ -222,6 +247,11 @@ export class WebviewCdpManager {
     if (gs) {
       if (gs.idleTimer) clearTimeout(gs.idleTimer);
       gs.idleTimer = null;
+      if (gs.discardTimer) clearTimeout(gs.discardTimer);
+      gs.discardTimer = null;
+      // gs.discarded is deliberately NOT cleared here: a discard-driven
+      // unmount arrives as webview 'destroyed' → unregister, and the flag is
+      // what lets ensureAwake() know the surface can be woken.
       gs.leases = 0;
       gs.inGrace = false;
       // Invalidate outstanding lease handles: an op that acquired before this
@@ -251,6 +281,64 @@ export class WebviewCdpManager {
 
   isLightweightMode(): boolean {
     return this.lightweightMode;
+  }
+
+  /** Toggle discard (memory-relief) mode and recompute every guest's dwell timer. */
+  setDiscardMode(enabled: boolean): void {
+    if (this.discardMode === enabled) return;
+    this.discardMode = enabled;
+    console.log(`[WebviewCdpManager] discardMode=${enabled}`);
+    for (const surfaceId of this.sessions.keys()) {
+      this.recomputeThrottle(surfaceId);
+    }
+    if (!enabled) {
+      // Cancel pending dwell timers for surfaces without a live session too.
+      for (const gs of this.guestState.values()) {
+        if (gs.discardTimer) {
+          clearTimeout(gs.discardTimer);
+          gs.discardTimer = null;
+        }
+      }
+    }
+  }
+
+  isDiscardMode(): boolean {
+    return this.discardMode;
+  }
+
+  /** Wire renderer signalling for discard/wake (main/index.ts). */
+  setDiscardHooks(hooks: { onDiscard?: (surfaceId: string) => void; onWake?: (surfaceId: string) => void }): void {
+    this.onDiscard = hooks.onDiscard;
+    this.onWake = hooks.onWake;
+  }
+
+  isDiscarded(surfaceId: string): boolean {
+    return this.guestState.get(surfaceId)?.discarded === true;
+  }
+
+  /**
+   * Resolve a live CDP target for a surface, waking it first if it was
+   * discarded. Returns null when the surface is neither registered nor
+   * discarded (nothing to wake), or when the wake reload times out.
+   */
+  async ensureAwake(surfaceId: string): Promise<CdpTargetInfo | null> {
+    const existing = this.sessions.get(surfaceId);
+    if (existing) return existing;
+    const gs = this.guestState.get(surfaceId);
+    if (!gs?.discarded) return null;
+    console.log(`[WebviewCdpManager] waking discarded surface=${surfaceId}`);
+    try {
+      this.onWake?.(surfaceId);
+    } catch (err) {
+      console.warn(`[WebviewCdpManager] wake signal failed:`, err);
+      return null;
+    }
+    try {
+      return await this.waitForTarget(surfaceId, WAKE_TIMEOUT_MS);
+    } catch {
+      console.warn(`[WebviewCdpManager] wake timed out for surface=${surfaceId}`);
+      return null;
+    }
   }
 
   /**
@@ -368,7 +456,7 @@ export class WebviewCdpManager {
     if (!gs) {
       // Unknown surfaces default to visible — fail open (never throttle a
       // guest we have no visibility signal for).
-      gs = { visible: true, leases: 0, idleTimer: null, inGrace: false, gen: 0 };
+      gs = { visible: true, leases: 0, idleTimer: null, inGrace: false, gen: 0, discarded: false, discardTimer: null };
       this.guestState.set(surfaceId, gs);
     }
     return gs;
@@ -412,6 +500,56 @@ export class WebviewCdpManager {
         });
     } catch (err) {
       console.warn(`[WebviewCdpManager] setCPUThrottlingRate failed:`, err);
+    }
+
+    // Memory relief (#517 slice C): a guest that stays throttled long enough
+    // is discarded. The dwell timer arms exactly when the throttle condition
+    // holds (and discard mode is on) and is cancelled the moment it stops
+    // holding — visibility, a lease, grace or a mode flip all reset the dwell.
+    const discardEligible = throttled && this.discardMode && !gs.discarded;
+    if (discardEligible && !gs.discardTimer) {
+      gs.discardTimer = setTimeout(() => {
+        gs.discardTimer = null;
+        this.fireDiscard(surfaceId);
+      }, DISCARD_AFTER_MS);
+      gs.discardTimer.unref?.();
+    } else if (!discardEligible && gs.discardTimer) {
+      clearTimeout(gs.discardTimer);
+      gs.discardTimer = null;
+    }
+  }
+
+  /** Dwell timer fired — re-check conditions and signal the renderer. */
+  private fireDiscard(surfaceId: string): void {
+    const session = this.sessions.get(surfaceId);
+    if (!session) return;
+    const gs = this.guestState.get(surfaceId);
+    if (!gs) return;
+    const stillEligible =
+      this.discardMode && this.lightweightMode &&
+      !gs.visible && gs.leases === 0 && !gs.inGrace && !gs.discarded;
+    if (!stillEligible) return;
+    const wc = webContents.fromId(session.webContentsId);
+    if (!wc || wc.isDestroyed()) return;
+    // Never discard a guest that is playing audio (background music/calls
+    // are a deliberate use of a hidden browser pane). Re-arm and try later.
+    try {
+      if (wc.isCurrentlyAudible()) {
+        gs.discardTimer = setTimeout(() => {
+          gs.discardTimer = null;
+          this.fireDiscard(surfaceId);
+        }, DISCARD_AFTER_MS);
+        gs.discardTimer.unref?.();
+        return;
+      }
+    } catch { /* audible check is best-effort */ }
+    gs.discarded = true;
+    console.log(`[WebviewCdpManager] discarding surface=${surfaceId}`);
+    try {
+      this.onDiscard?.(surfaceId);
+    } catch (err) {
+      console.warn(`[WebviewCdpManager] discard signal failed:`, err);
+      gs.discarded = false;
     }
   }
 
@@ -467,6 +605,7 @@ export class WebviewCdpManager {
     this.rpcLeases.clear();
     for (const gs of this.guestState.values()) {
       if (gs.idleTimer) clearTimeout(gs.idleTimer);
+      if (gs.discardTimer) clearTimeout(gs.discardTimer);
     }
     this.guestState.clear();
   }

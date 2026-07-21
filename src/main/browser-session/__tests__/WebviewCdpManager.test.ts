@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest';
+import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { WebviewCdpManager } from '../WebviewCdpManager';
 
 const mockDebugger = { attach: vi.fn(), detach: vi.fn(), sendCommand: vi.fn(async () => ({})) };
@@ -354,5 +354,123 @@ describe('WebviewCdpManager lightweight mode (#517)', () => {
     await manager.register('s1', 43);
     destroyedHandler(); // stale guest (wcId 42) fires destroyed
     expect(manager.getTarget('s1')).not.toBeNull(); // replacement survives
+  });
+});
+
+// ── #517 slice C — discard (memory relief) ──────────────────────────────────
+
+describe('WebviewCdpManager discard mode (#517 slice C)', () => {
+  let manager: WebviewCdpManager;
+  const DWELL = 5 * 60_000;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    vi.useFakeTimers();
+    (mockWebContents as any).isCurrentlyAudible = vi.fn(() => false);
+    manager = new WebviewCdpManager(18800);
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+  });
+
+  const enterEligible = async (surfaceId = 's1', wcId = 42) => {
+    await manager.register(surfaceId, wcId);
+    manager.setLightweightMode(true);
+    manager.setDiscardMode(true);
+    manager.setVisibility(surfaceId, false);
+  };
+
+  it('discards a guest after the dwell period and signals the renderer', async () => {
+    const onDiscard = vi.fn((sid: string) => manager.unregister(sid));
+    manager.setDiscardHooks({ onDiscard });
+    await enterEligible();
+    expect(onDiscard).not.toHaveBeenCalled();
+    vi.advanceTimersByTime(DWELL);
+    expect(onDiscard).toHaveBeenCalledWith('s1');
+    expect(manager.isDiscarded('s1')).toBe(true);
+    expect(manager.getTarget('s1')).toBeNull();
+  });
+
+  it('becoming visible before the dwell elapses cancels the discard', async () => {
+    const onDiscard = vi.fn();
+    manager.setDiscardHooks({ onDiscard });
+    await enterEligible();
+    vi.advanceTimersByTime(DWELL - 1000);
+    manager.setVisibility('s1', true);
+    vi.advanceTimersByTime(DWELL * 2);
+    expect(onDiscard).not.toHaveBeenCalled();
+    expect(manager.isDiscarded('s1')).toBe(false);
+  });
+
+  it('an automation lease before the dwell elapses cancels the discard', async () => {
+    const onDiscard = vi.fn();
+    manager.setDiscardHooks({ onDiscard });
+    await enterEligible();
+    vi.advanceTimersByTime(DWELL - 1000);
+    manager.acquireAutomationLease('s1');
+    vi.advanceTimersByTime(DWELL * 2);
+    expect(onDiscard).not.toHaveBeenCalled();
+  });
+
+  it('an audible guest is never discarded (dwell re-arms instead)', async () => {
+    const onDiscard = vi.fn();
+    manager.setDiscardHooks({ onDiscard });
+    (mockWebContents as any).isCurrentlyAudible.mockReturnValue(true);
+    await enterEligible();
+    vi.advanceTimersByTime(DWELL);
+    expect(onDiscard).not.toHaveBeenCalled();
+    expect(manager.isDiscarded('s1')).toBe(false);
+    // Audio stops — the re-armed dwell fires on its next tick.
+    (mockWebContents as any).isCurrentlyAudible.mockReturnValue(false);
+    vi.advanceTimersByTime(DWELL);
+    expect(onDiscard).toHaveBeenCalledWith('s1');
+  });
+
+  it('discard mode OFF never discards even when lightweight is on', async () => {
+    const onDiscard = vi.fn();
+    manager.setDiscardHooks({ onDiscard });
+    await manager.register('s1', 42);
+    manager.setLightweightMode(true);
+    manager.setVisibility('s1', false);
+    vi.advanceTimersByTime(DWELL * 3);
+    expect(onDiscard).not.toHaveBeenCalled();
+  });
+
+  it('ensureAwake wakes a discarded guest and resolves once it re-registers', async () => {
+    const onDiscard = vi.fn((sid: string) => manager.unregister(sid));
+    // Renderer remounts on wake → dom-ready re-registers the surface.
+    const onWake = vi.fn((sid: string) => { void manager.register(sid, 43); });
+    manager.setDiscardHooks({ onDiscard, onWake });
+    await enterEligible();
+    vi.advanceTimersByTime(DWELL);
+    expect(manager.isDiscarded('s1')).toBe(true);
+
+    const awake = manager.ensureAwake('s1');
+    // Let the mocked register()'s async steps (fetch) settle — but do NOT run
+    // all timers: the re-registered guest is still invisible, so a fresh dwell
+    // timer arms immediately and running it would legitimately re-discard.
+    await vi.advanceTimersByTimeAsync(100);
+    const target = await awake;
+    expect(onWake).toHaveBeenCalledWith('s1');
+    expect(target).not.toBeNull();
+    expect(manager.isDiscarded('s1')).toBe(false);
+  });
+
+  it('ensureAwake returns null for a surface that is neither registered nor discarded', async () => {
+    const onWake = vi.fn();
+    manager.setDiscardHooks({ onWake });
+    expect(await manager.ensureAwake('ghost')).toBeNull();
+    expect(onWake).not.toHaveBeenCalled();
+  });
+
+  it('re-registration after a discard clears the discarded flag', async () => {
+    const onDiscard = vi.fn((sid: string) => manager.unregister(sid));
+    manager.setDiscardHooks({ onDiscard });
+    await enterEligible();
+    vi.advanceTimersByTime(DWELL);
+    expect(manager.isDiscarded('s1')).toBe(true);
+    await manager.register('s1', 44);
+    expect(manager.isDiscarded('s1')).toBe(false);
   });
 });

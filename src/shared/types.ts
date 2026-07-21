@@ -648,6 +648,12 @@ export interface SessionData {
    */
   browserLightweightMode?: boolean;
   /**
+   * #517 slice C: discard (unmount + reload-on-return) browser guests that
+   * stay invisible for several minutes, freeing their renderer memory.
+   * Effective only alongside browserLightweightMode. Default false.
+   */
+  browserDiscardHidden?: boolean;
+  /**
    * Issue #175: global default starting directory for new terminals.
    * Empty/unset → os.homedir(). Per-workspace profile.startupCwd overrides.
    */

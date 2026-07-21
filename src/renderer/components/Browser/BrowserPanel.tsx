@@ -73,6 +73,15 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
   const [canGoForward, setCanGoForward] = useState(false);
   const [pageTitle, setPageTitle] = useState(() => t('browser.title'));
   const [isReady, setIsReady] = useState(false);
+  // #517 slice C — memory relief: when main decides this guest has been
+  // invisible long enough, the <webview> is unmounted entirely (destroying the
+  // guest renderer process and freeing its memory) and a placeholder renders
+  // instead. `mountSrc` is the URL the webview (re)mounts with — captured at
+  // restore time so the reload lands on the last page the user saw, and NOT
+  // updated on ordinary navigations (a src prop change would reload the page).
+  const [discarded, setDiscarded] = useState(false);
+  const [mountSrc, setMountSrc] = useState(initialUrl);
+  const currentUrlRef = useRef(initialUrl);
   const [inspecting, setInspecting] = useState(false);
   const [inspectInfo, setInspectInfo] = useState<string | null>(null);
 
@@ -88,7 +97,39 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
     }
   }, []);
 
-  // Attach webview event listeners once ready
+  // Keep a ref of the latest URL so a restore can remount on it without
+  // making the effect below depend on currentUrl.
+  useEffect(() => {
+    currentUrlRef.current = currentUrl;
+  }, [currentUrl]);
+
+  const restoreFromDiscard = useCallback(() => {
+    setDiscarded((wasDiscarded) => {
+      if (!wasDiscarded) return wasDiscarded;
+      setMountSrc(currentUrlRef.current);
+      return false;
+    });
+  }, []);
+
+  // Discard/wake signals from main (#517 slice C). Discard unmounts the
+  // webview (the 'destroyed' event unregisters the CDP target in main); wake
+  // remounts it — dom-ready then re-registers and resolves main's waiters.
+  useEffect(() => {
+    const api = (window as any).electronAPI?.browser;
+    const offDiscard = api?.onDiscarded?.((sid: string) => {
+      if (sid !== surfaceId) return;
+      setIsReady(false);
+      setDiscarded(true);
+    });
+    const offWake = api?.onWake?.((sid: string) => {
+      if (sid !== surfaceId) return;
+      restoreFromDiscard();
+    });
+    return () => { offDiscard?.(); offWake?.(); };
+  }, [surfaceId, restoreFromDiscard]);
+
+  // Attach webview event listeners once ready. `discarded` is a dependency so
+  // listeners re-attach on the fresh <webview> element after a restore.
   useEffect(() => {
     const wv = webviewRef.current;
     if (!wv) return;
@@ -154,7 +195,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
       wv.removeEventListener('did-navigate-in-page', onDidNavigateInPage as EventListener);
       wv.removeEventListener('page-title-updated', onTitleUpdated as EventListener);
     };
-  }, [updateNavState, updateBrowserUrl, surfaceId]);
+  }, [updateNavState, updateBrowserUrl, surfaceId, discarded]);
 
   // F12 opens DevTools for the webview
   useEffect(() => {
@@ -212,8 +253,21 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
     } catch { /* best-effort — older mains lack the handler */ }
   }, [surfaceId, effectiveVisible]);
 
+  // A discarded pane that becomes visible again restores itself — the user
+  // switched back to this workspace/pane and expects the page, not a stub.
+  useEffect(() => {
+    if (effectiveVisible) restoreFromDiscard();
+  }, [effectiveVisible, restoreFromDiscard]);
+
   const handleNavigate = useCallback((url: string) => {
     if (!isSafeBrowserUrl(url)) return;
+    if (discarded) {
+      // Navigating a discarded pane restores it directly onto the target URL.
+      setMountSrc(url);
+      setCurrentUrl(url);
+      setDiscarded(false);
+      return;
+    }
     const wv = webviewRef.current;
     if (!wv) return;
     if (isReady) {
@@ -223,7 +277,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
       wv.setAttribute('src', url);
     }
     setCurrentUrl(url);
-  }, [isReady]);
+  }, [isReady, discarded]);
 
   // Imperative navigation channel for openUrlInBrowserPane (terminal link
   // clicks, sidebar port badges, browser.open RPC). The store's browserUrl is
@@ -388,7 +442,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
     };
     wv.addEventListener('console-message', onConsole as EventListener);
     return () => { wv.removeEventListener('console-message', onConsole as EventListener); };
-  }, [removeInspector]);
+  }, [removeInspector, discarded]);
 
   const handleOpenDevTools = useCallback(() => {
     try {
@@ -474,11 +528,28 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
         </div>
       )}
 
-      {/* WebView */}
+      {/* WebView — or, when discarded (#517 slice C), a placeholder. The
+          <webview> is unmounted entirely so the guest renderer process dies
+          and its memory is reclaimed; remounting reloads mountSrc. */}
       <div className="flex-1 relative overflow-hidden" style={{ backgroundColor: 'var(--bg-base)' }}>
+        {discarded ? (
+        <button
+          type="button"
+          onClick={restoreFromDiscard}
+          className="flex flex-col items-center justify-center gap-1.5 w-full h-full cursor-pointer"
+          style={{ backgroundColor: 'var(--bg-base)', border: 'none' }}
+        >
+          <span className="text-xs text-[var(--text-subtle)]" style={{ fontFamily: 'ui-monospace, monospace' }}>
+            {t('browser.discarded')}
+          </span>
+          <span className="text-xs text-[var(--text-muted)] truncate max-w-[80%]" style={{ fontFamily: 'ui-monospace, monospace' }}>
+            {currentUrl}
+          </span>
+        </button>
+        ) : (
         <webview
           ref={webviewRef as React.RefObject<Electron.WebviewTag>}
-          src={initialUrl}
+          src={mountSrc}
           partition={partition}
           // Required for target=_blank / window.open to reach the main
           // process at all — without it the guest-view manager rejects the
@@ -496,6 +567,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
             display: 'flex',
           }}
         />
+        )}
       </div>
     </div>
   );

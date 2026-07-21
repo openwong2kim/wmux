@@ -1742,6 +1742,8 @@ function TabTerminal() {
   const setHiddenPaneRetentionEnabled = useStore((s) => s.setHiddenPaneRetentionEnabled);
   const browserLightweightMode = useStore((s) => s.browserLightweightMode);
   const setBrowserLightweightMode = useStore((s) => s.setBrowserLightweightMode);
+  const browserDiscardHidden = useStore((s) => s.browserDiscardHidden);
+  const setBrowserDiscardHidden = useStore((s) => s.setBrowserDiscardHidden);
   const startupDirectory = useStore((s) => s.startupDirectory);
   const setStartupDirectory = useStore((s) => s.setStartupDirectory);
   const [detectedShells, setDetectedShells] = useState<ShellInfo[]>([]);
@@ -1812,6 +1814,15 @@ function TabTerminal() {
             label={t('settings.browserLightweight')}
           />
         </SettingRow>
+        {browserLightweightMode && (
+          <SettingRow label={t('settings.browserDiscard')} description={t('settings.browserDiscardDesc')}>
+            <Toggle
+              checked={browserDiscardHidden}
+              onChange={setBrowserDiscardHidden}
+              label={t('settings.browserDiscard')}
+            />
+          </SettingRow>
+        )}
         <SettingRow label={t('settings.scrollbackLines')} description={t('settings.scrollbackDesc')}>
           <SettingNumberInput
             label={t('settings.scrollbackLines')}

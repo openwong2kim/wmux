@@ -544,6 +544,19 @@ const electronAPI = {
       ipcRenderer.invoke('browser:set-visibility', surfaceId, visible),
     setLightweight: (enabled: boolean) =>
       ipcRenderer.invoke('browser:set-lightweight', enabled),
+    // #517 slice C — memory relief (discard long-invisible guests)
+    setDiscard: (enabled: boolean) =>
+      ipcRenderer.invoke('browser:set-discard', enabled),
+    onDiscarded: (callback: (surfaceId: string) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, surfaceId: string) => callback(surfaceId);
+      ipcRenderer.on('browser:discarded', listener);
+      return () => { ipcRenderer.removeListener('browser:discarded', listener); };
+    },
+    onWake: (callback: (surfaceId: string) => void) => {
+      const listener = (_e: Electron.IpcRendererEvent, surfaceId: string) => callback(surfaceId);
+      ipcRenderer.on('browser:wake', listener);
+      return () => { ipcRenderer.removeListener('browser:wake', listener); };
+    },
   },
   fs: {
     readDir: (dirPath: string) => ipcRenderer.invoke(IPC.FS_READ_DIR, dirPath),

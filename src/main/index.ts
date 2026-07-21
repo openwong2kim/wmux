@@ -779,6 +779,26 @@ ipcMain.handle('browser:set-lightweight', (_event, enabled: boolean) => {
   webviewCdpManager.setLightweightMode(enabled);
   return { ok: true };
 });
+// #517 slice C — memory relief: discard long-invisible guests.
+ipcMain.handle('browser:set-discard', (_event, enabled: boolean) => {
+  if (typeof enabled !== 'boolean') return { ok: false };
+  webviewCdpManager.setDiscardMode(enabled);
+  return { ok: true };
+});
+// Discard/wake signals travel main → renderer: the renderer owns the <webview>
+// element, so main can only ask it to unmount (discard) or remount (wake).
+webviewCdpManager.setDiscardHooks({
+  onDiscard: (surfaceId) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('browser:discarded', surfaceId);
+    }
+  },
+  onWake: (surfaceId) => {
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('browser:wake', surfaceId);
+    }
+  },
+});
 
 console.log('[DEBUG] registering app.on(ready)');
 app.on('ready', async () => {
