@@ -139,22 +139,35 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
     const wv = webviewRef.current;
     if (!wv) return;
 
-    const onDomReady = async () => {
-      setIsReady(true);
-      updateNavState();
-
-      // Register webview with main process for CDP debugging.
-      // Must be awaited so that MCP tools querying browser.cdp.info
-      // after dom-ready find the registered CDP target.
+    // Register the guest's webContents with main for CDP. Idempotent for the
+    // same guest (main treats a same-wcId call as a re-registration), so it is
+    // safe to call from both did-attach and dom-ready.
+    const registerForCdp = async (via: string) => {
       try {
         const wcId = (wv as any).getWebContentsId?.();
         if (wcId && (window as any).electronAPI?.browser?.registerWebview) {
           await (window as any).electronAPI.browser.registerWebview(surfaceId, wcId);
-          console.log(`[BrowserPanel] CDP target registered for surface=${surfaceId} wc=${wcId}`);
+          console.log(`[BrowserPanel] CDP target registered (${via}) for surface=${surfaceId} wc=${wcId}`);
         }
       } catch (err) {
         console.warn('[BrowserPanel] Failed to register webview for CDP:', err);
       }
+    };
+
+    // did-attach fires as soon as the guest webContents exists — before the
+    // page finishes loading. Registering here decouples CDP availability from
+    // page load speed, which matters for the #517 wake path: a discarded pane
+    // remounts and reloads, and on a slow or unreachable page dom-ready can
+    // take longer than main's wake timeout, leaving automation with "no
+    // webview target" (observed live on a machine with dead DNS).
+    const onDidAttach = () => { void registerForCdp('did-attach'); };
+
+    const onDomReady = async () => {
+      setIsReady(true);
+      updateNavState();
+      // Re-register on dom-ready as well: the target list lookup by URL/title
+      // only matches once the page has actually loaded.
+      await registerForCdp('dom-ready');
     };
 
     const onStartLoading = () => {
@@ -185,6 +198,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
       setPageTitle(e.title || t('browser.title'));
     };
 
+    wv.addEventListener('did-attach', onDidAttach);
     wv.addEventListener('dom-ready', onDomReady);
     wv.addEventListener('did-start-loading', onStartLoading);
     wv.addEventListener('did-stop-loading', onStopLoading);
@@ -193,6 +207,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
     wv.addEventListener('page-title-updated', onTitleUpdated as EventListener);
 
     return () => {
+      wv.removeEventListener('did-attach', onDidAttach);
       wv.removeEventListener('dom-ready', onDomReady);
       wv.removeEventListener('did-start-loading', onStartLoading);
       wv.removeEventListener('did-stop-loading', onStopLoading);

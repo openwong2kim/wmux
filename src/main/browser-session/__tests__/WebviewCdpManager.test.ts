@@ -542,3 +542,32 @@ describe('WebviewCdpManager discard fixes (3-way review)', () => {
     expect(onWake).toHaveBeenCalledWith('s1');
   });
 });
+
+describe('WebviewCdpManager register resilience (live dogfood)', () => {
+  let manager: WebviewCdpManager;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    manager = new WebviewCdpManager(18800);
+  });
+
+  it('registers even when the debugger is already attached', async () => {
+    // Electron throws "Debugger is already attached to the target"; an
+    // exact-case guard missed it and aborted registration, which left a woken
+    // (remounted) guest permanently unregistered — automation then failed with
+    // "no webview target" until the pane was clicked.
+    mockDebugger.attach.mockImplementationOnce(() => {
+      throw new TypeError('Debugger is already attached to the target');
+    });
+    await manager.register('s1', 42);
+    expect(manager.getTarget('s1')).not.toBeNull();
+  });
+
+  it('still aborts registration on a genuine attach failure', async () => {
+    mockDebugger.attach.mockImplementationOnce(() => {
+      throw new Error('Cannot attach: target crashed');
+    });
+    await manager.register('s1', 42);
+    expect(manager.getTarget('s1')).toBeNull();
+  });
+});

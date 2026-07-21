@@ -35,7 +35,12 @@ const OP_LEASE_FAILSAFE_MS = 60_000;
 // Memory relief (#517 slice C): how long a guest must stay continuously
 // invisible, unleased and out of grace before its renderer is discarded
 // (the renderer unmounts the <webview>, destroying the guest process).
-const DISCARD_AFTER_MS = 5 * 60_000;
+// Env override is for dogfooding/tests only (a 5-minute dwell is impractical
+// to exercise live); not a supported user setting.
+const DISCARD_AFTER_MS =
+  Number(process.env['WMUX_DISCARD_AFTER_MS']) > 0
+    ? Number(process.env['WMUX_DISCARD_AFTER_MS'])
+    : 5 * 60_000;
 // How long ensureAwake() waits for a discarded guest to remount + register
 // after the wake signal. Longer than waitForTarget's default 5s because the
 // page has to fully reload before dom-ready re-registers it.
@@ -126,7 +131,12 @@ export class WebviewCdpManager {
     try {
       wc.debugger.attach('1.3');
     } catch (err) {
-      if (!String(err).includes('Already attached')) {
+      // Electron's message is "Debugger is already attached to the target" —
+      // the old guard matched "Already attached", which never hit, so an
+      // already-attached guest aborted registration entirely (observed live:
+      // the wake path left the surface permanently unregistered). Match
+      // case-insensitively on the stable part of the message.
+      if (!/already attached/i.test(String(err))) {
         console.error(`[WebviewCdpManager] debugger.attach failed:`, err);
         return;
       }
