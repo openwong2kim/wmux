@@ -144,9 +144,9 @@ Total: **142** methods (`ALL_RPC_METHODS` in
 | `browser.cookies` | `browser.cookies` | `browser` |
 | `browser.resize` | `browser.evaluate` | `browser` |
 | `browser.emulate` | `browser.emulate` | `browser` |
-| `browser.lease.acquire` | `browser.read` | `browser` |
-| `browser.lease.renew` | `browser.read` | `browser` |
-| `browser.lease.release` | `browser.read` | `browser` |
+| `browser.lease.acquire` | `browser.evaluate` | `browser` |
+| `browser.lease.renew` | `browser.evaluate` | `browser` |
+| `browser.lease.release` | `browser.evaluate` | `browser` |
 
 ### `a2a`
 
