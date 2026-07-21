@@ -26,6 +26,7 @@ import {
   WORKSPACE_PROFILE_ENV_KEY_MAX,
   WORKSPACE_PROFILE_ENV_VALUE_MAX,
   WORKSPACE_PROFILE_MAX_ENV_ENTRIES,
+  WORKSPACE_PROFILE_SHELL_MAX,
   WORKSPACE_PROFILE_STARTUP_CWD_MAX,
   type WorkspaceProfile,
 } from './types';
@@ -148,6 +149,35 @@ export function normalizeStartupCwd(input: unknown): string | undefined {
   return trimmed;
 }
 
+/** Legacy shell-setting aliases (issue-tracked defaultShell values) that are
+ *  labels, not spawnable paths — a profile must reject these the same way
+ *  ptyCreateOptions.isExecutableShellValue rejects them for defaultShell. */
+const LEGACY_SHELL_VALUES = new Set(['powershell', 'cmd', 'gitbash', 'wsl']);
+
+/** Bare unix shell names that resolve via PATH without a `/` or extension. */
+const BARE_UNIX_SHELL_NAMES = new Set(['bash', 'zsh', 'fish', 'pwsh', 'sh']);
+
+/**
+ * Normalize a per-workspace shell override (Track A): accept only a value
+ * that looks spawnable — an absolute/relative path (contains `\` or `/`), a
+ * Windows executable (`.exe`, case-insensitive), or a known bare unix shell
+ * name that resolves via PATH. Legacy defaultShell aliases (`powershell`,
+ * `cmd`, `gitbash`, `wsl`) are labels from the settings dropdown, not
+ * spawnable paths, and are rejected here exactly as they are for the global
+ * defaultShell (see ptyCreateOptions.isExecutableShellValue).
+ */
+export function normalizeShell(input: unknown): string | undefined {
+  if (typeof input !== 'string') return undefined;
+  const trimmed = input.trim();
+  if (trimmed.length === 0) return undefined;
+  if (trimmed.length > WORKSPACE_PROFILE_SHELL_MAX) return undefined;
+  if (LEGACY_SHELL_VALUES.has(trimmed.toLowerCase())) return undefined;
+  if (trimmed.includes('\\') || trimmed.includes('/')) return trimmed;
+  if (trimmed.toLowerCase().endsWith('.exe')) return trimmed;
+  if (BARE_UNIX_SHELL_NAMES.has(trimmed.toLowerCase())) return trimmed;
+  return undefined;
+}
+
 /**
  * Build a clean WorkspaceProfile from untrusted input, or `undefined` when the
  * result would be empty. `env` is omitted when it has no valid entries so an
@@ -158,18 +188,25 @@ export function normalizeWorkspaceProfile(
   opts: { dropSecretKeys?: boolean } = {},
 ): WorkspaceProfile | undefined {
   if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
-  const src = input as { env?: unknown; defaultPaneCommand?: unknown; startupCwd?: unknown };
+  const src = input as { env?: unknown; defaultPaneCommand?: unknown; startupCwd?: unknown; shell?: unknown };
 
   const env = normalizeEnv(src.env, opts.dropSecretKeys ?? false);
   const command = normalizeCommand(src.defaultPaneCommand);
   const startupCwd = normalizeStartupCwd(src.startupCwd);
+  const shell = normalizeShell(src.shell);
 
   const profile: WorkspaceProfile = {};
   if (Object.keys(env).length > 0) profile.env = env;
   if (command !== undefined) profile.defaultPaneCommand = command;
   if (startupCwd !== undefined) profile.startupCwd = startupCwd;
+  if (shell !== undefined) profile.shell = shell;
 
-  if (profile.env === undefined && profile.defaultPaneCommand === undefined && profile.startupCwd === undefined) {
+  if (
+    profile.env === undefined &&
+    profile.defaultPaneCommand === undefined &&
+    profile.startupCwd === undefined &&
+    profile.shell === undefined
+  ) {
     return undefined;
   }
   return profile;

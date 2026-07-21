@@ -582,18 +582,18 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     let ptyId: string;
     try {
       const created = await window.electronAPI.pty.create(
-        withWorkspaceProfile(
-          withDefaultShell(
+        withDefaultShell(
+          withWorkspaceProfile(
             {
               workspaceId: newWsId,
               cwd: cwd || undefined,
               ...(initialCommand ? { initialCommand } : {}),
             },
-            useStore.getState().defaultShell,
+            // profile.startupCwd = worktreePath 힌트(§1 — 초기 편의). split 상속에
+            // 밀리는 tolerant 힌트라 방어가 아니라 편의로만 계상한다.
+            { ...newWs.profile, startupCwd: cwd || newWs.profile?.startupCwd },
           ),
-          // profile.startupCwd = worktreePath 힌트(§1 — 초기 편의). split 상속에
-          // 밀리는 tolerant 힌트라 방어가 아니라 편의로만 계상한다.
-          { ...newWs.profile, startupCwd: cwd || newWs.profile?.startupCwd },
+          useStore.getState().defaultShell,
         ),
       );
       ptyId = created.id;
@@ -690,13 +690,16 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
         : resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: store.startupDirectory }) ?? '';
 
     const created = await window.electronAPI.pty.create(
-      withWorkspaceProfile(
-        {
-          ...withDefaultShell({ shell: shell || undefined }, store.defaultShell),
-          cwd: cwd || undefined,
-          workspaceId: ws.id,
-        },
-        ws.profile,
+      withDefaultShell(
+        withWorkspaceProfile(
+          {
+            shell: shell || undefined,
+            cwd: cwd || undefined,
+            workspaceId: ws.id,
+          },
+          ws.profile,
+        ),
+        store.defaultShell,
       ),
     );
     const ptyId = created.id;
@@ -951,12 +954,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     let created: { id: string; shell?: string; cwd?: string };
     try {
       created = await window.electronAPI.pty.create(
-        withWorkspaceProfile(
-          withDefaultShell(
+        withDefaultShell(
+          withWorkspaceProfile(
             { workspaceId: splitWs.id, cwd: startupCwd || undefined },
-            useStore.getState().defaultShell,
+            splitWs.profile,
           ),
-          splitWs.profile,
+          useStore.getState().defaultShell,
         ),
       );
     } catch (err) {

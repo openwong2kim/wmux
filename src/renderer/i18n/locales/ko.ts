@@ -34,6 +34,12 @@ export const ko = {
   'workspace.gitSyncTooltip': 'ahead {ahead} · behind {behind} · 커밋 안 된 변경 {dirty}',
   'workspace.idleTooltip': '{time} 동안 에이전트 활동 없음',
 
+  // Workspace profile — Track A: 워크스페이스별 셸 (나머지 workspaceProfile.*
+  // 키는 en으로 폴백; 이 세 키만 신규 UI에 필요해 추가)
+  'workspaceProfile.shellHeading': '셸',
+  'workspaceProfile.shellDefaultOption': '전역 기본값 사용',
+  'workspaceProfile.shellHint': '이 워크스페이스의 새 패널은 이 셸을 사용합니다. 기본값으로 두면 전역 설정을 따릅니다.',
+
   // Pane
   'pane.empty': '빈 창',
   'pane.splitRight': '오른쪽 분할',

@@ -71,6 +71,12 @@ export function withDefaultShell<T extends PtyCreateOptions>(
  *   per-pane override wins over the workspace default).
  * - The profile's defaultPaneCommand becomes `initialCommand` only when the
  *   caller didn't already specify one (an explicit command always wins).
+ * - The profile's `shell` fills `options.shell` only when the caller didn't
+ *   already specify one. Shell precedence (Track A): explicit per-pane shell
+ *   > workspace profile.shell > global defaultShell — callers must therefore
+ *   apply this BEFORE withDefaultShell (withDefaultShell(withWorkspaceProfile(
+ *   opts, profile), defaultShell)) so the global default only fills when
+ *   neither an explicit nor a profile shell was set.
  *
  * Pure and side-effect-free: returns the original object untouched when there
  * is no profile, so callsites with no configured workspace stay byte-identical.
@@ -86,6 +92,9 @@ export function withWorkspaceProfile<T extends PtyCreateOptions>(
   }
   if (profile.defaultPaneCommand && next.initialCommand === undefined) {
     next.initialCommand = profile.defaultPaneCommand;
+  }
+  if (profile.shell && next.shell === undefined) {
+    next.shell = profile.shell;
   }
   return next;
 }

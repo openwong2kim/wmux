@@ -10,6 +10,7 @@ import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
 import { buildSpawnInjection, classifyShell } from './shell-integration';
 import { expandTilde } from '../shared/expandTilde';
+import { splitWslCwd } from '../shared/wslCwd';
 import { buildExecArgs } from './execWrapper';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac } from '../shared/platform';
@@ -368,6 +369,26 @@ export class DaemonSessionManager extends EventEmitter {
       }
     }
 
+    // Track B (WSL/Ubuntu cwd): when `cmd` is wsl.exe and `cwd` is a
+    // Linux-style path (or `\\wsl$\...`/`\\wsl.localhost\...` UNC), node-pty
+    // cannot use it as the spawn cwd — ConPTY/CreateProcess only resolve
+    // Windows paths. Give node-pty a safe Windows cwd (this daemon's own
+    // home) and let `wsl.exe --cd <linuxpath>` do the actual positioning
+    // instead (see wslCwd.ts). Skipped on the exec path — its spawnArgs are
+    // an already-finalized wrapper-shell invocation of the caller's command,
+    // and prepending `--cd` would corrupt that argv rather than the shell's.
+    //
+    // IMPORTANT: this only changes what node-pty spawns with. `cwd` itself
+    // (used for `meta.cwd` below) is left untouched — it must stay the
+    // ORIGINAL Linux path so a recovery replay re-derives the identical
+    // split from createSession's own params.cwd, with no new persisted field.
+    let spawnCwd = cwd;
+    if (!params.exec) {
+      const wslSplit = splitWslCwd(cmd, cwd, os.homedir());
+      spawnCwd = wslSplit.spawnCwd ?? cwd;
+      spawnArgs = [...wslSplit.prefixArgs, ...spawnArgs];
+    }
+
     // Spawn the PTY. node-pty throws synchronously on a missing/invalid shell
     // binary or an unreadable cwd — common on macOS/Linux where the resolved
     // shell path differs from Windows. Surface an actionable message instead of
@@ -379,7 +400,7 @@ export class DaemonSessionManager extends EventEmitter {
         name: 'xterm-256color',
         cols,
         rows,
-        cwd,
+        cwd: spawnCwd,
         env,
         useConpty: true,
       });

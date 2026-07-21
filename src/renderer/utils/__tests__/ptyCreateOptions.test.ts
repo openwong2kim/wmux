@@ -141,6 +141,58 @@ describe('withWorkspaceProfile', () => {
   it('leaves env/initialCommand absent for an empty profile', () => {
     expect(withWorkspaceProfile({ workspaceId: 'ws-1' }, {})).toEqual({ workspaceId: 'ws-1' });
   });
+
+  it('fills shell from the profile when unset', () => {
+    expect(withWorkspaceProfile({ workspaceId: 'ws-1' }, { shell: '/bin/zsh' })).toEqual({
+      workspaceId: 'ws-1',
+      shell: '/bin/zsh',
+    });
+  });
+
+  it('does not overwrite an explicit shell', () => {
+    expect(withWorkspaceProfile({ shell: 'cmd.exe' }, { shell: '/bin/zsh' })).toEqual({
+      shell: 'cmd.exe',
+    });
+  });
+});
+
+// Track A: per-workspace shell precedence — explicit per-pane shell >
+// workspace profile.shell > global defaultShell. Callsites must apply
+// withWorkspaceProfile BEFORE withDefaultShell so the global default only
+// fills when neither an explicit nor a profile shell was set.
+describe('shell precedence (withDefaultShell + withWorkspaceProfile)', () => {
+  it('profile.shell wins over the global defaultShell', () => {
+    const result = withDefaultShell(
+      withWorkspaceProfile({ workspaceId: 'w' }, { shell: '/bin/zsh' }),
+      'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+    );
+    expect(result.shell).toBe('/bin/zsh');
+  });
+
+  it('an explicit per-pane shell beats profile.shell', () => {
+    const result = withDefaultShell(
+      withWorkspaceProfile({ shell: 'cmd.exe' }, { shell: '/bin/zsh' }),
+      'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+    );
+    expect(result.shell).toBe('cmd.exe');
+  });
+
+  it('falls back to the global defaultShell when there is no profile', () => {
+    const result = withDefaultShell(
+      withWorkspaceProfile({ workspaceId: 'w' }, undefined),
+      'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+    );
+    expect(result).toEqual({ workspaceId: 'w', shell: 'C:\\Program Files\\PowerShell\\7\\pwsh.exe' });
+  });
+
+  it('no-profile path stays byte-identical to withDefaultShell alone', () => {
+    const direct = withDefaultShell({ workspaceId: 'w' }, 'C:\\Program Files\\PowerShell\\7\\pwsh.exe');
+    const viaProfile = withDefaultShell(
+      withWorkspaceProfile({ workspaceId: 'w' }, undefined),
+      'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+    );
+    expect(viaProfile).toEqual(direct);
+  });
 });
 
 // Issues #173/#174/#175: priority chain for a new terminal's starting directory.

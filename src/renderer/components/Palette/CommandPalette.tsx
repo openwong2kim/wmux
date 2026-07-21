@@ -243,7 +243,7 @@ export default function CommandPalette() {
             // Issue #175: new tabs honor profile.startupCwd > global startupDirectory.
             const cwd = resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: state.startupDirectory });
             void ipcInvoke<{ id: string; cwd?: string }>(() =>
-              window.electronAPI.pty.create(withWorkspaceProfile(withDefaultShell({ workspaceId: ws.id, cwd, spawnKind: 'user-shell' }, state.defaultShell), ws.profile))
+              window.electronAPI.pty.create(withDefaultShell(withWorkspaceProfile({ workspaceId: ws.id, cwd, spawnKind: 'user-shell' }, ws.profile), state.defaultShell))
             ).then((result) => {
               if (result.ok) {
                 // #515: adopt the cwd main actually spawned in (was '' → later

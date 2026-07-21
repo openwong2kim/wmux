@@ -143,6 +143,12 @@ export interface WorkspaceProfile {
    * (validateCwd in pty.handler), so a disconnected drive never hard-fails.
    */
   startupCwd?: string;
+  /**
+   * Absolute path (or resolvable name) of the shell for new panes in this
+   * workspace. Overrides the global defaultShell; overridden by an explicit
+   * per-pane shell.
+   */
+  shell?: string;
 }
 
 // Validation caps — enforced by shared/workspaceProfile.ts.
@@ -151,6 +157,7 @@ export const WORKSPACE_PROFILE_ENV_KEY_MAX = 128;
 export const WORKSPACE_PROFILE_ENV_VALUE_MAX = 8192;
 export const WORKSPACE_PROFILE_COMMAND_MAX = 4096;
 export const WORKSPACE_PROFILE_STARTUP_CWD_MAX = 1024;
+export const WORKSPACE_PROFILE_SHELL_MAX = 1024;
 
 // === Workspace: a named collection of panes ===
 export interface Workspace {

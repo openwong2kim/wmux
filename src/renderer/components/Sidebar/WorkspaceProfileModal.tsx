@@ -10,6 +10,11 @@ interface WorkspaceProfileModalProps {
   onClose: () => void;
 }
 
+// Local shape for window.electronAPI.shell.list() — mirrors shared/ShellDetector's
+// ShellInfo without importing it directly (that module pulls in node:fs; see
+// SettingsPanel.tsx's identical local type for the same reason).
+type ShellInfo = { name: string; path: string; args?: string[] };
+
 interface EnvRow {
   id: number;
   key: string;
@@ -39,6 +44,8 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
   const [rows, setRows] = useState<EnvRow[]>(() => rowsFromProfile(workspace));
   const [command, setCommand] = useState<string>(workspace.profile?.defaultPaneCommand ?? '');
   const [startupCwd, setStartupCwd] = useState<string>(workspace.profile?.startupCwd ?? '');
+  const [shell, setShell] = useState<string>(workspace.profile?.shell ?? '');
+  const [detectedShells, setDetectedShells] = useState<ShellInfo[]>([]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
@@ -47,6 +54,32 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
     document.addEventListener('keydown', onKey);
     return () => document.removeEventListener('keydown', onKey);
   }, [onClose]);
+
+  // Best-effort shell detection (mirrors SettingsPanel's TabTerminal fetch) —
+  // a failure just leaves the dropdown at "use global default" plus whatever
+  // the profile already has.
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.shell.list()
+      .then((shells) => {
+        if (!cancelled) setDetectedShells(shells);
+      })
+      .catch(() => {
+        if (!cancelled) setDetectedShells([]);
+      });
+    return () => { cancelled = true; };
+  }, []);
+
+  // Round-trip a profile shell that isn't among the detected shells (stale
+  // detection, hand-edited session.json, or a machine without that shell
+  // installed) so saving doesn't silently swap it out from under the user.
+  const shellOptions = useMemo(() => {
+    const opts = detectedShells.map((s) => ({ value: s.path, label: s.name }));
+    if (shell && !opts.some((o) => o.value === shell)) {
+      opts.push({ value: shell, label: shell });
+    }
+    return opts;
+  }, [detectedShells, shell]);
 
   const updateRow = useCallback((id: number, patch: Partial<EnvRow>) => {
     setRows((prev) => {
@@ -77,10 +110,12 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
     }
     // setWorkspaceProfile normalizes (drops invalid/reserved AND secret-named
     // keys, collapses an empty profile to undefined) — it is the single
-    // enforcing boundary, so we just hand it the raw rows.
-    setWorkspaceProfile(workspace.id, { env, defaultPaneCommand: command, startupCwd });
+    // enforcing boundary, so we just hand it the raw rows. normalizeShell
+    // drops `shell` when it's empty ("use global default") or not a
+    // spawnable-looking value.
+    setWorkspaceProfile(workspace.id, { env, defaultPaneCommand: command, startupCwd, shell });
     onClose();
-  }, [rows, command, startupCwd, setWorkspaceProfile, workspace.id, onClose]);
+  }, [rows, command, startupCwd, shell, setWorkspaceProfile, workspace.id, onClose]);
 
   // A key is flagged invalid (red, dropped on save) when non-empty but not a
   // valid, non-reserved name.
@@ -177,6 +212,28 @@ export default function WorkspaceProfileModal({ workspace, onClose }: WorkspaceP
                   )}
                 </div>
               ))}
+            </div>
+          </div>
+
+          {/* Shell (Track A: per-workspace shell override) */}
+          <div>
+            <div className="text-[11px] font-semibold mb-1.5" style={{ color: 'var(--text-sub)' }}>
+              {t('workspaceProfile.shellHeading')}
+            </div>
+            <select
+              className="ui-input text-[11px] font-mono"
+              value={shell}
+              onChange={(e) => setShell(e.target.value)}
+            >
+              <option value="">{t('workspaceProfile.shellDefaultOption')}</option>
+              {shellOptions.map((o) => (
+                <option key={o.value} value={o.value}>
+                  {o.label}
+                </option>
+              ))}
+            </select>
+            <div className="text-[10px] mt-0.5 ml-0.5" style={{ color: 'var(--text-muted)' }}>
+              {t('workspaceProfile.shellHint')}
             </div>
           </div>
 

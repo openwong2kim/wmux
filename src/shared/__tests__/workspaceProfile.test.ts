@@ -6,6 +6,7 @@ import {
   isValidEnvKey,
   normalizeCommand,
   normalizeEnv,
+  normalizeShell,
   normalizeStartupCwd,
   normalizeWorkspaceProfile,
 } from '../workspaceProfile';
@@ -13,6 +14,7 @@ import {
   WORKSPACE_PROFILE_COMMAND_MAX,
   WORKSPACE_PROFILE_ENV_VALUE_MAX,
   WORKSPACE_PROFILE_MAX_ENV_ENTRIES,
+  WORKSPACE_PROFILE_SHELL_MAX,
 } from '../types';
 
 describe('isValidEnvKey', () => {
@@ -205,6 +207,47 @@ describe('normalizeWorkspaceProfile', () => {
   it('drops an over-long startupCwd but keeps the rest of the profile', () => {
     const profile = normalizeWorkspaceProfile({ startupCwd: 'x'.repeat(2000), defaultPaneCommand: 'go' });
     expect(profile).toEqual({ defaultPaneCommand: 'go' });
+  });
+
+  // Track A: per-workspace shell override.
+  it('round-trips a valid shell', () => {
+    expect(normalizeWorkspaceProfile({ shell: '/bin/zsh' })).toEqual({ shell: '/bin/zsh' });
+  });
+
+  it('drops an invalid shell but keeps the rest of the profile', () => {
+    const profile = normalizeWorkspaceProfile({ shell: 'powershell', defaultPaneCommand: 'go' });
+    expect(profile).toEqual({ defaultPaneCommand: 'go' });
+    expect(profile?.shell).toBeUndefined();
+  });
+});
+
+// Track A: per-workspace shell override.
+describe('normalizeShell', () => {
+  it('accepts absolute paths and .exe values', () => {
+    expect(normalizeShell('C:\\Program Files\\PowerShell\\7\\pwsh.exe')).toBe(
+      'C:\\Program Files\\PowerShell\\7\\pwsh.exe',
+    );
+    expect(normalizeShell('/bin/zsh')).toBe('/bin/zsh');
+    expect(normalizeShell('wsl.exe')).toBe('wsl.exe');
+  });
+
+  it('accepts known bare unix shell names', () => {
+    expect(normalizeShell('bash')).toBe('bash');
+  });
+
+  it('rejects empty, whitespace-only, and non-string input', () => {
+    expect(normalizeShell('')).toBeUndefined();
+    expect(normalizeShell('   ')).toBeUndefined();
+    expect(normalizeShell(42)).toBeUndefined();
+    expect(normalizeShell(null)).toBeUndefined();
+  });
+
+  it('rejects legacy defaultShell aliases (not spawnable paths)', () => {
+    expect(normalizeShell('powershell')).toBeUndefined();
+  });
+
+  it('rejects an over-long value', () => {
+    expect(normalizeShell('C:\\' + 'x'.repeat(WORKSPACE_PROFILE_SHELL_MAX))).toBeUndefined();
   });
 });
 

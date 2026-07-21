@@ -4,6 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { expandTilde } from '../../shared/expandTilde';
+import { splitWslCwd } from '../../shared/wslCwd';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../shared/windowsPathEnv';
 import { resolveEnvPolicy, type SpawnKind } from '../../shared/spawnKind';
@@ -214,13 +215,21 @@ export class PTYManager {
     // unreadable cwd (common on macOS/Linux where the shell path differs from
     // Windows). Surface an actionable error instead of the raw node-pty throw.
     // (useConpty is a Windows-only hint; node-pty ignores it elsewhere.)
+    // Track B (WSL/Ubuntu cwd): when `shell` is wsl.exe and `cwd` is a
+    // Linux-style path (or `\\wsl$\...`/`\\wsl.localhost\...` UNC), node-pty
+    // cannot use it as the spawn cwd — ConPTY/CreateProcess only resolve
+    // Windows paths. Give node-pty a safe Windows cwd (the caller's home)
+    // and let `wsl.exe --cd <linuxpath>` do the actual positioning instead.
+    // No-op for every other shell/cwd combination (see wslCwd.ts).
+    const { spawnCwd, prefixArgs } = splitWslCwd(shell, cwd, os.homedir());
+
     let ptyProcess: ReturnType<typeof pty.spawn>;
     try {
-      ptyProcess = pty.spawn(shell, hookInjection.args, {
+      ptyProcess = pty.spawn(shell, [...prefixArgs, ...hookInjection.args], {
         name: 'xterm-256color',
         cols: options?.cols || 80,
         rows: options?.rows || 24,
-        cwd,
+        cwd: spawnCwd,
         env: hookInjection.env,
         useConpty: true,
       });

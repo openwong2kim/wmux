@@ -25,6 +25,7 @@ import {
   type SessionDataHandler,
 } from './sessionDataDispatcher';
 import { updateCwd } from './metadata.handler';
+import { isWslShell, isLinuxLikeCwd } from '../../../shared/wslCwd';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
 import { dispatchNotification } from '../../notification/dispatchNotification';
@@ -191,9 +192,19 @@ const RESIZE_RETRY_DELAY_MS = 20;
 /**
  * Validate and resolve cwd. Returns undefined if invalid.
  * Shared by both daemon and local modes.
+ *
+ * `shell` is the RESOLVED shell command (not the raw options.shell — see call
+ * sites). When it's WSL and cwd looks like a Linux path/UNC, the usual
+ * Windows-oriented checks below are meaningless: `path.resolve` mangles a
+ * Linux path, the UNC block would reject the legitimate `\\wsl$\...` /
+ * `\\wsl.localhost\...` forms, and `fs.existsSync`/`fs.statSync` can never
+ * see into the Linux filesystem from Windows. Bypass and return the cwd
+ * unchanged — `splitWslCwd` (PTYManager / DaemonSessionManager) is what
+ * actually turns it into a safe node-pty cwd + `wsl.exe --cd` prefix.
  */
-function validateCwd(cwd: string | undefined): string | undefined {
+function validateCwd(cwd: string | undefined, shell?: string): string | undefined {
   if (!cwd) return undefined;
+  if (shell && isWslShell(shell) && isLinuxLikeCwd(cwd)) return cwd;
   const resolved = path.resolve(cwd);
   // Block UNC paths (e.g. \\server\share)
   if (resolved.startsWith('\\\\')) return undefined;
@@ -358,12 +369,15 @@ export function registerPTYHandlers(
           ? resolveSupervisionPolicy(options.supervision)
           : undefined;
 
-      const safeCwd = validateCwd(options?.cwd);
-      const effectiveCwd = safeCwd ?? require('os').homedir();
       // Daemon-mode default shell. On Windows prefer PowerShell 7 over 5.1 via
       // ShellDetector (issue #176) — mirrors PTYManager.getDefaultShell() so
-      // both modes pick the same default.
+      // both modes pick the same default. Resolved BEFORE validateCwd so the
+      // WSL bypass below can see the actual shell being launched, not just
+      // whatever (possibly absent) shell the caller asked for.
       const shell = options?.shell || (process.platform === 'win32' ? new ShellDetector().getDefault() : (process.env.SHELL || '/bin/bash'));
+
+      const safeCwd = validateCwd(options?.cwd, shell);
+      const effectiveCwd = safeCwd ?? require('os').homedir();
 
       // Generate a unique session ID
       const crypto = require('crypto');
@@ -557,7 +571,11 @@ export function registerPTYHandlers(
         }
       }
 
-      const safeCwd = validateCwd(options?.cwd);
+      // options?.shell is enough for the WSL bypass here even though
+      // PTYManager.create() falls back to its own default when shell is
+      // absent — only an EXPLICITLY-WSL shell needs validateCwd to skip the
+      // Windows-oriented checks, and the default shell is never wsl.exe.
+      const safeCwd = validateCwd(options?.cwd, options?.shell);
       const effectiveCwd = safeCwd ?? undefined;
       // Split off initialCommand — it's written into the shell post-create, not
       // a spawn option. exec/supervision are daemon-only (handled above) and
