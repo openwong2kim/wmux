@@ -6,13 +6,10 @@
 //   1. Determines the hook name from process.argv[2].
 //   2. Reads the Claude Code hook payload from stdin (JSON).
 //   3. Builds the canonical AgentSignal envelope.
-//   4. Sends the envelope to the first wmux endpoint that answers:
-//        a. the DAEMON control pipe — `daemon.hooks.signal`, token from
-//           ~/.wmux/daemon-auth-token. The daemon is the always-on process,
-//           so this is the one that still works with the GUI closed.
-//        b. the MAIN pipe — `hooks.signal`, token from ~/.wmux-auth-token.
-//           The pre-M1 path; kept for an older wmux, and forced by
-//           WMUX_HOOKS_TO_MAIN=1 (kill switch).
+//   4. Sends the envelope to the first reachable wmux endpoint:
+//        a. Native hosts try the daemon control pipe first, then the main pipe.
+//        b. WSL connects to the Windows main process over its authenticated TCP
+//           fallback, trying mirrored-loopback and NAT-gateway addresses.
 //   5. Logs the outcome (and which endpoint served it) to ~/.wmux/bridge.log.
 //   6. Exits 0 ALWAYS (so a wmux problem never breaks Claude Code).
 //
@@ -23,7 +20,7 @@
 // Codex review 2026-05-22 P0 #2: bridges must be JS-only.
 // Codex review 2026-05-22 P0 #4: token is read from disk, not env.
 
-import { readFileSync, existsSync, mkdirSync, appendFileSync, statSync, openSync, readSync, closeSync, writeFileSync, renameSync, unlinkSync } from 'node:fs';
+import { readFileSync, existsSync, mkdirSync, appendFileSync, statSync, openSync, readSync, closeSync, writeFileSync, renameSync, unlinkSync, readdirSync } from 'node:fs';
 import { homedir, userInfo } from 'node:os';
 import { join } from 'node:path';
 import { createConnection } from 'node:net';
@@ -34,7 +31,8 @@ const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow Claude
 // which bridge produced it — the installed copy is refreshed by byte-comparison
 // (setupHooks.refreshHookBridge, run at boot), never by this number.
 //   0.2.0 — daemon-first targeting (daemon.hooks.signal → hooks.signal).
-const BRIDGE_VERSION = '0.2.0';
+//   0.3.0 — WSL-to-Windows transport with daemon-first native fallback.
+const BRIDGE_VERSION = '0.3.0';
 
 // A2 (2026-05-29 user dogfood: 8 connect-errors during a brief main-process
 // restart / handler-swap window): retry a TRANSIENT connect failure a few
@@ -80,17 +78,172 @@ const HOOK_TO_KIND = {
 
 // ----- Path helpers (Node built-ins only) ---------------------------------
 
-function getAuthTokenPath() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  return join(home, '.wmux-auth-token');
+// The home dir the bridge itself lives under (WSL home when in WSL). Used for
+// diagnostics (bridge.log) that belong next to the running session.
+function localHome() {
+  return process.env.USERPROFILE || process.env.HOME || homedir();
 }
 
-function getPipeName() {
+// ----- WSL → Windows host bridging ----------------------------------------
+//
+// wmux is a native Windows app. When Claude Code runs inside WSL, none of the
+// native transports cross the VM boundary: the Windows named pipe and the
+// Linux Unix socket are each invisible to the other side. But the app also
+// runs a TCP fallback (PipeServer.startTcpFallback → <bind>:<port>, port
+// persisted to %USERPROFILE%\.wmux-tcp-port, token to
+// %USERPROFILE%\.wmux-auth-token). We read the Windows-side token + port from
+// the mounted drive and connect over TCP.
+//
+// Two WSL2 networking modes, both handled by trying targets in order:
+//   - mirrored (`networkingMode=mirrored`): Windows loopback is reachable from
+//     WSL as 127.0.0.1 → the first target connects.
+//   - NAT (default): 127.0.0.1 is WSL's OWN loopback (fails fast), and Windows
+//     is reachable only via the default-route gateway IP (the host's WSL
+//     vEthernet address) → the second target. This requires the app to bind
+//     beyond loopback when WSL is present (PipeServer.tcpBindHost); the port
+//     stays token-authenticated + rate-limited, so the wider bind does not
+//     weaken auth.
+
+let _windowsHomeFromWsl; // memoized: string | null (undefined = not yet computed)
+
+function isWsl() {
+  if (process.platform !== 'linux') return false;
+  if (process.env.WSL_DISTRO_NAME || process.env.WSL_INTEROP) return true;
+  try {
+    return /microsoft/i.test(readFileSync('/proc/version', 'utf8'));
+  } catch {
+    return false;
+  }
+}
+
+// Translate a Windows path (`C:\Users\Name`) to its WSL mount (`/mnt/c/Users/Name`).
+function winPathToWslMount(winPath) {
+  const m = /^([A-Za-z]):[\\/](.*)$/.exec(winPath);
+  if (!m) return null;
+  return `/mnt/${m[1].toLowerCase()}/${m[2].replace(/\\/g, '/')}`;
+}
+
+// A home is the LIVE wmux instance's when it holds both the token and the
+// tcp-port file (the app writes the port on start and unlinks it on clean
+// exit, so its presence is a running-instance signal).
+function hasLiveWmuxFiles(dir) {
+  return existsSync(join(dir, '.wmux-auth-token')) && existsSync(join(dir, '.wmux-tcp-port'));
+}
+
+// Locate the Windows user profile (as a WSL mount path) that holds the wmux
+// instance files. Memoized — the bridge is a short-lived per-hook process.
+// Precedence: explicit override → %USERPROFILE% (when WSL interop exposes it)
+// → glob mounted drives' Users/ dirs, preferring a LIVE instance but falling
+// back to any home with just the token so the resume-spool still lands where
+// the Windows daemon can drain it.
+function resolveWindowsHomeFromWsl() {
+  if (_windowsHomeFromWsl !== undefined) return _windowsHomeFromWsl;
+
+  const override = process.env.WMUX_WSL_WINHOME;
+  if (override && existsSync(override)) return (_windowsHomeFromWsl = override);
+
+  const fromEnv = process.env.USERPROFILE ? winPathToWslMount(process.env.USERPROFILE) : null;
+  if (fromEnv && hasLiveWmuxFiles(fromEnv)) return (_windowsHomeFromWsl = fromEnv);
+
+  let tokenOnlyFallback = null;
+  let drives;
+  try {
+    drives = readdirSync('/mnt', { withFileTypes: true });
+  } catch {
+    drives = [];
+  }
+  for (const d of drives) {
+    if (!d.isDirectory() || !/^[a-z]$/i.test(d.name)) continue;
+    let users;
+    try {
+      users = readdirSync(`/mnt/${d.name}/Users`, { withFileTypes: true });
+    } catch {
+      continue;
+    }
+    for (const u of users) {
+      if (!u.isDirectory()) continue;
+      const home = `/mnt/${d.name}/Users/${u.name}`;
+      if (hasLiveWmuxFiles(home)) return (_windowsHomeFromWsl = home);
+      if (!tokenOnlyFallback && existsSync(join(home, '.wmux-auth-token'))) {
+        tokenOnlyFallback = home;
+      }
+    }
+  }
+  return (_windowsHomeFromWsl = tokenOnlyFallback);
+}
+
+// Base dir for files the Windows app / daemon must read (auth token,
+// resume-spool). On WSL that's the Windows user profile; everywhere else it's
+// the local home. Falls back to the local home when no Windows instance is
+// found so non-WSL and native-Linux wmux behave exactly as before.
+function hostHome() {
+  if (isWsl()) {
+    const winHome = resolveWindowsHomeFromWsl();
+    if (winHome) return winHome;
+  }
+  return localHome();
+}
+
+function getAuthTokenPath() {
+  return join(hostHome(), '.wmux-auth-token');
+}
+
+// Read the Windows-side TCP fallback port for the WSL→Windows bridge.
+function readWindowsTcpPort(winHome) {
+  try {
+    const port = parseInt(readFileSync(join(winHome, '.wmux-tcp-port'), 'utf8').trim(), 10);
+    return Number.isInteger(port) && port > 0 ? port : null;
+  } catch {
+    return null;
+  }
+}
+
+// The IPv4 default-route gateway, parsed from /proc/net/route (no subprocess).
+// Under WSL2 NAT this is the Windows host's address on the WSL vEthernet — the
+// only way to reach Windows services from inside WSL. Returns null if absent.
+function readDefaultGatewayIp() {
+  try {
+    const lines = readFileSync('/proc/net/route', 'utf8').split('\n').slice(1);
+    for (const line of lines) {
+      const f = line.trim().split(/\s+/);
+      // Columns: Iface Destination Gateway Flags ... — default route has a
+      // 0.0.0.0 destination and a non-zero gateway, both little-endian hex.
+      if (f.length > 2 && f[1] === '00000000' && f[2] && f[2] !== '00000000') {
+        const bytes = f[2].match(/../g).reverse().map((h) => parseInt(h, 16));
+        if (bytes.length === 4 && bytes.every((b) => Number.isInteger(b))) {
+          return bytes.join('.');
+        }
+      }
+    }
+  } catch {
+    /* no /proc/net/route or unreadable */
+  }
+  return null;
+}
+
+// Ordered connect targets for sendRpc: each is an IPC path string (Windows
+// pipe / Unix socket) OR a { host, port } TCP object. Tried in order until one
+// connects; under WSL that's [loopback (mirrored mode), gateway (NAT mode)].
+function getRpcTargets() {
   if (process.platform === 'win32') {
     const username = userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-${username}`;
+    return [`\\\\.\\pipe\\wmux-${username}`];
   }
-  return join(homedir() || '/tmp', '.wmux.sock');
+  if (isWsl()) {
+    const winHome = resolveWindowsHomeFromWsl();
+    if (winHome) {
+      const port = readWindowsTcpPort(winHome);
+      if (port) {
+        const targets = [{ host: '127.0.0.1', port }]; // mirrored networking
+        const gateway = readDefaultGatewayIp(); // NAT networking (Windows host)
+        if (gateway && gateway !== '127.0.0.1') targets.push({ host: gateway, port });
+        return targets;
+      }
+    }
+    // No reachable Windows instance — fall through to the Unix socket, which
+    // ENOENTs fast (only a native-Linux wmux would answer it).
+  }
+  return [join(homedir() || '/tmp', '.wmux.sock')];
 }
 
 // ----- Daemon endpoint (M1: hook ingest lives in the daemon) ---------------
@@ -164,7 +317,10 @@ function resolveTargets() {
     return [{ name: 'daemon', pipe: pipeOverride, token, method: 'daemon.hooks.signal' }];
   }
   const targets = [];
-  if (process.env.WMUX_HOOKS_TO_MAIN !== '1') {
+  // The daemon exposes a local control pipe, not the main process's TCP
+  // fallback, so it is reachable only from the native host. WSL goes directly
+  // to the Windows main process using getRpcTargets() below.
+  if (!isWsl() && process.env.WMUX_HOOKS_TO_MAIN !== '1') {
     const token = readTokenFile(getDaemonAuthTokenPath());
     if (token) {
       targets.push({ name: 'daemon', pipe: getDaemonPipeName(), token, method: 'daemon.hooks.signal' });
@@ -172,14 +328,17 @@ function resolveTargets() {
   }
   const mainToken = readTokenFile(getAuthTokenPath());
   if (mainToken) {
-    targets.push({ name: 'main', pipe: getPipeName(), token: mainToken, method: 'hooks.signal' });
+    for (const pipe of getRpcTargets()) {
+      targets.push({ name: 'main', pipe, token: mainToken, method: 'hooks.signal' });
+    }
   }
   return targets;
 }
 
 function getBridgeLogPath() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  const dir = join(home, '.wmux');
+  // Log stays on the LOCAL (WSL) home — it's read by whoever is debugging the
+  // session in that environment, and must never depend on resolving Windows.
+  const dir = join(localHome(), '.wmux');
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
@@ -203,8 +362,10 @@ function getBridgeLogPath() {
 // pre-existing limitation as bridge.log. In production (no suffix) and in the
 // USERPROFILE-isolated dogfood, bridge and daemon resolve the same dir.
 function getResumeSpoolDir() {
-  const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  const dir = join(home, '.wmux', 'resume-spool');
+  // Spool under the HOST home (Windows profile in WSL) so the Windows daemon —
+  // which drains this on its next boot — can actually see the records. On a
+  // WSL degraded path they'd otherwise land in the WSL home the daemon never reads.
+  const dir = join(hostHome(), '.wmux', 'resume-spool');
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
@@ -510,11 +671,14 @@ async function readStdin() {
   });
 }
 
-// ----- RPC over named pipe ------------------------------------------------
+// ----- RPC over named pipe / Unix socket / TCP ----------------------------
 
-function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
+// `target` is either an IPC path string (Windows pipe, Unix socket) or a
+// { host, port } object (WSL → Windows TCP loopback). createConnection accepts
+// both shapes, so the retry/settle logic below is transport-agnostic.
+function sendRpc(target, request, timeoutMs = HOOK_TIMEOUT_MS) {
   return new Promise((resolve) => {
-    const sock = createConnection(pipePath);
+    const sock = createConnection(target);
     let buffer = '';
     let settled = false;
     // Track whether the request bytes were written. A reset/broken-pipe AFTER
@@ -532,6 +696,10 @@ function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
     };
 
     const timer = setTimeout(() => {
+      // `retryable` mirrors the error path: a timeout BEFORE the write bytes
+      // went out (unreachable host — e.g. a NAT gateway with nothing bound) is
+      // safe to fail over to the next target; a timeout mid-request is not
+      // (the server may act on the already-sent signal → double-fire risk).
       settle({ ok: false, error: 'timeout', retryable: !wrote });
     }, timeoutMs);
 
@@ -585,13 +753,13 @@ function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
 // `deadline` is passed in (not recomputed here) so a multi-target walk shares
 // ONE budget: trying the daemon and then main must still cost at most
 // HOOK_TIMEOUT_MS in total, or the fallback would double the hook's hard cap.
-async function sendRpcWithRetry(pipePath, request, deadline = Date.now() + HOOK_TIMEOUT_MS) {
+async function sendRpcWithRetry(target, request, deadline = Date.now() + HOOK_TIMEOUT_MS) {
   let attempt = 0;
   let last = { ok: false, error: 'timeout' };
   for (;;) {
     const remaining = deadline - Date.now();
     if (remaining <= 0) return last;
-    last = await sendRpc(pipePath, request, remaining);
+    last = await sendRpc(target, request, remaining);
     // Anything but a connect-error means the server was reached — return it.
     if (last.error !== 'connect-error') return last;
     // Retry ONLY when: the request was never written (retryable, so no

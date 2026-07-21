@@ -1,5 +1,6 @@
 import * as net from 'net';
 import * as fs from 'fs';
+import * as path from 'path';
 import * as crypto from 'crypto';
 import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../../shared/constants';
 import { secureWriteTokenFile, scheduleTokenFileReHarden } from '../../shared/security';
@@ -198,6 +199,39 @@ export class PipeServer {
     }
   }
 
+  /**
+   * Bind host for the TCP fallback.
+   *
+   * Default is loopback-only ('127.0.0.1') — the local MCP client's fallback
+   * path and native Windows callers all reach it there, and non-WSL machines
+   * gain no extra network exposure.
+   *
+   * When WSL is installed on this machine we widen to '0.0.0.0'. A WSL Claude
+   * session runs in a separate VM: under WSL2 NAT networking (the default) it
+   * cannot reach Windows loopback at all — only the Windows host's WSL
+   * vEthernet address — so a loopback-only bind is unreachable from WSL. The
+   * WSL bridge connects via the NAT gateway IP (see wmux-bridge.mjs
+   * getRpcTargets), which only lands here if we listen beyond loopback.
+   *
+   * Security: the wider bind does NOT relax authentication. Every connection
+   * still passes admitConnection() (per-second pre-auth rate limit) and every
+   * RPC still requires the on-disk token, which lives in the user profile and
+   * is not readable off-machine. The wider bind only changes which interfaces
+   * may ATTEMPT a connection. We gate on wsl.exe existing (a stable,
+   * boot-independent signal) rather than on a live WSL adapter, so the app
+   * need not be restarted after WSL first starts.
+   */
+  private tcpBindHost(): string {
+    if (process.platform !== 'win32') return '127.0.0.1';
+    try {
+      const wslExe = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'wsl.exe');
+      if (fs.existsSync(wslExe)) return '0.0.0.0';
+    } catch {
+      /* fall through to loopback-only */
+    }
+    return '127.0.0.1';
+  }
+
   private startTcpFallback(): void {
     if (process.platform !== 'win32') return; // Only needed on Windows
 
@@ -217,12 +251,16 @@ export class PipeServer {
       console.error('[PipeServer] TCP fallback error:', err);
     });
 
-    // Listen on random port on localhost only
-    this.tcpServer.listen(0, '127.0.0.1', () => {
+    // Bind loopback by default; widen to 0.0.0.0 when WSL is present so a WSL
+    // Claude session can reach the app across the NAT boundary (see
+    // tcpBindHost). The persisted port file carries only the port — clients
+    // choose the interface (127.0.0.1 locally, the WSL gateway IP from WSL).
+    const bindHost = this.tcpBindHost();
+    this.tcpServer.listen(0, bindHost, () => {
       const addr = this.tcpServer!.address() as net.AddressInfo;
       const portFile = getTcpPortPath();
       fs.writeFileSync(portFile, String(addr.port), { encoding: 'utf8', mode: 0o600 });
-      console.log(`[PipeServer] TCP fallback listening on 127.0.0.1:${addr.port}`);
+      console.log(`[PipeServer] TCP fallback listening on ${bindHost}:${addr.port}`);
     });
   }
 

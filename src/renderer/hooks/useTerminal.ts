@@ -841,6 +841,17 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // pays the addEventListener cost.
     _ensureDragListeners();
 
+    // Codex and other TUIs emit OSC 8 hyperlinks, while plain-text URLs are
+    // detected by WebLinksAddon. Route both through the same wmux policy.
+    // Without linkHandler, xterm falls back to window.confirm for OSC 8 links
+    // and never reaches our Electron shell.openExternal IPC handler.
+    const activateTerminalUrl = (event: MouseEvent, uri: string) => {
+      openTerminalUrl(uri, {
+        modifierHeld: event.ctrlKey || event.metaKey,
+        ptyId: ptyIdRef.current || undefined,
+      });
+    };
+
     const terminal = new Terminal({
       cursorBlink: true,
       fontSize: terminalFontSize,
@@ -850,6 +861,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       theme: xtermTheme,
       minimumContrastRatio,
       allowProposedApi: true,
+      linkHandler: {
+        activate: activateTerminalUrl,
+      },
       // Enable xterm 6's Windows-aware ConPTY reflow path. ConPTY emits
       // spurious row-change events on resize; the dedicated reflow logic
       // suppresses them, which in turn keeps SelectionService from
@@ -867,12 +881,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     // Smart link routing (X3): localhost URLs open in the embedded browser
     // pane, external ones in the system browser; Ctrl/Cmd+click inverts. The
     // ptyId identifies the owning workspace (multiview-safe reverse lookup).
-    const webLinksAddon = new WebLinksAddon((event, uri) => {
-      openTerminalUrl(uri, {
-        modifierHeld: event.ctrlKey || event.metaKey,
-        ptyId: ptyIdRef.current || undefined,
-      });
-    });
+    const webLinksAddon = new WebLinksAddon(activateTerminalUrl);
     terminal.loadAddon(fitAddon);
     terminal.loadAddon(searchAddon);
     terminal.loadAddon(unicode11Addon);
