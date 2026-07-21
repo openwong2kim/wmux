@@ -27,8 +27,11 @@ interface BrowserPanelProps {
    *  shows both sides at once, so visibility is decoupled from `isActive`.
    *  Defaults to `isActive` (stacked/tab case: only the active tab renders). */
   visible?: boolean;
-  /** Owning pane id — used to detect zoom-hidden state (#517). */
-  paneId?: string;
+  /** Hidden because another pane in THIS pane tree is zoomed (#517). Computed
+   *  by PaneContainer from the actual render tree — the global zoomedPaneId
+   *  cannot distinguish a zoom in a different, still-visible workspace tree
+   *  (codex P2). */
+  isZoomHidden?: boolean;
   /** True when a full-pane overlay (active diff/editor surface) covers this
    *  browser in the terminal+browser split (#517, codex P3): the panel stays
    *  rendered underneath, but the user cannot see it. */
@@ -49,23 +52,20 @@ export function computeEffectiveVisibility(input: {
   shown: boolean;
   isWorkspaceVisible: boolean;
   windowVisible: boolean;
-  zoomedPaneId: string | null;
-  paneId?: string;
+  isZoomHidden?: boolean;
   occluded?: boolean;
 }): boolean {
-  const { shown, isWorkspaceVisible, windowVisible, zoomedPaneId, paneId, occluded } = input;
-  const zoomHidden = zoomedPaneId !== null && zoomedPaneId !== paneId;
-  return shown && isWorkspaceVisible && windowVisible && !zoomHidden && !occluded;
+  const { shown, isWorkspaceVisible, windowVisible, isZoomHidden, occluded } = input;
+  return shown && isWorkspaceVisible && windowVisible && !isZoomHidden && !occluded;
 }
 
 // ---------------------------------------------------------------------------
 // Component
 // ---------------------------------------------------------------------------
 
-export default function BrowserPanel({ surfaceId, initialUrl, partition, isActive, visible, paneId, isWorkspaceVisible, occluded, onClose }: BrowserPanelProps) {
+export default function BrowserPanel({ surfaceId, initialUrl, partition, isActive, visible, isZoomHidden, isWorkspaceVisible, occluded, onClose }: BrowserPanelProps) {
   const t = useT();
   const updateBrowserUrl = useStore((s) => s.updateBrowserUrl);
-  const zoomedPaneId = useStore((s) => s.zoomedPaneId);
   const webviewRef = useRef<Electron.WebviewTag>(null);
   const [currentUrl, setCurrentUrl] = useState(initialUrl);
   const [isLoading, setIsLoading] = useState(false);
@@ -203,8 +203,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
     shown: visible ?? isActive,
     isWorkspaceVisible: isWorkspaceVisible ?? true,
     windowVisible,
-    zoomedPaneId,
-    paneId,
+    isZoomHidden,
     occluded,
   });
   useEffect(() => {

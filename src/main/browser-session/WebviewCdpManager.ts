@@ -1,4 +1,5 @@
 import { webContents } from 'electron';
+import { randomUUID } from 'crypto';
 
 export interface CdpTargetInfo {
   surfaceId: string;
@@ -63,7 +64,6 @@ export class WebviewCdpManager {
   // RPC-held leases (token → expiry timer + surfaceId), for automation that
   // drives the guest outside main (Playwright in the MCP process).
   private rpcLeases = new Map<string, { surfaceId: string; gen: number; timer: NodeJS.Timeout }>();
-  private rpcLeaseSeq = 0;
   // Optional hook so a CDP event-capture layer (BrowserCaptureManager, #106) can
   // tear down its debugger listeners when a surface is unregistered — manual
   // wc.debugger.detach() does not remove EventEmitter listeners, and may not
@@ -320,7 +320,10 @@ export class WebviewCdpManager {
    * pin a guest unthrottled forever; long ops renew.
    */
   acquireRpcLease(surfaceId: string): string {
-    const token = `lease-${++this.rpcLeaseSeq}`;
+    // Bearer capability (codex P2, PR #528): a guessable counter would let any
+    // browser.read-capable client release someone else's lease and strip the
+    // full-speed exemption from an in-flight hidden-guest op.
+    const token = `lease-${randomUUID()}`;
     const gen = this.acquireAutomationLease(surfaceId);
     const timer = setTimeout(() => this.releaseRpcLease(token), RPC_LEASE_TTL_MS);
     timer.unref?.();

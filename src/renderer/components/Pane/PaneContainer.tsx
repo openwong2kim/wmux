@@ -15,9 +15,14 @@ interface PaneContainerProps {
   // (codex P1).
   workspace: Workspace;
   isWorkspaceVisible?: boolean;
+  /** True when an ANCESTOR branch hid this subtree because another pane in the
+   *  same tree is zoomed (#517, codex P2). Computed here from the actual
+   *  render tree — the global zoomedPaneId alone cannot tell whether a pane
+   *  in a DIFFERENT (still visible) workspace tree is affected. */
+  isZoomHidden?: boolean;
 }
 
-export default function PaneContainer({ pane, workspace, isWorkspaceVisible = true }: PaneContainerProps) {
+export default function PaneContainer({ pane, workspace, isWorkspaceVisible = true, isZoomHidden = false }: PaneContainerProps) {
   const activePaneId = useStore((s) => {
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
     return ws?.activePaneId || '';
@@ -86,6 +91,7 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
         workspace={workspace}
         isActive={pane.id === activePaneId}
         isWorkspaceVisible={isWorkspaceVisible}
+        isZoomHidden={isZoomHidden}
       />
     );
   }
@@ -127,7 +133,12 @@ export default function PaneContainer({ pane, workspace, isWorkspaceVisible = tr
               minSize={10}
               {...(zoomHidden ? { 'data-wmux-zoom-hidden': true } : {})}
             >
-              <PaneContainer pane={child} workspace={workspace} isWorkspaceVisible={isWorkspaceVisible} />
+              <PaneContainer
+                pane={child}
+                workspace={workspace}
+                isWorkspaceVisible={isWorkspaceVisible}
+                isZoomHidden={isZoomHidden || zoomHidden}
+              />
             </Panel>
           </Fragment>
         );
