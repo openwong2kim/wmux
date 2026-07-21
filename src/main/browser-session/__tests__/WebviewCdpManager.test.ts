@@ -117,6 +117,22 @@ describe('WebviewCdpManager lightweight mode (#517)', () => {
     expect(lastThrottle()).toBe(false);
   });
 
+  it('throttle drives the CDP CPU-throttling lever (primary) alongside background throttling', async () => {
+    await manager.register('s1', 42);
+    manager.setLightweightMode(true);
+    manager.setVisibility('s1', false);
+    // Dogfood 2026-07-21: a CSS-hidden guest stays page-visible, so
+    // setBackgroundThrottling alone is inert — the CPU rate override is the
+    // lever that actually reclaims CPU.
+    expect(mockDebugger.sendCommand).toHaveBeenCalledWith(
+      'Emulation.setCPUThrottlingRate', { rate: 20 },
+    );
+    manager.setVisibility('s1', true);
+    expect(mockDebugger.sendCommand).toHaveBeenCalledWith(
+      'Emulation.setCPUThrottlingRate', { rate: 1 },
+    );
+  });
+
   it('lightweight ON: hidden guest is throttled, visible guest is not', async () => {
     await manager.register('s1', 42);
     manager.setLightweightMode(true);
@@ -199,6 +215,23 @@ describe('WebviewCdpManager lightweight mode (#517)', () => {
       ).rejects.toThrow('boom');
       vi.advanceTimersByTime(5_100);
       expect(lastThrottle()).toBe(true); // lease released → grace → throttled
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('op-lease failsafe: a hung op cannot pin the lease forever', async () => {
+    vi.useFakeTimers();
+    try {
+      await manager.register('s1', 42);
+      manager.setLightweightMode(true);
+      manager.setVisibility('s1', false);
+      // fn hangs forever (dogfood repro: Page.captureScreenshot on a
+      // display:none guest never resolves).
+      void manager.withAutomationLease('s1', () => new Promise<never>(() => {}));
+      expect(lastThrottle()).toBe(false); // leased
+      vi.advanceTimersByTime(60_100 + 5_100); // failsafe + idle grace
+      expect(lastThrottle()).toBe(true); // force-released → re-throttled
     } finally {
       vi.useRealTimers();
     }

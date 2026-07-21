@@ -15,6 +15,22 @@ const LEASE_IDLE_GRACE_MS = 5_000;
 // if the holder dies without releasing, the lease expires on its own. Holders
 // of long-running ops renew via browser.lease.renew.
 const RPC_LEASE_TTL_MS = 30_000;
+// CDP CPU throttling factor for an invisible guest. Dogfood (2026-07-21)
+// falsified the design's "setBackgroundThrottling is the single lever"
+// premise: Electron keeps a CSS-hidden <webview> guest in the 'visible'
+// page-visibility state (its rAF loop keeps pumping at full rate), so
+// background timer throttling and Page lifecycle freezing are both inert.
+// Emulation.setCPUThrottlingRate works regardless of visibility — measured
+// ~5x task-CPU reduction at rate 20 (tasks/s 131→27, rAF 50→22.6).
+// setBackgroundThrottling(true) is still applied alongside as belt-and-braces
+// for the minimized-window case, where the guest IS considered hidden.
+const BACKGROUND_CPU_THROTTLE_RATE = 20;
+// Failsafe for in-main per-op leases: a hung CDP command (dogfood repro —
+// Page.captureScreenshot never resolves for a display:none guest) would
+// otherwise pin its lease forever and permanently exempt the guest from
+// lightweight mode. After this bound the lease is force-released; the hung op
+// keeps running (it is hung anyway) and may be re-throttled.
+const OP_LEASE_FAILSAFE_MS = 60_000;
 
 interface GuestState {
   /** Effective visibility reported by the renderer (workspace ∧ window ∧ ¬zoom ∧ selected). */
@@ -25,6 +41,8 @@ interface GuestState {
   idleTimer: NodeJS.Timeout | null;
   /** True while inside the post-release idle grace window. */
   inGrace: boolean;
+  /** Last throttle decision actually applied (for transition logging). */
+  appliedThrottle?: boolean;
 }
 
 export class WebviewCdpManager {
@@ -242,13 +260,27 @@ export class WebviewCdpManager {
     this.recomputeThrottle(surfaceId);
   }
 
-  /** Convenience wrapper: lease held for the duration of fn. */
+  /** Convenience wrapper: lease held for the duration of fn, with a failsafe
+   *  release so a hung op cannot pin the lease forever (see
+   *  OP_LEASE_FAILSAFE_MS). */
   async withAutomationLease<T>(surfaceId: string, fn: () => Promise<T>): Promise<T> {
     this.acquireAutomationLease(surfaceId);
+    let released = false;
+    const releaseOnce = () => {
+      if (released) return;
+      released = true;
+      this.releaseAutomationLease(surfaceId);
+    };
+    const failsafe = setTimeout(() => {
+      console.warn(`[WebviewCdpManager] op lease failsafe fired for ${surfaceId} (op hung > ${OP_LEASE_FAILSAFE_MS}ms)`);
+      releaseOnce();
+    }, OP_LEASE_FAILSAFE_MS);
+    failsafe.unref?.();
     try {
       return await fn();
     } finally {
-      this.releaseAutomationLease(surfaceId);
+      clearTimeout(failsafe);
+      releaseOnce();
     }
   }
 
@@ -308,10 +340,31 @@ export class WebviewCdpManager {
     const gs = this.ensureGuestState(surfaceId);
     const throttled =
       this.lightweightMode && !gs.visible && gs.leases === 0 && !gs.inGrace;
+    if (gs.appliedThrottle !== throttled) {
+      gs.appliedThrottle = throttled;
+      console.log(
+        `[WebviewCdpManager] throttle ${surfaceId}: ${throttled} ` +
+        `(lw=${this.lightweightMode} visible=${gs.visible} leases=${gs.leases} grace=${gs.inGrace})`,
+      );
+    }
     try {
       wc.setBackgroundThrottling(throttled);
     } catch (err) {
       console.warn(`[WebviewCdpManager] recomputeThrottle failed:`, err);
+    }
+    // Primary CPU lever (see BACKGROUND_CPU_THROTTLE_RATE). Best-effort and
+    // fire-and-forget: a failed CDP command must never break visibility/lease
+    // bookkeeping, and rate 1 restores full speed.
+    try {
+      wc.debugger
+        .sendCommand('Emulation.setCPUThrottlingRate', {
+          rate: throttled ? BACKGROUND_CPU_THROTTLE_RATE : 1,
+        })
+        .catch((err) => {
+          console.warn(`[WebviewCdpManager] setCPUThrottlingRate failed:`, err);
+        });
+    } catch (err) {
+      console.warn(`[WebviewCdpManager] setCPUThrottlingRate failed:`, err);
     }
   }
 
