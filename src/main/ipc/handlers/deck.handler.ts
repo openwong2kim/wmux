@@ -34,7 +34,11 @@ import {
 } from '../../deck/CommanderSessionManager';
 import { loadCommanderSession, saveCommanderSession, clearCommanderSession } from '../../deck/commanderSessionStore';
 import { DeckScheduler } from '../../deck/DeckScheduler';
+import { DeckHeartbeat } from '../../deck/DeckHeartbeat';
 import { CommanderEventCoalescer } from '../../deck/CommanderEventCoalescer';
+import { createGlobalTurnGate } from '../../deck/globalTurnGate';
+import { loadDeckHeartbeat } from '../../deck/deckHeartbeatStore';
+import { getWorkspaceMirror, type FleetSnapshot } from '../../workspace/WorkspaceMirror';
 import {
   loadWorkspaceAutonomy,
   setWorkspaceAutonomy,
@@ -103,6 +107,32 @@ const FLEET_CONTEXT_MAX_CHARS = 2048;
  *  plausible id token before it can become a key. */
 const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
 
+/**
+ * The optional one-line fleet summary the coalescer appends to an edge-wake
+ * prompt (getFleetTail). Counts the mirror snapshot's attention panes by status
+ * so the brain sees the wider fleet state without a poll, e.g.
+ * `(fleet: 2 awaiting, 1 stopped — heartbeat will review)`. Returns undefined
+ * when the mirror is empty for this workspace or nothing needs attention — no
+ * line rather than a noisy "0 of everything". Pure + exported for unit testing.
+ */
+export function buildFleetTailLine(snapshot: FleetSnapshot | null): string | undefined {
+  if (!snapshot || snapshot.panes.length === 0) return undefined;
+  let awaiting = 0;
+  let stopped = 0;
+  let errored = 0;
+  for (const p of snapshot.panes) {
+    if (p.agentStatus === 'awaiting_input' || p.agentStatus === 'waiting') awaiting += 1;
+    else if (p.agentStatus === 'complete') stopped += 1;
+    else if (p.agentStatus === 'error') errored += 1;
+  }
+  const parts: string[] = [];
+  if (awaiting > 0) parts.push(`${awaiting} awaiting`);
+  if (stopped > 0) parts.push(`${stopped} stopped`);
+  if (errored > 0) parts.push(`${errored} error${errored === 1 ? '' : 's'}`);
+  if (parts.length === 0) return undefined; // fleet is all running/idle — no line
+  return `(fleet: ${parts.join(', ')} — heartbeat will review)`;
+}
+
 export function registerDeckHandler(
   getWindow: GetWindow,
   opts: RegisterDeckHandlerOptions = {},
@@ -141,6 +171,14 @@ export function registerDeckHandler(
     vendor: BrainVendor;
   }
   const managers = new Map<string, ManagedCommander>();
+
+  // Fleet-wide ceiling on CONCURRENT autonomous turns. Each workspace's manager
+  // is already one-turn-at-a-time, but a hook storm across many workspaces could
+  // wake several brains at once — this caps how many run in parallel. Held for
+  // the WHOLE turn at runTurnForWorkspace (autonomous path only); human
+  // DECK_SEND never passes through it. One instance per registration (not a
+  // module singleton) so tests start clean.
+  const globalTurnGate = createGlobalTurnGate(2);
 
   // Full-power toggle (BYOB approach A) — MAIN-side authority so scheduled /
   // event-woken turns and toggle changes between typed commands all see the
@@ -453,33 +491,49 @@ export function registerDeckHandler(
     if (!WORKSPACE_ID_RE.test(workspaceId)) {
       return { ok: false, code: 'invalid_workspace' as const };
     }
-    // Scheduled/event-woken turns reuse the live manager's model (a lazily
-    // created one starts with the default). Full power always comes from the
-    // main-side authority inside ensureManager — the live toggle applies to
-    // autonomous turns too.
-    const mgr = ensureManager(workspaceId, undefined, managers.get(workspaceId)?.model ?? '');
-    if (mgr.getStatus().status !== 'idle') {
+    // Fleet-wide concurrency gate (autonomous path only). Reserve a slot BEFORE
+    // the per-workspace busy check; over the cap this is a `busy` reject the
+    // caller (coalescer/scheduler/loop) retries later, exactly as a per-workspace
+    // busy would. The slot is held for the WHOLE turn — acquire here, release in
+    // the finally below once mgr.send has settled — so N concurrent turns can
+    // never exceed the cap even while their streams are open.
+    if (!globalTurnGate.tryAcquire()) {
       return { ok: false, code: 'busy' as const };
     }
-    // Build the wire prompt (prepends any pending/resolved [decision] block and
-    // the loop block) BEFORE the send — the status check and send stay one
-    // synchronous sequence (nothing awaits between them).
-    // turn-start announces the ORIGINAL prompt (what the human should see as
-    // the turn's cause); the context blocks ride only on the wire to the brain,
-    // mirroring the DECK_SEND path.
-    // Capture the decision THIS turn will inject (withLoopContext reads the same
-    // on-disk state synchronously right below) so at turn end we consume ONLY a
-    // resolution this turn actually carried — never one RAISED mid-turn, whose
-    // prompt this turn was built before (that would silently drop the human's
-    // answer and unblock the loop — 3-way review P1).
-    const injected = loadWorkspaceDecision(workspaceId);
-    const prompted = withLoopContext(workspaceId, prompt);
-    emit(workspaceId, { type: 'turn-start', prompt });
-    const verdict = await mgr.send(prompted);
-    if (verdict.ok && injected?.status === 'resolved') {
-      void clearResolvedDecision(workspaceId, injected.id).catch(() => {});
+    try {
+      // Scheduled/event-woken turns reuse the live manager's model (a lazily
+      // created one starts with the default). Full power always comes from the
+      // main-side authority inside ensureManager — the live toggle applies to
+      // autonomous turns too.
+      const mgr = ensureManager(workspaceId, undefined, managers.get(workspaceId)?.model ?? '');
+      if (mgr.getStatus().status !== 'idle') {
+        return { ok: false, code: 'busy' as const };
+      }
+      // Build the wire prompt (prepends any pending/resolved [decision] block and
+      // the loop block) BEFORE the send — the status check and send stay one
+      // synchronous sequence (nothing awaits between them).
+      // turn-start announces the ORIGINAL prompt (what the human should see as
+      // the turn's cause); the context blocks ride only on the wire to the brain,
+      // mirroring the DECK_SEND path.
+      // Capture the decision THIS turn will inject (withLoopContext reads the same
+      // on-disk state synchronously right below) so at turn end we consume ONLY a
+      // resolution this turn actually carried — never one RAISED mid-turn, whose
+      // prompt this turn was built before (that would silently drop the human's
+      // answer and unblock the loop — 3-way review P1).
+      const injected = loadWorkspaceDecision(workspaceId);
+      const prompted = withLoopContext(workspaceId, prompt);
+      emit(workspaceId, { type: 'turn-start', prompt });
+      const verdict = await mgr.send(prompted);
+      if (verdict.ok && injected?.status === 'resolved') {
+        void clearResolvedDecision(workspaceId, injected.id).catch(() => {});
+      }
+      return verdict;
+    } finally {
+      // Release the slot once the turn has fully settled (send resolved/rejected)
+      // — never on the synchronous path only, or a long turn would free its slot
+      // early and let the cap be exceeded.
+      globalTurnGate.release();
     }
-    return verdict;
   };
 
   // The first turn a freshly started/resumed loop takes. Without this, START
@@ -531,6 +585,14 @@ export function registerDeckHandler(
     // A PENDING decision gate blocks every wake for this workspace (even a
     // running loop) until the human resolves it. Read fresh at each flush.
     hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
+    // maxWakesPerMin: left to the coalescer's built-in default (6 accepted wakes
+    // per 60s window) — the single unconditional rate ceiling. No store knob
+    // yet, so nothing to thread here.
+    // One-line fleet summary appended to an edge-wake prompt: counts the mirror's
+    // attention panes so the brain sees the wider fleet without a poll. undefined
+    // (no line) when the mirror is empty or the fleet is all quiescent.
+    getFleetTail: (workspaceId) =>
+      buildFleetTailLine(getWorkspaceMirror().getFleetSnapshot(workspaceId)),
   });
   const offBus = eventBus.subscribe((ev) => {
     // AO-style CI feedback (owner decision 2026-07-18): a pane's PR went red.
@@ -613,6 +675,42 @@ export function registerDeckHandler(
     hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
   });
   scheduler.start();
+
+  // ── WP4: level-review heartbeat ───────────────────────────────────────────
+  // A slow cadence re-reads each armed workspace's CURRENT per-pane state (from
+  // the renderer mirror) and hands it to the coalescer's flushSnapshot, which
+  // re-runs the full gate stack — the missed-judgment safety net for a pane
+  // whose edge event was dropped. Reviewed workspaces are those with a live
+  // manager OR a resting mode other than 'off'; the coalescer's own gates decide
+  // whether a wake actually fires (the tick conditions only skip obvious no-ops).
+  const heartbeatWorkspaceIds = (): string[] => {
+    const ids = new Set<string>(managers.keys());
+    // A workspace can be armed (autonomy on) before its brain has ever spawned a
+    // manager — include every mirrored workspace whose resting mode isn't 'off'.
+    const entries = getWorkspaceMirror().getEntries();
+    if (entries) {
+      for (const e of entries) {
+        if (WORKSPACE_ID_RE.test(e.id) && loadWorkspaceMode(e.id) !== 'off') ids.add(e.id);
+      }
+    }
+    return [...ids];
+  };
+  const heartbeatConfig = loadDeckHeartbeat();
+  const heartbeat = new DeckHeartbeat({
+    getWorkspaceIds: heartbeatWorkspaceIds,
+    getAutonomy: (workspaceId) => loadWorkspaceAutonomy(workspaceId),
+    isBusy: (workspaceId) =>
+      managers.get(workspaceId)?.manager.getStatus().status === 'busy',
+    hasPendingDecision: (workspaceId) => hasPendingDecision(workspaceId),
+    getFleetSnapshot: (workspaceId) => getWorkspaceMirror().getFleetSnapshot(workspaceId),
+    flushSnapshot: (workspaceId, snapshot) => coalescer?.flushSnapshot(workspaceId, snapshot),
+    lastWakeAt: (workspaceId) => coalescer?.lastWakeAt(workspaceId) ?? null,
+    // Read the on/off switch fresh each tick so a Settings toggle applies without
+    // a restart; the cadence is fixed at construction (a rare change, restart-ok).
+    isEnabled: () => loadDeckHeartbeat().enabled,
+    intervalMs: heartbeatConfig.intervalMs,
+  });
+  heartbeat.start();
 
   ipcMain.removeHandler(IPC.DECK_SCHEDULES_LIST);
   ipcMain.handle(
@@ -1165,6 +1263,7 @@ export function registerDeckHandler(
     offBus();
     coalescer?.dispose();
     scheduler.stop();
+    heartbeat.stop();
     disposeAll();
     ipcMain.removeHandler(IPC.DECK_SEND);
     ipcMain.removeHandler(IPC.DECK_INTERRUPT);

@@ -653,3 +653,91 @@ describe('deck:loop kickoff — the loop actually starts working (owner dogfood 
     expect(adapters).toHaveLength(0);
   });
 });
+
+describe('global concurrent-turn gate — the fleet-wide cap on autonomous turns', () => {
+  // An adapter whose turn stays OPEN until its releaser is called, so the gate
+  // slot it acquired stays held (each autonomous turn holds a slot for its whole
+  // life — the loop kickoff routes through runTurnForWorkspace, the gated path).
+  const releasers: (() => void)[] = [];
+  class HoldingAdapter extends FakeAdapter {
+    async *send(text: string): AsyncIterable<BrainEvent> {
+      this.sentTexts.push(text);
+      await new Promise<void>((r) => releasers.push(r));
+      yield { type: 'turn-end', sessionId: 'sess' } as BrainEvent;
+    }
+  }
+  const started = (ws: string): number =>
+    adapters.find((a) => a.workspaceId === ws)?.sentTexts.length ?? 0;
+
+  const reRegisterHolding = () => {
+    captured.clear();
+    cleanup?.();
+    adapters = [];
+    releasers.length = 0;
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      createAdapter: (opts) => {
+        const a = new HoldingAdapter(opts.workspaceId);
+        adapters.push(a);
+        return a;
+      },
+    });
+  };
+
+  it('caps at two concurrent autonomous turns; the third is rejected before it spawns a brain', async () => {
+    reRegisterHolding();
+    // Two loop kickoffs take the two slots and hold them open.
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'a' });
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-2', objective: 'b' });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(started('ws-1')).toBe(1);
+    expect(started('ws-2')).toBe(1);
+
+    // The third workspace's kickoff hits the full gate. The reject happens BEFORE
+    // ensureManager, so no adapter is ever created for ws-3.
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-3', objective: 'c' });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(adapters.some((a) => a.workspaceId === 'ws-3')).toBe(false);
+  });
+
+  it('a slot released when a turn settles lets a subsequent autonomous turn through', async () => {
+    reRegisterHolding();
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'a' });
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-2', objective: 'b' });
+    await new Promise((r) => setTimeout(r, 15));
+    // Gate full: ws-3 kickoff rejected, no adapter.
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-3', objective: 'c' });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(adapters.some((a) => a.workspaceId === 'ws-3')).toBe(false);
+
+    // Release turn 1 → its slot frees once mgr.send settles.
+    releasers[0]?.();
+    await new Promise((r) => setTimeout(r, 15));
+    // A fresh autonomous turn (ws-4 kickoff) now acquires the freed slot.
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-4', objective: 'd' });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(started('ws-4')).toBe(1);
+
+    releasers.forEach((r) => r()); // let the held turns finish
+    await new Promise((r) => setTimeout(r, 15));
+  });
+
+  it('DECK_SEND (human) is NOT gated — it proceeds even while both slots are held', async () => {
+    reRegisterHolding();
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'a' });
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-2', objective: 'b' });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(started('ws-1')).toBe(1);
+    expect(started('ws-2')).toBe(1);
+
+    // A human types into a THIRD workspace while the gate is full. DECK_SEND
+    // bypasses the gate entirely — the turn reaches its brain. (Don't await the
+    // send: the HoldingAdapter keeps it open until released below.)
+    const humanSend = invoke(IPC.DECK_SEND, { workspaceId: 'ws-3', text: 'hello from the human' });
+    await new Promise((r) => setTimeout(r, 15));
+    const ws3 = adapters.find((a) => a.workspaceId === 'ws-3');
+    expect(ws3?.sentTexts).toContain('hello from the human');
+
+    releasers.forEach((r) => r());
+    await humanSend;
+  });
+});

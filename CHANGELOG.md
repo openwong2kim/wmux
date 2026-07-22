@@ -7,7 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **The orchestrator now runs a periodic level review, and caps how many brain turns run at once.** Two additions harden autonomous (Command Deck) orchestration. A *level-review heartbeat* re-reads each armed workspace's current per-pane state every few minutes and, if a pane needs attention that no live event ever surfaced (a dropped hook, an event lost during a busy stretch), wakes the brain to catch it — routed through the exact same mode/decision/budget/rate gates as an ordinary event wake, so it can never wake *more* than the live path would, only recover what it missed. Separately, a *global concurrency cap* limits the whole app to two autonomous turns in flight at once across all workspaces: a burst of activity spread over a fleet no longer spins up a pile of brain subprocesses simultaneously — the extra turns are deferred and retried, exactly like a workspace that's already mid-turn. Neither affects a turn you type yourself, which is never throttled.
+
 ### Changed
+
+- **Ambient auto-wakes are now rate-limited, and the orchestrator serves fleet state locally.** Under heavy fleet activity the orchestrator's view of the workspace tree used to require a round-trip to the renderer that a storm of hook signals could starve — main now keeps a local mirror of the last renderer-pushed snapshot and reads it directly on the hot path, so hook and terminal responsiveness no longer degrade as the fleet gets busy. On top of that, each workspace's ambient auto-wakes are capped to a sliding-window rate, so a runaway hook or detector loop can't turn the brain into a busy-loop (a running loop still iterates on its own budget). Edge wakes can now also carry a one-line fleet summary so the brain sees the wider picture without a poll.
 
 - **Install instructions now lead with the package manager.** The README's Windows install section puts `winget install openwong2kim.wmux` front and center with a clear note that it avoids the SmartScreen warning — the direct Setup.exe download is demoted to a secondary "offline install" path with an explicit note about why the warning appears (the installer isn't Authenticode-signed yet).
 
