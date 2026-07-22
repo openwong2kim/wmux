@@ -47,6 +47,19 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 // elision in bridge.log. (codex review round 2, P2 #10.)
 const MAX_STDIN_BYTES = 1 * 1024 * 1024;
 
+// Source-side throttle for PostToolUse (agent.activity) signals. The server
+// already keeps a per-pane leading-edge throttle at 3s (hooks.rpc.ts
+// ACTIVITY_THROTTLE_MS) and nothing else PostToolUse feeds needs per-call
+// delivery (the latency meter is statistical; hook authority has a 30-minute
+// TTL). Every suppressed call would otherwise still cost a fresh pipe
+// connection — with N sessions × M parallel subagents all firing PostToolUse
+// per tool call, that connection storm is what exhausts the main pipe's
+// pending-accept instances and its per-second admission cap. Throttling at
+// the source pins pipe traffic to ~1 activity RPC per pane per window no
+// matter how many agents run. Slightly below the server's 3s window so the
+// calls that DO go through still land inside the server's leading edge.
+const ACTIVITY_STAMP_THROTTLE_MS = 2500;
+
 // ----- Hook name → AgentSignal kind ---------------------------------------
 
 const HOOK_TO_KIND = {
@@ -146,7 +159,63 @@ function spoolResumeBinding(record) {
   }
 }
 
+// ----- PostToolUse activity stamp (source-side throttle) ------------------
+
+// Stamp files live next to bridge.log (same no-suffix ~/.wmux limitation).
+// One zero-byte file per throttle key; mtime is the last-send timestamp.
+function getActivityStampPath(key) {
+  const home = process.env.USERPROFILE || process.env.HOME || homedir();
+  const dir = join(home, '.wmux', 'activity-stamps');
+  try {
+    if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
+  } catch {
+    // Fall through; stat/write below will throw and the caller fails open.
+  }
+  const safe = String(key).replace(/[^a-zA-Z0-9_-]/g, '_').slice(0, 80);
+  return join(dir, safe || 'default');
+}
+
+// Leading-edge: returns true (skip the RPC) when a send for this key happened
+// within ACTIVITY_STAMP_THROTTLE_MS; otherwise stamps NOW and returns false.
+// The stamp is written BEFORE the send on purpose — a failed RPC must not
+// open the gate for a burst of retrying siblings (the server drops extras
+// anyway). Concurrent same-key hooks can race past a stale stamp; that only
+// costs one extra RPC, never correctness. Any fs error → fail open (send).
+function shouldThrottleActivity(key) {
+  try {
+    const file = getActivityStampPath(key);
+    try {
+      if (Date.now() - statSync(file).mtimeMs < ACTIVITY_STAMP_THROTTLE_MS) return true;
+    } catch {
+      // No stamp yet — first send for this key.
+    }
+    writeFileSync(file, '', { mode: 0o600 });
+    return false;
+  } catch {
+    return false;
+  }
+}
+
 // ----- Logging (best-effort, never throws) --------------------------------
+
+// Rotate bridge.log once it exceeds the cap: rename to bridge.log.1
+// (replacing the previous generation). Checked at most once per bridge
+// process — one extra stat per hook spawn, nothing on the append path.
+// Concurrent bridges racing the rename: one wins, the rest ENOENT and
+// carry on appending to the fresh file. Best-effort, never throws.
+const BRIDGE_LOG_MAX_BYTES = 5 * 1024 * 1024;
+let logRotationChecked = false;
+function rotateBridgeLogIfNeeded(logPath) {
+  if (logRotationChecked) return;
+  logRotationChecked = true;
+  try {
+    if (statSync(logPath).size > BRIDGE_LOG_MAX_BYTES) {
+      renameSync(logPath, `${logPath}.1`);
+    }
+  } catch {
+    // Missing file / lost rename race / locked .1 — all fine.
+  }
+}
 
 function logEvent(outcome, extra) {
   const line = JSON.stringify({
@@ -158,7 +227,9 @@ function logEvent(outcome, extra) {
     ...(extra ?? {}),
   });
   try {
-    appendFileSync(getBridgeLogPath(), line + '\n', { encoding: 'utf8' });
+    const logPath = getBridgeLogPath();
+    rotateBridgeLogIfNeeded(logPath);
+    appendFileSync(logPath, line + '\n', { encoding: 'utf8' });
   } catch {
     // No writable home → swallow. Nothing more we can do.
   }
@@ -461,6 +532,20 @@ async function main() {
       && !(payload && payload.tool_name === 'AskUserQuestion')) {
     logEvent('skip-pretooluse', { tool: payload && payload.tool_name });
     return;
+  }
+
+  // PostToolUse source-side throttle (see ACTIVITY_STAMP_THROTTLE_MS). Keyed
+  // by the pane (WMUX_PTY_ID) when running inside wmux, else by the Claude
+  // session id, else by cwd — the same identity the server routes on, so
+  // suppression maps 1:1 to what the server would have dropped. Skips are
+  // deliberately NOT logged: at N sessions × M subagents the skip volume is
+  // exactly the churn this throttle exists to remove.
+  if (hookName === 'PostToolUse') {
+    const throttleKey = process.env.WMUX_PTY_ID
+      || (payload && typeof payload.session_id === 'string' && payload.session_id)
+      || (payload && typeof payload.cwd === 'string' && payload.cwd)
+      || process.cwd();
+    if (shouldThrottleActivity(throttleKey)) return;
   }
 
   const tokenPath = getAuthTokenPath();
