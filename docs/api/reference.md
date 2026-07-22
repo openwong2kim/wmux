@@ -311,7 +311,7 @@ typed in `src/shared/events.ts`.
 | Max concurrent connections (`MAX_CONNECTIONS`) | 50 | `src/main/pipe/PipeServer.ts` (private static) |
 | Per-socket RPC rate limit | 50 / s | `src/main/pipe/PipeServer.ts` |
 | Global RPC rate limit (`GLOBAL_RATE_LIMIT`) | 200 / s | `src/main/pipe/PipeServer.ts` (private static) |
-| New connections rate limit (`MAX_NEW_CONNECTIONS_PER_SEC`) | 30 / s (pre-auth) | `src/main/pipe/PipeServer.ts` (private static) |
+| New connections rate limit (`MAX_NEW_CONNECTIONS_PER_SEC`) | 120 / s (pre-auth) | `src/main/pipe/PipeServer.ts` (private static) |
 | Max line buffer (`MAX_LINE_BUFFER`) | 1 MB | `src/main/pipe/PipeServer.ts` |
 
 An unauthenticated request (missing/wrong token on the first line) gets
