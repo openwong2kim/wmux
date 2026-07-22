@@ -84,6 +84,16 @@ describe('parseOsc7Cwd', () => {
     expect(parseOsc7Cwd('file://HOST/tmp/evil%1B%5D0%3Bpwned%07dir'))
       .toBe('/tmp/evil\x1b]0;pwned\x07dir');
   });
+
+  // CMD's PROMPT hook expands `$P` with native backslashes, so the drive path
+  // arrives back-slashed (…/C:\Users\me) rather than forward-slashed.
+  it('normalizes a back-slashed CMD drive path', () => {
+    expect(parseOsc7Cwd('file://localhost/C:\\Users\\me')).toBe('C:\\Users\\me');
+  });
+
+  it('normalizes a back-slashed CMD path containing spaces', () => {
+    expect(parseOsc7Cwd('file://localhost/C:\\Program Files\\app')).toBe('C:\\Program Files\\app');
+  });
 });
 
 describe('detectPromptCwd', () => {
@@ -124,5 +134,52 @@ describe('detectPromptCwd', () => {
 
   it('still reads POSIX bash prompts on darwin', () => {
     expect(detectPromptCwd('me@host:/home/me/work$', 'darwin')).toBe('/home/me/work');
+  });
+
+  // WSL --cd regression (2026-07-21): a git-aware bash prompt appends
+  // " (branch)" after the path; left in, it broke `wsl.exe --cd` with chdir
+  // ERROR 2 on the non-existent "…/locus (feat/locus-v1)".
+  it('strips a git-prompt branch decoration from a bash cwd', () => {
+    expect(detectPromptCwd('skflowne@host:/home/skflowne/projects/locus (feat/locus-v1)$')).toBe(
+      '/home/skflowne/projects/locus',
+    );
+  });
+
+  it('strips a git-prompt decoration carrying dirty-state markers', () => {
+    expect(detectPromptCwd('me@host:/home/me/work (main *=)$')).toBe('/home/me/work');
+  });
+
+  it('leaves a decoration-free bash cwd untouched', () => {
+    expect(detectPromptCwd('me@host:/home/me/proj$')).toBe('/home/me/proj');
+  });
+
+  // cmd.exe has no scriptable prompt hook, so on the daemon spawn path scraping
+  // its "C:\path>" prompt is the only cwd signal — previously unrecognized, so a
+  // split off a cmd pane never inherited its directory.
+  it('reads a cmd.exe drive prompt', () => {
+    expect(detectPromptCwd('C:\\Users\\me>', 'win32')).toBe('C:\\Users\\me');
+  });
+
+  it('reads a cmd.exe drive-root prompt', () => {
+    expect(detectPromptCwd('C:\\>', 'win32')).toBe('C:\\');
+  });
+
+  it('reads the LAST cmd.exe prompt after command output', () => {
+    const buf = 'C:\\a>dir\r\n...files...\r\nC:\\a\\b>';
+    expect(detectPromptCwd(buf, 'win32')).toBe('C:\\a\\b');
+  });
+
+  it('does not mistake a mid-line Windows path for a cmd prompt', () => {
+    // Only a path anchored at line start is a prompt; "see C:\x>" in output isn't.
+    expect(detectPromptCwd('see C:\\temp> for details', 'win32')).toBeNull();
+  });
+
+  it('rejects a cmd.exe prompt shape on a POSIX platform', () => {
+    expect(detectPromptCwd('C:\\Users\\me>', 'darwin')).toBeNull();
+  });
+
+  it('still prefers the PowerShell prompt over the cmd fallback', () => {
+    // "PS C:\p>" must read via the PS group, not the bare-drive cmd group.
+    expect(detectPromptCwd('PS C:\\proj>', 'win32')).toBe('C:\\proj');
   });
 });

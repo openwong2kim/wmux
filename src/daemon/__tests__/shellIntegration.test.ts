@@ -1,5 +1,13 @@
 import { describe, it, expect } from 'vitest';
-import { classifyShell, buildSpawnInjection, ZSH_RC, PWSH_INIT, BASH_INIT } from '../shell-integration';
+import {
+  classifyShell,
+  buildSpawnInjection,
+  buildWslBashInjection,
+  toWslMountPath,
+  ZSH_RC,
+  BASH_INIT,
+  PWSH_INIT,
+} from '../shell-integration';
 
 // zsh 지원(macOS 기본 셸) — ZDOTDIR 가로채기 방식의 핵심 불변식 검증.
 describe('classifyShell', () => {
@@ -15,6 +23,11 @@ describe('classifyShell', () => {
     expect(classifyShell('powershell.exe')).toBe('pwsh');
     expect(classifyShell('/usr/bin/fish')).toBeNull();
     expect(classifyShell('')).toBeNull();
+  });
+
+  it('classifies cmd.exe (target of the OSC 7 PROMPT hook)', () => {
+    expect(classifyShell('cmd.exe')).toBe('cmd');
+    expect(classifyShell('C:\\Windows\\System32\\cmd.exe')).toBe('cmd');
   });
 });
 
@@ -42,7 +55,86 @@ describe('buildSpawnInjection — zsh', () => {
 
   it('알 수 없는 셸은 injection이 없다(일반 spawn)', () => {
     expect(buildSpawnInjection('/usr/bin/fish')).toBeNull();
-    expect(buildSpawnInjection('cmd.exe')).toBeNull();
+  });
+});
+
+// cmd.exe: OSC 133 markers are impossible (no hook), but OSC 7 (cwd) can ride
+// the PROMPT env var. Windows-only — cmd.exe spawns nowhere else.
+describe('buildSpawnInjection — cmd.exe', () => {
+  it('injects the PROMPT OSC 7 hook on Windows and returns null elsewhere', () => {
+    const inj = buildSpawnInjection('cmd.exe');
+    if (process.platform === 'win32') {
+      expect(inj).not.toBeNull();
+      expect(inj?.args).toEqual([]);
+      // OSC 7 sequence with $P (path) + $E\ (ST). Host is a literal ('$C' in a
+      // CMD PROMPT expands to '(').
+      expect(inj?.env.PROMPT).toContain(']7;file://localhost/$P');
+      expect(inj?.env.PROMPT).not.toContain('$COMPUTERNAME');
+    } else {
+      expect(inj).toBeNull();
+    }
+  });
+});
+
+// v8: the bash/pwsh scripts emit OSC 7 (cwd) so the daemon spawn path reports
+// cwd authoritatively instead of scraping. The shape matches parseOsc7Cwd.
+describe('BASH_INIT / PWSH_INIT — OSC 7 cwd', () => {
+  it('BASH_INIT emits OSC 7 with the correct shape', () => {
+    expect(BASH_INIT).toContain('__wmux_osc7()');
+    // file://%s%s (no separator) — the double-slash form file://%s/%s would
+    // produce //home/... and is forbidden.
+    expect(BASH_INIT).toContain(']7;file://%s%s');
+    expect(BASH_INIT).not.toContain('file://%s/%s');
+    // Git Bash/MSYS: /c/Users/me → /c:/Users/me conversion without requiring
+    // an external cygpath process.
+    expect(BASH_INIT).toContain('${MSYSTEM:-}');
+    expect(BASH_INIT).toContain('p="/${p:1:1}:${p:2}"');
+    // Called from precmd (every prompt).
+    expect(BASH_INIT).toMatch(/__wmux_precmd\(\)[\s\S]*__wmux_osc7/);
+  });
+
+  it('PWSH_INIT emits OSC 7 only for the FileSystem provider', () => {
+    expect(PWSH_INIT).toContain(']7;file://');
+    expect(PWSH_INIT).toContain("Provider.Name -eq 'FileSystem'");
+  });
+
+  it('emits a WSL pane cwd as the Linux path, unconverted (no UNC)', () => {
+    // For splitWslCwd to re-derive `--cd <linuxpath>`, OSC 7 must carry the
+    // Linux path. The wslpath -w (UNC) conversion was removed — only Git Bash
+    // rewrites the drive-shaped MSYS path.
+    expect(BASH_INIT).not.toContain('wslpath');
+    expect(BASH_INIT).toContain('local p="$PWD"');
+    expect(BASH_INIT).toContain('if [ -n "${MSYSTEM:-}" ]');
+  });
+});
+
+// wsl.exe is a launcher, not a shell, so we source the rcfile at its WSL mount
+// path — but only when the login shell is bash. The path conversion is a pure
+// function, verified here.
+describe('toWslMountPath', () => {
+  it('converts a Windows path to a /mnt path', () => {
+    expect(toWslMountPath('C:\\Users\\me\\.wmux\\shell-integration\\wmux-shell-init.bash')).toBe(
+      '/mnt/c/Users/me/.wmux/shell-integration/wmux-shell-init.bash',
+    );
+  });
+
+  it('lowercases the drive letter', () => {
+    expect(toWslMountPath('D:\\proj\\x')).toBe('/mnt/d/proj/x');
+  });
+});
+
+describe('buildWslBashInjection', () => {
+  it('injects in the `-- bash --rcfile <mnt> -i` shape', () => {
+    const inj = buildWslBashInjection();
+    expect(inj.args[0]).toBe('--');
+    expect(inj.args[1]).toBe('bash');
+    expect(inj.args).toContain('--rcfile');
+    expect(inj.args[inj.args.length - 1]).toBe('-i');
+    // The rcfile must be a WSL-accessible /mnt (or POSIX) path.
+    const rc = inj.args[inj.args.indexOf('--rcfile') + 1];
+    expect(rc.startsWith('/')).toBe(true);
+    expect(rc).toContain('wmux-shell-init.bash');
+    expect(inj.env.WMUX_SHELL_INTEGRATION).toBe('1');
   });
 });
 

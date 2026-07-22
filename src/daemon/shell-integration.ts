@@ -1,7 +1,7 @@
 import * as fs from 'node:fs';
 import * as path from 'node:path';
 import { getWmuxDir } from './config';
-import { isMac } from '../shared/platform';
+import { isMac, isWindows } from '../shared/platform';
 
 /**
  * Shell integration installer: materializes OSC 133 init scripts into
@@ -11,13 +11,21 @@ import { isMac } from '../shared/platform';
  * missing) we overwrite it.
  *
  * Coverage:
- *   - PowerShell 5.1 / 7+  (powershell.exe, pwsh.exe)
- *   - Bash 4.4+            (Git Bash, WSL)
- *   - zsh 5.x              (macOS 기본 셸 — ZDOTDIR 가로채기 방식)
+ *   - PowerShell 5.1 / 7+  (powershell.exe, pwsh.exe)  — OSC 133 + OSC 7 (cwd)
+ *   - Bash 4.4+            (Git Bash, WSL)              — OSC 133 + OSC 7 (cwd)
+ *   - zsh 5.x              (macOS default shell, ZDOTDIR intercept) — OSC 133 + OSC 7
+ *   - cmd.exe              (Windows only)              — OSC 7 (cwd) via PROMPT
+ *                                                        (no scriptable hook →
+ *                                                         no OSC 133)
  *
  * Explicitly NOT covered:
- *   - cmd.exe              (no prompt hook, OSC 133 is a no-op there)
  *   - fish                 (v3 roadmap)
+ *
+ * The OSC 7 (cwd) emission here mirrors the standalone hooks in
+ * src/main/pty/shell-hooks/ (used by the main-process PTYManager spawn path);
+ * the daemon spawn path uses THIS module. Keep the two in sync — both feed the
+ * same parseOsc7Cwd, and once either emits OSC 7 the bridge marks the pane
+ * OSC-7-sticky and stops scraping prompt text for that session.
  */
 
 // v6: zsh stub에 OSC 7(cwd) 방출 추가 — mac 기본 zsh가 cd를 보고하지 않아
@@ -84,9 +92,23 @@ function global:prompt {
     $esc = [char]27
     $bel = [char]7
 
+    # OSC 7 (cwd): report the working directory over the authoritative escape
+    # channel so wmux tracks 'cd' without scraping prompt text. Only the
+    # FileSystem provider maps to a real path (skip Registry:/Cert: etc.);
+    # ProviderPath resolves a PSDrive to its backing path. Forward slashes and a
+    # single leading slash after the host match parseOsc7Cwd's shape (drive:
+    # /C:/x, UNC: ///server/x). Mirrors src/main/pty/shell-hooks/pwsh.ps1.
+    $osc7 = ''
+    try {
+        $loc = $executionContext.SessionState.Path.CurrentLocation
+        if ($loc.Provider.Name -eq 'FileSystem') {
+            $osc7 = "$esc]7;file://$env:COMPUTERNAME/$($loc.ProviderPath -replace '\\\\','/')$bel"
+        }
+    } catch { }
+
     # D;<exit>  marks end of previous command.
     # A         marks start of the new prompt.
-    $pre = "$esc]133;D;$ec$bel$esc]133;A$bel"
+    $pre = "$esc]133;D;$ec$bel$esc]133;A$bel$osc7"
 
     # OSC 7: cwd report (issue #540). wmux treats OSC 7 as the authoritative
     # cwd source and turns prompt scraping off for good the first time it sees
@@ -420,15 +442,16 @@ export function installShellIntegration(): ShellIntegrationPaths {
 
 /**
  * Classify a shell executable path into one of the integration families.
- * Returns null when no known integration exists (e.g. cmd.exe, zsh today).
+ * Returns null when no known integration exists (e.g. fish).
  */
-export function classifyShell(shellPath: string): 'pwsh' | 'bash' | 'zsh' | null {
+export function classifyShell(shellPath: string): 'pwsh' | 'bash' | 'zsh' | 'cmd' | null {
   if (!shellPath) return null;
   // 로그인 셸은 argv[0]가 '-zsh'처럼 앞에 '-'가 붙는다.
   const base = path.basename(shellPath).toLowerCase().replace(/^-/, '');
   if (base === 'powershell.exe' || base === 'pwsh.exe' || base === 'pwsh') return 'pwsh';
   if (base === 'bash.exe' || base === 'bash') return 'bash';
   if (base === 'zsh') return 'zsh';
+  if (base === 'cmd.exe' || base === 'cmd') return 'cmd';
   return null;
 }
 
@@ -438,13 +461,65 @@ export interface SpawnInjection {
 }
 
 /**
+ * Convert a Windows path to its WSL mount path so a script on the Windows
+ * filesystem can be sourced from inside a distro: `C:\Users\me\x` →
+ * `/mnt/c/Users/me/x`.
+ *
+ * Assumes WSL's default automount root (`/mnt/`). A distro with a custom
+ * `[automount] root` in `/etc/wsl.conf` won't match — in that case `bash`
+ * can't open the rcfile and simply starts without our hook, so the pane falls
+ * back to prompt scraping (no hard failure). Pure/deterministic so it's unit
+ * testable without a WSL install.
+ */
+export function toWslMountPath(winPath: string): string {
+  const m = /^([A-Za-z]):(.*)$/.exec(winPath);
+  if (!m) return winPath.replace(/\\/g, '/');
+  const drive = m[1].toLowerCase();
+  const rest = m[2].replace(/\\/g, '/');
+  return `/mnt/${drive}${rest.startsWith('/') ? '' : '/'}${rest}`;
+}
+
+/**
+ * Build the spawn injection for a `wsl.exe` launcher whose distro login shell
+ * is bash. Produces `-- bash --rcfile <mnt-path> -i`, which — composed after
+ * the daemon's `splitWslCwd` `--cd` prefix — spawns
+ * `wsl.exe [--cd <cwd>] -- bash --rcfile /mnt/c/…/wmux-shell-init.bash -i`.
+ * The rcfile sources the user's own ~/.bashrc internally, so it is additive.
+ *
+ * IMPORTANT: only use this when the distro's login shell really is bash. It
+ * forces bash, so a zsh/fish user would otherwise be dropped into bash — the
+ * daemon probes the login shell before calling this and skips it (falling back
+ * to prompt scraping) for non-bash shells.
+ */
+export function buildWslBashInjection(): SpawnInjection {
+  const paths = installShellIntegration();
+  const rcfile = toWslMountPath(paths.bash);
+  return {
+    args: ['--', 'bash', '--rcfile', rcfile, '-i'],
+    env: { WMUX_SHELL_INTEGRATION: '1' },
+  };
+}
+
+/**
  * Produce the extra spawn args + env vars needed to activate shell
  * integration for a known shell. Returns null for shells that have no
- * integration (cmd.exe, etc.) — caller should spawn the shell normally.
+ * integration (fish, etc.) — caller should spawn the shell normally.
  */
 export function buildSpawnInjection(shellPath: string): SpawnInjection | null {
   const kind = classifyShell(shellPath);
   if (!kind) return null;
+
+  if (kind === 'cmd') {
+    // cmd.exe has no scriptable prompt hook, so OSC 133 semantic markers are
+    // impossible — but OSC 7 (cwd) can ride the PROMPT env var. $P is the
+    // current path (native backslashes; parseOsc7Cwd normalizes), $E is ESC,
+    // $E\ the ST terminator, $G the '>'. The host segment is a literal — '$C'
+    // is a CMD PROMPT metachar that expands to '(', so '$COMPUTERNAME' would
+    // emit a stray "(OMPUTERNAME" token. Windows-only; cmd.exe spawns nowhere
+    // else. No installed script needed. Mirrors PTYManager.buildHookInjection.
+    if (!isWindows) return null;
+    return { args: [], env: { PROMPT: '$E]7;file://localhost/$P$E\\$P$G' } };
+  }
 
   const paths = installShellIntegration();
 

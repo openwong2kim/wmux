@@ -114,8 +114,12 @@ export class PTYManager {
         // Windows-only — cmd.exe does not exist on macOS/Linux, and the
         // PROMPT env var has different semantics on Unix shells.
         if (!isWindows) break;
-        // $E = ESC, $P = current drive and path, $G = >
-        env['PROMPT'] = '$E]7;file://$COMPUTERNAME/$P$E\\$P$G';
+        // $E = ESC, $P = current drive and path, $G = >, $E\ = ST terminator.
+        // The host segment is cosmetic (parseOsc7Cwd strips everything up to the
+        // first '/'), so use a literal: '$C' is a CMD PROMPT metachar that expands
+        // to '(', so '$COMPUTERNAME' would emit a stray "(OMPUTERNAME" token.
+        // $P yields a native backslash path (C:\path); parseOsc7Cwd normalizes it.
+        env['PROMPT'] = '$E]7;file://localhost/$P$E\\$P$G';
         env[ENV_KEYS.SHELL_HOOK_ACTIVE] = '1';
         break;
       }

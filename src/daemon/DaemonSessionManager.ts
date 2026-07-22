@@ -8,9 +8,10 @@ import type { DaemonSession, DaemonSessionState, DaemonSessionSupervision, Daemo
 import { RingBuffer } from './RingBuffer';
 import { DaemonPTYBridge } from './DaemonPTYBridge';
 import { PromptEventLog } from './PromptEventLog';
-import { buildSpawnInjection, classifyShell } from './shell-integration';
+import { buildSpawnInjection, classifyShell, buildWslBashInjection } from './shell-integration';
 import { expandTilde } from '../shared/expandTilde';
-import { splitWslCwd } from '../shared/wslCwd';
+import { splitWslCwd, isWslShell } from '../shared/wslCwd';
+import { execFileSync } from 'node:child_process';
 import { buildExecArgs } from './execWrapper';
 import { buildSafeChildEnv } from '../shared/envFilter';
 import { isMac } from '../shared/platform';
@@ -124,6 +125,13 @@ const clampRows = (rows: number): number => Math.max(MIN_SAFE_ROWS, rows);
 export class DaemonSessionManager extends EventEmitter {
   private sessions = new Map<string, ManagedSession>();
   private config: DaemonConfig | null = null;
+
+  /**
+   * Cached WSL default-login-shell path (`/bin/bash`, `/usr/bin/zsh`, …), or
+   * null when the probe couldn't determine it. `undefined` = not yet probed.
+   * Probed once per daemon lifetime — see wslLoginShellIsBash().
+   */
+  private wslLoginShell: string | null | undefined;
 
   /**
    * Injected by daemon/index.ts (keeps this class free of platform/shutdown
@@ -344,22 +352,33 @@ export class DaemonSessionManager extends EventEmitter {
       }
       spawnArgs = execArgs;
     } else {
-      // Shell integration: dot-source our OSC 133 init script when the shell
-      // is a supported family (pwsh/bash). Unknown shells (cmd.exe, zsh, etc.)
-      // get a plain spawn with no args and silently skip integration.
+      // Shell integration: dot-source our OSC 133 + OSC 7 init script when the
+      // shell is a supported family (pwsh/bash/zsh), or hook cmd.exe's PROMPT.
+      // wsl.exe is a launcher, not a shell — handled separately below so we can
+      // force `bash --rcfile` (with the script at its WSL mount path) ONLY when
+      // the distro login shell is actually bash. Everything else falls back to
+      // prompt scraping with a plain spawn.
       try {
-        const injection = buildSpawnInjection(cmd);
-        if (injection) {
-          // zsh ZDOTDIR 가로채기: injection이 ZDOTDIR을 wmux 디렉토리로 덮어쓰기
-          // 전에, 사용자의 원래 ZDOTDIR(없으면 HOME)을 WMUX_USER_ZDOTDIR로 보존한다.
-          // stub .zshenv/.zshrc가 이 값으로 사용자 설정을 복원하므로, 보존을
-          // 빠뜨리면 사용자 .zshrc(PATH/alias 등)가 통째로 날아간다.
-          if (classifyShell(cmd) === 'zsh' && !env['WMUX_USER_ZDOTDIR']) {
-            env['WMUX_USER_ZDOTDIR'] = env['ZDOTDIR'] || env['HOME'] || os.homedir();
-          }
+        if (isWslShell(cmd) && this.wslLoginShellIsBash()) {
+          const injection = buildWslBashInjection();
           spawnArgs = injection.args;
           for (const [k, v] of Object.entries(injection.env)) {
             env[k] = v;
+          }
+        } else {
+          const injection = buildSpawnInjection(cmd);
+          if (injection) {
+            // zsh ZDOTDIR 가로채기: injection이 ZDOTDIR을 wmux 디렉토리로 덮어쓰기
+            // 전에, 사용자의 원래 ZDOTDIR(없으면 HOME)을 WMUX_USER_ZDOTDIR로 보존한다.
+            // stub .zshenv/.zshrc가 이 값으로 사용자 설정을 복원하므로, 보존을
+            // 빠뜨리면 사용자 .zshrc(PATH/alias 등)가 통째로 날아간다.
+            if (classifyShell(cmd) === 'zsh' && !env['WMUX_USER_ZDOTDIR']) {
+              env['WMUX_USER_ZDOTDIR'] = env['ZDOTDIR'] || env['HOME'] || os.homedir();
+            }
+            spawnArgs = injection.args;
+            for (const [k, v] of Object.entries(injection.env)) {
+              env[k] = v;
+            }
           }
         }
       } catch (err) {
@@ -755,6 +774,33 @@ export class DaemonSessionManager extends EventEmitter {
     const resolved = resolveBareShellName(cmd);
     if (resolved) return resolved;
     return cmd; // fallback to original (let pty.spawn try PATH)
+  }
+
+  /**
+   * True when the WSL default distro's login shell is bash — the gate for
+   * forcing `bash --rcfile` on a wsl.exe pane so OSC 7 (cwd) reporting loads.
+   * We must NOT force bash on a zsh/fish user, so a non-bash (or unknown) login
+   * shell returns false and the pane spawns plainly (prompt-scraping fallback).
+   *
+   * Probed once and cached: `wsl.exe -- sh -c 'getent passwd "$(id -un)" | cut
+   * -d: -f7'` prints e.g. `/bin/bash`. Bounded by a timeout so a cold-booting
+   * or wedged WSL can't hang session creation; any failure caches null (treated
+   * as "not bash") rather than re-probing on every spawn.
+   */
+  private wslLoginShellIsBash(): boolean {
+    if (this.wslLoginShell === undefined) {
+      try {
+        const out = execFileSync(
+          'wsl.exe',
+          ['--', 'sh', '-c', 'getent passwd "$(id -un)" | cut -d: -f7'],
+          { encoding: 'utf8', timeout: 5000, windowsHide: true },
+        );
+        this.wslLoginShell = out.split('\n')[0]?.trim() || null;
+      } catch {
+        this.wslLoginShell = null;
+      }
+    }
+    return this.wslLoginShell !== null && /(^|\/)bash$/.test(this.wslLoginShell);
   }
 
   /**

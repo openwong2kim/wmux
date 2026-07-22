@@ -10,7 +10,15 @@
 
 import { isPlausibleCwd } from '../../shared/cwdShape';
 
-const PROMPT_CWD_RE = /(?:PS\s+([A-Za-z]:\\[^>]*?)>)|(?:\w+@[\w.-]+:([^$]+?)\$)/g;
+// Three prompt shapes, one per capture group:
+//   group 1 — PowerShell:  "PS C:\path>"
+//   group 2 — bash/zsh:     "user@host:/path$"  (may carry a git-prompt " (branch)")
+//   group 3 — cmd.exe:      "C:\path>"  anchored at line start so a bare Windows
+//             path echoed mid-line (docs, `type file.txt`) isn't mistaken for a
+//             prompt. cmd has no scriptable prompt hook, so on the daemon spawn
+//             path (which injects no OSC 7 hook) scraping is cmd's only cwd signal.
+const PROMPT_CWD_RE =
+  /(?:PS\s+([A-Za-z]:\\[^>]*?)>)|(?:\w+@[\w.-]+:([^$]+?)\$)|(?:(?:^|[\r\n])([A-Za-z]:\\[^\r\n>]*)>)/g;
 
 /**
  * Normalize an OSC 7 payload (`file://<host>/<path>`) into a native path.
@@ -37,8 +45,11 @@ export function parseOsc7Cwd(data: string): string {
   } catch {
     // Malformed percent-encoding — keep the raw (still better than dropping it).
   }
-  // Windows drive path by shape: "/C:/Users/me" → "C:\Users\me".
-  if (/^\/[A-Za-z]:\//.test(p)) {
+  // Windows drive path by shape: "/C:/Users/me" or "/C:\Users\me" → "C:\Users\me".
+  // The separator after the drive can be either slash: the pwsh/bash hooks emit
+  // forward slashes, but CMD's `PROMPT` hook expands `$P` with native backslashes
+  // (…/C:\Users\me), so accept both and normalize any forward slashes to `\`.
+  if (/^\/[A-Za-z]:[\\/]/.test(p)) {
     return p.slice(1).replace(/\//g, '\\');
   }
   // Windows UNC path: "/" (host separator) + "//server/share" → "\\server\share".
@@ -80,7 +91,18 @@ export function detectPromptCwd(
     if (m.index === PROMPT_CWD_RE.lastIndex) PROMPT_CWD_RE.lastIndex++;
   }
   if (!last) return null;
-  const cwd = (last[1] || last[2] || '').trim();
+  let cwd = (last[1] || last[2] || last[3] || '').trim();
+  if (!cwd) return null;
+  // Strip a bash/zsh git-prompt decoration (2026-07-21): a git-aware prompt
+  // (`__git_ps1`, default format ` (%s)`) renders "user@host:/path (branch)$",
+  // so the `:…$` scrape captures "/path (branch)". Left in, that polluted cwd
+  // was previously harmless (a Linux cwd on Windows just fell back to home),
+  // but `wsl.exe --cd <cwd>` now uses it verbatim and CreateProcess/chdir fails
+  // (ERROR 2) on the non-existent "…/locus (feat/locus-v1)". Only the bash
+  // group (last[2]) carries this; PowerShell's `>`-terminated group is left
+  // untouched. A real dir literally ending in " (…)" is rarer than a git prompt
+  // and would still be recovered by OSC 7 when available.
+  if (last[2]) cwd = cwd.replace(/\s+\([^)]*\)$/, '').trimEnd();
   if (!cwd) return null;
   // 오탐 방어(2026-07-20): 화면에 출력된 "PS C:\…>" 같은 텍스트를 프롬프트로
   // 오인해 POSIX 페인의 cwd를 Windows 경로로 덮어쓰던 사고 — 플랫폼에서

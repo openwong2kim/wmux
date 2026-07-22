@@ -13,6 +13,7 @@
 import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'node:fs';
 import * as path from 'node:path';
+import { execFileSync } from 'node:child_process';
 import type { ManagedSession } from '../DaemonSessionManager';
 import { DaemonSessionManager } from '../DaemonSessionManager';
 import type { PromptEvent } from '../PromptEventLog';
@@ -23,9 +24,41 @@ const PF = process.env.ProgramFiles || 'C:\\Program Files';
 const POWERSHELL = `${SYS}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
 const CMD_EXE = `${SYS}\\System32\\cmd.exe`;
 const GIT_BASH = `${PF}\\Git\\bin\\bash.exe`;
+const WSL_EXE = `${SYS}\\System32\\wsl.exe`;
 
 const hasPowerShell = process.platform === 'win32' && fs.existsSync(POWERSHELL);
 const hasGitBash = process.platform === 'win32' && fs.existsSync(GIT_BASH);
+const hasCmd = process.platform === 'win32' && fs.existsSync(CMD_EXE);
+
+// WSL OSC 7 only loads when the distro's login shell is bash (we force
+// `bash --rcfile`). Probe once at module load so the suite skips cleanly on
+// machines with no WSL, or where the default shell is zsh/fish. Returns the
+// distro $HOME (a Linux path) to use as the spawn cwd, or null to skip.
+function detectWslBashHome(): string | null {
+  if (process.platform !== 'win32' || !fs.existsSync(WSL_EXE)) return null;
+  try {
+    const shell = execFileSync(WSL_EXE, ['--', 'sh', '-c', 'getent passwd "$(id -un)" | cut -d: -f7'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    })
+      .split('\n')[0]
+      .trim();
+    if (!/(^|\/)bash$/.test(shell)) return null;
+    const home = execFileSync(WSL_EXE, ['--', 'sh', '-c', 'echo $HOME'], {
+      encoding: 'utf8',
+      timeout: 5000,
+      windowsHide: true,
+    })
+      .split('\n')[0]
+      .trim();
+    return home || null;
+  } catch {
+    return null;
+  }
+}
+const wslBashHome = detectWslBashHome();
+const hasWslBash = wslBashHome !== null;
 
 // Allow ConPTY boot + prompt render + command echo round trip. Generous
 // because a loaded GitHub Windows runner can be slow to cold-start
@@ -76,6 +109,22 @@ function waitForEventAfter(
       }
     };
     managed.bridge.on('prompt', onPrompt);
+  });
+}
+
+/** Wait for the first OSC 7 (cwd) event the bridge emits for this session. */
+function waitForCwd(managed: ManagedSession, timeoutMs = EVENT_TIMEOUT_MS): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      managed.bridge.off('cwd', onCwd);
+      reject(new Error('timed out waiting for cwd (OSC 7)'));
+    }, timeoutMs);
+    const onCwd = (payload: { sessionId: string; cwd: string }) => {
+      clearTimeout(timer);
+      managed.bridge.off('cwd', onCwd);
+      resolve(payload.cwd);
+    };
+    managed.bridge.on('cwd', onCwd);
   });
 }
 
@@ -162,6 +211,22 @@ describe.runIf(hasPowerShell)('OSC 133 runtime — powershell.exe', () => {
       'command_end with non-zero exitCode',
     );
     expect(cmdEnd.exitCode).toBe(7);
+  }, EVENT_TIMEOUT_MS + 2000);
+
+  it('reports the spawn cwd via OSC 7 (v8)', async () => {
+    manager = new DaemonSessionManager();
+    const id = `rt-pwsh-cwd-${Date.now()}`;
+    const cwd = path.resolve(process.cwd());
+    manager.createSession({ id, cmd: POWERSHELL, cwd });
+
+    const managed = manager.getSession(id)!;
+    const cwdPromise = waitForCwd(managed);
+    // The prompt (and its OSC 7) renders lazily under -NoExit; a bare Enter
+    // forces a fresh render without running a command.
+    managed.ptyProcess.write('\r');
+
+    const reported = await cwdPromise;
+    expect(reported.toLowerCase()).toBe(cwd.toLowerCase());
   }, EVENT_TIMEOUT_MS + 2000);
 });
 
@@ -264,4 +329,66 @@ describe.runIf(hasGitBash)('OSC 133 runtime — bash.exe (Git Bash)', () => {
     );
     expect(cmdEnd.exitCode).toBe(1);
   }, EVENT_TIMEOUT_MS + 2000);
+
+  it('reports the spawn cwd via OSC 7, MSYS path converted to Windows (v8)', async () => {
+    manager = new DaemonSessionManager();
+    const id = `rt-bash-cwd-${Date.now()}`;
+    const cwd = path.resolve(process.cwd());
+    manager.createSession({ id, cmd: GIT_BASH, cwd });
+
+    const managed = manager.getSession(id)!;
+    // Bash emits OSC 7 from PROMPT_COMMAND on the initial prompt — no input
+    // needed. cygpath -m turns the MSYS $PWD (/c/…) back into a Windows path.
+    const reported = await waitForCwd(managed);
+    expect(reported.toLowerCase()).toBe(cwd.toLowerCase());
+  }, EVENT_TIMEOUT_MS + 2000);
+});
+
+// cmd.exe carries OSC 7 on the PROMPT env var ($P), ST-terminated ($E\). It has
+// no OSC 133 hook, so cwd is the only signal — this is the v8 addition that makes
+// splitting a CMD pane inherit its directory.
+describe.runIf(hasCmd)('OSC 7 runtime — cmd.exe', () => {
+  let manager: DaemonSessionManager;
+
+  afterEach(() => {
+    if (manager) manager.disposeAll();
+  });
+
+  it('reports the spawn cwd via OSC 7 (back-slashed $P normalized)', async () => {
+    manager = new DaemonSessionManager();
+    const id = `rt-cmd-cwd-${Date.now()}`;
+    const cwd = path.resolve(process.cwd());
+    manager.createSession({ id, cmd: CMD_EXE, cwd });
+
+    const managed = manager.getSession(id)!;
+    // cmd renders its prompt (and the OSC 7 embedded in PROMPT) immediately on
+    // startup — no input required.
+    const reported = await waitForCwd(managed);
+    expect(reported.toLowerCase()).toBe(cwd.toLowerCase());
+  }, EVENT_TIMEOUT_MS + 2000);
+});
+
+// wsl.exe is a launcher, not a shell. The daemon detects the bash login shell,
+// forces `bash --rcfile <mnt-path> -i`, and — because a Linux-style cwd goes
+// through `wsl.exe --cd` — expects OSC 7 to report the Linux path unchanged
+// (round-trips back through splitWslCwd on the next split). This is the fix
+// for the original "chdir(… (branch)) failed 2" report, now on the OSC 7 path.
+describe.runIf(hasWslBash)('OSC 7 runtime — wsl.exe (bash login shell)', () => {
+  let manager: DaemonSessionManager;
+
+  afterEach(() => {
+    if (manager) manager.disposeAll();
+  });
+
+  it('reports the Linux spawn cwd via OSC 7, unconverted', async () => {
+    manager = new DaemonSessionManager();
+    const id = `rt-wsl-cwd-${Date.now()}`;
+    // wslBashHome is a Linux path (e.g. /home/me) → splitWslCwd routes it through
+    // `wsl.exe --cd`, and bash's PROMPT_COMMAND emits OSC 7 with $PWD on startup.
+    manager.createSession({ id, cmd: WSL_EXE, cwd: wslBashHome! });
+
+    const managed = manager.getSession(id)!;
+    const reported = await waitForCwd(managed);
+    expect(reported).toBe(wslBashHome);
+  }, EVENT_TIMEOUT_MS + 5000);
 });
