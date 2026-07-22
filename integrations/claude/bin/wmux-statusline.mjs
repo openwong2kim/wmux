@@ -9,11 +9,19 @@
 // `$env:CLAUDE_CONFIG_DIR=...; claude`. No CLAUDE_CONFIG_DIR means the default
 // `~/.claude` profile.
 //
-// Where the numbers come from: wmux's AccountUsageService probes Anthropic's
-// rate-limit headers per account (hook-gated on agent.stop, opt-in) and mirrors
-// its cache to `~/.wmux/usage/usage-cache.json`. This script only READS that
-// file — it never touches credentials and never talks to the network, so it is
-// safe to run at statusline frequency.
+// Where the numbers come from — ZERO-COST FIRST:
+//   1. Claude Code ≥2.1 pipes `rate_limits.five_hour/seven_day.used_percentage`
+//      on stdin for Pro/Max subscribers (absent before the session's first API
+//      response, and absent per-window). Free: no network, no token spend, and
+//      inherently per-account because it comes from THIS session.
+//   2. Fallback: wmux's usage cache mirror `~/.wmux/usage/usage-cache.json`,
+//      fed by the opt-in AccountUsageService probe. Covers the pre-first-turn
+//      gap and older Claude Code versions. If neither exists: `usage —`.
+// The account NAME comes from wmux's accounts.json (registered accounts), so
+// this script works even with the usage probe feature switched off.
+//
+// This script only READS local files — it never touches credentials and never
+// talks to the network, so it is safe to run at statusline frequency.
 //
 // Self-contained on purpose: Claude Code invokes it as a bare `node` command
 // from settings.json, so no TS imports and no wmux install-dir dependency
@@ -27,7 +35,7 @@ function getHome() {
   return process.env.USERPROFILE || process.env.HOME || homedir();
 }
 
-/** Lexical dir identity, case-folded on Windows. The cache file stores the
+/** Lexical dir identity, case-folded on Windows. accounts.json stores the
  *  canonical (realpath) form; CLAUDE_CONFIG_DIR is usually the same literal
  *  string wmux injected, so lexical compare covers the practical cases without
  *  a realpath call on every statusline tick. */
@@ -44,14 +52,38 @@ function readStdinJson() {
   }
 }
 
-function readCache(home) {
+function readJsonFile(path) {
   try {
-    const raw = readFileSync(join(home, '.wmux', 'usage', 'usage-cache.json'), 'utf8');
-    const parsed = JSON.parse(raw);
-    return Array.isArray(parsed?.entries) ? parsed.entries : [];
+    return JSON.parse(readFileSync(path, 'utf8'));
   } catch {
-    return [];
+    return null;
   }
+}
+
+/** Registered account name for this config dir, from wmux accounts.json. */
+function lookupAccountName(home, want) {
+  const parsed = readJsonFile(join(home, '.wmux', 'accounts.json'));
+  const accounts = Array.isArray(parsed?.accounts) ? parsed.accounts : [];
+  const hit = accounts.find(
+    (a) => a && a.vendor === 'claude' && typeof a.configDir === 'string' && normDir(a.configDir) === want,
+  );
+  return typeof hit?.name === 'string' && hit.name.length > 0 ? hit.name : null;
+}
+
+/** Fallback percentages from wmux's probe-cache mirror (opt-in feature). */
+function lookupCachedUsage(home, want) {
+  const parsed = readJsonFile(join(home, '.wmux', 'usage', 'usage-cache.json'));
+  const entries = Array.isArray(parsed?.entries) ? parsed.entries : [];
+  const entry = entries.find(
+    (e) => e && typeof e.configDir === 'string' && normDir(e.configDir) === want,
+  );
+  const snap = entry?.snapshot;
+  if (!snap || typeof snap.sessionPct !== 'number' || typeof snap.weeklyPct !== 'number') return null;
+  return {
+    fiveHourPct: snap.sessionPct,
+    sevenDayPct: snap.weeklyPct,
+    fetchedAtMs: typeof entry.fetchedAtMs === 'number' ? entry.fetchedAtMs : 0,
+  };
 }
 
 function main() {
@@ -65,35 +97,37 @@ function main() {
   const want = normDir(configDir);
   const isDefaultDir = want === normDir(join(home, '.claude'));
 
-  const entries = readCache(home);
-  const entry = entries.find(
-    (e) => e && typeof e.configDir === 'string' && normDir(e.configDir) === want,
-  ) ?? null;
-
   const parts = [];
 
   const model = input?.model?.display_name;
   if (typeof model === 'string' && model.length > 0) parts.push(model);
 
   // Account label: registered name > 'default' for ~/.claude > dir basename.
-  const name = typeof entry?.name === 'string' && entry.name.length > 0
-    ? entry.name
-    : (isDefaultDir ? 'default' : basename(configDir));
+  const name = lookupAccountName(home, want) ?? (isDefaultDir ? 'default' : basename(configDir));
   parts.push(name);
 
-  const snap = entry?.snapshot;
-  if (snap && typeof snap.sessionPct === 'number' && typeof snap.weeklyPct === 'number') {
-    parts.push(`5h ${snap.sessionPct}%`);
-    parts.push(`7d ${snap.weeklyPct}%`);
-    // Probes are hook-gated with a 5-min cooldown; anything hours old means the
-    // usage feature is off or this account has not had a turn in a long while.
-    const age = Date.now() - (typeof entry.fetchedAtMs === 'number' ? entry.fetchedAtMs : 0);
-    if (age > 2 * 60 * 60 * 1000) parts.push('stale');
-  } else {
-    // No cache row yet: the wmux usage toggle is off, wmux has not run, or this
-    // account has never been probed. Show a dash rather than nothing so the
-    // user can tell the statusline itself is alive.
-    parts.push('usage —');
+  // Percentages: stdin rate_limits (free, live, per-session) first. Each
+  // window may be independently absent per the statusline contract.
+  const rl = input?.rate_limits;
+  const fiveHour = rl?.five_hour?.used_percentage;
+  const sevenDay = rl?.seven_day?.used_percentage;
+  if (typeof fiveHour === 'number') parts.push(`5h ${Math.round(fiveHour)}%`);
+  if (typeof sevenDay === 'number') parts.push(`7d ${Math.round(sevenDay)}%`);
+
+  if (typeof fiveHour !== 'number' && typeof sevenDay !== 'number') {
+    // Pre-first-turn / older Claude Code: fall back to the wmux probe cache.
+    const cached = lookupCachedUsage(home, want);
+    if (cached) {
+      parts.push(`5h ${cached.fiveHourPct}%`);
+      parts.push(`7d ${cached.sevenDayPct}%`);
+      const age = Date.now() - cached.fetchedAtMs;
+      if (age > 2 * 60 * 60 * 1000) parts.push('stale');
+    } else {
+      // Neither source available: rate_limits hasn't arrived yet (or non-
+      // subscriber) and the opt-in probe cache is off/empty. Show a dash so
+      // the user can tell the statusline itself is alive.
+      parts.push('usage —');
+    }
   }
 
   process.stdout.write(parts.join(' · '));
