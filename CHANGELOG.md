@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.31.0] — 2026-07-22
+
 ### Added
 
 - **Per-account Claude usage in Claude Code's statusline (`wmux setup-statusline`).** The global StatusBar widget shows one account's 5h/7d usage, but panes in a single workspace can run different Claude accounts — each pane needs its *own* number. A new `wmux setup-statusline` command sets Claude Code's `statusLine` to a wmux script that renders `model · account · 5h N% · 7d N%` on the line under the input box; because the statusline process inherits `CLAUDE_CONFIG_DIR` from its own claude process, every pane shows the usage of the account it actually runs on — including accounts selected by hand with `$env:CLAUDE_CONFIG_DIR`. The numbers are zero-cost: Claude Code ≥2.1 pipes the session's live `rate_limits` (5h/7d used percentage) to the statusline on stdin, so there is no extra API traffic and no token spend — the script reads stdin plus wmux's `accounts.json` (for the account name) and nothing else. Installs into the default `~/.claude` profile and every registered claude account; a user's own custom statusLine is never overwritten. `--remove` / `--status` supported.
