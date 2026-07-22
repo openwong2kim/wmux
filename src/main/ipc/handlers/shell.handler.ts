@@ -4,6 +4,7 @@ import { ShellDetector } from '../../../shared/ShellDetector';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
 import { isAutostartEnabled, setAutostartEnabled } from '../../autostart';
+import { SystemStatsSampler } from '../../system/SystemStatsSampler';
 
 // Hard cap on the path string the renderer can send. Long enough for
 // Windows long-path (\\?\ prefix + ~32k) callers but small enough that a
@@ -28,6 +29,7 @@ const BLOCKED_EXTENSIONS = new Set<string>([
 
 export function registerShellHandlers(): () => void {
   const detector = new ShellDetector();
+  const systemStats = new SystemStatsSampler();
 
   ipcMain.removeHandler(IPC.SHELL_LIST);
   ipcMain.handle(IPC.SHELL_LIST, wrapHandler(IPC.SHELL_LIST, (_event: Electron.IpcMainInvokeEvent) => {
@@ -109,6 +111,15 @@ export function registerShellHandlers(): () => void {
     return totalKB * 1024; // bytes
   }));
 
+  ipcMain.removeHandler(IPC.SYSTEM_STATS);
+  ipcMain.handle(IPC.SYSTEM_STATS, wrapHandler(IPC.SYSTEM_STATS, async () => {
+    let appMemoryBytes = 0;
+    for (const metric of app.getAppMetrics()) {
+      appMemoryBytes += (metric.memory?.workingSetSize ?? 0) * 1024;
+    }
+    return systemStats.sample(appMemoryBytes);
+  }));
+
   // Windows "start on login" toggle (issue #460). The per-user Run registry
   // key is the source of truth; GET reads it, SET writes it and echoes back
   // the resulting state so an optimistic renderer can reconcile. Both are
@@ -140,6 +151,7 @@ export function registerShellHandlers(): () => void {
     ipcMain.removeHandler(IPC.SHELL_OPEN_EXTERNAL);
     ipcMain.removeHandler(IPC.SHELL_OPEN_PATH);
     ipcMain.removeHandler(IPC.APP_MEMORY);
+    ipcMain.removeHandler(IPC.SYSTEM_STATS);
     ipcMain.removeHandler(IPC.AUTOSTART_GET);
     ipcMain.removeHandler(IPC.AUTOSTART_SET);
   };

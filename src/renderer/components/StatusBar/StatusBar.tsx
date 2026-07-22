@@ -4,6 +4,7 @@ import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import type { Notification, Workspace } from '../../../shared/types';
 import { StatusClockUsage, StatusClockTime } from './StatusClock';
+import SystemVitals from './SystemVitals';
 import { selectActiveWorkspaceSummary } from '../../stores/selectors/workspaceProjections';
 import { tokenAttrs } from '../../themes';
 import { IconGear } from '../icons';
@@ -220,6 +221,7 @@ export default function StatusBar() {
         <PluginStatusBarWidgets alignment="right" />
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
         {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
+        <SystemVitals />
         <StatusClockTime />
         <button
           onClick={toggleSettingsPanel}

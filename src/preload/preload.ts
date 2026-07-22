@@ -7,6 +7,7 @@ import type {
 } from '../shared/firstRun';
 import { isFileDrag } from '../shared/dragDrop';
 import type { NotificationCategory } from '../shared/types';
+import type { SystemStatsSnapshot } from '../shared/systemStats';
 import type { ResumeBinding } from '../shared/agentResume';
 import type {
   RemoteInboxItem,
@@ -182,6 +183,7 @@ const electronAPI = {
      * V8 JS heap (~10MB) and under-reported real usage by ~10x.
      */
     getMemoryUsage: () => ipcRenderer.invoke(IPC.APP_MEMORY) as Promise<number>,
+    getStats: () => ipcRenderer.invoke(IPC.SYSTEM_STATS) as Promise<SystemStatsSnapshot>,
   },
   settings: {
     setToastEnabled: (enabled: boolean) => ipcRenderer.send(IPC.TOAST_ENABLED, enabled),
