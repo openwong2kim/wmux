@@ -1,8 +1,7 @@
 #!/usr/bin/env node
 import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
-import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
 import { z } from 'zod';
-import { clearClientIdentity, sendRpc, setClientIdentity, setCommanderRole } from './wmux-client';
+import { sendRpc, setClientIdentity, setCommanderRole } from './wmux-client';
 import { COMMANDER_MODE_ARG, COMMANDER_TOOL_SURFACE } from '../shared/commanderSurface';
 import type { RpcMethod } from '../shared/rpc';
 import { claimPinnedRoute, getPinnedRoute } from './paneResolver';
@@ -31,6 +30,32 @@ function getVersion(): string {
   }
 }
 
+/**
+ * Everything a server instance needs that used to come from process globals.
+ *
+ * Single-child mode (src/mcp/entry.ts) fills this straight from its own
+ * process env/argv/pid — behavior identical to the pre-factory module. The
+ * broker (src/mcp/broker.ts) fills it from the shim's connect handshake, so
+ * each hosted connection resolves identity as if it WERE the shim process:
+ * the PID walk starts at the shim's pid (the shim sits in the agent's own
+ * process tree, exactly where the old child sat).
+ */
+export interface WmuxServerCtx {
+  /** WMUX_WORKSPACE_ID hint from the pane env (stale-able, weak). */
+  envWorkspaceHint: string;
+  /** WMUX_PTY_ID hint from the pane env (immutable but spoofable, weak). */
+  envPtyHint: string;
+  /** WMUX_COMMANDER_TOKEN (BYOB P4) — undefined for ordinary panes. */
+  commanderToken: string | undefined;
+  /** --commander surface filter flag (from argv / shim handshake). */
+  commanderMode: boolean;
+  /** The pid identity walks start from (self pid, or the shim's pid). */
+  callerPid: number;
+  /** That pid's parent when already known (process.ppid); null → resolve lazily. */
+  callerPpid: number | null;
+}
+
+export function createWmuxServer(ctx: WmuxServerCtx): McpServer {
 // Workspace identity.
 //
 // The PTY env var (WMUX_WORKSPACE_ID) is treated as a HINT only — it is
@@ -41,7 +66,7 @@ function getVersion(): string {
 // until the MCP server is restarted. We instead resolve the CURRENT owner
 // via a2a.resolve.identity (which now maps our PID → live workspace) and
 // fall back to the env hint only when the live map is unavailable.
-const ENV_WORKSPACE_HINT = process.env.WMUX_WORKSPACE_ID || '';
+const ENV_WORKSPACE_HINT = ctx.envWorkspaceHint;
 // Our OWN pane anchor from the spawn env (WMUX_PTY_ID). UNLIKE the workspace
 // hint, the ptyId is immutable for the pane's lifetime — it is never re-minted
 // by a daemon respawn / session restore — so it is a safe WEAK fallback for
@@ -51,7 +76,7 @@ const ENV_WORKSPACE_HINT = process.env.WMUX_WORKSPACE_ID || '';
 // process could forge it; see getTaskSenderPtyId for where this weak value is
 // (and is NOT) trusted. Empty when the agent launcher didn't propagate the env
 // to this MCP child — the case the diagnostic logging below exists to surface.
-const ENV_PTY_HINT = process.env.WMUX_PTY_ID || '';
+const ENV_PTY_HINT = ctx.envPtyHint;
 let MY_WORKSPACE_ID = '';
 // Our OWN pane anchor (ptyId), captured alongside MY_WORKSPACE_ID on a PID-map
 // hit — set by EITHER our client-side walk (unforgeable: our own process tree
@@ -139,14 +164,14 @@ const server = new McpServer({
 // contain pane_close / surface_close / browser_* / company_* — unregistered
 // tools cannot be called by ANY brain runtime (SDK, ACP, gateway). Ordinary
 // pane agents (no arg) keep the full surface, unchanged.
-const COMMANDER_MODE = process.argv.includes(COMMANDER_MODE_ARG);
+const COMMANDER_MODE = ctx.commanderMode;
 if (COMMANDER_MODE) {
   // Layer 2 pairing: every outbound RPC from a commander-mode child carries
   // the per-spawn token as a role CLAIM — the router validates it and fails
   // the request closed when it is missing/stale, so a commander child whose
   // token env was lost degrades to "no fleet hands at all", never to an
   // ordinary external caller with the wider surface.
-  setCommanderRole(process.env.WMUX_COMMANDER_TOKEN ?? '');
+  setCommanderRole(ctx.commanderToken ?? '');
   const surface = new Set(COMMANDER_TOOL_SURFACE);
   const registerTool = server.tool.bind(server);
   // Single gate for every registration site (index.ts + channels +
@@ -233,7 +258,7 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     // hints — leaving the client-side walk as its only, blocked, path. Older
     // main builds ignore the field and omit `resolved`, so we fall through to
     // the client-side walk unchanged (graceful degradation).
-    const result = await sendRpc('a2a.resolve.identity' as RpcMethod, { callerPid: process.pid });
+    const result = await sendRpc('a2a.resolve.identity' as RpcMethod, { callerPid: ctx.callerPid });
     mappings = (result as { mappings: Record<string, string> }).mappings;
     entries = (result as { entries?: Array<{ pid: string; ptyId: string; workspaceId: string }> }).entries;
     resolved = (result as { resolved?: { workspaceId?: unknown; ptyId?: unknown } | null }).resolved;
@@ -287,10 +312,13 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
     }
   }
 
-  // Walk process tree upward: MCP server → Claude Code → shell(PTY)
-  let currentPid = process.ppid;
+  // Walk process tree upward: MCP server (or its shim) → Claude Code →
+  // shell(PTY). The walk queries the OS process table by pid, so it works
+  // identically whether we run inside the agent's tree (single child) or in
+  // the broker (which starts from the shim's pid asserted at connect).
+  let currentPid = ctx.callerPpid ?? (await getParentPid(ctx.callerPid)) ?? -1;
   let depth = 0;
-  for (; depth < 10; depth++) {
+  for (; depth < 10 && currentPid > 1; depth++) {
     const match = knownPids.get(currentPid);
     if (match) {
       // Capture our OWN pane anchor on EVERY verified hit — including when a
@@ -330,7 +358,7 @@ async function lookupPidMapWorkspace(): Promise<PidMapLookup> {
  * site in resolveWorkspaceId for the full rationale.
  */
 async function resolveCommanderWorkspaceId(): Promise<string> {
-  const token = process.env.WMUX_COMMANDER_TOKEN;
+  const token = ctx.commanderToken;
   if (!token) return '';
   try {
     const result = await sendRpc('deck.resolveCommanderWorkspace' as RpcMethod, { token });
@@ -518,7 +546,7 @@ async function resolveTerminalRouteBound(explicitPtyId?: string) {
   // subprocess has no pane ancestry, so the ordinary rules below would
   // confine it to its claimed workspace. Falls through on any failure.
   const commanderRoute = await resolveCommanderRoute({
-    token: process.env.WMUX_COMMANDER_TOKEN,
+    token: ctx.commanderToken,
     explicitPtyId,
     sendRpc: (method, params) => sendRpc(method as RpcMethod, params),
   });
@@ -764,7 +792,7 @@ server.tool(
     // Only the commander brain has WMUX_COMMANDER_TOKEN; a non-commander caller
     // sends an undefined token and the RPC fail-closes ("not a live commander").
     const params: Record<string, unknown> = {
-      token: process.env.WMUX_COMMANDER_TOKEN,
+      token: ctx.commanderToken,
       question,
     };
     if (options && options.length > 0) params.options = options;
@@ -1278,8 +1306,6 @@ registerPaneLifecycleTools(server, {
   resolveCallerWorkspaceId: resolveScopedReadWorkspaceId,
 });
 
-// === Start server ===
-
 // Hook the MCP initialize handshake so wmux substrate learns the declared
 // plugin identity (clientInfo.name + version). Fire `mcp.identify` once so
 // the trust DB picks up first-contact metadata — record-only, no
@@ -1308,32 +1334,11 @@ function wireClientIdentityHook(): void {
   };
 }
 
-async function main(): Promise<void> {
-  const transport = new StdioServerTransport();
-  wireClientIdentityHook();
-  await server.connect(transport);
+wireClientIdentityHook();
 
-  // Clean up Playwright connection when transport closes. Also drop the
-  // declared plugin identity so any trailing RPC traffic falls back to
-  // the substrate's legacy audit path instead of stamping a stale name —
-  // a reconnect must re-run the MCP initialize handshake to re-establish
-  // identity (see wireClientIdentityHook above).
-  transport.onclose = async () => {
-    console.log('[wmux-mcp] Transport closed, disconnecting Playwright');
-    clearClientIdentity();
-    await PlaywrightEngine.getInstance().disconnect();
-  };
-
-  // Graceful shutdown
-  const shutdown = async () => {
-    await PlaywrightEngine.getInstance().disconnect();
-    process.exit(0);
-  };
-  process.on('SIGTERM', shutdown);
-  process.on('SIGINT', shutdown);
+return server;
 }
 
-main().catch((err) => {
-  console.error('wmux MCP server failed to start:', err);
-  process.exit(1);
-});
+// The stdio entry (single child per agent) lives in src/mcp/entry.ts — this
+// module deliberately has NO import-time side effects so the broker can
+// import createWmuxServer without booting a stdio transport.

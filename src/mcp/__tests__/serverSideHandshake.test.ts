@@ -18,8 +18,21 @@ describe('MCP server-side identity handshake (source-level invariant)', () => {
   // line) can't satisfy the assertions — only real code counts.
   const src = rawSrc.replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
 
-  it('sends callerPid:process.pid on the a2a.resolve.identity RPC', () => {
-    expect(src).toMatch(/a2a\.resolve\.identity[\s\S]{0,120}callerPid:\s*process\.pid/);
+  it('sends the caller pid on the a2a.resolve.identity RPC', () => {
+    // Since the createWmuxServer factory split the pid rides ctx.callerPid.
+    // Both ctx builders must assert their OWN pid: the single-child entry
+    // sends process.pid directly; the shim asserts its pid in the broker
+    // handshake (the shim sits in the agent's tree where the old child sat,
+    // so the walk main runs is over the same ancestry).
+    expect(src).toMatch(/a2a\.resolve\.identity[\s\S]{0,120}callerPid:\s*ctx\.callerPid/);
+    const entrySrc = fs
+      .readFileSync(path.join(__dirname, '..', 'entry.ts'), 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(entrySrc).toMatch(/callerPid:\s*process\.pid/);
+    const shimSrc = fs
+      .readFileSync(path.join(__dirname, '..', 'shim.ts'), 'utf-8')
+      .replace(/\/\*[\s\S]*?\*\//g, '').replace(/\/\/.*$/gm, '');
+    expect(shimSrc).toMatch(/callerPid:\s*process\.pid/);
   });
 
   it('adopts the server-resolved ptyId as the VERIFIED own-pane anchor (channel sender gate)', () => {

@@ -33,13 +33,27 @@ function stripComments(s: string): string {
 const mcpIndexSrc = stripComments(
   fs.readFileSync(path.join(__dirname, '..', 'index.ts'), 'utf-8'),
 );
+const mcpEntrySrc = stripComments(
+  fs.readFileSync(path.join(__dirname, '..', 'entry.ts'), 'utf-8'),
+);
+const mcpShimSrc = stripComments(
+  fs.readFileSync(path.join(__dirname, '..', 'shim.ts'), 'utf-8'),
+);
 const ptyManagerSrc = stripComments(
   fs.readFileSync(path.join(__dirname, '..', '..', 'main', 'pty', 'PTYManager.ts'), 'utf-8'),
 );
 
 describe('WI-002 senderPtyId provenance (source-level invariant)', () => {
   it('ENV_PTY_HINT is sourced from the WMUX_PTY_ID spawn env', () => {
-    expect(mcpIndexSrc).toMatch(/const\s+ENV_PTY_HINT\s*=\s*process\.env\.WMUX_PTY_ID\s*\|\|\s*''/);
+    // Since the createWmuxServer factory split, the hint arrives via ctx:
+    // index.ts reads ctx.envPtyHint, and BOTH entries that build a ctx —
+    // the single-child stdio entry and the broker shim's handshake — must
+    // source that field from the WMUX_PTY_ID spawn env. The invariant is
+    // the same (weak hint comes only from the spawn env); the plumbing has
+    // one extra hop.
+    expect(mcpIndexSrc).toMatch(/const\s+ENV_PTY_HINT\s*=\s*ctx\.envPtyHint/);
+    expect(mcpEntrySrc).toMatch(/envPtyHint:\s*process\.env\.WMUX_PTY_ID\s*\|\|\s*''/);
+    expect(mcpShimSrc).toMatch(/envPtyHint:\s*process\.env\.WMUX_PTY_ID\s*\|\|\s*''/);
   });
 
   it('getTaskSenderPtyId prefers the VERIFIED ptyId, then falls back to the weak env hint', () => {

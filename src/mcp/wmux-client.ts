@@ -3,6 +3,7 @@ import * as fs from 'fs';
 import * as crypto from 'crypto';
 import type { RpcMethod, RpcResponse } from '../shared/rpc';
 import { getPipeName, getAuthTokenPath, getTcpPortPath } from '../shared/constants';
+import { getConnectionScope } from './connectionScope';
 
 const TIMEOUT_MS = 10000;
 const RETRY_COUNT = 3;
@@ -16,9 +17,21 @@ const RETRY_DELAY_MS = 1000;
 let CLIENT_NAME: string | undefined;
 let CLIENT_VERSION: string | undefined;
 
+// Broker mode (connectionScope.ts): when a connection scope is active, the
+// identity setters/getters below read and write the PER-CONNECTION slots
+// instead of these module globals, so N hosted server instances cannot
+// stamp each other's plugin identity onto outbound RPC envelopes. The
+// single-child entry never establishes a scope and keeps the globals.
+
 export function setClientIdentity(name?: string, version?: string): void {
   const trimmedName = typeof name === 'string' ? name.trim() : '';
   const trimmedVersion = typeof version === 'string' ? version.trim() : '';
+  const scope = getConnectionScope();
+  if (scope) {
+    scope.rpcIdentity.clientName = trimmedName.length > 0 ? trimmedName : undefined;
+    scope.rpcIdentity.clientVersion = trimmedVersion.length > 0 ? trimmedVersion : undefined;
+    return;
+  }
   CLIENT_NAME = trimmedName.length > 0 ? trimmedName : undefined;
   CLIENT_VERSION = trimmedVersion.length > 0 ? trimmedVersion : undefined;
 }
@@ -31,11 +44,21 @@ export function setClientIdentity(name?: string, version?: string): void {
 // has already disconnected. A reconnect must re-run the initialize
 // handshake to re-establish identity, which is the intended contract.
 export function clearClientIdentity(): void {
+  const scope = getConnectionScope();
+  if (scope) {
+    scope.rpcIdentity.clientName = undefined;
+    scope.rpcIdentity.clientVersion = undefined;
+    return;
+  }
   CLIENT_NAME = undefined;
   CLIENT_VERSION = undefined;
 }
 
 export function getClientIdentity(): { name?: string; version?: string } {
+  const scope = getConnectionScope();
+  if (scope) {
+    return { name: scope.rpcIdentity.clientName, version: scope.rpcIdentity.clientVersion };
+  }
   return { name: CLIENT_NAME, version: CLIENT_VERSION };
 }
 
@@ -48,7 +71,23 @@ export function getClientIdentity(): { name?: string; version?: string } {
 let COMMANDER_TOKEN: string | undefined;
 
 export function setCommanderRole(token: string): void {
+  const scope = getConnectionScope();
+  if (scope) {
+    scope.rpcIdentity.commanderToken = token;
+    return;
+  }
   COMMANDER_TOKEN = token;
+}
+
+/** Effective identity for the CURRENT execution context (scope-aware). */
+function currentEnvelopeIdentity(): {
+  clientName?: string;
+  clientVersion?: string;
+  commanderToken?: string;
+} {
+  const scope = getConnectionScope();
+  if (scope) return scope.rpcIdentity;
+  return { clientName: CLIENT_NAME, clientVersion: CLIENT_VERSION, commanderToken: COMMANDER_TOKEN };
 }
 
 function readAuthToken(): string | undefined {
@@ -79,9 +118,10 @@ function attemptRpc(
   return new Promise((resolve, reject) => {
     const id = crypto.randomUUID();
     const envelope: Record<string, unknown> = { id, method, params, token };
-    if (CLIENT_NAME) envelope.clientName = CLIENT_NAME;
-    if (CLIENT_VERSION) envelope.clientVersion = CLIENT_VERSION;
-    if (COMMANDER_TOKEN !== undefined) envelope.commanderToken = COMMANDER_TOKEN;
+    const identity = currentEnvelopeIdentity();
+    if (identity.clientName) envelope.clientName = identity.clientName;
+    if (identity.clientVersion) envelope.clientVersion = identity.clientVersion;
+    if (identity.commanderToken !== undefined) envelope.commanderToken = identity.commanderToken;
     const request = JSON.stringify(envelope) + '\n';
 
     const socket = typeof target === 'string' ? net.connect(target) : net.connect(target);

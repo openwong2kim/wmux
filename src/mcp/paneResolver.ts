@@ -25,6 +25,7 @@
  */
 
 import type { RpcMethod } from '../shared/rpc';
+import { getConnectionScope } from './connectionScope';
 
 export interface PinnedRoute {
   ptyId: string;
@@ -39,9 +40,37 @@ export interface ClaimDeps {
 let pinned: PinnedRoute | null = null;
 let claimInFlight: Promise<PinnedRoute> | null = null;
 
-/** The route claimed earlier in this process, or null before the first claim. */
+// Broker mode: the pin is per CONNECTION, not per process — two external
+// callers hosted by one broker must not share a claimed workspace. The
+// scope carries the slots; single-child mode falls back to module state.
+interface PinSlots {
+  get(): PinnedRoute | null;
+  set(v: PinnedRoute | null): void;
+  getInFlight(): Promise<PinnedRoute> | null;
+  setInFlight(v: Promise<PinnedRoute> | null): void;
+}
+
+function slots(): PinSlots {
+  const scope = getConnectionScope();
+  if (scope) {
+    return {
+      get: () => scope.pinnedRoute,
+      set: (v) => { scope.pinnedRoute = v; },
+      getInFlight: () => scope.pinnedClaimInFlight,
+      setInFlight: (v) => { scope.pinnedClaimInFlight = v; },
+    };
+  }
+  return {
+    get: () => pinned,
+    set: (v) => { pinned = v; },
+    getInFlight: () => claimInFlight,
+    setInFlight: (v) => { claimInFlight = v; },
+  };
+}
+
+/** The route claimed earlier in this process/connection, or null before the first claim. */
 export function getPinnedRoute(): PinnedRoute | null {
-  return pinned;
+  return slots().get();
 }
 
 /**
@@ -53,10 +82,13 @@ export function getPinnedRoute(): PinnedRoute | null {
  * NOT pin, so a later call retries instead of being permanently disabled.
  */
 export async function claimPinnedRoute(deps: ClaimDeps): Promise<PinnedRoute> {
-  if (pinned) return pinned;
-  if (claimInFlight) return claimInFlight;
+  const s = slots();
+  const existing = s.get();
+  if (existing) return existing;
+  const inFlight = s.getInFlight();
+  if (inFlight) return inFlight;
 
-  claimInFlight = (async () => {
+  const claim = (async () => {
     try {
       const result = await deps.sendRpc('mcp.claimWorkspace', { name: 'MCP' });
       const ptyId = (result as { ptyId?: string } | null)?.ptyId;
@@ -69,19 +101,21 @@ export async function claimPinnedRoute(deps: ClaimDeps): Promise<PinnedRoute> {
         // no trustworthy workspaceId to assert against — fail closed instead.
         throw new Error('mcp.claimWorkspace returned no workspaceId');
       }
-      pinned = { ptyId, workspaceId };
-      return pinned;
+      const route = { ptyId, workspaceId };
+      s.set(route);
+      return route;
     } catch (err) {
       const message = err instanceof Error ? err.message : String(err);
       console.error('[mcp] claimWorkspace failed:', message);
       throw new Error(`Unable to claim a dedicated MCP terminal workspace: ${message}`);
     }
   })();
+  s.setInFlight(claim);
 
   try {
-    return await claimInFlight;
+    return await claim;
   } finally {
-    claimInFlight = null;
+    s.setInFlight(null);
   }
 }
 

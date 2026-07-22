@@ -22,19 +22,56 @@ const path = require('path');
  */
 const outdir = 'dist/mcp-bundle';
 const outfile = path.join(outdir, 'index.js');
+const brokerFile = path.join(outdir, 'broker.js');
+const shimFile = path.join(outdir, 'shim.js');
 const chunkFile = path.join(outdir, 'playwright-chunk.js');
 const chunkEntry = path.join(outdir, '.pw-chunk-entry.js');
 
 async function main() {
   // 1. Main bundle — playwright-core external (lives in the chunk).
+  //    Entry is entry.ts (stdio single-child main); index.ts is the
+  //    createWmuxServer factory with no import-time side effects. Output
+  //    stays index.js so existing agent-config registrations keep working.
   await esbuild.build({
-    entryPoints: ['dist/mcp/mcp/index.js'],
+    entryPoints: ['dist/mcp/mcp/entry.js'],
     bundle: true,
     platform: 'node',
     outfile,
     external: ['electron', 'chromium-bidi', 'playwright-core'],
     logLevel: 'error',
   });
+
+  // 1b. Broker bundle (Option A) — hosts N server instances over the broker
+  //     pipe. Same externals as the main bundle so it inherits the lazy
+  //     playwright chunk: the broker idles without playwright loaded and
+  //     pays it ONCE (process-wide) on the first browser_* call.
+  await esbuild.build({
+    entryPoints: ['dist/mcp/mcp/broker.js'],
+    bundle: true,
+    platform: 'node',
+    outfile: brokerFile,
+    external: ['electron', 'chromium-bidi', 'playwright-core'],
+    logLevel: 'error',
+  });
+
+  // 1c. Shim bundle — the per-agent stdio⇄pipe pump. MUST stay ~bare-node:
+  //     no SDK, no zod, no playwright. The size assert below is the tripwire
+  //     against someone accidentally importing the heavy world into it.
+  await esbuild.build({
+    entryPoints: ['dist/mcp/mcp/shim.js'],
+    bundle: true,
+    platform: 'node',
+    outfile: shimFile,
+    external: ['electron'],
+    logLevel: 'error',
+  });
+  const shimBytes = fs.statSync(shimFile).size;
+  if (shimBytes > 256 * 1024) {
+    throw new Error(
+      `mcp shim bundle is ${Math.round(shimBytes / 1024)} KB — it must stay ` +
+      'tiny (something heavy leaked into src/mcp/shim.ts imports)'
+    );
+  }
 
   // 2. Lazy chunk — playwright-core bundled alone behind a re-export shim.
   fs.mkdirSync(outdir, { recursive: true });

@@ -61,6 +61,7 @@ import { resolveEnforcementMode } from './mcp/enforcementMode';
 import { ClaudeWorker } from './a2a/ClaudeWorker';
 import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
+import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { raceDaemonShutdown } from './daemonShutdownRace';
@@ -327,6 +328,11 @@ markBoot('pipe-server-ctor-done');
 registerPluginSchemePrivileges();
 let pluginHostLoader: PluginHostLoader | null = null;
 const mcpRegistrar = new McpRegistrar();
+// Shared MCP broker (Option A, WMUX_MCP_BROKER=1; default OFF). Started on
+// ready BEFORE mcpRegistrar.register so the broker pipe is (or is about to
+// be) listening when the first shim spawns — the shim retries connect with
+// backoff, so start order is a latency nicety, not a correctness gate.
+const mcpBrokerSupervisor = new BrokerSupervisor();
 const webviewCdpManager = new WebviewCdpManager(cdpPort);
 
 // Daemon client — initialized on app ready, used if daemon is available
@@ -1424,6 +1430,7 @@ app.on('ready', async () => {
   // Write auth token BEFORE starting pipe server — prevents race where
   // MCP client reads old token while new pipe is already listening
   const authToken = pipeServer.getAuthToken();
+  if (isMcpBrokerEnabled()) mcpBrokerSupervisor.start();
   mcpRegistrar.register(authToken);
   pipeServer.start();
   autoUpdater.start();
@@ -1460,6 +1467,10 @@ app.on('before-quit', async (e) => {
   if (isQuitting) return; // second pass — let quit proceed
   e.preventDefault();
   isQuitting = true;
+
+  // Broker dies with the app: shims exit and hosts mark the server down,
+  // same visible behavior as the old per-agent child dying with wmux.
+  mcpBrokerSupervisor.stop();
 
   // macOS 로그아웃/재시작/종료 대응(P4): win32의 'session-end' flushSync와 동등한
   // 동기 세션 flush. macOS는 WM_ENDSESSION 대신 Apple Event로 quit을 보내고

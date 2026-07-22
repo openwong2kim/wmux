@@ -440,6 +440,21 @@ export function getPipeName(): string {
   return `${home}/.wmux${dataSuffix()}.sock`;
 }
 
+// Shared MCP broker pipe (plans/mcp-broker-design-2026-07-16.md Option A).
+// A SECOND named pipe, separate from the main RPC pipe above: the broker
+// speaks line-framed MCP JSON-RPC to shims, not the wmux RPC envelope, and
+// keeping the protocols on separate pipes means neither server needs to
+// sniff frames. Same per-user + instance-suffix keying as getPipeName so a
+// dev-suffixed app's shims can never join the production broker.
+export function getMcpBrokerPipeName(): string {
+  if (process.platform === 'win32') {
+    const username = require('os').userInfo().username || 'default';
+    return `\\\\.\\pipe\\wmux-mcpb${dataSuffix()}-${username}`;
+  }
+  const home = require('os').homedir() || '/tmp';
+  return `${home}/.wmux-mcpb${dataSuffix()}.sock`;
+}
+
 // Environment variable names injected into PTY sessions
 export const ENV_KEYS = {
   WORKSPACE_ID: 'WMUX_WORKSPACE_ID',
