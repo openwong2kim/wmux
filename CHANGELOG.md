@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Changed
+
+- **Install instructions now lead with the package manager.** The README's Windows install section puts `winget install openwong2kim.wmux` front and center with a clear note that it avoids the SmartScreen warning — the direct Setup.exe download is demoted to a secondary "offline install" path with an explicit note about why the warning appears (the installer isn't Authenticode-signed yet).
+
 ## [3.31.0] — 2026-07-22
 
 ### Added
