@@ -121,10 +121,14 @@ export interface GlyphRepaintOptions {
 export const ACTIVITY_BYTES_DEFAULT = 256;
 export const BURST_QUIET_MS_DEFAULT = 300;
 export const FOCUS_THROTTLE_MS_DEFAULT = 1000;
-// Mid-stream flush cadence (issue #318). ~2 repaints/sec during heavy streaming
-// — frequent enough that corruption never lingers visibly, infrequent enough
-// that the extra full-range refreshes are not measurable GPU churn.
-export const BURST_STREAM_FLUSH_MS_DEFAULT = 500;
+// Mid-stream flush cadence (issue #318; halved to ~1 repaint/sec in the
+// 2026-07 perf pass, TASK-7). Each flush is a FULL-range terminal.refresh
+// that re-rasters every row on the GPU; at 4 visible streaming panes the old
+// 500 ms cadence meant 8 full repaints/sec of pure repair overhead. 1000 ms
+// keeps the self-heal property (corruption still clears within a second —
+// the trailing settle flush also remains) at half the GPU cost. If glyph
+// corruption is ever seen lingering mid-stream, drop back toward 750.
+export const BURST_STREAM_FLUSH_MS_DEFAULT = 1000;
 
 export function createGlyphRepaintScheduler(
   options: GlyphRepaintOptions,

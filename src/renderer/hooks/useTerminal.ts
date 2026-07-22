@@ -250,7 +250,12 @@ let webglTokenSeq = 0;
 // release is cancelled and the live context reused. The HARD ceiling on
 // simultaneous contexts is enforced by webglContextPool (LRU eviction under
 // Chromium's ~16 cap); this timer is only the no-pressure cleanup.
-export const WEBGL_HIDDEN_DISPOSE_DELAY_MS = 10_000;
+// 2026-07 perf pass (TASK-8): 10s → 5s. 10s effectively pinned contexts on
+// hidden panes long enough that >12-pane fleets leaned on LRU eviction (the
+// expensive path) instead of this cheap timer. 5s still covers the common
+// quick switch-back; if rapid workspace cycling ever shows blank-pane thrash,
+// revert toward 7s.
+export const WEBGL_HIDDEN_DISPOSE_DELAY_MS = 5_000;
 
 // RCA A1 — reconnect-with-retry policy lives in its own module so it can be
 // unit-tested without xterm/zustand/electron. Bound to the live deps here.
