@@ -858,6 +858,28 @@ export function registerPTYHandlers(
         // mac만 안 됨"의 정체). 여기서 seed하면 전 플랫폼에서 즉시 복원된다.
         if (session.cwd) updateCwd(id, session.cwd);
 
+        // Set up data forwarding BEFORE attachSession, not after. attachSession
+        // makes the daemon replay the session's historical screen (the recovered
+        // RingBuffer) the instant the pipe connects — for an IDLE recovered pane
+        // (a shell sitting at its prompt) that replay is the ONLY paint it will
+        // get, because no new output is coming. Registering the handler after
+        // attach+connect (the old order) left a window where DaemonClient could
+        // read+emit that replay before a handler existed, dropping it — the pane
+        // then sat blank until a focus/reveal forced a resync. At boot with many
+        // recovered sessions the busy event loop made losing that race likely
+        // (dogfood: a recovered pane blank until clicked). Registering first
+        // closes the window; replace-semantics keep a repeat reconnect from
+        // stacking a duplicate. Routed through the per-id helper so a stale
+        // listener (from a prior create with the same id, or an earlier
+        // reconnect) is swapped, not duplicated.
+        const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
+          if (payload.sessionId !== id) return;
+          // P1-3: same decode-then-batch as the create path.
+          const text = decodeSessionData(id, payload.data);
+          if (text) dataBatcher.push(id, text);
+        };
+        setSessionDataListener(id, onSessionData);
+
         // Reconnect is an explicit fresh-attach intent — pass forceFresh
         // so a stale sessionPipes entry (left over from a prior daemon
         // pipe replacement) is torn down rather than silently reused.
@@ -894,17 +916,8 @@ export function registerPTYHandlers(
           writePidMap(session.pid, id);
         }
 
-        // Set up data forwarding. Routed through the per-id helper so a
-        // repeat reconnect (e.g. AppLayout's reconcile firing again on the
-        // late daemon.onConnected event) replaces the prior listener instead
-        // of stacking a duplicate that doubles every byte the PTY emits.
-        const onSessionData = (payload: { sessionId: string; data: Buffer }) => {
-          if (payload.sessionId !== id) return;
-          // P1-3: same decode-then-batch as the create path.
-          const text = decodeSessionData(id, payload.data);
-          if (text) dataBatcher.push(id, text);
-        };
-        setSessionDataListener(id, onSessionData);
+        // (session:data forwarding was registered BEFORE attachSession above so
+        // the historical RingBuffer replay can't be dropped — see that comment.)
 
         console.log(`[lifecycle] pty.reconnect id=${id} result=ok pid=${session.pid ?? '?'}`);
         return { success: true, id: session.id, shell: session.cmd };

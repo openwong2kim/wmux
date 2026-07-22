@@ -41,3 +41,41 @@ describe('PTY_RECONNECT seeds cwd (source-level lock)', () => {
     expect(RECONNECT).toMatch(/if \(session\.cwd\) updateCwd\(id, session\.cwd\)/);
   });
 });
+
+/**
+ * Source-level regression lock (dogfood 2026-07-22, 30-session scaling branch):
+ *
+ * A recovered pane sat BLANK until it was clicked. Root cause: attachSession
+ * makes the daemon replay the session's historical RingBuffer (the only paint
+ * an idle recovered shell gets — no new output is coming), but the reconnect
+ * handler registered the session:data forwarder AFTER attach+connect. Under
+ * boot load (many sessions recovering, busy event loop) DaemonClient could
+ * read+emit that replay before a handler existed, dropping it; the pane then
+ * stayed blank until a focus/reveal forced a resync.
+ *
+ * Fix: register setSessionDataListener BEFORE daemon.attachSession so no replay
+ * byte can arrive without a handler. This lock pins that ordering — the handler
+ * is deeply coupled to daemonClient RPC (electron import), so like the cwd lock
+ * above we assert it at the source level.
+ */
+describe('PTY_RECONNECT registers session:data before attachSession (source-level lock)', () => {
+  const listenerIdx = RECONNECT.indexOf('setSessionDataListener(id, onSessionData)');
+  const attachIdx = RECONNECT.indexOf("daemon.attachSession', { id }");
+
+  it('registers the session:data handler in the reconnect path', () => {
+    expect(listenerIdx).toBeGreaterThan(-1);
+  });
+
+  it('calls attachSession in the reconnect path', () => {
+    expect(attachIdx).toBeGreaterThan(-1);
+  });
+
+  it('registers the handler BEFORE attachSession (closes the replay-drop window)', () => {
+    expect(listenerIdx).toBeLessThan(attachIdx);
+  });
+
+  it('does not re-register the handler a second time after attach (no duplicate)', () => {
+    const matches = RECONNECT.match(/setSessionDataListener\(id, onSessionData\)/g) ?? [];
+    expect(matches.length).toBe(1);
+  });
+});
