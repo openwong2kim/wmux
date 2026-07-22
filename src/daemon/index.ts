@@ -28,6 +28,7 @@ import { A2aTaskService, type CreateTaskInput } from './a2a/A2aTaskService';
 import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type Message } from '../shared/types';
 import { ProcessMonitor } from './ProcessMonitor';
+import { AgentProcessTracker } from './AgentProcessTracker';
 import { Watchdog } from './Watchdog';
 import { selectRecoverableSessions } from './recoverySelector';
 import { isShutdownKillExit, SHUTDOWN_KILL_RECLASSIFY_MS } from './shutdownKill';
@@ -1103,6 +1104,7 @@ function registerRpcHandlers(
   channelStateWriter: ChannelStateWriter,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
+  agentProcessTracker: AgentProcessTracker,
   startTime: number,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
   watchdog: Watchdog,
@@ -1211,6 +1213,7 @@ function registerRpcHandlers(
 
     // Stop process monitoring
     processMonitor.unwatch(p.id);
+    agentProcessTracker.disarm(p.id);
 
     // X8 belt: the session:destroyed event below also disarms, but a
     // destroy of an id the manager no longer holds (restart-failure edge)
@@ -1470,7 +1473,23 @@ function registerRpcHandlers(
           : undefined;
       const withPrompt =
         commandRunning === undefined ? withAgent : { ...withAgent, commandRunning };
-      return surfacedBinding ? { ...withPrompt, resumeBinding: surfacedBinding } : withPrompt;
+      if (!surfacedBinding) return withPrompt;
+      // Resume-chip edge trigger — process truth for the chip's busy gate,
+      // reported ONLY alongside a surfaced binding (the only consumer). Three
+      // states: true = the agent process is observed alive (chip hidden),
+      // false = it was observed and DIED (the alive→dead edge — chip may
+      // show), undefined = never attributed (renderer keeps its heuristic).
+      // Exec units are their own agent process: while the session lives the
+      // agent runs (its exit kills the session), so they are always `true`;
+      // 'suspended' tombstones hold no live PTY and stay undecided.
+      const agentProcessAlive = s.exec
+        ? (s.state === 'attached' || s.state === 'detached' ? true : undefined)
+        : agentProcessTracker.statusFor(s.id);
+      return {
+        ...withPrompt,
+        resumeBinding: surfacedBinding,
+        ...(agentProcessAlive !== undefined ? { agentProcessAlive } : {}),
+      };
     });
   });
 
@@ -1498,6 +1517,12 @@ function registerRpcHandlers(
     const p = params as unknown as DaemonSetResumeBindingParams;
     const managed = sessionManager.getSession(p.id);
     if (!managed || !p.resumeBinding || !p.resumeBinding.sessionId) return { ok: false };
+    // Resume-chip edge trigger: a hook reaching this RPC proves claude is
+    // running in the pane RIGHT NOW — attach the process watch (no-op while a
+    // live watch exists, so hook storms cost nothing). Runs before the
+    // staleness guards below on purpose: even a capture we discard as stale
+    // still proves the process is alive.
+    agentProcessTracker.arm(p.id, managed.meta.pid);
     const prev = managed.meta.resumeBinding;
     // codex P2: ignore a STALE capture — an older hook RPC (a delayed Stop /
     // SessionStart from a prior turn) reaching the daemon after a newer one must
@@ -2513,6 +2538,7 @@ function wireEvents(
   stateWriter: StateWriter,
   sessionPipes: Map<string, SessionPipe>,
   processMonitor: ProcessMonitor,
+  agentProcessTracker: AgentProcessTracker,
   sessionDataListeners: Map<string, { bridge: import('./DaemonPTYBridge').DaemonPTYBridge; listener: (data: Buffer) => void }>,
 ): void {
   // session:died → broadcast DaemonEvent + save state + cleanup.
@@ -2569,6 +2595,7 @@ function wireEvents(
     // Stop process monitoring
     try {
       processMonitor.unwatch(payload.id);
+      agentProcessTracker.disarm(payload.id);
     } catch (err) {
       log('warn', `session:died unwatch failed for ${payload.id}:`, err);
     }
@@ -2623,6 +2650,7 @@ function wireEvents(
     // removes). The watch closures also skip 'suspended' as defense in depth.
     try {
       processMonitor.unwatch(payload.id);
+      agentProcessTracker.disarm(payload.id);
     } catch (err) {
       log('warn', `session:interrupted unwatch failed for ${payload.id}:`, err);
     }
@@ -2768,6 +2796,11 @@ function wireEvents(
       // The agent is live again → this pane is no longer a "resume me" shell.
       recoveredAgentShellIds.delete(payload.sessionId);
       recoveredResumeBindings.delete(payload.sessionId);
+      // Resume-chip edge trigger: a live banner PROVES the agent is running
+      // right now — attach the process watch so the chip can hide on process
+      // truth and reappear exactly on the agent's exit edge. Covers codex,
+      // which has no hooks (the setResumeBinding arm never fires for it).
+      if (managed) agentProcessTracker.arm(payload.sessionId, managed.meta.pid);
     }
     const event: DaemonEvent = {
       type: 'agent.event',
@@ -3562,6 +3595,10 @@ async function main(): Promise<void> {
   });
   // app-weight P1-1: cadence from config (default 15 s; clamped 5–120 s).
   const processMonitor = new ProcessMonitor((config.daemon.livenessIntervalSec ?? 15) * 1000);
+  // Resume-chip edge trigger: watches the agent process (claude/codex) inside
+  // interactive panes so the chip can gate on process truth instead of the
+  // decaying activity heuristic. Rides processMonitor's existing batch.
+  const agentProcessTracker = new AgentProcessTracker(processMonitor);
 
   // LanLink PR-4 — the network surface. An ISOLATED net.Server (its OWN admission
   // counters, never the control pipe's = G1) bound to the configured NIC, with
@@ -3713,6 +3750,7 @@ async function main(): Promise<void> {
     channelStateWriter,
     sessionPipes,
     processMonitor,
+    agentProcessTracker,
     startTime,
     sessionDataListeners,
     watchdog,
@@ -3728,7 +3766,7 @@ async function main(): Promise<void> {
   );
 
   // 6. Wire events
-  wireEvents(sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, sessionDataListeners);
+  wireEvents(sessionManager, pipeServer, stateWriter, sessionPipes, processMonitor, agentProcessTracker, sessionDataListeners);
 
   // 6b-X8. Supervisor lifecycle hooks. `session:died` = the PTY exited on
   // its own → policy evaluation. `session:destroyed` = the USER closed the

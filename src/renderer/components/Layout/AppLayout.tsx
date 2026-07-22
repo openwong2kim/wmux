@@ -939,16 +939,20 @@ export default function AppLayout() {
         const resumeBindingSnapshot: Record<string, ResumeBinding> = {};
         // OSC 133 shell state per ptyId — the resume chip's authoritative gate.
         const commandRunningSnapshot: Record<string, boolean> = {};
+        // Process-truth agent liveness — the chip's edge-trigger gate.
+        const agentAliveSnapshot: Record<string, boolean> = {};
         for (const s of sessions) {
           if (s.supervision) snapshot[s.id] = s.supervision;
           if (s.resumeAgent) resumeSnapshot[s.id] = s.resumeAgent as AgentSlug;
           if (s.resumeBinding) resumeBindingSnapshot[s.id] = s.resumeBinding;
           if (s.commandRunning !== undefined) commandRunningSnapshot[s.id] = s.commandRunning;
+          if (s.agentProcessAlive !== undefined) agentAliveSnapshot[s.id] = s.agentProcessAlive;
         }
         useStore.getState().hydrateSupervision(snapshot);
         useStore.getState().hydrateResume(resumeSnapshot);
         useStore.getState().hydrateResumeBindings(resumeBindingSnapshot);
         useStore.getState().hydrateCommandRunning(commandRunningSnapshot);
+        useStore.getState().hydrateAgentAlive(agentAliveSnapshot);
         // 4d (channels): seed agent identity for panes the user has NOT
         // visited yet, so recovered agents show up as invite/mention
         // candidates right after boot instead of only after a visit.
@@ -1008,12 +1012,17 @@ export default function AppLayout() {
         // OSC 133 shell state rides the same poll — keeps the chip's authoritative
         // gate fresh (a foreground command that started/ended since the last tick).
         const cmdSnapshot: Record<string, boolean> = {};
+        // Agent process liveness rides along too — it is the edge (alive→dead)
+        // that lets the chip appear on panes without shell integration.
+        const agentAliveSnapshot: Record<string, boolean> = {};
         for (const s of sessions) {
           if (s.resumeBinding) snapshot[s.id] = s.resumeBinding;
           if (s.commandRunning !== undefined) cmdSnapshot[s.id] = s.commandRunning;
+          if (s.agentProcessAlive !== undefined) agentAliveSnapshot[s.id] = s.agentProcessAlive;
         }
         useStore.getState().hydrateResumeBindings(snapshot);
         useStore.getState().hydrateCommandRunning(cmdSnapshot);
+        useStore.getState().hydrateAgentAlive(agentAliveSnapshot);
       }).catch(() => { /* transient list failure — the next tick self-heals */ });
     };
     const id = window.setInterval(refreshBindings, 15_000);

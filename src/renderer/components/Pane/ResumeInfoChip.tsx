@@ -256,9 +256,13 @@ export function ResumeInfoChipGate(props: {
   const activityAt = useStore((s) => s.surfaceActivityAt[ptyId] ?? 0);
   const status = useStore((s) => s.surfaceAgentStatus[ptyId]);
   // OSC 133 authoritative shell state (undefined = shell integration off →
-  // heuristic fallback inside isPaneAgentBusy).
+  // process-truth tier, then heuristic fallback inside isPaneAgentBusy).
   const commandRunning = useStore((s) => s.commandRunningByPtyId[ptyId]);
-  const agentBusy = isPaneAgentBusy({ activityAt, agentClockMs, status, commandRunning });
+  // Process-truth agent liveness (daemon AgentProcessTracker) — the edge
+  // trigger that keeps the chip hidden while a QUIET agent is still alive on
+  // a pane without shell integration, and lets it appear on the exit edge.
+  const agentProcessAlive = useStore((s) => s.agentAliveByPtyId[ptyId]);
+  const agentBusy = isPaneAgentBusy({ activityAt, agentClockMs, status, commandRunning, agentProcessAlive });
   if (agentBusy) return null;
   return <ResumeInfoChip ptyId={ptyId} binding={binding} paneCwds={paneCwds} />;
 }

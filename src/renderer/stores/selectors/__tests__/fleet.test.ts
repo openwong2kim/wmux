@@ -574,3 +574,45 @@ describe('isPaneAgentBusy — OSC 133 commandRunning', () => {
     })).toBe(false);
   });
 });
+
+// ─── isPaneAgentBusy — process-truth tier (agentProcessAlive edge trigger) ───
+describe('isPaneAgentBusy — agentProcessAlive', () => {
+  const NOW = 1_000_000_000;
+  const staleActivity = NOW - (HOOK_RUNNING_TTL_MS + 5_000);
+
+  it('alive agent past the activity TTL → still busy (the mid-session false chip)', () => {
+    // The reported bug: a quiet claude (long thinking / finished turn) on a
+    // no-integration pane decayed the heuristic and surfaced the chip while
+    // the TUI was alive. Process truth must override the decay.
+    expect(isPaneAgentBusy({
+      activityAt: staleActivity, agentClockMs: NOW, status: 'complete', agentProcessAlive: true,
+    })).toBe(true);
+  });
+
+  it('dead agent process → idle even if the heuristic would say busy (the exit edge)', () => {
+    expect(isPaneAgentBusy({
+      activityAt: NOW, agentClockMs: NOW, status: 'running', agentProcessAlive: false,
+    })).toBe(false);
+  });
+
+  it('OSC 133 outranks process truth in both directions', () => {
+    // Shell provably at a prompt → typing is safe, chip may show.
+    expect(isPaneAgentBusy({
+      activityAt: 0, agentClockMs: NOW, status: undefined, commandRunning: false, agentProcessAlive: true,
+    })).toBe(false);
+    // A foreground command owns the PTY (agent died, user ran something else)
+    // → the chip must stay away.
+    expect(isPaneAgentBusy({
+      activityAt: 0, agentClockMs: NOW, status: undefined, commandRunning: true, agentProcessAlive: false,
+    })).toBe(true);
+  });
+
+  it('undefined → falls through to the activity heuristic', () => {
+    expect(isPaneAgentBusy({
+      activityAt: NOW, agentClockMs: NOW, status: undefined, agentProcessAlive: undefined,
+    })).toBe(true);
+    expect(isPaneAgentBusy({
+      activityAt: staleActivity, agentClockMs: NOW, status: undefined, agentProcessAlive: undefined,
+    })).toBe(false);
+  });
+});

@@ -65,6 +65,19 @@ export interface ResumeSlice {
 
   /** Replace the OSC 133 map from a `pty.list` snapshot. */
   hydrateCommandRunning: (snapshot: Record<string, boolean>) => void;
+
+  /**
+   * Process-truth agent liveness per ptyId (daemon AgentProcessTracker) —
+   * true = the pane's agent process is observed alive, false = it was observed
+   * and DIED (the alive→dead edge), absent = never attributed. Sits between
+   * OSC 133 and the activity heuristic in the resume chip's busy gate, so a
+   * quiet-but-alive agent on a no-integration pane no longer surfaces the chip
+   * mid-session.
+   */
+  agentAliveByPtyId: Record<string, boolean>;
+
+  /** Replace the agent-liveness map from a `pty.list` snapshot. */
+  hydrateAgentAlive: (snapshot: Record<string, boolean>) => void;
 }
 
 export const createResumeSlice: StateCreator<
@@ -76,6 +89,7 @@ export const createResumeSlice: StateCreator<
   resumeHintByPtyId: {},
   resumeBindingByPtyId: {},
   commandRunningByPtyId: {},
+  agentAliveByPtyId: {},
   ptyReadyByPtyId: {},
 
   markPtyReady: (ptyId) => set((draft: StoreState) => {
@@ -103,5 +117,9 @@ export const createResumeSlice: StateCreator<
 
   hydrateCommandRunning: (snapshot) => set((draft: StoreState) => {
     draft.commandRunningByPtyId = { ...snapshot };
+  }),
+
+  hydrateAgentAlive: (snapshot) => set((draft: StoreState) => {
+    draft.agentAliveByPtyId = { ...snapshot };
   }),
 });

@@ -61,7 +61,7 @@ const electronAPI = {
       // `surfaceId` (axis B, reboot-reattach): present only on sessions created
       // WITH a WMUX_SURFACE_ID (Terminal self-create path); reconcile uses it to
       // rebind a stale ptyId to the surviving session after a reboot.
-      ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string; resumeBinding?: ResumeBinding; commandRunning?: boolean }[]>,
+      ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }[]>,
     reconnect: (id: string) =>
       // RCA A1 — `transient` distinguishes a recoverable failure (pipe not
       // writable yet, RPC threw during a handler-swap window) from a permanent

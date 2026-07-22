@@ -774,6 +774,11 @@ export function registerPTYHandlers(
         // prompt, undefined = no shell integration. The resume chip's authoritative
         // gate (Pane.tsx / isPaneAgentBusy).
         commandRunning?: boolean;
+        // Process-truth agent liveness (AgentProcessTracker) — true = the pane's
+        // agent process is observed alive, false = it died (the edge the resume
+        // chip waits for), undefined = never attributed. Only present alongside
+        // resumeBinding.
+        agentProcessAlive?: boolean;
       }>;
       // Map to same shape as local PTYManager.getActiveInstances(), plus an
       // additive `supervision` summary for the renderer's supervision slice
@@ -817,6 +822,8 @@ export function registerPTYHandlers(
           // present when shell integration emits markers (else undefined → the
           // renderer falls back to its activity heuristic).
           ...(s.commandRunning !== undefined ? { commandRunning: s.commandRunning } : {}),
+          // Process-truth agent liveness — the resume chip's edge-trigger gate.
+          ...(s.agentProcessAlive !== undefined ? { agentProcessAlive: s.agentProcessAlive } : {}),
         }));
       // RCA A8 — log the count the renderer's reconcile will act on. An empty
       // or short list here, correlated with a renderer ptyId-clear, is the

@@ -84,14 +84,20 @@ export const HOOK_RUNNING_TTL_MS = 120_000;
  * the agent's input, not a shell, so the chip only surfaces once the agent has
  * settled or exited.
  *
- * Two tiers:
+ * Three tiers:
  *   1. AUTHORITATIVE — the OSC 133 shell-integration signal (`commandRunning`),
  *      when the pane's shell emits markers. `true` = a foreground command owns
  *      the PTY (busy); `false` = at a shell prompt (idle). This closes the gap
  *      the heuristic can't: a `claude` that sits idle past the activity TTL is
  *      still `commandRunning: true`, so the chip stays hidden the whole time it
  *      is up, and reappears the moment the shell is back at a prompt.
- *   2. HEURISTIC FALLBACK (no shell integration, `commandRunning` undefined) —
+ *   2. PROCESS TRUTH (`agentProcessAlive`, daemon AgentProcessTracker) — the
+ *      edge trigger for panes WITHOUT shell integration. `true` = the agent
+ *      process is observed alive (a quiet claude past the TTL is still busy);
+ *      `false` = it was observed and DIED — the alive→dead edge, however the
+ *      agent exited (double Ctrl+C, /exit, crash). `undefined` = never
+ *      attributed → fall through.
+ *   3. HEURISTIC FALLBACK (both above undefined) —
  *      recent hook activity within the TTL (focus-safe — `surfaceActivityAt` is
  *      NOT cleared on focus the way `surfaceAgentStatus` is) OR a live attention
  *      status still carried on a non-focused pane. `agentClockMs` freezes at
@@ -108,15 +114,26 @@ export function isPaneAgentBusy(args: {
   /**
    * `commandRunningByPtyId[ptyId]` — OSC 133 shell state. `true`/`false` is
    * authoritative and short-circuits; `undefined` (no shell integration) falls
-   * through to the heuristic.
+   * through to the process-truth tier.
    */
   commandRunning?: boolean;
+  /**
+   * `agentAliveByPtyId[ptyId]` — process-truth agent liveness. `true`/`false`
+   * short-circuits the heuristic; `undefined` (never attributed) falls through.
+   */
+  agentProcessAlive?: boolean;
 }): boolean {
-  const { activityAt, agentClockMs, status, commandRunning } = args;
-  // Tier 1 — authoritative OSC 133 signal.
+  const { activityAt, agentClockMs, status, commandRunning, agentProcessAlive } = args;
+  // Tier 1 — authoritative OSC 133 signal. Ranked above process truth: when
+  // the shell says it is back at a prompt, typing is safe even if some
+  // background descendant lingers — and vice versa, a foreground non-agent
+  // command (the agent died, the user ran `npm test`) must keep the chip away.
   if (commandRunning === true) return true;
   if (commandRunning === false) return false;
-  // Tier 2 — activity heuristic.
+  // Tier 2 — process truth (the edge trigger).
+  if (agentProcessAlive === true) return true;
+  if (agentProcessAlive === false) return false;
+  // Tier 3 — activity heuristic.
   const hookRunning =
     activityAt > 0 && agentClockMs - activityAt <= HOOK_RUNNING_TTL_MS;
   return (
