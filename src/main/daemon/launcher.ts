@@ -18,22 +18,30 @@ export interface DaemonInfo {
 }
 
 /**
- * Show a synchronous Electron dialog asking the user whether to recover
- * from an unverified-live daemon PID. Returns `true` if the user accepts
- * the stale-cleanup + spawn path, `false` if they cancel (we re-throw).
+ * Ask the user whether to recover from an unverified-live daemon PID.
+ * Returns `true` if the user accepts the stale-cleanup + spawn path,
+ * `false` if they cancel (we re-throw).
  *
- * Dialog is suppressed (and the function returns `false`) when:
+ * This dialog is ASYNCHRONOUS on purpose. It used to call
+ * `dialog.showMessageBoxSync`, which blocks the entire Electron main-process
+ * event loop for as long as the dialog stays open — freezing the pipe server,
+ * the PTY relay, and all IPC. At fleet scale (many concurrent sessions) a
+ * modal nobody has clicked yet reads as "the whole app just died". The async
+ * `dialog.showMessageBox` keeps the main process live while the user decides,
+ * so panes keep streaming behind the dialog.
+ *
+ * Dialog is suppressed (and the function resolves `false`) when:
  *  - `WMUX_NO_DIALOG=1` is set in the environment (test / headless runs)
  *  - the Electron `app` module is unavailable or not ready yet
  *
  * In those cases the caller falls back to the legacy throw so the
  * automation path is preserved exactly.
  */
-function askUserToRecoverFromStalePid(opts: {
+async function askUserToRecoverFromStalePid(opts: {
   reason: string;
   pid: number;
   pidFile: string;
-}): boolean {
+}): Promise<boolean> {
   if (process.env.WMUX_NO_DIALOG === '1') return false;
   // `app` may be undefined when launcher is exercised by unit tests
   // (vitest doesn't import the full Electron runtime).
@@ -51,7 +59,7 @@ function askUserToRecoverFromStalePid(opts: {
     `    elevated PowerShell:  taskkill /F /PID ${opts.pid}`,
   ].join('\n');
 
-  const choice = dialog.showMessageBoxSync({
+  const { response } = await dialog.showMessageBox({
     type: 'warning',
     title: 'wmux daemon recovery',
     message: 'Could not verify the existing daemon process.',
@@ -61,7 +69,7 @@ function askUserToRecoverFromStalePid(opts: {
     cancelId: 1,
     noLink: true,
   });
-  return choice === 0;
+  return response === 0;
 }
 
 // `ProcessLiveness` + the pure classifiers now live in shared/processLiveness so
@@ -294,6 +302,47 @@ export async function tryEscalatedReping(
     if (await ping(timeoutMs)) return true;
   }
   return false;
+}
+
+/**
+ * Recovery decision shared by the two "process probe was blocked" branches of
+ * ensureDaemon — image-lookup-failure and command-line-lookup-failure. On
+ * fleets running aggressive anti-virus, tasklist.exe / PowerShell
+ * Get-CimInstance can be silently blocked and return null, so the launcher
+ * cannot prove WHAT process owns the daemon PID.
+ *
+ * The old code went straight from a null probe to the recovery dialog. But a
+ * daemon that ANSWERS A PING is provably alive regardless of what an AV-blocked
+ * process probe reports — so, exactly like the verified branch already does
+ * before its SIGKILL, give the busy-but-alive daemon the SAME cheap, decisive
+ * escalated re-ping FIRST. A missed two-shot startup ping under ~13 concurrent
+ * sessions is a busy event loop, not a dead daemon. Only if the escalated
+ * re-ping ALSO fails (or there is no auth token to ping with) do we fall
+ * through to the dialog.
+ *
+ * Injectable (`reping`/`sleep`/`askUser` passed in) so the reuse-before-dialog
+ * ordering is unit-testable without a live daemon or an Electron dialog — the
+ * same seam `tryEscalatedReping` already uses.
+ *
+ * Returns:
+ *   'reuse'   — an escalated ping answered; reuse the existing daemon (no
+ *               dialog, no kill).
+ *   'recover' — re-ping failed (or no token) AND the user approved cleanup.
+ *   'refuse'  — re-ping failed (or no token) AND the user declined (or the
+ *               dialog was suppressed); the caller re-throws the legacy error.
+ */
+export async function recoverFromBlockedProbe(deps: {
+  token: string;
+  reping: (timeoutMs: number) => Promise<boolean>;
+  sleep: (ms: number) => Promise<void>;
+  askUser: () => Promise<boolean>;
+}): Promise<'reuse' | 'recover' | 'refuse'> {
+  if (deps.token) {
+    // Same [500, 1000] budget / 200 ms backoff the verified branch uses.
+    const alive = await tryEscalatedReping(deps.reping, [500, 1000], 200, deps.sleep);
+    if (alive) return 'reuse';
+  }
+  return (await deps.askUser()) ? 'recover' : 'refuse';
 }
 
 /**
@@ -654,18 +703,31 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
     } else {
       const imageName = getProcessImageName(existingPid);
       if (imageName === null) {
-        // (c) Could not even read the image — ask the user whether to
-        // recover. Refusing outright used to leave the user stranded
-        // when AV blocked tasklist.exe or PowerShell. The user keeps
-        // ultimate authority (cancel re-throws the same error), but
-        // the common case — yes, it really is a stale pid file — now
-        // resolves without manual filesystem work.
-        const recovered = askUserToRecoverFromStalePid({
-          reason: `image lookup for PID ${existingPid} failed (anti-virus may be blocking tasklist.exe / ps / WMI)`,
-          pid: existingPid,
-          pidFile,
+        // (c) Could not even read the image (AV blocked tasklist.exe / ps /
+        // WMI). Before popping the recovery dialog, give the daemon the SAME
+        // escalated re-ping the verified branch uses: a daemon that answers a
+        // ping is alive regardless of what an AV-blocked process probe says.
+        // Only when the re-ping ALSO fails do we ask the user. Refusing/asking
+        // outright used to leave the user stranded (or worse, spawn a second
+        // daemon over the live one) whenever AV blocked the probe.
+        const outcome = await recoverFromBlockedProbe({
+          token,
+          reping: (timeoutMs) => pingDaemon(pipeName, token, timeoutMs),
+          sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+          askUser: () =>
+            askUserToRecoverFromStalePid({
+              reason: `image lookup for PID ${existingPid} failed (anti-virus may be blocking tasklist.exe / ps / WMI)`,
+              pid: existingPid,
+              pidFile,
+            }),
         });
-        if (!recovered) {
+        if (outcome === 'reuse') {
+          console.log(
+            `[launcher] Daemon (PID ${existingPid}) answered escalated re-ping despite a blocked image lookup — reusing, no kill`,
+          );
+          return { pid: existingPid, authToken: token, pipeName, spawned: false };
+        }
+        if (outcome === 'refuse') {
           throw new Error(
             `[launcher] daemon.pid=${existingPid} alive but image lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
           );
@@ -683,14 +745,30 @@ export async function ensureDaemon(): Promise<DaemonInfo> {
         // app. Use the command line to decide.
         const cmdline = getProcessCommandLine(existingPid);
         if (cmdline === null) {
-          // (c) Lookup failed — same recovery dance as the image
-          // path: ask the user, treat cancel as the legacy throw.
-          const recovered = askUserToRecoverFromStalePid({
-            reason: `command-line lookup for PID ${existingPid} (image "${imageName}") failed (anti-virus may be blocking PowerShell / Get-CimInstance)`,
-            pid: existingPid,
-            pidFile,
+          // (c) Lookup failed — same recovery dance as the image path, and the
+          // same escalated re-ping FIRST. The image already matches wmux here,
+          // so a daemon that answers a ping is almost certainly the real one:
+          // an AV-blocked Get-CimInstance must not be allowed to trigger a
+          // spawn-over-live-daemon. Only when the re-ping ALSO fails do we ask
+          // the user; cancel stays the legacy throw.
+          const outcome = await recoverFromBlockedProbe({
+            token,
+            reping: (timeoutMs) => pingDaemon(pipeName, token, timeoutMs),
+            sleep: (ms) => new Promise<void>((resolve) => setTimeout(resolve, ms)),
+            askUser: () =>
+              askUserToRecoverFromStalePid({
+                reason: `command-line lookup for PID ${existingPid} (image "${imageName}") failed (anti-virus may be blocking PowerShell / Get-CimInstance)`,
+                pid: existingPid,
+                pidFile,
+              }),
           });
-          if (!recovered) {
+          if (outcome === 'reuse') {
+            console.log(
+              `[launcher] Daemon (PID ${existingPid}) answered escalated re-ping despite a blocked command-line lookup — reusing, no kill`,
+            );
+            return { pid: existingPid, authToken: token, pipeName, spawned: false };
+          }
+          if (outcome === 'refuse') {
             throw new Error(
               `[launcher] daemon.pid=${existingPid} alive (image "${imageName}" matches wmux) but command-line lookup failed; refusing to spawn over an unverified live process. Manually delete ${pidFile} if you have verified the daemon is gone (or in elevated PowerShell: taskkill /F /PID ${existingPid}).`,
             );
