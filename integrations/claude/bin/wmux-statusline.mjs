@@ -125,7 +125,19 @@ function main() {
   const rl = input?.rate_limits;
   const fiveHour = rl?.five_hour?.used_percentage;
   const sevenDay = rl?.seven_day?.used_percentage;
-  if (typeof fiveHour === 'number') parts.push(`5h ${Math.round(fiveHour)}%`);
+  if (typeof fiveHour === 'number') {
+    // The 5h window resets within hours, so WHEN it frees up is actionable —
+    // show the local reset time (HH:MM). The 7d reset is days out; omitted.
+    const resetsAt = rl?.five_hour?.resets_at;
+    let reset = '';
+    if (typeof resetsAt === 'number' && resetsAt * 1000 > Date.now()) {
+      const d = new Date(resetsAt * 1000);
+      const hh = String(d.getHours()).padStart(2, '0');
+      const mm = String(d.getMinutes()).padStart(2, '0');
+      reset = ` ↺${hh}:${mm}`;
+    }
+    parts.push(`5h ${Math.round(fiveHour)}%${reset}`);
+  }
   if (typeof sevenDay === 'number') parts.push(`7d ${Math.round(sevenDay)}%`);
 
   if (typeof fiveHour !== 'number' && typeof sevenDay !== 'number') {
