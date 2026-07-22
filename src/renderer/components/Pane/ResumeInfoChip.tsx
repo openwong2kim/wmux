@@ -4,6 +4,7 @@ import { useStore } from '../../stores';
 import { isPaneAgentBusy } from '../../stores/selectors/fleet';
 import {
   type ResumeBinding,
+  agentSupportsPermissionFlag,
   permissionFlagFor,
   resumeGrammarFor,
 } from '../../../shared/agentResume';
@@ -29,12 +30,20 @@ import {
  * auto-runs — the user presses Enter); a false negative silently resumes the
  * WRONG conversation. Loud beats silent.
  *
+ * `skipPermissions` (the pane toggle, default on) forces
+ * `--dangerously-skip-permissions` for Claude regardless of the captured mode;
+ * when off, the captured permission mode (acceptEdits/plan) is restored if any.
+ * Unlike the exact `<id>`, this launch preference is NOT conversation-scoped, so
+ * it rides EITHER grammar branch (exact `--resume` and fallback `--continue`).
+ * Codex takes no permission flag, so the toggle is inert there.
+ *
  * Returns `null` for a non-resumable agent (no grammar). Pure + exported so the
  * exact-vs-fallback decision is unit-testable without rendering.
  */
 export function buildPaneResumeCommand(
   binding: ResumeBinding,
   paneCwds: ReadonlyArray<string | undefined>,
+  skipPermissions: boolean,
 ): { command: string; exact: boolean } | null {
   const grammar = resumeGrammarFor(binding.agent);
   if (!grammar) return null;
@@ -46,10 +55,17 @@ export function buildPaneResumeCommand(
   };
   const target = normCwd(binding.cwd);
   const exact = paneCwds.some((c) => !!c && normCwd(c) === target);
-  const permFlag = exact ? permissionFlagFor(binding.permissionMode) : '';
-  const command = exact
-    ? `${binding.agent}${permFlag ? ` ${permFlag}` : ''} ${grammar.withId(binding.sessionId)}`
-    : `${binding.agent} ${grammar.fallback}`;
+  // Explicit toggle (default on) → force --dangerously-skip-permissions on
+  // EITHER branch (a launch preference, not conversation-scoped). Toggle off →
+  // restore the captured permission mode, but only on an EXACT resume (that
+  // mode belongs to the exact conversation; a cwd-relative --continue drops it).
+  const permFlag = agentSupportsPermissionFlag(binding.agent)
+    ? (skipPermissions
+        ? permissionFlagFor('bypassPermissions')
+        : (exact ? permissionFlagFor(binding.permissionMode) : ''))
+    : '';
+  const resumeArg = exact ? grammar.withId(binding.sessionId) : grammar.fallback;
+  const command = `${binding.agent}${permFlag ? ` ${permFlag}` : ''} ${resumeArg}`;
   return { command, exact };
 }
 
@@ -77,8 +93,12 @@ export default function ResumeInfoChip(props: {
   const t = useT();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
+  // Default ON — the owner routinely resumes with --dangerously-skip-permissions,
+  // so the chip pre-checks it. Claude-only (Codex has no such flag).
+  const canSkipPermissions = agentSupportsPermissionFlag(binding.agent);
+  const [skipPermissions, setSkipPermissions] = useState(true);
 
-  const built = buildPaneResumeCommand(binding, paneCwds);
+  const built = buildPaneResumeCommand(binding, paneCwds, skipPermissions);
   if (!built) return null; // not a resumable agent — nothing to offer
   const { command } = built;
 
@@ -186,6 +206,31 @@ export default function ResumeInfoChip(props: {
               {copied ? '✓' : '⧉'}
             </button>
           </div>
+
+          {/* Skip-permissions toggle (Claude only) — default on. Forces
+              --dangerously-skip-permissions onto the resume line; the preview
+              below updates live as it toggles. */}
+          {canSkipPermissions && (
+            <label
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                cursor: 'pointer',
+                color: 'var(--text-sub)',
+                userSelect: 'none',
+              }}
+              onClick={(e) => e.stopPropagation()}
+            >
+              <input
+                type="checkbox"
+                checked={skipPermissions}
+                onChange={(e) => setSkipPermissions(e.target.checked)}
+                style={{ accentColor: 'var(--accent-cursor)', cursor: 'pointer', margin: 0 }}
+              />
+              <span style={{ fontFamily: 'ui-monospace, monospace' }}>--dangerously-skip-permissions</span>
+            </label>
+          )}
 
           {/* Exact command preview — WYSIWYG with what 복구 types. */}
           <code

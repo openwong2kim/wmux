@@ -95,6 +95,16 @@ export function permissionFlagFor(mode: PermissionMode | undefined): string {
 }
 
 /**
+ * Whether an agent accepts a permission-mode launch flag. Claude only in v1 —
+ * `PERMISSION_FLAG` is a Claude Code concept; Codex has no equivalent (its
+ * `permissionMode` is never captured). Gates the resume chip's
+ * skip-permissions toggle so it never shows a Codex user a flag Codex rejects.
+ */
+export function agentSupportsPermissionFlag(agent: string): boolean {
+  return agent === 'claude';
+}
+
+/**
  * Normalize a cwd for resume-binding equality: backslashes → forward slashes,
  * lowercase a leading Windows drive letter, strip a trailing separator. POSIX
  * paths stay case-sensitive. So `D:\repo` and `d:/repo/` compare equal but

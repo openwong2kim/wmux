@@ -16,51 +16,64 @@ const claude = (over: Partial<ResumeBinding> = {}): ResumeBinding => ({
 });
 
 describe('buildPaneResumeCommand', () => {
-  it('cwd match + bypassPermissions → exact resume with the skip-permissions flag', () => {
-    const out = buildPaneResumeCommand(
-      claude({ permissionMode: 'bypassPermissions' }),
-      ['/Users/me/proj'],
-    );
+  // The pane's skip-permissions toggle. Default-on (`true`) is what the chip
+  // renders; the explicit `false` cases below prove the opt-out path.
+  it('skip-permissions ON (default) → exact resume forces --dangerously-skip-permissions', () => {
+    const out = buildPaneResumeCommand(claude(), ['/Users/me/proj'], true);
     expect(out).toEqual({
       command: 'claude --dangerously-skip-permissions --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
       exact: true,
     });
   });
 
-  it('cwd match + default mode → exact resume, no permission flag', () => {
-    const out = buildPaneResumeCommand(claude(), ['/Users/me/proj']);
+  it('skip-permissions ON also rides the cwd-relative fallback (a launch pref, not conversation-scoped)', () => {
+    const out = buildPaneResumeCommand(claude(), ['/Users/me/OTHER'], true);
+    expect(out).toEqual({ command: 'claude --dangerously-skip-permissions --continue', exact: false });
+  });
+
+  it('skip-permissions OFF + default mode → plain exact resume, no permission flag', () => {
+    const out = buildPaneResumeCommand(claude(), ['/Users/me/proj'], false);
     expect(out).toEqual({
       command: 'claude --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
       exact: true,
     });
   });
 
-  it('cwd mismatch → cwd-relative fallback, never an exact resume against the wrong dir', () => {
+  it('skip-permissions OFF restores the captured permission mode on an EXACT resume', () => {
+    const out = buildPaneResumeCommand(claude({ permissionMode: 'acceptEdits' }), ['/Users/me/proj'], false);
+    expect(out).toEqual({
+      command: 'claude --permission-mode acceptEdits --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
+      exact: true,
+    });
+  });
+
+  it('skip-permissions OFF drops the captured mode on a cwd-relative fallback (mode is conversation-scoped)', () => {
     const out = buildPaneResumeCommand(
       claude({ permissionMode: 'bypassPermissions' }),
       ['/Users/me/OTHER'],
+      false,
     );
-    // Fallback carries NO recorded permission mode and no --resume <id>.
     expect(out).toEqual({ command: 'claude --continue', exact: false });
   });
 
   it('missing live cwd → fallback (cannot confirm the cwd-scoped resume)', () => {
-    const out = buildPaneResumeCommand(claude(), [undefined]);
+    const out = buildPaneResumeCommand(claude(), [undefined], false);
     expect(out).toEqual({ command: 'claude --continue', exact: false });
   });
 
-  it('codex uses the subcommand grammar', () => {
+  it('codex takes no permission flag even with skip-permissions ON', () => {
     const out = buildPaneResumeCommand(
       claude({ agent: 'codex', sessionId: 'sess-77' }),
       ['/Users/me/proj'],
+      true,
     );
     expect(out).toEqual({ command: 'codex resume sess-77', exact: true });
   });
 
   it('trailing-slash / Windows drive-letter case differences still count as a match', () => {
-    expect(buildPaneResumeCommand(claude({ cwd: '/Users/me/proj/' }), ['/Users/me/proj'])?.exact).toBe(true);
+    expect(buildPaneResumeCommand(claude({ cwd: '/Users/me/proj/' }), ['/Users/me/proj'], true)?.exact).toBe(true);
     expect(
-      buildPaneResumeCommand(claude({ cwd: 'D:\\repo' }), ['d:/repo'])?.exact,
+      buildPaneResumeCommand(claude({ cwd: 'D:\\repo' }), ['d:/repo'], true)?.exact,
     ).toBe(true);
   });
 
@@ -70,8 +83,9 @@ describe('buildPaneResumeCommand', () => {
   // gate wrongly downgraded to `--continue`, dropping the permission flag.
   it('stale first candidate + matching second candidate (metadata.cwd) → exact resume', () => {
     const out = buildPaneResumeCommand(
-      claude({ cwd: 'D:\\wmux', permissionMode: 'bypassPermissions' }),
+      claude({ cwd: 'D:\\wmux' }),
       ['C:\\Users\\me', 'D:\\wmux'],
+      true,
     );
     expect(out).toEqual({
       command: 'claude --dangerously-skip-permissions --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
@@ -80,17 +94,17 @@ describe('buildPaneResumeCommand', () => {
   });
 
   it('no candidate matches → fallback', () => {
-    const out = buildPaneResumeCommand(claude(), ['C:\\Users\\me', 'D:\\other']);
+    const out = buildPaneResumeCommand(claude(), ['C:\\Users\\me', 'D:\\other'], false);
     expect(out).toEqual({ command: 'claude --continue', exact: false });
   });
 
   it('empty candidate list → fallback', () => {
-    const out = buildPaneResumeCommand(claude(), []);
+    const out = buildPaneResumeCommand(claude(), [], false);
     expect(out).toEqual({ command: 'claude --continue', exact: false });
   });
 
   it('non-resumable agent → null (no affordance)', () => {
-    expect(buildPaneResumeCommand(claude({ agent: 'gemini' }), ['/Users/me/proj'])).toBeNull();
+    expect(buildPaneResumeCommand(claude({ agent: 'gemini' }), ['/Users/me/proj'], true)).toBeNull();
   });
 });
 
