@@ -55,6 +55,224 @@ export interface WmuxServerCtx {
   callerPpid: number | null;
 }
 
+// The bounded default for terminal_read when the caller names no explicit cap.
+// SSOT is the renderer's DEFAULT_READ_TAIL_LINES (src/renderer/utils/terminalTail.ts);
+// mirrored here (the MCP bundle must not import renderer/xterm code) purely so
+// the tool description states the real number. Keep the two in lockstep.
+// Hoisted to module scope so the shapes below (and every server instance that
+// shares them) can reference it.
+const DEFAULT_READ_TAIL_LINES = 300;
+
+// ── Module-scope tool parameter shapes ──────────────────────────────────────
+// Hoisted out of the per-registration path (createWmuxServer) so that N broker
+// server instances share ONE set of zod schema objects instead of re-allocating
+// every leaf schema per connection. The shapes carry NO per-call state — every
+// handler (which closes over ctx / the resolvers) stays inside the factory. The
+// `<TOOLNAME>_SHAPE` naming mirrors the tool name 1:1. Tools whose param object
+// is empty (`{}`) are left inline: an empty object holds no zod schema to share.
+const BROWSER_OPEN_SHAPE = {
+  url: z.string().optional().describe('Initial URL to load (defaults to google.com)'),
+};
+
+const BROWSER_CLOSE_SHAPE = {
+  surfaceId: z.string().optional().describe('Target a specific surface by ID (searched across all workspaces). Omit to close the browser surface in the calling workspace.'),
+};
+
+const BROWSER_SESSION_START_SHAPE = {
+  profile: z.string().optional().describe('Profile name to use (defaults to "default")'),
+};
+
+const TERMINAL_READ_SHAPE = {
+  ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
+  tail_lines: z.number().int().positive().optional().describe(`Return only the last N lines. Omit for the default (${DEFAULT_READ_TAIL_LINES}). Read cost is O(N), so a small N is both cheaper and fewer tokens.`),
+  full_scrollback: z.boolean().optional().describe('Return the ENTIRE terminal backlog (up to the scrollback limit, ~10k lines) instead of a bounded tail. Expensive — walks the whole buffer. Use only when the recent tail is genuinely insufficient.'),
+};
+
+const TERMINAL_READ_EVENTS_SHAPE = {
+  ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal.'),
+  limit: z.number().int().positive().optional().describe('Return the N most recent events (default 32). Ignored when sinceOffset or lastCommandOnly is set.'),
+  sinceOffset: z.number().int().nonnegative().optional().describe('Return only events whose byteOffset is strictly greater than this value — for diff-style polling.'),
+  lastCommandOnly: z.boolean().optional().describe('Skip the events list and only return lastCompletedRange (the byte-offset range + exit code of the most recently finished command).'),
+};
+
+const TERMINAL_SEND_SHAPE = {
+  text: z.string().describe('Text to send to the terminal'),
+  ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
+  submit: z.boolean().optional().describe('When true, append a carriage return (\\r) after the text so it is committed — equivalent to pressing Enter. Use this for shell commands and TUI chat prompts (e.g. Claude Code, REPLs). Default: false (text is written as-is; you must call terminal_send_key({ key: "enter" }) separately to commit).'),
+};
+
+const TERMINAL_SEND_KEY_SHAPE = {
+  key: z.string().describe(
+    'Key name: enter, tab, ctrl+c, ctrl+d, ctrl+z, ctrl+l, escape, up, down, right, left',
+  ),
+  ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
+};
+
+const DECK_ASK_DECISION_SHAPE = {
+  question: z
+    .string()
+    .describe('The decision you need the human to make, in one clear sentence.'),
+  options: z
+    .array(z.string())
+    .optional()
+    .describe('Optional discrete choices, e.g. ["approach A", "approach B"]. Omit for a free-text answer.'),
+  context: z
+    .string()
+    .optional()
+    .describe('Optional short note on what is at stake or why you cannot decide yourself.'),
+};
+
+const SURFACE_LIST_SHAPE = {
+  workspaceId: z.string().optional().describe("Target a specific workspace by ID. Omit to use your own (the caller's) workspace."),
+};
+
+const PANE_LIST_SHAPE = {
+  workspaceId: z.string().optional().describe("Target a specific workspace by ID. Omit to use your own (the caller's) workspace."),
+};
+
+const PANE_SET_METADATA_SHAPE = {
+  paneId: z.string().optional().describe('Target leaf pane id. Omit to use the active pane in the calling workspace.'),
+  label: z.string().max(64).optional().describe('Short human label, e.g. "Backend".'),
+  // P2: `role` is deprecated — pane identity is the auto name + user label now.
+  // Removed from the input schema; any legacy role is read-only (dead-read).
+  status: z.string().max(128).optional().describe('Current status, e.g. "running-tests".'),
+  custom: z.record(z.string(), z.string()).optional().describe('Additional string→string properties for tool-specific data. Deep-merged with existing custom map when mergeMode="merge". Recommended convention: namespace your keys with a tool prefix (e.g. "orchestrator.taskId", "qa.status") to avoid semantic collisions with other cooperating tools.'),
+  merge: z.boolean().optional().describe('Legacy v2.8.x flag; prefer mergeMode. true → merge, false → replace. When both `merge` and `mergeMode` are provided, `mergeMode` wins.'),
+  mergeMode: z.enum(['merge', 'replace', 'replaceShared']).optional().describe('Explicit merge semantics (v2.9.0+). "merge" patches and deep-merges custom (default). "replace" wipes the metadata object and writes only the provided fields. "replaceShared" overwrites label/status but preserves another tool\'s custom keys. Overrides legacy `merge` boolean when both are provided.'),
+  expectedVersion: z.number().int().nonnegative().optional().describe('Optimistic concurrency guard (v2.9.0+). If the pane\'s current metadata version differs, the call fails with VERSION_CONFLICT and does not mutate. Read the current version from pane_get_metadata or pane_list. Omit for unconditional writes (legacy v2.8.x behavior). expectedVersion: 0 is the correct guard for a pane that has never been written; it succeeds iff no concurrent writer has set anything on this pane yet (useful for "claim a fresh pane" patterns).'),
+};
+
+const PANE_GET_METADATA_SHAPE = {
+  paneId: z.string().optional().describe('Target leaf pane id. Omit to use the active pane in the calling workspace.'),
+};
+
+const WMUX_SEARCH_PANES_SHAPE = {
+  query: z.string().min(1).describe('The text to search for. Required, non-empty. Treated as a literal substring unless regex=true.'),
+  regex: z.boolean().optional().describe('If true, treat query as a JavaScript regex pattern (e.g. "ERROR|WARN", "\\\\bTODO\\\\b"). Default flags only — case-sensitive, no inline `(?i)`. Invalid pattern returns an error. Default false.'),
+};
+
+const WMUX_EVENTS_POLL_SHAPE = {
+  cursor: z.number().int().nonnegative().optional().describe('Last seen seq number. Default 0 = replay all events still in the ring.'),
+  types: z
+    .array(z.enum([
+      'pane.created',
+      'pane.closed',
+      'pane.focused',
+      'pane.metadata.changed',
+      'workspace.metadata.changed',
+      'process.started',
+      'process.exited',
+      'agent.lifecycle',
+      'notification.received',
+      'a2a.task',
+    ]))
+    .optional()
+    .describe('Filter to specific event types. Omit to receive all types. `notification.received` fires when a terminal program emits a desktop-notification escape sequence (OSC 9, OSC 777 notify, kitty OSC 99) and carries ptyId, source (osc9|osc777|osc99), title (nullable), and body. `agent.lifecycle` carries ptyId, kind (agent.stop|agent.subagent_stop|agent.awaiting_input), source (hook|detector|osc133), agent slug (nullable when source=osc133 and no agent context), decision (emit|dedup), and optional exitCode (osc133 only). It fires on three signals: (1) an inner agent (Claude Code, Codex CLI, ...) finishes a turn (source=hook|detector, kind=agent.stop), (2) an agent surfaces a y/N approval prompt mid-turn (source=detector, kind=agent.awaiting_input), or (3) any OSC 133-instrumented shell command completes (source=osc133, kind=agent.stop, with exitCode). Orchestrators that previously polled `terminal_read_events` for OSC 133 boundaries can switch to ring-buffer polling here at the same cadence. `a2a.task` fires on agent-to-agent task lifecycle and carries taskId, from (sender workspaceId), to (receiver workspaceId), kind (created|updated|cancelled), state (submitted|working|input-required|completed|failed|canceled), and an optional messagePreview (≤200 chars). On completed/failed transitions it additionally carries verifiedItemCount (count of verified completion-evidence items; 0 = unverified completion). It is a POINTER, not the payload — the body is omitted by default; follow up with a2a_task_query to fetch it. UNLIKE every other event type (scoped strictly to the calling workspace), `a2a.task` is DUAL-PARTY: visible to BOTH the sending (from) and receiving (to) workspace, and to no third workspace. An unscoped poll receives zero a2a.task events.'),
+  max: z.number().int().positive().max(1024).optional().describe('Max events to return per poll. Default 256.'),
+};
+
+const A2A_TASK_QUERY_SHAPE = {
+  status: z.enum(['submitted', 'working', 'input-required', 'completed', 'failed', 'canceled']).optional().describe('Filter by task status'),
+  role: z.enum(['user', 'agent']).optional().describe('Filter: "user" = tasks you sent, "agent" = tasks assigned to you'),
+  updated_since: z.string().optional().describe('ISO-8601 timestamp; return only tasks whose metadata.updatedAt is strictly later (incremental cursor for polling).'),
+};
+
+const A2A_TASK_UPDATE_SHAPE = {
+  task_id: z.string().describe('Task ID to update'),
+  status: z
+    .enum(['working', 'completed', 'failed', 'input-required'])
+    .describe('New status. Allowed transitions: submitted->working; working->completed|failed|input-required; input-required->working. A fresh (submitted) task must go to working before it can complete.'),
+  message: z.string().optional().describe('Optional status message'),
+  artifact_name: z.string().optional().describe('Artifact name (for completed tasks)'),
+  artifact_data: z.record(z.string(), z.unknown()).optional().describe('Artifact data payload'),
+  evidence: z
+    .object({
+      summary: z.string().describe('Required, non-empty. For completed: the completion summary. For failed: the failure reason.'),
+      // kind별 discriminated union — normalize 계약과 1:1 (command는 command 필수 +
+      // passed|failed, inspection/artifact는 verified|unverified). zod가 통과시킨
+      // 아이템이 normalize에서 malformed로 죽는 조합을 스키마 단계에서 제거한다.
+      items: z
+        .array(
+          z.discriminatedUnion('kind', [
+            z.object({
+              kind: z.literal('command'),
+              status: z.enum(['passed', 'failed']),
+              summary: z.string(),
+              command: z.string().describe('What was run.'),
+              output: z.string().optional(),
+            }),
+            z.object({
+              kind: z.literal('inspection'),
+              status: z.enum(['verified', 'unverified']),
+              summary: z.string(),
+              location: z.string().optional(),
+              output: z.string().optional(),
+            }),
+            z.object({
+              kind: z.literal('artifact'),
+              status: z.enum(['verified', 'unverified']),
+              summary: z.string(),
+              location: z.string().optional(),
+              output: z.string().optional(),
+            }),
+          ]),
+        )
+        .optional()
+        .describe('completed requires >=1 well-formed item; failed may omit (summary alone is a valid failure report).'),
+      files: z.array(z.string()).optional().describe('Repository-relative paths only.'),
+    })
+    .optional()
+    .describe('Structured completion evidence. status:"completed" requires it (summary + >=1 item: command|inspection|artifact); status:"failed" requires evidence.summary (the failure reason). Verified items = command+passed or inspection/artifact+verified; zero verified => completion is accepted but graded unverified (verifiedItemCount=0). Rejections return completion_evidence_* reason codes (failed without a reason: failure_reason_missing).'),
+};
+
+const A2A_TASK_CANCEL_SHAPE = {
+  task_id: z.string().describe('Task ID to cancel'),
+  reason: z.string().optional().describe('Cancellation reason'),
+};
+
+const A2A_BROADCAST_SHAPE = {
+  message: z.string().describe('Broadcast message'),
+  priority: z.enum(['low', 'normal', 'high']).optional().describe('Priority level'),
+};
+
+const A2A_SET_SKILLS_SHAPE = {
+  skills: z.array(z.string()).describe('List of skill tags (e.g., ["frontend", "testing", "devops"])'),
+  description: z.string().optional().describe('Short description of what this agent does'),
+};
+
+const COMPANY_A2A_SEND_SHAPE = {
+  to: z.string().describe('Target agent name, department name, or "CEO"'),
+  message: z.string().describe('Message content'),
+  priority: z.enum(['low', 'normal', 'high']).optional().describe('Message priority (default: normal)'),
+};
+
+const COMPANY_A2A_BROADCAST_SHAPE = {
+  message: z.string().describe('Broadcast message content'),
+  priority: z.enum(['low', 'normal', 'high']).optional().describe('Message priority'),
+};
+
+const COMPANY_A2A_INBOX_SHAPE = {
+  unread_only: z.boolean().optional().describe('Only return unread messages (default: true)'),
+};
+
+const COMPANY_A2A_ACK_SHAPE = {
+  message_ids: z.array(z.string()).describe('Array of message IDs to acknowledge'),
+};
+
+// send_message / a2a_task_send share this shape (identical param contract).
+const SEND_MESSAGE_SHAPE = {
+  to: z.string().optional().describe('Target: workspace number (1, 2, 3), name ("Workspace 1"), or ID'),
+  pane_id: z.string().optional().describe('Optional: deliver to a specific pane inside the target workspace (from pane_list / a2a_discover panes[].paneId). Use when a workspace runs more than one agent. Must belong to "to".'),
+  surface_id: z.string().optional().describe('Optional: deliver to a specific surface inside the target workspace (from surface_list / a2a_discover panes[].surfaceId). More specific than pane_id; if both are given they must agree. Must belong to "to".'),
+  title: z.string().optional().describe('Short title for the message'),
+  task_id: z.string().optional().describe('Reply to existing task ID'),
+  message: z.string().describe('Message to send'),
+  execute: z.boolean().optional().describe('Set true on a NEW task to run it as a background Claude task. The user is prompted unless global A2A execute auto-approve / YOLO is enabled. Not supported with task_id. Default: false.'),
+  silent: z.boolean().optional().describe('Skip the PTY paste delivery on the receiver. The task is still persisted and the receiver can poll via a2a_task_query — use this to avoid injecting content into a running TUI agent\'s prompt stream. If omitted, live TUI agents receive a one-line nudge instead of a full paste.'),
+  data: z.record(z.string(), z.unknown()).optional().describe('Optional structured data (JSON)'),
+  data_mime_type: z.string().optional().describe('MIME type for data (default: application/json)'),
+};
+
 export function createWmuxServer(ctx: WmuxServerCtx): McpServer {
 // Workspace identity.
 //
@@ -572,9 +790,7 @@ async function resolveTerminalRouteBound(explicitPtyId?: string) {
 server.tool(
   'browser_open',
   'Open a new browser panel in the active pane. Use this when no browser surface exists yet.',
-  {
-    url: z.string().optional().describe('Initial URL to load (defaults to google.com)'),
-  },
+  BROWSER_OPEN_SHAPE,
   async ({ url }) => {
     // requireWorkspaceId (NOT the weak resolveWorkspaceId) so a failed identity
     // resolution THROWS instead of returning '' — which `...(workspaceId && …)`
@@ -589,9 +805,7 @@ server.tool(
 server.tool(
   'browser_close',
   'Close the browser panel in the calling workspace',
-  {
-    surfaceId: z.string().optional().describe('Target a specific surface by ID (searched across all workspaces). Omit to close the browser surface in the calling workspace.'),
-  },
+  BROWSER_CLOSE_SHAPE,
   async ({ surfaceId }) => {
     // Same fail-closed identity rule as browser_open: without an explicit
     // workspaceId the renderer falls back to the UI-active workspace, so a
@@ -627,9 +841,7 @@ PlaywrightEngine.getInstance().setWorkspaceIdResolver(requireWorkspaceId);
 server.tool(
   'browser_session_start',
   'Start a browser session with the specified profile',
-  {
-    profile: z.string().optional().describe('Profile name to use (defaults to "default")'),
-  },
+  BROWSER_SESSION_START_SHAPE,
   // No workspaceId: browser sessions are GLOBAL — a single profile + CDP port via
   // the module-level ProfileManager/PortAllocator in browser.rpc.ts. The handler
   // ignores workspaceId entirely, so requiring identity here would protect no
@@ -662,20 +874,10 @@ server.tool(
 
 // === Terminal tools ===
 
-// The bounded default for terminal_read when the caller names no explicit cap.
-// SSOT is the renderer's DEFAULT_READ_TAIL_LINES (src/renderer/utils/terminalTail.ts);
-// mirrored here (the MCP bundle must not import renderer/xterm code) purely so
-// the tool description states the real number. Keep the two in lockstep.
-const DEFAULT_READ_TAIL_LINES = 300;
-
 server.tool(
   'terminal_read',
   `Read the recent text from a terminal. By default returns the last ${DEFAULT_READ_TAIL_LINES} lines of output — the recent screen plus a little history, which is what you want for observing an agent's latest turn. Omit ptyId to read the active terminal. Reading is intentionally bounded and cheap; escalate on purpose when the default is not enough to judge what happened: pass a larger tail_lines (e.g. 800) to widen the window, or full_scrollback:true as a last resort to pull the ENTIRE backlog (far more expensive — avoid by reflex). Read cost scales with the number of lines returned. For structured command boundaries / exit codes, use terminal_read_events instead.`,
-  {
-    ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
-    tail_lines: z.number().int().positive().optional().describe(`Return only the last N lines. Omit for the default (${DEFAULT_READ_TAIL_LINES}). Read cost is O(N), so a small N is both cheaper and fewer tokens.`),
-    full_scrollback: z.boolean().optional().describe('Return the ENTIRE terminal backlog (up to the scrollback limit, ~10k lines) instead of a bounded tail. Expensive — walks the whole buffer. Use only when the recent tail is genuinely insufficient.'),
-  },
+  TERMINAL_READ_SHAPE,
   async ({ ptyId, tail_lines, full_scrollback }) => {
     const route = await resolveTerminalRouteBound(ptyId);
     const params: Record<string, unknown> = { workspaceId: route.workspaceId };
@@ -689,12 +891,7 @@ server.tool(
 server.tool(
   'terminal_read_events',
   'Return structured OSC 133 prompt/command events (prompt_start, prompt_end, command_start, command_end with exit code) from a terminal. Requires shell integration — wmux auto-injects for pwsh and bash; cmd.exe is unsupported. Use this instead of terminal_read when you need command boundaries, exit codes, or byte offsets for diff-style reads.',
-  {
-    ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal.'),
-    limit: z.number().int().positive().optional().describe('Return the N most recent events (default 32). Ignored when sinceOffset or lastCommandOnly is set.'),
-    sinceOffset: z.number().int().nonnegative().optional().describe('Return only events whose byteOffset is strictly greater than this value — for diff-style polling.'),
-    lastCommandOnly: z.boolean().optional().describe('Skip the events list and only return lastCompletedRange (the byte-offset range + exit code of the most recently finished command).'),
-  },
+  TERMINAL_READ_EVENTS_SHAPE,
   async ({ ptyId, limit, sinceOffset, lastCommandOnly }) => {
     const route = await resolveTerminalRouteBound(ptyId);
     const params: Record<string, unknown> = { workspaceId: route.workspaceId };
@@ -709,11 +906,7 @@ server.tool(
 server.tool(
   'terminal_send',
   'Send text to a terminal. By default the text is written as-is — no Enter is pressed, so a shell command or TUI chat prompt will sit on the input line without being committed. Pass `submit: true` to append a carriage return (\\r) so the text is committed, equivalent to pressing Enter. Omit ptyId to target the active terminal. Use surface_list() to discover available PTY IDs. To send messages to OTHER workspaces, use a2a_task_send or a2a_broadcast instead.',
-  {
-    text: z.string().describe('Text to send to the terminal'),
-    ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
-    submit: z.boolean().optional().describe('When true, append a carriage return (\\r) after the text so it is committed — equivalent to pressing Enter. Use this for shell commands and TUI chat prompts (e.g. Claude Code, REPLs). Default: false (text is written as-is; you must call terminal_send_key({ key: "enter" }) separately to commit).'),
-  },
+  TERMINAL_SEND_SHAPE,
   async ({ text, ptyId, submit }) => {
     const route = await resolveTerminalRouteBound(ptyId);
     const base: Record<string, unknown> = { text, workspaceId: route.workspaceId };
@@ -735,12 +928,7 @@ server.tool(
 server.tool(
   'terminal_send_key',
   'Send a named key to a terminal. Omit ptyId to target the active terminal. Use surface_list() to discover available PTY IDs. NOT A SUBMIT MECHANISM: `key:"enter"` presses Enter on whatever the terminal actually holds, which is usually NOTHING — a question or suggestion an agent PRINTED is rendered text, not text sitting in its input box, so Enter submits nothing and the pane stays blocked on the same prompt. This call returns ok as long as the key was delivered; ok does NOT mean anything was submitted or that the agent started working. To answer an agent that is waiting on you, send the answer explicitly with terminal_send({ text, submit: true }) and confirm the pane moved (agentStatus, or a fresh terminal_read) before reporting progress. Reserve this tool for real key presses: ctrl+c, escape, arrow keys, and y/N approval prompts the agent genuinely rendered.',
-  {
-    key: z.string().describe(
-      'Key name: enter, tab, ctrl+c, ctrl+d, ctrl+z, ctrl+l, escape, up, down, right, left',
-    ),
-    ptyId: z.string().optional().describe('Target a specific terminal by PTY ID. Omit to use the active terminal. Get PTY IDs from surface_list().'),
-  },
+  TERMINAL_SEND_KEY_SHAPE,
   async ({ key, ptyId }) => {
     const route = await resolveTerminalRouteBound(ptyId);
     const params: Record<string, unknown> = { key, workspaceId: route.workspaceId };
@@ -775,19 +963,7 @@ server.tool(
 server.tool(
   'deck_ask_decision',
   'Pause your working loop and ask the human operator to make a decision you should NOT make yourself — an ambiguous requirement, a risky or irreversible action, or a genuine choice between approaches. Your loop STOPS and will not auto-advance until the human answers; the pending decision survives an app restart or reboot, so the human can answer later and you will resume from here. After calling this, END YOUR TURN and do not act further. Use only for real forks — never for routine progress updates or questions you can resolve yourself.',
-  {
-    question: z
-      .string()
-      .describe('The decision you need the human to make, in one clear sentence.'),
-    options: z
-      .array(z.string())
-      .optional()
-      .describe('Optional discrete choices, e.g. ["approach A", "approach B"]. Omit for a free-text answer.'),
-    context: z
-      .string()
-      .optional()
-      .describe('Optional short note on what is at stake or why you cannot decide yourself.'),
-  },
+  DECK_ASK_DECISION_SHAPE,
   async ({ question, options, context }) => {
     // Only the commander brain has WMUX_COMMANDER_TOKEN; a non-commander caller
     // sends an undefined token and the RPC fail-closes ("not a live commander").
@@ -813,9 +989,7 @@ server.tool(
 server.tool(
   'surface_list',
   'List all surfaces (terminals and browsers) in a workspace. Returns surfaceId, ptyId, shell, CWD, git branch for each surface. Omit workspaceId to list your own workspace.',
-  {
-    workspaceId: z.string().optional().describe("Target a specific workspace by ID. Omit to use your own (the caller's) workspace."),
-  },
+  SURFACE_LIST_SHAPE,
   async ({ workspaceId }) => {
     // Scope to the CALLER's own workspace when omitted, not the GUI-focused one
     // (the a2a_whoami-vs-surface_list divergence). resolveScopedReadWorkspaceId
@@ -831,9 +1005,7 @@ server.tool(
 server.tool(
   'pane_list',
   'List all panes in a workspace with CWD, git branch, and metadata. Omit workspaceId to list your own workspace.',
-  {
-    workspaceId: z.string().optional().describe("Target a specific workspace by ID. Omit to use your own (the caller's) workspace."),
-  },
+  PANE_LIST_SHAPE,
   async ({ workspaceId }) => {
     // Caller-scoped when omitted (see surface_list) — fail-soft via
     // resolveScopedReadWorkspaceId so a read never throws on identity miss.
@@ -845,17 +1017,7 @@ server.tool(
 server.tool(
   'pane_set_metadata',
   'Attach descriptive metadata (label/status + custom k/v) to a leaf pane in the calling workspace. The custom map is deep-merged when mergeMode="merge" (the default), so cooperating tools can each write their own keys without clobbering. Use mergeMode="replace" to overwrite the entire metadata object, or "replaceShared" (v2.9.0+) to overwrite label/status while preserving another tool\'s custom keys verbatim. Pass expectedVersion (v2.9.0+) for optimistic concurrency — the call fails with VERSION_CONFLICT if the pane has been updated since you last read it. Omit paneId to target the active pane in the calling workspace.',
-  {
-    paneId: z.string().optional().describe('Target leaf pane id. Omit to use the active pane in the calling workspace.'),
-    label: z.string().max(64).optional().describe('Short human label, e.g. "Backend".'),
-    // P2: `role` is deprecated — pane identity is the auto name + user label now.
-    // Removed from the input schema; any legacy role is read-only (dead-read).
-    status: z.string().max(128).optional().describe('Current status, e.g. "running-tests".'),
-    custom: z.record(z.string(), z.string()).optional().describe('Additional string→string properties for tool-specific data. Deep-merged with existing custom map when mergeMode="merge". Recommended convention: namespace your keys with a tool prefix (e.g. "orchestrator.taskId", "qa.status") to avoid semantic collisions with other cooperating tools.'),
-    merge: z.boolean().optional().describe('Legacy v2.8.x flag; prefer mergeMode. true → merge, false → replace. When both `merge` and `mergeMode` are provided, `mergeMode` wins.'),
-    mergeMode: z.enum(['merge', 'replace', 'replaceShared']).optional().describe('Explicit merge semantics (v2.9.0+). "merge" patches and deep-merges custom (default). "replace" wipes the metadata object and writes only the provided fields. "replaceShared" overwrites label/status but preserves another tool\'s custom keys. Overrides legacy `merge` boolean when both are provided.'),
-    expectedVersion: z.number().int().nonnegative().optional().describe('Optimistic concurrency guard (v2.9.0+). If the pane\'s current metadata version differs, the call fails with VERSION_CONFLICT and does not mutate. Read the current version from pane_get_metadata or pane_list. Omit for unconditional writes (legacy v2.8.x behavior). expectedVersion: 0 is the correct guard for a pane that has never been written; it succeeds iff no concurrent writer has set anything on this pane yet (useful for "claim a fresh pane" patterns).'),
-  },
+  PANE_SET_METADATA_SHAPE,
   async ({ paneId, label, status, custom, merge, mergeMode, expectedVersion }) => {
     const workspaceId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId };
@@ -873,9 +1035,7 @@ server.tool(
 server.tool(
   'pane_get_metadata',
   'Read the metadata attached to a leaf pane in the calling workspace. Returns { paneId, metadata, version }. A version of 0 means no metadata has ever been written for this pane (the "never written" sentinel — pair with expectedVersion: 0 on pane_set_metadata to claim a fresh pane atomically).',
-  {
-    paneId: z.string().optional().describe('Target leaf pane id. Omit to use the active pane in the calling workspace.'),
-  },
+  PANE_GET_METADATA_SHAPE,
   async ({ paneId }) => {
     const workspaceId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId };
@@ -887,10 +1047,7 @@ server.tool(
 server.tool(
   'wmux_search_panes',
   'Search across all live terminal panes in the caller\'s workspace. Returns up to 200 matches with paneId + matched line + 2-line context (truncated=true means more were found). Use to find which pane has the JWT error, failing test, or build warning instead of polling each pane individually. Live panes only (v1); regex uses JS RegExp with default flags (case-sensitive, no inline `(?i)` — use `[Ee]rror` for case-insensitive).',
-  {
-    query: z.string().min(1).describe('The text to search for. Required, non-empty. Treated as a literal substring unless regex=true.'),
-    regex: z.boolean().optional().describe('If true, treat query as a JavaScript regex pattern (e.g. "ERROR|WARN", "\\\\bTODO\\\\b"). Default flags only — case-sensitive, no inline `(?i)`. Invalid pattern returns an error. Default false.'),
-  },
+  WMUX_SEARCH_PANES_SHAPE,
   async ({ query, regex }) => {
     const workspaceId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId, query };
@@ -902,25 +1059,7 @@ server.tool(
 server.tool(
   'wmux_events_poll',
   'Poll the wmux EventBus for pane, process, agent, notification, and A2A task lifecycle events. Cursor-based: pass `cursor` = the last `seq` you saw (start with 0 to replay from oldest in the ring). Returns { events, nextCursor, resync? }. `resync: true` means your cursor drifted past the in-memory ring (1024 events) and you should reconcile via pane_list. Events are auto-scoped to the calling workspace — EXCEPT `a2a.task`, which is dual-party (visible to both the sending and receiving workspace; see the `types` field for details).',
-  {
-    cursor: z.number().int().nonnegative().optional().describe('Last seen seq number. Default 0 = replay all events still in the ring.'),
-    types: z
-      .array(z.enum([
-        'pane.created',
-        'pane.closed',
-        'pane.focused',
-        'pane.metadata.changed',
-        'workspace.metadata.changed',
-        'process.started',
-        'process.exited',
-        'agent.lifecycle',
-        'notification.received',
-        'a2a.task',
-      ]))
-      .optional()
-      .describe('Filter to specific event types. Omit to receive all types. `notification.received` fires when a terminal program emits a desktop-notification escape sequence (OSC 9, OSC 777 notify, kitty OSC 99) and carries ptyId, source (osc9|osc777|osc99), title (nullable), and body. `agent.lifecycle` carries ptyId, kind (agent.stop|agent.subagent_stop|agent.awaiting_input), source (hook|detector|osc133), agent slug (nullable when source=osc133 and no agent context), decision (emit|dedup), and optional exitCode (osc133 only). It fires on three signals: (1) an inner agent (Claude Code, Codex CLI, ...) finishes a turn (source=hook|detector, kind=agent.stop), (2) an agent surfaces a y/N approval prompt mid-turn (source=detector, kind=agent.awaiting_input), or (3) any OSC 133-instrumented shell command completes (source=osc133, kind=agent.stop, with exitCode). Orchestrators that previously polled `terminal_read_events` for OSC 133 boundaries can switch to ring-buffer polling here at the same cadence. `a2a.task` fires on agent-to-agent task lifecycle and carries taskId, from (sender workspaceId), to (receiver workspaceId), kind (created|updated|cancelled), state (submitted|working|input-required|completed|failed|canceled), and an optional messagePreview (≤200 chars). On completed/failed transitions it additionally carries verifiedItemCount (count of verified completion-evidence items; 0 = unverified completion). It is a POINTER, not the payload — the body is omitted by default; follow up with a2a_task_query to fetch it. UNLIKE every other event type (scoped strictly to the calling workspace), `a2a.task` is DUAL-PARTY: visible to BOTH the sending (from) and receiving (to) workspace, and to no third workspace. An unscoped poll receives zero a2a.task events.'),
-    max: z.number().int().positive().max(1024).optional().describe('Max events to return per poll. Default 256.'),
-  },
+  WMUX_EVENTS_POLL_SHAPE,
   async ({ cursor, types, max }) => {
     const workspaceId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId };
@@ -1024,38 +1163,21 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
   return callRpc('a2a.task.send', params);
 };
 
-const sendMessageParams = {
-  to: z.string().optional().describe('Target: workspace number (1, 2, 3), name ("Workspace 1"), or ID'),
-  pane_id: z.string().optional().describe('Optional: deliver to a specific pane inside the target workspace (from pane_list / a2a_discover panes[].paneId). Use when a workspace runs more than one agent. Must belong to "to".'),
-  surface_id: z.string().optional().describe('Optional: deliver to a specific surface inside the target workspace (from surface_list / a2a_discover panes[].surfaceId). More specific than pane_id; if both are given they must agree. Must belong to "to".'),
-  title: z.string().optional().describe('Short title for the message'),
-  task_id: z.string().optional().describe('Reply to existing task ID'),
-  message: z.string().describe('Message to send'),
-  execute: z.boolean().optional().describe('Set true on a NEW task to run it as a background Claude task. The user is prompted unless global A2A execute auto-approve / YOLO is enabled. Not supported with task_id. Default: false.'),
-  silent: z.boolean().optional().describe('Skip the PTY paste delivery on the receiver. The task is still persisted and the receiver can poll via a2a_task_query — use this to avoid injecting content into a running TUI agent\'s prompt stream. If omitted, live TUI agents receive a one-line nudge instead of a full paste.'),
-  data: z.record(z.string(), z.unknown()).optional().describe('Optional structured data (JSON)'),
-  data_mime_type: z.string().optional().describe('MIME type for data (default: application/json)'),
-};
-
 server.tool(
   'send_message',
   'Send a message to another workspace. Use when asked to talk to, greet, or send anything to workspace 1/2/3 etc. Accepts number ("1", "3번"), name ("Workspace 2"), or ID.',
-  sendMessageParams,
+  SEND_MESSAGE_SHAPE,
   sendMessageHandler,
 );
 
 // Keep a2a_task_send as alias for backward compatibility
-server.tool('a2a_task_send', 'Alias for send_message.', sendMessageParams, sendMessageHandler);
+server.tool('a2a_task_send', 'Alias for send_message.', SEND_MESSAGE_SHAPE, sendMessageHandler);
 
 // 4. a2a_task_query — Query tasks by status/role
 server.tool(
   'a2a_task_query',
   'Query tasks assigned to you or sent by you. Filter by status and role. For incremental polling, pass updated_since (an ISO-8601 timestamp, e.g. a previous result\'s metadata.updatedAt) to get only tasks changed after that instant — cheaper than re-pulling the whole list each poll.',
-  {
-    status: z.enum(['submitted', 'working', 'input-required', 'completed', 'failed', 'canceled']).optional().describe('Filter by task status'),
-    role: z.enum(['user', 'agent']).optional().describe('Filter: "user" = tasks you sent, "agent" = tasks assigned to you'),
-    updated_since: z.string().optional().describe('ISO-8601 timestamp; return only tasks whose metadata.updatedAt is strictly later (incremental cursor for polling).'),
-  },
+  A2A_TASK_QUERY_SHAPE,
   async ({ status, role, updated_since }) => {
     const wsId = await requireWorkspaceId();
     return callRpc('a2a.task.query', { workspaceId: wsId, status, role, updatedSince: updated_since });
@@ -1066,53 +1188,7 @@ server.tool(
 server.tool(
   'a2a_task_update',
   'Update a task\'s status. Only the receiver workspace can change it. Transitions follow a state machine — you cannot jump straight from submitted to completed: take submitted -> working FIRST, then working -> completed/failed/input-required. Terminal states (completed/failed/canceled) are final and reject any further update (no resurrection). A rejected transition returns an error listing the allowed next states. Optionally attach artifacts on completion. status:"completed" requires evidence (enforced by a completion-evidence gate): summary + >=1 item (command|inspection|artifact). status:"failed" requires evidence.summary (the failure reason). A verified item is command+passed or inspection/artifact+verified; when zero, the completion is still accepted but reported at an unverified grade (verifiedItemCount=0). Rejections come back as completion_evidence_* reason codes (failed without a reason: failure_reason_missing).',
-  {
-    task_id: z.string().describe('Task ID to update'),
-    status: z
-      .enum(['working', 'completed', 'failed', 'input-required'])
-      .describe('New status. Allowed transitions: submitted->working; working->completed|failed|input-required; input-required->working. A fresh (submitted) task must go to working before it can complete.'),
-    message: z.string().optional().describe('Optional status message'),
-    artifact_name: z.string().optional().describe('Artifact name (for completed tasks)'),
-    artifact_data: z.record(z.string(), z.unknown()).optional().describe('Artifact data payload'),
-    evidence: z
-      .object({
-        summary: z.string().describe('Required, non-empty. For completed: the completion summary. For failed: the failure reason.'),
-        // kind별 discriminated union — normalize 계약과 1:1 (command는 command 필수 +
-        // passed|failed, inspection/artifact는 verified|unverified). zod가 통과시킨
-        // 아이템이 normalize에서 malformed로 죽는 조합을 스키마 단계에서 제거한다.
-        items: z
-          .array(
-            z.discriminatedUnion('kind', [
-              z.object({
-                kind: z.literal('command'),
-                status: z.enum(['passed', 'failed']),
-                summary: z.string(),
-                command: z.string().describe('What was run.'),
-                output: z.string().optional(),
-              }),
-              z.object({
-                kind: z.literal('inspection'),
-                status: z.enum(['verified', 'unverified']),
-                summary: z.string(),
-                location: z.string().optional(),
-                output: z.string().optional(),
-              }),
-              z.object({
-                kind: z.literal('artifact'),
-                status: z.enum(['verified', 'unverified']),
-                summary: z.string(),
-                location: z.string().optional(),
-                output: z.string().optional(),
-              }),
-            ]),
-          )
-          .optional()
-          .describe('completed requires >=1 well-formed item; failed may omit (summary alone is a valid failure report).'),
-        files: z.array(z.string()).optional().describe('Repository-relative paths only.'),
-      })
-      .optional()
-      .describe('Structured completion evidence. status:"completed" requires it (summary + >=1 item: command|inspection|artifact); status:"failed" requires evidence.summary (the failure reason). Verified items = command+passed or inspection/artifact+verified; zero verified => completion is accepted but graded unverified (verifiedItemCount=0). Rejections return completion_evidence_* reason codes (failed without a reason: failure_reason_missing).'),
-  },
+  A2A_TASK_UPDATE_SHAPE,
   async ({ task_id, status, message, artifact_name, artifact_data, evidence }) => {
     const wsId = await requireWorkspaceId();
     const params: Record<string, unknown> = { workspaceId: wsId, taskId: task_id, status };
@@ -1142,10 +1218,7 @@ server.tool(
 server.tool(
   'a2a_task_cancel',
   'Cancel a task you previously sent. Only the original sender can cancel.',
-  {
-    task_id: z.string().describe('Task ID to cancel'),
-    reason: z.string().optional().describe('Cancellation reason'),
-  },
+  A2A_TASK_CANCEL_SHAPE,
   async ({ task_id, reason }) => {
     const wsId = await requireWorkspaceId();
     return callRpc('a2a.task.cancel', { workspaceId: wsId, taskId: task_id, reason });
@@ -1156,10 +1229,7 @@ server.tool(
 server.tool(
   'a2a_broadcast',
   'Send a message to ALL other workspaces at once (e.g. announcements, greetings). For targeted messages, use a2a_task_send instead.',
-  {
-    message: z.string().describe('Broadcast message'),
-    priority: z.enum(['low', 'normal', 'high']).optional().describe('Priority level'),
-  },
+  A2A_BROADCAST_SHAPE,
   async ({ message, priority }) => {
     const wsId = await requireWorkspaceId();
     return callRpc('a2a.broadcast', { message, priority: priority || 'normal', workspaceId: wsId });
@@ -1170,10 +1240,7 @@ server.tool(
 server.tool(
   'a2a_set_skills',
   'Register your agent capabilities/skills so other agents can discover you via a2a_discover.',
-  {
-    skills: z.array(z.string()).describe('List of skill tags (e.g., ["frontend", "testing", "devops"])'),
-    description: z.string().optional().describe('Short description of what this agent does'),
-  },
+  A2A_SET_SKILLS_SHAPE,
   async ({ skills, description }) => {
     const wsId = await requireWorkspaceId();
     return callRpc('meta.setSkills', { workspaceId: wsId, skills, description });
@@ -1202,11 +1269,7 @@ server.tool(
 server.tool(
   'company_a2a_send',
   'Company mode: send a structured message to another agent by name (resolves by department → lead, member name, or "CEO"). Prefer this over send_message when the target is a company member rather than a raw workspace.',
-  {
-    to: z.string().describe('Target agent name, department name, or "CEO"'),
-    message: z.string().describe('Message content'),
-    priority: z.enum(['low', 'normal', 'high']).optional().describe('Message priority (default: normal)'),
-  },
+  COMPANY_A2A_SEND_SHAPE,
   async ({ to, message, priority }) => {
     const wsId = await requireWorkspaceId();
     return callRpc('company.a2a.send', {
@@ -1221,10 +1284,7 @@ server.tool(
 server.tool(
   'company_a2a_broadcast',
   'Company mode: broadcast a message to ALL agents in the company. Use sparingly. For workspace-wide broadcast (not company members), use a2a_broadcast.',
-  {
-    message: z.string().describe('Broadcast message content'),
-    priority: z.enum(['low', 'normal', 'high']).optional().describe('Message priority'),
-  },
+  COMPANY_A2A_BROADCAST_SHAPE,
   async ({ message, priority }) => {
     const wsId = await requireWorkspaceId();
     return callRpc('company.a2a.broadcast', {
@@ -1238,9 +1298,7 @@ server.tool(
 server.tool(
   'company_a2a_inbox',
   'Company mode: pull your inbox of structured messages from other agents. Returns messages with IDs — call company_a2a_ack to mark them as read. Canonical delivery channel (inbox/ack) rather than PTY paste.',
-  {
-    unread_only: z.boolean().optional().describe('Only return unread messages (default: true)'),
-  },
+  COMPANY_A2A_INBOX_SHAPE,
   async ({ unread_only }) => {
     const wsId = await requireWorkspaceId();
     return callRpc('company.a2a.inbox', { workspaceId: wsId, unreadOnly: unread_only !== false });
@@ -1250,9 +1308,7 @@ server.tool(
 server.tool(
   'company_a2a_ack',
   'Company mode: acknowledge (mark as read) inbox messages by their IDs.',
-  {
-    message_ids: z.array(z.string()).describe('Array of message IDs to acknowledge'),
-  },
+  COMPANY_A2A_ACK_SHAPE,
   async ({ message_ids }) => {
     const wsId = await requireWorkspaceId();
     return callRpc('company.a2a.ack', { workspaceId: wsId, messageIds: message_ids });

@@ -12,6 +12,42 @@ const optionalSurfaceId = z
   .optional()
   .describe('Target a specific surface by ID. Omit to use the active surface.');
 
+// Module-scope parameter shapes: hoisted out of the per-registration path so
+// every createWmuxServer() instance shares one set of zod schema objects.
+const BROWSER_SMART_SNAPSHOT_SHAPE = {
+  maxContentLength: z
+    .number()
+    .optional()
+    .describe('Maximum length of the content summary in characters (default 3000).'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_EXTRACT_TEXT_SHAPE = {
+  selector: z
+    .string()
+    .optional()
+    .describe('CSS selector to scope extraction to a specific element.'),
+  maxLength: z
+    .number()
+    .optional()
+    .describe('Maximum length of the returned markdown in characters.'),
+  includeLinks: z
+    .boolean()
+    .optional()
+    .describe('If true, preserve hyperlinks in the markdown output (default false).'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_EXTRACT_DATA_SHAPE = {
+  goal: z
+    .string()
+    .describe('Description of what data to extract (e.g. "product list", "search results").'),
+  fields: z
+    .record(z.string(), z.string())
+    .describe('Map of field names to their expected types (e.g. { name: "string", price: "number", url: "string" }).'),
+  surfaceId: optionalSurfaceId,
+};
+
 /**
  * Register extraction-related MCP tools on the given server.
  *
@@ -29,13 +65,7 @@ export function registerExtractionTools(server: McpServer): void {
   server.tool(
     'browser_smart_snapshot',
     'Get a smart snapshot of the page with indexed interactive elements and clean text content. Use element ref numbers with browser_click to interact.',
-    {
-      maxContentLength: z
-        .number()
-        .optional()
-        .describe('Maximum length of the content summary in characters (default 3000).'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_SMART_SNAPSHOT_SHAPE,
     async ({ maxContentLength, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // Playwright path uses the CDP accessibility tree; when no Page is
@@ -84,21 +114,7 @@ export function registerExtractionTools(server: McpServer): void {
   server.tool(
     'browser_extract_text',
     'Extract page content as clean markdown text, stripping navigation and noise.',
-    {
-      selector: z
-        .string()
-        .optional()
-        .describe('CSS selector to scope extraction to a specific element.'),
-      maxLength: z
-        .number()
-        .optional()
-        .describe('Maximum length of the returned markdown in characters.'),
-      includeLinks: z
-        .boolean()
-        .optional()
-        .describe('If true, preserve hyperlinks in the markdown output (default false).'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_EXTRACT_TEXT_SHAPE,
     async ({ selector, maxLength, includeLinks, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // resolveEvaluator picks the Playwright page when available, else the
@@ -131,15 +147,7 @@ export function registerExtractionTools(server: McpServer): void {
   server.tool(
     'browser_extract_data',
     'Extract structured data from the page (tables, lists, repeated items) as JSON.',
-    {
-      goal: z
-        .string()
-        .describe('Description of what data to extract (e.g. "product list", "search results").'),
-      fields: z
-        .record(z.string(), z.string())
-        .describe('Map of field names to their expected types (e.g. { name: "string", price: "number", url: "string" }).'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_EXTRACT_DATA_SHAPE,
     async ({ goal, fields, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // Native page.evaluate(fn, arg) when a Page exists (unchanged dev path);

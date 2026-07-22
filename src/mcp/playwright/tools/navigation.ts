@@ -11,6 +11,34 @@ const optionalSurfaceId = z
   .optional()
   .describe('Target a specific surface by ID. Omit to use the active surface.');
 
+// Module-scope parameter shapes: hoisted out of the per-registration path so
+// every createWmuxServer() instance shares one set of zod schema objects
+// (per-connection memory reduction). Shapes carry no per-call state — only the
+// handlers (which stay inside the register* functions) close over runtime deps.
+const BROWSER_NAVIGATE_SHAPE = {
+  url: z.string().describe('The URL to navigate to'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_NAVIGATE_BACK_SHAPE = {
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_TABS_SHAPE = {
+  action: z
+    .enum(['list', 'new', 'select', 'close'])
+    .optional()
+    .describe('Action to perform. Defaults to "list".'),
+  tabId: z
+    .number()
+    .optional()
+    .describe('Tab index (0-based) for "select" or "close" actions.'),
+  url: z
+    .string()
+    .optional()
+    .describe('URL to open when action is "new".'),
+};
+
 /**
  * Register navigation-related MCP tools on the given server.
  *
@@ -28,10 +56,7 @@ export function registerNavigationTools(server: McpServer): void {
   server.tool(
     'browser_navigate',
     'Navigate the browser page to a URL. Returns the final URL after navigation.',
-    {
-      url: z.string().describe('The URL to navigate to'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_NAVIGATE_SHAPE,
     async ({ url, surfaceId }) => {
       try {
         const urlCheck = validateNavigationUrl(url);
@@ -63,9 +88,7 @@ export function registerNavigationTools(server: McpServer): void {
   server.tool(
     'browser_navigate_back',
     'Go back in browser history. Returns the current URL after going back.',
-    {
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_NAVIGATE_BACK_SHAPE,
     async ({ surfaceId }) => {
       try {
         await sendRpc('browser.goBack', {
@@ -99,20 +122,7 @@ export function registerNavigationTools(server: McpServer): void {
   server.tool(
     'browser_tabs',
     'Manage browser tabs: list all tabs, open a new tab, select a tab, or close a tab.',
-    {
-      action: z
-        .enum(['list', 'new', 'select', 'close'])
-        .optional()
-        .describe('Action to perform. Defaults to "list".'),
-      tabId: z
-        .number()
-        .optional()
-        .describe('Tab index (0-based) for "select" or "close" actions.'),
-      url: z
-        .string()
-        .optional()
-        .describe('URL to open when action is "new".'),
-    },
+    BROWSER_TABS_SHAPE,
     async ({ action, tabId, url }) => withAutomationLease(undefined, async () => {
       try {
         const browser = await engine.getBrowser();

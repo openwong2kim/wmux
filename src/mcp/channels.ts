@@ -116,6 +116,141 @@ async function callChannelRpc(
   }
 }
 
+// Module-scope parameter shapes: hoisted out of the per-registration path so
+// every createWmuxServer() instance shares one set of zod schema objects. The
+// shapes carry no per-call state — the handlers (which close over `deps`) stay
+// inside registerChannelTools. channel_list takes no params, so its `{}` shape
+// stays inline (no zod objects to share).
+const CHANNEL_CREATE_SHAPE = {
+  name: channelNameSchema,
+  visibility: visibilitySchema,
+  topic: topicSchema,
+  member_id: memberIdSchema,
+  member_name: memberNameSchema,
+};
+
+const CHANNEL_POST_SHAPE = {
+  channel_id: z.string().describe('Target channel id.'),
+  text: z.string().describe('Message body. Newlines are preserved.'),
+  member_id: memberIdSchema,
+  member_name: memberNameSchema,
+  client_msg_id: z
+    .string()
+    .optional()
+    .describe('Optional idempotency key. Two posts with the same key on the same channel return the original seq instead of appending a duplicate.'),
+  mentions: z
+    .array(
+      z.object({
+        workspace_id: z.string().describe('Mentioned member workspace id. Dropped server-side unless it is a CURRENT channel member.'),
+        name: z.string().optional().describe('Display name for the @mention (defaults to the workspace id).'),
+        member_id: z.string().optional().describe('Narrow the mention to a specific member; omit for a workspace-level mention.'),
+      }),
+    )
+    .optional()
+    .describe('@-mentions to ping specific members. Each must be a current channel member; a non-member target is returned in `droppedMentions` (not silently dropped) so you know it did not land. Mentioned workspaces are notified via their a2a inbox.'),
+};
+
+const CHANNEL_JOIN_SHAPE = {
+  channel_id: z.string().describe('Target channel id.'),
+  member_id: memberIdSchema,
+  member_name: memberNameSchema,
+  include_history: z
+    .boolean()
+    .optional()
+    .describe('When true (default), the new member sees the channel\'s full history. When false, they see only posts after their join.'),
+};
+
+const CHANNEL_LEAVE_SHAPE = {
+  channel_id: z.string().describe('Target channel id.'),
+  member_id: memberIdSchema,
+};
+
+const CHANNEL_READ_SHAPE = {
+  channel_id: z.string().describe('Target channel id.'),
+  since_seq: z
+    .number()
+    .int()
+    .min(0)
+    .optional()
+    .describe(
+      'Return messages with seq >= since_seq (forward pagination). When combined with limit, the ' +
+        'floor is applied first, then the most recent `limit` of the remainder.',
+    ),
+  limit: z
+    .number()
+    .int()
+    .min(1)
+    .max(500)
+    .optional()
+    .describe('Max messages to return, taken from the newest end. Defaults to 50 to protect your context window.'),
+};
+
+const CHANNEL_INVITE_SHAPE = {
+  channel_id: z.string().describe('Target channel id.'),
+  invited_workspace_id: z.string().describe('Workspace id of the agent/workspace to add (the invitee, not you).'),
+  member_id: z
+    .string()
+    .describe('Member id for the INVITED workspace within the channel (e.g. "lead", "backend") — identifies the invitee, not the caller.'),
+  member_name: z
+    .string()
+    .optional()
+    .describe('Optional display-name fallback for the INVITED member — the daemon derives the shown name from the roster (server-owned).'),
+  include_history: z
+    .boolean()
+    .optional()
+    .describe('When true (default) the invited member sees the full channel history; false starts them at the current message.'),
+};
+
+const CHANNEL_GET_MEMBERS_SHAPE = {
+  channel_id: z.string().describe('Target channel id.'),
+};
+
+const CHANNEL_ACK_SHAPE = {
+  channel_id: z.string().describe('Target channel id.'),
+  upto_seq: z
+    .number()
+    .int()
+    .min(0)
+    .describe('Highest message seq you have consumed (inclusive) — the last seq returned by the channel_read page you just processed.'),
+  member_id: z
+    .string()
+    .optional()
+    .describe('YOUR member row in this channel (e.g. "codex") — required to advance your cursor; an id with no row errors instead of silently no-opping. Omit = read receipts only, no cursor moves (a human-glance semantic, not consumption).'),
+};
+
+const CHANNEL_UNREAD_SHAPE = {
+  member_id: z
+    .string()
+    .optional()
+    .describe('Narrow the summary to one of your member rows. Omit for every row your workspace holds.'),
+};
+
+const CHANNEL_MISSION_START_SHAPE = {
+  title: z.string().min(1).max(256).describe('Human-readable mission title (max 256 chars). Also seeds the channel name.'),
+  member_id: memberIdSchema,
+  invite: z
+    .array(
+      z.object({
+        workspace_id: z.string().describe('Workspace id of the member to seed into the mission channel.'),
+        member_id: z.string().describe('Member id within that workspace.'),
+      }),
+    )
+    .optional()
+    .describe('Optional initial members to add to the mission channel alongside you.'),
+  idempotency_key: z
+    .string()
+    .optional()
+    .describe('Optional idempotency key. A retried start with the same key returns the original { taskId, channelId } instead of creating a duplicate.'),
+};
+
+const CHANNEL_MISSION_CLOSE_SHAPE = {
+  task_id: z.string().describe('The WorkTask id returned by channel_mission_start.'),
+  idempotency_key: z
+    .string()
+    .optional()
+    .describe('Optional idempotency key. A retried close with the same key returns the original result.'),
+};
+
 /** Register the standard channel tools on the given MCP server. The
  *  parent module injects `resolveWorkspaceId` so workspace identity follows
  *  the same verification rules as the rest of the bundled server (verified
@@ -144,13 +279,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   server.tool(
     'channel_create',
     'Create a new channel. The creator is auto-added as a member with full history (plan KTD10). Visibility is immutable post-creation; a "private" channel must be joined by an existing member. Topics are optional and editable only via the underlying daemon.',
-    {
-      name: channelNameSchema,
-      visibility: visibilitySchema,
-      topic: topicSchema,
-      member_id: memberIdSchema,
-      member_name: memberNameSchema,
-    },
+    CHANNEL_CREATE_SHAPE,
     async ({ name, visibility, topic, member_id, member_name }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
@@ -175,26 +304,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   server.tool(
     'channel_post',
     'Post a message to a channel. Returns isError=true with code PERSIST_FAILED when persistence fails (U2 maintainer directive: do not swallow saveImmediate errors on the post path), CHANNEL_ARCHIVED for read-only channels, and CHANNEL_MENTIONS_TOO_MANY when a single post lists too many @mentions. Use client_msg_id for at-most-once delivery — a repeat post with the same key returns the original `seq` instead of appending a duplicate. IMPORTANT: check `droppedMentions` on the result — any @mention whose target workspace is NOT a channel member is reported there (not silently dropped), so you know that ping did not land.',
-    {
-      channel_id: z.string().describe('Target channel id.'),
-      text: z.string().describe('Message body. Newlines are preserved.'),
-      member_id: memberIdSchema,
-      member_name: memberNameSchema,
-      client_msg_id: z
-        .string()
-        .optional()
-        .describe('Optional idempotency key. Two posts with the same key on the same channel return the original seq instead of appending a duplicate.'),
-      mentions: z
-        .array(
-          z.object({
-            workspace_id: z.string().describe('Mentioned member workspace id. Dropped server-side unless it is a CURRENT channel member.'),
-            name: z.string().optional().describe('Display name for the @mention (defaults to the workspace id).'),
-            member_id: z.string().optional().describe('Narrow the mention to a specific member; omit for a workspace-level mention.'),
-          }),
-        )
-        .optional()
-        .describe('@-mentions to ping specific members. Each must be a current channel member; a non-member target is returned in `droppedMentions` (not silently dropped) so you know it did not land. Mentioned workspaces are notified via their a2a inbox.'),
-    },
+    CHANNEL_POST_SHAPE,
     async ({ channel_id, text, member_id, member_name, client_msg_id, mentions }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
@@ -225,15 +335,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   server.tool(
     'channel_join',
     'Join a channel as a member. By default joins with full history (historyFromSeq=0); pass include_history=false to start at the channel\'s current seq (no past messages). Public channels are joinable by any company member; private channels require an existing member to add you (not yet exposed via MCP — see plan Scope Boundaries).',
-    {
-      channel_id: z.string().describe('Target channel id.'),
-      member_id: memberIdSchema,
-      member_name: memberNameSchema,
-      include_history: z
-        .boolean()
-        .optional()
-        .describe('When true (default), the new member sees the channel\'s full history. When false, they see only posts after their join.'),
-    },
+    CHANNEL_JOIN_SHAPE,
     async ({ channel_id, member_id, member_name, include_history }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
@@ -256,10 +358,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   server.tool(
     'channel_leave',
     'Leave a channel. The caller\'s (workspaceId, memberId) pair is removed from the member list. If the channel becomes empty, the 7-day empty-channel reaper (plan KTD8) will purge it.',
-    {
-      channel_id: z.string().describe('Target channel id.'),
-      member_id: memberIdSchema,
-    },
+    CHANNEL_LEAVE_SHAPE,
     async ({ channel_id, member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callChannelRpc('a2a.channel.leave' as RpcMethod, {
@@ -293,25 +392,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       'recent `limit` messages (display). Reading consumes your context window, so prefer a small ' +
       '`limit`. A private channel you are not a member of returns an empty list; a missing channel ' +
       'returns an error.',
-    {
-      channel_id: z.string().describe('Target channel id.'),
-      since_seq: z
-        .number()
-        .int()
-        .min(0)
-        .optional()
-        .describe(
-          'Return messages with seq >= since_seq (forward pagination). When combined with limit, the ' +
-            'floor is applied first, then the most recent `limit` of the remainder.',
-        ),
-      limit: z
-        .number()
-        .int()
-        .min(1)
-        .max(500)
-        .optional()
-        .describe('Max messages to return, taken from the newest end. Defaults to 50 to protect your context window.'),
-    },
+    CHANNEL_READ_SHAPE,
     async ({ channel_id, since_seq, limit }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
@@ -333,21 +414,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   server.tool(
     'channel_invite',
     'Invite ANOTHER workspace/agent to a channel you belong to. This is the only way to add someone to a private channel (you cannot self-join one). Any member may invite; the invited workspace gains the channel history and live messages. Use channel_join to add YOURSELF to a public channel instead.',
-    {
-      channel_id: z.string().describe('Target channel id.'),
-      invited_workspace_id: z.string().describe('Workspace id of the agent/workspace to add (the invitee, not you).'),
-      member_id: z
-        .string()
-        .describe('Member id for the INVITED workspace within the channel (e.g. "lead", "backend") — identifies the invitee, not the caller.'),
-      member_name: z
-        .string()
-        .optional()
-        .describe('Optional display-name fallback for the INVITED member — the daemon derives the shown name from the roster (server-owned).'),
-      include_history: z
-        .boolean()
-        .optional()
-        .describe('When true (default) the invited member sees the full channel history; false starts them at the current message.'),
-    },
+    CHANNEL_INVITE_SHAPE,
     async ({ channel_id, invited_workspace_id, member_id, member_name, include_history }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callChannelRpc('a2a.channel.invite' as RpcMethod, {
@@ -373,9 +440,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   server.tool(
     'channel_get_members',
     'List the members of a channel you can see. Returns each member\'s workspaceId, memberId, joinedAt, and history floor. A private channel you are not a member of returns an empty list (membership is not leaked to non-members).',
-    {
-      channel_id: z.string().describe('Target channel id.'),
-    },
+    CHANNEL_GET_MEMBERS_SHAPE,
     async ({ channel_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callChannelRpc('a2a.channel.getMembers' as RpcMethod, {
@@ -395,18 +460,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   server.tool(
     'channel_ack',
     'Acknowledge channel messages up to a seq (inclusive) as consumed. Call this after channel_read with the highest seq you actually processed (read oldest-first via since_seq and repeat until drained — do not ack past messages you have not seen). Advances your durable read cursor, clears your unread count, and stops re-nudges. Advance-only (acking an older seq never rewinds) and clamped to the channel head. Requires member_id to move a cursor; an unknown member_id is an error, and omitting it records read receipts only.',
-    {
-      channel_id: z.string().describe('Target channel id.'),
-      upto_seq: z
-        .number()
-        .int()
-        .min(0)
-        .describe('Highest message seq you have consumed (inclusive) — the last seq returned by the channel_read page you just processed.'),
-      member_id: z
-        .string()
-        .optional()
-        .describe('YOUR member row in this channel (e.g. "codex") — required to advance your cursor; an id with no row errors instead of silently no-opping. Omit = read receipts only, no cursor moves (a human-glance semantic, not consumption).'),
-    },
+    CHANNEL_ACK_SHAPE,
     async ({ channel_id, upto_seq, member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callChannelRpc('a2a.channel.ack' as RpcMethod, {
@@ -428,12 +482,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   server.tool(
     'channel_unread',
     'Summarize your unread channel messages: per-channel unread count, mention-unread count (messages that @-mention you), your cursor (lastReadSeq), the channel head seq, and trimmedBeforeCursor (messages lost to retention before you read them — never silently dropped). Cheap to call; does not consume messages. Follow up with channel_read + channel_ack.',
-    {
-      member_id: z
-        .string()
-        .optional()
-        .describe('Narrow the summary to one of your member rows. Omit for every row your workspace holds.'),
-    },
+    CHANNEL_UNREAD_SHAPE,
     async ({ member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       return callChannelRpc('a2a.channel.unread' as RpcMethod, {
@@ -452,23 +501,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   server.tool(
     'channel_mission_start',
     'Start a mission: create a WorkTask (owned by you) plus a private mission channel bound to it. Returns { taskId, channelId }. Use idempotency_key to make a retried start safe — a repeat with the same key returns the original { taskId, channelId } instead of creating a duplicate mission + channel. Optionally seed the channel with initial members via invite.',
-    {
-      title: z.string().min(1).max(256).describe('Human-readable mission title (max 256 chars). Also seeds the channel name.'),
-      member_id: memberIdSchema,
-      invite: z
-        .array(
-          z.object({
-            workspace_id: z.string().describe('Workspace id of the member to seed into the mission channel.'),
-            member_id: z.string().describe('Member id within that workspace.'),
-          }),
-        )
-        .optional()
-        .describe('Optional initial members to add to the mission channel alongside you.'),
-      idempotency_key: z
-        .string()
-        .optional()
-        .describe('Optional idempotency key. A retried start with the same key returns the original { taskId, channelId } instead of creating a duplicate.'),
-    },
+    CHANNEL_MISSION_START_SHAPE,
     async ({ title, member_id, invite, idempotency_key }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {
@@ -493,13 +526,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
   server.tool(
     'channel_mission_close',
     'Close a mission by task_id: mark the WorkTask closed and archive its mission channel. Only the task owner (or the CEO) may close. Re-closing an already-closed mission is a no-op success. Use idempotency_key to make a retried close safe.',
-    {
-      task_id: z.string().describe('The WorkTask id returned by channel_mission_start.'),
-      idempotency_key: z
-        .string()
-        .optional()
-        .describe('Optional idempotency key. A retried close with the same key returns the original result.'),
-    },
+    CHANNEL_MISSION_CLOSE_SHAPE,
     async ({ task_id, idempotency_key }) => {
       const workspaceId = await deps.resolveWorkspaceId();
       const params: Record<string, unknown> = {

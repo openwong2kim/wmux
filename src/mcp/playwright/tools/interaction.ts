@@ -13,6 +13,97 @@ const optionalSurfaceId = z
   .optional()
   .describe('Target a specific surface by ID. Omit to use the active surface.');
 
+// Module-scope parameter shapes: hoisted out of the per-registration path so
+// every createWmuxServer() instance shares one set of zod schema objects.
+const BROWSER_CLICK_SHAPE = {
+  ref: z.string().optional().describe('Element ref number from browser_snapshot'),
+  smartRef: z
+    .number()
+    .optional()
+    .describe('Element ref number from browser_smart_snapshot (dom-intelligence). If provided, takes priority over ref.'),
+  double: z
+    .boolean()
+    .optional()
+    .describe('If true, perform a double-click instead of a single click.'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_TYPE_SHAPE = {
+  ref: z.string().describe('Element ref number from browser_snapshot'),
+  text: z.string().describe('Text to type into the element'),
+  submit: z
+    .boolean()
+    .optional()
+    .describe('If true, press Enter after typing.'),
+  humanlike: z
+    .boolean()
+    .optional()
+    .describe('If true, type with randomised human-like delays.'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_FILL_SHAPE = {
+  fields: z
+    .array(
+      z.object({
+        ref: z.string().describe('Element ref number'),
+        value: z.string().describe('Value to fill'),
+      }),
+    )
+    .describe('Array of {ref, value} pairs to fill'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_PRESS_KEY_SHAPE = {
+  key: z
+    .string()
+    .describe(
+      'Key to press. Examples: Enter, Tab, Escape, ArrowDown, Control+a, Meta+c',
+    ),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_HOVER_SHAPE = {
+  ref: z.string().describe('Element ref number from browser_snapshot'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_DRAG_SHAPE = {
+  sourceRef: z
+    .string()
+    .describe('Ref number of the element to drag from'),
+  targetRef: z.string().describe('Ref number of the element to drop onto'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_SELECT_SHAPE = {
+  ref: z.string().describe('Element ref number of the <select>'),
+  values: z
+    .array(z.string())
+    .describe('Array of option values to select'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_SCROLL_INTO_VIEW_SHAPE = {
+  ref: z.string().describe('Element ref number from browser_snapshot'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_SCROLL_SHAPE = {
+  direction: z
+    .enum(['up', 'down', 'left', 'right'])
+    .describe('Scroll direction'),
+  amount: z
+    .number()
+    .optional()
+    .describe('Pixels to scroll (default: 500). Use large values like 99999 for "scroll to top/bottom".'),
+  ref: z
+    .string()
+    .optional()
+    .describe('Element ref to scroll inside (e.g. a scrollable container). Omit to scroll the page.'),
+  surfaceId: optionalSurfaceId,
+};
+
 const REF_NOT_FOUND_HINT =
   'Element with ref={ref} not found. Run browser_snapshot to get current refs.';
 
@@ -98,18 +189,7 @@ export function registerInteractionTools(server: McpServer): void {
   server.tool(
     'browser_click',
     'Click an element identified by its ref number from the accessibility snapshot, or by a smartRef from browser_smart_snapshot.',
-    {
-      ref: z.string().optional().describe('Element ref number from browser_snapshot'),
-      smartRef: z
-        .number()
-        .optional()
-        .describe('Element ref number from browser_smart_snapshot (dom-intelligence). If provided, takes priority over ref.'),
-      double: z
-        .boolean()
-        .optional()
-        .describe('If true, perform a double-click instead of a single click.'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_CLICK_SHAPE,
     async ({ ref, smartRef, double, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // Try Playwright first
@@ -165,19 +245,7 @@ export function registerInteractionTools(server: McpServer): void {
   server.tool(
     'browser_type',
     'Type text into an element identified by its ref number.',
-    {
-      ref: z.string().describe('Element ref number from browser_snapshot'),
-      text: z.string().describe('Text to type into the element'),
-      submit: z
-        .boolean()
-        .optional()
-        .describe('If true, press Enter after typing.'),
-      humanlike: z
-        .boolean()
-        .optional()
-        .describe('If true, type with randomised human-like delays.'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_TYPE_SHAPE,
     async ({ ref, text, submit, humanlike, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
@@ -222,17 +290,7 @@ export function registerInteractionTools(server: McpServer): void {
   server.tool(
     'browser_fill',
     'Fill multiple form fields at once. Each field is identified by a ref number.',
-    {
-      fields: z
-        .array(
-          z.object({
-            ref: z.string().describe('Element ref number'),
-            value: z.string().describe('Value to fill'),
-          }),
-        )
-        .describe('Array of {ref, value} pairs to fill'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_FILL_SHAPE,
     async ({ fields, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
@@ -280,14 +338,7 @@ export function registerInteractionTools(server: McpServer): void {
   server.tool(
     'browser_press_key',
     'Press a keyboard key (e.g. Enter, Tab, Escape, ArrowDown, Control+a).',
-    {
-      key: z
-        .string()
-        .describe(
-          'Key to press. Examples: Enter, Tab, Escape, ArrowDown, Control+a, Meta+c',
-        ),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_PRESS_KEY_SHAPE,
     async ({ key, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
@@ -317,10 +368,7 @@ export function registerInteractionTools(server: McpServer): void {
   server.tool(
     'browser_hover',
     'Hover over an element identified by its ref number.',
-    {
-      ref: z.string().describe('Element ref number from browser_snapshot'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_HOVER_SHAPE,
     async ({ ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
@@ -362,13 +410,7 @@ export function registerInteractionTools(server: McpServer): void {
   server.tool(
     'browser_drag',
     'Drag an element from sourceRef to targetRef.',
-    {
-      sourceRef: z
-        .string()
-        .describe('Ref number of the element to drag from'),
-      targetRef: z.string().describe('Ref number of the element to drop onto'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_DRAG_SHAPE,
     async ({ sourceRef, targetRef, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
@@ -433,13 +475,7 @@ export function registerInteractionTools(server: McpServer): void {
   server.tool(
     'browser_select',
     'Select option(s) in a <select> element by value.',
-    {
-      ref: z.string().describe('Element ref number of the <select>'),
-      values: z
-        .array(z.string())
-        .describe('Array of option values to select'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_SELECT_SHAPE,
     async ({ ref, values, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
@@ -481,10 +517,7 @@ export function registerInteractionTools(server: McpServer): void {
   server.tool(
     'browser_scroll_into_view',
     'Scroll an element into the visible viewport.',
-    {
-      ref: z.string().describe('Element ref number from browser_snapshot'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_SCROLL_INTO_VIEW_SHAPE,
     async ({ ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
@@ -523,20 +556,7 @@ export function registerInteractionTools(server: McpServer): void {
   server.tool(
     'browser_scroll',
     'Scroll the page or a scrollable element. Use direction and amount to control scrolling.',
-    {
-      direction: z
-        .enum(['up', 'down', 'left', 'right'])
-        .describe('Scroll direction'),
-      amount: z
-        .number()
-        .optional()
-        .describe('Pixels to scroll (default: 500). Use large values like 99999 for "scroll to top/bottom".'),
-      ref: z
-        .string()
-        .optional()
-        .describe('Element ref to scroll inside (e.g. a scrollable container). Omit to scroll the page.'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_SCROLL_SHAPE,
     async ({ direction, amount, ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
       const px = amount ?? 500;
       const deltaX = direction === 'right' ? px : direction === 'left' ? -px : 0;

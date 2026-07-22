@@ -59,6 +59,42 @@ export interface PaneLifecycleDeps {
   resolveCallerWorkspaceId: () => Promise<string>;
 }
 
+// Module-scope parameter shapes: hoisted out of the per-registration path so
+// every createWmuxServer() instance shares one set of zod schema objects. The
+// shapes carry no per-call state — the handlers (which close over `deps`) stay
+// inside registerPaneLifecycleTools.
+const PANE_SPLIT_SHAPE = {
+  workspaceId: z
+    .string()
+    .optional()
+    .describe("Target workspace by id. Omit to use your own (the caller's) workspace."),
+  direction: z
+    .enum(['horizontal', 'vertical'])
+    .optional()
+    .describe('Split direction. Default: horizontal.'),
+};
+
+const PANE_CLOSE_SHAPE = {
+  paneId: z.string().describe('Leaf pane id to close (from pane_list).'),
+};
+
+const PANE_FOCUS_SHAPE = {
+  paneId: z.string().describe('Leaf pane id to focus (from pane_list).'),
+};
+
+const SURFACE_NEW_SHAPE = {
+  workspaceId: z
+    .string()
+    .optional()
+    .describe("Target workspace by id. Omit to use your own (the caller's) workspace."),
+  shell: z.string().optional().describe('Shell override. Omit for the workspace default.'),
+  cwd: z.string().optional().describe('Working directory. Omit for the workspace default.'),
+};
+
+const SURFACE_CLOSE_SHAPE = {
+  surfaceId: z.string().describe('Surface id to close (from surface_list).'),
+};
+
 /** Register the five pane/surface lifecycle tools on the given MCP server. */
 export function registerPaneLifecycleTools(server: McpServer, deps: PaneLifecycleDeps): void {
   const { callRpc, resolveCallerWorkspaceId } = deps;
@@ -67,16 +103,7 @@ export function registerPaneLifecycleTools(server: McpServer, deps: PaneLifecycl
   server.tool(
     'pane_split',
     'Split a leaf pane, creating a new sibling pane. Returns the new paneId (and a ptyWarning if a background PTY could not be pre-spawned). Omit workspaceId to split inside your own (the caller\'s) workspace; pass it to target a specific one — an unknown id is rejected, never silently redirected to the on-screen workspace.',
-    {
-      workspaceId: z
-        .string()
-        .optional()
-        .describe("Target workspace by id. Omit to use your own (the caller's) workspace."),
-      direction: z
-        .enum(['horizontal', 'vertical'])
-        .optional()
-        .describe('Split direction. Default: horizontal.'),
-    },
+    PANE_SPLIT_SHAPE,
     async ({ workspaceId, direction }) => {
       const resolved = workspaceId || (await resolveCallerWorkspaceId());
       const params: Record<string, unknown> = { direction: direction ?? 'horizontal' };
@@ -89,9 +116,7 @@ export function registerPaneLifecycleTools(server: McpServer, deps: PaneLifecycl
   server.tool(
     'pane_close',
     'Close a leaf pane and dispose its surfaces\' PTYs. paneId is globally unique and resolved across all workspaces, so a supervisor can reap a worker pane it created in a background workspace. Rejects branch (non-leaf) panes and the root pane.',
-    {
-      paneId: z.string().describe('Leaf pane id to close (from pane_list).'),
-    },
+    PANE_CLOSE_SHAPE,
     async ({ paneId }) => callRpc('pane.close', { id: paneId }),
   );
 
@@ -99,9 +124,7 @@ export function registerPaneLifecycleTools(server: McpServer, deps: PaneLifecycl
   server.tool(
     'pane_focus',
     'Focus a leaf pane. Does NOT switch the on-screen workspace (non-yank): focusing a pane in a background workspace marks it active there without stealing the user\'s screen. Use workspace.focus to switch screens. paneId is resolved across all workspaces.',
-    {
-      paneId: z.string().describe('Leaf pane id to focus (from pane_list).'),
-    },
+    PANE_FOCUS_SHAPE,
     async ({ paneId }) => callRpc('pane.focus', { id: paneId }),
   );
 
@@ -109,14 +132,7 @@ export function registerPaneLifecycleTools(server: McpServer, deps: PaneLifecycl
   server.tool(
     'surface_new',
     'Open a new surface (terminal) in the active pane of a workspace. Returns the new surfaceId + ptyId. Omit workspaceId to open in your own (the caller\'s) workspace; an explicit unknown id is rejected.',
-    {
-      workspaceId: z
-        .string()
-        .optional()
-        .describe("Target workspace by id. Omit to use your own (the caller's) workspace."),
-      shell: z.string().optional().describe('Shell override. Omit for the workspace default.'),
-      cwd: z.string().optional().describe('Working directory. Omit for the workspace default.'),
-    },
+    SURFACE_NEW_SHAPE,
     async ({ workspaceId, shell, cwd }) => {
       const resolved = workspaceId || (await resolveCallerWorkspaceId());
       const params: Record<string, unknown> = {};
@@ -131,9 +147,7 @@ export function registerPaneLifecycleTools(server: McpServer, deps: PaneLifecycl
   server.tool(
     'surface_close',
     'Close a surface and dispose its PTY. surfaceId is globally unique and resolved across all workspaces.',
-    {
-      surfaceId: z.string().describe('Surface id to close (from surface_list).'),
-    },
+    SURFACE_CLOSE_SHAPE,
     async ({ surfaceId }) => callRpc('surface.close', { id: surfaceId }),
   );
 }

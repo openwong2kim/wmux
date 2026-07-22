@@ -11,6 +11,32 @@ const optionalSurfaceId = z
   .optional()
   .describe('Target a specific surface by ID. Omit to use the active surface.');
 
+// Module-scope parameter shape: hoisted out of the per-registration path so
+// every createWmuxServer() instance shares one set of zod schema objects.
+const BROWSER_WAIT_SHAPE = {
+  url: z
+    .string()
+    .optional()
+    .describe('URL or glob pattern to wait for (e.g. "**/dashboard**").'),
+  selector: z
+    .string()
+    .optional()
+    .describe('CSS selector to wait for.'),
+  text: z
+    .string()
+    .optional()
+    .describe('Text to wait for in document.body.innerText.'),
+  fn: z
+    .string()
+    .optional()
+    .describe('Custom JavaScript predicate function body to wait for (must return truthy).'),
+  timeout: z
+    .number()
+    .optional()
+    .describe('Maximum wait time in milliseconds. Defaults to 30000.'),
+  surfaceId: optionalSurfaceId,
+};
+
 // ---------------------------------------------------------------------------
 // Packaged RPC fallback helpers (#114)
 // ---------------------------------------------------------------------------
@@ -102,29 +128,7 @@ export function registerWaitTools(server: McpServer): void {
   server.tool(
     'browser_wait',
     'Wait for a condition: URL pattern, CSS selector, text content, custom JS predicate, or network idle. Priority: url > selector > text > fn > networkidle.',
-    {
-      url: z
-        .string()
-        .optional()
-        .describe('URL or glob pattern to wait for (e.g. "**/dashboard**").'),
-      selector: z
-        .string()
-        .optional()
-        .describe('CSS selector to wait for.'),
-      text: z
-        .string()
-        .optional()
-        .describe('Text to wait for in document.body.innerText.'),
-      fn: z
-        .string()
-        .optional()
-        .describe('Custom JavaScript predicate function body to wait for (must return truthy).'),
-      timeout: z
-        .number()
-        .optional()
-        .describe('Maximum wait time in milliseconds. Defaults to 30000.'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_WAIT_SHAPE,
     async ({ url, selector, text, fn, timeout, surfaceId }) => withAutomationLease(surfaceId, async () => {
       const resolvedTimeout = timeout ?? 30000;
 

@@ -14,6 +14,111 @@ const optionalSurfaceId = z
   .optional()
   .describe('Target a specific surface by ID. Omit to use the active surface.');
 
+// Module-scope parameter shapes: hoisted out of the per-registration path so
+// every createWmuxServer() instance shares one set of zod schema objects.
+const BROWSER_COOKIES_SHAPE = {
+  action: z
+    .enum(['get', 'set', 'clear'])
+    .describe('Action to perform on cookies.'),
+  url: z
+    .string()
+    .optional()
+    .describe('URL to filter cookies by (for "get" action).'),
+  cookies: z
+    .array(
+      z.object({
+        name: z.string().describe('Cookie name'),
+        value: z.string().describe('Cookie value'),
+        domain: z.string().optional().describe('Cookie domain'),
+        path: z.string().optional().describe('Cookie path'),
+      }),
+    )
+    .optional()
+    .describe('Cookies to set (for "set" action).'),
+  allowSensitiveDomains: z
+    .boolean()
+    .optional()
+    .describe('Allow reading cookies from sensitive domains (email, banking, auth). Default false.'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_STORAGE_SHAPE = {
+  type: z
+    .enum(['local', 'session'])
+    .describe('Storage type: "local" for localStorage, "session" for sessionStorage.'),
+  action: z
+    .enum(['get', 'set', 'clear'])
+    .describe('Action to perform.'),
+  key: z
+    .string()
+    .optional()
+    .describe('Storage key (for "get" or "set"). Omit for "get" to retrieve all entries.'),
+  value: z
+    .string()
+    .optional()
+    .describe('Value to set (for "set" action).'),
+  allowSensitiveDomains: z
+    .boolean()
+    .optional()
+    .describe('Allow reading storage on sensitive domains. Default false.'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_EMULATE_SHAPE = {
+  offline: z
+    .boolean()
+    .optional()
+    .describe('Enable or disable offline mode.'),
+  headers: z
+    .record(z.string(), z.string())
+    .optional()
+    .describe('Extra HTTP headers to send with every request.'),
+  credentials: z
+    .object({
+      username: z.string(),
+      password: z.string(),
+    })
+    .nullable()
+    .optional()
+    .describe('HTTP credentials for Basic/Digest auth. Pass null to clear.'),
+  geo: z
+    .object({
+      latitude: z.number(),
+      longitude: z.number(),
+      accuracy: z.number().optional(),
+    })
+    .nullable()
+    .optional()
+    .describe('Geolocation override. Pass null to clear.'),
+  media: z
+    .enum(['dark', 'light', 'no-preference'])
+    .nullable()
+    .optional()
+    .describe('Color scheme media emulation. Pass null to reset.'),
+  timezone: z
+    .string()
+    .nullable()
+    .optional()
+    .describe('Timezone override (e.g. "America/New_York"). Pass null to reset.'),
+  locale: z
+    .string()
+    .nullable()
+    .optional()
+    .describe('Locale override (e.g. "en-US"). Pass null to reset.'),
+  device: z
+    .string()
+    .nullable()
+    .optional()
+    .describe('Device preset name from Playwright devices (e.g. "iPhone 13"). Pass null to reset.'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_RESIZE_SHAPE = {
+  width: z.number().describe('Viewport width in pixels.'),
+  height: z.number().describe('Viewport height in pixels.'),
+  surfaceId: optionalSurfaceId,
+};
+
 // ---------------------------------------------------------------------------
 // Packaged RPC fallback (#111)
 // ---------------------------------------------------------------------------
@@ -60,31 +165,7 @@ export function registerStateTools(server: McpServer): void {
   server.tool(
     'browser_cookies',
     'Manage browser cookies: get, set, or clear. Reads from sensitive domains (email, banking, auth) are blocked and values from such domains are redacted unless allowSensitiveDomains:true is set.',
-    {
-      action: z
-        .enum(['get', 'set', 'clear'])
-        .describe('Action to perform on cookies.'),
-      url: z
-        .string()
-        .optional()
-        .describe('URL to filter cookies by (for "get" action).'),
-      cookies: z
-        .array(
-          z.object({
-            name: z.string().describe('Cookie name'),
-            value: z.string().describe('Cookie value'),
-            domain: z.string().optional().describe('Cookie domain'),
-            path: z.string().optional().describe('Cookie path'),
-          }),
-        )
-        .optional()
-        .describe('Cookies to set (for "set" action).'),
-      allowSensitiveDomains: z
-        .boolean()
-        .optional()
-        .describe('Allow reading cookies from sensitive domains (email, banking, auth). Default false.'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_COOKIES_SHAPE,
     async ({ action, url, cookies, allowSensitiveDomains, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // Playwright Page when available (dev), else CDP over RPC (packaged, #111).
@@ -194,27 +275,7 @@ export function registerStateTools(server: McpServer): void {
   server.tool(
     'browser_storage',
     'Manage localStorage or sessionStorage: get, set, or clear. Reads on sensitive pages (email, banking, auth) are blocked unless allowSensitiveDomains:true is set.',
-    {
-      type: z
-        .enum(['local', 'session'])
-        .describe('Storage type: "local" for localStorage, "session" for sessionStorage.'),
-      action: z
-        .enum(['get', 'set', 'clear'])
-        .describe('Action to perform.'),
-      key: z
-        .string()
-        .optional()
-        .describe('Storage key (for "get" or "set"). Omit for "get" to retrieve all entries.'),
-      value: z
-        .string()
-        .optional()
-        .describe('Value to set (for "set" action).'),
-      allowSensitiveDomains: z
-        .boolean()
-        .optional()
-        .describe('Allow reading storage on sensitive domains. Default false.'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_STORAGE_SHAPE,
     async ({ type, action, key, value, allowSensitiveDomains, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         // browser_storage is pure page.evaluate, so it unifies over the same
@@ -326,54 +387,7 @@ export function registerStateTools(server: McpServer): void {
   server.tool(
     'browser_emulate',
     'Apply emulation settings to the browser page: offline mode, custom headers, HTTP credentials, geolocation, color scheme, timezone, locale, or device preset.',
-    {
-      offline: z
-        .boolean()
-        .optional()
-        .describe('Enable or disable offline mode.'),
-      headers: z
-        .record(z.string(), z.string())
-        .optional()
-        .describe('Extra HTTP headers to send with every request.'),
-      credentials: z
-        .object({
-          username: z.string(),
-          password: z.string(),
-        })
-        .nullable()
-        .optional()
-        .describe('HTTP credentials for Basic/Digest auth. Pass null to clear.'),
-      geo: z
-        .object({
-          latitude: z.number(),
-          longitude: z.number(),
-          accuracy: z.number().optional(),
-        })
-        .nullable()
-        .optional()
-        .describe('Geolocation override. Pass null to clear.'),
-      media: z
-        .enum(['dark', 'light', 'no-preference'])
-        .nullable()
-        .optional()
-        .describe('Color scheme media emulation. Pass null to reset.'),
-      timezone: z
-        .string()
-        .nullable()
-        .optional()
-        .describe('Timezone override (e.g. "America/New_York"). Pass null to reset.'),
-      locale: z
-        .string()
-        .nullable()
-        .optional()
-        .describe('Locale override (e.g. "en-US"). Pass null to reset.'),
-      device: z
-        .string()
-        .nullable()
-        .optional()
-        .describe('Device preset name from Playwright devices (e.g. "iPhone 13"). Pass null to reset.'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_EMULATE_SHAPE,
     async ({ offline, headers, credentials, geo, media, timezone, locale, device, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);
@@ -543,11 +557,7 @@ export function registerStateTools(server: McpServer): void {
   server.tool(
     'browser_resize',
     'Resize the browser viewport to the specified dimensions.',
-    {
-      width: z.number().describe('Viewport width in pixels.'),
-      height: z.number().describe('Viewport height in pixels.'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_RESIZE_SHAPE,
     async ({ width, height, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId).catch(() => null);

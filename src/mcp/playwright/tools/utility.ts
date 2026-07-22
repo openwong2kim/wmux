@@ -12,6 +12,27 @@ const optionalSurfaceId = z
   .optional()
   .describe('Target a specific surface by ID. Omit to use the active surface.');
 
+// Module-scope parameter shapes: hoisted out of the per-registration path so
+// every createWmuxServer() instance shares one set of zod schema objects.
+const BROWSER_PDF_SHAPE = {
+  path: z
+    .string()
+    .optional()
+    .describe('Relative output path under ~/.wmux/exports. Defaults to "output.pdf".'),
+  surfaceId: optionalSurfaceId,
+};
+
+const BROWSER_TRACE_SHAPE = {
+  action: z
+    .enum(['start', 'stop'])
+    .describe('Whether to start or stop tracing.'),
+  path: z
+    .string()
+    .optional()
+    .describe('Relative output path under ~/.wmux/exports (used with "stop"). Defaults to "trace.zip".'),
+  surfaceId: optionalSurfaceId,
+};
+
 function getExportRoot(): string {
   const root = path.join(os.homedir(), '.wmux', 'exports');
   if (!fs.existsSync(root)) {
@@ -89,13 +110,7 @@ export function registerUtilityTools(server: McpServer): void {
   server.tool(
     'browser_pdf',
     'Export the current page as a PDF file. Falls back to CDP Page.printToPDF when Playwright pdf() is unavailable (e.g. CDP-connected browsers).',
-    {
-      path: z
-        .string()
-        .optional()
-        .describe('Relative output path under ~/.wmux/exports. Defaults to "output.pdf".'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_PDF_SHAPE,
     async ({ path: outputPath, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const resolvedPath = resolveBrowserExportPath(outputPath, 'output.pdf');
@@ -160,16 +175,7 @@ export function registerUtilityTools(server: McpServer): void {
   server.tool(
     'browser_trace',
     'Start or stop Playwright tracing. Use "start" to begin recording and "stop" to save the trace file.',
-    {
-      action: z
-        .enum(['start', 'stop'])
-        .describe('Whether to start or stop tracing.'),
-      path: z
-        .string()
-        .optional()
-        .describe('Relative output path under ~/.wmux/exports (used with "stop"). Defaults to "trace.zip".'),
-      surfaceId: optionalSurfaceId,
-    },
+    BROWSER_TRACE_SHAPE,
     async ({ action, path: outputPath, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
         const page = await engine.getPage(surfaceId);
