@@ -73,7 +73,12 @@ function makeMockManager(instance: PTYInstance) {
   } as unknown as PTYManager;
 }
 
-function makeBridge(opts: { workspaceId?: string; hookRouter?: HookSignalRouter | null } = {}) {
+function makeBridge(opts: {
+  workspaceId?: string;
+  hookRouter?: HookSignalRouter | null;
+  onPromptBoundary?: (ptyId: string, type: string) => void;
+  onPtyEnded?: (ptyId: string) => void;
+} = {}) {
   const proc = makeMockProcess();
   const instance: PTYInstance = {
     id: 'pty-1',
@@ -86,7 +91,13 @@ function makeBridge(opts: { workspaceId?: string; hookRouter?: HookSignalRouter 
   const win = { isDestroyed: () => false, webContents: { send: vi.fn() } };
   const routerForClosure = opts.hookRouter;
   const getHookRouter = routerForClosure !== undefined ? () => routerForClosure : undefined;
-  const bridge = new PTYBridge(manager, () => win as never, getHookRouter);
+  const bridge = new PTYBridge(
+    manager,
+    () => win as never,
+    getHookRouter,
+    opts.onPromptBoundary,
+    opts.onPtyEnded,
+  );
   bridge.setupDataForwarding('pty-1');
   return { bridge, proc };
 }
@@ -574,6 +585,22 @@ describe('PTYBridge — agent.lifecycle EventBus tee (osc133 source)', () => {
   const OSC_133_D_FAIL = '\x1b]133;D;1\x07';
   const OSC_133_D_NO_EXIT = '\x1b]133;D\x07';
   const OSC_133_A = '\x1b]133;A\x07';
+  const OSC_133_C = '\x1b]133;C\x07';
+
+  it('forwards local-mode command boundaries and PTY cleanup to power tracking', () => {
+    const onPromptBoundary = vi.fn();
+    const onPtyEnded = vi.fn();
+    const { bridge, proc } = makeBridge({ onPromptBoundary, onPtyEnded });
+
+    proc.emitData(OSC_133_C);
+    proc.emitData(OSC_133_D_OK);
+    flush();
+    expect(onPromptBoundary).toHaveBeenNthCalledWith(1, 'pty-1', 'command_start');
+    expect(onPromptBoundary).toHaveBeenNthCalledWith(2, 'pty-1', 'command_end');
+
+    bridge.cleanupInstance('pty-1');
+    expect(onPtyEnded).toHaveBeenCalledWith('pty-1');
+  });
 
   it('emits source:"osc133" with parsed exitCode on OSC 133 D;<exitCode>', () => {
     const { proc } = makeBridge({ workspaceId: 'ws-a' });

@@ -40,7 +40,7 @@ import { RingBuffer } from './RingBuffer';
 import { GitContextWatcher } from '../main/pty/gitContextWatch';
 import { PortWatcher } from '../main/pty/portWatch';
 import { initDaemonLogSink } from './util/logSink';
-import type { DaemonState } from './types';
+import type { DaemonSession, DaemonState } from './types';
 import type { DaemonEvent, DaemonCreateSessionParams, DaemonSessionIdParams, DaemonResizeParams, DaemonSetResumeBindingParams } from '../shared/rpc';
 import { monitorEventLoopDelay, performance as nodePerformance } from 'node:perf_hooks';
 import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
@@ -3317,9 +3317,21 @@ function wireEvents(
   });
 
   // session:created → save state (debounced since saveImmediate is called in RPC handler)
-  sessionManager.on('session:created', () => {
+  sessionManager.on('session:created', (payload: { session: DaemonSession }) => {
     const state = buildState(sessionManager);
     stateWriter.saveDebounced(state);
+    // Main uses this minimal lifecycle projection to acquire an execution-only
+    // power request for daemon exec units created after initial hydration.
+    // Never broadcast the full session metadata: it contains the child env.
+    try {
+      pipeServer.broadcast({
+        type: 'session.created',
+        sessionId: payload.session.id,
+        data: { hasExec: payload.session.exec != null },
+      });
+    } catch (err) {
+      log('warn', `session:created broadcast failed for ${payload.session.id}:`, err);
+    }
   });
 
   // session:stateChanged → save state debounced

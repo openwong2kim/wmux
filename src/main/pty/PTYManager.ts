@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { expandTilde } from '../../shared/expandTilde';
-import { splitWslCwd } from '../../shared/wslCwd';
+import { applyWslPromptIntegration, isWslShell, splitWslCwd } from '../../shared/wslCwd';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
 import { withFreshWindowsPath } from '../../shared/windowsPathEnv';
 import { resolveEnvPolicy, type SpawnKind } from '../../shared/spawnKind';
@@ -213,7 +213,15 @@ export class PTYManager {
 
     // Detect shell type and inject hook
     const shellType = this.detectShellType(shell);
-    const hookInjection = this.buildHookInjection(shellType, env);
+    let hookInjection: { args: string[]; env: Record<string, string> };
+    if (isWslShell(shell)) {
+      const hookPath = path.join(this.getShellHooksDir(), 'bash.sh');
+      hookInjection = fs.existsSync(hookPath)
+        ? applyWslPromptIntegration(shell, env, hookPath)
+        : { args: [], env };
+    } else {
+      hookInjection = this.buildHookInjection(shellType, env);
+    }
 
     // node-pty throws synchronously on a missing/invalid shell binary or an
     // unreadable cwd (common on macOS/Linux where the shell path differs from

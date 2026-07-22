@@ -38,6 +38,46 @@ export function isWslShell(cmd: string): boolean {
   return basename === 'wsl.exe' || basename === 'wsl';
 }
 
+const WSL_PROMPT_ENV_NAMES = ['WMUX_SHELL_INTEGRATION', 'WMUX_BASH_INIT'] as const;
+
+/**
+ * Launch WSL's default Bash through wmux's rcfile, which sources the user's
+ * .bashrc first and installs OSC hooks afterwards. WSLENV translates the
+ * Windows rcfile path into a Linux mount path. Other default shells are exec'd
+ * unchanged by the in-guest dispatcher.
+ */
+export function applyWslPromptIntegration(
+  cmd: string,
+  env: Record<string, string>,
+  bashInitWindowsPath: string,
+): { env: Record<string, string>; args: string[] } {
+  if (!isWslShell(cmd) || env['WMUX_SHELL_INTEGRATION'] === '0') {
+    return { env, args: [] };
+  }
+
+  const next = { ...env };
+  next['WMUX_SHELL_INTEGRATION'] = '1';
+  next['WMUX_BASH_INIT'] = bashInitWindowsPath;
+
+  const entries = (next['WSLENV'] ?? '').split(':').filter(Boolean).map((entry) => {
+    const [name, rawFlags = ''] = entry.split('/');
+    if (name?.toUpperCase() !== 'WMUX_BASH_INIT') return entry;
+    const flags = rawFlags.toLowerCase().includes('p') ? rawFlags : `${rawFlags}p`;
+    return `${name}/${flags}`;
+  });
+  const present = new Set(entries.map((entry) => entry.split('/')[0]?.toUpperCase()));
+  for (const name of WSL_PROMPT_ENV_NAMES) {
+    if (!present.has(name)) entries.push(name === 'WMUX_BASH_INIT' ? `${name}/p` : name);
+  }
+  next['WSLENV'] = entries.join(':');
+  const dispatcher =
+    'wmux_shell="${SHELL:-/bin/sh}"; ' +
+    'case "${wmux_shell##*/}" in ' +
+    'bash) exec "$wmux_shell" --rcfile "$WMUX_BASH_INIT" -i ;; ' +
+    '*) exec "$wmux_shell" ;; esac';
+  return { env: next, args: ['--exec', '/bin/sh', '-c', dispatcher] };
+}
+
 /**
  * True when `p` looks like a Linux-side path rather than a Windows one:
  * an absolute `/...` path, a `~`/`~/...` home-relative path, or one of the

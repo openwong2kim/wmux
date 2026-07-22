@@ -25,7 +25,7 @@ process.on('uncaughtException', (err) => {
 import { markBoot, emitBootSummary } from './util/bootTrace';
 import * as crypto from 'crypto';
 import * as path from 'path';
-import { app, BrowserWindow, dialog, ipcMain, powerMonitor } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, powerMonitor, powerSaveBlocker } from 'electron';
 import { checkUserDataIsolation } from './dataIsolation';
 import { createWindow, loadMainRenderer } from './window/createWindow';
 import { PTYManager } from './pty/PTYManager';
@@ -118,6 +118,8 @@ import { eventBus } from './events/EventBus';
 import { broadcastMetadataUpdate } from './ipc/handlers/metadata.handler';
 import { readOrchRole } from '../shared/orchestratorRole';
 import { initLogSink, logLine } from './util/logSink';
+import { ActiveWorkPowerBlocker } from './power/ActiveWorkPowerBlocker';
+import { DaemonActiveWorkTracker } from './power/DaemonActiveWorkTracker';
 
 markBoot('imports-done');
 
@@ -330,12 +332,23 @@ if (!gotLock) {
 markBoot('construction-start');
 const ptyManager = new PTYManager();
 let mainWindow: BrowserWindow | null = null;
+const activeWorkPowerBlocker = new ActiveWorkPowerBlocker(
+  powerSaveBlocker,
+  process.platform === 'win32',
+  (message) => logLine('info', 'power', message),
+);
 // Forward-declared: PTYBridge captures this binding by reference and reads it
 // at runtime (after the actual HookSignalRouter is constructed further down
 // in this file). Lets the detector tee call `recordDetector` on emit without
 // reordering hook/router boot earlier than the PTY layer.
 let hookSignalRouter: HookSignalRouter | null = null;
-const ptyBridge = new PTYBridge(ptyManager, () => mainWindow, () => hookSignalRouter);
+const ptyBridge = new PTYBridge(
+  ptyManager,
+  () => mainWindow,
+  () => hookSignalRouter,
+  (ptyId, type) => activeWorkPowerBlocker.localPromptBoundary(ptyId, type),
+  (ptyId) => activeWorkPowerBlocker.localSessionEnded(ptyId),
+);
 const autoUpdater = new AutoUpdater(() => mainWindow);
 
 const rpcRouter = new RpcRouter();
@@ -361,6 +374,11 @@ const webviewCdpManager = new WebviewCdpManager(cdpPort);
 
 // Daemon client — initialized on app ready, used if daemon is available
 let daemonClient: DaemonClient | null = null;
+const DAEMON_POWER_RECONNECT_GRACE_MS = 60_000;
+const daemonActiveWorkTracker = new DaemonActiveWorkTracker(
+  activeWorkPowerBlocker,
+  (message) => logLine('warn', 'power', message),
+);
 
 // envelope PR4 C12: 워커 전이는 데몬 A2aTaskService(정본 로그)에 먼저 커밋된다 —
 // getter 주입이라 앱-레디 이후 연결되는 daemonClient를 자연 추적한다.
@@ -1083,6 +1101,7 @@ app.on('ready', async () => {
     onInstall: async (client) => {
       daemonClient = client;
       console.log('[Main] Connected to wmux-daemon (auth verified)');
+      await daemonActiveWorkTracker.attach(client);
       // Handler swap to daemon-routed mode. The microsecond window where
       // pty/* handlers are torn down and re-registered is the same
       // surface the original code used; the swap is logged for the
@@ -1152,6 +1171,11 @@ app.on('ready', async () => {
     },
     onUninstall: () => {
       console.warn('[Main] Daemon disconnected, falling back to local PTY');
+      // A named-pipe blip must not drop the execution-required request while
+      // the daemon and its PTYs are still alive. Reconnect hydration replaces
+      // this state; budget exhaustion releases it after a bounded grace.
+      daemonActiveWorkTracker.detach(false);
+      activeWorkPowerBlocker.beginDaemonReconnectGrace(DAEMON_POWER_RECONNECT_GRACE_MS);
       daemonNotificationRouter?.stop();
       daemonNotificationRouter = null;
       remoteInboxBridge?.stop();
@@ -1673,6 +1697,10 @@ app.on('before-quit', async (e) => {
   safeStep('daemonRespawnController.dispose', () => {
     daemonRespawnController?.dispose();
     daemonRespawnController = null;
+  });
+  safeStep('activeWorkPowerBlocker.dispose', () => {
+    daemonActiveWorkTracker.detach();
+    activeWorkPowerBlocker.dispose();
   });
 
   // tmux-style persistence (the entire reason the daemon exists): a normal

@@ -12,6 +12,7 @@
 
 import { describe, it, expect, afterEach } from 'vitest';
 import * as fs from 'node:fs';
+import * as os from 'node:os';
 import * as path from 'node:path';
 import { execFileSync } from 'node:child_process';
 import type { ManagedSession } from '../DaemonSessionManager';
@@ -68,6 +69,7 @@ const hasWslBash = wslBashHome !== null;
 // path still resolves the instant the event arrives, so the higher ceiling
 // only costs wall-clock on genuine failures.
 const EVENT_TIMEOUT_MS = 30000;
+const WSL_EVENT_TIMEOUT_MS = 12000;
 
 /**
  * Wait for a PromptEvent that was recorded AFTER `baselineLength` events.
@@ -391,4 +393,121 @@ describe.runIf(hasWslBash)('OSC 7 runtime — wsl.exe (bash login shell)', () =>
     const reported = await waitForCwd(managed);
     expect(reported).toBe(wslBashHome);
   }, EVENT_TIMEOUT_MS + 5000);
+});
+
+describe.runIf(hasGitBash)('OSC 133 runtime — user .bashrc override fixture', () => {
+  let manager: DaemonSessionManager;
+
+  afterEach(() => manager?.disposeAll());
+
+  it('installs markers after .bashrc replaces PS0 and PROMPT_COMMAND', async () => {
+    const fixtureHome = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-bashrc-override-'));
+    fs.writeFileSync(
+      path.join(fixtureHome, '.bashrc'),
+      "PS0='user-ps0'\nPROMPT_COMMAND='printf user-prompt-command'\n",
+      'utf8',
+    );
+    try {
+      manager = new DaemonSessionManager();
+      const id = `rt-bash-override-${Date.now()}`;
+      const env = Object.fromEntries(
+        Object.entries(process.env).filter((entry): entry is [string, string] => entry[1] !== undefined),
+      );
+      env.HOME = fixtureHome;
+      manager.createSession({ id, cmd: GIT_BASH, cwd: fixtureHome, env });
+
+      const managed = manager.getSession(id);
+      if (!managed) throw new Error(`Bash runtime session ${id} was not created`);
+      await waitForEventAfter(managed, 0, (e) => e.type === 'prompt_start', 'fixture prompt_start');
+      const baseline = managed.promptLog.size;
+      managed.ptyProcess.write('echo after-user-bashrc\r');
+      const start = await waitForEventAfter(
+        managed, baseline, (e) => e.type === 'command_start', 'fixture command_start',
+      );
+      const end = await waitForEventAfter(
+        managed,
+        baseline,
+        (e) => e.type === 'command_end' && e.byteOffset >= start.byteOffset,
+        'fixture command_end',
+      );
+      expect(end.exitCode).toBe(0);
+      const exited = new Promise<void>((resolve) => {
+        manager.once('session:died', (payload: { id: string }) => {
+          if (payload.id === id) resolve();
+        });
+      });
+      managed.ptyProcess.write('exit\r');
+      await Promise.race([
+        exited,
+        new Promise<never>((_, reject) =>
+          setTimeout(() => reject(new Error('fixture Bash did not exit')), 5_000),
+        ),
+      ]);
+    } finally {
+      manager?.disposeAll();
+      // ConPTY releases the child's cwd asynchronously after kill. Give its
+      // attach-console helper time to exit, then use Node's bounded Windows
+      // EPERM retry rather than making correct marker assertions flaky at
+      // fixture cleanup.
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      fs.rmSync(fixtureHome, {
+        recursive: true,
+        force: true,
+        maxRetries: 20,
+        retryDelay: 100,
+      });
+    }
+  }, EVENT_TIMEOUT_MS + 2000);
+});
+
+describe.runIf(hasWslBash)('OSC 133 runtime — wsl.exe (Bash)', () => {
+  let manager: DaemonSessionManager;
+
+  afterEach(() => {
+    if (manager) manager.disposeAll();
+  });
+
+  it('tracks a real WSL command as running from OSC 133 start through end', async () => {
+    manager = new DaemonSessionManager();
+    const id = `rt-wsl-bash-${Date.now()}`;
+    manager.createSession({
+      id,
+      cmd: WSL_EXE,
+      cwd: path.resolve(process.cwd()),
+    });
+
+    const managed = manager.getSession(id);
+    if (!managed) throw new Error(`WSL runtime session ${id} was not created`);
+    await waitForEventAfter(
+      managed,
+      0,
+      (e) => e.type === 'prompt_start',
+      'initial WSL prompt_start',
+      WSL_EVENT_TIMEOUT_MS,
+    );
+
+    const baseline = managed.promptLog.size;
+    // `read` gives us a deterministic, non-sleeping pause between C and D so
+    // commandRunning can be observed while the real WSL Bash command owns the PTY.
+    managed.ptyProcess.write('read -r __wmux_runtime_probe\r');
+    const cmdStart = await waitForEventAfter(
+      managed,
+      baseline,
+      (e) => e.type === 'command_start',
+      'WSL command_start',
+      WSL_EVENT_TIMEOUT_MS,
+    );
+    expect(managed.promptLog.isCommandRunning()).toBe(true);
+
+    managed.ptyProcess.write('released\r');
+    const cmdEnd = await waitForEventAfter(
+      managed,
+      baseline,
+      (e) => e.type === 'command_end' && e.byteOffset >= cmdStart.byteOffset,
+      'WSL command_end',
+      WSL_EVENT_TIMEOUT_MS,
+    );
+    expect(cmdEnd.exitCode).toBe(0);
+    expect(managed.promptLog.isCommandRunning()).toBe(false);
+  }, WSL_EVENT_TIMEOUT_MS + 3000);
 });

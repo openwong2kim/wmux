@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { isWslShell, isLinuxLikeCwd, splitWslCwd } from '../wslCwd';
+import { applyWslPromptIntegration, isWslShell, isLinuxLikeCwd, splitWslCwd } from '../wslCwd';
 
 // Track B (WSL/Ubuntu cwd) — a Linux-style cwd handed to a WSL pane must
 // launch via `wsl.exe --cd <linuxpath>` rather than node-pty's `cwd` spawn
@@ -100,5 +100,36 @@ describe('splitWslCwd', () => {
       spawnCwd: undefined,
       prefixArgs: [],
     });
+  });
+});
+
+describe('applyWslPromptIntegration', () => {
+  it('gives wsl.exe Bash authoritative command start/end markers', () => {
+    const result = applyWslPromptIntegration('C:\\Windows\\System32\\wsl.exe', {
+      WSLENV: 'EXISTING/u:WMUX_BASH_INIT',
+    }, 'C:\\Users\\g\\.wmux\\wmux-shell-init.bash');
+    const { env } = result;
+
+    expect(env.WMUX_SHELL_INTEGRATION).toBe('1');
+    expect(env.WMUX_BASH_INIT).toBe('C:\\Users\\g\\.wmux\\wmux-shell-init.bash');
+    expect(env.WSLENV?.split(':')).toEqual([
+      'EXISTING/u', 'WMUX_BASH_INIT/p', 'WMUX_SHELL_INTEGRATION',
+    ]);
+    expect(result.args.slice(0, 3)).toEqual(['--exec', '/bin/sh', '-c']);
+    expect(result.args[3]).toContain('--rcfile "$WMUX_BASH_INIT" -i');
+  });
+
+  it('adds path translation while preserving flags on an existing rcfile entry', () => {
+    const { env } = applyWslPromptIntegration('wsl.exe', {
+      WSLENV: 'WMUX_BASH_INIT/u',
+    }, 'C:\\wmux-init.bash');
+    expect(env.WSLENV).toContain('WMUX_BASH_INIT/up');
+  });
+
+  it('does not alter non-WSL shells or an explicit integration opt-out', () => {
+    const pwsh = { KEEP: 'yes' };
+    expect(applyWslPromptIntegration('pwsh.exe', pwsh, 'init')).toEqual({ env: pwsh, args: [] });
+    const optedOut = { WMUX_SHELL_INTEGRATION: '0' };
+    expect(applyWslPromptIntegration('wsl.exe', optedOut, 'init')).toEqual({ env: optedOut, args: [] });
   });
 });

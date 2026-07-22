@@ -25,6 +25,7 @@ const AGENT_EVENT_SUPPRESSION_MS = 10_000;
  * so that a failure in one does not block subsequent middleware or data forwarding.
  */
 export type PTYDataMiddleware = (data: string) => void;
+export type Osc133PromptBoundary = 'prompt_start' | 'prompt_end' | 'command_start' | 'command_end';
 
 export class PTYBridge {
   private oscParsers = new Map<string, OscParser>();
@@ -62,6 +63,10 @@ export class PTYBridge {
     // the binding by reference. Tests pass `undefined` and fall through to
     // a bare 'emit' decision — the test rig has no hook bridge anyway.
     private getHookRouter?: () => HookSignalRouter | null,
+    // Local-mode power tracking seam. Daemon-mode boundaries arrive through
+    // DaemonClient; fallback PTYs are parsed here and need the same signal.
+    private onPromptBoundary?: (ptyId: string, type: Osc133PromptBoundary) => void,
+    private onPtyEnded?: (ptyId: string) => void,
   ) {
     this.ptyManager.onDispose((ptyId) => this.cleanupInstance(ptyId));
     // Activity-based fallback: fires when sustained output drops to idle.
@@ -137,6 +142,11 @@ export class PTYBridge {
    * (e.g. from PTYManager.dispose()) to ensure cleanup when onExit is not fired.
    */
   cleanupInstance(ptyId: string): void {
+    try {
+      this.onPtyEnded?.(ptyId);
+    } catch (err) {
+      console.warn('[PTYBridge] onPtyEnded callback error:', err);
+    }
     // Clear agentStatus on every disposal path. onExit already broadcasts
     // 'idle', but the PTYManager.dispose → onDispose path can reach this
     // method WITHOUT going through onExit (e.g. user closes a pane via the
@@ -359,6 +369,18 @@ export class PTYBridge {
           // bytes from the same PTY data path.
           const payload = event.data || '';
           const parts = payload.split(';');
+          const boundary =
+            parts[0] === 'A' ? 'prompt_start' :
+            parts[0] === 'B' ? 'prompt_end' :
+            parts[0] === 'C' ? 'command_start' :
+            parts[0] === 'D' ? 'command_end' : null;
+          if (boundary) {
+            try {
+              this.onPromptBoundary?.(ptyId, boundary);
+            } catch (err) {
+              console.warn('[PTYBridge] onPromptBoundary callback error:', err);
+            }
+          }
           if (parts[0] === 'D' && instance.workspaceId) {
             let exitCode: number | null = null;
             if (parts.length > 1 && parts[1].length > 0) {
