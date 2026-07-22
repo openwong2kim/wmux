@@ -28,6 +28,23 @@ function readSettings(): Record<string, unknown> {
   return JSON.parse(fs.readFileSync(settingsPath, 'utf8'));
 }
 
+/** Write Claude Code's installed-plugins manifest next to settings.json. */
+function writePluginManifest(raw: string): void {
+  const manifestPath = path.join(path.dirname(settingsPath), 'plugins', 'installed_plugins.json');
+  fs.mkdirSync(path.dirname(manifestPath), { recursive: true });
+  fs.writeFileSync(manifestPath, raw, 'utf8');
+}
+
+/** Flatten every hook command string across all events in settings.json. */
+function allHookCommands(): string[] {
+  const hooks = (readSettings().hooks ?? {}) as Record<string, unknown[]>;
+  return Object.values(hooks).flatMap((groups) =>
+    (groups as { hooks: { command: string }[] }[]).flatMap((g) =>
+      g.hooks.map((h) => h.command),
+    ),
+  );
+}
+
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-setup-hooks-'));
   settingsPath = path.join(tmpDir, '.claude', 'settings.json');
@@ -151,6 +168,71 @@ describe('installHooks', () => {
     fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V2\n', 'utf8');
     installHooks(paths());
     expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V2\n');
+  });
+});
+
+describe('installHooks — plugin-aware', () => {
+  it('strips duplicate wmux entries, does not re-add, and preserves foreign hooks', () => {
+    // Seed a prior plugin-LESS install so settings.json carries wmux entries.
+    installHooks(paths());
+    // Add foreign hooks alongside the wmux ones.
+    const s0 = readSettings();
+    (s0.hooks as Record<string, unknown[]>).Stop.push({
+      matcher: '',
+      hooks: [{ type: 'command', command: 'echo foreign-stop' }],
+    });
+    (s0.hooks as Record<string, unknown[]>).PreToolUse = [
+      { matcher: '', hooks: [{ type: 'command', command: 'echo foreign-pre' }] },
+    ];
+    fs.writeFileSync(settingsPath, JSON.stringify(s0), 'utf8');
+
+    // Now the marketplace plugin appears.
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+    );
+
+    const outcome = installHooks(paths());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.pluginDetected).toBe(true);
+    expect(outcome.removedForPlugin).toBe(3);
+    expect(outcome.events).toEqual([]);
+
+    // No wmux command remains; both foreign hooks are preserved.
+    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(false);
+    expect(allHookCommands()).toContain('echo foreign-stop');
+    expect(allHookCommands()).toContain('echo foreign-pre');
+
+    // Idempotent: a second plugin-mode run removes nothing and never re-adds.
+    const again = installHooks(paths());
+    expect(again.pluginDetected).toBe(true);
+    expect(again.removedForPlugin).toBe(0);
+    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(false);
+  });
+
+  it('installs normally when the manifest exists but lacks the wmux plugin key', () => {
+    writePluginManifest(JSON.stringify({ 'some-other-plugin@market': {} }));
+    const outcome = installHooks(paths());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.pluginDetected).toBe(false);
+    expect(outcome.events.sort()).toEqual(['SessionStart', 'Stop', 'SubagentStop']);
+    const hooks = readSettings().hooks as Record<string, unknown[]>;
+    expect(Object.keys(hooks).sort()).toEqual(['SessionStart', 'Stop', 'SubagentStop']);
+  });
+
+  it('treats a malformed installed_plugins.json as plugin-absent (normal install)', () => {
+    writePluginManifest('{ this is not json');
+    const outcome = installHooks(paths());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.pluginDetected).toBe(false);
+    expect(outcome.events.sort()).toEqual(['SessionStart', 'Stop', 'SubagentStop']);
+    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
+  });
+
+  it('detects the plugin when referenced as an array value, not just a key', () => {
+    writePluginManifest(JSON.stringify({ 'wmux-marketplace': ['wmux-claude-integration'] }));
+    const outcome = installHooks(paths());
+    expect(outcome.pluginDetected).toBe(true);
+    expect(outcome.events).toEqual([]);
   });
 });
 

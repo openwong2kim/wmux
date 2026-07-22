@@ -19,7 +19,16 @@ export class PipeServer {
   private static readonly MAX_RETRIES = 5;
   private static readonly MAX_CONNECTIONS = 50;
   private static readonly GLOBAL_RATE_LIMIT = 200;
-  private static readonly MAX_NEW_CONNECTIONS_PER_SEC = 30;
+  // Cap on brand-new connections per second. Claude Code hooks connect once per
+  // hook invocation (connect → send → close), so at fleet scale (30 sessions ×
+  // parallel subagents) legitimate hook bursts routinely exceed 30/s. Excess
+  // sockets are destroyed PRE-AUTH, which the hook bridge sees as ECONNRESET
+  // (classified transient) and RETRIES with backoff — amplifying the storm.
+  // Raised 30 → 120: this limit is brute-force mitigation, not a legitimate-
+  // traffic cap. The math still holds at 120/s — auth is a timing-safe token
+  // compare, and 120 guesses/s against a 128-bit token is nothing — while 30/s
+  // sat below real hook-burst traffic and triggered the pre-auth retry storm.
+  private static readonly MAX_NEW_CONNECTIONS_PER_SEC = 120;
   private globalRate = { count: 0, resetAt: 0 };
   private connectionRate = { count: 0, resetAt: 0 };
 
