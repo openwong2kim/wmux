@@ -51,6 +51,7 @@ import { summarizeActivity } from '../../../shared/activitySummary';
 import type { DaemonClient } from '../../DaemonClient';
 import type { ResumeBinding, PermissionMode } from '../../../shared/agentResume';
 import { readLastAssistantMessage } from '../../claude/lastAssistantMessage';
+import { getWorkspaceMirror, type WorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import type { AgentLastMessage } from '../../../shared/events';
 import type { NotificationCategory } from '../../../shared/types';
 import os from 'node:os';
@@ -213,11 +214,20 @@ export function registerHooksRpc(
   // owns the pane. main resolves it to the bound account and hook-gates a usage
   // probe. Kept as a decoupled callback so this handler stays account-agnostic.
   onClaudeTurnEnd?: (workspaceId: string) => void,
+  // Main-side WorkspaceMirror (renderer-pushed snapshot of the workspace tree).
+  // Consulted FIRST in resolveWorkspacesForSignal so a hook can resolve without
+  // any renderer round-trip. Injected (default the singleton) for testability.
+  getMirror: () => Pick<WorkspaceMirror, 'peek'> = getWorkspaceMirror,
 ): () => void {
   const meter = hookRouter.getLatencyMeter();
   // Short-TTL, coalescing cache so a burst of hooks in one turn collapses to
   // a single workspace.list round-trip (see WORKSPACE_LIST_CACHE_TTL_MS note).
   const workspaceCache = createWorkspaceListCache(() => safeListWorkspaces(getWindow));
+
+  // Main-side workspace snapshot the renderer pushes on structural/status
+  // change. Resolved once here (the getter returns a stable singleton) so the
+  // hot path reads it directly — no renderer round-trip when it can serve.
+  const mirror = getMirror();
 
   // Fleet activity leading-edge throttle: ptyId → lastSentMs. Scoped to this
   // registration (like workspaceCache/floodMeter) so it lives for the handler's
@@ -264,7 +274,7 @@ export function registerHooksRpc(
     // list without a renderer round-trip (that round-trip is exactly what a
     // large-buffer flush storm starves, timing out the bridge's 2s cap). See
     // that function for the topology-stability + bounded-staleness rules.
-    const { workspaces, fetchMs, fastPathed } = await resolveWorkspacesForSignal(signal, workspaceCache);
+    const { workspaces, fetchMs, fastPathed } = await resolveWorkspacesForSignal(signal, workspaceCache, mirror);
     floodMeter.record({ degraded: fetchMs > HOOK_DEGRADED_FETCH_MS || !workspaces, fetchMs, fastPathed });
     if (!workspaces) {
       // Record as a miss because we couldn't determine match either
@@ -714,16 +724,29 @@ export function createWorkspaceListCache(
 }
 
 /**
- * Env-routed fast path (Fix B). Decide whether this signal can be routed from
- * the cache's last-known workspace list WITHOUT a renderer round-trip.
+ * Decide how this signal resolves its workspace list, cheapest source first.
+ * Three tiers, each removing more of the renderer dependency than the last:
+ *
+ *   (1) MIRROR — the main-side WorkspaceMirror, a full workspace tree the
+ *       renderer PUSHES to main on every structural/status change. When it is
+ *       populated, fresh (younger than STALE_TRUST_MS), AND the pure resolver
+ *       actually resolves a pane against its entries, we route off it with ZERO
+ *       renderer involvement — the strongest cure for the hook jank, because it
+ *       serves BOTH ptyId- and workspaceId-only signals (the renderer already
+ *       pushed the current active-surface mapping, so activePtyId is as fresh as
+ *       a push allows). An empty/never-populated mirror, a stale one, or a signal
+ *       the resolver can't place falls through to (2)/(3).
+ *   (2) ENV FAST PATH (Fix B) — peek the pull-cache's last-known list without a
+ *       fetch, under the strict same-ptyId guard below.
+ *   (3) BLOCKING PULL — the authoritative `workspace.list` round-trip.
  *
  * The round-trip (`workspace.list` → renderer) is what a large-buffer flush
  * storm starves: while the renderer is pegged parsing a multi-MB terminal
  * flush, it can't answer, the fetch times out, and the bridge's 2s hard cap
- * trips (~24% of hooks in the v3.24.0 dogfood). We remove that dependency for
- * the common case.
+ * trips (~24% of hooks in the v3.24.0 dogfood). Tiers (1) and (2) remove that
+ * dependency for the common case.
  *
- * Fast path is taken ONLY when ALL hold:
+ * The env fast path (2) is taken ONLY when ALL hold:
  *   - the signal carries WMUX_PTY_ID. A pane's daemon session id is
  *     topology-STABLE: it does not change when the active surface switches, so
  *     resolving it against a slightly stale list is safe. A `workspaceId`-only
@@ -745,16 +768,35 @@ export function createWorkspaceListCache(
  *     branch fires (id present in the list + workspace cross-check), which is
  *     the topology-stable case; any fallback returns a different id.
  *
- * On the fast path we `prime()` the cache (fire-and-forget) so it stays warm
- * for the next hook without blocking this one. `fetchMs` is 0 (no round-trip)
- * and `fastPathed` is true so the flood meter can report how many hooks the
- * cache absorbed — a green "0 degraded" during a real flush storm would
- * otherwise hide the saturation (GLM P2).
+ * On the env fast path (2) we `prime()` the cache (fire-and-forget) so it stays
+ * warm for the next hook without blocking this one. A mirror hit (1) needs no
+ * prime — the renderer refreshes the mirror on its own push cadence. In both
+ * cases `fetchMs` is 0 (no round-trip) and `fastPathed` is true so the flood
+ * meter can report how many hooks were absorbed without a fetch — a green
+ * "0 degraded" during a real flush storm would otherwise hide the saturation
+ * (GLM P2). A mirror hit counts as fastPathed, never degraded.
  */
 export async function resolveWorkspacesForSignal(
   signal: AgentSignal,
   cache: Pick<WorkspaceListCache, 'get' | 'peek' | 'prime'>,
+  mirror?: Pick<WorkspaceMirror, 'peek'>,
 ): Promise<{ workspaces: WorkspaceListEntry[] | null; fetchMs: number; fastPathed: boolean }> {
+  // (1) Mirror first. Populated + fresh + the pure resolver places a pane → no
+  // renderer round-trip at all. Unlike the env fast path below, this needs no
+  // WMUX_PTY_ID and no exact-id guard: the mirror is the renderer's own pushed
+  // tree, so a newly-created pane is already present (a create is a structural
+  // change that triggers a push), and a workspaceId-only signal resolves against
+  // an up-to-date active-surface mapping rather than a stale pull-cache one.
+  const mirrored = mirror?.peek();
+  if (
+    mirrored &&
+    mirrored.ageMs < STALE_TRUST_MS &&
+    resolvePtyIdForSignal(signal, mirrored.entries) !== null
+  ) {
+    return { workspaces: mirrored.entries, fetchMs: 0, fastPathed: true };
+  }
+
+  // (2) Env-routed fast path (Fix B): peek the pull-cache under the strict guard.
   const peeked = signal.ptyId ? cache.peek() : null;
   if (
     peeked &&
