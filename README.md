@@ -2,9 +2,9 @@
 
 # wmux
 
-### The agent fleet that survives a reboot.
+### The workspace multiplexer for AI coding agents.
 
-Fan out one prompt into **N isolated agents** in separate git worktrees, review their diffs **hunk by hunk**, and walk away — after a crash or **full OS reboot**, they come back mid-conversation. Native on **Windows & macOS**, for **Claude Code · Codex · Gemini**, with approval gates and a real browser your agents can drive.
+Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its own pane, or fan one prompt out into **N isolated git worktrees** you review **hunk by hunk**. Native on **Windows & macOS**, with approval gates, agent-to-agent channels, and a **real browser your agents drive**. Walk away — after a crash or **full OS reboot**, they come back mid-conversation.
 
 <img width="924" alt="wmux" src="https://github.com/user-attachments/assets/6ad876f5-1f41-409a-b949-8ca78471cd4f" />
 
@@ -17,7 +17,7 @@ Fan out one prompt into **N isolated agents** in separate git worktrees, review 
 
 </div>
 
-> **Windows has no native tmux.** wmux is the native fix — a terminal multiplexer + browser automation + MCP server that runs your agents **in parallel, in one window.** And now it runs natively on **macOS** too.
+> **What's a *workspace multiplexer*?** tmux splits a terminal. wmux multiplexes whole **workspaces** — terminals, agents, git worktrees, a browser, and the channels they coordinate over — all owned by a daemon that keeps them running across quits, crashes, and full reboots. **One window. One fleet. Windows & macOS.**
 
 ---
 
@@ -206,7 +206,7 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 
 <br>
 
-**Is wmux a tmux port?** No — it's a native multiplexer on Electron (ConPTY on Windows, forkpty on macOS) with tmux-*style* split panes, prefix keys, and session persistence. No WSL / Cygwin / MSYS2.
+**Is wmux a tmux port?** No — tmux was the inspiration, not the base. wmux is a native **workspace multiplexer** on Electron (ConPTY on Windows, forkpty on macOS): tmux-*style* split panes, prefix keys, and session persistence, but it also multiplexes agents, git worktrees, a browser, and channels. No WSL / Cygwin / MSYS2.
 
 **Which Macs are supported?** Apple Silicon (arm64) — download the `.dmg` from [releases](https://github.com/openwong2kim/wmux/releases/latest). Intel builds aren't produced right now; open an issue if you need one. If Gatekeeper warns on first launch, right-click the app → **Open**.
 
@@ -245,9 +245,13 @@ Requires Node 18+ and Python 3.x, plus a native toolchain: VS Build Tools (C++ w
 
 ## 🙌 Contributors
 
-New here? Grab a [**good first issue**](https://github.com/openwong2kim/wmux/labels/good%20first%20issue), help translate a locale, or read [**CONTRIBUTING.md**](CONTRIBUTING.md) — PRs welcome.
+wmux is built in the open. Huge thanks to everyone who's shipped code, squashed bugs, and translated locales:
 
 [![Contributors](https://contrib.rocks/image?repo=openwong2kim/wmux)](https://github.com/openwong2kim/wmux/graphs/contributors)
+
+Community shout-outs to [@snowyukitty](https://github.com/snowyukitty), [@matdac6](https://github.com/matdac6), [@margvez](https://github.com/margvez), [@zer0ken](https://github.com/zer0ken), [@AnandSundar](https://github.com/AnandSundar), [@cloim](https://github.com/cloim), [@cheyras](https://github.com/cheyras), [@junbeom09](https://github.com/junbeom09), [@rayss868](https://github.com/rayss868), [@dev-minggyu](https://github.com/dev-minggyu), and [@alphabeen](https://github.com/alphabeen) for their contributions. 💛
+
+**New here?** Grab a [**good first issue**](https://github.com/openwong2kim/wmux/labels/good%20first%20issue), help translate a locale (한국어 complete · 日本語 / 中文 in progress), or read [**CONTRIBUTING.md**](CONTRIBUTING.md). PRs welcome.
 
 Built on [xterm.js](https://xtermjs.org/), [node-pty](https://github.com/microsoft/node-pty), [Electron](https://www.electronjs.org/), and [Playwright](https://playwright.dev/).
 
@@ -257,7 +261,7 @@ Built on [xterm.js](https://xtermjs.org/), [node-pty](https://github.com/microso
 
 [MIT](LICENSE)
 
-<sub>**Keywords:** Windows tmux · tmux for Windows · macOS terminal multiplexer · tmux alternative · terminal multiplexer · AI agent terminal · agent fleet · git worktree fan-out · cmux alternative · Claude Code Windows · Codex CLI · Gemini CLI · MCP server · Chrome DevTools Protocol · split terminal · multi-agent · browser automation · ConPTY · xterm.js · Electron terminal</sub>
+<sub>**Keywords:** workspace multiplexer · AI coding agent workspace · agent fleet · multi-agent terminal · git worktree fan-out · Claude Code · Codex CLI · Gemini CLI · MCP server · Chrome DevTools Protocol · browser automation · split terminal · cmux alternative · Windows terminal multiplexer · macOS terminal multiplexer · ConPTY · xterm.js · Electron terminal · tmux for Windows</sub>
 
 <div align="center"><sub>⭐ Star history</sub><br>
 

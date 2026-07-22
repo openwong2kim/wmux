@@ -2,7 +2,7 @@
   "name": "wmux",
   "productName": "wmux",
   "version": "3.30.0",
-  "description": "cmux for Windows — run multiple AI CLI agents (Claude Code, Codex, Gemini) side-by-side with an MCP bridge and browser automation",
+  "description": "Workspace multiplexer for AI coding agents — run fleets of Claude Code, Codex & Gemini in parallel on Windows & macOS, with MCP browser automation built in",
   "private": true,
   "main": ".vite/build/index.js",
   "bin": {
@@ -30,11 +30,13 @@
     "spike:sa1:verify": "bash core/wmux-term/verify.sh"
   },
   "keywords": [
-    "terminal",
-    "multiplexer",
+    "workspace-multiplexer",
+    "terminal-multiplexer",
+    "ai-coding-agent",
+    "multi-agent",
     "mcp",
-    "ai-agent",
-    "windows",
+    "browser-automation",
+    "claude-code",
     "electron"
   ],
   "author": {
