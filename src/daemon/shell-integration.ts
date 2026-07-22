@@ -87,11 +87,19 @@ function global:prompt {
     # one — so this hook MUST re-emit on every prompt (parity with the zsh
     # integration), or a single stray OSC 7 from a child program would freeze
     # the pane's tracked cwd. FileSystem provider only: a registry/cert
-    # location has no directory to report. Backslashes become '/' so the
-    # daemon's parseOsc7Cwd sees the documented /C:/Users/... shape.
+    # location has no directory to report.
+    #
+    # Each path segment is percent-encoded (CodeRabbit review on #541): the
+    # daemon's parseOsc7Cwd unconditionally decodeURIComponent()s the payload,
+    # so a raw path containing a literal '%' (e.g. "build%20cache") would
+    # otherwise be silently corrupted by the decode. Splitting on '\' first and
+    # encoding each segment keeps '/' as the literal path separator
+    # parseOsc7Cwd expects while %-escaping everything else — colons, spaces,
+    # unicode, and literal '%' all round-trip correctly through decode.
     $loc = $executionContext.SessionState.Path.CurrentLocation
     if ($loc.Provider.Name -eq 'FileSystem') {
-        $pre += "$esc]7;file://$env:COMPUTERNAME/$($loc.ProviderPath.Replace('\\','/'))$bel"
+        $osc7Path = ($loc.ProviderPath -split '\\\\' | ForEach-Object { [Uri]::EscapeDataString($_) }) -join '/'
+        $pre += "$esc]7;file://$env:COMPUTERNAME/$osc7Path$bel"
     }
 
     $body = if ($global:__wmux_prev_prompt) {
@@ -161,11 +169,38 @@ __wmux_preexec() {
   printf '\\033]133;C\\a'
 }
 
+# Percent-encode a path for OSC 7 (CodeRabbit review on #541): the daemon's
+# parseOsc7Cwd unconditionally decodeURIComponent()s the payload, so a raw '%'
+# in a directory name (e.g. "build%20cache") would otherwise be silently
+# corrupted by the decode, and a raw ESC/BEL byte in a directory name would
+# terminate the OSC 7 sequence early and let its remaining bytes inject
+# arbitrary terminal escape sequences. One byte-wise walk over the whole path:
+# '/' passes through as the literal separator parseOsc7Cwd expects, RFC 3986
+# unreserved characters pass as-is, everything else becomes %XX. LC_ALL=C makes
+# bash index/slice the string byte-wise (not by UTF-8 codepoint), so multi-byte
+# characters are encoded byte-by-byte — the exact %-per-byte scheme
+# decodeURIComponent expects. Walking the whole string (instead of splitting on
+# '/' and re-joining) keeps trailing slashes (drive root "/c:/") and even
+# newline bytes in hostile directory names intact.
+__wmux_osc7_encode() {
+  local LC_ALL=C LC_CTYPE=C
+  local s="\$1" out= c i hex
+  for (( i=0; i<\${#s}; i++ )); do
+    c="\${s:i:1}"
+    case "\$c" in
+      [a-zA-Z0-9./~_-]) out+="\$c" ;;
+      *) printf -v hex '%02X' "'\$c"; out+="%\$hex" ;;
+    esac
+  done
+  printf '%s' "\$out"
+}
+
 # OSC 7: cwd report (issue #540) — parity with the zsh integration, because
 # wmux disables prompt scraping permanently after the first OSC 7 and relies
 # on the hook re-emitting it on every prompt. Git Bash (MSYSTEM set) rewrites
 # /c/Users/... to /c:/Users/... so wmux's parseOsc7Cwd recovers the real
-# Windows path; WSL/Linux/macOS emit \$PWD as-is.
+# Windows path; WSL/Linux/macOS emit \$PWD as-is (percent-encoded either way,
+# see __wmux_osc7_encode).
 __wmux_osc7() {
   local p="\$PWD"
   if [ -n "\${MSYSTEM:-}" ]; then
@@ -174,7 +209,7 @@ __wmux_osc7() {
       /[A-Za-z])   p="/\${p:1:1}:/" ;;
     esac
   fi
-  printf '\\033]7;file://%s%s\\a' "\${HOSTNAME-localhost}" "\$p"
+  printf '\\033]7;file://%s%s\\a' "\${HOSTNAME-localhost}" "\$(__wmux_osc7_encode "\$p")"
 }
 
 __wmux_precmd() {

@@ -41,18 +41,43 @@ describe('parseOsc7Cwd', () => {
   // Issue #540 round-trip pins: the exact payload shapes the v8 pwsh/bash
   // integration hooks emit must parse back to spawnable native paths, because
   // these values feed the split-inheritance seed (validateCwd + fs.existsSync).
-  it('parses the v8 pwsh hook shape (uppercase drive, backslashes pre-converted)', () => {
-    // pwsh emits file://$env:COMPUTERNAME/ + ProviderPath.Replace('\','/')
+  // Both hooks percent-encode (per-segment on pwsh, byte-wise on bash), so the
+  // drive colon arrives as %3A and spaces as %20.
+  it('parses the v8 pwsh hook shape (segment-encoded, uppercase drive)', () => {
+    // pwsh emits file://$env:COMPUTERNAME/ + EscapeDataString per '\'-segment.
+    expect(parseOsc7Cwd('file://DESKTOP-AB12/D%3A/wmux/src')).toBe('D:\\wmux\\src');
+    expect(parseOsc7Cwd('file://DESKTOP-AB12/D%3A/Users/me/My%20Docs')).toBe('D:\\Users\\me\\My Docs');
+  });
+
+  it('parses the raw-colon shape too (zsh hook and pre-encode daemons still emit it)', () => {
     expect(parseOsc7Cwd('file://DESKTOP-AB12/D:/wmux/src')).toBe('D:\\wmux\\src');
   });
 
-  it('parses the v8 Git Bash hook shape (lowercase drive from /c/... rewrite)', () => {
-    // Git Bash rewrites /c/Users/me → /c:/Users/me before emitting.
-    expect(parseOsc7Cwd('file://DESKTOP-AB12/c:/Users/me/proj')).toBe('c:\\Users\\me\\proj');
+  it('parses the v8 Git Bash hook shape (lowercase drive from /c/... rewrite, byte-encoded)', () => {
+    // Git Bash rewrites /c/Users/me → /c:/Users/me, then byte-encodes: %3A.
+    expect(parseOsc7Cwd('file://DESKTOP-AB12/c%3A/Users/me/proj')).toBe('c:\\Users\\me\\proj');
   });
 
-  it('parses the v8 Git Bash drive-root shape (/c → /c:/)', () => {
-    expect(parseOsc7Cwd('file://HOST/c:/')).toBe('c:\\');
+  it('parses the v8 Git Bash drive-root shape (/c → /c:/, trailing slash kept)', () => {
+    expect(parseOsc7Cwd('file://HOST/c%3A/')).toBe('c:\\');
+  });
+
+  // #541 review: a directory whose REAL name contains a literal percent
+  // sequence ("build%20cache") must round-trip — the hook emits %2520 (the
+  // '%' byte itself encoded), and one decode yields the literal %20 back.
+  it('round-trips a directory name containing a literal %20 (%2520 payload)', () => {
+    expect(parseOsc7Cwd('file://HOST/D%3A/build%2520cache')).toBe('D:\\build%20cache');
+    expect(parseOsc7Cwd('file://HOST/home/me/build%2520cache')).toBe('/home/me/build%20cache');
+  });
+
+  // #541 review: ESC/BEL bytes in a hostile directory name arrive %-encoded
+  // (%1B/%07) — decode turns them back into control characters inside the
+  // STRING VALUE only. They must stay inside the parsed path (state), never
+  // terminate the OSC sequence (the encoder upstream is the injection
+  // barrier; this pins the decoder half of the contract).
+  it('decodes %-encoded control bytes into the string value without truncation', () => {
+    expect(parseOsc7Cwd('file://HOST/tmp/evil%1B%5D0%3Bpwned%07dir'))
+      .toBe('/tmp/evil\x1b]0;pwned\x07dir');
   });
 });
 

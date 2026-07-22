@@ -101,11 +101,24 @@ describe('PWSH_INIT — OSC 7 cwd report (#540)', () => {
     expect(PWSH_INIT).toMatch(/Provider\.Name -eq 'FileSystem'/);
   });
 
-  it("converts backslashes to '/' to honor parseOsc7Cwd's /C:/Users/... contract", () => {
-    expect(PWSH_INIT).toContain(".Replace('\\','/')");
+  it("splits on '\\' and joins with '/' to honor parseOsc7Cwd's /C:/Users/... contract", () => {
+    // Regex split on a literal backslash: the .ps1 must read -split '\\'
+    // (an escaped backslash — a bare '\' is an invalid regex and errors on
+    // every prompt).
+    expect(PWSH_INIT).toContain("-split '\\\\'");
+    expect(PWSH_INIT).toContain("-join '/'");
     // The host/path separator must produce file://HOST/C:/... (single slash
     // between host and the converted path).
-    expect(PWSH_INIT).toContain(']7;file://$env:COMPUTERNAME/$(');
+    expect(PWSH_INIT).toContain(']7;file://$env:COMPUTERNAME/$osc7Path');
+  });
+
+  it('percent-encodes each path segment so parseOsc7Cwd decode round-trips (#541 review)', () => {
+    // parseOsc7Cwd decodeURIComponent()s the payload — a raw literal '%' in a
+    // directory name would be corrupted unless the emitter escapes it.
+    expect(PWSH_INIT).toContain('[Uri]::EscapeDataString');
+    // The encode must run per segment (after the '\' split), never on the
+    // whole path — encoding the whole path would escape the '/' separators.
+    expect(PWSH_INIT).toMatch(/-split '\\\\' \| ForEach-Object \{ \[Uri\]::EscapeDataString\(\$_\) \}/);
   });
 });
 
@@ -127,5 +140,24 @@ describe('BASH_INIT — OSC 7 cwd report (#540)', () => {
     // legitimate directory and must pass through untouched.
     expect(BASH_INIT).toMatch(/if \[ -n "\$\{MSYSTEM:-\}" \]/);
     expect(BASH_INIT).toMatch(/\/\[A-Za-z\]\/\*\)/);
+  });
+
+  it('percent-encodes the path so raw %, ESC and BEL bytes cannot corrupt or escape the sequence (#541 review)', () => {
+    // parseOsc7Cwd decodeURIComponent()s the payload: a literal '%' in a
+    // directory name must arrive as %25. Worse, a raw ESC/BEL byte in a
+    // directory name would TERMINATE the OSC 7 early and let the remaining
+    // pathname bytes inject arbitrary terminal escape sequences — the encoder
+    // is the injection barrier, so the emitter must never printf $PWD (or its
+    // MSYSTEM rewrite) raw.
+    expect(BASH_INIT).toContain('__wmux_osc7_encode()');
+    // Byte-wise walk (LC_ALL=C), '/' passes through, everything outside the
+    // unreserved set becomes %XX.
+    expect(BASH_INIT).toContain('local LC_ALL=C LC_CTYPE=C');
+    expect(BASH_INIT).toMatch(/\[a-zA-Z0-9.\/~_-\]\) out\+="\$c"/);
+    expect(BASH_INIT).toMatch(/printf -v hex '%02X' "'\$c"/);
+    // The emitter consumes the ENCODED path, not the raw one.
+    expect(BASH_INIT).toContain('"$(__wmux_osc7_encode "$p")"');
+    // And no emission path passes the raw $p to printf anymore.
+    expect(BASH_INIT).not.toContain('"${HOSTNAME-localhost}" "$p"');
   });
 });
