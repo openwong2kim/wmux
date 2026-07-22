@@ -26,6 +26,30 @@ interface FleetCardProps {
   /** S-C2 live output tail — last ~3 plaintext lines of this pane's buffer.
    *  Only meaningful for terminal cards with a ptyId; already plaintext. */
   tail?: string[];
+  /** TASK-6 — per-pane agent resource attribution: summed RAM (bytes) of this
+   *  pane's shell + descendant tree, and the heaviest child's image name. Only
+   *  present on Windows with a live agent; undefined ⇒ no chip. */
+  resource?: { rss: number; image?: string };
+}
+
+// TASK-6 — a bare process image ("claude.exe", "node.exe") shortened to a human
+// agent label for the chip. Falls back to the raw name minus a trailing .exe.
+function agentLabel(image: string | undefined): string {
+  if (!image) return 'agent';
+  const base = image.replace(/\.exe$/i, '').toLowerCase();
+  if (base === 'claude') return 'Claude';
+  if (base === 'node') return 'Node';
+  if (base === 'codex') return 'Codex';
+  if (base === 'python' || base === 'python3') return 'Python';
+  return image.replace(/\.exe$/i, '');
+}
+
+// TASK-6 — bytes → compact "370 MB" / "1.2 GB". Working-set is reported in
+// bytes; the chip shows whole MB (or one decimal GB) so it reads at a glance.
+function formatRss(bytes: number): string {
+  const mb = bytes / (1024 * 1024);
+  if (mb >= 1024) return `${(mb / 1024).toFixed(1)} GB`;
+  return `${Math.round(mb)} MB`;
 }
 
 /**
@@ -99,7 +123,7 @@ export function FleetCardEvidenceBadge({ task }: { task: Task | undefined }): Re
  * unattended-loop money state — gets a yellow border + "needs your input"
  * affordance so a blocked agent is unmissable. Click jumps to its pane.
  */
-function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
+function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
   const t = useT();
   const icon = AGENT_STATUS_ICON[card.agentStatus];
   // 사이클 C — 이 카드의 워크스페이스가 fan-out 태스크의 전용 워크스페이스
@@ -198,6 +222,22 @@ function FleetCard({ card, focused, onJump, tail }: FleetCardProps) {
           </>
         )}
       </div>
+
+      {/* TASK-6 — per-pane agent resource chip. Quiet mono token (no new accent —
+          DESIGN.md restraint): "Claude · 370 MB". Present only on Windows with a
+          live descendant agent (resource.rss > 0); undefined / zero ⇒ no row. */}
+      {resource && resource.rss > 0 && (
+        <div
+          data-fleet-resource
+          data-rss-bytes={resource.rss}
+          className="flex items-center gap-1 min-w-0 text-caption font-mono text-[var(--text-muted)]"
+          title={`${agentLabel(resource.image)} — ${formatRss(resource.rss)} resident (shell + descendants)`}
+        >
+          <span className="truncate">
+            {agentLabel(resource.image)} · {formatRss(resource.rss)}
+          </span>
+        </div>
+      )}
 
       {/* 사이클 C — 미션 라인(순수 prop-구동 서브컴포넌트). 이 카드가 fan-out
           태스크의 워크스페이스면 title + status를 부가 표시(매칭 없으면 null). */}

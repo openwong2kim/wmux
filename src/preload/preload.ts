@@ -62,6 +62,15 @@ const electronAPI = {
       // WITH a WMUX_SURFACE_ID (Terminal self-create path); reconcile uses it to
       // rebind a stale ptyId to the surviving session after a reboot.
       ipcRenderer.invoke(IPC.PTY_LIST) as Promise<{ id: string; shell: string; surfaceId?: string; createdAt?: string; supervision?: { status: 'armed' | 'stopped'; restartCount: number }; resumeAgent?: string; resumeBinding?: ResumeBinding; commandRunning?: boolean; agentProcessAlive?: boolean }[]>,
+    // TASK-6 — per-pane agent RAM for the Fleet View cockpit. Given the ptyIds
+    // currently shown as cards, returns { [ptyId]: { rss (bytes), image? } } by
+    // walking each pane shell's descendant process tree from ONE CIM snapshot.
+    // Empty map on non-Windows / local mode / snapshot failure (no chip shown).
+    // Called ONLY while Fleet View is visible (renderer-gated) — never on a timer
+    // here. `rss` is summed working-set bytes; `image` is the heaviest child's
+    // process name (e.g. "claude.exe").
+    resources: (ptyIds: string[]) =>
+      ipcRenderer.invoke(IPC.PANE_RESOURCES, ptyIds) as Promise<Record<string, { rss: number; image?: string }>>,
     reconnect: (id: string) =>
       // RCA A1 — `transient` distinguishes a recoverable failure (pipe not
       // writable yet, RPC threw during a handler-swap window) from a permanent

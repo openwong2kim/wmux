@@ -75,6 +75,9 @@ export default function FleetView() {
   // S-C2 Phase 2 — live output tail. {ptyId: last-3-lines}. Filled by ONE
   // shared coarse poll below; passed down to terminal cards only.
   const [tails, setTails] = useState<Record<string, string[]>>({});
+  // TASK-6 — per-pane agent RAM. {ptyId: {rss bytes, image?}}. Filled by ONE
+  // shared 4s poll below that only runs while this (mount-gated) cockpit is open.
+  const [resources, setResources] = useState<Record<string, { rss: number; image?: string }>>({});
   const panelRef = useRef<HTMLDivElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -158,6 +161,39 @@ export default function FleetView() {
     return () => {
       window.clearInterval(id);
       unsub();
+    };
+  }, [panes]);
+
+  // TASK-6 — per-pane agent resource attribution. The whole component is
+  // mount-gated on `fleetViewVisible`, so this interval exists ONLY while the
+  // cockpit is open: a closed Fleet View issues ZERO Win32_Process snapshots
+  // (the plan's polling-gate acceptance criterion). Each 4s tick sends the
+  // currently-shown terminal ptyIds to main, which takes ONE CIM snapshot, walks
+  // each pane shell's descendant tree, and returns summed RAM + heaviest child
+  // image. Non-Windows / local mode / snapshot failure → empty map → no chips.
+  useEffect(() => {
+    if (typeof window.electronAPI?.pty?.resources !== 'function') return;
+    let cancelled = false;
+    const ptyIds = panes
+      .filter((p) => p.surfaceType === 'terminal' && p.ptyId)
+      .map((p) => p.ptyId);
+    if (ptyIds.length === 0) {
+      setResources((prev) => (Object.keys(prev).length === 0 ? prev : {}));
+      return;
+    }
+    const poll = async () => {
+      try {
+        const next = await window.electronAPI.pty.resources(ptyIds);
+        if (!cancelled) setResources(next ?? {});
+      } catch {
+        // Fail-soft: keep the last-known values, drop no chips mid-glance.
+      }
+    };
+    void poll(); // paint immediately; don't wait 4s for the first sample.
+    const id = window.setInterval(poll, 4000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(id);
     };
   }, [panes]);
 
@@ -499,6 +535,7 @@ export default function FleetView() {
                   focused={idx === focusedIdx}
                   onJump={jump}
                   tail={card.ptyId ? tails[card.ptyId] : undefined}
+                  resource={card.ptyId ? resources[card.ptyId] : undefined}
                 />
               ))}
             </div>

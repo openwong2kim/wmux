@@ -7,6 +7,12 @@ export const IPC = {
   PTY_DATA: 'pty:data',
   PTY_EXIT: 'pty:exit',
   PTY_LIST: 'pty:list',
+  // TASK-6 — per-pane agent resource attribution for the Fleet View cockpit.
+  // Renderer → main invoke: takes a list of ptyIds, resolves each to its shell
+  // PID (via daemon.listSessions), takes ONE Win32_Process CIM snapshot, walks
+  // each pane's descendant tree, and returns summed RAM + dominant image name.
+  // Polled ONLY while Fleet View is visible (renderer-gated) — zero cost idle.
+  PANE_RESOURCES: 'pane:resources',
   PTY_RECONNECT: 'pty:reconnect',
   // Phase 3 PR-B — live-pipe re-flush. Re-runs the daemon SessionPipe flush on
   // the EXISTING connected socket (no teardown / re-auth), so a hidden pane can

@@ -26,6 +26,7 @@ import { registerWorktreeHandlers } from './handlers/worktree.handler';
 import { registerGithubHandlers } from './handlers/github.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
 import { registerLanLinkHandlers } from './handlers/lanlink.handler';
+import { registerPaneResourcesHandlers } from './handlers/paneResources.handler';
 import { registerAccountHandlers } from './handlers/account.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
 import { IPC } from '../../shared/constants';
@@ -172,6 +173,11 @@ export function registerAllHandlers(
   // the daemon). Without a DaemonClient there is no control pipe to forward to, so
   // the handlers stay unregistered and the Settings section hides itself.
   const cleanupLanLink = daemonClient ? registerLanLinkHandlers(daemonClient) : null;
+
+  // TASK-6 Fleet View resource attribution — daemon-mode only (the shell PIDs
+  // live in the daemon session list). Renderer polls this ONLY while Fleet View
+  // is visible, so a closed cockpit costs nothing.
+  const cleanupPaneResources = daemonClient ? registerPaneResourcesHandlers(daemonClient) : null;
 
   // Multi-account registry (M1) — renderer-only, mode-agnostic (main owns
   // accounts.json in both local and daemon mode; spawn env is resolved in main).
@@ -389,6 +395,7 @@ export function registerAllHandlers(
     cleanupGithub();
     if (cleanupMcp) cleanupMcp();
     if (cleanupLanLink) cleanupLanLink();
+    if (cleanupPaneResources) cleanupPaneResources();
     cleanupAccounts();
     // Mirror the register-side removeHandler so a teardown leaves no stale
     // handle behind (handle handlers are not .on listeners — see above).
