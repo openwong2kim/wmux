@@ -1,4 +1,4 @@
-import { useEffect, useState, useRef, useCallback } from 'react';
+import { useEffect, useState, useRef, useCallback, lazy, Suspense } from 'react';
 import type { AgentSlug } from '../../../shared/events';
 import type { ResumeBinding } from '../../../shared/agentResume';
 import { useStore } from '../../stores';
@@ -11,11 +11,15 @@ import { selectProjectCwdSignature } from '../../stores/selectors/appLayout';
 import { registerSessionSaver, saveSessionNow } from '../../utils/sessionSaveBridge';
 import { resolveReconcileRebind } from '../../hooks/resolveReconcileRebind';
 import NotificationPanel from '../Notification/NotificationPanel';
-import CommandPalette from '../Palette/CommandPalette';
-import WorktaskCleanupView from '../WorkTask/WorktaskCleanupView';
 import FleetView from '../FleetView/FleetView';
-import SettingsPanel from '../Settings/SettingsPanel';
-import InspectOverlay from '../Inspect/InspectOverlay';
+// TASK-2: the 4 always-mounted overlays are lazy-loaded + render-gated below so
+// their chunks stay out of the cold-boot critical path (SettingsPanel alone is
+// ~4k lines). React.lazy without a render gate is a no-op for FCP, so each is
+// gated on its own open/visible store flag inside <Suspense> + <ErrorBoundary>.
+const CommandPalette = lazy(() => import('../Palette/CommandPalette'));
+const WorktaskCleanupView = lazy(() => import('../WorkTask/WorktaskCleanupView'));
+const SettingsPanel = lazy(() => import('../Settings/SettingsPanel'));
+const InspectOverlay = lazy(() => import('../Inspect/InspectOverlay'));
 import FileTreePanel from '../FileTree/FileTreePanel';
 import ApprovalDialog from '../Company/ApprovalDialog';
 import ExecuteApprovalDialog from '../A2a/ExecuteApprovalDialog';
@@ -292,6 +296,16 @@ export default function AppLayout() {
   // only run while the cockpit is open (the open toggle lives in the global
   // keyboard handler, not inside FleetView, so gating the mount is safe).
   const fleetViewVisible = useStore((s) => s.fleetViewVisible);
+  // TASK-2: render gates for the lazy overlays. Lift each component's own
+  // internal open/visible flag to the layout so the lazy chunk is fetched only
+  // when the overlay actually opens (the components self-gate on these exact
+  // fields, so behavior is identical). SettingsPanel must also stay mounted
+  // while inspect mode is active (SettingsPanel.tsx: "Settings stays mounted
+  // the whole time" during inspect), hence the extra inspectModeActive term.
+  const commandPaletteVisible = useStore((s) => s.commandPaletteVisible);
+  const worktaskCleanupVisible = useStore((s) => s.worktaskCleanupVisible);
+  const settingsPanelVisible = useStore((s) => s.settingsPanelVisible);
+  const inspectModeActive = useStore((s) => s.inspectModeActive);
   // S-C2: while the Fleet View's Approvals tab owns the screen, it is the SOLE
   // approval surface — suppress the standalone A2A / MCP modals (delta 5, one
   // surface per item). The container keeps its pluginHost deadlock-break UX in
@@ -1217,14 +1231,36 @@ export default function AppLayout() {
           <SearchResultsPanel />
         </ErrorBoundary>
       )}
-      <CommandPalette />
-      <WorktaskCleanupView />
-      <SettingsPanel />
+      {/* TASK-2: lazy overlays, render-gated on their own store flags and
+          wrapped in <Suspense fallback={null}> inside <ErrorBoundary> so a
+          failed chunk load surfaces instead of silently dropping the overlay. */}
+      {commandPaletteVisible && (
+        <ErrorBoundary name="CommandPalette">
+          <Suspense fallback={null}><CommandPalette /></Suspense>
+        </ErrorBoundary>
+      )}
+      {worktaskCleanupVisible && (
+        <ErrorBoundary name="WorktaskCleanupView">
+          <Suspense fallback={null}><WorktaskCleanupView /></Suspense>
+        </ErrorBoundary>
+      )}
+      {/* SettingsPanel: gate on visible OR inspect-active — inspect mode keeps
+          the panel mounted while the overlay picks colors (D3 / SettingsPanel
+          ESC + inspect contract). */}
+      {(settingsPanelVisible || inspectModeActive) && (
+        <ErrorBoundary name="SettingsPanel">
+          <Suspense fallback={null}><SettingsPanel /></Suspense>
+        </ErrorBoundary>
+      )}
       {/* Color inspect-mode overlay (S4). Sits at --z-inspect (65, declared
           inside the component) — above SettingsPanel (--z-overlay 50) so it
           captures clicks over the minimized Settings bar, below FirstRunWizard
           (--z-dialog 70). Returns null when inspectModeActive is false. */}
-      <InspectOverlay />
+      {inspectModeActive && (
+        <ErrorBoundary name="InspectOverlay">
+          <Suspense fallback={null}><InspectOverlay /></Suspense>
+        </ErrorBoundary>
+      )}
       <ApprovalDialog />
       {!inboxOwnsApprovals && <ExecuteApprovalDialog />}
       {!inboxOwnsApprovals && <PermissionApprovalDialogContainer />}
