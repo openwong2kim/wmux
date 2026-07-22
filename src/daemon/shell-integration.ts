@@ -33,7 +33,13 @@ import { isMac } from '../shared/platform';
 // stray OSC 7 from any child program (agent TUI, nested shell) killed the only
 // cwd source, freezing the pane's tracked cwd at its spawn value (usually
 // home) — so splits landed in home, regressing #515.
-const INTEGRATION_VERSION = 8;
+// v9: percent-encode the zsh OSC 7 payload — parity with the v8 pwsh/bash
+// encoders (#541 review follow-up). The v6 zsh hook emitted raw $PWD, but the
+// daemon's parseOsc7Cwd unconditionally decodeURIComponent()s the payload, so
+// a directory whose real name contains a literal percent sequence
+// ("build%20cache") was silently corrupted, and a raw ESC/BEL byte in a
+// directory name could terminate the OSC 7 early and inject terminal escapes.
+const INTEGRATION_VERSION = 9;
 const VERSION_FILE = '.version';
 
 // -----------------------------------------------------------------------
@@ -295,7 +301,35 @@ __wmux_precmd() { local __ec=$?; printf '\\033]133;D;%d\\a\\033]133;A\\a' "$__ec
 # 시점 cwd에 고정된다. chpwd로 cd 즉시(뒤에 장기 실행 명령이 붙어도) 보고 +
 # precmd로 최초/매 프롬프트 보고. parseOsc7Cwd와 맞춰 host 뒤 슬래시 없이
 # \$PWD(절대경로, / 로 시작)를 붙여 file://host/abs/path 형태로 낸다.
-__wmux_osc7() { printf '\\033]7;file://%s%s\\a' "\${HOST-localhost}" "$PWD"; }
+#
+# v9: percent-encode the payload (parity with the pwsh/bash v8 encoders —
+# #541 review follow-up). The daemon's parseOsc7Cwd unconditionally
+# decodeURIComponent()s the payload, so a raw '%' in a directory name
+# ("build%20cache") was silently corrupted by the decode, and a raw ESC/BEL
+# byte in a directory name could terminate the OSC 7 early and inject
+# terminal escape sequences. One byte-wise walk over the whole path: '/'
+# passes through as the separator, RFC 3986 unreserved bytes pass as-is,
+# everything else becomes %XX. LC_ALL=C makes zsh index the string by byte
+# (not by UTF-8 codepoint), so multi-byte characters are encoded per byte —
+# the exact scheme decodeURIComponent expects. \`emulate -L zsh\` shields the
+# function from user rc options (KSH_ARRAYS would shift the 1-based string
+# subscripts this loop depends on).
+__wmux_osc7_encode() {
+  emulate -L zsh
+  local LC_ALL=C LC_CTYPE=C
+  local s="$1" out='' c hex
+  local -i i
+  for (( i = 1; i <= \${#s}; i++ )); do
+    c="\${s[i]}"
+    case "$c" in
+      [a-zA-Z0-9./~_-]) out+="$c" ;;
+      *) hex=\$(( [##16] #c )); [ \${#hex} -eq 1 ] && hex="0$hex"; out+="%$hex" ;;
+    esac
+  done
+  printf '%s' "$out"
+}
+
+__wmux_osc7() { printf '\\033]7;file://%s%s\\a' "\${HOST-localhost}" "\$(__wmux_osc7_encode "$PWD")"; }
 
 autoload -Uz add-zsh-hook 2>/dev/null
 if (( \${+functions[add-zsh-hook]} )); then

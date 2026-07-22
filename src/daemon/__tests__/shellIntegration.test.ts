@@ -68,10 +68,30 @@ describe('ZSH_RC — PROMPT B 마커 폭 가드', () => {
 describe('ZSH_RC — OSC 7 cwd 보고', () => {
   it('OSC 7을 방출하는 __wmux_osc7 함수를 정의한다', () => {
     expect(ZSH_RC).toContain('__wmux_osc7()');
-    // ESC]7;file://<host><PWD>BEL — parseOsc7Cwd와 맞춰 host 뒤 슬래시 없이
-    // $PWD(절대경로)를 붙인다. `%s/%s`(이중 슬래시)는 //Users/... 를 만들어 금지.
-    expect(ZSH_RC).toMatch(/__wmux_osc7\(\) \{ printf '\\033\]7;file:\/\/%s%s\\a' "\$\{HOST-localhost\}" "\$PWD"; \}/);
+    // ESC]7;file://<host><encoded PWD>BEL — parseOsc7Cwd와 맞춰 host 뒤 슬래시
+    // 없이 절대경로를 붙인다. `%s/%s`(이중 슬래시)는 //Users/... 를 만들어 금지.
+    // v9: $PWD는 __wmux_osc7_encode를 거쳐 percent-encode된 채 방출된다.
+    expect(ZSH_RC).toContain("printf '\\033]7;file://%s%s\\a'");
     expect(ZSH_RC).not.toContain('file://%s/%s');
+  });
+
+  it('percent-encodes the payload so raw %, ESC and BEL bytes cannot corrupt or escape the sequence (#541 review follow-up)', () => {
+    // parseOsc7Cwd decodeURIComponent()s the payload: a literal '%' in a
+    // directory name must arrive as %25, and a raw ESC/BEL byte must never
+    // reach the wire (it would terminate the OSC 7 early and inject terminal
+    // escapes) — the encoder is the injection barrier.
+    expect(ZSH_RC).toContain('__wmux_osc7_encode()');
+    // emulate -L zsh: user rc options (KSH_ARRAYS!) must not shift the
+    // 1-based string subscripts the byte loop depends on.
+    expect(ZSH_RC).toContain('emulate -L zsh');
+    // Byte-wise walk (LC_ALL=C), '/' passes through, unreserved passes,
+    // everything else becomes %XX via zsh's fork-free [##16] arithmetic.
+    expect(ZSH_RC).toContain('local LC_ALL=C LC_CTYPE=C');
+    expect(ZSH_RC).toMatch(/\[a-zA-Z0-9.\/~_-\]\) out\+="\$c"/);
+    expect(ZSH_RC).toContain('hex=$(( [##16] #c ))');
+    // The emitter consumes the ENCODED path, not the raw one.
+    expect(ZSH_RC).toContain('"$(__wmux_osc7_encode "$PWD")"');
+    expect(ZSH_RC).not.toContain('"${HOST-localhost}" "$PWD"');
   });
 
   it('chpwd(cd 즉시)와 precmd(최초/매 프롬프트)에 모두 등록한다', () => {

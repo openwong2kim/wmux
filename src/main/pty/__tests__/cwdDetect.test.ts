@@ -62,6 +62,11 @@ describe('parseOsc7Cwd', () => {
     expect(parseOsc7Cwd('file://HOST/c%3A/')).toBe('c:\\');
   });
 
+  // v9 zsh hook shape (#541 review follow-up): POSIX path, spaces %-encoded.
+  it('round-trips a POSIX path with encoded spaces (v9 zsh hook shape)', () => {
+    expect(parseOsc7Cwd('file://MacBook.local/Users/me/My%20Docs')).toBe('/Users/me/My Docs');
+  });
+
   // #541 review: a directory whose REAL name contains a literal percent
   // sequence ("build%20cache") must round-trip — the hook emits %2520 (the
   // '%' byte itself encoded), and one decode yields the literal %20 back.
