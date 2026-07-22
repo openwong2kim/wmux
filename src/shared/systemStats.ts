@@ -5,9 +5,7 @@ export interface MemoryStats {
 }
 
 export interface WslSystemStats {
-  distro: string;
   memory: MemoryStats;
-  swap: MemoryStats;
 }
 
 export interface SystemStatsSnapshot {

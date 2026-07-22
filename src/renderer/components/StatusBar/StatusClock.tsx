@@ -78,6 +78,9 @@ export function StatusClockTime() {
   // measured just this renderer's V8 JS heap (~10MB) and under-reported real
   // memory usage by roughly an order of magnitude.
   useEffect(() => {
+    // Newer builds include wmux RSS in SystemVitals. Keep this poll only as a
+    // compatibility fallback when an older preload is paired with this renderer.
+    if (typeof window.electronAPI.system.getStats === 'function') return;
     let cancelled = false;
     const update = () => {
       void window.electronAPI.system.getMemoryUsage().then((bytes) => {

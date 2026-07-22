@@ -13,9 +13,7 @@ const stats: SystemStatsSnapshot = {
   memory: { totalBytes: 32 * 1024 ** 3, usedBytes: 24 * 1024 ** 3, percent: 75 },
   appMemoryBytes: 931 * 1024 ** 2,
   wsl: {
-    distro: 'Ubuntu',
-    memory: { totalBytes: 20 * 1024 ** 3, usedBytes: 16 * 1024 ** 3, percent: 80 },
-    swap: { totalBytes: 16 * 1024 ** 3, usedBytes: 14.08 * 1024 ** 3, percent: 88 },
+    memory: { totalBytes: 20 * 1024 ** 3, usedBytes: 17.6 * 1024 ** 3, percent: 88 },
   },
 };
 
@@ -27,7 +25,7 @@ describe('SystemVitals', () => {
     expect(pressureToneClass(85)).toContain('accent-red');
   });
 
-  it('uses the highest WSL memory or swap pressure', () => {
+  it('uses WSL VM memory pressure', () => {
     expect(wslPressurePercent(stats)).toBe(88);
   });
 
@@ -42,6 +40,6 @@ describe('SystemVitals', () => {
     const tooltip = buildSystemVitalsTooltip(stats);
     expect(tooltip).toContain('Host RAM: 24.0 GB / 32.0 GB (75%)');
     expect(tooltip).toContain('wmux: 931 MB');
-    expect(tooltip).toContain('Ubuntu swap: 14.1 GB / 16.0 GB (88%)');
+    expect(tooltip).toContain('WSL VM RAM: 17.6 GB / 20.0 GB (88%)');
   });
 });

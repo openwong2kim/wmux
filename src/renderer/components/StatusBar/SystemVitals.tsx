@@ -11,7 +11,7 @@ export function pressureToneClass(percent: number): string {
 
 export function wslPressurePercent(stats: SystemStatsSnapshot): number | null {
   if (!stats.wsl) return null;
-  return Math.max(stats.wsl.memory.percent, stats.wsl.swap.percent);
+  return stats.wsl.memory.percent;
 }
 
 function formatBytes(bytes: number): string {
@@ -30,8 +30,7 @@ export function buildSystemVitalsTooltip(stats: SystemStatsSnapshot): string {
     `wmux: ${formatBytes(stats.appMemoryBytes)}`,
   ];
   if (stats.wsl) {
-    lines.push(formatMemory(`${stats.wsl.distro} RAM`, stats.wsl.memory));
-    lines.push(formatMemory(`${stats.wsl.distro} swap`, stats.wsl.swap));
+    lines.push(formatMemory('WSL VM RAM', stats.wsl.memory));
   }
   return lines.join('\n');
 }
@@ -58,9 +57,11 @@ export default function SystemVitals() {
   const [stats, setStats] = useState<SystemStatsSnapshot | null>(null);
 
   useEffect(() => {
+    const getStats = window.electronAPI.system.getStats;
+    if (typeof getStats !== 'function') return;
     let cancelled = false;
     const update = () => {
-      void window.electronAPI.system.getStats()
+      void getStats()
         .then((next) => { if (!cancelled) setStats(next); })
         .catch(() => { /* Preserve the last useful sample while main or WSL is unavailable. */ });
     };
