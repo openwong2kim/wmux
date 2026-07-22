@@ -37,6 +37,14 @@ const humanBehavior = new HumanBehavior();
 // in packaged builds (#106). Lazy: enables domains on first drain call.
 const captureManager = new BrowserCaptureManager();
 
+// #529: how long browser.screenshot waits on CDP Page.captureScreenshot before
+// falling back to webContents.capturePage(). Generous against slow-but-alive
+// captures (a healthy one returns in <100ms) while keeping the worst case far
+// under callers' RPC timeouts.
+const CDP_SCREENSHOT_TIMEOUT_MS = 2_500;
+// Bound for the capturePage fallback — it can hang on exactly the same guests.
+const CAPTURE_PAGE_TIMEOUT_MS = 1_500;
+
 export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webviewCdpManager: WebviewCdpManager): void {
   const getActivePartition = (): string => profileManager.getActiveProfile().partition;
 
@@ -380,12 +388,56 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error('browser.screenshot: WebContents unavailable');
 
-    // Always use CDP Page.captureScreenshot (reliable, no timeout issues)
-    const result = await wc.debugger.sendCommand('Page.captureScreenshot', {
-      format: 'png',
-      ...(fullPage && { captureBeyondViewport: true }),
-    });
-    return { data: (result as { data: string }).data };
+    // CDP first — it is the only path that supports captureBeyondViewport.
+    // But its compositor-path capture is unreliable for <webview> guests
+    // (#529): the command can wait forever on a frame that never comes, and
+    // WHICH visibility state hangs varies by machine/GPU session (measured
+    // both "hidden hangs" and "visible hangs" on the same box). So the call
+    // is bounded, with Electron's capturePage() — a different, synchronous
+    // readback path — as the fallback.
+    const cdpCapture = wc.debugger
+      .sendCommand('Page.captureScreenshot', {
+        format: 'png',
+        ...(fullPage && { captureBeyondViewport: true }),
+      })
+      // The abandoned promise may settle (or reject on detach) long after the
+      // timeout below — never let it surface as an unhandled rejection.
+      .catch(() => null);
+    const timeoutMarker = Symbol('cdp-screenshot-timeout');
+    const raced = await Promise.race([
+      cdpCapture,
+      new Promise<typeof timeoutMarker>((resolve) => {
+        const t = setTimeout(() => resolve(timeoutMarker), CDP_SCREENSHOT_TIMEOUT_MS);
+        t.unref?.();
+      }),
+    ]);
+    if (raced !== timeoutMarker && raced && typeof (raced as { data?: unknown }).data === 'string') {
+      return { data: (raced as { data: string }).data };
+    }
+
+    // Fallback: viewport-only, so a fullPage request degrades to the viewport
+    // — still strictly better than hanging for the caller. capturePage rides
+    // the same surface-copy machinery and hangs for the same guests (measured
+    // live), so it gets its own bound.
+    const fallback = await Promise.race([
+      wc.capturePage().catch(() => null),
+      new Promise<typeof timeoutMarker>((resolve) => {
+        const t = setTimeout(() => resolve(timeoutMarker), CAPTURE_PAGE_TIMEOUT_MS);
+        t.unref?.();
+      }),
+    ]);
+    if (fallback !== timeoutMarker && fallback && !fallback.isEmpty()) {
+      return { data: fallback.toPNG().toString('base64') };
+    }
+    // No capture path can produce pixels for this guest right now. Typical
+    // cause: the pane's workspace is hidden and the compositor has stopped
+    // producing frames for the guest (#529 — no CDP-side lever unblocks this;
+    // reveal tricks, bringToFront and lifecycle overrides were all measured
+    // ineffective). Fail fast with the workarounds instead of hanging.
+    throw new Error(
+      'browser.screenshot: the guest is not producing frames (its pane is likely in a hidden workspace — #529). ' +
+      'Bring the workspace to front (workspace.focus / pane_focus) and retry, or use browser_snapshot / browser_extract_text for content without pixels.',
+    );
   });
 
   /**

@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerBrowserRpc } from '../browser.rpc';
@@ -406,5 +406,94 @@ describe('registerBrowserRpc', () => {
       expect(response.error).toContain('browser.type.cdp');
     }
     expect(keyEventCalls()).toHaveLength(0);
+  });
+});
+
+// ── #529 — screenshot hang fallback ─────────────────────────────────────────
+
+describe('browser.screenshot capture fallback (#529)', () => {
+  // Local mirror of the register() helper above (it is scoped to the first
+  // describe block).
+  function register(): RpcRouter {
+    const router = new RpcRouter();
+    const webviewCdpManager = {
+      getTarget: vi.fn(() => ({ surfaceId: 'surface-1', webContentsId: 42, targetId: 'target-1', wsUrl: 'ws://127.0.0.1/devtools/page/target-1' })),
+      listTargets: vi.fn(() => []),
+      getCdpPort: vi.fn(() => 18800),
+      waitForTarget: vi.fn(),
+      ensureAwake: vi.fn(async () => null),
+      setCaptureCleanup: vi.fn(),
+      withAutomationLease: vi.fn(async (_surfaceId: string, fn: () => Promise<unknown>) => fn()),
+      acquireRpcLease: vi.fn(() => 'lease-1'),
+      renewRpcLease: vi.fn(() => true),
+      releaseRpcLease: vi.fn(() => true),
+    };
+    registerBrowserRpc(router, () => null, webviewCdpManager as never);
+    return router;
+  }
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    mockWebContents.isDestroyed.mockReturnValue(false);
+    vi.useFakeTimers();
+  });
+
+  afterEach(() => {
+    vi.useRealTimers();
+    delete (mockWebContents as Record<string, unknown>)['capturePage'];
+  });
+
+  it('returns the CDP capture when it resolves promptly (fast path unchanged)', async () => {
+    mockWebContents.debugger.sendCommand.mockResolvedValueOnce({ data: 'cdp-png' });
+    const router = register();
+    const p = router.dispatch({ id: 's1', method: 'browser.screenshot', params: {} });
+    await vi.advanceTimersByTimeAsync(10);
+    const response = await p;
+    expect(response.ok).toBe(true);
+    if (response.ok) expect(response.result).toEqual({ data: 'cdp-png' });
+  });
+
+  it('falls back to capturePage when the CDP capture hangs', async () => {
+    // A capture that never settles — the #529 compositor hang.
+    mockWebContents.debugger.sendCommand.mockReturnValueOnce(new Promise(() => {}));
+    (mockWebContents as Record<string, unknown>)['capturePage'] = vi.fn(async () => ({
+      isEmpty: () => false,
+      toPNG: () => Buffer.from('fallback-png'),
+    }));
+    const router = register();
+    const p = router.dispatch({ id: 's2', method: 'browser.screenshot', params: {} });
+    await vi.advanceTimersByTimeAsync(3000);
+    const response = await p;
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.result).toEqual({ data: Buffer.from('fallback-png').toString('base64') });
+    }
+  });
+
+  it('fails with a clear error when the CDP capture hangs AND capturePage is empty', async () => {
+    mockWebContents.debugger.sendCommand.mockReturnValueOnce(new Promise(() => {}));
+    (mockWebContents as Record<string, unknown>)['capturePage'] = vi.fn(async () => ({
+      isEmpty: () => true,
+      toPNG: () => Buffer.alloc(0),
+    }));
+    const router = register();
+    const p = router.dispatch({ id: 's3', method: 'browser.screenshot', params: {} });
+    await vi.advanceTimersByTimeAsync(3000);
+    const response = await p;
+    expect(response.ok).toBe(false);
+    if (!response.ok) expect(response.error).toContain('not producing frames');
+  });
+
+  it('a rejected CDP capture (debugger detached) also falls back instead of throwing', async () => {
+    mockWebContents.debugger.sendCommand.mockRejectedValueOnce(new Error('Debugger detached'));
+    (mockWebContents as Record<string, unknown>)['capturePage'] = vi.fn(async () => ({
+      isEmpty: () => false,
+      toPNG: () => Buffer.from('after-detach'),
+    }));
+    const router = register();
+    const p = router.dispatch({ id: 's4', method: 'browser.screenshot', params: {} });
+    await vi.advanceTimersByTimeAsync(3000);
+    const response = await p;
+    expect(response.ok).toBe(true);
   });
 });
