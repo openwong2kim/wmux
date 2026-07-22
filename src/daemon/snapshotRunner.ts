@@ -2,6 +2,7 @@ import { promises as fsp } from 'node:fs';
 import type { DaemonSessionManager } from './DaemonSessionManager';
 import type { StateWriter } from './StateWriter';
 import type { DaemonState, DaemonSession } from './types';
+import { BACKUP_SUFFIXES } from './util/atomicWrite';
 
 // Side-effect-free module so unit tests can drive runSnapshotOnce without
 // importing src/daemon/index.ts (which would execute its main() bootstrap on
@@ -114,26 +115,43 @@ export function createSnapshotRunner(
           snapshotLog('info', `Snapshot: dumped=${dumped} forced=${forced} skipped-clean=${skipped} of ${live.length} live`);
         }
         try {
+          // Async read (30-session scaling): this used to be a sync
+          // stateWriter.load() + saveImmediate pair on EVERY 30s tick —
+          // re-parsing and re-writing a sessions.json that grows with the
+          // fleet, on the same event loop that answers daemon.ping.
+          //
+          // Backup fallback (review consensus): the primary can be corrupt,
+          // or this read can land inside atomicWriteJSON's rename window.
+          // Treating that as "nothing to preserve" and then SAVING would
+          // permanently drop recovery-cap-skipped suspended sessions that
+          // exist only in this file — so on primary failure we walk the same
+          // .bak rotation load() uses before giving up.
+          let onDisk: DaemonSession[] = [];
+          const primary = stateWriter.getFilePath();
+          for (const file of [primary, ...BACKUP_SUFFIXES.map((s) => `${primary}${s}`)]) {
+            try {
+              const parsed = JSON.parse(await fsp.readFile(file, 'utf-8')) as
+                | { sessions?: DaemonSession[] }
+                | null;
+              if (parsed && Array.isArray(parsed.sessions)) {
+                onDisk = parsed.sessions;
+                break;
+              }
+            } catch {
+              // Absent/unreadable/corrupt slot — try the next backup. All
+              // slots failing means a true first save: nothing to preserve.
+            }
+          }
+
+          // Capture the live sessions AFTER the await above (codex review):
+          // a cwd/lifecycle event that persisted DURING the read would
+          // otherwise be overwritten by this merge's pre-event copies,
+          // re-opening the reboot-loss window until the next tick.
           const liveSessions = sessionManager.listSessions();
           const liveIds = new Set(liveSessions.map((s) => s.id));
-          let preserved: DaemonSession[] = [];
-          try {
-            // Async read (30-session scaling): this used to be a sync
-            // stateWriter.load() + saveImmediate pair on EVERY 30s tick —
-            // re-parsing and re-writing a sessions.json that grows with the
-            // fleet, on the same event loop that answers daemon.ping. A
-            // plain read is enough here: we only need the non-managed
-            // entries, and an unreadable/corrupt primary degrades to
-            // preserved=[] for this tick exactly like the old catch did
-            // (recovery's load() keeps its .bak fallback).
-            const raw = await fsp.readFile(stateWriter.getFilePath(), 'utf-8');
-            const existing = JSON.parse(raw) as { sessions?: DaemonSession[] } | null;
-            if (existing && Array.isArray(existing.sessions)) {
-              preserved = existing.sessions.filter((s) => s && typeof s.id === 'string' && !liveIds.has(s.id));
-            }
-          } catch {
-            // No prior sessions.json (first save) or unreadable — nothing to preserve.
-          }
+          const preserved = onDisk.filter(
+            (s) => s && typeof s.id === 'string' && !liveIds.has(s.id),
+          );
           const merged: DaemonState = {
             version: 1,
             sessions: [...liveSessions, ...preserved],

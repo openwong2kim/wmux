@@ -234,6 +234,48 @@ describe('installHooks — plugin-aware', () => {
     expect(outcome.pluginDetected).toBe(true);
     expect(outcome.events).toEqual([]);
   });
+
+  // Codex review: installed_plugins.json keeps listing a plugin the user
+  // disabled via settings `enabledPlugins` — its hooks.json is NOT loaded, so
+  // the settings.json entries are the only live installation and must not be
+  // stripped (that would leave zero wmux hooks).
+  it('installs normally when the plugin is installed but explicitly disabled', () => {
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+    );
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ enabledPlugins: { 'wmux-claude-integration@wmux-marketplace': false } }),
+      'utf8',
+    );
+
+    const outcome = installHooks(paths());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.pluginDetected).toBe(false);
+    expect(outcome.events.sort()).toEqual(['SessionStart', 'Stop', 'SubagentStop']);
+    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
+    // The user's enabledPlugins map is preserved untouched.
+    expect((readSettings().enabledPlugins as Record<string, unknown>)[
+      'wmux-claude-integration@wmux-marketplace'
+    ]).toBe(false);
+  });
+
+  it('still short-circuits when enabledPlugins lists the plugin as true', () => {
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+    );
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ enabledPlugins: { 'wmux-claude-integration@wmux-marketplace': true } }),
+      'utf8',
+    );
+
+    const outcome = installHooks(paths());
+    expect(outcome.pluginDetected).toBe(true);
+    expect(outcome.events).toEqual([]);
+  });
 });
 
 describe('removeHooks', () => {

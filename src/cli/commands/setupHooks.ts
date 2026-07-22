@@ -281,6 +281,23 @@ function detectPluginViaManifest(settingsPath: string): boolean {
   }
 }
 
+/**
+ * A plugin can be INSTALLED (listed in installed_plugins.json) yet DISABLED
+ * through Claude Code's `enabledPlugins` settings map — in which case its
+ * hooks.json is NOT loaded. Treating such a plugin as active would strip the
+ * working settings.json hook entries and leave the user with no wmux hooks at
+ * all (codex review). Only an EXPLICIT `false` counts as disabled: an entry
+ * absent from `enabledPlugins` means Claude Code runs the installed plugin.
+ */
+function isPluginExplicitlyDisabled(settings: Record<string, unknown>): boolean {
+  const enabled = settings['enabledPlugins'];
+  if (!enabled || typeof enabled !== 'object' || Array.isArray(enabled)) return false;
+  for (const [key, value] of Object.entries(enabled as Record<string, unknown>)) {
+    if (key.includes(WMUX_PLUGIN_MARKER) && value === false) return true;
+  }
+  return false;
+}
+
 // ----- Bridge copy --------------------------------------------------------
 
 interface BridgeCopyResult {
@@ -358,11 +375,14 @@ export function installHooks(paths: SetupHooksPaths): InstallOutcome {
   const settings = load.settings;
 
   // 2. Plugin-aware short-circuit: when the wmux-claude-integration marketplace
-  //    plugin is installed it already registers these hooks. Writing them here
-  //    too would double every Stop/SubagentStop/SessionStart signal, so we skip
-  //    the install and instead strip any duplicate settings.json entries left
-  //    over from a previous plugin-LESS run. All foreign hooks are preserved.
-  if (detectPluginViaManifest(paths.settingsPath)) {
+  //    plugin is installed AND enabled it already registers these hooks.
+  //    Writing them here too would double every Stop/SubagentStop/SessionStart
+  //    signal, so we skip the install and instead strip any duplicate
+  //    settings.json entries left over from a previous plugin-LESS run. All
+  //    foreign hooks are preserved. An installed-but-DISABLED plugin loads no
+  //    hooks, so it must NOT short-circuit — the settings.json entries are the
+  //    only live installation in that case (codex review).
+  if (detectPluginViaManifest(paths.settingsPath) && !isPluginExplicitlyDisabled(settings)) {
     const removedForPlugin = stripWmuxHooks(settings);
     if (removedForPlugin > 0) {
       writeJsonAtomic(paths.settingsPath, settings);

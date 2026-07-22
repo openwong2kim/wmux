@@ -117,6 +117,44 @@ describe('createSnapshotRunner (A1b — extracted from periodic interval body)',
     expect(fs.existsSync(writer.getBufferDumpPath('live-one'))).toBe(true);
   });
 
+  // Review consensus (Claude+Codex): a corrupt primary — or a read landing
+  // inside atomicWriteJSON's rename window — must NOT be treated as "nothing
+  // to preserve": the subsequent save would permanently drop cap-skipped
+  // suspended sessions that exist only on disk. The runner walks the same
+  // .bak rotation load() uses.
+  it('preserves cap-skipped sessions from .bak when the primary is corrupt', async () => {
+    const sessionsFile = path.join(tmpDir, 'sessions.json');
+    const recentIso = new Date(Date.now() - 60 * 60 * 1000).toISOString();
+    const suspended = {
+      id: 'cap-skipped',
+      state: 'suspended',
+      cmd: 'bash',
+      cwd: tmpDir,
+      env: {},
+      cols: 80,
+      rows: 24,
+      pid: 999,
+      createdAt: recentIso,
+      lastActivity: recentIso,
+      deadTtlHours: 24,
+    };
+    // Valid backup slot, corrupt primary.
+    fs.writeFileSync(
+      `${sessionsFile}.bak`,
+      JSON.stringify({ version: 1, sessions: [suspended], bootId: 'old-boot' }),
+    );
+    fs.writeFileSync(sessionsFile, '{{ definitely not json', 'utf8');
+
+    manager.createSession({ id: 'live-one', cmd: 'bash', cwd: tmpDir, env: {}, cols: 80, rows: 24 });
+    await runSnapshotOnce();
+
+    const persisted = JSON.parse(fs.readFileSync(sessionsFile, 'utf-8')) as {
+      sessions: { id: string }[];
+    };
+    const ids = persisted.sessions.map((s) => s.id).sort();
+    expect(ids).toEqual(['cap-skipped', 'live-one'].sort());
+  });
+
   // Authoritative-managed rule: if a session id exists in both the existing
   // file and sessionManager, sessionManager wins (carries the latest
   // lastActivity / cwd / geometry that may not yet have been saved by any
