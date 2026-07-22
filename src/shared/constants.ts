@@ -206,6 +206,13 @@ export const IPC = {
   //   loop and resumes the brain. Same renderer-only trust boundary as DECK_SEND.
   DECK_DECISION_GET: 'deck:decision:get',
   DECK_DECISION_RESOLVE: 'deck:decision:resolve',
+  //   WORKSPACE_MIRROR_PUSH (send) renderer → main: a fire-and-forget full
+  //   snapshot of the workspace tree + per-pane agent status. Feeds the
+  //   main-process WorkspaceMirror so routing / hook resolution can be served
+  //   locally instead of via the `workspace.list` renderer round-trip (which a
+  //   large-buffer flush storm starves). Snapshot-only — never read by the UI,
+  //   never authoritative for focus. Full replacement (last write wins).
+  WORKSPACE_MIRROR_PUSH: 'workspace:mirror:push',
   //   ACCOUNT_* (invoke) renderer → main: multi-account registry CRUD +
   //   per-workspace bindings. Renderer-only trust boundary (main owns
   //   accounts.json; the renderer never resolves spawn env). Onboarding
