@@ -17,6 +17,11 @@ import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
+import {
+  createSessionDataDispatcher,
+  type SessionDataDispatcher,
+  type SessionDataHandler,
+} from './sessionDataDispatcher';
 import { updateCwd } from './metadata.handler';
 import { markResize, markUserWrite } from '../../notification/idleSuppression';
 import { wrapHandler } from '../wrapHandler';
@@ -217,40 +222,32 @@ export function registerPTYHandlers(
 ): () => void {
   const useDaemon = daemonClient?.isConnected ?? false;
 
-  // Track daemon session:data listeners by sessionId so PTY_CREATE / PTY_RECONNECT
-  // can be idempotent. Without per-id tracking, every reconcile (mount + each
-  // daemon.onConnected) would push another listener for an already-active
-  // session, and the same PTY frame would be forwarded to the renderer N times
-  // — manifesting as spinner lines stacking up and characters smearing across
-  // rows in TUIs like Claude Code.
-  const daemonSessionListeners = new Map<string, (...args: unknown[]) => void>();
+  // Per-session data dispatch. DaemonClient emits a SINGLE 'session:data' event
+  // for ALL sessions; the O(N)-listeners-per-chunk fan-out (and its
+  // MaxListenersExceededWarning storm past the 11th session) is collapsed into
+  // ONE shared listener + a per-id handler map by createSessionDataDispatcher.
+  // Installed once per DaemonClient generation below and disposed in cleanup, so
+  // a daemon respawn (new DaemonClient) rewires a fresh dispatcher and old
+  // generations never cross-wire. See sessionDataDispatcher.ts for the
+  // single-slot-Map-vs-Set rationale. Null until the daemon-mode wiring below.
+  let sessionDataDispatcher: SessionDataDispatcher | null = null;
 
-  /** Register (or replace) the per-session data listener for `sessionId`. */
-  function setSessionDataListener(
-    sessionId: string,
-    listener: (...args: unknown[]) => void,
-  ): void {
-    if (!daemonClient) return;
-    const existing = daemonSessionListeners.get(sessionId);
-    if (existing) {
-      // P1-3: deliver anything the OLD listener generation buffered before
-      // the swap — identical ordering to the pre-batching path, and no
-      // old-generation bytes can interleave into the new stream.
-      dataBatcher.flushSession(sessionId);
-      daemonClient.removeListener('session:data', existing);
-    }
-    daemonClient.on('session:data', listener);
-    daemonSessionListeners.set(sessionId, listener);
+  /** Register (or replace) the per-session data handler for `sessionId`. */
+  function setSessionDataListener(sessionId: string, handler: SessionDataHandler): void {
+    if (!sessionDataDispatcher) return;
+    // P1-3: deliver anything the OLD handler generation buffered before the
+    // swap — identical ordering to the pre-batching path, and no old-generation
+    // bytes can interleave into the new stream.
+    if (sessionDataDispatcher.has(sessionId)) dataBatcher.flushSession(sessionId);
+    sessionDataDispatcher.set(sessionId, handler);
   }
 
-  /** Remove the per-session data listener for `sessionId`, if any. */
+  /** Remove the per-session data handler for `sessionId`, if any. */
   function clearSessionDataListener(sessionId: string): void {
-    if (!daemonClient) return;
-    const existing = daemonSessionListeners.get(sessionId);
-    if (!existing) return;
+    if (!sessionDataDispatcher) return;
+    if (!sessionDataDispatcher.has(sessionId)) return;
     dataBatcher.flushSession(sessionId); // P1-3: no bytes stranded in the batch
-    daemonClient.removeListener('session:data', existing);
-    daemonSessionListeners.delete(sessionId);
+    sessionDataDispatcher.delete(sessionId);
   }
 
   // Per-session StringDecoder to handle UTF-8 multi-byte sequences split across chunks
@@ -302,6 +299,9 @@ export function registerPTYHandlers(
   // matching what local-mode PTYBridge does inline.
   let onDaemonTitle: ((payload: { sessionId: string; title: string }) => void) | null = null;
   if (useDaemon && daemonClient) {
+    // Install the single shared 'session:data' listener for this generation.
+    sessionDataDispatcher = createSessionDataDispatcher(daemonClient);
+
     onDaemonFlushComplete = (payload: { sessionId: string; recoveredBytes: number }) => {
       // P1-3 ordering rule: the flush-complete marker must never overtake
       // batched data — the renderer resets + settles its resync on this
@@ -491,7 +491,7 @@ export function registerPTYHandlers(
         const text = decodeSessionData(sessionId, payload.data);
         if (text) dataBatcher.push(sessionId, text);
       };
-      setSessionDataListener(sessionId, onSessionData as (...args: unknown[]) => void);
+      setSessionDataListener(sessionId, onSessionData);
 
       // Register initial CWD
       updateCwd(sessionId, effectiveCwd);
@@ -904,7 +904,7 @@ export function registerPTYHandlers(
           const text = decodeSessionData(id, payload.data);
           if (text) dataBatcher.push(id, text);
         };
-        setSessionDataListener(id, onSessionData as (...args: unknown[]) => void);
+        setSessionDataListener(id, onSessionData);
 
         console.log(`[lifecycle] pty.reconnect id=${id} result=ok pid=${session.pid ?? '?'}`);
         return { success: true, id: session.id, shell: session.cmd };
@@ -1155,10 +1155,12 @@ export function registerPTYHandlers(
       // owns the window, then stop batching — a re-registered handler gets a
       // fresh batcher, so generations can never interleave.
       dataBatcher.dispose();
-      for (const listener of daemonSessionListeners.values()) {
-        daemonClient.removeListener('session:data', listener);
+      // Detach the single shared 'session:data' listener and drop the dispatch
+      // map — the next generation installs its own onto the new DaemonClient.
+      if (sessionDataDispatcher) {
+        sessionDataDispatcher.dispose();
+        sessionDataDispatcher = null;
       }
-      daemonSessionListeners.clear();
       if (onDaemonSessionDied) {
         daemonClient.removeListener('session:died', onDaemonSessionDied);
       }
