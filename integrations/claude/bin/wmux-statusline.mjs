@@ -1,5 +1,6 @@
 #!/usr/bin/env node
-// wmux statusline for Claude Code — renders `<model> · <account> · 5h N% · 7d N%`
+// wmux statusline for Claude Code — renders
+// `<model> · <account> · 5h N% ↺ HH:MM · 7d N% ↺ Nh` (beyond 48h: `↺ NdNh`)
 // on the line under the input box (Claude Code `statusLine` command).
 //
 // How it knows WHICH account this session runs on: the statusline process is
@@ -144,14 +145,17 @@ function main() {
     // actionable: `↺ 52h`, or `↺ 2d4h` once it exceeds 48h.
     const resetsAt = rl?.seven_day?.resets_at;
     let reset = '';
-    if (typeof resetsAt === 'number' && resetsAt * 1000 > Date.now()) {
-      const hoursLeft = Math.round((resetsAt * 1000 - Date.now()) / 3600000);
-      if (hoursLeft >= 48) {
+    const now = Date.now();
+    if (typeof resetsAt === 'number' && resetsAt * 1000 > now) {
+      const msLeft = resetsAt * 1000 - now;
+      if (msLeft >= 48 * 3600000) {
+        const hoursLeft = Math.round(msLeft / 3600000);
         const d = Math.floor(hoursLeft / 24);
         const h = hoursLeft % 24;
         reset = h > 0 ? ` ↺ ${d}d${h}h` : ` ↺ ${d}d`;
       } else {
-        reset = ` ↺ ${hoursLeft}h`;
+        // ceil so a positive remainder never renders as `0h`
+        reset = ` ↺ ${Math.ceil(msLeft / 3600000)}h`;
       }
     }
     parts.push(`7d ${Math.round(sevenDay)}%${reset}`);

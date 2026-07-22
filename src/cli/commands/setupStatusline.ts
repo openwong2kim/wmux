@@ -6,7 +6,8 @@ import * as path from 'path';
  * `wmux setup-statusline` — install the wmux usage statusline into Claude Code.
  *
  * Sets the `statusLine` command in Claude Code settings so the line under the
- * input box shows `<model> · <account> · ctx N% · 5h N% ↺HH:MM · 7d N%`. The
+ * input box shows `<model> · <account> · ctx N% · 5h N% ↺ HH:MM · 7d N% ↺ Nh`
+ * (the 7d remaining time reads `↺ NdNh` beyond 48h). The
  * numbers come from the JSON Claude Code pipes to the statusline on stdin
  * (`rate_limits`, `context_window`) — zero network, zero token spend; the
  * account label comes from local files (wmux accounts.json / the config dir's
