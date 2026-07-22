@@ -115,8 +115,13 @@ function main() {
     ?? (isDefaultDir ? 'default' : basename(configDir));
   parts.push(name);
 
-  // Percentages: stdin rate_limits (free, live, per-session) first. Each
-  // window may be independently absent per the statusline contract.
+  // THIS session's live context-window fill (input-side tokens vs window
+  // size). May be null early in the session and right after /compact.
+  const ctx = input?.context_window?.used_percentage;
+  if (typeof ctx === 'number') parts.push(`ctx ${Math.round(ctx)}%`);
+
+  // Account-level percentages: stdin rate_limits (free, live, per-session).
+  // Each window may be independently absent per the statusline contract.
   const rl = input?.rate_limits;
   const fiveHour = rl?.five_hour?.used_percentage;
   const sevenDay = rl?.seven_day?.used_percentage;
