@@ -186,10 +186,12 @@ describe('isFirstPartyClient', () => {
     // Empirically-captured agent MCP clientInfo.name values (see firstParty.ts).
     expect(isFirstPartyClient('claude-code')).toBe(true);
     expect(isFirstPartyClient('codex-mcp-client')).toBe(true);
+    expect(isFirstPartyClient('opencode')).toBe(true);
     expect(FIRST_PARTY_CLIENT_NAMES.has('claude-code')).toBe(true);
     expect(FIRST_PARTY_CLIENT_NAMES.has('codex-mcp-client')).toBe(true);
+    expect(FIRST_PARTY_CLIENT_NAMES.has('opencode')).toBe(true);
     // Near-misses and impersonation attempts must NOT be first-party (exact match).
-    for (const name of [undefined, '', 'claude', 'Claude-Code', 'codex', 'Codex', 'evil', 'wmux-orchestrator-e2e']) {
+    for (const name of [undefined, '', 'claude', 'Claude-Code', 'codex', 'Codex', 'OpenCode', 'open-code', 'evil', 'wmux-orchestrator-e2e']) {
       expect(isFirstPartyClient(name as string | undefined)).toBe(false);
     }
   });
