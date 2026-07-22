@@ -53,7 +53,15 @@ export class DaemonPipeServer {
 
   private static readonly MAX_CONNECTIONS = 20;
   private static readonly GLOBAL_RATE_LIMIT = 200;
-  private static readonly PER_SOCKET_RATE_LIMIT = 50;
+  // Per-socket RPC rate limit. The Electron main process holds ONE authenticated
+  // socket to the daemon and multiplexes EVERY pane's RPCs through it, so a
+  // per-socket cap below the global one just rate-limits the app against itself:
+  // a 30-pane boot or workspace-switch storm (resize + reconnect + initial reads
+  // per pane in one tick) trivially blew past 50/s, and rejected pty:reconnect
+  // calls could leave panes unattached. Raised 50 → 200 to align with
+  // GLOBAL_RATE_LIMIT, which still bounds totals; the per-socket cap is redundant
+  // DoS protection for a single trusted local client.
+  private static readonly PER_SOCKET_RATE_LIMIT = 200;
   private static readonly MAX_NEW_CONNECTIONS_PER_SEC = 20;
 
   private activePipeName: string;

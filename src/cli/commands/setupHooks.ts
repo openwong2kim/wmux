@@ -51,6 +51,9 @@ type HookEvent = (typeof HOOK_EVENTS)[number];
 /** Substring that identifies a wmux-owned hook command in settings.json. */
 const WMUX_BRIDGE_MARKER = 'wmux-bridge.mjs';
 
+/** Substring that identifies the wmux Claude Code marketplace plugin. */
+const WMUX_PLUGIN_MARKER = 'wmux-claude-integration';
+
 /**
  * Filesystem paths the command operates on. Injectable so unit tests can point
  * at a temp dir and never touch the real HOME. `mcp.ts` hardcodes os.homedir();
@@ -236,6 +239,48 @@ function stripWmuxHooks(settings: Record<string, unknown>): number {
   return removed;
 }
 
+// ----- Plugin manifest detection ------------------------------------------
+
+/** Recursively test whether any object key OR string value contains `needle`. */
+function jsonMentions(value: unknown, needle: string, depth = 0): boolean {
+  if (depth > 20) return false;
+  if (typeof value === 'string') return value.includes(needle);
+  if (Array.isArray(value)) {
+    return value.some((v) => jsonMentions(v, needle, depth + 1));
+  }
+  if (value && typeof value === 'object') {
+    for (const [k, v] of Object.entries(value as Record<string, unknown>)) {
+      if (k.includes(needle)) return true;
+      if (jsonMentions(v, needle, depth + 1)) return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Authoritative install-time detection of the `wmux-claude-integration`
+ * marketplace plugin via Claude Code's installed-plugins manifest
+ * (`<claudeDir>/plugins/installed_plugins.json`). Returns true when the manifest
+ * references the plugin by key or value. A missing OR malformed manifest is
+ * tolerated and treated as "not installed" — fail-open to the plugin-LESS
+ * install path so a corrupt manifest never blocks `wmux setup-hooks`.
+ */
+function detectPluginViaManifest(settingsPath: string): boolean {
+  const manifestPath = path.join(path.dirname(settingsPath), 'plugins', 'installed_plugins.json');
+  let raw: string;
+  try {
+    raw = fs.readFileSync(manifestPath, 'utf8');
+  } catch {
+    return false; // absent / unreadable
+  }
+  try {
+    const parsed = JSON.parse(raw, safeReviver) as unknown;
+    return jsonMentions(parsed, WMUX_PLUGIN_MARKER);
+  } catch {
+    return false; // malformed
+  }
+}
+
 // ----- Bridge copy --------------------------------------------------------
 
 interface BridgeCopyResult {
@@ -269,6 +314,14 @@ export interface InstallOutcome {
   /** Events written into settings.json. */
   events: HookEvent[];
   bridgeCopied: boolean;
+  /**
+   * True when the wmux-claude-integration marketplace plugin was detected. In
+   * that case we do NOT write hook entries (the plugin owns them) and instead
+   * strip any duplicate settings.json entries to prevent double signals.
+   */
+  pluginDetected: boolean;
+  /** Duplicate wmux hook groups removed because the plugin already owns them. */
+  removedForPlugin: number;
   /** Non-fatal warning (e.g. partial copy), or null. */
   warning: string | null;
   /** Fatal error (corruption / missing bridge); when set, ok is false. */
@@ -283,22 +336,19 @@ export function installHooks(paths: SetupHooksPaths): InstallOutcome {
     bridgeSource: paths.bridgeSource,
     events: [],
     bridgeCopied: false,
+    pluginDetected: false,
+    removedForPlugin: 0,
     warning: null,
     error: null,
   };
 
-  // 1. Locate + copy the bridge first; without it the hooks would be inert.
-  const copy = copyBridge(paths);
-  if (!copy.copied) {
-    return { ...base, error: copy.warning };
-  }
-
-  // 2. Load settings; abort on corruption rather than clobbering user config.
+  // 1. Load settings; abort on corruption rather than clobbering user config.
+  //    Done before touching the bridge so a corrupt config never triggers a
+  //    pointless copy, and so plugin detection can gate the whole install.
   const load = loadSettings(paths.settingsPath);
   if (load.corrupted) {
     return {
       ...base,
-      bridgeCopied: true,
       error:
         `settings.json at ${paths.settingsPath} is not valid JSON — aborting to avoid ` +
         `overwriting your Claude Code config. Fix or remove the file and re-run.`,
@@ -307,7 +357,26 @@ export function installHooks(paths: SetupHooksPaths): InstallOutcome {
 
   const settings = load.settings;
 
-  // 3. Idempotent merge: drop any stale wmux groups first, then append fresh
+  // 2. Plugin-aware short-circuit: when the wmux-claude-integration marketplace
+  //    plugin is installed it already registers these hooks. Writing them here
+  //    too would double every Stop/SubagentStop/SessionStart signal, so we skip
+  //    the install and instead strip any duplicate settings.json entries left
+  //    over from a previous plugin-LESS run. All foreign hooks are preserved.
+  if (detectPluginViaManifest(paths.settingsPath)) {
+    const removedForPlugin = stripWmuxHooks(settings);
+    if (removedForPlugin > 0) {
+      writeJsonAtomic(paths.settingsPath, settings);
+    }
+    return { ...base, ok: true, pluginDetected: true, removedForPlugin };
+  }
+
+  // 3. Locate + copy the bridge; without it the hooks would be inert.
+  const copy = copyBridge(paths);
+  if (!copy.copied) {
+    return { ...base, error: copy.warning };
+  }
+
+  // 4. Idempotent merge: drop any stale wmux groups first, then append fresh
   //    ones. This preserves all foreign hooks and every other settings key.
   stripWmuxHooks(settings);
 
@@ -478,6 +547,19 @@ function printInstall(outcome: InstallOutcome, jsonMode: boolean): void {
   }
   if (!outcome.ok) {
     if (outcome.error) console.error(outcome.error);
+    return;
+  }
+  if (outcome.pluginDetected) {
+    console.log('Detected the wmux-claude-integration plugin — it already registers these hooks.');
+    console.log('Skipped writing settings.json hook entries to avoid double signals.');
+    if (outcome.removedForPlugin > 0) {
+      console.log(
+        `Removed ${outcome.removedForPlugin} duplicate wmux hook entr${outcome.removedForPlugin === 1 ? 'y' : 'ies'} from ${outcome.settingsPath}.`,
+      );
+      console.log('Restart your Claude Code session for the change to take effect.');
+    } else {
+      console.log('No duplicate wmux hook entries in settings.json — nothing to change.');
+    }
     return;
   }
   console.log(`Copied bridge → ${outcome.bridgeDest}`);
