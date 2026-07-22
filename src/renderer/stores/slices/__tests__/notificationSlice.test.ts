@@ -2,7 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createNotificationSlice, type NotificationSlice } from '../notificationSlice';
-import type { Workspace, Pane } from '../../../../shared/types';
+import type { Workspace, Pane, Notification } from '../../../../shared/types';
 
 // Test store mirrors uiSlice.test.ts pattern: minimal slice + cross-slice
 // fields seeded via setState. notificationSlice reads state.workspaces, so we
@@ -348,5 +348,162 @@ describe('NotificationSlice — jumpToUnread (new)', () => {
     });
 
     expect(store.getState().jumpToUnread()).toBe('ws-c');
+  });
+});
+
+// ─── TASK-3: unreadBySurfaceId index ─────────────────────────────────────
+// The old O(P×N×S) Pane badge selector is replaced by a per-surfaceId unread
+// index maintained at all six mutation sites. These tests lock the index down.
+
+describe('NotificationSlice — unreadBySurfaceId index (TASK-3)', () => {
+  // Old filter-based count, replicated here as the source of truth for parity.
+  function oldUnreadForSurfaces(list: Notification[], surfaceIds: string[]): number {
+    return list.filter((n) => !n.read && surfaceIds.includes(n.surfaceId ?? '')).length;
+  }
+
+  // U1 — IRON RULE regression: cap-500 eviction of an UNREAD entry decrements.
+  it('decrements the evicted surfaceId when the cap-500 shift() drops an unread entry', () => {
+    const store = createTestStore([makeWorkspace('ws-a')]);
+    // 501 unread notifications, each on a distinct surfaceId.
+    for (let i = 0; i < 501; i++) {
+      store.getState().addNotification({
+        workspaceId: 'ws-a', type: 'info', title: `t${i}`, body: '', surfaceId: `surf-${i}`,
+      });
+    }
+    const list = store.getState().notifications;
+    expect(list).toHaveLength(500);
+    // surf-0 was the oldest and got shift()ed out (all-unread branch).
+    expect(list.find((n) => n.surfaceId === 'surf-0')).toBeUndefined();
+    const map = store.getState().unreadBySurfaceId;
+    // Its bucket must be gone (decremented to 0 → deleted), not left at 1.
+    expect(map['surf-0']).toBeUndefined();
+    // A surviving surface still counts 1.
+    expect(map['surf-500']).toBe(1);
+  });
+
+  // U2 — eviction of a READ entry does NOT decrement any bucket.
+  it('does not decrement when the evicted entry is a read entry', () => {
+    const store = createTestStore([makeWorkspace('ws-a')]);
+    for (let i = 0; i < 500; i++) {
+      store.getState().addNotification({
+        workspaceId: 'ws-a', type: 'info', title: `t${i}`, body: '', surfaceId: `surf-${i}`,
+      });
+    }
+    // Mark surf-10 read → its bucket disappears, and it becomes the eviction target.
+    const idAt10 = store.getState().notifications[10].id;
+    store.getState().markRead(idAt10);
+    expect(store.getState().unreadBySurfaceId['surf-10']).toBeUndefined();
+    const countBefore = { ...store.getState().unreadBySurfaceId };
+
+    // 501st push evicts the read surf-10 entry — no unread bucket should change.
+    store.getState().addNotification({
+      workspaceId: 'ws-a', type: 'info', title: 'overflow', body: '', surfaceId: 'surf-new',
+    });
+    const map = store.getState().unreadBySurfaceId;
+    // Every previously-existing bucket is unchanged...
+    for (const k of Object.keys(countBefore)) {
+      expect(map[k]).toBe(countBefore[k]);
+    }
+    // ...and the new one is added.
+    expect(map['surf-new']).toBe(1);
+  });
+
+  // U3 — markAllReadForWorkspace leaves other workspaces' surface counts intact.
+  it('markAllReadForWorkspace only clears buckets for that workspace', () => {
+    const store = createTestStore([makeWorkspace('ws-a'), makeWorkspace('ws-b')]);
+    store.getState().addNotification({ workspaceId: 'ws-a', type: 'info', title: '', body: '', surfaceId: 'a1' });
+    store.getState().addNotification({ workspaceId: 'ws-a', type: 'info', title: '', body: '', surfaceId: 'a2' });
+    store.getState().addNotification({ workspaceId: 'ws-b', type: 'info', title: '', body: '', surfaceId: 'b1' });
+
+    store.getState().markAllReadForWorkspace('ws-a');
+
+    const map = store.getState().unreadBySurfaceId;
+    expect(map['a1']).toBeUndefined();
+    expect(map['a2']).toBeUndefined();
+    expect(map['b1']).toBe(1);
+  });
+
+  // U4 — markRead twice on the same id decrements only once.
+  it('decrements once when markRead is called twice on the same id', () => {
+    const store = createTestStore([makeWorkspace('ws-a')]);
+    store.getState().addNotification({ workspaceId: 'ws-a', type: 'info', title: '', body: '', surfaceId: 's1' });
+    store.getState().addNotification({ workspaceId: 'ws-a', type: 'info', title: '', body: '', surfaceId: 's1' });
+    expect(store.getState().unreadBySurfaceId['s1']).toBe(2);
+
+    const firstId = store.getState().notifications[0].id;
+    store.getState().markRead(firstId);
+    store.getState().markRead(firstId);
+
+    expect(store.getState().unreadBySurfaceId['s1']).toBe(1);
+  });
+
+  // U5 — a notification without surfaceId does not create an 'undefined' key.
+  it('does not create an undefined key for surfaceId-less notifications', () => {
+    const store = createTestStore([makeWorkspace('ws-a')]);
+    store.getState().addNotification({ workspaceId: 'ws-a', type: 'info', title: '', body: '' });
+    const map = store.getState().unreadBySurfaceId;
+    expect(Object.keys(map)).toHaveLength(0);
+    expect('undefined' in map).toBe(false);
+    expect(map[undefined as unknown as string]).toBeUndefined();
+  });
+
+  // U6 — markAllRead and clearNotifications reset the map to {}.
+  it('markAllRead and clearNotifications reset the index to {}', () => {
+    const store = createTestStore([makeWorkspace('ws-a')]);
+    store.getState().addNotification({ workspaceId: 'ws-a', type: 'info', title: '', body: '', surfaceId: 's1' });
+    store.getState().addNotification({ workspaceId: 'ws-a', type: 'info', title: '', body: '', surfaceId: 's2' });
+    expect(Object.keys(store.getState().unreadBySurfaceId)).toHaveLength(2);
+
+    store.getState().markAllRead();
+    expect(store.getState().unreadBySurfaceId).toEqual({});
+
+    store.getState().addNotification({ workspaceId: 'ws-a', type: 'info', title: '', body: '', surfaceId: 's3' });
+    expect(Object.keys(store.getState().unreadBySurfaceId)).toHaveLength(1);
+    store.getState().clearNotifications();
+    expect(store.getState().unreadBySurfaceId).toEqual({});
+  });
+
+  // U7 — selector parity: index-derived count equals the old filter-based
+  // count across a randomized mutation sequence.
+  it('index-derived count matches the old filter-based count under random mutations', () => {
+    const store = createTestStore([makeWorkspace('ws-a'), makeWorkspace('ws-b')]);
+    const surfaces = ['s1', 's2', 's3', 's4'];
+    const workspaces = ['ws-a', 'ws-b'];
+    // Deterministic PRNG so failures reproduce.
+    let seed = 1234567;
+    const rand = () => {
+      seed = (seed * 1103515245 + 12345) & 0x7fffffff;
+      return seed / 0x7fffffff;
+    };
+
+    for (let step = 0; step < 400; step++) {
+      const roll = rand();
+      if (roll < 0.6) {
+        // add — sometimes with no surfaceId (workspace-scoped)
+        const withSurface = rand() < 0.85;
+        store.getState().addNotification({
+          workspaceId: workspaces[Math.floor(rand() * workspaces.length)],
+          type: 'info', title: `t${step}`, body: '',
+          ...(withSurface ? { surfaceId: surfaces[Math.floor(rand() * surfaces.length)] } : {}),
+        });
+      } else if (roll < 0.8) {
+        const list = store.getState().notifications;
+        if (list.length) store.getState().markRead(list[Math.floor(rand() * list.length)].id);
+      } else if (roll < 0.9) {
+        store.getState().markAllReadForWorkspace(workspaces[Math.floor(rand() * workspaces.length)]);
+      } else if (roll < 0.95) {
+        store.getState().markAllRead();
+      } else {
+        store.getState().clearNotifications();
+      }
+
+      // Parity check every step for each surface subset a Pane might hold.
+      const list = store.getState().notifications;
+      const map = store.getState().unreadBySurfaceId;
+      for (const subset of [['s1'], ['s2', 's3'], surfaces]) {
+        const indexed = subset.reduce((acc, id) => acc + (map[id] ?? 0), 0);
+        expect(indexed).toBe(oldUnreadForSurfaces(list, subset));
+      }
+    }
   });
 });

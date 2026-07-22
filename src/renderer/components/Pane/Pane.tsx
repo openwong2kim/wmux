@@ -121,11 +121,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const markRead = useStore((s) => s.markRead);
   const setPaneNotificationRing = useStore((s) => s.setPaneNotificationRing);
 
-  // count만 가져와 불필요한 배열 참조 안정성 문제 방지
+  // count만 가져와 불필요한 배열 참조 안정성 문제 방지.
+  // O(S) via the unreadBySurfaceId index on store state (was O(P×N×S) filter).
   const unreadCount = useStore((s) =>
-    s.notifications.filter(
-      (n) => !n.read && pane.surfaces.some((surf) => surf.id === n.surfaceId),
-    ).length,
+    pane.surfaces.reduce((acc, surf) => acc + (s.unreadBySurfaceId[surf.id] ?? 0), 0),
   );
   const notificationRingEnabled = useStore((s) => s.notificationRingEnabled);
   const hasUnread = !isActive && unreadCount > 0 && notificationRingEnabled;
