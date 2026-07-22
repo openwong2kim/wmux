@@ -127,18 +127,35 @@ function main() {
   const sevenDay = rl?.seven_day?.used_percentage;
   if (typeof fiveHour === 'number') {
     // The 5h window resets within hours, so WHEN it frees up is actionable —
-    // show the local reset time (HH:MM). The 7d reset is days out; omitted.
+    // show the local reset time (HH:MM). Space after ↺ so terminal fonts that
+    // render it double-width don't swallow the first digit.
     const resetsAt = rl?.five_hour?.resets_at;
     let reset = '';
     if (typeof resetsAt === 'number' && resetsAt * 1000 > Date.now()) {
       const d = new Date(resetsAt * 1000);
       const hh = String(d.getHours()).padStart(2, '0');
       const mm = String(d.getMinutes()).padStart(2, '0');
-      reset = ` ↺${hh}:${mm}`;
+      reset = ` ↺ ${hh}:${mm}`;
     }
     parts.push(`5h ${Math.round(fiveHour)}%${reset}`);
   }
-  if (typeof sevenDay === 'number') parts.push(`7d ${Math.round(sevenDay)}%`);
+  if (typeof sevenDay === 'number') {
+    // The 7d reset is days out, so remaining TIME (not clock time) is what's
+    // actionable: `↺ 52h`, or `↺ 2d4h` once it exceeds 48h.
+    const resetsAt = rl?.seven_day?.resets_at;
+    let reset = '';
+    if (typeof resetsAt === 'number' && resetsAt * 1000 > Date.now()) {
+      const hoursLeft = Math.round((resetsAt * 1000 - Date.now()) / 3600000);
+      if (hoursLeft >= 48) {
+        const d = Math.floor(hoursLeft / 24);
+        const h = hoursLeft % 24;
+        reset = h > 0 ? ` ↺ ${d}d${h}h` : ` ↺ ${d}d`;
+      } else {
+        reset = ` ↺ ${hoursLeft}h`;
+      }
+    }
+    parts.push(`7d ${Math.round(sevenDay)}%${reset}`);
+  }
 
   if (typeof fiveHour !== 'number' && typeof sevenDay !== 'number') {
     // rate_limits hasn't arrived yet (first turn pending) or this session has
