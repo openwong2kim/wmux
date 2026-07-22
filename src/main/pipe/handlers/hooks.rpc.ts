@@ -417,6 +417,25 @@ export function registerHooksRpc(
           ptyId,
           activity: '',
           pendingQuestion: stopMessage?.endsWithQuestion ? stopMessage.text : '',
+          // Hook-authoritative turn completion. A long-lived agent TUI
+          // (OpenCode, etc.) is a foreground command the WHOLE time it is open,
+          // so the byte-silence heuristic (ActivityMonitor) never flips it to
+          // idle — its periodic repaints keep the idle timer perpetually
+          // rescheduled — and no precise idle-prompt detector event ever lands.
+          // The pane was therefore stuck reporting 'running' forever between
+          // turns, both in the fleet badge (via ws metadata / surfaceAgent) and
+          // in `pane_list` (surfaceAgent.status), misleading the orchestrator
+          // and hiding the finished pane from the heartbeat level review (which
+          // only scans attention statuses). While the bridge is alive its Stop
+          // signal is canonical (hookRouter.touchAuthority just fired above), so
+          // mark the pane 'complete' — an ATTENTION status that outranks the
+          // busy-derived 'running' in selectFleetPanes and flows to
+          // surfaceAgent for pane_list. A genuinely new turn re-arms 'running'
+          // via ActivityMonitor.onActive / a fresh awaiting_input hook, both of
+          // which clear this attention entry (setSurfaceAgentStatus drops any
+          // non-attention status). session_start is a turn BEGINNING, not an
+          // end, so it must not set 'complete'.
+          ...(signal.kind === 'agent.stop' ? { agentStatus: 'complete' as const } : {}),
         });
       }
     }
