@@ -6,12 +6,14 @@ import * as path from 'path';
  * `wmux setup-statusline` — install the wmux usage statusline into Claude Code.
  *
  * Sets the `statusLine` command in Claude Code settings so the line under the
- * input box shows `<model> · <account> · 5h N% · 7d N%`, read from the usage
- * cache that wmux mirrors to `~/.wmux/usage/usage-cache.json` (see
- * AccountUsageService + UsageCacheFileWriter). Because the statusline process
- * inherits CLAUDE_CONFIG_DIR from its claude process, each pane shows the
- * usage of the account IT actually runs on — the multi-account-per-workspace
- * case the global StatusBar widget can't express.
+ * input box shows `<model> · <account> · ctx N% · 5h N% ↺HH:MM · 7d N%`. The
+ * numbers come from the JSON Claude Code pipes to the statusline on stdin
+ * (`rate_limits`, `context_window`) — zero network, zero token spend; the
+ * account label comes from local files (wmux accounts.json / the config dir's
+ * .claude.json). Because the statusline process inherits CLAUDE_CONFIG_DIR
+ * from its claude process, each pane shows the account IT actually runs on —
+ * the multi-account-per-workspace case the global StatusBar widget can't
+ * express.
  *
  * Targets: the default `~/.claude/settings.json` PLUS every registered claude
  * account's config dir (accounts.json) — CLAUDE_CONFIG_DIR partitions settings
@@ -40,8 +42,9 @@ GLOBAL FLAGS
   --json       Output raw JSON (useful for scripting).
 
 NOTE
-  The numbers come from wmux's opt-in usage feature (Settings → Accounts).
-  With the toggle off the statusline shows "usage —".
+  Usage numbers come from Claude Code's own statusline stdin (rate_limits) —
+  no extra API traffic. "usage —" simply means the session's first response
+  hasn't arrived yet (or the account has no subscription rate limits).
 `.trimStart();
 
 /** Substring identifying a wmux-owned statusLine command. */
@@ -113,10 +116,13 @@ export function defaultPaths(): SetupStatuslinePaths {
     { label: 'default (~/.claude)', settingsPath: path.join(home, '.claude', 'settings.json') },
     ...readClaudeAccountTargets(path.join(home, '.wmux')),
   ];
-  // A registered account may point at ~/.claude itself — dedupe by settings path.
+  // A registered account may point at ~/.claude itself — dedupe by settings
+  // path. Case-fold only on Windows; case-sensitive filesystems treat
+  // differently-cased paths as distinct dirs.
   const seen = new Set<string>();
   const deduped = targets.filter((t) => {
-    const key = path.resolve(t.settingsPath).toLowerCase();
+    const resolved = path.resolve(t.settingsPath);
+    const key = process.platform === 'win32' ? resolved.toLowerCase() : resolved;
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
