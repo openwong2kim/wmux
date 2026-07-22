@@ -112,10 +112,16 @@ describe('X6 ② reboot-survival durability', () => {
     expect(body).not.toMatch(/setImmediate\([^)]*saveImmediate/);
   });
 
-  it('session:cwd handler persists via saveImmediate (cwd-scoped resume needs live cwd)', () => {
+  it('session:cwd handler persists via saveAsap (immediate persist, async write)', () => {
+    // 30-session scaling: the cwd persist moved from saveImmediate (sync
+    // write on the event loop — stalls daemon.ping under fleet-wide `cd`
+    // churn) to saveAsap (persists within ms via the coalescing queue).
+    // The X6 contract this test guards is "cwd must NOT wait out the 30s
+    // debounce" — saveAsap still honors that; a revert to saveDebounced
+    // (or dropping the persist) re-opens the reboot race and fails here.
     const src = fs.readFileSync(daemonIndexPath, 'utf-8');
     const body = extractEventHandlerBody(src, 'session:cwd');
-    expect(body).toMatch(/stateWriter\.saveImmediate\(/);
+    expect(body).toMatch(/stateWriter\.saveAsap\(/);
     expect(body).not.toMatch(/stateWriter\.saveDebounced\(/);
   });
 

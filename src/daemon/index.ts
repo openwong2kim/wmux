@@ -2825,13 +2825,18 @@ function wireEvents(
       data: payload.cwd,
     };
     pipeServer.broadcast(event);
-    // Persist the new cwd IMMEDIATELY. Recovery replays meta.cwd (the pane
-    // respawns in it) AND the X6 ② resume pill pastes `claude --continue`,
-    // which is cwd-scoped — so a cwd lost to the reboot window would restore
-    // the pane to a stale directory and resume the wrong (or no) conversation.
-    // The bridge-level change-guard (DaemonSessionManager 'cwd' handler) means
-    // this only fires on an actual cd, so the immediate write stays cheap.
-    stateWriter.saveImmediate(buildState(sessionManager));
+    // Persist the new cwd NOW but asynchronously (saveAsap, not
+    // saveImmediate). Recovery replays meta.cwd AND the X6 ② resume pill
+    // pastes `claude --continue`, which is cwd-scoped — so the cwd must not
+    // wait out the 30s debounce. But the write must not run synchronously
+    // either: at fleet scale (30 sessions) sessions.json grows to hundreds
+    // of KB and concurrent agents `cd` constantly, so the old sync write +
+    // .bak rotation stalled the event loop right when it was busiest — the
+    // stall pattern that starves daemon.ping and gets a live daemon
+    // force-respawned. saveAsap persists within ms via the coalescing
+    // queue; only a SIGKILL inside that window can lose the cwd, and the
+    // next lifecycle event re-persists it.
+    stateWriter.saveAsap(buildState(sessionManager));
   });
 
   // Window-title change (OSC 0/2, detected in the daemon bridge). Broadcast so

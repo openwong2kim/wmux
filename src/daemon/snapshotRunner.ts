@@ -1,3 +1,4 @@
+import { promises as fsp } from 'node:fs';
 import type { DaemonSessionManager } from './DaemonSessionManager';
 import type { StateWriter } from './StateWriter';
 import type { DaemonState, DaemonSession } from './types';
@@ -117,17 +118,34 @@ export function createSnapshotRunner(
           const liveIds = new Set(liveSessions.map((s) => s.id));
           let preserved: DaemonSession[] = [];
           try {
-            const existing = stateWriter.load();
-            preserved = existing.sessions.filter((s) => !liveIds.has(s.id));
+            // Async read (30-session scaling): this used to be a sync
+            // stateWriter.load() + saveImmediate pair on EVERY 30s tick —
+            // re-parsing and re-writing a sessions.json that grows with the
+            // fleet, on the same event loop that answers daemon.ping. A
+            // plain read is enough here: we only need the non-managed
+            // entries, and an unreadable/corrupt primary degrades to
+            // preserved=[] for this tick exactly like the old catch did
+            // (recovery's load() keeps its .bak fallback).
+            const raw = await fsp.readFile(stateWriter.getFilePath(), 'utf-8');
+            const existing = JSON.parse(raw) as { sessions?: DaemonSession[] } | null;
+            if (existing && Array.isArray(existing.sessions)) {
+              preserved = existing.sessions.filter((s) => s && typeof s.id === 'string' && !liveIds.has(s.id));
+            }
           } catch {
-            // No prior sessions.json (first save) — nothing to preserve.
+            // No prior sessions.json (first save) or unreadable — nothing to preserve.
           }
           const merged: DaemonState = {
             version: 1,
             sessions: [...liveSessions, ...preserved],
             bootId: options.getBootId(),
           };
-          stateWriter.saveImmediate(merged);
+          // saveAsap, not saveImmediate: the periodic snapshot must not block
+          // the loop; the coalescing queue serialises it against other writers
+          // and a racing saveImmediate supersedes it (next tick re-merges).
+          // Awaited so "snapshot ran" still means "state persisted" for
+          // callers (session-create backstop, tests) — awaiting yields the
+          // loop, it does not block it.
+          await stateWriter.saveAsap(merged);
         } catch (err) {
           snapshotLog('warn', 'Snapshot state save failed:', err);
         }

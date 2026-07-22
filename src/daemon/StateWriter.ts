@@ -213,56 +213,85 @@ export class StateWriter {
 
     this.debounceTimer = setTimeout(() => {
       this.debounceTimer = null;
-      const snapshot = this.pendingState;
-      if (snapshot === null) return;
-
-      // Hand the actual I/O off to the coalescing queue so concurrent
-      // debounced writes (or an overlapping immediate save) cannot
-      // race each other over the shared `.bak`/`.tmp` rotation.
-      void this.queue.enqueue(QUEUE_KEY, async () => {
-        // Re-read pendingState at task execution time — another
-        // saveDebounced() call between the timer firing and this
-        // microtask running will have updated it.
-        const payload = this.pendingState;
-        if (payload === null) return;
-        // Snapshot the immediate epoch so we can detect a saveImmediate
-        // that fires while atomicWriteJSON is mid-flight.
-        const epochAtStart = this.immediateEpoch;
-        try {
-          await atomicWriteJSON(this.filePath, toPersistable(payload), {
-            validate: StateWriter.isDaemonState,
-            rotationEnabled: true,
-          });
-          // Race recovery: if saveImmediate() bumped the epoch while
-          // we were between awaits, our final rename just clobbered
-          // the emergency payload. Restore it synchronously so the
-          // on-disk primary matches the latest immediate save.
-          if (
-            this.immediateEpoch !== epochAtStart &&
-            this.lastImmediateState !== null
-          ) {
-            try {
-              atomicWriteJSONSync(this.filePath, toPersistable(this.lastImmediateState), {
-                validate: StateWriter.isDaemonState,
-                rotationEnabled: true,
-              });
-            } catch (err) {
-              console.error(
-                '[StateWriter] Failed to restore superseded immediate save:',
-                err,
-              );
-            }
-          }
-          // Only clear pending if no newer snapshot arrived while we
-          // were writing — otherwise we'd discard the newer data.
-          if (this.pendingState === payload) {
-            this.pendingState = null;
-          }
-        } catch (err) {
-          console.error('[StateWriter] Failed to save state (async):', err);
-        }
-      });
+      if (this.pendingState === null) return;
+      void this.enqueueAsyncWrite();
     }, DEBOUNCE_MS);
+  }
+
+  /**
+   * Immediate-but-async save (30-session scaling). For state changes that
+   * should persist NOW but must not block the daemon's event loop with a
+   * synchronous multi-file write (`atomicWriteJSONSync` + `.bak` rotation
+   * grows with session count and stacks up under load — the exact stall
+   * pattern that starves `daemon.ping` and gets a busy-but-alive daemon
+   * force-respawned).
+   *
+   * Durability vs `saveImmediate`: the SIGKILL-loss window shrinks from the
+   * debounce's 30s to the queue-dispatch + write duration (typically ms).
+   * Graceful-exit paths are fully covered — `flushSync()`/`flush()` persist
+   * any still-pending snapshot via the sync fallback. Callers whose write
+   * must survive an IMMEDIATE hard kill (emergency shutdown/suspend) keep
+   * using `saveImmediate`.
+   *
+   * Returns the queue promise: resolved when this snapshot (or a newer one
+   * that coalesced over it) has been written. Callers that need
+   * "persisted" semantics (snapshotRunner) await it; fire-and-forget
+   * callers ignore it.
+   */
+  saveAsap(state: DaemonState): Promise<void> {
+    this.pendingState = state;
+    return this.enqueueAsyncWrite();
+  }
+
+  /**
+   * Hand the actual I/O off to the coalescing queue so concurrent async
+   * writes (or an overlapping immediate save) cannot race each other over
+   * the shared `.bak`/`.tmp` rotation. The task re-reads `pendingState` at
+   * execution time, so calls that land while a write is queued coalesce to
+   * the newest snapshot, and a `saveImmediate` in between (which nulls
+   * `pendingState` and clears the queue) turns a stale task into a no-op.
+   */
+  private enqueueAsyncWrite(): Promise<void> {
+    return this.queue.enqueue(QUEUE_KEY, async () => {
+      const payload = this.pendingState;
+      if (payload === null) return;
+      // Snapshot the immediate epoch so we can detect a saveImmediate
+      // that fires while atomicWriteJSON is mid-flight.
+      const epochAtStart = this.immediateEpoch;
+      try {
+        await atomicWriteJSON(this.filePath, toPersistable(payload), {
+          validate: StateWriter.isDaemonState,
+          rotationEnabled: true,
+        });
+        // Race recovery: if saveImmediate() bumped the epoch while
+        // we were between awaits, our final rename just clobbered
+        // the emergency payload. Restore it synchronously so the
+        // on-disk primary matches the latest immediate save.
+        if (
+          this.immediateEpoch !== epochAtStart &&
+          this.lastImmediateState !== null
+        ) {
+          try {
+            atomicWriteJSONSync(this.filePath, toPersistable(this.lastImmediateState), {
+              validate: StateWriter.isDaemonState,
+              rotationEnabled: true,
+            });
+          } catch (err) {
+            console.error(
+              '[StateWriter] Failed to restore superseded immediate save:',
+              err,
+            );
+          }
+        }
+        // Only clear pending if no newer snapshot arrived while we
+        // were writing — otherwise we'd discard the newer data.
+        if (this.pendingState === payload) {
+          this.pendingState = null;
+        }
+      } catch (err) {
+        console.error('[StateWriter] Failed to save state (async):', err);
+      }
+    });
   }
 
   /** Load state from disk. Falls back to .bak on failure. Prunes expired DEAD sessions. */
@@ -381,6 +410,11 @@ export class StateWriter {
   /** Clean up timers (daemon shutdown). Flushes pending state first. */
   dispose(): void {
     this.flush();
+  }
+
+  /** Absolute path of sessions.json (for async readers like snapshotRunner). */
+  getFilePath(): string {
+    return this.filePath;
   }
 
   /** Get the path where a session's scrollback buffer should be dumped. */
