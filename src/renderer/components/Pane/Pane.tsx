@@ -9,7 +9,7 @@ import EditorPanel from '../Editor/EditorPanel';
 import DiffPanel from '../Diff/DiffPanel';
 import SurfaceTabs, { PANE_ACTIONS_CLUSTER_WIDTH } from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
-import { permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
+import { agentSupportsPermissionFlag, permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
 import { ResumeInfoChipGate } from './ResumeInfoChip';
 import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
@@ -257,9 +257,14 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   // Progressive-assembly stage: 0 = nothing typed; 1 = base command (permission
   // flag) typed, awaiting an optional second click to append the session resume.
   const [resumeStage, setResumeStage] = useState(0);
-  // Never carry a stale stage across panes or a re-offer.
+  // --dangerously-skip-permissions toggle for the recovery pill, default ON
+  // (the owner routinely resumes in bypass mode and was retyping the flag by
+  // hand). Claude-only; mirrors the persistent chip's toggle.
+  const [resumeSkipPermissions, setResumeSkipPermissions] = useState(true);
+  // Never carry a stale stage/toggle across panes or a re-offer.
   useEffect(() => {
     setResumeStage(0);
+    setResumeSkipPermissions(true);
   }, [activeSurfacePtyId, resumeHint]);
 
   const handleCloseSurface = useCallback((surfaceId: string) => {
@@ -455,7 +460,15 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         const agentMatches = resumeBinding?.agent === launcher;
         const exactOk = cwdMatches && agentMatches;
         const sessionId = exactOk ? resumeBinding?.sessionId : undefined;
-        const permFlag = exactOk ? permissionFlagFor(resumeBinding?.permissionMode) : '';
+        // --dangerously-skip-permissions is a launch preference, not tied to the
+        // exact conversation, so the explicit toggle forces it on EITHER the exact
+        // resume or the cwd-relative fallback. When the toggle is OFF, fall back
+        // to restoring the captured mode (acceptEdits/plan), exact-resume only.
+        const canSkip = agentSupportsPermissionFlag(launcher);
+        const forceSkip = canSkip && resumeSkipPermissions;
+        const permFlag = forceSkip
+          ? permissionFlagFor('bypassPermissions')
+          : (exactOk ? permissionFlagFor(resumeBinding?.permissionMode) : '');
 
         // Paste WITHOUT a trailing \r. The user presses Enter to run — so bypass
         // is re-granted only by an explicit keystroke, never automatically (D6).
@@ -468,6 +481,14 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         const onPrimary = (e: React.MouseEvent) => {
           e.stopPropagation();
           if (!grammar) return; // not resumable — pill shouldn't have shown (defensive)
+          const resumeArg = sessionId ? grammar.withId(sessionId) : grammar.fallback;
+          if (forceSkip) {
+            // Toggle ON (the common owner path): type the WHOLE line at once —
+            // `claude --dangerously-skip-permissions <resume>` — so both land on
+            // one line (F6) with no progressive stage. No auto-submit.
+            typeAndClear(`${launcher}${permFlag ? ` ${permFlag}` : ''} ${resumeArg}`);
+            return;
+          }
           if (!sessionId) {
             // No binding (hook absent / purged / cwd mismatch) → cwd-relative
             // fallback (Claude `--continue`, Codex `resume --last`); no auto-submit.
@@ -493,6 +514,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           }
         };
 
+        // The two-stage progressive assembly only applies to the toggle-OFF
+        // captured-mode path; with the toggle ON, one click types everything.
         const primaryLabel = resumeStage === 1
           ? `+ ${t('resume.addSession')}`
           : `▶ ${t('resume.label', { agent: agentName })}`;
@@ -500,29 +523,67 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
 
         return (
           <span
+            onClick={(e) => e.stopPropagation()}
             style={{
               position: 'absolute',
               top: 4,
               left: 6,
               zIndex: 20,
               display: 'inline-flex',
-              alignItems: 'center',
-              gap: 6,
+              flexDirection: 'column',
+              alignItems: 'flex-start',
+              gap: 4,
               fontSize: 10,
               fontFamily: 'ui-monospace, monospace',
               fontWeight: 600,
               letterSpacing: '0.04em',
-              // DESIGN.md: amber never FILLS an area — neutral surface pill with
-              // a thin amber edge (accent as an outline, not a wash) over the
-              // terminal. Was a solid amber block.
-              color: 'var(--text-main)',
-              backgroundColor: 'var(--bg-surface)',
-              border: '1px solid color-mix(in srgb, var(--accent-cursor) 55%, transparent)',
-              borderRadius: 4,
-              boxShadow: 'var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.25))',
-              overflow: 'hidden',
             }}
           >
+            {/* --dangerously-skip-permissions toggle (Claude only, default on).
+                A launch preference the owner used to retype by hand; the primary
+                button types it onto the resume line when checked. */}
+            {canSkip && (
+              <label
+                onClick={(e) => e.stopPropagation()}
+                style={{
+                  display: 'inline-flex',
+                  alignItems: 'center',
+                  gap: 6,
+                  cursor: 'pointer',
+                  fontWeight: 400,
+                  color: 'var(--text-sub)',
+                  backgroundColor: 'var(--bg-surface)',
+                  border: '1px solid var(--border-soft)',
+                  borderRadius: 4,
+                  padding: '1px 6px',
+                  boxShadow: 'var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.25))',
+                  userSelect: 'none',
+                }}
+              >
+                <input
+                  type="checkbox"
+                  checked={resumeSkipPermissions}
+                  onChange={(e) => setResumeSkipPermissions(e.target.checked)}
+                  style={{ accentColor: 'var(--accent-cursor)', cursor: 'pointer', margin: 0 }}
+                />
+                <span>--dangerously-skip-permissions</span>
+              </label>
+            )}
+            {/* Button pill — DESIGN.md: amber never FILLS an area — neutral surface
+                pill with a thin amber edge (accent as an outline, not a wash). */}
+            <span
+              style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: 6,
+                color: 'var(--text-main)',
+                backgroundColor: 'var(--bg-surface)',
+                border: '1px solid color-mix(in srgb, var(--accent-cursor) 55%, transparent)',
+                borderRadius: 4,
+                boxShadow: 'var(--shadow-sm, 0 1px 3px rgba(0,0,0,0.25))',
+                overflow: 'hidden',
+              }}
+            >
             <button
               onClick={onPrimary}
               title={primaryTooltip}
@@ -557,6 +618,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
             >
               ×
             </button>
+            </span>
           </span>
         );
       })()}
