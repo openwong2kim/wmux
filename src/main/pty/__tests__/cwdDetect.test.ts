@@ -37,6 +37,23 @@ describe('parseOsc7Cwd', () => {
   it('percent-decodes a UNC path with spaces', () => {
     expect(parseOsc7Cwd('file://HOST///nas/Team%20Share/x')).toBe('\\\\nas\\Team Share\\x');
   });
+
+  // Issue #540 round-trip pins: the exact payload shapes the v8 pwsh/bash
+  // integration hooks emit must parse back to spawnable native paths, because
+  // these values feed the split-inheritance seed (validateCwd + fs.existsSync).
+  it('parses the v8 pwsh hook shape (uppercase drive, backslashes pre-converted)', () => {
+    // pwsh emits file://$env:COMPUTERNAME/ + ProviderPath.Replace('\','/')
+    expect(parseOsc7Cwd('file://DESKTOP-AB12/D:/wmux/src')).toBe('D:\\wmux\\src');
+  });
+
+  it('parses the v8 Git Bash hook shape (lowercase drive from /c/... rewrite)', () => {
+    // Git Bash rewrites /c/Users/me → /c:/Users/me before emitting.
+    expect(parseOsc7Cwd('file://DESKTOP-AB12/c:/Users/me/proj')).toBe('c:\\Users\\me\\proj');
+  });
+
+  it('parses the v8 Git Bash drive-root shape (/c → /c:/)', () => {
+    expect(parseOsc7Cwd('file://HOST/c:/')).toBe('c:\\');
+  });
 });
 
 describe('detectPromptCwd', () => {

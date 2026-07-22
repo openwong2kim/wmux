@@ -26,14 +26,21 @@ import { isMac } from '../shared/platform';
 // v7: 번호만 재승격 — 릴리즈 데몬이 OSC 7 없는 스크립트를 ".version=6"으로
 // 이미 설치해 둔 기기에서 v6 게이트가 "최신"으로 오판, OSC 7 스텁이 영영
 // 설치되지 않던 문제(dogfood 실측 2026-07-20). 내용 변경 없음.
-const INTEGRATION_VERSION = 7;
+// v8: emit OSC 7 (cwd) from the pwsh and bash integrations too (issue #540).
+// The daemon's OSC 7-sticky permanently disables prompt scraping on the first
+// OSC 7 it sees, on the assumption that "the integration hook re-emits OSC 7
+// on every prompt" — which v6 made true only for zsh. On pwsh/bash a single
+// stray OSC 7 from any child program (agent TUI, nested shell) killed the only
+// cwd source, freezing the pane's tracked cwd at its spawn value (usually
+// home) — so splits landed in home, regressing #515.
+const INTEGRATION_VERSION = 8;
 const VERSION_FILE = '.version';
 
 // -----------------------------------------------------------------------
 // PowerShell (pwsh 7+ and Windows PowerShell 5.1) — uses PSReadLine hook
 // for the command_start marker and prompt function for A/B/D.
 // -----------------------------------------------------------------------
-const PWSH_INIT = `# wmux shell integration — OSC 133 semantic markers (v${INTEGRATION_VERSION})
+export const PWSH_INIT = `# wmux shell integration — OSC 133 semantic markers (v${INTEGRATION_VERSION})
 # Emits prompt/command boundaries so wmux's daemon can index command output
 # without parsing a scrollback viewport.
 
@@ -74,6 +81,18 @@ function global:prompt {
     # D;<exit>  marks end of previous command.
     # A         marks start of the new prompt.
     $pre = "$esc]133;D;$ec$bel$esc]133;A$bel"
+
+    # OSC 7: cwd report (issue #540). wmux treats OSC 7 as the authoritative
+    # cwd source and turns prompt scraping off for good the first time it sees
+    # one — so this hook MUST re-emit on every prompt (parity with the zsh
+    # integration), or a single stray OSC 7 from a child program would freeze
+    # the pane's tracked cwd. FileSystem provider only: a registry/cert
+    # location has no directory to report. Backslashes become '/' so the
+    # daemon's parseOsc7Cwd sees the documented /C:/Users/... shape.
+    $loc = $executionContext.SessionState.Path.CurrentLocation
+    if ($loc.Provider.Name -eq 'FileSystem') {
+        $pre += "$esc]7;file://$env:COMPUTERNAME/$($loc.ProviderPath.Replace('\\','/'))$bel"
+    }
 
     $body = if ($global:__wmux_prev_prompt) {
         try { & $global:__wmux_prev_prompt } catch { "PS $($executionContext.SessionState.Path.CurrentLocation)> " }
@@ -121,7 +140,7 @@ if (Get-Module -ListAvailable -Name PSReadLine) {
 // Bash 4.4+ — uses PS0 (pre-execution) for C and PROMPT_COMMAND for D/A.
 // PS1 suffix emits B.
 // -----------------------------------------------------------------------
-const BASH_INIT = `# wmux shell integration — OSC 133 semantic markers (v${INTEGRATION_VERSION})
+export const BASH_INIT = `# wmux shell integration — OSC 133 semantic markers (v${INTEGRATION_VERSION})
 # shellcheck shell=bash
 
 # Allow users to opt out via env.
@@ -142,9 +161,26 @@ __wmux_preexec() {
   printf '\\033]133;C\\a'
 }
 
+# OSC 7: cwd report (issue #540) — parity with the zsh integration, because
+# wmux disables prompt scraping permanently after the first OSC 7 and relies
+# on the hook re-emitting it on every prompt. Git Bash (MSYSTEM set) rewrites
+# /c/Users/... to /c:/Users/... so wmux's parseOsc7Cwd recovers the real
+# Windows path; WSL/Linux/macOS emit \$PWD as-is.
+__wmux_osc7() {
+  local p="\$PWD"
+  if [ -n "\${MSYSTEM:-}" ]; then
+    case "\$p" in
+      /[A-Za-z]/*) p="/\${p:1:1}:\${p:2}" ;;
+      /[A-Za-z])   p="/\${p:1:1}:/" ;;
+    esac
+  fi
+  printf '\\033]7;file://%s%s\\a' "\${HOSTNAME-localhost}" "\$p"
+}
+
 __wmux_precmd() {
   __wmux_last_exit=\$?
   printf '\\033]133;D;%d\\a\\033]133;A\\a' "\$__wmux_last_exit"
+  __wmux_osc7
 }
 
 # PS0 runs after Enter, before the command executes (bash 4.4+).

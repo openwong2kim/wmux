@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { classifyShell, buildSpawnInjection, ZSH_RC } from '../shell-integration';
+import { classifyShell, buildSpawnInjection, ZSH_RC, PWSH_INIT, BASH_INIT } from '../shell-integration';
 
 // zsh 지원(macOS 기본 셸) — ZDOTDIR 가로채기 방식의 핵심 불변식 검증.
 describe('classifyShell', () => {
@@ -79,5 +79,53 @@ describe('ZSH_RC — OSC 7 cwd 보고', () => {
     expect(ZSH_RC).toMatch(/add-zsh-hook precmd __wmux_osc7/);
     // add-zsh-hook 미존재 폴백 경로도 chpwd_functions에 등록해야 한다.
     expect(ZSH_RC).toMatch(/chpwd_functions\+=\(__wmux_osc7\)/);
+  });
+});
+
+// Issue #540: the daemon's OSC 7-sticky permanently disables prompt scraping
+// on the FIRST OSC 7, assuming the integration hook re-emits it on every
+// prompt. v6/v7 made that true only for zsh — on pwsh/bash a single stray
+// OSC 7 from any child program killed the only cwd source, freezing the
+// tracked cwd at the spawn value (usually home) so splits landed in home
+// (regressed #515). v8 gives pwsh/bash the same authoritative emitter.
+describe('PWSH_INIT — OSC 7 cwd report (#540)', () => {
+  it('emits OSC 7 from the prompt function on every prompt', () => {
+    expect(PWSH_INIT).toContain(']7;file://');
+    // The emission must live INSIDE the prompt function (re-emitted every
+    // prompt), not as a one-shot at init — the sticky depends on re-emission.
+    const promptBody = PWSH_INIT.slice(PWSH_INIT.indexOf('function global:prompt'));
+    expect(promptBody).toContain(']7;file://');
+  });
+
+  it('emits only for the FileSystem provider (registry/cert locations have no directory)', () => {
+    expect(PWSH_INIT).toMatch(/Provider\.Name -eq 'FileSystem'/);
+  });
+
+  it("converts backslashes to '/' to honor parseOsc7Cwd's /C:/Users/... contract", () => {
+    expect(PWSH_INIT).toContain(".Replace('\\','/')");
+    // The host/path separator must produce file://HOST/C:/... (single slash
+    // between host and the converted path).
+    expect(PWSH_INIT).toContain(']7;file://$env:COMPUTERNAME/$(');
+  });
+});
+
+describe('BASH_INIT — OSC 7 cwd report (#540)', () => {
+  it('defines __wmux_osc7 and calls it from precmd (every prompt)', () => {
+    expect(BASH_INIT).toContain('__wmux_osc7()');
+    expect(BASH_INIT).toContain(']7;file://');
+    // precmd body must invoke the OSC 7 hook so it re-emits on every prompt.
+    expect(BASH_INIT).toMatch(/__wmux_precmd\(\) \{[^}]*__wmux_osc7[^}]*\}/);
+  });
+
+  it('keeps the same payload contract as zsh (no double slash after host)', () => {
+    expect(BASH_INIT).toContain("printf '\\033]7;file://%s%s\\a'");
+    expect(BASH_INIT).not.toContain('file://%s/%s');
+  });
+
+  it('rewrites /c/Users → /c:/Users only under Git Bash (MSYSTEM set)', () => {
+    // The rewrite must be gated on MSYSTEM — on real Linux, /c/foo is a
+    // legitimate directory and must pass through untouched.
+    expect(BASH_INIT).toMatch(/if \[ -n "\$\{MSYSTEM:-\}" \]/);
+    expect(BASH_INIT).toMatch(/\/\[A-Za-z\]\/\*\)/);
   });
 });
