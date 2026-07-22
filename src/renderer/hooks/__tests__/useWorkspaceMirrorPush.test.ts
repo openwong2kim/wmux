@@ -32,11 +32,25 @@ describe('useWorkspaceMirrorPush — push policy wiring', () => {
     expect(src).toMatch(/scheduleTrailing/);
     // The debounced inputs are the fleet selector's per-pane status sources.
     expect(src).toMatch(/surfaceAgentStatus\s*!==\s*prev\.surfaceAgentStatus/);
-    expect(src).toMatch(/agentClockMs\s*!==\s*prev\.agentClockMs/);
   });
 
-  it('subscribes to the store and cleans up the subscription + timer on unmount', () => {
+  it('does NOT key the churn debounce on the ~2s agent clock', () => {
+    // agentClockMs ticks every ~2s while agents run; keying the debounce on it
+    // re-pushed the full payload every 2s all session. The periodic refresh
+    // carries decay-derived changes instead.
+    expect(src).not.toMatch(/agentClockMs\s*!==\s*prev\.agentClockMs/);
+  });
+
+  it('runs a slow periodic refresh (30s, unref\'d) to carry decay-derived changes', () => {
+    expect(src).toMatch(/PERIODIC_REFRESH_MS\s*=\s*30_000/);
+    expect(src).toMatch(/setInterval\(push,\s*PERIODIC_REFRESH_MS\)/);
+    expect(src).toMatch(/\.unref\?\.\(\)/);
+  });
+
+  it('subscribes to the store and cleans up the subscription + timers on unmount', () => {
     expect(src).toMatch(/useStore\.subscribe\(/);
-    expect(src).toMatch(/return\s*\(\)\s*=>\s*\{[\s\S]*clearTimeout\(trailingTimer\)[\s\S]*unsub\(\)/);
+    expect(src).toMatch(
+      /return\s*\(\)\s*=>\s*\{[\s\S]*clearTimeout\(trailingTimer\)[\s\S]*clearInterval\(refreshTimer\)[\s\S]*unsub\(\)/,
+    );
   });
 });

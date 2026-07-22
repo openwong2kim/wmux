@@ -113,6 +113,103 @@ describe('buildFleetSnapshots', () => {
   });
 });
 
+describe('buildFleetSnapshots — single-surface byte-identical pin', () => {
+  // Single-surface panes must serialize EXACTLY as the pre-surface-accuracy
+  // build did (attention row when a status is retained, base row otherwise).
+  it('emits one exact row per single-surface pane (attention + base)', () => {
+    const ws = workspace(
+      'ws-s', 'solo',
+      branch('b', [
+        leaf('pa', [surface('sa', 'pty-a')]), // no attention → base
+        leaf('pb', [surface('sb', 'pty-b')]), // retained attention
+      ]),
+      'pa',
+      { agentName: 'Claude Code', agentStatus: 'running' },
+    );
+    const st: FleetSelectorState = {
+      workspaces: [ws],
+      surfaceAgentStatus: { 'pty-b': 'waiting' },
+      surfaceActivity: {},
+    };
+    const [fleet] = buildFleetSnapshots(st, 42);
+    expect(fleet).toEqual({
+      workspaceId: 'ws-s',
+      ts: 42,
+      panes: [
+        // active pane, no retained attention → base status (ws meta 'running').
+        {
+          ptyId: 'pty-a',
+          agentName: 'Claude Code',
+          agentStatus: 'running',
+          isActivePane: true,
+          cwd: 'C:\\repo\\sa',
+        },
+        // background pane, retained attention → its own status; agentName null.
+        {
+          ptyId: 'pty-b',
+          agentName: null,
+          agentStatus: 'waiting',
+          isActivePane: false,
+          cwd: 'C:\\repo\\sb',
+        },
+      ],
+    });
+  });
+});
+
+describe('buildFleetSnapshots — surface-accurate multi-surface panes', () => {
+  // The active pane p2a has two surfaces; the BACKGROUND surface (pty-2a-first)
+  // is awaiting_input while the ACTIVE surface (pty-2a) is merely running. The
+  // UI rollup would pin awaiting_input onto the active surface's pty (wrong
+  // terminal for actuation); the mirror must not.
+  function multiState(): FleetSelectorState {
+    return {
+      workspaces: [w2],
+      surfaceAgentStatus: { 'pty-2a-first': 'awaiting_input' },
+      surfaceActivity: {},
+    };
+  }
+
+  it('attributes the background-tab attention to THAT surface, never the active one', () => {
+    const [fleet] = buildFleetSnapshots(multiState(), 100);
+    const bg = fleet.panes.find((p) => p.ptyId === 'pty-2a-first');
+    expect(bg).toEqual({
+      ptyId: 'pty-2a-first',
+      agentName: null, // background surface of the active pane → no agentName
+      agentStatus: 'awaiting_input',
+      isActivePane: false, // not the active SURFACE
+      cwd: 'C:\\repo\\s2a-first',
+    });
+    // The active surface still gets its own row, carrying the non-attention
+    // (base) status — NOT the background tab's awaiting_input.
+    const active = fleet.panes.find((p) => p.ptyId === 'pty-2a');
+    expect(active).toMatchObject({
+      ptyId: 'pty-2a',
+      agentStatus: 'running',
+      isActivePane: true,
+      agentName: 'Codex',
+    });
+    // No row anywhere attributes awaiting_input to the active surface's pty.
+    expect(
+      fleet.panes.some((p) => p.ptyId === 'pty-2a' && p.agentStatus === 'awaiting_input'),
+    ).toBe(false);
+  });
+
+  it('emits a distinct row per surface that holds its own attention status', () => {
+    const st: FleetSelectorState = {
+      workspaces: [w2],
+      surfaceAgentStatus: { 'pty-2a-first': 'awaiting_input', 'pty-2a': 'complete' },
+      surfaceActivity: {},
+    };
+    const [fleet] = buildFleetSnapshots(st, 1);
+    const p2a = fleet.panes.filter((p) => p.ptyId === 'pty-2a-first' || p.ptyId === 'pty-2a');
+    expect(p2a.map((p) => [p.ptyId, p.agentStatus, p.isActivePane])).toEqual([
+      ['pty-2a-first', 'awaiting_input', false],
+      ['pty-2a', 'complete', true], // active surface carries its OWN attention
+    ]);
+  });
+});
+
 describe('buildWorkspaceMirrorPayload', () => {
   it('stamps entries + fleets with one injected clock value', () => {
     const payload = buildWorkspaceMirrorPayload(state(), () => 5555);
