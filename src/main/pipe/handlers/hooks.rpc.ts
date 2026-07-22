@@ -801,18 +801,25 @@ export async function resolveWorkspacesForSignal(
   mirror?: Pick<WorkspaceMirror, 'peek'>,
 ): Promise<{ workspaces: WorkspaceListEntry[] | null; fetchMs: number; fastPathed: boolean }> {
   // (1) Mirror first. Populated + fresh + the pure resolver places a pane → no
-  // renderer round-trip at all. Unlike the env fast path below, this needs no
-  // WMUX_PTY_ID and no exact-id guard: the mirror is the renderer's own pushed
-  // tree, so a newly-created pane is already present (a create is a structural
-  // change that triggers a push), and a workspaceId-only signal resolves against
-  // an up-to-date active-surface mapping rather than a stale pull-cache one.
+  // renderer round-trip at all. The mirror is the renderer's own pushed tree,
+  // updated on its push cadence — but that push is a cross-process IPC that can
+  // LAG a just-created pane by a few frames. So when the hook carries a ptyId we
+  // apply the SAME exact-id guard as the env fast path (2): accept the mirror
+  // only when the resolver returns EXACTLY `signal.ptyId` (the pane is really in
+  // the mirror). If the pane's push hasn't landed yet the resolver falls through
+  // to workspaceId → activePtyId (another pane's id); a bare non-null check would
+  // fast-path that misroute — the cross-pane resume-binding clobber the pull path
+  // avoids by fetching a list that already contains the new pane. On guard
+  // failure we fall through to (2)/(3) unchanged. A workspaceId/cwd-only signal
+  // (no ptyId) has no exact target to protect, so non-null acceptance holds and
+  // it resolves against the mirror's up-to-date active-surface mapping.
   const mirrored = mirror?.peek();
-  if (
-    mirrored &&
-    mirrored.ageMs < STALE_TRUST_MS &&
-    resolvePtyIdForSignal(signal, mirrored.entries) !== null
-  ) {
-    return { workspaces: mirrored.entries, fetchMs: 0, fastPathed: true };
+  if (mirrored && mirrored.ageMs < STALE_TRUST_MS) {
+    const resolved = resolvePtyIdForSignal(signal, mirrored.entries);
+    const accept = signal.ptyId ? resolved === signal.ptyId : resolved !== null;
+    if (accept) {
+      return { workspaces: mirrored.entries, fetchMs: 0, fastPathed: true };
+    }
   }
 
   // (2) Env-routed fast path (Fix B): peek the pull-cache under the strict guard.

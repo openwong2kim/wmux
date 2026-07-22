@@ -79,6 +79,26 @@ describe('WorkspaceMirror', () => {
     expect(m.hasEverBeenPopulated()).toBe(true);
   });
 
+  it('read accessors return copies — mutating a returned list cannot corrupt the mirror', () => {
+    const m = new WorkspaceMirror();
+    m.setSnapshot(payload());
+
+    // getEntries: splice the returned array, then re-read — the mirror is intact.
+    const entries = m.getEntries();
+    entries?.splice(0, entries.length);
+    expect(m.getEntries()).toHaveLength(1);
+
+    // peek: same guarantee on the entries it hands back.
+    const peeked = m.peek();
+    peeked?.entries.push({ id: 'ws-evil', name: 'x', activePtyId: null });
+    expect(m.peek()?.entries).toHaveLength(1);
+
+    // getFleetSnapshot: mutating the panes array must not affect a later read.
+    const fleet = m.getFleetSnapshot('ws-1');
+    fleet?.panes.splice(0, fleet.panes.length);
+    expect(m.getFleetSnapshot('ws-1')?.panes).toHaveLength(1);
+  });
+
   it('getWorkspaceMirror returns a stable singleton; reset yields a fresh one', () => {
     __resetWorkspaceMirrorForTest();
     const a = getWorkspaceMirror();

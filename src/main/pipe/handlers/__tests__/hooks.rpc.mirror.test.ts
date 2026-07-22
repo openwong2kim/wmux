@@ -96,6 +96,35 @@ describe('resolveWorkspacesForSignal — mirror fast path (WP2)', () => {
     expect(cache.get).not.toHaveBeenCalled();
   });
 
+  it('ptyId ABSENT from a fresh mirror (push lag) → mirror rejected, falls to pull', async () => {
+    // A just-created pane whose renderer push hasn't landed: pty-NEW is not in
+    // the mirror, but its workspaceId resolves to ws-1's activePtyId (pty-1 — a
+    // DIFFERENT pane). The exact-id guard must reject rather than fast-path that
+    // misroute; a fresh pull would contain the new pane.
+    const mirror = fakeMirror({ entries: mirrorEntries(), ageMs: 100 });
+    const cache = fakeCache({ peek: null, get: mirrorEntries() });
+    const { fastPathed } = await resolveWorkspacesForSignal(
+      signal({ ptyId: 'pty-NEW', workspaceId: 'ws-1', cwd: '/repo' }),
+      cache,
+      mirror,
+    );
+    expect(cache.get).toHaveBeenCalledTimes(1); // renderer fetch (pull) invoked
+    expect(fastPathed).toBe(false);
+  });
+
+  it('ptyId PRESENT in a fresh mirror → mirror serves, NO pull', async () => {
+    const mirror = fakeMirror({ entries: mirrorEntries(), ageMs: 100 });
+    const cache = fakeCache({ peek: null, get: null });
+    const { workspaces, fastPathed } = await resolveWorkspacesForSignal(
+      signal({ ptyId: 'pty-1', workspaceId: 'ws-1', cwd: '/repo' }),
+      cache,
+      mirror,
+    );
+    expect(workspaces?.[0]?.id).toBe('ws-1');
+    expect(fastPathed).toBe(true);
+    expect(cache.get).not.toHaveBeenCalled(); // spy not called — mirror served
+  });
+
   it('stale mirror (ageMs > STALE_TRUST_MS) falls through to the pull cache', async () => {
     const mirror = fakeMirror({ entries: mirrorEntries(), ageMs: STALE_TRUST_MS + 1 });
     const cache = fakeCache({ peek: null, get: mirrorEntries() });

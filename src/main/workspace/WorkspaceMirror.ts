@@ -54,9 +54,16 @@ export class WorkspaceMirror {
     this.populated = true;
   }
 
+  // Read accessors return a SHALLOW COPY of the stored array so a mutating caller
+  // (splice/sort/push) can't corrupt the singleton's list for every other reader.
+  // Copying the array level is sufficient: the entry/pane objects themselves are
+  // renderer-validated value objects and are treated as read-only downstream — a
+  // per-read deep-freeze would tax this hot routing path (a hook fires far more
+  // often than the tree changes) for no additional list-corruption protection.
+
   /** The mirrored workspace entries, or null if nothing has ever been pushed. */
   getEntries(): WorkspaceListEntry[] | null {
-    return this.entries;
+    return this.entries === null ? null : [...this.entries];
   }
 
   /**
@@ -66,12 +73,16 @@ export class WorkspaceMirror {
    */
   peek(): { entries: WorkspaceListEntry[]; ageMs: number } | null {
     if (this.entries === null) return null;
-    return { entries: this.entries, ageMs: this.now() - this.setAt };
+    return { entries: [...this.entries], ageMs: this.now() - this.setAt };
   }
 
   /** The per-workspace agent-status snapshot, or null when unknown. */
   getFleetSnapshot(workspaceId: string): FleetSnapshot | null {
-    return this.fleets.get(workspaceId) ?? null;
+    const fleet = this.fleets.get(workspaceId);
+    if (!fleet) return null;
+    // Copy the object + its panes array so a caller reordering/mutating the list
+    // can't corrupt the stored snapshot.
+    return { ...fleet, panes: [...fleet.panes] };
   }
 
   /**
