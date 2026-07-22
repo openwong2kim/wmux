@@ -15,8 +15,10 @@
 // per-window). No network, no token spend, and inherently per-account because
 // it comes from THIS session. Before the first response (or on older Claude
 // Code / non-subscribers) the statusline shows `usage —`.
-// The account NAME comes from wmux's accounts.json (registered accounts), so
-// this script has no dependency on wmux's opt-in usage-probe feature at all.
+// The account NAME resolves, in order: wmux accounts.json registered name >
+// the logged-in identity's email (oauthAccount in the config dir's
+// .claude.json) > dir basename. All local reads — no dependency on wmux's
+// opt-in usage-probe feature at all.
 //
 // This script only READS local files — it never touches credentials and never
 // talks to the network, so it is safe to run at statusline frequency.
@@ -68,6 +70,28 @@ function lookupAccountName(home, want) {
   return typeof hit?.name === 'string' && hit.name.length > 0 ? hit.name : null;
 }
 
+/**
+ * Logged-in identity from the config dir's `.claude.json` (oauthAccount).
+ * CLAUDE_CONFIG_DIR partitions the whole config, so a bound account's file
+ * lives at `<configDir>/.claude.json`; the default profile's lives at
+ * `~/.claude.json`. Returns the email's local part ("wykim777" for
+ * wykim777@naver.com) to keep the line compact; null when unavailable.
+ */
+function lookupLoginEmail(home, configDir, isDefaultDir) {
+  const candidates = isDefaultDir
+    ? [join(home, '.claude.json'), join(configDir, '.claude.json')]
+    : [join(configDir, '.claude.json')];
+  for (const c of candidates) {
+    const parsed = readJsonFile(c);
+    const email = parsed?.oauthAccount?.emailAddress;
+    if (typeof email === 'string' && email.length > 0) {
+      const at = email.indexOf('@');
+      return at > 0 ? email.slice(0, at) : email;
+    }
+  }
+  return null;
+}
+
 function main() {
   const input = readStdinJson();
   const home = getHome();
@@ -84,8 +108,11 @@ function main() {
   const model = input?.model?.display_name;
   if (typeof model === 'string' && model.length > 0) parts.push(model);
 
-  // Account label: registered name > 'default' for ~/.claude > dir basename.
-  const name = lookupAccountName(home, want) ?? (isDefaultDir ? 'default' : basename(configDir));
+  // Account label: registered wmux name > logged-in email local part >
+  // 'default' for ~/.claude > dir basename.
+  const name = lookupAccountName(home, want)
+    ?? lookupLoginEmail(home, configDir, isDefaultDir)
+    ?? (isDefaultDir ? 'default' : basename(configDir));
   parts.push(name);
 
   // Percentages: stdin rate_limits (free, live, per-session) first. Each
