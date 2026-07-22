@@ -564,13 +564,6 @@ async function main() {
       ...(payload ?? {}),
       ...(usage ? { usage } : {}),
       ...(permissionMode ? { permissionMode } : {}),
-      // Per-pane account identity: the bridge runs inside the claude process,
-      // so CLAUDE_CONFIG_DIR here IS the account this pane actually uses —
-      // including manually-exported ones no workspace binding knows about.
-      // main resolves it to a registered account to hook-gate a usage probe.
-      ...(typeof process.env.CLAUDE_CONFIG_DIR === 'string' && process.env.CLAUDE_CONFIG_DIR.length > 0
-        ? { claudeConfigDir: process.env.CLAUDE_CONFIG_DIR }
-        : {}),
     },
     ts: Date.now(),
   };

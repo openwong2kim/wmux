@@ -212,7 +212,7 @@ export function registerHooksRpc(
   // M2: fired once per resolved claude `agent.stop`, carrying the workspace that
   // owns the pane. main resolves it to the bound account and hook-gates a usage
   // probe. Kept as a decoupled callback so this handler stays account-agnostic.
-  onClaudeTurnEnd?: (workspaceId: string, claudeConfigDir?: string) => void,
+  onClaudeTurnEnd?: (workspaceId: string) => void,
 ): () => void {
   const meter = hookRouter.getLatencyMeter();
   // Short-TTL, coalescing cache so a burst of hooks in one turn collapses to
@@ -479,11 +479,7 @@ export function registerHooksRpc(
       // the enabled/cooldown/inflight gates). Fires on BOTH emit and dedup: the
       // turn genuinely ended regardless of which signal source won the toast.
       if (signal.kind === 'agent.stop' && signal.agent === 'claude') {
-        // The bridge forwards its own CLAUDE_CONFIG_DIR (payload passthrough) —
-        // the pane's ACTUAL account, which may differ from the workspace
-        // binding when panes in one workspace run different accounts.
-        const dir = signal.payload['claudeConfigDir'];
-        onClaudeTurnEnd?.(workspaceId, typeof dir === 'string' && dir.length > 0 ? dir : undefined);
+        onClaudeTurnEnd?.(workspaceId);
       }
     }
 
