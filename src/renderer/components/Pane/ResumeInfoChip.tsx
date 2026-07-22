@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
 import { useT } from '../../hooks/useT';
+import { useStore } from '../../stores';
+import { isPaneAgentBusy } from '../../stores/selectors/fleet';
 import {
   type ResumeBinding,
   permissionFlagFor,
@@ -224,4 +226,39 @@ export default function ResumeInfoChip(props: {
       )}
     </span>
   );
+}
+
+/**
+ * Subscription boundary for the persistent resume chip's "is this pane's agent
+ * busy?" gate. This exists purely to keep the store-wide `agentClockMs` decay
+ * clock OUT of the Pane body.
+ *
+ * `useAgentActivityClock` bumps `agentClockMs` ~every 2 s while ANY agent is
+ * active. Pane used to subscribe to it directly to recompute `isPaneAgentBusy`
+ * — so at N mounted panes a single active agent re-ran ALL N Pane bodies every
+ * tick, even though the busy flag only ever gates THIS chip. The subscription
+ * lives here now: Pane mounts this leaf only for a pane that actually carries a
+ * resume binding, and a clock tick re-renders just this tiny gate, never the
+ * Pane body. A pane with no binding never mounts the leaf → zero work per tick.
+ *
+ * Busy semantics are unchanged (isPaneAgentBusy): typing a resume command into
+ * a LIVE agent TUI would land in the agent's input, not a shell, so the chip
+ * stays hidden until the agent has settled or exited.
+ */
+export function ResumeInfoChipGate(props: {
+  ptyId: string;
+  binding: ResumeBinding;
+  paneCwds: ReadonlyArray<string | undefined>;
+}): React.ReactElement | null {
+  const { ptyId, binding, paneCwds } = props;
+  // The reactive decay clock — subscribing HERE (not in Pane) is the whole point.
+  const agentClockMs = useStore((s) => s.agentClockMs);
+  const activityAt = useStore((s) => s.surfaceActivityAt[ptyId] ?? 0);
+  const status = useStore((s) => s.surfaceAgentStatus[ptyId]);
+  // OSC 133 authoritative shell state (undefined = shell integration off →
+  // heuristic fallback inside isPaneAgentBusy).
+  const commandRunning = useStore((s) => s.commandRunningByPtyId[ptyId]);
+  const agentBusy = isPaneAgentBusy({ activityAt, agentClockMs, status, commandRunning });
+  if (agentBusy) return null;
+  return <ResumeInfoChip ptyId={ptyId} binding={binding} paneCwds={paneCwds} />;
 }

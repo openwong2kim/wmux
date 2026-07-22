@@ -10,8 +10,7 @@ import DiffPanel from '../Diff/DiffPanel';
 import SurfaceTabs, { PANE_ACTIONS_CLUSTER_WIDTH } from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
-import ResumeInfoChip from './ResumeInfoChip';
-import { isPaneAgentBusy } from '../../stores/selectors/fleet';
+import { ResumeInfoChipGate } from './ResumeInfoChip';
 import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
 
@@ -249,30 +248,12 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const resumePtyReady = useStore((s) =>
     activeSurfacePtyId ? !!s.ptyReadyByPtyId[activeSurfacePtyId] : false,
   );
-  // Gate for the persistent resume chip (ResumeInfoChip, rendered below):
-  // suppress it while an agent is actively running in this pane. Typing
-  // `claude --resume …` into a LIVE agent TUI would land in the agent's input,
-  // not a shell — so the chip only surfaces once the agent has settled/exited.
-  // "Running" reuses the Fleet view's hook-activity window (recent agent
-  // activity within HOOK_RUNNING_TTL_MS — focus-safe, since surfaceActivityAt is
-  // NOT cleared on focus like surfaceAgentStatus is), plus any live attention
-  // status still carried on a non-focused pane. A settled/exited agent (no
-  // activity for the TTL) drops out and the chip returns.
-  const agentClockMs = useStore((s) => s.agentClockMs);
-  const activeSurfaceActivityAt = useStore((s) =>
-    activeSurfacePtyId ? (s.surfaceActivityAt[activeSurfacePtyId] ?? 0) : 0,
-  );
-  // OSC 133 authoritative shell state for this surface (undefined = shell
-  // integration off → heuristic fallback inside isPaneAgentBusy).
-  const activeSurfaceCommandRunning = useStore((s) =>
-    activeSurfacePtyId ? s.commandRunningByPtyId[activeSurfacePtyId] : undefined,
-  );
-  const agentBusy = isPaneAgentBusy({
-    activityAt: activeSurfaceActivityAt,
-    agentClockMs,
-    status: activeSurfaceStatus,
-    commandRunning: activeSurfaceCommandRunning,
-  });
+  // The persistent resume chip's "is this pane's agent busy?" gate — and the
+  // store-wide `agentClockMs` decay-clock subscription it needs — lives in the
+  // <ResumeInfoChipGate> leaf below, NOT here: Pane mounts that leaf only when a
+  // resume binding is present, so a clock tick (bumped ~every 2 s by
+  // useAgentActivityClock while any agent is active) re-renders just the tiny
+  // gate, never the whole Pane body across every mounted pane.
   // Progressive-assembly stage: 0 = nothing typed; 1 = base command (permission
   // flag) typed, awaiting an optional second click to append the session resume.
   const [resumeStage, setResumeStage] = useState(0);
@@ -584,8 +565,8 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           recovery pill flow above (the pill takes precedence right after a
           reboot). Reveals the conversation UUID and types the exact resume
           command into this pane on 복구. */}
-      {resumeBinding && !resumeHint && !agentBusy && activeSurfacePtyId && (
-        <ResumeInfoChip
+      {resumeBinding && !resumeHint && activeSurfacePtyId && (
+        <ResumeInfoChipGate
           ptyId={activeSurfacePtyId}
           binding={resumeBinding}
           paneCwds={[
