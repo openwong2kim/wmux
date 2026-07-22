@@ -362,6 +362,17 @@ export function nextPollDelayMs(elapsedMs: number): number {
   return elapsedMs < 2_000 ? 40 : 200;
 }
 
+/**
+ * Issue #537 — absolute wall-clock ceiling for waiting on a freshly-spawned
+ * daemon that is alive but still cold-recovering (no pipe file yet). Sized for
+ * the worst realistic recovery: the cap is MAX_RECOVER_SESSIONS (40) ConPTY
+ * spawns, measured ~0.9 s each (~36 s), with margin for ConPTY-87 retry bursts
+ * and Defender cold-scan. A boot still alive but silent past this is treated as
+ * genuinely hung → reject → the app falls back to local mode (old behavior),
+ * rather than hanging forever. Only applies while `isChildAlive` reports alive.
+ */
+export const DAEMON_READY_HARD_CEILING_MS = 90_000;
+
 export interface DaemonReadinessPollOptions {
   budgetMs: number;
   readPipeName: () => string | null;
@@ -369,6 +380,35 @@ export interface DaemonReadinessPollOptions {
   ping: (pipeName: string, token: string) => Promise<boolean>;
   onPipeFileSeen?: () => void;
   onPingOk?: () => void;
+  /**
+   * Issue #537 — the spawned daemon writes daemon.pid at acquireLock (boot
+   * start) but its daemon-pipe file only AFTER `recoverSessions` finishes, and
+   * cold-recovering a large session set is slow: measured ~23 s for 30 ConPTY
+   * sessions, well past `budgetMs`. Rejecting at `budgetMs` there declares a
+   * live, hard-working daemon "not responding" → ensureDaemon throws →
+   * replacement dead-ends → the renderer falls to local mode and every pane
+   * self-creates (duplicate agent sessions, the reported symptom).
+   *
+   * When provided, this reports whether the child we spawned is still alive. A
+   * live child that hasn't written its pipe file yet is, by construction, still
+   * in its boot/recovery path (acquireLock → config → recoverSessions are the
+   * only steps before the pipe file), NOT wedged — so we keep waiting past
+   * `budgetMs`, up to `hardCeilingMs`, instead of abandoning it. Absent →
+   * behavior is exactly the old flat-`budgetMs` give-up (callers/tests that
+   * don't spawn a child, e.g. the reuse path, are unaffected).
+   */
+  isChildAlive?: () => boolean;
+  /**
+   * Absolute wall-clock cap for the `isChildAlive` extension. Only meaningful
+   * with `isChildAlive`; without it the effective ceiling stays `budgetMs`.
+   * Bounds a genuinely-hung-but-alive boot so the app still falls back to local
+   * mode eventually rather than hanging forever. Fired-once `onSlowStart`
+   * surfaces that we crossed `budgetMs` while the child was still alive.
+   */
+  hardCeilingMs?: number;
+  /** Fired once, the first time the wait is extended past `budgetMs` because
+   *  the spawned child is still alive (recovery in progress). */
+  onSlowStart?: () => void;
 }
 
 /**
@@ -402,7 +442,15 @@ export function pollDaemonReady(
     rejectFn = rej;
   });
   const start = Date.now();
-  const budgetLabel = `${Math.round(opts.budgetMs / 1000)} seconds`;
+  // Issue #537 — the base `budgetMs` is the fast-path expectation; the
+  // effective ceiling extends to `hardCeilingMs` while the spawned child is
+  // provably alive (cold recovery). Without `isChildAlive` the ceiling stays
+  // `budgetMs`, preserving the old flat give-up.
+  const hardCeilingMs = opts.isChildAlive
+    ? Math.max(opts.budgetMs, opts.hardCeilingMs ?? opts.budgetMs)
+    : opts.budgetMs;
+  const elapsedLabel = (): string => `${Math.round((Date.now() - start) / 1000)} seconds`;
+  let slowStartFired = false;
 
   const finish = (fn: () => void): void => {
     if (settled) return;
@@ -421,7 +469,22 @@ export function pollDaemonReady(
     }, nextPollDelayMs(Date.now() - start));
   };
 
-  const overBudget = (): boolean => Date.now() - start >= opts.budgetMs;
+  // Give up when we hit the hard ceiling, OR when we pass the base budget and
+  // the child is not provably alive (dead, or no liveness signal supplied).
+  // While the child is alive past the base budget it is still recovering —
+  // keep waiting. `child died` is surfaced fast by spawnDaemon's exit handler
+  // (cancel), so this predicate only tops out at the ceiling in practice.
+  const overBudget = (): boolean => {
+    const elapsed = Date.now() - start;
+    if (elapsed >= hardCeilingMs) return true;
+    if (elapsed < opts.budgetMs) return false;
+    const childAlive = opts.isChildAlive ? opts.isChildAlive() : false;
+    if (childAlive && !slowStartFired) {
+      slowStartFired = true;
+      opts.onSlowStart?.();
+    }
+    return !childAlive;
+  };
 
   const check = async (): Promise<void> => {
     if (settled) return;
@@ -430,7 +493,7 @@ export function pollDaemonReady(
     const pipeName = opts.readPipeName();
     if (!pipeName) {
       if (overBudget()) {
-        finish(() => rejectFn(new Error(`Daemon spawned but pipe name file not created after ${budgetLabel}`)));
+        finish(() => rejectFn(new Error(`Daemon spawned but pipe name file not created after ${elapsedLabel()}`)));
       } else {
         schedule();
       }
@@ -444,7 +507,7 @@ export function pollDaemonReady(
     const token = opts.readToken();
     if (!token) {
       if (overBudget()) {
-        finish(() => rejectFn(new Error(`Daemon spawned but auth token not found after ${budgetLabel}`)));
+        finish(() => rejectFn(new Error(`Daemon spawned but auth token not found after ${elapsedLabel()}`)));
       } else {
         schedule();
       }
@@ -473,7 +536,7 @@ export function pollDaemonReady(
     // inside the budget can settle up to one ping-timeout past it — same
     // property as the old attempt-count loop, intentional.
     if (overBudget()) {
-      finish(() => rejectFn(new Error(`Daemon spawned but not responding after ${budgetLabel}`)));
+      finish(() => rejectFn(new Error(`Daemon spawned but not responding after ${elapsedLabel()}`)));
       return;
     }
     schedule();
@@ -564,7 +627,24 @@ function spawnDaemon(): Promise<number> {
     // guard live in pollDaemonReady (extracted so the chain is unit-testable
     // with fake timers).
     const readiness = pollDaemonReady({
-      budgetMs: 15_000, // wall-clock 15 s (the old loop's 75 × 200 ms ceiling, now measured directly)
+      budgetMs: 15_000, // wall-clock 15 s fast-path expectation for a warm daemon
+      // Issue #537 — extend the wait while THIS spawned child is still alive.
+      // The daemon writes daemon.pid at boot start but its pipe file only after
+      // `recoverSessions`, and cold-recovering a big session set runs long (~23 s
+      // for 30 ConPTY sessions, and the recovery cap is 40). A live child that
+      // hasn't produced its pipe file yet is recovering, not wedged — waiting is
+      // correct, and it is what stops the replacement/respawn machinery from
+      // declaring a dead-end and dropping every recovered session on the floor.
+      // The ceiling still bounds a genuinely hung boot so the app can fall back.
+      isChildAlive: () => child.exitCode === null,
+      hardCeilingMs: DAEMON_READY_HARD_CEILING_MS,
+      onSlowStart: () => {
+        markBoot('daemon-recovery-slow');
+        console.warn(
+          `[launcher] daemon (PID ${child.pid}) still booting past 15 s but alive — waiting up to ` +
+            `${Math.round(DAEMON_READY_HARD_CEILING_MS / 1000)} s (large session recovery in progress)`,
+        );
+      },
       readPipeName: () => readPipeNameFromFile(getWmuxDir()),
       readToken: readDaemonAuthToken,
       ping: (pipeName, token) => pingDaemon(pipeName, token, 2000),
@@ -577,15 +657,23 @@ function spawnDaemon(): Promise<number> {
     // detect) yields the canonical pipe to the live owner and exits with
     // DAEMON_EXIT_ALREADY_RUNNING (split-brain Defect 3). Surface that as a
     // distinct error so ensureDaemon reconnects to the existing daemon instead
-    // of treating it as a spawn failure. Other early exits fall through to the
-    // poll's own 15s timeout.
+    // of treating it as a spawn failure. Any OTHER early exit means the boot
+    // genuinely crashed — cancel the readiness poll immediately (Issue #537:
+    // the poll now waits on child liveness, so without this a crash-exit would
+    // otherwise idle out the whole hard ceiling instead of failing fast).
     child.on('exit', (code) => {
+      // readiness.cancel routes through the poll's own settled-guard, so a
+      // post-ready exit here is a harmless no-op.
       if (code === DAEMON_EXIT_ALREADY_RUNNING) {
         const e = new Error(
           'daemon yielded: another daemon already owns the canonical control pipe',
         ) as NodeJS.ErrnoException;
         e.code = 'EDAEMON_ALREADY_RUNNING';
         readiness.cancel(e);
+      } else {
+        readiness.cancel(
+          new Error(`Daemon process exited during startup (code ${code ?? 'null'}) before becoming ready`),
+        );
       }
     });
   });

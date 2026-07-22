@@ -30,6 +30,9 @@ describe('pollDaemonReady', () => {
 
   interface Overrides {
     budgetMs?: number;
+    hardCeilingMs?: number;
+    isChildAlive?: () => boolean;
+    onSlowStart?: () => void;
     readPipeName?: () => string | null;
     readToken?: () => string | null;
     ping?: (pipeName: string, token: string) => Promise<boolean>;
@@ -224,6 +227,84 @@ describe('pollDaemonReady', () => {
 
     expect(state.rejected).toBe(err);
     expect(calls).toBe(callsAtCancel);
+  });
+
+  // Issue #537 — the child-liveness extension. A daemon that is cold-recovering
+  // a large session set writes daemon.pid at boot but its pipe file only after
+  // recovery (~23 s for 30 sessions). Waiting past budgetMs while the spawned
+  // child is provably alive is what stops the replacement machinery from
+  // declaring a false dead-end and dropping every recovered session.
+  describe('#537 child-liveness extension', () => {
+    it('keeps waiting past budgetMs while the child is alive, then resolves when the pipe appears', async () => {
+      let pipeName: string | null = null;
+      const onSlowStart = vi.fn();
+      const state = observe(
+        startPoll({
+          budgetMs: 15_000,
+          hardCeilingMs: 90_000,
+          isChildAlive: () => true,
+          readPipeName: () => pipeName,
+          onSlowStart,
+        }).promise,
+      );
+
+      // Past the old flat budget — the old code would have rejected here.
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(state.rejected).toBeNull();
+      expect(state.resolved).toBe(false);
+      expect(onSlowStart).toHaveBeenCalledTimes(1); // fired once when we crossed budgetMs
+
+      // Recovery finishes at ~23 s and the pipe file lands.
+      pipeName = 'pipe-x';
+      await vi.advanceTimersByTimeAsync(400);
+      expect(state.resolved).toBe(true);
+    });
+
+    it('gives up at the hard ceiling if the child stays alive but never becomes ready', async () => {
+      const state = observe(
+        startPoll({
+          budgetMs: 15_000,
+          hardCeilingMs: 90_000,
+          isChildAlive: () => true,
+          readPipeName: () => null,
+        }).promise,
+      );
+
+      await vi.advanceTimersByTimeAsync(89_000);
+      expect(state.rejected).toBeNull(); // still within the ceiling
+      await vi.advanceTimersByTimeAsync(2_000);
+      expect(state.rejected?.message).toBe(
+        'Daemon spawned but pipe name file not created after 90 seconds',
+      );
+    });
+
+    it('gives up at budgetMs (no extension) the moment the child is reported dead', async () => {
+      let alive = true;
+      const state = observe(
+        startPoll({
+          budgetMs: 15_000,
+          hardCeilingMs: 90_000,
+          isChildAlive: () => alive,
+          readPipeName: () => null,
+        }).promise,
+      );
+
+      await vi.advanceTimersByTimeAsync(20_000);
+      expect(state.rejected).toBeNull(); // alive → still extending
+      alive = false; // child crashed mid-recovery
+      await vi.advanceTimersByTimeAsync(300);
+      expect(state.rejected?.message).toMatch(/pipe name file not created after \d+ seconds/);
+    });
+
+    it('without isChildAlive keeps the old flat-budget give-up (ceiling == budget)', async () => {
+      const state = observe(
+        startPoll({ budgetMs: 15_000, readPipeName: () => null }).promise,
+      );
+      await vi.advanceTimersByTimeAsync(15_500);
+      expect(state.rejected?.message).toBe(
+        'Daemon spawned but pipe name file not created after 15 seconds',
+      );
+    });
   });
 
   it('discards a ping that resolves after cancel (no double settle)', async () => {
