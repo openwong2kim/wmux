@@ -20,6 +20,7 @@ const destDir = join(repoRoot, 'dist', 'cli-bundle');
 //   - Codex resume-capture notify bridge (installed + registered by McpRegistrar)
 const bridges = [
   join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-bridge.mjs'),
+  join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-statusline.mjs'),
   join(repoRoot, 'integrations', 'codex', 'bin', 'wmux-codex-notify.mjs'),
 ];
 

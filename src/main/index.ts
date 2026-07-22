@@ -34,7 +34,10 @@ import { revealStatsAggregator } from './perf/revealStatsAggregator';
 import { registerHooksRpc } from './pipe/handlers/hooks.rpc';
 import { UsagePoller } from './claude/UsagePoller';
 import { AccountUsageService } from './account/AccountUsageService';
-import { getAccountStore } from './account/accountStore';
+import { getAccountStore, canonicalizeConfigDir } from './account/accountStore';
+import { UsageCacheFileWriter, usageCacheFilePath, type UsageCacheFileEntry } from './account/usageCacheFile';
+import { defaultSourceDir } from './account/accountProvision';
+import { getWmuxDir } from '../daemon/config';
 import { IPC, getWmuxHomeDir } from '../shared/constants';
 import { HookSignalRouter } from './hooks/HookSignalRouter';
 import { SignalLatencyMeter } from './hooks/SignalLatencyMeter';
@@ -608,13 +611,62 @@ const disposeDeckHandler = registerDeckHandler(() => mainWindow);
 // fire on the `agent.stop` hook for the pane's bound claude account (main
 // resolves workspace → account here so hooks.rpc stays account-agnostic).
 const accountUsageService = new AccountUsageService();
+// Statusline mirror: dump the per-account cache (+ the default-credential
+// poller snapshot) to <wmuxDir>/usage/usage-cache.json so the Claude Code
+// statusline script (wmux-statusline.mjs, installed by `wmux setup-statusline`)
+// can render each pane's OWN account usage. Derived state only — no tokens.
+const usageCacheWriter = new UsageCacheFileWriter(
+  usageCacheFilePath(getWmuxDir()),
+  (): UsageCacheFileEntry[] => {
+    const store = getAccountStore();
+    const rows: UsageCacheFileEntry[] = accountUsageService.getAll().map((e) => ({
+      accountId: e.accountId,
+      name: store.getAccount(e.accountId)?.name ?? e.accountId,
+      configDir: store.getAccount(e.accountId)?.configDir ?? '',
+      status: e.status,
+      snapshot: e.snapshot,
+      fetchedAtMs: e.fetchedAtMs,
+    })).filter((r) => r.configDir.length > 0);
+    // Default `~/.claude` credential (unregistered) — covered by UsagePoller.
+    const pollerState = usagePoller.getState();
+    if (pollerState.snapshot) {
+      rows.push({
+        accountId: null,
+        name: 'default',
+        configDir: defaultSourceDir('claude'),
+        status: pollerState.status,
+        snapshot: pollerState.snapshot,
+        fetchedAtMs: pollerState.snapshot.fetchedAtMs,
+      });
+    }
+    return rows;
+  },
+);
 const disposeAccountUsageListener = accountUsageService.onChange((entry) => {
   const win = mainWindow;
   if (win && !win.isDestroyed()) {
     win.webContents.send(IPC.ACCOUNT_USAGE_UPDATE, entry);
   }
+  usageCacheWriter.schedule();
 });
-const onClaudeTurnEnd = (workspaceId: string): void => {
+const onClaudeTurnEnd = (workspaceId: string, claudeConfigDir?: string): void => {
+  // M3 §4c: the bridge now forwards the pane's OWN CLAUDE_CONFIG_DIR, so when
+  // panes in one workspace run different accounts we probe the account the
+  // turn actually ran on — not the workspace binding. Falls back to the
+  // binding for older bridges / panes without the env var.
+  if (claudeConfigDir) {
+    try {
+      const canonical = canonicalizeConfigDir(claudeConfigDir);
+      const byDir = getAccountStore().listAccounts()
+        .find((a) => a.vendor === 'claude' && a.configDir === canonical);
+      if (byDir) {
+        void accountUsageService.maybeProbe(byDir.id);
+        return;
+      }
+    } catch {
+      // Dir vanished or is inaccessible — fall through to the binding path.
+    }
+  }
   // Resolve the workspace's bound claude account; only registered accounts probe
   // (an unbound workspace uses the default credential, covered by usagePoller).
   //
@@ -642,6 +694,7 @@ const disposeUsagePollerListener = usagePoller.onStateChange((state) => {
   if (win && !win.isDestroyed()) {
     win.webContents.send(IPC.USAGE_UPDATE, state);
   }
+  usageCacheWriter.schedule();
 });
 // LanLink PR-2 — renderer requests a full inbox replay on mount (cold start /
 // reload). Reset the bridge cursor to 0 and re-pull so the (possibly just-
@@ -1522,6 +1575,7 @@ app.on('before-quit', async (e) => {
   safeStep('disposeUsagePollerListener', () => disposeUsagePollerListener());
   safeStep('usagePoller.dispose', () => usagePoller.dispose());
   safeStep('disposeAccountUsageListener', () => disposeAccountUsageListener());
+  safeStep('usageCacheWriter', () => usageCacheWriter.dispose());
   safeStep('cleanupAccountUsageIpc', () => {
     ipcMain.removeHandler(IPC.ACCOUNT_USAGE_LIST);
     ipcMain.removeAllListeners(IPC.ACCOUNT_USAGE_REFRESH);

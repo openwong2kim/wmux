@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Per-account Claude usage in Claude Code's statusline (`wmux setup-statusline`).** The global StatusBar widget shows one account's 5h/7d usage, but panes in a single workspace can run different Claude accounts — each pane needs its *own* number. A new `wmux setup-statusline` command sets Claude Code's `statusLine` to a wmux script that renders `model · account · 5h N% · 7d N%` on the line under the input box; because the statusline process inherits `CLAUDE_CONFIG_DIR` from its own claude process, every pane shows the usage of the account it actually runs on — including accounts selected by hand with `$env:CLAUDE_CONFIG_DIR`. The numbers come from the existing opt-in usage feature (Settings → Accounts): wmux now mirrors its per-account cache to `~/.wmux/usage/usage-cache.json` (derived percentages only, never tokens), and the hook bridge forwards the pane's config dir on turn end so the probe refreshes the account the turn actually ran on, not just the workspace binding. Installs into the default `~/.claude` profile and every registered claude account; a user's own custom statusLine is never overwritten. `--remove` / `--status` supported.
+
 ### Fixed
 
 - **Browser screenshots no longer hang for panes that aren't on screen.** Chromium's screenshot command waits on a compositor frame that a non-visible webview guest may never produce, so `browser_screenshot` against a pane in a hidden workspace could stall for the caller's full RPC timeout (20–30 s) with no explanation — long enough that agents concluded the built-in browser was broken. Screenshot capture is now bounded: the CDP capture gets 2.5 s, an alternative capture path is tried for 1.5 s more, and if neither can produce pixels the call fails in ~4 s with an actionable error naming the likely cause (hidden workspace) and the workarounds (focus the workspace and retry, or use `browser_snapshot`/`browser_extract_text` for content without pixels). Screenshots of visible panes are unaffected (~60 ms). (#529)

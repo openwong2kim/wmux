@@ -14,6 +14,7 @@ import { handleSystem } from './commands/system';
 import { handleBrowser, handleOpen } from './commands/browser';
 import { handleMcp } from './commands/mcp';
 import { handleSetupHooks } from './commands/setupHooks';
+import { handleSetupStatusline } from './commands/setupStatusline';
 import { handleDoctor } from './commands/doctor';
 import { handleChannel } from './commands/channel';
 
@@ -99,6 +100,9 @@ CLAUDE CODE INTEGRATION
   setup-hooks                       Install Claude Code hooks (no plugin needed)
               [--remove]            Remove the wmux-owned hook entries
               [--status]            Report hook + bridge install state
+  setup-statusline                  Show per-account usage in Claude's statusline
+              [--remove]            Remove the wmux-owned statusLine entries
+              [--status]            Report statusline install state
 
 GLOBAL FLAGS
   --json      Output raw JSON (useful for scripting)
@@ -182,6 +186,8 @@ async function main(): Promise<void> {
       await handleMcp(rest, jsonMode);
     } else if (cmd === 'setup-hooks') {
       await handleSetupHooks(rest, jsonMode);
+    } else if (cmd === 'setup-statusline') {
+      await handleSetupStatusline(rest, jsonMode);
     } else if (cmd === 'doctor') {
       await handleDoctor(rest, jsonMode);
     } else if (cmd === 'channel') {
