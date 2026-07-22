@@ -430,6 +430,16 @@ export class CommanderEventCoalescer {
   getWatermark(workspaceId: string): number {
     return this.states.get(workspaceId)?.watermark ?? 0;
   }
+  /** The timestamp (ms, our clock) of the most recent ACCEPTED wake for this
+   *  workspace, or null if none has been accepted. Read-only accessor for the
+   *  WP4 heartbeat: it skips a level review that would land within intervalMs of
+   *  the last wake (that wake already surfaced current state). Does NOT prune —
+   *  a stale value only makes the heartbeat MORE conservative (it waits longer),
+   *  never less. */
+  lastWakeAt(workspaceId: string): number | null {
+    const ts = this.states.get(workspaceId)?.wakeTimestamps;
+    return ts && ts.length > 0 ? ts[ts.length - 1] : null;
+  }
 
   dispose(): void {
     this.disposed = true;
