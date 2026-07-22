@@ -95,8 +95,9 @@ export interface BrowserPaneStoreApi {
   workspaces: BrowserPaneWorkspaceLike[];
   activeWorkspaceId: string;
   zoomedPaneId: string | null;
-  splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string) => boolean;
+  splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string) => string | false;
   addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
+  clearSplitCwdSeed: (paneId: string) => void;
   updateBrowserUrl: (surfaceId: string, url: string) => void;
   updateBrowserPartition: (partition: string, surfaceId?: string) => void;
   setActiveSurface: (paneId: string, surfaceId: string, workspaceId?: string) => void;
@@ -224,15 +225,21 @@ export function openUrlInBrowserPaneImpl(
   // per-workspace leaf cap (and pushes its own toast) — bail so the browser
   // surface is not dropped onto the still-active original pane.
   const prevActivePaneId = ws.activePaneId;
-  if (!state.splitPane(prevActivePaneId, 'horizontal', targetWsId)) {
+  const newPaneId = state.splitPane(prevActivePaneId, 'horizontal', targetWsId);
+  // splitPane returns the exact new leaf id. Deriving it from the post-split
+  // `activePaneId` is wrong for a BACKGROUND workspace, where focus scoping
+  // (#236) leaves activePaneId on the original terminal pane — the browser
+  // would then merge into that terminal and strand the split leaf empty.
+  if (!newPaneId) {
     return { ok: false, error: 'pane-cap' };
   }
 
   const after = deps.getState();
-  const afterWs = after.workspaces.find((w) => w.id === targetWsId);
-  if (!afterWs) return { ok: false, error: 'workspace-not-found' };
-  const newPaneId = afterWs.activePaneId;
   after.addBrowserSurface(newPaneId, targetUrl, opts.partition, targetWsId);
+  // splitPane seeds an inherited cwd for the new pane (paneSlice #173) so a
+  // terminal funnel can start the shell there. A browser leaf never goes
+  // through that funnel, so the seed would leak — clear it.
+  after.clearSplitCwdSeed(newPaneId);
 
   if (!focusPane) {
     // Restore focus to the original pane (no-op when the target workspace is
@@ -242,10 +249,14 @@ export function openUrlInBrowserPaneImpl(
 
   const finalWs = deps.getState().workspaces.find((w) => w.id === targetWsId);
   const newLeaf = finalWs ? findLeafById(finalWs.rootPane, newPaneId) : null;
-  const surface = newLeaf?.surfaces[newLeaf.surfaces.length - 1];
+  // Invariant: the browser surface must have landed on the new leaf.
+  // addBrowserSurface silently no-ops on an unknown pane id, which would
+  // otherwise leak a bogus `{ ok: true, surfaceId: '' }`.
+  const surface = newLeaf?.surfaces.find((s) => s.surfaceType === 'browser');
+  if (!surface) return { ok: false, error: 'workspace-not-found' };
   return {
     ok: true,
-    surfaceId: surface?.id ?? '',
+    surfaceId: surface.id,
     paneId: newPaneId,
     url: targetUrl || DEFAULT_BROWSER_URL,
     reused: false,

@@ -200,11 +200,16 @@ describe('PaneSlice', () => {
 
     it('splits the explicit background workspace while another ws stays active', () => {
       const { ws1, ws2 } = twoWorkspaces();
-      const ok = store.getState().splitPane(ws2.rootPane.id, 'horizontal', ws2.id);
-      expect(ok).toBe(true);
+      const newPaneId = store.getState().splitPane(ws2.rootPane.id, 'horizontal', ws2.id);
 
       const ws2After = store.getState().workspaces.find((w) => w.id === ws2.id)!;
       expect(ws2After.rootPane.type).toBe('branch'); // ws2 got the split
+      // The returned id is the exact new leaf — for a background split it is NOT
+      // the (unmoved) activePaneId, so the caller must use the return value.
+      const leaves = getLeafPanes(ws2After.rootPane);
+      expect(leaves).toHaveLength(2);
+      const newLeaf = leaves.find((l) => l.id !== ws2.rootPane.id)!;
+      expect(newPaneId).toBe(newLeaf.id);
       const ws1After = store.getState().workspaces.find((w) => w.id === ws1.id)!;
       expect(ws1After.rootPane.type).toBe('leaf');    // ws1 untouched
       expect(store.getState().activeWorkspaceId).toBe(ws1.id); // global focus didn't move
@@ -441,7 +446,9 @@ describe('PaneSlice', () => {
       for (let i = 0; i < MAX_PANES_PER_WORKSPACE - 1; i++) {
         const ws = getActiveWorkspace(store);
         const ok = store.getState().splitPane(ws.activePaneId, 'horizontal');
-        expect(ok).toBe(true);
+        // Active-ws split: the new leaf becomes the active pane, so the returned
+        // id equals the post-split activePaneId.
+        expect(ok).toBe(getActiveWorkspace(store).activePaneId);
       }
       const wsAfter = getActiveWorkspace(store);
       expect(getLeafPanes(wsAfter.rootPane)).toHaveLength(MAX_PANES_PER_WORKSPACE);

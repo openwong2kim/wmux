@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **A browser opened by an agent in a background workspace no longer clones its terminal and strands a stray empty pane.** When an agent working in a workspace you weren't looking at opened a browser (the create path — that workspace had no browser pane yet), the browser was attached to the agent's own terminal pane instead of the freshly split one, and the empty split pane was left behind to sprout a stray terminal the moment you focused that workspace. The cause: a background split intentionally leaves the workspace's active-pane selection untouched (so it can't hijack the pane you're focused on), but the browser-open code read that unchanged selection as if it were the new pane. It now uses the exact pane the split created, so the browser lands where it should and no empty pane is orphaned. (#531)
+
 ## [3.30.0] — 2026-07-22
 
 ### Added

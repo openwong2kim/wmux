@@ -917,25 +917,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const direction =
       params.direction === 'vertical' ? 'vertical' : 'horizontal';
 
-    // Snapshot this workspace's empty leaves BEFORE the split so the freshly
-    // created (always-empty) leaf can be identified afterwards — without
-    // widening splitPane's boolean return, which would ripple to ~30 keybind /
-    // palette / test callsites.
-    const emptyBefore = new Set(
-      findLeafPanes(ws.rootPane).filter((l) => l.surfaces.length === 0).map((l) => l.id),
-    );
+    // splitPane returns the exact new leaf id, so there is no need to diff the
+    // empty-leaf set before/after (that heuristic could pick the wrong leaf if a
+    // reentrant subscriber emptied another pane during the split's set()).
+    const newPaneId = store.splitPane(ws.activePaneId, direction, ws.id);
+    if (!newPaneId) return { error: 'pane.split: pane cap reached (max 20 per workspace)' };
 
-    const ok = store.splitPane(ws.activePaneId, direction, ws.id);
-    if (!ok) return { error: 'pane.split: pane cap reached (max 20 per workspace)' };
-
-    // Locate the new leaf: the one empty leaf that was not empty-listed before.
     const afterSplit = useStore.getState();
     const splitWs = afterSplit.workspaces.find((w) => w.id === ws.id);
     if (!splitWs) return { ok: true }; // ws vanished in the async gap; split still happened
-    const newLeaf = findLeafPanes(splitWs.rootPane).find(
-      (l) => l.surfaces.length === 0 && !emptyBefore.has(l.id),
-    );
-    const newPaneId = newLeaf?.id;
 
     // Active-ws split: the AppLayout empty-leaf funnel owns PTY creation (it
     // carries the full startup-cwd / project-seed / X8-supervision chain), so
@@ -951,7 +941,6 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // surface-less — no terminal — until the user activates that workspace. An
     // external agent that splits-then-sends needs a live PTY immediately, so
     // spawn it here, mirroring surface.new's create + orphan-guard + adopt.
-    if (!newPaneId) return { ok: true }; // couldn't locate the new leaf; tree split still ok
 
     // Same cwd precedence the funnel applies (split-inherited > profile
     // startupCwd > global startupDirectory > main-side homedir). Consume the

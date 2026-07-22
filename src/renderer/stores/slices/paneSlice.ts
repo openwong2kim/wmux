@@ -32,12 +32,14 @@ export const MAX_PANES_PER_WORKSPACE = 20;
 export interface PaneSlice {
   /**
    * Split a leaf pane into a new horizontal/vertical branch.
-   * Returns `true` on success, `false` if the workspace is at
-   * MAX_PANES_PER_WORKSPACE (callers chaining `addBrowserSurface`,
-   * RPC handlers, etc. must abort on `false` so they don't mutate
-   * the still-active original pane).
+   * Returns the new pane's id on success, or `false` if the workspace is
+   * at MAX_PANES_PER_WORKSPACE. Callers chaining `addBrowserSurface`, RPC
+   * handlers, etc. must abort on `false` so they don't mutate the
+   * still-active original pane; the returned id is the exact new leaf,
+   * which for a BACKGROUND-workspace split is NOT `activePaneId` (focus
+   * scoping #236 leaves the active selection untouched).
    */
-  splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string, position?: 'before' | 'after') => boolean;
+  splitPane: (paneId: string, direction: 'horizontal' | 'vertical', workspaceId?: string, position?: 'before' | 'after') => string | false;
   /** Close a leaf pane. `workspaceId` lets RPC/CLI callers target a
    * non-active workspace (defaults to the active one — existing callers are
    * unchanged). */
@@ -373,7 +375,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
   splitPane: (paneId, direction, workspaceId, position = 'after') => {
     let event: { wsId: string; newPaneId: string; branchId: string; previousActiveId: string; focusMoved: boolean } | null = null;
     let blockedAtCap = false;
-    let created = false;
+    let createdPaneId: string | false = false;
     set((state: StoreState) => {
       const targetWsId = workspaceId || state.activeWorkspaceId;
       const ws = state.workspaces.find((w: Workspace) => w.id === targetWsId);
@@ -389,7 +391,6 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
         blockedAtCap = true;
         return;
       }
-      created = true;
 
       // Issue #173: capture the splitting pane's live cwd (OSC 7-tracked on
       // its active surface) so the new pane's PTY can start there. Browser /
@@ -411,6 +412,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
         ws.nextPaneOrdinal ??
         (getLeafPanes(ws.rootPane).reduce((m, l) => Math.max(m, l.ordinal ?? 0), 0) + 1);
       const newPane = createLeafPane(undefined, paneOrdinal);
+      createdPaneId = newPane.id;
       ws.nextPaneOrdinal = paneOrdinal + 1;
       // `position` drives 4-way directional split from Ctrl+Shift+Arrow:
       // 'before' puts the new pane left/up of the target, 'after' (default)
@@ -487,7 +489,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
         level: 'warn',
       });
     }
-    return created;
+    return createdPaneId;
   },
 
   closePane: (paneId, workspaceId) => {

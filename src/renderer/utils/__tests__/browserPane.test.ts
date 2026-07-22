@@ -4,7 +4,7 @@ import { immer } from 'zustand/middleware/immer';
 import { createPaneSlice, type PaneSlice, MAX_PANES_PER_WORKSPACE } from '../../stores/slices/paneSlice';
 import { createSurfaceSlice, type SurfaceSlice } from '../../stores/slices/surfaceSlice';
 import { createWorkspace, createLeafPane, type Workspace } from '../../../shared/types';
-import { getLeafPanes } from '../../../shared/paneUtils';
+import { getLeafPanes, findLeaf } from '../../../shared/paneUtils';
 import {
   isSafeBrowserUrl,
   isLocalhostUrl,
@@ -251,6 +251,93 @@ describe('openUrlInBrowserPaneImpl', () => {
 
       expect(result.ok).toBe(true);
       expect(firstBrowser(activeWs(store)).surface.browserUrl).toBe('http://127.0.0.1:5173/');
+    });
+  });
+
+  describe('background create path (#531)', () => {
+    // Build a second workspace B that holds a single terminal pane, leave the
+    // original workspace A active, and return the ids the assertions need.
+    function backgroundWsWithTerminal(cwd = 'D:\\proj') {
+      const other = createWorkspace('Background');
+      store.setState((state) => {
+        state.workspaces.push(other);
+      });
+      const terminalPaneId = other.rootPane.id;
+      store.getState().addSurface(terminalPaneId, 'pty-b', 'pwsh', cwd, other.id);
+      return { wsId: other.id, terminalPaneId };
+    }
+
+    it('routes the browser into the freshly split pane, not the agent terminal', () => {
+      const { deps } = makeDeps(store);
+      const activeBefore = store.getState().activeWorkspaceId;
+      const { wsId, terminalPaneId } = backgroundWsWithTerminal();
+
+      const result = openUrlInBrowserPaneImpl(
+        'http://localhost:5173',
+        { workspaceId: wsId, focusPane: false },
+        deps,
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(result.reused).toBe(false);
+
+      const state = store.getState();
+      const wsB = state.workspaces.find((w) => w.id === wsId)!;
+
+      // 1. No focus hijack — the user's active workspace is untouched.
+      expect(state.activeWorkspaceId).toBe(activeBefore);
+      // 2. B's own selection stays on the original terminal pane (focus scoping).
+      expect(wsB.activePaneId).toBe(terminalPaneId);
+      // 3. The browser landed on the returned NEW pane; the terminal pane keeps
+      //    exactly its one terminal surface (no 1:1 clone merge).
+      const newLeaf = findLeaf(wsB.rootPane, result.paneId)!;
+      expect(newLeaf.id).not.toBe(terminalPaneId);
+      expect(newLeaf.surfaces.map((s) => s.surfaceType)).toEqual(['browser']);
+      const terminalLeaf = findLeaf(wsB.rootPane, terminalPaneId)!;
+      expect(terminalLeaf.surfaces).toHaveLength(1);
+      expect(terminalLeaf.surfaces[0].surfaceType ?? 'terminal').toBe('terminal');
+      // 4. No stray empty leaf left for EmptyLeafFunnel to fill with a PTY.
+      const emptyLeaves = getLeafPanes(wsB.rootPane).filter((l) => l.surfaces.length === 0);
+      expect(emptyLeaves).toHaveLength(0);
+      // 5. The inherited-cwd seed for the browser pane is cleared (it never
+      //    reaches the terminal funnel, so it would otherwise leak).
+      expect(state.splitCwdSeed[result.paneId]).toBeUndefined();
+    });
+
+    it('clears the inherited-cwd seed even when the source terminal has a cwd', () => {
+      const { deps } = makeDeps(store);
+      const { wsId } = backgroundWsWithTerminal('D:\\src\\app');
+
+      const result = openUrlInBrowserPaneImpl(
+        'http://localhost:5173',
+        { workspaceId: wsId, focusPane: false },
+        deps,
+      );
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      expect(store.getState().splitCwdSeed[result.paneId]).toBeUndefined();
+    });
+
+    it('active create still routes the browser into the new pane (no regression)', () => {
+      const { deps } = makeDeps(store);
+      // A single-workspace store: the active workspace holds one terminal pane.
+      const activeWsId = store.getState().activeWorkspaceId;
+      const terminalPaneId = activeWs(store).rootPane.id;
+      store.getState().addSurface(terminalPaneId, 'pty-a', 'pwsh', 'D:\\proj', activeWsId);
+
+      const result = openUrlInBrowserPaneImpl('http://localhost:5173', {}, deps);
+
+      expect(result.ok).toBe(true);
+      if (!result.ok) return;
+      const ws = activeWs(store);
+      const newLeaf = findLeaf(ws.rootPane, result.paneId)!;
+      expect(newLeaf.id).not.toBe(terminalPaneId);
+      expect(newLeaf.surfaces.map((s) => s.surfaceType)).toEqual(['browser']);
+      // Active split: the browser pane becomes the active selection.
+      expect(ws.activePaneId).toBe(result.paneId);
+      expect(store.getState().splitCwdSeed[result.paneId]).toBeUndefined();
     });
   });
 
