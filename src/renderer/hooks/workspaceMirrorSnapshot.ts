@@ -8,14 +8,15 @@
 // payload is byte-identical to the `workspace.list` reply, with a single source
 // of truth for the two helpers.
 
-import type { Pane, PaneLeaf, Workspace } from '../../shared/types';
+import type { AgentStatus, Pane, PaneLeaf, Workspace } from '../../shared/types';
+import { getLeafPanes } from '../../shared/paneUtils';
 import type {
   WorkspaceListEntry,
   FleetSnapshot,
   FleetSnapshotPane,
   WorkspaceMirrorPushPayload,
 } from '../../shared/workspaceMirror';
-import { selectFleetPanes, type FleetSelectorState } from '../stores/selectors/fleet';
+import { selectFleetPanes, type FleetPane, type FleetSelectorState } from '../stores/selectors/fleet';
 
 /**
  * Resolve the ptyId of a workspace's active pane + active surface.
@@ -82,28 +83,94 @@ export function buildWorkspaceListEntries(workspaces: Workspace[]): WorkspaceLis
 }
 
 /**
- * Roll `selectFleetPanes` up into one FleetSnapshot per workspace. Reuses the
- * canonical fleet selector (its 3-tier status gate + active-pane fidelity for
- * agentName) so the mirror's per-pane status agrees exactly with the cockpit.
+ * Roll the fleet selector up into one FleetSnapshot per workspace — but
+ * SURFACE-accurate, which is where this deliberately diverges from the cockpit.
+ *
+ * The UI rollup (`selectFleetPanes`, fleet.ts) returns one row per leaf pane:
+ * ptyId is the ACTIVE surface, but agentStatus is the most-urgent attention
+ * status rolled across ALL of the leaf's surfaces — correct for a pane CARD (a
+ * background tab awaiting input must light the card). For the mirror it is
+ * wrong: the heartbeat's `[fleet-snapshot]` prompt tells the orchestrator
+ * "pane=<ptyId> state=<status> — verify then press", so pairing the active
+ * surface's ptyId with a background tab's attention status would aim the brain
+ * at the wrong terminal (possible mis-approval). UI lights the pane; actuation
+ * must target the surface.
+ *
+ * So per leaf we emit:
+ *   1. one row per surface that holds its OWN retained attention status
+ *      (ptyId = THAT surface, agentStatus = its `surfaceAgentStatus` entry), and
+ *   2. for the pane's ACTIVE surface, when it carries no attention entry of its
+ *      own, one row with the pane-level non-attention status (running/idle) —
+ *      so single-surface panes are byte-identical to before and the fleet tail
+ *      counts stay meaningful.
+ *
+ * `isActivePane` stays true only for a row whose surface is the workspace's
+ * active pane's ACTIVE surface (a background tab of the active pane is false).
+ * `agentName` follows the same active-pane/active-surface fidelity rule.
+ *
+ * Reuse: `selectFleetPanes` supplies the per-leaf derived status + agentName;
+ * running it again over the SAME state with the attention map emptied collapses
+ * each pane to its non-attention derivation (metaStatus / hookRunning / idle),
+ * which is exactly the base status the active surface must carry when a
+ * background surface holds the attention.
  */
 export function buildFleetSnapshots(state: FleetSelectorState, ts: number): FleetSnapshot[] {
+  // Pane-level derived row per leaf (active-surface ptyId, agentName, cwd,
+  // isActivePane) — the canonical selector, keyed by paneId.
+  const derivedByPane = new Map<string, FleetPane>();
+  for (const p of selectFleetPanes(state)) derivedByPane.set(p.paneId, p);
+  // Attention-stripped base status per leaf: the same selector with no retained
+  // attention statuses collapses each pane to running/idle (its non-attention
+  // derivation). This is what the active surface carries when the attention
+  // actually belongs to a background surface.
+  const baseByPane = new Map<string, AgentStatus>();
+  for (const p of selectFleetPanes({ ...state, surfaceAgentStatus: {} })) {
+    baseByPane.set(p.paneId, p.agentStatus);
+  }
+
   const byWs = new Map<string, FleetSnapshot>();
-  for (const pane of selectFleetPanes(state)) {
-    let snap = byWs.get(pane.workspaceId);
-    if (!snap) {
-      snap = { workspaceId: pane.workspaceId, ts, panes: [] };
-      byWs.set(pane.workspaceId, snap);
+  for (const ws of state.workspaces) {
+    for (const leaf of getLeafPanes(ws.rootPane)) {
+      const derived = derivedByPane.get(leaf.id);
+      if (!derived) continue; // selectFleetPanes emits every leaf → always present
+      let snap = byWs.get(ws.id);
+      if (!snap) {
+        snap = { workspaceId: ws.id, ts, panes: [] };
+        byWs.set(ws.id, snap);
+      }
+      const activePtyId = derived.ptyId; // selector's active-surface pty ('' if unspawned)
+      const emitted = new Set<string>();
+      // (1) One row per surface holding its OWN retained attention status.
+      for (const s of leaf.surfaces) {
+        if (!s.ptyId) continue;
+        const att = state.surfaceAgentStatus[s.ptyId];
+        if (att === undefined) continue;
+        const isActiveSurface = s.id === leaf.activeSurfaceId;
+        const row: FleetSnapshotPane = {
+          ptyId: s.ptyId,
+          // agentName is workspace-level (active-pane derived) → only the active
+          // pane's ACTIVE surface may carry it; null everywhere else.
+          agentName: derived.isActivePane && isActiveSurface ? (derived.agentName ?? null) : null,
+          agentStatus: att,
+          isActivePane: derived.isActivePane && isActiveSurface,
+        };
+        if (s.cwd !== undefined) row.cwd = s.cwd;
+        snap.panes.push(row);
+        emitted.add(s.ptyId);
+      }
+      // (2) Active surface's own row with the pane-level non-attention status,
+      //     unless it already emitted an attention row of its own above.
+      if (!emitted.has(activePtyId)) {
+        const out: FleetSnapshotPane = {
+          ptyId: activePtyId,
+          agentName: derived.agentName ?? null,
+          agentStatus: baseByPane.get(leaf.id) ?? 'idle',
+          isActivePane: derived.isActivePane,
+        };
+        if (derived.cwd !== undefined) out.cwd = derived.cwd;
+        snap.panes.push(out);
+      }
     }
-    const out: FleetSnapshotPane = {
-      ptyId: pane.ptyId,
-      // Selector exposes agentName only for the active pane (background-pane
-      // fidelity rule); null everywhere else.
-      agentName: pane.agentName ?? null,
-      agentStatus: pane.agentStatus,
-      isActivePane: pane.isActivePane,
-    };
-    if (pane.cwd !== undefined) out.cwd = pane.cwd;
-    snap.panes.push(out);
   }
   return [...byWs.values()];
 }
