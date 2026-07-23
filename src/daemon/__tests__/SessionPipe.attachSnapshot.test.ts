@@ -245,16 +245,17 @@ describe('SessionPipe initial-attach snapshot (TASK-10)', () => {
     const raw = bigHistory(ATTACH_SNAPSHOT_MIN_BYTES * 2); // longer parse window
     const ring = new RingBuffer(8 * 1024 * 1024);
     ring.write(raw);
+    // While the snapshot builds (flushed=false), live PTY output goes to the
+    // ring only — exactly what the daemon's data path does. Inject the marker
+    // right after the flush's first (pre-parse) readAll so it is deterministically
+    // in the ring during the parse; a wall-clock sleep raced the shared
+    // concurrency-1 snapshot queue and flaked on slower CI runners (macos-14).
+    const liveMarker = Buffer.from('\r\nLIVE-DELTA-MARKER-9f2\r\n', 'utf8');
+    injectAfterFirstReadAll(ring, liveMarker);
     const pipe = await startPipe(uniqueSessionId('delta'), ring, () => ({ cols: COLS, rows: ROWS }));
 
     const client = await connectClient(pipe.getPipeName(), TOKEN);
     clients.push(client);
-
-    // While the snapshot builds (flushed=false), live PTY output goes to the
-    // ring only — exactly what the daemon's data path does.
-    const liveMarker = Buffer.from('\r\nLIVE-DELTA-MARKER-9f2\r\n', 'utf8');
-    await sleep(30); // let auth complete and the parse start
-    ring.write(liveMarker);
 
     await waitFor(() => client.wire().includes(FLUSH_DONE_MARKER), 20_000);
     const replay = replaySegment(client.wire())!;
