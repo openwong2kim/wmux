@@ -536,8 +536,13 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
 interface ScopeInternals {
   setWorkspaceIdResolver(resolver: () => Promise<string>): void;
   resolveCallerSurface(): Promise<
-    { kind: 'surface'; surfaceId: string } | { kind: 'none' } | { kind: 'unscoped' }
+    | { kind: 'surface'; surfaceId: string; workspaceId: string }
+    | { kind: 'none'; workspaceId: string }
+    | { kind: 'unscoped' }
   >;
+  resolveSelectionContext(
+    explicitSurfaceId?: string,
+  ): Promise<{ key: string; surfaceId?: string; callerHasNoSurface: boolean }>;
 }
 function scope(engine: PlaywrightEngine): ScopeInternals {
   return engine as unknown as ScopeInternals;
@@ -568,6 +573,7 @@ describe('PlaywrightEngine read-path workspace scoping (#554)', () => {
     await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({
       kind: 'surface',
       surfaceId: 'surf-A',
+      workspaceId: 'ws-A',
     });
   });
 
@@ -578,7 +584,10 @@ describe('PlaywrightEngine read-path workspace scoping (#554)', () => {
     const engine = PlaywrightEngine.getInstance();
     scope(engine).setWorkspaceIdResolver(async () => 'ws-C-no-surface');
 
-    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'none' });
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({
+      kind: 'none',
+      workspaceId: 'ws-C-no-surface',
+    });
   });
 
   it("stays 'unscoped' (legacy lenient) when the main doesn't tag targets with a workspaceId", async () => {
@@ -611,5 +620,55 @@ describe('PlaywrightEngine read-path workspace scoping (#554)', () => {
     // Resolver returns empty id.
     scope(engine).setWorkspaceIdResolver(async () => '');
     await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
+  });
+
+  // The in-flight getPage lock, the auto-open latch, and the fast-fail latch
+  // are all keyed by this context. A per-workspace key is what keeps a
+  // concurrent call from another workspace from sharing the first caller's
+  // in-flight page / auto-open / failure state (CodeRabbit #554).
+  it('derives a DISTINCT selection-context key per workspace (isolates lock/latches)', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+    const ctxA = await scope(engine).resolveSelectionContext();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-B');
+    const ctxB = await scope(engine).resolveSelectionContext();
+
+    expect(ctxA.surfaceId).toBe('surf-A');
+    expect(ctxB.surfaceId).toBe('surf-B');
+    expect(ctxA.key).not.toBe(ctxB.key); // no shared lock/latch across workspaces
+  });
+
+  it('keys an explicit surfaceId separately from a resolved workspace', async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    const explicit = await scope(engine).resolveSelectionContext('surf-B');
+    const resolved = await scope(engine).resolveSelectionContext();
+    expect(explicit).toEqual({ key: 'surf:surf-B', surfaceId: 'surf-B', callerHasNoSurface: false });
+    expect(resolved.surfaceId).toBe('surf-A');
+    expect(explicit.key).not.toBe(resolved.key);
+  });
+
+  it("keys 'no surface' by the caller's own workspace so its auto-open isn't blocked by another", async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-C-no-surface');
+    const ctxC = await scope(engine).resolveSelectionContext();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-D-no-surface');
+    const ctxD = await scope(engine).resolveSelectionContext();
+
+    expect(ctxC.callerHasNoSurface).toBe(true);
+    expect(ctxD.callerHasNoSurface).toBe(true);
+    expect(ctxC.key).not.toBe(ctxD.key); // each surfaceless workspace auto-opens independently
   });
 });

@@ -111,11 +111,18 @@ export class PlaywrightEngine {
 
   private browser: Browser | null = null;
   private cdpPort: number | null = null;
-  private playwrightFailed = false;
-  /** Prevents repeated auto-open attempts within the same getPage call chain. */
-  private autoOpenAttempted = false;
-  /** Serializes getPage calls to prevent concurrent auto-open races. */
-  private getPageLock: Promise<Page | null> | null = null;
+  /** Fast-fail latch, keyed by selection context (#554). A page-discovery
+   *  failure in one workspace must not block reads in another. */
+  private playwrightFailed = new Set<string>();
+  /** Auto-open attempts, keyed by selection context (#554). Auto-open is a
+   *  per-workspace decision, so a single shared boolean would let one
+   *  workspace's auto-open suppress another workspace's own. */
+  private autoOpenAttempted = new Set<string>();
+  /** In-flight getPage promises, keyed by selection context (#554). A single
+   *  shared lock returned one caller's page (or auto-open) to a concurrent
+   *  caller in a DIFFERENT workspace — a cross-workspace read. Keying by
+   *  context serializes same-context calls while isolating different ones. */
+  private getPageLocks = new Map<string, Promise<Page | null>>();
   /**
    * Browser-level CDP session that owns the auto-attach subscription. Held
    * for the lifetime of `browser` and detached in `disconnect()`. Without
@@ -330,18 +337,27 @@ export class PlaywrightEngine {
    *    need to know about browser_open ordering)
    */
   async getPage(surfaceId?: string): Promise<Page | null> {
-    // Fast-fail if Playwright has already failed to find webview pages.
-    if (this.playwrightFailed) return null;
+    // Resolve the selection context (which workspace/surface this call targets)
+    // BEFORE consulting any shared state, so the lock, fast-fail latch, and
+    // auto-open latch are all scoped to THIS caller's workspace and can never
+    // bleed into another's (#554). Context resolution needs only the control
+    // RPC (browser.cdp.info); the CDP browser connection happens in
+    // _getPageImpl as before.
+    const ctx = await this.resolveSelectionContext(surfaceId);
 
-    // Serialize concurrent calls to prevent multiple auto-open races
-    if (this.getPageLock) {
-      return this.getPageLock;
-    }
-    this.getPageLock = this._getPageImpl(surfaceId);
+    // Fast-fail if page discovery already failed for this context.
+    if (this.playwrightFailed.has(ctx.key)) return null;
+
+    // Serialize concurrent calls for the SAME context (prevents duplicate
+    // auto-open); a different context gets its own promise, never this one's.
+    const inflight = this.getPageLocks.get(ctx.key);
+    if (inflight) return inflight;
+    const p = this._getPageImpl(ctx);
+    this.getPageLocks.set(ctx.key, p);
     try {
-      return await this.getPageLock;
+      return await p;
     } finally {
-      this.getPageLock = null;
+      this.getPageLocks.delete(ctx.key);
     }
   }
 
@@ -365,7 +381,9 @@ export class PlaywrightEngine {
    *    single-workspace setups keep working.
    */
   private async resolveCallerSurface(): Promise<
-    { kind: 'surface'; surfaceId: string } | { kind: 'none' } | { kind: 'unscoped' }
+    | { kind: 'surface'; surfaceId: string; workspaceId: string }
+    | { kind: 'none'; workspaceId: string }
+    | { kind: 'unscoped' }
   > {
     if (!this.workspaceIdResolver) return { kind: 'unscoped' };
     let workspaceId: string;
@@ -392,33 +410,47 @@ export class PlaywrightEngine {
     if (!anyTagged) return { kind: 'unscoped' };
 
     const own = info.targets.find((t) => t.workspaceId === workspaceId);
-    if (own) return { kind: 'surface', surfaceId: own.surfaceId };
-    return { kind: 'none' };
+    if (own) return { kind: 'surface', surfaceId: own.surfaceId, workspaceId };
+    return { kind: 'none', workspaceId };
   }
 
-  private async _getPageImpl(explicitSurfaceId?: string): Promise<Page | null> {
+  /**
+   * Resolve the page-selection context for a getPage() call and derive a
+   * stable KEY for it (#554 — CodeRabbit). Everything that used to be
+   * singleton-scoped — the in-flight lock, the auto-open latch, the
+   * fast-fail latch — is now keyed by this context so a call from one
+   * workspace can never share an in-flight page, an auto-open decision, or a
+   * failure state with a DIFFERENT workspace. Concurrent calls that genuinely
+   * target the same surface/workspace still share (and serialize) under one key.
+   */
+  private async resolveSelectionContext(
+    explicitSurfaceId?: string,
+  ): Promise<{ key: string; surfaceId?: string; callerHasNoSurface: boolean }> {
+    if (explicitSurfaceId) {
+      return { key: `surf:${explicitSurfaceId}`, surfaceId: explicitSurfaceId, callerHasNoSurface: false };
+    }
+    const owned = await this.resolveCallerSurface();
+    if (owned.kind === 'surface') {
+      return { key: `ws:${owned.workspaceId}`, surfaceId: owned.surfaceId, callerHasNoSurface: false };
+    }
+    if (owned.kind === 'none') {
+      return { key: `ws:${owned.workspaceId}`, surfaceId: undefined, callerHasNoSurface: true };
+    }
+    return { key: 'unscoped', surfaceId: undefined, callerHasNoSurface: false };
+  }
+
+  private async _getPageImpl(
+    ctx: { key: string; surfaceId?: string; callerHasNoSurface: boolean },
+  ): Promise<Page | null> {
 
     await this.ensureConnected();
 
-    // #554: when the caller didn't pin an explicit surfaceId, scope selection
-    // to the CALLING session's own workspace surface. Without this, the "first
-    // non-shell page" fallbacks below are workspace-blind — with two live
-    // browser surfaces an agent in workspace A could read workspace B's page.
-    let surfaceId = explicitSurfaceId;
-    // True when the caller's workspace is known to own NO surface: the blind
-    // fallbacks must be skipped (they'd return another workspace's page) and we
-    // fall through to auto-open a surface for the caller's own workspace.
-    let callerHasNoSurface = false;
-    if (!surfaceId) {
-      const owned = await this.resolveCallerSurface();
-      if (owned.kind === 'surface') {
-        surfaceId = owned.surfaceId;
-      } else if (owned.kind === 'none') {
-        callerHasNoSurface = true;
-      }
-      // 'unscoped' (identity unresolvable / older main) → leave surfaceId
-      // undefined and keep the legacy lenient fallbacks.
-    }
+    // Selection is scoped to the caller's workspace (#554), resolved by
+    // getPage() -> resolveSelectionContext(). `surfaceId` set = pin to that
+    // surface; `callerHasNoSurface` = the caller's workspace owns none, so the
+    // workspace-blind fallbacks must be skipped and we auto-open its own.
+    let surfaceId = ctx.surfaceId;
+    let callerHasNoSurface = ctx.callerHasNoSurface;
 
     for (let attempt = 1; attempt <= PAGE_FIND_RETRIES; attempt++) {
       try {
@@ -468,14 +500,15 @@ export class PlaywrightEngine {
         // first. Skipped for an explicitly pinned surfaceId (codex P3, PR
         // #528): a fresh surface gets a DIFFERENT id, so the pinned lookup
         // would still fail while the user is left with an unexpected pane.
-        if (attempt === 1 && !this.autoOpenAttempted && !surfaceId) {
+        if (attempt === 1 && !this.autoOpenAttempted.has(ctx.key) && !surfaceId) {
           console.error('[PlaywrightEngine] No page found — auto-opening browser surface');
           try {
             if (await this.attemptAutoOpen()) {
-              // Latch only once the RPC actually went out, so a fail-closed
-              // skip (no resolver / unresolved identity) leaves a later call
-              // free to retry instead of spending the one-shot attempt.
-              this.autoOpenAttempted = true;
+              // Latch (per context) only once the RPC actually went out, so a
+              // fail-closed skip (no resolver / unresolved identity) leaves a
+              // later call free to retry instead of spending the one-shot
+              // attempt — and one workspace's auto-open never blocks another's.
+              this.autoOpenAttempted.add(ctx.key);
               // Wait for the webview to register its CDP target
               await sleep(2000);
               await this.disconnect();
@@ -517,10 +550,12 @@ export class PlaywrightEngine {
     }
 
     console.error('[PlaywrightEngine] No webview page found after all retries — marking as temporarily failed');
-    this.playwrightFailed = true;
+    this.playwrightFailed.add(ctx.key);
     // Auto-reset after 10s so subsequent browser.open calls get a fresh chance.
-    // Without this, one early failure permanently blocks all Playwright page discovery.
-    setTimeout(() => { this.playwrightFailed = false; this.autoOpenAttempted = false; }, 10_000);
+    // Without this, one early failure permanently blocks this context's page
+    // discovery. Scoped to ctx.key so one workspace's failure never blocks
+    // another's (#554).
+    setTimeout(() => { this.playwrightFailed.delete(ctx.key); this.autoOpenAttempted.delete(ctx.key); }, 10_000);
     return null;
   }
 
