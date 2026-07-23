@@ -1,12 +1,12 @@
-// ─── T1 — fan-out invite memberId=workspaceId 규약 (J1 §2 ⑤) ──────────
+// ─── T1 — fan-out invite memberId=workspaceId convention (J1 §2 ⑤) ──────────
 //
-// FanOutService ⑤는 태스크 워크스페이스를 미션 채널에 invite할 때
-// invitedMember = { workspaceId, memberId: workspaceId }로 넣는다(FanOutService
-// spawnOne ⑤ 참조). 이 규약 하에서 해당 workspaceId 멤버의 채널 발신(post)이
-// 멤버 게이트를 통과하는지를 고정한다 — invite→post 왕복이 깨지면 태스크 에이전트가
-// 미션 채널에 말을 못 하므로 J1의 핵심 계약이 무너진다.
+// FanOutService ⑤ invites a task workspace to a mission channel with
+// invitedMember = { workspaceId, memberId: workspaceId } (see FanOutService
+// spawnOne ⑤). This test locks down that a channel post from that workspaceId
+// member passes the member gate — if invite→post breaks, task agents cannot
+// speak in the mission channel and J1's core contract collapses.
 //
-// fake 구조는 ChannelService.rosterIdentity.test.ts를 재사용한다.
+// Reuses the fake structure from ChannelService.rosterIdentity.test.ts.
 
 import { describe, it, expect, vi } from 'vitest';
 import { ChannelService } from '../ChannelService';
@@ -42,10 +42,10 @@ function makeService() {
   return { svc, writer, emit };
 }
 
-describe('T1 — invite memberId=workspaceId 후 그 멤버의 post가 게이트를 통과한다', () => {
-  it('CEO가 미션 채널을 만들고 태스크 워크스페이스를 invite하면 태스크 워크스페이스가 발신 가능', async () => {
+describe('T1 — invite memberId=workspaceId After that member's post passes through the gate.', () => {
+  it('CEOIf you create a mission channel and invite a task workspace, the task workspace can send.', async () => {
     const { svc } = makeService();
-    // 미션 채널은 생성자(owner) 워크스페이스가 만든다.
+    // Mission channel is created by the owner workspace.
     const created = await svc.create({
       name: 'mission',
       visibility: 'public',
@@ -56,7 +56,7 @@ describe('T1 — invite memberId=workspaceId 후 그 멤버의 post가 게이트
     if (!created.ok) return;
     const channelId = created.channel.id;
 
-    // FanOutService ⑤와 동일한 wire shape: workspaceId == memberId.
+    // Same wire shape as FanOutService ⑤: workspaceId == memberId.
     const TASK_WS = 'ws-task-1';
     const invited = await svc.invite({
       channelId,
@@ -65,23 +65,23 @@ describe('T1 — invite memberId=workspaceId 후 그 멤버의 post가 게이트
     });
     expect(invited.ok).toBe(true);
 
-    // 태스크 워크스페이스(에이전트 페인)가 verifiedWorkspaceId=TASK_WS로 발신.
+    // Task workspace (agent pane) posts with verifiedWorkspaceId=TASK_WS.
     const posted = await svc.post({
       channelId,
       sender: { workspaceId: TASK_WS, memberId: TASK_WS },
-      text: '태스크 진행 상황 보고',
+      text: 'Task progress report',
       verifiedWorkspaceId: TASK_WS,
     });
     expect(posted.ok).toBe(true);
     if (posted.ok) {
-      // 멤버 게이트 통과 + 로스터 행 신원으로 렌더.
+      // Member gate passed + render under roster row identity.
       expect(posted.message.memberId).toBe(TASK_WS);
     }
   });
 
-  it('invite 안 된 워크스페이스라도 단일 로스터 매핑으로 발신은 되지만, invite된 워크스페이스는 자기 행으로 귀속된다', async () => {
-    // 회귀 방어: invite된 TASK_WS의 발신이 owner 행이 아니라 TASK_WS 행으로 귀속돼야
-    // N개 태스크 신원이 뭉개지지 않는다(§1 신원 축 분리).
+  it('invite Even if it is not a workspace, you can send with a single roster mapping., inviteThe created workspace belongs to its own row.', async () => {
+    // Regression guard: invited TASK_WS posts must attribute to TASK_WS row, not owner row,
+    // so N task identities do not collapse (§1 identity-axis separation).
     const { svc } = makeService();
     const created = await svc.create({
       name: 'mission',

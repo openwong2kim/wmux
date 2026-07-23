@@ -37,20 +37,24 @@ const DEBOUNCE_MS = 30_000;
 const QUEUE_KEY = 'channel-state';
 
 /**
- * 이벤트로그 모드 옵션(envelope-design §6.4, PR3 additive). 미지정 시 기존 동작 1비트 불변.
+ * Event log mode options (envelope-design §6.4, PR3 additive). When unspecified,
+ * existing 1-bit behavior is unchanged.
  */
 export interface ChannelStateWriterEventLogOpts {
   /**
-   * §6.4c 워터마크 스탬프 훅. 지정되면 **모든 물리 write 직전(직렬화 시점)**에 상태를
-   * 변환해 기록한다 — 스케줄 시점이 아니라 write 시점에 훅이 돌아야 stateHash가 실제
-   * 기록 내용과 항상 일치한다(디바운스 창 동안 상태가 계속 변하므로, 스케줄 시점
-   * 해시는 나중에 쓰인 내용과 어긋나 reseed 오발동을 낳는다).
+   * §6.4c watermark stamp hook. When specified, state is transformed and recorded
+   * **immediately before every physical write (at serialization time)** — the hook
+   * must run at write time, not schedule time, so stateHash always matches what is
+   * actually written (during the debounce window state keeps changing, so a
+   * schedule-time hash would diverge from what gets written later and trigger false
+   * reseed).
    */
   stamp?: (state: ChannelState) => ChannelState;
   /**
-   * §6.4b — graceful shutdown 경로(flush/flushSync/dispose/syncFallback)의 write를
-   * durable(§2.3: tmp fsync→rename→dir fsync)로 승격. 스테디스테이트 디바운스 write는
-   * 캐시(정본은 로그)라 비내구 유지.
+   * §6.4b — promote writes on graceful shutdown paths
+   * (flush/flushSync/dispose/syncFallback) to durable (§2.3: tmp fsync→rename→dir
+   * fsync). Steady-state debounced writes remain non-durable cache (canonical source
+   * is the log).
    */
   durableFlush?: boolean;
 }
@@ -77,7 +81,7 @@ export class ChannelStateWriter {
   private readonly queue = new AsyncQueue();
   private immediateEpoch = 0;
   private lastImmediateState: ChannelState | null = null;
-  // 이벤트로그 모드(PR3 additive) — 부트 게이트가 enableEventLogDualWrite로 설정.
+  // Event log mode (PR3 additive) — boot gate sets this via enableEventLogDualWrite.
   private stamp?: (state: ChannelState) => ChannelState;
   private durableFlush = false;
 
@@ -102,7 +106,7 @@ export class ChannelStateWriter {
 
     this.queue.setSyncFallback(QUEUE_KEY, () => {
       if (this.pendingState !== null) {
-        // 프로세스-종료 드레인 경로 — §6.4b durableFlush 승격 대상.
+        // Process-exit drain path — §6.4b durableFlush promotion target.
         atomicWriteJSONSync(this.filePath, this.applyStamp(this.pendingState), {
           validate: ChannelStateWriter.isChannelState,
           rotationEnabled: true,
@@ -114,23 +118,24 @@ export class ChannelStateWriter {
   }
 
   /**
-   * 이벤트로그 dual-write 모드 활성(PR3 부트 게이트 전용, §6.4b/§6.4c).
-   * 이후 모든 write가 stamp(write 시점 워터마크)를 통과하고, shutdown 경로
-   * write가 durable로 승격된다. 레거시 모드(미호출)는 기존 동작 불변.
+   * Enable event log dual-write mode (PR3 boot gate only, §6.4b/§6.4c).
+   * All subsequent writes pass through stamp (watermark at write time), and
+   * shutdown-path writes are promoted to durable. Legacy mode (not called) keeps
+   * existing behavior unchanged.
    */
   enableEventLogDualWrite(opts: ChannelStateWriterEventLogOpts): void {
     this.stamp = opts.stamp;
     this.durableFlush = opts.durableFlush ?? false;
   }
 
-  /** write 직전 스탬프 적용(§6.4c — 직렬화 시점 해시 일치 보장). 훅 부재 시 원본. */
+  /** Apply stamp immediately before write (§6.4c — hash matches serialized content). Returns original when hook is absent. */
   private applyStamp(state: ChannelState): ChannelState {
     if (!this.stamp) return state;
     try {
       return this.stamp(state);
     } catch (err) {
-      // 스탬프 실패가 dual-write 자체를 막으면 안 된다(캐시 우선) — 워터마크 없는
-      // 파일은 다음 부트에서 absent→reseed로 감지된다(무성 아님).
+      // Stamp failure must not block dual-write itself (cache first) — a file without
+      // watermark is detected on next boot as absent→reseed (not silent).
       console.error('[ChannelStateWriter] watermark stamp failed:', err);
       return state;
     }
@@ -155,8 +160,9 @@ export class ChannelStateWriter {
       atomicWriteJSONSync(this.filePath, this.applyStamp(state), {
         validate: ChannelStateWriter.isChannelState,
         rotationEnabled: true,
-        // §2.3 durable 옵션(additive) — 마이그레이션/reseed 워터마크 되쓰기(§6.4c)와
-        // shutdown flush(§6.4b)만 true. 기존 호출부(무옵션)는 비내구 그대로.
+        // §2.3 durable option (additive) — only true for migration/reseed watermark
+        // rewrite (§6.4c) and shutdown flush (§6.4b). Existing call sites (no option)
+        // remain non-durable.
         durable: opts.durable ?? false,
       });
       this.pendingState = null;
@@ -185,11 +191,12 @@ export class ChannelStateWriter {
         if (payload === null) return;
         const epochAtStart = this.immediateEpoch;
         try {
-          // 스탬프는 write 시점(직렬화 직전)에 적용 — §6.4c 해시-내용 일치.
-          // 비동기 경로는 스탬프(해시 계산)와 직렬화 사이에 await(ensureDir)가
-          // 있어, 그 사이 커밋이 라이브 참조를 변형하면 해시≠기록내용으로 다음
-          // 부트가 허위 downgrade-write를 감지한다(Codex INFO-8) — 스탬프 전에
-          // 클론으로 고정해 해시와 내용을 같은 스냅숏에 묶는다.
+          // Stamp is applied at write time (immediately before serialization) — §6.4c
+          // hash-content alignment. The async path has await(ensureDir) between stamp
+          // (hash computation) and serialization, so if a commit mutates the live
+          // reference in between, hash≠written content and the next boot detects a
+          // false downgrade-write (Codex INFO-8) — clone before stamp to bind hash and
+          // content to the same snapshot.
           await atomicWriteJSON(this.filePath, this.applyStamp(structuredClone(payload)), {
             validate: ChannelStateWriter.isChannelState,
             rotationEnabled: true,
@@ -277,7 +284,7 @@ export class ChannelStateWriter {
       this.debounceTimer = null;
     }
     if (this.pendingState !== null) {
-      // dispose(셧다운) 경유 flush — 이벤트로그 모드면 §6.4b durable 승격.
+      // flush via dispose (shutdown) — §6.4b durable promotion when event log mode is on.
       this.saveImmediate(this.pendingState, { durable: this.durableFlush });
     }
   }
@@ -300,7 +307,7 @@ export class ChannelStateWriter {
         atomicWriteJSONSync(this.filePath, this.applyStamp(state), {
           validate: ChannelStateWriter.isChannelState,
           rotationEnabled: true,
-          // §6.4b — 프로세스-종료 flush의 durable 승격(이벤트로그 모드).
+          // §6.4b — durable promotion for process-exit flush (event log mode).
           durable: this.durableFlush,
         });
       } catch (err) {
@@ -330,9 +337,9 @@ export class ChannelStateWriter {
    * whole validator, triggering `.bak` recovery. Full schema validation
    * lands when the schema stabilises.
    *
-   * PR3: public 승격 — 마이그레이션 게이트(genesis 검증)와 SnapshotStore 폴백
-   * 체인의 validateProjection 주입 계약(envelope-design §6.1-3, PR2 문면)이
-   * 이 가드를 요구한다. 동작 불변.
+   * PR3: promoted to public — migration gate (genesis validation) and
+   * SnapshotStore fallback chain validateProjection injection contract
+   * (envelope-design §6.1-3, PR2 wording) require this guard. Behavior unchanged.
    */
   static isChannelState(parsed: unknown): parsed is ChannelState {
     if (typeof parsed !== 'object' || parsed === null) return false;
@@ -400,8 +407,9 @@ export class ChannelStateWriter {
 }
 
 /**
- * 빈 채널 reaper — load() 본문에서 추출(PR3, 동작 불변). 로그 모드 부트(스냅샷+replay
- * 시드, envelope-design §5)도 같은 프루닝 시멘틱을 유지해야 하므로 함수로 공유한다.
+ * Empty channel reaper — extracted from load() body (PR3, behavior unchanged). Boot
+ * in log mode (snapshot+replay seed, envelope-design §5) must keep the same pruning
+ * semantics, so this is shared as a function.
  *
  * Prune rules (applied per channel):
  *   - Has members: keep (always).

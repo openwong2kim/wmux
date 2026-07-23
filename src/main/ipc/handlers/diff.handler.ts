@@ -1,9 +1,9 @@
-// J2 — diff:read / diff:applyHunks main 핸들러 (스펙 §2·§3)
+// J2 — diff:read / diff:applyHunks main handlers (spec §2·§3)
 //
-// diff:read: 태스크 worktree cwd에서 워킹트리 대조 diff를 읽어 파싱·numstat·
-//   untracked 합성·타겟 스냅샷을 동봉해 반환(§2).
-// diff:applyHunks: 스냅샷 드리프트 게이트 → dirty 거부 → per-hunk 프로브 →
-//   선택 hunk 단일 패치 all-or-nothing apply(§3). 타겟 repo 단위 뮤텍스.
+// diff:read: read working-tree diff from task worktree cwd, parse, numstat,
+//   synthesize untracked, and return with target snapshot (§2).
+// diff:applyHunks: snapshot drift gate → dirty rejection → per-hunk probe →
+//   selected-hunk single-patch all-or-nothing apply (§3). Per-target-repo mutex.
 import { ipcMain } from 'electron';
 import { readFile, lstat } from 'node:fs/promises';
 import { mkdtemp, writeFile, rm } from 'node:fs/promises';
@@ -28,12 +28,12 @@ import {
   type HunkProbe,
 } from '../../../shared/diffParse';
 
-// git 실행 헬퍼는 main/git/git.ts로 승격 추출됨(동작 무변경) — worktree
-// 핸들러와 공유. throw 대신 stdout/stderr/code 반환 계약은 그대로다.
+// Git exec helper promoted to main/git/git.ts (behavior unchanged) — shared
+// with worktree handler. Still returns stdout/stderr/code instead of throw.
 
-// 타겟 repo 단위 직렬 큐(§3 R15 — J1 per-repo 뮤텍스 패턴 재사용).
-// key = 타겟 repo 경로. J1 TaskWorktreeManager.withRepoLock과 동형이나
-// 그 인스턴스는 FanOutService 내부라 additive 원칙상 동일 패턴을 복제.
+// Per-target-repo serial queue (§3 R15 — reuses J1 per-repo mutex pattern).
+// key = target repo path. Same shape as J1 TaskWorktreeManager.withRepoLock but
+// that instance lives inside FanOutService, so additive principle duplicates the pattern.
 const repoChains = new Map<string, Promise<unknown>>();
 function withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
   const prev = repoChains.get(repoKey) ?? Promise.resolve();
@@ -48,31 +48,31 @@ function withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-// 워크트리 cwd → 본 repo 경로. 실패 시 null.
-// F9: 취약한 문자열 조작 폴백(`.git` 접미 정규식 제거)을 폐기하고 git에 직접 물어본다.
-//   common-dir(`<repo>/.git`)의 상위 디렉토리에서 `rev-parse --show-toplevel`을
-//   실행하면 본 repo 루트를 정확히 얻는다(worktree cwd에서 직접 --show-toplevel은
-//   worktree 자신을 반환하므로 타겟=본 repo 계약과 어긋난다 — 상위에서 실행).
+// Worktree cwd → main repo path. null on failure.
+// F9: drop fragile string-manipulation fallback (strip `.git` suffix regex); ask git directly.
+//   Run `rev-parse --show-toplevel` from the parent of common-dir (`<repo>/.git`) to
+//   get the main repo root exactly (direct --show-toplevel from worktree cwd returns
+//   the worktree itself, breaking target=main-repo contract — run from parent).
 async function resolveTargetRepo(worktreePath: string): Promise<string | null> {
   const r = await git(['rev-parse', '--path-format=absolute', '--git-common-dir'], worktreePath);
   if (r.code !== 0) return null;
   const commonDir = r.stdout.trim();
   if (!commonDir) return null;
-  // common-dir의 상위(`<repo>/.git` → `<repo>`)를 work tree로 삼아 toplevel을 도출.
+  // Derive toplevel using common-dir's parent (`<repo>/.git` → `<repo>`) as work tree.
   const top = await git(['-C', dirname(commonDir), 'rev-parse', '--show-toplevel'], worktreePath);
   if (top.code !== 0 || !top.stdout.trim()) return null;
   return top.stdout.trim();
 }
 
-// `git status --porcelain -z`의 NUL 구획 출력을 레코드 단위로 파싱한다(F1 — quotepath).
-//   - 각 레코드: "XY <space>path\0". core.quotepath=false + -z로 공백·한글·따옴표
-//     파일명도 원문 그대로(따옴표·8진 이스케이프 없음).
-//   - rename/copy(X 또는 Y가 'R'/'C')는 "XY newpath\0oldpath\0" — 뒤따르는 NUL
-//     필드가 oldpath라 한 레코드가 2필드를 소비한다. status/xy는 newpath 기준.
+// Parse NUL-delimited `git status --porcelain -z` output record-by-record (F1 — quotepath).
+//   - Each record: "XY <space>path\0". core.quotepath=false + -z preserves spaces,
+//     CJK, and quoted filenames verbatim (no quotes or octal escapes).
+//   - rename/copy (X or Y is 'R'/'C'): "XY newpath\0oldpath\0" — trailing NUL
+//     field is oldpath, so one record consumes 2 fields. status/xy is newpath-based.
 interface StatusEntry {
-  readonly xy: string; // 2자 상태 코드(예: " M", "??", "R ").
-  readonly path: string; // newpath(표시·매칭 대상).
-  readonly origPath: string | null; // rename/copy의 oldpath. 그 외 null.
+  readonly xy: string; // 2-char status code (e.g. " M", "??", "R ").
+  readonly path: string; // newpath (display and match target).
+  readonly origPath: string | null; // oldpath for rename/copy; null otherwise.
 }
 function parsePorcelainZ(raw: string): StatusEntry[] {
   const fields = raw.split('\0');
@@ -81,11 +81,11 @@ function parsePorcelainZ(raw: string): StatusEntry[] {
   while (i < fields.length) {
     const rec = fields[i];
     i += 1;
-    // 마지막 NUL 뒤의 빈 꼬리 원소는 건너뜀.
+    // Skip empty tail element after final NUL.
     if (rec.length < 4) continue;
     const xy = rec.slice(0, 2);
-    const path = rec.slice(3); // "XY " 이후.
-    // rename/copy는 다음 필드가 oldpath.
+    const path = rec.slice(3); // after "XY ".
+    // rename/copy: next field is oldpath.
     const isRenameCopy = xy[0] === 'R' || xy[0] === 'C' || xy[1] === 'R' || xy[1] === 'C';
     let origPath: string | null = null;
     if (isRenameCopy && i < fields.length) {
@@ -97,18 +97,18 @@ function parsePorcelainZ(raw: string): StatusEntry[] {
   return out;
 }
 
-// 타겟 스냅샷 수집(§2 드리프트 게이트 재료).
+// Collect target snapshot (§2 drift-gate material).
 async function collectSnapshot(targetRepoPath: string): Promise<DiffTargetSnapshot> {
   const [head, branch, status] = await Promise.all([
     git(['rev-parse', 'HEAD'], targetRepoPath),
     git(['rev-parse', '--abbrev-ref', 'HEAD'], targetRepoPath),
-    // F1: -z + quotepath=false로 특수문자 파일명을 원문 파싱. rename은 newpath만.
+    // F1: -z + quotepath=false parses special-char filenames verbatim. rename uses newpath only.
     git(['-c', 'core.quotepath=false', 'status', '--porcelain', '-z'], targetRepoPath),
   ]);
   const dirty: string[] = [];
   for (const e of parsePorcelainZ(status.stdout)) {
-    // rename/copy는 newpath(e.path)를 dirty 대상으로. dirty 게이트는 채택 타겟
-    // 경로 집합과 매칭되므로 표시 경로 기준.
+    // rename/copy: newpath (e.path) is dirty target. dirty gate matches adopt-target
+    // path set, so use display path.
     dirty.push(e.path);
   }
   return {
@@ -119,7 +119,7 @@ async function collectSnapshot(targetRepoPath: string): Promise<DiffTargetSnapsh
   };
 }
 
-// numstat 파싱(파일 트리 표시용). binary는 "-\t-\tpath".
+// Parse numstat (for file-tree display). binary is "-\t-\tpath".
 function parseNumstat(raw: string): DiffNumstat[] {
   const out: DiffNumstat[] = [];
   for (const line of raw.split('\n')) {
@@ -137,26 +137,25 @@ function parseNumstat(raw: string): DiffNumstat[] {
   return out;
 }
 
-// git의 잘 알려진 empty tree 오브젝트 — 첫 커밋 전(HEAD 없음) repo의 diff base.
+// Git's well-known empty tree object — diff base for pre-first-commit (no HEAD) repos.
 const EMPTY_TREE_OID = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
 
-// diff:read 구현.
+// diff:read implementation.
 //
 // mode:
-//  - 'task'(기본): J2 태스크 산출물 diff. worktree를 본 repo로 매핑
-//    (resolveTargetRepo)한 뒤 merge-base 대조 — 태스크 브랜치의 산출물을
-//    본 repo 기준으로 채택하기 위한 의미.
-//  - 'workspace': 워크스페이스 diff. cwd repo/worktree 자신의 미커밋 변경만
-//    (`git diff HEAD` + untracked). 본 repo로 매핑하지 않는다 — 그러면 linked
-//    worktree의 브랜치 커밋 전체가 diff로 새어 나온다(Codex P2). 첫 커밋 전
-//    repo는 HEAD가 없으므로 empty-tree 대비로 전 파일을 added로 보여준다.
+//  - 'task' (default): J2 task-output diff. Map worktree to main repo
+//    (resolveTargetRepo) then merge-base compare — adopt task-branch output
+//    against main repo.
+//  - 'workspace': workspace diff. Only uncommitted changes on cwd repo/worktree
+//    itself (`git diff HEAD` + untracked). Do not map to main repo — otherwise
+//    linked worktree branch commits leak into diff (Codex P2). Pre-first-commit
+//    repo has no HEAD, so show all files as added vs empty-tree.
 async function readDiff(
   worktreePath: string,
   targetHeadOid: string,
   mode: 'task' | 'workspace' = 'task',
 ): Promise<DiffReadResult | DiffReadError> {
-  // workspace 모드: 대상 repo = 자기 자신(cwd toplevel). resolveTargetRepo로
-  // 본 repo 매핑을 하지 않는다.
+  // workspace mode: target repo = self (cwd toplevel). Do not map to main repo via resolveTargetRepo.
   const targetRepoPath =
     mode === 'workspace'
       ? await (async () => {
@@ -165,42 +164,42 @@ async function readDiff(
         })()
       : await resolveTargetRepo(worktreePath);
   if (!targetRepoPath) {
-    return { ok: false, error: '타겟 repo를 찾을 수 없음(worktree 손상?)', code: 'no-repo' };
+    return { ok: false, error: 'Target repo not found (corrupt worktree?)', code: 'no-repo' };
   }
 
-  // F8: targetHeadOid 인자 가드 — 지정 시 SHA-1 hex(7~40자)만 허용.
-  //   빈 문자열(미지정)은 아래에서 타겟 HEAD로 도출하므로 통과. 인자 주입을
-  //   merge-base·git 명령에 그대로 넘기기 전에 형식을 명시 검증한다.
+  // F8: targetHeadOid arg guard — when specified, allow SHA-1 hex (7–40 chars) only.
+  //   Empty string (unspecified) passes; derived to target HEAD below. Explicitly
+  //   validate format before passing arg injection into merge-base/git commands.
   if (targetHeadOid && !/^[0-9a-fA-F]{7,40}$/.test(targetHeadOid)) {
-    return { ok: false, error: 'targetHeadOid 형식 오류(SHA hex 7~40자 아님)', code: 'bad-oid' };
+    return { ok: false, error: 'targetHeadOid format error (not SHA hex 7–40 chars)', code: 'bad-oid' };
   }
 
   let mergeBase: string;
   if (mode === 'workspace') {
-    // 미커밋만: base = 자기 HEAD. 첫 커밋 전이면 empty-tree(전 파일 added).
+    // Uncommitted only: base = own HEAD. Pre-first-commit uses empty-tree (all files added).
     const h = await git(['rev-parse', 'HEAD'], targetRepoPath);
     mergeBase = h.code === 0 && h.stdout.trim() ? h.stdout.trim() : EMPTY_TREE_OID;
   } else {
-    // targetHeadOid 미지정 시 타겟 repo의 현 HEAD를 사용(렌더러가 미리 알 필요 없음).
+    // When targetHeadOid unspecified, use target repo's current HEAD (renderer need not know ahead).
     let headOid = targetHeadOid;
     if (!headOid) {
       const h = await git(['rev-parse', 'HEAD'], targetRepoPath);
       headOid = h.code === 0 ? h.stdout.trim() : '';
     }
-    // mergeBase = merge-base HEAD {targetHeadOid} — 단일 출처(§2 G8).
+    // mergeBase = merge-base HEAD {targetHeadOid} — single source (§2 G8).
     const mb = await git(['merge-base', 'HEAD', headOid], worktreePath);
     mergeBase = mb.code === 0 && mb.stdout.trim() ? mb.stdout.trim() : headOid;
   }
 
-  // 1-arg 워킹트리 대조(미커밋 포함). untracked 제외 — 별도 합성.
+  // 1-arg working-tree compare (includes uncommitted). Excludes untracked — synthesized separately.
   const diffRes = await git(['diff', mergeBase], worktreePath);
   if (diffRes.code !== 0) {
-    return { ok: false, error: `git diff 실패: ${diffRes.stderr.slice(0, 200)}`, code: 'diff-fail' };
+    return { ok: false, error: `git diff failed: ${diffRes.stderr.slice(0, 200)}`, code: 'diff-fail' };
   }
   const numRes = await git(['diff', '--numstat', mergeBase], worktreePath);
 
-  // untracked 수집 → 정식 new-file 헤더 합성(§2 R4).
-  // F1: -z + quotepath=false로 특수문자 untracked 파일명을 원문 파싱.
+  // Collect untracked → synthesize proper new-file headers (§2 R4).
+  // F1: -z + quotepath=false parses special-char untracked filenames verbatim.
   const utRes = await git(
     ['-c', 'core.quotepath=false', 'status', '--porcelain', '-uall', '-z'],
     worktreePath,
@@ -218,8 +217,8 @@ async function readDiff(
   for (const rel of untracked) {
     try {
       const full = join(worktreePath, rel);
-      // F3: readFile 전 lstat — symlink는 follow하면 repo 밖 파일을 diff에 노출한다.
-      // 정규 파일만 합성. symlink·FIFO·소켓·디바이스 등은 채택 불가("unsupported").
+      // F3: lstat before readFile — following symlinks exposes out-of-repo files in diff.
+      // Synthesize regular files only. symlink/FIFO/socket/device etc. not adoptable ("unsupported").
       const ls = await lstat(full);
       if (!ls.isFile()) {
         unsupported.push(rel);
@@ -232,7 +231,7 @@ async function readDiff(
         extraNumstat.push({ path: rel, additions: null, deletions: null });
         continue;
       }
-      // 바이너리 휴리스틱: NUL 바이트 존재.
+      // Binary heuristic: NUL byte present.
       if (stat.includes(0)) {
         truncated.push(rel);
         extraNumstat.push({ path: rel, additions: null, deletions: null });
@@ -243,28 +242,28 @@ async function readDiff(
       const lineCount = content.length === 0 ? 0 : content.replace(/\n$/, '').split('\n').length;
       extraNumstat.push({ path: rel, additions: lineCount, deletions: 0 });
     } catch {
-      // 읽기 실패(레이스로 삭제 등) — 조용히 건너뜀.
+      // Read failure (race delete etc.) — skip quietly.
     }
   }
 
-  // 총량 캡(§2). 초과 시 파싱은 하되 큰 파일은 표시 전용 마킹.
+  // Total size cap (§2). On exceed, still parse but mark large files display-only.
   if (Buffer.byteLength(diffText, 'utf8') > DIFF_TOTAL_CAP_BYTES) {
     return {
       ok: false,
-      error: 'diff 총량이 2MB를 초과 — 표시 전용(채택 불가). 커밋 단위를 좁혀 재열람.',
+      error: 'Total diff exceeds 2MB — display only (cannot adopt). Narrow commit scope and re-read.',
       code: 'too-large',
     };
   }
 
   const parsed = parseUnifiedDiff(diffText);
-  // 파일당 캡 초과 파일을 truncated로(파싱은 유지하되 안내).
+  // Mark per-file cap exceeders as truncated (keep parsing but annotate).
   const files: DiffFile[] = [];
   for (const f of parsed.files) {
     const size = f.headerBlock.length + f.hunks.reduce((s, h) => s + h.bodyLines.join('\n').length, 0);
     const isTruncated = size > DIFF_FILE_CAP_BYTES;
     if (isTruncated && !truncated.includes(f.path)) truncated.push(f.path);
-    // F7: 캡 초과 파일은 hunkSelectable=false로 강등(applyHunks의 2중 거부와 짝).
-    //   표시 diff는 잘리지 않았어도 재직렬화 신뢰 범위를 넘으므로 채택 대상에서 제외.
+    // F7: cap-exceeded files demoted to hunkSelectable=false (pairs with applyHunks double rejection).
+    //   Even if display diff wasn't truncated, exclude from adopt targets beyond re-serialization trust.
     if (isTruncated && f.hunkSelectable) {
       files.push({ ...f, hunkSelectable: false });
     } else {
@@ -278,14 +277,14 @@ async function readDiff(
   return { ok: true, files, numstat, snapshot, truncated, unsupported };
 }
 
-// 패치 내부 경로 검증(§3 R16): a/ b/ 정규화 후 .. 거부·절대경로 거부.
+// Validate paths inside patch (§3 R16): normalize a/ b/, reject .. and absolute paths.
 function patchPathsSafe(patch: string): boolean {
   for (const line of patch.split('\n')) {
     let p: string | null = null;
     if (line.startsWith('--- ') || line.startsWith('+++ ')) {
       p = line.slice(4).split('\t')[0];
     } else if (line.startsWith('diff --git ')) {
-      // "diff --git a/x b/y" — 두 경로 모두 검사.
+      // "diff --git a/x b/y" — check both paths.
       const m = line.match(/^diff --git (\S+) (\S+)$/);
       if (m) {
         for (const raw of [m[1], m[2]]) {
@@ -303,28 +302,28 @@ function patchPathsSafe(patch: string): boolean {
   return true;
 }
 
-// diff:applyHunks 구현.
+// diff:applyHunks implementation.
 async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<DiffApplyResult> {
   const targetRepoPath = await resolveTargetRepo(worktreePath);
   if (!targetRepoPath) {
-    return { ok: false, error: '타겟 repo를 찾을 수 없음', code: 'apply' };
+    return { ok: false, error: 'Target repo not found', code: 'apply' };
   }
 
   return withRepoLock(targetRepoPath, async (): Promise<DiffApplyResult> => {
-    // ① 드리프트 게이트(§2·§3): 스냅샷의 HEAD/브랜치가 현재와 일치해야 함.
+    // ① Drift gate (§2·§3): snapshot HEAD/branch must match current.
     const cur = await collectSnapshot(targetRepoPath);
     if (
       cur.targetHeadOid !== req.snapshot.targetHeadOid ||
       cur.targetBranch !== req.snapshot.targetBranch
     ) {
-      return { ok: false, error: '타겟이 이동됨 — diff 재열람 필요', code: 'drift' };
+      return { ok: false, error: 'Target moved — re-read diff required', code: 'drift' };
     }
 
-    // 선택 파일의 diff를 재계산(태스크 worktree 기준). read와 동일 소스.
+    // Recompute diff for selected files (task worktree basis). Same source as read.
     const read = await readDiff(worktreePath, req.snapshot.targetHeadOid);
     if (!read.ok) return { ok: false, error: read.error, code: 'apply' };
 
-    // 선택 파일 매핑 + 채택 가능성 검증.
+    // Map selected files + validate adoptability.
     const selMap = new Map<string, readonly number[]>();
     for (const s of req.selections) selMap.set(s.path, s.hunkIndices);
     const selectedFiles: Array<{ file: DiffFile; hunkIndices: readonly number[] }> = [];
@@ -332,35 +331,35 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
     for (const f of read.files) {
       const idxs = selMap.get(f.path);
       if (!idxs || idxs.length === 0) continue;
-      // F7 2중 거부: 캡 초과(truncated) 파일은 hunkSelectable=false로도 걸리지만,
-      // truncated 집합으로 명시 거부해 재직렬화 신뢰 범위를 넘는 채택을 이중 차단.
+      // F7 double rejection: cap-exceeded (truncated) files also hit hunkSelectable=false,
+      // but explicitly reject via truncated set to double-block adopt beyond re-serialization trust.
       if (truncatedSet.has(f.path)) {
         return {
           ok: false,
-          error: `${f.path}: 캡 초과로 표시 전용 — 채택 불가`,
+          error: `${f.path}: exceeds cap — display only, cannot adopt`,
           code: 'unsupported',
         };
       }
       if (!f.hunkSelectable) {
         return {
           ok: false,
-          error: `${f.path}: rename·binary·mode 변경은 채택 불가`,
+          error: `${f.path}: rename/binary/mode changes cannot be adopted`,
           code: 'unsupported',
         };
       }
       selectedFiles.push({ file: f, hunkIndices: idxs });
     }
     if (selectedFiles.length === 0) {
-      return { ok: false, error: '선택된 hunk 없음', code: 'apply' };
+      return { ok: false, error: 'No hunks selected', code: 'apply' };
     }
 
-    // ② dirty 거부(§3): 대상 파일이 현재 dirty면 거부.
+    // ② Dirty rejection (§3): reject if target file is currently dirty.
     const dirtySet = new Set(cur.targetDirtyFiles);
     for (const sf of selectedFiles) {
       if (dirtySet.has(sf.file.path)) {
         return {
           ok: false,
-          error: `${sf.file.path}: 타겟에 미커밋 변경 있음 — 충돌 방지로 거부`,
+          error: `${sf.file.path}: target has uncommitted changes — rejected to avoid conflicts`,
           code: 'dirty',
         };
       }
@@ -368,16 +367,16 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
 
     const patch = reassemblePatch(selectedFiles);
     if (!patchPathsSafe(patch)) {
-      return { ok: false, error: '패치 내부 경로 검증 실패(.. 또는 절대경로)', code: 'path' };
+      return { ok: false, error: 'Patch path validation failed (.. or absolute path)', code: 'path' };
     }
 
-    // ③ 프로브(§3, F2 재정의): per-hunk 개별 프로브는 UI 힌트 전용이고,
-    //    적용 게이트는 "선택 hunk 결합 패치 1회 --check"로 분리한다.
-    //    - 개별 --check는 의존 hunk(앞 hunk가 있어야 뒤 hunk가 붙는 경우)를
-    //      false-negative로 오판하므로 게이트로 쓰지 않는다.
-    //    - alreadyApplied(--reverse --check 성공) hunk는 게이트 전에 명시 실패로
-    //      반환한다: 결합 apply가 전체 거부될 때 "이미 적용된 hunk가 원인"임을
-    //      은닉하지 않고, 사용자에게 해당 hunk 선택 해제를 유도한다.
+    // ③ Probe (§3, F2 redefinition): per-hunk individual probes are UI-hint only;
+    //    apply gate is separated as "selected-hunk combined patch single --check".
+    //    - Individual --check false-negatives dependent hunks (later hunk needs earlier),
+    //      so not used as gate.
+    //    - alreadyApplied (--reverse --check succeeds) hunks fail explicitly before gate:
+    //      when combined apply rejects all, don't hide "already-applied hunk was the cause";
+    //      prompt user to deselect those hunks.
     const probes: HunkProbe[] = [];
     const dir = await mkdtemp(join(tmpdir(), 'wmux-diff-'));
     try {
@@ -397,40 +396,40 @@ async function applyHunks(req: DiffApplyRequest, worktreePath: string): Promise<
         }
       }
 
-      // alreadyApplied hunk는 게이트 통과 전 명시 실패(선택 해제 유도).
+      // alreadyApplied hunks fail explicitly before gate (prompt deselection).
       const already = probes.filter((p) => p.alreadyApplied);
       if (already.length > 0) {
         return {
           ok: false,
-          error: '일부 hunk가 타겟에 이미 적용됨 — 해당 hunk를 선택 해제 후 재시도',
+          error: 'Some hunks are already applied on target — deselect them and retry',
           code: 'probe',
           failedProbes: already,
         };
       }
 
-      // 적용 게이트: 선택 hunk 결합 패치 1회 --check(의존 hunk 통과, all-or-nothing).
+      // Apply gate: selected-hunk combined patch single --check (dependent hunks pass, all-or-nothing).
       const patchPath = join(dir, 'apply.diff');
       await writeFile(patchPath, patch);
       const gate = await git(['apply', '--check', patchPath], targetRepoPath);
       if (gate.code !== 0) {
-        // 결합 --check 실패: 개별 프로브에서 applicable=false인 hunk를 UI 힌트로
-        // 동봉(어느 hunk가 문제인지 사용자에게 표시). 힌트가 없으면(전부 개별로는
-        // 붙는데 결합에서만 실패) 전체 실패만 보고.
+        // Combined --check failed: attach applicable=false hunks from individual probes as UI hints
+        // (show user which hunk is problematic). If no hints (each applies individually but
+        // combined fails), report whole failure only.
         const notApplicable = probes.filter((p) => !p.applicable);
         return {
           ok: false,
-          error: `선택 hunk 결합 적용 불가(타겟 미변경): ${gate.stderr.slice(0, 200)}`,
+          error: `Selected hunks cannot be applied together (target unchanged): ${gate.stderr.slice(0, 200)}`,
           code: 'probe',
           failedProbes: notApplicable.length > 0 ? notApplicable : probes,
         };
       }
 
-      // ④ 단일 패치 all-or-nothing apply(§3). --unsafe-paths 금지.
+      // ④ Single-patch all-or-nothing apply (§3). --unsafe-paths forbidden.
       const applied = await git(['apply', patchPath], targetRepoPath);
       if (applied.code !== 0) {
         return {
           ok: false,
-          error: `git apply 실패(타겟 미변경): ${applied.stderr.slice(0, 200)}`,
+          error: `git apply failed (target unchanged): ${applied.stderr.slice(0, 200)}`,
           code: 'apply',
         };
       }
@@ -454,21 +453,21 @@ export function registerDiffHandlers(): () => void {
         mode: unknown,
       ): Promise<DiffReadResult | DiffReadError> => {
         if (typeof worktreePath !== 'string' || !worktreePath) {
-          return { ok: false, error: 'worktreePath 필요', code: 'bad-args' };
+          return { ok: false, error: 'worktreePath required', code: 'bad-args' };
         }
-        // targetHeadOid는 선택 — 미지정 시 타겟 repo HEAD로 도출.
+        // targetHeadOid is optional — when unspecified, derive from target repo HEAD.
         const head = typeof targetHeadOid === 'string' ? targetHeadOid : '';
-        // mode 미지정/오값은 'task'(기존 계약). 'workspace'만 명시 분기.
+        // Unspecified/invalid mode defaults to 'task' (existing contract). Only 'workspace' branches explicitly.
         return readDiff(worktreePath, head, mode === 'workspace' ? 'workspace' : 'task');
       },
     ),
   );
 
-  // 워크스페이스 diff 진입점 — cwd(서브디렉토리 가능)를 자기 worktree toplevel로
-  // 정규화한다. diff:read의 worktreePath 계약(untracked 합성이 repo-root 상대경로를
-  // join)이 toplevel을 전제하므로, 렌더러는 이 결과를 diffRepoPath로 영속한다.
-  // linked worktree cwd면 그 worktree의 toplevel을 반환한다(본 repo 아님 —
-  // 이후 diff:read의 resolveTargetRepo가 본 repo 대조를 알아서 수행).
+  // Workspace diff entry point — normalize cwd (subdir allowed) to own worktree toplevel.
+  // diff:read worktreePath contract (untracked synthesis joins repo-root-relative paths)
+  // assumes toplevel, so renderer persists this result as diffRepoPath.
+  // Linked worktree cwd returns that worktree's toplevel (not main repo —
+  // diff:read resolveTargetRepo performs main-repo compare afterward).
   ipcMain.removeHandler(IPC.DIFF_RESOLVE_REPO);
   ipcMain.handle(
     IPC.DIFF_RESOLVE_REPO,
@@ -497,11 +496,11 @@ export function registerDiffHandlers(): () => void {
         worktreePath: unknown,
       ): Promise<DiffApplyResult> => {
         if (typeof worktreePath !== 'string' || !worktreePath) {
-          return { ok: false, error: 'worktreePath 필요', code: 'apply' };
+          return { ok: false, error: 'worktreePath required', code: 'apply' };
         }
         const r = req as DiffApplyRequest;
         if (!r || !r.snapshot || !Array.isArray(r.selections)) {
-          return { ok: false, error: 'applyHunks 요청 형식 오류', code: 'apply' };
+          return { ok: false, error: 'applyHunks request format error', code: 'apply' };
         }
         return applyHunks(r, worktreePath);
       },

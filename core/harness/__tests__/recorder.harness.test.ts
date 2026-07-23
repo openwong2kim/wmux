@@ -1,7 +1,7 @@
-// E0 하니스 — recorder/differ 단위 검증 (스펙 §5-1·§5-2)
+// E0 harness — recorder/differ unit verification (spec §5-1·§5-2)
 //
-// 녹화 산출물 스키마·불변식과 재생기의 오프셋 정합을 좁게 검증한다(4중 게이트가 통합 검증을
-// 하므로 여기선 배관 단위 계약만).
+// Narrowly verifies recording output schema/invariants and replay offset alignment (the 4-gate suite
+// handles integration verification, so here we only verify plumbing-level contracts).
 
 import { describe, it, expect } from 'vitest';
 import { record, serializeEvents, parseEvents } from '../recorder';
@@ -15,19 +15,19 @@ import {
 } from '../differ';
 import type { GridSnapshot, IntendedDiff, RecordingEvent } from '../types';
 
-describe('recorder — events 왕복·불변식', () => {
-  it('events.jsonl 직렬화→파싱 왕복이 손실 없다', async () => {
+describe('recorder — events round trip and invariants', () => {
+  it('events.jsonl serialize→parse round trip is lossless', async () => {
     const w = workloadByName('resize-roundtrip')!;
     const res = await record(w, 0);
     const roundtrip = parseEvents(serializeEvents(res.events));
     expect(roundtrip).toEqual(res.events);
   });
 
-  it('트레일 선두는 항상 init(byteOffset=0)이고 geometry/reflowMode를 담는다', async () => {
+  it('trail head is always init (byteOffset=0) and carries geometry/reflowMode', async () => {
     for (const w of WORKLOADS) {
       const res = await record(w, 0);
       const first = res.events[0];
-      expect(first.type, `[${w.name}] 선두가 init이 아님`).toBe('init');
+      expect(first.type, `[${w.name}] head is not init`).toBe('init');
       expect(first.byteOffset).toBe(0);
       if (first.type === 'init') {
         expect(first.geometry).toEqual(w.initialGeometry);
@@ -36,12 +36,12 @@ describe('recorder — events 왕복·불변식', () => {
     }
   });
 
-  it('byteOffset은 단조 증가하고 [0, recording.length] 범위 안이다', async () => {
+  it('byteOffset is monotonically increasing and within [0, recording.length]', async () => {
     for (const w of WORKLOADS) {
       const res = await record(w, 0);
       let prev = -1;
       for (const e of res.events) {
-        expect(e.byteOffset, `[${w.name}] 단조 위반`).toBeGreaterThanOrEqual(prev);
+        expect(e.byteOffset, `[${w.name}] monotonicity violation`).toBeGreaterThanOrEqual(prev);
         expect(e.byteOffset).toBeGreaterThanOrEqual(0);
         expect(e.byteOffset).toBeLessThanOrEqual(res.bytes.length);
         prev = e.byteOffset;
@@ -49,18 +49,18 @@ describe('recorder — events 왕복·불변식', () => {
     }
   });
 
-  it('meta는 synthetic=true·workloadHash가 bytes의 sha256과 일치', async () => {
+  it('meta has synthetic=true and workloadHash matches bytes sha256', async () => {
     const w = workloadByName('sgr-spectrum')!;
     const res = await record(w, 0);
     expect(res.meta.synthetic).toBe(true);
-    // 같은 워크로드·시드 재녹화 → 같은 해시.
+    // Re-record same workload·seed → same hash.
     const res2 = await record(w, 0);
     expect(res2.meta.workloadHash).toBe(res.meta.workloadHash);
   });
 });
 
-describe('differ — diff 엔진 4분류', () => {
-  it('같은 그리드는 identical(불일치 0)', async () => {
+describe('differ — diff engine 4-class ledger', () => {
+  it('identical grids are identical (zero mismatches)', async () => {
     const w = workloadByName('scroll-flood')!;
     const res = await record(w, 0);
     const s = new XtermSubject();
@@ -71,13 +71,13 @@ describe('differ — diff 엔진 4분류', () => {
     expect(report.mismatches.length).toBe(0);
   });
 
-  it('셀 하나를 바꾸면 정확히 그 좌표·필드가 unclassified 불일치로 잡힌다', async () => {
+  it('mutating one cell catches exactly that coordinate·field as unclassified mismatch', async () => {
     const w = workloadByName('sgr-spectrum')!;
     const res = await record(w, 0);
     const s = new XtermSubject();
     const g1 = await s.replay(res.bytes, res.events);
     const g2 = await s.replay(res.bytes, res.events);
-    // g2의 (0,0) 셀 char를 인위 변조(구조적 복제 후 수정).
+    // Artificially mutate g2's (0,0) cell char (modify after structural clone).
     const mutated = {
       ...g2.grid,
       cells: g2.grid.cells.map((row, y) =>
@@ -87,12 +87,12 @@ describe('differ — diff 엔진 4분류', () => {
     const report = diffGrids(w.name, g1.grid, mutated, 'a', 'b');
     expect(report.identical).toBe(false);
     const charMismatch = report.mismatches.find((m) => m.x === 0 && m.y === 0 && m.field === 'char');
-    expect(charMismatch, '(0,0) char 불일치가 잡혀야 한다').toBeTruthy();
-    // 암묵 (d) 금지: 승인 목록에 없으면 unclassified.
+    expect(charMismatch, '(0,0) char mismatch must be caught').toBeTruthy();
+    // Implicit (d) forbidden: unclassified if not on approval list.
     expect(charMismatch!.classification).toBe('unclassified');
   });
 
-  it('intended 승인 목록에 등재된 불일치만 intended로 승격된다', async () => {
+  it('only mismatches on the intended approval list are promoted to intended', async () => {
     const w = workloadByName('sgr-spectrum')!;
     const res = await record(w, 0);
     const s = new XtermSubject();
@@ -104,15 +104,15 @@ describe('differ — diff 엔진 4분류', () => {
       ),
     };
     const intended: IntendedDiff[] = [
-      { workloadName: w.name, x: 0, y: 0, field: 'char', reason: '테스트: 의도된 차이로 승인' },
+      { workloadName: w.name, x: 0, y: 0, field: 'char', reason: 'test: approved as intended difference' },
     ];
     const report = diffGrids(w.name, g1.grid, mutated, 'a', 'b', intended);
     const charMismatch = report.mismatches.find((m) => m.x === 0 && m.y === 0 && m.field === 'char');
-    expect(charMismatch!.classification, '등재 항목은 intended').toBe('intended');
+    expect(charMismatch!.classification, 'listed entry is intended').toBe('intended');
   });
 
-  // R5: activeBuffer 불일치를 셀 비교 전에 잡는다.
-  it('activeBuffer(normal vs alternate) 불일치가 최우선 신호로 잡힌다', async () => {
+  // R5: Catch activeBuffer mismatch before cell comparison.
+  it('activeBuffer (normal vs alternate) mismatch is top-priority signal', async () => {
     const w = workloadByName('alt-screen')!;
     const res = await record(w, 0);
     const s = new XtermSubject();
@@ -120,18 +120,18 @@ describe('differ — diff 엔진 4분류', () => {
     const alt: GridSnapshot = { ...g.grid, activeBuffer: 'alternate' as const };
     const report = diffGrids(w.name, g.grid, alt, 'a', 'b');
     const bufMismatch = report.mismatches.find((m) => m.field === 'activeBuffer');
-    expect(bufMismatch, 'activeBuffer 불일치가 잡혀야 한다').toBeTruthy();
+    expect(bufMismatch, 'activeBuffer mismatch must be caught').toBeTruthy();
     expect(bufMismatch!.a).toBe('normal');
     expect(bufMismatch!.b).toBe('alternate');
   });
 
-  // R6: fgMode/bgMode raw 상수는 교차-피검체 diff 대상이 아니다.
-  it('fgMode/bgMode(raw 색모드 상수)는 diff 대상에서 제외된다(이식 불가)', async () => {
+  // R6: fgMode/bgMode raw constants are not cross-subject diff targets.
+  it('fgMode/bgMode (raw color-mode constants) are excluded from diff (not portable)', async () => {
     const w = workloadByName('sgr-spectrum')!;
     const res = await record(w, 0);
     const s = new XtermSubject();
     const g = await s.replay(res.bytes, res.events);
-    // 색이 있는 셀(행0 셀0 = 빨강 전경)의 raw fgMode를 인위로 다르게 만든다.
+    // Artificially make raw fgMode different on a colored cell (row 0 cell 0 = red foreground).
     const mutated: GridSnapshot = {
       ...g.grid,
       cells: g.grid.cells.map((row, y) =>
@@ -141,17 +141,17 @@ describe('differ — diff 엔진 4분류', () => {
       ),
     };
     const report = diffGrids(w.name, g.grid, mutated, 'a', 'b');
-    // fgMode/bgMode만 달라도 불일치로 잡히면 안 된다(diff 필드에서 제외됐으므로).
-    expect(report.mismatches.some((m) => m.field === 'fgMode'), 'fgMode는 diff 대상 아님').toBe(false);
-    expect(report.mismatches.some((m) => m.field === 'bgMode'), 'bgMode는 diff 대상 아님').toBe(false);
+    // fgMode/bgMode only differing must not be caught as mismatch (excluded from diff fields).
+    expect(report.mismatches.some((m) => m.field === 'fgMode'), 'fgMode is not a diff target').toBe(false);
+    expect(report.mismatches.some((m) => m.field === 'bgMode'), 'bgMode is not a diff target').toBe(false);
   });
 });
 
-describe('differ — 이벤트 스트림 검증(R3)', () => {
+describe('differ — event stream validation (R3)', () => {
   const geom = { cols: 80, rows: 24 } as const;
   const init: RecordingEvent = { type: 'init', byteOffset: 0, geometry: geom, reflowMode: 'self' };
 
-  it('정상 스트림(init 선두 + 단조 offset + 범위 내)은 통과한다', () => {
+  it('valid stream (init head + monotonic offset + in range) passes', () => {
     const events: RecordingEvent[] = [
       init,
       { type: 'resize', byteOffset: 5, geometry: geom },
@@ -160,43 +160,43 @@ describe('differ — 이벤트 스트림 검증(R3)', () => {
     expect(() => validateEventStream(events, 10)).not.toThrow();
   });
 
-  it('첫 이벤트가 init이 아니면 throw', () => {
+  it('throws when first event is not init', () => {
     const events: RecordingEvent[] = [{ type: 'resize', byteOffset: 0, geometry: geom }];
-    expect(() => validateEventStream(events, 10)).toThrow(/첫 이벤트가 init이 아니다/);
+    expect(() => validateEventStream(events, 10)).toThrow(/first event is not init/);
   });
 
-  it('빈 스트림은 throw', () => {
-    expect(() => validateEventStream([], 10)).toThrow(/비어있다/);
+  it('throws on empty stream', () => {
+    expect(() => validateEventStream([], 10)).toThrow(/is empty/);
   });
 
-  it('byteOffset이 원본 순서에서 감소하면 throw(정렬 은닉 금지)', () => {
-    // 손상 이벤트 파일 fixture: offset이 12 → 5로 역행(원본 순서 비단조).
+  it('throws when byteOffset decreases in original order (no sort masking)', () => {
+    // Corrupt event file fixture: offset regresses 12 → 5 (non-monotonic in original order).
     const events: RecordingEvent[] = [
       init,
       { type: 'resize', byteOffset: 12, geometry: geom },
       { type: 'resize', byteOffset: 5, geometry: geom },
     ];
-    expect(() => validateEventStream(events, 20)).toThrow(/단조 비감소가 아니다/);
+    expect(() => validateEventStream(events, 20)).toThrow(/not monotonically non-decreasing/);
   });
 
-  it('byteOffset이 recording 범위를 넘으면 throw', () => {
+  it('throws when byteOffset exceeds recording range', () => {
     const events: RecordingEvent[] = [init, { type: 'resize', byteOffset: 999, geometry: geom }];
-    expect(() => validateEventStream(events, 10)).toThrow(/범위 위반/);
+    expect(() => validateEventStream(events, 10)).toThrow(/out of range/);
   });
 
-  it('손상 스트림은 replay 진입에서도 throw한다(정렬로 은닉하지 않음)', async () => {
+  it('corrupt stream also throws at replay entry (no sort masking)', async () => {
     const s = new XtermSubject();
     const recording = new Uint8Array([65, 66, 67]); // "ABC"
     const corrupt: RecordingEvent[] = [
       init,
       { type: 'resize', byteOffset: 3, geometry: geom },
-      { type: 'resize', byteOffset: 1, geometry: geom }, // 역행 — 손상.
+      { type: 'resize', byteOffset: 1, geometry: geom }, // Regression — corrupt.
     ];
-    await expect(s.replay(recording, corrupt)).rejects.toThrow(/단조 비감소가 아니다/);
+    await expect(s.replay(recording, corrupt)).rejects.toThrow(/not monotonically non-decreasing/);
   });
 
-  it('parseEvents로 읽은 손상 이벤트 파일도 replay에서 throw', async () => {
-    // events.jsonl 텍스트가 offset 역행을 담은 fixture(손상 파일 시뮬레이션).
+  it('corrupt event file read via parseEvents also throws on replay', async () => {
+    // events.jsonl text fixture containing offset regression (simulates corrupt file).
     const jsonl =
       JSON.stringify(init) +
       '\n' +
@@ -207,39 +207,39 @@ describe('differ — 이벤트 스트림 검증(R3)', () => {
     const events = parseEvents(jsonl);
     const s = new XtermSubject();
     await expect(s.replay(new Uint8Array([65, 66, 67]), events)).rejects.toThrow(
-      /단조 비감소가 아니다/,
+      /not monotonically non-decreasing/,
     );
   });
 });
 
-describe('differ — intended-diffs 로더 배선(R4)', () => {
-  it('loadIntendedDiffs가 저장소 intended-diffs.json을 로드하고 스키마가 정합', () => {
+describe('differ — intended-diffs loader wiring (R4)', () => {
+  it('loadIntendedDiffs loads repo intended-diffs.json with valid schema', () => {
     const list = loadIntendedDiffs();
     expect(Array.isArray(list)).toBe(true);
-    // 예약 항목 2건: cjk-emoji VS16 폭 + resize-reflow 왕복 복원.
+    // Two reserved entries: cjk-emoji VS16 width + resize-reflow round-trip restore.
     const vs16 = list.find(
       (i) => i.workloadName === 'cjk-emoji' && i.x === 0 && i.y === 2 && i.field === 'width',
     );
     const reflow = list.find(
       (i) => i.workloadName === 'resize-reflow' && i.x === 79 && i.y === 0 && i.field === 'char',
     );
-    expect(vs16, 'VS16 하트 폭 예약 항목').toBeTruthy();
-    expect(reflow, 'resize-reflow 복원 예약 항목').toBeTruthy();
-    // 모든 항목이 사유(reason)를 갖는다(사람이 왜 의도인지 적었는지).
-    for (const i of list) expect(i.reason.length, 'reason 비어있음').toBeGreaterThan(0);
+    expect(vs16, 'VS16 heart width reserved entry').toBeTruthy();
+    expect(reflow, 'resize-reflow restore reserved entry').toBeTruthy();
+    // Every entry has a reason (human documented why it's intentional).
+    for (const i of list) expect(i.reason.length, 'reason is empty').toBeGreaterThan(0);
   });
 
-  it('잘못된 경로는 명시 throw(무음 빈 목록 폴백 금지)', () => {
-    expect(() => loadIntendedDiffs('/nonexistent/intended-diffs.json')).toThrow(/로드 실패/);
+  it('invalid path throws explicitly (no silent empty-list fallback)', () => {
+    expect(() => loadIntendedDiffs('/nonexistent/intended-diffs.json')).toThrow(/load failed/);
   });
 
-  it('runDifferential이 로더를 배선해 등재 좌표를 intended로 승격한다', async () => {
-    // 같은 피검체 2회지만, 한쪽을 인위 변조해 cjk-emoji VS16 셀(0,2) width를 다르게 만든 뒤,
-    // runDifferential이 자동 로드한 승인 목록으로 그 좌표를 intended로 승격하는지 확인한다.
+  it('runDifferential wires loader and promotes listed coordinates to intended', async () => {
+    // Same subject twice, but artificially mutate one side to make cjk-emoji VS16 cell (0,2) width different,
+    // then verify runDifferential promotes that coordinate to intended via auto-loaded approval list.
     const w = workloadByName('cjk-emoji')!;
     const res = await record(w, 0);
     const baseline = new XtermSubject();
-    // subjectB를 "VS16 셀 width를 2로 바꾸는" 래퍼 피검체로 만든다(E1 코어의 U16 승격을 흉내).
+    // Create subjectB as wrapper subject that "changes VS16 cell width to 2" (mimics E1 core U16 promotion).
     const promoted: import('../differ').Subject = {
       name: 'e1-mock',
       async replay(recording, events) {
@@ -254,7 +254,7 @@ describe('differ — intended-diffs 로더 배선(R4)', () => {
     const vs16Mismatch = report.mismatches.find(
       (m) => m.x === 0 && m.y === 2 && m.field === 'width',
     );
-    expect(vs16Mismatch, 'VS16 width 불일치가 잡혀야 한다').toBeTruthy();
-    expect(vs16Mismatch!.classification, '등재 좌표는 intended로 승격').toBe('intended');
+    expect(vs16Mismatch, 'VS16 width mismatch must be caught').toBeTruthy();
+    expect(vs16Mismatch!.classification, 'listed coordinate is promoted to intended').toBe('intended');
   });
 });

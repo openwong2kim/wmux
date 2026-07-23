@@ -11,7 +11,7 @@
  *   3. daemon auth token present     → returned trimmed
  *   4. daemon auth token absent      → undefined
  *
- * `fs` and `os` are mocked so the test is hermetic (no real ~/.wmux access).
+ * `fs` and `os` are mocked so the test is hermetic (no real ~/.fmux access).
  */
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 
@@ -54,30 +54,30 @@ afterEach(() => {
   else process.env.WMUX_DATA_SUFFIX = ORIGINAL_SUFFIX;
 });
 
-// P7: 파이프 이름 파생은 shared/constants의 getDaemonSocketPath로 위임됐다.
-// shared 헬퍼는 `require('os')`/env 기반이라 이 파일의 os mock이 닿지 않으므로
-// 정확한 username 대신 형태(shape)를 고정한다. unix 경로는 ~/.wmux{suffix}/
-// 하위로 이동(구경로 `~/.wmux-daemon.sock` 회귀 방지 역-assertion 포함).
+// P7: pipe name derivation is delegated to getDaemonSocketPath in shared/constants.
+// The shared helper is `require('os')`/env-based so this file's os mock does not
+// apply; we pin shape instead of exact username. Unix path moved under ~/.fmux{suffix}/
+// (includes reverse-assertion against legacy path `~/.fmux-daemon.sock`).
 describe('getDaemonPipeName', () => {
-  it('derives the win32 daemon pipe name (username 포함)', () => {
+  it('derives the win32 daemon pipe name (includes username)', () => {
     setPlatform('win32');
-    expect(getDaemonPipeName()).toMatch(/^\\\\\.\\pipe\\wmux-daemon-.+$/);
+    expect(getDaemonPipeName()).toMatch(/^\\\\\.\\pipe\\fmux-daemon-.+$/);
   });
 
   it('applies WMUX_DATA_SUFFIX to the win32 daemon pipe name', () => {
     setPlatform('win32');
     process.env.WMUX_DATA_SUFFIX = '-dev';
-    expect(getDaemonPipeName()).toMatch(/^\\\\\.\\pipe\\wmux-daemon-dev-.+$/);
+    expect(getDaemonPipeName()).toMatch(/^\\\\\.\\pipe\\fmux-daemon-dev-.+$/);
   });
 
-  it('derives the unix daemon socket path under ~/.wmux (P7)', () => {
+  it('derives the unix daemon socket path under ~/.fmux (P7)', () => {
     setPlatform('linux');
     const ORIGINAL_HOME = process.env.HOME;
     const ORIGINAL_USERPROFILE = process.env.USERPROFILE;
     process.env.HOME = '/home/u';
     delete process.env.USERPROFILE;
     try {
-      expect(getDaemonPipeName()).toBe('/home/u/.wmux/daemon.sock');
+      expect(getDaemonPipeName()).toBe('/home/u/.fmux/daemon.sock');
     } finally {
       if (ORIGINAL_HOME === undefined) delete process.env.HOME;
       else process.env.HOME = ORIGINAL_HOME;
@@ -91,11 +91,11 @@ describe('resolveDaemonPipeName', () => {
     setPlatform('win32');
     // The daemon may have fallen back to a renamed pipe; the hint file is the
     // source of truth, so its value must win over the derived convention.
-    readFileSyncMock.mockReturnValue('\\\\.\\pipe\\wmux-daemon-fallback-xyz\n');
-    expect(resolveDaemonPipeName()).toBe('\\\\.\\pipe\\wmux-daemon-fallback-xyz');
-    // It read from the suffix-aware ~/.wmux<suffix>/daemon-pipe path.
+    readFileSyncMock.mockReturnValue('\\\\.\\pipe\\fmux-daemon-fallback-xyz\n');
+    expect(resolveDaemonPipeName()).toBe('\\\\.\\pipe\\fmux-daemon-fallback-xyz');
+    // It read from the suffix-aware ~/.fmux<suffix>/daemon-pipe path.
     const readPath = String(readFileSyncMock.mock.calls[0][0]);
-    expect(readPath).toContain('.wmux');
+    expect(readPath).toContain('.fmux');
     expect(readPath).toContain('daemon-pipe');
   });
 
@@ -104,13 +104,13 @@ describe('resolveDaemonPipeName', () => {
     readFileSyncMock.mockImplementation(() => {
       throw Object.assign(new Error('ENOENT'), { code: 'ENOENT' });
     });
-    expect(resolveDaemonPipeName()).toMatch(/^\\\\\.\\pipe\\wmux-daemon-.+$/);
+    expect(resolveDaemonPipeName()).toMatch(/^\\\\\.\\pipe\\fmux-daemon-.+$/);
   });
 
   it('falls back to the derived name when the hint file is empty/whitespace', () => {
     setPlatform('win32');
     readFileSyncMock.mockReturnValue('   \n');
-    expect(resolveDaemonPipeName()).toMatch(/^\\\\\.\\pipe\\wmux-daemon-.+$/);
+    expect(resolveDaemonPipeName()).toMatch(/^\\\\\.\\pipe\\fmux-daemon-.+$/);
   });
 });
 
@@ -132,11 +132,11 @@ describe('resolveDaemonAuthToken', () => {
     else process.env.HOME = ORIGINAL_HOME;
   });
 
-  it('returns the trimmed token; default (no suffix) reads ~/.wmux/daemon-auth-token', () => {
+  it('returns the trimmed token; default (no suffix) reads ~/.fmux/daemon-auth-token', () => {
     readFileSyncMock.mockReturnValue('  SECRET123\n');
     expect(resolveDaemonAuthToken()).toBe('SECRET123');
     const readPath = String(readFileSyncMock.mock.calls[0][0]).replace(/\\/g, '/');
-    expect(readPath).toBe('/home/u/.wmux/daemon-auth-token');
+    expect(readPath).toBe('/home/u/.fmux/daemon-auth-token');
   });
 
   it('reads the SUFFIXED path first when WMUX_DATA_SUFFIX is set (isolation)', () => {
@@ -144,7 +144,7 @@ describe('resolveDaemonAuthToken', () => {
     readFileSyncMock.mockReturnValue('DEVTOKEN\n');
     expect(resolveDaemonAuthToken()).toBe('DEVTOKEN');
     const readPath = String(readFileSyncMock.mock.calls[0][0]).replace(/\\/g, '/');
-    expect(readPath).toBe('/home/u/.wmux-dev/daemon-auth-token');
+    expect(readPath).toBe('/home/u/.fmux-dev/daemon-auth-token');
   });
 
   it('falls back to the legacy unsuffixed path when the suffixed path is absent', () => {
@@ -160,8 +160,8 @@ describe('resolveDaemonAuthToken', () => {
     expect(readFileSyncMock).toHaveBeenCalledTimes(2);
     const first = String(readFileSyncMock.mock.calls[0][0]).replace(/\\/g, '/');
     const second = String(readFileSyncMock.mock.calls[1][0]).replace(/\\/g, '/');
-    expect(first).toBe('/home/u/.wmux-dev/daemon-auth-token');
-    expect(second).toBe('/home/u/.wmux/daemon-auth-token');
+    expect(first).toBe('/home/u/.fmux-dev/daemon-auth-token');
+    expect(second).toBe('/home/u/.fmux/daemon-auth-token');
   });
 
   it('returns undefined when the token file is absent', () => {

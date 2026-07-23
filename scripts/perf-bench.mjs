@@ -118,7 +118,7 @@ function parseArgs(argv) {
     // count (approximation; see measureWebglOccupancy).
     scrollbackLines: null, webglOccupancy: false,
     // W2 N-pane instrumentation (design plans/w2-harness-instrumentation-*).
-    // These scenarios run BY DEFAULT (design §4: "상시 기록") on a dedicated
+    // These scenarios run BY DEFAULT (design §4: "continuous recording") on a dedicated
     // instance; the skip flags exist only to keep local iteration light.
     // frameBudgetPanes: N-values for the concurrent-streaming frame-budget
     // sweep (measured incrementally on one instance).
@@ -1563,7 +1563,7 @@ async function measureImeScenario(inst) {
   // Calm-window frame baseline BEFORE composing (for the stall check).
   const baseStats = summarizeSamples(await sampleRafDeltas(page, 30));
 
-  // Synthesize the composition. Build "안녕하세요" one syllable at a time.
+  // Synthesize the composition. Build a multi-syllable Korean greeting one syllable at a time.
   await page.evaluate((expected) => {
     const ta = document.activeElement;
     if (!ta || !ta.classList.contains('xterm-helper-textarea')) throw new Error('textarea lost focus');

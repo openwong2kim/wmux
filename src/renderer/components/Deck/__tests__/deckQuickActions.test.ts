@@ -34,8 +34,8 @@ describe('buildQuickActions', () => {
   });
 
   it('uses the translator for the recover label when it yields a value', () => {
-    const t = (key: string): string => (key === 'deck.recoveryRun' ? '에이전트 복구' : '');
+    const t = (key: string): string => (key === 'deck.recoveryRun' ? 'Agent recovery' : '');
     const actions = buildQuickActions({ recoveryPanes: [recoveryPane()], t });
-    expect(actions[0].label).toBe('에이전트 복구');
+    expect(actions[0].label).toBe('Agent recovery');
   });
 });

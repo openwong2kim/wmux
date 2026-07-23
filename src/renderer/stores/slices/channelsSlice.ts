@@ -285,16 +285,16 @@ export interface ChannelsSlice {
     workspaceId: string,
   ) => Promise<ChannelActionResult<Channel>>;
 
-  // ── operator-join (설계 §2.1/§2.2) — humans-only 발견 + 자가 입장 ────────────
-  /** 발견 어포던스: 전 채널(공개+비공개, active+archived)의 메타데이터만 가져온다.
-   *  private 채널은 list()에서 비멤버에게 숨겨지므로 오퍼레이터 섹션이 "들어갈 수
-   *  있는 방"을 보여주려면 이 목록이 필요하다. 읽기지만 humans-only 트랜스포트
-   *  (mutateLocal)로만 도달한다(§2.2). 실패 시 빈 배열 + 콘솔 경고(비파괴적 조회). */
+  // ── operator-join (design §2.1/§2.2) — humans-only discovery + self-join ────────────
+  /** Discovery affordance: fetch metadata for all channels (public+private, active+archived).
+   *  private channels are hidden from non-members in list(), so the operator section needs
+   *  this list to show "rooms you can enter". Read-only but reachable only via humans-only
+   *  transport (mutateLocal) (§2.2). On failure: empty array + console warn (non-destructive query). */
   operatorListDaemon: (workspaceId: string) => Promise<OperatorChannelSummary[]>;
-  /** 오퍼레이터(사람)가 비공개 채널에 스스로 들어간다(§2.1). 성공 시 데몬이 사람
-   *  좌석을 심고 서버-발행 시스템 메시지를 남긴다(§2.1.1). 채널 행은 지금까지
-   *  private+비멤버라 미러에 없었을 수 있으므로, 성공만 신호하고 새로 보이게 된
-   *  채널 행 재동기는 호출자의 카탈로그 재-hydrate(+ membership 이벤트)에 맡긴다. */
+  /** Operator (human) self-joins a private channel (§2.1). On success daemon plants a human
+   *  seat and leaves a server-published system message (§2.1.1). The channel row may have been
+   *  absent from the mirror (private+non-member until now), so signal success only; caller
+   *  re-hydrates catalog (+ membership event) to sync newly visible channel row. */
   operatorJoinDaemon: (
     channelId: string,
   ) => Promise<ChannelActionResult<Record<string, never>>>;
@@ -1099,8 +1099,8 @@ export const createChannelsSlice: StateCreator<
     }
     let raw: unknown;
     try {
-      // 발견 어포던스(§2.2). 읽기지만 humans-only 트랜스포트라 mutateLocal로 탄다.
-      // 데몬은 { ok: true, channels: OperatorChannelSummary[] }를 반환한다.
+      // Discovery affordance (§2.2). Read-only but uses humans-only transport via mutateLocal.
+      // Daemon returns { ok: true, channels: OperatorChannelSummary[] }.
       raw = await bridge.mutateLocal('a2a.channel.operatorList', {
         verifiedWorkspaceId: workspaceId,
       });
@@ -1130,8 +1130,8 @@ export const createChannelsSlice: StateCreator<
     }
     let raw: unknown;
     try {
-      // 좌석은 데몬이 상수로 심는다(§2.1) — verifiedWorkspaceId=ws-human만 보낸다.
-      // 여분 필드(member/includeHistory 등)는 데몬이 읽지 않으므로 전달하지 않는다.
+      // Seat is planted by daemon as a constant (§2.1) — send only verifiedWorkspaceId=ws-human.
+      // Extra fields (member/includeHistory, etc.) are ignored by daemon — do not send.
       raw = await bridge.mutateLocal('a2a.channel.operatorJoin', {
         channelId,
         verifiedWorkspaceId: HUMAN_WORKSPACE_ID,
@@ -1142,10 +1142,10 @@ export const createChannelsSlice: StateCreator<
     if (raw === null || typeof raw !== 'object' || !('ok' in raw) || (raw as { ok: unknown }).ok !== true) {
       return { ok: false, error: get().mapRpcError(raw, 'a2a.channel.operatorJoin failed') };
     }
-    // 낙관적 미러 갱신: 채널 행은 지금까지 private+비멤버라 미러에 없었을 수 있으므로
-    // 좌석만 optimistic-add하지 않고, 호출자(ChannelsPanel)가 카탈로그를 재-hydrate해
-    // 새로 보이게 된 채널 행 + 멤버를 끌어온다. 데몬의 membership 카탈로그 이벤트도
-    // 동일 재동기를 유발한다(이중 안전). 여기선 성공만 신호한다.
+    // No optimistic mirror update: channel row may have been absent (private+non-member), so
+    // do not optimistic-add seat only — caller (ChannelsPanel) re-hydrates catalog to pull in
+    // newly visible channel row + members. Daemon membership catalog event triggers the same
+    // resync (belt-and-suspenders). Signal success only here.
     return { ok: true, value: {} };
   },
 });

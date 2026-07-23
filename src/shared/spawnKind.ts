@@ -1,28 +1,28 @@
 /**
- * pane 스폰 출처 분류 — env 정책의 입력.
+ * Pane spawn origin classification — input to env policy.
  *
- *  'user-shell' : 사용자가 UI로 직접 연 인터랙티브 셸 (env 투과 — 타 터미널 동형).
- *  'agent'      : wmux가 자율 스폰한 에이전트 pane (자격 게이트).
- *  'exec'       : 감독 exec 리프 — 명령을 pane root 프로세스로 실행 (자격 게이트).
+ *  'user-shell' : user-opened interactive shell via UI (env passthrough — same as other terminals).
+ *  'agent'      : wmux-autonomous agent pane spawn (credential gate).
+ *  'exec'       : supervised exec leaf — command runs as pane root process (credential gate).
  *
- * 렌더러(PtyCreateOptions)·main(pty.handler / PTYManager)에서 공통으로 쓰이므로
- * env 빌더가 있는 envFilter와 분리된 순수 타입 모듈에 둔다.
+ * Shared by renderer (PtyCreateOptions) and main (pty.handler / PTYManager), so it lives
+ * in a pure type module separate from envFilter which owns the env builders.
  */
 export type SpawnKind = 'user-shell' | 'agent' | 'exec';
 
-/** env 정책 결정 결과. passthrough=사람 셸(투과), gated=에이전트/자동화(자격 strip). */
+/** Env policy result. passthrough = human shell; gated = agent/automation (strip credentials). */
 export type EnvPolicy = 'passthrough' | 'gated';
 
 /**
- * 실행 컨텍스트 → env 정책. **fail-CLOSED** 규칙:
+ * Execution context → env policy. **fail-CLOSED** rules:
  *
- *   1. exec/supervision이 있으면 무조건 gated (스탬프보다 우선). 감독 exec 리프는
- *      정의상 wmux가 돌리는 자동화이므로 user-shell 스탬프가 잘못 붙어도 게이트.
- *   2. 명시적 'user-shell'만 passthrough.
- *   3. 그 외(미스탬프 · 'agent' · 알 수 없는 값)는 전부 gated.
+ *   1. exec/supervision always gated (overrides stamp). Supervised exec leaf is
+ *      wmux-driven automation by definition, so gate even with a wrong user-shell stamp.
+ *   2. Explicit 'user-shell' only → passthrough.
+ *   3. Everything else (unstamped · 'agent' · unknown) → gated.
  *
- * 새 스폰 경로가 스탬프를 빠뜨리면 자격이 새는 방향이 아니라 막히는 방향으로
- * 실패한다 — 즉 오분류의 기본값이 "사람 셸"이 아니라 "게이트"다.
+ * If a new spawn path omits its stamp, failure blocks credentials rather than leaking them —
+ * i.e. misclassification defaults to "gate", not "human shell".
  */
 export function resolveEnvPolicy(opts: {
   spawnKind?: SpawnKind;

@@ -271,7 +271,7 @@ function TreeItem({
 }
 
 export default function FileTreePanel({ position }: FileTreePanelProps) {
-  // A1: 활성 ws OBJECT만 구독(cwd/pane 트리 파생) — 배경 ws churn 무시.
+  // A1: subscribe to active ws OBJECT only (cwd/pane tree derived) — ignore background ws churn.
   const activeWorkspace = useStore(selectActiveWorkspace);
 
   // Resolve CWD: try workspace metadata first, then recursively find from panes

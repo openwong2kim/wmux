@@ -1,12 +1,12 @@
-// E0 하니스 M3 — esctest 어댑터 검증 (스펙: engine-core-decision-2026-07-09.md §5-3, D6 S-C)
+// E0 harness M3 — esctest adapter verification (spec: engine-core-decision-2026-07-09.md §5-3, D6 S-C)
 //
-// 통과 기준(D6 S-C 행):
-//   T1: DECRQCRA 왕복 1건 — 알려진 그리드 상태에서 체크섬 질의→응답이 DEC 규격 계산과 일치.
-//   T2: cup.py(CPR 기반) 완주 — esctest가 cup.py 1파일을 무수정 실행하고 판정을 반환.
-//   T3: 체크섬 단위 테스트 — DEC 규격 도출 구현의 독립 검증(수동 계산 케이스).
+// Pass criteria (D6 S-C row):
+//   T1: DECRQCRA round-trip ×1 — known grid state, checksum query→response matches DEC spec calculation.
+//   T2: cup.py (CPR-based) completion — esctest runs cup.py unmodified and returns verdicts.
+//   T3: Checksum unit tests — independent verification of DEC-spec-derived implementation (manual cases).
 //
-// vendor(GPL-2.0 esctest2) 부재 시 PTY 실행 테스트(T1·T2)는 명시 skip한다. T3는 vendor
-// 무관(순수 체크섬 단위)이라 항상 실행한다.
+// When vendor (GPL-2.0 esctest2) is absent, PTY execution tests (T1·T2) are explicitly skipped. T3 is
+// vendor-independent (pure checksum unit) and always runs.
 
 import { describe, it, expect } from 'vitest';
 import { Terminal } from '@xterm/headless';
@@ -32,15 +32,15 @@ const vendor = esctestVendorPresent();
 const describeVendor = vendor ? describe : describe.skip;
 
 if (!vendor) {
-  // 스킵 사유를 명시(조용한 통과 방지). vendor는 fetch-esctest.sh로 준비한다.
+  // State skip reason explicitly (prevent silent pass). Prepare vendor via fetch-esctest.sh.
   // eslint-disable-next-line no-console
   console.warn(
-    `[esctest-adapter.test] vendor 부재 (${ESCTEST_ENTRY}) — PTY 실행 테스트(T1·T2) skip. ` +
-      `준비: bash core/harness/esctest/fetch-esctest.sh`,
+    `[esctest-adapter.test] vendor missing (${ESCTEST_ENTRY}) — skipping PTY execution tests (T1·T2). ` +
+      `prepare: bash core/harness/esctest/fetch-esctest.sh`,
   );
 }
 
-// ── 헬퍼: 알려진 그리드 상태를 만든다(differ와 동일한 xterm.js + Unicode11 설정). ──
+// ── Helper: build known grid state (same xterm.js + Unicode11 setup as differ). ──
 function makeTerm(cols = 80, rows = 25): Terminal {
   const term = new Terminal({ cols, rows, scrollback: 0, allowProposedApi: true });
   term.loadAddon(new Unicode11Addon() as never);
@@ -52,23 +52,23 @@ function writeSync(term: Terminal, s: string): Promise<void> {
 }
 
 // ────────────────────────────────────────────────────────────────────────────
-// T3: 체크섬 단위 테스트 (vendor 무관 — DEC 규격 도출 구현의 독립 검증).
+// T3: Checksum unit tests (vendor-independent — independent verification of DEC-spec-derived implementation).
 // ────────────────────────────────────────────────────────────────────────────
-describe('T3 — DECRQCRA 체크섬 (DEC STD 070 / xterm ctlseqs 도출)', () => {
-  // 수동 계산 정답(파이썬 교차 계산): checksum = (-Σ code) & 0xFFFF, blank=0x20.
+describe('T3 — DECRQCRA checksum (DEC STD 070 / derived from xterm ctlseqs)', () => {
+  // Manual expected values (Python cross-check): checksum = (-Σ code) & 0xFFFF, blank=0x20.
   //   'A'(0x41) 1x1                → 0xFFBF
   //   'AB'(0x41+0x42) 1x2          → 0xFF7D
   //   'Hello' 1x5                  → 0xFE0C
-  //   빈 2x2 (space×4 = 0x80)      → 0xFF80
-  it('단일 문자 A(1x1) 체크섬 = 0xFFBF', async () => {
+  //   empty 2x2 (space×4 = 0x80)   → 0xFF80
+  it('single char A(1x1) checksum = 0xFFBF', async () => {
     const term = makeTerm();
-    await writeSync(term, 'A'); // (col1,row1)에 A.
+    await writeSync(term, 'A'); // A at (col1,row1).
     const chk = computeRectChecksum(term, 1, 1, 1, 1);
     expect(chk).toBe(0xffbf);
     term.dispose();
   });
 
-  it('AB(1x2) 체크섬 = 0xFF7D', async () => {
+  it('AB(1x2) checksum = 0xFF7D', async () => {
     const term = makeTerm();
     await writeSync(term, 'AB');
     const chk = computeRectChecksum(term, 1, 1, 1, 2);
@@ -76,7 +76,7 @@ describe('T3 — DECRQCRA 체크섬 (DEC STD 070 / xterm ctlseqs 도출)', () =>
     term.dispose();
   });
 
-  it('Hello(1x5) 체크섬 = 0xFE0C', async () => {
+  it('Hello(1x5) checksum = 0xFE0C', async () => {
     const term = makeTerm();
     await writeSync(term, 'Hello');
     const chk = computeRectChecksum(term, 1, 1, 1, 5);
@@ -84,27 +84,27 @@ describe('T3 — DECRQCRA 체크섬 (DEC STD 070 / xterm ctlseqs 도출)', () =>
     term.dispose();
   });
 
-  it('빈 영역(2x2, space×4) 체크섬 = 0xFF80', () => {
+  it('empty region(2x2, space×4) checksum = 0xFF80', () => {
     const term = makeTerm();
-    // 아무것도 쓰지 않은 영역 — 빈 셀은 blank(0x20)로 계산.
+    // Unwritten region — blank cells count as blank (0x20).
     const chk = computeRectChecksum(term, 1, 1, 2, 2);
     expect(chk).toBe(0xff80);
     term.dispose();
   });
 
-  it('esctest 복원식 정합: 0x10000 - checksum == Σcode (esctest escutil:279 역산)', () => {
-    // esctest는 응답 checksum을 0x10000 - checksum으로 되돌려 문자 코드와 비교한다.
-    // 우리 브리지가 (-sum)&0xFFFF를 보내면 이 역산이 sum을 정확히 복원해야 한다.
+  it('esctest inversion formula: 0x10000 - checksum == Σcode (esctest escutil:279 reverse-engineered)', () => {
+    // esctest inverts response checksum as 0x10000 - checksum to compare with char codes.
+    // If our bridge sends (-sum)&0xFFFF, this inversion must restore sum exactly.
     const sum = 0x41 + 0x42 + 0x43; // 'ABC'
     const checksum = (-sum) & 0xffff;
     expect((0x10000 - checksum) & 0xffff).toBe(sum);
   });
 
-  it('BLANK_CODE = 0x20 (xterm #336 blank 균등)', () => {
+  it('BLANK_CODE = 0x20 (xterm #336 blank uniform)', () => {
     expect(BLANK_CODE).toBe(0x20);
   });
 
-  it('buildDecrqcraReply는 DCS Pid!~HHHH ST 형식', () => {
+  it('buildDecrqcraReply uses DCS Pid!~HHHH ST format', () => {
     const reply = Buffer.from(buildDecrqcraReply(7, 0xffbf)).toString('binary');
     // ESC P 7 ! ~ F F B F ESC \
     expect(reply).toBe('\x1bP7!~FFBF\x1b\\');
@@ -112,10 +112,10 @@ describe('T3 — DECRQCRA 체크섬 (DEC STD 070 / xterm ctlseqs 도출)', () =>
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// DECRQCRA / WINOPS 요청 파서 단위(라우팅 정확성 — vendor 무관).
+// DECRQCRA / WINOPS request parser units (routing accuracy — vendor-independent).
 // ────────────────────────────────────────────────────────────────────────────
-describe('요청 파서 — DECRQCRA / WINOPS 크기 질의', () => {
-  it('완결 DECRQCRA 요청을 필드로 파싱(CSI Pid;Pp;t;l;b;r * y)', () => {
+describe('request parser — DECRQCRA / WINOPS size query', () => {
+  it('parses complete DECRQCRA request into fields (CSI Pid;Pp;t;l;b;r * y)', () => {
     const s = '\x1b[1;0;6;5;6;5*y';
     const p = tryParseDecrqcra(s, 0);
     expect(p).not.toBe('incomplete');
@@ -126,34 +126,34 @@ describe('요청 파서 — DECRQCRA / WINOPS 크기 질의', () => {
     }
   });
 
-  it('청크 경계에 걸린 DECRQCRA는 incomplete(이월 신호)', () => {
+  it('DECRQCRA split at chunk boundary is incomplete (carry-over signal)', () => {
     expect(tryParseDecrqcra('\x1b[1;0;6;5', 0)).toBe('incomplete');
   });
 
-  it('DECRQCRA 아닌 CSI(CPR)는 null(피검체로 흘려보냄)', () => {
+  it('non-DECRQCRA CSI (CPR) returns null (passes through to subject)', () => {
     expect(tryParseDecrqcra('\x1b[6n', 0)).toBeNull();
   });
 
-  it('WINOPS 18t/19t만 크기 질의로 파싱, 그 외 winop은 null', () => {
+  it('parses only WINOPS 18t/19t as size queries, other winops return null', () => {
     expect(tryParseWinopsSizeQuery('\x1b[18t', 0)).toMatchObject({ reportCode: 8 });
     expect(tryParseWinopsSizeQuery('\x1b[19t', 0)).toMatchObject({ reportCode: 9 });
-    // 타이틀 pop 등(23;0t)은 크기 질의 아님.
+    // Title pop etc. (23;0t) is not a size query.
     expect(tryParseWinopsSizeQuery('\x1b[23;0t', 0)).toBeNull();
-    // 픽셀 크기(14t)는 브리지 미지원(정직 — headless는 픽셀 침묵) → null로 흘려보냄.
+    // Pixel size (14t) unsupported by bridge (honest — headless is silent on pixels) → pass through as null.
     expect(tryParseWinopsSizeQuery('\x1b[14t', 0)).toBeNull();
   });
 
-  it('WINOPS 크기 응답 형식: CSI code;rows;cols t', () => {
+  it('WINOPS size reply format: CSI code;rows;cols t', () => {
     expect(Buffer.from(buildWinopsSizeReply(8, 25, 80)).toString('binary')).toBe('\x1b[8;25;80t');
     expect(Buffer.from(buildWinopsSizeReply(9, 25, 80)).toString('binary')).toBe('\x1b[9;25;80t');
   });
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// 로그 파서 단위(esctest 실측 포맷 — vendor 무관).
+// Log parser unit (esctest observed format — vendor-independent).
 // ────────────────────────────────────────────────────────────────────────────
-describe('parseEsctestLog — 실측 esctest 로그 포맷', () => {
-  it('Run test / Passed. 를 pass로 집계', () => {
+describe('parseEsctestLog — observed esctest log format', () => {
+  it('aggregates Run test / Passed. as pass', () => {
     const log = [
       'Run test: CUPTests.test_CUP_DefaultParams',
       'Passed.',
@@ -166,7 +166,7 @@ describe('parseEsctestLog — 실측 esctest 로그 포맷', () => {
     expect(cases.every((c) => c.status === 'pass')).toBe(true);
   });
 
-  it('*** TEST X FAILED 를 fail로 집계', () => {
+  it('aggregates *** TEST X FAILED as fail', () => {
     const log = ['Run test: FooTests.test_bar', '*** TEST FooTests.test_bar FAILED:', 'Traceback...'].join(
       '\n',
     );
@@ -175,12 +175,12 @@ describe('parseEsctestLog — 실측 esctest 로그 포맷', () => {
     expect(cases[0].status).toBe('fail');
   });
 
-  it('Fails as expected는 known-bug로 분리 집계(리뷰 반영 — pass 순도)', () => {
+  it('Fails as expected is counted separately as known-bug (review — pass purity)', () => {
     const log = ['Run test: FooTests.test_bar', 'Fails as expected: known xterm bug'].join('\n');
     expect(parseEsctestLog(log)[0].status).toBe('known-bug');
   });
 
-  it('능력 부재 skip은 skipped로 분리 집계(pass 합산 금지 — 리뷰 반영)', () => {
+  it('capability-missing skip is counted separately as skipped (must not add to pass — review)', () => {
     const log = [
       'Run test: FooTests.test_bar',
       'Skipped because terminal lacks requisite capability: 8-bit controls',
@@ -188,12 +188,12 @@ describe('parseEsctestLog — 실측 esctest 로그 포맷', () => {
     expect(parseEsctestLog(log)[0].status).toBe('skipped');
   });
 
-  it('신호 없이 끊긴 마지막 케이스는 error로 마감(무응답 데드락)', () => {
+  it('last case cut off without signal closes as error (no-response deadlock)', () => {
     const log = ['Run test: FooTests.test_bar'].join('\n');
     expect(parseEsctestLog(log)[0].status).toBe('error');
   });
 
-  it('esctest 요약 라인을 파싱한다(파서 집계의 독립 대조 기준 — 리뷰 반영)', () => {
+  it('parses esctest summary line (independent cross-check for parser aggregation — review)', () => {
     const s = parseEsctestSummary('...\n*** 6 tests passed, 0 known bugs, 0 tests failed ***\n');
     expect(s).toEqual({ passed: 6, knownBugs: 0, failed: 0 });
     expect(parseEsctestSummary('no summary here')).toBeNull();
@@ -201,35 +201,35 @@ describe('parseEsctestLog — 실측 esctest 로그 포맷', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// T1: DECRQCRA 왕복 1건 (vendor 필요 — PTY 실행).
+// T1: DECRQCRA round-trip ×1 (vendor required — PTY execution).
 // ────────────────────────────────────────────────────────────────────────────
-describeVendor('T1 — DECRQCRA 왕복 (esctest 무수정 실행)', () => {
-  it('deccra.py의 DECRQCRA 체크섬 왕복이 최소 1건 성공한다', async () => {
-    // deccra(DECCRA=사각형 복사)는 결과 검증에 AssertScreenCharsInRectEqual → DECRQCRA를 쓴다.
-    // cursorDoesNotMove 케이스는 CPR 기반이라 확실히 통과하고, 나머지는 DECRQCRA 왕복을 탄다.
-    // 통과 기준은 "왕복 1건"이므로 decrqcraBridgeUses ≥ 1 + 최소 1케이스 pass를 본다.
+describeVendor('T1 — DECRQCRA round trip (unmodified esctest execution)', () => {
+  it('DECRQCRA checksum round trip in deccra.py succeeds at least once', async () => {
+    // deccra (DECCRA=rect copy) verifies results via AssertScreenCharsInRectEqual → DECRQCRA.
+    // cursorDoesNotMove case is CPR-based and passes reliably; others take DECRQCRA round-trip.
+    // Pass criterion is "round-trip ×1" so check decrqcraBridgeUses ≥ 1 + at least 1 case pass.
     const r = await runEsctestCase({
       include: '(?i)^DECCRA[Tt]ests\\.',
       timeoutSec: 3,
       maxVtLevel: 5,
       hardTimeoutMs: 40000,
     });
-    // DECRQCRA 브리지가 실제로 왕복했다(핵심 통과 기준).
+    // DECRQCRA bridge actually round-tripped (core pass criterion).
     expect(r.decrqcraBridgeUses).toBeGreaterThanOrEqual(1);
-    // 최소 1케이스는 판정을 반환했다(무한 홀드/전멸 아님).
+    // At least 1 case returned a verdict (not infinite hold / total failure).
     expect(r.cases.length).toBeGreaterThanOrEqual(1);
-    // 어댑터가 완주했다(하드 타임아웃으로 죽지 않음).
+    // Adapter completed (did not die on hard timeout).
     expect(r.timedOut).toBe(false);
   });
 
-  it('알려진 그리드에서 DECRQCRA 왕복이 DEC 규격 계산과 일치(브리지 직접 검증)', async () => {
-    // 어댑터의 브리지 경로를 직접 실증: 그리드에 문자를 쓰고 그 rect의 체크섬이
-    // 수동 계산과 같은지 — 이 값이 곧 esctest에 되돌려주는 응답이다.
+  it('DECRQCRA round trip on known grid matches DEC spec calculation (direct bridge verification)', async () => {
+    // Direct proof of adapter bridge path: write chars to grid and checksum of that rect
+    // matches manual calculation — this is the response sent back to esctest.
     const term = makeTerm();
-    await writeSync(term, 'H'); // (1,1)에 H(0x48).
+    await writeSync(term, 'H'); // H at (1,1) (0x48).
     const chk = computeRectChecksum(term, 1, 1, 1, 1);
     expect(chk).toBe((-0x48) & 0xffff); // 0xFFB8.
-    // 응답 바이트가 esctest 파서가 읽는 형식인지.
+    // Response bytes match format esctest parser reads.
     const reply = Buffer.from(buildDecrqcraReply(42, chk)).toString('binary');
     expect(reply).toBe('\x1bP42!~FFB8\x1b\\');
     term.dispose();
@@ -237,30 +237,30 @@ describeVendor('T1 — DECRQCRA 왕복 (esctest 무수정 실행)', () => {
 });
 
 // ────────────────────────────────────────────────────────────────────────────
-// T2: cup.py 완주 (vendor 필요 — CPR 기반, 전 케이스 판정 수집).
+// T2: cup.py completion (vendor required — CPR-based, collect all case verdicts).
 // ────────────────────────────────────────────────────────────────────────────
-describeVendor('T2 — cup.py 완주 (CPR 기반, 무수정 실행)', () => {
-  it('cup.py 1파일을 무수정 실행하고 케이스별 판정을 반환한다', async () => {
+describeVendor('T2 — cup.py completion (CPR-based, unmodified execution)', () => {
+  it('runs cup.py unmodified and returns per-case verdicts', async () => {
     const r = await runEsctestCase({
-      include: 'cup', // (?i)cup으로 정규화 → CUPTests 매칭.
+      include: 'cup', // normalized to (?i)cup → matches CUPTests.
       timeoutSec: 3,
       maxVtLevel: 5,
       hardTimeoutMs: 40000,
     });
-    // 어댑터가 완주(reset 통과 + 케이스 실행).
+    // Adapter completed (reset passed + cases ran).
     expect(r.timedOut).toBe(false);
-    // cup.py는 6개 테스트 메서드를 가진다(vendor 핀 기준). 전부 판정을 반환해야 한다.
+    // cup.py has 6 test methods (vendor pin). All must return verdicts.
     expect(r.cases.length).toBe(6);
-    // xterm.js 기준선의 실태: 전 케이스 pass가 목표. 실제 미준수가 있으면 정직하게 fail로
-    // 남되(리포트에 기록), 여기서는 "완주 + 판정 반환"을 게이트로 한다. pass 수는 보고용.
-    // (관찰: 6/6 pass — xterm.js는 CUP를 정확히 준수.)
+    // xterm.js baseline reality: all cases pass is the goal. Actual non-compliance stays as honest fail
+    // (recorded in report); here the gate is "completion + verdicts returned". pass count is for reporting.
+    // (Observation: 6/6 pass — xterm.js complies with CUP correctly.)
     expect(r.passCount + r.failCount + r.errorCount + r.knownBugCount + r.skippedCount).toBe(6);
-    // 파서 집계가 esctest 자체 요약 라인과 일치한다(리뷰 반영 — 오분류·분모 축소 탐지).
+    // Parser aggregates match esctest's own summary line (review feedback — detect misclassification · denominator shrink).
     expect(r.esctestSummary).not.toBeNull();
     expect(r.reconciled).toBe(true);
-    // reset()의 GetScreenSize()가 WINOPS 브리지를 탔다(결정 문서 미포착 경로 실증).
+    // reset()'s GetScreenSize() took WINOPS bridge (path not captured in decision doc — spike proof).
     expect(r.winopsBridgeUses).toBeGreaterThanOrEqual(1);
-    // 리포트 빌드가 총계를 집계한다.
+    // Report build aggregates totals.
     const report = buildReport([r]);
     expect(report.totals.pass + report.totals.fail + report.totals.error).toBe(6);
     expect(report.totals.unreconciledRuns).toBe(0);

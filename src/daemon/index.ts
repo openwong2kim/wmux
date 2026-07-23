@@ -25,8 +25,8 @@ import { runMigration, evaluateWatermark, performReseed, stampWatermark } from '
 import { PrincipalService, PrincipalStateWriter } from './principals';
 import { isPrincipalUpsertInput } from '../shared/principals';
 import { DEFAULT_COMPANY_ID, CHANNELS_EPOCH } from '../shared/channels';
-// envelope PR4 (§5 D11): A2A 태스크 정본을 렌더러 인메모리에서 데몬 이벤트 로그로.
-// (로그·machineId는 채널 부트 게이트 산출물 공유 — 별도 개방 금지.)
+// envelope PR4 (§5 D11): A2A task canonical moves from renderer in-memory to daemon event log.
+// (log·machineId shared with channel boot gate output — separate open forbidden.)
 import { A2aTaskService, type CreateTaskInput } from './a2a/A2aTaskService';
 import { WorkTaskService } from './worktask/WorkTaskService';
 import { isTaskState, type Message } from '../shared/types';
@@ -1381,9 +1381,9 @@ function registerRpcHandlers(
   channelService: ChannelService,
   principalService: PrincipalService,
   principalStateWriter: PrincipalStateWriter,
-  // envelope PR4: A2A 태스크 데몬 정본. 로그 개방 실패 시 null → 렌더러-only 폴백.
+  // envelope PR4: A2A task daemon canonical. null on log open failure → renderer-only fallback.
   a2aTaskService: A2aTaskService | null,
-  // J0: WorkTask 미션 채널 정본. 로그 개방 실패 시 null → 미션 RPC fail-closed.
+  // J0: WorkTask mission channel canonical. null on log open failure → mission RPC fail-closed.
   workTaskService: WorkTaskService | null,
 ): void {
   // #557: shared teardown for both the explicit daemon.detachSession RPC and
@@ -1478,7 +1478,7 @@ function registerRpcHandlers(
     // recoverable trace instead of losing the brand-new pane entirely.
     triggerSnapshot();
 
-    // 응답에서 자격증명 값 제거(main은 pid 등만 사용). fresh env 교체 — live meta 불변.
+    // Strip credential values from response (main uses pid etc. only). Replace with fresh env — live meta unchanged.
     return { ...session, env: stripCredentialValues(session.env) };
   });
 
@@ -1649,7 +1649,7 @@ function registerRpcHandlers(
   // daemon.resyncSession (phase 3 PR-B) — re-run the flush sequence on the
   // live, already-connected session pipe: RESYNC_BEGIN marker → headless
   // snapshot (or raw-replay degrade) → FLUSH_DONE marker. The socket is never
-  // torn down, so input keeps flowing throughout ("무단절 reflush").
+  // torn down, so input keeps flowing throughout ("uninterrupted reflush").
   pipeServer.onRpc('daemon.resyncSession', async (params) => {
     const p = params as unknown as { id: string; scrollback?: number };
     const managed = sessionManager.getSession(p.id);
@@ -1782,13 +1782,13 @@ function registerRpcHandlers(
       // cwd + existence guards). Strip the meta field, then re-attach the
       // guarded transient one. Without this strip, the carry-forward would
       // bypass the D5/F7 guards (caught by x6-resume-binding-dogfood D/E).
-      // 자격증명 값을 뺀 fresh env로 교체 — 데몬 토큰 보유 클라이언트가 RPC로 세션
-      // 자격증명을 읽지 못하게. s.env는 live 인메모리 meta.env와 동일 참조라 in-place
-      // 수정 금지(스폰이 깨짐); stripCredentialValues는 fresh를 반환하므로 교체만 한다.
+      // Replace with fresh env stripped of credential values — clients holding daemon token must not
+      // read session credentials via RPC. s.env shares live in-memory meta.env reference so in-place
+      // mutation forbidden (breaks spawn); stripCredentialValues returns fresh so replace only.
       const base = { ...s, env: stripCredentialValues(s.env) };
       // Capture the durable meta binding before stripping it — reused below to
       // surface a guard-passed binding for LIVE agent panes too, so the per-pane
-      // resume affordance (Inspect/pane-header UUID + 복구) works ANY time, not
+      // resume affordance (Inspect/pane-header UUID + recovery) works ANY time, not
       // only right after a reboot.
       const durableBinding = base.resumeBinding;
       delete base.resumeBinding;
@@ -2145,9 +2145,9 @@ function registerRpcHandlers(
     return approvalRegistry.resolve({ id, decision, resolvedBy });
   });
 
-  // daemon.getAgentName — daemon AgentDetector가 gate로 확정한 에이전트 표시명을
-  // 직접 조회한다. renderer detection pull의 권위 소스: main으로의 session:agent
-  // emit 전파(타이밍 race)를 우회해, 배너 매칭이 됐다면 항상 정답을 준다.
+  // daemon.getAgentName — directly query agent display name confirmed by daemon AgentDetector gate.
+  // Authoritative source vs renderer detection pull: bypasses session:agent emit to main
+  // (timing race); if banner matched, always returns correct answer.
   pipeServer.onRpc('daemon.getAgentName', async (params) => {
     const id = typeof params['id'] === 'string' ? params['id'] : '';
     const session = id ? sessionManager.getSession(id) : undefined;
@@ -2700,12 +2700,12 @@ function registerRpcHandlers(
       typeof params['principalId'] === 'string' && params['principalId'].length > 0
         ? params['principalId']
         : undefined;
-    // B(패널·완료증거 §③ E10): whole-workspace purge(memberId·principalId 모두
-    // 부재)는 workspace 제거 teardown 신호다(workspaceSlice). 데몬이 이 사실을 아는
-    // 유일 지점이므로, 여기서 그 workspace로 향한 non-terminal A2A 태스크를 정본
-    // (로그)에서 force-fail한다 — 렌더러 캐시에서만 죽이면 재시작 시 restoreFromLog가
-    // 부활시켜 정본이 실제와 어긋난다. per-member purge(paneSlice)는 teardown이
-    // 아니므로 제외. 로그 커밋을 await해 응답 전 내구화(데몬 미가용 아님 — 동일 프로세스).
+    // B (panel·completion evidence §③ E10): whole-workspace purge (both memberId·principalId
+    // absent) is workspace removal teardown signal (workspaceSlice). Daemon is the only place that
+    // knows this, so force-fail non-terminal A2A tasks for that workspace in canonical
+    // (log) — killing only in renderer cache resurrects on restart via restoreFromLog and
+    // desyncs canonical from reality. per-member purge (paneSlice) is not teardown so excluded.
+    // await log commit for durability before response (not daemon unavailable — same process).
     if (a2aTaskService && memberId === undefined && principalId === undefined) {
       try {
         const n = await a2aTaskService.failTasksForWorkspaceRemoved(
@@ -2725,22 +2725,19 @@ function registerRpcHandlers(
     });
   });
 
-  // a2a.channel.operatorJoin — 오퍼레이터(사람)가 에이전트들이 만든 비공개 채널에
-  // 스스로 들어가는 신뢰 경로(operator-join 설계 §2.1). kick/purgeMembership과 동일한
-  // HUMANS-ONLY 관례: 파이프 라우터(a2a.channel.rpc.ts)에 등록되지 않고 렌더러 전용
-  // channels:mutate-local IPC로만 도달한다. stampCaller를 돌리지 않는다(archive/kick과
-  // 동일 근거): 스탬프하면 senderPtyId만 가진 파이프 에이전트에게 humans-only 목적지로
-  // 향하는 정직한 데몬-파이프 경로를 열어주게 된다. 렌더러가 미리 채운
-  // verifiedWorkspaceId만 수용한다.
+  // a2a.channel.operatorJoin — trusted path for operator (human) to join private channels agents created
+  // (operator-join design §2.1). Same HUMANS-ONLY convention as kick/purgeMembership: not on pipe router
+  // (a2a.channel.rpc.ts), renderer-only channels:mutate-local IPC only. No stampCaller (same as archive/kick):
+  // stamping would open honest daemon-pipe path to humans-only for pipe agents with only senderPtyId.
+  // Accepts only renderer-pre-filled verifiedWorkspaceId.
   //
-  // §2.1.2 직결 잔여(명시 수용, kick 선례와 동일 클래스): 데몬 소켓 직결 호출자(같은
-  // OS 유저)는 이 메서드를 임의 verifiedWorkspaceId로 호출해 사람 좌석을 임의 채널에
-  // 심을 수 있다. 그러나 이 호출자는 이미 channels.json을 디스크에서 메시지 전문 포함
-  // 읽을 수 있으므로(L3 천장, #113) operatorJoin이 새로 주는 읽기 능력은 없다. 새로
-  // 생기는 "위조된 사람 입장 신호"는 ChannelService가 남기는 서버-발행 시스템 메시지
-  // (§2.1.1)가 사람에게 가시화한다 — 유일하게 가능한 방어 형태다.
+  // §2.1.2 direct-connect residue (explicitly accepted, kick precedent class): daemon socket direct caller
+  // (same OS user) can call with arbitrary verifiedWorkspaceId to seat human in arbitrary channel.
+  // Caller can already read channels.json from disk with message bodies (L3 ceiling, #113) so operatorJoin
+  // adds no read capability. New "forged human join signal" visible via server-published system message
+  // ChannelService leaves (§2.1.1) — only feasible defense.
   pipeServer.onRpc('a2a.channel.operatorJoin', async (params) => {
-    // Deliberately NOT stamped (humans-only, kick/purgeMembership과 동일 근거).
+    // Deliberately NOT stamped (humans-only, same rationale as kick/purgeMembership).
     const channelId = typeof params['channelId'] === 'string' ? params['channelId'] : '';
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
@@ -2753,17 +2750,16 @@ function registerRpcHandlers(
         },
       };
     }
-    // 좌석 행은 ChannelService.operatorJoin이 상수로만 구성한다 — 여기서 params의
-    // 여분 필드(member/includeHistory 등)를 전달하지 않는다(§2.1 파라미터 표면 제거).
+    // Seat row built only from constants in ChannelService.operatorJoin — do not pass extra
+    // params fields (member/includeHistory etc.) here (§2.1 parameter surface removed).
     return channelService.operatorJoin({ channelId, verifiedWorkspaceId });
   });
 
-  // a2a.channel.operatorList — 비공개 채널 발견 어포던스(설계 §2.2, 읽기 전용).
-  // operatorJoin과 동일한 humans-only 트랜스포트: private 채널은 list()에서 비멤버에게
-  // 숨겨지므로 GUI가 "들어갈 수 있는 방"을 보여주려면 이 메서드가 필요하다. 읽기지만
-  // 파이프에 노출하면 에이전트가 전 private 채널 이름을 열거할 수 있으므로 파이프
-  // 미등록 + 렌더러 전용 경로만. §2.2 직결 잔여: 같은 호출자는 이미 디스크에서 동일
-  // 정보+메시지 전문을 읽는다 — API가 디스크보다 강하지 않다(명시 수용).
+  // a2a.channel.operatorList — private channel discovery affordance (design §2.2, read-only).
+  // Same humans-only transport as operatorJoin: private channels hidden from non-members in list() so
+  // GUI needs this to show "joinable rooms". Read-only but exposing on pipe would let agents enumerate
+  // all private channel names so pipe unregistered + renderer-only path only. §2.2 direct-connect residue:
+  // same caller already reads same info+message bodies from disk — API not stronger than disk (explicitly accepted).
   pipeServer.onRpc('a2a.channel.operatorList', async (params) => {
     const verifiedWorkspaceId =
       typeof params['verifiedWorkspaceId'] === 'string' ? params['verifiedWorkspaceId'] : '';
@@ -2774,11 +2770,10 @@ function registerRpcHandlers(
   });
 
   // ── A2A task registry (envelope PR4 §5 D11) ─────────────────────────
-  // 데몬 정본 A2A 태스크 서비스. main의 a2a.rpc.ts가 렌더러 delivery와 병행해 이
-  // 핸들러로 정본 상태(생성·전이·취소)를 커밋한다(dual-write 브리지 — D1). 정본은
-  // 데몬 로그, 렌더러 a2aSlice는 캐시로 강등. a2aTaskService가 null(로그 개방 실패)
-  // 이면 렌더러-only로 degrade한다 — A2A는 역사적으로 best-effort 비내구(a2aSlice
-  // 30분 GC)라 로그 부재가 파국이 아니다.
+  // Daemon canonical A2A task service. main a2a.rpc.ts commits canonical state (create·transition·cancel)
+  // via this handler in parallel with renderer delivery (dual-write bridge — D1). Canonical is daemon log,
+  // renderer a2aSlice is demoted to cache. When a2aTaskService null (log open failure) degrades to
+  // renderer-only — A2A historically best-effort non-durable (a2aSlice 30min GC) so log absence is not catastrophe.
   pipeServer.onRpc('a2a.task.create', async (rawParams) => {
     if (!a2aTaskService) return { ok: false, error: 'a2a.task.create: task log unavailable' };
     const p = rawParams as Record<string, unknown>;
@@ -2792,8 +2787,8 @@ function registerRpcHandlers(
       title: p.title,
       from,
       to,
-      // 초기 히스토리(첫 메시지)는 생성 envelope에 실려 내구화된다. 이후 증분
-      // 히스토리(reply) 내구화는 §6.F 몫 — 전이·생성·취소가 이 PR의 로그 정본.
+      // Initial history (first message) durably carried on create envelope. Subsequent incremental
+      // history (reply) durability is §6.F scope — transition·create·cancel are this PR's log canonical.
       ...(Array.isArray(p.history) ? { history: p.history as Message[] } : {}),
     });
   });
@@ -2807,19 +2802,19 @@ function registerRpcHandlers(
     if (!taskId || !workspaceId || !status) {
       return { ok: false, error: 'a2a.task.update: taskId, workspaceId, and status are required' };
     }
-    // 'canceled'는 a2a.task.cancel 전용(a2aSlice 현행 계약과 동형).
+    // 'canceled' is a2a.task.cancel only (same shape as current a2aSlice contract).
     if (status === 'canceled') return { ok: false, error: 'a2a.task.update: use a2a.task.cancel instead' };
     if (!isTaskState(status)) return { ok: false, error: `a2a.task.update: invalid status "${status}"` };
     return a2aTaskService.transition({
       taskId,
       to: status,
       callerWorkspaceId: workspaceId,
-      // S-C2: 페인 신원 주장 여부 — 페인 핀 태스크면 서비스가 soft-defer해 main이
-      // 렌더러 페인 게이트(오늘의 판정 지점)로 폴백한다(ptyId→pane 해석은 렌더러 소유).
+      // S-C2: pane identity claim — pane-pinned task soft-deferred so main falls back to
+      // renderer pane gate (today's verdict point) (ptyId→pane resolution is renderer-owned).
       callerHasPaneIdentity: typeof p.senderPtyId === 'string' && p.senderPtyId.trim() !== '',
-      // evidence는 서비스가 normalizeCompletionEvidenceWire로 재검증(sanitize)한 뒤
-      // 완료증거 게이트(PR-B)로 판정한다 — completed/failed는 구조화 증거 강제(거부는
-      // completion_evidence_* 사유코드로 호출자에 포워딩).
+      // evidence re-validated (sanitized) by service via normalizeCompletionEvidenceWire then
+      // completion evidence gate (PR-B) — completed/failed require structured evidence (rejections
+      // forwarded as completion_evidence_* reason codes).
       ...(p.evidence !== undefined ? { evidence: p.evidence } : {}),
       ...(typeof p.idempotencyKey === 'string' ? { idempotencyKey: p.idempotencyKey } : {}),
     });
@@ -2851,11 +2846,11 @@ function registerRpcHandlers(
     return { ok: true, workspaceId, tasks };
   });
 
-  // ── WorkTask 미션 채널 (J0 §3) ──────────────────────────────────────
-  // start/close/list. 신원은 a2a.channel.* 변이와 동일 규율(stampCaller로
-  // senderPtyId→verifiedWorkspaceId 서버 해석, 해석 불가 fail-closed). owner는
-  // 서비스가 born-owned로 강제 투입(§5.1) — wire는 title·invite·memberId만.
-  // 로그 미가용(workTaskService=null)이면 명시 에러(fail-closed, §1 D).
+  // ── WorkTask mission channel (J0 §3) ──────────────────────────────────────
+  // start/close/list. Identity same rules as a2a.channel.* mutations (stampCaller resolves
+  // senderPtyId→verifiedWorkspaceId server-side, fail-closed on failure). Owner forced born-owned
+  // by service (§5.1) — wire carries title·invite·memberId only.
+  // Log unavailable (workTaskService=null) → explicit error (fail-closed, §1 D).
 
   pipeServer.onRpc('task.mission.start', async (rawParams) => {
     if (!workTaskService) {
@@ -2876,12 +2871,11 @@ function registerRpcHandlers(
     if (!title) {
       return { ok: false, error: { code: 'INVALID_ARGUMENT', message: 'task.mission.start: title is required' } };
     }
-    // memberId: 채널 생성자 멤버 좌표. 미제공이면 verifiedWorkspaceId를 폴백으로 삼는다
-    // (a2a.channel.create의 createdBy.memberId와 동일 시멘틱 — pipe 클라이언트는 자신의
-    // memberId를 알 수도, 모를 수도 있다).
+    // memberId: creator member coordinates. If omitted fall back to verifiedWorkspaceId
+    // (same semantic as a2a.channel.create createdBy.memberId — pipe client may or may not know memberId).
     const memberId =
       typeof p['memberId'] === 'string' && p['memberId'].length > 0 ? p['memberId'] : verifiedWorkspaceId;
-    // invite: 선택 초대 목록(채널 초기 멤버). 형태 방어적 파싱.
+    // invite: optional invite list (initial channel members). Defensive shape parsing.
     const invite = Array.isArray(p['invite'])
       ? (p['invite'] as unknown[])
           .map((m) => (m && typeof m === 'object' ? (m as Record<string, unknown>) : null))
@@ -2942,10 +2936,10 @@ function registerRpcHandlers(
     return { ok: true, verifiedWorkspaceId, tasks: workTaskService.listMissions(verifiedWorkspaceId) };
   });
 
-  // task.mission.update(J1 §5): 물질화 필드 단조 커밋. 신원 규율은 start/close와
-  // 동형(stampCaller로 senderPtyId→verifiedWorkspaceId, fail-closed). wire
-  // 화이트리스트: {taskId, branch?, worktreePath?, paneGroupId?, prUrl?} —
-  // prUrl(J3 §2)은 비단조·closed 단독 갱신 허용·형식 검증(WORKTASK_PR_URL_RE).
+  // task.mission.update (J1 §5): monotonic materialization field commit. Identity rules same as start/close
+  // (stampCaller senderPtyId→verifiedWorkspaceId, fail-closed). Wire whitelist:
+  // {taskId, branch?, worktreePath?, paneGroupId?, prUrl?} —
+  // prUrl (J3 §2) non-monotonic·solo update on closed allowed·format validation (WORKTASK_PR_URL_RE).
   pipeServer.onRpc('task.mission.update', async (rawParams) => {
     if (!workTaskService) {
       return { ok: false, error: { code: 'NOT_AVAILABLE', message: 'task.mission.update: mission log unavailable' } };
@@ -3356,9 +3350,9 @@ function wireEvents(
     const event: DaemonEvent = {
       type: 'activity.active',
       sessionId: payload.sessionId,
-      // gate로 확정된 에이전트 이름을 data에 실어 main으로 전달한다(없으면 null).
-      // daemon mode running 상태에 agentName을 채우는 경로(local mode는
-      // PTYBridge가 getLastAgent로 직접 처리).
+      // Attach gate-confirmed agent name to data for main (null if absent).
+      // Path filling agentName in daemon mode running state (local mode
+      // PTYBridge handles via getLastAgent directly).
       data: payload.agentName ?? null,
     };
     pipeServer.broadcast(event);
@@ -3591,15 +3585,15 @@ let lanLinkServerRef: LanLinkServer | null = null;
 // Channels v2 — wake worker handle for shutdown + the emit fast path.
 let channelWakeWorkerRef: ChannelWakeWorker | null = null;
 
-// 이벤트로그(PR3) — projection 스냅샷 스토어. shutdown 경로가 pending 스냅샷을
-// durable로 flush(dispose)할 수 있도록 모듈 레벨 핸들 유지(§6.4b).
+// Event log (PR3) — projection snapshot store. Module-level handle so shutdown path can
+// flush pending snapshots durably (dispose) (§6.4b).
 let channelSnapshotStoreRef: SnapshotStore | null = null;
-// §6.4a: 활성 이벤트로그 formatVersion. manifest durable 활성(로그 모드) 시에만
-// main()이 세팅 — 레거시 폴백/마이그레이션 미완(channelEventLogDeps null 경로)이면
-// undefined로 남아 daemon.ping이 필드를 뺀다(부재 = pre-envelope 데몬 = 레거시
-// 세대). ping 핸들러(registerRpcHandlers 클로저)는 이 모듈 변수의 live binding을
-// 캡처하므로 값을 **호출 시점**에 읽는다 — 실제 ping RPC는 부트 완료 후에나 도착하니
-// 마이그레이션 세팅과 핸들러 등록의 상대 순서는 무관하다(등록이 앞서도 안전).
+// §6.4a: active event log formatVersion. Set by main() only when manifest durable active (log mode)
+// — legacy fallback/incomplete migration (channelEventLogDeps null path) leaves
+// undefined so daemon.ping omits field (absent = pre-envelope daemon = legacy
+// generation). ping handler (registerRpcHandlers closure) captures live binding of this module var
+// so reads value **at call time** — actual ping RPC arrives only after boot completes so
+// relative order of migration setup vs handler registration is irrelevant (safe if registration first).
 let activeEventLogFormatVersion: number | undefined = undefined;
 
 // === State builder ===
@@ -3798,7 +3792,7 @@ async function shutdown(
   stateWriter.dispose();
   channelStateWriter.dispose();
   principalStateWriter.dispose();
-  // 이벤트로그 스냅샷 flush(§6.4b) — pending projection 스냅샷을 durable로 소진.
+  // Event log snapshot flush (§6.4b) — drain pending projection snapshots durably.
   try {
     channelSnapshotStoreRef?.dispose();
   } catch (err) {
@@ -3961,53 +3955,53 @@ async function main(): Promise<void> {
   // SAME constant when it has no in-app Company, so optimistic rows and the
   // daemon's authoritative rows share one companyId.
   const channelStateWriter = new ChannelStateWriter(wmuxDir);
-  // ── 이벤트로그 부트 게이트 (envelope-design §6.1·§6.4 — PR3 배선) ──────────
-  // 순서: 마이그레이션 감지→변환→검증→활성(runMigration, §6.1) → 로그 open(스캔
-  // 복구+hwm 복원, §3) → 워터마크 판정(+필요 시 reseed, §6.4c) → dual-write
-  // 스탬프/durable 활성(§6.4b·c). 이후 ChannelService가 로그 커밋 경로로 구동된다.
+  // ── Event log boot gate (envelope-design §6.1·§6.4 — PR3 wiring) ──────────
+  // Order: migration detect→convert→validate→active (runMigration, §6.1) → log open (scan
+  // recovery+hwm restore, §3) → watermark verdict (+reseed if needed, §6.4c) → dual-write
+  // stamp/durable active (§6.4b·c). Then ChannelService runs on log commit path.
   const eventsDir = path.join(wmuxDir, 'events');
   const channelsJsonPath = path.join(wmuxDir, 'channels.json');
   let channelEventLogDeps: ChannelServiceEventLog | undefined;
-  // 로그 정본 플래그(패널 CL-1): manifest가 durable 활성인 순간부터 레거시
-  // channels.json 폴백은 로그-only 커밋을 유기하는 split-brain이다. fail-open은
-  // manifest 생성 "전"의 마이그레이션 실패(레거시 무손상·§6.1-3)에만 허용한다.
+  // Log canonical flag (panel CL-1): from moment manifest durable active, legacy
+  // channels.json fallback abandons log-only commits (split-brain). fail-open only
+  // for migration failure before manifest creation (legacy intact·§6.1-3).
   let logCanonical = false;
   try {
-    // 기존 부트에서 이미 활성이면(runMigration 자체가 던져도) fail-closed 대상.
-    // 파일 실존 기준(파싱 무관) — 손상 manifest도 로그-모드 물증이다(패널 델타).
+    // Already active on prior boot (even if runMigration throws) → fail-closed.
+    // File existence basis (parse-agnostic) — corrupt manifest is log-mode evidence (panel delta).
     logCanonical = manifestFileExists(eventsDir);
     const migration = runMigration({
       eventsDir,
-      // 레거시 부재(진짜 first-boot)는 null. 존재 시 기존 로더(리퍼·프로토타입
-      // 가드 포함)로 READ만 한다 — 변환은 레거시를 절대 쓰지 않는다(§6.1-2).
+      // Legacy absent (true first-boot) → null. If exists READ via existing loader (reviver·prototype
+      // guard included) only — conversion never writes legacy (§6.1-2).
       readLegacyState: () =>
         fs.existsSync(channelsJsonPath) ? channelStateWriter.load() : null,
       validateProjection: (d) => ChannelStateWriter.isChannelState(d),
-      // 완결 직후 워터마크 스탬프 되쓰기(§6.4c pristine 창 봉합) — durable(§2.3).
+      // Post-completion watermark stamp rewrite (§6.4c pristine window seal) — durable (§2.3).
       writeLegacyStamped: (stamped) => {
         channelStateWriter.saveImmediate(stamped, { durable: true });
       },
     });
-    // runMigration 반환 = manifest durable 활성(신규·기존 불문). 이 지점부터 실패는
-    // 레거시로 계속할 수 없다(위 플래그 주석).
+    // runMigration return = manifest durable active (new or existing). From here failure cannot
+    // continue on legacy (see flag comment above).
     logCanonical = true;
     let manifest = migration.manifest;
     const channelEventLog = new AppendOnlyLog({
       dir: eventsDir,
-      // §3-4 하한 클램프(PR2 배선 계약): 컴팩션-전소 부트에서도 스냅샷 좌표가
-      // lamport/seq 재사용을 차단한다.
+      // §3-4 floor clamp (PR2 wiring contract): snapshot coordinates block
+      // lamport/seq reuse even on compaction-pre-loss boot.
       hwmFloor: { lamport: manifest.snapshotLamport, seq: manifest.snapshotLamport },
     });
     channelEventLog.open();
     const channelSnapshots = new SnapshotStore(path.join(eventsDir, SNAPSHOT_DIRNAME));
     channelSnapshotStoreRef = channelSnapshots;
-    // 워터마크 부트 판정(§6.4c) — 기존 로그-활성 부트에서만. 신규 마이그레이션은
-    // 방금 genesis를 떴으므로 다운그레이드 창이 없고, 파일 부재는 reseed 대상이 아니다.
+    // Watermark boot verdict (§6.4c) — existing log-active boot only. Fresh migration
+    // just wrote genesis so no downgrade window; file absent is not reseed target.
     if (migration.detection === 'active' && fs.existsSync(channelsJsonPath)) {
       const raw = channelStateWriter.load();
       const verdict = evaluateWatermark(raw);
       if (verdict.kind === 'downgrade-write') {
-        log('warn', `channels.json 구-데몬 쓰기 감지(${verdict.reason}) — legacy-reseed 수행(§6.4c)`);
+        log('warn', `channels.json old-daemon write detected (${verdict.reason}) — performing legacy-reseed (§6.4c)`);
         const reseed = await performReseed({
           eventsDir,
           manifest,
@@ -4015,7 +4009,7 @@ async function main(): Promise<void> {
           append: (draft) => channelEventLog.append(draft),
           lamportHwm: () => channelEventLog.lamportHwm,
           origin: { machineId: migration.machineId, daemonEpoch: CHANNELS_EPOCH },
-          // 데몬 자체 발행 감사 마커 — authz 비관여(§7 스탬핑 완전형은 PR5).
+          // Daemon self-issued audit marker — authz agnostic (§7 full stamping is PR5).
           authContext: { principalId: 'daemon', verifiedWorkspaceId: 'daemon', trustTier: 'trusted' },
           validateProjection: (d) => ChannelStateWriter.isChannelState(d),
           writeLegacyStamped: (stamped) => {
@@ -4025,19 +4019,19 @@ async function main(): Promise<void> {
         if (reseed.ok) {
           manifest = reseed.manifest;
         } else {
-          // fail-closed (패널 CL-1): 다운그레이드(구-데몬이 channels.json에 직접 쓴 상태)를
-          // 감지했으나 reseed가 완결되지 못했다 — 그 상태는 정본인 로그에 실리지 못했다.
-          // 여기서 그대로 enableEventLogDualWrite로 진행하면 두 가지가 동시에 터진다:
-          //   (1) 데몬이 다운그레이드 데이터가 빠진 로그 projection 위에서 구동되고
-          //       (ChannelService는 channels.json이 아니라 로그에서 시드한다),
-          //   (2) 직후 첫 dual-write가 channels.json을 fresh 워터마크로 되쓰며 그 안의
-          //       다운그레이드 데이터까지 로그-파생 상태로 덮어써, "다음 부트 재시도"가
-          //       의존하는 downgrade 신호(stale 워터마크)를 소거한다 — 조용한 split-brain
-          //       + 데이터 유실. 부트를 실패시키면 channels.json은 stale 워터마크·데이터가
-          //       무손상으로 남아 다음 부트가 downgrade를 재감지·reseed 재시도한다.
-          //   append-failed는 디스크 결함이라 삼킬 수 없고, lamport-race는 single-instance
-          //   부트 락 하에서 발생 불가하다. logCanonical=true이므로 아래 catch가 fail-closed
-          //   재-throw한다(§6.1-4 활성 이후 실패 = 부트 중단).
+          // fail-closed (panel CL-1): downgrade detected (old-daemon wrote channels.json directly) but
+          // reseed did not complete — that state was not committed to canonical log.
+          // Proceeding with enableEventLogDualWrite here triggers both:
+          //   (1) daemon runs on log projection missing downgrade data
+          //       (ChannelService seeds from log not channels.json),
+          //   (2) first dual-write rewrites channels.json with fresh watermark overwriting
+          //       downgrade data with log-derived state, erasing downgrade signal next boot retry depends on
+          //       (stale watermark) — silent split-brain
+          //       + data loss. Failing boot leaves channels.json stale watermark·data
+          //       intact for next boot to re-detect downgrade·retry reseed.
+          //   append-failed is disk defect (cannot swallow); lamport-race impossible under single-instance
+          //   boot lock. logCanonical=true so catch below fail-closed
+          //   re-throws (§6.1-4 post-active failure = boot halt).
           throw new Error(
             `legacy-reseed incomplete (${reseed.failReason ?? 'unknown'}) — fail-closed: ` +
               `log is canonical but downgrade state was not committed to the log ` +
@@ -4046,8 +4040,8 @@ async function main(): Promise<void> {
         }
       }
     }
-    // 이후 모든 dual-write가 write-시점 워터마크(lamport+stateHash)를 싣고(§6.4c),
-    // shutdown flush는 durable로 승격된다(§6.4b).
+    // All subsequent dual-writes carry write-time watermark (lamport+stateHash) (§6.4c),
+    // shutdown flush promotes to durable (§6.4b).
     channelStateWriter.enableEventLogDualWrite({
       stamp: (s) => stampWatermark(s, channelEventLog.lamportHwm),
       durableFlush: true,
@@ -4059,22 +4053,22 @@ async function main(): Promise<void> {
       reseedRefs: manifest.reseedRefs,
       machineId: migration.machineId,
     };
-    // §6.4a: 활성 formatVersion을 노출값으로 확정(로그 모드 활성 지점). fail-open
-    // 경로(catch)는 이 줄에 도달하지 않으므로 undefined로 남아 ping이 필드를 뺀다.
+    // §6.4a: fix active formatVersion as exposed value (log mode active point). fail-open
+    // path (catch) never reaches this line so undefined and ping omits field.
     activeEventLogFormatVersion = manifest.formatVersion;
     log('info', `event log active (detection=${migration.detection}, lamport hwm=${channelEventLog.lamportHwm}, seg=${manifest.activeSegment})`);
   } catch (err) {
     if (logCanonical) {
-      // fail-closed(패널 CL-1, 2-MODEL): 로그가 정본으로 활성된 뒤의 실패(open 절단
-      // 실패·스냅샷 스토어 등)에서 레거시 커밋 경로로 계속하면, 로그에만 커밋된
-      // 최신 채널 상태를 버리고 stale channels.json 위에 새 mutation을 쌓는
-      // split-brain이 된다. 데몬 부트를 실패시키는 것이 조용한 데이터 유실보다 낫다.
+      // fail-closed (panel CL-1, 2-MODEL): after log canonical active, failure (open truncate
+      // failure·snapshot store etc.) continuing on legacy commit path discards latest state committed only to log
+      // and stacks new mutations on stale channels.json
+      // (split-brain). Failing daemon boot beats silent data loss.
       log('error', 'event log boot gate failed AFTER manifest activation — fail-closed:', err);
       throw err;
     }
-    // fail-open: 마이그레이션 중단(§6.1-3)은 레거시 무손상·manifest 미기록이므로,
-    // 이번 부트는 레거시 커밋 경로로 계속하고 다음 부트가 재시도한다(가용성 우선).
-    // 조용히 로그 모드로 진행하는 것(§6.1-1 (c) fail-safe 위반)이 아니라 그 반대다.
+    // fail-open: migration halt (§6.1-3) leaves legacy intact·manifest unwritten so
+    // this boot continues legacy commit path and next boot retries (availability first).
+    // Opposite of silently proceeding to log mode (§6.1-1 (c) fail-safe violation).
     log('error', 'event log boot gate failed — legacy channels.json commit path for this boot:', err);
     channelSnapshotStoreRef = null;
   }
@@ -4088,7 +4082,7 @@ async function main(): Promise<void> {
   const principalService = new PrincipalService({ writer: principalStateWriter });
   const channelService = new ChannelService({
     writer: channelStateWriter,
-    // 이벤트로그 커밋 경로(§5) — 부트 게이트 성공 시에만. 실패 시 레거시 경로 유지.
+    // Event log commit path (§5) — only when boot gate succeeds. On failure keep legacy path.
     ...(channelEventLogDeps ? { eventLog: channelEventLogDeps } : {}),
     companyId: DEFAULT_COMPANY_ID,
     // 1b (server-owned roster identity): member rows derive their display
@@ -4141,13 +4135,13 @@ async function main(): Promise<void> {
     },
   });
 
-  // ── A2A 태스크 데몬 정본 (envelope PR4 §5 D11 — 공유 로그) ──────────────
-  // 채널과 **단일 AppendOnlyLog 인스턴스를 공유**한다(§2.1 단일 논리 스트림 —
-  // lamport는 데몬 전역 단일 시계. 같은 events/에 인스턴스를 둘 열면 hwm이
-  // 갈라져 lamport가 중복 발급된다). machineId도 게이트 산출물 재사용. 양쪽
-  // replay는 각자 domain 필터로 자기 레코드만 소비한다(ChannelService :2560,
-  // A2aTaskService.restoreFromLog). 부트 게이트가 비활성(레거시 fail-open)이면
-  // A2A도 렌더러-only degrade — a2aSlice 30분 GC의 역사적 best-effort와 동형.
+  // ── A2A task daemon canonical (envelope PR4 §5 D11 — shared log) ──────────────
+  // **Shares single AppendOnlyLog instance** with channels (§2.1 single logical stream —
+  // lamport is daemon-global single clock. Two instances on same events/ split hwm and
+  // duplicate lamport issuance). Reuse machineId from gate output. Both sides
+  // replay consume only own records via domain filter (ChannelService :2560,
+  // A2aTaskService.restoreFromLog). If boot gate inactive (legacy fail-open)
+  // A2A also renderer-only degrade — same as historical a2aSlice 30min GC best-effort.
   let a2aTaskService: A2aTaskService | null = null;
   if (channelEventLogDeps) {
     try {
@@ -4155,32 +4149,32 @@ async function main(): Promise<void> {
         log: channelEventLogDeps.log,
         origin: { machineId: channelEventLogDeps.machineId, daemonEpoch: CHANNELS_EPOCH },
       });
-      svc.restoreFromLog(); // 크로스-재시작: 태스크 projection 복원(비내구→내구 전환의 핵심 가치)
+      svc.restoreFromLog(); // Cross-restart: restore task projection (core value of non-durable→durable transition)
       a2aTaskService = svc;
-      // A(패널): projection GC 주기 배선 — 렌더러 a2aSlice(useRpcBridge 5분 타이머)와
-      // 동형. 이게 없으면 종단 태스크가 projection Map에 영구 적재된다(부트 GC는
-      // restoreFromLog가 1회 수행하나 런타임 누적은 주기 GC 몫). unref로 이벤트
-      // 루프를 붙잡지 않는다. 로그 상주분 절단은 §9 컴팩션 소관(별도).
+      // A (panel): projection GC period wiring — same as renderer a2aSlice (useRpcBridge 5min timer)
+      // Without this terminal tasks accumulate permanently in projection Map (boot GC is
+      // one-time via restoreFromLog; runtime accumulation is periodic GC). unref so event
+      // loop not held. Log resident truncation is §9 compaction scope (separate).
       const a2aGcInterval = setInterval(() => {
         svc.gcTerminalTasks();
       }, 5 * 60 * 1000);
       a2aGcInterval.unref();
       log('info', `A2A task service active (shared log, tasks=${svc.taskCount})`);
     } catch (err) {
-      // 서비스 복원 실패는 파국이 아니다 — A2A는 역사적으로 best-effort 비내구.
-      // 렌더러-only로 degrade한다(a2aTaskService=null → 핸들러가 폴백 응답).
+      // Service restore failure not catastrophe — A2A historically best-effort non-durable.
+      // Degrade to renderer-only (a2aTaskService=null → handlers fallback response).
       log('warn', 'A2A task service unavailable — degrading to renderer-only A2A:', err);
     }
   } else {
     log('warn', 'A2A task service skipped — event log inactive this boot (legacy path)');
   }
 
-  // ── WorkTask 미션 채널 데몬 정본 (J0 — 공유 로그) ─────────────────────
-  // A2aTaskService와 동일하게 채널·A2A와 단일 AppendOnlyLog 인스턴스를 공유한다
-  // (§2.1 단일 논리 스트림). replay는 domain:'task' 필터로 자기 레코드만 소비.
-  // 부트 순서 고정(§1): replay → reconcile(양방향) → closed GC. 로그 미가용이면
-  // 미션 RPC는 fail-closed(null → 핸들러가 명시 에러). await 부트는 register
-  // 배선 전에 완료돼야 reconcile이 채널 상태를 정리한 뒤 첫 RPC를 받는다.
+  // ── WorkTask mission channel daemon canonical (J0 — shared log) ─────────────────────
+  // Same as A2aTaskService: shares single AppendOnlyLog with channels·A2A
+  // (§2.1 single logical stream). replay consumes only own records via domain:'task' filter.
+  // Fixed boot order (§1): replay → reconcile (bidirectional) → closed GC. If log unavailable
+  // mission RPC fail-closed (null → handlers explicit error). await boot before register
+  // wiring so reconcile cleans channel state before first RPC.
   let workTaskService: WorkTaskService | null = null;
   if (channelEventLogDeps) {
     try {
@@ -4188,11 +4182,11 @@ async function main(): Promise<void> {
         log: channelEventLogDeps.log,
         channels: channelService,
         origin: { machineId: channelEventLogDeps.machineId, daemonEpoch: CHANNELS_EPOCH },
-        // 데몬은 오늘 ceoWorkspaceId를 알지 못한다(ChannelService.archive와 동일 —
-        // 렌더러가 Company.ceoWorkspaceId 소유). CEO 예외 활성은 배선 후속.
+        // Daemon does not know ceoWorkspaceId today (same as ChannelService.archive —
+        // renderer owns Company.ceoWorkspaceId). CEO exception activation is follow-up wiring.
         ceoWorkspaceId: undefined,
-        // §5 배타 불변식의 realpath 해석기. 경로가 디스크에 실존하면 심링크를 풀고,
-        // 부재면(fs 예외) 원본을 반환해 순수 문자열 정규화로 폴백한다.
+        // §5 exclusivity realpath resolver. If path exists on disk resolve symlinks,
+        // if absent (fs error) return original for pure string normalization fallback.
         realpath: (p: string): string => {
           try {
             return fs.realpathSync(p);
@@ -4203,8 +4197,8 @@ async function main(): Promise<void> {
       });
       await svc.boot();
       workTaskService = svc;
-      // closed GC 주기 배선(A2A projection GC와 동형). 부트 GC는 boot()가 1회 수행,
-      // 런타임 누적은 주기 GC 몫. unref로 이벤트 루프를 붙잡지 않는다.
+      // closed GC period wiring (same shape as A2A projection GC). Boot GC once in boot(),
+      // runtime accumulation is periodic GC. unref so event loop not held.
       const workTaskGcInterval = setInterval(() => {
         svc.gcClosedTasks();
       }, 60 * 60 * 1000);
@@ -4387,10 +4381,10 @@ async function main(): Promise<void> {
   });
   paneSupervisorRef = paneSupervisor;
 
-  // PR2 레거시 마이그레이션: recovery(load) 전에 기존 sessions.json 주 파일 + 모든
-  // .bak 슬롯에서 자격증명 값을 1회 스크럽. PR1이 사용자 셸 자격증명 투과를 열며 그
-  // 값이 평문으로 영속되기 시작했으므로, 재기동 시 at-rest 자격증명을 제거한다.
-  // (이후 정상 write는 StateWriter의 toPersistable로 자동 clean 유지.)
+  // PR2 legacy migration: before recovery (load) scrub credential values once from existing sessions.json primary + all
+  // .bak slots. PR1 opened user shell credential passthrough and values started persisting plaintext so
+  // remove at-rest credentials on restart.
+  // (Subsequent normal writes stay clean via StateWriter toPersistable.)
   scrubPersistedCredentials(wmuxDir);
   const maxRecover = Math.min(config.session.maxSessions, MAX_RECOVER_SESSIONS);
   await recoverSessions(stateWriter, sessionManager, processMonitor, maxRecover);

@@ -14,7 +14,7 @@
 // from the daemon's OWN session record is server-side provenance — NOT the
 // caller's env claim (the spoofable hint the WI-002 audit retired).
 //
-// Acceptance rule (design doc "두 RPC 표면과 신뢰 모델", fail-closed):
+// Acceptance rule (design doc "Two RPC surfaces and trust model", fail-closed):
 //   1. Request already carries `verifiedWorkspaceId`  → trust it verbatim.
 //      That value has exactly two honest producers today — main's D5 stamp
 //      and the renderer-local mutate path — and this preserves their

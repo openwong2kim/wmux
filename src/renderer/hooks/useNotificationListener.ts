@@ -14,13 +14,13 @@ import { FrameCoalescer } from '../utils/frameCoalescer';
 import { normalizeWorktreePath } from '../../shared/workTask';
 
 /**
- * J3 §4 — cwd가 태스크 worktree 경계 안인지(best-effort, OSC 협조 기반). 정규화
- * 후 동일 경로거나 `{worktree}/` 접두면 안. 원본 repo 등 경계 밖이면 이탈.
+ * J3 §4 — whether cwd is inside task worktree boundary (best-effort, OSC-assisted). After
+ * normalization, inside if same path or `{worktree}/` prefix. Outside original repo etc. = departed.
  */
 function isWithinWorktree(cwd: string, worktreePath: string): boolean {
   const c = normalizeWorktreePath(cwd);
   const w = normalizeWorktreePath(worktreePath);
-  if (!c || !w) return true; // 판정 불가 → 이탈로 몰지 않음(경고만·오탐 방지).
+  if (!c || !w) return true; // Cannot judge → do not treat as departed (warning only, avoid false positives).
   return c === w || c.startsWith(w + '/');
 }
 
@@ -463,22 +463,21 @@ export function useNotificationListener() {
       ringTimersRef.current.set(paneId, t);
     };
 
-    // A3 (NB2 파동 0) — 메타 기록 프레임 코얼레싱.
+    // A3 (NB2 wave 0) — metadata record frame coalescing.
     //
-    // 타이틀/cwd/gitBranch는 같은 pty로 초당 수 회(주기 틱마다) 도착하는데,
-    // 각 갱신이 updateSurface*/updateWorkspaceMetadata를 즉시 호출하면 immer
-    // set이 workspaces 참조를 매번 새로 만들고 s.workspaces 구독자 전부가
-    // 리렌더된다. 같은 pty의 연속 갱신을 프레임당 1회(마지막 값 승리)로 병합해
-    // 팬아웃을 줄인다.
+    // title/cwd/gitBranch arrive many times per second on the same pty (each periodic tick);
+    // immediate updateSurface*/updateWorkspaceMetadata on each update makes immer set create a
+    // new workspaces reference every time and re-renders all s.workspaces subscribers. Merge
+    // consecutive updates for the same pty to once per frame (last value wins) to reduce fan-out.
     //
-    // 동작 불변: 데몬 정본·session.json 영속에는 무영향 — 값은 이미 main이
-    // 소유하며, 여기서 미루는 것은 "렌더러 스토어에 반영하는 시점"(최대 ~16ms)
-    // 뿐이다. 시각/저장 시맨틱은 동일. onUpdate(meta)의 복잡 경로(agentStatus
-    // 전이·per-surface 맵·포트 유니온·principal 등록)는 중간 전이/부수효과를
-    // 잃을 수 있어 의도적으로 코얼레싱하지 않는다.
+    // Behavior unchanged: no impact on daemon canonical / session.json persistence — main already
+    // owns values; we only defer "when renderer store reflects them" (max ~16ms). Visual/persist
+    // semantics identical. onUpdate(meta) complex path (agentStatus transitions, per-surface map,
+    // port union, principal registration) can lose intermediate transitions/side effects, so
+    // intentionally not coalesced.
     const cwdCoalescer = new FrameCoalescer<string, string>((ptyId, cwd) => {
       const state = useStore.getState();
-      // Per-surface cwd + owning workspace metadata, 프레임당 1회로 병합.
+      // Per-surface cwd + owning workspace metadata, merged once per frame.
       state.updateSurfaceCwd(ptyId, cwd);
       for (const ws of state.workspaces) {
         if (findSurfaceByPtyId(ws.rootPane, ptyId)) {
@@ -528,13 +527,13 @@ export function useNotificationListener() {
       // Per-surface cwd: every terminal tracks its own working directory (not
       // just the workspace's active cwd), so the "Working directories" menu and
       // the tab tooltip can show each powershell's path — and it persists.
-      // A3: 프레임당 1회로 병합(마지막 cwd 승리) — 실제 반영은 cwdCoalescer.
+      // A3: merge once per frame (last cwd wins) — applied by cwdCoalescer.
       if (!ptyId) return;
       cwdCoalescer.push(ptyId, cwd);
 
-      // J3 §4 — 태스크 워크스페이스의 페인 cwd가 worktree 경계 밖으로 벗어나면
-      // 이탈 뱃지(경고만·차단 없음). ptyId→워크스페이스→미션(worktreePath) 해석 후
-      // 경계 비교. 미션이 아니거나 미물질화면 무시.
+      // J3 §4 — when pane cwd in task workspace leaves worktree boundary, show departed badge
+      // (warning only, no block). Resolve ptyId→workspace→mission (worktreePath) then compare
+      // boundary. Ignore when not a mission or unmaterialized.
       const st = useStore.getState();
       const target = resolveNotificationTarget(st, ptyId, undefined);
       if (target) {
@@ -549,7 +548,7 @@ export function useNotificationListener() {
     const unsubTitle = window.electronAPI.notification.onTitleChanged((ptyId, title) => {
       // OSC 0/2 window title (e.g. Claude Code `/rename`) → the tab title,
       // unless the user manually renamed this surface (titleLocked).
-      // A3: 프레임당 1회로 병합(마지막 title 승리) — 반영은 titleCoalescer.
+      // A3: merge once per frame (last title wins) — applied by titleCoalescer.
       if (!ptyId) return;
       titleCoalescer.push(ptyId, title);
     });
@@ -697,10 +696,10 @@ export function useNotificationListener() {
             // Only update exclusive context (cwd/git/PR) from the active
             // pane's active surface to prevent stale PTYs from overwriting it.
             applyToWorkspace(ws.id, !isActivePtySurface(ws, ptyId));
-            // agentStatus='running'은 주기적으로 오지만 agentName(session:agent
-            // gate emit)은 1회성이라, ptyId↔surface 매핑이 준비되기 전에 발화하면
-            // 영영 유실된다. 매핑이 생긴 지금(running 수신 + agentName 비어 있음)
-            // main의 lastAgentNameByPty 캐시에서 race-free하게 pull해 메운다.
+            // agentStatus='running' arrives periodically but agentName (session:agent gate emit)
+            // is one-shot — if it fires before ptyId↔surface mapping is ready, it is lost forever.
+            // Mapping exists now (running received + agentName empty) — pull race-free from main's
+            // lastAgentNameByPty cache and mount.
             if (rest.agentStatus === 'running') {
               const needWsBackfill = !ws.metadata?.agentName;
               // Per-surface backfill (Codex review): the one-shot agentName can
@@ -784,32 +783,32 @@ export function useNotificationListener() {
     seedPaneLabels();
 
     const unsubGitBranch = window.electronAPI.notification.onGitBranchChanged((ptyId, branch) => {
-      // A3: 프레임당 1회로 병합(마지막 branch 승리) — 반영은 gitBranchCoalescer.
+      // A3: merge once per frame (last branch wins) — applied by gitBranchCoalescer.
       if (!ptyId) return;
       gitBranchCoalescer.push(ptyId, branch);
     });
 
-    // J3 §3 — initialCommand 재시도 소진(프롬프트 미발사) 통지. fan-out 결과가
-    // taskPtyRegistry에 등록해 둔 ptyId→태스크로 토스트 + [재발사]. 재발사는 main이
-    // prompt.md 실존을 검사(파일 소실 시 사유), 실제 inject는 pty.write. 상태 영속
-    // 없음(§3 G8 — 리부트로 토스트 소실 수용).
+    // J3 §3 — initialCommand retry exhausted (prompt not fired) notification. fan-out result
+    // registers ptyId→task in taskPtyRegistry for toast + [Refire]. Refire checks prompt.md
+    // exists on main (reason if file gone), actual inject via pty.write. No state persistence
+    // (§3 G8 — toast loss on reboot accepted).
     const unsubExhausted = window.electronAPI.notification.onInitialCmdExhausted((ptyId) => {
       if (!ptyId) return;
       const st = useStore.getState();
       const entry = st.taskPtyRegistry[ptyId];
-      if (!entry) return; // 매핑 부재(non-fanout·핸드셰이크 ptyId 누락) → best-effort 생략.
+      if (!entry) return; // No mapping (non-fanout, handshake ptyId missing) → best-effort skip.
       const worktreePath = entry.worktreePath;
       const initialCommand = entry.initialCommand;
-      // F2 — 재발사는 원래 initialCommand(에이전트 기동+프롬프트 주입)를 재전송해야
-      // 한다(맨 셸에 원문 프롬프트를 흘리면 셸이 실행). 둘 다 있어야 [재발사] 제공.
+      // F2 — refire must resend original initialCommand (agent launch + prompt injection);
+      // piping raw prompt into plain shell would execute it. Both required for [Refire] button.
       const canRefire = Boolean(worktreePath && initialCommand);
       st.pushToast({
         level: 'warn',
-        message: `태스크 "${entry.title}": 프롬프트가 발사되지 않았습니다(에이전트 페인이 비어 있을 수 있음).`,
+        message: `Task "${entry.title}": prompt was not fired (agent pane may be empty).`,
         ...(canRefire
           ? {
               action: {
-                label: '재발사',
+                label: 'Retry',
                 onClick: () => {
                   void (async () => {
                     const api = window.electronAPI.workTask;
@@ -817,12 +816,12 @@ export function useNotificationListener() {
                     try {
                       const res = await api.refire({ ptyId, worktreePath: worktreePath as string, initialCommand: initialCommand as string });
                       if (res.ok) {
-                        useStore.getState().pushToast({ level: 'info', message: `태스크 "${entry.title}": 프롬프트를 재발사했습니다.` });
+                        useStore.getState().pushToast({ level: 'info', message: `Task "${entry.title}": prompt re-fired.` });
                       } else {
-                        useStore.getState().pushToast({ level: 'error', message: `재발사 불가: ${res.error}` });
+                        useStore.getState().pushToast({ level: 'error', message: `Retry failed: ${res.error}` });
                       }
                     } catch (e) {
-                      useStore.getState().pushToast({ level: 'error', message: `재발사 불가: ${e instanceof Error ? e.message : String(e)}` });
+                      useStore.getState().pushToast({ level: 'error', message: `Retry failed: ${e instanceof Error ? e.message : String(e)}` });
                     }
                   })();
                 },
@@ -876,8 +875,8 @@ export function useNotificationListener() {
       snapCancelled = true;
       if (snapTimer) clearTimeout(snapTimer);
       ringTimersRef.current.clear();
-      // A3: 언마운트 직전 코얼레서에 남은 마지막 값을 동기 반영한 뒤 정리한다.
-      // (hot-reload/재마운트 시 마지막 title/cwd/branch 유실 방지.)
+      // A3: synchronously flush coalescer's last values before unmount cleanup.
+      // (Prevent losing last title/cwd/branch on hot-reload/remount.)
       cwdCoalescer.flushNow();
       titleCoalescer.flushNow();
       gitBranchCoalescer.flushNow();

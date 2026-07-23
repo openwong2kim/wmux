@@ -301,7 +301,7 @@ export class PipeServer {
       }
 
       const lines = buffer.split('\n');
-      // 마지막 요소는 아직 완성되지 않은 부분 — 다음 청크를 기다림
+      // Last element is an incomplete fragment — wait for the next chunk
       buffer = lines.pop() ?? '';
 
       for (const line of lines) {
@@ -314,7 +314,7 @@ export class PipeServer {
     });
 
     socket.on('end', () => {
-      // 연결 종료 시 남은 버퍼 처리
+      // On disconnect, flush any remaining buffer
       const trimmed = buffer.trim();
       if (trimmed) {
         this.processLine(socket, trimmed);

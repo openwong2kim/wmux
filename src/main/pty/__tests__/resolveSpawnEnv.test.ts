@@ -208,8 +208,8 @@ describe('resolveSpawnEnv', () => {
     expect(env.WMUX_DATA_SUFFIX).toBeUndefined();
   });
 
-  // issue #321 — Dock-launched macOS 앱은 LANG을 상속하지 않아 셸이 C 로케일로
-  // 떨어지고 한글 입력이 <0085> 식으로 깨진다. 폴백 주입을 검증한다.
+  // issue #321 — Dock-launched macOS app doesn't inherit LANG, shell falls to C locale,
+  // breaking CJK input as <0085>. Verify fallback injection.
   it('injects the fallback locale as LANG when no locale var is set', () => {
     const env = resolveSpawnEnv({ PATH: '/usr/bin' }, undefined, {}, 'ko_KR.UTF-8');
     expect(env.LANG).toBe('ko_KR.UTF-8');
@@ -235,7 +235,7 @@ describe('resolveSpawnEnv', () => {
 
 describe('resolveSpawnEnv — execution-context policy', () => {
   it('passthrough keeps credential-named vars (reported KAD_GATEWAY_KEY case)', () => {
-    // 사용자가 직접 연 셸: 자격증명 투과(tmux 동형). 신고 사건 해결 경로.
+    // User-opened shell: credential passthrough (tmux-shaped). Reported issue fix path.
     const env = resolveSpawnEnv(
       { PATH: '/usr/bin', KAD_GATEWAY_KEY: 'secret', GITHUB_TOKEN: 'ghp', WMUX_AUTH_TOKEN: 't' },
       undefined,
@@ -246,14 +246,14 @@ describe('resolveSpawnEnv — execution-context policy', () => {
     expect(env.KAD_GATEWAY_KEY).toBe('secret');
     expect(env.GITHUB_TOKEN).toBe('ghp');
     expect(env.PATH).toBe('/usr/bin');
-    // 내부 auth는 passthrough여도 무조건 strip.
+    // Internal auth always stripped even on passthrough.
     expect(env.WMUX_AUTH_TOKEN).toBeUndefined();
   });
 
   it('gated strips credential-named vars — and is the default (fail-closed)', () => {
     const base = { PATH: '/usr/bin', KAD_GATEWAY_KEY: 'secret', GITHUB_TOKEN: 'ghp' };
     const explicitGated = resolveSpawnEnv(base, undefined, {}, undefined, 'gated');
-    const defaultGated = resolveSpawnEnv(base, undefined, {}); // 정책 미지정 → gated
+    const defaultGated = resolveSpawnEnv(base, undefined, {}); // unspecified policy → gated
     for (const env of [explicitGated, defaultGated]) {
       expect(env.KAD_GATEWAY_KEY).toBeUndefined();
       expect(env.GITHUB_TOKEN).toBeUndefined();
@@ -269,7 +269,7 @@ describe('resolveSpawnEnv — execution-context policy', () => {
       undefined,
       'passthrough',
     );
-    expect(env.API_KEY).toBe('k');               // 자격증명 투과
-    expect(env.WMUX_WORKSPACE_ID).toBe('real');  // 정체성은 여전히 강제
+    expect(env.API_KEY).toBe('k');               // credential passthrough
+    expect(env.WMUX_WORKSPACE_ID).toBe('real');  // identity still forced
   });
 });

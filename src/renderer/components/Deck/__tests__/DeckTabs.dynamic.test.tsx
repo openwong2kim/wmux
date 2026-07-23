@@ -102,7 +102,7 @@ describe('DeckTabs', () => {
     expect(badge?.textContent).toContain('3');
   });
 
-  it('renders Orchestrator·Git·Channels tabs (owner 2026-07-20: 덱 복귀, Review는 Git에 병합)', () => {
+  it('renders Orchestrator·Git·Channels tabs (owner 2026-07-20: deck return, Review merged into Git)', () => {
     mount({ active: 'commander' });
     const ids = Array.from(container.querySelectorAll('[data-deck-tab]')).map((el) =>
       el.getAttribute('data-deck-tab'),

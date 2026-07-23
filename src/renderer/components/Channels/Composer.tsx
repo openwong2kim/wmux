@@ -759,10 +759,10 @@ function ComposerImpl({ channelId, onError }: ComposerProps): React.ReactElement
   );
 }
 
-// A2: 상시 마운트 대형 컴포넌트 memo 방벽. ChannelView가 리렌더돼도 props
-// (channelId·onError=pushToast 모두 안정)가 그대로면 Composer 재렌더를 건너뛴다.
-// 내부 자체 구독(멤버/멘션 등) 변경은 memo와 무관하게 반영된다.
-// 리뷰 반영: 실사용처(ChannelView)가 named import를 쓰므로 named export 자체가
-// memo 래핑이어야 방벽이 실제로 적용된다(초판은 default만 memo — 무효였음).
+// A2: always-mounted large component memo barrier. When ChannelView re-renders, skip Composer
+// re-render if props (channelId·onError=pushToast both stable) unchanged.
+// Internal self-subscriptions (members/mentions etc.) still apply regardless of memo.
+// Review fix: call site (ChannelView) uses named import so named export itself must be
+// memo-wrapped for barrier to apply (first version memo'd default only — ineffective).
 export const Composer = memo(ComposerImpl);
 export default Composer;

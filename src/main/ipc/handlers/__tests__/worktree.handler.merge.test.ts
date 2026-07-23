@@ -132,7 +132,7 @@ describe('worktree.handler — merge session (conflict path) start/status/discar
     const start = captured.get(IPC.WORKTREE_MERGE_START)!;
     const s = (await start({}, scn.repo, scn.featWt)) as MergeStartResult;
     expect(s.ok).toBe(false);
-    if (!s.ok) expect(s.error).toContain('source 워크트리에 커밋되지 않은');
+    if (!s.ok) expect(s.error).toContain('uncommitted changes');
   });
 
   it('start — rejects a sourcePath that is not a worktree of this repo', async () => {
@@ -148,7 +148,7 @@ describe('worktree.handler — merge session (conflict path) start/status/discar
       const start = captured.get(IPC.WORKTREE_MERGE_START)!;
       const s = (await start({}, scn.repo, other)) as MergeStartResult;
       expect(s.ok).toBe(false);
-      if (!s.ok) expect(s.error).toContain('이 repo의 워크트리가 아닙니다');
+      if (!s.ok) expect(s.error).toContain('not a worktree of this repo');
     } finally {
       rmSync(other, { recursive: true, force: true });
     }
@@ -196,7 +196,7 @@ describe('worktree.handler — merge session (no-op merge)', () => {
 
     const s = (await start({}, scn.repo, scn.featWt)) as MergeStartResult;
     expect(s.ok).toBe(false);
-    if (!s.ok) expect(s.error).toContain('이미 최신');
+    if (!s.ok) expect(s.error).toContain('Already up to date');
 
     // No session was created …
     const st = (await status({}, scn.repo)) as MergeStatusResult;

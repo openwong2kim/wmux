@@ -1,15 +1,14 @@
-// PR 표면 provider 계약 — Git 탭의 PR 목록·코멘트가 소비하는 정규화 타입.
+// PR surface provider contract — normalized types consumed by Git tab PR list and comments.
 //
-// 구현체: GhPrService(GitHub, gh CLI) + GlabPrService(GitLab, glab CLI).
-// provider 선택은 origin remote의 hostname으로 한다: github.com 계열 → gh,
-// 그 외 모든 호스트 → glab 경로(gitlab.com만이 아니라 self-hosted GitLab이
-// 흔하므로 hostname 화이트리스트가 아니라 "github이 아니면 glab에게 물어본다"
-// — glab 미설치/그 호스트 미인증이면 fail-closed 안내로 강등).
+// Implementations: GhPrService (GitHub, gh CLI) + GlabPrService (GitLab, glab CLI).
+// Provider selection uses origin remote hostname: github.com family → gh,
+// all other hosts → glab (self-hosted GitLab is common, so not a hostname whitelist but
+// "if not GitHub, ask glab" — missing glab or unauthenticated host degrades to fail-closed guidance).
 import { git } from '../git/git';
 import type { PrSummary, PrComment, PrDetail } from '../../shared/prSurface';
 
-// wire 타입은 shared/prSurface.ts가 정본(렌더러와 공유). 여기서 재노출해
-// main 쪽 소비자(구현체/핸들러)의 import 표면을 한 곳으로 유지한다.
+// Wire types live in shared/prSurface.ts (shared with renderer). Re-exported here to
+// keep main-side consumer import surface in one place.
 export type { PrSummary, PrComment, PrDetail };
 export { PR_COMMENT_BODY_CAP } from '../../shared/prSurface';
 
@@ -20,20 +19,20 @@ export type PrGate =
 export type PrListResult = { ok: true; prs: PrSummary[] } | { ok: false; error: string };
 export type PrDetailResult = { ok: true; detail: PrDetail } | { ok: false; error: string };
 
-/** 호스트 중립 provider 계약. `host`는 remote hostname — GitLab은 인증이
- *  호스트 단위(`glab auth status --hostname`, self-hosted)라 게이트에 필요하다.
- *  gh 구현은 무시한다. */
+/** Host-neutral provider contract. `host` is remote hostname — GitLab auth is
+ *  per-host (`glab auth status --hostname`, self-hosted) so the gate needs it.
+ *  gh implementation ignores it. */
 export interface PrProvider {
-  /** CLI 존재·인증 게이트. 실패는 사용자 안내 문구를 담아 fail-closed. */
+  /** CLI presence and auth gate. Failures carry user guidance (fail-closed). */
   gate(repoPath: string, host: string): Promise<PrGate>;
-  /** force=true는 수동 새로고침 — 구현체의 TTL 캐시를 건너뛴다. */
+  /** force=true is manual refresh — skips the implementation's TTL cache. */
   listPrs(repoPath: string, force?: boolean): Promise<PrListResult>;
   prDetail(repoPath: string, number: number, updatedAt: string): Promise<PrDetailResult>;
 }
 
-/** CLI(gh/glab) 실행용 PATH — macOS GUI 실행은 launchd PATH를 상속해
- *  Homebrew 경로(/opt/homebrew/bin, /usr/local/bin)가 빠진다. execFile이
- *  바이너리를 못 찾아 cli-missing으로 강등되는 것을 막기 위해 보강한다. */
+/** PATH for gh/glab CLI exec — macOS GUI inherits launchd PATH without
+ *  Homebrew paths (/opt/homebrew/bin, /usr/local/bin). Supplemented so execFile
+ *  does not degrade to cli-missing when the binary exists. */
 export function cliPath(): string {
   const base = process.env.PATH ?? '';
   if (process.platform !== 'darwin') return base;
@@ -43,7 +42,7 @@ export function cliPath(): string {
   return extras.length ? `${base}:${extras.join(':')}` : base;
 }
 
-/** origin remote URL → hostname. 원격 없음/파싱 불가는 null. 순수(테스트용). */
+/** origin remote URL → hostname. No remote or unparseable → null. Pure (for tests). */
 export function parseRemoteHost(url: string): string | null {
   const trimmed = url.trim();
   if (!trimmed) return null;
@@ -57,7 +56,7 @@ export function isGithubHost(host: string): boolean {
   return host === 'github.com' || host.endsWith('.github.com');
 }
 
-/** repo의 origin hostname — remote 없으면 null. */
+/** Origin hostname for repo — null when no remote. */
 export async function detectRemoteHost(repoPath: string): Promise<string | null> {
   const r = await git(['remote', 'get-url', 'origin'], repoPath);
   if (r.code !== 0) return null;

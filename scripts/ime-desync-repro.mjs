@@ -17,7 +17,7 @@ const CYCLES = Number(process.env.CYCLES || 8);
 const TAG = process.env.TAG || 'a';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
-// 2-set layout: 가=rk 나=sk 다=ek 라=fk 마=ak 바=qk 사=tk 아=dk
+// 2-set layout key mappings: ga=rk na=sk da=ek ra=fk ma=ak ba=qk sa=tk a=dk
 const SYLLABLES = ['rk', 'sk', 'ek', 'fk', 'ak', 'qk', 'tk', 'dk'];
 
 // Bare 'powershell.exe' ENOENTs on this machine (PATH lacks System32 — same

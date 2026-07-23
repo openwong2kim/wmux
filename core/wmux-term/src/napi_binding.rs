@@ -1,20 +1,20 @@
-//! napi-rs 바인딩 레이어 — 네이티브(.node) 타깃 전용.
+//! napi-rs binding layer — native (.node) target only.
 //!
-//! cfg(not(wasm32))에서만 컴파일. 코어 로직(`Grid`)을 N-API 클래스로 감싸는
-//! 얇은 어댑터 — 로직 중복 없음(배관 실증 원칙).
+//! Compiled only under cfg(not(wasm32)). Thin adapter wrapping core logic (`Grid`) as an
+//! N-API class — no duplicated logic (plumbing proof principle).
 
 use crate::grid::Grid;
 use napi::bindgen_prelude::*;
 use napi_derive::napi;
 
-/// feed() 반환 — §6 계약 최소 부분집합의 JS 노출.
+/// feed() return — JS exposure of §6 contract minimal subset.
 #[napi(object)]
 pub struct FeedResult {
     pub dirty_rows: u32,
     pub writeback_len: u32,
 }
 
-/// 터미널 그리드 — JS `new WmuxTerm(cols, rows)`.
+/// Terminal grid — JS `new WmuxTerm(cols, rows)`.
 #[napi(js_name = "WmuxTerm")]
 pub struct WmuxTerm {
     inner: Grid,
@@ -29,8 +29,8 @@ impl WmuxTerm {
         }
     }
 
-    /// 바이트를 feed하고 dirty 집계 반환.
-    /// JS에서 Uint8Array/Buffer로 전달 → 네이티브 슬라이스 왕복.
+    /// Feed bytes and return dirty aggregate.
+    /// JS passes Uint8Array/Buffer → native slice round-trip.
     #[napi]
     pub fn feed(&mut self, bytes: Uint8Array) -> FeedResult {
         let r = self.inner.feed(&bytes);

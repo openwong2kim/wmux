@@ -98,7 +98,7 @@ export function registerFsHandlers(): () => void {
       const result: FileEntry[] = [];
 
       for (const entry of entries) {
-        // node_modules, .git 기본 제외 (너무 큼)
+        // Exclude node_modules and .git by default (too large)
         if (entry.name === 'node_modules' || entry.name === '.git') continue;
 
         result.push({
@@ -109,7 +109,7 @@ export function registerFsHandlers(): () => void {
         });
       }
 
-      // 디렉토리 먼저, 그 다음 파일. 각각 알파벳 순
+      // Directories first, then files — each group alphabetically
       result.sort((a, b) => {
         if (a.isDirectory !== b.isDirectory) return a.isDirectory ? -1 : 1;
         return a.name.localeCompare(b.name, undefined, { sensitivity: 'base' });

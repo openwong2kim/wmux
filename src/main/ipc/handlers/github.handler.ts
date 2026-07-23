@@ -1,9 +1,9 @@
-// Git 탭 PR 섹션 — github:prList / github:prDetail main 핸들러.
+// Git tab PR section — github:prList / github:prDetail main handlers.
 //
-// 렌더러 전용 IPC(파이프 미노출). 흐름: origin hostname 감지 → github.com
-// 계열이면 gh(GhPrService), 그 외 모든 호스트는 glab(GlabPrService — self-
-// hosted GitLab 포함, 게이트가 그 호스트 인증을 검사). 모든 실패는 code를
-// 담아 fail-soft로 강등 — 렌더러가 게이트 안내문/빈 상태로 렌더한다.
+// Renderer-only IPC (not exposed on pipe). Flow: detect origin hostname → github.com
+// family uses gh (GhPrService), all other hosts use glab (GlabPrService — self-hosted
+// GitLab included; gate checks auth for that host). All failures degrade fail-soft with
+// code — renderer shows gate guidance or empty state.
 import { ipcMain } from 'electron';
 import { IPC } from '../../../shared/constants';
 import { wrapHandler } from '../wrapHandler';
@@ -24,7 +24,7 @@ export type GithubPrDetailResult =
   | { ok: true; detail: PrDetail }
   | { ok: false; code: 'error'; message: string };
 
-/** hostname → provider. github.com 계열은 gh, 그 외 전부 glab 경로. */
+/** hostname → provider. github.com family → gh; everything else → glab. */
 function providerFor(host: string): PrProvider {
   return isGithubHost(host) ? ghPrService : glabPrService;
 }
@@ -75,7 +75,7 @@ export function registerGithubHandlers(): () => void {
         if (typeof number !== 'number' || !Number.isInteger(number) || number <= 0) {
           return { ok: false, code: 'error', message: 'valid PR number required' };
         }
-        // 목록과 동일한 provider로 라우팅(호스트 재감지 — 상세는 저빈도라 무해).
+        // Route with the same provider as list (re-detect host — detail is low frequency).
         const host = await detectRemoteHost(repoPath);
         if (!host) return { ok: false, code: 'error', message: 'no origin remote' };
         const res = await providerFor(host).prDetail(

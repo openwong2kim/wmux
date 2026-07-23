@@ -1,19 +1,19 @@
-//! V4a — vte 단독 네이티브 feed 처리량 마이크로벤치.
+//! V4a — vte-only native feed throughput microbench.
 //!
-//! 게이트 ≥250MB/s(예산 500의 50%). 대량 합성 ANSI 스트림 ≥64MB,
-//! 워밍업 후 측정. 결과를 MB/s로 stdout 출력.
+//! Gate ≥250MB/s (50% of budget 500). Synthetic ANSI stream ≥64MB,
+//! measure after warmup. Print result as MB/s to stdout.
 //!
-//! 실행: cargo run --release --bin bench_native
+//! Run: cargo run --release --bin bench_native
 
 use std::time::Instant;
 use wmux_term::Grid;
 
-/// 대표 워크로드 근사 합성 ANSI 스트림 생성.
+/// Build a representative workload-approximate synthetic ANSI stream.
 ///
-/// 블록 구성: SGR 색 전환 + ASCII 텍스트 + **CSI 커서 이동(파라미터 파싱 경로)** +
-/// **UTF-8 멀티바이트(한글 — 연속바이트 경로)** + CRLF.
-/// **주의(정직 레이블 — 리뷰 반영)**: 이 수치는 best-case 상한이다 — OSC/DCS·
-/// 청크 경계 분할 이스케이프·이모지 ZWJ 최악 경로는 미포함(E1 셀 속성 구현 후 재계측).
+/// Block composition: SGR color switches + ASCII text + **CSI cursor moves (parameter parsing path)** +
+/// **UTF-8 multibyte (Korean — continuation-byte path)** + CRLF.
+/// **Note (honest label — review feedback)**: this figure is a best-case upper bound — OSC/DCS,
+/// chunk-boundary split escapes, and emoji ZWJ worst paths are excluded (remeasure after E1 cell attrs).
 fn synth_stream(target_bytes: usize) -> Vec<u8> {
     let mut buf = Vec::with_capacity(target_bytes + 512);
     let block: &[u8] =
@@ -32,10 +32,10 @@ fn synth_stream(target_bytes: usize) -> Vec<u8> {
 fn main() {
     let total_bytes: usize = 64 * 1024 * 1024; // 64MB
     let stream = synth_stream(total_bytes);
-    let chunk = 16 * 1024; // 16KB 청크로 feed(PTY read 근사).
+    let chunk = 16 * 1024; // 16KB chunks for feed (PTY read approximation).
 
-    // 워밍업 — 3MB 흘려 캐시·분기예측 안정화.
-    // (리뷰 반영: `.min`은 곱 전체에 걸어야 한다 — 연산자 우선순위 버그 수정.)
+    // Warmup — stream 3MB to stabilize cache and branch prediction.
+    // (Review feedback: `.min` must apply to the whole product — operator-precedence bug fix.)
     {
         let mut g = Grid::new(80, 24);
         let warm_len = (3 * 1024 * 1024usize).min(stream.len());
@@ -44,7 +44,7 @@ fn main() {
         }
     }
 
-    // 측정 — 새 그리드로 전량 feed.
+    // Measurement — feed full stream into a fresh grid.
     let mut g = Grid::new(80, 24);
     let t0 = Instant::now();
     let mut acc_dirty: u64 = 0;
@@ -54,7 +54,7 @@ fn main() {
     }
     let elapsed = t0.elapsed();
     std::hint::black_box(acc_dirty);
-    // 셀 쓰기 경로가 LTO로 제거되지 못하도록 최종 그리드 내용도 관측한다(리뷰 반영).
+    // Observe final grid contents so the cell write path cannot be LTO-stripped (review feedback).
     let mut sink: u64 = 0;
     for y in 0..g.rows() {
         for ch in g.snapshot_row(y).chars() {
@@ -67,16 +67,16 @@ fn main() {
     let secs = elapsed.as_secs_f64();
     let mbps = mb / secs;
 
-    println!("[V4a] vte 단독 네이티브 feed 처리량");
+    println!("[V4a] native vte-only feed throughput");
     println!("  bytes    = {} MB", mb as u64);
     println!("  elapsed  = {:.4} s", secs);
     println!("  throughput = {:.1} MB/s", mbps);
-    println!("  gate     = 250 MB/s (예산 500의 50%)");
+    println!("  gate     = 250 MB/s (50% of 500 budget)");
     if mbps >= 250.0 {
         println!("  RESULT   = PASS");
         std::process::exit(0);
     } else {
-        println!("  RESULT   = BELOW GATE (설계 재검토 트리거 데이터)");
-        std::process::exit(2); // 게이트 미달 — 정직 보고용 비영 코드.
+        println!("  RESULT   = BELOW GATE (design review trigger data)");
+        std::process::exit(2); // Below gate — non-zero exit for honest reporting.
     }
 }

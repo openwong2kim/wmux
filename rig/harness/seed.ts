@@ -1,23 +1,23 @@
-// 검증 리그 — 결정적 시드 유틸 (설계 §4 / G7)
+// Verification rig — deterministic seed utilities (design §4 / G7)
 //
-// 페르소나 행동을 결정적으로 만들기 위한 시드 기반 PRNG. G7: 시나리오는 결정적 시드로
-// 돌고, 실패 시 시드를 인쇄해 재현한다. S1은 PipeClient 직접 사용으로 충분하지만
-// (persona.ts 없이도 됨), S2~S8이 재사용할 시드 유틸은 분리해둘 가치가 있어(설계 §9
-// 판단 위임) 여기 둔다. persona.ts 프레임워크는 후속 PR 몫.
+// Seed-based PRNG for deterministic persona behavior. G7: scenarios run on deterministic seeds,
+// and failures print the seed for replay. S1 is fine with PipeClient directly (no persona.ts),
+// but S2~S8 benefit from a shared seed utility (design §9 delegation), so it lives here.
+// persona.ts framework is a follow-up PR.
 //
-// mulberry32 — 32비트 상태의 작고 빠른 결정적 PRNG. 암호학적 안전성이 아니라
-// 재현성이 목적(같은 시드 = 같은 수열).
+// mulberry32 — small fast deterministic PRNG with 32-bit state. Not cryptographically secure;
+// goal is reproducibility (same seed = same sequence).
 
-/** 시드 하나로 초기화되는 결정적 난수 생성기. */
+/** Deterministic RNG initialized from one seed. */
 export class SeededRng {
   private state: number;
 
   constructor(readonly seed: number) {
-    // 0이면 수열이 죽으므로 non-zero로 정규화.
+    // Normalize to non-zero — seed 0 kills the sequence.
     this.state = seed >>> 0 || 0x9e3779b9;
   }
 
-  /** [0, 1) 균등 실수. */
+  /** Uniform float in [0, 1). */
   next(): number {
     // mulberry32
     this.state = (this.state + 0x6d2b79f5) >>> 0;
@@ -27,15 +27,15 @@ export class SeededRng {
     return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
   }
 
-  /** [minInclusive, maxExclusive) 정수. */
+  /** Integer in [minInclusive, maxExclusive). */
   int(minInclusive: number, maxExclusive: number): number {
     return minInclusive + Math.floor(this.next() * (maxExclusive - minInclusive));
   }
 }
 
 /**
- * 이번 런의 기본 시드를 고른다. `WMUX_RIG_SEED` env가 있으면 그 값(실패 재현용),
- * 없으면 시간 기반 시드를 새로 뽑는다. 어느 쪽이든 테스트가 시드를 인쇄해야 재현 가능.
+ * Pick the default seed for this run. Uses `WMUX_RIG_SEED` env if set (failure replay),
+ * otherwise draws a time-based seed. Either way, tests must print the seed for reproducibility.
  */
 export function pickSeed(): number {
   const fromEnv = process.env.WMUX_RIG_SEED;

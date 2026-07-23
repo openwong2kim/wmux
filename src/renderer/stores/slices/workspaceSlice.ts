@@ -355,10 +355,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           delete state.paneNotificationRing[pid];
         }
       }
-      // J3 F4: 이 ws가 태스크 워크스페이스(paneGroupId=이 ws id)였다면 이탈 뱃지·
-      // onExhausted 매핑을 evict(무한 성장 방지). departed는 ws id 키, registry는
-      // ptyId 키라 제거 ws의 모든 surface ptyId를 훑는다. workTaskSlice 없이 조립된
-      // 최소 목 스토어(단위 테스트)에선 두 맵이 부재하므로 존재 가드.
+      // J3 F4: if this ws was a task workspace (paneGroupId = this ws id), evict departed badge and
+      // onExhausted mapping (prevent unbounded growth). departed uses ws id key; registry uses
+      // ptyId key, so scan all surface ptyIds on removed ws. Minimal mock stores assembled without
+      // workTaskSlice (unit tests) may lack both maps — guard existence.
       if (state.departedPaneGroups) delete state.departedPaneGroups[id];
       if (state.taskPtyRegistry) {
         const removedWs = state.workspaces[idx];
@@ -568,11 +568,10 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       const BLOCKED_URL_SCHEMES = ['javascript:', 'data:', 'vbscript:', 'file:'];
       const sanitizePanes = (pane: Pane) => {
         if (pane.type === 'leaf') {
-          // 2026-07-20 워크스페이스 헤더 승격으로 페인 surface 폐지, 구 세션 정리:
-          // git·review는 이제 페인 탭이 아니라 워크스페이스 헤더 탭+중앙 표면으로
-          // 산다(surfaceType 유니온은 하위호환 위해 유지). 이미 저장된 세션에 남은
-          // git/review surface를 여기서 걸러낸다 — 안 그러면 폐지된 렌더 분기가 없어
-          // 빈 탭으로 남는다. activeSurfaceId가 걸러진 surface를 가리키면 재조정한다.
+          // 2026-07-20 workspace header promotion retired pane git/review surfaces — legacy session cleanup:
+          // git·review now live as workspace header tabs + center surfaces (surfaceType union kept for
+          // backward compat). Filter git/review surfaces left in saved sessions — otherwise deprecated
+          // render branches are gone and empty tabs remain. Re-point activeSurfaceId if it aimed at filtered surface.
           const before = pane.surfaces;
           const filtered = before.filter(
             (s) => s.surfaceType !== 'git' && s.surfaceType !== 'review',
@@ -812,15 +811,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
         // the prefixConfig merge): a default the user deleted outright — with
         // no replacement on that key — is re-added on next load. Acceptable
         // until a removed-defaults tombstone schema exists.
-        // `typeof window` 가드는 node 테스트 환경(window 미정의)에서 ReferenceError를 막는다.
+        // `typeof window` guard prevents ReferenceError in node test env (window undefined).
         const platform = typeof window !== 'undefined' ? window.electronAPI?.platform : undefined;
-        // 손 안 댄 원본 F7/Ctrl+F7 기본값을 현재 플랫폼 기본 키(Mac=Ctrl+7)로 1회 승격.
-        // macOS 미디어 키(F7)·시스템 단축키(^F7)에 먹혀 안 뜨던 바인딩을 실제로 고친다.
+        // One-time promote untouched original F7/Ctrl+F7 defaults to current platform default (Mac=Ctrl+7).
+        // Fixes bindings swallowed by macOS media keys (F7) and system shortcuts (^F7).
         const migrated = upgradeDefaultKeybindingsForPlatform(data.customKeybindings, platform);
         const savedIds = new Set(migrated.map((k) => k.id));
         const savedKeys = new Set(migrated.map((k) => k.key));
-        // 플랫폼별 기본값으로 백필 — Mac은 Ctrl+7, 그 외 F7. 저장된 기본값은
-        // id/key 매칭에 걸려 아래 filter에서 제외되므로 중복 추가되지 않는다.
+        // Backfill platform defaults — Mac Ctrl+7, others F7. Saved defaults are excluded by
+        // id/key match in filter below, so no duplicate add.
         const missingDefaults = buildDefaultCustomKeybindings(platform).filter(
           (k) => !savedIds.has(k.id) && !savedKeys.has(k.key),
         );
@@ -884,7 +883,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       const walk = (pane: Pane) => {
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
-            // 유틸 surface(git·review)는 pty 없음 — 명시적으로 제외해 방어.
+            // Utility surfaces (git·review) have no pty — explicitly exclude defensively.
             if (s.ptyId === ptyId && s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff' && s.surfaceType !== 'git' && s.surfaceType !== 'review') {
               s.ptyId = '';
             }
@@ -901,7 +900,7 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       const walkAndClearPtyIds = (pane: Pane) => {
         if (pane.type === 'leaf') {
           for (const s of pane.surfaces) {
-            // 유틸 surface(git·review)는 pty 없음 — 명시적으로 제외해 방어.
+            // Utility surfaces (git·review) have no pty — explicitly exclude defensively.
             if (s.surfaceType !== 'browser' && s.surfaceType !== 'editor' && s.surfaceType !== 'diff' && s.surfaceType !== 'git' && s.surfaceType !== 'review') {
               s.ptyId = '';
             }

@@ -399,11 +399,11 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // mutateLocal path, not registered on the pipe router). Entries here for
   // RpcMethod completeness, same as archive/kick.
   'a2a.channel.purgeMembership':      { capability: 'a2a.channel.send', riskClass: 'a2a' },
-  // operator-join (설계 §2.1/§2.2) — operatorJoin(mutation) / operatorList(read)도
-  // humans-only다: 파이프 라우터에 등록되지 않고 렌더러 전용 mutateLocal로만 도달.
-  // 여기 등재는 RpcMethod 완전성(이 Record<RpcMethod, …>) 목적이며 first-party
-  // 그랜트에서는 제외된다(설계 §2.3). operatorList도 읽기지만 humans-only 트랜스포트가
-  // 필요하므로 send 등급으로 둔다(도달 시점엔 이미 mutateLocal 경계를 통과했다는 의미).
+  // operator-join (design §2.1/§2.2) — operatorJoin (mutation) / operatorList (read) are
+  // also humans-only: not on pipe router; reachable only via renderer mutateLocal.
+  // Listed here for RpcMethod completeness (Record<RpcMethod, …>), excluded from
+  // first-party grants (design §2.3). operatorList is read but needs humans-only
+  // transport, so send tier (meaning mutateLocal boundary was already crossed).
   'a2a.channel.operatorJoin':         { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.channel.operatorList':         { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'a2a.principal.upsert':             { capability: 'wmux.internal' },
@@ -419,8 +419,8 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   'task.mission.start': { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'task.mission.close': { capability: 'a2a.channel.send', riskClass: 'a2a' },
   'task.mission.list':  { capability: 'a2a.channel.read', riskClass: 'a2a' },
-  // J1 §5 — 물질화 커밋. start/close와 동일 mutation 등급(a2a.channel.send).
-  // 단조 물질화·배타 불변식·owner|CEO authz는 데몬 WorkTaskService에서 강제.
+  // J1 §5 — materialization commit. Same mutation tier as start/close (a2a.channel.send).
+  // Monotonic materialization, exclusivity invariant, owner|CEO authz enforced in daemon WorkTaskService.
   'task.mission.update': { capability: 'a2a.channel.send', riskClass: 'a2a' },
 
   // --- Company subsystem (substrate-internal team/orchestration). All

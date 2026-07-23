@@ -183,7 +183,7 @@ describe('a2a.rpc — execute confirmation gate', () => {
   });
 });
 
-// ── 패널 D: task.query 병합 — 데몬 정본이 더 최신이면 status/updatedAt 우선 ──
+// ── Panel D: task.query merge — daemon source wins status/updatedAt when newer ──
 
 import type { DaemonClient } from '../../../DaemonClient';
 
@@ -197,10 +197,10 @@ function setupRouterWithDaemon(
   return router;
 }
 
-describe('a2a.task.query 병합 (패널 D)', () => {
-  it('같은 id에서 데몬이 더 최신이면 status/updatedAt은 데몬 값, history는 렌더러 보존', async () => {
+describe('a2a.task.query merge (panel D)', () => {
+  it('when daemon is newer for same id, status/updatedAt from daemon, history preserved from renderer', async () => {
     const worker = makeWorker();
-    // 렌더러 캐시: stale working(+ 증분 history 2건). 데몬 정본: completed(더 최신).
+    // Renderer cache: stale working (+ 2 incremental history). Daemon source: completed (newer).
     sendToRendererMock.mockResolvedValueOnce({
       workspaceId: 'ws-r',
       tasks: [{
@@ -227,12 +227,12 @@ describe('a2a.task.query 병합 (패널 D)', () => {
     const tasks = ((res as { result: unknown }).result as { tasks: Array<Record<string, unknown>> }).tasks;
     expect(tasks).toHaveLength(1);
     const t = tasks[0];
-    expect((t.status as { state: string }).state).toBe('completed'); // 데몬 정본 우선
+    expect((t.status as { state: string }).state).toBe('completed'); // daemon source wins
     expect((t.metadata as { updatedAt: string }).updatedAt).toBe('2026-07-07T00:05:00.000Z');
-    expect(t.history).toEqual(['h1', 'h2']); // 렌더러 증분 보존
+    expect(t.history).toEqual(['h1', 'h2']); // renderer increment preserved
   });
 
-  it('렌더러가 더 최신이면(증분 히스토리로 앞섬) 렌더러 유지 — 데몬-only id는 추가', async () => {
+  it('when renderer is newer (ahead via incremental history) keep renderer — append daemon-only ids', async () => {
     const worker = makeWorker();
     sendToRendererMock.mockResolvedValueOnce({
       workspaceId: 'ws-r',
@@ -255,13 +255,13 @@ describe('a2a.task.query 병합 (패널 D)', () => {
     const res = await router.dispatch({ id: 'q2', method: 'a2a.task.query', params: { workspaceId: 'ws-r' } });
     const tasks = ((res as { result: unknown }).result as { tasks: Array<Record<string, unknown>> }).tasks;
     const byId = new Map(tasks.map((t) => [t.id, t]));
-    expect((byId.get('t1')!.status as { state: string }).state).toBe('input-required'); // 렌더러가 최신 → 유지
-    expect(byId.get('t2-restart-survivor')).toBeDefined(); // 데몬-only(재시작 생존분) 추가
+    expect((byId.get('t1')!.status as { state: string }).state).toBe('input-required'); // renderer newer → keep
+    expect(byId.get('t2-restart-survivor')).toBeDefined(); // daemon-only (restart survivor) appended
   });
 });
 
-describe('a2a.task.query 델타: status 필터는 병합 후 적용(D override 보존)', () => {
-  it('필터=working인데 데몬 정본=completed(더 최신)면 stale working이 결과에서 빠진다', async () => {
+describe('a2a.task.query delta: status filter applied after merge (preserves D override)', () => {
+  it('filter=working but daemon canonical=completed (newer) drops stale working from results', async () => {
     const worker = makeWorker();
     sendToRendererMock.mockResolvedValueOnce({
       workspaceId: 'ws-r',
@@ -280,15 +280,15 @@ describe('a2a.task.query 델타: status 필터는 병합 후 적용(D override �
 
     const res = await router.dispatch({ id: 'q1', method: 'a2a.task.query', params: { workspaceId: 'ws-r', status: 'working' } });
     const tasks = ((res as { result: unknown }).result as { tasks: Array<Record<string, unknown>> }).tasks;
-    // 데몬 override로 t1이 completed가 됐고 필터=working이라 결과에서 제외돼야 한다.
+    // Daemon override made t1 completed; filter=working so excluded from results.
     expect(tasks).toHaveLength(0);
-    // 데몬 조회는 status 무필터로 나갔다(정본을 필터로 숨기지 않기 위해).
+    // Daemon query went out without status filter (don't hide source behind filter).
     expect(daemonCalls[0]).not.toHaveProperty('status');
   });
 });
 
-describe('a2a.task.cancel 델타: terminal no-op은 거짓 cancelled 이벤트를 방출하지 않는다', () => {
-  it('데몬이 completed(멱등 no-op) 반환 → 렌더러 cancel 라운드트립 없이 ok만', async () => {
+describe('a2a.task.cancel delta: terminal no-op does not emit false cancelled event', () => {
+  it('daemon returns completed (idempotent no-op) → ok only without renderer cancel round-trip', async () => {
     sendToRendererMock.mockClear();
     const worker = makeWorker();
     const router = setupRouterWithDaemon(worker, async (method) => {
@@ -299,13 +299,13 @@ describe('a2a.task.cancel 델타: terminal no-op은 거짓 cancelled 이벤트�
     });
     const res = await router.dispatch({ id: 'c1', method: 'a2a.task.cancel', params: { taskId: 't1', workspaceId: 'ws-r' } });
     expect((res as { ok: boolean }).ok).toBe(true);
-    expect(worker.cancel).toHaveBeenCalledWith('t1'); // 워커는 여전히 취소
-    // 종단 no-op → 렌더러 a2a.task.cancel(daemonCommitted) 미발행(거짓 이벤트 없음).
+    expect(worker.cancel).toHaveBeenCalledWith('t1'); // worker still cancelled
+    // terminal no-op → no renderer a2a.task.cancel(daemonCommitted) (no false event).
     const cancelSends = sendToRendererMock.mock.calls.filter((c) => c[1] === 'a2a.task.cancel');
     expect(cancelSends).toHaveLength(0);
   });
 
-  it('데몬이 canceled(실취소) 반환 → 렌더러 daemonCommitted 발행', async () => {
+  it('daemon returns canceled (real cancel) → renderer daemonCommitted published', async () => {
     sendToRendererMock.mockClear();
     sendToRendererMock.mockResolvedValue({ ok: true, taskId: 't2' });
     const worker = makeWorker();

@@ -1,8 +1,8 @@
 /**
  * useNotificationSound
  *
- * Web Audio API를 사용해 외부 파일 없이 짧은 비프음을 생성합니다.
- * notificationSoundEnabled 설정이 true일 때만 재생됩니다.
+ * Generates short beeps via Web Audio API without external files.
+ * Plays only when notificationSoundEnabled is true.
  */
 
 let audioCtx: AudioContext | null = null;
@@ -15,11 +15,11 @@ function getAudioContext(): AudioContext {
 }
 
 /**
- * 알림 타입별 소리 재생.
- * - agent: 두 음 상승 (성공 신호)
- * - error: 낮은 단음 (경고)
- * - warning: 중간 단음
- * - info: 기본 단음
+ * Play sound by notification type.
+ * - agent: two rising tones (success signal)
+ * - error: low single tone (warning)
+ * - warning: mid single tone
+ * - info: default single tone
  */
 export function playNotificationSound(type: 'agent' | 'error' | 'warning' | 'info' = 'info'): void {
   try {
@@ -34,20 +34,20 @@ export function playNotificationSound(type: 'agent' | 'error' | 'warning' | 'inf
 
     switch (type) {
       case 'agent':
-        // 두 음 상승: 솔 → 도
+        // Two rising tones: G → C
         configs.push({ freq: 784, time: now, duration: 0.1 });
         configs.push({ freq: 1047, time: now + 0.12, duration: 0.12 });
         break;
       case 'error':
-        // 낮은 단음
+        // Low single tone
         configs.push({ freq: 330, time: now, duration: 0.18 });
         break;
       case 'warning':
-        // 중간 단음
+        // Mid single tone
         configs.push({ freq: 523, time: now, duration: 0.14 });
         break;
       default:
-        // info: 짧은 고음
+        // info: short high tone
         configs.push({ freq: 880, time: now, duration: 0.1 });
         break;
     }
@@ -70,6 +70,6 @@ export function playNotificationSound(type: 'agent' | 'error' | 'warning' | 'inf
       osc.stop(time + duration + 0.01);
     }
   } catch {
-    // AudioContext가 지원되지 않는 환경에서는 무시
+    // Ignore when AudioContext is not supported
   }
 }

@@ -4,8 +4,8 @@ import * as path from 'node:path';
 import type { CompanyTemplate } from '../types';
 
 /**
- * Company 구성을 JSON 파일로 저장/로드하는 매니저.
- * 저장 경로: app.getPath('userData') / templates / {name}.json
+ * Manager that saves/loads Company configuration as JSON files.
+ * Storage path: app.getPath('userData') / templates / {name}.json
  */
 export class CompanyTemplateManager {
   private readonly templatesDir: string;
@@ -51,13 +51,13 @@ export class CompanyTemplateManager {
     return resolved;
   }
 
-  /** JSON 파일로 템플릿을 저장한다. */
+  /** Saves the template as a JSON file. */
   save(company: CompanyTemplate): void {
     const fp = this.filePath(company.name);
     fs.writeFileSync(fp, JSON.stringify(company, null, 2), 'utf-8');
   }
 
-  /** 이름으로 템플릿을 로드한다. 존재하지 않으면 null 반환. */
+  /** Loads a template by name. Returns null if it does not exist. */
   load(name: string): CompanyTemplate | null {
     const fp = this.filePath(name);
     if (!fs.existsSync(fp)) return null;
@@ -77,7 +77,7 @@ export class CompanyTemplateManager {
     }
   }
 
-  /** 저장된 템플릿 이름 목록을 반환한다. */
+  /** Returns the list of saved template names. */
   list(): string[] {
     this.ensureDir();
     return fs
@@ -86,7 +86,7 @@ export class CompanyTemplateManager {
       .map((f) => f.slice(0, -5));
   }
 
-  /** 이름으로 템플릿 파일을 삭제한다. */
+  /** Deletes the template file for the given name. */
   delete(name: string): void {
     const fp = this.filePath(name);
     if (fs.existsSync(fp)) {
@@ -95,7 +95,7 @@ export class CompanyTemplateManager {
   }
 
   /**
-   * 지정된 절대 경로로 템플릿을 내보낸다.
+   * Exports the template to the specified absolute path.
    * Security: validates the target path is within a safe directory.
    */
   exportToFile(company: CompanyTemplate, filePath: string): void {
@@ -111,7 +111,7 @@ export class CompanyTemplateManager {
   }
 
   /**
-   * 지정된 절대 경로에서 템플릿을 가져온다. 파싱 실패 시 null 반환.
+   * Imports a template from the specified absolute path. Returns null on parse failure.
    * Security: validates the file size to prevent abuse.
    */
   importFromFile(filePath: string): CompanyTemplate | null {

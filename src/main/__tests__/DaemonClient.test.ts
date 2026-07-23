@@ -81,8 +81,8 @@ function createMockSessionPipe(
   sessionId: string,
 ): { server: net.Server; start: () => Promise<string>; stop: () => Promise<void>; writeToClient: (data: Buffer) => void } {
   const pipeName = process.platform === 'win32'
-    ? `\\\\.\\pipe\\wmux-session-${sessionId}`
-    : path.join(os.homedir(), `.wmux-session-${sessionId}.sock`);
+    ? `\\\\.\\pipe\\fmux-session-${sessionId}`
+    : path.join(os.homedir(), `.fmux-session-${sessionId}.sock`);
 
   let clientSocket: net.Socket | null = null;
   const inputReceived: Buffer[] = [];
@@ -392,8 +392,8 @@ describe('DaemonClient', () => {
       // Track input received at the mock session server
       const inputReceived: Buffer[] = [];
       const sessionPipeName = process.platform === 'win32'
-        ? `\\\\.\\pipe\\wmux-session-${sessionId}`
-        : path.join(os.homedir(), `.wmux-session-${sessionId}.sock`);
+        ? `\\\\.\\pipe\\fmux-session-${sessionId}`
+        : path.join(os.homedir(), `.fmux-session-${sessionId}.sock`);
 
       let clientSocket: net.Socket | null = null;
       const sessionServer = net.createServer((socket) => {
@@ -700,10 +700,10 @@ describe('DaemonClient', () => {
     it('getDaemonPipeName should return platform-appropriate pipe name', () => {
       const name = getDaemonPipeName();
       if (process.platform === 'win32') {
-        expect(name).toMatch(/^\\\\.\\pipe\\wmux-daemon-/);
+        expect(name).toMatch(/^\\\\.\\pipe\\fmux-daemon-/);
       } else {
-        // P7: Unix 소켓은 ~/.wmux{suffix}/ 하위로 이동
-        expect(name).toMatch(/\/\.wmux(-[^/]+)?\/daemon\.sock$/);
+        // P7: Unix socket moved under ~/.fmux{suffix}/
+        expect(name).toMatch(/\/\.fmux(-[^/]+)?\/daemon\.sock$/);
       }
     });
 

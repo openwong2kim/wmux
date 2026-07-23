@@ -1,4 +1,4 @@
-// ─── WorktaskScanService — J3 §1 정리 스캔(디스크 정본 4종 + GC 역추적) ──────
+// ─── WorktaskScanService — J3 §1 cleanup scan (4 disk source-of-truth kinds + GC backtrace) ──────
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -8,7 +8,7 @@ import os from 'node:os';
 import { WorktaskScanService, type ScanOpenTask } from '../WorktaskScanService';
 import { WORKTASK_META_FILENAME, type WorkTaskMetaStamp } from '../../../shared/workTask';
 
-let root: string; // 전용 루트 스텁({wmux home}/worktrees 대역)
+let root: string; // dedicated root stub ({wmux home}/worktrees band)
 const REPO_HASH = 'abc123def456';
 
 beforeEach(() => {
@@ -18,7 +18,7 @@ afterEach(() => {
   fs.rmSync(root, { recursive: true, force: true });
 });
 
-/** 전용 루트에 worktree 디렉토리(+선택적 task.json)를 만든다. 반환=worktree 경로. */
+/** Create worktree directory (+ optional task.json) under dedicated root. Returns worktree path. */
 function seedWorktree(slug: string, stamp?: WorkTaskMetaStamp): string {
   const wt = path.join(root, REPO_HASH, slug);
   fs.mkdirSync(wt, { recursive: true });
@@ -31,7 +31,7 @@ function seedWorktree(slug: string, stamp?: WorkTaskMetaStamp): string {
   return wt;
 }
 
-/** linux 정규화 + realpath=항등 + isDirty 주입으로 결정론 스캔. */
+/** Deterministic scan via linux normalization + identity realpath + injected isDirty. */
 function makeSvc(dirtyPaths: Set<string> = new Set()): WorktaskScanService {
   return new WorktaskScanService({
     worktreesRoot: root,
@@ -41,8 +41,8 @@ function makeSvc(dirtyPaths: Set<string> = new Set()): WorktaskScanService {
   });
 }
 
-describe('J3 §1 정리 스캔 4종 판정', () => {
-  it('unmaterialized-open: worktreePath 부재 open 태스크', async () => {
+describe('J3 §1 cleanup scan — four category kinds', () => {
+  it('unmaterialized-open: open task without worktreePath', async () => {
     const svc = makeSvc();
     const res = await svc.scan([{ taskId: 'wtask-1', title: 'A' }]);
     const e = res.entries.find((x) => x.category === 'unmaterialized-open');
@@ -51,7 +51,7 @@ describe('J3 §1 정리 스캔 4종 판정', () => {
     expect(e?.title).toBe('A');
   });
 
-  it('disk-missing: worktreePath 주장하나 디스크 부재', async () => {
+  it('disk-missing: claims worktreePath but absent on disk', async () => {
     const svc = makeSvc();
     const ghost = path.join(root, REPO_HASH, 'ghost-slug');
     const res = await svc.scan([{ taskId: 'wtask-2', title: 'B', worktreePath: ghost }]);
@@ -61,7 +61,7 @@ describe('J3 §1 정리 스캔 4종 판정', () => {
     expect(e?.worktreePath).toBe(ghost);
   });
 
-  it('preserved: 디스크 worktree가 open 태스크와 매칭 + dirty', async () => {
+  it('preserved: disk worktree matches open task + dirty', async () => {
     const wt = seedWorktree('preserved-slug');
     const svc = makeSvc(new Set([wt]));
     const res = await svc.scan([{ taskId: 'wtask-3', title: 'C', worktreePath: wt }]);
@@ -71,28 +71,28 @@ describe('J3 §1 정리 스캔 4종 판정', () => {
     expect(e?.worktreePath).toBe(wt);
   });
 
-  it('clean+linked(정상 작업)은 이상 아님 — 목록 제외', async () => {
+  it('clean+linked (normal work) is not an anomaly — excluded from list', async () => {
     const wt = seedWorktree('clean-slug');
-    const svc = makeSvc(/* dirty 없음 */);
+    const svc = makeSvc(/* not dirty */);
     const res = await svc.scan([{ taskId: 'wtask-4', title: 'D', worktreePath: wt }]);
-    // 어떤 카테고리로도 등재되지 않는다(정상 작업).
+    // not listed in any category (normal work).
     expect(res.entries.find((x) => x.worktreePath === wt)).toBeUndefined();
     expect(res.entries).toHaveLength(0);
   });
 
-  it('orphan-dir: 매칭 open 태스크 없는 디스크 worktree(task.json 역추적)', async () => {
+  it('orphan-dir: disk worktree with no matching open task (task.json backtrace)', async () => {
     const wt = seedWorktree('orphan-slug', { taskId: 'wtask-5', title: 'E', createdAt: 111 });
     const svc = makeSvc();
-    const res = await svc.scan([]); // projection에 아무 태스크도 없음.
+    const res = await svc.scan([]); // no tasks in projection.
     const e = res.entries.find((x) => x.category === 'orphan-dir');
     expect(e).toBeTruthy();
-    expect(e?.taskId).toBe('wtask-5'); // task.json 역추적.
+    expect(e?.taskId).toBe('wtask-5'); // task.json backtrace.
     expect(e?.title).toBe('E');
     expect(e?.worktreePath).toBe(wt);
   });
 
-  it('orphan-dir: task.json 부재면 역추적 없이 등재(안전 삭제 대상)', async () => {
-    const wt = seedWorktree('bare-orphan'); // 스탬프 없음.
+  it('orphan-dir: listed without backtrace when task.json absent (safe delete candidate)', async () => {
+    const wt = seedWorktree('bare-orphan'); // no stamp.
     const svc = makeSvc();
     const res = await svc.scan([]);
     const e = res.entries.find((x) => x.worktreePath === wt);
@@ -101,13 +101,13 @@ describe('J3 §1 정리 스캔 4종 판정', () => {
   });
 });
 
-describe('J3 §1 GC 이후 역추적(closed 태스크 소멸 후 task.json)', () => {
-  it('projection에서 GC된 closed 태스크의 worktree를 taskId·closedAt로 역추적', async () => {
-    // closed 태스크가 7일 GC로 projection에서 사라진 상태 = openTasks에 부재.
-    // worktree + task.json(closedAt 포함)만 디스크에 잔존.
+describe('J3 §1 post-GC backtrace (task.json after closed task removal)', () => {
+  it('backtraces GCed closed task worktree via taskId·closedAt', async () => {
+    // closed task gone from projection via 7-day GC = absent from openTasks.
+    // only worktree + task.json (with closedAt) remains on disk.
     const wt = seedWorktree('gc-slug', {
       taskId: 'wtask-gc',
-      title: 'GC된 미션',
+      title: 'GCed mission',
       createdAt: 1000,
       closedAt: 2000,
     });
@@ -116,13 +116,13 @@ describe('J3 §1 GC 이후 역추적(closed 태스크 소멸 후 task.json)', ()
     const e = res.entries.find((x) => x.worktreePath === wt);
     expect(e?.category).toBe('orphan-dir');
     expect(e?.taskId).toBe('wtask-gc');
-    expect(e?.title).toBe('GC된 미션');
+    expect(e?.title).toBe('GCed mission');
     expect(e?.closedAt).toBe(2000);
   });
 });
 
-describe('J3 F1 owner 스코프 — 이상 엔트리에 ownerWorkspaceId', () => {
-  it('unmaterialized-open·preserved 엔트리에 owner ws id가 실린다', async () => {
+describe('J3 F1 owner scope — ownerWorkspaceId on anomaly entries', () => {
+  it('unmaterialized-open·preserved entries carry owner ws id', async () => {
     const wt = seedWorktree('owned-slug');
     const svc = makeSvc(new Set([wt]));
     const res = await svc.scan([
@@ -133,7 +133,7 @@ describe('J3 F1 owner 스코프 — 이상 엔트리에 ownerWorkspaceId', () =>
     expect(res.entries.find((x) => x.taskId === 'wtask-p')?.ownerWorkspaceId).toBe('parent-b');
   });
 
-  it('disk-missing 엔트리에도 owner ws id가 실린다', async () => {
+  it('disk-missing entries also carry owner ws id', async () => {
     const svc = makeSvc();
     const ghost = path.join(root, REPO_HASH, 'ghost2');
     const res = await svc.scan([{ taskId: 'wtask-d', title: 'D', ownerWorkspaceId: 'parent-c', worktreePath: ghost }]);
@@ -141,9 +141,9 @@ describe('J3 F1 owner 스코프 — 이상 엔트리에 ownerWorkspaceId', () =>
   });
 });
 
-describe('J3 F8 meta 고아 — worktree 없는 .meta 잔여', () => {
-  it('worktree 없이 .meta/{slug}/task.json만 남으면 orphan-dir로 표시(자동 삭제 안 함)', async () => {
-    // remove↔meta 삭제 사이 크래시: worktree 디렉토리는 없고 meta만 잔존.
+describe('J3 F8 meta orphan — .meta remnant without worktree', () => {
+  it('orphan-dir when only .meta/{slug}/task.json remains without worktree (no auto delete)', async () => {
+    // crash between remove↔meta delete: no worktree dir, meta only remains.
     const slug = 'meta-only';
     const metaDir = path.join(root, REPO_HASH, '.meta', slug);
     fs.mkdirSync(metaDir, { recursive: true });
@@ -159,8 +159,8 @@ describe('J3 F8 meta 고아 — worktree 없는 .meta 잔여', () => {
     expect(e?.worktreePath).toBe(path.join(root, REPO_HASH, slug));
   });
 
-  it('worktree가 있는 정상 meta는 중복 등재되지 않는다', async () => {
-    // worktree + open 태스크 매칭(clean) → 이상 아님. meta 사이드카가 있어도 orphan 아님.
+  it('healthy meta with worktree is not listed twice', async () => {
+    // worktree + matching open task (clean) → not an anomaly. meta sidecar present → not orphan.
     const wt = seedWorktree('healthy', { taskId: 'wtask-h', title: 'H', createdAt: 1 });
     const svc = makeSvc(/* clean */);
     const res = await svc.scan([{ taskId: 'wtask-h', title: 'H', worktreePath: wt }]);
@@ -168,16 +168,16 @@ describe('J3 F8 meta 고아 — worktree 없는 .meta 잔여', () => {
   });
 });
 
-describe('J3 §1 스캔 경계', () => {
-  it('.meta 사이드카는 worktree로 오인하지 않는다', async () => {
+describe('J3 §1 scan boundaries', () => {
+  it('.meta sidecar is not mistaken for a worktree', async () => {
     seedWorktree('with-meta', { taskId: 'wtask-6', title: 'F', createdAt: 1 });
     const svc = makeSvc();
     const res = await svc.scan([{ taskId: 'wtask-6', title: 'F', worktreePath: path.join(root, REPO_HASH, 'with-meta') }]);
-    // .meta 디렉토리가 orphan-dir로 잘못 잡히면 안 됨.
+    // .meta directory must not be misclassified as orphan-dir.
     expect(res.entries.find((x) => x.worktreePath?.endsWith('.meta'))).toBeUndefined();
   });
 
-  it('전용 루트 부재는 빈 스캔(예외 없음)', async () => {
+  it('missing dedicated root yields empty scan (no exception)', async () => {
     const svc = new WorktaskScanService({
       worktreesRoot: path.join(root, 'does-not-exist'),
       platform: 'linux',
@@ -188,7 +188,7 @@ describe('J3 §1 스캔 경계', () => {
     expect(res.entries).toHaveLength(0);
   });
 
-  it('isDirty가 throw하면 보수적으로 preserved 등재(무해측)', async () => {
+  it('isDirty throw → conservatively listed as preserved (harmless side)', async () => {
     const wt = seedWorktree('throw-slug');
     const svc = new WorktaskScanService({
       worktreesRoot: root,

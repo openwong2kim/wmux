@@ -1,5 +1,5 @@
-// 2026-07-15 dogfood report: "Amber 테마에서 클로드 사용중에 글씨가 검정으로
-// 나올 때가 있다" (text sometimes renders black while using Claude, in the
+// 2026-07-15 dogfood report: "Text sometimes renders black while using Claude in the
+// Amber theme" (text sometimes renders black while using Claude, in the
 // Amber theme). Root cause: Claude Code (and other TUI apps) emit true-color
 // RGB foreground text that bypasses the xterm indexed ANSI palette entirely —
 // the same mechanism #74 fixed for light themes (literal white on a cream

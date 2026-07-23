@@ -1,18 +1,18 @@
 /**
- * SnapshotStore — projection 스냅샷 저장/로드 + 폴백 체인 + 컴팩션 판정
- * (envelope-design §5·§9). PR2 범위: 순수 라이브러리. 서비스 배선은 PR3.
+ * SnapshotStore — projection snapshot save/load + fallback chain + compaction planning
+ * (envelope-design §5·§9). PR2 scope: pure library. Service wiring is PR3.
  *
- * 계약 요약(스펙 문면):
- *   - 스냅샷 쓰기는 전부 durable(§2.3 D13) — projection 스냅샷은 manifest.snapshotLamport가
- *     참조하고 §9 컴팩션이 "durable 확정 후에만 절단"하므로 fsync 없는 쓰기는 이중 소실을 낳는다.
- *   - genesis(immutable)·reseed(genesis급 immutable)·projection 스냅샷은 하나의 SnapshotEnvelope
- *     형식을 공유한다 — snapshotLamport 마커를 **파일 자체에** 실어야 폴백 체인이 .bak/reseed로
- *     내려갈 때 replay 하한을 정확히 안다(manifest.snapshotLamport는 최신 스냅샷 기준이라
- *     폴백된 구 스냅샷엔 부정확 → 데이터 유실). 그래서 각 스냅샷은 자족적이다.
- *   - 폴백 체인(§5): 최신 스냅샷 → .bak → reseed(최신순) → genesis. 손상 시 다음 단계로.
- *     ".bak" 단계는 atomicReadJSONSync의 primary→.bak 폴백이 담당한다.
- *   - 컴팩션 트리거는 **판정 함수만**(planCompaction) — 실행(절단)은 미래(PR3+). 가드:
- *     durable 스냅샷 확정 전 절단 금지, genesis·reseed는 절대 비절단(§9 함정, D14).
+ * Contract summary (spec surface):
+ *   - All snapshot writes are durable (§2.3 D13) — projection snapshots are referenced by manifest.snapshotLamport
+ *     and §9 compaction "truncate only after durable confirmed" so non-fsync writes cause double loss.
+ *   - genesis (immutable)·reseed (genesis-grade immutable)·projection snapshots share one SnapshotEnvelope
+ *     format — snapshotLamport marker must live **in the file itself** so fallback chain knows exact replay
+ *     floor when descending to .bak/reseed (manifest.snapshotLamport is latest-snapshot basis so
+ *     inaccurate on fallen-back older snapshot → data loss). Each snapshot is self-contained.
+ *   - Fallback chain (§5): latest snapshot → .bak → reseed (newest first) → genesis. On corruption, next step.
+ *     ".bak" step handled by atomicReadJSONSync primary→.bak fallback.
+ *   - Compaction trigger is **planning function only** (planCompaction) — execution (truncate) is future (PR3+). Guards:
+ *     no truncate before durable snapshot confirmed, genesis·reseed never truncated (§9 trap, D14).
  */
 
 import path from 'node:path';
@@ -24,37 +24,37 @@ import {
 import { AsyncQueue } from '../util/AsyncQueue';
 
 /**
- * 스냅샷 파일 1개의 봉투(§5). projection(도메인 상태)과 snapshotLamport 마커를 함께 실어
- * 폴백 체인이 파일만으로 자족적이게 한다.
+ * Envelope for one snapshot file (§5). Carries projection (domain state) and snapshotLamport marker together so
+ * fallback chain is self-contained from files alone.
  *
- * additive-only: 필드 추가만, 기존 필드 제거·개명 금지(디스크 영속 계약).
+ * additive-only: add fields only, no remove·rename of existing fields (disk persistence contract).
  */
 export interface SnapshotEnvelope<T> {
   version: number;
-  /** 이 스냅샷에 반영된 최대 lamport. 부트 replay는 `lamport > snapshotLamport`만 적용(§5). */
+  /** Max lamport reflected in this snapshot. Boot replay applies only `lamport > snapshotLamport` (§5). */
   snapshotLamport: number;
-  /** 도메인 projection(ChannelState 등). 로그 계층은 미해석. */
+  /** Domain projection (ChannelState etc.). Log layer does not interpret. */
   projection: T;
 }
 
 export const SNAPSHOT_ENVELOPE_VERSION = 1;
 
-/** `events/snapshot/` 서브디렉토리 이름(§2.1). */
+/** `events/snapshot/` subdirectory name (§2.1). */
 export const SNAPSHOT_DIRNAME = 'snapshot';
 
-/** genesis 채널 스냅샷 참조명(§2.1, D14 immutable). */
+/** genesis channel snapshot ref name (§2.1, D14 immutable). */
 export const GENESIS_CHANNEL_REF = 'genesis-channel.json';
-/** 활성 채널 projection 스냅샷 참조명(§2.1·§5). */
+/** Active channel projection snapshot ref name (§2.1·§5). */
 export const CHANNEL_PROJECTION_REF = 'channel.json';
-/** 활성 A2A projection 스냅샷 참조명(§2.1·§5). */
+/** Active A2A projection snapshot ref name (§2.1·§5). */
 export const A2A_PROJECTION_REF = 'a2a.json';
 
-/** reseed 스냅샷 참조명 빌더(§6.4c, genesis급 immutable). */
+/** reseed snapshot ref name builder (§6.4c, genesis-grade immutable). */
 export function reseedRef(n: number): string {
   return `reseed-${n}.json`;
 }
 
-/** SnapshotEnvelope 구조 가드(projection 내용은 별도 validator가 검사). */
+/** SnapshotEnvelope structure guard (projection content checked by separate validator). */
 export function isSnapshotEnvelope(v: unknown): v is SnapshotEnvelope<unknown> {
   if (typeof v !== 'object' || v === null) return false;
   const o = v as Record<string, unknown>;
@@ -65,7 +65,7 @@ export function isSnapshotEnvelope(v: unknown): v is SnapshotEnvelope<unknown> {
   );
 }
 
-/** 폴백 체인 로드 결과. source가 어느 단계에서 왔는지 알려 감사·테스트에 쓴다. */
+/** Fallback chain load result. source tells which step for audit·tests. */
 export interface FallbackLoad<T> {
   projection: T;
   snapshotLamport: number;
@@ -73,21 +73,21 @@ export interface FallbackLoad<T> {
   ref: string;
 }
 
-/** planCompaction 입력의 세그먼트 메타. */
+/** Segment meta for planCompaction input. */
 export interface SegmentMeta {
   num: number;
-  /** 세그먼트 내 최대 lamport. 빈 세그먼트는 0. */
+  /** Max lamport in segment. Empty segment is 0. */
   maxLamport: number;
   empty: boolean;
 }
 
-/** planCompaction 판정 결과(실행 없음 — 절단 대상 목록 + 보호 스냅샷 목록). */
+/** planCompaction planning result (no execution — truncate candidate list + protected snapshot list). */
 export interface CompactionPlan {
-  /** 안전하게 절단(삭제)할 수 있는 세그먼트 번호. durable 미확정이면 항상 빈 배열. */
+  /** Segment numbers safe to truncate (delete). Empty if durable unconfirmed. */
   truncatableSegments: number[];
-  /** 절대 절단 금지 스냅샷(§9 D14) — genesis + 전 reseed. 계약을 명시적·검증가능하게. */
+  /** Never-truncate snapshots (§9 D14) — genesis + all reseed. Explicit·verifiable contract. */
   protectedSnapshots: string[];
-  /** 판정 근거(감사·테스트용). */
+  /** Planning rationale (audit·tests). */
   reason: string;
 }
 
@@ -97,26 +97,26 @@ interface DebounceSlot<T> {
   timer: NodeJS.Timeout | null;
   pending: SnapshotEnvelope<T> | null;
   /**
-   * 세대 가드(패널 E): sync 쓰기(writeDurableSync·flushSync)마다 단조 증가. in-flight
-   * async 쓰기는 시작 세대를 캡처하고, 완료 시 세대가 전진했으면(= 자기 rename이 더
-   * 신선한 sync 내용을 되덮은 것) lastSync를 복원한다 — ChannelStateWriter의
-   * immediateEpoch race recovery(:142-160)와 동형 패턴.
+   * Generation guard (panel E): monotonically increases on each sync write (writeDurableSync·flushSync).
+   * In-flight async write captures start generation; on completion if generation advanced (= its rename
+   * overwrote fresher sync content) restore lastSync — same pattern as ChannelStateWriter
+   * immediateEpoch race recovery (:142-160).
    */
   epoch: number;
-  /** 마지막 sync 쓰기 내용(세대 가드 복원 원본). */
+  /** Last sync write content (generation guard restore source). */
   lastSync: SnapshotEnvelope<T> | null;
 }
 
 /**
- * projection 스냅샷 저장소. `snapshotDir`(= `events/snapshot`) 아래 파일을 durable로 쓴다.
- * debounced 경로는 부트 가속용 활성 projection 스냅샷(channel.json 등)에, writeDurableSync는
- * 마이그레이션의 순서 있는 시퀀스(genesis·reseed)에 쓴다.
+ * Projection snapshot store. Writes files under `snapshotDir` (= `events/snapshot`) durably.
+ * Debounced path for boot-acceleration active projection snapshots (channel.json etc.); writeDurableSync for
+ * ordered migration sequences (genesis·reseed).
  */
 export class SnapshotStore {
   private readonly dir: string;
   private readonly debounceMs: number;
   private readonly queue = new AsyncQueue();
-  // ref별 독립 debounce(channel.json·a2a.json이 서로를 지연시키지 않게).
+  // Independent debounce per ref (channel.json·a2a.json do not delay each other).
   private readonly slots = new Map<string, DebounceSlot<unknown>>();
 
   constructor(
@@ -127,12 +127,12 @@ export class SnapshotStore {
     this.debounceMs = opts.debounceMs ?? DEFAULT_DEBOUNCE_MS;
   }
 
-  /** 스냅샷 파일 절대 경로. */
+  /** Absolute snapshot file path. */
   snapshotPath(ref: string): string {
     return path.join(this.dir, ref);
   }
 
-  /** ref별 debounce 슬롯 확보. */
+  /** Acquire debounce slot per ref. */
   private getSlot(ref: string): DebounceSlot<unknown> {
     let slot = this.slots.get(ref);
     if (!slot) {
@@ -143,10 +143,10 @@ export class SnapshotStore {
   }
 
   /**
-   * durable 동기 쓰기(§2.3). 마이그레이션 시퀀스(genesis)·reseed처럼 순서가 중요한 지점에서
-   * 사용. validateProjection이 있으면 projection 내용까지 검증(genesis 무결 보장).
-   * 세대 가드(패널 E): sync 쓰기이므로 세대를 올려, 같은 ref의 in-flight async 쓰기가
-   * 이 내용을 되덮으면 복원되게 한다.
+   * Durable sync write (§2.3). For ordered points like migration sequence (genesis)·reseed.
+   * If validateProjection present, validates projection content too (genesis integrity guarantee).
+   * Generation guard (panel E): sync write bumps epoch so in-flight async on same ref that overwrites
+   * this content gets restored.
    */
   writeDurableSync<T>(
     ref: string,
@@ -165,15 +165,15 @@ export class SnapshotStore {
         ? (d) => isSnapshotEnvelope(d) && validateProjection(d.projection)
         : isSnapshotEnvelope,
     });
-    // 쓰기 성공 후에만 세대 전진(실패한 sync를 복원 원본으로 삼지 않는다).
+    // Bump epoch only after successful write (do not use failed sync as restore source).
     const slot = this.getSlot(ref);
     slot.epoch++;
     slot.lastSync = envelope;
   }
 
   /**
-   * debounced durable 쓰기(§5). 잦은 갱신을 debounceMs 창으로 코얼레싱한다.
-   * 커밋 경로가 아니다(정본은 로그) — 부트 가속용 캐시일 뿐이라 손실돼도 replay로 복구된다.
+   * Debounced durable write (§5). Coalesces frequent updates in debounceMs window.
+   * Not commit path (canonical is log) — boot-acceleration cache only; loss recoverable via replay.
    */
   saveDebounced<T>(
     ref: string,
@@ -195,8 +195,8 @@ export class SnapshotStore {
       void this.queue.enqueue(ref, async () => {
         const payload = slot.pending;
         if (payload === null) return;
-        // 세대 가드(패널 E): await 창에 sync 쓰기(flushSync·writeDurableSync)가 끼면
-        // 이 async rename이 더 신선한 내용을 stale로 되덮는다 → 완료 후 세대 비교로 복원.
+        // Generation guard (panel E): sync write (flushSync·writeDurableSync) during await window means
+        // this async rename overwrites fresher content as stale → restore after completion via epoch compare.
         const epochAtStart = slot.epoch;
         try {
           await atomicWriteJSON(this.snapshotPath(ref), payload, {
@@ -204,7 +204,7 @@ export class SnapshotStore {
             validate: isSnapshotEnvelope,
           });
           if (slot.epoch !== epochAtStart && slot.lastSync !== null) {
-            // stale rename이 최신 sync 내용을 덮었다 — 복원(durable 동기).
+            // Stale rename overwrote latest sync — restore (durable sync).
             try {
               atomicWriteJSONSync(this.snapshotPath(ref), slot.lastSync, {
                 durable: true,
@@ -212,21 +212,21 @@ export class SnapshotStore {
               });
             } catch (err) {
               console.error(
-                '[SnapshotStore] 세대 가드 복원 쓰기 실패:',
+                '[SnapshotStore] generation-guard restore write failed:',
                 err,
               );
             }
           }
           if (slot.pending === payload) slot.pending = null;
         } catch (err) {
-          // 스냅샷은 캐시 — 실패해도 정본(로그) 무영향. 로그만 남기고 계속.
-          console.error('[SnapshotStore] debounced 스냅샷 쓰기 실패:', err);
+          // Snapshot is cache — failure does not affect canonical (log). Log and continue.
+          console.error('[SnapshotStore] debounced snapshot write failed:', err);
         }
       });
     }, this.debounceMs);
   }
 
-  /** debounce 타이머를 즉시 소진(durable 동기 쓰기로). 프로세스 종료 경로용(§6.4b PR3). */
+  /** Expire debounce timer immediately (durable sync write). For process shutdown path (§6.4b PR3). */
   flushSync(): void {
     for (const [ref, slot] of this.slots) {
       if (slot.timer !== null) {
@@ -241,30 +241,29 @@ export class SnapshotStore {
             durable: true,
             validate: isSnapshotEnvelope,
           });
-          // 세대 전진(패널 E): in-flight async 쓰기가 이 내용을 되덮으면 복원되도록.
+          // Epoch advance (panel E): in-flight async that overwrites gets restored.
           slot.epoch++;
           slot.lastSync = snap;
         } catch (err) {
-          console.error('[SnapshotStore] flushSync 스냅샷 쓰기 실패:', err);
+          console.error('[SnapshotStore] flushSync snapshot write failed:', err);
         }
       }
     }
     this.queue.flushSync();
   }
 
-  /** 타이머 정리(데몬 종료). 남은 pending은 flushSync로 소진. */
+  /** Timer cleanup (daemon shutdown). Remaining pending drained via flushSync. */
   dispose(): void {
     this.flushSync();
   }
 
   /**
-   * 스냅샷 1개 로드(primary→.bak 폴백은 atomicReadJSONSync가 내장). envelope 구조 +
-   * projection 내용을 함께 검증해 손상 스냅샷은 null을 반환(폴백 체인이 다음 단계로).
+   * Load one snapshot (primary→.bak fallback built into atomicReadJSONSync). Validates envelope structure +
+   * projection together; corrupt snapshot returns null (fallback chain proceeds to next step).
    *
-   * preserveOnCorruption(패널 G①): true면 validate 거부 시에도 파일을 격리 **이동하지
-   * 않는다** — genesis·reseed는 §6.2 불변 계약("어떤 경로도 수정·삭제 안 함") 대상이라
-   * read 경로조차 파일을 옮겨선 안 된다. 활성 projection 스냅샷(재작성 캐시)은 기본
-   * false(기존 격리 증거 보존 동작 유지).
+   * preserveOnCorruption (panel G①): when true, validate reject does not **move** file to isolation —
+   * genesis·reseed are §6.2 immutable contract ("no path modifies·deletes") so even read path must not move files.
+   * Active projection snapshot (rewrite cache) defaults false (preserve existing isolation evidence behavior).
    */
   load<T>(
     ref: string,
@@ -279,9 +278,9 @@ export class SnapshotStore {
   }
 
   /**
-   * 폴백 체인 로드(§5): 최신 스냅샷 → .bak → reseed(최신순) → genesis.
-   * 각 단계는 자족적 snapshotLamport를 실어 반환하므로, 호출자는 그 값 초과 로그만 replay하면 된다.
-   * 전 단계가 손상이면 null(genesis마저 손상된 파국 — 상위가 처리).
+   * Fallback chain load (§5): latest snapshot → .bak → reseed (newest first) → genesis.
+   * Each step carries self-contained snapshotLamport so caller replays only log beyond that value.
+   * null if all steps corrupt (catastrophe — upper layer handles).
    */
   loadWithFallback<T>(opts: {
     activeRef: string;
@@ -301,8 +300,8 @@ export class SnapshotStore {
       };
     }
 
-    // reseed는 최신(높은 번호)부터 — 가장 최근 구-데몬 구간을 우선 복구.
-    // preserveOnCorruption: reseed·genesis는 §6.2 불변 아티팩트 — 손상돼도 이동 금지(G①).
+    // reseed from newest (highest number) — prioritize most recent old-daemon span recovery.
+    // preserveOnCorruption: reseed·genesis are §6.2 immutable artifacts — no move even when corrupt (G①).
     for (const ref of [...reseedRefs].reverse()) {
       const rs = this.load<T>(ref, validateProjection, {
         preserveOnCorruption: true,
@@ -333,22 +332,22 @@ export class SnapshotStore {
   }
 
   /**
-   * 컴팩션 트리거 판정(§9) — **판정만, 절단 실행 없음**(PR2 범위). 가드:
-   *   - durable 스냅샷 미확정(durableSnapshotConfirmed=false)이면 절단 후보 0 —
-   *     fsync 없는 스냅샷을 전제로 절단하면 전원손실 시 이중 소실(§9 함정, D13이 닫음).
-   *   - protectedFloorLamport 이하의 비어있지-않은 세그먼트만 후보이되, **가장 최근 후보
-   *     1개는 감사용으로 보존**(§9 "감사용 1버전 보존").
-   *   - 활성 세그먼트는 절대 후보 아님.
-   *   - genesis·reseed는 세그먼트가 아니라 스냅샷이라 세그먼트 후보 집합에 구조적으로 없다 —
-   *     그 계약을 protectedSnapshots로 명시(D14, 검증가능).
+   * Compaction trigger planning (§9) — **plan only, no truncate execution** (PR2 scope). Guards:
+   *   - durable snapshot unconfirmed (durableSnapshotConfirmed=false) → zero truncate candidates —
+   *     truncating assuming non-fsync snapshot causes double loss on total loss (§9 trap, D13 closes it).
+   *   - Non-empty segments at or below protectedFloorLamport are candidates but **most recent candidate
+   *     kept one for audit** (§9 "keep one version for audit").
+   *   - Active segment never a candidate.
+   *   - genesis·reseed are snapshots not segments so structurally absent from segment candidates —
+   *     contract made explicit·verifiable via protectedSnapshots (D14).
    */
   static planCompaction(input: {
     segments: SegmentMeta[];
     /**
-     * 절단 보호 하한(패널 F). **호출자 계약: 폴백 체인에 참여하는 생존 스냅샷들
-     * (primary·`.bak` 등)의 snapshotLamport 중 최솟값(min)을 전달하라** — manifest의
-     * 최신 lamport(Y)만으로 절단하면, primary 손상 시 .bak(더 오래된 X)로 폴백했을 때
-     * (X, Y] 구간 이벤트가 절단돼 복구 불가가 된다. min이 그 창을 닫는다.
+     * Truncate protection floor (panel F). **Caller contract: pass min of snapshotLamport among surviving
+     * snapshots in fallback chain (primary·`.bak` etc.)** — truncating by manifest latest lamport (Y) alone
+     * when primary corrupt and falling back to .bak (older X) truncates (X, Y] events making recovery impossible.
+     * min closes that window.
      */
     protectedFloorLamport: number;
     durableSnapshotConfirmed: boolean;
@@ -362,11 +361,11 @@ export class SnapshotStore {
       return {
         truncatableSegments: [],
         protectedSnapshots,
-        reason: 'durable 스냅샷 미확정 — 절단 금지(§9 함정)',
+        reason: 'durable snapshot unconfirmed — truncate forbidden (§9 trap)',
       };
     }
 
-    // 후보 = 비어있지-않고, 전부 보호 하한 이하이며, 활성이 아닌 세그먼트.
+    // Candidates = non-empty, all at or below protection floor, not active.
     const candidates = input.segments
       .filter(
         (s) =>
@@ -381,19 +380,19 @@ export class SnapshotStore {
       return {
         truncatableSegments: [],
         protectedSnapshots,
-        reason: 'protectedFloorLamport 이하 세그먼트 없음',
+        reason: 'no segments at or below protectedFloorLamport',
       };
     }
 
-    // 가장 최근 후보 1개(최고 번호)는 감사용 보존 → 그 앞의 것만 절단 가능.
+    // Keep most recent candidate (highest number) for audit → only earlier ones truncatable.
     const truncatableSegments = candidates.slice(0, candidates.length - 1);
     return {
       truncatableSegments,
       protectedSnapshots,
       reason:
         truncatableSegments.length > 0
-          ? `durable 확정 — protectedFloorLamport ${input.protectedFloorLamport} 이하 세그먼트 절단(감사용 1개 보존)`
-          : '후보 1개뿐 — 감사용 보존으로 절단 0',
+          ? `durable confirmed — truncate segments at or below protectedFloorLamport ${input.protectedFloorLamport} (keep 1 for audit)`
+          : 'only one candidate — audit retention yields zero truncations',
     };
   }
 }

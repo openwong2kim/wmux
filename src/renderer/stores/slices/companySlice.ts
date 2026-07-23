@@ -43,11 +43,11 @@ export interface CompanySlice {
 
   // Cost (per-member granular tracking)
   memberCosts: Record<string, number>;         // memberId → estimated cost ($)
-  sessionStartTime: number | null;             // session 시작 timestamp (ms)
+  sessionStartTime: number | null;             // session start timestamp (ms)
   addMemberCost: (memberId: string, amount: number) => void;
   resetCosts: () => void;
   setSessionStartTime: (time: number | null) => void;
-  updateCostEstimate: (cost: number) => void;  // company.totalCostEstimate 갱신
+  updateCostEstimate: (cost: number) => void;  // update company.totalCostEstimate
 
   // CEO workspace
   setCeoWorkspace: (workspaceId: string) => void;
@@ -114,7 +114,7 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
       workDir: workDir || undefined,
     };
     state.company = company;
-    // 새 company 생성 시 세션 시작 시간 자동 설정
+    // Auto-set session start time when creating a new company
     state.sessionStartTime = Date.now();
     state.memberCosts = {};
   }),
@@ -246,7 +246,7 @@ export const createCompanySlice: StateCreator<StoreState, [['zustand/immer', nev
   addMemberCost: (memberId, amount) => set((state) => {
     const prev = state.memberCosts[memberId] ?? 0;
     state.memberCosts[memberId] = prev + amount;
-    // totalCostEstimate 동기화
+    // Sync totalCostEstimate
     if (state.company) {
       const total = Object.values(state.memberCosts).reduce((s, v) => s + v, 0);
       state.company.totalCostEstimate = total;

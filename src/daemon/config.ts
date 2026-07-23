@@ -6,7 +6,7 @@ import { getWindowsDefaultShell } from '../shared/shellResolution';
 import { dataSuffix, getDaemonSocketPath, getLegacyDaemonSocketPath } from '../shared/constants';
 import { coerceLanLinkConfig, defaultLanLinkConfig } from '../shared/lanlink';
 
-/** ~/.wmux directory (인스턴스 격리 suffix 반영 — main에서 상속된 WMUX_DATA_SUFFIX) */
+/** ~/.wmux directory (instance isolation suffix — WMUX_DATA_SUFFIX inherited from main) */
 export function getWmuxDir(): string {
   return path.join(os.homedir(), `.fmux${dataSuffix()}`);
 }
@@ -26,9 +26,9 @@ function getDefaultShell(): string {
   return process.env.SHELL || '/bin/sh';
 }
 
-/** Generate default pipe name for current platform (격리 suffix 반영).
- * P7: macOS/Linux 소켓은 홈 직하 대신 ~/.wmux{suffix}/ 하위 — shared 헬퍼가
- * 단일 진실 소스(클라이언트들과 lockstep). */
+/** Generate default pipe name for current platform (isolation suffix applied).
+ * P7: macOS/Linux sockets live under ~/.wmux{suffix}/ instead of directly under
+ * home — shared helper is the single source of truth (lockstep with clients). */
 function getDefaultPipeName(): string {
   return getDaemonSocketPath();
 }
@@ -153,11 +153,11 @@ export function loadConfig(): DaemonConfig {
 
     const config = parsed as DaemonConfig;
 
-    // P7 마이그레이션: config.json에 박제된 pipeName이 "구버전 기본값"
-    // (`~/.wmux-daemon{suffix}.sock`)이면 새 기본값(`~/.wmux{suffix}/daemon.sock`)
-    // 으로 재작성한다. 사용자가 직접 커스텀한 pipeName은 그대로 존중. 실행 중인
-    // 구데몬과의 호환은 데몬이 부팅 시 쓰는 daemon-pipe 힌트 파일이 담당하므로
-    // 여기서는 다음 데몬 부팅부터 새 경로로 바인드되게만 하면 된다.
+    // P7 migration: if config.json pins pipeName to the "legacy default"
+    // (`~/.wmux-daemon{suffix}.sock`), rewrite to the new default
+    // (`~/.wmux{suffix}/daemon.sock`). User-custom pipeName values are respected.
+    // Compatibility with a running old daemon is handled by the daemon-pipe hint
+    // file written at boot; here we only ensure the next daemon boot binds the new path.
     if (process.platform !== 'win32' && config.daemon.pipeName === getLegacyDaemonSocketPath()) {
       config.daemon.pipeName = getDaemonSocketPath();
       saveConfig(config);

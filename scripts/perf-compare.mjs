@@ -78,7 +78,7 @@ export const GATES = [
     unit: 'bytes',
   },
   // W2 — N-pane concurrent-streaming frame budget (design §2.1/§3). ratio 2.0
-  // encodes the strategy doc's "예산 2배" trigger directly. Calibrated against
+  // encodes the strategy doc's "2× budget" trigger directly. Calibrated against
   // real CI runs (2026-07-10, 4 runs): frameDeltaMs.p95 is vsync-pinned at
   // 15.7ms for every N with zero run-to-run spread, so a single dropped-frame
   // step (33.3ms) trips the 2.0x + 8ms double condition exactly as designed.

@@ -13,8 +13,8 @@ import { FOCUS_RING } from '../focusRing';
 export default function MiniSidebar() {
   const t = useT();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
-  // A1: 레일은 id/name + 에이전트 상태만 그린다 — 요약 투영만 구독해 cwd/git/
-  // port 변경에는 리렌더되지 않게 한다.
+  // A1: the rail renders only id/name + agent status — subscribe to summary projection only so
+  // cwd/git/port changes do not re-render.
   const workspaces = useStore(useShallow(selectWorkspaceRailSummary));
   // Dot source (agent-status-dot fix): whole-workspace roll-up, same derivation
   // as WorkspaceItem — not the active-pane-only `ws.agentStatus` projection.
@@ -80,7 +80,7 @@ export default function MiniSidebar() {
           const handleClick = (e: React.MouseEvent<HTMLButtonElement>) => {
             // Suppress click that fires immediately after a drag.
             if (Date.now() - dragStartTimeRef.current < 200) return;
-            // 멀티뷰 토글: 플랫폼 주 보조키 + 클릭 (cmdOrCtrl 패턴, WorkspaceItem과 동일).
+            // Multiview toggle: platform primary modifier + click (cmdOrCtrl pattern, same as WorkspaceItem).
             // macOS=⌘, Win/Linux=Ctrl.
             const cmdOrCtrl = window.electronAPI?.platform === 'darwin' ? e.metaKey : e.ctrlKey;
             if (cmdOrCtrl) {

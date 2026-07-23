@@ -6,7 +6,7 @@ import type { ResumeBinding } from '../../../../shared/agentResume';
 
 // buildPaneResumeCommand — the per-pane resume affordance's command builder.
 // Mirrors the reboot-recovery pill's exact-vs-fallback gates (deckRecovery /
-// Pane.tsx). This is the exact string typed into the pane on 복구.
+// Pane.tsx). This is the exact string typed into the pane on recovery.
 const claude = (over: Partial<ResumeBinding> = {}): ResumeBinding => ({
   agent: 'claude',
   sessionId: 'a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',

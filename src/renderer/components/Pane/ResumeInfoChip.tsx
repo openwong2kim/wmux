@@ -83,7 +83,7 @@ export function buildPaneResumeCommand(
  * Per-pane resume affordance — the persistent sibling of the reboot-recovery
  * pill (Pane.tsx). Shown on ANY agent pane that carries a captured conversation
  * binding (surfaced by the daemon once its transcript exists), not only right
- * after a reboot. Reveals the Claude/Codex conversation UUID and, on 복구, types
+ * after a reboot. Reveals the Claude/Codex conversation UUID and, on recovery, types
  * the exact resume command into THIS pane — e.g.
  *   `claude --dangerously-skip-permissions --resume <uuid>`
  *
@@ -255,7 +255,7 @@ export default function ResumeInfoChip(props: {
             </label>
           )}
 
-          {/* Exact command preview — WYSIWYG with what 복구 types. */}
+          {/* Exact command preview — WYSIWYG with what recovery types. */}
           <code
             style={{
               display: 'block',
@@ -272,7 +272,7 @@ export default function ResumeInfoChip(props: {
             {command}
           </code>
 
-          {/* 복구 — type the command into THIS pane (no auto-Enter). */}
+          {/* Recovery — type the command into THIS pane (no auto-Enter). */}
           <button
             onClick={onRecover}
             title={t('resume.tooltip')}

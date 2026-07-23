@@ -334,9 +334,9 @@ export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, parti
   const injectInspector = useCallback(() => {
     const wv = webviewRef.current;
     if (!wv || !isReady) return;
-    // 이 오버레이/라벨은 게스트 웹뷰(임의의 외부 페이지) 내부에 주입된다.
-    // wmux 테마 CSS 변수가 없는 문서라서 색은 의도적으로 자립 hex로 둔다
-    // (테마 토큰 승격 대상 아님 — 외부 페이지 위 오버레이).
+    // This overlay/label is injected inside the guest webview (arbitrary external page).
+    // Document lacks wmux theme CSS variables so colors are intentionally standalone hex
+    // (not a theme token promotion target — overlay on external page).
     wv.executeJavaScript(`
       (function() {
         if (window.__wmuxInspector) return;

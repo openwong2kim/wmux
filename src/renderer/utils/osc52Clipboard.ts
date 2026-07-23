@@ -64,8 +64,8 @@ export function decodeOsc52Write(payload: string): string | null {
 
 /**
  * Decode standard base64 into a UTF-8 string. `atob` yields one Latin-1 char
- * per byte, so naively returning it mangles any multi-byte UTF-8 (Korean,
- * emoji). Re-read the bytes and decode as UTF-8 so `복사`/😀 survive the round
+ * per byte, so naively returning it mangles multi-byte UTF-8 (CJK,
+ * emoji). Re-read the bytes and decode as UTF-8 so copy/😀 survive the round
  * trip. Throws (caught above) on invalid base64.
  */
 function decodeBase64Utf8(b64: string): string {

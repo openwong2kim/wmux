@@ -28,12 +28,12 @@ import { isMac, isWindows } from '../shared/platform';
  * OSC-7-sticky and stops scraping prompt text for that session.
  */
 
-// v6: zsh stub에 OSC 7(cwd) 방출 추가 — mac 기본 zsh가 cd를 보고하지 않아
-// 사이드바 브랜치/git 컨텍스트가 생성 시점 cwd에 고정되던 문제 수정
+// v6: add OSC 7 (cwd) emission to zsh stub — default mac zsh does not report cd,
+// so sidebar branch/git context stayed pinned to spawn-time cwd
 // (owner-reported 2026-07-19).
-// v7: 번호만 재승격 — 릴리즈 데몬이 OSC 7 없는 스크립트를 ".version=6"으로
-// 이미 설치해 둔 기기에서 v6 게이트가 "최신"으로 오판, OSC 7 스텁이 영영
-// 설치되지 않던 문제(dogfood 실측 2026-07-20). 내용 변경 없음.
+// v7: version bump only — release daemon had installed OSC-7-less scripts as ".version=6"
+// on some devices, so v6 gate misjudged "latest" and OSC 7 stub never installed
+// (dogfood 2026-07-20). No content change.
 // v8: emit OSC 7 (cwd) from the pwsh and bash integrations too (issue #540).
 // The daemon's OSC 7-sticky permanently disables prompt scraping on the first
 // OSC 7 it sees, on the assumption that "the integration hook re-emits OSC 7
@@ -263,20 +263,20 @@ esac
 `;
 
 // -----------------------------------------------------------------------
-// zsh 5.x (macOS 기본 셸) — ZDOTDIR 가로채기 방식.
+// zsh 5.x (macOS default shell) — ZDOTDIR interception approach.
 //
-// zsh는 bash의 --rcfile 같은 옵션이 없다. 대신 시작 시 $ZDOTDIR(미설정 시
-// $HOME)의 .zshenv → .zprofile → .zshrc → .zlogin을 로드한다. 그래서 wmux는
-// ZDOTDIR을 자기 디렉토리로 바꿔 띄우고, 그 안의 stub들이 사용자의 원래 zsh
-// 파일을 먼저 source한 뒤(WMUX_USER_ZDOTDIR로 원래 위치 전달) .zshrc에서만
-// OSC 133 hook을 추가한다. VS Code / iTerm2와 동일한 표준 기법.
+// zsh has no bash-style --rcfile option. Instead it loads .zshenv → .zprofile →
+// .zshrc → .zlogin from $ZDOTDIR (or $HOME if unset) at startup. So wmux
+// launches with ZDOTDIR pointing at its directory; stubs source the user's
+// original zsh files first (WMUX_USER_ZDOTDIR carries the original location),
+// then add OSC 133 hooks only in .zshrc. Same standard technique as VS Code / iTerm2.
 //
-// 핵심 안전장치: 사용자 설정을 절대 잃지 않도록 4개 파일 모두 원래 것을
-// source하고, .zshrc 끝에서 ZDOTDIR을 사용자 값으로 복원해 이후 셸 동작이
-// 평소와 동일하게 유지되게 한다.
+// Key safety: all four files source the user's originals so settings are never lost;
+// .zshrc restores ZDOTDIR to the user's value at the end so subsequent shell behavior
+// stays normal.
 // -----------------------------------------------------------------------
 
-// 공통: 원래 ZDOTDIR(없으면 HOME) 위임. <hook>은 파일별 OSC 133 추가분.
+// Common: delegate to original ZDOTDIR (or HOME). <hook> is per-file OSC 133 addition.
 const ZSH_ENV = `# wmux shell integration — zsh .zshenv stub (v${INTEGRATION_VERSION})
 __wmux_uzd="\${WMUX_USER_ZDOTDIR:-$HOME}"
 [ -r "$__wmux_uzd/.zshenv" ] && source "$__wmux_uzd/.zshenv"
@@ -297,32 +297,32 @@ export const ZSH_RC = `# wmux shell integration — OSC 133 semantic markers (zs
 
 __wmux_uzd="\${WMUX_USER_ZDOTDIR:-$HOME}"
 
-# 사용자의 실제 .zshrc를 먼저 로드해 alias/PATH/테마(oh-my-zsh 등)를 보존한다.
+# Load the user's real .zshrc first to preserve alias/PATH/theme (oh-my-zsh, etc.).
 [ -r "$__wmux_uzd/.zshrc" ] && source "$__wmux_uzd/.zshrc"
 
-# ZDOTDIR을 사용자 값으로 되돌린다. 이후 서브셸/재로드가 평소처럼 동작하도록.
+# Restore ZDOTDIR to the user's value so subshells/reloads behave normally.
 if [ "$__wmux_uzd" = "$HOME" ]; then
   unset ZDOTDIR
 else
   export ZDOTDIR="$__wmux_uzd"
 fi
 
-# 옵트아웃: WMUX_SHELL_INTEGRATION=0 이면 OSC 133 markers를 달지 않는다.
+# Opt-out: WMUX_SHELL_INTEGRATION=0 skips OSC 133 markers.
 if [ "\${WMUX_SHELL_INTEGRATION:-1}" = "0" ]; then
   return 0 2>/dev/null
 fi
 
-# preexec: 명령 실행 직전 → C (command start)
+# preexec: just before command runs → C (command start)
 __wmux_preexec() { printf '\\033]133;C\\a'; }
-# precmd: 프롬프트 출력 직전 → D;<exit> (이전 명령 종료) + A (프롬프트 시작)
+# precmd: just before prompt → D;<exit> (previous command end) + A (prompt start)
 __wmux_precmd() { local __ec=$?; printf '\\033]133;D;%d\\a\\033]133;A\\a' "$__ec"; }
 
-# OSC 7: cwd 보고 — wmux 사이드바가 브랜치/포트/PR을 pane의 실제 디렉토리로
-# 추적하려면 cd를 감지해야 한다. mac 기본 zsh는 OSC 7을 안 쏘고 daemon의
-# 프롬프트 스크레이프도 zsh 프롬프트(host%)를 못 잡아, 이 hook 없이는 생성
-# 시점 cwd에 고정된다. chpwd로 cd 즉시(뒤에 장기 실행 명령이 붙어도) 보고 +
-# precmd로 최초/매 프롬프트 보고. parseOsc7Cwd와 맞춰 host 뒤 슬래시 없이
-# \$PWD(절대경로, / 로 시작)를 붙여 file://host/abs/path 형태로 낸다.
+# OSC 7: cwd reporting — wmux sidebar tracks branch/port/PR to the pane's actual directory,
+# so cd must be detected. Default mac zsh does not emit OSC 7 and daemon prompt scraping
+# cannot match zsh prompts (host%), so without this hook cwd stays at spawn time.
+# chpwd reports immediately on cd (even before a long-running command) +
+# precmd on first/each prompt. Matches parseOsc7Cwd: no slash after host,
+# append $PWD (absolute, leading /) as file://host/abs/path.
 #
 # v9: percent-encode the payload (parity with the pwsh/bash v8 encoders —
 # #541 review follow-up). The daemon's parseOsc7Cwd unconditionally
@@ -367,7 +367,7 @@ else
   precmd_functions+=(__wmux_osc7)
 fi
 
-# B (프롬프트 끝 / 사용자 입력 시작)을 PROMPT 끝에 한 번만 추가.
+# B (prompt end / user input start) appended once at end of PROMPT.
 # Wrap the raw OSC in zsh's %{...%} zero-width guard. Without it zle counts the
 # escape bytes as printable prompt width, and zrefresh/resetvideo overruns the
 # line buffer during resize sweeps → SIGBUS crash (RCA 2026-07-05).
@@ -387,7 +387,7 @@ export function getShellIntegrationDir(): string {
 export interface ShellIntegrationPaths {
   pwsh: string;
   bash: string;
-  /** zsh ZDOTDIR로 쓸 디렉토리 (.zshenv/.zprofile/.zlogin/.zshrc 포함). */
+  /** zsh ZDOTDIR directory (contains .zshenv/.zprofile/.zlogin/.zshrc). */
   zshDir: string;
 }
 
@@ -426,7 +426,7 @@ export function installShellIntegration(): ShellIntegrationPaths {
   if (needsWrite) {
     fs.writeFileSync(pwshPath, PWSH_INIT, { encoding: 'utf-8', mode: 0o600 });
     fs.writeFileSync(bashPath, BASH_INIT, { encoding: 'utf-8', mode: 0o600 });
-    // zsh: ZDOTDIR 디렉토리에 4개 stub 작성 (사용자 설정 위임 + .zshrc만 OSC 133).
+    // zsh: write four stubs under ZDOTDIR (delegate user config + OSC 133 only in .zshrc).
     if (!fs.existsSync(zshDir)) {
       fs.mkdirSync(zshDir, { recursive: true });
     }
@@ -446,7 +446,7 @@ export function installShellIntegration(): ShellIntegrationPaths {
  */
 export function classifyShell(shellPath: string): 'pwsh' | 'bash' | 'zsh' | 'cmd' | null {
   if (!shellPath) return null;
-  // 로그인 셸은 argv[0]가 '-zsh'처럼 앞에 '-'가 붙는다.
+  // Login shells have argv[0] prefixed with '-' (e.g. '-zsh').
   const base = path.basename(shellPath).toLowerCase().replace(/^-/, '');
   if (base === 'powershell.exe' || base === 'pwsh.exe' || base === 'pwsh') return 'pwsh';
   if (base === 'bash.exe' || base === 'bash') return 'bash';
@@ -533,9 +533,9 @@ export function buildSpawnInjection(shellPath: string): SpawnInjection | null {
   }
 
   if (kind === 'zsh') {
-    // zsh: ZDOTDIR을 wmux zsh 디렉토리로 바꿔 OSC 133 stub들이 로드되게 한다.
-    // 원래 ZDOTDIR(사용자 .zshrc 위치)은 DaemonSessionManager가 spawn 직전에
-    // WMUX_USER_ZDOTDIR로 보존하므로, stub들이 사용자 설정을 먼저 source한다.
+    // zsh: set ZDOTDIR to wmux zsh dir so OSC 133 stubs load.
+    // Original ZDOTDIR (user .zshrc location) is preserved as WMUX_USER_ZDOTDIR by
+    // DaemonSessionManager before spawn, so stubs source user config first.
     //
     // `-l` on macOS (#519). The standard macOS PATH is assembled by
     // /etc/zprofile, which runs /usr/libexec/path_helper — and zprofile is a

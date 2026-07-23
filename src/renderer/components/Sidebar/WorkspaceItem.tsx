@@ -15,9 +15,9 @@ import WorkspaceAccountMenu from './WorkspaceAccountMenu';
 import { displayPath } from '../../utils/displayPath';
 
 interface WorkspaceItemProps {
-  /** A1: 부모(Sidebar)는 id만 내리고, 이 컴포넌트가 자기 ws를 self-subscribe해
-   *  자기 ws 변경에만 리렌더된다. 콜백은 모두 id 인자를 받아 부모에서 안정적으로
-   *  한 번만 생성될 수 있게 한다(React.memo가 실효하도록). */
+  /** A1: parent (Sidebar) passes id only; this component self-subscribes to its ws and
+   *  re-renders only on its own ws changes. Callbacks all take id so parent can create them
+   *  stably once (React.memo effective). */
   workspaceId: string;
   isActive: boolean;
   isMultiview: boolean;
@@ -72,10 +72,10 @@ function PrBadge({ pr }: { pr: PrStatus }): React.ReactElement {
 }
 
 /**
- * Git 신호등(owner 2026-07-20) — 워크스페이스 이름 아래 전용 행에서 색으로
- * 상태를 즉독: clean=green ●, dirty=amber ●N, ahead=blue ↑N, behind=red ↓N.
- * 브랜치가 잡힌 워크스페이스는 항상 최소 1개의 불이 켜진다(clean이면 green).
- * 숫자는 항상 동반(맨 화살표는 모호 — GitHub Desktop #9282).
+ * Git traffic lights (owner 2026-07-20) — dedicated row under workspace name for at-a-glance
+ * color state: clean=green ●, dirty=amber ●N, ahead=blue ↑N, behind=red ↓N. Workspaces with
+ * a branch always show at least one light (green when clean). Numbers always accompany
+ * (arrow-only is ambiguous — GitHub Desktop #9282).
  */
 function GitSyncBadge({ sync }: { sync: GitSyncStatus }): React.ReactElement | null {
   const t = useT();
@@ -114,8 +114,8 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
   if (!metadata.gitBranch && !hasContext && !note) return null;
   return (
     <>
-      {/* Git 신호등 행 — 이름 바로 아래 전용 줄(owner 2026-07-20: 행이 위아래로
-          두꺼워져도 OK). 브랜치·신호등·PR을 한 줄에, 포트·알림은 다음 줄로. */}
+      {/* Git traffic-light row — dedicated line right under name (owner 2026-07-20: OK if row
+          grows taller). Branch, lights, and PR on one line; ports and notifications on next. */}
       {metadata.gitBranch && (
         <div className="flex items-center gap-2 mt-1 text-[10px] font-mono text-[var(--text-muted)] min-w-0" data-git-signal-line>
           <span
@@ -168,8 +168,8 @@ function WorkspaceContextLine({ metadata, onPortClick }: {
 }
 
 /**
- * "Copied!" 피드백. 정본 토스트(toastSlice)를 경유해 앱 전역 알림과 스타일을
- * 공유한다. (기존 수동 DOM 토스트는 store를 우회했다.)
+ * "Copied!" feedback. Routes through canonical toast (toastSlice) to share app-wide
+ * notification styling. (Old manual DOM toast bypassed the store.)
  */
 function showCopyToast(text: string): void {
   useStore.getState().pushToast({ level: 'info', message: text });
@@ -198,7 +198,7 @@ function shortenPath(path: string, maxLen = 25): string {
 
 function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, onCtrlSelect, onRename, onClose, onCopyInfo, onDuplicate, onReorder }: WorkspaceItemProps) {
   const t = useT();
-  // A1: 자기 ws만 구독 — 배경 ws churn/다른 항목 변경에는 리렌더되지 않는다.
+  // A1: subscribe to own ws only — no re-render on background ws churn or other item changes.
   const workspace = useStore(selectWorkspaceById(workspaceId));
   const [editing, setEditing] = useState(false);
   const [editName, setEditName] = useState(workspace?.name ?? '');
@@ -228,7 +228,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   const agentStatus = useStore((s) => selectWorkspaceAgentStatus(s, workspaceId));
   // X5 wmux.json badge state for this workspace (transient, probe-driven).
   const projectState = useStore((s) => s.projectConfigs[workspaceId]);
-  // J3 §4 — 태스크 워크스페이스의 페인 cwd가 worktree 경계 밖으로 이탈했는지(경고만).
+  // J3 §4 — whether pane cwd in task workspace departed outside worktree boundary (warning only).
   const departedCwd = useStore((s) => s.departedPaneGroups[workspaceId]);
 
   // Idle badge — how long since ANY of this workspace's surfaces last showed
@@ -351,7 +351,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDragLeave = (e: React.DragEvent<HTMLDivElement>) => {
-    // currentTarget 밖으로 나갈 때만 인디케이터 제거
+    // Remove indicator only when leaving currentTarget
     if (!e.currentTarget.contains(e.relatedTarget as Node)) {
       setDropIndicator(null);
     }
@@ -367,8 +367,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     const fromIndex = useStore.getState().draggedWorkspaceIndex;
     if (fromIndex === null || fromIndex === index) return;
 
-    // 드롭 위치를 아이템 중간 기준으로 결정
-    // 위 절반 → 현재 index 앞으로, 아래 절반 → 현재 index 뒤로
+    // Drop position by item midpoint
+    // Upper half → before current index, lower half → after current index
     const rect = e.currentTarget.getBoundingClientRect();
     const midY = rect.top + rect.height / 2;
     const toIndex = e.clientY < midY
@@ -378,11 +378,11 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleClick = (e: React.MouseEvent<HTMLDivElement>) => {
-    // 드래그 직후 클릭 이벤트 무시 (200ms 이내)
+    // Ignore click right after drag (within 200ms)
     if (Date.now() - dragStartTimeRef.current < 200) return;
-    // 멀티뷰 토글: 플랫폼 주 보조키 + 클릭 (useKeyboard의 cmdOrCtrl 패턴과 동일).
-    // macOS=⌘, Win/Linux=Ctrl. macOS에서 Ctrl+클릭은 OS 우클릭(컨텍스트 메뉴)으로
-    // 깔끔히 분리되고, Win/Linux에선 Super+클릭이 오작동하지 않는다.
+    // Multiview toggle: platform primary modifier + click (same cmdOrCtrl pattern as useKeyboard).
+    // macOS=⌘, Win/Linux=Ctrl. On macOS Ctrl+click is OS right-click (context menu), cleanly
+    // separated; on Win/Linux Super+click does not misfire.
     const cmdOrCtrl = window.electronAPI?.platform === 'darwin' ? e.metaKey : e.ctrlKey;
     if (cmdOrCtrl) {
       e.preventDefault();
@@ -393,7 +393,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   };
 
   const handleDoubleClick = () => {
-    // 드래그 직후 더블클릭 이벤트 무시
+    // Ignore double-click right after drag
     if (Date.now() - dragStartTimeRef.current < 300) return;
     setEditName(workspace?.name ?? '');
     setEditing(true);
@@ -432,9 +432,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
     };
   }, [closeConfirmPos]);
 
-  // A1: 자기 ws가 (막 삭제되어) 없으면 렌더하지 않는다. 모든 훅 호출 이후에만
-  // 반환해 훅 순서를 보존한다. Sidebar는 삭제와 동시에 이 항목을 map에서 제거
-  // 하므로 이 창은 찰나다.
+  // A1: do not render when own ws is gone (just deleted). Return only after all hook calls
+  // to preserve hook order. Sidebar removes this item from map on delete — this window is fleeting.
   if (!workspace) return null;
 
   const hasProfile = workspace.profile !== undefined;
@@ -452,7 +451,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
           e.preventDefault();
         }
       }}>
-      {/* 드롭 인디케이터 - 위. pointer-events-none so it never participates
+      {/* Drop indicator — above. pointer-events-none so it never participates
           in drag hit-testing (codex P3). */}
       {dropIndicator === 'above' && (
         <div className="absolute top-0 left-0 right-0 h-[3px] bg-[var(--accent-blue)] rounded-full z-10 -translate-y-px pointer-events-none sidebar-row-enter" />
@@ -603,7 +602,7 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
         </button>
       </div>
 
-      {/* 드롭 인디케이터 - 아래. pointer-events-none so it never participates
+      {/* Drop indicator — below. pointer-events-none so it never participates
           in drag hit-testing (codex P3). */}
       {dropIndicator === 'below' && (
         <div className="absolute bottom-0 left-0 right-0 h-[3px] bg-[var(--accent-blue)] rounded-full z-10 translate-y-px pointer-events-none sidebar-row-enter" />
@@ -746,8 +745,8 @@ function WorkspaceItem({ workspaceId, isActive, isMultiview, index, onSelect, on
   );
 }
 
-// A2: 리스트 자식 memo 방벽. 부모(Sidebar)가 리렌더돼도 이 항목의 props(id·
-// isActive·isMultiview·index·안정 콜백)가 그대로면 리렌더를 건너뛴다. 자기 ws
-// 내용 변경은 내부 self-subscribe가 직접 리렌더를 유발하므로 memo와 무관하게
-// 반영된다. 기본 얕은 비교로 충분(모든 콜백이 Sidebar에서 안정적으로 생성됨).
+// A2: list-child memo barrier. When Sidebar re-renders, skip re-render if props (id,
+// isActive, isMultiview, index, stable callbacks) unchanged. Own ws content changes trigger
+// re-render via internal self-subscribe regardless of memo. Shallow compare suffices (all
+// callbacks created stably in Sidebar).
 export default memo(WorkspaceItem);

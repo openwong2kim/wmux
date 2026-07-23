@@ -6,7 +6,7 @@
 // agent that can read `wmux channel --help` can be a channel member.
 //
 // Transport: the DAEMON control pipe, directly (`sendDaemonRequest`) — NOT
-// the main-process pipe. Rationale (design doc "두 RPC 표면과 신뢰 모델"):
+// the main-process pipe. Rationale (design doc "Two RPC surfaces and trust model"):
 // the daemon owns channel state and survives the GUI, so `wmux channel`
 // keeps working headless (GUI closed, reboot-recovery window) — which is the
 // money-demo path. Identity: we attach `senderPtyId` and the daemon stamps

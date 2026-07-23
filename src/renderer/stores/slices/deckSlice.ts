@@ -29,8 +29,8 @@ import { generateId } from '../../../shared/types';
 
 /** Which dock tab is showing. `commander` is the default (the LLM-less
  *  command composer); `channels` is the classic channel list + conversation.
- *  git — 오너 결정(2026-07-20): 좌측 푸터/중앙 표면 시안을 원복하고 우측 덱의
- *  탭으로 복귀. Review는 별도 탭이 아니라 Git 탭 하단 섹션으로 병합(전 ws 집계). */
+ *  git — owner decision (2026-07-20): revert left footer/center surface mockups; return as
+ *  right-deck tabs. Review is not a separate tab but a section under Git tab (all-ws aggregate). */
 export type DeckTab = 'commander' | 'git' | 'channels';
 
 /** One workspace orchestrator's turn state. Distinct from the Phase 1 fan-out
@@ -75,10 +75,10 @@ export interface DeckSlice {
   recoveryCardDismissed: boolean;
   dismissRecoveryCard: () => void;
 
-  /** diff→오케스트레이터 질문 릴레이. DiffPanel(다른 표면)이 질문을 실어 두고
-   *  Orchestrator 탭으로 전환하면, CommanderView가 마운트/변경 시 집어
-   *  handleBrainSend로 발사한다 — fleet context·optimistic 버블·모델 오버라이드
-   *  조립을 한 곳(CommanderView)에 유지하기 위한 우회로. transient(비영속). */
+  /** diff→agent question relay. DiffPanel (other surface) stages a question; when switching to
+   *  Orchestrator tab, CommanderView picks it up on mount/change and fires via handleBrainSend —
+   *  bypass to keep fleet context·optimistic bubble·model override assembly in one place
+   *  (CommanderView). Transient (not persisted). */
   pendingBrainPrompt: string | null;
   setPendingBrainPrompt: (prompt: string | null) => void;
 }

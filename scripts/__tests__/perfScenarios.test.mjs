@@ -79,7 +79,7 @@ describe('compareImeEcho', () => {
     expect(v.echoedSanitized).toContain('안녕하세요');
   });
   it('fails on a dropped syllable (mangled composition)', () => {
-    const v = compareImeEcho('안녕하세요', '안녕세요'); // missing 하
+    const v = compareImeEcho('안녕하세요', '안녕세요'); // missing ha
     expect(v.pass).toBe(false);
     expect(v.reason).toMatch(/not found/);
   });

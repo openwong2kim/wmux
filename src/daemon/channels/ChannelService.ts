@@ -137,28 +137,30 @@ export interface ChannelError {
 }
 
 /**
- * 이벤트로그 백엔드(envelope-design §5, PR3 — 옵셔널 additive).
+ * Event-log backend (envelope-design §5, PR3 — optional additive).
  *
- * 지정되면 커밋 지점이 saveOrFail(전체상태 동기 write)에서 log.append(envelope)로
- * 반전된다(D1 단계적 반전): 로그가 정본, channels.json은 워터마크 스탬프된 debounced
- * dual-write 캐시(§6.4), snapshot/channel.json은 부트 가속 스냅샷(§5). 부트는
- * 스냅샷 폴백 체인 + `lamport > snapshotLamport` tail replay로 시드한다.
+ * When set, the commit point flips from saveOrFail (full-state synchronous write)
+ * to log.append(envelope) (D1 phased flip): the log is canonical, channels.json is
+ * a watermark-stamped debounced dual-write cache (§6.4), and snapshot/channel.json
+ * is a boot-acceleration snapshot (§5). Boot seeds via the snapshot fallback chain
+ * + `lamport > snapshotLamport` tail replay.
  *
- * 미지정(레거시/테스트) 시 기존 saveOrFail 커밋 경로가 1비트 불변으로 유지된다 —
- * §10 T-파리티(기존 채널 테스트 무변경 통과)의 전제.
+ * When unset (legacy/tests), the existing saveOrFail commit path remains as a
+ * 1-bit invariant — the premise of §10 T-parity (existing channel tests pass
+ * unchanged).
  */
 export interface ChannelServiceEventLog {
-  /** 열린(open() 완료) append-only 로그. 데몬 부트 게이트가 소유. */
+  /** Open (open() complete) append-only log. Owned by the daemon boot gate. */
   log: AppendOnlyLog;
-  /** `events/snapshot/` 스토어(부트 시드 + debounced 스냅샷). */
+  /** `events/snapshot/` store (boot seed + debounced snapshots). */
   snapshots: SnapshotStore;
-  /** manifest.genesisRef — 폴백 체인의 바닥(§6.2). */
+  /** manifest.genesisRef — floor of the fallback chain (§6.2). */
   genesisRef: string;
-  /** manifest.reseedRefs — 폴백 체인의 중간 단계(§6.4c). */
+  /** manifest.reseedRefs — intermediate stages of the fallback chain (§6.4c). */
   reseedRefs: string[];
   /** origin.machineId(§8). */
   machineId: string;
-  /** 빈 채널 reaper TTL(시간). 기본 CHANNEL_EMPTY_TTL_HOURS_DEFAULT. */
+  /** Empty-channel reaper TTL (hours). Default CHANNEL_EMPTY_TTL_HOURS_DEFAULT. */
   emptyChannelTtlHours?: number;
 }
 
@@ -168,7 +170,7 @@ export interface ChannelServiceDeps {
    *  `ChannelStateWriter` is required because we read `load()` at
    *  construction to seed in-memory state. */
   writer: ChannelStateWriter;
-  /** 이벤트로그 백엔드(§5). 부재 시 레거시 커밋 경로(테스트·구 배선) 불변. */
+  /** Event-log backend (§5). When absent, the legacy commit path (tests, old wiring) is unchanged. */
   eventLog?: ChannelServiceEventLog;
   /** Company this daemon's channels belong to. Channels are company-bounded
    *  by design (see plan KTD10). */
@@ -270,23 +272,26 @@ export interface JoinChannelParams {
 }
 
 /**
- * operator-join (설계 §2.1) — 오퍼레이터(사람)가 에이전트들이 만든 비공개 채널에
- * 스스로 들어가는 파라미터. **정확히 두 필드뿐**이다(타입 수준 강제, Codex #2):
- * 좌석 행은 본문이 상수로만 구성하며, caller가 실어 보낸 member/includeHistory 등은
- * 절대 읽지 않는다 — P5류 주입(create의 members[] 우회)의 재발 방지 핵심이다. 원시
- * params 객체에 여분 필드가 실려 와도 이 타입엔 존재하지 않으므로 본문이 접근할
- * 수 없다(join()과 별도 본문인 이유 — 공용 헬퍼로 caller 필드를 소비하는 형태 금지).
+ * operator-join (design §2.1) — parameters for an operator (human) joining a
+ * private channel created by agents on their own. **Exactly two fields** (type-level
+ * enforcement, Codex #2): the seat row is built from constants only in the body;
+ * member/includeHistory etc. sent by the caller are never read — the core guard
+ * against P5-style injection (bypassing create's members[]). Extra fields on the raw
+ * params object do not exist on this type, so the body cannot access them (separate
+ * body from join() — no shared helper that consumes caller fields).
  */
 export interface OperatorJoinParams {
   channelId: string;
-  /** 서버-검증 workspaceId. 좌석이 하드코딩이라 authz 입력이 아니다 — "no anonymous
-   *  mutation" 자세 확인용 존재 검증만(kick 관례). 직결 잔여 함의는 설계 §2.1.2. */
+  /** Server-verified workspaceId. The seat is hardcoded so this is not an authz input —
+   *  existence check only for the "no anonymous mutation" posture (kick convention).
+   *  Residual direct-call semantics are in design §2.1.2. */
   verifiedWorkspaceId: string;
 }
 
 /**
- * operator-list (설계 §2.2) — 비공개 채널 발견 어포던스. 파라미터는
- * verifiedWorkspaceId 하나(존재 검증 전용). 전 채널의 메타데이터만 반환한다.
+ * operator-list (design §2.2) — private-channel discovery affordance. Single
+ * parameter verifiedWorkspaceId (existence check only). Returns metadata for all
+ * channels.
  */
 export interface OperatorListParams {
   verifiedWorkspaceId: string;
@@ -469,9 +474,9 @@ export class ChannelService {
     this.writer = deps.writer;
     this.eventLog = deps.eventLog;
     if (deps.eventLog) {
-      // 로그 모드 부트(§5): 스냅샷 폴백 체인(최신→.bak→reseed→genesis)으로 시드하고
-      // `lamport > snapshotLamport`인 채널 레코드만 tail replay. channels.json은
-      // 더 이상 시드 원천이 아니다(워터마크 판정·dual-write 대상일 뿐 — §6.4).
+      // Log-mode boot (§5): seed via snapshot fallback chain (latest→.bak→reseed→genesis)
+      // and tail-replay only channel records with `lamport > snapshotLamport`. channels.json
+      // is no longer a seed source (watermark check and dual-write target only — §6.4).
       this.state = this.seedFromEventLog(deps.eventLog);
     } else {
       // Seed from the writer. The writer's `load()` runs the empty-channel
@@ -598,22 +603,25 @@ export class ChannelService {
   }
 
   /**
-   * operator-list (설계 §2.2) — 발견 어포던스. private 채널은 list()에서 비멤버에게
-   * 숨겨지므로, GUI가 "들어갈 수 있는 방"을 보여줄 방법이 필요하다. 전 채널
-   * (공개+비공개, active+archived)의 **메타데이터만** 반환한다 — 메시지 미리보기·
-   * 멤버 상세 없음(내용을 읽으려면 operatorJoin해야 하고, 그건 시스템 메시지를
-   * 남긴다 §2.1.1). verifiedWorkspaceId는 필터가 아니라 존재 검증 전용이다: 전
-   * 채널을 반환하되(name 포함 유지 — 이름 없는 목록은 맹목 join 유발로 오히려
-   * 해롭다 §2.2), 부재 시엔 빈 목록(no anonymous). 우발 노출은 GUI 의도 게이트로
-   * 해소한다(접힘 기본 오퍼레이터 섹션 §3). 직결 잔여에서 이 메서드가 "전 private
-   * 채널 name·memberCount 열거 오라클"이 됨은 §2.2에서 디스크 등가로 명시 수용.
+   * operator-list (design §2.2) — discovery affordance. Private channels are hidden
+   * from non-members in list(), so the GUI needs a way to show "rooms you can enter".
+   * Returns **metadata only** for all channels (public+private, active+archived) —
+   * no message previews or member details (to read content you must operatorJoin,
+   * which leaves a system message §2.1.1). verifiedWorkspaceId is for existence
+   * check only, not filtering: return all channels (keep name — a nameless list
+   * invites blind joins and is worse §2.2); empty list when absent (no anonymous).
+   * Accidental exposure is gated by GUI intent (collapsed default operator section §3).
+   * In residual direct-call paths, this method becoming a "full private channel
+   * name·memberCount enumeration oracle" is explicitly accepted as disk-equivalent
+   * in §2.2.
    *
-   * 정렬 결정성: createdAt 오름차순, 동률은 id 사전순 tiebreak(안정 결정성).
+   * Sort determinism: createdAt ascending, id lexicographic tiebreak (stable).
    */
   operatorList(params: OperatorListParams): OperatorChannelSummary[] {
-    // 존재 검증(no anonymous). 부재는 handler가 이미 거르지만, 심층 방어로 여기서도
-    // 빈 목록을 반환한다 — 직결 잔여 호출자에게도 정체성 스탬프 없이는 열거를 주지
-    // 않는다(디스크 등가라 방어 경계는 아니나, API가 디스크보다 강하지 않게 유지).
+    // Existence check (no anonymous). Handler already filters absence, but defense
+    // in depth returns empty here too — no enumeration without an identity stamp even
+    // for residual direct callers (not a defense boundary vs disk, but API stays no
+    // stronger than disk).
     if (!params.verifiedWorkspaceId) return [];
     return this.state.channels
       .map((c) => ({
@@ -907,7 +915,7 @@ export class ChannelService {
         });
       }
       if (this.eventLog) {
-        // G1 append-then-apply: 배리어 성공 후에만 적용. 실패 = 무적용(롤백 없음).
+        // G1 append-then-apply: apply only after barrier success. Failure = no apply (no rollback).
         if (
           !(await this.commitAndApply(
             { kind: 'create', channel, members: initialMembers },
@@ -920,7 +928,7 @@ export class ChannelService {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel create' } };
         }
       } else {
-        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        // Legacy mode (1-bit invariant): apply → synchronous save → rollback on failure.
         this.state.channels.push(channel);
         this.state.members[channel.id] = initialMembers;
         this.state.messages[channel.id] = [];
@@ -988,7 +996,7 @@ export class ChannelService {
       }
       const now = this.now();
       if (this.eventLog) {
-        // G1 append-then-apply: 배리어 성공 후에만 적용. 실패 = 무적용(롤백 없음).
+        // G1 append-then-apply: apply only after barrier success. Failure = no apply (no rollback).
         if (
           !(await this.commitAndApply(
             { kind: 'archive', channelId: channel.id, archivedAt: now, archivedBy: params.archivedBy },
@@ -998,7 +1006,7 @@ export class ChannelService {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel archive' } };
         }
       } else {
-        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        // Legacy mode (1-bit invariant): apply → synchronous save → rollback on failure.
         channel.status = 'archived';
         channel.archivedAt = now;
         channel.archivedBy = params.archivedBy;
@@ -1192,8 +1200,8 @@ export class ChannelService {
         memberName: joinMemberName,
       };
       if (this.eventLog) {
-        // G1 append-then-apply: 배리어 성공 후에만 적용(push + emptySince 해제는
-        // 적용기 몫). 실패 = 무적용(롤백 없음).
+        // G1 append-then-apply: apply only after barrier success (push + emptySince
+        // clear are applier duties). Failure = no apply (no rollback).
         if (
           !(await this.commitAndApply(
             { kind: 'join', channelId: channel.id, member: joinedRow },
@@ -1206,7 +1214,7 @@ export class ChannelService {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel join' } };
         }
       } else {
-        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        // Legacy mode (1-bit invariant): apply → synchronous save → rollback on failure.
         // Snapshot emptySince so we can restore it on a saveOrFail
         // rollback (R10). Without the snapshot, a failed persist would
         // leave the channel with NO emptySince even though it should
@@ -1241,32 +1249,35 @@ export class ChannelService {
   }
 
   /**
-   * operator-join (설계 §2.1) — 오퍼레이터(사람)가 에이전트들이 만든 비공개 채널에
-   * **스스로** 들어가는 신뢰 경로. #288 가시성 게이트를 의식적으로 우회하지만(존재
-   * → archived → duplicate 게이트는 join()과 동일), **좌석 행은 caller 파라미터를
-   * 일절 읽지 않고 상수로만 구성**한다 — join()과 별도 본문인 이유(공용 헬퍼로
-   * caller 필드를 소비하는 형태 금지, P5류 주입 재발 방지, Codex #2).
+   * operator-join (design §2.1) — trusted path for an operator (human) to join a
+   * private channel created by agents **on their own**. Consciously bypasses the #288
+   * visibility gate (existence → archived → duplicate gates match join()), but **the
+   * seat row is built from constants only and never reads caller params** — separate
+   * body from join() (no shared helper consuming caller fields, P5-style injection
+   * guard, Codex #2).
    *
-   * 에러 코드(§2.1): 없는 id → CHANNEL_NOT_FOUND(주인 상대 존재 은폐 불필요 —
-   * join()의 private 마스킹과 달리 여기선 실제 부재만 이 코드), archived →
-   * CHANNEL_ARCHIVED, 이미 멤버 → DUPLICATE_MEMBER(GUI가 no-op으로 처리;
-   * silent-success 아님 — join()과 의미론 일치).
+   * Error codes (§2.1): missing id → CHANNEL_NOT_FOUND (no need to hide existence
+   * from owner — unlike join()'s private masking, only actual absence uses this code),
+   * archived → CHANNEL_ARCHIVED, already member → DUPLICATE_MEMBER (GUI treats as
+   * no-op; not silent-success — semantics match join()).
    *
-   * 성공 시 서버-발행 시스템 메시지 1건을 채널 히스토리에 **영속 append**한다
-   * (§2.1.1 필수): 좌석 push와 메시지 append를 하나의 커밋(operator-join envelope)
-   * 으로 묶어 원자성을 보장한다 — persist 실패 시 둘 다 미적용(로그 모드) 또는 둘 다
-   * 롤백(레거시 모드). 이 흔적은 (a) leave 후에도 남는 내구 감사이고 (b) #113 잔여로
-   * 위조된 입장(§2.1.2)을 사람이 GUI에서 발견하는 유일한 장치다.
+   * On success, **durably append** one server-issued system message to channel history
+   * (§2.1.1 required): seat push and message append are bundled in one commit
+   * (operator-join envelope) for atomicity — on persist failure both are unapplied
+   * (log mode) or both rolled back (legacy mode). This trail is (a) durable audit
+   * surviving leave and (b) the only device for a human to spot forged entry (§2.1.2)
+   * in the GUI via #113 residual.
    *
-   * authz: verifiedWorkspaceId는 좌석이 하드코딩이라 authz 입력이 아니다 — 존재
-   * 검증만(kick 관례). humans-only는 트랜스포트가 강제한다(파이프 미등록 §2.3).
-   * 재진입: leave 후 재-operatorJoin은 일반 join과 같은 "새 좌석"(unread 리셋) —
-   * 상태 이월 없음(§2.1, GLM ①).
+   * authz: verifiedWorkspaceId is not authz input because the seat is hardcoded —
+   * existence check only (kick convention). humans-only is enforced by transport
+   * (pipe not registered §2.3). Re-entry: re-operatorJoin after leave is a "new seat"
+   * like ordinary join (unread reset) — no state carry-over (§2.1, GLM ①).
    */
   async operatorJoin(params: OperatorJoinParams): Promise<Result<{ memberId: string }>> {
-    // "no anonymous mutation" — verifiedWorkspaceId 부재 거부(handler와 대칭 심층
-    // 방어). 좌석은 하드코딩이라 authz 입력은 아니지만, 스탬프 없는 호출은 받지
-    // 않는다(kick/archive 관례). handler도 동일 거부(daemon/index.ts).
+    // "no anonymous mutation" — reject missing verifiedWorkspaceId (symmetric deep
+    // defense with handler). Seat is hardcoded so not authz input, but calls without
+    // a stamp are rejected (kick/archive convention). Handler rejects the same
+    // (daemon/index.ts).
     if (!params.verifiedWorkspaceId) {
       return { ok: false, error: { code: 'NOT_AUTHORIZED', message: 'verifiedWorkspaceId is required' } };
     }
@@ -1275,26 +1286,27 @@ export class ChannelService {
       if (!channel) {
         return { ok: false, error: { code: 'CHANNEL_NOT_FOUND', message: `No such channel: ${params.channelId}` } };
       }
-      // archived 게이트 — join()/invite()/kick()과 동일. archived 채널엔 좌석을
-      // 심지 않는다(§2.1: join은 CHANNEL_ARCHIVED로 거부).
+      // archived gate — same as join()/invite()/kick(). Do not seat on archived
+      // channels (§2.1: join rejects with CHANNEL_ARCHIVED).
       if (channel.status === 'archived') {
         return { ok: false, error: { code: 'CHANNEL_ARCHIVED', message: 'Cannot join an archived channel' } };
       }
       const members = this.state.members[channel.id] ?? [];
-      // duplicate 게이트 — 사람 좌석은 (HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID) 상수라
-      // caller 입력과 무관하게 이 한 행의 존재로 판정한다.
+      // duplicate gate — human seat uses (HUMAN_WORKSPACE_ID, HUMAN_MEMBER_ID)
+      // constants; judged by this single row regardless of caller input.
       if (members.some((m) => m.workspaceId === HUMAN_WORKSPACE_ID && m.memberId === HUMAN_MEMBER_ID)) {
         return { ok: false, error: { code: 'DUPLICATE_MEMBER', message: 'Already a member' } };
       }
       const now = this.now();
-      // 시스템 메시지가 소비할 seq — 좌석 lastReadSeq 계산에 쓸 nextSeq를 append
-      // 전에 캡처(§2.1: lastReadSeq = nextSeq-1). 메시지는 이 seq를 소비하고
-      // 오퍼레이터 본인이 작성자이므로 unread 계산이 자기-작성 메시지를 면제 →
-      // 오퍼레이터 unread = 0(§2.1 "unread = 0").
+      // seq consumed by the system message — capture nextSeq before append for seat
+      // lastReadSeq (§2.1: lastReadSeq = nextSeq-1). Message consumes this seq and
+      // operator is author so unread exempts self-authored messages → operator
+      // unread = 0 (§2.1 "unread = 0").
       const seq = channel.nextSeq;
-      // 좌석 행 — **상수로만** 구성(설계 §2.1). caller params를 읽지 않는다. shape는
-      // P5 병합 human 행과 동일(memberName 없음 — 렌더러가 localized "Me"로 대체):
-      // workspaceId / memberId / joinedAt / historyFromSeq(전체 히스토리=0) /
+      // Seat row — **constants only** (design §2.1). Does not read caller params.
+      // Shape matches P5 merged human row (no memberName — renderer substitutes
+      // localized "Me"): workspaceId / memberId / joinedAt / historyFromSeq(full
+      // history=0) /
       // lastReadSeq(nextSeq-1) / principalId.
       const seatRow: ChannelMember = {
         workspaceId: HUMAN_WORKSPACE_ID,
@@ -1304,11 +1316,11 @@ export class ChannelService {
         lastReadSeq: channel.nextSeq - 1,
         principalId: HUMAN_SELF_PRINCIPAL_ID,
       };
-      // 서버-발행 시스템 메시지(§2.1.1). systemKind로 판별하고 text는 폴백이다.
-      // nudge 억제의 실제 장치는 unreadFor()의 systemKind 면제다 — 감사 마커는
-      // 누구의 unread도 만들지 않으므로 wake worker가 이 행으로 nudge를 걸지
-      // 않는다. deliveryStatus='delivered'는 "배달이 아니다"의 표기일 뿐 unread/
-      // wake 판정에는 관여하지 않는다.
+      // Server-issued system message (§2.1.1). Identified by systemKind; text is fallback.
+      // Actual nudge suppression is unreadFor()'s systemKind exemption — audit marker
+      // creates no one's unread so wake worker does not nudge on this row.
+      // deliveryStatus='delivered' marks "not delivery" only; does not affect unread/
+      // wake decisions.
       const systemMessage: ChannelMessage = {
         channelId: channel.id,
         seq,
@@ -1321,9 +1333,10 @@ export class ChannelService {
         systemKind: 'operator-join',
       };
       if (this.eventLog) {
-        // 로그 모드: 좌석+메시지를 하나의 operator-join envelope로 원자 커밋. fsync
-        // 배리어 성공 후에만 둘 다 적용된다 — 실패 = 무적용(부분 상태 구조적 불가,
-        // 롤백 블록 불요). 이것이 "persist 실패 시 원자 롤백"의 로그-모드 형태다.
+        // Log mode: atomically commit seat+message in one operator-join envelope. Both
+        // apply only after fsync barrier success — failure = no apply (partial state
+        // structurally impossible, no rollback block). This is log-mode "atomic rollback
+        // on persist failure".
         if (
           !(await this.commitAndApply(
             { kind: 'operator-join', channelId: channel.id, member: seatRow, message: systemMessage },
@@ -1333,9 +1346,9 @@ export class ChannelService {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist operator join' } };
         }
       } else {
-        // 레거시 모드: 좌석 push + seq 소비 + 메시지 append를 적용한 뒤 동기 저장.
-        // 실패 시 셋 다 원자 롤백(§2.1.1): pop 메시지 → un-bump nextSeq → pop 좌석 →
-        // emptySince 복원. join()/post()의 레거시 롤백 패턴과 동형.
+        // Legacy mode: apply seat push + seq consumption + message append, then sync save.
+        // On failure, atomic rollback of all three (§2.1.1): pop message → un-bump nextSeq
+        // → pop seat → restore emptySince. Same pattern as join()/post() legacy rollback.
         const previousEmptySince = channel.emptySince;
         if (channel.emptySince !== undefined) delete channel.emptySince;
         members.push(seatRow);
@@ -1351,19 +1364,19 @@ export class ChannelService {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist operator join' } };
         }
       }
-      // 멤버십 변경 팬아웃 — post-join 멤버 집합(사람 포함)에 roster/sidebar 재동기
-      // (join()과 동일 신호). 최선노력·비내구라 §2.1.1 시스템 메시지가 내구 흔적을
-      // 별도로 남긴다(단 채널 히스토리는 CHANNEL_MESSAGES_MAX에서 tail-evict되므로
-      // 이 흔적의 보존도 그 한계 내다 — 무한 감사 로그가 아니다).
+      // Membership-change fanout — re-sync roster/sidebar for post-join member set
+      // (includes human) (same signal as join()). Best-effort; §2.1.1 system message
+      // leaves durable trail separately (but channel history tail-evicts at
+      // CHANNEL_MESSAGES_MAX so trail retention is bounded — not an infinite audit log).
       this.emitCatalog(
         channel.id,
         HUMAN_WORKSPACE_ID,
         (this.state.members[channel.id] ?? []).map((m) => m.workspaceId),
         'membership',
       );
-      // 시스템 메시지 라이브 팬아웃(best-effort) — 열린 ChannelView에 즉시 표시.
-      // 실패는 post()와 동일하게 무시(내구성은 위 영속 append가 이미 보장). 시스템
-      // 마커라 recipients는 빈 목록.
+      // System message live fanout (best-effort) — show immediately in open ChannelView.
+      // Failures ignored like post() (durability already guaranteed by durable append
+      // above). System marker so recipients is empty.
       try {
         this.emit({
           type: 'channel.message',
@@ -1407,11 +1420,12 @@ export class ChannelService {
       if (idx < 0) {
         return { ok: false, error: { code: 'NOT_A_MEMBER', message: 'Not a member' } };
       }
-      // Snapshot the removed member (레거시 롤백 재삽입 + emit 수신자 계산용).
+      // Snapshot the removed member (legacy rollback re-insert + emit recipient calc).
       const removed = members[idx];
       if (this.eventLog) {
-        // G1 append-then-apply: emptySince 판정을 **선결정**(제거는 적용기 몫 —
-        // 마지막 멤버 이탈이면 스탬프값을 효과로 기록). 실패 = 무적용(롤백 없음).
+        // G1 append-then-apply: **pre-decide** emptySince (removal is applier duty —
+        // stamp value recorded as effect when last member leaves). Failure = no apply
+        // (no rollback).
         const emptySince =
           members.length === 1 && channel.emptySince === undefined ? this.now() : undefined;
         if (
@@ -1429,7 +1443,7 @@ export class ChannelService {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel leave' } };
         }
       } else {
-        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        // Legacy mode (1-bit invariant): apply → synchronous save → rollback on failure.
         members.splice(idx, 1);
         // If the channel is now empty, stamp `emptySince` (plan KTD8).
         if (members.length === 0 && channel.emptySince === undefined) {
@@ -1515,10 +1529,10 @@ export class ChannelService {
       if (idx < 0) {
         return { ok: false, error: { code: 'NOT_A_MEMBER', message: 'Target is not a member' } };
       }
-      // Snapshot the removed member (레거시 롤백 재삽입 + emit 수신자 계산용, mirrors leave).
+      // Snapshot the removed member (legacy rollback re-insert + emit recipient calc, mirrors leave).
       const removed = members[idx];
       if (this.eventLog) {
-        // G1 append-then-apply(leave와 동형): 실패 = 무적용(롤백 없음).
+        // G1 append-then-apply (same shape as leave): failure = no apply (no rollback).
         const emptySince =
           members.length === 1 && channel.emptySince === undefined ? this.now() : undefined;
         if (
@@ -1536,7 +1550,7 @@ export class ChannelService {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel kick' } };
         }
       } else {
-        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        // Legacy mode (1-bit invariant): apply → synchronous save → rollback on failure.
         members.splice(idx, 1);
         // If the channel is now empty, stamp `emptySince` (plan KTD8) — same as leave.
         if (members.length === 0 && channel.emptySince === undefined) {
@@ -1603,8 +1617,8 @@ export class ChannelService {
         const survivors = members.filter((m) => !matches(m));
         const removed = members.filter(matches);
         if (this.eventLog) {
-          // G1 append-then-apply: 실패 = 무적용(롤백 없음). 적용기의 purge matcher는
-          // 위 matches와 동형(principalId 우선 → memberId → ws 전체).
+          // G1 append-then-apply: failure = no apply (no rollback). Applier purge matcher
+          // mirrors matches above (principalId first → memberId → whole ws).
           const emptySince =
             survivors.length === 0 && channel.emptySince === undefined ? this.now() : undefined;
           if (
@@ -1623,7 +1637,7 @@ export class ChannelService {
             return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist membership purge' } };
           }
         } else {
-          // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+          // Legacy mode (1-bit invariant): apply → synchronous save → rollback on failure.
           const previousEmptySince = channel.emptySince;
           this.state.members[channel.id] = survivors;
           if (survivors.length === 0 && channel.emptySince === undefined) {
@@ -1736,7 +1750,7 @@ export class ChannelService {
         memberName: this.deriveMemberName(invitee.memberId, invitee.principalId),
       };
       if (this.eventLog) {
-        // G1 append-then-apply(join과 동형): 실패 = 무적용(롤백 없음).
+        // G1 append-then-apply (same shape as join): failure = no apply (no rollback).
         if (
           !(await this.commitAndApply(
             { kind: 'invite', channelId: channel.id, member: invitedRow },
@@ -1746,7 +1760,7 @@ export class ChannelService {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist channel invite' } };
         }
       } else {
-        // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+        // Legacy mode (1-bit invariant): apply → synchronous save → rollback on failure.
         const previousEmptySince = channel.emptySince;
         if (channel.emptySince !== undefined) {
           delete channel.emptySince;
@@ -1983,9 +1997,9 @@ export class ChannelService {
       // The only exits after this point are the persist-failure branch —
       // which rolls the name back — and success, which persists it.
       //
-      // G1(append-then-apply): 여기서는 **결정만** 한다(refreshedName 계산).
-      // 실제 row 변형은 커밋 경로별로 — 로그 모드는 append 성공 후 적용기,
-      // 레거시 모드는 아래 분기에서 기존 그대로(스냅샷+롤백).
+      // G1(append-then-apply): **decide only** here (refreshedName calculation).
+      // Actual row mutation is per commit path — log mode applies after append success,
+      // legacy mode unchanged below (snapshot+rollback).
       let refreshedName: string | undefined;
       if (senderRow?.principalId && this.resolvePrincipalDisplay) {
         try {
@@ -2089,9 +2103,9 @@ export class ChannelService {
           ...(typeof mn.ptyId === 'string' && mn.ptyId.length > 0 ? { ptyId: mn.ptyId } : {}),
         });
       }
-      // G1: seq는 **선결정**(증가 없음). 로그 모드는 append 성공 후 적용기가
-      // nextSeq를 seq+1로 전진시키고, 레거시 모드는 아래 분기에서 ++한다 —
-      // 발급 규칙(다음 값 = 현재 nextSeq)은 두 경로 동일.
+      // G1: seq is **pre-decided** (no increment). Log mode applier advances nextSeq
+      // to seq+1 after append success; legacy mode ++ below — issuance rule (next value
+      // = current nextSeq) is identical on both paths.
       const seq = channel.nextSeq;
       const now = this.now();
       const message: ChannelMessage = {
@@ -2125,16 +2139,16 @@ export class ChannelService {
       // matching nothing and re-nudging itself.
       const senderRowRode = senderRow !== undefined && senderRow.lastReadSeq === seq - 1;
       if (this.eventLog) {
-        // ── G1 append-then-apply(로그 모드): fsync 배리어 성공 **후에만** 적용 ──
-        // append await 창 동안 projection은 미변형이라, 뮤텍스를 안 타는 동기
-        // 읽기가 미커밋 낙관 상태를 보는 dirty read가 구조적으로 불가능하다.
-        // 실패 = 무적용 — 롤백 블록 자체가 없다(레거시 분기에만 존재).
+        // ── G1 append-then-apply (log mode): apply only **after** fsync barrier success ──
+        // Projection is unmodified during the append await window, so synchronous reads
+        // without the mutex cannot see uncommitted optimistic state — dirty read is
+        // structurally impossible. Failure = no apply — no rollback block (legacy branch only).
         const applied = await this.commitAndApply(
           {
             kind: 'post',
             channelId: channel.id,
             message,
-            // 커서 라이드·이름 리프레시는 이 커밋에 포함된 효과 — replay 재현용(§5).
+            // Cursor ride and name refresh are effects in this commit — for replay (§5).
             ...(senderRow && senderRowRode
               ? { cursorRide: { workspaceId: senderRow.workspaceId, memberId: senderRow.memberId } }
               : {}),
@@ -2156,9 +2170,9 @@ export class ChannelService {
         if (!applied) {
           return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist post' } };
         }
-        // 인메모리 LRU(droppedMentions·unmatchedMemberId 재응답 부가정보 포함) —
-        // state.idempotency는 적용기가 이미 반영했다(FIFO cap). 라이브 LRU 축출
-        // 순서와의 미세 차이는 §4 cap 시멘틱 내(부트 hydration FIFO와 동형).
+        // In-memory LRU (includes droppedMentions·unmatchedMemberId replay metadata) —
+        // state.idempotency already updated by applier (FIFO cap). Minor ordering diff
+        // vs live LRU eviction is within §4 cap semantics (same shape as boot hydration FIFO).
         if (params.clientMsgId) {
           const channelIdMap = this.idempotency.get(channel.id) ?? new Map();
           const idemKey = idempotencyKey(params.sender.workspaceId, params.clientMsgId);
@@ -2173,7 +2187,7 @@ export class ChannelService {
           }
           this.idempotency.set(channel.id, channelIdMap);
         }
-        // 적용기의 캡 trim과 인메모리 LRU 정합: 잘린 seq를 가리키는 엔트리 프룬(A2).
+        // Align applier cap trim with in-memory LRU: prune entries pointing at trimmed seqs (A2).
         const msgsAfterApply = this.state.messages[channel.id] ?? [];
         if (msgsAfterApply.length > 0) {
           const minSeq = msgsAfterApply[0].seq;
@@ -2185,7 +2199,7 @@ export class ChannelService {
           }
         }
       } else {
-        // ── 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백 ──
+        // ── Legacy mode (1-bit invariant): apply → synchronous save → rollback on failure ──
         let senderRowPrevName: string | undefined;
         let senderRowNameRefreshed = false;
         if (senderRow && refreshedName !== undefined) {
@@ -2296,9 +2310,9 @@ export class ChannelService {
       // post O(total history). The idempotency map's pointer to an evicted seq is
       // already handled — the post path falls through to a fresh post (see above).
       //
-      // G1: 레거시 전용 — 로그 모드의 trim은 post 적용기의 결정론적 일부
-      // (channelEvents.ts, replay와 동일 캡 규칙)이고 인메모리 LRU 프룬은 위
-      // 커밋 분기에서 이미 수행했다.
+      // G1: legacy only — log-mode trim is deterministic part of post applier
+      // (channelEvents.ts, same cap rules as replay) and in-memory LRU prune already
+      // ran in the commit branch above.
       if (!this.eventLog) {
         const msgs2 = this.state.messages[channel.id];
         if (msgs2 && msgs2.length > CHANNEL_MESSAGES_MAX) {
@@ -2446,10 +2460,10 @@ export class ChannelService {
       const now = this.now();
       if (flips.length > 0 || cursorFlips.length > 0) {
         if (this.eventLog) {
-          // G1 append-then-apply: 수집(collect)은 위에서 읽기 전용으로 끝났고,
-          // 적용은 배리어 성공 후 적용기가 수행한다 — 적용기의 재수집(pending
-          // 전용 플립·advance-only 커서)은 뮤텍스 하에서 위 수집과 결정론적으로
-          // 동일하다. 실패 = 무적용(롤백 없음).
+          // G1 append-then-apply: collect finished read-only above; applier applies after
+          // barrier success — applier re-collect (pending-only flips·advance-only cursor)
+          // is deterministically identical to collect above under mutex. Failure = no apply
+          // (no rollback).
           if (
             !(await this.commitAndApply(
               {
@@ -2469,7 +2483,7 @@ export class ChannelService {
             return { ok: false, error: { code: 'PERSIST_FAILED', message: 'Failed to persist ack' } };
           }
         } else {
-          // 레거시 모드(1비트 불변): 적용 → 동기 저장 → 실패 시 롤백.
+          // Legacy mode (1-bit invariant): apply → synchronous save → rollback on failure.
           for (const f of flips) {
             f.entry.status = 'delivered';
             f.entry.lastAttemptAt = now;
@@ -2763,13 +2777,13 @@ export class ChannelService {
     return this.writer.saveImmediate(this.state);
   }
 
-  // ── 이벤트로그 커밋 경로 (envelope-design §5, PR3) ────────────────────
+  // ── Event-log commit path (envelope-design §5, PR3) ────────────────────
 
   /**
-   * 커밋 프리미티브(로그 모드 전용 — commitAndApply 경유로만 호출) —
-   * `log.append(envelope)`가 fsync 배리어 아래에서 resolve한다(boolean 계약 D16).
-   * 1 커밋 = 1 envelope(§2.6 부분승격 금지 논증 ②). 레거시 모드의 커밋은 각
-   * 사이트의 else 분기(saveOrFail)가 담당한다.
+   * Commit primitive (log mode only — called via commitAndApply only) —
+   * `log.append(envelope)` resolves under the fsync barrier (boolean contract D16).
+   * 1 commit = 1 envelope (§2.6 no partial-promotion argument ②). Legacy-mode
+   * commits are handled by each site's else branch (saveOrFail).
    */
   private async commit(
     payload: ChannelEventPayload,
@@ -2781,12 +2795,13 @@ export class ChannelService {
       payload,
       origin: {
         machineId: this.eventLog.machineId,
-        daemonEpoch: CHANNELS_EPOCH, // D8: 순서 비관여 provenance 스탬프
+        daemonEpoch: CHANNELS_EPOCH, // D8: order-agnostic provenance stamp
       },
-      // §7 스탬핑(PR5 완성): 서비스 경계가 보유한 서버-해석 verifiedWorkspaceId(모든
-      // mutation의 authz 앵커, a2a.channel.rpc.ts:180-183 서버핀 하류)와 서버 결정
-      // principal 좌표(display/routing 전용, authz 아님 — 발신자 위조 copy는 상류
-      // a2a.channel.rpc.ts:108-120에서 strip)를 스탬프한다.
+      // §7 stamping (PR5 complete): stamp server-resolved verifiedWorkspaceId held at
+      // service boundary (authz anchor for all mutations, downstream of server pin at
+      // a2a.channel.rpc.ts:180-183) and server-decided principal coordinates
+      // (display/routing only, not authz — forged sender copy stripped upstream at
+      // a2a.channel.rpc.ts:108-120).
       authContext: this.authContextFor(auth),
     });
     const ok = await this.eventLog.log.append(draft);
@@ -2795,15 +2810,16 @@ export class ChannelService {
   }
 
   /**
-   * G1 — 커밋-후-적용(append-then-apply, 로그 모드 전용). fsync 배리어가 성공한
-   * **후에만** payload를 projection에 적용한다(적용기 = replay와 동일 함수 —
-   * 라이브와 replay의 수렴이 구성적으로 보장된다).
+   * G1 — commit-then-apply (append-then-apply, log mode only). Applies payload to
+   * projection **only after** fsync barrier success (applier = same function as replay —
+   * live/replay convergence is structurally guaranteed).
    *
-   * 이 순서가 dirty read를 구조적으로 제거한다: 구 saveOrFail은 동기라 mutation
-   * 임계구역에 yield가 없었지만 append는 await를 도입했다 — 적용을 배리어 뒤로
-   * 미루면 그 await 창 동안 뮤텍스를 안 타는 동기 읽기(list()·getMessages() 등)는
-   * 항상 커밋된 상태만 본다. 실패 = 무적용이므로 롤백 블록도 없다(레거시 모드
-   * 분기에만 남는다 — 각 사이트의 else 분기 참조).
+   * This order structurally removes dirty reads: old saveOrFail was synchronous with no
+   * yield in the mutation critical section, but append introduces await — deferring
+   * apply past the barrier means synchronous reads without the mutex (list(),
+   * getMessages(), etc.) during that await window always see committed state only.
+   * Failure = no apply so no rollback block either (remains in legacy-mode branches
+   * only — see each site's else branch).
    */
   private async commitAndApply(
     payload: ChannelEventPayload,
@@ -2814,7 +2830,7 @@ export class ChannelService {
     return true;
   }
 
-  /** §7 — Q1 커밋 경로는 사실상 trusted(비신뢰는 상류 fail-closed로 미도달). */
+  /** §7 — Q1 commit path is effectively trusted (untrusted callers fail-closed upstream). */
   private authContextFor(auth: {
     verifiedWorkspaceId: string;
     principalId?: string;
@@ -2827,11 +2843,11 @@ export class ChannelService {
   }
 
   /**
-   * 커밋 성공 후 캐시 유지(§5·§6.4): channels.json dual-write(debounced, 워터마크는
-   * writer가 write 시점에 스탬프)와 snapshot/channel.json(debounced, 부트 가속).
-   * 둘 다 라이브 참조를 넘긴다 — 직렬화는 write 시점이므로 최신 상태가 실린다.
-   * 스냅샷 마커가 내용보다 낮을 수 있는 창은 replay 적용기의 멱등성이 흡수한다
-   * (channelEvents.ts 헤더 불변식 (b)).
+   * Post-commit cache maintenance (§5·§6.4): channels.json dual-write (debounced,
+   * watermark stamped by writer at write time) and snapshot/channel.json (debounced,
+   * boot acceleration). Both pass live references — serialization happens at write time
+   * so latest state is captured. Window where snapshot marker may lag content is
+   * absorbed by replay applier idempotence (channelEvents.ts header invariant (b)).
    */
   private scheduleCacheWrites(): void {
     if (!this.eventLog) return;
@@ -2843,40 +2859,40 @@ export class ChannelService {
     );
   }
 
-  /** 로그 모드 부트 시드(§5): 폴백 체인 로드 → tail replay → reaper. */
+  /** Log-mode boot seed (§5): load fallback chain → tail replay → reaper. */
   private seedFromEventLog(eventLog: ChannelServiceEventLog): ChannelState {
     const loaded = eventLog.snapshots.loadWithFallback<ChannelState>({
       activeRef: CHANNEL_PROJECTION_REF,
       genesisRef: eventLog.genesisRef,
       reseedRefs: eventLog.reseedRefs,
-      // ChannelStateWriter.isChannelState는 PR3에서 public 승격(PR2 주입 계약).
+      // ChannelStateWriter.isChannelState was promoted public in PR3 (PR2 injection contract).
       validateProjection: (d): boolean => ChannelStateWriter.isChannelState(d),
     });
     let state: ChannelState;
     let floor: number;
     if (loaded) {
-      // 시드 projection에서 워터마크 필드 제거(§6.4c — dual-write 전용 메타).
+      // Strip watermark fields from seed projection (§6.4c — dual-write-only meta).
       const { eventLogWatermark: _wm, ...clean } = loaded.projection as ChannelState & {
         eventLogWatermark?: unknown;
       };
       state = clean as ChannelState;
       floor = loaded.snapshotLamport;
     } else {
-      // 스냅샷 체인 전손(genesis까지) — §5 파국 폴백: 빈 상태 + 전체 replay.
+      // Snapshot chain total loss (through genesis) — §5 disaster fallback: empty state + full replay.
       console.error(
-        '[ChannelService] 스냅샷 폴백 체인 전손 — 빈 상태에서 로그 전체 replay로 복구 시도',
+        '[ChannelService] snapshot fallback chain total loss — attempting full log replay from empty state',
       );
       state = { ...EMPTY_CHANNEL_STATE, channels: [], members: {}, messages: {}, idempotency: {} };
       floor = 0;
     }
-    // tail replay(§5): 스냅샷 이후(lamport > floor) 채널 레코드만 결정론 재적용.
-    // 적용기는 멱등(at-least-once §2.6 + 스냅샷 마커 지연 흡수 — channelEvents.ts).
+    // tail replay (§5): deterministically re-apply channel records after snapshot (lamport > floor).
+    // Applier is idempotent (at-least-once §2.6 + snapshot marker lag absorption — channelEvents.ts).
     for (const rec of eventLog.log.readAllRecords()) {
-      if (rec.domain !== 'channel') continue; // 도메인 무지 통과(§1)
+      if (rec.domain !== 'channel') continue; // pass through non-domain records (§1)
       if (rec.lamport <= floor) continue;
       applyChannelEvent(state, rec.payload);
     }
-    // 빈 채널 reaper — 레거시 load()와 동일 시멘틱 유지(하위 시멘틱 불변).
+    // Empty-channel reaper — same semantics as legacy load() (sub-semantics unchanged).
     reapEmptyChannels(state, eventLog.emptyChannelTtlHours);
     return state;
   }

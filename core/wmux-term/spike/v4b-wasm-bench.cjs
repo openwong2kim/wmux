@@ -1,11 +1,11 @@
-// V4b — wasm 스켈레톤 feed 처리량 마이크로벤치.
-// 게이트 ≥75MB/s(예산 150의 50%). web 타깃 wasm을 Node에서 로드하기 어려워
-// wasm-bindgen nodejs 타깃을 추가로 빌드해 측정한다(결정 문서 V4b 허용 조항).
-// nodejs 타깃과 web 타깃은 동일 .wasm 바이너리(wmux_term_bg.wasm) — glue만 다름.
+// V4b — wasm skeleton feed throughput microbench.
+// Gate ≥75MB/s (50% of budget 150). Hard to load web-target wasm in Node, so we also
+// build the wasm-bindgen nodejs target for measurement (decision doc V4b allowance).
+// nodejs and web targets share the same .wasm binary (wmux_term_bg.wasm) — glue differs.
 const path = require('node:path');
 const { WmuxTerm } = require(path.join(__dirname, '..', 'dist', 'wasm-node', 'wmux_term.js'));
 
-// V4a와 동일 합성 스트림(공정 비교).
+// V4a uses the same synthetic stream (fair comparison).
 function synthStream(targetBytes) {
   const block = Buffer.from(
     '\x1b[31mERROR\x1b[0m build failed at \x1b[1msrc/main.rs:42\x1b[0m: ' +
@@ -23,7 +23,7 @@ const TOTAL = 64 * 1024 * 1024; // 64MB
 const CHUNK = 16 * 1024;
 const stream = synthStream(TOTAL);
 
-// 워밍업 — 3MB(JIT·wasm 인스턴스 안정화).
+// Warmup — 3MB (JIT + wasm instance stabilization).
 {
   const g = new WmuxTerm(80, 24);
   const warm = stream.subarray(0, 3 * 1024 * 1024);
@@ -32,7 +32,7 @@ const stream = synthStream(TOTAL);
   }
 }
 
-// 측정.
+// Measurement.
 const g = new WmuxTerm(80, 24);
 const t0 = process.hrtime.bigint();
 let accDirty = 0;
@@ -46,17 +46,17 @@ const secs = Number(t1 - t0) / 1e9;
 const mb = TOTAL / (1024 * 1024);
 const mbps = mb / secs;
 
-console.log('[V4b] wasm 스켈레톤 feed 처리량 (nodejs 타깃 — web과 동일 .wasm)');
+console.log('[V4b] wasm skeleton feed throughput (nodejs target — same .wasm as web)');
 console.log(`  node ${process.version}`);
 console.log(`  bytes    = ${mb} MB`);
 console.log(`  elapsed  = ${secs.toFixed(4)} s`);
 console.log(`  throughput = ${mbps.toFixed(1)} MB/s`);
-console.log(`  gate     = 75 MB/s (예산 150의 50%)`);
-console.log(`  (accDirty=${accDirty} — 최적화 방지)`);
+console.log(`  gate     = 75 MB/s (50% of 150 budget)`);
+console.log(`  (accDirty=${accDirty} — prevent optimization)`);
 if (mbps >= 75.0) {
   console.log('  RESULT   = PASS');
   process.exit(0);
 } else {
-  console.log('  RESULT   = BELOW GATE (설계 재검토 트리거 데이터)');
+  console.log('  RESULT   = BELOW GATE (design review trigger data)');
   process.exit(2);
 }

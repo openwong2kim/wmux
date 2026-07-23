@@ -96,7 +96,7 @@ export function compareImeEcho(expected, echoedRaw) {
 // --- frame-stall judgment ---------------------------------------------------
 
 // A workload window is "stalled" when its during-window frame p95 exceeds the
-// calm-baseline p95 by `factor` (design §2.2: "예산의 2배 초과"). Guarded so a
+// calm-baseline p95 by `factor` (design §2.2: "exceed 2× budget"). Guarded so a
 // tiny/absent baseline can't trip on ordinary jitter: an absolute floor
 // (minStallMs) must also be crossed. Missing baseline OR during → not stalled
 // (we cannot assert a regression without both numbers).

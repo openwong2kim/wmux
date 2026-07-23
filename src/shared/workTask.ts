@@ -1,26 +1,28 @@
 /**
- * WorkTask 도메인(`domain:'task'`)의 스키마 + 로그 payload (J0 §2 D2).
+ * WorkTask domain (`domain:'task'`) schema + log payload (J0 §2 D2).
  *
- * ┌── PROTOCOL 파일: additive-only 규약 ──────────────────────────────┐
- * │ 이 스키마는 append-only 로그에 영속된다. 부트 replay가 과거 레코드를     │
- * │ 이 타입으로 재파싱하므로(shared/eventlog.ts PROTOCOL 헤더와 동일 규약):  │
- * │   - 필드를 제거·개명·의미변경하지 마라(과거 레코드 파싱 붕괴).           │
- * │   - 새 필드는 옵셔널(`?:`)로만 추가하라(구 레코드엔 부재).              │
- * │   - status·kind enum 값은 추가만 허용, 기존 값 재사용 금지.            │
- * └──────────────────────────────────────────────────────────────────┘
+ * ┌── PROTOCOL file: additive-only contract ──────────────────────────────┐
+ * │ This schema persists in the append-only log. Boot replay re-parses past   │
+ * │ records into this type (same contract as shared/eventlog.ts PROTOCOL      │
+ * │ header):                                                                  │
+ * │   - Do not remove, rename, or change field meaning (past record parse     │
+ * │     collapse).                                                            │
+ * │   - New fields must be optional (`?:`) only (absent on old records).      │
+ * │   - status·kind enum values: add only; never reuse existing values.       │
+ * └───────────────────────────────────────────────────────────────────────────┘
  *
- * WorkTask는 A2A `Task`(shared/types.ts — 에이전트 간 위임 단위)를 오버로드하지
- * 않는다(§1 D1): worktree 미션 단위(branch·worktreePath·paneGroupId·
- * missionChannelId)라 수명주기·전이 그래프가 다르다. 타입 이름·`domain:'task'`
- * 슬롯·RPC `task.mission.*` 접두로 A2A와 물리적으로 분리한다.
+ * WorkTask does not overload A2A `Task` (shared/types.ts — inter-agent delegation unit)
+ * (§1 D1): worktree mission unit (branch·worktreePath·paneGroupId·missionChannelId) with
+ * different lifecycle·transition graph. Physically separated from A2A via type name·
+ * `domain:'task'` slot·RPC `task.mission.*` prefix.
  *
- * envelope.payload는 도메인 opaque다 — 로그 계층은 이 타입을 해석하지 않는다.
- * 해석·projection 적용은 WorkTaskService(daemon)의 몫이다.
+ * envelope.payload is domain opaque — the log layer does not interpret this type.
+ * Interpretation·projection is WorkTaskService (daemon) responsibility.
  */
 
 /**
- * 데몬 스탬프 신원 참조(§2 — §6.L authContext와 동형). authz 앵커는
- * verifiedWorkspaceId다(principalId는 display/routing/감사 전용).
+ * Daemon-stamped identity reference (§2 — same shape as §6.L authContext). authz anchor is
+ * verifiedWorkspaceId (principalId is display/routing/audit only).
  */
 export interface WorkTaskRef {
   principalId: string;
@@ -28,73 +30,73 @@ export interface WorkTaskRef {
 }
 
 /**
- * 미션 단위 태스크 정본 레코드(§2 D2). J0 전이 그래프는 `open → closed` 하나.
- * 물질화 필드(branch/worktreePath/paneGroupId/prUrl)는 전부 옵셔널 — J1+가
- * `task.update`로 채운다(뒤집기가 아니라 채우기).
+ * Mission-unit task canonical record (§2 D2). J0 transition graph is single `open → closed`.
+ * Materialization fields (branch/worktreePath/paneGroupId/prUrl) are all optional — J1+ fills
+ * via `task.update` (fill, not flip).
  */
 export interface WorkTask {
-  /** 'wtask-' + UUID. mission.start 진입 시 서버가 선발급(§3 topic 선각인에 필요). */
+  /** 'wtask-' + UUID. Server pre-issues on mission.start entry (§3 topic pre-stamp needed). */
   id: string;
-  /** 사람이 읽는 미션 한 줄. 캡: 채널 topic 캡 상수(CHANNEL_TOPIC_MAX) 재사용. */
+  /** Human-readable one-line mission. Cap: reuses channel topic cap constant (CHANNEL_TOPIC_MAX). */
   title: string;
-  /** J0 전이 그래프는 open→closed 단 하나(§2). */
+  /** J0 transition graph is open→closed only (§2). */
   status: 'open' | 'closed';
-  /** R3 바인딩 — 채널이 아니라 태스크가 링크를 소유(§3). */
+  /** R3 binding — task owns the link, not the channel (§3). */
   missionChannelId: string;
   createdAt: number;
   closedAt?: number;
-  /** 감사 메타(불변). */
+  /** Audit meta (immutable). */
   createdBy: WorkTaskRef;
   /**
-   * authz 앵커(§3 close 게이트). J0 born-owned: 생성 시 서버가 createdBy로
-   * 강제 투입한다(wire 불가 — §5.1). §6.M P2 풀 태스크만 owner 부재로 태어난다
-   * (pending = open ∧ owner 부재)지만 J0은 항상 owner 존재.
+   * authz anchor (§3 close gate). J0 born-owned: server force-injects from createdBy at
+   * creation (not on wire — §5.1). §6.M P2 pool tasks only are born without owner
+   * (pending = open ∧ no owner) but J0 always has owner.
    */
   owner: WorkTaskRef;
-  // ── J1+ 물질화 필드 (J0에선 스키마만, 항상 옵셔널) ──
+  // ── J1+ materialization fields (schema only in J0, always optional) ──
   branch?: string;
   worktreePath?: string;
   /**
-   * 태스크 전용 워크스페이스 id(J1 §1 D1 의미 확정 — J0가 위임한 "그룹 vs 페인
-   * 배열" 미결의 판정). 태스크 실행 단위 = 전용 워크스페이스이고, 그 워크스페이스
-   * id를 그대로 담는다(신원 축 분리·리부트 생존이 기존 워크스페이스 영속 경로에
-   * 무임승차). J0 additive-only 규약상 필드명은 불변, 의미만 확정한다.
+   * Task-dedicated workspace id (J1 §1 D1 meaning finalized — J0 deferred "group vs pane
+   * array" decision). Task execution unit = dedicated workspace; store that workspace id
+   * directly (identity-axis separation·reboot survival piggybacks existing workspace persistence).
+   * J0 additive-only: field name immutable, meaning only finalized.
    */
   paneGroupId?: string;
   // ── J2 ──
   prUrl?: string;
-  // ── §6.M 예약 (P2에서 활성화, J0 미구현 — §5 계약 참조) ──
-  /** lease는 데몬 단독 소유(§5.3) — 어떤 caller도 wire로 쓰지 못한다. */
+  // ── §6.M reserved (activated in P2, J0 unimplemented — see §5 contract) ──
+  /** lease is daemon-only owned (§5.3) — no caller may write on wire. */
   lease?: { expiresAt: number; claimantRef: string };
 }
 
 /**
- * `domain:'task'` 로그 payload 판별 union(§2 D2). kind가 닫힌 enum이라
- * projection이 미지 kind를 안전하게 무시(fail-closed)한다. 로그 계층은 미해석.
+ * `domain:'task'` log payload discriminated union (§2 D2). kind is a closed enum so
+ * projection safely ignores unknown kinds (fail-closed). Log layer does not interpret.
  */
 export type WorkTaskEventPayload =
   | WorkTaskCreatePayload
   | WorkTaskClosePayload
   | WorkTaskUpdatePayload;
 
-/** 태스크 생성 — 서버 구성 WorkTask를 통째로 실어 projection 시드. */
+/** Task creation — carries server-composed WorkTask whole for projection seed. */
 export interface WorkTaskCreatePayload {
   kind: 'task.create';
   task: WorkTask;
 }
 
-/** 태스크 종료 — id·closedAt. `evidence?`는 §6.M P2 예약 슬롯(J0 미해석). */
+/** Task close — id·closedAt. `evidence?` is §6.M P2 reserved slot (J0 uninterpreted). */
 export interface WorkTaskClosePayload {
   kind: 'task.close';
   taskId: string;
   closedAt: number;
-  /** §6.M P2 완료증거 예약 슬롯 — J0 close는 사람 액션이라 게이트 없음(§5.5). */
+  /** §6.M P2 completion evidence reserved slot — J0 close is human action, no gate (§5.5). */
   evidence?: unknown;
 }
 
 /**
- * J1+ 필드 패치(§2 D2 — 갱신 경로 선예약). J0에선 union에 타입만 예약하고
- * 핸들러는 J1 몫이다(branch/worktreePath/paneGroupId/prUrl 물질화).
+ * J1+ field patch (§2 D2 — update path pre-reserved). J0 reserves type in union only;
+ * handler is J1 work (branch/worktreePath/paneGroupId/prUrl materialization).
  */
 export interface WorkTaskUpdatePayload {
   kind: 'task.update';
@@ -105,54 +107,54 @@ export interface WorkTaskUpdatePayload {
   prUrl?: string;
 }
 
-// ── 상수 캡 (§2 DoS 캡 — 채널 상수 재사용 관례) ─────────────────────────
+// ── Constant caps (§2 DoS caps — channel constant reuse convention) ─────────────────────────
 
 /**
- * 워크스페이스당 open WorkTask 상한(§2·§6 — 에이전트 start 스팸 방어). 채널
- * 상수(CHANNEL_MAX_MEMBERS)와 동형 수준으로 보수적. 초과 시 명시 에러.
+ * Open WorkTask cap per workspace (§2·§6 — agent start spam defense). Conservative, same order
+ * as channel constant (CHANNEL_MAX_MEMBERS). Explicit error on exceed.
  */
 export const WORKTASK_MAX_OPEN_PER_WORKSPACE = 256;
 
-/** §4 멱등 LRU cap — 채널/A2A 상수(1000)와 동형. */
+/** §4 idempotency LRU cap — same shape as channel/A2A constant (1000). */
 export const WORKTASK_IDEMPOTENCY_CAP = 1000;
 
 /**
- * fan-out 1회 호출당 태스크 상한(J1 §2 — 워크스페이스·PTY 폭주 방어). J0 open
- * 캡(WORKTASK_MAX_OPEN_PER_WORKSPACE=256)과 별개로, 단일 fanout:start 호출이
- * 찍을 수 있는 태스크 수를 8로 제한한다. 초과 시 프리플라이트에서 즉시 거부.
+ * Task cap per fan-out call (J1 §2 — workspace·PTY burst defense). Separate from J0 open
+ * cap (WORKTASK_MAX_OPEN_PER_WORKSPACE=256); limits tasks a single fanout:start call can
+ * spawn to 8. Preflight rejects immediately on exceed.
  */
 export const FANOUT_MAX_TASKS = 8;
 
 /**
- * fan-out 프롬프트 본문 캡(J1 §4 G5 — argv 한계). `{agentCmd} "$(cat {path})"`의
- * `$(cat)` 치환 결과가 단일 argv가 되므로 Windows 명령줄 한계(8191자)·ARG_MAX를
- * 고려한 플랫폼 최소공배수 8KB. 초과 시 명시 에러("프롬프트를 줄이고 상세는
- * 파일로 만들어 경로를 언급하라").
+ * Fan-out prompt body cap (J1 §4 G5 — argv limits). `$(cat)` substitution in
+ * `{agentCmd} "$(cat {path})"` becomes a single argv, so 8KB platform LCM considering
+ * Windows command-line limit (8191 chars)·ARG_MAX. Explicit error on exceed
+ * ("shorten the prompt and put details in a file, mention the path").
  */
 export const FANOUT_PROMPT_MAX_BYTES = 8 * 1024;
 
-/** closed projection GC 임계(§1 D — 리뷰 반영 GLM: 7일). 인메모리 뷰 바운드다. */
+/** closed projection GC threshold (§1 D — review GLM: 7 days). In-memory view bound. */
 export const WORKTASK_CLOSED_GC_MS = 7 * 24 * 60 * 60 * 1000;
 
 /**
- * prUrl wire 검증(J3 §2 — 리뷰 G5): GitHub PR URL 정합만 수용. prUrl은 비단조
- * mutable 필드라(PR 재생성 갱신 허용) write-once 게이트가 없다 — 형식 게이트가
- * 임의 URL 덮어쓰기를 방어한다.
+ * prUrl wire validation (J3 §2 — review G5): accept GitHub PR URL form only. prUrl is non-monotonic
+ * mutable field (PR regeneration updates allowed) with no write-once gate — format gate defends
+ * against arbitrary URL overwrite.
  */
 export const WORKTASK_PR_URL_RE = /^https:\/\/github\.com\/[^/]+\/[^/]+\/pull\/\d+$/;
 
-/** 미션 채널 topic 앵커 접두(§3) — 고아 reconcile의 유일 마킹. */
+/** Mission channel topic anchor prefix (§3) — sole marking for orphan reconcile. */
 export const MISSION_TOPIC_PREFIX = 'wmux:mission:';
 
-/** 미션 topic 앵커 문자열 조립(§3.1 채널 선각인). */
+/** Assemble mission topic anchor string (§3.1 channel pre-stamp). */
 export function missionTopicFor(taskId: string): string {
   return `${MISSION_TOPIC_PREFIX}${taskId}`;
 }
 
 /**
- * 미션 topic에서 taskId 추출(§3 부트 reconcile — 채널 방향). 앵커 패턴이
- * 아니면 null. reconcile은 "projection에 없는 taskId"만 archive하므로 위조
- * topic 채널(사용자 수동 생성)도 태스크가 없으면 정리된다(§6 자해 한정).
+ * Extract taskId from mission topic (§3 boot reconcile — channel direction). null if not anchor
+ * pattern. reconcile archives only "taskId not in projection", so forged topic channels (user
+ * manual creation) are also cleaned when no task exists (§6 self-harm limited).
  */
 export function taskIdFromMissionTopic(topic: string | undefined): string | null {
   if (typeof topic !== 'string') return null;
@@ -162,35 +164,33 @@ export function taskIdFromMissionTopic(topic: string | undefined): string | null
 }
 
 /**
- * worktreePath 정규화(§2 배타 불변식 — 리뷰 반영 Codex). 서로 다른 표기의
- * 같은 체크아웃을 하나로 접는다: trailing slash 제거·중복 슬래시 접기·
- * 플랫폼 대소문자 정책(대소문자 무구분 FS=win/mac). realpath 해석(심링크)은
- * 데몬 파일시스템 접근이 필요하므로 호출측 몫이고, 여기서는 문자열 정규화만
- * 담당한다(순수 함수 — 테스트 가능).
+ * worktreePath normalization (§2 exclusivity invariant — review Codex). Collapses same checkout
+ * with different notation: trailing slash removal·duplicate slash folding·platform case policy
+ * (case-insensitive FS = win/mac). realpath (symlinks) needs daemon filesystem access, so caller
+ * responsibility; here handles string normalization only (pure function — testable).
  *
- * **J0 실효 명시(§2 리뷰 — Claude)**: J0에선 worktreePath가 항상 미설정이라
- * 이 유틸과 배타 불변식은 계약 선언·정규화까지만이고 활성 사용은 J1 몫이다.
+ * **J0 effective note (§2 review — Claude)**: J0 always has worktreePath unset, so this util
+ * and exclusivity invariant are contract declaration·normalization only; active use is J1 work.
  */
 export function normalizeWorktreePath(raw: string, platform: NodeJS.Platform = process.platform): string {
   let p = raw.trim();
   if (p.length === 0) return p;
-  // 백슬래시(win)를 슬래시로 통일한 뒤 비교(경로 구분자 정규화).
+  // Unify backslash (win) to slash before comparison (path separator normalization).
   p = p.replace(/\\/g, '/');
-  // 중복 슬래시 접기(단, 선두 UNC `//`는 보존하지 않음 — J0 실효 0이라 단순화).
+  // Fold duplicate slashes (leading UNC `//` not preserved — J0 effective 0, simplified).
   p = p.replace(/\/{2,}/g, '/');
-  // trailing slash 제거(루트 '/' 제외).
+  // Remove trailing slash (except root '/').
   if (p.length > 1) p = p.replace(/\/+$/, '');
-  // 대소문자 무구분 FS(win32/darwin): canonical lower-case 비교.
+  // Case-insensitive FS (win32/darwin): canonical lower-case comparison.
   if (platform === 'win32' || platform === 'darwin') p = p.toLowerCase();
   return p;
 }
 
 /**
- * 태스크 meta dir에 각인하는 디스크 정본 스탬프(J3 §1 D1 — CL5). 태스크
- * projection이 GC(WORKTASK_CLOSED_GC_MS)로 소멸한 뒤에도 전용 루트에 남은
- * worktree 디렉토리를 taskId·title로 역추적할 수 있게 하는 사이드카다.
- * closedAt은 clean close 시 meta dir째 삭제되므로 대개 부재 — close↔meta삭제
- * 사이 크래시로 worktree가 잔존하는 창에서만 관측된다.
+ * Disk canonical stamp engraved in task meta dir (J3 §1 D1 — CL5). Sidecar allowing reverse
+ * lookup of taskId·title from worktree directories left in dedicated root after task projection
+ * GC (WORKTASK_CLOSED_GC_MS). closedAt usually absent — meta dir deleted on clean close — only
+ * observed in crash window between close↔meta deletion when worktree survives.
  */
 export interface WorkTaskMetaStamp {
   taskId: string;
@@ -199,15 +199,15 @@ export interface WorkTaskMetaStamp {
   closedAt?: number;
 }
 
-/** meta dir에 스탬프를 쓰는 파일명(J3 §1 — 정리 스캔 역추적 정본). */
+/** Filename for stamp in meta dir (J3 §1 — cleanup scan reverse-lookup canonical). */
 export const WORKTASK_META_FILENAME = 'task.json';
 
-// ── J3 IPC wire 결과 타입(렌더러 안전 — node import 없는 순수 데이터) ──────────
-// main측 서비스(TaskCloseService·TaskPrService·WorktaskScanService)는 node를
-// import하므로 렌더러 번들에 못 들어간다. preload·렌더러가 공유하는 이 wire 타입은
-// 그 서비스 반환을 그대로 미러링한다(계약 표류 시 tsc가 잡도록 손으로 정합 유지).
+// ── J3 IPC wire result types (renderer-safe — pure data, no node import) ──────────
+// Main-side services (TaskCloseService·TaskPrService·WorktaskScanService) import node,
+// so they cannot enter the renderer bundle. This wire type shared by preload·renderer mirrors
+// those service returns (manually kept in sync so tsc catches contract drift).
 
-/** task:close 결과(TaskCloseService.CloseTaskResult 미러). */
+/** task:close result (mirrors TaskCloseService.CloseTaskResult). */
 export type CloseTaskResultWire =
   | { ok: true; taskId: string; archivePending: boolean; unmaterialized?: boolean }
   | {
@@ -219,7 +219,7 @@ export type CloseTaskResultWire =
       aheadCount?: number;
     };
 
-/** task:create-pr 결과(TaskPrService.CreatePrResult 미러). */
+/** task:create-pr result (mirrors TaskPrService.CreatePrResult). */
 export type CreatePrResultWire =
   | { ok: true; prUrl: string; recovered?: boolean; commitPending?: boolean }
   | {
@@ -229,7 +229,7 @@ export type CreatePrResultWire =
       browseFallback?: string;
     };
 
-/** 정리 스캔 항목 4종(WorktaskScanService.WorktaskScanEntry 미러). */
+/** Cleanup scan entry 4 kinds (mirrors WorktaskScanService.WorktaskScanEntry). */
 export type WorktaskScanCategoryWire =
   | 'unmaterialized-open'
   | 'disk-missing'
@@ -240,14 +240,14 @@ export interface WorktaskScanEntryWire {
   category: WorktaskScanCategoryWire;
   taskId?: string;
   title?: string;
-  /** F1 — 열린 태스크 이상 항목의 owner(부모) ws id(정합화 close 신원). */
+  /** F1 — owner (parent) ws id for open-task anomaly entries (reconcile close identity). */
   ownerWorkspaceId?: string;
   worktreePath?: string;
   closedAt?: number;
   detail?: string;
 }
 
-/** worktask:scan 결과(핸들러 반환 미러). */
+/** worktask:scan result (mirrors handler return). */
 export type WorktaskScanResultWire =
   | { ok: true; scannedRoot: string; entries: WorktaskScanEntryWire[] }
   | { ok: false; error: string; scannedRoot: string; entries: WorktaskScanEntryWire[] };

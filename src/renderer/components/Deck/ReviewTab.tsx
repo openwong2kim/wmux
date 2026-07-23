@@ -1,14 +1,14 @@
 // ─── Deck Review tab — diff-first review of THIS repo's workspaces ───────────
 //
-// Conductor-style review surface (owner decision 2026-07-18). Scope 교정
-// (owner 2026-07-20): 전체 워크스페이스가 아니라 **현재 컨텍스트 repo와 같은
-// repo**(그 repo의 워크트리 위에 있는) 워크스페이스만 보여준다 — Git 탭 상단의
-// 워크트리·머지 워크플로우와 스코프를 일치시켜 "지금 이 repo" 맥락을 지킨다.
-// 같은 repo 판정 = 활성 pane cwd로 해결한 repo의 `worktree.list`가 주는 워크트리
-// 경로 집합에 그 워크스페이스의 resolved 토플레벨이 들어있는가(추가 git 호출 1번).
+// Conductor-style review surface (owner decision 2026-07-18). Scope correction
+// (owner 2026-07-20): show workspaces on **the same repo as current context**
+// (on that repo's worktrees) not all workspaces — align scope with Git tab top
+// worktree·merge workflow to keep "this repo now" context.
+// Same-repo determination = workspace resolved toplevel is in worktree path set from
+// `worktree.list` for repo resolved from active pane cwd (one extra git call).
 // One row per in-scope workspace: name, branch, PR badge, uncommitted diff stat
 // (files / +adds / −dels) — one-click entry into the EXISTING DiffPanel surface.
-// 이 탭은 집계·라우팅만; hunk 단위 review/adopt는 DiffPanel(J2)에 남는다.
+// This tab only aggregates·routes; hunk-level review/adopt stays in DiffPanel (J2).
 //
 // Pull-only, like GitTab: stats load on mount / tab focus / manual refresh —
 // no polling, no daemon involvement. Each row resolves its repo from the
@@ -66,18 +66,18 @@ function pathLeaf(p: string): string {
   return p.split(/[/\\]/).filter(Boolean).pop() || p;
 }
 
-// 워크스페이스의 repo-base cwd 후보(우선순위 순) — GitTab과 동일 규칙(2026-07-21).
-// 에이전트 TUI pane은 surface.cwd(셸 cwd)가 repo 밖일 수 있어(셸=홈, 에이전트=repo)
-// hook이 보고한 metadata.cwd를 두 번째 후보로 넣고, 호출부가 순서대로
-// resolveRepo를 시도해 첫 성공을 채택한다.
+// Workspace repo-base cwd candidates (priority order) — same rules as GitTab (2026-07-21).
+// Agent TUI pane surface.cwd (shell cwd) may be outside repo (shell=home, agent=repo)
+// so put hook-reported metadata.cwd as second candidate; caller tries resolveRepo
+// in order and adopts first success.
 function repoCwdCandidates(
   ws: { rootPane: Pane; activePaneId: string; metadata?: { cwd?: string }; profile?: { startupCwd?: string } },
   startupDirectory: string,
 ): string[] {
   const leaf = findActiveLeaf(ws.rootPane, ws.activePaneId) ?? findFirstLeaf(ws.rootPane);
   const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-  // platform은 호스트 OS 기준(normRepo와 동일 소스) — 렌더러의 process.platform
-  // 기본값은 CI POSIX 러너에서 Windows 경로를 오거부한다.
+  // platform is host OS (same source as normRepo) — renderer process.platform
+  // default rejects Windows paths on CI POSIX runners.
   const plat = (window as unknown as { electronAPI?: { platform?: string } }).electronAPI?.platform;
   const surfaceCwd = surface?.cwd && isPlausibleCwd(surface.cwd, plat ?? undefined) ? surface.cwd : '';
   const candidates = [
@@ -89,7 +89,7 @@ function repoCwdCandidates(
   return [...new Set(candidates)];
 }
 
-/** 후보를 순서대로 resolveRepo에 넣어 첫 성공을 반환(없으면 null). */
+/** Try candidates in order against resolveRepo; return first success (null if none). */
 async function resolveFirstRepo(
   bridge: DiffBridge,
   candidates: string[],
@@ -125,7 +125,7 @@ function getWorktreeList(): WorktreeListFn | null {
   return api?.worktree?.list ?? null;
 }
 
-/** repo 경로 정규화 — 대소문자 정책은 파일시스템에 맞춘다(win/mac 무시). */
+/** Normalize repo path — case policy follows filesystem (ignore on win/mac). */
 function normRepo(p: string): string {
   const s = p.replace(/[/\\]+$/, '');
   const plat = (window as unknown as { electronAPI?: { platform?: string } }).electronAPI?.platform;
@@ -159,9 +159,9 @@ export function ReviewTab(): React.ReactElement {
     const wtList = getWorktreeList();
     const state = useStore.getState();
 
-    // 현재 컨텍스트 repo의 워크트리 경로 집합 = Review 스코프. 활성 워크스페이스의
-    // 활성 pane cwd로 repo를 해결한 뒤 그 repo의 worktree.list를 읽는다(추가 git 1번).
-    // 해결 실패(현재 repo 없음)면 scope=null → 폴백으로 전체 표시(기존 동작).
+    // Current context repo worktree path set = Review scope. Resolve repo from active workspace
+    // active pane cwd then read that repo's worktree.list (one extra git call).
+    // Resolve failure (no current repo) → scope=null → fallback show all (legacy behavior).
     let scope: Set<string> | null = null;
     const active = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
     if (bridge && wtList && active) {
@@ -174,7 +174,7 @@ export function ReviewTab(): React.ReactElement {
             if (wl.ok) scope = new Set(wl.worktrees.map((w) => normRepo(w.path)));
           }
         } catch {
-          // 스코프 해결 실패 → null 유지(전체 폴백).
+          // Scope resolve failure → keep null (show all fallback).
         }
       }
     }
@@ -214,8 +214,8 @@ export function ReviewTab(): React.ReactElement {
           row.error = e instanceof Error ? e.message : String(e);
         }
       }
-      // 스코프가 있으면 같은 repo(그 repo의 워크트리 위)만 통과. 스코프 null이면
-      // 전체(현재 repo를 못 잡은 폴백). repo 미해결 행은 스코프 있을 때 제외.
+      // When scope set pass same repo (on that repo's worktrees) only. When scope null
+      // show all (could not determine current repo fallback). Exclude unresolved repo rows when scope set.
       if (scope) {
         if (row.repoPath && scope.has(normRepo(row.repoPath))) out.push(row);
       } else {
@@ -227,7 +227,7 @@ export function ReviewTab(): React.ReactElement {
     setLoading(false);
   }, []);
 
-  // 활성 워크스페이스가 바뀌면 스코프(현재 repo)도 바뀌므로 재조회한다.
+  // Active workspace change changes scope (current repo) so re-fetch.
   useEffect(() => {
     void load();
   }, [load, workspaceIds, activeWorkspaceId]);

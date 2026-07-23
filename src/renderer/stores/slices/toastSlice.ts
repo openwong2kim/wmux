@@ -20,7 +20,7 @@ export interface Toast {
   message: string;
   level: ToastLevel;
   /**
-   * F5 — optional single action button (e.g. fan-out's "diff 열기"). When
+   * F5 — optional single action button (e.g. fan-out's "open diff"). When
    * present, ToastContainer renders a button that runs `onClick` then dismisses.
    */
   action?: {

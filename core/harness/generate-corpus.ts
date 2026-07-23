@@ -1,24 +1,24 @@
-// E0 컨포먼스 하니스 — 코퍼스 생성 (스펙: engine-core-decision-2026-07-09.md §5-1)
+// E0 conformance harness — corpus generation (spec: engine-core-decision-2026-07-09.md §5-1)
 //
-// 합성 워크로드 5종을 녹화해 core/harness/corpus/{name}/{recording.bin,events.jsonl,meta.json}을
-// 생성한다. 결정적이므로 재실행해도 같은 바이트가 나온다(meta.json workloadHash로 확인 가능).
+// Records 5 synthetic workloads to produce core/harness/corpus/{name}/{recording.bin,events.jsonl,meta.json}.
+// Deterministic — reruns yield the same bytes (verify via meta.json workloadHash).
 //
-// 실행: npm run harness:gen-corpus (vitest 러너로 이 모듈의 generateCorpus를 호출).
-// 커밋 코퍼스는 합성 5종만(D4 거버넌스). 실 CLI 워크로드는 커밋하지 않는다.
+// Run: npm run harness:gen-corpus (vitest runner calls generateCorpus in this module).
+// Committed corpus is synthetic 5 only (D4 governance). Real CLI workloads are not committed.
 //
-// tsx 의존을 새로 들이지 않으려고 실행 러너로 vitest를 재사용한다(tsconfig.harness + vitest는
-// CJS 컨텍스트라 __dirname이 있다). import.meta는 쓰지 않는다.
+// Reuses vitest as the runner to avoid adding a tsx dependency (tsconfig.harness + vitest run in
+// a CJS context where __dirname exists). Do not use import.meta.
 
 import path from 'node:path';
 import { record, writeRecording } from './recorder';
 import { WORKLOADS } from './workloads';
 
-/** 커밋 코퍼스 디렉토리(이 파일 기준 corpus/). */
+/** Committed corpus directory (corpus/ relative to this file). */
 export const CORPUS_DIR = path.join(__dirname, 'corpus');
 
-/** 합성 워크로드 5종을 녹화해 CORPUS_DIR에 기록한다. 생성된 케이스 디렉토리 목록을 반환. */
+/** Record 5 synthetic workloads into CORPUS_DIR. Returns list of created case directories. */
 export async function generateCorpus(outDir: string = CORPUS_DIR): Promise<string[]> {
-  const seed = 0; // 합성 워크로드는 시드 무의존이나 meta에 기록해 재현성을 명시.
+  const seed = 0; // Synthetic workloads are seed-independent but record seed in meta for reproducibility.
   const dirs: string[] = [];
   for (const w of WORKLOADS) {
     const result = await record(w, seed);
@@ -30,6 +30,6 @@ export async function generateCorpus(outDir: string = CORPUS_DIR): Promise<strin
     );
   }
   // eslint-disable-next-line no-console
-  console.log(`[gen-corpus] 완료 — ${WORKLOADS.length}종 코퍼스 생성.`);
+  console.log(`[gen-corpus] done — generated ${WORKLOADS.length} corpus cases.`);
   return dirs;
 }

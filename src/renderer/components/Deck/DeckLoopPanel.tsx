@@ -43,7 +43,7 @@ export interface DeckLoopApi {
   start: (args: {
     workspaceId: string;
     objective: string;
-    /** 매 iteration 절차(선택) — 모달의 steps 편집기가 채운다. */
+    /** Per-iteration procedure (optional) — filled by modal steps editor. */
     steps?: string[];
     taskTexts?: string[];
     tier?: LoopTier;
@@ -53,7 +53,7 @@ export interface DeckLoopApi {
   stop: (workspaceId: string) => Promise<{ ok: boolean }>;
   pause: (workspaceId: string) => Promise<{ ok: boolean }>;
   resume: (workspaceId: string) => Promise<{ ok: boolean }>;
-  /** 스킬 픽커 카탈로그(선택 — 구 preload엔 없을 수 있다). */
+  /** Skill picker catalog (optional — may be absent on older preload). */
   skills?: (cwd: string) => Promise<{ skills: import('../../../main/deck/skillCatalogScan').SkillCatalogEntry[] }>;
 }
 
@@ -66,7 +66,7 @@ export function DeckLoopPanel({
   api?: DeckLoopApi;
   /** The workspace this deck view is bound to — the loop is per-workspace. */
   workspaceId?: string;
-  /** 활성 pane cwd — 모달의 스킬 카탈로그 스캔 기준(선택). */
+  /** Active pane cwd — skill catalog scan basis for modal (optional). */
   cwd?: string;
   t?: (key: string) => string;
 }): React.ReactElement | null {
@@ -77,8 +77,8 @@ export function DeckLoopPanel({
     api ??
     (window.electronAPI as unknown as { deck?: { loop?: DeckLoopApi } } | undefined)?.deck?.loop;
   const [open, setOpen] = useState(false);
-  // 루프가 없을 때 칩은 설정 모달을 연다(인라인 폼은 도크 폭에서 넘쳐 Start가
-  // 화면 밖으로 밀리는 결함이 있어 모달로 승격 — DeckLoopModal 헤더 주석).
+  // When no loop, chip opens setup modal (inline form overflowed dock width pushing Start
+  // off screen — promoted to modal — see DeckLoopModal header comment).
   const [modalOpen, setModalOpen] = useState(false);
   const [loop, setLoop] = useState<WorkspaceLoopState | null>(null);
   const [wakeBudget, setWakeBudget] = useState<{ remaining: number; total: number } | null>(null);
@@ -112,7 +112,7 @@ export function DeckLoopPanel({
         data-deck-loop-toggle
         aria-expanded={loop ? open : modalOpen}
         onClick={() => {
-          // 루프 있음 → 인라인 상태 카드 토글. 없음 → 설정 모달.
+          // loop present → toggle inline status card. absent → setup modal.
           if (loop) setOpen((v) => !v);
           else setModalOpen(true);
         }}
@@ -236,8 +236,8 @@ export function DeckLoopPanel({
         </div>
       )}
 
-      {/* 설정 모달 — objective/steps(스킬 픽커)/done-when/고급. START 성공 시
-          상태 카드가 바로 보이도록 open을 켜고 refresh한다. */}
+      {/* Settings modal — objective/steps (skill picker)/done-when/advanced. On START success
+          open modal and refresh so status card is visible immediately. */}
       {modalOpen && (
         <DeckLoopModal
           api={resolvedApi}

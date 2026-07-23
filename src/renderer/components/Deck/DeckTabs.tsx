@@ -3,8 +3,8 @@
 // Tab header at the top of the right dock: [Orchestrator] [Channels].
 // `commander` (Orchestrator) is the default (the LLM-less command composer);
 // Channels holds the classic list + conversation and is hideable via Settings,
-// so the visible set is 1–2 tabs. Git·Review는 시안 A(2026-07-20)로 중앙 페인
-// surface 탭으로 이관됐다. Warm rounded count badge: Channels = unread. Pure +
+// so the visible set is 1–2 tabs. Git·Review moved to center pane surface tabs per design A (2026-07-20).
+// Warm rounded count badge: Channels = unread. Pure +
 // props-driven so the tab-switch behavior is unit-testable under jsdom without
 // the store-connected dock body.
 
@@ -29,16 +29,16 @@ export interface DeckTabsProps {
    *  so orchestrator settings live next to its name instead of buried in
    *  Settings. Omit → the strip is tabs-only (unchanged). */
   rightSlot?: React.ReactNode;
-  /** Orchestrator(=Agent) 탭에 인라인으로 붙는 현재 모델 라벨(예: 'Sonnet 5',
-   *  기본값은 'Default'). 있으면 탭 라벨이 `Agent (Sonnet 5)`로 렌더된다. 모델
-   *  선택은 탭에서만 하도록 컨트롤 바의 모델 칩을 이 자리로 옮긴 결과다. */
+  /** Current model label inline on Orchestrator(=Agent) tab (e.g. 'Sonnet 5',
+   *  default 'Default'). When set tab label renders as `Agent (Sonnet 5)`. Model
+   *  selection moved here from control bar model chip. */
   commanderModelLabel?: string;
-  /** 모델 드롭다운 옵션(OrchestratorModelChip.MODEL_OPTIONS 재사용). ChannelDock이
-   *  store에서 주입하고, DeckTabs는 순수 컴포넌트로 유지된다. */
+  /** Model dropdown options (reuse OrchestratorModelChip.MODEL_OPTIONS). ChannelDock
+   *  injects from store; DeckTabs stays pure component. */
   commanderModelOptions?: { value: string; label: string }[];
-  /** 현재 선택된 모델 값(옵션의 value; '' = Default). 선택 표시용. */
+  /** Currently selected model value (option value; '' = Default). For display. */
   commanderModelValue?: string;
-  /** 모델 선택 콜백. 있으면 활성 Agent 탭 재클릭 시 드롭다운이 열린다. */
+  /** Model select callback. When set, re-click active Agent tab opens dropdown. */
   onCommanderModelSelect?: (value: string) => void;
   /** Translator — defaults to identity so tests can omit it. */
   t?: (key: string) => string;
@@ -71,9 +71,9 @@ export function DeckTabs({
   const t = tProp ?? ((key: string) => key);
   const tabs = TABS.filter((tab) => tab.id !== 'channels' || showChannels);
 
-  // Agent(commander) 탭의 인라인 모델 드롭다운 상태. 탭이 활성일 때만 재클릭으로
-  // 열리며, 외부 클릭·Esc로 닫힌다(role="menu" a11y). 중첩 button을 피하려고
-  // 드롭다운은 탭 button의 형제로, relative 래퍼 안에 절대배치한다.
+  // Inline model dropdown state on Agent(commander) tab. Opens on re-click only when tab active;
+  // closes on outside click·Esc (role="menu" a11y). Dropdown is sibling of tab button inside
+  // relative wrapper (absolute positioned) to avoid nested buttons.
   const [modelMenuOpen, setModelMenuOpen] = useState(false);
   const modelMenuRef = useRef<HTMLDivElement>(null);
   const canModelMenu = !!onCommanderModelSelect && !!commanderModelOptions?.length;
@@ -92,7 +92,7 @@ export function DeckTabs({
       document.removeEventListener('keydown', onKey);
     };
   }, [modelMenuOpen]);
-  // 활성 탭이 아니게 되면(또는 메뉴 비활성) 열린 드롭다운을 닫는다.
+  // Close open dropdown when tab no longer active (or menu disabled).
   useEffect(() => {
     if (active !== 'commander' || !canModelMenu) setModelMenuOpen(false);
   }, [active, canModelMenu]);
@@ -109,10 +109,10 @@ export function DeckTabs({
       {tabs.map((tab) => {
         const isActive = active === tab.id;
         const isCommander = tab.id === 'commander';
-        // Agent 탭만 모델 인라인 드롭다운을 가진다(활성 상태에서 재클릭 시 토글).
+        // Only Agent tab has inline model dropdown (toggle on re-click when active).
         const tabHasModelMenu = isCommander && canModelMenu;
         const baseLabel = t(tab.labelKey) || tab.fallback;
-        // Agent 탭 라벨에 현재 모델을 괄호로 덧붙인다 → `Agent (Sonnet 5)`.
+        // Append current model in parentheses to Agent tab label → `Agent (Sonnet 5)`.
         const label = isCommander && commanderModelLabel ? `${baseLabel} (${commanderModelLabel})` : baseLabel;
         const button = (
           <button
@@ -124,7 +124,7 @@ export function DeckTabs({
             data-active={isActive ? 'true' : undefined}
             {...(tabHasModelMenu ? { 'aria-haspopup': 'menu', 'aria-expanded': modelMenuOpen } : {})}
             onClick={() => {
-              // 비활성 → 탭 선택(기존 동작). 활성 Agent 탭 재클릭 → 모델 메뉴 토글.
+              // inactive → select tab (existing). active Agent tab re-click → toggle model menu.
               if (tabHasModelMenu && isActive) setModelMenuOpen((v) => !v);
               else onSelect(tab.id);
             }}

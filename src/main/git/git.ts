@@ -1,7 +1,7 @@
-// 공용 git 실행 헬퍼 — diff.handler(J2)의 git()을 승격 추출(동작 무변경).
-// cwd 고정, 타임아웃·버퍼 캡. throw 대신 stdout/stderr/code 반환 계약:
-// 호출부가 git 실패를 표시용 에러로 강등할 수 있어야 하므로(fail-soft 표면),
-// execFile의 throw를 여기서 흡수한다.
+// Shared git exec helper — promoted from diff.handler (J2) git() (behavior unchanged).
+// Fixed cwd, timeout and buffer caps. Returns stdout/stderr/code instead of throw:
+// callers must be able to downgrade git failures to display errors (fail-soft surface),
+// so execFile throws are absorbed here.
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { getGitExecEnv } from '../../shared/execEnv';

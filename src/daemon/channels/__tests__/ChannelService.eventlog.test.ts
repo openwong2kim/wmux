@@ -1,9 +1,9 @@
-// ─── ChannelService × 이벤트로그 (PR3 통합) ────────────────────────────
-// envelope-design §5 커밋경로 반전의 계약 고정:
-//   - 1 커밋 = 1 envelope, 커밋 실패(fsync 주입) → PERSIST_FAILED + 롤백 + 무이벤트
-//   - 재부트 = 스냅샷 폴백 체인 + tail replay → 라이브 projection과 수렴
-//   - 스냅샷 마커 지연(stale marker) → 멱등 재적용으로 수렴
-//   - dual-write 워터마크(§6.4c): 정상 재기동 오발동 0 / 구-데몬 쓰기 감지
+// ─── ChannelService × event log (PR3 integration) ────────────────────────────
+// envelope-design §5 commit-path inversion contract lock:
+//   - 1 commit = 1 envelope, commit failure (injected fsync) → PERSIST_FAILED + rollback + no event
+//   - reboot = snapshot fallback chain + tail replay → converges with live projection
+//   - stale snapshot marker → converges via idempotent re-apply
+//   - dual-write watermark (§6.4c): zero false reseed on normal reboot / old-daemon write detection
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
@@ -29,7 +29,7 @@ let eventsDir: string;
 beforeEach(() => {
   dir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-svc-eventlog-'));
   eventsDir = path.join(dir, 'events');
-  // 마이그레이션 완료 상태 모사: genesis(빈 상태, lamport 0) 존재.
+  // Simulate post-migration state: genesis (empty state, lamport 0) exists.
   const store = new SnapshotStore(path.join(eventsDir, SNAPSHOT_DIRNAME));
   store.writeDurableSync(
     GENESIS_CHANNEL_REF,
@@ -61,7 +61,7 @@ function makeHarness(opts: { fsync?: (fd: number) => void } = {}): Harness {
   log.open();
   const snapshots = new SnapshotStore(path.join(eventsDir, SNAPSHOT_DIRNAME));
   writer.enableEventLogDualWrite({
-    // index.ts 부트 게이트와 동일 배선 — write 시점 워터마크(§6.4c).
+    // Same wiring as index.ts boot gate — write-time watermark (§6.4c).
     stamp: (s) => stampWatermark(s, log.lamportHwm),
     durableFlush: true,
   });
@@ -86,14 +86,14 @@ function makeHarness(opts: { fsync?: (fd: number) => void } = {}): Harness {
   return { svc, writer, log, snapshots, emit, deps };
 }
 
-/** 라이브 projection 스냅숏(비교용 deep clone). */
+/** Live projection snapshot (deep clone for comparison). */
 function stateOf(svc: ChannelService): ChannelState {
   return JSON.parse(
     JSON.stringify((svc as unknown as { state: ChannelState }).state),
   ) as ChannelState;
 }
 
-/** 대표 mutation 배터리 — 전 이벤트 종류를 커버한다. */
+/** Representative mutation battery — covers all event kinds. */
 async function runBattery(svc: ChannelService): Promise<string> {
   const created = await svc.create({
     name: 'general',
@@ -160,19 +160,19 @@ async function runBattery(svc: ChannelService): Promise<string> {
   return chId;
 }
 
-describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
-  it('1 커밋 = 1 envelope — 배터리의 커밋 수와 로그 레코드 수·kind가 일치', async () => {
+describe('ChannelService × Event log (§5 Invert commit path)', () => {
+  it('1 commit = 1 envelope — The number of commits in the battery matches the number and kind of log records.', async () => {
     const h = makeHarness();
     await runBattery(h.svc);
     const kinds = h.log.readAllRecords().map(
       (r) => (r.payload as { kind: string }).kind,
     );
-    // create/join/invite/post/post/ack/ack/leave/create/kick/purge/archive = 12 커밋.
+    // create/join/invite/post/post/ack/ack/leave/create/kick/purge/archive = 12 commits.
     expect(kinds).toEqual([
       'create', 'join', 'invite', 'post', 'post', 'ack', 'ack', 'leave',
       'create', 'kick', 'purge', 'archive',
     ]);
-    // 도메인·origin 스탬프(§1): 전 레코드 channel 도메인 + machineId.
+    // domain·origin stamp (§1): every record channel domain + machineId.
     for (const rec of h.log.readAllRecords()) {
       expect(rec.domain).toBe('channel');
       expect(rec.origin.machineId).toBe('machine-test');
@@ -181,7 +181,7 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
     h.log.close();
   });
 
-  it('재부트(스냅샷 없음): genesis + 전체 replay가 라이브 projection과 수렴', async () => {
+  it('reboot(No snapshots): genesis + Full replay converges with live projection', async () => {
     const h = makeHarness();
     await runBattery(h.svc);
     const live = stateOf(h.svc);
@@ -189,14 +189,14 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
 
     const h2 = makeHarness();
     expect(stateOf(h2.svc)).toEqual(live);
-    // lamport hwm도 복원(재시작 후 재사용 없음 — §3).
+    // lamport hwm restored too (no reuse after restart — §3).
     expect(h2.log.lamportHwm).toBe(12);
     h2.log.close();
   });
 
-  it('operator-join: 좌석+시스템 메시지가 1 envelope로 커밋되고 재부트 replay가 수렴', async () => {
+  it('operator-join: seat+System messages are committed to 1 envelope and reboot replays converge.', async () => {
     const h = makeHarness();
-    // 에이전트가 만든 비공개 채널.
+    // private channel created by agent.
     const created = await h.svc.create({
       name: 'secret',
       visibility: 'private',
@@ -210,23 +210,23 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
       verifiedWorkspaceId: 'ws-human',
     });
     expect(res.ok).toBe(true);
-    // 좌석 push + 시스템 메시지 append가 단 하나의 operator-join envelope다(1 커밋 = 1 envelope).
+    // seat push + system message append is a single operator-join envelope (1 commit = 1 envelope).
     const recs = h.log.readAllRecords();
     expect(recs.length).toBe(before + 1);
     expect((recs.at(-1)?.payload as { kind: string }).kind).toBe('operator-join');
     const live = stateOf(h.svc);
     h.log.close();
 
-    // 재부트: genesis + 전체 replay가 라이브 projection과 정확히 수렴(원자 재적용).
+    // reboot: genesis + full replay converges exactly with live projection (atomic re-apply).
     const h2 = makeHarness();
     expect(stateOf(h2.svc)).toEqual(live);
     h2.log.close();
   });
 
-  it('재부트(스냅샷 가속): flush된 스냅샷 + tail replay가 수렴', async () => {
+  it('reboot(Snapshot Acceleration): flushsnapshot + tail replayconverge', async () => {
     const h = makeHarness();
     const chId = await runBattery(h.svc);
-    // 스냅샷 flush(마커 = 현재 hwm 12) 후 추가 커밋 2건(tail).
+    // snapshot flush (marker = current hwm 12) then 2 more commits (tail).
     h.snapshots.flushSync();
     await h.svc.post({
       channelId: chId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
@@ -241,11 +241,11 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
     h2.log.close();
   });
 
-  it('스냅샷 마커 지연(내용 > 마커): 멱등 재적용으로 수렴 — 이중 적용 없음', async () => {
+  it('Snapshot marker delay(detail > marker): Convergence with idempotent reapplication — no double application', async () => {
     const h = makeHarness();
     const chId = await runBattery(h.svc);
-    // 레이스 산물 모사: 전체 내용(hwm 12 반영)을 옛 마커(lamport 4)로 기록 —
-    // 부트가 lamport 5..12를 이미 반영된 내용 위에 재적용해도 수렴해야 한다.
+    // simulate race artifact: write full content (hwm 12) with old marker (lamport 4) —
+    // boot re-applying lamport 5..12 over already-applied content must still converge.
     h.snapshots.writeDurableSync(
       CHANNEL_PROJECTION_REF,
       (h.svc as unknown as { state: ChannelState }).state,
@@ -258,13 +258,13 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
     const h2 = makeHarness();
     const replayed = stateOf(h2.svc);
     expect(replayed).toEqual(live);
-    // 이중 적용의 대표 증상 부재: 메시지 중복 없음.
+    // no double-apply symptom: no duplicate messages.
     const msgs = replayed.messages[chId] ?? [];
     expect(new Set(msgs.map((m) => m.seq)).size).toBe(msgs.length);
     h2.log.close();
   });
 
-  it('커밋 실패(fsync 주입): PERSIST_FAILED + 인메모리 롤백 + 무이벤트 + 로그 무기록, 이후 재개', async () => {
+  it('commit failed(fsync injection): PERSIST_FAILED + In-memory rollback + No event + No log records, then resume', async () => {
     let fail = false;
     const h = makeHarness({
       fsync: () => {
@@ -287,14 +287,14 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
     });
     expect(r.ok).toBe(false);
     if (!r.ok) expect(r.error.code).toBe('PERSIST_FAILED');
-    // 인메모리 롤백: nextSeq·messages·멱등 엔트리 원복(기존 롤백 블록 형태 보존).
+    // in-memory rollback: nextSeq·messages·idempotency entry restored (preserve existing rollback block shape).
     expect(stateOf(h.svc)).toEqual(before);
-    // 이벤트 방출 없음(persist-first 계약).
+    // no event emission (persist-first contract).
     expect(h.emit).not.toHaveBeenCalled();
-    // 디스크에 롤백 레코드 없음(§2.4-4 배치 롤백).
-    expect(h.log.readAllRecords()).toHaveLength(1); // create뿐
+    // no rollback record on disk (§2.4-4 batch rollback).
+    expect(h.log.readAllRecords()).toHaveLength(1); // create only
 
-    // 실패 후 재개: lamport gap 허용·재사용 금지(§3 함정).
+    // resume after failure: lamport gap allowed, reuse forbidden (§3 pitfall).
     fail = false;
     const retry = await h.svc.post({
       channelId: created.channel.id,
@@ -304,11 +304,11 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
     expect(retry.ok).toBe(true);
     const recs = h.log.readAllRecords();
     expect(recs).toHaveLength(2);
-    expect(recs[1].lamport).toBe(3); // 2가 gap(소비 후 롤백), 재사용 없음
+    expect(recs[1].lamport).toBe(3); // 2 is gap (consumed then rolled back), no reuse
     h.log.close();
   });
 
-  it('멱등 replay 재구성(§4): 재부트 후 같은 clientMsgId 재시도가 원본을 반환(중복 커밋 없음)', async () => {
+  it('Idempotent replay reconstruction(§4): Retrying same clientMsgId after reboot returns original(No duplicate commits)', async () => {
     const h = makeHarness();
     const created = await h.svc.create({
       name: 'general', visibility: 'public',
@@ -335,23 +335,23 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
       expect(retry.message.seq).toBe(first.message.seq);
       expect(retry.message.text).toBe('once');
     }
-    // 로그에 post는 1건뿐(재시도는 append 없이 원본 반환).
+    // only one post in log (retry returns original without append).
     expect(
       h2.log.readAllRecords().filter((r) => (r.payload as { kind: string }).kind === 'post'),
     ).toHaveLength(1);
     h2.log.close();
   });
 
-  it('워터마크(§6.4c): flush된 dual-write는 unchanged(오발동 0), 구-데몬 쓰기 모사는 감지', async () => {
+  it('watermark(§6.4c): flushThe dual-write is unchanged(Misfire 0), Gu-daemon write copy is detected', async () => {
     const h = makeHarness();
     await runBattery(h.svc);
-    // dual-write 강제 flush(§6.4b 셧다운 경로) — write 시점 스탬프.
+    // forced dual-write flush (§6.4b shutdown path) — write-time stamp.
     h.writer.flushSync();
     const channelsJson = path.join(dir, 'channels.json');
     const raw1 = JSON.parse(fs.readFileSync(channelsJson, 'utf8')) as Record<string, unknown>;
-    expect(evaluateWatermark(raw1).kind).toBe('unchanged'); // 정상 재기동 — reseed 오발동 0
+    expect(evaluateWatermark(raw1).kind).toBe('unchanged'); // normal reboot — zero false reseed
 
-    // 구-데몬 쓰기 모사: 내용 변경 + 워터마크 필드 왕복 보존(§6.4c 감지 근거).
+    // simulate old-daemon write: content change + watermark fields round-tripped (§6.4c detection basis).
     (raw1['channels'] as Array<{ name: string }>)[0].name = 'renamed-by-old-daemon';
     fs.writeFileSync(channelsJson, JSON.stringify(raw1));
     const raw2 = JSON.parse(fs.readFileSync(channelsJson, 'utf8'));
@@ -361,13 +361,13 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
     h.log.close();
   });
 
-  // ─── G1 — 커밋-후-적용(append-then-apply): dirty read 구조적 제거 ─────────
-  // 구 saveOrFail은 동기라 mutation 임계구역에 yield가 없었지만 append는 await를
-  // 도입했다. G1은 적용을 fsync 배리어 **뒤**로 미뤄, 그 await 창 동안 뮤텍스를
-  // 안 타는 동기 읽기(list/getMessages)가 미커밋 낙관 상태를 보는 일이 없게 한다.
-  describe('G1 커밋-후-적용', () => {
-    it('① in-flight 비가시 ② fsync reject 후에도 비가시(무롤백) ③ resolve 후 가시', async () => {
-      // 수동 fsync 게이트: 테스트가 각 배리어의 resolve/reject를 직접 쥔다.
+  // ─── G1 — commit-then-apply (append-then-apply): structurally eliminate dirty read ─────────
+  // legacy saveOrFail was sync (no yield in mutation critical section) but append introduced await.
+  // G1 defers apply until after fsync barrier so sync reads without mutex during that await
+  // window (list/getMessages) never see uncommitted optimistic state.
+  describe('G1 Commit-Post-Apply', () => {
+    it('① in-flight Invisible ② Invisible even after fsync reject(No roll bag) ③ resolve after thorns', async () => {
+      // manual fsync gate: test holds each barrier resolve/reject directly.
       let release: (() => void) | null = null;
       let fail: ((err: Error) => void) | null = null;
       const gate = (): Promise<void> =>
@@ -388,18 +388,18 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
       const before = stateOf(h.svc);
       h.emit.mockClear();
 
-      // ① in-flight: append의 write는 끝났지만 배리어 미해소 — projection 비가시.
+      // ① in-flight: append write done but barrier unresolved — projection invisible.
       gated = true;
       const postPromise = h.svc.post({
         channelId: chId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
         text: 'optimistic', verifiedWorkspaceId: 'ws-1', clientMsgId: 'cli-g1',
       });
-      await new Promise((r) => setTimeout(r, 10)); // write+배리어 진입 대기
-      expect(h.svc.getMessages(chId, undefined, 'ws-1')).toHaveLength(0); // dirty read 없음
+      await new Promise((r) => setTimeout(r, 10)); // wait for write+barrier entry
+      expect(h.svc.getMessages(chId, undefined, 'ws-1')).toHaveLength(0); // no dirty read
       expect(stateOf(h.svc)).toEqual(before);
       expect(h.emit).not.toHaveBeenCalled();
 
-      // ② 배리어 reject: 미적용 그대로 — 롤백이 필요한 상태 자체가 없다.
+      // ② barrier reject: still unapplied — no rollback-needed state exists.
       fail!(new Error('inject barrier failure'));
       const r1 = await postPromise;
       expect(r1.ok).toBe(false);
@@ -408,25 +408,25 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
       expect(stateOf(h.svc)).toEqual(before);
       expect(h.emit).not.toHaveBeenCalled();
 
-      // ③ 배리어 resolve: 적용·가시 + 이벤트 방출.
+      // ③ barrier resolve: apply·visible + event emission.
       const postPromise2 = h.svc.post({
         channelId: chId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
-        text: 'committed', verifiedWorkspaceId: 'ws-1', clientMsgId: 'cli-g1', // 재시도(같은 키)
+        text: 'committed', verifiedWorkspaceId: 'ws-1', clientMsgId: 'cli-g1', // retry (same key)
       });
       await new Promise((r) => setTimeout(r, 10));
-      expect(h.svc.getMessages(chId, undefined, 'ws-1')).toHaveLength(0); // 아직 비가시
+      expect(h.svc.getMessages(chId, undefined, 'ws-1')).toHaveLength(0); // still invisible
       release!();
       const r2 = await postPromise2;
       expect(r2.ok).toBe(true);
       const visible = h.svc.getMessages(chId, undefined, 'ws-1');
       expect(visible).toHaveLength(1);
       expect(visible[0].text).toBe('committed');
-      expect(visible[0].seq).toBe(1); // 실패 시도는 seq를 소비하지 않음(선결정·무적용)
+      expect(visible[0].seq).toBe(1); // failed attempt did not consume seq (pre-decided·unapplied)
       expect(h.emit).toHaveBeenCalled();
       h.log.close();
     });
 
-    it('멤버십 계열(join)도 배리어 전 비가시 — 적용은 커밋 뒤', async () => {
+    it('Membership series(join)Also invisible before barrier — applies after commit', async () => {
       let release: (() => void) | null = null;
       let gated = false;
       const h = makeHarness({
@@ -449,7 +449,7 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
         verifiedWorkspaceId: 'ws-2',
       });
       await new Promise((r) => setTimeout(r, 10));
-      expect(h.svc.getMembers(created.channel.id, 'ws-1')).toHaveLength(1); // 미커밋 join 비가시
+      expect(h.svc.getMembers(created.channel.id, 'ws-1')).toHaveLength(1); // uncommitted join invisible
       release!();
       expect((await joinPromise).ok).toBe(true);
       expect(h.svc.getMembers(created.channel.id, 'ws-1')).toHaveLength(2);
@@ -458,18 +458,18 @@ describe('ChannelService × 이벤트로그 (§5 커밋경로 반전)', () => {
   });
 });
 
-// ─── 패널 반영: trim 역사 가드(CL-3) + 로그 모드 시멘틱 파리티(CL-4 확장) ─────
+// ─── panel follow-ups: trim history guard (CL-3) + log-mode semantic parity (CL-4 extension) ─────
 
 import { applyChannelEvent } from '../channelEvents';
 
-describe('replay trim 역사 가드 (패널 CL-3)', () => {
-  it('보존 범위 이전의 과거 post(seq < nextSeq, msgs에 없음) 재적용은 전체 no-op', () => {
+describe('replay trim history guard (panel CL-3)', () => {
+  it('Past before conservation scope post(seq < nextSeq, msgsNone in) Reapply all no-op', () => {
     const state: ChannelState = JSON.parse(JSON.stringify(EMPTY_CHANNEL_STATE));
     state.channels.push({
       id: 'ch-1', name: 'g', visibility: 'public', createdBy: 'ws-1',
       createdAt: 1, nextSeq: 101, companyId: 'co',
     } as unknown as ChannelState['channels'][number]);
-    // 히스토리 캡이 seq 100만 보존한 상태 모사(50은 이미 절단됨).
+    // simulate history cap keeping only seq 100 (50 already trimmed).
     state.messages['ch-1'] = [
       { seq: 100, workspaceId: 'ws-1', memberId: 'm-1', memberName: 'a', text: 'newest', ts: 100 } as unknown as NonNullable<ChannelState['messages']['x']>[number],
     ];
@@ -478,11 +478,11 @@ describe('replay trim 역사 가드 (패널 CL-3)', () => {
       kind: 'post', channelId: 'ch-1',
       message: { seq: 50, workspaceId: 'ws-1', memberId: 'm-1', memberName: 'a', text: 'trimmed-old', ts: 50 },
     });
-    // 순서 붕괴·보존분 축출·커서/멱등 부작용 전무.
+    // no order collapse·preserved-range eviction·cursor/idempotency side effects.
     expect(state).toEqual(before);
   });
 
-  it('nextSeq 이상의 신규 post는 정상 적용(가드가 신규를 막지 않음)', () => {
+  it('nextSeq New posts above are applied normally.(Guard does not block new players)', () => {
     const state: ChannelState = JSON.parse(JSON.stringify(EMPTY_CHANNEL_STATE));
     state.channels.push({
       id: 'ch-1', name: 'g', visibility: 'public', createdBy: 'ws-1',
@@ -498,8 +498,8 @@ describe('replay trim 역사 가드 (패널 CL-3)', () => {
   });
 });
 
-describe('로그 모드 시멘틱 파리티 — 핵심 표면 (패널 CL-4 확장)', () => {
-  it('per-member 커서: 한 멤버의 ack가 다른 멤버 unread에 불간섭 + 재부트 후 유지', async () => {
+describe('Log Mode Semantic Parity — Core Surface (Panel CL-4 extension)', () => {
+  it('per-member cursor: ack of one member does not interfere with unread of another member + Stay after reboot', async () => {
     const h = makeHarness();
     const created = await h.svc.create({
       name: 'cur', visibility: 'public',
@@ -529,13 +529,13 @@ describe('로그 모드 시멘틱 파리티 — 핵심 표면 (패널 CL-4 확�
     })).ok).toBe(true);
 
     const rows = stateOf(h.svc).members[chId];
-    // 발신자 m-1은 자기 발신 자동 읽음(라이브 시멘틱) — 파리티 대상은 제3의
-    // 비-ack 멤버 m-3의 불간섭이다.
+    // sender m-1 auto-reads own posts (live semantic) — parity target is third-party
+    // non-ack member m-3 non-interference.
     const m3Before = rows.find((r) => r.memberId === 'm-3')?.lastReadSeq;
     expect(rows.find((r) => r.memberId === 'm-2')?.lastReadSeq).toBe(2);
-    expect(m3Before).not.toBe(2); // 타 멤버 ack가 m-3 커서에 불간섭
+    expect(m3Before).not.toBe(2); // other member ack does not touch m-3 cursor
 
-    // 재부트(스냅샷 없음 → genesis+replay) 후 커서 보존.
+    // cursor preserved after reboot (no snapshot → genesis+replay).
     h.log.close();
     const h2 = makeHarness();
     const rows2 = stateOf(h2.svc).members[chId];
@@ -544,7 +544,7 @@ describe('로그 모드 시멘틱 파리티 — 핵심 표면 (패널 CL-4 확�
     h2.log.close();
   });
 
-  it('existence-hiding: 비멤버 list()에 private 채널 비노출 — 재부트 후에도', async () => {
+  it('existence-hiding: non-member list()Private channels not exposed — even after reboot', async () => {
     const h = makeHarness();
     const created = await h.svc.create({
       name: 'secret', visibility: 'private',
@@ -561,7 +561,7 @@ describe('로그 모드 시멘틱 파리티 — 핵심 표면 (패널 CL-4 확�
     h2.log.close();
   });
 
-  it('멱등 재시도: 동일 clientMsgId 재post → 메시지 1건 — 재부트 리플레이 후에도 1건', async () => {
+  it('Idempotent retry: Same clientMsgId repost → 1 message — 1 message even after reboot replay', async () => {
     const h = makeHarness();
     const created = await h.svc.create({
       name: 'g', visibility: 'public',
@@ -582,13 +582,13 @@ describe('로그 모드 시멘틱 파리티 — 핵심 표면 (패널 CL-4 확�
     expect(stateOf(h.svc).messages[chId]).toHaveLength(1);
     h.log.close();
     const h2 = makeHarness();
-    expect(stateOf(h2.svc).messages[chId]).toHaveLength(1); // 로그에도 1건(멱등 no-append)
+    expect(stateOf(h2.svc).messages[chId]).toHaveLength(1); // one in log too (idempotent no-append)
     h2.log.close();
   });
 });
 
-describe('코얼레싱 배치 롤백 — 서비스 레벨 (패널 2R INFO)', () => {
-  it('동일 tick 다중 post(채널 3개) → 공유 배리어 실패 → 전원 PERSIST_FAILED + 로그 무잔존', async () => {
+describe('Coalescing Batch Rollback — Service Level (panel 2R INFO)', () => {
+  it('Same tick multiple post(3 channels) → Shared barrier failure → power PERSIST_FAILED + No log retention', async () => {
     let fail = false;
     const h = makeHarness({
       fsync: () => {
@@ -607,7 +607,7 @@ describe('코얼레싱 배치 롤백 — 서비스 레벨 (패널 2R INFO)', () 
     }
     const before = h.log.readAllRecords().length; // create 3
     fail = true;
-    // 서로 다른 채널이라 per-channel 락에 안 걸리고 같은 tick에 append → 한 배리어로 코얼레싱.
+    // different channels skip per-channel lock contention, same-tick append → one coalesced barrier.
     const results = await Promise.all(ids.map((channelId) =>
       h.svc.post({
         channelId, sender: { workspaceId: 'ws-1', memberId: 'm-1' },
@@ -618,9 +618,9 @@ describe('코얼레싱 배치 롤백 — 서비스 레벨 (패널 2R INFO)', () 
       expect(r.ok).toBe(false);
       if (!r.ok) expect(r.error.code).toBe('PERSIST_FAILED');
     }
-    // §2.4-4: 배치 전량 물리 제거 — 중간 null 매장 없이 로그가 배리어 이전으로 복귀.
+    // §2.4-4: batch fully physically removed — log returns to pre-barrier with no intermediate null tomb.
     expect(h.log.readAllRecords()).toHaveLength(before);
-    // projection에도 미적용(G1 append-then-apply).
+    // also unapplied in projection (G1 append-then-apply).
     for (const channelId of ids) {
       expect(stateOf(h.svc).messages[channelId] ?? []).toHaveLength(0);
     }
@@ -630,23 +630,23 @@ describe('코얼레싱 배치 롤백 — 서비스 레벨 (패널 2R INFO)', () 
       text: 'retry', verifiedWorkspaceId: 'ws-1',
     });
     expect(retry.ok).toBe(true);
-    expect(stateOf(h.svc).messages[ids[0]].map((m) => m.seq)).toEqual([1]); // seq 미소비 재확인
+    expect(stateOf(h.svc).messages[ids[0]].map((m) => m.seq)).toEqual([1]); // seq not consumed re-check
   });
 });
 
-// ─── 공유 로그 통합 (PR3×PR4 단일화 — §2.1 단일 논리 스트림) ───────────────
+// ─── shared log integration (PR3×PR4 unification — §2.1 single logical stream) ───────────────
 
 import { A2aTaskService } from '../../a2a/A2aTaskService';
 
-describe('공유 로그: 채널 × A2A 단일 인스턴스', () => {
-  it('도메인 혼재 커밋 → lamport 전역 단조 + 양쪽 replay가 자기 도메인만 소비', async () => {
+describe('shared log: channel × A2A single instance', () => {
+  it('Mixed domain commit → lamport global forge + Both replays only consume their own domain', async () => {
     const h = makeHarness();
     const a2a = new A2aTaskService({
       log: h.log,
       origin: { machineId: 'machine-test', daemonEpoch: 1 },
     });
 
-    // 채널·A2A 커밋을 교차 배치 — 한 로그, 한 lamport 시계.
+    // interleave channel·A2A commits — one log, one lamport clock.
     const created = await h.svc.create({
       name: 'shared', visibility: 'public',
       createdBy: { workspaceId: 'ws-1', memberId: 'm-1' },
@@ -667,13 +667,13 @@ describe('공유 로그: 채널 × A2A 단일 인스턴스', () => {
       taskId: 'task-x', to: 'working', callerWorkspaceId: 'ws-2',
     })).ok).toBe(true);
 
-    // 단일 스트림: 도메인 혼재 + lamport 빈틈없이 단조(1..4) — 이중 인스턴스였다면
-    // hwm이 갈라져 중복 lamport가 발급된다.
+    // single stream: mixed domains + gapless monotonic lamport (1..4) — dual instance would
+    // split hwm and issue duplicate lamports.
     const recs = h.log.readAllRecords();
     expect(recs.map((r) => r.domain)).toEqual(['channel', 'a2a', 'channel', 'a2a']);
     expect(recs.map((r) => r.lamport)).toEqual([1, 2, 3, 4]);
 
-    // 재부트: 채널 replay는 a2a 레코드 무시, a2a restore는 channel 무시 — 상호 무오염.
+    // reboot: channel replay ignores a2a records, a2a restore ignores channel — mutual non-pollution.
     const channelLive = stateOf(h.svc);
     h.log.close();
     const h2 = makeHarness();

@@ -80,7 +80,7 @@ export const createNotificationSlice: StateCreator<StoreState, [['zustand/immer'
         // Evicted entry is READ — no unread bookkeeping needed.
         state.notifications.splice(readOld, 1);
       } else {
-        // 모두 unread면 가장 오래된 것 제거 — the evicted entry is UNREAD, so
+        // All unread — evict oldest; the evicted entry is UNREAD, so
         // its surface bucket must be decremented.
         const evicted = state.notifications.shift();
         if (evicted?.surfaceId) decUnread(state.unreadBySurfaceId, evicted.surfaceId);

@@ -76,7 +76,7 @@ export const IPC = {
   // all leave the window alive with nothing on the other end of send()).
   NOTIFICATION_LISTENER_READY: 'notification:listener-ready',
   CWD_CHANGED: 'notification:cwd-changed',
-  /** J3 §3: initialCommand 재시도 소진(프롬프트 미발사) — payload: sessionId. */
+  /** J3 §3: initialCommand retries exhausted (prompt not fired) — payload: sessionId. */
   PTY_INITIAL_CMD_EXHAUSTED: 'notification:initial-cmd-exhausted',
   GIT_BRANCH_CHANGED: 'notification:git-branch-changed',
   TERMINAL_TITLE_CHANGED: 'terminal:title-changed',
@@ -111,17 +111,17 @@ export const IPC = {
   // workspace, sound by the Electron process boundary) and forwards to the
   // daemon, whose authz gates run against it. See channelLocal.handler.ts.
   CHANNEL_MUTATE_LOCAL: 'channels:mutate-local',
-  // J1 fan-out — renderer(다이얼로그) → main: 프롬프트 1개 → N 격리 태스크 스폰.
-  // main의 FanOutService가 데몬 RPC(mission.start/update/invite)와 렌더러 spawn을
-  // 조립한다. 렌더러 신뢰 신원(verifiedWorkspaceId)은 channelLocal과 동일 trust
-  // basis(Electron 프로세스 경계). 파이프 미노출 — 같은 사용자 MCP 클라가 못 닿는다.
+  // J1 fan-out — renderer (dialog) → main: one prompt → N isolated task spawns.
+  // main FanOutService assembles daemon RPC (mission.start/update/invite) and renderer spawn.
+  // Renderer trusted identity (verifiedWorkspaceId) shares channelLocal trust basis (Electron
+  // process boundary). Pipe-unexposed — same-user MCP client cannot reach it.
   FANOUT_START: 'fanout:start',
-  // J3 태스크 수명주기 — renderer → main(파이프 미노출, channelLocal과 동일 trust).
-  //  TASK_CLOSE: remove 성공→close 커밋 순서 오케스트레이션(TaskCloseService).
-  //  TASK_CREATE_PR: gh 4중 게이트 1클릭 PR(TaskPrService).
-  //  WORKTASK_SCAN: 전용 루트 디스크 정본 정리 스캔(WorktaskScanService).
-  //  WORKTASK_REFIRE: 미발사 재발사 — prompt.md 실존 검사 후 원래 initialCommand
-  //    (에이전트 기동+프롬프트 주입)를 정상 경로와 동일 sanitize로 재전송(§3·F2).
+  // J3 task lifecycle — renderer → main (pipe-unexposed, same trust as channelLocal).
+  //  TASK_CLOSE: orchestrate remove success→close commit order (TaskCloseService).
+  //  TASK_CREATE_PR: gh 4-gate one-click PR (TaskPrService).
+  //  WORKTASK_SCAN: dedicated-root disk canonical cleanup scan (WorktaskScanService).
+  //  WORKTASK_REFIRE: refire unsent — check prompt.md exists, then resend original initialCommand
+  //    (agent boot+prompt injection) with same sanitize as normal path (§3·F2).
   TASK_CLOSE: 'task:close',
   TASK_CREATE_PR: 'task:create-pr',
   WORKTASK_SCAN: 'worktask:scan',
@@ -181,9 +181,9 @@ export const IPC = {
   //   never writes `passes` (v1 posture: no self-scored done); this is the
   //   human's pen.
   DECK_LOOP_TASK: 'deck:loop:task',
-  //   DECK_LOOP_SKILLS — 루프 설정 모달의 스킬 픽커 재료: pane 에이전트가 쓸
-  //   수 있는 스킬/커맨드 카탈로그를 디스크(.claude/skills|commands)에서 스캔.
-  //   읽기 전용, 렌더러 전용.
+  //   DECK_LOOP_SKILLS — skill picker material for loop settings modal: scan disk
+  //   (.claude/skills|commands) for skill/command catalog pane agents can use.
+  //   Read-only, renderer-only.
   DECK_LOOP_SKILLS: 'deck:loop:skills',
   //   DECK_AUTOWAKE_* — the global event-push kill switch (Settings toggle).
   //   OFF suppresses ambient wake-turns (the unrequested summaries); a
@@ -316,23 +316,23 @@ export const IPC = {
   // Path is validated main-side: must be absolute, no NUL bytes, length-capped.
   SHELL_OPEN_PATH: 'shell:open-path',
   GIT_STATUS: 'git:status',
-  // J2 — diff 리뷰·hunk 채택
+  // J2 — diff review·hunk adoption
   DIFF_READ: 'diff:read',
   DIFF_APPLY_HUNKS: 'diff:applyHunks',
-  // 워크스페이스 diff 진입점 — 임의 cwd를 자기 worktree toplevel로 정규화.
-  // (서브디렉토리 cwd를 그대로 diff:read에 넘기면 untracked 합성의
-  //  join(worktreePath, rel)이 repo-root 상대경로와 어긋난다.)
+  // Workspace diff entry point — normalize arbitrary cwd to own worktree toplevel.
+  // (Passing subdirectory cwd directly to diff:read misaligns untracked synthesis
+  //  join(worktreePath, rel) with repo-root relative paths.)
   DIFF_RESOLVE_REPO: 'diff:resolveRepo',
-  // Deck Git 탭 — 워크트리 GUI (list/add/remove; remove는 --force 미제공)
+  // Deck Git tab — worktree GUI (list/add/remove; remove does not offer --force)
   WORKTREE_LIST: 'worktree:list',
   WORKTREE_ADD: 'worktree:add',
   WORKTREE_REMOVE: 'worktree:remove',
-  // Git 탭 머지 세션 — 격리 integration 워크트리 기반(start/status/land/discard)
+  // Git tab merge session — isolated integration worktree based (start/status/land/discard)
   WORKTREE_MERGE_START: 'worktree:mergeStart',
   WORKTREE_MERGE_STATUS: 'worktree:mergeStatus',
   WORKTREE_MERGE_LAND: 'worktree:mergeLand',
   WORKTREE_MERGE_DISCARD: 'worktree:mergeDiscard',
-  // Git 탭 PR 섹션 — gh CLI 기반 PR 목록·코멘트(성긴 pull, 30s TTL)
+  // Git tab PR section — gh CLI based PR list·comments (sparse pull, 30s TTL)
   GITHUB_PR_LIST: 'github:prList',
   GITHUB_PR_DETAIL: 'github:prDetail',
   DIALOG_PICK_FILE: 'dialog:pick-file',
@@ -359,11 +359,11 @@ export const IPC = {
   // uiSlice.setAnthropicUsage.
   USAGE_UPDATE: 'usage:update',
   // Renderer → main: opt-in / opt-out toggle for the Anthropic usage
-  // meter (Settings → Claude 연동 → Anthropic 사용량 표기 토글). Main
+  // meter (Settings → Claude integration → Anthropic usage display toggle). Main
   // starts/stops the UsagePoller on receipt.
   USAGE_TOGGLE: 'usage:toggle',
   // Renderer → main: manual refresh (StatusBar mini widget / Settings
-  // "지금 새로고침" button). Triggers an immediate poll regardless of
+  // "Refresh now" button). Triggers an immediate poll regardless of
   // interval timing. Caller enforces a UI-side cooldown (5 min).
   USAGE_REFRESH: 'usage:refresh',
   // EventBus publish — renderer→main one-way for pane lifecycle events
@@ -468,11 +468,11 @@ export const IPC = {
 // well clear of Node's own 1/2/9-ish fatal codes.
 export const DAEMON_EXIT_ALREADY_RUNNING = 75;
 
-// 인스턴스 격리용 경로 suffix. main 프로세스가 dev 빌드(!app.isPackaged)에서
-// WMUX_DATA_SUFFIX='-dev'를 설정하고, daemon은 spawn 시 env로 이를 상속한다.
-// 이 헬퍼를 모든 소켓/토큰/디렉토리 경로에 적용해, dev 빌드와 packaged 빌드(또는
-// 다른 체크아웃의 빌드)가 같은 SingletonLock·소켓·~/.wmux를 두고 충돌하지 않게
-// 한다. 미설정(packaged 기본) 시 빈 문자열이라 기존 경로와 100% 동일.
+// Instance-isolation path suffix. main process sets WMUX_DATA_SUFFIX='-dev' in dev builds
+// (!app.isPackaged); daemon inherits it via env at spawn. Apply this helper to all
+// socket/token/directory paths so dev and packaged builds (or builds from other checkouts)
+// do not collide on the same SingletonLock·socket·~/.wmux. When unset (packaged default)
+// returns empty string — 100% identical to legacy paths.
 export function dataSuffix(): string {
   return process.env.WMUX_DATA_SUFFIX || '';
 }
@@ -583,23 +583,21 @@ export function getWmuxHomeDir(): string {
   return `${home}/.fmux${dataSuffix()}`;
 }
 
-// ─── P7: 데몬 제어/세션 소켓 경로 (macOS/Linux는 ~/.wmux{suffix}/ 하위) ──────
+// ─── P7: daemon control/session socket paths (macOS/Linux under ~/.wmux{suffix}/) ──────
 //
-// 과거에는 홈 디렉터리에 직접 `~/.wmux-daemon{suffix}.sock` /
-// `~/.wmux-session-<id>.sock`을 만들어 홈을 오염시켰다. 디렉터리가 이미
-// suffix를 담으므로 파일명에서 suffix를 빼 sun_path 104바이트 한계에 여유를
-// 둔다(`~/.wmux/daemon.sock`, `~/.wmux/session-<uuid>.sock`). Windows named
-// pipe 이름은 기존 그대로 유지(경로 아님).
+// Previously created `~/.wmux-daemon{suffix}.sock` / `~/.wmux-session-<id>.sock` directly
+// in home, polluting it. Directory already carries suffix, so suffix is dropped from filenames
+// for sun_path 104-byte headroom (`~/.wmux/daemon.sock`, `~/.wmux/session-<uuid>.sock`).
+// Windows named pipe names unchanged (not paths).
 //
-// FOUR-SIDED LOCKSTEP — 데몬 바인더(daemon/config.ts getDefaultPipeName,
-// daemon/SessionPipe.getPipeName)와 클라이언트(main/DaemonClient, cli/client)가
-// 전부 이 헬퍼를 쓴다. 서로 다른 경로를 계산하면 구데몬처럼 연결이 끊긴다.
-// 업그레이드 중 살아 있는 구버전 데몬과의 호환은 ① 제어 파이프: 데몬이 부팅 시
-// 실제 바인드 경로를 `~/.wmux/daemon-pipe` 힌트 파일에 쓰고 클라이언트가 이를
-// 우선하므로 유지 ② 세션 파이프: 힌트가 없으므로 클라이언트 쪽 legacy 경로
-// 재시도 폴백(main/DaemonClient.connectSessionPipe)으로 유지.
+// FOUR-SIDED LOCKSTEP — daemon binders (daemon/config.ts getDefaultPipeName,
+// daemon/SessionPipe.getPipeName) and clients (main/DaemonClient, cli/client) must all use
+// this helper. Different computed paths break connections like an old daemon. Compatibility
+// with live old daemons during upgrade: ① control pipe: daemon writes actual bind path to
+// `~/.wmux/daemon-pipe` hint file at boot, client prefers it ② session pipe: no hint, so
+// client legacy path retry fallback (main/DaemonClient.connectSessionPipe) maintains compatibility.
 
-/** 데몬 제어 소켓/파이프 기본 경로. */
+/** Default daemon control socket/pipe path. */
 export function getDaemonSocketPath(): string {
   if (process.platform === 'win32') {
     const username = require('os').userInfo().username || 'default';
@@ -608,14 +606,14 @@ export function getDaemonSocketPath(): string {
   return `${getWmuxHomeDir()}/daemon.sock`;
 }
 
-/** P7 이전(구버전)의 데몬 제어 소켓 경로 — 폴백/마이그레이션 판정용.
- * 구버전 코드와 동일하게 os.homedir() 기반으로 계산해야 문자열이 일치한다. */
+/** Pre-P7 (legacy) daemon control socket path — for fallback/migration detection.
+ * Must compute with os.homedir() like legacy code for string match. */
 export function getLegacyDaemonSocketPath(): string {
   const home = require('os').homedir() || '';
   return `${home}/.fmux-daemon${dataSuffix()}.sock`;
 }
 
-/** 세션 데이터 소켓/파이프 경로. */
+/** Session data socket/pipe path. */
 export function getSessionSocketPath(sessionId: string): string {
   if (process.platform === 'win32') {
     return `\\\\.\\pipe\\fmux-session-${sessionId}`;
@@ -623,7 +621,7 @@ export function getSessionSocketPath(sessionId: string): string {
   return `${getWmuxHomeDir()}/session-${sessionId}.sock`;
 }
 
-/** P7 이전(구버전)의 세션 소켓 경로 — 구데몬 연결 폴백용(os.homedir() 기반). */
+/** Pre-P7 (legacy) session socket path — old-daemon connection fallback (os.homedir() based). */
 export function getLegacySessionSocketPath(sessionId: string): string {
   const home = require('os').homedir() || '';
   return `${home}/.fmux-session-${sessionId}.sock`;

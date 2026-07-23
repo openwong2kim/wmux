@@ -6,7 +6,7 @@
  * only busy signal was a decaying activity heuristic (HOOK_RUNNING_TTL_MS).
  * A live `claude` that stays quiet past the TTL (long thinking gap, or a
  * finished turn waiting for the user) read as "not busy", so the chip
- * surfaced MID-SESSION — clicking 복구 would type a resume command into the
+ * surfaced MID-SESSION — clicking recover would type a resume command into the
  * agent's own input. The fix is an edge trigger: observe the agent PROCESS
  * and flip exactly once, on the alive→dead transition, no matter how the
  * agent exits (double Ctrl+C, /exit, Ctrl+D, crash).

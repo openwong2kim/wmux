@@ -15,22 +15,24 @@ import {
   getDaemonSocketPath,
 } from '../shared/constants';
 
-// 서버(PipeServer)와 동일한 경로 해석을 사용한다. 과거에는 '/tmp/wmux.sock'을
-// 하드코딩해 macOS/Linux에서 서버('~/.wmux.sock')와 어긋나 항상 "not running"이
-// 떴고, Windows에서도 username 없는 '\\.\pipe\wmux'로 빗나갔다. getPipeName()이
-// win32/unix·username을 모두 처리한다. WMUX_SOCKET_PATH로 오버라이드 가능하되,
-// PTY env는 세션 생성 시점에 동결되므로 env 경로 실패 시 파생 경로로 재시도한다.
+// Uses the same path resolution as the server (PipeServer). Previously hardcoded
+// '/tmp/wmux.sock', which on macOS/Linux diverged from the server ('~/.wmux.sock')
+// and always showed "not running"; on Windows it missed username and used
+// '\\.\pipe\wmux'. getPipeName() handles win32/unix and username. WMUX_SOCKET_PATH
+// can override, but PTY env is frozen at session creation, so retry derived path
+// if the env path fails.
 const TIMEOUT_MS = 5000;
 
-// 인증 토큰: 서버는 토큰을 ~/.wmux-auth-token 파일에 쓴다. CLI가 이 파일을
-// 자동으로 읽지 않아 매번 WMUX_AUTH_TOKEN을 수동 주입해야 했다(인증 실패).
-// 파일 우선 — PTY env의 토큰은 PipeServer.rotateToken() 이후 stale일 수 있다.
+// Auth token: the server writes the token to ~/.wmux-auth-token. The CLI did not
+// read this file automatically, so WMUX_AUTH_TOKEN had to be injected manually
+// (auth failure). File takes priority — PTY env token may be stale after
+// PipeServer.rotateToken().
 function resolveAuthToken(): string | undefined {
   try {
     const fromFile = fs.readFileSync(getAuthTokenPath(), 'utf8').trim();
     if (fromFile) return fromFile;
   } catch {
-    // 파일 없음/권한 없음 — env로 폴백
+    // File missing / permission denied — fall back to env
   }
   if (process.env.WMUX_AUTH_TOKEN) return process.env.WMUX_AUTH_TOKEN;
   return undefined;
@@ -140,8 +142,8 @@ export async function sendRequest(
 ): Promise<RpcResponse> {
   const token = resolveAuthToken();
 
-  // env 경로(WMUX_SOCKET_PATH)는 stale할 수 있으므로(데이터 suffix 변경 등),
-  // 실패 시 파생 경로로 폴백한다. wmux-client.ts(MCP)와 동일 전략.
+  // env path (WMUX_SOCKET_PATH) may be stale (e.g. data suffix change),
+  // so fall back to derived path on failure. Same strategy as wmux-client.ts (MCP).
   const envPath = process.env.WMUX_SOCKET_PATH;
   const derivedPath = getPipeName();
   const pipePaths = envPath && envPath !== derivedPath ? [envPath, derivedPath] : [derivedPath];
@@ -156,8 +158,8 @@ export async function sendRequest(
     }
   }
 
-  // TCP localhost 폴백 — Windows named pipe EPERM/ACL 이슈 우회 (서버가
-  // 127.0.0.1 랜덤 포트를 열고 포트를 ~/.wmux-tcp-port에 기록한다).
+  // TCP localhost fallback — bypass Windows named pipe EPERM/ACL issues (server
+  // opens a random 127.0.0.1 port and records it in ~/.wmux-tcp-port).
   if (process.platform === 'win32') {
     const tcpPort = readTcpPort();
     if (tcpPort) {
@@ -205,7 +207,7 @@ export async function sendRequest(
  * Used as the fallback when the `daemon-pipe` hint file is absent.
  */
 export function getDaemonPipeName(): string {
-  // P7: shared 헬퍼로 위임 — main/DaemonClient·daemon/config.ts와 lockstep.
+  // P7: delegate to shared helper — lockstep with main/DaemonClient and daemon/config.ts.
   return getDaemonSocketPath();
 }
 

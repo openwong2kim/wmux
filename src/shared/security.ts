@@ -8,9 +8,9 @@ import { execFile, execFileSync, spawn } from 'child_process';
  * string, or null if it can't be determined.
  *
  * Why this exists: passing `%USERNAME%` to icacls breaks for non-ASCII profile
- * names (e.g. a Korean account like `홍길동`). icacls parses its argv as the
+ *names (e.g. a Korean account like `Hong Gil-dong`). icacls parses its argv as the
  * console's legacy OEM codepage, so the name is mangled into a ghost principal
- * such as `홍길동\` — icacls happily grants Full control to that non-existent
+ *such as `Hong Gil-dong\` — icacls happily grants Full control to that non-existent
  * account while the REAL owner SID gets nothing. Combined with `/inheritance:r`
  * stripping every inherited ACE, the owner is locked out of their own token
  * file. A SID is pure ASCII, so it round-trips through any codepage intact.

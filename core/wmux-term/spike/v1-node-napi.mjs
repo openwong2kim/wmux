@@ -1,5 +1,5 @@
-// V1 — 순수 Node에서 .node 애드온 require → new/feed/snapshot_row 왕복.
-// 성공 조건: 왕복 결과가 기대와 일치 + exit 0.
+// V1 — require .node addon in plain Node → new/feed/snapshot_row round-trip.
+// Success: round-trip results match expectations + exit 0.
 import { createRequire } from 'node:module';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
@@ -20,7 +20,7 @@ function check(name, cond, got) {
   }
 }
 
-console.log('[V1] 순수 Node + napi .node 왕복');
+console.log('[V1] pure Node + napi .node round trip');
 console.log(`  node ${process.version}`);
 
 const term = new WmuxTerm(10, 3);
@@ -30,21 +30,21 @@ check('rows getter', term.rows === 3, term.rows);
 const enc = new TextEncoder();
 const r1 = term.feed(enc.encode('hi'));
 check('feed dirtyRows=1', r1.dirtyRows === 1, r1);
-check('feed writebackLen=0 (스켈레톤 상수)', r1.writebackLen === 0, r1);
-check('snapshot_row(0) = "hi" + 공백', term.snapshotRow(0) === 'hi        ', JSON.stringify(term.snapshotRow(0)));
+check('feed writebackLen=0 (skeleton constant)', r1.writebackLen === 0, r1);
+check('snapshot_row(0) = "hi" + spaces', term.snapshotRow(0) === 'hi        ', JSON.stringify(term.snapshotRow(0)));
 
 const r2 = term.feed(enc.encode('\r\ncd'));
-check('CRLF 후 snapshot_row(1) = "cd"', term.snapshotRow(1) === 'cd        ', JSON.stringify(term.snapshotRow(1)));
+check('after CRLF snapshot_row(1) = "cd"', term.snapshotRow(1) === 'cd        ', JSON.stringify(term.snapshotRow(1)));
 
-// SGR 시퀀스가 셀에 새지 않는지(파서가 삼킴).
+// SGR sequences must not leak into cells (parser swallows them).
 term.reset();
 term.feed(enc.encode('\x1b[31mred\x1b[0m'));
-check('reset + CSI 삼킴 → "red"만', term.snapshotRow(0) === 'red       ', JSON.stringify(term.snapshotRow(0)));
+check('reset + CSI swallow → "red" only', term.snapshotRow(0) === 'red       ', JSON.stringify(term.snapshotRow(0)));
 
 if (fail === 0) {
-  console.log('[V1] OK — 전 왕복 통과');
+  console.log('[V1] OK — full round trip passed');
   process.exit(0);
 } else {
-  console.error(`[V1] FAIL — ${fail}건`);
+  console.error(`[V1] FAIL — ${fail} case(s)`);
   process.exit(1);
 }

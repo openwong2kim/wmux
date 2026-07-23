@@ -1,7 +1,7 @@
-// V5 — wasm 인스턴스 3개 동시 생성(각 80×24 + feed 1MB) 시 메모리 오더 기록.
-// nodejs 타깃 wasm-bindgen 모듈은 단일 wasm 인스턴스(모듈 공유)이므로,
-// "인스턴스"는 WmuxTerm 객체 3개(각각 자체 그리드 + 선형 메모리 상 Vec 할당)를 뜻한다.
-// process.memoryUsage()로 RSS·external·wasm 선형 메모리(ArrayBuffer 바이트) 오더 측정.
+// V5 — record memory order when creating 3 wasm instances concurrently (each 80×24 + 1MB feed).
+// The nodejs-target wasm-bindgen module is a single wasm instance (shared module), so
+// "instance" here means 3 WmuxTerm objects (each with its own grid + Vec allocation in linear memory).
+// Measure RSS · external · wasm linear memory (ArrayBuffer bytes) order via process.memoryUsage().
 const path = require('node:path');
 const wasm = require(path.join(__dirname, '..', 'dist', 'wasm-node', 'wmux_term.js'));
 const { WmuxTerm } = wasm;
@@ -18,14 +18,14 @@ function synth1MB() {
   return Buffer.concat(parts).subarray(0, target);
 }
 
-// wasm 선형 메모리 바이트 — wasm-bindgen이 노출하는 memory.buffer.
+// Wasm linear memory bytes — memory.buffer exposed by wasm-bindgen.
 function wasmMemBytes() {
-  // nodejs glue는 `wasm` 심볼로 exports를 담는다. memory export 접근.
+  // nodejs glue holds exports in the `wasm` symbol. Access the memory export.
   try {
-    // wasm-bindgen nodejs 산출물은 내부적으로 wasm.memory를 쓴다 — d.ts엔 없으나
-    // 런타임 exports에 존재. 안전 접근 위해 __wbindgen 계열 없이 memory만 탐색.
+    // wasm-bindgen nodejs output uses wasm.memory internally — not in d.ts but
+    // present in runtime exports. Probe memory only, without __wbindgen symbols.
     const mod = require(path.join(__dirname, '..', 'dist', 'wasm-node', 'wmux_term_bg.js'));
-    // bg.js가 없을 수도 있으니(단일 파일 산출) fallback.
+    // bg.js may be absent (single-file output) — fallback.
     return mod && mod.memory ? mod.memory.buffer.byteLength : null;
   } catch {
     return null;
@@ -42,42 +42,42 @@ function snap(label) {
   };
 }
 
-// 리뷰 반영: 이것은 WebAssembly.Instance 3개가 아니다 — nodejs glue는 모듈당
-// 단일 인스턴스이고, 아래는 그 선형 메모리를 공유하는 WmuxTerm 객체 3개다.
-// per-pane 독립 Instance(각자 선형 메모리)의 실측은 E2(web glue 다중 로드)로 이월.
-console.log('[V5] 단일 wasm 모듈 내 WmuxTerm 객체 3개 — 메모리 오더');
+// Review feedback: this is NOT three WebAssembly.Instance objects — nodejs glue uses one
+// instance per module; below are three WmuxTerm objects sharing that linear memory.
+// Per-pane independent Instance (each with its own linear memory) is deferred to E2 (multiple web glue loads).
+console.log('[V5] three WmuxTerm objects in one wasm module — memory order');
 console.log(`  node ${process.version}`);
 
 const stream = synth1MB();
 const rows = [];
-rows.push(snap('baseline (모듈 로드 후)'));
+rows.push(snap('baseline (after module load)'));
 
 const terms = [];
 for (let i = 0; i < 3; i++) {
   const t = new WmuxTerm(80, 24);
   t.feed(stream); // 1MB feed.
   terms.push(t);
-  rows.push(snap(`인스턴스 ${i + 1} 생성+1MB feed 후`));
+  rows.push(snap(`after instance ${i + 1} create + 1MB feed`));
 }
 
-// 살아있게 유지(GC 방지).
+// Keep alive (prevent GC).
 let checksum = 0;
 for (const t of terms) checksum += t.snapshot_row(0).length;
 
 const memBytes = wasmMemBytes();
 
-console.log('  --- process.memoryUsage() 오더 ---');
+console.log('  --- process.memoryUsage() order ---');
 for (const r of rows) {
   console.log(`  ${r.label.padEnd(30)} rss=${r.rssMB}MB external=${r.externalMB}MB arrayBuffers=${r.arrayBuffersMB}MB`);
 }
 if (memBytes != null) {
-  console.log(`  wasm 선형 메모리(공유 인스턴스) = ${(memBytes / 1048576).toFixed(2)} MB`);
+  console.log(`  wasm linear memory (shared instance) = ${(memBytes / 1048576).toFixed(2)} MB`);
 } else {
-  console.log('  wasm 선형 메모리 = (nodejs 단일 파일 산출 — memory export 직접 노출 안 됨, RSS 오더로 대체)');
+  console.log('  wasm linear memory = (nodejs single-file output — memory export not exposed; using RSS order instead)');
 }
 console.log(`  (checksum=${checksum})`);
 
-// 메모리 오더 판정: 3개 인스턴스가 RSS를 폭증시키지 않는지(각 그리드는 80*24 char = ~7.7KB).
-// 이 검증은 "오더 기록"이 목적 — pass/fail 게이트 아님(결정 문서 V5 = 기록).
-console.log('[V5] OK — 오더 기록 완료(게이트 아님, E2 SharedArrayBuffer 전 미측정치)');
+// Memory order check: 3 instances must not explode RSS (each grid is 80*24 char ≈ ~7.7KB).
+// This validation records order only — not a pass/fail gate (decision doc V5 = record).
+console.log('[V5] OK — order recorded (not a gate; pre-E2 SharedArrayBuffer unmeasured)');
 process.exit(0);

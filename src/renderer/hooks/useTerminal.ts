@@ -868,8 +868,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // spurious row-change events on resize; the dedicated reflow logic
       // suppresses them, which in turn keeps SelectionService from
       // unconditionally clearing the user's selection mid-drag.
-      // macOS/Linux PTY는 ConPTY가 아니므로 이 reflow 경로를 켜면 오히려
-      // focus/resize 시 줄바꿈이 어긋나 글자가 깨진다(좌측 팬 garble). win32 한정.
+      // macOS/Linux PTY is not ConPTY — enabling this reflow path mis-wraps on focus/resize
+      // and garbles text (left pane garble). win32 only.
       ...(window.electronAPI.platform === 'win32'
         ? { windowsPty: { backend: 'conpty' as const, buildNumber: 21376 } }
         : {}),
@@ -944,28 +944,25 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
     terminal.unicode.activeVersion = '11';
     terminal.open(container);
 
-    // xterm 자체 네이티브 'paste' 리스너(terminal.element/textarea에 직접 붙어있음)가
-    // 아래 Cmd+V/Ctrl+V/Ctrl+Shift+V 핸들러와 겹칠 때만 캡처 단계에서 차단한다. wmux는
-    // Menu.setApplicationMenu()를 호출하지 않아 Electron 기본 메뉴가 깔리는데, macOS는
-    // Cmd+V가 NSMenu key equivalent로 처리되어 keydown의 preventDefault()로도 못 막는다
-    // — 그 결과 xterm 자체 paste 경로와 아래 커스텀 비동기 IPC 경로가 같은 pty에 동시에
-    // 써서 붙여넣기 앞부분이 유실/손상되는 레이스가 생긴다. 이 레이스는 macOS 한정이다:
-    // 독립 리서치 2패스(Electron/Chromium 소스·공식 문서·GitHub 이슈 1차 출처)로 확인.
-    // Windows/Linux는 액셀러레이터 디스패치가 렌더러 우선이라 preventDefault로 억제되고,
-    // Electron 기본 paste role이 registerAccelerator:false(Electron 소스 lib/browser/api/
-    // menu-item-roles.ts)라 Ctrl+V 라벨이 OS 단축키로 등록조차 안 된다 → 여기서 레이스할
-    // 두 번째 네이티브 writer 자체가 존재하지 않는다(이전 주석의 "이론상 플랫폼 무관하게
-    // 방어" 추정은 오답이었다). 오히려 Linux에서 이 가드를 켜두면 X11 middle-click
-    // PRIMARY-selection 붙여넣기(Chromium이 진짜 DOM 'paste'를 쏨)를 CLIPBOARD paste와
-    // 구분 못 해 300ms 창 안에서 잘못 취소하는 오검출 위험이 생긴다(clipboardChunk.ts도
-    // middle-click은 xterm onData로 무방해 통과한다고 가정). 그래서 아래 등록을 isMac으로
-    // 게이트한다. 또 macOS에서도 무조건 차단하면 안 된다 — 메뉴바 Edit>Paste를 마우스로
-    // 클릭하거나 VoiceOver/UI 자동화가 keydown 없이 합성 paste 이벤트만 보내는 경로는 아래
-    // keydown 핸들러가 전혀 안 돌기 때문에 xterm 자체 파이프라인이 유일한 처리 경로다
-    // (팀 리뷰 발견: 무조건 차단하면 그 경로가 조용히 무동작해진다). 그래서 keydown 핸들러가
-    // 막 시작한 직후(NATIVE_PASTE_RACE_WINDOW_MS 이내)에만 "레이스 중"으로 보고 차단하고,
-    // 그 밖의 native paste는 그대로 흘려보내 xterm 자체 처리에 맡긴다. 윈도우 크기는 이
-    // 파일의 기존 RIGHT_CLICK_PASTE_SUPPRESS_MS와 동일한 관례(최근 이벤트 판별용 300ms)를 따른다.
+    // Block at capture phase only when xterm's native 'paste' listener (on terminal.element/textarea)
+    // overlaps with Cmd+V/Ctrl+V/Ctrl+Shift+V handlers below. wmux does not call
+    // Menu.setApplicationMenu(), so Electron default menu applies; on macOS Cmd+V is an NSMenu
+    // key equivalent that keydown preventDefault() cannot block — xterm native paste and custom
+    // async IPC paste then write to the same pty and race, losing/corrupting paste prefix. macOS only
+    // (confirmed by independent two-pass research: Electron/Chromium sources, docs, GitHub issues).
+    // Windows/Linux: accelerator dispatch is renderer-first and suppressible via preventDefault;
+    // Electron default paste role is registerAccelerator:false (Electron lib/browser/api/
+    // menu-item-roles.ts) so Ctrl+V is not registered as OS shortcut → no second native writer to
+    // race (prior "defend on all platforms" assumption was wrong). On Linux, enabling this guard
+    // risks false-positive cancellation of X11 middle-click PRIMARY-selection paste (Chromium fires
+    // real DOM 'paste') within 300ms window, confused with CLIPBOARD paste (clipboardChunk.ts assumes
+    // middle-click passes via xterm onData). So gate registration below with isMac. Also must not
+    // block unconditionally on macOS — Edit>Paste via menu or VoiceOver/UI automation synthetic paste
+    // without keydown never runs keydown handlers; xterm pipeline is the only path (team review:
+    // unconditional block silently broke that path). keydown handlers stamp lastPasteKeydownAt;
+    // blockNativePaste treats "in race" only within NATIVE_PASTE_RACE_WINDOW_MS after; other native
+    // paste flows to xterm. Window size follows RIGHT_CLICK_PASTE_SUPPRESS_MS convention here (300ms
+    // recent-event discrimination).
     const isMac = window.electronAPI?.platform === 'darwin';
     let lastPasteKeydownAt = 0;
     const NATIVE_PASTE_RACE_WINDOW_MS = 300;
@@ -974,9 +971,9 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       e.preventDefault();
       e.stopPropagation();
     };
-    // macOS 한정 게이트: 레이스(NSMenu key equivalent)는 여기서만 발생한다. Windows/Linux엔
-    // 레이스할 두 번째 네이티브 writer가 없고(Electron paste role registerAccelerator:false),
-    // Linux는 middle-click PRIMARY-selection paste 오검출 위험까지 있어 등록에서 제외한다.
+    // macOS-only gate: race (NSMenu key equivalent) occurs only here. Windows/Linux have no
+    // second native writer to race (Electron paste role registerAccelerator:false); Linux also
+    // has middle-click PRIMARY-selection false-positive risk — exclude from registration.
     if (isMac) { container.addEventListener('paste', blockNativePaste, true); }
 
     // Issue #167: keep the hidden IME textarea empty while idle. xterm only
@@ -1244,11 +1241,10 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // 'd' is the Ctrl+D split-right shortcut — without it xterm sends EOT (0x04)
       // to the PTY and PowerShell echoes it back as `^D` instead of triggering split.
       //
-      // macOS: useKeyboard가 cmdOrCtrl=metaKey로 매칭하므로 Cmd 계열 액션(,/d/k/i/
-      // n/t/`)의 Ctrl 조합은 앱 액션이 아니다 — 삼키면 Ctrl+D(EOF)·Ctrl+I(Tab)·
-      // Ctrl+K(kill-line) 등 readline 컨트롤 문자가 PTY에도 못 가고 죽는다
-      // (owner-reported 2026-07-19). mac에서는 literal-Ctrl 바인딩만(b=프리픽스,
-      // m=북마크, Ctrl+Arrow) 버블시키고 나머지는 xterm→PTY로 통과.
+      // macOS: useKeyboard matches cmdOrCtrl=metaKey, so Ctrl variants of Cmd actions (,/d/k/i/
+      // n/t/) are not app actions — swallowing them kills Ctrl+D (EOF), Ctrl+I (Tab), Ctrl+K
+      // (kill-line), etc. from reaching PTY (owner-reported 2026-07-19). On mac, bubble only
+      // literal-Ctrl bindings (b=prefix, m=bookmark, Ctrl+Arrow); pass rest xterm→PTY.
       const bubbleKeys = isMac
         ? ['b', 'm', 'ArrowUp', 'ArrowDown']
         : [',', 'b', 'd', 'k', 'i', 'n', 't', 'm', 'ArrowUp', 'ArrowDown', '`'];
@@ -1265,7 +1261,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       if (e.ctrlKey && !e.shiftKey && bubbleCodes.includes(e.code)) {
         return false;
       }
-      // Ctrl+` by code (cross-layout) — mac은 Cmd+`가 액션이므로 Ctrl+`(NUL)는 PTY로.
+      // Ctrl+` by code (cross-layout) — on mac Cmd+` is app action, so Ctrl+` (NUL) goes to PTY.
       if (!isMac && e.ctrlKey && !e.shiftKey && e.code === 'Backquote') {
         return false;
       }
@@ -1274,7 +1270,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // physical code as well so zoom survives a Hangul / non-Latin IME. The
       // Ctrl++ (Shift+=) and numpad variants are already covered: the Ctrl+Shift
       // catch-all below bubbles the former, and useKeyboard maps NumpadAdd etc.
-      // mac 줌은 Cmd+=/-/0 — Ctrl 조합은 앱 액션이 아니므로 xterm/PTY로 통과.
+      // mac zoom is Cmd+=/-/0 — Ctrl combos are not app actions, pass to xterm/PTY.
       if (!isMac && e.ctrlKey && !e.shiftKey && (
         e.key === '=' || e.key === '-' || e.key === '0' ||
         e.code === 'Equal' || e.code === 'Minus' || e.code === 'Digit0' ||
@@ -1321,7 +1317,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       }
       if (isMac && e.metaKey && !e.ctrlKey && !e.altKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
         e.preventDefault();
-        lastPasteKeydownAt = Date.now(); // blockNativePaste 위: 곧 같이 뜰 native paste를 레이스로 잡는다
+        lastPasteKeydownAt = Date.now(); // Above blockNativePaste: catch imminent native paste race
         void (async () => {
           const text = await window.clipboardAPI.readText();
           if (text) {
@@ -1347,8 +1343,8 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // fallback the copy silently falls through to SIGINT (the reported "Ctrl+C
       // copy broken in Hangul mode" bug). Same IME class as the Ctrl+J / Escape
       // handlers above.
-      // macOS는 복사가 Cmd+C 전담(위 분기)이므로 Ctrl+C는 항상 SIGINT — 선택영역이
-      // 남아 있어도 인터럽트를 가로채지 않는다(owner-reported 2026-07-19).
+      // macOS: copy is Cmd+C only (branch above), so Ctrl+C is always SIGINT — do not intercept
+      // even when selection remains (owner-reported 2026-07-19).
       if (!isMac && e.ctrlKey && !e.shiftKey && (e.key === 'c' || e.code === 'KeyC')) {
         const sel = terminal.getSelection();
         if (sel) {
@@ -1362,13 +1358,12 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
 
       // Ctrl+V: paste from clipboard (use our IPC clipboard, block event
       // so xterm doesn't also paste via browser's native paste event)
-      // mac은 Cmd+V가 붙여넣기 전담(위 분기) — Ctrl+V는 readline quoted-insert
-      // (verbatim)이므로 PTY로 통과시킨다.
+      // mac: Cmd+V owns paste (branch above) — Ctrl+V is readline quoted-insert (verbatim), pass to PTY.
       if (!isMac && e.ctrlKey && !e.shiftKey && (e.key === 'v' || e.code === 'KeyV')) {
         e.preventDefault();
-        // isMac 게이트: blockNativePaste 리스너가 비-macOS에선 등록조차 안 되므로(위 참고)
-        // 스탬프도 macOS에서만 찍는다 — 안 그러면 나중에 등록 게이트를 넓힐 때 값이 이미
-        // 차 있어 X11 middle-click 오검출 위험이 조용히 되살아난다(review-team GLM 발견).
+        // isMac gate: blockNativePaste listener not registered off macOS (see above) — stamp only
+        // on macOS, else widening registration gate later revives X11 middle-click false-positive
+        // risk silently (review-team GLM finding).
         if (isMac) lastPasteKeydownAt = Date.now();
         void (async () => {
           // Try text first
@@ -1411,7 +1406,7 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // Ctrl+Shift+V: paste fallback
       if (e.ctrlKey && e.shiftKey && (e.key === 'V' || e.code === 'KeyV')) {
         e.preventDefault();
-        if (isMac) lastPasteKeydownAt = Date.now(); // isMac 게이트 이유는 Ctrl+V 분기 주석 참고
+        if (isMac) lastPasteKeydownAt = Date.now(); // isMac gate rationale — see Ctrl+V branch comment
         void (async () => {
           const text = await window.clipboardAPI.readText();
           if (text) {

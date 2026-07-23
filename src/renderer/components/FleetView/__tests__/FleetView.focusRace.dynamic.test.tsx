@@ -1,20 +1,20 @@
 // @vitest-environment jsdom
 //
-// NB2 파동2 — FleetView 마운트 포커스 레이스 회귀 하네스.
+// NB2 wave 2 — FleetView mount focus race regression harness.
 //
-// 증상(2모델 합의 CRITICAL): 상시 크롬으로 전환하면서 마운트 효과(rAF로 포커스를
-// 당김)와 로빙 포커스 효과가 각각 useEffect로 분리됐다. 로빙 효과의
-// `panel.contains(document.activeElement)` 가드는 마운트 시점에 동기 실행되는데,
-// 그때는 rAF 콜백이 아직 안 돌아 패널 안에 포커스가 없어 거짓 → 즉시 return.
-// 예전 마운트 효과는 panelRef(컨테이너)에만 포커스를 줬으므로 어떤 카드에도 실제
-// DOM 포커스가 걸리지 않았다. 탭에 카드가 하나뿐이면 화살표를 눌러도 인덱스가
-// 클램프돼 로빙이 영영 안 살아나고, 스크린리더도 최초 선택을 announce하지 못한다.
+// Symptom (CRITICAL, two-model consensus): switching to persistent chrome split the mount
+// effect (rAF focus pull) and roving focus effect into separate useEffects. The roving
+// effect's `panel.contains(document.activeElement)` guard runs synchronously at mount time,
+// but the rAF callback has not run yet, so focus is not inside the panel → false → immediate
+// return. The old mount effect only focused panelRef (the container), so no card ever got
+// real DOM focus. With a single card in the tab, arrow keys clamp the index and roving never
+// wakes up; screen readers also fail to announce the initial selection.
 //
-// 수정: 마운트 효과가 panelRef가 아니라 "현재 포커스 인덱스의 카드/행"에 직접
-// 포커스한다. 이 하네스는 REAL <FleetView/>를 createRoot로 마운트해 효과를 돌리고,
-// rAF를 flush한 뒤 document.activeElement가 (컨테이너가 아니라) data-fleet-card
-// 버튼인지 검증한다. 카드가 하나뿐인 케이스(레이스가 영구화되던 조건)를 픽스처로
-// 고정한다. 겸사겸사 닫힘 시 포커스 복원(INFO 4번)도 검증한다.
+// Fix: the mount effect focuses the card/row at the current focus index directly, not
+// panelRef. This harness mounts REAL <FleetView/> via createRoot, runs effects, flushes rAF,
+// then verifies document.activeElement is the data-fleet-card button (not the container).
+// Fixtures the single-card case (where the race used to persist). Also verifies focus restore
+// on close (INFO item 4).
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import * as React from 'react';
@@ -26,7 +26,7 @@ import type { Workspace, Pane, Surface } from '../../../../shared/types';
 const act = React.act;
 (globalThis as unknown as { IS_REACT_ACT_ENVIRONMENT: boolean }).IS_REACT_ACT_ENVIRONMENT = true;
 
-// ─── Fixtures: 브라우저 서피스 단일 페인 = 카드 1개(터미널 tail 경로 회피) ─────
+// ─── Fixtures: single browser-surface pane = one card (avoids terminal tail path) ─────
 function surface(id: string, ptyId: string, extra: Partial<Surface> = {}): Surface {
   return { id, ptyId, title: id, shell: 'pwsh', cwd: `C:\\repo\\${id}`, surfaceType: 'browser', ...extra };
 }
@@ -59,7 +59,7 @@ function unmount(): void {
   container.remove();
 }
 
-/** 마운트 효과가 예약한 rAF 콜백(포커스 이동)을 flush한다. */
+/** Flush the rAF callback scheduled by the mount effect (focus move). */
 async function flushRaf(): Promise<void> {
   await act(async () => {
     await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
@@ -93,13 +93,13 @@ describe('FleetView — mount focus race (NB2 wave2)', () => {
     await flushRaf();
 
     const active = document.activeElement as HTMLElement | null;
-    // 레이스가 있으면 여기서 active는 role=region 패널(또는 body)이라 실패한다.
+    // With the race, active would be the role=region panel (or body) and this would fail.
     expect(active?.hasAttribute('data-fleet-card')).toBe(true);
     expect(active?.getAttribute('role')).toBe('option');
   });
 
   it('restores focus to the opener element on close (unmount)', async () => {
-    // 열기 트리거 대역: 마운트 직전에 포커스를 쥔 요소(예: 페인의 textarea).
+    // Open trigger band: element that held focus just before mount (e.g. pane textarea).
     const opener = document.createElement('button');
     document.body.appendChild(opener);
     opener.focus();
@@ -107,11 +107,11 @@ describe('FleetView — mount focus race (NB2 wave2)', () => {
 
     mount();
     await flushRaf();
-    // 열리면 포커스는 카드로 넘어간다.
+    // When open, focus moves to the card.
     expect(document.activeElement).not.toBe(opener);
 
     unmount();
-    // 닫히면 열기 시점 요소로 복원(브라우저가 body로 떨구지 않는다).
+    // When closed, focus restores to the opener (browser does not drop to body).
     expect(document.activeElement).toBe(opener);
     opener.remove();
   });

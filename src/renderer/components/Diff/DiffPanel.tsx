@@ -1,8 +1,8 @@
-// J2 — DiffPanel: 태스크 산출물 diff 리뷰·hunk 채택·코멘트 (스펙 §1·§3·§4)
+// J2 — DiffPanel: task output diff review·hunk adopt·comments (spec §1·§3·§4)
 //
-// §6.J 문면 준수: "읽기·코멘트·체크아웃 3동작만 — 풀 IDE diff 에디터 금지."
-// 파일 트리(numstat) + unified diff(+/- 색만) + hunk 체크박스 + 채택 버튼 +
-// 실패 hunk 표시 + "적용됨"/"채택불가" 뱃지 + 코멘트 버튼.
+// §6.J literal compliance: "read·comment·checkout 3 actions only — no full IDE diff editor."
+// File tree (numstat) + unified diff (+/- colors only) + hunk checkboxes + adopt button +
+// failed hunk display + "applied"/"cannot adopt" badges + comment button.
 import { useState, useEffect, useCallback, useMemo, useRef } from 'react';
 import type {
   DiffFile,
@@ -27,11 +27,11 @@ const BTN_DANGER_TINTED =
   'rounded-[5px] border transition-colors bg-[color-mix(in_srgb,var(--accent-red)_15%,transparent)] border-[color-mix(in_srgb,var(--accent-red)_32%,transparent)] text-[color-mix(in_srgb,var(--accent-red)_70%,var(--text-main))] hover:bg-[color-mix(in_srgb,var(--accent-red)_22%,transparent)]';
 
 /**
- * diff 대상 유니온 — 기존 태스크 워크트리(J2, hunk 채택·코멘트·PR 포함)와
- * 워크스페이스 repo(읽기 전용: git diff HEAD + untracked)를 한 컴포넌트가
- * 렌더한다. fork 대신 유니온: diffParse 렌더·캡·truncated 로직의 이중화를 막는다.
- * 워크스페이스 모드는 task 결합부(미션채널 코멘트·채택·PR·close)를 전부 가드로
- * 끈다 — §6.J "읽기·코멘트·체크아웃 3동작" 계약 내의 순수 열람 표면.
+ * diff target union — existing task worktree (J2, hunk adopt·comments·PR included) and
+ * workspace repo (read-only: git diff HEAD + untracked) rendered by one component.
+ * Union instead of fork: avoids duplicating diffParse render·cap·truncated logic.
+ * Workspace mode guards all task-coupled parts (mission channel comments·adopt·PR·close) —
+ * pure read surface within §6.J "read·comment·checkout 3 actions" contract.
  */
 export type DiffPanelSource =
   | { kind: 'task'; taskId: string }
@@ -41,21 +41,21 @@ interface DiffPanelProps {
   source: DiffPanelSource;
   isActive: boolean;
   surfaceId: string;
-  /** 렌더러 신원 앵커(채널 포스트용). */
+  /** Renderer identity anchor (for channel posts). */
   verifiedWorkspaceId: string;
 }
 
-// 태스크 메타(task.mission.list에서 역참조).
+// Task meta (reverse reference from task.mission.list).
 interface TaskMeta {
   worktreePath: string;
   branch: string;
   missionChannelId: string;
   channelArchived: boolean;
-  /** F11 — closed면 close/PR 버튼을 감춘다(worktree 제거됨·닫을 것 없음). */
+  /** F11 — hide close/PR buttons when closed (worktree removed·nothing to close). */
   status: 'open' | 'closed';
 }
 
-// F10 — diff 코멘트 역조회(미션 채널의 diff-comment 앵커 메시지).
+// F10 — diff comment reverse lookup (mission channel diff-comment anchor messages).
 interface DiffComment {
   file: string;
   hunkHeader: string;
@@ -64,7 +64,7 @@ interface DiffComment {
   postedAt: number;
 }
 
-// 채널 메시지에서 이 태스크의 diff-comment 앵커만 추출한다(§4 data.kind 매칭).
+// Extract only this task's diff-comment anchors from channel messages (§4 data.kind match).
 export function extractDiffComments(
   messages: Array<{ text?: string; memberName?: string; postedAt?: number; data?: unknown }>,
   taskId: string,
@@ -87,10 +87,9 @@ export function extractDiffComments(
   return out;
 }
 
-// J4 §S2 — diff 주석 포스트에 부착할 텍스트 앵커. CLI/MCP read가 data payload를
-// 렌더하지 않아도 에이전트가 어느 파일·hunk에 대한 코멘트인지 본문만으로 알 수 있게
-// 한다. hunkHeader는 text 쪽만 절단하고(data 앵커는 원형 유지 — extractDiffComments가
-// 그걸 읽는다), 비어 있으면 `@ ...` 파트를 생략한다.
+// J4 §S2 — text anchor attached to diff comment post. So agents know file·hunk from body alone
+// even when CLI/MCP read does not render data payload. Truncate hunkHeader on text side only
+// (data anchor kept intact — extractDiffComments reads it); omit `@ ...` part when empty.
 export const DIFF_COMMENT_HEADER_MAX = 80;
 
 export function formatDiffCommentText(file: string, hunkHeader: string, comment: string): string {
@@ -102,17 +101,16 @@ export function formatDiffCommentText(file: string, hunkHeader: string, comment:
   return `${anchor} ${comment}`;
 }
 
-// J4 §S1 — diff 주석 포스트의 자동 멘션 대상을 해석한다. 미션 채널 멤버 중 사람
-// (HUMAN_WORKSPACE_ID)과 코멘터 자신(selfWorkspaceId — 미션 채널의 createdBy는 owner
-// 워크스페이스라 항상 멤버다)을 제외한 나머지를 워크스페이스 단위로 하나씩 멘션한다.
+// J4 §S1 — resolve auto-mention targets for diff comment post. Among mission channel members,
+// exclude human (HUMAN_WORKSPACE_ID) and commenter self (selfWorkspaceId — mission channel
+// createdBy is owner workspace so always member); mention rest one per workspace.
 //
-// memberId를 붙이지 않는(=워크스페이스-레벨) 것이 의도적이다: 데몬의 mentionUnread
-// 집계(ChannelService.unreadFor)는 memberId 없는 멘션을 그 워크스페이스의 모든 멤버
-// 행에 대해 카운트하므로, 한 워크스페이스에 에이전트 팬이 여럿(예: 같은 WS의
-// Claude+Codex)이어도 전원이 깨어난다. 반대로 memberId를 붙이면 post RPC의 dedup 키가
-// (workspaceId, paneId)라 memberId만 다른 형제 멘션이 collapse되어 첫 행만 살아남고
-// 나머지는 조용히 유실된다. CHANNEL_MENTIONS_MAX로 사전 절단한다(초과분은 post RPC가
-// 어차피 CHANNEL_MENTIONS_TOO_MANY로 거부).
+// Intentionally workspace-level (no memberId): daemon mentionUnread aggregation
+// (ChannelService.unreadFor) counts mentions without memberId for all member rows in that workspace,
+// so all agent fans in one WS (e.g. Claude+Codex in same WS) wake. Conversely attaching memberId
+// makes post RPC dedup key (workspaceId, paneId) collapse sibling mentions — only first row survives,
+// rest silently lost. Pre-truncate with CHANNEL_MENTIONS_MAX (excess rejected by post RPC as
+// CHANNEL_MENTIONS_TOO_MANY anyway).
 export function resolveDiffMentionTargets(
   members: ReadonlyArray<{ workspaceId?: string; memberId?: string; memberName?: string }>,
   selfWorkspaceId: string,
@@ -134,7 +132,7 @@ export function resolveDiffMentionTargets(
   return [...byWorkspace.values()].slice(0, CHANNEL_MENTIONS_MAX);
 }
 
-// diff.read/applyHunks 브릿지(preload 노출).
+// diff.read/applyHunks bridge (preload exposed).
 interface DiffBridge {
   read: (
     worktreePath: string,
@@ -149,7 +147,7 @@ function getDiffBridge(): DiffBridge | null {
   return api?.diff ?? null;
 }
 
-// task.mission.list로 taskId → 워크트리·채널 역참조.
+// task.mission.list reverse reference taskId → worktree·channel.
 async function resolveTaskMeta(taskId: string, verifiedWorkspaceId: string): Promise<TaskMeta | null> {
   const api = (window as unknown as {
     electronAPI?: { rpc?: { invoke: (m: string, p: Record<string, unknown>) => Promise<unknown> } };
@@ -168,9 +166,9 @@ async function resolveTaskMeta(taskId: string, verifiedWorkspaceId: string): Pro
     };
     const task = res?.tasks?.find((t) => t.id === taskId);
     if (!task || !task.worktreePath) return null;
-    // 채널 archived 여부(코멘트 버튼 게이팅). F9 fail-safe: 채널 get이 실패하면
-    // archived=true로 간주해 코멘트를 비활성화한다 — 조회 불가 상태에서 코멘트
-    // 발사를 허용하면 소실·아카이브된 채널에 헛발사할 수 있으므로 안전측으로 닫는다.
+    // Channel archived (comment button gating). F9 fail-safe: when channel get fails
+    // assume archived=true and disable comments — allowing comment fire when lookup impossible
+    // could misfire to lost·archived channels so fail closed.
     let channelArchived = true;
     const channelId = task.missionChannelId ?? '';
     if (channelId) {
@@ -179,12 +177,12 @@ async function resolveTaskMeta(taskId: string, verifiedWorkspaceId: string): Pro
           verifiedWorkspaceId,
           channelId,
         })) as { ok?: boolean; channel?: { status?: string }; error?: unknown };
-        // get 성공 시에만 실제 status를 신뢰. 그 외(ok:false·형태 미상)는 닫힘 유지.
+        // Trust actual status only on get success. Otherwise (ok:false·unknown shape) keep closed.
         if (chRes && chRes.ok === true && chRes.channel) {
           channelArchived = chRes.channel.status === 'archived';
         }
       } catch {
-        /* 조회 실패 → channelArchived=true 유지(코멘트 비활성) */
+        /* lookup failure → keep channelArchived=true (comments disabled) */
       }
     }
     return {
@@ -199,7 +197,7 @@ async function resolveTaskMeta(taskId: string, verifiedWorkspaceId: string): Pro
   }
 }
 
-// F10 — 미션 채널의 diff-comment 앵커를 역조회한다(§4 read RPC 재사용).
+// F10 — reverse lookup diff-comment anchors from mission channel (reuse §4 read RPC).
 async function loadDiffComments(
   channelId: string,
   taskId: string,
@@ -222,18 +220,18 @@ async function loadDiffComments(
   }
 }
 
-// 미션 채널 로스터 행(멘션 대상 해석 + 코멘터 자신의 sender 신원 파생에 쓰는 최소 필드).
+// Mission channel roster row (minimal fields for mention target resolution + commenter sender identity).
 interface MissionMemberRow {
   workspaceId: string;
   memberId: string;
   memberName?: string;
 }
 
-// J4 §S1 — 미션 채널 로스터를 조회한다. 기존 채널 멤버 read RPC(a2a.channel.getMembers)를
-// 재사용 — loadDiffComments와 동일 트랜스포트·신원(verifiedWorkspaceId). 한 번 조회한
-// 로스터에서 멘션 대상(resolveDiffMentionTargets)과 sender 자기-행(post 신원)을 함께
-// 파생한다. 실패·비가시(사설 채널 비멤버 → 빈 로스터)는 빈 배열 → 멘션 없이 포스트하고
-// (자기-행 없음 → post는 데몬 멤버십 게이트에서 실패하고 F9가 사유를 표면화).
+// J4 §S1 — fetch mission channel roster. Reuse existing channel member read RPC (a2a.channel.getMembers) —
+// same transport·identity as loadDiffComments (verifiedWorkspaceId). From one roster fetch derive
+// mention targets (resolveDiffMentionTargets) and sender self-row (post identity). Failure·invisible
+// (private channel non-member → empty roster) → empty array → post without mentions
+// (no self-row → post fails daemon membership gate and F9 surfaces reason).
 async function loadMissionRoster(
   channelId: string,
   verifiedWorkspaceId: string,
@@ -267,7 +265,7 @@ async function loadMissionRoster(
   }
 }
 
-// F10 — 코멘트 목록 렌더(작성자·본문·시각 — 최소).
+// F10 — comment list render (author·body·time — minimal).
 function CommentList({ comments }: { comments: DiffComment[] }) {
   if (comments.length === 0) return null;
   return (
@@ -285,7 +283,7 @@ function CommentList({ comments }: { comments: DiffComment[] }) {
   );
 }
 
-// hunk 라인에 +/- 색만 입힌다(신택스 하이라이팅 금지 — 비목표).
+// Color hunk lines +/- only (no syntax highlighting — non-goal).
 function HunkBody({ bodyLines }: { bodyLines: readonly string[] }) {
   return (
     <div className="font-mono text-[11px] leading-[1.5] whitespace-pre overflow-x-auto">
@@ -307,7 +305,7 @@ function HunkBody({ bodyLines }: { bodyLines: readonly string[] }) {
   );
 }
 
-// 크롬 emoji 금지(DESIGN.md) — 코멘트 액션은 monochrome 말풍선 glyph.
+// No chrome emoji (DESIGN.md) — comment action uses monochrome speech bubble glyph.
 function IconComment() {
   return (
     <svg width="11" height="11" viewBox="0 0 14 14" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -322,8 +320,8 @@ function IconComment() {
 }
 
 export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspaceId }: DiffPanelProps) {
-  // source는 렌더마다 새 객체일 수 있으므로(호출부 인라인 구성) 원시값으로 분해해
-  // load 콜백의 dep로 쓴다 — 객체 identity를 dep에 넣으면 매 렌더 refetch 루프.
+  // source may be new object each render (inline at call site) — decompose to primitives for
+  // load callback deps — putting object identity in deps causes refetch loop every render.
   const isTask = source.kind === 'task';
   const taskId = source.kind === 'task' ? source.taskId : '';
   const repoPath = source.kind === 'workspace' ? source.repoPath : '';
@@ -332,14 +330,14 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  // path → 선택된 hunk index Set.
+  // path → Set of selected hunk indices.
   const [selection, setSelection] = useState<Record<string, Set<number>>>({});
   const [applyMsg, setApplyMsg] = useState<string | null>(null);
   const [failedProbes, setFailedProbes] = useState<Set<string>>(new Set());
   const [applying, setApplying] = useState(false);
-  // F10: 미션 채널에서 역조회한 diff 코멘트.
+  // F10: diff comments reverse-looked up from mission channel.
   const [comments, setComments] = useState<DiffComment[]>([]);
-  // J3 §1·§2: close·PR 진행 상태(중복 클릭 방지).
+  // J3 §1·§2: close·PR in-progress state (prevent double click).
   const [lifecycleBusy, setLifecycleBusy] = useState<'close' | 'pr' | null>(null);
   const pushToast = useStore((s) => s.pushToast);
   const t = useT();
@@ -358,12 +356,12 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         return;
       }
       setMeta(m);
-      // F10: 코멘트 역조회(실패는 빈 목록 — diff 렌더는 막지 않음).
+      // F10: comment reverse lookup (failure → empty list — do not block diff render).
       setComments(await loadDiffComments(m.missionChannelId, taskId, verifiedWorkspaceId));
       readPath = m.worktreePath;
     } else {
-      // 워크스페이스 모드 — 태스크 역참조·코멘트 없음. repoPath는 diff:resolveRepo가
-      // 정규화한 worktree toplevel이다.
+      // Workspace mode — no task reverse reference·comments. repoPath is worktree toplevel
+      // normalized by diff:resolveRepo.
       readPath = repoPath;
     }
     const bridge = getDiffBridge();
@@ -372,8 +370,8 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
       setLoading(false);
       return;
     }
-    // workspace 모드는 명시 전달 — 자기 HEAD 대비 미커밋만(본 repo 매핑 없음).
-    // linked worktree에서 브랜치 커밋이 diff로 새는 것을 막는다(Codex P2).
+    // Workspace mode passed explicitly — uncommitted vs own HEAD only (no main repo mapping).
+    // Prevents branch commits in linked worktree leaking into diff (Codex P2).
     const res = await bridge.read(readPath, undefined, isTask ? 'task' : 'workspace');
     if (!res.ok) {
       setError(res.error);
@@ -389,8 +387,8 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     void load();
   }, [load]);
 
-  // 워크스페이스 diff는 파생 데이터 — 탭 재활성화(비활성→활성 전이) 때 재읽기.
-  // 태스크 모드는 기존 수동 Reload 계약 유지(채택 selection이 refetch로 날아가면 안 됨).
+  // Workspace diff is derived data — re-read on tab reactivation (inactive→active transition).
+  // Task mode keeps manual Reload contract (adopt selection must not be lost on refetch).
   const wasActiveRef = useRef(isActive);
   useEffect(() => {
     if (!isTask && isActive && !wasActiveRef.current) void load();
@@ -439,7 +437,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     setApplying(false);
     if (res.ok) {
       setApplyMsg(t('diff.adopted', { count: res.appliedFiles.length }));
-      // 재열람: 채택분은 여전히 태스크 worktree diff에 보이며 "적용됨" 뱃지로 표시됨.
+      // Re-read: adopted hunks still visible in task worktree diff with "applied" badge.
       void load();
     } else {
       if (res.code === 'probe' && res.failedProbes) {
@@ -455,7 +453,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     }
   }, [meta, data, selection, taskId, load, t]);
 
-  // 코멘트 발사(§4·J4): 미션 채널에 diff-comment 앵커 포스트(렌더러 channelLocal 경로).
+  // Fire comment (§4·J4): post diff-comment anchor to mission channel (renderer channelLocal path).
   const handleComment = useCallback(
     async (file: string, hunkHeader: string) => {
       if (!meta || meta.channelArchived || !meta.missionChannelId) return;
@@ -465,35 +463,35 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         electronAPI?: { rpc?: { mutateChannelLocal: (m: string, p: Record<string, unknown>) => Promise<unknown> } };
       }).electronAPI;
       if (!api?.rpc) return;
-      // 미션 채널 로스터를 한 번 조회해 멘션 대상과 sender 자기-행을 함께 파생한다.
+      // Fetch mission channel roster once to derive mention targets and sender self-row together.
       const roster = await loadMissionRoster(meta.missionChannelId, verifiedWorkspaceId);
-      // J4 §S1: hunk에 코멘트를 다는 행위 자체가 "에이전트야 이거 반영해"이므로 미션
-      // 채널의 태스크 에이전트(사람·자신 제외 멤버 전원)를 항상 멘션한다 — 이 멘션이
-      // 기존 mention→wake 루프를 타고 에이전트를 깨워 피드백을 전달한다. 대상 0
-      // (에이전트 전원 leave/kick)이면 멘션 없이 포스트한다(주석 기록 자체는 유효).
+      // J4 §S1: commenting on hunk itself means "agent please apply this" so always mention
+      // task agents in mission channel (all members except human·self) — this mention rides
+      // existing mention→wake loop to wake agents with feedback. When zero targets
+      // (all agents leave/kick) post without mentions (comment record itself is valid).
       const mentions = resolveDiffMentionTargets(roster, verifiedWorkspaceId);
-      // sender 신원 = 코멘터 자신의 로스터 행. 데몬 post 게이트가 sender.workspaceId ===
-      // verifiedWorkspaceId를 핀하고 비멤버를 거부하므로, 미션 채널의 owner(=diff owner
-      // 워크스페이스, 항상 멤버)인 verifiedWorkspaceId로 sender를 구성한다. memberName은
-      // 데몬이 로스터 행에서 재도출하므로 표시용 폴백일 뿐이다.
+      // Sender identity = commenter's roster row. Daemon post gate pins sender.workspaceId ===
+      // verifiedWorkspaceId and rejects non-members, so compose sender with verifiedWorkspaceId
+      // as mission channel owner (= diff owner workspace, always member). memberName is
+      // re-derived by daemon from roster row — display fallback only.
       const self = roster.find((m) => m.workspaceId === verifiedWorkspaceId);
       const sender = {
         workspaceId: verifiedWorkspaceId,
         memberId: self?.memberId ?? '',
         memberName: self?.memberName ?? self?.memberId ?? '',
       };
-      // J4 §S2: 앵커를 본문에도 각인 — CLI/MCP read가 data를 렌더 안 해도 문맥이 남는다.
+      // J4 §S2: stamp anchor in body too — context remains when CLI/MCP read does not render data.
       const text = formatDiffCommentText(file, hunkHeader, comment);
-      // F9: post 실패(채널 소실·권한·IPC 오류)를 삼키지 않고 에러 메시지로 표면화.
+      // F9: do not swallow post failure (channel lost·auth·IPC error) — surface as error message.
       try {
         const res = (await api.rpc.mutateChannelLocal('a2a.channel.post', {
           verifiedWorkspaceId,
           channelId: meta.missionChannelId,
-          // sender: 데몬 post는 sender(+ sender.workspaceId===verifiedWorkspaceId 핀)를
-          // 요구한다. 이 필드가 없으면 NOT_AUTHORIZED로 거부된다(발견된 J2 갭 보강).
+          // sender: daemon post requires sender (+ sender.workspaceId===verifiedWorkspaceId pin).
+          // Without this field NOT_AUTHORIZED rejection (J2 gap fix).
           sender,
           text,
-          // data 앵커는 렌더러 인라인 매핑용 — hunkHeader는 원형 유지(§S2, text만 절단).
+          // data anchor for renderer inline mapping — hunkHeader kept intact (§S2, truncate text only).
           data: { kind: 'diff-comment', taskId, file, hunkHeader, side: 'new', line: 0 },
           ...(mentions.length > 0 ? { mentions } : {}),
         })) as { ok?: boolean; error?: string } | undefined;
@@ -502,7 +500,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
           return;
         }
         setApplyMsg(t('diff.commentFired', { count: mentions.length }));
-        // F10: 발사 직후 역조회 갱신 — 방금 단 코멘트가 인라인에 바로 뜬다.
+        // F10: refresh reverse lookup right after fire — comment appears inline immediately.
         setComments(await loadDiffComments(meta.missionChannelId, taskId, verifiedWorkspaceId));
       } catch (e) {
         setApplyMsg(t('diff.commentFailed', { error: e instanceof Error ? e.message : String(e) }));
@@ -511,9 +509,9 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     [meta, taskId, verifiedWorkspaceId, t],
   );
 
-  // J3 §1 — close(remove 성공→close 순서). 확인 1회 후 결과를 토스트로 구분
-  // (dirty=보존/unpushed=경고+PR 제안/archivePending). main이 데몬 projection에서
-  // 물질화 필드를 역참조하므로 taskId만 전달한다.
+  // J3 §1 — close (remove success→close order). One confirm then toast distinguishes result
+  // (dirty=preserved/unpushed=warn+PR suggest/archivePending). main reverse-references
+  // materialization fields from daemon projection so pass taskId only.
   const handleClose = useCallback(async () => {
     if (lifecycleBusy) return;
     const api = (window as unknown as { electronAPI?: { workTask?: import('../../../preload/preload').ElectronAPI['workTask'] } }).electronAPI;
@@ -523,8 +521,8 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     try {
       const res = await api.workTask.close(taskId, verifiedWorkspaceId);
       if (res.ok) {
-        // F11과 정합: close가 커밋됐으니 로컬 meta도 closed로 — PR/닫기 버튼이
-        // 제거된 worktree를 상대로 다시 눌리지 않게 즉시 숨긴다.
+        // Align with F11: close committed so set local meta closed too — hide PR/close buttons
+        // immediately so they are not clicked again against removed worktree.
         setMeta((m) => (m ? { ...m, status: 'closed' } : m));
         pushToast({
           level: res.archivePending ? 'warn' : 'info',
@@ -554,11 +552,11 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
     }
   }, [lifecycleBusy, taskId, verifiedWorkspaceId, pushToast, t]);
 
-  // diff→오케스트레이터 질문: hunk 컨텍스트 블록 + 질문을 단일 메시지로
-  // 조립해 pendingBrainPrompt 릴레이에 싣고 Orchestrator 탭으로 전환한다
-  // (CommanderView가 정상 send 경로로 발사 — 턴을 바로 관전하게 된다).
-  // 입력은 인라인 폼: window.prompt는 Electron 렌더러에서 미지원(dogfood 실측
-  // — 호출이 throw라 질문이 조용히 무산됐다).
+  // diff→orchestrator question: assemble hunk context block + question into single message,
+  // load on pendingBrainPrompt relay and switch to Orchestrator tab
+  // (CommanderView fires via normal send path — watch turn immediately).
+  // Inline form input: window.prompt unsupported in Electron renderer (dogfood measured
+  // — call throws so question silently failed).
   const [askTarget, setAskTarget] = useState<string | null>(null); // `${path}#${idx}`
   const [askText, setAskText] = useState('');
   const handleAskOrchestrator = useCallback(
@@ -577,14 +575,14 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         question,
       });
       st.setPendingBrainPrompt(prompt);
-      // 덱이 접혀 있거나 다른 탭이면 열고 전환 — 발사된 턴이 바로 보여야 한다.
+      // Open deck and switch tab if collapsed or on other tab — fired turn must be visible.
       st.setChannelDockVisible(true);
       st.setActiveDeckTab('commander');
     },
     [askText, isTask, meta, taskId, repoPath, data],
   );
 
-  // J3 §2 — 1클릭 PR(확인 1회 포함). gh 4중 게이트·멱등 재진입은 main이 수행.
+  // J3 §2 — 1-click PR (includes one confirm). gh 4-gate·idempotent re-entry handled by main.
   const handleCreatePr = useCallback(async () => {
     if (lifecycleBusy) return;
     const api = (window as unknown as { electronAPI?: { workTask?: import('../../../preload/preload').ElectronAPI['workTask'] } }).electronAPI;
@@ -624,9 +622,9 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
 
   const activeFile = selectedFile ? filesByPath.get(selectedFile) : null;
 
-  // 파일 트리에 보일 경로 목록 — 파싱된 files + numstat에만 있는 경로(untracked
-  // 바이너리·대형·symlink 등 표시 전용). files가 비어도 이런 변경이 있으면
-  // "clean"이 아니며 트리에 표시돼야 한다(Codex P2 — hidden change 오판 방지).
+  // Paths shown in file tree — parsed files + numstat-only paths (untracked
+  // binary·large·symlink display-only). Even when files empty, such changes mean
+  // not "clean" and must show in tree (Codex P2 — prevent hidden change misjudgment).
   const displayPaths = useMemo(() => {
     if (!data) return [] as string[];
     const seen = new Set<string>();
@@ -641,9 +639,9 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
   }, [data]);
   const hasAnyChange = displayPaths.length > 0;
 
-  // F10 — 활성 파일의 코멘트를 hunkHeader별로 그룹핑. 현재 diff의 hunk 헤더와
-  // 일치하는 코멘트는 해당 hunk 아래, 불일치분(라인 드리프트로 헤더가 바뀐 것)은
-  // 파일 하단 "위치 이동됨" 그룹으로 강등. (v1 앵커 정밀도 = hunkHeader 단위 — §4.)
+  // F10 — group active file comments by hunkHeader. Comments matching current diff hunk headers
+  // go under that hunk; mismatches (header changed by line drift) demoted to file bottom
+  // "moved" group. (v1 anchor precision = hunkHeader unit — §4.)
   const fileComments = useMemo(() => {
     if (!activeFile) return { byHunk: new Map<string, DiffComment[]>(), moved: [] as DiffComment[] };
     const headers = new Set(activeFile.hunks.map((h) => h.header));
@@ -672,7 +670,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
       <div className="flex items-center gap-2 px-3 py-1.5 bg-[var(--bg-surface)] border-b border-[var(--bg-mantle)] shrink-0 text-xs">
         <span className="text-[var(--text-main)] font-semibold">Diff</span>
         {meta && <span className="text-[var(--text-muted)] text-[10px]">{meta.branch}</span>}
-        {/* 워크스페이스 모드 — 브랜치는 스냅샷에서(태스크 meta 없음). */}
+        {/* Workspace mode — branch from snapshot (no task meta). */}
         {!isTask && data && (
           <span className="text-[var(--text-muted)] text-[10px]">{data.snapshot.targetBranch}</span>
         )}
@@ -683,7 +681,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         >
           Reload
         </button>
-        {/* 채택은 태스크 모드 전용 — 워크스페이스 모드는 repo 자신 대상이라 무의미(읽기 전용). */}
+        {/* Adopt is task-mode only — workspace mode targets own repo (read-only, meaningless). */}
         {isTask && (
           <button
             className={`px-2 py-0.5 text-[10px] ${BTN_PRIMARY_WARM} disabled:opacity-40`}
@@ -694,7 +692,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
             {applying ? t('diff.adopting') : t('diff.adopt', { count: selectedCount })}
           </button>
         )}
-        {/* J3 §2·§1 — 1클릭 PR·close. F11: closed 태스크에선 숨긴다(worktree 제거됨). */}
+        {/* J3 §2·§1 — one-click PR·close. F11: hidden for closed tasks (worktree removed). */}
         {meta && meta.status !== 'closed' && (
           <>
             <button
@@ -742,15 +740,15 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
         )}
         {!loading && !error && data && hasAnyChange && (
           <>
-            {/* 파일 트리(numstat) — files + numstat-only(표시 전용) 경로 union. */}
+            {/* File tree (numstat) — union of files + numstat-only (display-only) paths. */}
             <div className="w-56 shrink-0 overflow-y-auto border-r border-[var(--bg-mantle)] text-[11px]">
               {displayPaths.map((path) => {
                 const f = filesByPath.get(path);
                 const num = data.numstat.find((n) => n.path === path);
                 const isTrunc = data.truncated.includes(path);
                 const isUnsupported = (data.unsupported ?? []).includes(path);
-                // numstat에만 있는 경로(파싱된 file 없음) = 바이너리·대형·symlink 등
-                // 표시 전용. 클릭해도 hunk가 없어 "표시 전용" 안내가 뜬다.
+                // numstat-only path (no parsed file) = binary·large·symlink etc.
+                // display-only. Click shows "display only" notice — no hunks.
                 return (
                   <button
                     key={path}
@@ -778,7 +776,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
               })}
             </div>
 
-            {/* unified diff 뷰 + hunk 체크박스 */}
+            {/* Unified diff view + hunk checkboxes */}
             <div className="flex-1 overflow-auto p-2">
               {!activeFile && selectedFile && (
                 <div className="text-[var(--text-muted)] text-xs">
@@ -814,7 +812,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                           <span className="text-[9px] text-[var(--accent-red,#f87171)]">{t('diff.nonAdoptable')}</span>
                         )}
                         <div className="flex-1" />
-                        {/* diff→오케스트레이터 질문 — 양 모드 공통(hunk 컨텍스트 동봉). */}
+                        {/* diff→orchestrator question — both modes (hunk context attached). */}
                         <button
                           className="text-[9px] text-[var(--text-muted)] hover:text-[var(--text-main)]"
                           onClick={() => {
@@ -841,7 +839,7 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                           </span>
                         )}
                       </div>
-                      {/* 인라인 질문 폼 — Enter 발사, Esc 닫기. */}
+                      {/* Inline ask form — Enter sends, Esc closes. */}
                       {askTarget === key && (
                         <div
                           className="flex items-center gap-1.5 px-2 py-1 bg-[var(--bg-base)] border-t border-[var(--bg-mantle)]"
@@ -853,8 +851,8 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                             value={askText}
                             onChange={(e) => setAskText(e.target.value)}
                             onKeyDown={(e) => {
-                              // IME 조합 중 Enter(한/일/중)는 조합 확정이지 제출이 아님 —
-                              // isComposing/keyCode 229를 가드(Codex P2).
+                              // Enter during IME composition (ko/ja/zh) confirms composition not submit —
+                              // guard isComposing/keyCode 229 (Codex P2).
                               if (e.key === 'Enter' && !e.nativeEvent.isComposing && e.keyCode !== 229) {
                                 handleAskOrchestrator(activeFile.path, hunk.header, hunk.bodyLines.join('\n'));
                               } else if (e.key === 'Escape') {
@@ -880,12 +878,12 @@ export default function DiffPanel({ source, isActive, surfaceId, verifiedWorkspa
                       <div className="px-2 py-1">
                         <HunkBody bodyLines={hunk.bodyLines} />
                       </div>
-                      {/* F10: 이 hunk 헤더에 매칭된 코멘트 인라인 표시. */}
+                      {/* F10: inline comments matching this hunk header. */}
                       <CommentList comments={fileComments.byHunk.get(hunk.header) ?? []} />
                     </div>
                   );
                 })}
-              {/* F10: hunkHeader 불일치(위치 이동됨) 코멘트 그룹 — 파일 하단. */}
+              {/* F10: hunkHeader mismatch (moved) comment group — bottom of file. */}
               {activeFile && fileComments.moved.length > 0 && (
                 <div className="mb-2 border border-[var(--accent-red,#f87171)] rounded overflow-hidden">
                   <div className="px-2 py-1 bg-[var(--bg-surface)] text-[10px] text-[var(--text-muted)]">

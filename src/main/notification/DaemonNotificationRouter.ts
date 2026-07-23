@@ -912,11 +912,11 @@ export class DaemonNotificationRouter {
 
     const onActive = (payload: { sessionId: string; agentName?: string }) => {
       try {
-        // daemon이 active 이벤트에 gate로 확정한 agentName을 실어 보낸다(있으면).
-        // 이게 있어야 idle prompt 패턴이 안 잡히는 에이전트(Claude Code v2.1.x:
-        // 입력대기 hint가 "❯"만 남음)도 running 상태에서 agentName이 채워진다.
-        // 없으면 필드를 생략해 이전 이름을 보존한다 — 빈 문자열로 덮으면 renderer의
-        // Object.assign이 정당한 이름을 지워 사이드바 라벨이 매 버스트마다 깜빡인다.
+        // When present, daemon sends agentName confirmed by gate on active events.
+        // Needed so agents whose idle prompt pattern no longer matches (Claude Code v2.1.x:
+        // input hint is only "❯") still get agentName while running.
+        // Omit the field when absent to preserve the previous name — empty string would
+        // make renderer Object.assign wipe a valid name and flicker sidebar labels every burst.
         broadcastMetadataUpdate(this.getWindow(), {
           ptyId: payload.sessionId,
           agentStatus: 'running',

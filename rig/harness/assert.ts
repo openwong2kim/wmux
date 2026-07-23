@@ -1,24 +1,24 @@
-// 검증 리그 — 상태 어서션 헬퍼 (설계 §5)
+// Verification rig — state assertion helpers (design §5)
 //
-// 각 헬퍼는 데몬 정본(파이프 RPC 결과)에 대해 계약을 어서트한다. §5 규율: **각 헬퍼
-// 주석에 정본 코드 좌표를 명기**한다 — 계약이 이동하면(예: seq 규칙·unread 산식이 바뀌면)
-// 리그가 함께 깨져 갱신을 강제하는 것이 의도. 어서션이 존재하지 않는 계약을 검사하면
-// 정상 동작을 fail로 찍으므로(footgun), 좌표가 곧 계약의 출처 표기다.
+// Each helper asserts contracts against the daemon source of truth (pipe RPC results). §5 rule: **each helper
+// comment must cite source-of-truth code coordinates** — when contracts move (e.g. seq rules or unread formula change),
+// the rig is meant to break together and force updates. Asserting non-existent contracts marks normal behavior as fail (footgun),
+// so coordinates are the contract's provenance marker.
 //
-// 실패는 throw(Error). vitest가 잡아 시나리오를 red로 만든다.
+// Failures throw(Error). vitest catches them and marks scenarios red.
 
-/** 데몬이 반환하는 메시지 행의 최소 형태(어서션이 읽는 필드만). */
+/** Minimum shape of a message row returned by the daemon (fields assertions read only). */
 export interface RigChannelMessage {
-  /** 정본: `src/shared/channels.ts:141` — 모노토닉 per-channel 시퀀스(KTD2). */
+  /** Source of truth: `src/shared/channels.ts:141` — monotonic per-channel sequence (KTD2). */
   seq: number;
-  /** 정본: `src/shared/channels.ts:142` — 발신 workspace. */
+  /** Source of truth: `src/shared/channels.ts:142` — sending workspace. */
   workspaceId: string;
   text: string;
 }
 
-/** 데몬이 반환하는 unread 엔트리의 최소 형태. */
+/** Minimum shape of an unread entry returned by the daemon. */
 export interface RigUnreadEntry {
-  /** 정본: `ChannelService.unreadFor` 반환형 `src/daemon/channels/ChannelService.ts:2304-2317`. */
+  /** Source of truth: return type of `ChannelService.unreadFor` `src/daemon/channels/ChannelService.ts:2304-2317`. */
   channelId: string;
   memberId: string;
   lastReadSeq: number;
@@ -28,40 +28,40 @@ export interface RigUnreadEntry {
 }
 
 /**
- * 배달 영수증을 읽는 데 필요한 메시지 필드(S5 no-ack 현행 계약 고정용). getMessages가
- * `ChannelMessage` 전체를 반환하므로 이 필드들은 실재한다(`ChannelService.getMessages`
+ * Message fields needed to read delivery receipts (S5 no-ack current contract pinning). getMessages returns
+ * the full `ChannelMessage`, so these fields exist (`ChannelService.getMessages`
  * → `ChannelMessage`, `src/shared/channels.ts:159,:167`).
  */
 export interface RigDeliveryRow {
-  /** 정본: `src/shared/channels.ts:159` — post 시 'pending', ack로만 'delivered'로 전이. */
+  /** Source of truth: `src/shared/channels.ts:159` — 'pending' at post, transitions to 'delivered' only via ack. */
   deliveryStatus: 'pending' | 'delivered' | 'target_gone';
-  /** 정본: `src/shared/channels.ts:167,:232` — post 시 전 멤버 'pending'으로 프리즈. */
+  /** Source of truth: `src/shared/channels.ts:167,:232` — all members frozen as 'pending' at post. */
   recipientSnapshot?: Array<{ workspaceId: string; memberId: string; status: 'pending' | 'delivered' | 'target_gone' }>;
 }
 
-/** A2A 태스크의 최소 상태 형태(S8). */
+/** Minimum task state shape (S8). */
 export interface RigTask {
-  /** 정본: `Task.status.state` `src/shared/types.ts` (VALID_TRANSITIONS 대상). */
+  /** Source of truth: `Task.status.state` `src/shared/types.ts` (VALID_TRANSITIONS target). */
   status: { state: string };
   id: string;
 }
 
 /**
- * seq 무결성 어서션 — getMessages 전수 결과가 (a) 정확히 기대 개수 (b) seq 연속(gap 0)
- * (c) 무중복 (d) 기대 시작 seq부터임을 검사한다.
+ * Seq integrity assertion — checks that getMessages full results are (a) exactly expected count (b) contiguous seq (gap 0)
+ * (c) no duplicates (d) starting from expected seq.
  *
- * 정본 계약:
- *   - seq는 모노토닉 per-channel, post마다 1씩 증가: 첫 채널의 create 직후 nextSeq=1
- *     (`ChannelService.create` → `channel.nextSeq: 1`, 스모크 실증), post가 nextSeq를
- *     소비하고 증가시킨다 → 무유실이면 [expectedFromSeq .. expectedFromSeq+N-1] 연속.
- *   - getMessages는 seq >= floor 필터 후 순서대로 반환(`ChannelService.getMessages`
- *     `src/daemon/channels/ChannelService.ts:625` filter, public 채널은 floor=0).
- *   - post 커밋 계약: RPC ok 반환 = fsync 커밋 후(envelope PR3) → ok받은 전 메시지가
- *     반드시 getMessages에 나타나야 한다(무유실).
+ * Source-of-truth contract:
+ *   - seq is monotonic per-channel, +1 per post: first channel's nextSeq=1 right after create
+ *     (`ChannelService.create` → `channel.nextSeq: 1`, smoke verified), post consumes and increments nextSeq
+ *     → if lossless, contiguous [expectedFromSeq .. expectedFromSeq+N-1].
+ *   - getMessages returns seq >= floor filter in order (`ChannelService.getMessages`
+ *     `src/daemon/channels/ChannelService.ts:625` filter, public channel floor=0).
+ *   - post commit contract: RPC ok return = after fsync commit (envelope PR3) → every message that got ok
+ *     must appear in getMessages (lossless).
  *
- * @param messages       getMessages 전수 결과.
- * @param expectedCount  기대 메시지 수(연사한 총 post 수).
- * @param expectedFromSeq 기대 시작 seq(첫 post의 seq — 보통 1).
+ * @param messages       Full getMessages result.
+ * @param expectedCount  Expected message count (total posts fired).
+ * @param expectedFromSeq Expected starting seq (first post's seq — usually 1).
  */
 export function assertChannelSeq(
   messages: RigChannelMessage[],
@@ -71,32 +71,32 @@ export function assertChannelSeq(
   if (messages.length !== expectedCount) {
     throw new Error(
       `assertChannelSeq: expected ${expectedCount} messages, got ${messages.length} ` +
-        `(seqs=[${messages.map((m) => m.seq).join(',')}]) — 유실 또는 중복 의심`,
+        `(seqs=[${messages.map((m) => m.seq).join(',')}]) — suspected loss or duplicate`,
     );
   }
   const seen = new Set<number>();
   for (let i = 0; i < messages.length; i++) {
     const seq = messages[i].seq;
     if (seen.has(seq)) {
-      throw new Error(`assertChannelSeq: duplicate seq ${seq} at index ${i} (무중복 위반)`);
+      throw new Error(`assertChannelSeq: duplicate seq ${seq} at index ${i} (no-duplicate violation)`);
     }
     seen.add(seq);
     const expectedSeq = expectedFromSeq + i;
     if (seq !== expectedSeq) {
       throw new Error(
         `assertChannelSeq: non-contiguous seq at index ${i}: expected ${expectedSeq}, got ${seq} ` +
-          `(seqs=[${messages.map((m) => m.seq).join(',')}]) — gap 또는 순서 위반`,
+          `(seqs=[${messages.map((m) => m.seq).join(',')}]) — gap or order violation`,
       );
     }
   }
 }
 
 /**
- * 텍스트 전수 대조 어서션 — 보낸 본문 멀티셋이 받은 본문 멀티셋과 정확히 일치하는지
- * (seq 순서 무관, 내용 무유실·무중복) 검사한다. flood 페르소나가 결정적 본문을 연사할 때
- * "전 도달"을 seq뿐 아니라 내용으로도 못박는다.
+ * Full text multiset assertion — checks that sent bodies match received bodies exactly
+ * (order-independent, no loss or duplication of content). When the flood persona fires deterministic bodies,
+ * pins "full delivery" by content as well as seq.
  *
- * 정본: 메시지 본문은 `ChannelMessage.text`(`src/shared/channels.ts:146`)에 verbatim 보존.
+ * Source of truth: message body is preserved verbatim in `ChannelMessage.text` (`src/shared/channels.ts:146`).
  */
 export function assertTextsDelivered(messages: RigChannelMessage[], expectedTexts: string[]): void {
   const got = messages.map((m) => m.text).slice().sort();
@@ -110,26 +110,25 @@ export function assertTextsDelivered(messages: RigChannelMessage[], expectedText
     if (got[i] !== want[i]) {
       throw new Error(
         `assertTextsDelivered: text multiset mismatch at sorted index ${i}: ` +
-          `want=${JSON.stringify(want[i])} got=${JSON.stringify(got[i])} — 본문 유실/변형`,
+          `want=${JSON.stringify(want[i])} got=${JSON.stringify(got[i])} — body loss/mutation`,
       );
     }
   }
 }
 
 /**
- * unread 어서션 — 특정 (채널, 멤버)의 unread/headSeq/lastReadSeq를 확인한다.
+ * Unread assertion — checks unread/headSeq/lastReadSeq for a specific (channel, member).
  *
- * 정본 계약(`ChannelService.unreadFor` `src/daemon/channels/ChannelService.ts:2304-2343`):
- *   - headSeq = channel.nextSeq - 1 (마지막 커밋된 seq).
- *   - unread = cursor(lastReadSeq) 초과 & historyFromSeq 이상인 메시지 수.
- *   - 아직 ack 안 한 멤버는 자신이 본 적 없는 메시지를 unread로 센다(단, 자기 발신 포함
- *     여부는 산식이 seq만 보므로 자기 것도 포함될 수 있다 — 호출자가 expected를 그에 맞춰
- *     계산해야 한다).
+ * Source-of-truth contract (`ChannelService.unreadFor` `src/daemon/channels/ChannelService.ts:2304-2343`):
+ *   - headSeq = channel.nextSeq - 1 (last committed seq).
+ *   - unread = count of messages above cursor(lastReadSeq) and >= historyFromSeq.
+ *   - Members who have not acked yet count messages they have not seen as unread (formula is seq-only, so
+ *     own sends may be included — caller must compute expected accordingly).
  *
- * @param entries   unread RPC의 entries 전수.
- * @param channelId 대상 채널.
- * @param memberId  대상 멤버(보통 workspaceId와 동일하게 배정).
- * @param expect    기대값(부분 — 준 필드만 검사).
+ * @param entries   Full entries from unread RPC.
+ * @param channelId Target channel.
+ * @param memberId  Target member (usually assigned same as workspaceId).
+ * @param expect    Expected values (partial — only provided fields are checked).
  */
 export function assertUnread(
   entries: RigUnreadEntry[],
@@ -156,21 +155,21 @@ export function assertUnread(
 }
 
 /**
- * 배달 영수증 계약 고정 어서션(S5 no-ack). 특정 메시지의 `deliveryStatus`와, 그 메시지
- * `recipientSnapshot`에서 대상 workspace 엔트리(들)의 status가 기대와 일치하는지 검사한다.
+ * Delivery receipt contract pinning assertion (S5 no-ack). Checks that a specific message's `deliveryStatus` and
+ * the target workspace entry/entries in its `recipientSnapshot` match expectations.
  *
- * 정본 계약(§4 S5 — Q1-2 P3가 이 계약을 뒤집으면 리그가 함께 깨져 갱신을 강제하는 것이
- * 의도, 설계 Claude m/80):
- *   - post 직후 메시지 `deliveryStatus='pending'`, 전 멤버 스냅샷 'pending'
+ * Source-of-truth contract (§4 S5 — if Q1-2 P3 inverts this contract, the rig is meant to break and force updates,
+ * design Claude m/80):
+ *   - Right after post: message `deliveryStatus='pending'`, all member snapshots 'pending'
  *     (`ChannelService.post` `src/daemon/channels/ChannelService.ts:1755-1759,:1844-1845`).
- *   - ack **로만** 호출자 스냅샷 pending→delivered, "적어도 하나 delivered"면 메시지
- *     `deliveryStatus`도 delivered로 전이(`ChannelService.ack` :2086-2090). ack 없으면
- *     pending 유지 — 이 함수가 그 불변식을 못박는다.
+ *   - **Only** ack transitions caller snapshot pending→delivered; when at least one is delivered, message
+ *     `deliveryStatus` also transitions to delivered (`ChannelService.ack` :2086-2090). Without ack,
+ *     pending persists — this function pins that invariant.
  *
- * @param row               getMessages가 반환한 메시지 행(deliveryStatus + recipientSnapshot).
- * @param expectMsgStatus   기대 메시지 배달 상태.
- * @param recipientWs       스냅샷에서 검사할 대상 workspace.
- * @param expectRowStatus   그 workspace 스냅샷 엔트리의 기대 status.
+ * @param row               Message row from getMessages (deliveryStatus + recipientSnapshot).
+ * @param expectMsgStatus   Expected message delivery status.
+ * @param recipientWs       Target workspace to check in snapshot.
+ * @param expectRowStatus   Expected status for that workspace snapshot entry.
  */
 export function assertDeliveryStatus(
   row: RigDeliveryRow,
@@ -181,7 +180,7 @@ export function assertDeliveryStatus(
   if (row.deliveryStatus !== expectMsgStatus) {
     throw new Error(
       `assertDeliveryStatus: message deliveryStatus expected ${expectMsgStatus}, got ${row.deliveryStatus} ` +
-        `— 정본 계약(ack로만 전이) 위반. row=${JSON.stringify(row)}`,
+        `— canonical contract (transition only on ack) violation. row=${JSON.stringify(row)}`,
     );
   }
   const entries = (row.recipientSnapshot ?? []).filter((e) => e.workspaceId === recipientWs);
@@ -202,11 +201,10 @@ export function assertDeliveryStatus(
 }
 
 /**
- * 태스크 상태 어서션(S8). query 결과에서 taskId를 찾아 status.state가 기대와 일치하는지
- * 검사한다.
+ * Task state assertion (S8). Finds taskId in query result and checks status.state matches expectation.
  *
- * 정본: `A2aTaskService.queryTasks` 반환 `Task[]`, `task.status.state`는
- * VALID_TRANSITIONS(`src/shared/types.ts:655`)로 전이 강제되는 상태 머신.
+ * Source of truth: `A2aTaskService.queryTasks` returns `Task[]`; `task.status.state` is a state machine
+ * enforced by VALID_TRANSITIONS (`src/shared/types.ts:655`).
  */
 export function assertTaskState(tasks: RigTask[], taskId: string, expectState: string): void {
   const task = tasks.find((t) => t.id === taskId);
@@ -224,19 +222,18 @@ export function assertTaskState(tasks: RigTask[], taskId: string, expectState: s
 }
 
 /**
- * S7 단방 부분집합 어서션(설계 §4 S7 · footgun 9). SIGKILL→respawn 후 **RPC ok로 커밋
- * 확인된 항목의 집합**이 replay 결과 집합의 **부분집합**임을 검사한다.
+ * S7 one-way subset assertion (design §4 S7 · footgun 9). After SIGKILL→respawn, checks that the set of items
+ * **confirmed committed via RPC ok** is a **subset** of the replay result set.
  *
- * 왜 단방인가(리뷰 Claude c/80): AppendOnlyLog는 at-least-once valid-tail 승격 계약
- * (`src/daemon/eventlog/AppendOnlyLog.ts:13-15,:254-269`) — fsync 배리어 직전 물리 write
- * 된 미커밋분이 부트 스캔에서 정당하게 승격될 수 있다. 따라서 "미커밋 무부활"(replay ⊆
- * committed)은 정상 동작을 fail로 찍으므로 **어서트 불가**. 우리가 못박는 건 오직
- * "RPC ok로 커밋 확인된 것은 반드시 살아남는다"(committed ⊆ replay) — 즉 확인된 커밋의
- * 무손실이다.
+ * Why one-way (review Claude c/80): AppendOnlyLog has at-least-once valid-tail promotion contract
+ * (`src/daemon/eventlog/AppendOnlyLog.ts:13-15,:254-269`) — physically written but uncommitted data before the
+ * fsync barrier may be legitimately promoted on boot scan. Therefore "no resurrection of uncommitted"(replay ⊆
+ * committed) would mark normal behavior as fail and is **not assertable**. What we pin is only
+ * "RPC-ok-confirmed commits must survive"(committed ⊆ replay) — lossless survival of confirmed commits.
  *
- * @param committed  SIGKILL 전에 RPC ok를 받아 확실히 커밋된 항목(예: seq·taskId).
- * @param replayed   respawn 후 데몬이 replay로 복원한 항목 전수.
- * @param label      진단 라벨.
+ * @param committed  Items definitely committed before SIGKILL (e.g. seq·taskId) via RPC ok.
+ * @param replayed   Full items restored by daemon replay after respawn.
+ * @param label      Diagnostic label.
  */
 export function assertReplaySuperset<T>(committed: T[], replayed: T[], label: string): void {
   const have = new Set(replayed);
@@ -244,7 +241,7 @@ export function assertReplaySuperset<T>(committed: T[], replayed: T[], label: st
   if (missing.length > 0) {
     throw new Error(
       `assertReplaySuperset[${label}]: ${missing.length} committed item(s) did NOT survive replay ` +
-        `(missing=[${missing.map((m) => String(m)).join(',')}]) — 확인된 커밋 무손실 위반. ` +
+        `(missing=[${missing.map((m) => String(m)).join(',')}]) — confirmed commit lossless violation. ` +
         `replayed=[${replayed.map((r) => String(r)).join(',')}]`,
     );
   }

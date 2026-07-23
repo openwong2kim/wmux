@@ -172,7 +172,7 @@ function daclIsOwnerOnly(p, ownerSid, ownerName) {
 const { OWNER_SID, OWNER_NAME } = (() => {
   // SID via `/user /fo list`: the "SID:" label is ASCII on every locale.
   // Account name via bare `whoami` (no args): prints only MACHINE\user with
-  // no label at all — localized Windows (e.g. Korean "사용자 이름:") breaks
+  // no label at all — localized Windows (e.g. non-English "User name:" label) breaks
   // any label-based parse of the /fo list output.
   const out = execFileSync(path.join(SYS32, 'whoami.exe'), ['/user', '/fo', 'list'], { windowsHide: true }).toString('utf8');
   const name = execFileSync(path.join(SYS32, 'whoami.exe'), [], { windowsHide: true }).toString('utf8').trim();

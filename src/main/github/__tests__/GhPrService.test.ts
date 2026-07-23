@@ -1,5 +1,5 @@
-// GhPrService — gh JSON 매핑·게이트·TTL·updatedAt 상세캐시 (exec 목킹,
-// PrStatusCache 테스트 스타일). + PrProvider의 remote 호스트 분류.
+// GhPrService — gh JSON mapping, gate, TTL, updatedAt detail cache (exec mocking,
+// PrStatusCache test style). + PrProvider remote host classification.
 import { describe, it, expect, vi } from 'vitest';
 import { GhPrService, mapGhListItem, mapGhDetail } from '../GhPrService';
 import { parseRemoteHost, isGithubHost } from '../PrProvider';
@@ -46,11 +46,11 @@ const LIST_JSON = JSON.stringify([
     url: 'https://github.com/o/r/pull/1',
     statusCheckRollup: [{ conclusion: 'FAILURE' }],
   },
-  { title: 'malformed — number 없음', url: 'https://x' },
+  { title: 'malformed — no number', url: 'https://x' },
 ]);
 
-describe('mapGhListItem / mapGhDetail — 매핑 계약', () => {
-  it('state·draft·checks·reviewDecision 매핑, malformed는 null', () => {
+describe('mapGhListItem / mapGhDetail — mapping contract', () => {
+  it('maps state·draft·checks·reviewDecision, malformed is null', () => {
     const arr = JSON.parse(LIST_JSON) as Parameters<typeof mapGhListItem>[0][];
     const a = mapGhListItem(arr[0])!;
     expect(a).toMatchObject({
@@ -58,7 +58,7 @@ describe('mapGhListItem / mapGhDetail — 매핑 계약', () => {
       state: 'open',
       author: 'openwong2kim',
       reviewDecision: 'REVIEW_REQUIRED',
-      checks: 'pending', // IN_PROGRESS가 있으니 pending 우선.
+      checks: 'pending', // IN_PROGRESS present so pending wins.
     });
     expect(a.mergeable).toBe('CONFLICTING'); // uppercased from the gh payload.
     expect(mapGhListItem(arr[1])!).toMatchObject({ state: 'merged', checks: 'failing', mergeable: '' });
@@ -67,7 +67,7 @@ describe('mapGhListItem / mapGhDetail — 매핑 계약', () => {
     expect(mapGhListItem({ number: 3, url: 'u', statusCheckRollup: [] })!.checks).toBeNull();
   });
 
-  it('comments+reviews를 시간순 단일 스트림으로, 본문 캡 절단 마킹', () => {
+  it('comments+reviews as chronological single stream, body cap truncation marking', () => {
     const big = 'x'.repeat(PR_COMMENT_BODY_CAP + 10);
     const out = mapGhDetail(
       {
@@ -89,7 +89,7 @@ describe('mapGhListItem / mapGhDetail — 매핑 계약', () => {
     expect(out[3]).toMatchObject({ kind: 'review', reviewState: 'CHANGES_REQUESTED', body: '' });
   });
 
-  it('인라인 리뷰 코멘트(gh api)를 파일:라인 앵커와 함께 병합(Codex P2)', () => {
+  it('merges inline review comments (gh api) with file:line anchors (Codex P2)', () => {
     const out = mapGhDetail(
       { comments: [], reviews: [] },
       'pr-url',
@@ -101,36 +101,36 @@ describe('mapGhListItem / mapGhDetail — 매핑 계약', () => {
     expect(out).toHaveLength(2);
     expect(out[0]).toMatchObject({ author: 'rev', kind: 'review', url: 'h' });
     expect(out[0].body).toBe('src/a.ts:42 — nit here');
-    expect(out[1].body).toBe('no path'); // path 없으면 앵커 없음.
+    expect(out[1].body).toBe('no path'); // no anchor without path.
   });
 
-  it('HTML 주석(봇 마커)은 본문에서 스트립된다', () => {
+  it('HTML comments (bot markers) stripped from body', () => {
     const out = mapGhDetail(
       {
         comments: [
           {
             author: { login: 'coderabbitai' },
-            body: '<!-- auto-generated -->\n실제 내용\n<!-- entry_end -->',
+            body: '<!-- auto-generated -->\nactual content\n<!-- entry_end -->',
             createdAt: 't',
           },
         ],
       },
       'u',
     );
-    expect(out[0].body).toBe('실제 내용');
+    expect(out[0].body).toBe('actual content');
   });
 });
 
-describe('GhPrService — 게이트', () => {
-  it('gh ENOENT → cli-missing, 프로세스 수명 동안 재프로브 없음', async () => {
+describe('GhPrService — gate', () => {
+  it('gh ENOENT → cli-missing, no reprobe for process lifetime', async () => {
     const enoent = Object.assign(new Error('spawn gh ENOENT'), { code: 'ENOENT' });
     const { svc, calls } = makeService(() => enoent);
     expect((await svc.gate('D:/r')).ok).toBe(false);
     expect((await svc.gate('D:/r')).ok).toBe(false);
-    expect(calls.length).toBe(1); // 두 번째 gate는 exec 자체를 안 탐.
+    expect(calls.length).toBe(1); // second gate doesn't call exec at all.
   });
 
-  it('버전 OK + auth 실패 → unauthenticated', async () => {
+  it('version OK + auth failure → unauthenticated', async () => {
     const { svc } = makeService((args) =>
       args[0] === '--version' ? { stdout: 'gh version 2' } : new Error('not logged in'),
     );
@@ -139,15 +139,15 @@ describe('GhPrService — 게이트', () => {
   });
 });
 
-describe('GhPrService — 목록 TTL·상세 updatedAt 캐시', () => {
-  it('30s 내 재호출은 exec 생략, TTL 경과 후 재fetch', async () => {
+describe('GhPrService — list TTL·detail updatedAt cache', () => {
+  it('re-call within 30s skips exec, refetch after TTL', async () => {
     const nowRef = { t: 0 };
     const { svc, calls } = makeService((args) => {
       if (args[0] === 'pr' && args[1] === 'list') return { stdout: LIST_JSON };
       return { stdout: '' };
     }, nowRef);
     const r1 = await svc.listPrs('D:/r');
-    expect(r1.ok && r1.prs.length).toBe(2); // malformed 1건 필터.
+    expect(r1.ok && r1.prs.length).toBe(2); // 1 malformed filtered.
     await svc.listPrs('D:/r');
     expect(calls.filter((c) => c.args[1] === 'list').length).toBe(1);
     nowRef.t = 31_000;
@@ -155,20 +155,20 @@ describe('GhPrService — 목록 TTL·상세 updatedAt 캐시', () => {
     expect(calls.filter((c) => c.args[1] === 'list').length).toBe(2);
   });
 
-  it('force=true는 TTL 창 안에서도 gh를 재호출(수동 새로고침, Codex P2)', async () => {
+  it('force=true re-invokes gh even inside TTL window (manual refresh, Codex P2)', async () => {
     const nowRef = { t: 0 };
     const { svc, calls } = makeService((args) => {
       if (args[0] === 'pr' && args[1] === 'list') return { stdout: LIST_JSON };
       return { stdout: '' };
     }, nowRef);
     await svc.listPrs('D:/r');
-    await svc.listPrs('D:/r'); // TTL 히트 — 재호출 없음.
+    await svc.listPrs('D:/r'); // TTL hit — no re-call.
     expect(calls.filter((c) => c.args[1] === 'list').length).toBe(1);
-    await svc.listPrs('D:/r', true); // force — TTL 무시.
+    await svc.listPrs('D:/r', true); // force — ignore TTL.
     expect(calls.filter((c) => c.args[1] === 'list').length).toBe(2);
   });
 
-  it('상세 — 같은 updatedAt이면 재fetch 생략, 바뀌면 재fetch', async () => {
+  it('detail — skips refetch when same updatedAt, refetches when changed', async () => {
     const { svc, calls } = makeService((args) => {
       if (args[0] === 'pr' && args[1] === 'view') {
         return { stdout: JSON.stringify({ number: 423, url: 'u', comments: [{ author: { login: 'a' }, body: 'hi', createdAt: 't' }], reviews: [] }) };
@@ -177,13 +177,13 @@ describe('GhPrService — 목록 TTL·상세 updatedAt 캐시', () => {
     });
     const d1 = await svc.prDetail('D:/r', 423, 'T1');
     expect(d1.ok && d1.detail.comments.length).toBe(1);
-    await svc.prDetail('D:/r', 423, 'T1'); // 캐시 히트.
+    await svc.prDetail('D:/r', 423, 'T1'); // cache hit.
     expect(calls.filter((c) => c.args[1] === 'view').length).toBe(1);
-    await svc.prDetail('D:/r', 423, 'T2'); // updatedAt 변경 → 재fetch.
+    await svc.prDetail('D:/r', 423, 'T2'); // updatedAt changed → re-fetch.
     expect(calls.filter((c) => c.args[1] === 'view').length).toBe(2);
   });
 
-  it('gh 실패 stderr는 fail-soft로 강등', async () => {
+  it('gh failure stderr demoted fail-soft', async () => {
     const { svc } = makeService(() => Object.assign(new Error('boom'), { stderr: 'no pull requests' }));
     const r = await svc.listPrs('D:/r');
     expect(r.ok).toBe(false);
@@ -191,7 +191,7 @@ describe('GhPrService — 목록 TTL·상세 updatedAt 캐시', () => {
   });
 });
 
-describe('parseRemoteHost / isGithubHost — provider 라우팅 재료', () => {
+describe('parseRemoteHost / isGithubHost — provider routing inputs', () => {
   it.each([
     ['https://github.com/o/r.git', 'github.com'],
     ['git@github.com:o/r.git', 'github.com'],
@@ -204,7 +204,7 @@ describe('parseRemoteHost / isGithubHost — provider 라우팅 재료', () => {
     expect(parseRemoteHost(url)).toBe(expected);
   });
 
-  it('github.com 계열만 gh 경로', () => {
+  it('github.com family only uses gh path', () => {
     expect(isGithubHost('github.com')).toBe(true);
     expect(isGithubHost('gitlab.com')).toBe(false);
     expect(isGithubHost('gitlab.company.io')).toBe(false);

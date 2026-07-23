@@ -56,19 +56,18 @@ function powershellCandidates(): string[] {
   return candidates;
 }
 
-// system_profiler는 첫 실행(폰트 캐시 콜드)에 수 초 걸릴 수 있어 넉넉히 15s.
-// 제안 목록은 선택적 편의 기능이므로 타임아웃 시 조용히 []로 떨어진다.
+// system_profiler can take several seconds on first run (cold font cache) — allow 15s.
+// Suggestions are optional convenience; on timeout we quietly fall back to [].
 const SP_TIMEOUT_MS = 15000;
 
-// 수백 개 폰트 × typeface 메타데이터 JSON — 수 MB까지 갈 수 있어 16MB 상한.
+// Hundreds of fonts × typeface metadata JSON — can reach several MB; cap at 16MB.
 const SP_MAX_BUFFER = 16 * 1024 * 1024;
 
 /**
- * `system_profiler SPFontsDataType -json` stdout을 파싱해 CSS로 해석 가능한
- * 폰트 패밀리 이름 목록을 만든다. typeface의 `family` 필드가 CSS family와
- * 일치한다("Menlo", "Apple SD Gothic Neo" 등 — 파일명이 아니라 패밀리명).
- * 순수 함수(I/O 없음)라 system_profiler 없이 단위 테스트 가능. 형식이
- * 어긋나면 던지지 않고 파싱 가능한 만큼만 수집한다.
+ * Parse `system_profiler SPFontsDataType -json` stdout into CSS-usable font family
+ * names. The typeface `family` field matches CSS family ("Menlo", "Apple SD Gothic Neo",
+ * etc. — family name, not filename). Pure function (no I/O) so unit tests need no
+ * system_profiler. On malformed input, collect what parses instead of throwing.
  */
 export function parseMacFontProfile(stdout: string): string[] {
   const names: string[] = [];
@@ -85,14 +84,14 @@ export function parseMacFontProfile(stdout: string): string[] {
       }
     }
   } catch {
-    // JSON 자체가 깨진 경우 — 제안 없음으로 처리
+    // Broken JSON — treat as no suggestions
     return [];
   }
   return Array.from(new Set(names)).sort((a, b) => a.localeCompare(b));
 }
 
 async function listMacFonts(): Promise<string[]> {
-  // system_profiler는 항상 /usr/sbin에 있다 — PATH 의존 없이 절대 경로 사용.
+  // system_profiler always lives at /usr/sbin — use absolute path, no PATH dependency.
   const { stdout } = await execFileAsync(
     '/usr/sbin/system_profiler',
     ['SPFontsDataType', '-json'],
@@ -128,7 +127,7 @@ export async function listInstalledFonts(): Promise<string[]> {
   try {
     if (process.platform === 'win32') return await listWindowsFonts();
     if (process.platform === 'darwin') return await listMacFonts();
-    // Linux 열거는 후속 과제 — []면 피커는 free-text로 동작한다.
+    // Linux enumeration is follow-up work — [] means the picker stays free-text.
     return [];
   } catch {
     // Swallow: a missing/locked PowerShell, a slow system_profiler, or a slow

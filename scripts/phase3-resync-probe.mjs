@@ -1,4 +1,4 @@
-// Phase 3 PR-B — isolated daemon resync probe (갭-프리 실증).
+// Phase 3 PR-B — isolated daemon resync probe (gap-free demonstration).
 //
 // Boots the BUNDLED daemon (dist/daemon-bundle/index.js) in a throwaway HOME
 // with WMUX_DATA_SUFFIX isolation, creates a real PTY session, attaches a
@@ -10,7 +10,7 @@
 //    snapshot replay → live ...) has CONTIGUOUS numbered flood lines after
 //    each burst quiesces — a byte lost at any resync seam (T1: snapshot /
 //    partial-tail / post-marker tail / live) tears or drops a line;
-//  - input written mid-resync still reaches the PTY (무단절);
+//  - input written mid-resync still reaches the PTY (no disconnect);
 //  - every reflush took the snapshot path (mode=snapshot in daemon log) —
 //    an unexpected raw fallback fails the probe.
 //
@@ -280,7 +280,7 @@ async function main() {
       }
     }
 
-    // 무단절 input check: type an echo during one more resync.
+    // No-disconnect input check: type an echo during one more resync.
     sessSock.write('echo probe-input-alive\r');
     await control.rpc('daemon.resyncSession', { id: sessionId, scrollback: 5000 }).catch((e) => failures.push(`final resync failed: ${e.message}`));
     await quiesce();

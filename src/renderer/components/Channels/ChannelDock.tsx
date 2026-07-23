@@ -54,14 +54,14 @@ export default function ChannelDock(): React.ReactElement {
   // stale persisted 'channels' can never render either — the guard below.
   const channelsTabVisible = useStore((s) => s.channelsTabVisible);
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
-  // Orchestrator 모델 — 컨트롤 바 칩에서 Agent 탭 인라인 드롭다운으로 이동.
-  // DeckTabs는 순수 컴포넌트이므로 라벨·옵션·선택 콜백을 여기서 store와 잇는다.
+  // Orchestrator model — moved from control bar chip to Agent tab inline dropdown.
+  // DeckTabs is a pure component so label·options·select callback are wired to store here.
   const deckBrainModel = useStore((s) => s.deckBrainModel);
   const setDeckBrainModel = useStore((s) => s.setDeckBrainModel);
   const commanderModelLabel = (MODEL_OPTIONS.find((o) => o.value === deckBrainModel) ?? MODEL_OPTIONS[0]).label;
   const t = useT();
   const showChannelsView = activeDeckTab === 'channels' && channelsTabVisible;
-  // git 탭(오너 결정 2026-07-20 — 덱 복귀, Review는 Git 탭 하단 섹션으로 병합).
+  // git tab (owner decision 2026-07-20 — deck return, Review merged into Git tab bottom section).
   const showGitView = activeDeckTab === 'git';
 
   // Workspace sidebar is on `sidebarPosition`; the dock is on the opposite
@@ -110,8 +110,8 @@ export default function ChannelDock(): React.ReactElement {
       />
 
       {showGitView ? (
-        // Git tab — 위: 현재 워크스페이스(워크트리·PR), 아래: 전 워크스페이스
-        // diff 집계(구 Review, 오너 결정 2026-07-20 병합).
+        // Git tab — top: current workspace (worktrees·PR), bottom: all-workspace
+        // diff aggregate (former Review, owner decision 2026-07-20 merge).
         <div className="flex-1 min-h-0 overflow-y-auto">
           <GitTab />
           <div className="border-t" style={{ borderColor: 'var(--border-soft)' }}>

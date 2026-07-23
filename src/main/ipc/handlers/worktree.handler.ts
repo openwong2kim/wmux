@@ -1,16 +1,16 @@
-// Deck Git 탭 — 워크트리 GUI main 핸들러 (list / add / remove).
+// Deck Git tab — worktree GUI main handler (list / add / remove).
 //
-// 렌더러-전용 IPC 표면(파이프 RpcRouter 미노출 — channelLocal/fanout과 동일
-// trust basis). git이 디스크 정본이라 캐시·영속 상태가 없다: 데몬 재시작·앱
-// 재시작 무영향, 매 호출이 fresh `git worktree ...` 실행.
+// Renderer-only IPC surface (not exposed on pipe RpcRouter — same trust basis as
+// channelLocal/fanout). git is disk source of truth, no cache/persistent state:
+// daemon/app restart has no effect; every call runs fresh `git worktree ...`.
 //
-// 안전 계약:
-//  - add: 브랜치명은 validateGitRef(플래그 주입·traversal·제어문자 차단),
-//    경로는 명시 인자 없이 관례 위치(<repo부모>/<repo이름>-worktrees/<branch>)로
-//    핸들러가 도출한다 — 렌더러가 임의 디스크 경로를 지정할 수 없다.
-//  - remove: `git worktree remove` 그대로 — dirty 워크트리는 git 자신이 거부하고
-//    그 stderr를 사용자에게 표면화한다. --force는 v1 미제공(careful 원칙).
-//  - 모든 실패는 { ok:false, error }로 강등(fail-soft 표시 표면).
+// Safety contract:
+//  - add: branch name via validateGitRef (blocks flag injection/traversal/control chars);
+//    path derived by handler at conventional location (<repo-parent>/<repo-name>-worktrees/<branch>)
+//    with no explicit arg — renderer cannot specify arbitrary disk paths.
+//  - remove: plain `git worktree remove` — git rejects dirty worktrees and surfaces
+//    stderr to user. --force not provided in v1 (careful principle).
+//  - All failures demoted to { ok:false, error } (fail-soft display surface).
 import { ipcMain } from 'electron';
 import { existsSync, mkdirSync } from 'node:fs';
 import { join, dirname, basename, resolve } from 'node:path';
@@ -43,22 +43,22 @@ import {
   type VerifyResult,
 } from '../../git/mergeSession';
 
-/** worktree list 행 — 재시작 복구용 MERGING 파생 필드(디스크에서 계산). */
+/** worktree list row — MERGING derived fields for restart recovery (computed from disk). */
 export interface WorktreeRow extends WorktreeEntry {
-  /** MERGE_HEAD 존재 여부(진행 중 머지). */
+  /** MERGE_HEAD present (merge in progress). */
   merging?: boolean;
-  /** 우리 소유 격리 integration 워크트리 여부(경로 접두 인식). */
+  /** Our owned isolated integration worktree (path-prefix recognition). */
   integration?: boolean;
-  /** 미해결 충돌 파일 수(merging일 때만 의미). */
+  /** Unresolved conflict file count (meaningful only when merging). */
   conflicts?: number;
 }
 
 export type WorktreeListResult =
   | {
       ok: true;
-      /** 호출 컨텍스트의 worktree toplevel(현재 워크트리 — GUI의 "현재" dot 기준). */
+      /** Call-context worktree toplevel (current worktree — GUI "current" dot basis). */
       repoPath: string;
-      /** 본(main) 워크트리 경로 — porcelain 첫 블록(git 계약: main이 항상 먼저). */
+      /** Main worktree path — porcelain first block (git contract: main always first). */
       mainPath: string;
       worktrees: WorktreeRow[];
     }
@@ -72,8 +72,8 @@ export type WorktreeMutateResult =
   | { ok: true; worktreePath: string }
   | { ok: false; error: string };
 
-// repo 단위 뮤텍스 — diff.handler.withRepoLock과 동형 복제(additive 원칙:
-// 그쪽 인스턴스는 diff 채택 직렬화 전용이라 큐를 공유하지 않는다).
+// Per-repo mutex — same shape as diff.handler.withRepoLock (additive principle:
+// that instance is diff-adopt serialization only, so queues are not shared).
 const repoChains = new Map<string, Promise<unknown>>();
 function withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
   const prev = repoChains.get(repoKey) ?? Promise.resolve();
@@ -88,23 +88,23 @@ function withRepoLock<T>(repoKey: string, fn: () => Promise<T>): Promise<T> {
   return run;
 }
 
-// cwd(서브디렉토리 가능) → 자기 worktree toplevel. 비-git이면 null.
+// cwd (subdir allowed) → own worktree toplevel. null if not git.
 async function resolveToplevel(cwd: string): Promise<string | null> {
   const r = await git(['rev-parse', '--show-toplevel'], cwd);
   const top = r.code === 0 ? r.stdout.trim() : '';
   return top || null;
 }
 
-// 경로 정규화 — 파일시스템 대소문자 정책 반영(Codex P2). Windows/macOS는
-// case-insensitive라 lowercase, POSIX(case-sensitive)는 원형 유지: 그래야
-// `/repo/Foo`와 `/repo/foo`가 서로 다른 워크트리로 올바로 구분된다.
+// Path normalization — reflect filesystem case policy (Codex P2). Windows/macOS are
+// case-insensitive → lowercase; POSIX (case-sensitive) keeps original so
+// `/repo/Foo` and `/repo/foo` are correctly distinct worktrees.
 function normPath(p: string): string {
   const trimmed = resolve(p).replace(/[/\\]+$/, '');
   return process.platform === 'win32' || process.platform === 'darwin' ? trimmed.toLowerCase() : trimmed;
 }
 
-// 본 워크트리(main) = `git worktree list --porcelain` 첫 블록(git 계약).
-// cwd가 linked worktree여도 여기서 본 repo를 얻는다.
+// Main worktree = first block of `git worktree list --porcelain` (git contract).
+// Gets main repo even when cwd is a linked worktree.
 async function resolveMainWorktree(top: string): Promise<string> {
   const r = await git(['worktree', 'list', '--porcelain'], top);
   if (r.code !== 0) return top;
@@ -117,9 +117,9 @@ async function listWorktrees(repoPath: string): Promise<WorktreeListResult> {
   const r = await git(['worktree', 'list', '--porcelain'], top);
   if (r.code !== 0) return { ok: false, error: r.stderr.slice(0, 300) };
   const parsed = parseWorktreePorcelain(r.stdout);
-  // 재시작 복구: 각 워크트리의 MERGING 상태를 디스크에서 파생해 붙인다(병렬).
-  // 앱 재시작으로 in-memory 세션이 유실돼도 UI가 integration 워크트리를
-  // 인식해 Land/Discard를 제시할 수 있게 하는 정본은 git 디스크 상태다.
+  // Restart recovery: derive each worktree's MERGING state from disk (parallel).
+  // Even if in-memory session is lost on app restart, git disk state is source of
+  // truth so UI can recognize integration worktrees and offer Land/Discard.
   const worktrees: WorktreeRow[] = await Promise.all(
     parsed.map(async (e) => {
       const integration = isIntegrationPath(e.path);
@@ -127,9 +127,9 @@ async function listWorktrees(repoPath: string): Promise<WorktreeListResult> {
       return { ...e, merging: ms.merging, integration, conflicts: ms.conflicts };
     }),
   );
-  // dogfood가 잡은 실버그: top은 "호출한 워크트리"의 toplevel이지 본 repo가
-  // 아니다(linked worktree에서 열면 자기 자신). 본 워크트리는 porcelain 첫
-  // 블록이 계약이므로 그걸로 mainPath를 분리해 내려준다.
+  // Dogfood silver bug: top is the "calling worktree" toplevel, not main repo
+  // (opening from linked worktree returns itself). Main worktree is porcelain first
+  // block by contract, so return mainPath separately.
   return { ok: true, repoPath: top, mainPath: worktrees[0]?.path ?? top, worktrees };
 }
 
@@ -142,25 +142,25 @@ async function addWorktree(repoPath: string, branch: string): Promise<WorktreeMu
   }
   const top = await resolveToplevel(repoPath);
   if (!top) return { ok: false, error: 'not a git repository' };
-  // 경로 도출 기준 = 본(main) 워크트리(Codex P2). linked worktree에서 열면
-  // top이 그 worktree 자신이라 `<linked>-worktrees`가 되던 버그를 막는다.
+  // Path derivation basis = main worktree (Codex P2). When opened from linked worktree,
+  // top was that worktree itself, producing `<linked>-worktrees` bug.
   const mainWt = await resolveMainWorktree(top);
   return withRepoLock(normPath(mainWt), async () => {
-    // 관례 위치: <main부모>/<main이름>-worktrees/<branch-dir>. 오너의 실사용
-    // 관례(D:\wmux-worktrees\*)와 동형 — repo 안이 아니라 형제 디렉토리라
-    // 워크트리가 자기 repo의 untracked 노이즈가 되지 않는다.
+    // Conventional location: <main-parent>/<main-name>-worktrees/<branch-dir>. Same shape as
+    // owner's real usage (D:\wmux-worktrees\*) — sibling dir, not inside repo, so
+    // worktrees don't become untracked noise in their own repo.
     const parent = join(dirname(mainWt), `${basename(mainWt)}-worktrees`);
     const wtPath = resolve(parent, branchToDirName(safeBranch));
     if (existsSync(wtPath)) {
       return { ok: false, error: `path already exists: ${wtPath}` };
     }
     if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
-    // 브랜치 해석 3분기(Codex P2 — remote-only 브랜치 보존):
-    //  ① 로컬 브랜치 존재 → 체크아웃.
-    //  ② 아니면 --guess-remote 시도 → origin/<branch>가 있으면 그걸 추적하는
-    //     로컬 브랜치를 만든다(강제 -b가 remote를 무시하고 새 브랜치를 만드는
-    //     것 방지). remote 매칭이 없으면 실패.
-    //  ③ ②가 실패하면 -b로 HEAD에서 새 브랜치 생성.
+    // Branch resolution 3-way (Codex P2 — preserve remote-only branches):
+    //  ① Local branch exists → checkout.
+    //  ② Else try --guess-remote → if origin/<branch> exists, create local branch
+    //     tracking it (prevents forced -b ignoring remote and creating new branch).
+    //     Fail if no remote match.
+    //  ③ If ② fails, create new branch from HEAD with -b.
     const local = await git(['rev-parse', '--verify', '--quiet', `refs/heads/${safeBranch}`], mainWt);
     if (local.code === 0) {
       const r = await git(['worktree', 'add', wtPath, safeBranch], mainWt);
@@ -178,43 +178,43 @@ async function addWorktree(repoPath: string, branch: string): Promise<WorktreeMu
 async function removeWorktree(repoPath: string, worktreePath: string): Promise<WorktreeMutateResult> {
   const top = await resolveToplevel(repoPath);
   if (!top) return { ok: false, error: 'not a git repository' };
-  // 렌더러가 넘기는 경로는 직전 list 결과에서 온 값이지만, 신뢰하지 않고
-  // 실제 워크트리 목록에 있는 경로인지 재검증한다(임의 경로 인자 차단).
+  // Renderer path comes from prior list result, but re-validate against actual
+  // worktree list (block arbitrary path args).
   const listed = await git(['worktree', 'list', '--porcelain'], top);
   if (listed.code !== 0) return { ok: false, error: listed.stderr.slice(0, 300) };
   const entries = parseWorktreePorcelain(listed.stdout);
   const target = entries.find((e) => normPath(e.path) === normPath(worktreePath));
   if (!target) return { ok: false, error: 'not a listed worktree of this repository' };
-  // 본 워크트리(porcelain 첫 블록) 제거 거부.
+  // Reject removing main worktree (porcelain first block).
   const mainPath = entries[0]?.path ?? top;
   if (normPath(target.path) === normPath(mainPath)) {
     return { ok: false, error: 'cannot remove the main worktree' };
   }
-  // 활성(호출 컨텍스트) 워크트리 제거 거부(Codex P2): git은 clean 워크트리를
-  // 그 자신의 cwd에서도 제거해준다 — 사용자가 지금 서 있는 워크트리를 지워
-  // pane cwd가 사라지는 상황을 막는다. top = 활성 pane의 toplevel.
+  // Reject removing active (call-context) worktree (Codex P2): git removes clean
+  // worktrees even from their own cwd — block user deleting current worktree and
+  // losing pane cwd. top = active pane toplevel.
   if (normPath(target.path) === normPath(top)) {
     return { ok: false, error: 'cannot remove the worktree you are currently in' };
   }
-  // 락 키를 base(본 워크트리)로 통일 — 기존 버그: add는 normPath(mainWt), remove는
-  // normPath(top)을 써서 같은 repo의 add/remove가 서로 직렬화되지 않았다(키 불일치).
-  // merge 세션까지 같은 base 키를 공유해야 repo-wide 뮤텍스가 성립한다.
+  // Unify lock key to base (main worktree) — prior bug: add used normPath(mainWt), remove
+  // used normPath(top), so same-repo add/remove didn't serialize (key mismatch).
+  // merge session must share same base key for repo-wide mutex.
   const mainWt = entries[0]?.path ?? top;
   return withRepoLock(normPath(mainWt), async () => {
-    // --force 없음: dirty/잠김 워크트리는 git이 거부하며 그 사유를 그대로 표면화.
+    // No --force: git rejects dirty/locked worktrees and surfaces reason as-is.
     const r = await git(['worktree', 'remove', target.path], top);
     if (r.code !== 0) return { ok: false, error: r.stderr.slice(0, 300) };
     return { ok: true, worktreePath: target.path };
   });
 }
 
-// ── 머지 세션 ────────────────────────────────────────────────────────────────
+// ── Merge session ────────────────────────────────────────────────────────────────
 //
-// 격리 integration 워크트리에서 git-native 머지 → verify 게이트 → Land/Discard.
-// 세션은 base 키(본 워크트리)당 최대 1개(동시 start 거부). 정본은 git 디스크
-// 상태(MERGE_HEAD)라 앱 재시작 후 status가 디스크에서 세션을 복구한다.
+// Git-native merge in isolated integration worktree → verify gate → Land/Discard.
+// Max one session per base key (main worktree); concurrent start rejected. Source of
+// truth is git disk state (MERGE_HEAD); status recovers session from disk after restart.
 
-/** 세션 내부 상태(공개 status + 재검증용 OID·verify 취소 핸들). */
+/** Session internal state (public status + OIDs for revalidation, verify cancel handle). */
 interface MergeSessionState {
   sessionId: string;
   repoKey: string;
@@ -234,7 +234,7 @@ interface MergeSessionState {
   verifyPromise?: Promise<void>;
 }
 
-// repoKey(normPath(mainWt)) → 세션. add/remove와 같은 base 키를 공유한다.
+// repoKey(normPath(mainWt)) → session. Shares base key with add/remove.
 const mergeSessions = new Map<string, MergeSessionState>();
 
 function toStatus(s: MergeSessionState): MergeSessionStatus {
@@ -252,8 +252,8 @@ function toStatus(s: MergeSessionState): MergeSessionStatus {
   };
 }
 
-// clean 머지 후 verify를 락 밖에서 비동기 실행 — 세션 phase를 갱신한다. 세션이
-// 그 사이 Discard로 교체/삭제됐으면 결과를 버린다(stale 방지).
+// Run verify async outside lock after clean merge — update session phase. Discard
+// replacing/deleting session in between → discard result (stale prevention).
 function kickVerify(s: MergeSessionState): void {
   // The integration worktree is a fresh checkout with no node_modules (gitignored),
   // so link deps from the base checkout first or `npm test`/`npm run lint` can't
@@ -272,7 +272,7 @@ function kickVerify(s: MergeSessionState): void {
     .catch(() => {
       if (mergeSessions.get(s.repoKey) !== s) return;
       s.phase = 'failed';
-      s.verify = { ok: false, output: 'verify 실행 오류' };
+      s.verify = { ok: false, output: 'verify execution error' };
     });
 }
 
@@ -293,46 +293,46 @@ async function mergeStart(repoPath: string, sourcePath: string): Promise<MergeSt
   if ('error' in ctx) return { ok: false, error: ctx.error };
   const { mainWt, repoKey, entries } = ctx;
   return withRepoLock(repoKey, async () => {
-    if (mergeSessions.has(repoKey)) return { ok: false, error: '이미 진행 중인 머지 세션이 있습니다' };
-    // 디스크 재확인: 이전 세션의 integration 워크트리가 MERGING으로 남아있으면 거부.
+    if (mergeSessions.has(repoKey)) return { ok: false, error: 'A merge session is already in progress' };
+    // Disk re-check: reject if prior session's integration worktree still MERGING.
     for (const e of entries) {
       if (isIntegrationPath(e.path) && existsSync(e.path)) {
         const ms = await readMergeState(e.path);
-        if (ms.merging) return { ok: false, error: '이전 머지가 정리되지 않았습니다 — 먼저 Land/Discard 하세요' };
+        if (ms.merging) return { ok: false, error: 'Previous merge was not cleaned up — Land or Discard first' };
       }
     }
-    // base 명시 해결(worktree[0] HEAD 아님) → 그 브랜치가 체크아웃된 워크트리 탐색.
+    // Resolve base explicitly (not worktree[0] HEAD) → find worktree with that branch checked out.
     const base = await resolveBaseBranch(mainWt);
-    if (!base) return { ok: false, error: 'base 브랜치를 확인할 수 없습니다(gh/origin/main·master 모두 실패)' };
+    if (!base) return { ok: false, error: 'Cannot resolve base branch (gh/origin/main and master both failed)' };
     const baseEntry = entries.find((e) => e.branch === base);
-    if (!baseEntry) return { ok: false, error: `base 브랜치(${base})가 어떤 워크트리에도 체크아웃되어 있지 않습니다 — clean 상태로 체크아웃하세요` };
+    if (!baseEntry) return { ok: false, error: `Base branch (${base}) is not checked out in any worktree — check it out in a clean state` };
     const baseCheckoutPath = baseEntry.path;
     const pre = await checkTargetPreconditions(baseCheckoutPath, base);
     if (!pre.ok) return { ok: false, error: pre.error };
 
-    // source 워크트리 → 캡처 OID(움직이는 브랜치명 아님) + 브랜치명(있으면).
+    // source worktree → capture OID (not moving branch name) + branch name (if any).
     const sourceTop = await resolveToplevel(sourcePath);
-    if (!sourceTop) return { ok: false, error: 'source가 git 워크트리가 아닙니다' };
+    if (!sourceTop) return { ok: false, error: 'Source is not a git worktree' };
     // Re-validate against this repo's worktree list (like removeWorktree) — the
     // renderer must not be able to inject an arbitrary git repo path as source.
     const srcEntry = entries.find((e) => normPath(e.path) === normPath(sourceTop));
-    if (!srcEntry) return { ok: false, error: 'source가 이 repo의 워크트리가 아닙니다' };
+    if (!srcEntry) return { ok: false, error: 'Source is not a worktree of this repo' };
     const sourceBranch = srcEntry.branch ?? null;
     // Refuse a dirty source: only the committed HEAD is merged, so uncommitted or
     // untracked work would be silently dropped (especially risky in AI worktrees).
     const srcStatus = await git(['status', '--porcelain'], sourceTop);
     if (srcStatus.code !== 0) return { ok: false, error: srcStatus.stderr.slice(0, 300) };
     if (srcStatus.stdout.trim() !== '') {
-      return { ok: false, error: 'source 워크트리에 커밋되지 않은 변경이 있습니다 — 먼저 커밋하세요' };
+      return { ok: false, error: 'Source worktree has uncommitted changes — commit first' };
     }
     const srcHead = await git(['rev-parse', 'HEAD'], sourceTop);
-    if (srcHead.code !== 0) return { ok: false, error: 'source HEAD 확인 실패' };
+    if (srcHead.code !== 0) return { ok: false, error: 'Failed to read source HEAD' };
     const sourceOid = srcHead.stdout.trim();
     const baseHead = await git(['rev-parse', 'HEAD'], baseCheckoutPath);
-    if (baseHead.code !== 0) return { ok: false, error: 'base HEAD 확인 실패' };
+    if (baseHead.code !== 0) return { ok: false, error: 'Failed to read base HEAD' };
     const baseOid = baseHead.stdout.trim();
 
-    // 격리 integration 워크트리 생성 → 캡처 source OID를 --no-commit --no-ff 머지.
+    // Create isolated integration worktree → merge captured source OID with --no-commit --no-ff.
     const created = await createIntegrationWorktree(mainWt, baseOid, sourceBranch ?? sourceOid.slice(0, 7));
     if (!created.ok) return { ok: false, error: created.error };
     const merged = await runMergeNoCommit(created.path, sourceOid);
@@ -346,7 +346,7 @@ async function mergeStart(repoPath: string, sourcePath: string): Promise<MergeSt
     // (recoverSession skips a non-merging one), so reject and clean it up instead.
     if (outcome.phase === 'clean' && outcome.changedFiles === 0) {
       await removeIntegrationWorktree(mainWt, created.path);
-      return { ok: false, error: '이미 최신입니다 — 머지할 변경이 없습니다' };
+      return { ok: false, error: 'Already up to date — nothing to merge' };
     }
     const session: MergeSessionState = {
       sessionId: randomUUID(),
@@ -358,8 +358,8 @@ async function mergeStart(repoPath: string, sourcePath: string): Promise<MergeSt
       sourceBranch,
       sourceOid,
       integrationPath: created.path,
-      // 충돌이면 conflicted에서 정지(B-MVP: 수동 진입). clean(변경 있음)이면 verify로.
-      // (변경 0건 clean = no-op은 위에서 이미 거부됐다.)
+      // Conflicts → stop at conflicted (B-MVP: manual entry). clean (with changes) → verify.
+      // (0-change clean = no-op already rejected above.)
       phase: outcome.phase === 'conflicted' ? 'conflicted' : 'verifying',
       conflicts: outcome.conflicts,
       changedFiles: outcome.changedFiles,
@@ -370,16 +370,16 @@ async function mergeStart(repoPath: string, sourcePath: string): Promise<MergeSt
   });
 }
 
-// 앱 재시작 후 in-memory 세션 유실 시, integration 워크트리의 MERGING 상태에서
-// 세션을 재구성한다(정본=디스크). base/OID는 integration의 HEAD/MERGE_HEAD와
-// base 재해결로 전부 파생 가능. clean이면 verify를 재실행한다.
+// After app restart in-memory session loss, reconstruct session from integration
+// worktree MERGING state (source of truth = disk). base/OID fully derivable from
+// integration HEAD/MERGE_HEAD and base re-resolution. Re-run verify if clean.
 async function recoverSession(ctx: MergeCtx): Promise<MergeSessionState | null> {
   const { mainWt, repoKey, entries } = ctx;
   const intEntry = entries.find((e) => isIntegrationPath(e.path) && existsSync(e.path));
   if (!intEntry) return null;
   const ms = await readMergeState(intEntry.path);
   if (!ms.merging) return null;
-  const headR = await git(['rev-parse', 'HEAD'], intEntry.path); // 커밋 전이라 base OID.
+  const headR = await git(['rev-parse', 'HEAD'], intEntry.path); // pre-commit, so base OID.
   const mhR = await git(['rev-parse', 'MERGE_HEAD'], intEntry.path); // source OID.
   if (headR.code !== 0 || mhR.code !== 0) return null;
   // Don't degrade into a corrupt session: without a resolved base + its checkout,
@@ -442,8 +442,8 @@ async function mergeLand(repoPath: string): Promise<MergeActionResult> {
   const { repoKey } = ctx;
   return withRepoLock(repoKey, async () => {
     const s = mergeSessions.get(repoKey);
-    if (!s) return { ok: false, error: '진행 중인 머지 세션이 없습니다' };
-    if (s.phase !== 'verified') return { ok: false, error: 'verify가 통과된 상태(verified)에서만 Land할 수 있습니다' };
+    if (!s) return { ok: false, error: 'No merge session in progress' };
+    if (s.phase !== 'verified') return { ok: false, error: 'Land is only allowed after verify passes (verified phase)' };
     const res = await landMerge({
       integrationPath: s.integrationPath,
       baseCheckoutPath: s.baseCheckoutPath,
@@ -474,7 +474,7 @@ async function mergeDiscard(repoPath: string): Promise<MergeActionResult> {
   await pre?.verifyPromise?.catch(() => undefined);
   return withRepoLock(repoKey, async () => {
     const s = mergeSessions.get(repoKey);
-    // 세션이 없어도 디스크의 integration 워크트리를 정리(재시작 후 Discard 등).
+    // Even without session, clean up integration worktree on disk (post-restart Discard etc.).
     const integrationPath =
       s?.integrationPath ?? entries.find((e) => isIntegrationPath(e.path) && existsSync(e.path))?.path;
     if (!integrationPath) {

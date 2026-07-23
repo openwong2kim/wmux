@@ -53,8 +53,8 @@ describe('sanitizeFontFamily', () => {
   });
 });
 
-// 크로스 플랫폼 폴백 체인 락 — mac 모노(Menlo/SF Mono/Monaco), win 모노
-// (Consolas/Courier New), 한글 폴백(Apple SD Gothic Neo/Malgun Gothic), generic.
+// Cross-platform fallback chain lock — mac mono (Menlo/SF Mono/Monaco), win mono
+// (Consolas/Courier New), CJK fallback (Apple SD Gothic Neo/Malgun Gothic), generic.
 const FALLBACK_CHAIN =
   "'Menlo', 'SF Mono', 'Monaco', 'Consolas', 'Courier New', 'Apple SD Gothic Neo', 'Malgun Gothic', monospace";
 

@@ -9,9 +9,9 @@ export interface PtyCreateOptions {
   workspaceId?: string;
   surfaceId?: string;
   /**
-   * 스폰 출처 (실행 컨텍스트 env 정책). 사용자가 UI로 직접 여는 셸 pane만
-   * 'user-shell'로 스탬프해 자격증명을 투과받는다. 프로그래매틱 스폰(MCP·company
-   * provisioner·project seed)은 스탬프를 생략 → main이 fail-closed로 gated 처리.
+   * Spawn origin (runtime env policy). Only shell panes opened directly by the user
+   * via UI are stamped 'user-shell' to receive credential passthrough. Programmatic
+   * spawns (MCP, company provisioner, project seed) omit the stamp → main fail-closed gates them.
    */
   spawnKind?: SpawnKind;
   /**

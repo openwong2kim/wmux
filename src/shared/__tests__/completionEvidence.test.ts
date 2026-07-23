@@ -14,7 +14,7 @@ import {
 const passedCmd: EvidenceItem = {
   kind: 'command',
   status: 'passed',
-  summary: '테스트 통과',
+  summary: 'tests passed',
   command: 'npm test',
 };
 const unverifiedInspection: EvidenceItem = {
@@ -24,11 +24,11 @@ const unverifiedInspection: EvidenceItem = {
 };
 
 function ev(overrides: Partial<CompletionEvidence> = {}): CompletionEvidence {
-  return { summary: '작업 완료', items: [passedCmd], ...overrides };
+  return { summary: 'work complete', items: [passedCmd], ...overrides };
 }
 
-describe('validateCompletionEvidence — 수용 기준 (로드맵 :446)', () => {
-  it('T-gate-missing: evidence 없이 completed → completion_evidence_missing 거부', () => {
+describe('validateCompletionEvidence — acceptance criteria (roadmap :446)', () => {
+  it('T-gate-missing: completed without evidence → completion_evidence_missing rejection', () => {
     expect(validateCompletionEvidence('completed', undefined)).toEqual({
       ok: false,
       code: 'completion_evidence_missing',
@@ -36,28 +36,28 @@ describe('validateCompletionEvidence — 수용 기준 (로드맵 :446)', () => 
   });
 });
 
-describe('validateCompletionEvidence — 게이트 불변식 (E9: 게이트=구조, verified=등급)', () => {
-  it('completed + 검증 아이템 → 통과, verifiedItemCount 정직 산출', () => {
+describe('validateCompletionEvidence — gate invariants (E9: gate=structure, verified=grade)', () => {
+  it('completed + verified items → pass, honest verifiedItemCount', () => {
     const r = validateCompletionEvidence(
       'completed',
-      ev({ items: [passedCmd, unverifiedInspection, { kind: 'artifact', status: 'verified', summary: '산출물 확인' }] }),
+      ev({ items: [passedCmd, unverifiedInspection, { kind: 'artifact', status: 'verified', summary: 'artifact verified' }] }),
     );
     expect(r).toEqual({ ok: true, verifiedItemCount: 2 });
   });
 
-  it('completed + well-formed이나 verified 0(unverified 자기보고만) → 통과 + count 0 (E9 등급 모델)', () => {
+  it('completed + well-formed but verified 0 (unverified self-report only) → pass + count 0 (E9 grade model)', () => {
     const r = validateCompletionEvidence('completed', ev({ items: [unverifiedInspection] }));
     expect(r).toEqual({ ok: true, verifiedItemCount: 0 });
   });
 
-  it('세탁 불가(CL1): ClaudeWorker (A′) 정직 증거는 verified로 세지지 않는다', () => {
-    // run-success를 inspection/unverified로 표기 — command+passed로 승격되지 않음
+  it('no laundering (CL1): ClaudeWorker (A′) honest evidence is not counted verified', () => {
+    // Label run-success as inspection/unverified — does not promote to command+passed
     expect(isVerifiedItem(unverifiedInspection)).toBe(false);
     expect(isVerifiedItem(passedCmd)).toBe(true);
     expect(isVerifiedItem({ kind: 'command', status: 'failed', summary: 's', command: 'c' })).toBe(false);
   });
 
-  it('completed + 빈/공백 summary → completion_evidence_empty_summary', () => {
+  it('completed + empty/whitespace summary → completion_evidence_empty_summary', () => {
     expect(validateCompletionEvidence('completed', ev({ summary: '' }))).toEqual({
       ok: false,
       code: 'completion_evidence_empty_summary',
@@ -68,14 +68,14 @@ describe('validateCompletionEvidence — 게이트 불변식 (E9: 게이트=구�
     });
   });
 
-  it('completed + 빈 items → completion_evidence_no_items', () => {
+  it('completed + empty items → completion_evidence_no_items', () => {
     expect(validateCompletionEvidence('completed', ev({ items: [] }))).toEqual({
       ok: false,
       code: 'completion_evidence_no_items',
     });
   });
 
-  it('command 아이템에 command 누락/공백 → completion_evidence_invalid_item', () => {
+  it('command item missing/blank command → completion_evidence_invalid_item', () => {
     const noCmd = { kind: 'command', status: 'passed', summary: 's' } as unknown as EvidenceItem;
     expect(validateCompletionEvidence('completed', ev({ items: [noCmd] }))).toEqual({
       ok: false,
@@ -88,7 +88,7 @@ describe('validateCompletionEvidence — 게이트 불변식 (E9: 게이트=구�
     });
   });
 
-  it('items/files가 비배열 객체({})여도 throw 없이 fail-closed verdict (게이트 예외 붕괴 방지)', () => {
+  it('non-array items/files ({}) yields fail-closed verdict without throw (gate exception collapse guard)', () => {
     const nonArrayItems = { summary: 's', items: {} } as unknown as CompletionEvidence;
     expect(validateCompletionEvidence('completed', nonArrayItems)).toEqual({
       ok: false,
@@ -101,7 +101,7 @@ describe('validateCompletionEvidence — 게이트 불변식 (E9: 게이트=구�
     });
   });
 
-  it('미지 kind / kind별 위장 status(command+verified) → completion_evidence_invalid_item (G6 닫힌 enum)', () => {
+  it('unknown kind / disguised status per kind (command+verified) → completion_evidence_invalid_item (G6 closed enum)', () => {
     const unknownKind = { kind: 'vibe', status: 'passed', summary: 's' } as unknown as EvidenceItem;
     expect(validateCompletionEvidence('completed', ev({ items: [unknownKind] }))).toEqual({
       ok: false,
@@ -115,15 +115,15 @@ describe('validateCompletionEvidence — 게이트 불변식 (E9: 게이트=구�
   });
 });
 
-describe('validateCompletionEvidence — failed 비대칭 + X8 형태 검증 공통', () => {
-  it('failed + 사유(summary)만, items 없음 → 통과 (검증 불변식 미적용)', () => {
+describe('validateCompletionEvidence — failed asymmetry + X8 shape validation shared', () => {
+  it('failed + reason (summary) only, no items → pass (verification invariant not applied)', () => {
     expect(validateCompletionEvidence('failed', { summary: 'spawn error', items: [] })).toEqual({
       ok: true,
       verifiedItemCount: 0,
     });
   });
 
-  it('failed + evidence/summary 부재 → failure_reason_missing', () => {
+  it('failed + missing evidence/summary → failure_reason_missing', () => {
     expect(validateCompletionEvidence('failed', undefined)).toEqual({ ok: false, code: 'failure_reason_missing' });
     expect(validateCompletionEvidence('failed', { summary: ' ', items: [] })).toEqual({
       ok: false,
@@ -131,23 +131,23 @@ describe('validateCompletionEvidence — failed 비대칭 + X8 형태 검증 공
     });
   });
 
-  it('failed + 진단 아이템(command+failed) → 통과 / malformed 아이템 → 거부 (X8: 감사 로그 잔류 차단)', () => {
+  it('failed + diagnostic item (command+failed) → pass / malformed item → reject (X8: audit log residue block)', () => {
     expect(
       validateCompletionEvidence('failed', {
-        summary: '빌드 실패',
-        items: [{ kind: 'command', status: 'failed', summary: '빌드', command: 'npm run build' }],
+        summary: 'build failed',
+        items: [{ kind: 'command', status: 'failed', summary: 'build', command: 'npm run build' }],
       }),
     ).toEqual({ ok: true, verifiedItemCount: 0 });
     const malformed = { kind: 'command', status: 'exploded', summary: 's', command: 'c' } as unknown as EvidenceItem;
-    expect(validateCompletionEvidence('failed', { summary: '실패', items: [malformed] })).toEqual({
+    expect(validateCompletionEvidence('failed', { summary: 'failure', items: [malformed] })).toEqual({
       ok: false,
       code: 'completion_evidence_invalid_item',
     });
   });
 });
 
-describe('validateCompletionEvidence — DoS 캡 (E12)', () => {
-  it(`items ${EVIDENCE_MAX_ITEMS + 1}개 → completion_evidence_too_large`, () => {
+describe('validateCompletionEvidence — DoS cap (E12)', () => {
+  it(`items ${EVIDENCE_MAX_ITEMS + 1} → completion_evidence_too_large`, () => {
     const items = Array.from({ length: EVIDENCE_MAX_ITEMS + 1 }, () => ({ ...passedCmd }));
     expect(validateCompletionEvidence('completed', ev({ items }))).toEqual({
       ok: false,
@@ -155,8 +155,8 @@ describe('validateCompletionEvidence — DoS 캡 (E12)', () => {
     });
   });
 
-  it('문자열 필드 4KiB 초과(멀티바이트는 바이트 기준) → too_large', () => {
-    // '한' = 3바이트 — 1366자 * 3 = 4098바이트 > 4096
+  it('string field over 4KiB (multibyte counted in bytes) → too_large', () => {
+    // Hangul syllable (3 UTF-8 bytes) — 1366 chars * 3 = 4098 bytes > 4096
     const big = '한'.repeat(Math.ceil((EVIDENCE_MAX_STR_BYTES + 1) / 3));
     expect(validateCompletionEvidence('completed', ev({ summary: big }))).toEqual({
       ok: false,
@@ -169,7 +169,7 @@ describe('validateCompletionEvidence — DoS 캡 (E12)', () => {
     });
   });
 
-  it(`files ${EVIDENCE_MAX_FILES + 1}개 → too_large`, () => {
+  it(`files ${EVIDENCE_MAX_FILES + 1} → too_large`, () => {
     const files = Array.from({ length: EVIDENCE_MAX_FILES + 1 }, (_, i) => `src/f${i}.ts`);
     expect(validateCompletionEvidence('completed', ev({ files }))).toEqual({
       ok: false,
@@ -177,8 +177,8 @@ describe('validateCompletionEvidence — DoS 캡 (E12)', () => {
     });
   });
 
-  it('직렬화 총량 64KiB 초과 → too_large (개별 캡은 전부 통과하는 조합)', () => {
-    // 아이템 20개 × output 3.9KiB ≈ 78KiB — 개별 필드 캡 이하, 총량 초과
+  it('serialized total over 64KiB → too_large (each per-field cap passes individually)', () => {
+    // 20 items × 3.9KiB output ≈ 78KiB — under per-field caps, over total cap
     const items = Array.from({ length: 20 }, () => ({ ...passedCmd, output: 'y'.repeat(3900) }) as EvidenceItem);
     expect(validateCompletionEvidence('completed', ev({ items }))).toEqual({
       ok: false,
@@ -187,56 +187,56 @@ describe('validateCompletionEvidence — DoS 캡 (E12)', () => {
   });
 });
 
-describe('isSafeRelPath — 새니타이즈 (X7+G5 변종 매트릭스)', () => {
+describe('isSafeRelPath — sanitization (X7+G5 variant matrix)', () => {
   const reject = [
-    '/etc/x', // POSIX 절대
-    'C:\\x', // 드라이브 절대
+    '/etc/x', // POSIX absolute
+    'C:\\x', // drive absolute
     '\\\\host\\x', // UNC
-    '\\\\?\\C:\\x', // NT 네임스페이스
+    '\\\\?\\C:\\x', // NT namespace
     'C:foo', // drive-relative
     'a.txt:ads', // NTFS ADS
-    'file://x', // URL 스킴
-    'a/../b', // 상위 탈출
-    '..', // 상위 탈출 단독
-    'a\\..\\b', // 백슬래시 구분자 탈출
-    'a\u0000b', // null 바이트
-    'a\nb', // C0 제어문자
-    '', // 빈 문자열
-    'x'.repeat(EVIDENCE_MAX_FILE_PATH_BYTES + 1), // 과길이
+    'file://x', // URL scheme
+    'a/../b', // parent escape
+    '..', // parent escape alone
+    'a\\..\\b', // backslash separator escape
+    'a\u0000b', // null byte
+    'a\nb', // C0 control char
+    '', // empty string
+    'x'.repeat(EVIDENCE_MAX_FILE_PATH_BYTES + 1), // overlong
   ];
-  it.each(reject)('거부: %j', (p) => {
+  it.each(reject)('rejects: %j', (p) => {
     expect(isSafeRelPath(p)).toBe(false);
   });
 
   const accept = [
     'src/a.ts',
-    'docs/한글.md', // 멀티바이트
-    'a\\b/c.txt', // 혼합 구분자 상대경로
-    '%2e%2e%2f', // 무디코드 정책: 리터럴 세그먼트명으로 통과(소비자 디코드 금지 계약)
-    './a.ts', // '.' 세그먼트는 무해
+    'docs/한글.md', // multibyte filename (test data)
+    'a\\b/c.txt', // mixed-separator relative path
+    '%2e%2e%2f', // mojibake policy: pass as literal segment (consumer must not decode)
+    './a.ts', // '.' segment is harmless
   ];
-  it.each(accept)('통과: %j', (p) => {
+  it.each(accept)('accepts: %j', (p) => {
     expect(isSafeRelPath(p)).toBe(true);
   });
 
-  it('비문자열 → 거부', () => {
+  it('non-string → reject', () => {
     expect(isSafeRelPath(null)).toBe(false);
     expect(isSafeRelPath(42)).toBe(false);
   });
 });
 
-describe('normalizeCompletionEvidenceWire — wire 가드 (X6: plain+hasOwn+normalize)', () => {
+describe('normalizeCompletionEvidenceWire — wire guard (X6: plain+hasOwn+normalize)', () => {
   const validWire = {
-    summary: '완료',
-    items: [{ kind: 'command', status: 'passed', summary: '테스트', command: 'npm test' }],
+    summary: 'done',
+    items: [{ kind: 'command', status: 'passed', summary: 'tests', command: 'npm test' }],
     files: ['src/a.ts'],
   };
 
-  it('유효 입력 → 알려진 필드만 복사한 새 객체 (원본과 분리)', () => {
+  it('valid input → copies known fields into new object (separate from original)', () => {
     const out = normalizeCompletionEvidenceWire(validWire);
     expect(out).toEqual({
-      summary: '완료',
-      items: [{ kind: 'command', status: 'passed', summary: '테스트', command: 'npm test' }],
+      summary: 'done',
+      items: [{ kind: 'command', status: 'passed', summary: 'tests', command: 'npm test' }],
       files: ['src/a.ts'],
     });
     expect(out).not.toBe(validWire);
@@ -244,7 +244,7 @@ describe('normalizeCompletionEvidenceWire — wire 가드 (X6: plain+hasOwn+norm
     expect(out!.files).not.toBe(validWire.files);
   });
 
-  it('recordedBy/recordedAt·미지 키 밀수 → 드롭 (서버 전용 스탬프 보호)', () => {
+  it('recordedBy/recordedAt·unknown key smuggling → dropped (server-only stamp protection)', () => {
     const out = normalizeCompletionEvidenceWire({
       ...validWire,
       recordedBy: 'ws-forged',
@@ -257,7 +257,7 @@ describe('normalizeCompletionEvidenceWire — wire 가드 (X6: plain+hasOwn+norm
     expect(out).not.toHaveProperty('smuggle');
   });
 
-  it('JSON.parse의 __proto__ own-키 → 산출물에 오염 없음 (프로토타입 오염 차단)', () => {
+  it('JSON.parse __proto__ own-key → no pollution in output (prototype pollution block)', () => {
     const wire = JSON.parse(
       '{"summary":"s","items":[],"__proto__":{"polluted":"yes"}}',
     ) as unknown;
@@ -268,24 +268,24 @@ describe('normalizeCompletionEvidenceWire — wire 가드 (X6: plain+hasOwn+norm
     expect(({} as Record<string, unknown>).polluted).toBeUndefined();
   });
 
-  it('비-plain object(class 인스턴스·상속 필드) → null', () => {
+  it('non-plain object (class instance·inherited fields) → null', () => {
     class Fake {
       summary = 's';
       items: unknown[] = [];
     }
     expect(normalizeCompletionEvidenceWire(new Fake())).toBeNull();
-    // summary가 프로토타입 체인에만 있는 객체 — hasOwn 검사로 거부
+    // Object with summary only on prototype chain — rejected by hasOwn check
     expect(normalizeCompletionEvidenceWire(Object.create({ summary: 's', items: [] }))).toBeNull();
   });
 
-  it('null-prototype 객체(정상 wire 산물) → 통과', () => {
+  it('null-prototype object (normal wire product) → pass', () => {
     const o = Object.create(null) as Record<string, unknown>;
     o.summary = 's';
     o.items = [];
     expect(normalizeCompletionEvidenceWire(o)).toEqual({ summary: 's', items: [] });
   });
 
-  it('형태 불량 → null: items 비배열 / 미지 kind / 위장 status / 비문자열 files', () => {
+  it('malformed shape → null: non-array items / unknown kind / disguised status / non-string files', () => {
     expect(normalizeCompletionEvidenceWire({ summary: 's', items: 'nope' })).toBeNull();
     expect(normalizeCompletionEvidenceWire({ summary: 's', items: [{ kind: 'vibe', status: 'ok', summary: 'x' }] })).toBeNull();
     expect(
@@ -297,7 +297,7 @@ describe('normalizeCompletionEvidenceWire — wire 가드 (X6: plain+hasOwn+norm
     expect(normalizeCompletionEvidenceWire([])).toBeNull();
   });
 
-  it('files 경로 새니타이즈를 wire에서도 강제 — 비상대 경로는 null (additive-inert 창 보호)', () => {
+  it('wire enforces file path sanitization — non-relative paths → null (additive-inert window protection)', () => {
     expect(normalizeCompletionEvidenceWire({ summary: 's', items: [], files: ['/etc/passwd'] })).toBeNull();
     expect(normalizeCompletionEvidenceWire({ summary: 's', items: [], files: ['a/../b'] })).toBeNull();
     expect(normalizeCompletionEvidenceWire({ summary: 's', items: [], files: ['C:foo'] })).toBeNull();
@@ -308,7 +308,7 @@ describe('normalizeCompletionEvidenceWire — wire 가드 (X6: plain+hasOwn+norm
     });
   });
 
-  it('shape만 판정: 빈 summary는 통과시키고 권위 검증기가 거부 (역할 분리)', () => {
+  it('shape-only: empty summary passes wire; authority validator rejects (role separation)', () => {
     const out = normalizeCompletionEvidenceWire({ summary: '', items: [] });
     expect(out).toEqual({ summary: '', items: [] });
     expect(validateCompletionEvidence('completed', out!)).toEqual({
@@ -317,7 +317,7 @@ describe('normalizeCompletionEvidenceWire — wire 가드 (X6: plain+hasOwn+norm
     });
   });
 
-  it('캡 초과 → null (wire에서도 독립 강제)', () => {
+  it('cap exceeded → null (independently enforced on wire too)', () => {
     const items = Array.from({ length: EVIDENCE_MAX_ITEMS + 1 }, () => ({
       kind: 'command',
       status: 'passed',

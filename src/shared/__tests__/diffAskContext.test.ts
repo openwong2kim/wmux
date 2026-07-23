@@ -1,4 +1,4 @@
-// diff→오케스트레이터 질문 컨텍스트 블록 조립 — 필드·펜싱·캡 계약.
+// diff→orchestrator question context block assembly — field, fencing, and cap contract.
 import { describe, it, expect } from 'vitest';
 import { buildDiffAskContext, DIFF_ASK_CONTEXT_CAP } from '../diffAskContext';
 
@@ -8,11 +8,11 @@ const base = {
   file: 'src/a.ts',
   hunkHeader: '@@ -1,3 +1,4 @@',
   hunkBody: ' line1\n+added\n line2',
-  question: '이 변경 안전해?',
+  question: 'Is this change safe?',
 };
 
 describe('buildDiffAskContext', () => {
-  it('repo·branch·file·hunk 헤더를 담고 hunk 본문을 ```diff 펜스로 감싼다', () => {
+  it('includes repo·branch·file·hunk headers and wraps hunk body in ```diff fence', () => {
     const out = buildDiffAskContext(base);
     expect(out).toContain('[diff question]');
     expect(out).toContain('repo: D:/proj/repo');
@@ -20,32 +20,32 @@ describe('buildDiffAskContext', () => {
     expect(out).toContain('file: src/a.ts');
     expect(out).toContain('hunk: @@ -1,3 +1,4 @@');
     expect(out).toContain('```diff\n line1\n+added\n line2\n```');
-    expect(out.trim().endsWith('이 변경 안전해?')).toBe(true);
+    expect(out.trim().endsWith('Is this change safe?')).toBe(true);
   });
 
-  it('branch·hunkHeader가 비면 해당 라인 생략, 본문 없으면 펜스 생략', () => {
+  it('omits branch·hunk lines when empty; omits fence when body absent', () => {
     const out = buildDiffAskContext({ ...base, branch: '', hunkHeader: '', hunkBody: '' });
     expect(out).not.toContain('branch:');
     expect(out).not.toContain('hunk:');
     expect(out).not.toContain('```');
   });
 
-  it('캡 초과 시 hunk 본문을 통째로 생략(부분 절단 금지) — 경로·헤더·질문은 유지', () => {
+  it('omits entire hunk body when over cap (no partial truncate) — path·headers·question kept', () => {
     const out = buildDiffAskContext({ ...base, hunkBody: 'x'.repeat(DIFF_ASK_CONTEXT_CAP + 100) });
     expect(new TextEncoder().encode(out).length).toBeLessThanOrEqual(DIFF_ASK_CONTEXT_CAP);
     expect(out).not.toContain('xxx');
     expect(out).toContain('hunk body omitted');
     expect(out).toContain('file: src/a.ts');
-    expect(out).toContain('이 변경 안전해?');
+    expect(out).toContain('Is this change safe?');
   });
 
-  it('hunk 안에 ``` 라인이 있어도 펜스가 조기 종료되지 않는다(Codex P2)', () => {
+  it('fence does not terminate early when hunk contains ``` line (Codex P2)', () => {
     const out = buildDiffAskContext({ ...base, hunkBody: ' before\n+```\n after' });
-    // 본문의 ``` 보다 긴 펜스(````)로 감싸야 한다.
+    // Must wrap with a fence longer than ``` in the body (````).
     expect(out).toContain('````diff\n before\n+```\n after\n````');
   });
 
-  it('본문 생략 후에도 초과하면(질문 자체가 큼) 최종 바이트 캡으로 절단(Codex P3)', () => {
+  it('after body omission, still over cap (large question) → final byte cap truncate (Codex P3)', () => {
     const out = buildDiffAskContext({
       ...base,
       hunkBody: 'x'.repeat(100),

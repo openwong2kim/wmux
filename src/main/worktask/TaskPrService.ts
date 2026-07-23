@@ -1,23 +1,23 @@
 /**
- * TaskPrService — J3 §2 D2. 태스크 산출물의 1클릭 PR(main측 오케스트레이션).
+ * TaskPrService — J3 §2 D2. One-click PR for task deliverables (main-side orchestration).
  *
- * gh 4중 게이트(§2):
- *   ① `gh --version` + `gh auth status` — 버전≠인증(G3). 부재·미인증은 안내 +
- *      브라우저 폴백 사유 반환(예외 없음).
- *   ② dirty 검사 — 미커밋 변경이 있으면 "PR에 포함 안 됨" 차단 + 커밋 안내(CX7).
- *   ③ `git push -u origin {branch}` — execFile argv(셸 조립 금지 계약 G6).
- *   ④ `gh pr create --head {branch} --title --body --base {base}` — --base 명시
- *      (CL4: base 추론 실패 방지. base = repo default via
+ * gh four-gate flow (§2):
+ *   ① `gh --version` + `gh auth status` — version ≠ auth (G3). Missing/unauthenticated
+ *      returns guidance + browser fallback reason (no throw).
+ *   ② dirty check — uncommitted changes block with "not included in PR" + commit guidance (CX7).
+ *   ③ `git push -u origin {branch}` — execFile argv (no shell assembly — contract G6).
+ *   ④ `gh pr create --head {branch} --title --body --base {base}` — explicit --base
+ *      (CL4: avoid base inference failure. base = repo default via
  *      `gh repo view --json defaultBranchRef`).
  *
- * 멱등 재진입(CX5+G4): pr create 실패 시 `gh pr list --head {branch}` 조회 —
- * 기존 PR 있으면 URL 회수로 성공 수렴. push의 "이미 존재"는 fast-forward면 무해
- * 통과. half-done(push만 성공) 상태는 재클릭이 자연 수렴한다.
+ * Idempotent re-entry (CX5+G4): on pr create failure, query `gh pr list --head {branch}` —
+ * existing PR converges to success via recovered URL. push "already exists" is harmless
+ * when fast-forward. half-done (push only) state converges on re-click.
  *
- * 성공 시: prUrl을 데몬 task.mission.update로 커밋 + PrStatusCache.invalidate로
- * 5분 TTL 공백 제거(CX8).
+ * On success: commit prUrl via daemon task.mission.update + PrStatusCache.invalidate to
+ * close the 5-minute TTL gap (CX8).
  *
- * fork 워크플로(§7·CL9): origin remote 부재는 명시 에러(자동 추측 금지).
+ * fork workflow (§7·CL9): missing origin remote is an explicit error (no auto-guess).
  */
 
 import { execFile } from 'node:child_process';
@@ -29,20 +29,20 @@ const execFileAsync = promisify(execFile);
 const GH_TIMEOUT_MS = 20_000;
 const GIT_TIMEOUT_MS = 60_000;
 
-/** gh를 대화형으로 절대 멈추지 않게 하는 환경(로그인 프롬프트·pager 봉쇄). */
+/** gh env that never blocks interactively (login prompt·pager suppressed). */
 const GH_ENV = { ...process.env, GH_PROMPT_DISABLED: '1', GH_PAGER: 'cat', NO_COLOR: '1' };
 
-/** 데몬 RPC 최소 표면(prUrl 커밋 — 테스트 주입 가능). */
+/** Minimal daemon RPC surface (prUrl commit — injectable in tests). */
 export interface PrDaemonPort {
   rpc(method: string, params: Record<string, unknown>): Promise<unknown>;
 }
 
-/** PrStatusCache 무효화 최소 표면(테스트 주입 가능). */
+/** Minimal PrStatusCache invalidation surface (injectable in tests). */
 export interface PrCachePort {
   invalidate(cwd: string, branch: string): void;
 }
 
-/** exec 최소 표면(테스트 주입). {stdout,stderr} 또는 throw(비0 종료). */
+/** Minimal exec surface (injectable in tests). {stdout,stderr} or throw (non-zero exit). */
 export type PrExec = (
   cmd: string,
   args: string[],
@@ -60,9 +60,9 @@ export interface CreatePrInput {
   verifiedWorkspaceId: string;
   worktreePath: string;
   branch: string;
-  /** PR 제목(태스크 title). */
+  /** PR title (task title). */
   title: string;
-  /** PR 본문(선택 — 기본 자동 1줄). */
+  /** PR body (optional — default one auto line). */
   body?: string;
 }
 
@@ -70,16 +70,16 @@ export type CreatePrResult =
   | {
       ok: true;
       prUrl: string;
-      /** pr create 실패 후 기존 PR URL을 회수해 수렴함(멱등 재진입). */
+      /** Converged via recovered existing PR URL after pr create failure (idempotent re-entry). */
       recovered?: boolean;
-      /** prUrl 데몬 커밋 실패(비치명 — PR 자체는 성립). */
+      /** prUrl daemon commit failed (non-fatal — PR itself succeeded). */
       commitPending?: boolean;
     }
   | {
       ok: false;
       reason: 'gh-missing' | 'gh-unauth' | 'dirty' | 'no-origin' | 'push-failed' | 'pr-failed' | 'error';
       error: string;
-      /** 브라우저 폴백 안내(gh 부재·미인증 시). */
+      /** Browser fallback guidance (when gh missing/unauthenticated). */
       browseFallback?: string;
     };
 
@@ -116,15 +116,15 @@ export class TaskPrService {
     const { taskId, verifiedWorkspaceId, worktreePath, branch, title } = input;
     const body = input.body && input.body.length > 0 ? input.body : `wmux fan-out task: ${title}`;
 
-    // ── ① gh 게이트: 버전 + 인증(G3 — 버전≠인증) ──
+    // ── ① gh gate: version + auth (G3 — version ≠ auth) ──
     try {
       await this.gh(['--version'], worktreePath);
     } catch {
       return {
         ok: false,
         reason: 'gh-missing',
-        error: 'GitHub CLI(gh)가 설치되어 있지 않습니다',
-        browseFallback: `브라우저에서 직접 PR을 생성하세요: 브랜치 ${branch}를 push 후 GitHub 비교 화면 이용`,
+        error: 'GitHub CLI (gh) is not installed',
+        browseFallback: `Create the PR in your browser: push branch ${branch}, then use GitHub compare`,
       };
     }
     try {
@@ -133,26 +133,26 @@ export class TaskPrService {
       return {
         ok: false,
         reason: 'gh-unauth',
-        error: 'GitHub CLI가 인증되지 않았습니다 — `gh auth login` 후 다시 시도하세요',
-        browseFallback: `또는 브라우저에서 브랜치 ${branch}로 직접 PR을 생성하세요`,
+        error: 'GitHub CLI is not authenticated — run `gh auth login` and try again',
+        browseFallback: `Or create a PR for branch ${branch} directly in your browser`,
       };
     }
 
-    // ── ② dirty 검사(CX7): 미커밋 변경은 PR에 안 들어감 → 차단 + 커밋 안내 ──
+    // ── ② dirty check (CX7): uncommitted changes are not in PR → block + commit guidance ──
     try {
       const { stdout } = await this.git(['status', '--porcelain'], worktreePath);
       if (stdout.trim().length > 0) {
         return {
           ok: false,
           reason: 'dirty',
-          error: '미커밋 변경이 있습니다 — 커밋하지 않은 산출물은 PR에 포함되지 않습니다. 먼저 커밋하세요',
+          error: 'Uncommitted changes — uncommitted output is not included in the PR. Commit first',
         };
       }
     } catch (err) {
-      return { ok: false, reason: 'error', error: `git status 실패: ${errMsg(err)}` };
+      return { ok: false, reason: 'error', error: `git status failed: ${errMsg(err)}` };
     }
 
-    // origin remote 존재 검증(fork·다중 remote 자동 추측 금지 — §7·CL9).
+    // Verify origin remote exists (no auto-guess for fork/multi-remote — §7·CL9).
     try {
       const { stdout } = await this.git(['remote'], worktreePath);
       const remotes = stdout.split('\n').map((r) => r.trim()).filter(Boolean);
@@ -160,23 +160,23 @@ export class TaskPrService {
         return {
           ok: false,
           reason: 'no-origin',
-          error: `origin remote가 없습니다(remotes: ${remotes.join(', ') || '없음'}) — head 추론을 자동 추측하지 않습니다. origin을 설정하세요`,
+          error: `No origin remote (remotes: ${remotes.join(', ') || 'none'}) — head inference is not auto-guessed. Configure origin`,
         };
       }
     } catch (err) {
-      return { ok: false, reason: 'error', error: `git remote 조회 실패: ${errMsg(err)}` };
+      return { ok: false, reason: 'error', error: `git remote lookup failed: ${errMsg(err)}` };
     }
 
-    // ── ③ push -u origin -- {branch}(execFile argv + `--` 세퍼레이터 — F6: 브랜치명이
-    // 옵션으로 오인되는 표면 차단). 이미 존재(fast-forward)면 무해 통과.
+    // ── ③ push -u origin -- {branch} (execFile argv + `--` separator — F6: block branch
+    // names mistaken as options). Already exists (fast-forward) passes harmlessly.
     try {
       await this.git(['push', '-u', 'origin', '--', branch], worktreePath);
     } catch (err) {
-      return { ok: false, reason: 'push-failed', error: `git push 실패: ${errMsg(err)}` };
+      return { ok: false, reason: 'push-failed', error: `git push failed: ${errMsg(err)}` };
     }
 
-    // base = repo default(CL4·[J2대조]4 — fan-out 원본 브랜치 미기록이라 default 조회).
-    // F6: 조회 실패·빈 값이면 'main' 추측 대신 명시 에러(엉뚱한 base로 PR 여는 것 방지).
+    // base = repo default (CL4·[J2 contrast]4 — fan-out source branch not recorded, query default).
+    // F6: on lookup failure/empty, explicit error instead of guessing 'main' (avoid wrong-base PR).
     let base: string;
     try {
       const { stdout } = await this.gh(
@@ -185,10 +185,10 @@ export class TaskPrService {
       );
       base = stdout.trim();
     } catch (err) {
-      return { ok: false, reason: 'pr-failed', error: `base 브랜치(repo default)를 확인할 수 없습니다: ${errMsg(err)}` };
+      return { ok: false, reason: 'pr-failed', error: `Cannot determine base branch (repo default): ${errMsg(err)}` };
     }
     if (!base) {
-      return { ok: false, reason: 'pr-failed', error: 'base 브랜치(repo default)를 확인할 수 없습니다(빈 응답) — origin의 defaultBranchRef가 없습니다' };
+      return { ok: false, reason: 'pr-failed', error: 'Cannot determine base branch (repo default, empty response) — origin has no defaultBranchRef' };
     }
 
     // ── ④ gh pr create --head --title --body --base ──
@@ -200,16 +200,16 @@ export class TaskPrService {
       );
       prUrl = extractPrUrl(stdout);
     } catch (createErr) {
-      // 멱등 재진입(CX5+G4): 기존 PR을 조회해 URL 회수로 수렴.
+      // Idempotent re-entry (CX5+G4): query existing PR and converge via recovered URL.
       const recovered = await this.recoverExistingPr(worktreePath, branch);
       if (recovered) {
         return this.finalize(taskId, verifiedWorkspaceId, worktreePath, branch, recovered, true);
       }
-      return { ok: false, reason: 'pr-failed', error: `gh pr create 실패: ${errMsg(createErr)}` };
+      return { ok: false, reason: 'pr-failed', error: `gh pr create failed: ${errMsg(createErr)}` };
     }
 
     if (!prUrl || !WORKTASK_PR_URL_RE.test(prUrl)) {
-      // 출력 파싱 실패 — 재진입 조회로 URL 회수 시도.
+      // Output parse failed — try re-entry lookup to recover URL.
       const recovered = await this.recoverExistingPr(worktreePath, branch);
       if (recovered) {
         return this.finalize(taskId, verifiedWorkspaceId, worktreePath, branch, recovered, true);
@@ -217,14 +217,14 @@ export class TaskPrService {
       return {
         ok: false,
         reason: 'pr-failed',
-        error: `PR은 생성됐으나 URL을 파싱하지 못했습니다: ${prUrl || '(빈 출력)'}`,
+        error: `PR was created but URL could not be parsed: ${prUrl || '(empty output)'}`,
       };
     }
 
     return this.finalize(taskId, verifiedWorkspaceId, worktreePath, branch, prUrl, false);
   }
 
-  /** 기존 PR URL 조회(멱등 재진입). 없으면 null. */
+  /** Look up existing PR URL (idempotent re-entry). null if none. */
   private async recoverExistingPr(worktreePath: string, branch: string): Promise<string | null> {
     try {
       const { stdout } = await this.gh(
@@ -238,7 +238,7 @@ export class TaskPrService {
     }
   }
 
-  /** prUrl 커밋(데몬) + PrStatusCache invalidate. 커밋 실패는 비치명(commitPending). */
+  /** Commit prUrl (daemon) + PrStatusCache invalidate. Commit failure is non-fatal (commitPending). */
   private async finalize(
     taskId: string,
     verifiedWorkspaceId: string,
@@ -258,11 +258,11 @@ export class TaskPrService {
     } catch {
       commitPending = true;
     }
-    // CX8: PR 생성 성공 → 5분 TTL 캐시 무효화(다음 폴이 새 PR 상태를 즉시 반영).
+    // CX8: PR created → invalidate 5-minute TTL cache (next poll reflects new PR state immediately).
     try {
       this.cache?.invalidate(worktreePath, branch);
     } catch {
-      /* 캐시 무효화 실패는 무해 — 다음 TTL 만료가 수렴 */
+      /* Cache invalidation failure is harmless — next TTL expiry converges */
     }
     return {
       ok: true,
@@ -282,7 +282,7 @@ function errMsg(err: unknown): string {
   return String(err);
 }
 
-/** gh pr create stdout에서 PR URL 추출(마지막 github pull URL 라인). */
+/** Extract PR URL from gh pr create stdout (last github pull URL line). */
 function extractPrUrl(stdout: string): string {
   const lines = stdout.split('\n').map((l) => l.trim()).filter(Boolean);
   for (let i = lines.length - 1; i >= 0; i--) {

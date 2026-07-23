@@ -1,7 +1,7 @@
-// ─── operator-join tests (설계 §2.1/§2.2) ─────────────────────────────────────
-// 오퍼레이터(사람)가 에이전트들이 만든 비공개 채널에 스스로 들어가는 신뢰 경로와
-// 그 발견 목록에 대한 단위 테스트. 보안 스펙의 핵심(파라미터 주입 무시 / 서버-발행
-// 시스템 메시지 원자 append / 좌석 shape 정합)을 고정한다.
+// ─── operator-join tests (design §2.1/§2.2) ─────────────────────────────────────
+// Unit tests for the trusted path where an operator (human) joins a private channel
+// created by agents, and its discovery list. Locks down security spec essentials
+// (ignore injected params / server-published system message atomic append / seat shape).
 
 import { describe, it, expect, vi } from 'vitest';
 import { readFileSync } from 'node:fs';
@@ -18,7 +18,7 @@ import {
 } from '../../../shared/channels';
 import { HUMAN_SELF_PRINCIPAL_ID } from '../../../shared/principals';
 
-// 인메모리 fake writer(ChannelService.test.ts와 동일 계약) — legacy 모드 구동.
+// In-memory fake writer (same contract as ChannelService.test.ts) — runs legacy mode.
 function makeFakeWriter(opts: { failNext?: boolean } = {}) {
   let failNext = opts.failNext ?? false;
   let lastSaved: ChannelState | null = null;
@@ -70,7 +70,7 @@ function makeService() {
   return { svc, writer, emit };
 }
 
-/** 에이전트가 만든 비공개 채널(사람은 비멤버) — operatorJoin의 표준 대상. */
+/** Private channel created by an agent (human is non-member) — standard operatorJoin target. */
 async function makePrivateAgentChannel(svc: ChannelService): Promise<string> {
   const created = await svc.create({
     name: 'secret-room',
@@ -86,8 +86,8 @@ describe('ChannelService.operatorJoin', () => {
   it('joins a PRIVATE channel the human OBSERVES but is not a member of (adds a roster seat)', async () => {
     const { svc } = makeService();
     const channelId = await makePrivateAgentChannel(svc);
-    // W1: 사전조건 — 사람은 이 비공개 채널을 read-only로 관전한다(get 가시). 하지만
-    // 아직 멤버는 아니다(roster에 ws-human 없음). operatorJoin이 좌석을 심는다.
+    // W1: precondition — human observes this private channel read-only (get visible). But
+    // not yet a member (no ws-human in roster). operatorJoin plants the seat.
     expect(svc.get(channelId, HUMAN_WORKSPACE_ID)).not.toBeNull();
     expect(
       svc.getMembers(channelId, HUMAN_WORKSPACE_ID).some((m) => m.workspaceId === HUMAN_WORKSPACE_ID),
@@ -97,7 +97,7 @@ describe('ChannelService.operatorJoin', () => {
     expect(res.ok).toBe(true);
     if (!res.ok) throw new Error(res.error.code);
     expect(res.memberId).toBe(HUMAN_MEMBER_ID);
-    // 사후조건: 이제 사람이 멤버다(관전 → 참여).
+    // postcondition: human is now a member (observe → participate).
     expect(svc.get(channelId, HUMAN_WORKSPACE_ID)).not.toBeNull();
     expect(
       svc.getMembers(channelId, HUMAN_WORKSPACE_ID).some((m) => m.workspaceId === HUMAN_WORKSPACE_ID),
@@ -139,13 +139,13 @@ describe('ChannelService.operatorJoin', () => {
     await svc.operatorJoin({ channelId, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
     const rows = svc.getMembers(channelId, HUMAN_WORKSPACE_ID);
     const human = rows.find((m) => m.memberId === HUMAN_MEMBER_ID);
-    // 정확 키 집합 — memberName 없음(렌더러가 localized "Me"로 대체), principal 하드코딩.
+    // Exact key set — no memberName (renderer substitutes localized "Me"), hardcoded principal.
     expect(human).toEqual({
       workspaceId: HUMAN_WORKSPACE_ID,
       memberId: HUMAN_MEMBER_ID,
       joinedAt: 1_700_000_000_000,
       historyFromSeq: 0,
-      lastReadSeq: 0, // create 직후 nextSeq=1 → nextSeq-1
+      lastReadSeq: 0, // right after create nextSeq=1 → nextSeq-1
       principalId: HUMAN_SELF_PRINCIPAL_ID,
     });
     expect(human).not.toHaveProperty('memberName');
@@ -154,7 +154,7 @@ describe('ChannelService.operatorJoin', () => {
   it('IGNORES injected garbage params (member / includeHistory / workspaceId) — constant seat only', async () => {
     const { svc } = makeService();
     const channelId = await makePrivateAgentChannel(svc);
-    // 원시 params에 P5류 주입을 시도한다(타입 표면엔 없으므로 any 캐스트로 강제 주입).
+    // Attempt P5-style injection on raw params (forced via any cast — not on type surface).
     await svc.operatorJoin({
       channelId,
       verifiedWorkspaceId: HUMAN_WORKSPACE_ID,
@@ -165,10 +165,10 @@ describe('ChannelService.operatorJoin', () => {
       lastReadSeq: 999,
     } as unknown as Parameters<ChannelService['operatorJoin']>[0]);
     const rows = svc.getMembers(channelId, HUMAN_WORKSPACE_ID);
-    // 주입된 ws-evil/evil-seat 좌석은 존재하지 않는다.
+    // Injected ws-evil/evil-seat seat must not exist.
     expect(rows.some((m) => m.workspaceId === 'ws-evil' || m.memberId === 'evil-seat')).toBe(false);
     const human = rows.find((m) => m.memberId === HUMAN_MEMBER_ID);
-    // 좌석은 상수: principal은 HUMAN_SELF, historyFromSeq는 0(주입된 999 아님).
+    // Seat is constant: principal HUMAN_SELF, historyFromSeq 0 (not injected 999).
     expect(human?.principalId).toBe(HUMAN_SELF_PRINCIPAL_ID);
     expect(human?.historyFromSeq).toBe(0);
   });
@@ -181,10 +181,10 @@ describe('ChannelService.operatorJoin', () => {
 
     await svc.operatorJoin({ channelId, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
 
-    // seq 소비: nextSeq가 1 전진.
+    // seq consumed: nextSeq advances by 1.
     const after = svc.get(channelId, 'ws-agent');
     expect(after?.nextSeq).toBe(2);
-    // 히스토리에 systemKind 마커 1건.
+    // One systemKind marker in history.
     const msgs = svc.getMessages(channelId, undefined, HUMAN_WORKSPACE_ID);
     const sys = msgs.filter((m) => m.systemKind === 'operator-join');
     expect(sys).toHaveLength(1);
@@ -199,9 +199,9 @@ describe('ChannelService.operatorJoin', () => {
 
     await svc.operatorJoin({ channelId, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
 
-    // 채널 생성자(에이전트)의 unread — unreadFor()의 systemKind 면제가 wake
-    // worker의 plain-unread nudge를 막는 실제 장치다(3모델 리뷰 합의). 마커가
-    // seq는 소비하되(headSeq 전진) 누구의 unread도 만들지 않아야 한다.
+    // Agent creator unread — unreadFor() systemKind exemption is the actual device
+    // blocking wake worker plain-unread nudge (3-model review consensus). Marker
+    // must consume seq (headSeq advances) but create unread for nobody.
     const rows = svc.unreadFor('ws-agent', 'agent-1');
     const row = rows.find((r) => r.channelId === channelId);
     expect(row).toBeDefined();
@@ -213,17 +213,17 @@ describe('ChannelService.operatorJoin', () => {
   it('atomically ROLLS BACK seat AND system message when persist fails', async () => {
     const { svc, writer } = makeService();
     const channelId = await makePrivateAgentChannel(svc);
-    writer.setFailNext(); // 다음 saveImmediate(=operatorJoin의 저장)가 실패한다.
+    writer.setFailNext(); // next saveImmediate (=operatorJoin persist) fails.
 
     const res = await svc.operatorJoin({ channelId, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
     expect(res).toMatchObject({ ok: false, error: { code: 'PERSIST_FAILED' } });
 
-    // 좌석 미추가.
+    // seat not added.
     const rows = svc.getMembers(channelId, 'ws-agent');
     expect(rows.some((m) => m.memberId === HUMAN_MEMBER_ID)).toBe(false);
-    // 메시지 미append.
+    // message not appended.
     expect(svc.getMessages(channelId, undefined, 'ws-agent')).toHaveLength(0);
-    // nextSeq 원복(1).
+    // nextSeq restored (1).
     expect(svc.get(channelId, 'ws-agent')?.nextSeq).toBe(1);
   });
 
@@ -242,7 +242,7 @@ describe('ChannelService.operatorJoin', () => {
       expect(catalog.recipientWorkspaceIds).toContain(HUMAN_WORKSPACE_ID);
       expect(catalog.recipientWorkspaceIds).toContain('ws-agent');
     }
-    // 시스템 메시지 라이브 팬아웃도 발생(systemKind 포함).
+    // system message live fan-out also fires (includes systemKind).
     const message = emit.mock.calls
       .map((c) => c[0])
       .find((e) => e.type === 'channel.message');
@@ -256,7 +256,7 @@ describe('ChannelService.operatorJoin', () => {
     const { svc } = makeService();
     const channelId = await makePrivateAgentChannel(svc);
     await svc.operatorJoin({ channelId, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
-    // 사람이 leave.
+    // human leaves.
     await svc.leave({
       channelId,
       workspaceId: HUMAN_WORKSPACE_ID,
@@ -264,7 +264,7 @@ describe('ChannelService.operatorJoin', () => {
       verifiedWorkspaceId: HUMAN_WORKSPACE_ID,
     });
     expect(svc.getMembers(channelId, 'ws-agent').some((m) => m.memberId === HUMAN_MEMBER_ID)).toBe(false);
-    // 재진입 — 새 좌석 lastReadSeq = 재진입 시점 nextSeq-1(상태 이월 없음).
+    // re-entry — fresh seat lastReadSeq = nextSeq-1 at re-entry (no state carry).
     const before = svc.get(channelId, 'ws-agent')?.nextSeq ?? 0;
     const res = await svc.operatorJoin({ channelId, verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
     expect(res.ok).toBe(true);
@@ -280,7 +280,7 @@ describe('ChannelService.operatorList', () => {
     await makePrivateAgentChannel(svc);
     const list = svc.operatorList({ verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
     expect(list).toHaveLength(1);
-    // 정확 키 집합 — 프로젝션 필드만.
+    // Exact key set — projection fields only.
     expect(Object.keys(list[0]).sort()).toEqual(
       ['createdAt', 'id', 'memberCount', 'name', 'status', 'visibility'].sort(),
     );
@@ -291,7 +291,7 @@ describe('ChannelService.operatorList', () => {
   it('includes private channels the caller is NOT a member of', async () => {
     const { svc } = makeService();
     const channelId = await makePrivateAgentChannel(svc);
-    // 사람은 비멤버지만 operatorList엔 보인다(발견 어포던스).
+    // human is non-member but visible in operatorList (discovery affordance).
     const list = svc.operatorList({ verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
     expect(list.map((c) => c.id)).toContain(channelId);
     expect(list[0].visibility).toBe('private');
@@ -309,7 +309,7 @@ describe('ChannelService.operatorList', () => {
   it('is deterministically ordered (createdAt asc, id tiebreak)', async () => {
     const writer = makeFakeWriter();
     const emit = vi.fn<ChannelServiceEmit>();
-    // 같은 now()로 두 채널을 만들어 createdAt 동률을 강제 → id tiebreak 검증.
+    // create two channels with same now() to force createdAt tie → id tiebreak check.
     const svc = new ChannelService({
       writer: writer as unknown as ConstructorParameters<typeof ChannelService>[0]['writer'],
       companyId: 'co-test',
@@ -331,7 +331,7 @@ describe('ChannelService.operatorList', () => {
     if (!a.ok || !b.ok) throw new Error('create failed');
     const list = svc.operatorList({ verifiedWorkspaceId: HUMAN_WORKSPACE_ID });
     const ids = list.map((c) => c.id);
-    // createdAt 동률이므로 id 사전순으로 결정론적.
+    // createdAt tied, so deterministic by id lex order.
     const expected = [a.channel.id, b.channel.id].sort((x, y) => x.localeCompare(y));
     expect(ids).toEqual(expected);
   });
@@ -343,7 +343,7 @@ describe('ChannelService.operatorList', () => {
   });
 });
 
-// ─── replay 적용기: operator-join 이벤트의 원자성 + 멱등성 ─────────────────────
+// ─── replay applier: operator-join event atomicity + idempotency ─────────────────────
 describe('applyChannelEvent — operator-join (compound event replay)', () => {
   function seedState(): ChannelState {
     return {
@@ -409,10 +409,10 @@ describe('applyChannelEvent — operator-join (compound event replay)', () => {
   });
 });
 
-// ─── 경계 고정: MCP 도구 표면에 operator 메서드 부재 ──────────────────────────
+// ─── boundary lock: operator methods absent from MCP tool surface ──────────────────────────
 describe('operator methods are absent from the bundled MCP tool surface', () => {
   it('src/mcp/channels.ts never references operatorJoin / operatorList', () => {
-    // vitest는 리포 루트(worktree)에서 실행된다 — cwd 기준 상대 경로로 소스를 읽는다.
+    // vitest runs from repo root (worktree) — read source via cwd-relative path.
     const channelsTool = readFileSync(resolve(process.cwd(), 'src/mcp/channels.ts'), 'utf8');
     expect(channelsTool).not.toContain('operatorJoin');
     expect(channelsTool).not.toContain('operatorList');

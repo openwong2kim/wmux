@@ -13,11 +13,12 @@ import { AsyncQueue } from './util/AsyncQueue';
 import { stripCredentialValues } from '../shared/envFilter';
 
 /**
- * 영속 직전 자격증명 *값*을 제거한 DaemonState fresh 사본. 모든 sessions.json write
- * 경로(saveImmediate·saveDebounced·flushSync·race-recovery)가 이걸 거치므로, 자격증명은
- * 인메모리 meta.env에만 존재하고 디스크에는 절대 도달하지 않는다. 세션의 다른 필드와
- * 비자격 env(PATH·identity 등)는 보존. **fresh 사본** — live 인메모리 meta를 오염시키지
- * 않는다(스폰/supervised-restart는 인메모리 env를 그대로 씀).
+ * Fresh copy of DaemonState with credential *values* stripped before persistence. Every
+ * sessions.json write path (saveImmediate, saveDebounced, flushSync, race-recovery)
+ * goes through this, so credentials exist only in in-memory meta.env and never reach
+ * disk. Other session fields and non-credential env (PATH, identity, etc.) are
+ * preserved. **Fresh copy** — does not mutate live in-memory meta (spawn/supervised-restart
+ * uses in-memory env as-is).
  */
 function toPersistable(state: DaemonState): DaemonState {
   return {
@@ -27,16 +28,17 @@ function toPersistable(state: DaemonState): DaemonState {
 }
 
 /**
- * 부팅 1회 레거시 스크럽: 기존 sessions.json 주 파일 + 모든 .bak 슬롯에서 자격증명
- * 값을 제거한다. PR1 이후 사용자 셸(passthrough)의 자격증명이 평문으로 남은 레거시
- * 파일을 정리 — recovery(load) 전에 호출해 이후 로드가 스크럽본을 읽게 한다.
- * total·non-throwing: 읽기/파싱 실패한 슬롯은 건너뛰고, 세션 목록은 절대 드롭하지 않는다.
- * rotation 없이 임시파일→fsync→rename으로 슬롯 자체를 제자리 스크럽(백업의 백업 없음).
+ * One-time boot legacy scrub: remove credential values from existing sessions.json
+ * primary + all .bak slots. Cleans legacy files where post-PR1 user shell (passthrough)
+ * credentials remained in plaintext — call before recovery(load) so subsequent load reads
+ * scrubbed copies. total, non-throwing: skip read/parse failures; never drop session list.
+ * Scrub slots in place via tmp→fsync→rename (no rotation, no backup-of-backup).
  *
- * 범위: 주 파일 + rotation 백업(.bak~.bak.3)만. `*.premigrate.bak`(migrate)·`corrupted/`
- * (quarantine) 사본은 대상 아님 — 현재 DAEMON_STATE_REGISTRY가 identity라 premigrate
- * 스냅샷이 생성되지 않고, quarantine은 파싱 불가 파일만 격리하므로 오늘은 무해. 실제
- * daemon-state 마이그레이션 스텝을 추가하면 그때 이 두 경로도 스크럽 대상에 포함해야 한다.
+ * Scope: primary + rotation backups (.bak~.bak.3) only. `*.premigrate.bak` (migrate) and
+ * `corrupted/` (quarantine) copies are out of scope — today's DAEMON_STATE_REGISTRY is
+ * identity so no premigrate snapshot is created, and quarantine isolates only unparseable
+ * files so harmless for now. When a real daemon-state migration step lands, include both
+ * paths in scrub targets.
  */
 export function scrubPersistedCredentials(baseDir: string): void {
   const primary = path.join(baseDir, 'sessions.json');
@@ -50,12 +52,12 @@ export function scrubPersistedCredentials(baseDir: string): void {
       if (!parsed || !Array.isArray(parsed.sessions)) continue;
       let changed = false;
       for (const session of parsed.sessions) {
-        if (!session || !('env' in session)) continue; // env 없는 세션은 그대로 보존
+        if (!session || !('env' in session)) continue; // preserve sessions without env
         const env = session.env;
         if (env === null || typeof env !== 'object') {
-          // 비객체 env(예: 손상/수기편집으로 문자열 "GITHUB_TOKEN=ghp...")는 자격증명을
-          // 숨길 수 있으므로 빈 객체로 교체 — skip하면 그 문자열이 그대로 남는다(Codex
-          // 리뷰). stripCredentialValues의 non-object→{} 계약과 일치.
+          // Non-object env (e.g. corrupted/hand-edited string "GITHUB_TOKEN=ghp...") cannot
+          // hide credentials, so replace with {} — skip would leave the string intact (Codex
+          // review). Matches stripCredentialValues non-object→{} contract.
           session.env = {};
           changed = true;
           continue;
@@ -68,9 +70,9 @@ export function scrubPersistedCredentials(baseDir: string): void {
         }
       }
       if (!changed) continue;
-      // fsync 후 rename — 부팅 배치 스크럽이 여러 슬롯(주+.bak.N)을 연달아 다시 쓰는데,
-      // 플러시 없이 rename만 하면 전원 손실 시 모든 슬롯이 동시에 찢겨 load가 유효 슬롯을
-      // 못 찾는다(3모델 리뷰 F2). 슬롯당 1회 부팅 비용이라 fsync 오버헤드는 무시 가능.
+      // fsync then rename — boot batch scrub rewrites many slots (primary+.bak.N) in sequence;
+      // rename-only without flush can tear all slots on power loss so load finds no valid slot
+      // (3-model review F2). One fsync per slot at boot is negligible overhead.
       const tmp = `${file}.scrub.tmp`;
       const fd = fs.openSync(tmp, 'w', 0o600);
       try {
@@ -81,7 +83,7 @@ export function scrubPersistedCredentials(baseDir: string): void {
       }
       fs.renameSync(tmp, file);
     } catch (err) {
-      // total·non-throwing — 한 슬롯 실패가 다른 슬롯이나 부팅을 막지 않는다.
+      // total, non-throwing — one slot failure must not block others or boot.
       console.warn(`[StateWriter] credential scrub skipped ${file}:`, (err as Error)?.message ?? err);
     }
   }

@@ -1,15 +1,15 @@
-// GlabPrService — PrProvider의 GitLab(glab CLI) 구현.
+// GlabPrService — GitLab (glab CLI) implementation of PrProvider.
 //
-// GhPrService와 대칭 구조(비대화형 env·버전≠인증 2단 게이트·ENOENT 영구침묵·
-// never-throw·30s 목록 TTL·updatedAt 키 상세캐시). 차이점:
-//  - 인증은 호스트 단위: self-hosted GitLab이 흔하므로 게이트가
-//    `glab auth status --hostname <host>`를 쓴다 (gate가 host를 받는 이유).
-//  - 데이터는 GitLab REST 원형: 목록 = `glab mr list --output json`(REST MR
-//    배열), 코멘트 = `glab api projects/:id/merge_requests/<iid>/notes`
-//    (`:id`는 glab이 cwd의 repo로 치환). system 노트("added 1 commit" 등)는
-//    사람 코멘트가 아니라 노이즈라 걸러낸다.
-//  - checks: REST 목록 페이로드에 파이프라인 롤업이 없어 v1은 null(정직한
-//    부재 — UI가 무색 dot). head_pipeline 조회는 MR당 추가 콜이라 보류.
+// Symmetric to GhPrService (non-interactive env, version≠auth two-step gate, ENOENT silent
+// for process lifetime, never-throw, 30s list TTL, updatedAt-keyed detail cache). Differences:
+//  - Per-host auth: self-hosted GitLab is common, so gate uses
+//    `glab auth status --hostname <host>` (why gate takes host).
+//  - GitLab REST raw payloads: list = `glab mr list --output json` (REST MR array),
+//    comments = `glab api projects/:id/merge_requests/<iid>/notes`
+//    (`:id` substituted by glab from cwd repo). System notes ("added 1 commit", etc.) are
+//    noise, not human comments — filtered out.
+//  - checks: REST list payload has no pipeline rollup — v1 is honest null (neutral dot in UI).
+//    head_pipeline per MR is deferred (extra call each).
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import {
@@ -33,13 +33,13 @@ const MAX_ENTRIES = 128;
 const GLAB_ENV: NodeJS.ProcessEnv = {
   ...process.env,
   PATH: cliPath(),
-  // glab 비대화형 강제 — 프롬프트/페이저가 폴을 블록하면 안 된다(gh와 동일 계약).
+  // Force glab non-interactive — prompts/pager must not block the poll (same contract as gh).
   NO_PROMPT: '1',
   GLAB_PAGER: 'cat',
   NO_COLOR: '1',
 };
 
-// 캐시 키 — 파일시스템 대소문자 정책 반영(gh 경로와 동일). POSIX는 원형 유지.
+// Cache key — filesystem case policy (same as gh path). POSIX keeps original form.
 function cacheKey(repoPath: string): string {
   return process.platform === 'win32' || process.platform === 'darwin'
     ? repoPath.toLowerCase()
@@ -52,7 +52,7 @@ type Exec = (
   opts: { cwd: string; timeout: number; env: NodeJS.ProcessEnv; windowsHide: boolean },
 ) => Promise<{ stdout: string }>;
 
-// ── GitLab REST 페이로드 매핑(순수, 테스트용 export) ─────────────────────────
+// ── GitLab REST payload mapping (pure, exported for tests) ─────────────────────────
 
 interface GlabMrItem {
   iid?: number;
@@ -87,9 +87,9 @@ export function mapGlabMrItem(json: GlabMrItem): PrSummary | null {
     updatedAt: json.updated_at ?? '',
     url: json.web_url,
     reviewDecision: '',
-    // REST 목록엔 파이프라인 롤업이 없다 — v1은 정직한 null(무색 dot).
+    // REST list has no pipeline rollup — v1 honest null (neutral dot).
     checks: null,
-    // GitLab의 has_conflicts를 gh 계약(CONFLICTING) 어휘로 정규화. 부재는 ''.
+    // Normalize GitLab has_conflicts to gh contract (CONFLICTING) vocabulary. Absent → ''.
     mergeable: json.has_conflicts === true ? 'CONFLICTING' : '',
   };
 }
@@ -102,13 +102,13 @@ interface GlabNote {
 }
 
 function capBody(raw: string): { body: string; truncated: boolean } {
-  // gh 쪽과 동일 정규화: 봇 HTML 주석 마커 스트립 + 캡.
+  // Same normalization as gh: strip bot HTML comment markers + cap.
   const body = raw.replace(/<!--[\s\S]*?-->/g, '').trim();
   if (Buffer.byteLength(body, 'utf8') <= PR_COMMENT_BODY_CAP) return { body, truncated: false };
   return { body: body.slice(0, PR_COMMENT_BODY_CAP), truncated: true };
 }
 
-/** notes → 코멘트 스트림. system 노트(머지/커밋 자동기록)는 제외. */
+/** notes → comment stream. Excludes system notes (merge/commit auto-records). */
 export function mapGlabNotes(notes: GlabNote[], mrUrl: string): PrComment[] {
   const out: PrComment[] = [];
   for (const n of notes) {
@@ -129,7 +129,7 @@ export function mapGlabNotes(notes: GlabNote[], mrUrl: string): PrComment[] {
   return out;
 }
 
-// ── 서비스 본체 ───────────────────────────────────────────────────────────────
+// ── Service body ───────────────────────────────────────────────────────────────
 
 interface ListEntry {
   value: PrListResult;
@@ -139,9 +139,9 @@ interface ListEntry {
 
 export class GlabPrService implements PrProvider {
   private listCache = new Map<string, ListEntry>();
-  /** key = repo\0iid — updatedAt 불변이면 notes 재fetch 생략. + url 동봉 캐시. */
+  /** key = repo\0iid — skip notes re-fetch when updatedAt unchanged. URL cached alongside. */
   private detailCache = new Map<string, { updatedAt: string; value: PrDetailResult }>();
-  /** iid → web_url (목록에서 채움 — notes의 앵커 URL로 쓴다). */
+  /** iid → web_url (filled from list — anchor URL for notes). */
   private urlByIid = new Map<string, string>();
   private glabAvailable: boolean | null = null;
 
@@ -171,7 +171,7 @@ export class GlabPrService implements PrProvider {
       return { ok: false, reason: 'cli-missing', message: 'GitLab CLI (glab) is not installed' };
     }
     try {
-      // 호스트 단위 인증(self-hosted 대응) — 미인증이면 비 0 종료.
+      // Per-host auth (self-hosted) — unauthenticated exits non-zero.
       await this.glab(['auth', 'status', '--hostname', host], repoPath);
     } catch {
       return {
@@ -183,7 +183,7 @@ export class GlabPrService implements PrProvider {
     return { ok: true };
   }
 
-  // force=true: 수동 새로고침 — TTL 캐시를 건너뛴다(gh 경로와 동일 계약).
+  // force=true: manual refresh — skip TTL cache (same contract as gh path).
   async listPrs(repoPath: string, force = false): Promise<PrListResult> {
     const key = cacheKey(repoPath);
     const entry = this.listCache.get(key);
@@ -213,7 +213,7 @@ export class GlabPrService implements PrProvider {
 
   private async fetchList(repoPath: string): Promise<PrListResult> {
     try {
-      // REST MR 배열 원형 — glab mr list의 json 출력(open MR 기본).
+      // Raw REST MR array — glab mr list json output (open MRs by default).
       const { stdout } = await this.glab(
         ['mr', 'list', '--per-page', String(LIST_LIMIT), '--output', 'json'],
         repoPath,
@@ -235,7 +235,7 @@ export class GlabPrService implements PrProvider {
     const cached = this.detailCache.get(key);
     if (cached && cached.updatedAt === updatedAt && cached.value.ok) return cached.value;
     try {
-      // `:id`는 glab이 cwd의 repo(URL-encoded full path)로 치환한다.
+      // `:id` substituted by glab from cwd repo (URL-encoded full path).
       const { stdout } = await this.glab(
         ['api', `projects/:id/merge_requests/${number}/notes?sort=asc&per_page=100`],
         repoPath,
@@ -264,5 +264,5 @@ export class GlabPrService implements PrProvider {
   }
 }
 
-/** 프로세스 전역 싱글턴 — gh 쪽(ghPrService)과 동일 수명 계약. */
+/** Process-global singleton — same lifetime contract as gh (ghPrService). */
 export const glabPrService = new GlabPrService();

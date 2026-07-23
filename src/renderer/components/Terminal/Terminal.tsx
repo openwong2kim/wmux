@@ -176,7 +176,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         return;
       }
       if (cancelled) {
-        // 이미 unmount됨 — PTY 정리
+        // Already unmounted — PTY cleanup
         window.electronAPI.pty.dispose(result.data.id);
         return;
       }
@@ -200,7 +200,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
     });
 
     return () => { cancelled = true; };
-  }, [externalPtyId, shell, cwd]); // onPtyCreated 제거 (stale closure 방지)
+  }, [externalPtyId, shell, cwd]); // removed onPtyCreated (stale closure prevention)
 
   // isVisible = workspace is shown AND this surface tab is the active one.
   // useTerminal uses this to skip fit() when the container is display:none.

@@ -50,11 +50,11 @@ describe('WorkspaceSlice.setActiveWorkspace', () => {
     expect(store.getState().activeWorkspaceId).toBe(wsA.id);
   });
 
-  // 멀티뷰 그룹은 명시적으로 해제하기 전까지 유지된다. 사용자가 그룹 외부
-  // 워크스페이스를 단순 클릭하면 그 워크스페이스의 단일 뷰로 전환되지만,
-  // 저장된 그룹은 그대로 보존돼서 그룹 멤버를 다시 누르면 그리드가 복원된다.
-  // (그리드 표시 조건은 AppLayout에서 activeWorkspaceId가 multiviewIds에
-  // 포함된 경우로 게이트됨 — 첫 회귀 "다른 탭 눌러도 화면 안 바뀜"도 같이 해결.)
+  // Multiview groups persist until explicitly cleared. Clicking a workspace outside the group
+  // switches to that workspace's single view, but the saved group remains so clicking a group
+  // member again restores the grid.
+  // (Grid display gated in AppLayout when activeWorkspaceId is in multiviewIds —
+  // also fixes first regression "clicking another tab doesn't change view".)
   it('preserves the saved multiview group when switching outside of it', () => {
     const store = createTestStore(
       [wsA, wsB, wsC],
@@ -148,7 +148,7 @@ describe('removeWorkspace — A8: fail tasks delegated to a closed workspace', (
       artifacts: [],
     });
     store.getState().updateTaskStatus(done, 'working', wsB.id);
-    // 완료증거 게이트(PR-B) 활성 후 completed는 구조화 증거 필수 — 최소 컴플라이언트 증거 첨부.
+    // Completion-evidence gate (PR-B) active: completed requires structured evidence — attach minimal client evidence.
     store.getState().updateTaskStatus(done, 'completed', wsB.id, undefined, undefined, {
       summary: 'done',
       items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }],

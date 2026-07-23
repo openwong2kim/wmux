@@ -1,30 +1,31 @@
 import type { CustomKeybinding } from '../../shared/types';
 
-// === 커스텀 키바인딩의 "단독" F키(F1–F12) 판별 (pure helper) ===
+// === Detect "bare" F-keys (F1–F12) in custom keybindings (pure helper) ===
 //
-// macOS 기본 설정(`com.apple.keyboard.fnState` = 0)에서는 F1–F12가 미디어/시스템
-// 키로 동작해 keydown 이벤트가 앱에 전달되지 않는다. 즉 수정자 없는 단독 F키
-// 바인딩(예: 'F7')은 Fn을 함께 누르거나 시스템 설정을 바꾸지 않으면 발동하지 않는다.
-// 수정자를 얹은 F키 조합('Ctrl+F7' 등)도 macOS 시스템 단축키(^F7 등)에 가로채일
-// 수 있어 Mac 기본값은 F키가 아닌 'Ctrl+7'이다. 안내문은 오직 "단독 F키"
-// 바인딩에만 필요하다 — 수정자가 붙은 조합에는 뜨면 안 된다(자기모순).
+// With macOS default settings (`com.apple.keyboard.fnState` = 0), F1–F12 act as media/
+// system keys and keydown events never reach the app. Bare F-key bindings without
+// modifiers (e.g. 'F7') therefore do not fire unless Fn is held or system settings
+// change. Modifier combos ('Ctrl+F7', etc.) can still be intercepted by macOS system
+// shortcuts (^F7, etc.), so the Mac default is 'Ctrl+7', not an F-key. Guidance text
+// applies only to bare F-key bindings — it must not appear on modified combos
+// (self-contradictory).
 //
-// 순수 함수라 store 없이 렌더/셀렉터에서 호출 가능하고 단위 테스트도 쉽다.
+// Pure function: callable from render/selectors without a store; easy to unit test.
 
-/** F1–F12 형태인지 검사한다(F13+ 제외). */
+/** Returns whether the string matches F1–F12 (excludes F13+). */
 const FUNCTION_KEY_RE = /^F([1-9]|1[0-2])$/;
 
 /**
- * 콤보 문자열이 수정자 없는 단독 F키(F1–F12)인지 판별.
- * 예: 'F7' → true, 'Ctrl+F7' → false('+'가 있으면 정규식이 매치되지 않음), 'A' → false.
+ * Whether a combo string is a bare F-key (F1–F12) without modifiers.
+ * e.g. 'F7' → true, 'Ctrl+F7' → false ('+' prevents regex match), 'A' → false.
  */
 export function isBareFunctionKeyCombo(key: string): boolean {
   return FUNCTION_KEY_RE.test(key.trim());
 }
 
 /**
- * 주어진 커스텀 키바인딩 목록에 수정자 없는 단독 F키 바인딩이 하나라도 있으면 true.
- * (macOS 전용 안내문 노출 조건으로 사용)
+ * True when any custom keybinding uses a bare F-key without modifiers.
+ * (Used as the macOS-only guidance visibility condition.)
  */
 export function hasBareFunctionKeyBinding(keybindings: CustomKeybinding[]): boolean {
   return keybindings.some((kb) => isBareFunctionKeyCombo(kb.key));

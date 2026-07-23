@@ -1,7 +1,7 @@
-// ─── TaskWorktreeManager 단위 (J1 §3 D3) ──────────────────────────────
+// ─── TaskWorktreeManager unit tests (J1 §3 D3) ──────────────────────────────
 //
-// 전용 루트 suffix 파생·직렬 큐·dirty 거부·에지 fail-closed·경로 길이. git은
-// 주입 runGit fake로 시뮬레이션하고, fs 경로는 실 temp 디렉토리로 확인한다.
+// Dedicated root suffix derivation·serial queue·dirty reject·edge fail-closed·path length. git is
+// simulated via injected runGit fake; fs paths verified with real temp directories.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -32,17 +32,17 @@ afterEach(() => {
   vi.resetModules();
 });
 
-// 각 테스트가 env(HOME/suffix)를 세팅한 뒤 모듈을 import해야 constants가 반영된다.
+// Each test must set env (HOME/suffix) before importing the module so constants apply.
 async function loadModule() {
   return await import('../TaskWorktreeManager');
 }
 
-/** path.join()이 win32에서 '/'까지 '\\'로 정규화하므로, 슬래시 리터럴 비교 전에 양쪽을 통일한다. */
+/** path.join() normalizes '/' to '\\' on win32 — unify both sides before slash literal compare. */
 function toPosix(p: string): string {
   return p.replace(/\\/g, '/');
 }
 
-/** git fake: rev-parse/status/worktree 등 인자별 응답 스크립트. */
+/** git fake: per-arg response script for rev-parse/status/worktree etc. */
 function makeGitFake(script: (args: string[], cwd: string) => { stdout?: string; stderr?: string } | Error) {
   return vi.fn(async (args: string[], cwd: string) => {
     const r = script(args, cwd);
@@ -51,12 +51,12 @@ function makeGitFake(script: (args: string[], cwd: string) => { stdout?: string;
   });
 }
 
-/** 정상 repo git fake — toplevel·non-bare·branch 부재·worktree add 성공. */
+/** Normal repo git fake — toplevel·non-bare·no branch·worktree add succeeds. */
 function healthyRepoGit(repoRoot: string) {
   return makeGitFake((args) => {
     if (args[0] === 'rev-parse' && args.includes('--show-toplevel')) return { stdout: `${repoRoot}\n` };
     if (args[0] === 'rev-parse' && args.includes('--is-bare-repository')) return { stdout: 'false\n' };
-    if (args[0] === 'rev-parse' && args.includes('--verify')) return new Error('unknown revision'); // 브랜치 부재
+    if (args[0] === 'rev-parse' && args.includes('--verify')) return new Error('unknown revision'); // branch absent
     if (args[0] === 'worktree' && args[1] === 'add') return { stdout: '' };
     if (args[0] === 'worktree' && args[1] === 'remove') return { stdout: '' };
     if (args[0] === 'status') return { stdout: '' };
@@ -64,24 +64,24 @@ function healthyRepoGit(repoRoot: string) {
   });
 }
 
-describe('slug 파생 (§3)', () => {
-  it('taskSlug = titleSlug(24자)-taskId말미8자', async () => {
+describe('slug derivation (§3)', () => {
+  it('taskSlug = titleSlug(24 chars)-taskId suffix 8 chars', async () => {
     const { buildTaskSlug } = await loadModule();
     const slug = buildTaskSlug('Ship the Widget!', 'wtask-abc123-deadbeef');
     expect(slug).toBe('ship-the-widget-deadbeef');
   });
-  it('title이 비면 taskId 접미사만', async () => {
+  it('empty title → taskId suffix only', async () => {
     const { buildTaskSlug } = await loadModule();
     expect(buildTaskSlug('!!!', 'wtask-x-12345678')).toBe('12345678');
   });
-  it('긴 title은 24자로 절단', async () => {
+  it('long title is truncated to 24 chars', async () => {
     const { titleToSlug } = await loadModule();
     expect(titleToSlug('a'.repeat(50)).length).toBeLessThanOrEqual(24);
   });
 });
 
-describe('preflight — 전용 루트 suffix 파생 (§3 C4)', () => {
-  it('경로가 getWmuxHomeDir() 하위 worktrees/{repoHash}/{slug}로 파생된다', async () => {
+describe('preflight — dedicated root suffix derivation (§3 C4)', () => {
+  it('path derives under getWmuxHomeDir() worktrees/{repoHash}/{slug}', async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
     const { TaskWorktreeManager } = await loadModule();
     const mgr = new TaskWorktreeManager({ runGit: healthyRepoGit(repoRoot) });
@@ -91,12 +91,12 @@ describe('preflight — 전용 루트 suffix 파생 (§3 C4)', () => {
     expect(toPosix(res.plan.worktreePath).startsWith(`${toPosix(home)}/.wmux/worktrees/`)).toBe(true);
     expect(toPosix(res.plan.worktreePath).endsWith('/my-task-abcd1234')).toBe(true);
     expect(res.plan.branch).toBe('wtask/my-task-abcd1234');
-    // metaDir은 worktree 밖(.meta) — diff 청정성.
+    // metaDir is outside worktree (.meta) — diff cleanliness.
     expect(toPosix(res.plan.metaDir)).toContain('/.meta/');
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
-  it('suffix(dev)가 루트에 상속된다', async () => {
+  it('suffix (dev) is inherited by root', async () => {
     process.env.WMUX_DATA_SUFFIX = '-dev';
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
     const { TaskWorktreeManager } = await loadModule();
@@ -108,9 +108,9 @@ describe('preflight — 전용 루트 suffix 파생 (§3 C4)', () => {
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
-  // J3 §1·§3 — metaDirForWorktree는 worktreePath 하나로 preflight의 metaDir을
-  // 되찾는다(정리 스캔 task.json 역추적·재발사 prompt.md 실존 검사의 단일 출처).
-  it('metaDirForWorktree(worktreePath)가 preflight의 metaDir과 정합한다', async () => {
+  // J3 §1·§3 — metaDirForWorktree recovers preflight metaDir from worktreePath alone
+  // (single source for cleanup-scan task.json backtrace·relaunch prompt.md existence check).
+  it('metaDirForWorktree(worktreePath) matches preflight metaDir', async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
     const { TaskWorktreeManager, metaDirForWorktree } = await loadModule();
     const mgr = new TaskWorktreeManager({ runGit: healthyRepoGit(repoRoot) });
@@ -122,8 +122,8 @@ describe('preflight — 전용 루트 suffix 파생 (§3 C4)', () => {
   });
 });
 
-describe('preflight — 에지 fail-closed (§3)', () => {
-  it('비 repo 거부', async () => {
+describe('preflight — edge fail-closed (§3)', () => {
+  it('rejects non-repo', async () => {
     const { TaskWorktreeManager } = await loadModule();
     const mgr = new TaskWorktreeManager({
       runGit: makeGitFake(() => new Error('fatal: not a git repository')),
@@ -134,7 +134,7 @@ describe('preflight — 에지 fail-closed (§3)', () => {
     expect(res.error).toMatch(/not a git repository/);
   });
 
-  it('bare repo 거부', async () => {
+  it('rejects bare repo', async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
     const { TaskWorktreeManager } = await loadModule();
     const mgr = new TaskWorktreeManager({
@@ -151,7 +151,7 @@ describe('preflight — 에지 fail-closed (§3)', () => {
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
-  it('서브모듈 repo 거부(.gitmodules 존재)', async () => {
+  it('rejects submodule repo (.gitmodules present)', async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
     fs.writeFileSync(path.join(repoRoot, '.gitmodules'), '[submodule "x"]\n');
     const { TaskWorktreeManager } = await loadModule();
@@ -163,7 +163,7 @@ describe('preflight — 에지 fail-closed (§3)', () => {
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
-  it('LFS repo 거부(.gitattributes filter=lfs)', async () => {
+  it('rejects LFS repo (.gitattributes filter=lfs)', async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
     fs.writeFileSync(path.join(repoRoot, '.gitattributes'), '*.bin filter=lfs diff=lfs\n');
     const { TaskWorktreeManager } = await loadModule();
@@ -175,10 +175,9 @@ describe('preflight — 에지 fail-closed (§3)', () => {
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
-  it('경로 길이(260자) 초과 거부', async () => {
+  it('rejects path length exceeding 260 chars', async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
-    // slug는 24+8 캡이라 title로는 260 초과 불가 — HOME을 아주 긴 경로로 바꿔
-    // 루트를 부풀린다.
+    // slug is 24+8 capped so title alone cannot exceed 260 — inflate root with very long HOME.
     const deepHome = path.join(home, 'a'.repeat(250));
     fs.mkdirSync(deepHome, { recursive: true });
     process.env.HOME = deepHome;
@@ -194,14 +193,14 @@ describe('preflight — 에지 fail-closed (§3)', () => {
   });
 });
 
-describe('createWorktree — 브랜치 충돌 (§3)', () => {
-  it('기존 브랜치가 있으면 명시 에러', async () => {
+describe('createWorktree — branch conflict (§3)', () => {
+  it('explicit error when branch already exists', async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
     const { TaskWorktreeManager } = await loadModule();
     const git = makeGitFake((args) => {
       if (args.includes('--show-toplevel')) return { stdout: `${repoRoot}\n` };
       if (args.includes('--is-bare-repository')) return { stdout: 'false\n' };
-      if (args[0] === 'rev-parse' && args.includes('--verify')) return { stdout: 'exists\n' }; // 브랜치 존재
+      if (args[0] === 'rev-parse' && args.includes('--verify')) return { stdout: 'exists\n' }; // branch exists
       return { stdout: '' };
     });
     const mgr = new TaskWorktreeManager({ runGit: git });
@@ -215,20 +214,20 @@ describe('createWorktree — 브랜치 충돌 (§3)', () => {
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
-  it('checkBranchConflict 옵션이면 preflight가 기존 브랜치를 선차단한다 (F3)', async () => {
+  it('preflight blocks existing branch when checkBranchConflict option set (F3)', async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
     const { TaskWorktreeManager } = await loadModule();
     const git = makeGitFake((args) => {
       if (args.includes('--show-toplevel')) return { stdout: `${repoRoot}\n` };
       if (args.includes('--is-bare-repository')) return { stdout: 'false\n' };
-      if (args[0] === 'rev-parse' && args.includes('--verify')) return { stdout: 'exists\n' }; // 브랜치 존재
+      if (args[0] === 'rev-parse' && args.includes('--verify')) return { stdout: 'exists\n' }; // branch exists
       return { stdout: '' };
     });
     const mgr = new TaskWorktreeManager({ runGit: git });
-    // 옵션 없으면 통과(충돌은 createWorktree가 잡음).
+    // without option, passes (createWorktree catches conflicts).
     const ok = await mgr.preflight(repoRoot, 'T', 'wtask-x-abcd1234');
     expect(ok.ok).toBe(true);
-    // 옵션 켜면 preflight 자체가 거부.
+    // with option on, preflight itself rejects.
     const rejected = await mgr.preflight(repoRoot, 'T', 'wtask-x-abcd1234', { checkBranchConflict: true });
     expect(rejected.ok).toBe(false);
     if (rejected.ok) return;
@@ -237,8 +236,8 @@ describe('createWorktree — 브랜치 충돌 (§3)', () => {
   });
 });
 
-describe('removeWorktree — dirty 보존 (§3)', () => {
-  it('dirty면 제거 거부 + preserved', async () => {
+describe('removeWorktree — dirty preservation (§3)', () => {
+  it('dirty → removal rejected + preserved', async () => {
     const repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-repo-'));
     const { TaskWorktreeManager } = await loadModule();
     const removeCalls: string[] = [];
@@ -255,11 +254,11 @@ describe('removeWorktree — dirty 보존 (§3)', () => {
     expect(res.ok).toBe(false);
     if (res.ok) return;
     expect(res.preserved).toBe(true);
-    expect(removeCalls).toHaveLength(0); // 강제 삭제 안 함
+    expect(removeCalls).toHaveLength(0); // no forced delete
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 
-  it('clean이면 제거', async () => {
+  it('clean → removed', async () => {
     const { TaskWorktreeManager } = await loadModule();
     const git = makeGitFake((args) => {
       if (args[0] === 'status') return { stdout: '' };
@@ -272,12 +271,12 @@ describe('removeWorktree — dirty 보존 (§3)', () => {
   });
 });
 
-describe('per-repo 직렬 큐 (§3 index.lock 경합 차단)', () => {
-  it('같은 repoHash의 create는 겹치지 않고 순차 실행된다', async () => {
+describe('per-repo serial queue (§3 index.lock contention guard)', () => {
+  it('creates for same repoHash run sequentially without overlap', async () => {
     const { TaskWorktreeManager } = await loadModule();
     let active = 0;
     let maxActive = 0;
-    // worktree add를 지연시켜 동시성을 관측한다. 직렬 큐면 maxActive는 1.
+    // delay worktree add to observe concurrency. serial queue → maxActive is 1.
     const mgr = new TaskWorktreeManager({
       runGit: async (args) => {
         if (args[0] === 'rev-parse' && args.includes('--verify')) throw new Error('absent');
@@ -301,6 +300,6 @@ describe('per-repo 직렬 큐 (§3 index.lock 경합 차단)', () => {
       mgr.createWorktree({ ...base, worktreePath: '/wt/s2', branch: 'wtask/s2' }),
       mgr.createWorktree({ ...base, worktreePath: '/wt/s3', branch: 'wtask/s3' }),
     ]);
-    expect(maxActive).toBe(1); // 직렬 — 동시 실행 0
+    expect(maxActive).toBe(1); // serial — zero concurrent runs
   });
 });

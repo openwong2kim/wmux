@@ -1,38 +1,39 @@
-// J2 — diff·hunk 채택: 원문 보존 파서 (스펙 §3)
+// J2 — diff/hunk adoption: verbatim-preserving parser (spec §3)
 //
-// 설계 계약(피해야 할 급소 — 스펙 §3·§7·§10 R1/R11):
-//   - 파일 헤더 블록(diff --git / index / mode / --- / +++)과 hunk 바디를
-//     "바이트 원문"으로 보존한다. lossy 재구성 금지.
-//   - 선택 hunk 재조립 시: 원본 파일 헤더를 그대로 재부착하고,
-//     hunk 헤더의 라인카운트(@@ -a,b +c,d @@)만 재계산한다.
-//   - `\ No newline at end of file` 마커·CRLF는 바디 원문 보존으로 자동 통과.
-//   - 이 파서는 스스로를 신뢰하지 않는다 — 재직렬화 결과는 실제 `git apply`로
-//     검증(왕복 오라클 테스트, R11). 파서 자기합의 금지.
+// Design contract (pitfalls to avoid — spec §3·§7·§10 R1/R11):
+//   - Preserve file header blocks (diff --git / index / mode / --- / +++) and hunk
+//     bodies as "byte-for-byte originals". No lossy reconstruction.
+//   - When reassembling selected hunks: reattach the original file header verbatim,
+//     and recalculate only the hunk header line counts (@@ -a,b +c,d @@).
+//   - `\ No newline at end of file` markers and CRLF pass through automatically via
+//     body verbatim preservation.
+//   - This parser does not trust itself — reserialization is verified with actual
+//     `git apply` (round-trip oracle tests, R11). No parser self-consensus.
 //
-// v1 채택 지원 범위: 평문 modify/add/delete만.
-//   rename·copy·mode change·binary는 표시 전용(파일 단위 채택 불가 라벨).
+// v1 adoption scope: plain-text modify/add/delete only.
+//   rename·copy·mode change·binary are display-only (file-level adoption unavailable label).
 
-// diff 총량·파일당 캡 (스펙 §2). 초과 시 표시 전용 라벨.
+// diff total and per-file caps (spec §2). Excess → display-only label.
 export const DIFF_TOTAL_CAP_BYTES = 2 * 1024 * 1024; // 2MB
 export const DIFF_FILE_CAP_BYTES = 512 * 1024; // 512KB
 
-// 파싱된 단일 hunk. body는 hunk 헤더(@@ 라인) 이후의 원문 바디를 그대로 보존한다.
+// Parsed single hunk. body preserves the verbatim body after the hunk header (@@ line).
 export interface DiffHunk {
-  // hunk 헤더 라인 전체 원문(예: "@@ -1,3 +1,4 @@ func foo()"). 개행 미포함.
+  // Full original hunk header line (e.g. "@@ -1,3 +1,4 @@ func foo()"). No newline.
   readonly header: string;
-  // 헤더에서 파싱한 좌표(재계산·검증용).
+  // Coordinates parsed from the header (for recalculation/validation).
   readonly oldStart: number;
   readonly oldLines: number;
   readonly newStart: number;
   readonly newLines: number;
-  // hunk 헤더 뒤 붙는 트레일링 텍스트(함수 컨텍스트 등). "@@ ... @@" 뒤 부분.
+  // Trailing text after the hunk header (function context, etc.). Part after "@@ ... @@".
   readonly section: string;
-  // hunk 바디 원문(각 라인은 ' '/'+'/'-'/'\' 접두). 바이트 원문 보존.
-  // 배열 각 원소는 개행을 포함하지 않은 라인. 재직렬화 시 '\n'으로 결합.
+  // Verbatim hunk body (each line prefixed with ' '/'+'/'-'/'\').
+  // Each array element is a line without newline. Rejoined with '\n' on reserialization.
   readonly bodyLines: readonly string[];
 }
 
-// 파일 단위 채택 가능성 분류.
+// File-level adoptability classification.
 export type FileChangeKind =
   | 'modify'
   | 'add'
@@ -42,16 +43,16 @@ export type FileChangeKind =
   | 'mode'
   | 'binary';
 
-// 파싱된 단일 파일 diff.
+// Parsed single-file diff.
 export interface DiffFile {
-  // 표시·매칭용 경로(b/ 측 우선, delete면 a/ 측).
+  // Display/matching path (b/ side preferred; a/ side for delete).
   readonly path: string;
   readonly oldPath: string | null;
   readonly newPath: string | null;
   readonly kind: FileChangeKind;
-  // hunk 선택 채택 가능 여부. 평문 modify/add/delete만 true.
+  // Whether hunk-select adoption is allowed. true only for plain modify/add/delete.
   readonly hunkSelectable: boolean;
-  // 파일 헤더 블록 원문(diff --git ~ +++ 라인까지, 첫 hunk 헤더 직전). 개행 포함.
+  // Verbatim file header block (diff --git through +++ lines, before first hunk header). Includes newlines.
   readonly headerBlock: string;
   readonly hunks: readonly DiffHunk[];
 }
@@ -60,9 +61,9 @@ export interface ParsedDiff {
   readonly files: readonly DiffFile[];
 }
 
-// ── diff:read / diff:applyHunks RPC 계약 (main↔renderer 공유, 스펙 §2·§3) ──
+// ── diff:read / diff:applyHunks RPC contract (main↔renderer shared, spec §2·§3) ──
 
-// 타겟 repo 스냅샷(드리프트 게이트용, §2). applyHunks가 이를 되받아 재검증한다.
+// Target repo snapshot (for drift gate, §2). applyHunks receives this back for revalidation.
 export interface DiffTargetSnapshot {
   readonly targetRepoPath: string;
   readonly targetBranch: string;
@@ -70,16 +71,16 @@ export interface DiffTargetSnapshot {
   readonly targetDirtyFiles: readonly string[];
 }
 
-// diff:read 응답. files는 파싱된 diff, snapshot은 드리프트 게이트 재료.
+// diff:read response. files is the parsed diff; snapshot is drift-gate material.
 export interface DiffReadResult {
   readonly ok: true;
   readonly files: readonly DiffFile[];
   readonly numstat: readonly DiffNumstat[];
   readonly snapshot: DiffTargetSnapshot;
-  // 캡 초과·binary 등으로 표시 전용인 파일 경로 목록(사용자 안내용).
+  // File paths that are display-only due to cap overflow, binary, etc. (user guidance).
   readonly truncated: readonly string[];
-  // F3: symlink·FIFO 등 비정규 파일 — 합성·채택 불가("unsupported" 라벨).
-  //   repo 밖 노출(symlink 타겟 readFile) 차단을 위해 아예 합성에서 제외한다.
+  // F3: non-regular files (symlink·FIFO, etc.) — cannot synthesize or adopt ("unsupported" label).
+  //   Excluded from synthesis entirely to block out-of-repo exposure (symlink target readFile).
   readonly unsupported: readonly string[];
 }
 
@@ -89,29 +90,29 @@ export interface DiffReadError {
   readonly code?: string;
 }
 
-// numstat 한 줄(파일 트리 표시용). binary는 additions/deletions = null.
+// One numstat line (for file tree display). binary → additions/deletions = null.
 export interface DiffNumstat {
   readonly path: string;
   readonly additions: number | null;
   readonly deletions: number | null;
 }
 
-// diff:applyHunks 요청. 스냅샷을 되받아 드리프트 재검증(§3).
+// diff:applyHunks request. Snapshot is echoed back for drift revalidation (§3).
 export interface DiffApplyRequest {
   readonly taskId: string;
   readonly snapshot: DiffTargetSnapshot;
   readonly selections: ReadonlyArray<{
-    readonly path: string; // 표시 경로(repo-relative).
+    readonly path: string; // display path (repo-relative).
     readonly hunkIndices: readonly number[];
   }>;
 }
 
-// per-hunk 프로브 결과(§3). applied는 --reverse --check best-effort 뱃지.
+// Per-hunk probe result (§3). applied is a --reverse --check best-effort badge.
 export interface HunkProbe {
   readonly path: string;
   readonly hunkIndex: number;
-  readonly applicable: boolean; // git apply --check 성공
-  readonly alreadyApplied: boolean; // git apply --reverse --check 성공(best-effort)
+  readonly applicable: boolean; // git apply --check succeeded
+  readonly alreadyApplied: boolean; // git apply --reverse --check succeeded (best-effort)
 }
 
 export type DiffApplyResult =
@@ -120,22 +121,22 @@ export type DiffApplyResult =
       readonly ok: false;
       readonly error: string;
       readonly code:
-        | 'drift' // 타겟 HEAD/브랜치 이동
-        | 'dirty' // 대상 파일 dirty
-        | 'probe' // per-hunk 프로브 실패(failedProbes에 특정)
-        | 'apply' // 최종 apply 실패
-        | 'path' // 경로 검증 실패(.. 등)
-        | 'unsupported'; // rename·binary 등 채택 불가
+        | 'drift' // target HEAD/branch moved
+        | 'dirty' // target file dirty
+        | 'probe' // per-hunk probe failed (see failedProbes)
+        | 'apply' // final apply failed
+        | 'path' // path validation failed (.. etc.)
+        | 'unsupported'; // rename·binary etc. — adoption unavailable
       readonly failedProbes?: readonly HunkProbe[];
     };
 
-// hunk 헤더 파싱 정규식. "@@ -a,b +c,d @@" 또는 "@@ -a +c @@"(단일 라인).
+// Hunk header parsing regex. "@@ -a,b +c,d @@" or "@@ -a +c @@" (single line).
 const HUNK_HEADER_RE = /^@@ -(\d+)(?:,(\d+))? \+(\d+)(?:,(\d+))? @@(.*)$/;
 
-// unified diff 텍스트를 파일·hunk 단위로 파싱한다. 원문 보존.
+// Parse unified diff text into file·hunk units. Verbatim preservation.
 export function parseUnifiedDiff(text: string): ParsedDiff {
-  // 입력 개행을 보존하기 위해 '\n' 기준으로 쪼갠다. 각 라인의 '\n'은 재직렬화 때 복원.
-  // CRLF는 라인 내용에 '\r'로 남아 원문 보존된다.
+  // Split on '\n' to preserve input newlines. Each line's '\n' is restored on reserialization.
+  // CRLF remains in line content as '\r' for verbatim preservation.
   const lines = text.length === 0 ? [] : text.split('\n');
   const files: DiffFile[] = [];
 
@@ -147,8 +148,8 @@ export function parseUnifiedDiff(text: string): ParsedDiff {
       continue;
     }
 
-    // 파일 헤더 블록 수집: "diff --git" 부터 첫 "@@" hunk 헤더 직전 또는 다음
-    // "diff --git" 직전까지.
+    // Collect file header block: from "diff --git" until first "@@" hunk header or next
+    // "diff --git".
     const headerStart = i;
     let oldPath: string | null = null;
     let newPath: string | null = null;
@@ -156,7 +157,7 @@ export function parseUnifiedDiff(text: string): ParsedDiff {
     let isBinary = false;
     let isRename = false;
     let isCopy = false;
-    let isModeOnly = true; // hunk나 ---/+++ 를 만나기 전까지는 mode-only 후보
+    let isModeOnly = true; // mode-only candidate until hunk or ---/+++ is seen
 
     i += 1;
     while (i < lines.length) {
@@ -180,21 +181,21 @@ export function parseUnifiedDiff(text: string): ParsedDiff {
         isBinary = true;
         isModeOnly = false;
       } else if (h.startsWith('old mode') || h.startsWith('new mode')) {
-        // mode change — isModeOnly 후보 유지
+        // mode change — keep isModeOnly candidate
       }
       i += 1;
     }
-    const headerEnd = i; // 첫 hunk 또는 다음 파일 시작
+    const headerEnd = i; // first hunk or next file start
 
-    // hunk 수집.
+    // Collect hunks.
     const hunks: DiffHunk[] = [];
     while (i < lines.length && lines[i].startsWith('@@ ')) {
       const hres = HUNK_HEADER_RE.exec(lines[i]);
       const headerLine = lines[i];
       i += 1;
       const bodyLines: string[] = [];
-      // hunk 바디: 다음 hunk("@@ ") 또는 다음 파일("diff --git") 직전까지.
-      // ' '/'+'/'-'/'\' 접두 라인만 바디. 그 외(빈 라인 포함) 판정은 아래.
+      // Hunk body: until next hunk("@@ ") or next file("diff --git").
+      // Only ' '/'+'/'-'/'\' prefixed lines are body. Other lines (including empty) judged below.
       while (i < lines.length) {
         const b = lines[i];
         if (b.startsWith('@@ ') || b.startsWith('diff --git')) break;
@@ -203,14 +204,14 @@ export function parseUnifiedDiff(text: string): ParsedDiff {
           bodyLines.push(b);
           i += 1;
         } else if (b === '') {
-          // git diff의 빈 컨텍스트 라인은 ' '(공백 1자)로 나오므로 완전 빈 문자열은
-          // split('\n')의 트레일링 원소다. F9: "마지막 원소일 때만" 종료로 한정한다 —
-          // 중간의 빈 문자열(예: 다음 파일 헤더 앞 구분 공백)에서 hunk를 조기 종료하면
-          // 뒤따르는 바디 라인을 유실할 수 있으므로, 마지막이 아니면 건너뛰고 계속.
+          // git diff empty context lines use ' ' (single space); a fully empty string is
+          // split('\n')'s trailing element. F9: terminate only "when last element" —
+          // terminating early on a mid-stream empty string (e.g. separator before next file header)
+          // can drop following body lines, so skip and continue unless last.
           if (i === lines.length - 1) break;
           i += 1;
         } else {
-          // 알 수 없는 라인(다음 섹션) — hunk 종료.
+          // Unknown line (next section) — end hunk.
           break;
         }
       }
@@ -236,10 +237,10 @@ export function parseUnifiedDiff(text: string): ParsedDiff {
       });
     }
 
-    // 파일 헤더 블록 원문 재구성(원본 라인 그대로 + 개행).
+    // Reconstruct verbatim file header block (original lines + newline).
     const headerBlock = lines.slice(headerStart, headerEnd).join('\n') + '\n';
 
-    // 채택 가능성 분류.
+    // Adoptability classification.
     if (isBinary) kind = 'binary';
     else if (isRename) kind = 'rename';
     else if (isCopy) kind = 'copy';
@@ -248,11 +249,11 @@ export function parseUnifiedDiff(text: string): ParsedDiff {
     const hunkSelectable =
       (kind === 'modify' || kind === 'add' || kind === 'delete') && hunks.length > 0;
 
-    // 표시 경로: a/ b/ 접두 제거(원문 oldPath/newPath는 접두 유지).
-    // F4: delete는 newPath가 `/dev/null`이라 그대로 쓰면 dirty 게이트·numstat
-    //   매칭이 실경로와 어긋난다(dirtySet.has('/dev/null')은 늘 false → delete
-    //   파일이 타겟에서 dirty여도 거부 못 함). newPath가 /dev/null이면 oldPath를
-    //   identity/display로 사용해 실경로가 dirty 검사 대상에 포함되게 한다.
+    // Display path: strip a/ b/ prefix (raw oldPath/newPath keep prefix).
+    // F4: delete has newPath `/dev/null`; using it as-is misaligns dirty gate·numstat
+    //   matching with real paths (dirtySet.has('/dev/null') is always false → delete
+    //   files dirty on target cannot be rejected). When newPath is /dev/null, use oldPath
+    //   for identity/display so the real path is included in dirty checks.
     const rawDisplay =
       newPath && newPath !== '/dev/null' ? newPath : (oldPath ?? newPath ?? '(unknown)');
     const displayPath = stripDiffPrefix(rawDisplay);
@@ -270,26 +271,26 @@ export function parseUnifiedDiff(text: string): ParsedDiff {
   return { files };
 }
 
-// 선택된 hunk들로 단일 파일의 패치를 재조립한다.
-//   - 원본 파일 헤더 블록을 그대로 재부착.
-//   - 각 선택 hunk의 바디는 원문 보존.
-//   - hunk 헤더의 라인카운트만 바디에서 재계산(oldStart는 원본 좌표 유지 —
-//     unified diff의 old 좌표는 원본 파일 기준이라 다른 hunk 적용 여부와 무관, §3).
-//   - newStart는 이전 선택 hunk들의 (added-deleted) 누적 델타로 보정.
+// Reassemble a single file's patch from selected hunks.
+//   - Reattach the original file header block verbatim.
+//   - Each selected hunk body is preserved verbatim.
+//   - Recalculate only hunk header line counts (oldStart keeps original coordinates —
+//     unified diff old coordinates are relative to the original file, independent of other hunk application, §3).
+//   - newStart is adjusted by cumulative (added-deleted) delta from prior selected hunks.
 //
-// 반환: 이 파일에 대한 패치 텍스트(헤더 + 선택 hunk들). 선택 0개면 빈 문자열.
+// Returns: patch text for this file (header + selected hunks). Empty string if none selected.
 export function reassembleFile(file: DiffFile, selectedHunkIndices: readonly number[]): string {
   const selected = [...selectedHunkIndices].sort((a, b) => a - b);
   if (selected.length === 0) return '';
 
   let out = file.headerBlock;
-  let newLineDelta = 0; // 앞선 선택 hunk들의 순 라인 증감 누적.
+  let newLineDelta = 0; // cumulative net line delta from prior selected hunks.
 
   for (const idx of selected) {
     const hunk = file.hunks[idx];
     if (!hunk) continue;
 
-    // 바디에서 실제 old/new 라인 수를 재계산(원문 보존 검증).
+    // Recalculate actual old/new line counts from body (verbatim preservation check).
     let oldCount = 0;
     let newCount = 0;
     for (const bl of hunk.bodyLines) {
@@ -302,10 +303,10 @@ export function reassembleFile(file: DiffFile, selectedHunkIndices: readonly num
       } else if (c === '+') {
         newCount += 1;
       }
-      // '\'(No newline) 라인은 카운트에 미포함.
+      // '\' (No newline) lines are not counted.
     }
 
-    // old 좌표는 원본 파일 기준으로 불변. new 좌표는 앞선 선택분 델타로 보정.
+    // old coordinates are immutable relative to the original file. new coordinates adjusted by prior selection delta.
     const oldStart = hunk.oldStart;
     const newStart = hunk.oldStart + newLineDelta;
 
@@ -328,7 +329,7 @@ export function reassembleFile(file: DiffFile, selectedHunkIndices: readonly num
   return out;
 }
 
-// 여러 파일의 선택을 하나의 패치로 합친다(단일 git apply용, §3 all-or-nothing).
+// Merge selections from multiple files into one patch (single git apply, §3 all-or-nothing).
 export function reassemblePatch(
   selections: ReadonlyArray<{ file: DiffFile; hunkIndices: readonly number[] }>,
 ): string {
@@ -339,9 +340,9 @@ export function reassemblePatch(
   return patch;
 }
 
-// hunk 헤더 포맷팅. 라인 수가 1이면 git 관례상 ",1"을 생략할 수 있으나
-// git apply는 명시적 카운트를 수용하므로 안전하게 항상 명시한다.
-// 단, oldCount/newCount가 0인 경우(순수 add/delete hunk)는 "start,0" 형식.
+// Hunk header formatting. git convention may omit ",1" when line count is 1, but
+// git apply accepts explicit counts, so always specify for safety.
+// When oldCount/newCount is 0 (pure add/delete hunk), use "start,0" format.
 function formatHunkHeader(
   oldStart: number,
   oldCount: number,
@@ -354,15 +355,15 @@ function formatHunkHeader(
   return `@@ -${oldPart} +${newPart} @@${section}`;
 }
 
-// "--- a/path" / "+++ b/path" 라인에서 경로 추출. 탭 이후(타임스탬프) 절단.
-// a/ b/ 접두는 유지(원문 보존 목적). /dev/null 은 그대로.
+// Extract path from "--- a/path" / "+++ b/path" lines. Truncate at tab (timestamp).
+// Keep a/ b/ prefix (verbatim preservation). /dev/null unchanged.
 function parseHeaderPath(rest: string): string {
   const tab = rest.indexOf('\t');
   const p = tab >= 0 ? rest.slice(0, tab) : rest;
   return p;
 }
 
-// a/ 또는 b/ 접두를 제거해 repo-relative 표시 경로를 얻는다. /dev/null은 그대로.
+// Strip a/ or b/ prefix for repo-relative display path. /dev/null unchanged.
 function stripDiffPrefix(p: string): string {
   if (p === '/dev/null') return p;
   if (p.startsWith('a/') || p.startsWith('b/')) return p.slice(2);
@@ -374,16 +375,16 @@ function num(s: string): number {
   return Number.isFinite(n) ? n : 0;
 }
 
-// untracked 파일을 정식 new-file diff 헤더로 합성(스펙 §2·R4).
-// git apply가 수용하는 형식: diff --git + new file mode + index + --- /dev/null + +++ b/path.
-// content는 파일 원문(바이트). 파일 단위 all-or-nothing.
+// Synthesize untracked file as formal new-file diff header (spec §2·R4).
+// Format accepted by git apply: diff --git + new file mode + index + --- /dev/null + +++ b/path.
+// content is file verbatim (bytes). File-level all-or-nothing.
 export function synthesizeNewFileDiff(
   repoRelPath: string,
   content: string,
   mode = '100644',
 ): string {
   const lines = content.length === 0 ? [] : content.split('\n');
-  // content가 트레일링 개행으로 끝나면 split 결과 마지막이 빈 문자열 → 실제 라인 아님.
+  // If content ends with trailing newline, split's last element is empty string → not a real line.
   const endsWithNewline = content.endsWith('\n');
   const bodyLines = endsWithNewline ? lines.slice(0, -1) : lines;
   const lineCount = bodyLines.length;
@@ -392,7 +393,7 @@ export function synthesizeNewFileDiff(
   out += `diff --git a/${repoRelPath} b/${repoRelPath}\n`;
   out += `new file mode ${mode}\n`;
   out += `index 0000000..0000000\n`;
-  // 빈 파일은 hunk 없이 헤더만(git apply는 0라인 hunk를 corrupt로 거부).
+  // Empty file: header only (git apply rejects 0-line hunks as corrupt).
   if (lineCount === 0) {
     return out;
   }

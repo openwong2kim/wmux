@@ -197,35 +197,36 @@ export interface ChannelMessage {
    */
   senderPtyId?: string;
   /**
-   * 서버-발행 시스템 메시지 판별자 (operator-join 설계 §2.1.1). 존재하면 이 행은
-   * 사용자가 작성한 일반 메시지가 아니라 데몬이 발행한 감사 흔적이다 — 렌더러는
-   * `text`(영어 폴백) 대신 이 종류로 문구를 localize한다. 일반 메시지에는 부재
-   * (additive 선택 필드, `ChannelState.version` 불변 — senderPtyId 관례와 동일).
+   * Server-published system message discriminator (operator-join design §2.1.1). When present,
+   * this row is not a user-authored ordinary message but a daemon-published audit trace — the
+   * renderer localizes copy via this kind instead of `text` (English fallback). Absent on
+   * ordinary messages (additive optional field, `ChannelState.version` unchanged — same
+   * convention as senderPtyId).
    */
   systemKind?: ChannelSystemMessageKind;
 }
 
 /**
- * 서버-발행 시스템 메시지 종류 (operator-join 설계 §2.1.1). 채널 히스토리에 일반
- * 메시지와 동일한 영속 경로로 append되는 감사 메시지의 판별자다. additive-only:
- * 종류 추가만 허용(디스크 계약). 현재는 오퍼레이터(사람)가 비공개 채널에
- * operatorJoin했음을 알리는 한 종류뿐이며, 이 흔적은 내구 감사(leave 후에도 남음)
- * 이자 #113 잔여로 위조된 입장을 사람이 GUI에서 발견하게 하는 유일한 장치다.
+ * Server-published system message kind (operator-join design §2.1.1). Discriminator for audit
+ * messages appended via the same persistence path as ordinary channel history. additive-only:
+ * add kinds only (disk contract). Currently only one kind announces that an operator (human)
+ * operatorJoin'd a private channel; this trace is durable audit (remains after leave) and the
+ * sole #113 residual device for humans to discover forged entry in the GUI.
  */
 export type ChannelSystemMessageKind = 'operator-join';
 
 /**
- * operator-join 시스템 메시지의 영어 폴백 본문. 렌더러는 `systemKind`로 판별해
- * i18n 문자열로 대체하므로, 이 텍스트는 비-GUI 소비자(CLI/로그/구 렌더러)용
- * 폴백일 뿐이다. `ChannelMessage.text`는 필수 필드라 값이 반드시 있어야 한다.
+ * English fallback body for operator-join system messages. Renderer replaces via i18n keyed
+ * on `systemKind`, so this text is fallback for non-GUI consumers (CLI/log/legacy renderer) only.
+ * `ChannelMessage.text` is required, so a value must always be present.
  */
 export const OPERATOR_JOIN_SYSTEM_TEXT = 'Operator joined the channel.';
 
 /**
- * operator-list 프로젝션 행 (operator-join 설계 §2.2) — 발견 어포던스가 반환하는
- * 채널 메타데이터만. 메시지 미리보기·멤버 상세 없음(내용을 읽으려면 operatorJoin
- * 해야 하고, 그건 서버-발행 시스템 메시지를 남긴다 §2.1.1). 데몬이 반환하고 렌더러
- * 오퍼레이터 섹션이 소비하므로 shared에 둔다.
+ * operator-list projection row (operator-join design §2.2) — channel metadata only returned by
+ * discovery affordance. No message preview·member detail (to read content you must operatorJoin,
+ * which leaves a server-published system message §2.1.1). Returned by daemon, consumed by renderer
+ * operator section, hence lives in shared.
  */
 export interface OperatorChannelSummary {
   id: string;

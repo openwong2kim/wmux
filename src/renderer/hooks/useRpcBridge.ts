@@ -232,8 +232,8 @@ export function useRpcBridge(): void {
             | 'a2a.channel.join'
             | 'a2a.channel.leave'
             | 'a2a.channel.archive'
-            // operator-join (설계 §2.1/§2.2) — humans-only, 렌더러 전용 mutateLocal
-            // 경로로만 도달(파이프 미등록). operatorList는 읽기지만 같은 트랜스포트.
+            // operator-join (design §2.1/§2.2) — humans-only, reachable only via renderer-only
+            // mutateLocal path (pipe not registered). operatorList is read-only but same transport.
             | 'a2a.channel.operatorJoin'
             | 'a2a.channel.operatorList',
           params: Record<string, unknown>,
@@ -396,13 +396,13 @@ function emitA2aTaskEvent(
   // from/to are validated non-empty at the publish trust boundary too, but
   // skip locally to avoid emitting a degenerate (third-party-blind) pointer.
   if (!from || !to || !taskId) return;
-  // verifiedItemCount(§6.M PR-C)는 **종단 전이(completed/failed)**의 등급이다.
-  // 데몬은 비종단 전이(working)에도 evidence를 수용하므로(PR-B else-if), evidence
-  // 존재만으로 파생하면 working 이벤트가 등급을 달고 나가 계약("completed/failed
-  // only")을 깬다(리뷰 Codex+GLM) — state로 게이트한다. evidence 자체는 데몬 커밋
-  // 경로(committedTask)와 렌더러 폴백 경로 양쪽이 task.status.evidence에 싣는 단일
-  // 정본이라 소스는 경로 무관 일관하다. items 방어(?.): 타입상 배열이나 폴백 wire
-  // 변형에서 undefined면 부재로 안전 처리(크래시 금지).
+  // verifiedItemCount (§6.M PR-C) is a grade on **terminal transitions (completed/failed)**.
+  // Daemon accepts evidence on non-terminal transitions too (PR-B else-if); deriving from
+  // evidence alone would let working events carry grade and break the "completed/failed only"
+  // contract (Codex+GLM review) — gate by state. evidence itself is single canonical on
+  // task.status.evidence from both daemon commit path (committedTask) and renderer fallback;
+  // source is consistent regardless of path. items guard (?.): treat undefined as absent safely
+  // on fallback wire variants (no crash).
   const effectiveState = state ?? task.status.state;
   const evidence = task.status.evidence;
   const verifiedItemCount =
@@ -560,11 +560,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   }
 
   if (method === 'fanout.spawnWorkspace') {
-    // J1 §2 ③ — fan-out 태스크의 전용 워크스페이스 + 에이전트 페인 스폰. main의
-    // FanOutService가 sendToRenderer로 호출한다. mcp.claimWorkspace와 동형이나
-    // cwd=worktreePath + initialCommand(프롬프트 파일 치환)를 추가로 싣는다. 실제
-    // workspaceId를 회수 반환(핸드셰이크 C3). 사람 포커스를 훔치지 않는다(이전 활성
-    // 복원). 워크스페이스 트리 정본은 렌더러라 이 경로가 정본 우회 없는 스폰이다.
+    // J1 §2 ③ — spawn dedicated workspace + agent pane for fan-out task. main FanOutService
+    // calls via sendToRenderer. Same shape as mcp.claimWorkspace but also carries
+    // cwd=worktreePath + initialCommand (prompt file substitution). Returns actual workspaceId
+    // (handshake C3). Does not steal human focus (restores previous active). Renderer owns
+    // workspace tree canonical — this path is spawn without bypassing canonical.
     const previousActiveId = store.activeWorkspaceId;
     const name = typeof params.name === 'string' && params.name.length > 0 ? params.name : undefined;
     const cwd = typeof params.cwd === 'string' ? params.cwd : '';
@@ -589,8 +589,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
               cwd: cwd || undefined,
               ...(initialCommand ? { initialCommand } : {}),
             },
-            // profile.startupCwd = worktreePath 힌트(§1 — 초기 편의). split 상속에
-            // 밀리는 tolerant 힌트라 방어가 아니라 편의로만 계상한다.
+            // profile.startupCwd = worktreePath hint (§1 — initial convenience). Tolerant hint
+            // that yields to split inheritance — convenience only, not defense.
             { ...newWs.profile, startupCwd: cwd || newWs.profile?.startupCwd },
           ),
           useStore.getState().defaultShell,
@@ -614,7 +614,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     }
     afterPty.addSurface(paneId, ptyId, '', cwd, newWsId);
 
-    // 포커스 복원 — fan-out 스폰이 사람 화면을 훔치지 않는다.
+    // Focus restore — fan-out spawn does not steal the user's screen.
     useStore.getState().setActiveWorkspace(previousActiveId);
 
     return { workspaceId: newWsId, ptyId };
@@ -1370,7 +1370,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // synchronously on the renderer thread, and even an explicit `tail_lines`
     // only trimmed the RESULT — the expensive walk still ran. An orchestrator
     // that bursts terminal_read then pinned the render thread and starved
-    // input/switch/paint ("terminal read 폭발할때"). Now:
+    // input/switch/paint ("terminal read explosion"). Now:
     //   - full_scrollback:true → the exact whole-buffer read (old behavior),
     //   - tail_lines:N         → the last N rows, read in O(N),
     //   - neither              → the last DEFAULT rows, read in O(DEFAULT).
@@ -1801,7 +1801,7 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // Resolve the target workspace by id / exact name / number / substring. A
     // DUPLICATE EXACT NAME is REFUSED (ambiguous) rather than silently picking
     // whichever appears first — two same-named workspaces previously misrouted a
-    // send. Number/substring stay first-match (the documented "N번"/partial
+    // send. Number/substring stay first-match (the documented numbered/partial
     // addressing contract).
     const targetResult = resolveWorkspaceTarget(store.workspaces, to);
     if (targetResult.kind === 'ambiguous') {
@@ -1932,9 +1932,9 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // Return the RESOLVED target workspaceId so the main-side a2a.rpc handler
     // uses it for execute:true ClaudeWorker spawn, instead of the raw fuzzy `to`
     // string (which could be a number/partial name).
-    // `task`: 확정된 태스크 스냅샷(주소 해석 반영) — main이 데몬 A2aTaskService에
-    // 정본 미러-생성(envelope PR4)할 때 쓰고, 파이프 호출자에게 반환하기 전에
-    // main이 제거한다(응답 계약 불변).
+    // `task`: resolved task snapshot (address resolution applied) — main uses for daemon
+    // A2aTaskService mirror-create (envelope PR4); main strips before returning to pipe caller
+    // (response contract unchanged).
     return { ok: true, taskId: newTaskId, silent, toWorkspaceId: target.id, executeApproved: executeRequested, task: createdTask };
   }
 
@@ -1999,10 +1999,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       }
     }
 
-    // 완료증거(evidence)는 사람용 message와 분리된 기계용 1급 입력이다. 전이 적용
-    // 전에 untrusted-wire를 정규화한다 — 실패(null)면 오염된 shape가 스토어에 닿기
-    // 전에 차단한다(거부 게이트가 아니라 위생: 저장 자체가 오염이므로. recordedBy 등
-    // 서버 전용 스탬프·미지 키는 normalize가 드롭한다).
+    // Completion evidence is machine-first input separate from human message. Normalize
+    // untrusted wire before applying transition — null on failure blocks polluted shape
+    // before store (hygiene, not rejection gate: storage itself would be pollution. normalize
+    // drops server-only stamps like recordedBy and unknown keys).
     let evidence: CompletionEvidence | undefined;
     if (params.evidence !== undefined) {
       const normalized = normalizeCompletionEvidenceWire(params.evidence);
@@ -2027,10 +2027,10 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const callerAddrUpdate = resolveSenderPaneAddress(callerLeavesUpdate, callerPtyIdUpdate);
 
     // ── Apply the status transition ──
-    // envelope PR4(§6.M C6): main이 데몬 A2aTaskService에 이미 커밋한 전이는
-    // daemonCommitted 마커 + committedTask 스냅샷으로 도착한다 — 캐시는 이를
-    // **재검증 없이 verbatim 적용**한다(재검증하면 데몬 force-fail 커밋을 거부해
-    // split-brain). 마커가 없으면(데몬 미가용/미시드 태스크) 기존 검증 writer로 폴백.
+    // envelope PR4 (§6.M C6): transitions already committed by main to daemon A2aTaskService
+    // arrive with daemonCommitted marker + committedTask snapshot — cache applies **verbatim
+    // without re-validation** (re-validation would reject daemon force-fail commits → split-brain).
+    // Without marker (daemon unavailable / missed task), fall back to existing validated writer.
     const committedTask =
       params.daemonCommitted === true &&
       params.committedTask && typeof params.committedTask === 'object' &&
@@ -2149,8 +2149,8 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     const workspaceId = typeof params.workspaceId === 'string' ? params.workspaceId : '';
     if (!taskId) return { error: 'a2a.task.cancel: missing "taskId"' };
     if (!workspaceId) return { error: 'a2a.task.cancel: missing "workspaceId". Ensure WMUX_WORKSPACE_ID is set.' };
-    // envelope PR4(C6): 데몬이 이미 커밋한 취소는 verbatim 적용(재검증 없음 —
-    // update 경로와 동일 계약). 마커 없으면 기존 검증 writer 폴백.
+    // envelope PR4 (C6): cancellations already committed by daemon apply verbatim (no re-validation —
+    // same contract as update path). Without marker, fall back to existing validated writer.
     const committedCancel =
       params.daemonCommitted === true &&
       params.committedTask && typeof params.committedTask === 'object' &&

@@ -31,7 +31,7 @@ export type Vendor = 'claude' | 'codex';
 
 export interface Account {
   id: string;
-  /** Human label the user recognizes ("회사 Max", "개인"). */
+  /** Human label the user recognizes (e.g. "Work Max", "Personal"). */
   name: string;
   vendor: Vendor;
   /** Canonical absolute path to the vendor config dir (CLAUDE_CONFIG_DIR /

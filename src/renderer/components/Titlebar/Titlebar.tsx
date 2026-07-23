@@ -29,9 +29,9 @@ import PresetPicker from '../Sidebar/PresetPicker';
 /** Height shared with main's titleBarOverlay config (registerHandlers.ts). */
 export const TITLEBAR_HEIGHT = 36;
 
-// macOS 트래픽 라이트 예약 폭. macOS 26(Tahoe)에서 신호등이 커져 72px로는
-// 로고가 초록 버튼에 겹친다(owner-reported 2026-07-18) — x=12 배치 기준
-// 초록 끝 ~65px + 여백 15px.
+// macOS traffic-light reserve width. On macOS 26 (Tahoe) the lights grew — 72px is not
+// enough and the logo overlaps the green button (owner-reported 2026-07-18) — at x=12
+// green ends ~65px + 15px margin.
 export const MAC_TRAFFIC_LIGHT_RESERVE = 80;
 
 // Lazy + guarded platform read: module-level `window` access crashes node-env
@@ -134,10 +134,10 @@ export default function Titlebar() {
   // docked right there is no panel below the top-left corner to fuse with.
   const leftSegmentWidth = sidebarPosition === 'left' ? (sidebarVisible ? 240 : 48) : 0;
 
-  // macOS 트래픽 라이트 예약: 세그먼트가 충분히 넓으면(확장 240px) 세그먼트
-  // "안쪽" 패딩으로 품는다 — 헤더에 걸면 세그먼트 전체가 예약만큼 밀려 아래
-  // 사이드바 경계와 어긋난다(owner-reported). 미니(48px)·세그먼트 없음일 때만
-  // 기존처럼 헤더에 예약.
+  // macOS traffic-light reserve: when the segment is wide enough (expanded 240px), absorb
+  // reserve as inner segment padding — on the header, the whole segment shifts by reserve
+  // and misaligns with the sidebar boundary below (owner-reported). Only mini (48px) or no
+  // segment uses header reserve as before.
   const macReserve = isMac && !macFullscreen ? MAC_TRAFFIC_LIGHT_RESERVE : 0;
   const reserveInSegment = macReserve > 0 && leftSegmentWidth > macReserve;
 
@@ -160,8 +160,8 @@ export default function Titlebar() {
         // createWindow) — reserve MAC_TRAFFIC_LIGHT_RESERVE px for them,
         // EXCEPT in native fullscreen
         // where the lights are hidden and a fixed reserve just shifts the
-        // whole top row right (owner-reported on mac). 세그먼트가 예약을
-        // 품는 경우엔 헤더 예약 0 (위 reserveInSegment 참조).
+        // whole top row right (owner-reported on mac). When segment absorbs reserve,
+        // header reserve is 0 (see reserveInSegment above).
         paddingLeft: reserveInSegment ? 0 : macReserve,
       } as CSSProperties}
       data-testid="titlebar"
@@ -171,7 +171,7 @@ export default function Titlebar() {
         className={`flex items-center gap-2 px-3 overflow-hidden ${leftSegmentWidth ? 'bg-[var(--bg-mantle)]' : ''}`}
         style={{
           width: leftSegmentWidth || undefined,
-          // 트래픽 라이트를 세그먼트 안에 품을 때는 px-3 대신 예약 폭 안쪽 패딩.
+          // When traffic lights sit inside the segment, use inner padding at reserve width instead of px-3.
           paddingLeft: reserveInSegment ? MAC_TRAFFIC_LIGHT_RESERVE : undefined,
           // Fuse with the sidebar below via the same inset hairline seam.
           boxShadow: leftSegmentWidth ? 'inset -1px 0 0 var(--border-soft)' : undefined,

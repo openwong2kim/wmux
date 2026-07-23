@@ -9,15 +9,15 @@ import {
   PWSH_INIT,
 } from '../shell-integration';
 
-// zsh 지원(macOS 기본 셸) — ZDOTDIR 가로채기 방식의 핵심 불변식 검증.
+// zsh support (macOS default shell) — verify core invariants of the ZDOTDIR hijack approach.
 describe('classifyShell', () => {
-  it('zsh를 분류한다 (경로/이름/로그인 셸 형태)', () => {
+  it('classifies zsh (path/name/login shell form)', () => {
     expect(classifyShell('/bin/zsh')).toBe('zsh');
     expect(classifyShell('zsh')).toBe('zsh');
-    expect(classifyShell('-zsh')).toBe('zsh'); // 로그인 셸은 argv[0]에 '-' 접두
+    expect(classifyShell('-zsh')).toBe('zsh'); // login shell has '-' prefix in argv[0]
   });
 
-  it('기존 셸 분류는 그대로 유지한다', () => {
+  it('preserves existing shell classification', () => {
     expect(classifyShell('/bin/bash')).toBe('bash');
     expect(classifyShell('pwsh')).toBe('pwsh');
     expect(classifyShell('powershell.exe')).toBe('pwsh');
@@ -32,10 +32,10 @@ describe('classifyShell', () => {
 });
 
 describe('buildSpawnInjection — zsh', () => {
-  it('zsh는 ZDOTDIR을 wmux zsh 디렉토리로 설정한다', () => {
+  it('zsh sets ZDOTDIR to the wmux zsh directory', () => {
     const inj = buildSpawnInjection('/bin/zsh');
     expect(inj).not.toBeNull();
-    // ZDOTDIR 가로채기: wmux 디렉토리를 가리켜야 OSC 133 stub이 로드된다.
+    // ZDOTDIR hijack: must point at wmux directory so OSC 133 stub loads.
     expect(inj?.env.ZDOTDIR).toMatch(/shell-integration[\\/]zsh$/);
     expect(inj?.env.WMUX_SHELL_INTEGRATION).toBe('1');
     expect(inj?.args).toContain('-i');
@@ -53,7 +53,7 @@ describe('buildSpawnInjection — zsh', () => {
     }
   });
 
-  it('알 수 없는 셸은 injection이 없다(일반 spawn)', () => {
+  it('unknown shells get no injection (plain spawn)', () => {
     expect(buildSpawnInjection('/usr/bin/fish')).toBeNull();
   });
 });
@@ -138,31 +138,31 @@ describe('buildWslBashInjection', () => {
   });
 });
 
-// OSC 133 B 마커는 반드시 zsh의 %{...%} 제로폭 가드로 감싸야 한다.
-// 가드 없이 raw escape를 PROMPT에 붙이면 zle가 8바이트를 표시 폭으로
-// 오계산 → resize 스윕 중 zrefresh/resetvideo가 SIGBUS로 크래시한다 (RCA 2026-07-05).
-describe('ZSH_RC — PROMPT B 마커 폭 가드', () => {
-  it('133;B 마커를 %{ ... %} 안에 감싼다', () => {
-    // %{ 와 그 다음 %} 사이에 133;B 가 있어야 한다 (사이에 다른 % 프롬프트 이스케이프 없음).
+// OSC 133 B marker must be wrapped in zsh's %{...%} zero-width guard.
+// Without the guard, raw escape appended to PROMPT makes zle count 8 bytes as
+// display width → zrefresh/resetvideo SIGBUS crash during resize sweeps (RCA 2026-07-05).
+describe('ZSH_RC — PROMPT B marker width guard', () => {
+  it('wraps the 133;B marker inside %{ ... %}', () => {
+    // 133;B must sit between %{ and the next %} (no other % prompt escapes in between).
     expect(ZSH_RC).toMatch(/%\{[^%]*133;B[^%]*%\}/);
   });
 
-  it('가드를 씌워도 마커 자체는 여전히 방출된다', () => {
-    // 회귀 방지: 폭 가드 때문에 마커가 통째로 사라지면 OSC 133 인덱싱이 깨진다.
+  it('marker is still emitted even with the guard applied', () => {
+    // Regression guard: if width guard drops the marker entirely, OSC 133 indexing breaks.
     expect(ZSH_RC).toContain('133;B');
-    // 가드 없는 옛 형태(PROMPT="${PROMPT}"$'...133;B)가 남아있지 않아야 한다.
+    // Unguarded legacy form (PROMPT="${PROMPT}"$'...133;B) must not remain.
     expect(ZSH_RC).not.toMatch(/"\$\{PROMPT\}"\$'\\033\]133;B/);
   });
 });
 
-// v6: mac 기본 zsh가 cd를 보고하지 않아 사이드바 브랜치/git 컨텍스트가 생성
-// 시점 cwd에 고정되던 문제 수정(owner-reported 2026-07-19).
-describe('ZSH_RC — OSC 7 cwd 보고', () => {
-  it('OSC 7을 방출하는 __wmux_osc7 함수를 정의한다', () => {
+// v6: fix mac default zsh not reporting cd, which froze sidebar branch/git context
+// at spawn-time cwd (owner-reported 2026-07-19).
+describe('ZSH_RC — OSC 7 cwd reporting', () => {
+  it('defines __wmux_osc7 function that emits OSC 7', () => {
     expect(ZSH_RC).toContain('__wmux_osc7()');
-    // ESC]7;file://<host><encoded PWD>BEL — parseOsc7Cwd와 맞춰 host 뒤 슬래시
-    // 없이 절대경로를 붙인다. `%s/%s`(이중 슬래시)는 //Users/... 를 만들어 금지.
-    // v9: $PWD는 __wmux_osc7_encode를 거쳐 percent-encode된 채 방출된다.
+    // ESC]7;file://<host><encoded PWD>BEL — match parseOsc7Cwd: append absolute path
+    // after host with no slash. `%s/%s` (double slash) creates //Users/... and is forbidden.
+    // v9: $PWD is emitted percent-encoded via __wmux_osc7_encode.
     expect(ZSH_RC).toContain("printf '\\033]7;file://%s%s\\a'");
     expect(ZSH_RC).not.toContain('file://%s/%s');
   });
@@ -186,10 +186,10 @@ describe('ZSH_RC — OSC 7 cwd 보고', () => {
     expect(ZSH_RC).not.toContain('"${HOST-localhost}" "$PWD"');
   });
 
-  it('chpwd(cd 즉시)와 precmd(최초/매 프롬프트)에 모두 등록한다', () => {
+  it('registers on both chpwd (immediate cd) and precmd (initial/every prompt)', () => {
     expect(ZSH_RC).toMatch(/add-zsh-hook chpwd __wmux_osc7/);
     expect(ZSH_RC).toMatch(/add-zsh-hook precmd __wmux_osc7/);
-    // add-zsh-hook 미존재 폴백 경로도 chpwd_functions에 등록해야 한다.
+    // add-zsh-hook fallback path must also register in chpwd_functions.
     expect(ZSH_RC).toMatch(/chpwd_functions\+=\(__wmux_osc7\)/);
   });
 });

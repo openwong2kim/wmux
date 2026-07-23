@@ -56,7 +56,7 @@ function PaletteItem({ item, isActive, onClick }: PaletteItemProps) {
   );
 }
 
-// A2: 리스트 자식 memo 방벽. 팔레트에서 activeIdx만 바뀔 때, 활성/비활성 경계의
-// 두 항목 외 나머지 행은 리렌더를 건너뛴다(item.action은 buildItems 안에서
-// 안정적으로 생성되므로 onClick 참조가 안정적).
+// A2: list-child memo barrier. When only activeIdx changes in the palette, rows other than
+// the two items at the active/inactive boundary skip re-render (item.action is created
+// stably inside buildItems, so onClick references are stable).
 export default memo(PaletteItem);

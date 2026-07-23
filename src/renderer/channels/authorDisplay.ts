@@ -65,7 +65,7 @@ export function formatChannelAuthor(
   // pipe rejects that name, but the display layer pins it too; ship review).
   if (memberId === HUMAN_MEMBER_ID) {
     // P5: a post from the unified human seat needs NO chip — there is exactly
-    // one human, "나/Me" alone identifies them. Pre-P5 posts carry the real
+    // one human, "Me" alone identifies them. Pre-P5 posts carry the real
     // workspace they were sent from; keep that chip as historical context.
     if (message.workspaceId === HUMAN_WORKSPACE_ID) {
       return { kind: 'human', primary: '', chip: null, hue };
@@ -104,7 +104,7 @@ export function rosterMemberLabel(
   workspaceLabel: string,
 ): RosterMemberLabel {
   const isSelf = member.workspaceId === selfWorkspaceId && member.memberId === selfMemberId;
-  // P5: the unified human row is the ONLY human row — "나/Me" alone is
+  // P5: the unified human row is the ONLY human row — "Me" alone is
   // unambiguous, and its workspace is the reserved virtual one (a raw
   // 'ws-human' suffix would just leak an internal token).
   if (isSelf) return { primary: '', showWorkspaceSuffix: false };

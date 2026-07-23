@@ -1,27 +1,28 @@
 /**
- * A2aTaskService — A2A 태스크의 **데몬측 정본**(envelope-design §5 D11).
+ * A2aTaskService — **daemon-side source of truth** for A2A tasks (envelope-design §5 D11).
  *
- * 종전 A2A 정본은 렌더러 인메모리 스토어(a2aSlice)였다 — 30분 GC 비내구라 채널과
- * 비대칭이었다. 본 서비스가 정본을 데몬 append-only 로그로 이동한다:
- *   - projection-first: 태스크 맵 projection을 들고, 모든 전이를 `domain:'a2a'`
- *     envelope로 **먼저 커밋(append→true)한 뒤 projection에 적용**한다. append가
- *     false(배치 롤백)면 projection은 건드리지 않는다 — 로그가 정본이므로.
- *   - `VALID_TRANSITIONS`(types.ts) 데몬측 강제(성공 종단='completed').
- *   - 완료증거(evidence): §6.M PR-B 게이트 **활성**. 종단 전이(completed/failed)는
- *     구조화 증거를 강제한다(validateCompletionEvidence) — completed=summary+≥1
- *     well-formed 아이템, failed=summary(사유). normalizeCompletionEvidenceWire로
- *     먼저 재검증(sanitize)한 뒤 게이트가 판정한다. verified≥1은 게이트가 아니라
- *     completed의 **등급**(E9)이다 — verifiedItemCount는 정직 산출·표기만 한다.
- *   - per-task 직렬화(뮤텍스)로 collect→append→apply 일관성.
- *   - clientMsgId류 멱등(§4): (taskId, idempotencyKey) LRU — 재시도는 append 없이
- *     원본 결과 반환(동일 키 재시도 → 로그 1건).
- *   - 30분 GC 시멘틱은 projection 레벨 유지(a2aSlice 현행 준수, 로그 절단 아님).
+ * Previously the A2A source of truth was the renderer in-memory store (a2aSlice) — non-durable
+ * with 30-minute GC, asymmetric with channels. This service moves the source of truth to the
+ * daemon append-only log:
+ *   - projection-first: holds a task-map projection; every transition is **committed first
+ *     (append→true) as a `domain:'a2a'` envelope, then applied to the projection**. If append
+ *     returns false (batch rollback), the projection is untouched — the log is the source of truth.
+ *   - `VALID_TRANSITIONS`(types.ts) enforced on the daemon (successful terminal = 'completed').
+ *   - completion evidence: §6.M PR-B gate **active**. Terminal transitions (completed/failed)
+ *     require structured evidence (validateCompletionEvidence) — completed = summary + ≥1
+ *     well-formed item, failed = summary (reason). normalizeCompletionEvidenceWire re-validates
+ *     (sanitizes) first, then the gate decides. verified≥1 is not a gate but a **grade** (E9) for
+ *     completed — verifiedItemCount only computes and records honestly.
+ *   - per-task serialization (mutex) for collect→append→apply consistency.
+ *   - clientMsgId-style idempotency (§4): (taskId, idempotencyKey) LRU — retries return the
+ *     original result without append (same-key retry → one log entry).
+ *   - 30-minute GC semantics remain at projection level (matches current a2aSlice; no log truncation).
  *
- * authContext 스탬핑(§7 PR5): verifiedWorkspaceId는 서버핀 authz 앵커(호출자 제공),
- * principalId는 저장된 task 좌표에서 **서버 유도**한 display/routing 스탬프(위조 불가 —
- * 발신자 주장값은 신뢰하지 않는다, §7:356), trustTier는 'semi-trusted' 고정(§7 표:
- * A2A execute = 우리가 spawn한 ClaudeWorker). principalId/trustTier는 authz가 아니다 —
- * 권한 앵커는 verifiedWorkspaceId뿐이다(§7:358).
+ * authContext stamping (§7 PR5): verifiedWorkspaceId is the server-pinned authz anchor (caller-provided);
+ * principalId is a display/routing stamp **derived server-side** from stored task coordinates (not
+ * forgeable — sender claims are not trusted, §7:356); trustTier is fixed at 'semi-trusted' (§7 table:
+ * A2A execute = ClaudeWorker we spawned). principalId/trustTier are not authz — the permission
+ * anchor is verifiedWorkspaceId only (§7:358).
  */
 
 import { makeEnvelope } from '../../shared/eventlog';
@@ -51,17 +52,18 @@ import type {
   A2aTaskTransitionPayload,
 } from '../../shared/a2aEventlog';
 
-/** a2aSlice 현행 값 준수(캐시와 동일 시멘틱). */
-const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30분
+/** Matches current a2aSlice values (same semantics as the cache). */
+const GC_MAX_AGE_MS = 30 * 60 * 1000; // 30 minutes
 const GC_MAX_TASKS = 500;
-/** §4: 멱등 LRU cap/stream — 채널 상수(CHANNEL_IDEMPOTENCY_CAP=1000)와 동형. */
+/** §4: idempotency LRU cap/stream — same shape as channel constant (CHANNEL_IDEMPOTENCY_CAP=1000). */
 const IDEMPOTENCY_CAP = 1000;
 
 /**
- * 완료증거 게이트(§6.M PR-B) 거부 코드 → 사람용 액션 힌트(설계 §⑤). 코드는 기계 파싱용
- * 안정 식별자, 힌트는 발신 에이전트가 무엇을 붙여 재시도할지 아는 사람용 문구다.
- * shared/completionEvidence는 주석 외 불변(스키마는 envelope PR5 소유 — X9)이라
- * 힌트 매핑은 강제 지점(데몬·렌더러 폴백)에 각각 로컬로 둔다.
+ * Completion-evidence gate (§6.M PR-B) rejection code → human action hint (design §⑤). Codes are
+ * stable machine-parseable identifiers; hints are human-readable phrases telling the sending agent
+ * what to attach before retrying. shared/completionEvidence stays unchanged except comments (schema
+ * owned by envelope PR5 — X9), so hint mapping lives locally at each enforcement site (daemon and
+ * renderer fallback).
  */
 function evidenceGateHint(code: string): string {
   switch (code) {
@@ -84,7 +86,7 @@ function evidenceGateHint(code: string): string {
   }
 }
 
-/** append + readAllRecords만 요구하는 최소 로그 인터페이스(AppendOnlyLog 만족). */
+/** Minimal log interface requiring only append + readAllRecords (satisfied by AppendOnlyLog). */
 export interface A2aLogLike {
   append(draft: EventEnvelopeDraft): Promise<boolean>;
   readAllRecords(): EventEnvelope[];
@@ -92,13 +94,13 @@ export interface A2aLogLike {
 
 export interface A2aTaskServiceOptions {
   log: A2aLogLike;
-  /** envelope origin(§8). machineId·daemonEpoch는 부트에서 확정. */
+  /** envelope origin (§8). machineId and daemonEpoch are fixed at boot. */
   origin: { machineId: string; daemonEpoch: number };
-  /** GC/타임스탬프 주입(테스트). 기본 Date.now. */
+  /** GC/timestamp injection (tests). Defaults to Date.now. */
   now?: () => number;
 }
 
-/** 한 페인 좌표(선택적 pane-granular authz). */
+/** One pane coordinate (optional pane-granular authz). */
 export interface PaneAddr {
   paneId?: string;
   surfaceId?: string;
@@ -116,22 +118,23 @@ export interface CreateTaskInput {
 export interface TransitionInput {
   taskId: string;
   to: TaskState;
-  /** 서버핀된 호출자 workspace(수신자여야 함). */
+  /** Server-pinned caller workspace (must be the receiver). */
   callerWorkspaceId: string;
-  /** 알려진 경우의 호출자 페인(pane-granular authz). 헤드리스면 null/undefined. */
+  /** Caller pane when known (pane-granular authz). null/undefined for headless. */
   callerAddr?: PaneAddr | null;
   /**
-   * 호출자가 페인 신원(senderPtyId)을 주장했는가. S-C2 pane-granular authz는
-   * 렌더러 페인 트리에서만 판정 가능하다(ptyId→pane 해석은 렌더러 소유) — 페인
-   * 핀 태스크(to.paneId)에 페인 신원 호출자가 오면 데몬은 soft-defer하고 main이
-   * 렌더러 검증 경로로 폴백한다(오늘의 판정 지점 보존, 서버측 이관은 PR5/§7).
+   * Whether the caller claimed pane identity (senderPtyId). S-C2 pane-granular authz can only
+   * be decided in the renderer pane tree (ptyId→pane resolution is renderer-owned) — when a
+   * pane-identity caller hits a pane-pinned task (to.paneId), the daemon soft-defers and main
+   * falls back to the renderer verification path (preserves today's decision point; server-side
+   * migration is PR5/§7).
    */
   callerHasPaneIdentity?: boolean;
-  /** 사람용 상태 메시지(있을 때만). */
+  /** Human-readable status message (when present). */
   message?: Message;
-  /** §6.M 완료증거(raw). 서비스가 재정규화(sanitize)해 저장 — 게이트 없음. */
+  /** §6.M completion evidence (raw). Service re-normalizes (sanitizes) for storage — no gate here. */
   evidence?: unknown;
-  /** §4 멱등키(clientMsgId류). 재시도 흡수. */
+  /** §4 idempotency key (clientMsgId-style). Absorbs retries. */
   idempotencyKey?: string;
 }
 
@@ -143,8 +146,8 @@ export interface CancelTaskInput {
 
 export type OpErr = { ok: false; error: string };
 /**
- * 전이/취소/생성 성공 결과는 커밋된 태스크 스냅샷을 동반한다 — 렌더러 캐시가 이 값을
- * **재검증 없이 verbatim 적용**한다(§6.M C6, a2aSlice.applyDaemonTaskUpdate).
+ * Successful transition/cancel/create results carry the committed task snapshot — the renderer
+ * cache applies this value **verbatim without re-validation** (§6.M C6, a2aSlice.applyDaemonTaskUpdate).
  */
 export type TransitionOk = { ok: true; verifiedItemCount?: number; task: Task };
 export type CancelOk = { ok: true; task: Task };
@@ -161,11 +164,11 @@ export class A2aTaskService {
   private readonly origin: { machineId: string; daemonEpoch: number };
   private readonly now: () => number;
 
-  /** projection: taskId → Task(정본 상태의 인메모리 뷰, 로그에서 재파생 가능). */
+  /** projection: taskId → Task (in-memory view of source-of-truth state, re-derivable from log). */
   private readonly tasks = new Map<string, Task>();
-  /** per-task 직렬화 체인(collect→append→apply 일관성). */
+  /** per-task serialization chain (collect→append→apply consistency). */
   private readonly locks = new Map<string, Promise<unknown>>();
-  /** §4 멱등: streamId(taskId) → (idempotencyKey → 원본 결과). LRU cap. */
+  /** §4 idempotency: streamId(taskId) → (idempotencyKey → original result). LRU cap. */
   private readonly idempotency = new Map<string, Map<string, TransitionOk | CancelOk>>();
 
   constructor(opts: A2aTaskServiceOptions) {
@@ -174,28 +177,29 @@ export class A2aTaskService {
     this.now = opts.now ?? Date.now;
   }
 
-  // ── 부트 복원 (cross-restart projection) ────────────────────────────
+  // ── boot restore (cross-restart projection) ────────────────────────────
 
   /**
-   * 로그의 `domain:'a2a'` 레코드를 순서대로 replay해 projection 복원.
-   * 비내구→내구 전환의 핵심 가치: 재시작 후 태스크가 살아남는다. 부트 1회 호출.
+   * Replay `domain:'a2a'` records from the log in order to restore the projection.
+   * Core value of non-durable→durable transition: tasks survive restart. Call once at boot.
    */
   restoreFromLog(): void {
     for (const rec of this.log.readAllRecords()) {
       if (rec.domain !== 'a2a') continue;
       this.applyPayload(rec.payload);
-      this.restoreIdempotency(rec); // E: 크로스-재시작 멱등 재시드
+      this.restoreIdempotency(rec); // E: cross-restart idempotency re-seed
     }
-    // A: 부트 직후 GC — 30분 경과 종단 태스크를 즉시 정리한다. 로그는 영구이므로
-    // 이게 없으면 restore가 역대 전 종단 태스크를 매 부트 부활시켜(projection 무한
-    // 성장) query에 노출한다. GC는 projection만 바운드(로그 절단은 §9 컴팩션 몫).
+    // A: GC immediately after boot — purge terminal tasks older than 30 minutes. The log is
+    // permanent, so without this restore resurrects every historical terminal task each boot
+    // (unbounded projection growth) and exposes them via query. GC bounds projection only (log
+    // truncation is §9 compaction's job).
     this.gcTerminalTasks();
   }
 
   /**
-   * E(패널): 재시작 후 같은 idempotencyKey 재시도가 원본 결과를 반환하도록 멱등 LRU를
-   * replay에서 재구성한다. 없으면 재시도가 캐시 미스→invalid transition(태스크가 이미
-   * 전진)으로 변질된다. transition/cancel만 키를 싣는다(create는 결정적 id로 멱등).
+   * E (panel): Rebuild idempotency LRU from replay so same idempotencyKey retries after restart
+   * return the original result. Without this, retries become cache misses → invalid transition
+   * (task already advanced). Only transition/cancel carry keys (create is idempotent via deterministic id).
    */
   private restoreIdempotency(rec: EventEnvelope): void {
     if (!rec.idempotencyKey) return;
@@ -221,8 +225,8 @@ export class A2aTaskService {
   }
 
   /**
-   * payload를 projection에 적용(append 성공 후에만 호출). kind가 닫힌 union이라
-   * 미지 kind(executor-lifecycle 예약 슬롯 등)는 안전하게 무시한다(fail-closed).
+   * Apply payload to projection (call only after successful append). kind is a closed union, so
+   * unknown kinds (executor-lifecycle reserved slots, etc.) are safely ignored (fail-closed).
    */
   private applyPayload(payload: unknown): void {
     if (payload === null || typeof payload !== 'object') return;
@@ -255,19 +259,19 @@ export class A2aTaskService {
       task.metadata.updatedAt = c.timestamp;
       return;
     }
-    // executor-lifecycle / 미지 kind: 예약 슬롯 — projection 무시.
+    // executor-lifecycle / unknown kind: reserved slot — ignore in projection.
   }
 
   // ── mutation ───────────────────────────────────────────────────────
 
   /**
-   * 태스크 생성 → `task.create` envelope append → projection 시드.
-   * 멱등(A3): 동일 id가 이미 있으면 append 없이 기존 유지(완료 태스크 부활 방지).
+   * Create task → append `task.create` envelope → seed projection.
+   * Idempotent (A3): if the same id already exists, keep existing state without append (prevents completed-task resurrection).
    */
   createTask(input: CreateTaskInput): Promise<CreateOk | OpErr> {
     const id = input.id ?? this.generateTaskId();
     return this.withTaskLock(id, async () => {
-      // A3 멱등: 결정적 id(chmention-*) 재배달은 기존 상태를 보존.
+      // A3 idempotency: deterministic id (chmention-*) redelivery preserves existing state.
       const existing = this.tasks.get(id);
       if (existing) return { ok: true, taskId: id, task: existing };
 
@@ -288,7 +292,7 @@ export class A2aTaskService {
         metadata,
       };
       const payload: A2aTaskCreatePayload = { kind: 'task.create', task };
-      // create의 행위자 = 발신자(from) — principalId를 from pane 좌표에서 서버 유도.
+      // create actor = sender (from) — derive principalId server-side from from pane coordinates.
       const committed = await this.log.append(
         this.envelope(payload, input.from.workspaceId, this.derivePrincipalId(task, 'from', input.from.workspaceId)),
       );
@@ -301,38 +305,39 @@ export class A2aTaskService {
   }
 
   /**
-   * 상태 전이 — 데몬 정본 게이트. 권한 + VALID_TRANSITIONS + 완료증거 게이트(PR-B) 강제.
-   * append(true) 후에만 projection 적용. 멱등키가 있으면 재시도 흡수(로그 1건).
+   * State transition — daemon source-of-truth gate. Enforces authz + VALID_TRANSITIONS + completion-evidence gate (PR-B).
+   * Applies projection only after append(true). With idempotency key, absorbs retries (one log entry).
    */
   transition(input: TransitionInput): Promise<TransitionOk | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
       const task = this.tasks.get(input.taskId);
       if (!task) return { ok: false, error: `a2a.task.update: task not found: ${input.taskId}` };
 
-      // 권한: 수신자 workspace만 상태 갱신 가능(a2aSlice 현행 계약).
+      // Authz: only the receiver workspace may update state (current a2aSlice contract).
       if (task.metadata.to.workspaceId !== input.callerWorkspaceId) {
         return { ok: false, error: `a2a.task.update: caller ${input.callerWorkspaceId} is not the receiver` };
       }
-      // pane-granular authz(S-C2): 호출자 페인이 알려졌고(callerAddr) 태스크가 특정
-      // 수신 페인에 핀됐으면(to.paneId) 그 페인이어야 한다. callerAddr 부재(헤드리스
-      // ClaudeWorker)면 ws-authz — 이 불변식이 워커 완료 전이를 막지 않게 한다.
+      // pane-granular authz (S-C2): when caller pane is known (callerAddr) and the task is pinned to a
+      // specific receiver pane (to.paneId), it must match. Missing callerAddr (headless ClaudeWorker)
+      // → ws-authz — this invariant must not block worker completion transitions.
       if (input.callerAddr && task.metadata.to.paneId && task.metadata.to.paneId !== input.callerAddr.paneId) {
         return { ok: false, error: 'a2a.task.update: caller pane is not the addressed receiver pane' };
       }
-      // S-C2 soft-defer: 페인 핀 태스크 + 페인 신원 주장 호출자인데 callerAddr가
-      // 해석되지 않은 경우(ptyId→pane 해석은 렌더러 소유) — 데몬이 ws-authz로
-      // 통과시키면 오늘의 페인 게이트(a2aSlice)가 우회된다. 렌더러 검증 경로로
-      // 폴백하도록 soft 거부한다(main의 A2A_DAEMON_SOFT_ERRORS 계약).
+      // S-C2 soft-defer: pane-pinned task + pane-identity caller but callerAddr unresolved
+      // (ptyId→pane resolution is renderer-owned) — passing via ws-authz on the daemon would bypass
+      // today's pane gate (a2aSlice). Soft-reject to fall back to renderer verification path
+      // (main's A2A_DAEMON_SOFT_ERRORS contract).
       if (input.callerHasPaneIdentity && !input.callerAddr && task.metadata.to.paneId) {
         return { ok: false, error: 'a2a.task.update: pane-authz deferred to renderer (pane-pinned task)' };
       }
-      // §4 멱등: 앞서 커밋된 동일 키면 append 없이 원본 결과. 위치는 authz·soft-defer
-      // **뒤**(리뷰 codex 델타: 히트가 authz를 앞지르면 키를 아는 비참여자가 커밋 스냅샷을
-      // 재생 조회 — authz 우회), validateTransition **앞**(종단 재시도가 invalid
-      // transition으로 변질되지 않게). 정당한 재시도는 동일 입력이라 authz를 항상 재통과.
+      // §4 idempotency: same key committed earlier → return original result without append. Position is
+      // **after** authz and soft-defer (review codex delta: hit before authz lets a non-participant who
+      // knows the key replay committed snapshots — authz bypass), **before** validateTransition (so
+      // terminal retries are not misreported as invalid transition). Legitimate retries always re-pass
+      // authz because input is identical.
       const cached = this.idempotencyHit(input.taskId, input.idempotencyKey, 'transition');
       if (cached) return cached as TransitionOk;
-      // VALID_TRANSITIONS 데몬측 강제(성공 종단='completed').
+      // VALID_TRANSITIONS enforced on daemon (successful terminal = 'completed').
       if (!validateTransition(task.status.state, input.to)) {
         const from = task.status.state;
         const allowed = VALID_TRANSITIONS[from];
@@ -342,11 +347,11 @@ export class A2aTaskService {
         return { ok: false, error: `a2a.task.update: invalid transition ${from} -> ${input.to}. ${guidance}.` };
       }
 
-      // evidence 정규화(§6.M): untrusted wire를 재검증(sanitize)한다. malformed shape는
-      // 렌더러 wire 경계(useRpcBridge completion_evidence_malformed)와 동형으로 거부한다
-      // — 조용히 드롭하면 렌더러(거부)와 데몬(커밋)이 갈라진다(split). 미지 kind·타입
-      // 혼동 아이템은 여기서 malformed로 죽고, shape는 맞지만 well-formed가 아닌
-      // 아이템(빈 command 등)은 아래 게이트가 completion_evidence_invalid_item으로 잡는다.
+      // evidence normalization (§6.M): re-validate (sanitize) untrusted wire. Malformed shapes are
+      // rejected the same way as the renderer wire boundary (useRpcBridge completion_evidence_malformed)
+      // — silent drop would split renderer (reject) and daemon (commit). Unknown kinds and type-confused
+      // items die here as malformed; shape-valid but not well-formed items (empty command, etc.) are
+      // caught below by the gate as completion_evidence_invalid_item.
       let evidence: CompletionEvidence | undefined;
       let verifiedItemCount: number | undefined;
       if (input.evidence !== undefined) {
@@ -360,10 +365,10 @@ export class A2aTaskService {
         evidence = normalized;
       }
 
-      // 완료증거 게이트(§6.M PR-B — 활성). 종단 전이(completed/failed)는 구조화 증거를
-      // 강제한다. pane-authz·불법 전이 거부(위)가 게이트보다 먼저라 게이트는 합법 전이에만
-      // 도달한다(기존 에러 메시지·도그푸드 어서션 보존). verified≥1은 게이트가 아니라
-      // 등급(E9) — verdict가 verifiedItemCount를 정직 산출한다(0 허용).
+      // Completion-evidence gate (§6.M PR-B — active). Terminal transitions (completed/failed) require
+      // structured evidence. pane-authz and illegal-transition rejection (above) run before the gate,
+      // so the gate only sees legal transitions (preserves existing error messages and dogfood assertions).
+      // verified≥1 is a grade (E9), not a gate — verdict honestly computes verifiedItemCount (0 allowed).
       if (input.to === 'completed' || input.to === 'failed') {
         const verdict = validateCompletionEvidence(input.to, evidence);
         if (!verdict.ok) {
@@ -371,7 +376,7 @@ export class A2aTaskService {
         }
         verifiedItemCount = verdict.verifiedItemCount;
       } else if (evidence !== undefined) {
-        // 비종단 전이(working/input-required)는 게이트 비대상 — evidence 수용 + 등급 카운트만.
+        // Non-terminal transitions (working/input-required) are not gate targets — accept evidence + grade count only.
         verifiedItemCount = evidence.items.filter(isVerifiedItem).length;
       }
 
@@ -384,8 +389,8 @@ export class A2aTaskService {
         ...(evidence ? { evidence } : {}),
         ...(verifiedItemCount !== undefined ? { verifiedItemCount } : {}),
       };
-      // transition의 행위자 = 수신자(authz가 callerWorkspaceId===to.workspaceId 강제) —
-      // principalId를 저장된 to pane 좌표에서 서버 유도(위조 불가).
+      // transition actor = receiver (authz forces callerWorkspaceId === to.workspaceId) —
+      // derive principalId server-side from stored to pane coordinates (not forgeable).
       const authWs = input.callerWorkspaceId;
       const committed = await this.log.append(
         this.envelope(payload, authWs, this.derivePrincipalId(task, 'to', authWs), input.idempotencyKey),
@@ -398,7 +403,7 @@ export class A2aTaskService {
       const result: TransitionOk = {
         ok: true,
         ...(verifiedItemCount !== undefined ? { verifiedItemCount } : {}),
-        task, // 커밋된 projection 스냅샷 — 캐시 verbatim 적용의 원본(C6)
+        task, // committed projection snapshot — source for cache verbatim apply (C6)
       };
       this.idempotencyRecord(input.taskId, input.idempotencyKey, 'transition', result);
       return result;
@@ -406,7 +411,7 @@ export class A2aTaskService {
   }
 
   /**
-   * 취소 — sender/receiver 모두 가능. VALID_TRANSITIONS(→canceled) 강제.
+   * Cancel — allowed for sender or receiver. VALID_TRANSITIONS (→canceled) enforced.
    */
   cancelTask(input: CancelTaskInput): Promise<CancelOk | OpErr> {
     return this.withTaskLock(input.taskId, async () => {
@@ -418,13 +423,13 @@ export class A2aTaskService {
       if (!isSender && !isReceiver) {
         return { ok: false, error: `a2a.task.cancel: caller ${input.callerWorkspaceId} is not sender or receiver` };
       }
-      // §4 멱등: transition과 대칭 — 히트는 authz 뒤(비참여자 키 재생 조회 차단),
-      // op 네임스페이스 분리(transition 키로 cancel 결과를 재생하지 못하게 — codex 델타).
+      // §4 idempotency: symmetric with transition — hit after authz (blocks non-participant key replay),
+      // op namespace separation (cancel cannot replay transition results with the same key — codex delta).
       const cached = this.idempotencyHit(input.taskId, input.idempotencyKey, 'cancel');
       if (cached) return cached as CancelOk;
-      // G(패널): 이미 종단이면 멱등 no-op 성공 — 취소의 목적(종단 도달)이 이미
-      // 충족됐다. reject하면 종전 렌더러 passthrough 경로 대비 회귀다(호출자는
-      // 취소를 눌렀는데 에러를 받는다). 로그 append 없이 현 상태 반환.
+      // G (panel): already terminal → idempotent no-op success — cancel's goal (reach terminal) is
+      // already satisfied. Rejecting would regress vs the former renderer passthrough path (caller
+      // pressed cancel but gets an error). Return current state without log append.
       if ((TERMINAL_STATES as readonly string[]).includes(task.status.state)) {
         return { ok: true, task };
       }
@@ -437,9 +442,9 @@ export class A2aTaskService {
         taskId: input.taskId,
         timestamp: this.isoNow(),
       };
-      // cancel의 행위자 = sender 또는 receiver — 위에서 판정한 역할로 pane을 선택한다
-      // (self-address task에선 sender 우선 — 취소는 통상 발신자 행위). principalId를 그
-      // 측 pane 좌표에서 서버 유도.
+      // cancel actor = sender or receiver — pick pane from role determined above (sender preferred on
+      // self-address tasks — cancel is typically a sender action). Derive principalId server-side from
+      // that side's pane coordinates.
       const committed = await this.log.append(
         this.envelope(payload, input.callerWorkspaceId, this.derivePrincipalId(task, isSender ? 'from' : 'to', input.callerWorkspaceId), input.idempotencyKey),
       );
@@ -454,21 +459,21 @@ export class A2aTaskService {
   }
 
   /**
-   * B(패널·완료증거 설계 §③ E10) — workspace teardown 전용 강제-실패 진입점.
-   * 수신 workspace가 제거되면 그 workspace로 향한 non-terminal 태스크는 어떤
-   * 전진도 불가하다(수신자 소멸). `VALID_TRANSITIONS`를 **의도적으로 우회**해
-   * (submitted/input-required→failed는 그래프상 불가) failed로 커밋한다 —
-   * 일반 transition API는 이 전이를 여전히 거부한다(진입점이 그래프 완화가 아님).
+   * B (panel · completion-evidence design §③ E10) — force-fail entry point for workspace teardown only.
+   * When a receiver workspace is removed, non-terminal tasks addressed to that workspace cannot advance
+   * (receiver gone). **Intentionally bypasses** `VALID_TRANSITIONS` to commit failed (submitted/input-required→failed
+   * is impossible on the graph) — the normal transition API still rejects this transition (entry point is
+   * not graph relaxation).
    *
-   * 이게 없으면 teardown이 렌더러 캐시에서만 태스크를 죽이고 데몬 정본엔 미도달 →
-   * 재시작 시 restoreFromLog가 죽은 태스크를 working/submitted로 부활시켜 정본이
-   * 실제와 어긋난다(내구성 정본 주장 훼손). 데몬 부트 게이트가 workspace 제거를
-   * 아는 유일 지점(a2a.channel.purgeMembership 핸들러)에서 호출된다.
+   * Without this, teardown kills tasks only in the renderer cache and never reaches the daemon source
+   * of truth → restart restoreFromLog resurrects dead tasks as working/submitted, diverging source of
+   * truth from reality (undermines durable-source claim). Called from the daemon boot gate that knows
+   * workspace removal (a2a.channel.purgeMembership handler).
    *
-   * @returns 실제로 failed로 커밋된 태스크 수.
+   * @returns Number of tasks actually committed to failed.
    */
   async failTasksForWorkspaceRemoved(workspaceId: string, reason: string): Promise<number> {
-    // 스냅샷 후 순회 — 락 안에서 status가 바뀌므로 순회 중 Map 변형 회피.
+    // Snapshot then iterate — status may change under lock, avoid mutating Map during iteration.
     const targets = [...this.tasks.values()].filter(
       (t) =>
         t.metadata.to.workspaceId === workspaceId &&
@@ -476,9 +481,9 @@ export class A2aTaskService {
     );
     let failed = 0;
     for (const target of targets) {
-      // eslint-disable-next-line no-await-in-loop -- per-task 직렬화(정상 전이와 순서 보장)
+      // eslint-disable-next-line no-await-in-loop -- per-task serialization (ordering with normal transitions)
       const ok = await this.withTaskLock(target.id, async () => {
-        // 락 대기 중 정상 전이로 종단됐으면 멱등 skip(이중 커밋 방지).
+        // Idempotent skip if normal transition reached terminal while waiting on lock (prevent double commit).
         const cur = this.tasks.get(target.id);
         if (!cur || (TERMINAL_STATES as readonly string[]).includes(cur.status.state)) return false;
         const payload: A2aTaskTransitionPayload = {
@@ -487,13 +492,13 @@ export class A2aTaskService {
           to: 'failed',
           timestamp: this.isoNow(),
           forced: 'workspace_removed',
-          // 합성 완료증거(§③ E10): 실패 사유만(items 없음). force-fail은 완료증거
-          // 게이트(PR-B)를 **의도적으로 우회**하는 데몬 네이티브 진입점이라
-          // validateCompletionEvidence를 거치지 않는다 — 수신자 소멸 태스크를 그대로 커밋.
+          // Synthetic completion evidence (§③ E10): failure reason only (no items). force-fail is a
+          // daemon-native entry point that **intentionally bypasses** the completion-evidence gate (PR-B) —
+          // does not call validateCompletionEvidence — commits receiver-gone tasks as-is.
           evidence: { summary: reason, items: [] },
         };
-        // 데몬 강제-실패(teardown): 제거되는 수신 workspace를 authz 앵커로, principalId는
-        // 수신 pane(to) 좌표에서 서버 유도(cur는 위 가드로 non-null).
+        // Daemon force-fail (teardown): removed receiver workspace as authz anchor; principalId derived
+        // server-side from receiver pane (to) coordinates (cur is non-null from guard above).
         const committed = await this.log.append(
           this.envelope(payload, workspaceId, this.derivePrincipalId(cur, 'to', workspaceId)),
         );
@@ -521,28 +526,28 @@ export class A2aTaskService {
       if (filters?.role === 'user' && !isSender) continue;
       if (filters?.role === 'agent' && !isReceiver) continue;
       if (filters?.status && task.status.state !== filters.status) continue;
-      // 증분 커서(A9): ISO-8601 문자열 사전순=시간순. strictly-after.
+      // Incremental cursor (A9): ISO-8601 string lex order = time order. strictly-after.
       if (filters?.updatedSince && !(task.metadata.updatedAt > filters.updatedSince)) continue;
       out.push(task);
     }
     return out;
   }
 
-  /** 관측용(테스트/디버그): 현재 projection 태스크 수. */
+  /** Observability (tests/debug): current projection task count. */
   get taskCount(): number {
     return this.tasks.size;
   }
 
-  // ── GC (projection 레벨, 로그 절단 아님) ────────────────────────────
+  // ── GC (projection level, not log truncation) ────────────────────────────
 
   /**
-   * 30분 초과 종단 태스크 제거 + 하드캡 초과 시 **오래된 종단분만** 축출.
+   * Remove terminal tasks older than 30 minutes + evict **oldest terminal only** when hard cap exceeded.
    *
-   * a2aSlice(UI 캐시)의 GC와 달리 **비종단(활성) 태스크는 절대 축출하지 않는다**
-   * (패널 델타): 이건 데몬 정본 projection이라 활성 태스크를 지우면 라이브
-   * 태스크를 잃는다(query/transition이 'task not found'). 종단분만으로 캡에 못
-   * 미치면 projection은 캡을 넘긴 채 유지된다 — 활성 작업 보존이 정답이고, 실제
-   * 동시 태스크 수가 자연 바운드다. 로그 상주분 절단은 §9 컴팩션 몫(여기 아님).
+   * Unlike a2aSlice (UI cache) GC, **never evicts non-terminal (active) tasks** (panel delta): this is
+   * the daemon source-of-truth projection — deleting active tasks loses live work (query/transition
+   * returns 'task not found'). If terminal-only eviction cannot meet the cap, projection may exceed the
+   * cap — preserving active work is correct; natural concurrent task count is the real bound. Log
+   * retention truncation is §9 compaction's job (not here).
    */
   gcTerminalTasks(): void {
     const now = this.now();
@@ -557,7 +562,7 @@ export class A2aTaskService {
     }
     if (this.tasks.size <= GC_MAX_TASKS) return;
     let toRemove = this.tasks.size - GC_MAX_TASKS;
-    // 종단 태스크만 축출 후보 — 활성은 절대 지우지 않는다(정본 무결성).
+    // Terminal tasks only as eviction candidates — never delete active (source-of-truth integrity).
     const terminalOldest = [...this.tasks.values()]
       .filter((t) => (TERMINAL_STATES as readonly string[]).includes(t.status.state))
       .sort((a, b) => new Date(a.metadata.updatedAt).getTime() - new Date(b.metadata.updatedAt).getTime());
@@ -569,18 +574,18 @@ export class A2aTaskService {
     }
   }
 
-  // ── 내부 ────────────────────────────────────────────────────────────
+  // ── internal ────────────────────────────────────────────────────────────
 
   private isoNow(): string {
     return new Date(this.now()).toISOString();
   }
 
   private generateTaskId(): string {
-    // a2aSlice generateId('task')와 동형 — 조정 없는 유일 id.
+    // Same shape as a2aSlice generateId('task') — unique id without coordination.
     return `task-${this.now().toString(36)}-${Math.random().toString(36).slice(2, 10)}`;
   }
 
-  /** makeEnvelope 초안 조립(발급 필드는 append 소관). */
+  /** Assemble makeEnvelope draft (issuance fields owned by append). */
   private envelope(
     payload: unknown,
     verifiedWorkspaceId: string,
@@ -597,19 +602,19 @@ export class A2aTaskService {
   }
 
   /**
-   * principalId 서버 유도(§7). 행위자(actor)의 **역할**을 호출자가 명시한다(actorSide) —
-   * create·sender-cancel의 행위자는 from, transition(수신자 강제)·teardown·receiver-cancel은
-   * to. 역할을 workspaceId 일치로 추론하지 않는 이유: self-address task(from.ws===to.ws)에서는
-   * 양쪽이 같은 ws라 추론이 불가능해 행위자를 오기한다(리뷰 3모델 합의 — Codex·GLM·Claude).
+   * Server-derived principalId (§7). Caller explicitly names the actor's **role** (actorSide) —
+   * create and sender-cancel use from; transition (receiver-forced), teardown, and receiver-cancel use
+   * to. We do not infer role from workspaceId match: on self-address tasks (from.ws === to.ws) both
+   * sides share the same ws and inference misidentifies the actor (3-model review consensus — Codex·GLM·Claude).
    *
-   * 유도 소스는 task.metadata의 pane 좌표다. transition/cancel의 좌표는 생성 시 서버 저장값이라
-   * 상태를 갱신하는 caller가 위조할 수 없다. create의 from 좌표는 그 호출의 신선한 입력이지만
-   * 정상 토폴로지에선 렌더러 경계 해석값이다(§7:356의 "senderPtyId→레지스트리" 서버 유도는
-   * A2A 경로에선 데몬이 ptyId→pane을 해석하지 못하므로(S-C2, 렌더러 소유) 좌표 유도가 그
-   * 데몬-경계 등가물이다 — 채널 경로처럼 상류가 레지스트리 해석 principalId를 주입하지는 않는다).
-   * pane 미핀(ws-level task·헤드리스 ClaudeWorker)이면 verifiedWorkspaceId 폴백.
-   * principalId는 display/routing·감사 전용이라 이 유도가 어긋나도 authz는 불변이다
-   * (권한 앵커 = verifiedWorkspaceId, §7:358).
+   * Derivation source is pane coordinates in task.metadata. For transition/cancel, coordinates were stored
+   * at create time server-side, so the caller updating state cannot forge them. For create, from coordinates
+   * are fresh input for that call but in normal topology are renderer-boundary resolved values (§7:356
+   * "senderPtyId→registry" server derivation is not available on the A2A path because the daemon cannot
+   * resolve ptyId→pane — S-C2, renderer-owned — coordinate derivation is the daemon-boundary equivalent;
+   * unlike the channel path, upstream does not inject registry-resolved principalId). Unpinned pane
+   * (ws-level task, headless ClaudeWorker) falls back to verifiedWorkspaceId. principalId is display/routing
+   * and audit only — authz is unchanged if derivation is wrong (permission anchor = verifiedWorkspaceId, §7:358).
    */
   private derivePrincipalId(task: Task, actorSide: 'from' | 'to', verifiedWorkspaceId: string): string {
     const addr = task.metadata[actorSide];
@@ -618,12 +623,12 @@ export class A2aTaskService {
   }
 
   /**
-   * authContext 조립(§7 PR5). verifiedWorkspaceId = 서버핀 authz 앵커(호출자 제공).
-   * principalId = derivePrincipalId가 서버 유도한 display/routing 스탬프. trustTier =
-   * 'semi-trusted' 고정: A2A task RPC는 caller가 GUI human인지 우리가 spawn한 ClaudeWorker인지
-   * 구별할 신뢰 신호를 싣지 않으므로(§7 표의 trusted/semi-trusted 구분 입력 부재) 보수적
-   * 하위 등급으로 단일화한다(발신자 주장 차단). 정밀 등급 배정은 caller trust 신호 배선 후속.
-   * trustTier/principalId는 display·감사 전용이라 authz에 무영향(§7:358).
+   * Assemble authContext (§7 PR5). verifiedWorkspaceId = server-pinned authz anchor (caller-provided).
+   * principalId = display/routing stamp derived by derivePrincipalId. trustTier = fixed 'semi-trusted':
+   * A2A task RPC carries no trust signal to distinguish GUI human vs ClaudeWorker we spawned (§7 table
+   * trusted/semi-trusted distinction input absent), so conservatively unified at the lower tier (blocks
+   * sender claims). Precise tier assignment is follow-up after caller trust signal wiring. trustTier/
+   * principalId are display/audit only — no authz impact (§7:358).
    */
   private buildAuthContext(
     verifiedWorkspaceId: string,
@@ -637,9 +642,9 @@ export class A2aTaskService {
   }
 
   /**
-   * 멱등 키는 op 네임스페이스로 분리 저장한다(codex 델타): transition과 cancel이 같은
-   * (taskId, key) 평면을 공유하면 한 op의 키로 다른 op의 캐시 결과를 재생할 수 있다
-   * (예: cancel 키 재사용 transition이 CancelOk를 TransitionOk로 오반환).
+   * Idempotency keys are stored in separate op namespaces (codex delta): if transition and cancel shared
+   * the same (taskId, key) plane, one op's key could replay another op's cached result (e.g. cancel key
+   * reused on transition returns CancelOk as TransitionOk).
    */
   private idempotencyHit(
     taskId: string,
@@ -663,7 +668,7 @@ export class A2aTaskService {
       this.idempotency.set(taskId, stream);
     }
     stream.set(`${op}:${key}`, result);
-    // LRU: Map은 삽입 순서를 보존 — cap 초과 시 가장 오래된 키부터 축출.
+    // LRU: Map preserves insertion order — evict oldest keys when cap exceeded.
     while (stream.size > IDEMPOTENCY_CAP) {
       const oldest = stream.keys().next().value as string | undefined;
       if (oldest === undefined) break;
@@ -672,9 +677,9 @@ export class A2aTaskService {
   }
 
   /**
-   * per-task 직렬화. prev 체인 뒤에 fn을 잇고, 다음 대기자가 prev 실패로 거부되지
-   * 않도록 저장 체인은 에러를 삼킨다(ChannelService.withChannelLock 동형). 테일에서
-   * 정착 시 항목을 정리해 locks 맵을 바운드한다.
+   * per-task serialization. Chain fn after prev; swallow errors on the stored chain so the next waiter
+   * is not rejected because prev failed (same shape as ChannelService.withChannelLock). Clean up entry
+   * when tail settles to bound the locks map.
    */
   private withTaskLock<T>(taskId: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.locks.get(taskId) ?? Promise.resolve();

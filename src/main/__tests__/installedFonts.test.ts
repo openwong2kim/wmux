@@ -42,13 +42,13 @@ describe('parseFontList', () => {
 
 describe('parseMacFontProfile', () => {
   it('extracts, dedups, and locale-sorts typeface family names', () => {
-    // system_profiler SPFontsDataType -json 축약 형태 — 폰트당 typefaces 배열
+    // Abbreviated system_profiler SPFontsDataType -json — typefaces array per font entry
     const stdout = JSON.stringify({
       SPFontsDataType: [
         { typefaces: [{ family: 'Menlo' }, { family: 'Menlo' }] },
         { typefaces: [{ family: ' Apple SD Gothic Neo ' }, { family: '' }, { family: 42 }] },
         { typefaces: [{ family: 'D2Coding' }] },
-        {}, // typefaces 없는 항목도 무해해야 한다
+        {}, // entries without typefaces must be harmless
       ],
     });
     expect(parseMacFontProfile(stdout)).toEqual(['Apple SD Gothic Neo', 'D2Coding', 'Menlo']);

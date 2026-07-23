@@ -117,7 +117,7 @@ describe('FleetCard — X8 supervision chip', () => {
   });
 });
 
-describe('FleetCard — 사이클 C mission line', () => {
+describe('FleetCard — cycle C mission line', () => {
   function mission(over: Partial<WorkTask> & Pick<WorkTask, 'id' | 'title' | 'status'>): WorkTask {
     const ref = { principalId: 'p', verifiedWorkspaceId: 'parent-a' };
     return {
@@ -133,7 +133,7 @@ describe('FleetCard — 사이클 C mission line', () => {
 
   it('renders nothing when the card has no matching mission', () => {
     expect(renderLine(undefined)).toBe('');
-    // 미션 캐시가 비어 있으면(생성 시점) 카드 본체에도 미션 라인이 없다.
+    // When the mission cache is empty (at creation time), the card body has no mission line either.
     expect(render({ card: card() })).not.toContain('data-fleet-mission');
   });
 

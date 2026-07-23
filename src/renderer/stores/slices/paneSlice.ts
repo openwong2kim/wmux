@@ -560,7 +560,7 @@ export const createPaneSlice: StateCreator<StoreState, [['zustand/immer', never]
             delete state.surfaceActivityAt[s.ptyId];
             delete state.surfaceOutputAt[s.ptyId];
             clearNudgesFor(s.ptyId); // A5: don't let a reused ptyId inherit this pane's nudge cap
-            // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict.
+            // J3 F4: evict onExhausted mapping when this ptyId is destroyed.
             if (state.taskPtyRegistry) delete state.taskPtyRegistry[s.ptyId];
           }
         }

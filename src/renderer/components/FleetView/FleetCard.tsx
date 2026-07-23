@@ -20,8 +20,8 @@ function shortenPath(path: string, maxLen = 34): string {
 interface FleetCardProps {
   card: FleetPane;
   focused: boolean;
-  /** A2: card를 인자로 받는다 — 부모가 안정적인 단일 콜백(useCallback)을 그대로
-   *  내릴 수 있어 memo(FleetCard)가 실효한다(카드마다 새 화살표 생성 회피). */
+  /** A2: takes card as an argument — parent can pass one stable callback (useCallback)
+   *  so memo(FleetCard) is effective (avoids creating a new arrow per card). */
   onJump: (card: FleetPane) => void;
   /** S-C2 live output tail — last ~3 plaintext lines of this pane's buffer.
    *  Only meaningful for terminal cards with a ptyId; already plaintext. */
@@ -53,8 +53,9 @@ function formatRss(bytes: number): string {
 }
 
 /**
- * 사이클 C — fan-out 미션 라인(순수 prop-구동, 테스트 가능). 매칭 미션이 없으면
- * null(기존 카드 확장 — 신규 UI 표면 아님). status로 색·취소선을 인코딩한다.
+ * Cycle C — fan-out mission line (pure prop-driven, testable). Returns null when no
+ * matching mission (existing card extension — not a new UI surface). Encodes color and
+ * strikethrough via status.
  */
 export function FleetCardMissionLine({ mission }: { mission: WorkTask | undefined }): React.ReactElement | null {
   if (!mission) return null;
@@ -126,10 +127,10 @@ export function FleetCardEvidenceBadge({ task }: { task: Task | undefined }): Re
 function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
   const t = useT();
   const icon = AGENT_STATUS_ICON[card.agentStatus];
-  // 사이클 C — 이 카드의 워크스페이스가 fan-out 태스크의 전용 워크스페이스
-  // (paneGroupId)면 미션 title·status를 부가 표시한다. 좁은 셀렉터(자기
-  // paneGroupId 항목만)라 다른 미션 변경엔 리렌더되지 않고, 매칭이 없으면
-  // undefined(신규 UI 표면 없음 — 기존 카드 확장).
+  // Cycle C — when this card's workspace is the dedicated workspace (paneGroupId) of a
+  // fan-out task, show mission title and status. Narrow selector (own paneGroupId only)
+  // so other mission changes do not re-render; undefined when no match (no new UI surface
+  // — existing card extension).
   const mission = useStore((s) => s.missionByPaneGroup[card.workspaceId]);
   // NB3 trust surface — the most recent completed A2A task with evidence
   // addressed to this pane (narrow, reference-stable read: the selector returns
@@ -239,8 +240,8 @@ function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
         </div>
       )}
 
-      {/* 사이클 C — 미션 라인(순수 prop-구동 서브컴포넌트). 이 카드가 fan-out
-          태스크의 워크스페이스면 title + status를 부가 표시(매칭 없으면 null). */}
+      {/* Cycle C — mission line (pure prop-driven subcomponent). When this card is the
+          fan-out task workspace, show title + status (null when no match). */}
       <FleetCardMissionLine mission={mission} />
 
       {/* NB3 trust surface — completion-evidence badge for the pane's most
@@ -298,7 +299,7 @@ function FleetCard({ card, focused, onJump, tail, resource }: FleetCardProps) {
   );
 }
 
-// A2: 그리드 자식 memo 방벽. 부모(FleetView)가 함대 갱신마다 리렌더돼도 이 카드의
-// props(card·focused·onJump·tail)가 참조상 같으면 리렌더를 건너뛴다. card/tail은
-// fleet 셀렉터가 값이 바뀐 pane에 대해서만 새 참조를 만들므로 얕은 비교로 실효.
+// A2: grid-child memo barrier. When FleetView re-renders on every fleet update, this card
+// skips re-render if props (card, focused, onJump, tail) are referentially equal. card/tail
+// get new references only for panes whose values changed (fleet selector), so shallow compare works.
 export default memo(FleetCard);

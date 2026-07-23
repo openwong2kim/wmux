@@ -1,29 +1,29 @@
 /**
- * CostEstimator — PTY 출력 기반 에이전트 실행 비용 추정기
+ * CostEstimator — agent run cost estimator based on PTY output
  *
- * Anthropic API 요금 기준 (2026.03):
+ * Anthropic API pricing (2026.03):
  *   Claude Opus 4.6:  $15/M input tokens,  $75/M output tokens
  *
- * 추정 방식:
- *   - PTY 출력 1 char ≈ 1 output token (보수적 추정)
- *   - 활성 시간(분) × 분당 고정 비용 (하이브리드 모델)
+ * Estimation method:
+ *   - PTY output 1 char ≈ 1 output token (conservative estimate)
+ *   - active time (minutes) × fixed cost per minute (hybrid model)
  *
- * 정확도: ±50% 수준 (상대적 비교 용도)
+ * Accuracy: ±50% (for relative comparison only)
  */
 
 // Claude Opus 4.6 output: $75 / 1_000_000 tokens
 const COST_PER_OUTPUT_TOKEN = 75 / 1_000_000;
 
-// 1 char ≈ 1 token (단순 추정, ANSI 시퀀스 포함이므로 실제보다 약간 높음)
+// 1 char ≈ 1 token (simple estimate; includes ANSI sequences so slightly high)
 const CHARS_PER_TOKEN = 1;
 
-// 활성 에이전트 분당 추정 비용 ($0.02/min)
+// Estimated cost per active agent minute ($0.02/min)
 const COST_PER_MINUTE_ACTIVE = 0.02;
 
 export class CostEstimator {
   private memberCosts = new Map<string, number>();
 
-  // ─── PTY 출력 글자 수 기반 비용 누적 ─────────────────────────────────────
+  // ─── Accumulate cost from PTY output character count ─────────────────────
 
   addOutputChars(memberId: string, charCount: number): void {
     const tokens = charCount / CHARS_PER_TOKEN;
@@ -34,7 +34,7 @@ export class CostEstimator {
     );
   }
 
-  // ─── 활성 시간(분) 기반 비용 누적 ────────────────────────────────────────
+  // ─── Accumulate cost from active time (minutes) ────────────────────────────
 
   addActiveMinutes(memberId: string, minutes: number): void {
     const cost = minutes * COST_PER_MINUTE_ACTIVE;
@@ -44,7 +44,7 @@ export class CostEstimator {
     );
   }
 
-  // ─── 조회 ─────────────────────────────────────────────────────────────────
+  // ─── Query ─────────────────────────────────────────────────────────────────
 
   getMemberCost(memberId: string): number {
     return this.memberCosts.get(memberId) ?? 0;
@@ -62,7 +62,7 @@ export class CostEstimator {
     return memberIds.reduce((sum, id) => sum + this.getMemberCost(id), 0);
   }
 
-  // ─── 리셋 ─────────────────────────────────────────────────────────────────
+  // ─── Reset ─────────────────────────────────────────────────────────────────
 
   reset(): void {
     this.memberCosts.clear();
@@ -72,7 +72,7 @@ export class CostEstimator {
     this.memberCosts.delete(memberId);
   }
 
-  // ─── 스냅샷 (직렬화) ──────────────────────────────────────────────────────
+  // ─── Snapshot (serialization) ──────────────────────────────────────────────
 
   toRecord(): Record<string, number> {
     return Object.fromEntries(this.memberCosts.entries());
@@ -86,5 +86,5 @@ export class CostEstimator {
   }
 }
 
-// 앱 전역 싱글턴
+// App-wide singleton
 export const globalCostEstimator = new CostEstimator();

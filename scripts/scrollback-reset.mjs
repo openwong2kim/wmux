@@ -180,7 +180,7 @@ function main() {
   console.log('  2. Create 2+ panes, run something with visible output');
   console.log('  3. Tray → Quit (graceful)');
   console.log('  4. npm start');
-  console.log('  5. Expect: "패널 복원 중…" placeholder, then panes with restored scrollback');
+  console.log('  5. Expect: "Restoring panes…" placeholder, then panes with restored scrollback');
 }
 
 main();

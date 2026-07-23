@@ -1,18 +1,19 @@
-// ─── 사이드바 "Missions" 섹션 (NB2 파동2 사이클 C) ───────────────────────────
+// ─── Sidebar "Missions" section (NB2 wave 2 cycle C) ───────────────────────────
 //
-// fan-out(J1)이 만든 미션(WorkTask)을 워크스페이스 리스트 상단의 별도 그룹으로
-// 승격한다. 각 미션 = 프롬프트 1개가 펼쳐진 격리 태스크이고, `paneGroupId`가 곧
-// 그 태스크 전용 자식 워크스페이스 id다. 행은 title·status(open/closed)와 미션
-// 채널로 이어지는 링크를 보여준다.
+// Promotes fan-out (J1) missions (WorkTask) to a separate group at the top of the
+// workspace list. Each mission = one prompt expanded into an isolated task; `paneGroupId`
+// is the dedicated child workspace id for that task. Rows show title, status (open/closed),
+// and a link to the mission channel.
 //
-// worktree 배지(⊕, WorkspaceItem)와의 공존: 배지는 "이 워크스페이스가 git worktree"
-// 라는 저수준 사실을, 이 섹션은 "이 워크스페이스가 fan-out 태스크"라는 상위 개념을
-// 얹는다(worktree ⊂ task는 아님 — broadcast 모드는 격리 없음). 둘은 서로 다른 축이라
-// 같은 자식 워크스페이스가 사이드바 리스트(배지 있음)와 이 섹션(미션 행)에 모두 나올
-// 수 있고, 이는 의도된 이중 표현이다.
+// Coexistence with worktree badge (⊕, WorkspaceItem): the badge is the low-level fact
+// "this workspace is a git worktree"; this section adds the higher-level concept "this
+// workspace is a fan-out task" (worktree ⊂ task does not hold — broadcast mode has no
+// isolation). They are independent axes, so the same child workspace may appear both in
+// the sidebar list (with badge) and in this section (mission row) — intentional dual
+// representation.
 //
-// 빈 상태: 미션이 하나도 없으면(대부분의 일반 워크스페이스) 이 컴포넌트는 null을
-// 반환해 **공간을 전혀 차지하지 않는다**(헤더조차 렌더하지 않음).
+// Empty state: when there are no missions (most normal workspaces), this component returns
+// null and **occupies no space at all** (does not even render a header).
 
 import { memo, useMemo } from 'react';
 import { useShallow } from 'zustand/react/shallow';
@@ -20,9 +21,9 @@ import { useStore } from '../../stores';
 import type { WorkTask } from '../../../shared/workTask';
 
 /**
- * 모든 부모 캐시를 평탄화·정렬한 미션 목록(순수 함수 — 테스트 가능). open을 먼저,
- * 그 안에서 최신(createdAt desc) 순으로 정렬한다. 태스크는 부모 하나에만 속하므로
- * 중복은 없다.
+ * Flatten and sort all parent caches into one mission list (pure function — testable).
+ * Open first, then newest (createdAt desc) within each status. Tasks belong to only one
+ * parent, so there are no duplicates.
  */
 export function flattenMissions(byWorkspace: Record<string, WorkTask[]>): WorkTask[] {
   const all: WorkTask[] = [];
@@ -39,7 +40,7 @@ function useFlatMissions(): WorkTask[] {
 }
 
 function MissionRow({ task }: { task: WorkTask }): React.ReactElement {
-  // 자식 워크스페이스 존재 여부(존재할 때만 행 클릭으로 점프 가능).
+  // Whether the child workspace exists (row click jump only when it does).
   const childExists = useStore((s) =>
     task.paneGroupId ? s.workspaces.some((w) => w.id === task.paneGroupId) : false,
   );
@@ -52,8 +53,8 @@ function MissionRow({ task }: { task: WorkTask }): React.ReactElement {
     }
   };
   const openMissionChannel = (): void => {
-    // 기존 채널 열기 경로 재사용(setActiveChannel이 dock을 열고 채널을 선택) —
-    // 새 라우팅을 만들지 않는다.
+    // Reuse existing channel-open path (setActiveChannel opens dock and selects channel) —
+    // no new routing.
     useStore.getState().setActiveChannel(task.missionChannelId);
   };
 
@@ -83,7 +84,7 @@ function MissionRow({ task }: { task: WorkTask }): React.ReactElement {
       >
         {task.title}
       </span>
-      {/* 미션 채널 링크 — 기존 ChannelDock으로 해당 채널을 연다. */}
+      {/* Mission channel link — opens that channel in existing ChannelDock. */}
       <button
         type="button"
         className="flex-shrink-0 text-[10px] font-mono text-[var(--text-subtle)] hover:text-[var(--accent-blue)] transition-colors"
@@ -103,7 +104,7 @@ function MissionRow({ task }: { task: WorkTask }): React.ReactElement {
 
 function MissionsSection(): React.ReactElement | null {
   const missions = useFlatMissions();
-  // 빈 상태: 미션이 없으면 아무 것도 렌더하지 않는다(공간 0).
+  // Empty state: render nothing when there are no missions (zero space).
   if (missions.length === 0) return null;
 
   return (

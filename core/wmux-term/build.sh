@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
-# S-A1 스파이크 빌드 — napi .node(darwin-arm64) + wasm(web/nodejs) + 네이티브 벤치 바이너리.
-# 로컬 전용(CI 편입은 S-A2). Rust는 cargo PATH 필요.
+# S-A1 spike build — napi .node (darwin-arm64) + wasm (web/nodejs) + native bench binary.
+# Local only (CI integration is S-A2). Requires cargo on PATH.
 set -euo pipefail
 
 export PATH="$HOME/.cargo/bin:$PATH"
@@ -8,8 +8,8 @@ CRATE_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$CRATE_DIR/../.." && pwd)"
 NAPI="$REPO_ROOT/node_modules/.bin/napi"
 WASM_PACK="$REPO_ROOT/node_modules/.bin/wasm-pack"
-# wasm-bindgen CLI는 wasm-pack이 Cargo.lock의 wasm-bindgen 버전에 맞춰 자체
-# 다운로드·캐시·실행한다 — 홈 캐시 PATH 주입 금지(글로벌 상태 의존, 리뷰 반영).
+# wasm-bindgen CLI is downloaded, cached, and run by wasm-pack to match the wasm-bindgen
+# version in Cargo.lock — do not inject home-cache PATH (avoids global-state dependency; review feedback).
 
 cd "$CRATE_DIR"
 
@@ -17,14 +17,14 @@ echo "==> [1/4] napi .node (aarch64-apple-darwin)"
 "$NAPI" build --manifest-path ./Cargo.toml --output-dir ./dist/napi \
   --platform --release --js index.cjs --dts index.d.ts
 
-echo "==> [2/4] wasm web 타깃(렌더러용)"
+echo "==> [2/4] wasm web target (renderer)"
 "$WASM_PACK" build --target web --release --out-dir ./dist/wasm-web --out-name wmux_term
 
-echo "==> [3/4] wasm nodejs 타깃(V4b 벤치·V5 메모리용 — web과 동일 .wasm)"
+echo "==> [3/4] wasm nodejs target (V4b bench + V5 memory — same .wasm as web)"
 "$WASM_PACK" build --target nodejs --release --out-dir ./dist/wasm-node --out-name wmux_term
 
-echo "==> [4/4] 네이티브 벤치 바이너리(bench 피처, 바인딩 제외)"
+echo "==> [4/4] native bench binary (bench feature, bindings excluded)"
 cargo build --release --no-default-features --features bench --bin bench_native
 
-echo "==> 완료. 산출물:"
+echo "==> Done. Artifacts:"
 ls -la dist/napi/*.node dist/wasm-web/*.wasm dist/wasm-node/*.wasm target/release/bench_native 2>/dev/null || true

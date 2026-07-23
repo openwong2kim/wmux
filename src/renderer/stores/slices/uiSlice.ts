@@ -104,8 +104,8 @@ export interface UISlice {
   toggleFleetView: () => void;
   setFleetViewVisible: (visible: boolean) => void;
 
-  // J3 §1 — 태스크 정리 목록(팔레트 진입). 전용 루트 디스크 정본 스캔 결과를
-  // 4종(미물질화·디스크 결측·보존·무연결)으로 보여준다. 전이 UI 상태(미영속).
+  // J3 §1 — task cleanup list (palette entry). Shows dedicated root disk canonical scan in
+  // four buckets (unmaterialized·disk missing·preserved·orphaned). Transient UI state (not persisted).
   worktaskCleanupVisible: boolean;
   setWorktaskCleanupVisible: (visible: boolean) => void;
 
@@ -702,7 +702,7 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     if (visible && state.inspectModeActive) resetInspectState(state);
   }),
 
-  // ─── J3 태스크 정리 목록 ──────────────────────────────────────────────────
+  // ─── J3 task cleanup list ──────────────────────────────────────────────────
   worktaskCleanupVisible: false,
   setWorktaskCleanupVisible: (visible) => set((state) => {
     state.worktaskCleanupVisible = visible;

@@ -1,17 +1,17 @@
-// ─── J3 함대 리부트 생존 데모(§5(a) — fanout N=4 왕복, 하드 게이트 판정식) ────
+// ─── J3 fleet reboot survival demo (§5(a) — fanout N=4 round-trip, hard gate verdict) ────
 //
-// J1 단일 태스크 데모(j1-reboot-survival.demo.test.ts)의 함대 확장. 실 git 리포
-// + 실 worktree 4개 + 실 AppendOnlyLog로 §5(a) 스크립트 실증 범위를 재현한다:
-//   mission.start ×4 → worktree ×4(실 git) → 산출물 시딩(각 worktree에 미커밋
-//   변경) → task.update 물질화 ×4 → 데몬 재시작 시뮬레이션(서비스 재생성 +
-//   boot replay) → **데몬 상태 전량 복원**: projection 4태스크 open·물질화 필드
-//   잔존 / worktree 4개 fs 실존 + 산출물 파일 잔존 / 미션 채널 4개 active.
+// Fleet extension of J1 single-task demo (j1-reboot-survival.demo.test.ts). Reproduce §5(a)
+// script demo scope with real git repo + 4 real worktrees + real AppendOnlyLog:
+//   mission.start ×4 → worktree ×4 (real git) → artifact seeding (uncommitted change per worktree)
+//   → task.update materialization ×4 → daemon restart simulation (service recreate +
+//   boot replay) → **full daemon state restore**: 4 tasks open·materialized fields retained /
+//   4 worktrees fs existence + artifact files retained / 4 mission channels active.
 //
-// 실증 범위 규율(§5 — 리뷰 G7+CL7): 이 판정식이 실증하는 것은 **데몬 상태**까지다.
-// 워크스페이스·페인 복원(session.json/렌더러 경로)은 수동 시나리오 문서 몫이며,
-// 이 테스트의 PASS를 근거로 "워크스페이스 생존"을 주장하지 않는다.
+// Demo scope discipline (§5 — review G7+CL7): this verdict formula demonstrates **daemon state** only.
+// Workspace·pane restore (session.json/renderer path) is manual scenario doc scope;
+// do not claim "workspace survival" based on this test PASS.
 //
-// scripts/j3-fleet-reboot-survival-demo.mjs가 이 스펙을 구동한다.
+// scripts/j3-fleet-reboot-survival-demo.mjs drives this spec.
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -35,7 +35,7 @@ beforeEach(() => {
   logDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-j3demo-log-'));
   repoRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-j3demo-repo-'));
   wtRoot = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-j3demo-wt-'));
-  // 실 git 리포 초기화 + 최초 커밋(worktree add에 HEAD가 필요).
+  // Init real git repo + first commit (worktree add needs HEAD).
   const git = (args: string[]) => execFileSync('git', args, { cwd: repoRoot });
   git(['init', '-q', '-b', 'main']);
   git(['config', 'user.email', 'demo@wmux.test']);
@@ -54,7 +54,7 @@ function newLog(): AppendOnlyLog {
   return log;
 }
 
-// 최소 채널 포트(J1 데모 하네스 동형 — active/archived 추적만).
+// Minimal channel port (same harness as J1 demo — active/archived tracking only).
 function makeChannelPort() {
   const channels = new Map<string, { id: string; topic?: string; status: 'active' | 'archived'; createdByWorkspaceId?: string }>();
   let seq = 0;
@@ -89,8 +89,8 @@ function newSvc(port: WorkTaskChannelPort): WorkTaskService {
   });
 }
 
-describe('J3 §5(a) 함대 리부트 생존 왕복(데모 판정식)', () => {
-  it(`fanout N=${FLEET_N} → 산출물 시딩 → 재시작 replay → 데몬 상태 전량 복원`, async () => {
+describe('J3 §5(a) fleet reboot survival round-trip (demo verdict)', () => {
+  it(`fanout N=${FLEET_N} → seed artifacts → restart replay → full daemon state restore`, async () => {
     const { port, channels } = makeChannelPort();
     const svc = newSvc(port);
     await svc.boot();
@@ -105,7 +105,7 @@ describe('J3 §5(a) 함대 리부트 생존 왕복(데모 판정식)', () => {
       artifactPath: string;
     }> = [];
 
-    // ①~③ 함대 스폰: mission.start → 실 worktree → 산출물 시딩 → 물질화.
+    // ①~③ Fleet spawn: mission.start → real worktree → artifact seeding → materialization.
     for (let k = 0; k < FLEET_N; k++) {
       const started = await svc.startMission({
         title: `Fleet task #${k + 1}`,
@@ -130,7 +130,7 @@ describe('J3 §5(a) 함대 리부트 생존 왕복(데모 판정식)', () => {
       });
       expect(created.ok).toBe(true);
 
-      // 산출물 시딩: 에이전트 작업 시뮬레이션 — 미커밋 변경(§5(a) "산출물 시딩").
+      // Artifact seeding: simulate agent work — uncommitted change (§5(a) "artifact seeding").
       const artifactPath = path.join(worktreePath, `artifact-${k + 1}.txt`);
       fs.writeFileSync(artifactPath, `fleet artifact ${k + 1}\n`);
 
@@ -147,27 +147,27 @@ describe('J3 §5(a) 함대 리부트 생존 왕복(데모 판정식)', () => {
       fleet.push({ taskId, channelId, branch, worktreePath, workspaceId, artifactPath });
     }
 
-    // ④ 데몬 재시작 시뮬레이션 — 같은 로그·같은 채널 위에 서비스 재생성 + replay.
+    // ④ Daemon restart simulation — recreate service on same log·channels + replay.
     const svc2 = newSvc(port);
     await svc2.boot();
 
-    // ⑤ 검증: 데몬 상태 전량 복원(N=4 전원 — 하나라도 결손이면 함대 생존 실패).
+    // ⑤ Verify: full daemon state restore (all N=4 — any gap fails fleet survival).
     for (const m of fleet) {
-      // projection: open + 물질화 필드 잔존.
+      // projection: open + materialized fields retained.
       const t = svc2.getTask(m.taskId);
       expect(t?.status).toBe('open');
       expect(t?.branch).toBe(m.branch);
       expect(t?.worktreePath).toBe(m.worktreePath);
       expect(t?.paneGroupId).toBe(m.workspaceId);
-      // worktree 디스크 실존 + 미커밋 산출물 잔존(재시작이 산출물을 못 건드림).
+      // worktree on-disk existence + uncommitted artifact retained (restart must not touch artifacts).
       expect(fs.existsSync(m.worktreePath)).toBe(true);
       expect(fs.existsSync(path.join(m.worktreePath, '.git'))).toBe(true);
       expect(fs.readFileSync(m.artifactPath, 'utf8')).toContain('fleet artifact');
-      // 미션 채널 active.
+      // mission channel active.
       expect(channels.get(m.channelId)?.status).toBe('active');
     }
 
-    // 상호 격리 재확인: 4 worktree·4 branch·4 채널이 전부 상이.
+    // Mutual isolation recheck: 4 worktrees·4 branches·4 channels all distinct.
     expect(new Set(fleet.map((m) => m.worktreePath)).size).toBe(FLEET_N);
     expect(new Set(fleet.map((m) => m.branch)).size).toBe(FLEET_N);
     expect(new Set(fleet.map((m) => m.channelId)).size).toBe(FLEET_N);

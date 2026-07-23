@@ -75,7 +75,7 @@ describe('a2aSlice — createA2aTask idempotency (A3: no completed-task resurrec
     });
     // Drive it to a terminal state.
     store.getState().updateTaskStatus(id, 'working', 'ws-b');
-    // 완료증거 게이트(PR-B) 활성 후 completed는 구조화 증거 필수 — 최소 컴플라이언트 증거 첨부.
+    // Completion-evidence gate (PR-B) active: completed requires structured evidence — attach minimal client evidence.
     store.getState().updateTaskStatus(id, 'completed', 'ws-b', undefined, undefined, {
       summary: 'done',
       items: [{ kind: 'inspection', status: 'unverified', summary: 'ok' }],
@@ -243,7 +243,7 @@ describe('a2aSlice — updateTaskStatus transitions (P3 message clarity)', () =>
   });
 });
 
-describe('a2aSlice — updateTaskStatus 완료증거 저장 (§6.M P1 PR-D′, additive)', () => {
+describe('a2aSlice — updateTaskStatus completion-evidence persistence (§6.M P1 PR-D′, additive)', () => {
   let store: ReturnType<typeof createTestStore>;
   let taskId: string;
 
@@ -263,23 +263,23 @@ describe('a2aSlice — updateTaskStatus 완료증거 저장 (§6.M P1 PR-D′, a
     });
   });
 
-  it('전이 성공 시 evidence 를 task.status.evidence 에 verbatim 저장', () => {
+  it('stores evidence verbatim on task.status.evidence when transition succeeds', () => {
     store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
     const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, evidence);
     expect(r.ok).toBe(true);
     expect(store.getState().a2aTasks[taskId].status.evidence).toEqual(evidence);
   });
 
-  it('evidence 미제공 시 status.evidence 필드 부재 (additive: 없으면 안 붙음 — 비종단 전이)', () => {
-    // 완료증거 게이트(PR-B) 활성 후 completed는 evidence 필수라, additive-absent(없으면
-    // 안 붙음)는 게이트 비대상인 비종단 전이(working)로 확인한다.
+  it('omits status.evidence when evidence not provided (additive: absent on non-terminal transition)', () => {
+    // Completion-evidence gate (PR-B) active: completed requires evidence, so test additive-absent
+    // (omit when absent) on non-terminal transition (working), which gate does not cover.
     const r = store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
     expect(r.ok).toBe(true);
     expect(store.getState().a2aTasks[taskId].status).not.toHaveProperty('evidence');
   });
 
-  it('전이 거부 시 evidence 는 저장되지 않음 (게이트가 아니라 전이 성공에 종속)', () => {
-    // submitted -> completed 는 구조 전이 거부 → evidence 를 넘겨도 status 는 그대로.
+  it('does not store evidence when transition is rejected (tied to success, not gate alone)', () => {
+    // submitted -> completed is structurally rejected — status unchanged even with evidence passed.
     const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, evidence);
     expect(r.ok).toBe(false);
     expect(store.getState().a2aTasks[taskId].status.state).toBe('submitted');
@@ -473,12 +473,12 @@ describe('a2aSlice — pendingExecuteApproval', () => {
   });
 });
 
-// ── envelope PR4(§6.M C6): 데몬 커밋의 캐시 verbatim 적용 ────────────────
-// 계약: applyDaemonTaskUpdate는 authz·validateTransition·evidence 어느 것도
-// 재실행하지 않는다 — 캐시가 재검증하면 데몬 force-fail 커밋(그래프 밖 전이)을
-// 거부해 split-brain이 난다. 기존 updateTaskStatus(검증 writer)는 데몬 미가용
-// 폴백으로 병존한다(위 스위트들이 그 시멘틱을 계속 고정).
-describe('a2aSlice — applyDaemonTaskUpdate (캐시 verbatim, C6)', () => {
+// ── envelope PR4(§6.M C6): verbatim cache apply of daemon commits ────────────────
+// Contract: applyDaemonTaskUpdate re-runs neither authz, validateTransition, nor evidence —
+// cache re-validation would reject daemon force-fail commits (out-of-graph transitions) and
+// cause split-brain. Existing updateTaskStatus (validating writer) coexists as daemon-unavailable
+// fallback (suites above keep pinning that semantic).
+describe('a2aSlice — applyDaemonTaskUpdate (cache verbatim, C6)', () => {
   function makeTask(id: string, state: string, updatedAt: string) {
     return {
       kind: 'task' as const,
@@ -496,7 +496,7 @@ describe('a2aSlice — applyDaemonTaskUpdate (캐시 verbatim, C6)', () => {
     };
   }
 
-  it('그래프 밖 전이(submitted→failed, force-fail류)도 재검증 없이 수용한다', () => {
+  it('accepts out-of-graph transitions (submitted→failed, force-fail) without re-validation', () => {
     const store = createTestStore();
     const id = store.getState().createA2aTask({
       title: 'Test',
@@ -505,16 +505,16 @@ describe('a2aSlice — applyDaemonTaskUpdate (캐시 verbatim, C6)', () => {
       history: [makeMessage('hello')],
       artifacts: [],
     });
-    // 대조: 검증 writer는 이 전이를 거부한다(VALID_TRANSITIONS: submitted→failed 금지).
+    // Contrast: validating writer rejects this transition (VALID_TRANSITIONS: submitted→failed forbidden).
     const rejected = store.getState().updateTaskStatus(id, 'failed', 'ws-receiver');
     expect(rejected.ok).toBe(false);
-    // verbatim 적용 경로는 데몬 커밋을 그대로 수용한다.
+    // Verbatim apply path accepts daemon commit as-is.
     store.getState().applyDaemonTaskUpdate(makeTask(id, 'failed', '2026-07-07T01:00:00.000Z'));
     expect(store.getState().getTask(id)?.status.state).toBe('failed');
     expect(store.getState().getTask(id)?.metadata.updatedAt).toBe('2026-07-07T01:00:00.000Z');
   });
 
-  it('기존 태스크엔 status·updatedAt만 반영하고 렌더러 보유 히스토리를 보존한다', () => {
+  it('updates only status·updatedAt on existing tasks and preserves renderer-held history', () => {
     const store = createTestStore();
     const id = store.getState().createA2aTask({
       title: 'Test',
@@ -532,13 +532,13 @@ describe('a2aSlice — applyDaemonTaskUpdate (캐시 verbatim, C6)', () => {
     store.getState().applyDaemonTaskUpdate(committed);
     const task = store.getState().getTask(id);
     expect(task?.status.state).toBe('working');
-    // 데몬 커밋 evidence가 verbatim 실린다.
+    // Daemon commit evidence applied verbatim.
     expect(task?.status.evidence?.summary).toBe('ev');
-    // 렌더러가 보유한 증분 히스토리(2건)는 데몬 스냅샷(0건)으로 덮이지 않는다.
+    // Renderer-held incremental history (2 entries) is not overwritten by daemon snapshot (0 entries).
     expect(task?.history).toHaveLength(2);
   });
 
-  it('캐시 미스(데몬 재시작 생존 태스크)는 스냅샷을 통째로 upsert한다', () => {
+  it('upserts full snapshot on cache miss (daemon-restart survivor task)', () => {
     const store = createTestStore();
     store.getState().applyDaemonTaskUpdate(makeTask('task-survivor', 'completed', '2026-07-07T03:00:00.000Z'));
     const task = store.getState().getTask('task-survivor');
@@ -548,11 +548,11 @@ describe('a2aSlice — applyDaemonTaskUpdate (캐시 verbatim, C6)', () => {
   });
 });
 
-// ── §6.M PR-B: 완료증거 게이트 (폴백 writer) ──────────────────────────────
-// 데몬이 soft-defer(pane-핀 + senderPtyId, S-C2)하거나 미가용일 때 updateTaskStatus가
-// 최종 판정자다 — completed/failed에 구조화 증거를 강제한다. 데몬 커밋의 verbatim
-// 적용(applyDaemonTaskUpdate)은 절대 게이트하지 않는다(C6 — force-fail 커밋 거부 = split).
-describe('a2aSlice — updateTaskStatus 완료증거 게이트 (§6.M PR-B, 폴백 writer)', () => {
+// ── §6.M PR-B: completion-evidence gate (fallback writer) ──────────────────────────────
+// When daemon soft-defers (pane-pin + senderPtyId, S-C2) or is unavailable, updateTaskStatus is
+// final arbiter — forces structured evidence for completed/failed. Verbatim daemon commit apply
+// (applyDaemonTaskUpdate) never gates (C6 — rejecting force-fail commit = split).
+describe('a2aSlice — updateTaskStatus completion-evidence gate (§6.M PR-B, fallback writer)', () => {
   let store: ReturnType<typeof createTestStore>;
   let taskId: string;
 
@@ -573,35 +573,35 @@ describe('a2aSlice — updateTaskStatus 완료증거 게이트 (§6.M PR-B, 폴�
     store.getState().updateTaskStatus(taskId, 'working', 'ws-receiver');
   });
 
-  it('completed + evidence 없음 → completion_evidence_missing 거부, 상태 불변', () => {
+  it('completed + no evidence → completion_evidence_missing rejection, state unchanged', () => {
     const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver');
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/completion_evidence_missing/);
-    expect(store.getState().a2aTasks[taskId].status.state).toBe('working'); // 미전이
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('working'); // no transition
   });
 
-  it('completed + 컴플라이언트 evidence → 통과 + evidence 저장', () => {
+  it('completed + compliant evidence → pass + evidence stored', () => {
     const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, compliant);
     expect(r.ok).toBe(true);
     expect(store.getState().a2aTasks[taskId].status.state).toBe('completed');
     expect(store.getState().a2aTasks[taskId].status.evidence).toEqual(compliant);
   });
 
-  it('failed + evidence 없음 → failure_reason_missing 거부', () => {
+  it('failed + no evidence → failure_reason_missing rejection', () => {
     const r = store.getState().updateTaskStatus(taskId, 'failed', 'ws-receiver');
     expect(r.ok).toBe(false);
     expect(r.error).toMatch(/failure_reason_missing/);
     expect(store.getState().a2aTasks[taskId].status.state).toBe('working');
   });
 
-  it('failed + 사유 summary만(items 없음) → 통과 (비대칭 E3)', () => {
+  it('failed + reason summary only (no items) → pass (asymmetric E3)', () => {
     const r = store.getState().updateTaskStatus(taskId, 'failed', 'ws-receiver', undefined, undefined, { summary: 'build broke', items: [] });
     expect(r.ok).toBe(true);
     expect(store.getState().a2aTasks[taskId].status.state).toBe('failed');
   });
 
-  it('malformed evidence(미지 kind)는 폴백 writer도 데몬과 동형으로 malformed 거부(리뷰 GLM+Claude)', () => {
-    // 브릿지 normalize를 우회한 직접 호출 가정 — writer 자체 normalize가 방어심층.
+  it('malformed evidence (unknown kind) rejected by fallback writer same as daemon (review GLM+Claude)', () => {
+    // Assumes direct call bypassing bridge normalize — writer's own normalize is defense-in-depth.
     const hostile = { summary: 'x', items: [{ kind: 'bogus', status: 'passed', summary: 'y' }] } as unknown as CompletionEvidence;
     const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, hostile);
     expect(r.ok).toBe(false);
@@ -609,16 +609,16 @@ describe('a2aSlice — updateTaskStatus 완료증거 게이트 (§6.M PR-B, 폴�
     expect(store.getState().a2aTasks[taskId].status.state).toBe('working');
   });
 
-  it('writer 자체 normalize가 서버 전용 스탬프(recordedBy)를 저장 전 드롭한다', () => {
+  it('writer normalize drops server-only stamp (recordedBy) before storage', () => {
     const withStamp = { ...compliant, recordedBy: 'forged:principal' } as CompletionEvidence;
     const r = store.getState().updateTaskStatus(taskId, 'completed', 'ws-receiver', undefined, undefined, withStamp);
     expect(r.ok).toBe(true);
     expect(store.getState().a2aTasks[taskId].status.evidence?.recordedBy).toBeUndefined();
   });
 
-  it('applyDaemonTaskUpdate는 evidence 없는 데몬 force-fail 커밋도 verbatim 적용(게이트 미경유, C6)', () => {
-    // 폴백 writer는 completed/failed를 게이트하지만, 데몬이 이미 판정해 커밋한 force-fail
-    // 스냅샷(evidence 없음)은 재검증 없이 그대로 반영한다 — 재검증하면 split-brain.
+  it('applyDaemonTaskUpdate applies daemon force-fail commit verbatim without evidence (no gate, C6)', () => {
+    // Fallback writer gates completed/failed, but daemon-committed force-fail snapshot (no evidence)
+    // is applied verbatim without re-validation — re-validation would split-brain.
     store.getState().applyDaemonTaskUpdate({
       kind: 'task',
       id: taskId,
@@ -633,6 +633,6 @@ describe('a2aSlice — updateTaskStatus 완료증거 게이트 (§6.M PR-B, 폴�
         updatedAt: '2026-07-08T00:00:00.000Z',
       },
     });
-    expect(store.getState().a2aTasks[taskId].status.state).toBe('failed'); // evidence 없이도 수용
+    expect(store.getState().a2aTasks[taskId].status.state).toBe('failed'); // accepted without evidence
   });
 });

@@ -28,11 +28,10 @@ import RemoteInboxList from './RemoteInboxList';
  * ones floated to the top. Click a card → jump straight to that pane. The
  * "Approvals" tab is a v2 stub (the unified A2A + MCP approval inbox).
  *
- * NB2 파동2 사이클 A: 전체화면 모달 → 상시 크롬 전환. ChannelDock과 같은 flex
- * 형제 패턴으로 AppLayout에 배치돼 페인을 reflow한다(더 이상 fixed 오버레이가
- * 아니라 워크스페이스 사이드바 반대편의 고정폭 사이드 패널). 백드롭·모달 포커스
- * 트랩은 제거됐고, 키보드 상호작용은 패널에 포커스가 있을 때만 가로챈다 —
- * 다른 페인으로 Tab 이동이 자유롭다.
+ * NB2 wave 2 cycle A: fullscreen modal → persistent chrome. Placed in AppLayout as a flex
+ * sibling like ChannelDock so panes reflow (no longer a fixed overlay — a fixed-width side
+ * panel opposite the workspace sidebar). Backdrop and modal focus trap removed; keyboard
+ * interaction is captured only when the panel has focus — Tab can move freely to other panes.
  *
  * Mount-gated by AppLayout on `fleetViewVisible`, so this component (and its
  * store subscriptions / selector) only exists while the cockpit is open.
@@ -40,9 +39,9 @@ import RemoteInboxList from './RemoteInboxList';
 export default function FleetView() {
   const t = useT();
   const setVisible = useStore((s) => s.setFleetViewVisible);
-  // 상시 크롬 엣지 미러링: 워크스페이스 사이드바는 sidebarPosition에, 이 패널은
-  // 그 반대편에 앉는다(ChannelDock과 동일 규칙). 사이드바가 왼쪽(기본)이면 패널은
-  // 오른쪽이고 콘텐츠 경계선은 왼쪽을 향한다(border-l).
+  // Persistent chrome edge mirroring: workspace sidebar follows sidebarPosition; this panel
+  // sits on the opposite side (same rule as ChannelDock). Sidebar left (default) → panel
+  // right and content border faces left (border-l).
   const sidebarPosition = useStore((s) => s.sidebarPosition);
   const dockOnRight = sidebarPosition !== 'right';
   const workspaces = useStore((s) => s.workspaces);
@@ -254,10 +253,10 @@ export default function FleetView() {
     setRemoteIdx((i) => Math.min(i, Math.max(remoteInbox.length - 1, 0)));
   }, [remoteInbox.length]);
 
-  // 현재 탭·포커스 인덱스에 해당하는 카드/행에 실제 DOM 포커스를 건다. 성공 시 true.
-  // 패널 컨테이너(panelRef)가 아니라 항목 요소에 직접 걸어야 (1) 보조기술이 최초
-  // 선택을 announce하고 (2) 탭에 카드가 하나뿐이어도 로빙 인덱스 클램프에 갇히지
-  // 않는다. 마운트 효과와 로빙 효과가 공유하는 단일 포커스 경로.
+  // Focus real DOM on the card/row for the current tab and focus index. Returns true on success.
+  // Must target the item element, not panelRef, so (1) assistive tech announces initial selection
+  // and (2) with a single card in the tab, roving index is not stuck in clamp. Shared focus
+  // path for mount and roving effects.
   const focusActiveItem = useCallback(() => {
     if (tab === 'fleet' && panes.length > 0) {
       const cards = gridRef.current?.querySelectorAll<HTMLElement>('[data-fleet-card]');
@@ -275,25 +274,24 @@ export default function FleetView() {
     return false;
   }, [tab, focusedIdx, inboxIdx, remoteIdx, panes.length, inbox.length, remoteInbox.length]);
 
-  // 마운트 효과([] deps)가 매 포커스 변경마다 재실행되지 않으면서도 최신 상태를
-  // 읽도록, 최신 focusActiveItem 클로저를 ref에 보관한다.
+  // Keep latest focusActiveItem closure in a ref so mount effect ([] deps) reads current state
+  // without re-running on every focus change.
   const focusActiveItemRef = useRef(focusActiveItem);
   focusActiveItemRef.current = focusActiveItem;
 
-  // 닫힐 때 포커스를 되돌릴 대상(열기 트리거 시점의 activeElement)을 담아두는 ref.
+  // Ref holding activeElement at open trigger time — focus restore target on close.
   const restoreFocusRef = useRef<HTMLElement | null>(null);
 
-  // 상시 크롬 전환: 열림(마운트) 시 딱 한 번 현재 항목으로 포커스를 당긴다. 예전엔
-  // 여기서 panelRef에만 포커스를 줬는데, 아래 로빙 효과의 "포커스가 이미 패널 안"
-  // 가드가 rAF 콜백보다 먼저 동기 실행돼 거짓이라 즉시 return → 어떤 카드에도 실제
-  // DOM 포커스가 안 걸리고, 카드가 하나뿐이면 화살표 클램프로 인덱스가 안 바뀌어
-  // 로빙이 영영 안 살아나는 레이스가 있었다. 이제 실제 카드/행에 직접 포커스하고,
-  // 항목이 하나도 없을 때만 패널 컨테이너로 폴백한다. 모달과 달리 그 뒤로는 절대
-  // 포커스를 강탈하지 않는다(아래 로빙 효과가 "이미 패널 안"일 때만 이동).
+  // Persistent chrome: on open (mount), pull focus to current item once. Previously only
+  // panelRef was focused; the roving effect's "focus already inside panel" guard ran
+  // synchronously before the rAF callback → false → immediate return → no card got real DOM
+  // focus; with one card, arrow clamp prevented index change and roving never woke up. Now
+  // focus the actual card/row directly, fall back to panel container only when no items.
+  // Unlike modal, never steal focus afterward (roving moves only when "already inside panel").
   //
-  // 닫힘(Esc/닫기 버튼/Ctrl+Shift+A) 시엔 포커스가 있던 요소가 사라지며 브라우저가
-  // 포커스를 body로 되돌린다. 이를 막기 위해 마운트 시점(아직 아래 rAF가 포커스를
-  // 뺏기 전 = 열기 트리거 직후의 activeElement)을 저장해뒀다가 언마운트에서 복원한다.
+  // On close (Esc/close button/Ctrl+Shift+A), focused elements disappear and browser drops
+  // focus to body. Save activeElement at mount (before rAF steals focus = just after open
+  // trigger) and restore on unmount.
   useEffect(() => {
     restoreFocusRef.current =
       document.activeElement instanceof HTMLElement ? document.activeElement : null;
@@ -302,18 +300,17 @@ export default function FleetView() {
     });
     return () => {
       cancelAnimationFrame(raf);
-      // 열기 시점 요소가 아직 문서에 살아있으면 포커스를 되돌린다(예: 타이핑 중이던
-      // 페인의 xterm textarea). 그새 사라졌으면 억지로 옮기지 않고 브라우저 기본
-      // (body)에 맡긴다.
+      // Restore focus if opener element is still in document (e.g. pane xterm textarea mid-typing).
+      // If it disappeared, do not force-move — leave browser default (body).
       const el = restoreFocusRef.current;
       if (el && el.isConnected) el.focus();
     };
   }, []);
 
-  // 로빙 포커스: 화살표 이동에 맞춰 DOM 포커스가 카드/행을 따라가고 보조기술이
-  // 선택을 읽어주도록 한다. 단 상시 크롬이므로 포커스가 "이미 패널 안"일 때만
-  // 이동한다 — 사용자가 다른 페인에서 타이핑 중일 때 리렌더가 포커스를 뺏으면
-  // 안 된다(모달 트랩과의 결정적 차이). 포커스가 밖이면 아무것도 하지 않는다.
+  // Roving focus: DOM focus follows cards/rows on arrow moves so assistive tech reads selection.
+  // Persistent chrome — move only when focus is "already inside panel"; must not steal focus
+  // while user types in another pane (decisive difference from modal trap). Do nothing when
+  // focus is outside.
   useEffect(() => {
     const panel = panelRef.current;
     if (!panel || !panel.contains(document.activeElement)) return;
@@ -321,13 +318,12 @@ export default function FleetView() {
     return () => cancelAnimationFrame(raf);
   }, [focusActiveItem]);
 
-  // Keyboard (상시 크롬 재설계): 모달 시절의 전역 window 캡처 리스너 + Tab 트랩을
-  // 걷어냈다. 대신 이 핸들러는 패널 DOM에 onKeyDownCapture로 붙어 "포커스가 패널
-  // 안에 있을 때만" 발동한다 — 다른 페인의 xterm에 포커스가 있으면 아무 키도
-  // 가로채지 않으므로 화면 전체를 가두지 않는다. Tab은 더 이상 붙잡지 않는다:
-  // 네이티브 Tab이 role=listbox 관례(로빙 tabindex, 화살표=내부 이동, Tab=위젯
-  // 진입/이탈)대로 포커스를 패널 밖 다른 페인으로 내보낼 수 있다. Esc는 포커스가
-  // 패널 안일 때 크롬을 닫는다. Ctrl+Shift+A 토글은 useKeyboard 전역 핸들러 담당.
+  // Keyboard (persistent chrome redesign): removed modal-era global window capture + Tab trap.
+  // Handler attaches via onKeyDownCapture on panel DOM and runs only when focus is inside —
+  // no keys intercepted when another pane's xterm has focus, so the screen is not caged.
+  // Tab is no longer held: native Tab follows role=listbox convention (roving tabindex,
+  // arrows=internal move, Tab=widget enter/exit) and can move focus to other panes. Esc closes
+  // chrome when focus is inside. Ctrl+Shift+A toggle is useKeyboard global handler.
   const handleKeyDown = useCallback((e: React.KeyboardEvent<HTMLDivElement>) => {
       if (e.key === 'Escape') {
         e.preventDefault();
@@ -350,12 +346,12 @@ export default function FleetView() {
       // explicit keyboard Approve (the sanctioned path per guard #5) would be
       // unreachable because the critical-row no-op swallows Enter first.
       const active = document.activeElement;
-      // 행 단축키(Enter=승인, Backspace/Delete=거부/dismiss)는 role=option 행 자체에
-      // 포커스가 있을 때만 발동한다. 예전엔 <button>만 예외 처리했는데, Tab 트랩을
-      // 걷어내며 A2A 행의 auto-approve 체크박스(input)도 키보드 포커스를 받게 됐다.
-      // 체크박스에 포커스가 있을 때 Enter/Backspace/Delete가 행 승인/거부로 오발화하면
-      // 신뢰경계 위반이다 — 그래서 버튼·체크박스 등 어떤 인터랙티브 컨트롤이든 행
-      // 자신이 아니면 가로채지 않고 네이티브 활성화(체크박스 토글, 버튼 클릭)에 맡긴다.
+      // Row shortcuts (Enter=approve, Backspace/Delete=deny/dismiss) fire only when the
+      // role=option row itself has focus. Previously only <button> was exempt; removing Tab
+      // trap let A2A row auto-approve checkbox (input) receive keyboard focus. Enter/Backspace/
+      // Delete while checkbox focused must not misfire as row approve/deny (trust boundary) —
+      // so any interactive control other than the row itself is not intercepted; native
+      // activation (checkbox toggle, button click) owns the keys.
       const onOptionRow =
         active instanceof HTMLElement && active.getAttribute('role') === 'option' &&
         !!panelRef.current?.contains(active);
@@ -422,9 +418,9 @@ export default function FleetView() {
     }, [tab, panes.length, inbox, inboxIdx, remoteInbox, remoteIdx, dismissRemoteItem, setVisible]);
 
   return (
-    // 상시 크롬 패널: fixed 오버레이·백드롭 없이 AppLayout flex 트리의 형제로서
-    // 폭을 차지해 페인을 reflow한다. role=region(모달 아님), 사이드바 반대편 엣지에
-    // 붙는다. 키보드는 포커스가 이 패널 안에 있을 때만 onKeyDownCapture로 가로챈다.
+    // Persistent chrome panel: flex sibling in AppLayout tree (no fixed overlay/backdrop),
+    // takes width and reflows panes. role=region (not modal), docked on edge opposite sidebar.
+    // Keyboard captured via onKeyDownCapture only when focus is inside this panel.
     <div
       ref={panelRef}
       tabIndex={-1}
@@ -471,8 +467,8 @@ export default function FleetView() {
               {t('fleet.sort.label')}: {t(fleetSortMode === 'attention' ? 'fleet.sort.attention' : 'fleet.sort.workspace')}
             </button>
           )}
-          {/* 상시 크롬: 백드롭 클릭-닫힘이 사라졌으므로 명시적 닫기 버튼이 필수.
-              Ctrl+Shift+A / Esc(포커스 내부)와 함께 닫기 경로를 제공한다. */}
+          {/* Persistent chrome: backdrop click-to-close is gone, so explicit close button is required.
+              Provides close path alongside Ctrl+Shift+A / Esc (when focus inside). */}
           <button
             type="button"
             onClick={() => setVisible(false)}
@@ -539,9 +535,9 @@ export default function FleetView() {
               role="listbox"
               aria-label={t('fleet.title')}
               className="grid gap-3"
-              // 상시 크롬 폭(모달 92vw/960px보다 좁음)에 맞춰 카드 최소폭을 축소해
-              // 좁은 패널에서도 그리드가 넘치지 않게 한다. 카드 내부는 전부 truncate라
-              // 200px에서도 레이아웃이 깨지지 않는다(기능 불변, 시각은 자연히 변화).
+              // Shrink card min-width for persistent chrome (narrower than modal 92vw/960px) so
+              // grid does not overflow in a narrow panel. Card internals are all truncate so
+              // layout holds at 200px (behavior unchanged, visuals naturally differ).
               style={{ gridTemplateColumns: 'repeat(auto-fill, minmax(200px, 1fr))' }}
             >
               {panes.map((card, idx) => (

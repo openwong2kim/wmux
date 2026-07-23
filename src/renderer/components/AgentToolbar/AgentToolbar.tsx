@@ -13,7 +13,7 @@ import { IconPaperclip, IconFolder, IconStar, IconKeyboard, IconPlus, IconUsers,
 
 export default function AgentToolbar() {
   const t = useT();
-  // A1: 활성 ws의 포커스 pty만 필요 — 활성 ws OBJECT만 구독(배경 ws churn 무시).
+  // A1: only need focused pty of active ws — subscribe to active ws OBJECT only (ignore background ws churn).
   const activeWorkspace = useStore(selectActiveWorkspace);
   const popover = useStore((s) => s.toolbarPopover);
   const setPopover = useStore((s) => s.setToolbarPopover);
@@ -129,9 +129,9 @@ export default function AgentToolbar() {
       </button>
       <div className="flex-1" />
       {disabled && <span className="text-[10px] text-[var(--text-muted)]">{t('toolbar.noTerminal')}</span>}
-      {/* Multi Task(fan-out) — 함대 스폰 명령이라 에이전트 툴바로 복귀(DESIGN.md
-          Decisions Log 2026-07-20). 우측 그룹에서 New chat 왼쪽에 산다. 클릭 시
-          FanOutDialog를 툴바 위(bottom-full)로 연다. */}
+      {/* Multi Task (fan-out) — fleet spawn command, back on agent toolbar (DESIGN.md
+          Decisions Log 2026-07-20). Sits left of New chat in the right group. Click opens
+          FanOutDialog above the toolbar (bottom-full). */}
       <button
         className={`${btn} ${showFanOut ? active : idle}`}
         // Opening a local popover clears the global one (explorer/snippets/rich).

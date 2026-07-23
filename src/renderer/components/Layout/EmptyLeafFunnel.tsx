@@ -45,7 +45,7 @@ const collectEmptyLeaves = (pane: Pane): LeafPane[] => {
  * Renders nothing. Owns the empty-leaf PTY-create funnel. Deps include the
  * joined empty-leaf id signature so that splitPane (which adds a new empty leaf
  * without changing the workspace id) re-triggers PTY creation. Without this, a
- * freshly split pane stays as the "빈 창" placeholder forever.
+ * freshly split pane stays as the "empty pane" placeholder forever.
  */
 export function EmptyLeafFunnel() {
   const { invoke: ipcInvoke } = useIpc();
@@ -180,9 +180,9 @@ export function EmptyLeafFunnel() {
           withRoleBinding(
             withWorkspaceProfile(
               withDefaultShell(
-                // 순수 빈 리프(사용자가 split으로 연 셸)만 user-shell로 스탬프해 env
-                // 투과. project seed(seedCommand 존재 — initialCommand/exec 브랜치)는
-                // 자동화라 미스탬프 → main이 fail-closed로 gated 처리.
+                // Stamp only pure empty leaves (shell opened by user split) as user-shell for env
+                // passthrough. Project seed (seedCommand present — initialCommand/exec branch) is
+                // automation, so leave unstamped → main gates fail-closed.
                 {
                   workspaceId: wsId,
                   cwd: startupCwd,

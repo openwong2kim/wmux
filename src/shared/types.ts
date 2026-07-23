@@ -54,19 +54,19 @@ export interface Surface {
   browserUrl?: string;
   browserPartition?: string;
   editorFilePath?: string;
-  /** J2 — diff 서피스: 대상 태스크 id. diff 내용은 파생 데이터(열 때마다 재계산). */
+  /** J2 — diff surface: target task id. diff content is derived data (recomputed on each open). */
   diffTaskId?: string;
   /**
-   * 워크스페이스 diff 서피스 — 대상 repo(worktree toplevel) 절대경로.
-   * diffTaskId와 상호배타: 이 필드가 있으면 태스크 역참조 없이 repo를 직접
-   * 대조한다(diff:resolveRepo가 정규화한 값만 담김). diff 내용은 파생 데이터.
+   * Workspace diff surface — target repo (worktree toplevel) absolute path.
+   * Mutually exclusive with diffTaskId: when present, compares repo directly without task
+   * back-reference (only values normalized by diff:resolveRepo). diff content is derived data.
    */
   diffRepoPath?: string;
   /**
-   * J3 F1 — diff 서피스의 태스크 owner(부모) 워크스페이스 id. diff 서피스는 자식
-   * 태스크 워크스페이스에 붙지만 task.mission.* RPC는 owner 스코프라(daemon
-   * listMissions·close authz), 그 조회·close·PR는 이 owner id를 verifiedWorkspaceId로
-   * 써야 태스크를 찾는다. 담는 값 = fan-out을 실행한 부모 ws id.
+   * J3 F1 — task owner (parent) workspace id for diff surface. diff surface attaches to child
+   * task workspace but task.mission.* RPC is owner-scoped (daemon listMissions·close authz), so
+   * lookup·close·PR must use this owner id as verifiedWorkspaceId to find the task.
+   * Value stored = parent ws id that ran fan-out.
    */
   diffOwnerWorkspaceId?: string;
   scrollbackFile?: string;  // surfaceId used as filename for scrollback dump
@@ -487,16 +487,15 @@ export interface CustomKeybinding {
  * win on load (saved entry kept), while a default missing from an older saved
  * session is back-filled so shipping a new built-in never silently drops it.
  *
- * 플랫폼 인자를 받는 순수 팩토리다. macOS 기본 설정
- * (`com.apple.keyboard.fnState` = 0)에서는 F1–F12가 미디어 키로 소비돼
- * 단독 F7 keydown이 앱에 전달되지 않고, 이전 시도였던 `Ctrl+F7`은 macOS
- * 시스템 단축키("Tab 키 이동 방식 변경", 기본 활성)가 OS 레벨에서 먼저
- * 소비한다 — 즉 Mac에서 F7 기반 조합은 전부 함정이다. 그래서 Mac은
- * F키가 아닌 `Ctrl+7`(F7의 7)로 시드한다. Win/Linux는 단타 F7 유지.
- * (`Ctrl+Shift+7` 류는 불가 — 매처가 e.key 기준이라 Shift+7이 레이아웃에
- * 따라 '&' 등으로 들어온다.) 기존 Mac 사용자의 저장된 F7·Ctrl+F7 원본은
- * {@link upgradeDefaultKeybindingsForPlatform}이 승격한다.
- * `window` 같은 전역에 접근하지 않아 main/renderer 양쪽에서 안전하다.
+ * Platform-aware pure factory. On macOS default config
+ * (`com.apple.keyboard.fnState` = 0), F1–F12 are consumed as media keys so standalone
+ * F7 keydown never reaches the app; the prior attempt `Ctrl+F7` is consumed first by macOS
+ * system shortcut ("Change Tab key navigation", enabled by default) at OS level — i.e. all
+ * F7-based combos on Mac are traps. So Mac seeds with `Ctrl+7` (the 7 of F7), not F keys.
+ * Win/Linux keep single-tap F7. (`Ctrl+Shift+7` etc. impossible — matcher is e.key based
+ * so Shift+7 arrives as '&' etc. per layout.) Existing Mac users with saved F7·Ctrl+F7
+ * originals are upgraded by {@link upgradeDefaultKeybindingsForPlatform}.
+ * Does not touch globals like `window` — safe in main/renderer.
  */
 export function buildDefaultCustomKeybindings(platform?: string): CustomKeybinding[] {
   const isMac = platform === 'darwin';
@@ -512,47 +511,47 @@ export function buildDefaultCustomKeybindings(platform?: string): CustomKeybindi
 }
 
 /**
- * 플랫폼 무관 기본값(F7). 팩토리를 인자 없이 호출한 결과와 동일하며,
- * 플랫폼을 알 필요 없는 참조·테스트용 폴백으로 유지한다. 실제 시드/백필은
- * {@link buildDefaultCustomKeybindings}에 플랫폼을 넘겨 호출한다.
+ * Platform-agnostic default (F7). Same as calling factory with no args; kept as fallback for
+ * references·tests that need no platform. Actual seed/backfill calls
+ * {@link buildDefaultCustomKeybindings} with platform.
  */
 export const DEFAULT_CUSTOM_KEYBINDINGS: CustomKeybinding[] = buildDefaultCustomKeybindings();
 
 /**
- * 이 기본 바인딩이 과거 버전들에서 출하됐던 키 이력. 저장 세션에 이 중 하나가
- * "손 안 댄 원본" 상태로 남아 있으면 현 플랫폼 기본 키로 승격 대상이 된다.
- *   F7      — 초기 전 플랫폼 공통 기본값 (Mac 미디어 키에 먹힘)
- *   Ctrl+F7 — v3.26 Mac 기본값 (macOS 시스템 단축키 ^F7이 가로챔)
+ * Key history in which this default binding shipped in past versions. If a saved session still
+ * has one of these as an "untouched original", it is eligible for upgrade to the current
+ * platform default key.
+ *   F7      — initial cross-platform default (swallowed by Mac media keys)
+ *   Ctrl+F7 — v3.26 Mac default (macOS system shortcut ^F7 intercepts)
  */
 const LEGACY_DEFAULT_F7_KEYS = ['F7', 'Ctrl+F7'];
 
 /**
- * 저장 세션 로드 시, "손 안 댄 원본 기본값"(키가 과거 출하 이력 중 하나)을 현재
- * 플랫폼의 기본 키로 1회 승격한다.
+ * On saved session load, one-time upgrade of "untouched original default" (key in past ship
+ * history) to current platform default key.
  *
- * 배경: 기본 키가 바뀌기 전에 설치한 기존 사용자는 저장 세션에 옛 기본 키를 갖고
- * 있다. 백필은 id로 이를 "사용자 편집"처럼 보존하므로, 승격이 없으면 정작 옛 키가
- * macOS에 먹혀 안 뜨던 그 사용자들은 계속 깨진 채 남는다.
+ * Background: users who installed before the default key changed have old default keys in saved
+ * sessions. Backfill preserves them by id as "user edits", so without upgrade those users whose
+ * old keys were broken on macOS stay broken.
  *
- * 오작동 방지: 사용자가 해당 키를 "의도적으로 다른 용도"로 바꿨을 수 있으므로,
- * id·키 이력뿐 아니라 command·label·sendEnter까지 원본 shipped 기본값과 **완전히
- * 동일**할 때만 승격한다. 조금이라도 편집한 항목은 command 등이 달라 여기 걸리지
- * 않는다. 키가 이미 현 플랫폼 기본이거나 이력에 없으면 그대로 반환(idempotent).
+ * Mis-upgrade guard: user may have intentionally repurposed the key, so upgrade only when
+ * id·key history AND command·label·sendEnter match the original shipped default **exactly**.
+ * Any edit differs on command etc. and won't match. Idempotent if key is already platform default
+ * or not in history.
  */
 export function upgradeDefaultKeybindingsForPlatform(
   saved: CustomKeybinding[],
   platform?: string,
 ): CustomKeybinding[] {
-  const shipped = buildDefaultCustomKeybindings(undefined)[0]; // 플랫폼 무관 원본(F7) — 비교 기준
+  const shipped = buildDefaultCustomKeybindings(undefined)[0]; // platform-agnostic original (F7) — comparison baseline
   const platformDefault = buildDefaultCustomKeybindings(platform)[0];
-  // 플랫폼 기본이 원본과 같으면(비-Mac·platform 미상) 엄격 no-op. 이 가드가 없으면
-  // (a) win/linux에서 사용자가 의도적으로 기본 바인딩을 Ctrl+F7로 재지정한 편집이
-  // F7로 되돌려지고, (b) mac에서 platform이 일시적으로 undefined일 때(preload
-  // race) 멀쩡한 Ctrl+F7이 mac 최악의 키인 F7로 "역승격"돼 저장된다.
+  // Strict no-op when platform default equals original (non-Mac·unknown platform). Without this guard:
+  // (a) win/linux users who intentionally remapped default binding to Ctrl+F7 get reverted to F7, and
+  // (b) on mac when platform is temporarily undefined (preload race), valid Ctrl+F7 gets "reverse-upgraded"
+  // to the worst Mac key F7 and saved.
   if (platformDefault.key === shipped.key) return saved;
-  // 승격 목적지 키를 다른 바인딩이 이미 쓰고 있으면 승격하지 않는다 — 키 매칭은
-  // first-match라 기본 바인딩(항상 배열 앞쪽)이 사용자 바인딩을 소리 없이
-  // 가려버린다. 이 경우 죽은 레거시 키를 그대로 두는 쪽이 안전하다.
+  // Do not upgrade if another binding already uses destination key — matching is first-match so
+  // default binding (always front of array) would silently shadow user bindings. Safer to keep dead legacy key.
   const keyTaken = saved.some(
     (kb) => kb.id !== shipped.id && kb.key === platformDefault.key,
   );
@@ -822,7 +821,7 @@ export interface TaskStatus {
   state: TaskState;
   message?: Message;
   timestamp: string; // ISO 8601
-  evidence?: CompletionEvidence; // additive — completed/failed 전이의 구조화 증거(§6.M P1)
+  evidence?: CompletionEvidence; // additive — structured evidence for completed/failed transitions (§6.M P1)
 }
 
 /** Valid state transitions for A2A tasks */
@@ -845,43 +844,43 @@ export function validateTransition(from: TaskState, to: TaskState): boolean {
 /** Terminal states — tasks in these states are eligible for GC */
 export const TERMINAL_STATES: readonly TaskState[] = ['completed', 'failed', 'canceled'];
 
-// --- 완료증거 (§6.M P1 — completed/failed 전이의 구조화 증거) ---
+// --- Completion evidence (§6.M P1 — structured evidence for completed/failed transitions) ---
 
 /**
- * 완료증거 아이템 — discriminated union. status가 kind별 닫힌 enum이라
- * 오타·위장 status(예: command+verified)가 well-formed로 통과할 수 없다.
- * "검증됨" 판정 = (command && passed) | (inspection|artifact && verified) —
- * shared/completionEvidence.ts isVerifiedItem. 검증 여부는 전이 게이트가 아니라
- * completed의 "검증 등급"(verifiedItemCount)으로 정직 표기된다.
+ * Completion evidence item — discriminated union. status is a closed enum per kind so typos·
+ * disguised status (e.g. command+verified) cannot pass as well-formed.
+ * "Verified" = (command && passed) | (inspection|artifact && verified) —
+ * shared/completionEvidence.ts isVerifiedItem. Verification is not a transition gate but
+ * honestly displayed as completed "verification grade" (verifiedItemCount).
  */
 export type EvidenceItem =
   | {
-      kind: 'command'; // 실행된 명령 — 검증됨 = status 'passed'
+      kind: 'command'; // executed command — verified = status 'passed'
       status: 'passed' | 'failed';
-      summary: string; // 필수·비어있지 않음 — 이 아이템이 무엇을 검증했나
-      command: string; // 필수 — 무엇을 실행했나
-      output?: string; // 출력 발췌(캡: EVIDENCE_MAX_STR_BYTES)
+      summary: string; // required·non-empty — what this item verified
+      command: string; // required — what was executed
+      output?: string; // output excerpt (cap: EVIDENCE_MAX_STR_BYTES)
     }
   | {
-      kind: 'inspection' | 'artifact'; // 점검/산출물 — 검증됨 = status 'verified'
+      kind: 'inspection' | 'artifact'; // inspection/artifact — verified = status 'verified'
       status: 'verified' | 'unverified';
-      summary: string; // 필수·비어있지 않음
-      location?: string; // 대상 위치(선택)
+      summary: string; // required·non-empty
+      location?: string; // target location (optional)
       output?: string;
     };
 
 /**
- * completed/failed 전이에 첨부되는 구조화 완료증거 — 전이 API의 별도 1급 입력
- * (자유서술 message에 태우지 않는다: message는 전이 후 append라 원자적 게이팅 불가).
- * recordedBy/recordedAt는 wire에서 드롭되고(normalizeCompletionEvidenceWire)
- * 정본 writer가 authContext로 스탬프한다(클라 위조 불가).
+ * Structured completion evidence attached to completed/failed transitions — separate first-class
+ * transition API input (not carried on free-form message: message appends after transition, no atomic gating).
+ * recordedBy/recordedAt dropped on wire (normalizeCompletionEvidenceWire); canonical writer stamps via
+ * authContext (client cannot forge).
  */
 export interface CompletionEvidence {
-  summary: string; // 필수·비어있지 않음(completed=전이 요약 / failed=실패 사유)
-  items: EvidenceItem[]; // completed → ≥1 well-formed / failed → 선택(제공 시 형태 검증 동일)
-  files?: string[]; // 상대경로만(isSafeRelPath). 캡: EVIDENCE_MAX_FILES
-  recordedBy?: string; // 서버 전용 스탬프 — wire 값은 normalize에서 드롭
-  recordedAt?: string; // 서버 전용 스탬프(ISO 8601) — wire 값은 normalize에서 드롭
+  summary: string; // required·non-empty (completed=transition summary / failed=failure reason)
+  items: EvidenceItem[]; // completed → ≥1 well-formed / failed → optional (same shape validation if provided)
+  files?: string[]; // relative paths only (isSafeRelPath). cap: EVIDENCE_MAX_FILES
+  recordedBy?: string; // server-only stamp — wire value dropped in normalize
+  recordedAt?: string; // server-only stamp (ISO 8601) — wire value dropped in normalize
 }
 
 // --- Artifact ---

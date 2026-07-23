@@ -1,31 +1,33 @@
-// E0 하니스 M3 — esctest PTY 어댑터 (스펙: engine-core-decision-2026-07-09.md §5-3)
+// E0 harness M3 — esctest PTY adapter (spec: engine-core-decision-2026-07-09.md §5-3)
 //
-// esctest2(GPL-2.0, vendor/ — 무수정 실행)를 PTY 자식으로 스폰하고, 그 프로세스가
-// 방출하는 질의·시퀀스 바이트를 피검체(@xterm/headless)에 feed한 뒤, 피검체의 응답을
-// PTY master에 되쓴다. 어댑터는 **바이트 라우팅만** 한다 — 질의 응답은 피검체에서 산출.
+// Spawns esctest2 (GPL-2.0, vendor/ — unmodified execution) as a PTY child; feeds query/sequence
+// bytes emitted by that process into the subject-under-test (@xterm/headless), then writes the
+// subject's responses back to the PTY master. The adapter **only routes bytes** — query responses
+// are produced by the subject-under-test.
 //
-// ── I/O 모델(vendor escio.py 사용법 확인, 로직 미독해) ────────────────────────
-//   - esctest.escio.Init(): tty.setraw(stdin) — esctest의 stdin이 PTY여야 raw 설정 성공.
-//   - esctest.escio.Write(s): sys.stdout.write — 질의/시퀀스가 PTY master로 흘러나온다.
-//   - esctest.escio.ReadCSI/ReadOSC/ReadDCS: sys.stdin.read(1) 블로킹 — 응답을 기다린다.
-//   ⇒ node-pty로 python3 esctest.py를 스폰(자식=PTY slave). master.onData = esctest가 쓴
-//     바이트 → 피검체 feed. 피검체 응답(term.onData) → master.write = esctest stdin으로 되씀.
+// ── I/O model (vendor escio.py usage verified, logic not read) ────────────────────────
+//   - esctest.escio.Init(): tty.setraw(stdin) — esctest stdin must be a PTY for raw setup to succeed.
+//   - esctest.escio.Write(s): sys.stdout.write — queries/sequences flow to the PTY master.
+//   - esctest.escio.ReadCSI/ReadOSC/ReadDCS: sys.stdin.read(1) blocking — waits for responses.
+//   ⇒ Spawn python3 esctest.py via node-pty (child = PTY slave). master.onData = bytes esctest wrote
+//     → feed subject. Subject responses (term.onData) → master.write = written to esctest stdin.
 //
-// ── 응답 라우팅 규율(§5-3) ───────────────────────────────────────────────────
-//   (a) xterm.js 자체 방출(CPR·DA·DA2·XTERM_WINOPS 등): term.onData 콜백 바이트를
-//       **무가공**으로 master에 되쓴다. 어댑터는 형식을 만들지 않는다.
-//   (b) DECRQCRA(xterm.js 미구현): 어댑터 브리지가 **피검체 그리드 스냅샷에서 체크섬을
-//       계산**해 DCS 응답을 만든다. 그리드가 판정 대상이므로 검증력 유지. 브리지 사용
-//       사실을 리포트에 기록. — 체크섬 알고리즘은 DEC STD 070 / xterm ctlseqs에서 도출
-//       (vendor 소스의 체크섬 로직 미참조 — 클린룸 규율. computeRectChecksum 참조).
+// ── Response routing rules (§5-3) ───────────────────────────────────────────────────
+//   (a) xterm.js native emissions (CPR·DA·DA2·XTERM_WINOPS, etc.): term.onData callback bytes are
+//       written to master **unmodified**. The adapter does not construct formats.
+//   (b) DECRQCRA (xterm.js unimplemented): adapter bridge **computes checksum from subject grid
+//       snapshot** and builds the DCS response. Grid is the adjudication target, so verification
+//       power is preserved. Bridge usage is recorded in the report. — Checksum algorithm derived
+//       from DEC STD 070 / xterm ctlseqs (vendor source checksum logic not referenced — clean-room
+//       rule. See computeRectChecksum).
 
 import { spawn, type IPty } from 'node-pty';
 import { Terminal } from '@xterm/headless';
 import { Unicode11Addon } from '@xterm/addon-unicode11';
 import { existsSync } from 'node:fs';
 import path from 'node:path';
-// 어댑터는 요청 파서(tryParse*)를 라우팅 루프에서, 응답 빌더/체크섬(computeRectChecksum·
-// buildDecrqcraReply·buildWinopsSizeReply)을 XtermBridge 내부에서 쓴다.
+// Adapter uses request parsers (tryParse*) in the routing loop; response builders/checksum
+// (computeRectChecksum·buildDecrqcraReply·buildWinopsSizeReply) inside XtermBridge.
 import {
   computeRectChecksum,
   buildDecrqcraReply,
@@ -37,8 +39,8 @@ import {
 import type { EsctestCaseResult, EsctestReport, DecrqcraBridgeUse } from './report-types';
 
 /**
- * vendor 경로(fetch-esctest.sh가 여기에 클론). 기본은 이 파일 옆 vendor/이지만,
- * WMUX_ESCTEST_VENDOR 환경변수로 오버라이드할 수 있다(번들 실행·CI 위치 커스터마이즈).
+ * Vendor path (fetch-esctest.sh clones here). Default is vendor/ beside this file, but
+ * WMUX_ESCTEST_VENDOR env var can override (bundle runs, CI location customization).
  */
 export const VENDOR_ROOT = process.env.WMUX_ESCTEST_VENDOR
   ? path.resolve(process.env.WMUX_ESCTEST_VENDOR)
@@ -46,35 +48,37 @@ export const VENDOR_ROOT = process.env.WMUX_ESCTEST_VENDOR
 export const ESCTEST_DIR = path.join(VENDOR_ROOT, 'esctest');
 export const ESCTEST_ENTRY = path.join(ESCTEST_DIR, 'esctest.py');
 
-/** vendor가 페치됐는지(부재 시 테스트는 명시 skip). */
+/** Whether vendor was fetched (tests explicitly skip if absent). */
 export function esctestVendorPresent(): boolean {
   return existsSync(ESCTEST_ENTRY);
 }
 
 export interface EsctestRunOptions {
   /**
-   * 실행할 테스트 선택. esctest는 --include=정규식을 full_name(예: "CUPTests.test_CUP_...")에
-   * `re.search`로 매칭한다. 파일명(예: 'cup')을 주면 어댑터가 case-insensitive 플래그((?i))를
-   * 붙여 클래스명 대문자(CUPTests)에 매칭시킨다 — esctest 정규식은 case-sensitive라 소문자
-   * 파일명이 대문자 클래스에 안 맞는 함정을 여기서 흡수한다. 이미 (?i)로 시작하면 그대로 쓴다.
+   * Test selection to run. esctest matches --include=regex against full_name (e.g.
+   * "CUPTests.test_CUP_...") via `re.search`. Passing a filename (e.g. 'cup') makes the adapter
+   * add a case-insensitive flag ((?i)) so it matches uppercase class names (CUPTests) — esctest
+   * regex is case-sensitive, so lowercase filenames would miss uppercase classes; this absorbs
+   * that trap. If already starting with (?i), it is used as-is.
    */
   readonly include: string;
-  /** 초기 grid geometry. esctest 다수 케이스는 80x25 가정. */
+  /** Initial grid geometry. Most esctest cases assume 80x25. */
   readonly cols?: number;
   readonly rows?: number;
-  /** 응답 타임아웃(초). esctest --timeout으로 전달(기본 1은 CI에서 빠듯 → 3). */
+  /** Response timeout (seconds). Passed to esctest --timeout (default 1 is tight in CI → 3). */
   readonly timeoutSec?: number;
-  /** VT 레벨(DECRQCRA는 VT4 필요). 기본 4. */
+  /** VT level (DECRQCRA requires VT4). Default 4. */
   readonly maxVtLevel?: number;
-  /** 전체 실행 워치독(ms). 무응답 데드락 방어. */
+  /** Overall run watchdog (ms). Guards against unresponsive deadlock. */
   readonly hardTimeoutMs?: number;
-  /** python3 실행 파일. 기본 'python3'. */
+  /** python3 executable. Default 'python3'. */
   readonly python?: string;
 }
 
 /**
- * 피검체 브리지. xterm.js 그리드를 들고, DECRQCRA 질의가 오면 스냅샷에서 체크섬을 낸다.
- * xterm.js가 스스로 방출하는 응답(CPR/DA…)은 이 클래스가 건드리지 않는다(무가공 라우팅).
+ * Subject-under-test bridge. Holds the xterm.js grid; when a DECRQCRA query arrives, checksum
+ * is computed from a snapshot. Responses xterm.js emits itself (CPR/DA…) are not touched by
+ * this class (unmodified routing).
  */
 class XtermBridge {
   readonly term: Terminal;
@@ -82,26 +86,26 @@ class XtermBridge {
   private winopsBridgeCount = 0;
 
   constructor(cols: number, rows: number) {
-    // scrollback 0 — 뷰포트 상태만 검증(differ.ts와 동일 정책).
+    // scrollback 0 — verify viewport state only (same policy as differ.ts).
     this.term = new Terminal({ cols, rows, scrollback: 0, allowProposedApi: true });
-    // 기준선 폭 모델 = Unicode 11 고정(본체 renderer 정렬 — differ.ts와 동일).
+    // Baseline width model = Unicode 11 fixed (aligned with main renderer — same as differ.ts).
     this.term.loadAddon(new Unicode11Addon() as never);
     this.term.unicode.activeVersion = '11';
   }
 
-  /** DECRQCRA 브리지 사용 기록(리포트 필드). */
+  /** DECRQCRA bridge usage records (report field). */
   get decrqcraBridgeUses(): readonly DecrqcraBridgeUse[] {
     return this.bridgeUses;
   }
 
-  /** WINOPS 크기 리포트 브리지 사용 횟수(리포트 필드 — 결정 문서 §5-3 미포착 경로). */
+  /** WINOPS size-report bridge usage count (report field — path not captured in decision doc §5-3). */
   get winopsBridgeUses(): number {
     return this.winopsBridgeCount;
   }
 
   /**
-   * DECRQCRA 요청 1건을 처리해 응답 바이트를 만든다. 피검체 그리드 스냅샷에서 체크섬 계산.
-   * rect(top,left,bottom,right)는 1-based 화면 좌표. Pid는 요청 그대로 에코.
+   * Handle one DECRQCRA request and build response bytes. Checksum from subject grid snapshot.
+   * rect(top,left,bottom,right) are 1-based screen coordinates. Pid is echoed from the request.
    */
   handleDecrqcra(pid: number, top: number, left: number, bottom: number, right: number): Uint8Array {
     const checksum = computeRectChecksum(this.term, top, left, bottom, right);
@@ -110,8 +114,8 @@ class XtermBridge {
   }
 
   /**
-   * WINOPS 크기 리포트(CSI 18 t / CSI 19 t)에 응답한다. xterm.js가 침묵하는 경로 —
-   * 어댑터가 현재 grid geometry(term.cols/rows)로 응답한다. reportCode 8=18t, 9=19t.
+   * Respond to WINOPS size report (CSI 18 t / CSI 19 t). Path where xterm.js is silent —
+   * adapter responds with current grid geometry (term.cols/rows). reportCode 8=18t, 9=19t.
    */
   handleWinopsSize(reportCode: 8 | 9): Uint8Array {
     this.winopsBridgeCount += 1;
@@ -119,8 +123,8 @@ class XtermBridge {
   }
 
   /**
-   * WINOPS 문자 resize(CSI 8;rows;cols t)를 피검체 그리드에 반영한다(리뷰 반영 —
-   * 이걸 안 하면 이후 CSI 18 t가 초기 geometry로 고정돼 브리지 신선도가 깨진다).
+   * Apply WINOPS character resize (CSI 8;rows;cols t) to subject grid (review feedback —
+   * without this, subsequent CSI 18 t stays at initial geometry and bridge freshness breaks).
    */
   applyWinopsResize(rows: number, cols: number): void {
     this.term.resize(cols, rows);
@@ -128,24 +132,25 @@ class XtermBridge {
 }
 
 /**
- * esctest 1개 파일(include)을 무수정 실행하고 판정을 수집한다.
+ * Run one esctest file (include) unmodified and collect adjudications.
  *
- * 동작:
- *  1) node-pty로 python3 esctest.py를 스폰(자식=PTY slave). CWD=vendor esctest 디렉토리
- *     (esctest는 상대 import·tests 디렉토리를 그 위치에서 찾는다).
- *  2) master.onData: esctest가 쓴 바이트를 버퍼에 모으며, DECRQCRA 요청이면 가로채 브리지로
- *     응답하고, 그 외 바이트는 전부 피검체(term)에 feed한다. 피검체가 자체 응답을 방출하면
- *     (term.onData) 그 바이트를 master에 되쓴다(무가공).
- *  3) esctest 종료(onExit) 또는 하드 타임아웃까지 대기 → exit code + stdout 로그 파싱.
+ * Flow:
+ *  1) Spawn python3 esctest.py via node-pty (child = PTY slave). CWD = vendor esctest dir
+ *     (esctest finds relative imports and tests dir from that location).
+ *  2) master.onData: buffer bytes esctest wrote; intercept DECRQCRA requests and respond via
+ *     bridge; feed all other bytes to subject (term). When subject emits its own responses
+ *     (term.onData), write those bytes to master (unmodified).
+ *  3) Wait until esctest exits (onExit) or hard timeout → exit code + stdout log parsing.
  *
- * DECRQCRA 가로채기 이유: xterm.js는 DECRQCRA 미구현이라 term에 그대로 feed하면 응답이 없어
- * esctest가 timeout으로 실패한다. §5-3대로 "그리드 스냅샷에서 체크섬 계산 브리지"를 명시 사용해
- * 그리드 검증력을 유지한다. CPR/DA 등은 xterm.js가 방출하므로 가로채지 않는다.
+ * Why intercept DECRQCRA: xterm.js does not implement DECRQCRA; feeding it to term yields no
+ * response and esctest fails on timeout. Per §5-3, explicitly use "checksum-from-grid-snapshot
+ * bridge" to preserve grid verification power. CPR/DA etc. are emitted by xterm.js, so not
+ * intercepted.
  */
 export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCaseResult> {
   if (!esctestVendorPresent()) {
     throw new Error(
-      `[esctest-adapter] vendor 부재: ${ESCTEST_ENTRY} — 먼저 bash core/harness/esctest/fetch-esctest.sh`,
+      `[esctest-adapter] vendor missing: ${ESCTEST_ENTRY} — run bash core/harness/esctest/fetch-esctest.sh first`,
     );
   }
   const cols = opts.cols ?? 80;
@@ -157,11 +162,11 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
 
   const bridge = new XtermBridge(cols, rows);
 
-  // esctest 인자(vendor README 사용법): --expected-terminal=xterm(어서션 방언),
-  // --include=정규식(파일 선택), --max-vt-level, --timeout(응답 대기), --no-print-logs를
-  // 끄고(로그를 stdout에 남겨 파싱), --logfile은 임시로.
-  // include 정규화: 소문자 파일명이 대문자 클래스명(CUPTests)에 매칭되도록 (?i) 부여.
-  // 이미 (?i) 등 인라인 플래그로 시작하면 존중한다.
+  // esctest args (vendor README usage): --expected-terminal=xterm (session dialect),
+  // --include=regex (file selection), --max-vt-level, --timeout (response wait), turn off
+  // --no-print-logs (keep logs on stdout for parsing), --logfile is temporary.
+  // include normalization: add (?i) so lowercase filenames match uppercase class names (CUPTests).
+  // Respect if already starting with inline flags like (?i).
   const includeArg = opts.include.startsWith('(?') ? opts.include : `(?i)${opts.include}`;
   const args = [
     ESCTEST_ENTRY,
@@ -169,7 +174,7 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
     `--include=${includeArg}`,
     `--max-vt-level=${maxVtLevel}`,
     `--timeout=${timeoutSec}`,
-    '--force', // assertion 실패해도 완주(케이스별 판정을 로그에서 수집).
+    '--force', // Run to completion even on assertion failure (collect per-case adjudication from log).
     '--v=2',
   ];
 
@@ -183,33 +188,33 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
       env: { ...process.env } as { [key: string]: string },
     });
   } catch (e) {
-    throw new Error(`[esctest-adapter] python3 esctest 스폰 실패: ${String(e)}`);
+    throw new Error(`[esctest-adapter] python3 esctest spawn failed: ${String(e)}`);
   }
 
-  // 피검체가 자체 방출하는 응답(CPR·DA…)을 master로 되쓴다(무가공 라우팅).
+  // Write subject's native responses (CPR·DA…) back to master (unmodified routing).
   const writeBackToEsctest = (data: string): void => {
     try {
       child.write(data);
     } catch {
-      /* 종료 경합 시 write 실패는 무시(onExit가 결과를 확정). */
+      /* Ignore write failure on exit race (onExit finalizes result). */
     }
   };
   bridge.term.onData(writeBackToEsctest);
 
-  // esctest stdout 전체(로그 파싱용)를 모은다.
+  // Collect full esctest stdout (for log parsing).
   let stdoutLog = '';
-  // DECRQCRA 요청 프레이밍이 청크 경계에 걸릴 수 있어 미소비 바이트를 이월한다.
+  // DECRQCRA request framing may span chunk boundaries; carry unconsumed bytes forward.
   let pending = '';
 
   const onDataFromEsctest = (chunk: string): void => {
     stdoutLog += chunk;
-    // esctest가 쓴 바이트에서 DECRQCRA 요청만 가로채고, 나머지는 피검체에 feed.
-    // DECRQCRA 요청 형식: CSI Pid ; Pp ; top ; left ; bottom ; right * y
-    // (tryParseDecrqcra가 pending+chunk에서 완결 요청을 찾아 소비 범위를 알려준다.)
+    // From bytes esctest wrote, intercept DECRQCRA requests only; feed the rest to subject.
+    // DECRQCRA request form: CSI Pid ; Pp ; top ; left ; bottom ; right * y
+    // (tryParseDecrqcra finds complete requests in pending+chunk and reports consumed range.)
     pending += chunk;
     let feedable = '';
     let idx = 0;
-    // feedable을 피검체에 반영하고 비운다(브리지 응답 직전 그리드 최신화에 쓴다).
+    // Apply feedable to subject and clear (used to refresh grid before bridge response).
     const flushFeed = (): void => {
       if (feedable.length > 0) {
         bridge.term.write(feedable);
@@ -217,28 +222,28 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
       }
     };
     while (idx < pending.length) {
-      // ① DECRQCRA(xterm.js 미구현 — 그리드 체크섬 브리지).
+      // ① DECRQCRA (xterm.js unimplemented — grid checksum bridge).
       const dec = tryParseDecrqcra(pending, idx);
-      if (dec === 'incomplete') break; // 완결 대기 — 이월.
+      if (dec === 'incomplete') break; // Wait for completion — carry forward.
       if (dec !== null) {
-        flushFeed(); // 체크섬 전 그리드 최신화.
+        flushFeed(); // Refresh grid before checksum.
         const reply = bridge.handleDecrqcra(dec.pid, dec.top, dec.left, dec.bottom, dec.right);
         writeBackToEsctest(Buffer.from(reply).toString('binary'));
         idx = dec.end;
         continue;
       }
-      // ② WINOPS 크기 리포트(xterm.js 침묵 — geometry 브리지).
+      // ② WINOPS size report (xterm.js silent — geometry bridge).
       const win = tryParseWinopsSizeQuery(pending, idx);
-      if (win === 'incomplete') break; // 완결 대기 — 이월.
+      if (win === 'incomplete') break; // Wait for completion — carry forward.
       if (win !== null) {
-        flushFeed(); // geometry는 term.cols/rows에서 읽으므로 앞선 resize 반영 후.
+        flushFeed(); // geometry read from term.cols/rows after prior resize applied.
         const reply = bridge.handleWinopsSize(win.reportCode);
         writeBackToEsctest(Buffer.from(reply).toString('binary'));
         idx = win.end;
         continue;
       }
-      // ③ WINOPS 문자 resize(CSI 8;r;c t) — 피검체+PTY에 반영해 이후 크기 질의 신선도 보장
-      //    (리뷰 반영). 시퀀스 자체도 피검체에 feed(무해 — xterm.js는 무시).
+      // ③ WINOPS character resize (CSI 8;r;c t) — apply to subject+PTY so later size queries stay fresh
+      //    (review feedback). Also feed sequence to subject (harmless — xterm.js ignores).
       const rsz = tryParseWinopsResize(pending, idx);
       if (rsz === 'incomplete') break;
       if (rsz !== null) {
@@ -247,18 +252,19 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
         try {
           child.resize(rsz.cols, rsz.rows);
         } catch {
-          /* 종료 경합 시 무시. */
+          /* Ignore on exit race. */
         }
         idx = rsz.end;
         continue;
       }
-      // ④ 가로챌 질의 아님 → 피검체로 흘려보낼 1바이트.
+      // ④ Not an intercepted query → one byte to subject.
       feedable += pending[idx];
       idx += 1;
     }
-    // 소비되지 않은 꼬리는 이월(가로챌 요청 시작 가능성). 방어(리뷰 반영): 미완결 CSI가
-    // 비정상적으로 길면(현실 CSI 상한을 훨씬 넘는 4KiB) 가로챌 요청이 아니라고 판정하고
-    // 선두 1바이트를 피검체로 강제 배출해 재파싱 — 무한 누적·O(n²) 재파싱 폭주 차단.
+    // Carry unconsumed tail (possible start of interceptable request). Guard (review feedback):
+    // if incomplete CSI grows abnormally long (4KiB, far beyond realistic CSI limit), treat as
+    // not an interceptable request and force first byte to subject for re-parse — blocks infinite
+    // accumulation and O(n²) re-parse blowup.
     pending = pending.slice(idx);
     while (pending.length > 4096) {
       bridge.term.write(pending[0]);
@@ -274,8 +280,8 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
     child.onExit(({ exitCode, signal }) => resolve({ exitCode, signal }));
   });
 
-  // 하드 워치독: 무응답 데드락 방어. 타임아웃 시 kill → 유예 후 SIGKILL 에스컬레이션
-  // (리뷰 반영 — 자식이 기본 신호를 무시해도 반환 보장), exited 자체도 race로 캡.
+  // Hard watchdog: guard against unresponsive deadlock. On timeout kill → grace then SIGKILL
+  // escalation (review feedback — ensures return even if child ignores default signal), cap exited itself via race.
   let timedOut = false;
   let killEscalation: ReturnType<typeof setTimeout> | undefined;
   const watchdog = setTimeout(() => {
@@ -283,18 +289,18 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
     try {
       child.kill();
     } catch {
-      /* 이미 종료됐으면 무시. */
+      /* Ignore if already exited. */
     }
     killEscalation = setTimeout(() => {
       try {
         child.kill('SIGKILL');
       } catch {
-        /* 무시. */
+        /* Ignore. */
       }
     }, 2000);
   }, hardTimeoutMs);
 
-  // SIGKILL조차 onExit를 못 만드는 극단 경합 대비 — 함수는 어떤 경우에도 반환한다.
+  // Even if SIGKILL fails to produce onExit in extreme race — function always returns.
   const { exitCode, signal } = await Promise.race([
     exited,
     new Promise<{ exitCode: number; signal?: number }>((resolve) =>
@@ -309,8 +315,8 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
 
   bridge.term.dispose();
 
-  // 라이브 디버깅: 커밋 산출물(report.json)에는 로그를 싣지 않으므로(리뷰 반영 — GPL 유래
-  // 텍스트 배제) 필요 시 env로 stderr에 전량 방출한다.
+  // Live debugging: commit artifact (report.json) omits logs (review feedback — exclude GPL-derived
+  // text); dump full stdout to stderr via env when needed.
   if (process.env.WMUX_ESCTEST_DEBUG_LOG) {
     process.stderr.write(`\n===== esctest stdout (include=${opts.include}) =====\n${stdoutLog}\n`);
   }
@@ -321,8 +327,8 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
   const errorCount = cases.filter((c) => c.status === 'error').length;
   const knownBugCount = cases.filter((c) => c.status === 'known-bug').length;
   const skippedCount = cases.filter((c) => c.status === 'skipped').length;
-  // esctest 자체 요약 라인 — 파서 집계의 독립 대조 기준(리뷰 반영).
-  // 대조식: esctest는 skip을 "passed"에 셈(실측) → pass+skipped == passed.
+  // esctest's own summary line — independent cross-check for parser aggregation (review feedback).
+  // Cross-check: esctest counts skips in "passed" (observed) → pass+skipped == passed.
   const esctestSummary = parseEsctestSummary(stdoutLog);
   const reconciled =
     !timedOut &&
@@ -346,14 +352,14 @@ export async function runEsctestCase(opts: EsctestRunOptions): Promise<EsctestCa
     winopsBridgeUses: bridge.winopsBridgeUses,
     esctestSummary,
     reconciled,
-    // rawLogTail은 커밋 산출물에서 제거됐다(리뷰 반영 — GPL 유래 로그 텍스트를 report.json에
-    // 싣지 않는다). 라이브 디버깅은 WMUX_ESCTEST_DEBUG_LOG=1로 stdout 전량을 stderr에 흘린다.
+    // rawLogTail removed from commit artifact (review feedback — do not put GPL-derived log text in
+    // report.json). Live debugging: WMUX_ESCTEST_DEBUG_LOG=1 dumps full stdout to stderr.
   };
 }
 
 /**
- * esctest 최종 요약 라인 파싱: "*** N tests passed, M known bugs, K tests failed ***"
- * (vendor 실측 포맷 — 출력 사용법만, GPL 로직 미독해).
+ * Parse esctest final summary line: "*** N tests passed, M known bugs, K tests failed ***"
+ * (vendor observed format — output usage only, GPL logic not read).
  */
 export function parseEsctestSummary(
   log: string,
@@ -364,17 +370,17 @@ export function parseEsctestSummary(
 }
 
 /**
- * esctest stdout 로그에서 케이스별 판정을 파싱한다. vendor 실측 포맷(esctest.py RunTest):
- *   - 케이스 시작:  "Run test: <ClassName.test_name>"
- *   - 통과:         "Passed."
- *   - known-bug 예상 실패: "Fails as expected: ..."  → pass로 집계(esctest 관점 정상)
- *   - 능력 부재 skip:      "Skipped because terminal lacks requisite capability: ..."
- *   - 실패:         "*** TEST <name> FAILED:"  (이후 traceback)
- * 이 파서는 esctest의 **출력 사용법**만 쓴다(GPL 로직 미독해).
+ * Parse per-case adjudication from esctest stdout log. Vendor observed format (esctest.py RunTest):
+ *   - Case start:  "Run test: <ClassName.test_name>"
+ *   - Pass:        "Passed."
+ *   - known-bug expected fail: "Fails as expected: ..."  → counted as pass (normal in esctest view)
+ *   - capability skip:         "Skipped because terminal lacks requisite capability: ..."
+ *   - Fail:        "*** TEST <name> FAILED:"  (traceback follows)
+ * This parser uses esctest **output usage** only (GPL logic not read).
  *
- * 상태 우선순위: 케이스 블록 안에서 먼저 만나는 확정 신호(Passed/FAILED/Skipped/Fails as
- * expected)로 마감한다. FAILED 뒤 traceback의 "Timeout waiting to read"는 별도 error가 아니라
- * 그 케이스 실패의 원인으로 본다(이중 계상 방지).
+ * Status priority: within a case block, first definitive signal (Passed/FAILED/Skipped/Fails as
+ * expected) settles it. "Timeout waiting to read" in traceback after FAILED is failure cause for
+ * that case, not a separate error (avoids double counting).
  */
 export function parseEsctestLog(log: string): EsctestCaseResult['cases'] {
   const cases: { name: string; status: 'pass' | 'fail' | 'error' | 'known-bug' | 'skipped' }[] = [];
@@ -382,7 +388,7 @@ export function parseEsctestLog(log: string): EsctestCaseResult['cases'] {
   const startRe = /Run test:\s*(\S+)/;
   const failRe = /\*\*\*\s*TEST\s+(\S+)\s+FAILED/;
   let currentName: string | null = null;
-  let settled = false; // 현재 케이스가 확정 신호를 받았는지.
+  let settled = false; // Whether current case received a definitive signal.
 
   const settle = (name: string, status: 'pass' | 'fail' | 'error' | 'known-bug' | 'skipped'): void => {
     cases.push({ name, status });
@@ -392,7 +398,7 @@ export function parseEsctestLog(log: string): EsctestCaseResult['cases'] {
   for (const line of lines) {
     const start = line.match(startRe);
     if (start) {
-      // 직전 케이스가 신호 없이 다음 케이스로 넘어갔으면(비정상 중단) error로 마감.
+      // If prior case advanced without signal (abnormal abort), close as error.
       if (currentName && !settled) settle(currentName, 'error');
       currentName = start[1];
       settled = false;
@@ -400,7 +406,7 @@ export function parseEsctestLog(log: string): EsctestCaseResult['cases'] {
     }
     const fail = line.match(failRe);
     if (fail) {
-      // FAILED는 케이스 시작 없이도 나올 수 있는 완전한 신호(이름 포함).
+      // FAILED is a complete signal even without case start (includes name).
       settle(fail[1], 'fail');
       currentName = null;
       continue;
@@ -409,19 +415,19 @@ export function parseEsctestLog(log: string): EsctestCaseResult['cases'] {
     if (/^Passed\.\s*$/.test(line)) {
       settle(currentName, 'pass');
     } else if (/^Fails as expected:/.test(line)) {
-      // known-bug 예상 실패 — esctest 관점 정상이나 pass와 분리 집계(리뷰 반영: 순도 감사).
+      // known-bug expected fail — normal in esctest view but counted separately from pass (review: purity audit).
       settle(currentName, 'known-bug');
     } else if (/^Skipped because terminal lacks requisite capability:/.test(line)) {
-      // 능력 부재 skip — 검증되지 않음. pass 합산 금지, 별도 상태(리뷰 반영).
+      // capability skip — not verified. Do not add to pass; separate status (review feedback).
       settle(currentName, 'skipped');
     }
   }
-  // 마지막 케이스가 미확정으로 끝났으면 error로 마감(무응답 데드락 등).
+  // If last case ended unsettled, close as error (unresponsive deadlock, etc.).
   if (currentName && !settled) settle(currentName, 'error');
   return cases;
 }
 
-/** 여러 include 실행을 하나의 리포트로 묶는다(report.json 산출). */
+/** Bundle multiple include runs into one report (report.json output). */
 export function buildReport(caseResults: readonly EsctestCaseResult[]): EsctestReport {
   const sum = (f: (c: EsctestCaseResult) => number): number =>
     caseResults.reduce((s, c) => s + f(c), 0);
@@ -434,7 +440,7 @@ export function buildReport(caseResults: readonly EsctestCaseResult[]): EsctestR
       pass: sum((c) => c.passCount),
       fail: sum((c) => c.failCount),
       error: sum((c) => c.errorCount),
-      // 리뷰 반영 — 순도 분리 + 비정상 실행이 총계 밖으로 새지 않게 가시화.
+      // Review feedback — purity split + surface abnormal runs so they do not leak outside totals.
       knownBug: sum((c) => c.knownBugCount),
       skipped: sum((c) => c.skippedCount),
       timedOutRuns: caseResults.filter((c) => c.timedOut).length,

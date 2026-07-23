@@ -6,7 +6,7 @@ import {
   type CustomKeybinding,
 } from '../types';
 
-/** 원본(F7) shipped 기본값 한 벌. */
+/** One set of original (F7) shipped defaults. */
 const pristineF7 = (): CustomKeybinding => ({ ...buildDefaultCustomKeybindings(undefined)[0] });
 
 describe('buildDefaultCustomKeybindings', () => {
@@ -22,7 +22,7 @@ describe('buildDefaultCustomKeybindings', () => {
     for (const platform of ['win32', 'linux', undefined]) {
       const kbs = buildDefaultCustomKeybindings(platform);
       expect(kbs[0].key).toBe('F7');
-      // id는 플랫폼과 무관하게 동일해야 백필 매칭이 유지된다.
+      // id must stay platform-agnostic for backfill matching
       expect(kbs[0].id).toBe('kb-default-f7');
     }
   });
@@ -36,7 +36,7 @@ describe('upgradeDefaultKeybindingsForPlatform', () => {
   it('upgrades an untouched shipped F7 default to Ctrl+7 on macOS', () => {
     const out = upgradeDefaultKeybindingsForPlatform([pristineF7()], 'darwin');
     expect(out[0].key).toBe('Ctrl+7');
-    // 나머지 필드는 보존.
+    // Preserve remaining fields.
     expect(out[0].id).toBe('kb-default-f7');
     expect(out[0].command).toBe('claude --dangerously-skip-permissions');
   });
@@ -50,7 +50,7 @@ describe('upgradeDefaultKeybindingsForPlatform', () => {
   it('leaves a user-modified F7 binding alone (different command)', () => {
     const edited: CustomKeybinding = { ...pristineF7(), command: 'vim' };
     const out = upgradeDefaultKeybindingsForPlatform([edited], 'darwin');
-    expect(out[0].key).toBe('F7'); // 승격 안 함 — 사용자가 의도적으로 F7 재지정
+    expect(out[0].key).toBe('F7'); // no promotion — user intentionally remapped F7
   });
 
   it('leaves a user-chosen non-legacy key alone on macOS', () => {
@@ -67,8 +67,8 @@ describe('upgradeDefaultKeybindingsForPlatform', () => {
   });
 
   it('leaves a Ctrl+F7 binding alone on Windows/Linux (never shipped there = user edit)', () => {
-    // win/linux는 Ctrl+F7을 기본값으로 출하한 적이 없으므로, 그 키는 사실상
-    // 항상 사용자 편집이다. "정규화"는 편집을 되돌리는 회귀라 하지 않는다.
+    // win/linux never shipped Ctrl+F7 as default, so that key is effectively always user-edited.
+    // "Normalization" must not revert edits — that would be a regression.
     const edited: CustomKeybinding = { ...pristineF7(), key: 'Ctrl+F7' };
     const out = upgradeDefaultKeybindingsForPlatform([edited], 'win32');
     expect(out[0].key).toBe('Ctrl+F7');
@@ -81,13 +81,13 @@ describe('upgradeDefaultKeybindingsForPlatform', () => {
   });
 
   it('skips promotion when another binding already uses the destination key', () => {
-    // first-match 키 해석에서 기본 바인딩이 사용자 바인딩을 가리는 것을 방지.
+    // Prevent default binding from shadowing user binding in first-match key resolution.
     const userOnCtrl7: CustomKeybinding = {
       ...pristineF7(), id: 'kb-user-1', key: 'Ctrl+7', command: 'vim', label: 'vim',
     };
     const legacy: CustomKeybinding = { ...pristineF7(), key: 'Ctrl+F7' };
     const out = upgradeDefaultKeybindingsForPlatform([legacy, userOnCtrl7], 'darwin');
-    expect(out[0].key).toBe('Ctrl+F7'); // 승격 보류 — 죽은 키 유지가 안전
+    expect(out[0].key).toBe('Ctrl+F7'); // promotion deferred — keeping dead key is safer
     expect(out[1].key).toBe('Ctrl+7');
     expect(out[1].command).toBe('vim');
   });

@@ -14,9 +14,10 @@ function isoNow(): string {
 }
 
 /**
- * 완료증거 게이트(§6.M PR-B) 거부 코드 → 사람용 액션 힌트(설계 §⑤). 데몬 강제 지점
- * (A2aTaskService)과 동일 매핑을 폴백 writer에 로컬로 둔다 — shared/completionEvidence는
- * 주석 외 불변(스키마는 envelope PR5 소유)이라 공용 헬퍼로 뺄 수 없다.
+ * Completion-evidence gate (§6.M PR-B) rejection code → human action hint (design §⑤). Same
+ * mapping as daemon enforcement point (A2aTaskService) kept locally on the fallback writer —
+ * shared/completionEvidence is immutable aside from comments (schema owned by envelope PR5), so
+ * it cannot be extracted to a shared helper.
  */
 function evidenceGateHint(code: string): string {
   switch (code) {
@@ -85,19 +86,19 @@ export interface A2aSlice {
   // is restricted to THAT pane. Absent (headless worker / token client / env-hint
   // fallback) ⇒ ws-granular authz, unchanged.
   //
-  // 지위(envelope PR4, §6.M C6): A2A 전이 정본이 데몬 A2aTaskService로 이관되면서
-  // 이 검증 writer는 **데몬 미가용/미시드 태스크의 폴백·컨틴전시 경로**로 강등됐다.
-  // 렌더러-로컬 생성 태스크(채널멘션 chmention-* 등, 데몬에 시드되지 않음)와 데몬
-  // degrade 창의 전이는 여전히 여기로 온다 — 제거하지 않는다. 데몬이 커밋한 전이는
-  // applyDaemonTaskUpdate(verbatim)로만 적용된다.
+  // Role (envelope PR4, §6.M C6): with A2A transition source of truth moved to daemon
+  // A2aTaskService, this validating writer is **demoted to fallback/contingency for daemon-
+  // unavailable/unseeded tasks**. Renderer-local created tasks (channel mentions chmention-*, etc.,
+  // not seeded to daemon) and transitions during daemon degrade windows still arrive here — do
+  // not remove. Daemon-committed transitions apply only via applyDaemonTaskUpdate (verbatim).
   updateTaskStatus: (taskId: string, state: TaskState, callerWorkspaceId: string, callerAddr?: PaneAddress | null, statusMessage?: Message, evidence?: CompletionEvidence) => { ok: boolean; error?: string };
   /**
-   * 데몬 커밋 결과의 캐시 verbatim 적용(envelope PR4 §5 D11, §6.M 설계 C6).
+   * Verbatim cache apply of daemon commit result (envelope PR4 §5 D11, §6.M design C6).
    *
-   * **재검증 금지 계약**: evidence 게이트뿐 아니라 structural validateTransition도
-   * 재실행하지 않는다 — 데몬 force-fail(E10 teardown 등)은 그래프 밖 전이를 정당하게
-   * 커밋하는데, 캐시가 validateTransition을 재실행하면 그 커밋을 거부해 split-brain이
-   * 난다. 정본은 데몬 로그, 이 스토어는 캐시다(30분 GC는 캐시 GC로 의미 재정의).
+   * **No re-validation contract**: do not re-run evidence gate OR structural validateTransition —
+   * daemon force-fail (E10 teardown, etc.) legitimately commits out-of-graph transitions; cache
+   * re-running validateTransition would reject those commits and cause split-brain. Source of
+   * truth is daemon log; this store is cache (30min GC redefined as cache GC).
    */
   applyDaemonTaskUpdate: (committed: Task) => void;
   addTaskArtifact: (taskId: string, artifact: Artifact) => void;
@@ -225,11 +226,11 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
         : `'${from}' is a terminal state with no further transitions`;
       return { ok: false, error: `Invalid transition: ${from} -> ${newState}. ${guidance}.` };
     }
-    // 완료증거 정규화(§6.M — 데몬 transition과 구조 동형, 리뷰 GLM+Claude): 이 writer는
-    // 브릿지 normalize를 신뢰하지 않고 재검증한다. 유일 프로덕션 호출자(useRpcBridge)가
-    // 먼저 normalize하지만, 브릿지를 우회한 미래 호출이 데몬(malformed 거부)과 다른
-    // 판정을 받으면 안 된다 — 미지 kind·비plain 객체는 여기서도 malformed로 죽고,
-    // recordedBy 등 서버 전용 스탬프·미지 키는 저장 전 드롭된다.
+    // Completion-evidence normalization (§6.M — structurally parallel to daemon transition, GLM+Claude review):
+    // this writer does not trust bridge normalize and re-validates. The sole production caller
+    // (useRpcBridge) normalizes first, but future callers bypassing the bridge must not get a
+    // different verdict than daemon (malformed rejection) — unknown kind/non-plain objects die
+    // as malformed here too; server-only stamps like recordedBy and unknown keys are dropped before store.
     let normalizedEvidence: CompletionEvidence | undefined;
     if (evidence !== undefined) {
       const normalized = normalizeCompletionEvidenceWire(evidence);
@@ -238,13 +239,13 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
       }
       normalizedEvidence = normalized;
     }
-    // 완료증거 게이트(§6.M PR-B — 폴백 writer). 데몬 게이트만으로는 우회 0이 아니다:
-    // pane-핀 태스크 + senderPtyId 호출자는 데몬이 'pane-authz deferred'로 soft-defer해
-    // 이 writer가 최종 판정자가 되고(S-C2), 데몬 미가용 degrade에서도 동일하다. 데몬과
-    // 동형으로 completed/failed에 구조화 증거를 강제한다. validateTransition·권한 거부가
-    // 앞서므로(위) 게이트는 합법 전이에만 도달한다. 데몬 커밋의 verbatim 적용
-    // (applyDaemonTaskUpdate)은 **절대 게이트하지 않는다**(C6 — force-fail 커밋 거부 =
-    // split-brain). 브릿지(useRpcBridge)가 'a2a.task.update: ' 접두를 붙이므로 코드:힌트만 반환.
+    // Completion-evidence gate (§6.M PR-B — fallback writer). Daemon gate alone is not zero-bypass:
+    // pane-pinned tasks + senderPtyId callers are soft-deferred by daemon ('pane-authz deferred'),
+    // making this writer the final arbiter (S-C2); same during daemon-unavailable degrade. Mirrors
+    // daemon by requiring structured evidence for completed/failed. validateTransition/permission
+    // rejection already ran (above), so gate only sees legal transitions. Daemon commit verbatim
+    // apply (applyDaemonTaskUpdate) **never gates** (C6 — rejecting force-fail commit = split-brain).
+    // Bridge (useRpcBridge) prefixes 'a2a.task.update: ', so return code:hint only.
     if (newState === 'completed' || newState === 'failed') {
       const verdict = validateCompletionEvidence(newState, normalizedEvidence);
       if (!verdict.ok) {
@@ -254,8 +255,8 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
     set((state: StoreState) => {
       const t = state.a2aTasks[taskId];
       if (t) {
-        // additive: 완료증거는 전이 성공 시 status에 저장한다(normalize 산출물 —
-        // 게이트(PR-B)는 validateTransition 뒤·set 앞에서 이미 판정했다(위)).
+        // additive: store completion evidence on status when transition succeeds (normalize output —
+        // gate (PR-B) already decided before set, after validateTransition above).
         t.status = { state: newState, message: statusMessage, timestamp: isoNow(), ...(normalizedEvidence ? { evidence: normalizedEvidence } : {}) };
         t.metadata.updatedAt = isoNow();
       }
@@ -264,17 +265,17 @@ export const createA2aSlice: StateCreator<StoreState, [['zustand/immer', never]]
   },
 
   applyDaemonTaskUpdate: (committed) => set((state: StoreState) => {
-    // C6 verbatim: authz·validateTransition·evidence 어느 것도 재실행하지 않는다.
-    // 데몬 A2aTaskService가 이미 게이트를 통과시킨 커밋이다(재검증 = split-brain).
+    // C6 verbatim: re-run neither authz, validateTransition, nor evidence.
+    // Daemon A2aTaskService already passed this commit through gates (re-validation = split-brain).
     const existing = state.a2aTasks[committed.id];
     if (existing) {
-      // 상태·updatedAt만 데몬 커밋 그대로 반영. history/artifacts는 렌더러가 보유한
-      // 상위집합을 보존한다(데몬 projection은 생성 시점 히스토리만 내구화 — 증분
-      // 히스토리 내구화는 §6.F 몫).
+      // Reflect status/updatedAt verbatim from daemon commit. Preserve renderer-held superset of
+      // history/artifacts (daemon projection persists only creation-time history — incremental
+      // history persistence is §6.F scope).
       existing.status = committed.status;
       existing.metadata.updatedAt = committed.metadata.updatedAt;
     } else {
-      // 캐시 미스(데몬 재시작 생존 태스크 등): 데몬 스냅샷을 통째로 수용.
+      // Cache miss (daemon-restart-surviving task, etc.): accept daemon snapshot wholesale.
       state.a2aTasks[committed.id] = committed;
     }
   }),

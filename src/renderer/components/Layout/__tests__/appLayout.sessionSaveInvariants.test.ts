@@ -25,7 +25,7 @@ describe('AppLayout — axis A session-save invariants', () => {
   const source = fs.readFileSync(appLayoutPath, 'utf-8');
 
   function startupRegion(): string {
-    const start = source.indexOf('// 앱 시작 시 세션 복원');
+    const start = source.indexOf('// Restore session on app start');
     expect(start, 'startup restore effect not found').toBeGreaterThanOrEqual(0);
     const end = source.indexOf('First-run wizard', start);
     return source.slice(start, end > 0 ? end : start + 8000);

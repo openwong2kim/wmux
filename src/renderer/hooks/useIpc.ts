@@ -76,12 +76,12 @@ export interface UseIpcOptions {
 
 /** Default, user-facing messages (Korean, to match the rest of the UI). */
 const DEFAULT_MESSAGES: Record<IpcErrorCode, string> = {
-  DAEMON_DISCONNECTED: 'daemon이 응답하지 않습니다. 재시도 중…',
-  VALIDATION_ERROR: '요청이 유효하지 않습니다.',
-  NOT_FOUND: '항목을 찾을 수 없습니다.',
-  PERMISSION_DENIED: '권한이 거부되었습니다.',
-  RESOURCE_EXHAUSTED: '터미널 세션 한도에 도달했습니다. 일부 pane을 닫거나 wmux를 재시작한 뒤 다시 시도해주세요.',
-  UNKNOWN: '알 수 없는 오류가 발생했습니다.',
+  DAEMON_DISCONNECTED: 'Daemon is not responding. Retrying…',
+  VALIDATION_ERROR: 'Request is invalid.',
+  NOT_FOUND: 'Item not found.',
+  PERMISSION_DENIED: 'Permission denied.',
+  RESOURCE_EXHAUSTED: 'Terminal session limit reached. Close some panes or restart wmux, then try again.',
+  UNKNOWN: 'An unknown error occurred.',
 };
 
 /** Map an error code to a toast level. */

@@ -65,8 +65,8 @@ export class SessionPipe {
   ) {}
 
   /** Get the platform-specific pipe name for this session.
-   * P7: Unix 소켓은 ~/.wmux{suffix}/ 하위 — shared 헬퍼가 클라이언트
-   * (main/DaemonClient.getSessionPipeName)와 lockstep의 단일 진실 소스. */
+   * P7: Unix socket lives under ~/.wmux{suffix}/ — shared helper is the single
+   * source of truth in lockstep with clients (main/DaemonClient.getSessionPipeName). */
   getPipeName(): string {
     return getSessionSocketPath(this.sessionId);
   }
@@ -83,7 +83,7 @@ export class SessionPipe {
       try {
         fs.mkdirSync(path.dirname(pipeName), { recursive: true });
       } catch {
-        // best-effort — bind가 곧 실패를 드러낸다
+        // best-effort — bind will surface failure soon
       }
       try {
         const stat = fs.lstatSync(pipeName);

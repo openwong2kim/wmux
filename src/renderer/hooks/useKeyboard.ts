@@ -369,7 +369,7 @@ export function useKeyboard() {
         const state = store.getState();
         const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
         if (ws) {
-          // 워크스페이스 내 모든 PTY 정리
+          // Dispose all PTYs in the workspace
           const disposePtys = (pane: import('../../shared/types').Pane) => {
             if (pane.type === 'leaf') {
               for (const s of pane.surfaces) {

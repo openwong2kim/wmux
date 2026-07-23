@@ -1,15 +1,15 @@
-// J3 태스크 수명주기 IPC 핸들러(renderer → main). channelLocal·fanout과 동일
-// renderer-trusted 신원(Electron 프로세스 경계, 파이프 미노출).
+// J3 task lifecycle IPC handlers (renderer → main). Same renderer-trusted identity as
+// channelLocal/fanout (Electron process boundary, not exposed on pipe).
 //
-// 4 채널:
-//   task:close        — TaskCloseService(remove 성공→close 순서 역전 §1).
-//   task:create-pr    — TaskPrService(gh 4중 게이트 1클릭 PR §2).
-//   worktask:scan     — WorktaskScanService(디스크 정본 정리 스캔 §1).
-//   worktask:refire   — 미발사 재발사(prompt.md 실존 검사 후 원래 initialCommand 재전송 §3·F2).
+// 4 channels:
+//   task:close        — TaskCloseService (remove success→close order inversion §1).
+//   task:create-pr    — TaskPrService (gh 4-gate 1-click PR §2).
+//   worktask:scan     — WorktaskScanService (disk source-of-truth cleanup scan §1).
+//   worktask:refire   — refire on non-dispatch (prompt.md existence check then resend original initialCommand §3·F2).
 //
-// close·createPr는 taskId만 받고 물질화 필드(branch·worktreePath·title)는 데몬
-// projection(task.mission.list)에서 역참조한다 — 렌더러가 stale 필드를 실어보내
-// 엉뚱한 worktree를 건드리는 표면을 없앤다(단일 정본).
+// close/createPr take taskId only; materialization fields (branch/worktreePath/title) are
+// reverse-looked up from daemon projection (task.mission.list) — removes surface where
+// renderer sends stale fields and touches wrong worktree (single source of truth).
 
 import { ipcMain } from 'electron';
 import { execFile } from 'node:child_process';
@@ -32,7 +32,7 @@ import { normalizeWorktreePath } from '../../../shared/workTask';
 
 const execFileAsync = promisify(execFile);
 
-/** projection 태스크 최소 형태(task.mission.list 반환). */
+/** Minimal projection task shape (task.mission.list return). */
 interface ProjectionTask {
   id: string;
   title: string;
@@ -52,9 +52,9 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
     },
   };
 
-  // 프로세스 수명 단일 인스턴스: TaskWorktreeManager는 repoHash 단위 뮤텍스 체인을
-  // 유지해야 하므로(index.lock 경합 차단) 재사용한다. fan-out과는 별도 인스턴스지만
-  // 크로스 인스턴스 worktree add/remove 경합은 git 자체의 index.lock이 backstop.
+  // Single instance for process lifetime: TaskWorktreeManager must keep repoHash mutex chain
+  // (blocks index.lock contention), so reuse it. Separate from fan-out instance but
+  // cross-instance worktree add/remove contention is backstopped by git index.lock.
   const worktrees = new TaskWorktreeManager();
   const closeService = new TaskCloseService({ daemon: daemonPort, worktrees });
   const prService = new TaskPrService({ daemon: daemonPort, cache: prStatusCache });
@@ -69,19 +69,19 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
       if (error) return { ok: false, taskId: '', reason: 'error' as const, error };
 
       const task = await resolveTask(daemonPort, taskId, verifiedWorkspaceId);
-      if (!task) return { ok: false, taskId, reason: 'error' as const, error: 'task:close: 태스크를 찾을 수 없음(projection 부재)' };
+      if (!task) return { ok: false, taskId, reason: 'error' as const, error: 'task:close: task not found (missing projection)' };
 
-      // F3 — close-only 라우팅: worktreePath 부재(미물질화 CX4) / 디스크 결측
-      // (fs.existsSync false) / 본 repo 해석 불가(worktree 손상)면 remove 단계를
-      // 건너뛰고 mission.close만. 이게 스캔의 disk-missing 정합화 버튼과
-      // TaskCloseService 계약(remove 성공↔close 실패 크래시 재시도)을 살린다.
+      // F3 — close-only routing: missing worktreePath (unmaterialized CX4) / disk missing
+      // (fs.existsSync false) / main repo unresolvable (corrupt worktree) → skip remove,
+      // mission.close only. Aligns with scan disk-missing reconcile button and
+      // TaskCloseService contract (remove success↔close failure crash retry).
       if (!task.worktreePath || !fs.existsSync(task.worktreePath)) {
         return closeService.closeTask({ taskId, verifiedWorkspaceId });
       }
       const repo = await resolveRepoInfo(task.worktreePath);
       if (!repo) {
-        // worktree 디렉토리는 있으나 본 repo 해석 불가 — remove가 어차피 실패하므로
-        // close-only로 정합화(닫히지 않고 영영 붙잡히는 것 방지).
+        // Worktree dir exists but main repo unresolvable — remove would fail anyway,
+        // close-only reconcile (prevent stuck-open forever).
         return closeService.closeTask({ taskId, verifiedWorkspaceId });
       }
       return closeService.closeTask({
@@ -104,12 +104,12 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
       if (error) return { ok: false, reason: 'error' as const, error };
 
       const task = await resolveTask(daemonPort, taskId, verifiedWorkspaceId);
-      if (!task) return { ok: false, reason: 'error' as const, error: 'task:create-pr: 태스크를 찾을 수 없음' };
+      if (!task) return { ok: false, reason: 'error' as const, error: 'task:create-pr: task not found' };
       if (!task.worktreePath || !task.branch) {
         return {
           ok: false,
           reason: 'error' as const,
-          error: 'task:create-pr: 미물질화 태스크(worktree·branch 부재)는 PR을 생성할 수 없습니다',
+          error: 'task:create-pr: unmaterialized task (missing worktree/branch) cannot create a PR',
         };
       }
       return prService.createPr({
@@ -132,17 +132,17 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
           ? ((raw as Record<string, unknown>).verifiedWorkspaceId as string)
           : '';
       if (!verifiedWorkspaceId) {
-        return { ok: false, error: 'worktask:scan: verifiedWorkspaceId가 필요합니다', scannedRoot: '', entries: [] };
+        return { ok: false, error: 'worktask:scan: verifiedWorkspaceId is required', scannedRoot: '', entries: [] };
       }
       const tasks = await listMissions(daemonPort, verifiedWorkspaceId);
-      // 정본=디스크, 보조=projection(§1 CL5). reconcile 대상 open 집합은 데몬
-      // 권위 목록(요청 owner) ∪ 렌더러가 아는 전체 open(다른 부모 워크스페이스의
-      // 활성 worktree가 orphan으로 오분류되는 것을 방지). taskId로 dedup.
+      // Source of truth = disk, auxiliary = projection (§1 CL5). Reconcile open set =
+      // daemon authoritative list (request owner) ∪ all open known to renderer (prevents
+      // active worktrees from other parent workspaces classified as orphan). Dedup by taskId.
       const byId = new Map<string, ScanOpenTask>();
       for (const t of tasks) {
         if (t.status !== 'open') continue;
-        // 데몬 목록은 요청 owner 스코프라 owner = verifiedWorkspaceId(F1: close가
-        // owner 스코프 authz라 엔트리에 owner를 실어 정합화 버튼이 올바른 신원을 쓰게).
+        // Daemon list is request-owner scoped, so owner = verifiedWorkspaceId (F1: close is
+        // owner-scoped authz; attach owner on entry so reconcile button uses correct identity).
         byId.set(t.id, {
           taskId: t.id,
           title: t.title,
@@ -161,7 +161,7 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
         byId.set(taskId, {
           taskId,
           title: typeof kt.title === 'string' ? kt.title : taskId,
-          // 다른 부모의 태스크는 렌더러가 실어준 owner를 그대로 쓴다(없으면 요청 owner).
+          // Other parent's task: use owner from renderer (fallback to request owner).
           ownerWorkspaceId: typeof kt.ownerWorkspaceId === 'string' ? kt.ownerWorkspaceId : verifiedWorkspaceId,
           ...(typeof kt.worktreePath === 'string' ? { worktreePath: kt.worktreePath } : {}),
         });
@@ -172,11 +172,11 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
   );
 
   // ── worktask:refire ─────────────────────────────────────────────────
-  // 미발사 재발사(§3·F2). exhausted 페인은 기동 명령이 한 번도 전달 안 됨 = 맨 셸
-  // (에이전트 없음). 원문 프롬프트를 흘리면 셸이 그걸 명령으로 실행하므로, 원래
-  // initialCommand(에이전트 기동 + `$(cat prompt.md)` 주입)를 정상 경로와 동일한
-  // sanitizePtyText 규율로 재전송한다. prompt.md가 소실됐으면 재발사할 원본이 없어
-  // 거부(F7: worktreePath는 전용 루트 하위여야 — 경로 오라클 차단).
+  // Refire on non-dispatch (§3·F2). Exhausted pane never got startup command = bare shell
+  // (no agent). Raw prompt would run as shell command, so resend original
+  // initialCommand (agent launch + `$(cat prompt.md)` injection) with same
+  // sanitizePtyText rules as normal path. Reject if prompt.md lost (no source to refire).
+  // (F7: worktreePath must be under dedicated root — blocks path oracle.)
   ipcMain.removeHandler(IPC.WORKTASK_REFIRE);
   ipcMain.handle(
     IPC.WORKTASK_REFIRE,
@@ -186,21 +186,21 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
       const worktreePath = typeof r.worktreePath === 'string' ? r.worktreePath : '';
       const initialCommand = typeof r.initialCommand === 'string' ? r.initialCommand : '';
       if (!ptyId || !worktreePath || !initialCommand) {
-        return { ok: false as const, error: 'worktask:refire: ptyId·worktreePath·initialCommand가 필요합니다' };
+        return { ok: false as const, error: 'worktask:refire: ptyId, worktreePath, and initialCommand are required' };
       }
-      // F7 — worktreePath가 전용 루트({wmux home}/worktrees) 하위인지 검증. 임의
-      // 경로로 prompt.md 실존을 프로빙하는 오라클/탈출을 차단한다.
+      // F7 — verify worktreePath is under dedicated root ({wmux home}/worktrees). Block
+      // oracle/escape probing prompt.md existence on arbitrary paths.
       if (!isUnderWorktreeRoot(worktreePath)) {
-        return { ok: false as const, error: 'worktask:refire: worktreePath가 전용 루트 밖입니다' };
+        return { ok: false as const, error: 'worktask:refire: worktreePath is outside the dedicated root' };
       }
-      // prompt.md 실존 검사(initialCommand의 `$(cat …)` 대상이 소실됐으면 무의미).
+      // prompt.md existence check (meaningless if `$(cat …)` target in initialCommand is gone).
       const promptPath = path.join(metaDirForWorktree(worktreePath), 'prompt.md');
       if (!fs.existsSync(promptPath)) {
-        return { ok: false as const, error: '프롬프트 파일이 소실되었습니다 — 재발사할 원본이 없습니다' };
+        return { ok: false as const, error: 'Prompt file is missing — no original to refire' };
       }
       const dc = getDaemonClient();
-      if (!dc) return { ok: false as const, error: 'worktask:refire: 데몬 미연결' };
-      // 정상 경로(scheduleInitialCommand.write)와 동일: sanitize + CR.
+      if (!dc) return { ok: false as const, error: 'worktask:refire: daemon not connected' };
+      // Same as normal path (scheduleInitialCommand.write): sanitize + CR.
       dc.writeToSession(ptyId, sanitizePtyText(initialCommand) + '\r');
       return { ok: true as const };
     }),
@@ -214,27 +214,27 @@ export function registerWorktaskHandlers(getDaemonClient: () => DaemonClient | n
   };
 }
 
-/** F7 — worktreePath 정규화 후 전용 루트({wmux home}/worktrees) 하위 여부.
- *  path.resolve로 `..`를 먼저 붕괴시킨다 — normalizeWorktreePath는 구분자/대소문자만
- *  다루므로 그것만으로는 `{root}/worktrees/../../etc`가 prefix 검사를 통과한다. */
+/** F7 — after normalizing worktreePath, is it under dedicated root ({wmux home}/worktrees)?
+ *  Collapse `..` via path.resolve first — normalizeWorktreePath only handles separators/case,
+ *  so `{root}/worktrees/../../etc` alone would pass prefix check. */
 function isUnderWorktreeRoot(worktreePath: string): boolean {
   const root = normalizeWorktreePath(path.resolve(getWmuxHomeDir(), 'worktrees'));
   const p = normalizeWorktreePath(path.resolve(worktreePath));
   return p === root || p.startsWith(root + '/');
 }
 
-/** {taskId, verifiedWorkspaceId} 방어적 파싱(렌더러 신뢰이나 형태 검증). */
+/** Defensive parse of {taskId, verifiedWorkspaceId} (renderer trusted but shape validated). */
 function parseTaskRef(raw: unknown): { taskId: string; verifiedWorkspaceId: string; error?: string } {
-  if (!raw || typeof raw !== 'object') return { taskId: '', verifiedWorkspaceId: '', error: '요청 객체가 필요합니다' };
+  if (!raw || typeof raw !== 'object') return { taskId: '', verifiedWorkspaceId: '', error: 'Request object is required' };
   const r = raw as Record<string, unknown>;
   const taskId = typeof r.taskId === 'string' ? r.taskId : '';
   const verifiedWorkspaceId = typeof r.verifiedWorkspaceId === 'string' ? r.verifiedWorkspaceId : '';
-  if (!taskId) return { taskId, verifiedWorkspaceId, error: 'taskId가 필요합니다' };
-  if (!verifiedWorkspaceId) return { taskId, verifiedWorkspaceId, error: 'verifiedWorkspaceId가 필요합니다' };
+  if (!taskId) return { taskId, verifiedWorkspaceId, error: 'taskId is required' };
+  if (!verifiedWorkspaceId) return { taskId, verifiedWorkspaceId, error: 'verifiedWorkspaceId is required' };
   return { taskId, verifiedWorkspaceId };
 }
 
-/** task.mission.list → 태스크 배열(형태 방어). */
+/** task.mission.list → task array (defensive shape). */
 async function listMissions(
   daemon: { rpc(m: string, p: Record<string, unknown>): Promise<unknown> },
   verifiedWorkspaceId: string,
@@ -247,7 +247,7 @@ async function listMissions(
   return res.tasks;
 }
 
-/** taskId → projection 태스크(owner 스코프). 부재면 null. */
+/** taskId → projection task (owner scope). null if absent. */
 async function resolveTask(
   daemon: { rpc(m: string, p: Record<string, unknown>): Promise<unknown> },
   taskId: string,
@@ -258,15 +258,15 @@ async function resolveTask(
 }
 
 /**
- * worktree 경로 → 본 repo 루트 + repoHash. diff.handler.resolveTargetRepo와 동형:
- * common-dir(`<repo>/.git`)의 상위에서 `--show-toplevel`을 실행해 본 repo 루트를
- * 얻는다(worktree cwd 직접 --show-toplevel은 worktree 자신을 반환). repoHash는
- * preflight와 동일 규칙(realpath sha256 12자)이라 뮤텍스 키가 정합.
+ * worktree path → main repo root + repoHash. Same shape as diff.handler.resolveTargetRepo:
+ * run `--show-toplevel` from parent of common-dir (`<repo>/.git`) to get main repo root
+ * (direct --show-toplevel from worktree cwd returns the worktree itself). repoHash uses
+ * same rule as preflight (realpath sha256 12 chars) so mutex key aligns.
  */
 async function resolveRepoInfo(worktreePath: string): Promise<{ repoRoot: string; repoHash: string } | null> {
   try {
-    // F10 — `--path-format=absolute`는 git≥2.31 전용. 실패(구식 git)하면 플래그
-    // 없이 재시도해 상대/절대 혼재 출력을 worktreePath 기준으로 절대화한다.
+    // F10 — `--path-format=absolute` requires git≥2.31. On failure (old git), retry without
+    // flag and absolutize mixed relative/absolute output against worktreePath.
     let commonDir: string;
     try {
       const common = await execFileAsync(

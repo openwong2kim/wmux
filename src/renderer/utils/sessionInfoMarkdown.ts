@@ -58,7 +58,7 @@ function renderSurfaceLines(
       out.push(`   - Surface ID: ${s.id}`);
       if (s.browserUrl) out.push(`   - URL: ${s.browserUrl}`);
     } else if (surfaceType === 'diff') {
-      // J2 — diff 서피스는 PTY 없음. taskId만 표시(PTY ID 오표기 방지).
+      // J2 — diff surfaces have no PTY. Show taskId only (avoids mislabeling a PTY ID).
       out.push(`${idx}. ${activeTag}Diff`);
       out.push(`   - Surface ID: ${s.id}`);
       if (s.diffTaskId) out.push(`   - Task ID: ${s.diffTaskId}`);

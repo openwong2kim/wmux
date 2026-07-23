@@ -1,34 +1,34 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { FrameCoalescer } from '../frameCoalescer';
 
-// node 환경에는 requestAnimationFrame이 없어 코얼레서는 setTimeout(16ms)
-// 폴백으로 프레임을 스케줄한다. fake timer로 프레임 경계를 결정적으로 제어한다.
-describe('FrameCoalescer — 프레임당 1회 병합(마지막 값 승리)', () => {
+// node has no requestAnimationFrame; coalescer schedules frames via setTimeout(16ms)
+// fallback. Fake timers give deterministic frame boundaries.
+describe('FrameCoalescer — one merge per frame (last value wins)', () => {
   beforeEach(() => vi.useFakeTimers());
   afterEach(() => vi.useRealTimers());
 
-  it('같은 key의 N회 연속 push를 프레임당 commit 1회로 병합한다', () => {
+  it('coalesces N consecutive pushes for same key into one commit per frame', () => {
     const commit = vi.fn<(k: string, v: number) => void>();
     const fc = new FrameCoalescer<string, number>(commit);
 
     for (let i = 1; i <= 10; i++) fc.push('pty-1', i);
-    // 아직 프레임 미도래 — commit 0회.
+    // Frame not elapsed yet — zero commits.
     expect(commit).toHaveBeenCalledTimes(0);
     expect(fc.pendingSize).toBe(1);
 
     vi.advanceTimersByTime(16);
-    // 프레임 1회 → commit 1회, 마지막 값(10)만 반영.
+    // One frame → one commit; only last value (10) applied.
     expect(commit).toHaveBeenCalledTimes(1);
     expect(commit).toHaveBeenCalledWith('pty-1', 10);
   });
 
-  it('서로 다른 key는 같은 프레임에서 각각 1회씩 commit된다', () => {
+  it('commits each distinct key once in the same frame', () => {
     const commit = vi.fn<(k: string, v: number) => void>();
     const fc = new FrameCoalescer<string, number>(commit);
 
     fc.push('a', 1);
     fc.push('b', 2);
-    fc.push('a', 3); // a 갱신 — 마지막 값 3 승리
+    fc.push('a', 3); // a updated — last value 3 wins
     vi.advanceTimersByTime(16);
 
     expect(commit).toHaveBeenCalledTimes(2);
@@ -36,7 +36,7 @@ describe('FrameCoalescer — 프레임당 1회 병합(마지막 값 승리)', ()
     expect(commit).toHaveBeenCalledWith('b', 2);
   });
 
-  it('다음 프레임의 push는 새 commit을 만든다(프레임 간 병합 없음)', () => {
+  it('push in next frame creates a new commit (no cross-frame merge)', () => {
     const commit = vi.fn<(k: string, v: number) => void>();
     const fc = new FrameCoalescer<string, number>(commit);
 
@@ -50,25 +50,25 @@ describe('FrameCoalescer — 프레임당 1회 병합(마지막 값 승리)', ()
     expect(commit).toHaveBeenNthCalledWith(2, 'x', 2);
   });
 
-  it('flush(commit) 도중 들어온 값은 유실 없이 다음 프레임에 반영된다', () => {
+  it('values pushed during flush(commit) are reflected next frame without loss', () => {
     const commit = vi.fn<(k: string, v: number) => void>();
     const fc = new FrameCoalescer<string, number>(commit);
-    // 첫 commit이 실행되는 순간 재-push해서 in-flight 게이트를 자극한다.
+    // Re-push during first commit to exercise in-flight gate.
     commit.mockImplementationOnce(() => {
       fc.push('re', 99);
     });
 
     fc.push('re', 1);
-    vi.advanceTimersByTime(16); // 1 commit → 내부에서 99 재적재
+    vi.advanceTimersByTime(16); // 1 commit → 99 re-queued internally
     expect(commit).toHaveBeenCalledTimes(1);
     expect(commit).toHaveBeenNthCalledWith(1, 're', 1);
 
-    vi.advanceTimersByTime(16); // 다음 프레임에 99 반영
+    vi.advanceTimersByTime(16); // Next frame applies 99
     expect(commit).toHaveBeenCalledTimes(2);
     expect(commit).toHaveBeenNthCalledWith(2, 're', 99);
   });
 
-  it('flushNow()는 예약 프레임을 취소하고 pending을 즉시 동기 반영한다', () => {
+  it('flushNow() cancels scheduled frame and applies pending synchronously', () => {
     const commit = vi.fn<(k: string, v: number) => void>();
     const fc = new FrameCoalescer<string, number>(commit);
 
@@ -77,12 +77,12 @@ describe('FrameCoalescer — 프레임당 1회 병합(마지막 값 승리)', ()
     expect(commit).toHaveBeenCalledTimes(1);
     expect(commit).toHaveBeenCalledWith('k', 7);
 
-    // 타이머를 돌려도 중복 commit이 없어야 한다(프레임이 취소됐으므로).
+    // Advancing timers must not duplicate commit (frame was cancelled).
     vi.advanceTimersByTime(32);
     expect(commit).toHaveBeenCalledTimes(1);
   });
 
-  it('dispose()는 pending을 폐기하고 반영하지 않는다', () => {
+  it('dispose() discards pending without applying', () => {
     const commit = vi.fn<(k: string, v: number) => void>();
     const fc = new FrameCoalescer<string, number>(commit);
 

@@ -18,7 +18,7 @@ import CompanyPanel from './CompanyPanel';
 import { sumUnread } from '../Channels/ChannelsPanel';
 import { COMPANY_MODE_ENABLED } from '../../../shared/featureFlags';
 
-// Pane 트리에서 모든 leaf의 PTY를 dispose
+// Dispose all leaf PTYs in the pane tree
 function disposeAllPtys(pane: Pane) {
   if (pane.type === 'leaf') {
     for (const s of pane.surfaces) {
@@ -32,9 +32,9 @@ function disposeAllPtys(pane: Pane) {
 export default function Sidebar() {
   const t = useT();
   const sidebarPosition = useStore((s) => s.sidebarPosition);
-  // A1: 통트리 구독 해체. Sidebar는 목록 구조(id·name·순서)만 구독하고, 각
-  // WorkspaceItem이 자기 ws를 self-subscribe한다. 배경 ws의 metadata/surface
-  // churn은 이 컴포넌트를 리렌더하지 않는다(이름/추가/삭제/재정렬 시에만).
+  // A1: drop whole-tree subscription. Sidebar subscribes only to list structure (id, name, order);
+  // each WorkspaceItem self-subscribes to its ws. Background ws metadata/surface churn does not
+  // re-render this component (only on rename/add/delete/reorder).
   const workspaces = useStore(useShallow(selectWorkspaceIdName));
   const [wsSearch, setWsSearch] = useState('');
   const wsSearchRef = useRef<HTMLInputElement>(null);
@@ -73,9 +73,9 @@ export default function Sidebar() {
   const toggleChannelDock = useStore((s) => s.toggleChannelDock);
   const channelUnreadTotal = useMemo(() => sumUnread(channelUnread), [channelUnread]);
 
-  // Git 버튼(Agent 아래) — 덱을 열고 Git 탭으로. 이미 Git 탭이 열려 있으면 덱을
-  // 닫는다(토글). dirty 배지 = 커밋 안 된 변경이 있는 워크스페이스 수(신호등과
-  // 같은 gitSync 메타 재사용, 신규 폴링 0).
+  // Git button (below Agent) — open deck on Git tab. Toggle closed if Git tab already open.
+  // Dirty badge = count of workspaces with uncommitted changes (reuses gitSync meta from
+  // traffic lights, zero new polling).
   const activeDeckTab = useStore((s) => s.activeDeckTab);
   const setActiveDeckTab = useStore((s) => s.setActiveDeckTab);
   const setChannelDockVisible = useStore((s) => s.setChannelDockVisible);
@@ -115,8 +115,8 @@ export default function Sidebar() {
     if (workspaces.length < 3) setWsSearch('');
   }, [workspaces.length]);
 
-  // A1: 콜백을 useCallback으로 안정화해 memo(WorkspaceItem)가 실효하게 한다.
-  // 요약만 구독하므로 개별 ws는 getState()로 명령형 조회한다(구독 다이어트).
+  // A1: stabilize callbacks with useCallback so memo(WorkspaceItem) is effective.
+  // Summary-only subscription; individual ws read imperatively via getState() (subscription diet).
   const handleCtrlSelect = useCallback((wsId: string) => {
     toggleMultiviewWorkspace(wsId);
   }, [toggleMultiviewWorkspace]);
@@ -127,12 +127,12 @@ export default function Sidebar() {
 
     await window.clipboardAPI.writeText(buildWorkspaceMarkdown(ws));
 
-    // 정본 토스트(toastSlice)로 피드백 — 기존 수동 DOM 토스트는 store 우회였다.
+    // Feedback via canonical toast (toastSlice) — old manual DOM toast bypassed the store.
     pushToast({ level: 'info', message: t('workspace.copied') });
   }, [t, pushToast]);
 
   const handleClose = useCallback((wsId: string) => {
-    // 삭제 전 해당 워크스페이스의 모든 PTY 정리
+    // Dispose all PTYs for this workspace before deletion
     const ws = useStore.getState().workspaces.find((w) => w.id === wsId);
     if (ws) disposeAllPtys(ws.rootPane);
 
@@ -181,14 +181,13 @@ export default function Sidebar() {
           }
         }}
       >
-        {/* 사이클 C — fan-out 미션 섹션. 미션이 없으면(일반 워크스페이스) 아무
-            것도 렌더하지 않아 공간을 차지하지 않는다(MissionsSection이 null 반환).
-            worktree 배지(⊕)와 공존 — 배지는 저수준 사실, 이 섹션은 상위 개념. */}
+        {/* Cycle C — fan-out mission section. When no missions (normal workspace), renders
+            nothing and occupies no space (MissionsSection returns null). Coexists with worktree
+            badge (⊕) — badge is low-level fact, this section is higher-level concept. */}
         <MissionsSection />
-        {/* A1/A2: 각 항목에 id + 안정 콜백만 내린다. 콜백은 모두 id 인자를 받는
-            스토어 액션/useCallback 핸들러라 렌더마다 새로 만들어지지 않아
-            memo(WorkspaceItem)가 실효한다. 항목 내용은 WorkspaceItem이 자기
-            ws를 self-subscribe해 반영한다. */}
+        {/* A1/A2: pass only id + stable callbacks to each item. Callbacks take id args via
+            store actions/useCallback handlers, not recreated each render, so memo(WorkspaceItem)
+            works. Item content updated by WorkspaceItem self-subscribe. */}
         {/* index must be the position in the UNFILTERED list — reorder and
             the Ctrl+number labels are defined against it. */}
         {filteredWorkspaces.map((ws) => (
@@ -240,9 +239,9 @@ export default function Sidebar() {
         )}
       </button>
 
-      {/* Git toggle — Agent 바로 아래. 덱을 열고 Git 탭으로(이미 Git이면 덱 닫기).
-          열림=steel(내비게이션) · dirty=warm(카운트 동반) · 그 외 muted. git 상태
-          신호등이 좌측 행에 살므로 진입점도 좌측 푸터에 둔다(오너 결정 2026-07-20). */}
+      {/* Git toggle — below Agent. Open deck on Git tab (close deck if Git already open).
+          open=steel (navigation) · dirty=warm (with count) · else muted. Git traffic lights live
+          on left row, so entry point in left footer too (owner decision 2026-07-20). */}
       <button
         type="button"
         onClick={toggleGit}

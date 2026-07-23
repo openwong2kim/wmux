@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-// DeckLoopModal — steps 편집기·스킬 자동완성·START 페이로드 (jsdom + fake api).
+// DeckLoopModal — steps editor·skill autocomplete·START payload (jsdom + fake api).
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
@@ -53,8 +53,8 @@ function setValue(el: HTMLInputElement | HTMLTextAreaElement, value: string): vo
   el.dispatchEvent(new Event('input', { bubbles: true }));
 }
 
-describe('filterSkillSuggestions — "/" 프리픽스 자동완성(순수)', () => {
-  it('"/"로 시작할 때만, 부분일치 필터', () => {
+describe('filterSkillSuggestions — "/" prefix autocomplete (pure)', () => {
+  it('only when starting with "/", partial-match filter', () => {
     expect(filterSkillSuggestions(CATALOG, 'qa')).toEqual([]);
     expect(filterSkillSuggestions(CATALOG, '/qa').map((s) => s.name)).toEqual(['qa', 'qa-only']);
     expect(filterSkillSuggestions(CATALOG, '/rev').map((s) => s.name)).toEqual(['review']);
@@ -79,12 +79,12 @@ describe('DeckLoopModal', () => {
     });
   }
 
-  it('steps 추가·스킬 제안 선택·START 페이로드에 steps/taskTexts가 실린다', async () => {
+  it('add steps·select skill suggestion·START payload carries steps/taskTexts', async () => {
     const api = fakeApi();
     await mount(api);
     // objective.
     setValue(container.querySelector('[data-deck-loop-objective-input]') as HTMLInputElement, 'keep CI green');
-    // step 추가 → "/q" 타이핑 → 제안 노출 → 첫 제안 선택.
+    // Add step → type "/q" → show suggestions → select first suggestion.
     await act(async () => {
       (container.querySelector('[data-deck-loop-step-add]') as HTMLButtonElement).click();
     });
@@ -100,15 +100,15 @@ describe('DeckLoopModal', () => {
       suggest[0].dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     });
     expect((container.querySelector('[data-deck-loop-step]') as HTMLInputElement).value).toBe('/qa');
-    // 두 번째 step은 자유 텍스트.
+    // Second step is free text.
     await act(async () => {
       (container.querySelector('[data-deck-loop-step-add]') as HTMLButtonElement).click();
     });
     const steps = container.querySelectorAll('[data-deck-loop-step]');
     await act(async () => {
-      setValue(steps[1] as HTMLInputElement, '실패 수정');
+      setValue(steps[1] as HTMLInputElement, 'fix failure');
     });
-    // done-when 두 줄.
+    // Two done-when lines.
     setValue(container.querySelector('[data-deck-loop-donewhen]') as HTMLTextAreaElement, 'tests pass\nlint clean');
     await act(async () => {
       (container.querySelector('[data-deck-loop-start]') as HTMLButtonElement).click();
@@ -117,7 +117,7 @@ describe('DeckLoopModal', () => {
     expect(api.started[0]).toMatchObject({
       workspaceId: 'ws-1',
       objective: 'keep CI green',
-      steps: ['/qa', '실패 수정'],
+      steps: ['/qa', 'fix failure'],
       taskTexts: ['tests pass', 'lint clean'],
       tier: 'continue', // default is now `continue` (report read as inert on first use)
       iterations: 25,
@@ -165,7 +165,7 @@ describe('DeckLoopModal', () => {
     });
   });
 
-  it('objective 없이 START → 에러 표시, api 미호출', async () => {
+  it('START without objective → error shown, api not called', async () => {
     const api = fakeApi();
     await mount(api);
     await act(async () => {
@@ -175,7 +175,7 @@ describe('DeckLoopModal', () => {
     expect(container.querySelector('[data-deck-loop-error]')).not.toBeNull();
   });
 
-  it('skills API 없는 구 preload에서도 렌더·START 동작(제안만 없음)', async () => {
+  it('renders and START works on legacy preload without skills API (no suggestions only)', async () => {
     const api = fakeApi();
     delete (api as { skills?: unknown }).skills;
     await mount(api);

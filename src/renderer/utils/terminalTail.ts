@@ -34,7 +34,7 @@ export function readPtyBufferLines(ptyId: string): string[] {
  *  RCA (2026-07-14 orchestrator lag): terminal_read went through
  *  readPtyBufferLines (0..baseY+cursorY, a full-scrollback synchronous walk with
  *  no bound). An orchestrator that bursts reads pinned the renderer thread —
- *  input/switch/paint starved ("terminal read 폭발할때"). The write path (#440
+ *  input/switch/paint starved ("when terminal reads explode"). The write path (#440
  *  terminalOutputScheduler) is budgeted; reads bypassed it entirely. Bounding
  *  the default to recent output aligns with the tool's own headline ("read the
  *  current visible text") and cuts per-read cost from O(scrollback) to O(N).

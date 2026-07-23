@@ -285,13 +285,13 @@ export function registerA2aChannelRpc(
   router.register('task.mission.start', (p) => forward('task.mission.start', p, true));
   router.register('task.mission.close', (p) => forward('task.mission.close', p, true));
   router.register('task.mission.list', (p, ctx) => forward('task.mission.list', p, false, ctx));
-  // task.mission.update(J1 §5) — 물질화 커밋. 변이라 verifiable caller 필수(start/
-  // close와 동일 forwarder·스탬프 규율). MCP 도구 표면은 없지만(FanOutService 내부
-  // 경로), 이 router 등록으로 first-party 파이프 클라이언트는 도달 가능하다 — "도구
-  // 없음 = 파이프 미도달"이 아니다. 변이는 owner OR CEO authz 게이트가 방어한다:
-  // #113 same-machine 신원 위조 ceiling 하에서 owner-워크스페이스 에이전트가 자기
-  // 태스크를 선점 물질화하는 것은 수용 잔여(단, 물질화 단조 게이트가 이중 물질화는
-  // 차단하므로 피해는 자기 태스크 1회 선점에 한정된다).
+  // task.mission.update (J1 §5) — materialization commit. Mutation requires verifiable caller (same
+  // forwarder·stamp rules as start/close). No MCP tool surface (FanOutService internal
+  // path), but this router registration lets first-party pipe clients reach it — "no tool
+  // ≠ pipe unreachable". Mutation defended by owner OR CEO authz gate:
+  // #113 same-machine identity forgery ceiling — owner-workspace agent preemptively materializing
+  // own task is accepted residual (materialization monotonic gate blocks double materialization,
+  // so harm limited to one preempt on own task).
   router.register('task.mission.update', (p) => forward('task.mission.update', p, true));
 
   // NOTE: a2a.channel.archive and a2a.channel.kick are intentionally NOT registered

@@ -84,7 +84,7 @@ function ToastItem({
       ) : (
         <span className="flex-1 leading-snug">{message}</span>
       )}
-      {/* F5 — optional action button (fan-out "diff 열기"). Runs then dismisses. */}
+      {/* F5 — optional action button (fan-out "open diff"). Runs then dismisses. */}
       {action && (
         <button
           type="button"

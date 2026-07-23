@@ -163,11 +163,11 @@ export function registerAllHandlers(
   registerStatuslineBridgeHandlers();
   const cleanupFs = registerFsHandlers();
   const cleanupToolbar = registerToolbarHandlers();
-  // J2 — diff:read / diff:applyHunks. git 전용(데몬 무관) — 항상 등록.
+  // J2 — diff:read / diff:applyHunks. Git-only (daemon-independent) — always registered.
   const cleanupDiff = registerDiffHandlers();
-  // Deck Git 탭 — worktree list/add/remove. git 전용(데몬 무관) — 항상 등록.
+  // Deck Git tab — worktree list/add/remove. Git-only (daemon-independent) — always registered.
   const cleanupWorktree = registerWorktreeHandlers();
-  // Deck Git 탭 PR 섹션 — gh CLI 기반(미설치/미인증은 fail-closed 안내).
+  // Deck Git tab PR section — gh CLI based (missing/unauthenticated → fail-closed guidance).
   const cleanupGithub = registerGithubHandlers();
   const cleanupMcp = options.mcpRegistrar
     ? registerMcpHandlers(options.mcpRegistrar, options.getMcpAuthToken ?? (() => null))

@@ -75,20 +75,20 @@ describe('pickSplitShownSurfaces — split visibility decoupled from focus', () 
   });
 });
 
-// F6 — split(terminal+browser) 혼재 페인에서 diff·editor가 누락되지 않아야 한다.
+// F6 — diff and editor must not be omitted in split (terminal+browser) panes.
 describe('pickOverlaySurfaces — F6 mixed-split diff/editor routing', () => {
-  it('terminal+browser+diff 혼재에서 diff 서피스를 오버레이 집합으로 추출', () => {
+  it('extracts diff surfaces as overlay set from terminal+browser+diff mix', () => {
     const surfaces = [
       { id: 's1', surfaceType: 'terminal' },
       { id: 's2', surfaceType: 'browser' },
       { id: 's3', surfaceType: 'diff' },
     ];
     const overlay = pickOverlaySurfaces(surfaces);
-    // 스플릿이 terminals·browsers만 렌더하므로 diff는 오버레이로 별도 라우팅돼야 한다.
+    // Split renders only terminals and browsers, so diff must be routed separately as an overlay.
     expect(overlay.map((s) => s.id)).toEqual(['s3']);
   });
 
-  it('editor도 오버레이 집합에 포함(diff와 동일 처리)', () => {
+  it('editor also included in overlay set (same as diff)', () => {
     const surfaces = [
       { id: 't', surfaceType: 'terminal' },
       { id: 'b', surfaceType: 'browser' },
@@ -98,7 +98,7 @@ describe('pickOverlaySurfaces — F6 mixed-split diff/editor routing', () => {
     expect(pickOverlaySurfaces(surfaces).map((s) => s.id)).toEqual(['e', 'd']);
   });
 
-  it('순수 terminal/browser만이면 오버레이 없음(회귀 방지)', () => {
+  it('pure terminal/browser only → no overlay (regression guard)', () => {
     const surfaces = [
       { id: 't', surfaceType: 'terminal' },
       { id: 'b', surfaceType: 'browser' },
@@ -107,8 +107,8 @@ describe('pickOverlaySurfaces — F6 mixed-split diff/editor routing', () => {
     expect(pickOverlaySurfaces(surfaces)).toEqual([]);
   });
 
-  it('git·review는 오버레이 집합에서 제외(2026-07-20 워크스페이스 헤더로 이관)', () => {
-    // 페인 surface 폐지 후 git/review는 페인 오버레이가 아니라 중앙 표면으로 산다.
+  it('git·review excluded from overlay set (moved to workspace header 2026-07-20)', () => {
+    // After pane surface teardown, git/review lives on a central surface, not a pane overlay.
     const surfaces = [
       { id: 't', surfaceType: 'terminal' },
       { id: 'g', surfaceType: 'git' },

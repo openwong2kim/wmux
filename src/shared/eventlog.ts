@@ -1,24 +1,26 @@
 /**
- * 공통 이벤트 Envelope — append-only 로그의 레코드 스키마 (envelope-design §1).
+ * Common event Envelope — append-only log record schema (envelope-design §1).
  *
- * ┌── PROTOCOL 파일: additive-only 규약 ──────────────────────────────┐
- * │ 이 파일은 디스크에 영속되는 로그 레코드의 계약이다. 크래시 후 부트가       │
- * │ 이 스키마로 과거 레코드를 재파싱하므로:                                  │
- * │   - 필드를 제거·개명·의미변경하지 마라(과거 레코드 파싱 붕괴).           │
- * │   - 새 필드는 반드시 옵셔널(`?:`)로만 추가하라(구 레코드엔 부재).        │
- * │   - domain enum·TrustTier 값은 추가만 허용, 기존 값 재사용 금지.        │
- * │ (§8 origin.keyId, §6.F evidence 등 미래 확장은 전부 옵셔널 additive.)  │
- * └──────────────────────────────────────────────────────────────────┘
+ * ┌── PROTOCOL file: additive-only contract ──────────────────────────────┐
+ * │ This file is the contract for log records persisted to disk. After a     │
+ * │ crash, boot replays past records by re-parsing with this schema:         │
+ * │   - Do not remove, rename, or change field meaning (past record parse    │
+ * │     collapse).                                                           │
+ * │   - New fields must be optional (`?:`) only (absent on old records).     │
+ * │   - domain enum·TrustTier values: add only; never reuse existing values. │
+ * │ (§8 origin.keyId, §6.F evidence etc. future extensions are all optional  │
+ * │ additive.)                                                               │
+ * └──────────────────────────────────────────────────────────────────────────┘
  *
- * 스코프 경계: payload는 도메인 소유의 opaque 값이다. 로그 계층은 절대
- * 해석하지 않는다(§1 필드표). 채널/A2A 전이 payload·완료증거(evidence)
- * 스키마는 PR5 소관 — 여기서 만들지 않는다.
+ * Scope boundary: payload is domain-owned opaque value. The log layer never
+ * interprets it (§1 field table). Channel/A2A transition payload·completion
+ * evidence (evidence) schemas are PR5-owned — not defined here.
  */
 
 /**
- * 이벤트 도메인 (§1). 로그는 도메인 무지 — 스코프 밖 값도 미해석 통과.
- * Q1 재배선 대상은 'channel'·'a2a'뿐이고 나머지는 미래 소비자용 예약 슬롯.
- * (additive-only: 값 추가만, 기존 값 재사용·제거 금지.)
+ * Event domain (§1). Log is domain-agnostic — out-of-scope values pass through uninterpreted.
+ * Q1 reroute targets are 'channel'·'a2a' only; the rest are reserved slots for future consumers.
+ * (additive-only: add values only; never reuse or remove existing values.)
  */
 export type EventDomain =
   | 'channel'
@@ -29,74 +31,73 @@ export type EventDomain =
   | 'asp';
 
 /**
- * 신뢰 등급 (§7, §6.K 4등급과 1:1). principalId/trustTier는 라우팅·표시·
- * 감사용이며 authz가 아니다 — 권한 판정 앵커는 verifiedWorkspaceId다.
+ * Trust tier (§7, 1:1 with §6.K 4-tier). principalId/trustTier are for routing·display·
+ * audit, not authz — the authz anchor is verifiedWorkspaceId.
  * (additive-only.)
  */
 export type TrustTier = 'trusted' | 'semi-trusted' | 'heuristic' | 'untrusted';
 
 /**
- * 레코드 출처 (§1, §8). `(machineId, seq)`가 부트 경계를 넘어 전역 유일.
- * daemonEpoch는 순서 비관여 provenance 스탬프(§8 D8).
+ * Record provenance (§1, §8). `(machineId, seq)` is globally unique across boot boundaries.
+ * daemonEpoch is order-agnostic provenance stamp (§8 D8).
  */
 export interface EventOrigin {
-  /** §8: 설치 생애 영구 불변 UUID(교체 금지 — Q4에도 keyId로 분리). */
+  /** §8: permanently immutable UUID for install lifetime (no replacement — Q4 splits via keyId). */
   machineId: string;
-  /** §8 D8: = CHANNELS_EPOCH. 스키마 세대 출처표기 전용, 순서 비관여. */
+  /** §8 D8: = CHANNELS_EPOCH. Schema-generation provenance only, order-agnostic. */
   daemonEpoch: number;
-  /** §8 D7: 이 머신 로그의 append 인덱스(영속 단조·비리셋). append가 발급. */
+  /** §8 D7: append index for this machine's log (persisted monotonic·non-reset). Issued by append. */
   seq: number;
-  // keyId?: string  // §8: Q4 additive 예약 — 페어링 키 지문(machineId 대체 아님)
+  // keyId?: string  // §8: Q4 additive reservation — pairing key fingerprint (not machineId replacement)
 }
 
-/** 신뢰 컨텍스트 (§7). 데몬 경계에서 스탬프. */
+/** Trust context (§7). Stamped at daemon boundary. */
 export interface AuthContext {
-  /** §7: display/routing 스탬프(authz 아님). 데몬이 서버측에서 결정. */
+  /** §7: display/routing stamp (not authz). Determined server-side by daemon. */
   principalId: string;
-  /** §7: 서버 핀(authz 앵커, 위조 불가). */
+  /** §7: server pin (authz anchor, not forgeable). */
   verifiedWorkspaceId: string;
   /** §7, §6.K. */
   trustTier: TrustTier;
 }
 
 /**
- * 로그 레코드 1건 (§1). 한 줄(NDJSON) = 한 EventEnvelope.
+ * One log record (§1). One line (NDJSON) = one EventEnvelope.
  *
- * 순서 정본은 `lamport`(데몬 전역 논리시계)이고, `wallClock`은 표시/감사
- * 전용으로 순서에 절대 관여하지 않는다(§1 D10).
+ * Order authority is `lamport` (daemon-global logical clock); `wallClock` is display/audit
+ * only and never participates in ordering (§1 D10).
  */
 export interface EventEnvelope {
   /**
-   * §1 D9: randomUUID() v4. 레코드 정체성(≠ idempotencyKey). **append 임계구역에서
-   * 발급** — draft에 있으면 재시도가 같은 draft를 재사용할 때 서로 다른 두 커밋
-   * 레코드가 동일 eventId를 갖게 되어(at-least-once 승격과 조합) 전역 유일성이
-   * 깨진다(3모델 패널). 그래서 draft에는 존재하지 않는다.
+   * §1 D9: randomUUID() v4. Record identity (≠ idempotencyKey). **Issued in append critical
+   * section** — if present on draft, retries reusing the same draft cause two distinct commit
+   * records to share the same eventId (combined with at-least-once promotion), breaking global
+   * uniqueness (3-model panel). Hence absent on draft.
    */
   eventId: string;
   origin: EventOrigin;
-  /** §1 D6: 데몬 전역 논리시계, 표시 순서의 정본. append가 발급(pre-increment). */
+  /** §1 D6: daemon-global logical clock, display-order authority. Issued by append (pre-increment). */
   lamport: number;
-  /** §1 D10: Date.now() @ append. 표시·감사 전용, 순서 비관여. */
+  /** §1 D10: Date.now() @ append. Display·audit only, order-agnostic. */
   wallClock: number;
-  /** §4: 업무 멱등키(있을 때만). at-least-once 승격의 재시도 흡수 앵커(§2.6). */
+  /** §4: business idempotency key (when present). at-least-once promotion retry-absorption anchor (§2.6). */
   idempotencyKey?: string;
-  /** §1: 직접 원인 이벤트의 eventId[]. Q1 비게이팅 provenance. */
+  /** §1: eventIds of direct cause events[]. Q1 non-gating provenance. */
   causalRefs?: string[];
   authContext: AuthContext;
   domain: EventDomain;
-  /** 도메인 소유 opaque. 로그 계층은 미해석(레이어 경계, §1 필드표). */
+  /** Domain-owned opaque. Log layer does not interpret (layer boundary, §1 field table). */
   payload: unknown;
 }
 
 /**
- * makeEnvelope 산출물 — 발급 필드(eventId·lamport·wallClock·origin.seq)가 전부
- * 제외된 초안.
+ * makeEnvelope output — draft with all issued fields (eventId·lamport·wallClock·origin.seq)
+ * excluded.
  *
- * 네 필드 모두 AppendOnlyLog.append가 자신의 임계구역에서 발급한다(§1 "@ append",
- * §3). lamport/seq는 hwm 임계구역이 필요해서, eventId/wallClock은 draft 재사용
- * 재시도가 동일 eventId를 두 번 커밋하지 못하게(레코드마다 신규 발급). 서비스는
- * 업무 필드만 채워 draft를 만들고 append에 넘긴다 — 발급 주체가 로그 단독임을
- * 타입으로 강제한다.
+ * All four fields are issued by AppendOnlyLog.append in its own critical section (§1 "@ append",
+ * §3). lamport/seq need the hwm critical section; eventId/wallClock are fresh per record so
+ * draft-reuse retries cannot commit the same eventId twice. Services fill only business fields
+ * into a draft and pass to append — types enforce that issuance is log-only.
  */
 export type EventEnvelopeDraft = Omit<
   EventEnvelope,
@@ -105,11 +106,11 @@ export type EventEnvelopeDraft = Omit<
   origin: Omit<EventOrigin, 'seq'>;
 };
 
-/** makeEnvelope 입력. 발급 필드는 전부 append 소관이라 여기 없다. */
+/** makeEnvelope input. All issued fields are append-owned, not here. */
 export interface MakeEnvelopeInput {
   domain: EventDomain;
   payload: unknown;
-  /** machineId·daemonEpoch. seq는 append가 발급하므로 여기 없음. */
+  /** machineId·daemonEpoch. seq is append-issued, not here. */
   origin: Omit<EventOrigin, 'seq'>;
   authContext: AuthContext;
   idempotencyKey?: string;
@@ -117,8 +118,8 @@ export interface MakeEnvelopeInput {
 }
 
 /**
- * envelope 초안 팩토리 (§1, §5). 업무 필드를 조립하고 옵셔널을 정돈한다.
- * 발급 필드(eventId·lamport·wallClock·origin.seq)는 전부 append가 채운다.
+ * Envelope draft factory (§1, §5). Assembles business fields and tidies optionals.
+ * All issued fields (eventId·lamport·wallClock·origin.seq) are filled by append.
  */
 export function makeEnvelope(input: MakeEnvelopeInput): EventEnvelopeDraft {
   const draft: EventEnvelopeDraft = {
@@ -134,7 +135,7 @@ export function makeEnvelope(input: MakeEnvelopeInput): EventEnvelopeDraft {
     domain: input.domain,
     payload: input.payload,
   };
-  // 옵셔널은 값이 있을 때만 실어 로그 줄을 깨끗하게 유지(additive 관례).
+  // Include optionals only when set, keeping log lines clean (additive convention).
   if (input.idempotencyKey !== undefined) {
     draft.idempotencyKey = input.idempotencyKey;
   }

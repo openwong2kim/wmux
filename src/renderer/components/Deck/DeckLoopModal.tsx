@@ -1,20 +1,18 @@
-// ─── 루프 설정 모달 — objective / steps(스킬 픽커) / done-when / 고급 ─────────
+// ─── Loop setup modal — objective / steps (skill picker) / done-when / advanced ─────────
 //
-// 도크 인라인 폼(248~320px)은 컨트롤 4개가 한 줄에서 넘쳐 Start 버튼이 화면
-// 밖으로 밀리는 실사용 결함이 있었다. 설정은 이 오버레이 모달로 승격하고,
-// 도크에는 루프 상태 카드만 남는다(DeckLoopPanel).
+// Dock inline form (248~320px) overflowed four controls on one line pushing Start off screen.
+// Settings promoted to this overlay modal; dock keeps loop status card only (DeckLoopPanel).
 //
-// 3축 모델:
-//   objective — 왜(방향). 필수.
-//   steps     — 매 iteration의 절차(선택). 각 step은 자유 텍스트이며 "/"로
-//               시작하면 pane 에이전트의 스킬/커맨드 카탈로그(.claude/skills·
-//               commands 스캔)에서 자동완성된다. 스킬 실행의 의미는 "pane에
-//               그 커맨드를 타이핑"(그라운딩 규칙) — 여기서 고르는 건 절차의
-//               표기이지 오케 권한이 아니다.
-//   done-when — 종료 조건(선택, 사람이 체크).
-// 고급 행(tier/iterations/cadence)은 모달 폭에서 여유 있게 배치된다.
+// 3-axis model:
+//   objective — why (direction). Required.
+//   steps     — per-iteration procedure (optional). Each step is free text; starting with "/"
+//               autocompletes from pane agent skill/command catalog (.claude/skills·
+//               commands scan). Skill execution means "type that command in pane"
+//               (grounding rule) — picking here is procedure notation not ok permission.
+//   done-when — exit condition (optional, human checks).
+// Advanced row (tier/iterations/cadence) has room in modal width.
 //
-// 순수 UI: 모든 IPC는 주입된 api로만(jsdom 테스트 가능). Esc/백드롭 닫기.
+// Pure UI: all IPC via injected api only (jsdom testable). Esc/backdrop close.
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
@@ -32,7 +30,7 @@ const CADENCE_OPTIONS: { minutes: number; labelKey: string; fallback: string }[]
   { minutes: 1440, labelKey: 'deck.loopCadence24h', fallback: 'Every day' },
 ];
 
-/** "/qa" 류 step 입력에 대한 스킬 자동완성 후보(순수 — 테스트 대상). */
+/** Skill autocomplete candidates for "/qa"-style step input (pure — test target). */
 export function filterSkillSuggestions(
   catalog: readonly SkillCatalogEntry[],
   input: string,
@@ -57,7 +55,7 @@ export function DeckLoopModal({
 }: {
   api: DeckLoopApi;
   workspaceId?: string;
-  /** 스킬 카탈로그 스캔 기준 cwd(활성 pane) — 없으면 사용자 전역만 나온다. */
+  /** cwd for skill catalog scan (active pane) — without it only user-global entries appear. */
   cwd?: string;
   /** Workspace agent-mode reader (same bridge AgentModeChip uses). Injected so
    *  the modal can PREVIEW the loop's effective authority — a loop's real caps
@@ -65,7 +63,7 @@ export function DeckLoopModal({
    *  this dialog. Absent (older container / pure jsdom parent) → no preview. */
   modeApi?: AgentModeApi;
   onClose: () => void;
-  /** START 성공 후(도크 상태카드 갱신용). */
+  /** After START success (for dock status card refresh). */
   onStarted: () => void;
   t?: (key: string) => string;
 }): React.ReactElement {
@@ -82,7 +80,7 @@ export function DeckLoopModal({
   const [iterations, setIterations] = useState(25);
   const [error, setError] = useState<string | null>(null);
   const [catalog, setCatalog] = useState<SkillCatalogEntry[]>([]);
-  /** 자동완성이 열려 있는 step index (없으면 -1). */
+  /** Step index with autocomplete open (-1 if none). */
   const [suggestFor, setSuggestFor] = useState(-1);
   /** Workspace agent mode — snapshot at open, for the authority preview. */
   const [mode, setMode] = useState<AgentMode | null>(null);
@@ -100,7 +98,7 @@ export function DeckLoopModal({
     return () => { alive = false; };
   }, [modeApi, workspaceId]);
 
-  // 스킬 카탈로그 — 모달 열릴 때 1회 스캔(읽기 전용, fail-soft 빈 목록).
+  // Skill catalog — one scan when modal opens (read-only, fail-soft empty list).
   useEffect(() => {
     let alive = true;
     if (api.skills) {
@@ -117,7 +115,7 @@ export function DeckLoopModal({
     objectiveRef.current?.focus();
   }, []);
 
-  // Esc 닫기 — 모달 전역.
+  // Esc close — modal-wide.
   useEffect(() => {
     const onKey = (e: KeyboardEvent): void => {
       if (e.key === 'Escape') onClose();
@@ -189,7 +187,7 @@ export function DeckLoopModal({
         onMouseDown={(e) => e.stopPropagation()}
         {...tokenAttrs('bgMantle', 'bg')}
       >
-        {/* 헤더 */}
+        {/* Header */}
         <div className="flex items-center">
           <span className="text-[13px] font-semibold text-[var(--text-main)]" {...tokenAttrs('textMain', 'text')}>
             {t('deck.loopModalTitle') || 'Start a loop'}
@@ -221,7 +219,7 @@ export function DeckLoopModal({
           />
         </div>
 
-        {/* Steps — 매 iteration 절차(선택) + 스킬 자동완성 */}
+        {/* Steps — per-iteration procedure (optional) + skill autocomplete */}
         <div className="space-y-1">
           <div className={labelCls}>
             {t('deck.loopSteps') || 'Steps — each iteration (optional)'}
@@ -258,7 +256,7 @@ export function DeckLoopModal({
                     ✕
                   </button>
                 </div>
-                {/* "/..." 입력 시 pane 스킬/커맨드 자동완성. */}
+                {/* Pane skill/command autocomplete on "/..." input. */}
                 {suggestions.length > 0 && (
                   <div
                     data-deck-loop-skill-suggest
@@ -270,7 +268,7 @@ export function DeckLoopModal({
                         key={`${s.source}:${s.name}`}
                         type="button"
                         onMouseDown={(e) => {
-                          e.preventDefault(); // blur 전에 선택 처리.
+                          e.preventDefault(); // handle selection before blur.
                           setStep(idx, `/${s.name}`);
                           setSuggestFor(-1);
                         }}
@@ -323,7 +321,7 @@ export function DeckLoopModal({
           />
         </div>
 
-        {/* 고급 행 — 모달 폭에선 한 줄에 여유 있게 들어간다. */}
+        {/* Advanced row — fits comfortably on one line in modal width. */}
         <div className="flex items-center gap-2 flex-wrap">
           <select
             data-deck-loop-tier

@@ -1,4 +1,4 @@
-// ─── TaskCloseService — J3 §1 close 순서 계약(remove 성공 → close 커밋) ──────
+// ─── TaskCloseService — J3 §1 close ordering contract (remove success → close commit) ──────
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -60,8 +60,8 @@ async function makeWorktree(slug: string): Promise<{ mgr: TaskWorktreeManager; w
   return { mgr, worktreePath, metaDir };
 }
 
-describe('J3 §1 close 순서 계약', () => {
-  it('clean: remove 성공 → close 커밋 → meta 삭제 (순서 역전 계약)', async () => {
+describe('J3 §1 close order contract', () => {
+  it('clean: remove success → close commit → meta delete (order inversion contract)', async () => {
     const { mgr, worktreePath, metaDir } = await makeWorktree('clean-task');
     const { port, calls } = makeDaemon();
     const svc = new TaskCloseService({ daemon: port, worktrees: mgr });
@@ -75,14 +75,14 @@ describe('J3 §1 close 순서 계약', () => {
       metaDir,
     });
     expect(res.ok).toBe(true);
-    // worktree 제거 + meta 삭제 + close RPC 1회.
+    // worktree remove + meta delete + close RPC once.
     expect(fs.existsSync(worktreePath)).toBe(false);
     expect(fs.existsSync(metaDir)).toBe(false);
     expect(calls).toHaveLength(1);
     expect(calls[0]?.method).toBe('task.mission.close');
   });
 
-  it('dirty: remove 거부 + close 보류(RPC 0회) + 보존 경로 반환', async () => {
+  it('dirty: remove rejected + close deferred (0 RPC) + preserve path returned', async () => {
     const { mgr, worktreePath, metaDir } = await makeWorktree('dirty-task');
     fs.writeFileSync(path.join(worktreePath, 'wip.txt'), 'uncommitted\n');
     const { port, calls } = makeDaemon();
@@ -100,23 +100,23 @@ describe('J3 §1 close 순서 계약', () => {
     if (res.ok) throw new Error('unreachable');
     expect(res.reason).toBe('dirty');
     expect(res.preservedWorktree).toBe(worktreePath);
-    // close 보류 — 태스크는 open 유지(모순 상태 제거).
+    // close deferred — task stays open (contradictory state removed).
     expect(calls).toHaveLength(0);
-    // 산출물·prompt.md 보존.
+    // deliverables·prompt.md preserved.
     expect(fs.existsSync(path.join(worktreePath, 'wip.txt'))).toBe(true);
     expect(fs.existsSync(metaDir)).toBe(true);
   });
 
-  it('미push 커밋: 진행 중단 + unpushed 경고(remove·close 0회)', async () => {
+  it('unpushed commits: abort progress + unpushed warning (0 remove·close)', async () => {
     const { mgr, worktreePath, metaDir } = await makeWorktree('ahead-task');
-    // 원격이 있어야 경고 게이트가 켜진다(로컬 전용 repo는 오탐 방지로 생략).
+    // remotes must exist for warning gate (local-only repo skipped to avoid false positives).
     const remoteDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-close-remote-'));
     git(['init', '-q', '--bare'], remoteDir);
     git(['remote', 'add', 'origin', remoteDir], repoRoot);
-    // worktree에 커밋 1개(미push).
+    // one unpushed commit on worktree.
     fs.writeFileSync(path.join(worktreePath, 'done.txt'), 'work\n');
     git(['add', '.'], worktreePath);
-    git(['commit', '-q', '-m', '산출물'], worktreePath);
+    git(['commit', '-q', '-m', 'artifact'], worktreePath);
 
     const { port, calls } = makeDaemon();
     const svc = new TaskCloseService({ daemon: port, worktrees: mgr });
@@ -137,7 +137,7 @@ describe('J3 §1 close 순서 계약', () => {
     fs.rmSync(remoteDir, { recursive: true, force: true });
   });
 
-  it('미물질화(worktreePath 부재): worktree 단계 건너뛰고 close만', async () => {
+  it('unmaterialized (missing worktreePath): skip worktree step, close only', async () => {
     const { port, calls } = makeDaemon();
     const mgr = new TaskWorktreeManager();
     const svc = new TaskCloseService({ daemon: port, worktrees: mgr });
@@ -148,7 +148,7 @@ describe('J3 §1 close 순서 계약', () => {
     expect(calls).toHaveLength(1);
   });
 
-  it('archivePending: 데몬 응답의 archive 미확정이 결과에 전달된다(CX2)', async () => {
+  it('archivePending: unconfirmed archive from daemon response passed through (CX2)', async () => {
     const { mgr, worktreePath, metaDir } = await makeWorktree('pending-task');
     const { port } = makeDaemon({ ok: true, taskId: 'wtask-5', archivePending: true });
     const svc = new TaskCloseService({ daemon: port, worktrees: mgr });

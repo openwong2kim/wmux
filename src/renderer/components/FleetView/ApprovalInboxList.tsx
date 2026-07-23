@@ -50,7 +50,7 @@ export default function ApprovalInboxList({ items, focusedIdx, onResolve }: Appr
   // Resolve A2A sender/receiver workspace IDs to display names (mirrors
   // ExecuteApprovalDialog) so the row tells the user WHICH workspace wants
   // bypassPermissions — security context, not just a title.
-  // A1: id→name 해석만 필요 — {id,name} 투영만 구독.
+  // A1: only id→name resolution needed — subscribe to {id,name} projection only.
   const workspaces = useStore(useShallow(selectWorkspaceIdName));
   const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
   const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);

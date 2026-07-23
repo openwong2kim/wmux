@@ -102,7 +102,7 @@ function classifyError(err: unknown): IpcErrorCode {
   // Daemon session cap reached. Phrasing comes from
   // `DaemonSessionManager.createSession` — keep this matcher in sync.
   // Without classification the renderer would surface a generic
-  // "알 수 없는 오류" toast, which hides the actionable instruction
+  // "unknown error" toast, which hides the actionable instruction
   // (close some panes / restart wmux) that the daemon attached.
   if (
     lower.includes('cannot create new terminal') &&
@@ -111,9 +111,9 @@ function classifyError(err: unknown): IpcErrorCode {
     return 'RESOURCE_EXHAUSTED';
   }
 
-  // 데몬 rate-limit(DaemonPipeServer PER_SOCKET/GLOBAL_RATE_LIMIT). 리사이즈
-  // burst 등 일시적 부하 신호다. UNKNOWN으로 두면 콘솔/토스트가 '알 수 없는
-  // 오류'로 도배되므로 RESOURCE_EXHAUSTED로 분류한다.
+  // Daemon rate-limit (DaemonPipeServer PER_SOCKET/GLOBAL_RATE_LIMIT). Transient load
+  // signal (resize burst, etc.). Leaving as UNKNOWN floods console/toast with
+  // 'unknown error' — classify as RESOURCE_EXHAUSTED.
   if (lower.includes('rate limit')) {
     return 'RESOURCE_EXHAUSTED';
   }

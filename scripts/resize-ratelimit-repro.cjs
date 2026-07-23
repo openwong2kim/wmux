@@ -1,6 +1,6 @@
 /**
  * Dynamic repro for the `pty:resize` rate-limit flood + uncaught-promise bug
- * and the `sendResize` fix (TODOS "pty:resize '[UNKNOWN] rate limited' 폭주").
+ * and the `sendResize` fix (TODOS "pty:resize '[UNKNOWN] rate limited' flood").
  *
  * Forces the exact daemon condition behind the bug — a resize burst on a
  * single RPC socket exceeding DaemonPipeServer.PER_SOCKET_RATE_LIMIT (50/s) —

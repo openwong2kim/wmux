@@ -44,12 +44,12 @@ describe('useIpc / createInvoke', () => {
 
   describe('error classification', () => {
     const cases: Array<{ code: IpcErrorCode; expected: string }> = [
-      { code: 'DAEMON_DISCONNECTED', expected: 'daemon이 응답하지 않습니다. 재시도 중…' },
-      { code: 'VALIDATION_ERROR',    expected: '요청이 유효하지 않습니다.' },
-      { code: 'NOT_FOUND',           expected: '항목을 찾을 수 없습니다.' },
-      { code: 'PERMISSION_DENIED',   expected: '권한이 거부되었습니다.' },
-      { code: 'RESOURCE_EXHAUSTED',  expected: '터미널 세션 한도에 도달했습니다. 일부 pane을 닫거나 wmux를 재시작한 뒤 다시 시도해주세요.' },
-      { code: 'UNKNOWN',             expected: '알 수 없는 오류가 발생했습니다.' },
+      { code: 'DAEMON_DISCONNECTED', expected: 'Daemon is not responding. Retrying…' },
+      { code: 'VALIDATION_ERROR',    expected: 'Request is invalid.' },
+      { code: 'NOT_FOUND',           expected: 'Item not found.' },
+      { code: 'PERMISSION_DENIED',   expected: 'Permission denied.' },
+      { code: 'RESOURCE_EXHAUSTED',  expected: 'Terminal session limit reached. Close some panes or restart wmux, then try again.' },
+      { code: 'UNKNOWN',             expected: 'An unknown error occurred.' },
     ];
 
     for (const { code, expected } of cases) {
@@ -222,7 +222,7 @@ describe('useIpc / createInvoke', () => {
       if (!result.ok) {
         expect(result.error.code).toBe('RESOURCE_EXHAUSTED');
         expect(result.error.message).toBe(
-          '터미널 세션 한도에 도달했습니다. 일부 pane을 닫거나 wmux를 재시작한 뒤 다시 시도해주세요.',
+          'Terminal session limit reached. Close some panes or restart wmux, then try again.',
         );
       }
     });

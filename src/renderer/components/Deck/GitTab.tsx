@@ -25,21 +25,21 @@ import type { MergeSessionStatus } from '../../../main/git/mergeSession';
 import { PrSection } from './PrSection';
 import { isPlausibleCwd } from '../../../shared/cwdShape';
 
-// worktree list 행 — main이 붙여 내려주는 재시작-복구용 MERGING 파생 필드(선택).
+// worktree list row — optional MERGING derived field from main for restart recovery.
 type WorktreeRowUI = WorktreeEntry & { merging?: boolean; integration?: boolean; conflicts?: number };
 
 type MergeStart = { ok: true; status: MergeSessionStatus } | { ok: false; error: string };
 type MergeStatus = { ok: true; status: MergeSessionStatus | null } | { ok: false; error: string };
 type MergeAction = { ok: true } | { ok: false; error: string };
 
-// 활성 워크스페이스의 활성 pane → repo-base cwd 후보 목록(우선순위 순).
-// 셀렉터로도 재사용(store 상태에서 원시 문자열로 수렴 — 리렌더 최소화).
+// Active workspace active pane → repo-base cwd candidate list (priority order).
+// Also reused by selector (converge to raw string from store — minimize re-renders).
 //
-// 왜 목록인가(2026-07-21 실측): 에이전트 TUI pane은 surface.cwd(셸의 cwd)가
-// repo 밖일 수 있다 — 셸은 홈에 앉아 있고 에이전트만 repo에서 작업하는 경우
-// (관측: surface.cwd=C:\Users\me, metadata.cwd=D:\wmux). metadata.cwd는 hook이
-// 보고한 에이전트 cwd로 사이드바 브랜치가 이미 신뢰하는 값이므로 두 번째
-// 후보로 넣는다. load()가 순서대로 resolveRepo를 시도해 첫 성공을 채택한다.
+// Why a list (2026-07-21 measured): agent TUI pane surface.cwd (shell cwd) may be
+// outside repo — shell at home while agent works in repo
+// (observed: surface.cwd=C:\Users\me, metadata.cwd=D:\wmux). metadata.cwd is hook-reported
+// agent cwd already trusted by sidebar branch so second candidate.
+// load() tries resolveRepo in order and adopts first success.
 function selectActivePaneCwdCandidates(state: StoreState): string {
   const ws = state.workspaces.find((w) => w.id === state.activeWorkspaceId);
   if (!ws) return '';
@@ -53,9 +53,9 @@ function selectActivePaneCwdCandidates(state: StoreState): string {
   };
   const leaf = findLeaf(ws.rootPane);
   const surface = leaf?.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-  // 오염된 cwd(스크래핑 오탐으로 저장된 불가능한 모양)는 건너뛰고 폴백 사용.
-  // platform은 호스트 OS 기준(ReviewTab.normRepo와 동일 소스) — 렌더러의
-  // process.platform 기본값은 CI POSIX 러너에서 Windows 경로를 오거부한다.
+  // Skip tainted cwd (impossible shape saved by scrape false positive) and use fallback.
+  // platform is host OS (same source as ReviewTab.normRepo) — renderer
+  // process.platform default rejects Windows paths on CI POSIX runners.
   const plat = (window as unknown as { electronAPI?: { platform?: string } }).electronAPI?.platform;
   const surfaceCwd = surface?.cwd && isPlausibleCwd(surface.cwd, plat ?? undefined) ? surface.cwd : '';
   const candidates = [
@@ -82,7 +82,7 @@ interface WorktreeBridge {
   remove: (repoPath: string, worktreePath: string) => Promise<
     { ok: true; worktreePath: string } | { ok: false; error: string }
   >;
-  // 머지 세션(격리 integration 워크트리). 구 preload에는 없을 수 있어 optional.
+  // Merge session (isolated integration worktree). optional on older preload.
   mergeStart?: (repoPath: string, sourcePath: string) => Promise<MergeStart>;
   mergeStatus?: (repoPath: string) => Promise<MergeStatus>;
   mergeLand?: (repoPath: string) => Promise<MergeAction>;
@@ -101,19 +101,19 @@ function getBridges(): { worktree: WorktreeBridge | null; resolveRepo: ((cwd: st
 export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
   const t = useT();
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  // 활성 pane cwd를 reactive 구독 — 같은 워크스페이스에서 다른 repo pane으로
-  // 포커스가 옮겨가도 재조회되도록 load의 dep으로 쓴다(Codex P2). 단 중앙 surface로
-  // 렌더될 땐 prop cwd(생성 시 캡처된 surface.cwd)가 repo base로 우선한다 — 자기
-  // 빈 cwd를 활성 pane에서 읽어 repo가 틀어지는 문제를 막는다. prop 미제공(덱 하위
-  // 호환) 시에만 selectActivePaneCwdCandidates 폴백.
+  // Reactively subscribe active pane cwd — re-fetch when focus moves to different repo pane
+  // in same workspace via load dep (Codex P2). When rendered as center surface,
+  // prop cwd (captured surface.cwd at creation) takes priority as repo base — prevents
+  // reading empty cwd from active pane and wrong repo. Fallback to selectActivePaneCwdCandidates
+  // only when prop omitted (deck sub compatibility).
   const activePaneCwdCandidates = useStore(selectActivePaneCwdCandidates);
-  // prop cwd(중앙 surface 생성 시 캡처)가 있으면 그것만 시도 — 활성 pane 폴백 금지
-  // (자기 빈 cwd를 활성 pane에서 읽어 repo가 틀어지는 문제, GitTab.cwdProp 테스트).
+  // When prop cwd (captured at center surface creation) present try only that — no active pane fallback
+  // (prevents wrong repo from empty active pane cwd — GitTab.cwdProp test).
   const activeCwdCandidates = cwd != null ? cwd : activePaneCwdCandidates;
   const pushToast = useStore((s) => s.pushToast);
   const [repoPath, setRepoPath] = useState<string | null>(null);
-  // 본(main) 워크트리 경로 — "main" 배지·Remove 숨김 기준. 현재 워크트리
-  // (dot 기준)와 별개다: linked worktree에서 열면 둘이 다르다(dogfood 실측).
+  // Main worktree path — "main" badge·Remove hide basis. Distinct from current worktree
+  // (dot basis): differ when opened from linked worktree (dogfood measured).
   const [mainPath, setMainPath] = useState<string>('');
   const [currentWorktree, setCurrentWorktree] = useState<string>('');
   const [worktrees, setWorktrees] = useState<WorktreeRowUI[]>([]);
@@ -121,11 +121,11 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
   const [error, setError] = useState<string | null>(null);
   const [newBranch, setNewBranch] = useState('');
   const [busy, setBusy] = useState(false);
-  // 활성 머지 세션(격리 integration 워크트리). null = 세션 없음. 정본은 main이라
-  // load마다 mergeStatus로 재수화(재시작 후 복구 포함), transient 단계는 폴링.
+  // Active merge session (isolated integration worktree). null = no session. main is source of truth so
+  // rehydrate via mergeStatus each load (includes post-restart recovery), poll transient stages.
   const [session, setSession] = useState<MergeSessionStatus | null>(null);
-  // Monotonic load token — 빠른 repo(pane cwd) 전환 시 늦게 도착한 이전 응답이
-  // 새 결과를 덮지 않게 한다(ReviewTab:97 패턴 복제). 최신 load()만 commit.
+  // Monotonic load token — prevent late stale response from older repo(pane cwd) switch
+  // overwriting newer result (ReviewTab:97 pattern). Only latest load() commits.
   const loadSeq = useRef(0);
 
   const load = useCallback(async () => {
@@ -139,8 +139,8 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
       setLoading(false);
       return;
     }
-    // 후보를 순서대로 시도해 첫 git-resolve 성공을 채택한다(에이전트 pane의
-    // 셸 cwd가 repo 밖이어도 metadata.cwd 폴백이 잡는다 — 2026-07-21).
+    // Try candidates in order, adopt first git-resolve success (agent pane shell cwd
+    // outside repo still caught by metadata.cwd fallback — 2026-07-21).
     let resolved: { ok: true; repoPath: string } | { ok: false } = { ok: false };
     for (const candidate of activeCwdCandidates.split('\0').filter(Boolean)) {
       resolved = await resolveRepo(candidate);
@@ -166,8 +166,8 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
       setWorktrees(res.worktrees);
     }
     setLoading(false);
-    // 머지 세션 재수화 — main이 정본(디스크 MERGE_HEAD 파생)이라 앱 재시작 후에도
-    // 진행 중 세션을 복구해 Land/Discard를 제시한다. 구 preload면 mergeStatus 부재.
+    // Merge session rehydration — main is source of truth (disk MERGE_HEAD derived) so after app restart
+    // recover in-progress session and offer Land/Discard. Older preload may lack mergeStatus.
     if (res.ok && worktree.mergeStatus) {
       const ms = await worktree.mergeStatus(res.repoPath);
       if (seq !== loadSeq.current) return; // superseded by a newer load
@@ -175,8 +175,8 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
     }
   }, [activeCwdCandidates]);
 
-  // 탭 마운트 시 + 활성 워크스페이스/pane cwd 변경 시 재조회(pull-only).
-  // load가 activeCwd에 의존하므로 pane 포커스 전환도 여기서 재조회된다.
+  // Re-fetch on tab mount + active workspace/pane cwd change (pull-only).
+  // load depends on activeCwd so pane focus switch also re-fetches here.
   useEffect(() => {
     void load();
   }, [load, activeWorkspaceId]);
@@ -187,7 +187,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
     const { worktree } = getBridges();
     if (!worktree) return;
     setBusy(true);
-    // try/finally: IPC가 {ok:false} 대신 reject해도 busy가 풀리도록(Codex P2).
+    // try/finally: release busy even when IPC rejects instead of {ok:false} (Codex P2).
     try {
       const res = await worktree.add(repoPath, branch);
       if (!res.ok) {
@@ -213,7 +213,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
       try {
         const res = await worktree.remove(repoPath, wt.path);
         if (!res.ok) {
-          // dirty 워크트리 등 — git의 거부 사유를 그대로 표면화(--force 미제공).
+          // dirty worktree etc — surface git rejection reason as-is (no --force).
           pushToast({ level: 'warn', message: `${t('git.removeFailed')}: ${res.error}` });
           return;
         }
@@ -234,9 +234,9 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
     st.addWorkspace(wt.branch ?? pathLeaf(wt.path), { startupCwd: wt.path });
   }, []);
 
-  // diff 서피스 열기 — 워크트리 path는 이미 toplevel이라 resolveRepo 불요,
-  // 팔레트 "Show Git Diff"와 동일 결과(같은 repoPath면 기존 탭 전환 dedup 포함).
-  // 활성 워크스페이스의 활성 leaf pane에 탭을 얹는다.
+  // Open diff surface — worktree path already toplevel so no resolveRepo,
+  // same as palette "Show Git Diff" (existing tab switch dedup when same repoPath).
+  // Mount tab on active workspace active leaf pane.
   const handleDiff = useCallback((targetPath: string) => {
     const st = useStore.getState();
     const ws = st.workspaces.find((w) => w.id === st.activeWorkspaceId);
@@ -254,7 +254,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
     st.addWorkspaceDiffSurface(leaf.id, targetPath, `diff: ${pathLeaf(targetPath)}`);
   }, []);
 
-  // 머지 시작 — 이 워크트리(source)를 base로 격리 머지. 세션 1개만 허용.
+  // Start merge — isolated merge with this worktree (source) as base. Only one session allowed.
   const handleMerge = useCallback(
     async (wt: WorktreeRowUI) => {
       if (!repoPath || busy || session) return;
@@ -277,7 +277,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
     [repoPath, busy, session, pushToast, t],
   );
 
-  // Land — verify 통과 시에만 base를 결과로 fast-forward. 성공 시 세션 소멸 + 재조회.
+  // Land — fast-forward base to result only when verify passes. On success session ends + re-fetch.
   const handleLand = useCallback(async () => {
     if (!repoPath || busy) return;
     const { worktree } = getBridges();
@@ -299,7 +299,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
     }
   }, [repoPath, busy, pushToast, t, load]);
 
-  // Discard — merge --abort + integration 워크트리 제거. base는 무변경.
+  // Discard — merge --abort + remove integration worktree. base unchanged.
   const handleDiscard = useCallback(async () => {
     if (!repoPath || busy) return;
     const { worktree } = getBridges();
@@ -320,8 +320,8 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
     }
   }, [repoPath, busy, pushToast, t, load]);
 
-  // 충돌 시 수동 진입 — integration 워크트리를 새 워크스페이스로 열어(startupCwd)
-  // 사용자가 Claude로 충돌을 해결하게 한다(B-MVP: 자동해결 아님, handleOpen 패턴 재사용).
+  // Manual entry on conflict — open integration worktree as new workspace (startupCwd)
+  // for user to resolve with Claude (B-MVP: no auto-resolve, reuse handleOpen pattern).
   const openIntegration = useCallback(() => {
     if (!session) return;
     const st = useStore.getState();
@@ -329,7 +329,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
     st.addWorkspace(`merge: ${session.sourceBranch ?? pathLeaf(session.integrationPath)}`, { startupCwd: session.integrationPath });
   }, [session]);
 
-  // transient 단계(merging/verifying) 동안만 상태 폴링 — 종결 단계로 가면 정지.
+  // Poll status only during transient stages (merging/verifying) — stop at terminal stage.
   const sessionPhase = session?.phase;
   useEffect(() => {
     if (sessionPhase !== 'merging' && sessionPhase !== 'verifying') return;
@@ -351,14 +351,14 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
   const norm = (p: string) => p.replace(/[/\\]+$/, '').replace(/\\/g, '/').toLowerCase();
   const isMain = (wt: WorktreeEntry) => mainPath !== '' && norm(wt.path) === norm(mainPath);
   const isCurrent = (wt: WorktreeEntry) => currentWorktree !== '' && norm(wt.path) === norm(currentWorktree);
-  // 표시 목록에서 우리 소유 integration 워크트리는 감춘다(구현 세부, 세션 패널로 대체).
+  // Hide our-owned integration worktree from display list (implementation detail, replaced by session panel).
   const visibleWorktrees = worktrees.filter((w) => !w.integration);
 
   return (
     <div data-git-tab className="flex flex-col flex-1 min-h-0 text-[12px]">
-      {/* Pull Requests 섹션 — gh 기반(미설치/비GitHub은 안내문으로 강등). */}
+      {/* Pull Requests section — gh based (not installed/non-GitHub degraded to notice). */}
       <PrSection repoPath={repoPath} />
-      {/* 워크트리 섹션 헤더 — 36px 크롬 행. */}
+      {/* Worktrees section header — 36px chrome row. */}
       <div
         className="flex items-center gap-2 h-9 px-3 shrink-0 border-b border-[var(--bg-surface)]"
         style={{ borderColor: 'var(--border-soft)' }}
@@ -377,7 +377,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
           </span>
         )}
         <div className="flex-1" />
-        {/* 현재 repo(활성 pane의 워크트리) diff — 팔레트 커맨드의 버튼 진입점. */}
+        {/* Current repo (active pane worktree) diff — button entry for palette command. */}
         {repoPath && (
           <button
             type="button"
@@ -406,7 +406,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
         </button>
       </div>
 
-      {/* 본문 */}
+      {/* Body */}
       <div className="flex-1 min-h-0 overflow-y-auto">
         {loading && (
           <div className="px-3 py-4 text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
@@ -431,7 +431,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
                 className="group flex items-center gap-2 px-3 h-9 border-b border-[var(--bg-surface)] hover:bg-[rgba(var(--bg-surface-rgb),0.5)]"
                 style={{ borderColor: 'var(--border-soft)' }}
               >
-                {/* 현재(활성 pane이 속한) 워크트리만 amber 1포인트. */}
+                {/* Only current (worktree active pane belongs to) gets amber 1-point. */}
                 <span
                   aria-hidden="true"
                   className={`w-1.5 h-1.5 rounded-full shrink-0 ${
@@ -453,7 +453,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
                     {wt.prunable !== null && ` · ${t('git.prunable') || 'prunable'}`}
                   </span>
                 </div>
-                {/* 이 워크트리의 diff 서피스 열기(경로=toplevel 그대로). */}
+                {/* Open diff surface for this worktree (path=toplevel as-is). */}
                 <button
                   type="button"
                   onClick={() => handleDiff(wt.path)}
@@ -472,7 +472,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
                 >
                   {t('git.open') || 'Open'}
                 </button>
-                {/* 이 워크트리(source)를 base로 격리 머지 — feature 행에만, 세션 1개일 때만. */}
+                {/* Isolated merge with this worktree (source) as base — feature rows only, when one session max. */}
                 {!isMain(wt) && wt.branch && (
                   <button
                     type="button"
@@ -507,7 +507,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
         )}
       </div>
 
-      {/* 머지 세션 패널 — 활성 세션일 때만. plain-language 요약 + Land/Discard. */}
+      {/* Merge session panel — when active session only. plain-language summary + Land/Discard. */}
       {session && (
         <div
           data-git-merge-session
@@ -516,7 +516,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
           {...tokenAttrs('bgSurface', 'border')}
         >
           <div className="flex items-center gap-2">
-            {/* 단계 dot: alive=amber(merging/verifying) · ok=green · 문제=red. */}
+            {/* Stage dot: alive=amber(merging/verifying) · ok=green · problem=red. */}
             <span
               aria-hidden="true"
               className="w-1.5 h-1.5 rounded-full shrink-0"
@@ -549,7 +549,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
                         : t('git.mergePhaseReady') || 'Ready'}
             </span>
           </div>
-          {/* plain-language 요약 — 변경 파일 수 + verify 결과(diff-blind 사용자용). */}
+          {/* Plain-language summary — changed file count + verify result (for diff-blind users). */}
           <div className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>
             {session.phase === 'conflicted'
               ? `${session.conflicts.length} conflicting file(s) — open with Claude to resolve`
@@ -601,7 +601,7 @@ export function GitTab({ cwd }: { cwd?: string } = {}): React.ReactElement {
         </div>
       )}
 
-      {/* 새 워크트리 — 브랜치명 입력 한 줄(관례 위치는 main이 도출). */}
+      {/* New worktree — single branch name input (main derived by convention). */}
       {repoPath && (
         <div
           className="flex items-center gap-1.5 h-9 px-2 shrink-0 border-t border-[var(--bg-surface)]"

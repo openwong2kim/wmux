@@ -1184,7 +1184,7 @@ export function registerDeckHandler(
       const taskTexts = Array.isArray(req.taskTexts)
         ? req.taskTexts.filter((t): t is string => typeof t === 'string')
         : [];
-      // 반복 절차(steps) — 문자열 배열만 수용, 정규화·캡은 store가 담당.
+      // Repeat procedure (steps) — accept string array only; store handles normalize/cap.
       const steps = Array.isArray(req.steps)
         ? req.steps.filter((s): s is string => typeof s === 'string')
         : [];
@@ -1326,8 +1326,8 @@ export function registerDeckHandler(
     }),
   );
 
-  // 루프 설정 모달의 스킬 픽커 — pane 에이전트의 스킬/커맨드 카탈로그 스캔
-  // (읽기 전용, .claude/skills|commands 디스크 규약. skillCatalogScan 참조).
+  // Loop settings modal skill picker — scan pane agent skill/command catalog
+  // (read-only, .claude/skills|commands disk convention. See skillCatalogScan).
   ipcMain.removeHandler(IPC.DECK_LOOP_SKILLS);
   ipcMain.handle(
     IPC.DECK_LOOP_SKILLS,

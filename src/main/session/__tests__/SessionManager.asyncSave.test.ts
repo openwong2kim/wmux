@@ -1,16 +1,14 @@
 /**
- * A4 (NB2 파동 0) — 비동기 주기 저장(saveAsync)의 계약.
+ * A4 (NB2 wave 0) — async periodic save (saveAsync) contract.
  *
- * 목표: 5초 크래시-세이프티 틱을 main 이벤트 루프를 블록하지 않는 비동기 원자
- * 쓰기로 이관하되,
- *   (a) 종료/flush 경로가 마지막 스테이징을 유실 없이 디스크에 반영하고,
- *   (b) 리부트 생존의 핵심인 이벤트 기반 sync save()가 async 스테이징 이후
- *       발생하면 stale async 쓰기에 덮이지 않으며(에폭 가드),
- *   (c) 쓰기 원자성(tmp+rename, 유효 payload)은 그대로임
- * 을 고정한다.
+ * Goal: move 5s crash-safety tick to async atomic write that does not block main event loop,
+ * while fixing:
+ *   (a) exit/flush path persists last staging to disk without loss,
+ *   (b) event-driven sync save() after async staging is not overwritten by stale async write (epoch guard),
+ *   (c) write atomicity (tmp+rename, valid payload) unchanged
  *
- * Electron `app.getPath('userData')`는 per-test tmpdir로 목킹(다른 SessionManager
- * 테스트와 동일 패턴).
+ * Electron `app.getPath('userData')` mocked to per-test tmpdir (same pattern as other SessionManager
+ * tests).
  */
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import fs from 'node:fs';
@@ -25,12 +23,11 @@ vi.mock('electron', () => ({
   },
 }));
 
-// 리뷰 반영(패널 2-MODEL): 진짜 in-flight 레이스(async 쓰기가 await에 진입한 뒤
-// sync save가 끼어드는 창)를 재현하려면 async 쓰기를 인위적으로 멈출 게이트가
-// 필요하다. 기본은 무지연 통과(open) — 해당 케이스만 게이트를 닫는다.
-// 경로 주의: vi.mock은 "이 테스트 파일" 기준으로 resolve된다(SessionManager의
-// import 스펙과 동일 모듈에 닿아야 함) — 잘못된 경로는 조용히 무시돼 가짜
-// 양성이 되므로 gatedCalls 카운터로 목킹 실적용을 어서션한다.
+// Review fix (panel 2-MODEL): reproducing true in-flight race (async write entered await then
+// sync save interleaves) requires gate to artificially pause async write.
+// Default is pass-through (open) — only that case closes gate.
+// Path note: vi.mock resolves relative to "this test file" (must hit same module as SessionManager
+// import spec) — wrong path silently ignored causing false positive so assert gatedCalls counter.
 let asyncWriteGate: Promise<void> | null = null;
 let gatedCalls = 0;
 vi.mock('../../../daemon/util/atomicWrite', async (importOriginal) => {
@@ -55,7 +52,7 @@ function freshDir(): void {
   fs.mkdirSync(tmpRoot, { recursive: true });
 }
 
-/** 단일 leaf에 주어진 ptyId 하나를 담은 최소 SessionData. */
+/** Minimal SessionData with one ptyId in a single leaf. */
 function makeSession(ptyId: string): SessionData {
   return {
     workspaces: [{
@@ -88,7 +85,7 @@ describe('SessionManager — async periodic save (A4)', () => {
   it('saveAsync writes the payload atomically and validly (loadable round-trip)', async () => {
     const sm = new SessionManager();
     sm.saveAsync(makeSession('pty-async-1'));
-    // 비동기 큐가 실제 쓰기를 완료할 때까지 대기.
+    // Wait until async queue completes actual write.
     await sm.flush();
     expect(readDiskPtyId(sm)).toBe('pty-async-1');
   });
@@ -96,7 +93,7 @@ describe('SessionManager — async periodic save (A4)', () => {
   it('flush() persists the last staged async snapshot before the debounce timer fires', async () => {
     const sm = new SessionManager();
     sm.saveAsync(makeSession('pty-A'));
-    sm.saveAsync(makeSession('pty-B')); // 병합 — 마지막 값이 이겨야
+    sm.saveAsync(makeSession('pty-B')); // coalesce — last value must win
     await sm.flush();
     expect(readDiskPtyId(sm)).toBe('pty-B');
   });
@@ -104,18 +101,18 @@ describe('SessionManager — async periodic save (A4)', () => {
   it('flushSync() (exit path) writes the last staged async snapshot synchronously', () => {
     const sm = new SessionManager();
     sm.saveAsync(makeSession('pty-exit'));
-    // 종료 경로: 이벤트 루프가 더 돌지 않는다고 가정하고 동기 flush.
+    // Exit path: assume event loop stops — synchronous flush.
     sm.flushSync();
     expect(readDiskPtyId(sm)).toBe('pty-exit');
   });
 
   it('a later sync save() wins over an in-flight async stage (reboot-survival guard)', async () => {
     const sm = new SessionManager();
-    // async로 오래된 스냅샷을 스테이징한 뒤, 이벤트 기반 sync save로 최신 ptyId를
-    // 커밋한다. 최종 디스크 상태는 반드시 최신(sync) 값이어야 한다.
+    // Stage stale snapshot via async then commit latest ptyId via event-driven sync save.
+    // Final disk state must be latest (sync) value.
     sm.saveAsync(makeSession('pty-stale-async'));
     sm.save(makeSession('pty-fresh-sync'));
-    // 큐에 남아 있던 async 태스크가 실행되더라도 에폭 가드로 stale 쓰기를 건너뛴다.
+    // Even if queued async task runs, epoch guard skips stale write.
     await sm.flush();
     expect(readDiskPtyId(sm)).toBe('pty-fresh-sync');
   });
@@ -123,15 +120,15 @@ describe('SessionManager — async periodic save (A4)', () => {
   it('sync save() remains synchronous — data is on disk immediately (no await)', () => {
     const sm = new SessionManager();
     sm.save(makeSession('pty-sync-now'));
-    // await 없이 즉시 읽어도 최신 값이 보여야 한다(동기 원자 쓰기).
+    // Read immediately without await should show latest (synchronous atomic write).
     expect(readDiskPtyId(sm)).toBe('pty-sync-now');
   });
 
   it('a sync save that lands while an async write is IN-FLIGHT is restored (post-write recovery)', async () => {
-    // 리뷰 반영(패널 2-MODEL — in-flight 역전): async 태스크가 pre-write 에폭
-    // 검사를 통과하고 실제 쓰기(await)에 진입한 "후" sync save가 커밋하면,
-    // 뒤늦은 async rename이 디스크를 stale로 되돌린다. post-write 복원 루프가
-    // 이를 감지해 sync 커밋본을 재기록해야 한다 — 최종 디스크 = 최신(sync).
+    // Review fix (panel 2-MODEL — in-flight inversion): after async task passes pre-write epoch
+    // check and enters actual write (await), sync save commits,
+    // late async rename would revert disk to stale. post-write recovery loop must
+    // detect and re-write sync commit — final disk = latest (sync).
     const sm = new SessionManager();
     let openGate!: () => void;
     asyncWriteGate = new Promise<void>((resolve) => {
@@ -140,17 +137,17 @@ describe('SessionManager — async periodic save (A4)', () => {
     try {
       gatedCalls = 0;
       sm.saveAsync(makeSession('pty-stale-inflight'));
-      // 태스크가 큐에서 시작해 pre-check를 통과하고 게이트에 매달릴 때까지 양보.
+      // Yield until task starts, passes pre-check, and blocks on gate.
       await new Promise((r) => setTimeout(r, 10));
-      // 목킹 실적용 확인 — stale 쓰기가 게이트에 실제로 매달렸다(가짜 양성 방지).
+      // Confirm mock applied — stale write actually blocked on gate (prevent false positive).
       expect(gatedCalls).toBe(1);
-      // 이 시점 async는 in-flight — queue.clear()로 제거 불가. sync가 최신 커밋.
+      // At this point async is in-flight — cannot remove via queue.clear(). sync commits latest.
       sm.save(makeSession('pty-fresh-sync-late'));
       expect(readDiskPtyId(sm)).toBe('pty-fresh-sync-late');
-      // 게이트를 열어 stale async가 rename까지 완주하게 한 뒤 큐를 비운다.
+      // Open gate so stale async completes rename then drain queue.
       openGate();
       await sm.flush();
-      // post-write 복원이 없다면 여기서 pty-stale-inflight가 보인다(역전).
+      // Without post-write recovery pty-stale-inflight would appear here (inversion).
       expect(readDiskPtyId(sm)).toBe('pty-fresh-sync-late');
     } finally {
       asyncWriteGate = null;

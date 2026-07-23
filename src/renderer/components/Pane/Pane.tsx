@@ -270,7 +270,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const markRead = useStore((s) => s.markRead);
   const setPaneNotificationRing = useStore((s) => s.setPaneNotificationRing);
 
-  // count만 가져와 불필요한 배열 참조 안정성 문제 방지.
+  // Fetch count only to avoid unnecessary array reference stability issues.
   // O(S) via the unreadBySurfaceId index on store state (was O(P×N×S) filter).
   const unreadCount = useStore((s) =>
     pane.surfaces.reduce((acc, surf) => acc + (s.unreadBySurfaceId[surf.id] ?? 0), 0),
@@ -321,7 +321,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
 
   const handleClick = useCallback(() => {
     setActivePane(pane.id);
-    // 최신 state에서 직접 읽어 stale closure 방지
+    // Read directly from latest state to avoid stale closure
     const { notifications } = useStore.getState();
     const surfaceIds = new Set(pane.surfaces.map((s) => s.id));
     let markedAny = false;
@@ -442,7 +442,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     }
     closeSurface(pane.id, surfaceId);
 
-    // 마지막 Surface가 닫히면 Pane도 자동 제거
+    // When the last surface closes, remove the pane automatically
     if (pane.surfaces.length <= 1) {
       closePane(pane.id);
     }
@@ -785,7 +785,7 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
           carries a captured conversation binding but is NOT in the reboot-
           recovery pill flow above (the pill takes precedence right after a
           reboot). Reveals the conversation UUID and types the exact resume
-          command into this pane on 복구. */}
+          command into this pane on recovery. */}
       {resumeBinding && !resumeHint && activeSurfacePtyId && (
         <ResumeInfoChipGate
           ptyId={activeSurfacePtyId}
@@ -892,10 +892,10 @@ function SplitSurfaceView({
     () => pane.surfaces.filter((s) => s.surfaceType === 'browser'),
     [pane.surfaces],
   );
-  // F6 — terminal·browser 어디에도 속하지 않는 비PTY 서피스(diff·editor). hasBoth
-  // 스플릿 경로가 terminals·browsers만 렌더해 이들이 누락됐다(diff가 안 뜸). active
-  // 인 것만 split 위에 오버레이로 겹쳐 렌더한다(각 패널이 display:isActive로 자기
-  // 가시성을 관리하므로 비active는 보이지 않음 — editor 기존 단독 경로는 무회귀).
+  // F6 — non-PTY surfaces (diff, editor) that belong to neither terminal nor browser. hasBoth
+  // split path rendered only terminals and browsers, omitting these (diff never appeared). Render
+  // only the active one overlaid on split (each panel manages visibility via display:isActive, so
+  // inactive is hidden — editor standalone path unchanged).
   const others = useMemo(() => pickOverlaySurfaces(pane.surfaces), [pane.surfaces]);
 
   const hasBoth = terminals.length > 0 && browsers.length > 0;
@@ -933,10 +933,10 @@ function SplitSurfaceView({
               onClose={() => onCloseSurface(surface.id)}
             />
           ) : surface.surfaceType === 'diff' ? (
-            // J2 — diff 서피스는 PTY 없음. F1: verifiedWorkspaceId는 태스크 owner(부모)
-            // ws id(task.mission.* RPC가 owner 스코프). fan-out이 diff 서피스에 실어둔
-            // diffOwnerWorkspaceId를 쓰고, 없으면(구 세션 등) 담고 있는 ws로 폴백.
-            // diffRepoPath가 있으면 워크스페이스 diff(읽기 전용, 태스크 결합 없음).
+            // J2 — diff surface has no PTY. F1: verifiedWorkspaceId is task owner (parent)
+            // ws id (task.mission.* RPC is owner-scoped). Use diffOwnerWorkspaceId from fan-out
+            // on diff surface; fall back to containing ws if absent (legacy sessions). diffRepoPath
+            // present → workspace diff (read-only, no task coupling).
             <DiffPanel
               key={surface.id}
               source={
@@ -1021,8 +1021,8 @@ function SplitSurfaceView({
           </div>
         </Panel>
       </Group>
-      {/* F6 — active인 diff·editor 서피스를 스플릿 위에 오버레이(absolute inset-0).
-          비active는 각 패널의 display:none으로 숨으므로 겹쳐도 안전. */}
+      {/* F6 — overlay active diff/editor surfaces on split (absolute inset-0).
+          Inactive hidden via each panel's display:none, so overlap is safe. */}
       {others.map((surface) =>
         surface.surfaceType === 'diff' ? (
           <DiffPanel

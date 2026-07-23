@@ -232,7 +232,7 @@ describe('HeadlessSnapshot — fidelity round-trips', () => {
   it('keeps a multibyte char intact across an interior feed-slice boundary', async () => {
     const cols = 120;
     const rows = 10;
-    // Pad so the 3-byte '한' straddles the FEED_SLICE_BYTES boundary
+    // Pad so the 3-byte UTF-8 hangul syllable straddles the FEED_SLICE_BYTES boundary
     // (1 byte in slice 0, 2 bytes in slice 1), then end with a marker line.
     const pad = 'x'.repeat(64) + '\r\n'; // 66 ASCII bytes
     let s = '';

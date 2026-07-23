@@ -1,25 +1,25 @@
-// 검증 리그 — SIM S7: flood 중 데몬 SIGKILL→재스폰 (설계 §4 시나리오 S7, v1.1 재정의판)
+// Verification rig — SIM S7: daemon SIGKILL→respawn during flood (design §4 scenario S7, v1.1 redefinition)
 //
-// 계약(v1.1 §4 — **단방 부분집합만**): flood 도중 데몬을 SIGKILL하고 같은 suffix로
-// respawn한 뒤, {RPC ok로 커밋 확인된 메시지 seq} ⊆ {replay 후 getMessages 결과 seq}.
-// 즉 **확인된 커밋의 무손실**만 어서트한다(§6.L envelope 실증).
+// Contract (v1.1 §4 — **one-way subset only**): SIGKILL daemon during flood, respawn with same suffix,
+// then {message seq confirmed committed via RPC ok} ⊆ {getMessages seq after replay}.
+// Asserts **lossless confirmed commits only** (§6.L envelope proof).
 //
-// **미커밋 무부활은 어서트 불가**(리뷰 P4 — Claude c/80, footgun 9): AppendOnlyLog는
-// at-least-once valid-tail 승격 계약(`src/daemon/eventlog/AppendOnlyLog.ts:13-15,:254-269`)
-// — fsync 배리어 직전 물리 write된 미커밋분이 부트 스캔에서 정당하게 승격될 수 있다.
-// 그래서 "replay ⊆ committed"(미커밋 무부활)를 어서트하면 정상 동작을 fail로 찍는다.
-// 우리가 못박는 건 오직 committed ⊆ replay(assertReplaySuperset — 단방).
+// **Uncommitted non-resurrection not assertable** (review P4 — Claude c/80, footgun 9): AppendOnlyLog
+// at-least-once valid-tail promotion contract (`src/daemon/eventlog/AppendOnlyLog.ts:13-15,:254-269`)
+// — physically written uncommitted data just before fsync barrier may legitimately promote on boot scan.
+// Asserting "replay ⊆ committed" (uncommitted stays dead) fails normal behavior.
+// We pin only committed ⊆ replay (assertReplaySuperset — one-way).
 //
-// **ack는 커밋 증거에서 제외**(footgun 11 — Codex M12): ack는 flip 없으면 no-op ok가
-// 있어(`ChannelService.ts:2185` 부근) "ok=커밋"이 성립하지 않는다. 그래서 S7의 커밋
-// 원장은 post의 ok seq만이다. ack 효과 검증은 이 시나리오 밖.
+// **ack excluded from commit evidence** (footgun 11 — Codex M12): ack can be no-op ok without flip
+// (`ChannelService.ts:2185` area) so "ok=commit" doesn't hold. S7 commit ledger is post ok seq only.
+// ack effect verification is outside this scenario.
 //
-// **graceful vs SIGKILL 혼동 금지**(footgun 10): graceful close는 pending 전원 false
-// 확정(별도 계약, E2E-3 몫). S7은 SIGKILL이라 tail 승격 가능 — 계약이 다르다.
+// **No graceful vs SIGKILL confusion** (footgun 10): graceful close confirms all pending false
+// (separate contract, E2E-3 scope). S7 is SIGKILL so tail promotion possible — different contract.
 //
-// 실행 모델: 채널 open → 1차 flood(각 post ok seq 수집=확인된 커밋) → **데몬 SIGKILL**
-// → respawn(디스크 상태 복원) → getMessages로 replay 결과 수집 → committed ⊆ replay
-// 어서트. + respawn 후 채널이 계속 동작하는지(2차 post) 확인.
+// Execution model: channel open → 1st flood (collect each post ok seq=confirmed commit) → **daemon SIGKILL**
+// → respawn (disk state restore) → getMessages for replay → committed ⊆ replay assert.
+// + verify channel still works after respawn (2nd post).
 
 import { describe, it, beforeAll, afterAll, expect } from 'vitest';
 import { createRigContext, removeRigHome, type RigContext } from '../harness/isolation';
@@ -28,10 +28,10 @@ import { PersonaRunner } from '../harness/persona';
 import { assertReplaySuperset, type RigChannelMessage, type RigUnreadEntry } from '../harness/assert';
 import { pickSeed } from '../harness/seed';
 
-/** 1차 flood post 수(SIGKILL 전 확실히 커밋되는 원장). */
+/** 1st flood post count (ledger definitely committed before SIGKILL). */
 const FLOOD_POSTS = 20;
 
-describe('SIM S7 — flood 중 SIGKILL→respawn: 확인된 커밋 무손실 (단방 부분집합)', () => {
+describe('SIM S7 — SIGKILL→respawn during flood: lossless confirmed commits (one-way subset)', () => {
   let ctx: RigContext;
   let daemon: RigDaemon;
   let runner: PersonaRunner;
@@ -49,17 +49,17 @@ describe('SIM S7 — flood 중 SIGKILL→respawn: 확인된 커밋 무손실 (�
     if (ctx) removeRigHome(ctx);
   });
 
-  it('SIGKILL 후 respawn하면 RPC ok로 커밋 확인된 전 메시지가 replay로 살아남는다', async () => {
-    // 고정 루프라 결정적(rng 미사용) — seed는 PersonaRunner rng 시드로만 쓰이고 이
-    // 시나리오 본문은 소비하지 않는다. 시드 재현 문구를 두지 않는다(거짓 신호 방지).
+  it('after SIGKILL respawn, all RPC-ok-confirmed messages survive replay', async () => {
+    // Fixed loop so deterministic (no rng) — seed only used as PersonaRunner rng seed
+    // and this scenario body does not consume it. No seed reproduction wording (avoids false signal).
     try {
       runner = new PersonaRunner(ctx, { idPrefix: 's7', seed });
       const [poster, reader] = runner.spawn(2);
       const { channelId, nextSeq } = await runner.openChannel('rig-s7-replay', poster, [reader]);
-      expect(nextSeq, 'create 직후 nextSeq=1').toBe(1);
+      expect(nextSeq, 'nextSeq=1 right after create').toBe(1);
 
-      // 1. 1차 flood — 각 post의 ok 반환 seq를 수집한다. ok = fsync 커밋 후(envelope PR3)
-      //    이므로 이 seq들은 "확실히 커밋된" 원장이다. 순차 발사(커밋 확인 후 다음).
+      // 1. 1st flood — collect each post ok return seq. ok = after fsync commit (envelope PR3)
+      //    so these seqs are "definitely committed" ledger. Sequential fire (next after commit confirmed).
       const committedSeqs: number[] = [];
       for (let k = 0; k < FLOOD_POSTS; k++) {
         const res = await poster.client.channelRpc('a2a.channel.post', {
@@ -70,11 +70,11 @@ describe('SIM S7 — flood 중 SIGKILL→respawn: 확인된 커밋 무손실 (�
         const seq = (res['message'] as { seq: number }).seq;
         committedSeqs.push(seq);
       }
-      expect(committedSeqs.length, '1차 flood 전량 ok').toBe(FLOOD_POSTS);
+      expect(committedSeqs.length, 'first flood all ok').toBe(FLOOD_POSTS);
 
-      // 1b. reader가 전량 ack(멤버 스코프 — 커서 전진). ack는 **커밋 증거로 세지 않는다**
-      //     (footgun 11 · Codex M12: ack는 flip 없으면 no-op ok라 "ok=로그 커밋"이 아니다).
-      //     대신 respawn 후 **unread 질의**로 커서 생존만 확인한다(살아남았으면 unread 감소).
+      // 1b. reader acks all (member scope — cursor advance). ack is **not counted as commit evidence**
+      //     (footgun 11 · Codex M12: ack can be no-op ok without flip so "ok=log commit" doesn't hold).
+      //     Instead verify cursor survival via **unread query** after respawn (if alive, unread decreases).
       await reader.client.channelRpc('a2a.channel.ack', {
         channelId,
         uptoSeq: FLOOD_POSTS,
@@ -83,54 +83,54 @@ describe('SIM S7 — flood 중 SIGKILL→respawn: 확인된 커밋 무손실 (�
       // eslint-disable-next-line no-console
       console.log(`[S7] committed ${committedSeqs.length} posts + reader ack, pid=${daemon.pid} → SIGKILL`);
 
-      // 2. 데몬 트리 SIGKILL(카오스 주입) — exit 회수까지 대기. 커밋 배리어와 무관하게
-      //    즉발 종료(RigDaemon.kill이 SIGKILL 세만틱 유지).
+      // 2. Daemon tree SIGKILL (chaos injection) — wait until exit reclaimed. Immediate termination
+      //    regardless of commit barrier (RigDaemon.kill preserves SIGKILL semantics).
       const killedPid = daemon.pid;
       await daemon.kill();
-      expect(daemon.pid, 'kill 후 pid 없음').toBeUndefined();
+      expect(daemon.pid, 'no pid after kill').toBeUndefined();
 
-      // 3. 같은 suffix로 respawn — 데몬이 임시 홈 안 이벤트 로그에서 상태를 복원한다
-      //    (§6.L replay). respawn은 ready(daemon.ping)까지 기다린다.
+      // 3. Respawn with same suffix — daemon restores state from event log in temp home
+      //    (§6.L replay). respawn waits until ready (daemon.ping).
       await daemon.respawn();
-      expect(daemon.pid, 'respawn 후 새 pid 존재').toBeDefined();
-      expect(daemon.pid, 'respawn은 새 프로세스').not.toBe(killedPid);
+      expect(daemon.pid, 'new pid exists after respawn').toBeDefined();
+      expect(daemon.pid, 'respawn is a new process').not.toBe(killedPid);
 
-      // 4. replay 결과 수집 — respawn 후 소켓은 새로 열려야 하므로 reader 클라이언트가
-      //    지연 재연결한다(PipeClient가 끊긴 소켓을 다음 호출에서 재연결). getMessages로
-      //    복원된 원장 전수를 읽는다.
+      // 4. Collect replay results — socket must reopen after respawn so reader client
+      //    reconnects lazily (PipeClient reconnects dropped socket on next call). getMessages reads
+      //    full restored ledger.
       const fetched = await reader.client.channelRpc('a2a.channel.getMessages', { channelId });
       const replayed = (fetched['messages'] ?? []) as RigChannelMessage[];
       const replayedSeqs = replayed.map((m) => m.seq);
       // eslint-disable-next-line no-console
       console.log(`[S7] replayed ${replayedSeqs.length} messages after respawn`);
 
-      // 5. **단방 부분집합**: 확인된 커밋 seq 전부가 replay 결과에 있어야 한다
-      //    (committed ⊆ replayed). 역방향(replay ⊆ committed)은 at-least-once tail
-      //    승격 계약상 어서트하지 않는다(footgun 9).
+      // 5. **One-way subset**: all confirmed commit seqs must appear in replay results
+      //    (committed ⊆ replayed). Reverse direction (replay ⊆ committed) not asserted due to
+      //    at-least-once tail promotion contract (footgun 9).
       assertReplaySuperset(committedSeqs, replayedSeqs, 's7-post-seqs');
 
-      // 5b. ack 효과는 **unread로만** 확인한다(post seq 커밋 증거와 분리 — footgun 11:
-      //     receipt-only ack는 flip 없으면 no-op ok라 커밋 증거로 셀 수 없다). 단 위 3단의
-      //     ack는 **member-scoped**(memberId 지정 — line 78-81)라 커서를 실제 전진시키는
-      //     **커밋**이다: cursorFlips가 생겨 commitAndApply(append-then-barrier)를 타므로
-      //     (`ChannelService.ack` :2185-2208) 그 ok는 **배리어 후 내구**다. 따라서 이 커서의
-      //     replay 생존을 하드어서트하는 것이 정당하다(no-op receipt ack의 무보장과 다른
-      //     계약 — member-scoped cursor 커밋은 post와 동일한 내구 보장). SIGKILL을 관통해
-      //     reader의 lastReadSeq가 ack한 지점 이상으로 살아남았음을 확인한다.
+      // 5b. ack effect verified **via unread only** (separate from post seq commit evidence — footgun 11:
+      //     receipt-only ack can be no-op ok without flip so not countable as commit evidence). But ack in
+      //     step 3 is **member-scoped** (memberId specified — line 78-81) so cursor actually advances —
+      //     a **commit**: cursorFlips trigger commitAndApply (append-then-barrier)
+      //     (`ChannelService.ack` :2185-2208) so its ok is **durable after barrier**. Therefore hard-asserting
+      //     this cursor's replay survival is justified (different contract from no-op receipt ack's no guarantee
+      //     — member-scoped cursor commit has same durability as post). Verify reader's lastReadSeq survives
+      //     SIGKILL at or beyond acked point.
       const readerUnread = await reader.client.channelRpc('a2a.channel.unread', {});
       const readerEntries = (readerUnread['entries'] ?? []) as RigUnreadEntry[];
       const readerRow = readerEntries.find(
         (e) => e.channelId === channelId && e.memberId === reader.ws,
       );
-      expect(readerRow, 'respawn 후 reader unread 엔트리 존재(멤버십 복원)').toBeTruthy();
-      // 커서가 replay를 관통해 살아남음 → 읽은 지점(lastReadSeq)이 ack한 seq 이상.
+      expect(readerRow, 'reader unread entry exists after respawn (membership restored)').toBeTruthy();
+      // Cursor survives replay → read point (lastReadSeq) at or beyond acked seq.
       expect(
         readerRow!.lastReadSeq,
-        'respawn 후 reader 커서가 내구 생존(ack가 replay를 관통)',
+        'reader cursor durably survives respawn (ack survives replay)',
       ).toBeGreaterThanOrEqual(Math.min(FLOOD_POSTS, Math.max(...replayedSeqs)));
 
-      // 6. respawn 후 채널이 계속 동작한다(복원된 nextSeq 위에서 이어 쓰기). 새 post의
-      //    seq는 replay된 최대 seq보다 커야 한다(seq 원장 연속성이 재시작을 관통).
+      // 6. Channel still works after respawn (continues writing above restored nextSeq). New post
+      //    seq must exceed max replayed seq (seq ledger continuity survives restart).
       const maxReplayed = replayedSeqs.length > 0 ? Math.max(...replayedSeqs) : 0;
       const after = await poster.client.channelRpc('a2a.channel.post', {
         channelId,
@@ -138,7 +138,7 @@ describe('SIM S7 — flood 중 SIGKILL→respawn: 확인된 커밋 무손실 (�
         text: 's7|post-respawn',
       });
       const afterSeq = (after['message'] as { seq: number }).seq;
-      expect(afterSeq, 'respawn 후 post seq는 replay 최대 seq 초과(원장 연속)').toBeGreaterThan(
+      expect(afterSeq, 'post seq after respawn exceeds max replayed seq (ledger continuity)').toBeGreaterThan(
         maxReplayed,
       );
     } catch (err) {

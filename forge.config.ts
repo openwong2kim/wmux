@@ -66,10 +66,11 @@ function pruneForeignPrebuilds(nodePtyDir: string, platform: string, arch: strin
   }
 }
 
-// node-pty의 spawn-helper(macOS에서 셸을 fork/exec하는 바이너리)는 npm prebuild가
-// 실행권한 없이(rw-r--r--) 풀려서, +x를 직접 부여하지 않으면 posix_spawnp가
-// 셸을 띄우지 못한다("posix_spawnp failed"). 반드시 코드 서명 "전"에 호출해야
-// 한다(서명 후 권한을 바꾸면 서명이 깨진다). root 하위를 재귀 탐색한다.
+// node-pty's spawn-helper binary (which fork/execs the shell on macOS) is
+// unpacked by npm prebuilds without execute permission (rw-r--r--). Without
+// adding +x, posix_spawnp cannot launch the shell ("posix_spawnp failed").
+// Call this before code signing; changing permissions afterward breaks signing.
+// Recursively scan below root.
 function chmodSpawnHelpers(root: string): void {
   if (!fs.existsSync(root)) return;
   for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
@@ -79,34 +80,34 @@ function chmodSpawnHelpers(root: string): void {
   }
 }
 
-// macOS Developer ID signing + notarization은 packagerConfig가 아니라 아래
-// postPackage hook의 "맨 끝"에서 직접 수행한다(signMacAppIfConfigured).
+// macOS Developer ID signing and notarization run directly at the very end of
+// the postPackage hook (signMacAppIfConfigured), not in packagerConfig.
 //
-// 이유(중요): packager의 osxSign/osxNotarize는 postPackage hook보다 "먼저"
-// 실행된다. 그런데 postPackage hook은 node-pty를 app.asar과 daemon-bundle로
-// 복사해 넣는다 — 즉 packagerConfig에서 서명하면, 그 직후 postPackage가
-// 봉인된 리소스를 변경해 서명이 깨진다(`a sealed resource is missing or
-// invalid`). 그래서 모든 파일 조작이 끝난 마지막에 서명→노타라이즈→스테이플
-// 순서로 처리해야 한다.
+// Important: the packager's osxSign/osxNotarize run before the postPackage
+// hook. The hook then copies node-pty into app.asar and daemon-bundle; signing
+// in packagerConfig would therefore be followed by changes to sealed resources,
+// breaking the signature (a sealed resource is missing or invalid). Sign,
+// notarize, and staple only after all file operations are complete.
 //
-// Apple 자격증명(APPLE_TEAM_ID/APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD) 3개가
-// 모두 있을 때만 동작하고, 없으면 UNSIGNED 빌드를 그대로 만든다(로컬 dev나
-// secrets 미설정 CI). Developer ID Application identity는 keychain에서 자동
-// 탐색한다. entitlements는 hardened-runtime 예외(RunAsNode + node-pty)를
-// 부여한다(build/entitlements.mac.plist).
+// This runs only when all three Apple credentials
+// (APPLE_TEAM_ID/APPLE_ID/APPLE_APP_SPECIFIC_PASSWORD) are present; otherwise
+// it leaves an UNSIGNED build (for local development or CI without secrets).
+// The Developer ID Application identity is discovered automatically in the
+// keychain. Entitlements grant the hardened-runtime exceptions (RunAsNode and
+// node-pty) in build/entitlements.mac.plist.
 async function signMacAppIfConfigured(appPath: string): Promise<void> {
   const { APPLE_TEAM_ID, APPLE_ID, APPLE_APP_SPECIFIC_PASSWORD } = process.env;
   if (process.platform !== 'darwin') return;
   if (!APPLE_TEAM_ID || !APPLE_ID || !APPLE_APP_SPECIFIC_PASSWORD) {
-    console.log('[postPackage] Apple 자격증명 없음 — UNSIGNED 빌드로 진행.');
+    console.log('[postPackage] No Apple credentials — proceeding with UNSIGNED build.');
     return;
   }
 
   const { signAsync } = require('@electron/osx-sign');
   const { notarize } = require('@electron/notarize');
 
-  // 1) inside-out 서명: 모든 헬퍼 .app과 .node 네이티브 바이너리까지 서명한다.
-  console.log('[postPackage] 코드 서명 (Developer ID, hardened runtime)...');
+  // 1) Sign inside out, including every helper .app and native .node binary.
+  console.log('[postPackage] Code signing (Developer ID, hardened runtime)...');
   await signAsync({
     app: appPath,
     optionsForFile: () => ({
@@ -115,8 +116,8 @@ async function signMacAppIfConfigured(appPath: string): Promise<void> {
     }),
   });
 
-  // 2) 노타라이즈: notarytool로 제출 후 완료까지 대기(수 분 소요).
-  console.log('[postPackage] 노타라이즈 (notarytool, 수 분 소요)...');
+  // 2) Notarize: submit with notarytool and wait for completion (several minutes).
+  console.log('[postPackage] Notarizing (notarytool, may take several minutes)...');
   await notarize({
     appPath,
     appleId: APPLE_ID,
@@ -124,11 +125,11 @@ async function signMacAppIfConfigured(appPath: string): Promise<void> {
     teamId: APPLE_TEAM_ID,
   });
 
-  // 3) 스테이플: 노타라이즈 티켓을 .app에 부착(오프라인 Gatekeeper 통과용).
-  console.log('[postPackage] 스테이플 (xcrun stapler)...');
+  // 3) Staple the notarization ticket to the .app for offline Gatekeeper checks.
+  console.log('[postPackage] Stapling (xcrun stapler)...');
   require('child_process').execFileSync('xcrun', ['stapler', 'staple', appPath], { stdio: 'inherit' });
 
-  console.log('[postPackage] macOS 서명 + 노타라이즈 + 스테이플 완료.');
+  console.log('[postPackage] macOS sign + notarize + staple complete.');
 }
 
 // Sign + notarize + staple the .dmg container itself, from the postMake hook.
@@ -221,9 +222,9 @@ const config: ForgeConfig = {
     // ./dist/daemon-web ships as a sibling of daemon-bundle so the detached
     // daemon resolves terminal.html at `__dirname/../daemon-web` (wmux web).
     extraResource: ['./dist/mcp-bundle', './dist/daemon-bundle', './dist/daemon-web', './dist/cli-bundle', './node_modules/@anthropic-ai/claude-agent-sdk', './assets/icon.ico', './assets/icon.icns', './assets/icon.png', './assets/trayTemplate.png', './assets/trayTemplate@2x.png', './LICENSE', './THIRD_PARTY_NOTICES', './src/main/pty/shell-hooks'],
-    // macOS 서명/노타라이즈는 packagerConfig가 아니라 postPackage hook 끝에서
-    // 수행한다(signMacAppIfConfigured 주석 참고). 여기서 서명하면 postPackage의
-    // node-pty 복사가 서명을 깨뜨리기 때문이다.
+    // macOS signing/notarization runs at the end of the postPackage hook, not
+    // in packagerConfig (see the signMacAppIfConfigured comment). Signing here
+    // would be invalidated by the postPackage node-pty copy.
   },
   hooks: {
     postPackage: async (_config, packageResult) => {
@@ -241,9 +242,9 @@ const config: ForgeConfig = {
       if (!canPrune) {
         console.warn('[postPackage] packageResult platform/arch unavailable — skipping node-pty prebuild pruning.');
       }
-      // macOS는 .app 번들이라 리소스가 <app>.app/Contents/Resources에,
-      // Windows/Linux는 <output>/resources에 위치한다. .app 이름은
-      // productName에 따라 달라지므로 디렉토리에서 직접 찾는다.
+      // macOS uses an .app bundle, so resources are under
+      // <app>.app/Contents/Resources; Windows/Linux use <output>/resources.
+      // The .app name depends on productName, so find it directly in the directory.
       const appBundle = process.platform === 'darwin'
         ? fs.readdirSync(outputPath).find((f) => f.endsWith('.app'))
         : undefined;
@@ -272,16 +273,16 @@ const config: ForgeConfig = {
       console.log('[postPackage] Repacking asar...');
       fs.unlinkSync(asarPath);
       if (fs.existsSync(unpackedDir)) fs.rmSync(unpackedDir, { recursive: true });
-      // node-pty의 네이티브 자산(prebuilds/ 안의 *.node + spawn-helper)만 asar
-      // 밖으로 빼낸다. spawn-helper는 macOS에서 셸을 fork/exec하는 바이너리라
-      // asar에 갇히면 실행 불가("posix_spawnp failed")다.
+      // Unpack only node-pty's native assets (*.node files and spawn-helper in
+      // prebuilds/). spawn-helper fork/execs the shell on macOS and cannot run
+      // when trapped inside asar ("posix_spawnp failed").
       //
-      // 주의: lib/ 같은 JS는 unpack하지 말고 asar "안"에 둬야 한다. node-pty가
-      // helperPath를 __dirname 기준으로 만든 뒤 `.replace('app.asar',
-      // 'app.asar.unpacked')`로 unpacked 경로를 유도하는데, lib까지 unpack하면
-      // __dirname에 이미 'app.asar.unpacked'가 들어가
-      // 'app.asar.unpacked.unpacked'(ENOENT)로 망가진다. prebuilds만 unpack하면
-      // lib는 가상 app.asar에 남아 replace가 정확히 'app.asar.unpacked'로 변환된다.
+      // Keep JavaScript such as lib/ inside asar. node-pty
+      // builds helperPath from __dirname and derives the unpacked path with
+      // .replace('app.asar', 'app.asar.unpacked'); unpacking lib too would make
+      // __dirname already contain app.asar.unpacked and produce
+      // app.asar.unpacked.unpacked (ENOENT). With only prebuilds unpacked, lib
+      // remains in the virtual app.asar and the replacement is correct.
       await asar.createPackageWithOptions(tempDir, asarPath, {
         unpack: '**/node_modules/node-pty/prebuilds/**',
       });
@@ -344,15 +345,15 @@ const config: ForgeConfig = {
         removePsFiles(resourcesDir);
       }
 
-      // 7. node-pty spawn-helper에 실행권한 부여 — app.asar.unpacked와
-      //    daemon-bundle 양쪽 모두. 반드시 서명 "전"에 해야 한다.
+      // 7. Grant execute permission to node-pty's spawn-helper in both
+      //    app.asar.unpacked and daemon-bundle. Do this before signing.
       if (process.platform === 'darwin') {
         chmodSpawnHelpers(resourcesDir);
       }
 
-      // 8. macOS 서명 + 노타라이즈 + 스테이플 — 반드시 위의 모든 파일 조작
-      //    (asar 재패킹 + daemon-bundle node-pty 복사 + chmod)이 끝난 "뒤"에
-      //    수행해야 서명이 깨지지 않는다. darwin이 아니거나 자격증명 없으면 no-op.
+      // 8. Sign, notarize, and staple on macOS only after all file operations
+      //    above (asar repacking, daemon-bundle node-pty copy, and chmod) finish;
+      //    otherwise signing breaks. This is a no-op outside darwin or without credentials.
       if (appBundle) {
         await signMacAppIfConfigured(path.join(outputPath, appBundle));
       }
@@ -466,10 +467,11 @@ const config: ForgeConfig = {
       // multiplexer that already executes arbitrary shell commands.
       // Documented in README §6 + docs/SECURITY.md §1.4 — keep in sync.
       [FuseV1Options.RunAsNode]: true,
-      // 서명된 빌드에서만 쿠키 암호화를 켠다. macOS os_crypt는 keychain에서 암호화
-      // 키를 읽는데, 미서명(로컬 dev/UNSIGNED) 바이너리는 hardened runtime 자격이
-      // 없어 keychain 접근이 거부된다(errSecAuthFailed -25293, 매 실행 콘솔 에러).
-      // Apple 자격증명 3개가 모두 있는 정식 빌드에서만 활성화한다.
+      // Enable cookie encryption only for signed builds. macOS os_crypt reads
+      // its encryption key from the keychain, but unsigned local-dev/UNSIGNED
+      // binaries lack hardened-runtime credentials and are denied access
+      // (errSecAuthFailed -25293, a console error on every run). Enable this
+      // only for official builds with all three Apple credentials.
       [FuseV1Options.EnableCookieEncryption]: Boolean(
         process.env.APPLE_TEAM_ID && process.env.APPLE_ID && process.env.APPLE_APP_SPECIFIC_PASSWORD,
       ),

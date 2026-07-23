@@ -1,13 +1,14 @@
 #!/usr/bin/env node
-// ─── J3 함대 리부트 생존 데모 러너(§5(a) — 하드 게이트 판정식) ────────────────
+// ─── J3 fleet reboot survival demo runner (§5(a) — hard gate verdict) ─────────
 //
-// fanout N=4 → 실 worktree 4개 + 산출물 시딩 → 데몬 재시작 replay → **데몬 상태
-// 전량 복원**(projection·물질화 필드·worktree fs + 산출물·채널 active)을 재현한다.
+// fanout N=4 → 4 real worktrees + artifact seeding → daemon restart replay →
+// reproduces **full daemon state restore** (projection·materialized fields·worktree
+// fs + artifacts·channel active).
 //
-// 실증 범위 규율(§5): 이 스크립트의 PASS는 데몬 상태 복원까지만 실증한다.
-// 워크스페이스·페인 복원은 수동 시나리오 문서(docs) 절차로 별도 확인한다.
+// Demonstration scope rule (§5): this script's PASS only proves daemon state restore.
+// Workspace·pane restore is verified separately via manual scenario docs (docs).
 //
-// 사용:
+// Usage:
 //   node scripts/j3-fleet-reboot-survival-demo.mjs
 
 import { spawnSync } from 'node:child_process';
@@ -17,11 +18,11 @@ import { fileURLToPath } from 'node:url';
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const SPEC = 'src/daemon/worktask/__tests__/j3-fleet-reboot-survival.demo.test.ts';
 
-console.log('[j3-fleet-demo] 함대 리부트 생존 왕복 시작 — N=4 실 worktree + 산출물 시딩 + 재시작 replay');
+console.log('[j3-fleet-demo] Fleet reboot survival round-trip starting — N=4 real worktrees + artifact seeding + restart replay');
 
-// Windows에서 `npx`는 `npx.cmd`라 shell 없이 직접 spawn하면 ENOENT/EINVAL(최신
-// Node의 .cmd 스폰 보안 완화). shell:true로 실행명을 해석시킨다 — 인자는 정적
-// 상수(SPEC)라 셸 인젝션 표면이 없다.
+// On Windows `npx` is `npx.cmd`; spawning without shell yields ENOENT/EINVAL
+// (recent Node .cmd spawn hardening). shell:true resolves the executable — args
+// are the static constant SPEC, so no shell injection surface.
 const res = spawnSync(
   'npx',
   ['vitest', 'run', SPEC],
@@ -29,9 +30,9 @@ const res = spawnSync(
 );
 
 if (res.status === 0) {
-  console.log('[j3-fleet-demo] PASS — 재시작 후 함대 4기 데몬 상태 전량 복원(projection·worktree·산출물·채널)');
+  console.log('[j3-fleet-demo] PASS — full fleet of 4 daemon states restored after restart (projection·worktree·artifacts·channel)');
   process.exit(0);
 } else {
-  console.error('[j3-fleet-demo] FAIL — 함대 왕복 검증 실패(위 vitest 출력 참조)');
+  console.error('[j3-fleet-demo] FAIL — fleet round-trip verification failed (see vitest output above)');
   process.exit(res.status ?? 1);
 }

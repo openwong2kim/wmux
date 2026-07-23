@@ -41,26 +41,25 @@ export interface LastAssistantMessage {
  * an agent that asks mid-report and then keeps working is not blocked, while an
  * agent whose final line is a question is waiting on an answer. Korean question
  * endings are included — this repo's agents are routinely driven in Korean, and
- * a Korean question mostly ends in `-까/-나/-지` with no `?` at all.
+ * a Korean question mostly ends in `-kka/-na/-ji` with no `?` at all.
  */
 export function endsWithQuestion(text: string): boolean {
   const lines = text.split('\n').map((l) => l.trim()).filter(Boolean);
   const last = lines[lines.length - 1];
   if (!last) return false;
-  // Strip trailing markdown emphasis/quotes so `**...할까?**` still matches.
+  // Strip trailing markdown emphasis/quotes so bold-wrapped questions still match.
   const tail = last.replace(/[*_`"')\]]+$/, '').trim();
   if (tail.endsWith('?') || tail.endsWith('？')) return true;
   // A Korean question may still be punctuated with a period; strip it before
-  // testing the ending so `진행할까.` matches the same as `진행할까`.
+  // testing the ending so trailing-period forms match the same as bare endings.
   const bare = tail.replace(/[.!。]+$/, '');
   // Korean interrogative endings, which routinely carry no '?' at all.
   //
-  // Deliberately narrow. `가요` and `니` were removed after review: ordinary
-  // declaratives end in them constantly ("저장소에 들어가요.", "고쳤으니.") and a
-  // false positive is worse than a miss — it makes the orchestrator announce a
-  // block that does not exist and "answer" a statement. `까요` is listed
-  // explicitly because `까` alone misses the most common polite proposal form
-  // ("진행할까요"), which was the exact bug class this function exists to catch.
+  // Deliberately narrow. -yo and -ni endings were removed after review: ordinary
+  // declaratives end in them constantly and a false positive is worse than a miss —
+  // it makes the orchestrator announce a block that does not exist and "answer" a
+  // statement. -kka-yo is listed explicitly because -kka alone misses the most
+  // common polite proposal form, which was the exact bug class this function exists to catch.
   return /(까|까요|나요|는지|을지|ㄹ지)$/.test(bare);
 }
 

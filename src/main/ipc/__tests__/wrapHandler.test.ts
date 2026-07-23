@@ -22,7 +22,7 @@ describe('wrapHandler', () => {
     return JSON.parse(trimmed) as Record<string, unknown>;
   }
 
-  // 1. 성공 시 raw value 반환
+  // 1. On success, return raw value
   it('returns the raw value unchanged on success', async () => {
     const wrapped = wrapHandler('test:channel', (_event: unknown, a: number, b: number) => a + b);
     const result = await wrapped({} as never, 2, 3);
@@ -37,7 +37,7 @@ describe('wrapHandler', () => {
     expect(writtenLines).toHaveLength(0);
   });
 
-  // 2. 에러 throw 시 로그 stderr에 JSON line 출력 + re-throw
+  // 2. On error throw, log JSON line to stderr + re-throw
   it('writes a structured JSON line to stderr and re-throws on failure', async () => {
     const boom = new Error('something failed');
     const wrapped = wrapHandler('test:fail', (_event: unknown) => {
@@ -57,7 +57,7 @@ describe('wrapHandler', () => {
     expect(entry.stack).toContain('something failed');
   });
 
-  // 3. DAEMON_DISCONNECTED 패턴 감지
+  // 3. Detect DAEMON_DISCONNECTED pattern
   it('classifies "daemon not connected" as DAEMON_DISCONNECTED', async () => {
     const wrapped = wrapHandler('pty:create', (_event: unknown) => {
       throw new Error('daemon not connected');
@@ -79,7 +79,7 @@ describe('wrapHandler', () => {
 
   // v2.8.2 — daemon session cap (MAX_SESSIONS) reached.
   // Without this classifier the renderer falls back to a generic
-  // "알 수 없는 오류" toast and hides the actionable instruction the
+  // "unknown error" toast and hides the actionable instruction the
   // daemon attached to the error message.
   it('classifies the daemon session-cap error as RESOURCE_EXHAUSTED', async () => {
     const wrapped = wrapHandler('pty:create', (_event: unknown) => {
@@ -94,8 +94,8 @@ describe('wrapHandler', () => {
   });
 
   it('classifies a daemon "rate limited" error as RESOURCE_EXHAUSTED', async () => {
-    // DaemonPipeServer rate-limit. 분류 없이는 UNKNOWN → '알 수 없는 오류'
-    // 토스트/콘솔 도배가 된다(리사이즈 burst 등).
+    // DaemonPipeServer rate-limit. Without classification → UNKNOWN → 'unknown error'
+    // toast/console flood (resize burst etc.).
     const wrapped = wrapHandler('pty:create', (_event: unknown) => {
       throw new Error('rate limited');
     });
@@ -126,7 +126,7 @@ describe('wrapHandler', () => {
     expect(entry.error_code).toBe('UNKNOWN' satisfies IpcErrorCode);
   });
 
-  // 4. 에러에 code 있으면 보존
+  // 4. Preserve code on error if present
   it('preserves a known code property on the error', async () => {
     const err = Object.assign(new Error('no such session'), { code: 'NOT_FOUND' as const });
     const wrapped = wrapHandler('pty:dispose', (_event: unknown) => {
@@ -160,7 +160,7 @@ describe('wrapHandler', () => {
     expect((err as { code: string }).code).toBe('ENOENT');
   });
 
-  // 5. args_summary 200자 truncate
+  // 5. args_summary 200-char truncate
   it('truncates args_summary beyond 200 characters with ...', () => {
     const longString = 'x'.repeat(500);
     const summary = buildArgsSummary([{ data: longString }]);
@@ -192,7 +192,7 @@ describe('wrapHandler', () => {
     expect(entry.args_summary).toBeUndefined();
   });
 
-  // 6. password 필드 REDACTED
+  // 6. password field REDACTED
   it('redacts keys matching password/token/secret/key', () => {
     const summary = buildArgsSummary([
       { username: 'alice', password: 'hunter2', authToken: 'abc', secret: 's', apiKey: 'k' },

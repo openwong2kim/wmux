@@ -1,11 +1,11 @@
-// J3 §1 — 태스크 정리 목록(팔레트 진입). 전용 루트 디스크 정본 스캔 결과를 4종
-// (미물질화 open·디스크 결측·보존 잔존·무연결 디렉토리)으로 보여준다.
+// J3 §1 — task cleanup list (palette entry). Shows four categories from dedicated root
+// disk canonical scan (unmaterialized open, disk missing, preserved remnant, unlinked directory).
 //
-// 정본=디스크. reconcile 대상 open 집합은 데몬 권위 목록 + 렌더러가 아는 전체 open
-// (missionByPaneGroup)의 합집합이라, 다른 부모 워크스페이스의 활성 worktree가
-// orphan으로 오분류되지 않는다. open 태스크 이상(미물질화·디스크 결측·보존)은
-// "닫기"(TaskCloseService)로 정합화하고, 무연결 디렉토리는 경로·안내만 표시한다
-// (자동 삭제는 J3 비목표 — 사람이 확인 후 수동 정리).
+// Canonical = disk. Reconcile open set is union of daemon authoritative list + all open the
+// renderer knows (missionByPaneGroup), so active worktrees owned by other parent workspaces are
+// not misclassified as orphans. Open task anomalies (unmaterialized, disk missing, preserved)
+// are reconciled via "close" (TaskCloseService); unlinked directories show path and guidance
+// only (auto-delete is out of J3 scope — manual cleanup after human review).
 
 import { useCallback, useEffect, useState } from 'react';
 import { useStore } from '../../stores';
@@ -45,9 +45,9 @@ export default function WorktaskCleanupView() {
     if (!api || !activeWorkspaceId) return;
     setLoading(true);
     setError(null);
-    // 렌더러가 아는 전체 open 미션(모든 부모)을 reconcile 힌트로 넘긴다. F1: 각
-    // 미션의 owner ws id도 실어, 다른 부모가 소유한 태스크의 정합화 close가 그
-    // owner 신원으로 불리게 한다(close authz가 owner 스코프).
+    // Pass all open missions the renderer knows (all parents) as reconcile hints. F1: include
+    // each mission's owner ws id so reconciling close for tasks owned by another parent is
+    // invoked with that owner identity (close authz is owner-scoped).
     const knownOpen = Object.values(missionByPaneGroup)
       .filter((m) => m.status === 'open')
       .map((m) => ({
@@ -79,8 +79,8 @@ export default function WorktaskCleanupView() {
   const handleClose = useCallback(
     async (taskId: string, ownerWorkspaceId: string | undefined) => {
       const api = window.electronAPI.workTask;
-      // F1 — close는 태스크 owner 스코프 authz라 엔트리의 owner ws id로 부른다
-      // (활성 ws가 아님). owner를 모르면 활성 ws로 폴백(동일 부모에서 연 경우 정합).
+      // F1 — close uses task owner-scoped authz, so call with entry owner ws id (not active ws).
+      // Fall back to active ws when owner unknown (consistent when opened from same parent).
       const closeAs = ownerWorkspaceId || activeWorkspaceId;
       if (!api || !closeAs) return;
       setBusyTaskId(taskId);

@@ -10,16 +10,16 @@ import {
   getLegacyDaemonAuthTokenPath,
 } from '../constants';
 
-// WMUX_DATA_SUFFIX 기반 인스턴스 격리. dev 빌드와 packaged 빌드(또는 다른
-// 체크아웃의 빌드)가 같은 소켓·토큰·~/.fmux를 두고 충돌하던 문제를 막는다.
-describe('dataSuffix 인스턴스 격리', () => {
+// WMUX_DATA_SUFFIX instance isolation. Prevents dev and packaged builds (or builds from
+// different checkouts) from colliding on the same socket·token·~/.fmux.
+describe('dataSuffix instance isolation', () => {
   const orig = process.env.WMUX_DATA_SUFFIX;
   afterEach(() => {
     if (orig === undefined) delete process.env.WMUX_DATA_SUFFIX;
     else process.env.WMUX_DATA_SUFFIX = orig;
   });
 
-  it('suffix 미설정(packaged 기본) 시 기존 경로를 그대로 유지한다', () => {
+  it('keeps legacy paths when suffix unset (packaged default)', () => {
     delete process.env.WMUX_DATA_SUFFIX;
     expect(dataSuffix()).toBe('');
     expect(getAuthTokenPath()).toMatch(/\.fmux-auth-token$/);
@@ -30,7 +30,7 @@ describe('dataSuffix 인스턴스 격리', () => {
     }
   });
 
-  it('suffix 설정 시 모든 경로(소켓/토큰/홈/pid-map/tcp)에 격리가 반영된다', () => {
+  it('applies isolation to all paths (socket/token/home/pid-map/tcp) when suffix set', () => {
     process.env.WMUX_DATA_SUFFIX = '-dev';
     expect(dataSuffix()).toBe('-dev');
     expect(getAuthTokenPath()).toMatch(/\.fmux-dev-auth-token$/);
@@ -44,7 +44,7 @@ describe('dataSuffix 인스턴스 격리', () => {
     }
   });
 
-  it('핵심 불변식: packaged 경로와 dev 경로는 절대 겹치지 않는다', () => {
+  it('core invariant: packaged and dev paths never overlap', () => {
     delete process.env.WMUX_DATA_SUFFIX;
     const packagedPipe = getPipeName();
     const packagedHome = getWmuxHomeDir();
@@ -89,17 +89,17 @@ describe('daemon auth token path (suffix-aware, 3-way lockstep)', () => {
   });
 });
 
-// P7 — 데몬/세션 소켓을 ~/.fmux{suffix}/ 하위로 이동. 바인더(daemon)와
-// 클라이언트(main/cli)가 전부 이 헬퍼를 쓰므로 여기서 경로 형태를 고정한다.
-describe('P7 소켓 경로 (~/.fmux 하위 + sun_path 한계)', () => {
+// P7 — move daemon/session sockets under ~/.fmux{suffix}/. Binder (daemon) and
+// clients (main/cli) all use this helper, so path shape is fixed here.
+describe('P7 socket paths (under ~/.fmux + sun_path limit)', () => {
   const orig = process.env.WMUX_DATA_SUFFIX;
   afterEach(() => {
     if (orig === undefined) delete process.env.WMUX_DATA_SUFFIX;
     else process.env.WMUX_DATA_SUFFIX = orig;
   });
 
-  it('신규 소켓은 ~/.fmux{suffix}/ 하위, legacy는 홈 직하 형태를 유지한다', async () => {
-    if (process.platform === 'win32') return; // named pipe는 경로 규칙 대상 아님
+  it('new sockets under ~/.fmux{suffix}/; legacy stays home-direct form', async () => {
+    if (process.platform === 'win32') return; // named pipe not subject to path rules
     // Mock HOME to a deterministic short value so the socket-path length assert
     // below doesn't depend on the real $HOME (flaky on CI with long profile
     // names). getWmuxHomeDir prefers USERPROFILE over HOME, so drop USERPROFILE
@@ -114,15 +114,15 @@ describe('P7 소켓 경로 (~/.fmux 하위 + sun_path 한계)', () => {
         getDaemonSocketPath, getLegacyDaemonSocketPath,
         getSessionSocketPath, getLegacySessionSocketPath, getWmuxHomeDir,
       } = await import('../constants');
-      const sessionId = '123e4567-e89b-42d3-a456-426614174000'; // uuid 36자
+      const sessionId = '123e4567-e89b-42d3-a456-426614174000'; // uuid 36 chars
       expect(getDaemonSocketPath()).toBe(`${getWmuxHomeDir()}/daemon.sock`);
       expect(getSessionSocketPath(sessionId)).toBe(`${getWmuxHomeDir()}/session-${sessionId}.sock`);
-      // legacy 경로는 구버전 코드와 byte-동일해야 폴백/마이그레이션 판정이 맞는다
+      // Legacy path must be byte-identical to old code for fallback/migration checks
       expect(getLegacyDaemonSocketPath()).toMatch(/\/\.fmux-daemon\.sock$/);
       expect(getLegacySessionSocketPath(sessionId)).toMatch(/\/\.fmux-session-.*\.sock$/);
-      // sun_path 104바이트 한계(macOS) — uuid 세션 id 기준으로 여유 확인
+      // sun_path 104-byte limit (macOS) — verify headroom with uuid session id
       expect(Buffer.byteLength(getSessionSocketPath(sessionId))).toBeLessThanOrEqual(104);
-      // suffix는 디렉토리에만 반영(파일명 중복 없음 → 경로 단축)
+      // suffix only on directory (no duplicate filename → shorter path)
       process.env.WMUX_DATA_SUFFIX = '-dev';
       expect(getDaemonSocketPath()).toMatch(/\/\.fmux-dev\/daemon\.sock$/);
     } finally {

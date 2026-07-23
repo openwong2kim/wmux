@@ -1,22 +1,23 @@
 /**
- * 채널 도메인 이벤트 payload + 부트 replay 적용기 (envelope-design §5, PR3).
+ * Channel domain event payload + boot replay applier (envelope-design §5, PR3).
  *
- * payload는 "결정된 효과(effect)"를 담는다 — 검증·판정(now()·randomUUID 포함)은
- * 라이브 경로가 이미 끝냈고, replay는 그 결과를 결정론적으로 재적용만 한다.
- * (요청 params를 담아 비즈니스 로직을 재실행하면 now/uuid 비결정성으로 replay가
- * 라이브와 어긋난다 — 효과 기록이 유일한 결정론적 형태다.)
+ * Payload carries "determined effects" — validation/judgment (including now()·randomUUID)
+ * is already done on the live path, and replay only deterministically re-applies those results.
+ * (If you put request params and re-run business logic, now/uuid non-determinism makes replay
+ * diverge from live — effect records are the only deterministic form.)
  *
- * ┌── 불변식: 모든 적용기는 멱등이다 ─────────────────────────────────────┐
- * │ (a) at-least-once 계약(§2.6 D17): 승격 레코드·롤백-후-생존 레코드가       │
- * │     replay에 재출현할 수 있다 — 재적용이 무해해야 한다.                   │
- * │ (b) 스냅샷 마커 지연: 스냅샷은 라이브 참조를 write 시점에 직렬화하므로     │
- * │     내용이 마커(snapshotLamport)보다 앞설 수 있다 — 이미 반영된 이벤트의   │
- * │     재적용이 무해해야 마커-이하 보수적 replay가 안전하다.                 │
- * │ 각 적용기는 존재/seq 가드로 이를 보장한다(레코드 정체성 기준).            │
- * └─────────────────────────────────────────────────────────────────────┘
+ * ┌── Invariant: all appliers are idempotent ─────────────────────────────────────┐
+ * │ (a) at-least-once contract (§2.6 D17): promotion records·post-rollback-survival │
+ * │     records can reappear on replay — re-application must be harmless.           │
+ * │ (b) Snapshot marker lag: snapshots serialize live reference at write time, so   │
+ * │     content can precede the marker (snapshotLamport) — re-application of        │
+ * │     already-applied events must be harmless for conservative replay up to the   │
+ * │     marker to be safe.                                                          │
+ * │ Each applier guarantees this with existence/seq guards (record identity basis). │
+ * └─────────────────────────────────────────────────────────────────────────────────┘
  *
- * additive-only: kind 추가만 허용. 기존 kind의 필드 제거·의미변경 금지(디스크 계약).
- * 미지의 kind는 무시(전방 호환 — 미래 데몬이 쓴 레코드를 구 데몬 replay가 통과).
+ * additive-only: only kind additions allowed. No field removal·semantic change for existing kinds (disk contract).
+ * Unknown kinds are ignored (forward compatibility — old daemon replay passes records written by future daemons).
  */
 
 import {
@@ -28,7 +29,7 @@ import {
   type ChannelState,
 } from '../../shared/channels';
 
-/** 채널 도메인 envelope payload (D16 — 1 커밋 = 1 envelope). */
+/** Channel domain envelope payload (D16 — 1 commit = 1 envelope). */
 export type ChannelEventPayload =
   | {
       kind: 'create';
@@ -56,7 +57,7 @@ export type ChannelEventPayload =
       channelId: string;
       workspaceId: string;
       memberId: string;
-      /** 라이브 경로가 판정한 emptySince 스탬프(마지막 멤버 이탈 시에만 존재). */
+      /** emptySince stamp determined by live path (only present when last member leaves). */
       emptySince?: number;
     }
   | {
@@ -77,32 +78,32 @@ export type ChannelEventPayload =
   | {
       kind: 'post';
       channelId: string;
-      /** 결정 완료된 메시지 행(seq·clientMsgId·mentions 포함) 전체. */
+      /** Fully determined message row (including seq·clientMsgId·mentions). */
       message: ChannelMessage;
-      /** 발신자 커서 라이드(§5 — 라이브에서 lastReadSeq === seq-1일 때만 기록). */
+      /** Sender cursor ride (§5 — recorded only when lastReadSeq === seq-1 on live path). */
       cursorRide?: { workspaceId: string; memberId: string };
-      /** 1b 이름 리프레시가 이 커밋에 포함됐을 때의 확정값. */
+      /** Confirmed value when 1b name refresh was included in this commit. */
       nameRefresh?: { workspaceId: string; memberId: string; memberName: string };
     }
   | {
       kind: 'ack';
       channelId: string;
       workspaceId: string;
-      /** 있으면 커서 전진(멤버-스코프), 없으면 수신확인만(receipt-only). */
+      /** If present, cursor advance (member-scoped); if absent, receipt-only ack. */
       memberId?: string;
       uptoSeq: number;
-      /** 라이브 ack의 now() — lastAttemptAt 스탬프의 결정론 재현용. */
+      /** Live ack's now() — for deterministic reproduction of lastAttemptAt stamp. */
       ackedAt: number;
     }
   | {
       /**
-       * operator-join (설계 §2.1.1) — 오퍼레이터(사람) 좌석 push + 서버-발행 시스템
-       * 메시지 append를 **하나의 envelope**로 묶는다. 두 효과를 한 커밋에 실어
-       * 원자성을 보장한다: append-only 로그에서는 좌석만 커밋되고 메시지가 실패하는
-       * 부분 상태가 구조적으로 불가능해야 하므로("persist 실패 시 좌석·메시지 원자
-       * 롤백"), join+post 두 envelope로 쪼갤 수 없다. 1 커밋 = 1 envelope 불변식
-       * 유지(D16). 적용기는 멱등: 좌석은 (workspaceId, memberId) 존재 가드, 메시지는
-       * seq 존재/trim된 과거 seq 가드(post 적용기와 동형).
+       * operator-join (design §2.1.1) — bundles operator (human) seat push + server-issued system
+       * message append into **one envelope**. Carrying both effects in one commit
+       * guarantees atomicity: on append-only log, partial state where only seat is committed and message fails
+       * must be structurally impossible ("atomic rollback of seat·message on persist failure"),
+       * so join+post cannot be split into two envelopes. Maintains 1 commit = 1 envelope invariant
+       * (D16). Applier is idempotent: seat uses (workspaceId, memberId) existence guard, message uses
+       * seq existence/trimmed past seq guard (same shape as post applier).
        */
       kind: 'operator-join';
       channelId: string;
@@ -110,28 +111,28 @@ export type ChannelEventPayload =
       message: ChannelMessage;
     }
   | {
-      /** §6.4c reseed 마커(migrateToEventLog가 append). 상태는 스냅샷이 운반 — replay 무동작. */
+      /** §6.4c reseed marker (migrateToEventLog appends). State carried by snapshot — replay no-op. */
       kind: 'legacy-reseed';
       reseedNumber: number;
       stateHash: string;
       detectedAt: number;
     };
 
-/** 멱등 인덱스 compositeKey — ChannelService와 동일 형식(A11 sender-scoped). */
+/** Idempotent index compositeKey — same format as ChannelService (A11 sender-scoped). */
 function idemKey(workspaceId: string, clientMsgId: string): string {
   return JSON.stringify([workspaceId, clientMsgId]);
 }
 
 /**
- * 부트 replay 적용기(§5). state를 제자리 변형한다. 이벤트 방출 없음(재구성은 무성).
- * 모든 분기가 멱등 — 파일 헤더의 불변식 참조.
+ * Boot replay applier (§5). Mutates state in place. No event emission (reconstruction is silent).
+ * All branches are idempotent — see file header invariant.
  */
 export function applyChannelEvent(state: ChannelState, payload: unknown): void {
   if (payload === null || typeof payload !== 'object') return;
   const p = payload as ChannelEventPayload;
   switch (p.kind) {
     case 'create': {
-      if (state.channels.some((c) => c.id === p.channel.id)) return; // 멱등
+      if (state.channels.some((c) => c.id === p.channel.id)) return; // idempotent
       state.channels.push({ ...p.channel });
       state.members[p.channel.id] = p.members.map((m) => ({ ...m }));
       state.messages[p.channel.id] = [];
@@ -151,7 +152,7 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
       const ch = state.channels.find((c) => c.id === p.channelId);
       if (!ch) return;
       const members = state.members[p.channelId] ?? [];
-      // 멱등: 동일 (workspaceId, memberId) 행이 이미 있으면 재적용 no-op.
+      // Idempotent: if row with same (workspaceId, memberId) already exists, re-apply is no-op.
       if (
         members.some(
           (m) => m.workspaceId === p.member.workspaceId && m.memberId === p.member.memberId,
@@ -161,7 +162,7 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
       }
       members.push({ ...p.member });
       state.members[p.channelId] = members;
-      // 라이브 경로는 join/invite 시 emptySince를 무조건 해제한다.
+      // Live path always clears emptySince on join/invite.
       delete ch.emptySince;
       return;
     }
@@ -180,7 +181,7 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
             m.workspaceId === p.targetWorkspaceId && m.memberId === p.targetMemberId
           );
         }
-        // purge — 라이브 matcher와 동형(principalId 우선, 그다음 memberId, 없으면 ws 전체).
+        // purge — same shape as live matcher (principalId first, then memberId, else whole ws).
         return (
           m.workspaceId === p.workspaceId &&
           (p.principalId !== undefined
@@ -189,7 +190,7 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
         );
       };
       const survivors = members.filter((m) => !matches(m));
-      if (survivors.length === members.length) return; // 멱등: 이미 제거됨
+      if (survivors.length === members.length) return; // idempotent: already removed
       state.members[p.channelId] = survivors;
       if (
         p.emptySince !== undefined &&
@@ -205,17 +206,17 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
       if (!ch) return;
       const msgs = (state.messages[p.channelId] ??= []);
       const seq = p.message.seq;
-      // 멱등: 같은 seq가 이미 있으면(스냅샷 선반영·승격 재출현) 재적용 no-op.
+      // Idempotent: same seq already present (snapshot pre-reflection·promotion reappearance) — re-apply no-op.
       if (msgs.some((m) => m.seq === seq)) return;
-      // trim된 역사 가드(패널 CL-3): seq < nextSeq인데 msgs에 없다 = 히스토리 캡이
-      // 이미 절단한 과거 post다. 재적용하면 tail에 붙어 순서가 깨지고, 캡 trim이
-      // 진짜 보존분을 앞에서 축출한다. 스냅샷이 그 효과(커서·멱등 포함)를 이미
-      // 반영했으므로 전체 no-op.
+      // Trimmed history guard (panel CL-3): seq < nextSeq but absent from msgs = history cap
+      // already cut this past post. Re-applying would append to tail and break order, and cap trim would
+      // evict preserved content from the front. Snapshot already reflected that effect (cursor·idempotency included),
+      // so full no-op.
       if (seq < ch.nextSeq) return;
       msgs.push({ ...p.message });
-      // nextSeq 전진(라이브의 nextSeq++와 동치 — replay는 seq+1로 클램프 전진).
+      // nextSeq advance (equivalent to live nextSeq++ — replay clamps forward to seq+1).
       if (ch.nextSeq <= seq) ch.nextSeq = seq + 1;
-      // 커서 라이드 — 라이브 조건(lastReadSeq === seq-1) 그대로, 재적용은 no-op.
+      // Cursor ride — same live condition (lastReadSeq === seq-1), re-apply is no-op.
       if (p.cursorRide) {
         const row = (state.members[p.channelId] ?? []).find(
           (m) =>
@@ -224,7 +225,7 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
         );
         if (row && row.lastReadSeq === seq - 1) row.lastReadSeq = seq;
       }
-      // 1b 이름 리프레시(확정값 세팅 — 멱등).
+      // 1b name refresh (set confirmed value — idempotent).
       if (p.nameRefresh) {
         const row = (state.members[p.channelId] ?? []).find(
           (m) =>
@@ -233,19 +234,19 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
         );
         if (row) row.memberName = p.nameRefresh.memberName;
       }
-      // 멱등 인덱스(state.idempotency)는 로그의 projection(§4) — post 적용이 재구성.
+      // Idempotency index (state.idempotency) is log projection (§4) — post apply reconstructs it.
       if (p.message.clientMsgId) {
         const map = (state.idempotency[p.channelId] ??= {});
         map[idemKey(p.message.workspaceId, p.message.clientMsgId)] = seq;
-        // cap 초과 시 삽입순 선입 삭제(부트 hydration의 FIFO 시드와 동형 —
-        // 라이브 LRU의 recency 정보는 로그에 없으므로 삽입순이 결정론적 대용).
+        // On cap overflow, delete oldest by insertion order (same shape as boot hydration FIFO seed —
+        // live LRU recency info is not in the log, so insertion order is the deterministic substitute).
         const keys = Object.keys(map);
         for (let i = 0; keys.length - i > CHANNEL_IDEMPOTENCY_CAP; i++) {
           delete map[keys[i]];
         }
       }
-      // 히스토리 캡 trim(A2) — 라이브가 post-커밋 후 적용하는 것과 동일 규칙이라
-      // 별도 trim 이벤트 없이 replay가 수렴한다.
+      // History cap trim (A2) — same rule live applies after post-commit, so replay converges
+      // without a separate trim event.
       if (msgs.length > CHANNEL_MESSAGES_MAX) {
         const trimmed = msgs.slice(msgs.length - CHANNEL_MESSAGES_MAX);
         state.messages[p.channelId] = trimmed;
@@ -262,7 +263,7 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
     case 'ack': {
       const ch = state.channels.find((c) => c.id === p.channelId);
       if (!ch) return;
-      // 수신확인 플립 — pending → delivered만 건드리므로 재적용 no-op(멱등).
+      // Receipt flip — only touches pending → delivered, so re-apply is no-op (idempotent).
       for (const m of state.messages[p.channelId] ?? []) {
         if (m.seq > p.uptoSeq) continue;
         for (const entry of m.recipientSnapshot ?? []) {
@@ -273,7 +274,7 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
           }
         }
       }
-      // 커서 전진 — advance-only·head 클램프(라이브와 동일), 역행 불가라 멱등.
+      // Cursor advance — advance-only·head clamp (same as live), cannot regress so idempotent.
       if (p.memberId !== undefined) {
         const cursorTarget = Math.min(p.uptoSeq, ch.nextSeq - 1);
         for (const row of state.members[p.channelId] ?? []) {
@@ -287,9 +288,9 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
     case 'operator-join': {
       const ch = state.channels.find((c) => c.id === p.channelId);
       if (!ch) return;
-      // 두 효과를 독립 멱등 가드로 적용(라이브는 항상 둘 다 실행하지만, 재적용
-      // 시 부분 반영 스냅샷도 안전하게 흡수한다).
-      // 1) 사람 좌석 push — (workspaceId, memberId) 존재 시 no-op(join 적용기와 동형).
+      // Apply both effects with independent idempotent guards (live always runs both, but re-apply
+      // safely absorbs partial-reflection snapshots too).
+      // 1) Human seat push — no-op if (workspaceId, memberId) exists (same shape as join applier).
       const members = state.members[p.channelId] ?? [];
       if (
         !members.some(
@@ -298,11 +299,11 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
       ) {
         members.push({ ...p.member });
         state.members[p.channelId] = members;
-        // operatorJoin은 leave 후 재진입도 "새 좌석" → join과 동일하게 emptySince 해제.
+        // operatorJoin re-entry after leave is also a "new seat" → clears emptySince like join.
         delete ch.emptySince;
       }
-      // 2) 시스템 메시지 append — seq 존재/trim된 과거 seq 가드(post 적용기와 동형).
-      //    clientMsgId·cursorRide·nameRefresh 없음(시스템 마커).
+      // 2) System message append — seq existence/trimmed past seq guard (same shape as post applier).
+      //    No clientMsgId·cursorRide·nameRefresh (system marker).
       const msgs = (state.messages[p.channelId] ??= []);
       const seq = p.message.seq;
       if (!msgs.some((m) => m.seq === seq) && seq >= ch.nextSeq) {
@@ -315,8 +316,8 @@ export function applyChannelEvent(state: ChannelState, payload: unknown): void {
       return;
     }
     case 'legacy-reseed':
-      return; // 상태는 reseed 스냅샷이 운반(§6.4c) — 마커는 감사 전용.
+      return; // State carried by reseed snapshot (§6.4c) — marker is audit-only.
     default:
-      return; // 미지 kind — 전방 호환 통과(additive-only).
+      return; // Unknown kind — forward-compatible pass-through (additive-only).
   }
 }

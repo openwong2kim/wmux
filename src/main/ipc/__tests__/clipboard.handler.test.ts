@@ -5,9 +5,9 @@ import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
  * (invalid type, oversize, write failure) as thrown errors so the renderer
  * can react instead of silently showing "copied" toasts.
  *
- * CLIPBOARD_READ — macOS에서 Finder 파일 복사(text/uri-list 존재) 감지 시
- * osascript로 절대 POSIX 경로를 해석하고, 실패하면 readText()로 폴백하며,
- * 게이트를 통과하지 못하면(타 OS·일반 텍스트) 스폰 자체가 없음을 검증한다.
+ * CLIPBOARD_READ — on macOS Finder file copy (text/uri-list present), resolves absolute
+ * POSIX path via osascript, falls back to readText() on failure, and verifies no spawn
+ * when gate fails (other OS / plain text).
  */
 
 // ── Module mocks (hoisted; cannot reference outer test variables) ──────────
@@ -50,8 +50,7 @@ vi.mock('fs', () => ({
   writeFileSync: vi.fn(),
 }));
 
-// osascript 셸아웃 경계 모킹 — 실제 프로세스를 스폰하지 않고
-// 성공/실패/빈 출력 시나리오를 시뮬레이션한다.
+// Mock osascript shell-out boundary — simulate success/failure/empty output without spawning.
 vi.mock('node:child_process', () => {
   const execFile = vi.fn();
   return { execFile, default: { execFile } };
@@ -70,10 +69,10 @@ const availableFormats = (electron as unknown as { __availableFormats: ReturnTyp
 const pasteboardRead = (electron as unknown as { __read: ReturnType<typeof vi.fn> }).__read;
 const execFileMock = execFile as unknown as ReturnType<typeof vi.fn>;
 
-// execFile(file, args, opts, cb) 콜백 시그니처
+// execFile(file, args, opts, cb) callback signature
 type ExecFileCb = (err: Error | null, stdout: string, stderr: string) => void;
 
-// osascript가 stdout으로 주어진 문자열을 내놓는 성공 케이스를 시뮬레이션
+// Simulate success case where osascript prints given string to stdout
 function mockResolverStdout(stdout: string): void {
   execFileMock.mockImplementation(
     (_file: unknown, _args: unknown, _opts: unknown, cb: unknown) => {
@@ -82,7 +81,7 @@ function mockResolverStdout(stdout: string): void {
   );
 }
 
-// process.platform을 테스트별로 바꾸고 afterEach에서 원복한다
+// Change process.platform per test; restored in afterEach
 const originalPlatform = process.platform;
 function setPlatform(value: NodeJS.Platform): void {
   Object.defineProperty(process, 'platform', { value, configurable: true });
@@ -174,9 +173,9 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
     pasteboardRead.mockReturnValue('file:///Users/foo/project/out/wmux-darwin-arm64/');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
-    // 디렉터리 trailing slash는 macOS가 준 그대로 유지된다
+    // Directory trailing slash preserved as macOS provided it
     await expect(handler({} as never)).resolves.toBe('/Users/foo/project/out/wmux-darwin-arm64/');
-    // 빠른 경로: osascript 스폰이 없어야 한다 (매 paste 스폰이 지연의 원흉)
+    // Fast path: must not spawn osascript (per-paste spawn was the latency culprit)
     expect(execFileMock).not.toHaveBeenCalled();
     expect(readText).not.toHaveBeenCalled();
   });
@@ -192,18 +191,18 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
     expect(execFileMock.mock.calls[0][0]).toBe('/usr/bin/osascript');
   });
 
-  it('darwin fast path NFC-normalizes NFD Korean folder names (한글 경로 깨짐)', async () => {
+  it('darwin fast path NFC-normalizes NFD Korean folder names (Hangul path corruption)', async () => {
     setPlatform('darwin');
     const nfd = '한글'.normalize('NFD');
     pasteboardRead.mockReturnValue('file:///Users/foo/' + encodeURIComponent(nfd));
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
-    // 한글은 SAFE_PATH_RE 밖 → pty용 단일따옴표 인용. 핵심 단언은 따옴표 안이
-    // NFC(완성형 '한글')이라는 것 — NFD였다면 자모가 분해돼 다른 문자열이 된다.
+    // Korean is outside SAFE_PATH_RE → single-quote for pty. Key assertion: inside quotes
+    // is NFC composed form — NFD would decompose jamo into a different string.
     await expect(handler({} as never)).resolves.toBe("'/Users/foo/한글'");
   });
 
-  it('darwin readText fallback NFC-normalizes NFD text (Finder "경로명 복사")', async () => {
+  it('darwin readText fallback NFC-normalizes NFD text (Finder copy path name)', async () => {
     setPlatform('darwin');
     readText.mockReturnValue('/Users/foo/한글'.normalize('NFD'));
 
@@ -221,8 +220,8 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
   });
 
   it('neutralizes shell metacharacters in filenames ($, backtick, ", ;) via single-quoting', async () => {
-    // Finder 파일명은 사용자 통제 밖 입력이 셸로 들어가는 경계 — 큰따옴표는 $·백틱을
-    // 여전히 해석하므로 부족하다(CodeRabbit 지적). 단일따옴표 안은 전부 리터럴.
+    // Finder filenames are untrusted input entering the shell boundary — double quotes
+    // still interpret $ and backticks (CodeRabbit). Inside single quotes all literal.
     setPlatform('darwin');
     pasteboardRead.mockReturnValue('file:///.file/id=1');
     mockResolverStdout('/Users/foo/we$ird `name";dir\n');
@@ -237,7 +236,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
     mockResolverStdout("/Users/foo/it's here\n");
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
-    // '...'가 '에서 닫히고 \' 리터럴을 잇고 다시 '로 열린다: 'it'\''s here'
+    // '...' closes at ', then \' literal, then reopens ': 'it'\''s here'
     await expect(handler({} as never)).resolves.toBe(`'/Users/foo/it'\\''s here'`);
   });
 
@@ -258,7 +257,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
   it('falls back to readText when output is empty (browser URL exposes uri-list but no «class furl»)', async () => {
     setPlatform('darwin');
     pasteboardRead.mockReturnValue('file:///.file/id=1');
-    // furl 가드 스크립트는 비파일 클립보드(브라우저 URL 복사 등)에서 빈 문자열을 낸다
+    // furl guard script returns empty for non-file clipboard (browser URL copy, etc.)
     mockResolverStdout('\n');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -277,7 +276,7 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
   it('non-darwin → readText untouched and resolver is never spawned', async () => {
     setPlatform('linux');
-    // file-url 슬롯이 있어도 darwin 게이트가 먼저 컷한다
+    // Even with file-url slot, darwin gate cuts first
     pasteboardRead.mockReturnValue('file:///home/foo/x');
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
@@ -291,9 +290,9 @@ describe('CLIPBOARD_READ — macOS Finder file-copy path resolution', () => {
 
     const handler = getHandler(IPC.CLIPBOARD_READ);
     await expect(handler({} as never)).resolves.toBe('hello');
-    // 열거(availableFormats)는 "네이티브 read가 빈손일 때 파일 여부 확인"용으로
-    // 남는다(Codex: 클립보드 API가 UTI를 못 읽는 버전에서 파일 paste가 basename
-    // 텍스트로 퇴행하면 안 됨). 보장하는 건 스폰 없음 — 지연의 원흉은 osascript다.
+    // availableFormats remains for "check file when native read is empty" (Codex: clipboard
+    // API versions that cannot read UTI must not degrade file paste to basename text).
+    // What we guarantee here is no spawn — osascript is the latency culprit.
     expect(execFileMock).not.toHaveBeenCalled();
   });
 });

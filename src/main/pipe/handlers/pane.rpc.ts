@@ -140,10 +140,10 @@ export function registerPaneRpc(
       Record<string, unknown> & { id?: unknown; metadata?: unknown }
     >;
 
-    // renderer가 paneGate 미준비(부팅 중) 등으로 배열 대신 { error, retryable }
-    // 객체를 반환할 수 있다. 그대로 .map()을 돌리면 TypeError로 핸들러가 죽고
-    // 클라이언트엔 의미 없는 에러가 간다. 명시적으로 검사해 retryable 사유를
-    // 그대로 전파한다(클라이언트가 재시도 판단 가능).
+    // Renderer may return { error, retryable } instead of an array when paneGate is
+    // not ready (booting), etc. Calling .map() blindly throws TypeError and sends
+    // a useless error to the client. Check explicitly and propagate retryable reason
+    // so the client can decide whether to retry.
     if (!Array.isArray(panes)) {
       const errObj = panes as { error?: unknown; retryable?: unknown } | null;
       const reason =

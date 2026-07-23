@@ -23,8 +23,8 @@ vi.mock('child_process', () => ({
   execFileSync: (...args: unknown[]) => execFileSync(...args),
 }));
 
-// darwin 분기용 electron app mock — 로그인 항목 상태를 in-memory로 흉내낸다.
-// win/linux 테스트에서는 호출되지 않는다(호출 시 테스트에서 검증).
+// electron app mock for the darwin branch — fakes login-item state in memory.
+// Not invoked on win/linux tests (verified in those tests if called).
 const loginItemState = { openAtLogin: false };
 const setLoginItemSettings = vi.fn((s: { openAtLogin: boolean }) => {
   loginItemState.openAtLogin = s.openAtLogin;
@@ -121,7 +121,7 @@ describe('autostart (win32)', () => {
 describe('autostart (darwin)', () => {
   beforeEach(() => setPlatform('darwin'));
 
-  it('setAutostartEnabled는 setLoginItemSettings로 등록/해제하고 openAtLogin을 되읽는다', async () => {
+  it('setAutostartEnabled registers/unregisters via setLoginItemSettings and reads back openAtLogin', async () => {
     electronAppAvailable = true;
     loginItemState.openAtLogin = false;
     const mod = await load();
@@ -129,11 +129,11 @@ describe('autostart (darwin)', () => {
     expect(setLoginItemSettings).toHaveBeenCalledWith({ openAtLogin: true });
     expect(mod.setAutostartEnabled(false)).toBe(false);
     expect(setLoginItemSettings).toHaveBeenLastCalledWith({ openAtLogin: false });
-    // darwin 경로는 reg.exe를 절대 스폰하지 않는다
+    // darwin path never spawns reg.exe
     expect(execFileSync).not.toHaveBeenCalled();
   });
 
-  it('electron app 미가용 시 best-effort로 false를 반환한다', async () => {
+  it('returns false best-effort when electron app is unavailable', async () => {
     electronAppAvailable = false;
     const mod = await load();
     expect(mod.isAutostartEnabled()).toBe(false);
@@ -142,7 +142,7 @@ describe('autostart (darwin)', () => {
   });
 });
 
-describe('autostart (linux 등 기타 플랫폼)', () => {
+describe('autostart (linux and other platforms)', () => {
   beforeEach(() => setPlatform('linux'));
 
   it('every function is inert and reg.exe is never spawned', async () => {

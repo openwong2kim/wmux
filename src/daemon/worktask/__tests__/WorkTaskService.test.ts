@@ -1,12 +1,12 @@
-// ─── WorkTaskService tests (J0 §0 성공기준 + §1~§3 계약) ────────────────
+// ─── WorkTaskService tests (J0 §0 success criteria + §1~§3 contracts) ────────────────
 //
-// 성공기준(§0) E2E 왕복: mission.start → 채널 post → mission.close → 데몬 재시작
-// 시뮬레이션(서비스 재생성 + boot replay) → projection 복원(closed) · archive 멱등
-// 재시도 no-op. 이 테스트가 "R3 블로커 해소"의 판정식이다.
+// Success criteria (§0) E2E round-trip: mission.start → channel post → mission.close → daemon restart
+// simulation (service recreate + boot replay) → projection restore (closed) · archive idempotent
+// retry no-op. This test is the verdict for "R3 blocker cleared".
 //
-// 인프라: 실 AppendOnlyLog(A2aTaskService.test.ts fixture 재사용) + 실
-// ChannelService(ChannelService.test.ts fake writer 패턴 재사용, E2E fidelity),
-// 또는 주입 가능한 fake ChannelPort(reconcile/보상 archive 실패 케이스).
+// Infrastructure: real AppendOnlyLog (reuse A2aTaskService.test.ts fixture) + real
+// ChannelService (reuse ChannelService.test.ts fake writer pattern, E2E fidelity),
+// or injectable fake ChannelPort (reconcile/compensating archive failure cases).
 
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
@@ -39,7 +39,7 @@ function newLog(): AppendOnlyLog {
   return log;
 }
 
-// ── 실 ChannelService fake writer (ChannelService.test.ts 패턴 재사용) ──
+// ── Real ChannelService fake writer (reuse ChannelService.test.ts pattern) ──
 function makeFakeWriter() {
   let lastSaved: ChannelState | null = null;
   const freshState = (): ChannelState => ({
@@ -95,7 +95,7 @@ function newWorkTaskService(
   });
 }
 
-// ── 주입 가능한 fake ChannelPort (실패·상태 제어) ──────────────────────
+// ── Injectable fake ChannelPort (failure·state control) ──────────────────────
 function makeFakeChannelPort(opts?: { failCreate?: boolean }) {
   let seq = 0;
   const channels = new Map<
@@ -103,7 +103,7 @@ function makeFakeChannelPort(opts?: { failCreate?: boolean }) {
     { id: string; topic?: string; status: 'active' | 'archived'; createdByWorkspaceId?: string }
   >();
   const archiveCalls: string[] = [];
-  /** archive 호출의 신원 관측(R1' — 고아 reconcile이 창설 ws로 archive하는지). */
+  /** Observe archive call identity (R1' — orphan reconcile archives with creator ws). */
   const archiveIdentities: Array<{ channelId: string; verifiedWorkspaceId: string }> = [];
   const port: WorkTaskChannelPort = {
     create: vi.fn(async (params) => {
@@ -132,7 +132,7 @@ function makeFakeChannelPort(opts?: { failCreate?: boolean }) {
     }),
     listAllForReconcile: () => [...channels.values()].map((c) => ({ ...c })),
   };
-  // 테스트 헬퍼: 크래시/외부 변이 시뮬레이션(non-null assertion 회피).
+  // Test helper: crash/external mutation simulation (avoid non-null assertion).
   const setStatus = (id: string, status: 'active' | 'archived'): void => {
     const ch = channels.get(id);
     if (ch) ch.status = status;
@@ -140,42 +140,42 @@ function makeFakeChannelPort(opts?: { failCreate?: boolean }) {
   return { port, channels, archiveCalls, archiveIdentities, setStatus };
 }
 
-// ═══ §2 경로 정규화 유틸 ═══════════════════════════════════════════════
+// ═══ §2 path normalization utils ═══════════════════════════════════════════════
 
-describe('normalizeWorktreePath (§2 배타 불변식 정규화)', () => {
-  it('trailing slash·중복 슬래시 제거', () => {
+describe('normalizeWorktreePath (§2 exclusivity invariant normalization)', () => {
+  it('strips trailing slash and collapses duplicate slashes', () => {
     expect(normalizeWorktreePath('/a/b//c/', 'linux')).toBe('/a/b/c');
   });
-  it('대소문자 무구분 FS는 lower-case canonical', () => {
+  it('case-insensitive FS uses lower-case canonical', () => {
     expect(normalizeWorktreePath('/A/B', 'darwin')).toBe('/a/b');
     expect(normalizeWorktreePath('/A/B', 'linux')).toBe('/A/B');
   });
-  it('백슬래시(win)를 슬래시로 통일', () => {
+  it('normalizes backslashes (win) to slashes', () => {
     expect(normalizeWorktreePath('C:\\Repo\\WT', 'win32')).toBe('c:/repo/wt');
   });
 });
 
-describe('missionTopic 앵커 (§3)', () => {
+describe('missionTopic anchor (§3)', () => {
   it('round-trips taskId', () => {
     expect(taskIdFromMissionTopic(missionTopicFor('wtask-abc'))).toBe('wtask-abc');
   });
-  it('비앵커 topic은 null', () => {
+  it('non-anchor topic returns null', () => {
     expect(taskIdFromMissionTopic('random topic')).toBeNull();
     expect(taskIdFromMissionTopic(undefined)).toBeNull();
   });
 });
 
-// ═══ §0 성공기준 — E2E 왕복 ════════════════════════════════════════════
+// ═══ §0 success criteria — E2E round-trip ════════════════════════════════════════════
 
-describe('§0 성공기준 E2E 왕복 (mission.start → post → close → 재시작 → 복원·archive 멱등)', () => {
-  it('E2E: start → channel post → close → restart replay 복원 + archive 멱등 no-op', async () => {
+describe('§0 success criteria E2E round-trip (mission.start → post → close → restart → restore·archive idempotent)', () => {
+  it('E2E: start → channel post → close → restart replay restore + archive idempotent no-op', async () => {
     const writer = makeFakeWriter();
     const channelSvc = newChannelService(writer);
     const log = newLog();
     const svc = newWorkTaskService(log, channelSvc as unknown as WorkTaskChannelPort);
     await svc.boot();
 
-    // 1) mission.start — 태스크 + 미션 채널 생성.
+    // 1) mission.start — create task + mission channel.
     const started = await svc.startMission({
       title: 'Ship the widget',
       verifiedWorkspaceId: 'ws-owner',
@@ -185,13 +185,13 @@ describe('§0 성공기준 E2E 왕복 (mission.start → post → close → 재�
     if (!started.ok) return;
     const { taskId, channelId } = started;
 
-    // 채널이 실제로 생겼고 topic 앵커가 박혔다.
+    // Channel actually created and topic anchor set.
     const created = channelSvc.get(channelId, 'ws-owner');
     expect(created).not.toBeNull();
     expect(created?.topic).toBe(missionTopicFor(taskId));
     expect(created?.status).toBe('active');
 
-    // 2) 채널 post — 미션 채널은 평범한 채널이라 그대로 소비된다.
+    // 2) channel post — mission channel is a normal channel so post works as usual.
     const posted = await channelSvc.post({
       channelId,
       sender: { workspaceId: 'ws-owner', memberId: 'lead' },
@@ -200,38 +200,38 @@ describe('§0 성공기준 E2E 왕복 (mission.start → post → close → 재�
     });
     expect(posted.ok).toBe(true);
 
-    // 3) mission.close — 태스크 closed + 채널 archive.
+    // 3) mission.close — task closed + channel archive.
     const closed = await svc.closeMission({ taskId, verifiedWorkspaceId: 'ws-owner' });
     expect(closed.ok).toBe(true);
     expect(svc.getTask(taskId)?.status).toBe('closed');
     expect(channelSvc.get(channelId, 'ws-owner')?.status).toBe('archived');
 
-    // 4) 데몬 재시작 시뮬레이션 — 같은 로그·같은 writer 위에 서비스 재생성 + boot replay.
-    const channelSvc2 = newChannelService(writer); // writer.load()가 마지막 저장 상태 복원.
-    const log2 = newLog(); // 같은 dir → 같은 세그먼트 replay.
+    // 4) Daemon restart simulation — recreate service on same log·writer + boot replay.
+    const channelSvc2 = newChannelService(writer); // writer.load() restores last saved state.
+    const log2 = newLog(); // same dir → same segment replay.
     const svc2 = newWorkTaskService(log2, channelSvc2 as unknown as WorkTaskChannelPort);
     await svc2.boot();
 
-    // projection 복원: closed 태스크가 살아있다.
+    // Projection restore: closed task survives.
     const restored = svc2.getTask(taskId);
     expect(restored).toBeDefined();
     expect(restored?.status).toBe('closed');
     expect(restored?.missionChannelId).toBe(channelId);
 
-    // archive 멱등 재시도 no-op: 부트 reconcile 태스크 방향이 이미 archived 채널을
-    // 다시 archive하려 해도 no-op(에러 없음). 채널은 여전히 archived.
+    // Archive idempotent retry no-op: boot reconcile task direction may retry archive on
+    // already-archived channel — still no-op (no error). Channel remains archived.
     expect(channelSvc2.get(channelId, 'ws-owner')?.status).toBe('archived');
 
-    // 재close도 멱등 no-op ack.
+    // Re-close is also idempotent no-op ack.
     const reclose = await svc2.closeMission({ taskId, verifiedWorkspaceId: 'ws-owner' });
     expect(reclose.ok).toBe(true);
   });
 });
 
-// ═══ §3 멱등 (start 재시도 · 재close) ═══════════════════════════════════
+// ═══ §3 idempotency (start retry · re-close) ═══════════════════════════════════
 
-describe('§3 멱등', () => {
-  it('같은 idempotency_key start 재시도는 채널·태스크 중복 없이 원본 반환', async () => {
+describe('§3 idempotency', () => {
+  it('same idempotency_key start retry returns original without duplicating channel/task', async () => {
     const { port, create } = (() => {
       const f = makeFakeChannelPort();
       return { port: f.port, create: f.port.create as ReturnType<typeof vi.fn> };
@@ -245,12 +245,12 @@ describe('§3 멱등', () => {
     if (!r1.ok || !r2.ok) return;
     expect(r2.taskId).toBe(r1.taskId);
     expect(r2.channelId).toBe(r1.channelId);
-    // 채널 생성은 정확히 1회.
+    // Channel create exactly once.
     expect(create).toHaveBeenCalledTimes(1);
     expect(svc.taskCount).toBe(1);
   });
 
-  it('재close는 멱등 no-op ack (에러 아님)', async () => {
+  it('re-close is idempotent no-op ack (not an error)', async () => {
     const { port } = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), port);
     await svc.boot();
@@ -263,7 +263,7 @@ describe('§3 멱등', () => {
     expect(c2.ok).toBe(true);
   });
 
-  it('R2′: 멱등 키는 워크스페이스 스코프 — 타 ws가 같은 키를 써도 남의 결과를 받지 않는다', async () => {
+  it('R2′: idempotency key is workspace-scoped — other ws using same key does not get foreign result', async () => {
     const { port } = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), port);
     await svc.boot();
@@ -271,13 +271,13 @@ describe('§3 멱등', () => {
     const b = await svc.startMission({ title: 'B', verifiedWorkspaceId: 'ws-b', memberId: 'lead', idempotencyKey: 'shared' });
     expect(a.ok && b.ok).toBe(true);
     if (!a.ok || !b.ok) return;
-    // 무스코프 전역 키였다면 b가 a의 {taskId, channelId}(private 채널 id 누출)를 받는다.
+    // With unscoped global key, b would receive a's {taskId, channelId} (private channel id leak).
     expect(b.taskId).not.toBe(a.taskId);
     expect(b.channelId).not.toBe(a.channelId);
     expect(svc.taskCount).toBe(2);
   });
 
-  it('R2′: close 캐시 히트가 요청 taskId와 불일치하면 미스로 취급 — authz·존재 검증 경로를 탄다', async () => {
+  it('R2′: close cache hit mismatched to request taskId treated as miss — takes authz/existence path', async () => {
     const { port } = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), port);
     await svc.boot();
@@ -287,7 +287,7 @@ describe('§3 멱등', () => {
     if (!t1.ok || !t2.ok) return;
     const c1 = await svc.closeMission({ taskId: t1.taskId, verifiedWorkspaceId: 'ws-a', idempotencyKey: 'k' });
     expect(c1.ok).toBe(true);
-    // 같은 키로 다른 태스크 close — 이전 영수증(t1) 재반환이 아니라 t2가 실제로 닫혀야 한다.
+    // Same key closing different task — t2 must actually close, not replay t1 receipt.
     const c2 = await svc.closeMission({ taskId: t2.taskId, verifiedWorkspaceId: 'ws-a', idempotencyKey: 'k' });
     expect(c2.ok).toBe(true);
     if (!c2.ok) return;
@@ -295,7 +295,7 @@ describe('§3 멱등', () => {
     expect(svc.getTask(t2.taskId)?.status).toBe('closed');
   });
 
-  it('R4′: 같은 ms·같은 title 두 start도 채널명이 달라진다 (shortId = random 세그먼트)', async () => {
+  it('R4′: two starts in same ms with same title still get different channel names (shortId = random segment)', async () => {
     const fixed = 1_700_000_000_000;
     const f = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), f.port, { now: () => fixed });
@@ -306,15 +306,15 @@ describe('§3 멱등', () => {
     const create = f.port.create as ReturnType<typeof vi.fn>;
     const names = create.mock.calls.map((c) => (c[0] as { name: string }).name);
     expect(names).toHaveLength(2);
-    // timestamp-shortId였다면 동일명 → 실 ChannelService의 중복 거부로 자기 DoS.
+    // With timestamp-shortId, same name → real ChannelService duplicate rejection self-DoS.
     expect(names[0]).not.toBe(names[1]);
   });
 });
 
-// ═══ §3 authz (타 워크스페이스 거부 · CEO 허용) ══════════════════════════
+// ═══ §3 authz (reject other workspace · CEO allowed) ══════════════════════════
 
 describe('§3 close authz (owner OR CEO)', () => {
-  it('타 워크스페이스 close 거부', async () => {
+  it('rejects close from foreign workspace', async () => {
     const { port } = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), port);
     await svc.boot();
@@ -323,11 +323,11 @@ describe('§3 close authz (owner OR CEO)', () => {
     if (!started.ok) return;
     const r = await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-intruder' });
     expect(r.ok).toBe(false);
-    // 정본 불변: 거부된 close는 태스크를 open으로 남긴다.
+    // Canonical invariant: rejected close leaves task open.
     expect(svc.getTask(started.taskId)?.status).toBe('open');
   });
 
-  it('CEO는 타 워크스페이스 태스크도 close 가능', async () => {
+  it('CEO can close tasks from foreign workspace', async () => {
     const { port } = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), port, { ceoWorkspaceId: 'ws-ceo' });
     await svc.boot();
@@ -340,12 +340,12 @@ describe('§3 close authz (owner OR CEO)', () => {
   });
 });
 
-// ═══ §3 보상 archive (append 실패) ═════════════════════════════════════
+// ═══ §3 compensating archive (append failure) ═════════════════════════════════════
 
-describe('§3 실패 보상 archive', () => {
-  it('task.create append 실패 시 생성된 채널을 즉시 보상 archive', async () => {
+describe('§3 failure compensating archive', () => {
+  it('compensating archive of created channel when task.create append fails', async () => {
     const { port, archiveCalls } = makeFakeChannelPort();
-    // append를 강제 실패시키는 로그 스텁.
+    // Log stub that forces append failure.
     const failingLog = {
       append: vi.fn(async () => false),
       readAllRecords: () => [],
@@ -354,13 +354,13 @@ describe('§3 실패 보상 archive', () => {
     await svc.boot();
     const r = await svc.startMission({ title: 'T', verifiedWorkspaceId: 'ws-a', memberId: 'lead' });
     expect(r.ok).toBe(false);
-    // 채널은 만들어졌지만(create 성공) append 실패로 보상 archive가 그 채널을 아카이브.
+    // Channel created (create success) but append failure triggers compensating archive.
     expect(archiveCalls).toHaveLength(1);
-    // projection에 태스크 없음(append 무커밋).
+    // No task in projection (append uncommitted).
     expect(svc.taskCount).toBe(0);
   });
 
-  it('채널 create 실패면 태스크 생성 없이 명시 에러', async () => {
+  it('explicit error with no task creation when channel create fails', async () => {
     const { port } = makeFakeChannelPort({ failCreate: true });
     const svc = newWorkTaskService(newLog(), port);
     await svc.boot();
@@ -370,11 +370,11 @@ describe('§3 실패 보상 archive', () => {
   });
 });
 
-// ═══ §3 양방향 reconcile (고아 채널 · closed+active) ════════════════════
+// ═══ §3 bidirectional reconcile (orphan channel · closed+active) ════════════════════
 
-describe('§3 양방향 부트 reconcile', () => {
-  it('채널 방향: projection에 없는 mission-topic 고아 채널을 archive (크래시 창)', async () => {
-    // 사전상태: mission-topic 앵커가 박힌 active 채널이 있으나 로그엔 task.create 없음.
+describe('§3 bidirectional boot reconcile', () => {
+  it('channel direction: archive orphan mission-topic channels missing from projection (crash window)', async () => {
+    // Pre-state: active channel with mission-topic anchor but no task.create in log.
     const { port, channels, archiveCalls, archiveIdentities } = makeFakeChannelPort();
     channels.set('ch-orphan', {
       id: 'ch-orphan',
@@ -383,17 +383,17 @@ describe('§3 양방향 부트 reconcile', () => {
       createdByWorkspaceId: 'ws-creator',
     });
     const svc = newWorkTaskService(newLog(), port);
-    await svc.boot(); // reconcile 채널 방향이 고아를 줍는다.
+    await svc.boot(); // reconcile channel direction picks up orphan.
     expect(archiveCalls).toContain('ch-orphan');
     expect(channels.get('ch-orphan')?.status).toBe('archived');
-    // R1′: archive 신원은 빈 값이 아니라 채널의 창설 워크스페이스 — 창설자는 항상
-    // 멤버로 시드되므로 실 ChannelService의 멤버 게이트를 통과한다('' 는 전패).
+    // R1': archive identity is channel creator workspace — creator always
+    // seeded as member so real ChannelService member gate passes ('' loses).
     const orphanArchive = archiveIdentities.find((a) => a.channelId === 'ch-orphan');
     expect(orphanArchive?.verifiedWorkspaceId).toBe('ws-creator');
   });
 
-  it('태스크 방향: closed 태스크의 채널이 active면 부트에서 archive 재시도', async () => {
-    // 1) 정상 start+close를 실 로그에 남긴 뒤,
+  it('task direction: retry archive on boot when closed task channel is still active', async () => {
+    // 1) Leave normal start+close in real log,
     const { port, channels, setStatus } = makeFakeChannelPort();
     const log = newLog();
     const svc = newWorkTaskService(log, port);
@@ -402,9 +402,9 @@ describe('§3 양방향 부트 reconcile', () => {
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-a' });
-    // 2) 크래시 창 시뮬레이션: 채널을 다시 active로 되돌린다(close의 archive가 유실됐다고 가정).
+    // 2) Crash window simulation: revert channel to active (assume close archive lost).
     setStatus(started.channelId, 'active');
-    // 3) 재부트: 태스크 방향 reconcile이 closed+active를 잡아 archive 재시도.
+    // 3) Reboot: task-direction reconcile catches closed+active and retries archive.
     const log2 = newLog();
     const svc2 = newWorkTaskService(log2, port);
     await svc2.boot();
@@ -413,40 +413,40 @@ describe('§3 양방향 부트 reconcile', () => {
   });
 });
 
-// ═══ §3 외부 변이 내성 (선archive · 채널 소실) ═════════════════════════
+// ═══ §3 external mutation tolerance (pre-archive · channel loss) ═════════════════════════
 
-describe('§3 close 채널 상태 무조건 내성', () => {
-  it('사람이 채널을 먼저 archive해도 close 성립 (archive no-op)', async () => {
+describe('§3 close channel-state unconditional resilience', () => {
+  it('close succeeds even if human archived channel first (archive no-op)', async () => {
     const { port, setStatus } = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), port);
     await svc.boot();
     const started = await svc.startMission({ title: 'T', verifiedWorkspaceId: 'ws-a', memberId: 'lead' });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
-    // 외부 선archive.
+    // External pre-archive.
     setStatus(started.channelId, 'archived');
     const r = await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-a' });
     expect(r.ok).toBe(true);
     expect(svc.getTask(started.taskId)?.status).toBe('closed');
   });
 
-  it('채널이 reaper로 소실돼도 close 성립 (CHANNEL_NOT_FOUND no-op)', async () => {
+  it('close succeeds even if channel lost to reaper (CHANNEL_NOT_FOUND no-op)', async () => {
     const { port, channels } = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), port);
     await svc.boot();
     const started = await svc.startMission({ title: 'T', verifiedWorkspaceId: 'ws-a', memberId: 'lead' });
     expect(started.ok).toBe(true);
     if (!started.ok) return;
-    channels.delete(started.channelId); // reaper 소실.
+    channels.delete(started.channelId); // reaper loss.
     const r = await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-a' });
     expect(r.ok).toBe(true);
   });
 });
 
-// ═══ §1 closed GC (7일 + archive 미확인 면제) ══════════════════════════
+// ═══ §1 closed GC (7 days + unconfirmed archive exemption) ══════════════════════════
 
 describe('§1 closed projection GC', () => {
-  it('7일 경과 closed(채널 archived)는 projection 퇴출', async () => {
+  it('closed after 7 days (channel archived) evicted from projection', async () => {
     let clock = 1_000_000;
     const { port } = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), port, { now: () => clock });
@@ -455,13 +455,13 @@ describe('§1 closed projection GC', () => {
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-a' });
-    // 8일 경과.
+    // 8 days elapsed.
     clock += 8 * 24 * 60 * 60 * 1000;
     svc.gcClosedTasks();
     expect(svc.getTask(started.taskId)).toBeUndefined();
   });
 
-  it('archive 미확인 closed도 GC 퇴출 — 복구는 다음 부트 replay+reconcile이 담당 (R3′)', async () => {
+  it('unconfirmed-archive closed also GC-evicted — recovery on next boot replay+reconcile (R3′)', async () => {
     let clock = 1_000_000;
     const { port, channels, setStatus } = makeFakeChannelPort();
     const log = newLog();
@@ -471,24 +471,24 @@ describe('§1 closed projection GC', () => {
     expect(started.ok).toBe(true);
     if (!started.ok) return;
     await svc.closeMission({ taskId: started.taskId, verifiedWorkspaceId: 'ws-a' });
-    // 채널을 강제로 active로 되돌려 archive 미확인 상태 조성.
+    // Force channel back to active to create unconfirmed archive state.
     setStatus(started.channelId, 'active');
     clock += 8 * 24 * 60 * 60 * 1000;
     svc.gcClosedTasks();
-    // 면제 없음: projection에서 퇴출된다(면제를 두면 owner-leave 잔여에서 영구 잔류
-    // — 뷰 바운드 무산). 복구 경로가 끊기지 않음을 아래 재부트로 실증한다.
+    // No exemption: evicted from projection (exemption would leave permanent residue
+    // after owner-leave — view bound void). Reboot below proves recovery path intact.
     expect(svc.getTask(started.taskId)).toBeUndefined();
-    // 재부트: replay가 로그에서 태스크를 복원하고 reconcile이 archive를 재시도.
+    // Reboot: replay restores task from log and reconcile retries archive.
     const svc2 = newWorkTaskService(newLog(), port, { now: () => clock });
     await svc2.boot();
     expect(channels.get(started.channelId)?.status).toBe('archived');
   });
 });
 
-// ═══ §2 DoS 캡 (워크스페이스당 open 상한) ══════════════════════════════
+// ═══ §2 DoS cap (open limit per workspace) ══════════════════════════════
 
-describe('§2 open 태스크 캡', () => {
-  it('list는 owner 스코프만 반환', async () => {
+describe('§2 open task cap', () => {
+  it('list returns owner scope only', async () => {
     const { port } = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), port);
     await svc.boot();
@@ -500,9 +500,9 @@ describe('§2 open 태스크 캡', () => {
   });
 });
 
-// ═══ §5 task.update — 단조 물질화·배타 불변식·authz·closed 거부 ══════════
+// ═══ §5 task.update — monotonic materialization·exclusivity·authz·closed reject ══════════
 
-describe('§5 task.mission.update (J1 물질화)', () => {
+describe('§5 task.mission.update (J1 materialization)', () => {
   async function startedSvc(opts?: { ceoWorkspaceId?: string }) {
     const { port, channels } = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), port, opts);
@@ -516,7 +516,7 @@ describe('§5 task.mission.update (J1 물질화)', () => {
     return { svc, port, channels, taskId: started.taskId };
   }
 
-  it('물질화 필드를 커밋하고 projection에 반영한다', async () => {
+  it('commits materialization fields and reflects them in projection', async () => {
     const { svc, taskId } = await startedSvc();
     const res = await svc.updateMission({
       taskId,
@@ -532,7 +532,7 @@ describe('§5 task.mission.update (J1 물질화)', () => {
     expect(t?.paneGroupId).toBe('ws-task-1');
   });
 
-  it('단조: 이미 설정된 필드의 덮어쓰기를 거부한다', async () => {
+  it('monotonic: rejects overwrite of already-set fields', async () => {
     const { svc, taskId } = await startedSvc();
     await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', branch: 'wtask/a' });
     const res = await svc.updateMission({
@@ -546,7 +546,7 @@ describe('§5 task.mission.update (J1 물질화)', () => {
     expect(svc.getTask(taskId)?.branch).toBe('wtask/a');
   });
 
-  it('단조: 동일 값 재쓰기는 멱등 no-op 성공', async () => {
+  it('monotonic: same-value rewrite is idempotent no-op success', async () => {
     const { svc, taskId } = await startedSvc();
     await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', worktreePath: '/wt/x' });
     const again = await svc.updateMission({
@@ -558,16 +558,16 @@ describe('§5 task.mission.update (J1 물질화)', () => {
     expect(svc.getTask(taskId)?.worktreePath).toBe('/wt/x');
   });
 
-  it('배타 불변식: 같은 canonical worktreePath를 다른 open 태스크가 못 점유', async () => {
+  it('exclusivity invariant: another open task cannot claim same canonical worktreePath', async () => {
     const { port } = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), port);
     await svc.boot();
-    // 두 태스크를 같은 owner로 만들고 첫째에 경로를 심는다.
+    // Create two tasks for same owner and set path on first.
     const s1 = await svc.startMission({ title: 'T1', verifiedWorkspaceId: 'ws-o', memberId: 'l' });
     const s2 = await svc.startMission({ title: 'T2', verifiedWorkspaceId: 'ws-o', memberId: 'l' });
     if (!s1.ok || !s2.ok) throw new Error('start');
     await svc.updateMission({ taskId: s1.taskId, verifiedWorkspaceId: 'ws-o', worktreePath: '/wt/shared/' });
-    // 표기만 다른 같은 경로(trailing slash·대소문자) → 거부.
+    // Same canonical path with different notation (trailing slash·case) → reject.
     const clash = await svc.updateMission({
       taskId: s2.taskId,
       verifiedWorkspaceId: 'ws-o',
@@ -578,7 +578,7 @@ describe('§5 task.mission.update (J1 물질화)', () => {
     expect(clash.error).toMatch(/already claimed/);
   });
 
-  it('authz: owner/CEO 아닌 caller 거부', async () => {
+  it('authz: rejects caller that is not owner/CEO', async () => {
     const { svc, taskId } = await startedSvc({ ceoWorkspaceId: 'ws-ceo' });
     const stranger = await svc.updateMission({
       taskId,
@@ -588,7 +588,7 @@ describe('§5 task.mission.update (J1 물질화)', () => {
     expect(stranger.ok).toBe(false);
     if (stranger.ok) return;
     expect(stranger.error).toMatch(/not the task owner or CEO/);
-    // CEO는 통과.
+    // CEO passes.
     const ceo = await svc.updateMission({
       taskId,
       verifiedWorkspaceId: 'ws-ceo',
@@ -597,7 +597,7 @@ describe('§5 task.mission.update (J1 물질화)', () => {
     expect(ceo.ok).toBe(true);
   });
 
-  it('closed 태스크의 update는 거부', async () => {
+  it('rejects update on closed task', async () => {
     const { svc, taskId } = await startedSvc();
     await svc.closeMission({ taskId, verifiedWorkspaceId: 'ws-owner' });
     const res = await svc.updateMission({
@@ -610,7 +610,7 @@ describe('§5 task.mission.update (J1 물질화)', () => {
     expect(res.error).toMatch(/closed/);
   });
 
-  it('물질화 필드가 재시작 replay 후 잔존한다', async () => {
+  it('materialization fields survive restart replay', async () => {
     const { port } = makeFakeChannelPort();
     const log = newLog();
     const svc = newWorkTaskService(log, port);
@@ -624,7 +624,7 @@ describe('§5 task.mission.update (J1 물질화)', () => {
       worktreePath: '/wt/keep',
       paneGroupId: 'ws-keep',
     });
-    // 재부트: 같은 로그·port 위에 서비스 재생성 + replay.
+    // Reboot: recreate service on same log·port + replay.
     const svc2 = newWorkTaskService(newLog(), port);
     await svc2.boot();
     const t = svc2.getTask(started.taskId);
@@ -635,7 +635,7 @@ describe('§5 task.mission.update (J1 물질화)', () => {
   });
 });
 
-describe('J3 §2 prUrl — 비단조·closed 단독 허용·형식 검증', () => {
+describe('J3 §2 prUrl — non-monotonic·closed-only·format validation', () => {
   async function started() {
     const { port } = makeFakeChannelPort();
     const svc = newWorkTaskService(newLog(), port);
@@ -647,36 +647,36 @@ describe('J3 §2 prUrl — 비단조·closed 단독 허용·형식 검증', () =
   const PR1 = 'https://github.com/acme/repo/pull/12';
   const PR2 = 'https://github.com/acme/repo/pull/13';
 
-  it('open 태스크에 prUrl을 커밋하고, 다른 값으로 갱신(비단조)할 수 있다', async () => {
+  it('can commit prUrl on open task and update to different value (non-monotonic)', async () => {
     const { svc, taskId } = await started();
     const r1 = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR1 });
     expect(r1.ok).toBe(true);
     expect(svc.getTask(taskId)?.prUrl).toBe(PR1);
-    // 비단조: 재생성 URL로 갱신 허용(물질화 필드와 달리 write-once 아님).
+    // Non-monotonic: allow URL regeneration update (not write-once like materialization fields).
     const r2 = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR2 });
     expect(r2.ok).toBe(true);
     expect(svc.getTask(taskId)?.prUrl).toBe(PR2);
   });
 
-  it('closed 태스크에 prUrl 단독 갱신은 허용, 물질화 필드 동반은 거부', async () => {
+  it('allows prUrl-only update on closed task, rejects accompanying materialization fields', async () => {
     const { svc, taskId } = await started();
     const closed = await svc.closeMission({ taskId, verifiedWorkspaceId: 'ws-owner' });
     expect(closed.ok).toBe(true);
-    // prUrl 단독 → 허용(PR은 close 후에도 생성 가능 — CX6).
+    // prUrl alone → allowed (PR can be created after close — CX6).
     const solo = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR1 });
     expect(solo.ok).toBe(true);
     expect(svc.getTask(taskId)?.prUrl).toBe(PR1);
-    // 물질화 동반 → 기존 closed 거부 유지.
+    // With materialization → existing closed reject preserved.
     const mixed = await svc.updateMission({
       taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR2, branch: 'wtask/x',
     });
     expect(mixed.ok).toBe(false);
-    // prUrl 없는 물질화 단독도 여전히 거부(기존 계약 불변).
+    // Materialization alone without prUrl still rejected (existing contract unchanged).
     const mat = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', branch: 'wtask/x' });
     expect(mat.ok).toBe(false);
   });
 
-  it('GitHub PR URL 형식이 아니면 거부한다(G5 — 임의 URL 차단)', async () => {
+  it('rejects non-GitHub PR URL format (G5 — blocks arbitrary URLs)', async () => {
     const { svc, taskId } = await started();
     for (const bad of [
       'https://evil.example.com/acme/repo/pull/1',
@@ -690,7 +690,7 @@ describe('J3 §2 prUrl — 비단조·closed 단독 허용·형식 검증', () =
     expect(svc.getTask(taskId)?.prUrl).toBeUndefined();
   });
 
-  it('동일 prUrl 재쓰기는 append 없는 멱등 no-op이다', async () => {
+  it('same prUrl rewrite is idempotent no-op without append', async () => {
     const { svc, taskId } = await started();
     await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR1 });
     const again = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR1 });
@@ -698,13 +698,13 @@ describe('J3 §2 prUrl — 비단조·closed 단독 허용·형식 검증', () =
     expect(svc.getTask(taskId)?.prUrl).toBe(PR1);
   });
 
-  it('authz: 타 워크스페이스는 prUrl 갱신 불가', async () => {
+  it('authz: foreign workspace cannot update prUrl', async () => {
     const { svc, taskId } = await started();
     const r = await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-intruder', prUrl: PR1 });
     expect(r.ok).toBe(false);
   });
 
-  it('closed 태스크의 prUrl이 재부트 replay에서 복원된다', async () => {
+  it('closed task prUrl restored on reboot replay', async () => {
     const { svc, port, taskId } = await started();
     await svc.closeMission({ taskId, verifiedWorkspaceId: 'ws-owner' });
     await svc.updateMission({ taskId, verifiedWorkspaceId: 'ws-owner', prUrl: PR1 });

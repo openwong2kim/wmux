@@ -383,9 +383,9 @@ export default function AppLayout() {
   // agents or persisted across restart were invisible. Decoupled from in-app
   // Company mode (falls back to the active workspace for identity).
   useChannelsHydration();
-  // 사이클 C — 미션(WorkTask) 캐시. task.mission.list를 owner-scoped로 폴링해
-  // 사이드바 "Missions" 섹션 + FleetCard 미션 라인을 채운다(순수 pull, 성긴 폴링 —
-  // useMissionsPolling 헤더 참조).
+  // Cycle C — mission (WorkTask) cache. Poll task.mission.list owner-scoped to fill
+  // sidebar "Missions" section + FleetCard mission lines (pure pull, sparse polling —
+  // see useMissionsPolling header).
   useMissionsPolling();
   // TASK-9 cold-park: sparse sweep that unmounts terminals of long-hidden
   // workspaces to reclaim renderer RAM (reveal replays from the daemon snapshot).
@@ -503,7 +503,7 @@ export default function AppLayout() {
       if (!leaf) return;
 
       const activeSurface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-      // browser/editor/diff는 PTY가 없어 경로 붙여넣기 대상이 아님(J2 — diff 추가).
+      // browser/editor/diff have no PTY — not path-paste targets (J2 — diff added).
       if (!activeSurface || activeSurface.surfaceType === 'browser' || activeSurface.surfaceType === 'editor' || activeSurface.surfaceType === 'diff') return;
 
       const text = paths.map((p) => (p.includes(' ') ? `"${p}"` : p)).join(' ');
@@ -646,7 +646,7 @@ export default function AppLayout() {
           if (pane.type === 'leaf') {
             for (const surface of pane.surfaces) {
               if (signal?.aborted) return;
-              // browser/editor/diff는 PTY를 갖지 않음 — 재조정·자가생성 대상에서 제외(J2).
+              // browser/editor/diff have no PTY — excluded from refocus/auto-spawn (J2).
               if (surface.surfaceType === 'browser' || surface.surfaceType === 'editor' || surface.surfaceType === 'diff') continue;
               if (!surface.ptyId) {
                 console.log(`[AppLayout] Surface ${surface.id}: no ptyId, Terminal will self-create`);
@@ -754,7 +754,7 @@ export default function AppLayout() {
     return run;
   }, [ipcInvoke]);
 
-  // 앱 시작 시 세션 복원 (Fix 0 — see state machine diagram at top of file)
+  // Restore session on app start (Fix 0 — see state machine diagram at top of file)
   useEffect(() => {
     const gen = ++startupGenRef.current;
     let abortCtl: AbortController | null = null;
@@ -806,7 +806,7 @@ export default function AppLayout() {
         // settled the daemon-vs-local decision. Without this gate, the
         // reconcile fires while IPC handlers are mid-swap and pty.list
         // can hit a "no handler registered" rejection — the renderer
-        // surfaces that as a generic "알 수 없는 오류" toast spam.
+        // surfaces that as a generic "unknown error" toast spam.
         const daemonReady = await window.electronAPI.daemon.whenReady();
 
         // Codex P1 — set daemonMode flag here, BEFORE paneGate flips ready.
@@ -1151,11 +1151,11 @@ export default function AppLayout() {
   // Awaits scrollback dump completion before saving session.json to guarantee
   // files referenced in session data actually exist on disk.
   //
-  // A4 (NB2 파동 0): 이 주기 틱은 크래시 세이프티 목적이므로 비동기 저장
-  // (session.saveAsync)으로 보낸다 — main-side 원자 쓰기가 async라 main 이벤트
-  // 루프를 블록하지 않는다. 유실 창은 그대로 ≤5초(틱 간격)다. 리부트 생존의
-  // 핵심인 이벤트 기반 저장(saveSessionNow)과 종료 경로(beforeunload/before-quit/
-  // session-end)는 여전히 동기 save/flushSync를 써서 마지막 상태 유실을 막는다.
+  // A4 (NB2 wave 0): this periodic tick is crash-safety only, so use async save
+  // (session.saveAsync) — main-side atomic write is async and does not block the main
+  // event loop. Loss window stays ≤5s (tick interval). Event-driven save (saveSessionNow)
+  // and shutdown paths (beforeunload/before-quit/session-end) still use sync save/flushSync
+  // to prevent losing final state on reboot.
   useEffect(() => {
     const interval = setInterval(() => {
       if (!sessionLoadedRef.current) return;
@@ -1244,10 +1244,10 @@ export default function AppLayout() {
         {/* P1.5 — the status strip moved into the Titlebar (owner feedback:
             the empty titlebar center + a second status row doubled the top
             chrome). This column now starts directly with the pane area. */}
-        {/* Workspace center — 페인 그리드 전용(Git·Review는 우측 덱 탭으로 복귀).
-            페인 그리드는 WorkspaceViewport가 `workspaces` 구독을 소유(PERF 2026-07-13)
-            해 메타데이터/서피스 churn이 뷰포트(메모된 슬롯)만 리렌더하고 AppLayout
-            크롬은 건드리지 않는다. */}
+        {/* Workspace center — pane grid only (Git/Review moved to right deck tabs).
+            WorkspaceViewport owns `workspaces` subscription (PERF 2026-07-13) so
+            metadata/surface churn re-renders only the viewport (memoized slots), not AppLayout
+            chrome. */}
         <WorkspaceCenter />
         {/* Render-null logic mounts. Both own subscriptions that change on a
             workspace switch (EmptyLeafFunnel: activeWorkspaceId + empty-leaf
@@ -1273,10 +1273,9 @@ export default function AppLayout() {
           <ChannelDock />
         </ErrorBoundary>
       )}
-      {/* S-C1 Fleet View (Ctrl+Shift+A) — NB2 파동2 사이클 A에서 전체화면 모달을
-          상시 크롬으로 전환. ChannelDock과 같은 flex 형제 패턴으로 워크스페이스
-          사이드바 반대편 엣지에 고정폭으로 앉아 페인을 reflow한다(더 이상 z-fleet
-          fixed 오버레이가 아니다). Mount-gated on fleetViewVisible. */}
+      {/* S-C1 Fleet View (Ctrl+Shift+A) — NB2 wave 2 cycle A: fullscreen modal → persistent
+          chrome. Same flex sibling pattern as ChannelDock, fixed width on edge opposite workspace
+          sidebar, reflows panes (no longer z-fleet fixed overlay). Mount-gated on fleetViewVisible. */}
       {fleetViewVisible && (
         <ErrorBoundary name="FleetView">
           <FleetView />

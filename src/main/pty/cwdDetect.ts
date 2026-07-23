@@ -104,9 +104,9 @@ export function detectPromptCwd(
   // and would still be recovered by OSC 7 when available.
   if (last[2]) cwd = cwd.replace(/\s+\([^)]*\)$/, '').trimEnd();
   if (!cwd) return null;
-  // 오탐 방어(2026-07-20): 화면에 출력된 "PS C:\…>" 같은 텍스트를 프롬프트로
-  // 오인해 POSIX 페인의 cwd를 Windows 경로로 덮어쓰던 사고 — 플랫폼에서
-  // 존재할 수 없는 모양이면 버린다.
+  // False-positive guard (2026-07-20): screen text like "PS C:\…>" was mistaken for a
+  // prompt and overwrote a POSIX pane's cwd with a Windows path — discard shapes that
+  // cannot exist on this platform.
   if (!isPlausibleCwd(cwd, platform)) return null;
   return cwd;
 }

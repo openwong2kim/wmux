@@ -1,13 +1,13 @@
-// J1 §7 Multi Task(병렬 작업) 다이얼로그. N(1~8) 격리 태스크를 동시에 연다.
+// J1 §7 Multi Task (parallel work) dialog. Opens N(1~8) isolated tasks at once.
 //
-// mode 토글(경쟁/병렬)은 순수 UI 강조 스위치다 — 서비스는 항상 공통+개별 프롬프트를
-// 결합해서 발사하므로(compete는 개별 필드를 숨길 뿐 결합 규칙 자체는 동일), 토글이
-// 상태 기계를 늘리지 않는다. 프롬프트가 전부 비어도 거부하지 않는다(§7 "환경만
-// 조성" — worktree·에이전트 페인만 열고 사람이 직접 입력).
+// mode toggle (compete/parallel) is a pure UI emphasis switch — service always combines
+// shared+individual prompts when firing (compete only hides individual fields, same combine rule),
+// so toggle does not grow state machine. Does not reject when all prompts empty (§7 "environment-only"
+// — open worktree·agent pane only, human enters prompt).
 //
-// 입력: 공통 프롬프트, 태스크별 title+프롬프트(자동 파생 + 편집), N(클릭형 1~8),
-// repo 경로(기본: 활성 ws cwd), agentCmd(기본 claude), 브랜치 접두 미리보기, 멱등키
-// 발급(제출 1회). 격리 해제 토글은 두지 않는다(§6 C10 — broadcast는 별개 진입).
+// Input: shared prompt, per-task title+prompt (auto-derived + editable), N (click 1~8),
+// repo path (default: active ws cwd), agentCmd (default claude), branch prefix preview, idempotency key
+// issued once on submit. No isolation-off toggle (§6 C10 — broadcast is separate entry).
 
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { useStore } from '../../stores';
@@ -20,19 +20,19 @@ import { t } from '../../i18n';
 import Button from '../ui/Button';
 import Input from '../ui/Input';
 
-// 리뷰 발견(Codex+GLM+Claude 3/3 합의) — compete 모드에서 `mode === 'parallel' ?
-// taskPrompts : []`처럼 인라인 배열 리터럴을 useEffect 의존성에 넣으면 매 렌더마다
-// 새 참조가 생겨 이펙트가 무한 재실행된다(effect→setState(새 배열)→리렌더→새 []→
-// effect... "Maximum update depth exceeded"). 모듈 상수로 참조를 고정해 방지.
+// Review finding (Codex+GLM+Claude 3/3 consensus) — in compete mode putting inline array literal
+// like `mode === 'parallel' ? taskPrompts : []` in useEffect deps creates new reference every render
+// causing infinite effect loop (effect→setState(new array)→re-render→new []→
+// effect... "Maximum update depth exceeded"). Pin reference with module constant.
 const EMPTY_TASK_PROMPTS: readonly string[] = [];
 
-/** title 자동 파생: "{프롬프트 앞 24자} #k"(§7 G6). */
+/** Auto-derived title: "{first 24 chars of prompt} #k" (§7 G6). */
 function deriveTitle(prompt: string, k: number): string {
   const head = prompt.trim().slice(0, 24).replace(/\s+/g, ' ').trim();
   return head.length > 0 ? `${head} #${k + 1}` : `task #${k + 1}`;
 }
 
-/** branch 미리보기용 slug(TaskWorktreeManager.titleToSlug 규칙 동형 — 미리보기 전용). */
+/** Slug for branch preview (same shape as TaskWorktreeManager.titleToSlug — preview only). */
 function previewSlug(title: string): string {
   return title
     .toLowerCase()
@@ -44,7 +44,7 @@ function previewSlug(title: string): string {
 
 interface FanOutDialogProps {
   onClose: () => void;
-  /** 앵커 정렬 — 좁은 덱 컨트롤 바에서는 우측 정렬해 왼쪽 오버플로를 막는다. */
+  /** Anchor alignment — right-align in narrow deck control bar to prevent left overflow. */
   align?: 'left' | 'right';
 }
 
@@ -55,9 +55,9 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
 
   const defaultRepo = activeWorkspace?.metadata?.cwd ?? '';
 
-  // 'compete' = 같은 작업 N번(경쟁 — 공통 프롬프트만), 'parallel' = 서로 다른 작업
-  // N개(병렬 — 태스크별 프롬프트). 상호배타 UI는 아니고(서비스는 항상 공통+개별을
-  // 결합) 다이얼로그가 어느 필드를 강조·노출할지만 바꾼다(§7 리뷰).
+  // 'compete' = same work N times (compete — shared prompt only), 'parallel' = N different works
+  // (parallel — per-task prompts). Not mutually exclusive UI (service always combines shared+individual);
+  // dialog only changes which fields are emphasized·shown (§7 review).
   const [mode, setMode] = useState<'compete' | 'parallel'>('parallel');
   const [prompt, setPrompt] = useState('');
   const [n, setN] = useState(2);
@@ -68,18 +68,18 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
   const [agentCmd, setAgentCmd] = useState('claude');
   const [submitting, setSubmitting] = useState(false);
 
-  // repo 기본값이 늦게 로드되면 반영.
+  // Reflect when repo default loads late.
   useEffect(() => {
     if (!repoPath && defaultRepo) setRepoPath(defaultRepo);
   }, [defaultRepo, repoPath]);
 
-  // 경쟁 모드에선 태스크별 필드를 숨기므로 서비스에도 보내지 않는다(사용자가 이전에
-  // 병렬 모드에서 입력해둔 값은 state에 보존 — 다시 전환하면 되살아난다). 리뷰 발견
-  // (3/3 합의): 매 렌더 새 []를 만들면 안 되므로 안정 참조(EMPTY_TASK_PROMPTS)로 고정.
+  // In compete mode hide per-task fields so do not send to service either (values entered in
+  // parallel mode stay in state — revive on switch back). Review finding
+  // (3/3 consensus): must not create new [] every render — pin stable reference (EMPTY_TASK_PROMPTS).
   const effectiveTaskPrompts = mode === 'parallel' ? taskPrompts : EMPTY_TASK_PROMPTS;
 
-  // N·프롬프트 변경 시 미편집 title만 자동 파생(편집분은 보존). 태스크별 프롬프트가
-  // 있으면 그쪽에서 파생(개별 작업의 정체성은 개별 프롬프트가 정본).
+  // On N·prompt change auto-derive unedited titles only (preserve edits). When per-task prompt
+  // exists derive from it (individual prompt is source of truth for task identity).
   useEffect(() => {
     setTitles((prev) => {
       const next = [...prev];
@@ -101,7 +101,7 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
   }, [n, prompt, effectiveTaskPrompts]); // eslint-disable-line react-hooks/exhaustive-deps
 
   const promptBytes = useMemo(() => new TextEncoder().encode(prompt).length, [prompt]);
-  // 태스크 유효 프롬프트 = 공통 + 개별(빈 쪽 생략) — FanOutService 결합 규칙과 동형.
+  // Per-task effective prompt = shared + individual (omit empty side) — same as FanOutService combine rule.
   const effectiveBytes = useMemo(() => {
     const enc = new TextEncoder();
     return Array.from({ length: n }, (_, k) => {
@@ -110,7 +110,7 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
     });
   }, [n, prompt, effectiveTaskPrompts]);
   const promptOverCap = effectiveBytes.some((b) => b > FANOUT_PROMPT_MAX_BYTES);
-  // 정보성 힌트일 뿐 제출을 막지 않는다(§7 — 환경만 조성도 정당한 사용).
+  // Informational hint only — does not block submit (§7 — environment-only is valid).
   const promptAllEmpty = effectiveBytes.every((b) => b === 0);
 
   const setTitleAt = useCallback((k: number, v: string) => {
@@ -136,8 +136,8 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
 
   const handleSubmit = useCallback(async () => {
     if (submitting) return;
-    // §7: 프롬프트가 전부 비어도 거부하지 않는다 — "환경만 조성"(worktree·에이전트
-    // 페인만 열고 사람이 직접 입력)도 정당한 사용이다. 캡 초과만 클라에서도 막는다.
+    // §7: do not reject when all prompts empty — "environment-only"(worktree·agent
+    // pane only, human enters prompt) is valid. Client also blocks only cap exceed.
     if (promptOverCap) {
       pushToast({ level: 'warn', message: t('fanout.errPromptTooLarge', { max: FANOUT_PROMPT_MAX_BYTES }) });
       return;
@@ -147,7 +147,7 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
       return;
     }
     setSubmitting(true);
-    // 호출 단위 멱등키 1회 발급(§2 G1) — 더블클릭·재시도가 N배 worktree를 못 찍는다.
+    // Issue per-call idempotency key once (§2 G1) — double-click·retry cannot stamp N worktrees.
     const idempotencyKey = generateId('fanout');
     try {
       const res = await window.electronAPI.fanout.start({
@@ -157,15 +157,15 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
         taskPrompts: Array.from({ length: n }, (_, k) => effectiveTaskPrompts[k] ?? ''),
         repoPath: repoPath.trim(),
         agentCmd: agentCmd.trim() || 'claude',
-        // 렌더러 신뢰 신원(§2 — channelLocal과 동일 trust basis). owner = 생성자
-        // (스펙 §5.1 born-owned=createdBy)라 활성 워크스페이스로 고정한다. CEO 자동
-        // 승격은 하지 않는다(생성자 소유권을 CEO로 뭉개면 born-owned 계약 위반).
+        // Renderer-trusted identity (§2 — same trust basis as channelLocal). owner = creator
+        // (spec §5.1 born-owned=createdBy) so pinned to active workspace. No CEO auto
+        // promotion (merging creator ownership into CEO violates born-owned contract).
         verifiedWorkspaceId: activeWorkspace?.id ?? '',
       });
-      // owner(부모) ws id = fan-out을 실행한 활성 워크스페이스(§5.1 born-owned).
+      // owner (parent) ws id = active workspace that ran fan-out (§5.1 born-owned).
       reportResult(res, pushToast, activeWorkspace?.id ?? '');
-      // fan-out 완료 직후 미션 캐시 즉시 refetch(순수 pull이라 push가 없다 —
-      // 배경 폴링을 기다리지 않고 사이드바 "Missions" 섹션을 바로 채운다).
+      // Immediate mission cache refetch after fan-out (pure pull, no push —
+      // fill sidebar "Missions" without waiting for background poll).
       const parentId = activeWorkspace?.id;
       if (parentId) void useStore.getState().refreshMissions(parentId);
       onClose();
@@ -180,7 +180,7 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
 
   return (
     <div
-      // 420px 고정 폭은 248–320px 덱 컨트롤 바에서 잘린다 → 뷰포트 클램프.
+      // Fixed 420px width clips in 248–320px deck control bar → viewport clamp.
       className={`absolute bottom-full mb-2 ${align === 'right' ? 'right-2' : 'left-2'} z-50 max-h-[70vh] overflow-y-auto rounded-[7px] border border-[var(--bg-overlay)] bg-[var(--bg-mantle)] p-3 shadow-xl`}
       style={{ width: 'min(420px, calc(100vw - 24px))' }}
       data-testid="fanout-dialog"
@@ -309,7 +309,7 @@ export default function FanOutDialog({ onClose, align = 'left' }: FanOutDialogPr
   );
 }
 
-/** 결과 리포트 → 토스트(미물질화·채널 미연결·프롬프트 미발사 구분 — §7). */
+/** Result report → toast (distinguish unmaterialized·channel disconnected·prompt not fired — §7). */
 interface FanOutResultLike {
   ok?: boolean;
   error?: string;
@@ -319,13 +319,13 @@ interface FanOutResultLike {
     error?: string;
     unmaterialized?: boolean;
     channelDisconnected?: boolean;
-    // F5 — diff 진입 재료(FanOutTaskResult에서 반환).
+    // F5 — diff entry material (returned from FanOutTaskResult).
     taskId?: string;
     workspaceId?: string;
     worktreePath?: string;
-    // J3 §3 — onExhausted 토스트 매핑 재료(ptyId→태스크).
+    // J3 §3 — onExhausted toast mapping material (ptyId→task).
     ptyId?: string;
-    // F2 — 재발사용 원래 initialCommand(에이전트 기동+프롬프트 주입).
+    // F2 — original initialCommand for retry (agent launch+prompt injection).
     initialCommand?: string;
   }>;
 }
@@ -336,9 +336,9 @@ type PushToast = (t: {
   action?: { label: string; onClick: () => void };
 }) => string;
 
-// F5 — 태스크 워크스페이스의 첫 leaf 페인에 diff 서피스를 연다. 워크스페이스가
-// 아직 없거나 leaf가 없으면(레이스) 조용히 무시. F1: owner(부모) ws id를 서피스에
-// 실어 close/PR/resolveTaskMeta가 owner 스코프 RPC를 올바른 신원으로 부르게 한다.
+// F5 — open diff surface on first leaf pane of task workspace. Silently ignore when workspace
+// not yet present or no leaf (race). F1: carry owner (parent) ws id on surface so
+// close/PR/resolveTaskMeta call owner-scoped RPC with correct identity.
 function openTaskDiff(taskId: string, workspaceId: string, title: string, ownerWorkspaceId: string): void {
   const st = useStore.getState();
   const ws = st.workspaces.find((w) => w.id === workspaceId);
@@ -346,7 +346,7 @@ function openTaskDiff(taskId: string, workspaceId: string, title: string, ownerW
   const leaf = findLeafPanes(ws.rootPane)[0];
   if (!leaf) return;
   st.addDiffSurface(leaf.id, taskId, `diff: ${title}`, workspaceId, ownerWorkspaceId);
-  // 태스크 워크스페이스로 전환해 방금 연 diff가 바로 보이게.
+  // Switch to task workspace so opened diff is immediately visible.
   st.setActiveWorkspace(workspaceId);
 }
 
@@ -358,10 +358,10 @@ function reportResult(res: unknown, pushToast: PushToast, ownerWorkspaceId: stri
   }
   const tasks = r.tasks ?? [];
 
-  // J3 §3 — onExhausted 토스트가 소비할 ptyId→태스크 매핑을 등록(발사 실패 통지는
-  // fan-out 반환 이후 비동기로 오므로 store에 남겨둔다). ptyId 없는 태스크는 생략.
-  // F2: 재발사가 원문 프롬프트가 아니라 원래 initialCommand(에이전트 기동+프롬프트
-  // 주입)를 재전송해야 하므로 initialCommand도 함께 싣는다.
+  // J3 §3 — register ptyId→task mapping for onExhausted toast (fire failure notice arrives
+  // async after fan-out return so keep in store). Skip tasks without ptyId.
+  // F2: retry must resend original initialCommand (agent launch+prompt injection) not raw prompt
+  // so carry initialCommand too.
   const ptyEntries = tasks
     .filter((t) => t.ptyId && t.taskId)
     .map((t) => ({
@@ -386,8 +386,8 @@ function reportResult(res: unknown, pushToast: PushToast, ownerWorkspaceId: stri
     message: parts.join(' · '),
   });
 
-  // F5 — 물질화된 성공 태스크마다 "diff 열기" 액션 토스트. 워크스페이스가 있어야
-  // 서피스를 열 수 있으므로 workspaceId·taskId가 채워진 태스크만 대상.
+  // F5 — "open diff" action toast per materialized success task. Only tasks with
+  // workspaceId·taskId filled (need workspace to open surface).
   for (const task of tasks) {
     if (!task.ok || !task.taskId || !task.workspaceId) continue;
     const taskId = task.taskId;

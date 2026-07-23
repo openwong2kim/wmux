@@ -6,7 +6,7 @@ import type { CompletionEvidence } from '../../shared/types';
 
 type GetWindow = () => BrowserWindow | null;
 
-/** 데몬 커밋에 필요한 최소 RPC 표면(DaemonClient 만족 — 테스트 주입 용이). */
+/** Minimal RPC surface needed for daemon commit (satisfied by DaemonClient — easy test injection). */
 export interface DaemonRpcLike {
   rpc(method: string, params?: Record<string, unknown>): Promise<unknown>;
 }
@@ -33,8 +33,8 @@ export class ClaudeWorker {
 
   constructor(getWindow: GetWindow, getDaemonClient?: GetDaemonClient) {
     this.getWindow = getWindow;
-    // envelope PR4 C12: 전이 정본은 데몬 로그 — 미주입(구 배선/테스트)이면 렌더러
-    // 직행 폴백만 남는다(현행 동작 보존).
+    // envelope PR4 C12: transition canonical form is daemon log — if not injected (legacy wiring/test),
+    // only renderer direct fallback remains (preserves current behavior).
     this.getDaemonClient = getDaemonClient ?? (() => null);
   }
 
@@ -168,16 +168,16 @@ export class ClaudeWorker {
         ? `Error: ${resultText}`
         : resultText;
 
-      // (A′) 정직 증거: run 결과를 unverified 자기보고로만 표기한다 — CLI가 스스로
-      // 성공을 보고했을 뿐 우리가 독립 검증한 게 아니므로 절대 command/passed(verified)로
-      // 승격하지 않는다(설계 §⑥ CL1: run-success 세탁이 P2 의존성 술어를 오염 못 하게).
+      // (A′) Honest evidence: report run result as unverified self-report only — CLI reported
+      // success itself, we did not verify independently, so never promote to command/passed (verified)
+      // (design §⑥ CL1: run-success laundering must not corrupt P2 dependency predicates).
       const evidence: CompletionEvidence = isError
         ? {
             summary: `Error: ${resultText.trim() || 'agent run failed'}`,
             items: [{ kind: 'inspection', status: 'unverified', summary: 'claude CLI run reported error' }],
           }
         : {
-            // C7: 빈 result 텍스트가 빈 summary 자기거부로 이어지지 않게 기본값을 준다.
+            // C7: empty result text must not self-reject with empty summary — supply default.
             summary: resultText.trim() || 'agent run completed (empty result text)',
             items: [{
               kind: 'inspection',
@@ -195,17 +195,17 @@ export class ClaudeWorker {
   }
 
   /**
-   * 태스크 상태 전이 — **데몬 A2aTaskService 경유(envelope PR4 C12)**.
+   * Task state transition — **via daemon A2aTaskService (envelope PR4 C12)**.
    *
-   * 종전에는 sendToRenderer('a2a.task.update') 직행이었다 — a2aSlice가 캐시로
-   * 강등된 뒤 그 경로만 남으면 실행자 전이(working/failed/completed)가 데몬 로그에
-   * 영영 도달하지 않아 정본이 어디에도 없게 된다(패널 C12). 순서:
-   *   1) 데몬 커밋(evidence 동반, §6.M PR-D′ 배선 보존 + idempotencyKey 재시도 흡수).
-   *   2) 렌더러 캐시 갱신 — 데몬이 커밋했으면 daemonCommitted 마커 + committedTask로
-   *      verbatim 적용(C6), 아니면 현행 검증 경로 그대로(폴백). 어느 쪽이든 렌더러의
-   *      메시지 배달·단일 퍼널 이벤트 방출은 렌더러 핸들러가 수행한다(캐시 갱신 보장).
-   * 데몬 거부/미가용은 현행과 동일하게 삼키고 로그만 남긴다(렌더러 폴백이 같은
-   * 전이 그래프로 재판정 — 동형 게이트라 조용한 성공 위장이 없다).
+   * Previously sendToRenderer('a2a.task.update') direct — after a2aSlice demoted to cache,
+   * that path alone left executor transitions (working/failed/completed) never reaching
+   * daemon log, so canonical form existed nowhere (panel C12). Order:
+   *   1) Daemon commit (with evidence, §6.M PR-D′ wiring preserved + idempotencyKey absorbs retries).
+   *   2) Renderer cache update — if daemon committed: daemonCommitted marker + committedTask for
+   *      verbatim apply (C6); else current validation path unchanged (fallback). Either way,
+   *      message delivery and single-funnel event emission stay in renderer handler (cache update guaranteed).
+   * Daemon reject/unavailable swallowed with log only as today (renderer fallback re-judges same
+   * transition graph — isomorphic gate, no silent success masquerade).
    */
   private async updateTaskStatus(
     taskId: string,
@@ -223,7 +223,7 @@ export class ClaudeWorker {
           workspaceId,
           status,
           ...(evidence ? { evidence } : {}),
-          // §4 멱등: 태스크당 상태 전이는 1회 — 재시도가 로그를 이중 커밋하지 않게.
+          // §4 idempotent: one state transition per task — retries must not double-commit the log.
           idempotencyKey: `claude-worker:${taskId}:${status}`,
         });
         if (res && typeof res === 'object' && (res as { ok?: unknown }).ok === true) {

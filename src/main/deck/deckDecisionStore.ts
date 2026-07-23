@@ -70,7 +70,7 @@ export function getDeckDecisionPath(dir: string = getWmuxDir()): string {
   return path.join(dir, 'deck-decisions.json');
 }
 
-/** options 정규화 — 문자열만, trim, 빈 항목 제거, 개수·길이 캡. */
+/** Normalize options — strings only, trim, drop empty entries, cap count and length. */
 function sanitizeOptions(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw

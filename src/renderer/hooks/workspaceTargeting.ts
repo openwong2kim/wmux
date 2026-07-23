@@ -19,7 +19,7 @@ export type WorkspaceTargetResult =
  *   2. exact name (ci)    → STRICT: exactly 1 resolves; 2+ ⇒ ambiguous (caller
  *                           must re-address by ID).
  *   3. number / substring → first-match preserved. These are the documented
- *      heuristic addressing modes ("3", "3번", partial name); they were always
+ *      heuristic addressing modes ("3", optional Korean ordinal suffix, partial name); they were always
  *      order-dependent and stay so to avoid breaking that contract.
  *
  * Tier precedence means an exact name beats a substring of a different
@@ -48,7 +48,7 @@ export function resolveWorkspaceTarget(
   }
 
   // 3. Number / substring — heuristic first-match (contract-preserving).
-  // Parses "3", "3번", "ws3", "workspace 3", "#3".
+  // Parses "3", optional Korean ordinal suffix, "ws3", "workspace 3", "#3".
   const numMatch = toNorm.match(/^#?(?:ws|workspace\s*)?(\d+)(?:번)?$/);
   const targetNum = numMatch ? parseInt(numMatch[1], 10) : NaN;
   const heuristic = workspaces.find((w) => {

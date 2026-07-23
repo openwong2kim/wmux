@@ -355,10 +355,10 @@ export class DaemonSessionManager extends EventEmitter {
           ? applyWslPromptIntegration(cmd, env, installShellIntegration().bash)
           : buildSpawnInjection(cmd);
         if (injection) {
-          // zsh ZDOTDIR 가로채기: injection이 ZDOTDIR을 wmux 디렉토리로 덮어쓰기
-          // 전에, 사용자의 원래 ZDOTDIR(없으면 HOME)을 WMUX_USER_ZDOTDIR로 보존한다.
-          // stub .zshenv/.zshrc가 이 값으로 사용자 설정을 복원하므로, 보존을
-          // 빠뜨리면 사용자 .zshrc(PATH/alias 등)가 통째로 날아간다.
+          // zsh ZDOTDIR hijack: before injection overwrites ZDOTDIR with the wmux
+          // directory, preserve the user's original ZDOTDIR (or HOME) as
+          // WMUX_USER_ZDOTDIR. Stub .zshenv/.zshrc restores user config from this
+          // value — omitting preservation drops the user's .zshrc (PATH/alias etc.).
           if (classifyShell(cmd) === 'zsh' && !env['WMUX_USER_ZDOTDIR']) {
             env['WMUX_USER_ZDOTDIR'] = env['ZDOTDIR'] || env['HOME'] || os.homedir();
           }

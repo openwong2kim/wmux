@@ -1,19 +1,20 @@
 /**
- * origin.machineId — 민팅·로드·레코드-복구 순수 로직 (envelope-design §8).
+ * origin.machineId — mint·load·record-recovery pure logic (envelope-design §8).
  *
- * 생애·소재 계약(§8, 패널 C8):
- *   - machineId는 설치 생애 **영구 불변**. Q4에도 교체하지 않는다(계보 연속성).
- *     페어링 신원은 별도 origin.keyId(additive)로 얹는다.
- *   - 소재는 `events/machine-id`, **로그와 동일 fate**. 로그가 소실되면 이 파일도
- *     함께 소실 → 재민팅 → 새 origin 계보 → `(machineId, seq)` 재사용이 구조적으로
- *     불가능. 로그 밖(예: ~/.wmux/machine-id)에 두면 로그만 소실됐을 때 옛
- *     machineId가 살아남아 소실된 seq들이 재사용된다(전역 유일성 붕괴).
- *   - 부분 소실 복구: machine-id 파일만 없고 세그먼트가 살아 있으면, 아무 레코드의
- *     origin.machineId에서 값을 복구해 재기록한다(재민팅 금지 — 세그먼트가 증거).
+ * Lifetime·substrate contract (§8, panel C8):
+ *   - machineId is **permanently immutable** for install lifetime. Not replaced even in Q4
+ *     (lineage continuity). Pairing identity layers via separate origin.keyId (additive).
+ *   - Substrate is `events/machine-id`, **same fate as the log**. If the log is lost, this
+ *     file is lost too → remint → new origin lineage → `(machineId, seq)` reuse is structurally
+ *     impossible. Placing it outside the log (e.g. ~/.wmux/machine-id) leaves old machineId
+ *     alive when only the log is lost, allowing lost seq values to be reused (global uniqueness
+ *     collapse).
+ *   - Partial-loss recovery: if machine-id file is missing but segments survive, recover the
+ *     value from any record's origin.machineId and rewrite (no remint — segments are evidence).
  *
- * shared 레이어 파일이라 daemon/util에 의존하지 않는다. machine-id는 JSON이 아닌
- * 원시 UUID 문자열이므로, §2.3 durable 시퀀스(tmp write→tmp fsync→rename→dir fsync)를
- * 자체 구현한다(atomicWrite core.ts의 JSON durable 경로와 동형 계약).
+ * Shared-layer file — no dependency on daemon/util. machine-id is a raw UUID string, not JSON,
+ * so §2.3 durable sequence (tmp write→tmp fsync→rename→dir fsync) is implemented here
+ * (same contract as atomicWrite core.ts JSON durable path).
  */
 
 import fs from 'node:fs';
@@ -23,17 +24,17 @@ import { randomUUID } from 'node:crypto';
 
 const MACHINE_ID_FILE = 'machine-id';
 
-/** §8: 설치 신원 신규 민팅. */
+/** §8: mint new install identity. */
 export function mintMachineId(): string {
   return randomUUID();
 }
 
-/** `events/machine-id` 경로. */
+/** Path to `events/machine-id`. */
 export function machineIdPath(eventsDir: string): string {
   return path.join(eventsDir, MACHINE_ID_FILE);
 }
 
-/** 파일에서 로드. 부재/공백이면 null. */
+/** Load from file. null if missing/blank. */
 export function readMachineId(eventsDir: string): string | null {
   let raw: string;
   try {
@@ -48,8 +49,8 @@ export function readMachineId(eventsDir: string): string | null {
 }
 
 /**
- * durable 기록 (§2.3): tmp write → tmp fsync → rename → 부모 dir fsync.
- * win32는 디렉토리 fsync 미지원 — 4단계 스킵(§2.3 win32 잔여).
+ * Durable write (§2.3): tmp write → tmp fsync → rename → parent dir fsync.
+ * win32 lacks directory fsync — skip step 4 (§2.3 win32 residual).
  */
 export function writeMachineId(eventsDir: string, id: string): void {
   fs.mkdirSync(eventsDir, { recursive: true });
@@ -58,22 +59,22 @@ export function writeMachineId(eventsDir: string, id: string): void {
   const fd = fs.openSync(tmp, 'w', 0o600);
   try {
     fs.writeSync(fd, id);
-    fs.fsyncSync(fd); // rename 전 내용 내구화(§2.3-2)
+    fs.fsyncSync(fd); // durabilize content before rename (§2.3-2)
   } finally {
     fs.closeSync(fd);
   }
   fs.renameSync(tmp, target);
-  fsyncDir(eventsDir); // rename(디렉토리 엔트리) 내구화(§2.3-4)
+  fsyncDir(eventsDir); // durabilize rename (directory entry) (§2.3-4)
 }
 
 function fsyncDir(dir: string): void {
-  if (process.platform === 'win32') return; // §2.3 win32 잔여
+  if (process.platform === 'win32') return; // §2.3 win32 residual
   let dirFd = -1;
   try {
     dirFd = fs.openSync(dir, 'r');
     fs.fsyncSync(dirFd);
   } catch {
-    // best-effort — 디렉토리 fsync 미지원 파일시스템은 §2.3 수용 잔여
+    // best-effort — filesystems without directory fsync are §2.3 accepted residual
   } finally {
     if (dirFd >= 0) {
       try {
@@ -85,7 +86,7 @@ function fsyncDir(dir: string): void {
   }
 }
 
-/** 레코드 배열에서 machineId 복구(§8 재민팅 금지 근거). 첫 유효값 반환. */
+/** Recover machineId from record array (§8 no-remint basis). Returns first valid value. */
 export function recoverMachineIdFromRecords(
   records: ReadonlyArray<{ origin?: { machineId?: unknown } }>,
 ): string | undefined {
@@ -98,15 +99,15 @@ export function recoverMachineIdFromRecords(
 
 export interface ResolveMachineIdOptions {
   /**
-   * 파일 부재 시, 살아있는 세그먼트 레코드에서 machineId를 복구하는 훅(§8).
-   * 값을 반환하면 재민팅하지 않고 그 값을 재기록한다.
+   * Hook to recover machineId from surviving segment records when file is missing (§8).
+   * If a value is returned, remint is skipped and that value is rewritten.
    */
   recoverFromRecords?: () => string | undefined;
 }
 
 /**
- * 로드 → (부재 시) 레코드 복구 → (그래도 부재 시) 민팅 순서로 machineId 확정(§8).
- * 어느 경로든 결과를 durable 기록해 다음 부트가 재사용하도록 한다.
+ * Resolve machineId: load → (if missing) record recovery → (if still missing) mint (§8).
+ * Either way, durably write the result so the next boot reuses it.
  */
 export function resolveMachineId(
   eventsDir: string,
@@ -117,7 +118,7 @@ export function resolveMachineId(
 
   const recovered = opts.recoverFromRecords?.();
   if (recovered) {
-    // 세그먼트가 증거 — 재민팅 금지, 복구값 재기록(§8 부분 소실 복구).
+    // Segments are evidence — no remint, rewrite recovered value (§8 partial-loss recovery).
     writeMachineId(eventsDir, recovered);
     return recovered;
   }

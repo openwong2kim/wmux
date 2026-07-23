@@ -44,7 +44,7 @@ describe('resolveWorkspaceTarget', () => {
   it('KEEPS number/substring first-match (does NOT error on heuristic collision)', () => {
     // "3" matches both "Workspace 3" and "v3-app" (digit-run 3). The documented
     // addressing contract is first-match, NOT an ambiguity error (only EXACT
-    // names are refused). This preserves the "N번" agent flow.
+    // names are refused). This preserves the numbered ("N-th") agent flow.
     const list = [ws('ws-3', 'Workspace 3'), ws('ws-v3', 'v3-app')];
     expect(resolveWorkspaceTarget(list, '3')).toEqual({ kind: 'resolved', id: 'ws-3' });
   });

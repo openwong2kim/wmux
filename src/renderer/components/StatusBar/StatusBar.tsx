@@ -87,11 +87,11 @@ export function NotificationBellBadgeView({ unreadCount, onActivate }: Notificat
 
 export default function StatusBar() {
   const t = useT();
-  // A1: 통트리 구독 해체. StatusBar는 활성 ws의 name/branch 요약과 unreadCount
-  // 파생값만 필요하다 — workspaces 전체를 구독하지 않는다.
-  //  - activeWs 요약: 활성 ws의 name/gitBranch가 바뀔 때만 리렌더(useShallow).
-  //  - unreadCount: computeUnreadCount를 셀렉터 안으로 옮겨 number를 직접 구독.
-  //    number 반환이라 zustand 기본 Object.is 비교로 값이 바뀔 때만 리렌더된다.
+  // A1: drop whole-tree subscription. StatusBar needs only active ws name/branch summary and
+  // unreadCount derived value — do not subscribe to all workspaces.
+  //  - activeWs summary: re-render only when active ws name/gitBranch changes (useShallow).
+  //  - unreadCount: move computeUnreadCount into selector and subscribe to number directly.
+  //    number return uses zustand default Object.is compare — re-render only when value changes.
   const activeWs = useStore(useShallow(selectActiveWorkspaceSummary));
   const unreadCount = useStore((s) => computeUnreadCount(s.notifications, s.workspaces));
   // Bridge P2 rev2 — fleet vitals as APPEARING chips (owner call: the always-on
@@ -135,9 +135,8 @@ export default function StatusBar() {
   const prefixMode = useStore((s) => s.prefixMode);
   const prefixError = useStore((s) => s.prefixError);
 
-  // Company 모드 여부(사이드바 모드 기준). 비용/경과 분·시각·메모리는 시계
-  // 커서에 의존하므로 A5에서 StatusClock{Usage,Time}로 분리됐다 — 시계 틱이
-  // StatusBar 본체를 리렌더하지 않게 하기 위함.
+  // Company mode (sidebar mode). Cost/elapsed minutes/time/memory depend on clock cursor,
+  // so A5 split them into StatusClock{Usage,Time} — clock ticks must not re-render StatusBar body.
   const sidebarMode = useStore((s) => s.sidebarMode);
 
   const branch = activeWs.branch;
@@ -177,7 +176,7 @@ export default function StatusBar() {
             <span className="text-[var(--text-muted)]" {...tokenAttrs('textMuted', 'text')}>⎇</span> {branch}
           </span>
         )}
-        {/* Company 모드 배지 */}
+        {/* Company mode badge */}
         {isCompanyMode && (
           <span className="text-[8px] font-mono px-1.5 py-px bg-[var(--bg-surface)] text-[var(--accent-blue)] rounded">
             {t('statusBar.company')}
@@ -215,12 +214,12 @@ export default function StatusBar() {
             {(t('strip.needsYou') || '{count} need you').replace('{count}', String(fleetVitals.needsYou))}
           </button>
         )}
-        {/* A5: company 비용 + 사용량 위젯(시계 커서 의존) — 분리된 소형 컴포넌트. */}
+        {/* A5: company cost + usage widget (clock cursor dependent) — split small component. */}
         <StatusClockUsage isCompanyMode={isCompanyMode} />
         {/* Plugin status-bar widgets (B-1 ui.statusbar, right-aligned) */}
         <PluginStatusBarWidgets alignment="right" />
         <NotificationBellBadgeView unreadCount={unreadCount} onActivate={toggleNotificationPanel} />
-        {/* A5: 메모리 + 시각(시계 커서 의존) — 분리된 소형 컴포넌트. */}
+        {/* A5: memory + time (clock cursor dependent) — split small component. */}
         <SystemVitals />
         <StatusClockTime />
         <button

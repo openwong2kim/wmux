@@ -1,7 +1,7 @@
-//! napi-build 셋업 — 네이티브(.node) 타깃에서만 실행.
+//! napi-build setup — runs only for native (.node) targets.
 //!
-//! 주의(리뷰 반영): build.rs 안의 `#[cfg(target_arch)]`는 **빌드 호스트** 기준이라
-//! 크로스 타깃(wasm32) 판정에 쓸 수 없다 — cargo가 넘겨주는 타깃 env로 판정한다.
+//! Note (review feedback): `#[cfg(target_arch)]` inside build.rs is evaluated for the **build host**,
+//! so it cannot be used to detect cross targets (wasm32) — use the target env vars cargo provides instead.
 
 fn main() {
     let target_arch = std::env::var("CARGO_CFG_TARGET_ARCH").unwrap_or_default();

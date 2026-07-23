@@ -37,8 +37,7 @@ describe('surfaceSlice.addSurface — workspace targeting (#236)', () => {
 
     const ws2Pane = state.workspaces.find((w) => w.id === ws2.id)!.rootPane;
     if (ws2Pane.type !== 'leaf') throw new Error('expected leaf');
-    // 터미널만 push(2026-07-20 원형 복귀 — Git·Review는 워크스페이스 헤더 탭으로 이관).
-    expect(ws2Pane.surfaces).toHaveLength(1);
+    // Terminal only pushed (2026-07-20 circle restore — Git·Review moved to workspace header tabs).    expect(ws2Pane.surfaces).toHaveLength(1);
     expect(ws2Pane.surfaces[0].ptyId).toBe('pty-bg');
     expect(ws2Pane.activeSurfaceId).toBe(ws2Pane.surfaces[0].id);
 
@@ -54,14 +53,13 @@ describe('surfaceSlice.addSurface — workspace targeting (#236)', () => {
     slice.addSurface(state.workspaces[0].rootPane.id, 'pty-1', 'pwsh', 'C:\\a');
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf');
-    // 터미널만 push(원형).
-    expect(pane.surfaces).toHaveLength(1);
+    // Terminal only pushed (circle restore).    expect(pane.surfaces).toHaveLength(1);
     expect(pane.surfaces[0].ptyId).toBe('pty-1');
   });
 });
 
-describe('surfaceSlice.addDiffSurface — J2 4번째 서피스', () => {
-  it('diff 서피스는 ptyId="" + surfaceType="diff" + taskId 영속(PTY 자가생성 방지 불변식)', () => {
+describe('surfaceSlice.addDiffSurface — J2 4th surface', () => {
+  it('diff surface persists ptyId="" + surfaceType="diff" + taskId (no PTY self-create invariant)', () => {
     const { state, slice } = createHarness();
     const paneId = state.workspaces[0].rootPane.id;
     slice.addDiffSurface(paneId, 'wtask-42', 'My Diff');
@@ -70,27 +68,26 @@ describe('surfaceSlice.addDiffSurface — J2 4번째 서피스', () => {
     expect(pane.surfaces).toHaveLength(1);
     const s = pane.surfaces[0];
     expect(s.surfaceType).toBe('diff');
-    // PTY 없음 — 복원 시 자가생성 경로에 걸리지 않음(스펙 §1 성공기준).
-    expect(s.ptyId).toBe('');
+    // No PTY — must not hit self-create path on restore (spec §1 success criterion).    expect(s.ptyId).toBe('');
     expect(s.diffTaskId).toBe('wtask-42');
     expect(s.title).toBe('My Diff');
     expect(pane.activeSurfaceId).toBe(s.id);
   });
 
-  it('같은 taskId 재요청 시 새 탭 대신 기존 탭 전환', () => {
+  it('switches to existing tab instead of new tab on duplicate taskId request', () => {
     const { state, slice } = createHarness();
     const paneId = state.workspaces[0].rootPane.id;
     slice.addDiffSurface(paneId, 'wtask-1');
     slice.addDiffSurface(paneId, 'wtask-2');
-    slice.addDiffSurface(paneId, 'wtask-1'); // 중복.
+    slice.addDiffSurface(paneId, 'wtask-1'); // duplicate.
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf');
-    expect(pane.surfaces).toHaveLength(2); // 3개가 아니라 2개.
+    expect(pane.surfaces).toHaveLength(2); // 2, not 3.
     const first = pane.surfaces.find((s) => s.diffTaskId === 'wtask-1')!;
-    expect(pane.activeSurfaceId).toBe(first.id); // 첫 탭으로 전환됨.
+    expect(pane.activeSurfaceId).toBe(first.id); // switched to first tab.
   });
 
-  it('workspaceId로 백그라운드 워크스페이스 타겟팅', () => {
+  it('targets background workspace via workspaceId', () => {
     const { state, slice } = createHarness();
     const ws2 = createWorkspace('BG');
     state.workspaces.push(ws2);
@@ -102,8 +99,8 @@ describe('surfaceSlice.addDiffSurface — J2 4번째 서피스', () => {
   });
 });
 
-describe('surfaceSlice.addWorkspaceDiffSurface — 워크스페이스 diff 서피스', () => {
-  it('ptyId="" + surfaceType="diff" + diffRepoPath 영속(diffTaskId 없음)', () => {
+describe('surfaceSlice.addWorkspaceDiffSurface — workspace diff surface', () => {
+  it('persists ptyId="" + surfaceType="diff" + diffRepoPath (no diffTaskId)', () => {
     const { state, slice } = createHarness();
     const paneId = state.workspaces[0].rootPane.id;
     slice.addWorkspaceDiffSurface(paneId, 'D:\\proj\\repo', 'diff: repo');
@@ -112,20 +109,19 @@ describe('surfaceSlice.addWorkspaceDiffSurface — 워크스페이스 diff 서�
     expect(pane.surfaces).toHaveLength(1);
     const s = pane.surfaces[0];
     expect(s.surfaceType).toBe('diff');
-    // PTY 없음 — 복원 시 자가생성 경로에 걸리지 않음(diffTaskId 서피스와 동일 불변식).
-    expect(s.ptyId).toBe('');
+    // No PTY — must not hit self-create path on restore (same invariant as diffTaskId surfaces).    expect(s.ptyId).toBe('');
     expect(s.diffRepoPath).toBe('D:\\proj\\repo');
     expect(s.diffTaskId).toBeUndefined();
     expect(s.title).toBe('diff: repo');
     expect(pane.activeSurfaceId).toBe(s.id);
   });
 
-  it('같은 repoPath 재요청 시 새 탭 대신 기존 탭 전환', () => {
+  it('switches to existing tab instead of new tab on duplicate repoPath request', () => {
     const { state, slice } = createHarness();
     const paneId = state.workspaces[0].rootPane.id;
     slice.addWorkspaceDiffSurface(paneId, 'D:\\a');
     slice.addWorkspaceDiffSurface(paneId, 'D:\\b');
-    slice.addWorkspaceDiffSurface(paneId, 'D:\\a'); // 중복.
+    slice.addWorkspaceDiffSurface(paneId, 'D:\\a'); // duplicate.
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf');
     expect(pane.surfaces).toHaveLength(2);
@@ -133,7 +129,7 @@ describe('surfaceSlice.addWorkspaceDiffSurface — 워크스페이스 diff 서�
     expect(pane.activeSurfaceId).toBe(first.id);
   });
 
-  it('태스크 diff(diffTaskId)와 워크스페이스 diff(diffRepoPath)는 서로 dedup되지 않음', () => {
+  it('task diff (diffTaskId) and workspace diff (diffRepoPath) are not deduped against each other', () => {
     const { state, slice } = createHarness();
     const paneId = state.workspaces[0].rootPane.id;
     slice.addDiffSurface(paneId, 'wtask-1');
@@ -150,9 +146,8 @@ describe('surfaceSlice.updateSurfaceCwd', () => {
     const paneId = state.workspaces[0].rootPane.id;
     slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\start');
 
-    // POSIX 경로 사용 — updateSurfaceCwd는 실행 플랫폼에서 불가능한 모양(테스트
-    // 러너는 POSIX이므로 Windows 경로)을 거부한다(cwdShape 가드).
-    slice.updateSurfaceCwd('pty-1', '/proj/api');
+    // Use POSIX path — updateSurfaceCwd rejects shapes impossible on runtime platform (test
+    // runner is POSIX, so Windows paths) (cwdShape guard).    slice.updateSurfaceCwd('pty-1', '/proj/api');
 
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf pane');
@@ -329,7 +324,7 @@ describe('surfaceSlice.closeSurface', () => {
 
     slice.closeSurface(paneId, firstId);
 
-    // pty-2 터미널만 남는다(자동 세트 없음 — 원형 복귀).
+    // Only pty-2 terminal remains (no auto-set — circle restore).
     expect(pane.surfaces).toHaveLength(1);
     expect(pane.surfaces.find((s) => s.id === firstId)).toBeUndefined();
   });

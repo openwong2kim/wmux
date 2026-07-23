@@ -46,7 +46,7 @@ function installElectronApi(): void {
       onCwdChanged: sub(),
       onTitleChanged: sub(),
       onGitBranchChanged: sub(),
-      // J3 §3 — 새 구독. 나머지 알림 구독과 동일하게 no-op unsub를 반환한다.
+      // J3 §3 — new subscription. Returns a no-op unsub, same as other notification subscriptions.
       onInitialCmdExhausted: sub(),
       // Renderer-readiness ping (codex review catch) + renderer-decided OS
       // toast relay — both fire unconditionally on mount / dispatch, so the

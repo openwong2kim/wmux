@@ -1,4 +1,4 @@
-// V3 preload — 렌더러가 결과를 main으로 보낼 IPC 채널만 노출(contextIsolation).
+// V3 preload — expose only the IPC channel for the renderer to send results to main (contextIsolation).
 const { contextBridge, ipcRenderer } = require('electron');
 
 contextBridge.exposeInMainWorld('v3bridge', {

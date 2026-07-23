@@ -1,62 +1,58 @@
-// 검증 리그 — 데몬 파이프 클라이언트 (설계 §5 / G6)
+// Verification rig — daemon pipe client (design §5 / G6)
 //
-// 데몬 제어 파이프에 line-delimited JSON-RPC로 연결한다. 프로토콜은 서버 정본
-// `src/daemon/DaemonPipeServer.ts`를 정독해 정제:
-//   - 프레이밍: 요청·응답 모두 `\n`으로 구분된 JSON 한 줄(:398 split('\n'),
-//     :478 write(JSON+'\n')). 응답은 `id`로 상관(broadcast 이벤트 줄이 끼어들 수 있어
-//     매칭되지 않는 id·이벤트 줄은 무시 — 도그푸드 rpcCall 관례).
-//   - 인증: 모든 요청에 `token` 필드(:438-447 timingSafeEqual). 불일치면 소켓 파괴.
-//     토큰은 `{홈}/.wmux{suffix}/daemon-auth-token`에서 읽는다(데몬이 부팅 시 민팅).
-//   - 이중 ok 계층(도그푸드 a2a-symmetric-reply-dogfood.mjs:92-109이 명시한 함정):
-//     · 트랜스포트 봉투 `{id, ok, result}` — 핸들러가 throw 안 하면 항상 ok:true.
-//     · 핸들러 페이로드 `result` — 채널 op는 `result.ok`(ChannelService Result<T>
-//       판별 유니온)가 실제 성공/실패. `channelRpc()`가 `result.ok===false`를 throw로
-//       승격한다.
+// Connects to daemon control pipe via line-delimited JSON-RPC. Protocol refined by reading server source of truth
+// `src/daemon/DaemonPipeServer.ts`:
+//   - Framing: request·response both JSON one line delimited by `\n` (:398 split('\n'),
+//     :478 write(JSON+'\n')). Responses correlated by `id` (broadcast event lines may interleave —
+//     unmatched id·event lines ignored — dogfood rpcCall convention).
+//   - Auth: every request has `token` field (:438-447 timingSafeEqual). Mismatch destroys socket.
+//     Token read from `{home}/.wmux{suffix}/daemon-auth-token` (minted by daemon at boot).
+//   - Dual ok layers (trap explicit in dogfood a2a-symmetric-reply-dogfood.mjs:92-109):
+//     · Transport envelope `{id, ok, result}` — always ok:true if handler does not throw.
+//     · Handler payload `result` — channel ops use `result.ok` (ChannelService Result<T>
+//       discriminated union) for actual success/failure. `channelRpc()` promotes `result.ok===false` to throw.
 //
-// 지속 연결(persistent socket): 호출당 새 소켓을 여는 도그푸드 방식은 데몬의 연결률 캡
-// (`MAX_NEW_CONNECTIONS_PER_SEC = 20`, DaemonPipeServer:57)에 걸려 flood 부하에서
-// EPIPE 폭주를 일으킨다(스모크 실증: 80연사 중 32건 탈락). 그래서 PipeClient는 소켓
-// 1개를 롱리브드로 유지하고 RPC를 id로 멀티플렉싱한다 — 연결 churn을 없애고 데몬의
-// per-socket 캡(50/sec)만 상대한다(페르소나당 소켓 1개라 8ws=400/sec 여유). 연결이
-// 끊기면 다음 호출에서 지연 재연결한다.
+// Persistent socket: dogfood per-call new socket hits daemon connection rate cap
+// (`MAX_NEW_CONNECTIONS_PER_SEC = 20`, DaemonPipeServer:57), causing EPIPE storms under flood load
+// (smoke verified: 32 of 80 posts dropped). So PipeClient keeps one long-lived socket and multiplexes RPCs by id —
+// eliminates connection churn, only faces per-socket cap (50/sec) (1 socket per persona → 8ws=400/sec headroom). Reconnects lazily on disconnect.
 //
-// ── G6 정직-main 규율 (리뷰 반영: 우회 봉쇄) ─────────────────────────────────
-// public 표면은 정확히 2개 — `rpc()`(비스탬프)와 `channelRpc()`(스탬프). 원시 전송
-// 경로(send/transact)는 private이라 시나리오가 위생 검사를 우회할 수 없다.
-//   - `channelRpc()`: 생성자에 바인딩된 workspaceId 1개만 `verifiedWorkspaceId`로
-//     스탬프. 최상위 타 ws 자칭·중첩 밀수·`sender.workspaceId` 불일치는 throw.
-//   - `rpc()`: 신원 위생을 항상 강제 — params 트리 어디든 `verifiedWorkspaceId` 키가
-//     있으면 throw(그 키는 channelRpc만 스탬프 가능), 예약 신원 값이 신원류 키에
-//     실리면 throw.
-//   - 예약 신원(ws-human/local-ui)은 생성자 바인딩 자체를 거부.
+// ── G6 honest-main rules (review reflected: bypass blocked) ─────────────────────────────────
+// Public surface is exactly 2 — `rpc()` (unstamped) and `channelRpc()` (stamped). Raw send path
+// (send/transact) is private so scenarios cannot bypass hygiene checks.
+//   - `channelRpc()`: stamps only constructor-bound workspaceId as `verifiedWorkspaceId`.
+//     Foreign ws self-claim·nested smuggling·`sender.workspaceId` mismatch → throw.
+//   - `rpc()`: always enforces identity hygiene — `verifiedWorkspaceId` key anywhere in params tree → throw
+//     (only channelRpc may stamp that key), reserved identity values in identity-class keys → throw.
+//   - Reserved identities (ws-human/local-ui) rejected at constructor binding itself.
 //
-// 주의(리뷰 확정 판단): "모든 workspaceId == bound" 블랭킷 금지는 틀리다 — A2A의
-// `to.workspaceId`, invite 타겟(invitedMember.workspaceId), create의 members[]는
-// 정당하게 타 ws를 가리킨다. 하네스가 금지하는 것은 딱 두 가지다:
-//   (1) 호출자 신원 필드 — `verifiedWorkspaceId`(위치 불문 밀수 금지) +
-//       `sender.workspaceId`(bound 불일치 금지),
-//   (2) 예약 신원 값 전역 — `ws-human`/`local-ui`가 신원류 키
-//       (workspaceId/memberId/*WorkspaceId/*MemberId)에 실리는 것.
+// Note (review confirmed judgment): blanket "all workspaceId == bound" ban is wrong — A2A's
+// `to.workspaceId`, invite targets (invitedMember.workspaceId), create's members[] legitimately point at other ws.
+// Harness forbids exactly two things:
+//   (1) Caller identity fields — `verifiedWorkspaceId`(smuggling at any depth forbidden) +
+//       `sender.workspaceId`(bound mismatch forbidden),
+//   (2) Reserved identity values globally — `ws-human`/`local-ui` in identity-class keys
+//       (workspaceId/memberId/*WorkspaceId/*MemberId).
 //
-// 제품에 테스트 전용 경로 0. 데몬은 pre-stamped verifiedWorkspaceId를 verbatim
-// 신뢰하므로(`channelCallerIdentity.ts:92-94` Rule 1) SIM은 "정직한 main"을 모사할
-// 뿐이고, 커버 못 하는 라우터 게이트는 §2.5 커버리지 맵에 정직 선언돼 있다(리그 사각).
+// Zero test-only paths in product. Daemon trusts pre-stamped verifiedWorkspaceId verbatim
+// (`channelCallerIdentity.ts:92-94` Rule 1) so SIM only mimics "honest main"; router gates not covered
+// are honestly declared in §2.5 coverage map (rig blind spot).
 
 import net from 'node:net';
 import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 
-/** 트랜스포트 봉투 — 데몬 파이프가 모든 응답에 씌운다. */
+/** Transport envelope — daemon pipe wraps every response with this. */
 interface RpcEnvelope {
   id: string;
   ok: boolean;
-  /** ok:true일 때의 핸들러 반환값. 채널 op면 자체 { ok, ... } Result를 담는다. */
+  /** Handler return value when ok:true. Channel ops embed their own { ok, ... } Result. */
   result?: unknown;
-  /** ok:false일 때의 트랜스포트 레벨 에러 문자열(미인증·알 수 없는 메서드 등). */
+  /** Transport-level error string when ok:false (unauthenticated·unknown method etc.). */
   error?: string;
 }
 
-/** id로 상관되는 미결 RPC 하나. */
+/** One pending RPC correlated by id. */
 interface Pending {
   resolve: (env: RpcEnvelope) => void;
   reject: (err: Error) => void;
@@ -64,10 +60,10 @@ interface Pending {
   method: string;
 }
 
-/** 데몬 파이프에 자칭이 금지된 예약 신원(G6) — 렌더러 경로 전용 좌석. */
+/** Reserved identities forbidden on daemon pipe (G6) — renderer-path-only seats. */
 const RESERVED_WORKSPACE_IDS = new Set(['ws-human', 'local-ui']);
 
-/** 신원류 키 판정 — 예약 신원 값 스캔의 대상 키(헤더 주의 블록 (2) 참조). */
+/** Identity-class key detection — keys scanned for reserved identity values (see header note block (2)). */
 const isIdentityKey = (key: string): boolean =>
   key === 'workspaceId' ||
   key === 'memberId' ||
@@ -75,13 +71,12 @@ const isIdentityKey = (key: string): boolean =>
   key.endsWith('MemberId');
 
 /**
- * G6 신원 위생 워크 — params 트리 전체를 걸어 (a) `verifiedWorkspaceId` 키 밀수,
- * (b) 신원류 키에 실린 예약 신원 값을 잡아 throw한다.
+ * G6 identity hygiene walk — traverses full params tree to catch (a) `verifiedWorkspaceId` smuggling,
+ * (b) reserved identity values in identity-class keys, and throw.
  *
- * @param allowRootVerified channelRpc 경로에서 true: 최상위 `verifiedWorkspaceId`는
- *   호출측(channelRpc)이 bound 일치를 이미 검증·스탬프하므로 워크에서 면제. 중첩
- *   위치는 여전히 throw(어떤 핸들러도 중첩 verifiedWorkspaceId를 읽지 않으며, 존재
- *   자체가 밀수 시도다).
+ * @param allowRootVerified channelRpc path: true — top-level `verifiedWorkspaceId` exempt from walk because
+ *   caller (channelRpc) already verified·stamped bound match. Nested positions still throw (no handler reads
+ *   nested verifiedWorkspaceId; presence itself is smuggling attempt).
  */
 function walkIdentityHygiene(node: unknown, nodePath: string, allowRootVerified: boolean): void {
   if (Array.isArray(node)) {
@@ -94,13 +89,13 @@ function walkIdentityHygiene(node: unknown, nodePath: string, allowRootVerified:
     if (key === 'verifiedWorkspaceId' && !(allowRootVerified && nodePath === '')) {
       throw new Error(
         `[rig/pipe] G6: caller-supplied verifiedWorkspaceId at "${p}" — ` +
-          '스탬프는 channelRpc()만 소유한다(바인딩 ws로만). rpc()·중첩 위치의 밀수는 금지',
+          'only channelRpc() owns the stamp (bound ws only). smuggling via rpc() or nested positions is forbidden',
       );
     }
     if (isIdentityKey(key) && typeof value === 'string' && RESERVED_WORKSPACE_IDS.has(value)) {
       throw new Error(
         `[rig/pipe] G6: reserved identity "${value}" in identity field "${p}" — ` +
-          '페르소나는 ws-human/local-ui를 어떤 위치에서도 자칭·지정할 수 없다',
+          'persona must not claim or assign ws-human/local-ui in any position',
       );
     }
     walkIdentityHygiene(value, p, allowRootVerified);
@@ -108,17 +103,16 @@ function walkIdentityHygiene(node: unknown, nodePath: string, allowRootVerified:
 }
 
 export interface PipeClientOptions {
-  /** RPC 응답 대기 타임아웃(ms). 기본 8초(도그푸드 관례). */
+  /** RPC response wait timeout (ms). Default 8s (dogfood convention). */
   readonly timeoutMs?: number;
 }
 
 /**
- * 데몬 파이프 RPC 클라이언트. 소켓 1개를 지속 유지하고 RPC를 id로 멀티플렉싱한다.
+ * Daemon pipe RPC client. Keeps one persistent socket and multiplexes RPCs by id.
  *
- * 정직-main 규율(G6): 이 클라이언트는 정확히 하나의 workspaceId를 대변한다. public
- * 표면은 `rpc()`/`channelRpc()` 2개뿐이고 둘 다 신원 위생을 강제한다 — 페르소나가
- * 다른 ws나 예약 신원을 자칭하려 하면 소켓에 닿기 전에 throw한다(제품 코드 우회
- * 아님 — 하네스 계약).
+ * Honest-main rules (G6): this client represents exactly one workspaceId. Public surface is only
+ * `rpc()`/`channelRpc()` and both enforce identity hygiene — persona attempting other ws or reserved
+ * identity throws before socket (not product bypass — harness contract).
  */
 export class PipeClient {
   private readonly pipePath: string;
@@ -133,20 +127,20 @@ export class PipeClient {
   private closed = false;
 
   /**
-   * @param pipePath      데몬 제어 파이프 주소(RigContext.daemonPipePath).
-   * @param tokenPath     데몬 auth token 파일 경로(RigContext.daemonTokenPath).
-   * @param workspaceId   이 클라이언트가 대변하는 페르소나 workspaceId(G6 바인딩).
-   *                      예약 신원(ws-human/local-ui)이면 생성 자체를 거부한다.
+   * @param pipePath      Daemon control pipe address (RigContext.daemonPipePath).
+   * @param tokenPath     Daemon auth token file path (RigContext.daemonTokenPath).
+   * @param workspaceId   Persona workspaceId this client represents (G6 binding).
+   *                      Rejects reserved identities (ws-human/local-ui) at construction.
    */
   constructor(pipePath: string, tokenPath: string, workspaceId: string, opts: PipeClientOptions = {}) {
     if (RESERVED_WORKSPACE_IDS.has(workspaceId)) {
       throw new Error(
         `[rig/pipe] G6: refusing to bind PipeClient to reserved identity "${workspaceId}" ` +
-          '(페르소나는 정직-main 모사 — 예약 신원 자칭 금지)',
+          '(persona mimics honest-main — reserved identity impersonation forbidden)',
       );
     }
     if (!workspaceId || !workspaceId.trim()) {
-      throw new Error('[rig/pipe] PipeClient requires a non-empty workspaceId (G6 정직-main 바인딩)');
+      throw new Error('[rig/pipe] PipeClient requires a non-empty workspaceId (G6 honest-main binding)');
     }
     this.pipePath = pipePath;
     this.tokenPath = tokenPath;
@@ -154,12 +148,12 @@ export class PipeClient {
     this.timeoutMs = opts.timeoutMs ?? 8000;
   }
 
-  /** 이 클라이언트가 바인딩된 workspaceId(읽기 전용 노출 — 어서션 상관용). */
+  /** Bound workspaceId (read-only exposure — for assertion correlation). */
   get ws(): string {
     return this.workspaceId;
   }
 
-  /** 소켓을 닫고 미결 RPC를 전부 reject한다(teardown 시 호출 권장). */
+  /** Closes socket and rejects all pending RPCs (recommended on teardown). */
   close(): void {
     this.closed = true;
     const s = this.sock;
@@ -179,10 +173,10 @@ export class PipeClient {
   }
 
   /**
-   * 비스탬프 RPC(daemon.ping 등 신원 무관 호출용). **신원 위생은 항상 강제**(G6):
-   * params 트리 어디든 `verifiedWorkspaceId`가 있으면 throw — 그 키를 실을 수 있는
-   * 경로는 channelRpc()의 스탬프뿐이다. 예약 신원 값이 신원류 키에 실려도 throw.
-   * 트랜스포트 봉투를 벗겨 핸들러 페이로드(result)를 돌려준다.
+   * Unstamped RPC (identity-agnostic calls like daemon.ping). **Identity hygiene always enforced** (G6):
+   * `verifiedWorkspaceId` anywhere in params tree → throw — only channelRpc() may carry that key.
+   * Reserved identity values in identity-class keys → throw.
+   * Strips transport envelope and returns handler payload (result).
    */
   async rpc(method: string, params: Record<string, unknown> = {}): Promise<unknown> {
     walkIdentityHygiene(params, '', /* allowRootVerified */ false);
@@ -190,19 +184,19 @@ export class PipeClient {
   }
 
   /**
-   * 채널/principal RPC. 바인딩된 workspaceId를 `verifiedWorkspaceId`로 스탬프한 뒤
-   * 핸들러 페이로드의 판별 유니온을 검사한다: `result.ok===false`면 ChannelError로
-   * throw(테스트가 실패 원인을 즉시 본다), ok:true면 페이로드 전체를 돌려준다.
+   * Channel/principal RPC. Stamps bound workspaceId as `verifiedWorkspaceId`, then checks handler payload
+   * discriminated union: `result.ok===false` → throw as ChannelError (test sees failure reason immediately),
+   * ok:true → returns full payload.
    *
-   * G6 강제: (1) 최상위 `verifiedWorkspaceId`는 bound와 동일 값만 허용(타 ws 자칭
-   * throw), (2) 중첩 밀수 throw, (3) `sender.workspaceId`가 있으면 bound 불일치 시
-   * throw(정본 post의 sender-pin 게이트와 같은 방향 — 하네스가 먼저 잡는다),
-   * (4) 예약 신원 값 전역 throw.
+   * G6 enforcement: (1) top-level `verifiedWorkspaceId` must match bound (foreign ws self-claim → throw),
+   * (2) nested smuggling → throw, (3) if `sender.workspaceId` present, bound mismatch → throw
+   * (same direction as source post sender-pin gate — harness catches first),
+   * (4) reserved identity values globally → throw.
    */
   async channelRpc(method: string, params: Record<string, unknown> = {}): Promise<Record<string, unknown>> {
     const finalParams: Record<string, unknown> = { ...params };
 
-    // (1) 최상위 verifiedWorkspaceId — bound 일치만 허용(스탬프와 동치), 타 값은 G6 위반.
+    // (1) Top-level verifiedWorkspaceId — only bound match allowed (equivalent to stamp), other values are G6 violation.
     const claimed = finalParams['verifiedWorkspaceId'];
     if (typeof claimed === 'string' && claimed.length > 0 && claimed !== this.workspaceId) {
       throw new Error(
@@ -211,24 +205,24 @@ export class PipeClient {
       );
     }
 
-    // (3) 호출자 신원 필드 sender.workspaceId — bound 불일치는 G6 위반.
-    //     (createdBy/member는 데몬이 verifiedWorkspaceId로 핀하므로(D5) 별도 금지 불요;
-    //      sender는 post의 sender-pin 게이트 입력이라 하네스가 먼저 명시 거부한다.)
+    // (3) Caller identity field sender.workspaceId — bound mismatch is G6 violation.
+    //     (createdBy/member pinned by daemon via verifiedWorkspaceId (D5) — no separate ban needed;
+    //      sender is post sender-pin gate input so harness explicitly rejects first.)
     const sender = finalParams['sender'];
     if (sender !== null && typeof sender === 'object' && !Array.isArray(sender)) {
       const sws = (sender as Record<string, unknown>)['workspaceId'];
       if (typeof sws === 'string' && sws.length > 0 && sws !== this.workspaceId) {
         throw new Error(
           `[rig/pipe] G6: sender.workspaceId "${sws}" disagrees with bound workspace ` +
-            `"${this.workspaceId}" — 페르소나는 자기 신원으로만 발신한다`,
+            `"${this.workspaceId}" — persona may only send as its own identity`,
         );
       }
     }
 
-    // (2)+(4) 트리 위생 — 중첩 verifiedWorkspaceId 밀수·예약 신원 값.
+    // (2)+(4) Tree hygiene — nested verifiedWorkspaceId smuggling·reserved identity values.
     walkIdentityHygiene(finalParams, '', /* allowRootVerified */ true);
 
-    // 스탬프(바인딩 값으로 확정).
+    // Stamp (confirm with bound value).
     finalParams['verifiedWorkspaceId'] = this.workspaceId;
 
     const result = await this.send(method, finalParams);
@@ -254,8 +248,8 @@ export class PipeClient {
   }
 
   /**
-   * 원시 전송(private — 위생 검사를 우회하는 public 경로를 없앤다). 트랜스포트 봉투를
-   * 벗겨 `result`를 돌려주고, 봉투 레벨 실패(미인증·알 수 없는 메서드)는 throw.
+   * Raw send (private — no public path bypassing hygiene checks). Strips transport envelope,
+   * returns `result`; envelope-level failure (unauthenticated·unknown method) → throw.
    */
   private async send(method: string, params: Record<string, unknown>): Promise<unknown> {
     const envelope = await this.transact(method, params);
@@ -266,8 +260,8 @@ export class PipeClient {
   }
 
   /**
-   * 지속 소켓을 확보한다(없으면 연결). 연결 중이면 같은 Promise를 공유한다. 연결이
-   * 끊기면 미결 RPC를 reject하고 소켓을 비워 다음 호출이 재연결하게 한다.
+   * Ensures persistent socket (connects if missing). Shares same Promise while connecting. On disconnect,
+   * rejects pending RPCs and clears socket so next call reconnects.
    */
   private ensureSocket(): Promise<net.Socket> {
     if (this.closed) return Promise.reject(new Error('[rig/pipe] client closed'));
@@ -293,7 +287,7 @@ export class PipeClient {
     return this.connecting;
   }
 
-  /** 소켓에 data/close 핸들러를 붙인다(응답 프레이밍 + 연결 종료 정리). */
+  /** Attaches data/close handlers to socket (response framing + connection teardown cleanup). */
   private attach(sock: net.Socket): void {
     sock.on('data', (chunk: string) => {
       this.buf += chunk;
@@ -308,7 +302,7 @@ export class PipeClient {
         } catch {
           continue;
         }
-        // broadcast 이벤트 줄(id 없음)이나 매칭 안 되는 id는 무시.
+        // Ignore broadcast event lines (no id) or unmatched ids.
         if (typeof msg.id !== 'string') continue;
         const p = this.pending.get(msg.id);
         if (!p) continue;
@@ -320,7 +314,7 @@ export class PipeClient {
     const onGone = (): void => {
       if (this.sock === sock) this.sock = null;
       this.buf = '';
-      // 이 소켓에 매인 미결 RPC를 전부 reject → 호출자가 재시도/실패 판단.
+      // Reject all pending RPCs on this socket → caller decides retry/failure.
       for (const [id, p] of this.pending) {
         this.pending.delete(id);
         clearTimeout(p.timer);
@@ -331,7 +325,7 @@ export class PipeClient {
     sock.once('error', onGone);
   }
 
-  /** 지속 소켓 위로 RPC 1건을 보내고 id 매칭 응답을 기다린다. */
+  /** Sends one RPC over persistent socket and waits for id-matched response. */
   private async transact(method: string, params: Record<string, unknown>): Promise<RpcEnvelope> {
     const sock = await this.ensureSocket();
     const token = this.readToken();

@@ -201,7 +201,7 @@ describe('incompleteUtf8SuffixLength', () => {
   });
 
   it('ignores completed multibyte chars that precede ASCII', () => {
-    // '한' (complete) followed by 'A' — nothing at the tail is incomplete.
+    // Complete hangul syllable (U+AC00) followed by 'A' — nothing at the tail is incomplete.
     expect(incompleteUtf8SuffixLength(Buffer.from('한A'))).toBe(0);
   });
 });

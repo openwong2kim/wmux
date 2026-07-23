@@ -355,7 +355,7 @@ export function registerMetadataHandlers(
     }
   }, 5000);
 
-  // cleanup 함수 반환 — 앱 종료 시 호출
+  // Return cleanup function — invoked on app shutdown
   return () => {
     clearInterval(pollingInterval);
     ipcMain.removeHandler(IPC.METADATA_REQUEST);

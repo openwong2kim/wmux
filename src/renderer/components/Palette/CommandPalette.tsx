@@ -127,14 +127,14 @@ export default function CommandPalette() {
   const t = useT();
   const visible = useStore((s) => s.commandPaletteVisible);
   const setVisible = useStore((s) => s.setCommandPaletteVisible);
-  // A1: 워크스페이스 "목록" 항목은 id/name만 필요 — 통트리 대신 {id,name} 투영을
-  // 구독해 배경 ws churn에 재빌드/리렌더되지 않게 한다.
+  // A1: workspace list items need only id/name — subscribe to {id,name} projection instead
+  // of whole tree so background ws churn does not rebuild/re-render.
   const workspaces = useStore(useShallow(selectWorkspaceIdName));
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId);
-  // 리뷰 반영: 활성 ws surface 목록을 getState() 스냅샷으로만 읽으면 팔레트가
-  // 열린 동안의 surface 추가/삭제/개명이 반영되지 않는다(조용한 stale).
-  // visible-게이트 구독 — 닫혀 있으면 undefined 고정(구독 리렌더 0), 열려 있으면
-  // 활성 ws 참조 변경(자기 트리 변경에만 바뀜)에 반응해 목록을 재빌드한다.
+  // Review fix: reading active ws surface list from getState() snapshot only leaves the
+  // palette stale while open (surface add/remove/rename not reflected).
+  // Visible-gate subscription — undefined when closed (zero subscription re-renders); when
+  // open, rebuild list when active ws reference changes (only on own tree changes).
   const activeWorkspaceForItems = useStore((s) =>
     s.commandPaletteVisible ? s.workspaces.find((w) => w.id === s.activeWorkspaceId) : undefined,
   );
@@ -174,8 +174,8 @@ export default function CommandPalette() {
       });
     });
 
-    // Surfaces — gather from active workspace leaf panes. 리뷰 반영: visible-게이트
-    // 구독(activeWorkspaceForItems)을 쓰므로 팔레트가 열린 동안의 surface 변경도 반영된다.
+    // Surfaces — gather from active workspace leaf panes. Review fix: visible-gate
+    // subscription (activeWorkspaceForItems) reflects surface changes while palette is open.
     const activeWs = activeWorkspaceForItems;
     if (activeWs) {
       const collectSurfaces = (pane: import('../../../shared/types').Pane) => {
@@ -264,7 +264,7 @@ export default function CommandPalette() {
         action: () => { useStore.getState().setFleetViewVisible(true); setVisible(false); },
       },
       {
-        // J3 §1 — 태스크 정리 목록(전용 루트 디스크 정본 스캔).
+        // J3 §1 — task cleanup list (dedicated root disk canonical scan).
         label: t('palette.cmd.openWorktaskCleanup'),
         action: () => { useStore.getState().setWorktaskCleanupVisible(true); setVisible(false); },
       },
@@ -278,8 +278,8 @@ export default function CommandPalette() {
         },
       },
       {
-        // 워크스페이스 git diff — 활성 pane의 cwd를 diff:resolveRepo로 worktree
-        // toplevel로 정규화한 뒤 읽기 전용 diff 서피스를 연다. 비-git cwd는 토스트.
+        // Workspace git diff — normalize active pane cwd via diff:resolveRepo to worktree
+        // toplevel, then open read-only diff surface. Non-git cwd gets a toast.
         label: t('palette.cmd.showGitDiff'),
         action: () => {
           const state = useStore.getState();
@@ -296,11 +296,11 @@ export default function CommandPalette() {
           const leaf = findLeaf(ws.rootPane);
           if (!leaf) { setVisible(false); return; }
           const activeSurface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-          // cwd 우선순위: 활성 surface의 라이브 cwd(OSC 7) > 프로필 startupCwd > 전역.
+          // cwd priority: active surface live cwd (OSC 7) > profile startupCwd > global.
           const cwd =
             activeSurface?.cwd ||
             resolveStartupCwd({ splitInheritsCwd: false, profile: ws.profile, startupDirectory: state.startupDirectory }) ||
-            ''; // 빈 cwd는 resolveRepo가 ok:false로 거부 → noRepo 토스트.
+            ''; // Empty cwd rejected by resolveRepo as ok:false → noRepo toast.
           void window.electronAPI.diff.resolveRepo(cwd).then((r) => {
             const st = useStore.getState();
             if (!r.ok) {
@@ -310,7 +310,7 @@ export default function CommandPalette() {
             const repoName = r.repoPath.split(/[/\\]/).filter(Boolean).pop() || r.repoPath;
             st.addWorkspaceDiffSurface(leaf.id, r.repoPath, `diff: ${repoName}`);
           }).catch((err) => {
-            // IPC reject(핸들러 미등록·직렬화 실패 등)도 무음이 아니라 토스트로.
+            // IPC reject (handler not registered, serialization failure, etc.) also surfaces as toast, not silence.
             useStore.getState().pushToast({ level: 'warn', message: t('diff.noRepo') });
             console.error('[wmux:palette] diff.resolveRepo failed:', err);
           });

@@ -1,20 +1,20 @@
 /**
- * TaskWorktreeManager — J1 §3 D3. fan-out 태스크의 전용 git worktree를 만든다.
+ * TaskWorktreeManager — J1 §3 D3. Creates dedicated git worktrees for fan-out tasks.
  *
- * company/WorktreeManager(고아 코드 2벌)의 재사용 실체는 검증 유틸 계승
- * (validateGitRef·validatePath — 플래그 주입·traversal 방어)이고, §6.J 함정
- * 목록(전용 루트·직렬 큐·dirty 보존·에지 fail-closed·경로 길이)은 신규 구현이다.
+ * Reuse from company/WorktreeManager (orphaned duplicate) is validation utils only
+ * (validateGitRef·validatePath — flag injection·traversal defense); §6.J pitfall
+ * list (dedicated root·serial queue·dirty preserve·edge fail-closed·path length) is new implementation.
  *
- * 핵심 계약:
- *   - 전용 루트: `${getWmuxHomeDir()}/worktrees/{repoHash}/{taskSlug}` — 하드코딩
- *     `~/.wmux` 금지, getWmuxHomeDir() 파생으로 dev/dogfood suffix 격리 상속(C4).
- *   - repoHash = repo 루트 realpath의 해시 12자(J0 normalizeWorktreePath 주석의
- *     "realpath는 호출측 몫" 이행 지점).
- *   - taskSlug = `{title slug 24자}-{taskId 말미 8자}`(충돌은 taskId가 흡수).
- *   - branch = `wtask/{taskSlug}` — 기존 브랜치 충돌 시 명시 에러(자동 접미사 금지).
- *   - per-repo 직렬 큐: repoHash 단위 뮤텍스로 add/remove 순차화(git index.lock 경합 차단).
- *   - dirty 거부: remove 진입 시 porcelain 검사 → dirty면 제거 거부 + 보존 반환.
- *   - 에지 fail-closed: bare·서브모듈·LFS·비repo·경로 260자 초과는 명시 에러.
+ * Core contracts:
+ *   - Dedicated root: `${getWmuxHomeDir()}/worktrees/{repoHash}/{taskSlug}` — no hardcoded
+ *     `~/.wmux`; inherits dev/dogfood suffix isolation via getWmuxHomeDir() (C4).
+ *   - repoHash = 12-char hash of repo root realpath (J0 normalizeWorktreePath comment
+ *     "realpath is caller's job" fulfillment point).
+ *   - taskSlug = `{title slug 24 chars}-{taskId suffix 8 chars}` (collisions absorbed by taskId).
+ *   - branch = `wtask/{taskSlug}` — explicit error on existing branch conflict (no auto suffix).
+ *   - per-repo serial queue: repoHash mutex serializes add/remove (blocks git index.lock contention).
+ *   - dirty rejection: porcelain check on remove entry → reject removal + return preserved if dirty.
+ *   - edge fail-closed: bare·submodule·LFS·non-repo·path over 260 chars → explicit error.
  */
 
 import { execFile } from 'node:child_process';
@@ -27,15 +27,15 @@ import { getGitExecEnv } from '../../shared/execEnv';
 
 const execFileAsync = promisify(execFile);
 
-/** Windows MAX_PATH 방어 — 루트+slug 조합 상한(§3 리뷰 G2 편입). */
+/** Windows MAX_PATH guard — root+slug combined upper bound (§3 review G2). */
 const MAX_WORKTREE_PATH_LEN = 260;
-/** taskSlug: title slug 최대 길이(§3). */
+/** taskSlug: title slug max length (§3). */
 const TITLE_SLUG_MAX = 24;
-/** taskSlug: taskId 말미 길이(§3 — 충돌 흡수 엔트로피). */
+/** taskSlug: taskId suffix length (§3 — collision absorption entropy). */
 const TASK_ID_SUFFIX_LEN = 8;
 
 /**
- * git ref(브랜치명) 검증 — 플래그 주입·traversal 방어(company/WorktreeManager 계승).
+ * git ref (branch name) validation — flag injection·traversal defense (inherited from company/WorktreeManager).
  */
 function validateGitRef(ref: string, label: string): string {
   if (!ref || ref.trim().length === 0) {
@@ -59,8 +59,8 @@ function validateGitRef(ref: string, label: string): string {
 }
 
 /**
- * 파일시스템 경로 검증(company/WorktreeManager 계승) — 플래그 주입·제어문자 방어
- * 후 절대경로로 resolve.
+ * Filesystem path validation (inherited from company/WorktreeManager) — flag injection·control char defense
+ * then resolve to absolute path.
  */
 function validatePath(p: string, label: string): string {
   if (!p || p.trim().length === 0) {
@@ -77,7 +77,7 @@ function validatePath(p: string, label: string): string {
   return path.resolve(trimmed);
 }
 
-/** title → slug(소문자·영숫자·하이픈, 최대 TITLE_SLUG_MAX자). */
+/** title → slug (lowercase·alphanumeric·hyphen, max TITLE_SLUG_MAX chars). */
 export function titleToSlug(title: string): string {
   return title
     .toLowerCase()
@@ -87,42 +87,42 @@ export function titleToSlug(title: string): string {
     .replace(/-+$/g, '');
 }
 
-/** taskId 말미 8자(= random 세그먼트) 추출 — 충돌 흡수. */
+/** Last 8 chars of taskId (= random segment) — collision absorption. */
 export function taskIdSuffix(taskId: string): string {
   return taskId.replace(/^wtask-/, '').slice(-TASK_ID_SUFFIX_LEN);
 }
 
 /**
- * worktree 경로 → meta dir 파생(J3 §1·§3 — preflight의 경로 규칙 역산).
- * preflight가 `worktreePath = {root}/{slug}`·`metaDir = {root}/.meta/{slug}`로
- * 파생하므로, `dirname(worktreePath)/.meta/basename(worktreePath)`가 정합이다.
- * 정리 스캔(task.json 역추적)·미발사 재발사(prompt.md 실존 검사)가 worktreePath
- * 하나로 meta dir를 되찾는 단일 출처.
+ * worktree path → meta dir derivation (J3 §1·§3 — inverse of preflight path rules).
+ * preflight derives `worktreePath = {root}/{slug}`·`metaDir = {root}/.meta/{slug}` so
+ * `dirname(worktreePath)/.meta/basename(worktreePath)` is consistent.
+ * Cleanup scan (task.json reverse trace)·unsent retry (prompt.md existence check) use worktreePath
+ * as single source to recover meta dir.
  */
 export function metaDirForWorktree(worktreePath: string): string {
   return path.join(path.dirname(worktreePath), '.meta', path.basename(worktreePath));
 }
 
-/** taskSlug = `{titleSlug}-{taskIdSuffix}`. titleSlug 비면 접미사만. */
+/** taskSlug = `{titleSlug}-{taskIdSuffix}`. suffix only when titleSlug empty. */
 export function buildTaskSlug(title: string, taskId: string): string {
   const slug = titleToSlug(title);
   const suffix = taskIdSuffix(taskId);
   return slug.length > 0 ? `${slug}-${suffix}` : suffix;
 }
 
-/** fan-out 태스크 worktree의 파생 경로 묶음(프리플라이트가 계산·검증). */
+/** Derived path bundle for fan-out task worktree (computed·validated by preflight). */
 export interface TaskWorktreePlan {
-  /** repo 루트 realpath. */
+  /** Repo root realpath. */
   repoRoot: string;
-  /** repo 루트 realpath 해시 12자. */
+  /** 12-char hash of repo root realpath. */
   repoHash: string;
   /** `{titleSlug}-{taskIdSuffix}`. */
   taskSlug: string;
-  /** 전용 worktree 경로. */
+  /** Dedicated worktree path. */
   worktreePath: string;
   /** `wtask/{taskSlug}`. */
   branch: string;
-  /** 프롬프트 등 메타 파일 디렉토리(worktree 밖 — diff 청정성 §4). */
+  /** Meta file directory for prompts etc. (outside worktree — diff cleanliness §4). */
   metaDir: string;
 }
 
@@ -139,14 +139,14 @@ export type RemoveResult =
   | { ok: false; error: string; preserved?: boolean };
 
 /**
- * repo 단위 직렬 큐를 갖춘 worktree 매니저. 인스턴스는 프로세스 수명 동안 재사용
- * (repoHash → 뮤텍스 체인을 유지해야 하므로).
+ * Worktree manager with per-repo serial queue. Instance reused for process lifetime
+ * (must maintain repoHash → mutex chain).
  */
 export class TaskWorktreeManager {
-  /** repoHash → write 체인(§3 per-repo 직렬 큐 — index.lock 경합 차단). */
+  /** repoHash → write chain (§3 per-repo serial queue — index.lock contention block). */
   private readonly repoChains = new Map<string, Promise<unknown>>();
 
-  /** 주입 가능한 git 러너(테스트) — 기본 execFile. */
+  /** Injectable git runner (tests) — default execFile. */
   private readonly runGit: (args: string[], cwd: string) => Promise<{ stdout: string; stderr: string }>;
 
   constructor(opts?: {
@@ -161,12 +161,12 @@ export class TaskWorktreeManager {
   }
 
   /**
-   * 프리플라이트(§2 ⓪ — repo 유효성 1회 선검증). 부적격이면 태스크·채널 생성
-   * 자체가 일어나선 안 되므로 FanOutService가 fan-out 전체를 거부하는 판정식이다.
-   *   - 비 repo·git 부재 → 거부.
-   *   - bare repo·서브모듈·LFS → 거부(지원 후속, 조용한 반쪽 동작 금지).
-   *   - 전용 루트 쓰기 가능 + 경로 길이(260자) 검증.
-   *   - branch·slug·경로 파생 반환(성공 시).
+   * Preflight (§2 ⓪ — repo validity once upfront). Ineligible repos must not create tasks·channels
+   * so FanOutService uses this to reject entire fan-out.
+   *   - non-repo·missing git → reject.
+   *   - bare repo·submodule·LFS → reject (support later, no silent half behavior).
+   *   - dedicated root writable + path length (260 chars) validation.
+   *   - return branch·slug·path derivation on success.
    */
   async preflight(
     repoPathRaw: string,
@@ -181,7 +181,7 @@ export class TaskWorktreeManager {
       return { ok: false, error: `preflight: ${(err as Error).message}` };
     }
 
-    // repo 루트 확인(비 repo·git 부재 fail-closed). --show-toplevel은 bare에서 실패한다.
+    // Confirm repo root (non-repo·missing git fail-closed). --show-toplevel fails on bare.
     let repoRoot: string;
     try {
       const { stdout } = await this.runGit(['rev-parse', '--show-toplevel'], repoInput);
@@ -193,7 +193,7 @@ export class TaskWorktreeManager {
       return { ok: false, error: `preflight: not a git repository or git unavailable: ${repoInput}` };
     }
 
-    // bare repo 거부(§3 에지 fail-closed).
+    // Reject bare repo (§3 edge fail-closed).
     try {
       const { stdout } = await this.runGit(['rev-parse', '--is-bare-repository'], repoRoot);
       if (stdout.trim() === 'true') {
@@ -203,12 +203,12 @@ export class TaskWorktreeManager {
       return { ok: false, error: 'preflight: failed to determine repository kind' };
     }
 
-    // 서브모듈 포함 repo 거부(§3). .gitmodules 존재로 판정(보수적 fail-closed).
+    // Reject repo with submodules (§3). Detect via .gitmodules presence (conservative fail-closed).
     if (fs.existsSync(path.join(repoRoot, '.gitmodules'))) {
       return { ok: false, error: 'preflight: repositories with submodules are not supported (J1)' };
     }
 
-    // LFS 거부(§3). .gitattributes에 filter=lfs가 있으면 fail-closed.
+    // Reject LFS (§3). fail-closed when .gitattributes has filter=lfs.
     const gitattr = path.join(repoRoot, '.gitattributes');
     if (fs.existsSync(gitattr)) {
       try {
@@ -217,12 +217,12 @@ export class TaskWorktreeManager {
           return { ok: false, error: 'preflight: git-LFS repositories are not supported (J1)' };
         }
       } catch {
-        // 읽기 실패는 LFS 판정 불가 — 보수적으로 통과시키지 않고 거부.
+        // Read failure → cannot determine LFS — conservatively reject, do not pass through.
         return { ok: false, error: 'preflight: failed to inspect .gitattributes' };
       }
     }
 
-    // repo 루트 realpath 해시 12자.
+    // 12-char hash of repo root realpath.
     let realRoot: string;
     try {
       realRoot = fs.realpathSync(repoRoot);
@@ -231,14 +231,14 @@ export class TaskWorktreeManager {
     }
     const repoHash = crypto.createHash('sha256').update(realRoot).digest('hex').slice(0, 12);
 
-    // 경로 파생.
+    // Path derivation.
     const taskSlug = buildTaskSlug(title, taskId);
     const root = `${getWmuxHomeDir()}/worktrees/${repoHash}`;
     const worktreePath = path.join(root, taskSlug);
     const metaDir = path.join(root, '.meta', taskSlug);
     const branch = `wtask/${taskSlug}`;
 
-    // branch·경로 검증(플래그 주입·traversal — 계승 유틸).
+    // branch·path validation (flag injection·traversal — inherited utils).
     try {
       validateGitRef(branch, 'branch');
       validatePath(worktreePath, 'worktreePath');
@@ -246,7 +246,7 @@ export class TaskWorktreeManager {
       return { ok: false, error: `preflight: ${(err as Error).message}` };
     }
 
-    // Windows MAX_PATH 방어(§3 리뷰 G2).
+    // Windows MAX_PATH guard (§3 review G2).
     if (worktreePath.length > MAX_WORKTREE_PATH_LEN) {
       return {
         ok: false,
@@ -254,23 +254,23 @@ export class TaskWorktreeManager {
       };
     }
 
-    // 전용 루트 쓰기 가능 검증(디렉토리 생성 시도).
+    // Verify dedicated root writable (attempt directory creation).
     try {
       fs.mkdirSync(root, { recursive: true });
     } catch (err) {
       return { ok: false, error: `preflight: dedicated worktree root not writable: ${(err as Error).message}` };
     }
 
-    // branch 충돌 선검증(F3 — titles 전체 선검증 시 사용). createWorktree가 락 안에서
-    // 다시 검사하지만, 전역 프리플라이트가 mission.start 전에 부적격 태스크를 걸러
-    // "부적격이면 태스크 생성 0" 계약을 지키려면 여기서도 확인해야 한다.
+    // Branch conflict pre-check (F3 — used when pre-validating all titles). createWorktree re-checks
+    // under lock but global preflight must filter ineligible tasks before mission.start to honor
+    // "ineligible → zero tasks created" contract — must check here too.
     if (opts?.checkBranchConflict) {
       try {
         await this.runGit(['rev-parse', '--verify', '--quiet', `refs/heads/${branch}`], realRoot);
-        // 성공 = 브랜치 존재 → 충돌.
+        // success = branch exists → conflict.
         return { ok: false, error: `preflight: branch already exists: ${branch}` };
       } catch {
-        // 실패 = 브랜치 부재 → 정상.
+        // failure = branch absent → OK.
       }
     }
 
@@ -278,21 +278,21 @@ export class TaskWorktreeManager {
   }
 
   /**
-   * worktree 생성(§3 — per-repo 직렬 큐 하). `git worktree add {path} -b {branch}`.
-   * 기존 브랜치 충돌은 명시 에러(자동 접미사 금지). plan은 preflight 산출을 그대로 받는다.
+   * Create worktree (§3 — under per-repo serial queue). `git worktree add {path} -b {branch}`.
+   * Existing branch conflict → explicit error (no auto suffix). plan is preflight output as-is.
    */
   async createWorktree(plan: TaskWorktreePlan): Promise<CreateResult> {
     return this.withRepoLock(plan.repoHash, async () => {
       const safeBranch = validateGitRef(plan.branch, 'branch');
       const safePath = validatePath(plan.worktreePath, 'worktreePath');
 
-      // 기존 브랜치 충돌 선검사(명시 에러 — 사용자 브랜치 공간 오염 금지).
+      // Existing branch conflict pre-check (explicit error — no polluting user branch namespace).
       try {
         await this.runGit(['rev-parse', '--verify', '--quiet', `refs/heads/${safeBranch}`], plan.repoRoot);
-        // 성공 = 브랜치 존재 → 충돌.
+        // success = branch exists → conflict.
         return { ok: false, error: `createWorktree: branch already exists: ${safeBranch}` };
       } catch {
-        // 실패 = 브랜치 부재 → 정상 진행.
+        // failure = branch absent → proceed.
       }
 
       try {
@@ -305,21 +305,21 @@ export class TaskWorktreeManager {
   }
 
   /**
-   * worktree 제거(§3 — dirty 보존). remove 진입 시 porcelain 검사 → dirty면 제거
-   * 거부 + preserved:true 반환(강제 삭제 API 자체를 만들지 않는다 — J3 UX 몫).
+   * Remove worktree (§3 — dirty preserve). porcelain check on remove entry → reject removal
+   * + return preserved:true (no force-delete API — J3 UX scope).
    */
   async removeWorktree(repoRoot: string, repoHash: string, worktreePath: string): Promise<RemoveResult> {
     return this.withRepoLock(repoHash, async () => {
       const safePath = validatePath(worktreePath, 'worktreePath');
 
-      // dirty 검사: worktree 안에서 porcelain. 커밋 안 된 변경이 있으면 보존.
+      // dirty check: porcelain inside worktree. preserve if uncommitted changes exist.
       try {
         const { stdout } = await this.runGit(['status', '--porcelain'], safePath);
         if (stdout.trim().length > 0) {
           return { ok: false, error: 'removeWorktree: worktree is dirty; preserved', preserved: true };
         }
       } catch (err) {
-        // status 실패(경로 부재 등) — 보수적으로 제거 시도하지 않고 보존.
+        // status failure (missing path etc.) — conservatively preserve, do not attempt removal.
         return { ok: false, error: `removeWorktree: status check failed: ${(err as Error).message}`, preserved: true };
       }
 
@@ -333,9 +333,9 @@ export class TaskWorktreeManager {
   }
 
   /**
-   * repoHash 단위 직렬 체인(§3 — index.lock 경합 차단). A2aTaskService.withTaskLock 동형.
-   * 프로세스 내 직렬화만 보장한다 — 크로스 프로세스 동시 add는 git 자체의 index.lock에
-   * 의존하고, 경합 시 git 에러가 명시 전파된다(조용한 성공 위장 없음).
+   * Per-repoHash serial chain (§3 — index.lock contention block). Same shape as A2aTaskService.withTaskLock.
+   * Guarantees in-process serialization only — cross-process concurrent add relies on git index.lock;
+   * contention propagates explicit git errors (no silent success masquerade).
    */
   private withRepoLock<T>(repoHash: string, fn: () => Promise<T>): Promise<T> {
     const prev = this.repoChains.get(repoHash) ?? Promise.resolve();

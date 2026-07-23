@@ -12,9 +12,9 @@ import {
 } from '../SnapshotStore';
 import type { ChannelState } from '../../../shared/channels';
 
-// 패널 E 재현용 게이트: async atomicWriteJSON을 게이트에서 블록해 flushSync가
-// in-flight 창에 끼어드는 인터리빙을 결정적으로 재현한다. sync 쓰기 호출은
-// syncCalls로 기록해 "복원 쓰기 발생"을 관측한다.
+// Panel E reproduction gate: block async atomicWriteJSON at the gate so flushSync can
+// interleave into the in-flight window deterministically. Sync write calls are
+// recorded via syncCalls to observe "restore write occurred".
 const gate = vi.hoisted(() => ({
   block: null as Promise<void> | null,
   entered: false,
@@ -69,7 +69,7 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
-// ── 헬퍼 ──────────────────────────────────────────────────────────────
+// ── Helpers ──────────────────────────────────────────────────────────────
 
 function isChannelStateLike(d: unknown): boolean {
   if (typeof d !== 'object' || d === null) return false;
@@ -82,7 +82,7 @@ function isChannelStateLike(d: unknown): boolean {
   );
 }
 
-/** 마커로 구분되는 최소 ChannelState-유사 projection. */
+/** Minimal ChannelState-like projection distinguished by marker. */
 function proj(marker: string): ChannelState {
   return {
     version: 1,
@@ -104,10 +104,10 @@ function proj(marker: string): ChannelState {
   };
 }
 
-// ── T-스냅샷 손상 폴백(§5): 최신 → .bak → reseed → genesis ────────────────
+// ── T-snapshot corruption fallback (§5): latest → .bak → reseed → genesis ────────────────
 
-describe('T-스냅샷 손상 폴백', () => {
-  it('최신 → .bak → reseed → genesis 순으로 강등', () => {
+describe('T-snapshot corruption fallback', () => {
+  it('degrades latest → .bak → reseed → genesis in order', () => {
     const store = new SnapshotStore(dir);
     store.writeDurableSync(GENESIS_CHANNEL_REF, proj('genesis'), 0);
     store.writeDurableSync(reseedRef(1), proj('reseed'), 5);
@@ -121,20 +121,20 @@ describe('T-스냅샷 손상 폴백', () => {
       validateProjection: isChannelStateLike,
     };
 
-    // 1. 정상 → 최신 active-new.
+    // 1. Normal → latest active-new.
     let fb = store.loadWithFallback<ChannelState>(opts);
     expect(fb!.source).toBe('snapshot');
     expect(fb!.snapshotLamport).toBe(10);
     expect(fb!.projection.channels[0].id).toBe('ch-active-new');
 
-    // 2. primary 손상 → .bak(active-old).
+    // 2. Primary corrupt → .bak (active-old).
     fs.writeFileSync(store.snapshotPath(CHANNEL_PROJECTION_REF), 'CORRUPT{');
     fb = store.loadWithFallback<ChannelState>(opts);
     expect(fb!.source).toBe('snapshot');
     expect(fb!.snapshotLamport).toBe(9);
     expect(fb!.projection.channels[0].id).toBe('ch-active-old');
 
-    // 3. .bak도 손상 → reseed.
+    // 3. .bak also corrupt → reseed.
     fs.writeFileSync(
       `${store.snapshotPath(CHANNEL_PROJECTION_REF)}.bak`,
       'CORRUPT{',
@@ -144,7 +144,7 @@ describe('T-스냅샷 손상 폴백', () => {
     expect(fb!.snapshotLamport).toBe(5);
     expect(fb!.projection.channels[0].id).toBe('ch-reseed');
 
-    // 4. reseed 손상 → genesis(바닥).
+    // 4. Reseed corrupt → genesis (floor).
     fs.writeFileSync(store.snapshotPath(reseedRef(1)), 'CORRUPT{');
     fs.rmSync(`${store.snapshotPath(reseedRef(1))}.bak`, { force: true });
     fb = store.loadWithFallback<ChannelState>(opts);
@@ -153,24 +153,24 @@ describe('T-스냅샷 손상 폴백', () => {
     expect(fb!.projection.channels[0].id).toBe('ch-genesis');
   });
 
-  it('reseed 다수 → 최신(높은 번호)부터 시도', () => {
+  it('multiple reseeds → tries newest (highest number) first', () => {
     const store = new SnapshotStore(dir);
     store.writeDurableSync(GENESIS_CHANNEL_REF, proj('genesis'), 0);
     store.writeDurableSync(reseedRef(1), proj('reseed-1'), 3);
     store.writeDurableSync(reseedRef(2), proj('reseed-2'), 7);
 
     const fb = store.loadWithFallback<ChannelState>({
-      activeRef: CHANNEL_PROJECTION_REF, // 부재
+      activeRef: CHANNEL_PROJECTION_REF, // absent
       genesisRef: GENESIS_CHANNEL_REF,
       reseedRefs: [reseedRef(1), reseedRef(2)],
       validateProjection: isChannelStateLike,
     });
     expect(fb!.source).toBe('reseed');
-    expect(fb!.projection.channels[0].id).toBe('ch-reseed-2'); // 최신
+    expect(fb!.projection.channels[0].id).toBe('ch-reseed-2'); // newest
     expect(fb!.snapshotLamport).toBe(7);
   });
 
-  it('genesis마저 손상 → null(파국은 상위가 처리)', () => {
+  it('genesis also corrupt → null (catastrophe handled upstream)', () => {
     const store = new SnapshotStore(dir);
     store.writeDurableSync(GENESIS_CHANNEL_REF, proj('genesis'), 0);
     fs.writeFileSync(store.snapshotPath(GENESIS_CHANNEL_REF), 'CORRUPT{');
@@ -187,8 +187,8 @@ describe('T-스냅샷 손상 폴백', () => {
 
 // ── durable write/load + debounce ──────────────────────────────────────
 
-describe('durable 스냅샷 write/load', () => {
-  it('writeDurableSync → load 왕복(snapshotLamport 보존)', () => {
+describe('durable snapshot write/load', () => {
+  it('writeDurableSync → load round trip (snapshotLamport preserved)', () => {
     const store = new SnapshotStore(dir);
     store.writeDurableSync(CHANNEL_PROJECTION_REF, proj('x'), 42, isChannelStateLike);
     const env = store.load<ChannelState>(CHANNEL_PROJECTION_REF, isChannelStateLike);
@@ -197,9 +197,9 @@ describe('durable 스냅샷 write/load', () => {
     expect(isSnapshotEnvelope(env)).toBe(true);
   });
 
-  it('projection 검증 실패 스냅샷은 load에서 null(폴백 유도)', () => {
+  it('projection validation failure → null on load (induces fallback)', () => {
     const store = new SnapshotStore(dir);
-    // 봉투는 유효하나 projection이 ChannelState-유사가 아님.
+    // Envelope valid but projection is not ChannelState-like.
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
       store.snapshotPath(CHANNEL_PROJECTION_REF),
@@ -210,7 +210,7 @@ describe('durable 스냅샷 write/load', () => {
     ).toBeNull();
   });
 
-  it('saveDebounced → flushSync가 pending을 durable 동기 쓰기로 소진', () => {
+  it('saveDebounced → flushSync drains pending via durable sync write', () => {
     const store = new SnapshotStore(dir, { debounceMs: 1_000_000 });
     store.saveDebounced(CHANNEL_PROJECTION_REF, proj('deb'), 7);
     store.flushSync();
@@ -221,12 +221,12 @@ describe('durable 스냅샷 write/load', () => {
   });
 });
 
-// ── T-컴팩션 순서(§9 가드) ──────────────────────────────────────────────
+// ── T-compaction order (§9 guard) ──────────────────────────────────────────────
 
-describe('T-컴팩션 순서', () => {
+describe('T-compaction order', () => {
   const G = 'genesis-channel.json';
 
-  it('durable 미확정 → 절단 후보 0(§9 함정)', () => {
+  it('durable unconfirmed → zero truncate candidates (§9 trap)', () => {
     const plan = SnapshotStore.planCompaction({
       segments: [{ num: 1, maxLamport: 5, empty: false }],
       protectedFloorLamport: 10,
@@ -236,17 +236,17 @@ describe('T-컴팩션 순서', () => {
       reseedRefs: [reseedRef(1)],
     });
     expect(plan.truncatableSegments).toEqual([]);
-    // genesis·reseed는 항상 보호 목록에(절대 비절단, D14).
+    // genesis·reseed always on protect list (never truncate, D14).
     expect(plan.protectedSnapshots).toEqual([G, reseedRef(1)]);
   });
 
-  it('durable 확정 → snapshotLamport 미만 세그먼트 절단(감사용 최근 1개 보존)', () => {
+  it('durable confirmed → truncates segments below snapshotLamport (keeps 1 for audit)', () => {
     const plan = SnapshotStore.planCompaction({
       segments: [
-        { num: 1, maxLamport: 5, empty: false }, // < 20 후보
-        { num: 2, maxLamport: 15, empty: false }, // < 20 후보(최근 → 감사 보존)
-        { num: 3, maxLamport: 25, empty: false }, // > 20 → 후보 아님
-        { num: 4, maxLamport: 0, empty: true }, // 활성(빈)
+        { num: 1, maxLamport: 5, empty: false }, // < 20 candidate
+        { num: 2, maxLamport: 15, empty: false }, // < 20 candidate (recent → audit preserve)
+        { num: 3, maxLamport: 25, empty: false }, // > 20 → not a candidate
+        { num: 4, maxLamport: 0, empty: true }, // active (empty)
       ],
       protectedFloorLamport: 20,
       durableSnapshotConfirmed: true,
@@ -254,12 +254,12 @@ describe('T-컴팩션 순서', () => {
       genesisRef: G,
       reseedRefs: [],
     });
-    // 후보 {1,2} 중 최고번호(2)는 감사 보존 → 절단 = [1].
+    // Among candidates {1,2} highest (2) kept for audit → truncate = [1].
     expect(plan.truncatableSegments).toEqual([1]);
     expect(plan.protectedSnapshots).toEqual([G]);
   });
 
-  it('활성 세그먼트는 snapshotLamport 이하라도 절단 후보 아님', () => {
+  it('active segment is never a truncate candidate even at or below snapshotLamport', () => {
     const plan = SnapshotStore.planCompaction({
       segments: [{ num: 1, maxLamport: 5, empty: false }],
       protectedFloorLamport: 10,
@@ -271,7 +271,7 @@ describe('T-컴팩션 순서', () => {
     expect(plan.truncatableSegments).toEqual([]);
   });
 
-  it('후보 1개뿐 → 감사 보존으로 절단 0', () => {
+  it('only one candidate → audit retention yields zero truncations', () => {
     const plan = SnapshotStore.planCompaction({
       segments: [
         { num: 1, maxLamport: 5, empty: false },
@@ -287,13 +287,13 @@ describe('T-컴팩션 순서', () => {
     expect(plan.protectedSnapshots).toEqual([G, reseedRef(1), reseedRef(2)]);
   });
 
-  it('폴백 하한(패널 F): floor=min(primary,.bak)이면 (X,Y] 구간 세그먼트가 보호된다', () => {
-    // primary snapshotLamport=9, .bak=5 → 호출자 계약대로 floor=min=5 전달.
-    // manifest 최신(9) 기준이었다면 seg2(maxLamport 7)가 절단돼 .bak 폴백 시 (5,9] 유실.
+  it('fallback floor (panel F): floor=min(primary,.bak) protects (X,Y] range segments', () => {
+    // primary snapshotLamport=9, .bak=5 → per caller contract floor=min=5 passed.
+    // If manifest latest (9) were used, seg2 (maxLamport 7) would truncate → (5,9] loss on .bak fallback.
     const plan = SnapshotStore.planCompaction({
       segments: [
-        { num: 1, maxLamport: 3, empty: false }, // ≤5 후보
-        { num: 2, maxLamport: 7, empty: false }, // >5 → 보호(X,Y] 구간)
+        { num: 1, maxLamport: 3, empty: false }, // ≤5 candidate
+        { num: 2, maxLamport: 7, empty: false }, // >5 → protected (X,Y] range)
         { num: 3, maxLamport: 0, empty: true },
       ],
       protectedFloorLamport: 5,
@@ -302,9 +302,9 @@ describe('T-컴팩션 순서', () => {
       genesisRef: G,
       reseedRefs: [],
     });
-    // 후보 {1}뿐 → 감사 보존으로 절단 0. seg2는 floor 초과라 후보조차 아님.
+    // Only candidate {1} → audit retention so truncate 0. seg2 not even a candidate (above floor).
     expect(plan.truncatableSegments).toEqual([]);
-    // floor를 9(최신)로 잘못 주면 seg2가 후보에 들어가 seg1이 절단됨 — 대비 검증.
+    // If floor wrongly set to 9 (latest), seg2 enters candidates and seg1 truncates — contrast check.
     const wrong = SnapshotStore.planCompaction({
       segments: [
         { num: 1, maxLamport: 3, empty: false },
@@ -321,10 +321,10 @@ describe('T-컴팩션 순서', () => {
   });
 });
 
-// ── 패널 E: flushSync vs in-flight async 쓰기(세대 가드) ─────────────────
+// ── Panel E: flushSync vs in-flight async write (generation guard) ─────────────────
 
-describe('flushSync vs in-flight async 쓰기 (세대 가드)', () => {
-  it('stale async rename이 flushSync 내용을 되덮으면 복원 — 최종 파일 = flushSync 내용', async () => {
+describe('flushSync vs in-flight async write (generation guard)', () => {
+  it('stale async rename overwriting flushSync content is restored — final file = flushSync content', async () => {
     let release!: () => void;
     gate.block = new Promise<void>((r) => {
       release = r;
@@ -332,26 +332,26 @@ describe('flushSync vs in-flight async 쓰기 (세대 가드)', () => {
 
     const store = new SnapshotStore(dir, { debounceMs: 1 });
     store.saveDebounced(CHANNEL_PROJECTION_REF, proj('stale'), 1);
-    // debounce 발화 + async task가 atomicWriteJSON에 진입(게이트 블록)할 때까지 대기.
+    // Wait until debounce fires + async task enters atomicWriteJSON (gate blocked).
     for (let i = 0; i < 200 && !gate.entered; i++) {
       // eslint-disable-next-line no-await-in-loop
       await new Promise((r) => setTimeout(r, 2));
     }
     expect(gate.entered).toBe(true);
 
-    // in-flight 창에 신규 상태 staging → flushSync가 sync durable 기록 + 세대 전진.
+    // Staging new state in in-flight window → flushSync sync durable write + generation advance.
     store.saveDebounced(CHANNEL_PROJECTION_REF, proj('fresh'), 2);
     store.flushSync();
-    expect(gate.syncCalls.length).toBe(1); // flushSync의 fresh 쓰기
+    expect(gate.syncCalls.length).toBe(1); // flushSync fresh write
 
-    // stale async 재개 → rename 착지(fresh를 되덮음) → 세대 가드가 fresh 복원(sync 2번째).
+    // Stale async resumes → rename lands (overwrites fresh) → generation guard restores fresh (2nd sync).
     release();
     gate.block = null;
     for (let i = 0; i < 200 && gate.syncCalls.length < 2; i++) {
       // eslint-disable-next-line no-await-in-loop
       await new Promise((r) => setTimeout(r, 2));
     }
-    expect(gate.syncCalls.length).toBeGreaterThanOrEqual(2); // 복원 쓰기 발생
+    expect(gate.syncCalls.length).toBeGreaterThanOrEqual(2); // restore write occurred
 
     const env = store.load<ChannelState>(
       CHANNEL_PROJECTION_REF,
@@ -363,14 +363,14 @@ describe('flushSync vs in-flight async 쓰기 (세대 가드)', () => {
   });
 });
 
-// ── 패널 G①: 불변 아티팩트는 read 경로도 이동 금지 ───────────────────────
+// ── Panel G①: immutable artifacts must not move on read path either ───────────────────────
 
-describe('genesis·reseed 손상 시 격리 이동 금지 (§6.2)', () => {
-  it('projection 검증 실패 genesis/reseed → 폴백은 진행하되 파일은 원위치 보존', () => {
+describe('genesis·reseed corruption must not quarantine-move (§6.2)', () => {
+  it('projection validation failure on genesis/reseed → fallback proceeds but files stay in place', () => {
     const store = new SnapshotStore(dir);
     store.writeDurableSync(GENESIS_CHANNEL_REF, proj('genesis'), 0);
     store.writeDurableSync(reseedRef(1), proj('reseed'), 5);
-    // 유효 JSON이지만 projection이 무효 — validate 거부 경로(격리 이동 트리거 지점).
+    // Valid JSON but invalid projection — validate reject path (isolation move trigger point).
     const badEnvelope = JSON.stringify({
       version: 1,
       snapshotLamport: 9,
@@ -384,20 +384,20 @@ describe('genesis·reseed 손상 시 격리 이동 금지 (§6.2)', () => {
     });
 
     const fb = store.loadWithFallback<ChannelState>({
-      activeRef: CHANNEL_PROJECTION_REF, // 부재
+      activeRef: CHANNEL_PROJECTION_REF, // absent
       genesisRef: GENESIS_CHANNEL_REF,
       reseedRefs: [reseedRef(1)],
       validateProjection: isChannelStateLike,
     });
-    expect(fb).toBeNull(); // 전손 — 그러나 파일은 이동되지 않아야 한다.
+    expect(fb).toBeNull(); // total loss — but file must not be moved.
 
-    // 원위치 보존(격리 이동 없음) — §6.2 "어떤 경로도 수정·삭제 안 함".
+    // Preserved in place (no isolation move) — §6.2 "no path modifies or deletes".
     expect(fs.existsSync(store.snapshotPath(GENESIS_CHANNEL_REF))).toBe(true);
     expect(fs.existsSync(store.snapshotPath(reseedRef(1)))).toBe(true);
     expect(fs.existsSync(path.join(dir, 'corrupted'))).toBe(false);
   });
 
-  it('활성 projection 스냅샷은 기본 동작 유지(validate 거부 시 격리 이동)', () => {
+  it('active projection snapshot keeps default behavior (quarantine move on validate reject)', () => {
     const store = new SnapshotStore(dir);
     fs.mkdirSync(dir, { recursive: true });
     fs.writeFileSync(
@@ -405,7 +405,7 @@ describe('genesis·reseed 손상 시 격리 이동 금지 (§6.2)', () => {
       JSON.stringify({ version: 1, snapshotLamport: 1, projection: { bogus: true } }),
     );
     expect(store.load(CHANNEL_PROJECTION_REF, isChannelStateLike)).toBeNull();
-    // 기존 T6 격리 관례 유지 — 활성 스냅샷(재작성 캐시)은 증거 보존을 위해 이동됨.
+    // Existing T6 isolation convention — active snapshot (rewrite cache) moved for evidence preservation.
     expect(fs.existsSync(store.snapshotPath(CHANNEL_PROJECTION_REF))).toBe(
       false,
     );

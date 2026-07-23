@@ -96,8 +96,8 @@ type PtyCreateOptions = {
   initialCommand?: string;
   exec?: string;
   supervision?: PtyCreateSupervisionInput;
-  /** 스폰 출처 (실행 컨텍스트 정책). 'user-shell'만 env 투과; exec/supervision이
-   * 있으면 스탬프와 무관하게 gated. 미지정은 fail-closed gated. */
+  /** Spawn origin (execution-context policy). Only 'user-shell' passes env through; exec/supervision
+   * always gated regardless of stamp. Unspecified is fail-closed gated. */
   spawnKind?: SpawnKind;
 };
 
@@ -433,10 +433,10 @@ export function registerPTYHandlers(
       // daemon's WMUX_PTY_ID stamp). Forced identity, so a profile cannot
       // spoof another pane's member id.
       identity[ENV_KEYS.MEMBER_ID] = sessionId;
-      // 실행 컨텍스트 정책. exec/supervision이 있으면 감독 리프(자동화)라 스탬프와
-      // 무관하게 gated; 그 외엔 'user-shell' 스탬프만 passthrough, 나머지는
-      // fail-closed gated. 정책은 baseline 빌더만 바꾼다 — WMUX_* clear·identity
-      // 강제·프로필 overlay 순서는 불변(resolveSpawnEnv).
+      // Execution-context policy. exec/supervision = supervised leaf (automation), always gated
+      // regardless of stamp; otherwise only 'user-shell' stamp passthrough, rest fail-closed gated.
+      // Policy changes baseline builder only — WMUX_* clear, identity force, profile overlay
+      // order unchanged (resolveSpawnEnv).
       const envPolicy = resolveEnvPolicy({
         spawnKind: options?.spawnKind,
         hasExec: execCommand !== undefined,
@@ -459,7 +459,7 @@ export function registerPTYHandlers(
       // native-terminal freshness. No-op off win32 / on failure. (Recovery replays
       // the persisted create-time env verbatim; refreshing that is a follow-up.)
       const resolvedEnv = resolveSpawnEnv(withFreshWindowsPath(globalThis.process.env), options?.env, identity, getShellUtf8Locale(), envPolicy, accountEnv);
-      // 관측 floor: gated pane에서 자격증명을 withheld하면 로컬 로그 1줄.
+      // Observability floor: one local log line when gated pane withholds credentials.
       if (envPolicy === 'gated') {
         const withheld = withheldCredentialNames(globalThis.process.env);
         if (withheld.length > 0) {
@@ -508,8 +508,8 @@ export function registerPTYHandlers(
             `[pty:create] startup command for ${sessionId} not delivered after ` +
             `retries — session pipe never became writable (pane may be empty).`,
           );
-          // J3 §3: 프롬프트 미발사를 렌더러에 통지(fan-out 토스트·재발사 소비 —
-          // 사후 이벤트가 정본, 동기 리포트엔 싣지 못한다. 상태 영속 없음).
+          // J3 §3: notify renderer of non-dispatch (fan-out toast/refire consumption —
+          // post-hoc event is source of truth, can't carry in sync report. No state persistence).
           const win = getWindow?.();
           if (win && !win.isDestroyed()) {
             win.webContents.send(IPC.PTY_INITIAL_CMD_EXHAUSTED, sessionId);
@@ -729,11 +729,10 @@ export function registerPTYHandlers(
           return;
         } catch (err: unknown) {
           const msg = err instanceof Error ? err.message : String(err);
-          // 데몬 rate-limit(DaemonPipeServer)은 창 리사이즈 burst 중 일시적으로
-          // 발생한다. pty:resize는 연속 이벤트라 이번 것을 조용히 흘려도 곧 다음
-          // resize가 정확한 크기를 싣고 온다(리사이즈 종료 시 빈도가 떨어져
-          // 마지막 이벤트는 통과). 재시도하면 부하만 가중되고, throw하면
-          // '[UNKNOWN] rate limited'가 콘솔을 도배한다 — graceful swallow.
+          // Daemon rate-limit (DaemonPipeServer) occurs transiently during window resize bursts.
+          // pty:resize is continuous — silently dropping this one is fine; next resize carries
+          // correct size (frequency drops when resize ends, last event passes). Retrying adds load;
+          // throwing floods console with '[UNKNOWN] rate limited' — graceful swallow.
           if (msg.toLowerCase().includes('rate limit')) return;
           const isNotFound = msg.includes('not found') || msg.includes('not exist');
           if (!isNotFound) throw err;
@@ -894,16 +893,14 @@ export function registerPTYHandlers(
           return { success: false, error: 'Session not found or dead', code: 'session-dead', transient: false };
         }
 
-        // 재접속 시 cwd를 즉시 복원한다(owner-reported: 앱 재시작 후 워크스페이스
-        // 사이드바에 이름만 뜨고 브랜치/포트/PR이 안 뜸). 메타데이터 폴은 cwdMap에
-        // 들어온 pane만 처리하고 buildMetadataPayload도 cwd 없으면 즉시 null이라,
-        // cwd가 없으면 그 pane의 컨텍스트 라인 전체가 사라진다. create 경로는 cwd를
-        // seed하지만 reconnect는 안 했다 — 데몬은 meta.cwd를 listSessions 응답에
-        // 이미 실어 보내는데 여기서 버려졌다. 프롬프트 스크레이프(detectPromptCwd)로
-        // 사후 복구되는 경우가 있으나 그 정규식은 PowerShell(`PS C:\…>`)·
-        // bash(`user@host:…$`)만 잡고 macOS 기본 zsh 프롬프트(`host%`)는 못 잡으며
-        // zsh는 OSC 7도 안 쏘므로, mac에서는 영영 복구되지 않는다("win에선 되는데
-        // mac만 안 됨"의 정체). 여기서 seed하면 전 플랫폼에서 즉시 복원된다.
+        // Restore cwd immediately on reconnect (owner-reported: after app restart workspace
+        // sidebar shows name only, branch/port/PR missing). Metadata poll only handles panes
+        // in cwdMap and buildMetadataPayload returns null without cwd, so entire context line
+        // vanishes. create path seeds cwd but reconnect didn't — daemon already sends meta.cwd
+        // in listSessions but it was dropped here. Prompt scrape (detectPromptCwd) sometimes
+        // recovers but regex only catches PowerShell (`PS C:\…>`) and bash (`user@host:…$`),
+        // not macOS default zsh (`host%`), and zsh doesn't emit OSC 7 — never recovers on Mac
+        // ("works on win, not mac" root cause). Seeding here restores immediately on all platforms.
         if (session.cwd) updateCwd(id, session.cwd);
 
         // Set up data forwarding BEFORE attachSession, not after. attachSession

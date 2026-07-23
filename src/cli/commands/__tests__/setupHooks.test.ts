@@ -494,9 +494,9 @@ describe('refreshHookBridge', () => {
 });
 
 describe('findBridgeSourceFrom', () => {
-  // 패키징 앱의 메인 프로세스 레이아웃 재현: __dirname이 app.asar/.vite/build일 때
-  // walk-up으로 Resources/cli-bundle/wmux-bridge.mjs를 찾아야 한다 (인앱 "hook 설치"
-  // 버튼이 이 경로로 호출됨 — cli-bundle/ 후보 누락 시 설치가 항상 실패하던 회귀 방지).
+  // Reproduce packaged app main-process layout: when __dirname is app.asar/.vite/build,
+  // walk-up must find Resources/cli-bundle/wmux-bridge.mjs (in-app "install hooks"
+  // button calls via this path — regression guard when cli-bundle/ candidate was missing).
   it('resolves Resources/cli-bundle from the packaged main bundle dir', () => {
     const resources = path.join(tmpDir, 'Resources');
     const mainDir = path.join(resources, 'app.asar', '.vite', 'build');

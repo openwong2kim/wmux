@@ -246,9 +246,9 @@ export class DaemonClient extends EventEmitter {
     try {
       await this.connectSessionPipeOnce(sessionId, pipeName);
     } catch (err) {
-      // P7 legacy 폴백: 업그레이드를 관통해 살아 있는 구버전 데몬은 세션 소켓을
-      // 구경로(`~/.wmux-session-<id>.sock`)에 바인드한다. 새 경로가 ENOENT면
-      // 구경로를 1회 재시도한다(Unix 전용 — win 파이프 이름은 불변).
+      // P7 legacy fallback: pre-P7 daemons surviving upgrades bind session sockets at
+      // the old path (`~/.wmux-session-<id>.sock`). If the new path returns ENOENT,
+      // retry the old path once (Unix only — win pipe names are unchanged).
       const code = (err as NodeJS.ErrnoException)?.code;
       if (process.platform !== 'win32' && code === 'ENOENT') {
         await this.connectSessionPipeOnce(sessionId, getLegacySessionSocketPath(sessionId));
@@ -258,7 +258,7 @@ export class DaemonClient extends EventEmitter {
     }
   }
 
-  /** 세션 파이프 단일 연결 시도 — 성공 시 소켓 등록까지 수행. */
+  /** Single session-pipe connect attempt — registers socket on success. */
   private connectSessionPipeOnce(sessionId: string, pipeName: string): Promise<void> {
     return new Promise<void>((resolve, reject) => {
       const timeout = setTimeout(() => {
@@ -441,8 +441,8 @@ export class DaemonClient extends EventEmitter {
   }
 
   /**
-   * daemon AgentDetector가 gate로 확정한 에이전트 표시명을 조회한다(없으면 null).
-   * renderer detection pull의 권위 소스 — session:agent emit 전파 race를 우회한다.
+   * Query agent display name confirmed by gate in daemon AgentDetector (null if absent).
+   * Authoritative source for renderer detection pull — bypasses session:agent emit race.
    */
   async getAgentName(sessionId: string): Promise<string | null> {
     try {
@@ -461,8 +461,8 @@ export class DaemonClient extends EventEmitter {
 
   // --- Private helpers ---
 
-  // P7: shared 헬퍼가 데몬 바인더(daemon/SessionPipe.getPipeName)와 lockstep의
-  // 단일 진실 소스. 구경로는 connectSessionPipe의 legacy 폴백에서만 쓴다.
+  // P7: shared helper is the single source of truth in lockstep with the daemon
+  // binder (daemon/SessionPipe.getPipeName). Old path is used only in connectSessionPipe legacy fallback.
   private getSessionPipeName(sessionId: string): string {
     return getSessionSocketPath(sessionId);
   }
@@ -595,7 +595,7 @@ export class DaemonClient extends EventEmitter {
           this.emit('session:idle', { sessionId: event.sessionId });
           break;
         case 'activity.active':
-          // data에 실린 gate 확정 agentName(없으면 null)을 함께 전달.
+          // Forward gate-confirmed agentName from data (null if absent).
           this.emit('session:active', {
             sessionId: event.sessionId,
             agentName: typeof event.data === 'string' ? event.data : undefined,
@@ -755,8 +755,8 @@ export class DaemonClient extends EventEmitter {
 }
 
 /** Get the daemon control pipe name for the current platform/user.
- * P7: shared 헬퍼로 위임 — 데몬(daemon/config.ts)·CLI(cli/client.ts)와 lockstep.
- * 실행 중인 데몬의 실제 경로는 daemon-pipe 힌트 파일이 우선한다(launcher). */
+ * P7: delegated to shared helper — lockstep with daemon (daemon/config.ts) and CLI (cli/client.ts).
+ * Running daemon's actual path is preferred via the daemon-pipe hint file (launcher). */
 export function getDaemonPipeName(): string {
   return getDaemonSocketPath();
 }

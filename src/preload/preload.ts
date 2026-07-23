@@ -229,7 +229,7 @@ const electronAPI = {
     // — confirms to main that IPC.NOTIFICATION sends will actually reach a
     // live listener, not just a live (but reloading/unmounted) window.
     listenerReady: () => ipcRenderer.send(IPC.NOTIFICATION_LISTENER_READY),
-    // J3 §3: initialCommand 재시도 소진(프롬프트 미발사) 통지 — fan-out 토스트 소비.
+    // J3 §3: initialCommand retry exhausted (prompt not fired) notification — consumed by fan-out toast.
     onInitialCmdExhausted: (callback: (ptyId: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, ptyId: string) => callback(ptyId);
       ipcRenderer.on(IPC.PTY_INITIAL_CMD_EXHAUSTED, listener);
@@ -282,8 +282,8 @@ const electronAPI = {
     // METADATA_UPDATE.paneRole. '' clears the assignment (unassigned sentinel).
     setRole: (paneId: string, workspaceId: string, role: string) =>
       ipcRenderer.invoke(IPC.METADATA_SET_ROLE, paneId, workspaceId, role) as Promise<{ ok: boolean }>,
-    // gate로 확정된 agentName을 main 캐시에서 pull. running 수신 시 agentName이
-    // 비어 있으면 호출해, 매핑 준비 전에 놓친 1회성 session:agent emit을 메운다.
+    // Pull gate-confirmed agentName from main cache. When running arrives with empty agentName,
+    // call to backfill one-shot session:agent emit missed before mapping was ready.
     resolveAgent: (ptyId: string) =>
       ipcRenderer.invoke('detection:resolveAgent', ptyId) as Promise<string | null>,
   },
@@ -321,8 +321,8 @@ const electronAPI = {
     mutateChannelLocal: (method: string, params: Record<string, unknown>) =>
       ipcRenderer.invoke(IPC.CHANNEL_MUTATE_LOCAL, method, params),
   },
-  // J1 fan-out — 프롬프트 1개 → N 격리 태스크. 렌더러 다이얼로그가 요청을 조립해
-  // main의 FanOutService로 보낸다(renderer-trusted 신원, 파이프 미노출).
+  // J1 fan-out — 1 prompt → N isolated tasks. Renderer dialog assembles request and
+  // sends to main FanOutService (renderer-trusted identity, not pipe-exposed).
   fanout: {
     start: (req: Record<string, unknown>) => ipcRenderer.invoke(IPC.FANOUT_START, req),
   },
@@ -471,7 +471,7 @@ const electronAPI = {
         ipcRenderer.invoke(IPC.DECK_LOOP_PAUSE, { workspaceId }) as Promise<{ ok: boolean }>,
       resume: (workspaceId: string) =>
         ipcRenderer.invoke(IPC.DECK_LOOP_RESUME, { workspaceId }) as Promise<{ ok: boolean }>,
-      // 스킬 픽커 재료 — pane 에이전트의 스킬/커맨드 카탈로그(읽기 전용 스캔).
+      // Skill picker material — pane agent's skill/command catalog (read-only scan).
       skills: (cwd: string) =>
         ipcRenderer.invoke(IPC.DECK_LOOP_SKILLS, cwd) as Promise<{
           skills: import('../main/deck/skillCatalogScan').SkillCatalogEntry[];
@@ -649,11 +649,11 @@ const electronAPI = {
   git: {
     status: (cwd: string) => ipcRenderer.invoke(IPC.GIT_STATUS, cwd) as Promise<string>,
   },
-  // J2 — diff 리뷰·hunk 채택. worktreePath는 태스크 워크트리, targetHeadOid는
-  // 태스크가 분기한 시점의 타겟 HEAD(드리프트 게이트 재료).
-  // Deck Git 탭 PR 섹션 — gh CLI 기반 PR 목록·코멘트(렌더러 전용).
+  // J2 — diff review·hunk adopt. worktreePath is task worktree, targetHeadOid is
+  // target HEAD at task branch point (drift gate material).
+  // Deck Git tab PR section — gh CLI PR list·comments (renderer only).
   github: {
-    // force=true는 수동 새로고침 — main의 30s TTL 캐시를 건너뛴다.
+    // force=true is manual refresh — bypasses main's 30s TTL cache.
     prList: (repoPath: string, force?: boolean) =>
       ipcRenderer.invoke(IPC.GITHUB_PR_LIST, repoPath, force ?? false) as Promise<
         import('../main/ipc/handlers/github.handler').GithubPrListResult
@@ -663,7 +663,7 @@ const electronAPI = {
         import('../main/ipc/handlers/github.handler').GithubPrDetailResult
       >,
   },
-  // Deck Git 탭 — worktree list/add/remove(렌더러 전용, 파이프 미노출).
+  // Deck Git tab — worktree list/add/remove (renderer only, not pipe-exposed).
   worktree: {
     list: (repoPath: string) =>
       ipcRenderer.invoke(IPC.WORKTREE_LIST, repoPath) as Promise<
@@ -677,8 +677,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.WORKTREE_REMOVE, repoPath, worktreePath) as Promise<
         import('../main/ipc/handlers/worktree.handler').WorktreeMutateResult
       >,
-    // 머지 세션 — 격리 integration 워크트리(start/status/land/discard). sourcePath는
-    // 머지할 feature 워크트리, repoPath는 그 repo의 임의 워크트리 경로(main 도출용).
+    // Merge session — isolated integration worktree (start/status/land/discard). sourcePath is
+    // feature worktree to merge, repoPath is any worktree path in that repo (for main derivation).
     mergeStart: (repoPath: string, sourcePath: string) =>
       ipcRenderer.invoke(IPC.WORKTREE_MERGE_START, repoPath, sourcePath) as Promise<
         import('../main/ipc/handlers/worktree.handler').MergeStartResult
@@ -697,12 +697,12 @@ const electronAPI = {
       >,
   },
   diff: {
-    // 워크스페이스 diff — 임의 cwd를 자기 worktree toplevel로 정규화(비-git이면 ok:false).
+    // Workspace diff — normalize arbitrary cwd to own worktree toplevel (ok:false if non-git).
     resolveRepo: (cwd: string) =>
       ipcRenderer.invoke(IPC.DIFF_RESOLVE_REPO, cwd) as Promise<
         { ok: true; repoPath: string } | { ok: false }
       >,
-    // mode='workspace'는 cwd repo/worktree 자신의 미커밋 변경만(본 repo 매핑 없음).
+    // mode='workspace' is uncommitted changes of cwd repo/worktree only (no main repo mapping).
     read: (worktreePath: string, targetHeadOid?: string, mode?: 'task' | 'workspace') =>
       ipcRenderer.invoke(IPC.DIFF_READ, worktreePath, targetHeadOid ?? '', mode ?? 'task') as Promise<
         import('../shared/diffParse').DiffReadResult | import('../shared/diffParse').DiffReadError
@@ -715,9 +715,9 @@ const electronAPI = {
         import('../shared/diffParse').DiffApplyResult
       >,
   },
-  // J3 태스크 수명주기 — close(remove→close)·1클릭 PR(gh 4중 게이트)·정리 스캔·
-  // 미발사 재발사. 물질화 필드는 main이 데몬 projection에서 역참조하므로 렌더러는
-  // taskId + verifiedWorkspaceId만 싣는다.
+  // J3 task lifecycle — close(remove→close)·1-click PR(gh 4-gate)·cleanup scan·
+  // unsent retry. Materialization fields reverse-referenced by main from daemon projection so renderer
+  // carries only taskId + verifiedWorkspaceId.
   workTask: {
     close: (taskId: string, verifiedWorkspaceId: string) =>
       ipcRenderer.invoke(IPC.TASK_CLOSE, { taskId, verifiedWorkspaceId }) as Promise<
@@ -734,8 +734,8 @@ const electronAPI = {
       ipcRenderer.invoke(IPC.WORKTASK_SCAN, { verifiedWorkspaceId, knownOpen }) as Promise<
         import('../shared/workTask').WorktaskScanResultWire
       >,
-    // F2 — 재발사: prompt.md 실존 검사 후 원래 initialCommand를 정상 경로와 동일
-    // sanitize로 재전송(맨 셸이 프롬프트를 실행하는 오배선 방지).
+    // F2 — retry: check prompt.md exists then resend original initialCommand with same
+    // sanitize as normal path (prevent bare shell executing prompt).
     refire: (params: { ptyId: string; worktreePath: string; initialCommand: string }) =>
       ipcRenderer.invoke(IPC.WORKTASK_REFIRE, params) as Promise<
         { ok: true } | { ok: false; error: string }

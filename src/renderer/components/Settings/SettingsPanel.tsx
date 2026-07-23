@@ -514,8 +514,8 @@ const BUNDLED_FONTS = new Set([
 
 function ResetSection() {
   const t = useT();
-  // A1: workspaces는 이 콜백 안에서만 명령형으로 쓰인다(렌더에 미사용) — 구독을
-  // 없애고 getState()로 읽어 불필요한 리렌더를 제거한다.
+  // A1: workspaces used imperatively only inside this callback (not in render) — drop
+  // subscription and read via getState() to avoid unnecessary re-renders.
   const removeWorkspace = useStore((s) => s.removeWorkspace);
   const addWorkspace = useStore((s) => s.addWorkspace);
   const setVisible = useStore((s) => s.setSettingsPanelVisible);
@@ -1867,7 +1867,7 @@ function UpdateStatus() {
 // Windows "start on login" toggle (issue #460). The per-user Run registry key
 // is the source of truth — read on mount, flipped optimistically with echo
 // reconciliation (mirrors OrchestratorSection's auto-wake). Rendered on win32
-// (Run key) + darwin(로그인 항목); the backing IPC is a no-op elsewhere.
+// (Run key) + darwin (login items); the backing IPC is a no-op elsewhere.
 function StartupSection() {
   const t = useT();
   const [enabled, setEnabled] = useState(true);
@@ -1944,7 +1944,7 @@ function TabGeneral() {
         <UpdateStatus />
       </div>
 
-      {/* Startup — win32(레지스트리 Run 키) + darwin(로그인 항목). 그 외 숨김. */}
+      {/* Startup — win32 (registry Run key) + darwin (login items). Hidden elsewhere. */}
       {(window.electronAPI.platform === 'win32' || window.electronAPI.platform === 'darwin') && (
         <StartupSection />
       )}
@@ -3735,8 +3735,8 @@ function TabNotifications() {
   const mutedNotificationCategories = useStore((s) => s.mutedNotificationCategories);
   const setNotificationCategoryMuted = useStore((s) => s.setNotificationCategoryMuted);
 
-  // A1: {id,name,notificationsMuted}만 필요 — 투영만 구독해 cwd/git/port churn에
-  // 리렌더되지 않게 한다.
+  // A1: need only {id,name,notificationsMuted} — subscribe to projection only so cwd/git/port
+  // churn does not re-render.
   const muteRows = useStore(useShallow(selectWorkspaceMuteRows));
   const updateWorkspaceMetadata = useStore((s) => s.updateWorkspaceMetadata);
 
@@ -4052,7 +4052,7 @@ function TabShortcuts() {
       {/* Custom keybindings */}
       <SectionLabel label={t('settings.customKeybindings')} />
 
-      {/* macOS 기본 설정에서 F1–F12는 미디어 키로 동작해 F키 단독 바인딩이 발동하지 않음 → 안내 */}
+      {/* macOS default: F1–F12 act as media keys so standalone F-key bindings do not fire → show hint */}
       {window.electronAPI.platform === 'darwin' && hasBareFunctionKeyBinding(customKeybindings) && (
         <p className="text-[11px] text-[color:var(--text-muted)] px-1">{t('settings.kb.macFnHint')}</p>
       )}

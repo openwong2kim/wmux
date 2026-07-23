@@ -122,13 +122,13 @@ describe('execution-context env builders', () => {
 
   it('interactive shell keeps credentials, strips only wmux/Electron internals', () => {
     const env = buildInteractiveShellEnv(base);
-    // 자격증명 투과 (신고 사건 해결)
+    // Credentials pass through (reported incident fix)
     expect(env.KAD_GATEWAY_KEY).toBe('k');
     expect(env.GITHUB_TOKEN).toBe('g');
     expect(env.ANTHROPIC_API_KEY).toBe('a');
     expect(env.SSH_AUTH_SOCK).toBe('/s');
     expect(env.PATH).toBe('/usr/bin');
-    // 내부는 항상 strip
+    // Internals always stripped
     expect(env.WMUX_AUTH_TOKEN).toBeUndefined();
     expect(env.ELECTRON_RUN_AS_NODE).toBeUndefined();
     expect(env.VITE_DEV_SERVER_URL).toBeUndefined();
@@ -141,7 +141,7 @@ describe('execution-context env builders', () => {
     expect(env.ANTHROPIC_API_KEY).toBeUndefined();
     expect(env.WMUX_AUTH_TOKEN).toBeUndefined();
     expect(env.PATH).toBe('/usr/bin');
-    expect(env.SSH_AUTH_SOCK).toBe('/s'); // safe-passthrough는 gated에서도 생존
+    expect(env.SSH_AUTH_SOCK).toBe('/s'); // safe-passthrough survives gated too
   });
 });
 
@@ -166,8 +166,8 @@ describe('withheldCredentialNames', () => {
       PATH: '/p',
       KAD_GATEWAY_KEY: 'k',
       GITHUB_TOKEN: 'g',
-      WMUX_AUTH_TOKEN: 'x',   // internal → 제외
-      SSH_AUTH_SOCK: '/s',    // safe-passthrough → 제외
+      WMUX_AUTH_TOKEN: 'x',   // internal → excluded
+      SSH_AUTH_SOCK: '/s',    // safe-passthrough → excluded
     });
     expect(names.sort()).toEqual(['GITHUB_TOKEN', 'KAD_GATEWAY_KEY']);
   });
@@ -177,14 +177,14 @@ describe('withheldCredentialNames', () => {
   });
 });
 
-describe('stripCredentialValues (직렬화 경계 — 디스크/RPC)', () => {
-  it('자격증명 값만 제거하고 비자격 env(PATH·identity)는 보존', () => {
+describe('stripCredentialValues (serialization boundary — disk/RPC)', () => {
+  it('strips credential values only; preserves non-credential env (PATH·identity)', () => {
     const stripped = stripCredentialValues({
       PATH: '/usr/bin',
-      WMUX_SURFACE_ID: 'surf-1',      // identity — 보존 (pty:list 복원 의존)
-      KAD_GATEWAY_KEY: 'secret',       // 자격증명 — 제거
-      GITHUB_TOKEN: 'ghp',             // 자격증명 — 제거
-      SSH_AUTH_SOCK: '/s',             // safe-passthrough — 보존
+      WMUX_SURFACE_ID: 'surf-1',      // identity — preserved (pty:list restore depends on it)
+      KAD_GATEWAY_KEY: 'secret',       // credential — removed
+      GITHUB_TOKEN: 'ghp',             // credential — removed
+      SSH_AUTH_SOCK: '/s',             // safe-passthrough — preserved
     });
     expect(stripped.PATH).toBe('/usr/bin');
     expect(stripped.WMUX_SURFACE_ID).toBe('surf-1');
@@ -193,22 +193,22 @@ describe('stripCredentialValues (직렬화 경계 — 디스크/RPC)', () => {
     expect(stripped.GITHUB_TOKEN).toBeUndefined();
   });
 
-  it('fresh 사본을 반환 — 입력을 in-place 수정하지 않음(live meta.env 오염 방지)', () => {
+  it('returns fresh copy — does not mutate input in-place (live meta.env pollution guard)', () => {
     const live = { PATH: '/p', GITHUB_TOKEN: 'ghp' };
     const stripped = stripCredentialValues(live);
-    expect(live.GITHUB_TOKEN).toBe('ghp'); // 원본 불변
+    expect(live.GITHUB_TOKEN).toBe('ghp'); // original unchanged
     expect(stripped.GITHUB_TOKEN).toBeUndefined();
     expect(stripped).not.toBe(live);
   });
 
-  it('env가 undefined/null/비객체면 빈 객체(마이그레이션 total·non-throwing)', () => {
+  it('undefined/null/non-object env → empty object (migration total·non-throwing)', () => {
     expect(stripCredentialValues(undefined)).toEqual({});
     expect(stripCredentialValues(null)).toEqual({});
     expect(stripCredentialValues('not-an-object' as unknown as Record<string, string>)).toEqual({});
   });
 
-  it('선행 밑줄 없는 well-known 비밀도 제거 (3모델 리뷰 확정)', () => {
-    // `_PASSWORD$`/`_KEY$` 패턴에 안 걸리지만 자격증명인 exact 이름들.
+  it('strips well-known secrets without leading underscore (3-model review confirmed)', () => {
+    // Exact names that are credentials but do not match `_PASSWORD$`/`_KEY$` patterns.
     for (const name of ['PGPASSWORD', 'MYSQL_PWD', 'SECRET_KEY_BASE', 'LDAPPASSWORD',
       'AWS_ACCESS_KEY_ID', 'REDIS_URL', 'MONGO_URL', 'MONGODB_URI']) {
       expect(isCredentialEnvKey(name)).toBe(true);
@@ -222,11 +222,11 @@ describe('stripCredentialValues (직렬화 경계 — 디스크/RPC)', () => {
     expect(stripped.REDIS_URL).toBeUndefined();
   });
 
-  it('exact 추가는 유사 비자격 키를 오탐하지 않음', () => {
-    // exact 이름으로만 넓혔으므로(광역 패턴 아님), 비슷하지만 비밀이 아닌 키는 통과.
-    expect(isCredentialEnvKey('PGPASSFILE')).toBe(false);  // passfile 경로(값이 비밀 아님)
+  it('exact additions do not false-positive similar non-credential keys', () => {
+    // Widened by exact names only (not broad patterns), so similar non-secret keys pass.
+    expect(isCredentialEnvKey('PGPASSFILE')).toBe(false);  // passfile path (value is not a secret)
     expect(isCredentialEnvKey('PGHOST')).toBe(false);
     expect(isCredentialEnvKey('MYSQL_HOST')).toBe(false);
-    expect(isCredentialEnvKey('REDIS_HOST')).toBe(false);  // REDIS_URL이 아님
+    expect(isCredentialEnvKey('REDIS_HOST')).toBe(false);  // not REDIS_URL
   });
 });

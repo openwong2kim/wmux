@@ -1,11 +1,11 @@
-// E0 컨포먼스 하니스 — 공유 타입 (스펙: engine-core-decision-2026-07-09.md §5-1·§5-2)
+// E0 conformance harness — shared types (spec: engine-core-decision-2026-07-09.md §5-1·§5-2)
 //
-// 녹화기(M1)와 차등 러너(M2)가 공유하는 자료구조를 한곳에 모은다. 녹화 산출물(events.jsonl)
-// 스키마와 그리드 스냅샷·diff 리포트 스키마가 여기 정본이다. 제품 코드(src/)는 전혀 건드리지
-// 않으며, 하니스 내부에서만 쓰인다.
+// Shared data structures for recorder (M1) and differential runner (M2). Canonical schema for
+// recording artifacts (events.jsonl) and grid snapshot · diff report schema. Does not touch product
+// code (src/) — harness-internal only.
 
 /**
- * PTY geometry(열·행). 녹화 시작 시점의 초기 geometry와 이후 resize 이벤트가 이 타입을 쓴다.
+ * PTY geometry (cols · rows). Initial geometry at record start and subsequent resize events use this type.
  */
 export interface Geometry {
   readonly cols: number;
@@ -13,24 +13,24 @@ export interface Geometry {
 }
 
 /**
- * reflow 모드. §6-3 전이표의 골격 — win32·conpty는 HostReflow(코어 reflow 미실행),
- * 그 외는 SelfReflow. 녹화 트레일에 기록해 재생 측이 어떤 reflow 규율로 재생할지 명시한다.
- * 합성 코퍼스는 macOS(openpty) 환경이므로 기본 'self'.
+ * Reflow mode. §6-3 transition table skeleton — win32 · conpty use HostReflow (core reflow not run),
+ * others SelfReflow. Recorded in the trail so replay knows which reflow rules to apply.
+ * Synthetic corpus is macOS (openpty) so default 'self'.
  */
 export type ReflowMode = 'self' | 'host';
 
 /**
- * 녹화 트레일(events.jsonl)의 한 줄. 초기 geometry·resize·reflow_mode 전이를 **단조 증가하는
- * 바이트 오프셋**과 함께 기록한다. 재생 측(differ)은 recording.bin을 바이트 단위로 흘려보내다가
- * 각 이벤트의 byteOffset 시점에 해당 이벤트(resize 등)를 적용한다.
+ * One line of the recording trail (events.jsonl). Records initial geometry · resize · reflow_mode
+ * transitions with **monotonically increasing byte offsets**. Replay side (differ) streams recording.bin
+ * byte-by-byte and applies each event (resize etc.) at its byteOffset.
  *
- * byteOffset의 의미: "recording.bin의 앞에서부터 이만큼의 바이트를 피검체에 feed한 직후" 이
- * 이벤트를 적용한다. 즉 offset은 [0, recording.bin.length] 범위의 절대 위치다.
+ * byteOffset meaning: "after feeding this many bytes from the start of recording.bin to the subject,
+ * apply this event." So offset is an absolute position in [0, recording.bin.length].
  */
 export type RecordingEvent =
   | {
       readonly type: 'init';
-      readonly byteOffset: 0; // init은 항상 스트림 선두(0바이트 feed 후 = 아무것도 feed 안 함).
+      readonly byteOffset: 0; // init is always stream head (0 bytes fed = nothing fed yet).
       readonly geometry: Geometry;
       readonly reflowMode: ReflowMode;
     }
@@ -46,12 +46,12 @@ export type RecordingEvent =
     };
 
 /**
- * meta.json 스키마. 재현성·거버넌스를 위한 메타데이터.
- * - seed: 워크로드가 결정적 PRNG를 쓸 경우의 시드(합성 워크로드는 시드 고정 → 동일 바이트).
- * - workloadHash: 워크로드가 산출한 recording.bin의 sha256(동일 스크립트 2회 녹화 = 동일 해시 검증용).
- * - workloadName: 코퍼스 케이스 이름.
- * - synthetic: 합성 제너레이터 유래 여부(커밋 코퍼스는 항상 true — D4 거버넌스).
- * - createdVia: 산출 경로('synthetic-generator' | 'cli-recording').
+ * meta.json schema. Metadata for reproducibility · governance.
+ * - seed: seed when workload uses deterministic PRNG (synthetic workloads use fixed seed → same bytes).
+ * - workloadHash: sha256 of recording.bin produced by workload (verify two recordings = same hash).
+ * - workloadName: corpus case name.
+ * - synthetic: from synthetic generator (committed corpus always true — D4 governance).
+ * - createdVia: output path ('synthetic-generator' | 'cli-recording').
  */
 export interface RecordingMeta {
   readonly workloadName: string;
@@ -63,25 +63,25 @@ export interface RecordingMeta {
 }
 
 /**
- * 한 셀의 전 속성 스냅샷. @xterm/headless IBufferCell에서 추출한 값이며, 우리 코어(E1)·제3
- * 레퍼런스도 같은 형상으로 산출해 셀 단위 diff가 가능하도록 한다.
+ * Full snapshot of one cell. Values extracted from @xterm/headless IBufferCell; our core (E1) and
+ * third reference must emit the same shape for cell-level diff.
  *
- * 색 모드: raw fgMode/bgMode는 xterm.js 내부 상수(default=0, palette-16≠palette-256≠RGB). 이 raw
- * 상수는 **xterm.js 내부 표현이라 이식 불가**(우리 코어·제3 레퍼런스가 같은 정수를 낼 보장이 없다) —
- * 그래서 스냅샷에는 **참고 필드로만** 남기고 **교차-피검체 diff에서는 제외한다**(differ.ts CELL_FIELDS
- * 참조: fgMode/bgMode 비대상). 이식 가능한 모드 판정은 boolean 3종(palette/rgb/default)이며, 우리
- * 코어(E1)도 이 boolean 형상으로 산출한다(IBufferCell.isFgPalette/isFgRGB/isFgDefault 대응).
- * 스타일 플래그 9종: bold/italic/dim/underline/blink/inverse/invisible/strikethrough/overline.
+ * Color mode: raw fgMode/bgMode are xterm.js internal constants (default=0, palette-16≠palette-256≠RGB).
+ * These raw constants are **not portable** (our core · third reference may not emit the same integers) —
+ * kept in snapshot **for reference only** and **excluded from cross-subject diff** (see differ.ts
+ * CELL_FIELDS: fgMode/bgMode not diffed). Portable mode is the 3 booleans (palette/rgb/default); our
+ * core (E1) also emits this boolean shape (IBufferCell.isFgPalette/isFgRGB/isFgDefault).
+ * Style flags (9): bold/italic/dim/underline/blink/inverse/invisible/strikethrough/overline.
  */
 export interface CellSnapshot {
-  readonly char: string; // getChars() — 빈 문자열이면 공백/후속 wide 셀.
-  readonly width: number; // getWidth() — 1(보통)·2(wide)·0(wide 다음 spacer).
-  readonly code: number; // getCode() — UTF32 codepoint(결합 문자는 마지막 문자).
-  readonly fgMode: number; // getFgColorMode() raw 상수 — 참고 필드(diff 비대상, 이식 불가).
-  readonly fg: number; // getFgColor() — palette 인덱스 / 0xRRGGBB / default -1.
-  readonly bgMode: number; // getBgColorMode() raw 상수 — 참고 필드(diff 비대상, 이식 불가).
+  readonly char: string; // getChars() — empty string means blank / trailing wide cell.
+  readonly width: number; // getWidth() — 1(normal) · 2(wide) · 0(wide following spacer).
+  readonly code: number; // getCode() — UTF32 codepoint (combining chars = last char).
+  readonly fgMode: number; // getFgColorMode() raw constant — reference field (not diffed, not portable).
+  readonly fg: number; // getFgColor() — palette index / 0xRRGGBB / default -1.
+  readonly bgMode: number; // getBgColorMode() raw constant — reference field (not diffed, not portable).
   readonly bg: number;
-  readonly fgPalette: boolean; // isFgPalette() — 16색·256색 팔레트.
+  readonly fgPalette: boolean; // isFgPalette() — 16-color · 256-color palette.
   readonly fgRGB: boolean; // isFgRGB() — truecolor.
   readonly fgDefault: boolean; // isFgDefault().
   readonly bgPalette: boolean;
@@ -98,15 +98,15 @@ export interface CellSnapshot {
   readonly overline: boolean;
 }
 
-/** 커서 위치. 버퍼 좌표(0-based). */
+/** Cursor position. Buffer coordinates (0-based). */
 export interface CursorSnapshot {
   readonly x: number;
   readonly y: number;
 }
 
 /**
- * 전 그리드 스냅샷. 활성 버퍼(normal|alt)의 전 셀을 행×열로 담고 커서 위치를 곁들인다.
- * rows[y][x] = 해당 셀 스냅샷. 피검체 간 diff의 단위.
+ * Full grid snapshot. All cells of active buffer (normal|alt) in rows×cols plus cursor position.
+ * rows[y][x] = cell snapshot. Unit of cross-subject diff.
  */
 export interface GridSnapshot {
   readonly cols: number;
@@ -117,31 +117,32 @@ export interface GridSnapshot {
 }
 
 /**
- * 불일치 1건. 두 피검체(예: xterm.js vs 우리 코어)의 같은 좌표 같은 필드가 어긋난 지점.
- * classification은 4분류 대장(§5-2)을 그대로 반영한다.
+ * One mismatch. Same coordinate · same field differs between two subjects (e.g. xterm.js vs our core).
+ * classification reflects the 4-bucket ledger (§5-2) directly.
  */
 export interface DiffEntry {
   readonly x: number;
   readonly y: number;
   readonly field: keyof CellSnapshot | 'cursor' | 'grid-shape' | 'activeBuffer';
-  readonly a: unknown; // subject A의 값.
-  readonly b: unknown; // subject B의 값.
+  readonly a: unknown; // subject A value.
+  readonly b: unknown; // subject B value.
   readonly classification: DiffClassification;
 }
 
 /**
- * 4분류 대장(§5-2). (d)의도된 개선은 암묵 분류 금지 — 명시 승인 목록(intended-diffs.json)에
- * 등재된 것만 'intended'로 표기된다. 미등재 불일치는 'unclassified'로 남아 사람이 판정해야 한다.
+ * 4-bucket ledger (§5-2). (d) intended improvements forbid implicit classification — only entries on
+ * the explicit approval list (intended-diffs.json) are marked 'intended'. Unlisted mismatches stay
+ * 'unclassified' for human judgment.
  */
 export type DiffClassification =
-  | 'our-bug' // (a) 우리 코어 버그.
-  | 'xterm-bug' // (b) xterm.js 버그(내재화 마케팅 재료).
-  | 'spec-ambiguous' // (c) 스펙 모호 — 제3 레퍼런스/DEC 규격 심판 대상.
-  | 'intended' // (d) 의도된 개선 — 승인 목록에 등재된 것만.
-  | 'unclassified'; // 미판정(기본값 — 암묵 (d) 금지).
+  | 'our-bug' // (a) our core bug.
+  | 'xterm-bug' // (b) xterm.js bug (internalization marketing material).
+  | 'spec-ambiguous' // (c) spec ambiguity — third reference / DEC spec adjudication.
+  | 'intended' // (d) intended improvement — approval list only.
+  | 'unclassified'; // undecided (default — implicit (d) forbidden).
 
 /**
- * diff 리포트. 두 피검체 이름·스냅샷 요약·불일치 목록·처리량 계측을 담는다.
+ * Diff report. Two subject names · snapshot summary · mismatch list · throughput metrics.
  */
 export interface DiffReport {
   readonly workloadName: string;
@@ -154,7 +155,7 @@ export interface DiffReport {
 }
 
 /**
- * 처리량 계측. xterm.js 기준선 수치(§5-2 요구). feed MB/s·전셀 추출 시간(ms).
+ * Throughput metrics. xterm.js baseline numbers (§5-2 requirement). feed MB/s · full-cell extract time (ms).
  */
 export interface ThroughputMetrics {
   readonly subject: string;
@@ -166,13 +167,13 @@ export interface ThroughputMetrics {
 }
 
 /**
- * (d) 의도된 개선 승인 목록의 한 항목. intended-diffs.json이 이 배열을 담는다.
- * 워크로드·좌표·필드가 일치하는 불일치만 'intended'로 승격한다.
+ * One entry on the (d) intended-improvement approval list. intended-diffs.json holds this array.
+ * Only mismatches matching workload · coordinate · field are promoted to 'intended'.
  */
 export interface IntendedDiff {
   readonly workloadName: string;
   readonly x: number;
   readonly y: number;
   readonly field: string;
-  readonly reason: string; // 왜 이것이 버그가 아니라 의도된 차이인지(사람이 작성).
+  readonly reason: string; // Why this is intentional difference, not a bug (human-written).
 }

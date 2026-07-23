@@ -1,6 +1,6 @@
 // ─── Superpowers Workflow Templates ───────────────────────────────────────────
-// 에이전트 팀이 따라야 할 표준 워크플로우 정의.
-// WorkflowStep.skill 은 agency-agents "superpowers" 스킬명과 1:1 매핑됩니다.
+// Standard workflows agent teams should follow.
+// WorkflowStep.skill maps 1:1 to agency-agents "superpowers" skill names.
 
 // ─── Types ────────────────────────────────────────────────────────────────────
 
@@ -8,7 +8,7 @@ export interface WorkflowStep {
   id: string;
   name: string;
   description: string;
-  /** agency-agents superpowers 스킬명 */
+  /** agency-agents superpowers skill name */
   skill: string;
   required: boolean;
 }
@@ -18,7 +18,7 @@ export interface WorkflowTemplate {
   name: string;
   description: string;
   steps: WorkflowStep[];
-  /** 이 워크플로우가 기본 추천되는 카테고리 목록 */
+  /** Categories for which this workflow is the default recommendation */
   recommendedFor: string[];
 }
 
@@ -34,42 +34,42 @@ export const WORKFLOWS: WorkflowTemplate[] = [
       {
         id: 'brainstorm',
         name: 'Brainstorming',
-        description: '설계 정제 + 요구사항 확인. 구현 전 모든 엣지 케이스를 논의합니다.',
+        description: 'Refine design and confirm requirements. Discuss all edge cases before implementation.',
         skill: 'brainstorming',
         required: true,
       },
       {
         id: 'plan',
         name: 'Write Plan',
-        description: '2–5분 단위 태스크로 분해한 실행 계획을 작성합니다.',
+        description: 'Write an execution plan broken into 2–5 minute tasks.',
         skill: 'writing-plans',
         required: true,
       },
       {
         id: 'tdd',
         name: 'Test-Driven Development',
-        description: 'RED → GREEN → REFACTOR 사이클로 구현합니다.',
+        description: 'Implement using the RED → GREEN → REFACTOR cycle.',
         skill: 'test-driven-development',
         required: true,
       },
       {
         id: 'execute',
         name: 'Execute Plan',
-        description: '체크포인트를 확인하며 계획을 단계별로 실행합니다.',
+        description: 'Execute the plan step by step, checking checkpoints.',
         skill: 'executing-plans',
         required: true,
       },
       {
         id: 'review',
         name: 'Code Review',
-        description: '리뷰 요청 후 피드백을 반영합니다.',
+        description: 'Request review and incorporate feedback.',
         skill: 'requesting-code-review',
         required: true,
       },
       {
         id: 'verify',
         name: 'Verification',
-        description: '완료 전 모든 요구사항 충족 여부를 검증합니다.',
+        description: 'Verify all requirements are met before completion.',
         skill: 'verification-before-completion',
         required: true,
       },
@@ -86,28 +86,28 @@ export const WORKFLOWS: WorkflowTemplate[] = [
       {
         id: 'brainstorm',
         name: 'Brainstorming',
-        description: '설계 컨셉 + 유저 리서치 인사이트를 통합합니다.',
+        description: 'Integrate design concepts and user research insights.',
         skill: 'brainstorming',
         required: true,
       },
       {
         id: 'plan',
         name: 'Write Plan',
-        description: '디자인 태스크를 단계별로 분해합니다.',
+        description: 'Break design tasks into steps.',
         skill: 'writing-plans',
         required: true,
       },
       {
         id: 'execute',
         name: 'Execute Plan',
-        description: '계획에 따라 디자인 산출물을 생성합니다.',
+        description: 'Produce design deliverables according to the plan.',
         skill: 'executing-plans',
         required: true,
       },
       {
         id: 'review',
         name: 'Design Review',
-        description: '이해관계자 리뷰 후 피드백을 반영합니다.',
+        description: 'Incorporate stakeholder review feedback.',
         skill: 'requesting-code-review',
         required: false,
       },
@@ -124,21 +124,21 @@ export const WORKFLOWS: WorkflowTemplate[] = [
       {
         id: 'debug',
         name: 'Systematic Analysis',
-        description: '체계적 취약점 분석: 공격 표면 매핑 → 가설 수립 → 검증.',
+        description: 'Systematic vulnerability analysis: attack surface mapping → hypothesis → validation.',
         skill: 'systematic-debugging',
         required: true,
       },
       {
         id: 'review',
         name: 'Code Review',
-        description: '보안 관점 코드 리뷰 및 수정 제안.',
+        description: 'Security-focused code review and remediation suggestions.',
         skill: 'requesting-code-review',
         required: true,
       },
       {
         id: 'verify',
         name: 'Verification',
-        description: '패치 적용 후 재검증 및 최종 보안 서명.',
+        description: 'Re-verify after patches and final security sign-off.',
         skill: 'verification-before-completion',
         required: true,
       },
@@ -150,19 +150,19 @@ export const WORKFLOWS: WorkflowTemplate[] = [
   {
     id: 'rapid-prototype',
     name: 'Rapid Prototyping',
-    description: 'Brainstorm → Execute (빠른 프로토타이핑)',
+    description: 'Brainstorm → Execute (rapid prototyping)',
     steps: [
       {
         id: 'brainstorm',
         name: 'Brainstorming',
-        description: '아이디어를 빠르게 정제하고 핵심 가정을 정의합니다.',
+        description: 'Quickly refine ideas and define core assumptions.',
         skill: 'brainstorming',
         required: true,
       },
       {
         id: 'execute',
         name: 'Execute',
-        description: '최소 기능 프로토타입을 빠르게 구현합니다.',
+        description: 'Quickly implement a minimal functional prototype.',
         skill: 'executing-plans',
         required: true,
       },
@@ -179,21 +179,21 @@ export const WORKFLOWS: WorkflowTemplate[] = [
       {
         id: 'plan',
         name: 'Write Plan',
-        description: '마일스톤과 세부 태스크를 정의하고 담당자를 배정합니다.',
+        description: 'Define milestones, subtasks, and assign owners.',
         skill: 'writing-plans',
         required: true,
       },
       {
         id: 'execute',
         name: 'Execute Plan',
-        description: '체크포인트 기반으로 진척을 추적하며 실행합니다.',
+        description: 'Track progress at checkpoints and execute.',
         skill: 'executing-plans',
         required: true,
       },
       {
         id: 'verify',
         name: 'Verification',
-        description: '산출물 품질 및 완료 기준 충족 여부를 확인합니다.',
+        description: 'Verify deliverable quality and completion criteria.',
         skill: 'verification-before-completion',
         required: true,
       },
@@ -204,14 +204,14 @@ export const WORKFLOWS: WorkflowTemplate[] = [
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
-/** 카테고리에 맞는 추천 워크플로우를 반환합니다. 매칭 없으면 standard-dev 를 기본값으로 사용합니다. */
+/** Return recommended workflow for category. Defaults to standard-dev when no match. */
 export function getRecommendedWorkflow(category: string): WorkflowTemplate {
   return (
     WORKFLOWS.find((w) => w.recommendedFor.includes(category)) ?? WORKFLOWS[0]
   );
 }
 
-/** id 로 WorkflowTemplate 를 반환합니다. 없으면 undefined. */
+/** Return WorkflowTemplate by id. undefined if not found. */
 export function getWorkflowById(id: string): WorkflowTemplate | undefined {
   return WORKFLOWS.find((w) => w.id === id);
 }

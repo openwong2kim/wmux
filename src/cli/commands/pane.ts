@@ -10,10 +10,10 @@ interface PaneInfo {
 }
 
 function formatPaneList(result: unknown): void {
-  // pane.list RPC는 { asOfSeq, bootId, panes: [...] } 형태를 반환한다. 과거엔
-  // result 자체를 PaneInfo[]로 캐스트해 Array.isArray가 항상 false → 팬이
-  // 있어도 "No panes found"로 표시되던 버그가 있었다(--json은 정상). panes를
-  // 추출해서 렌더한다.
+  // pane.list RPC returns { asOfSeq, bootId, panes: [...] }. Previously result
+  // was cast directly to PaneInfo[], so Array.isArray was always false → showed
+  // "No panes found" even when panes existed (--json was fine). Extract panes
+  // and render.
   const panes = (result as { panes?: unknown } | null)?.panes;
   const list = Array.isArray(panes) ? (panes as PaneInfo[]) : [];
   if (list.length === 0) {

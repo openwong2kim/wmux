@@ -1,27 +1,27 @@
-// Git 탭 PR 섹션의 정규화 wire 타입 — main(GhPrService)과 렌더러(PrSection)가
-// 공유한다. 호스트 중립: GitHub(gh)이 v1 구현, GitLab(glab)은 후속 구현체가
-// 같은 shape로 채운다.
+// Normalized wire types for the Git tab PR section — shared by main (GhPrService)
+// and renderer (PrSection). Host-neutral: GitHub (gh) is v1; GitLab (glab) fills the
+// same shape in a follow-up implementation.
 
-/** 정규화된 PR 요약 — 목록 행 렌더에 필요한 전부. */
+/** Normalized PR summary — everything needed for a list row. */
 export interface PrSummary {
   readonly number: number;
   readonly title: string;
   readonly state: 'open' | 'draft' | 'merged' | 'closed';
   readonly author: string;
   readonly headRefName: string;
-  /** ISO 8601 — 코멘트 재fetch 생략 판단(updatedAt 불변 → skip)에도 쓰인다. */
+  /** ISO 8601 — also used to skip comment re-fetch when updatedAt is unchanged. */
   readonly updatedAt: string;
   readonly url: string;
-  /** APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED / '' — 호스트 원문 유지. */
+  /** APPROVED / CHANGES_REQUESTED / REVIEW_REQUIRED / '' — host raw value preserved. */
   readonly reviewDecision: string;
-  /** CI 롤업 — 3상. 체크 없으면 null. */
+  /** CI rollup — 3-state. null when no checks. */
   readonly checks: 'passing' | 'pending' | 'failing' | null;
-  /** 머지 가능성 — 호스트 원문 유지(gh: MERGEABLE/CONFLICTING/UNKNOWN).
-   *  구현체가 미지원이면 ''. 충돌 라우팅(PrReviewRouter)의 엣지 소스. */
+  /** Mergeability — host raw value preserved (gh: MERGEABLE/CONFLICTING/UNKNOWN).
+   *  '' when unsupported. Edge source for conflict routing (PrReviewRouter). */
   readonly mergeable: string;
 }
 
-/** 정규화된 코멘트/리뷰 한 건. 리뷰는 state(APPROVED 등)를 함께 담는다. */
+/** Normalized comment/review entry. Reviews carry state (APPROVED etc.) together. */
 export interface PrComment {
   readonly author: string;
   readonly body: string;
@@ -29,7 +29,7 @@ export interface PrComment {
   readonly url: string;
   readonly kind: 'comment' | 'review';
   readonly reviewState: string;
-  /** 본문이 캡(PR_COMMENT_BODY_CAP)에서 절단됐는가 — UI가 "브라우저에서 보기" 유도. */
+  /** Body was truncated at PR_COMMENT_BODY_CAP — UI should nudge "view in browser". */
   readonly truncated: boolean;
 }
 
@@ -38,5 +38,5 @@ export interface PrDetail {
   readonly comments: PrComment[];
 }
 
-/** 코멘트 본문 캡 — 초과분은 절단 + truncated 마킹(브라우저 유도). */
+/** Comment body cap — excess truncated + truncated flag (browser nudge). */
 export const PR_COMMENT_BODY_CAP = 16 * 1024;

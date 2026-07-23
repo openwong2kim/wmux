@@ -16,7 +16,7 @@ describe('endsWithQuestion', () => {
 
   it('detects Korean interrogative endings with no question mark', () => {
     // The common real case: agents in this repo are driven in Korean, where a
-    // question routinely ends in -까/-는지 and carries no '?' at all.
+    // question routinely ends in -kka/-neunji and carries no '?' at all.
     expect(endsWithQuestion('브랜치 옮겨서 PR 올릴까')).toBe(true);
     expect(endsWithQuestion('이대로 진행해도 되는지')).toBe(true);
   });
@@ -37,9 +37,9 @@ describe('endsWithQuestion', () => {
     expect(endsWithQuestion('')).toBe(false);
   });
 
-  // Both review models flagged these independently: `가요` and `니` end ordinary
-  // declaratives constantly, and a false positive is worse than a miss — it
-  // makes the orchestrator announce a block that does not exist.
+  // Both review models flagged these independently: polite -yo and -ni endings
+  // appear on ordinary declaratives constantly, and a false positive is worse
+  // than a miss — it makes the orchestrator announce a block that does not exist.
   it('does not mistake polite declaratives for questions', () => {
     expect(endsWithQuestion('이제 커밋 메시지를 작성하러 가요')).toBe(false);
     expect(endsWithQuestion('결과는 저장소에 들어가요.')).toBe(false);
@@ -47,9 +47,9 @@ describe('endsWithQuestion', () => {
     expect(endsWithQuestion('테스트를 고쳤으니.')).toBe(false);
   });
 
-  it('catches the polite proposal form that plain 까 misses', () => {
-    // `진행할까요` ends in 요, not 까 — the most common way an agent asks
-    // permission in Korean, and the exact bug class this function exists for.
+  it('catches the polite proposal form that plain -kka suffix misses', () => {
+    // Polite proposal form (-kka-yo) ends in -yo, not -kka — the most common way
+    // an agent asks permission in Korean, and the exact bug class this function exists for.
     expect(endsWithQuestion('이대로 진행할까요')).toBe(true);
     expect(endsWithQuestion('머지할까.')).toBe(true);
   });

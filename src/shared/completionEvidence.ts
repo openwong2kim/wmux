@@ -1,36 +1,37 @@
 /**
- * §6.M P1 완료증거 계약 — 검증기 코어 (순수 함수, 도메인 무관).
- * 설계 정본: plans/completion-evidence-design-2026-07-06.md v1.1
+ * §6.M P1 completion evidence contract — validator core (pure functions, domain-agnostic).
+ * Design authority: plans/completion-evidence-design-2026-07-06.md v1.1
  *
- * 게이트 = 구조, verified = 등급(E9): 전이 게이트는 구조(summary + well-formed
- * items + 새니타이즈 + 캡)만 강제하고, "검증됨" 여부는 verifiedItemCount로 정직
- * 산출·표기한다 — verified≥1은 전이 요건이 아니다(P2 게이트7의 의존성 술어로 소비).
- * run-success 자동 passed 승격 같은 세탁이 게이트를 오염시키지 못하게 하는 구조.
+ * Gate = structure, verified = grade (E9): transition gate enforces only structure (summary +
+ * well-formed items + sanitize + caps); "verified" is computed·displayed honestly via
+ * verifiedItemCount — verified≥1 is not a transition requirement (consumed as dependency
+ * predicate of P2 gate7). Structure prevents laundering like auto passed promotion on
+ * run-success from polluting the gate.
  */
 import type { CompletionEvidence, EvidenceItem } from './types';
 
-// E12: DoS 캡 — append-only 정본 로그에 거대 증거 영구 증폭 방지.
-// 권위 검증기(validateCompletionEvidence)와 wire 가드(normalize) 양쪽에서 강제.
+// E12: DoS caps — prevent giant evidence permanently amplifying the append-only canonical log.
+// Enforced on both authority validator (validateCompletionEvidence) and wire guard (normalize).
 export const EVIDENCE_MAX_ITEMS = 64;
-export const EVIDENCE_MAX_STR_BYTES = 4 * 1024; // summary/command/location/output 각각
+export const EVIDENCE_MAX_STR_BYTES = 4 * 1024; // per summary/command/location/output
 export const EVIDENCE_MAX_FILES = 256;
 export const EVIDENCE_MAX_FILE_PATH_BYTES = 1024;
-export const EVIDENCE_MAX_TOTAL_BYTES = 64 * 1024; // JSON.stringify(evidence) 총량
+export const EVIDENCE_MAX_TOTAL_BYTES = 64 * 1024; // JSON.stringify(evidence) total
 
-// renderer(Electron)·데몬·vitest 전부에서 동작하도록 Buffer 대신 TextEncoder 사용
-// (utf8 바이트 수 — Buffer.byteLength와 동일 의미).
+// Use TextEncoder instead of Buffer so this runs in renderer (Electron), daemon, and vitest
+// (utf8 byte count — same meaning as Buffer.byteLength).
 const utf8 = new TextEncoder();
 function byteLen(s: unknown): number {
   return typeof s === 'string' ? utf8.encode(s).length : 0;
 }
 
 /**
- * "검증됨" = (command && passed) | (inspection|artifact && verified).
- * 등급 산출 전용 — 전이 게이트 아님(E9).
+ * "Verified" = (command && passed) | (inspection|artifact && verified).
+ * Grade computation only — not a transition gate (E9).
  */
 export function isVerifiedItem(it: EvidenceItem): boolean {
   if (it.kind === 'command') return it.status === 'passed';
-  return it.status === 'verified'; // union이 kind를 닫아둠
+  return it.status === 'verified'; // union closes kind
 }
 
 function isWellFormedItem(it: unknown): it is EvidenceItem {
@@ -47,7 +48,7 @@ function isWellFormedItem(it: unknown): it is EvidenceItem {
   if (o.kind === 'inspection' || o.kind === 'artifact') {
     return o.status === 'verified' || o.status === 'unverified';
   }
-  return false; // 알 수 없는 kind/status = 형태 불량(fail-closed)
+  return false; // unknown kind/status = malformed (fail-closed)
 }
 
 function withinCaps(ev: CompletionEvidence): boolean {
@@ -67,10 +68,10 @@ export type EvidenceVerdict =
   | { ok: false; code: string };
 
 /**
- * 완료증거 게이트. to는 completed|failed만 — canceled(중단이지 결과 주장이 아님)와
- * teardown force-fail(의도적 우회 진입점, E10)은 이 게이트를 호출하지 않는다.
- * 형태 검증은 completed·failed 공통(X8: malformed 진단 아이템의 감사 로그 잔류 차단),
- * verified 요구는 어느 전이에도 없다(E9 — 등급으로만 산출).
+ * Completion evidence gate. to is completed|failed only — canceled (abort, not a result claim)
+ * and teardown force-fail (intentional bypass entry point, E10) do not call this gate.
+ * Shape validation is common to completed·failed (X8: block malformed diagnostic items from audit log),
+ * verified is never required on any transition (E9 — grade only).
  */
 export function validateCompletionEvidence(
   to: 'completed' | 'failed',
@@ -82,8 +83,8 @@ export function validateCompletionEvidence(
   if (typeof ev.summary !== 'string' || ev.summary.trim() === '') {
     return { ok: false, code: to === 'completed' ? 'completion_evidence_empty_summary' : 'failure_reason_missing' };
   }
-  // 권위 검증기는 타입 표기를 신뢰하지 않는다 — items가 비배열(예: {})이면 아래
-  // for..of가 verdict 대신 TypeError를 던져 게이트가 예외로 붕괴한다. fail-closed.
+  // Authority validator does not trust type annotations — non-array items (e.g. {}) would make
+  // for..of throw TypeError instead of verdict, collapsing the gate. fail-closed.
   if (ev.items !== undefined && !Array.isArray(ev.items)) {
     return { ok: false, code: 'completion_evidence_invalid_item' };
   }
@@ -101,31 +102,31 @@ export function validateCompletionEvidence(
   if (to === 'completed' && items.length === 0) {
     return { ok: false, code: 'completion_evidence_no_items' };
   }
-  // E9: verified≥1은 전이 요건이 아니라 등급 — 정직 산출해 반환(0 허용)
+  // E9: verified≥1 is grade not transition requirement — return honestly (0 allowed)
   return { ok: true, verifiedItemCount: items.filter(isVerifiedItem).length };
 }
 
 /**
- * files[] 경로 새니타이즈. 저장소-상대 경로만 허용, 파일시스템 접근 없는 순수 문자열
- * 판정. 정책: 디코드도 정규화도 하지 않는다 — 입력을 리터럴 코드유닛으로 판정·저장하며,
- * 소비자도 사용 전 URL-디코드·유니코드 정규화를 해서는 안 된다(그 순간 이 가드의
- * 판정이 무효가 된다 — 계약). '..'은 ASCII라 유니코드 정규화로 위장 불가;
- * percent-encoded('%2e%2e%2f')는 디코드 안 하므로 무해한 리터럴 세그먼트명이다.
+ * files[] path sanitize. Repository-relative paths only; pure string judgment without filesystem access.
+ * Policy: no decode or normalization — judge·store input as literal code units; consumers must not
+ * URL-decode or Unicode-normalize before use (that invalidates this guard — contract). '..' is ASCII
+ * so cannot be disguised via Unicode normalization; percent-encoded ('%2e%2e%2f') is not decoded,
+ * so harmless literal segment names.
  */
 export function isSafeRelPath(p: unknown): boolean {
   if (typeof p !== 'string' || p.length === 0) return false;
   if (byteLen(p) > EVIDENCE_MAX_FILE_PATH_BYTES) return false;
   for (let i = 0; i < p.length; i++) {
     const c = p.charCodeAt(i);
-    if (c < 0x20 || c === 0x7f) return false; // C0 제어문자(null 포함)·DEL
+    if (c < 0x20 || c === 0x7f) return false; // C0 control chars (incl. null)·DEL
   }
-  // 콜론 한 규칙으로 일괄 거부: 드라이브 절대('C:\x'), drive-relative('C:foo'),
-  // NTFS ADS('a.txt:ads'), URL 스킴('file://x'). 이식 가능한 상대경로에 콜론은
-  // 불필요하다(Windows 파일명 원천 금지 문자).
+  // Single colon rule rejects all: drive absolute ('C:\x'), drive-relative ('C:foo'),
+  // NTFS ADS ('a.txt:ads'), URL scheme ('file://x'). Colon is unnecessary in portable
+  // relative paths (forbidden in Windows filenames).
   if (p.includes(':')) return false;
-  // 선행 구분자 거부: POSIX 절대 '/x', UNC '\\host', NT 네임스페이스 '\\?\' 전부 커버
+  // Reject leading separators: POSIX absolute '/x', UNC '\\host', NT namespace '\\?\' all covered
   if (/^[/\\]/.test(p)) return false;
-  const segs = p.split(/[/\\]/); // 양 OS 구분자 모두로 분할
+  const segs = p.split(/[/\\]/); // split on both OS separators
   if (segs.some((s) => s === '..')) return false;
   return true;
 }
@@ -133,18 +134,18 @@ export function isSafeRelPath(p: unknown): boolean {
 function isPlainObject(v: unknown): v is Record<string, unknown> {
   if (v === null || typeof v !== 'object' || Array.isArray(v)) return false;
   const proto = Object.getPrototypeOf(v);
-  return proto === Object.prototype || proto === null; // JSON.parse 산물 + null-proto만
+  return proto === Object.prototype || proto === null; // JSON.parse product + null-proto only
 }
 
 /**
- * untrusted-wire 완료증거 가드+정규화. isTaskState(types.ts, LanLink C10)의 위협 모델
- * (hostile wire 값이 lookup 키·스토어 레코드가 되기 전 차단)을 계승·강화.
- * 실패 시 null(→ 사유코드 completion_evidence_malformed). 성공 시 알려진 필드만 복사한
- * **새 객체** 반환 — 미지 키는 드롭되고(프로토타입 오염·밀수 필드 원천 차단), 원본
- * 객체의 getter/프로토타입이 하류에서 작동할 여지를 제거한다. recordedBy/recordedAt도
- * 여기서 드롭된다(서버 전용 스탬프 — 정본 writer가 authContext로 기록).
- * 형태(shape)만 판정한다 — 빈 summary 등 업무 불변식은 권위 검증기
- * (validateCompletionEvidence)가 재검증한다(wire 통과 = 신뢰 아님).
+ * Untrusted-wire completion evidence guard+normalize. Inherits and strengthens isTaskState
+ * (types.ts, LanLink C10) threat model (block hostile wire values before they become lookup keys·store records).
+ * On failure returns null (→ reason code completion_evidence_malformed). On success returns a **new object**
+ * copying known fields only — unknown keys dropped (prototype pollution·smuggled fields blocked at source),
+ * original object's getters/prototype cannot act downstream. recordedBy/recordedAt also dropped here
+ * (server-only stamps — canonical writer records via authContext).
+ * Judges shape only — empty summary etc. business invariants are revalidated by authority validator
+ * (validateCompletionEvidence) (wire pass ≠ trust).
  */
 export function normalizeCompletionEvidenceWire(v: unknown): CompletionEvidence | null {
   if (!isPlainObject(v)) return null;
@@ -177,16 +178,16 @@ export function normalizeCompletionEvidenceWire(v: unknown): CompletionEvidence 
           ...(typeof raw.output === 'string' ? { output: raw.output } : {}),
         });
       } else {
-        return null; // 알 수 없는 kind = 전체 거부(fail-closed)
+        return null; // unknown kind = reject entire payload (fail-closed)
       }
     }
   }
   let files: string[] | undefined;
   if (Object.hasOwn(v, 'files')) {
     if (!Array.isArray(v.files) || v.files.length > EVIDENCE_MAX_FILES) return null;
-    // 경로 새니타이즈를 wire에서도 강제한다(권위 검증기와 이중) — 게이트가 아직
-    // 배선되지 않은 additive-inert 창에서도 비상대 경로('/etc/x', 'a/../b')가
-    // 스토어 레코드로 영속되지 못하게(isTaskState 선례: 저장 전 검증).
+    // Enforce path sanitize on wire too (dual with authority validator) — even in additive-inert
+    // window before gate is wired, non-relative paths ('/etc/x', 'a/../b') cannot persist as
+    // store records (isTaskState precedent: validate before save).
     if ((v.files as unknown[]).some((f) => !isSafeRelPath(f))) return null;
     files = [...(v.files as string[])];
   }

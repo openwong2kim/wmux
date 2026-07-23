@@ -1,25 +1,29 @@
 /**
- * A2A 태스크 도메인(`domain:'a2a'`)의 로그 payload 스키마 (envelope-design §5 D11).
+ * Log payload schema for the A2A task domain (`domain:'a2a'`) (envelope-design section 5 D11).
  *
- * ┌── PROTOCOL 파일: additive-only 규약 ──────────────────────────────┐
- * │ 이 payload는 append-only 로그에 영속된다. 부트 replay가 과거 레코드를    │
- * │ 이 스키마로 재파싱하므로:                                              │
- * │   - 필드를 제거·개명·의미변경하지 마라(과거 레코드 파싱 붕괴).           │
- * │   - 새 필드는 옵셔널(`?:`)로만 추가하라(구 레코드엔 부재).              │
- * │   - kind 값은 추가만 허용, 기존 값 재사용 금지.                        │
+ * ┌── PROTOCOL file: additive-only contract ──────────────────────────┐
+ * │ This payload is persisted in an append-only log. Boot replay       │
+ * │ re-parses historical records against this schema, so:              │
+ * │   - Do not remove, rename, or change the meaning of fields         │
+ * │     (that would break parsing of past records).                    │
+ * │   - Add new fields only as optional (`?:`) (absent on old records).│
+ * │   - kind values may only be added; never reuse existing values.    │
  * └──────────────────────────────────────────────────────────────────┘
  *
- * envelope.payload는 도메인 opaque다(eventlog.ts §1 필드표) — 로그 계층은
- * 이 타입을 해석하지 않는다. 해석·projection 적용은 A2aTaskService의 몫이다.
+ * envelope.payload is opaque to the domain (eventlog.ts section 1 field table).
+ * The log layer does not interpret this type; A2aTaskService interprets it and
+ * applies projections.
  */
 
 import type { Task, TaskState, Message, CompletionEvidence } from './types';
 
 /**
- * A2A 로그 payload 판별 union. kind가 닫힌 enum이라 projection이 미지 kind를
- * 안전하게 무시(fail-closed)한다. evidence는 §6.M 완료증거 스키마다 — 완료증거
- * 게이트(PR-B)는 A2aTaskService.transition이 강제하고, 이 payload는 게이트를 통과한
- * 증거를 실어 나른다(스키마 자체는 검증 로직이 아니라 운반 계약).
+ * Discriminated union of A2A log payloads. Because kind is a closed enum,
+ * projection can safely ignore unknown kinds (fail-closed). evidence follows
+ * the section 6.M completion-evidence schema — the completion-evidence gate
+ * (PR-B) is enforced by A2aTaskService.transition; this payload only carries
+ * evidence that already passed the gate (the schema is a transport contract,
+ * not the validation logic).
  */
 export type A2aEventPayload =
   | A2aTaskCreatePayload
@@ -27,43 +31,48 @@ export type A2aEventPayload =
   | A2aTaskCancelPayload
   | A2aExecutorLifecyclePayload;
 
-/** 태스크 생성 — 정본 레코드 1건을 통째로 실어 projection 시드. */
+/** Task creation — carry the complete canonical record to seed the projection. */
 export interface A2aTaskCreatePayload {
   kind: 'task.create';
   task: Task;
 }
 
 /**
- * 상태 전이(working/completed/failed/input-required). VALID_TRANSITIONS는
- * A2aTaskService가 데몬측에서 강제한다(성공 종단='completed', types.ts:624).
+ * State transition (working/completed/failed/input-required). VALID_TRANSITIONS
+ * is enforced by A2aTaskService on the daemon side (successful terminal state:
+ * 'completed', types.ts:624).
  */
 export interface A2aTaskTransitionPayload {
   kind: 'task.transition';
   taskId: string;
   to: TaskState;
-  /** ISO 8601 — 전이 시각. projection의 status.timestamp/updatedAt에 반영. */
+  /** ISO 8601 transition time, reflected in projection status.timestamp/updatedAt. */
   timestamp: string;
-  /** 사람용 상태 메시지(있을 때만). 기계용 evidence와 분리(§① E1). */
+  /** Human-facing status message, when present; separate from machine evidence (E1). */
   message?: Message;
   /**
-   * §6.M 완료증거 — normalizeCompletionEvidenceWire로 재검증 후 저장한다. 완료증거
-   * 게이트(PR-B)는 A2aTaskService.transition이 강제한다(completed=구조화 증거,
-   * failed=사유). verified≥1은 게이트가 아니라 등급(§② E9)이라 verifiedItemCount로 표기.
+   * Section 6.M completion evidence — re-validated via normalizeCompletionEvidenceWire
+   * then stored. The completion-evidence gate (PR-B) is enforced by
+   * A2aTaskService.transition (completed = structured evidence, failed = reason).
+   * verified≥1 is a grade, not a gate (section ② E9), so it is recorded as
+   * verifiedItemCount.
    */
   evidence?: CompletionEvidence;
-  /** 감사·등급용 검증 아이템 수(0=unverified 완료). 전이 게이트 아님(§② E9). */
+  /** Verified item count for audit/grading (0 = unverified completion). Not a transition gate (section ② E9). */
   verifiedItemCount?: number;
   /**
-   * 강제-실패 감사 마커(완료증거 설계 §③ E10). 부재=일반 전이. `'workspace_removed'`
-   * =수신 workspace teardown으로 인한 force-fail(`failTasksForWorkspaceRemoved`) —
-   * VALID_TRANSITIONS를 의도적으로 우회한 전이임을 로그에서 구별한다(submitted/
-   * input-required→failed는 그래프상 불가한데 수신자 소멸로 어떤 non-terminal도
-   * 전진 불가하므로 정당). 일반 transition API로는 이 값이 실리지 않는다.
+   * Force-fail audit marker (completion-evidence design section ③ E10). Absent =
+   * normal transition. `'workspace_removed'` = force-fail due to receiver workspace
+   * teardown (`failTasksForWorkspaceRemoved`) — distinguishes in the log a
+   * transition that intentionally bypasses VALID_TRANSITIONS (submitted/
+   * input-required→failed is illegal on the graph, but justified when the
+   * receiver is gone and no non-terminal state can advance). The normal
+   * transition API never sets this value.
    */
   forced?: 'workspace_removed';
 }
 
-/** 취소(canceled) — sender/receiver 모두 가능(권한은 서비스가 판정). */
+/** Cancellation (canceled) — either sender or receiver may request it; the service checks authorization. */
 export interface A2aTaskCancelPayload {
   kind: 'task.cancel';
   taskId: string;
@@ -71,18 +80,21 @@ export interface A2aTaskCancelPayload {
 }
 
 /**
- * 실행자 생애 이벤트 — **Q1 스키마 예약만**(envelope §5 델타 ⑧, §6.F).
+ * Executor lifecycle event — **Q1 schema reservation only** (envelope section 5
+ * delta ⑧, section 6.F).
  *
- * execute의 2-프로세스 문제(task 상태=데몬 로그, ClaudeWorker=Main 잔존)의 화해
- * 프로토콜은 §6.F/Q1-4 몫이다. 여기서는 도메인 슬롯·필드만 예약한다 — **기록·펜싱·
- * 하트비트 구현은 아직 없다**. heartbeat(주기·손실허용)는 §6.F 구현 시 §2.7 relaxed
- * 스트림의 첫 소비자로 배정 예정이고, spawn/exit(저빈도)만 커밋 스트림 후보다.
- * A2aTaskService는 이 kind를 append하지 않으며, projection도 무시한다(예약 슬롯).
+ * The reconciliation protocol for execute's two-process problem (task state =
+ * daemon log, ClaudeWorker remains in Main) belongs to section 6.F / Q1-4.
+ * Here only the domain slot and fields are reserved — **recording, fencing, and
+ * heartbeat are not implemented yet**. When section 6.F lands, heartbeat
+ * (periodic, loss-tolerant) is planned as the first consumer of the section 2.7
+ * relaxed stream; only low-frequency spawn/exit would follow the commit stream.
+ * A2aTaskService does not append this kind, and projection ignores it (reserved slot).
  */
 export interface A2aExecutorLifecyclePayload {
   kind: 'executor-lifecycle';
   taskId: string;
   event: 'spawn' | 'heartbeat' | 'exit';
-  /** §6.F 펜싱 토큰 예약 — Q1 미사용(stale 강등×워커 생존 화해는 미래). */
+  /** Section 6.F fencing-token reservation — unused in Q1; stale demotion/worker reconciliation is future work. */
   fenceToken?: number;
 }

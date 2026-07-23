@@ -147,8 +147,8 @@ describe('ProcessMonitor', () => {
   });
 
   // Regression: a malformed/empty batch result must NOT cascade-fire onDead
-  // for every watched session. The user-visible bug was "한번 터지면 모든
-  // 터미널이 동시에 종료" — caused by tasklist returning unparseable output
+  // for every watched session. The user-visible bug was "once it triggers, all
+  // terminals terminate at once" — caused by tasklist returning unparseable output
   // once, which made aliveSet empty, which marked every PID dead in one tick.
   // The fix re-verifies each apparent-dead PID via isDefinitelyDead() before
   // firing onDead.

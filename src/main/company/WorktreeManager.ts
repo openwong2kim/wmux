@@ -56,8 +56,8 @@ function validatePath(p: string, label: string): string {
 }
 
 /**
- * Git worktree를 사용하여 부서별 독립 작업 환경을 제공하는 매니저.
- * 모든 git 명령은 cwd(현재 작업 디렉토리)를 기준으로 실행한다.
+ * Manager that provides per-department isolated workspaces using git worktrees.
+ * All git commands run relative to cwd (current working directory).
  */
 export class WorktreeManager {
   private readonly cwd: string;
@@ -67,8 +67,8 @@ export class WorktreeManager {
   }
 
   /**
-   * 새 worktree를 생성한다.
-   * `git worktree add <path> -b <branch>` 실행.
+   * Create a new worktree.
+   * Runs `git worktree add <path> -b <branch>`.
    */
   async createWorktree(branch: string, worktreePath: string): Promise<void> {
     const safeBranch = validateGitRef(branch, 'branch');
@@ -81,8 +81,8 @@ export class WorktreeManager {
   }
 
   /**
-   * worktree를 제거한다.
-   * `git worktree remove <path>` 실행.
+   * Remove a worktree.
+   * Runs `git worktree remove <path>`.
    */
   async removeWorktree(worktreePath: string): Promise<void> {
     const safePath = validatePath(worktreePath, 'worktreePath');
@@ -94,8 +94,8 @@ export class WorktreeManager {
   }
 
   /**
-   * 모든 worktree 목록을 반환한다.
-   * `git worktree list --porcelain` 출력을 파싱한다.
+   * Return all worktrees.
+   * Parses output of `git worktree list --porcelain`.
    */
   async listWorktrees(): Promise<WorktreeInfo[]> {
     const { stdout } = await execFileAsync(
@@ -139,14 +139,14 @@ export class WorktreeManager {
   }
 
   /**
-   * 지정된 브랜치를 현재 브랜치(또는 targetBranch)에 merge한다.
-   * `git merge <branch>` 실행 후 결과 문자열을 반환한다.
+   * Merge the given branch into the current branch (or targetBranch).
+   * Runs `git merge <branch>` and returns the result string.
    */
   async mergeWorktree(branch: string, targetBranch?: string): Promise<string> {
     const safeBranch = validateGitRef(branch, 'branch');
     if (targetBranch) {
       const safeTarget = validateGitRef(targetBranch, 'targetBranch');
-      // targetBranch로 먼저 전환한 뒤 merge
+      // Switch to targetBranch first, then merge
       await execFileAsync('git', ['checkout', safeTarget], { cwd: this.cwd, timeout: 30000, env: getGitExecEnv() });
     }
     const { stdout, stderr } = await execFileAsync(

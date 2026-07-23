@@ -21,26 +21,26 @@ afterEach(() => {
 });
 
 describe('durable atomic write (§2.3)', () => {
-  it('sync: durable 경로가 tmp fsync를 호출하고 내용이 왕복된다', () => {
+  it('sync: durable path calls tmp fsync and round-trips content', () => {
     const target = path.join(dir, 'manifest.json');
     const fsyncSpy = vi.spyOn(fs, 'fsyncSync');
     atomicWriteJSONSync(target, { a: 1 }, { durable: true });
-    // §2.3-2 tmp fd fsync가 최소 1회(+win32 아니면 §2.3-4 dir fsync).
+    // §2.3-2 tmp fd fsync at least once (+ §2.3-4 dir fsync when not win32).
     expect(fsyncSpy).toHaveBeenCalled();
     expect(atomicReadJSONSync<{ a: number }>(target)).toEqual({ a: 1 });
   });
 
-  it('async: durable 경로가 내용을 정상 기록한다', async () => {
+  it('async: durable path records content correctly', async () => {
     const target = path.join(dir, 'snap.json');
     await atomicWriteJSON(target, { b: 2 }, { durable: true });
     expect(atomicReadJSONSync<{ b: number }>(target)).toEqual({ b: 2 });
   });
 
-  it('durable 미지정(기존 경로)은 fsync 없이 동작이 불변', () => {
+  it('durable unset (legacy path) behaves unchanged without fsync', () => {
     const target = path.join(dir, 'plain.json');
     const fsyncSpy = vi.spyOn(fs, 'fsyncSync');
     atomicWriteJSONSync(target, { c: 3 });
-    // 기존 경로는 fsync를 호출하지 않는다(1비트 불변).
+    // Legacy path does not call fsync (1-bit invariant).
     expect(fsyncSpy).not.toHaveBeenCalled();
     expect(atomicReadJSONSync<{ c: number }>(target)).toEqual({ c: 3 });
   });

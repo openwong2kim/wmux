@@ -1,4 +1,4 @@
-// ─── TaskPrService — J3 §2 gh 4중 게이트 1클릭 PR ────────────────────────────
+// ─── TaskPrService — J3 §2 gh four-gate one-click PR ────────────────────────────
 
 import { describe, it, expect, vi } from 'vitest';
 import { TaskPrService, type PrExec, type CreatePrInput } from '../TaskPrService';
@@ -13,7 +13,7 @@ const INPUT: CreatePrInput = {
   title: 'Fix the thing',
 };
 
-/** exec 스텁: (cmd,args) 시그니처별로 stdout 반환 또는 throw. 호출 로그 노출. */
+/** exec stub: return stdout or throw per (cmd,args) signature. Exposes call log. */
 function makeExec(
   behavior: (cmd: string, args: string[]) => { stdout: string } | { throw: string },
 ): { exec: PrExec; calls: Array<{ cmd: string; args: string[] }> } {
@@ -38,7 +38,7 @@ function argStr(args: string[]): string {
   return args.join(' ');
 }
 
-/** 정상 경로 기본 동작(테스트가 개별 스텁으로 override). */
+/** Default happy-path behavior (tests override individual stubs). */
 function happyBehavior(cmd: string, args: string[]): { stdout: string } | { throw: string } {
   const a = argStr(args);
   if (isGh(cmd)) {
@@ -69,8 +69,8 @@ function makeService(exec: PrExec, opts?: { daemonOk?: boolean }) {
   return { svc, daemon, daemonCalls, invalidate };
 }
 
-describe('J3 §2 gh 게이트(버전·인증)', () => {
-  it('gh 미설치: gh-missing + 브라우저 폴백', async () => {
+describe('J3 §2 gh gate (version·auth)', () => {
+  it('gh not installed: gh-missing + browser fallback', async () => {
     const { exec } = makeExec((cmd, args) =>
       isGh(cmd) && argStr(args).startsWith('--version') ? { throw: 'not found' } : happyBehavior(cmd, args),
     );
@@ -82,7 +82,7 @@ describe('J3 §2 gh 게이트(버전·인증)', () => {
     expect(res.browseFallback).toBeTruthy();
   });
 
-  it('gh 미인증(버전은 있음): gh-unauth', async () => {
+  it('gh not authenticated (version ok): gh-unauth', async () => {
     const { exec } = makeExec((cmd, args) =>
       isGh(cmd) && argStr(args).startsWith('auth status') ? { throw: 'not logged in' } : happyBehavior(cmd, args),
     );
@@ -94,8 +94,8 @@ describe('J3 §2 gh 게이트(버전·인증)', () => {
   });
 });
 
-describe('J3 §2 dirty 차단(CX7)', () => {
-  it('미커밋 변경이 있으면 push 전에 dirty로 차단', async () => {
+describe('J3 §2 dirty block (CX7)', () => {
+  it('uncommitted changes block as dirty before push', async () => {
     const { exec, calls } = makeExec((cmd, args) =>
       cmd === 'git' && argStr(args).startsWith('status') ? { stdout: ' M file.ts\n' } : happyBehavior(cmd, args),
     );
@@ -104,13 +104,13 @@ describe('J3 §2 dirty 차단(CX7)', () => {
     expect(res.ok).toBe(false);
     if (res.ok) throw new Error('unreachable');
     expect(res.reason).toBe('dirty');
-    // push가 실행되지 않았어야 한다(차단 후 중단).
+    // push must not have run (stopped after block).
     expect(calls.find((c) => c.cmd === 'git' && c.args[0] === 'push')).toBeUndefined();
   });
 });
 
-describe('J3 §2 no-origin(fork·다중 remote 자동 추측 금지 §7·CL9)', () => {
-  it('origin remote 부재는 명시 에러', async () => {
+describe('J3 §2 no-origin (fork·multi-remote auto-guess forbidden §7·CL9)', () => {
+  it('missing origin remote is explicit error', async () => {
     const { exec } = makeExec((cmd, args) =>
       cmd === 'git' && argStr(args).startsWith('remote') ? { stdout: 'upstream\nfork' } : happyBehavior(cmd, args),
     );
@@ -122,8 +122,8 @@ describe('J3 §2 no-origin(fork·다중 remote 자동 추측 금지 §7·CL9)', 
   });
 });
 
-describe('J3 §2 정상 1클릭 PR', () => {
-  it('push + pr create(--base 명시) + prUrl 커밋 + invalidate', async () => {
+describe('J3 §2 normal one-click PR', () => {
+  it('push + pr create (--base explicit) + prUrl commit + invalidate', async () => {
     const { exec, calls } = makeExec(happyBehavior);
     const { svc, daemonCalls, invalidate } = makeService(exec);
     const res = await svc.createPr(INPUT);
@@ -131,25 +131,25 @@ describe('J3 §2 정상 1클릭 PR', () => {
     if (!res.ok) throw new Error('unreachable');
     expect(res.prUrl).toBe(VALID_PR);
 
-    // push -u origin -- {branch}(F6 세퍼레이터).
+    // push -u origin -- {branch} (F6 separator).
     const push = calls.find((c) => c.cmd === 'git' && c.args[0] === 'push');
     expect(push?.args).toEqual(['push', '-u', 'origin', '--', INPUT.branch]);
 
-    // pr create에 --base가 실 값(main)으로 실렸는지.
+    // pr create received --base with actual value (main).
     const create = calls.find((c) => isGh(c.cmd) && c.args[0] === 'pr' && c.args[1] === 'create');
     expect(create?.args).toContain('--base');
     const baseIdx = create!.args.indexOf('--base');
     expect(create!.args[baseIdx + 1]).toBe('main');
-    // --head도 브랜치로 명시.
+    // --head also explicit as branch.
     expect(create!.args).toContain('--head');
 
-    // prUrl 데몬 커밋 + PrStatusCache invalidate.
+    // prUrl daemon commit + PrStatusCache invalidate.
     const upd = daemonCalls.find((c) => c.method === 'task.mission.update');
     expect(upd?.params.prUrl).toBe(VALID_PR);
     expect(invalidate).toHaveBeenCalledWith(INPUT.worktreePath, INPUT.branch);
   });
 
-  it('F6 — repo view 실패면 base 추측 없이 명시 에러(pr create 안 함)', async () => {
+  it('F6 — repo view failure → explicit error without base guess (no pr create)', async () => {
     const { exec, calls } = makeExec((cmd, args) =>
       isGh(cmd) && argStr(args).startsWith('repo view') ? { throw: 'no default' } : happyBehavior(cmd, args),
     );
@@ -159,11 +159,11 @@ describe('J3 §2 정상 1클릭 PR', () => {
     if (res.ok) throw new Error('unreachable');
     expect(res.reason).toBe('pr-failed');
     expect(res.error).toContain('base');
-    // base 미상이면 pr create를 시도하지 않는다(엉뚱한 base 방지).
+    // when base unknown, must not attempt pr create (avoid wrong base).
     expect(calls.find((c) => isGh(c.cmd) && c.args[0] === 'pr' && c.args[1] === 'create')).toBeUndefined();
   });
 
-  it('F6 — defaultBranchRef 빈 응답도 명시 에러', async () => {
+  it('F6 — empty defaultBranchRef response is explicit error', async () => {
     const { exec } = makeExec((cmd, args) =>
       isGh(cmd) && argStr(args).startsWith('repo view') ? { stdout: '' } : happyBehavior(cmd, args),
     );
@@ -175,8 +175,8 @@ describe('J3 §2 정상 1클릭 PR', () => {
   });
 });
 
-describe('J3 §2 멱등 재진입(CX5+G4)', () => {
-  it('pr create 실패 → pr list로 기존 URL 회수 수렴', async () => {
+describe('J3 §2 idempotent re-entry (CX5+G4)', () => {
+  it('pr create failure → converge via pr list to existing URL', async () => {
     const { exec } = makeExec((cmd, args) => {
       const a = argStr(args);
       if (isGh(cmd) && a.startsWith('pr create')) return { throw: 'a pull request already exists' };
@@ -189,11 +189,11 @@ describe('J3 §2 멱등 재진입(CX5+G4)', () => {
     if (!res.ok) throw new Error('unreachable');
     expect(res.recovered).toBe(true);
     expect(res.prUrl).toBe(VALID_PR);
-    // 회수 경로도 prUrl을 커밋한다.
+    // recovery path also commits prUrl.
     expect(daemonCalls.find((c) => c.method === 'task.mission.update')?.params.prUrl).toBe(VALID_PR);
   });
 
-  it('pr create 실패 + 기존 PR도 없음 → pr-failed', async () => {
+  it('pr create failure + no existing PR → pr-failed', async () => {
     const { exec } = makeExec((cmd, args) => {
       const a = argStr(args);
       if (isGh(cmd) && a.startsWith('pr create')) return { throw: 'boom' };
@@ -208,8 +208,8 @@ describe('J3 §2 멱등 재진입(CX5+G4)', () => {
   });
 });
 
-describe('J3 §2 URL 검증(G5)', () => {
-  it('pr create가 비-github URL을 뱉으면 회수 실패 시 pr-failed', async () => {
+describe('J3 §2 URL validation (G5)', () => {
+  it('pr create emits non-github URL → pr-failed when recovery fails', async () => {
     const { exec } = makeExec((cmd, args) => {
       const a = argStr(args);
       if (isGh(cmd) && a.startsWith('pr create')) return { stdout: 'https://evil.example.com/pull/1' };
@@ -224,8 +224,8 @@ describe('J3 §2 URL 검증(G5)', () => {
   });
 });
 
-describe('J3 §2 push 실패', () => {
-  it('git push 실패는 push-failed', async () => {
+describe('J3 §2 push failure', () => {
+  it('git push failure → push-failed', async () => {
     const { exec } = makeExec((cmd, args) =>
       cmd === 'git' && argStr(args).startsWith('push') ? { throw: 'permission denied' } : happyBehavior(cmd, args),
     );
@@ -237,8 +237,8 @@ describe('J3 §2 push 실패', () => {
   });
 });
 
-describe('J3 §2 prUrl 커밋 실패(비치명)', () => {
-  it('데몬 update 실패는 commitPending으로 표기(PR 자체는 성공)', async () => {
+describe('J3 §2 prUrl commit failure (non-fatal)', () => {
+  it('daemon update failure marked commitPending (PR itself succeeds)', async () => {
     const { exec } = makeExec(happyBehavior);
     const { svc } = makeService(exec, { daemonOk: false });
     const res = await svc.createPr(INPUT);

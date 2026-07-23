@@ -4,7 +4,7 @@
 // panes at once and the fan-out is delivered by the EXISTING plumbing (W2
 // immediate injection for a running Claude, the wake worker for everything
 // else); the replies stack up in one `#commander` thread instead of forcing
-// the human to walk pane-to-pane typing. This is the "왔다갔다 타이핑" painkiller
+// the human to walk pane-to-pane typing. This is the "back-and-forth typing" painkiller
 // — and the chat skeleton (thread list + composer + pane chips) is exactly what
 // Phase 2's orchestrator chat renders on top of.
 //
@@ -115,7 +115,7 @@ export interface CommanderViewContentProps {
   /** M1.5: the workspace this deck view is bound to — new schedules are
    *  created against its orchestrator. */
   activeWorkspaceId?: string;
-  /** 활성 pane의 라이브 cwd — 루프 설정 모달의 스킬 카탈로그 스캔 기준. */
+  /** Active pane live cwd — skill catalog scan basis for loop setup modal. */
   activePaneCwd?: string;
   /** P2① mission control — the Fleet roster slot, pinned above the thread.
    *  Injected as a node so this surface stays presentational/store-free. */
@@ -347,8 +347,8 @@ export function CommanderViewContent({
           {...tokenAttrs('bgSurface', 'border')}
         >
           {/* Mode = the single autonomy knob, always showing the current mode.
-              모델 선택은 Agent 탭 인라인 드롭다운으로 이동(DESIGN.md Decisions
-              Log 2026-07-20)했고, fan-out은 에이전트 툴바로 복귀했다. */}
+              Model selection moved to Agent tab inline dropdown (DESIGN.md Decisions
+              Log 2026-07-20); fan-out returned to agent toolbar. */}
           <AgentModeChipContainer t={t} workspaceId={activeWorkspaceId} />
           {/* The one-click loop chip + panel (loop engineering v1) — binds to
               THIS workspace. */}
@@ -817,8 +817,8 @@ export function CommanderView(): React.ReactElement {
   // conversation. Background workspaces' turns keep streaming into their own
   // threads via useDeckStream's envelope routing.
   const activeWorkspaceId = useStore((s) => s.activeWorkspaceId) || '';
-  // 활성 pane의 라이브 cwd(OSC 7 추적 surface.cwd) — 루프 모달의 스킬 카탈로그
-  // 스캔 기준. 트리 워크는 셀렉터 안에서 원시 문자열로 수렴시켜 리렌더 최소화.
+  // Active pane live cwd (OSC 7 tracked surface.cwd) — skill catalog scan basis for loop modal.
+  // Tree walk converges to raw string inside selector to minimize re-renders.
   const activePaneCwd = useStore((s) => {
     const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
     if (!ws) return '';
@@ -1136,16 +1136,16 @@ export function CommanderView(): React.ReactElement {
     [activeWorkspaceId, workspaces, surfaceAgent, paneLabel, paneRole, channels, recoveryPanes, startDeckBrainTurn, failDeckBrainTurn, pushToast, t],
   );
 
-  // diff→오케스트레이터 질문 릴레이(deckSlice.pendingBrainPrompt) — DiffPanel이
-  // 질문을 실어 두고 이 탭으로 전환하면 여기서 집어 정상 send 경로(fleet
-  // context·optimistic 버블 포함)로 발사한다. 소비 즉시 클리어(1회성).
+  // diff→orchestrator question relay (deckSlice.pendingBrainPrompt) — DiffPanel loads
+  // question and switches here; picked up and fired via normal send path (fleet
+  // context·optimistic bubble included). Clear immediately on consume (one-shot).
   const pendingBrainPrompt = useStore((s) => s.pendingBrainPrompt);
   const setPendingBrainPrompt = useStore((s) => s.setPendingBrainPrompt);
   useEffect(() => {
     if (!pendingBrainPrompt) return;
-    // 이미 턴이 도는 중이면 소비하지 않고 대기(Codex P2) — 여기서 clear+send하면
-    // deck:send가 busy로 거부하고 질문이 유실된다. busy가 풀리면(브레인 status
-    // 변화로 이 effect 재실행) 그때 발사한다.
+    // When turn already running do not consume yet (Codex P2) — clear+send here makes
+    // deck:send reject busy and question is lost. Fire when busy clears (effect re-runs
+    // on brain status change).
     if (brainThread.status === 'busy') return;
     setPendingBrainPrompt(null);
     void handleBrainSend(pendingBrainPrompt);

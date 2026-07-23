@@ -59,7 +59,7 @@ export interface WorkspaceLoopState {
   objective: string;
   /**
    * Optional per-iteration procedure — what the brain should do EACH wake, in
-   * order (e.g. "/qa 실행" → "실패 수정" → "/review"). Distinct from `tasks`
+   * order (e.g. "/qa run" → "fix failures" → "/review"). Distinct from `tasks`
    * (the done-contract): steps are the HOW of one iteration, tasks are the
    * WHEN-TO-STOP. Free text; a step may reference a pane agent's skill
    * ("/qa") — running it means typing that command into a real pane, per the
@@ -113,7 +113,7 @@ export function getDeckLoopStatePath(dir: string = getWmuxDir()): string {
   return path.join(dir, 'deck-loop-state.json');
 }
 
-/** steps 정규화 — 문자열만, trim, 빈 줄 제거, 개수·길이 캡. */
+/** Normalize steps — strings only, trim, drop blank lines, cap count and length. */
 function sanitizeSteps(raw: unknown): string[] {
   if (!Array.isArray(raw)) return [];
   return raw
@@ -379,8 +379,8 @@ export function renderLoopStateBlock(state: WorkspaceLoopState): string {
       ? `done-when (${doneCount}/${state.tasks.length} passing):\n${taskLines.join('\n')}`
       : 'done-when: (no checklist — run toward the objective until the human stops the loop)',
   ];
-  // 반복 절차(HOW): 사람이 정한 iteration당 순서. 스킬 참조("/qa")는 실제
-  // pane에 그 커맨드를 타이핑하는 것을 뜻한다(그라운딩 규칙과 동일).
+  // Iteration procedure (HOW): human-defined order per wake. A skill reference
+  // ("/qa") means typing that command into a real pane (same as grounding rules).
   if (state.steps.length > 0) {
     parts.splice(
       1,

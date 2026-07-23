@@ -1,7 +1,7 @@
 // ─── Agent Persona Generator ──────────────────────────────────────────────────
-// 팀장(Lead) / 팀원(Member) / CEO 의 CLAUDE.md 형식 페르소나를 자동 생성합니다.
-// 생성된 마크다운은 각 에이전트 워크스페이스의 시스템 프롬프트 또는
-// CLAUDE.md 파일로 주입됩니다.
+// Auto-generates CLAUDE.md-format personas for Lead / Member / CEO.
+// Generated markdown is injected as each agent workspace's system prompt or
+// CLAUDE.md file.
 
 import type { PresetInfo } from './presets';
 import type { WorkflowTemplate } from './workflows';
@@ -51,8 +51,8 @@ export function enrichWithSoul(basePersona: string, presetId: string): string {
 // ─── Lead Persona ─────────────────────────────────────────────────────────────
 
 /**
- * 부서 팀장(Team Lead) 의 CLAUDE.md 마크다운을 생성합니다.
- * 팀 구성, 워크플로우, 커뮤니케이션 규칙이 포함됩니다.
+ * Generates CLAUDE.md markdown for a department Team Lead.
+ * Includes team composition, workflow, and communication rules.
  */
 export function generateLeadPersona(options: LeadPersonaOptions): string {
   const { companyName, departmentName, leadPreset, members, workflow } = options;
@@ -117,7 +117,7 @@ ${toolList}
 // ─── Member Persona ───────────────────────────────────────────────────────────
 
 /**
- * 부서 팀원(Team Member) 의 CLAUDE.md 마크다운을 생성합니다.
+ * Generates CLAUDE.md markdown for a department Team Member.
  */
 export function generateMemberPersona(options: MemberPersonaOptions): string {
   const { companyName, departmentName, memberPreset, memberName, leadName, workflow } = options;
@@ -174,8 +174,8 @@ ${toolList}
 // ─── CEO Persona ──────────────────────────────────────────────────────────────
 
 /**
- * CEO 의 CLAUDE.md 마크다운을 생성합니다.
- * 전체 부서 구성과 조율 책임이 포함됩니다.
+ * Generates CLAUDE.md markdown for the CEO.
+ * Includes full department structure and coordination responsibilities.
  */
 export function generateCeoPersona(options: CeoPersonaOptions): string {
   const { companyName, departments } = options;

@@ -137,11 +137,11 @@ export class DaemonPTYBridge extends EventEmitter {
       } else {
         this.agentDetector?.resetEmissionState();
       }
-      // gate로 확정된 에이전트 이름을 active 이벤트에 함께 싣는다. main의
-      // DaemonNotificationRouter는 daemon AgentDetector에 직접 닿지 못하지만,
-      // 같은 daemon 프로세스인 여기서는 getLastAgent()가 닿는다. 이게 있어야
-      // idle prompt 패턴이 안 잡히는 에이전트(Claude Code v2.1.x 등)도 running
-      // 상태에서 agentName이 채워진다.
+      // Attach gate-confirmed agent name to active events. main's
+      // DaemonNotificationRouter cannot reach the daemon AgentDetector directly,
+      // but within the same daemon process getLastAgent() can. This ensures
+      // agents whose idle prompt pattern is not detected (Claude Code v2.1.x etc.)
+      // still get agentName filled while running.
       this.emit('active', { sessionId: ptyId, agentName: this.agentDetector?.getLastAgent() ?? undefined });
     });
 
@@ -210,16 +210,17 @@ export class DaemonPTYBridge extends EventEmitter {
 
     // PTY data handler
     const onDataDisposable = ptyProcess.onData((data: string) => {
-      // AgentDetector는 순수 텍스트 분석(side effect 없음)이라 muted 구간에서도
-      // 돌려야 한다. recovery 세션은 첫 resize 전까지 muted인데, 그 사이에
-      // 에이전트 시작 배너("Claude Code vX" 등)가 출력되면 gate 정규식이 영구
-      // 미활성화되어 이후 모든 status 감지가 죽는다(daemon mode agent detection
-      // 갭). feed만 muted 체크 앞으로 끌어올리고, ring buffer write·emit 등
-      // side effect는 여전히 muted로 차단해 geometry mismatch 오염은 막는다.
+      // AgentDetector is pure text analysis (no side effects) so it must run even
+      // during muted intervals. Recovery sessions stay muted until first resize; if
+      // an agent startup banner ("Claude Code vX" etc.) prints in that window, the
+      // gate regex stays permanently disabled and all later status detection dies
+      // (daemon mode agent detection gap). Only feed skips the muted check upfront;
+      // ring buffer write·emit etc. remain muted-blocked to prevent geometry mismatch
+      // contamination.
       try {
         agentDetector.feed(data);
       } catch {
-        // detection 실패가 데이터 포워딩을 막아선 안 된다.
+        // detection failure must not block data forwarding.
       }
 
       // Muted: drop the chunk before any side effect. Recovery sessions
@@ -280,10 +281,10 @@ export class DaemonPTYBridge extends EventEmitter {
   }
 
   /**
-   * gate로 확정된 에이전트 표시명(없으면 null). daemon 프로세스 안의
-   * AgentDetector가 배너를 직접 feed받아 설정하므로, main으로의 1회성
-   * session:agent emit 전파(타이밍 race)와 무관하게 권위 있는 값을 준다.
-   * renderer의 detection pull이 이 값을 직접 조회한다.
+   * Gate-confirmed agent display name (null if none). AgentDetector inside the
+   * daemon process receives banner feed directly, so this is authoritative regardless
+   * of one-shot session:agent emit propagation to main (timing race). Renderer
+   * detection pull queries this value directly.
    */
   getLastAgent(): string | null {
     return this.agentDetector?.getLastAgent() ?? null;

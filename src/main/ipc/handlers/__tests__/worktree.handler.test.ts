@@ -1,4 +1,4 @@
-// worktree:list / add / remove 핸들러 테스트 — 실제 임시 git repo로 왕복 검증.
+// worktree:list / add / remove handler tests — round-trip with real temp git repo.
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { mkdtempSync, writeFileSync, rmSync, mkdirSync, existsSync, realpathSync } from 'node:fs';
@@ -24,8 +24,8 @@ function g(cwd: string, args: string[]): string {
 }
 
 function makeRepo(): { base: string; repo: string; cleanup: () => void } {
-  // realpathSync.native로 8.3 단축폼(CI Windows RUNNER~1)을 롱폼으로 정규화 —
-  // 핸들러가 git canonical 경로 기준으로 파생·비교하므로 fixture도 맞춰야 한다.
+  // Normalize 8.3 short form (CI Windows RUNNER~1) to long form via realpathSync.native —
+  // handler derives/compares on git canonical paths, so fixture must match.
   const base = realpathSync.native(mkdtempSync(join(tmpdir(), 'wmux-wth-')));
   const repo = join(base, 'repo');
   mkdirSync(repo);
@@ -41,7 +41,7 @@ function makeRepo(): { base: string; repo: string; cleanup: () => void } {
 type ListRes = { ok: boolean; repoPath?: string; worktrees?: WorktreeEntry[]; error?: string };
 type MutRes = { ok: boolean; worktreePath?: string; error?: string };
 
-describe('worktree.handler — list/add/remove 왕복', () => {
+describe('worktree.handler — list/add/remove round-trip', () => {
   let scn: ReturnType<typeof makeRepo>;
   beforeEach(() => {
     captured.clear();
@@ -50,14 +50,14 @@ describe('worktree.handler — list/add/remove 왕복', () => {
   });
   afterEach(() => scn.cleanup());
 
-  it('add(새 브랜치) → list에 나타남 → remove → list에서 사라짐', async () => {
+  it('add (new branch) → appears in list → remove → disappears from list', async () => {
     const add = captured.get(IPC.WORKTREE_ADD)!;
     const list = captured.get(IPC.WORKTREE_LIST)!;
     const remove = captured.get(IPC.WORKTREE_REMOVE)!;
 
     const a = (await add({}, scn.repo, 'feat/x')) as MutRes;
     expect(a.ok).toBe(true);
-    // 관례 위치: <repo부모>/<repo이름>-worktrees/<branch-dir>.
+    // Conventional location: <repo-parent>/<repo-name>-worktrees/<branch-dir>.
     expect(dirname(a.worktreePath!)).toBe(join(dirname(scn.repo), `${basename(scn.repo)}-worktrees`));
     expect(existsSync(a.worktreePath!)).toBe(true);
 
@@ -71,7 +71,7 @@ describe('worktree.handler — list/add/remove 왕복', () => {
     expect(l2.worktrees!.map((w) => w.branch)).not.toContain('feat/x');
   });
 
-  it('add — 기존 브랜치는 -b 없이 체크아웃', async () => {
+  it('add — existing branch checked out without -b', async () => {
     g(scn.repo, ['branch', 'existing']);
     const add = captured.get(IPC.WORKTREE_ADD)!;
     const a = (await add({}, scn.repo, 'existing')) as MutRes;
@@ -80,7 +80,7 @@ describe('worktree.handler — list/add/remove 왕복', () => {
     expect(head).toBe('existing');
   });
 
-  it('add — 위험 브랜치명(-플래그·traversal) fail-soft 거부', async () => {
+  it('add — dangerous branch names (-flag·traversal) fail-soft rejected', async () => {
     const add = captured.get(IPC.WORKTREE_ADD)!;
     for (const bad of ['--force', 'a..b', 'a b']) {
       const r = (await add({}, scn.repo, bad)) as MutRes;
@@ -88,17 +88,17 @@ describe('worktree.handler — list/add/remove 왕복', () => {
     }
   });
 
-  it('remove — dirty 워크트리는 git 거부 사유를 그대로 표면화(--force 없음)', async () => {
+  it('remove — dirty worktree surfaces git rejection as-is (no --force)', async () => {
     const add = captured.get(IPC.WORKTREE_ADD)!;
     const remove = captured.get(IPC.WORKTREE_REMOVE)!;
     const a = (await add({}, scn.repo, 'feat/dirty')) as MutRes;
     writeFileSync(join(a.worktreePath!, 'junk.txt'), 'x\n');
     const r = (await remove({}, scn.repo, a.worktreePath!)) as MutRes;
     expect(r.ok).toBe(false);
-    expect(existsSync(a.worktreePath!)).toBe(true); // 워크트리 보존.
+    expect(existsSync(a.worktreePath!)).toBe(true); // worktree preserved.
   });
 
-  it('remove — 목록에 없는 임의 경로·본 워크트리 거부', async () => {
+  it('remove — rejects unlisted arbitrary path and main worktree', async () => {
     const remove = captured.get(IPC.WORKTREE_REMOVE)!;
     const arb = (await remove({}, scn.repo, join(scn.base, 'not-a-worktree'))) as MutRes;
     expect(arb.ok).toBe(false);
@@ -108,63 +108,63 @@ describe('worktree.handler — list/add/remove 왕복', () => {
     expect(main.error).toContain('main worktree');
   });
 
-  it('list — linked worktree 컨텍스트에서도 mainPath는 본 repo(dogfood 회귀)', async () => {
+  it('list — mainPath is main repo even from linked worktree context (dogfood regression)', async () => {
     const add = captured.get(IPC.WORKTREE_ADD)!;
     const list = captured.get(IPC.WORKTREE_LIST)!;
     const a = (await add({}, scn.repo, 'feat/ctx')) as MutRes;
     expect(a.ok).toBe(true);
-    // 링크드 워크트리 "안에서" 목록을 열면: repoPath=자기 자신, mainPath=본 repo.
+    // List opened "inside" linked worktree: repoPath=self, mainPath=main repo.
     const r = (await list({}, a.worktreePath!)) as ListRes & { mainPath?: string };
     expect(r.ok).toBe(true);
     const norm = (p: string) => p.replace(/\\/g, '/').toLowerCase();
     expect(norm(r.repoPath!)).toBe(norm(a.worktreePath!));
     expect(norm(r.mainPath!)).toBe(norm(scn.repo));
-    // 본 워크트리 remove는 어느 컨텍스트에서도 거부.
+    // main worktree remove rejected in any context.
     const remove = captured.get(IPC.WORKTREE_REMOVE)!;
     const m = (await remove({}, a.worktreePath!, scn.repo)) as MutRes;
     expect(m.ok).toBe(false);
     expect(m.error).toContain('main worktree');
   });
 
-  it('remove — 활성(호출 컨텍스트) 워크트리는 clean이어도 거부(Codex P2)', async () => {
+  it('remove — rejects active (call-context) worktree even when clean (Codex P2)', async () => {
     const add = captured.get(IPC.WORKTREE_ADD)!;
     const remove = captured.get(IPC.WORKTREE_REMOVE)!;
     const a = (await add({}, scn.repo, 'feat/active')) as MutRes;
-    // 그 워크트리 "안에서"(repoPath=자기 자신) 자기 자신을 지우려 하면 거부.
+    // Reject removing self from inside that worktree (repoPath=self).
     const r = (await remove({}, a.worktreePath!, a.worktreePath!)) as MutRes;
     expect(r.ok).toBe(false);
     expect(r.error).toContain('currently in');
     expect(existsSync(a.worktreePath!)).toBe(true);
   });
 
-  it('add — linked worktree 컨텍스트에서도 경로는 본 repo 기준으로 도출(Codex P2)', async () => {
+  it('add — paths derived from main repo even from linked worktree context (Codex P2)', async () => {
     const add = captured.get(IPC.WORKTREE_ADD)!;
     const a = (await add({}, scn.repo, 'feat/first')) as MutRes;
-    // 첫 워크트리 "안에서" 두 번째 생성 — 경로는 <linked>-worktrees가 아니라
-    // 본 repo의 형제 <repo>-worktrees여야 한다.
+    // Create second from inside first worktree — path must be sibling <repo>-worktrees,
+    // not <linked>-worktrees.
     const b = (await add({}, a.worktreePath!, 'feat/second')) as MutRes;
     expect(b.ok).toBe(true);
     expect(dirname(b.worktreePath!)).toBe(join(dirname(scn.repo), `${basename(scn.repo)}-worktrees`));
   });
 
-  it('add — remote-only 브랜치는 origin 추적 로컬 브랜치로 체크아웃(Codex P2)', async () => {
-    // origin remote를 흉내내는 bare repo + feat/remote 브랜치.
+  it('add — remote-only branch checked out as origin-tracking local branch (Codex P2)', async () => {
+    // bare repo mimicking origin remote + feat/remote branch.
     const remoteBare = join(scn.base, 'remote.git');
     g(scn.base, ['clone', '-q', '--bare', scn.repo, remoteBare]);
     g(scn.repo, ['remote', 'add', 'origin', remoteBare]);
     g(scn.repo, ['branch', 'feat/remote']);
     g(scn.repo, ['push', '-q', 'origin', 'feat/remote']);
-    g(scn.repo, ['branch', '-D', 'feat/remote']); // 로컬에서 제거 → remote-only.
+    g(scn.repo, ['branch', '-D', 'feat/remote']); // remove locally → remote-only.
     g(scn.repo, ['fetch', '-q', 'origin']);
     const add = captured.get(IPC.WORKTREE_ADD)!;
     const a = (await add({}, scn.repo, 'feat/remote')) as MutRes;
     expect(a.ok).toBe(true);
-    // 새 로컬 브랜치가 origin/feat/remote를 upstream으로 추적해야 한다.
+    // new local branch must track origin/feat/remote as upstream.
     const upstream = g(a.worktreePath!, ['rev-parse', '--abbrev-ref', 'feat/remote@{upstream}']).trim();
     expect(upstream).toBe('origin/feat/remote');
   });
 
-  it('list — 비-git 경로는 fail-soft', async () => {
+  it('list — non-git path fail-soft', async () => {
     const list = captured.get(IPC.WORKTREE_LIST)!;
     const plain = join(scn.base, 'plain');
     mkdirSync(plain);
@@ -172,7 +172,7 @@ describe('worktree.handler — list/add/remove 왕복', () => {
     expect(r.ok).toBe(false);
   });
 
-  it('list — 서브디렉토리 경로도 toplevel로 정규화해 성공', async () => {
+  it('list — subdirectory path normalized to toplevel succeeds', async () => {
     mkdirSync(join(scn.repo, 'sub'));
     const list = captured.get(IPC.WORKTREE_LIST)!;
     const r = (await list({}, join(scn.repo, 'sub'))) as ListRes;

@@ -125,8 +125,8 @@ describe('detectPromptCwd', () => {
     expect(detectPromptCwd(buf, 'win32')).toBe('C:\\start\\dist');
   });
 
-  // 오탐 방어(2026-07-20): 화면에 표시된 Windows 프롬프트 텍스트가 POSIX
-  // 페인의 cwd를 덮지 않는다 — "C:\…" 사고 회귀 테스트.
+  // False-positive guard (2026-07-20): on-screen Windows prompt text must not overwrite
+  // a POSIX pane's cwd — regression test for the "C:\…" incident.
   it('rejects a Windows-shaped prompt cwd on a POSIX platform', () => {
     expect(detectPromptCwd('PS C:\\Users\\me>', 'darwin')).toBeNull();
     expect(detectPromptCwd('PS C:\\\u2026>', 'darwin')).toBeNull();

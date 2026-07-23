@@ -15,11 +15,11 @@ export interface SurfaceSlice {
   addSurface: (paneId: string, ptyId: string, shell: string, cwd: string, workspaceId?: string) => void;
   addBrowserSurface: (paneId: string, url?: string, partition?: string, workspaceId?: string) => void;
   addEditorSurface: (paneId: string, filePath: string) => void;
-  /** J2 — diff 리뷰 서피스 추가. taskId만 영속(diff 내용은 파생 데이터).
-   * 같은 taskId가 이미 열려 있으면 그 탭으로 전환. editor/browser처럼 ptyId 없음. */
+  /** J2 — add diff review surface. Only taskId persisted (diff content is derived).
+   * Switch to existing tab if same taskId already open. No ptyId, like editor/browser. */
   addDiffSurface: (paneId: string, taskId: string, title?: string, workspaceId?: string, ownerWorkspaceId?: string) => void;
-  /** 워크스페이스 diff 서피스 — repoPath(worktree toplevel)만 영속(diff 내용은 파생).
-   * 같은 repoPath가 이미 열려 있으면 그 탭으로 전환. diff/editor처럼 ptyId 없음. */
+  /** Workspace diff surface — only repoPath (worktree toplevel) persisted (diff content derived).
+   * Switch to existing tab if same repoPath already open. No ptyId, like diff/editor. */
   addWorkspaceDiffSurface: (paneId: string, repoPath: string, title?: string, workspaceId?: string) => void;
   /** Close a surface tab. `workspaceId` lets RPC/CLI callers target a
    * non-active workspace (defaults to the active one — existing callers are
@@ -153,9 +153,9 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane) return;
-    // 같은 태스크 diff가 이미 열려 있으면 그 탭으로 전환. F1 backfill: J3 이전에
-    // 만들어진 서피스는 diffOwnerWorkspaceId가 없다 — 재사용 시 이번에 전달된
-    // owner를 채워 owner 스코프 RPC(close/PR/meta)가 자식 ws로 폴백하지 않게 한다.
+    // Switch to existing task diff tab if open. F1 backfill: surfaces created before J3 lack
+    // diffOwnerWorkspaceId — on reuse fill owner passed now so owner-scoped RPC (close/PR/meta)
+    // does not fall back to child ws.
     const existing = pane.surfaces.find((s) => s.surfaceType === 'diff' && s.diffTaskId === taskId);
     if (existing) {
       if (ownerWorkspaceId && !existing.diffOwnerWorkspaceId) {
@@ -172,7 +172,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
       cwd: '',
       surfaceType: 'diff',
       diffTaskId: taskId,
-      // F1: task.mission.* RPC가 owner 스코프라 owner(부모) ws id를 실어둔다.
+      // F1: task.mission.* RPC is owner-scoped — store parent ws id as owner.
       ...(ownerWorkspaceId ? { diffOwnerWorkspaceId: ownerWorkspaceId } : {}),
     };
     pane.surfaces.push(surface);
@@ -185,7 +185,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     if (!ws) return;
     const pane = findLeafPane(ws.rootPane, paneId);
     if (!pane) return;
-    // 같은 repo diff가 이미 열려 있으면 그 탭으로 전환(addDiffSurface와 동형).
+    // Switch to existing repo diff tab if open (same shape as addDiffSurface).
     const existing = pane.surfaces.find(
       (s) => s.surfaceType === 'diff' && s.diffRepoPath === repoPath,
     );
@@ -229,7 +229,7 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
     // inherit a dead pane's question and read as blocked from birth.
     if (closedPtyId && state.surfacePendingQuestion) delete state.surfacePendingQuestion[closedPtyId];
     if (closedPtyId) clearNudgesFor(closedPtyId); // A5: free the rate-cap entry for a reusable ptyId
-    // J3 F4: onExhausted 매핑도 이 ptyId 소멸과 함께 evict(무한 성장·재사용 ptyId 오염 방지).
+    // J3 F4: evict onExhausted mapping when this ptyId is destroyed (prevent unbounded growth / reused ptyId pollution).
     if (closedPtyId && state.taskPtyRegistry) delete state.taskPtyRegistry[closedPtyId];
 
     pane.surfaces.splice(idx, 1);
@@ -297,8 +297,8 @@ export const createSurfaceSlice: StateCreator<StoreState, [['zustand/immer', nev
 
   updateSurfaceCwd: (ptyId, cwd) => set((state: StoreState) => {
     if (!ptyId) return;
-    // 프롬프트 스크래핑 오탐 방어 — 구버전 데몬이 화면 텍스트에서 긁은
-    // 불가능한 모양의 경로(맥에서 "C:\…")는 기존 cwd를 덮지 않는다.
+    // Prompt-scrape false-positive defense — legacy daemon scraped impossible path shapes
+    // from screen text (e.g. "C:\…" on Mac) must not overwrite existing cwd.
     if (!isPlausibleCwd(cwd)) return;
     for (const ws of state.workspaces) {
       const updateInPane = (pane: Pane): boolean => {

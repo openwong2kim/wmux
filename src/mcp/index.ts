@@ -197,9 +197,9 @@ const A2A_TASK_UPDATE_SHAPE = {
   evidence: z
     .object({
       summary: z.string().describe('Required, non-empty. For completed: the completion summary. For failed: the failure reason.'),
-      // kind별 discriminated union — normalize 계약과 1:1 (command는 command 필수 +
-      // passed|failed, inspection/artifact는 verified|unverified). zod가 통과시킨
-      // 아이템이 normalize에서 malformed로 죽는 조합을 스키마 단계에서 제거한다.
+      // kind-specific discriminated union — 1:1 with normalize contract (command requires
+      // command field + passed|failed; inspection/artifact verified|unverified). Removes
+      // combinations that pass zod but die as malformed in normalize.
       items: z
         .array(
           z.discriminatedUnion('kind', [
@@ -1131,7 +1131,7 @@ server.tool(
 // 2. a2a_discover — Agent Card discovery
 server.tool(
   'a2a_discover',
-  'List all available workspaces/agents and their names. ALWAYS call this first when the user references a workspace by number or name (e.g. "3번", "Workspace 1") so you know valid targets.',
+  'List all available workspaces/agents and their names. ALWAYS call this first when the user references a workspace by number or name (e.g. "workspace 3", "Workspace 1") so you know valid targets.',
   {},
   async () => callRpc('a2a.discover'),
 );
@@ -1189,7 +1189,7 @@ const sendMessageHandler = async ({ to, pane_id, surface_id, title, task_id, mes
 
 server.tool(
   'send_message',
-  'Send a message to another workspace. Use when asked to talk to, greet, or send anything to workspace 1/2/3 etc. Accepts number ("1", "3번"), name ("Workspace 2"), or ID.',
+  'Send a message to another workspace. Use when asked to talk to, greet, or send anything to workspace 1/2/3 etc. Accepts number ("1", "3"), name ("Workspace 2"), or ID.',
   SEND_MESSAGE_SHAPE,
   sendMessageHandler,
 );
@@ -1225,8 +1225,9 @@ server.tool(
     const senderPtyId = getTaskSenderPtyId();
     if (senderPtyId) params.senderPtyId = senderPtyId;
     if (message) params.message = message;
-    // 완료증거는 artifact_name/artifact_data(A2A-spec 산출물 채널)와 병존하는 별도
-    // wmux 완료계약 채널 — 권위 정규화·검증은 렌더러/데몬이 수행(여긴 통과만).
+    // Completion evidence is a separate wmux completion-contract channel coexisting with
+    // artifact_name/artifact_data (A2A-spec artifact channel) — authority normalization/
+    // validation is renderer/daemon (pass-through here only).
     if (evidence) params.evidence = evidence;
     if (artifact_name) {
       params.artifact = {

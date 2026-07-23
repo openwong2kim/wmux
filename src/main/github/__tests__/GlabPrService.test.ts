@@ -1,5 +1,5 @@
-// GlabPrService — GitLab REST 매핑·호스트 단위 게이트·TTL·updatedAt 캐시
-// (exec 목킹, GhPrService 테스트와 대칭).
+// GlabPrService — GitLab REST mapping·per-host gate·TTL·updatedAt cache
+// (exec mock, symmetric with GhPrService tests).
 import { describe, it, expect, vi } from 'vitest';
 import { GlabPrService, mapGlabMrItem, mapGlabNotes } from '../GlabPrService';
 import { PR_COMMENT_BODY_CAP } from '../../../shared/prSurface';
@@ -34,11 +34,11 @@ const MR_LIST_JSON = JSON.stringify([
   },
   { iid: 3, title: 'old', state: 'merged', web_url: 'https://g/mr/3' },
   { iid: 2, title: 'wip', state: 'opened', work_in_progress: true, web_url: 'https://g/mr/2' },
-  { title: 'malformed — iid 없음', web_url: 'https://g/x' },
+  { title: 'malformed — no iid', web_url: 'https://g/x' },
 ]);
 
-describe('mapGlabMrItem / mapGlabNotes — GitLab REST 매핑', () => {
-  it('iid→number, source_branch→headRefName, draft/WIP→draft, checks=null(v1 정직 부재)', () => {
+describe('mapGlabMrItem / mapGlabNotes — GitLab REST mapping', () => {
+  it('iid→number, source_branch→headRefName, draft/WIP→draft, checks=null (v1 honest absence)', () => {
     const arr = JSON.parse(MR_LIST_JSON) as Parameters<typeof mapGlabMrItem>[0][];
     const a = mapGlabMrItem(arr[0])!;
     expect(a).toMatchObject({
@@ -55,27 +55,27 @@ describe('mapGlabMrItem / mapGlabNotes — GitLab REST 매핑', () => {
     expect(mapGlabMrItem(arr[3])).toBeNull();
   });
 
-  it('notes — system 노트 제외, 시간순 정렬, HTML주석 스트립+캡', () => {
+  it('notes — excludes system notes, chronological sort, HTML comment strip+cap', () => {
     const big = 'x'.repeat(PR_COMMENT_BODY_CAP + 10);
     const out = mapGlabNotes(
       [
         { system: true, body: 'added 1 commit', created_at: '2026-07-13T00:30:00Z' },
-        { author: { username: 'b' }, body: '<!-- bot -->둘째', created_at: '2026-07-13T02:00:00Z' },
-        { author: { username: 'a' }, body: '첫째', created_at: '2026-07-13T01:00:00Z' },
+        { author: { username: 'b' }, body: '<!-- bot -->second', created_at: '2026-07-13T02:00:00Z' },
+        { author: { username: 'a' }, body: 'first', created_at: '2026-07-13T01:00:00Z' },
         { author: { username: 'c' }, body: big, created_at: '2026-07-13T03:00:00Z' },
       ],
       'mr-url',
     );
     expect(out.map((c) => c.author)).toEqual(['a', 'b', 'c']);
-    expect(out[1].body).toBe('둘째');
+    expect(out[1].body).toBe('second');
     expect(out[2].truncated).toBe(true);
     expect(out[0].url).toBe('mr-url');
     expect(out.every((c) => c.kind === 'comment')).toBe(true);
   });
 });
 
-describe('GlabPrService — 게이트(호스트 단위)', () => {
-  it('glab ENOENT → cli-missing, 프로세스 수명 동안 재프로브 없음', async () => {
+describe('GlabPrService — gate (per-host)', () => {
+  it('glab ENOENT → cli-missing, no reprobe for process lifetime', async () => {
     const enoent = Object.assign(new Error('spawn glab ENOENT'), { code: 'ENOENT' });
     const { svc, calls } = makeService(() => enoent);
     expect((await svc.gate('D:/r', 'gitlab.company.io')).ok).toBe(false);
@@ -83,21 +83,21 @@ describe('GlabPrService — 게이트(호스트 단위)', () => {
     expect(calls.length).toBe(1);
   });
 
-  it('버전 OK + 그 호스트 미인증 → unauthenticated에 호스트명 포함 안내', async () => {
+  it('version OK + unauthenticated on that host → unauthenticated includes host name', async () => {
     const { svc, calls } = makeService((args) =>
       args[0] === '--version' ? { stdout: 'glab 1.x' } : new Error('no token'),
     );
     const g = await svc.gate('D:/r', 'gitlab.company.io');
     expect(g).toMatchObject({ ok: false, reason: 'unauthenticated' });
     if (!g.ok) expect(g.message).toContain('gitlab.company.io');
-    // auth status가 --hostname으로 그 호스트를 검사했는지.
+    // auth status checked that host via --hostname.
     const auth = calls.find((c) => c.args[0] === 'auth');
     expect(auth!.args).toContain('--hostname');
     expect(auth!.args).toContain('gitlab.company.io');
   });
 });
 
-describe('GlabPrService — 목록 TTL·상세 updatedAt 캐시', () => {
+describe('GlabPrService — list TTL·detail updatedAt cache', () => {
   function dataService(nowRef = { t: 0 }) {
     return makeService((args) => {
       if (args[0] === 'mr' && args[1] === 'list') return { stdout: MR_LIST_JSON };
@@ -113,7 +113,7 @@ describe('GlabPrService — 목록 TTL·상세 updatedAt 캐시', () => {
     }, nowRef);
   }
 
-  it('30s 내 재호출 exec 생략, TTL 후 재fetch — malformed 필터 포함', async () => {
+  it('re-call within 30s skips exec, refetch after TTL — includes malformed filter', async () => {
     const nowRef = { t: 0 };
     const { svc, calls } = dataService(nowRef);
     const r1 = await svc.listPrs('D:/r');
@@ -125,22 +125,22 @@ describe('GlabPrService — 목록 TTL·상세 updatedAt 캐시', () => {
     expect(calls.filter((c) => c.args[1] === 'list').length).toBe(2);
   });
 
-  it('상세 — notes를 :id 치환 api로 조회, updatedAt 캐시, MR url 앵커 부착', async () => {
+  it('detail — fetches notes via :id substitution api, updatedAt cache, MR url anchor', async () => {
     const { svc, calls } = dataService();
-    await svc.listPrs('D:/r'); // urlByIid 채움.
+    await svc.listPrs('D:/r'); // fills urlByIid.
     const d1 = await svc.prDetail('D:/r', 7, 'T1');
-    expect(d1.ok && d1.detail.comments.length).toBe(1); // system 제외.
+    expect(d1.ok && d1.detail.comments.length).toBe(1); // system excluded.
     if (d1.ok) expect(d1.detail.comments[0].url).toContain('/merge_requests/7');
     await svc.prDetail('D:/r', 7, 'T1');
     expect(calls.filter((c) => c.args[0] === 'api').length).toBe(1);
     await svc.prDetail('D:/r', 7, 'T2');
     expect(calls.filter((c) => c.args[0] === 'api').length).toBe(2);
-    // api 경로가 :id 치환 + iid를 쓰는지.
+    // api path uses :id substitution + iid.
     const api = calls.find((c) => c.args[0] === 'api')!;
     expect(api.args[1]).toContain('projects/:id/merge_requests/7/notes');
   });
 
-  it('glab 실패 stderr는 fail-soft로 강등', async () => {
+  it('glab failure stderr demoted fail-soft', async () => {
     const { svc } = makeService(() => Object.assign(new Error('boom'), { stderr: '404 project not found' }));
     const r = await svc.listPrs('D:/r');
     expect(r.ok).toBe(false);

@@ -4,18 +4,18 @@ import { immer } from 'zustand/middleware/immer';
 import { createWorkTaskSlice, type WorkTaskSlice } from '../workTaskSlice';
 import type { WorkTask } from '../../../../shared/workTask';
 
-// WorkTaskSlice는 StoreState 전체가 아니라 자기 상태만 건드리므로 최소 목 스토어로
-// 검증한다(companySlice.test.ts 관례 동형).
+// WorkTaskSlice touches only its own state, not full StoreState — validate with minimal mock store
+// (same convention as companySlice.test.ts).
 function createTestStore() {
   return create<WorkTaskSlice>()(
     immer((...args) => ({
-      // @ts-expect-error — 최소 목 스토어는 전체 StoreState와 일치하지 않는다.
+      // @ts-expect-error — minimal mock store does not match full StoreState.
       ...createWorkTaskSlice(...args),
     })),
   );
 }
 
-/** 미션 픽스처 헬퍼(필수 필드만 채운다 — 렌더러는 read-only 소비자). */
+/** Mission fixture helper (fills required fields only — renderer is read-only consumer). */
 function mission(over: Partial<WorkTask> & Pick<WorkTask, 'id' | 'title'>): WorkTask {
   const ref = { principalId: 'p', verifiedWorkspaceId: over.owner?.verifiedWorkspaceId ?? 'parent-a' };
   return {
@@ -35,7 +35,7 @@ describe('workTaskSlice', () => {
     store = createTestStore();
   });
 
-  it('setMissions가 부모별로 캐싱하고 paneGroupId 역인덱스를 만든다', () => {
+  it('setMissions caches per parent and builds paneGroupId reverse index', () => {
     store.getState().setMissions('parent-a', [
       mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1' }),
       mission({ id: 'wtask-2', title: 'B', paneGroupId: 'child-2' }),
@@ -45,73 +45,73 @@ describe('workTaskSlice', () => {
     expect(store.getState().getMissionForPaneGroup('child-2')?.title).toBe('B');
   });
 
-  it('paneGroupId 미물질화(fan-out 진행 중) 태스크는 역인덱스에서 빠진다', () => {
+  it('tasks without materialized paneGroupId (fan-out in progress) are omitted from reverse index', () => {
     store.getState().setMissions('parent-a', [
-      mission({ id: 'wtask-1', title: 'A' }), // paneGroupId 없음
+      mission({ id: 'wtask-1', title: 'A' }), // no paneGroupId
     ]);
     expect(store.getState().missionsByWorkspace['parent-a']).toHaveLength(1);
     expect(store.getState().getMissionForPaneGroup('child-1')).toBeUndefined();
   });
 
-  it('여러 부모의 미션을 하나의 paneGroupId 인덱스로 합친다', () => {
+  it('merges missions from multiple parents into one paneGroupId index', () => {
     store.getState().setMissions('parent-a', [mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1' })]);
     store.getState().setMissions('parent-b', [mission({ id: 'wtask-9', title: 'Z', paneGroupId: 'child-9', owner: { principalId: 'p', verifiedWorkspaceId: 'parent-b' } })]);
     expect(store.getState().getMissionForPaneGroup('child-1')?.id).toBe('wtask-1');
     expect(store.getState().getMissionForPaneGroup('child-9')?.id).toBe('wtask-9');
   });
 
-  it('setMissions 재호출은 그 부모의 목록만 통째로 교체한다(다른 부모 보존)', () => {
+  it('setMissions re-invocation replaces only that parent list (other parents preserved)', () => {
     store.getState().setMissions('parent-a', [mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1' })]);
     store.getState().setMissions('parent-b', [mission({ id: 'wtask-2', title: 'B', paneGroupId: 'child-2' })]);
-    // parent-a를 빈 목록으로 교체 → child-1 인덱스 사라지고 parent-b는 유지.
+    // Replace parent-a with empty list → child-1 index gone, parent-b preserved.
     store.getState().setMissions('parent-a', []);
     expect(store.getState().getMissionForPaneGroup('child-1')).toBeUndefined();
     expect(store.getState().getMissionForPaneGroup('child-2')?.id).toBe('wtask-2');
   });
 
-  it('clearMissionsFor는 부모 캐시와 그 역인덱스를 제거한다', () => {
+  it('clearMissionsFor removes parent cache and its reverse index entries', () => {
     store.getState().setMissions('parent-a', [mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1' })]);
     store.getState().clearMissionsFor('parent-a');
     expect(store.getState().missionsByWorkspace['parent-a']).toBeUndefined();
     expect(store.getState().getMissionForPaneGroup('child-1')).toBeUndefined();
   });
 
-  describe('J3 §3 registerTaskPtys (onExhausted 토스트 매핑)', () => {
-    it('ptyId→태스크 매핑을 등록하고 worktreePath를 보존한다', () => {
+  describe('J3 §3 registerTaskPtys (onExhausted toast mapping)', () => {
+    it('registers ptyId→task mapping and preserves worktreePath', () => {
       store.getState().registerTaskPtys([
         { ptyId: 'pty-1', taskId: 'wtask-1', title: 'A', worktreePath: '/wt/a' },
-        { ptyId: 'pty-2', taskId: 'wtask-2', title: 'B' }, // worktreePath 없음(미물질화).
+        { ptyId: 'pty-2', taskId: 'wtask-2', title: 'B' }, // no worktreePath (not materialized).
       ]);
       expect(store.getState().taskPtyRegistry['pty-1']).toEqual({ taskId: 'wtask-1', title: 'A', worktreePath: '/wt/a' });
       expect(store.getState().taskPtyRegistry['pty-2']).toEqual({ taskId: 'wtask-2', title: 'B' });
     });
 
-    it('빈 ptyId 항목은 건너뛴다', () => {
+    it('skips entries with empty ptyId', () => {
       store.getState().registerTaskPtys([{ ptyId: '', taskId: 'x', title: 'X' }]);
       expect(Object.keys(store.getState().taskPtyRegistry)).toHaveLength(0);
     });
   });
 
-  describe('J3 §4 setPaneGroupDeparted (이탈 뱃지)', () => {
-    it('이탈 cwd를 설정하고 null로 해제한다', () => {
+  describe('J3 §4 setPaneGroupDeparted (departure badge)', () => {
+    it('sets departed cwd and clears with null', () => {
       store.getState().setPaneGroupDeparted('child-1', '/somewhere/else');
       expect(store.getState().departedPaneGroups['child-1']).toBe('/somewhere/else');
       store.getState().setPaneGroupDeparted('child-1', null);
       expect(store.getState().departedPaneGroups['child-1']).toBeUndefined();
     });
 
-    it('빈 paneGroupId는 무시한다', () => {
+    it('ignores empty paneGroupId', () => {
       store.getState().setPaneGroupDeparted('', '/x');
       expect(Object.keys(store.getState().departedPaneGroups)).toHaveLength(0);
     });
   });
 
-  describe('refreshMissions (브리지 경유)', () => {
+  describe('refreshMissions (via bridge)', () => {
     afterEach(() => {
       delete (globalThis as { window?: unknown }).window;
     });
 
-    it('rpc.invoke 봉투({result:{ok,tasks}})를 벗겨 setMissions에 투영한다', async () => {
+    it('unwraps rpc.invoke envelope ({result:{ok,tasks}}) into setMissions', async () => {
       const listFn = vi.fn().mockResolvedValue({
         ok: true,
         result: { ok: true, tasks: [mission({ id: 'wtask-1', title: 'A', paneGroupId: 'child-1' })] },
@@ -124,13 +124,13 @@ describe('workTaskSlice', () => {
       expect(store.getState().getMissionForPaneGroup('child-1')?.id).toBe('wtask-1');
     });
 
-    it('브리지 미설치/거부/비배열 응답은 조용한 no-op(캐시 불변)', async () => {
-      // 브리지 없음.
+    it('bridge missing/rejected/non-array response is silent no-op (cache unchanged)', async () => {
+      // No bridge installed.
       (globalThis as { window?: unknown }).window = {};
       await store.getState().refreshMissions('parent-a');
       expect(store.getState().missionsByWorkspace['parent-a']).toBeUndefined();
 
-      // ok=false 봉투.
+      // ok=false envelope.
       (globalThis as { window?: unknown }).window = {
         __wmuxMissionRpc: { list: vi.fn().mockResolvedValue({ ok: false }) },
       };
@@ -138,7 +138,7 @@ describe('workTaskSlice', () => {
       expect(store.getState().missionsByWorkspace['parent-a']).toBeUndefined();
     });
 
-    it('빈 verifiedWorkspaceId는 브리지를 부르지 않는다', async () => {
+    it('does not call bridge for empty verifiedWorkspaceId', async () => {
       const listFn = vi.fn();
       (globalThis as { window?: unknown }).window = { __wmuxMissionRpc: { list: listFn } };
       await store.getState().refreshMissions('');

@@ -1,29 +1,29 @@
-// `git worktree list --porcelain` 파서 + 워크트리 GUI 입력 검증 (순수 함수).
+// `git worktree list --porcelain` parser + worktree GUI input validation (pure functions).
 //
-// company/WorktreeManager의 파서와 별개 구현이다 — 그쪽은 유료 모듈(company)
-// 내부 타입에 결박돼 있고 동결 상태라 건드리지 않는다(레이어·정책 양쪽 이유).
-// 이 파서는 porcelain 블록 계약을 더 넓게 커버한다: detached / bare /
-// locked(+사유) / prunable까지 — GUI가 "왜 이 워크트리를 못 지우는가"를
-// 표시하려면 이 플래그들이 필요하다.
+// Separate implementation from company/WorktreeManager's parser — that one is bound to
+// paid module (company) internal types and frozen, so we do not touch it (layer + policy).
+// This parser covers a wider porcelain block contract: detached / bare /
+// locked (+reason) / prunable — the GUI needs these flags to show "why this worktree
+// cannot be removed".
 //
-// porcelain 계약(git-worktree(1)): 워크트리당 한 블록, 빈 줄 구분.
-//   worktree <path>          — 항상 첫 줄(절대경로)
-//   HEAD <oid>               — bare가 아니면 존재
-//   branch refs/heads/<name> — attached일 때만; detached면 대신 `detached` 라인
-//   bare / detached          — 무값 불리언 라인
-//   locked [<reason>] / prunable [<reason>] — 값이 있을 수도 없을 수도 있음
+// porcelain contract (git-worktree(1)): one block per worktree, blank line separator.
+//   worktree <path>          — always first line (absolute path)
+//   HEAD <oid>               — present unless bare
+//   branch refs/heads/<name> — attached only; detached uses `detached` line instead
+//   bare / detached          — valueless boolean lines
+//   locked [<reason>] / prunable [<reason>] — reason may or may not be present
 
 export interface WorktreeEntry {
-  /** 워크트리 절대경로 (porcelain 원문 — 슬래시 구분자일 수 있음). */
+  /** Worktree absolute path (porcelain raw — may use slash separators). */
   readonly path: string;
   readonly headOid: string;
-  /** attached 브랜치 이름(refs/heads/ 제거). detached·bare면 null. */
+  /** Attached branch name (refs/heads/ stripped). null when detached·bare. */
   readonly branch: string | null;
   readonly detached: boolean;
   readonly bare: boolean;
-  /** locked면 사유 문자열(사유 없으면 ''), 아니면 null. */
+  /** Reason string when locked ('' if no reason), else null. */
   readonly locked: string | null;
-  /** prunable이면 사유 문자열(없으면 ''), 아니면 null. */
+  /** Reason string when prunable ('' if none), else null. */
   readonly prunable: string | null;
 }
 
@@ -57,10 +57,10 @@ export function parseWorktreePorcelain(raw: string): WorktreeEntry[] {
 }
 
 /**
- * git ref(브랜치명) 검증 — 플래그 주입('-' 시작)·traversal('..')·제어문자 차단.
- * company WorktreeManager.validateGitRef와 동일 규칙(정책 계약이라 규칙만 복제).
- * 통과 시 trim된 값을 반환, 실패 시 사유 문자열을 담아 throw 대신 null 계약이
- * 아닌 Error를 던진다(호출부 IPC 핸들러가 fail-soft로 강등).
+ * git ref (branch name) validation — block flag injection (leading '-'), traversal ('..'), controls.
+ * Same rules as company WorktreeManager.validateGitRef (policy contract — rules copied only).
+ * Returns trimmed value on success; throws Error on failure (not a null contract —
+ * IPC handler caller downgrades fail-soft).
  */
 export function validateGitRef(ref: string): string {
   const trimmed = (ref ?? '').trim();
@@ -75,7 +75,7 @@ export function validateGitRef(ref: string): string {
   return trimmed;
 }
 
-/** 브랜치명 → 워크트리 디렉토리 leaf 이름(경로 안전 문자만). */
+/** Branch name → worktree directory leaf name (path-safe characters only). */
 export function branchToDirName(branch: string): string {
   return branch.replace(/[/\\:*?"<>|\s]+/g, '-').replace(/^-+|-+$/g, '') || 'worktree';
 }

@@ -8,11 +8,12 @@ import type { EnvPolicy } from '../../shared/spawnKind';
  * pty.handler). Extracted as a pure function so the security-critical merge
  * order has direct regression coverage and the two callsites can't drift.
  *
- *   1. baseline — `policy`가 결정한다 (실행 컨텍스트 정책):
- *        'gated'(기본, fail-closed)  → buildGatedAutomationEnv: 내부 + 자격증명
- *          strip. 에이전트/자동화 pane. 기존 동작과 동일(하위호환).
- *        'passthrough'               → buildInteractiveShellEnv: 내부만 strip,
- *          자격증명 투과. 사용자가 직접 연 셸 (타 터미널 동형).
+ *   1. baseline — determined by `policy` (execution-context policy):
+ *        'gated' (default, fail-closed) → buildGatedAutomationEnv: strip
+ *          internal + credentials. Agent/automation panes. Same as legacy behavior
+ *          (backward compatible).
+ *        'passthrough'                  → buildInteractiveShellEnv: strip internal
+ *          only, credentials pass through. User-opened shell (same as other terminals).
  *   1.5 accountEnv (multi-account) — overlay the workspace's bound-account env
  *      (CLAUDE_CONFIG_DIR / CODEX_HOME), resolved in MAIN from the workspace
  *      binding, AFTER the denylist and BEFORE the profile. Applied before the
@@ -32,9 +33,9 @@ import type { EnvPolicy } from '../../shared/spawnKind';
  *      decides which identity vars apply (local mode also sets the socket
  *      path; daemon mode does not).
  *
- * `policy`는 기본 'gated'라 인자를 안 주는 기존 호출부/테스트는 이전과 동일하게
- * 동작한다(fail-closed). WMUX_* 네임스페이스 clear + identity 강제는 정책과
- * 무관하게 항상 적용되므로, passthrough여도 상속된 WMUX 정체성은 스푸핑 불가.
+ * `policy` defaults to 'gated', so existing callers/tests that omit the argument
+ * behave as before (fail-closed). WMUX_* namespace clear + forced identity apply
+ * regardless of policy, so even passthrough cannot spoof inherited WMUX identity.
  *
  * The result is a fresh object the caller may further mutate (e.g. shell-
  * integration injection layered on top).
@@ -114,10 +115,11 @@ export function resolveSpawnEnv(
   // process.env (never a persisted blob), so a simple presence check is enough —
   // the daemon recovery path scrubs a stale blob suffix separately.
   if (typeof dataSuffix === 'string' && dataSuffix) env[ENV_KEYS.DATA_SUFFIX] = dataSuffix;
-  // 로케일 폴백 (issue #321): 셸이 UTF-8 로케일을 하나도 못 받으면 C/POSIX로 떨어져
-  // zsh ZLE가 한글·CJK 멀티바이트 입력을 조합하지 못하고 `<0085>` 식으로 깨진다.
-  // macOS를 Dock/Finder로 실행하면 `LANG`이 상속되지 않는 게 대표적 트리거. 사용자가
-  // 프로필/rc로 이미 로케일을 지정했으면(아래 셋 중 하나라도) 절대 덮어쓰지 않는다.
+  // Locale fallback (issue #321): without any UTF-8 locale the shell falls back to
+  // C/POSIX and zsh ZLE cannot compose Korean/CJK multibyte input, showing garbage
+  // like `<0085>`. Launching macOS from Dock/Finder without inheriting `LANG` is the
+  // common trigger. Never overwrite if the user already set locale via profile/rc
+  // (any of the three vars below).
   if (fallbackLocale && !env.LANG && !env.LC_ALL && !env.LC_CTYPE) {
     env.LANG = fallbackLocale;
   }

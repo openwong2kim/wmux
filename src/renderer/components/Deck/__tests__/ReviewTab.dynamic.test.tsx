@@ -158,8 +158,8 @@ describe('ReviewTab — diff-first roster', () => {
     expect(surfaces.some((s) => s.surfaceType === 'diff')).toBe(true);
   });
 
-  it('스코프: 현재 repo(워크트리 포함)만 보이고 다른 repo는 제외된다', async () => {
-    // 현재 repo = D:/repo-clean, 그 워크트리 = [본체, feat]. 다른 repo(D:/repo-other)는 제외.
+  it('scope: only current repo (including worktree) visible, other repos excluded', async () => {
+    // Current repo = D:/repo-clean, its worktrees = [main, feat]. Other repo (D:/repo-other) excluded.
     (window as unknown as { electronAPI: { worktree?: unknown } }).electronAPI.worktree = {
       list: vi.fn(async (repoPath: string) =>
         repoPath === 'D:/repo-clean'
@@ -173,32 +173,32 @@ describe('ReviewTab — diff-first roster', () => {
         workspace('ws-feat', 'feat-ws', 'D:/repo-clean-worktrees/feat'),
         workspace('ws-other', 'other-ws', 'D:/repo-other'),
       ],
-      'ws-main', // 활성 = repo-clean → 스코프 = repo-clean의 워크트리
+      'ws-main', // active = repo-clean → scope = repo-clean worktrees
     );
     await mount();
     const rows = container.querySelectorAll('[data-review-list] li');
-    expect(rows).toHaveLength(2); // main + feat, other 제외
+    expect(rows).toHaveLength(2); // main + feat, other excluded
     const text = container.textContent ?? '';
     expect(text).toContain('main-ws');
     expect(text).toContain('feat-ws');
     expect(text).not.toContain('other-ws');
   });
 
-  it('스코프 해결 실패(활성 워크스페이스가 repo 아님)면 전체 폴백', async () => {
-    // worktree.list는 있으나 활성 워크스페이스 cwd가 repo가 아니라 scope=null → 전체.
+  it('scope resolution failure (active workspace not a repo) → full fallback', async () => {
+    // worktree.list exists but active workspace cwd is not a repo so scope=null → show all.
     (window as unknown as { electronAPI: { worktree?: unknown } }).electronAPI.worktree = {
       list: vi.fn(async () => ({ ok: true, worktrees: [{ path: 'D:/repo-clean' }] })),
     };
     seed(
       [
-        workspace('ws-home', 'home-ws', 'C:/not-a-repo'), // 활성, repo 아님 → scope null
+        workspace('ws-home', 'home-ws', 'C:/not-a-repo'), // active, not a repo → scope null
         workspace('ws-repo', 'repo-ws', 'D:/repo-clean'),
       ],
       'ws-home',
     );
     await mount();
     const rows = container.querySelectorAll('[data-review-list] li');
-    expect(rows).toHaveLength(2); // 폴백: 둘 다 표시
+    expect(rows).toHaveLength(2); // fallback: both shown
   });
 
   // Regression (2026-07-21): agent pane whose SHELL sits outside the repo —

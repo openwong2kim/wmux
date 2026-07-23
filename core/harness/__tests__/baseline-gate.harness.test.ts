@@ -1,20 +1,22 @@
-// E0 하니스 — 4중 기준선 게이트 (스펙: engine-core-decision-2026-07-09.md §5-2)
+// E0 harness — four-way baseline gate (spec: engine-core-decision-2026-07-09.md section 5-2)
 //
-// 자기일치(①)만으로는 게이트 통과 불가 — 4개 전부여야 한다:
-//   ① 결정성    — xterm.js 2회 실행 스냅샷 100% 일치.
-//   ② 무크래시  — 전 코퍼스를 크래시/panic 없이 완주.
-//   ③ 골든      — 워크로드 정답 명세(코퍼스당 ≥3 어서션)를 xterm.js 산출이 통과.
-//   ④ 재현성    — 녹화→재생 왕복 안정(코퍼스 재생성 시 동일 바이트 + 재생 결과 동일).
+// Matching itself (1) is not enough to pass the gate; all four conditions are required:
+//   1. Determinism — two xterm.js runs produce identical snapshots.
+//   2. No crashes — the entire corpus completes without a crash or panic.
+//   3. Golden results — xterm.js output passes at least three workload assertions per corpus.
+//   4. Reproducibility — recording and replay are stable round trips with identical bytes and results.
 //
-// 이 게이트의 의미(§5-2 명시): "차등 기준선(분모) 확립 + 하니스 자체 신뢰성 증명". 코어 정확도
-// 판정은 E1(≥99.9%)·E4(99.99%)의 몫이지 여기가 아니다.
+// Meaning of this gate (explicitly defined in section 5-2): establish a differential
+// baseline (denominator) and demonstrate that the harness itself is trustworthy.
+// Core accuracy belongs to E1 (at least 99.9%) and E4 (99.99%), not this gate.
 //
-// ── 게이트④ tautology 제거(R1) ──────────────────────────────────────────────
-// 이 테스트는 **저장소 코퍼스 디렉토리(CORPUS_DIR)에 어떤 쓰기도 하지 않는다.** 커밋된 코퍼스
-// 파일(recording.bin·events.jsonl·meta.json)을 먼저 메모리로 읽어 보존하고, 재생성은 별도 tmp
-// 디렉토리(os.tmpdir 하위)로 내보낸 뒤 커밋본과 바이트/구조를 비교한다. 이렇게 해야 "커밋본
-// 드리프트 0" 검사가 방금 덮어쓴 값과의 자기 비교(tautology)로 전락하지 않는다. 저장소 코퍼스의
-// 생성은 harness:gen-corpus 스크립트 전용이다(generate-corpus.ts의 기본 출력 경로).
+// --- Remove gate 4 tautology (R1) ---------------------------------------------
+// This test never writes to the repository corpus directory (CORPUS_DIR). It first
+// preserves the committed corpus files (recording.bin, events.jsonl, meta.json) in
+// memory, writes regenerated output to a separate temporary directory, then compares
+// bytes and structure with the committed copy. This prevents the drift check from
+// becoming a self-comparison against values it just overwrote. Corpus generation is
+// reserved for the harness:gen-corpus script (the default path of generate-corpus.ts).
 
 import { describe, it, beforeAll, expect } from 'vitest';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
@@ -26,7 +28,7 @@ import { XtermSubject, snapshotsEqual } from '../differ';
 import { generateCorpus, CORPUS_DIR } from '../generate-corpus';
 import type { CellSnapshot, GridSnapshot, RecordingEvent, ThroughputMetrics } from '../types';
 
-/** 커밋된 코퍼스 케이스에서 raw 파일 3종을 읽는다(저장소 읽기 전용 — 쓰기 없음). */
+/** Read the three raw files for a committed corpus case (repository read-only — no writes). */
 interface CommittedCase {
   readonly recordingBin: Uint8Array;
   readonly eventsJsonlText: string;
@@ -46,11 +48,11 @@ function readCommittedCase(name: string): CommittedCase {
   };
 }
 
-describe('E0 4중 기준선 게이트 — xterm.js', () => {
+describe('E0 four-way baseline gate — xterm.js', () => {
   const subject = new XtermSubject();
   const metrics: ThroughputMetrics[] = [];
 
-  // 커밋된 코퍼스를 **먼저 메모리로 보존**한다(R1 — 재생성이 이 값을 오염시키지 않도록 선행 스냅샷).
+  // Preserve the committed corpus in memory first (R1), before regeneration can alter it.
   const committed = new Map<string, CommittedCase>();
 
   beforeAll(() => {
@@ -59,34 +61,31 @@ describe('E0 4중 기준선 게이트 — xterm.js', () => {
     }
   });
 
-  // ── 게이트 ① 결정성: 같은 recording을 xterm.js에 2회 재생 → 스냅샷 100% 일치 ──
-  it('게이트①: xterm.js 2회 재생 스냅샷이 전 코퍼스에서 100% 일치(결정성)', async () => {
+  // Gate 1: replay the same recording twice in xterm.js and require identical snapshots.
+  it('gate 1: xterm.js two replay snapshots match 100% across the full corpus (determinism)', async () => {
     for (const w of WORKLOADS) {
       const { recordingBin, events } = committed.get(w.name)!;
       const r1 = await subject.replay(recordingBin, events);
       const r2 = await subject.replay(recordingBin, events);
       expect(
         snapshotsEqual(r1.grid, r2.grid),
-        `[${w.name}] xterm.js 2회 재생이 불일치(비결정)`,
+        `[${w.name}] xterm.js two replays mismatch (non-deterministic)`,
       ).toBe(true);
     }
   });
 
-  // ── 게이트 ① 보강(R10): 청크 경계 강건성 — 1바이트씩 feed vs 통째 feed가 동일 레이아웃 ──
-  // 파서가 청크 경계에서 상태를 올바로 보존하는지 실검증한다(멀티바이트 UTF-8·ESC 시퀀스가 임의
-  // 경계에서 잘려도 그리드가 같아야 한다). XtermSubject를 feedChunkBytes=1로 구성해 recording을
-  // 1바이트씩 흘리고 통째 재생과 대조한다 — 청크 크기만 다르고 나머지 규율은 동일하다.
+  // Gate 1 reinforcement (R10): chunk-boundary robustness; one-byte and whole-input feeds
+  // must produce the same layout.
+  // Verify that the parser preserves state at chunk boundaries, including when multibyte
+  // UTF-8 and ESC sequences are split arbitrarily. Compare a one-byte feed with whole replay.
   //
-  // **실측 관측(2026-07-09) — 정직한 예외 1건**: cjk-emoji의 ZWJ 가족(👨‍👩‍👧)에서, 트레일링 ZWJ
-  // (U+200D)가 **다른 write 콜에 걸쳐 도착하면** 앞 셀의 grapheme 문자열(char/code)에 붙지 않는다
-  // (통째 feed: char="👨‍"·code=U+200D / 1바이트 feed: char="👨"·code=U+1F468). 정확히 2셀에서
-  // char·code만 이렇게 갈리고, **width·커서·색·플래그·버퍼 등 레이아웃은 100% 동일**하다(폭 불일치
-  // 0). 이는 xterm.js의 좁은 실동작이며 하니스 버그가 아니다. 그래서 이 게이트는 레이아웃 강건성을
-  // 강제하되, char/code 차이가 **순수 트레일링 U+200D 부착 여부**뿐인 셀만 관용한다(그 외 어떤
-  // char/code/width/레이아웃 발산도 실패). 이렇게 해야 게이트가 고무도장이 아니라 실제 강건성 증명이
-  // 된다.
+  // Measured observation (2026-07-09): one honest exception occurs for the cjk-emoji ZWJ
+  // family. If the trailing ZWJ (U+200D) arrives in another write call, it does not attach
+  // to the preceding cell's grapheme string. Only char/code differ in two cells; width,
+  // cursor, color, flags, buffer, and layout remain identical. This is xterm.js behavior,
+  // not a harness bug. Therefore tolerate only a pure trailing-ZWJ attachment difference.
   const subjectByByte = new XtermSubject({ feedChunkBytes: 1 });
-  it('게이트①-b: 1바이트씩 feed vs 통째 feed가 동일 레이아웃(청크 경계 강건성)', async () => {
+  it('gate 1-b: one-byte feed vs whole feed yields identical layout (chunk-boundary robustness)', async () => {
     for (const w of WORKLOADS) {
       const { recordingBin, events } = committed.get(w.name)!;
       const whole = await subject.replay(recordingBin, events);
@@ -94,93 +93,95 @@ describe('E0 4중 기준선 게이트 — xterm.js', () => {
       const diff = chunkBoundaryDiff(whole.grid, chunked.grid);
       expect(
         diff,
-        `[${w.name}] 청크 경계 강건성 위반(순수 ZWJ 부착 외 발산): ${diff ?? ''}`,
+        `[${w.name}] chunk-boundary robustness violation (divergence beyond pure ZWJ attachment): ${diff ?? ''}`,
       ).toBeNull();
     }
   });
 
-  // ── 게이트 ② 무크래시: 전 코퍼스 완주 ──
-  it('게이트②: 전 코퍼스를 크래시/throw 없이 완주(무크래시)', async () => {
+  // Gate 2: complete the entire corpus without crashes.
+  it('gate 2: full corpus completes without crash/throw (no-crash)', async () => {
     for (const w of WORKLOADS) {
       const { recordingBin, events } = committed.get(w.name)!;
-      // replay가 throw하면 이 expect 이전에 테스트가 실패한다 — 완주 자체가 게이트.
+      // A thrown replay fails the test before this assertion; completion itself is the gate.
       const res = await subject.replay(recordingBin, events);
-      metrics.push(res.metrics); // ④/처리량 계측에 재사용.
-      expect(res.grid.cells.length, `[${w.name}] 그리드 행이 비어있음`).toBeGreaterThan(0);
+      metrics.push(res.metrics); // Reused for throughput measurements.
+      expect(res.grid.cells.length, `[${w.name}] grid has no rows`).toBeGreaterThan(0);
     }
-    expect(metrics.length, '전 코퍼스가 완주해야 한다').toBe(WORKLOADS.length);
+    expect(metrics.length, 'full corpus must complete').toBe(WORKLOADS.length);
   });
 
-  // ── 게이트 ③ 골든: 워크로드 정답 명세를 xterm.js 산출이 통과(코퍼스당 ≥3) ──
-  it('게이트③: 골든 어서션(코퍼스당 ≥3)을 xterm.js 산출이 전부 통과', async () => {
+  // Gate 3: xterm.js output must pass the golden workload specification (at least three per corpus).
+  it('gate 3: xterm.js output passes all golden assertions (≥3 per corpus)', async () => {
     for (const w of WORKLOADS) {
-      // 코퍼스당 ≥3 어서션 불변식(스펙 §5-2 ③).
-      expect(w.golden.length, `[${w.name}] 골든 어서션이 3개 미만`).toBeGreaterThanOrEqual(3);
+      // Invariant: every corpus has at least three golden assertions (specification section 5-2.3).
+      expect(w.golden.length, `[${w.name}] fewer than 3 golden assertions`).toBeGreaterThanOrEqual(3);
       const { recordingBin, events } = committed.get(w.name)!;
       const res = await subject.replay(recordingBin, events);
       for (const g of w.golden) {
         const failure = g.check(res.grid);
-        expect(failure, `[${w.name}] 골든 실패: ${g.name} → ${failure}`).toBeNull();
+        expect(failure, `[${w.name}] golden failure: ${g.name} → ${failure}`).toBeNull();
       }
     }
   });
 
-  // ── 게이트 ④ 재현성: 녹화→재생 왕복 안정 (tautology 제거 — R1) ──
-  // (a) 녹화 재생성이 동일 바이트를 냄(2회 record 해시 일치).
-  // (b) **커밋된 코퍼스 3종 파일 == 별도 tmp로 재생성한 산출물**(저장소에 쓰지 않고 비교).
-  //     recording.bin은 바이트, events.jsonl·meta.json은 구조(파싱 후 deep-equal)로 대조한다.
-  // (c) 커밋된 녹화 산출물을 재생한 결과가 워크로드 정의의 골든을 통과(왕복 안정).
-  it('게이트④: 녹화→재생 왕복 안정(2회 녹화 동일 바이트 + 별도 tmp 재생성==커밋본 + 재생 골든 통과)', async () => {
-    // 재생성은 **별도 tmp 디렉토리**로만 — 저장소 CORPUS_DIR은 절대 건드리지 않는다.
+  // Gate 4: reproducibility — recording→replay round trip is stable (tautology removed — R1).
+  // (a) Recording regeneration yields identical bytes (two record() hashes match).
+  // (b) **Committed corpus files == artifacts regenerated into a separate tmp dir**
+  //     (compare without writing to the repository). recording.bin is compared by
+  //     bytes; events.jsonl and meta.json by structure (parse then deep-equal).
+  // (c) Replaying the committed recording passes the workload's golden assertions
+  //     (round-trip stability).
+  it('gate 4: record→replay round trip stable (two recordings identical bytes + tmp regen == committed + replay golden pass)', async () => {
+    // Regeneration goes only to a **separate tmp directory** — never touch CORPUS_DIR.
     const tmpDir = mkdtempSync(path.join(tmpdir(), 'wmux-harness-gate4-'));
     try {
-      // 전 워크로드를 tmp로 재생성(harness:gen-corpus와 동일 경로지만 출력 대상만 tmp).
+      // Regenerate all workloads into tmp (same path as harness:gen-corpus; only the output root differs).
       const genDirs = await generateCorpus(tmpDir);
-      expect(genDirs.length, '재생성이 전 워크로드를 산출').toBe(WORKLOADS.length);
+      expect(genDirs.length, 'regeneration must emit all workloads').toBe(WORKLOADS.length);
 
       for (const w of WORKLOADS) {
         const c = committed.get(w.name)!;
-        // (a) 2회 녹화 동일 바이트(비결정 녹화 검출).
+        // (a) Two recordings yield identical bytes (detect non-deterministic recording).
         const rec1 = await record(w, 0);
         const rec2 = await record(w, 0);
-        expect(rec1.meta.workloadHash, `[${w.name}] 2회 녹화 해시 불일치(비결정 녹화)`).toBe(
+        expect(rec1.meta.workloadHash, `[${w.name}] two recording hashes mismatch (non-deterministic recording)`).toBe(
           rec2.meta.workloadHash,
         );
 
-        // (b) 커밋본 vs tmp 재생성 — recording.bin 바이트 동일.
+        // (b) Committed vs tmp regeneration — recording.bin bytes match.
         const tmpCaseDir = path.join(tmpDir, w.name);
         const tmpBin = new Uint8Array(readFileSync(path.join(tmpCaseDir, 'recording.bin')));
         expect(
           sha256Hex(c.recordingBin),
-          `[${w.name}] 커밋 코퍼스 recording.bin 드리프트(tmp 재생성과 바이트 불일치)`,
+          `[${w.name}] committed corpus recording.bin drift (byte mismatch vs tmp regen)`,
         ).toBe(sha256Hex(tmpBin));
-        // 재생성 산출물이 방금 record()한 결정적 바이트와도 일치(교차 확인).
-        expect(sha256Hex(tmpBin), `[${w.name}] tmp 재생성 != record() 산출`).toBe(
+        // Regenerated artifact also matches the deterministic bytes from record() (cross-check).
+        expect(sha256Hex(tmpBin), `[${w.name}] tmp regen != record() output`).toBe(
           rec1.meta.workloadHash,
         );
 
-        // (b') events.jsonl — 구조 비교(파싱 후 deep-equal). 직렬화 공백 차이에 강건.
+        // (b') events.jsonl — structural compare (parse then deep-equal). Robust to serialization whitespace.
         const tmpEventsText = readFileSync(path.join(tmpCaseDir, 'events.jsonl'), 'utf8');
         expect(
           parseEvents(tmpEventsText),
-          `[${w.name}] 커밋 events.jsonl 구조 드리프트`,
+          `[${w.name}] committed events.jsonl structural drift`,
         ).toEqual(c.events);
-        // 커밋된 events.jsonl은 재직렬화 왕복이 안정(파서 계약).
-        expect(serializeEvents(c.events), `[${w.name}] events.jsonl 재직렬화 왕복 불안정`).toBe(
+        // Committed events.jsonl has a stable reserialize round trip (parser contract).
+        expect(serializeEvents(c.events), `[${w.name}] events.jsonl reserialize round trip unstable`).toBe(
           tmpEventsText,
         );
 
-        // (b'') meta.json — 구조 비교(파싱 후 deep-equal). 커밋본과 재생성본이 같은 메타를 담는지.
+        // (b'') meta.json — structural compare (parse then deep-equal). Committed and regenerated hold the same meta.
         const tmpMetaText = readFileSync(path.join(tmpCaseDir, 'meta.json'), 'utf8');
         expect(
           JSON.parse(c.metaJsonText),
-          `[${w.name}] 커밋 meta.json 구조 드리프트`,
+          `[${w.name}] committed meta.json structural drift`,
         ).toEqual(JSON.parse(tmpMetaText));
 
-        // (c) 커밋된 산출물을 재생한 결과가 골든을 통과(왕복 안정).
+        // (c) Replaying the committed artifact passes golden assertions (round-trip stability).
         const res = await subject.replay(c.recordingBin, c.events);
         for (const g of w.golden) {
-          expect(g.check(res.grid), `[${w.name}] 재생 왕복 골든 실패: ${g.name}`).toBeNull();
+          expect(g.check(res.grid), `[${w.name}] replay round-trip golden failure: ${g.name}`).toBeNull();
         }
       }
     } finally {
@@ -188,9 +189,9 @@ describe('E0 4중 기준선 게이트 — xterm.js', () => {
     }
   });
 
-  // ── 처리량 계측(§5-2 요구 — xterm.js 기준선 수치) ──
-  it('처리량 계측: xterm.js feed MB/s·전셀 추출 시간을 기준선으로 기록', async () => {
-    // 계측은 게이트가 아니라 관측 — 수치를 인쇄해 리포트에 남긴다(예산 판정은 E1 코어 등장 시).
+  // Throughput measurement (section 5-2 requirement — xterm.js baseline numbers).
+  it('throughput measurement: record xterm.js feed MB/s and full-cell extract time as baseline', async () => {
+    // Measurement is observation, not a gate — print numbers for the report (budget checks arrive with E1 core).
     let totalBytes = 0;
     let totalFeedMs = 0;
     for (const m of metrics) {
@@ -208,8 +209,9 @@ describe('E0 4중 기준선 게이트 — xterm.js', () => {
       `[throughput] AGGREGATE(corpus) xterm.js: ${totalBytes}B / ${totalFeedMs.toFixed(2)}ms = ${aggMBps.toFixed(1)} MB/s`,
     );
 
-    // 대표성 있는 steady-state 수치: 커밋 코퍼스는 작아(≤6.4KB) 고정 오버헤드가 지배해 MB/s를
-    // 저평가한다. 예산(500/150MB/s) 오더 확인용으로 수 MB flood를 즉석 생성해(커밋 안 함) 측정한다.
+    // Representative steady-state numbers: the committed corpus is small (≤6.4KB), so fixed
+    // overhead dominates and understates MB/s. Generate a multi-MB flood on the fly (not
+    // committed) to check budget order of magnitude (500/150 MB/s).
     const bigLines: string[] = [];
     for (let i = 0; i < 60000; i++) {
       bigLines.push(`line ${String(i).padStart(6, '0')} ${'.'.repeat(40)}\r\n`);
@@ -225,15 +227,15 @@ describe('E0 4중 기준선 게이트 — xterm.js', () => {
         `(${bigRes.metrics.feedMBps.toFixed(1)} MB/s) extract=${bigRes.metrics.extractMs.toFixed(2)}ms`,
     );
 
-    // 계측이 실제로 수집됐는지(0이 아닌 실측)만 어서트 — 절대 수치는 환경 종속이라 게이트 아님.
+    // Assert only that measurements were collected (non-zero) — absolute numbers are environment-dependent, not a gate.
     expect(metrics.length).toBe(WORKLOADS.length);
     expect(totalBytes).toBeGreaterThan(0);
     expect(bigRes.metrics.feedMBps).toBeGreaterThan(0);
   });
 
-  // ── 워크로드 커버리지 불변식: 커밋 코퍼스는 정확히 합성 6종(D4) ──
-  it('코퍼스 거버넌스: 커밋 코퍼스는 합성 6종이며 전부 synthetic=true', () => {
-    expect(WORKLOADS.length, '커밋 코퍼스는 합성 6종').toBe(6);
+  // Workload coverage invariant: committed corpus is exactly six synthetic cases (D4).
+  it('corpus governance: committed corpus is exactly six synthetic cases, all synthetic=true', () => {
+    expect(WORKLOADS.length, 'committed corpus is six synthetic cases').toBe(6);
     const names = WORKLOADS.map((w) => w.name).sort();
     expect(names).toEqual(
       ['alt-screen', 'cjk-emoji', 'resize-reflow', 'resize-roundtrip', 'scroll-flood', 'sgr-spectrum'].sort(),
@@ -245,22 +247,23 @@ describe('E0 4중 기준선 게이트 — xterm.js', () => {
       };
       expect(meta.synthetic, `[${name}] meta.synthetic`).toBe(true);
       expect(meta.createdVia, `[${name}] createdVia`).toBe('synthetic-generator');
-      expect(workloadByName(name), `[${name}] 워크로드 정의 존재`).toBeTruthy();
+      expect(workloadByName(name), `[${name}] workload definition exists`).toBeTruthy();
     }
   });
 });
 
 const ZWJ = '‍'; // Zero-Width Joiner.
 
-/** char 문자열의 트레일링 ZWJ(U+200D)를 벗겨 비교용으로 정규화한다. */
+/** Strip a trailing ZWJ (U+200D) from a char string for comparison. */
 function stripTrailingZwj(s: string): string {
   return s.endsWith(ZWJ) ? s.slice(0, -1) : s;
 }
 
 /**
- * 청크 경계 강건성 비교(R10). 두 그리드를 비교해 발산 사유(문자열)를 반환하고, 강건하면 null.
- * 레이아웃(형상·커서·버퍼·폭·색·플래그)은 완전 일치를 요구한다. char/code 차이는 **순수 트레일링
- * U+200D 부착 여부**뿐일 때만 관용한다(측정된 xterm.js ZWJ 실동작 — 위 게이트①-b 주석 근거).
+ * Chunk-boundary robustness compare (R10). Returns a divergence reason string, or null if robust.
+ * Layout (shape, cursor, buffer, width, color, flags) must match exactly. char/code differences
+ * are tolerated only when they are **pure trailing U+200D attachment** (measured xterm.js ZWJ
+ * behavior — see gate 1-b comment above).
  */
 function chunkBoundaryDiff(a: GridSnapshot, b: GridSnapshot): string | null {
   if (a.cols !== b.cols || a.rows !== b.rows) {
@@ -270,7 +273,7 @@ function chunkBoundaryDiff(a: GridSnapshot, b: GridSnapshot): string | null {
   if (a.cursor.x !== b.cursor.x || a.cursor.y !== b.cursor.y) {
     return `cursor (${a.cursor.x},${a.cursor.y}) vs (${b.cursor.x},${b.cursor.y})`;
   }
-  // 레이아웃 필드(char/code 제외 전부). 이 목록에 하나라도 어긋나면 강건성 위반.
+  // Layout fields (everything forced except char/code). Any mismatch here is a robustness violation.
   const layoutFields: (keyof CellSnapshot)[] = [
     'width', 'fg', 'bg', 'fgPalette', 'fgRGB', 'fgDefault', 'bgPalette', 'bgRGB', 'bgDefault',
     'bold', 'italic', 'dim', 'underline', 'blink', 'inverse', 'invisible', 'strikethrough', 'overline',
@@ -281,18 +284,18 @@ function chunkBoundaryDiff(a: GridSnapshot, b: GridSnapshot): string | null {
       const cb = b.cells[y]?.[x];
       if (!ca || !cb) continue;
       for (const f of layoutFields) {
-        if (ca[f] !== cb[f]) return `(${x},${y}) 레이아웃 ${f}: ${String(ca[f])} vs ${String(cb[f])}`;
+        if (ca[f] !== cb[f]) return `(${x},${y}) layout ${f}: ${String(ca[f])} vs ${String(cb[f])}`;
       }
-      // char/code: 순수 트레일링 ZWJ 차이만 관용, 그 외 발산은 위반.
+      // char/code: tolerate pure trailing-ZWJ differences only; any other divergence is a violation.
       if (ca.char !== cb.char && stripTrailingZwj(ca.char) !== stripTrailingZwj(cb.char)) {
-        return `(${x},${y}) char "${ca.char}" vs "${cb.char}"(순수 ZWJ 부착 아님)`;
+        return `(${x},${y}) char "${ca.char}" vs "${cb.char}" (not pure ZWJ attachment)`;
       }
       if (ca.code !== cb.code) {
-        // code 차이가 ZWJ 부착에서만 왔는지 확인: char의 트레일링 ZWJ만 다르면 code 차이도 그 결과.
+        // Confirm the code difference comes only from ZWJ attachment: if only trailing ZWJ on char differs, so does code.
         const onlyZwj =
           stripTrailingZwj(ca.char) === stripTrailingZwj(cb.char) &&
           (ca.char.endsWith(ZWJ) || cb.char.endsWith(ZWJ));
-        if (!onlyZwj) return `(${x},${y}) code ${ca.code} vs ${cb.code}(순수 ZWJ 부착 아님)`;
+        if (!onlyZwj) return `(${x},${y}) code ${ca.code} vs ${cb.code} (not pure ZWJ attachment)`;
       }
     }
   }

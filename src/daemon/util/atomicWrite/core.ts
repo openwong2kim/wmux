@@ -61,12 +61,11 @@ export interface AtomicWriteOptions {
   clock?: () => number;
 
   /**
-   * durable 쓰기 (envelope-design §2.3 D13). true면 crash-safe 시퀀스를 강제한다:
-   *   tmp write → tmp fd fsync → rename → 부모 디렉토리 fsync.
-   * 기본 경로(false/미지정)는 fsync 없는 write+rename로 **1비트도 불변**이다 —
-   * 스냅샷엔 충분하지만 정본(manifest 등)엔 전원손실 내구를 위해 durable이 필요하다.
-   * win32는 디렉토리 fsync 미지원이라 4단계를 스킵한다(§2.3 win32 잔여, 파일 자체
-   * FlushFileBuffers까지만 보장).
+   * Durable write (envelope-design §2.3 D13). When true, forces crash-safe sequence:
+   *   tmp write → tmp fd fsync → rename → parent directory fsync.
+   * Default path (false/omitted) is write+rename without fsync — **1-bit invariant** —
+   * sufficient for snapshots but canonical files (manifest, etc.) need durable for power-loss durability.
+   * win32 skips step 4 (directory fsync unsupported — §2.3 win32 remainder; file FlushFileBuffers only).
    */
   durable?: boolean;
 }
@@ -95,10 +94,10 @@ export interface AtomicReadOptions<T> {
   clock?: () => number;
 
   /**
-   * validate 거부 시 격리(quarantine) 이동 여부(기본 true — 기존 동작 불변).
-   * false면 손상 파일을 **절대 이동·수정하지 않고** null만 반환한다 — genesis·reseed처럼
-   * "어떤 경로도 수정·삭제하지 않는다"(envelope-design §6.2 불변 계약) 아티팩트의
-   * read 경로용. `.bak` 폴백 체인은 동일하게 동작한다.
+   * When validate rejects, whether to quarantine (default true — existing behavior invariant).
+   * false returns null only and **never moves or modifies** the corrupt file — for read paths
+   * of artifacts under "never modify or delete any path" (envelope-design §6.2 invariant contract)
+   * such as genesis/reseed. `.bak` fallback chain behaves the same.
    */
   quarantineOnCorruption?: boolean;
 }
@@ -150,9 +149,9 @@ async function ensureDir(filePath: string): Promise<void> {
 }
 
 /**
- * durable 경로의 부모 디렉토리 fsync (§2.3-4). rename(디렉토리 엔트리)을 내구화한다.
- * win32는 디렉토리 핸들 fsync를 지원하지 않으므로 스킵(§2.3 win32 잔여). 실패는
- * best-effort로 흡수한다 — 파일 자체는 이미 tmp fsync로 내구화됐다.
+ * Parent directory fsync on durable path (§2.3-4). Durableizes rename (directory entry).
+ * win32 skips (directory handle fsync unsupported — §2.3 win32 remainder). Failures absorbed
+ * best-effort — file itself was already durableized via tmp fsync.
  */
 async function fsyncParentDir(dir: string): Promise<void> {
   if (process.platform === 'win32') return;
@@ -290,7 +289,7 @@ export async function atomicWriteJSON(
     // 1. Write to temp file. mode:0o600 is a no-op on Windows, but
     //    matches the StateWriter's POSIX intent.
     if (opts.durable) {
-      // §2.3-1,2: rename 전에 tmp 내용을 fsync해 디스크에 내구화한다.
+      // §2.3-1,2: fsync tmp contents to disk before rename.
       const fh = await fsp.open(tmp, 'w', 0o600);
       try {
         await fh.writeFile(json, { encoding: 'utf-8' });
@@ -325,7 +324,7 @@ export async function atomicWriteJSON(
     // 4. Atomic rename tmp → target.
     await fsp.rename(tmp, targetPath);
 
-    // 5. §2.3-4: durable이면 부모 디렉토리 엔트리(rename)를 내구화(win32 스킵).
+    // 5. §2.3-4: when durable, durableize parent directory entry (rename); skip on win32.
     if (opts.durable) {
       await fsyncParentDir(path.dirname(targetPath));
     }
@@ -468,7 +467,7 @@ export function atomicWriteJSONSync(
 
   try {
     if (opts.durable) {
-      // §2.3-1,2: rename 전에 tmp 내용을 fsync해 디스크에 내구화한다.
+      // §2.3-1,2: fsync tmp contents to disk before rename.
       const fd = fs.openSync(tmp, 'w', 0o600);
       try {
         fs.writeFileSync(fd, json, { encoding: 'utf-8' });
@@ -498,7 +497,7 @@ export function atomicWriteJSONSync(
 
     fs.renameSync(tmp, targetPath);
 
-    // §2.3-4: durable이면 부모 디렉토리 엔트리(rename)를 내구화(win32 스킵).
+    // §2.3-4: when durable, durableize parent directory entry (rename); skip on win32.
     if (opts.durable) {
       fsyncParentDirSync(path.dirname(targetPath));
     }

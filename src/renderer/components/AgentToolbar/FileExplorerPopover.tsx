@@ -21,9 +21,9 @@ export default function FileExplorerPopover() {
   const addEditorSurface = useStore((s) => s.addEditorSurface);
   const setPopover = useStore((s) => s.setToolbarPopover);
 
-  // A1: 활성 ws OBJECT만 구독한다. 셀렉터는 새 객체를 만들지 않고 immer가
-  // 관리하는 ws 참조를 그대로 돌려주므로 Object.is 스냅샷 검사를 통과한다(무한
-  // 루프 없음). 배경 ws의 metadata/surface churn에는 리렌더되지 않는다.
+  // A1: subscribe to active ws OBJECT only. Selector returns immer-managed ws reference
+  // without creating new objects so Object.is snapshot check passes (no infinite
+  // loop). Does not re-render on background ws metadata/surface churn.
   const ws = useStore(selectActiveWorkspace);
   const activePaneId = ws?.activePaneId;
   let cwd: string | undefined = ws?.metadata?.cwd;

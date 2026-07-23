@@ -1,10 +1,10 @@
 // @vitest-environment jsdom
 //
-// macOS 트래픽 라이트 예약 위치 계약 (owner-reported 2026-07-17):
-// 사이드바가 왼쪽 도킹 + 확장(240px)일 때 예약은 mantle 세그먼트 "안쪽"
-// 패딩이어야 한다 — 헤더에 걸면 세그먼트 전체가 예약만큼 밀려 아래 사이드바
-// 경계(240px)와 어긋난다. 세그먼트가 예약보다 좁을 때(미니 48px·없음)만
-// 헤더가 예약을 진다.
+// macOS traffic-light reserve placement contract (owner-reported 2026-07-17):
+// When the sidebar is left-docked + expanded (240px), reserve must be the mantle segment's
+// inner padding — putting it on the header shifts the whole segment by the reserve amount
+// and misaligns with the sidebar boundary below (240px). Only when the segment is narrower
+// than the reserve (mini 48px, none) does the header absorb the reserve.
 
 import { describe, it, expect, vi, beforeEach, afterEach } from 'vitest';
 import { createRoot } from 'react-dom/client';
@@ -47,7 +47,7 @@ function render(): { header: HTMLElement; segment: HTMLElement; cleanup: () => v
 }
 
 describe('Titlebar macOS traffic-light reserve', () => {
-  it('확장 사이드바(240px): 예약이 세그먼트 안쪽 패딩으로 들어가고 헤더는 0', () => {
+  it('expanded sidebar (240px): reserve goes into segment inner padding, header is 0', () => {
     act(() => useStore.setState({ sidebarPosition: 'left', sidebarVisible: true }));
     const { header, segment } = render();
     expect(header.style.paddingLeft).toBe('0px');
@@ -55,7 +55,7 @@ describe('Titlebar macOS traffic-light reserve', () => {
     expect(segment.style.width).toBe('240px');
   });
 
-  it('미니 사이드바(48px): 세그먼트가 예약보다 좁으니 헤더가 예약을 진다', () => {
+  it('mini sidebar (48px): segment narrower than reserve so header wins reserve', () => {
     act(() => useStore.setState({ sidebarPosition: 'left', sidebarVisible: false }));
     const { header, segment } = render();
     expect(header.style.paddingLeft).toBe(`${MAC_TRAFFIC_LIGHT_RESERVE}px`);

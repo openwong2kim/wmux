@@ -315,7 +315,7 @@ describe('clean merge → Land round-trip', () => {
       sourceOid: featOid,
     });
     expect(landed.ok).toBe(false);
-    if (!landed.ok) expect(landed.error).toContain('이동');
+    if (!landed.ok) expect(landed.error).toContain('moved');
 
     await abortIntegrationMerge(created.path);
     await removeIntegrationWorktree(scn.repo, created.path);

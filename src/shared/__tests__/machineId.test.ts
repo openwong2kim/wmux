@@ -23,34 +23,34 @@ afterEach(() => {
 });
 
 describe('machineId', () => {
-  it('mintMachineId는 uuid 형태를 생성', () => {
+  it('mintMachineId generates uuid form', () => {
     expect(mintMachineId()).toMatch(
       /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
     );
   });
 
-  it('readMachineId: 부재 시 null', () => {
+  it('readMachineId: null when absent', () => {
     expect(readMachineId(dir)).toBeNull();
   });
 
-  it('resolveMachineId: 최초엔 민팅·durable 기록, 재호출은 동일값 로드(재민팅 없음)', () => {
+  it('resolveMachineId: first call mints·durable write; recall loads same value (no re-mint)', () => {
     const first = resolveMachineId(dir);
-    // 파일에 원시 문자열로 기록됐고 내용이 반환값과 일치.
+    // Written to file as a raw string matching the return value.
     expect(fs.readFileSync(machineIdPath(dir), 'utf-8')).toBe(first);
     const second = resolveMachineId(dir);
-    expect(second).toBe(first); // 재민팅 금지
+    expect(second).toBe(first); // no re-minting
   });
 
-  it('resolveMachineId: 파일 부재 + 레코드 복구 훅 → 재민팅 없이 복구값 재기록', () => {
+  it('resolveMachineId: missing file + record recovery hook → rewrites recovered value without re-mint', () => {
     const recovered = resolveMachineId(dir, {
       recoverFromRecords: () => 'recovered-id',
     });
     expect(recovered).toBe('recovered-id');
-    // 세그먼트가 증거 — 복구값을 파일에 재기록.
+    // Segment is evidence — re-write the recovered value to file.
     expect(readMachineId(dir)).toBe('recovered-id');
   });
 
-  it('recoverMachineIdFromRecords: 첫 유효 origin.machineId 반환', () => {
+  it('recoverMachineIdFromRecords: returns first valid origin.machineId', () => {
     expect(
       recoverMachineIdFromRecords([
         { origin: {} },
@@ -61,7 +61,7 @@ describe('machineId', () => {
     expect(recoverMachineIdFromRecords([])).toBeUndefined();
   });
 
-  it('writeMachineId → readMachineId 왕복', () => {
+  it('writeMachineId → readMachineId round-trip', () => {
     writeMachineId(dir, 'fixed-uuid');
     expect(readMachineId(dir)).toBe('fixed-uuid');
   });

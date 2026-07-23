@@ -12,8 +12,8 @@ import { t } from '../../i18n';
  */
 export default function ExecuteApprovalDialog() {
   const approval = useStore((s) => s.pendingExecuteApproval);
-  // A1: id→name 해석만 필요 — {id,name} 투영만 구독해 metadata/surface 변경에
-  // 리렌더되지 않게 한다.
+  // A1: only id→name resolution needed — subscribe to {id,name} projection only so
+  // metadata/surface changes do not re-render.
   const workspaces = useStore(useShallow(selectWorkspaceIdName));
   const a2aAutoApproveExecute = useStore((s) => s.a2aAutoApproveExecute);
   const setA2aAutoApproveExecute = useStore((s) => s.setA2aAutoApproveExecute);

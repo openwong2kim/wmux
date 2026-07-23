@@ -81,7 +81,7 @@ describe('PaneSlice', () => {
     // its dep signature so split-induced empty leaves trigger PTY creation. If split
     // ever stops producing an empty leaf as the new active pane (or that leaf already
     // carries surfaces), the effect would silently miss it and the new pane would
-    // stay as the "빈 창" placeholder forever. Lock both invariants here.
+    // stay as the empty-pane placeholder forever. Lock both invariants here.
     it('split produces a new empty leaf and makes it active', () => {
       const ws = getActiveWorkspace(store);
       const rootId = ws.rootPane.id;

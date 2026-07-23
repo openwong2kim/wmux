@@ -1,5 +1,5 @@
-// V2 — Electron 41 main 프로세스에서 동일 .node 로드 (U2 실증: ABI 안정 → 무재빌드).
-// 창 불필요. app.whenReady → require → 검증 → process.exit(0/1).
+// V2 — load the same .node in Electron 41 main process (U2 proof: stable ABI → no rebuild).
+// No window needed. app.whenReady → require → verify → process.exit(0/1).
 const { app } = require('electron');
 const path = require('node:path');
 
@@ -14,10 +14,10 @@ function run() {
     }
   };
 
-  console.log('[V2] Electron 41 main 프로세스 + napi .node (U2)');
+  console.log('[V2] Electron 41 main process + napi .node (U2)');
   console.log(`  electron ${process.versions.electron} / node ${process.versions.node} / modules ABI ${process.versions.modules}`);
 
-  // 순수 Node가 빌드한 것과 정확히 동일한 .node — 재빌드 없이 로드되어야 U2 통과.
+  // Exactly the same .node built by plain Node — must load without rebuild for U2 to pass.
   const addon = require(path.join(__dirname, '..', 'dist', 'napi', 'index.cjs'));
   const { WmuxTerm } = addon;
 
@@ -28,21 +28,21 @@ function run() {
   const enc = new TextEncoder();
   const r = term.feed(enc.encode('electron main OK'));
   check('feed dirtyRows=1', r.dirtyRows === 1, r);
-  check('snapshot_row(0) 선두 일치', term.snapshotRow(0).startsWith('electron main OK'), JSON.stringify(term.snapshotRow(0)));
+  check('snapshot_row(0) prefix match', term.snapshotRow(0).startsWith('electron main OK'), JSON.stringify(term.snapshotRow(0)));
 
   term.feed(enc.encode('\r\nline2'));
-  check('CRLF 후 row1', term.snapshotRow(1).startsWith('line2'), JSON.stringify(term.snapshotRow(1)));
+  check('after CRLF row1', term.snapshotRow(1).startsWith('line2'), JSON.stringify(term.snapshotRow(1)));
 
   if (fail === 0) {
-    console.log('[V2] OK — Electron main에서 무재빌드 로드·왕복 성공');
+    console.log('[V2] OK — no-rebuild load and round trip succeeded in Electron main');
     app.exit(0);
   } else {
-    console.error(`[V2] FAIL — ${fail}건`);
+    console.error(`[V2] FAIL — ${fail} case(s)`);
     app.exit(1);
   }
 }
 
 app.whenReady().then(run).catch((e) => {
-  console.error('[V2] 예외:', e);
+  console.error('[V2] exception:', e);
   app.exit(1);
 });

@@ -194,8 +194,7 @@ function makeBrowserSurfaceTree(url: string): Pane {
   } as unknown as Pane;
 }
 
-// J2 — diff 서피스 트리(ptyId 없음, taskId만 영속).
-function makeDiffSurfaceTree(taskId: string): Pane {
+// J2 — diff surface tree (no ptyId, only taskId persisted).function makeDiffSurfaceTree(taskId: string): Pane {
   return {
     id: 'pane-root',
     type: 'leaf',
@@ -212,8 +211,8 @@ function makeDiffSurfaceTree(taskId: string): Pane {
   } as unknown as Pane;
 }
 
-describe('WorkspaceSlice.loadSession — J2 diff 서피스 복원(PTY 자가생성 0)', () => {
-  it('diff 서피스 복원 시 surfaceType·taskId 보존 + ptyId="" 유지', () => {
+describe('WorkspaceSlice.loadSession — J2 diff surface restore (zero PTY self-create)', () => {
+  it('preserves surfaceType·taskId on diff surface restore + keeps ptyId=""', () => {
     const store = createTestStore();
     const ws: Workspace = {
       id: 'ws-1',
@@ -228,23 +227,21 @@ describe('WorkspaceSlice.loadSession — J2 diff 서피스 복원(PTY 자가생�
     } as unknown as SessionData;
 
     store.getState().loadSession(data);
-    // clearAllPtyState는 복원 폴백 경로 — diff 서피스는 PTY 클리어 대상이 아님.
-    store.getState().clearAllPtyState();
+    // clearAllPtyState is restore fallback path — diff surfaces are not PTY clear targets.    store.getState().clearAllPtyState();
 
     const root = store.getState().workspaces[0].rootPane as unknown as {
       surfaces: { ptyId: string; surfaceType?: string; diffTaskId?: string }[];
     };
     const s = root.surfaces[0];
-    // 핵심 불변식: PTY 자가생성 경로에 걸리지 않도록 ptyId는 계속 비어 있고
-    // surfaceType='diff'가 보존되어 렌더 스위치가 DiffPanel로 라우팅한다.
-    expect(s.surfaceType).toBe('diff');
+    // Core invariant: ptyId stays empty to avoid PTY self-create path and surfaceType='diff'
+    // preserved so render switch routes to DiffPanel.    expect(s.surfaceType).toBe('diff');
     expect(s.ptyId).toBe('');
     expect(s.diffTaskId).toBe('wtask-restore');
   });
 });
 
-describe('WorkspaceSlice.loadSession — git/review surface 정리(2026-07-20 헤더 승격)', () => {
-  it('구 세션의 git·review surface를 걸러내고, activeSurfaceId가 걸린 surface를 가리키면 재조정한다', () => {
+describe('WorkspaceSlice.loadSession — git/review surface cleanup (2026-07-20 header promotion)', () => {
+  it('filters legacy git·review surfaces and re-points activeSurfaceId when it referenced one', () => {
     const store = createTestStore();
     const ws: Workspace = {
       id: 'ws-1',
@@ -257,8 +254,7 @@ describe('WorkspaceSlice.loadSession — git/review surface 정리(2026-07-20 �
           { id: 'git-1', ptyId: '', title: 'Git', shell: '', cwd: '/repo', surfaceType: 'git' },
           { id: 'rev-1', ptyId: '', title: 'Review', shell: '', cwd: '', surfaceType: 'review' },
         ],
-        // 활성 surface가 걸러질 git을 가리킨다 — 재조정 대상.
-        activeSurfaceId: 'git-1',
+        // activeSurfaceId points at filtered git — must re-point.        activeSurfaceId: 'git-1',
       },
       activePaneId: 'pane-root',
     } as unknown as Workspace;
@@ -274,11 +270,9 @@ describe('WorkspaceSlice.loadSession — git/review surface 정리(2026-07-20 �
       surfaces: { id: string; surfaceType?: string }[];
       activeSurfaceId: string;
     };
-    // git·review는 사라지고 터미널만 남는다.
-    expect(root.surfaces.map((s) => s.surfaceType)).toEqual(['terminal']);
+    // git·review gone; terminal only remains.    expect(root.surfaces.map((s) => s.surfaceType)).toEqual(['terminal']);
     expect(root.surfaces.some((s) => s.surfaceType === 'git' || s.surfaceType === 'review')).toBe(false);
-    // 걸러진 surface를 가리키던 activeSurfaceId는 남은 첫 surface로 재조정된다.
-    expect(root.activeSurfaceId).toBe('term-1');
+    // activeSurfaceId that pointed at filtered surface re-points to first remaining surface.    expect(root.activeSurfaceId).toBe('term-1');
   });
 });
 
@@ -637,8 +631,8 @@ describe('WorkspaceSlice.loadSession — config merge (forward-compat)', () => {
   });
 
   it('upgrades an existing macOS user\'s untouched F7 default to Ctrl+7 on load', () => {
-    // 기존 Mac 사용자(Ctrl+7 기본값 이전 설치)의 저장된 원본 F7을 로드 시 승격한다.
-    // platform을 darwin으로 세팅해 시드/백필/승격의 macOS 분기를 실제로 태운다.
+    // Promote saved original F7 on load for existing Mac users (pre Ctrl+7 default install).
+    // Set platform to darwin to exercise macOS branches for seed/backfill/promotion.
     const prevPlatform = (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform;
     (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform = 'darwin';
     try {
@@ -648,8 +642,8 @@ describe('WorkspaceSlice.loadSession — config merge (forward-compat)', () => {
       );
       const kbs = store.getState().customKeybindings as { id: string; key: string }[];
       const def = kbs.filter((k) => k.id === 'kb-default-f7');
-      expect(def).toHaveLength(1); // 중복 백필 없음
-      expect(def[0].key).toBe('Ctrl+7'); // 승격됨
+      expect(def).toHaveLength(1); // no duplicate backfill
+      expect(def[0].key).toBe('Ctrl+7'); // promoted
     } finally {
       (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform = prevPlatform;
     }
@@ -665,7 +659,7 @@ describe('WorkspaceSlice.loadSession — config merge (forward-compat)', () => {
       );
       const kbs = store.getState().customKeybindings as { id: string; key: string }[];
       const def = kbs.filter((k) => k.id === 'kb-default-f7');
-      expect(def[0].key).toBe('F7'); // 사용자 편집 → 승격 안 함
+      expect(def[0].key).toBe('F7'); // user edit — no promotion
     } finally {
       (globalThis.window as unknown as { electronAPI: { platform?: string } }).electronAPI.platform = prevPlatform;
     }

@@ -177,14 +177,14 @@ export async function resolveBaseBranch(cwd: string): Promise<string | null> {
  */
 export async function checkTargetPreconditions(baseCheckoutPath: string, base: string): Promise<OkErr> {
   const mh = await git(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], baseCheckoutPath);
-  if (mh.code === 0) return { ok: false, error: `타겟 워크트리에 진행 중인 머지가 있습니다(MERGE_HEAD)` };
+  if (mh.code === 0) return { ok: false, error: `Target worktree has a merge in progress (MERGE_HEAD)` };
   const sym = await git(['symbolic-ref', '--quiet', '--short', 'HEAD'], baseCheckoutPath);
-  if (sym.code !== 0) return { ok: false, error: `타겟 워크트리가 detached HEAD 상태입니다` };
+  if (sym.code !== 0) return { ok: false, error: `Target worktree is in detached HEAD state` };
   const cur = sym.stdout.trim();
-  if (cur !== base) return { ok: false, error: `타겟 워크트리가 base(${base})가 아니라 ${cur}에 있습니다` };
+  if (cur !== base) return { ok: false, error: `Target worktree is on ${cur}, not base(${base})` };
   const st = await git(['status', '--porcelain'], baseCheckoutPath);
   if (st.code !== 0) return { ok: false, error: st.stderr.slice(0, 300) };
-  if (st.stdout.trim() !== '') return { ok: false, error: `타겟 워크트리에 커밋되지 않은 변경이 있습니다` };
+  if (st.stdout.trim() !== '') return { ok: false, error: `Target worktree has uncommitted changes` };
   return { ok: true };
 }
 
@@ -279,7 +279,7 @@ export async function createIntegrationWorktree(
   const parent = join(dirname(mainWt), `${basename(mainWt)}-worktrees`);
   const leaf = INTEGRATION_PREFIX + (branchToDirName(sourceLeaf) || 'src');
   const path = resolve(parent, leaf);
-  if (existsSync(path)) return { ok: false, error: `integration 경로가 이미 존재합니다: ${path}` };
+  if (existsSync(path)) return { ok: false, error: `Integration path already exists: ${path}` };
   if (!existsSync(parent)) mkdirSync(parent, { recursive: true });
   const r = await git(['worktree', 'add', '--detach', path, baseOid], mainWt);
   if (r.code !== 0) return { ok: false, error: r.stderr.slice(0, 300) };
@@ -337,9 +337,9 @@ export async function landMerge(
 ): Promise<{ ok: true; landedOid: string; alreadyUpToDate?: boolean } | { ok: false; error: string }> {
   // 1) Re-verify base — hasn't it moved or been dirtied since we started?
   const head = await git(['rev-parse', 'HEAD'], p.baseCheckoutPath);
-  if (head.code !== 0) return { ok: false, error: 'base 워크트리 HEAD 확인 실패' };
+  if (head.code !== 0) return { ok: false, error: 'Failed to read base worktree HEAD' };
   if (head.stdout.trim() !== p.baseOid) {
-    return { ok: false, error: '머지 시작 이후 base가 이동했습니다 — Discard 후 다시 시도하세요' };
+    return { ok: false, error: 'Base moved since merge started — Discard and try again' };
   }
   const pre = await checkTargetPreconditions(p.baseCheckoutPath, p.base);
   if (!pre.ok) return { ok: false, error: pre.error };
@@ -347,9 +347,9 @@ export async function landMerge(
   // 2) Re-verify the integration state, then commit.
   const mh = await git(['rev-parse', '-q', '--verify', 'MERGE_HEAD'], p.integrationPath);
   if (mh.code === 0) {
-    if (mh.stdout.trim() !== p.sourceOid) return { ok: false, error: 'integration MERGE_HEAD가 예상 source와 다릅니다' };
+    if (mh.stdout.trim() !== p.sourceOid) return { ok: false, error: 'Integration MERGE_HEAD does not match expected source' };
     const conflicts = await detectConflicts(p.integrationPath);
-    if (conflicts.length > 0) return { ok: false, error: '미해결 충돌이 남아 있습니다' };
+    if (conflicts.length > 0) return { ok: false, error: 'Unresolved conflicts remain' };
     const c = await git(['commit', '--no-edit'], p.integrationPath);
     if (c.code !== 0) return { ok: false, error: c.stderr.slice(0, 300) };
   }
@@ -362,7 +362,7 @@ export async function landMerge(
 
   // 3) Fast-forward base to the integration result (consistently updates index and working tree).
   const ff = await git(['merge', '--ff-only', landedOid], p.baseCheckoutPath);
-  if (ff.code !== 0) return { ok: false, error: `base fast-forward 실패: ${ff.stderr.slice(0, 300)}` };
+  if (ff.code !== 0) return { ok: false, error: `Base fast-forward failed: ${ff.stderr.slice(0, 300)}` };
   return { ok: true, landedOid };
 }
 
