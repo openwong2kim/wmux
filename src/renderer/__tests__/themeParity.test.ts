@@ -59,4 +59,9 @@ describe('theme SSOT parity (themes.ts ⇄ globals.css)', () => {
   it('every built-in theme has a globals.css block', () => {
     for (const id of ids) expect(globals[id], id).toBeDefined();
   });
+
+  it('uses Forge for first paint without overriding an explicit theme', () => {
+    expect(css).toContain(':root:not([data-theme]), [data-theme="forge"]');
+    expect(css).not.toMatch(/:root\s*,\s*\[data-theme="forge"\]/);
+  });
 });

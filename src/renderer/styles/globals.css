@@ -88,7 +88,7 @@
 /* Forge — comfortable charcoal-brown dark mode. Ember orange is reserved for
  * alive/action cues, steel-blue carries navigation, and semantic status colors
  * remain distinct for diffs and terminal diagnostics. */
-:root, [data-theme="forge"] {
+:root:not([data-theme]), [data-theme="forge"] {
   --bg-base: #171513;
   --bg-mantle: #1C1916;
   --bg-surface: #25211D;
