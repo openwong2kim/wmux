@@ -29,8 +29,11 @@ export interface CommanderSendResult {
   ok: boolean;
   /** Present on rejection: `busy` (a turn is running), `disposed`, `empty`,
    *  or `invalid_workspace` (handler-level, M1.5 — the send carried no valid
-   *  workspaceId to route to an orchestrator). */
-  code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace';
+   *  workspaceId to route to an orchestrator). Additionally `errored` rides an
+   *  ok:true result when the turn RAN but the adapter threw mid-stream —
+   *  callers that must distinguish "completed" from "died mid-turn" (the
+   *  re-examine consume) check it; everyone else keys off `ok` alone. */
+  code?: 'busy' | 'disposed' | 'empty' | 'invalid_workspace' | 'errored';
 }
 
 export interface CommanderStatusSnapshot {
@@ -141,7 +144,12 @@ export class CommanderSessionManager {
       return { ok: true };
     } catch (err) {
       this.sink({ type: 'error', message: err instanceof Error ? err.message : String(err) });
-      return { ok: true };
+      // ok:true is deliberate — the turn RAN (callers must not retry it as if it
+      // never started). `code:'errored'` is ADDITIVE (round-4 review P1): callers
+      // that must distinguish "ran to completion" from "died mid-turn" (the
+      // re-examine consume, which would otherwise delete a self-resolution the
+      // turn never acted on) can check it; everyone else keys off `ok` alone.
+      return { ok: true, code: 'errored' };
     } finally {
       // Never clobber a `disposed` flip that happened during the turn.
       if (this._status === 'busy') {

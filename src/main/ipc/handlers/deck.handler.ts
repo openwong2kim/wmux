@@ -618,7 +618,12 @@ export function registerDeckHandler(
       if (runOpts.reExamine) {
         const mode = loadWorkspaceMode(workspaceId);
         const ttlMs = loadDeckHeartbeat().decisionTtlMs;
+        // The global auto-wake switch is re-checked here too (round-4 review
+        // P1): the heartbeat checked it at fire time, but the queued gate wait
+        // above can span minutes — an operator who flipped Auto-wake off during
+        // the wait must not get an ambient turn.
         const valid =
+          loadAutoWakeEnabled() &&
           mode !== 'off' &&
           injected?.status === 'pending' &&
           injected.id === runOpts.reExamine.expectedId &&
@@ -662,18 +667,28 @@ export function registerDeckHandler(
             after?.status === 'resolved' &&
             after.resolvedBy === 'brain' &&
             injected &&
-            after.id === injected.id
+            after.id === injected.id &&
+            // Round-4 review P1: send() reports ok:true even when the adapter
+            // errored mid-turn (code:'errored'). A self-resolution from a turn
+            // that DIED may never have been acted on — keep the durable record
+            // so the self-resume path (honest '(self)' provenance) replays it,
+            // instead of deleting the only evidence it existed.
+            verdict.code !== 'errored'
           ) {
             void clearResolvedDecision(workspaceId, after.id).catch(() => {});
           } else if (after?.status === 'resolved' && injected && after.id === injected.id) {
-            // The HUMAN answered while this re-examine turn was running: their
-            // resolve kick busy-rejected against this very turn, and this turn's
-            // prompt never carried their answer. Schedule the resume now that the
-            // turn has ended (round-3 P2) — otherwise the answer sits on disk
-            // until an unrelated wake happens to pick it up. Deferred a tick so
-            // the manager has fully settled to idle before the busy precheck.
+            // Two ways to land here, both needing a follow-up resume turn:
+            //  - the HUMAN answered while this re-examine turn was running
+            //    (their resolve kick busy-rejected against this very turn, and
+            //    this turn's prompt never carried their answer — round-3 P2), or
+            //  - the BRAIN self-resolved but the turn then ERRORED before acting
+            //    (round-4 P1: the record was deliberately NOT consumed above).
+            // resumePromptFor() picks the honest prompt for each provenance.
+            // Deferred a tick so the manager has fully settled to idle before
+            // the busy precheck.
+            const resumeFor = after;
             setImmediate(() => {
-              void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId, {
+              void runTurnForWorkspace(resumePromptFor(resumeFor), workspaceId, {
                 queued: true,
               }).catch(() => {
                 /* best-effort — the durable resolved record rides the next turn */

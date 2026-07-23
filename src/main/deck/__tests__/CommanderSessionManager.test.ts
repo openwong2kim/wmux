@@ -233,3 +233,34 @@ describe('CommanderSessionManager', () => {
     expect(res).toEqual({ ok: false, code: 'disposed' });
   });
 });
+
+// Round-4 review P1: a mid-stream adapter throw must be distinguishable from a
+// completed turn — ok:true (the turn RAN; do not retry it) + code:'errored'
+// (it died mid-turn; a self-resolution created during it may never have been
+// acted on, so the re-examine consume must NOT delete it).
+describe('send — mid-stream adapter error', () => {
+  class ThrowingAdapter extends (class {} as new () => Record<string, unknown>) {
+    started: unknown = null;
+    start(opts: unknown): void {
+      this.started = opts;
+    }
+    // eslint-disable-next-line require-yield
+    async *send(): AsyncIterable<never> {
+      throw new Error('adapter died mid-turn');
+    }
+    interrupt(): void {}
+    dispose(): void {}
+  }
+
+  it('returns ok:true with code:errored, sinks the error, and goes back to idle', async () => {
+    const events: unknown[] = [];
+    const mgr = new CommanderSessionManager({
+      adapter: new ThrowingAdapter() as never,
+      sink: (ev) => events.push(ev),
+    });
+    const verdict = await mgr.send('do the thing');
+    expect(verdict).toEqual({ ok: true, code: 'errored' });
+    expect(events.some((e) => (e as { type: string }).type === 'error')).toBe(true);
+    expect(mgr.getStatus().status).toBe('idle');
+  });
+});
