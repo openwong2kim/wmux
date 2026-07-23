@@ -94,6 +94,7 @@ beforeEach(() => {
 });
 
 afterEach(() => {
+  vi.useRealTimers();
   fs.rmSync(tmpDir, { recursive: true, force: true });
 });
 
@@ -165,6 +166,11 @@ describe('T14 — legacy data compatibility', () => {
       'utf-8',
     );
 
+    // Keep the detached backup within its 8 h TTL so this case exercises
+    // legacy `.bak` recovery rather than time-based session pruning.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-23T11:00:00.000Z'));
+
     const writer = new StateWriter(tmpDir);
     try {
       const loaded = writer.load();
@@ -174,6 +180,7 @@ describe('T14 — legacy data compatibility', () => {
       expect(loaded.version).toBe(1);
     } finally {
       writer.dispose();
+      vi.useRealTimers();
     }
   });
 

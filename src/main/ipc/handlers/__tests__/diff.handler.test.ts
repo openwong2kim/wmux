@@ -364,10 +364,22 @@ describe('diff:read — F3 symlink untracked는 unsupported(repo 밖 노출 차�
   });
   afterEach(() => scn.cleanup());
 
-  it('symlink는 합성하지 않고 unsupported 라벨로 반환', async () => {
+  it('symlink는 합성하지 않고 unsupported 라벨로 반환', async ({ skip }) => {
     // worktree 밖 파일을 가리키는 symlink를 untracked로 생성.
     const outside = join(scn.repoRoot, 'a.txt'); // repo 밖(본 repo)의 실경로.
-    symlinkSync(outside, join(scn.worktreePath, 'link.txt'));
+    try {
+      symlinkSync(outside, join(scn.worktreePath, 'link.txt'));
+    } catch (error) {
+      if (
+        process.platform === 'win32' &&
+        (error as NodeJS.ErrnoException).code === 'EPERM'
+      ) {
+        skip(
+          'Windows symlink creation requires Developer Mode or administrator privileges',
+        );
+      }
+      throw error;
+    }
     const read = captured.get(IPC.DIFF_READ)!;
     const res = (await read({}, scn.worktreePath, scn.targetHeadOid)) as {
       ok: boolean;
