@@ -25,7 +25,10 @@ import type { Workspace } from '../../../shared/types';
  * unmounting it disposes the workspace's xterm/WebGL/registry entries (useTerminal
  * cleanup) WITHOUT touching the daemon PTY, so RAM stops scaling with hidden
  * workspace count. A parked slot is always hidden (parked ⇒ not active), so the
- * placeholder is never visible; it exists only to keep the mount slot alive. */
+ * placeholder is never visible; it exists only to keep the mount slot alive.
+ * Only terminal-only workspaces are ever parked (sweepColdPark gates on
+ * isTerminalOnlyWorkspace), so unmounting here can never drop a browser webview
+ * session or unsaved editor state — those have no daemon-side replay. */
 export const WorkspaceSlot = memo(function WorkspaceSlot({
   workspace,
   isActive,

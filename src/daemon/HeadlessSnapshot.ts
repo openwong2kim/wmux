@@ -71,7 +71,12 @@ export type SnapshotOutcome =
 // avoid; 4 s keeps headroom while still bounding a pathological stream.
 const DEFAULT_BUDGET_MS = 4000;
 const DEFAULT_SCROLLBACK = 5000;
-const MAX_SCROLLBACK = 50_000;
+/** Lossless upper bound on serialized scrollback. Exported so the attach flush
+ *  can request the full history (the renderer's xterm scrollback is
+ *  user-configurable up to this) instead of silently truncating to the
+ *  DEFAULT — the headless terminal is per-snapshot and disposed, so the peak
+ *  cost is bounded. */
+export const MAX_SCROLLBACK = 50_000;
 /** Feed slice size — keeps each synchronous parse burst bounded so the daemon
  * event loop (input forwarding!) never stalls behind an 8 MB write.
  * Exported for the slice-boundary regression test. */
@@ -204,6 +209,11 @@ async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutc
       if (!line) continue;
       rows.push({ text: line.translateToString(true), wrapped: i > 0 && line.isWrapped });
     }
+    // Drop trailing empty viewport rows: the grid is always `rows` tall, so a
+    // short session leaves blank rows the live read path (readPtyBufferTail)
+    // never returns — including them would make readScreen tail_lines come back
+    // as blank lines.
+    while (rows.length > 0 && rows[rows.length - 1].text === '') rows.pop();
     return { ok: true, rows, bytesIn, durationMs: Date.now() - started };
   } catch (err) {
     return { ok: false, reason: 'error', detail: err instanceof Error ? err.message : String(err) };

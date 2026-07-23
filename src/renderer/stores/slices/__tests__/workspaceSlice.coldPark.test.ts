@@ -62,6 +62,29 @@ describe('WorkspaceSlice cold-park', () => {
     expect(store.getState().parkedWorkspaceIds[wsC.id]).toBe(true);
   });
 
+  it('never parks a workspace that holds a non-terminal surface', () => {
+    // Give B a browser surface — its live webview state has no daemon-side
+    // replay, so cold-park must skip it even when idle past the threshold.
+    const leaf = wsB.rootPane;
+    if (leaf.type === 'leaf') {
+      leaf.surfaces.push({
+        id: 'surf-browser',
+        ptyId: '',
+        title: 'browser',
+        shell: '',
+        cwd: '',
+        surfaceType: 'browser',
+        browserUrl: 'https://example.com',
+      });
+      leaf.activeSurfaceId = 'surf-browser';
+    }
+    const store = createTestStore([wsA, wsB], wsA.id);
+    const t0 = 1_000_000;
+    store.getState().sweepColdPark(t0, THRESHOLD);
+    store.getState().sweepColdPark(t0 + THRESHOLD * 2, THRESHOLD);
+    expect(store.getState().parkedWorkspaceIds[wsB.id]).toBeUndefined();
+  });
+
   it('setActiveWorkspace un-parks the incoming workspace synchronously', () => {
     const store = createTestStore([wsA, wsB], wsA.id);
     // Park B.

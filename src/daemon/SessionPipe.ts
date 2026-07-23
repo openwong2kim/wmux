@@ -4,7 +4,7 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { getSessionSocketPath } from '../shared/constants';
 import type { RingBuffer } from './RingBuffer';
-import { generateSnapshot } from './HeadlessSnapshot';
+import { generateSnapshot, MAX_SCROLLBACK } from './HeadlessSnapshot';
 
 /**
  * TASK-10: initial-attach flushes at or above this size go through the
@@ -210,6 +210,12 @@ export class SessionPipe {
         cols: dims.cols,
         rows: dims.rows,
         initial: buffered,
+        // This layer has no renderer config, and the renderer's xterm scrollback
+        // is user-configurable (default 10k) above the snapshot DEFAULT (5k). A
+        // successful snapshot would otherwise truncate history the raw replay
+        // preserved, so request the lossless upper bound — the headless terminal
+        // is per-snapshot and disposed.
+        scrollback: MAX_SCROLLBACK,
       });
       if (socket.destroyed || this.client !== socket) return; // client left mid-parse
       // Size guard: when most of the history still fits inside the

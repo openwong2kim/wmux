@@ -58,6 +58,19 @@ describe('generateTextSnapshot (cold-park fallback)', () => {
     expect(outcome.rows.map((r) => r.text)).toContain('안녕하세요 세계');
   });
 
+  it('trims trailing empty viewport rows', async () => {
+    // A short session leaves the grid (24 rows here) mostly blank below the
+    // content. Those trailing empties must not appear in the rows — otherwise a
+    // parked readScreen tail_lines would return blank lines the live path omits.
+    const initial = Buffer.from('only line\r\n', 'utf8');
+    const outcome = await generateTextSnapshot({ cols: 80, rows: 24, initial });
+    expect(outcome.ok).toBe(true);
+    if (!outcome.ok) return;
+    expect(outcome.rows.length).toBeGreaterThan(0);
+    expect(outcome.rows[outcome.rows.length - 1].text).not.toBe('');
+    expect(outcome.rows.map((r) => r.text)).toContain('only line');
+  });
+
   it('fails soft on an exceeded time budget', async () => {
     // A large history with a 0 ms budget forces the budget branch.
     const big = Buffer.from('x'.repeat(2 * 1024 * 1024), 'utf8');

@@ -18,6 +18,23 @@ function collectLeafPanes(pane: Pane): PaneLeaf[] {
 }
 
 /**
+ * Cold-park (TASK-9) is safe ONLY for terminal-only workspaces. Unmounting a
+ * pane tree that holds a browser (live webview session), editor (unsaved local
+ * scratch edits), or diff/git/review surface would lose that state — unlike a
+ * terminal, whose bytes live in the daemon ring and replay on reveal. So a
+ * workspace is parkable only when every surface is a terminal (surfaceType
+ * absent defaults to terminal). Deeper per-surface parking is a follow-up.
+ */
+function isTerminalOnlyWorkspace(ws: Workspace): boolean {
+  for (const leaf of collectLeafPanes(ws.rootPane)) {
+    for (const s of leaf.surfaces) {
+      if (s.surfaceType !== undefined && s.surfaceType !== 'terminal') return false;
+    }
+  }
+  return true;
+}
+
+/**
  * Build a non-colliding "<base> (copy)" / "<base> (copy N)" name for a
  * duplicate. An existing copy-suffix on the source is stripped first so
  * duplicating a copy yields "Foo (copy 2)" rather than "Foo (copy) (copy)".
@@ -134,6 +151,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           continue;
         }
         if (state.parkedWorkspaceIds[id]) continue; // already parked
+        // Never park a workspace holding a browser/editor/diff surface — those
+        // carry live state a terminal doesn't (no daemon ring to replay from).
+        if (!isTerminalOnlyWorkspace(ws)) continue;
         const since = state.lastVisibleAt[id];
         if (since === undefined) {
           // First time we observe it hidden — start the idle clock. (Covers

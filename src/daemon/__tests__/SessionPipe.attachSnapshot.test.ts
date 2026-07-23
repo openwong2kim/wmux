@@ -75,6 +75,24 @@ async function screenOf(data: Buffer, cols: number, rows: number): Promise<strin
   }
 }
 
+/** Parse ANSI and return EVERY buffer row (scrollback + viewport), trimmed. */
+async function fullBufferText(data: Buffer, cols: number, rows: number, scrollback: number): Promise<string[]> {
+  const term = new Terminal({ cols, rows, scrollback, allowProposedApi: true });
+  term.loadAddon(new Unicode11Addon());
+  term.unicode.activeVersion = '11';
+  try {
+    await new Promise<void>((resolve) => term.write(data, resolve));
+    const buf = term.buffer.active;
+    const lines: string[] = [];
+    for (let i = 0; i < buf.length; i++) {
+      lines.push(buf.getLine(i)?.translateToString(true) ?? '');
+    }
+    return lines;
+  } finally {
+    term.dispose();
+  }
+}
+
 /** ≥ threshold of plausible shell traffic: numbered lines + SGR + CJK. */
 function bigHistory(minBytes: number): Buffer {
   const parts: Buffer[] = [];
@@ -82,6 +100,23 @@ function bigHistory(minBytes: number): Buffer {
   for (let i = 0; total < minBytes; i++) {
     const line = `\x1b[3${i % 8}mline ${i} 한글출력 ${'x'.repeat(40)}\x1b[0m\r\n`;
     const b = Buffer.from(line, 'utf8');
+    parts.push(b);
+    total += b.length;
+  }
+  return Buffer.concat(parts);
+}
+
+/** Redraw-heavy history (progress bars / TUI repaints): each iteration clears
+ *  and repaints the same small screen, so the FINAL state is a handful of rows
+ *  however many megabytes were written. This is the compression the snapshot
+ *  path exists for — independent of scrollback depth (unlike pure-append
+ *  history, which under MAX_SCROLLBACK retains every line and does not shrink). */
+function redrawHistory(minBytes: number): Buffer {
+  const parts: Buffer[] = [];
+  let total = 0;
+  for (let i = 0; total < minBytes; i++) {
+    const frame = `\x1b[H\x1b[2Jprogress ${i % 100}%\r\n\x1b[3${i % 8}mstatus line 한글 ${'.'.repeat(60)}\x1b[0m`;
+    const b = Buffer.from(frame, 'utf8');
     parts.push(b);
     total += b.length;
   }
@@ -113,11 +148,11 @@ async function startPipe(
 
 describe('SessionPipe initial-attach snapshot (TASK-10)', () => {
   it('large buffer + dims → compact snapshot with screen parity, then FLUSH_DONE', async () => {
-    // 4× the threshold: enough history that most of it has scrolled past the
-    // serialized scrollback window — the real big-ring shape this path
-    // exists for (a buffer where every line still fits in scrollback can
-    // serialize LARGER and takes the no-gain raw fallback instead).
-    const raw = bigHistory(ATTACH_SNAPSHOT_MIN_BYTES * 4);
+    // Redraw-heavy history (4× the threshold): the repaints collapse to a few
+    // final rows, the real big-ring shape this path exists for. (Pure-append
+    // history now retains every line under MAX_SCROLLBACK and takes the no-gain
+    // raw fallback instead — see the 'preserves history' test below.)
+    const raw = redrawHistory(ATTACH_SNAPSHOT_MIN_BYTES * 4);
     const ring = new RingBuffer(8 * 1024 * 1024);
     ring.write(raw);
     const pipe = await startPipe(uniqueSessionId('big'), ring, () => ({ cols: COLS, rows: ROWS }));
@@ -246,6 +281,36 @@ describe('SessionPipe initial-attach snapshot (TASK-10)', () => {
       return out;
     };
   }
+
+  it('attach snapshot preserves history beyond the 5000-line default', async () => {
+    // 8000 uniquely-numbered lines: the pre-fix DEFAULT_SCROLLBACK=5000 would
+    // drop the oldest ~3000 from a serialized snapshot; the flush now requests
+    // MAX_SCROLLBACK so the full history survives (parity with the renderer's
+    // configurable 10k xterm scrollback).
+    const parts: Buffer[] = [];
+    for (let i = 0; i < 8000; i++) {
+      parts.push(Buffer.from(`LINE-${String(i).padStart(6, '0')} ${'x'.repeat(30)}\r\n`, 'utf8'));
+    }
+    const raw = Buffer.concat(parts);
+    expect(raw.length).toBeGreaterThan(ATTACH_SNAPSHOT_MIN_BYTES);
+    const ring = new RingBuffer(16 * 1024 * 1024);
+    ring.write(raw);
+    const pipe = await startPipe(uniqueSessionId('scrollback'), ring, () => ({ cols: COLS, rows: ROWS }));
+
+    const client = await connectClient(pipe.getPipeName(), TOKEN);
+    clients.push(client);
+    await waitFor(() => client.wire().includes(FLUSH_DONE_MARKER), 20_000);
+
+    const replay = replaySegment(client.wire())!;
+    const lines = await fullBufferText(replay, COLS, ROWS, 50_000);
+    const joined = lines.join('\n');
+    // The oldest lines (well beyond 5000 from the bottom) are still present.
+    expect(joined).toContain('LINE-000000');
+    expect(joined).toContain('LINE-002000');
+    // Count surviving distinct markers to prove > 5000 lines round-tripped.
+    const survived = lines.filter((l) => /^LINE-\d{6}/.test(l)).length;
+    expect(survived).toBeGreaterThan(5000);
+  });
 
   it('live delta during a FAILED parse (alt-screen) is not dropped', async () => {
     // Alt-screen forces the snapshot to fail → the raw fallback branch. The fix
