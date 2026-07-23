@@ -1740,6 +1740,8 @@ function TabTerminal() {
   const setImeResidueGuardEnabled = useStore((s) => s.setImeResidueGuardEnabled);
   const hiddenPaneRetentionEnabled = useStore((s) => s.hiddenPaneRetentionEnabled);
   const setHiddenPaneRetentionEnabled = useStore((s) => s.setHiddenPaneRetentionEnabled);
+  const coldParkEnabled = useStore((s) => s.coldParkEnabled);
+  const setColdParkEnabled = useStore((s) => s.setColdParkEnabled);
   const browserLightweightMode = useStore((s) => s.browserLightweightMode);
   const setBrowserLightweightMode = useStore((s) => s.setBrowserLightweightMode);
   const browserDiscardHidden = useStore((s) => s.browserDiscardHidden);
@@ -1805,6 +1807,13 @@ function TabTerminal() {
             checked={hiddenPaneRetentionEnabled}
             onChange={setHiddenPaneRetentionEnabled}
             label={t('settings.hiddenPaneRetention')}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.coldPark')} description={t('settings.coldParkDesc')}>
+          <Toggle
+            checked={coldParkEnabled}
+            onChange={setColdParkEnabled}
+            label={t('settings.coldPark')}
           />
         </SettingRow>
         <SettingRow label={t('settings.browserLightweight')} description={t('settings.browserLightweightDesc')}>

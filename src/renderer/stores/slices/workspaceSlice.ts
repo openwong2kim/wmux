@@ -9,6 +9,7 @@ import { resetInspectState } from './uiSlice';
 import { sanitizeFontFamily } from '../../utils/terminalFont';
 import { publishWorkspaceMetadataChanged, publishA2aTask } from '../../events/publisher';
 import { retentionMigrationDone, markRetentionMigrationDone } from '../retentionMigration';
+import { decUnread } from './notificationSlice';
 
 /** Collect all leaf panes from a pane tree */
 function collectLeafPanes(pane: Pane): PaneLeaf[] {
@@ -381,7 +382,15 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       // notification slice mounted.
       if (Array.isArray(state.notifications)) {
         for (const n of state.notifications) {
-          if (n.workspaceId === id && !n.read) n.read = true;
+          if (n.workspaceId === id && !n.read) {
+            n.read = true;
+            // Keep the O(S) unread index in sync — bypassing it here left ghost
+            // unread badges after visiting a workspace (Sprint-1 selector).
+            // Guarded for tests that mount workspaceSlice without the index.
+            if (n.surfaceId && state.unreadBySurfaceId) {
+              decUnread(state.unreadBySurfaceId, n.surfaceId);
+            }
+          }
         }
       }
       // Same lifecycle clear for the visual ring — once a workspace is

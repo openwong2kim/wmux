@@ -372,6 +372,8 @@ export const ko = {
   'settings.imeResidueGuardDesc': '잔여 IME 텍스트를 파괴적으로 덮어쓰는 음성 입력 도구로부터 보호합니다. 해당 도구를 쓰지 않으면 꺼 두세요 — 일부 입력기와 충돌할 수 있습니다.',
   'settings.hiddenPaneRetention': '숨겨진 패널 렌더링 일시정지',
   'settings.hiddenPaneRetentionDesc': '기본 켜짐. 숨겨진 패널은 화면 렌더링만 멈추고 모든 것은 계속 실행됩니다 — 출력은 데몬이 보관하며 다시 표시될 때 따라잡습니다("동기화 중" 표시). 끄면 숨겨진 패널도 항상 렌더링하지만, 바쁜 패널마다 실제 CPU 비용이 듭니다. 데몬 세션 전용 — 로컬 모드 세션은 항상 렌더링됩니다.',
+  'settings.coldPark': '유휴 숨김 워크스페이스 내리기',
+  'settings.coldParkDesc': '기본 켜짐. 몇 분간 보지 않은 워크스페이스는 터미널을 내려 메모리를 회수하므로, 열어 둔 워크스페이스 수에 따라 RAM이 늘지 않습니다. 세션은 데몬에서 계속 실행되며, 다시 전환하면 워크스페이스를 복원하고 데몬에서 화면을 재생합니다. 끄면 모든 워크스페이스를 계속 올려 두어 즉시 표시됩니다. 데몬 세션 전용.',
   'settings.browserLightweight': '백그라운드 브라우저 경량 모드',
   'settings.browserLightweightDesc': '보이지 않는 내장 브라우저 패널(숨은 워크스페이스, 줌으로 가려진 패널, 최소화된 창)의 CPU 사용을 제한합니다. 자동화(MCP/스크린샷)는 계속 전속력으로 동작합니다. CPU만 절감되며 메모리는 줄지 않습니다.',
   'settings.browserDiscard': '숨은 브라우저 내리기 (메모리 절감)',

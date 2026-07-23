@@ -19,8 +19,10 @@ export interface NotificationSlice {
 }
 
 // Decrement a surfaceId bucket, clamping at 0 and deleting zeroed keys so the
-// map stays small on long-running sessions.
-function decUnread(map: Record<string, number>, surfaceId: string): void {
+// map stays small on long-running sessions. Exported so other slices that mark
+// notifications read (e.g. workspaceSlice.setActiveWorkspace) keep the index in
+// sync instead of drifting.
+export function decUnread(map: Record<string, number>, surfaceId: string): void {
   const next = (map[surfaceId] ?? 0) - 1;
   if (next > 0) {
     map[surfaceId] = next;

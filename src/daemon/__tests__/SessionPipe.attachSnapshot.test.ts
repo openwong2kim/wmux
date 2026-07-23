@@ -228,4 +228,71 @@ describe('SessionPipe initial-attach snapshot (TASK-10)', () => {
     expect(replay.includes(liveMarker)).toBe(true);
     expect(replay.length).toBeLessThan(raw.length); // still a snapshot, not raw
   });
+
+  // Deterministic mid-parse injection: the attach flush reads the ring once
+  // BEFORE the parse (`buffered`) and again AFTER (the delta re-read). Hooking
+  // the first readAll to append the live bytes right after it returns guarantees
+  // the delta is in the ring during the parse without racing a wall-clock sleep
+  // (which the shared concurrency-1 snapshot queue makes flaky).
+  function injectAfterFirstReadAll(ring: RingBuffer, liveMarker: Buffer): void {
+    const origReadAll = ring.readAll.bind(ring);
+    let injected = false;
+    (ring as unknown as { readAll: () => Buffer }).readAll = () => {
+      const out = origReadAll();
+      if (!injected) {
+        injected = true;
+        ring.write(liveMarker);
+      }
+      return out;
+    };
+  }
+
+  it('live delta during a FAILED parse (alt-screen) is not dropped', async () => {
+    // Alt-screen forces the snapshot to fail → the raw fallback branch. The fix
+    // re-reads the ring there, so bytes written while the (doomed) parse ran are
+    // retransmitted instead of silently lost until the next resync.
+    const raw = Buffer.concat([
+      bigHistory(ATTACH_SNAPSHOT_MIN_BYTES),
+      Buffer.from('\x1b[?1049h\x1b[2Jvim-ish full screen content', 'utf8'),
+    ]);
+    const ring = new RingBuffer(8 * 1024 * 1024);
+    ring.write(raw);
+    const liveMarker = Buffer.from('\r\nLIVE-DELTA-FAIL-7c1\r\n', 'utf8');
+    injectAfterFirstReadAll(ring, liveMarker);
+    const pipe = await startPipe(uniqueSessionId('delta-fail'), ring, () => ({ cols: COLS, rows: ROWS }));
+
+    const client = await connectClient(pipe.getPipeName(), TOKEN);
+    clients.push(client);
+    await waitFor(() => client.wire().includes(FLUSH_DONE_MARKER), 20_000);
+    const replay = replaySegment(client.wire())!;
+    // Raw fallback ships the full re-read: the original history is a prefix and
+    // the live delta rides at the tail — nothing dropped.
+    expect(replay.subarray(0, raw.length).equals(raw)).toBe(true);
+    expect(replay.includes(liveMarker)).toBe(true);
+  });
+
+  it('live delta during a NO-GAIN parse is not dropped', async () => {
+    // Plain ASCII that fits inside the serialized scrollback window: the cell
+    // reconstruction is no smaller than raw, so the size guard takes the no-gain
+    // raw branch. The fix re-reads the ring there too, so the mid-parse delta is
+    // retransmitted rather than dropped.
+    const parts: Buffer[] = [];
+    for (let i = 0; parts.reduce((n, b) => n + b.length, 0) < ATTACH_SNAPSHOT_MIN_BYTES; i++) {
+      parts.push(Buffer.from(`plain line ${i} ${'.'.repeat(48)}\r\n`, 'utf8'));
+    }
+    const raw = Buffer.concat(parts);
+    const ring = new RingBuffer(8 * 1024 * 1024);
+    ring.write(raw);
+    const liveMarker = Buffer.from('\r\nLIVE-DELTA-NOGAIN-4b8\r\n', 'utf8');
+    injectAfterFirstReadAll(ring, liveMarker);
+    const pipe = await startPipe(uniqueSessionId('delta-nogain'), ring, () => ({ cols: COLS, rows: ROWS }));
+
+    const client = await connectClient(pipe.getPipeName(), TOKEN);
+    clients.push(client);
+    await waitFor(() => client.wire().includes(FLUSH_DONE_MARKER), 20_000);
+    const replay = replaySegment(client.wire())!;
+    // Whichever raw branch (no-gain here) or the snapshot-delta path was taken,
+    // the delta must be present — that is the regression under test.
+    expect(replay.includes(liveMarker)).toBe(true);
+  });
 });

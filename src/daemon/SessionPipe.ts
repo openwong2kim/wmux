@@ -218,9 +218,16 @@ export class SessionPipe {
       // stream. No win then — ship raw. The big-ring case this path exists
       // for (megabytes of overwritten history) compresses drastically.
       if (outcome.ok && outcome.payload.length >= buffered.length) {
+        // No gain — ship raw. But re-read the ring first: bytes written DURING
+        // the await were gated off the socket (flushed=false) and are absent
+        // from the pre-parse `buffered`. Shipping `buffered` here would drop
+        // that live delta until the next resync (silent output loss). `after`
+        // ⊇ `buffered` by the append-only prefix property; a wrap only makes it
+        // a fresh honest raw read — either way `after` is the correct payload.
+        payload = this.ringBuffer.readAll();
         // eslint-disable-next-line no-console
         console.log(
-          `[SessionPipe.flush] sessionId=${this.sessionId} mode=raw fallbackReason=no-gain snapshot=${outcome.payload.length} raw=${buffered.length}`,
+          `[SessionPipe.flush] sessionId=${this.sessionId} mode=raw fallbackReason=no-gain snapshot=${outcome.payload.length} raw=${payload.length}`,
         );
       } else if (outcome.ok) {
         // The ring is append-only until it wraps: "old read is a prefix of
@@ -247,6 +254,10 @@ export class SessionPipe {
           );
         }
       } else {
+        // Snapshot failed (alt-screen, margins, budget, ...) — ship raw. Same
+        // live-delta hazard as the no-gain branch: re-read the ring so bytes
+        // that arrived during the failed parse are retransmitted, not dropped.
+        payload = this.ringBuffer.readAll();
         // eslint-disable-next-line no-console
         console.log(
           `[SessionPipe.flush] sessionId=${this.sessionId} mode=raw fallbackReason=${outcome.reason}${'detail' in outcome && outcome.detail ? ` detail=${outcome.detail}` : ''}`,

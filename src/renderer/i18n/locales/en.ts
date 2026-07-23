@@ -421,6 +421,8 @@ export const en = {
   'settings.imeResidueGuardDesc': 'Protects against voice-input tools that replace leftover IME text destructively. Leave off unless you use such a tool — the clearing can confuse some IMEs.',
   'settings.hiddenPaneRetention': 'Pause hidden pane rendering',
   'settings.hiddenPaneRetentionDesc': 'Default on. Hidden panes pause screen rendering while everything keeps running — output is captured by the daemon and the pane catches up when you switch back (briefly shown as "catching up"). Turn off to render every hidden pane continuously; that costs real CPU per busy hidden pane. Daemon sessions only; local-mode sessions always render.',
+  'settings.coldPark': 'Unload idle hidden workspaces',
+  'settings.coldParkDesc': 'Default on. A workspace you have not looked at in a few minutes has its terminals unloaded to free memory, so RAM stops growing with the number of workspaces you keep open. The sessions keep running in the daemon; switching back reloads the workspace and replays its screen from the daemon. Turn off to keep every workspace loaded for instant reveals. Daemon sessions only.',
   'settings.browserLightweight': 'Lightweight background browsers',
   'settings.browserLightweightDesc': 'Throttle CPU usage of built-in browser panes that are not visible (hidden workspaces, zoomed-away panes, minimized window). Automation (MCP/screenshots) still runs full-speed. Reduces CPU only, not memory.',
   'settings.browserDiscard': 'Discard hidden browsers (frees memory)',

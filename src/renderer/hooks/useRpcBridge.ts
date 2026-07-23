@@ -1232,7 +1232,13 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       const paneId = ptyToPaneId.get(ptyId);
       if (!paneId) continue;
       const rows = await fetchParkedPaneRows(ptyId, 5000);
-      if (!rows) continue; // legacy daemon / local mode / gone session — skip
+      if (!rows) {
+        // Legacy daemon / local mode / gone session: this parked pane could not
+        // be read, so coverage is incomplete — flag truncated so callers know
+        // the result set is partial rather than treating it as authoritative.
+        truncated = true;
+        continue;
+      }
       try {
         const requestedBudget = remainingBudget;
         const matches = searchInBuffer(
