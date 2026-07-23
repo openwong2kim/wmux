@@ -7,9 +7,9 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
-### Changed
+### Fixed
 
-- **Install instructions now lead with the package manager.** The README's Windows install section puts `winget install openwong2kim.wmux` front and center with a clear note that it avoids the SmartScreen warning — the direct Setup.exe download is demoted to a secondary "offline install" path with an explicit note about why the warning appears (the installer isn't Authenticode-signed yet).
+- **The `wmux` CLI launcher no longer hardcodes a version-specific path.** The `wmux.cmd` shim in `<install>/bin/` used to embed an absolute path like `app-3.31.0\wmux.exe`. Squirrel's `--squirrel-updated` handler regenerates the shim on every update, but if that handler fails to fire (crash, timeout, manual copy), the hardcoded path would silently break CLI access after the next update. The shim now dynamically discovers the latest `app-*` directory relative to its own location at runtime (`dir /b /ad /o-d`), so it always resolves to the current version regardless of whether the Squirrel event ran. (#556)
 
 ## [3.31.0] — 2026-07-22
 
