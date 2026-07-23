@@ -68,6 +68,7 @@ import {
   clearDecision,
   renderDecisionBlock,
   renderStaleDecisionBlock,
+  isDecisionStale,
   hasPendingDecision,
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
@@ -153,7 +154,7 @@ export function renderAutonomyBlock(mode: AgentMode): string | null {
       return (
         '[autonomy] mode: auto — you have DECISION AUTHORITY. Resolve forks yourself from ' +
         'binding policy rules, standing conventions, and memory; escalate via ' +
-        'deck_ask_decision ONLY a genuine residual fork none of those settles (or a risky/' +
+        'deck_ask_decision ONLY for a genuine residual fork none of those settles (or a risky/' +
         'irreversible action).'
       );
     case 'assist':
@@ -550,7 +551,13 @@ export function registerDeckHandler(
       // brain re-examines and — in auto mode — may self-resolve. Present only on
       // that one narrow path; every other caller leaves it undefined and gets
       // the unchanged withLoopContext prompt.
-      reExamine?: { ttlMinutes: number; mode: AgentMode };
+      // Only the EXPECTED decision id is captured at fire time; mode, TTL and
+      // staleness are re-validated FRESH after the (possibly long) queued gate
+      // wait — a workspace flipped to `off`, a replaced decision, or a decision
+      // that is no longer stale/pending ABORTS the re-examine instead of running
+      // a stale turn (3-way review P1: the off kill switch must hold across the
+      // gate wait, and a replaced decision must not inherit the old re-examine).
+      reExamine?: { expectedId: string };
     } = {},
   ): Promise<{ ok: boolean; code?: string }> => {
     if (!WORKSPACE_ID_RE.test(workspaceId)) {
@@ -601,16 +608,37 @@ export function registerDeckHandler(
       const injected = loadWorkspaceDecision(workspaceId);
       // WP3 re-examine builds a DIFFERENT wire prompt: the STALE decision block
       // (re-examine / auto-may-self-resolve) instead of withLoopContext's normal
-      // "BLOCKED — wait" pending block, plus the loop block, then the instruction.
-      // Falls back to the normal path if the decision is no longer pending (it was
-      // resolved/cleared between the heartbeat check and here).
+      // "BLOCKED — wait" pending block. Everything is RE-VALIDATED fresh here —
+      // after the queued gate wait — and the turn is ABORTED (not run through the
+      // normal path) when the re-examine no longer applies: mode flipped to off
+      // (kill switch), the decision was resolved/cleared/replaced (id mismatch),
+      // or it is no longer stale under the CURRENT TTL. Running the fallback
+      // prompt instead would waste a turn telling a blocked brain to wait.
       let prompted: string;
-      if (runOpts.reExamine && injected?.status === 'pending') {
-        const staleBlock = renderStaleDecisionBlock(injected, runOpts.reExamine);
+      if (runOpts.reExamine) {
+        const mode = loadWorkspaceMode(workspaceId);
+        const ttlMs = loadDeckHeartbeat().decisionTtlMs;
+        const valid =
+          mode !== 'off' &&
+          injected?.status === 'pending' &&
+          injected.id === runOpts.reExamine.expectedId &&
+          isDecisionStale(injected, ttlMs);
+        if (!valid) {
+          return { ok: false, code: 'reexamine_invalidated' as const };
+        }
+        const ttlMinutes = Math.max(1, Math.round(ttlMs / 60_000));
+        // Same leading context as a normal turn (3-way review P2: the stale block
+        // tells the brain to cite a binding policy rule — that rule must be IN
+        // this turn): [autonomy] → [policy] → stale [decision] → loop → prompt.
+        const blocks: string[] = [];
+        const autonomy = renderAutonomyBlock(mode);
+        if (autonomy) blocks.push(autonomy);
+        const policy = loadDeckPolicyBlock();
+        if (policy) blocks.push(policy);
+        blocks.push(renderStaleDecisionBlock(injected, { ttlMinutes, mode }));
         const loop = loadWorkspaceLoopState(workspaceId);
-        prompted = loop
-          ? `${staleBlock}\n\n${renderLoopStateBlock(loop)}\n\n${prompt}`
-          : `${staleBlock}\n\n${prompt}`;
+        if (loop) blocks.push(renderLoopStateBlock(loop));
+        prompted = `${blocks.join('\n\n')}\n\n${prompt}`;
       } else {
         prompted = withLoopContext(workspaceId, prompt);
       }
@@ -826,13 +854,14 @@ export function registerDeckHandler(
     // decision and fire a bounded re-examine wake that bypasses the wake block.
     getDecision: (workspaceId) => loadWorkspaceDecision(workspaceId),
     decisionTtlMs: heartbeatConfig.decisionTtlMs,
-    reExamineDecision: (workspaceId) => {
-      // Re-read the config/mode fresh (the decision may outlive several beats).
-      const ttlMinutes = Math.max(1, Math.round(loadDeckHeartbeat().decisionTtlMs / 60_000));
-      const mode = loadWorkspaceMode(workspaceId);
+    reExamineDecision: (workspaceId, decision) => {
+      // Capture ONLY the decision id. Mode/TTL/staleness are re-validated
+      // FRESH inside runTurnForWorkspace after the queued gate wait, so an
+      // off-flip or a replaced decision aborts instead of running stale
+      // (3-way review P1).
       void runTurnForWorkspace(DECISION_REEXAMINE_PROMPT, workspaceId, {
         queued: true,
-        reExamine: { ttlMinutes, mode },
+        reExamine: { expectedId: decision.id },
       }).catch(() => {
         /* best-effort — a rejected re-examine just retries after the next TTL */
       });

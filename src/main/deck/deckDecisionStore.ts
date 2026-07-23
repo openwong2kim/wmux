@@ -361,7 +361,10 @@ export function renderStaleDecisionBlock(
       'You are in AUTO mode. If a BINDING policy rule or a standing convention actually ' +
         'settles this question, resolve it YOURSELF: call ' +
         'deck_resolve_decision({ id, resolution }) with the resolution STATING the rule/basis ' +
-        'that settles it, then act on it and proceed. If NOTHING settles it, either re-raise a ' +
+        'that settles it, then act on it and proceed. EXCEPTION: if this decision concerns a ' +
+        'risky or irreversible action (destructive commands, force-push, deploys, deletions), ' +
+        'self-resolve is NOT for it — that class always waits for the human, no matter how ' +
+        'stale. If NOTHING settles it, either re-raise a ' +
         'sharper question with deck_ask_decision (which replaces this one) or keep waiting — do ' +
         'NOT invent an answer just to unblock yourself.',
     );

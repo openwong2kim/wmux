@@ -105,7 +105,17 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
     }
     const existing = loadWorkspaceDecision(ws);
     if (existing && existing.status === 'pending') {
-      return { ok: false, error: 'decision_pending', id: existing.id };
+      // STALE REPLACE (WP3): the re-examine turn explicitly offers "re-raise a
+      // sharper question, which replaces this one". That contract only exists
+      // when the pending decision is actually STALE (past the TTL) — a fresh
+      // pending decision still refuses a second raise, so the brain cannot
+      // stack or churn decisions inside a normal turn. raiseDecision() is
+      // last-writer-wins at the store level, so falling through here replaces
+      // the stale record atomically.
+      const ttlMs = loadDeckHeartbeat().decisionTtlMs;
+      if (!isDecisionStale(existing, ttlMs)) {
+        return { ok: false, error: 'decision_pending', id: existing.id };
+      }
     }
     const options = Array.isArray(params['options'])
       ? (params['options'] as unknown[]).filter((s): s is string => typeof s === 'string')
@@ -158,7 +168,16 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
     if (loadWorkspaceMode(ws) !== 'auto') {
       return { ok: false, error: 'mode_not_auto' };
     }
-    // (ii) age gate — must be stale per the configured TTL.
+    // (ii) age gate — must be stale per the configured TTL. POLARITY GUARD
+    // (3-way review): isDecisionStale treats a lost clock (raisedAt <= 0, the
+    // sanitize fallback) as "stale immediately", which is the conservative
+    // choice for the heartbeat re-examine (wake early) but the DANGEROUS one
+    // here (self-resolve early). For the self-resolve gate a lost clock must
+    // fail CLOSED: without a trustworthy age we cannot prove the TTL elapsed,
+    // so the decision stays human-only.
+    if (!(current.raisedAt > 0)) {
+      return { ok: false, error: 'not_stale' };
+    }
     const ttlMs = loadDeckHeartbeat().decisionTtlMs;
     if (!isDecisionStale(current, ttlMs)) {
       return { ok: false, error: 'not_stale' };

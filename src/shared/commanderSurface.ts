@@ -85,6 +85,9 @@ export const COMMANDER_TOOL_SURFACE: readonly string[] = [
   'send_message',
   // Decision gate — pause-and-ask, the opposite of destructive.
   'deck_ask_decision',
+  // WP3 — self-resolve of the brain's OWN stale decision (server-gated:
+  // auto mode + TTL elapsed + substance floor, enforced in deck.rpc.ts).
+  'deck_resolve_decision',
 ];
 
 /** Pipe RPC methods the commander tool surface actually invokes — the

@@ -277,6 +277,11 @@ export const DEFAULT_ALLOWED_TOOLS: string[] = [
   // itself. A benign self-signal — it can ONLY pause the loop and ask, the
   // opposite of a destructive tool — so it auto-allows like the comms tools.
   WMUX('deck_ask_decision'),
+  // Self-resolve of the brain's OWN stale decision. Auto-allowing is safe for
+  // the same reason as deck_ask_decision: the tool itself only flips a decision
+  // record — the server RPC (deck.rpc.ts) enforces every precondition (auto
+  // mode, TTL elapsed, substance floor), so a disallowed call is refused there.
+  WMUX('deck_resolve_decision'),
 ];
 
 // Built-in CLI tools the orchestrator must NEVER hold. `allowedTools` only

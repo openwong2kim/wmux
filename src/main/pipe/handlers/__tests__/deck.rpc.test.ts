@@ -21,12 +21,15 @@ vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
 // (isDecisionStale, renderDecisionBlock, raiseDecision) real via importActual so
 // the gate's staleness math and requestDecision keep exercising real code.
 type Decision = import('../../../deck/deckDecisionStore').WorkspaceDecision;
-const { modeMock, ttlMock, decisionRef, resolveDecisionMock } = vi.hoisted(() => ({
-  modeMock: vi.fn<() => 'off' | 'assist' | 'auto'>(() => 'auto'),
-  ttlMock: vi.fn<() => number>(() => 30 * 60_000),
-  decisionRef: { current: null as Decision | null },
-  resolveDecisionMock: vi.fn(),
-}));
+const { modeMock, ttlMock, decisionRef, resolveDecisionMock, raiseDecisionMock } = vi.hoisted(
+  () => ({
+    modeMock: vi.fn<() => 'off' | 'assist' | 'auto'>(() => 'auto'),
+    ttlMock: vi.fn<() => number>(() => 30 * 60_000),
+    decisionRef: { current: null as Decision | null },
+    resolveDecisionMock: vi.fn(),
+    raiseDecisionMock: vi.fn(),
+  }),
+);
 vi.mock('../../../deck/deckAutonomyStore', () => ({
   loadWorkspaceMode: (_ws: string) => modeMock(),
 }));
@@ -40,6 +43,7 @@ vi.mock('../../../deck/deckDecisionStore', async (orig) => {
     loadWorkspaceDecision: (_ws: string) => decisionRef.current,
     resolveDecision: (ws: string, id: string, resolution: string) =>
       resolveDecisionMock(ws, id, resolution),
+    raiseDecision: (ws: string, args: unknown) => raiseDecisionMock(ws, args),
   };
 });
 
@@ -309,5 +313,107 @@ describe('deck.resolveDecision (WP3 self-resolve gate)', () => {
       const res = await resolve(router, params);
       expect(res.ok).toBe(false);
     }
+  });
+});
+
+// ─── 3-way review regression coverage ────────────────────────────────────────
+
+// Lost-clock polarity guard: isDecisionStale treats raisedAt<=0 as "stale
+// immediately" (conservative for the heartbeat — wake early), but for the
+// SELF-RESOLVE gate that polarity is dangerous (resolve early). The RPC must
+// fail CLOSED on a lost clock: without a trustworthy age the TTL cannot be
+// proven elapsed, so the decision stays human-only.
+describe('deck.resolveDecision — lost-clock polarity guard', () => {
+  const TTL = 30 * 60_000;
+  const GOOD_RESOLUTION = 'Per deck-policy.md: worktree rule settles this question.';
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetCommanderTrustForTesting();
+    modeMock.mockReturnValue('auto');
+    ttlMock.mockReturnValue(TTL);
+  });
+
+  it('rejects raisedAt=0 (sanitize fallback) with not_stale even though isDecisionStale says stale', async () => {
+    decisionRef.current = {
+      id: 'dec-0',
+      question: 'Where?',
+      options: [],
+      context: '',
+      status: 'pending',
+      raisedAt: 0, // lost clock — reads as epoch-old to isDecisionStale
+    };
+    const router = new RpcRouter();
+    registerDeckRpc(router, () => fakeWindow);
+    const token = mintCommanderToken('ws-1');
+    const res = (await router.dispatch({
+      id: '1',
+      method: 'deck.resolveDecision',
+      params: { token, id: 'dec-0', resolution: GOOD_RESOLUTION },
+    })) as { ok: boolean; result?: unknown };
+    expect((res.result as { ok: boolean; error: string })).toEqual({
+      ok: false,
+      error: 'not_stale',
+    });
+    expect(resolveDecisionMock).not.toHaveBeenCalled();
+  });
+});
+
+// Stale replace: the re-examine prompt offers "re-raise a sharper question,
+// which replaces this one". That contract only exists for a STALE pending
+// decision — a fresh pending one still refuses a second raise (no stacking).
+describe('deck.requestDecision — stale replace', () => {
+  const TTL = 30 * 60_000;
+
+  const pendingAgedMs = (ageMs: number): Decision => ({
+    id: 'dec-old',
+    question: 'Old question?',
+    options: [],
+    context: '',
+    status: 'pending',
+    raisedAt: Date.now() - ageMs,
+  });
+
+  const request = (
+    router: RpcRouter,
+    params: Record<string, unknown>,
+  ): Promise<{ ok: boolean; result?: unknown }> =>
+    router.dispatch({ id: '1', method: 'deck.requestDecision', params }) as Promise<{
+      ok: boolean;
+      result?: unknown;
+    }>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetCommanderTrustForTesting();
+    ttlMock.mockReturnValue(TTL);
+    raiseDecisionMock.mockImplementation(async (_ws: string, args: { question: string }) => ({
+      id: 'dec-new',
+      question: args.question,
+      options: [],
+      context: '',
+      status: 'pending' as const,
+      raisedAt: Date.now(),
+    }));
+  });
+
+  it('refuses a second raise while a FRESH decision is pending (no stacking)', async () => {
+    decisionRef.current = pendingAgedMs(60_000); // 1 min old — fresh
+    const token = mintCommanderToken('ws-1');
+    const res = await request(setup(), { token, question: 'Sharper question?' });
+    expect((res.result as { ok: boolean; error: string; id: string })).toEqual({
+      ok: false,
+      error: 'decision_pending',
+      id: 'dec-old',
+    });
+    expect(raiseDecisionMock).not.toHaveBeenCalled();
+  });
+
+  it('REPLACES a STALE pending decision with the sharper question', async () => {
+    decisionRef.current = pendingAgedMs(TTL + 60_000); // past the TTL — stale
+    const token = mintCommanderToken('ws-1');
+    const res = await request(setup(), { token, question: 'Sharper question?' });
+    expect((res.result as { ok: boolean; id: string })).toEqual({ ok: true, id: 'dec-new' });
+    expect(raiseDecisionMock).toHaveBeenCalledTimes(1);
   });
 });
