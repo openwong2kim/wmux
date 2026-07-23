@@ -221,6 +221,8 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     terminalFontFamily: state.terminalFontFamily,
     defaultShell: state.defaultShell,
     deckBrainModel: state.deckBrainModel || undefined,
+    orchestratorRoleBindings:
+      Object.keys(state.orchestratorRoleBindings).length > 0 ? state.orchestratorRoleBindings : undefined,
     // Persisted explicitly (not `|| undefined`): an explicit false survives
     // serialization, so a future default flip can't resurrect full power for
     // a user who deliberately turned it off (CodeRabbit, PR #474).

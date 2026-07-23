@@ -4,6 +4,7 @@ import type { PTYManager } from '../../pty/PTYManager';
 import type { DaemonClient } from '../../DaemonClient';
 import { sendToRenderer } from './_bridge';
 import { sanitizePtyText } from '../../../shared/types';
+import { applyRoleBinding, normalizeRoleBinding, type RoleBinding } from '../../../shared/orchestratorRole';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -122,11 +123,34 @@ async function assertWorkspaceOwnsPty(
   }
 }
 
+/**
+ * Resolve a pane's enforced role→model binding for a ptyId, via the SAME
+ * renderer oracle assertWorkspaceOwnsPty already consults (input.findOwnerWorkspace,
+ * extended in D2 to also return the owning paneId + resolved roleBinding). Both
+ * the role mirror and the operator binding map live in the renderer store, so
+ * the renderer resolves the pair; main just applies the pure transform.
+ *
+ * Returns undefined on any miss (no owner, unbound role, malformed reply) — the
+ * caller fails OPEN, never blocking a legitimate send because a lookup raced.
+ */
+export type RoleBindingResolver = (ptyId: string) => Promise<RoleBinding | undefined>;
+
+export function makeRoleBindingResolver(getWindow: GetWindow): RoleBindingResolver {
+  return async (ptyId: string): Promise<RoleBinding | undefined> => {
+    const result = await sendToRenderer(getWindow, 'input.findOwnerWorkspace', { ptyId });
+    if (!result || typeof result !== 'object' || !('roleBinding' in result)) return undefined;
+    // Re-normalize at the read boundary — the renderer store is hand-editable
+    // via session.json, so treat the binding as untrusted even here.
+    return normalizeRoleBinding((result as Record<string, unknown>)['roleBinding']);
+  };
+}
+
 export function registerInputRpc(
   router: RpcRouter,
   ptyManager: PTYManager,
   getWindow: GetWindow,
   getDaemonClient?: () => DaemonClient | null,
+  resolveRoleBinding?: RoleBindingResolver,
 ): void {
   /**
    * input.send — writes text to a PTY session.
@@ -161,7 +185,33 @@ export function registerInputRpc(
 
     await assertWorkspaceOwnsPty(getWindow, ptyId, callerWs, 'input.send');
 
-    const safeText = params['raw'] === true ? text : sanitizePtyText(text);
+    let safeText = params['raw'] === true ? text : sanitizePtyText(text);
+
+    // D2 — role→model enforcement. When the text is being COMMITTED (submit) and
+    // the target pane carries a bound role, transparently rewrite a bare agent
+    // launcher (`claude`) into its enforced form (`claude --model haiku`). This
+    // is the single chokepoint covering both the orchestrator's
+    // terminal_send("claude") reflex and a human typing `claude⏎`. We only touch
+    // the commit edge — a half-typed line (submit=false) or a multi-line paste is
+    // never rewritten. Fail OPEN on any resolver error so a role lookup that
+    // races can never block a legitimate send.
+    let enforcedModel: string | undefined;
+    let enforcementNote: string | undefined;
+    if (params['submit'] === true && resolveRoleBinding && !safeText.includes('\n')) {
+      try {
+        const binding = await resolveRoleBinding(ptyId);
+        if (binding) {
+          const rewrite = applyRoleBinding(safeText, binding);
+          if (rewrite.changed) {
+            safeText = rewrite.command;
+            enforcedModel = binding.model;
+          }
+          if (rewrite.note) enforcementNote = rewrite.note;
+        }
+      } catch {
+        // fail-open — enforcement is best-effort at the input layer.
+      }
+    }
 
     // Route one chunk to the local PTYManager, else the daemon. Shared by the
     // text write and the trailing-\r submit so both hit the same session.
@@ -198,7 +248,16 @@ export function registerInputRpc(
       writeChunk(safeText);
     }
 
-    return { ok: true, ptyId, submitted: params['submit'] === true };
+    return {
+      ok: true,
+      ptyId,
+      submitted: params['submit'] === true,
+      // D2 — surface enforcement on the payload (callRpc stringifies it into the
+      // tool result, so the orchestrator sees which model was pinned). The pane
+      // also shows the rewritten command directly — the primary indication.
+      ...(enforcedModel ? { enforcedModel } : {}),
+      ...(enforcementNote ? { note: enforcementNote } : {}),
+    };
   });
 
   /**

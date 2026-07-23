@@ -8,6 +8,7 @@ import type { Message, Part, TaskState, Artifact, AgentSkill, Task, CompletionEv
 import { normalizeCompletionEvidenceWire, isVerifiedItem } from '../../shared/completionEvidence';
 import type { PaneSearchResult, PaneSearchResponse } from '../../shared/types';
 import { generateId } from '../../shared/types';
+import { normalizeRoleBinding } from '../../shared/orchestratorRole';
 import { handleCompanyRpc } from '../../company/renderer/rpcHandlers';
 import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/a2aFormat';
 import type { A2aPriority } from '../utils/a2aFormat';
@@ -1257,6 +1258,13 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // or null if no surface in any workspace is bound to that PTY. Main-side
   // validators use this to gate cross-workspace terminal access (defense
   // against PTY-id leaks bypassing the metadata-layer isolation).
+  //
+  // D2: also returns the owning paneId and its resolved role→model binding (if
+  // any), so main's input.send rewrite can enforce the bound model without a
+  // second round-trip. Both the role mirror (paneRole) and the operator binding
+  // map (orchestratorRoleBindings) live in the renderer store, so the renderer
+  // is the natural place to resolve the pair. Fields are additive — legacy
+  // callers that read only `workspaceId` are unaffected.
   if (method === 'input.findOwnerWorkspace') {
     const ptyId = typeof params.ptyId === 'string' ? params.ptyId : '';
     if (!ptyId) return { workspaceId: null };
@@ -1264,7 +1272,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       const leaves = findLeafPanes(ws.rootPane);
       for (const leaf of leaves) {
         for (const s of leaf.surfaces) {
-          if (s.ptyId === ptyId) return { workspaceId: ws.id };
+          if (s.ptyId === ptyId) {
+            const role = store.paneRole[leaf.id];
+            const binding = role ? normalizeRoleBinding(store.orchestratorRoleBindings[role]) : undefined;
+            return {
+              workspaceId: ws.id,
+              paneId: leaf.id,
+              ...(binding ? { roleBinding: binding } : {}),
+            };
+          }
         }
       }
     }

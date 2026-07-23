@@ -4,7 +4,9 @@ import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerInputRpc, decideTerminalOmittedTarget } from '../input.rpc';
+import type { RoleBindingResolver } from '../input.rpc';
 import type { PTYManager } from '../../../pty/PTYManager';
+import type { RoleBinding } from '../../../../shared/orchestratorRole';
 
 // Mock the renderer bridge so we can drive input.findOwnerWorkspace (the
 // ownership oracle assertWorkspaceOwnsPty consults) and input.readScreen (the
@@ -330,5 +332,108 @@ describe('input.send — submit sends text and Enter as two separate writes', ()
       params: { text: 'no submit', ptyId: 'pty-a', workspaceId: 'ws-self' },
     });
     expect(writeMock.mock.calls).toEqual([['pty-a', 'no submit']]);
+  });
+});
+
+// D2 — role→model enforcement at the input.send chokepoint. A submit of a bare
+// bound-agent launcher is transparently rewritten to carry the role's model;
+// an explicit --model, an unbound pane, a non-submit, a multi-line paste, and a
+// resolver miss all leave the text untouched (fail-open).
+describe('input.send — role→model enforcement (D2)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function setupWithResolver(
+    resolver: RoleBindingResolver,
+  ): { router: RpcRouter; writeMock: ReturnType<typeof vi.fn> } {
+    const writeMock = vi.fn();
+    const pty = { get: vi.fn(() => ({ id: 'x' })), write: writeMock } as unknown as PTYManager;
+    const router = new RpcRouter();
+    registerInputRpc(router, pty, () => fakeWindow, undefined, resolver);
+    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
+      if (method === 'input.findOwnerWorkspace') return Promise.resolve({ workspaceId: 'ws-self' });
+      return Promise.resolve(null);
+    });
+    return { router, writeMock };
+  }
+
+  const bind = (binding: RoleBinding | undefined): RoleBindingResolver => () => Promise.resolve(binding);
+
+  it('rewrites a bare bound launcher on submit — the written text carries --model', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ model: 'haiku' }));
+    const res = await router.dispatch({
+      id: '1',
+      method: 'input.send',
+      params: { text: 'claude', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(res.ok).toBe(true);
+    const payload = res.ok ? (res.result as { enforcedModel?: string }) : {};
+    expect(payload.enforcedModel).toBe('haiku');
+    expect(writeMock.mock.calls).toEqual([
+      ['pty-a', 'claude --model haiku'],
+      ['pty-a', '\r'],
+    ]);
+  });
+
+  it('leaves an explicit --model untouched', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ model: 'haiku' }));
+    await router.dispatch({
+      id: '2',
+      method: 'input.send',
+      params: { text: 'claude --model opus', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude --model opus']);
+  });
+
+  it('leaves an unbound pane untouched (resolver returns undefined)', async () => {
+    const { router, writeMock } = setupWithResolver(bind(undefined));
+    await router.dispatch({
+      id: '3',
+      method: 'input.send',
+      params: { text: 'claude', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude']);
+  });
+
+  it('does not rewrite when submit is not set', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ model: 'haiku' }));
+    await router.dispatch({
+      id: '4',
+      method: 'input.send',
+      params: { text: 'claude', ptyId: 'pty-a', workspaceId: 'ws-self' },
+    });
+    expect(writeMock.mock.calls).toEqual([['pty-a', 'claude']]);
+  });
+
+  it('does not rewrite multi-line text', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ model: 'haiku' }));
+    await router.dispatch({
+      id: '5',
+      method: 'input.send',
+      params: { text: 'claude\nsecond line', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude\nsecond line']);
+  });
+
+  it('fails open when the resolver throws — the send still goes through', async () => {
+    const throwing: RoleBindingResolver = () => Promise.reject(new Error('renderer race'));
+    const { router, writeMock } = setupWithResolver(throwing);
+    const res = await router.dispatch({
+      id: '6',
+      method: 'input.send',
+      params: { text: 'claude', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(res.ok).toBe(true);
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude']);
+  });
+
+  it('surfaces an advisory note for a bound agent with no model-flag grammar', async () => {
+    const { router } = setupWithResolver(bind({ agent: 'gemini', model: 'flash' }));
+    const res = await router.dispatch({
+      id: '7',
+      method: 'input.send',
+      params: { text: 'gemini', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    const note = res.ok ? (res.result as { note?: string }).note : undefined;
+    expect(note).toMatch(/no known --model flag/);
   });
 });

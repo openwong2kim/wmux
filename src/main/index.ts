@@ -24,7 +24,7 @@ import { PipeServer } from './pipe/PipeServer';
 import { registerWorkspaceRpc } from './pipe/handlers/workspace.rpc';
 import { registerSurfaceRpc } from './pipe/handlers/surface.rpc';
 import { registerPaneRpc } from './pipe/handlers/pane.rpc';
-import { registerInputRpc } from './pipe/handlers/input.rpc';
+import { registerInputRpc, makeRoleBindingResolver } from './pipe/handlers/input.rpc';
 import { registerDeckRpc } from './pipe/handlers/deck.rpc';
 import { registerNotifyRpc } from './pipe/handlers/notify.rpc';
 import { registerMetaRpc } from './pipe/handlers/meta.rpc';
@@ -577,7 +577,13 @@ hookSignalRouter = new HookSignalRouter({ latencyMeter: signalLatencyMeter });
 registerWorkspaceRpc(rpcRouter, () => mainWindow);
 registerSurfaceRpc(rpcRouter, () => mainWindow);
 registerPaneRpc(rpcRouter, () => mainWindow, {}, () => daemonClient);
-registerInputRpc(rpcRouter, ptyManager, () => mainWindow, () => daemonClient);
+registerInputRpc(
+  rpcRouter,
+  ptyManager,
+  () => mainWindow,
+  () => daemonClient,
+  makeRoleBindingResolver(() => mainWindow),
+);
 registerDeckRpc(rpcRouter, () => mainWindow);
 registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);

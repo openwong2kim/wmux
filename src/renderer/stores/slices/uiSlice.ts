@@ -4,6 +4,11 @@ import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { markRetentionMigrationDone } from '../retentionMigration';
 import type { FleetSortMode } from '../selectors/fleet';
 import {
+  normalizeRoleBinding,
+  type OrchestratorRoleBindings,
+  type RoleBinding,
+} from '../../../shared/orchestratorRole';
+import {
   generateId,
   createLeafPane,
   assignPaneOrdinals,
@@ -135,6 +140,15 @@ export interface UISlice {
   // id) passed to the Agent SDK. Applied between turns — see deck.handler.
   deckBrainModel: string;
   setDeckBrainModel: (model: string) => void;
+
+  // D2 — global operator-level role→model enforcement map. Keyed by role name
+  // (Builder/Reviewer/Tester/Planner ∪ custom). An agent launched in a pane
+  // carrying a bound role is transparently rewritten to run the bound
+  // agent+model (main's input.send chokepoint). All roles unbound by default;
+  // persisted like deckBrainModel. See shared/orchestratorRole.applyRoleBinding.
+  orchestratorRoleBindings: OrchestratorRoleBindings;
+  /** Upsert one role's binding; an empty/undefined binding clears it. */
+  setOrchestratorRoleBinding: (role: string, binding: RoleBinding | undefined) => void;
 
   // Orchestrator full-power mode (BYOB approach A): load the user's Claude
   // Code ecosystem (skills, CLAUDE.md, hooks) into brain turns. Default OFF —
@@ -809,6 +823,19 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setDeckBrainModel: (model) => set((state) => {
     state.deckBrainModel = model;
+  }),
+
+  orchestratorRoleBindings: {},
+
+  setOrchestratorRoleBinding: (role, binding) => set((state) => {
+    const key = role.trim();
+    if (!key) return;
+    const normalized = normalizeRoleBinding(binding);
+    if (normalized) {
+      state.orchestratorRoleBindings[key] = normalized;
+    } else {
+      delete state.orchestratorRoleBindings[key];
+    }
   }),
 
   deckBrainFullPower: false,

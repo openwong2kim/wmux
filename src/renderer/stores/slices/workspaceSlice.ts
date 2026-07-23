@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { createWorkspace, clonePaneTreeFresh, assignPaneOrdinals, generateId, BUILTIN_TEMPLATES, DEFAULT_PREFIX_CONFIG, buildDefaultCustomKeybindings, upgradeDefaultKeybindingsForPlatform, TERMINAL_STATES, NOTIFICATION_CATEGORIES, type Pane, type PaneLeaf, type SessionData, type Workspace, type WorkspaceMetadata, type WorkspaceProfile } from '../../../shared/types';
 import { normalizeWorkspaceProfile } from '../../../shared/workspaceProfile';
+import { normalizeRoleBindings } from '../../../shared/orchestratorRole';
 import { getPresetById } from '../../../shared/layoutPresets';
 import { setLocale as i18nSetLocale, t as i18nT, type Locale } from '../../i18n';
 import { applyCustomCssVars, migrateThemeId, migrateCustomThemeColors } from '../../themes';
@@ -689,6 +690,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       }
       if (data.defaultShell) state.defaultShell = data.defaultShell;
       if (typeof data.deckBrainModel === 'string') state.deckBrainModel = data.deckBrainModel;
+      // D2 — re-normalize on load (session.json is hand-editable / untrusted).
+      state.orchestratorRoleBindings = normalizeRoleBindings(data.orchestratorRoleBindings);
       // Fail closed to raw mode: only an explicit true enables full power.
       state.deckBrainFullPower = data.deckBrainFullPower === true;
       // Fail closed to the default brain: only known vendor ids are restored.
