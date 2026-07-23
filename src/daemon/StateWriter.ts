@@ -154,7 +154,7 @@ export class StateWriter {
   private immediateEpoch = 0;
   private lastImmediateState: DaemonState | null = null;
 
-  constructor(baseDir: string, suspendedTtlHours: number = SUSPENDED_TTL_HOURS_DEFAULT, detachedTtlHours: number = DETACHED_TTL_HOURS_DEFAULT, persistHealedOnLoad: boolean = false) {
+  constructor(baseDir: string, suspendedTtlHours: number = SUSPENDED_TTL_HOURS_DEFAULT, detachedTtlHours: number = DETACHED_TTL_HOURS_DEFAULT, persistHealedOnLoad = false) {
     this.filePath = path.join(baseDir, 'sessions.json');
     // Substrate 3.0: suspended-tombstone GC retention. The daemon main
     // threads config.session.suspendedTtlHours here (codex #2). The
@@ -360,21 +360,26 @@ export class StateWriter {
     const now = Date.now();
     let restamped = false;
     state.sessions = state.sessions.filter((s) => {
-      const sinceMs = now - new Date(s.lastActivity).getTime();
-      // A corrupted/malformed lastActivity makes getTime() NaN, so every
-      // `NaN < ttl` comparison below is false and the record would be KEPT
-      // forever (fail-open) — the exact leak the #557 reaper exists to stop.
-      // Restamp to now rather than pruning: pruning would fail-closed and could
-      // kill a possibly-live session on a single transient bad timestamp, while
-      // restamping restarts the TTL clock from now so the record can age out on
-      // a later load. The restamp is persisted below (persistHealedOnLoad) so
-      // the fix survives a daemon restart — otherwise the corrupt value would be
-      // re-read and re-restamped every boot and never actually age out.
-      if (Number.isNaN(sinceMs)) {
+      // Heal any lastActivity that is not a valid, parseable ISO timestamp.
+      // isDaemonState() only validates minimal fields, so disk corruption or a
+      // legacy record can leave lastActivity as a non-string (null, number,
+      // boolean) or an unparseable string. `new Date(null/false/0).getTime()`
+      // coerces to a VALID epoch 0, which a NaN-only guard would miss — the
+      // record would then look ancient and be silently reaped, contradicting
+      // this reaper's own fail-open design. So we detect corruption directly:
+      // non-string OR Date.parse() → NaN. Restamp to now rather than pruning:
+      // pruning would fail-closed and could kill a possibly-live session on a
+      // single bad timestamp, while restamping restarts the TTL clock so the
+      // record can age out on a later load. The restamp is persisted below
+      // (persistHealedOnLoad) so the fix survives a daemon restart — otherwise
+      // the corrupt value would be re-read and re-restamped every boot and
+      // never actually age out.
+      if (typeof s.lastActivity !== 'string' || Number.isNaN(Date.parse(s.lastActivity))) {
         s.lastActivity = new Date(now).toISOString();
         restamped = true;
         return true;
       }
+      const sinceMs = now - new Date(s.lastActivity).getTime();
       if (s.state === 'dead') {
         return sinceMs < s.deadTtlHours * 60 * 60 * 1000;
       }

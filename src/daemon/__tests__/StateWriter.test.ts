@@ -297,6 +297,40 @@ describe('StateWriter', () => {
     }
   });
 
+  it('heals a non-string lastActivity (null / number) instead of reaping it as ancient (#557)', () => {
+    // `new Date(null).getTime()` and `new Date(0).getTime()` both coerce to a
+    // VALID epoch 0, so a NaN-only guard would miss them and the record would
+    // look ~56 years old and be silently reaped. isDaemonState() validates only
+    // minimal fields, so disk corruption / legacy records can carry a non-string
+    // lastActivity here. Both must heal (kept + restamped), like a bad string.
+    const nullActivity = makeSession({
+      id: 'null-activity',
+      state: 'detached',
+      lastActivity: null as unknown as string,
+    });
+    const numericActivity = makeSession({
+      id: 'numeric-activity',
+      state: 'dead',
+      lastActivity: 0 as unknown as string,
+    });
+
+    writer.saveImmediate(makeState([nullActivity, numericActivity]));
+
+    const before = Date.now();
+    const loaded = writer.load();
+    const after = Date.now();
+    const ids = loaded.sessions.map((s) => s.id);
+
+    expect(ids).toContain('null-activity');
+    expect(ids).toContain('numeric-activity');
+    for (const s of loaded.sessions) {
+      const t = new Date(s.lastActivity).getTime();
+      expect(Number.isNaN(t)).toBe(false);
+      expect(t).toBeGreaterThanOrEqual(before);
+      expect(t).toBeLessThanOrEqual(after);
+    }
+  });
+
   it('persists the restamp to disk so it survives a restart and eventually ages out (#557)', () => {
     // The real leak the persist guard closes: an in-memory-only restamp would be
     // re-read as corrupt on the next boot and restamped again forever. The main
