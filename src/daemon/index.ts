@@ -6,7 +6,7 @@ import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
-import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget } from './HeadlessSnapshot';
+import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
@@ -1434,7 +1434,7 @@ function registerRpcHandlers(
     if (!managed) {
       throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
     }
-    const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 5000, 50_000);
+    const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 5000, MAX_SCROLLBACK);
     const outcome = await generateTextSnapshot({
       // Dims backstop parity with the attach flush (?? 80 / ?? 24): a recovered
       // session may not have real dims yet, and a 0-wide headless terminal would

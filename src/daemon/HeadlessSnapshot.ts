@@ -71,12 +71,12 @@ export type SnapshotOutcome =
 // avoid; 4 s keeps headroom while still bounding a pathological stream.
 const DEFAULT_BUDGET_MS = 4000;
 const DEFAULT_SCROLLBACK = 5000;
-/** Lossless upper bound on serialized scrollback. Exported so the attach flush
- *  can request the full history (the renderer's xterm scrollback is
- *  user-configurable up to this) instead of silently truncating to the
- *  DEFAULT — the headless terminal is per-snapshot and disposed, so the peak
- *  cost is bounded. */
-export const MAX_SCROLLBACK = 50_000;
+/** Lossless upper bound on serialized scrollback. Aligned with the Settings
+ *  ceiling for `scrollbackLines` (SettingsPanel.tsx — the slider maxes at
+ *  100k), so a compact attach snapshot never drops rows a raw replay would have
+ *  kept for a user configured that high. The headless terminal is per-snapshot
+ *  and disposed, so the peak cost is bounded. */
+export const MAX_SCROLLBACK = 100_000;
 /** Feed slice size — keeps each synchronous parse burst bounded so the daemon
  * event loop (input forwarding!) never stalls behind an 8 MB write.
  * Exported for the slice-boundary regression test. */
@@ -138,26 +138,38 @@ export function generateTextSnapshot(req: SnapshotRequest): Promise<TextSnapshot
   return enqueueSnapshotJob(() => generateTextInner(req));
 }
 
-/** Per-row JSON overhead estimate for `{"text":"…","wrapped":false},`. */
-const TEXT_ROW_JSON_OVERHEAD = 28;
+/** Per-row structural JSON overhead for `,{"text":,"wrapped":false}`. */
+const TEXT_ROW_JSON_OVERHEAD = 26;
+
+/** Serialized cost of one row: the JSON-escaped text (quotes, backslashes — and
+ *  Windows paths are backslash-heavy — DOUBLE under JSON.stringify, so measuring
+ *  raw text.length would UNDER-estimate and could still blow the frame) plus the
+ *  structural overhead. `.length` (UTF-16 code units) is the correct unit here:
+ *  MAX_LINE_BUFFER is compared against the string `.length` after
+ *  setEncoding('utf8') in BOTH DaemonPipeServer and DaemonClient — do NOT switch
+ *  this to Buffer.byteLength (that would be a byte/code-unit mismatch). */
+function rowSerializedCost(r: TextSnapshotRow): number {
+  return JSON.stringify(r.text).length + TEXT_ROW_JSON_OVERHEAD;
+}
 
 /**
- * Cap serialized text rows to a byte budget for the control-pipe frame limit
+ * Cap serialized text rows to a budget for the control-pipe frame limit
  * (DaemonPipeServer/DaemonClient MAX_LINE_BUFFER is 1 MiB and CLEARS on
  * overflow — an oversized readSessionText response would time out and come back
- * empty). Drops the OLDEST rows (front) until the estimated JSON size fits,
- * since the tail is the most relevant, and reports whether it trimmed.
+ * empty). Drops the OLDEST rows (front) until the estimated size fits, since the
+ * tail is the most relevant, and reports whether it trimmed.
  */
 export function capTextRowsToFrameBudget(
   rows: TextSnapshotRow[],
   maxBytes: number,
 ): { rows: TextSnapshotRow[]; truncated: boolean } {
+  const costs = rows.map(rowSerializedCost);
   let total = 0;
-  for (const r of rows) total += r.text.length + TEXT_ROW_JSON_OVERHEAD;
+  for (const c of costs) total += c;
   if (total <= maxBytes) return { rows, truncated: false };
   let drop = 0;
   while (drop < rows.length && total > maxBytes) {
-    total -= rows[drop].text.length + TEXT_ROW_JSON_OVERHEAD;
+    total -= costs[drop];
     drop++;
   }
   return { rows: rows.slice(drop), truncated: true };

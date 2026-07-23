@@ -98,11 +98,24 @@ describe('capTextRowsToFrameBudget (readSessionText frame budget)', () => {
     const CAP = 700 * 1024;
     const out = capTextRowsToFrameBudget(rows, CAP);
     expect(out.truncated).toBe(true);
-    // Estimated serialized size stays under the cap.
-    const est = out.rows.reduce((n, r) => n + r.text.length + 28, 0);
-    expect(est).toBeLessThanOrEqual(CAP);
+    // The TRUE serialized size (JSON-escaped) of the kept rows stays under cap.
+    const trueSize = JSON.stringify(out.rows).length;
+    expect(trueSize).toBeLessThanOrEqual(CAP);
     // The TAIL is kept (most relevant) — the last row survives, an early one is gone.
     expect(out.rows[out.rows.length - 1].text).toContain('row 019999');
     expect(out.rows.some((r) => r.text.includes('row 000000'))).toBe(false);
+  });
+
+  it('accounts for JSON escaping so quote/backslash-heavy rows stay under cap', () => {
+    // Windows paths + quotes: every \ and " DOUBLES under JSON.stringify. A
+    // raw text.length estimate would under-count and could blow the frame.
+    const heavy = 'C:\\Users\\rizz\\"proj"\\node_modules\\'.repeat(4);
+    const rows = Array.from({ length: 40_000 }, () => ({ text: heavy, wrapped: false }));
+    const CAP = 700 * 1024;
+    const out = capTextRowsToFrameBudget(rows, CAP);
+    expect(out.truncated).toBe(true);
+    // The honest JSON size of what we return must fit — this is the assertion
+    // that fails with a raw text.length estimate.
+    expect(JSON.stringify(out.rows).length).toBeLessThanOrEqual(CAP);
   });
 });

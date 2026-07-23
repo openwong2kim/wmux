@@ -1176,8 +1176,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     // silent miss (hard AC). Sequential (not Promise.all) so the shared budget
     // is honored and the daemon's concurrency-1 snapshot queue isn't stormed.
     const parkedPtyIds = Array.from(ptyToPaneId.keys()).filter((id) => !terminalRegistry.has(id));
+    // Wall-clock deadline: each parked read can take seconds on the daemon's
+    // concurrency-1 snapshot queue, and 3+ heavy panes would blow the outer 10s
+    // MCP RPC timeout. Stop issuing reads past ~6s and report truncated rather
+    // than let the whole search time out to empty.
+    const PARKED_DEADLINE_MS = 6000;
+    const parkedStart = Date.now();
     for (const ptyId of parkedPtyIds) {
       if (remainingBudget <= 0) { truncated = true; break; }
+      if (Date.now() - parkedStart > PARKED_DEADLINE_MS) { truncated = true; break; }
       const paneId = ptyToPaneId.get(ptyId);
       if (!paneId) continue;
       // Request the renderer's configured scrollback depth (daemon clamps to
@@ -1317,7 +1324,15 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       const read = await fetchParkedPaneRows(ptyId, depth);
       if (!read) return { ptyId, text: '' }; // legacy daemon / local / gone
       const texts = read.rows.map((r) => r.text);
-      if (wantsFull) return { ptyId, text: texts.join('\n') };
+      if (wantsFull) {
+        // full_scrollback promises the ENTIRE backlog — if the daemon dropped
+        // oldest rows to fit the RPC frame, surface truncated so the caller
+        // doesn't read partial history as complete (callRpc serializes the whole
+        // result object, so the field reaches the agent).
+        return { ptyId, text: texts.join('\n'), ...(read.truncated && { truncated: true }) };
+      }
+      // Bounded tail read: only the last capP rows were requested, so older
+      // history missing is by design, not a truncation to report.
       return { ptyId, text: texts.slice(-capP).join('\n') };
     }
 
