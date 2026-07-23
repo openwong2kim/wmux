@@ -193,6 +193,12 @@ export const IPC = {
   //   2026-07-17). Renderer-only trust boundary.
   HOOKS_BRIDGE_STATUS: 'hooks:bridge:status',
   HOOKS_BRIDGE_INSTALL: 'hooks:bridge:install',
+  //   STATUSLINE_BRIDGE — mirrors HOOKS_BRIDGE for the per-account usage
+  //   statusline (`wmux setup-statusline`). STATUS reports per-target install
+  //   state; INSTALL performs the same idempotent install as the CLI. Same
+  //   explicit-user-trigger constraint — never auto-run at boot.
+  STATUSLINE_BRIDGE_STATUS: 'statusline:bridge:status',
+  STATUSLINE_BRIDGE_INSTALL: 'statusline:bridge:install',
   //   DECK_CONVERSATION_CLEAR — the operator's `/clear` for one workspace's
   //   orchestrator: disposes the live brain (interrupting an in-flight turn)
   //   and drops the persisted session id, so the next turn starts a FRESH SDK

@@ -502,6 +502,19 @@ const electronAPI = {
           import('../cli/commands/setupHooks').InstallOutcome
         >,
     },
+    // Per-account usage statusline (in-app `wmux setup-statusline`). Mirrors
+    // hooksBridge — STATUS feeds the Settings/install prompt; INSTALL is the
+    // explicit user-clicked install.
+    statuslineBridge: {
+      status: () =>
+        ipcRenderer.invoke(IPC.STATUSLINE_BRIDGE_STATUS) as Promise<
+          import('../main/ipc/handlers/statuslineBridge.handler').StatuslineBridgeStatus
+        >,
+      install: () =>
+        ipcRenderer.invoke(IPC.STATUSLINE_BRIDGE_INSTALL) as Promise<
+          import('../cli/commands/setupStatusline').StatuslineOutcome
+        >,
+    },
     // Brain-raised decision gate. GET hydrates the pending decision on mount (so
     // it shows after a reboot); RESOLVE is the human's answer, which clears the
     // block and resumes the loop.

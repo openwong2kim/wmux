@@ -19,6 +19,7 @@ import { registerMetadataHandlers } from './handlers/metadata.handler';
 import { startLocalContextWatch } from '../metadata/localContextWatch';
 import { registerClipboardHandlers } from './handlers/clipboard.handler';
 import { registerHooksBridgeHandlers } from './handlers/hooksBridge.handler';
+import { registerStatuslineBridgeHandlers } from './handlers/statuslineBridge.handler';
 import { registerFsHandlers } from './handlers/fs.handler';
 import { registerToolbarHandlers } from './handlers/toolbar.handler';
 import { registerDiffHandlers } from './handlers/diff.handler';
@@ -157,6 +158,7 @@ export function registerAllHandlers(
   });
   registerClipboardHandlers();
   registerHooksBridgeHandlers();
+  registerStatuslineBridgeHandlers();
   const cleanupFs = registerFsHandlers();
   const cleanupToolbar = registerToolbarHandlers();
   // J2 — diff:read / diff:applyHunks. git 전용(데몬 무관) — 항상 등록.
