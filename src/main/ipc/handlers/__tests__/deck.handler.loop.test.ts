@@ -184,9 +184,11 @@ vi.mock('../../../deck/deckDecisionStore', () => ({
   ),
 }));
 
-import { registerDeckHandler } from '../deck.handler';
+import { registerDeckHandler, buildFleetTailLine } from '../deck.handler';
 import { IPC } from '../../../../shared/constants';
+import type { FleetSnapshot } from '../../../workspace/WorkspaceMirror';
 import { eventBus } from '../../../events/EventBus';
+import { createGlobalTurnGate } from '../../../deck/globalTurnGate';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../../../deck/BrainAdapter';
 
 /** Fake adapter recording the exact text each turn was sent with. */
@@ -236,6 +238,32 @@ beforeEach(() => {
       adapters.push(a);
       return a;
     },
+  });
+});
+
+describe('buildFleetTailLine — the one-line fleet summary', () => {
+  const snap = (statuses: string[]): FleetSnapshot => ({
+    workspaceId: 'ws-1',
+    ts: 1,
+    panes: statuses.map((s, i) => ({
+      ptyId: `p${i}`,
+      agentName: 'claude',
+      agentStatus: s as FleetSnapshot['panes'][number]['agentStatus'],
+      isActivePane: false,
+    })),
+  });
+
+  it('counts awaiting/stopped/errored panes with no misleading heartbeat clause', () => {
+    const line = buildFleetTailLine(snap(['awaiting_input', 'complete', 'error']));
+    // Accurate regardless of whether the heartbeat is enabled — just the counts.
+    expect(line).toBe('(fleet: 1 awaiting, 1 stopped, 1 error)');
+    expect(line).not.toContain('heartbeat');
+  });
+
+  it('returns undefined when the mirror is empty or the fleet is all quiescent', () => {
+    expect(buildFleetTailLine(null)).toBeUndefined();
+    expect(buildFleetTailLine(snap([]))).toBeUndefined();
+    expect(buildFleetTailLine(snap(['running', 'idle']))).toBeUndefined();
   });
 });
 
@@ -465,6 +493,35 @@ describe('deck:decision — the gate (handler wiring)', () => {
       expect(a?.sentTexts.some((t) => t.includes('RESOLVED') && t.includes('reconciled'))).toBe(true);
     });
   });
+
+  it('M2: startup reconcile processes MORE than the gate cap of resolved decisions (queued + serial)', async () => {
+    // Three resolved-but-unconsumed decisions on relaunch. The old fire-and-forget
+    // loop only got `cap` (2) past the gate and silently dropped the third; the
+    // queued+serial reconcile must resume ALL three.
+    cleanup?.();
+    for (const ws of ['ws-a', 'ws-b', 'ws-c']) {
+      decisions.set(ws, {
+        id: `${ws}-d`, question: 'Q?', options: [], context: '',
+        status: 'resolved', resolution: `ans-${ws}`, raisedAt: 1, resolvedAt: 2,
+      });
+    }
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      createAdapter: (opts) => {
+        const a = new FakeAdapter(opts.workspaceId);
+        adapters.push(a);
+        return a;
+      },
+      reconcileDelayMs: 5,
+    });
+    // Each workspace's brain gets its resume turn (FakeAdapter completes instantly,
+    // freeing its slot for the next serial resume).
+    for (const ws of ['ws-a', 'ws-b', 'ws-c']) {
+      await vi.waitFor(() => {
+        const a = adapters.find((x) => x.workspaceId === ws);
+        expect(a?.sentTexts.some((t) => t.includes('RESOLVED') && t.includes(`ans-${ws}`))).toBe(true);
+      });
+    }
+  });
 });
 
 describe('deck:loop:stop / pause / resume — the OFF contract', () => {
@@ -651,5 +708,155 @@ describe('deck:loop kickoff — the loop actually starts working (owner dogfood 
     await new Promise((r) => setTimeout(r, 20));
     // No loop was created ⇒ no manager, no turn.
     expect(adapters).toHaveLength(0);
+  });
+});
+
+describe('global concurrent-turn gate — the fleet-wide cap on autonomous turns', () => {
+  // An adapter whose turn stays OPEN until its releaser is called, so the gate
+  // slot it acquired stays held (each autonomous turn holds a slot for its whole
+  // life — the loop kickoff routes through runTurnForWorkspace, the gated path).
+  const releasers: (() => void)[] = [];
+  class HoldingAdapter extends FakeAdapter {
+    async *send(text: string): AsyncIterable<BrainEvent> {
+      this.sentTexts.push(text);
+      await new Promise<void>((r) => releasers.push(r));
+      yield { type: 'turn-end', sessionId: 'sess' } as BrainEvent;
+    }
+  }
+  const started = (ws: string): number =>
+    adapters.find((a) => a.workspaceId === ws)?.sentTexts.length ?? 0;
+
+  const reRegisterHolding = (
+    extra: Parameters<typeof registerDeckHandler>[1] = {},
+  ) => {
+    captured.clear();
+    cleanup?.();
+    adapters = [];
+    releasers.length = 0;
+    cleanup = registerDeckHandler(() => fakeWindow, {
+      createAdapter: (opts) => {
+        const a = new HoldingAdapter(opts.workspaceId);
+        adapters.push(a);
+        return a;
+      },
+      ...extra,
+    });
+  };
+
+  it('a one-shot loop kickoff AWAITS a slot and proceeds when one frees (queued acquire)', async () => {
+    reRegisterHolding();
+    // Two loop kickoffs take the two slots and hold them open.
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'a' });
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-2', objective: 'b' });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(started('ws-1')).toBe(1);
+    expect(started('ws-2')).toBe(1);
+
+    // A THIRD loop kickoff hits the full gate. As a one-shot caller it QUEUES for
+    // a slot rather than dropping its turn — so ws-3 has NOT sent yet.
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-3', objective: 'c' });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(started('ws-3')).toBe(0);
+
+    // Release turn 1 → its slot frees; the queued ws-3 kickoff acquires it and
+    // finally runs (pre-fix it would have been rejected and the loop sat idle).
+    releasers[0]?.();
+    await new Promise((r) => setTimeout(r, 20));
+    expect(started('ws-3')).toBe(1);
+
+    releasers.forEach((r) => r()); // let the held turns finish
+    await new Promise((r) => setTimeout(r, 15));
+  });
+
+  it('a busy workspace never touches the fleet gate (P3 acquire ordering)', async () => {
+    // Inject the gate so we can watch its acquire methods.
+    const gate = createGlobalTurnGate(2);
+    const tryAcq = vi.spyOn(gate, 'tryAcquire');
+    const queuedAcq = vi.spyOn(gate, 'acquireWhenAvailable');
+    reRegisterHolding({ turnGate: gate });
+
+    // ws-1 is held BUSY by an (ungated) human send.
+    const human = invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'long human turn' });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(started('ws-1')).toBe(1);
+    tryAcq.mockClear();
+    queuedAcq.mockClear();
+
+    // A resume for the BUSY ws-1 must reject on the pre-acquire busy check —
+    // never consuming (or queuing on) a fleet slot.
+    decisions.set('ws-1', {
+      id: 'd1', question: 'Q?', options: [], context: '',
+      status: 'pending', raisedAt: 1,
+    });
+    await invoke(IPC.DECK_DECISION_RESOLVE, { workspaceId: 'ws-1', id: 'd1', resolution: 'go' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(queuedAcq).not.toHaveBeenCalled();
+    expect(tryAcq).not.toHaveBeenCalled();
+
+    // Contrast: a resume for an IDLE workspace DOES reach the gate (queued path).
+    decisions.set('ws-2', {
+      id: 'd2', question: 'Q?', options: [], context: '',
+      status: 'pending', raisedAt: 1,
+    });
+    await invoke(IPC.DECK_DECISION_RESOLVE, { workspaceId: 'ws-2', id: 'd2', resolution: 'ok' });
+    await new Promise((r) => setTimeout(r, 20));
+    expect(queuedAcq).toHaveBeenCalledWith(expect.any(Number), 'ws-2');
+
+    releasers.forEach((r) => r());
+    await human;
+  });
+
+  it('the fast reject-and-requeue path rejects a 3rd concurrent turn while the gate is full', async () => {
+    // The coalescer (event-woken wakes) uses the FAST tryAcquire path. Pre-fill
+    // the injected gate to its cap of 2 to stand in for two in-flight turns.
+    const gate = createGlobalTurnGate(2);
+    reRegisterHolding({ turnGate: gate });
+    const held1 = gate.tryAcquire('other-1');
+    const held2 = gate.tryAcquire('other-2');
+    expect(held1).toBeTruthy();
+    expect(held2).toBeTruthy();
+
+    // An awaiting_input edge for an IDLE ws-3 (assist mode wakes on it). The
+    // coalescer debounces, flushes → runTurn fast path → gate full → busy reject.
+    eventBus.emit({
+      type: 'agent.lifecycle', workspaceId: 'ws-3', ptyId: 'p1',
+      kind: 'agent.awaiting_input', source: 'hook', agent: 'claude', decision: 'emit',
+    });
+    await new Promise((r) => setTimeout(r, 1700)); // > coalescer debounce (1500ms)
+    expect(started('ws-3')).toBe(0); // rejected on the full gate, no send
+
+    // Free the gate and re-edge: the same wake now gets a slot and fires — proof
+    // it was only the full gate blocking it.
+    gate.release(held1!);
+    gate.release(held2!);
+    eventBus.emit({
+      type: 'agent.lifecycle', workspaceId: 'ws-3', ptyId: 'p2',
+      kind: 'agent.awaiting_input', source: 'hook', agent: 'claude', decision: 'emit',
+    });
+    await new Promise((r) => setTimeout(r, 1700));
+    expect(started('ws-3')).toBe(1);
+
+    releasers.forEach((r) => r());
+    await new Promise((r) => setTimeout(r, 15));
+  }, 10_000);
+
+  it('DECK_SEND (human) is NOT gated — it proceeds even while both slots are held', async () => {
+    reRegisterHolding();
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'a' });
+    await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-2', objective: 'b' });
+    await new Promise((r) => setTimeout(r, 15));
+    expect(started('ws-1')).toBe(1);
+    expect(started('ws-2')).toBe(1);
+
+    // A human types into a THIRD workspace while the gate is full. DECK_SEND
+    // bypasses the gate entirely — the turn reaches its brain. (Don't await the
+    // send: the HoldingAdapter keeps it open until released below.)
+    const humanSend = invoke(IPC.DECK_SEND, { workspaceId: 'ws-3', text: 'hello from the human' });
+    await new Promise((r) => setTimeout(r, 15));
+    const ws3 = adapters.find((a) => a.workspaceId === 'ws-3');
+    expect(ws3?.sentTexts).toContain('hello from the human');
+
+    releasers.forEach((r) => r());
+    await humanSend;
   });
 });

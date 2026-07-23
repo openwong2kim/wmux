@@ -162,6 +162,13 @@ export class DaemonSessionManager extends EventEmitter {
     agent?: { role: string; teamId: string; displayName: string };
     createdAt?: string;
     /**
+     * Recovery passes the session's persisted lastActivity so the TTL reaper
+     * can age out stale orphan shells (#557). Without this, createSession
+     * stamps `now` on every boot, immortalising resurrected detached sessions.
+     * Omitted for brand-new sessions, which correctly start at `now`.
+     */
+    lastActivity?: string;
+    /**
      * Recovery passes the session's persisted per-session dead-TTL so a
      * recovered session keeps its create-time retention instead of being
      * restamped from the current config (codex P2). Omitted for brand-new
@@ -386,7 +393,10 @@ export class DaemonSessionManager extends EventEmitter {
       id: params.id,
       state: 'detached',
       createdAt: params.createdAt ?? now,
-      lastActivity: now,
+      // #557: recovery passes the persisted timestamp; a brand-new session
+      // takes `now`. Resetting to `now` unconditionally (the old behaviour)
+      // immortalised orphan shells — a TTL could never fire post-restart.
+      lastActivity: params.lastActivity ?? now,
       pid: ptyProcess.pid,
       cmd,
       cwd,

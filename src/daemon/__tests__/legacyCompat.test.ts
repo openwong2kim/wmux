@@ -27,7 +27,7 @@
  * legacy/session.json`) is still used as the on-disk payload.
  */
 
-import { describe, it, expect, beforeEach, afterEach } from 'vitest';
+import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
@@ -108,6 +108,14 @@ describe('T14 — legacy data compatibility', () => {
   it('loads a legacy daemonState.json via StateWriter.load()', () => {
     copyFixture(LEGACY_DAEMON_FIXTURE, 'sessions.json');
 
+    // #557: the detached prune reaps detached sessions past the 8 h TTL, and
+    // the fixture's detached session carries an absolute lastActivity
+    // (2026-07-23T10:00:00Z). Freeze the clock 1 h after it so this case is
+    // deterministic — it must not silently start failing 8 h after that wall
+    // time or need periodic fixture bumps.
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-07-23T11:00:00.000Z'));
+
     const writer = new StateWriter(tmpDir);
     try {
       const loaded = writer.load();
@@ -115,8 +123,9 @@ describe('T14 — legacy data compatibility', () => {
       expect(loaded.version).toBe(1);
       expect(Array.isArray(loaded.sessions)).toBe(true);
       // The fixture contains two sessions: one detached, one attached.
-      // `attached` is not pruned (only `dead` sessions are age-checked
-      // in StateWriter.load), so both survive the prune pass.
+      // Both survive the prune pass — `attached` is never TTL-reaped, and
+      // the detached session's lastActivity is recent (within the 8 h
+      // detached TTL), so it survives too. See #557.
       const ids = loaded.sessions.map((s) => s.id);
       expect(ids).toContain('sess-legacy-primary');
       expect(ids).toContain('sess-legacy-attached');
@@ -136,6 +145,7 @@ describe('T14 — legacy data compatibility', () => {
       expect(attached?.agent?.teamId).toBe('team-alpha');
     } finally {
       writer.dispose();
+      vi.useRealTimers();
     }
   });
 

@@ -20,55 +20,16 @@ import { submitBracketedPasteToPty } from '../utils/ptyMessageDelivery';
 import { publishA2aTask } from '../events/publisher';
 import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminalPtyInLeaves, resolveSelfPaneIdentity, resolveSenderPaneAddress, resolvePaneRole, findLeafPanes, type PaneAddress } from './a2aAddressing';
 import { resolveWorkspaceTarget } from './workspaceTargeting';
+import { findActivePtyId, collectAllPtyIds, buildWorkspaceListEntries } from './workspaceMirrorSnapshot';
 
 // ---------------------------------------------------------------------------
 // Pane tree utilities
 // ---------------------------------------------------------------------------
 
-/**
- * Resolve the ptyId of a workspace's active pane + active surface.
- *
- * Duplicated from StatusBar.tsx's local helper — kept inline here rather
- * than lifting to a shared module because both call sites read the active
- * pane through the renderer store and lifting would force a circular
- * dependency between renderer/utils and the store. Two tiny copies are
- * cheaper than the shared-module gymnastics.
- *
- * Used by the workspace.list RPC response so hook bridge scripts
- * (integrations/<agent>/bin/wmux-bridge.mjs) can resolve their hook
- * payload's cwd → workspace → activePtyId in a single round-trip.
- */
-function findActivePtyId(rootPane: Pane | undefined, activePaneId: string): string | null {
-  if (!rootPane) return null;
-  const findLeaf = (pane: Pane): PaneLeaf | null => {
-    if (pane.type === 'leaf') return pane.id === activePaneId ? pane : null;
-    for (const child of pane.children) {
-      const found = findLeaf(child);
-      if (found) return found;
-    }
-    return null;
-  };
-  const leaf = findLeaf(rootPane);
-  if (!leaf) return null;
-  const surface = leaf.surfaces.find((s) => s.id === leaf.activeSurfaceId);
-  return surface?.ptyId ?? null;
-}
-
-/** All ptyIds in a workspace (every leaf, every surface). */
-function collectAllPtyIds(root: Pane): string[] {
-  const ids: string[] = [];
-  const walk = (pane: Pane): void => {
-    if (pane.type === 'leaf') {
-      for (const s of pane.surfaces) {
-        if (s.ptyId) ids.push(s.ptyId);
-      }
-      return;
-    }
-    for (const child of pane.children) walk(child);
-  };
-  walk(root);
-  return ids;
-}
+// `findActivePtyId` / `collectAllPtyIds` were lifted to
+// ./workspaceMirrorSnapshot so the WorkspaceMirror push payload (which mirrors
+// the `workspace.list` reply) shares one source of truth for them. Imported
+// above; the workspace.list handler and line-492 pty sweep use them unchanged.
 
 function findPaneById(root: Pane, id: string): Pane | null {
   if (root.id === id) return root;
@@ -434,26 +395,11 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // -------------------------------------------------------------------------
 
   if (method === 'workspace.list') {
-    return store.workspaces.map((w) => ({
-      id: w.id,
-      name: w.name,
-      metadata: {
-        cwd: w.metadata?.cwd ?? null,
-        gitBranch: w.metadata?.gitBranch ?? null,
-        agentName: w.metadata?.agentName ?? null,
-        agentStatus: w.metadata?.agentStatus ?? null,
-        status: w.metadata?.status ?? null,
-        progress: w.metadata?.progress ?? null,
-      },
-      // Phase 1 hook plugin support — bridge scripts resolve hook payload's
-      // cwd → workspace → activePtyId. activePtyId is the active pane's
-      // active surface; ptyIds is the union over the whole workspace
-      // (used when bridge needs to disambiguate via env if cwd alone is
-      // ambiguous). Both fields are optional from the wire-format POV —
-      // existing consumers that destructure metadata only are unaffected.
-      activePtyId: findActivePtyId(w.rootPane, w.activePaneId),
-      ptyIds: collectAllPtyIds(w.rootPane),
-    }));
+    // Phase 1 hook plugin support — bridge scripts resolve hook payload's
+    // cwd → workspace → activePtyId. Shared with the WorkspaceMirror push so
+    // the mirror snapshot can never diverge from this reply (see
+    // buildWorkspaceListEntries).
+    return buildWorkspaceListEntries(store.workspaces);
   }
 
   if (method === 'workspace.new') {

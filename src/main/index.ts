@@ -51,6 +51,7 @@ import { registerChannelLocalHandlers } from './ipc/handlers/channelLocal.handle
 import { registerFanOutHandler } from './ipc/handlers/fanout.handler';
 import { registerWorktaskHandlers } from './ipc/handlers/worktask.handler';
 import { registerDeckHandler } from './ipc/handlers/deck.handler';
+import { registerWorkspaceMirrorHandler } from './ipc/handlers/workspaceMirror.handler';
 import { registerUiPluginRpc } from './pipe/handlers/uiPlugin.rpc';
 import { registerMcpPluginRpc } from './pipe/handlers/mcp.rpc';
 import { getPluginTrustStore } from './mcp/PluginTrustStore';
@@ -601,6 +602,11 @@ registerWorktaskHandlers(() => daemonClient);
 // Agent-SDK orchestrator session runs in MAIN and drives the fleet via the wmux
 // MCP bundle. Lazily spawned on the first deck:send; disposed on before-quit.
 const disposeDeckHandler = registerDeckHandler(() => mainWindow);
+// WorkspaceMirror — renderer push (fire-and-forget) keeps a main-process cache
+// of the workspace tree + per-pane agent status warm, so routing / hook
+// resolution is served locally instead of via the workspace.list renderer
+// round-trip (which a large-buffer flush storm starves). Snapshot-only.
+const disposeWorkspaceMirrorHandler = registerWorkspaceMirrorHandler();
 // Returns an unsubscribe for the signal-health push subscription. Called from
 // before-quit so HMR reload / shutdown does not leak the listener.
 // ─── M2 — per-account usage service (hook-gated, opt-in) ─────────────────────
@@ -1518,6 +1524,7 @@ app.on('before-quit', async (e) => {
   safeStep('cleanupHandlers', () => cleanupHandlers());
   safeStep('disposeFirstRunHandlers', () => disposeFirstRunHandlers());
   safeStep('disposeDeckHandler', () => disposeDeckHandler());
+  safeStep('disposeWorkspaceMirrorHandler', () => disposeWorkspaceMirrorHandler());
   safeStep('disposeHooksRpc', () => disposeHooksRpc());
   safeStep('disposeUsagePollerListener', () => disposeUsagePollerListener());
   safeStep('usagePoller.dispose', () => usagePoller.dispose());

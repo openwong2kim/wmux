@@ -565,6 +565,29 @@ describe('DaemonSessionManager', () => {
     expect(s.deadTtlHours).toBe(12);
   });
 
+  // #557: recovery must thread the persisted lastActivity through so the
+  // detached TTL reaper can age out stale orphan shells. Without this,
+  // createSession stamped `now` on every boot, immortalising resurrected
+  // detached sessions (the orphan-leak the issue reports).
+  it('preserves a passed lastActivity over the default `now` (recovery path)', () => {
+    const persisted = '2026-01-01T00:00:00.000Z';
+    const s = manager.createSession({
+      id: 'rec-activity',
+      cmd: 'cmd.exe',
+      cwd: '.',
+      lastActivity: persisted,
+    });
+    expect(s.lastActivity).toBe(persisted);
+  });
+
+  it('stamps lastActivity to ~now for brand-new sessions (no lastActivity passed)', () => {
+    const before = Date.now();
+    const s = manager.createSession({ id: 'new-activity', cmd: 'cmd.exe', cwd: '.' });
+    const stamped = new Date(s.lastActivity).getTime();
+    expect(stamped).toBeGreaterThanOrEqual(before);
+    expect(stamped).toBeLessThanOrEqual(Date.now());
+  });
+
   // v2.8.1 hotfix: deferred output mode for recovered sessions (Bug 2)
   describe('deferOutput (recovery mode)', () => {
     it('drops PTY data while deferred and the ring buffer stays clean', () => {

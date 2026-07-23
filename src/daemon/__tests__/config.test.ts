@@ -131,6 +131,7 @@ describe('createDefaultConfig — lifecycle knobs', () => {
     const c = createDefaultConfig();
     expect(c.session.maxSessions).toBe(200);
     expect(c.session.suspendedTtlHours).toBe(7 * 24);
+    expect(c.session.detachedTtlHours).toBe(8);
     expect(c.daemon.memWarnMb).toBe(500);
     expect(c.daemon.memReapMb).toBe(750);
     expect(c.daemon.memBlockMb).toBe(1024);
@@ -162,6 +163,7 @@ describe('loadConfig — lifecycle backfill + clamp', () => {
     // New fields backfilled to defaults
     expect(c.session.maxSessions).toBe(200);
     expect(c.session.suspendedTtlHours).toBe(7 * 24);
+    expect(c.session.detachedTtlHours).toBe(8);
     expect(c.daemon.memWarnMb).toBe(500);
     expect(c.daemon.memReapMb).toBe(750);
     expect(c.daemon.memBlockMb).toBe(1024);
@@ -171,12 +173,13 @@ describe('loadConfig — lifecycle backfill + clamp', () => {
     const c0 = createDefaultConfig();
     writeRawConfig({
       ...c0,
-      session: { ...c0.session, maxSessions: 50, suspendedTtlHours: 48 },
+      session: { ...c0.session, maxSessions: 50, suspendedTtlHours: 48, detachedTtlHours: 12 },
       daemon: { ...c0.daemon, memWarnMb: 300, memReapMb: 400, memBlockMb: 600 },
     });
     const c = loadConfig();
     expect(c.session.maxSessions).toBe(50);
     expect(c.session.suspendedTtlHours).toBe(48);
+    expect(c.session.detachedTtlHours).toBe(12);
     expect(c.daemon.memWarnMb).toBe(300);
     expect(c.daemon.memReapMb).toBe(400);
     expect(c.daemon.memBlockMb).toBe(600);
@@ -187,28 +190,31 @@ describe('loadConfig — lifecycle backfill + clamp', () => {
     writeRawConfig({
       ...c0,
       daemon: { ...c0.daemon, pipeName: '\\\\.\\pipe\\keepme' },
-      session: { ...c0.session, maxSessions: 'abc' as unknown as number, suspendedTtlHours: 99 },
+      session: { ...c0.session, maxSessions: 'abc' as unknown as number, suspendedTtlHours: 99, detachedTtlHours: 24 },
     });
     const c = loadConfig();
     expect(c.daemon.pipeName).toBe('\\\\.\\pipe\\keepme'); // NOT reset to default
     expect(c.session.maxSessions).toBe(200);               // garbage → backfilled
     expect(c.session.suspendedTtlHours).toBe(99);          // sibling preserved
+    expect(c.session.detachedTtlHours).toBe(24);           // sibling preserved
   });
 
   it('clamps ≤0 / negative to the floor (no "off" for floors)', () => {
     const c0 = createDefaultConfig();
-    writeRawConfig({ ...c0, session: { ...c0.session, maxSessions: 0, suspendedTtlHours: -5 } });
+    writeRawConfig({ ...c0, session: { ...c0.session, maxSessions: 0, suspendedTtlHours: -5, detachedTtlHours: -1 } });
     const c = loadConfig();
     expect(c.session.maxSessions).toBe(1);        // MAX_SESSIONS_FLOOR
     expect(c.session.suspendedTtlHours).toBe(1);  // SUSPENDED_TTL_FLOOR_HOURS
+    expect(c.session.detachedTtlHours).toBe(1);   // DETACHED_TTL_FLOOR_HOURS
   });
 
   it('clamps over-cap values to the cap', () => {
     const c0 = createDefaultConfig();
-    writeRawConfig({ ...c0, session: { ...c0.session, maxSessions: 999999, suspendedTtlHours: 99999999 } });
+    writeRawConfig({ ...c0, session: { ...c0.session, maxSessions: 999999, suspendedTtlHours: 99999999, detachedTtlHours: 99999999 } });
     const c = loadConfig();
     expect(c.session.maxSessions).toBe(10_000);          // MAX_SESSIONS_CAP
     expect(c.session.suspendedTtlHours).toBe(24 * 365);  // SUSPENDED_TTL_CAP_HOURS
+    expect(c.session.detachedTtlHours).toBe(24 * 365);   // DETACHED_TTL_CAP_HOURS
   });
 
   it('caps memory thresholds at physical RAM (absolute upper cap)', () => {
@@ -226,7 +232,7 @@ describe('loadConfig — lifecycle backfill + clamp', () => {
   it('REGRESSION #5: memBlockMb below the safe floor → clamped + startup warning (no silent brick)', () => {
     const c0 = createDefaultConfig();
     writeRawConfig({ ...c0, daemon: { ...c0.daemon, memWarnMb: 10, memReapMb: 20, memBlockMb: 30 } });
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { /* silence expected warning */ });
     const c = loadConfig();
     expect(c.daemon.memBlockMb).toBeGreaterThanOrEqual(256); // MEM_BLOCK_FLOOR_MB
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('below the safe floor'));

@@ -57,11 +57,15 @@ import * as electron from 'electron';
 // ── Fixtures ─────────────────────────────────────────────────────────
 
 function makeSession(overrides: Partial<DaemonSession> = {}): DaemonSession {
+  // lastActivity defaults to NOW so the detached-TTL reaper (#557) doesn't
+  // prune these fixtures — tests here exercise crash-restore atomicity, not
+  // TTL timing. Dedicated TTL tests set an explicit old timestamp.
+  const recent = new Date().toISOString();
   return {
     id: 'sess-1',
     state: 'detached',
-    createdAt: new Date('2026-04-17T00:00:00.000Z').toISOString(),
-    lastActivity: new Date('2026-04-17T00:00:00.000Z').toISOString(),
+    createdAt: recent,
+    lastActivity: recent,
     pid: 4242,
     cmd: 'bash',
     cwd: '/tmp',

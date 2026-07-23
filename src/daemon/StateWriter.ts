@@ -106,6 +106,14 @@ const QUEUE_KEY = 'state';
 // callers that don't pass config (see constructor).
 const SUSPENDED_TTL_HOURS_DEFAULT = 7 * 24;
 
+// #557: idle DETACHED sessions (no client attached, shell still alive) are
+// reaped after this many hours of inactivity. `lastActivity` is bumped on PTY
+// output, so only shells that have gone silent while detached age out — an
+// active detached session (running build, tail -f) stays alive. 8 h survives a
+// workday gap and kills overnight orphans; the per-instance config
+// (config.session.detachedTtlHours) overrides this at the daemon.
+const DETACHED_TTL_HOURS_DEFAULT = 8;
+
 /**
  * Persists DaemonState (sessions.json) to disk using the shared
  * atomic-write helpers in `./util/atomicWrite`. The public API
@@ -128,6 +136,7 @@ const SUSPENDED_TTL_HOURS_DEFAULT = 7 * 24;
 export class StateWriter {
   private filePath: string;
   private readonly suspendedTtlHours: number;
+  private readonly detachedTtlHours: number;
   private debounceTimer: NodeJS.Timeout | null = null;
   private pendingState: DaemonState | null = null;
   private readonly queue = new AsyncQueue();
@@ -140,7 +149,7 @@ export class StateWriter {
   private immediateEpoch = 0;
   private lastImmediateState: DaemonState | null = null;
 
-  constructor(baseDir: string, suspendedTtlHours: number = SUSPENDED_TTL_HOURS_DEFAULT) {
+  constructor(baseDir: string, suspendedTtlHours: number = SUSPENDED_TTL_HOURS_DEFAULT, detachedTtlHours: number = DETACHED_TTL_HOURS_DEFAULT) {
     this.filePath = path.join(baseDir, 'sessions.json');
     // Substrate 3.0: suspended-tombstone GC retention. The daemon main
     // threads config.session.suspendedTtlHours here (codex #2). The
@@ -149,6 +158,11 @@ export class StateWriter {
     // the authoritative prune runs on the main instance during recovery
     // (codex #3 — both startup paths handled).
     this.suspendedTtlHours = suspendedTtlHours;
+    // #557: detached-shell GC retention. Same threading pattern; the daemon
+    // main passes config.session.detachedTtlHours. Idle detached sessions
+    // that reach this TTL on load are dropped BEFORE recovery iterates, so a
+    // crash/forced-kill no longer resurrects a fleet of orphan shells.
+    this.detachedTtlHours = detachedTtlHours;
 
     // Sync fallback used by `flushSync()` on emergency exit paths.
     // It writes whatever the latest pending snapshot is using the
@@ -322,14 +336,21 @@ export class StateWriter {
       return empty;
     }
 
-    // Prune expired sessions. Two paths:
+    // Prune expired sessions. Three paths:
     //   - dead: per-session TTL (s.deadTtlHours)
     //   - suspended: this.suspendedTtlHours (configurable, default 7d —
     //     v2.8.1 hotfix; see top of this file for the accumulation incident
     //     this prevents).
+    //   - detached: this.detachedTtlHours (configurable, default 8h — #557).
     //
-    // detached/attached states are runtime-only and never reach disk —
-    // shutdown demotes every live session to suspended before saving.
+    // attached is the only live state with no TTL: a client is connected, so
+    // the session is in active use. detached/attached DO reach disk via the
+    // 30 s snapshot runner (snapshotRunner.ts merges listSessions() verbatim),
+    // so the detached clause below is the bound that prevents a crash/forced-
+    // kill from resurrecting a fleet of orphan shells on the next boot — the
+    // stale records are pruned here BEFORE recovery iterates and re-spawns.
+    // Graceful shutdown still demotes every live session to suspended, so on a
+    // clean exit these become suspended-tombstones governed by the 7 d TTL.
     const now = Date.now();
     state.sessions = state.sessions.filter((s) => {
       const sinceMs = now - new Date(s.lastActivity).getTime();
@@ -339,7 +360,17 @@ export class StateWriter {
       if (s.state === 'suspended') {
         return sinceMs < this.suspendedTtlHours * 60 * 60 * 1000;
       }
-      return true;
+      if (s.state === 'detached') {
+        // #557: exec/supervised units (X8 reboot-survival) are intentionally
+        // long-lived unattached sessions that may sit silent for >8 h. The
+        // detached TTL would defeat supervision, so never age them out here.
+        // exec and supervision are independent optional fields (a supervised
+        // plain shell has supervision without exec), so both must exempt —
+        // matches the supervised-unit predicate in agentResume.ts.
+        if (s.exec || s.supervision) return true;
+        return sinceMs < this.detachedTtlHours * 60 * 60 * 1000;
+      }
+      return true; // attached: in active use, never TTL-reaped
     });
 
     return state;
