@@ -33,6 +33,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **The `wmux` CLI launcher no longer hardcodes a version-specific path.** The `wmux.cmd` shim in `<install>/bin/` used to embed an absolute path like `app-3.31.0\wmux.exe`. Squirrel's `--squirrel-updated` handler regenerates the shim on every update, but if that handler fails to fire (crash, timeout, manual copy), the hardcoded path would silently break CLI access after the next update. The shim now dynamically discovers the latest `app-*` directory relative to its own location at runtime (`dir /b /ad /o-d`), so it always resolves to the current version regardless of whether the Squirrel event ran. (#556)
 
+- **OpenClaude panes no longer flood the notification center with "Ready for input".** The agent detector's waiting-for-input patterns for OpenClaude were too loose: `bypass permissions on` matched the TUI's status bar, which re-renders roughly every 16 ms, so the pane was re-declared "awaiting input" continuously and every re-declaration fired a notification. Debug capture of the real TUI showed the actual prompt reduces to a bare `>` (or `> ○` while spinning) after ANSI stripping and trimming, so detection now keys off that prompt marker alone. Only OpenClaude's patterns changed; other agents are untouched. ([#539](https://github.com/openwong2kim/wmux/pull/539), thanks [@rayss868](https://github.com/rayss868))
+
 ### Changed
 
 - **Hidden workspaces stop holding terminal memory.** A workspace you haven't looked at in a while (5 minutes) now has its terminals unmounted to reclaim renderer RAM, so memory no longer grows with the number of workspaces you keep open — only with the ones you're actually using. The daemon keeps every session running untouched; revealing a parked workspace remounts it and replays its screen from the daemon (fast, via the new attach snapshot below), and cross-pane search and agent screen-reads still reach parked panes by reading their content from the daemon, so nothing is silently skipped. On by default; a Settings toggle turns it off for anyone who prefers every workspace to reveal instantly.
@@ -50,6 +52,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A crashed or Task-Manager-killed GUI no longer pins its terminal sessions alive forever.** Sessions with a client attached are deliberately exempt from every reaper — a client is watching, so the shell is in use. But that exemption trusted the `attached` state to be truthful, and nothing enforced it: when the GUI died without a clean detach (a crash, a force-kill), its sessions stayed `attached` in the daemon indefinitely, immune to the TTL and keeping the daemon itself alive. The daemon now notices when an attached client's pipe dies without a detach and, after a 60 s grace window (which absorbs renderer reloads and transient reconnects), demotes the session to `detached` so the normal 8 h detached TTL can age it out. (#557)
 
 - **Supervised/exec panes are never reaped by the detached TTL.** Reboot-survival supervised units are long-lived unattached sessions that can legitimately sit silent for hours; they're now exempt from the new detached TTL (on both load-time prune and the hourly reaper) so supervision keeps working. Reaping a detached session now also unlinks its leftover scrollback buffer dump, matching the dead-session path. (#557)
+
+### Contributors
+Thanks to the external contributors in this release:
+- **[@rayss868](https://github.com/rayss868)** — fixed the OpenClaude notification-spam detection ([#539](https://github.com/openwong2kim/wmux/pull/539)), first contribution. Root-caused it properly: captured the real TUI output to prove which pattern was firing every 16 ms, then narrowed the fix to the bare prompt marker and dropped an unreachable regex on review feedback rather than leaving it in.
+- **[@snowyukitty](https://github.com/snowyukitty)** — hardened the TTL and Windows symlink test cases ([#569](https://github.com/openwong2kim/wmux/pull/569)), making the detached-session reaper suite deterministic instead of wall-clock dependent.
 
 ## [3.31.0] — 2026-07-22
 
