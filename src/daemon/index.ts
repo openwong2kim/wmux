@@ -343,6 +343,14 @@ function resumeLaunchCommand(
 // throws (a corrupt spool file must not fail the recovery path). Returns the
 // number of bindings applied so the caller can skip the save when nothing changed.
 const RESUME_SPOOL_MAX_AGE_MS = 7 * 24 * 60 * 60 * 1000; // prune orphans after 7d
+
+// #557: when an authed client socket vanishes without a detach RPC (GUI crash /
+// Task-Manager kill), the session is stuck 'attached' — exempt from every TTL
+// reaper and holding the daemon alive (the Watchdog counts live sessions). After
+// this grace window with no client, demote it to 'detached' so the 8 h detached
+// TTL can age it out. The grace absorbs renderer reloads / transient pipe flaps;
+// a real client crash never reconnects, so it always fires.
+const ATTACHED_ORPHAN_GRACE_MS = 60_000;
 const KNOWN_PERMISSION_MODES: ReadonlySet<string> = new Set([
   'bypassPermissions', 'acceptEdits', 'plan', 'default',
 ]);
@@ -1259,6 +1267,28 @@ function registerRpcHandlers(
 
       const pipe = new SessionPipe(p.id, managed.ringBuffer, pipeServer.getAuthToken());
       sessionPipes.set(p.id, pipe);
+
+      // #557: demote a stuck-'attached' session to 'detached' if its authed
+      // client dies without a detach RPC (GUI crash / kill). A single grace
+      // timer per pipe, reset on each onClientGone; .unref() so it never holds
+      // the daemon alive. On fire, re-validate everything before demoting so a
+      // reconnect during the grace window (which re-auths and sets hasClient())
+      // cancels the demotion.
+      let orphanTimer: NodeJS.Timeout | null = null;
+      pipe.onClientGone = () => {
+        if (orphanTimer) clearTimeout(orphanTimer);
+        orphanTimer = setTimeout(() => {
+          orphanTimer = null;
+          if (sessionPipes.get(p.id) !== pipe) return; // superseded by a newer pipe
+          if (pipe.hasClient()) return; // a client re-authenticated in the grace window
+          const s = sessionManager.getSession(p.id);
+          if (!s || s.meta.state !== 'attached') return;
+          sessionManager.detachSession(p.id);
+          stateWriter.saveImmediate(buildState(sessionManager));
+          log('info', `[lifecycle] auto-demoted attached→detached id=${p.id} (client gone without detach RPC, grace ${ATTACHED_ORPHAN_GRACE_MS}ms elapsed)`);
+        }, ATTACHED_ORPHAN_GRACE_MS);
+        orphanTimer.unref();
+      };
 
       // Forward PTY output to session pipe
       const onData = (data: Buffer) => {
@@ -3912,9 +3942,18 @@ async function main(): Promise<void> {
       // detached — an active detached session (running build) is never touched.
       // `attached` is never reaped here: a client is connected and in use.
       if (managed.meta.state === 'detached') {
+        // #557: exec/supervised units (X8 reboot-survival) are intentionally
+        // long-lived unattached sessions that may sit silent for >8 h. Reaping
+        // them would defeat supervision, so skip them here (mirrors the
+        // StateWriter.load exemption).
+        if (managed.meta.exec) continue;
         const idleSince = new Date(managed.meta.lastActivity).getTime();
         const ttlMs = config.session.detachedTtlHours * 60 * 60 * 1000;
         if (Date.now() - idleSince >= ttlMs) {
+          // Mirror the dead branch: drop any leftover buffer dump from a prior
+          // suspend cycle before destroying, or it leaks until the next boot.
+          const bufPath = stateWriter.getBufferDumpPath(managed.meta.id);
+          try { if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath); } catch { /* ignore */ }
           sessionManager.destroySession(managed.meta.id);
           reaped++;
         }

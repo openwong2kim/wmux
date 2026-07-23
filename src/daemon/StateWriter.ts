@@ -361,6 +361,10 @@ export class StateWriter {
         return sinceMs < this.suspendedTtlHours * 60 * 60 * 1000;
       }
       if (s.state === 'detached') {
+        // #557: exec/supervised units (X8 reboot-survival) are intentionally
+        // long-lived unattached sessions that may sit silent for >8 h. The
+        // detached TTL would defeat supervision, so never age them out here.
+        if (s.exec) return true;
         return sinceMs < this.detachedTtlHours * 60 * 60 * 1000;
       }
       return true; // attached: in active use, never TTL-reaped

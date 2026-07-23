@@ -282,6 +282,32 @@ describe('StateWriter', () => {
     expect(ids).toContain('fresh-1h');
   });
 
+  it('load keeps an exec/supervised detached session past the detached TTL (#557)', () => {
+    // exec units (X8 reboot-survival) are intentionally long-lived unattached
+    // sessions that may sit silent for >8 h. The detached TTL must not reap
+    // them, or supervision breaks. A plain detached session of the same age IS
+    // pruned — proving the exemption is exec-specific, not TTL-wide.
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    const supervised = makeSession({
+      id: 'supervised-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 100 * HOUR).toISOString(),
+      exec: { command: 'node server.js' },
+    });
+    const plain = makeSession({
+      id: 'plain-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 100 * HOUR).toISOString(),
+    });
+
+    writer.saveImmediate(makeState([supervised, plain]));
+
+    const ids = writer.load().sessions.map((s) => s.id);
+    expect(ids).toContain('supervised-detached');
+    expect(ids).not.toContain('plain-detached');
+  });
+
   it('load uses suspended TTL even when deadTtlHours is short', () => {
     // Regression guard: the suspended TTL must not be confused with
     // the per-session deadTtlHours field, which only governs DEAD pruning.
