@@ -74,6 +74,14 @@ import {
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import { scanSkillCatalog, type SkillCatalogEntry } from '../../deck/skillCatalogScan';
+import { buildWorkspaceBriefing, toBriefedSnapshot, type WorkspaceBriefing } from '../../deck/deckBriefing';
+import {
+  loadDeckBriefingConfig,
+  saveDeckBriefingConfig,
+  loadBriefedSnapshot,
+  saveBriefedSnapshot,
+  type DeckBriefingConfig,
+} from '../../deck/deckBriefingStore';
 import { eventBus } from '../../events/EventBus';
 import {
   loadDeckSchedules,
@@ -1486,6 +1494,81 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── D1: deterministic "welcome home" briefing ─────────────────────────────
+  // A synchronous main-process READ of existing judgment-engine state — NO brain
+  // turn, NO globalTurnGate acquire, renders in every autonomy mode including
+  // 'off'. Every feed is a main-singleton read (mirror snapshot/entries,
+  // decision, mode, loop) plus the last-viewed snapshot for the delta. The
+  // snapshot is persisted after each build so the next open diffs against "what
+  // you last saw". markColdStart returns true the FIRST time a workspace is
+  // briefed since this handler registered (process start), false thereafter.
+  const briefedSinceStart = new Set<string>();
+  const markColdStart = (workspaceId: string): boolean => {
+    if (briefedSinceStart.has(workspaceId)) return false;
+    briefedSinceStart.add(workspaceId);
+    return true;
+  };
+
+  ipcMain.removeHandler(IPC.DECK_BRIEFING_GET);
+  ipcMain.handle(
+    IPC.DECK_BRIEFING_GET,
+    wrapHandler(IPC.DECK_BRIEFING_GET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ briefing: WorkspaceBriefing | null; autoShow?: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { briefing: null };
+      const cfg = loadDeckBriefingConfig();
+      if (!cfg.enabled) return { briefing: null };
+      const mirror = getWorkspaceMirror();
+      const snapshot = mirror.getFleetSnapshot(workspaceId);
+      const entry = mirror.getEntries()?.find((e) => e.id === workspaceId) ?? null;
+      const briefing = buildWorkspaceBriefing({
+        workspaceId,
+        entry,
+        snapshot,
+        decision: loadWorkspaceDecision(workspaceId),
+        mode: loadWorkspaceMode(workspaceId),
+        loop: loadWorkspaceLoopState(workspaceId),
+        prior: loadBriefedSnapshot(workspaceId),
+        coldStart: markColdStart(workspaceId),
+      });
+      // Persist the snapshot AFTER building the delta so the next open diffs
+      // against what the operator just saw. Fire-and-forget — a failed persist
+      // only costs a slightly-stale delta next time.
+      void saveBriefedSnapshot(workspaceId, toBriefedSnapshot(briefing)).catch(() => {});
+      return { briefing, autoShow: cfg.autoShow };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_GET);
+  ipcMain.handle(
+    IPC.DECK_BRIEFING_CONFIG_GET,
+    wrapHandler(IPC.DECK_BRIEFING_CONFIG_GET, async (): Promise<DeckBriefingConfig> => {
+      return loadDeckBriefingConfig();
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_SET);
+  ipcMain.handle(
+    IPC.DECK_BRIEFING_CONFIG_SET,
+    wrapHandler(IPC.DECK_BRIEFING_CONFIG_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<DeckBriefingConfig> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const patch: Partial<DeckBriefingConfig> = {};
+      if (typeof req.enabled === 'boolean') patch.enabled = req.enabled;
+      if (typeof req.autoShow === 'boolean') patch.autoShow = req.autoShow;
+      return saveDeckBriefingConfig(patch);
+    }),
+  );
+
   // M2 — headless startup reconcile. A resolution can be persisted but never
   // consumed if the app closed between resolve and the fire-and-forget resume
   // kick, and the deck may never be reopened (so the GET-hydrate nudge above
@@ -1556,5 +1639,8 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_MODE_SET);
     ipcMain.removeHandler(IPC.DECK_DECISION_GET);
     ipcMain.removeHandler(IPC.DECK_DECISION_RESOLVE);
+    ipcMain.removeHandler(IPC.DECK_BRIEFING_GET);
+    ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_GET);
+    ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_SET);
   };
 }

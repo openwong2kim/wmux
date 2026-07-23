@@ -547,6 +547,24 @@ const electronAPI = {
           decision?: import('../main/deck/deckDecisionStore').WorkspaceDecision;
         }>,
     },
+    // Deterministic "welcome home" briefing — a synchronous main-process READ of
+    // existing judgment state (no brain turn). GET builds the summary + delta and
+    // persists the last-viewed snapshot; CONFIG get/set are the Settings toggles.
+    briefing: {
+      get: (workspaceId: string) =>
+        ipcRenderer.invoke(IPC.DECK_BRIEFING_GET, { workspaceId }) as Promise<{
+          briefing: import('../main/deck/deckBriefing').WorkspaceBriefing | null;
+          autoShow?: boolean;
+        }>,
+      getConfig: () =>
+        ipcRenderer.invoke(IPC.DECK_BRIEFING_CONFIG_GET) as Promise<
+          import('../main/deck/deckBriefingStore').DeckBriefingConfig
+        >,
+      setConfig: (patch: Partial<import('../main/deck/deckBriefingStore').DeckBriefingConfig>) =>
+        ipcRenderer.invoke(IPC.DECK_BRIEFING_CONFIG_SET, patch) as Promise<
+          import('../main/deck/deckBriefingStore').DeckBriefingConfig
+        >,
+    },
     // Normalized BrainEvent push, enveloped with the workspace whose
     // orchestrator produced it (see BrainAdapter.BrainEvent).
     onStream: (
