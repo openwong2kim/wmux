@@ -71,6 +71,27 @@ describe('loadConfig', () => {
     expect(loaded.daemon.logLevel).toBe('debug');
   });
 
+  it.runIf(process.platform === 'win32')(
+    'rewrites a copied upstream default pipe to the isolated Forge instance pipe',
+    () => {
+      const copied = createDefaultConfig();
+      copied.daemon.pipeName = `\\\\.\\pipe\\wmux-daemon-${os.userInfo().username}`;
+      writeRawConfig(copied);
+
+      const loaded = loadConfig();
+      expect(loaded.daemon.pipeName).toBe(createDefaultConfig().daemon.pipeName);
+      expect(loaded.daemon.pipeName).toContain('fmux-daemon');
+    },
+  );
+
+  it.runIf(process.platform === 'win32')('preserves a genuinely custom daemon pipe', () => {
+    const custom = createDefaultConfig();
+    custom.daemon.pipeName = '\\\\.\\pipe\\my-custom-daemon';
+    writeRawConfig(custom);
+
+    expect(loadConfig().daemon.pipeName).toBe(custom.daemon.pipeName);
+  });
+
   it('resets to defaults when config.json contains invalid JSON', () => {
     const wmuxDir = getWmuxDir();
     fs.mkdirSync(wmuxDir, { recursive: true });

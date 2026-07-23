@@ -34,6 +34,24 @@ function getDefaultPipeName(): string {
 }
 
 /**
+ * Recognize generated Windows daemon pipe names from upstream wmux or Forge
+ * Mux, with either the production or current instance suffix. These are not
+ * user customizations: they are cached defaults that become collision hazards
+ * when a config is explicitly copied between product/instance profiles.
+ */
+function isGeneratedWindowsDaemonPipeName(pipeName: string): boolean {
+  if (process.platform !== 'win32') return false;
+  const username = os.userInfo().username || 'default';
+  const suffixes = new Set(['', dataSuffix()]);
+  for (const product of ['wmux', 'fmux']) {
+    for (const suffix of suffixes) {
+      if (pipeName === `\\\\.\\pipe\\${product}-daemon${suffix}-${username}`) return true;
+    }
+  }
+  return false;
+}
+
+/**
  * Substrate 3.0 lifecycle clamp bounds. Tier-2 resource floors stay
  * configurable, but can't be set to self-defeating values: a 0/negative
  * threshold, or a memory threshold above physical RAM, would silently
@@ -158,7 +176,11 @@ export function loadConfig(): DaemonConfig {
     // (`~/.wmux{suffix}/daemon.sock`). User-custom pipeName values are respected.
     // Compatibility with a running old daemon is handled by the daemon-pipe hint
     // file written at boot; here we only ensure the next daemon boot binds the new path.
-    if (process.platform !== 'win32' && config.daemon.pipeName === getLegacyDaemonSocketPath()) {
+    if (
+      (process.platform !== 'win32' && config.daemon.pipeName === getLegacyDaemonSocketPath()) ||
+      (isGeneratedWindowsDaemonPipeName(config.daemon.pipeName) &&
+        config.daemon.pipeName !== getDaemonSocketPath())
+    ) {
       config.daemon.pipeName = getDaemonSocketPath();
       saveConfig(config);
     }
