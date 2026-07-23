@@ -40,9 +40,9 @@ export const XTERM_PALETTES: Record<XtermPaletteId, XtermThemeColors> = {
     brightBlack: '#5C5A55', brightRed: '#E28A8A', brightGreen: '#A8D19A', brightYellow: '#E2C687',
     brightBlue: '#A6C3EA', brightMagenta: '#D7B3D7', brightCyan: '#A8D1C6', brightWhite: '#EFEEEC',
   },
-  // Forge: a low-glare charcoal-brown terminal with clear semantic ANSI
-  // colors. Orange belongs to the cursor/action identity; diffs and shell
-  // diagnostics retain independent green, red, yellow, blue, and cyan hues.
+  // Optional Forge terminal palette for custom themes. The built-in Forge UI
+  // deliberately keeps Amber Graphite below so changing chrome does not
+  // recolor shell-owned prompts, cwd segments, or other ANSI terminal content.
   forge: {
     background: '#141210', foreground: '#D6CEC5', cursor: '#F08A3C', selectionBackground: '#45372C',
     black: '#2B2723', red: '#DB746A', green: '#86B978', yellow: '#D4AA5F',
@@ -205,7 +205,7 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
 // Which xterm palette each built-in theme uses for terminal rendering.
 export const BUILTIN_XTERM_PALETTE: Record<BuiltinThemeId, XtermPaletteId> = {
   amber: 'amber-graphite',
-  forge: 'forge',
+  forge: 'amber-graphite',
   'catppuccin-mocha': 'catppuccin-mocha',
   monochrome: 'monochrome',
   'stars-and-stripes': 'one-dark',

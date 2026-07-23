@@ -6,6 +6,7 @@ import {
   migrateCustomThemeColors,
   UI_THEME_TOKENS,
   XTERM_PALETTES,
+  XTERM_THEMES,
   BUILTIN_XTERM_PALETTE,
   type BuiltinThemeId,
 } from '../themes';
@@ -90,12 +91,9 @@ describe('themes — 10-token system', () => {
       expect(getContrastRatio(textMuted, bgBase)).toBeGreaterThanOrEqual(3);
     });
 
-    it('keeps terminal diff and diagnostic colors independent from orange', () => {
-      const ui = UI_THEME_TOKENS.forge;
-      const terminal = XTERM_PALETTES.forge;
-      expect(terminal.cursor).toBe(ui.accent);
-      expect(terminal.green).toBe(ui.success);
-      expect(terminal.red).toBe(ui.danger);
+    it('does not recolor shell-owned prompts or cwd segments', () => {
+      const terminal = XTERM_THEMES.forge;
+      expect(terminal).toBe(XTERM_PALETTES['amber-graphite']);
       expect(new Set([terminal.cursor, terminal.green, terminal.red, terminal.yellow]).size).toBe(4);
       expect(getContrastRatio(terminal.green, terminal.background)).toBeGreaterThanOrEqual(4.5);
       expect(getContrastRatio(terminal.red, terminal.background)).toBeGreaterThanOrEqual(4.5);
