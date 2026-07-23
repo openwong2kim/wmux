@@ -1254,7 +1254,18 @@ function registerRpcHandlers(
         sessionPipes.delete(p.id);
       }
 
-      const pipe = new SessionPipe(p.id, managed.ringBuffer, pipeServer.getAuthToken());
+      // TASK-10: dims provider enables the attach-flush snapshot (large ring
+      // buffers serialize daemon-side instead of shipping 8 MB raw). Read at
+      // flush time so a resize between attach RPC and socket connect is seen.
+      const pipe = new SessionPipe(p.id, managed.ringBuffer, pipeServer.getAuthToken(), () => {
+        const live = sessionManager.getSession(p.id);
+        return {
+          // 80x24 backstop: a recovered session whose meta predates dims
+          // tracking must not hand NaN to the headless terminal ctor.
+          cols: live?.meta.cols ?? managed.meta.cols ?? 80,
+          rows: live?.meta.rows ?? managed.meta.rows ?? 24,
+        };
+      });
       sessionPipes.set(p.id, pipe);
 
       // Forward PTY output to session pipe

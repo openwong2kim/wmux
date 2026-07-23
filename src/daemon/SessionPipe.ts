@@ -4,6 +4,15 @@ import path from 'node:path';
 import crypto from 'node:crypto';
 import { getSessionSocketPath } from '../shared/constants';
 import type { RingBuffer } from './RingBuffer';
+import { generateSnapshot } from './HeadlessSnapshot';
+
+/**
+ * TASK-10: initial-attach flushes at or above this size go through the
+ * daemon-side HeadlessSnapshot instead of shipping raw bytes. Below it the
+ * renderer parses the raw replay faster than a snapshot round would cost.
+ * (The resync/reflush path has its own caller-side policy — see reflush.)
+ */
+export const ATTACH_SNAPSHOT_MIN_BYTES = 256 * 1024;
 
 /** Marker sent after Ring Buffer flush to signal transition to real-time mode. */
 export const FLUSH_DONE_MARKER = Buffer.from('\x00WMUX_FLUSH_DONE\x00');
@@ -45,6 +54,12 @@ export class SessionPipe {
     private readonly sessionId: string,
     private readonly ringBuffer: RingBuffer,
     private readonly authToken: string,
+    /**
+     * TASK-10: live terminal dimensions for the attach-flush snapshot mirror.
+     * Optional — absent (older call sites, tests) disables snapshotting and
+     * the flush ships raw bytes exactly as before.
+     */
+    private readonly getDims?: () => { cols: number; rows: number },
   ) {}
 
   /** Get the platform-specific pipe name for this session.
@@ -152,6 +167,98 @@ export class SessionPipe {
         resolve();
       });
     });
+  }
+
+  /**
+   * Attach flush (TASK-10). Small buffers ship raw exactly as before. Large
+   * buffers (≥ SNAPSHOT_MIN_BYTES, dims available) are replayed through a
+   * headless terminal daemon-side and the SERIALIZED screen+scrollback is
+   * shipped instead — same wire format (plain ANSI), a fraction of the
+   * bytes, so the renderer's synchronous parse on reveal shrinks from
+   * multi-second to near-instant.
+   *
+   * Ordering safety: writeToClient gates on `flushed`, so live PTY output
+   * during the async parse never reaches the socket — it lands only in the
+   * ring buffer. After the snapshot we re-read the ring and ship the bytes
+   * that arrived during the parse as a DELTA. If the ring wrapped or was
+   * cleared mid-parse (prefix no longer intact), the snapshot is discarded
+   * and the fresh full read ships raw — fail-open, never a gap.
+   */
+  private async flushRingBuffer(socket: net.Socket): Promise<void> {
+    const buffered = this.ringBuffer.readAll();
+    // Instrumentation for #35 (scrollback-empty-after-restart). Pairs
+    // with `[recovery] session X bytes=N` on daemon startup and
+    // `Suspended session X (buffer: N bytes)` on shutdown. If those
+    // two upstream stages report N>0 but this prints bytes=0, the
+    // renderer attach raced the recovery write and we flushed before
+    // RingBuffer was repopulated — the scrollback-empty signature.
+    // eslint-disable-next-line no-console
+    console.log(
+      `[SessionPipe.flush] sessionId=${this.sessionId} bytes=${buffered.length}`,
+    );
+
+    let payload = buffered;
+    const dims = this.getDims?.();
+    if (dims && buffered.length >= ATTACH_SNAPSHOT_MIN_BYTES) {
+      // Reuses the resync path's HeadlessSnapshot (global concurrency-1
+      // queue, alt-screen/margins/partial-tail fail-open ladder, DECSET
+      // modes tail). No live tee here: unlike reflush there is no bridge
+      // handle at this layer, so bytes arriving DURING the parse are
+      // recovered by re-reading the ring afterwards — writeToClient gates
+      // on `flushed`, so nothing reaches the socket in between.
+      const outcome = await generateSnapshot({
+        cols: dims.cols,
+        rows: dims.rows,
+        initial: buffered,
+      });
+      if (socket.destroyed || this.client !== socket) return; // client left mid-parse
+      // Size guard: when most of the history still fits inside the
+      // serialized scrollback (buffers just past the threshold), the
+      // cell-by-cell SGR reconstruction can come out BIGGER than the raw
+      // stream. No win then — ship raw. The big-ring case this path exists
+      // for (megabytes of overwritten history) compresses drastically.
+      if (outcome.ok && outcome.payload.length >= buffered.length) {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[SessionPipe.flush] sessionId=${this.sessionId} mode=raw fallbackReason=no-gain snapshot=${outcome.payload.length} raw=${buffered.length}`,
+        );
+      } else if (outcome.ok) {
+        // The ring is append-only until it wraps: "old read is a prefix of
+        // the new read" proves the delta is exactly the new tail. A wrap or
+        // clear mid-parse (prefix broken) discards the snapshot and ships
+        // the fresh raw read — fail-open, never a gap.
+        const after = this.ringBuffer.readAll();
+        const wrapped =
+          after.length < buffered.length ||
+          !after.subarray(0, buffered.length).equals(buffered);
+        if (wrapped) {
+          payload = after;
+          // eslint-disable-next-line no-console
+          console.log(
+            `[SessionPipe.flush] sessionId=${this.sessionId} snapshot discarded (ring wrapped mid-parse) bytes=${after.length}`,
+          );
+        } else {
+          payload = Buffer.concat([outcome.payload, after.subarray(buffered.length)]);
+          // eslint-disable-next-line no-console
+          console.log(
+            `[SessionPipe.flush] sessionId=${this.sessionId} mode=snapshot ` +
+              `${outcome.bytesIn} -> ${outcome.payload.length} bytes ` +
+              `(+${after.length - buffered.length} live delta) durationMs=${outcome.durationMs}`,
+          );
+        }
+      } else {
+        // eslint-disable-next-line no-console
+        console.log(
+          `[SessionPipe.flush] sessionId=${this.sessionId} mode=raw fallbackReason=${outcome.reason}${'detail' in outcome && outcome.detail ? ` detail=${outcome.detail}` : ''}`,
+        );
+      }
+    }
+
+    if (payload.length > 0) {
+      socket.write(payload);
+    }
+    socket.write(FLUSH_DONE_MARKER);
+    this.flushed = true;
   }
 
   /** Write PTY output data to the connected client. */
@@ -433,37 +540,23 @@ export class SessionPipe {
       // Any data after the newline is leftover input — process after setup
       const leftover = authBuffer.subarray(newlineIndex + 1);
 
-      // Step 1: Flush ring buffer contents
-      const buffered = this.ringBuffer.readAll();
-      // Instrumentation for #35 (scrollback-empty-after-restart). Pairs
-      // with `[recovery] session X bytes=N` on daemon startup and
-      // `Suspended session X (buffer: N bytes)` on shutdown. If those
-      // two upstream stages report N>0 but this prints bytes=0, the
-      // renderer attach raced the recovery write and we flushed before
-      // RingBuffer was repopulated — the scrollback-empty signature.
-      // eslint-disable-next-line no-console
-      console.log(
-        `[SessionPipe.flush] sessionId=${this.sessionId} bytes=${buffered.length}`,
-      );
-      if (buffered.length > 0) {
-        socket.write(buffered);
-      }
-
-      // Step 2: Send flush done marker
-      socket.write(FLUSH_DONE_MARKER);
-      this.flushed = true;
-
-      // Step 3: Forward client input to PTY via callback
+      // Forward client input to PTY BEFORE the (possibly async) flush below:
+      // input is independent of output-flush state, and wiring it here means
+      // keystrokes arriving while a large snapshot builds are never dropped.
       socket.on('data', (inputData: Buffer) => {
         if (this.inputCallback) {
           this.inputCallback(Buffer.isBuffer(inputData) ? inputData : Buffer.from(inputData));
         }
       });
-
-      // Process any leftover data after the auth token line
       if (leftover.length > 0 && this.inputCallback) {
         this.inputCallback(leftover);
       }
+
+      // Flush the ring buffer (snapshot path may await); errors fail open to
+      // a raw flush inside, so this catch only guards socket teardown races.
+      void this.flushRingBuffer(socket).catch(() => {
+        if (!socket.destroyed) socket.destroy();
+      });
     };
 
     socket.on('data', onAuthData);
