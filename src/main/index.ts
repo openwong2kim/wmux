@@ -290,13 +290,13 @@ if (process.env.WMUX_DATA_SUFFIX) {
 // shortcut's AppUserModelID so the taskbar button groups/pins against it (and
 // Windows resolves the shortcut's icon for the button) instead of spawning a
 // second, ungrouped button under a process-derived ID. Squirrel sets the
-// shortcut AUMID to `com.squirrel.<package>.<exe>` = `com.squirrel.wmux.wmux`
+// shortcut AUMID to `com.squirrel.<package>.<exe>` = `com.squirrel.fmux.fmux`
 // (MakerSquirrel name 'wmux' + wmux.exe). Must run before any BrowserWindow.
 // Packaged-only: in dev there is no Squirrel-created shortcut whose AUMID
 // matches this id, so setting it unpackaged can muddle taskbar grouping. Gate
 // on app.isPackaged, mirroring the WMUX_DATA_SUFFIX dev/packaged split above.
 if (process.platform === 'win32' && app.isPackaged) {
-  app.setAppUserModelId('com.squirrel.wmux.wmux');
+  app.setAppUserModelId('com.squirrel.fmux.fmux');
 }
 
 let isQuitting = false;
@@ -972,7 +972,7 @@ app.on('ready', async () => {
     applicationVersion: app.getVersion(),
     version: app.getVersion(),
     copyright: 'MIT License — see LICENSE in the install folder.',
-    website: 'https://github.com/openwong2kim/wmux',
+    website: 'https://github.com/skflowne/fmux',
     iconPath: app.isPackaged
       ? path.join(process.resourcesPath, 'icon.png')
       : path.join(__dirname, '..', '..', 'assets', 'icon.png'),

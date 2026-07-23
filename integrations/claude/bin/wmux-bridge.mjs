@@ -127,7 +127,7 @@ function winPathToWslMount(winPath) {
 // tcp-port file (the app writes the port on start and unlinks it on clean
 // exit, so its presence is a running-instance signal).
 function hasLiveWmuxFiles(dir) {
-  return existsSync(join(dir, '.wmux-auth-token')) && existsSync(join(dir, '.wmux-tcp-port'));
+  return existsSync(join(dir, '.fmux-auth-token')) && existsSync(join(dir, '.fmux-tcp-port'));
 }
 
 // Locate the Windows user profile (as a WSL mount path) that holds the wmux
@@ -164,7 +164,7 @@ function resolveWindowsHomeFromWsl() {
       if (!u.isDirectory()) continue;
       const home = `/mnt/${d.name}/Users/${u.name}`;
       if (hasLiveWmuxFiles(home)) return (_windowsHomeFromWsl = home);
-      if (!tokenOnlyFallback && existsSync(join(home, '.wmux-auth-token'))) {
+      if (!tokenOnlyFallback && existsSync(join(home, '.fmux-auth-token'))) {
         tokenOnlyFallback = home;
       }
     }
@@ -185,13 +185,13 @@ function hostHome() {
 }
 
 function getAuthTokenPath() {
-  return join(hostHome(), '.wmux-auth-token');
+  return join(hostHome(), '.fmux-auth-token');
 }
 
 // Read the Windows-side TCP fallback port for the WSL→Windows bridge.
 function readWindowsTcpPort(winHome) {
   try {
-    const port = parseInt(readFileSync(join(winHome, '.wmux-tcp-port'), 'utf8').trim(), 10);
+    const port = parseInt(readFileSync(join(winHome, '.fmux-tcp-port'), 'utf8').trim(), 10);
     return Number.isInteger(port) && port > 0 ? port : null;
   } catch {
     return null;
@@ -243,7 +243,7 @@ function getRpcTargets() {
     // No reachable Windows instance — fall through to the Unix socket, which
     // ENOENTs fast (only a native-Linux wmux would answer it).
   }
-  return [join(homedir() || '/tmp', '.wmux.sock')];
+  return [join(homedir() || '/tmp', '.fmux.sock')];
 }
 
 // ----- Daemon endpoint (M1: hook ingest lives in the daemon) ---------------
@@ -338,7 +338,7 @@ function resolveTargets() {
 function getBridgeLogPath() {
   // Log stays on the LOCAL (WSL) home — it's read by whoever is debugging the
   // session in that environment, and must never depend on resolving Windows.
-  const dir = join(localHome(), '.wmux');
+  const dir = join(localHome(), '.fmux');
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
@@ -365,7 +365,7 @@ function getResumeSpoolDir() {
   // Spool under the HOST home (Windows profile in WSL) so the Windows daemon —
   // which drains this on its next boot — can actually see the records. On a
   // WSL degraded path they'd otherwise land in the WSL home the daemon never reads.
-  const dir = join(hostHome(), '.wmux', 'resume-spool');
+  const dir = join(hostHome(), '.fmux', 'resume-spool');
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {
@@ -418,7 +418,7 @@ function spoolResumeBinding(record) {
 // One zero-byte file per throttle key; mtime is the last-send timestamp.
 function getActivityStampPath(key) {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  const dir = join(home, '.wmux', 'activity-stamps');
+  const dir = join(home, '.fmux', 'activity-stamps');
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch {

@@ -40,6 +40,75 @@ const ICO_PATH = path.join(ASSETS_DIR, 'icon.ico');
 const ICNS_PATH = path.join(ASSETS_DIR, 'icon.icns');
 const PNG_PATH = path.join(ASSETS_DIR, 'icon.png');
 
+function generateForgeMuxMasterPng() {
+  const size = 1024;
+  const rgba = new Uint8Array(size * size * 4);
+  const colors = {
+    bg: [0x15, 0x15, 0x17, 0xff],
+    border: [0x2b, 0x2b, 0x2f, 0xff],
+    fg: [0xef, 0xee, 0xec, 0xff],
+    accent: [0xe8, 0xa3, 0x3d, 0xff],
+  };
+
+  const set = (x, y, color) => {
+    if (x < 0 || y < 0 || x >= size || y >= size) return;
+    rgba.set(color, (y * size + x) * 4);
+  };
+  const circle = (cx, cy, radius, color) => {
+    const r2 = radius * radius;
+    for (let y = Math.floor(cy - radius); y <= Math.ceil(cy + radius); y++) {
+      for (let x = Math.floor(cx - radius); x <= Math.ceil(cx + radius); x++) {
+        if ((x - cx) ** 2 + (y - cy) ** 2 <= r2) set(x, y, color);
+      }
+    }
+  };
+  const line = (x1, y1, x2, y2, width, color) => {
+    const dx = x2 - x1;
+    const dy = y2 - y1;
+    const length2 = dx * dx + dy * dy;
+    const radius = width / 2;
+    const minX = Math.floor(Math.min(x1, x2) - radius);
+    const maxX = Math.ceil(Math.max(x1, x2) + radius);
+    const minY = Math.floor(Math.min(y1, y2) - radius);
+    const maxY = Math.ceil(Math.max(y1, y2) + radius);
+    for (let y = minY; y <= maxY; y++) {
+      for (let x = minX; x <= maxX; x++) {
+        const t = Math.max(0, Math.min(1, ((x - x1) * dx + (y - y1) * dy) / length2));
+        const px = x1 + t * dx;
+        const py = y1 + t * dy;
+        if ((x - px) ** 2 + (y - py) ** 2 <= radius * radius) set(x, y, color);
+      }
+    }
+  };
+
+  for (let i = 0; i < size * size; i++) rgba.set(colors.bg, i * 4);
+
+  // Quiet inset frame.
+  for (let i = 0; i < 12; i++) {
+    line(92, 60 + i, 932, 60 + i, 1, colors.border);
+    line(92, 952 - i, 932, 952 - i, 1, colors.border);
+    line(60 + i, 92, 60 + i, 932, 1, colors.border);
+    line(952 - i, 92, 952 - i, 932, 1, colors.border);
+  }
+
+  // Lowercase f.
+  line(312, 792, 312, 328, 88, colors.fg);
+  line(312, 328, 440, 208, 88, colors.fg);
+  line(440, 208, 520, 208, 88, colors.fg);
+  line(312, 464, 496, 464, 88, colors.fg);
+
+  // One stream multiplexing into three.
+  line(528, 512, 616, 512, 56, colors.accent);
+  line(616, 512, 808, 312, 56, colors.accent);
+  line(616, 512, 840, 512, 56, colors.accent);
+  line(616, 512, 808, 712, 56, colors.accent);
+  circle(824, 296, 32, colors.accent);
+  circle(856, 512, 32, colors.accent);
+  circle(824, 728, 32, colors.accent);
+
+  return Buffer.from(UPNG.encode([rgba.buffer], size, size, 0));
+}
+
 // ---------------------------------------------------------------------------
 // Step 1: Ensure icon.ico exists. If missing, regenerate the legacy pixel-art
 // "W" 32x32 ICO (preserves the historical generator behavior bit-for-bit).
@@ -174,7 +243,7 @@ function extractMasterPng(icoPath) {
   return bestPng;
 }
 
-let masterPng = extractMasterPng(ICO_PATH);
+let masterPng = generateForgeMuxMasterPng();
 
 if (!masterPng) {
   // ICO is BMP-only (legacy fallback path). Synthesize a 256x256 PNG from

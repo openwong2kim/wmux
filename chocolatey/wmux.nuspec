@@ -1,18 +1,18 @@
 <?xml version="1.0" encoding="utf-8"?>
 <package xmlns="http://schemas.microsoft.com/packaging/2015/06/nuspec.xsd">
   <metadata>
-    <id>wmux</id>
+    <id>fmux</id>
     <!-- version is injected by CI from package.json -->
     <version>$version$</version>
-    <title>wmux</title>
+    <title>Forge Mux</title>
     <authors>openwong2kim</authors>
     <owners>openwong2kim</owners>
-    <projectUrl>https://github.com/openwong2kim/wmux</projectUrl>
-    <iconUrl>https://raw.githubusercontent.com/openwong2kim/wmux/main/assets/icon.ico</iconUrl>
-    <licenseUrl>https://github.com/openwong2kim/wmux/blob/main/LICENSE</licenseUrl>
+    <projectUrl>https://github.com/skflowne/fmux</projectUrl>
+    <iconUrl>https://raw.githubusercontent.com/skflowne/fmux/main/assets/icon.ico</iconUrl>
+    <licenseUrl>https://github.com/skflowne/fmux/blob/main/LICENSE</licenseUrl>
     <requireLicenseAcceptance>false</requireLicenseAcceptance>
-    <projectSourceUrl>https://github.com/openwong2kim/wmux</projectSourceUrl>
-    <bugTrackerUrl>https://github.com/openwong2kim/wmux/issues</bugTrackerUrl>
+    <projectSourceUrl>https://github.com/skflowne/fmux</projectSourceUrl>
+    <bugTrackerUrl>https://github.com/skflowne/fmux/issues</bugTrackerUrl>
     <tags>terminal multiplexer ai-agent mcp windows electron developer-tools cli</tags>
     <summary>Windows terminal multiplexer built for AI coding agents</summary>
     <description><![CDATA[
@@ -28,6 +28,6 @@ Built-in MCP server lets AI agents control terminals programmatically.
 - MCP server for AI agent integration
 - System tray support
     ]]></description>
-    <releaseNotes>https://github.com/openwong2kim/wmux/releases</releaseNotes>
+    <releaseNotes>https://github.com/skflowne/fmux/releases</releaseNotes>
   </metadata>
 </package>

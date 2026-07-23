@@ -24,8 +24,8 @@ import { join } from 'node:path';
 import { IPC } from '../../../shared/constants';
 
 const FAKE_VERSION = '9.9.9';
-const EXPECTED_WIN32_FEED = `https://update.electronjs.org/openwong2kim/wmux/win32/${FAKE_VERSION}`;
-const EXPECTED_DARWIN_FEED = `https://update.electronjs.org/openwong2kim/wmux/darwin-arm64/${FAKE_VERSION}`;
+const EXPECTED_WIN32_FEED = `https://update.electronjs.org/skflowne/fmux/win32/${FAKE_VERSION}`;
+const EXPECTED_DARWIN_FEED = `https://update.electronjs.org/skflowne/fmux/darwin-arm64/${FAKE_VERSION}`;
 
 /** Platforms with no in-app updater: [platform, arch]. */
 const UNSUPPORTED: ReadonlyArray<readonly [NodeJS.Platform, string]> = [
@@ -71,7 +71,7 @@ async function loadForPlatform(
   const ipcListeners = new Map<string, (...args: unknown[]) => unknown>();
   // Downloads write through a real fs stream — give app.getPath('temp') a
   // real, throwaway directory instead of a shared literal.
-  const tempPathDir = mkdtempSync(join(tmpdir(), 'wmux-autoupdater-test-'));
+  const tempPathDir = mkdtempSync(join(tmpdir(), 'fmux-autoupdater-test-'));
   tempDirs.push(tempPathDir);
 
   // Minimal net.request honoring `routes`; unrouted URLs emit a 204.
@@ -268,7 +268,7 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
   const UPDATE_VERSION = '9.9.10';
   const INSTALLER_BYTES = Buffer.from('fake-installer-bytes-for-#502');
   const INSTALLER_SHA256 = createHash('sha256').update(INSTALLER_BYTES).digest('hex');
-  const DOWNLOAD_URL = `https://github.com/openwong2kim/wmux/releases/download/v${UPDATE_VERSION}/wmux-${UPDATE_VERSION}.Setup.exe`;
+  const DOWNLOAD_URL = `https://github.com/skflowne/fmux/releases/download/v${UPDATE_VERSION}/fmux-${UPDATE_VERSION}.Setup.exe`;
 
   const downloadRoutes = (url: string) => {
     if (url === EXPECTED_WIN32_FEED) {
@@ -282,7 +282,7 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
         statusCode: 200,
         body: Buffer.from(JSON.stringify({
           version: UPDATE_VERSION,
-          setupExe: `wmux-${UPDATE_VERSION}.Setup.exe`,
+          setupExe: `fmux-${UPDATE_VERSION}.Setup.exe`,
           sha256: INSTALLER_SHA256,
           url: DOWNLOAD_URL,
         })),
@@ -344,7 +344,7 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
 
     expect(loaded.shellOpenPath).toHaveBeenCalledTimes(1);
     const openedPath = String(loaded.shellOpenPath.mock.calls[0]![0]);
-    expect(openedPath).toContain(`wmux-update-${UPDATE_VERSION}-`);
+    expect(openedPath).toContain(`fmux-update-${UPDATE_VERSION}-`);
     expect(openedPath).toContain('.Setup.exe');
     // The quit is the fix: Squirrel must never run against a live instance.
     expect(loaded.appQuit).toHaveBeenCalledTimes(1);

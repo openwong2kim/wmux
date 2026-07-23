@@ -1,20 +1,15 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 256 256" fill="none">
-  <!-- Black background -->
-  <rect width="256" height="256" fill="#000000"/>
+  <rect width="256" height="256" rx="42" fill="#151517"/>
+  <rect x="12" y="12" width="232" height="232" rx="34" stroke="#2B2B2F" stroke-width="4"/>
 
-  <!-- Eye: > (big, left side) -->
-  <path d="
-    M 30 40
-    L 120 128
-    L 30 216
-  " fill="none" stroke="#FFFFFF" stroke-width="28" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Forge: a compact lowercase f -->
+  <path d="M78 198V82C78 62 90 52 110 52H130M78 116H124"
+        stroke="#EFEEEC" stroke-width="22" stroke-linecap="round" stroke-linejoin="round"/>
 
-  <!-- Mouth: w (small, bottom right) -->
-  <path d="
-    M 138 152
-    L 160 208
-    L 184 168
-    L 208 208
-    L 230 152
-  " fill="none" stroke="#FFFFFF" stroke-width="16" stroke-linecap="round" stroke-linejoin="round"/>
+  <!-- Mux: one terminal stream branching into three -->
+  <path d="M132 128H154M154 128L202 78M154 128H210M154 128L202 178"
+        stroke="#E8A33D" stroke-width="14" stroke-linecap="round" stroke-linejoin="round"/>
+  <circle cx="206" cy="74" r="8" fill="#E8A33D"/>
+  <circle cx="214" cy="128" r="8" fill="#E8A33D"/>
+  <circle cx="206" cy="182" r="8" fill="#E8A33D"/>
 </svg>

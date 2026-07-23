@@ -109,8 +109,8 @@ jobs:
         run: |
           $version  = "${{ steps.pkg.outputs.version }}"
           $sha256   = "${{ steps.checksum.outputs.sha256 }}".ToLower()
-          $setupExe = "wmux-$version.Setup.exe"
-          $url      = "https://github.com/openwong2kim/wmux/releases/download/v$version/$setupExe"
+          $setupExe = "fmux-$version.Setup.exe"
+          $url      = "https://github.com/skflowne/fmux/releases/download/v$version/$setupExe"
           $manifest = [ordered]@{
             version  = $version
             setupExe = $setupExe
@@ -215,7 +215,7 @@ jobs:
       - name: Push to Chocolatey
         if: env.CHOCO_API_KEY != ''
         continue-on-error: true
-        run: choco push out/choco/wmux.${{ steps.pkg.outputs.version }}.nupkg --source https://push.chocolatey.org --api-key ${{ secrets.CHOCO_API_KEY }}
+        run: choco push out/choco/fmux.${{ steps.pkg.outputs.version }}.nupkg --source https://push.chocolatey.org --api-key ${{ secrets.CHOCO_API_KEY }}
         shell: pwsh
         env:
           CHOCO_API_KEY: ${{ secrets.CHOCO_API_KEY }}
@@ -234,7 +234,7 @@ jobs:
         continue-on-error: true
         uses: vedantmgoyal9/winget-releaser@4ffc7888bffd451b357355dc214d43bb9f23917e # v2
         with:
-          identifier: openwong2kim.wmux
+          identifier: skflowne.fmux
           version: ${{ needs.build.outputs.version }}
           installers-regex: '\.Setup\.exe$'
           token: ${{ secrets.WINGET_TOKEN }}

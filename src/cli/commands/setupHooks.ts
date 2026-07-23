@@ -73,7 +73,7 @@ export function defaultPaths(): SetupHooksPaths {
   const home = os.homedir();
   return {
     settingsPath: path.join(home, '.claude', 'settings.json'),
-    bridgeDest: path.join(home, '.wmux', 'hooks', 'wmux-bridge.mjs'),
+    bridgeDest: path.join(home, '.fmux', 'hooks', 'wmux-bridge.mjs'),
     bridgeSource: findBridgeSource(),
   };
 }

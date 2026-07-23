@@ -484,10 +484,10 @@ export function getPipeName(): string {
     // Use os.userInfo() instead of process.env.USERNAME — env vars may not
     // be inherited by MCP subprocesses spawned by Claude Code
     const username = require('os').userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux${dataSuffix()}-${username}`;
+    return `\\\\.\\pipe\\fmux${dataSuffix()}-${username}`;
   }
   const home = require('os').homedir() || '/tmp';
-  return `${home}/.wmux${dataSuffix()}.sock`;
+  return `${home}/.fmux${dataSuffix()}.sock`;
 }
 
 // Shared MCP broker pipe (plans/mcp-broker-design-2026-07-16.md Option A).
@@ -559,7 +559,7 @@ export const ENV_KEYS = {
 // Auth token file path — written by wmux main process, read by MCP server
 export function getAuthTokenPath(): string {
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  return `${home}/.wmux${dataSuffix()}-auth-token`;
+  return `${home}/.fmux${dataSuffix()}-auth-token`;
 }
 
 // PID-to-workspace mapping directory — written by PTYManager, read by MCP server
@@ -572,7 +572,7 @@ export function getPidMapDir(): string {
 // when Windows named pipe EPERM blocks direct pipe connections
 export function getTcpPortPath(): string {
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  return `${home}/.wmux${dataSuffix()}-tcp-port`;
+  return `${home}/.fmux${dataSuffix()}-tcp-port`;
 }
 
 // wmux user home directory — root for plugin-trust.json, pid-map/, and other
@@ -580,7 +580,7 @@ export function getTcpPortPath(): string {
 // of truth so callers don't reimplement the USERPROFILE/HOME dance.
 export function getWmuxHomeDir(): string {
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  return `${home}/.wmux${dataSuffix()}`;
+  return `${home}/.fmux${dataSuffix()}`;
 }
 
 // ─── P7: 데몬 제어/세션 소켓 경로 (macOS/Linux는 ~/.wmux{suffix}/ 하위) ──────
@@ -603,7 +603,7 @@ export function getWmuxHomeDir(): string {
 export function getDaemonSocketPath(): string {
   if (process.platform === 'win32') {
     const username = require('os').userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-daemon${dataSuffix()}-${username}`;
+    return `\\\\.\\pipe\\fmux-daemon${dataSuffix()}-${username}`;
   }
   return `${getWmuxHomeDir()}/daemon.sock`;
 }
@@ -612,13 +612,13 @@ export function getDaemonSocketPath(): string {
  * 구버전 코드와 동일하게 os.homedir() 기반으로 계산해야 문자열이 일치한다. */
 export function getLegacyDaemonSocketPath(): string {
   const home = require('os').homedir() || '';
-  return `${home}/.wmux-daemon${dataSuffix()}.sock`;
+  return `${home}/.fmux-daemon${dataSuffix()}.sock`;
 }
 
 /** 세션 데이터 소켓/파이프 경로. */
 export function getSessionSocketPath(sessionId: string): string {
   if (process.platform === 'win32') {
-    return `\\\\.\\pipe\\wmux-session-${sessionId}`;
+    return `\\\\.\\pipe\\fmux-session-${sessionId}`;
   }
   return `${getWmuxHomeDir()}/session-${sessionId}.sock`;
 }
@@ -626,7 +626,7 @@ export function getSessionSocketPath(sessionId: string): string {
 /** P7 이전(구버전)의 세션 소켓 경로 — 구데몬 연결 폴백용(os.homedir() 기반). */
 export function getLegacySessionSocketPath(sessionId: string): string {
   const home = require('os').homedir() || '';
-  return `${home}/.wmux-session-${sessionId}.sock`;
+  return `${home}/.fmux-session-${sessionId}.sock`;
 }
 
 // Daemon control-pipe auth token. Unlike the main-pipe token (getAuthTokenPath,
@@ -674,7 +674,7 @@ export function getDaemonAuthTokenPath(): string {
 // which equals os.homedir() — where older versions wrote — on Windows.)
 export function getLegacyDaemonAuthTokenPath(): string {
   const home = process.env.USERPROFILE || process.env.HOME || '';
-  return `${home}/.wmux/daemon-auth-token`;
+  return `${home}/.fmux/daemon-auth-token`;
 }
 
 // Plugin trust database — see `docs/api/mcp-plugin-spec.md`. Written by main

@@ -11,9 +11,9 @@
       - one-liner:  $env:WMUX_FROM_SOURCE=1; irm <url>/install.ps1 | iex
       - file:       pwsh -File install.ps1 -FromSource
 .EXAMPLE
-    irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
+    irm https://raw.githubusercontent.com/skflowne/fmux/main/install.ps1 | iex
 .EXAMPLE
-    $env:WMUX_FROM_SOURCE=1; irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
+    $env:WMUX_FROM_SOURCE=1; irm https://raw.githubusercontent.com/skflowne/fmux/main/install.ps1 | iex
 #>
 param([switch]$FromSource)
 
@@ -145,7 +145,7 @@ function ConvertFrom-JsonSafe {
 # Configuration
 # ---------------------------------------------------------------------------
 
-$repo = 'openwong2kim/wmux'
+$repo = 'skflowne/fmux'
 $installDir = "$env:LOCALAPPDATA\wmux"
 
 if (-not $env:LOCALAPPDATA -or -not $installDir) {
@@ -268,7 +268,7 @@ if (-not $FromSource) {
     Write-Host "  (SAC) may be enforcing on this device. Check with:" -ForegroundColor DarkGray
     Write-Host "      Get-MpComputerStatus | Select-Object SmartAppControlState" -ForegroundColor DarkGray
     Write-Host "  SAC blocks can be transient (cloud reputation) — retry later, or install" -ForegroundColor DarkGray
-    Write-Host "  via winget/Chocolatey. Details: github.com/openwong2kim/wmux/issues/200" -ForegroundColor DarkGray
+    Write-Host "  via winget/Chocolatey. Details: github.com/skflowne/fmux/issues/200" -ForegroundColor DarkGray
     Write-Host ""
     return
 }

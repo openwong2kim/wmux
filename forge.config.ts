@@ -20,7 +20,7 @@ import * as path from 'path';
 // fails the `\.Setup\.exe$` regex — silently, because winget-releaser
 // runs with continue-on-error.
 const pkg = JSON.parse(fs.readFileSync(path.join(__dirname, 'package.json'), 'utf-8')) as { version: string };
-const SQUIRREL_SETUP_EXE = `wmux-${pkg.version}.Setup.exe`;
+const SQUIRREL_SETUP_EXE = `fmux-${pkg.version}.Setup.exe`;
 
 function copyDirSync(src: string, dest: string, skipFile?: (name: string) => boolean): void {
   fs.mkdirSync(dest, { recursive: true });
@@ -393,10 +393,10 @@ const config: ForgeConfig = {
     ...(process.platform === 'win32'
       ? [
           new MakerSquirrel({
-            name: 'wmux',
+            name: 'fmux',
             setupExe: SQUIRREL_SETUP_EXE,
             setupIcon: './assets/icon.ico',
-            iconUrl: 'https://raw.githubusercontent.com/openwong2kim/wmux/main/assets/icon.ico',
+            iconUrl: 'https://raw.githubusercontent.com/skflowne/fmux/main/assets/icon.ico',
           }),
         ]
       : []),
@@ -410,15 +410,15 @@ const config: ForgeConfig = {
       ? [
           new MakerDeb({
             options: {
-              name: 'wmux',
-              productName: 'wmux',
+              name: 'fmux',
+              productName: 'Forge Mux',
               categories: ['Utility', 'Development'],
             },
           }),
           new MakerRpm({
             options: {
-              name: 'wmux',
-              productName: 'wmux',
+              name: 'fmux',
+              productName: 'Forge Mux',
               categories: ['Utility', 'Development'],
             },
           }),
@@ -428,8 +428,8 @@ const config: ForgeConfig = {
           // builds never instantiate it.
           new MakerAppImage({
             options: {
-              name: 'wmux',
-              productName: 'wmux',
+              name: 'fmux',
+              productName: 'Forge Mux',
               categories: ['Utility', 'Development'],
               icon: './assets/icon.png',
             },

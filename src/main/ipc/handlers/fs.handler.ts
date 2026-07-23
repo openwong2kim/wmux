@@ -28,11 +28,11 @@ const BLOCKED_DIRS = [
 ];
 
 const BLOCKED_FILES = [
-  '.wmux-auth-token',
+  '.fmux-auth-token',
   '.npmrc',
   '.netrc',
   '.env',
-  '.wmux/daemon-auth-token',
+  '.fmux/daemon-auth-token',
 ];
 
 export function isSensitivePath(resolvedPath: string): boolean {

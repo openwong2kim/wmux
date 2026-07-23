@@ -20,7 +20,7 @@ import { IPC } from '../../shared/constants';
 import { isAllowedDownloadUrl, digestsEqual, validateManifest, type UpdateManifest } from './verifyUpdate';
 import { LocalUpdateFeed } from './LocalUpdateFeed';
 
-const REPO = 'openwong2kim/wmux';
+const REPO = 'skflowne/fmux';
 // update.electronjs.org keys releases by platform-arch. Only the two arches we
 // actually publish installers for are ever requested (see isUpdaterSupported).
 const isDarwin = process.platform === 'darwin';
@@ -316,7 +316,7 @@ export class AutoUpdater {
       // the right extension on every platform (.Setup.exe on Windows, .zip on
       // macOS) instead of a hardcoded Windows one.
       const safeName = manifest.fileName.replace(/[^A-Za-z0-9._-]/g, '_');
-      const dest = join(app.getPath('temp'), `wmux-update-${manifest.version}-${process.pid}-${safeName}`);
+      const dest = join(app.getPath('temp'), `fmux-update-${manifest.version}-${process.pid}-${safeName}`);
       const hash = createHash('sha256');
       const out = createWriteStream(dest);
       let settled = false;

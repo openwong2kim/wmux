@@ -8,7 +8,7 @@ import { coerceLanLinkConfig, defaultLanLinkConfig } from '../shared/lanlink';
 
 /** ~/.wmux directory (인스턴스 격리 suffix 반영 — main에서 상속된 WMUX_DATA_SUFFIX) */
 export function getWmuxDir(): string {
-  return path.join(os.homedir(), `.wmux${dataSuffix()}`);
+  return path.join(os.homedir(), `.fmux${dataSuffix()}`);
 }
 
 /** Path to daemon config file */

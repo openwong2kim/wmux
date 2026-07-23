@@ -49,7 +49,7 @@ const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
 function getAuthTokenPath() {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  return join(home, '.wmux-auth-token');
+  return join(home, '.fmux-auth-token');
 }
 
 function getPipeName() {
@@ -63,7 +63,7 @@ function getPipeName() {
     const username = userInfo().username || 'default';
     return `\\\\.\\pipe\\wmux-${username}`;
   }
-  return join(homedir() || '/tmp', '.wmux.sock');
+  return join(homedir() || '/tmp', '.fmux.sock');
 }
 
 // ----- Daemon endpoint (M1: hook ingest lives in the daemon) ---------------
@@ -129,7 +129,7 @@ function resolveTargets() {
 
 function getLogPath() {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  const dir = join(home, '.wmux');
+  const dir = join(home, '.fmux');
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch { /* appendFileSync below also fails → swallowed */ }
@@ -157,7 +157,7 @@ function logEvent(outcome, extra) {
 // WMUX_* var the pane env strips).
 function getResumeSpoolDir() {
   const home = process.env.USERPROFILE || process.env.HOME || homedir();
-  const dir = join(home, '.wmux', 'resume-spool');
+  const dir = join(home, '.fmux', 'resume-spool');
   try {
     if (!existsSync(dir)) mkdirSync(dir, { recursive: true, mode: 0o700 });
   } catch { /* writeFileSync below throws + is swallowed */ }

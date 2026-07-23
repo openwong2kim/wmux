@@ -15,9 +15,9 @@ import {
 const VALID_SHA = 'a'.repeat(64);
 const validManifest = (over: Record<string, unknown> = {}) => ({
   version: '2.14.1',
-  setupExe: 'wmux-2.14.1.Setup.exe',
+  setupExe: 'fmux-2.14.1.Setup.exe',
   sha256: VALID_SHA,
-  url: 'https://github.com/openwong2kim/wmux/releases/download/v2.14.1/wmux-2.14.1.Setup.exe',
+  url: 'https://github.com/skflowne/fmux/releases/download/v2.14.1/fmux-2.14.1.Setup.exe',
   ...over,
 });
 

@@ -354,7 +354,7 @@ export class McpRegistrar {
       console.warn('[McpRegistrar] Codex notify script not found — skipping notify registration.');
       return;
     }
-    const dest = path.join(this.home, '.wmux', 'hooks', CODEX_NOTIFY_BASENAME);
+    const dest = path.join(this.home, '.fmux', 'hooks', CODEX_NOTIFY_BASENAME);
     try {
       const destDir = path.dirname(dest);
       if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });

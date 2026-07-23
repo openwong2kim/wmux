@@ -49,3 +49,36 @@ In QA/design-review mode, flag any code that doesn't match DESIGN.md.
   distinguishable by semver, so the stale-daemon auto-replacement triggers
   only on (a) pre-B′ daemons (missing version field) and (b) release-to-
   release upgrades and (c) `CHANNELS_EPOCH` bumps — not on every dev rebuild.
+
+## Fork workflow (owner decision, 2026-07-23)
+
+- `origin/main` is the upstream tracking reference. Do not add fork-specific
+  commits directly to it.
+- `develop` is the long-lived integration branch. Rebase it onto `origin/main`,
+  resolve conflicts there, and verify it before promoting changes.
+- For a fork release, rebase `main` onto the same upstream base and squash merge
+  the verified `develop` delta into `main`. Do not cherry-pick its history.
+- Keep `develop`; feature branches may be deleted after their integrated work is
+  verified and released. Keep a recovery ref if needed.
+- Preserve upstream CHANGELOG history. Fork-facing changes go under
+  `## [Unreleased]`; releases follow the explicit versioning policy above.
+
+## Fork identity boundary (owner decision, 2026-07-23)
+
+Forge Mux must coexist with upstream wmux while remaining easy to rebase. Keep its
+identity as a small, deliberate patch layer; never perform repository-wide
+wording or symbol renames.
+
+- Preserve upstream identifiers, module and file names, historical docs, tests,
+  and comments unless a change is required for real coexistence.
+- Change only collision-facing boundaries: package, product, and CLI names;
+  installer/updater and application IDs; data directories; IPC endpoints;
+  project config filenames; and installed integration destinations.
+- Centralize identity values at existing packaging and path boundaries. Do not
+  scatter product-name literals through feature code.
+- Keep the patch isolated and replayable after rebasing `develop` onto
+  `origin/main`.
+- Do not read or migrate wmux state automatically. Forge Mux uses its own namespace.
+- Keep this layer in one dedicated commit, tagged `fmux-identity-boundary`.
+  Rebase it with `develop`; if recovery is needed, replay that tag with
+  `git cherry-pick fmux-identity-boundary`.

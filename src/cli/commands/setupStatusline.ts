@@ -115,7 +115,7 @@ export function defaultPaths(): SetupStatuslinePaths {
   const home = os.homedir();
   const targets = [
     { label: 'default (~/.claude)', settingsPath: path.join(home, '.claude', 'settings.json') },
-    ...readClaudeAccountTargets(path.join(home, '.wmux')),
+    ...readClaudeAccountTargets(path.join(home, '.fmux')),
   ];
   // A registered account may point at ~/.claude itself — dedupe by settings
   // path. Case-fold only on Windows; case-sensitive filesystems treat
@@ -130,7 +130,7 @@ export function defaultPaths(): SetupStatuslinePaths {
   });
   return {
     targets: deduped,
-    scriptDest: path.join(home, '.wmux', 'hooks', 'wmux-statusline.mjs'),
+    scriptDest: path.join(home, '.fmux', 'hooks', 'wmux-statusline.mjs'),
     scriptSource: findStatuslineSourceFrom(__dirname),
   };
 }

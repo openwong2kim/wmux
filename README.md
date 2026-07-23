@@ -1,6 +1,6 @@
 <div align="center">
 
-# wmux
+# Forge Mux
 
 ### The workspace multiplexer for AI coding agents.
 
@@ -8,17 +8,31 @@ Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its 
 
 <img width="924" alt="wmux — the workspace multiplexer for AI coding agents, on Windows and macOS" src="docs/banner.png" />
 
-[![Website](https://img.shields.io/badge/wmux.app-E8A33D?label=&labelColor=151517)](https://www.wmux.app)
-[![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
-[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white)](https://github.com/openwong2kim/wmux/releases/latest)
-[![Latest release](https://img.shields.io/github/v/release/openwong2kim/wmux?color=2ea44f&label=release)](https://github.com/openwong2kim/wmux/releases/latest)
-[![Downloads](https://img.shields.io/github/downloads/openwong2kim/wmux/total?color=blue&label=downloads)](https://github.com/openwong2kim/wmux/releases)
+[![Windows 10/11](https://img.shields.io/badge/Windows-10%2F11-0078D6?logo=windows&logoColor=white)](https://github.com/skflowne/fmux/releases/latest)
+[![macOS](https://img.shields.io/badge/macOS-Apple%20Silicon-000000?logo=apple&logoColor=white)](https://github.com/skflowne/fmux/releases/latest)
+[![Latest release](https://img.shields.io/github/v/release/skflowne/fmux?color=2ea44f&label=release)](https://github.com/skflowne/fmux/releases/latest)
+[![Downloads](https://img.shields.io/github/downloads/skflowne/fmux/total?color=blue&label=downloads)](https://github.com/skflowne/fmux/releases)
 [![License: MIT](https://img.shields.io/badge/License-MIT-green.svg)](LICENSE)
-[![Stars](https://img.shields.io/github/stars/openwong2kim/wmux?style=social)](https://github.com/openwong2kim/wmux)
+[![Stars](https://img.shields.io/github/stars/skflowne/fmux?style=social)](https://github.com/skflowne/fmux)
 
 </div>
 
 > **What's a *workspace multiplexer*?** tmux splits a terminal. wmux multiplexes whole **workspaces** — terminals, agents, git worktrees, a browser, and the channels they coordinate over — all owned by a daemon that keeps them running across quits, crashes, and full reboots. **One window. One fleet. Windows & macOS.**
+
+---
+
+## Fork maintenance
+
+Forge Mux preserves upstream wmux source structure so upstream updates remain
+reviewable and practical to rebase. Only user-facing and collision-facing
+boundaries use the `fmux` identity: installation and CLI names, release sources,
+application IDs, data directories, IPC endpoints, project config filenames, and
+integration destinations.
+
+Development happens on `develop`, rebased onto `origin/main` and verified. A
+release promotes that verified delta to `main` as one squash merge. The isolated
+identity commit is tagged `fmux-identity-boundary`; rebase it with `develop`, or
+recover it with `git cherry-pick fmux-identity-boundary`.
 
 ---
 
@@ -76,18 +90,16 @@ Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its 
 **Windows** — use a package manager (avoids the SmartScreen warning):
 
 ```powershell
-winget install openwong2kim.wmux
+winget install skflowne.fmux
 ```
 
-<sub>or `choco install wmux` &nbsp;·&nbsp; [**download Setup.exe**](https://github.com/openwong2kim/wmux/releases/latest) for offline install — the installer is signed with a SignPath *test* certificate for now, so SmartScreen still shows an unknown publisher; winget/choco skip the prompt ([why?](#install-help))</sub>
+<sub>or `choco install fmux` &nbsp;·&nbsp; [**download Setup.exe**](https://github.com/skflowne/fmux/releases/latest) for offline install — a SmartScreen prompt appears because the installer isn't Authenticode-signed yet; winget/choco bypass it ([why?](#install-help))</sub>
 
 **macOS** (Apple Silicon)
 
-<sub>[**Download the .dmg**](https://github.com/openwong2kim/wmux/releases/latest) — Developer ID signed, notarized and stapled, so it opens without a Gatekeeper detour — and drag wmux to Applications. On first launch the `wmux` CLI installs itself onto your PATH.</sub>
+<sub>[**Download the .dmg**](https://github.com/skflowne/fmux/releases/latest) and drag wmux to Applications. On first launch the `wmux` CLI installs itself onto your PATH. If Gatekeeper warns, right-click the app → **Open** ([more](#install-help)).</sub>
 
-<sub>Both platforms update themselves in place: wmux checks for a new release every 30 minutes and verifies the download against a published SHA-256 before installing (Windows x64 and macOS arm64).</sub>
-
-**Linux** — experimental AppImage / .deb / .rpm builds are on the [releases page](https://github.com/openwong2kim/wmux/releases/latest).
+**Linux** — experimental AppImage / .deb / .rpm builds are on the [releases page](https://github.com/skflowne/fmux/releases/latest).
 
 <sub>Prefer a tour first? [**wmux.app**](https://www.wmux.app) walks through the same features with screenshots.</sub>
 
@@ -124,7 +136,7 @@ winget install openwong2kim.wmux
 - 🛡️ **Token-authed IPC**, SSRF guard, PTY input sanitization, randomized CDP port, Electron Fuses
 - 📱 **`wmux web`** — your live panes in a phone browser (PWA-installable), read-only and loopback-only by default; input and network exposure are explicit, warned-about opt-ins
 - ⬆️ **In-app auto-update** on Windows and macOS (arm64) — checked every 30 minutes, SHA-256 verified against a published manifest before it installs
-- 🎨 **10 UI themes** (Amber by default · Catppuccin · Nightowl · Monochrome · Void · Hinomaru · Taegeuk · Stars & Stripes · Red Dynasty · Custom) and **10 terminal palettes**, light ones included &nbsp;·&nbsp; 🌏 **23 locales scaffolded** — English & 한국어 complete, 日本語 / 中文 in progress — **[translations welcome](https://github.com/openwong2kim/wmux/labels/good%20first%20issue)**
+- 🎨 **10 UI themes** (Amber by default · Catppuccin · Nightowl · Monochrome · Void · Hinomaru · Taegeuk · Stars & Stripes · Red Dynasty · Custom) and **10 terminal palettes**, light ones included &nbsp;·&nbsp; 🌏 **23 locales scaffolded** — English & 한국어 complete, 日本語 / 中文 in progress — **[translations welcome](https://github.com/skflowne/fmux/labels/good%20first%20issue)**
 
 > 💡 **Tip:** point Claude Code at the MCP tools (`browser_open`, `terminal_read`, `pane_list`, `a2a_task_send`, `channel_post`) or script the `wmux` CLI (`wmux send` / `read-screen` / `list-panes` / `wmux channel post`) to orchestrate panes programmatically.
 
@@ -215,7 +227,7 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 
 **Is wmux a tmux port?** No — tmux was the inspiration, not the base. wmux is a native **workspace multiplexer** on Electron (ConPTY on Windows, forkpty on macOS): tmux-*style* split panes, prefix keys, and session persistence, but it also multiplexes agents, git worktrees, a browser, and channels. No WSL / Cygwin / MSYS2.
 
-**Which Macs are supported?** Apple Silicon (arm64) — download the `.dmg` from [releases](https://github.com/openwong2kim/wmux/releases/latest). It is Developer ID signed, notarized and stapled, so Gatekeeper lets it through on first launch. Intel builds aren't produced right now; open an issue if you need one.
+**Which Macs are supported?** Apple Silicon (arm64) — download the `.dmg` from [releases](https://github.com/skflowne/fmux/releases/latest). Intel builds aren't produced right now; open an issue if you need one. If Gatekeeper warns on first launch, right-click the app → **Open**.
 
 **Can I reach my panes from my phone?** Yes — `wmux web` serves your live panes to a browser (PWA-installable). It is **read-only and loopback-only by default**; `--allow-input` and `--expose` are explicit opt-ins, and even read-only shows a pane's full scrollback to whoever can reach the port, so keep it behind Tailscale rather than the open internet.
 
@@ -227,11 +239,11 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 
 **"Windows protected your PC" warning?** The release pipeline already signs `Setup.exe` through [SignPath](https://signpath.io/), but with a *test* certificate while the [SignPath Foundation](https://signpath.org/) OSS certificate is pending — Windows does not trust it, so SmartScreen still reports an unknown publisher. It's safe: click **More info → Run anyway**, or install via **winget** / **Chocolatey** to skip the prompt.
 
-**Installer blocked with no "Run anyway"?** **Smart App Control (SAC)** on Windows 11 can block unsigned binaries outright. Check with `Get-MpComputerStatus | Select-Object SmartAppControlState`. SAC uses cloud reputation, so blocks are often transient — retry later, use winget/choco, or build from source ([#200](https://github.com/openwong2kim/wmux/issues/200)).
+**Installer blocked with no "Run anyway"?** **Smart App Control (SAC)** on Windows 11 can block unsigned binaries outright. Check with `Get-MpComputerStatus | Select-Object SmartAppControlState`. SAC uses cloud reputation, so blocks are often transient — retry later, use winget/choco, or build from source ([#200](https://github.com/skflowne/fmux/issues/200)).
 
 **PowerShell one-liner** (downloads the prebuilt Setup.exe, verifies SHA-256, no build tools):
 ```powershell
-irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
+irm https://raw.githubusercontent.com/skflowne/fmux/main/install.ps1 | iex
 ```
 
 </details>
@@ -241,8 +253,8 @@ irm https://raw.githubusercontent.com/openwong2kim/wmux/main/install.ps1 | iex
 ## 🛠️ Build from source
 
 ```powershell
-git clone https://github.com/openwong2kim/wmux.git
-cd wmux
+git clone https://github.com/skflowne/fmux.git
+cd fmux
 npm install
 npm start          # dev mode
 npm run make       # build installer
@@ -256,11 +268,11 @@ Requires Node 18+ and Python 3.x, plus a native toolchain: VS Build Tools (C++ w
 
 wmux is built in the open. Huge thanks to everyone who's shipped code, squashed bugs, and translated locales:
 
-[![Contributors](https://contrib.rocks/image?repo=openwong2kim/wmux)](https://github.com/openwong2kim/wmux/graphs/contributors)
+[![Contributors](https://contrib.rocks/image?repo=skflowne/fmux)](https://github.com/skflowne/fmux/graphs/contributors)
 
 Community shout-outs to [@snowyukitty](https://github.com/snowyukitty), [@matdac6](https://github.com/matdac6), [@margvez](https://github.com/margvez), [@zer0ken](https://github.com/zer0ken), [@AnandSundar](https://github.com/AnandSundar), [@cloim](https://github.com/cloim), [@cheyras](https://github.com/cheyras), [@junbeom09](https://github.com/junbeom09), [@rayss868](https://github.com/rayss868), [@dev-minggyu](https://github.com/dev-minggyu), and [@alphabeen](https://github.com/alphabeen) for their contributions. 💛
 
-**New here?** Grab a [**good first issue**](https://github.com/openwong2kim/wmux/labels/good%20first%20issue), help translate a locale (한국어 complete · 日本語 / 中文 in progress), or read [**CONTRIBUTING.md**](CONTRIBUTING.md). PRs welcome.
+**New here?** Grab a [**good first issue**](https://github.com/skflowne/fmux/labels/good%20first%20issue), help translate a locale (한국어 complete · 日本語 / 中文 in progress), or read [**CONTRIBUTING.md**](CONTRIBUTING.md). PRs welcome.
 
 Built on [xterm.js](https://xtermjs.org/), [node-pty](https://github.com/microsoft/node-pty), [Electron](https://www.electronjs.org/), and [Playwright](https://playwright.dev/).
 
@@ -274,6 +286,6 @@ Built on [xterm.js](https://xtermjs.org/), [node-pty](https://github.com/microso
 
 <div align="center"><sub>⭐ Star history</sub><br>
 
-[![Star History](https://api.star-history.com/svg?repos=openwong2kim/wmux&type=Date)](https://star-history.com/#openwong2kim/wmux&Date)
+[![Star History](https://api.star-history.com/svg?repos=skflowne/fmux&type=Date)](https://star-history.com/#skflowne/fmux&Date)
 
 </div>

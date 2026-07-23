@@ -1,8 +1,8 @@
 $ErrorActionPreference = 'Stop'
 
-$packageName = 'wmux'
+$packageName = 'fmux'
 
-[array]$keys = Get-UninstallRegistryKey -SoftwareName 'wmux*'
+[array]$keys = Get-UninstallRegistryKey -SoftwareName 'fmux*'
 
 if ($keys.Count -eq 1) {
   $keys | ForEach-Object {
