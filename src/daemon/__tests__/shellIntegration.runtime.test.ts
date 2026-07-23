@@ -393,6 +393,27 @@ describe.runIf(hasWslBash)('OSC 7 runtime — wsl.exe (bash login shell)', () =>
     const reported = await waitForCwd(managed);
     expect(reported).toBe(wslBashHome);
   }, EVENT_TIMEOUT_MS + 5000);
+
+  it('propagates the xterm capability used by colored PS1 configuration', async () => {
+    manager = new DaemonSessionManager();
+    const id = `rt-wsl-term-${Date.now()}`;
+    manager.createSession({ id, cmd: WSL_EXE, cwd: wslBashHome! });
+
+    const managed = manager.getSession(id)!;
+    await waitForCwd(managed);
+    const baseline = managed.promptLog.size;
+    managed.ptyProcess.write("printf '__WMUX_TERM__=%s\\n' \"$TERM\"\r");
+    await waitForEventAfter(
+      managed,
+      baseline,
+      (event) => event.type === 'command_end',
+      'TERM probe command_end',
+      WSL_EVENT_TIMEOUT_MS,
+    );
+    expect(managed.ringBuffer.readAll().toString('utf8')).toContain(
+      '__WMUX_TERM__=xterm-256color',
+    );
+  }, EVENT_TIMEOUT_MS + 5000);
 });
 
 describe.runIf(hasGitBash)('OSC 133 runtime — user .bashrc override fixture', () => {

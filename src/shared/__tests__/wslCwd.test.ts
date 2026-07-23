@@ -113,8 +113,9 @@ describe('applyWslPromptIntegration', () => {
     expect(env.WMUX_SHELL_INTEGRATION).toBe('1');
     expect(env.WMUX_BASH_INIT).toBe('C:\\Users\\g\\.wmux\\wmux-shell-init.bash');
     expect(env.WSLENV?.split(':')).toEqual([
-      'EXISTING/u', 'WMUX_BASH_INIT/p', 'WMUX_SHELL_INTEGRATION',
+      'EXISTING/u', 'WMUX_BASH_INIT/p', 'WMUX_SHELL_INTEGRATION', 'TERM',
     ]);
+    expect(env.TERM).toBe('xterm-256color');
     expect(result.args.slice(0, 3)).toEqual(['--exec', '/bin/sh', '-c']);
     expect(result.args[3]).toContain('--rcfile "$WMUX_BASH_INIT" -i');
   });
@@ -124,6 +125,13 @@ describe('applyWslPromptIntegration', () => {
       WSLENV: 'WMUX_BASH_INIT/u',
     }, 'C:\\wmux-init.bash');
     expect(env.WSLENV).toContain('WMUX_BASH_INIT/up');
+  });
+
+  it('preserves an explicit terminal type', () => {
+    const { env } = applyWslPromptIntegration('wsl.exe', {
+      TERM: 'screen-256color',
+    }, 'C:\\wmux-init.bash');
+    expect(env.TERM).toBe('screen-256color');
   });
 
   it('does not alter non-WSL shells or an explicit integration opt-out', () => {

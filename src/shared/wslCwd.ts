@@ -38,7 +38,7 @@ export function isWslShell(cmd: string): boolean {
   return basename === 'wsl.exe' || basename === 'wsl';
 }
 
-const WSL_PROMPT_ENV_NAMES = ['WMUX_SHELL_INTEGRATION', 'WMUX_BASH_INIT'] as const;
+const WSL_PROMPT_ENV_NAMES = ['WMUX_SHELL_INTEGRATION', 'WMUX_BASH_INIT', 'TERM'] as const;
 
 /**
  * Launch WSL's default Bash through wmux's rcfile, which sources the user's
@@ -58,6 +58,12 @@ export function applyWslPromptIntegration(
   const next = { ...env };
   next['WMUX_SHELL_INTEGRATION'] = '1';
   next['WMUX_BASH_INIT'] = bashInitWindowsPath;
+  // node-pty's `name: xterm-256color` reaches native POSIX children, but on
+  // Windows the child is wsl.exe and the terminal type does not reliably cross
+  // into the guest. Stock Ubuntu .bashrc uses TERM to decide whether PS1 may
+  // contain colors, so an unset/plain value removes every themed cwd/branch
+  // segment before xterm ever sees it. Preserve an explicit user override.
+  next['TERM'] ||= 'xterm-256color';
 
   const entries = (next['WSLENV'] ?? '').split(':').filter(Boolean).map((entry) => {
     const [name, rawFlags = ''] = entry.split('/');
