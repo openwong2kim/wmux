@@ -1436,8 +1436,11 @@ function registerRpcHandlers(
     }
     const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 5000, 50_000);
     const outcome = await generateTextSnapshot({
-      cols: managed.meta.cols,
-      rows: managed.meta.rows,
+      // Dims backstop parity with the attach flush (?? 80 / ?? 24): a recovered
+      // session may not have real dims yet, and a 0-wide headless terminal would
+      // fail soft instead of reading.
+      cols: managed.meta.cols ?? 80,
+      rows: managed.meta.rows ?? 24,
       scrollback,
       initial: managed.ringBuffer.readAll(),
     });

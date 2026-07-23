@@ -90,6 +90,16 @@ export default function FleetView() {
     [workspaces, surfaceAgentStatus, surfaceActivity, paneLabel, supervisionByPtyId, fleetSortMode],
   );
   const needsCount = useMemo(() => countNeedsAttention(panes), [panes]);
+  // Stable identity key of the terminal ptyIds to poll for RAM. `panes`
+  // recomputes on every streaming activity tick (surfaceActivity/agentStatus
+  // are memo deps), so keying the resource-poll effect on `panes` directly
+  // would tear down + re-fire the poll (a fresh CIM spawn) each tick while
+  // Fleet View is open and any agent streams. This string only changes when the
+  // set of polled ptyIds changes, so the effect's interval stays stable.
+  const resourcePtyIdsKey = useMemo(
+    () => panes.filter((p) => p.surfaceType === 'terminal' && p.ptyId).map((p) => p.ptyId).sort().join(','),
+    [panes],
+  );
 
   // S-C2 approval inbox — pure derivation of the two pending-approval sources
   // (A2A-first, then MCP). Mirrors the fleet selector's narrow subscription.
@@ -174,9 +184,7 @@ export default function FleetView() {
   useEffect(() => {
     if (typeof window.electronAPI?.pty?.resources !== 'function') return;
     let cancelled = false;
-    const ptyIds = panes
-      .filter((p) => p.surfaceType === 'terminal' && p.ptyId)
-      .map((p) => p.ptyId);
+    const ptyIds = resourcePtyIdsKey ? resourcePtyIdsKey.split(',') : [];
     if (ptyIds.length === 0) {
       setResources((prev) => (Object.keys(prev).length === 0 ? prev : {}));
       return;
@@ -195,7 +203,7 @@ export default function FleetView() {
       cancelled = true;
       window.clearInterval(id);
     };
-  }, [panes]);
+  }, [resourcePtyIdsKey]);
 
   // Jump to a pane's workspace + pane + surface, then close the overlay.
   // Terminal panes resolve by their active-surface ptyId via the full

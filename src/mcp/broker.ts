@@ -82,6 +82,8 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   // closing on its own, so without this the per-connection server and its
   // Playwright/CDP session would leak on every shim disconnect.
   let transport: StdioServerTransport | null = null;
+  // Guards the onclose teardown against the re-entry that server.close() causes.
+  let connClosed = false;
 
   await runInConnectionScope(scope, async () => {
     const server = createWmuxServer({
@@ -113,6 +115,10 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
     const onclose = transport.onclose;
     transport.onclose = () =>
       runInConnectionScope(scope, () => {
+        // Re-entry guard: server.close() below closes the transport, which
+        // re-fires this handler — run the teardown exactly once.
+        if (connClosed) return;
+        connClosed = true;
         log('transport closed');
         // Tear down THIS caller's browser session only. The engine is
         // per-connection (scope.playwright), so no other agent is touched.
@@ -120,6 +126,9 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
         if (engine) {
           void engine.disconnect().catch(() => { /* best-effort */ });
         }
+        // Close the per-connection McpServer too — without this, repeated shim
+        // reconnects accumulate server instances in the broker process.
+        void server.close().catch(() => { /* best-effort */ });
         onclose?.();
       });
   });
