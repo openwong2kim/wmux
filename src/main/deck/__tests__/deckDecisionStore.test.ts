@@ -312,3 +312,22 @@ describe('resolution provenance (resolvedBy)', () => {
     expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ resolvedBy: 'brain' });
   });
 });
+
+describe('renderDecisionBlock provenance (round 3)', () => {
+  it('presents a brain self-resolution as the brain own answer, never the human', async () => {
+    const d = (await raiseDecision('ws-1', { question: 'Q?' }, dir))!;
+    await resolveDecision('ws-1', d.id, 'per policy rule, settled', dir, 'brain');
+    const block = renderDecisionBlock(loadWorkspaceDecision('ws-1', dir)!);
+    expect(block).toContain('RESOLVED (self)');
+    expect(block).toContain('YOURSELF');
+    expect(block).not.toContain('the human decided');
+  });
+
+  it('keeps the human-resolved wording byte-identical for human resolutions', async () => {
+    const d = (await raiseDecision('ws-1', { question: 'Q?' }, dir))!;
+    await resolveDecision('ws-1', d.id, 'human answer', dir);
+    const block = renderDecisionBlock(loadWorkspaceDecision('ws-1', dir)!);
+    expect(block).toContain('the human decided: human answer');
+    expect(block).not.toContain('(self)');
+  });
+});

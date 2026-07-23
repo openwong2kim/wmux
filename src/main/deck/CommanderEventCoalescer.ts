@@ -430,6 +430,19 @@ export class CommanderEventCoalescer {
   getWatermark(workspaceId: string): number {
     return this.states.get(workspaceId)?.watermark ?? 0;
   }
+  /** Account one ambient wake that ran OUTSIDE the coalescer's own flush paths
+   *  (WP3 stale-decision re-examine, 3-way review round 3): it consumes the
+   *  consecutive-wake budget and counts against the rate ceiling exactly like
+   *  an accepted edge/snapshot flush, so an unresolved decision cannot fund an
+   *  unbounded stream of re-examines — once the budget is exhausted, the next
+   *  re-ping's getWakeBudgetRemaining() gate refuses until a human send resets
+   *  it (notifyHumanSend), the same recovery as every other ambient wake. */
+  noteExternalWake(workspaceId: string): void {
+    if (this.disposed) return;
+    const st = this.ensureState(workspaceId);
+    st.autoWakesUsed += 1;
+    this.recordWake(st, this.nowFn());
+  }
   /** The timestamp (ms, our clock) of the most recent ACCEPTED wake for this
    *  workspace, or null if none has been accepted. Read-only accessor for the
    *  WP4 heartbeat: it skips a level review that would land within intervalMs of

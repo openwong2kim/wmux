@@ -665,6 +665,20 @@ export function registerDeckHandler(
             after.id === injected.id
           ) {
             void clearResolvedDecision(workspaceId, after.id).catch(() => {});
+          } else if (after?.status === 'resolved' && injected && after.id === injected.id) {
+            // The HUMAN answered while this re-examine turn was running: their
+            // resolve kick busy-rejected against this very turn, and this turn's
+            // prompt never carried their answer. Schedule the resume now that the
+            // turn has ended (round-3 P2) — otherwise the answer sits on disk
+            // until an unrelated wake happens to pick it up. Deferred a tick so
+            // the manager has fully settled to idle before the busy precheck.
+            setImmediate(() => {
+              void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId, {
+                queued: true,
+              }).catch(() => {
+                /* best-effort — the durable resolved record rides the next turn */
+              });
+            });
           }
         } else if (injected?.status === 'resolved') {
           void clearResolvedDecision(workspaceId, injected.id).catch(() => {});
@@ -881,9 +895,17 @@ export function registerDeckHandler(
       void runTurnForWorkspace(DECISION_REEXAMINE_PROMPT, workspaceId, {
         queued: true,
         reExamine: { expectedId: decision.id },
-      }).catch(() => {
-        /* best-effort — a rejected re-examine just retries after the next TTL */
-      });
+      })
+        .then((r) => {
+          // Round-3 review P2: an ACCEPTED re-examine consumes the consecutive-
+          // wake budget and counts against the rate ceiling like any other
+          // ambient wake — an unresolved decision cannot fund an unbounded
+          // stream of re-examines. Rejected/aborted turns cost nothing.
+          if (r.ok) coalescer?.noteExternalWake(workspaceId);
+        })
+        .catch(() => {
+          /* best-effort — a rejected re-examine just retries after the next TTL */
+        });
     },
     // Read the on/off switch fresh each tick so a Settings toggle applies without
     // a restart; the cadence is fixed at construction (a rare change, restart-ok).
@@ -1362,6 +1384,17 @@ export function registerDeckHandler(
     'If their resolution corrects your judgment or cites a rule you missed, persist a short ' +
     'memory fact about it (per your memory-write policy) so you do not re-raise that class ' +
     'of question.';
+  // Round-3 review P2: a brain-self-resolved record that survived its re-examine
+  // turn (turn errored/interrupted after the resolve landed) must NOT replay as
+  // "the operator resolved" — that would misattribute the brain's own answer to
+  // the human. Same resume mechanics, honest provenance.
+  const DECISION_SELF_RESUME_PROMPT =
+    'A decision you SELF-RESOLVED earlier (auto-mode, see the [decision] block above) was ' +
+    'never acted on — the turn that resolved it did not complete. This is YOUR OWN ' +
+    'resolution, not a human answer: if it still holds, act on it now and continue; if it ' +
+    'no longer applies, raise a fresh decision instead.';
+  const resumePromptFor = (d: WorkspaceDecision): string =>
+    d.resolvedBy === 'brain' ? DECISION_SELF_RESUME_PROMPT : DECISION_RESUME_PROMPT;
 
   ipcMain.removeHandler(IPC.DECK_DECISION_GET);
   ipcMain.handle(
@@ -1384,7 +1417,9 @@ export function registerDeckHandler(
       if (workspaceId && decision?.status === 'resolved') {
         // Queued acquire (P1): a one-shot resume must await a slot, not silently
         // drop on a full gate — the answer would sit forever with autonomy off.
-        void runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId, { queued: true }).catch(() => {});
+        // Provenance-aware prompt (round-3 P2): a brain self-resolution must not
+        // replay as "the operator resolved".
+        void runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(() => {});
       }
       return { decision };
     }),
@@ -1437,7 +1472,9 @@ export function registerDeckHandler(
     // silently dropped the rest.
     for (const [workspaceId, decision] of Object.entries(loadDeckDecisions())) {
       if (decision.status === 'resolved') {
-        await runTurnForWorkspace(DECISION_RESUME_PROMPT, workspaceId, { queued: true }).catch(
+        // Provenance-aware prompt (round-3 P2): a stranded brain self-resolution
+        // resumes as the brain's OWN answer, never as "the operator resolved".
+        await runTurnForWorkspace(resumePromptFor(decision), workspaceId, { queued: true }).catch(
           () => {},
         );
       }

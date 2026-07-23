@@ -353,6 +353,17 @@ export async function clearResolvedDecision(
  */
 export function renderDecisionBlock(d: WorkspaceDecision): string {
   if (d.status === 'resolved') {
+    // Provenance-aware (round-3 review P2): a brain self-resolution must never
+    // be presented as the human's answer — a stranded self-resolve that resumes
+    // later (turn errored after the resolve landed) says so honestly.
+    if (d.resolvedBy === 'brain') {
+      return [
+        `[decision] RESOLVED (self) — you resolved this stale decision YOURSELF: ${d.question}`,
+        `your resolution: ${d.resolution ?? ''}`,
+        'This is your OWN auto-mode self-resolution, not a human answer. If it still',
+        'holds, act on it and continue; if it no longer applies, raise a fresh decision.',
+      ].join('\n');
+    }
     return [
       `[decision] RESOLVED — you asked the human: ${d.question}`,
       `the human decided: ${d.resolution ?? ''}`,
