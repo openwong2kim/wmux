@@ -105,6 +105,7 @@ Thumbs.db
 
 # Local tool/agent state (not committed)
 .claude/
+.cursor/
 .context/
 .gstack/
 .team/
