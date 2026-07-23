@@ -701,7 +701,12 @@ export function registerDeckHandler(
               });
             });
           }
-        } else if (injected?.status === 'resolved') {
+        } else if (injected?.status === 'resolved' && verdict.code !== 'errored') {
+          // Same errored guard as the re-examine consume (final review round):
+          // a resume turn that DIED mid-stream (code:'errored') may never have
+          // acted on the resolution its prompt carried — keep the durable
+          // record so the next natural wake / startup reconcile resumes it
+          // again, instead of deleting the answer unacted-on.
           void clearResolvedDecision(workspaceId, injected.id).catch(() => {});
         }
       }
