@@ -1,6 +1,6 @@
 # Changelog
 
-All notable changes to wmux are documented in this file.
+All notable changes to Forge Mux are documented in this file.
 
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
@@ -8,6 +8,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ## [3.35.1] — 2026-07-26
+## [1.0.0] — 2026-07-23
+
+Initial Forge Mux release, based on upstream wmux 3.31.0. Forge Mux uses its
+own `fmux` package, CLI, installer, application identifiers, data directories,
+IPC endpoints, updater channel, and integration destinations so it can coexist
+with wmux while continuing to import upstream improvements.
 
 ### Fixed
 
@@ -197,6 +203,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 Thanks to the external contributors in this release:
 - **[@rayss868](https://github.com/rayss868)** — fixed the OpenClaude notification-spam detection ([#539](https://github.com/openwong2kim/wmux/pull/539)), first contribution. Root-caused it properly: captured the real TUI output to prove which pattern was firing every 16 ms, then narrowed the fix to the bare prompt marker and dropped an unreachable regex on review feedback rather than leaving it in.
 - **[@snowyukitty](https://github.com/snowyukitty)** — hardened the TTL and Windows symlink test cases ([#569](https://github.com/openwong2kim/wmux/pull/569)), making the detached-session reaper suite deterministic instead of wall-clock dependent.
+---
+
+The entries below are inherited from upstream wmux and retained as project
+provenance.
 
 ## [3.31.0] — 2026-07-22
 

@@ -91,7 +91,7 @@ export function applyProjectLayoutNow(workspaceId: string): boolean {
 export async function applyProjectLayoutFresh(workspaceId: string): Promise<boolean> {
   const fresh = await probeProjectConfig(workspaceId);
   if (fresh?.trust !== 'trusted') {
-    useStore.getState().pushToast({ level: 'warn', message: 'wmux.json changed or is no longer trusted — review it from the sidebar badge' });
+    useStore.getState().pushToast({ level: 'warn', message: 'fmux.json changed or is no longer trusted — review it from the sidebar badge' });
     return false;
   }
   return applyProjectLayoutNow(workspaceId);

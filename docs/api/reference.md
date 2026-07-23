@@ -5,9 +5,9 @@
   src/main/mcp/methodCapabilityMap.ts.
 -->
 
-# wmux API Reference (generated)
+# Forge Mux API Reference (generated)
 
-> **Generated from wmux v3.35.1 sources.** This file is produced by
+> **Generated from Forge Mux v1.0.0 sources.** This file is produced by
 > `scripts/gen-api-reference.mjs` directly from the code — it lists every
 > RPC method, event type, required capability, and the key event-bus
 > constants exactly as the running daemon sees them. For the hand-curated
@@ -16,17 +16,17 @@
 > [`../PROTOCOL.md`](../PROTOCOL.md).
 
 Transport (see `src/shared/constants.ts`): JSON-RPC over a Named Pipe at
-`\\.\pipe\wmux-<username>` (Windows) or a Unix domain socket at
-`~/.wmux.sock` (POSIX). The first request on each connection carries the
-UUID token from `~/.wmux-auth-token` in its `token` field. On Windows, a
-loopback TCP fallback (port in `~/.wmux-tcp-port`) is used when the pipe
+`\\.\pipe\fmux-<username>` (Windows) or a Unix domain socket at
+`~/.fmux.sock` (POSIX). The first request on each connection carries the
+UUID token from `~/.fmux-auth-token` in its `token` field. On Windows, a
+loopback TCP fallback (port in `~/.fmux-tcp-port`) is used when the pipe
 returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.
 
 ---
 
 ## RPC methods
 
-Total: **144** methods (`ALL_RPC_METHODS` in
+Total: **142** methods (`ALL_RPC_METHODS` in
 `src/shared/rpc.ts`). Capability and risk class are read from
 `src/main/mcp/methodCapabilityMap.ts`:
 
@@ -122,7 +122,6 @@ Total: **144** methods (`ALL_RPC_METHODS` in
 
 | Method | Capability | Risk class |
 |---|---|---|
-| `browser.tabs` | `wmux.internal` |  |
 | `browser.open` | `browser.navigate` | `browser` |
 | `browser.navigate` | `browser.navigate` | `browser` |
 | `browser.goBack` | `browser.navigate` | `browser` |
@@ -265,7 +264,6 @@ Total: **144** methods (`ALL_RPC_METHODS` in
 | `deck.resolvePaneRoute` | `null` |  |
 | `deck.resolveCommanderWorkspace` | `null` |  |
 | `deck.requestDecision` | `null` |  |
-| `deck.resolveDecision` | `null` |  |
 | `task.mission.start` | `a2a.channel.send` | `a2a` |
 | `task.mission.close` | `a2a.channel.send` | `a2a` |
 | `task.mission.list` | `a2a.channel.read` | `a2a` |

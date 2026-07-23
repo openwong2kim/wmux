@@ -23,7 +23,7 @@ import { branchToDirName } from '../../shared/worktreeParse';
 const execFileAsync = promisify(execFile);
 
 /** Leaf prefix of the integration worktree directory — recognition marker for restart recovery. */
-export const INTEGRATION_PREFIX = '.wmux-merge-';
+export const INTEGRATION_PREFIX = '.fmux-merge-';
 
 export type MergePhase = 'merging' | 'conflicted' | 'clean' | 'verifying' | 'verified' | 'failed';
 

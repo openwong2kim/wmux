@@ -153,7 +153,7 @@ export const en = {
   'palette.cmd.saveLayout': 'Save Current Layout as Template',
   'palette.cmd.layoutPrefix': 'Layout: ',
   'palette.cmd.projectPrefix': 'Project: ',
-  'palette.cmd.projectReview': 'Project: Review wmux.json…',
+  'palette.cmd.projectReview': 'Project: Review fmux.json…',
   'palette.cmd.projectApplyLayout': 'Project: Apply Layout',
 
   // Fleet View (S-C1 cockpit — all agents, all workspaces, one screen)
@@ -195,11 +195,11 @@ export const en = {
   'fleet.approvals.delDeny': 'deny',
 
   // Project config (X5 wmux.json)
-  'project.dialogTitle': 'Project configuration (wmux.json)',
+  'project.dialogTitle': 'Project configuration (fmux.json)',
   'project.file': 'file',
-  'project.invalid': 'This wmux.json could not be parsed. Fix the JSON and reopen this dialog.',
+  'project.invalid': 'This fmux.json could not be parsed. Fix the JSON and reopen this dialog.',
   'project.untrustedNotice': 'Commands from this file run only after you trust it. Review them below — trusting approves exactly what is shown.',
-  'project.staleNotice': 'wmux.json changed since you trusted it. Nothing runs until you review and trust the new version.',
+  'project.staleNotice': 'fmux.json changed since you trusted it. Nothing runs until you review and trust the new version.',
   'project.deniedNotice': 'You denied this project. Its commands and layout stay disabled until you trust it here.',
   'project.commandsHeading': 'Custom commands',
   'project.layoutHeading': 'Layout ({count} panes)',
@@ -211,8 +211,8 @@ export const en = {
   'project.notNow': 'Not now',
   'project.revoke': 'Revoke trust',
   'project.close': 'Close',
-  'project.badgeTooltip': 'wmux.json — project commands & layout',
-  'project.discoveredToast': 'wmux.json found — click the sidebar badge to review project commands',
+  'project.badgeTooltip': 'fmux.json — project commands & layout',
+  'project.discoveredToast': 'fmux.json found — click the sidebar badge to review project commands',
   // X8 — supervision disclosure on the trust/approval screen. The approval
   // screen MUST surface autonomous behavior: a supervised pane runs its command
   // as a process that wmux auto-restarts. {restart}=on-failure|always,

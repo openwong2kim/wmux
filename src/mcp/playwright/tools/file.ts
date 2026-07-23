@@ -18,7 +18,7 @@ const optionalSurfaceId = z
 const BROWSER_FILE_UPLOAD_SHAPE = {
   paths: z
     .array(z.string())
-    .describe('Array of file paths to upload. Each path must resolve under ~/.wmux/uploads/.'),
+    .describe('Array of file paths to upload. Each path must resolve under ~/.fmux/uploads/.'),
   ref: z
     .string()
     .optional()
@@ -61,7 +61,7 @@ const BROWSER_DIALOG_SHAPE = {
 };
 
 // ---------------------------------------------------------------------------
-// Upload sandbox: restrict browser_file_upload to ~/.wmux/uploads
+// Upload sandbox: restrict browser_file_upload to ~/.fmux/uploads
 // ---------------------------------------------------------------------------
 
 function getUploadRoot(): string {
@@ -92,7 +92,7 @@ function validateUploadPath(input: string): string {
   if (rel === '' || rel.startsWith('..') || path.isAbsolute(rel)) {
     throw new Error(
       `browser_file_upload blocked: "${input}" is outside the allowed upload root (${root}). ` +
-      `Move the file under ~/.wmux/uploads/ before uploading.`,
+      `Move the file under ~/.fmux/uploads/ before uploading.`,
     );
   }
   return resolved;
@@ -115,7 +115,7 @@ export function registerFileTools(server: McpServer): void {
   // -----------------------------------------------------------------------
   server.tool(
     'browser_file_upload',
-    'Upload files to a file input element. Paths MUST live under ~/.wmux/uploads/ — arbitrary filesystem paths are rejected to prevent exfiltration of credentials or SSH keys via malicious pages.',
+    'Upload files to a file input element. Paths MUST live under ~/.fmux/uploads/ — arbitrary filesystem paths are rejected to prevent exfiltration of credentials or SSH keys via malicious pages.',
     BROWSER_FILE_UPLOAD_SHAPE,
     async ({ paths, ref, surfaceId }) => withAutomationLease(surfaceId, async () => {
       try {
@@ -145,7 +145,7 @@ export function registerFileTools(server: McpServer): void {
           content: [
             {
               type: 'text' as const,
-              text: `Uploaded ${safePaths.length} file(s) from ~/.wmux/uploads/`,
+              text: `Uploaded ${safePaths.length} file(s) from ~/.fmux/uploads/`,
             },
           ],
         };

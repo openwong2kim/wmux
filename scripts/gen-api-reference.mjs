@@ -292,9 +292,9 @@ function buildMarkdown() {
   p('  src/main/mcp/methodCapabilityMap.ts.');
   p('-->');
   p('');
-  p('# wmux API Reference (generated)');
+  p('# Forge Mux API Reference (generated)');
   p('');
-  p(`> **Generated from wmux v${pkg.version} sources.** This file is produced by`);
+  p(`> **Generated from Forge Mux v${pkg.version} sources.** This file is produced by`);
   p('> `scripts/gen-api-reference.mjs` directly from the code — it lists every');
   p('> RPC method, event type, required capability, and the key event-bus');
   p('> constants exactly as the running daemon sees them. For the hand-curated');
@@ -303,10 +303,10 @@ function buildMarkdown() {
   p('> [`../PROTOCOL.md`](../PROTOCOL.md).');
   p('');
   p('Transport (see `src/shared/constants.ts`): JSON-RPC over a Named Pipe at');
-  p('`\\\\.\\pipe\\wmux-<username>` (Windows) or a Unix domain socket at');
-  p('`~/.wmux.sock` (POSIX). The first request on each connection carries the');
-  p('UUID token from `~/.wmux-auth-token` in its `token` field. On Windows, a');
-  p('loopback TCP fallback (port in `~/.wmux-tcp-port`) is used when the pipe');
+  p('`\\\\.\\pipe\\fmux-<username>` (Windows) or a Unix domain socket at');
+  p('`~/.fmux.sock` (POSIX). The first request on each connection carries the');
+  p('UUID token from `~/.fmux-auth-token` in its `token` field. On Windows, a');
+  p('loopback TCP fallback (port in `~/.fmux-tcp-port`) is used when the pipe');
   p('returns `EPERM`. Wire framing: newline-delimited JSON, one object per line.');
   p('');
   p('---');

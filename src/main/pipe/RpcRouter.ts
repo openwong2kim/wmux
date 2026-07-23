@@ -407,7 +407,7 @@ function renderRejectionMessage(r: RpcRejection): string {
       return `${r.method}: ${r.rejected.length} of ${r.allowed.length + r.rejected.length} paths not covered by declared ${r.capability} globs`;
     case 'identity-status':
       if (r.status === 'denied') {
-        return `${r.method}: plugin is denied; edit ~/.wmux/plugin-trust.json to restore`;
+        return `${r.method}: plugin is denied; edit ~/.fmux/plugin-trust.json to restore`;
       }
       if (r.pendingApproval) {
         return `${r.method}: awaiting user approval (promptId=${r.pendingApproval.promptId})`;

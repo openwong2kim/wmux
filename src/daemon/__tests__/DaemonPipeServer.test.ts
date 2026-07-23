@@ -285,7 +285,7 @@ describe('DaemonPipeServer', () => {
 
   it('rotateToken invalidates old token, issues new one, drops connected sockets', async () => {
     // Redirect token file to a temp location so we don't clobber the user's
-    // real ~/.wmux/daemon-auth-token during the test.
+    // real ~/.fmux/daemon-auth-token during the test.
     const tmpTokenPath = path.join(os.tmpdir(), `wmux-test-token-${crypto.randomUUID().slice(0, 8)}`);
     server.setTokenPathForTest(tmpTokenPath);
 
@@ -331,7 +331,7 @@ describe('DaemonPipeServer', () => {
 
   it('loadOrCreateToken writes to the suffix-aware shared path (getDaemonAuthTokenPath), isolated from prod', async () => {
     // Point HOME at a fresh temp dir and set a UNIQUE data suffix so the writer
-    // lands in an ISOLATED dir, never the developer's real ~/.wmux. Crucially,
+    // lands in an ISOLATED dir, never the developer's real ~/.fmux. Crucially,
     // NO setTokenPathForTest override here — this exercises the REAL
     // getTokenPath → getDaemonAuthTokenPath resolution that the launcher
     // (DaemonClient.readDaemonAuthToken) and CLI (client.resolveDaemonAuthToken)

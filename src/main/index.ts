@@ -1230,7 +1230,7 @@ app.on('ready', async () => {
             : 'wmux could not bring the daemon back up after 5 retries.';
           dialog.showErrorBox(
             'wmux daemon unavailable',
-            `${hint}\n\nwmux will keep running in local-only mode. To recover:\n  1. Quit wmux from the tray.\n  2. In an elevated PowerShell, run:  Get-Process | Where-Object { $_.Path -like '*wmux*' }\n  3. taskkill /F /PID <pid>  for any leftover daemon process.\n  4. Delete ~/.wmux/daemon.pid if it exists.\n  5. Re-launch wmux.`,
+            `${hint}\n\nForge Mux will keep running in local-only mode. To recover:\n  1. Quit Forge Mux from the tray.\n  2. In an elevated PowerShell, run:  Get-Process | Where-Object { $_.Path -like '*fmux*' }\n  3. taskkill /F /PID <pid>  for any leftover daemon process.\n  4. Delete ~/.fmux/daemon.pid if it exists.\n  5. Re-launch Forge Mux.`,
           );
         }
       }

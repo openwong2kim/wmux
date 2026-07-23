@@ -29,7 +29,7 @@ function trustedState(overrides: Partial<ProjectConfigState> = {}): ProjectConfi
   return {
     found: true,
     root: 'd:\\proj',
-    configPath: 'd:\\proj\\wmux.json',
+    configPath: 'd:\\proj\\fmux.json',
     contentHash: 'a'.repeat(64),
     trust: 'trusted',
     config: {

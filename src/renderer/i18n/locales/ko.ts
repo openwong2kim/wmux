@@ -109,7 +109,7 @@ export const ko = {
   'palette.cmd.saveLayout': '현재 레이아웃을 템플릿으로 저장',
   'palette.cmd.layoutPrefix': '레이아웃: ',
   'palette.cmd.projectPrefix': '프로젝트: ',
-  'palette.cmd.projectReview': '프로젝트: wmux.json 검토…',
+  'palette.cmd.projectReview': '프로젝트: fmux.json 검토…',
   'palette.cmd.projectApplyLayout': '프로젝트: 레이아웃 적용',
 
   // Fleet View (S-C1 cockpit)
@@ -150,11 +150,11 @@ export const ko = {
   'fleet.approvals.delDeny': '거부',
 
   // Project config (X5 wmux.json)
-  'project.dialogTitle': '프로젝트 설정 (wmux.json)',
+  'project.dialogTitle': '프로젝트 설정 (fmux.json)',
   'project.file': '파일',
-  'project.invalid': '이 wmux.json을 해석할 수 없습니다. JSON을 수정한 뒤 다시 여세요.',
+  'project.invalid': '이 fmux.json을 해석할 수 없습니다. JSON을 수정한 뒤 다시 여세요.',
   'project.untrustedNotice': '이 파일의 커맨드는 신뢰한 뒤에만 실행됩니다. 아래 내용을 검토하세요 — 신뢰는 표시된 내용 그대로를 승인합니다.',
-  'project.staleNotice': '신뢰한 이후 wmux.json이 변경되었습니다. 새 버전을 검토하고 신뢰하기 전까지 아무것도 실행되지 않습니다.',
+  'project.staleNotice': '신뢰한 이후 fmux.json이 변경되었습니다. 새 버전을 검토하고 신뢰하기 전까지 아무것도 실행되지 않습니다.',
   'project.deniedNotice': '이 프로젝트를 거부했습니다. 여기서 신뢰하기 전까지 커맨드와 레이아웃이 비활성 상태로 유지됩니다.',
   'project.commandsHeading': '커스텀 커맨드',
   'project.layoutHeading': '레이아웃 ({count}개 pane)',
@@ -166,8 +166,8 @@ export const ko = {
   'project.notNow': '나중에',
   'project.revoke': '신뢰 철회',
   'project.close': '닫기',
-  'project.badgeTooltip': 'wmux.json — 프로젝트 커맨드·레이아웃',
-  'project.discoveredToast': 'wmux.json 발견 — 사이드바 배지를 클릭해 프로젝트 커맨드를 검토하세요',
+  'project.badgeTooltip': 'fmux.json — 프로젝트 커맨드·레이아웃',
+  'project.discoveredToast': 'fmux.json 발견 — 사이드바 배지를 클릭해 프로젝트 커맨드를 검토하세요',
   'project.supervisionBadge': '↻ 자동 재시작 ({restart}, 연속 {burst}회까지)',
   'project.unattendedHeading': '무인 실행 (재부팅 후 권한 프롬프트 스킵)',
   'project.unattendedConsent': '재부팅 시 이 {count}개 pane을 권한 확인 없이 자동 실행하도록 허용. 각 pane은 마지막 사용 권한 모드로 복원되며, --dangerously-skip-permissions가 포함될 수 있습니다.',

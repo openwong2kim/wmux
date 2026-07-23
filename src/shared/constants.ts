@@ -499,10 +499,10 @@ export function getPipeName(): string {
 export function getMcpBrokerPipeName(): string {
   if (process.platform === 'win32') {
     const username = require('os').userInfo().username || 'default';
-    return `\\\\.\\pipe\\wmux-mcpb${dataSuffix()}-${username}`;
+    return `\\\\.\\pipe\\fmux-mcpb${dataSuffix()}-${username}`;
   }
   const home = require('os').homedir() || '/tmp';
-  return `${home}/.wmux-mcpb${dataSuffix()}.sock`;
+  return `${home}/.fmux-mcpb${dataSuffix()}.sock`;
 }
 
 // Environment variable names injected into PTY sessions

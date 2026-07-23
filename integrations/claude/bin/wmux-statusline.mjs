@@ -63,7 +63,7 @@ function readJsonFile(path) {
 
 /** Registered account name for this config dir, from wmux accounts.json. */
 function lookupAccountName(home, want) {
-  const parsed = readJsonFile(join(home, '.wmux', 'accounts.json'));
+  const parsed = readJsonFile(join(home, '.fmux', 'accounts.json'));
   const accounts = Array.isArray(parsed?.accounts) ? parsed.accounts : [];
   const hit = accounts.find(
     (a) => a && a.vendor === 'claude' && typeof a.configDir === 'string' && normDir(a.configDir) === want,

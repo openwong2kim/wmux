@@ -28,7 +28,7 @@ export async function runProjectCommand(
   if (probed && probed.trust !== 'trusted') {
     useStore.getState().pushToast({
       level: 'warn',
-      message: 'wmux.json changed or is no longer trusted — review it from the sidebar badge',
+      message: 'fmux.json changed or is no longer trusted — review it from the sidebar badge',
     });
     return { ok: false, reason: 'untrusted' };
   }

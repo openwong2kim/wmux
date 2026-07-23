@@ -203,6 +203,6 @@ describe('worktree.handler — merge session (no-op merge)', () => {
     expect(st.ok).toBe(true);
     if (st.ok) expect(st.status).toBeNull();
     // … and no integration worktree was left behind.
-    expect(g(scn.repo, ['worktree', 'list'])).not.toContain('.wmux-merge');
+    expect(g(scn.repo, ['worktree', 'list'])).not.toContain('.fmux-merge');
   });
 });
