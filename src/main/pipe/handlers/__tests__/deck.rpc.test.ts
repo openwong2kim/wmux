@@ -21,15 +21,21 @@ vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
 // (isDecisionStale, renderDecisionBlock, raiseDecision) real via importActual so
 // the gate's staleness math and requestDecision keep exercising real code.
 type Decision = import('../../../deck/deckDecisionStore').WorkspaceDecision;
-const { modeMock, ttlMock, decisionRef, resolveDecisionMock, raiseDecisionMock } = vi.hoisted(
-  () => ({
-    modeMock: vi.fn<() => 'off' | 'assist' | 'auto'>(() => 'auto'),
-    ttlMock: vi.fn<() => number>(() => 30 * 60_000),
-    decisionRef: { current: null as Decision | null },
-    resolveDecisionMock: vi.fn(),
-    raiseDecisionMock: vi.fn(),
-  }),
-);
+const {
+  modeMock,
+  ttlMock,
+  decisionRef,
+  resolveDecisionMock,
+  raiseDecisionMock,
+  replaceStaleDecisionMock,
+} = vi.hoisted(() => ({
+  modeMock: vi.fn<() => 'off' | 'assist' | 'auto'>(() => 'auto'),
+  ttlMock: vi.fn<() => number>(() => 30 * 60_000),
+  decisionRef: { current: null as Decision | null },
+  resolveDecisionMock: vi.fn(),
+  raiseDecisionMock: vi.fn(),
+  replaceStaleDecisionMock: vi.fn(),
+}));
 vi.mock('../../../deck/deckAutonomyStore', () => ({
   loadWorkspaceMode: (_ws: string) => modeMock(),
 }));
@@ -44,6 +50,8 @@ vi.mock('../../../deck/deckDecisionStore', async (orig) => {
     resolveDecision: (ws: string, id: string, resolution: string) =>
       resolveDecisionMock(ws, id, resolution),
     raiseDecision: (ws: string, args: unknown) => raiseDecisionMock(ws, args),
+    replaceStaleDecision: (ws: string, expectedId: string, ttlMs: number, args: unknown) =>
+      replaceStaleDecisionMock(ws, expectedId, ttlMs, args),
   };
 });
 
@@ -409,11 +417,40 @@ describe('deck.requestDecision — stale replace', () => {
     expect(raiseDecisionMock).not.toHaveBeenCalled();
   });
 
-  it('REPLACES a STALE pending decision with the sharper question', async () => {
+  it('REPLACES a STALE pending decision via the CAS (never last-writer-wins raise)', async () => {
     decisionRef.current = pendingAgedMs(TTL + 60_000); // past the TTL — stale
+    replaceStaleDecisionMock.mockResolvedValue({
+      id: 'dec-new',
+      question: 'Sharper question?',
+      options: [],
+      context: '',
+      status: 'pending' as const,
+      raisedAt: Date.now(),
+    });
     const token = mintCommanderToken('ws-1');
     const res = await request(setup(), { token, question: 'Sharper question?' });
     expect((res.result as { ok: boolean; id: string })).toEqual({ ok: true, id: 'dec-new' });
-    expect(raiseDecisionMock).toHaveBeenCalledTimes(1);
+    // The replace must go through the CAS, NOT the last-writer-wins raise —
+    // raiseDecision would overwrite a concurrent human resolve (round 2 P1).
+    expect(replaceStaleDecisionMock).toHaveBeenCalledWith(
+      'ws-1',
+      'dec-old',
+      TTL,
+      expect.objectContaining({ question: 'Sharper question?' }),
+    );
+    expect(raiseDecisionMock).not.toHaveBeenCalled();
+  });
+
+  it('refuses when the CAS loses (human resolved concurrently) — answer preserved', async () => {
+    decisionRef.current = pendingAgedMs(TTL + 60_000); // stale at check time
+    replaceStaleDecisionMock.mockResolvedValue(null); // ...but the human's resolve won the write
+    const token = mintCommanderToken('ws-1');
+    const res = await request(setup(), { token, question: 'Sharper question?' });
+    expect((res.result as { ok: boolean; error: string; id: string })).toEqual({
+      ok: false,
+      error: 'decision_pending',
+      id: 'dec-old',
+    });
+    expect(raiseDecisionMock).not.toHaveBeenCalled();
   });
 });

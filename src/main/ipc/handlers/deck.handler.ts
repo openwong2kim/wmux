@@ -651,9 +651,19 @@ export function registerDeckHandler(
           // acted on it in-turn, so there is no separate resume to kick (a kick
           // would just busy-reject against this very turn); we only CONSUME the
           // now-resolved record so it doesn't linger and re-inject. Scope the
-          // consume to the id this turn actually re-examined.
+          // consume to the id this turn actually re-examined AND to the BRAIN's
+          // own resolution (resolvedBy === 'brain'). If the HUMAN resolved it
+          // while this turn was running, their answer was never in this turn's
+          // prompt — consuming it here would silently discard it (3-way review
+          // round 2 P1). A human resolution is left on disk so the next natural
+          // wake / startup reconcile carries it into a resume turn.
           const after = loadWorkspaceDecision(workspaceId);
-          if (after?.status === 'resolved' && injected && after.id === injected.id) {
+          if (
+            after?.status === 'resolved' &&
+            after.resolvedBy === 'brain' &&
+            injected &&
+            after.id === injected.id
+          ) {
             void clearResolvedDecision(workspaceId, after.id).catch(() => {});
           }
         } else if (injected?.status === 'resolved') {
@@ -855,6 +865,15 @@ export function registerDeckHandler(
     getDecision: (workspaceId) => loadWorkspaceDecision(workspaceId),
     decisionTtlMs: heartbeatConfig.decisionTtlMs,
     reExamineDecision: (workspaceId, decision) => {
+      // AMBIENT-WAKE CONTROLS (3-way review round 2 P1): this path bypasses
+      // ONLY the pending-decision gate — that is the feature. The other
+      // ambient controls still apply: the global auto-wake switch (off ⇒ no
+      // ambient wakes of any kind) and the coalescer's consecutive-wake
+      // budget. The rate ceiling is inherently respected — the heartbeat
+      // debounces re-pings to once per TTL (≥ 5 min), far under any per-minute
+      // cap.
+      if (!loadAutoWakeEnabled()) return;
+      if ((coalescer?.getWakeBudgetRemaining(workspaceId) ?? 0) <= 0) return;
       // Capture ONLY the decision id. Mode/TTL/staleness are re-validated
       // FRESH inside runTurnForWorkspace after the queued gate wait, so an
       // off-flip or a replaced decision aborts instead of running stale

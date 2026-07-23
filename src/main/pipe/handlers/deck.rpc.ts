@@ -25,8 +25,10 @@ import { commanderTokenWorkspace } from '../../deck/commanderTrust';
 import {
   loadWorkspaceDecision,
   raiseDecision,
+  replaceStaleDecision,
   resolveDecision,
   isDecisionStale,
+  type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import { loadWorkspaceMode } from '../../deck/deckAutonomyStore';
 import { loadDeckHeartbeat } from '../../deck/deckHeartbeatStore';
@@ -103,25 +105,37 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
     if (typeof question !== 'string' || question.trim().length === 0) {
       throw new Error('deck.requestDecision: missing required param "question"');
     }
+    const options = Array.isArray(params['options'])
+      ? (params['options'] as unknown[]).filter((s): s is string => typeof s === 'string')
+      : [];
+    const context = typeof params['context'] === 'string' ? (params['context'] as string) : '';
     const existing = loadWorkspaceDecision(ws);
+    let decision: WorkspaceDecision | null;
     if (existing && existing.status === 'pending') {
       // STALE REPLACE (WP3): the re-examine turn explicitly offers "re-raise a
       // sharper question, which replaces this one". That contract only exists
       // when the pending decision is actually STALE (past the TTL) — a fresh
       // pending decision still refuses a second raise, so the brain cannot
-      // stack or churn decisions inside a normal turn. raiseDecision() is
-      // last-writer-wins at the store level, so falling through here replaces
-      // the stale record atomically.
+      // stack or churn decisions inside a normal turn. The replace itself is a
+      // COMPARE-AND-SWAP inside one serialized store mutation (3-way review
+      // round 2): if the human's resolve wins the race, the CAS fails and their
+      // answer stays intact — we refuse instead of overwriting it.
       const ttlMs = loadDeckHeartbeat().decisionTtlMs;
       if (!isDecisionStale(existing, ttlMs)) {
         return { ok: false, error: 'decision_pending', id: existing.id };
       }
+      decision = await replaceStaleDecision(ws, existing.id, ttlMs, {
+        question,
+        options,
+        context,
+      });
+      if (!decision) {
+        // CAS lost — the decision was resolved/cleared/replaced concurrently.
+        return { ok: false, error: 'decision_pending', id: existing.id };
+      }
+      return { ok: true, id: decision.id };
     }
-    const options = Array.isArray(params['options'])
-      ? (params['options'] as unknown[]).filter((s): s is string => typeof s === 'string')
-      : [];
-    const context = typeof params['context'] === 'string' ? (params['context'] as string) : '';
-    const decision = await raiseDecision(ws, { question, options, context });
+    decision = await raiseDecision(ws, { question, options, context });
     // Fail CLOSED: if nothing was persisted (write failure, or the question
     // sanitized to empty), do NOT tell the brain the decision was raised — it
     // would end its turn believing the loop is blocked while hasPendingDecision
@@ -186,7 +200,11 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
     if (resolution.length < MIN_SELF_RESOLVE_CHARS) {
       return { ok: false, error: 'insufficient_basis' };
     }
-    const resolved = await resolveDecision(ws, id, resolution);
+    // Tag the provenance: a self-resolve is the BRAIN's answer, and only a
+    // brain-resolved record may be consumed by the re-examine turn that made it.
+    // A human's resolution (default 'human') must always survive to a resume
+    // turn (3-way review round 2 — never drop the human's answer).
+    const resolved = await resolveDecision(ws, id, resolution, undefined, 'brain');
     // resolveDecision re-checks id+pending under its write lock; a null here means
     // a concurrent resolve/clear won the race — surface it as not_pending.
     if (!resolved || resolved.status !== 'resolved') {

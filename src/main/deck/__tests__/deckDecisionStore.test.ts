@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 import {
   raiseDecision,
+  replaceStaleDecision,
   resolveDecision,
   clearDecision,
   clearResolvedDecision,
@@ -216,5 +217,98 @@ describe('renderStaleDecisionBlock', () => {
   it('off mode also withholds self-resolve', () => {
     const out = renderStaleDecisionBlock(base, { ttlMinutes: 30, mode: 'off' });
     expect(out).not.toContain('deck_resolve_decision');
+  });
+});
+
+// ─── 3-way review round 2 — CAS replace + resolution provenance ──────────────
+
+describe('replaceStaleDecision (compare-and-swap)', () => {
+  const TTL = 30 * 60_000;
+
+  const seedPending = (raisedAt: number, id = 'dec-old'): void => {
+    writeFileSync(
+      getDeckDecisionPath(dir),
+      JSON.stringify({
+        'ws-1': {
+          id,
+          question: 'Old question?',
+          options: [],
+          context: '',
+          status: 'pending',
+          raisedAt,
+        },
+      }),
+    );
+  };
+
+  it('replaces a STALE pending decision atomically', async () => {
+    seedPending(Date.now() - TTL - 60_000);
+    const next = await replaceStaleDecision(
+      'ws-1',
+      'dec-old',
+      TTL,
+      { question: 'Sharper question?' },
+      dir,
+    );
+    expect(next).toMatchObject({ question: 'Sharper question?', status: 'pending' });
+    expect(next!.id).not.toBe('dec-old');
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ question: 'Sharper question?' });
+  });
+
+  it('refuses a FRESH pending decision (CAS re-checks staleness at write time)', async () => {
+    seedPending(Date.now() - 60_000); // 1 min old
+    const next = await replaceStaleDecision(
+      'ws-1',
+      'dec-old',
+      TTL,
+      { question: 'Sharper question?' },
+      dir,
+    );
+    expect(next).toBeNull();
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ question: 'Old question?' });
+  });
+
+  it('refuses an id mismatch (decision was already replaced)', async () => {
+    seedPending(Date.now() - TTL - 60_000, 'dec-other');
+    const next = await replaceStaleDecision(
+      'ws-1',
+      'dec-old',
+      TTL,
+      { question: 'Sharper question?' },
+      dir,
+    );
+    expect(next).toBeNull();
+  });
+
+  it("NEVER overwrites the human's concurrent resolve — their answer survives", async () => {
+    seedPending(Date.now() - TTL - 60_000);
+    // The human resolves between the brain's check and its replace attempt.
+    await resolveDecision('ws-1', 'dec-old', 'Human said: use the worktree.', dir);
+    const next = await replaceStaleDecision(
+      'ws-1',
+      'dec-old',
+      TTL,
+      { question: 'Sharper question?' },
+      dir,
+    );
+    expect(next).toBeNull(); // CAS lost
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({
+      status: 'resolved',
+      resolution: 'Human said: use the worktree.',
+    });
+  });
+});
+
+describe('resolution provenance (resolvedBy)', () => {
+  it('defaults to human, tags brain when asked, and round-trips through sanitize', async () => {
+    const d1 = (await raiseDecision('ws-1', { question: 'Q1?' }, dir))!;
+    await resolveDecision('ws-1', d1.id, 'the human answer', dir);
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ resolvedBy: 'human' });
+    await clearDecision('ws-1', dir);
+
+    const d2 = (await raiseDecision('ws-1', { question: 'Q2?' }, dir))!;
+    await resolveDecision('ws-1', d2.id, 'per policy rule X, settled', dir, 'brain');
+    // A fresh read from disk exercises sanitizeDecision — the tag must survive.
+    expect(loadWorkspaceDecision('ws-1', dir)).toMatchObject({ resolvedBy: 'brain' });
   });
 });

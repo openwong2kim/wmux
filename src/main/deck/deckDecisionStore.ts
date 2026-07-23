@@ -44,9 +44,17 @@ export interface WorkspaceDecision {
   status: DecisionStatus;
   /** The human's answer (a chosen option or free text). Present once resolved. */
   resolution?: string;
+  /** Who resolved it (3-way review round 2): 'human' via the Deck UI, 'brain'
+   *  via the auto-mode self-resolve RPC. Consumers use this to decide whether a
+   *  resolution may be consumed by the re-examine turn (brain's own) or must
+   *  survive to the next resume turn (the human's answer — never droppable).
+   *  Absent on legacy records ⇒ treated as 'human' (the conservative read). */
+  resolvedBy?: DecisionResolvedBy;
   raisedAt: number;
   resolvedAt?: number;
 }
+
+export type DecisionResolvedBy = 'human' | 'brain';
 
 const WORKSPACE_ID_RE = /^[A-Za-z0-9._-]{1,80}$/;
 
@@ -93,6 +101,9 @@ function sanitizeDecision(raw: unknown): WorkspaceDecision | null {
       typeof o.context === 'string' ? o.context.slice(0, DECISION_LIMITS.MAX_CONTEXT_CHARS) : '',
     status,
     ...(status === 'resolved' && resolution ? { resolution } : {}),
+    ...(status === 'resolved' && (o.resolvedBy === 'human' || o.resolvedBy === 'brain')
+      ? { resolvedBy: o.resolvedBy as DecisionResolvedBy }
+      : {}),
     raisedAt: typeof o.raisedAt === 'number' && Number.isFinite(o.raisedAt) ? o.raisedAt : 0,
     ...(typeof o.resolvedAt === 'number' && Number.isFinite(o.resolvedAt)
       ? { resolvedAt: o.resolvedAt }
@@ -206,6 +217,56 @@ export async function raiseDecision(
   );
 }
 
+/**
+ * REPLACE a STALE pending decision with a sharper question — compare-and-swap
+ * inside ONE serialized mutation (3-way review round 2): the existing record
+ * must still be the expected id, still pending, and still stale under `ttlMs`
+ * AT WRITE TIME. Without this, a load→check→raise sequence races the human's
+ * resolve: their answer lands between the check and the raise, and the raise
+ * (last-writer-wins) silently overwrites the RESOLVED record with a fresh
+ * pending one — discarding the human's answer. Returns the new pending decision,
+ * or null when the CAS failed (caller should treat it as "no replace happened";
+ * the human's resolution, if that is what won, stays intact on disk).
+ */
+export async function replaceStaleDecision(
+  workspaceId: string,
+  expectedId: string,
+  ttlMs: number,
+  args: { question: string; options?: string[]; context?: string },
+  dir?: string,
+): Promise<WorkspaceDecision | null> {
+  const question = args.question.trim();
+  if (!question || !expectedId) return null;
+  let swapped = false;
+  const result = await mutate(
+    workspaceId,
+    (prev) => {
+      if (
+        !prev ||
+        prev.status !== 'pending' ||
+        prev.id !== expectedId ||
+        !isDecisionStale(prev, ttlMs)
+      ) {
+        return prev; // CAS failed — leave whatever is there (incl. a human resolve) intact
+      }
+      swapped = true;
+      return {
+        id: randomUUID(),
+        question: question.slice(0, DECISION_LIMITS.MAX_QUESTION_CHARS),
+        options: sanitizeOptions(args.options),
+        context:
+          typeof args.context === 'string'
+            ? args.context.trim().slice(0, DECISION_LIMITS.MAX_CONTEXT_CHARS)
+            : '',
+        status: 'pending',
+        raisedAt: Date.now(),
+      };
+    },
+    dir,
+  );
+  return swapped ? result : null;
+}
+
 /** Resolve a pending decision, but ONLY when the id matches the active one and
  *  it is still pending (a stale resolve — wrong id, already resolved, or empty
  *  answer — is a no-op returning current state). */
@@ -214,6 +275,7 @@ export async function resolveDecision(
   id: string,
   resolution: string,
   dir?: string,
+  resolvedBy: DecisionResolvedBy = 'human',
 ): Promise<WorkspaceDecision | null> {
   const answer = resolution.trim();
   if (!answer) return null;
@@ -236,6 +298,7 @@ export async function resolveDecision(
         ...prev,
         status: 'resolved',
         resolution: answer.slice(0, DECISION_LIMITS.MAX_RESOLUTION_CHARS),
+        resolvedBy,
         resolvedAt: Date.now(),
       };
     },
