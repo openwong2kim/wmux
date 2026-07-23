@@ -19,6 +19,12 @@ import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWri
 export interface DeckHeartbeatConfig {
   enabled: boolean;
   intervalMs: number;
+  /** Age (ms) beyond which a PENDING brain-raised decision is treated as STALE:
+   *  the next heartbeat wakes the brain with a re-examine turn that bypasses the
+   *  pending-decision wake block so a decision can never wedge the wake loop
+   *  forever waiting on a human (WP3). Sanitized like intervalMs (corrupt →
+   *  default; clamped to a floor). */
+  decisionTtlMs: number;
 }
 
 /** A floor on the review cadence: a heartbeat firing more often than once a
@@ -26,9 +32,19 @@ export interface DeckHeartbeatConfig {
  *  churn budget. Anything below is clamped up on read. */
 export const MIN_HEARTBEAT_INTERVAL_MS = 60_000;
 
+/** A floor on the decision TTL: re-examining a pending decision more often than
+ *  every 5 minutes would nag the brain (and burn a wake) faster than a human
+ *  could reasonably answer. Anything below is clamped up on read. */
+export const MIN_DECISION_TTL_MS = 5 * 60_000;
+
+/** Default decision TTL: 30 minutes of no human answer before the first
+ *  re-examine wake. */
+export const DEFAULT_DECISION_TTL_MS = 30 * 60_000;
+
 export const DEFAULT_HEARTBEAT: DeckHeartbeatConfig = {
   enabled: true,
   intervalMs: 180_000,
+  decisionTtlMs: DEFAULT_DECISION_TTL_MS,
 };
 
 export function getDeckHeartbeatPath(dir: string = getWmuxDir()): string {
@@ -51,7 +67,12 @@ export function loadDeckHeartbeat(dir?: string): DeckHeartbeatConfig {
         ? Math.floor(o.intervalMs)
         : DEFAULT_HEARTBEAT.intervalMs;
     const intervalMs = Math.max(MIN_HEARTBEAT_INTERVAL_MS, rawInterval);
-    return { enabled, intervalMs };
+    const rawTtl =
+      typeof o.decisionTtlMs === 'number' && Number.isFinite(o.decisionTtlMs)
+        ? Math.floor(o.decisionTtlMs)
+        : DEFAULT_HEARTBEAT.decisionTtlMs;
+    const decisionTtlMs = Math.max(MIN_DECISION_TTL_MS, rawTtl);
+    return { enabled, intervalMs, decisionTtlMs };
   } catch {
     return { ...DEFAULT_HEARTBEAT };
   }
@@ -70,9 +91,14 @@ export async function saveDeckHeartbeat(
     typeof patch.intervalMs === 'number' && Number.isFinite(patch.intervalMs)
       ? Math.floor(patch.intervalMs)
       : current.intervalMs;
+  const rawTtl =
+    typeof patch.decisionTtlMs === 'number' && Number.isFinite(patch.decisionTtlMs)
+      ? Math.floor(patch.decisionTtlMs)
+      : current.decisionTtlMs;
   const next: DeckHeartbeatConfig = {
     enabled,
     intervalMs: Math.max(MIN_HEARTBEAT_INTERVAL_MS, rawInterval),
+    decisionTtlMs: Math.max(MIN_DECISION_TTL_MS, rawTtl),
   };
   await atomicWriteJSON(getDeckHeartbeatPath(dir), next);
   return next;

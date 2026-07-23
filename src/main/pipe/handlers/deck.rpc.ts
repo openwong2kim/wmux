@@ -22,7 +22,20 @@ import type { BrowserWindow } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
 import { commanderTokenWorkspace } from '../../deck/commanderTrust';
-import { loadWorkspaceDecision, raiseDecision } from '../../deck/deckDecisionStore';
+import {
+  loadWorkspaceDecision,
+  raiseDecision,
+  resolveDecision,
+  isDecisionStale,
+} from '../../deck/deckDecisionStore';
+import { loadWorkspaceMode } from '../../deck/deckAutonomyStore';
+import { loadDeckHeartbeat } from '../../deck/deckHeartbeatStore';
+
+/** Minimum characters a self-resolve resolution must carry. The re-examine
+ *  prompt demands the brain CITE the binding rule/basis that settles the
+ *  decision; the server can't parse that intent, so it demands substance — a
+ *  bare "yes"/"done" is refused. Not NLP, just a floor against empty self-grants. */
+const MIN_SELF_RESOLVE_CHARS = 20;
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -107,5 +120,59 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
       return { ok: false, error: 'raise_failed' };
     }
     return { ok: true, id: decision.id };
+  });
+
+  // `deck.resolveDecision` is how the commander brain resolves its OWN stale
+  // pending decision (WP3) — the escape hatch for a decision that has blocked the
+  // workspace's wake loop past the TTL with no human answer. It is ONLY valid
+  // after the heartbeat's re-examine turn tells the brain it may self-resolve,
+  // and the server enforces every precondition (a tool-description rule is not
+  // enough): ALL of the following must hold or the resolve is refused with a
+  // condition-specific error:
+  //   (i)   the workspace mode is 'auto' — assist/off may never self-resolve;
+  //   (ii)  the pending decision is actually STALE (age > decisionTtlMs) — the
+  //         brain cannot resolve a fresh decision it just raised this turn;
+  //   (iii) the resolution is substantive (>= MIN_SELF_RESOLVE_CHARS) so it can
+  //         carry the cited rule/basis, not a bare self-grant.
+  // Auth is the same per-spawn commander token as requestDecision; a non-commander
+  // caller has none and fails closed. On success the pending decision flips to
+  // resolved (deckDecisionStore); the brain — already awake in the re-examine turn
+  // — proceeds, and that turn's end consumes the resolved record (deck.handler).
+  router.register('deck.resolveDecision', async (params) => {
+    const ws = commanderTokenWorkspace(params['token']);
+    if (!ws) {
+      throw new Error('deck.resolveDecision: not a live commander session');
+    }
+    const id = typeof params['id'] === 'string' ? params['id'] : '';
+    if (!id) {
+      throw new Error('deck.resolveDecision: missing required param "id"');
+    }
+    const resolution = typeof params['resolution'] === 'string' ? params['resolution'].trim() : '';
+
+    // Load the current decision once — the id must match the ACTIVE pending one.
+    const current = loadWorkspaceDecision(ws);
+    if (!current || current.status !== 'pending' || current.id !== id) {
+      return { ok: false, error: 'not_pending' };
+    }
+    // (i) mode gate — auto only.
+    if (loadWorkspaceMode(ws) !== 'auto') {
+      return { ok: false, error: 'mode_not_auto' };
+    }
+    // (ii) age gate — must be stale per the configured TTL.
+    const ttlMs = loadDeckHeartbeat().decisionTtlMs;
+    if (!isDecisionStale(current, ttlMs)) {
+      return { ok: false, error: 'not_stale' };
+    }
+    // (iii) substance gate — the resolution must cite a basis, not be empty/bare.
+    if (resolution.length < MIN_SELF_RESOLVE_CHARS) {
+      return { ok: false, error: 'insufficient_basis' };
+    }
+    const resolved = await resolveDecision(ws, id, resolution);
+    // resolveDecision re-checks id+pending under its write lock; a null here means
+    // a concurrent resolve/clear won the race — surface it as not_pending.
+    if (!resolved || resolved.status !== 'resolved') {
+      return { ok: false, error: 'not_pending' };
+    }
+    return { ok: true, id: resolved.id };
   });
 }

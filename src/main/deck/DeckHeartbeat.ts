@@ -17,6 +17,8 @@
 // authority on whether a wake actually fires.
 
 import type { WorkspaceAutonomy } from './deckAutonomyStore';
+import type { WorkspaceDecision } from './deckDecisionStore';
+import { isDecisionStale } from './deckDecisionStore';
 import type { FleetSnapshot, FleetSnapshotPane } from '../../shared/workspaceMirror';
 
 export interface DeckHeartbeatDeps {
@@ -31,6 +33,18 @@ export interface DeckHeartbeatDeps {
   isBusy: (workspaceId: string) => boolean;
   /** True when this workspace has an unresolved decision gate (blocks every wake). */
   hasPendingDecision: (workspaceId: string) => boolean;
+  /** This workspace's current decision (pending/resolved) or null. Read only to
+   *  detect a STALE pending decision (WP3). Absent ⇒ the re-examine path is off
+   *  (a torn/missing dep just leaves the pending gate blocking, as before). */
+  getDecision?: (workspaceId: string) => WorkspaceDecision | null;
+  /** Fire a re-examine wake for a STALE pending decision. This is the ONE wake
+   *  allowed PAST the pending-decision block: it injects the stale-decision block
+   *  and, in auto mode, lets the brain self-resolve. Fire-and-forget; absent ⇒ no
+   *  re-examine (the decision keeps blocking until a human answers). */
+  reExamineDecision?: (workspaceId: string, decision: WorkspaceDecision) => void;
+  /** Age (ms) beyond which a pending decision is re-examined (deck-heartbeat.json,
+   *  read at construction like intervalMs). 0/absent ⇒ re-examine disabled. */
+  decisionTtlMs?: number;
   /** This workspace's current per-pane snapshot from the renderer mirror, or null
    *  when unknown (never populated / no fleet for this workspace). */
   getFleetSnapshot: (workspaceId: string) => FleetSnapshot | null;
@@ -62,6 +76,11 @@ export class DeckHeartbeat {
   private readonly deps: DeckHeartbeatDeps;
   private timer: ReturnType<typeof setInterval> | null = null;
   private ticking = false;
+  /** Debounce for the stale-decision re-examine (WP3): the last decision id we
+   *  re-pinged per workspace and when. We re-ping at most once per TTL interval,
+   *  and re-ping again immediately when the decision id changes (the brain
+   *  re-raised a sharper question). */
+  private readonly reExaminedAt = new Map<string, { id: string; at: number }>();
 
   constructor(deps: DeckHeartbeatDeps) {
     this.deps = deps;
@@ -107,9 +126,17 @@ export class DeckHeartbeat {
     // Mode gate: 'off' never wakes. (The coalescer re-checks the full policy;
     // this just skips the obvious case without a snapshot read.)
     if (this.safe(() => this.deps.getAutonomy(workspaceId).mode, 'off') === 'off') return;
-    // A mid-turn brain, or one blocked on a decision, is never level-reviewed.
+    // A mid-turn brain is never level-reviewed (a review must not race a turn).
     if (this.safe(() => this.deps.isBusy(workspaceId), false)) return;
-    if (this.safe(() => this.deps.hasPendingDecision(workspaceId), false)) return;
+    // A brain blocked on a decision is normally never woken — EXCEPT the narrow
+    // WP3 re-examine: a STALE pending decision gets one bounded re-examine wake
+    // (which bypasses the wake block) so a decision can't wedge the loop forever.
+    // Either way a pending decision stops here — it never falls through to a
+    // normal snapshot flush, so the bypass can't leak to ordinary wakes.
+    if (this.safe(() => this.deps.hasPendingDecision(workspaceId), false)) {
+      this.maybeReExamineStaleDecision(workspaceId, now);
+      return;
+    }
     // Recently woken → the last wake already surfaced current state.
     const last = this.safe(() => this.deps.lastWakeAt(workspaceId), null);
     if (last !== null && now - last < this.deps.intervalMs) return;
@@ -121,6 +148,32 @@ export class DeckHeartbeat {
     // wakes only if worthy. Never-throw: a flush error must not abort the pass.
     this.safe(() => {
       this.deps.flushSnapshot(workspaceId, snapshot);
+      return undefined;
+    }, undefined);
+  }
+
+  /** WP3 — a workspace with a pending decision landed here. If that decision is
+   *  STALE (older than decisionTtlMs) and the debounce allows, fire ONE
+   *  re-examine wake. The re-examine bypasses the pending-decision wake block
+   *  (that is its whole purpose); the debounce keeps it to at most one re-ping
+   *  per TTL interval per decision id (and re-pings immediately when the id
+   *  changes — the brain re-raised a sharper question). Best-effort: any missing
+   *  dep leaves the decision blocking exactly as before. */
+  private maybeReExamineStaleDecision(workspaceId: string, now: number): void {
+    const ttl = this.deps.decisionTtlMs ?? 0;
+    if (!(ttl > 0) || !this.deps.getDecision || !this.deps.reExamineDecision) return;
+    const decision = this.safe(() => this.deps.getDecision?.(workspaceId) ?? null, null);
+    if (!decision || decision.status !== 'pending') return;
+    if (!isDecisionStale(decision, ttl, now)) return;
+    // Debounce: skip if we already re-pinged THIS decision id within the last TTL
+    // window. A different id (re-raised question) resets the debounce; the
+    // staleness gate above then holds off the next re-ping until the new
+    // decision itself ages past the TTL.
+    const last = this.reExaminedAt.get(workspaceId);
+    if (last && last.id === decision.id && now - last.at < ttl) return;
+    this.reExaminedAt.set(workspaceId, { id: decision.id, at: now });
+    this.safe(() => {
+      this.deps.reExamineDecision?.(workspaceId, decision);
       return undefined;
     }, undefined);
   }

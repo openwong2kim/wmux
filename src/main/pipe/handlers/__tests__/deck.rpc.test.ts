@@ -16,6 +16,33 @@ import {
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
 
+// WP3 self-resolve gate reads three stores (mode / heartbeat TTL / decision).
+// Mock the two config stores and the decision read/write; keep the pure helpers
+// (isDecisionStale, renderDecisionBlock, raiseDecision) real via importActual so
+// the gate's staleness math and requestDecision keep exercising real code.
+type Decision = import('../../../deck/deckDecisionStore').WorkspaceDecision;
+const { modeMock, ttlMock, decisionRef, resolveDecisionMock } = vi.hoisted(() => ({
+  modeMock: vi.fn<() => 'off' | 'assist' | 'auto'>(() => 'auto'),
+  ttlMock: vi.fn<() => number>(() => 30 * 60_000),
+  decisionRef: { current: null as Decision | null },
+  resolveDecisionMock: vi.fn(),
+}));
+vi.mock('../../../deck/deckAutonomyStore', () => ({
+  loadWorkspaceMode: (_ws: string) => modeMock(),
+}));
+vi.mock('../../../deck/deckHeartbeatStore', () => ({
+  loadDeckHeartbeat: () => ({ enabled: true, intervalMs: 180_000, decisionTtlMs: ttlMock() }),
+}));
+vi.mock('../../../deck/deckDecisionStore', async (orig) => {
+  const actual = await orig<typeof import('../../../deck/deckDecisionStore')>();
+  return {
+    ...actual,
+    loadWorkspaceDecision: (_ws: string) => decisionRef.current,
+    resolveDecision: (ws: string, id: string, resolution: string) =>
+      resolveDecisionMock(ws, id, resolution),
+  };
+});
+
 const fakeWindow = {} as BrowserWindow;
 
 function setup(): RpcRouter {
@@ -171,5 +198,116 @@ describe('deck.resolveCommanderWorkspace', () => {
       params: { token },
     });
     expect(res.ok).toBe(false);
+  });
+});
+
+// deck.resolveDecision — the WP3 brain self-resolve of a STALE pending decision.
+// Server-enforced 3-condition gate: mode must be 'auto', the decision must be
+// stale (age > TTL), and the resolution must be substantive (>= 20 chars). Each
+// failing condition alone rejects with its OWN error string.
+describe('deck.resolveDecision (WP3 self-resolve gate)', () => {
+  const TTL = 30 * 60_000;
+  const GOOD_RESOLUTION = 'Per CLAUDE.md: PRs never bump the version, so no bump.';
+
+  const stalePending = (id = 'dec-1'): Decision => ({
+    id,
+    question: 'Bump version?',
+    options: [],
+    context: '',
+    status: 'pending',
+    raisedAt: Date.now() - TTL - 60_000, // an hour-ish old → stale
+  });
+
+  const resolve = (
+    router: RpcRouter,
+    params: Record<string, unknown>,
+  ): Promise<{ ok: boolean; result?: unknown; error?: unknown }> =>
+    router.dispatch({ id: '1', method: 'deck.resolveDecision', params }) as Promise<{
+      ok: boolean;
+      result?: unknown;
+      error?: unknown;
+    }>;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    __resetCommanderTrustForTesting();
+    // Restore the "all conditions pass" defaults after clearAllMocks.
+    modeMock.mockReturnValue('auto');
+    ttlMock.mockReturnValue(TTL);
+    decisionRef.current = stalePending();
+    resolveDecisionMock.mockImplementation(
+      async (_ws: string, id: string, resolution: string) => {
+        const cur = decisionRef.current;
+        if (!cur || cur.id !== id || cur.status !== 'pending') return null;
+        const next: Decision = { ...cur, status: 'resolved', resolution, resolvedAt: Date.now() };
+        decisionRef.current = next;
+        return next;
+      },
+    );
+  });
+
+  it('resolves when ALL three conditions hold, and the pending clears', async () => {
+    const token = mintCommanderToken('ws-1');
+    const res = await resolve(setup(), { token, id: 'dec-1', resolution: GOOD_RESOLUTION });
+    expect(res.ok).toBe(true);
+    expect((res.result as { ok: boolean; id: string })).toEqual({ ok: true, id: 'dec-1' });
+    expect(resolveDecisionMock).toHaveBeenCalledWith('ws-1', 'dec-1', GOOD_RESOLUTION);
+    expect(decisionRef.current?.status).toBe('resolved');
+  });
+
+  it('rejects a non-auto workspace with mode_not_auto (mode condition alone)', async () => {
+    modeMock.mockReturnValue('assist');
+    const token = mintCommanderToken('ws-1');
+    const res = await resolve(setup(), { token, id: 'dec-1', resolution: GOOD_RESOLUTION });
+    expect((res.result as { ok: boolean; error: string })).toEqual({
+      ok: false,
+      error: 'mode_not_auto',
+    });
+    expect(resolveDecisionMock).not.toHaveBeenCalled();
+    expect(decisionRef.current?.status).toBe('pending');
+  });
+
+  it('rejects a fresh (not-yet-stale) decision with not_stale (age condition alone)', async () => {
+    decisionRef.current = { ...stalePending(), raisedAt: Date.now() }; // age ~0
+    const token = mintCommanderToken('ws-1');
+    const res = await resolve(setup(), { token, id: 'dec-1', resolution: GOOD_RESOLUTION });
+    expect((res.result as { ok: boolean; error: string })).toEqual({
+      ok: false,
+      error: 'not_stale',
+    });
+    expect(resolveDecisionMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a too-short resolution with insufficient_basis (substance condition alone)', async () => {
+    const token = mintCommanderToken('ws-1');
+    const res = await resolve(setup(), { token, id: 'dec-1', resolution: 'yes' });
+    expect((res.result as { ok: boolean; error: string })).toEqual({
+      ok: false,
+      error: 'insufficient_basis',
+    });
+    expect(resolveDecisionMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a mismatched / absent pending decision id with not_pending', async () => {
+    const token = mintCommanderToken('ws-1');
+    const wrongId = await resolve(setup(), { token, id: 'other', resolution: GOOD_RESOLUTION });
+    expect((wrongId.result as { error: string }).error).toBe('not_pending');
+
+    decisionRef.current = null;
+    const none = await resolve(setup(), { token, id: 'dec-1', resolution: GOOD_RESOLUTION });
+    expect((none.result as { error: string }).error).toBe('not_pending');
+  });
+
+  it('throws (fails closed) without a live commander token', async () => {
+    const token = mintCommanderToken('ws-1');
+    const router = setup();
+    for (const params of [
+      { id: 'dec-1', resolution: GOOD_RESOLUTION }, // no token
+      { token: 'guessed', id: 'dec-1', resolution: GOOD_RESOLUTION },
+      { token, id: '', resolution: GOOD_RESOLUTION }, // live token but missing id
+    ]) {
+      const res = await resolve(router, params);
+      expect(res.ok).toBe(false);
+    }
   });
 });

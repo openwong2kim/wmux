@@ -112,6 +112,10 @@ export const FIRST_PARTY_METHODS: ReadonlySet<RpcMethod> = new Set<RpcMethod>([
   // commander-brain decision gate (deck_ask_decision tool). Same per-spawn-token
   // auth; a non-commander caller has no token and fails closed.
   'deck.requestDecision',
+  // commander-brain self-resolve of a STALE decision (deck_resolve_decision tool,
+  // WP3). Same per-spawn-token auth; the handler server-enforces auto-mode +
+  // staleness + substance, so a non-commander or premature caller fails closed.
+  'deck.resolveDecision',
   // events
   'events.poll',
   // browser (Playwright + packaged CDP/RPC fallbacks)

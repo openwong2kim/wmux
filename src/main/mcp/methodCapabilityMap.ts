@@ -263,6 +263,9 @@ export const METHOD_CAPABILITY: Record<RpcMethod, RequiredCapability> = {
   // Brain-raised decision gate. Carries its OWN commander-token auth
   // (deck.rpc.ts), so no capability gate — same posture as the deck.resolve* pair.
   'deck.requestDecision': { capability: null },
+  // Brain self-resolve of a stale decision (WP3). Same commander-token auth +
+  // server-side auto/staleness/substance gate, so no capability gate either.
+  'deck.resolveDecision': { capability: null },
 
   // --- Browser (Playwright). Plugins declaring these get the browser
   //     risk-class prompt; all are gated against KNOWN_CAPABILITIES entries.

@@ -10,8 +10,11 @@ import {
   loadWorkspaceDecision,
   hasPendingDecision,
   renderDecisionBlock,
+  renderStaleDecisionBlock,
+  isDecisionStale,
   getDeckDecisionPath,
   DECISION_LIMITS,
+  type WorkspaceDecision,
 } from '../deckDecisionStore';
 
 let dir: string;
@@ -131,5 +134,87 @@ describe('deckDecisionStore', () => {
     const p = (await raiseDecision('ws-2', { question: 'P?' }, dir))!;
     await clearResolvedDecision('ws-2', p.id, dir);
     expect(hasPendingDecision('ws-2', dir)).toBe(true);
+  });
+
+  it('renderDecisionBlock output is byte-identical to the pre-WP3 wording (no drift for existing callers)', async () => {
+    // The stale variant is a SIBLING — the plain pending/resolved output must not
+    // have shifted, or withLoopContext / the UI hydrate would see different text.
+    const d = (await raiseDecision('ws-1', { question: 'Ship it?', options: ['yes', 'no'], context: 'why' }, dir))!;
+    expect(renderDecisionBlock(d)).toBe(
+      [
+        '[decision] BLOCKED — you are waiting on a human decision and must NOT proceed:',
+        '  Ship it?',
+        '  options: yes | no',
+        '  context: why',
+        'Do not act until the human resolves this. If they just messaged you, they may be answering — otherwise wait.',
+      ].join('\n'),
+    );
+  });
+});
+
+describe('isDecisionStale', () => {
+  const pending = (raisedAt: number): WorkspaceDecision => ({
+    id: 'd1',
+    question: 'Q?',
+    options: [],
+    context: '',
+    status: 'pending',
+    raisedAt,
+  });
+
+  it('is false before the TTL elapses and true strictly after', () => {
+    const ttl = 30 * 60_000;
+    const d = pending(1_000_000);
+    expect(isDecisionStale(d, ttl, 1_000_000)).toBe(false); // age 0
+    expect(isDecisionStale(d, ttl, 1_000_000 + ttl)).toBe(false); // exactly TTL — not yet stale
+    expect(isDecisionStale(d, ttl, 1_000_000 + ttl + 1)).toBe(true); // one ms past
+  });
+
+  it('a resolved decision is never stale', () => {
+    const d: WorkspaceDecision = { ...pending(0), status: 'resolved', resolution: 'x', resolvedAt: 1 };
+    expect(isDecisionStale(d, 1_000, 10_000_000)).toBe(false);
+  });
+
+  it('a non-positive / non-finite TTL is never stale (guards a misconfigured 0)', () => {
+    expect(isDecisionStale(pending(0), 0, 10_000_000)).toBe(false);
+    expect(isDecisionStale(pending(0), Number.NaN, 10_000_000)).toBe(false);
+  });
+
+  it('a raisedAt of 0 (lost clock) reads as stale immediately (conservative)', () => {
+    expect(isDecisionStale(pending(0), 30 * 60_000, 30 * 60_000 + 1)).toBe(true);
+  });
+});
+
+describe('renderStaleDecisionBlock', () => {
+  const base: WorkspaceDecision = {
+    id: 'dec-42',
+    question: 'Force-push to main?',
+    options: ['yes', 'no'],
+    context: 'CI is red',
+    status: 'pending',
+    raisedAt: 0,
+  };
+
+  it('auto mode carries the self-resolve instruction and the id', () => {
+    const out = renderStaleDecisionBlock(base, { ttlMinutes: 30, mode: 'auto' });
+    expect(out).toContain('STALE');
+    expect(out).toContain('30+ minutes');
+    expect(out).toContain('Force-push to main?');
+    expect(out).toContain('options: yes | no');
+    expect(out).toContain('id: dec-42');
+    expect(out).toContain('deck_resolve_decision');
+    expect(out).toContain('AUTO mode');
+  });
+
+  it('assist mode does NOT offer self-resolve (restate/wait only)', () => {
+    const out = renderStaleDecisionBlock(base, { ttlMinutes: 30, mode: 'assist' });
+    expect(out).toContain('STALE');
+    expect(out).not.toContain('deck_resolve_decision');
+    expect(out).toContain('may NOT resolve this yourself');
+  });
+
+  it('off mode also withholds self-resolve', () => {
+    const out = renderStaleDecisionBlock(base, { ttlMinutes: 30, mode: 'off' });
+    expect(out).not.toContain('deck_resolve_decision');
   });
 });

@@ -28,6 +28,7 @@ import { randomUUID } from 'node:crypto';
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
 import { atomicReadJSONSync, atomicWriteJSON } from '../../daemon/util/atomicWrite';
+import type { AgentMode } from './deckAutonomyStore';
 
 export type DecisionStatus = 'pending' | 'resolved';
 
@@ -304,5 +305,72 @@ export function renderDecisionBlock(d: WorkspaceDecision): string {
   parts.push(
     'Do not act until the human resolves this. If they just messaged you, they may be answering — otherwise wait.',
   );
+  return parts.join('\n');
+}
+
+/**
+ * Is this PENDING decision STALE — has it sat unanswered longer than `ttlMs`?
+ * Pure and clock-injectable (WP3 heartbeat re-examine gate). A resolved decision
+ * is never stale (there is nothing to re-examine); a decision with a
+ * missing/zero raisedAt (0, the sanitize fallback) counts its age from the epoch
+ * and so reads as stale immediately — the conservative choice, since a pending
+ * decision with no timestamp has been around long enough that we lost its clock.
+ */
+export function isDecisionStale(
+  d: WorkspaceDecision,
+  ttlMs: number,
+  now: number = Date.now(),
+): boolean {
+  if (d.status !== 'pending') return false;
+  if (!Number.isFinite(ttlMs) || ttlMs <= 0) return false;
+  return now - d.raisedAt > ttlMs;
+}
+
+/**
+ * Render the STALE re-examine variant of a pending decision block (WP3). Unlike
+ * renderDecisionBlock's plain "BLOCKED — wait" pending text, this tells the brain
+ * the decision has gone unanswered for N+ minutes and it must re-examine NOW:
+ *
+ *   - in `auto` mode, if a BINDING policy rule / standing convention settles the
+ *     question, it may resolve its OWN decision via deck_resolve_decision({id,
+ *     resolution}) — citing that rule — and proceed;
+ *   - in any mode it may instead re-raise a sharper question (deck_ask_decision,
+ *     which replaces this one) or keep waiting;
+ *   - under assist/off it may NOT self-resolve (server-enforced) — restate/improve
+ *     only.
+ *
+ * Trusted context (the brain's own decision), prepended to the re-examine turn.
+ * Kept SEPARATE from renderDecisionBlock so that function's output stays
+ * byte-identical for its existing callers (withLoopContext, the UI hydrate).
+ */
+export function renderStaleDecisionBlock(
+  d: WorkspaceDecision,
+  opts: { ttlMinutes: number; mode: AgentMode },
+): string {
+  const mins = Math.max(1, Math.round(opts.ttlMinutes));
+  const parts = [
+    `[decision] STALE — this decision you raised has been PENDING for ${mins}+ minutes ` +
+      'with no human answer. Re-examine it NOW:',
+    `  ${d.question}`,
+  ];
+  if (d.options.length > 0) parts.push(`  options: ${d.options.join(' | ')}`);
+  if (d.context) parts.push(`  context: ${d.context}`);
+  parts.push(`  id: ${d.id}`);
+  if (opts.mode === 'auto') {
+    parts.push(
+      'You are in AUTO mode. If a BINDING policy rule or a standing convention actually ' +
+        'settles this question, resolve it YOURSELF: call ' +
+        'deck_resolve_decision({ id, resolution }) with the resolution STATING the rule/basis ' +
+        'that settles it, then act on it and proceed. If NOTHING settles it, either re-raise a ' +
+        'sharper question with deck_ask_decision (which replaces this one) or keep waiting — do ' +
+        'NOT invent an answer just to unblock yourself.',
+    );
+  } else {
+    parts.push(
+      'You may NOT resolve this yourself in this mode — only the human can. Either re-raise a ' +
+        'sharper, better-framed question with deck_ask_decision (which replaces this one) so the ' +
+        'human has what they need, or keep waiting. Do not act on the question until it is resolved.',
+    );
+  }
   return parts.join('\n');
 }

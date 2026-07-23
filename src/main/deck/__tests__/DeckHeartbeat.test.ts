@@ -8,6 +8,7 @@ import { describe, it, expect, vi } from 'vitest';
 import { DeckHeartbeat, type DeckHeartbeatDeps } from '../DeckHeartbeat';
 import { CommanderEventCoalescer } from '../CommanderEventCoalescer';
 import type { WorkspaceAutonomy } from '../deckAutonomyStore';
+import type { WorkspaceDecision } from '../deckDecisionStore';
 import type { FleetSnapshot } from '../../../shared/workspaceMirror';
 
 const INTERVAL = 180_000;
@@ -157,6 +158,114 @@ describe('DeckHeartbeat — timer lifecycle', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+});
+
+describe('DeckHeartbeat — WP3 stale-decision re-examine', () => {
+  const TTL = 30 * 60_000;
+  const NOW = 10_000_000;
+
+  const pending = (raisedAt: number, id = 'd1'): WorkspaceDecision => ({
+    id,
+    question: 'Q?',
+    options: [],
+    context: '',
+    status: 'pending',
+    raisedAt,
+  });
+
+  /** Deps for the re-examine path: a pending decision gate is present, and the
+   *  WP3 seams (getDecision / decisionTtlMs / reExamineDecision) are wired. The
+   *  snapshot flush must NEVER fire on this path (the pending gate stops before
+   *  it), so we assert on `reExamine` and keep `flush` as a leak sentinel. */
+  function makeReExamineDeps(over: Partial<DeckHeartbeatDeps> = {}): {
+    deps: DeckHeartbeatDeps;
+    reExamine: ReturnType<typeof vi.fn>;
+    flush: ReturnType<typeof vi.fn>;
+  } {
+    const reExamine = vi.fn();
+    const flush = vi.fn();
+    const deps: DeckHeartbeatDeps = {
+      getWorkspaceIds: () => ['ws-1'],
+      getAutonomy: () => autonomy('auto'),
+      isBusy: () => false,
+      hasPendingDecision: () => true,
+      getFleetSnapshot: () => attentionSnapshot(),
+      flushSnapshot: flush,
+      lastWakeAt: () => null,
+      isEnabled: () => true,
+      intervalMs: INTERVAL,
+      now: () => NOW,
+      getDecision: () => pending(NOW - TTL - 1), // stale by 1ms
+      decisionTtlMs: TTL,
+      reExamineDecision: reExamine,
+      ...over,
+    };
+    return { deps, reExamine, flush };
+  }
+
+  it('fires a re-examine (and NOT a snapshot flush) for a stale pending decision', () => {
+    const { deps, reExamine, flush } = makeReExamineDeps();
+    new DeckHeartbeat(deps).tick();
+    expect(reExamine).toHaveBeenCalledTimes(1);
+    expect(reExamine).toHaveBeenCalledWith('ws-1', expect.objectContaining({ id: 'd1' }));
+    // Bypass does NOT leak into the ordinary snapshot wake.
+    expect(flush).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-examine a pending decision that is not yet stale', () => {
+    const { deps, reExamine } = makeReExamineDeps({ getDecision: () => pending(NOW - TTL + 1) });
+    new DeckHeartbeat(deps).tick();
+    expect(reExamine).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-examine when there is no decision (defensive — gate said pending)', () => {
+    const { deps, reExamine } = makeReExamineDeps({ getDecision: () => null });
+    new DeckHeartbeat(deps).tick();
+    expect(reExamine).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-examine when the TTL is unset (feature off)', () => {
+    const { deps, reExamine } = makeReExamineDeps({ decisionTtlMs: 0 });
+    new DeckHeartbeat(deps).tick();
+    expect(reExamine).not.toHaveBeenCalled();
+  });
+
+  it('does NOT re-examine a busy or off workspace (gated before the decision check)', () => {
+    const busy = makeReExamineDeps({ isBusy: () => true });
+    new DeckHeartbeat(busy.deps).tick();
+    expect(busy.reExamine).not.toHaveBeenCalled();
+
+    const off = makeReExamineDeps({ getAutonomy: () => autonomy('off') });
+    new DeckHeartbeat(off.deps).tick();
+    expect(off.reExamine).not.toHaveBeenCalled();
+  });
+
+  it('debounces: at most one re-ping per TTL for the same decision id, re-firing after another TTL', () => {
+    let now = NOW;
+    const { deps, reExamine } = makeReExamineDeps({ now: () => now });
+    const hb = new DeckHeartbeat(deps);
+    hb.tick();
+    expect(reExamine).toHaveBeenCalledTimes(1); // stale → fires
+    now += TTL - 1;
+    hb.tick();
+    expect(reExamine).toHaveBeenCalledTimes(1); // within the same TTL window → suppressed
+    now += 2; // now > NOW + TTL since last re-ping
+    hb.tick();
+    expect(reExamine).toHaveBeenCalledTimes(2); // TTL elapsed → re-fires
+  });
+
+  it('re-fires immediately when the decision id changes (brain re-raised a sharper question)', () => {
+    let decision = pending(NOW - TTL - 1, 'd1');
+    const { deps, reExamine } = makeReExamineDeps({ getDecision: () => decision });
+    const hb = new DeckHeartbeat(deps);
+    hb.tick();
+    expect(reExamine).toHaveBeenCalledTimes(1);
+    // A re-raise: a NEW id, also already older than the TTL (raisedAt back-dated).
+    decision = pending(NOW - TTL - 1, 'd2');
+    hb.tick();
+    expect(reExamine).toHaveBeenCalledTimes(2);
+    expect(reExamine).toHaveBeenLastCalledWith('ws-1', expect.objectContaining({ id: 'd2' }));
   });
 });
 

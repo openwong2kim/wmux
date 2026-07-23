@@ -118,6 +118,7 @@ export const COMMANDER_RPC_METHODS: ReadonlySet<string> = new Set<string>([
   'deck.resolvePaneRoute',
   'deck.resolveCommanderWorkspace',
   'deck.requestDecision',
+  'deck.resolveDecision',
   // events
   'events.poll',
   // agent-to-agent + channels + missions
