@@ -11,6 +11,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **Install instructions now lead with the package manager.** The README's Windows install section puts `winget install openwong2kim.wmux` front and center with a clear note that it avoids the SmartScreen warning — the direct Setup.exe download is demoted to a secondary "offline install" path with an explicit note about why the warning appears (the installer isn't Authenticode-signed yet).
 
+### Fixed
+
+- **Detached terminal sessions are no longer leaked forever and re-spawned on every daemon restart.** A pane you close (or a client that disconnects) leaves its shell running in a `detached` state — alive, but with no client watching. These were never garbage-collected: the reaper gave `dead` and `suspended` sessions a TTL but let `detached` live indefinitely, and because the 30 s snapshot writes them to `sessions.json` verbatim, a daemon crash or forced kill left the records on disk. Every restart then re-spawned a fresh shell for each one and reset its activity clock, so the orphans could never age out — only `maxSessions` (200) would eventually block *new* terminals instead of reaping old ones. On a long-running machine this accumulated dozens of orphaned shells (one report: 40 `powershell.exe` processes holding ~3.3 GB). Idle detached sessions now honor a `session.detachedTtlHours` TTL (default 8 h — survives a workday gap, kills overnight orphans): stale records are pruned on load *before* recovery iterates, so a restart now self-heals the fleet instead of growing it, and the hourly runtime reaper kills shells that have gone silent while detached. Activity is tracked by real PTY output, so a detached session that's actually busy (a running build, `tail -f`) is never reaped — only truly idle ones. Recovery also preserves the original `lastActivity` instead of stamping `now`, so the TTL can actually fire across restarts. (#557)
+
 ## [3.31.0] — 2026-07-22
 
 ### Added

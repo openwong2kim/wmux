@@ -46,6 +46,12 @@ const MAX_SESSIONS_FLOOR = 1;
 const MAX_SESSIONS_CAP = 10_000;
 const SUSPENDED_TTL_FLOOR_HOURS = 1;
 const SUSPENDED_TTL_CAP_HOURS = 24 * 365; // 1 year — "permanent" = large, not 0
+// Detached TTL bounds — same discipline as suspended. A floor of 1 h keeps
+// an aggressively-set value from reaping a session mid-creation (create →
+// detached → attach is normally milliseconds, but a renderer stall could
+// widen that window). Cap mirrors suspended so "permanent" stays possible.
+const DETACHED_TTL_FLOOR_HOURS = 1;
+const DETACHED_TTL_CAP_HOURS = 24 * 365;
 const MEM_WARN_FLOOR_MB = 128;
 const MEM_REAP_FLOOR_MB = 192;
 const MEM_BLOCK_FLOOR_MB = 256;
@@ -101,6 +107,11 @@ export function createDefaultConfig(): DaemonConfig {
       deadSessionDumpBuffer: true,
       maxSessions: 200,
       suspendedTtlHours: 7 * 24,
+      // Idle detached shells (closed pane, no client) reaped after 8 h of
+      // inactivity — survives a workday gap, kills overnight orphans (#557).
+      // lastActivity is bumped on PTY output, so an active detached session
+      // (e.g. a running build) never hits this.
+      detachedTtlHours: 8,
     },
     // LanLink control plane (PR-3) — OFF by default, explicit opt-in. NIC null
     // until the user selects one; port omitted (PR-4 picks a default).
@@ -174,6 +185,10 @@ export function loadConfig(): DaemonConfig {
     config.session.suspendedTtlHours = clampLifecycle(
       config.session.suspendedTtlHours, defaults.session.suspendedTtlHours,
       SUSPENDED_TTL_FLOOR_HOURS, SUSPENDED_TTL_CAP_HOURS,
+    );
+    config.session.detachedTtlHours = clampLifecycle(
+      config.session.detachedTtlHours, defaults.session.detachedTtlHours,
+      DETACHED_TTL_FLOOR_HOURS, DETACHED_TTL_CAP_HOURS,
     );
     // app-weight P1 idle-CPU knobs — same per-field backfill + clamp.
     config.daemon.livenessIntervalSec = clampLifecycle(

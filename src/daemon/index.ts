@@ -763,18 +763,19 @@ async function recoverSessions(
           try {
             recovered = sessionManager.createSession({
               id: session.id,
-              cmd: session.cmd,
-              cwd,
-              env: session.env,
-              cols: session.cols,
-              rows: session.rows,
-              agent: session.agent,
-              createdAt: session.createdAt,
-              deadTtlHours: session.deadTtlHours,
-              // X8: replay the exec unit + supervision policy — for an exec
-              // session this relaunches the supervised command itself (the
-              // reboot-survival story), not an empty shell.
-              exec: session.exec,
+            cmd: session.cmd,
+            cwd,
+            env: session.env,
+            cols: session.cols,
+            rows: session.rows,
+            agent: session.agent,
+            createdAt: session.createdAt,
+            lastActivity: session.lastActivity,
+            deadTtlHours: session.deadTtlHours,
+            // X8: replay the exec unit + supervision policy — for an exec
+            // session this relaunches the supervised command itself (the
+            // reboot-survival story), not an empty shell.
+            exec: session.exec,
               // X6: if the exec unit is an agent, resume its conversation
               // (non-persisted launch command; meta.exec.command stays original).
               execLaunchCommand: resumeLaunchCommand(session, spoolBindings.get(session.id)),
@@ -855,6 +856,7 @@ async function recoverSessions(
             rows: session.rows,
             agent: session.agent,
             createdAt: session.createdAt,
+            lastActivity: session.lastActivity,
             deadTtlHours: session.deadTtlHours,
             // X8: replay exec unit + supervision (see suspended path above).
             exec: session.exec,
@@ -899,6 +901,7 @@ async function recoverSessions(
           rows: session.rows,
           agent: session.agent,
           createdAt: session.createdAt,
+          lastActivity: session.lastActivity,
           deadTtlHours: session.deadTtlHours,
           // X8: replay exec unit + supervision (see suspended path above).
           exec: session.exec,
@@ -3234,7 +3237,7 @@ async function main(): Promise<void> {
   // Thread the configured suspended-tombstone TTL into the authoritative
   // StateWriter (codex #2). The acquireLock() one-shot above runs pre-config
   // and only reads bootId, so the default there is harmless.
-  const stateWriter = new StateWriter(wmuxDir, config.session.suspendedTtlHours);
+  const stateWriter = new StateWriter(wmuxDir, config.session.suspendedTtlHours, config.session.detachedTtlHours);
   // LanLink PR-2 — durable inbound inbox (remote peer messages). Daemon-owned
   // so it survives main/renderer death (C3). Lives next to sessions.json under
   // the same suffix-aware wmuxDir; every append is synchronous + fsync'd.
@@ -3892,18 +3895,33 @@ async function main(): Promise<void> {
   const reapInterval = setInterval(() => {
     let reaped = 0;
     for (const managed of sessionManager.listManagedSessions()) {
-      if (managed.meta.state !== 'dead') continue;
-      const deadSince = new Date(managed.meta.lastActivity).getTime();
-      const ttlMs = managed.meta.deadTtlHours * 60 * 60 * 1000;
-      if (Date.now() - deadSince >= ttlMs) {
-        const bufPath = stateWriter.getBufferDumpPath(managed.meta.id);
-        try { if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath); } catch { /* ignore */ }
-        sessionManager.destroySession(managed.meta.id);
-        reaped++;
+      if (managed.meta.state === 'dead') {
+        const deadSince = new Date(managed.meta.lastActivity).getTime();
+        const ttlMs = managed.meta.deadTtlHours * 60 * 60 * 1000;
+        if (Date.now() - deadSince >= ttlMs) {
+          const bufPath = stateWriter.getBufferDumpPath(managed.meta.id);
+          try { if (fs.existsSync(bufPath)) fs.unlinkSync(bufPath); } catch { /* ignore */ }
+          sessionManager.destroySession(managed.meta.id);
+          reaped++;
+        }
+        continue;
+      }
+      // #557: also reap idle DETACHED sessions (no client attached, shell still
+      // alive) past config.session.detachedTtlHours. lastActivity is bumped on
+      // PTY output, so this only catches shells that have gone silent while
+      // detached — an active detached session (running build) is never touched.
+      // `attached` is never reaped here: a client is connected and in use.
+      if (managed.meta.state === 'detached') {
+        const idleSince = new Date(managed.meta.lastActivity).getTime();
+        const ttlMs = config.session.detachedTtlHours * 60 * 60 * 1000;
+        if (Date.now() - idleSince >= ttlMs) {
+          sessionManager.destroySession(managed.meta.id);
+          reaped++;
+        }
       }
     }
     if (reaped > 0) {
-      log('info', `Reaped ${reaped} expired dead session(s)`);
+      log('info', `Reaped ${reaped} expired session(s)`);
       const state = buildState(sessionManager);
       stateWriter.saveImmediate(state);
     }

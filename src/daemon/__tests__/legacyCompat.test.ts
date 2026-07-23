@@ -115,8 +115,9 @@ describe('T14 — legacy data compatibility', () => {
       expect(loaded.version).toBe(1);
       expect(Array.isArray(loaded.sessions)).toBe(true);
       // The fixture contains two sessions: one detached, one attached.
-      // `attached` is not pruned (only `dead` sessions are age-checked
-      // in StateWriter.load), so both survive the prune pass.
+      // Both survive the prune pass — `attached` is never TTL-reaped, and
+      // the detached session's lastActivity is recent (within the 8 h
+      // detached TTL), so it survives too. See #557.
       const ids = loaded.sessions.map((s) => s.id);
       expect(ids).toContain('sess-legacy-primary');
       expect(ids).toContain('sess-legacy-attached');
