@@ -536,6 +536,14 @@ const electronAPI = {
       return () => { ipcRenderer.removeListener(IPC.DECK_STREAM, listener); };
     },
   },
+  // WorkspaceMirror push — fire-and-forget full snapshot of the workspace tree +
+  // per-pane agent status. Keeps the main-process mirror warm so routing / hook
+  // resolution is served locally instead of via a `workspace.list` round-trip
+  // (see main/workspace/WorkspaceMirror.ts). Snapshot-only; never read by the UI.
+  workspaceMirror: {
+    push: (payload: import('../shared/workspaceMirror').WorkspaceMirrorPushPayload) =>
+      ipcRenderer.send(IPC.WORKSPACE_MIRROR_PUSH, payload),
+  },
   browser: {
     registerWebview: (surfaceId: string, webContentsId: number) =>
       ipcRenderer.invoke('browser:register-webview', surfaceId, webContentsId),

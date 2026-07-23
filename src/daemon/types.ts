@@ -139,10 +139,20 @@ export interface DaemonConfig {
      * TTL in hours after which an idle SUSPENDED session tombstone is
      * garbage-collected on the next `StateWriter.load`. This is GC of a
      * tombstone (no live PTY behind it), not eviction of a live session.
-     * "Permanent" retention = a large value, never 0. Backfilled from the
-     * default when absent/garbage.
+     * "Permanent" retention = a large value, never 0. Backfilled from
+     * the default when absent/garbage.
      */
     suspendedTtlHours: number;
+    /**
+     * TTL in hours after which an idle DETACHED session (no client
+     * attached, shell still alive) is reaped — PTY killed and record
+     * removed. Activity is tracked via `lastActivity`, which is bumped on
+     * PTY output, so a detached session actively producing output (e.g. a
+     * long build) is never reaped; only truly idle unattached shells age
+     * out. "Permanent" retention = a large value, never 0. Backfilled from
+     * the default when absent/garbage. See #557.
+     */
+    detachedTtlHours: number;
   };
   /**
    * LanLink control-plane state (PR-3). OPTIONAL — old config.json files predate

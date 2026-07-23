@@ -212,19 +212,113 @@ describe('StateWriter', () => {
       state: 'suspended',
       lastActivity: new Date(now - 6 * 24 * HOUR).toISOString(),
     });
-    // Live sessions and detached ones should never be touched by TTL.
-    const detached = makeSession({ id: 'detached', state: 'detached' });
+    // Live attached sessions should never be touched by TTL — a client is
+    // connected and the session is in active use.
     const attached = makeSession({ id: 'attached', state: 'attached' });
 
-    writer.saveImmediate(makeState([stale, fresh, detached, attached]));
+    writer.saveImmediate(makeState([stale, fresh, attached]));
 
     const loaded = writer.load();
     const ids = loaded.sessions.map((s) => s.id);
 
     expect(ids).not.toContain('stale-suspended');
     expect(ids).toContain('fresh-suspended');
-    expect(ids).toContain('detached');
     expect(ids).toContain('attached');
+  });
+
+  it('load prunes DETACHED sessions past the detached TTL (#557)', () => {
+    // A crash/forced-kill leaves detached records on disk (the 30 s snapshot
+    // runner writes listSessions() verbatim). Without a detached TTL these
+    // accumulated forever and were re-spawned on every restart. Default TTL
+    // is 8 h; a stale orphan (10 h idle) must be pruned before recovery runs.
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    const stale = makeSession({
+      id: 'stale-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 10 * HOUR).toISOString(),
+    });
+    const fresh = makeSession({
+      id: 'fresh-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 1 * HOUR).toISOString(),
+    });
+    // Attached is never TTL-reaped regardless of age.
+    const attached = makeSession({
+      id: 'old-attached',
+      state: 'attached',
+      lastActivity: new Date(now - 30 * 24 * HOUR).toISOString(),
+    });
+
+    writer.saveImmediate(makeState([stale, fresh, attached]));
+
+    const loaded = writer.load();
+    const ids = loaded.sessions.map((s) => s.id);
+
+    expect(ids).not.toContain('stale-detached');
+    expect(ids).toContain('fresh-detached');
+    expect(ids).toContain('old-attached');
+  });
+
+  it('honours a custom detachedTtlHours from the constructor (#557)', () => {
+    // A writer configured with a 2 h detached TTL instead of the 8 h default.
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    const customWriter = new StateWriter(tmpDir, 7 * 24, 2);
+    const stale = makeSession({
+      id: 'stale-3h',
+      state: 'detached',
+      lastActivity: new Date(now - 3 * HOUR).toISOString(), // 3h > 2h → pruned
+    });
+    const fresh = makeSession({
+      id: 'fresh-1h',
+      state: 'detached',
+      lastActivity: new Date(now - 1 * HOUR).toISOString(), // 1h < 2h → survives
+    });
+    customWriter.saveImmediate(makeState([stale, fresh]));
+
+    const ids = customWriter.load().sessions.map((s) => s.id);
+    expect(ids).not.toContain('stale-3h');
+    expect(ids).toContain('fresh-1h');
+  });
+
+  it('load keeps an exec/supervised detached session past the detached TTL (#557)', () => {
+    // exec units (X8 reboot-survival) are intentionally long-lived unattached
+    // sessions that may sit silent for >8 h. The detached TTL must not reap
+    // them, or supervision breaks. A plain detached session of the same age IS
+    // pruned — proving the exemption is exec-specific, not TTL-wide.
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    const supervised = makeSession({
+      id: 'supervised-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 100 * HOUR).toISOString(),
+      exec: { command: 'node server.js' },
+    });
+    // supervision is an independent optional field: a supervised plain shell
+    // can carry supervision WITHOUT exec, and must be exempt too.
+    const supervisionOnly = makeSession({
+      id: 'supervision-only-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 100 * HOUR).toISOString(),
+      supervision: {
+        restart: 'on-failure',
+        limit: { burst: 5, healthyUptimeSec: 300 },
+        status: 'armed',
+      },
+    });
+    const plain = makeSession({
+      id: 'plain-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 100 * HOUR).toISOString(),
+    });
+
+    writer.saveImmediate(makeState([supervised, supervisionOnly, plain]));
+
+    const ids = writer.load().sessions.map((s) => s.id);
+    expect(ids).toContain('supervised-detached');
+    expect(ids).toContain('supervision-only-detached');
+    expect(ids).not.toContain('plain-detached');
   });
 
   it('load uses suspended TTL even when deadTtlHours is short', () => {

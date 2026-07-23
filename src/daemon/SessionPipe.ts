@@ -37,6 +37,15 @@ export class SessionPipe {
   private reflushInFlight = false;
   private connectionRate = { count: 0, resetAt: 0 };
 
+  /**
+   * Fired when the AUTHED client socket goes away (close or error) without a
+   * detach RPC — i.e. the GUI crashed / was force-killed. The daemon wires this
+   * to demote a stuck-'attached' session to 'detached' after a grace period so
+   * the TTL reaper can eventually age it out (#557). Never fires for pre-auth
+   * sockets (scanner/handshake churn).
+   */
+  onClientGone?: () => void;
+
   // A single session pipe is legitimately consumed by at most one renderer at a time.
   // Anything above this cap in a 1-second window is brute-force / scanner traffic.
   private static readonly MAX_NEW_CONNECTIONS_PER_SEC = 10;
@@ -197,6 +206,11 @@ export class SessionPipe {
 
   /** Whether a client is currently connected. */
   get isConnected(): boolean {
+    return this.client !== null && !this.client.destroyed;
+  }
+
+  /** Whether a client socket is currently held (used by the orphan-demote guard). */
+  hasClient(): boolean {
     return this.client !== null && !this.client.destroyed;
   }
 
@@ -473,6 +487,9 @@ export class SessionPipe {
       if (this.client === socket) {
         this.client = null;
         this.flushed = false;
+        // Notify only for an authed client that vanished without a detach RPC
+        // (GUI crash / kill). Pre-auth churn must not demote the session.
+        if (authenticated) this.onClientGone?.();
       }
     });
 
@@ -482,6 +499,7 @@ export class SessionPipe {
         socket.destroy();
         this.client = null;
         this.flushed = false;
+        if (authenticated) this.onClientGone?.();
       }
     });
   }
