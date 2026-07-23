@@ -1,5 +1,27 @@
 import { describe, expect, it } from 'vitest';
-import { resolveRespawnCwd, resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../ptyCreateOptions';
+import { resolveRespawnCwd, resolveStartupCwd, withDefaultShell, withWorkspaceProfile, withRoleBinding } from '../ptyCreateOptions';
+
+describe('withRoleBinding (D2)', () => {
+  it('enforces the bound model on a bound pane\'s initialCommand', () => {
+    const out = withRoleBinding({ workspaceId: 'ws', initialCommand: 'claude' }, { model: 'haiku' });
+    expect(out.initialCommand).toBe('claude --model haiku');
+  });
+
+  it('is a no-op when there is no binding', () => {
+    const options = { workspaceId: 'ws', initialCommand: 'claude' };
+    expect(withRoleBinding(options, undefined)).toBe(options);
+  });
+
+  it('is a no-op when there is no initialCommand (exec/supervised branch)', () => {
+    const options = { workspaceId: 'ws', exec: 'claude' };
+    expect(withRoleBinding(options, { model: 'haiku' })).toBe(options);
+  });
+
+  it('does not override an explicit --model already in the seed command', () => {
+    const options = { workspaceId: 'ws', initialCommand: 'claude --model opus' };
+    expect(withRoleBinding(options, { model: 'haiku' })).toBe(options);
+  });
+});
 
 describe('withDefaultShell', () => {
   it('uses the stored detected shell path when no shell is specified', () => {

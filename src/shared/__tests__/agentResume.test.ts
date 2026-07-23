@@ -87,6 +87,20 @@ describe('toResumeCommand (X6)', () => {
     });
   });
 
+  // D2 durability — a launch string that already carries a role-enforced
+  // `--model` (from the input.send rewrite, baked into the persisted command)
+  // must survive supervised replay verbatim, so the bound model outlives a reboot.
+  describe('preserves a trailing --model on resume (D2 durability)', () => {
+    it('exact resume keeps --model haiku', () => {
+      expect(toResumeCommand('claude --model haiku', binding(), CWD)).toBe(
+        'claude --resume abc-123 --model haiku',
+      );
+    });
+    it('fallback resume keeps --model haiku', () => {
+      expect(toResumeCommand('claude --model haiku')).toBe('claude --continue --model haiku');
+    });
+  });
+
   describe('leaves non-agent / ambiguous commands unchanged', () => {
     it('unknown launcher (node, bash) → unchanged', () => {
       expect(toResumeCommand('node server.js')).toBe('node server.js');

@@ -1,4 +1,5 @@
 import type { SpawnKind } from '../../shared/spawnKind';
+import { applyRoleBinding, type RoleBinding } from '../../shared/orchestratorRole';
 
 export interface PtyCreateOptions {
   shell?: string;
@@ -87,6 +88,29 @@ export function withWorkspaceProfile<T extends PtyCreateOptions>(
     next.initialCommand = profile.defaultPaneCommand;
   }
   return next;
+}
+
+/**
+ * D2 — overlay a role's enforced agent/model binding onto a NEW pane's
+ * `initialCommand`, when the pane's role is already known at seed time (project
+ * layout / saved teams). Applied ALONGSIDE withWorkspaceProfile at the
+ * command-assembly sites so an initialCommand-launched agent gets the same
+ * enforcement the orchestrator's input.send rewrite provides.
+ *
+ * Pure + no-op-safe: returns the original object untouched when there is no
+ * binding or no initialCommand, or when the command already carries an explicit
+ * `--model` (the transparent-rewrite rules live in applyRoleBinding). A brand-
+ * new empty pane whose role is assigned AFTER creation is NOT covered here —
+ * its enforcement guarantee is the Stage-2 input.send rewrite.
+ */
+export function withRoleBinding<T extends PtyCreateOptions>(
+  options: T,
+  binding: RoleBinding | undefined,
+): T {
+  if (!binding || options.initialCommand === undefined) return options;
+  const { command, changed } = applyRoleBinding(options.initialCommand, binding);
+  if (!changed) return options;
+  return { ...options, initialCommand: command };
 }
 
 /**

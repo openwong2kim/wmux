@@ -72,6 +72,7 @@ export default function DeckFleet({
   const surfaceActivity = useStore((s) => s.surfaceActivity);
   const paneLabel = useStore((s) => s.paneLabel);
   const paneRole = useStore((s) => s.paneRole);
+  const roleBindings = useStore((s) => s.orchestratorRoleBindings);
 
   const panes = useMemo(() => {
     const all = selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel });
@@ -117,6 +118,12 @@ export default function DeckFleet({
           const roleOptions = role && !(ORCH_ROLES as readonly string[]).includes(role)
             ? [role, ...ORCH_ROLES]
             : [...ORCH_ROLES];
+          // D2 — the enforced agent/model for this role, shown as a muted
+          // sub-label so the operator sees what a worker will actually launch as.
+          const binding = role ? roleBindings[role] : undefined;
+          const bindingLabel = binding
+            ? [binding.agent, binding.model].filter(Boolean).join(' · ')
+            : '';
           return (
             // Row = flex container so the jump button and the role <select> are
             // SIBLINGS (a <select> cannot nest inside a <button>). No parent click
@@ -124,7 +131,7 @@ export default function DeckFleet({
             <div
               key={`${p.workspaceId}:${p.paneId}`}
               data-deck-fleet-row
-              className="group flex items-center gap-1 h-[26px] px-1 rounded-[4px]"
+              className="group flex items-center gap-1 min-h-[26px] px-1 rounded-[4px]"
               // The needs-input wash is the ONE permitted area wash (DESIGN.md
               // attention grammar). color-mix so every theme's danger hue works.
               style={attention ? { backgroundColor: 'color-mix(in srgb, var(--accent-red) 9%, transparent)' } : undefined}
@@ -163,22 +170,36 @@ export default function DeckFleet({
                 </span>
               </button>
               {/* Operator-assigned role — soft routing hint the orchestrator reads.
-                  Writes through MetadataStore (setRole) so it relays to the brain. */}
-              <select
-                aria-label={`${rowLabel(p)} role`}
-                value={role}
-                onChange={(e) => {
-                  void window.electronAPI?.metadata?.setRole?.(p.paneId, p.workspaceId, e.target.value);
-                }}
-                className="shrink-0 h-[18px] max-w-[84px] bg-transparent text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)] focus:text-[var(--text-main)] rounded-[3px] outline-none cursor-pointer"
-                {...tokenAttrs('textMuted', 'text')}
-                title="Preferred role — the orchestrator routes matching work here"
-              >
-                <option value="">role…</option>
-                {roleOptions.map((r) => (
-                  <option key={r} value={r}>{r}</option>
-                ))}
-              </select>
+                  Writes through MetadataStore (setRole) so it relays to the brain.
+                  D2: when the role is bound, a muted agent·model sub-label shows
+                  what an agent launched here will actually run as (amber stays
+                  reserved for alive+focus per DESIGN.md). */}
+              <div className="shrink-0 flex flex-col items-end">
+                <select
+                  aria-label={`${rowLabel(p)} role`}
+                  value={role}
+                  onChange={(e) => {
+                    void window.electronAPI?.metadata?.setRole?.(p.paneId, p.workspaceId, e.target.value);
+                  }}
+                  className="h-[18px] max-w-[84px] bg-transparent text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)] focus:text-[var(--text-main)] rounded-[3px] outline-none cursor-pointer"
+                  {...tokenAttrs('textMuted', 'text')}
+                  title="Preferred role — the orchestrator routes matching work here"
+                >
+                  <option value="">role…</option>
+                  {roleOptions.map((r) => (
+                    <option key={r} value={r}>{r}</option>
+                  ))}
+                </select>
+                {bindingLabel && (
+                  <span
+                    className="font-mono text-[9px] leading-none text-[var(--text-muted)] max-w-[100px] truncate"
+                    {...tokenAttrs('textMuted', 'text')}
+                    title={`Enforced launch: ${bindingLabel}`}
+                  >
+                    {bindingLabel}
+                  </span>
+                )}
+              </div>
             </div>
           );
         })}

@@ -8,6 +8,7 @@ import {
   permissionFlagFor,
   resumeGrammarFor,
 } from '../../../shared/agentResume';
+import { applyRoleBinding, type RoleBinding } from '../../../shared/orchestratorRole';
 
 /**
  * Assemble the resume command for a pane from its binding + LIVE cwd
@@ -44,6 +45,7 @@ export function buildPaneResumeCommand(
   binding: ResumeBinding,
   paneCwds: ReadonlyArray<string | undefined>,
   skipPermissions: boolean,
+  roleBinding?: RoleBinding,
 ): { command: string; exact: boolean } | null {
   const grammar = resumeGrammarFor(binding.agent);
   if (!grammar) return null;
@@ -65,7 +67,12 @@ export function buildPaneResumeCommand(
         : (exact ? permissionFlagFor(binding.permissionMode) : ''))
     : '';
   const resumeArg = exact ? grammar.withId(binding.sessionId) : grammar.fallback;
-  const command = `${binding.agent}${permFlag ? ` ${permFlag}` : ''} ${resumeArg}`;
+  const base = `${binding.agent}${permFlag ? ` ${permFlag}` : ''} ${resumeArg}`;
+  // D2 — re-assert the role's enforced model on resume. The reconstruction above
+  // rebuilds from the agent stem + resume/permission flags only, so a bound
+  // model would silently drop; applyRoleBinding re-injects it (unless the
+  // operator already put an explicit --model on the line).
+  const command = applyRoleBinding(base, roleBinding).command;
   return { command, exact };
 }
 
@@ -88,8 +95,10 @@ export default function ResumeInfoChip(props: {
    *  surface.cwd (OSC 7-tracked shell cwd), then the workspace's hook-reported
    *  agent cwd (metadata.cwd) — see buildPaneResumeCommand. */
   paneCwds: ReadonlyArray<string | undefined>;
+  /** D2 — the pane's enforced role→model binding (re-asserted on resume). */
+  roleBinding?: RoleBinding;
 }): React.ReactElement | null {
-  const { ptyId, binding, paneCwds } = props;
+  const { ptyId, binding, paneCwds, roleBinding } = props;
   const t = useT();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -98,7 +107,7 @@ export default function ResumeInfoChip(props: {
   const canSkipPermissions = agentSupportsPermissionFlag(binding.agent);
   const [skipPermissions, setSkipPermissions] = useState(true);
 
-  const built = buildPaneResumeCommand(binding, paneCwds, skipPermissions);
+  const built = buildPaneResumeCommand(binding, paneCwds, skipPermissions, roleBinding);
   if (!built) return null; // not a resumable agent — nothing to offer
   const { command } = built;
 
@@ -294,8 +303,9 @@ export function ResumeInfoChipGate(props: {
   ptyId: string;
   binding: ResumeBinding;
   paneCwds: ReadonlyArray<string | undefined>;
+  roleBinding?: RoleBinding;
 }): React.ReactElement | null {
-  const { ptyId, binding, paneCwds } = props;
+  const { ptyId, binding, paneCwds, roleBinding } = props;
   // The reactive decay clock — subscribing HERE (not in Pane) is the whole point.
   const agentClockMs = useStore((s) => s.agentClockMs);
   const activityAt = useStore((s) => s.surfaceActivityAt[ptyId] ?? 0);
@@ -309,5 +319,5 @@ export function ResumeInfoChipGate(props: {
   const agentProcessAlive = useStore((s) => s.agentAliveByPtyId[ptyId]);
   const agentBusy = isPaneAgentBusy({ activityAt, agentClockMs, status, commandRunning, agentProcessAlive });
   if (agentBusy) return null;
-  return <ResumeInfoChip ptyId={ptyId} binding={binding} paneCwds={paneCwds} />;
+  return <ResumeInfoChip ptyId={ptyId} binding={binding} paneCwds={paneCwds} roleBinding={roleBinding} />;
 }

@@ -23,6 +23,8 @@ import {
 } from '../../contrastSafety';
 import type { CustomThemeColors, NotificationCategory, XtermThemeColors } from '../../../shared/types';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
+import { ORCH_ROLES } from '../../../shared/orchestratorRole';
+import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
@@ -604,6 +606,76 @@ const ORCHESTRATOR_MODEL_OPTIONS = [
   { value: 'haiku',  labelKey: '' },
 ];
 
+// D2 — global role→model enforcement editor. One compact row per built-in role
+// (v1 binds only the 4 fixed roles; a custom-role combobox is deferred): an
+// agent select, a model select (reusing the orchestrator MODEL_OPTIONS), and a
+// free-text extra-args field. Writing through setOrchestratorRoleBinding
+// normalizes + persists; clearing every field unbinds the role.
+const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini'] as const;
+
+function RoleBindingEditor() {
+  const t = useT();
+  const bindings = useStore((s) => s.orchestratorRoleBindings);
+  const setBinding = useStore((s) => s.setOrchestratorRoleBinding);
+
+  const update = (role: string, patch: { agent?: string; model?: string; args?: string }) => {
+    const current = bindings[role] ?? {};
+    setBinding(role, { ...current, ...patch });
+  };
+
+  return (
+    <Card className="flex flex-col gap-2 px-3 py-2.5">
+      <div className="min-w-0">
+        <p className="text-sm text-[color:var(--text-main)]">{t('settings.roleBindings')}</p>
+        <p className="text-[11px] text-[color:var(--text-muted)] mt-0.5">{t('settings.roleBindingsDesc')}</p>
+      </div>
+      <div className="flex flex-col gap-1.5 mt-1">
+        {ORCH_ROLES.map((role) => {
+          const b = bindings[role] ?? {};
+          return (
+            <div key={role} className="flex items-center gap-2" data-role-binding-row={role}>
+              <span className="text-[12px] text-[color:var(--text-sub)] w-[64px] shrink-0">{role}</span>
+              <select
+                aria-label={`${role} agent`}
+                value={b.agent ?? ''}
+                onChange={(e) => update(role, { agent: e.target.value })}
+                className="text-[11px] rounded px-1.5 py-1 font-mono bg-[var(--bg-surface)] text-[var(--text-main)] outline-none"
+                style={{ border: '1px solid var(--bg-overlay)', minWidth: 92 }}
+              >
+                <option value="">{t('settings.roleBindingAgentPlaceholder')}</option>
+                {ROLE_BINDING_AGENTS.map((a) => (
+                  <option key={a} value={a}>{a}</option>
+                ))}
+              </select>
+              <select
+                aria-label={`${role} model`}
+                value={b.model ?? ''}
+                onChange={(e) => update(role, { model: e.target.value })}
+                className="text-[11px] rounded px-1.5 py-1 font-mono bg-[var(--bg-surface)] text-[var(--text-main)] outline-none"
+                style={{ border: '1px solid var(--bg-overlay)', minWidth: 92 }}
+              >
+                <option value="">{t('settings.roleBindingModelDefault')}</option>
+                {MODEL_OPTIONS.filter((o) => o.value).map((o) => (
+                  <option key={o.value} value={o.value}>{o.label}</option>
+                ))}
+              </select>
+              <input
+                aria-label={`${role} extra args`}
+                type="text"
+                value={b.args ?? ''}
+                placeholder={t('settings.roleBindingArgsPlaceholder')}
+                onChange={(e) => update(role, { args: e.target.value })}
+                className="flex-1 min-w-0 text-[11px] rounded px-1.5 py-1 font-mono bg-[var(--bg-surface)] text-[var(--text-main)] outline-none"
+                style={{ border: '1px solid var(--bg-overlay)' }}
+              />
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
 function OrchestratorSection() {
   const t = useT();
   const deckBrainModel = useStore((s) => s.deckBrainModel);
@@ -708,6 +780,7 @@ function OrchestratorSection() {
           label={t('settings.orchestratorModel')}
         />
       </SettingRow>
+      <RoleBindingEditor />
       <SettingRow
         label={t('settings.orchestratorFullPower')}
         description={t('settings.orchestratorFullPowerDesc')}

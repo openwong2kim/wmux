@@ -106,6 +106,25 @@ describe('buildPaneResumeCommand', () => {
   it('non-resumable agent → null (no affordance)', () => {
     expect(buildPaneResumeCommand(claude({ agent: 'gemini' }), ['/Users/me/proj'], true)).toBeNull();
   });
+
+  // D2 — a role→model binding re-asserts the enforced model on resume, so a
+  // rebuilt resume command doesn't silently drop the fleet guarantee.
+  it('re-asserts the bound model on an exact resume', () => {
+    const out = buildPaneResumeCommand(claude(), ['/Users/me/proj'], false, { model: 'haiku' });
+    expect(out?.command).toBe('claude --model haiku --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a');
+  });
+
+  it('re-asserts the bound model on the cwd-relative fallback too', () => {
+    const out = buildPaneResumeCommand(claude(), ['/Users/me/OTHER'], false, { model: 'haiku' });
+    expect(out?.command).toBe('claude --model haiku --continue');
+  });
+
+  it('does not double-apply the model when the operator already put one on the line', () => {
+    // The binding agent gates on the launcher stem; an explicit model is left
+    // alone by applyRoleBinding, so a resume never grows a second --model.
+    const out = buildPaneResumeCommand(claude(), ['/Users/me/proj'], false, { agent: 'claude', model: 'haiku' });
+    expect(out?.command).toBe('claude --model haiku --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a');
+  });
 });
 
 // ─── Render smoke test ───────────────────────────────────────────────────────

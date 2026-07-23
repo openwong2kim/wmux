@@ -23,6 +23,7 @@ import {
   shellDisplayName,
   withDefaultShell,
   withWorkspaceProfile,
+  withRoleBinding,
 } from '../../utils/ptyCreateOptions';
 import {
   PROJECT_SUPERVISION_DEFAULT_BURST,
@@ -151,22 +152,30 @@ export function EmptyLeafFunnel() {
       // RESOURCE_EXHAUSTED when the daemon session cap is hit during a
       // Ctrl+D split) surfaces an actionable toast instead of leaving the
       // split as a permanent empty-leaf placeholder.
+      // D2 — if this (restored) pane already carries a bound role, enforce its
+      // agent/model on the seeded initialCommand. No-op for the exec/supervised
+      // branch (no initialCommand) and for panes whose role is set only later.
+      const seedRoleName = storeState.paneRole[paneId];
+      const seedRoleBinding = seedRoleName ? storeState.orchestratorRoleBindings[seedRoleName] : undefined;
       void ipcInvoke<{ id: string; shell?: string; cwd?: string }>(() =>
         window.electronAPI.pty.create(
-          withWorkspaceProfile(
-            withDefaultShell(
-              // 순수 빈 리프(사용자가 split으로 연 셸)만 user-shell로 스탬프해 env
-              // 투과. project seed(seedCommand 존재 — initialCommand/exec 브랜치)는
-              // 자동화라 미스탬프 → main이 fail-closed로 gated 처리.
-              {
-                workspaceId: wsId,
-                cwd: startupCwd,
-                ...bootstrapOptions,
-                ...(seedCommand === undefined ? { spawnKind: 'user-shell' as const } : {}),
-              },
-              useStore.getState().defaultShell,
+          withRoleBinding(
+            withWorkspaceProfile(
+              withDefaultShell(
+                // 순수 빈 리프(사용자가 split으로 연 셸)만 user-shell로 스탬프해 env
+                // 투과. project seed(seedCommand 존재 — initialCommand/exec 브랜치)는
+                // 자동화라 미스탬프 → main이 fail-closed로 gated 처리.
+                {
+                  workspaceId: wsId,
+                  cwd: startupCwd,
+                  ...bootstrapOptions,
+                  ...(seedCommand === undefined ? { spawnKind: 'user-shell' as const } : {}),
+                },
+                useStore.getState().defaultShell,
+              ),
+              activeWorkspace.profile,
             ),
-            activeWorkspace.profile,
+            seedRoleBinding,
           )
         )
       ).then((result) => {

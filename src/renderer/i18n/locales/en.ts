@@ -324,6 +324,13 @@ export const en = {
   'settings.orchestratorFullPower': 'Full-power mode',
   'settings.orchestratorFullPowerDesc':
     'Load your Claude Code skills, CLAUDE.md and hooks into orchestrator turns. Your hooks run inside brain turns (your own code, outside any wmux sandbox), tool calls may get slower, and the brain cannot write its memory notes while this is on. Applies from the next brain turn.',
+  // D2 — role → agent/model enforcement editor (Settings › Orchestrator).
+  'settings.roleBindings': 'Role → model enforcement',
+  'settings.roleBindingsDesc':
+    'Pin an agent and model to each role. When an agent is launched in a pane carrying that role — by you or the orchestrator — it is run with the bound model automatically. Leave a row blank to keep the role unbound.',
+  'settings.roleBindingAgentPlaceholder': 'agent',
+  'settings.roleBindingModelDefault': 'model…',
+  'settings.roleBindingArgsPlaceholder': 'extra args (optional)',
   // M3: surfaced subscription rate-limit notices in the orchestrator thread.
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.

@@ -99,7 +99,28 @@ describe('DeckFleet role dropdown', () => {
     expect(select).not.toBeNull();
     // The critical invalid-nesting regression: a <select> inside a <button>.
     expect(button!.querySelector('select')).toBeNull();
-    expect(select!.parentElement).toBe(row);
+    // The select lives in the row (D2 wraps it with its binding sub-label in a
+    // column div) but never under the jump button.
+    expect(row.contains(select)).toBe(true);
+    expect(button!.contains(select)).toBe(false);
+  });
+
+  // D2 — a bound role shows a muted `agent · model` sub-label; an unbound role
+  // shows none.
+  it('renders the enforced agent · model sub-label only when the role is bound', () => {
+    seedStore({ p1: 'Reviewer' });
+    act(() => useStore.setState({ orchestratorRoleBindings: { Reviewer: { agent: 'codex', model: 'o3' } } }));
+    mount();
+    const row = q<HTMLDivElement>('[data-deck-fleet-row]');
+    expect(row.textContent).toContain('codex · o3');
+  });
+
+  it('shows no binding sub-label for an unbound role', () => {
+    seedStore({ p1: 'Builder' });
+    act(() => useStore.setState({ orchestratorRoleBindings: {} }));
+    mount();
+    const row = q<HTMLDivElement>('[data-deck-fleet-row]');
+    expect(row.textContent).not.toContain('·');
   });
 
   it('jump button still jumps; the select does NOT trigger a jump', () => {

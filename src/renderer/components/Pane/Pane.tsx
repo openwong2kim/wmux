@@ -247,6 +247,13 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const resumePtyReady = useStore((s) =>
     activeSurfacePtyId ? !!s.ptyReadyByPtyId[activeSurfacePtyId] : false,
   );
+  // D2 — this pane's enforced role→model binding (if its role is bound). Threaded
+  // into the resume chip so a reconstructed resume command re-asserts the model
+  // flag (a naive resume rebuilds from the agent stem alone and would drop it).
+  const paneRoleBinding = useStore((s) => {
+    const role = s.paneRole[pane.id];
+    return role ? s.orchestratorRoleBindings[role] : undefined;
+  });
   // The persistent resume chip's "is this pane's agent busy?" gate — and the
   // store-wide `agentClockMs` decay-clock subscription it needs — lives in the
   // <ResumeInfoChipGate> leaf below, NOT here: Pane mounts that leaf only when a
@@ -630,11 +637,37 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         <ResumeInfoChipGate
           ptyId={activeSurfacePtyId}
           binding={resumeBinding}
+          roleBinding={paneRoleBinding}
           paneCwds={[
             pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd,
             workspace.metadata?.cwd,
           ]}
         />
+      )}
+      {/* D2 — muted enforced-model badge on a role-bound pane. Amber stays
+          reserved for alive+focus (DESIGN.md), so this rides the sub tones. */}
+      {paneRoleBinding?.model && (
+        <span
+          data-pane-enforced-model
+          title={`Role-enforced launch: ${[paneRoleBinding.agent, paneRoleBinding.model].filter(Boolean).join(' · ')}`}
+          style={{
+            position: 'absolute',
+            top: 4,
+            right: 6,
+            zIndex: 20,
+            padding: '0 5px',
+            fontSize: 9,
+            fontFamily: 'ui-monospace, monospace',
+            letterSpacing: '0.02em',
+            color: 'var(--text-muted)',
+            backgroundColor: 'var(--bg-surface)',
+            border: '1px solid var(--border-soft)',
+            borderRadius: 3,
+            pointerEvents: 'none',
+          }}
+        >
+          {paneRoleBinding.model}
+        </span>
       )}
       <SurfaceTabs
         surfaces={pane.surfaces}
