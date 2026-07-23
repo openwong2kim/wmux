@@ -4,7 +4,7 @@ import { buildShimCmd, buildPathEditScript, deriveShimPaths } from '../cliShim';
 describe('buildShimCmd', () => {
   it('discovers app-* dynamically, scopes ELECTRON_RUN_AS_NODE, and forwards args + exit code', () => {
     const cmd = buildShimCmd();
-    expect(cmd).toContain('setlocal');
+    expect(cmd).toContain('setlocal DisableDelayedExpansion');
     expect(cmd).toContain('set "ELECTRON_RUN_AS_NODE=1"');
     // Dynamic discovery: uses %~dp0 relative resolution, not hardcoded version
     expect(cmd).toContain('dir /b /ad /o-d');
@@ -17,8 +17,14 @@ describe('buildShimCmd', () => {
     expect(cmd.includes('\r\n')).toBe(true);
     // No delayed expansion — a literal `!` in a path must survive
     expect(cmd).not.toContain('enabledelayedexpansion');
+    // Full invocation: direct exec (no `call` — it re-expands %/^ in args),
+    // exact quoting, and %* forwarding
+    expect(cmd).toContain(
+      '  "%~dp0..\\%%i\\wmux.exe" "%~dp0..\\%%i\\resources\\cli-bundle\\index.js" %*',
+    );
+    expect(cmd).not.toContain('call "');
     // No hardcoded version path
-    expect(cmd).not.toContain('app-3.');
+    expect(cmd).not.toMatch(/app-\d+(?:\.\d+)+[\\/]/);
   });
 });
 

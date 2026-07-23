@@ -40,10 +40,14 @@ import { execFileSync } from 'child_process';
 export function buildShimCmd(): string {
   return [
     '@echo off',
-    'setlocal',
+    // DisableDelayedExpansion explicitly: a parent `cmd /v:on` shell would
+    // otherwise be inherited and eat literal `!` in forwarded arguments.
+    'setlocal DisableDelayedExpansion',
     'set "ELECTRON_RUN_AS_NODE=1"',
     'for /f "delims=" %%i in (\'dir /b /ad /o-d "%~dp0..\\app-*" 2^>nul\') do (',
-    '  call "%~dp0..\\%%i\\wmux.exe" "%~dp0..\\%%i\\resources\\cli-bundle\\index.js" %*',
+    // No `call` — it is only needed for batch files and would re-expand
+    // %-sequences and carets in the forwarded arguments.
+    '  "%~dp0..\\%%i\\wmux.exe" "%~dp0..\\%%i\\resources\\cli-bundle\\index.js" %*',
     '  goto :wmux_done',
     ')',
     'echo wmux: no app directory found in "%~dp0.." >&2',
