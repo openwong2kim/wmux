@@ -147,6 +147,27 @@ describe('selectFleetPanes', () => {
     expect(p2a.isActivePane).toBe(true);
   });
 
+  it('a hook-sourced complete on the ACTIVE pane wins over stale running metadata (TUI turn-end)', () => {
+    // The OpenCode-forever-running bug: a long-lived TUI agent is a foreground
+    // command the whole time it is open, so ws metadata stays 'running' between
+    // turns. The Stop hook now writes an attention 'complete' for the pty; the
+    // selector's attention tier must outrank the workspace-level 'running' so
+    // the fleet badge / heartbeat level review see the turn ended.
+    const tui = workspace(
+      'ws-tui', 'tui',
+      leaf('ptui', [surface('stui', 'pty-tui')]),
+      'ptui',
+      { agentName: 'OpenCode', agentStatus: 'running' },
+    );
+    const [card] = selectFleetPanes({
+      workspaces: [tui],
+      surfaceAgentStatus: { 'pty-tui': 'complete' },
+      surfaceActivity: {},
+    });
+    expect(card.isActivePane).toBe(true);
+    expect(card.agentStatus).toBe('complete');
+  });
+
   it('keeps per-pty attention status for a BACKGROUND pane but not its agentName', () => {
     const p2b = byPane(selectFleetPanes(fixture()), 'p2b');
     expect(p2b.agentStatus).toBe('complete'); // per-pty, accurate in background
@@ -550,6 +571,16 @@ describe('isPaneAgentBusy', () => {
 describe('isPaneAgentBusy — OSC 133 commandRunning', () => {
   const NOW = 1_000_000_000;
   const staleActivity = NOW - (HOOK_RUNNING_TTL_MS + 5_000);
+
+  it('commandRunning=true → busy even when the FLEET status is complete (chip gate ≠ fleet display)', () => {
+    // Concern separation: the Stop hook now marks a foreground TUI agent
+    // 'complete' for the FLEET (display / pane_list / level review). That must
+    // NOT surface the resume chip — typing into a live agent TUI would land in
+    // its input, not a shell — so the chip gate's OSC 133 tier-1 still wins.
+    expect(isPaneAgentBusy({
+      activityAt: 0, agentClockMs: NOW, status: 'complete', commandRunning: true,
+    })).toBe(true);
+  });
 
   it('commandRunning=true → busy even with NO activity and no status (closes the idle-TUI gap)', () => {
     expect(isPaneAgentBusy({

@@ -72,13 +72,13 @@ Run **fleets of Claude Code, Codex & Gemini in parallel** — each agent in its 
 
 ## ⚡ Install in 30 seconds
 
-**Windows**
+**Windows** — use a package manager (avoids the SmartScreen warning):
 
 ```powershell
 winget install openwong2kim.wmux
 ```
 
-<sub>or `choco install wmux` &nbsp;·&nbsp; or [**download Setup.exe**](https://github.com/openwong2kim/wmux/releases/latest) &nbsp;·&nbsp; winget/choco avoid the SmartScreen prompt ([why?](#install-help))</sub>
+<sub>or `choco install wmux` &nbsp;·&nbsp; [**download Setup.exe**](https://github.com/openwong2kim/wmux/releases/latest) for offline install — a SmartScreen prompt appears because the installer isn't Authenticode-signed yet; winget/choco bypass it ([why?](#install-help))</sub>
 
 **macOS** (Apple Silicon)
 

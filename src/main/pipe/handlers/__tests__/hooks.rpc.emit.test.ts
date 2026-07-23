@@ -175,6 +175,46 @@ describe('hooks.signal — agent.lifecycle event tee', () => {
     );
   });
 
+  it('agent.stop marks the pane complete (hook-authoritative turn end for a TUI agent)', async () => {
+    const stub = stubHookRouter();
+    stub.setDecision('emit');
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    // OpenCode is a long-lived foreground TUI: the byte-silence heuristic never
+    // flips it to idle, so before this the pane reported 'running' forever
+    // between turns. The Stop hook now broadcasts an attention 'complete'.
+    const res = await router.dispatch({
+      id: 'oc1',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.stop', agent: 'opencode' }) as unknown as Record<string, unknown>,
+    });
+
+    expect(res.ok).toBe(true);
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({ ptyId: 'pty-1', agentStatus: 'complete', activity: '' }),
+    );
+  });
+
+  it('agent.session_start clears activity but does NOT mark the pane complete (a turn beginning is not an end)', async () => {
+    const stub = stubHookRouter();
+    const router = new RpcRouter();
+    registerHooksRpc(router, () => fakeWindow(), stub.router);
+
+    await router.dispatch({
+      id: 'ss1',
+      method: 'hooks.signal',
+      params: signal({ kind: 'agent.session_start', agent: 'opencode' }) as unknown as Record<string, unknown>,
+    });
+
+    expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
+    const call = broadcastMetadataUpdateMock.mock.calls[0][1] as Record<string, unknown>;
+    expect(call).toMatchObject({ ptyId: 'pty-1', activity: '' });
+    expect(call).not.toHaveProperty('agentStatus');
+  });
+
   it('emits agent.lifecycle on dedup decision but skips sendNotification', async () => {
     const stub = stubHookRouter();
     stub.setDecision('dedup');

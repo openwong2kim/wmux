@@ -7,7 +7,8 @@ import { dispatchNotification } from './dispatchNotification';
 import { recentlySuppressed, clearPty as clearSuppression } from './idleSuppression';
 import { broadcastMetadataUpdate } from '../ipc/handlers/metadata.handler';
 import { eventBus } from '../events/EventBus';
-import { findWorkspaceIdForPty } from '../pipe/handlers/hooks.rpc';
+import { findWorkspaceIdForPty, STALE_TRUST_MS } from '../pipe/handlers/hooks.rpc';
+import { getWorkspaceMirror, type WorkspaceMirror } from '../workspace/WorkspaceMirror';
 import { sendToRenderer } from '../pipe/handlers/_bridge';
 import { agentDisplayToSlug } from '../pty/AgentDetector';
 import type { ChannelMessage } from '../../shared/channels';
@@ -99,6 +100,10 @@ export class DaemonNotificationRouter {
     // Optional clock override. Used by tests so cache-TTL behavior can be
     // exercised deterministically without faking globals.
     private now: () => number = Date.now,
+    // Main-side WorkspaceMirror (renderer-pushed workspace tree). Consulted
+    // before the cached round-trip so a resolvable ptyId never touches the
+    // renderer. Injected (default the singleton) for testability.
+    private getMirror: () => Pick<WorkspaceMirror, 'peek'> = getWorkspaceMirror,
   ) {}
 
   /**
@@ -116,6 +121,18 @@ export class DaemonNotificationRouter {
    * mutations don't have to wait out the full TTL.
    */
   private async resolveWorkspaceIdForPty(ptyId: string): Promise<string | null> {
+    // Mirror first: the renderer pushes its full workspace tree to main on every
+    // structural/status change, so a ptyId that still belongs to an open pane
+    // resolves here with no renderer round-trip. A ptyId→workspace mapping is
+    // topology-stable (independent of which surface is focused), so a mirror
+    // that is merely fresh (< STALE_TRUST_MS) is authoritative for it. A miss
+    // (empty/stale mirror, or a ptyId absent from the snapshot — e.g. a pane
+    // that just closed) falls through to the cached round-trip below.
+    const mirrored = this.getMirror().peek();
+    if (mirrored && mirrored.ageMs < STALE_TRUST_MS) {
+      const workspaceId = findWorkspaceIdForPty(ptyId, mirrored.entries);
+      if (workspaceId) return workspaceId;
+    }
     const cached = this.workspaceCache;
     if (cached && this.now() - cached.ts < WORKSPACE_LIST_CACHE_TTL_MS) {
       return findWorkspaceIdForPty(ptyId, cached.value);
