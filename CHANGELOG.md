@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **A "welcome home" briefing when you open a workspace.** The Command Deck now greets you at the top of the orchestrator thread with a one-shot, deterministic summary of what the judgment engine already knows: what changed while you were away ("2 finished, 1 now blocked on you"), what is blocked on your decision, what each agent pane is doing, and a "look at this first" ordering — each pane one click from its terminal. It is a pure read of existing state: no brain turn is spent, nothing is throttled, and it renders in every autonomy mode including `off`. It stays a quiet one-line affordance and only auto-expands when there is something worth surfacing (a cold start, a newly-raised decision, or a pane that just became blocked), so it never nags on an ordinary workspace switch. Toggle it (and its auto-expand) in Settings → Orchestrator.
+
 ### Changed
 
 - **The statusline's model label is now just the model and its effort — `Opus 4.8 (xhigh)`.** The context-window size is no longer rendered. It was meant to surface as a `1M` note on `[1m]` sessions, but it never actually appeared: wmux read it from a `" (1M context)"` suffix Claude Code used to bake into `model.display_name`, and ≥2.1.218 sends the clean name and reports the window under `context_window` instead. Rather than resurrect the note, it is dropped on purpose — the window size is a property of the account's model selection that rarely differs pane to pane, while the live fill (`ctx N%`) right next to it is the part that actually moves. The legacy suffix is still stripped, so older Claude Code renders the same label instead of a stray `Opus 4.7 (1M context) (high)`. The label rendering, which had no tests at all, is now covered by cases that feed the script the exact JSON Claude Code pipes on stdin.
@@ -22,8 +26,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [3.32.0] — 2026-07-24
 
 ### Added
-
-- **A "welcome home" briefing when you open a workspace.** The Command Deck now greets you at the top of the orchestrator thread with a one-shot, deterministic summary of what the judgment engine already knows: what changed while you were away ("2 finished, 1 now blocked on you"), what is blocked on your decision, what each agent pane is doing, and a "look at this first" ordering — each pane one click from its terminal. It is a pure read of existing state: no brain turn is spent, nothing is throttled, and it renders in every autonomy mode including `off`. It stays a quiet one-line affordance and only auto-expands when there is something worth surfacing (a cold start, a newly-raised decision, or a pane that just became blocked), so it never nags on an ordinary workspace switch. Toggle it (and its auto-expand) in Settings → Orchestrator.
 
 - **Per-pane agent memory, live in Fleet View.** Each pane's card now shows the resident memory of the agent process running in it (the CLI plus any child it spawned), attributed from the process tree and refreshed on the existing Fleet-View liveness batch — no extra polling while the panel is closed. Makes it obvious at a glance which session is the heavy one when the machine gets tight.
 
