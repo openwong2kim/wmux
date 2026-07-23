@@ -7,6 +7,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [3.32.0] — 2026-07-24
+
 ### Added
 
 - **Per-pane agent memory, live in Fleet View.** Each pane's card now shows the resident memory of the agent process running in it (the CLI plus any child it spawned), attributed from the process tree and refreshed on the existing Fleet-View liveness batch — no extra polling while the panel is closed. Makes it obvious at a glance which session is the heavy one when the machine gets tight.
