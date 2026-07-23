@@ -93,7 +93,7 @@ describe('themes — 10-token system', () => {
 
     it('does not recolor shell-owned prompts or cwd segments', () => {
       const terminal = XTERM_THEMES.forge;
-      expect(terminal).toBe(XTERM_PALETTES['amber-graphite']);
+      expect(terminal).toBe(XTERM_PALETTES['catppuccin-mocha']);
       expect(new Set([terminal.cursor, terminal.green, terminal.red, terminal.yellow]).size).toBe(4);
       expect(getContrastRatio(terminal.green, terminal.background)).toBeGreaterThanOrEqual(4.5);
       expect(getContrastRatio(terminal.red, terminal.background)).toBeGreaterThanOrEqual(4.5);
