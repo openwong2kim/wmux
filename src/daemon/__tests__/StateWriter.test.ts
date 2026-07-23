@@ -260,6 +260,61 @@ describe('StateWriter', () => {
     expect(ids).toContain('old-attached');
   });
 
+  it('load restamps sessions with a corrupt lastActivity instead of leaking them (#557)', () => {
+    // A malformed lastActivity makes `now - getTime()` NaN, and every
+    // `NaN < ttl` comparison is false — so without the restamp guard these
+    // records would be KEPT forever (fail-open), defeating the reaper. The fix
+    // restamps to now (not prune) so a possibly-live session survives one bad
+    // timestamp yet the TTL clock restarts and can age out on a later load.
+    const corruptDetached = makeSession({
+      id: 'corrupt-detached',
+      state: 'detached',
+      lastActivity: 'not-a-date',
+    });
+    const corruptDead = makeSession({
+      id: 'corrupt-dead',
+      state: 'dead',
+      lastActivity: 'not-a-date',
+    });
+
+    writer.saveImmediate(makeState([corruptDetached, corruptDead]));
+
+    const before = Date.now();
+    const loaded = writer.load();
+    const after = Date.now();
+    const ids = loaded.sessions.map((s) => s.id);
+
+    // Both survive this load...
+    expect(ids).toContain('corrupt-detached');
+    expect(ids).toContain('corrupt-dead');
+
+    // ...and their timestamps are now valid, recent ISO strings.
+    for (const s of loaded.sessions) {
+      const t = new Date(s.lastActivity).getTime();
+      expect(Number.isNaN(t)).toBe(false);
+      expect(t).toBeGreaterThanOrEqual(before);
+      expect(t).toBeLessThanOrEqual(after);
+    }
+  });
+
+  it('load prunes a restamped session once its restamped clock exceeds the TTL (#557)', () => {
+    // After a restamp the TTL clock is real again: a detached session whose
+    // (restamped) lastActivity is well past the detached TTL must be pruned on
+    // the next load, proving the corrupt-timestamp path can never leak forever.
+    const now = Date.now();
+    const HOUR = 60 * 60 * 1000;
+    const staleRestamped = makeSession({
+      id: 'stale-restamped',
+      state: 'detached',
+      lastActivity: new Date(now - 10 * HOUR).toISOString(), // 10h > 8h default
+    });
+
+    writer.saveImmediate(makeState([staleRestamped]));
+
+    const ids = writer.load().sessions.map((s) => s.id);
+    expect(ids).not.toContain('stale-restamped');
+  });
+
   it('honours a custom detachedTtlHours from the constructor (#557)', () => {
     // A writer configured with a 2 h detached TTL instead of the 8 h default.
     const now = Date.now();

@@ -354,6 +354,17 @@ export class StateWriter {
     const now = Date.now();
     state.sessions = state.sessions.filter((s) => {
       const sinceMs = now - new Date(s.lastActivity).getTime();
+      // A corrupted/malformed lastActivity makes getTime() NaN, so every
+      // `NaN < ttl` comparison below is false and the record would be KEPT
+      // forever (fail-open) — the exact leak the #557 reaper exists to stop.
+      // Restamp to now rather than pruning: pruning would fail-closed and could
+      // kill a possibly-live session on a single transient bad timestamp, while
+      // restamping restarts the TTL clock from now so the record can age out on
+      // the next load and can never leak permanently.
+      if (Number.isNaN(sinceMs)) {
+        s.lastActivity = new Date(now).toISOString();
+        return true;
+      }
       if (s.state === 'dead') {
         return sinceMs < s.deadTtlHours * 60 * 60 * 1000;
       }
