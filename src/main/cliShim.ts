@@ -28,13 +28,31 @@ import * as fs from 'fs';
 import * as path from 'path';
 import { execFileSync } from 'child_process';
 
-/** Batch shim content. `setlocal` keeps ELECTRON_RUN_AS_NODE out of the calling shell. */
-export function buildShimCmd(exePath: string, cliJsPath: string): string {
+/**
+ * Batch shim content. Uses `%~dp0` (the shim's own directory, `<squirrelRoot>/bin`)
+ * to dynamically discover the latest `app-*` directory at runtime, instead of
+ * hardcoding a version-specific path. This survives Squirrel updates even if
+ * the `--squirrel-updated` handler fails to regenerate the shim.
+ *
+ * `dir /b /ad /o-d` lists directories matching `app-*` sorted newest-first
+ * (by modification time). The first match is the current version.
+ */
+export function buildShimCmd(): string {
   return [
     '@echo off',
-    'setlocal',
+    // DisableDelayedExpansion explicitly: a parent `cmd /v:on` shell would
+    // otherwise be inherited and eat literal `!` in forwarded arguments.
+    'setlocal DisableDelayedExpansion',
     'set "ELECTRON_RUN_AS_NODE=1"',
-    `call "${exePath}" "${cliJsPath}" %*`,
+    'for /f "delims=" %%i in (\'dir /b /ad /o-d "%~dp0..\\app-*" 2^>nul\') do (',
+    // No `call` — it is only needed for batch files and would re-expand
+    // %-sequences and carets in the forwarded arguments.
+    '  "%~dp0..\\%%i\\wmux.exe" "%~dp0..\\%%i\\resources\\cli-bundle\\index.js" %*',
+    '  goto :wmux_done',
+    ')',
+    'echo wmux: no app directory found in "%~dp0.." >&2',
+    'exit /b 1',
+    ':wmux_done',
     'endlocal & exit /b %ERRORLEVEL%',
     '',
   ].join('\r\n');
@@ -129,7 +147,7 @@ export function installCliShim(execPath: string): void {
       return;
     }
     fs.mkdirSync(binDir, { recursive: true });
-    fs.writeFileSync(path.join(binDir, 'wmux.cmd'), buildShimCmd(execPath, cliJsPath), 'utf8');
+    fs.writeFileSync(path.join(binDir, 'wmux.cmd'), buildShimCmd(), 'utf8');
     runPathEdit(binDir, 'add');
   } catch (err) {
     console.warn('[cliShim] shim install failed (non-fatal):', err);
