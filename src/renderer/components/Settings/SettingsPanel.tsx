@@ -632,6 +632,36 @@ function OrchestratorSection() {
       .then((r) => setAutoWake(r.enabled))
       .catch(() => setAutoWake(!enabled));
   };
+  // D1 briefing toggles — persisted in MAIN (deck-briefing.json). Read on mount;
+  // optimistic toggle with echo reconciliation (mirrors auto-wake).
+  const [briefingEnabled, setBriefingEnabled] = useState(true);
+  const [briefingAutoShow, setBriefingAutoShow] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.deck?.briefing
+      ?.getConfig()
+      .then((c) => {
+        if (cancelled) return;
+        setBriefingEnabled(c.enabled);
+        setBriefingAutoShow(c.autoShow);
+      })
+      .catch(() => undefined); // keep the default-on rendering
+    return () => { cancelled = true; };
+  }, []);
+  const onBriefingEnabledChange = (enabled: boolean) => {
+    setBriefingEnabled(enabled);
+    window.electronAPI.deck?.briefing
+      ?.setConfig({ enabled })
+      .then((c) => { setBriefingEnabled(c.enabled); setBriefingAutoShow(c.autoShow); })
+      .catch(() => setBriefingEnabled(!enabled));
+  };
+  const onBriefingAutoShowChange = (autoShow: boolean) => {
+    setBriefingAutoShow(autoShow);
+    window.electronAPI.deck?.briefing
+      ?.setConfig({ autoShow })
+      .then((c) => { setBriefingEnabled(c.enabled); setBriefingAutoShow(c.autoShow); })
+      .catch(() => setBriefingAutoShow(!autoShow));
+  };
   const options = ORCHESTRATOR_MODEL_OPTIONS.map((o) => ({
     value: o.value,
     label: o.labelKey
@@ -684,6 +714,26 @@ function OrchestratorSection() {
           checked={autoWake}
           onChange={onAutoWakeChange}
           label={t('settings.autoWake')}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('settings.briefing')}
+        description={t('settings.briefingDesc')}
+      >
+        <Toggle
+          checked={briefingEnabled}
+          onChange={onBriefingEnabledChange}
+          label={t('settings.briefing')}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('settings.briefingAutoShow')}
+        description={t('settings.briefingAutoShowDesc')}
+      >
+        <Toggle
+          checked={briefingAutoShow}
+          onChange={onBriefingAutoShowChange}
+          label={t('settings.briefingAutoShow')}
         />
       </SettingRow>
       <SettingRow

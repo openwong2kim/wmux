@@ -915,6 +915,32 @@ export const en = {
   'deck.decisionPlaceholder': 'Type your answer…',
   'deck.decisionAnswerLabel': 'Your answer to the orchestrator decision',
   'deck.recoveryDismiss': 'Dismiss',
+  // Command Deck D1 — the deterministic "welcome home" briefing card.
+  'deck.briefing.eyebrow': 'Briefing',
+  'deck.briefing.expand': 'Brief me',
+  'deck.briefing.whileAway': 'While you were away:',
+  'deck.briefing.finished': 'finished',
+  'deck.briefing.nowBlocked': 'now blocked on you',
+  'deck.briefing.errored': 'hit an error',
+  'deck.briefing.newDecision': 'a new decision',
+  'deck.briefing.decisionPointer': 'A decision is waiting on you below.',
+  'deck.briefing.loopLabel': 'Loop:',
+  'deck.briefing.unnamedPane': 'shell',
+  'deck.briefing.jump': 'Jump to pane',
+  'deck.briefing.more': '+{count} more',
+  'deck.briefing.channelsUnread': '{count} unread in channels',
+  'deck.briefing.reason.blocked': 'blocked on input',
+  'deck.briefing.reason.error': 'error',
+  'deck.briefing.reason.finished': 'finished',
+  'deck.briefing.reason.running': 'running',
+  'deck.briefing.reason.idle': 'idle',
+  // Settings — briefing toggles.
+  'settings.briefing': 'Welcome-home briefing',
+  'settings.briefingDesc':
+    'Show a one-shot summary of what changed while you were away when you open a workspace.',
+  'settings.briefingAutoShow': 'Auto-expand briefing',
+  'settings.briefingAutoShowDesc':
+    'Expand the briefing automatically on cold start, a new decision, or a newly-blocked pane.',
   // Command Deck — the control bar (Mode·Loop·Schedules) is component-owned.
   // Command Deck P3d — orchestrator schedules (reboot-surviving).
   'deck.schedules': 'Schedules',

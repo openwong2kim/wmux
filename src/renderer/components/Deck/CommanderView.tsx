@@ -40,7 +40,7 @@ import {
   synthesizeChannelMessage,
   type MentionCandidate,
 } from '../Channels/Composer';
-import { synthesizeChannel } from '../Channels/ChannelsPanel';
+import { synthesizeChannel, sumUnread } from '../Channels/ChannelsPanel';
 import { renderMessageBody } from '../Channels/ChannelView';
 import { formatChannelAuthor } from '../../channels/authorDisplay';
 import {
@@ -67,6 +67,7 @@ import { renderBrainMarkdown } from './BrainMarkdown';
 import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 import { DeckLoopPanel } from './DeckLoopPanel';
 import { DeckDecisionCard } from './DeckDecisionCard';
+import { DeckBriefingCard } from './DeckBriefingCard';
 import { AgentModeChipContainer } from './AgentModeChip';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
@@ -118,6 +119,11 @@ export interface CommanderViewContentProps {
   /** P2① mission control — the Fleet roster slot, pinned above the thread.
    *  Injected as a node so this surface stays presentational/store-free. */
   fleetSlot?: React.ReactNode;
+  /** D1 briefing — unread channel count for the active workspace (renderer-only
+   *  overlay on the briefing card; main can't see it). */
+  channelsUnread?: number;
+  /** Jump to the Channels tab (the briefing's unread-line affordance). */
+  onJumpToChannels?: () => void;
   t?: (key: string) => string;
 }
 
@@ -141,6 +147,8 @@ export function CommanderViewContent({
   activeWorkspaceId,
   activePaneCwd,
   fleetSlot,
+  channelsUnread = 0,
+  onJumpToChannels,
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -247,6 +255,19 @@ export function CommanderViewContent({
             </div>
           </div>
         )}
+
+        {/* D1 briefing — the deterministic "welcome home" summary. Frames the
+            thread ABOVE the decision card; neutral chrome (amber stays reserved
+            for the decision card + running dots). Self-contained + renders null
+            when the config is disabled or there is nothing to brief. */}
+        <DeckBriefingCard
+          workspaceId={activeWorkspaceId}
+          t={t}
+          onJumpToPane={onJumpToPane}
+          resolvePtyPane={resolvePtyPane}
+          channelsUnread={channelsUnread}
+          onJumpToChannels={onJumpToChannels}
+        />
 
         {/* Decision gate — a brain-raised decision blocking the loop until the
             operator answers. Self-contained (hydrates from the durable store, so
@@ -767,6 +788,12 @@ function CommanderThreadItem({
 export function CommanderView(): React.ReactElement {
   const t = useT();
   const channels = useStore((s) => s.channels);
+  // D1 briefing: the unread-channels overlay + a jump to the Channels tab. The
+  // count is a renderer-only augmentation (main can't see channel unread).
+  const channelUnread = useStore((s) => s.channelUnread);
+  const channelsUnread = useMemo(() => sumUnread(channelUnread), [channelUnread]);
+  const setActiveDeckTab = useStore((s) => s.setActiveDeckTab);
+  const onJumpToChannels = useCallback(() => setActiveDeckTab('channels'), [setActiveDeckTab]);
   const workspaces = useStore((s) => s.workspaces);
   const surfaceAgent = useStore((s) => s.surfaceAgent);
   const paneLabel = useStore((s) => s.paneLabel);
@@ -1158,6 +1185,8 @@ export function CommanderView(): React.ReactElement {
       activeWorkspaceId={activeWorkspaceId}
       activePaneCwd={activePaneCwd}
       fleetSlot={<DeckFleet onJumpToPane={onJumpToPane} />}
+      channelsUnread={channelsUnread}
+      onJumpToChannels={onJumpToChannels}
       t={t}
     />
   );
