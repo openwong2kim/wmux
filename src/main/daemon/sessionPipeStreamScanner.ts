@@ -1,4 +1,4 @@
-import { FLUSH_DONE_MARKER, RESYNC_BEGIN_MARKER } from '../../daemon/SessionPipe';
+import { FLUSH_DONE_MARKER, RESYNC_BEGIN_MARKER } from '../../daemon/sessionPipeMarkers';
 
 /**
  * Stream events produced while scanning a session pipe's byte stream.

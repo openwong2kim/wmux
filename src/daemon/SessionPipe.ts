@@ -5,6 +5,12 @@ import crypto from 'node:crypto';
 import { getSessionSocketPath } from '../shared/constants';
 import type { RingBuffer } from './RingBuffer';
 import { generateSnapshot, MAX_SCROLLBACK } from './HeadlessSnapshot';
+import { FLUSH_DONE_MARKER, RESYNC_BEGIN_MARKER } from './sessionPipeMarkers';
+
+// Re-exported for existing importers; the definitions live in the dependency-free
+// sessionPipeMarkers module so the Electron main bundle can import the markers
+// without dragging SessionPipe's @xterm/headless dependency into its Vite graph.
+export { FLUSH_DONE_MARKER, RESYNC_BEGIN_MARKER };
 
 /**
  * TASK-10: initial-attach flushes at or above this size go through the
@@ -13,19 +19,6 @@ import { generateSnapshot, MAX_SCROLLBACK } from './HeadlessSnapshot';
  * (The resync/reflush path has its own caller-side policy — see reflush.)
  */
 export const ATTACH_SNAPSHOT_MIN_BYTES = 256 * 1024;
-
-/** Marker sent after Ring Buffer flush to signal transition to real-time mode. */
-export const FLUSH_DONE_MARKER = Buffer.from('\x00WMUX_FLUSH_DONE\x00');
-
-/**
- * In-band announcement that a live-pipe re-flush is starting (phase 3 PR-B).
- * Written on the ALREADY-FLUSHED stream right before live output is
- * suppressed; everything after it up to the next FLUSH_DONE_MARKER is replay
- * (snapshot or raw) that the client must accumulate exactly like the initial
- * flush. Carrying the state transition in the stream itself is what makes the
- * protocol race-free: no RPC-vs-stream ordering can misclassify bytes.
- */
-export const RESYNC_BEGIN_MARKER = Buffer.from('\x00WMUX_RESYNC_BEGIN\x00');
 
 /**
  * Per-session data pipe for raw byte streaming.
