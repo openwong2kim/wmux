@@ -14,7 +14,7 @@ function makeStore(): ProjectConfigStore {
 
 function writeConfig(dir: string, value: unknown): string {
   fs.mkdirSync(dir, { recursive: true });
-  const p = path.join(dir, 'wmux.json');
+  const p = path.join(dir, 'fmux.json');
   fs.writeFileSync(p, typeof value === 'string' ? value : JSON.stringify(value));
   return p;
 }
@@ -32,7 +32,7 @@ afterEach(() => {
 });
 
 describe('findConfigDir — discovery walk', () => {
-  it('finds wmux.json in the starting directory', () => {
+  it('finds fmux.json in the starting directory', () => {
     const proj = path.join(tmpRoot, 'proj');
     writeConfig(proj, VALID);
     expect(makeStore().findConfigDir(proj)).toBe(proj);
@@ -65,7 +65,7 @@ describe('findConfigDir — discovery walk', () => {
     expect(makeStore().findConfigDir(wt)).toBeNull();
   });
 
-  it('finds wmux.json AT the repo root', () => {
+  it('finds fmux.json at the repo root', () => {
     const repo = path.join(tmpRoot, 'repo');
     fs.mkdirSync(path.join(repo, '.git'), { recursive: true });
     writeConfig(repo, VALID);

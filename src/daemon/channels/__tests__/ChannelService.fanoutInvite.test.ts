@@ -42,7 +42,7 @@ function makeService() {
   return { svc, writer, emit };
 }
 
-describe('T1 — invite memberId=workspaceId After that member's post passes through the gate.', () => {
+describe('T1 — an invited memberId=workspaceId can post through the gate', () => {
   it('CEOIf you create a mission channel and invite a task workspace, the task workspace can send.', async () => {
     const { svc } = makeService();
     // Mission channel is created by the owner workspace.

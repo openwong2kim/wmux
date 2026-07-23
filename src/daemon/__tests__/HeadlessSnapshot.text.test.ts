@@ -33,7 +33,7 @@ describe('generateTextSnapshot (cold-park fallback)', () => {
     expect(texts).toContain('ERROR boom');
     expect(texts).toContain('second line');
     // No escape bytes leaked into the plain text.
-    expect(texts.join('\n')).not.toMatch(/\x1b/);
+    expect(texts.join('\n')).not.toContain(String.fromCharCode(0x1b));
   });
 
   it('is searchable via the renderer search engine (no silent miss)', async () => {

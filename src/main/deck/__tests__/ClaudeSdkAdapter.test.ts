@@ -398,7 +398,7 @@ describe('ClaudeSdkAdapter', () => {
     expect(calls).toHaveLength(1);
     expect(calls[0].options.resume).toBe('sess-disk');
     // Session storage must not key on the (per-version) process cwd.
-    expect(calls[0].options.cwd).toContain('.wmux');
+    expect(calls[0].options.cwd).toContain('.fmux');
     expect(adapter.sessionId).toBe('sess-live');
   });
 

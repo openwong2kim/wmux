@@ -16,7 +16,7 @@ const DEFAULT_CONFIG: HumanBehaviorConfig = {
 
 export class HumanBehavior {
   private config: HumanBehaviorConfig;
-  private dailyActionCount: number = 0;
+  private dailyActionCount = 0;
 
   constructor(config?: Partial<HumanBehaviorConfig>) {
     this.config = { ...DEFAULT_CONFIG, ...config };

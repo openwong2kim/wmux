@@ -107,7 +107,7 @@ export function setLocale(locale: Locale): void {
  * @example
  * t('terminal.exited', { code: 1 }) // "Process exited with code 1"
  */
-export function t(key: TranslationKey | (string & {}), vars?: Record<string, string | number>): string {
+export function t(key: TranslationKey | (string & Record<never, never>), vars?: Record<string, string | number>): string {
   const map = translations[currentLocale];
   const k = key as TranslationKey;
   let str: string = (map[k] ?? translations.en[k] ?? key) as string;

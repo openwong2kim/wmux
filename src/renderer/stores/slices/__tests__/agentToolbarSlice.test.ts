@@ -19,7 +19,7 @@ describe('agentToolbarSlice', () => {
 
   it('adds, updates, removes snippets', () => {
     useStore.getState().addSnippet('Tests', 'write tests for this');
-    let snips = useStore.getState().toolbarSnippets;
+    const snips = useStore.getState().toolbarSnippets;
     expect(snips).toHaveLength(1);
     const id = snips[0].id;
     expect(snips[0]).toMatchObject({ label: 'Tests', text: 'write tests for this' });

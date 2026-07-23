@@ -76,7 +76,7 @@ describe('DaemonNotificationRouter workspace.list cache', () => {
   });
 
   it('invalidateWorkspaceCache() forces the next lookup to refetch', async () => {
-    let t = 1_000_000;
+    const t = 1_000_000;
     const { router } = makeRouter(() => t);
 
     await resolve(router, 'pty-a');

@@ -37,7 +37,7 @@ describe('fs.handler security helpers', () => {
   });
 
   it('treats the daemon auth token path as sensitive', () => {
-    expect(isSensitivePath(path.join(home, '.wmux', 'daemon-auth-token'))).toBe(true);
+    expect(isSensitivePath(path.join(home, '.fmux', 'daemon-auth-token'))).toBe(true);
   });
 
   it('rejects a symlink whose canonical target is sensitive', async () => {
@@ -47,7 +47,7 @@ describe('fs.handler security helpers', () => {
   });
 
   it('rejects a direct sensitive path before canonical lookup', async () => {
-    await expect(resolveAccessiblePath(path.join(home, '.wmux-auth-token'))).resolves.toBeNull();
+    await expect(resolveAccessiblePath(path.join(home, '.fmux-auth-token'))).resolves.toBeNull();
     expect(realpathSpy).not.toHaveBeenCalled();
   });
 

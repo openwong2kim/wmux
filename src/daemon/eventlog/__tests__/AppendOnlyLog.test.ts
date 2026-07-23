@@ -358,7 +358,7 @@ describe('fail-stop: rollback ftruncate failed (3model agreement)', () => {
 });
 
 describe('fail-closed: Boot recovery truncation failure (3model agreement)', () => {
-  it('If you can't cut open()This throw — do not open on bad tail', () => {
+  it('throws when open() cannot truncate a bad tail', () => {
     fs.writeFileSync(seg(1), envLine(1, 1) + 'GARBAGE-tail\n');
     const truncSpy = vi.spyOn(fs, 'truncateSync').mockImplementation(() => {
       /* Simulate worst case where truncate is silently ineffective */

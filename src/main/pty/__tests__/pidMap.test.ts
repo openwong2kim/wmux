@@ -13,7 +13,7 @@ import { writePidMap, removePidMapByPtyId } from '../pidMap';
  * content-keying invariant the whole ghost defense rests on: prune by file
  * CONTENT (ptyId), never by filename (the recyclable OS PID).
  *
- * getPidMapDir() resolves `${USERPROFILE || HOME}/.wmux/pid-map` at call time,
+ * getPidMapDir() resolves `${USERPROFILE || HOME}/.fmux/pid-map` at call time,
  * so we redirect both env vars at a throwaway tmpdir and run the real code.
  */
 describe('pidMap fs primitives', () => {
@@ -30,7 +30,7 @@ describe('pidMap fs primitives', () => {
     // test is platform-independent.
     process.env.USERPROFILE = tmp;
     process.env.HOME = tmp;
-    mapDir = path.join(tmp, '.wmux', 'pid-map');
+    mapDir = path.join(tmp, '.fmux', 'pid-map');
     fs.mkdirSync(mapDir, { recursive: true });
   });
 

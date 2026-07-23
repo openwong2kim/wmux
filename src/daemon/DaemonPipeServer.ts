@@ -44,7 +44,7 @@ export function classifyReclaimProbe(
  */
 export class DaemonPipeServer {
   private server: net.Server | null = null;
-  private authToken: string = '';
+  private authToken = '';
   private readonly handlers = new Map<string, RpcHandler>();
   private readonly connectedSockets = new Set<net.Socket>();
   private readonly rateLimits = new Map<net.Socket, { count: number; resetAt: number }>();

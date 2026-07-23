@@ -356,7 +356,7 @@ describe('DaemonPipeServer', () => {
       // readers resolve via the SAME helper, so read ↔ write agree by
       // construction. Assert the on-disk file at that path carries the token.
       const writtenPath = getDaemonAuthTokenPath();
-      expect(writtenPath.replace(/\\/g, '/')).toContain(`.wmux${suffix}/daemon-auth-token`);
+      expect(writtenPath.replace(/\\/g, '/')).toContain(`.fmux${suffix}/daemon-auth-token`);
       expect(fs.readFileSync(writtenPath, 'utf8').trim()).toBe(token);
 
       // Isolation: the suffixed instance did NOT pollute the shared, unsuffixed

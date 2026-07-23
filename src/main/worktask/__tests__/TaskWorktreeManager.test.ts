@@ -88,7 +88,7 @@ describe('preflight — dedicated root suffix derivation (§3 C4)', () => {
     const res = await mgr.preflight(repoRoot, 'My Task', 'wtask-x-abcd1234');
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(toPosix(res.plan.worktreePath).startsWith(`${toPosix(home)}/.wmux/worktrees/`)).toBe(true);
+    expect(toPosix(res.plan.worktreePath).startsWith(`${toPosix(home)}/.fmux/worktrees/`)).toBe(true);
     expect(toPosix(res.plan.worktreePath).endsWith('/my-task-abcd1234')).toBe(true);
     expect(res.plan.branch).toBe('wtask/my-task-abcd1234');
     // metaDir is outside worktree (.meta) — diff cleanliness.
@@ -104,7 +104,7 @@ describe('preflight — dedicated root suffix derivation (§3 C4)', () => {
     const res = await mgr.preflight(repoRoot, 'T', 'wtask-x-abcd1234');
     expect(res.ok).toBe(true);
     if (!res.ok) return;
-    expect(toPosix(res.plan.worktreePath).startsWith(`${toPosix(home)}/.wmux-dev/worktrees/`)).toBe(true);
+    expect(toPosix(res.plan.worktreePath).startsWith(`${toPosix(home)}/.fmux-dev/worktrees/`)).toBe(true);
     fs.rmSync(repoRoot, { recursive: true, force: true });
   });
 

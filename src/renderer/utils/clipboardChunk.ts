@@ -163,7 +163,7 @@ export async function pastePtyChunked(
   // command. Replace it with the visible symbol U+241B, matching xterm's
   // bracketTextForPaste. Length-preserving (1 unit → 1 unit), so the chunk
   // boundaries and surrogate-pair safety below are unaffected.
-  if (bracketed) normalized = normalized.replace(/\x1b/g, '␛');
+  if (bracketed) normalized = normalized.replaceAll(String.fromCharCode(0x1b), '␛');
   const size = PTY_PASTE_CHUNK_SIZE;
 
   // Fast path: short payload + bracketed mode → single write keeps the wire

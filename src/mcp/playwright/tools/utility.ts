@@ -1,10 +1,10 @@
 import type { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
 import { z } from 'zod';
 import * as fs from 'fs';
-import * as os from 'os';
 import * as path from 'path';
 import { PlaywrightEngine } from '../PlaywrightEngine';
 import { withAutomationLease } from '../automationLease';
+import { getWmuxHomeDir } from '../../../shared/constants';
 
 // Optional surfaceId schema reused across tools
 const optionalSurfaceId = z
@@ -18,7 +18,7 @@ const BROWSER_PDF_SHAPE = {
   path: z
     .string()
     .optional()
-    .describe('Relative output path under ~/.wmux/exports. Defaults to "output.pdf".'),
+    .describe('Relative output path under ~/.fmux/exports. Defaults to "output.pdf".'),
   surfaceId: optionalSurfaceId,
 };
 
@@ -29,12 +29,12 @@ const BROWSER_TRACE_SHAPE = {
   path: z
     .string()
     .optional()
-    .describe('Relative output path under ~/.wmux/exports (used with "stop"). Defaults to "trace.zip".'),
+    .describe('Relative output path under ~/.fmux/exports (used with "stop"). Defaults to "trace.zip".'),
   surfaceId: optionalSurfaceId,
 };
 
 function getExportRoot(): string {
-  const root = path.join(os.homedir(), '.wmux', 'exports');
+  const root = path.join(getWmuxHomeDir(), 'exports');
   if (!fs.existsSync(root)) {
     fs.mkdirSync(root, { recursive: true });
   }
@@ -65,7 +65,7 @@ export function resolveBrowserExportPath(requestedPath: string | undefined, defa
   // resolves (via realpath) outside the export root — catches symlinks
   // planted at intermediate directories. A non-existent leaf is fine; we
   // only care about already-materialised filesystem entries. Without
-  // this, an attacker who can write a symlink under ~/.wmux/exports/
+  // this, an attacker who can write a symlink under ~/.fmux/exports/
   // could redirect a `browser_pdf` write to anywhere on disk.
   let probe = resolved;
   while (probe !== exportRoot && probe !== path.dirname(probe)) {

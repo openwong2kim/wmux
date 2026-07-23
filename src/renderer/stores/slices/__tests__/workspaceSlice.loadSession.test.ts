@@ -194,7 +194,8 @@ function makeBrowserSurfaceTree(url: string): Pane {
   } as unknown as Pane;
 }
 
-// J2 — diff surface tree (no ptyId, only taskId persisted).function makeDiffSurfaceTree(taskId: string): Pane {
+// J2 — diff surface tree (no ptyId, only taskId persisted).
+function makeDiffSurfaceTree(taskId: string): Pane {
   return {
     id: 'pane-root',
     type: 'leaf',
@@ -227,14 +228,16 @@ describe('WorkspaceSlice.loadSession — J2 diff surface restore (zero PTY self-
     } as unknown as SessionData;
 
     store.getState().loadSession(data);
-    // clearAllPtyState is restore fallback path — diff surfaces are not PTY clear targets.    store.getState().clearAllPtyState();
+    // clearAllPtyState is restore fallback path — diff surfaces are not PTY clear targets.
+    store.getState().clearAllPtyState();
 
     const root = store.getState().workspaces[0].rootPane as unknown as {
       surfaces: { ptyId: string; surfaceType?: string; diffTaskId?: string }[];
     };
     const s = root.surfaces[0];
     // Core invariant: ptyId stays empty to avoid PTY self-create path and surfaceType='diff'
-    // preserved so render switch routes to DiffPanel.    expect(s.surfaceType).toBe('diff');
+    // Preserved so the render switch routes to DiffPanel.
+    expect(s.surfaceType).toBe('diff');
     expect(s.ptyId).toBe('');
     expect(s.diffTaskId).toBe('wtask-restore');
   });
@@ -270,9 +273,11 @@ describe('WorkspaceSlice.loadSession — git/review surface cleanup (2026-07-20 
       surfaces: { id: string; surfaceType?: string }[];
       activeSurfaceId: string;
     };
-    // git·review gone; terminal only remains.    expect(root.surfaces.map((s) => s.surfaceType)).toEqual(['terminal']);
+    // Git and Review are gone; only the terminal remains.
+    expect(root.surfaces.map((s) => s.surfaceType)).toEqual(['terminal']);
     expect(root.surfaces.some((s) => s.surfaceType === 'git' || s.surfaceType === 'review')).toBe(false);
-    // activeSurfaceId that pointed at filtered surface re-points to first remaining surface.    expect(root.activeSurfaceId).toBe('term-1');
+    // An activeSurfaceId pointing at a filtered surface moves to the first remaining surface.
+    expect(root.activeSurfaceId).toBe('term-1');
   });
 });
 

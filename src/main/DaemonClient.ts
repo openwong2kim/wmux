@@ -53,10 +53,10 @@ export class DaemonClient extends EventEmitter {
   // Keyed by sessionId, lifecycle-bound to the socket in sessionPipes: created
   // in setupSessionPipe, dropped on socket close/error/disconnect.
   private sessionScanners: Map<string, SessionPipeStreamScanner> = new Map();
-  private connected: boolean = false;
-  private requestId: number = 0;
+  private connected = false;
+  private requestId = 0;
   private pendingRequests: Map<string, PendingRequest> = new Map();
-  private controlBuffer: string = '';
+  private controlBuffer = '';
 
   constructor(
     private pipeName: string,

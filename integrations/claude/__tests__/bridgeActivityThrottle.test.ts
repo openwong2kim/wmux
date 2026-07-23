@@ -90,16 +90,16 @@ describe('shouldThrottleActivity', () => {
 
   it('sanitizes hostile keys into distinct stamp files under the stamp dir', () => {
     const p = stampPathFor('..\\..\\evil/../key');
-    const dir = path.join(fakeHome, '.wmux', 'activity-stamps');
+    const dir = path.join(fakeHome, '.fmux', 'activity-stamps');
     expect(path.dirname(p)).toBe(dir);
     expect(path.basename(p)).toMatch(/^[a-zA-Z0-9_-]+$/);
   });
 
   it('fails open (send) when the stamp dir cannot exist', () => {
     // Occupy the stamp dir's path with a FILE so mkdir/stat/write all fail.
-    const wmuxDir = path.join(fakeHome, '.wmux');
-    mkdirSync(wmuxDir, { recursive: true });
-    writeFileSync(path.join(wmuxDir, 'activity-stamps'), 'not a dir', 'utf8');
+    const fmuxDir = path.join(fakeHome, '.fmux');
+    mkdirSync(fmuxDir, { recursive: true });
+    writeFileSync(path.join(fmuxDir, 'activity-stamps'), 'not a dir', 'utf8');
     expect(shouldThrottle('pty-1')).toBe(false);
     expect(shouldThrottle('pty-1')).toBe(false); // still open on repeat
   });

@@ -167,7 +167,7 @@ describe('T-A2A log reach + evidence reception', () => {
     expect(svc.getTask('task-1')?.status.state).toBe('working');
   });
 
-  it('S-C2: Pain Pin Task + The caller claimed Payne's identity. soft-defer(Fallback to renderer gate)', async () => {
+  it('S-C2: pane-pinned task + caller claiming pane identity soft-defers to the renderer gate', async () => {
     const log = newLog();
     const svc = newService(log);
     await svc.createTask({
@@ -640,7 +640,7 @@ describe('PR-B Completion Proof Gate', () => {
     expect(svc.getTask('task-1')?.status.state).toBe('working');
   });
 
-  it('failed + Reason summary only(items doesn't exist) → ok (asymmetry E3)', async () => {
+  it('failed + reason summary only (no items) succeeds (asymmetry E3)', async () => {
     const log = newLog();
     const svc = newService(log);
     await seedWorkingTask(svc);

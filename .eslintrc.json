@@ -12,5 +12,22 @@
     "plugin:import/electron",
     "plugin:import/typescript"
   ],
-  "parser": "@typescript-eslint/parser"
+  "parser": "@typescript-eslint/parser",
+  "plugins": [
+    "react-hooks"
+  ],
+  "ignorePatterns": [
+    "dist/",
+    ".vite/",
+    "out/"
+  ],
+  "rules": {
+    "@typescript-eslint/no-empty-function": "off",
+    "@typescript-eslint/no-var-requires": "off",
+    "import/no-unresolved": "off",
+    "no-empty": ["error", { "allowEmptyCatch": true }],
+    "no-useless-escape": "off",
+    "react-hooks/rules-of-hooks": "error",
+    "react-hooks/exhaustive-deps": "warn"
+  }
 }

@@ -56,7 +56,7 @@ describe('DaemonNotificationRouter — WorkspaceMirror fast path', () => {
   });
 
   it('mirror hit resolves the ptyId with NO renderer round-trip', async () => {
-    let t = 1_000_000;
+    const t = 1_000_000;
     const mirror = new WorkspaceMirror(() => t);
     mirror.setSnapshot(pushPayload()); // fresh
     const { router } = makeRouter(() => t, mirror);
@@ -67,7 +67,7 @@ describe('DaemonNotificationRouter — WorkspaceMirror fast path', () => {
   });
 
   it('mirror miss (ptyId absent from snapshot) falls back to the cached round-trip', async () => {
-    let t = 1_000_000;
+    const t = 1_000_000;
     const mirror = new WorkspaceMirror(() => t);
     mirror.setSnapshot(pushPayload());
     const { router } = makeRouter(() => t, mirror);
@@ -81,7 +81,7 @@ describe('DaemonNotificationRouter — WorkspaceMirror fast path', () => {
   });
 
   it('empty mirror (never populated) uses the cached round-trip', async () => {
-    let t = 1_000_000;
+    const t = 1_000_000;
     const mirror = new WorkspaceMirror(() => t); // never setSnapshot
     const { router } = makeRouter(() => t, mirror);
 
@@ -101,7 +101,7 @@ describe('DaemonNotificationRouter — WorkspaceMirror fast path', () => {
   });
 
   it('mirror hit does not populate/consume the pull cache — invalidate stays a pull-path concern', async () => {
-    let t = 1_000_000;
+    const t = 1_000_000;
     const mirror = new WorkspaceMirror(() => t);
     mirror.setSnapshot(pushPayload());
     const { router } = makeRouter(() => t, mirror);

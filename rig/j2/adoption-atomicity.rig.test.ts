@@ -92,7 +92,7 @@ describe('J2 adoption atomicity — independent git oracle (design §5)', () => 
     expect(result.endsWith('\n'), 'no trailing newline pollution').toBe(false);
   });
 
-  it('all-or-nothing — bad patch does not touch target at all (atomicity)'', () => {
+  it('all-or-nothing — bad patch does not touch target at all (atomicity)', () => {
     const { repo, wt } = scenario({ 'a.txt': 'l1\nl2\nl3\n' }, { 'a.txt': 'l1\nCHANGED\nl3\n' });
     const diff = g(wt, ['diff']);
     const file = parseUnifiedDiff(diff).files[0];

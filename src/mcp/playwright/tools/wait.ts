@@ -54,7 +54,7 @@ const BROWSER_WAIT_SHAPE = {
  * exactly:
  *   - a single `*` is confined to one path segment (`[^/]*`);
  *   - a "deep" `**` bounded by `/` or the string edge spans zero or more whole
- *     segments and absorbs the following slash, so `/**​/settings` also matches
+ *     segments and absorbs the following slash, so a double-star settings glob also matches
  *     `/settings` (zero segments), not just `/a/b/settings`.
  * Every other character is escaped to a regex literal.
  */

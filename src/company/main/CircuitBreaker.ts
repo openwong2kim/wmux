@@ -97,7 +97,7 @@ export class CircuitBreaker {
   // -------------------------------------------------------------------
 
   /** Start periodic pruning of stale channels. */
-  startCleanup(intervalMs: number = 60_000): void {
+  startCleanup(intervalMs = 60_000): void {
     if (this.cleanupId) return;
 
     this.cleanupId = setInterval(() => {

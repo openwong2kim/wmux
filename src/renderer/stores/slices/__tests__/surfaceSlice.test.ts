@@ -37,7 +37,8 @@ describe('surfaceSlice.addSurface — workspace targeting (#236)', () => {
 
     const ws2Pane = state.workspaces.find((w) => w.id === ws2.id)!.rootPane;
     if (ws2Pane.type !== 'leaf') throw new Error('expected leaf');
-    // Terminal only pushed (2026-07-20 circle restore — Git·Review moved to workspace header tabs).    expect(ws2Pane.surfaces).toHaveLength(1);
+    // Only the terminal is pushed; Git and Review moved to workspace header tabs.
+    expect(ws2Pane.surfaces).toHaveLength(1);
     expect(ws2Pane.surfaces[0].ptyId).toBe('pty-bg');
     expect(ws2Pane.activeSurfaceId).toBe(ws2Pane.surfaces[0].id);
 
@@ -53,7 +54,8 @@ describe('surfaceSlice.addSurface — workspace targeting (#236)', () => {
     slice.addSurface(state.workspaces[0].rootPane.id, 'pty-1', 'pwsh', 'C:\\a');
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf');
-    // Terminal only pushed (circle restore).    expect(pane.surfaces).toHaveLength(1);
+    // Only the terminal is pushed.
+    expect(pane.surfaces).toHaveLength(1);
     expect(pane.surfaces[0].ptyId).toBe('pty-1');
   });
 });
@@ -68,7 +70,8 @@ describe('surfaceSlice.addDiffSurface — J2 4th surface', () => {
     expect(pane.surfaces).toHaveLength(1);
     const s = pane.surfaces[0];
     expect(s.surfaceType).toBe('diff');
-    // No PTY — must not hit self-create path on restore (spec §1 success criterion).    expect(s.ptyId).toBe('');
+    // No PTY: restore must not hit the self-create path.
+    expect(s.ptyId).toBe('');
     expect(s.diffTaskId).toBe('wtask-42');
     expect(s.title).toBe('My Diff');
     expect(pane.activeSurfaceId).toBe(s.id);
@@ -109,7 +112,8 @@ describe('surfaceSlice.addWorkspaceDiffSurface — workspace diff surface', () =
     expect(pane.surfaces).toHaveLength(1);
     const s = pane.surfaces[0];
     expect(s.surfaceType).toBe('diff');
-    // No PTY — must not hit self-create path on restore (same invariant as diffTaskId surfaces).    expect(s.ptyId).toBe('');
+    // No PTY: restore must not hit the self-create path.
+    expect(s.ptyId).toBe('');
     expect(s.diffRepoPath).toBe('D:\\proj\\repo');
     expect(s.diffTaskId).toBeUndefined();
     expect(s.title).toBe('diff: repo');
@@ -146,12 +150,13 @@ describe('surfaceSlice.updateSurfaceCwd', () => {
     const paneId = state.workspaces[0].rootPane.id;
     slice.addSurface(paneId, 'pty-1', 'pwsh', 'C:\\start');
 
-    // Use POSIX path — updateSurfaceCwd rejects shapes impossible on runtime platform (test
-    // runner is POSIX, so Windows paths) (cwdShape guard).    slice.updateSurfaceCwd('pty-1', '/proj/api');
+    // Use the platform-native path shape accepted by the cwdShape guard.
+    const nextCwd = process.platform === 'win32' ? 'D:\\proj\\api' : '/proj/api';
+    slice.updateSurfaceCwd('pty-1', nextCwd);
 
     const pane = state.workspaces[0].rootPane;
     if (pane.type !== 'leaf') throw new Error('expected leaf pane');
-    expect(pane.surfaces[0].cwd).toBe('/proj/api');
+    expect(pane.surfaces[0].cwd).toBe(nextCwd);
   });
 
   it('only touches the surface that owns the ptyId', () => {
