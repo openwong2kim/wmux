@@ -39,6 +39,25 @@ export interface WorkspaceSlice {
   /** P2 — global high-water for stable Workspace.wsOrdinal allocation. Never
    *  decremented; persisted in SessionData so numbers survive restart. */
   nextWorkspaceOrdinal: number;
+  // ─── Cold-park (TASK-9) — renderer-only, NOT persisted ───────────────────
+  // Hidden workspaces idle past a threshold are "parked": WorkspaceViewport
+  // renders a placeholder instead of PaneContainer, unmounting their terminals
+  // (daemon PTY + store row survive). These maps are deliberately NOT part of
+  // workspace metadata — metadata mutations publish over the RPC bus, and park
+  // state is a local view concern that must never leave this renderer.
+  /** Wall-clock ms a workspace was last visible (stamped when it goes hidden).
+   *  Absent while a workspace is visible. */
+  lastVisibleAt: Record<string, number>;
+  /** Set membership (id → true) of currently cold-parked workspaces. */
+  parkedWorkspaceIds: Record<string, true>;
+  /** Immediately un-park a workspace (called synchronously on reveal so the
+   *  same frame renders PaneContainer, not the placeholder). */
+  unparkWorkspace: (id: string) => void;
+  /** Idempotent periodic sweep: stamps newly-hidden workspaces, parks those
+   *  idle past `thresholdMs`, and un-parks/clears any that are visible now.
+   *  Visible = activeWorkspaceId OR a multiview member. Pure w.r.t. current
+   *  state — safe to call on any cadence. */
+  sweepColdPark: (nowTs: number, thresholdMs: number) => void;
   /** Create and activate a new workspace. An optional `profile` is normalized
    * (dropSecretKeys) and attached in the SAME immer set, so pane #1 spawns with
    * profile.startupCwd already present instead of a home fallback (#515). */
@@ -93,6 +112,37 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     workspaces: [initial],
     activeWorkspaceId: initial.id,
     nextWorkspaceOrdinal: 2,
+    lastVisibleAt: {},
+    parkedWorkspaceIds: {},
+
+    unparkWorkspace: (id) => set((state: StoreState) => {
+      if (state.parkedWorkspaceIds[id]) delete state.parkedWorkspaceIds[id];
+      // It's about to be visible — drop its idle stamp so the clock restarts
+      // only once it goes hidden again.
+      if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
+    }),
+
+    sweepColdPark: (nowTs, thresholdMs) => set((state: StoreState) => {
+      const visible = new Set<string>([state.activeWorkspaceId, ...state.multiviewIds]);
+      for (const ws of state.workspaces) {
+        const id = ws.id;
+        if (visible.has(id)) {
+          // Visible now — never parked, no idle clock running.
+          if (state.parkedWorkspaceIds[id]) delete state.parkedWorkspaceIds[id];
+          if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
+          continue;
+        }
+        if (state.parkedWorkspaceIds[id]) continue; // already parked
+        const since = state.lastVisibleAt[id];
+        if (since === undefined) {
+          // First time we observe it hidden — start the idle clock. (Covers
+          // restored-but-never-viewed workspaces, which have no stamp.)
+          state.lastVisibleAt[id] = nowTs;
+        } else if (nowTs - since >= thresholdMs) {
+          state.parkedWorkspaceIds[id] = true;
+        }
+      }
+    }),
 
     addWorkspace: (name, profile) => set((state: StoreState) => {
       let wsName = name;
@@ -303,6 +353,19 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
 
     setActiveWorkspace: (id) => set((state: StoreState) => {
       if (!state.workspaces.some((w: Workspace) => w.id === id)) return;
+      // Cold-park (TASK-9): the outgoing workspace is about to go hidden — start
+      // its idle clock. The incoming one is un-parked synchronously in this same
+      // mutation so WorkspaceViewport renders PaneContainer (not the placeholder)
+      // on the very next frame. The outgoing stamp is skipped if it stays visible
+      // as a multiview member.
+      if (state.parkedWorkspaceIds && state.lastVisibleAt) {
+        const prev = state.activeWorkspaceId;
+        if (prev && prev !== id && !(state.multiviewIds ?? []).includes(prev)) {
+          state.lastVisibleAt[prev] = Date.now();
+        }
+        if (state.parkedWorkspaceIds[id]) delete state.parkedWorkspaceIds[id];
+        if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
+      }
       state.activeWorkspaceId = id;
       // D-teardown: a workspace switch invalidates any marked-region queries
       // the inspect overlay is holding, so exit inspect explicitly rather than
@@ -635,6 +698,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       } else {
         markRetentionMigrationDone();
       }
+      // Cold-park (TASK-9): default ON; only an explicit persisted false opts out.
+      if (typeof data.coldParkEnabled === 'boolean') state.coldParkEnabled = data.coldParkEnabled;
       if (typeof data.startupDirectory === 'string') state.startupDirectory = data.startupDirectory.trim();
       if (data.scrollbackLines != null) state.scrollbackLines = data.scrollbackLines;
       if (data.scrollbackRestoreEnabled != null) state.scrollbackRestoreEnabled = data.scrollbackRestoreEnabled;

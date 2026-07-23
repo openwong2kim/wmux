@@ -104,6 +104,118 @@ export function generateSnapshot(req: SnapshotRequest): Promise<SnapshotOutcome>
   return enqueueSnapshotJob(() => generateInner(req));
 }
 
+/** One physical row of a text snapshot — ANSI already stripped by xterm. */
+export interface TextSnapshotRow {
+  text: string;
+  /** `true` when this row is the soft-wrap continuation of the row above. */
+  wrapped: boolean;
+}
+
+export type TextSnapshotOutcome =
+  | { ok: true; rows: TextSnapshotRow[]; bytesIn: number; durationMs: number }
+  | { ok: false; reason: SnapshotFallbackReason; detail?: string };
+
+/**
+ * Plain-text variant of the snapshot used by the cold-park search/read
+ * fallback (TASK-9): a parked pane has no renderer xterm buffer, so cross-pane
+ * search and `input.readScreen` must read its content from the daemon ring
+ * instead of silently skipping it. Feeds the ring through a headless terminal
+ * (same chunked, budgeted, UTF-8-safe path as `generateInner`) and returns the
+ * parsed grid as physical rows with wrap flags — the renderer rebuilds a
+ * `SearchableBuffer` from these and runs the identical search engine.
+ *
+ * Unlike the ANSI snapshot this never fails on alt-screen/margins: the text of
+ * the visible grid is still the honest answer for a read, and search over it is
+ * strictly better than a silent miss. It only fails on budget/parse errors.
+ * Runs on the shared concurrency-1 queue so it can't multiply peak memory.
+ */
+export function generateTextSnapshot(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
+  return enqueueSnapshotJob(() => generateTextInner(req));
+}
+
+async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
+  const started = Date.now();
+  const budgetMs = req.budgetMs ?? DEFAULT_BUDGET_MS;
+  const scrollback = clamp(req.scrollback ?? DEFAULT_SCROLLBACK, 0, MAX_SCROLLBACK);
+
+  const terminal = new Terminal({
+    cols: req.cols,
+    rows: req.rows,
+    scrollback,
+    allowProposedApi: true,
+    logLevel: 'off',
+  });
+  try {
+    terminal.loadAddon(new Unicode11Addon());
+    terminal.unicode.activeVersion = '11';
+
+    let utf8Carry: Buffer = Buffer.alloc(0);
+    let bytesIn = 0;
+
+    // Mirror generateInner's slice/retreat/carry discipline so an interior
+    // 256 KB boundary through a CJK/emoji char never decodes as U+FFFD.
+    const feed = async (raw: Buffer): Promise<boolean> => {
+      bytesIn += raw.length;
+      const buf = utf8Carry.length > 0 ? Buffer.concat([utf8Carry, raw]) : raw;
+      utf8Carry = Buffer.alloc(0);
+      for (let off = 0; off < buf.length; ) {
+        const end = Math.min(off + FEED_SLICE_BYTES, buf.length);
+        const isFinal = end === buf.length;
+        let slice = buf.subarray(off, end);
+        const pending = incompleteUtf8SuffixLength(slice);
+        if (pending > 0) {
+          slice = slice.subarray(0, slice.length - pending);
+          if (isFinal) {
+            utf8Carry = Buffer.from(buf.subarray(end - pending, end));
+            off = end;
+          } else {
+            off = end - pending;
+          }
+        } else {
+          off = end;
+        }
+        if (slice.length === 0) continue;
+        await new Promise<void>((resolve) => terminal.write(slice.toString('utf8'), resolve));
+        if (Date.now() - started > budgetMs) return false;
+      }
+      return true;
+    };
+
+    if (!(await feed(req.initial))) {
+      return { ok: false, reason: 'budget' };
+    }
+    if (req.drainQueue) {
+      for (;;) {
+        const chunks = req.drainQueue();
+        if (chunks.length === 0) break;
+        for (const chunk of chunks) {
+          if (!(await feed(chunk))) return { ok: false, reason: 'budget' };
+        }
+      }
+    }
+
+    const buffer = terminal.buffer.active;
+    const rows: TextSnapshotRow[] = [];
+    // Walk scrollback + viewport (0 .. baseY + rows). translateToString(true)
+    // strips ANSI and trailing grid whitespace, matching the renderer's read.
+    const limit = buffer.baseY + terminal.rows;
+    for (let i = 0; i < limit; i++) {
+      const line = buffer.getLine(i);
+      if (!line) continue;
+      rows.push({ text: line.translateToString(true), wrapped: i > 0 && line.isWrapped });
+    }
+    return { ok: true, rows, bytesIn, durationMs: Date.now() - started };
+  } catch (err) {
+    return { ok: false, reason: 'error', detail: err instanceof Error ? err.message : String(err) };
+  } finally {
+    try {
+      terminal.dispose();
+    } catch {
+      /* already disposed on some error paths */
+    }
+  }
+}
+
 /**
  * Non-queued variant for callers that already hold the slot via
  * enqueueSnapshotJob (SessionPipe.reflush). Calling this without the slot

@@ -22,6 +22,46 @@ import { resolvePaneAddress, activePaneTerminalPty, decideSameWsSend, isTerminal
 import { resolveWorkspaceTarget } from './workspaceTargeting';
 
 // ---------------------------------------------------------------------------
+// Cold-park (TASK-9) daemon-backed read fallback
+// ---------------------------------------------------------------------------
+//
+// A cold-parked workspace has no renderer xterm buffer (its terminals were
+// unmounted to reclaim RAM), so pane.search and input.readScreen would silently
+// skip its panes. These helpers pull the pane's grid from the daemon ring as
+// plain-text rows and adapt them so the SAME search engine / read path runs —
+// no silent misses (hard AC). Fails soft to null: a legacy daemon, local mode,
+// or a gone session degrades to "skip this pane" exactly as before the feature.
+
+interface DaemonTextRow { text: string; wrapped: boolean }
+
+/** Fetch a parked pane's grid from the daemon as plain-text rows, or null. */
+async function fetchParkedPaneRows(ptyId: string, scrollback?: number): Promise<DaemonTextRow[] | null> {
+  const api = window.electronAPI?.pty;
+  if (!api || typeof api.readText !== 'function') return null; // stale preload
+  try {
+    const res = await api.readText(ptyId, scrollback !== undefined ? { scrollback } : undefined);
+    return res?.success ? res.rows : null;
+  } catch {
+    return null;
+  }
+}
+
+/** Adapt daemon text rows to the SearchableBuffer surface searchInBuffer needs. */
+function rowsToSearchableBuffer(rows: DaemonTextRow[]): SearchableBuffer {
+  return {
+    length: rows.length,
+    getLine(idx: number) {
+      const row = rows[idx];
+      if (!row) return undefined;
+      return {
+        isWrapped: row.wrapped,
+        translateToString: () => row.text,
+      };
+    },
+  };
+}
+
+// ---------------------------------------------------------------------------
 // Pane tree utilities
 // ---------------------------------------------------------------------------
 
@@ -1180,6 +1220,54 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       }
     }
 
+    // ─── Cold-park fallback (TASK-9) ─────────────────────────────────────
+    // Panes in this workspace whose terminals are unmounted (cold-parked) are
+    // absent from terminalRegistry and were skipped above. Read their grid from
+    // the daemon ring so they are still searched — a parked pane must not be a
+    // silent miss (hard AC). Sequential (not Promise.all) so the shared budget
+    // is honored and the daemon's concurrency-1 snapshot queue isn't stormed.
+    const parkedPtyIds = Array.from(ptyToPaneId.keys()).filter((id) => !terminalRegistry.has(id));
+    for (const ptyId of parkedPtyIds) {
+      if (remainingBudget <= 0) { truncated = true; break; }
+      const paneId = ptyToPaneId.get(ptyId);
+      if (!paneId) continue;
+      const rows = await fetchParkedPaneRows(ptyId, 5000);
+      if (!rows) continue; // legacy daemon / local mode / gone session — skip
+      try {
+        const requestedBudget = remainingBudget;
+        const matches = searchInBuffer(
+          rowsToSearchableBuffer(rows),
+          query,
+          { regex, contextLines: 2, perBufferLineCap: 20_000, remainingBudget },
+        );
+        totalMatches += matches.length;
+        for (const m of matches) {
+          const label = ptyToPaneLabel.get(ptyId);
+          results.push({
+            paneId,
+            surfaceId: ptyToSurfaceId.get(ptyId)!,
+            ptyId,
+            lineIdx: m.lineIdx,
+            physicalBaseY: m.physicalBaseY,
+            text: m.text,
+            contextBefore: m.contextBefore,
+            contextAfter: m.contextAfter,
+            ...(label !== undefined && { paneLabel: label }),
+          });
+          remainingBudget--;
+          if (remainingBudget <= 0) break;
+        }
+        if (matches.length === requestedBudget && remainingBudget <= 0) {
+          truncated = true;
+        }
+      } catch (err) {
+        if (err instanceof SyntaxError) {
+          return { error: `pane.search: invalid regex: ${err.message}` };
+        }
+        // Per-pane fallback errors — skip silently, same as the live path.
+      }
+    }
+
     const response: PaneSearchResponse = {
       resultShapeVersion: 1,
       results,
@@ -1249,8 +1337,24 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     }
     if (!ptyId) return { ptyId: null, text: '' };
 
+    const raw = params as Record<string, unknown>;
+
     const terminal = terminalRegistry.get(ptyId);
-    if (!terminal) return { ptyId, text: '' };
+    if (!terminal) {
+      // Cold-park fallback (TASK-9): the pane's terminal is unmounted (parked).
+      // Read its grid from the daemon ring instead of returning empty — an agent
+      // reading a parked pane must see its content, not a silent blank.
+      const rows = await fetchParkedPaneRows(ptyId, 5000);
+      if (!rows) return { ptyId, text: '' }; // legacy daemon / local / gone
+      const texts = rows.map((r) => r.text);
+      if (raw.full_scrollback === true) return { ptyId, text: texts.join('\n') };
+      const rawTailP = raw.tail_lines;
+      const capP =
+        typeof rawTailP === 'number' && Number.isFinite(rawTailP) && rawTailP > 0
+          ? Math.floor(rawTailP)
+          : DEFAULT_READ_TAIL_LINES;
+      return { ptyId, text: texts.slice(-capP).join('\n') };
+    }
 
     // Phase 3 hydrate-before-read — see pane.search above. Agents reading a
     // hidden pane must see its live state, not a retention-stale buffer.
@@ -1268,7 +1372,6 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
     //   - neither              → the last DEFAULT rows, read in O(DEFAULT).
     // The bounded reader never walks past its window, so a 10k-row backlog costs
     // the same as a fresh pane.
-    const raw = params as Record<string, unknown>;
     const fullScrollback = raw.full_scrollback === true;
     if (fullScrollback) {
       // Explicit opt-in to the exact, unbounded read (walk 0..baseY+cursorY).

@@ -1041,6 +1041,39 @@ export function registerPTYHandlers(
     }
   }));
 
+  // pty:readText (TASK-9 cold-park) — plain-text snapshot of a session's grid
+  // from the daemon ring, for the search / readScreen fallback when a workspace
+  // is cold-parked (no renderer xterm buffer). Read-only; never resurrects the
+  // session. Local mode / legacy daemons return { success: false } so the
+  // renderer degrades to "skip this pane" exactly as before the feature.
+  ipcMain.removeHandler(IPC.PTY_READ_TEXT);
+  ipcMain.handle(IPC.PTY_READ_TEXT, wrapHandler(IPC.PTY_READ_TEXT, async (_event: Electron.IpcMainInvokeEvent, id: string, opts?: { scrollback?: number }) => {
+    if (!useDaemon || !daemonClient) {
+      return { success: false, code: 'local-mode' };
+    }
+    const scrollback = opts?.scrollback;
+    try {
+      const res = await daemonClient.rpc('daemon.readSessionText', { id, scrollback }, { timeoutMs: DAEMON_RESYNC_RPC_TIMEOUT_MS }) as {
+        mode: 'rows' | 'unavailable';
+        rows?: Array<{ text: string; wrapped: boolean }>;
+        reason?: string;
+      };
+      if (res.mode === 'rows') {
+        return { success: true, rows: res.rows ?? [] };
+      }
+      return { success: false, code: 'unavailable', reason: res.reason };
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err);
+      if (msg.includes('Unknown method')) {
+        return { success: false, code: 'legacy-daemon' };
+      }
+      if (msg.includes('SESSION_NOT_FOUND')) {
+        return { success: false, code: 'session-gone' };
+      }
+      return { success: false, code: 'rpc-error', reason: msg };
+    }
+  }));
+
   // X8 supervision control — rearm a tripped runaway guard / stop supervision.
   // Renderer-only by design (decision ⑥): only the user re-arms a guard, never
   // an external MCP/CLI client (the daemon RPCs are 'wmux.internal'-gated). Both

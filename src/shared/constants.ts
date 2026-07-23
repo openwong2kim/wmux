@@ -20,6 +20,11 @@ export const IPC = {
   // from PTY_RECONNECT, which opens a fresh socket. Renderer degrades to
   // reconnect against legacy daemons (code:'legacy-daemon').
   PTY_RESYNC: 'pty:resync',
+  // TASK-9 cold-park — read-only PLAIN-TEXT snapshot of a session's grid from
+  // the daemon ring (ANSI stripped, rows + wrap flags). Used by the cross-pane
+  // search / readScreen fallback when a workspace is cold-parked and has no
+  // renderer xterm buffer, so parked panes are searched, never silently skipped.
+  PTY_READ_TEXT: 'pty:readText',
   // X8 pane supervision. PTY_RESTARTED fires when the daemon's PaneSupervisor
   // re-created a session under the SAME id with a fresh PTY (a supervised
   // restart). Distinct from PTY_EXIT — the renderer must re-attach the

@@ -89,6 +89,14 @@ const electronAPI = {
         | { success: true; mode: 'dead-snapshot'; payloadBase64: string; cols: number; rows: number }
         | { success: false; code: string; reason?: string; transient?: boolean }
       >,
+    // TASK-9 cold-park — plain-text grid snapshot of a session from the daemon
+    // ring (ANSI stripped, rows + wrap flags). Backs the search / readScreen
+    // fallback for cold-parked panes that have no renderer xterm buffer.
+    readText: (id: string, opts?: { scrollback?: number }) =>
+      ipcRenderer.invoke(IPC.PTY_READ_TEXT, id, opts) as Promise<
+        | { success: true; rows: Array<{ text: string; wrapped: boolean }> }
+        | { success: false; code: string; reason?: string }
+      >,
     onData: (callback: (id: string, data: string) => void) => {
       const listener = (_event: Electron.IpcRendererEvent, id: string, data: string) => callback(id, data);
       ipcRenderer.on(IPC.PTY_DATA, listener);

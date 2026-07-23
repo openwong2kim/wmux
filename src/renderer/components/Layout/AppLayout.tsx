@@ -48,6 +48,7 @@ import { useDeckStream } from '../../hooks/useDeckStream';
 import { useChannelsEventSubscription } from '../../hooks/useChannelsEventSubscription';
 import { useChannelsHydration } from '../../hooks/useChannelsHydration';
 import { useMissionsPolling } from '../../hooks/useMissionsPolling';
+import { useColdParkSweep } from '../../hooks/useColdParkSweep';
 import { usePaneDecorationChannel } from '../../plugins/usePaneDecorationChannel';
 import { useIpc } from '../../hooks/useIpc';
 import type { SessionData, PaneLeaf, Pane, Surface } from '../../../shared/types';
@@ -229,6 +230,7 @@ function buildSessionData(dumped: Map<string, boolean>): SessionData {
     splitInheritsCwd: state.splitInheritsCwd,
     imeResidueGuardEnabled: state.imeResidueGuardEnabled,
     hiddenPaneRetentionEnabled: state.hiddenPaneRetentionEnabled,
+    coldParkEnabled: state.coldParkEnabled,
     browserLightweightMode: state.browserLightweightMode,
     browserDiscardHidden: state.browserDiscardHidden,
     startupDirectory: state.startupDirectory || undefined,
@@ -378,6 +380,9 @@ export default function AppLayout() {
   // 사이드바 "Missions" 섹션 + FleetCard 미션 라인을 채운다(순수 pull, 성긴 폴링 —
   // useMissionsPolling 헤더 참조).
   useMissionsPolling();
+  // TASK-9 cold-park: sparse sweep that unmounts terminals of long-hidden
+  // workspaces to reclaim renderer RAM (reveal replays from the daemon snapshot).
+  useColdParkSweep();
   // Plugin host (B-1): ui.decoratePane push → uiSlice pane decorations.
   usePaneDecorationChannel();
   const { invoke: ipcInvoke } = useIpc();

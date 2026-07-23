@@ -182,6 +182,14 @@ export interface UISlice {
   hiddenPaneRetentionEnabled: boolean;
   setHiddenPaneRetentionEnabled: (enabled: boolean) => void;
 
+  // TASK-9 cold-park (default ON): hidden workspaces idle past a threshold have
+  // their terminal components unmounted to reclaim renderer RAM (daemon PTY +
+  // store row survive; reveal remounts and replays via the daemon snapshot).
+  // The escape hatch for anyone who prefers instant reveals over RAM. Depends on
+  // daemon-backed sessions — like retention, it's a no-op in local PTY mode.
+  coldParkEnabled: boolean;
+  setColdParkEnabled: (enabled: boolean) => void;
+
   // #517 browser lightweight mode (default OFF while dogfooding): CPU-throttle
   // embedded browser guests that are effectively invisible (hidden workspace /
   // zoom-hidden / minimized window) and not under automation. CPU-only — does
@@ -852,6 +860,14 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   // exactly once.
   hiddenPaneRetentionEnabled: true,
 
+  // TASK-9 cold-park — default ON. Renderer-only view state; the flag itself is
+  // persisted with the rest of uiSlice so a user's opt-out survives restart.
+  coldParkEnabled: true,
+
+  setColdParkEnabled: (enabled) => set((state) => {
+    state.coldParkEnabled = enabled;
+  }),
+
   setHiddenPaneRetentionEnabled: (enabled) => set((state) => {
     state.hiddenPaneRetentionEnabled = enabled;
     // Explicit user intent — stamp the migration ledger so this choice is
@@ -1097,6 +1113,15 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
       }
       if (!state.multiviewIds.includes(wsId)) {
         state.multiviewIds.push(wsId);
+      }
+      // Cold-park (TASK-9): a workspace joining the multiview grid becomes
+      // visible — un-park it synchronously so the tile renders live this frame.
+      // Guarded for tests that mount uiSlice without the workspaceSlice maps.
+      if (state.parkedWorkspaceIds && state.lastVisibleAt) {
+        for (const id of state.multiviewIds) {
+          if (state.parkedWorkspaceIds[id]) delete state.parkedWorkspaceIds[id];
+          if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
+        }
       }
     }
     // If only 1 or 0 left, clear multiview

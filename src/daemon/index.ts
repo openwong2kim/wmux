@@ -6,7 +6,7 @@ import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
-import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob } from './HeadlessSnapshot';
+import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot } from './HeadlessSnapshot';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
@@ -1419,6 +1419,33 @@ function registerRpcHandlers(
       cols: managed.meta.cols,
       rows: managed.meta.rows,
     };
+  });
+
+  // daemon.readSessionText (TASK-9 cold-park) — read-only PLAIN-TEXT snapshot
+  // of a session's grid (scrollback + viewport), ANSI stripped, for the search
+  // / readScreen fallback when a workspace is cold-parked and has no renderer
+  // xterm buffer. Returns physical rows with wrap flags so the renderer can
+  // rebuild a SearchableBuffer and run the identical search engine — no silent
+  // misses. Never resurrects or mutates the session. Works for live, dead, or
+  // suspended sessions (it only reads the ring).
+  pipeServer.onRpc('daemon.readSessionText', async (params) => {
+    const p = params as unknown as { id: string; scrollback?: number };
+    const managed = sessionManager.getSession(p.id);
+    if (!managed) {
+      throw new Error(`SESSION_NOT_FOUND: ${p.id}`);
+    }
+    const scrollback = Math.min(typeof p.scrollback === 'number' ? p.scrollback : 5000, 50_000);
+    const outcome = await generateTextSnapshot({
+      cols: managed.meta.cols,
+      rows: managed.meta.rows,
+      scrollback,
+      initial: managed.ringBuffer.readAll(),
+    });
+    if (!outcome.ok) {
+      log('info', `[readText] session=${p.id} unavailable reason=${outcome.reason}`);
+      return { ok: true, mode: 'unavailable', reason: outcome.reason };
+    }
+    return { ok: true, mode: 'rows', rows: outcome.rows };
   });
 
   // daemon.listSessions

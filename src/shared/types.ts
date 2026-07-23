@@ -643,6 +643,12 @@ export interface SessionData {
    */
   hiddenPaneRetentionEnabled?: boolean;
   /**
+   * TASK-9 cold-park: hidden workspaces idle past a threshold unmount their
+   * terminal components to reclaim renderer RAM (reveal replays from the daemon
+   * snapshot). Default true; this persists an explicit opt-out.
+   */
+  coldParkEnabled?: boolean;
+  /**
    * #517 browser lightweight mode: CPU-throttle effectively-invisible embedded
    * browser guests (automation-leased guests stay full-speed). Default false.
    */
