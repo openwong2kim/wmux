@@ -86,7 +86,7 @@ irreversible actions still come to you. Delete these examples and add your own. 
  * concurrent seed can't clobber. Fire-and-forget from handler init; swallows
  * every failure (a missing policy file just means no policy block).
  */
-export function ensureDeckPolicySeed(dir?: string): void {
+export function ensureDeckPolicySeed(dir: string = getWmuxDir()): void {
   const file = getDeckPolicyPath(dir);
   try {
     if (fs.existsSync(file)) return;
@@ -94,6 +94,12 @@ export function ensureDeckPolicySeed(dir?: string): void {
     return; // can't even stat — do not risk clobbering
   }
   try {
+    // The wmux data dir may not exist yet on a FRESH profile — main's seed can
+    // run before the daemon has created ~/.wmux{suffix} (live dogfood caught
+    // this: on a brand-new WMUX_DATA_SUFFIX the write raced the daemon's dir
+    // creation and lost with a swallowed ENOENT, so no policy ever seeded).
+    // mkdir -p first; recursive create is a no-op when it already exists.
+    fs.mkdirSync(dir, { recursive: true });
     // 'wx' = create-exclusive: fails (caught below) if the file appeared
     // between the existsSync check and here, so we never overwrite.
     fs.writeFileSync(file, POLICY_SEED, { encoding: 'utf8', flag: 'wx' });

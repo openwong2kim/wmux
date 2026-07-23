@@ -77,4 +77,15 @@ describe('ensureDeckPolicySeed', () => {
     ensureDeckPolicySeed(dir); // idempotent, still no overwrite
     expect(fs.readFileSync(getDeckPolicyPath(dir), 'utf8')).toBe(custom);
   });
+
+  it('creates the data dir first when it does not exist yet (fresh-profile race)', () => {
+    // Live dogfood regression: on a brand-new WMUX_DATA_SUFFIX, main's seed can
+    // run before the daemon has created ~/.wmux{suffix}. The write must mkdir -p
+    // its parent, not swallow an ENOENT and silently never seed.
+    const freshDir = path.join(dir, 'not', 'yet', 'created');
+    expect(fs.existsSync(freshDir)).toBe(false);
+    ensureDeckPolicySeed(freshDir);
+    expect(fs.existsSync(getDeckPolicyPath(freshDir))).toBe(true);
+    expect(loadDeckPolicyBlock(freshDir)!).toContain('isolated git worktree');
+  });
 });
