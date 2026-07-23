@@ -961,12 +961,12 @@ describe("regression — yesterday's frozen fork now composes a resolve-first tu
     id: '7c578499-3900-44ab-aac5-21c3286ad6a6',
     question: 'P0(Immediate: wmux web / ttyd 래퍼) 구현을 어디서 진행할까요?',
     options: [
-      'D:\wmux-worktrees\ 에 새 워크트리 생성 후 그 안에서 진행 (권장)',
-      'D:\wmux 메인 체크아웃에서 직접 진행',
-      '이 test2 워크스페이스(D:\test2)에서 프로토타입으로 진행',
+      'D:\\wmux-worktrees\\ 에 새 워크트리 생성 후 그 안에서 진행 (권장)',
+      'D:\\wmux 메인 체크아웃에서 직접 진행',
+      '이 test2 워크스페이스(D:\\test2)에서 프로토타입으로 진행',
     ],
     context:
-      '메모리에 "D:\wmux 메인 체크아웃은 디자인 세션 중 건드리지 말 것, 워크트리는 D:\wmux-worktrees\에" 라는 규칙이 있습니다.',
+      '메모리에 "D:\\wmux 메인 체크아웃은 디자인 세션 중 건드리지 말 것, 워크트리는 D:\\wmux-worktrees\\에" 라는 규칙이 있습니다.',
     status: 'pending' as const,
     raisedAt: 1,
   };

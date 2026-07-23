@@ -248,8 +248,12 @@ describe('send — mid-stream adapter error', () => {
     async *send(): AsyncIterable<never> {
       throw new Error('adapter died mid-turn');
     }
-    interrupt(): void {}
-    dispose(): void {}
+    interrupt(): void {
+      /* no-op fake */
+    }
+    dispose(): void {
+      /* no-op fake */
+    }
   }
 
   it('returns ok:true with code:errored, sinks the error, and goes back to idle', async () => {
