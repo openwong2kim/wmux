@@ -232,7 +232,7 @@ describe('loadConfig — lifecycle backfill + clamp', () => {
   it('REGRESSION #5: memBlockMb below the safe floor → clamped + startup warning (no silent brick)', () => {
     const c0 = createDefaultConfig();
     writeRawConfig({ ...c0, daemon: { ...c0.daemon, memWarnMb: 10, memReapMb: 20, memBlockMb: 30 } });
-    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const warnSpy = vi.spyOn(console, 'warn').mockImplementation(() => { /* silence expected warning */ });
     const c = loadConfig();
     expect(c.daemon.memBlockMb).toBeGreaterThanOrEqual(256); // MEM_BLOCK_FLOOR_MB
     expect(warnSpy).toHaveBeenCalledWith(expect.stringContaining('below the safe floor'));

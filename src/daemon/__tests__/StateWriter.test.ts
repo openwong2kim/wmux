@@ -295,16 +295,29 @@ describe('StateWriter', () => {
       lastActivity: new Date(now - 100 * HOUR).toISOString(),
       exec: { command: 'node server.js' },
     });
+    // supervision is an independent optional field: a supervised plain shell
+    // can carry supervision WITHOUT exec, and must be exempt too.
+    const supervisionOnly = makeSession({
+      id: 'supervision-only-detached',
+      state: 'detached',
+      lastActivity: new Date(now - 100 * HOUR).toISOString(),
+      supervision: {
+        restart: 'on-failure',
+        limit: { burst: 5, healthyUptimeSec: 300 },
+        status: 'armed',
+      },
+    });
     const plain = makeSession({
       id: 'plain-detached',
       state: 'detached',
       lastActivity: new Date(now - 100 * HOUR).toISOString(),
     });
 
-    writer.saveImmediate(makeState([supervised, plain]));
+    writer.saveImmediate(makeState([supervised, supervisionOnly, plain]));
 
     const ids = writer.load().sessions.map((s) => s.id);
     expect(ids).toContain('supervised-detached');
+    expect(ids).toContain('supervision-only-detached');
     expect(ids).not.toContain('plain-detached');
   });
 

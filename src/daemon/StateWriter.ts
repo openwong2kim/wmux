@@ -364,7 +364,10 @@ export class StateWriter {
         // #557: exec/supervised units (X8 reboot-survival) are intentionally
         // long-lived unattached sessions that may sit silent for >8 h. The
         // detached TTL would defeat supervision, so never age them out here.
-        if (s.exec) return true;
+        // exec and supervision are independent optional fields (a supervised
+        // plain shell has supervision without exec), so both must exempt —
+        // matches the supervised-unit predicate in agentResume.ts.
+        if (s.exec || s.supervision) return true;
         return sinceMs < this.detachedTtlHours * 60 * 60 * 1000;
       }
       return true; // attached: in active use, never TTL-reaped

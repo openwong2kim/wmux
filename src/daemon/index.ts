@@ -1129,6 +1129,30 @@ function registerRpcHandlers(
   // J0: WorkTask 미션 채널 정본. 로그 개방 실패 시 null → 미션 RPC fail-closed.
   workTaskService: WorkTaskService | null,
 ): void {
+  // #557: shared teardown for both the explicit daemon.detachSession RPC and
+  // the onClientGone auto-demote timer. Removes the tracked PTY data listener,
+  // stops and drops the SessionPipe, then flips the session to 'detached'.
+  // Without routing the auto-demote through this, that path left the pipe
+  // listening (able to accept a re-authed client on a now-'detached' session)
+  // and leaked the data listener. Callers persist state + log after it returns.
+  const detachAndCleanup = async (id: string): Promise<void> => {
+    const tracked = sessionDataListeners.get(id);
+    if (tracked) {
+      tracked.bridge.removeListener('data', tracked.listener);
+      sessionDataListeners.delete(id);
+    }
+    const pipe = sessionPipes.get(id);
+    if (pipe) {
+      try {
+        await pipe.stop();
+      } catch (err) {
+        log('warn', `Failed to stop session pipe for ${id}:`, err);
+      }
+      sessionPipes.delete(id);
+    }
+    sessionManager.detachSession(id);
+  };
+
   // daemon.createSession
   pipeServer.onRpc('daemon.createSession', async (params) => {
     // B′ auto-replace (Codex #1): shutdown() snapshots the managed-session
@@ -1279,13 +1303,17 @@ function registerRpcHandlers(
         if (orphanTimer) clearTimeout(orphanTimer);
         orphanTimer = setTimeout(() => {
           orphanTimer = null;
-          if (sessionPipes.get(p.id) !== pipe) return; // superseded by a newer pipe
-          if (pipe.hasClient()) return; // a client re-authenticated in the grace window
-          const s = sessionManager.getSession(p.id);
-          if (!s || s.meta.state !== 'attached') return;
-          sessionManager.detachSession(p.id);
-          stateWriter.saveImmediate(buildState(sessionManager));
-          log('info', `[lifecycle] auto-demoted attached→detached id=${p.id} (client gone without detach RPC, grace ${ATTACHED_ORPHAN_GRACE_MS}ms elapsed)`);
+          void (async () => {
+            if (sessionPipes.get(p.id) !== pipe) return; // superseded by a newer pipe
+            if (pipe.hasClient()) return; // a client re-authenticated in the grace window
+            const s = sessionManager.getSession(p.id);
+            if (!s || s.meta.state !== 'attached') return;
+            // Route through the shared teardown so the pipe + data listener are
+            // torn down exactly like an explicit detach — not just the state flip.
+            await detachAndCleanup(p.id);
+            stateWriter.saveImmediate(buildState(sessionManager));
+            log('info', `[lifecycle] auto-demoted attached→detached id=${p.id} (client gone without detach RPC, grace ${ATTACHED_ORPHAN_GRACE_MS}ms elapsed)`);
+          })().catch((err) => log('warn', `auto-demote failed for ${p.id}:`, err));
         }, ATTACHED_ORPHAN_GRACE_MS);
         orphanTimer.unref();
       };
@@ -1332,25 +1360,7 @@ function registerRpcHandlers(
   pipeServer.onRpc('daemon.detachSession', async (params) => {
     const p = params as unknown as DaemonSessionIdParams;
 
-    // Remove data listener to prevent leak
-    const tracked = sessionDataListeners.get(p.id);
-    if (tracked) {
-      tracked.bridge.removeListener('data', tracked.listener);
-      sessionDataListeners.delete(p.id);
-    }
-
-    // Clean up session pipe
-    const pipe = sessionPipes.get(p.id);
-    if (pipe) {
-      try {
-        await pipe.stop();
-      } catch (err) {
-        log('warn', `Failed to stop session pipe for ${p.id}:`, err);
-      }
-      sessionPipes.delete(p.id);
-    }
-
-    sessionManager.detachSession(p.id);
+    await detachAndCleanup(p.id);
 
     const state = buildState(sessionManager);
     stateWriter.saveImmediate(state);
@@ -3945,8 +3955,9 @@ async function main(): Promise<void> {
         // #557: exec/supervised units (X8 reboot-survival) are intentionally
         // long-lived unattached sessions that may sit silent for >8 h. Reaping
         // them would defeat supervision, so skip them here (mirrors the
-        // StateWriter.load exemption).
-        if (managed.meta.exec) continue;
+        // StateWriter.load exemption). exec and supervision are independent
+        // optional fields, so exempt on either.
+        if (managed.meta.exec || managed.meta.supervision) continue;
         const idleSince = new Date(managed.meta.lastActivity).getTime();
         const ttlMs = config.session.detachedTtlHours * 60 * 60 * 1000;
         if (Date.now() - idleSince >= ttlMs) {
