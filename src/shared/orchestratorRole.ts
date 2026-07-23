@@ -1,3 +1,5 @@
+import { launcherStem, tokenize } from './agentResume';
+
 // Orchestrator pane role (soft, operator-assigned "preferred role").
 //
 // A role is a human-set hint attached to a pane's metadata under
@@ -44,4 +46,187 @@ export function readOrchRole(
   // eslint-disable-next-line no-control-regex -- intentional control-char strip
   const cleaned = raw.replace(/[\x00-\x1F\x7F]/g, ' ').trim().slice(0, ORCH_ROLE_MAX);
   return cleaned.length > 0 ? cleaned : undefined;
+}
+
+// ─── D2: Role → agent/model binding (ENFORCED, unlike the soft role hint) ─────
+//
+// A soft role (above) is a routing HINT the orchestrator may ignore. A binding
+// turns a role into policy: "every agent launched in a Reviewer pane runs
+// `codex --model o3`". Enforcement happens at wmux-owned command-assembly time
+// (input.send rewrite is the backbone) — see applyRoleBinding. The map is a
+// GLOBAL operator-level concept (the owner's cross-repo "빌더1 리뷰어2" team),
+// persisted next to deckBrainModel; all roles are unbound until the operator
+// sets them in Settings.
+
+/** A role's enforced launch policy. All fields optional: an empty binding is a
+ *  no-op. `args` is the injection-risk surface — it carries arbitrary launch
+ *  flags — so it is control-char stripped + length-capped at every boundary. */
+export interface RoleBinding {
+  /** Launcher stem this role expects: 'claude' | 'codex' | 'opencode' | 'gemini'.
+   *  When set, the model flag is injected ONLY if the actual launcher matches
+   *  (so a codex model alias is never forced into a claude launch). */
+  agent?: string;
+  /** Model alias/id passed to the agent's model flag, e.g. 'haiku'. */
+  model?: string;
+  /** Extra launch args appended verbatim (advanced). Normalized/capped. */
+  args?: string;
+}
+
+/** Operator-level, cross-workspace. Keyed by role name (ORCH_ROLES ∪ custom). */
+export type OrchestratorRoleBindings = Record<string, RoleBinding>;
+
+/** Per-agent model-flag grammar (sibling of agentResume's RESUME_BY_LAUNCHER).
+ *  ONLY agents whose `--model` grammar is empirically verified live here; an
+ *  absent agent (gemini/aider/opencode) yields a no-op + advisory note rather
+ *  than a guessed, possibly-broken flag. claude + codex `--model <m>` are
+ *  verified in agentResume.test.ts (`codex --model gpt-5.5`, `claude --model`). */
+interface ModelFlagGrammar {
+  /** Render the model flag tokens inserted right after the launcher token. */
+  flag: (model: string) => string;
+}
+const MODEL_FLAG_BY_LAUNCHER: Readonly<Record<string, ModelFlagGrammar>> = {
+  claude: { flag: (m) => `--model ${m}` },
+  codex: { flag: (m) => `--model ${m}` },
+  // opencode/gemini/aider deliberately absent — their `--model` CLI grammar is
+  // NOT verified anywhere in the repo (integrations/ + agentResume both cover
+  // only claude/codex). Binding a role to them is a no-op + note (D-5), never a
+  // fabricated flag. Add them here once their grammar is confirmed.
+};
+
+/** Whether wmux knows how to inject a model flag for a launcher stem. */
+export function launcherSupportsModelFlag(stem: string): boolean {
+  return stem in MODEL_FLAG_BY_LAUNCHER;
+}
+
+/** Max lengths for the binding fields at the normalization boundary. `args` is
+ *  the widest surface (arbitrary flags) so it gets the command-sized cap. */
+export const ROLE_BINDING_AGENT_MAX = 48;
+export const ROLE_BINDING_MODEL_MAX = 64;
+export const ROLE_BINDING_ARGS_MAX = 200;
+/** Cap on how many role→binding entries we persist/read (defensive). */
+export const ROLE_BINDINGS_MAX_ENTRIES = 64;
+
+/** Strip control chars (incl. newline/CR/tab → space), collapse runs of
+ *  whitespace, trim, and length-cap. Shared shape for all binding fields so a
+ *  crafted value can never forge extra command lines when written to a shell.
+ *  Mirrors readOrchRole's control-char posture + normalizeCommand's length cap. */
+function normalizeBindingField(input: unknown, max: number): string | undefined {
+  if (typeof input !== 'string') return undefined;
+  // eslint-disable-next-line no-control-regex -- intentional control-char strip
+  const cleaned = input.replace(/[\x00-\x1F\x7F]/g, ' ').replace(/\s+/g, ' ').trim();
+  if (cleaned.length === 0) return undefined;
+  return cleaned.slice(0, max);
+}
+
+/** Build a clean RoleBinding from untrusted input (Settings write / session.json
+ *  load), or undefined when the result carries no usable field. */
+export function normalizeRoleBinding(input: unknown): RoleBinding | undefined {
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return undefined;
+  const src = input as { agent?: unknown; model?: unknown; args?: unknown };
+  const binding: RoleBinding = {};
+  // Agent normalizes to a launcher stem so it compares cleanly against a live
+  // command's stem (drops a path/extension a hand-edited value might carry).
+  const agentRaw = normalizeBindingField(src.agent, ROLE_BINDING_AGENT_MAX);
+  const agent = agentRaw ? launcherStem(agentRaw) : undefined;
+  const model = normalizeBindingField(src.model, ROLE_BINDING_MODEL_MAX);
+  const args = normalizeBindingField(src.args, ROLE_BINDING_ARGS_MAX);
+  if (agent) binding.agent = agent;
+  if (model) binding.model = model;
+  if (args) binding.args = args;
+  if (binding.agent === undefined && binding.model === undefined && binding.args === undefined) {
+    return undefined;
+  }
+  return binding;
+}
+
+/** Normalize a whole role→binding map from untrusted input: sanitize each role
+ *  key + binding, drop empties, cap the entry count. Never throws. */
+export function normalizeRoleBindings(input: unknown): OrchestratorRoleBindings {
+  const out: OrchestratorRoleBindings = {};
+  if (input === null || typeof input !== 'object' || Array.isArray(input)) return out;
+  let count = 0;
+  for (const [rawKey, rawVal] of Object.entries(input as Record<string, unknown>)) {
+    if (count >= ROLE_BINDINGS_MAX_ENTRIES) break;
+    const key = normalizeBindingField(rawKey, ORCH_ROLE_MAX);
+    if (!key) continue;
+    const binding = normalizeRoleBinding(rawVal);
+    if (!binding) continue;
+    out[key] = binding;
+    count++;
+  }
+  return out;
+}
+
+/** Unquoted tokens that mean an explicit model flag is already present, so the
+ *  rewrite must NOT add a second one (D-4: a manual `--model` wins for that
+ *  launch). Checked on UNQUOTED tokens only, so `claude "explain --model"` is
+ *  not a false match. */
+function hasExplicitModelFlag(tokens: ReturnType<typeof tokenize>): boolean {
+  for (const tkn of tokens) {
+    if (tkn.quoted) continue;
+    if (tkn.value === '--model' || tkn.value.startsWith('--model=') || tkn.value === '-m') {
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
+ * Pure transform: given a launch command + a role's binding, return the command
+ * with the bound agent's model (and any extra args) enforced.
+ *
+ * Rules:
+ *  - No binding, or a binding with neither model nor args → unchanged.
+ *  - `binding.agent` set and the command's launcher stem differs → unchanged
+ *    (the binding targets a different agent; never force a codex model alias
+ *    into a claude launch).
+ *  - `binding.model` set but the launcher has no known `--model` grammar
+ *    (gemini/aider/custom) → unchanged + advisory `note` (D-5).
+ *  - An explicit `--model` already in the (unquoted) command → model NOT
+ *    re-injected (D-4), though `binding.args` may still be appended.
+ *  - Otherwise: inject `--model <m>` right after the launcher token and append
+ *    normalized `binding.args` at the end.
+ *
+ * Idempotent: re-applying never double-adds the model flag (an explicit
+ * `--model` short-circuits) nor the args (guarded by a trailing-match check).
+ */
+export function applyRoleBinding(
+  command: string,
+  binding: RoleBinding | undefined,
+): { command: string; changed: boolean; note?: string } {
+  if (!binding) return { command, changed: false };
+  const model = binding.model?.trim() || undefined;
+  const args = binding.args?.trim() || undefined;
+  if (!model && !args) return { command, changed: false };
+
+  const tokens = tokenize(command);
+  if (tokens.length === 0) return { command, changed: false };
+  const stem = launcherStem(tokens[0].value);
+
+  // Agent gate: a binding that names an agent only applies to that launcher.
+  if (binding.agent && binding.agent !== stem) return { command, changed: false };
+
+  const grammar = MODEL_FLAG_BY_LAUNCHER[stem];
+
+  // Model requested but this launcher has no known flag → no-op + note.
+  if (model && !grammar) {
+    return {
+      command,
+      changed: false,
+      note: `Role bound to model "${model}", but launcher "${stem}" has no known --model flag; launched unchanged.`,
+    };
+  }
+
+  let out = command;
+  // Inject the model flag unless an explicit one is already present (D-4).
+  if (model && grammar && !hasExplicitModelFlag(tokens)) {
+    const at = tokens[0].end;
+    out = `${command.slice(0, at)} ${grammar.flag(model)}${command.slice(at)}`;
+  }
+  // Append extra args verbatim, but only when not already trailing (idempotence).
+  if (args && !out.trimEnd().endsWith(args)) {
+    out = `${out} ${args}`;
+  }
+
+  return { command: out, changed: out !== command };
 }
