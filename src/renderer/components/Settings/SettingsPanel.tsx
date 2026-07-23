@@ -2473,6 +2473,7 @@ const UI_TOKEN_GROUPS: { label: string; tokens: UITokenSpec[] }[] = [
 
 const BASE_ON_OPTIONS: { value: BuiltinThemeId; label: string }[] = [
   { value: 'amber', label: 'Amber' },
+  { value: 'forge', label: 'Forge' },
   { value: 'catppuccin-mocha', label: 'Catppuccin' },
   { value: 'stars-and-stripes', label: 'Stars & Stripes' },
   { value: 'red-dynasty', label: 'Red Dynasty' },

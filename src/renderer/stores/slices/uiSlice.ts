@@ -989,9 +989,9 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
   }),
 
   // ─── Theme ──────────────────────────────────────────────────────────────
-  // Default = the amber design system (owner redesign decision 2026-07-11);
-  // persisted choices in session.json are untouched.
-  theme: 'amber',
+  // Forge is the first-run default; persisted choices in session.json remain
+  // untouched so this does not override an existing user's selected theme.
+  theme: 'forge',
 
   setTheme: (theme) => {
     document.documentElement.setAttribute('data-theme', theme);

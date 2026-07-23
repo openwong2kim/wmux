@@ -13,7 +13,7 @@ import { luminance, getContrastRatio } from '../tailwindPalette';
 
 describe('themes — 10-token system', () => {
   const builtinIds: BuiltinThemeId[] = [
-    'catppuccin-mocha', 'monochrome', 'stars-and-stripes', 'red-dynasty',
+    'amber', 'forge', 'catppuccin-mocha', 'monochrome', 'stars-and-stripes', 'red-dynasty',
     'nightowl', 'void', 'hinomaru', 'taegeuk',
   ];
 
@@ -81,6 +81,27 @@ describe('themes — 10-token system', () => {
     });
   });
 
+  describe('forge theme — comfortable dark contrast', () => {
+    it('keeps all three text tiers readable without a near-black base', () => {
+      const { bgBase, textMain, textSub, textMuted } = UI_THEME_TOKENS.forge;
+      expect(bgBase).toBe('#171513');
+      expect(getContrastRatio(textMain, bgBase)).toBeGreaterThanOrEqual(7);
+      expect(getContrastRatio(textSub, bgBase)).toBeGreaterThanOrEqual(4.5);
+      expect(getContrastRatio(textMuted, bgBase)).toBeGreaterThanOrEqual(3);
+    });
+
+    it('keeps terminal diff and diagnostic colors independent from orange', () => {
+      const ui = UI_THEME_TOKENS.forge;
+      const terminal = XTERM_PALETTES.forge;
+      expect(terminal.cursor).toBe(ui.accent);
+      expect(terminal.green).toBe(ui.success);
+      expect(terminal.red).toBe(ui.danger);
+      expect(new Set([terminal.cursor, terminal.green, terminal.red, terminal.yellow]).size).toBe(4);
+      expect(getContrastRatio(terminal.green, terminal.background)).toBeGreaterThanOrEqual(4.5);
+      expect(getContrastRatio(terminal.red, terminal.background)).toBeGreaterThanOrEqual(4.5);
+    });
+  });
+
   describe('deriveFullPalette — 10 → 17 expansion', () => {
     it('preserves manual tokens and derives the rest', () => {
       const ui = UI_THEME_TOKENS['catppuccin-mocha'];
@@ -125,6 +146,8 @@ describe('themes — 10-token system', () => {
       // don't vanish into a red / light base. themeParity.test.ts locks these
       // values against globals.css.
       const DISTINCT_LINK_ACCENT: Record<string, string> = {
+        amber: '#6E9BC4',
+        forge: '#79A6BD',
         'red-dynasty': '#6AA0CC',
         hinomaru: '#1C4D6A',
         nightowl: '#7FA6C9',

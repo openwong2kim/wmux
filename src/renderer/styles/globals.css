@@ -61,9 +61,9 @@
 /* Amber — the redesign default (designs/design-system-20260711). Warm
  * graphite neutrals + ONE amber for action/focus/attention; success/danger
  * keep muted green/red for status semantics, warning IS the amber.
- * `:root` rides this block so the pre-hydration frame already paints the
- * default theme (index.tsx sets data-theme from the store before render). */
-:root, [data-theme="amber"] {
+ * Forge owns `:root` as the first-paint default; this block remains available
+ * to users who explicitly select Amber. */
+[data-theme="amber"] {
   --bg-base: #151517;
   --bg-mantle: #19191C;
   --bg-surface: #202024;
@@ -83,6 +83,31 @@
   --accent-blue-rgb: 110, 155, 196;
   --bg-surface-rgb: 32, 32, 36;
   --bg-base-rgb: 21, 21, 23;
+}
+
+/* Forge — comfortable charcoal-brown dark mode. Ember orange is reserved for
+ * alive/action cues, steel-blue carries navigation, and semantic status colors
+ * remain distinct for diffs and terminal diagnostics. */
+:root, [data-theme="forge"] {
+  --bg-base: #171513;
+  --bg-mantle: #1C1916;
+  --bg-surface: #25211D;
+  --bg-overlay: #302B26;
+  --text-muted: #766D64;
+  --text-subtle: #968C82;
+  --text-sub: #B6AA9D;
+  --text-sub2: #D0C7BE;
+  --text-main: #EAE4DE;
+  --accent: #F08A3C;
+  --accent-cursor: #F08A3C;
+  --accent-blue: #79A6BD;
+  --accent-green: #86B978;
+  --accent-red: #DB746A;
+  --accent-yellow: #D4AA5F;
+  --accent-rgb: 240, 138, 60;
+  --accent-blue-rgb: 121, 166, 189;
+  --bg-surface-rgb: 37, 33, 29;
+  --bg-base-rgb: 23, 21, 19;
 }
 
 /* Hinomaru — light theme. Text colors are DARK on the cream background.

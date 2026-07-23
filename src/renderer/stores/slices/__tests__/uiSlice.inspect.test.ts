@@ -25,7 +25,7 @@ vi.mock('../../../themes', () => ({
   migrateCustomThemeColors: (c: unknown) => c,
   builtinToCustom: (id: string) => ({ bgBase: `seed-${id}`, xtermPaletteId: 'catppuccin-mocha' }),
   UI_THEME_TOKENS: {
-    amber: {}, 'catppuccin-mocha': {}, monochrome: {}, 'stars-and-stripes': {}, 'red-dynasty': {},
+    amber: {}, forge: {}, 'catppuccin-mocha': {}, monochrome: {}, 'stars-and-stripes': {}, 'red-dynasty': {},
     nightowl: {}, void: {}, hinomaru: {}, taegeuk: {},
   },
 }));
@@ -65,13 +65,13 @@ describe('UISlice — enterInspect (D-builtin seed + D-exclusive)', () => {
   beforeEach(() => { store = createUIStore(); });
 
   it('seeds a custom theme + switches to custom when entering from a built-in', () => {
-    // Default theme is 'amber' (a built-in) — entering must seed.
-    expect(store.getState().theme).toBe('amber');
+    // Default theme is 'forge' (a built-in) — entering must seed.
+    expect(store.getState().theme).toBe('forge');
     store.getState().enterInspect();
 
     expect(store.getState().theme).toBe('custom');
     expect(store.getState().customThemeColors).toEqual({
-      bgBase: 'seed-amber',
+      bgBase: 'seed-forge',
       xtermPaletteId: 'catppuccin-mocha', // mock builtinToCustom's fixed palette id
     });
     expect(store.getState().inspectModeActive).toBe(true);

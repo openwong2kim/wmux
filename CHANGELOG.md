@@ -128,6 +128,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- **Forge is the new default theme, providing a comfortable, balanced dark mode for long sessions.** Warm charcoal surfaces avoid both harsh near-black contrast and washed-out gray, ember-orange highlights mark action and activity, and terminal/diff semantics keep dedicated green, red, yellow, blue, and cyan colors. Existing saved theme choices remain unchanged.
+
 - **Per-pane agent memory, live in Fleet View.** Each pane's card now shows the resident memory of the agent process running in it (the CLI plus any child it spawned), attributed from the process tree and refreshed on the existing Fleet-View liveness batch — no extra polling while the panel is closed. Makes it obvious at a glance which session is the heavy one when the machine gets tight.
 
 - **Groundwork for installing the per-account usage statusline from within the app.** The statusline setup logic (`wmux setup-statusline`) is now exposed to the renderer through IPC handlers (`statusline:bridge:status` / `statusline:bridge:install`), mirroring the hooks bridge pattern, so an upcoming Settings UI can let an app-only user (winget/Setup.exe) who never opens a terminal discover and enable it. No user-facing UI ships yet with this change. Same explicit user-click constraint as hooks: never auto-run at boot. (#555)

@@ -7,7 +7,7 @@ export type { XtermThemeColors };
 // ─── Theme IDs ─────────────────────────────────────────────────────────────
 
 export type BuiltinThemeId =
-  | 'amber'
+  | 'amber' | 'forge'
   | 'catppuccin-mocha' | 'monochrome' | 'stars-and-stripes'
   | 'red-dynasty' | 'nightowl' | 'void'
   | 'hinomaru' | 'taegeuk';
@@ -18,6 +18,7 @@ export type ThemeId = BuiltinThemeId | 'custom';
 // override their custom theme palette independently of the UI tokens.
 export type XtermPaletteId =
   | 'amber-graphite'
+  | 'forge'
   | 'catppuccin-mocha'
   | 'tokyo-night'
   | 'one-dark'
@@ -38,6 +39,16 @@ export const XTERM_PALETTES: Record<XtermPaletteId, XtermThemeColors> = {
     blue: '#8AAEE0', magenta: '#C79BC7', cyan: '#8FBFB2', white: '#BDBAB4',
     brightBlack: '#5C5A55', brightRed: '#E28A8A', brightGreen: '#A8D19A', brightYellow: '#E2C687',
     brightBlue: '#A6C3EA', brightMagenta: '#D7B3D7', brightCyan: '#A8D1C6', brightWhite: '#EFEEEC',
+  },
+  // Forge: a low-glare charcoal-brown terminal with clear semantic ANSI
+  // colors. Orange belongs to the cursor/action identity; diffs and shell
+  // diagnostics retain independent green, red, yellow, blue, and cyan hues.
+  forge: {
+    background: '#141210', foreground: '#D6CEC5', cursor: '#F08A3C', selectionBackground: '#45372C',
+    black: '#2B2723', red: '#DB746A', green: '#86B978', yellow: '#D4AA5F',
+    blue: '#79A6BD', magenta: '#B98EAD', cyan: '#78B5AD', white: '#D6CEC5',
+    brightBlack: '#71685F', brightRed: '#E89289', brightGreen: '#A3CE98', brightYellow: '#E4C17E',
+    brightBlue: '#98BED0', brightMagenta: '#CDAAC3', brightCyan: '#98CCC5', brightWhite: '#F2ECE6',
   },
   'catppuccin-mocha': {
     background: '#1E1E2E', foreground: '#CDD6F4', cursor: '#F5E0DC', selectionBackground: '#585B70',
@@ -142,6 +153,11 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
     textMain: '#EFEEEC', textSub: '#A5A29C', textMuted: '#66645F',
     accent: '#E8A33D', accentSecondary: '#6E9BC4', success: '#8FBF7F', danger: '#D96C6C', warning: '#E8A33D', // 2-accent (owner 2026-07-15): amber = alive/attention, steel-blue --accent-blue = navigation/interactive
   },
+  forge: {
+    bgBase: '#171513', bgSurface: '#25211D', bgMantle: '#1C1916',
+    textMain: '#EAE4DE', textSub: '#B6AA9D', textMuted: '#766D64',
+    accent: '#F08A3C', accentSecondary: '#79A6BD', success: '#86B978', danger: '#DB746A', warning: '#D4AA5F',
+  },
   'catppuccin-mocha': {
     bgBase: '#1E1E2E', bgSurface: '#313244', bgMantle: '#181825',
     textMain: '#CDD6F4', textSub: '#BAC2DE', textMuted: '#585B70', // SSOT: authentic Catppuccin Surface2 (matches shipped globals.css)
@@ -189,6 +205,7 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
 // Which xterm palette each built-in theme uses for terminal rendering.
 export const BUILTIN_XTERM_PALETTE: Record<BuiltinThemeId, XtermPaletteId> = {
   amber: 'amber-graphite',
+  forge: 'forge',
   'catppuccin-mocha': 'catppuccin-mocha',
   monochrome: 'monochrome',
   'stars-and-stripes': 'one-dark',
@@ -265,6 +282,7 @@ export function deriveFullPalette(tokens: UIThemeTokens): FullCssPalette {
 // edits are never pinned to a stale override.
 export const BUILTIN_CSS_OVERRIDES: Partial<Record<BuiltinThemeId, Partial<FullCssPalette>>> = {
   amber: { bgOverlay: '#28282D', textSubtle: '#85827B' },
+  forge: { bgOverlay: '#302B26', textSubtle: '#968C82', textSub2: '#D0C7BE' },
   'catppuccin-mocha': { bgOverlay: '#45475A', textSubtle: '#6C7086', textSub2: '#A6ADC8', accentCursor: '#F5E0DC' },
   monochrome: { bgOverlay: '#2A2A2A', textSubtle: '#606060', textSub2: '#888888', accentCursor: '#FFFFFF' },
   'stars-and-stripes': { bgOverlay: '#2A3E5A', textSubtle: '#4A6080', textSub2: '#8090A8', accentCursor: '#E89B4A' }, // 2-accent: orange-gold alive, distinct from pale-gold warning (accent stays blue = nav)
@@ -319,6 +337,7 @@ for (const id of Object.keys(UI_THEME_TOKENS) as BuiltinThemeId[]) {
 // its only consumer, stopped reading it.)
 export const THEME_OPTIONS: Array<{ value: ThemeId; label: string }> = [
   { value: 'amber',             label: 'Amber' },
+  { value: 'forge',             label: 'Forge' },
   { value: 'catppuccin-mocha',  label: 'Catppuccin' },
   { value: 'stars-and-stripes', label: 'Stars & Stripes' },
   { value: 'red-dynasty',       label: 'Red Dynasty' },
@@ -332,6 +351,7 @@ export const THEME_OPTIONS: Array<{ value: ThemeId; label: string }> = [
 
 export const XTERM_PALETTE_OPTIONS: Array<{ value: XtermPaletteId; label: string }> = [
   { value: 'amber-graphite',   label: 'Amber Graphite' },
+  { value: 'forge',            label: 'Forge' },
   { value: 'catppuccin-mocha', label: 'Catppuccin Mocha' },
   { value: 'tokyo-night',      label: 'Tokyo Night' },
   { value: 'one-dark',         label: 'One Dark' },

@@ -104,7 +104,7 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
         // bgBase (not mantle): the overlay strip sits on the titlebar's right
         // half, which is bgBase — the renderer re-pushes the live theme's
         // value on boot/theme-change via window:setTitleBarOverlay anyway.
-        titleBarOverlay: { color: '#151517', symbolColor: '#A5A29C', height: 36 },
+        titleBarOverlay: { color: '#171513', symbolColor: '#B6AA9D', height: 36 },
       },
       mac: {
         titleBarStyle: 'hidden',
@@ -112,9 +112,9 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
       },
       default: {},
     }),
-    // Matches the amber (default) theme's bgBase so the first paint doesn't
-    // flash a foreign color behind the renderer (was catppuccin '#1e1e2e').
-    backgroundColor: '#151517',
+    // Matches the Forge default theme's bgBase so the first paint doesn't
+    // flash a foreign color behind the renderer.
+    backgroundColor: '#171513',
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

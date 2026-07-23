@@ -120,6 +120,10 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   `#E08A57`, violet `#9E8CFF`, cyan `#5FB6C9`, green `#8FBF7F`. Amber kept for
   now; revisit freely — it is a 1-line change plus themes.
 - Dark is primary. Light themes (hinomaru/taegeuk) follow the same grammar.
+- **Forge theme (default, 2026-07-23):** comfortable charcoal-brown dark surfaces,
+  ember orange for alive/action, muted steel-blue for navigation, and dedicated
+  semantic ANSI colors. Green/red remain independent for diffs and terminal
+  status; the orange identity never replaces them.
 
 ## Typography
 
