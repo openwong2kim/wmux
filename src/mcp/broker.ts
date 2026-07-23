@@ -66,6 +66,9 @@ function tokenMatches(presented: string | undefined, expected: string): boolean 
 
 let connSeq = 0;
 
+/** How long a connection may sit without completing the wmuxShim handshake. */
+const HANDSHAKE_TIMEOUT_MS = 10_000;
+
 async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Promise<void> {
   const connId = ++connSeq;
   const scope: ConnectionScope = createConnectionScope();
@@ -164,6 +167,15 @@ function main(): void {
     let buffer = Buffer.alloc(0);
     const MAX_HANDSHAKE = 8 * 1024;
 
+    // Auth deadline: a local client can connect and send nothing, holding the
+    // socket open forever. Destroy any socket that hasn't delivered its
+    // handshake line within the window; cleared the moment the line arrives.
+    const authTimer = setTimeout(() => {
+      console.error('[wmux-mcp-broker] handshake timeout, dropping connection');
+      socket.destroy();
+    }, HANDSHAKE_TIMEOUT_MS);
+    socket.once('close', () => clearTimeout(authTimer));
+
     const onData = (chunk: Buffer) => {
       buffer = Buffer.concat([buffer, chunk]);
       const nl = buffer.indexOf(0x0a);
@@ -176,6 +188,7 @@ function main(): void {
       }
 
       socket.removeListener('data', onData);
+      clearTimeout(authTimer); // handshake line received — deadline satisfied
       socket.pause();
 
       let handshake: ShimHandshake | null = null;

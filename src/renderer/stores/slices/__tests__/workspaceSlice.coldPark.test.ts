@@ -86,6 +86,27 @@ describe('WorkspaceSlice cold-park', () => {
     expect(store.getState().parkedWorkspaceIds[wsB.id]).toBeUndefined();
   });
 
+  it('un-parks a parked workspace that gains a non-terminal surface', () => {
+    const store = createTestStore([wsA, wsB], wsA.id);
+    const t0 = 1_000_000;
+    store.getState().sweepColdPark(t0, THRESHOLD);
+    store.getState().sweepColdPark(t0 + THRESHOLD, THRESHOLD);
+    expect(store.getState().parkedWorkspaceIds[wsB.id]).toBe(true);
+    // A browser.open targeting the parked workspace adds a webview surface — the
+    // next sweep must unpark it so the surface mounts (not blank until reveal).
+    store.setState((s) => {
+      const leaf = s.workspaces.find((w) => w.id === wsB.id)!.rootPane;
+      if (leaf.type === 'leaf') {
+        leaf.surfaces.push({
+          id: 'surf-browser', ptyId: '', title: 'b', shell: '', cwd: '',
+          surfaceType: 'browser', browserUrl: 'https://example.com',
+        });
+      }
+    });
+    store.getState().sweepColdPark(t0 + THRESHOLD * 2, THRESHOLD);
+    expect(store.getState().parkedWorkspaceIds[wsB.id]).toBeUndefined();
+  });
+
   it('setActiveWorkspace un-parks the incoming workspace synchronously', () => {
     const store = createTestStore([wsA, wsB], wsA.id);
     // Park B.

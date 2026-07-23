@@ -34,14 +34,17 @@ import { findActivePtyId, collectAllPtyIds, buildWorkspaceListEntries } from './
 // or a gone session degrades to "skip this pane" exactly as before the feature.
 
 interface DaemonTextRow { text: string; wrapped: boolean }
+interface ParkedPaneRead { rows: DaemonTextRow[]; truncated: boolean }
 
-/** Fetch a parked pane's grid from the daemon as plain-text rows, or null. */
-async function fetchParkedPaneRows(ptyId: string, scrollback?: number): Promise<DaemonTextRow[] | null> {
+/** Fetch a parked pane's grid from the daemon as plain-text rows, or null.
+ *  `truncated` is true when the daemon dropped oldest rows to fit the RPC frame
+ *  budget — the caller propagates it so coverage is reported as incomplete. */
+async function fetchParkedPaneRows(ptyId: string, scrollback?: number): Promise<ParkedPaneRead | null> {
   const api = window.electronAPI?.pty;
   if (!api || typeof api.readText !== 'function') return null; // stale preload
   try {
     const res = await api.readText(ptyId, scrollback !== undefined ? { scrollback } : undefined);
-    return res?.success ? res.rows : null;
+    return res?.success ? { rows: res.rows, truncated: res.truncated === true } : null;
   } catch {
     return null;
   }
@@ -1180,18 +1183,20 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       // Request the renderer's configured scrollback depth (daemon clamps to
       // MAX_SCROLLBACK) — a hard 5000 would miss the older half of a 10k buffer
       // while still reporting truncated:false.
-      const rows = await fetchParkedPaneRows(ptyId, store.scrollbackLines);
-      if (!rows) {
+      const read = await fetchParkedPaneRows(ptyId, store.scrollbackLines);
+      if (!read) {
         // Legacy daemon / local mode / gone session: this parked pane could not
         // be read, so coverage is incomplete — flag truncated so callers know
         // the result set is partial rather than treating it as authoritative.
         truncated = true;
         continue;
       }
+      // The daemon dropped oldest rows to fit the RPC frame → partial coverage.
+      if (read.truncated) truncated = true;
       try {
         const requestedBudget = remainingBudget;
         const matches = searchInBuffer(
-          rowsToSearchableBuffer(rows),
+          rowsToSearchableBuffer(read.rows),
           query,
           { regex, contextLines: 2, perBufferLineCap: 20_000, remainingBudget },
         );
@@ -1299,15 +1304,20 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       // Cold-park fallback (TASK-9): the pane's terminal is unmounted (parked).
       // Read its grid from the daemon ring instead of returning empty — an agent
       // reading a parked pane must see its content, not a silent blank.
-      const rows = await fetchParkedPaneRows(ptyId, store.scrollbackLines);
-      if (!rows) return { ptyId, text: '' }; // legacy daemon / local / gone
-      const texts = rows.map((r) => r.text);
-      if (raw.full_scrollback === true) return { ptyId, text: texts.join('\n') };
+      const wantsFull = raw.full_scrollback === true;
       const rawTailP = raw.tail_lines;
       const capP =
         typeof rawTailP === 'number' && Number.isFinite(rawTailP) && rawTailP > 0
           ? Math.floor(rawTailP)
           : DEFAULT_READ_TAIL_LINES;
+      // Request only as deep as the read needs: a bounded tail read fetches
+      // `capP` rows, not the whole configured scrollback — avoids the big daemon
+      // payload for the common case. full_scrollback opts into the full depth.
+      const depth = wantsFull ? store.scrollbackLines : capP;
+      const read = await fetchParkedPaneRows(ptyId, depth);
+      if (!read) return { ptyId, text: '' }; // legacy daemon / local / gone
+      const texts = read.rows.map((r) => r.text);
+      if (wantsFull) return { ptyId, text: texts.join('\n') };
       return { ptyId, text: texts.slice(-capP).join('\n') };
     }
 

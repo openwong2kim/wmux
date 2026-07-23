@@ -138,6 +138,31 @@ export function generateTextSnapshot(req: SnapshotRequest): Promise<TextSnapshot
   return enqueueSnapshotJob(() => generateTextInner(req));
 }
 
+/** Per-row JSON overhead estimate for `{"text":"…","wrapped":false},`. */
+const TEXT_ROW_JSON_OVERHEAD = 28;
+
+/**
+ * Cap serialized text rows to a byte budget for the control-pipe frame limit
+ * (DaemonPipeServer/DaemonClient MAX_LINE_BUFFER is 1 MiB and CLEARS on
+ * overflow — an oversized readSessionText response would time out and come back
+ * empty). Drops the OLDEST rows (front) until the estimated JSON size fits,
+ * since the tail is the most relevant, and reports whether it trimmed.
+ */
+export function capTextRowsToFrameBudget(
+  rows: TextSnapshotRow[],
+  maxBytes: number,
+): { rows: TextSnapshotRow[]; truncated: boolean } {
+  let total = 0;
+  for (const r of rows) total += r.text.length + TEXT_ROW_JSON_OVERHEAD;
+  if (total <= maxBytes) return { rows, truncated: false };
+  let drop = 0;
+  while (drop < rows.length && total > maxBytes) {
+    total -= rows[drop].text.length + TEXT_ROW_JSON_OVERHEAD;
+    drop++;
+  }
+  return { rows: rows.slice(drop), truncated: true };
+}
+
 async function generateTextInner(req: SnapshotRequest): Promise<TextSnapshotOutcome> {
   const started = Date.now();
   const budgetMs = req.budgetMs ?? DEFAULT_BUDGET_MS;

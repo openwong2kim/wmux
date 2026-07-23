@@ -94,7 +94,7 @@ const electronAPI = {
     // fallback for cold-parked panes that have no renderer xterm buffer.
     readText: (id: string, opts?: { scrollback?: number }) =>
       ipcRenderer.invoke(IPC.PTY_READ_TEXT, id, opts) as Promise<
-        | { success: true; rows: Array<{ text: string; wrapped: boolean }> }
+        | { success: true; rows: Array<{ text: string; wrapped: boolean }>; truncated?: boolean }
         | { success: false; code: string; reason?: string }
       >,
     onData: (callback: (id: string, data: string) => void) => {

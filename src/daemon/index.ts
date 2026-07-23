@@ -6,7 +6,7 @@ import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
-import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot } from './HeadlessSnapshot';
+import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget } from './HeadlessSnapshot';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
 import { LanLinkInbox } from './lanlink/inbox';
@@ -1448,7 +1448,16 @@ function registerRpcHandlers(
       log('info', `[readText] session=${p.id} unavailable reason=${outcome.reason}`);
       return { ok: true, mode: 'unavailable', reason: outcome.reason };
     }
-    return { ok: true, mode: 'rows', rows: outcome.rows };
+    // Frame budget: keep the JSON response under the 1 MiB control-pipe frame
+    // limit (leaving envelope headroom) by dropping oldest rows; see
+    // capTextRowsToFrameBudget. Without this a parked pane with 10k+ rows blows
+    // the frame and the RPC times out to empty.
+    const MAX_ROWS_BYTES = 700 * 1024;
+    const capped = capTextRowsToFrameBudget(outcome.rows, MAX_ROWS_BYTES);
+    if (capped.truncated) {
+      log('info', `[readText] session=${p.id} response truncated to fit frame budget (${outcome.rows.length} rows)`);
+    }
+    return { ok: true, mode: 'rows', rows: capped.rows, truncated: capped.truncated };
   });
 
   // daemon.listSessions

@@ -165,7 +165,16 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
           if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
           continue;
         }
-        if (state.parkedWorkspaceIds[id]) continue; // already parked
+        if (state.parkedWorkspaceIds[id]) {
+          // Already parked — but a parked workspace can GAIN a non-terminal
+          // surface (e.g. browser.open targeting it), which would never mount
+          // until manual reveal. Re-check and unpark so the new surface renders.
+          if (!isTerminalOnlyWorkspace(ws)) {
+            delete state.parkedWorkspaceIds[id];
+            if (state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
+          }
+          continue;
+        }
         // Never park a workspace holding a browser/editor/diff surface — those
         // carry live state a terminal doesn't (no daemon ring to replay from).
         if (!isTerminalOnlyWorkspace(ws)) continue;
@@ -497,6 +506,14 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
     loadSession: (data: SessionData) => set((state: StoreState) => {
       if (!data.workspaces || data.workspaces.length === 0) return;
 
+      // Cold-park is renderer-only and non-persisted. loadSession replaces the
+      // whole workspace list, so any parked/idle-clock entry keyed to an id no
+      // longer in the new list would linger forever (the sweep only iterates
+      // current workspaces). Reset both maps — the sweep re-derives park state
+      // for the restored workspaces from scratch.
+      state.parkedWorkspaceIds = {};
+      state.lastVisibleAt = {};
+
       // Security + correctness: sanitize surfaces.
       //
       // HISTORICAL CONTEXT (Pre-Fix-0):
@@ -596,9 +613,6 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
 
       state.workspaces = data.workspaces;
       state.activeWorkspaceId = data.activeWorkspaceId;
-      // Cold-park is renderer-only and not persisted, but a re-entrant loadSession
-      // could run against a live parked set — keep the restored active visible.
-      clearColdParkEntry(state, state.activeWorkspaceId);
       state.sidebarVisible = data.sidebarVisible;
 
       // ── P2 hydration backfill (checklist F) ──────────────────────────────

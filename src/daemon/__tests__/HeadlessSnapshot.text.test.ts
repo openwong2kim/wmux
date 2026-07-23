@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { generateTextSnapshot } from '../HeadlessSnapshot';
+import { generateTextSnapshot, capTextRowsToFrameBudget } from '../HeadlessSnapshot';
 import { searchInBuffer, type SearchableBuffer } from '../../renderer/utils/searchEngine';
 
 // ── Cold-park text snapshot (TASK-9) ────────────────────────────────
@@ -78,5 +78,31 @@ describe('generateTextSnapshot (cold-park fallback)', () => {
     expect(outcome.ok).toBe(false);
     if (outcome.ok) return;
     expect(outcome.reason).toBe('budget');
+  });
+});
+
+describe('capTextRowsToFrameBudget (readSessionText frame budget)', () => {
+  it('leaves rows untouched when under the cap', () => {
+    const rows = Array.from({ length: 100 }, (_, i) => ({ text: `line ${i}`, wrapped: false }));
+    const out = capTextRowsToFrameBudget(rows, 700 * 1024);
+    expect(out.truncated).toBe(false);
+    expect(out.rows.length).toBe(100);
+  });
+
+  it('drops OLDEST rows to fit the cap and reports truncated', () => {
+    // 20k rows of ~100 chars each ≈ 2.5 MB serialized — well over the frame cap.
+    const rows = Array.from({ length: 20_000 }, (_, i) => ({
+      text: `row ${String(i).padStart(6, '0')} ${'x'.repeat(90)}`,
+      wrapped: false,
+    }));
+    const CAP = 700 * 1024;
+    const out = capTextRowsToFrameBudget(rows, CAP);
+    expect(out.truncated).toBe(true);
+    // Estimated serialized size stays under the cap.
+    const est = out.rows.reduce((n, r) => n + r.text.length + 28, 0);
+    expect(est).toBeLessThanOrEqual(CAP);
+    // The TAIL is kept (most relevant) — the last row survives, an early one is gone.
+    expect(out.rows[out.rows.length - 1].text).toContain('row 019999');
+    expect(out.rows.some((r) => r.text.includes('row 000000'))).toBe(false);
   });
 });
