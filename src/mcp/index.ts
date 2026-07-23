@@ -962,7 +962,7 @@ server.tool(
 
 server.tool(
   'deck_ask_decision',
-  'Pause your working loop and ask the human operator to make a decision you should NOT make yourself — an ambiguous requirement, a risky or irreversible action, or a genuine choice between approaches. Your loop STOPS and will not auto-advance until the human answers; the pending decision survives an app restart or reboot, so the human can answer later and you will resume from here. After calling this, END YOUR TURN and do not act further. Use only for real forks — never for routine progress updates or questions you can resolve yourself.',
+  'Pause your working loop and ask the human operator to make a decision you should NOT make yourself — an ambiguous requirement, a risky or irreversible action, or a genuine choice between approaches. Before calling this, check the binding policy rules / standing conventions / your memory — if one settles the question, act on it instead of asking; a question whose answer you can already cite is NOT a decision for the human. Your loop STOPS and will not auto-advance until the human answers; the pending decision survives an app restart or reboot, so the human can answer later and you will resume from here. After calling this, END YOUR TURN and do not act further. Use only for real forks — never for routine progress updates or questions you can resolve yourself.',
   DECK_ASK_DECISION_SHAPE,
   async ({ question, options, context }) => {
     // Only the commander brain has WMUX_COMMANDER_TOKEN; a non-commander caller

@@ -184,7 +184,16 @@ vi.mock('../../../deck/deckDecisionStore', () => ({
   ),
 }));
 
-import { registerDeckHandler, buildFleetTailLine } from '../deck.handler';
+// Policy channel: controllable in-memory block; seed is a no-op so tests never
+// touch the real ~/.wmux/deck-policy.md. Default null = no policy file present.
+let mockPolicyBlock: string | null = null;
+vi.mock('../../../deck/deckPolicy', () => ({
+  loadDeckPolicyBlock: vi.fn(() => mockPolicyBlock),
+  ensureDeckPolicySeed: vi.fn(() => undefined),
+  getDeckPolicyPath: vi.fn(() => '/fake/deck-policy.md'),
+}));
+
+import { registerDeckHandler, buildFleetTailLine, renderAutonomyBlock } from '../deck.handler';
 import { IPC } from '../../../../shared/constants';
 import type { FleetSnapshot } from '../../../workspace/WorkspaceMirror';
 import { eventBus } from '../../../events/EventBus';
@@ -228,6 +237,7 @@ beforeEach(() => {
   decisions.clear();
   capWrites.length = 0;
   mockMode = 'assist';
+  mockPolicyBlock = null;
   schedules = [];
   scheduleSeq = 0;
   adapters = [];
@@ -662,8 +672,12 @@ describe('deck:send × auto-wake race — the loop-stall guard (dogfood finding 
 
 describe('loop-state block on the brain wire', () => {
   it('human DECK_SEND carries the loop block when a loop exists — and not otherwise', async () => {
+    // The resting mode is 'assist', so every turn now leads with an [autonomy]
+    // block; the typed text still tails it, and the loop block only rides when
+    // a loop exists.
     await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'no loop yet' });
-    expect(adapters[0].sentTexts[0]).toBe('no loop yet');
+    expect(adapters[0].sentTexts[0].endsWith('no loop yet')).toBe(true);
+    expect(adapters[0].sentTexts[0]).not.toContain('[loop] objective');
 
     await invoke(IPC.DECK_LOOP_START, { workspaceId: 'ws-1', objective: 'keep green' });
     // START now fires a fire-and-forget kickoff turn — let it settle so the
@@ -671,8 +685,78 @@ describe('loop-state block on the brain wire', () => {
     await new Promise((r) => setTimeout(r, 20));
     await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'progress?' });
     const last = adapters[0].sentTexts.at(-1)!;
-    expect(last.startsWith('[loop] objective: keep green')).toBe(true);
+    expect(last).toContain('[loop] objective: keep green');
     expect(last.endsWith('progress?')).toBe(true);
+  });
+});
+
+describe('decision authority — [autonomy] + [policy] framing on the brain wire', () => {
+  it('renderAutonomyBlock: auto grants authority, assist recommends, off is silent', () => {
+    expect(renderAutonomyBlock('auto')).toContain('DECISION AUTHORITY');
+    const assist = renderAutonomyBlock('assist')!;
+    expect(assist).toContain('report and recommend');
+    expect(assist).not.toContain('DECISION AUTHORITY');
+    expect(renderAutonomyBlock('off')).toBeNull();
+  });
+
+  it('an auto turn leads with the auto autonomy block; the typed text tails it', async () => {
+    mockMode = 'auto';
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'go' });
+    const sent = adapters[0].sentTexts[0];
+    expect(sent).toContain('[autonomy] mode: auto');
+    expect(sent).toContain('DECISION AUTHORITY');
+    expect(sent.endsWith('go')).toBe(true);
+  });
+
+  it('an assist turn carries the assist block (no authority claim)', async () => {
+    mockMode = 'assist';
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'go' });
+    const sent = adapters[0].sentTexts[0];
+    expect(sent).toContain('[autonomy] mode: assist');
+    expect(sent).not.toContain('DECISION AUTHORITY');
+  });
+
+  it('an off workspace gets NO autonomy or policy block — no ambient instructions', async () => {
+    mockMode = 'off';
+    mockPolicyBlock = '## Operator policy (BINDING standing rules)\n- rule';
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'plain' });
+    expect(adapters[0].sentTexts[0]).toBe('plain');
+  });
+
+  it('policy is injected for auto AND ordered autonomy → policy → decision', async () => {
+    mockMode = 'auto';
+    mockPolicyBlock = '## Operator policy (BINDING standing rules)\n- worktree rule';
+    decisions.set('ws-1', {
+      id: 'd1',
+      question: 'A or B?',
+      options: [],
+      context: '',
+      status: 'pending',
+      raisedAt: 1,
+    });
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'decide' });
+    const sent = adapters[0].sentTexts[0];
+    const iAuto = sent.indexOf('[autonomy]');
+    const iPolicy = sent.indexOf('## Operator policy');
+    const iDecision = sent.indexOf('[decision] BLOCKED');
+    expect(iAuto).toBeGreaterThanOrEqual(0);
+    expect(iPolicy).toBeGreaterThan(iAuto);
+    expect(iDecision).toBeGreaterThan(iPolicy);
+    expect(sent.endsWith('decide')).toBe(true);
+  });
+
+  it('policy is injected for assist too', async () => {
+    mockMode = 'assist';
+    mockPolicyBlock = '## Operator policy (BINDING standing rules)\n- some rule';
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'x' });
+    expect(adapters[0].sentTexts[0]).toContain('## Operator policy');
+  });
+
+  it('off mode skips the policy block even when deck-policy.md exists', async () => {
+    mockMode = 'off';
+    mockPolicyBlock = '## Operator policy (BINDING standing rules)\n- rule';
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'x' });
+    expect(adapters[0].sentTexts[0]).not.toContain('Operator policy');
   });
 });
 
@@ -854,7 +938,8 @@ describe('global concurrent-turn gate — the fleet-wide cap on autonomous turns
     const humanSend = invoke(IPC.DECK_SEND, { workspaceId: 'ws-3', text: 'hello from the human' });
     await new Promise((r) => setTimeout(r, 15));
     const ws3 = adapters.find((a) => a.workspaceId === 'ws-3');
-    expect(ws3?.sentTexts).toContain('hello from the human');
+    // The typed text tails the [autonomy] block (assist), so match on suffix.
+    expect(ws3?.sentTexts.some((t) => t.endsWith('hello from the human'))).toBe(true);
 
     releasers.forEach((r) => r());
     await humanSend;

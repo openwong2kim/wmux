@@ -27,6 +27,7 @@ import { ClaudeSdkAdapter, buildCommanderSystemPrompt, resolveMcpBundlePath } fr
 import { AcpBrainAdapter } from '../../deck/AcpBrainAdapter';
 import type { BrainVendor } from '../../../shared/types';
 import { getMemoryRootDir } from '../../deck/commanderMemory';
+import { loadDeckPolicyBlock, ensureDeckPolicySeed } from '../../deck/deckPolicy';
 import {
   CommanderSessionManager,
   type CommanderSendResult,
@@ -136,6 +137,32 @@ export function buildFleetTailLine(snapshot: FleetSnapshot | null): string | und
   // Just the counts — no "heartbeat will review" clause, which would be a lie
   // whenever the heartbeat is disabled (3-way review P3).
   return `(fleet: ${parts.join(', ')})`;
+}
+
+/**
+ * The per-turn `[autonomy]` block: tells the brain what DECISION AUTHORITY its
+ * current mode carries, so it reads the policy/decision/loop blocks below it in
+ * the right frame. Mode is read FRESH each turn (a Settings flip applies without
+ * a restart). `off` workspaces get NO block — an off workspace should never
+ * receive ambient-turn instructions. Pure + exported for unit testing.
+ */
+export function renderAutonomyBlock(mode: AgentMode): string | null {
+  switch (mode) {
+    case 'auto':
+      return (
+        '[autonomy] mode: auto — you have DECISION AUTHORITY. Resolve forks yourself from ' +
+        'binding policy rules, standing conventions, and memory; escalate via ' +
+        'deck_ask_decision ONLY a genuine residual fork none of those settles (or a risky/' +
+        'irreversible action).'
+      );
+    case 'assist':
+      return (
+        '[autonomy] mode: assist — report and recommend; do not drive panes beyond your ' +
+        'caps. Escalate genuine forks via deck_ask_decision.'
+      );
+    case 'off':
+      return null;
+  }
 }
 
 export function registerDeckHandler(
@@ -308,12 +335,28 @@ export function registerDeckHandler(
   // to write `passes` and `done` does not suppress wakes in v1 (owner decision:
   // the human stops the loop).
   const withLoopContext = (workspaceId: string, text: string): string => {
+    // Mode is read fresh here (not cached) so a Settings flip between turns
+    // takes effect immediately — same rationale as the heartbeat's per-tick read.
+    const mode = loadWorkspaceMode(workspaceId);
     const decision = loadWorkspaceDecision(workspaceId);
     const loop = loadWorkspaceLoopState(workspaceId);
     const blocks: string[] = [];
-    // The decision block LEADS — a blocked (or just-resolved) decision is the
-    // most urgent trusted context for this turn. Both survive a reboot as
-    // atomic JSON, so a resumed brain re-reads exactly where it paused.
+    // The [autonomy] block LEADS — it frames how the brain should read everything
+    // below it (whether it has authority to resolve the policy/decision itself).
+    // `off` returns null (no ambient instructions for an off workspace).
+    const autonomy = renderAutonomyBlock(mode);
+    if (autonomy) blocks.push(autonomy);
+    // Binding operator policy next: the standing rules that let the brain resolve
+    // a fork itself instead of escalating (and, in assist, guide what it
+    // recommends). Injected for auto AND assist; never for off. Read fresh (the
+    // operator can edit deck-policy.md between turns). Fail-open → no block.
+    if (mode !== 'off') {
+      const policy = loadDeckPolicyBlock();
+      if (policy) blocks.push(policy);
+    }
+    // Then the decision block — a blocked (or just-resolved) decision is the most
+    // urgent trusted context. Both decision + loop survive a reboot as atomic
+    // JSON, so a resumed brain re-reads exactly where it paused.
     if (decision) blocks.push(renderDecisionBlock(decision));
     if (loop) blocks.push(renderLoopStateBlock(loop));
     if (blocks.length === 0) return text;
@@ -742,6 +785,16 @@ export function registerDeckHandler(
     intervalMs: heartbeatConfig.intervalMs,
   });
   heartbeat.start();
+
+  // Seed the binding operator-policy file once (never overwrites an existing
+  // one). Fire-and-forget: a missing policy file just means no policy block, so
+  // a failure here is harmless. Done at init so the file exists for the operator
+  // to edit before their first autonomous turn.
+  try {
+    ensureDeckPolicySeed();
+  } catch {
+    /* best-effort — deckPolicy already swallows its own IO errors */
+  }
 
   ipcMain.removeHandler(IPC.DECK_SCHEDULES_LIST);
   ipcMain.handle(
@@ -1199,7 +1252,10 @@ export function registerDeckHandler(
   // resolution so the brain continues from exactly where it paused.
   const DECISION_RESUME_PROMPT =
     'The operator just resolved the decision you raised (see the [decision] block above). ' +
-    'Act on their answer now and continue — take the next concrete step, then end the turn.';
+    'Act on their answer now and continue — take the next concrete step, then end the turn. ' +
+    'If their resolution corrects your judgment or cites a rule you missed, persist a short ' +
+    'memory fact about it (per your memory-write policy) so you do not re-raise that class ' +
+    'of question.';
 
   ipcMain.removeHandler(IPC.DECK_DECISION_GET);
   ipcMain.handle(

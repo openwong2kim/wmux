@@ -23,6 +23,14 @@ vi.mock('../../../deck/commanderSessionStore', () => ({
   saveCommanderSession: vi.fn(async () => undefined),
 }));
 
+// Keep the handler hermetic: no policy file read, and — critically — the init
+// seed must not write deck-policy.md into the real wmux dir during unit tests.
+vi.mock('../../../deck/deckPolicy', () => ({
+  loadDeckPolicyBlock: vi.fn(() => null),
+  ensureDeckPolicySeed: vi.fn(() => undefined),
+  getDeckPolicyPath: vi.fn(() => '/fake/deck-policy.md'),
+}));
+
 import { registerDeckHandler } from '../deck.handler';
 import { IPC } from '../../../../shared/constants';
 import type { BrainAdapter, BrainEvent, BrainStartOptions } from '../../../deck/BrainAdapter';

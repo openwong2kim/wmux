@@ -331,6 +331,26 @@ describe('ClaudeSdkAdapter', () => {
     expect(prompt).toContain('Never type a fake prompt');
   });
 
+  it('encodes a resolve-first decision boundary (check policy/conventions/memory first)', () => {
+    const prompt = buildCommanderSystemPrompt();
+    // The resolve-first PROCEDURE, in order (the prompt wraps across lines, so
+    // match the load-bearing tokens rather than a contiguous phrase).
+    expect(prompt).toContain('RESOLVE BEFORE YOU ESCALATE');
+    expect(prompt).toContain('[policy]');
+    expect(prompt).toContain('binding policy rules');
+    expect(prompt).toContain('recalled memory');
+    // The old positive trigger no longer stands alone unqualified: "a genuine
+    // choice between approaches" is now bound to "WHERE NO standing rule ...".
+    expect(prompt).toMatch(/genuine choice between approaches WHERE NO standing rule or convention/);
+    expect(prompt).toContain('a standing rule already answers is NOT a genuine choice');
+    // Mechanics preserved.
+    expect(prompt).toContain('END YOUR TURN');
+    expect(prompt).toContain('survives an app');
+    expect(prompt).toContain('routine progress updates');
+    // Learnings loop: persist an operator correction so it is not re-raised.
+    expect(prompt).toContain('If the operator corrects an escalation you raised');
+  });
+
   it('GLM profile injects the compatible base-url / auth-token', async () => {
     const calls: Array<{ options: Record<string, unknown> }> = [];
     const adapter = new ClaudeSdkAdapter({
