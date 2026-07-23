@@ -91,12 +91,33 @@ describe('themes — 10-token system', () => {
       expect(getContrastRatio(textMuted, bgBase)).toBeGreaterThanOrEqual(3);
     });
 
-    it('does not recolor shell-owned prompts or cwd segments', () => {
+    it('keeps terminal diff and diagnostic colors independent from orange', () => {
+      const ui = UI_THEME_TOKENS.forge;
       const terminal = XTERM_THEMES.forge;
-      expect(terminal).toBe(XTERM_PALETTES['catppuccin-mocha']);
+      expect(terminal).toBe(XTERM_PALETTES.forge);
+      expect(terminal.cursor).toBe(ui.accent);
+      expect(terminal.green).toBe(ui.success);
+      expect(terminal.red).toBe(ui.danger);
       expect(new Set([terminal.cursor, terminal.green, terminal.red, terminal.yellow]).size).toBe(4);
       expect(getContrastRatio(terminal.green, terminal.background)).toBeGreaterThanOrEqual(4.5);
       expect(getContrastRatio(terminal.red, terminal.background)).toBeGreaterThanOrEqual(4.5);
+    });
+  });
+
+  describe('monochrome chrome — semantic terminal colors', () => {
+    it.each(['monochrome', 'void'] as const)('%s keeps PS1 and status ANSI colors distinct', (id) => {
+      const terminal = XTERM_THEMES[id];
+      expect(terminal).toBe(XTERM_PALETTES.monochrome);
+      expect(new Set([
+        terminal.foreground,
+        terminal.red,
+        terminal.green,
+        terminal.yellow,
+        terminal.blue,
+        terminal.cyan,
+      ]).size).toBe(6);
+      expect(getContrastRatio(terminal.green, terminal.background)).toBeGreaterThanOrEqual(4.5);
+      expect(getContrastRatio(terminal.blue, terminal.background)).toBeGreaterThanOrEqual(4.5);
     });
   });
 

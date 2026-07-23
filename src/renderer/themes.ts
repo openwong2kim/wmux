@@ -40,9 +40,9 @@ export const XTERM_PALETTES: Record<XtermPaletteId, XtermThemeColors> = {
     brightBlack: '#5C5A55', brightRed: '#E28A8A', brightGreen: '#A8D19A', brightYellow: '#E2C687',
     brightBlue: '#A6C3EA', brightMagenta: '#D7B3D7', brightCyan: '#A8D1C6', brightWhite: '#EFEEEC',
   },
-  // Optional Forge terminal palette for custom themes. The built-in Forge UI
-  // deliberately keeps Catppuccin below so changing chrome does not recolor
-  // shell-owned prompts, cwd segments, or other ANSI terminal content.
+  // Forge: a low-glare charcoal-brown terminal with clear semantic ANSI
+  // colors. Orange belongs to the cursor/action identity; diffs and shell
+  // diagnostics retain independent green, red, yellow, blue, and cyan hues.
   forge: {
     background: '#141210', foreground: '#D6CEC5', cursor: '#F08A3C', selectionBackground: '#45372C',
     black: '#2B2723', red: '#DB746A', green: '#86B978', yellow: '#D4AA5F',
@@ -94,10 +94,10 @@ export const XTERM_PALETTES: Record<XtermPaletteId, XtermThemeColors> = {
   },
   monochrome: {
     background: '#080808', foreground: '#E0E0E0', cursor: '#FFFFFF', selectionBackground: '#2A2A2A',
-    black: '#2A2A2A', red: '#FF5555', green: '#909090', yellow: '#C0C0C0',
-    blue: '#A0A0A0', magenta: '#999999', cyan: '#888888', white: '#B0B0B0',
-    brightBlack: '#404040', brightRed: '#FF5555', brightGreen: '#B0B0B0', brightYellow: '#D0D0D0',
-    brightBlue: '#B0B0B0', brightMagenta: '#AAAAAA', brightCyan: '#999999', brightWhite: '#888888',
+    black: '#2A2A2A', red: '#DB746A', green: '#86B978', yellow: '#D4AA5F',
+    blue: '#79A6BD', magenta: '#B98EAD', cyan: '#78B5AD', white: '#B0B0B0',
+    brightBlack: '#55504B', brightRed: '#E89289', brightGreen: '#A3CE98', brightYellow: '#E4C17E',
+    brightBlue: '#98BED0', brightMagenta: '#CDAAC3', brightCyan: '#98CCC5', brightWhite: '#E0E0E0',
   },
   'sandstone-light': {
     background: '#FAF8F5', foreground: '#2A2522', cursor: '#2A2522', selectionBackground: '#D4CFC6',
@@ -205,7 +205,7 @@ export const UI_THEME_TOKENS: Record<BuiltinThemeId, UIThemeTokens> = {
 // Which xterm palette each built-in theme uses for terminal rendering.
 export const BUILTIN_XTERM_PALETTE: Record<BuiltinThemeId, XtermPaletteId> = {
   amber: 'amber-graphite',
-  forge: 'catppuccin-mocha',
+  forge: 'forge',
   'catppuccin-mocha': 'catppuccin-mocha',
   monochrome: 'monochrome',
   'stars-and-stripes': 'one-dark',

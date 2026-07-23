@@ -114,7 +114,9 @@ discipline, Zed's quiet chrome, Codex's instrument footer.)
   row + the global footer chip). Never three.
 - **Terminal content owns its ANSI palette** (`amber-graphite` terminal theme):
   diffs/success are green, errors red — never theme-accent-colored. This keeps
-  the hero visually separate from the chrome.
+  the hero visually separate from the chrome. Monochrome and Void apply their
+  colorless identity to application chrome only; terminal ANSI semantics remain
+  colored and distinct.
 - **Hue is swappable by design:** the entire focus/accent identity hangs on the
   single `accent` token. Candidate alternates evaluated 2026-07-11: copper
   `#E08A57`, violet `#9E8CFF`, cyan `#5FB6C9`, green `#8FBF7F`. Amber kept for
