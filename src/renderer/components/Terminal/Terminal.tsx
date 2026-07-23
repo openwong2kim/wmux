@@ -347,7 +347,9 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         flexDirection: 'column',
         width: '100%',
         height: '100%',
+        minHeight: 0,
         position: 'relative',
+        overflow: 'hidden',
       }}
     >
       {/* Session restore overlay */}
@@ -375,7 +377,7 @@ export default function TerminalComponent({ ptyId: externalPtyId, shell, cwd, on
         draggable={false}
         onDragOver={handleTerminalDragOver}
         onDrop={handleTerminalDrop}
-        style={{ width: '100%', height: '100%', padding: '4px' }}
+        style={{ width: '100%', height: '100%', minHeight: 0, padding: '4px', overflow: 'hidden' }}
       />
 
       {/* Scrollback bookmark markers on the left edge */}
