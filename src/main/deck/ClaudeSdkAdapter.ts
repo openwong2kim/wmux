@@ -314,8 +314,9 @@ const DEFAULT_MAX_TURNS = 48;
 /**
  * Resolve the wmux MCP stdio bundle the brain mounts. Mirrors
  * McpRegistrar.getMcpScriptPath: packaged → resources/mcp-bundle/index.js (with
- * the legacy fallback); dev → dist/mcp/mcp/index.js, walking up a few parents so
- * a worktree / nested cwd still finds the repo's build output. Returns null when
+ * the legacy fallback); dev → dist/mcp/mcp/entry.js (the stdio boot; index.js is
+ * now a side-effect-free factory), walking up a few parents so a worktree /
+ * nested cwd still finds the repo's build output. Returns null when
  * no bundle exists (the deck then runs the brain with NO fleet tools, rather
  * than crashing — surfaced as a startup warning by the caller).
  */
@@ -328,13 +329,13 @@ export function resolveMcpBundlePath(): string | null {
     return null;
   }
   const appPath = app.getAppPath();
-  const devPath = path.join(appPath, 'dist', 'mcp', 'mcp', 'index.js');
+  const devPath = path.join(appPath, 'dist', 'mcp', 'mcp', 'entry.js');
   if (fs.existsSync(devPath)) return devPath;
   let current = appPath;
   for (let i = 0; i < 5; i++) {
     const parent = path.resolve(current, '..');
     if (parent === current) break;
-    const candidate = path.join(parent, 'dist', 'mcp', 'mcp', 'index.js');
+    const candidate = path.join(parent, 'dist', 'mcp', 'mcp', 'entry.js');
     if (fs.existsSync(candidate)) return candidate;
     current = parent;
   }

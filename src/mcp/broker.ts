@@ -77,6 +77,12 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
       `envHints=${handshake.envWorkspaceHint ? 'ws' : ''}${handshake.envPtyHint ? '+pty' : ''}`,
   );
 
+  // Hoisted so the socket lifecycle handlers below can close the transport when
+  // the shim exits. StdioServerTransport.onclose does NOT fire from the socket
+  // closing on its own, so without this the per-connection server and its
+  // Playwright/CDP session would leak on every shim disconnect.
+  let transport: StdioServerTransport | null = null;
+
   await runInConnectionScope(scope, async () => {
     const server = createWmuxServer({
       envWorkspaceHint: handshake.envWorkspaceHint || '',
@@ -93,7 +99,7 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
 
     // The remaining socket bytes are line-framed MCP JSON-RPC — exactly what
     // StdioServerTransport speaks; it accepts any Readable/Writable pair.
-    const transport = new StdioServerTransport(socket, socket);
+    transport = new StdioServerTransport(socket, socket);
     await server.connect(transport);
 
     // server.connect wired transport.onmessage/onclose/onerror. Re-wrap them
@@ -119,6 +125,19 @@ async function hostConnection(socket: net.Socket, handshake: ShimHandshake): Pro
   });
 
   socket.on('error', (err) => log(`socket error: ${err.message}`));
+
+  // A shim exit closes the socket but does not, on its own, fire the MCP
+  // transport's onclose — so drive it explicitly. transport.close() invokes the
+  // wrapped onclose above (which disconnects this connection's Playwright/CDP
+  // session), guarded so a close+end pair only tears down once.
+  let torndown = false;
+  const teardown = () => {
+    if (torndown) return;
+    torndown = true;
+    void transport?.close();
+  };
+  socket.on('close', teardown);
+  socket.on('end', teardown);
 }
 
 function main(): void {
@@ -184,11 +203,42 @@ function main(): void {
     socket.on('error', () => { /* per-connection errors logged in hostConnection */ });
   });
 
+  let staleRetried = false;
   server.on('error', (err) => {
-    // EADDRINUSE = another broker (stale or racing) owns the pipe. The
-    // supervisor treats a fast exit as "already running" via this code.
-    console.error(`[wmux-mcp-broker] server error: ${err.message}`);
-    process.exit((err as NodeJS.ErrnoException).code === 'EADDRINUSE' ? 75 : 1);
+    const code = (err as NodeJS.ErrnoException).code;
+    if (code !== 'EADDRINUSE') {
+      console.error(`[wmux-mcp-broker] server error: ${err.message}`);
+      process.exit(1);
+      return;
+    }
+    // EADDRINUSE has two causes on the Unix domain socket: a LIVE broker owns
+    // the pipe (stand down — the supervisor reads 75 as "already running"), or
+    // a crashed broker left a STALE socket file (domain sockets are not
+    // auto-removed). Probe by connecting: a successful connect proves a live
+    // listener; a refused connect means the file is stale, so unlink and retry
+    // listen once. Windows named pipes vanish with their owner (no stale file),
+    // so there the only cause is a live broker — stand down directly.
+    if (process.platform === 'win32' || staleRetried) {
+      console.error('[wmux-mcp-broker] pipe in use by a live broker; standing down');
+      process.exit(75);
+      return;
+    }
+    const probe = net.connect(pipeName);
+    probe.once('connect', () => {
+      probe.destroy();
+      console.error('[wmux-mcp-broker] another broker is live; standing down');
+      process.exit(75);
+    });
+    probe.once('error', () => {
+      probe.destroy();
+      staleRetried = true;
+      try {
+        fs.unlinkSync(pipeName);
+      } catch { /* already gone / not a filesystem path — listen retry decides */ }
+      server.listen(pipeName, () => {
+        console.error(`[wmux-mcp-broker] listening on ${pipeName} pid=${process.pid} (after stale-socket cleanup)`);
+      });
+    });
   });
 
   server.listen(pipeName, () => {

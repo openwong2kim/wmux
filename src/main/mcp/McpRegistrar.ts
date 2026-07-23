@@ -226,18 +226,21 @@ export class McpRegistrar {
       return null;
     }
 
-    // Dev mode: use the unbundled tsc output (has access to node_modules)
+    // Dev mode: use the unbundled tsc output (has access to node_modules).
+    // entry.js is the stdio boot; index.js is now a side-effect-free factory
+    // (the broker split moved main() into entry.ts), so pointing at index.js
+    // would launch a module that does nothing.
     const appPath = app.getAppPath();
 
-    const devPath = path.join(appPath, 'dist', 'mcp', 'mcp', 'index.js');
+    const devPath = path.join(appPath, 'dist', 'mcp', 'mcp', 'entry.js');
     if (fs.existsSync(devPath)) return devPath;
 
-    // Walk up directories until we find dist/mcp/mcp/index.js or hit root
+    // Walk up directories until we find dist/mcp/mcp/entry.js or hit root
     let current = appPath;
     for (let i = 0; i < 5; i++) {
       const parent = path.resolve(current, '..');
       if (parent === current) break;
-      const candidate = path.join(parent, 'dist', 'mcp', 'mcp', 'index.js');
+      const candidate = path.join(parent, 'dist', 'mcp', 'mcp', 'entry.js');
       if (fs.existsSync(candidate)) return candidate;
       current = parent;
     }

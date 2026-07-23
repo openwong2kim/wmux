@@ -39,6 +39,14 @@ export interface ConnectionScope {
   /** paneResolver pin, per connection instead of per process. */
   pinnedRoute: PinnedRoute | null;
   pinnedClaimInFlight: Promise<PinnedRoute> | null;
+  /**
+   * dom-intelligence smart-snapshot element cache (ref → locator), per
+   * connection instead of per process — otherwise a second connection's
+   * snapshot would overwrite the first's refs and browser_click({smartRef})
+   * would resolve against the wrong agent's page. Typed as unknown[] to avoid
+   * an import cycle (dom-intelligence imports this module); it owns the cast.
+   */
+  elementCache?: unknown[];
 }
 
 const storage = new AsyncLocalStorage<ConnectionScope>();

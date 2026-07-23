@@ -96,6 +96,9 @@ function resolveWmuxScript(): string | null {
   const candidates = [
     path.join('mcp-bundle', 'index.js'),
     path.join('dist', 'mcp-bundle', 'index.js'),
+    // Unbundled dev layout: entry.js is the stdio boot (index.js became a
+    // side-effect-free factory after the broker split).
+    path.join('dist', 'mcp', 'mcp', 'entry.js'),
     path.join('dist', 'mcp', 'mcp', 'index.js'),
   ];
   let dir = __dirname;

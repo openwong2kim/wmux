@@ -1,5 +1,6 @@
 import type { Page } from 'playwright-core';
 import type { JsonEvaluator } from './page-eval';
+import { getConnectionScope } from '../connectionScope';
 
 // ---------------------------------------------------------------------------
 // Shared interactive-element selector
@@ -148,7 +149,22 @@ interface CdpAXNode {
 // Element cache — stores indexed elements from the last snapshot
 // ---------------------------------------------------------------------------
 
-let elementCache: IndexedElement[] = [];
+// Fallback store for single-child mode (no connection scope active). Under the
+// broker each connection keeps its OWN cache on its AsyncLocalStorage scope so
+// concurrent agents' smart refs never collide — see getElementCache/setElementCache.
+let moduleElementCache: IndexedElement[] = [];
+
+function getElementCache(): IndexedElement[] {
+  const scope = getConnectionScope();
+  if (scope) return (scope.elementCache as IndexedElement[] | undefined) ?? [];
+  return moduleElementCache;
+}
+
+function setElementCache(elements: IndexedElement[]): void {
+  const scope = getConnectionScope();
+  if (scope) scope.elementCache = elements;
+  else moduleElementCache = elements;
+}
 
 // ---------------------------------------------------------------------------
 // Internal helpers
@@ -287,7 +303,7 @@ export async function getSmartSnapshot(
   ]);
 
   // Update element cache
-  elementCache = elements;
+  setElementCache(elements);
 
   return { url, title, elements, content };
 }
@@ -381,7 +397,7 @@ export async function getSmartSnapshotViaEval(
 
   // Cache so browser_click({smartRef}) resolves via getLocatorByRef even if
   // getPage() flips null->page between this snapshot and the click.
-  elementCache = elements;
+  setElementCache(elements);
 
   return {
     url: raw?.url ?? '',
@@ -398,8 +414,9 @@ export async function getSmartSnapshotViaEval(
  * Returns `null` if the ref is out of range or no snapshot has been taken.
  */
 export function getLocatorByRef(ref: number): string | null {
-  if (ref < 1 || ref > elementCache.length) return null;
-  return elementCache[ref - 1].locator;
+  const cache = getElementCache();
+  if (ref < 1 || ref > cache.length) return null;
+  return cache[ref - 1].locator;
 }
 
 /**
@@ -407,5 +424,5 @@ export function getLocatorByRef(ref: number): string | null {
  * to avoid stale refs.
  */
 export function clearElementCache(): void {
-  elementCache = [];
+  setElementCache([]);
 }

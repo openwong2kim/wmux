@@ -80,14 +80,15 @@ const memberNameSchema = z
 /** Helper: convert the typed `{ ok, ... } | { ok: false, error }` envelope
  *  into an MCP tool result with `isError` set on the failure branch. The
  *  error code is embedded in the text so the agent can branch on it. */
-// Set by registerChannelTools so callChannelRpc can stamp the caller's
-// verified senderPtyId (D5) on every channel RPC without threading it through
-// each of the tool handlers.
-let resolveSenderPtyId: () => string = () => '';
-
 async function callChannelRpc(
   method: RpcMethod,
   params: Record<string, unknown>,
+  // Per-registration resolver for the caller's verified senderPtyId (D5).
+  // Passed in (not a module global) because the broker hosts MANY servers in
+  // ONE process: a module-global would let the last-registered connection's
+  // resolver win, stamping every connection's channel RPCs with the wrong
+  // sender identity.
+  resolveSenderPtyId: () => string,
 ): Promise<{ content: { type: 'text'; text: string }[]; isError?: boolean }> {
   // D5: attach the MCP server's verified senderPtyId so the main-side
   // a2a.channel handler resolves the owning workspace and stamps
@@ -256,8 +257,14 @@ const CHANNEL_MISSION_CLOSE_SHAPE = {
  *  the same verification rules as the rest of the bundled server (verified
  *  PID-map hit first, env-hint fallback on miss). */
 export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): void {
-  // D5: capture the caller's verified-ptyId resolver for callChannelRpc.
-  resolveSenderPtyId = deps.getSenderPtyId ?? (() => '');
+  // D5: the caller's verified-ptyId resolver, captured in THIS registration's
+  // closure (not a module global) so concurrent broker-hosted connections each
+  // stamp their own sender identity. `callRpc` binds it into every channel RPC.
+  const resolveSenderPtyId = deps.getSenderPtyId ?? (() => '');
+  const callRpc = (
+    method: RpcMethod,
+    params: Record<string, unknown>,
+  ): ReturnType<typeof callChannelRpc> => callChannelRpc(method, params, resolveSenderPtyId);
   // ── channel_list ──────────────────────────────────────────────────
   server.tool(
     'channel_list',
@@ -271,7 +278,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
       // the sender / enforce archive authz (plan R5/R6). The daemon
       // today reads it only on `post` and `archive`; including it on
       // every call keeps the transport shape uniform.
-      return callChannelRpc('a2a.channel.list' as RpcMethod, { workspaceId, verifiedWorkspaceId: workspaceId });
+      return callRpc('a2a.channel.list' as RpcMethod, { workspaceId, verifiedWorkspaceId: workspaceId });
     },
   );
 
@@ -296,7 +303,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         },
       };
       if (topic !== undefined) params['topic'] = topic;
-      return callChannelRpc('a2a.channel.create' as RpcMethod, params);
+      return callRpc('a2a.channel.create' as RpcMethod, params);
     },
   );
 
@@ -327,7 +334,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
           ...(m.member_id !== undefined ? { memberId: m.member_id } : {}),
         }));
       }
-      return callChannelRpc('a2a.channel.post' as RpcMethod, params);
+      return callRpc('a2a.channel.post' as RpcMethod, params);
     },
   );
 
@@ -350,7 +357,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         },
         includeHistory: include_history !== false,
       };
-      return callChannelRpc('a2a.channel.join' as RpcMethod, params);
+      return callRpc('a2a.channel.join' as RpcMethod, params);
     },
   );
 
@@ -361,7 +368,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
     CHANNEL_LEAVE_SHAPE,
     async ({ channel_id, member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
-      return callChannelRpc('a2a.channel.leave' as RpcMethod, {
+      return callRpc('a2a.channel.leave' as RpcMethod, {
         workspaceId,
         verifiedWorkspaceId: workspaceId,
         channelId: channel_id,
@@ -402,7 +409,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         limit: limit ?? 50,
       };
       if (since_seq !== undefined) params['sinceSeq'] = since_seq;
-      return callChannelRpc('a2a.channel.getMessages' as RpcMethod, params);
+      return callRpc('a2a.channel.getMessages' as RpcMethod, params);
     },
   );
 
@@ -417,7 +424,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
     CHANNEL_INVITE_SHAPE,
     async ({ channel_id, invited_workspace_id, member_id, member_name, include_history }) => {
       const workspaceId = await deps.resolveWorkspaceId();
-      return callChannelRpc('a2a.channel.invite' as RpcMethod, {
+      return callRpc('a2a.channel.invite' as RpcMethod, {
         workspaceId,
         verifiedWorkspaceId: workspaceId,
         channelId: channel_id,
@@ -443,7 +450,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
     CHANNEL_GET_MEMBERS_SHAPE,
     async ({ channel_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
-      return callChannelRpc('a2a.channel.getMembers' as RpcMethod, {
+      return callRpc('a2a.channel.getMembers' as RpcMethod, {
         workspaceId,
         verifiedWorkspaceId: workspaceId,
         channelId: channel_id,
@@ -463,7 +470,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
     CHANNEL_ACK_SHAPE,
     async ({ channel_id, upto_seq, member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
-      return callChannelRpc('a2a.channel.ack' as RpcMethod, {
+      return callRpc('a2a.channel.ack' as RpcMethod, {
         workspaceId,
         verifiedWorkspaceId: workspaceId,
         channelId: channel_id,
@@ -485,7 +492,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
     CHANNEL_UNREAD_SHAPE,
     async ({ member_id }) => {
       const workspaceId = await deps.resolveWorkspaceId();
-      return callChannelRpc('a2a.channel.unread' as RpcMethod, {
+      return callRpc('a2a.channel.unread' as RpcMethod, {
         workspaceId,
         verifiedWorkspaceId: workspaceId,
         ...(member_id !== undefined ? { memberId: member_id } : {}),
@@ -514,7 +521,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         params['invite'] = invite.map((m) => ({ workspaceId: m.workspace_id, memberId: m.member_id }));
       }
       if (idempotency_key !== undefined) params['idempotencyKey'] = idempotency_key;
-      return callChannelRpc('task.mission.start' as RpcMethod, params);
+      return callRpc('task.mission.start' as RpcMethod, params);
     },
   );
 
@@ -535,7 +542,7 @@ export function registerChannelTools(server: McpServer, deps: ChannelToolDeps): 
         taskId: task_id,
       };
       if (idempotency_key !== undefined) params['idempotencyKey'] = idempotency_key;
-      return callChannelRpc('task.mission.close' as RpcMethod, params);
+      return callRpc('task.mission.close' as RpcMethod, params);
     },
   );
 }
