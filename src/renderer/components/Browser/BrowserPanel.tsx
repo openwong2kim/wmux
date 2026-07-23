@@ -19,6 +19,10 @@ import {
 
 interface BrowserPanelProps {
   surfaceId: string;
+  /** Owning workspace id — reported to main at CDP register time so the
+   *  browser read tools can scope page selection to the caller's workspace
+   *  and never return another workspace's page (#554). */
+  workspaceId: string;
   initialUrl: string;
   partition: string;
   /** Focused surface (drives F12 devtools + toolbar active state). */
@@ -63,7 +67,7 @@ export function computeEffectiveVisibility(input: {
 // Component
 // ---------------------------------------------------------------------------
 
-export default function BrowserPanel({ surfaceId, initialUrl, partition, isActive, visible, isZoomHidden, isWorkspaceVisible, occluded, onClose }: BrowserPanelProps) {
+export default function BrowserPanel({ surfaceId, workspaceId, initialUrl, partition, isActive, visible, isZoomHidden, isWorkspaceVisible, occluded, onClose }: BrowserPanelProps) {
   const t = useT();
   const updateBrowserUrl = useStore((s) => s.updateBrowserUrl);
   const webviewRef = useRef<Electron.WebviewTag>(null);
@@ -146,7 +150,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
       try {
         const wcId = (wv as any).getWebContentsId?.();
         if (wcId && (window as any).electronAPI?.browser?.registerWebview) {
-          await (window as any).electronAPI.browser.registerWebview(surfaceId, wcId);
+          await (window as any).electronAPI.browser.registerWebview(surfaceId, wcId, workspaceId);
           console.log(`[BrowserPanel] CDP target registered (${via}) for surface=${surfaceId} wc=${wcId}`);
         }
       } catch (err) {
@@ -215,7 +219,7 @@ export default function BrowserPanel({ surfaceId, initialUrl, partition, isActiv
       wv.removeEventListener('did-navigate-in-page', onDidNavigateInPage as EventListener);
       wv.removeEventListener('page-title-updated', onTitleUpdated as EventListener);
     };
-  }, [updateNavState, updateBrowserUrl, surfaceId, discarded]);
+  }, [updateNavState, updateBrowserUrl, surfaceId, workspaceId, discarded]);
 
   // F12 opens DevTools for the webview
   useEffect(() => {

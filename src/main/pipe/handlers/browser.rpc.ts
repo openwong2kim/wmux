@@ -369,6 +369,9 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       targets: targets.map((t) => ({
         surfaceId: t.surfaceId,
         targetId: t.targetId,
+        // Owning workspace (#554) — lets the read path scope page selection to
+        // the calling session's workspace instead of the first surface globally.
+        ...(t.workspaceId && { workspaceId: t.workspaceId }),
       })),
     };
   });

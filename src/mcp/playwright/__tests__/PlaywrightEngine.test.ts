@@ -517,3 +517,99 @@ describe('PlaywrightEngine auto-open workspace routing (#190)', () => {
     expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-caller-1' });
   }, 15_000);
 });
+
+/*
+ * #554 — read-path workspace scoping.
+ *
+ * browser_snapshot / browser_evaluate / browser_extract_* take an OPTIONAL
+ * surfaceId. When it is omitted (the common case), page selection must be
+ * scoped to the CALLING session's workspace. Before this fix getPage() fell
+ * back to "first non-shell page", which is workspace-blind: with two live
+ * browser surfaces, an agent in workspace A could read workspace B's page.
+ *
+ * resolveCallerSurface() is the scoping primitive — it maps the caller's
+ * resolved workspace to its own surfaceId from the workspace-tagged
+ * browser.cdp.info target list, and reports 'none' (own workspace has no
+ * surface) or 'unscoped' (identity/tags unavailable → stay lenient) so the
+ * caller never falls through to another workspace's page.
+ */
+interface ScopeInternals {
+  setWorkspaceIdResolver(resolver: () => Promise<string>): void;
+  resolveCallerSurface(): Promise<
+    { kind: 'surface'; surfaceId: string } | { kind: 'none' } | { kind: 'unscoped' }
+  >;
+}
+function scope(engine: PlaywrightEngine): ScopeInternals {
+  return engine as unknown as ScopeInternals;
+}
+
+describe('PlaywrightEngine read-path workspace scoping (#554)', () => {
+  const twoWorkspaceTargets = {
+    cdpPort: 9222,
+    targets: [
+      { surfaceId: 'surf-A', targetId: 'wc-1', workspaceId: 'ws-A' },
+      { surfaceId: 'surf-B', targetId: 'wc-2', workspaceId: 'ws-B' },
+    ],
+  };
+
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  it("picks the caller's own surface, never another workspace's, when surfaceId is omitted", async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({
+      kind: 'surface',
+      surfaceId: 'surf-A',
+    });
+  });
+
+  it("reports 'none' — not another workspace's surface — when the caller's workspace owns no surface", async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-C-no-surface');
+
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'none' });
+  });
+
+  it("stays 'unscoped' (legacy lenient) when the main doesn't tag targets with a workspaceId", async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({ cdpPort: 9222, targets: [{ surfaceId: 'surf-A', targetId: 'wc-1' }] })
+        : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
+  });
+
+  it("stays 'unscoped' when no resolver is wired or identity cannot be resolved", async () => {
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info' ? Promise.resolve(twoWorkspaceTargets) : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+
+    // No resolver wired.
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
+
+    // Resolver throws (server-walk failed).
+    scope(engine).setWorkspaceIdResolver(async () => {
+      throw new Error('identity unknown');
+    });
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
+
+    // Resolver returns empty id.
+    scope(engine).setWorkspaceIdResolver(async () => '');
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({ kind: 'unscoped' });
+  });
+});

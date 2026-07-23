@@ -7,6 +7,13 @@ import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 interface CdpTargetInfo {
   surfaceId: string;
   targetId: string;
+  /**
+   * Owning workspace id (#554). Present on mains that tag surfaces at CDP
+   * register time; absent on older mains. Used to scope page selection to the
+   * CALLING session's workspace so a read never returns another workspace's
+   * page. See resolveCallerSurface().
+   */
+  workspaceId?: string;
 }
 
 interface CdpInfoResponse {
@@ -338,12 +345,87 @@ export class PlaywrightEngine {
     }
   }
 
-  private async _getPageImpl(surfaceId?: string): Promise<Page | null> {
+  /**
+   * Resolve the surface owned by the CALLING session's workspace (#554).
+   *
+   * Read tools (browser_snapshot / browser_evaluate / browser_extract_*) take
+   * an OPTIONAL surfaceId; when the caller omits it — the common case — page
+   * selection must still be scoped to the caller's workspace, mirroring the
+   * write path (browser.open / navigate) which already routes by the caller's
+   * resolved workspace. Otherwise, with two live browser surfaces, an agent in
+   * workspace A can read workspace B's page.
+   *
+   *  - { kind: 'surface', surfaceId } — caller's workspace owns a live surface;
+   *    scope selection to it.
+   *  - { kind: 'none' } — identity resolved but the caller's workspace owns no
+   *    surface. Callers must NOT fall back to another workspace's page.
+   *  - { kind: 'unscoped' } — identity could not be resolved (no resolver, the
+   *    server-walk threw/returned empty, or an older main that doesn't tag
+   *    targets with a workspaceId). Preserve the legacy lenient behavior so
+   *    single-workspace setups keep working.
+   */
+  private async resolveCallerSurface(): Promise<
+    { kind: 'surface'; surfaceId: string } | { kind: 'none' } | { kind: 'unscoped' }
+  > {
+    if (!this.workspaceIdResolver) return { kind: 'unscoped' };
+    let workspaceId: string;
+    try {
+      workspaceId = await this.workspaceIdResolver();
+    } catch {
+      return { kind: 'unscoped' };
+    }
+    if (!workspaceId) return { kind: 'unscoped' };
+
+    let info: CdpInfoResponse;
+    try {
+      info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
+    } catch {
+      return { kind: 'unscoped' };
+    }
+    this.cacheShellUrl(info);
+
+    // Older mains don't tag targets with a workspaceId. If NONE carry one we
+    // cannot scope, so stay lenient rather than fail-closing a working setup.
+    const anyTagged = info.targets.some(
+      (t) => typeof t.workspaceId === 'string' && t.workspaceId.length > 0,
+    );
+    if (!anyTagged) return { kind: 'unscoped' };
+
+    const own = info.targets.find((t) => t.workspaceId === workspaceId);
+    if (own) return { kind: 'surface', surfaceId: own.surfaceId };
+    return { kind: 'none' };
+  }
+
+  private async _getPageImpl(explicitSurfaceId?: string): Promise<Page | null> {
 
     await this.ensureConnected();
 
+    // #554: when the caller didn't pin an explicit surfaceId, scope selection
+    // to the CALLING session's own workspace surface. Without this, the "first
+    // non-shell page" fallbacks below are workspace-blind — with two live
+    // browser surfaces an agent in workspace A could read workspace B's page.
+    let surfaceId = explicitSurfaceId;
+    // True when the caller's workspace is known to own NO surface: the blind
+    // fallbacks must be skipped (they'd return another workspace's page) and we
+    // fall through to auto-open a surface for the caller's own workspace.
+    let callerHasNoSurface = false;
+    if (!surfaceId) {
+      const owned = await this.resolveCallerSurface();
+      if (owned.kind === 'surface') {
+        surfaceId = owned.surfaceId;
+      } else if (owned.kind === 'none') {
+        callerHasNoSurface = true;
+      }
+      // 'unscoped' (identity unresolvable / older main) → leave surfaceId
+      // undefined and keep the legacy lenient fallbacks.
+    }
+
     for (let attempt = 1; attempt <= PAGE_FIND_RETRIES; attempt++) {
       try {
+        // Strategies 1-3 locate an EXISTING page. When the caller's workspace
+        // is known to own no surface (#554), every one of them can only return
+        // a DIFFERENT workspace's page, so skip straight to auto-open.
+        if (!callerHasNoSurface) {
         // Strategy 1 (was 2): positive identification via the registered
         // targetId from WebviewCdpManager. This is the authoritative match —
         // it pins the exact guest webview by id — so it runs FIRST, before the
@@ -379,6 +461,7 @@ export class PlaywrightEngine {
           const page = await this.findViaJsonEndpoint(surfaceId);
           if (page) return page;
         }
+        } // end !callerHasNoSurface
 
         // Strategy 4: No browser surface exists — auto-open one via RPC.
         // This eliminates the requirement for callers to call browser_open
@@ -397,6 +480,16 @@ export class PlaywrightEngine {
               await sleep(2000);
               await this.disconnect();
               await this.ensureConnected();
+              // The just-opened surface belongs to the caller's workspace, so
+              // re-resolve to pin it (#554) — otherwise callerHasNoSurface would
+              // keep skipping Strategies 1-3 and the new page is never found.
+              if (callerHasNoSurface) {
+                const owned = await this.resolveCallerSurface();
+                if (owned.kind === 'surface') {
+                  surfaceId = owned.surfaceId;
+                  callerHasNoSurface = false;
+                }
+              }
               continue; // retry page discovery
             }
           } catch (openErr) {

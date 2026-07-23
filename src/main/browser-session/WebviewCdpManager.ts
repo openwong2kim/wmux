@@ -6,6 +6,15 @@ export interface CdpTargetInfo {
   webContentsId: number;
   targetId: string;
   wsUrl: string;
+  /**
+   * Owning workspace id, reported by the renderer at register time (#554).
+   * Exposed via browser.cdp.info so the read path (browser_snapshot /
+   * browser_evaluate) can scope page selection to the CALLING session's
+   * workspace instead of grabbing the first surface globally — which could be
+   * another workspace's page. Optional for backward-compat with any caller
+   * that registers without it.
+   */
+  workspaceId?: string;
 }
 
 // Post-release idle grace before a guest is re-throttled, so back-to-back
@@ -110,7 +119,7 @@ export class WebviewCdpManager {
     this.captureCleanup = fn;
   }
 
-  async register(surfaceId: string, webContentsId: number): Promise<void> {
+  async register(surfaceId: string, webContentsId: number, workspaceId?: string): Promise<void> {
     // Same-guest re-registration (codex P2, PR #528): BrowserPanel re-calls
     // register() on every dom-ready, so a hidden navigation/reload would
     // otherwise round-trip through unregister() — zeroing lease counts and
@@ -182,7 +191,16 @@ export class WebviewCdpManager {
       console.warn(`[WebviewCdpManager] /json fetch failed, using fallback:`, err);
     }
 
-    const info: CdpTargetInfo = { surfaceId, webContentsId, targetId, wsUrl };
+    // Preserve a previously-known workspaceId across a same-guest re-register
+    // (BrowserPanel re-calls register() on every dom-ready) so a call that
+    // happens to omit the id can never blank out the surface's owner (#554).
+    const info: CdpTargetInfo = {
+      surfaceId,
+      webContentsId,
+      targetId,
+      wsUrl,
+      workspaceId: workspaceId ?? prev?.workspaceId,
+    };
     this.sessions.set(surfaceId, info);
 
     // Same-guest re-registration keeps the existing destroyed listener —

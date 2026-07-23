@@ -768,8 +768,8 @@ console.log(
 );
 
 // IPC: webview CDP registration
-ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, webContentsId: number) => {
-  await webviewCdpManager.register(surfaceId, webContentsId);
+ipcMain.handle('browser:register-webview', async (_event, surfaceId: string, webContentsId: number, workspaceId?: string) => {
+  await webviewCdpManager.register(surfaceId, webContentsId, typeof workspaceId === 'string' ? workspaceId : undefined);
   return { ok: true };
 });
 

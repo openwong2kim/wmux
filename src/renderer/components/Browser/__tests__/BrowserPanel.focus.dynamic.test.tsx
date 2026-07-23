@@ -55,6 +55,7 @@ function mount(props: MountProps): void {
     root.render(
       React.createElement(BrowserPanel, {
         surfaceId: props.surfaceId ?? 'surf-1',
+        workspaceId: 'ws-test',
         initialUrl: 'https://example.com',
         partition: 'persist:test',
         isActive: props.isActive,
@@ -187,6 +188,7 @@ describe('BrowserPanel — webview keyboard focus (#252)', () => {
       root.render(
         React.createElement(BrowserPanel, {
           surfaceId: 'surf-1',
+          workspaceId: 'ws-test',
           initialUrl: 'https://example.com',
           partition: 'persist:test',
           isActive: true,

@@ -78,6 +78,20 @@ describe('WebviewCdpManager', () => {
     expect(list[0].surfaceId).toBe('s1');
   });
 
+  it('stores the owning workspaceId reported at register time (#554)', async () => {
+    await manager.register('s1', 42, 'ws-A');
+    expect(manager.getTarget('s1')?.workspaceId).toBe('ws-A');
+    expect(manager.listTargets()[0].workspaceId).toBe('ws-A');
+  });
+
+  it('preserves the workspaceId across a same-guest re-register that omits it (#554)', async () => {
+    // BrowserPanel re-calls register() on every dom-ready; a call that happens
+    // to omit the id must never blank out a surface's known owner.
+    await manager.register('s1', 42, 'ws-A');
+    await manager.register('s1', 42);
+    expect(manager.getTarget('s1')?.workspaceId).toBe('ws-A');
+  });
+
   it('waitForTarget resolves when target is already registered', async () => {
     await manager.register('surface-1', 42);
     const target = await manager.waitForTarget('surface-1', 1000);

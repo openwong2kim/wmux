@@ -558,8 +558,8 @@ const electronAPI = {
       ipcRenderer.send(IPC.WORKSPACE_MIRROR_PUSH, payload),
   },
   browser: {
-    registerWebview: (surfaceId: string, webContentsId: number) =>
-      ipcRenderer.invoke('browser:register-webview', surfaceId, webContentsId),
+    registerWebview: (surfaceId: string, webContentsId: number, workspaceId?: string) =>
+      ipcRenderer.invoke('browser:register-webview', surfaceId, webContentsId, workspaceId),
     // #517 lightweight mode signals
     setVisibility: (surfaceId: string, visible: boolean) =>
       ipcRenderer.invoke('browser:set-visibility', surfaceId, visible),
