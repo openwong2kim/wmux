@@ -25,6 +25,21 @@ function collectLeafPanes(pane: Pane): PaneLeaf[] {
  * workspace is parkable only when every surface is a terminal (surfaceType
  * absent defaults to terminal). Deeper per-surface parking is a follow-up.
  */
+/**
+ * Cold-park convergence helper: drop a workspace's parked / idle-clock entries.
+ * Called wherever activeWorkspaceId is assigned OUTSIDE setActiveWorkspace
+ * (removeWorkspace, company destroy/removeDept, loadSession) so a promoted-to-
+ * visible workspace's park state converges immediately instead of lingering
+ * until the next sweep. Guarded for stores/tests without the cold-park maps.
+ */
+export function clearColdParkEntry(
+  state: { parkedWorkspaceIds?: Record<string, true>; lastVisibleAt?: Record<string, number> },
+  id: string,
+): void {
+  if (state.parkedWorkspaceIds && state.parkedWorkspaceIds[id]) delete state.parkedWorkspaceIds[id];
+  if (state.lastVisibleAt && state.lastVisibleAt[id] !== undefined) delete state.lastVisibleAt[id];
+}
+
 function isTerminalOnlyWorkspace(ws: Workspace): boolean {
   for (const leaf of collectLeafPanes(ws.rootPane)) {
     for (const s of leaf.surfaces) {
@@ -344,6 +359,8 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
       state.workspaces.splice(idx, 1);
       if (state.activeWorkspaceId === id) {
         state.activeWorkspaceId = state.workspaces[Math.min(idx, state.workspaces.length - 1)].id;
+        // Cold-park: the newly-promoted workspace must not stay parked.
+        clearColdParkEntry(state, state.activeWorkspaceId);
       }
       // D-teardown: removing a workspace (sidebar X, Ctrl+Shift+W, kill-pane)
       // unmounts the marked-region DOM the inspect overlay queries. setActiveWorkspace
@@ -579,6 +596,9 @@ export const createWorkspaceSlice: StateCreator<StoreState, [['zustand/immer', n
 
       state.workspaces = data.workspaces;
       state.activeWorkspaceId = data.activeWorkspaceId;
+      // Cold-park is renderer-only and not persisted, but a re-entrant loadSession
+      // could run against a live parked set — keep the restored active visible.
+      clearColdParkEntry(state, state.activeWorkspaceId);
       state.sidebarVisible = data.sidebarVisible;
 
       // ── P2 hydration backfill (checklist F) ──────────────────────────────

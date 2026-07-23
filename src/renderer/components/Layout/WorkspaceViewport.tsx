@@ -198,7 +198,18 @@ export function WorkspaceViewport() {
           key={ws.id}
           workspace={ws}
           isActive={ws.id === activeWorkspaceId}
-          parked={parkedWorkspaceIds[ws.id] === true}
+          // Visible ⇒ never rendered as parked, regardless of the parked set.
+          // activeWorkspaceId is assigned directly by several handoff paths
+          // (removeWorkspace, company destroy/removeDept, loadSession) that
+          // don't run the un-park action, so a parked id promoted to active
+          // would otherwise render a blank viewport until the 30s sweep. This
+          // render guard covers every current and future promotion path; the
+          // slice still converges its state via the clears in those sites.
+          parked={
+            parkedWorkspaceIds[ws.id] === true &&
+            ws.id !== activeWorkspaceId &&
+            !multiviewIds.includes(ws.id)
+          }
         />
       ))}
     </div>

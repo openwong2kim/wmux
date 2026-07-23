@@ -189,12 +189,20 @@ export default function FleetView() {
       setResources((prev) => (Object.keys(prev).length === 0 ? prev : {}));
       return;
     }
+    // In-flight guard: a CIM snapshot can take up to ~8s (slow machines), longer
+    // than the 4s tick — without this the interval would stack concurrent
+    // whole-machine powershell spawns. Skip a tick while one is still running.
+    let inFlight = false;
     const poll = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const next = await window.electronAPI.pty.resources(ptyIds);
         if (!cancelled) setResources(next ?? {});
       } catch {
         // Fail-soft: keep the last-known values, drop no chips mid-glance.
+      } finally {
+        inFlight = false;
       }
     };
     void poll(); // paint immediately; don't wait 4s for the first sample.

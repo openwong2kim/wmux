@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach } from 'vitest';
 import { create } from 'zustand';
 import { immer } from 'zustand/middleware/immer';
 import { createWorkspaceSlice, type WorkspaceSlice } from '../workspaceSlice';
+import { createA2aSlice } from '../a2aSlice';
 import { createWorkspace, type Workspace } from '../../../../shared/types';
 
 // Cold-park (TASK-9) park/unpark state machine. Uses a minimal store that
@@ -98,6 +99,32 @@ describe('WorkspaceSlice cold-park', () => {
     expect(store.getState().lastVisibleAt[wsB.id]).toBeUndefined();
     // A is now the outgoing workspace → its idle clock started.
     expect(store.getState().lastVisibleAt[wsA.id]).toBeGreaterThan(0);
+  });
+
+  it('removeWorkspace un-parks the workspace it promotes to active', () => {
+    // Combined store so removeWorkspace can see a2aTasks (fail-delegated path).
+    const store = create<WorkspaceSlice & ReturnType<typeof createA2aSlice> & { multiviewIds: string[] }>()(
+      immer((...args) => ({
+        // @ts-expect-error — minimal composed store doesn't match full StoreState
+        ...createWorkspaceSlice(...args),
+        // @ts-expect-error — same
+        ...createA2aSlice(...args),
+        workspaces: [wsA, wsB],
+        activeWorkspaceId: wsA.id,
+        multiviewIds: [],
+      })),
+    );
+    // Park B while A is active.
+    const t0 = 1_000_000;
+    store.getState().sweepColdPark(t0, THRESHOLD);
+    store.getState().sweepColdPark(t0 + THRESHOLD, THRESHOLD);
+    expect(store.getState().parkedWorkspaceIds[wsB.id]).toBe(true);
+    // Removing the active workspace promotes B to active directly (not via
+    // setActiveWorkspace) — the park entry must be cleared so B isn't rendered
+    // as a blank parked viewport.
+    store.getState().removeWorkspace(wsA.id);
+    expect(store.getState().activeWorkspaceId).toBe(wsB.id);
+    expect(store.getState().parkedWorkspaceIds[wsB.id]).toBeUndefined();
   });
 
   it('unparkWorkspace releases a parked workspace and resets its clock', () => {

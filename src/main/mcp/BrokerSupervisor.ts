@@ -62,25 +62,48 @@ export class BrokerSupervisor {
       if (line) console.log(`[mcp-broker] ${line}`);
     });
 
-    child.on('exit', (code, signal) => {
+    // Guard so a spawn 'error' and the trailing 'exit' don't both schedule a
+    // restart (a failed spawn emits both).
+    let settled = false;
+    const scheduleRestart = (reason: string) => {
+      if (settled) return;
+      settled = true;
       this.child = null;
       if (this.stopped) return;
-      if (code === EXIT_ALREADY_RUNNING) {
-        // Another live broker owns the pipe (e.g. HMR main reload raced the
-        // old instance). The pipe is served either way — do not fight it.
-        console.log('[BrokerSupervisor] pipe already served by another broker; standing down');
-        return;
-      }
       if (Date.now() - startedAt > STABLE_MS) this.restarts = 0;
       const delay = RESTART_BACKOFF_MS[Math.min(this.restarts, RESTART_BACKOFF_MS.length - 1)];
       this.restarts++;
-      console.error(
-        `[BrokerSupervisor] broker exited code=${code} signal=${signal}; restart in ${delay}ms`,
-      );
+      console.error(`[BrokerSupervisor] ${reason}; restart in ${delay}ms`);
       this.restartTimer = setTimeout(() => {
         this.restartTimer = null;
         this.start();
       }, delay);
+    };
+
+    // A spawn failure (EPERM, ENOENT, ...) emits 'error'. With no listener this
+    // throws in the main process and can take down the whole app for an optional
+    // feature — treat it like a crash exit: log, clear the handle, fail open via
+    // the same backoff restart.
+    child.on('error', (err) => {
+      console.error(`[BrokerSupervisor] broker spawn error: ${err.message}`);
+      scheduleRestart('broker spawn error');
+    });
+
+    child.on('exit', (code, signal) => {
+      if (this.stopped) {
+        this.child = null;
+        settled = true;
+        return;
+      }
+      if (code === EXIT_ALREADY_RUNNING) {
+        // Another live broker owns the pipe (e.g. HMR main reload raced the
+        // old instance). The pipe is served either way — do not fight it.
+        this.child = null;
+        settled = true;
+        console.log('[BrokerSupervisor] pipe already served by another broker; standing down');
+        return;
+      }
+      scheduleRestart(`broker exited code=${code} signal=${signal}`);
     });
   }
 
