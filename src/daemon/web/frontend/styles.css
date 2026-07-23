@@ -1,0 +1,84 @@
+/* wmux web — chrome. Design tokens from DESIGN.md (amber-graphite cockpit):
+   amber #E8A33D is "alive" only (the live dot); steel #6E9BC4 is interactive;
+   no amber washes. */
+:root {
+  --bg-base: #151517;
+  --bg-surface: #202024;
+  --text-main: #EFEEEC;
+  --text-sub: #A5A29C;
+  --text-muted: #66645F;
+  --amber: #E8A33D;
+  --steel: #6E9BC4;
+  --danger: #D96C6C;
+  --success: #8FBF7F;
+}
+* { box-sizing: border-box; }
+html, body {
+  margin: 0;
+  height: 100%;
+  background: var(--bg-base);
+  color: var(--text-main);
+  font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "DejaVu Sans Mono", monospace;
+  -webkit-text-size-adjust: 100%;
+  overscroll-behavior: none;
+}
+body { display: flex; flex-direction: column; }
+#bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 8px 10px;
+  padding-top: max(8px, env(safe-area-inset-top));
+  background: var(--bg-surface);
+  border-bottom: 1px solid #000;
+  font-size: 12px;
+  z-index: 2;
+}
+#brand { color: var(--text-sub); letter-spacing: 0.5px; white-space: nowrap; }
+#brand-dot { color: var(--amber); padding: 0 1px; }
+#picker {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: var(--bg-base);
+  color: var(--text-main);
+  border: 1px solid var(--text-muted);
+  border-radius: 6px;
+  padding: 5px 8px;
+  font: inherit;
+  font-size: 12px;
+}
+#picker:focus { outline: none; border-color: var(--steel); }
+#status { color: var(--text-sub); white-space: nowrap; }
+#status[data-kind="live"] { color: var(--success); }
+#status[data-kind="live"]::before {
+  content: "\25CF"; /* ● */
+  color: var(--amber);
+  margin-right: 4px;
+}
+#status[data-kind="reconnect"], #status[data-kind="ended"] { color: var(--amber); }
+#status[data-kind="error"] { color: var(--danger); }
+#banner {
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.6px;
+  color: var(--text-muted);
+  border: 1px solid var(--text-muted);
+  border-radius: 4px;
+  padding: 2px 6px;
+  white-space: nowrap;
+}
+#banner[data-mode="rw"] { color: var(--amber); border-color: var(--amber); }
+#stage {
+  flex: 1 1 auto;
+  position: relative;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+}
+#scaler {
+  transform-origin: top left;
+  padding: 4px;
+}
+#term { display: inline-block; }
+/* xterm sets its own bg; keep the viewport dark behind any scaled gap */
+.xterm { padding: 2px; }

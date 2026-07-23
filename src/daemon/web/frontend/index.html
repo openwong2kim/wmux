@@ -1,0 +1,36 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
+  <title>wmux web</title>
+  <link rel="manifest" href="/manifest.webmanifest" />
+  <meta name="theme-color" content="#151517" />
+  <!-- iOS add-to-home-screen (works over plain HTTP, no service worker needed) -->
+  <meta name="apple-mobile-web-app-capable" content="yes" />
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
+  <meta name="apple-mobile-web-app-title" content="wmux" />
+  <link rel="apple-touch-icon" href="/icon-192.png" />
+  <style>
+/*__XTERM_CSS__*/
+/*__APP_CSS__*/
+  </style>
+</head>
+<body>
+  <header id="bar">
+    <span id="brand">wmux<span id="brand-dot">·</span>web</span>
+    <select id="picker" aria-label="pane"></select>
+    <span id="status">idle</span>
+    <span id="banner" data-mode="ro">read-only</span>
+  </header>
+  <main id="stage">
+    <div id="scaler"><div id="term"></div></div>
+  </main>
+  <script>
+/*__XTERM_JS__*/
+  </script>
+  <script>
+/*__APP_JS__*/
+  </script>
+</body>
+</html>

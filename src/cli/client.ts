@@ -283,3 +283,24 @@ export function sendDaemonRequest(
     resolveDaemonAuthToken(),
   );
 }
+
+/**
+ * Call a daemon control-pipe method by its RAW string name. The daemon pipe is
+ * token-only and dispatches purely by string (DaemonPipeServer.onRpc(method:
+ * string)), so a handful of daemon-only methods (daemon.serializeSession,
+ * daemon.resyncSession, daemon.web.*) are deliberately absent from the typed
+ * RpcMethod union — they never reach the main-pipe capability enforcer. This is
+ * the CLI escape hatch for those; the `as RpcMethod` cast is honest because the
+ * daemon never consults the union to dispatch.
+ */
+export function sendDaemonStringRequest(
+  method: string,
+  params: Record<string, unknown> = {},
+): Promise<RpcResponse> {
+  return sendRequestToPipe(
+    resolveDaemonPipeName(),
+    method as RpcMethod,
+    params,
+    resolveDaemonAuthToken(),
+  );
+}
