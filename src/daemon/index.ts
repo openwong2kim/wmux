@@ -1634,7 +1634,9 @@ function registerRpcHandlers(
     const p = params as { port?: number; host?: string; allowInput?: boolean };
     const port =
       typeof p.port === 'number' && p.port > 0 && p.port < 65536 ? Math.floor(p.port) : 7681;
-    const host = typeof p.host === 'string' && p.host ? p.host : '0.0.0.0';
+    // Safe default: bind loopback only. Network exposure is an explicit
+    // caller decision (the CLI `--expose` flag sends host '0.0.0.0').
+    const host = typeof p.host === 'string' && p.host ? p.host : '127.0.0.1';
     const allowInput = p.allowInput === true;
     return webServer.start({ port, host, allowInput });
   });

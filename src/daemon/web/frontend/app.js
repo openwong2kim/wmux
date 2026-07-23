@@ -81,13 +81,21 @@
   window.addEventListener('resize', rescale);
   window.addEventListener('orientationchange', function () { setTimeout(rescale, 200); });
 
-  function withToken(pathname) {
+  // SSE is the ONLY endpoint that carries the token in the query string
+  // (EventSource cannot set headers). Every other call uses a Bearer header so
+  // the token stays out of query strings / URL logs.
+  function streamUrl(pathname) {
     var sep = pathname.indexOf('?') >= 0 ? '&' : '?';
     return pathname + sep + 'token=' + encodeURIComponent(token);
   }
+  function authHeaders(extra) {
+    var h = { Authorization: 'Bearer ' + token };
+    if (extra) for (var k in extra) if (Object.prototype.hasOwnProperty.call(extra, k)) h[k] = extra[k];
+    return h;
+  }
 
   function api(pathname) {
-    return fetch(withToken(pathname)).then(function (r) {
+    return fetch(pathname, { headers: authHeaders() }).then(function (r) {
       if (r.status === 401) { promptToken(); throw new Error('unauthorized'); }
       return r;
     });
@@ -100,10 +108,10 @@
 
   function sendInput(data) {
     if (!allowInput || !currentSession) return;
-    fetch(withToken('/api/input?session=' + encodeURIComponent(currentSession)), {
+    fetch('/api/input?session=' + encodeURIComponent(currentSession), {
       method: 'POST',
       body: data,
-      headers: { 'Content-Type': 'application/octet-stream' },
+      headers: authHeaders({ 'Content-Type': 'application/octet-stream' }),
       keepalive: true
     }).catch(function () { /* transient */ });
   }
@@ -113,7 +121,7 @@
     currentSession = sessionId;
     if (term) term.reset();
     setStatus('connecting…');
-    es = new EventSource(withToken('/api/stream?session=' + encodeURIComponent(sessionId)));
+    es = new EventSource(streamUrl('/api/stream?session=' + encodeURIComponent(sessionId)));
     es.addEventListener('meta', function (e) {
       var m = JSON.parse(e.data);
       ensureTerm(m.cols, m.rows);

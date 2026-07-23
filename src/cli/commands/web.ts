@@ -3,7 +3,8 @@ import { printResult, ensureOk, parseFlag, hasFlag } from '../utils';
 import type { RpcResponse } from '../../shared/rpc';
 
 const DEFAULT_PORT = 7681;
-const DEFAULT_HOST = '0.0.0.0';
+const LOOPBACK_HOST = '127.0.0.1';
+const EXPOSE_HOST = '0.0.0.0';
 
 interface WebInfo {
   running: boolean;
@@ -18,9 +19,10 @@ interface WebInfo {
 /**
  * `wmux web` — expose wmux terminal panes to a browser / PWA.
  *
- * Read-only by default (execute-impossible stays the default posture); pass
- * `--allow-input` to enable keyboard input. The server runs INSIDE the daemon,
- * so it survives a GUI close and never contends with the desktop for a pane.
+ * Safe defaults: read-only (execute-impossible stays the default) AND
+ * loopback-only bind. Network exposure and keyboard input are each an explicit
+ * opt-in flag. The server runs INSIDE the daemon, so it survives a GUI close
+ * and never contends with the desktop for a pane.
  */
 export async function handleWeb(args: string[], jsonMode: boolean): Promise<void> {
   // --status / --stop are control verbs; otherwise we (re)start.
@@ -42,7 +44,11 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
     console.error('Error: --port must be an integer between 1 and 65535');
     process.exit(1);
   }
-  const host = parseFlag(args, '--host') ?? DEFAULT_HOST;
+
+  // Host precedence: explicit --host wins; else --expose binds all interfaces;
+  // else loopback-only (safe default — nothing off-machine can reach it).
+  const explicitHost = parseFlag(args, '--host');
+  const host = explicitHost ?? (hasFlag(args, '--expose') ? EXPOSE_HOST : LOOPBACK_HOST);
   const allowInput = hasFlag(args, '--allow-input');
 
   const response = await sendDaemonStringRequest('daemon.web.start', { port, host, allowInput });
@@ -60,12 +66,32 @@ function report(response: RpcResponse, jsonMode: boolean, mode: 'start' | 'statu
   }
 
   const urls = info.urls ?? [];
+  const exposed = info.host === EXPOSE_HOST || info.host === '::';
+  const loopbackOnly = info.host === LOOPBACK_HOST || info.host === '::1';
+
   console.log('');
   console.log(`  wmux web ${mode === 'start' ? 'started' : 'running'} — ${info.allowInput ? 'INPUT ENABLED' : 'read-only'}`);
   console.log(`  bind ${info.host}:${info.port}${typeof info.clients === 'number' ? `  ·  ${info.clients} viewer(s)` : ''}`);
   console.log('');
+
+  // Severity-ordered warning: even read-only exposes the ENTIRE scrollback.
+  console.log('  ⚠ Anyone who opens the page can read the FULL scrollback of the');
+  console.log('    selected pane — even in read-only mode. Do not serve panes that');
+  console.log('    have secrets, tokens, or private output on screen.');
+  console.log('');
+
+  if (loopbackOnly) {
+    console.log('  This bind is LOCAL-ONLY (127.0.0.1) — not reachable from your phone.');
+    console.log('  For remote access, either:');
+    console.log('    • run `wmux web --expose` to bind all interfaces (tailnet + LAN), or');
+    console.log('    • keep loopback and front it with `tailscale serve` (adds HTTPS).');
+  } else if (exposed) {
+    console.log('  ⚠ Reachable on ALL network interfaces (0.0.0.0). The access token is');
+    console.log('    the only thing gating it — treat the URL below as a secret.');
+  }
   if (urls.length) {
-    console.log('  Open on your phone (same Tailscale tailnet or LAN):');
+    console.log('');
+    console.log(loopbackOnly ? '  Open locally:' : '  Open on your phone (same Tailscale tailnet or LAN):');
     for (const u of urls) console.log(`    ${u}`);
   } else if (info.token) {
     console.log(`  token: ${info.token}`);

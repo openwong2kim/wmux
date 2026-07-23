@@ -142,9 +142,14 @@ export class WebTerminalServer {
     });
 
     this.server = server;
+    // Record the ACTUAL bound port so status()/urls report it even when the
+    // caller requested port 0 (ephemeral — used by the unit tests for a
+    // hermetic bind that never collides).
+    const addr = server.address();
+    if (addr && typeof addr === 'object') this.opts.port = addr.port;
     this.deps.log(
       'info',
-      `[web] listening on ${options.host}:${options.port} (input ${options.allowInput ? 'ENABLED' : 'read-only'})`,
+      `[web] listening on ${this.opts.host}:${this.opts.port} (input ${options.allowInput ? 'ENABLED' : 'read-only'})`,
     );
     return this.status();
   }
@@ -216,9 +221,13 @@ export class WebTerminalServer {
       return this.serveStatic(res, this.icon, 'image/png');
     }
 
-    // Everything under /api/* is token-gated.
+    // Everything under /api/* is token-gated. Only the SSE stream may carry the
+    // token in the query string (EventSource cannot set headers); every other
+    // endpoint requires an Authorization: Bearer header, keeping the token out
+    // of query strings and URL/proxy logs.
     if (p.startsWith('/api/')) {
-      if (!this.isAuthed(req, url)) {
+      const isStream = req.method === 'GET' && p === '/api/stream';
+      if (!this.isAuthed(req, url, isStream)) {
         return this.json(res, 401, { error: 'unauthorized' });
       }
       if (req.method === 'GET' && p === '/api/config') {
@@ -371,14 +380,19 @@ export class WebTerminalServer {
 
   // --- helpers ------------------------------------------------------------
 
-  private isAuthed(req: http.IncomingMessage, url: URL): boolean {
+  /**
+   * Authenticate an /api/* request against the per-start web token (timing-safe).
+   * `allowQuery` is true ONLY for the SSE stream, which must accept `?token=`
+   * because EventSource cannot set headers; every other endpoint is Bearer-only.
+   */
+  private isAuthed(req: http.IncomingMessage, url: URL, allowQuery: boolean): boolean {
     if (!this.token) return false;
-    const fromQuery = url.searchParams.get('token');
     const header = req.headers['authorization'];
     const fromHeader = typeof header === 'string' && header.startsWith('Bearer ')
       ? header.slice('Bearer '.length)
       : null;
-    const supplied = fromQuery ?? fromHeader ?? '';
+    const fromQuery = allowQuery ? url.searchParams.get('token') : null;
+    const supplied = fromHeader ?? fromQuery ?? '';
     const a = Buffer.from(supplied);
     const b = Buffer.from(this.token);
     return a.length === b.length && crypto.timingSafeEqual(a, b);

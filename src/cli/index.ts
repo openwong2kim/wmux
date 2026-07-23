@@ -56,9 +56,13 @@ BROWSER PANE
   open <url> [--workspace <id>]     Open/reuse a browser pane at <url>
 
 WEB ACCESS (browser / PWA over Tailscale)
-  web                               Serve wmux panes to a browser (read-only)
+  web                               Serve wmux panes to a browser (read-only,
+                                    LOCAL-ONLY by default). NOTE: even read-only
+                                    exposes a pane's FULL scrollback to viewers.
         [--port <n>]                Listen port (default 7681)
-        [--host <addr>]             Bind address (default 0.0.0.0)
+        [--expose]                  Bind all interfaces (0.0.0.0) for phone
+                                    access. Off by default (loopback only).
+        [--host <addr>]             Explicit bind address (overrides --expose)
         [--allow-input]             Enable keyboard input (off by default)
         [--status]                  Show whether the web server is running
         [--stop]                    Stop the web server
