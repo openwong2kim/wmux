@@ -297,22 +297,77 @@ describe('StateWriter', () => {
     }
   });
 
-  it('load prunes a restamped session once its restamped clock exceeds the TTL (#557)', () => {
-    // After a restamp the TTL clock is real again: a detached session whose
-    // (restamped) lastActivity is well past the detached TTL must be pruned on
-    // the next load, proving the corrupt-timestamp path can never leak forever.
-    const now = Date.now();
+  it('persists the restamp to disk so it survives a restart and eventually ages out (#557)', () => {
+    // The real leak the persist guard closes: an in-memory-only restamp would be
+    // re-read as corrupt on the next boot and restamped again forever. The main
+    // recovery writer (persistHealedOnLoad=true) must write the healed value to
+    // disk, and the persisted restamp must then age out normally once the TTL
+    // elapses against it — exercising the full corrupt→persist→age-out path.
     const HOUR = 60 * 60 * 1000;
-    const staleRestamped = makeSession({
-      id: 'stale-restamped',
+    const filePath = path.join(tmpDir, 'sessions.json');
+    const corrupt = makeSession({
+      id: 'corrupt-detached',
       state: 'detached',
-      lastActivity: new Date(now - 10 * HOUR).toISOString(), // 10h > 8h default
+      lastActivity: 'not-a-date',
     });
 
-    writer.saveImmediate(makeState([staleRestamped]));
+    vi.useFakeTimers();
+    try {
+      const t0 = new Date('2026-07-23T00:00:00.000Z').getTime();
+      vi.setSystemTime(t0);
 
-    const ids = writer.load().sessions.map((s) => s.id);
-    expect(ids).not.toContain('stale-restamped');
+      // Recovery writer: persistHealedOnLoad ON. Default 8h detached TTL.
+      const recoveryWriter = new StateWriter(tmpDir, 7 * 24, 8, true);
+      recoveryWriter.saveImmediate(makeState([corrupt]));
+
+      // First load heals the corrupt timestamp AND writes it back to disk.
+      const firstLoad = recoveryWriter.load();
+      expect(firstLoad.sessions.map((s) => s.id)).toContain('corrupt-detached');
+
+      // The healed value is on disk (not just in memory): re-reading the raw
+      // file shows a valid ISO timestamp equal to t0, not 'not-a-date'.
+      const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as {
+        sessions: Array<{ id: string; lastActivity: string }>;
+      };
+      const persisted = onDisk.sessions.find((s) => s.id === 'corrupt-detached');
+      expect(persisted).toBeDefined();
+      expect(new Date(persisted!.lastActivity).getTime()).toBe(t0);
+
+      // Advance the clock past the detached TTL relative to the PERSISTED
+      // restamp. A fresh writer over the same dir (a daemon restart) rereads the
+      // persisted value and now ages it out — proving it can never leak forever.
+      vi.setSystemTime(t0 + 10 * HOUR); // 10h > 8h TTL
+      const restarted = new StateWriter(tmpDir, 7 * 24, 8, true);
+      const afterRestart = restarted.load().sessions.map((s) => s.id);
+      expect(afterRestart).not.toContain('corrupt-detached');
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('does NOT persist a restamp when persistHealedOnLoad is off (one-shot lock path) (#557)', () => {
+    // The acquireLock() one-shot writer only reads bootId and must never write
+    // sessions.json (it would race the main instance). With the flag off, load()
+    // still heals the timestamp in memory but leaves the on-disk record corrupt.
+    const filePath = path.join(tmpDir, 'sessions.json');
+    const corrupt = makeSession({
+      id: 'corrupt-detached',
+      state: 'detached',
+      lastActivity: 'not-a-date',
+    });
+
+    // Default `writer` (constructed in beforeEach) has persistHealedOnLoad off.
+    writer.saveImmediate(makeState([corrupt]));
+
+    const loaded = writer.load();
+    // In-memory copy is healed...
+    expect(Number.isNaN(new Date(loaded.sessions[0].lastActivity).getTime())).toBe(false);
+
+    // ...but the on-disk file was NOT rewritten by load(): still 'not-a-date'.
+    const onDisk = JSON.parse(fs.readFileSync(filePath, 'utf-8')) as {
+      sessions: Array<{ id: string; lastActivity: string }>;
+    };
+    expect(onDisk.sessions[0].lastActivity).toBe('not-a-date');
   });
 
   it('honours a custom detachedTtlHours from the constructor (#557)', () => {

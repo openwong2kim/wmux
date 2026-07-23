@@ -3327,7 +3327,11 @@ async function main(): Promise<void> {
   // Thread the configured suspended-tombstone TTL into the authoritative
   // StateWriter (codex #2). The acquireLock() one-shot above runs pre-config
   // and only reads bootId, so the default there is harmless.
-  const stateWriter = new StateWriter(wmuxDir, config.session.suspendedTtlHours, config.session.detachedTtlHours);
+  // persistHealedOnLoad=true: this is the authoritative recovery StateWriter, so
+  // when load() restamps a corrupt lastActivity it may write the healed state
+  // back to disk. The acquireLock() one-shot writer above leaves it off (default
+  // false) so the two paths never race over sessions.json.
+  const stateWriter = new StateWriter(wmuxDir, config.session.suspendedTtlHours, config.session.detachedTtlHours, true);
   // LanLink PR-2 — durable inbound inbox (remote peer messages). Daemon-owned
   // so it survives main/renderer death (C3). Lives next to sessions.json under
   // the same suffix-aware wmuxDir; every append is synchronous + fsync'd.
