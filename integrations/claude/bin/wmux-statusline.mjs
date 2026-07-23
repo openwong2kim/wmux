@@ -106,8 +106,23 @@ function main() {
 
   const parts = [];
 
+  // Model label, kept short on purpose. Two stdin fields feed it:
+  //   display_name — for `[1m]` model variants Claude Code bakes a verbose
+  //     " (1M context)" suffix into it ("Opus 4.7 (1M context)").
+  //   effort.level — present only on models that support it; "high" by default.
+  // Rendering both verbatim would give `Opus 4.7 (1M context) (high)`, so the
+  // suffix is folded into the same parenthetical: `Opus 4.7 (1M, high)`.
+  // Steady state on a non-1M model is just `Opus 4.8 (high)`.
   const model = input?.model?.display_name;
-  if (typeof model === 'string' && model.length > 0) parts.push(model);
+  if (typeof model === 'string' && model.length > 0) {
+    const oneMillion = / \(1M context\)$/.test(model);
+    const effort = input?.effort?.level;
+    const notes = [];
+    if (oneMillion) notes.push('1M');
+    if (typeof effort === 'string' && effort.length > 0) notes.push(effort);
+    const name = oneMillion ? model.replace(/ \(1M context\)$/, '') : model;
+    parts.push(notes.length > 0 ? `${name} (${notes.join(', ')})` : name);
+  }
 
   // Account label: registered wmux name > logged-in email local part >
   // 'default' for ~/.claude > dir basename.
