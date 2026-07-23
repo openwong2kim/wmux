@@ -194,6 +194,7 @@ vi.mock('../../../deck/deckPolicy', () => ({
 }));
 
 import { registerDeckHandler, buildFleetTailLine, renderAutonomyBlock } from '../deck.handler';
+import { buildCommanderSystemPrompt } from '../../../deck/ClaudeSdkAdapter';
 import { IPC } from '../../../../shared/constants';
 import type { FleetSnapshot } from '../../../workspace/WorkspaceMirror';
 import { eventBus } from '../../../events/EventBus';
@@ -943,5 +944,77 @@ describe('global concurrent-turn gate — the fleet-wide cap on autonomous turns
 
     releasers.forEach((r) => r());
     await humanSend;
+  });
+});
+
+// ─── Regression: yesterday's exact fork that froze the orchestrator ──────────
+// On 2026-07-23 15:42 an auto-mode orchestrator raised THIS decision and froze
+// for a day, even though a standing worktree rule already answered it. This
+// reproduces the exact fork and asserts the fix: the brain now receives, in one
+// turn, (a) explicit auto DECISION AUTHORITY, (b) the BINDING worktree rule that
+// settles the question, and (c) a system prompt whose resolve-first procedure
+// tells it a rule-answered choice is NOT a fork — the three ingredients that
+// were ALL absent when it escalated.
+describe("regression — yesterday's frozen fork now composes a resolve-first turn", () => {
+  // The real deck-decisions.json record that froze the loop.
+  const FROZEN_DECISION = {
+    id: '7c578499-3900-44ab-aac5-21c3286ad6a6',
+    question: 'P0(Immediate: wmux web / ttyd 래퍼) 구현을 어디서 진행할까요?',
+    options: [
+      'D:\wmux-worktrees\ 에 새 워크트리 생성 후 그 안에서 진행 (권장)',
+      'D:\wmux 메인 체크아웃에서 직접 진행',
+      '이 test2 워크스페이스(D:\test2)에서 프로토타입으로 진행',
+    ],
+    context:
+      '메모리에 "D:\wmux 메인 체크아웃은 디자인 세션 중 건드리지 말 것, 워크트리는 D:\wmux-worktrees\에" 라는 규칙이 있습니다.',
+    status: 'pending' as const,
+    raisedAt: 1,
+  };
+  // The binding block loadDeckPolicyBlock() produces from the seeded worktree rule.
+  const BINDING_POLICY =
+    '## Operator policy (BINDING standing rules)\n' +
+    'These rules are authoritative. When a rule below settles a question you were\n' +
+    'about to ask, act on the rule, cite it, and do not raise a decision for it.\n\n' +
+    "- Work happens in an isolated git worktree under the designated worktrees folder — never the product's main checkout. If a task doesn't say where, this rule answers it.";
+
+  it('the system prompt encodes the resolve-first procedure + genuine-choice qualifier', () => {
+    const sys = buildCommanderSystemPrompt();
+    expect(sys).toContain('RESOLVE BEFORE YOU ESCALATE');
+    expect(sys).toContain('the [policy]');
+    // The exact qualifier that reclassifies yesterday's fork as self-resolvable.
+    expect(sys).toContain('A choice that a standing rule already answers is NOT a genuine choice');
+  });
+
+  it('an auto turn on the frozen fork carries authority + the binding worktree rule + the decision', async () => {
+    mockMode = 'auto';
+    mockPolicyBlock = BINDING_POLICY;
+    decisions.set('ws-1', FROZEN_DECISION);
+
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'continue the mission' });
+    const sent = adapters[0].sentTexts[0];
+
+    // (a) explicit decision authority for auto — absent yesterday (mode never
+    //     reached the prompt).
+    expect(sent).toContain('[autonomy] mode: auto');
+    expect(sent).toContain('DECISION AUTHORITY');
+    // (b) the BINDING rule that answers "where?" is now IN the turn, framed as
+    //     authoritative — yesterday it lived only in non-binding memory.
+    expect(sent).toContain('BINDING standing rules');
+    expect(sent).toContain('isolated git worktree');
+    // (c) the decision itself is present so the brain can act on / resolve it.
+    expect(sent).toContain('P0(Immediate: wmux web');
+    // Ordering: authority frames policy frames the decision.
+    expect(sent.indexOf('[autonomy]')).toBeLessThan(sent.indexOf('BINDING standing rules'));
+    expect(sent.indexOf('BINDING standing rules')).toBeLessThan(sent.indexOf('[decision]'));
+  });
+
+  it('the SAME fork under off mode gets none of it (no ambient instructions)', async () => {
+    mockMode = 'off';
+    mockPolicyBlock = BINDING_POLICY;
+    decisions.set('ws-1', FROZEN_DECISION);
+    await invoke(IPC.DECK_SEND, { workspaceId: 'ws-1', text: 'x' });
+    const sent = adapters[0].sentTexts[0];
+    expect(sent).not.toContain('[autonomy]');
+    expect(sent).not.toContain('BINDING standing rules');
   });
 });
