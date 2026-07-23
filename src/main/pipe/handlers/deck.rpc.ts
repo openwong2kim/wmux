@@ -32,6 +32,7 @@ import {
 } from '../../deck/deckDecisionStore';
 import { loadWorkspaceMode } from '../../deck/deckAutonomyStore';
 import { loadDeckHeartbeat } from '../../deck/deckHeartbeatStore';
+import { hasReExamineLease } from '../../deck/reExamineLease';
 
 /** Minimum characters a self-resolve resolution must carry. The re-examine
  *  prompt demands the brain CITE the binding rule/basis that settles the
@@ -177,6 +178,15 @@ export function registerDeckRpc(router: RpcRouter, getWindow: GetWindow): void {
     const current = loadWorkspaceDecision(ws);
     if (!current || current.status !== 'pending' || current.id !== id) {
       return { ok: false, error: 'not_pending' };
+    }
+    // (0) TURN LEASE (round-5 review P1) — self-resolve is valid ONLY inside
+    // the heartbeat's re-examine turn for exactly this decision. The commander
+    // token is valid across every turn of the session, so without this check an
+    // ordinary turn (a human chat while a stale decision is pending) could pass
+    // the mode/TTL/substance gates and self-resolve outside the re-examine
+    // framing. The lease is granted/revoked by the re-examine turn itself.
+    if (!hasReExamineLease(ws, id)) {
+      return { ok: false, error: 'no_reexamine_lease' };
     }
     // (i) mode gate — auto only.
     if (loadWorkspaceMode(ws) !== 'auto') {

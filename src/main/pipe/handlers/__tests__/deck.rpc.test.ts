@@ -12,6 +12,10 @@ import {
   mintCommanderToken,
   __resetCommanderTrustForTesting,
 } from '../../../deck/commanderTrust';
+import {
+  grantReExamineLease,
+  __resetReExamineLeasesForTesting,
+} from '../../../deck/reExamineLease';
 
 const { sendToRendererMock } = vi.hoisted(() => ({ sendToRendererMock: vi.fn() }));
 vi.mock('../_bridge', () => ({ sendToRenderer: sendToRendererMock }));
@@ -243,7 +247,11 @@ describe('deck.resolveDecision (WP3 self-resolve gate)', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetCommanderTrustForTesting();
-    // Restore the "all conditions pass" defaults after clearAllMocks.
+    __resetReExamineLeasesForTesting();
+    // Restore the "all conditions pass" defaults after clearAllMocks. The
+    // re-examine lease (round-5 gate 0) is granted so the mode/TTL/substance
+    // conditions below are each exercised in isolation.
+    grantReExamineLease('ws-1', 'dec-1');
     modeMock.mockReturnValue('auto');
     ttlMock.mockReturnValue(TTL);
     decisionRef.current = stalePending();
@@ -300,6 +308,29 @@ describe('deck.resolveDecision (WP3 self-resolve gate)', () => {
     expect(resolveDecisionMock).not.toHaveBeenCalled();
   });
 
+  it('rejects a call OUTSIDE a live re-examine turn with no_reexamine_lease (round-5 gate 0)', async () => {
+    __resetReExamineLeasesForTesting(); // no re-examine turn is running
+    const token = mintCommanderToken('ws-1');
+    const res = await resolve(setup(), { token, id: 'dec-1', resolution: GOOD_RESOLUTION });
+    expect((res.result as { ok: boolean; error: string })).toEqual({
+      ok: false,
+      error: 'no_reexamine_lease',
+    });
+    expect(resolveDecisionMock).not.toHaveBeenCalled();
+  });
+
+  it('rejects a lease for a DIFFERENT decision id (lease is decision-scoped)', async () => {
+    __resetReExamineLeasesForTesting();
+    grantReExamineLease('ws-1', 'dec-other'); // re-examine running, but for another decision
+    const token = mintCommanderToken('ws-1');
+    const res = await resolve(setup(), { token, id: 'dec-1', resolution: GOOD_RESOLUTION });
+    expect((res.result as { ok: boolean; error: string })).toEqual({
+      ok: false,
+      error: 'no_reexamine_lease',
+    });
+    expect(resolveDecisionMock).not.toHaveBeenCalled();
+  });
+
   it('rejects a mismatched / absent pending decision id with not_pending', async () => {
     const token = mintCommanderToken('ws-1');
     const wrongId = await resolve(setup(), { token, id: 'other', resolution: GOOD_RESOLUTION });
@@ -338,6 +369,8 @@ describe('deck.resolveDecision — lost-clock polarity guard', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     __resetCommanderTrustForTesting();
+    __resetReExamineLeasesForTesting();
+    grantReExamineLease('ws-1', 'dec-0'); // gate 0 satisfied — the polarity is under test
     modeMock.mockReturnValue('auto');
     ttlMock.mockReturnValue(TTL);
   });

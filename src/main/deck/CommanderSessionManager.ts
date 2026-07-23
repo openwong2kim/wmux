@@ -120,6 +120,13 @@ export class CommanderSessionManager {
     }
 
     this._status = 'busy';
+    // Round-5 review P1: production adapters (ClaudeSdkAdapter, AcpBrainAdapter)
+    // report failures by YIELDING a BrainEvent{type:'error'} — or by ending the
+    // stream without a turn-end — rather than throwing, so an exception-only
+    // 'errored' tag misses them. Completion is judged by OBSERVATION: a turn is
+    // complete only when a turn-end was seen and no error event streamed.
+    let sawTurnEnd = false;
+    let sawErrorEvent = false;
     try {
       for await (const ev of this.adapter.send(trimmed)) {
         // Disposed mid-turn (app quitting): stop forwarding. The adapter's
@@ -127,6 +134,8 @@ export class CommanderSessionManager {
         // cast — TS narrows the field to 'busy' here, but dispose() can flip it
         // to 'disposed' during the await.
         if ((this._status as CommanderStatus) === 'disposed') break;
+        if (ev.type === 'turn-end') sawTurnEnd = true;
+        else if (ev.type === 'error') sawErrorEvent = true;
         if (
           ev.type === 'turn-end' &&
           ev.sessionId &&
@@ -141,7 +150,12 @@ export class CommanderSessionManager {
         }
         this.sink(ev);
       }
-      return { ok: true };
+      // Observation-based completion (round-5 review P1): a stream that yielded
+      // an error event, or ended without a turn-end (incl. a disposed-mid-turn
+      // break), did NOT complete — tag it so provenance-sensitive callers (the
+      // re-examine consume) keep durable records alive. ok stays true: the turn
+      // ran and must not be retried as if it never started.
+      return sawTurnEnd && !sawErrorEvent ? { ok: true } : { ok: true, code: 'errored' };
     } catch (err) {
       this.sink({ type: 'error', message: err instanceof Error ? err.message : String(err) });
       // ok:true is deliberate — the turn RAN (callers must not retry it as if it

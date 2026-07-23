@@ -28,6 +28,7 @@ import { AcpBrainAdapter } from '../../deck/AcpBrainAdapter';
 import type { BrainVendor } from '../../../shared/types';
 import { getMemoryRootDir } from '../../deck/commanderMemory';
 import { loadDeckPolicyBlock, ensureDeckPolicySeed } from '../../deck/deckPolicy';
+import { grantReExamineLease, revokeReExamineLease } from '../../deck/reExamineLease';
 import {
   CommanderSessionManager,
   type CommanderSendResult,
@@ -631,6 +632,11 @@ export function registerDeckHandler(
         if (!valid) {
           return { ok: false, code: 'reexamine_invalidated' as const };
         }
+        // TURN LEASE (round-5 review P1): deck_resolve_decision is refused
+        // server-side unless THIS re-examine turn for THIS decision is live.
+        // Granted here (post-validation, pre-send), revoked in the outer
+        // finally — success, error, or abort all die with the turn.
+        grantReExamineLease(workspaceId, injected.id);
         const ttlMinutes = Math.max(1, Math.round(ttlMs / 60_000));
         // Same leading context as a normal turn (3-way review P2: the stale block
         // tells the brain to cite a binding policy rule — that rule must be IN
@@ -701,6 +707,10 @@ export function registerDeckHandler(
       }
       return verdict;
     } finally {
+      // The re-examine self-resolve lease dies with the turn, no matter how it
+      // ended (round-5 review P1) — revoke BEFORE the slot release so no other
+      // turn can observe a stale lease.
+      if (runOpts.reExamine) revokeReExamineLease(workspaceId);
       // Release the slot once the turn has fully settled (send resolved/rejected)
       // — never on the synchronous path only, or a long turn would free its slot
       // early and let the cap be exceeded. Release is by token: a slot already
