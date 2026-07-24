@@ -170,7 +170,7 @@ describe('AutoUpdater two-step flow (win32)', () => {
     await until(() => openPath.mock.calls.length > 0);
 
     expect(openPath).toHaveBeenCalledTimes(1);
-    expect(openPath.mock.calls[0][0]).toContain('wmux-update-');
+    expect(openPath.mock.calls[0][0]).toContain('fmux-update-');
     expect(quit).toHaveBeenCalledTimes(1);
   });
 
