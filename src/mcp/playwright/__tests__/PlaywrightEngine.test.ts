@@ -672,3 +672,119 @@ describe('PlaywrightEngine read-path workspace scoping (#554)', () => {
     expect(ctxC.key).not.toBe(ctxD.key); // each surfaceless workspace auto-opens independently
   });
 });
+
+/**
+ * #580 Option 1: the engine now asks main to scope browser.cdp.info to its own
+ * workspace, and reads the `targetsScoped` flag so an empty list means "I own
+ * none" rather than "legacy main." The #554 block above still covers the
+ * legacy/unscoped-response path (a main that ignores the param), which must
+ * keep working; these cover the scoped-response path a current main returns.
+ */
+describe('PlaywrightEngine read-path workspace scoping — scoped cdp.info (#580)', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  // A main honoring the param returns ONLY the caller's targets + the flag.
+  const scopedCdpInfo = (callerWs: string) => ({
+    cdpPort: 9222,
+    targetsScoped: true,
+    targets:
+      callerWs === 'ws-A'
+        ? [{ surfaceId: 'surf-A', targetId: 'wc-1', workspaceId: 'ws-A' }]
+        : [],
+  });
+
+  it('passes the resolved workspaceId to browser.cdp.info', async () => {
+    mockSendRpc.mockImplementation((method: string, params?: unknown) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve(scopedCdpInfo((params as { workspaceId: string }).workspaceId))
+        : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    await scope(engine).resolveCallerSurface();
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-A' });
+  });
+
+  it('reports its own surface from a scoped response', async () => {
+    mockSendRpc.mockImplementation((method: string, params?: unknown) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve(scopedCdpInfo((params as { workspaceId: string }).workspaceId))
+        : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({
+      kind: 'surface',
+      surfaceId: 'surf-A',
+      workspaceId: 'ws-A',
+    });
+  });
+
+  it("reads an EMPTY scoped response as 'none', not 'unscoped' (the targetsScoped disambiguation)", async () => {
+    mockSendRpc.mockImplementation((method: string, params?: unknown) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve(scopedCdpInfo((params as { workspaceId: string }).workspaceId))
+        : Promise.resolve({}),
+    );
+    const engine = PlaywrightEngine.getInstance();
+    // ws-B owns nothing; a scoped empty list must fail closed to 'none' so the
+    // caller never falls through to another workspace's page — the whole point
+    // of the flag, since without it an empty list is ambiguous with legacy.
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-B');
+
+    await expect(scope(engine).resolveCallerSurface()).resolves.toEqual({
+      kind: 'none',
+      workspaceId: 'ws-B',
+    });
+  });
+
+  it('an empty scoped response routes getPage to auto-open the CALLER\'s own browser, scoping its queries', async () => {
+    // Under scoping, a caller that owns no live target must NOT fall through to
+    // another workspace's guest — it auto-opens its own. This asserts the two
+    // isolation-critical calls getPage makes on that path: it queries
+    // cdp.info scoped to itself, and opens in its OWN workspace. (The auto-open
+    // -> returned-page mechanics are covered independently by the #554 auto-open
+    // test; here the empty scoped response keeps the caller on the self-open
+    // branch rather than a foreign page.)
+    const shellUrl = 'file:///app/.vite/renderer/main_window/index.html';
+    let opened = false;
+
+    const browser = {
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+      contexts: vi.fn().mockReturnValue([]),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    mockConnectOverCDP.mockResolvedValue(browser);
+    mockSendRpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === 'browser.cdp.info') {
+        const ws = (params as { workspaceId?: string } | undefined)?.workspaceId;
+        // Honor the scope request: caller owns nothing → empty + flag, both
+        // before and after the open (so it never resolves a foreign page).
+        return Promise.resolve({ cdpPort: 9222, shellUrl, ...(ws && { targetsScoped: true }), targets: [] });
+      }
+      if (method === 'browser.open') {
+        opened = true;
+        return Promise.resolve({ ok: true });
+      }
+      return Promise.resolve({});
+    });
+
+    const engine = PlaywrightEngine.getInstance();
+    autoOpen(engine).setWorkspaceIdResolver(async () => 'ws-B');
+
+    await engine.getPage();
+
+    // Opened in the caller's OWN workspace — the isolation guarantee.
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-B' });
+    // And it asked main to scope the target list to the caller.
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-B' });
+    expect(opened).toBe(true);
+  }, 15_000);
+});

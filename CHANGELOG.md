@@ -48,6 +48,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`browser_close` can no longer close another workspace's browser by surface id.** Closing by an explicit `surfaceId` searched every workspace, so a caller in workspace A could tear down workspace B's browser if it learned B's id (composing with the cross-workspace target ids `browser.cdp.info` still exposes — [#580](https://github.com/openwong2kim/wmux/issues/580)). An explicit `surfaceId` is now scoped to the caller's own workspace and fails closed when caller identity is absent, rather than falling back to whichever workspace is on screen — matching the boundary `browser_tabs` already enforces. The surface-id-less "close the browser pane" convenience is unchanged. This closes the destructive half of #580; scoping the `browser.cdp.info` disclosure itself is tracked separately. (#580)
 
+- **`browser.cdp.info` no longer volunteers other workspaces' live browser targets.** The internal RPC that the browser automation engine uses to locate a guest returned every registered CDP target — with its surface id and owning workspace — to any `browser.read` caller, which is how a foreign surface id could be discovered in the first place. It now filters that list to the caller's own workspace server-side (the port and app-shell URL, which are workspace-agnostic, are unchanged). This is defense-in-depth within the same single-OS-user trust boundary, not a hard seal: anything holding the shared CDP port can still enumerate targets directly, so sealing that off is left as a larger change. Closes the disclosure half of #580. (#580)
+
 ## [3.32.0] — 2026-07-24
 
 ### Added

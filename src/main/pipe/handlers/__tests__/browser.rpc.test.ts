@@ -172,6 +172,91 @@ describe('registerBrowserRpc', () => {
     }
   });
 
+  // #580 Option 1: browser.cdp.info filters its target list to the caller's
+  // workspace server-side when a workspaceId is supplied, so the RPC never
+  // volunteers another workspace's live targets to a caller that identifies
+  // itself. cdpPort/shellUrl stay unscoped (workspace-agnostic).
+  describe('browser.cdp.info workspace scoping (#580)', () => {
+    // A three-target catalog spanning two workspaces plus one untagged target.
+    function registerMultiWs(): RpcRouter {
+      const router = new RpcRouter();
+      const webviewCdpManager = {
+        getTarget: vi.fn(),
+        listTargets: vi.fn(() => [
+          { surfaceId: 'surface-a', targetId: 'target-a', workspaceId: 'ws-a' },
+          { surfaceId: 'surface-b', targetId: 'target-b', workspaceId: 'ws-b' },
+          { surfaceId: 'surface-untagged', targetId: 'target-u' },
+        ]),
+        getCdpPort: vi.fn(() => 18800),
+        waitForTarget: vi.fn(),
+        ensureAwake: vi.fn(async () => null),
+        setCaptureCleanup: vi.fn(),
+        withAutomationLease: vi.fn(async (_s: string, fn: () => Promise<unknown>) => fn()),
+        acquireRpcLease: vi.fn(() => 'lease-1'),
+        renewRpcLease: vi.fn(() => true),
+        releaseRpcLease: vi.fn(() => true),
+      };
+      registerBrowserRpc(router, () => null, webviewCdpManager as never);
+      return router;
+    }
+
+    it('filters targets to the caller workspace and marks the response scoped', async () => {
+      const router = registerMultiWs();
+
+      const response = await router.dispatch({
+        id: 'ws1',
+        method: 'browser.cdp.info',
+        params: { workspaceId: 'ws-a' },
+      });
+
+      expect(response.ok).toBe(true);
+      if (response.ok) {
+        expect(response.result).toEqual({
+          cdpPort: 18800,
+          targetsScoped: true,
+          targets: [{ surfaceId: 'surface-a', targetId: 'target-a', workspaceId: 'ws-a' }],
+        });
+        // Neither the foreign nor the untagged target may leak.
+        expect(JSON.stringify(response.result)).not.toContain('surface-b');
+        expect(JSON.stringify(response.result)).not.toContain('surface-untagged');
+      }
+    });
+
+    it('returns an empty scoped list when the caller owns no live target', async () => {
+      const router = registerMultiWs();
+
+      const response = await router.dispatch({
+        id: 'ws2',
+        method: 'browser.cdp.info',
+        params: { workspaceId: 'ws-none' },
+      });
+
+      expect(response.ok).toBe(true);
+      if (response.ok) {
+        // Empty + targetsScoped is the signal the engine reads as "own none",
+        // distinct from a legacy main that cannot scope at all.
+        expect(response.result).toEqual({ cdpPort: 18800, targetsScoped: true, targets: [] });
+      }
+    });
+
+    it('returns every target and no scoped flag when no workspaceId is supplied (legacy)', async () => {
+      const router = registerMultiWs();
+
+      const response = await router.dispatch({
+        id: 'ws3',
+        method: 'browser.cdp.info',
+        params: {},
+      });
+
+      expect(response.ok).toBe(true);
+      if (response.ok) {
+        const result = response.result as { targetsScoped?: boolean; targets: unknown[] };
+        expect(result.targetsScoped).toBeUndefined();
+        expect(result.targets).toHaveLength(3);
+      }
+    });
+  });
+
   it('browser.navigate rejects URLs whose resolved targets are blocked', async () => {
     validateResolvedNavigationUrlMock.mockResolvedValue({
       valid: false,
