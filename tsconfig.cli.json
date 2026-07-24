@@ -19,6 +19,6 @@
     "src/shared/bootPhases.ts"
   ],
   "exclude": [
-    "src/cli/__tests__/**"
+    "src/cli/**/__tests__/**"
   ]
 }

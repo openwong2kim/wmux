@@ -22,6 +22,7 @@
 // so a failed assertion cannot strand a node process.
 
 import { spawn, type ChildProcess } from 'child_process';
+import * as fs from 'fs';
 import * as net from 'net';
 import * as path from 'path';
 import { afterEach, describe, expect, it } from 'vitest';
@@ -32,6 +33,13 @@ import { getMcpBrokerPipeName } from '../../../shared/constants';
 // the SAME artifact packaged builds ship (resources/mcp-bundle/broker.js) — it
 // is self-contained, so it runs under plain node with no node_modules access.
 const BROKER_JS = path.join(process.cwd(), 'dist', 'mcp-bundle', 'broker.js');
+
+// broker.js is a build artifact (`npm run build:mcp`), not checked in. CI-clean
+// runs `npm test` without building it, so this whole suite is a local/dogfood
+// lane: it deliberately skips unless the bundle exists. The packaged-build matrix
+// is the separate gate that guarantees the bundle is present
+// (see plans/mcp-broker-enable-plan-2026-07-24.md).
+const brokerBundleExists = fs.existsSync(BROKER_JS);
 
 const sleep = (ms: number): Promise<void> =>
   new Promise((r) => setTimeout(r, ms));
@@ -134,7 +142,7 @@ afterEach(async () => {
   }
 });
 
-describe('broker lifecycle (dynamic, real process)', () => {
+describe.skipIf(!brokerBundleExists)('broker lifecycle (dynamic, real process)', () => {
   it(
     'real broker makes the pipe connectable, then unconnectable after it dies',
     async () => {
