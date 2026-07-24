@@ -141,6 +141,8 @@ interface Harness {
   prompts: { ws: string; prompt: string }[];
   setBusy: (b: boolean) => void;
   setRunResult: (r: { ok: boolean; code?: string }) => void;
+  setAutoWake: (b: boolean) => void;
+  setLoop: (l: { running: boolean; iterations: number } | null) => void;
 }
 
 function mk(opts: {
@@ -153,6 +155,9 @@ function mk(opts: {
 } = {}): Harness {
   let busy = false;
   let runResult: { ok: boolean; code?: string } = { ok: true };
+  // Auto-wake and loop start from the opts value but can be toggled mid-test.
+  let autoWake = opts.isAutoWakeEnabled ? opts.isAutoWakeEnabled() : true;
+  let loop = opts.loop ?? null;
   const prompts: { ws: string; prompt: string }[] = [];
   const c = new CommanderEventCoalescer({
     runTurn: async (ws, prompt) => {
@@ -161,8 +166,8 @@ function mk(opts: {
     },
     isBusy: () => busy,
     getAutonomy: () => opts.autonomy ?? { ...AUTO_AUTONOMY },
-    getLoop: () => opts.loop ?? null,
-    ...(opts.isAutoWakeEnabled ? { isAutoWakeEnabled: opts.isAutoWakeEnabled } : {}),
+    getLoop: () => loop,
+    isAutoWakeEnabled: () => autoWake,
     ...(opts.hasPendingDecision ? { hasPendingDecision: opts.hasPendingDecision } : {}),
     debounceMs: 50,
     wakeBudget: opts.wakeBudget ?? 100,
@@ -172,6 +177,8 @@ function mk(opts: {
     c, prompts,
     setBusy: (b) => { busy = b; },
     setRunResult: (r) => { runResult = r; },
+    setAutoWake: (b) => { autoWake = b; },
+    setLoop: (l) => { loop = l; },
   };
 }
 
@@ -387,6 +394,27 @@ describe('flushSnapshot — retire a surfaced complete pane (#561)', () => {
     const p = h.prompts[1].prompt;
     expect(p).toContain('pane=ptyB');      // the blocked pane surfaces…
     expect(p).not.toContain('pane=ptyA');  // …the already-reviewed complete pane does not
+  });
+
+  it('re-arms even when the re-observing flush early-returns (auto-wake OFF between)', async () => {
+    // Surface + retire under a running loop (which overrides the auto-wake switch).
+    const h = mk({ isAutoWakeEnabled: () => true, loop: { running: true, iterations: 100 } });
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    // Auto-wake goes OFF and the loop stops; the pane starts a new turn. This flush
+    // early-returns at the auto-wake gate — but reconcile still re-arms ptyA.
+    h.setAutoWake(false);
+    h.setLoop(null);
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'running' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    // Auto-wake back on; the pane completes again → surfaces fresh (not suppressed
+    // by a stale retired entry the early-returning flush failed to clear).
+    h.setAutoWake(true);
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(2);
   });
 
   it('error panes are NOT retired — a still-broken pane keeps surfacing', async () => {

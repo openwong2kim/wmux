@@ -314,6 +314,13 @@ export class CommanderEventCoalescer {
   flushSnapshot(workspaceId: string, snapshot: FleetSnapshot): void {
     if (this.disposed) return;
     const st = this.ensureState(workspaceId);
+    // Re-arm the "already surfaced" set against the CURRENT level state BEFORE any
+    // gate: a pane observed non-`complete` here (new activity, or gone) must drop
+    // out of the retired set even on a flush that early-returns below (pending
+    // decision, auto-wake off, policy 'none'), so its NEXT completion surfaces fresh
+    // once the workspace can wake again (issue #561). The snapshot is ground truth
+    // regardless of whether this flush acts on it.
+    this.reconcileSurfacedComplete(st, snapshot);
     // Decision gate: a pending decision blocks EVERY wake, snapshot included.
     // Drop the snapshot (the next heartbeat re-reads it); leave buffered edges
     // untouched for the normal edge path to govern.
@@ -326,13 +333,6 @@ export class CommanderEventCoalescer {
     const autonomy = this.safeAutonomy(workspaceId);
     const policy: WakePolicy = loopRunning ? 'all' : modeToWakePolicy(autonomy.mode);
     if (policy === 'none') return;
-
-    // Re-arm the "already surfaced" set against the CURRENT level state: a pane we
-    // previously surfaced-and-retired that is no longer `complete` (new activity,
-    // or gone from the snapshot) drops out, so its NEXT completion surfaces fresh
-    // (issue #561). Done before the worthiness checks and independent of whether
-    // this flush wakes — the snapshot is the ground truth of current state.
-    this.reconcileSurfacedComplete(st, snapshot);
 
     // Attention panes to surface. 'all' (auto/loop) surfaces every non-quiescent
     // pane; 'value-filtered' (assist) narrows to the blocked ones — a plain
@@ -382,14 +382,6 @@ export class CommanderEventCoalescer {
     // of them (including value-filtered-out stops) on accept, so a dropped stop is
     // consumed, not re-surfaced — identical to the edge path. 0 when none buffered.
     const snapshotMaxSeq = edges.length > 0 ? edges[edges.length - 1].seq : 0;
-    // The `complete` panes this flush is about to surface. Retiring them is tied to
-    // the SAME outcomes that advance the edge watermark (accept + non-busy failure +
-    // catch, never a busy reject): if the brain got the turn, the pane was reviewed
-    // once and should not re-surface; a busy reject means it never landed, so leave
-    // it armed for the next heartbeat to re-read — identical to the buffered edges.
-    const surfacedCompleteIds = snapPanes
-      .filter((p) => p.agentStatus === 'complete')
-      .map((p) => p.ptyId);
     const prompt = buildSnapshotPrompt(
       { workspaceId: snapshot.workspaceId, ts: snapshot.ts, panes: snapPanes },
       worthyEdges,
@@ -398,6 +390,18 @@ export class CommanderEventCoalescer {
       { loopRunning, fleetTail: this.safeFleetTail(workspaceId) },
     );
     st.phase = 'send-pending';
+    // Retire the `complete` panes this flush surfaces SYNCHRONOUSLY, here at the
+    // commit point — never after the async runTurn settles. At this instant
+    // snapPanes' complete IDs are exactly the currently-complete panes going into
+    // the prompt, so adding them now cannot re-add a pane that a LATER snapshot has
+    // since re-armed (the stale-add race a settle-time retire would have). A future
+    // reconcile drops any of these the moment its pane moves off `complete`. The
+    // sync busy gate above already returned before this point, so a pane the brain
+    // is too busy (mid-turn) to review is never retired here.
+    this.retireSurfacedComplete(
+      st,
+      snapPanes.filter((p) => p.agentStatus === 'complete').map((p) => p.ptyId),
+    );
 
     void this.deps
       .runTurn(workspaceId, prompt)
@@ -408,19 +412,16 @@ export class CommanderEventCoalescer {
           this.recordWake(st, this.nowFn());
           if (snapshotMaxSeq > st.watermark) st.watermark = snapshotMaxSeq;
           this.pruneBuffer(st, snapshotMaxSeq);
-          this.retireSurfacedComplete(st, surfacedCompleteIds);
           st.phase = st.buffer.size > 0 ? 'buffering' : 'idle';
         } else if (r.code === 'busy') {
           // The snapshot drops (next heartbeat re-reads level state); buffered
-          // edges survive untouched, and the complete panes stay armed. Retry the
-          // edge path if any remain.
+          // edges survive untouched. Retry the edge path if any remain.
           st.phase = st.buffer.size > 0 ? 'buffering' : 'idle';
           if (st.buffer.size > 0) this.restartDebounce(workspaceId, st);
         } else {
           // Non-busy failure: consume the folded edges to avoid a poison loop.
           if (snapshotMaxSeq > st.watermark) st.watermark = snapshotMaxSeq;
           this.pruneBuffer(st, snapshotMaxSeq);
-          this.retireSurfacedComplete(st, surfacedCompleteIds);
           st.phase = st.buffer.size > 0 ? 'buffering' : 'idle';
         }
       })
@@ -428,7 +429,6 @@ export class CommanderEventCoalescer {
         if (this.disposed) return;
         if (snapshotMaxSeq > st.watermark) st.watermark = snapshotMaxSeq;
         this.pruneBuffer(st, snapshotMaxSeq);
-        this.retireSurfacedComplete(st, surfacedCompleteIds);
         st.phase = st.buffer.size > 0 ? 'buffering' : 'idle';
       });
   }
@@ -567,10 +567,10 @@ export class CommanderEventCoalescer {
     }
   }
 
-  /** Mark the `complete` panes a snapshot flush just surfaced as retired, so a
+  /** Mark the `complete` panes a snapshot flush is surfacing as retired, so a
    *  later heartbeat drops them instead of re-reviewing the same finished pane
-   *  (issue #561). Called only where the edge watermark also advances — never on
-   *  a busy reject — so a pane the brain never actually saw stays armed. */
+   *  (issue #561). Called synchronously at the flush's commit point — after the
+   *  sync busy gate, so a pane the brain is mid-turn on is never retired here. */
   private retireSurfacedComplete(st: WsState, ptyIds: readonly string[]): void {
     for (const id of ptyIds) st.snapshotSurfacedComplete.add(id);
   }
