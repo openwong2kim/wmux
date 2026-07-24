@@ -1564,7 +1564,11 @@ export function registerDeckHandler(
       });
       pendingSeen.set(workspaceId, {
         builtAt: briefing.builtAt,
-        snapshot: toBriefedSnapshot(briefing),
+        snapshot: toBriefedSnapshot(
+          snapshot,
+          briefing.pendingDecision?.id ?? null,
+          briefing.builtAt,
+        ),
       });
       return { briefing, autoShow: cfg.autoShow, mirrorReady: true };
     }),

@@ -70,7 +70,14 @@ export interface WorkspaceBriefing {
   pendingDecision: WorkspaceDecision | null;
   /** The running loop's objective + how many done-when tasks pass. */
   loop: { objective: string; passes: number; taskCount: number } | null;
-  panes: BriefingPane[];
+  /** The TOP of the priority ladder — the single "look at this first" pane, and
+   *  the only pane the card names. Owner decision 2026-07-24: the briefing does
+   *  NOT render a pane roster; DeckFleet is mounted directly above it with a
+   *  near-identical row anatomy, and a blocked pane was being rendered three
+   *  times across the screen (Fleet row + briefing row + titlebar vitals chip)
+   *  where DESIGN.md allows two — "Never three." The full sorted list is still
+   *  computed (it feeds the counts and this pick) but is not shipped. */
+  topPane: BriefingPane | null;
   changed: BriefingChange | null;
   coldStart: boolean;
   builtAt: number;
@@ -152,14 +159,14 @@ export interface BuildBriefingInputs {
  * Build the deterministic briefing from already-resolved feeds. Pure,
  * never-throws — every input may be null/empty and the result still renders.
  */
-export function buildWorkspaceBriefing(inputs: BuildBriefingInputs): WorkspaceBriefing {
-  const { workspaceId, entry, snapshot, decision, mode, loop, prior, coldStart } = inputs;
-  const builtAt = inputs.now ?? Date.now();
-
-  const pendingDecision = decision && decision.status === 'pending' ? decision : null;
-
-  const rawPanes = snapshot?.panes ?? [];
-  const panes: BriefingPane[] = rawPanes
+/**
+ * The panes of a fleet snapshot, mapped + sorted by the priority ladder. Pure
+ * and exported for testing: the ladder still decides which single pane the card
+ * names ("look at this first"), even though the list itself is no longer
+ * rendered as rows.
+ */
+export function buildBriefingPanes(snapshot: FleetSnapshot | null): BriefingPane[] {
+  return (snapshot?.panes ?? [])
     .map((p) => ({
       ptyId: p.ptyId,
       agentName: p.agentName ? cap(p.agentName, BRIEFING_LIMITS.MAX_AGENT_NAME_CHARS) : p.agentName,
@@ -168,9 +175,20 @@ export function buildWorkspaceBriefing(inputs: BuildBriefingInputs): WorkspaceBr
       priority: PRIORITY[p.agentStatus] ?? 5,
       reason: reasonFor(p.agentStatus),
     }))
-    // Stable sort by priority, then by ptyId so equal-priority rows never
-    // reorder between builds (deterministic ordering for the "+N more" cap).
+    // Stable sort by priority, then by ptyId so equal-priority panes never
+    // reorder between builds — the named "look at this first" pane must not
+    // flicker between two equally-urgent candidates on consecutive refreshes.
     .sort((a, b) => a.priority - b.priority || a.ptyId.localeCompare(b.ptyId));
+}
+
+export function buildWorkspaceBriefing(inputs: BuildBriefingInputs): WorkspaceBriefing {
+  const { workspaceId, entry, snapshot, decision, mode, loop, prior, coldStart } = inputs;
+  const builtAt = inputs.now ?? Date.now();
+
+  const pendingDecision = decision && decision.status === 'pending' ? decision : null;
+
+  const rawPanes = snapshot?.panes ?? [];
+  const panes = buildBriefingPanes(snapshot);
 
   const loopSummary =
     loop && loop.objective
@@ -190,7 +208,7 @@ export function buildWorkspaceBriefing(inputs: BuildBriefingInputs): WorkspaceBr
     counts: summarizeBriefingCounts(panes),
     pendingDecision,
     loop: loopSummary,
-    panes,
+    topPane: panes[0] ?? null,
     changed,
     coldStart,
     builtAt,
@@ -277,7 +295,7 @@ export function hasBriefingDelta(changed: BriefingChange | null): boolean {
  */
 export function briefingHasContent(b: WorkspaceBriefing): boolean {
   return (
-    b.panes.length > 0 ||
+    b.counts.total > 0 ||
     b.pendingDecision !== null ||
     b.loop !== null ||
     hasBriefingDelta(b.changed)
@@ -324,12 +342,24 @@ export function isNewlyActionable(prev: BriefingSignal | null, next: BriefingSig
   return next.blocked.some((ptyId) => !prev.blocked.includes(ptyId));
 }
 
-/** Distil a built briefing into the tiny status-only snapshot to persist after a
- *  view (the next open diffs against this). */
-export function toBriefedSnapshot(b: WorkspaceBriefing, at?: number): BriefedSnapshot {
+/**
+ * Distil a fleet snapshot into the tiny status-only record to persist once the
+ * operator has actually seen a briefing (the next open diffs against this).
+ *
+ * Takes the RAW snapshot rather than the built briefing: the briefing no longer
+ * carries a pane list (only the top-priority pick), but the delta baseline needs
+ * every pane's status. The handler already holds the raw snapshot, so this reads
+ * from the source instead of round-tripping through a payload field that exists
+ * only to feed it.
+ */
+export function toBriefedSnapshot(
+  snapshot: FleetSnapshot | null,
+  decisionId: string | null,
+  at: number,
+): BriefedSnapshot {
   return {
-    panes: b.panes.map((p) => ({ ptyId: p.ptyId, agentStatus: p.agentStatus })),
-    decisionId: b.pendingDecision?.id ?? null,
-    at: at ?? b.builtAt,
+    panes: (snapshot?.panes ?? []).map((p) => ({ ptyId: p.ptyId, agentStatus: p.agentStatus })),
+    decisionId,
+    at,
   };
 }

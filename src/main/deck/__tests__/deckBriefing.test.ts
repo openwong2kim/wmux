@@ -6,6 +6,7 @@
 import { describe, it, expect } from 'vitest';
 import {
   BRIEFING_LIMITS,
+  buildBriefingPanes,
   buildWorkspaceBriefing,
   briefingHasContent,
   briefingSignal,
@@ -66,9 +67,23 @@ describe('buildWorkspaceBriefing — priority ordering', () => {
         { ptyId: 'p-block', agentStatus: 'awaiting_input' },
       ]),
     });
-    expect(b.panes.map((p) => p.ptyId)).toEqual(['p-block', 'p-err', 'p-done', 'p-run', 'p-idle']);
-    expect(b.panes[0].reason).toBe('blocked');
-    expect(b.panes[1].reason).toBe('error');
+    // The ladder still runs in full — it decides which single pane the card
+    // names — even though the sorted list is no longer part of the payload.
+    const sorted = buildBriefingPanes(
+      snap([
+        { ptyId: 'p-idle', agentStatus: 'idle' },
+        { ptyId: 'p-run', agentStatus: 'running' },
+        { ptyId: 'p-done', agentStatus: 'complete' },
+        { ptyId: 'p-err', agentStatus: 'error' },
+        { ptyId: 'p-block', agentStatus: 'awaiting_input' },
+      ]),
+    );
+    expect(sorted.map((p) => p.ptyId)).toEqual(['p-block', 'p-err', 'p-done', 'p-run', 'p-idle']);
+    expect(sorted[0].reason).toBe('blocked');
+    expect(sorted[1].reason).toBe('error');
+    // ...and the briefing ships only its conclusion.
+    expect(b.topPane?.ptyId).toBe('p-block');
+    expect(b).not.toHaveProperty('panes');
   });
 
   it('waiting is treated as blocked (same priority as awaiting_input)', () => {
@@ -79,8 +94,25 @@ describe('buildWorkspaceBriefing — priority ordering', () => {
         { ptyId: 'p-wait', agentStatus: 'waiting' },
       ]),
     });
-    expect(b.panes[0].ptyId).toBe('p-wait');
-    expect(b.panes[0].reason).toBe('blocked');
+    expect(b.topPane?.ptyId).toBe('p-wait');
+    expect(b.topPane?.reason).toBe('blocked');
+  });
+
+  it('equal-priority panes break ties by ptyId so the named pane never flickers', () => {
+    const build = () =>
+      buildWorkspaceBriefing({
+        ...baseInputs,
+        snapshot: snap([
+          { ptyId: 'p-b', agentStatus: 'awaiting_input' },
+          { ptyId: 'p-a', agentStatus: 'awaiting_input' },
+        ]),
+      });
+    expect(build().topPane?.ptyId).toBe('p-a');
+    expect(build().topPane?.ptyId).toBe('p-a');
+  });
+
+  it('an empty fleet has no top pane', () => {
+    expect(buildWorkspaceBriefing({ ...baseInputs, snapshot: null }).topPane).toBeNull();
   });
 });
 
@@ -313,8 +345,8 @@ describe('payload caps', () => {
         updatedAt: 1,
       } as WorkspaceLoopState,
     });
-    expect(b.panes[0].agentName!.length).toBe(BRIEFING_LIMITS.MAX_AGENT_NAME_CHARS);
-    expect(b.panes[0].cwd!.length).toBe(BRIEFING_LIMITS.MAX_CWD_CHARS);
+    expect(b.topPane!.agentName!.length).toBe(BRIEFING_LIMITS.MAX_AGENT_NAME_CHARS);
+    expect(b.topPane!.cwd!.length).toBe(BRIEFING_LIMITS.MAX_CWD_CHARS);
     expect(b.loop!.objective.length).toBe(BRIEFING_LIMITS.MAX_OBJECTIVE_CHARS);
   });
 });
@@ -381,20 +413,34 @@ describe('loop summary + never-throw + snapshot', () => {
       loop: null,
     });
     expect(b.workspaceName).toBe('ws-1');
-    expect(b.panes).toEqual([]);
+    expect(b.topPane).toBeNull();
     expect(b.counts.total).toBe(0);
   });
 
-  it('toBriefedSnapshot distils status-only panes + decision id', () => {
-    const b = buildWorkspaceBriefing({
-      ...baseInputs,
-      snapshot: snap([{ ptyId: 'p1', agentStatus: 'running' }]),
-      decision: decision({ id: 'dec-9' }),
-    });
-    expect(toBriefedSnapshot(b)).toEqual({
-      panes: [{ ptyId: 'p1', agentStatus: 'running' }],
+  it('toBriefedSnapshot distils status-only panes + decision id from the RAW snapshot', () => {
+    // The baseline needs EVERY pane's status, not just the named one — it is
+    // read from the fleet snapshot the handler already holds, not from the
+    // (now single-pane) briefing payload.
+    expect(
+      toBriefedSnapshot(
+        snap([
+          { ptyId: 'p1', agentStatus: 'running' },
+          { ptyId: 'p2', agentStatus: 'idle' },
+        ]),
+        'dec-9',
+        1000,
+      ),
+    ).toEqual({
+      panes: [
+        { ptyId: 'p1', agentStatus: 'running' },
+        { ptyId: 'p2', agentStatus: 'idle' },
+      ],
       decisionId: 'dec-9',
       at: 1000,
     });
+  });
+
+  it('toBriefedSnapshot on a null snapshot is an empty baseline', () => {
+    expect(toBriefedSnapshot(null, null, 5)).toEqual({ panes: [], decisionId: null, at: 5 });
   });
 });

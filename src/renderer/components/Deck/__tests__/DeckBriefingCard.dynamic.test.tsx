@@ -4,8 +4,9 @@
 // injected, no store/IPC. Covers the collapse/expand rules (including the
 // "never fight the operator" preservation contract), the acknowledge-vs-fetch
 // split, the mirror-not-ready retry, the empty-state guard, the reqSeq
-// workspace-switch race guard, pane-row jumps, the pane overflow control, the
-// channels-unread overlay, scoped onStream refetch, and the Settings config bus.
+// workspace-switch race guard, the single top-priority jump that replaced the
+// pane roster, the channels-unread overlay, scoped onStream refetch, and the
+// Settings config bus.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createElement, act } from 'react';
@@ -53,20 +54,26 @@ const pane = (
   reason: REASON[agentStatus],
 });
 
-const briefing = (over: Partial<WorkspaceBriefing> = {}): WorkspaceBriefing => {
-  const panes = over.panes ?? [pane('p-default')];
+/** `panes` is a TEST-ONLY input: the payload ships only the counts and the top
+ *  of the priority ladder, so the fixture derives both from the list the test
+ *  describes (keeping the tests readable in fleet terms). */
+const briefing = (
+  over: Partial<WorkspaceBriefing> & { panes?: BriefingPane[] } = {},
+): WorkspaceBriefing => {
+  const { panes, ...rest } = over;
+  const list = panes ?? [pane('p-default')];
   return {
     workspaceId: 'ws-1',
     workspaceName: 'Proj',
     mode: 'assist',
-    counts: summarizeBriefingCounts(panes),
+    counts: summarizeBriefingCounts(list),
+    topPane: list[0] ?? null,
     pendingDecision: null,
     loop: null,
     changed: null,
     coldStart: false,
     builtAt: 1,
-    ...over,
-    panes,
+    ...rest,
   };
 };
 
@@ -113,11 +120,11 @@ function streamHarness(): {
   onStream: (cb: (env: { workspaceId: string; event: unknown }) => void) => () => void;
   tick: (workspaceId?: string) => Promise<void>;
 } {
-  let fire: (env: { workspaceId: string; event: unknown }) => void = () => {};
+  let fire: (env: { workspaceId: string; event: unknown }) => void = () => undefined;
   return {
     onStream: (cb) => {
       fire = cb;
-      return () => {};
+      return () => undefined;
     },
     tick: async (workspaceId = 'ws-1') => {
       await act(async () => {
@@ -444,52 +451,118 @@ describe('DeckBriefingCard — mirror not ready', () => {
   });
 });
 
-describe('DeckBriefingCard — pane list', () => {
-  it('a pane jump resolves the ptyId and calls onJumpToPane', async () => {
-    const jumps: { workspaceId: string; paneId: string }[] = [];
-    const b = briefing({ coldStart: true, panes: [pane('pty-9', 'awaiting_input', 'claude')] });
+describe('DeckBriefingCard — no roster, one jump', () => {
+  const fleet = [
+    pane('p1', 'awaiting_input', 'claude'),
+    pane('p2', 'running', 'codex'),
+    pane('p3', 'idle', 'shell-a'),
+  ];
+
+  it('renders NO pane rows — DeckFleet above owns the roster', async () => {
     await mount({
-      api: makeApi({ briefing: b, autoShow: true }).api,
+      api: makeApi({ briefing: briefing({ coldStart: true, panes: fleet }), autoShow: true }).api,
       workspaceId: 'ws-1',
-      resolvePtyPane: (ptyId) =>
-        ptyId === 'pty-9' ? { workspaceId: 'ws-1', paneId: 'pane-3' } : null,
-      onJumpToPane: (workspaceId, paneId) => jumps.push({ workspaceId, paneId }),
+      resolvePtyPane: (ptyId) => ({ workspaceId: 'ws-1', paneId: ptyId }),
     });
-    const jump = container.querySelector('[data-briefing-jump]') as HTMLButtonElement;
-    expect(jump).not.toBeNull();
-    await click(jump);
-    expect(jumps).toEqual([{ workspaceId: 'ws-1', paneId: 'pane-3' }]);
+    expect(isExpanded()).toBe(true);
+    expect(container.querySelectorAll('[data-briefing-pane]').length).toBe(0);
+    expect(container.querySelector('[data-briefing-more]')).toBeNull();
   });
 
-  it('each jump control is named after its pane (screen readers can tell rows apart)', async () => {
+  it('surfaces exactly ONE jump — the top of the priority ladder — even at fleet scale', async () => {
+    const many = [
+      pane('p-block', 'awaiting_input', 'claude'),
+      ...Array.from({ length: 29 }, (_, i) => pane(`p${i}`, 'running', `a${i}`)),
+    ];
+    await mount({
+      api: makeApi({ briefing: briefing({ coldStart: true, panes: many }), autoShow: true }).api,
+      workspaceId: 'ws-1',
+      resolvePtyPane: (ptyId) => ({ workspaceId: 'ws-1', paneId: ptyId }),
+    });
+    const jumps = container.querySelectorAll('[data-briefing-jump]');
+    expect(jumps.length).toBe(1);
+    expect(jumps[0].getAttribute('aria-label')).toBe('Jump to claude');
+  });
+
+  it('the jump is reachable while COLLAPSED (one click from the claim to its evidence)', async () => {
+    const jumped: { workspaceId: string; paneId: string }[] = [];
+    await mount({
+      api: makeApi({ briefing: briefing({ panes: fleet }), autoShow: true }).api,
+      workspaceId: 'ws-1',
+      resolvePtyPane: (ptyId) =>
+        ptyId === 'p1' ? { workspaceId: 'ws-1', paneId: 'pane-3' } : null,
+      onJumpToPane: (workspaceId, paneId) => jumped.push({ workspaceId, paneId }),
+    });
+    expect(isExpanded()).toBe(false);
+    const jump = container.querySelector('[data-briefing-jump]') as HTMLButtonElement;
+    expect(jump).not.toBeNull();
+    expect(jump.textContent).toContain('claude');
+    await click(jump);
+    expect(jumped).toEqual([{ workspaceId: 'ws-1', paneId: 'pane-3' }]);
+  });
+
+  it('clicking the jump does not toggle the card (it is not nested in the toggle)', async () => {
+    await mount({
+      api: makeApi({ briefing: briefing({ panes: fleet }), autoShow: true }).api,
+      workspaceId: 'ws-1',
+      resolvePtyPane: (ptyId) => ({ workspaceId: 'ws-1', paneId: ptyId }),
+    });
+    expect(isExpanded()).toBe(false);
+    await click(container.querySelector('[data-briefing-jump]') as HTMLButtonElement);
+    expect(isExpanded()).toBe(false);
+  });
+
+  it('an unnamed pane falls back to the shell label in the accessible name', async () => {
+    await mount({
+      api: makeApi({ briefing: briefing({ panes: [pane('p9', 'error')] }), autoShow: true }).api,
+      workspaceId: 'ws-1',
+      resolvePtyPane: (ptyId) => ({ workspaceId: 'ws-1', paneId: ptyId }),
+    });
+    expect(
+      container.querySelector('[data-briefing-jump]')!.getAttribute('aria-label'),
+    ).toBe('Jump to shell');
+  });
+
+  it('no jump is offered when the pane cannot be resolved (never a click to nowhere)', async () => {
+    await mount({
+      api: makeApi({ briefing: briefing({ panes: fleet }), autoShow: true }).api,
+      workspaceId: 'ws-1',
+      resolvePtyPane: () => null,
+    });
+    expect(container.querySelector('[data-briefing-jump]')).toBeNull();
+  });
+
+  it('with a decision pending, the decision pointer leads the body and the jump is secondary', async () => {
     const b = briefing({
       coldStart: true,
-      panes: [pane('p1', 'awaiting_input', 'claude'), pane('p2', 'running', 'codex'), pane('p3')],
+      panes: fleet,
+      pendingDecision: {
+        id: 'dec-1',
+        question: 'Ship it?',
+        options: [],
+        context: '',
+        status: 'pending',
+        raisedAt: 1,
+      },
+      changed: { finished: ['p9'], newlyBlocked: [], errored: [], newDecision: true },
     });
     await mount({
       api: makeApi({ briefing: b, autoShow: true }).api,
       workspaceId: 'ws-1',
       resolvePtyPane: (ptyId) => ({ workspaceId: 'ws-1', paneId: ptyId }),
     });
-    const labels = [...container.querySelectorAll('[data-briefing-jump]')].map((el) =>
-      el.getAttribute('aria-label'),
+    const body = container.querySelector('[data-briefing-body]')!;
+    const kinds = [...body.children].map((el) =>
+      el.hasAttribute('data-briefing-decision')
+        ? 'decision'
+        : el.hasAttribute('data-briefing-delta')
+          ? 'delta'
+          : 'other',
     );
-    expect(labels).toEqual(['Jump to claude', 'Jump to codex', 'Jump to shell']);
-  });
-
-  it('caps the pane list at 8 rows and "+N more" reveals the rest', async () => {
-    const panes = Array.from({ length: 11 }, (_, i) => pane(`p${i}`, 'running', `a${i}`));
-    await mount({
-      api: makeApi({ briefing: briefing({ coldStart: true, panes }), autoShow: true }).api,
-      workspaceId: 'ws-1',
-    });
-    expect(container.querySelectorAll('[data-briefing-pane]').length).toBe(8);
-    const more = container.querySelector('[data-briefing-more]') as HTMLButtonElement;
-    expect(more.tagName).toBe('BUTTON');
-    expect(more.textContent).toContain('3 more');
-    await click(more);
-    expect(container.querySelectorAll('[data-briefing-pane]').length).toBe(11);
-    expect(container.querySelector('[data-briefing-more]')).toBeNull();
+    expect(kinds[0]).toBe('decision');
+    expect(kinds).toContain('delta');
+    // The pane jump still exists, in the header, secondary to the pointer.
+    expect(container.querySelector('[data-briefing-jump]')).not.toBeNull();
   });
 
   it('shows the channels-unread overlay and jumps to channels', async () => {
@@ -512,7 +585,7 @@ describe('DeckBriefingCard — pane list', () => {
 describe('DeckBriefingCard — refresh plumbing', () => {
   it('reqSeq guard: a stale response for the old workspace does not overwrite the new card', async () => {
     // Slow api for ws-1, fast for ws-2 — remount with ws-2 before ws-1 resolves.
-    let releaseWs1: (v: GetResult) => void = () => {};
+    let releaseWs1: (v: GetResult) => void = () => undefined;
     const slow = new Promise<GetResult>((res) => {
       releaseWs1 = res;
     });

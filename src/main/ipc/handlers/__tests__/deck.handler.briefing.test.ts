@@ -193,7 +193,17 @@ describe('DECK_BRIEFING_GET', () => {
     };
     expect(r.briefing).not.toBeNull();
     expect(r.briefing!.workspaceName).toBe('Proj');
-    expect(r.briefing!.panes.map((p) => p.ptyId)).toEqual(['p-block', 'p-run']);
+    // The payload carries the ladder's conclusion + the counts, not a roster.
+    expect(r.briefing!.topPane?.ptyId).toBe('p-block');
+    expect(r.briefing!.counts).toEqual({
+      total: 2,
+      blocked: 1,
+      errored: 0,
+      running: 1,
+      done: 0,
+      idle: 0,
+    });
+    expect(r.briefing).not.toHaveProperty('panes');
     expect(r.autoShow).toBe(true);
   });
 
@@ -255,7 +265,7 @@ describe('DECK_BRIEFING_GET', () => {
     };
     expect(real.mirrorReady).toBe(true);
     expect(real.briefing.coldStart).toBe(true);
-    expect(real.briefing.panes.map((p) => p.ptyId)).toEqual(['p1']);
+    expect(real.briefing.topPane?.ptyId).toBe('p1');
   });
 
   it('THE READ GUARANTEE: no brain adapter is created and the turn gate is never touched', async () => {

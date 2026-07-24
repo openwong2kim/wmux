@@ -1,10 +1,20 @@
 // ─── Command Deck — "welcome home" briefing card (D1) ────────────────────────
 //
 // Presents the deterministic briefing (deckBriefing.ts) at the top of the deck
-// thread: a headline, an optional "changed while away" line, the suggested-order
-// pane list, and pointers into the decision card / channels. It is a PRESENTER
-// of existing judgment — never a second resolve control (the DeckDecisionCard
-// owns the amber "blocked on you" element below it).
+// thread: a headline, an optional "changed while away" line, and pointers into
+// the decision card / channels. It is a PRESENTER of existing judgment — never a
+// second resolve control (the DeckDecisionCard owns the amber "blocked on you"
+// element below it).
+//
+// It deliberately does NOT render a pane roster (owner decision 2026-07-24).
+// DeckFleet is mounted directly above this card with a near-identical row
+// anatomy — status dot, agent name, mono detail line, jump arrow — in
+// effectively the same order, so one blocked pane was being rendered three times
+// down the screen (Fleet row + briefing row + titlebar vitals chip) where
+// DESIGN.md permits at most two: "Never three." What survives is the ladder's
+// CONCLUSION: the single highest-priority pane, named next to the headline and
+// one click from its terminal, so "every claim one click from its evidence"
+// holds without rebuilding the roster.
 //
 // Self-contained (the DeckDecisionCard pattern): all IPC goes through the
 // injected `api` / `onStream` props (defaulting to window.electronAPI.deck.*),
@@ -33,7 +43,6 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import { tokenAttrs } from '../../themes';
 import { FOCUS_RING } from '../focusRing';
 import { onBriefingConfigChanged } from './deckBriefingConfigBus';
-import type { AgentStatus } from '../../../shared/types';
 import {
   briefingHasContent,
   briefingSignal,
@@ -66,36 +75,11 @@ export type DeckBriefingStream = (
   cb: (env: { workspaceId: string; event: unknown }) => void,
 ) => () => void;
 
-/** Cap the rendered pane rows — a 30-session fleet must not paint 30 rows in the
- *  chat dock (DESIGN.md "does this shrink the hero?"). Priority sort ensures the
- *  capped list shows the ones that matter; the rest sit behind "+N more", which
- *  is a BUTTON (an overflow indicator that hides rows with no way to reach them
- *  is a dead end at fleet scale). */
-const MAX_PANE_ROWS = 8;
-
 /** Retry cadence while the workspace mirror is still unpopulated. The mirror
  *  push waits for the pane gate, so a deck opened during startup can beat it;
  *  bounded so a renderer that never pushes doesn't poll forever. */
 const MIRROR_RETRY_MS = 750;
 const MIRROR_MAX_RETRIES = 20;
-
-/** DESIGN.md status-dot vocabulary: amber=running, green=ok/idle-complete,
- *  gray=idle, red=needs input/error. Local copy of the Fleet row's vocabulary
- *  (DeckFleet's is module-private) so the two stay visually identical. */
-function dotColor(status: AgentStatus): string {
-  switch (status) {
-    case 'running':
-      return 'var(--accent-cursor)';
-    case 'complete':
-      return 'var(--accent-green)';
-    case 'awaiting_input':
-    case 'waiting':
-    case 'error':
-      return 'var(--accent-red)';
-    default:
-      return 'var(--text-muted)';
-  }
-}
 
 type T = (key: string) => string;
 
@@ -249,7 +233,6 @@ export function DeckBriefingCard({
 
   const [briefing, setBriefing] = useState<WorkspaceBriefing | null>(null);
   const [expanded, setExpanded] = useState(false);
-  const [showAllPanes, setShowAllPanes] = useState(false);
   // The delta STAYS once shown. Acknowledging it clears the delta in main, so
   // without this the "2 finished, 1 now blocked" line the operator is reading
   // would vanish on the very next stream tick.
@@ -332,7 +315,6 @@ export function DeckBriefingCard({
     }
     setBriefing(null);
     setExpanded(false);
-    setShowAllPanes(false);
     setShownChange(null);
   }, [workspaceId]);
 
@@ -390,10 +372,14 @@ export function DeckBriefingCard({
     if (coord) onJumpToPane?.(coord.workspaceId, coord.paneId);
   };
 
-  const shownPanes = showAllPanes ? briefing.panes : briefing.panes.slice(0, MAX_PANE_ROWS);
-  const overflow = briefing.panes.length - shownPanes.length;
   const delta = hasBriefingDelta(shownChange) ? shownChange : briefing.changed;
   const showDelta = hasBriefingDelta(delta);
+  // The ladder's conclusion, and the card's ONLY jump: the single pane to look at
+  // first. Rendered only when it actually resolves to a live pane, so the card
+  // never offers a click that goes nowhere.
+  const top = briefing.topPane;
+  const topName = top ? top.agentName || t('deck.briefing.unnamedPane') || 'shell' : '';
+  const showTopJump = !!top && !!resolvePtyPane?.(top.ptyId);
 
   return (
     <div
@@ -401,7 +387,12 @@ export function DeckBriefingCard({
       className="rounded-[7px] px-4 py-2.5 bg-[rgba(var(--bg-surface-rgb),0.55)]"
       {...tokenAttrs('bgSurface', 'bg')}
     >
-      {/* Header row — the collapsed one-line affordance; click toggles expand. */}
+      {/* Header row — the collapsed one-line affordance; click toggles expand.
+          The jump sits OUTSIDE the toggle button (a button cannot nest a
+          button) and stays neutral steel-blue navigation: no status dot, no
+          danger tint — the attention rendition for that pane already belongs to
+          the Fleet row and the titlebar chip. */}
+      <div className="flex items-center gap-2">
       <button
         type="button"
         data-briefing-toggle
@@ -414,7 +405,7 @@ export function DeckBriefingCard({
             return !v;
           });
         }}
-        className={`group w-full flex items-center gap-2 text-left ${FOCUS_RING}`}
+        className={`group flex-1 min-w-0 flex items-center gap-2 text-left ${FOCUS_RING}`}
       >
         <span className="text-[11px] font-mono uppercase tracking-wider text-[var(--text-muted)] shrink-0">
           {t('deck.briefing.eyebrow') || 'Briefing'}
@@ -433,20 +424,25 @@ export function DeckBriefingCard({
         </span>
       </button>
 
+      {showTopJump && top && (
+        <button
+          type="button"
+          data-briefing-jump
+          onClick={() => jumpTo(top.ptyId)}
+          aria-label={tf(t, 'deck.briefing.jumpTo', 'Jump to {name}').replace('{name}', topName)}
+          className={`shrink-0 flex items-center gap-1 font-mono text-[11px] text-[var(--text-muted)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
+        >
+          <span className="truncate max-w-[120px]">{topName}</span>
+          <span aria-hidden="true">→</span>
+        </button>
+      )}
+      </div>
+
       {expanded && (
         <div data-briefing-body className="mt-2 space-y-2">
-          {showDelta && delta && (
-            <div
-              data-briefing-delta
-              className="text-[11px] font-mono text-[var(--text-sub)] leading-relaxed"
-              {...tokenAttrs('textSub', 'text')}
-            >
-              {briefingDeltaLine(delta, t)}
-            </div>
-          )}
-
-          {/* Pending decision pointer — names it, points at the DecisionCard
-              below. NEVER a second resolve control. */}
+          {/* Pending decision pointer FIRST — when one is open it is the primary
+              affordance of this card; it names the decision and points at the
+              DecisionCard below. NEVER a second resolve control. */}
           {briefing.pendingDecision && (
             <div
               data-briefing-decision
@@ -454,6 +450,16 @@ export function DeckBriefingCard({
               {...tokenAttrs('textMain', 'text')}
             >
               {t('deck.briefing.decisionPointer') || 'A decision is waiting on you below.'}
+            </div>
+          )}
+
+          {showDelta && delta && (
+            <div
+              data-briefing-delta
+              className="text-[11px] font-mono text-[var(--text-sub)] leading-relaxed"
+              {...tokenAttrs('textSub', 'text')}
+            >
+              {briefingDeltaLine(delta, t)}
             </div>
           )}
 
@@ -467,67 +473,6 @@ export function DeckBriefingCard({
               {briefing.loop.taskCount > 0
                 ? ` (${briefing.loop.passes}/${briefing.loop.taskCount})`
                 : ''}
-            </div>
-          )}
-
-          {shownPanes.length > 0 && (
-            <div data-briefing-panes className="space-y-0.5">
-              {shownPanes.map((p) => {
-                const canJump = !!resolvePtyPane?.(p.ptyId);
-                const name = p.agentName || t('deck.briefing.unnamedPane') || 'shell';
-                return (
-                  <div
-                    key={p.ptyId}
-                    data-briefing-pane
-                    className="group flex items-center gap-2 text-[12px] leading-relaxed"
-                  >
-                    <span
-                      aria-hidden="true"
-                      className="w-[7px] h-[7px] rounded-full shrink-0"
-                      style={{ backgroundColor: dotColor(p.agentStatus) }}
-                    />
-                    <span
-                      className="shrink-0 text-[var(--text-main)] truncate max-w-[40%]"
-                      {...tokenAttrs('textMain', 'text')}
-                    >
-                      {name}
-                    </span>
-                    <span
-                      className="flex-1 min-w-0 truncate font-mono text-[11px] text-[var(--text-muted)]"
-                      {...tokenAttrs('textMuted', 'text')}
-                    >
-                      {t(`deck.briefing.reason.${p.reason}`) || p.reason}
-                      {p.cwd ? ` · ${p.cwd}` : ''}
-                    </span>
-                    {canJump && (
-                      <button
-                        type="button"
-                        data-briefing-jump
-                        onClick={() => jumpTo(p.ptyId)}
-                        // Naming the pane matters: eight rows that all announce
-                        // "Jump to pane" are indistinguishable to a screen reader.
-                        aria-label={tf(t, 'deck.briefing.jumpTo', 'Jump to {name}').replace(
-                          '{name}',
-                          name,
-                        )}
-                        className={`shrink-0 font-mono text-[11px] text-[var(--text-muted)] group-hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
-                      >
-                        →
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-              {overflow > 0 && (
-                <button
-                  type="button"
-                  data-briefing-more
-                  onClick={() => setShowAllPanes(true)}
-                  className={`block text-left text-[11px] font-mono text-[var(--text-muted)] hover:text-[var(--accent-blue)] transition-colors ${FOCUS_RING}`}
-                >
-                  {tc(t, 'deck.briefing.more', '+{count} more', overflow)}
-                </button>
-              )}
             </div>
           )}
 

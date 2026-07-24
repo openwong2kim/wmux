@@ -949,13 +949,7 @@ export const en = {
   'deck.briefing.loopLabel': 'Loop:',
   'deck.briefing.unnamedPane': 'shell',
   'deck.briefing.jumpTo': 'Jump to {name}',
-  'deck.briefing.more': '+{count} more',
   'deck.briefing.channelsUnread': '{count} unread in channels',
-  'deck.briefing.reason.blocked': 'blocked on input',
-  'deck.briefing.reason.error': 'error',
-  'deck.briefing.reason.finished': 'finished',
-  'deck.briefing.reason.running': 'running',
-  'deck.briefing.reason.idle': 'idle',
   // Settings — briefing toggles.
   'settings.briefing': 'Welcome-home briefing',
   'settings.briefingDesc':
