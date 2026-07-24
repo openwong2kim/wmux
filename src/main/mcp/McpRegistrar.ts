@@ -8,6 +8,7 @@ import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 import { MCP_TARGETS } from '../../shared/mcpTargets';
 import { isMcpBrokerEnabled } from './BrokerSupervisor';
 import { canConnectBrokerPipe } from './brokerProbe';
+import { stabilizeMcpBundle } from './stabilizeBundle';
 import { CODEX_NOTIFY_BASENAME } from '../../shared/configIO';
 import {
   readAllTargetStatuses,
@@ -235,20 +236,29 @@ export class McpRegistrar {
     // broker isn't reachable. Fail-open: if the shim file is missing (stale
     // build), fall through to the full bundle so agents keep working.
     if (useShim) {
-      const shim = app.isPackaged
-        ? path.join(process.resourcesPath, 'mcp-bundle', 'shim.js')
-        : path.join(app.getAppPath(), 'dist', 'mcp', 'mcp', 'shim.js');
-      if (fs.existsSync(shim)) return shim;
+      if (app.isPackaged) {
+        // Packaged shim lives in the versioned resourcesPath — stabilize it to
+        // ~/.wmux/mcp/ so the registered command survives app-* swaps.
+        const shim = path.join(process.resourcesPath, 'mcp-bundle', 'shim.js');
+        if (fs.existsSync(shim)) return this.stabilizePackaged(shim);
+      } else {
+        const shim = path.join(app.getAppPath(), 'dist', 'mcp', 'mcp', 'shim.js');
+        if (fs.existsSync(shim)) return shim;
+      }
       console.error('[McpRegistrar] WMUX_MCP_BROKER=1 but shim.js missing — falling back to full bundle');
     }
 
     if (app.isPackaged) {
-      // Production: bundled single-file in resources/mcp-bundle/
+      // Production: bundled single-file in resources/mcp-bundle/. Register a
+      // STABLE copy under ~/.wmux/mcp/ instead of this versioned resourcesPath
+      // so the command wmux writes into ~/.claude.json never dangles when the
+      // app-{version} dir (or a dogfood worktree/out/) is later removed — see
+      // stabilizeMcpBundle. Fail-open returns the versioned path.
       const bundlePath = path.join(process.resourcesPath, 'mcp-bundle', 'index.js');
-      if (fs.existsSync(bundlePath)) return bundlePath;
+      if (fs.existsSync(bundlePath)) return this.stabilizePackaged(bundlePath);
       // Fallback: old layout (resources/mcp/mcp/index.js)
       const legacyPath = path.join(process.resourcesPath, 'mcp', 'mcp', 'index.js');
-      if (fs.existsSync(legacyPath)) return legacyPath;
+      if (fs.existsSync(legacyPath)) return this.stabilizePackaged(legacyPath);
       return null;
     }
 
@@ -272,6 +282,32 @@ export class McpRegistrar {
     }
 
     return null;
+  }
+
+  /**
+   * Relocate a packaged bundle entry into the stable `~/.wmux/mcp/` directory
+   * and return the path to register. Keeps the registered MCP command out of the
+   * versioned `resourcesPath`, so it never dangles across app updates / worktree
+   * cleanup — the exact failure captured in the RCA (a registered args path
+   * pointing at an already-deleted dogfood `out/…/mcp-bundle/index.js`). Refreshes
+   * on boot (version-marker gated), mirroring installAndRegisterCodexNotify. On
+   * any copy failure it fails open to the versioned source so MCP still works
+   * this session (see stabilizeMcpBundle).
+   */
+  private stabilizePackaged(source: string): string {
+    const stableDir = path.join(this.home, '.wmux', 'mcp');
+    const result = stabilizeMcpBundle(source, stableDir, app.getVersion());
+    if (result.stabilized) {
+      if (result.synced) {
+        console.log(`[McpRegistrar] MCP bundle synced to stable path → ${result.scriptPath}`);
+      }
+    } else {
+      console.warn(
+        `[McpRegistrar] MCP bundle stable-copy unavailable (${result.reason}); ` +
+          `registering versioned path ${result.scriptPath}`,
+      );
+    }
+    return result.scriptPath;
   }
 
   /**
