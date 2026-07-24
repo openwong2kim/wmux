@@ -1,10 +1,10 @@
 /**
  * Windows "start on login" control.
  *
- * wmux registers itself in the per-user Run key so a reboot brings the app
+ * Forge Mux registers itself in the per-user Run key so a reboot brings the app
  * (and its daemon) back automatically:
  *
- *   HKCU\Software\Microsoft\Windows\CurrentVersion\Run  →  value "wmux" = "<exe>"
+ *   HKCU\Software\Microsoft\Windows\CurrentVersion\Run  →  value "fmux" = "<exe>"
  *
  * The registry value is the single source of truth for "is autostart on?" —
  * there is no separate config file to drift out of sync with it. Settings reads
@@ -63,6 +63,11 @@ function regExe(): string {
  * True only when the per-user Run key currently holds a `fmux` value. An
  * upstream `wmux` Run entry is foreign and must not count as Forge autostart
  * (and must never be deleted by Forge enable/disable).
+ *
+ * Pre-boundary Forge builds also wrote Run value `wmux`. That name collides
+ * 1:1 with live upstream, so this module never migrates or deletes it —
+ * remove a leftover manually (regedit / Task Manager Startup) if an old Forge
+ * install left `wmux` pointing at fmux.exe after upgrade.
  */
 export function isAutostartEnabled(): boolean {
   if (process.platform === 'darwin') {

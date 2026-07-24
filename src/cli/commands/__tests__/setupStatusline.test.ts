@@ -295,7 +295,9 @@ describe('readClaudeAccountTargets', () => {
 describe('classifyStatusLine', () => {
   it('classifies none / wmux / foreign', () => {
     expect(classifyStatusLine({})).toBe('none');
-    expect(classifyStatusLine({ statusLine: { type: 'command', command: `node "x/${WMUX_STATUSLINE_MARKER}"` } })).toBe('wmux');
+    expect(classifyStatusLine({
+      statusLine: { type: 'command', command: `node "/home/u/.fmux/hooks/${WMUX_STATUSLINE_MARKER}"` },
+    })).toBe('wmux');
     expect(classifyStatusLine({ statusLine: { type: 'command', command: 'other' } })).toBe('foreign');
     expect(classifyStatusLine({ statusLine: 'weird' })).toBe('foreign');
   });
@@ -306,6 +308,28 @@ describe('classifyStatusLine', () => {
         statusLine: {
           type: 'command',
           command: 'node "C:/Users/u/.wmux/hooks/wmux-statusline.mjs"',
+        },
+      }),
+    ).toBe('foreign');
+  });
+
+  it('treats a legacy Forge ~/.fmux/hooks/wmux-statusline.mjs path as owned', () => {
+    expect(
+      classifyStatusLine({
+        statusLine: {
+          type: 'command',
+          command: 'node "C:/Users/u/.fmux/hooks/wmux-statusline.mjs"',
+        },
+      }),
+    ).toBe('wmux');
+  });
+
+  it('does not claim fmux-statusline.mjs outside ~/.fmux/hooks/', () => {
+    expect(
+      classifyStatusLine({
+        statusLine: {
+          type: 'command',
+          command: 'node "C:/Users/u/bin/fmux-statusline.mjs"',
         },
       }),
     ).toBe('foreign');

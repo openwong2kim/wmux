@@ -183,9 +183,9 @@ function loadSettings(settingsPath: string): LoadResult {
 }
 
 /** 'none' | 'wmux' | 'foreign' — what the target's statusLine currently is.
- *  'wmux' here means Forge-owned (historical enum). Ownership matches the
- *  Forge basename or a prior copy under ~/.fmux/hooks/ — never upstream
- *  ~/.wmux/hooks/wmux-statusline.mjs. */
+ *  'wmux' here means Forge-owned (historical enum). Ownership is path-scoped
+ *  under `~/.fmux/hooks/` for `fmux-statusline.mjs` or legacy
+ *  `wmux-statusline.mjs` — never upstream `~/.wmux/hooks/…`. */
 export function classifyStatusLine(settings: Record<string, unknown>): 'none' | 'wmux' | 'foreign' {
   const sl = settings.statusLine;
   if (sl === undefined || sl === null) return 'none';
@@ -193,8 +193,8 @@ export function classifyStatusLine(settings: Record<string, unknown>): 'none' | 
     const cmd = (sl as Record<string, unknown>).command;
     if (typeof cmd === 'string') {
       const norm = cmd.replace(/\\/g, '/');
-      if (norm.includes(WMUX_STATUSLINE_MARKER)) return 'wmux';
-      if (norm.includes('/.fmux/hooks/') && norm.includes('statusline')) return 'wmux';
+      if (!norm.includes('/.fmux/hooks/')) return 'foreign';
+      if (norm.includes(WMUX_STATUSLINE_MARKER) || norm.includes('wmux-statusline.mjs')) return 'wmux';
     }
   }
   return 'foreign';

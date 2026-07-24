@@ -1,9 +1,9 @@
 #Requires -Version 5.1
 <#
 .SYNOPSIS
-    wmux installer for Windows
+    Forge Mux (fmux) installer for Windows
 .DESCRIPTION
-    Downloads and runs the prebuilt wmux Setup.exe from the latest GitHub
+    Downloads and runs the prebuilt fmux Setup.exe from the latest GitHub
     Release, verifying its SHA-256 against the published update-manifest.json
     before launching it.
 
@@ -444,7 +444,7 @@ if (Test-Path $installDir) {
             Remove-Item -Recurse -Force $installDir -ErrorAction Stop
         } catch {
             Write-Host "  [!] Cannot remove existing install: $_" -ForegroundColor Red
-            Write-Host "       Close wmux and any terminals using $installDir, then re-run." -ForegroundColor Red
+            Write-Host "       Close Forge Mux (fmux) and any terminals using $installDir, then re-run." -ForegroundColor Red
             return
         }
     }
@@ -497,13 +497,39 @@ try {
         $nodePath = (Get-Command node).Source
         $fmuxCmd = "$installDir\fmux.cmd"
         Set-Content -Path $fmuxCmd -Value "@echo off`r`n`"$nodePath`" `"$cliEntry`" %*" -Encoding ASCII
-        # Add to user PATH persistently (exact match, not substring)
-        $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
-        $pathEntries = if ($userPath) { $userPath.Split(';') } else { @() }
-        if ($installDir -notin $pathEntries) {
-            [Environment]::SetEnvironmentVariable('Path', "$installDir;$userPath", 'User')
-            $env:Path = "$installDir;$env:Path"
-            Write-Host "  [*] Added $installDir to user PATH" -ForegroundColor Green
+        # Add to user PATH persistently (exact match, not substring).
+        # Read/write REG_EXPAND_SZ via the registry so %VAR% tokens in other
+        # Path entries (including a co-installed wmux bin dir) are not demoted
+        # the way [Environment]::SetEnvironmentVariable would. Broadcast
+        # WM_SETTINGCHANGE so new shells pick up the change without relogin
+        # (same contract as src/main/cliShim.ts).
+        $envKey = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)
+        try {
+            $userPath = [string]$envKey.GetValue(
+                'Path',
+                '',
+                [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames
+            )
+            $installNorm = $installDir.TrimEnd('\', '/')
+            $pathEntries = if ($userPath) {
+                @($userPath.Split(';') | Where-Object { $_.Trim().Length -gt 0 })
+            } else {
+                @()
+            }
+            $already = [bool]($pathEntries | Where-Object { $_.TrimEnd('\', '/') -eq $installNorm })
+            if (-not $already) {
+                $newParts = @($installNorm) + $pathEntries
+                $newPath = $newParts -join ';'
+                Set-ItemProperty -Path 'HKCU:\Environment' -Name 'Path' -Value $newPath -Type ExpandString
+                $sig = '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);'
+                $w = Add-Type -MemberDefinition $sig -Name 'Win32SendMessageTimeout' -Namespace 'FmuxInstall' -PassThru
+                [System.UIntPtr]$res = [System.UIntPtr]::Zero
+                $null = $w::SendMessageTimeout([System.IntPtr]0xffff, 0x1A, [System.UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$res)
+                $env:Path = "$installNorm;$env:Path"
+                Write-Host "  [*] Added $installDir to user PATH" -ForegroundColor Green
+            }
+        } finally {
+            if ($envKey) { $envKey.Close() }
         }
     }
 } finally {

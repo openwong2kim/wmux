@@ -52,15 +52,14 @@ type HookEvent = (typeof HOOK_EVENTS)[number];
 const FMUX_BRIDGE_BASENAME = 'fmux-bridge.mjs';
 
 /**
- * True when a settings.json hook command belongs to Forge Mux — never match a
- * bare upstream `wmux-bridge.mjs` under `~/.wmux/hooks/`.
+ * True when a settings.json hook command belongs to Forge Mux.
+ * Owned: `fmux-bridge.mjs` or legacy `wmux-bridge.mjs` under `~/.fmux/hooks/`.
+ * Never: upstream `~/.wmux/hooks/wmux-bridge.mjs` or arbitrary scripts in that dir.
  */
 export function isForgeOwnedHookCommand(command: string): boolean {
   const norm = command.replace(/\\/g, '/');
-  if (norm.includes(FMUX_BRIDGE_BASENAME)) return true;
-  // Prior Forge installs copied the upstream-named script under ~/.fmux/hooks/.
-  if (norm.includes('/.fmux/hooks/')) return true;
-  return false;
+  if (!norm.includes('/.fmux/hooks/')) return false;
+  return norm.includes(FMUX_BRIDGE_BASENAME) || norm.includes('wmux-bridge.mjs');
 }
 
 /**

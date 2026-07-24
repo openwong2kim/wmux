@@ -1,9 +1,11 @@
 #!/usr/bin/env node
-// Copy the Claude Code hook bridge into the CLI bundle so it ships as an
-// extraResource. `forge.config.ts` packages the whole `dist/cli-bundle/`
-// directory, so placing the bridge there gets it into the packaged app for
-// free, next to the bundled CLI (`index.js`). `wmux setup-hooks` then finds it
-// via an upward-walk and copies it to the stable `~/.wmux/hooks/` location.
+// Copy agent bridges into the CLI bundle so they ship as an extraResource.
+// `forge.config.ts` packages the whole `dist/cli-bundle/` directory, so placing
+// the bridges there gets them into the packaged app next to the bundled CLI
+// (`index.js`). `fmux setup-hooks` / `fmux setup-statusline` then copy them to
+// the stable `~/.fmux/hooks/` location (as `fmux-bridge.mjs` /
+// `fmux-statusline.mjs`). Codex notify is registered by McpRegistrar as
+// `fmux-codex-notify.mjs` under the same hooks dir.
 //
 // Cross-platform: pure Node built-ins, no shell `cp`. Creates the destination
 // directory (mkdir -p equivalent) before copying.
@@ -16,8 +18,9 @@ const repoRoot = join(dirname(fileURLToPath(import.meta.url)), '..');
 const destDir = join(repoRoot, 'dist', 'cli-bundle');
 
 // Self-contained agent bridges shipped in the CLI bundle (extraResource):
-//   - Claude Code hook bridge (installed to ~/.wmux/hooks by `wmux setup-hooks`)
-//   - Codex resume-capture notify bridge (installed + registered by McpRegistrar)
+//   - Claude Code hook/statusline sources (upstream-named in-repo; installed as
+//     fmux-* under ~/.fmux/hooks by setup-hooks / setup-statusline)
+//   - Codex resume-capture notify bridge (fmux-codex-notify.mjs)
 const bridges = [
   join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-bridge.mjs'),
   join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-statusline.mjs'),

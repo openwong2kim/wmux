@@ -40,6 +40,8 @@ export async function applyLanLinkFirewall(port: number, exe: string): Promise<v
   const netsh = netshPath();
   // delete-then-add so a port/exe change leaves no stale Forge rule.
   // Never touch upstream `wmux LanLink …` rules — a co-installed wmux owns those.
+  // Pre-boundary Forge used those same names; automatic cleanup would break a
+  // live upstream install, so leftovers must be removed manually if needed.
   await run(netsh, ['advfirewall', 'firewall', 'delete', 'rule', `name=${PRIVATE_RULE}`]);
   await run(netsh, ['advfirewall', 'firewall', 'delete', 'rule', `name=${PUBLIC_DENY_RULE}`]);
   await run(netsh, [

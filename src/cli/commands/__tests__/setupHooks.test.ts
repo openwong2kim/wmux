@@ -332,6 +332,42 @@ describe('removeHooks', () => {
     expect(hooks.PostToolUse).toBeUndefined();
   });
 
+  it('removes a legacy Forge ~/.fmux/hooks/wmux-bridge.mjs entry on --remove', () => {
+    const legacyCmd = `node "${path.join(tmpDir, '.fmux', 'hooks', 'wmux-bridge.mjs')}" Stop`;
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          Stop: [{ matcher: '', hooks: [{ type: 'command', command: legacyCmd }] }],
+        },
+      }),
+      'utf8',
+    );
+    const outcome = removeHooks(paths());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.removed).toBeGreaterThan(0);
+    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(false);
+  });
+
+  it('does not claim a custom script under ~/.fmux/hooks/ as Forge-owned', () => {
+    const custom = `node "${path.join(tmpDir, '.fmux', 'hooks', 'custom.mjs')}" Stop`;
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({
+        hooks: {
+          Stop: [{ matcher: '', hooks: [{ type: 'command', command: custom }] }],
+        },
+      }),
+      'utf8',
+    );
+    const outcome = removeHooks(paths());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.removed).toBe(0);
+    expect(allHookCommands()).toContain(custom);
+  });
+
   it('drops the empty hooks object when nothing foreign remains', () => {
     installHooks(paths());
     removeHooks(paths());

@@ -58,10 +58,57 @@ describe('registerTarget — Claude (json, createIfMissing)', () => {
 
   it('drops a historical stray wmux-a2a key from Claude JSON (dead-server cleanup)', () => {
     const p = claudeTarget.configPath(home);
-    fs.writeFileSync(p, JSON.stringify({ mcpServers: { 'wmux-a2a': { command: 'node', args: ['/old/a2a.js'] } } }), 'utf8');
+    fs.writeFileSync(
+      p,
+      JSON.stringify({ mcpServers: { 'wmux-a2a': { command: 'node', args: ['C:\\Users\\u\\.fmux\\mcp\\wmux-a2a.js'] } } }),
+      'utf8',
+    );
     registerTarget(claudeTarget, home, WMUX_SCRIPT);
     const after = JSON.parse(fs.readFileSync(p, 'utf8')) as { mcpServers: Record<string, unknown> };
     expect(after.mcpServers['wmux-a2a']).toBeUndefined();
+    expect(after.mcpServers.fmux).toBeTruthy();
+  });
+
+  it('leaves a foreign same-named dead key (non-node) intact', () => {
+    const p = claudeTarget.configPath(home);
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        mcpServers: {
+          'wmux-playwright': { command: 'npx', args: ['@playwright/mcp'] },
+          'wmux-devtools': { command: 'docker', args: ['run', 'devtools'] },
+        },
+      }),
+      'utf8',
+    );
+    registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    const after = JSON.parse(fs.readFileSync(p, 'utf8')) as {
+      mcpServers: Record<string, { command: string }>;
+    };
+    expect(after.mcpServers['wmux-playwright'].command).toBe('npx');
+    expect(after.mcpServers['wmux-devtools'].command).toBe('docker');
+    expect(after.mcpServers.fmux).toBeTruthy();
+  });
+
+  it('leaves an ambiguous node dead-key path intact (prefer leave when unsure)', () => {
+    const p = claudeTarget.configPath(home);
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        mcpServers: {
+          'wmux-playwright': { command: 'node', args: ['C:\\Users\\u\\projects\\my-mcp\\index.js'] },
+        },
+      }),
+      'utf8',
+    );
+    registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    const after = JSON.parse(fs.readFileSync(p, 'utf8')) as {
+      mcpServers: Record<string, { command: string; args: string[] }>;
+    };
+    expect(after.mcpServers['wmux-playwright']).toEqual({
+      command: 'node',
+      args: ['C:\\Users\\u\\projects\\my-mcp\\index.js'],
+    });
     expect(after.mcpServers.fmux).toBeTruthy();
   });
 
@@ -82,6 +129,45 @@ describe('registerTarget — Claude (json, createIfMissing)', () => {
       command: 'node',
       args: ['C:\\upstream\\wmux\\index.js'],
     });
+  });
+
+  it('drops a path-proven pre-boundary Forge leftover under key wmux', () => {
+    const p = claudeTarget.configPath(home);
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        mcpServers: {
+          wmux: { command: 'node', args: ['C:\\Users\\u\\.fmux\\resources\\mcp\\index.js'] },
+        },
+      }),
+      'utf8',
+    );
+    registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    const after = JSON.parse(fs.readFileSync(p, 'utf8')) as { mcpServers: Record<string, unknown> };
+    expect(after.mcpServers.wmux).toBeUndefined();
+    expect(after.mcpServers.fmux).toBeTruthy();
+  });
+
+  it('leaves an ambiguous wmux MCP path intact (prefer leave when unsure)', () => {
+    const p = claudeTarget.configPath(home);
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        mcpServers: {
+          wmux: { command: 'node', args: ['C:\\Users\\u\\projects\\custom-mcp\\index.js'] },
+        },
+      }),
+      'utf8',
+    );
+    registerTarget(claudeTarget, home, WMUX_SCRIPT);
+    const after = JSON.parse(fs.readFileSync(p, 'utf8')) as {
+      mcpServers: Record<string, { command: string; args: string[] }>;
+    };
+    expect(after.mcpServers.wmux).toEqual({
+      command: 'node',
+      args: ['C:\\Users\\u\\projects\\custom-mcp\\index.js'],
+    });
+    expect(after.mcpServers.fmux).toBeTruthy();
   });
 
   it('unregister removes fmux only — never a co-installed wmux key', () => {
@@ -128,6 +214,36 @@ describe('registerTarget — Codex (toml, only if installed)', () => {
     expect(after).toContain(`[projects.'d:\\wmux']`); // backslash key NOT corrupted
     expect(after).toContain('[mcp_servers.fmux]');
     expect(readTargetStatus(codexTarget, home).wmux).toEqual({ registered: true, path: WMUX_SCRIPT });
+  });
+
+  it('leaves a co-installed [mcp_servers.wmux] intact when registering fmux', () => {
+    const p = codexTarget.configPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(
+      p,
+      `model = "x"\n\n[mcp_servers.wmux]\ncommand = "node"\nargs = ["C:\\\\upstream\\\\wmux\\\\index.js"]\n`,
+      'utf8',
+    );
+    const r = registerTarget(codexTarget, home, WMUX_SCRIPT);
+    expect(r.wrote).toContain('fmux');
+    const after = fs.readFileSync(p, 'utf8');
+    expect(after).toContain('[mcp_servers.wmux]');
+    expect(after).toContain('[mcp_servers.fmux]');
+    expect(after).toContain('C:\\\\upstream\\\\wmux\\\\index.js');
+  });
+
+  it('drops a path-proven Forge leftover [mcp_servers.wmux] under ~/.fmux', () => {
+    const p = codexTarget.configPath(home);
+    fs.mkdirSync(path.dirname(p), { recursive: true });
+    fs.writeFileSync(
+      p,
+      `model = "x"\n\n[mcp_servers.wmux]\ncommand = "node"\nargs = ["C:\\\\Users\\\\u\\\\.fmux\\\\resources\\\\mcp\\\\index.js"]\n`,
+      'utf8',
+    );
+    registerTarget(codexTarget, home, WMUX_SCRIPT);
+    const after = fs.readFileSync(p, 'utf8');
+    expect(after).not.toContain('[mcp_servers.wmux]');
+    expect(after).toContain('[mcp_servers.fmux]');
   });
 
   it('leaves a malformed config.toml untouched (never clobbers)', () => {
@@ -190,12 +306,21 @@ describe('registerCodexNotify — resume-capture notify (skip-if-foreign)', () =
     expect(r2.skipped).toBeNull();
   });
 
-  it('updates a stale Forge path written by a prior session', () => {
-    writeCodex('model = "x"\n');
-    registerCodexNotify(home, 'C:\\old\\fmux-codex-notify.mjs');
+  it('updates a stale Forge path still under ~/.fmux/hooks/', () => {
+    const stale = 'C:\\Users\\old\\.fmux\\hooks\\fmux-codex-notify.mjs';
+    writeCodex(`model = "x"\nnotify = ["node", ${JSON.stringify(stale)}]\n`);
     const r = registerCodexNotify(home, NOTIFY);
     expect(r.wrote).toBe(true);
     expect(readCodexNotifyStatus(home).path).toBe(NOTIFY);
+  });
+
+  it('SKIPS a same-basename notify outside ~/.fmux/hooks/ (never claims foreign paths)', () => {
+    const elsewhere = 'C:\\Users\\u\\bin\\fmux-codex-notify.mjs';
+    const p = writeCodex(`model = "x"\nnotify = ["node", ${JSON.stringify(elsewhere)}]\n`);
+    const r = registerCodexNotify(home, NOTIFY);
+    expect(r.skipped).toBe('foreign');
+    expect(r.wrote).toBe(false);
+    expect(fs.readFileSync(p, 'utf8')).toContain('bin\\\\fmux-codex-notify.mjs');
   });
 
   it('SKIPS an upstream wmux notify — never steals the shared Codex slot', () => {
