@@ -167,7 +167,8 @@ export class FirstRunOrchestrator {
     if (!token) {
       return { ok: false, code: 'UNKNOWN', message: 'auth token not ready (pipe server still starting)' };
     }
-    this.mcpRegistrar.register(token);
+    // No opts: register() probes broker health itself (RISK 6 self-correction).
+    await this.mcpRegistrar.register(token);
     // First-run is the Claude onboarding flow; success is keyed on Claude's
     // target. Codex/Gemini are written opportunistically by register() when
     // installed and their failure must not fail first-run.

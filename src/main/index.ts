@@ -1485,8 +1485,16 @@ app.on('ready', async () => {
   // Write auth token BEFORE starting pipe server — prevents race where
   // MCP client reads old token while new pipe is already listening
   const authToken = pipeServer.getAuthToken();
-  if (isMcpBrokerEnabled()) mcpBrokerSupervisor.start();
-  mcpRegistrar.register(authToken);
+  if (isMcpBrokerEnabled()) {
+    // Gate shim registration on broker readiness: if the broker can't serve
+    // within the timeout, register the full bundle so agents still get tools
+    // (W1). whenReady never rejects and caps boot delay at the timeout.
+    mcpBrokerSupervisor.start();
+    const brokerReady = await mcpBrokerSupervisor.whenReady(4000);
+    await mcpRegistrar.register(authToken, { useShim: brokerReady });
+  } else {
+    await mcpRegistrar.register(authToken);
+  }
   pipeServer.start();
   autoUpdater.start();
   markBoot('ready-end');

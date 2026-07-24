@@ -78,7 +78,9 @@ export function registerMcpHandlers(
         // Pipe server not yet ready — surface to renderer rather than crash.
         throw new Error('MCP re-register unavailable: auth token not ready (pipe server still starting)');
       }
-      registrar.register(token);
+      // No opts: register() probes broker health itself, so a re-register while
+      // the broker is down writes the full bundle instead of a dead shim (RISK 6).
+      await registrar.register(token);
       return serialize(registrar.getStatus());
     }),
   );
