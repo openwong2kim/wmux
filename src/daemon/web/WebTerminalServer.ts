@@ -355,6 +355,8 @@ export class WebTerminalServer {
     agent: string | null;
     lastActivity: string;
     workspace?: string;
+    /** Short program name (`pwsh`, `bash`) — what to call a pane with no agent. */
+    shell?: string;
   }> {
     return this.deps.sessionManager.listLiveSessions().map((s) => ({
       id: s.id,
@@ -365,6 +367,7 @@ export class WebTerminalServer {
       agent: s.agent?.displayName ?? s.lastDetectedAgent ?? null,
       lastActivity: s.lastActivity,
       ...workspaceLabelOf(s.env),
+      ...shellLabelOf(s.cmd),
     }));
   }
 
@@ -681,6 +684,32 @@ function writeSse(res: http.ServerResponse, event: string, data: string): void {
  * cwd, exactly as before), and a workspace renamed after a pane spawned keeps
  * showing the old name here. We never invent a label.
  */
+/**
+ * A short, human name for the program a pane is running, taken from the
+ * recorded command. Without it, a pane with no detected agent had nothing to be
+ * called but its own cwd, which the row already prints underneath — so every
+ * such row read as the same string twice and panes were indistinguishable.
+ * Only the basename is surfaced: the full command line can carry arguments, and
+ * arguments can carry secrets.
+ */
+function shellLabelOf(cmd: string | undefined): { shell?: string } {
+  if (typeof cmd !== 'string' || !cmd.trim()) return {};
+  // Windows program paths contain spaces as a matter of course
+  // (C:\Program Files\...\pwsh.exe) and are NOT quoted when they carry no
+  // arguments, so neither splitting on whitespace nor trusting quotes is enough
+  // on its own: the real shells this sees arrive bare. Take the quoted span
+  // when there is one, else everything up to an executable-extension boundary,
+  // else the first whitespace-delimited token (the POSIX case, which has no
+  // extension to anchor on).
+  const trimmed = cmd.trim();
+  const quoted = /^"([^"]+)"/.exec(trimmed);
+  const exe = /^(.*?\.(?:exe|cmd|bat|com))(?:\s|$)/i.exec(trimmed);
+  const first = quoted ? quoted[1] : exe ? exe[1] : trimmed.split(/\s+/)[0];
+  const base = first.split(/[\\/]/).pop() ?? '';
+  const name = base.replace(/\.(exe|cmd|bat|com)$/i, '');
+  return name ? { shell: name } : {};
+}
+
 function workspaceLabelOf(env: Record<string, string> | undefined): { workspace?: string } {
   const value = env?.[ENV_KEYS.WORKSPACE_NAME];
   const workspace = typeof value === 'string' ? value.trim() : '';

@@ -24,16 +24,25 @@ function makeDeps() {
       id: 's1', cwd: '/x', cols: 80, rows: 24, state: 'detached',
       agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
       env: { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1', ANTHROPIC_API_KEY: 'sk-secret' },
+      // Quoted because the path contains a space, plus an argument to prove
+      // only the basename is surfaced.
+      cmd: '"C:\\Program Files\\PowerShell\\7\\pwsh.exe" -NoLogo --token sk-nope',
     },
     {
       id: 's2', cwd: '/y', cols: 80, rows: 24, state: 'attached',
       agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
       env: { WMUX_WORKSPACE_ID: 'ws-legacy' },
+      // The shape actually recorded on Windows: UNQUOTED, spaces in the path,
+      // no arguments (ShellDetector hands the bare path through). Splitting on
+      // whitespace here yields "Program" for every pane — precisely the
+      // sameness this field exists to remove — so this case must stay covered.
+      cmd: 'C:\\Program Files\\WindowsApps\\Microsoft.PowerShell_7.6.4.0_x64__8wekyb3d8bbwe\\pwsh.exe',
     },
     {
       id: 's3', cwd: '/z', cols: 80, rows: 24, state: 'detached',
       agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
       env: { PATH: '/usr/bin' },
+      cmd: '/usr/bin/bash -l',
     },
   ];
   // The real DaemonSessionManager is an EventEmitter; the server tees its
@@ -345,5 +354,21 @@ describe('WebTerminalServer', () => {
     const after = server.status().pairCode;
     expect(after).toHaveLength(6);
     expect(after).not.toBe(first);
+  });
+  it('names a pane by its program so an agent-less row is not just its own cwd twice', async () => {
+    const info = await startRO();
+    const res = await fetch(`http://127.0.0.1:${info.port}/api/sessions`, {
+      headers: { Authorization: `Bearer ${info.token}` },
+    });
+    const { sessions } = await res.json();
+    // A quoted program path containing spaces must survive intact.
+    expect(sessions[0].shell).toBe('pwsh');
+    // A bare Windows path, and a POSIX one.
+    expect(sessions[1].shell).toBe('pwsh');
+    expect(sessions[2].shell).toBe('bash');
+    // Arguments can carry secrets, so only the basename is ever surfaced.
+    const wire = JSON.stringify(sessions);
+    expect(wire).not.toContain('--token');
+    expect(wire).not.toContain('Program Files');
   });
 });
