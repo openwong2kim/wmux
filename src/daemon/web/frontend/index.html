@@ -5,7 +5,7 @@
   <meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover" />
   <title>wmux web</title>
   <link rel="manifest" href="/manifest.webmanifest" />
-  <meta name="theme-color" content="#151517" />
+  <meta name="theme-color" content="#19191c" />
   <!-- iOS add-to-home-screen (works over plain HTTP, no service worker needed) -->
   <meta name="apple-mobile-web-app-capable" content="yes" />
   <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent" />
@@ -18,14 +18,97 @@
 </head>
 <body>
   <header id="bar">
-    <span id="brand">wmux<span id="brand-dot">·</span>web</span>
-    <select id="picker" aria-label="pane"></select>
-    <span id="status">idle</span>
+    <div id="brand"><b>wmux</b><span id="brand-dot">·</span><span id="brand-web">web</span></div>
+
+    <button id="switcher" type="button" aria-haspopup="listbox" aria-expanded="false" disabled>
+      <span id="sw-dot" aria-hidden="true"></span>
+      <span id="sw-label">Connecting…</span>
+      <svg id="sw-chevron" width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <path d="M6 9l6 6 6-6" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+    </button>
+
+    <div id="conn" data-kind="connecting">
+      <span id="conn-dot" aria-hidden="true"></span>
+      <span id="conn-label">connecting…</span>
+    </div>
+
     <span id="banner" data-mode="ro">read-only</span>
   </header>
+
+  <!-- Fleet strip: glanceable status of every pane. Hidden with <2 sessions
+       (dead chrome rule). Chips are text-first, boxless until active. -->
+  <nav id="fleet" hidden aria-label="Panes"></nav>
+
+  <!-- In-app notification banners (agent needs you / approval). Fixed below the
+       top bar; each entry is a raised surface with a colored left edge. -->
+  <div id="notify-stack" aria-live="polite"></div>
+
   <main id="stage">
     <div id="scaler"><div id="term"></div></div>
+
+    <div id="overlay" data-show="loading">
+     <div id="ov-card">
+      <div class="spinner" aria-hidden="true"></div>
+      <svg id="ov-glyph" width="40" height="40" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+        <rect x="3" y="4" width="18" height="16" rx="2" stroke="currentColor" stroke-width="1.5"/>
+        <path d="M7 9l3 3-3 3M13 15h4" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>
+      </svg>
+      <div id="ov-title">Connecting to wmux</div>
+      <div id="ov-body">Attaching to the daemon and loading live panes.</div>
+      <button id="ov-retry" type="button">
+        <svg width="14" height="14" viewBox="0 0 24 24" fill="none" aria-hidden="true">
+          <path d="M20 11a8 8 0 10-1.5 5" stroke="currentColor" stroke-width="2" stroke-linecap="round"/>
+          <path d="M20 5v5h-5" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"/>
+        </svg>
+        Retry
+      </button>
+
+      <form id="ov-auth" autocomplete="off">
+        <label for="ov-token">Access token</label>
+        <input id="ov-token" type="text" inputmode="text" autocomplete="off"
+               autocapitalize="none" autocorrect="off" spellcheck="false" />
+        <button id="ov-connect" type="submit">Connect</button>
+        <button id="ov-to-pair" class="ov-alt" type="button">Have a pairing code instead?</button>
+      </form>
+
+      <!-- Pairing screen: 6-char single-use code typed on the phone. -->
+      <form id="ov-pair" autocomplete="off">
+        <label for="ov-code">Pairing code</label>
+        <input id="ov-code" type="text" inputmode="text" maxlength="6"
+               autocomplete="one-time-code" autocapitalize="characters"
+               autocorrect="off" spellcheck="false" placeholder="ABC123" />
+        <div id="ov-pair-err" role="alert"></div>
+        <button id="ov-pair-go" type="submit">Pair</button>
+        <button id="ov-to-token" class="ov-alt" type="button">Have a token instead?</button>
+      </form>
+     </div>
+    </div>
   </main>
+
+  <!-- Touch key bar: the phone cannot send Esc / Tab / Ctrl / arrows without it.
+       Zoom controls are always present; the key rows only when input is allowed. -->
+  <div id="keybar" hidden>
+    <div id="kb-row">
+      <div id="kb-keys" role="toolbar" aria-label="Terminal keys"></div>
+      <div id="kb-tail">
+        <button id="kb-agent" type="button" title="Agent commands" aria-expanded="false">/</button>
+        <button class="kb-zoom" type="button" data-zoom="-1" aria-label="Smaller text">A&#8722;</button>
+        <button class="kb-zoom" type="button" data-zoom="1" aria-label="Larger text">A+</button>
+        <button id="kb-fit" class="kb-zoom" type="button" aria-pressed="true" title="Fit whole width">Fit</button>
+      </div>
+    </div>
+    <div id="kb-agent-row" hidden></div>
+  </div>
+
+  <div id="sheet" role="dialog" aria-modal="true" aria-label="Sessions">
+    <div id="sheet-backdrop"></div>
+    <div id="sheet-panel">
+      <div id="sheet-head"><span>Sessions</span><span id="sheet-count"></span></div>
+      <ul id="sheet-list"></ul>
+    </div>
+  </div>
+
   <script>
 /*__XTERM_JS__*/
   </script>

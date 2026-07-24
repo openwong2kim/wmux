@@ -43,6 +43,10 @@ export interface WebTerminalInfo {
   urls?: string[];
   /** Live SSE client count. */
   clients?: number;
+  /** Short single-use pairing code — typed on the phone instead of the token. */
+  pairCode?: string;
+  /** Epoch ms when the current pairing code expires. */
+  pairExpiresAt?: number;
 }
 
 interface WebTerminalServerDeps {
@@ -61,6 +65,13 @@ interface WebTerminalServerDeps {
 const MAX_INPUT_BYTES = 64 * 1024;
 /** SSE heartbeat — keeps the connection alive through idle proxies. */
 const HEARTBEAT_MS = 25_000;
+/** Pairing code lifetime — long enough to walk to the phone, short enough to matter. */
+const PAIR_TTL_MS = 10 * 60 * 1000;
+/** Wrong-code attempts before the pairing code is burned. */
+const PAIR_MAX_ATTEMPTS = 5;
+/** Pairing alphabet: A-Z2-9 minus the visually ambiguous 0/O/1/I. */
+const PAIR_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
+const PAIR_CODE_LEN = 6;
 
 interface SseClient {
   res: http.ServerResponse;
@@ -73,6 +84,17 @@ export class WebTerminalServer {
   private token = '';
   private opts: WebTerminalStartOptions | null = null;
   private readonly clients = new Set<SseClient>();
+
+  // Pairing state (single active code per running server).
+  private pairCode = '';
+  private pairExpiresAt = 0;
+  private pairAttempts = 0;
+
+  // Bound so on()/off() reference the SAME listener across start()/stop().
+  private readonly onSessionCritical = (payload: { sessionId: string; event?: unknown }): void =>
+    this.broadcastEvent('critical', payload);
+  private readonly onSessionNotification = (payload: { sessionId: string; event?: unknown }): void =>
+    this.broadcastEvent('notify', payload);
 
   // Static assets, loaded once on start and cached in memory (all small).
   private terminalHtml: Buffer | null = null;
@@ -98,6 +120,13 @@ export class WebTerminalServer {
     this.loadAssets();
     this.token = crypto.randomUUID();
     this.opts = options;
+    this.generatePairCode();
+
+    // Tee fleet-wide attention signals into EVERY connected SSE client — a
+    // viewer watching pane A must still hear that pane B needs an answer. These
+    // are attached once here and removed in stop() so restarts rotate cleanly.
+    this.deps.sessionManager.on('session:critical', this.onSessionCritical);
+    this.deps.sessionManager.on('session:notification', this.onSessionNotification);
 
     const server = http.createServer((req, res) => {
       // Never let a handler error escape into the daemon event loop.
@@ -158,6 +187,12 @@ export class WebTerminalServer {
   async stop(): Promise<{ stopped: boolean }> {
     if (!this.server) return { stopped: false };
 
+    this.deps.sessionManager.off('session:critical', this.onSessionCritical);
+    this.deps.sessionManager.off('session:notification', this.onSessionNotification);
+    this.pairCode = '';
+    this.pairExpiresAt = 0;
+    this.pairAttempts = 0;
+
     for (const client of this.clients) {
       try {
         client.detach();
@@ -193,6 +228,8 @@ export class WebTerminalServer {
       token: this.token,
       urls: this.buildUrls(),
       clients: this.clients.size,
+      pairCode: this.pairCode || undefined,
+      pairExpiresAt: this.pairCode ? this.pairExpiresAt : undefined,
     };
   }
 
@@ -202,8 +239,9 @@ export class WebTerminalServer {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const p = url.pathname;
 
-    // Static, unauthenticated app shell (no secrets live in these).
-    if (req.method === 'GET' && (p === '/' || p === '/index.html')) {
+    // Static, unauthenticated app shell (no secrets live in these). `/pair`
+    // is the same SPA shell — the frontend renders the pairing screen for it.
+    if (req.method === 'GET' && (p === '/' || p === '/index.html' || p === '/pair')) {
       return this.serveStatic(res, this.terminalHtml, 'text/html; charset=utf-8');
     }
     if (req.method === 'GET' && p === '/manifest.webmanifest') {
@@ -219,6 +257,13 @@ export class WebTerminalServer {
     }
     if (req.method === 'GET' && (p === '/icon-192.png' || p === '/icon-512.png' || p === '/favicon.ico')) {
       return this.serveStatic(res, this.icon, 'image/png');
+    }
+
+    // Pairing exchange is the ONLY unauthenticated /api route: it trades a
+    // short single-use code for the real token, so it cannot itself require the
+    // token. Placed before the /api/* auth gate.
+    if (req.method === 'GET' && p === '/api/pair') {
+      return this.handlePair(res, url);
     }
 
     // Everything under /api/* is token-gated. Only the SSE stream may carry the
@@ -376,6 +421,77 @@ export class WebTerminalServer {
     req.on('error', () => {
       aborted = true;
     });
+  }
+
+  // --- fleet-wide event tee -----------------------------------------------
+
+  /**
+   * Fan a session-manager attention event out to EVERY connected SSE client,
+   * regardless of which session that client's stream watches. The wire payload
+   * flattens the event so the frontend sees `{sessionId, ...event}`.
+   */
+  private broadcastEvent(kind: 'critical' | 'notify', payload: { sessionId: string; event?: unknown }): void {
+    if (!payload || typeof payload !== 'object') return;
+    const event = payload.event && typeof payload.event === 'object' ? (payload.event as Record<string, unknown>) : {};
+    const body = JSON.stringify({ sessionId: payload.sessionId, ...event });
+    for (const client of this.clients) {
+      try {
+        writeSse(client.res, kind, body);
+      } catch {
+        /* client stream broken — its own 'close' handler cleans up */
+      }
+    }
+  }
+
+  // --- pairing ------------------------------------------------------------
+
+  /** Mint a fresh single-use pairing code with a bounded lifetime + attempts. */
+  private generatePairCode(): void {
+    const bytes = crypto.randomBytes(PAIR_CODE_LEN);
+    let code = '';
+    for (let i = 0; i < PAIR_CODE_LEN; i++) {
+      code += PAIR_ALPHABET[bytes[i] % PAIR_ALPHABET.length];
+    }
+    this.pairCode = code;
+    this.pairExpiresAt = Date.now() + PAIR_TTL_MS;
+    this.pairAttempts = PAIR_MAX_ATTEMPTS;
+  }
+
+  /**
+   * Exchange a pairing code for the web token. Correct code → `{token}` and the
+   * code is immediately invalidated (single use). Wrong/expired → 403; a wrong
+   * code decrements the attempt budget and burns the code when it hits zero.
+   */
+  private handlePair(res: http.ServerResponse, url: URL): void {
+    const supplied = (url.searchParams.get('code') ?? '').trim().toUpperCase();
+
+    if (!this.pairCode || Date.now() > this.pairExpiresAt) {
+      this.pairCode = '';
+      return this.json(res, 403, { error: 'expired' });
+    }
+    if (this.pairAttempts <= 0) {
+      this.pairCode = '';
+      return this.json(res, 403, { error: 'too many attempts' });
+    }
+
+    const a = Buffer.from(supplied);
+    const b = Buffer.from(this.pairCode);
+    const match = a.length === b.length && crypto.timingSafeEqual(a, b);
+    if (!match) {
+      this.pairAttempts -= 1;
+      if (this.pairAttempts <= 0) this.pairCode = '';
+      return this.json(res, 403, {
+        error: 'invalid code',
+        attemptsLeft: Math.max(0, this.pairAttempts),
+      });
+    }
+
+    // Success: hand over the token exactly once, then burn the code.
+    const token = this.token;
+    this.pairCode = '';
+    this.pairExpiresAt = 0;
+    this.pairAttempts = 0;
+    return this.json(res, 200, { token });
   }
 
   // --- helpers ------------------------------------------------------------

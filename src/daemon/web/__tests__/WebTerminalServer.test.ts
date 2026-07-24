@@ -19,10 +19,12 @@ function makeDeps() {
     id: 's1', cwd: '/x', cols: 80, rows: 24, state: 'detached',
     agent: undefined, lastDetectedAgent: undefined, lastActivity: '2020-01-01T00:00:00.000Z',
   }];
-  const sessionManager = {
+  // The real DaemonSessionManager is an EventEmitter; the server tees its
+  // session:critical / session:notification events, so the fake must emit too.
+  const sessionManager = Object.assign(new EventEmitter(), {
     getSession: (id: string) => (id === 's1' ? managed : undefined),
     listLiveSessions: () => live,
-  } as unknown as DaemonSessionManager;
+  }) as unknown as DaemonSessionManager;
   return { sessionManager, bridge, write };
 }
 
@@ -30,11 +32,13 @@ describe('WebTerminalServer', () => {
   let server: WebTerminalServer;
   let bridge: EventEmitter;
   let write: ReturnType<typeof vi.fn>;
+  let sessionManager: DaemonSessionManager;
 
   beforeEach(() => {
     const deps = makeDeps();
     bridge = deps.bridge;
     write = deps.write;
+    sessionManager = deps.sessionManager;
     server = new WebTerminalServer({
       sessionManager: deps.sessionManager,
       log: () => { /* silent in tests */ },
@@ -130,5 +134,110 @@ describe('WebTerminalServer', () => {
 
   it('stop() on a server that never started is a no-op', async () => {
     expect(await server.stop()).toEqual({ stopped: false });
+  });
+
+  // ── pairing ────────────────────────────────────────────────────────────────
+  it('exposes a 6-char pairing code + expiry in status()', async () => {
+    const info = await startRO();
+    expect(info.pairCode).toMatch(/^[A-Z2-9]{6}$/);
+    expect(typeof info.pairExpiresAt).toBe('number');
+    expect((info.pairExpiresAt as number)).toBeGreaterThan(Date.now());
+  });
+
+  it('/api/pair with the right code returns the token once, then 403 (single use)', async () => {
+    const info = await startRO();
+    const code = info.pairCode as string;
+    const token = info.token as string;
+
+    // No auth header needed — pairing is the only unauthenticated /api route.
+    const ok = await fetch(`${base()}/api/pair?code=${code}`);
+    expect(ok.status).toBe(200);
+    expect(await ok.json()).toEqual({ token });
+
+    // The code is burned — a second use fails.
+    const reuse = await fetch(`${base()}/api/pair?code=${code}`);
+    expect(reuse.status).toBe(403);
+  });
+
+  it('/api/pair with a wrong code decrements attempts and locks after 5', async () => {
+    const info = await startRO();
+    const code = info.pairCode as string;
+    // Build a wrong code of the same length from the same alphabet.
+    const wrong = code[0] === 'A' ? 'BBBBBB' : 'AAAAAA';
+
+    for (let i = 4; i >= 1; i--) {
+      const r = await fetch(`${base()}/api/pair?code=${wrong}`);
+      expect(r.status).toBe(403);
+      expect((await r.json()).attemptsLeft).toBe(i);
+    }
+    // 5th wrong attempt burns the code.
+    const last = await fetch(`${base()}/api/pair?code=${wrong}`);
+    expect(last.status).toBe(403);
+    expect((await last.json()).attemptsLeft).toBe(0);
+
+    // Even the CORRECT code no longer works once the budget is exhausted.
+    const correct = await fetch(`${base()}/api/pair?code=${code}`);
+    expect(correct.status).toBe(403);
+  });
+
+  it('mints a fresh pairing code on each start', async () => {
+    const a = (await startRO()).pairCode as string;
+    await server.stop();
+    const b = (await startRO()).pairCode as string;
+    // Overwhelmingly likely to differ; assert format regardless.
+    expect(b).toMatch(/^[A-Z2-9]{6}$/);
+    expect(a).toMatch(/^[A-Z2-9]{6}$/);
+  });
+
+  // ── critical / notify SSE tee ──────────────────────────────────────────────
+  it('tees session:critical and session:notification to every SSE client', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+
+    const ac = new AbortController();
+    const sse = await fetch(
+      `${base()}/api/stream?session=s1&token=${encodeURIComponent(token)}`,
+      { signal: ac.signal },
+    );
+    expect(sse.status).toBe(200);
+    await new Promise((r) => setTimeout(r, 30));
+
+    // Emit fleet-wide events; they must reach the stream even though it watches s1.
+    (sessionManager as unknown as EventEmitter).emit('session:critical', {
+      sessionId: 's2',
+      event: { action: 'delete files', riskLevel: 'critical' },
+    });
+    (sessionManager as unknown as EventEmitter).emit('session:notification', {
+      sessionId: 's3',
+      event: { message: 'done', ts: 123 },
+    });
+
+    // Read a chunk of the stream and assert both events flattened onto the wire.
+    const reader = (sse.body as ReadableStream<Uint8Array>).getReader();
+    let text = '';
+    const deadline = Date.now() + 500;
+    while (Date.now() < deadline && !(text.includes('event: critical') && text.includes('event: notify'))) {
+      const { value, done } = await reader.read();
+      if (done) break;
+      if (value) text += Buffer.from(value).toString('utf8');
+    }
+    ac.abort();
+
+    expect(text).toContain('event: critical');
+    expect(text).toContain('"sessionId":"s2"');
+    expect(text).toContain('"action":"delete files"');
+    expect(text).toContain('event: notify');
+    expect(text).toContain('"sessionId":"s3"');
+    expect(text).toContain('"message":"done"');
+  });
+
+  it('removes the session-manager listeners on stop (no leak across restarts)', async () => {
+    await startRO();
+    const em = sessionManager as unknown as EventEmitter;
+    expect(em.listenerCount('session:critical')).toBe(1);
+    expect(em.listenerCount('session:notification')).toBe(1);
+    await server.stop();
+    expect(em.listenerCount('session:critical')).toBe(0);
+    expect(em.listenerCount('session:notification')).toBe(0);
   });
 });

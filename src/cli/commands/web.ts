@@ -14,6 +14,8 @@ interface WebInfo {
   token?: string;
   urls?: string[];
   clients?: number;
+  pairCode?: string;
+  pairExpiresAt?: number;
 }
 
 /**
@@ -53,6 +55,22 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
 
   const response = await sendDaemonStringRequest('daemon.web.start', { port, host, allowInput });
   return report(response, jsonMode, 'start');
+}
+
+/** Pick a `host:port` for the `/pair` URL — a reachable LAN/tailnet address if
+ * we have one, else fall back to the bind host:port. */
+function pickPairHost(urls: string[], info: WebInfo, loopbackOnly: boolean): string {
+  if (!loopbackOnly) {
+    for (const u of urls) {
+      try {
+        const parsed = new URL(u);
+        if (parsed.hostname !== '127.0.0.1' && parsed.hostname !== '::1') return parsed.host;
+      } catch {
+        /* ignore malformed */
+      }
+    }
+  }
+  return `${info.host ?? '127.0.0.1'}:${info.port ?? DEFAULT_PORT}`;
 }
 
 function report(response: RpcResponse, jsonMode: boolean, mode: 'start' | 'status'): void {
@@ -95,6 +113,16 @@ function report(response: RpcResponse, jsonMode: boolean, mode: 'start' | 'statu
     for (const u of urls) console.log(`    ${u}`);
   } else if (info.token) {
     console.log(`  token: ${info.token}`);
+  }
+
+  // Pairing code: far easier to key in on a phone than the 36-char UUID token.
+  // Prefer the first non-loopback URL's host so the phone hits a reachable /pair.
+  if (info.pairCode) {
+    const pairHost = pickPairHost(urls, info, loopbackOnly);
+    console.log('');
+    console.log('  Pair from phone (no token typing):');
+    console.log(`    open  http://${pairHost}/pair`);
+    console.log(`    enter code  ${info.pairCode}   (valid 10 min, single use)`);
   }
   console.log('');
   if (!info.allowInput) {
