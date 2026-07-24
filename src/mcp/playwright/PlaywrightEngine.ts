@@ -4,6 +4,8 @@ import { sendRpc } from '../wmux-client';
 import { getConnectionScope } from '../connectionScope';
 import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
+import type { BrowserBackend } from '../../shared/browserBackend';
+import { EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE } from '../../shared/browserBackend';
 
 interface CdpTargetInfo {
   surfaceId: string;
@@ -34,6 +36,15 @@ interface CdpInfoResponse {
    * fallback in resolveCallerSurface is gated on its ABSENCE.
    */
   targetsScoped?: boolean;
+  /**
+   * The workspace's browser backend (#517). 'external' means agent-driven opens
+   * are delegated to the OS default browser and NO builtin webview target will
+   * ever exist for this workspace — so a page-resolution miss is permanent, not
+   * a race. Absent on older mains (treated as 'builtin' — the default — so
+   * builtin behavior is byte-identical). The value itself is GLOBAL (one
+   * main-side setting), merely reported on this per-workspace-scoped response.
+   */
+  workspaceBackend?: BrowserBackend;
   targets: CdpTargetInfo[];
 }
 
@@ -147,6 +158,18 @@ export class PlaywrightEngine {
    */
   private shellUrl: string | null = null;
   /**
+   * The caller workspace's browser backend, captured from the most recent
+   * browser.cdp.info response (#517). 'external' means the workspace delegates
+   * agent opens to the OS browser and owns no builtin webview target, so a
+   * page-resolution miss must fail with the shared contract error instead of
+   * looping through retries/auto-open that can never succeed. undefined until a
+   * cdp.info response is seen; absent-in-response is treated as 'builtin'.
+   * NOTE: the backend setting is GLOBAL today (one main-side value, not
+   * per-workspace) — a single field on this singleton engine is correct. If a
+   * per-workspace backend ever ships, this must become per-context state.
+   */
+  private workspaceBackend: BrowserBackend | undefined = undefined;
+  /**
    * Resolves the calling session's workspace id for auto-open. Wired by
    * src/mcp/index.ts to requireWorkspaceId(). Auto-open issues browser.open
    * outside any MCP tool handler, so it cannot use the per-tool
@@ -187,6 +210,14 @@ export class PlaywrightEngine {
   private cacheShellUrl(info: CdpInfoResponse): void {
     if (info.shellUrl && info.shellUrl.length > 0) {
       this.shellUrl = info.shellUrl;
+    }
+    // Capture the backend marker alongside the shell URL (#517): every
+    // browser.cdp.info response flows through here, so this is the single point
+    // where the marker reaches the engine regardless of which finder made the
+    // call. Only overwrite when the field is present — an older main that omits
+    // it must not clobber a value learned from a scoped response.
+    if (info.workspaceBackend) {
+      this.workspaceBackend = info.workspaceBackend;
     }
   }
 
@@ -279,6 +310,9 @@ export class PlaywrightEngine {
     // Drop the cached shell URL — a reconnect may target a different window
     // (different port) whose shell URL must be re-fetched, not reused.
     this.shellUrl = null;
+    // Drop the cached backend marker for the same reason — it is re-learned
+    // from the next cdp.info response (#517).
+    this.workspaceBackend = undefined;
     if (s) {
       await s.detach().catch(() => { /* session may already be gone */ });
     }
@@ -362,6 +396,21 @@ export class PlaywrightEngine {
     // RPC (browser.cdp.info); the CDP browser connection happens in
     // _getPageImpl as before.
     const ctx = await this.resolveSelectionContext(surfaceId);
+
+    // External-backend contract (#517): the caller's workspace delegates opens
+    // to the OS browser and owns no builtin webview target (callerHasNoSurface,
+    // i.e. resolveCallerSurface returned kind:'none' with zero scoped targets).
+    // No target will EVER appear, so the retry/auto-open/wait loops below are
+    // pointless — fail immediately with the shared contract error instead of
+    // the generic target-miss that sends agents into retry loops. Gated on an
+    // explicit 'external' marker, so builtin (and older mains that omit it)
+    // are byte-identical. Deliberately NOT applied when the caller pinned an
+    // explicit surfaceId or when a live builtin target exists (mixed mode):
+    // resolveSelectionContext only sets callerHasNoSurface on the scoped-empty
+    // path, so a manually-opened builtin pane still resolves normally.
+    if (ctx.callerHasNoSurface && this.workspaceBackend === 'external') {
+      throw new Error(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
+    }
 
     // Fast-fail if page discovery already failed for this context.
     if (this.playwrightFailed.has(ctx.key)) return null;

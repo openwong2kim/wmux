@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Added
+
+- **Choose your browser backend: built-in panes, or your real browser (#517).** A new Settings → Terminal option, "Browser backend", decides where browser opens land. The default (`Built-in`) keeps today's behavior exactly: an embedded browser pane opens inside wmux and the full automation toolset works on it. Switching to `External` routes every open — an agent's `browser_open` / `browser_navigate`, **and** your own clicks (the pane's browser button, the command palette, the keyboard shortcut, a workspace's port badge, a link clicked inside a terminal) — to your OS default browser instead. wmux spawns **no embedded Chromium at all**, so a workspace that opens pages costs wmux zero browser memory, whether the page was opened by an agent or by you. External mode is deliberately fire-and-forget: wmux gets no handle on the opened tab, so tabs aren't tracked, listed, or closable from wmux, and deep-automation tools (click, screenshot, extract, …) fail with a clear "backend is external" error instead of a confusing target-miss — agents are told exactly why and what to use instead. Opens land in your real, signed-in browser, from any workspace — that reach is the point, and the Settings copy says it plainly. The choice is read by the main process at boot (no startup race: the very first open after launch already honors it) and applies immediately when changed.
+
 ## [3.33.0] — 2026-07-24
 
 ### Added

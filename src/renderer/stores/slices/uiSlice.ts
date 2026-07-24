@@ -2,6 +2,7 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { markRetentionMigrationDone } from '../retentionMigration';
+import { DEFAULT_BROWSER_BACKEND, type BrowserBackend } from '../../../shared/browserBackend';
 import type { FleetSortMode } from '../selectors/fleet';
 import {
   normalizeRoleBinding,
@@ -217,6 +218,21 @@ export interface UISlice {
   // Only effective while browserLightweightMode is also on.
   browserDiscardHidden: boolean;
   setBrowserDiscardHidden: (enabled: boolean) => void;
+
+  // #517 backend choice (default 'builtin'). NON-PERSISTED renderer mirror:
+  // main owns the authoritative value (userData JSON, read synchronously at
+  // boot) and Settings writes it back via IPC. This field exists only so the
+  // Settings UI can render the current selection; it is deliberately absent
+  // from the SessionData persistence allowlist (buildSessionData/loadSession).
+  // AppLayout hydrates it from electronAPI.browser.getBackend() on mount.
+  browserBackend: BrowserBackend;
+  setBrowserBackend: (backend: BrowserBackend) => void;
+  // True once the boot read of main's persisted value has landed (or was
+  // skipped — no bridge / older main). Settings disables the control until
+  // then, so a user edit can never race the async hydration and be silently
+  // overwritten by the stale boot value (codex P2).
+  browserBackendHydrated: boolean;
+  hydrateBrowserBackend: (backend: BrowserBackend | null) => void;
 
   // Issue #175: global default starting directory for new terminals.
   // '' = unset → os.homedir() fallback in the spawn layer.
@@ -916,6 +932,23 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setBrowserDiscardHidden: (enabled) => set((state) => {
     state.browserDiscardHidden = enabled;
+  }),
+
+  // #517 backend choice — mirror only; DEFAULT_BROWSER_BACKEND keeps the store
+  // in sync with main's default until AppLayout hydrates the real value.
+  browserBackend: DEFAULT_BROWSER_BACKEND,
+
+  setBrowserBackend: (backend) => set((state) => {
+    state.browserBackend = backend;
+  }),
+
+  browserBackendHydrated: false,
+
+  // One-shot boot hydration: applies main's persisted value (null = nothing to
+  // hydrate, e.g. jsdom or an older main) and unlocks the Settings control.
+  hydrateBrowserBackend: (backend) => set((state) => {
+    if (backend !== null) state.browserBackend = backend;
+    state.browserBackendHydrated = true;
   }),
 
   startupDirectory: '',

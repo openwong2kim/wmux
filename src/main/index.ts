@@ -64,6 +64,8 @@ import { AutoUpdater } from './updater/AutoUpdater';
 import { McpRegistrar } from './mcp/McpRegistrar';
 import { BrokerSupervisor, isMcpBrokerEnabled } from './mcp/BrokerSupervisor';
 import { WebviewCdpManager } from './browser-session/WebviewCdpManager';
+import { BrowserBackendStore } from './browser-session/BrowserBackendStore';
+import { isBrowserBackend } from '../shared/browserBackend';
 import { DaemonClient, getDaemonPipeName, readDaemonAuthToken } from './DaemonClient';
 import { raceDaemonShutdown } from './daemonShutdownRace';
 import { migrateScrollbackOnce } from './scrollback/legacyMigration';
@@ -589,7 +591,11 @@ registerNotifyRpc(rpcRouter, () => mainWindow);
 registerMetaRpc(rpcRouter, () => mainWindow);
 registerSystemRpc(rpcRouter);
 registerPerfRpc(rpcRouter);
-registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager);
+// #517 backend choice: main owns the setting (sync read at boot — an RPC can
+// arrive before the renderer has pushed anything, so renderer-push authority
+// would race and fail open to builtin).
+const browserBackendStore = new BrowserBackendStore(app.getPath('userData'));
+registerBrowserRpc(rpcRouter, () => mainWindow, webviewCdpManager, browserBackendStore);
 registerA2aRpc(rpcRouter, () => mainWindow, claudeWorker, { getDaemonClient: () => daemonClient });
 registerA2aChannelRpc(rpcRouter, () => daemonClient, () => mainWindow);
 registerCompanyRpc(rpcRouter, () => mainWindow);
@@ -809,6 +815,13 @@ ipcMain.handle('browser:set-lightweight', (_event, enabled: boolean) => {
 ipcMain.handle('browser:set-discard', (_event, enabled: boolean) => {
   if (typeof enabled !== 'boolean') return { ok: false };
   webviewCdpManager.setDiscardMode(enabled);
+  return { ok: true };
+});
+// #517 backend choice — renderer Settings UI reads/writes the main-owned value.
+ipcMain.handle('browser:get-backend', () => browserBackendStore.get());
+ipcMain.handle('browser:set-backend', (_event, value: unknown) => {
+  if (!isBrowserBackend(value)) return { ok: false };
+  browserBackendStore.set(value);
   return { ok: true };
 });
 // Discard/wake signals travel main → renderer: the renderer owns the <webview>

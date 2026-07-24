@@ -17,6 +17,7 @@
 import { useEffect, useRef } from 'react';
 import { useStore } from '../../stores';
 import { useIpc } from '../../hooks/useIpc';
+import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
 import { selectActiveEmptyLeafIdsKey } from '../../stores/selectors/appLayout';
 import {
   resolveStartupCwd,
@@ -109,6 +110,9 @@ export function EmptyLeafFunnel() {
       const projectSeed = storeState.projectPaneSeed[paneId];
       if (projectSeed) storeState.clearProjectPaneSeed(paneId);
       if (projectSeed?.url) {
+        // #517 external backend: a project-seeded browser leaf delegates to the
+        // OS browser rather than mounting an embedded webview.
+        if (maybeDelegateExternalBrowser(projectSeed.url)) continue;
         // Browser leaf (X3 surface) — no PTY at all. NOTE: this synchronous
         // store write re-renders and re-runs this effect before the loop's
         // other iterations' creates resolve — see ptyCreateInFlightRef above.

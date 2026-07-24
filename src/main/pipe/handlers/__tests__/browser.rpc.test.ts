@@ -117,6 +117,7 @@ describe('registerBrowserRpc', () => {
       // No window (getWindow → null): shellUrl is omitted, not null.
       expect(response.result).toEqual({
         cdpPort: 18800,
+        workspaceBackend: 'builtin',
         targets: [{ surfaceId: 'surface-1', targetId: 'target-1' }],
       });
     }
@@ -137,6 +138,7 @@ describe('registerBrowserRpc', () => {
     if (response.ok) {
       expect(response.result).toMatchObject({
         cdpPort: 18800,
+        workspaceBackend: 'builtin',
         shellUrl: 'file:///x/.vite/renderer/main_window/index.html',
       });
     }
@@ -213,6 +215,7 @@ describe('registerBrowserRpc', () => {
       if (response.ok) {
         expect(response.result).toEqual({
           cdpPort: 18800,
+          workspaceBackend: 'builtin',
           targetsScoped: true,
           targets: [{ surfaceId: 'surface-a', targetId: 'target-a', workspaceId: 'ws-a' }],
         });
@@ -235,7 +238,7 @@ describe('registerBrowserRpc', () => {
       if (response.ok) {
         // Empty + targetsScoped is the signal the engine reads as "own none",
         // distinct from a legacy main that cannot scope at all.
-        expect(response.result).toEqual({ cdpPort: 18800, targetsScoped: true, targets: [] });
+        expect(response.result).toEqual({ cdpPort: 18800, targetsScoped: true, workspaceBackend: 'builtin', targets: [] });
       }
     });
 

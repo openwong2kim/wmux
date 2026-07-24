@@ -42,6 +42,10 @@ vi.mock('../lazyPlaywright', () => ({
 
 // Import after mocks are declared.
 import { PlaywrightEngine, isElectronShellUrl } from '../PlaywrightEngine';
+import {
+  EXTERNAL_BACKEND_UNSUPPORTED_CODE,
+  EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE,
+} from '../../../shared/browserBackend';
 
 /*
  * Regression tests for app-shell URL detection.
@@ -786,5 +790,145 @@ describe('PlaywrightEngine read-path workspace scoping — scoped cdp.info (#580
     // And it asked main to scope the target list to the caller.
     expect(mockSendRpc).toHaveBeenCalledWith('browser.cdp.info', { workspaceId: 'ws-B' });
     expect(opened).toBe(true);
+  }, 15_000);
+});
+
+/*
+ * #517 — external browser backend contract.
+ *
+ * When a workspace's backend is 'external', agent opens are delegated to the OS
+ * default browser and the workspace owns NO builtin webview target. A page
+ * resolution miss is therefore permanent — retrying/auto-opening can never
+ * conjure a target — so getPage() must fail immediately with the shared
+ * EXTERNAL_BACKEND_UNSUPPORTED contract error rather than looping. The marker
+ * rides on browser.cdp.info (workspaceBackend), so builtin (and older mains
+ * that omit the field) stay byte-identical: the guard fires only on an explicit
+ * 'external' + zero-scoped-targets combination.
+ */
+describe('PlaywrightEngine external backend contract (#517)', () => {
+  beforeEach(() => {
+    (PlaywrightEngine as unknown as { instance: PlaywrightEngine | null }).instance = null;
+    mockSendRpc.mockReset();
+    mockConnectOverCDP.mockReset();
+  });
+
+  it('throws the shared contract error on external backend + zero scoped targets, without any retry/connect', async () => {
+    // Scoped response: caller owns nothing AND the backend is external.
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({
+            cdpPort: 9222,
+            targetsScoped: true,
+            workspaceBackend: 'external',
+            targets: [],
+          })
+        : Promise.resolve({}),
+    );
+
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-external');
+
+    await expect(engine.getPage()).rejects.toThrow(EXTERNAL_BACKEND_UNSUPPORTED_CODE);
+    // Same prose as the shared constant — no forked message.
+    await expect(engine.getPage()).rejects.toThrow(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
+
+    // No retry/auto-open/connect loop was entered: the throw happens before
+    // _getPageImpl, so the CDP browser is never connected and no browser.open
+    // is ever issued. This is the "skip the pointless retry loops" guarantee.
+    expect(mockConnectOverCDP).not.toHaveBeenCalled();
+    expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
+  });
+
+  it('does NOT throw for builtin backend + zero scoped targets (existing generic behavior)', async () => {
+    // Same shape as the external case but backend is builtin — the generic
+    // "no page" path must be preserved: auto-open its own, retry, then null.
+    let opened = false;
+    const browser = {
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockImplementation(async () => makeFakeSession()),
+      contexts: vi.fn().mockReturnValue([]),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    mockConnectOverCDP.mockResolvedValue(browser);
+    mockSendRpc.mockImplementation((method: string, params?: unknown) => {
+      if (method === 'browser.cdp.info') {
+        const ws = (params as { workspaceId?: string } | undefined)?.workspaceId;
+        return Promise.resolve({
+          cdpPort: 9222,
+          shellUrl: 'file:///app/.vite/renderer/main_window/index.html',
+          ...(ws && { targetsScoped: true }),
+          workspaceBackend: 'builtin',
+          targets: [],
+        });
+      }
+      if (method === 'browser.open') {
+        opened = true;
+        return Promise.resolve({ ok: true });
+      }
+      return Promise.resolve({});
+    });
+
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-builtin');
+
+    // Resolves to null (no page ever appears) — never throws the contract error.
+    await expect(engine.getPage()).resolves.toBeNull();
+    // The builtin generic path still auto-opened in the caller's own workspace.
+    expect(opened).toBe(true);
+    expect(mockSendRpc).toHaveBeenCalledWith('browser.open', { workspaceId: 'ws-builtin' });
+  }, 15_000);
+
+  it('resolves normally in external mixed mode when the caller owns a live builtin target', async () => {
+    // External backend globally, but this workspace has a manually-opened
+    // builtin pane (a live scoped target). resolveCallerSurface returns
+    // kind:'surface', so callerHasNoSurface is false and the contract guard is
+    // skipped — the page resolves like any builtin surface.
+    const webviewPage: FakePage = {
+      url: vi.fn().mockReturnValue('https://example.com/'),
+      context: vi.fn(),
+    };
+    const targetSession = {
+      send: vi.fn().mockImplementation((method: string) =>
+        method === 'Target.getTargets'
+          ? Promise.resolve({
+              targetInfos: [
+                { targetId: 'wc-1', type: 'page', title: '', url: 'https://example.com/', attached: true },
+              ],
+            })
+          : Promise.resolve({}),
+      ),
+      detach: vi.fn().mockResolvedValue(undefined),
+    };
+    const ctx = {
+      pages: vi.fn().mockReturnValue([webviewPage]),
+      newCDPSession: vi.fn().mockResolvedValue(targetSession),
+    };
+    webviewPage.context.mockReturnValue(ctx);
+
+    const browser = {
+      isConnected: vi.fn().mockReturnValue(true),
+      newBrowserCDPSession: vi.fn().mockResolvedValue(targetSession),
+      contexts: vi.fn().mockReturnValue([ctx]),
+      close: vi.fn().mockResolvedValue(undefined),
+    };
+    mockConnectOverCDP.mockResolvedValue(browser);
+    mockSendRpc.mockImplementation((method: string) =>
+      method === 'browser.cdp.info'
+        ? Promise.resolve({
+            cdpPort: 9222,
+            targetsScoped: true,
+            workspaceBackend: 'external',
+            targets: [{ surfaceId: 'surf-A', targetId: 'wc-1', workspaceId: 'ws-A' }],
+          })
+        : Promise.resolve({}),
+    );
+
+    const engine = PlaywrightEngine.getInstance();
+    scope(engine).setWorkspaceIdResolver(async () => 'ws-A');
+
+    const page = await engine.getPage();
+    expect(page).toBe(webviewPage);
+    // No auto-open — the live builtin target was used.
+    expect(mockSendRpc.mock.calls.filter((c) => c[0] === 'browser.open')).toHaveLength(0);
   }, 15_000);
 });

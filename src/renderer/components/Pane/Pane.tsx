@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useState, useMemo } from 'react';
 import { Panel, Group, Separator } from 'react-resizable-panels';
 import type { PaneLeaf, Workspace } from '../../../shared/types';
+import { maybeDelegateExternalBrowser } from '../../utils/browserPaneActions';
 import { useStore } from '../../stores';
 import { useT } from '../../hooks/useT';
 import TerminalComponent from '../Terminal/Terminal';
@@ -355,6 +356,9 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     splitPane(pane.id, 'vertical', workspace.id);
   }, [splitPane, pane.id, workspace.id]);
   const handleAddBrowser = useCallback(() => {
+    // #517 external backend: send the open to the OS browser instead of
+    // mounting an embedded webview pane. No url here → the default homepage.
+    if (maybeDelegateExternalBrowser(undefined)) return;
     addBrowserSurface(pane.id, undefined, undefined, workspace.id);
   }, [addBrowserSurface, pane.id, workspace.id]);
 
