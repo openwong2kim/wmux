@@ -87,6 +87,14 @@ import { terminateRunningAppInstances } from './squirrelTeardown';
 // Squirrel events entirely (issue #463).
 import * as autostart from './autostart';
 import * as cliShim from './cliShim';
+import {
+  refreshStatuslineScript,
+  defaultPaths as defaultStatuslinePaths,
+} from '../cli/commands/setupStatusline';
+import {
+  refreshHookBridge,
+  defaultPaths as defaultHooksPaths,
+} from '../cli/commands/setupHooks';
 import { ProcessMonitor } from '../daemon/ProcessMonitor';
 import { metadataStore } from './metadata/MetadataStore';
 import { collectLegacyMetadata } from './metadata/legacyMigration';
@@ -848,6 +856,41 @@ app.on('ready', async () => {
       }
     }, 3000);
     shimTimer.unref();
+  }
+
+  // ~/.wmux/hooks/의 설치본 스크립트(statusline·hook bridge)를 번들 버전에 맞춘다.
+  // Squirrel은 app-x.y.z를 통째로 갈아치우지만 이 스크립트들은 (업데이트에서
+  // 살아남으라고) 그 바깥에 복사돼 있어서, 지금까지는 `wmux setup-statusline` /
+  // `wmux setup-hooks`를 손으로 다시 돌리기 전까지 옛 파일이 계속 돌았다. 낡은
+  // 스크립트는 에러 없이 조용히 옛 동작을 유지한다 — statusline은 틀린 줄을
+  // 그리고, bridge는 로그 로테이션·훅 스로틀 같은 스케일 픽스를 못 받는다.
+  // 이미 wmux가 소유한 설치에만, 내용이 실제로 다를 때만 손대고 settings.json은
+  // 절대 건드리지 않으므로 "부팅 시 자동 설치 금지" 제약(2026-07-17)과 충돌하지
+  // 않는다 — 그 규칙은 사용자를 새로 가입시키지 말라는 것이지, 이미 켠 파일을
+  // 낡은 채로 두라는 게 아니다. bridge refresh는 플러그인 캐시본(마켓플레이스가
+  // 버전 디렉터리로 따로 관리)은 건드리지 않고 오직 plugin-LESS 복사본만 담당한다.
+  // 부팅 경로를 막지 않게 지연 실행, 전체 best-effort.
+  if (app.isPackaged) {
+    const refreshTimer = setTimeout(() => {
+      try {
+        const sl = refreshStatuslineScript(defaultStatuslinePaths());
+        // 정상 무동작(up-to-date/not-installed)은 로그 소음이라 남기지 않는다.
+        if (sl === 'refreshed' || sl === 'failed' || sl === 'no-source') {
+          logLine('info', 'main', `statusline script refresh: ${sl}`);
+        }
+      } catch (err) {
+        console.warn('[statusline] script refresh failed (non-fatal):', err);
+      }
+      try {
+        const br = refreshHookBridge(defaultHooksPaths());
+        if (br === 'refreshed' || br === 'failed' || br === 'no-source') {
+          logLine('info', 'main', `hook bridge refresh: ${br}`);
+        }
+      } catch (err) {
+        console.warn('[hooks] bridge refresh failed (non-fatal):', err);
+      }
+    }, 3000);
+    refreshTimer.unref();
   }
 
   // Dev Dock 아이콘: dev에선 패키징 안 된 제네릭 Electron 바이너리로 실행돼

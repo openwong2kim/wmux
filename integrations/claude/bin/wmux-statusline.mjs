@@ -106,22 +106,22 @@ function main() {
 
   const parts = [];
 
-  // Model label, kept short on purpose. Two stdin fields feed it:
-  //   display_name — for `[1m]` model variants Claude Code bakes a verbose
-  //     " (1M context)" suffix into it ("Opus 4.7 (1M context)").
-  //   effort.level — present only on models that support it; "high" by default.
-  // Rendering both verbatim would give `Opus 4.7 (1M context) (high)`, so the
-  // suffix is folded into the same parenthetical: `Opus 4.7 (1M, high)`.
-  // Steady state on a non-1M model is just `Opus 4.8 (high)`.
+  // Model label: `Opus 4.8 (xhigh)` — the model and the effort it runs at, and
+  // deliberately nothing else. The context-window SIZE is not rendered: it is a
+  // property of the account's model selection that rarely differs pane to pane,
+  // and the live fill (`ctx N%` below) is the part that actually changes. Two
+  // stdin fields feed the label:
+  //   display_name — older Claude Code baked a verbose " (1M context)" suffix
+  //     into it for `[1m]` model variants ("Opus 4.7 (1M context)"); ≥2.1.218
+  //     sends the clean name and reports the window under context_window
+  //     instead. The suffix is stripped so both versions render identically.
+  //   effort.level — present only on models that expose one ("high", "xhigh"…);
+  //     a model without one renders as a bare `Haiku 4.5`.
   const model = input?.model?.display_name;
   if (typeof model === 'string' && model.length > 0) {
-    const oneMillion = / \(1M context\)$/.test(model);
+    const name = model.replace(/ \(1M context\)$/, '');
     const effort = input?.effort?.level;
-    const notes = [];
-    if (oneMillion) notes.push('1M');
-    if (typeof effort === 'string' && effort.length > 0) notes.push(effort);
-    const name = oneMillion ? model.replace(/ \(1M context\)$/, '') : model;
-    parts.push(notes.length > 0 ? `${name} (${notes.join(', ')})` : name);
+    parts.push(typeof effort === 'string' && effort.length > 0 ? `${name} (${effort})` : name);
   }
 
   // Account label: registered wmux name > logged-in email local part >
