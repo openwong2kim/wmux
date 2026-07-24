@@ -64,6 +64,24 @@ In QA/design-review mode, flag any code that doesn't match DESIGN.md.
 - Preserve upstream CHANGELOG history. Fork-facing changes go under
   `## [Unreleased]`; releases follow the explicit versioning policy above.
 
+## CHANGELOG on upstream syncs (owner decision, 2026-07-24)
+
+- Section layout, top to bottom: `[Unreleased]` (mirrors upstream fixes not yet
+  in any release, plus pending fork entries), fork release sections (`[1.0.0]`…)
+  carrying **fork-facing entries only** with their stated upstream base, then the
+  `---` provenance separator and the inherited upstream `[3.x]` sections, which
+  stay authoritative for upstream-authored work.
+- A fork release cut from a pre-release upstream base will overlap the upstream
+  section that later ships the same work. After a sync imports that section,
+  drop the byte-identical twin from the fork section (keep fork-adapted
+  variants), and update the fork section's "based on upstream wmux X.Y.Z" line
+  if the rebase moved the base before the release tag was published.
+- Per-clone (like `tagOpt`, not versioned): `.git/info/attributes` contains
+  `CHANGELOG.md merge=union`, so replayed fork commits append instead of
+  conflicting during a rebase. Union merges can duplicate or mis-section
+  entries, so **always audit the final CHANGELOG after a sync**: header order,
+  duplicated bold entry titles, and empty `###` subsections.
+
 ## Fork identity boundary (owner decision, 2026-07-23)
 
 Forge Mux must coexist with upstream wmux while remaining easy to rebase. Keep its
