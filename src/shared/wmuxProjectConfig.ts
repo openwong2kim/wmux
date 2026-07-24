@@ -21,6 +21,7 @@
  */
 
 import { WORKSPACE_PROFILE_COMMAND_MAX, WORKSPACE_PROFILE_STARTUP_CWD_MAX } from './types';
+import { ORCH_ROLES, sanitizeOrchRole } from './orchestratorRole';
 
 /** File name probed for at/above a workspace's cwd (stops at the repo root). */
 export const WMUX_PROJECT_CONFIG_FILENAME = 'wmux.json';
@@ -63,6 +64,23 @@ export interface WmuxProjectLayoutLeaf {
   cwd?: string;
   /** http/https URL — the leaf becomes a browser pane (X3) instead of a PTY. */
   url?: string;
+  /**
+   * D2 — the orchestrator role this pane is created with, one of ORCH_ROLES.
+   *
+   * Applying a layout REPLACES the pane tree with freshly generated pane ids, so
+   * there is no old pane for a role to be carried over from — a project pane's
+   * role has to be declared, or it has none and its seeded `command` launches
+   * without the role's bound model. This field is that declaration.
+   *
+   * Restricted to the built-in vocabulary ON PURPOSE, unlike the free-text role
+   * a human can set from the Fleet dropdown. wmux.json is checked into the repo
+   * and therefore attacker-reachable, and a role is injected verbatim into the
+   * orchestrator's workspace snapshot; allowing only the four names that
+   * Settings can actually bind means this file can select an operator's existing
+   * policy but can never introduce new text into that prompt. Rejected on a
+   * `url` leaf — a browser pane launches no agent.
+   */
+  role?: string;
   /**
    * X8 supervision. When set, `command` is run as the pane's ROOT process under
    * the daemon's PaneSupervisor instead of being typed into an interactive
@@ -167,6 +185,26 @@ export function isValidProjectRelativeCwd(input: string): boolean {
   if (input.startsWith('/') || input.startsWith('\\')) return false; // root/UNC
   const segments = input.split(/[\\/]+/);
   return segments.every((seg) => seg !== '..');
+}
+
+/**
+ * Resolve a layout leaf's `role` to a canonical ORCH_ROLES name.
+ *
+ * Matched case-insensitively (hand-authoring friendliness, same spirit as an
+ * omitted `version`) and returned in the vocabulary's own casing so the value
+ * that reaches MetadataStore is byte-identical to what the Fleet dropdown
+ * writes — a role is looked up as a map key, and `builder` would silently miss
+ * the operator's `Builder` binding.
+ *
+ * Returns null for anything outside the vocabulary, which drops the whole layout
+ * (all-or-nothing, matching the `restart` enum): a typo'd role would otherwise
+ * quietly produce a pane with no enforcement at all.
+ */
+function normLayoutRole(input: unknown): string | null {
+  const cleaned = sanitizeOrchRole(input);
+  if (cleaned === undefined) return null;
+  const match = ORCH_ROLES.find((r) => r.toLowerCase() === cleaned.toLowerCase());
+  return match ?? null;
 }
 
 function normRelativeCwd(input: unknown): string | undefined {
@@ -365,6 +403,7 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
     restartLimit?: unknown;
     unattended?: unknown;
     restorePermissionMode?: unknown;
+    role?: unknown;
   };
 
   // Branch: presence of `panes` is the discriminator.
@@ -403,6 +442,17 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
   // contradiction the author must resolve, not something to guess at.
   if (url !== undefined && (command !== undefined || cwd !== undefined)) return null;
 
+  // D2 role. Strict like the supervision fields: an unknown role name is a typo
+  // that would silently yield an unenforced pane, so it drops the layout rather
+  // than being ignored. Meaningless on a browser leaf.
+  let role: string | undefined;
+  if (src.role !== undefined) {
+    if (url !== undefined) return null;
+    const resolved = normLayoutRole(src.role);
+    if (resolved === null) return null;
+    role = resolved;
+  }
+
   // X8 supervision (decision ⑪ — STRICT; a bad value drops the whole layout
   // rather than silently downgrading to unsupervised).
   const supervision = normalizeSupervision(
@@ -419,6 +469,7 @@ function normalizeLayoutNode(input: unknown, depth: number, budget: LayoutBudget
   if (command !== undefined) leaf.command = command;
   if (cwd !== undefined) leaf.cwd = cwd;
   if (url !== undefined) leaf.url = url;
+  if (role !== undefined) leaf.role = role;
   if (supervision.restart !== undefined) leaf.restart = supervision.restart;
   if (supervision.restartLimit !== undefined) leaf.restartLimit = supervision.restartLimit;
   if (supervision.restorePermissionMode === true) leaf.restorePermissionMode = true;

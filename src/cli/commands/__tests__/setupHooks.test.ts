@@ -5,6 +5,7 @@ import * as path from 'path';
 import {
   installHooks,
   removeHooks,
+  refreshHookBridge,
   statusHooks,
   findBridgeSourceFrom,
   type SetupHooksPaths,
@@ -391,6 +392,104 @@ describe('statusHooks', () => {
     fs.mkdirSync(pluginDir, { recursive: true });
     const s = statusHooks(paths());
     expect(s.pluginAlsoInstalled).toBe(true);
+  });
+});
+
+describe('refreshHookBridge', () => {
+  /** An install whose settings.json references the stable bridge, then a bundle
+   *  that has since moved on — the exact post-app-update stale state. */
+  function installThenBumpSource(): void {
+    installHooks(paths());
+    fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V2\n', 'utf8');
+  }
+
+  it('replaces a stale bridge when settings.json references it', () => {
+    installThenBumpSource();
+    expect(refreshHookBridge(paths())).toBe('refreshed');
+    expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V2\n');
+  });
+
+  it('never writes settings.json — only the bridge file', () => {
+    installThenBumpSource();
+    const before = fs.readFileSync(settingsPath, 'utf8');
+    refreshHookBridge(paths());
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(before);
+  });
+
+  it('reports up-to-date without rewriting an identical bridge', () => {
+    installHooks(paths());
+    const mtime = fs.statSync(bridgeDest).mtimeMs;
+    expect(refreshHookBridge(paths())).toBe('up-to-date');
+    expect(fs.statSync(bridgeDest).mtimeMs).toBe(mtime);
+  });
+
+  it('does NOT enroll a user who never installed the hooks', () => {
+    expect(refreshHookBridge(paths())).toBe('not-installed');
+    expect(fs.existsSync(bridgeDest)).toBe(false);
+    expect(fs.existsSync(settingsPath)).toBe(false);
+  });
+
+  it('restores a referenced bridge that was deleted, without writing settings', () => {
+    installHooks(paths());
+    const settingsBefore = fs.readFileSync(settingsPath, 'utf8');
+    fs.rmSync(bridgeDest); // file gone, but settings hooks still reference it
+    expect(refreshHookBridge(paths())).toBe('refreshed');
+    expect(fs.existsSync(bridgeDest)).toBe(true);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(settingsBefore);
+  });
+
+  it('does NOT restore when settings has no wmux hooks referencing the bridge', () => {
+    // settings.json present with only foreign hooks; bridge absent.
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'node other.js' }] }] } }),
+      'utf8',
+    );
+    expect(refreshHookBridge(paths())).toBe('not-installed');
+    expect(fs.existsSync(bridgeDest)).toBe(false);
+  });
+
+  it('leaves the bridge alone when settings.json no longer references it', () => {
+    // A leftover bridge file, but the user has since removed the hooks — the
+    // plugin now owns the signals, and refreshing this orphan is pure surprise.
+    installHooks(paths());
+    removeHooks(paths());
+    fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V2\n', 'utf8');
+    expect(refreshHookBridge(paths())).toBe('not-installed');
+    expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
+  });
+
+  it('does not resurrect a bridge for a FOREIGN-only hooks map', () => {
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'node my-own.js' }] }] } }),
+      'utf8',
+    );
+    fs.mkdirSync(path.dirname(bridgeDest), { recursive: true });
+    fs.writeFileSync(bridgeDest, 'BRIDGE_CONTENT_V1\n', 'utf8');
+    fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V2\n', 'utf8');
+    expect(refreshHookBridge(paths())).toBe('not-installed');
+    expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
+  });
+
+  it('reports no-source when the bundled bridge cannot be located', () => {
+    installHooks(paths());
+    expect(refreshHookBridge(paths({ bridgeSource: null }))).toBe('no-source');
+  });
+
+  it('degrades to failed instead of throwing on an unreadable source', () => {
+    installHooks(paths());
+    expect(refreshHookBridge(paths({ bridgeSource: path.join(tmpDir, 'gone.mjs') }))).toBe('failed');
+  });
+
+  it('does not refresh through a corrupted settings.json', () => {
+    installHooks(paths());
+    fs.writeFileSync(settingsPath, '{not json', 'utf8');
+    fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V2\n', 'utf8');
+    expect(refreshHookBridge(paths())).toBe('not-installed');
+    expect(fs.readFileSync(bridgeDest, 'utf8')).toBe('BRIDGE_CONTENT_V1\n');
   });
 });
 

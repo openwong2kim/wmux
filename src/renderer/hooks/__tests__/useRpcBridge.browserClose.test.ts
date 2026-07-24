@@ -107,18 +107,21 @@ describe('useRpcBridge close-path workspace routing', () => {
     return match[0];
   }
 
-  it('browser.close honors params.workspaceId with an active-workspace fallback (mirrors browser.open)', () => {
+  // #580: the ownership policy is a pure function (decideBrowserClose, tested
+  // behaviorally in browserTabs.test.ts). Here we only pin the wiring — the
+  // handler must delegate to it and drive the scoped close helper, and must NOT
+  // reintroduce the global explicit-id search that let a caller reach another
+  // workspace's browser by id.
+  it('browser.close delegates to decideBrowserClose and the scoped close helper', () => {
     const block = blockBetween("method === 'browser\\.close'", "method === 'browser\\.navigate'");
-    expect(block).toMatch(/params\.workspaceId/);
-    expect(block).toMatch(/store\.activeWorkspaceId/);
-    // The store mutations must be pinned to the RESOLVED workspace, or the
-    // slice-level active-workspace default silently no-ops on background ones.
-    expect(block).toMatch(/closeBrowserTabInWorkspace\(store,\s*targetWs\.id,\s*targetSurfaceId\)/);
+    expect(block).toMatch(/decideBrowserClose\(params,\s*store\.activeWorkspaceId\)/);
+    expect(block).toMatch(/closeBrowserTabInWorkspace\(store,\s*decision\.workspaceId,\s*decision\.surfaceId\)/);
   });
 
-  it('browser.close with an explicit surfaceId searches every workspace (unambiguous target)', () => {
+  it('browser.close no longer searches every workspace for an explicit surfaceId (#580)', () => {
     const block = blockBetween("method === 'browser\\.close'", "method === 'browser\\.navigate'");
-    expect(block).toMatch(/for \(const ws of store\.workspaces\)/);
+    // The global explicit-id search was the cross-workspace close vector.
+    expect(block).not.toMatch(/for \(const ws of store\.workspaces\)/);
   });
 
   it('surface.close resolves an explicit surface id across all workspaces', () => {

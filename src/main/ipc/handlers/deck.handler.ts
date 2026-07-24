@@ -74,6 +74,20 @@ import {
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import { scanSkillCatalog, type SkillCatalogEntry } from '../../deck/skillCatalogScan';
+import {
+  buildWorkspaceBriefing,
+  toBriefedSnapshot,
+  type BriefedSnapshot,
+  type WorkspaceBriefing,
+} from '../../deck/deckBriefing';
+import {
+  loadDeckBriefingConfig,
+  saveDeckBriefingConfig,
+  readDeckBriefingConfig,
+  readBriefedSnapshot,
+  saveBriefedSnapshot,
+  type DeckBriefingConfig,
+} from '../../deck/deckBriefingStore';
 import { eventBus } from '../../events/EventBus';
 import {
   loadDeckSchedules,
@@ -1486,6 +1500,136 @@ export function registerDeckHandler(
     }),
   );
 
+  // ── D1: deterministic "welcome home" briefing ─────────────────────────────
+  // A synchronous main-process READ of existing judgment-engine state — NO brain
+  // turn, NO globalTurnGate acquire, renders in every autonomy mode including
+  // 'off'. Every feed is a main-singleton read (mirror snapshot/entries,
+  // decision, mode, loop) plus the last-viewed snapshot for the delta.
+  //
+  // READ and ACKNOWLEDGE are deliberately SEPARATE channels. The card fetches on
+  // every deck stream tick (and while collapsed), so persisting the baseline
+  // inside GET consumed deltas nobody ever saw: "2 finished, 1 now blocked"
+  // could be folded into the snapshot while the operator was on another tab and
+  // was then unrecoverable. GET is therefore pure; the card calls
+  // DECK_BRIEFING_SEEN only once the briefing is actually rendered expanded, and
+  // only THAT advances the "what you last saw" baseline.
+  //
+  // markColdStart returns true the FIRST time a workspace is briefed since this
+  // handler registered (process start), false thereafter.
+  const briefedSinceStart = new Set<string>();
+  const markColdStart = (workspaceId: string): boolean => {
+    if (briefedSinceStart.has(workspaceId)) return false;
+    briefedSinceStart.add(workspaceId);
+    return true;
+  };
+
+  // The snapshot each GET *would* persist, held until the renderer acknowledges
+  // that build. Keyed by workspace, matched by builtAt so an acknowledge can only
+  // ever commit the exact build the operator saw — a newer build that landed in
+  // between is not silently consumed, and the renderer never gets to hand main
+  // its own snapshot data.
+  const pendingSeen = new Map<string, { builtAt: number; snapshot: BriefedSnapshot }>();
+
+  ipcMain.removeHandler(IPC.DECK_BRIEFING_GET);
+  ipcMain.handle(
+    IPC.DECK_BRIEFING_GET,
+    wrapHandler(IPC.DECK_BRIEFING_GET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ briefing: WorkspaceBriefing | null; autoShow?: boolean; mirrorReady?: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { briefing: null };
+      // Both reads join the store's write chain so a GET that races a queued
+      // acknowledge still computes its delta from POST-write state.
+      const cfg = await readDeckBriefingConfig();
+      if (!cfg.enabled) return { briefing: null };
+      const mirror = getWorkspaceMirror();
+      // The mirror push waits for paneGate === 'ready', so an early GET during
+      // startup sees an EMPTY fleet that is not the truth. Building on it would
+      // burn the one-shot cold-start flag and (once acknowledged) seed an empty
+      // baseline, leaving recovered panes invisible. Report "not ready" instead
+      // and let the card retry — nothing is consumed.
+      if (!mirror.hasEverBeenPopulated()) return { briefing: null, mirrorReady: false };
+      const snapshot = mirror.getFleetSnapshot(workspaceId);
+      const entry = mirror.getEntries()?.find((e) => e.id === workspaceId) ?? null;
+      const briefing = buildWorkspaceBriefing({
+        workspaceId,
+        entry,
+        snapshot,
+        decision: loadWorkspaceDecision(workspaceId),
+        mode: loadWorkspaceMode(workspaceId),
+        loop: loadWorkspaceLoopState(workspaceId),
+        prior: await readBriefedSnapshot(workspaceId),
+        coldStart: markColdStart(workspaceId),
+      });
+      pendingSeen.set(workspaceId, {
+        builtAt: briefing.builtAt,
+        snapshot: toBriefedSnapshot(
+          snapshot,
+          briefing.pendingDecision?.id ?? null,
+          briefing.builtAt,
+        ),
+      });
+      return { briefing, autoShow: cfg.autoShow, mirrorReady: true };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_BRIEFING_SEEN);
+  ipcMain.handle(
+    IPC.DECK_BRIEFING_SEEN,
+    wrapHandler(IPC.DECK_BRIEFING_SEEN, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false };
+      const builtAt = typeof req.builtAt === 'number' ? req.builtAt : NaN;
+      const pending = pendingSeen.get(workspaceId);
+      // No-op unless this acknowledges the exact build main handed out. Also
+      // makes a repeated ack for the same build free (no disk write).
+      if (!pending || pending.builtAt !== builtAt) return { ok: false };
+      pendingSeen.delete(workspaceId);
+      const live = getWorkspaceMirror().getEntries()?.map((e) => e.id);
+      // Fire-and-forget, same never-throw posture as the rest of the store: a
+      // failed persist only costs a slightly-stale delta on the next open.
+      void saveBriefedSnapshot(workspaceId, pending.snapshot, undefined, {
+        ...(live ? { liveWorkspaceIds: live } : {}),
+      }).catch(() => undefined);
+      return { ok: true };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_GET);
+  ipcMain.handle(
+    IPC.DECK_BRIEFING_CONFIG_GET,
+    wrapHandler(IPC.DECK_BRIEFING_CONFIG_GET, async (): Promise<DeckBriefingConfig> => {
+      return loadDeckBriefingConfig();
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_SET);
+  ipcMain.handle(
+    IPC.DECK_BRIEFING_CONFIG_SET,
+    wrapHandler(IPC.DECK_BRIEFING_CONFIG_SET, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<DeckBriefingConfig> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const patch: Partial<DeckBriefingConfig> = {};
+      if (typeof req.enabled === 'boolean') patch.enabled = req.enabled;
+      if (typeof req.autoShow === 'boolean') patch.autoShow = req.autoShow;
+      return saveDeckBriefingConfig(patch);
+    }),
+  );
+
   // M2 — headless startup reconcile. A resolution can be persisted but never
   // consumed if the app closed between resolve and the fire-and-forget resume
   // kick, and the deck may never be reopened (so the GET-hydrate nudge above
@@ -1556,5 +1700,9 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_MODE_SET);
     ipcMain.removeHandler(IPC.DECK_DECISION_GET);
     ipcMain.removeHandler(IPC.DECK_DECISION_RESOLVE);
+    ipcMain.removeHandler(IPC.DECK_BRIEFING_GET);
+    ipcMain.removeHandler(IPC.DECK_BRIEFING_SEEN);
+    ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_GET);
+    ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_SET);
   };
 }

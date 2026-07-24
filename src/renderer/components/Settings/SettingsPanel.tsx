@@ -23,9 +23,12 @@ import {
 } from '../../contrastSafety';
 import type { CustomThemeColors, NotificationCategory, XtermThemeColors } from '../../../shared/types';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
+import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
+import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
+import { notifyBriefingConfigChanged } from '../Deck/deckBriefingConfigBus';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
 import { AccountsSection } from './AccountsSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
@@ -603,6 +606,180 @@ const ORCHESTRATOR_MODEL_OPTIONS = [
   { value: 'haiku',  labelKey: '' },
 ];
 
+// D2 — global role→model enforcement editor. One compact row per built-in role
+// (v1 binds only the 4 fixed roles; a custom-role combobox is deferred): an
+// agent select, a model combobox, and a free-text extra-args field. Writing
+// through setOrchestratorRoleBinding normalizes + persists; clearing every field
+// unbinds the role.
+//
+// The agent list keeps launchers with no verified `--model` grammar
+// (opencode/gemini) because an args-only binding is still enforceable for them —
+// but a row that cannot do what it looks like it does says so INLINE rather than
+// no-op'ing silently. Model entry is a datalist combobox, not a <select>: only
+// claude's aliases are known to us, and a codex model id (`gpt-5.5`) must be
+// typeable.
+const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini'] as const;
+
+const ROLE_BINDING_FIELD_CLASS =
+  'text-[11px] rounded px-1.5 py-1 font-mono bg-[color:var(--bg-surface)] ' +
+  'text-[color:var(--text-main)] border border-[color:var(--border-soft)] outline-none';
+
+/** The one honest thing to say about a row's current state, or none when the
+ *  row does exactly what it appears to. Keeps a mis-set binding from looking
+ *  bound while enforcing nothing. */
+export function roleBindingHint(b: { agent?: string; model?: string; args?: string }):
+  | { key: string; params?: Record<string, string> }
+  | undefined {
+  if (b.model && !b.agent) return { key: 'settings.roleBindingHintNoAgent' };
+  if (b.model && b.agent && !launcherSupportsModelFlag(b.agent)) {
+    return { key: 'settings.roleBindingHintNoGrammar', params: { agent: b.agent } };
+  }
+  if (b.agent && !b.model && !b.args) return { key: 'settings.roleBindingHintInert' };
+  return undefined;
+}
+
+/**
+ * A text input whose DISPLAYED text survives normalization while you type.
+ *
+ * Every write to a binding is normalized on the way into the store
+ * (normalizeBindingField collapses whitespace runs and trims), so a plainly
+ * controlled input re-rendered from the store ate the space the instant you
+ * typed it: `--foo ` came back as `--foo`, and the next character landed as
+ * `--foob`. A two-token args value could be pasted but never typed.
+ *
+ * So while the field has focus we render the RAW keystrokes. The persisted value
+ * is still normalized on every keystroke — committing per keystroke rather than
+ * on blur is deliberate, since it means no edit can be stranded by an unmount
+ * (the panel closing, the section collapsing) with nothing to flush. Dropping
+ * the draft on blur or Enter snaps the field back to the canonical spelling that
+ * was actually stored, so the operator sees what wmux kept. A paste is just a
+ * change event, and rides the same path.
+ */
+function DraftTextInput({
+  value,
+  onChange,
+  ...rest
+}: {
+  value: string;
+  onChange: (e: { target: { value: string } }) => void;
+  'aria-label': string;
+  type: string;
+  placeholder?: string;
+  list?: string;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <input
+      {...rest}
+      value={draft ?? value}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        onChange(e);
+      }}
+      onBlur={() => setDraft(null)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          setDraft(null);
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
+export interface RoleBindingsViewProps {
+  bindings: Record<string, { agent?: string; model?: string; args?: string }>;
+  /** Called with the FULL next binding for a role (the view merges the patch). */
+  onChange: (role: string, next: { agent?: string; model?: string; args?: string }) => void;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}
+
+/** Presentational half — the container below owns the store. Split so the view
+ *  is renderable (and assertable) without a live store, matching NotificationsView. */
+export function RoleBindingsView({ bindings, onChange, t }: RoleBindingsViewProps) {
+  const update = (role: string, patch: { agent?: string; model?: string; args?: string }) => {
+    onChange(role, { ...(bindings[role] ?? {}), ...patch });
+  };
+
+  return (
+    <Card className="flex flex-col gap-2 px-3 py-2.5">
+      <div className="min-w-0">
+        <p className="text-sm text-[color:var(--text-main)]">{t('settings.roleBindings')}</p>
+        <p className="text-[11px] text-[color:var(--text-muted)] mt-0.5">{t('settings.roleBindingsDesc')}</p>
+      </div>
+      <div className="flex flex-col gap-1.5 mt-1">
+        {ORCH_ROLES.map((role) => {
+          const b = bindings[role] ?? {};
+          const hint = roleBindingHint(b);
+          const listId = `role-binding-models-${role}`;
+          return (
+            <div key={role} className="flex flex-col gap-0.5" data-role-binding-row={role}>
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-[color:var(--text-sub)] w-[64px] shrink-0">{role}</span>
+                <select
+                  aria-label={t('settings.roleBindingAgentLabel', { role })}
+                  value={b.agent ?? ''}
+                  onChange={(e) => update(role, { agent: e.target.value })}
+                  className={`${ROLE_BINDING_FIELD_CLASS} ${FOCUS_RING}`}
+                  style={{ minWidth: 92 }}
+                >
+                  <option value="">{t('settings.roleBindingAgentPlaceholder')}</option>
+                  {ROLE_BINDING_AGENTS.map((a) => (
+                    <option key={a} value={a}>{a}</option>
+                  ))}
+                </select>
+                <DraftTextInput
+                  aria-label={t('settings.roleBindingModelLabel', { role })}
+                  type="text"
+                  list={listId}
+                  value={b.model ?? ''}
+                  placeholder={t('settings.roleBindingModelPlaceholder')}
+                  onChange={(e) => update(role, { model: e.target.value })}
+                  className={`${ROLE_BINDING_FIELD_CLASS} ${FOCUS_RING}`}
+                  style={{ minWidth: 92, width: 116 }}
+                />
+                {/* Suggestions only — free text is required for codex model ids.
+                    We only know claude's aliases, so that is all we suggest. */}
+                <datalist id={listId}>
+                  {b.agent === 'claude' &&
+                    MODEL_OPTIONS.filter((o) => o.value).map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                </datalist>
+                <DraftTextInput
+                  aria-label={t('settings.roleBindingArgsLabel', { role })}
+                  type="text"
+                  value={b.args ?? ''}
+                  placeholder={t('settings.roleBindingArgsPlaceholder')}
+                  onChange={(e) => update(role, { args: e.target.value })}
+                  className={`flex-1 min-w-0 ${ROLE_BINDING_FIELD_CLASS} ${FOCUS_RING}`}
+                />
+              </div>
+              {hint && (
+                <p
+                  className="text-[10px] text-[color:var(--text-muted)] pl-[72px]"
+                  data-role-binding-hint={role}
+                >
+                  {t(hint.key, hint.params)}
+                </p>
+              )}
+            </div>
+          );
+        })}
+      </div>
+    </Card>
+  );
+}
+
+function RoleBindingEditor() {
+  const t = useT();
+  const bindings = useStore((s) => s.orchestratorRoleBindings);
+  const setBinding = useStore((s) => s.setOrchestratorRoleBinding);
+  return <RoleBindingsView bindings={bindings} onChange={setBinding} t={t} />;
+}
+
 function OrchestratorSection() {
   const t = useT();
   const deckBrainModel = useStore((s) => s.deckBrainModel);
@@ -631,6 +808,47 @@ function OrchestratorSection() {
       ?.set(enabled)
       .then((r) => setAutoWake(r.enabled))
       .catch(() => setAutoWake(!enabled));
+  };
+  // D1 briefing toggles — persisted in MAIN (deck-briefing.json). Read on mount;
+  // optimistic toggle with echo reconciliation (mirrors auto-wake).
+  const [briefingEnabled, setBriefingEnabled] = useState(true);
+  const [briefingAutoShow, setBriefingAutoShow] = useState(true);
+  useEffect(() => {
+    let cancelled = false;
+    window.electronAPI.deck?.briefing
+      ?.getConfig()
+      .then((c) => {
+        if (cancelled) return;
+        setBriefingEnabled(c.enabled);
+        setBriefingAutoShow(c.autoShow);
+      })
+      .catch(() => undefined); // keep the default-on rendering
+    return () => { cancelled = true; };
+  }, []);
+  // A mounted DeckBriefingCard reads its config from main, not from this
+  // component's state, so every confirmed change is broadcast — otherwise a card
+  // that is already on screen stays visible after the operator turns it off.
+  const onBriefingEnabledChange = (enabled: boolean) => {
+    setBriefingEnabled(enabled);
+    window.electronAPI.deck?.briefing
+      ?.setConfig({ enabled })
+      .then((c) => {
+        setBriefingEnabled(c.enabled);
+        setBriefingAutoShow(c.autoShow);
+        notifyBriefingConfigChanged();
+      })
+      .catch(() => setBriefingEnabled(!enabled));
+  };
+  const onBriefingAutoShowChange = (autoShow: boolean) => {
+    setBriefingAutoShow(autoShow);
+    window.electronAPI.deck?.briefing
+      ?.setConfig({ autoShow })
+      .then((c) => {
+        setBriefingEnabled(c.enabled);
+        setBriefingAutoShow(c.autoShow);
+        notifyBriefingConfigChanged();
+      })
+      .catch(() => setBriefingAutoShow(!autoShow));
   };
   const options = ORCHESTRATOR_MODEL_OPTIONS.map((o) => ({
     value: o.value,
@@ -666,6 +884,7 @@ function OrchestratorSection() {
           label={t('settings.orchestratorModel')}
         />
       </SettingRow>
+      <RoleBindingEditor />
       <SettingRow
         label={t('settings.orchestratorFullPower')}
         description={t('settings.orchestratorFullPowerDesc')}
@@ -684,6 +903,26 @@ function OrchestratorSection() {
           checked={autoWake}
           onChange={onAutoWakeChange}
           label={t('settings.autoWake')}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('settings.briefing')}
+        description={t('settings.briefingDesc')}
+      >
+        <Toggle
+          checked={briefingEnabled}
+          onChange={onBriefingEnabledChange}
+          label={t('settings.briefing')}
+        />
+      </SettingRow>
+      <SettingRow
+        label={t('settings.briefingAutoShow')}
+        description={t('settings.briefingAutoShowDesc')}
+      >
+        <Toggle
+          checked={briefingAutoShow}
+          onChange={onBriefingAutoShowChange}
+          label={t('settings.briefingAutoShow')}
         />
       </SettingRow>
       <SettingRow

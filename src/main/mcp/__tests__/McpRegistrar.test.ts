@@ -24,9 +24,11 @@ vi.mock('../../../shared/errors/macos', () => ({
   MACOS_ERRORS: { mcpPermissionDenied: { code: 'TEST', summary: '', remedy: '' } },
 }));
 vi.mock('../../../shared/platform', () => ({ isMac: false }));
+vi.mock('../brokerProbe', () => ({ canConnectBrokerPipe: vi.fn() }));
 
 // IMPORTANT: import the SUT after vi.mock() declarations.
 import { McpRegistrar, type McpRegistrarStatus, type McpTargetStatus } from '../McpRegistrar';
+import { canConnectBrokerPipe } from '../brokerProbe';
 
 const claudeJson = () => path.join(tmpHome, '.claude.json');
 const codexToml = () => path.join(tmpHome, '.codex', 'config.toml');
@@ -151,6 +153,61 @@ describe('McpRegistrar.forceUnregister (multi-target)', () => {
     expect(fs.existsSync(claudeJson())).toBe(false);
     expect(fs.existsSync(codexToml())).toBe(false);
     expect(fs.existsSync(geminiJson())).toBe(false);
+  });
+});
+
+describe('McpRegistrar.register (broker topology selection)', () => {
+  const distDir = () => path.join(tmpHome, 'dist', 'mcp', 'mcp');
+  const shimPath = () => path.join(distDir(), 'shim.js');
+  const entryPath = () => path.join(distDir(), 'entry.js');
+
+  beforeEach(() => {
+    fs.mkdirSync(distDir(), { recursive: true });
+    // Both topologies must have a resolvable script for getMcpScriptPath.
+    fs.writeFileSync(shimPath(), '// shim', 'utf8');
+    fs.writeFileSync(entryPath(), '// entry', 'utf8');
+    vi.mocked(canConnectBrokerPipe).mockReset();
+    delete process.env.WMUX_MCP_BROKER;
+  });
+  afterEach(() => {
+    delete process.env.WMUX_MCP_BROKER;
+  });
+
+  const registeredPath = (): string | null =>
+    target(new McpRegistrar().getStatus(), 'claude').wmux.path;
+
+  it('opts.useShim=true writes the shim path without probing', async () => {
+    await new McpRegistrar().register('tok', { useShim: true });
+    expect(registeredPath()).toBe(shimPath());
+    expect(canConnectBrokerPipe).not.toHaveBeenCalled();
+  });
+
+  it('opts.useShim=false writes the full bundle path without probing', async () => {
+    await new McpRegistrar().register('tok', { useShim: false });
+    expect(registeredPath()).toBe(entryPath());
+    expect(canConnectBrokerPipe).not.toHaveBeenCalled();
+  });
+
+  it('no opts + flag on + broker reachable → shim (self-correcting probe)', async () => {
+    process.env.WMUX_MCP_BROKER = '1';
+    vi.mocked(canConnectBrokerPipe).mockResolvedValue(true);
+    await new McpRegistrar().register('tok');
+    expect(canConnectBrokerPipe).toHaveBeenCalledWith(300);
+    expect(registeredPath()).toBe(shimPath());
+  });
+
+  it('no opts + flag on + broker unreachable → full bundle', async () => {
+    process.env.WMUX_MCP_BROKER = '1';
+    vi.mocked(canConnectBrokerPipe).mockResolvedValue(false);
+    await new McpRegistrar().register('tok');
+    expect(canConnectBrokerPipe).toHaveBeenCalledWith(300);
+    expect(registeredPath()).toBe(entryPath());
+  });
+
+  it('flag off → full bundle, no probe (byte-identical to pre-broker)', async () => {
+    await new McpRegistrar().register('tok');
+    expect(canConnectBrokerPipe).not.toHaveBeenCalled();
+    expect(registeredPath()).toBe(entryPath());
   });
 });
 

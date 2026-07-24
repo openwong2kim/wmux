@@ -9,7 +9,7 @@ import {
 } from '../../stores/selectors/fleet';
 import type { AgentStatus } from '../../../shared/types';
 import { shellDisplayName } from '../../utils/ptyCreateOptions';
-import { ORCH_ROLES } from '../../../shared/orchestratorRole';
+import { ORCH_ROLES, bindingEnforcesModel } from '../../../shared/orchestratorRole';
 
 /**
  * Bridge P2① — the Fleet roster inside the deck's Orchestrator tab.
@@ -72,6 +72,7 @@ export default function DeckFleet({
   const surfaceActivity = useStore((s) => s.surfaceActivity);
   const paneLabel = useStore((s) => s.paneLabel);
   const paneRole = useStore((s) => s.paneRole);
+  const roleBindings = useStore((s) => s.orchestratorRoleBindings);
 
   const panes = useMemo(() => {
     const all = selectFleetPanes({ workspaces, surfaceAgentStatus, surfaceActivity, paneLabel });
@@ -117,6 +118,18 @@ export default function DeckFleet({
           const roleOptions = role && !(ORCH_ROLES as readonly string[]).includes(role)
             ? [role, ...ORCH_ROLES]
             : [...ORCH_ROLES];
+          // D2 — the enforced agent/model for this role, shown as a muted
+          // sub-label so the operator sees what a worker will actually launch as.
+          // Gated on the binding REALLY injecting the model (bindingEnforcesModel),
+          // the same gate the pane badge uses: a stored-but-inert binding gets no
+          // chip here, because a chip reading "gemini · flash" is indistinguishable
+          // from an enforced one while the launch is untouched. Settings is where
+          // an inert row explains itself; this roster only states facts about the
+          // launch. Consequence: an args-only binding shows no chip either.
+          const binding = role ? roleBindings[role] : undefined;
+          const bindingLabel = bindingEnforcesModel(binding)
+            ? [binding?.agent, binding?.model].filter(Boolean).join(' · ')
+            : '';
           return (
             // Row = flex container so the jump button and the role <select> are
             // SIBLINGS (a <select> cannot nest inside a <button>). No parent click
@@ -163,7 +176,20 @@ export default function DeckFleet({
                 </span>
               </button>
               {/* Operator-assigned role — soft routing hint the orchestrator reads.
-                  Writes through MetadataStore (setRole) so it relays to the brain. */}
+                  Writes through MetadataStore (setRole) so it relays to the brain.
+                  D2: when the role is bound, a muted agent·model chip sits INLINE
+                  beside the select (not stacked — the row keeps its 26px density
+                  contract) showing what an agent launched here will run as. Amber
+                  stays reserved for alive+focus per DESIGN.md. */}
+              {bindingLabel && (
+                <span
+                  className="shrink-0 font-mono text-[10px] leading-none text-[var(--text-muted)] max-w-[92px] truncate"
+                  {...tokenAttrs('textMuted', 'text')}
+                  title={t('deck.fleet.enforcedLaunch', { binding: bindingLabel })}
+                >
+                  {bindingLabel}
+                </span>
+              )}
               <select
                 aria-label={`${rowLabel(p)} role`}
                 value={role}

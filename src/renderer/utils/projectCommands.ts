@@ -7,7 +7,7 @@
 // palette/sidebar item rendered before a trust revocation can't still execute.
 
 import { useStore } from '../stores';
-import { withDefaultShell, withWorkspaceProfile } from './ptyCreateOptions';
+import { withDefaultShell, withWorkspaceProfile, withRoleBinding } from './ptyCreateOptions';
 import { probeProjectConfig } from './projectConfigProbe';
 import type { WmuxProjectCommand } from '../../shared/wmuxProjectConfig';
 
@@ -44,19 +44,27 @@ export async function runProjectCommand(
   const ws = state.workspaces.find((w) => w.id === workspaceId);
   if (!ws) return { ok: false, reason: 'no-workspace' };
   const paneId = ws.activePaneId;
+  // D2 — the target pane's role is known here (it is the workspace's active
+  // pane), so a role-bound command re-launches with its enforced agent/model.
+  const paneRoleName = state.paneRole[paneId];
+  const roleBinding = paneRoleName ? state.orchestratorRoleBindings[paneRoleName] : undefined;
 
   try {
     const created = await window.electronAPI.pty.create(
-      withWorkspaceProfile(
-        withDefaultShell(
-          {
-            workspaceId,
-            cwd: project.root,
-            initialCommand: command.command,
-          },
-          state.defaultShell,
+      withRoleBinding(
+        withWorkspaceProfile(
+          withDefaultShell(
+            {
+              workspaceId,
+              cwd: project.root,
+              initialCommand: command.command,
+            },
+            state.defaultShell,
+          ),
+          ws.profile,
         ),
-        ws.profile,
+        roleBinding,
+        paneRoleName,
       ),
     ) as { id: string; shell?: string; cwd?: string };
     const fresh = useStore.getState();

@@ -10,6 +10,7 @@ import DiffPanel from '../Diff/DiffPanel';
 import SurfaceTabs, { PANE_ACTIONS_CLUSTER_WIDTH } from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { agentSupportsPermissionFlag, permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
+import { applyRoleBinding, bindingEnforcesModel, type RoleBinding } from '../../../shared/orchestratorRole';
 import { ResumeInfoChipGate } from './ResumeInfoChip';
 import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
@@ -69,6 +70,63 @@ export function composePaneClassName(opts: {
   return classes.join(' ');
 }
 
+/** D2 — only a terminal surface can launch an agent, so only a terminal surface
+ *  may claim a role-enforced model. An undefined `surfaceType` is a legacy
+ *  terminal (the field postdates the original Surface shape). */
+export function isTerminalSurfaceType(surfaceType: string | undefined): boolean {
+  return surfaceType === undefined || surfaceType === 'terminal';
+}
+
+/**
+ * D2 — may this pane display a "role-enforced launch" model badge?
+ *
+ * Both halves are load-bearing and neither is obvious at the call site, which is
+ * why this is a named predicate rather than an inline `&&`:
+ *  - the binding must REALLY inject the model (bindingEnforcesModel). A
+ *    model-only binding, or one naming an agent whose `--model` grammar wmux has
+ *    not verified, is stored and shown in Settings but never applied — badging it
+ *    would tell the operator a pane is pinned to a model while the launch goes
+ *    out on the default.
+ *  - the surface must be a terminal, since nothing else launches an agent.
+ */
+export function showsEnforcedModelBadge(opts: {
+  binding: RoleBinding | undefined;
+  surfaceType: string | undefined;
+}): boolean {
+  return bindingEnforcesModel(opts.binding) && isTerminalSurfaceType(opts.surfaceType);
+}
+
+/**
+ * D2 — the `right` offset at which the enforced-model badge can sit without
+ * covering the pane's top-right controls, which are all absolutely positioned
+ * at `top: 4` with `zIndex: 20`:
+ *   - action cluster ON  → SurfaceTabs owns the strip (PANE_ACTIONS_CLUSTER_WIDTH),
+ *     with the supervision badge parked just left of it.
+ *   - action cluster OFF → the zoom (`right: 6`) or maximize button takes the
+ *     corner, and the supervision badge sits at 6 (un-zoomed, pushing maximize
+ *     out to 32) or 54 (zoomed).
+ * The badge lands past whichever of those is rightmost. Pure so the arithmetic
+ * is testable without a DOM — the same reason composePaneClassName is extracted.
+ */
+export function enforcedModelBadgeOffset(opts: {
+  paneActionsVisible: boolean;
+  isZoomed: boolean;
+  supervised: boolean;
+}): number {
+  const { paneActionsVisible, isZoomed, supervised } = opts;
+  /** Rendered width of the supervision badge (10px glyph + 6px side padding). */
+  const SUPERVISION_W = 28;
+  /** Rendered width of a corner icon button plus its 6px gutter. */
+  const CORNER_BTN_W = 26;
+  if (paneActionsVisible) {
+    return PANE_ACTIONS_CLUSTER_WIDTH + 6 + (supervised ? SUPERVISION_W : 0);
+  }
+  if (!supervised) return 6 + CORNER_BTN_W;
+  // Supervised: zoom sits at 6 and supervision at 54, else supervision at 6 and
+  // maximize at 32.
+  return isZoomed ? 54 + SUPERVISION_W : 32 + CORNER_BTN_W + 4;
+}
+
 /**
  * Choose which terminal and which browser surface is SHOWN on each side of the
  * terminal+browser split (`SplitSurfaceView` hasBoth). Both sides are laid out
@@ -107,6 +165,96 @@ export function pickOverlaySurfaces<T extends { surfaceType?: string }>(
   return surfaces.filter(
     (s) => s.surfaceType === 'diff' || s.surfaceType === 'editor',
   );
+}
+
+/** The side effect the reboot-recovery pill performs on one primary-button
+ *  click: the exact string written to the PTY, plus the two follow-ups the
+ *  handler must apply (clear the hint / advance the progressive stage) and
+ *  whether the role→model rewrite actually fired (for the audit log). */
+export interface RecoveryPillPlan {
+  /** Written verbatim to the PTY (no trailing \r — the user presses Enter). */
+  text: string;
+  /** typeAndClear vs type: clear the resume hint after writing. */
+  clearHint: boolean;
+  /** Advance to stage 1 (permission-restore base typed, awaiting the resume
+   *  arg on a second click). */
+  advanceStage: boolean;
+  /** applyRoleBinding changed a launcher-prefixed variant — the caller logs it
+   *  once, at the action (not on every render). */
+  rewritten: boolean;
+}
+
+/**
+ * D2 — what the reboot-recovery pill types for one primary click, with the
+ * pane's role→model binding re-asserted on every launcher-prefixed variant.
+ *
+ * This mirrors the persistent chip's {@link buildPaneResumeCommand}: a resume
+ * command reconstructed from the agent stem + resume/permission flags would
+ * silently DROP a bound model, so `applyRoleBinding` re-injects it (its own gates
+ * handle a non-agent stem, prose, an explicit `--model`, or an agent mismatch —
+ * so the four launcher-prefixed forms can be passed through unconditionally).
+ *
+ * The two-stage assembly (stage 0 types a permission-restore base, stage 1
+ * appends the exact-session resume) puts the model on the STAGE-0 base, because
+ * the stage-2 continuation is a bare ` <resumeArg>` fragment — not launcher-
+ * prefixed — which applyRoleBinding would no-op on anyway (its stem gate). So the
+ * assembled line ends up `claude --model haiku --permission-mode plan --resume
+ * <id>`: one valid line, model included.
+ *
+ * Pure + exported so the rewrite and the two-stage assembly are unit-testable
+ * without a DOM (the repo's vitest runs node-env; see the sibling helpers).
+ * Returns null for a non-resumable launcher (the pill should not have shown).
+ */
+export function planRecoveryPillType(args: {
+  launcher: string;
+  /** The exact-session id when the cwd+agent gates passed, else undefined. */
+  sessionId: string | undefined;
+  /** The permission-restore flag(s) for this launch, or '' when none apply. */
+  permFlag: string;
+  /** Toggle-ON path: type the whole `--dangerously-skip-permissions` line at
+   *  once (no progressive stage). */
+  forceSkip: boolean;
+  /** Progressive-assembly stage: 0 = nothing typed yet, 1 = base typed. */
+  resumeStage: number;
+  /** The pane's role→model binding (re-asserted on the launch), if bound. */
+  roleBinding: RoleBinding | undefined;
+}): RecoveryPillPlan | null {
+  const { launcher, sessionId, permFlag, forceSkip, resumeStage, roleBinding } = args;
+  const grammar = resumeGrammarFor(launcher);
+  if (!grammar) return null; // not resumable — pill shouldn't have shown (defensive)
+  // Re-assert the bound model on a launcher-prefixed line. The stage-2
+  // continuation is NOT launcher-prefixed, so it is typed verbatim (the model
+  // already rode the stage-0 base) — matching input.send / buildPaneResumeCommand.
+  const rewrite = (cmd: string): { text: string; rewritten: boolean } => {
+    const r = applyRoleBinding(cmd, roleBinding);
+    return { text: r.command, rewritten: r.changed };
+  };
+  const resumeArg = sessionId ? grammar.withId(sessionId) : grammar.fallback;
+  if (forceSkip) {
+    // Toggle ON: the WHOLE line at once so both flags land together (F6).
+    const { text, rewritten } = rewrite(`${launcher}${permFlag ? ` ${permFlag}` : ''} ${resumeArg}`);
+    return { text, clearHint: true, advanceStage: false, rewritten };
+  }
+  if (!sessionId) {
+    // No binding → cwd-relative fallback (Claude `--continue`, Codex `resume --last`).
+    const { text, rewritten } = rewrite(`${launcher} ${grammar.fallback}`);
+    return { text, clearHint: true, advanceStage: false, rewritten };
+  }
+  if (resumeStage === 0 && permFlag) {
+    // Click 1: permission-restore base ONLY — but with the model already
+    // injected, so click 2's bare resume arg appends onto a line carrying --model.
+    const { text, rewritten } = rewrite(`${launcher} ${permFlag}`);
+    return { text, clearHint: false, advanceStage: true, rewritten };
+  }
+  if (resumeStage === 0) {
+    // Default mode (no permission flag) → one click types the full id-resume.
+    const { text, rewritten } = rewrite(`${launcher} ${grammar.withId(sessionId)}`);
+    return { text, clearHint: true, advanceStage: false, rewritten };
+  }
+  // Click 2: append the exact-session resume to the already-typed base. NOT
+  // launcher-prefixed, so it is never independently rewritten (the model is
+  // already on the base line typed in stage 0).
+  return { text: ` ${grammar.withId(sessionId)}`, clearHint: true, advanceStage: false, rewritten: false };
 }
 
 export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVisible = true, isZoomHidden = false }: PaneProps) {
@@ -230,6 +378,12 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
     activeSurfacePtyId ? s.supervisionByPtyId[activeSurfacePtyId] : undefined,
   );
 
+  const enforcedModelBadgeRight = enforcedModelBadgeOffset({
+    paneActionsVisible,
+    isZoomed,
+    supervised: !!supervision,
+  });
+
   // X6 ②/③ resume pill. A pane recovered-this-boot that was running an agent
   // gets a resume offer. Clickable only once the pane is interactive (first PTY
   // data — EI6) so the paste can't land before the recovered pipe is writable.
@@ -247,6 +401,17 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const resumePtyReady = useStore((s) =>
     activeSurfacePtyId ? !!s.ptyReadyByPtyId[activeSurfacePtyId] : false,
   );
+  // D2 — this pane's enforced role→model binding (if its role is bound). Threaded
+  // into the resume chip so a reconstructed resume command re-asserts the model
+  // flag (a naive resume rebuilds from the agent stem alone and would drop it).
+  const paneRoleName = useStore((s) => s.paneRole[pane.id]);
+  const paneRoleBinding = useStore((s) =>
+    paneRoleName ? s.orchestratorRoleBindings[paneRoleName] : undefined,
+  );
+  const showsEnforcedModel = showsEnforcedModelBadge({
+    binding: paneRoleBinding,
+    surfaceType: pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.surfaceType,
+  });
   // The persistent resume chip's "is this pane's agent busy?" gate — and the
   // store-wide `agentClockMs` decay-clock subscription it needs — lives in the
   // <ResumeInfoChipGate> leaf below, NOT here: Pane mounts that leaf only when a
@@ -422,10 +587,6 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         const ptyId = activeSurfacePtyId;
         const launcher = resumeHint; // slug doubles as the launcher stem ('claude'/'codex')
         const agentName = launcher.charAt(0).toUpperCase() + launcher.slice(1);
-        // Resume grammar for this agent (Claude flag form / Codex subcommand
-        // form). The pill is only offered for resumable agents, so this is
-        // present in practice; guarded below regardless.
-        const grammar = resumeGrammarFor(launcher);
         // cwd-match guard (F7): `--resume <id>` is cwd-scoped, so only offer the
         // exact-session resume when the binding's origin cwd still matches the
         // pane's LIVE cwd. The daemon checks this at recovery, but the shell can
@@ -479,38 +640,33 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
 
         const onPrimary = (e: React.MouseEvent) => {
           e.stopPropagation();
-          if (!grammar) return; // not resumable — pill shouldn't have shown (defensive)
-          const resumeArg = sessionId ? grammar.withId(sessionId) : grammar.fallback;
-          if (forceSkip) {
-            // Toggle ON (the common owner path): type the WHOLE line at once —
-            // `claude --dangerously-skip-permissions <resume>` — so both land on
-            // one line (F6) with no progressive stage. No auto-submit.
-            typeAndClear(`${launcher}${permFlag ? ` ${permFlag}` : ''} ${resumeArg}`);
-            return;
+          // Assemble the exact string to type — with the role's bound model
+          // re-asserted on the launcher-prefixed variants (mirrors the chip and
+          // the input.send path). The permission-restore (click 1) / exact-resume
+          // (click 2) staging and the D6 no-auto-submit contract are unchanged;
+          // planRecoveryPillType only injects the model where applyRoleBinding's
+          // gates allow it.
+          const plan = planRecoveryPillType({
+            launcher,
+            sessionId,
+            permFlag,
+            forceSkip,
+            resumeStage,
+            roleBinding: paneRoleBinding,
+          });
+          if (!plan) return; // not resumable — pill shouldn't have shown (defensive)
+          if (plan.rewritten) {
+            // Audit trail — a role silently changed what this pill types. Logged
+            // at the ACTION so it fires once per real rewrite, not every render.
+            console.log('[wmux:role-binding] resume command rewritten', {
+              role: paneRoleName,
+              agent: launcher,
+              after: plan.text,
+            });
           }
-          if (!sessionId) {
-            // No binding (hook absent / purged / cwd mismatch) → cwd-relative
-            // fallback (Claude `--continue`, Codex `resume --last`); no auto-submit.
-            typeAndClear(`${launcher} ${grammar.fallback}`);
-            return;
-          }
-          if (resumeStage === 0 && permFlag) {
-            // Click 1: permission-restore only (Claude). Stop + Enter = a fresh
-            // session in the restored mode; click again to also resume the exact
-            // session. Both flags MUST land on ONE line (F6) — hence no submit
-            // between clicks. Codex has no permFlag, so it never enters this stage.
-            type(`${launcher} ${permFlag}`);
-            setResumeStage(1);
-            return;
-          }
-          if (resumeStage === 0) {
-            // Default mode (no permission flag) → one click types the full
-            // id-resume; no pointless permission-only stop.
-            typeAndClear(`${launcher} ${grammar.withId(sessionId)}`);
-          } else {
-            // Click 2: append the exact-session resume to the already-typed base.
-            typeAndClear(` ${grammar.withId(sessionId)}`);
-          }
+          if (plan.clearHint) typeAndClear(plan.text);
+          else type(plan.text);
+          if (plan.advanceStage) setResumeStage(1);
         };
 
         // The two-stage progressive assembly only applies to the toggle-OFF
@@ -630,11 +786,49 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
         <ResumeInfoChipGate
           ptyId={activeSurfacePtyId}
           binding={resumeBinding}
+          roleBinding={paneRoleBinding}
+          role={paneRoleName}
           paneCwds={[
             pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.cwd,
             workspace.metadata?.cwd,
           ]}
         />
+      )}
+      {/* D2 — muted enforced-model badge on a role-bound TERMINAL pane. Amber
+          stays reserved for alive+focus (DESIGN.md), so this rides the sub
+          tones. A browser/diff/editor surface never launches an agent, so the
+          badge would be a lie there — hence the surface-type gate, and the
+          enforceability gate beside it (see showsEnforcedModel). */}
+      {showsEnforcedModel && paneRoleBinding && (
+        <span
+          data-pane-enforced-model
+          title={t('pane.enforcedLaunch', {
+            binding: [paneRoleBinding.agent, paneRoleBinding.model].filter(Boolean).join(' · '),
+          })}
+          style={{
+            position: 'absolute',
+            top: 4,
+            // The pane's top-right is a stack of absolutely-positioned controls
+            // (zoom/maximize, the supervision badge, or SurfaceTabs' own action
+            // cluster). Anchor past whatever is present — the same approach the
+            // supervision badge above uses — so this never covers a button.
+            right: enforcedModelBadgeRight,
+            zIndex: 20,
+            padding: '0 5px',
+            fontSize: 10,
+            lineHeight: '16px',
+            fontFamily: 'ui-monospace, monospace',
+            letterSpacing: '0.02em',
+            color: 'var(--text-muted)',
+            backgroundColor: 'var(--bg-surface)',
+            border: '1px solid var(--border-soft)',
+            borderRadius: 3,
+            pointerEvents: 'none',
+            userSelect: 'none',
+          }}
+        >
+          {paneRoleBinding.model}
+        </span>
       )}
       <SurfaceTabs
         surfaces={pane.surfaces}

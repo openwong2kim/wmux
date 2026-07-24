@@ -1,4 +1,5 @@
 import type { SpawnKind } from '../../shared/spawnKind';
+import { applyRoleBinding, type RoleBinding } from '../../shared/orchestratorRole';
 
 export interface PtyCreateOptions {
   shell?: string;
@@ -87,6 +88,56 @@ export function withWorkspaceProfile<T extends PtyCreateOptions>(
     next.initialCommand = profile.defaultPaneCommand;
   }
   return next;
+}
+
+/**
+ * D2 — overlay a role's enforced agent/model binding onto the command a NEW pane
+ * is created to run, when the pane's role is known at seed time (project layout /
+ * saved teams). Applied ALONGSIDE withWorkspaceProfile at the command-assembly
+ * sites so a seeded agent gets the same enforcement the orchestrator's
+ * input.send rewrite provides.
+ *
+ * Covers BOTH bootstrap shapes the funnel can pick, since a wmux.json leaf may
+ * declare a role next to either one:
+ *   - `initialCommand` — typed into the pane's shell after boot,
+ *   - `exec` — the X8 supervised unit run as the pane's root process.
+ * Leaving `exec` out would have made `role` + `restart` on the same leaf a
+ * silent no-op, which is the exact shape of dishonesty this feature is meant to
+ * avoid. Only one is ever set at a time (the funnel chooses), but both are
+ * handled rather than assumed.
+ *
+ * Pure + no-op-safe: returns the original object untouched when there is no
+ * binding or no command to rewrite, or when the command already carries an
+ * explicit `--model` (the transparent-rewrite rules live in applyRoleBinding). A
+ * brand-new empty pane whose role is assigned AFTER creation is NOT covered here
+ * — its enforcement guarantee is the Stage-2 input.send rewrite.
+ */
+export function withRoleBinding<T extends PtyCreateOptions>(
+  options: T,
+  binding: RoleBinding | undefined,
+  role?: string,
+): T {
+  if (!binding) return options;
+  const next = { ...options };
+  let touched = false;
+  for (const field of ['initialCommand', 'exec'] as const) {
+    const before = options[field];
+    if (before === undefined) continue;
+    // `exec` is spawned as the pane's root process, so it cannot be prose typed
+    // at a live agent — the shape a supervised agent leaf uses (`claude /loop`)
+    // is a launch, and the submitted-line prose gate would wrongly reject it.
+    const { command, changed } = applyRoleBinding(before, binding, {
+      spawnedProcess: field === 'exec',
+    });
+    if (!changed) continue;
+    next[field] = command;
+    touched = true;
+    // Audit trail: this path alters what a pane will RUN with no request/response
+    // to carry a note (unlike input.send, which reports `enforcedModel` back to
+    // the caller), so the rewrite would otherwise be invisible.
+    console.log('[wmux:role-binding] seed command rewritten', { role, field, before, after: command });
+  }
+  return touched ? next : options;
 }
 
 /**

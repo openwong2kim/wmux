@@ -7,6 +7,8 @@ import { isMac } from '../../shared/platform';
 import { formatMacosError, MACOS_ERRORS } from '../../shared/errors/macos';
 import { MCP_TARGETS } from '../../shared/mcpTargets';
 import { isMcpBrokerEnabled } from './BrokerSupervisor';
+import { canConnectBrokerPipe } from './brokerProbe';
+import { stabilizeMcpBundle } from './stabilizeBundle';
 import { CODEX_NOTIFY_BASENAME } from '../../shared/configIO';
 import {
   readAllTargetStatuses,
@@ -121,10 +123,34 @@ export class McpRegistrar {
   }
 
   /**
+   * Resolve whether registration should point agents at the thin shim (broker
+   * topology) or the full bundle (legacy single-child). An explicit
+   * `opts.useShim` wins; otherwise, when the broker flag is on, probe the pipe
+   * so EVERY call site (boot, renderer re-register IPC, first-run onboarding) is
+   * self-correcting — a caller that omits opts never has to know the broker's
+   * live health (RISK 6). Flag off short-circuits with no probe and no logs so
+   * the pre-broker world is byte-identical.
+   */
+  private async resolveUseShim(opts?: { useShim?: boolean }): Promise<boolean> {
+    if (opts && typeof opts.useShim === 'boolean') return opts.useShim;
+    if (!isMcpBrokerEnabled()) return false;
+    return canConnectBrokerPipe(300);
+  }
+
+  /**
    * Write auth token to file and register the MCP servers in every installed
    * target. Must be called after PipeServer.start().
+   *
+   * `opts.useShim` forces the topology (boot passes the readiness-gate result);
+   * omitting it lets register() probe the broker itself so re-register call
+   * sites stay self-correcting.
    */
-  register(authToken: string): void {
+  async register(authToken: string, opts?: { useShim?: boolean }): Promise<void> {
+    const useShim = await this.resolveUseShim(opts);
+    // Only the broker topology surfaces a path-choice log; flag-off stays silent.
+    if (isMcpBrokerEnabled()) {
+      console.log(useShim ? '[mcp] broker reachable → shim' : '[mcp] broker unreachable → full bundle');
+    }
     try {
       // Write auth token to file so the MCP server can read it. Skip when the
       // on-disk value already matches (S-A cold-start): a rewrite costs a 1-2s
@@ -140,7 +166,7 @@ export class McpRegistrar {
         console.log(`[McpRegistrar] Auth token written to ${this.authTokenPath}`);
       }
 
-      const mcpScript = this.getMcpScriptPath();
+      const mcpScript = this.getMcpScriptPath(useShim);
       if (!mcpScript) {
         console.warn('[McpRegistrar] Could not determine MCP script path — skipping registration.');
         return;
@@ -200,29 +226,39 @@ export class McpRegistrar {
     this.ownedKeys.clear();
   }
 
-  private getMcpScriptPath(): string | null {
-    // Broker topology (WMUX_MCP_BROKER=1): agents spawn the thin shim
-    // instead of the full bundle; the resident broker (BrokerSupervisor)
-    // hosts the actual server. Registered server name stays "wmux" — only
-    // the script path changes, which hosts tolerate without a restart
-    // (design doc §81: a NEW name would trip host schema caches).
-    // Fail-open: if the shim is missing (stale build), fall through to the
-    // full bundle so agents keep working in the legacy topology.
-    if (isMcpBrokerEnabled()) {
-      const shim = app.isPackaged
-        ? path.join(process.resourcesPath, 'mcp-bundle', 'shim.js')
-        : path.join(app.getAppPath(), 'dist', 'mcp', 'mcp', 'shim.js');
-      if (fs.existsSync(shim)) return shim;
+  private getMcpScriptPath(useShim: boolean): string | null {
+    // Broker topology: agents spawn the thin shim instead of the full bundle;
+    // the resident broker (BrokerSupervisor) hosts the actual server. Registered
+    // server name stays "wmux" — only the script path changes, which hosts
+    // tolerate without a restart (design doc §81: a NEW name would trip host
+    // schema caches). `useShim` is decided by the caller (readiness gate or an
+    // internal probe) so registration falls back to the full bundle whenever the
+    // broker isn't reachable. Fail-open: if the shim file is missing (stale
+    // build), fall through to the full bundle so agents keep working.
+    if (useShim) {
+      if (app.isPackaged) {
+        // Packaged shim lives in the versioned resourcesPath — stabilize it to
+        // ~/.wmux/mcp/ so the registered command survives app-* swaps.
+        const shim = path.join(process.resourcesPath, 'mcp-bundle', 'shim.js');
+        if (fs.existsSync(shim)) return this.stabilizePackaged(shim);
+      } else {
+        const shim = path.join(app.getAppPath(), 'dist', 'mcp', 'mcp', 'shim.js');
+        if (fs.existsSync(shim)) return shim;
+      }
       console.error('[McpRegistrar] WMUX_MCP_BROKER=1 but shim.js missing — falling back to full bundle');
     }
 
     if (app.isPackaged) {
-      // Production: bundled single-file in resources/mcp-bundle/
+      // Production: bundled single-file in resources/mcp-bundle/. Register a
+      // STABLE copy under ~/.wmux/mcp/ instead of this versioned resourcesPath
+      // so the command wmux writes into ~/.claude.json never dangles when the
+      // app-{version} dir (or a dogfood worktree/out/) is later removed — see
+      // stabilizeMcpBundle. Fail-open returns the versioned path.
       const bundlePath = path.join(process.resourcesPath, 'mcp-bundle', 'index.js');
-      if (fs.existsSync(bundlePath)) return bundlePath;
+      if (fs.existsSync(bundlePath)) return this.stabilizePackaged(bundlePath);
       // Fallback: old layout (resources/mcp/mcp/index.js)
       const legacyPath = path.join(process.resourcesPath, 'mcp', 'mcp', 'index.js');
-      if (fs.existsSync(legacyPath)) return legacyPath;
+      if (fs.existsSync(legacyPath)) return this.stabilizePackaged(legacyPath);
       return null;
     }
 
@@ -246,6 +282,32 @@ export class McpRegistrar {
     }
 
     return null;
+  }
+
+  /**
+   * Relocate a packaged bundle entry into the stable `~/.wmux/mcp/` directory
+   * and return the path to register. Keeps the registered MCP command out of the
+   * versioned `resourcesPath`, so it never dangles across app updates / worktree
+   * cleanup — the exact failure captured in the RCA (a registered args path
+   * pointing at an already-deleted dogfood `out/…/mcp-bundle/index.js`). Refreshes
+   * on boot (version-marker gated), mirroring installAndRegisterCodexNotify. On
+   * any copy failure it fails open to the versioned source so MCP still works
+   * this session (see stabilizeMcpBundle).
+   */
+  private stabilizePackaged(source: string): string {
+    const stableDir = path.join(this.home, '.wmux', 'mcp');
+    const result = stabilizeMcpBundle(source, stableDir, app.getVersion());
+    if (result.stabilized) {
+      if (result.synced) {
+        console.log(`[McpRegistrar] MCP bundle synced to stable path → ${result.scriptPath}`);
+      }
+    } else {
+      console.warn(
+        `[McpRegistrar] MCP bundle stable-copy unavailable (${result.reason}); ` +
+          `registering versioned path ${result.scriptPath}`,
+      );
+    }
+    return result.scriptPath;
   }
 
   /**

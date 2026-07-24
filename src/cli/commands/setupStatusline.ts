@@ -258,6 +258,69 @@ export function installStatusline(paths: SetupStatuslinePaths): StatuslineOutcom
   return { ...base, ok: true, scriptCopied: true, targets };
 }
 
+/** What a boot-time script refresh did — see refreshStatuslineScript. */
+export type RefreshOutcome =
+  | 'refreshed'     // installed script was stale OR missing; the bundled one (re)written
+  | 'up-to-date'    // byte-identical, nothing written
+  | 'not-installed' // no wmux-owned statusLine — the user never opted in
+  | 'no-source'     // bundled script not locatable (broken install / odd layout)
+  | 'failed';       // read/copy error — the old script keeps working, just stale
+
+/**
+ * Bring `~/.wmux/hooks/wmux-statusline.mjs` up to the bundled version.
+ *
+ * The script is copied out to a stable path so it survives Squirrel's
+ * `app-x.y.z` swap — which also means an app update alone never refreshed it:
+ * the user had to re-run `wmux setup-statusline` by hand. A stale script fails
+ * silently by construction — no error, just a line that quietly stopped
+ * matching what this version renders or what Claude Code now sends on stdin.
+ *
+ * Safe to run at boot because it does NOT enroll anyone: it touches nothing
+ * unless a wmux-owned `statusLine` is already installed, and it never writes
+ * settings.json. That keeps the "never auto-run at boot" constraint (owner
+ * decision 2026-07-17) intact — that rule is about opting a user IN, not about
+ * keeping a file they already opted into correct.
+ *
+ * Ownership is checked BEFORE the file is read, so a `statusLine` that still
+ * points at a script which has since been deleted (manual cleanup, a partial
+ * reinstall) is REPAIRED, not written off as uninstalled — otherwise Claude
+ * Code would keep invoking a nonexistent script every tick and this boot
+ * reconcile, the very thing meant to heal it, would skip it forever.
+ *
+ * The write is tmp+rename because the statusline runs at input-box frequency;
+ * a plain copy could hand a half-written script to a tick landing mid-copy. The
+ * tmp name carries the pid so two instances racing at boot (a Squirrel swap can
+ * briefly overlap old and new) can't interleave writes into one temp file.
+ */
+export function refreshStatuslineScript(paths: SetupStatuslinePaths): RefreshOutcome {
+  if (!paths.scriptSource) return 'no-source';
+  try {
+    const owned = paths.targets.some((t) => {
+      const load = loadSettings(t.settingsPath);
+      return !load.corrupted && classifyStatusLine(load.settings) === 'wmux';
+    });
+    if (!owned) return 'not-installed';
+    const source = fs.readFileSync(paths.scriptSource);
+    // A missing destination is a repair case, not "up to date" — read it
+    // defensively (ENOENT → force a write) rather than gating on existsSync.
+    let current: Buffer | null = null;
+    try {
+      current = fs.readFileSync(paths.scriptDest);
+    } catch {
+      current = null;
+    }
+    if (current && source.equals(current)) return 'up-to-date';
+    const destDir = path.dirname(paths.scriptDest);
+    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+    const tmp = paths.scriptDest + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, source);
+    fs.renameSync(tmp, paths.scriptDest);
+    return 'refreshed';
+  } catch {
+    return 'failed';
+  }
+}
+
 export function removeStatusline(paths: SetupStatuslinePaths): StatuslineOutcome {
   const targets: TargetReport[] = [];
   for (const t of paths.targets) {

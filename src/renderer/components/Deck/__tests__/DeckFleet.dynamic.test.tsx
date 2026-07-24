@@ -102,6 +102,54 @@ describe('DeckFleet role dropdown', () => {
     expect(select!.parentElement).toBe(row);
   });
 
+  // D2 — a bound role shows a muted `agent · model` chip; an unbound role
+  // shows none.
+  it('renders the enforced agent · model chip only when the role is bound', () => {
+    seedStore({ p1: 'Reviewer' });
+    act(() => useStore.setState({ orchestratorRoleBindings: { Reviewer: { agent: 'codex', model: 'o3' } } }));
+    mount();
+    const row = q<HTMLDivElement>('[data-deck-fleet-row]');
+    expect(row.textContent).toContain('codex · o3');
+  });
+
+  it('shows no binding chip for an unbound role', () => {
+    seedStore({ p1: 'Builder' });
+    act(() => useStore.setState({ orchestratorRoleBindings: {} }));
+    mount();
+    const row = q<HTMLDivElement>('[data-deck-fleet-row]');
+    expect(row.textContent).not.toContain('·');
+  });
+
+  // P2-B — the chip read the same for a binding that enforces nothing, so the
+  // roster asserted a pinned model the launch path never applies. It must agree
+  // with the pane badge: both gate on bindingEnforcesModel.
+  it.each([
+    ['a model with no agent', { model: 'haiku' }],
+    ['an agent with no verified --model grammar', { agent: 'gemini', model: 'flash' }],
+    ['an args-only binding (no model to show)', { agent: 'claude', args: '--verbose' }],
+    ['an inert agent-only binding', { agent: 'claude' }],
+  ])('shows no chip for %s', (_label, binding) => {
+    seedStore({ p1: 'Reviewer' });
+    act(() => useStore.setState({ orchestratorRoleBindings: { Reviewer: binding } }));
+    mount();
+    const row = q<HTMLDivElement>('[data-deck-fleet-row]');
+    for (const shown of ['haiku', 'flash', 'gemini', '--verbose', '·']) {
+      expect(row.textContent).not.toContain(shown);
+    }
+  });
+
+  // DESIGN.md: rows are 26–30px and the type scale starts at 10px. A bound row
+  // used to grow (min-h + a stacked 9px sub-label), breaking both.
+  it('keeps the fixed row height and the 10px floor when the role is bound', () => {
+    seedStore({ p1: 'Reviewer' });
+    act(() => useStore.setState({ orchestratorRoleBindings: { Reviewer: { agent: 'codex', model: 'o3' } } }));
+    mount();
+    const row = q<HTMLDivElement>('[data-deck-fleet-row]');
+    expect(row.className).toContain('h-[26px]');
+    expect(row.className).not.toContain('min-h-[26px]');
+    expect(row.innerHTML).not.toContain('text-[9px]');
+  });
+
   it('jump button still jumps; the select does NOT trigger a jump', () => {
     mount();
     const row = q<HTMLDivElement>('[data-deck-fleet-row]');

@@ -1,5 +1,86 @@
-import { describe, expect, it } from 'vitest';
-import { resolveRespawnCwd, resolveStartupCwd, withDefaultShell, withWorkspaceProfile } from '../ptyCreateOptions';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { resolveRespawnCwd, resolveStartupCwd, withDefaultShell, withWorkspaceProfile, withRoleBinding } from '../ptyCreateOptions';
+
+describe('withRoleBinding (D2)', () => {
+  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
+  beforeEach(() => logSpy.mockClear());
+
+  it('enforces the bound model on a bound pane\'s initialCommand', () => {
+    const out = withRoleBinding(
+      { workspaceId: 'ws', initialCommand: 'claude' },
+      { agent: 'claude', model: 'haiku' },
+    );
+    expect(out.initialCommand).toBe('claude --model haiku');
+  });
+
+  it('is a no-op when there is no binding', () => {
+    const options = { workspaceId: 'ws', initialCommand: 'claude' };
+    expect(withRoleBinding(options, undefined)).toBe(options);
+  });
+
+  // P2-C — a wmux.json leaf can declare a role next to `restart`, which makes
+  // the funnel pick the exec branch. Skipping exec would have made that exact
+  // combination a silent no-op.
+  it("enforces the bound model on a supervised leaf's exec unit", () => {
+    const out = withRoleBinding(
+      { workspaceId: 'ws', exec: 'claude /loop' },
+      { agent: 'claude', model: 'haiku' },
+    );
+    expect(out.exec).toBe('claude --model haiku /loop');
+  });
+
+  it('leaves a non-agent exec unit untouched', () => {
+    const options = { workspaceId: 'ws', exec: 'npm run dev' };
+    expect(withRoleBinding(options, { agent: 'claude', model: 'haiku' })).toBe(options);
+  });
+
+  it('is a no-op when there is no command of either shape', () => {
+    const options = { workspaceId: 'ws' };
+    expect(withRoleBinding(options, { agent: 'claude', model: 'haiku' })).toBe(options);
+  });
+
+  it('does not override an explicit --model already in the seed command', () => {
+    const options = { workspaceId: 'ws', initialCommand: 'claude --model opus' };
+    expect(withRoleBinding(options, { agent: 'claude', model: 'haiku' })).toBe(options);
+  });
+
+  // P1-1 — a seeded project command is usually NOT an agent launch.
+  it('leaves a non-agent seed command untouched even with args bound', () => {
+    const options = { workspaceId: 'ws', initialCommand: 'npm run dev' };
+    expect(withRoleBinding(options, { args: '--dangerously-skip-permissions' })).toBe(options);
+  });
+
+  // P2-7 — this path alters what runs with no response to carry a note.
+  it('logs an audit line with the role and before/after when it rewrites', () => {
+    withRoleBinding(
+      { workspaceId: 'ws', initialCommand: 'claude' },
+      { agent: 'claude', model: 'haiku' },
+      'Builder',
+    );
+    expect(logSpy).toHaveBeenCalledWith(
+      '[wmux:role-binding] seed command rewritten',
+      expect.objectContaining({
+        role: 'Builder',
+        field: 'initialCommand',
+        before: 'claude',
+        after: 'claude --model haiku',
+      }),
+    );
+  });
+
+  it('names the exec field in the audit line so the two paths are distinguishable', () => {
+    withRoleBinding({ workspaceId: 'ws', exec: 'claude' }, { agent: 'claude', model: 'haiku' }, 'Tester');
+    expect(logSpy).toHaveBeenCalledWith(
+      '[wmux:role-binding] seed command rewritten',
+      expect.objectContaining({ role: 'Tester', field: 'exec' }),
+    );
+  });
+
+  it('logs nothing when the seed command is unchanged', () => {
+    withRoleBinding({ workspaceId: 'ws', initialCommand: 'npm run dev' }, { args: '--foo' }, 'Builder');
+    expect(logSpy).not.toHaveBeenCalled();
+  });
+});
 
 describe('withDefaultShell', () => {
   it('uses the stored detected shell path when no shell is specified', () => {

@@ -20,7 +20,7 @@ describe('buildPaneResumeCommand', () => {
   // renders; the explicit `false` cases below prove the opt-out path.
   it('skip-permissions ON (default) → exact resume forces --dangerously-skip-permissions', () => {
     const out = buildPaneResumeCommand(claude(), ['/Users/me/proj'], true);
-    expect(out).toEqual({
+    expect(out).toMatchObject({
       command: 'claude --dangerously-skip-permissions --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
       exact: true,
     });
@@ -28,12 +28,12 @@ describe('buildPaneResumeCommand', () => {
 
   it('skip-permissions ON also rides the cwd-relative fallback (a launch pref, not conversation-scoped)', () => {
     const out = buildPaneResumeCommand(claude(), ['/Users/me/OTHER'], true);
-    expect(out).toEqual({ command: 'claude --dangerously-skip-permissions --continue', exact: false });
+    expect(out).toMatchObject({ command: 'claude --dangerously-skip-permissions --continue', exact: false });
   });
 
   it('skip-permissions OFF + default mode → plain exact resume, no permission flag', () => {
     const out = buildPaneResumeCommand(claude(), ['/Users/me/proj'], false);
-    expect(out).toEqual({
+    expect(out).toMatchObject({
       command: 'claude --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
       exact: true,
     });
@@ -41,7 +41,7 @@ describe('buildPaneResumeCommand', () => {
 
   it('skip-permissions OFF restores the captured permission mode on an EXACT resume', () => {
     const out = buildPaneResumeCommand(claude({ permissionMode: 'acceptEdits' }), ['/Users/me/proj'], false);
-    expect(out).toEqual({
+    expect(out).toMatchObject({
       command: 'claude --permission-mode acceptEdits --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
       exact: true,
     });
@@ -53,12 +53,12 @@ describe('buildPaneResumeCommand', () => {
       ['/Users/me/OTHER'],
       false,
     );
-    expect(out).toEqual({ command: 'claude --continue', exact: false });
+    expect(out).toMatchObject({ command: 'claude --continue', exact: false });
   });
 
   it('missing live cwd → fallback (cannot confirm the cwd-scoped resume)', () => {
     const out = buildPaneResumeCommand(claude(), [undefined], false);
-    expect(out).toEqual({ command: 'claude --continue', exact: false });
+    expect(out).toMatchObject({ command: 'claude --continue', exact: false });
   });
 
   it('codex takes no permission flag even with skip-permissions ON', () => {
@@ -67,7 +67,7 @@ describe('buildPaneResumeCommand', () => {
       ['/Users/me/proj'],
       true,
     );
-    expect(out).toEqual({ command: 'codex resume sess-77', exact: true });
+    expect(out).toMatchObject({ command: 'codex resume sess-77', exact: true });
   });
 
   it('trailing-slash / Windows drive-letter case differences still count as a match', () => {
@@ -87,7 +87,7 @@ describe('buildPaneResumeCommand', () => {
       ['C:\\Users\\me', 'D:\\wmux'],
       true,
     );
-    expect(out).toEqual({
+    expect(out).toMatchObject({
       command: 'claude --dangerously-skip-permissions --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
       exact: true,
     });
@@ -95,16 +95,57 @@ describe('buildPaneResumeCommand', () => {
 
   it('no candidate matches → fallback', () => {
     const out = buildPaneResumeCommand(claude(), ['C:\\Users\\me', 'D:\\other'], false);
-    expect(out).toEqual({ command: 'claude --continue', exact: false });
+    expect(out).toMatchObject({ command: 'claude --continue', exact: false });
   });
 
   it('empty candidate list → fallback', () => {
     const out = buildPaneResumeCommand(claude(), [], false);
-    expect(out).toEqual({ command: 'claude --continue', exact: false });
+    expect(out).toMatchObject({ command: 'claude --continue', exact: false });
   });
 
   it('non-resumable agent → null (no affordance)', () => {
     expect(buildPaneResumeCommand(claude({ agent: 'gemini' }), ['/Users/me/proj'], true)).toBeNull();
+  });
+
+  // D2 — a role→model binding re-asserts the enforced model on resume, so a
+  // rebuilt resume command doesn't silently drop the fleet guarantee.
+  it('re-asserts the bound model on an exact resume', () => {
+    const out = buildPaneResumeCommand(claude(), ['/Users/me/proj'], false, { agent: 'claude', model: 'haiku' });
+    expect(out?.command).toBe('claude --model haiku --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a');
+  });
+
+  it('re-asserts the bound model on the cwd-relative fallback too', () => {
+    const out = buildPaneResumeCommand(claude(), ['/Users/me/OTHER'], false, { agent: 'claude', model: 'haiku' });
+    expect(out?.command).toBe('claude --model haiku --continue');
+  });
+
+  it('reports roleRewritten so the caller can log the change once', () => {
+    const rewritten = buildPaneResumeCommand(claude(), ['/Users/me/proj'], false, {
+      agent: 'claude',
+      model: 'haiku',
+    });
+    expect(rewritten?.roleRewritten).toBe(true);
+    const untouched = buildPaneResumeCommand(claude(), ['/Users/me/proj'], false);
+    expect(untouched?.roleRewritten).toBe(false);
+  });
+
+  it('does not apply a binding that names a different agent', () => {
+    const out = buildPaneResumeCommand(claude(), ['/Users/me/proj'], false, {
+      agent: 'codex',
+      model: 'gpt-5.5',
+    });
+    expect(out?.command).toBe('claude --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a');
+    expect(out?.roleRewritten).toBe(false);
+  });
+
+  it('keeps the skip-permissions flag when re-asserting the model', () => {
+    const out = buildPaneResumeCommand(claude(), ['/Users/me/proj'], true, {
+      agent: 'claude',
+      model: 'haiku',
+    });
+    expect(out?.command).toBe(
+      'claude --model haiku --dangerously-skip-permissions --resume a1b2c3d4-0000-0000-0000-9f8e7d6c5b4a',
+    );
   });
 });
 

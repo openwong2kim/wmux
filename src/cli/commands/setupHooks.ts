@@ -426,6 +426,80 @@ export function installHooks(paths: SetupHooksPaths): InstallOutcome {
   };
 }
 
+// ----- Boot-time script refresh -------------------------------------------
+
+/** What a boot-time bridge refresh did — mirrors setupStatusline's RefreshOutcome. */
+export type BridgeRefreshOutcome =
+  | 'refreshed'     // installed bridge was stale OR missing; the bundled one (re)written
+  | 'up-to-date'    // byte-identical, nothing written
+  | 'not-installed' // no wmux hooks reference the stable bridge — nothing to refresh
+  | 'no-source'     // bundled bridge not locatable (broken install / odd layout)
+  | 'failed';       // read/copy error — the old bridge keeps working, just stale
+
+/** True when settings.json has at least one wmux-owned hook group referencing
+ *  the stable bridge — i.e. the plugin-LESS install this refresh owns. */
+function settingsReferenceBridge(settings: Record<string, unknown>): boolean {
+  const hooks = settings.hooks;
+  if (!hooks || typeof hooks !== 'object' || Array.isArray(hooks)) return false;
+  return Object.values(hooks as Record<string, unknown>).some(
+    (groups) => Array.isArray(groups) && groups.some((g) => isWmuxGroup(g)),
+  );
+}
+
+/**
+ * Bring `~/.wmux/hooks/wmux-bridge.mjs` up to the bundled version at boot.
+ *
+ * Same stale-by-construction problem as the statusline script (see
+ * setupStatusline.refreshStatuslineScript): the bridge is copied to a stable
+ * path so it survives Squirrel's `app-x.y.z` swap, which is exactly why an app
+ * update never refreshed it — the user had to re-run `wmux setup-hooks` by hand,
+ * and a stale bridge silently keeps its old behavior (a real case: the log
+ * rotation + activity-stamp throttle from the "30+ sessions" scaling fix never
+ * reached an already-installed bridge, so its bridge.log grew without bound).
+ *
+ * Scope is deliberately narrow — this owns ONLY the plugin-LESS copy under
+ * `~/.wmux/hooks/`, and only when settings.json actually references it. It does
+ * NOT touch the marketplace plugin's own bridge under
+ * `~/.claude/plugins/cache/…` — that copy is versioned and updated by Claude
+ * Code's plugin system, not by wmux. And like the statusline refresh it never
+ * writes settings.json, so it cannot enroll a user or resurrect a hook they
+ * removed: no wmux hook groups → 'not-installed', nothing happens.
+ *
+ * The settings reference is checked BEFORE the file is read, so a hook still
+ * pointing at a bridge that has since been deleted is REPAIRED rather than
+ * written off as uninstalled — otherwise every configured hook would keep
+ * targeting a nonexistent file and this reconcile would never fix it.
+ *
+ * tmp+rename because the bridge is spawned on every Stop/SubagentStop/etc.; a
+ * plain copy could hand a half-written script to a hook firing mid-copy. The
+ * tmp name carries the pid so two instances racing at boot can't interleave.
+ */
+export function refreshHookBridge(paths: SetupHooksPaths): BridgeRefreshOutcome {
+  if (!paths.bridgeSource) return 'no-source';
+  try {
+    const load = loadSettings(paths.settingsPath);
+    if (load.corrupted || !settingsReferenceBridge(load.settings)) return 'not-installed';
+    const source = fs.readFileSync(paths.bridgeSource);
+    // A missing destination is a repair case, not "up to date" — read it
+    // defensively (ENOENT → force a write) rather than gating on existsSync.
+    let current: Buffer | null = null;
+    try {
+      current = fs.readFileSync(paths.bridgeDest);
+    } catch {
+      current = null;
+    }
+    if (current && source.equals(current)) return 'up-to-date';
+    const destDir = path.dirname(paths.bridgeDest);
+    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+    const tmp = paths.bridgeDest + '.' + process.pid + '.tmp';
+    fs.writeFileSync(tmp, source);
+    fs.renameSync(tmp, paths.bridgeDest);
+    return 'refreshed';
+  } catch {
+    return 'failed';
+  }
+}
+
 // ----- Remove -------------------------------------------------------------
 
 export interface RemoveOutcome {

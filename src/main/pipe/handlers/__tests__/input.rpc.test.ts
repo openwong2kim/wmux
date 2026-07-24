@@ -4,7 +4,9 @@ import path from 'node:path';
 import type { BrowserWindow } from 'electron';
 import { RpcRouter } from '../../RpcRouter';
 import { registerInputRpc, decideTerminalOmittedTarget } from '../input.rpc';
+import type { RoleBindingResolver } from '../input.rpc';
 import type { PTYManager } from '../../../pty/PTYManager';
+import type { RoleBinding } from '../../../../shared/orchestratorRole';
 
 // Mock the renderer bridge so we can drive input.findOwnerWorkspace (the
 // ownership oracle assertWorkspaceOwnsPty consults) and input.readScreen (the
@@ -330,5 +332,178 @@ describe('input.send — submit sends text and Enter as two separate writes', ()
       params: { text: 'no submit', ptyId: 'pty-a', workspaceId: 'ws-self' },
     });
     expect(writeMock.mock.calls).toEqual([['pty-a', 'no submit']]);
+  });
+});
+
+// D2 — role→model enforcement at the input.send chokepoint. A submit of a bare
+// bound-agent launcher is transparently rewritten to carry the role's model;
+// an explicit --model, an unbound pane, a non-submit, a multi-line paste, and a
+// resolver miss all leave the text untouched (fail-open).
+describe('input.send — role→model enforcement (D2)', () => {
+  beforeEach(() => vi.clearAllMocks());
+
+  function setupWithResolver(
+    resolver: RoleBindingResolver,
+  ): { router: RpcRouter; writeMock: ReturnType<typeof vi.fn> } {
+    const writeMock = vi.fn();
+    const pty = { get: vi.fn(() => ({ id: 'x' })), write: writeMock } as unknown as PTYManager;
+    const router = new RpcRouter();
+    registerInputRpc(router, pty, () => fakeWindow, undefined, resolver);
+    sendToRendererMock.mockImplementation((_w: unknown, method: string) => {
+      if (method === 'input.findOwnerWorkspace') return Promise.resolve({ workspaceId: 'ws-self' });
+      return Promise.resolve(null);
+    });
+    return { router, writeMock };
+  }
+
+  const bind = (binding: RoleBinding | undefined): RoleBindingResolver => () => Promise.resolve(binding);
+
+  it('rewrites a bare bound launcher on submit — the written text carries --model', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
+    const res = await router.dispatch({
+      id: '1',
+      method: 'input.send',
+      params: { text: 'claude', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(res.ok).toBe(true);
+    const payload = res.ok ? (res.result as { enforcedModel?: string }) : {};
+    expect(payload.enforcedModel).toBe('haiku');
+    expect(writeMock.mock.calls).toEqual([
+      ['pty-a', 'claude --model haiku'],
+      ['pty-a', '\r'],
+    ]);
+  });
+
+  it('leaves an explicit --model untouched', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
+    await router.dispatch({
+      id: '2',
+      method: 'input.send',
+      params: { text: 'claude --model opus', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude --model opus']);
+  });
+
+  it('leaves an unbound pane untouched (resolver returns undefined)', async () => {
+    const { router, writeMock } = setupWithResolver(bind(undefined));
+    await router.dispatch({
+      id: '3',
+      method: 'input.send',
+      params: { text: 'claude', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude']);
+  });
+
+  it('does not rewrite when submit is not set', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
+    await router.dispatch({
+      id: '4',
+      method: 'input.send',
+      params: { text: 'claude', ptyId: 'pty-a', workspaceId: 'ws-self' },
+    });
+    expect(writeMock.mock.calls).toEqual([['pty-a', 'claude']]);
+  });
+
+  it('does not rewrite multi-line text', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
+    await router.dispatch({
+      id: '5',
+      method: 'input.send',
+      params: { text: 'claude\nsecond line', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude\nsecond line']);
+  });
+
+  it('fails open when the resolver throws — the send still goes through', async () => {
+    const throwing: RoleBindingResolver = () => Promise.reject(new Error('renderer race'));
+    const { router, writeMock } = setupWithResolver(throwing);
+    const res = await router.dispatch({
+      id: '6',
+      method: 'input.send',
+      params: { text: 'claude', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(res.ok).toBe(true);
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude']);
+  });
+
+  it('surfaces an advisory note for a bound agent with no model-flag grammar', async () => {
+    const { router } = setupWithResolver(bind({ agent: 'gemini', model: 'flash' }));
+    const res = await router.dispatch({
+      id: '7',
+      method: 'input.send',
+      params: { text: 'gemini', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    const note = res.ok ? (res.result as { note?: string }).note : undefined;
+    expect(note).toMatch(/no known --model flag/);
+  });
+
+  // P2-2 — \r is a line terminator too, and a raw write is bytes, not a command.
+  it('does not rewrite text containing a carriage return', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
+    await router.dispatch({
+      id: '8',
+      method: 'input.send',
+      params: { text: 'claude\rsecond', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude\rsecond']);
+  });
+
+  it('does not rewrite a raw:true write', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
+    await router.dispatch({
+      id: '9',
+      method: 'input.send',
+      params: { text: 'claude', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true, raw: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude']);
+  });
+
+  // P2-5 — an args-only rewrite must not advertise a model that isn't running.
+  it('reports enforcedModel only when the model flag was actually injected', async () => {
+    const { router, writeMock } = setupWithResolver(
+      bind({ agent: 'claude', model: 'haiku', args: '--foo' }),
+    );
+    const res = await router.dispatch({
+      id: '10',
+      method: 'input.send',
+      params: {
+        text: 'claude --model opus',
+        ptyId: 'pty-a',
+        workspaceId: 'ws-self',
+        submit: true,
+      },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude --model opus --foo']);
+    const payload = res.ok ? (res.result as { enforcedModel?: string }) : {};
+    expect(payload.enforcedModel).toBeUndefined();
+  });
+
+  // P1-1 — the handler runs on EVERY submitted line in a bound pane.
+  it('leaves a shell command in a bound pane byte-identical', async () => {
+    const { router, writeMock } = setupWithResolver(
+      bind({ agent: 'claude', model: 'haiku', args: '--dangerously-skip-permissions' }),
+    );
+    await router.dispatch({
+      id: '11',
+      method: 'input.send',
+      params: { text: 'git commit -m "wip"', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'git commit -m "wip"']);
+  });
+
+  // P2-1 — terminal_send is also how the orchestrator prompts a RUNNING agent.
+  it('leaves a prose instruction starting with the launcher word alone', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
+    await router.dispatch({
+      id: '12',
+      method: 'input.send',
+      params: {
+        text: 'claude code is failing on windows',
+        ptyId: 'pty-a',
+        workspaceId: 'ws-self',
+        submit: true,
+      },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude code is failing on windows']);
   });
 });

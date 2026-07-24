@@ -3,9 +3,74 @@ import type { RpcRouter } from '../RpcRouter';
 import type { DaemonClient } from '../../DaemonClient';
 import { sendToRenderer } from './_bridge';
 import type { PaneMetadata } from '../../../shared/types';
+import type { RpcContext } from '../../../shared/rpc';
+import { ORCH_ROLE_KEY } from '../../../shared/orchestratorRole';
 import { metadataStore, type MergeMode, type MetadataStore } from '../../metadata/MetadataStore';
 
 type GetWindow = () => BrowserWindow | null;
+
+/**
+ * D2 SECURITY — `custom['orchestrator.role']` is OPERATOR-ONLY on this wire.
+ *
+ * The role is no longer just a routing hint the orchestrator may ignore: it
+ * selects which enforced agent/model/args binding applies to a pane
+ * (shared/orchestratorRole.applyRoleBinding). Leaving it writable by any
+ * `pane.setMetadata` caller would hand policy selection to the very agents the
+ * policy governs — a prompt-injected worker could rename its own role to an
+ * unbound string so the lookup misses and it gets the expensive default model,
+ * point the operator's binding at a pane of its choosing, or change a sibling
+ * pane's role so that pane launches differently. A sentence in the commander
+ * system prompt ("Never set or change a pane's role yourself") is a request to
+ * an LLM, not a control.
+ *
+ * `ctx.firstParty` is the existing trust distinction for exactly this: it is set
+ * only by trusted in-process dispatch (the renderer IPC bridge, the plugin host)
+ * and is a dispatch() argument, never a request field, so the external wire
+ * cannot forge it — see the a2a.channel / events.poll precedents.
+ *
+ * The operator's own path is UNAFFECTED: the Fleet dropdown writes through the
+ * dedicated `metadata:set-role` ipcMain channel (metadata.handler.ts), which
+ * never touches this router.
+ *
+ * STRIP, not throw — deliberately. `pane.setMetadata` is a multi-field write and
+ * read-modify-write is the natural client shape (read the metadata, edit one
+ * field, send the map back), so a throw would punish an agent for merely echoing
+ * a role it never intended to change, taking its legitimate `label`/`status`
+ * write down with it. Instead the key is dropped, the rest of the patch applies,
+ * and the denial is made OBSERVABLE two ways: the reply carries
+ * `rejectedKeys: ['orchestrator.role']` plus a `note`, and main logs a warning.
+ * This mirrors the deprecated-`role`-field drop already in this handler.
+ */
+function guardRoleKey(
+  patch: Partial<PaneMetadata>,
+  mode: MergeMode,
+  currentCustom: Record<string, string> | undefined,
+): { patch: Partial<PaneMetadata>; rejected: boolean } {
+  const wroteRole = patch.custom !== undefined && ORCH_ROLE_KEY in patch.custom;
+  const currentRole = currentCustom?.[ORCH_ROLE_KEY];
+
+  // 'replaceShared' preserves base.custom wholesale and ignores patch.custom
+  // entirely (MetadataStore.merge), so the role is already untouchable there.
+  if (mode === 'replaceShared') return { patch, rejected: false };
+
+  // A 'replace' DELETES every custom key the patch omits, so stripping alone is
+  // not enough — dropping the role is itself the attack (an unbound role fails
+  // the lookup open). Carry the operator's existing value forward.
+  const mustPreserve = mode === 'replace' && currentRole !== undefined;
+  if (!wroteRole && !mustPreserve) return { patch, rejected: false };
+
+  const custom: Record<string, string> = { ...(patch.custom ?? {}) };
+  delete custom[ORCH_ROLE_KEY];
+  if (mustPreserve) custom[ORCH_ROLE_KEY] = currentRole as string;
+
+  const next: Partial<PaneMetadata> = { ...patch };
+  if (Object.keys(custom).length > 0 || patch.custom !== undefined) {
+    next.custom = custom;
+  }
+  // Only an explicit write attempt is reported; a preserved-through-replace role
+  // is invisible policy, not a denied request.
+  return { patch: next, rejected: wroteRole };
+}
 
 // === Validation single source of truth ===
 //
@@ -334,7 +399,7 @@ export function registerPaneRpc(
    * the caller's workspace and don't get hijacked to whichever ws the user
    * is currently viewing.
    */
-  router.register('pane.setMetadata', async (params) => {
+  router.register('pane.setMetadata', async (params, ctx?: RpcContext) => {
     const paneId = typeof params['paneId'] === 'string' ? params['paneId'] : undefined;
     const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
 
@@ -380,7 +445,7 @@ export function registerPaneRpc(
     // custom-map contract) is the store's job. Cast targets are safe because
     // MetadataStore.set runs sanitize() up front and throws on every shape
     // violation; the catch below wraps with the RPC-method prefix.
-    const patch: Partial<PaneMetadata> = {};
+    let patch: Partial<PaneMetadata> = {};
     if (params['label'] !== undefined) patch.label = params['label'] as string;
     // P2: `role` deprecated — no longer written from the RPC. Legacy role in
     // metadata.json is read-only (dead); MetadataStore keeps the field handling
@@ -405,6 +470,22 @@ export function registerPaneRpc(
     if (params['role'] !== undefined && Object.keys(patch).length === 0) {
       const current = store.get(target.paneId);
       return { ok: true, paneId: target.paneId, metadata: current.metadata, version: current.version };
+    }
+
+    // D2 SECURITY — the enforcement role is operator-only on this wire. See
+    // guardRoleKey. First-party dispatch (renderer bridge / plugin host) is the
+    // operator and passes through untouched.
+    let roleRejected = false;
+    if (!ctx?.firstParty) {
+      const guarded = guardRoleKey(patch, mergeMode, store.get(target.paneId).metadata.custom);
+      patch = guarded.patch;
+      roleRejected = guarded.rejected;
+      if (roleRejected) {
+        console.warn(
+          `[wmux:pane.setMetadata] denied "${ORCH_ROLE_KEY}" write from a non-first-party caller`,
+          { paneId: target.paneId, clientName: ctx?.clientName ?? 'unknown' },
+        );
+      }
     }
 
     let result;
@@ -441,6 +522,15 @@ export function registerPaneRpc(
       paneId: target.paneId,
       metadata: result.metadata,
       version: result.version,
+      // D2 SECURITY — the denial must be visible to the caller, not silent.
+      ...(roleRejected
+        ? {
+            rejectedKeys: [ORCH_ROLE_KEY],
+            note:
+              `"${ORCH_ROLE_KEY}" is assigned by the operator and cannot be set over this API; ` +
+              'the rest of the patch was applied.',
+          }
+        : {}),
     };
   });
 
@@ -476,7 +566,7 @@ export function registerPaneRpc(
    * Same resolution as setMetadata. The renderer is consulted only to
    * resolve the active leaf; the actual clear happens against MetadataStore.
    */
-  router.register('pane.clearMetadata', async (params) => {
+  router.register('pane.clearMetadata', async (params, ctx?: RpcContext) => {
     const paneId = typeof params['paneId'] === 'string' ? params['paneId'] : undefined;
     const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
 
@@ -486,6 +576,38 @@ export function registerPaneRpc(
     } catch (err) {
       const msg = err instanceof Error ? err.message : String(err);
       throw new Error(`pane.clearMetadata: ${msg}`);
+    }
+
+    // D2 SECURITY — the SECOND route to the same key. A wholesale clear drops
+    // `orchestrator.role` along with everything else, and dropping the role IS
+    // the attack: an unbound role misses the binding lookup and fail-open hands
+    // the agent the default model. So a non-first-party clear wipes everything
+    // EXCEPT the operator's role assignment. Same strip-and-report posture as
+    // setMetadata; see guardRoleKey.
+    const preservedRole = ctx?.firstParty
+      ? undefined
+      : store.get(target.paneId).metadata.custom?.[ORCH_ROLE_KEY];
+    if (preservedRole !== undefined) {
+      console.warn(
+        `[wmux:pane.clearMetadata] preserved "${ORCH_ROLE_KEY}" through a non-first-party clear`,
+        { paneId: target.paneId, clientName: ctx?.clientName ?? 'unknown' },
+      );
+      const kept = store.set(
+        target.paneId,
+        { custom: { [ORCH_ROLE_KEY]: preservedRole } },
+        { mergeMode: 'replace', workspaceId: target.workspaceId },
+      );
+      return kept.ok
+        ? {
+            ok: true,
+            paneId: target.paneId,
+            version: kept.version,
+            rejectedKeys: [ORCH_ROLE_KEY],
+            note:
+              `"${ORCH_ROLE_KEY}" is assigned by the operator and was preserved; ` +
+              'all other metadata was cleared.',
+          }
+        : { ok: false, paneId: target.paneId, error: kept.error };
     }
 
     const result = store.clear(target.paneId);

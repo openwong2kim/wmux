@@ -88,6 +88,31 @@ describe('projectConfigSlice', () => {
       expect(seeds[leaves[2].id]).toEqual({ url: 'http://localhost:3000' });
     });
 
+    // P2-C — the tree is rebuilt with fresh pane ids, so the paneRole mirror
+    // (pane-id keyed) cannot carry a role across an apply. The seed is the only
+    // channel a project pane's role can travel on.
+    it("carries a leaf's declared role onto the new pane's seed", () => {
+      store.getState().setProjectConfig(wsId, trustedState({
+        config: {
+          version: 1,
+          layout: {
+            type: 'branch',
+            direction: 'horizontal',
+            children: [
+              { type: 'leaf', command: 'claude', role: 'Reviewer' },
+              { type: 'leaf', command: 'npm run dev' },
+            ],
+          },
+        },
+      }));
+      store.getState().applyProjectLayout(wsId);
+      const leaves = collectLeaves(store.getState().workspaces[0].rootPane);
+      const seeds = store.getState().projectPaneSeed;
+      expect(seeds[leaves[0].id]).toEqual({ command: 'claude', cwd: 'd:\\proj', role: 'Reviewer' });
+      // A leaf with no declared role must not inherit its sibling's.
+      expect(seeds[leaves[1].id].role).toBeUndefined();
+    });
+
     it('preserves branch sizes from the config', () => {
       store.getState().setProjectConfig(wsId, trustedState());
       store.getState().applyProjectLayout(wsId);

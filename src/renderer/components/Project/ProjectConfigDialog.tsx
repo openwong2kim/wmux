@@ -30,6 +30,11 @@ interface LayoutRow {
    * would restore its captured permission mode on reboot IF the user gives the
    * separate unattended consent below. */
   unattended?: boolean;
+  /** D2 — the orchestrator role this leaf declares. Surfaced because a bound
+   * role REWRITES the command shown beside it (the operator's own Settings
+   * binding supplies the model/args), so approving the command verbatim is not
+   * quite approving what runs. */
+  role?: string;
 }
 
 /** Layout startup commands with their pane position, depth-first. */
@@ -47,6 +52,7 @@ function layoutRows(node: WmuxProjectLayoutNode, acc: LayoutRow[] = []): LayoutR
           row.supervision = { restart: n.restart, burst: n.restartLimit?.burst ?? PROJECT_SUPERVISION_DEFAULT_BURST };
         }
         if (n.restorePermissionMode === true) row.unattended = true;
+        if (n.role !== undefined) row.role = n.role;
         acc.push(row);
       }
       return;
@@ -188,6 +194,11 @@ export default function ProjectConfigDialog() {
               {rows.map((row) => (
                 <li key={row.index} className="break-all">
                   · {t('project.pane')} {row.index}: {row.label}
+                  {row.role && (
+                    <span className="ml-1" style={{ color: 'var(--text-sub)' }}>
+                      {t('project.roleBadge', { role: row.role })}
+                    </span>
+                  )}
                   {row.supervision && (
                     <span className="ml-1" style={{ color: 'var(--accent-yellow)' }}>
                       {t('project.supervisionBadge', { restart: row.supervision.restart, burst: row.supervision.burst })}

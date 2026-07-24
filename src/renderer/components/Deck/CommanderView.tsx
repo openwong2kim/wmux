@@ -27,6 +27,7 @@ import { FOCUS_RING } from '../focusRing';
 import { formatChatTime, type DeckLimitNotice } from './deckBrain';
 import DeckFleet from './DeckFleet';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
+import { getLeafPanes } from '../../../shared/paneUtils';
 import { generateId } from '../../../shared/types';
 import type { ChannelMention, ChannelMessage } from '../../../shared/channels';
 import {
@@ -40,7 +41,7 @@ import {
   synthesizeChannelMessage,
   type MentionCandidate,
 } from '../Channels/Composer';
-import { synthesizeChannel } from '../Channels/ChannelsPanel';
+import { synthesizeChannel, sumUnread } from '../Channels/ChannelsPanel';
 import { renderMessageBody } from '../Channels/ChannelView';
 import { formatChannelAuthor } from '../../channels/authorDisplay';
 import {
@@ -67,6 +68,7 @@ import { renderBrainMarkdown } from './BrainMarkdown';
 import { DeckSchedulesPanel } from './DeckSchedulesPanel';
 import { DeckLoopPanel } from './DeckLoopPanel';
 import { DeckDecisionCard } from './DeckDecisionCard';
+import { DeckBriefingCard } from './DeckBriefingCard';
 import { AgentModeChipContainer } from './AgentModeChip';
 
 const EMPTY_MESSAGES: ChannelMessage[] = [];
@@ -118,6 +120,15 @@ export interface CommanderViewContentProps {
   /** P2① mission control — the Fleet roster slot, pinned above the thread.
    *  Injected as a node so this surface stays presentational/store-free. */
   fleetSlot?: React.ReactNode;
+  /** D1 briefing — unread channel count for the active workspace (renderer-only
+   *  overlay on the briefing card; main can't see it). */
+  channelsUnread?: number;
+  /** Jump to the Channels tab (the briefing's unread-line affordance). */
+  onJumpToChannels?: () => void;
+  /** D1 briefing — fingerprint of the active workspace's status-relevant fleet
+   *  state; the card refetches when it moves (the autonomy-'off' path, where no
+   *  brain stream ever fires). */
+  fleetSignature?: string;
   t?: (key: string) => string;
 }
 
@@ -141,6 +152,9 @@ export function CommanderViewContent({
   activeWorkspaceId,
   activePaneCwd,
   fleetSlot,
+  channelsUnread = 0,
+  onJumpToChannels,
+  fleetSignature,
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -247,6 +261,20 @@ export function CommanderViewContent({
             </div>
           </div>
         )}
+
+        {/* D1 briefing — the deterministic "welcome home" summary. Frames the
+            thread ABOVE the decision card; neutral chrome (amber stays reserved
+            for the decision card + running dots). Self-contained + renders null
+            when the config is disabled or there is nothing to brief. */}
+        <DeckBriefingCard
+          workspaceId={activeWorkspaceId}
+          t={t}
+          onJumpToPane={onJumpToPane}
+          resolvePtyPane={resolvePtyPane}
+          channelsUnread={channelsUnread}
+          onJumpToChannels={onJumpToChannels}
+          fleetSignature={fleetSignature}
+        />
 
         {/* Decision gate — a brain-raised decision blocking the loop until the
             operator answers. Self-contained (hydrates from the durable store, so
@@ -767,6 +795,12 @@ function CommanderThreadItem({
 export function CommanderView(): React.ReactElement {
   const t = useT();
   const channels = useStore((s) => s.channels);
+  // D1 briefing: the unread-channels overlay + a jump to the Channels tab. The
+  // count is a renderer-only augmentation (main can't see channel unread).
+  const channelUnread = useStore((s) => s.channelUnread);
+  const channelsUnread = useMemo(() => sumUnread(channelUnread), [channelUnread]);
+  const setActiveDeckTab = useStore((s) => s.setActiveDeckTab);
+  const onJumpToChannels = useCallback(() => setActiveDeckTab('channels'), [setActiveDeckTab]);
   const workspaces = useStore((s) => s.workspaces);
   const surfaceAgent = useStore((s) => s.surfaceAgent);
   const paneLabel = useStore((s) => s.paneLabel);
@@ -846,6 +880,29 @@ export function CommanderView(): React.ReactElement {
   const workspaceNamesKey = useStore((s) =>
     s.workspaces.map((w) => `${w.id}=${encodeURIComponent(w.name)}`).join('&'),
   );
+  // D1 briefing: a primitive fingerprint of the ACTIVE workspace's
+  // status-relevant fleet state, so the card can refetch when a pane changes
+  // even in autonomy mode 'off' (where no brain turn ever streams). Collapsed
+  // to a string inside the selector — the workspaceNamesKey idiom — so an
+  // unrelated pane-tree mutation neither re-renders this view nor wakes the
+  // card. Deliberately NOT included: the hook-running decay clock
+  // (`agentClockMs`), which ticks continuously and would turn this into a
+  // refetch loop. Every state the briefing actually acts on (blocked, error,
+  // complete) is a retained ATTENTION status and lives in `surfaceAgentStatus`;
+  // the workspace-level status covers the active pane's running/idle.
+  const fleetSignature = useStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+    if (!ws) return '';
+    const parts: string[] = [`~${ws.metadata?.agentStatus ?? ''}`];
+    for (const leaf of getLeafPanes(ws.rootPane)) {
+      for (const surface of leaf.surfaces) {
+        if (!surface.ptyId) continue;
+        parts.push(`${surface.ptyId}:${s.surfaceAgentStatus[surface.ptyId] ?? ''}`);
+      }
+    }
+    return parts.join('|');
+  });
+
   const workspaceName = useMemo(() => {
     const names = new Map<string, string>();
     for (const pair of workspaceNamesKey.split('&')) {
@@ -1158,6 +1215,9 @@ export function CommanderView(): React.ReactElement {
       activeWorkspaceId={activeWorkspaceId}
       activePaneCwd={activePaneCwd}
       fleetSlot={<DeckFleet onJumpToPane={onJumpToPane} />}
+      channelsUnread={channelsUnread}
+      onJumpToChannels={onJumpToChannels}
+      fleetSignature={fleetSignature}
       t={t}
     />
   );

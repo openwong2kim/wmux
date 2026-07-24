@@ -5,6 +5,7 @@ import path from 'node:path';
 import {
   installStatusline,
   removeStatusline,
+  refreshStatuslineScript,
   statusStatusline,
   readClaudeAccountTargets,
   classifyStatusLine,
@@ -145,6 +146,102 @@ describe('removeStatusline', () => {
   it('reports nothing for a missing settings.json', () => {
     const outcome = removeStatusline(makePaths([target('acc-a')]));
     expect(outcome.targets[0].outcome).toBe('nothing');
+  });
+});
+
+describe('refreshStatuslineScript', () => {
+  /** Simulate an app update: the bundled script moved on, the installed copy didn't. */
+  function bumpSource(paths: SetupStatuslinePaths): void {
+    const source = paths.scriptSource;
+    if (!source) throw new Error('test fixture always builds a script source');
+    fs.writeFileSync(source, '// statusline stub v2\n', 'utf8');
+  }
+
+  it('replaces a stale installed script when a wmux statusLine is set', () => {
+    const t = target('acc-a');
+    const paths = makePaths([t]);
+    installStatusline(paths);
+    bumpSource(paths);
+    expect(refreshStatuslineScript(paths)).toBe('refreshed');
+    expect(fs.readFileSync(paths.scriptDest, 'utf8')).toBe('// statusline stub v2\n');
+  });
+
+  it('never touches settings.json — only the script file', () => {
+    const t = target('acc-a');
+    const paths = makePaths([t]);
+    installStatusline(paths);
+    const before = fs.readFileSync(t.settingsPath, 'utf8');
+    bumpSource(paths);
+    refreshStatuslineScript(paths);
+    expect(fs.readFileSync(t.settingsPath, 'utf8')).toBe(before);
+  });
+
+  it('reports up-to-date without rewriting an identical script', () => {
+    const paths = makePaths([target('acc-a')]);
+    installStatusline(paths);
+    const mtime = fs.statSync(paths.scriptDest).mtimeMs;
+    expect(refreshStatuslineScript(paths)).toBe('up-to-date');
+    expect(fs.statSync(paths.scriptDest).mtimeMs).toBe(mtime);
+  });
+
+  it('does NOT enroll a user who never installed the statusline', () => {
+    const t = target('acc-a');
+    const paths = makePaths([t]);
+    expect(refreshStatuslineScript(paths)).toBe('not-installed');
+    expect(fs.existsSync(paths.scriptDest)).toBe(false);
+    expect(fs.existsSync(t.settingsPath)).toBe(false);
+  });
+
+  it('restores a referenced script that was deleted, without writing settings', () => {
+    const t = target('acc-a');
+    const paths = makePaths([t]);
+    installStatusline(paths);
+    const settingsBefore = fs.readFileSync(t.settingsPath, 'utf8');
+    fs.rmSync(paths.scriptDest); // file gone, but settings still points at it
+    expect(refreshStatuslineScript(paths)).toBe('refreshed');
+    expect(fs.existsSync(paths.scriptDest)).toBe(true);
+    expect(fs.readFileSync(t.settingsPath, 'utf8')).toBe(settingsBefore);
+  });
+
+  it('does NOT restore when no target references the script', () => {
+    const t = target('acc-a');
+    const paths = makePaths([t]);
+    // settings.json exists but with no wmux statusLine; script absent.
+    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
+    fs.writeFileSync(t.settingsPath, JSON.stringify({ model: 'opus' }), 'utf8');
+    expect(refreshStatuslineScript(paths)).toBe('not-installed');
+    expect(fs.existsSync(paths.scriptDest)).toBe(false);
+  });
+
+  it('leaves the script alone when every target runs a FOREIGN statusLine', () => {
+    const t = target('acc-a');
+    const paths = makePaths([t]);
+    // Script present (an old install), but the user has since switched to their
+    // own statusLine — refreshing wmux's file would be pure surprise.
+    fs.mkdirSync(path.dirname(paths.scriptDest), { recursive: true });
+    fs.writeFileSync(paths.scriptDest, '// old\n', 'utf8');
+    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
+    fs.writeFileSync(
+      t.settingsPath,
+      JSON.stringify({ statusLine: { type: 'command', command: 'node my-own-line.js' } }),
+      'utf8',
+    );
+    expect(refreshStatuslineScript(paths)).toBe('not-installed');
+    expect(fs.readFileSync(paths.scriptDest, 'utf8')).toBe('// old\n');
+  });
+
+  it('reports no-source when the bundled script cannot be located', () => {
+    const paths = makePaths([target('acc-a')]);
+    installStatusline(paths);
+    expect(refreshStatuslineScript({ ...paths, scriptSource: null })).toBe('no-source');
+  });
+
+  it('degrades to failed instead of throwing when the source is unreadable', () => {
+    const paths = makePaths([target('acc-a')]);
+    installStatusline(paths);
+    expect(refreshStatuslineScript({ ...paths, scriptSource: path.join(tmpDir, 'gone.mjs') })).toBe(
+      'failed',
+    );
   });
 });
 
