@@ -96,13 +96,13 @@ re-import wmux tags.
 
 ## ⚡ Install in 30 seconds
 
-**Windows** — use a package manager (avoids the SmartScreen warning):
+**Windows** — one-liner (downloads the latest Setup.exe and verifies its SHA-256 before running it):
 
 ```powershell
-winget install skflowne.fmux
+irm https://raw.githubusercontent.com/skflowne/fmux/main/install.ps1 | iex
 ```
 
-<sub>or `choco install fmux` &nbsp;·&nbsp; [**download Setup.exe**](https://github.com/skflowne/fmux/releases/latest) for offline install — a SmartScreen prompt appears because the installer isn't Authenticode-signed yet; winget/choco bypass it ([why?](#install-help))</sub>
+<sub>or [**download Setup.exe**](https://github.com/skflowne/fmux/releases/latest) directly — either way a SmartScreen prompt appears because the installer isn't Authenticode-signed yet ([why?](#install-help)). Once installed, Forge Mux keeps itself up to date via the in-app updater.</sub>
 
 **macOS** (Apple Silicon)
 
@@ -244,14 +244,11 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 
 **Feels heavy, or a workspace switch is slow?** See [docs/performance.md](docs/performance.md) — what runs while a pane is hidden, the daemon's `config.json` knobs, and how to self-diagnose with `fmux doctor`.
 
-**"Windows protected your PC" warning?** The release pipeline already signs `Setup.exe` through [SignPath](https://signpath.io/), but with a *test* certificate while the [SignPath Foundation](https://signpath.org/) OSS certificate is pending — Windows does not trust it, so SmartScreen still reports an unknown publisher. It's safe: click **More info → Run anyway**, or install via **winget** / **Chocolatey** to skip the prompt.
+**"Windows protected your PC" warning?** The release pipeline signs `Setup.exe` through [SignPath](https://signpath.io/), but currently with a test certificate that Windows does not trust, so SmartScreen still reports an unknown publisher. It's safe to click **More info → Run anyway**; the install one-liner verifies the Setup.exe SHA-256 against the release manifest before running it.
 
-**Installer blocked with no "Run anyway"?** **Smart App Control (SAC)** on Windows 11 can block unsigned binaries outright. Check with `Get-MpComputerStatus | Select-Object SmartAppControlState`. SAC uses cloud reputation, so blocks are often transient — retry later, use winget/choco, or build from source ([#200](https://github.com/skflowne/fmux/issues/200)).
+**Installer blocked with no "Run anyway"?** **Smart App Control (SAC)** on Windows 11 can block unsigned binaries outright. Check with `Get-MpComputerStatus | Select-Object SmartAppControlState`. SAC uses cloud reputation, so blocks are often transient — retry later, or build from source ([#200](https://github.com/skflowne/fmux/issues/200)).
 
-**PowerShell one-liner** (downloads the prebuilt Setup.exe, verifies SHA-256, no build tools):
-```powershell
-irm https://raw.githubusercontent.com/skflowne/fmux/main/install.ps1 | iex
-```
+**How do updates work?** The app checks GitHub releases every 30 minutes, downloads the new installer in the background, verifies its SHA-256 against the published manifest, and offers a one-click "Restart to install" (a manual *Check for updates* in Settings installs in one step). Your sessions persist in the daemon across the restart — no need to re-run the install script.
 
 </details>
 
