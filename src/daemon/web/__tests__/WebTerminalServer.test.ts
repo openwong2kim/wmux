@@ -259,9 +259,13 @@ describe('WebTerminalServer', () => {
       sessionId: 's2',
       event: { action: 'delete files', riskLevel: 'critical' },
     });
+    // The PRODUCTION notify shape (DaemonPTYBridge): {source, title, body, ts},
+    // with title null because OSC 9 carries no title. The fake used to emit a
+    // `{message}` object that exists nowhere in the daemon — which is exactly
+    // how #597 (the frontend reading `data.message`) shipped green.
     (sessionManager as unknown as EventEmitter).emit('session:notification', {
       sessionId: 's3',
-      event: { message: 'done', ts: 123 },
+      event: { source: 'osc9', title: null, body: 'Build finished, 3 tests failed', ts: 123 },
     });
 
     // Read a chunk of the stream and assert both events flattened onto the wire.
@@ -280,7 +284,16 @@ describe('WebTerminalServer', () => {
     expect(text).toContain('"action":"delete files"');
     expect(text).toContain('event: notify');
     expect(text).toContain('"sessionId":"s3"');
-    expect(text).toContain('"message":"done"');
+    // ★ The whole parsed notification reaches the browser VERBATIM — all four
+    // fields, not just whichever one the frontend happened to read. #597 was a
+    // field-name mismatch, and only an end-to-end shape assertion catches that.
+    expect(text).toContain('"source":"osc9"');
+    expect(text).toContain('"title":null');
+    expect(text).toContain('"body":"Build finished, 3 tests failed"');
+    expect(text).toContain('"ts":123');
+    // Every attention payload is now identified so clients can dedup/replay.
+    expect(text).toMatch(/"id":\d+/);
+    expect(text).toContain('"epoch":"');
   });
 
   it('removes the session-manager listeners on stop (no leak across restarts)', async () => {
@@ -459,5 +472,256 @@ describe('WebTerminalServer', () => {
     expect(em.listenerCount('session:critical')).toBe(1);
     expect(em.listenerCount('session:notification')).toBe(1);
     expect(second.isRunning).toBe(false);
+  });
+
+  // ── /api/events — the durable attention channel (#598) ─────────────────────
+  const emitNotify = (sessionId: string, body: string) =>
+    (sessionManager as unknown as EventEmitter).emit('session:notification', {
+      sessionId,
+      event: { source: 'osc9', title: null, body, ts: 1 },
+    });
+
+  type Backlog = {
+    epoch: string;
+    headId: number;
+    reset: boolean;
+    events: Array<Record<string, unknown>>;
+  };
+  const backlog = async (token: string, since?: string): Promise<Backlog> => {
+    const q = since ? `?since=${encodeURIComponent(since)}` : '';
+    const res = await fetch(`${base()}/api/events${q}`, { headers: bearer(token) });
+    expect(res.status).toBe(200);
+    return (await res.json()) as Backlog;
+  };
+
+  /** Open the SSE variant and read until `want` appears (or the deadline). */
+  const readEventStream = async (url: string, want: RegExp, headers: Record<string, string> = {}) => {
+    const ac = new AbortController();
+    const res = await fetch(url, {
+      signal: ac.signal,
+      headers: { Accept: 'text/event-stream', ...headers },
+    });
+    let text = '';
+    if (res.status === 200 && res.body) {
+      const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+      const deadline = Date.now() + 700;
+      while (Date.now() < deadline && !want.test(text)) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) text += Buffer.from(value).toString('utf8');
+      }
+    }
+    ac.abort();
+    return { status: res.status, text };
+  };
+
+  it('★ delivers an attention event raised while NO client was connected', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+
+    // Nobody is watching — the pane-stream fan-out is a no-op. Before the
+    // attention log this event was simply gone (#598).
+    emitNotify('s3', 'Build finished, 3 tests failed');
+
+    const data = await backlog(token);
+    expect(data.events).toHaveLength(1);
+    expect(data.events[0]).toMatchObject({
+      id: 1,
+      kind: 'notify',
+      sessionId: 's3',
+      source: 'osc9',
+      title: null,
+      body: 'Build finished, 3 tests failed',
+    });
+    expect(data.headId).toBe(1);
+  });
+
+  it('★ treats a cursor from another epoch as a full resync', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    emitNotify('s3', 'one');
+    emitNotify('s3', 'two');
+
+    const data = await backlog(token, 'bogus-epoch:57');
+    expect(data.reset).toBe(true);
+    expect(data.events.map((e) => e.body)).toEqual(['one', 'two']);
+    expect(data.epoch).not.toBe('bogus-epoch');
+  });
+
+  it('★ gates /api/events like every other route — Bearer for JSON, ?token= for SSE only', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+
+    // JSON mode: no credentials, and a query token, are both refused.
+    expect((await fetch(`${base()}/api/events`)).status).toBe(401);
+    expect((await fetch(`${base()}/api/events?token=${encodeURIComponent(token)}`)).status).toBe(401);
+
+    // SSE mode: `?token=` is accepted (EventSource cannot set headers)…
+    const ok = await readEventStream(
+      `${base()}/api/events?token=${encodeURIComponent(token)}`,
+      /event: reset/,
+    );
+    expect(ok.status).toBe(200);
+    // …but only the real token.
+    const bad = await readEventStream(`${base()}/api/events?token=nope`, /never/);
+    expect(bad.status).toBe(401);
+  });
+
+  it('returns only what a matching cursor has not seen, and reports the head id', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    emitNotify('s3', 'one');
+    emitNotify('s3', 'two');
+    emitNotify('s3', 'three');
+
+    const all = await backlog(token);
+    expect(all.reset).toBe(true);
+    expect(all.headId).toBe(3);
+
+    const since = await backlog(token, `${all.epoch}:2`);
+    expect(since.reset).toBe(false);
+    expect(since.events.map((e) => e.id)).toEqual([3]);
+    expect(since.headId).toBe(3);
+
+    // Fully caught up: nothing to replay, and still not a resync.
+    const caughtUp = await backlog(token, `${all.epoch}:3`);
+    expect(caughtUp.reset).toBe(false);
+    expect(caughtUp.events).toEqual([]);
+  });
+
+  it('evicts the oldest entries past the cap while ids stay monotonic', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    const CAP = 100; // ATTENTION_CAP — module-private, asserted by behaviour
+    for (let i = 1; i <= CAP + 10; i++) emitNotify('s3', `evt-${i}`);
+
+    const data = await backlog(token);
+    expect(data.events).toHaveLength(CAP);
+    // The oldest ten are gone; the newest is kept; ids never restart.
+    expect(data.events[0].id).toBe(11);
+    expect(data.events[CAP - 1].id).toBe(CAP + 10);
+    expect(data.events[CAP - 1].body).toBe(`evt-${CAP + 10}`);
+    expect(data.headId).toBe(CAP + 10);
+    const ids = data.events.map((e) => e.id as number);
+    expect(ids).toEqual(ids.slice().sort((a, b) => a - b));
+  });
+
+  it('evicts entries past the TTL (injected clock, no sleeping for 30 minutes)', async () => {
+    // A dedicated server so the clock seam is under this test's control.
+    let clock = 1_000_000;
+    const aged = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+      now: () => clock,
+    });
+    const info = await aged.start({ port: 0, host: '127.0.0.1', allowInput: false });
+    const token = info.token as string;
+    const port = info.port as number;
+    const em = sessionManager as unknown as EventEmitter;
+    try {
+      em.emit('session:notification', {
+        sessionId: 's3',
+        event: { source: 'osc9', title: null, body: 'stale', ts: 1 },
+      });
+      // Past the 30-minute TTL, then a fresh event so eviction runs.
+      clock += 31 * 60 * 1000;
+      em.emit('session:notification', {
+        sessionId: 's3',
+        event: { source: 'osc9', title: null, body: 'fresh', ts: 2 },
+      });
+
+      const res = await fetch(`http://127.0.0.1:${port}/api/events`, { headers: bearer(token) });
+      const data = (await res.json()) as Backlog;
+      expect(data.events.map((e) => e.body)).toEqual(['fresh']);
+      // The id space does NOT rewind just because an entry aged out.
+      expect(data.headId).toBe(2);
+    } finally {
+      await aged.stop();
+    }
+  });
+
+  it('SSE mode: emits ids, resets a foreign cursor, then replays before live events', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    emitNotify('s2', 'backlogged');
+
+    const ac = new AbortController();
+    const res = await fetch(`${base()}/api/events?token=${encodeURIComponent(token)}`, {
+      signal: ac.signal,
+      headers: { Accept: 'text/event-stream' },
+    });
+    expect(res.status).toBe(200);
+    expect(res.headers.get('content-type')).toContain('text/event-stream');
+
+    const reader = (res.body as ReadableStream<Uint8Array>).getReader();
+    let text = '';
+    const pump = async (until: RegExp) => {
+      const deadline = Date.now() + 700;
+      while (Date.now() < deadline && !until.test(text)) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        if (value) text += Buffer.from(value).toString('utf8');
+      }
+    };
+    await pump(/"body":"backlogged"/);
+    // No cursor at all → told to resync, then handed the whole window.
+    expect(text).toContain('event: reset');
+    expect(text).toMatch(/id: [0-9a-f-]+:1\n/);
+    expect(text.indexOf('event: reset')).toBeLessThan(text.indexOf('"body":"backlogged"'));
+
+    // Live events keep flowing on the same stream, after the replay.
+    emitNotify('s2', 'live-one');
+    await pump(/"body":"live-one"/);
+    ac.abort();
+    expect(text.indexOf('"body":"backlogged"')).toBeLessThan(text.indexOf('"body":"live-one"'));
+    expect(text).toMatch(/id: [0-9a-f-]+:2\n/);
+  });
+
+  it('SSE mode: a matching cursor replays only the missed tail, with no reset', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    emitNotify('s2', 'seen-already');
+    emitNotify('s2', 'missed-it');
+    const epoch = (await backlog(token)).epoch;
+
+    const out = await readEventStream(
+      `${base()}/api/events?token=${encodeURIComponent(token)}&since=${encodeURIComponent(`${epoch}:1`)}`,
+      /"body":"missed-it"/,
+    );
+    expect(out.status).toBe(200);
+    expect(out.text).not.toContain('event: reset');
+    expect(out.text).not.toContain('seen-already');
+    expect(out.text).toContain('"body":"missed-it"');
+  });
+
+  it('resumes from Last-Event-ID, which the browser resends on reconnect', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    emitNotify('s2', 'before-drop');
+    emitNotify('s2', 'after-drop');
+    const epoch = (await backlog(token)).epoch;
+
+    const out = await readEventStream(
+      `${base()}/api/events?token=${encodeURIComponent(token)}`,
+      /"body":"after-drop"/,
+      { 'Last-Event-ID': `${epoch}:1` },
+    );
+    expect(out.text).not.toContain('event: reset');
+    expect(out.text).not.toContain('before-drop');
+  });
+
+  it('drops /api/events subscribers on stop() without touching the log', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+    emitNotify('s2', 'kept');
+    await readEventStream(`${base()}/api/events?token=${encodeURIComponent(token)}`, /event: reset/);
+    await server.stop();
+
+    // A web-server restart is not an event-loss boundary: the daemon kept
+    // running, so the recorded window (and its epoch) survives.
+    const next = await startRO();
+    const data = await backlog(next.token as string);
+    expect(data.events.map((e) => e.body)).toEqual(['kept']);
   });
 });

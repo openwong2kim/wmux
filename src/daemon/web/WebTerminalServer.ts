@@ -67,6 +67,12 @@ interface WebTerminalServerDeps {
    * (`resources/daemon-web`) layouts.
    */
   assetsDir: string;
+  /**
+   * Clock seam. Only the attention log's TTL eviction reads it; injected so the
+   * unit tests can age entries deterministically instead of sleeping half an
+   * hour. Defaults to the wall clock.
+   */
+  now?: () => number;
 }
 
 /** Cap a single input POST body so a hostile client cannot exhaust memory. */
@@ -86,6 +92,15 @@ const PAIR_REGEN_COOLDOWN_MS = 30_000;
 /** Pairing alphabet: A-Z2-9 minus the visually ambiguous 0/O/1/I. */
 const PAIR_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const PAIR_CODE_LEN = 6;
+/**
+ * How many attention events the replay window holds. A phone that dropped
+ * connection for a coffee break must get everything it missed; a phone that was
+ * off overnight gets the most recent window and a `reset` marker rather than an
+ * unbounded backlog the daemon paid RAM for all night.
+ */
+const ATTENTION_CAP = 100;
+/** Attention entries older than this are dropped even if the cap allows them. */
+const ATTENTION_TTL_MS = 30 * 60 * 1000;
 
 interface SseClient {
   res: http.ServerResponse;
@@ -93,11 +108,53 @@ interface SseClient {
   detach: () => void;
 }
 
+/** A live `/api/events` subscriber (fleet-wide attention only, no pane bytes). */
+interface EventClient {
+  res: http.ServerResponse;
+  detach: () => void;
+}
+
+/**
+ * One recorded attention event. `payload` is the flattened wire object
+ * (`{sessionId, ...event}`) exactly as it goes out live, so a replay and a live
+ * delivery are byte-identical apart from framing.
+ */
+interface AttentionEntry {
+  id: number;
+  at: number;
+  kind: 'critical' | 'notify';
+  payload: Record<string, unknown>;
+}
+
+/** A resume position: which server generation, and how far into it. */
+interface AttentionCursor {
+  epoch: string;
+  id: number;
+}
+
 export class WebTerminalServer {
   private server: http.Server | null = null;
   private token = '';
   private opts: WebTerminalStartOptions | null = null;
   private readonly clients = new Set<SseClient>();
+  /** Live `/api/events` subscribers — fleet attention, no pane stream attached. */
+  private readonly eventClients = new Set<EventClient>();
+
+  /**
+   * Attention replay state.
+   *
+   * The epoch is minted ONCE per instance, in the constructor: a new daemon
+   * process gets a new epoch, which is exactly the boundary at which a client's
+   * stored cursor stops meaning anything (ids restart at 1). The OS boot id is
+   * deliberately NOT used — two daemon restarts inside one boot would share it
+   * and a client would silently replay against the wrong id space.
+   *
+   * The log survives `stop()`/`start()`: restarting the WEB server is not an
+   * event-loss boundary, the daemon kept running and kept recording.
+   */
+  private readonly attentionEpoch = crypto.randomUUID();
+  private attentionSeq = 0;
+  private attentionLog: AttentionEntry[] = [];
 
   // Pairing state (single active code per running server).
   private pairCode = '';
@@ -250,6 +307,18 @@ export class WebTerminalServer {
     }
     this.clients.clear();
 
+    // The attention log and epoch deliberately survive: a client that reconnects
+    // after a web-server restart still has a valid cursor into the same daemon.
+    for (const client of this.eventClients) {
+      try {
+        client.detach();
+        client.res.end();
+      } catch {
+        /* ignore */
+      }
+    }
+    this.eventClients.clear();
+
     const server = this.server;
     this.server = null;
     this.opts = null;
@@ -373,7 +442,16 @@ export class WebTerminalServer {
     // endpoint requires an Authorization: Bearer header, keeping the token out
     // of query strings and URL/proxy logs.
     if (p.startsWith('/api/')) {
-      const isStream = req.method === 'GET' && p === '/api/stream';
+      // `/api/events` answers in two shapes on one route: an EventSource (which
+      // cannot set headers, so it gets the same `?token=` exception as
+      // `/api/stream`) and a plain JSON backlog fetch (Bearer only, like every
+      // other endpoint). The Accept header decides which, and therefore also
+      // which auth rule applies.
+      const wantsEventStream =
+        req.method === 'GET' &&
+        p === '/api/events' &&
+        String(req.headers.accept ?? '').includes('text/event-stream');
+      const isStream = (req.method === 'GET' && p === '/api/stream') || wantsEventStream;
       if (!this.isAuthed(req, url, isStream)) {
         return this.json(res, 401, { error: 'unauthorized' });
       }
@@ -385,6 +463,11 @@ export class WebTerminalServer {
       }
       if (req.method === 'GET' && p === '/api/stream') {
         return this.handleStream(req, res, url);
+      }
+      if (req.method === 'GET' && p === '/api/events') {
+        return wantsEventStream
+          ? this.handleEventStream(req, res, url)
+          : this.handleEventBacklog(res, url);
       }
       if (req.method === 'POST' && p === '/api/input') {
         return this.handleInput(req, res, url);
@@ -534,14 +617,33 @@ export class WebTerminalServer {
   // --- fleet-wide event tee -----------------------------------------------
 
   /**
-   * Fan a session-manager attention event out to EVERY connected SSE client,
-   * regardless of which session that client's stream watches. The wire payload
-   * flattens the event so the frontend sees `{sessionId, ...event}`.
+   * Record an attention event, then fan it out to EVERY connected client —
+   * pane streams (whatever session they watch) and `/api/events` subscribers
+   * alike. The wire payload flattens the event so the frontend sees
+   * `{id, epoch, sessionId, ...event}`.
+   *
+   * Recording happens FIRST and unconditionally. That is the whole point of
+   * #598: an approval raised while nobody was connected used to evaporate,
+   * because a fan-out over an empty client set is a no-op. Now it lands in the
+   * log and the next connect replays it.
    */
   private broadcastEvent(kind: 'critical' | 'notify', payload: { sessionId: string; event?: unknown }): void {
     if (!payload || typeof payload !== 'object') return;
     const event = payload.event && typeof payload.event === 'object' ? (payload.event as Record<string, unknown>) : {};
-    const body = JSON.stringify({ sessionId: payload.sessionId, ...event });
+    const entry: AttentionEntry = {
+      id: ++this.attentionSeq,
+      at: this.now(),
+      kind,
+      payload: { sessionId: payload.sessionId, ...event },
+    };
+    this.attentionLog.push(entry);
+    this.evictAttention();
+
+    const body = this.attentionWireBody(entry);
+    // BACK-COMPAT (remove after one release): attention still rides the pane
+    // streams so a cached PWA frontend that predates `/api/events` keeps
+    // working. The extra `id`/`epoch` fields are ignored by old clients; new
+    // ones dedup on them, so the double delivery is harmless.
     for (const client of this.clients) {
       try {
         writeSse(client.res, kind, body);
@@ -549,6 +651,141 @@ export class WebTerminalServer {
         /* client stream broken — its own 'close' handler cleans up */
       }
     }
+    for (const client of this.eventClients) {
+      try {
+        writeSse(client.res, kind, body, this.sseId(entry.id));
+      } catch {
+        /* client stream broken — its own 'close' handler cleans up */
+      }
+    }
+  }
+
+  /** Drop entries past the cap (oldest first) and anything past the TTL. */
+  private evictAttention(): void {
+    if (this.attentionLog.length > ATTENTION_CAP) {
+      this.attentionLog.splice(0, this.attentionLog.length - ATTENTION_CAP);
+    }
+    const cutoff = this.now() - ATTENTION_TTL_MS;
+    // Entries are appended in time order, so the expired ones are a prefix.
+    let drop = 0;
+    while (drop < this.attentionLog.length && this.attentionLog[drop].at < cutoff) drop += 1;
+    if (drop > 0) this.attentionLog.splice(0, drop);
+  }
+
+  private now(): number {
+    return this.deps.now ? this.deps.now() : Date.now();
+  }
+
+  /** The exact JSON one attention event carries on the wire, live or replayed. */
+  private attentionWireBody(entry: AttentionEntry): string {
+    return JSON.stringify({ id: entry.id, epoch: this.attentionEpoch, ...entry.payload });
+  }
+
+  /** SSE `id:` value — epoch-qualified so a stale cursor is detectable. */
+  private sseId(id: number): string {
+    return `${this.attentionEpoch}:${id}`;
+  }
+
+  /** Highest id ever issued (NOT the log's head — the log evicts, ids do not). */
+  private headId(): number {
+    return this.attentionSeq;
+  }
+
+  /**
+   * Parse an `epoch:id` cursor. A UUID contains no colon, but split on the LAST
+   * one anyway so a future epoch format cannot silently mis-parse.
+   */
+  private parseCursor(raw: string | undefined | null): AttentionCursor | null {
+    if (typeof raw !== 'string') return null;
+    const value = raw.trim();
+    const cut = value.lastIndexOf(':');
+    if (cut <= 0) return null;
+    const epoch = value.slice(0, cut);
+    const id = Number(value.slice(cut + 1));
+    if (!epoch || !Number.isFinite(id) || id < 0) return null;
+    return { epoch, id: Math.floor(id) };
+  }
+
+  /**
+   * Everything a cursor has not seen yet. A cursor from another epoch (or none
+   * at all) cannot be positioned in this id space, so the caller is told to
+   * resync and handed the whole current window.
+   */
+  private replayFrom(cursor: AttentionCursor | null): { reset: boolean; entries: AttentionEntry[] } {
+    this.evictAttention();
+    if (!cursor || cursor.epoch !== this.attentionEpoch) {
+      return { reset: true, entries: this.attentionLog.slice() };
+    }
+    return { reset: false, entries: this.attentionLog.filter((e) => e.id > cursor.id) };
+  }
+
+  /**
+   * `GET /api/events` (SSE) — the durable attention channel.
+   *
+   * Unlike the pane streams this one is opened ONCE per page and never
+   * torn down on a pane switch, which is what makes replay meaningful: the
+   * browser resends `Last-Event-ID` on every automatic reconnect, so a phone
+   * that lost signal picks up exactly where it stopped.
+   */
+  private handleEventStream(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
+    res.writeHead(200, {
+      'Content-Type': 'text/event-stream; charset=utf-8',
+      'Cache-Control': 'no-cache, no-transform',
+      Connection: 'keep-alive',
+      'X-Accel-Buffering': 'no',
+      ...this.securityHeaders(),
+    });
+
+    // EventSource's own resume header wins; `?since=` covers a page RELOAD,
+    // where the browser starts a fresh EventSource with no memory of the id.
+    const lastEventId = req.headers['last-event-id'];
+    const cursor =
+      this.parseCursor(typeof lastEventId === 'string' ? lastEventId : null) ??
+      this.parseCursor(url.searchParams.get('since'));
+
+    const { reset, entries } = this.replayFrom(cursor);
+    if (reset) {
+      // Say so BEFORE the backlog: the client renders a summary for a resync
+      // instead of a burst of banners for events it may already have acted on.
+      writeSse(res, 'reset', JSON.stringify({ epoch: this.attentionEpoch, headId: this.headId() }));
+    }
+    for (const entry of entries) {
+      writeSse(res, entry.kind, this.attentionWireBody(entry), this.sseId(entry.id));
+    }
+
+    const heartbeat = setInterval(() => {
+      try {
+        res.write(': ping\n\n');
+      } catch {
+        /* ignore */
+      }
+    }, HEARTBEAT_MS);
+    heartbeat.unref();
+
+    const detach = (): void => clearInterval(heartbeat);
+    const client: EventClient = { res, detach };
+    this.eventClients.add(client);
+
+    req.on('close', () => {
+      detach();
+      this.eventClients.delete(client);
+    });
+  }
+
+  /**
+   * `GET /api/events` (JSON) — the same window as a plain fetch, for a client
+   * that wants the backlog up front (or has no EventSource at all, e.g. the
+   * native app). Bearer-only: a non-SSE route never accepts `?token=`.
+   */
+  private handleEventBacklog(res: http.ServerResponse, url: URL): void {
+    const cursor = this.parseCursor(url.searchParams.get('since'));
+    const { reset, entries } = this.replayFrom(cursor);
+    return this.json(res, 200, {
+      epoch: this.attentionEpoch,
+      headId: this.headId(),
+      reset,
+      events: entries.map((e) => ({ id: e.id, kind: e.kind, ...e.payload, at: e.at })),
+    });
   }
 
   // --- pairing ------------------------------------------------------------
@@ -712,8 +949,14 @@ export class WebTerminalServer {
 
 // === module helpers =========================================================
 
-function writeSse(res: http.ServerResponse, event: string, data: string): void {
-  res.write(`event: ${event}\ndata: ${data}\n\n`);
+/**
+ * One SSE frame. `id` is optional and emitted only on the attention stream —
+ * the browser echoes the last one back as `Last-Event-ID` when it reconnects,
+ * which is the entire replay mechanism. Pane streams stay id-less: their resume
+ * story is the ring-buffer snapshot, not an id cursor.
+ */
+function writeSse(res: http.ServerResponse, event: string, data: string, id?: string): void {
+  res.write(`${id ? `id: ${id}\n` : ''}event: ${event}\ndata: ${data}\n\n`);
 }
 
 /**

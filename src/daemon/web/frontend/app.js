@@ -9,7 +9,7 @@
  * <select>), a dot-vocabulary connection chip, and explicit loading / empty /
  * error / auth states instead of a bare status string.
  */
-/* global Terminal */ // provided by the inlined __XTERM_JS__ bundle
+/* global Terminal, wmuxAttentionFormat */ // provided by the inlined bundles
 (function () {
   'use strict';
   var $ = function (s) { return document.querySelector(s); };
@@ -80,6 +80,7 @@
 
   var term = null;               // the 1-up terminal (null while split view owns the stage)
   var es = null;                 // the 1-up SSE stream
+  var attnEs = null;             // the page-lifetime attention stream (/api/events)
   var tiles = [];                // split-view tiles, each with its OWN stream + terminal
   var allowInput = false;
   var currentSession = null;
@@ -177,6 +178,9 @@
   /** Show the inline auth form. `stale` marks a rejected token vs a missing one. */
   function requireToken(stale) {
     if (es) { es.close(); es = null; }
+    // The attention stream carries the same rejected token; drop it so the next
+    // successful init opens a fresh one (with the stored cursor, so nothing is lost).
+    if (attnEs) { attnEs.close(); attnEs = null; }
     // Split tiles hold their OWN streams carrying the stale token; left alive,
     // buildGrid() would happily reuse the dead tiles after re-auth. Tear the
     // grid down so the next successful init starts clean.
@@ -684,21 +688,94 @@
     document.title = criticalCount > 0 ? '● ' + BASE_TITLE : BASE_TITLE;
   }
 
+  // Attention events are delivered twice on purpose (the pane stream keeps the
+  // old tee for one release, /api/events is the durable channel), and the
+  // durable channel replays on every reconnect — so the same event can arrive
+  // several times. `epoch:id` is the identity that makes that safe. The seen set
+  // is bounded by a FIFO of its own keys: an unbounded one is a slow leak on a
+  // phone that stays open for days.
+  var SEEN_CAP = 200;
+  var seenAttention = {};
+  var seenOrder = [];
+  var CURSOR_KEY = 'wmux-web-attn-cursor';
+  var lastAttentionCursor = '';
+  try { lastAttentionCursor = sessionStorage.getItem(CURSOR_KEY) || ''; } catch (e) { /* private mode */ }
+
+  function markSeen(key) {
+    seenAttention[key] = true;
+    seenOrder.push(key);
+    while (seenOrder.length > SEEN_CAP) delete seenAttention[seenOrder.shift()];
+  }
+  function rememberCursor(key) {
+    lastAttentionCursor = key;
+    // EventSource's own Last-Event-ID covers reconnects within this page; the
+    // stored cursor is what survives a RELOAD (it goes out as ?since=).
+    try { sessionStorage.setItem(CURSOR_KEY, key); } catch (e) { /* private mode */ }
+  }
+
+  // A `reset` frame means the server could not place our cursor (fresh client,
+  // or the daemon restarted), so what follows is a full window rather than
+  // "what you missed". Rendering a banner per event would bury the screen in
+  // alerts the user may have already dealt with, so replayed events only light
+  // up their fleet chips and collapse into one summary line.
+  var replaying = false;
+  var replayCount = 0;
+  var replayTimer = null;
+
+  function endReplay() {
+    replayTimer = null;
+    replaying = false;
+    if (replayCount > 0) {
+      pushNotif({
+        kind: 'notify',
+        slim: false,
+        sessionId: null,
+        sessionName: 'Tap a highlighted pane to catch up.',
+        title: replayCount + ' event' + (replayCount === 1 ? '' : 's') + ' while you were away',
+        sub: ''
+      });
+    }
+    replayCount = 0;
+  }
+  function beginReplay() {
+    replaying = true;
+    replayCount = 0;
+    armReplayEnd();
+  }
+  // The backlog can span several network chunks, so the end of it is not an
+  // event we are told about — it is a short quiet period after the last one.
+  function armReplayEnd() {
+    if (replayTimer) clearTimeout(replayTimer);
+    replayTimer = setTimeout(endReplay, 200);
+  }
+
   function handleAttention(kind, raw) {
     var data;
     try { data = JSON.parse(raw); } catch (e) { return; }
     if (!data || !data.sessionId) return;
+
+    // Events with no id come from a server that predates the attention log —
+    // there is nothing to dedup on, so they pass straight through (back-compat).
+    if (data.epoch && typeof data.id === 'number') {
+      var key = data.epoch + ':' + data.id;
+      if (seenAttention[key]) return;
+      markSeen(key);
+      rememberCursor(key);
+    }
+
     var sid = data.sessionId;
     var s = sessions.filter(function (x) { return x.id === sid; })[0];
     var name = s ? sessionName(s) : sid;
 
-    var title, sub;
-    if (kind === 'critical') {
-      title = 'Approval needed';
-      sub = data.action || 'A pane is waiting on you.';
-    } else {
-      title = data.message || 'Notification';
-      sub = '';
+    var f = wmuxAttentionFormat.formatAttention(kind, data);
+    var title = f.title;
+    var sub = f.sub;
+
+    if (replaying) {
+      if (sid !== currentSession) { attn[sid] = true; renderFleet(); }
+      replayCount += 1;
+      armReplayEnd();
+      return;
     }
 
     // Mark the chip unless it is the pane already in view.
@@ -795,6 +872,32 @@
     src.onopen = function () { if (sink.open) sink.open(); };
     src.onerror = function () { if (sink.error) sink.error(); };
     return src;
+  }
+
+  /**
+   * The durable attention channel — ONE per page, for the page's whole life.
+   *
+   * Pane streams come and go with every tap, and attention events that landed
+   * while none was open used to be gone for good (#598). This stream is opened
+   * once (after the first session list, so a replayed event can resolve a pane
+   * name), never re-opened on a pane switch, and carries ids: the browser
+   * resends the last one as Last-Event-ID on its automatic retry, so a phone
+   * that lost signal resumes exactly where it stopped. `?since=` covers the
+   * other case — a full page reload, where the browser has no id to resend.
+   */
+  function openAttentionStream() {
+    if (attnEs) return;
+    var path = '/api/events';
+    if (lastAttentionCursor) path += '?since=' + encodeURIComponent(lastAttentionCursor);
+    attnEs = new EventSource(streamUrl(path));
+    attnEs.addEventListener('reset', function () { beginReplay(); });
+    attnEs.addEventListener('critical', function (e) { handleAttention('critical', e.data); });
+    attnEs.addEventListener('notify', function (e) { handleAttention('notify', e.data); });
+    // Left to EventSource's own retry, which resends Last-Event-ID for us.
+    // MERGE FOLLOW-UP: #596 adds a 401 probe (diagnoseStreamError) for a stream
+    // that fails because the token rotated; this stream should use it too once
+    // both branches are on main.
+    attnEs.onerror = function () { /* browser reconnects and replays */ };
   }
 
   function connect(sessionId) {
@@ -1087,6 +1190,9 @@
       renderSheet();
       renderFleet();
       startFleetPolling();
+      // After the fleet is known, so a replayed event can be labelled with its
+      // pane's name instead of a raw session id.
+      openAttentionStream();
       if (!sessions.length) {
         switcherEl.disabled = true;
         updateSwitcher(null);
