@@ -477,6 +477,9 @@ export default function AppLayout() {
   // the shared promise of whatever run is in flight. Late re-reconciles
   // after the first run completes still trigger a fresh pass.
   const reconcileInFlightRef = useRef<Promise<void> | null>(null);
+  // #582: monotonic reconcile cycle counter for clearer console logs —
+  // distinguishes "1 cycle walking 4 workspaces" from "4 cycles" (#582).
+  const reconcileCycleRef = useRef(0);
 
   useEffect(() => {
     // File drop via preload onFileDrop (reliable cross-platform)
@@ -583,7 +586,13 @@ export default function AppLayout() {
         if (signal?.aborted) return;
         const activePtys = listResult.data;
         const activeIds = new Set(activePtys.map((p: { id: string }) => p.id));
-        console.log('[AppLayout] Daemon active PTYs:', [...activeIds]);
+        // #582: include workspace count so "Reconciling workspace: X" logs that
+        // follow are unambiguously a single cycle walking N workspaces, not N
+        // separate cycles. The monotonic cycle number helps correlate across
+        // startup + late-reconcile runs in the console capture.
+        const wsCount = useStore.getState().workspaces.length;
+        reconcileCycleRef.current++;
+        console.log(`[AppLayout] Reconcile cycle #${reconcileCycleRef.current}: daemon has ${activeIds.size} PTYs across ${wsCount} workspace(s)`);
 
         // RCA A1 — empty-list guard (the single most important non-destructive
         // change). `pty.list` returning ZERO live sessions on a reconnect
@@ -736,7 +745,7 @@ export default function AppLayout() {
             useStore.getState().updateSurfacePtyId(a.paneId, a.surfaceId, a.newPtyId);
           }
         }
-        console.log('[AppLayout] Reconciliation complete');
+        console.log(`[AppLayout] Reconcile cycle #${reconcileCycleRef.current} complete (${absentCandidates.length} absent candidate(s))`);
       } finally {
         reconcileInFlightRef.current = null;
       }

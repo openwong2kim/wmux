@@ -1,3 +1,16 @@
+// #582: Suppress Electron's dev-only "Insecure Content-Security-Policy"
+// warning at the earliest possible point — before `app` ready and before any
+// BrowserWindow is created. Vite's HMR requires `unsafe-eval`, so the warning
+// is unavoidable in dev; the production CSP (enforced in createWindow) is
+// strict with no `unsafe-eval`, so this is dev-only noise reduction, not a
+// security trade-off. This MUST run before createWindow()/loadMainRenderer()
+// so the override is active before the first renderer navigates — setting it
+// inside createWindow (after loadMainRenderer) leaves a window where Electron
+// reads the flag before the override lands.
+if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+  process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
+}
+
 process.on('unhandledRejection', (reason) => {
   console.error('[Main] Unhandled rejection:', reason);
 });
