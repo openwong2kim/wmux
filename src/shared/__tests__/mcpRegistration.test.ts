@@ -207,6 +207,15 @@ describe('registerCodexNotify — resume-capture notify (skip-if-foreign)', () =
     expect(readCodexNotifyStatus(home).state).toBe('foreign');
   });
 
+  it('migrates a prior Forge ~/.fmux/hooks/wmux-codex-notify.mjs path to fmux-codex-notify.mjs', () => {
+    const legacyForge = 'C:\\Users\\u\\.fmux\\hooks\\wmux-codex-notify.mjs';
+    writeCodex(`model = "x"\nnotify = ["node", ${JSON.stringify(legacyForge)}]\n`);
+    const r = registerCodexNotify(home, NOTIFY);
+    expect(r.skipped).toBeNull();
+    expect(r.wrote).toBe(true);
+    expect(readCodexNotifyStatus(home)).toMatchObject({ state: 'wmux', path: NOTIFY });
+  });
+
   it('SKIPS a foreign notify — never clobbers the user’s program', () => {
     const p = writeCodex('model = "x"\nnotify = ["notify-send", "Codex"]\n');
     const r = registerCodexNotify(home, NOTIFY);
