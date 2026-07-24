@@ -638,6 +638,57 @@ export function roleBindingHint(b: { agent?: string; model?: string; args?: stri
   return undefined;
 }
 
+/**
+ * A text input whose DISPLAYED text survives normalization while you type.
+ *
+ * Every write to a binding is normalized on the way into the store
+ * (normalizeBindingField collapses whitespace runs and trims), so a plainly
+ * controlled input re-rendered from the store ate the space the instant you
+ * typed it: `--foo ` came back as `--foo`, and the next character landed as
+ * `--foob`. A two-token args value could be pasted but never typed.
+ *
+ * So while the field has focus we render the RAW keystrokes. The persisted value
+ * is still normalized on every keystroke — committing per keystroke rather than
+ * on blur is deliberate, since it means no edit can be stranded by an unmount
+ * (the panel closing, the section collapsing) with nothing to flush. Dropping
+ * the draft on blur or Enter snaps the field back to the canonical spelling that
+ * was actually stored, so the operator sees what wmux kept. A paste is just a
+ * change event, and rides the same path.
+ */
+function DraftTextInput({
+  value,
+  onChange,
+  ...rest
+}: {
+  value: string;
+  onChange: (e: { target: { value: string } }) => void;
+  'aria-label': string;
+  type: string;
+  placeholder?: string;
+  list?: string;
+  className?: string;
+  style?: React.CSSProperties;
+}) {
+  const [draft, setDraft] = useState<string | null>(null);
+  return (
+    <input
+      {...rest}
+      value={draft ?? value}
+      onChange={(e) => {
+        setDraft(e.target.value);
+        onChange(e);
+      }}
+      onBlur={() => setDraft(null)}
+      onKeyDown={(e) => {
+        if (e.key === 'Enter') {
+          setDraft(null);
+          e.currentTarget.blur();
+        }
+      }}
+    />
+  );
+}
+
 export interface RoleBindingsViewProps {
   bindings: Record<string, { agent?: string; model?: string; args?: string }>;
   /** Called with the FULL next binding for a role (the view merges the patch). */
@@ -679,7 +730,7 @@ export function RoleBindingsView({ bindings, onChange, t }: RoleBindingsViewProp
                     <option key={a} value={a}>{a}</option>
                   ))}
                 </select>
-                <input
+                <DraftTextInput
                   aria-label={t('settings.roleBindingModelLabel', { role })}
                   type="text"
                   list={listId}
@@ -697,7 +748,7 @@ export function RoleBindingsView({ bindings, onChange, t }: RoleBindingsViewProp
                       <option key={o.value} value={o.value}>{o.label}</option>
                     ))}
                 </datalist>
-                <input
+                <DraftTextInput
                   aria-label={t('settings.roleBindingArgsLabel', { role })}
                   type="text"
                   value={b.args ?? ''}
