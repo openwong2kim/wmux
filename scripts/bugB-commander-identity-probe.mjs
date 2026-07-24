@@ -36,11 +36,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  userDataDir as appUserDataDir,
+  mainPipeName,
+  packagedAppDir,
+  packagedAppExe,
+} from './helpers/packaged-app.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
-const MCP_BUNDLE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'resources', 'mcp-bundle', 'index.js');
+const APP_EXE = packagedAppExe();
+const MCP_BUNDLE = path.join(packagedAppDir(), 'resources', 'mcp-bundle', 'index.js');
 const USERNAME = os.userInfo().username || 'default';
 
 const results = [];
@@ -57,7 +65,7 @@ if (!fs.existsSync(APP_EXE)) { console.error(`packaged exe not found: ${APP_EXE}
 if (!fs.existsSync(MCP_BUNDLE)) { console.error(`mcp bundle not found: ${MCP_BUNDLE} — run \`npm run package\` first`); process.exit(2); }
 
 const suffix = `-bugbdog${process.pid}`;
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-bugbdog-'));
+const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-bugbdog-`));
 const isoEnv = {
   ...process.env,
   USERPROFILE: home, HOME: home,
@@ -69,12 +77,12 @@ delete isoEnv.HOMEDRIVE; delete isoEnv.HOMEPATH;
 for (const k of Object.keys(isoEnv)) { if (/^WMUX_(WORKSPACE_ID|PTY_ID|SURFACE_ID|SOCKET_PATH|COMMANDER_TOKEN)$/i.test(k)) delete isoEnv[k]; }
 fs.mkdirSync(isoEnv.APPDATA, { recursive: true });
 fs.mkdirSync(isoEnv.LOCALAPPDATA, { recursive: true });
-const userDataDir = path.join(isoEnv.APPDATA, `wmux${suffix}`);
+const userDataDir = appUserDataDir(isoEnv.APPDATA, suffix);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
 
-const mainPipe = `\\\\.\\pipe\\wmux${suffix}-${USERNAME}`;
-const authTokenPath = path.join(home, `.wmux${suffix}-auth-token`);
+const mainPipe = mainPipeName(suffix, USERNAME);
+const authTokenPath = appAuthTokenPath(home, suffix);
 function readMainToken() { try { return fs.readFileSync(authTokenPath, 'utf8').trim() || null; } catch { return null; } }
 let TOKEN = null;
 

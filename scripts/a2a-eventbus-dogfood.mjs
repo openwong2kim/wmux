@@ -2,7 +2,7 @@
 /**
  * A2A EventBus Inbox (S-C2 ②) — dynamic dogfood, Phase 1: DUAL-PARTY SCOPING.
  *
- * WHAT THIS VERIFIES (against the PACKAGED exe, out/wmux-win32-x64/wmux.exe)
+ * WHAT THIS VERIFIES (against the PACKAGED exe — see helpers/packaged-app.mjs)
  * ------------------------------------------------------------------------
  * The make-or-break invariant of the feature (plan §"The make-or-break"):
  * an A2A task involves exactly TWO workspaces (from, to). The receiver must
@@ -39,8 +39,8 @@
  *
  * ISOLATION (pra-poll-dogfood model): fresh temp USERPROFILE/HOME/APPDATA/
  * LOCALAPPDATA + a unique WMUX_DATA_SUFFIX re-keys the main pipe
- * (`\\.\pipe\wmux<suffix>-<user>`), the auth token (`<home>/.wmux<suffix>-auth-token`),
- * the daemon pipe, ~/.wmux and the Electron userData dir — BOTH the pipe and the
+ * (`\\.\pipe\<exe><suffix>-<user>`), the auth token (`<home>/.<exe><suffix>-auth-token`),
+ * the daemon pipe, the app home dir and the Electron userData dir — BOTH the pipe and the
  * token are suffix-aware (constants.ts:179/209), so this runs beside a live wmux
  * without touching it. CLEANUP: app kill + detached-daemon shutdown RPC →
  * pid SIGKILL fallback → temp HOME removed → zombie count = 0.
@@ -53,11 +53,18 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  REPO_ROOT,
+  appHomeDir,
+  authTokenPath as appAuthTokenPath,
+  daemonAuthTokenPaths,
+  mainPipeName,
+  packagedAppExe,
+  userDataDir as appUserDataDir,
+} from './helpers/packaged-app.mjs';
 
-const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
-const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
+const APP_EXE = packagedAppExe();
 const USERNAME = os.userInfo().username || 'default';
 
 const results = [];
@@ -80,7 +87,7 @@ if (!fs.existsSync(APP_EXE)) {
 
 // --- isolated instance environment (pra-poll-dogfood pattern) ---
 const suffix = `-a2adog${process.pid}`;
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-a2adog-'));
+const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-a2adog-`));
 const env = {
   ...process.env,
   USERPROFILE: home,
@@ -98,14 +105,14 @@ delete env.HOMEPATH;
 delete env.WMUX_DISABLE_CDP;
 fs.mkdirSync(env.APPDATA, { recursive: true });
 fs.mkdirSync(env.LOCALAPPDATA, { recursive: true });
-const userDataDir = path.join(env.APPDATA, `wmux${suffix}`);
+const userDataDir = appUserDataDir(env.APPDATA, suffix);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
 
-const wmuxDir = path.join(home, `.wmux${suffix}`);
-const mainPipe = `\\\\.\\pipe\\wmux${suffix}-${USERNAME}`;
-// getAuthTokenPath() === `${home}/.wmux${suffix}-auth-token` (constants.ts:209)
-const authTokenPath = path.join(home, `.wmux${suffix}-auth-token`);
+const wmuxDir = appHomeDir(home, suffix);
+const mainPipe = mainPipeName(suffix, USERNAME);
+// getAuthTokenPath() === `${home}/.<exe>${suffix}-auth-token` (constants.ts:209)
+const authTokenPath = appAuthTokenPath(home, suffix);
 
 function readMainToken() {
   try { const t = fs.readFileSync(authTokenPath, 'utf8').trim(); return t || null; }
@@ -122,7 +129,7 @@ function readDaemonPipeName() {
   catch { return null; }
 }
 function readDaemonToken() {
-  for (const p of [path.join(home, '.wmux', 'daemon-auth-token'), path.join(wmuxDir, 'daemon-auth-token')]) {
+  for (const p of daemonAuthTokenPaths(home, suffix)) {
     try { const t = fs.readFileSync(p, 'utf8').trim(); if (t) return t; } catch { /* next */ }
   }
   return null;
@@ -269,7 +276,7 @@ async function main() {
     check('boot: daemon pipe file appeared', daemonUp);
     TOKEN = await waitMainToken(15000);
     check('boot: main-pipe auth token present (suffix-aware path)', !!TOKEN,
-      TOKEN ? `…/.wmux${suffix}-auth-token` : `MISSING at ${authTokenPath}`);
+      TOKEN ? path.basename(authTokenPath) : `MISSING at ${authTokenPath}`);
     if (!TOKEN) throw new Error('no main-pipe token — cannot drive RPC');
 
     const initialWs = await waitRendererReady(TOKEN, 30000);

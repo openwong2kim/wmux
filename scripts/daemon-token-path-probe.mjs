@@ -6,7 +6,7 @@
  * Guards the fix for the suffix-unaware daemon token path: the daemon control
  * pipe is suffix-aware (`wmux-daemon${suffix}-user`) so a dev/dogfood instance
  * and a packaged instance run concurrently on DIFFERENT pipes — but all three
- * token sites used to hardcode the SHARED `~/.wmux/daemon-auth-token`, so the
+ * token sites used to hardcode the SHARED `~/.<exe>/daemon-auth-token`, so the
  * two daemons collided on one credential file (a cold-start race or rotateToken
  * could then brick one instance's auth). The fix routes the writer
  * (DaemonPipeServer.getTokenPath), the launcher reader
@@ -16,10 +16,10 @@
  * read-only fallback to the legacy unsuffixed path.
  *
  * PASS criteria:
- *   P1  suffixed daemon WRITES its token to `<home>/.wmux${SUFFIX}/daemon-auth-token`
- *   P2  ...and does NOT pollute the shared, unsuffixed `<home>/.wmux/daemon-auth-token`
+ *   P1  suffixed daemon WRITES its token to `<home>/.<exe>${SUFFIX}/daemon-auth-token`
+ *   P2  ...and does NOT pollute the shared, unsuffixed `<home>/.<exe>/daemon-auth-token`
  *   P3  a reader resolving the token path from the daemon's OWN env (the suffix-aware
- *       ladder — `.wmux${SUFFIX}` then legacy `.wmux`) lands on EXACTLY the path the
+ *       ladder — `.<exe>${SUFFIX}` then legacy `.<exe>`) lands on EXACTLY the path the
  *       daemon wrote: the writer<->reader path agreement ("mismatch = brick").
  *       NOTE: this drives the path FORMULA end-to-end against the real daemon; the
  *       reader FUNCTIONS' own logic (readDaemonAuthToken / resolveDaemonAuthToken,
@@ -27,7 +27,7 @@
  *       (client.daemonPipe.test.ts, DaemonPipeServer.test.ts).
  *   P4  ...and that reader-resolved token authenticates against the live daemon
  *   P5  a WRONG token is rejected (unauthorized) — sanity
- *   P6  BACKWARD COMPAT: with NO suffix, a pre-existing `~/.wmux/daemon-auth-token`
+ *   P6  BACKWARD COMPAT: with NO suffix, a pre-existing `~/.<exe>/daemon-auth-token`
  *       (as older versions wrote) is adopted and still authenticates — no stranding
  *
  * Run: npm run build:daemon && node scripts/daemon-token-path-probe.mjs
@@ -39,6 +39,10 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+} from './helpers/packaged-app.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
@@ -60,8 +64,8 @@ function writeConfig(wmuxDir, pipeName) {
 
 function makePipeName(tag) {
   return process.platform === 'win32'
-    ? `\\\\.\\pipe\\wmux-test-${tag}`
-    : path.join(os.tmpdir(), `wmux-test-${tag}.sock`);
+    ? `\\\\.\\pipe\\${EXECUTABLE_NAME}-test-${tag}`
+    : path.join(os.tmpdir(), `${EXECUTABLE_NAME}-test-${tag}.sock`);
 }
 
 // Spawn the real daemon with an isolated HOME and (optionally) a data suffix,
@@ -142,16 +146,16 @@ function rpc(socket, method, params, authToken, timeoutMs = 15_000) {
 
 // Reader-side path resolution, replicated from the shared helpers so the probe
 // EXERCISES the writer<->reader path agreement instead of hardcoding the write
-// path. Mirrors getDaemonAuthTokenPath (`${USERPROFILE||HOME}/.wmux${suffix}/
-// daemon-auth-token`) then getLegacyDaemonAuthTokenPath (`…/.wmux/…`). The daemon
+// path. Mirrors getDaemonAuthTokenPath (`${USERPROFILE||HOME}/.<exe>${suffix}/
+// daemon-auth-token`) then getLegacyDaemonAuthTokenPath (`…/.<exe>/…`). The daemon
 // was spawned with USERPROFILE/HOME = testHome, so a reader running in that env
 // computes exactly these candidates — driving the token READ through this ladder
 // is what proves env→path→token agreement E2E ("mismatch = brick"). Keep this in
 // lockstep with src/shared/constants.ts if the path formula changes.
 function readerResolveToken(testHome, suffix) {
   const candidates = [
-    path.join(testHome, `.wmux${suffix ?? ''}`, 'daemon-auth-token'),
-    path.join(testHome, '.wmux', 'daemon-auth-token'), // legacy unsuffixed fallback
+    path.join(appHomeDir(testHome, suffix ?? ''), 'daemon-auth-token'),
+    path.join(appHomeDir(testHome, ''), 'daemon-auth-token'), // legacy unsuffixed fallback
   ];
   for (const p of candidates) {
     try {
@@ -176,9 +180,9 @@ function killAll() {
 async function scenarioSuffixIsolation() {
   const tag = `tokp-${randomUUID().slice(0, 8)}`;
   const suffix = `-probe${randomUUID().slice(0, 4)}`;
-  const testHome = path.join(os.tmpdir(), `wmux-${tag}`);
-  const suffixedDir = path.join(testHome, `.wmux${suffix}`);
-  const legacyDir = path.join(testHome, '.wmux');
+  const testHome = path.join(os.tmpdir(), `${EXECUTABLE_NAME}-${tag}`);
+  const suffixedDir = appHomeDir(testHome, suffix);
+  const legacyDir = appHomeDir(testHome, '');
   fs.mkdirSync(suffixedDir, { recursive: true });
 
   const pipeName = makePipeName(tag);
@@ -194,7 +198,7 @@ async function scenarioSuffixIsolation() {
     const legacyToken = path.join(legacyDir, 'daemon-auth-token');
     const wroteSuffixed = await waitForFile(suffixedToken);
     check('P1 suffixed daemon WRITES token to the suffix-aware dir', wroteSuffixed, suffixedToken);
-    check('P2 suffixed daemon does NOT pollute the shared ~/.wmux token', !fs.existsSync(legacyToken), legacyToken);
+    check('P2 suffixed daemon does NOT pollute the shared unsuffixed app-home token', !fs.existsSync(legacyToken), legacyToken);
 
     // Resolve the token the way a READER does (independent path computation from
     // the daemon's env), NOT by hardcoding the write path — this is what actually
@@ -219,8 +223,8 @@ async function scenarioSuffixIsolation() {
 
 async function scenarioBackwardCompat() {
   const tag = `tokp-bc-${randomUUID().slice(0, 8)}`;
-  const testHome = path.join(os.tmpdir(), `wmux-${tag}`);
-  const wmuxDir = path.join(testHome, '.wmux'); // NO suffix — production layout
+  const testHome = path.join(os.tmpdir(), `${EXECUTABLE_NAME}-${tag}`);
+  const wmuxDir = appHomeDir(testHome, ''); // NO suffix — production layout
   fs.mkdirSync(wmuxDir, { recursive: true });
 
   const pipeName = makePipeName(tag);
@@ -237,7 +241,7 @@ async function scenarioBackwardCompat() {
     const resolved = await waitForPipeFile(wmuxDir);
     sock = await connectSocket(resolved);
     const good = await rpc(sock, 'daemon.ping', {}, legacyToken);
-    check('P6 backward-compat: pre-existing ~/.wmux token is adopted & authenticates', good.ok === true, good.ok ? 'pong' : `error=${JSON.stringify(good.error)}`);
+    check('P6 backward-compat: pre-existing unsuffixed app-home token is adopted & authenticates', good.ok === true, good.ok ? 'pong' : `error=${JSON.stringify(good.error)}`);
   } finally {
     try { sock?.destroy(); } catch { /* ignore */ }
     try { daemon.kill('SIGKILL'); } catch { /* ignore */ }

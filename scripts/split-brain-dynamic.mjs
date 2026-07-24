@@ -4,7 +4,7 @@
  * (plans/duplicate-daemon-split-brain.md, Step ③).
  *
  * Spawns the BUNDLED daemon in an isolated state dir (USERPROFILE/HOME →
- * tmpdir, unique pipe name) so it never touches the user's real ~/.wmux or
+ * tmpdir, unique pipe name) so it never touches the user's real ~/.<exe> or
  * the production daemon.
  *
  * SB1 — the split-brain trigger, end-to-end:
@@ -29,6 +29,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+} from './helpers/packaged-app.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
@@ -40,14 +44,14 @@ if (!fs.existsSync(DAEMON_BUNDLE)) {
 }
 
 function makeTestHome() {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-split-brain-'));
-  fs.mkdirSync(path.join(home, '.wmux'), { recursive: true });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-split-brain-`));
+  fs.mkdirSync(appHomeDir(home, ''), { recursive: true });
   return home;
 }
 
 function makePipeName(tag) {
-  if (process.platform === 'win32') return `\\\\.\\pipe\\wmux-test-${tag}`;
-  return path.join(os.tmpdir(), `wmux-test-${tag}.sock`);
+  if (process.platform === 'win32') return `\\\\.\\pipe\\${EXECUTABLE_NAME}-test-${tag}`;
+  return path.join(os.tmpdir(), `${EXECUTABLE_NAME}-test-${tag}.sock`);
 }
 
 function writeConfig(wmuxDir, pipeName, authToken) {
@@ -161,7 +165,7 @@ function exitOf(child) {
 // SB1 -------------------------------------------------------------------
 async function runSB1(report) {
   const testHome = makeTestHome();
-  const wmuxDir = path.join(testHome, '.wmux');
+  const wmuxDir = appHomeDir(testHome, '');
   const tag = `sb1-${randomUUID().slice(0, 8)}`;
   const pipeName = makePipeName(tag);
   const authToken = randomUUID();
@@ -217,7 +221,7 @@ async function runSB1(report) {
 // SB2 (regression) ------------------------------------------------------
 async function runSB2(report) {
   const testHome = makeTestHome();
-  const wmuxDir = path.join(testHome, '.wmux');
+  const wmuxDir = appHomeDir(testHome, '');
   const tag = `sb2-${randomUUID().slice(0, 8)}`;
   const pipeName = makePipeName(tag);
   const authToken = randomUUID();

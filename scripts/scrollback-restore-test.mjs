@@ -17,7 +17,7 @@
  *   2. Create a single session via daemon.createSession RPC.
  *   3. Wait briefly so the shell prompt populates the ring buffer.
  *   4. Graceful daemon.shutdown — should dump buffer to disk.
- *   5. Assert ~/.wmux/buffers/{sessionId}.buf exists and is non-empty.
+ *   5. Assert ~/.<exe>/buffers/{sessionId}.buf exists and is non-empty.
  *   6. Restart daemon against the SAME test home (recovery).
  *   7. RPC daemon.listSessions — savedId must appear in the recovered set.
  *   8. Pass.
@@ -34,6 +34,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+} from './helpers/packaged-app.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
@@ -44,16 +48,16 @@ if (!fs.existsSync(DAEMON_BUNDLE)) {
 }
 
 // Isolated state directory + custom pipe — never collide with the
-// user's real ~/.wmux/ daemon if one is running.
-const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-scrollback-restore-'));
-const TEST_WMUX = path.join(TEST_HOME, '.wmux');
+// user's real ~/.<exe>/ daemon if one is running.
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-scrollback-restore-`));
+const TEST_WMUX = appHomeDir(TEST_HOME, '');
 fs.mkdirSync(TEST_WMUX, { recursive: true });
 
 const PIPE_TAG = `scrollback-${randomUUID().slice(0, 8)}`;
 const PIPE_NAME =
   process.platform === 'win32'
-    ? `\\\\.\\pipe\\wmux-test-${PIPE_TAG}`
-    : path.join(TEST_HOME, `.wmux-test-${PIPE_TAG}.sock`);
+    ? `\\\\.\\pipe\\${EXECUTABLE_NAME}-test-${PIPE_TAG}`
+    : path.join(TEST_HOME, `.${EXECUTABLE_NAME}-test-${PIPE_TAG}.sock`);
 const AUTH_TOKEN = randomUUID();
 
 function writeConfig() {

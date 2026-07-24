@@ -91,6 +91,17 @@ export function daemonPipeName(suffix, username) {
   return `\\\\.\\pipe\\${EXECUTABLE_NAME}-daemon${suffix}-${username}`;
 }
 
+/**
+ * A session's dedicated stream pipe (SessionPipe.getPipeName): the win32 named
+ * pipe `\\.\pipe\<exe>-session-<id>`, or the POSIX socket `<home>/
+ * .<exe>-session-<id>.sock`. Not suffix-aware — the session id already makes it
+ * unique. `home` is the DAEMON's home, which harnesses override to a temp dir.
+ */
+export function sessionPipeName(sessionId, home) {
+  if (process.platform === 'win32') return `\\\\.\\pipe\\${EXECUTABLE_NAME}-session-${sessionId}`;
+  return path.join(home, `.${EXECUTABLE_NAME}-session-${sessionId}.sock`);
+}
+
 /** `<home>/.<exe><suffix>` — daemon.pid, daemon-pipe, config.json live here. */
 export function appHomeDir(home, suffix) {
   return path.join(home, `.${EXECUTABLE_NAME}${suffix}`);

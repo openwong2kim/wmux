@@ -32,6 +32,12 @@ const { randomUUID } = require('crypto');
 
 const REPO_ROOT = path.resolve(__dirname, '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
+// This script is CommonJS, so it cannot `require` helpers/packaged-app.mjs —
+// it reads the same package.json field the helper does. `~/.<exe>` mirrors
+// getWmuxHomeDir() in src/shared/constants.ts.
+const EXECUTABLE_NAME =
+  JSON.parse(fs.readFileSync(path.join(REPO_ROOT, 'package.json'), 'utf8')).executableName;
+const appHomeDir = (home) => path.join(home, `.${EXECUTABLE_NAME}`);
 const PER_SOCKET_LIMIT = 50; // DaemonPipeServer.PER_SOCKET_RATE_LIMIT
 const BURST = 70;            // > limit so the tail of the burst is rate-limited
 const TARGET = { cols: 137, rows: 42 }; // distinctive geometry for the self-heal
@@ -51,14 +57,14 @@ process.on('unhandledRejection', () => { if (counting) unhandledCount++; });
 process.on('uncaughtException', (err) => { console.error('[uncaughtException]', err.stack || err.message); });
 
 function makeTestHome() {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-resize-rl-'));
-  fs.mkdirSync(path.join(home, '.wmux'), { recursive: true });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-resize-rl-`));
+  fs.mkdirSync(appHomeDir(home), { recursive: true });
   return home;
 }
 function makePipeName(tag) {
   return process.platform === 'win32'
-    ? `\\\\.\\pipe\\wmux-test-${tag}`
-    : path.join(os.tmpdir(), `wmux-test-${tag}.sock`);
+    ? `\\\\.\\pipe\\${EXECUTABLE_NAME}-test-${tag}`
+    : path.join(os.tmpdir(), `${EXECUTABLE_NAME}-test-${tag}.sock`);
 }
 function writeConfig(wmuxDir, pipeName, authToken) {
   fs.writeFileSync(path.join(wmuxDir, 'config.json'), JSON.stringify({
@@ -158,7 +164,7 @@ function sendResize(socket, sid, cols, rows, authToken) {
 
 async function main() {
   const testHome = makeTestHome();
-  const wmuxDir = path.join(testHome, '.wmux');
+  const wmuxDir = appHomeDir(testHome);
   const tag = `resize-rl-${randomUUID().slice(0, 8)}`;
   const pipeName = makePipeName(tag);
   const authToken = randomUUID();

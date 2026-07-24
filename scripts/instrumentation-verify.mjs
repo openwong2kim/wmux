@@ -29,6 +29,11 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+  sessionPipeName as appSessionPipeName,
+} from './helpers/packaged-app.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
@@ -39,14 +44,14 @@ if (!fs.existsSync(DAEMON_BUNDLE)) {
 }
 
 function makeTestHome() {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-instrum-'));
-  fs.mkdirSync(path.join(home, '.wmux'), { recursive: true });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-instrum-`));
+  fs.mkdirSync(appHomeDir(home, ''), { recursive: true });
   return home;
 }
 
 function makePipeName(tag) {
-  if (process.platform === 'win32') return `\\\\.\\pipe\\wmux-instrum-${tag}`;
-  return path.join(os.tmpdir(), `wmux-instrum-${tag}.sock`);
+  if (process.platform === 'win32') return `\\\\.\\pipe\\${EXECUTABLE_NAME}-instrum-${tag}`;
+  return path.join(os.tmpdir(), `${EXECUTABLE_NAME}-instrum-${tag}.sock`);
 }
 
 function writeConfig(wmuxDir, pipeName, authToken) {
@@ -143,7 +148,7 @@ function connectPipe(pipeName) {
 
 async function flow1ShutdownPhases() {
   const testHome = makeTestHome();
-  const wmuxDir = path.join(testHome, '.wmux');
+  const wmuxDir = appHomeDir(testHome, '');
   const pipeName = makePipeName(`F1-${Date.now()}`);
   const authToken = randomUUID();
   writeConfig(wmuxDir, pipeName, authToken);
@@ -223,7 +228,7 @@ async function flow1ShutdownPhases() {
 }
 
 async function flow2Recovery(testHome) {
-  const wmuxDir = path.join(testHome, '.wmux');
+  const wmuxDir = appHomeDir(testHome, '');
   const cfg = JSON.parse(fs.readFileSync(path.join(wmuxDir, 'config.json'), 'utf-8'));
   const pipeName = cfg.daemon.pipeName;
   const authToken = fs.readFileSync(path.join(wmuxDir, 'daemon-auth-token'), 'utf-8');
@@ -277,9 +282,7 @@ async function flow3FlushBytes(daemonProc, log, pipeName, authToken, sessionId, 
   // POSIX socket path must be derived from the daemon child's HOME (testHome),
   // not the parent harness's os.homedir(); the daemon is spawned with HOME
   // overridden to the temp test home, so its os.homedir() resolves there.
-  const sessionPipeName = process.platform === 'win32'
-    ? `\\\\.\\pipe\\wmux-session-${effective}`
-    : `${testHome}/.wmux-session-${effective}.sock`;
+  const sessionPipeName = appSessionPipeName(effective, testHome);
   return await attemptSessionFlush(sessionPipeName, authToken, log);
 }
 

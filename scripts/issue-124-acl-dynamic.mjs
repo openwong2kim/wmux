@@ -40,6 +40,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { EXECUTABLE_NAME } from './helpers/packaged-app.mjs';
 
 // import.meta.dirname is undefined before Node 20.11; package.json supports
 // node >=18, so derive the script directory from the module URL instead.
@@ -82,7 +83,7 @@ const OWNER_SID = currentSid();
 async function loadRealSecurityModule() {
   const require = (await import('node:module')).createRequire(import.meta.url);
   const esbuild = require('esbuild');
-  const outFile = path.join(os.tmpdir(), `wmux-security-${process.pid}-${Date.now()}.mjs`);
+  const outFile = path.join(os.tmpdir(), `${EXECUTABLE_NAME}-security-${process.pid}-${Date.now()}.mjs`);
   esbuild.buildSync({
     entryPoints: [SECURITY_TS],
     bundle: true,
@@ -135,7 +136,7 @@ function ps(script, targetPath) {
 }
 
 function makeTempToken() {
-  const p = path.join(os.tmpdir(), `wmux-tok-${process.pid}-${Math.random().toString(36).slice(2)}`);
+  const p = path.join(os.tmpdir(), `${EXECUTABLE_NAME}-tok-${process.pid}-${Math.random().toString(36).slice(2)}`);
   fs.writeFileSync(p, 'secret-token-xyz', { encoding: 'utf8', mode: 0o600 });
   return p;
 }
@@ -209,7 +210,7 @@ async function main() {
   // unreachable there: a fresh file carries only inherited ACEs).
   console.log('CASE (a) fresh-inherited — secureWriteTokenFile then reHarden');
   {
-    const p = path.join(os.tmpdir(), `wmux-fresh-${process.pid}-${Math.random().toString(36).slice(2)}`);
+    const p = path.join(os.tmpdir(), `${EXECUTABLE_NAME}-fresh-${process.pid}-${Math.random().toString(36).slice(2)}`);
     let threw = null;
     try {
       secureWriteTokenFile(p, 'secret-token-xyz'); // real write path: writes + hardens

@@ -34,13 +34,13 @@
  *
  * ISOLATION MODEL (copied from scripts/m0-dynamic-verify.mjs)
  * ----------------------------------------------------------
- *   - Spawns out/wmux-win32-x64/wmux.exe with a temp USERPROFILE/HOME/APPDATA/
- *     LOCALAPPDATA so .wmux/, the auth token, pid-map and tcp-port are
+ *   - Spawns the packaged app (helpers/packaged-app.mjs) with a temp USERPROFILE/HOME/APPDATA/
+ *     LOCALAPPDATA so .<exe>/, the auth token, pid-map and tcp-port are
  *     sandboxed. WMUX_DISABLE_CDP=true keeps the browser engine out.
  *   - The win32 pipe name is shared per Windows account (os.userInfo()), so
  *     we pre-flight pipeAlive() and ABORT if a real wmux is already on it —
  *     running two daemons collides on the single per-user pipe.
- *   - Reads the token from <TEST_HOME>/.wmux-auth-token once the app writes it.
+ *   - Reads the token from <TEST_HOME>/.<exe>-auth-token once the app writes it.
  *   - Raw newline-delimited JSON-RPC over the pipe. NO clientName, so the
  *     request is recorded 'legacy' and grandfathered by RpcRouter — this runs
  *     against the production enforce-mode app without an approval dialog
@@ -67,6 +67,12 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  packagedAppExe,
+  mainPipeName,
+} from './helpers/packaged-app.mjs';
 
 // === Constants mirrored from source (verify against the cited files) ===
 // src/shared/events.ts
@@ -80,8 +86,8 @@ const GLOBAL_RATE = 200;      // rpc/s across all sockets
 // engines.node >=18, so use the fileURLToPath shim like the other scripts.
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
-const PIPE_NAME = `\\\\.\\pipe\\wmux-${os.userInfo().username}`;
+const APP_EXE = packagedAppExe();
+const PIPE_NAME = mainPipeName('', os.userInfo().username);
 
 // === CLI ===
 function parseArgs(argv) {
@@ -107,7 +113,7 @@ Flags:
   --json <path>      Also write machine-readable results JSON to <path>.
   -h, --help         Show this help.
 
-Spawns the packaged app at out/wmux-win32-x64/wmux.exe in an isolated temp
+Spawns the packaged app at ${APP_EXE} in an isolated temp
 HOME, talks raw JSON-RPC over the per-user Named Pipe (no clientName →
 grandfathered 'legacy'), runs B1-B4, and prints a results table. Numbers are
 environment-dependent; re-run on the target machine. See
@@ -120,8 +126,8 @@ if (!fs.existsSync(APP_EXE)) {
   process.exit(2);
 }
 
-const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-bench-'));
-const AUTH_TOKEN_PATH = path.join(TEST_HOME, '.wmux-auth-token');
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-bench-`));
+const AUTH_TOKEN_PATH = appAuthTokenPath(TEST_HOME, '');
 
 let appProc;
 const cleanup = () => new Promise((resolve) => {

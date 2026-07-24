@@ -49,6 +49,10 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+} from './helpers/packaged-app.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
@@ -61,14 +65,14 @@ if (!fs.existsSync(DAEMON_BUNDLE)) {
 // --- harness helpers (mirrors persistence-dynamic.mjs) -----------------
 
 function makeTestHome() {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wc-dyn-'));
-  fs.mkdirSync(path.join(home, '.wmux'), { recursive: true });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-wc-dyn-`));
+  fs.mkdirSync(appHomeDir(home, ''), { recursive: true });
   return home;
 }
 
 function makePipeName(tag) {
-  if (process.platform === 'win32') return `\\\\.\\pipe\\wmux-test-${tag}`;
-  return path.join(os.tmpdir(), `wmux-test-${tag}.sock`);
+  if (process.platform === 'win32') return `\\\\.\\pipe\\${EXECUTABLE_NAME}-test-${tag}`;
+  return path.join(os.tmpdir(), `${EXECUTABLE_NAME}-test-${tag}.sock`);
 }
 
 function writeConfig(wmuxDir, pipeName, authToken) {
@@ -187,7 +191,7 @@ async function killDaemon(child) {
 
 async function runWC1(report) {
   const testHome = makeTestHome();
-  const wmuxDir = path.join(testHome, '.wmux');
+  const wmuxDir = appHomeDir(testHome, '');
   const pipeName = makePipeName(`WC1-${randomUUID().slice(0, 8)}`);
   const authToken = randomUUID();
   writeConfig(wmuxDir, pipeName, authToken);
@@ -254,7 +258,7 @@ async function runWC1(report) {
 
 async function runWC2(report) {
   const testHome = makeTestHome();
-  const wmuxDir = path.join(testHome, '.wmux');
+  const wmuxDir = appHomeDir(testHome, '');
   const pipeName = makePipeName(`WC2-${randomUUID().slice(0, 8)}`);
   const authToken = randomUUID();
   writeConfig(wmuxDir, pipeName, authToken);

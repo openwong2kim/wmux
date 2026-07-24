@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 /**
  * S-C2 Fleet View Deepening — LIVE dogfood against the PACKAGED exe.
- * (out/wmux-win32-x64/wmux.exe, built from team/2026-06-15/s-c2-fleet-view-deepening)
+ * (helpers/packaged-app.mjs, built from team/2026-06-15/s-c2-fleet-view-deepening)
  *
  * Proves the two highest-risk things end-to-end in a real build, then attempts the
  * MCP trust-DB chain. See plans/s-c2-fleet-view-deepening.md + decisions.md (6 guards).
@@ -28,14 +28,14 @@
  *   the enforcer rejects (unconfirmed + declaredCaps>0) → ApprovalQueue mints a
  *   prompt → PERMISSION_PROMPT_OPEN → useApprovalInboxBridge.addMcpPrompt.
  *   Two distinct clientNames (distinct caps) → two distinct inbox rows. Approve
- *   one (non-critical), Deny the other; assert ~/.wmux<suffix>/plugin-trust.json
+ *   one (non-critical), Deny the other; assert ~/.<exe><suffix>/plugin-trust.json
  *   shows trusted/denied. Also proves the critical-Enter guard with a third
  *   critical-capability plugin: focus its row, press Enter → NOT approved (row
  *   stays); click its Approve button → resolves.
  *
  * ISOLATION (a2a-eventbus-dogfood pattern): fresh temp USERPROFILE/HOME/APPDATA/
  * LOCALAPPDATA + a unique WMUX_DATA_SUFFIX re-keys the main pipe, the auth token,
- * ~/.wmux<suffix>, the trust DB and the userData dir — runs beside a live wmux
+ * ~/.<exe><suffix>, the trust DB and the userData dir — runs beside a live wmux
  * untouched. CLEANUP: app kill + detached-daemon shutdown → SIGKILL fallback →
  * temp HOME removed → zombie count target 0.
  *
@@ -48,11 +48,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  appHomeDir,
+  userDataDir as appUserDataDir,
+  mainPipeName,
+  packagedAppExe,
+} from './helpers/packaged-app.mjs';
 import { chromium } from 'playwright-core';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
+const APP_EXE = packagedAppExe();
 const OUT_DIR = path.join(REPO_ROOT, 'out-sc2-dogfood');
 const USERNAME = os.userInfo().username || 'default';
 const MARKER = 'S_C2_TAIL_MARKER_zq7x';
@@ -73,7 +81,7 @@ fs.mkdirSync(OUT_DIR, { recursive: true });
 
 // ── isolated instance environment ──
 const suffix = `-sc2dog${process.pid}`;
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-sc2dog-'));
+const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-sc2dog-`));
 const env = {
   ...process.env,
   USERPROFILE: home,
@@ -88,20 +96,20 @@ delete env.HOMEPATH;
 delete env.WMUX_DISABLE_CDP; // CDP defaults ON (WMUX_DISABLE_CDP !== 'true')
 fs.mkdirSync(env.APPDATA, { recursive: true });
 fs.mkdirSync(env.LOCALAPPDATA, { recursive: true });
-const userDataDir = path.join(env.APPDATA, `wmux${suffix}`);
+const userDataDir = appUserDataDir(env.APPDATA, suffix);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
 
-const wmuxDir = path.join(home, `.wmux${suffix}`);
-const mainPipe = `\\\\.\\pipe\\wmux${suffix}-${USERNAME}`;
-const authTokenPath = path.join(home, `.wmux${suffix}-auth-token`);
+const wmuxDir = appHomeDir(home, suffix);
+const mainPipe = mainPipeName(suffix, USERNAME);
+const authTokenPath = appAuthTokenPath(home, suffix);
 const trustPath = path.join(wmuxDir, 'plugin-trust.json');
 
 function readMainToken() { try { const t = fs.readFileSync(authTokenPath, 'utf8').trim(); return t || null; } catch { return null; } }
 function readDaemonPid() { try { const p = Number(fs.readFileSync(path.join(wmuxDir, 'daemon.pid'), 'utf8').trim()); return Number.isInteger(p) && p > 0 ? p : null; } catch { return null; } }
 function readDaemonPipeName() { try { return fs.readFileSync(path.join(wmuxDir, 'daemon-pipe'), 'utf8').trim() || null; } catch { return null; } }
 function readDaemonToken() {
-  for (const p of [path.join(home, '.wmux', 'daemon-auth-token'), path.join(wmuxDir, 'daemon-auth-token')]) {
+  for (const p of [path.join(appHomeDir(home, ''), 'daemon-auth-token'), path.join(wmuxDir, 'daemon-auth-token')]) {
     try { const t = fs.readFileSync(p, 'utf8').trim(); if (t) return t; } catch { /* next */ }
   }
   return null;
@@ -291,7 +299,7 @@ async function main() {
     const daemonUp = await waitDaemonPipeFile(30000);
     check('boot: daemon pipe file appeared', daemonUp);
     TOKEN = await waitMainToken(20000);
-    check('boot: main-pipe auth token present', !!TOKEN, TOKEN ? `…/.wmux${suffix}-auth-token` : `MISSING ${authTokenPath}`);
+    check('boot: main-pipe auth token present', !!TOKEN, TOKEN ? path.basename(authTokenPath) : `MISSING ${authTokenPath}`);
     if (!TOKEN) throw new Error('no main-pipe token');
     const initialWs = await waitRendererReady(TOKEN, 40000);
     check('boot: renderer ready (workspace.list round-trip)', Array.isArray(initialWs), `${initialWs.length} initial ws`);

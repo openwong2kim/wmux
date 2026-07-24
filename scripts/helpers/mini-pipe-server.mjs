@@ -9,7 +9,7 @@
  * Handlers reproduced:
  *
  *   a2a.resolve.identity
- *     Reads ~/.wmux/pid-map/ (via HOME/USERPROFILE override). Each entry is
+ *     Reads ~/.<exe>/pid-map/ (via HOME/USERPROFILE override). Each entry is
  *     PID → ptyId; the handler resolves the CURRENT owning workspace for that
  *     ptyId, mirroring src/main/pipe/handlers/a2a.rpc.ts. The live pty →
  *     workspace lookup (real handler: input.findOwnerWorkspace on the
@@ -45,6 +45,7 @@ import net from 'node:net';
 import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
+import { appHomeDir } from './packaged-app.mjs';
 
 const pipeName = process.env.WMUX_MINISERVER_PIPE;
 const expectedToken = process.env.WMUX_MINISERVER_TOKEN;
@@ -56,7 +57,7 @@ if (!pipeName || !expectedToken) {
 
 function getPidMapDir() {
   const home = process.env.USERPROFILE || process.env.HOME || os.homedir();
-  return path.join(home, '.wmux', 'pid-map');
+  return path.join(appHomeDir(home, ''), 'pid-map');
 }
 
 function getSimulatedOwners() {

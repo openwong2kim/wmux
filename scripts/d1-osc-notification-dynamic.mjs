@@ -20,6 +20,11 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+  sessionPipeName as appSessionPipeName,
+} from './helpers/packaged-app.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
@@ -29,15 +34,15 @@ if (!fs.existsSync(DAEMON_BUNDLE)) {
   process.exit(2);
 }
 
-const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-d1-osc-'));
-const TEST_WMUX = path.join(TEST_HOME, '.wmux');
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-d1-osc-`));
+const TEST_WMUX = appHomeDir(TEST_HOME, '');
 fs.mkdirSync(TEST_WMUX, { recursive: true });
 
 const PIPE_TAG = `d1osc-${randomUUID().slice(0, 8)}`;
 const PIPE_NAME =
   process.platform === 'win32'
-    ? `\\\\.\\pipe\\wmux-test-${PIPE_TAG}`
-    : path.join(TEST_HOME, `.wmux-test-${PIPE_TAG}.sock`);
+    ? `\\\\.\\pipe\\${EXECUTABLE_NAME}-test-${PIPE_TAG}`
+    : path.join(TEST_HOME, `.${EXECUTABLE_NAME}-test-${PIPE_TAG}.sock`);
 const AUTH_TOKEN = randomUUID();
 
 fs.writeFileSync(
@@ -146,9 +151,7 @@ try {
   console.log('[probe] session created');
 
   await rpc(control, 'daemon.attachSession', { id: SESSION_ID });
-  const sessionPipeName = process.platform === 'win32'
-    ? `\\\\.\\pipe\\wmux-session-${SESSION_ID}`
-    : path.join(os.tmpdir(), `wmux-session-${SESSION_ID}.sock`);
+  const sessionPipeName = appSessionPipeName(SESSION_ID, os.tmpdir());
 
   const sessionSock = await new Promise((resolve, reject) => {
     const s = net.createConnection(sessionPipeName, () => resolve(s));

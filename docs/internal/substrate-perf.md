@@ -27,9 +27,9 @@ The bench measures the substrate **end to end over the Named Pipe against the pa
 
 `scripts/substrate-bench.mjs` reuses the isolation model from `scripts/m0-dynamic-verify.mjs`:
 
-- Spawns `out/wmux-win32-x64/wmux.exe` with a temp `USERPROFILE`/`HOME`/`APPDATA`/`LOCALAPPDATA`, so `.wmux/`, the auth token, the pid-map, and the tcp-port file are sandboxed. `WMUX_DISABLE_CDP=true` keeps the browser engine out of the measurement.
-- The win32 pipe name is shared per Windows account (`\\.\pipe\wmux-<username>`), so the bench pre-flights `pipeAlive()` and **aborts** if a real wmux daemon is already on it — two daemons collide on the single per-user pipe.
-- Reads the token from `<TEST_HOME>/.wmux-auth-token` once the app writes it, then talks raw newline-delimited JSON-RPC over the pipe.
+- Spawns the packaged app with a temp `USERPROFILE`/`HOME`/`APPDATA`/`LOCALAPPDATA`, so the app home dir, the auth token, the pid-map, and the tcp-port file are sandboxed. `WMUX_DISABLE_CDP=true` keeps the browser engine out of the measurement. The exe path and every runtime path below are derived from `package.json` `productName`/`executableName` via `scripts/helpers/packaged-app.mjs` — for this fork that resolves to `out/fmux-win32-x64/fmux.exe` and `~/.fmux`.
+- The win32 pipe name is shared per Windows account (`\\.\pipe\<exe>-<username>`), so the bench pre-flights `pipeAlive()` and **aborts** if a real daemon is already on it — two daemons collide on the single per-user pipe.
+- Reads the token from `<TEST_HOME>/.<exe>-auth-token` once the app writes it, then talks raw newline-delimited JSON-RPC over the pipe.
 - **No `clientName`.** The request is recorded as `legacy` by `RpcRouter` and grandfathered, so the bench runs against the production **enforce-mode** app without tripping an approval dialog (the same reason `m0-dynamic-verify.mjs` works against the packaged build — see `RpcRouter.dispatch`).
 - Cleanup is SIGTERM then SIGKILL, awaited before exit so the temp HOME is removed.
 
@@ -77,7 +77,7 @@ The bench prints a results table and emits machine-readable JSON both to `--json
 
 > Numbers below are from one bench run on the environment noted. They are environment-dependent (pipe IPC latency, CPU, disk — each write persists `metadata.json` synchronously); re-run on the target machine before quoting. Re-generate verbatim with the §2.4 command and lift the values from the `BENCH_JSON` block.
 
-Environment: `win32, Node v22.21.1, packaged app build 2.17.1 (out/wmux-win32-x64), --duration 10s, run 2026-06-10`
+Environment: `win32, Node v22.21.1, packaged app build 2.17.1 (upstream wmux out dir, pre-fork), --duration 10s, run 2026-06-10`
 
 ### B1 — metadata write throughput (single socket, paced under cap)
 

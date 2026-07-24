@@ -1,7 +1,7 @@
 /*
  * Live dogfood — issue #285: pane + surface lifecycle MCP tools under ENFORCE.
  *
- * Spawns an isolated packaged wmux (out/wmux-win32-x64/wmux.exe, fresh `npm run
+ * Spawns an isolated packaged app (helpers/packaged-app.mjs, fresh `npm run
  * package`) with WMUX_DATA_SUFFIX isolation + mcp.mode=enforce, then over the
  * main-pipe RPC proves the #285 first-party allowlist end to end:
  *
@@ -31,10 +31,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  appHomeDir,
+  userDataDir as appUserDataDir,
+  mainPipeName,
+  packagedAppExe,
+} from './helpers/packaged-app.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
+const APP_EXE = packagedAppExe();
 const USERNAME = os.userInfo().username || 'default';
 
 const results = [];
@@ -50,7 +58,7 @@ if (process.platform !== 'win32') { console.log('issue-285-dogfood: SKIP (win32-
 if (!fs.existsSync(APP_EXE)) { console.error(`packaged exe not found: ${APP_EXE} — run \`npm run package\` first`); process.exit(2); }
 
 const suffix = `-pl285dog${process.pid}`;
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pl285-'));
+const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-pl285-`));
 const env = {
   ...process.env,
   USERPROFILE: home, HOME: home,
@@ -62,18 +70,18 @@ delete env.HOMEDRIVE; delete env.HOMEPATH;
 delete env.NODE_ENV; // ensure packaged default (isDev=false ⇒ enforce), not a dev shell's 'development'
 fs.mkdirSync(env.APPDATA, { recursive: true });
 fs.mkdirSync(env.LOCALAPPDATA, { recursive: true });
-const userDataDir = path.join(env.APPDATA, `wmux${suffix}`);
+const userDataDir = appUserDataDir(env.APPDATA, suffix);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
 
-// Belt-and-suspenders: seed ~/.wmux<suffix>/config.json with mcp.mode=enforce.
+// Belt-and-suspenders: seed ~/.<exe><suffix>/config.json with mcp.mode=enforce.
 // The packaged exe already defaults to enforce; this pins it regardless of env.
-const wmuxDir = path.join(home, `.wmux${suffix}`);
+const wmuxDir = appHomeDir(home, suffix);
 fs.mkdirSync(wmuxDir, { recursive: true });
 fs.writeFileSync(path.join(wmuxDir, 'config.json'), JSON.stringify({ mcp: { mode: 'enforce' } }, null, 2), 'utf8');
 
-const mainPipe = `\\\\.\\pipe\\wmux${suffix}-${USERNAME}`;
-const authTokenPath = path.join(home, `.wmux${suffix}-auth-token`);
+const mainPipe = mainPipeName(suffix, USERNAME);
+const authTokenPath = appAuthTokenPath(home, suffix);
 
 function readMainToken() { try { return fs.readFileSync(authTokenPath, 'utf8').trim() || null; } catch { return null; } }
 

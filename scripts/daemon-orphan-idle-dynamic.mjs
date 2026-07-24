@@ -26,6 +26,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+} from './helpers/packaged-app.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
@@ -97,11 +101,11 @@ function waitForPipeFile(wmuxDir, timeoutMs = 10_000) {
 }
 
 async function runScenario(name, opts) {
-  const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), `wmux-orphan-${name}-`));
-  const TEST_WMUX = path.join(TEST_HOME, '.wmux');
+  const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-orphan-${name}-`));
+  const TEST_WMUX = appHomeDir(TEST_HOME, '');
   fs.mkdirSync(TEST_WMUX, { recursive: true });
   const PIPE = WIN
-    ? `\\\\.\\pipe\\wmux-test-${name}-${randomUUID().slice(0, 8)}`
+    ? `\\\\.\\pipe\\${EXECUTABLE_NAME}-test-${name}-${randomUUID().slice(0, 8)}`
     : path.join(TEST_HOME, `s-${randomUUID().slice(0, 8)}.sock`);
   const TOKEN = randomUUID();
 

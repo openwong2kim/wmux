@@ -1,20 +1,20 @@
 #!/usr/bin/env node
 /**
  * PR #140 real-profile dynamic verification — Windows token-file DACL hardening
- * run against the REAL `%USERPROFILE%\.wmux\` directory rather than `%TEMP%`.
+ * run against the REAL `%USERPROFILE%\.<exe>\` directory rather than `%TEMP%`.
  *
  * Why this exists: `scripts/issue-124-acl-dynamic.mjs` proves the genuine
  * `secureWriteTokenFile` / `reHardenTokenFileAcl` produce an owner-only DACL
  * across the (a) fresh-inherited / (b) shipped-icacls / (c) explicit-Everyone
  * states — but it seeds those files under `%TEMP%` (…\AppData\Local\Temp), whose
- * parent inheritance descriptor can differ from the actual `.wmux` directory the
+ * parent inheritance descriptor can differ from the actual `.<exe>` directory the
  * daemon writes the auth token into. SECURITY.md §1.1 mandates the real-profile
  * descriptor for any Windows token-ACL change (precedent: #41/#43 passed isolated
  * tests then locked the owner out in real dogfood).
  *
  * This harness compiles the REAL src/shared/security.ts and runs the genuine
  * functions against uniquely-named PROBE files created INSIDE the real
- * `%USERPROFILE%\.wmux\` directory (never the live `daemon-auth-token` — so a
+ * `%USERPROFILE%\.<exe>\` directory (never the live `daemon-auth-token` — so a
  * running daemon is untouched). It exercises the same three on-disk states with
  * the real parent-directory inheritance the daemon actually inherits, and the
  * decisive (c) case proves the new DACL-only rebuild strips a pre-existing
@@ -29,6 +29,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { EXECUTABLE_NAME, appHomeDir } from './helpers/packaged-app.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
@@ -38,7 +39,7 @@ const ICACLS = path.join(SYS32, 'icacls.exe');
 const POWERSHELL = path.join(SYS32, 'WindowsPowerShell', 'v1.0', 'powershell.exe');
 
 // The REAL profile directory the daemon writes the auth token into.
-const WMUX_DIR = path.join(os.homedir(), '.wmux');
+const WMUX_DIR = appHomeDir(os.homedir(), '');
 const LIVE_TOKEN = path.join(WMUX_DIR, 'daemon-auth-token');
 
 const results = [];
@@ -65,7 +66,7 @@ const OWNER_SID = currentSid();
 async function loadRealSecurityModule() {
   const require = (await import('node:module')).createRequire(import.meta.url);
   const esbuild = require('esbuild');
-  const outFile = path.join(os.tmpdir(), `wmux-security-${process.pid}-${Date.now()}.mjs`);
+  const outFile = path.join(os.tmpdir(), `${EXECUTABLE_NAME}-security-${process.pid}-${Date.now()}.mjs`);
   esbuild.buildSync({
     entryPoints: [SECURITY_TS],
     bundle: true,
@@ -91,7 +92,7 @@ function ps(script, targetPath) {
   ).toString('utf8').trim();
 }
 
-// Probe files live in the REAL .wmux dir, uniquely named so they can never
+// Probe files live in the REAL .<exe> dir, uniquely named so they can never
 // collide with the live token a running daemon owns.
 const probes = [];
 function makeProbeToken() {
@@ -178,19 +179,19 @@ function describeParentInheritance() {
 
 async function main() {
   console.log(`pr140-realprofile-acl-dynamic — owner SID ${OWNER_SID}`);
-  console.log(`real .wmux dir: ${WMUX_DIR}`);
+  console.log(`real app home dir: ${WMUX_DIR}`);
   console.log(`live token present: ${fs.existsSync(LIVE_TOKEN)} (NEVER touched by this harness)`);
   console.log(`PowerShell present: ${fs.existsSync(POWERSHELL)} (primary .NET path)`);
-  console.log(`.wmux inherited ACEs (the real descriptor a probe inherits): ${describeParentInheritance()}\n`);
+  console.log(`app-home inherited ACEs (the real descriptor a probe inherits):${describeParentInheritance()}\n`);
 
   if (!fs.existsSync(WMUX_DIR)) {
-    console.log('FAIL: real .wmux dir does not exist — cannot run real-profile probe.');
+    console.log(`FAIL: ${WMUX_DIR} does not exist — cannot run real-profile probe.`);
     process.exit(1);
   }
 
   const { reHardenTokenFileAcl, secureWriteTokenFile } = await loadRealSecurityModule();
 
-  // ---- (a) fresh write into the REAL .wmux dir ----
+  // ---- (a) fresh write into the REAL .<exe> dir ----
   console.log('CASE (a) fresh write in real .wmux — secureWriteTokenFile then reHarden');
   {
     const p = path.join(WMUX_DIR, `pr140-fresh-${process.pid}-${Math.random().toString(36).slice(2)}`);

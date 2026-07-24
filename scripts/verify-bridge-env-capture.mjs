@@ -21,6 +21,10 @@ import { dirname, resolve } from 'node:path';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+} from './helpers/packaged-app.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BRIDGE = resolve(__dirname, '..', 'integrations', 'claude', 'bin', 'wmux-bridge.mjs');
@@ -52,14 +56,14 @@ const cases = [
   },
 ];
 
-// Create a temp dir so we don't pollute ~/.wmux/bridge.log with verification runs.
-const tmpHome = mkdtempSync(join(tmpdir(), 'wmux-bridge-verify-'));
-// Bridge bails before envelope build when `~/.wmux-auth-token` is missing
+// Create a temp dir so we don't pollute ~/.<exe>/bridge.log with verification runs.
+const tmpHome = mkdtempSync(join(tmpdir(), `${EXECUTABLE_NAME}-bridge-verify-`));
+// Bridge bails before envelope build when `~/.<exe>-auth-token` is missing
 // (production correctness — token must exist before sending RPC). Drop a
 // fake token so the envelope is built and the debug dump runs. The token
 // never leaves the bridge in this test because the RPC will fail at the
 // named pipe step (no daemon at the fake pipe path).
-writeFileSync(join(tmpHome, '.wmux-auth-token'), 'fake-verification-token');
+writeFileSync(appAuthTokenPath(tmpHome, ''), 'fake-verification-token');
 
 let failures = 0;
 for (const tc of cases) {

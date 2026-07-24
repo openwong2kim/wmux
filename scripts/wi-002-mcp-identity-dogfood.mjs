@@ -8,7 +8,7 @@
  * directly), this drives the MCP SERVER over its stdio JSON-RPC, because the
  * server's own identity resolution is the unit under test.
  *
- * Setup: an isolated packaged wmux (out/wmux-win32-x64/wmux.exe + a unique
+ * Setup: an isolated packaged app (helpers/packaged-app.mjs + a unique
  * WMUX_DATA_SUFFIX + temp USERPROFILE) boots main+daemon and a real pane. We
  * then spawn the real mcp-bundle as a child of THIS script (so its process tree
  * is node→script, NOT in the daemon's pid-map → the walk misses), with the
@@ -37,11 +37,19 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  userDataDir as appUserDataDir,
+  mainPipeName,
+  packagedAppDir,
+  packagedAppExe,
+} from './helpers/packaged-app.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
-const MCP_BUNDLE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'resources', 'mcp-bundle', 'index.js');
+const APP_EXE = packagedAppExe();
+const MCP_BUNDLE = path.join(packagedAppDir(), 'resources', 'mcp-bundle', 'index.js');
 const USERNAME = os.userInfo().username || 'default';
 
 const results = [];
@@ -58,7 +66,7 @@ if (!fs.existsSync(APP_EXE)) { console.error(`packaged exe not found: ${APP_EXE}
 if (!fs.existsSync(MCP_BUNDLE)) { console.error(`mcp bundle not found: ${MCP_BUNDLE} — run \`npm run package\` first`); process.exit(2); }
 
 const suffix = `-wi002dog${process.pid}`;
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wi002dog-'));
+const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-wi002dog-`));
 const isoEnv = {
   ...process.env,
   USERPROFILE: home, HOME: home,
@@ -72,12 +80,12 @@ delete isoEnv.HOMEDRIVE; delete isoEnv.HOMEPATH;
 for (const k of Object.keys(isoEnv)) { if (/^WMUX_(WORKSPACE_ID|PTY_ID|SURFACE_ID|SOCKET_PATH)$/i.test(k)) delete isoEnv[k]; }
 fs.mkdirSync(isoEnv.APPDATA, { recursive: true });
 fs.mkdirSync(isoEnv.LOCALAPPDATA, { recursive: true });
-const userDataDir = path.join(isoEnv.APPDATA, `wmux${suffix}`);
+const userDataDir = appUserDataDir(isoEnv.APPDATA, suffix);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
 
-const mainPipe = `\\\\.\\pipe\\wmux${suffix}-${USERNAME}`;
-const authTokenPath = path.join(home, `.wmux${suffix}-auth-token`);
+const mainPipe = mainPipeName(suffix, USERNAME);
+const authTokenPath = appAuthTokenPath(home, suffix);
 function readMainToken() { try { return fs.readFileSync(authTokenPath, 'utf8').trim() || null; } catch { return null; } }
 let TOKEN = null;
 

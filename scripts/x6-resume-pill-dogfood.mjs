@@ -22,14 +22,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+} from './helpers/packaged-app.mjs';
 
 const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
 
 function makePipeName(tag) {
   return process.platform === 'win32'
-    ? `\\\\.\\pipe\\wmux-test-${tag}`
-    : path.join(os.tmpdir(), `wmux-test-${tag}.sock`);
+    ? `\\\\.\\pipe\\${EXECUTABLE_NAME}-test-${tag}`
+    : path.join(os.tmpdir(), `${EXECUTABLE_NAME}-test-${tag}.sock`);
 }
 
 function writeConfig(wmuxDir, pipeName, authToken) {
@@ -99,8 +103,8 @@ function rpc(socket, method, params, authToken, timeoutMs = 30_000) {
 
 async function main() {
   const tag = `x6pill-${randomUUID().slice(0, 8)}`;
-  const testHome = path.join(os.tmpdir(), `wmux-${tag}`);
-  const wmuxDir = path.join(testHome, '.wmux');
+  const testHome = path.join(os.tmpdir(), `${EXECUTABLE_NAME}-${tag}`);
+  const wmuxDir = appHomeDir(testHome, '');
   const projDir = path.join(testHome, 'proj');
   fs.mkdirSync(wmuxDir, { recursive: true });
   fs.mkdirSync(projDir, { recursive: true });

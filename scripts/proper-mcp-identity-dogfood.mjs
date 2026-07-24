@@ -35,11 +35,20 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  appHomeDir,
+  userDataDir as appUserDataDir,
+  mainPipeName,
+  packagedAppDir,
+  packagedAppExe,
+} from './helpers/packaged-app.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
-const MCP_BUNDLE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'resources', 'mcp-bundle', 'index.js');
+const APP_EXE = packagedAppExe();
+const MCP_BUNDLE = path.join(packagedAppDir(), 'resources', 'mcp-bundle', 'index.js');
 const USERNAME = os.userInfo().username || 'default';
 
 const results = [];
@@ -56,7 +65,7 @@ if (!fs.existsSync(APP_EXE)) { console.error(`packaged exe not found: ${APP_EXE}
 if (!fs.existsSync(MCP_BUNDLE)) { console.error(`mcp bundle not found: ${MCP_BUNDLE} — run \`npm run package\` first`); process.exit(2); }
 
 const suffix = `-propdog${process.pid}`;
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-propdog-'));
+const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-propdog-`));
 const isoEnv = {
   ...process.env,
   USERPROFILE: home, HOME: home,
@@ -68,18 +77,18 @@ delete isoEnv.HOMEDRIVE; delete isoEnv.HOMEPATH;
 for (const k of Object.keys(isoEnv)) { if (/^WMUX_(WORKSPACE_ID|PTY_ID|SURFACE_ID|SOCKET_PATH)$/i.test(k)) delete isoEnv[k]; }
 fs.mkdirSync(isoEnv.APPDATA, { recursive: true });
 fs.mkdirSync(isoEnv.LOCALAPPDATA, { recursive: true });
-const userDataDir = path.join(isoEnv.APPDATA, `wmux${suffix}`);
+const userDataDir = appUserDataDir(isoEnv.APPDATA, suffix);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
 
-// getPidMapDir() == `${USERPROFILE}/.wmux${SUFFIX}/pid-map` (shared/constants.ts).
-const pidMapDir = path.join(home, `.wmux${suffix}`, 'pid-map');
+// getPidMapDir() == `${USERPROFILE}/.<exe>${SUFFIX}/pid-map` (shared/constants.ts).
+const pidMapDir = path.join(appHomeDir(home, suffix), 'pid-map');
 const anchorFile = path.join(pidMapDir, String(process.pid)); // script pid = MCP's parent
 function writeAnchor(ptyId) { fs.mkdirSync(pidMapDir, { recursive: true }); fs.writeFileSync(anchorFile, ptyId, 'utf8'); }
 function removeAnchor() { try { fs.unlinkSync(anchorFile); } catch { /* */ } }
 
-const mainPipe = `\\\\.\\pipe\\wmux${suffix}-${USERNAME}`;
-const authTokenPath = path.join(home, `.wmux${suffix}-auth-token`);
+const mainPipe = mainPipeName(suffix, USERNAME);
+const authTokenPath = appAuthTokenPath(home, suffix);
 function readMainToken() { try { return fs.readFileSync(authTokenPath, 'utf8').trim() || null; } catch { return null; } }
 let TOKEN = null;
 

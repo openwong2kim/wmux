@@ -48,6 +48,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+} from './helpers/packaged-app.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 const MINI_SERVER = path.join(REPO_ROOT, 'scripts', 'helpers', 'mini-pipe-server.mjs');
@@ -61,14 +65,14 @@ if (!fs.existsSync(MINI_SERVER) || !fs.existsSync(HELPER_PROBE)) {
 // === Test environment ===
 
 function makeTestHome() {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-wsid-dyn-'));
-  fs.mkdirSync(path.join(home, '.wmux'), { recursive: true });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-wsid-dyn-`));
+  fs.mkdirSync(appHomeDir(home, ''), { recursive: true });
   return home;
 }
 
 function makePipeName(tag) {
-  if (process.platform === 'win32') return `\\\\.\\pipe\\wmux-wsid-${tag}`;
-  return path.join(os.tmpdir(), `wmux-wsid-${tag}.sock`);
+  if (process.platform === 'win32') return `\\\\.\\pipe\\${EXECUTABLE_NAME}-wsid-${tag}`;
+  return path.join(os.tmpdir(), `${EXECUTABLE_NAME}-wsid-${tag}.sock`);
 }
 
 function spawnMiniServer({ pipeName, authToken, testHome, owners, workspaces, resolveOnce }) {
@@ -158,7 +162,7 @@ async function killChild(child) {
 
 async function withServer(label, body, owners, workspaces, extra = {}) {
   const testHome = makeTestHome();
-  const wmuxDir = path.join(testHome, '.wmux');
+  const wmuxDir = appHomeDir(testHome, '');
   const pipeName = makePipeName(`${label}-${randomUUID().slice(0, 8)}`);
   const authToken = randomUUID();
   const { child, getStderr } = await spawnMiniServer({ pipeName, authToken, testHome, owners, workspaces, resolveOnce: extra.resolveOnce });

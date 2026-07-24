@@ -1,7 +1,7 @@
 /**
  * Live re-verification for the `wmux doctor` daemon-pipe fix.
  *
- * Boots the PACKAGED app (out/wmux-win32-x64/wmux.exe from the MAIN repo — the
+ * Boots the PACKAGED app (helpers/packaged-app.mjs, from the MAIN repo — the
  * daemon binary is unchanged by this CLI-only fix) in a fully isolated env
  * (fresh temp HOME + unique WMUX_DATA_SUFFIX), waits for the detached daemon to
  * come up, then runs the WORKTREE's freshly built CLI bundle `doctor` against
@@ -22,6 +22,15 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+  userDataDir as appUserDataDir,
+  daemonAuthTokenPaths,
+  daemonPipeName,
+  mainPipeName,
+  packagedAppExe,
+} from './helpers/packaged-app.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const WORKTREE_ROOT = path.resolve(__dirname, '..');
@@ -29,7 +38,7 @@ const WORKTREE_ROOT = path.resolve(__dirname, '..');
 // from a git worktree (which shares no out/ with the main checkout), point
 // WMUX_APP_ROOT at the checkout that ran `npm run package`.
 const APP_ROOT = process.env.WMUX_APP_ROOT || WORKTREE_ROOT;
-const APP_EXE = path.join(APP_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
+const APP_EXE = packagedAppExe({ outDir: path.join(APP_ROOT, 'out') });
 const CLI_BUNDLE = path.join(WORKTREE_ROOT, 'dist', 'cli-bundle', 'index.js');
 const USERNAME = os.userInfo().username || 'default';
 const POWERSHELL_EXE = path.join(
@@ -108,8 +117,8 @@ function readDaemonPid(wmuxDir) {
 function readDaemonPipe(wmuxDir, fallback) {
   try { const n = fs.readFileSync(path.join(wmuxDir, 'daemon-pipe'), 'utf8').trim(); return n || fallback; } catch { return fallback; }
 }
-function readDaemonToken(home, wmuxDir) {
-  for (const p of [path.join(home, '.wmux', 'daemon-auth-token'), path.join(wmuxDir, 'daemon-auth-token')]) {
+function readDaemonToken(home, suffix) {
+  for (const p of daemonAuthTokenPaths(home, suffix)) {
     try { return fs.readFileSync(p, 'utf8').trim(); } catch {}
   }
   return null;
@@ -125,8 +134,8 @@ async function main() {
   if (!fs.existsSync(CLI_BUNDLE)) { console.error(`Missing CLI bundle: ${CLI_BUNDLE} (build it first)`); process.exit(2); }
 
   const suffix = `-doctorlive${process.pid}`;
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-doctorlive-'));
-  const wmuxDir = path.join(home, `.wmux${suffix}`);
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-doctorlive-`));
+  const wmuxDir = appHomeDir(home, suffix);
   const env = {
     ...process.env,
     USERPROFILE: home, HOME: home, HOMEDRIVE: undefined, HOMEPATH: undefined,
@@ -136,12 +145,12 @@ async function main() {
   };
   fs.mkdirSync(env.APPDATA, { recursive: true });
   fs.mkdirSync(env.LOCALAPPDATA, { recursive: true });
-  const userDataDir = path.join(env.APPDATA, `wmux${suffix}`);
+  const userDataDir = appUserDataDir(env.APPDATA, suffix);
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
 
-  const mainPipe = `\\\\.\\pipe\\wmux${suffix}-${USERNAME}`;
-  const daemonPipeFallback = `\\\\.\\pipe\\wmux-daemon${suffix}-${USERNAME}`;
+  const mainPipe = mainPipeName(suffix, USERNAME);
+  const daemonPipeFallback = daemonPipeName(suffix, USERNAME);
 
   console.log(`[setup] home=${home}`);
   console.log(`[setup] suffix=${suffix}`);
@@ -151,7 +160,7 @@ async function main() {
   let proc = null;
   try {
     console.log('\n[boot] spawning app...');
-    proc = spawn(APP_EXE, [], { cwd: MAIN_REPO, env, stdio: ['ignore', 'pipe', 'pipe'], detached: false });
+    proc = spawn(APP_EXE, [], { cwd: APP_ROOT, env, stdio: ['ignore', 'pipe', 'pipe'], detached: false });
     proc.stdout.on('data', () => {});
     proc.stderr.on('data', () => {});
     proc.on('exit', (c) => console.log(`[app] main process exited (code ${c})`));
@@ -161,7 +170,7 @@ async function main() {
     const daemonPipe = readDaemonPipe(wmuxDir, daemonPipeFallback);
     console.log(`[boot] daemon-pipe = ${daemonPipe}`);
     await waitFor('daemon pipe alive', () => pipeAlive(daemonPipe), 30000, 200);
-    const token = readDaemonToken(home, wmuxDir);
+    const token = readDaemonToken(home, suffix);
     assert(!!token, 'daemon auth token present on disk');
     // Confirm the daemon answers daemon.ping over its own pipe (ground truth).
     await waitFor('daemon.ping ok', async () => {
@@ -230,7 +239,7 @@ async function main() {
     console.log('\n[cleanup]');
     const daemonPid = readDaemonPid(wmuxDir);
     const daemonPipe = readDaemonPipe(wmuxDir, daemonPipeFallback);
-    const token = readDaemonToken(home, wmuxDir);
+    const token = readDaemonToken(home, suffix);
     if (token && await pipeAlive(daemonPipe)) {
       try { const dc = new PipeClient(daemonPipe, token); await dc.connect(); await dc.call('daemon.shutdown', {}, 5000).catch(() => {}); dc.close(); } catch {}
     }

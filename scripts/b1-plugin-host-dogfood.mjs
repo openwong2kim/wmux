@@ -1,6 +1,6 @@
 // B-1 plugin host dogfood — drives the running dev wmux over CDP.
 //
-// Pre-req: hello-panel example installed at ~/.wmux-dev/plugins/hello-panel
+// Pre-req: hello-panel example installed at ~/.<exe>-dev/plugins/hello-panel
 // and dev wmux running (npm start). CDP_URL defaults to the dev instance.
 //
 // Asserts, end-to-end through the real GUI:

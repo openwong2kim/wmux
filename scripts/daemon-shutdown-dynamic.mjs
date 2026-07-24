@@ -36,6 +36,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+} from './helpers/packaged-app.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
@@ -48,16 +52,16 @@ if (!fs.existsSync(DAEMON_BUNDLE)) {
 // Helpers ---------------------------------------------------------------
 
 function makeTestHome() {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-shutdown-dyn-'));
-  fs.mkdirSync(path.join(home, '.wmux'), { recursive: true });
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-shutdown-dyn-`));
+  fs.mkdirSync(appHomeDir(home, ''), { recursive: true });
   return home;
 }
 
 function makePipeName(tag) {
   if (process.platform === 'win32') {
-    return `\\\\.\\pipe\\wmux-test-${tag}`;
+    return `\\\\.\\pipe\\${EXECUTABLE_NAME}-test-${tag}`;
   }
-  return path.join(os.tmpdir(), `wmux-test-${tag}.sock`);
+  return path.join(os.tmpdir(), `${EXECUTABLE_NAME}-test-${tag}.sock`);
 }
 
 function writeConfig(wmuxDir, pipeName, authToken) {
@@ -187,7 +191,7 @@ async function killDaemon(child) {
 
 async function withDaemon(label, body) {
   const testHome = makeTestHome();
-  const wmuxDir = path.join(testHome, '.wmux');
+  const wmuxDir = appHomeDir(testHome, '');
   const tag = `${label}-${randomUUID().slice(0, 8)}`;
   const pipeName = makePipeName(tag);
   const authToken = randomUUID();
@@ -296,7 +300,7 @@ async function measureShutdownLatency(label, n) {
 // restore my scrollback session entry?"
 async function runT4(report) {
   const testHome = makeTestHome();
-  const wmuxDir = path.join(testHome, '.wmux');
+  const wmuxDir = appHomeDir(testHome, '');
   const tag = `T4-${randomUUID().slice(0, 8)}`;
   const pipeName = makePipeName(tag);
   const authToken = randomUUID();

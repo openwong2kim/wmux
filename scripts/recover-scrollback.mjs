@@ -43,7 +43,7 @@
 //     fuse with the following line. The character content is preserved
 //     losslessly; only the exact wrap structure is approximate.
 //   - This tool is read-only against the source dir. It writes to a
-//     separate output dir (default: ~/wmux-recovered-<date>). The
+//     separate output dir (default: ~/<exe>-recovered-<date>). The
 //     quarantined originals are never modified.
 //
 // CLI
@@ -52,9 +52,9 @@
 //
 // Options:
 //     -i, --input <dir>     Source dir of quarantined files
-//                           (default: %APPDATA%/wmux/scrollback/corrupted/)
+//                           (default: %APPDATA%/<productName>/scrollback/corrupted/)
 //     -o, --output <dir>    Output dir for recovered .txt files
-//                           (default: ~/wmux-recovered-YYYY-MM-DD)
+//                           (default: ~/<exe>-recovered-YYYY-MM-DD)
 //     -n, --dry-run         Analyze and report without writing
 //     -v, --verbose         Per-file stats + preview
 //     -h, --help            Show this help
@@ -64,6 +64,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { parseArgs } from 'node:util';
+import { EXECUTABLE_NAME, PRODUCT_NAME } from './helpers/packaged-app.mjs';
 
 // ── Tunables (mirror corruption.ts) ────────────────────────────────────────
 
@@ -181,9 +182,9 @@ USAGE
 
 OPTIONS
     -i, --input <dir>     Source dir of quarantined files
-                          (default: %APPDATA%/wmux/scrollback/corrupted)
+                          (default: %APPDATA%/<productName>/scrollback/corrupted)
     -o, --output <dir>    Output dir for recovered .txt files
-                          (default: ~/wmux-recovered-YYYY-MM-DD)
+                          (default: ~/<exe>-recovered-YYYY-MM-DD)
     -n, --dry-run         Analyze and report without writing
     -v, --verbose         Print per-file stats + first 80 chars preview
     -h, --help            Show this help
@@ -191,14 +192,14 @@ OPTIONS
 
 function defaultInputDir() {
   const appData = process.env.APPDATA;
-  if (appData) return path.join(appData, 'wmux', 'scrollback', 'corrupted');
+  if (appData) return path.join(appData, PRODUCT_NAME, 'scrollback', 'corrupted');
   // Linux / macOS — wmux is Windows-only today but be future-friendly.
-  return path.join(os.homedir(), '.config', 'wmux', 'scrollback', 'corrupted');
+  return path.join(os.homedir(), '.config', PRODUCT_NAME, 'scrollback', 'corrupted');
 }
 
 function defaultOutputDir() {
   const date = new Date().toISOString().slice(0, 10);
-  return path.join(os.homedir(), `wmux-recovered-${date}`);
+  return path.join(os.homedir(), `${EXECUTABLE_NAME}-recovered-${date}`);
 }
 
 function deriveOutputName(quarantineName) {

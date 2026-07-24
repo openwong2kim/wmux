@@ -34,7 +34,7 @@
  *       createLateReconcileOnConnect (logs "[lifecycle] daemon connected during
  *       startup — skipping late reconcile").
  *
- * WHAT THIS VERIFIES (against the PACKAGED exe, out/wmux-win32-x64/wmux.exe)
+ * WHAT THIS VERIFIES (against the PACKAGED exe — helpers/packaged-app.mjs)
  * ------------------------------------------------------------------------
  *   S1 parallelism proof: in ONE boot's stderr boot-trace, assert
  *      `renderer-load-triggered` epoch < `daemon-bootstrap-end` epoch. Under
@@ -56,7 +56,7 @@
  *      against a populated list) and assert mount-immediate typing still works
  *      on that reuse/restore boot.
  *   S4 gate log: scan the isolated main log file
- *      (%APPDATA%\wmux<suffix>\logs\main-*.log — renderer console is relayed
+ *      (%APPDATA%\<productName><suffix>\logs\main-*.log — renderer console is relayed
  *      there). If any boot saw daemon:connected arrive DURING startup, assert
  *      the "[lifecycle] daemon connected during startup — skipping late
  *      reconcile" gate line is present AND the "[lifecycle] daemon connected
@@ -68,7 +68,7 @@
  *
  * ISOLATION (perf-bench.mjs model): each boot env gets a fresh temp
  * USERPROFILE/HOME/APPDATA/LOCALAPPDATA + a unique WMUX_DATA_SUFFIX that re-keys
- * the main pipe, daemon pipe, auth tokens, ~/.wmux and the Electron userData
+ * the main pipe, daemon pipe, auth tokens, ~/.<exe> and the Electron userData
  * dir (and thus the single-instance lock), so this runs BESIDE a live wmux
  * without touching it. The CDP identity guard (APP_URL_PREFIX) additionally
  * refuses any renderer page not under OUR packaged build dir, so a stray
@@ -86,13 +86,24 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  appHomeDir,
+  userDataDir as appUserDataDir,
+  daemonAuthTokenPaths,
+  isAppImageName,
+  mainPipeName,
+  packagedAppExe,
+  packagedAppUrlPrefix,
+} from './helpers/packaged-app.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
+const APP_EXE = packagedAppExe();
 // Identity guard (perf-bench): only attach to renderer pages under OUR build dir.
-const APP_URL_PREFIX = pathToFileURL(path.join(REPO_ROOT, 'out', 'wmux-win32-x64')).href.toLowerCase();
+const APP_URL_PREFIX = packagedAppUrlPrefix();
 const USERNAME = os.userInfo().username || 'default';
 const CDP_PORT_MIN = 18800;
 const CDP_PORT_MAX = 18899;
@@ -136,7 +147,7 @@ try {
 const liveEnvs = [];
 function makeEnv(tag) {
   const suffix = `-cskd${process.pid}${tag}`;
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), `wmux-cskd-${tag}-`));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-cskd-${tag}-`));
   const env = {
     ...process.env,
     USERPROFILE: home,
@@ -154,13 +165,13 @@ function makeEnv(tag) {
   // Pre-seed the first-run marker so the wizard overlay (which swallows the
   // pane click + steals terminal focus) never shows; boot measures the REGULAR
   // path (the production first-keystroke bug was on the regular cold path).
-  const userDataDir = path.join(env.APPDATA, `wmux${suffix}`);
+  const userDataDir = appUserDataDir(env.APPDATA, suffix);
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
   const rec = {
     tag, suffix, home, env, userDataDir,
-    wmuxDir: path.join(home, `.wmux${suffix}`),
-    mainPipe: `\\\\.\\pipe\\wmux${suffix}-${USERNAME}`,
+    wmuxDir: appHomeDir(home, suffix),
+    mainPipe: mainPipeName(suffix, USERNAME),
     logDir: path.join(userDataDir, 'logs'),
   };
   liveEnvs.push(rec);
@@ -178,10 +189,7 @@ function readDaemonPipeName(e) {
   catch { return null; }
 }
 function readDaemonToken(e) {
-  for (const p of [
-    path.join(e.home, '.wmux', 'daemon-auth-token'),
-    path.join(e.wmuxDir, 'daemon-auth-token'),
-  ]) {
+  for (const p of daemonAuthTokenPaths(e.home, e.suffix)) {
     try { const t = fs.readFileSync(p, 'utf8').trim(); if (t) return t; } catch { /* next */ }
   }
   return null;
@@ -192,15 +200,16 @@ function pidAlive(pid) {
 const POWERSHELL_EXE = path.join(
   process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe',
 );
-// True only if `pid` is alive AND its image is wmux.exe — distinguishes a real
-// surviving app process from a recycled pid (perf-bench pidLooksLikeWmuxDaemon).
+// True only if `pid` is alive AND its image is the app binary — distinguishes a
+// real surviving app process from a recycled pid (perf-bench
+// pidLooksLikeWmuxDaemon).
 function pidIsWmux(pid) {
   return new Promise((resolve) => {
     execFile(POWERSHELL_EXE, ['-NoProfile', '-NonInteractive', '-Command',
       `(Get-CimInstance Win32_Process -Filter "ProcessId=${Number(pid)}").Name`],
     { windowsHide: true, timeout: 5000 }, (err, stdout) => {
       if (err) return resolve(false); // lookup failed / process gone
-      resolve(String(stdout).trim().toLowerCase() === 'wmux.exe');
+      resolve(isAppImageName(String(stdout).trim()));
     });
   });
 }
@@ -244,9 +253,9 @@ function rpcCall(pipeName, token, method, params = {}, timeoutMs = 5000) {
   });
 }
 function readMainToken(e) {
-  // src writes the main auth token to <home>/.wmux<suffix>-auth-token.
+  // src writes the main auth token to <home>/.<exe><suffix>-auth-token.
   for (const p of [
-    path.join(e.home, `.wmux${e.suffix}-auth-token`),
+    appAuthTokenPath(e.home, e.suffix),
     path.join(e.wmuxDir, 'auth-token'),
   ]) {
     try { const t = fs.readFileSync(p, 'utf8').trim(); if (t) return t; } catch { /* next */ }

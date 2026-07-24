@@ -2,7 +2,7 @@
 /**
  * A2A EventBus Inbox (S-C2 ②) — dynamic dogfood, Phase 2: SILENT-DEFAULT.
  *
- * WHAT THIS VERIFIES (against the PACKAGED exe, out/wmux-win32-x64/wmux.exe)
+ * WHAT THIS VERIFIES (against the PACKAGED exe — helpers/packaged-app.mjs)
  * ------------------------------------------------------------------------
  * The per-receiver delivery default (plan §"Silent-default for TUI"):
  *   - receiver running a LIVE TUI agent  → a one-line NUDGE pasted to its PTY
@@ -46,10 +46,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  appHomeDir,
+  userDataDir as appUserDataDir,
+  mainPipeName,
+  packagedAppExe,
+} from './helpers/packaged-app.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
+const APP_EXE = packagedAppExe();
 const USERNAME = os.userInfo().username || 'default';
 
 const results = [];
@@ -65,7 +73,7 @@ if (process.platform !== 'win32') { console.log('a2a-silent-default-dogfood: SKI
 if (!fs.existsSync(APP_EXE)) { console.error(`packaged exe not found: ${APP_EXE} — run \`npm run package\` first`); process.exit(2); }
 
 const suffix = `-a2asd${process.pid}`;
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-a2asd-'));
+const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-a2asd-`));
 const env = {
   ...process.env,
   USERPROFILE: home, HOME: home, HOMEDRIVE: undefined, HOMEPATH: undefined,
@@ -75,18 +83,18 @@ const env = {
 delete env.WMUX_DISABLE_CDP;
 fs.mkdirSync(env.APPDATA, { recursive: true });
 fs.mkdirSync(env.LOCALAPPDATA, { recursive: true });
-const userDataDir = path.join(env.APPDATA, `wmux${suffix}`);
+const userDataDir = appUserDataDir(env.APPDATA, suffix);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
 
-const wmuxDir = path.join(home, `.wmux${suffix}`);
-const mainPipe = `\\\\.\\pipe\\wmux${suffix}-${USERNAME}`;
-const authTokenPath = path.join(home, `.wmux${suffix}-auth-token`);
+const wmuxDir = appHomeDir(home, suffix);
+const mainPipe = mainPipeName(suffix, USERNAME);
+const authTokenPath = appAuthTokenPath(home, suffix);
 
 const readMainToken = () => { try { return fs.readFileSync(authTokenPath, 'utf8').trim() || null; } catch { return null; } };
 const readDaemonPid = () => { try { const p = Number(fs.readFileSync(path.join(wmuxDir, 'daemon.pid'), 'utf8').trim()); return Number.isInteger(p) && p > 0 ? p : null; } catch { return null; } };
 const readDaemonPipeName = () => { try { return fs.readFileSync(path.join(wmuxDir, 'daemon-pipe'), 'utf8').trim() || null; } catch { return null; } };
-const readDaemonToken = () => { for (const p of [path.join(home, '.wmux', 'daemon-auth-token'), path.join(wmuxDir, 'daemon-auth-token')]) { try { const t = fs.readFileSync(p, 'utf8').trim(); if (t) return t; } catch { /* */ } } return null; };
+const readDaemonToken = () => { for (const p of [path.join(appHomeDir(home, ''), 'daemon-auth-token'), path.join(wmuxDir, 'daemon-auth-token')]) { try { const t = fs.readFileSync(p, 'utf8').trim(); if (t) return t; } catch { /* */ } } return null; };
 const pidAlive = (pid) => { try { process.kill(pid, 0); return true; } catch { return false; } };
 const pipeAlive = (pipeName) => new Promise((resolve) => {
   const sock = net.createConnection(pipeName);

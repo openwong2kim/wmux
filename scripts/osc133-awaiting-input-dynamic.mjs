@@ -26,11 +26,17 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  packagedAppExe,
+  mainPipeName,
+} from './helpers/packaged-app.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
-const PIPE_NAME = `\\\\.\\pipe\\wmux-${os.userInfo().username}`;
+const APP_EXE = packagedAppExe();
+const PIPE_NAME = mainPipeName('', os.userInfo().username);
 
 if (!fs.existsSync(APP_EXE)) {
   console.error(`Packaged app missing at ${APP_EXE}. Run \`npm run package\` first.`);
@@ -47,8 +53,8 @@ function pipeAlive() {
   });
 }
 
-const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-pr76-dyn-'));
-const AUTH_TOKEN_PATH = path.join(TEST_HOME, '.wmux-auth-token');
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-pr76-dyn-`));
+const AUTH_TOKEN_PATH = appAuthTokenPath(TEST_HOME, '');
 
 let appProc;
 const cleanup = () => new Promise((resolve) => {

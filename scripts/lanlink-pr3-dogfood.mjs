@@ -17,14 +17,18 @@ import net from 'node:net';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import {
+  appHomeDir,
+  daemonPipeName,
+} from './helpers/packaged-app.mjs';
 
 const SUFFIX = '-lanlink-pr3';
 const home = os.homedir();
 const username = os.userInfo().username || 'default';
-const PIPE = `\\\\.\\pipe\\wmux-daemon${SUFFIX}-${username}`;
-const DIR = path.join(home, `.wmux${SUFFIX}`);
+const PIPE = daemonPipeName(SUFFIX, username);
+const DIR = appHomeDir(home, SUFFIX);
 const CONFIG = path.join(DIR, 'config.json');
-const TOKEN_PATH = path.join(home, '.wmux', 'daemon-auth-token');
+const TOKEN_PATH = path.join(appHomeDir(home, ''), 'daemon-auth-token');
 const DAEMON = path.resolve('dist/daemon-bundle/index.js');
 
 const env = { ...process.env, WMUX_DATA_SUFFIX: SUFFIX };

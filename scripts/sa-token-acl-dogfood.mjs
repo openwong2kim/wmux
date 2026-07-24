@@ -25,10 +25,17 @@ import net from 'node:net';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  appHomeDir,
+  userDataDir as appUserDataDir,
+  packagedAppExe,
+} from './helpers/packaged-app.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
+const APP_EXE = packagedAppExe();
 const SYS32 = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32');
 const ICACLS = path.join(SYS32, 'icacls.exe');
 
@@ -50,7 +57,7 @@ if (!fs.existsSync(APP_EXE)) {
 
 // --- isolated instance environment (perf-bench pattern) ---
 const suffix = `-acldog${process.pid}`;
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-acldog-'));
+const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-acldog-`));
 const env = {
   ...process.env,
   USERPROFILE: home,
@@ -65,14 +72,14 @@ const env = {
 };
 fs.mkdirSync(env.APPDATA, { recursive: true });
 fs.mkdirSync(env.LOCALAPPDATA, { recursive: true });
-const userDataDir = path.join(env.APPDATA, `wmux${suffix}`);
+const userDataDir = appUserDataDir(env.APPDATA, suffix);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
 
-const wmuxDir = path.join(home, `.wmux${suffix}`);
-// getAuthTokenPath() is suffix-aware: ~/.wmux<suffix>-auth-token
-const mainTokenPath = path.join(home, `.wmux${suffix}-auth-token`);
-const daemonTokenPath = path.join(home, '.wmux', 'daemon-auth-token'); // NOT suffix-aware (bench comment)
+const wmuxDir = appHomeDir(home, suffix);
+// getAuthTokenPath() is suffix-aware: ~/.<exe><suffix>-auth-token
+const mainTokenPath = appAuthTokenPath(home, suffix);
+const daemonTokenPath = path.join(appHomeDir(home, ''), 'daemon-auth-token'); // NOT suffix-aware (bench comment)
 const daemonLogDir = path.join(wmuxDir, 'logs');
 
 function readDaemonPid() {
@@ -195,7 +202,7 @@ async function main() {
   check('boot#1: no deferred re-harden on the create path', deferred1.length === 0);
 
   // Locate the actual main token file (suffix-aware path may differ).
-  const mainTokenCandidates = [mainTokenPath, path.join(home, `.wmux-auth-token${suffix}`), path.join(home, '.wmux-auth-token')];
+  const mainTokenCandidates = [mainTokenPath, `${appAuthTokenPath(home, '')}${suffix}`, appAuthTokenPath(home, '')];
   const mainToken = mainTokenCandidates.find((p) => fs.existsSync(p));
   check('boot#1: main token file exists', !!mainToken, mainToken ?? `tried ${mainTokenCandidates.join(', ')}`);
   const daemonTokenCandidates = [path.join(wmuxDir, 'daemon-auth-token'), daemonTokenPath];

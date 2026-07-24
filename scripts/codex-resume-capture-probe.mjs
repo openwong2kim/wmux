@@ -11,7 +11,7 @@
 //   P3: a payload with no session_id captures nothing (quiet drop, exit 0).
 //
 // Isolated: overrides USERPROFILE/HOME to a temp dir (auth token + spool land
-// there), so it never touches the user's real ~/.wmux. The pipe name is
+// there), so it never touches the user's real ~/.<exe>. The pipe name is
 // username-derived (not HOME-derived), so the mock listens on the real name —
 // safe because wmux must be DOWN for the probe to bind it.
 //
@@ -23,14 +23,19 @@ import { join } from 'node:path';
 import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  appHomeDir,
+} from './helpers/packaged-app.mjs';
 
 const SCRIPT = join(fileURLToPath(new URL('../integrations/codex/bin/fmux-codex-notify.mjs', import.meta.url)));
 const TOKEN = 'probe-token-abc';
 // Isolated test pipe (WMUX_PIPE_NAME override) so the probe runs even while the
-// real wmux holds `\\.\pipe\wmux-<user>`. Unique per pid to avoid collisions.
+// real wmux holds `\\.\pipe\<exe>-<user>`. Unique per pid to avoid collisions.
 const PIPE = process.platform === 'win32'
-  ? `\\\\.\\pipe\\wmux-codexprobe-${process.pid}`
-  : join(tmpdir(), `wmux-codexprobe-${process.pid}.sock`);
+  ? `\\\\.\\pipe\\${EXECUTABLE_NAME}-codexprobe-${process.pid}`
+  : join(tmpdir(), `${EXECUTABLE_NAME}-codexprobe-${process.pid}.sock`);
 
 let passed = 0, failed = 0;
 const ok = (name, cond, detail) => {
@@ -39,8 +44,8 @@ const ok = (name, cond, detail) => {
 };
 
 function makeHome() {
-  const home = mkdtempSync(join(tmpdir(), 'wmux-codexprobe-'));
-  writeFileSync(join(home, '.wmux-auth-token'), TOKEN, 'utf8');
+  const home = mkdtempSync(join(tmpdir(), `${EXECUTABLE_NAME}-codexprobe-`));
+  writeFileSync(appAuthTokenPath(home, ''), TOKEN, 'utf8');
   return home;
 }
 
@@ -134,7 +139,7 @@ async function main() {
   const exit2 = await runNotify(home2, payload); // no server listening now
   await wait(150);
   ok('exits 0 with pipe down', exit2 === 0, `exit=${exit2}`);
-  const spoolFile = join(home2, '.wmux', 'resume-spool', 'pty-probe-1.json');
+  const spoolFile = join(appHomeDir(home2, ''), 'resume-spool', 'pty-probe-1.json');
   ok('spooled a record on RPC failure', existsSync(spoolFile), spoolFile);
   if (existsSync(spoolFile)) {
     const rec = JSON.parse(readFileSync(spoolFile, 'utf8'));
@@ -151,7 +156,7 @@ async function main() {
   await wait(100);
   ok('no-session-id → exits 0', exit3 === 0, `exit=${exit3}`);
   ok('no-session-id → nothing spooled',
-    !existsSync(join(home3, '.wmux', 'resume-spool', 'pty-probe-1.json')));
+    !existsSync(join(appHomeDir(home3, ''), 'resume-spool', 'pty-probe-1.json')));
   rmSync(home3, { recursive: true, force: true });
 
   console.log(`\n${passed} passed, ${failed} failed`);

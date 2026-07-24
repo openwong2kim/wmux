@@ -16,7 +16,7 @@
  *      approves in the GUI. This is the withApprovalRetry idiom's trigger.
  *
  * Strategy / isolation: identical to scripts/m0-dynamic-verify.mjs — spawn the
- * packaged app at out/wmux-win32-x64/wmux.exe with a temp USERPROFILE/HOME/
+ * packaged app (helpers/packaged-app.mjs) with a temp USERPROFILE/HOME/
  * APPDATA/LOCALAPPDATA + WMUX_DISABLE_CDP, pre-flight pipeAlive() abort if a
  * real wmux is on the per-user pipe, read the isolated token, talk raw
  * newline-JSON over the pipe, SIGTERM→SIGKILL cleanup.
@@ -32,12 +32,18 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  packagedAppExe,
+  mainPipeName,
+} from './helpers/packaged-app.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
+const APP_EXE = packagedAppExe();
 const RECORDER = path.join(REPO_ROOT, 'examples', 'event-recorder', 'recorder.mjs');
-const PIPE_NAME = `\\\\.\\pipe\\wmux-${os.userInfo().username}`;
+const PIPE_NAME = mainPipeName('', os.userInfo().username);
 
 if (!fs.existsSync(APP_EXE)) {
   console.error(`Packaged app missing at ${APP_EXE}. Run \`npm run package\` first.`);
@@ -58,8 +64,8 @@ function pipeAlive() {
   });
 }
 
-const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-i15-verify-'));
-const AUTH_TOKEN_PATH = path.join(TEST_HOME, '.wmux-auth-token');
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-i15-verify-`));
+const AUTH_TOKEN_PATH = appAuthTokenPath(TEST_HOME, '');
 const NDJSON_OUT = path.join(TEST_HOME, 'events.ndjson');
 
 let appProc;

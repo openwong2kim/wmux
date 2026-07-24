@@ -1,7 +1,7 @@
 /*
  * Live dogfood — Part A: pane-level A2A identity + addressing.
  *
- * Spawns an isolated packaged wmux (out/wmux-win32-x64/wmux.exe) with
+ * Spawns an isolated packaged app (helpers/packaged-app.mjs) with
  * WMUX_DATA_SUFFIX isolation, splits the default workspace into two panes,
  * spoofs a DISTINCT agent identity into each pane's PTY (echo banners that the
  * AgentDetector gate matches), then verifies over the main-pipe RPC:
@@ -20,10 +20,18 @@ import os from 'node:os';
 import path from 'node:path';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  appHomeDir,
+  userDataDir as appUserDataDir,
+  mainPipeName,
+  packagedAppExe,
+} from './helpers/packaged-app.mjs';
 
 const SCRIPT_DIR = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(SCRIPT_DIR, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
+const APP_EXE = packagedAppExe();
 const USERNAME = os.userInfo().username || 'default';
 
 const results = [];
@@ -39,7 +47,7 @@ if (process.platform !== 'win32') { console.log('a2a-pane-identity-dogfood: SKIP
 if (!fs.existsSync(APP_EXE)) { console.error(`packaged exe not found: ${APP_EXE} — run \`npm run package\` first`); process.exit(2); }
 
 const suffix = `-paneiddog${process.pid}`;
-const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-paneiddog-'));
+const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-paneiddog-`));
 const env = {
   ...process.env,
   USERPROFILE: home, HOME: home,
@@ -50,13 +58,13 @@ const env = {
 delete env.HOMEDRIVE; delete env.HOMEPATH;
 fs.mkdirSync(env.APPDATA, { recursive: true });
 fs.mkdirSync(env.LOCALAPPDATA, { recursive: true });
-const userDataDir = path.join(env.APPDATA, `wmux${suffix}`);
+const userDataDir = appUserDataDir(env.APPDATA, suffix);
 fs.mkdirSync(userDataDir, { recursive: true });
 fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
 
-const wmuxDir = path.join(home, `.wmux${suffix}`);
-const mainPipe = `\\\\.\\pipe\\wmux${suffix}-${USERNAME}`;
-const authTokenPath = path.join(home, `.wmux${suffix}-auth-token`);
+const wmuxDir = appHomeDir(home, suffix);
+const mainPipe = mainPipeName(suffix, USERNAME);
+const authTokenPath = appAuthTokenPath(home, suffix);
 
 function readMainToken() { try { return fs.readFileSync(authTokenPath, 'utf8').trim() || null; } catch { return null; } }
 

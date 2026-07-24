@@ -25,11 +25,19 @@ import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+  appHomeDir,
+  userDataDir as appUserDataDir,
+  mainPipeName,
+  packagedAppExe,
+} from './helpers/packaged-app.mjs';
 import { chromium } from 'playwright-core';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const REPO_ROOT = path.resolve(__dirname, '..');
-const APP_EXE = path.join(REPO_ROOT, 'out', 'wmux-win32-x64', 'wmux.exe');
+const APP_EXE = packagedAppExe();
 const USERNAME = os.userInfo().username || 'default';
 const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
 
@@ -97,7 +105,7 @@ function report(name, pass, detail) {
 async function main() {
   if (!fs.existsSync(APP_EXE)) throw new Error(`packaged app missing: ${APP_EXE} (npm run package first)`);
   const suffix = `-p3probe${process.pid}`;
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-p3-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-p3-`));
   const env = {
     ...process.env,
     USERPROFILE: home, HOME: home, HOMEDRIVE: undefined, HOMEPATH: undefined,
@@ -108,7 +116,7 @@ async function main() {
   delete env.WMUX_DISABLE_CDP;
   fs.mkdirSync(env.APPDATA, { recursive: true });
   fs.mkdirSync(env.LOCALAPPDATA, { recursive: true });
-  const userDataDir = path.join(env.APPDATA, `wmux${suffix}`);
+  const userDataDir = appUserDataDir(env.APPDATA, suffix);
   fs.mkdirSync(userDataDir, { recursive: true });
   fs.writeFileSync(path.join(userDataDir, '.first-run'), new Date().toISOString(), 'utf8');
   // Seed: retention ON + skip onboarding overlays (same shape perf-bench uses).
@@ -145,7 +153,7 @@ async function main() {
 
   const cleanup = () => {
     try {
-      const dpid = Number(fs.readFileSync(path.join(home, `.wmux${suffix}`, 'daemon.pid'), 'utf8').trim());
+      const dpid = Number(fs.readFileSync(path.join(appHomeDir(home, suffix), 'daemon.pid'), 'utf8').trim());
       if (Number.isInteger(dpid) && dpid > 0) process.kill(dpid, 'SIGKILL');
     } catch { /* no daemon pid */ }
     try { if (proc.exitCode === null) proc.kill('SIGKILL'); } catch { /* already gone */ }
@@ -177,9 +185,9 @@ async function main() {
 
     // Main pipe client.
     const token = await waitFor('auth token', () => {
-      try { return fs.readFileSync(path.join(home, `.wmux${suffix}-auth-token`), 'utf8').trim() || null; } catch { return null; }
+      try { return fs.readFileSync(appAuthTokenPath(home, suffix), 'utf8').trim() || null; } catch { return null; }
     }, 15000, 250);
-    const client = new PipeClient(`\\\\.\\pipe\\wmux${suffix}-${USERNAME}`, token);
+    const client = new PipeClient(mainPipeName(suffix, USERNAME), token);
     await waitFor('main pipe connect', async () => {
       try { await client.connect(); return true; } catch { return null; }
     }, 20000, 500);
@@ -275,7 +283,7 @@ async function main() {
     // renderer console levels are mirrored there with timestamps — including
     // one-shot logs that fired before this probe attached its CDP listener).
     try {
-      const logsDir = path.join(env.APPDATA, `wmux${suffix}`, 'logs');
+      const logsDir = path.join(appUserDataDir(env.APPDATA, suffix), 'logs');
       for (const f of fs.readdirSync(logsDir)) {
         const text = fs.readFileSync(path.join(logsDir, f), 'utf8');
         const hits = text.split('\n').filter((l) =>

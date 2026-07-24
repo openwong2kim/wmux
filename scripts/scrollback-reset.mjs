@@ -4,15 +4,15 @@
  * a clean slate, or to escape from a session.json ↔ daemon buffer-dump
  * mismatch that has built up over previous launches.
  *
- * NON-DESTRUCTIVE — everything moves into ~/.wmux/backup-<timestamp>/.
+ * NON-DESTRUCTIVE — everything moves into ~/.<exe>/backup-<timestamp>/.
  * You can restore by moving files back if needed.
  *
  * What this script does:
  *   1. Kills any running wmux + Electron processes (so daemon releases
  *      its singleton state and stops writing to sessions.json mid-move).
- *   2. Backs up + removes ~/.wmux/sessions.json and its .bak* siblings.
- *   3. Backs up + removes ~/.wmux/buffers/*.buf (the daemon ringBuffer dumps).
- *   4. Backs up + removes %APPDATA%/wmux/session.json and its .bak* siblings
+ *   2. Backs up + removes ~/.<exe>/sessions.json and its .bak* siblings.
+ *   3. Backs up + removes ~/.<exe>/buffers/*.buf (the daemon ringBuffer dumps).
+ *   4. Backs up + removes %APPDATA%/<productName>/session.json and its .bak* siblings
  *      (the renderer-side workspace snapshot, which holds the stale ptyIds).
  *
  * Use cases:
@@ -30,15 +30,22 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { execSync } from 'node:child_process';
+import {
+  EXECUTABLE_NAME,
+  PRODUCT_NAME,
+  appHomeDir,
+  userDataDir,
+} from './helpers/packaged-app.mjs';
 
 const HOME = os.homedir();
-const WMUX_DIR = path.join(HOME, '.wmux');
+const WMUX_DIR = appHomeDir(HOME, '');
+// Electron's userData dir — keyed by app.getName(), i.e. the DISPLAY name.
 const APPDATA_WMUX_DIR =
   process.platform === 'win32'
-    ? path.join(process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming'), 'wmux')
+    ? userDataDir(process.env.APPDATA || path.join(HOME, 'AppData', 'Roaming'), '')
     : process.platform === 'darwin'
-    ? path.join(HOME, 'Library', 'Application Support', 'wmux')
-    : path.join(HOME, '.config', 'wmux');
+    ? path.join(HOME, 'Library', 'Application Support', PRODUCT_NAME)
+    : path.join(HOME, '.config', PRODUCT_NAME);
 
 const TIMESTAMP = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);
 const BACKUP_DIR = path.join(WMUX_DIR, `backup-${TIMESTAMP}`);
@@ -100,9 +107,9 @@ function killWmuxProcesses() {
   console.log('[1/4] killing running wmux/electron processes…');
   if (process.platform === 'win32') {
     // taskkill returns non-zero if no matching process — that's fine.
-    for (const name of ['wmux.exe', 'electron.exe', 'node.exe']) {
+    for (const name of [`${EXECUTABLE_NAME}.exe`, 'electron.exe', 'node.exe']) {
       try {
-        const out = execSync(`taskkill /F /IM ${name} /FI "WINDOWTITLE eq wmux*" 2>nul`, {
+        const out = execSync(`taskkill /F /IM ${name} /FI "WINDOWTITLE eq ${EXECUTABLE_NAME}*" 2>nul`, {
           stdio: ['ignore', 'pipe', 'pipe'],
         }).toString();
         if (out.trim()) console.log(`  [taskkill] ${name}: ${out.trim()}`);
@@ -110,15 +117,15 @@ function killWmuxProcesses() {
         /* no matching process — fine */
       }
     }
-    // Also try without window-title filter for the wmux launcher itself.
+    // Also try without window-title filter for the app launcher itself.
     try {
-      execSync('taskkill /F /IM wmux.exe 2>nul', { stdio: 'ignore' });
+      execSync(`taskkill /F /IM ${EXECUTABLE_NAME}.exe 2>nul`, { stdio: 'ignore' });
     } catch {
       /* fine */
     }
   } else {
     try {
-      execSync('pkill -f "wmux" || true', { stdio: 'ignore' });
+      execSync(`pkill -f "${EXECUTABLE_NAME}" || true`, { stdio: 'ignore' });
     } catch {
       /* fine */
     }
@@ -140,7 +147,7 @@ function main() {
   console.log('');
 
   if (!fs.existsSync(WMUX_DIR)) {
-    console.log('No ~/.wmux/ directory found. Nothing to clean. Exiting.');
+    console.log(`No ${WMUX_DIR} directory found. Nothing to clean. Exiting.`);
     return;
   }
 

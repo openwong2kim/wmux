@@ -20,12 +20,16 @@ import { fileURLToPath } from 'node:url';
 import { dirname, resolve, basename, join } from 'node:path';
 import { writeFileSync, mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import {
+  EXECUTABLE_NAME,
+  authTokenPath as appAuthTokenPath,
+} from './helpers/packaged-app.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const BRIDGE = resolve(__dirname, '..', 'integrations', 'claude', 'bin', 'wmux-bridge.mjs');
 
-const tmpHome = mkdtempSync(join(tmpdir(), 'wmux-bridge-resume-'));
-writeFileSync(join(tmpHome, '.wmux-auth-token'), 'fake-verification-token');
+const tmpHome = mkdtempSync(join(tmpdir(), `${EXECUTABLE_NAME}-bridge-resume-`));
+writeFileSync(appAuthTokenPath(tmpHome, ''), 'fake-verification-token');
 
 // A transcript JSONL line for a user turn stamped with a permission mode (F5).
 const userLine = (mode) =>

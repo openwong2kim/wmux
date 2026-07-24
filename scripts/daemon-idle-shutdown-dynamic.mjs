@@ -23,6 +23,10 @@ import fs from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { randomUUID } from 'node:crypto';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+} from './helpers/packaged-app.mjs';
 
 const REPO_ROOT = path.resolve(import.meta.dirname, '..');
 const DAEMON_BUNDLE = path.join(REPO_ROOT, 'dist', 'daemon-bundle', 'index.js');
@@ -33,16 +37,16 @@ if (!fs.existsSync(DAEMON_BUNDLE)) {
 }
 
 // Isolated state directory + custom pipe name so we never collide
-// with the real ~/.wmux/ daemon the user's app may be running.
-const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-idle-dyn-'));
-const TEST_WMUX = path.join(TEST_HOME, '.wmux');
+// with the real ~/.<exe>/ daemon the user's app may be running.
+const TEST_HOME = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-idle-dyn-`));
+const TEST_WMUX = appHomeDir(TEST_HOME, '');
 fs.mkdirSync(TEST_WMUX, { recursive: true });
 
 const PIPE_TAG = `idle-${randomUUID().slice(0, 8)}`;
 const PIPE_NAME =
   process.platform === 'win32'
-    ? `\\\\.\\pipe\\wmux-test-${PIPE_TAG}`
-    : path.join(TEST_HOME, `.wmux-test-${PIPE_TAG}.sock`);
+    ? `\\\\.\\pipe\\${EXECUTABLE_NAME}-test-${PIPE_TAG}`
+    : path.join(TEST_HOME, `.${EXECUTABLE_NAME}-test-${PIPE_TAG}.sock`);
 
 const AUTH_TOKEN = randomUUID();
 

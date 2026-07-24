@@ -22,6 +22,12 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import {
+  EXECUTABLE_NAME,
+  appHomeDir,
+  daemonPipeName,
+  sessionPipeName,
+} from './helpers/packaged-app.mjs';
 import headless from '@xterm/headless';
 import unicode11 from '@xterm/addon-unicode11';
 
@@ -168,7 +174,7 @@ class RendererSim {
 }
 
 async function main() {
-  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-resyncprobe-'));
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), `${EXECUTABLE_NAME}-resyncprobe-`));
   const env = {
     ...process.env,
     USERPROFILE: home,
@@ -185,9 +191,9 @@ async function main() {
   const failures = [];
   try {
     const token = await waitFor('auth token', () => {
-      try { return fs.readFileSync(path.join(home, `.wmux${SUFFIX}`, 'daemon-auth-token'), 'utf8').trim() || null; } catch { return null; }
+      try { return fs.readFileSync(path.join(appHomeDir(home, SUFFIX), 'daemon-auth-token'), 'utf8').trim() || null; } catch { return null; }
     });
-    const control = new ControlClient(`\\\\.\\pipe\\wmux-daemon${SUFFIX}-${USERNAME}`, token);
+    const control = new ControlClient(daemonPipeName(SUFFIX, USERNAME), token);
     await waitFor('control pipe', async () => {
       try { await control.connect(); return true; } catch { return null; }
     });
@@ -221,7 +227,7 @@ async function main() {
     // Session pipe attach (fake renderer).
     const sim = new RendererSim();
     const sessSock = await new Promise((resolve, reject) => {
-      const s = net.createConnection(`\\\\.\\pipe\\wmux-session-${sessionId}`);
+      const s = net.createConnection(sessionPipeName(sessionId, home));
       s.once('connect', () => resolve(s));
       s.once('error', reject);
     });
