@@ -158,6 +158,7 @@ export const COMMANDER_TEARDOWN_DENY: ReadonlySet<string> = new Set<string>([
   'pane.close',
   'surface.close',
   'workspace.close',
+  'browser.tabs',
   'browser.close',
   'daemon.destroySession',
 ]);

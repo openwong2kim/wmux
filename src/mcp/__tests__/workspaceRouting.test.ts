@@ -22,6 +22,8 @@ import path from 'node:path';
 //      browser.rpc.ts; the handler ignores workspaceId). It carries NO workspace
 //      identity, matching browser_session_stop/status/list — so it can never
 //      reintroduce the active-workspace fallback bug.
+//   4. browser_tabs injects requireWorkspaceId() at its production registration
+//      site, so its isolated unit tests cannot mask accidental weak wiring.
 describe('MCP workspace routing (source-level invariants)', () => {
   const indexPath = path.join(__dirname, '..', 'index.ts');
   const rawSrc = fs.readFileSync(indexPath, 'utf-8');
@@ -168,6 +170,17 @@ describe('MCP workspace routing (source-level invariants)', () => {
     // pinned to the calling session and fails closed (skips auto-open) on a
     // resolve miss, never reaching the renderer's active-workspace fallback.
     expect(src).toMatch(/setWorkspaceIdResolver\(\s*requireWorkspaceId\s*\)/);
+  });
+
+  it('browser_tabs production wiring injects requireWorkspaceId (#565)', () => {
+    // navigation.tabs.test.ts injects a resolver so it can exercise the tool in
+    // isolation. This source lock covers the complementary production seam: a
+    // future rewire to the weak resolver must fail even if those unit tests pass.
+    const registrations = src.match(/registerNavigationTools\([\s\S]*?\);/g) ?? [];
+    expect(registrations).toHaveLength(1);
+    expect(registrations[0]).toMatch(
+      /registerNavigationTools\(\s*server\s*,\s*\{\s*resolveWorkspaceId:\s*requireWorkspaceId\s*\}\s*\)/,
+    );
   });
 
   it('browser_session_start is GLOBAL — carries no workspace identity (no resolver calls)', () => {

@@ -13,6 +13,11 @@ import { WebviewCdpManager } from '../../browser-session/WebviewCdpManager';
 import { BrowserCaptureManager } from '../../browser-session/BrowserCaptureManager';
 import { validateResolvedNavigationUrl } from '../../security/navigationPolicy';
 import { parseKeyPress } from './cdpKeys';
+import {
+  BROWSER_TABS_ACTIONS,
+  browserTabsError,
+  type BrowserTabsAction,
+} from '../../../shared/browserTabs';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -115,6 +120,79 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
   router.register('browser.lease.release', async (params) => {
     const token = typeof params['token'] === 'string' ? params['token'] : '';
     return { ok: webviewCdpManager.releaseRpcLease(token) };
+  });
+
+  /**
+   * browser.tabs
+   * Workspace-exact control-plane operations for the browser_tabs MCP tool.
+   * params: { action, workspaceId, surfaceId?, url? }
+   *
+   * This is deliberately a wmux.internal RPC: workspaceId is resolved by the
+   * bundled MCP server, not trusted from an arbitrary capability-bearing
+   * plugin. The renderer re-checks ownership at the mutation boundary.
+   */
+  router.register('browser.tabs', async (params) => {
+    const actionValue = typeof params['action'] === 'string' ? params['action'] : 'list';
+    if (!(BROWSER_TABS_ACTIONS as readonly string[]).includes(actionValue)) {
+      return browserTabsError(
+        'BROWSER_TABS_INVALID_ARGUMENT',
+        `Unknown browser_tabs action "${actionValue}".`,
+      );
+    }
+    const action = actionValue as BrowserTabsAction;
+    const workspaceId =
+      typeof params['workspaceId'] === 'string' && params['workspaceId'].length > 0
+        ? params['workspaceId']
+        : '';
+    if (!workspaceId) {
+      return browserTabsError(
+        'BROWSER_TABS_WORKSPACE_UNRESOLVED',
+        'The calling workspace is unavailable.',
+      );
+    }
+
+    const surfaceId =
+      typeof params['surfaceId'] === 'string' && params['surfaceId'].length > 0
+        ? params['surfaceId']
+        : undefined;
+    const url = typeof params['url'] === 'string' ? params['url'] : undefined;
+    if ((action === 'select' || action === 'close') && !surfaceId) {
+      return browserTabsError(
+        'BROWSER_TABS_INVALID_ARGUMENT',
+        `browser_tabs ${action} requires a surfaceId returned by browser_tabs list.`,
+      );
+    }
+    if ((action === 'list' || action === 'new') && surfaceId) {
+      return browserTabsError(
+        'BROWSER_TABS_INVALID_ARGUMENT',
+        `browser_tabs ${action} does not accept surfaceId.`,
+      );
+    }
+    if (action !== 'new' && url !== undefined) {
+      return browserTabsError(
+        'BROWSER_TABS_INVALID_ARGUMENT',
+        `browser_tabs ${action} does not accept url.`,
+      );
+    }
+
+    if (action === 'new' && url !== undefined) {
+      try {
+        await validateUrl(url, 'browser.tabs');
+      } catch (error) {
+        return browserTabsError(
+          'BROWSER_TAB_URL_BLOCKED',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+
+    return sendToRenderer(getWindow, 'browser.tabs', {
+      action,
+      workspaceId,
+      ...(surfaceId && { surfaceId }),
+      ...(url !== undefined && { url }),
+      ...(action === 'new' && { partition: getActivePartition() }),
+    });
   });
 
   /**

@@ -49,7 +49,13 @@ describe('commander surface manifest invariants', () => {
       expect(COMMANDER_RPC_METHODS.has(method), `${method} both allowed and denied`).toBe(false);
     }
     // Effect-based inventory: the known teardown reachers must all be present.
-    for (const required of ['pane.close', 'surface.close', 'workspace.close', 'browser.close']) {
+    for (const required of [
+      'pane.close',
+      'surface.close',
+      'workspace.close',
+      'browser.tabs',
+      'browser.close',
+    ]) {
       expect(COMMANDER_TEARDOWN_DENY.has(required)).toBe(true);
     }
   });

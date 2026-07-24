@@ -829,7 +829,7 @@ server.tool(
 );
 
 // === Playwright browser tools ===
-registerNavigationTools(server);
+registerNavigationTools(server, { resolveWorkspaceId: requireWorkspaceId });
 registerInteractionTools(server);
 registerInspectionTools(server);
 registerStateTools(server);

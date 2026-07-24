@@ -13,6 +13,10 @@ import { formatA2aMessage, formatA2aBroadcast, sanitizeA2aName } from '../utils/
 import type { A2aPriority } from '../utils/a2aFormat';
 import { requestExecuteApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
+import {
+  closeBrowserTabInWorkspace,
+  handleBrowserTabsRpc,
+} from '../utils/browserTabs';
 import { terminalRegistry, hydrateTerminalForRead } from './useTerminal';
 import { readPtyBufferLines, readPtyBufferTail, DEFAULT_READ_TAIL_LINES } from '../utils/terminalTail';
 import { searchInBuffer, type SearchableBuffer } from '../utils/searchEngine';
@@ -1398,6 +1402,13 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   // browser.*
   // -------------------------------------------------------------------------
 
+  if (method === 'browser.tabs') {
+    return handleBrowserTabsRpc(params, {
+      getState: () => useStore.getState(),
+      openUrl: openUrlInBrowserPane,
+    });
+  }
+
   if (method === 'browser.open') {
     const targetWsId = typeof params.workspaceId === 'string'
       ? params.workspaceId
@@ -1493,37 +1504,12 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
       return { error: 'browser.close: no browser surface found' };
     }
 
-    // Snapshot whether this was the pane's last surface BEFORE removing it, so
-    // the decision matches Pane.tsx handleCloseSurface (which reads
-    // pane.surfaces.length at call time, pre-close) regardless of how the store
-    // applies the mutation.
-    const wasLastSurface = targetLeaf.surfaces.length <= 1;
-
-    store.closeSurface(targetLeaf.id, targetSurfaceId, targetWs.id);
-
-    // Mirror the UI close path's cascade: when the closed surface was the
-    // pane's last one, remove the now-empty leaf too. Without this, AppLayout's
-    // "auto-create initial surface for empty leaf panes" effect backfills the
-    // empty leaf with a fresh terminal, so MCP browser_close would accrete
-    // blank terminals where the UI path leaves nothing. A browser sharing a
-    // split pane with a terminal has surfaces.length > 1, so only the surface
-    // is removed and the pane stays.
-    //
-    // Root-pane edge: closePane is a no-op on the root pane ("can't close root
-    // pane"), so a browser that is a workspace's ONLY pane leaves an empty root
-    // that AppLayout backfills with a terminal. That is intended (a workspace
-    // can't have zero panes) and the UI path behaves identically, so it is not
-    // an asymmetry — only the non-root case was leaking.
-    //
-    // Safety note: closeSurface and closePane are two separate set() calls, so
-    // there is a transient "empty leaf" state between them. They run
-    // synchronously with no await in between, so zustand batches them and React
-    // never re-renders on the intermediate state — the empty-leaf auto-terminal
-    // effect only ever sees the final state (pane removed) and stays dormant.
-    // Keep these two calls synchronous and adjacent; an await between them would
-    // expose the empty leaf to the effect and reintroduce the backfill.
-    if (wasLastSurface) {
-      store.closePane(targetLeaf.id, targetWs.id);
+    // Shared with browser.tabs close so both paths preserve the exact UI
+    // last-surface cascade. The helper re-resolves within targetWs immediately
+    // before mutation; browser.close keeps its legacy global explicit-id
+    // resolution above, while browser.tabs never leaves caller scope.
+    if (!closeBrowserTabInWorkspace(store, targetWs.id, targetSurfaceId)) {
+      return { error: 'browser.close: no browser surface found' };
     }
     return { ok: true };
   }

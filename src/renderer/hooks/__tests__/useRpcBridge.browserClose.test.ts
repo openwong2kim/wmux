@@ -13,10 +13,11 @@ import * as path from 'node:path';
  * leaf panes" effect then filled with a terminal. browser_open/close in a loop
  * accreted blank terminals.
  *
- * Fix: the handler snapshots whether this was the last surface BEFORE closing,
- * then cascades into closePane — mirroring the UI path. (Root panes are a no-op
- * in closePane by design, so a browser that is a workspace's only pane still
- * gets an auto-terminal on both paths; only the non-root asymmetry was a bug.)
+ * Fix: the shared browser-tabs close helper snapshots whether this was the last
+ * surface BEFORE closing, then cascades into closePane — mirroring the UI path.
+ * (Root panes are a no-op in closePane by design, so a browser that is a
+ * workspace's only pane still gets an auto-terminal on both paths; only the
+ * non-root asymmetry was a bug.)
  *
  * This is a source-structural test: handleRpcMethod is not exported and pulls in
  * the whole store, so it can't be imported under vitest — the same reason the
@@ -24,42 +25,42 @@ import * as path from 'node:path';
  * reorders it so the last-surface decision is made AFTER the surface is gone.
  */
 describe('useRpcBridge browser.close cascade (issue #143)', () => {
-  const src = fs.readFileSync(
-    path.join(__dirname, '..', 'useRpcBridge.ts'),
+  const closeHelperSrc = fs.readFileSync(
+    path.join(__dirname, '..', '..', 'utils', 'browserTabs.ts'),
     'utf-8',
   );
 
-  /** Isolate the browser.close handler region so assertions can't match elsewhere. */
-  function closeBlock(): string {
-    const match = src.match(
-      /method === 'browser\.close'[\s\S]*?method === 'browser\.navigate'/,
+  /** Isolate the shared close helper so assertions cannot match another path. */
+  function closeHelperBlock(): string {
+    const match = closeHelperSrc.match(
+      /export function closeBrowserTabInWorkspace[\s\S]*?^}/m,
     );
     if (!match) {
       throw new Error(
-        "browser.close -> browser.navigate handler region not found in " +
-          'useRpcBridge.ts. Update the regex if the layout changed.',
+        'closeBrowserTabInWorkspace helper not found in browserTabs.ts. ' +
+          'Update the regex if the layout changed.',
       );
     }
     return match[0];
   }
 
   it('cascades into closePane when the last surface is closed', () => {
-    const block = closeBlock();
-    expect(block).toMatch(/store\.closeSurface\(/);
+    const block = closeHelperBlock();
+    expect(block).toMatch(/state\.closeSurface\(/);
     // The empty-pane cleanup that issue #143 was missing.
-    expect(block).toMatch(/store\.closePane\(targetLeaf\.id,\s*targetWs\.id\)/);
+    expect(block).toMatch(/state\.closePane\(target\.pane\.id,\s*target\.workspace\.id\)/);
   });
 
   it('decides last-surface BEFORE closeSurface (no off-by-one on the snapshot)', () => {
-    const block = closeBlock();
+    const block = closeHelperBlock();
     // The pre-close snapshot must exist and gate the closePane call.
-    expect(block).toMatch(/const\s+wasLastSurface\s*=\s*targetLeaf\.surfaces\.length\s*<=\s*1/);
+    expect(block).toMatch(/const\s+wasLastSurface\s*=\s*target\.pane\.surfaces\.length\s*<=\s*1/);
     expect(block).toMatch(/if\s*\(\s*wasLastSurface\s*\)/);
 
     // Ordering: the length is captured before the surface is spliced out, or the
     // decision would be off-by-one (length already decremented).
     const snapAt = block.indexOf('wasLastSurface =');
-    const closeAt = block.indexOf('store.closeSurface(');
+    const closeAt = block.indexOf('state.closeSurface(');
     expect(snapAt).toBeGreaterThanOrEqual(0);
     expect(closeAt).toBeGreaterThan(snapAt);
   });
@@ -102,7 +103,7 @@ describe('useRpcBridge close-path workspace routing', () => {
     expect(block).toMatch(/store\.activeWorkspaceId/);
     // The store mutations must be pinned to the RESOLVED workspace, or the
     // slice-level active-workspace default silently no-ops on background ones.
-    expect(block).toMatch(/store\.closeSurface\(targetLeaf\.id,\s*targetSurfaceId,\s*targetWs\.id\)/);
+    expect(block).toMatch(/closeBrowserTabInWorkspace\(store,\s*targetWs\.id,\s*targetSurfaceId\)/);
   });
 
   it('browser.close with an explicit surfaceId searches every workspace (unambiguous target)', () => {
@@ -114,5 +115,11 @@ describe('useRpcBridge close-path workspace routing', () => {
     const block = blockBetween("method === 'surface\\.close'", "method === 'pane\\.list'");
     expect(block).toMatch(/for \(const ws of store\.workspaces\)/);
     expect(block).toMatch(/store\.closeSurface\(targetLeaf\.id,\s*surfaceId,\s*targetWs\.id\)/);
+  });
+
+  it('browser.tabs delegates to the workspace-exact renderer helper', () => {
+    const block = blockBetween("method === 'browser\\.tabs'", "method === 'browser\\.open'");
+    expect(block).toMatch(/handleBrowserTabsRpc\(params/);
+    expect(block).toMatch(/getState:\s*\(\)\s*=>\s*useStore\.getState\(\)/);
   });
 });

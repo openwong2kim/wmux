@@ -22,12 +22,13 @@ function ctx(clientName?: string): RpcContext {
 
 const FP = 'claude-code';
 // A representative spread of the allowlist: a normal capability method, a
-// path-scoped one, and two that map to `wmux.internal` (the whole reason the
+// path-scoped one, and three that map to `wmux.internal` (the whole reason the
 // allowlist exists — these can never be granted via declaration).
 const SAMPLE_ALLOWED: RpcMethod[] = [
   'browser.open',
   'pane.setMetadata',
   'surface.list',
+  'browser.tabs',
   'company.a2a.whoami',
 ];
 
@@ -59,8 +60,13 @@ describe('PermissionEnforcer.check — first-party allowlist', () => {
     expect(out).toEqual({ kind: 'allow' });
   });
 
-  it('allows wmux.internal methods (surface.list, company.a2a.*) that can never be declared', () => {
-    for (const method of ['surface.list', 'company.a2a.send', 'company.a2a.status'] as const) {
+  it('allows wmux.internal methods (surface.list, browser.tabs, company.a2a.*) that can never be declared', () => {
+    for (const method of [
+      'surface.list',
+      'browser.tabs',
+      'company.a2a.send',
+      'company.a2a.status',
+    ] as const) {
       const out = check({
         method,
         params: {},

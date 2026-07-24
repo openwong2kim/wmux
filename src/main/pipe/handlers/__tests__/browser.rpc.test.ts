@@ -192,6 +192,130 @@ describe('registerBrowserRpc', () => {
     expect(mockWebContents.loadURL).not.toHaveBeenCalled();
   });
 
+  it('browser.tabs list forwards the strictly supplied workspace without CDP state', async () => {
+    const router = register();
+
+    const response = await router.dispatch({
+      id: '4b',
+      method: 'browser.tabs',
+      params: { action: 'list', workspaceId: 'ws-caller' },
+    });
+
+    expect(response.ok).toBe(true);
+    expect(sendToRendererMock).toHaveBeenCalledWith(expect.any(Function), 'browser.tabs', {
+      action: 'list',
+      workspaceId: 'ws-caller',
+    });
+  });
+
+  it('browser.tabs new validates the URL and supplies the active partition', async () => {
+    const router = register();
+
+    await router.dispatch({
+      id: '4c',
+      method: 'browser.tabs',
+      params: {
+        action: 'new',
+        workspaceId: 'ws-caller',
+        url: 'https://example.com/',
+      },
+    });
+
+    expect(validateResolvedNavigationUrlMock).toHaveBeenCalledWith('https://example.com/');
+    expect(sendToRendererMock).toHaveBeenCalledWith(expect.any(Function), 'browser.tabs', {
+      action: 'new',
+      workspaceId: 'ws-caller',
+      url: 'https://example.com/',
+      partition: 'persist:wmux-default',
+    });
+  });
+
+  it('browser.tabs new returns a stable blocked-url error before renderer mutation', async () => {
+    validateResolvedNavigationUrlMock.mockResolvedValue({
+      valid: false,
+      reason: 'Blocked resolved address 169.254.169.254',
+    });
+    const router = register();
+
+    const response = await router.dispatch({
+      id: '4d',
+      method: 'browser.tabs',
+      params: {
+        action: 'new',
+        workspaceId: 'ws-caller',
+        url: 'https://metadata.example/',
+      },
+    });
+
+    expect(response.ok).toBe(true);
+    if (response.ok) {
+      expect(response.result).toMatchObject({
+        ok: false,
+        error: { code: 'BROWSER_TAB_URL_BLOCKED' },
+      });
+    }
+    expect(sendToRendererMock).not.toHaveBeenCalledWith(
+      expect.any(Function),
+      'browser.tabs',
+      expect.anything(),
+    );
+  });
+
+  it('browser.tabs rejects missing workspace identity and select without surfaceId', async () => {
+    const router = register();
+
+    const noWorkspace = await router.dispatch({
+      id: '4e',
+      method: 'browser.tabs',
+      params: { action: 'list' },
+    });
+    const noSurface = await router.dispatch({
+      id: '4f',
+      method: 'browser.tabs',
+      params: { action: 'select', workspaceId: 'ws-caller' },
+    });
+
+    expect(noWorkspace.ok).toBe(true);
+    if (noWorkspace.ok) {
+      expect(noWorkspace.result).toMatchObject({
+        ok: false,
+        error: { code: 'BROWSER_TABS_WORKSPACE_UNRESOLVED' },
+      });
+    }
+    expect(noSurface.ok).toBe(true);
+    if (noSurface.ok) {
+      expect(noSurface.result).toMatchObject({
+        ok: false,
+        error: { code: 'BROWSER_TABS_INVALID_ARGUMENT' },
+      });
+    }
+    expect(sendToRendererMock).not.toHaveBeenCalledWith(
+      expect.any(Function),
+      'browser.tabs',
+      expect.anything(),
+    );
+  });
+
+  it('browser.tabs close forwards only the stable surface id inside the caller workspace', async () => {
+    const router = register();
+
+    await router.dispatch({
+      id: '4g',
+      method: 'browser.tabs',
+      params: {
+        action: 'close',
+        workspaceId: 'ws-caller',
+        surfaceId: 'surface-a',
+      },
+    });
+
+    expect(sendToRendererMock).toHaveBeenCalledWith(expect.any(Function), 'browser.tabs', {
+      action: 'close',
+      workspaceId: 'ws-caller',
+      surfaceId: 'surface-a',
+    });
+  });
+
   it('browser.open passes the active profile partition to the renderer', async () => {
     const router = register();
 

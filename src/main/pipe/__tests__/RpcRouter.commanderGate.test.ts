@@ -47,6 +47,7 @@ function wireEnforced(): void {
   });
   router.register('pane.close', async () => ({ ok: true }));
   router.register('surface.close', async () => ({ ok: true }));
+  router.register('browser.tabs', async () => ({ ok: true, action: 'close' }));
   router.register('workspace.new', async () => ({ ok: true, id: 'ws-9' }));
   router.setTrustLookup(async (name) => store.get(name));
   router.setEnforcementMode('enforce');
@@ -122,7 +123,7 @@ describe('commander role gate — validated token (the external-brain enable)', 
   it('refuses teardown methods even WITH a valid token (Layer 2 backstop)', async () => {
     const token = mintCommanderToken('ws-brain');
     try {
-      for (const method of ['pane.close', 'surface.close'] as const) {
+      for (const method of ['pane.close', 'surface.close', 'browser.tabs'] as const) {
         const res = await router.dispatch({
           id: `t-${method}`,
           method,

@@ -123,6 +123,7 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 
 | Method | Params | Tier | Notes |
 |---|---|---|---|
+| `browser.tabs` | `{ action, workspaceId, surfaceId?, url? }` | internal | Workspace-exact lifecycle backing for the bundled MCP `browser_tabs` tool. `workspaceId` is supplied by its strict caller-identity resolver and is not exposed as public tool input; the renderer re-checks surface ownership before select/close. |
 | `browser.open` | `{ url? }` | experimental | The browser/CDP surface backs the MCP `browser_*` tools. Wire shapes may evolve before v3.0. Currently the primary AI-agent capability driver, but not part of the substrate identity. |
 | `browser.navigate`, `browser.goBack`, `browser.close` | various | experimental | |
 | `browser.session.{start,stop,status,list}` | various | experimental | |
@@ -203,7 +204,8 @@ There is intentionally no `channel_archive` MCP tool: archiving tears a channel 
 
 | MCP tool family | Count | Notes |
 |---|---|---|
-| `browser_*` (open, close, navigate, navigate_back, screenshot, fill, type, click, hover, drag, press_key, scroll, scroll_into_view, snapshot, smart_snapshot, console, cookies, dialog, download, evaluate, extract_data, extract_text, file_upload, highlight, network, pdf, resize, response_body, select, session_list, session_start, session_status, session_stop, storage, tabs, trace, wait, wait_for_download, emulate) | ~40 | Wire shapes may evolve before v3.0. Backs Claude Code / Codex / Gemini CLI browser-control use cases. |
+| `browser_tabs` | 1 | Manages logical browser surfaces only in the calling session's workspace. `list`/`new` return stable opaque `surfaceId` values used by `select`/`close`; the former experimental numeric `tabId` index is no longer accepted. |
+| Other `browser_*` tools (open, close, navigate, navigate_back, screenshot, fill, type, click, hover, drag, press_key, scroll, scroll_into_view, snapshot, smart_snapshot, console, cookies, dialog, download, evaluate, extract_data, extract_text, file_upload, highlight, network, pdf, resize, response_body, select, session_list, session_start, session_status, session_stop, storage, trace, wait, wait_for_download, emulate) | ~39 | Wire shapes may evolve before v3.0. Backs Claude Code / Codex / Gemini CLI browser-control use cases. |
 
 ---
 
@@ -269,6 +271,7 @@ The EventBus (`src/main/events/EventBus.ts`) is an in-memory ring buffer of `RIN
 
 | Date | Change |
 |---|---|
+| 2026-07-24 | Workspace-scoped browser tabs (issue #565) — defined a browser tab as a logical wmux browser surface and replaced the global Playwright-page inventory plus mutable numeric `tabId` with stable `surfaceId` addressing. The public experimental `browser_tabs` tool now resolves the caller workspace strictly; its reserved `browser.tabs` backing RPC re-checks ownership at the renderer effect boundary and is denied to commander-role callers because it multiplexes close. |
 | 2026-07-05 | Channel delivery reliability (v3.15.0) — added the `a2a.channel.nudgeRecorded` daemon RPC (**internal** tier) to the A2A table: the renderer reports a just-delivered mention paste into the wake worker's shared nudge ledger, so an attached agent is not pasted AND re-nudged for the same mention. Renderer-only mutate path (`channels:mutate-local`), absent from the main pipe router by design. No new MCP tool, event type, or capability. |
 | 2026-06-23 | Pane + surface lifecycle MCP tools (issue #285) — exposed five tools (`pane_split`, `pane_close`, `pane_focus`, `surface_new`, `surface_close`) mirroring the workspace-scoped pane/surface RPCs (#236/#238/#256/#257). CREATE family (split/new) takes an optional `workspaceId` (defaults to the caller's own workspace); ADDRESS family (close/focus) takes a globally-unique id resolved across all workspaces. Added the five to `FIRST_PARTY_METHODS`; the reserved `wmux.internal` `surface.new`/`surface.close` also widen `ALLOWED_RESERVED_FIRST_PARTY` per the §2.4 first-party security review. No new RPC method or capability. |
 | 2026-06-21 | A2A channels (a2a-channels U2) — added nine `a2a.channel.*` pipe RPC methods (list, get, getMessages, getMembers, create, post, join, leave, archive) and six corresponding `channel_*` MCP tools. Added `channel.message` to the event table with the **multi-party** scoping rule (generalised from `a2a.task` dual-party): visible to the sender's `workspaceId` AND every `recipientWorkspaceId` in the frozen snapshot, never a third workspace, zero visibility on an unscoped poll. The recipient set is frozen at critical-section entry in `ChannelService.post` (KTD3). Updated PROTOCOL.md §2.8 with the parallel `channel.message` rule. |
