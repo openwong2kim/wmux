@@ -25,10 +25,11 @@ import {
  * missing url opens the same homepage an empty builtin browser pane would have
  * shown (DEFAULT_BROWSER_URL), keeping the affordance meaningful.
  *
- * The backend value is main-owned; the renderer reads the hydrated mirror
- * (uiSlice.browserBackend). Before boot hydration lands it is the 'builtin'
- * default, so the sub-second pre-hydration window opens builtin — acceptable,
- * and it self-corrects the moment the mirror hydrates.
+ * The backend value is main-owned; the renderer mirror (uiSlice.browserBackend)
+ * is seeded synchronously at store-module load from main's persisted value
+ * (readInitialBrowserBackend → getBackendSync), so it is already correct on the
+ * first render — there is no async-hydration window in which an external-mode
+ * open could leak an embedded webview.
  */
 export function maybeDelegateExternalBrowser(url?: string): boolean {
   if (useStore.getState().browserBackend !== 'external') return false;

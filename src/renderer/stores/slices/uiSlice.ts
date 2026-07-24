@@ -2,7 +2,25 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { markRetentionMigrationDone } from '../retentionMigration';
-import { DEFAULT_BROWSER_BACKEND, type BrowserBackend } from '../../../shared/browserBackend';
+import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
+
+/**
+ * #517: read main's authoritative browser backend synchronously at store-module
+ * load, so the mirror is correct before the first render and no browser-open
+ * path can spawn an embedded webview during async hydration while the persisted
+ * value is 'external'. Falls back to the default (and hydrated:false, so the
+ * async AppLayout path still runs) in node/jsdom tests or against an older
+ * preload with no sync bridge.
+ */
+function readInitialBrowserBackend(): { backend: BrowserBackend; hydrated: boolean } {
+  try {
+    const sync = (globalThis as { window?: { electronAPI?: { browser?: { getBackendSync?: () => unknown } } } })
+      .window?.electronAPI?.browser?.getBackendSync?.();
+    if (isBrowserBackend(sync)) return { backend: sync, hydrated: true };
+  } catch { /* not in renderer, or older preload — async hydration handles it */ }
+  return { backend: DEFAULT_BROWSER_BACKEND, hydrated: false };
+}
+const INITIAL_BROWSER_BACKEND = readInitialBrowserBackend();
 import type { FleetSortMode } from '../selectors/fleet';
 import {
   normalizeRoleBinding,
@@ -934,15 +952,16 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
     state.browserDiscardHidden = enabled;
   }),
 
-  // #517 backend choice — mirror only; DEFAULT_BROWSER_BACKEND keeps the store
-  // in sync with main's default until AppLayout hydrates the real value.
-  browserBackend: DEFAULT_BROWSER_BACKEND,
+  // #517 backend choice — mirror of main's authoritative value. Read
+  // synchronously at module load (readInitialBrowserBackend) so it is correct
+  // before the first render; AppLayout's async hydration is a fallback/refresh.
+  browserBackend: INITIAL_BROWSER_BACKEND.backend,
 
   setBrowserBackend: (backend) => set((state) => {
     state.browserBackend = backend;
   }),
 
-  browserBackendHydrated: false,
+  browserBackendHydrated: INITIAL_BROWSER_BACKEND.hydrated,
 
   // One-shot boot hydration: applies main's persisted value (null = nothing to
   // hydrate, e.g. jsdom or an older main) and unlocks the Settings control.

@@ -832,6 +832,13 @@ ipcMain.handle('browser:set-discard', (_event, enabled: boolean) => {
 });
 // #517 backend choice — renderer Settings UI reads/writes the main-owned value.
 ipcMain.handle('browser:get-backend', () => browserBackendStore.get());
+// Synchronous boot read: the renderer initializes its mirror from this BEFORE
+// its first render, so no browser-open path (user click or session-restored
+// browser leaf) can spawn an embedded webview during the async-hydration window
+// while the persisted value is 'external' (#517, CodeRabbit).
+ipcMain.on('browser:get-backend-sync', (event) => {
+  event.returnValue = browserBackendStore.get();
+});
 ipcMain.handle('browser:set-backend', (_event, value: unknown) => {
   if (!isBrowserBackend(value)) return { ok: false };
   browserBackendStore.set(value);
