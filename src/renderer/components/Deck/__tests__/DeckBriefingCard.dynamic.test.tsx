@@ -51,7 +51,9 @@ function installFakeIntersectionObserver(): void {
       this.el = el;
       this.cb([{ isIntersecting: ioIntersecting, target: el }]);
     }
-    unobserve(): void {}
+    unobserve(): void {
+      /* no-op */
+    }
     disconnect(): void {
       const i = ioInstances.indexOf(this);
       if (i >= 0) ioInstances.splice(i, 1);

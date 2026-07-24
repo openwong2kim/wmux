@@ -1600,7 +1600,7 @@ export function registerDeckHandler(
       // failed persist only costs a slightly-stale delta on the next open.
       void saveBriefedSnapshot(workspaceId, pending.snapshot, undefined, {
         ...(live ? { liveWorkspaceIds: live } : {}),
-      }).catch(() => {});
+      }).catch(() => undefined);
       return { ok: true };
     }),
   );
