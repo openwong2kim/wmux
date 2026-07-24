@@ -26,6 +26,7 @@ import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
 import { FIRST_RUN_REOPEN_EVENT } from '../../../shared/firstRun';
+import { notifyBriefingConfigChanged } from '../Deck/deckBriefingConfigBus';
 import { ClaudeIntegrationSection } from './ClaudeIntegrationSection';
 import { AccountsSection } from './AccountsSection';
 import { terminalFontFamilyCss } from '../../utils/terminalFont';
@@ -648,18 +649,29 @@ function OrchestratorSection() {
       .catch(() => undefined); // keep the default-on rendering
     return () => { cancelled = true; };
   }, []);
+  // A mounted DeckBriefingCard reads its config from main, not from this
+  // component's state, so every confirmed change is broadcast — otherwise a card
+  // that is already on screen stays visible after the operator turns it off.
   const onBriefingEnabledChange = (enabled: boolean) => {
     setBriefingEnabled(enabled);
     window.electronAPI.deck?.briefing
       ?.setConfig({ enabled })
-      .then((c) => { setBriefingEnabled(c.enabled); setBriefingAutoShow(c.autoShow); })
+      .then((c) => {
+        setBriefingEnabled(c.enabled);
+        setBriefingAutoShow(c.autoShow);
+        notifyBriefingConfigChanged();
+      })
       .catch(() => setBriefingEnabled(!enabled));
   };
   const onBriefingAutoShowChange = (autoShow: boolean) => {
     setBriefingAutoShow(autoShow);
     window.electronAPI.deck?.briefing
       ?.setConfig({ autoShow })
-      .then((c) => { setBriefingEnabled(c.enabled); setBriefingAutoShow(c.autoShow); })
+      .then((c) => {
+        setBriefingEnabled(c.enabled);
+        setBriefingAutoShow(c.autoShow);
+        notifyBriefingConfigChanged();
+      })
       .catch(() => setBriefingAutoShow(!autoShow));
   };
   const options = ORCHESTRATOR_MODEL_OPTIONS.map((o) => ({
