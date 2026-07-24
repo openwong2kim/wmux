@@ -332,16 +332,19 @@ function SettingSelect({
   onChange,
   options,
   label,
+  disabled,
 }: {
   value: string;
   onChange: (v: string) => void;
   options: { value: string; label: string }[];
   label: string;
+  disabled?: boolean;
 }) {
   return (
     <select
       aria-label={label}
       value={value}
+      disabled={disabled}
       onChange={(e) => onChange(e.target.value)}
       className="text-xs rounded-md px-2 py-1 focus:outline-none focus:ring-1 focus:ring-[color:var(--accent-blue)] font-mono"
       style={{
@@ -1985,6 +1988,9 @@ function TabTerminal() {
   const setBrowserLightweightMode = useStore((s) => s.setBrowserLightweightMode);
   const browserDiscardHidden = useStore((s) => s.browserDiscardHidden);
   const setBrowserDiscardHidden = useStore((s) => s.setBrowserDiscardHidden);
+  const browserBackend = useStore((s) => s.browserBackend);
+  const setBrowserBackend = useStore((s) => s.setBrowserBackend);
+  const browserBackendHydrated = useStore((s) => s.browserBackendHydrated);
   const startupDirectory = useStore((s) => s.startupDirectory);
   const setStartupDirectory = useStore((s) => s.setStartupDirectory);
   const [detectedShells, setDetectedShells] = useState<ShellInfo[]>([]);
@@ -2053,6 +2059,20 @@ function TabTerminal() {
             checked={coldParkEnabled}
             onChange={setColdParkEnabled}
             label={t('settings.coldPark')}
+          />
+        </SettingRow>
+        <SettingRow label={t('settings.browserBackend')} description={t('settings.browserBackendDesc')}>
+          <SettingSelect
+            label={t('settings.browserBackend')}
+            value={browserBackend}
+            // Locked until the boot read of main's persisted value lands, so an
+            // edit can never race the async hydration and be overwritten.
+            disabled={!browserBackendHydrated}
+            onChange={(v) => setBrowserBackend(v === 'external' ? 'external' : 'builtin')}
+            options={[
+              { value: 'builtin', label: t('settings.browserBackendBuiltin') },
+              { value: 'external', label: t('settings.browserBackendExternal') },
+            ]}
           />
         </SettingRow>
         <SettingRow label={t('settings.browserLightweight')} description={t('settings.browserLightweightDesc')}>

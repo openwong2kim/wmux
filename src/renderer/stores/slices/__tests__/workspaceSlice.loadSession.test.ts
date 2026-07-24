@@ -45,6 +45,8 @@ type TestState = WorkspaceSlice & {
   agentToolbarEnabled: boolean;
   toolbarSnippets: { id: string; label: string; text: string }[];
   newConversationCommand: string;
+  // #517 — main-owned browser backend mirror (NOT a SessionData key).
+  browserBackend: 'builtin' | 'external';
 };
 
 function createTestStore() {
@@ -86,6 +88,9 @@ function createTestStore() {
       agentToolbarEnabled: true,
       toolbarSnippets: [],
       newConversationCommand: '/clear',
+      // #517 — main-owned backend mirror. Seeded here so the non-persistence
+      // test can prove loadSession never writes it (it isn't a SessionData key).
+      browserBackend: 'builtin',
     }))
   );
 }
@@ -567,6 +572,20 @@ describe('WorkspaceSlice.loadSession — config merge (forward-compat)', () => {
     const cfg = store.getState().prefixConfig as { key: string; bindings: Record<string, string> };
     expect(cfg.key).toBe(DEFAULT_PREFIX_CONFIG.key);
     expect(cfg.bindings['ArrowUp']).toBe('focusUp');
+  });
+
+  it('does NOT hydrate browserBackend from a session file (main owns that value)', () => {
+    // The backend setting is persisted by MAIN, not the renderer session file.
+    // Even if a hand-edited/legacy session.json smuggles in a browserBackend
+    // field, loadSession must ignore it — it is deliberately absent from the
+    // SessionData allowlist, so the mirror stays at its seeded value and only
+    // AppLayout's IPC hydration can change it.
+    const store = createTestStore();
+    expect(store.getState().browserBackend).toBe('builtin');
+    store.getState().loadSession(
+      makeSession({ browserBackend: 'external' } as unknown as Partial<SessionData>)
+    );
+    expect(store.getState().browserBackend).toBe('builtin');
   });
 
   it('back-fills a missing default keybinding while preserving saved entries', () => {

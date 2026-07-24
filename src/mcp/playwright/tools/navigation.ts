@@ -84,6 +84,13 @@ function tabsToolSuccess(result: BrowserTabsSuccessResult) {
       payload = { action: result.action, tabs: result.tabs.map(publicTab) };
       break;
     case 'new':
+      // #517 external backend: the tab opened in the OS default browser and
+      // wmux holds no handle on it — report the delegation honestly instead of
+      // inventing a descriptor.
+      payload = 'backend' in result
+        ? { action: result.action, backend: result.backend, opened: result.opened, url: result.url }
+        : { action: result.action, tab: publicTab(result.tab) };
+      break;
     case 'select':
       payload = { action: result.action, tab: publicTab(result.tab) };
       break;

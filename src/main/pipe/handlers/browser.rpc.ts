@@ -1,5 +1,5 @@
 import type { BrowserWindow } from 'electron';
-import { webContents } from 'electron';
+import { shell, webContents } from 'electron';
 import type { RpcRouter } from '../RpcRouter';
 import { sendToRenderer } from './_bridge';
 import {
@@ -18,6 +18,11 @@ import {
   browserTabsError,
   type BrowserTabsAction,
 } from '../../../shared/browserTabs';
+import {
+  EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE,
+  type ExternalOpenResult,
+} from '../../../shared/browserBackend';
+import type { BrowserBackendStore } from '../../browser-session/BrowserBackendStore';
 
 type GetWindow = () => BrowserWindow | null;
 
@@ -50,16 +55,70 @@ const CDP_SCREENSHOT_TIMEOUT_MS = 2_500;
 // Bound for the capturePage fallback — it can hang on exactly the same guests.
 const CAPTURE_PAGE_TIMEOUT_MS = 1_500;
 
-export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webviewCdpManager: WebviewCdpManager): void {
+export function registerBrowserRpc(
+  router: RpcRouter,
+  getWindow: GetWindow,
+  webviewCdpManager: WebviewCdpManager,
+  backendStore?: BrowserBackendStore,
+): void {
   const getActivePartition = (): string => profileManager.getActiveProfile().partition;
+
+  // ── #517 backend fork ────────────────────────────────────────────────────
+  //
+  //   browser.open (RPC, main)
+  //     │
+  //     ├─ backend()                     ── main-owned, read sync at boot; no gate
+  //     │
+  //     ├─ 'builtin' ──► existing path, untouched: sendToRenderer
+  //     │                → openUrlInBrowserPaneImpl → <webview>
+  //     │
+  //     └─ 'external' ─► validateResolvedNavigationUrl(url)
+  //                      └─ ok → shell.openExternal(url)
+  //                              → { backend:'external', opened:true, url }
+  //
+  // External mode is fire-and-forget: no surface, no pane, no tracking. Tools
+  // that need a live page fail closed with the shared contract error — never a
+  // generic target-miss, never a silent fallback onto another builtin surface.
+  const backend = () => backendStore?.get() ?? 'builtin';
+
+  const delegateExternal = async (url: string, method: string): Promise<ExternalOpenResult> => {
+    await validateUrl(url, method);
+    await shell.openExternal(url);
+    return { backend: 'external', opened: true, url };
+  };
+
+  // External mode must never resolve the workspace-blind DEFAULT target:
+  // getTarget(undefined)/ensureAwake(undefined) fall back to "any surface",
+  // which in external mode can be another workspace's manually-opened pane —
+  // a call without a surfaceId would then automate a pane its caller does not
+  // own instead of delegating/failing closed (codex P1). With an explicit
+  // surfaceId both lookups are exact-match, so mixed mode still works.
+  const resolveTargetSurface = async (surfaceId: string | undefined): Promise<string | undefined> => {
+    if (backend() === 'external' && !surfaceId) return undefined;
+    let resolved = webviewCdpManager.getTarget(surfaceId)?.surfaceId;
+    if (!resolved) {
+      resolved = (await webviewCdpManager.ensureAwake(surfaceId))?.surfaceId;
+    }
+    return resolved;
+  };
 
   // Resolve the guest webview's WebContents for a CDP-backed handler, throwing a
   // method-tagged error if no target is registered or the WebContents is gone.
   // Shared by the #111 state handlers (cookies / resize / emulate) which all
   // drive the page over `wc.debugger.sendCommand`.
+  // Single choke point for the external-backend contract error: a miss while the
+  // backend is 'external' means the caller is asking for deep automation that
+  // external mode cannot provide — say so explicitly instead of "no target".
   const resolveWc = (surfaceId: string | undefined, method: string): Electron.WebContents => {
-    const target = webviewCdpManager.getTarget(surfaceId);
-    if (!target) throw new Error(`${method}: no webview target registered`);
+    // Same default-target rule as resolveTargetSurface: external + no
+    // surfaceId must not grab another workspace's pane via the default lookup.
+    const target = backend() === 'external' && !surfaceId
+      ? null
+      : webviewCdpManager.getTarget(surfaceId);
+    if (!target) {
+      if (backend() === 'external') throw new Error(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
+      throw new Error(`${method}: no webview target registered`);
+    }
     const wc = webContents.fromId(target.webContentsId);
     if (!wc || wc.isDestroyed()) throw new Error(`${method}: WebContents unavailable`);
     return wc;
@@ -78,20 +137,29 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
   const registerLeased = (
     method: Parameters<RpcRouter['register']>[0],
     handler: (params: Record<string, unknown>) => Promise<unknown>,
+    // #517 backend fork: what to do when no builtin target resolves while the
+    // backend is 'external'. Default is the fail-closed contract error; the
+    // open-shaped handlers (navigate) pass a delegate instead.
+    externalFallback?: (params: Record<string, unknown>) => Promise<unknown>,
   ): void => {
     router.register(method, async (params) => {
       const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
-      let resolved = webviewCdpManager.getTarget(surfaceId)?.surfaceId;
       // Memory relief (#517 slice C): automation targeting a discarded guest
       // wakes it (renderer remounts + page reloads) before taking the lease,
       // so hidden-guest automation keeps working instead of "no target".
-      // Also with NO surfaceId: ensureAwake falls back to any discarded
-      // surface, matching getTarget()'s default-target contract (codex P1 —
-      // otherwise the default MCP path fails once the only pane is discarded).
+      // With NO surfaceId in builtin mode: ensureAwake falls back to any
+      // discarded surface, matching getTarget()'s default-target contract
+      // (codex P1 — otherwise the default MCP path fails once the only pane is
+      // discarded). In EXTERNAL mode the default lookup is blocked entirely —
+      // see resolveTargetSurface.
+      const resolved = await resolveTargetSurface(surfaceId);
       if (!resolved) {
-        resolved = (await webviewCdpManager.ensureAwake(surfaceId))?.surfaceId;
+        if (backend() === 'external') {
+          if (externalFallback) return externalFallback(params);
+          throw new Error(EXTERNAL_BACKEND_UNSUPPORTED_MESSAGE);
+        }
+        return handler(params);
       }
-      if (!resolved) return handler(params);
       return webviewCdpManager.withAutomationLease(resolved, () => handler(params));
     });
   };
@@ -103,13 +171,11 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
   // long waits.
   router.register('browser.lease.acquire', async (params) => {
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
-    let resolved = webviewCdpManager.getTarget(surfaceId)?.surfaceId;
     // Wake a discarded guest so out-of-process (Playwright) automation gets a
-    // live target under its lease (#517 slice C). Works without surfaceId too
-    // (defaults to any discarded surface, matching getTarget's contract).
-    if (!resolved) {
-      resolved = (await webviewCdpManager.ensureAwake(surfaceId))?.surfaceId;
-    }
+    // live target under its lease (#517 slice C). Without surfaceId this
+    // defaults to any discarded surface in builtin mode; external mode blocks
+    // the default lookup (see resolveTargetSurface).
+    const resolved = await resolveTargetSurface(surfaceId);
     if (!resolved) return { token: null };
     return { token: webviewCdpManager.acquireRpcLease(resolved) };
   });
@@ -175,6 +241,41 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       );
     }
 
+    // #517 backend fork: 'new' is an open-shaped action, so external mode
+    // delegates it like browser.open. list/select/close keep operating on
+    // builtin surfaces only (external opens are fire-and-forget, untracked).
+    if (action === 'new' && backend() === 'external') {
+      if (!url) {
+        return browserTabsError(
+          'BROWSER_TABS_INVALID_ARGUMENT',
+          `browser_tabs new requires a url when the browser backend is 'external'.`,
+        );
+      }
+      // URL validation failure is a URL_BLOCKED error; a failed OS launch is a
+      // CREATE_FAILED — the two must not share a code (agents branch on it).
+      try {
+        await validateUrl(url, 'browser.tabs');
+      } catch (error) {
+        return browserTabsError(
+          'BROWSER_TAB_URL_BLOCKED',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+      try {
+        const opened = await delegateExternal(url, 'browser.tabs');
+        // BrowserTabsResult external variant — the MCP consumer validates the
+        // response shape (isBrowserTabsResult), so a raw ExternalOpenResult
+        // would be rejected after the tab already opened, and retries would
+        // spawn duplicate tabs (codex P1).
+        return { ok: true, action: 'new', backend: 'external', opened: true, url: opened.url };
+      } catch (error) {
+        return browserTabsError(
+          'BROWSER_TAB_CREATE_FAILED',
+          error instanceof Error ? error.message : String(error),
+        );
+      }
+    }
+
     if (action === 'new' && url !== undefined) {
       try {
         await validateUrl(url, 'browser.tabs');
@@ -203,6 +304,17 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
   router.register('browser.open', async (params) => {
     const url = typeof params['url'] === 'string' ? params['url'] : undefined;
     const workspaceId = typeof params['workspaceId'] === 'string' ? params['workspaceId'] : undefined;
+    if (backend() === 'external') {
+      // Missing url is an argument error, not the backend contract error —
+      // conflating them makes agents "work around" a tool that would succeed
+      // with a url (GLM P3). There is no about:blank to open externally.
+      if (!url) {
+        throw new Error(
+          `browser.open: a url is required when the browser backend is 'external' (nothing to open in the OS browser without one).`,
+        );
+      }
+      return delegateExternal(url, 'browser.open');
+    }
     if (url) await validateUrl(url, 'browser.open');
     return sendToRenderer(getWindow, 'browser.open', {
       partition: getActivePartition(),
@@ -240,11 +352,15 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
    * Tries CDP direct navigation first, falls back to renderer bridge.
    * params: { url: string, surfaceId?: string }
    */
-  registerLeased('browser.navigate', async (params) => {
+  const requireNavigateUrl = (params: Record<string, unknown>): string => {
     if (typeof params['url'] !== 'string' || params['url'].length === 0) {
       throw new Error('browser.navigate: missing required param "url"');
     }
-    await validateUrl(params['url'], 'browser.navigate');
+    return params['url'];
+  };
+  registerLeased('browser.navigate', async (params) => {
+    const navUrl = requireNavigateUrl(params);
+    await validateUrl(navUrl, 'browser.navigate');
     const surfaceId = typeof params['surfaceId'] === 'string' ? params['surfaceId'] : undefined;
 
     // Try CDP direct navigation first
@@ -253,8 +369,8 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       try {
         const wc = webContents.fromId(target.webContentsId);
         if (wc && !wc.isDestroyed()) {
-          await wc.loadURL(params['url']);
-          return { ok: true, url: params['url'] };
+          await wc.loadURL(navUrl);
+          return { ok: true, url: navUrl };
         }
       } catch (err) {
         console.warn('[browser.navigate] CDP fallback to renderer:', err);
@@ -266,7 +382,11 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       url: params['url'],
       ...(surfaceId && { surfaceId }),
     });
-  });
+  },
+  // External backend + no builtin surface: navigate behaves exactly like open
+  // (fire-and-forget delegate) instead of failing on a surface that was never
+  // going to exist. A live builtin surface (manual pane) still wins above.
+  (params) => delegateExternal(requireNavigateUrl(params), 'browser.navigate'));
 
   /**
    * browser.goBack
@@ -470,6 +590,10 @@ export function registerBrowserRpc(router: RpcRouter, getWindow: GetWindow, webv
       // "legacy main that can't scope" (empty + unscoped). The engine gates its
       // leniency fallback on this.
       ...(callerWorkspaceId && { targetsScoped: true }),
+      // #517 backend fork: with zero targets + 'external' the engine returns
+      // the shared contract error instead of the generic target-miss (which
+      // would send agents into pointless retry loops).
+      workspaceBackend: backend(),
       targets: scopedTargets.map((t) => ({
         surfaceId: t.surfaceId,
         targetId: t.targetId,

@@ -413,6 +413,51 @@ export default function AppLayout() {
     } catch { /* older main without the handler — setting stays inert */ }
   }, [browserDiscardHidden, browserLightweightMode]);
 
+  // #517 backend choice — unlike lightweight/discard (session-persisted), MAIN
+  // owns this value. On mount, hydrate the non-persisted uiSlice mirror from
+  // main's authoritative setting; thereafter mirror Settings changes back to
+  // main via IPC. The hydratedRef guard is load-bearing: getBackend() is async,
+  // so without it the change-push effect below would fire on first render with
+  // the store's default ('builtin') and clobber a persisted 'external' before
+  // the boot read resolves. We only push after hydration completes.
+  const browserBackend = useStore((s) => s.browserBackend);
+  const browserBackendHydrated = useStore((s) => s.browserBackendHydrated);
+  const hydrateBrowserBackend = useStore((s) => s.hydrateBrowserBackend);
+  useEffect(() => {
+    let cancelled = false;
+    // optional-chain electronAPI — jsdom (tests) has no preload bridge.
+    const getBackend = (window as any).electronAPI?.browser?.getBackend;
+    if (typeof getBackend !== 'function') {
+      hydrateBrowserBackend(null); // nothing to hydrate; unlock the control
+      return;
+    }
+    Promise.resolve(getBackend())
+      .then((backend: unknown) => {
+        if (cancelled) return;
+        hydrateBrowserBackend(backend === 'builtin' || backend === 'external' ? backend : null);
+      })
+      .catch(() => { if (!cancelled) hydrateBrowserBackend(null); });
+    return () => { cancelled = true; };
+  }, [hydrateBrowserBackend]);
+  // Mirror Settings changes back to main. The Settings control is disabled
+  // until hydration lands (store flag), so a user edit can never race the
+  // async boot read — and the value the boot read just applied is not pushed
+  // back redundantly (lastPushedRef): only genuine edits reach main.
+  const lastPushedBackendRef = useRef<string | null>(null);
+  useEffect(() => {
+    if (!browserBackendHydrated) return;
+    if (lastPushedBackendRef.current === null) {
+      // First run after hydration: record the hydrated value, don't echo it.
+      lastPushedBackendRef.current = browserBackend;
+      return;
+    }
+    if (lastPushedBackendRef.current === browserBackend) return;
+    lastPushedBackendRef.current = browserBackend;
+    try {
+      (window as any).electronAPI?.browser?.setBackend?.(browserBackend);
+    } catch { /* older main without the handler — setting stays inert */ }
+  }, [browserBackend, browserBackendHydrated]);
+
   // ─── File drop — handled in preload where File.path is accessible ──────
   const [isDragging, setIsDragging] = useState(false);
   const dragCounterRef = useRef(0);

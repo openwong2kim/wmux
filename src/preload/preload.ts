@@ -611,6 +611,16 @@ const electronAPI = {
     // #517 slice C — memory relief (discard long-invisible guests)
     setDiscard: (enabled: boolean) =>
       ipcRenderer.invoke('browser:set-discard', enabled),
+    // #517 backend choice — main owns the persisted value; renderer mirrors it
+    getBackend: (): Promise<'builtin' | 'external'> =>
+      ipcRenderer.invoke('browser:get-backend'),
+    // Synchronous boot read (#517) — the renderer store initializes from this
+    // before first render to close the async-hydration race that could spawn a
+    // webview in external mode. Blocking, but a one-time boot cost.
+    getBackendSync: (): 'builtin' | 'external' =>
+      ipcRenderer.sendSync('browser:get-backend-sync'),
+    setBackend: (backend: 'builtin' | 'external') =>
+      ipcRenderer.invoke('browser:set-backend', backend),
     onDiscarded: (callback: (surfaceId: string) => void) => {
       const listener = (_e: Electron.IpcRendererEvent, surfaceId: string) => callback(surfaceId);
       ipcRenderer.on('browser:discarded', listener);

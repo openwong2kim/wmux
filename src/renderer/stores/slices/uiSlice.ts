@@ -2,6 +2,25 @@ import type { StateCreator } from 'zustand';
 import type { StoreState } from '../index';
 import { setLocale as i18nSetLocale, type Locale } from '../../i18n';
 import { markRetentionMigrationDone } from '../retentionMigration';
+import { DEFAULT_BROWSER_BACKEND, isBrowserBackend, type BrowserBackend } from '../../../shared/browserBackend';
+
+/**
+ * #517: read main's authoritative browser backend synchronously at store-module
+ * load, so the mirror is correct before the first render and no browser-open
+ * path can spawn an embedded webview during async hydration while the persisted
+ * value is 'external'. Falls back to the default (and hydrated:false, so the
+ * async AppLayout path still runs) in node/jsdom tests or against an older
+ * preload with no sync bridge.
+ */
+function readInitialBrowserBackend(): { backend: BrowserBackend; hydrated: boolean } {
+  try {
+    const sync = (globalThis as { window?: { electronAPI?: { browser?: { getBackendSync?: () => unknown } } } })
+      .window?.electronAPI?.browser?.getBackendSync?.();
+    if (isBrowserBackend(sync)) return { backend: sync, hydrated: true };
+  } catch { /* not in renderer, or older preload — async hydration handles it */ }
+  return { backend: DEFAULT_BROWSER_BACKEND, hydrated: false };
+}
+const INITIAL_BROWSER_BACKEND = readInitialBrowserBackend();
 import type { FleetSortMode } from '../selectors/fleet';
 import {
   normalizeRoleBinding,
@@ -217,6 +236,21 @@ export interface UISlice {
   // Only effective while browserLightweightMode is also on.
   browserDiscardHidden: boolean;
   setBrowserDiscardHidden: (enabled: boolean) => void;
+
+  // #517 backend choice (default 'builtin'). NON-PERSISTED renderer mirror:
+  // main owns the authoritative value (userData JSON, read synchronously at
+  // boot) and Settings writes it back via IPC. This field exists only so the
+  // Settings UI can render the current selection; it is deliberately absent
+  // from the SessionData persistence allowlist (buildSessionData/loadSession).
+  // AppLayout hydrates it from electronAPI.browser.getBackend() on mount.
+  browserBackend: BrowserBackend;
+  setBrowserBackend: (backend: BrowserBackend) => void;
+  // True once the boot read of main's persisted value has landed (or was
+  // skipped — no bridge / older main). Settings disables the control until
+  // then, so a user edit can never race the async hydration and be silently
+  // overwritten by the stale boot value (codex P2).
+  browserBackendHydrated: boolean;
+  hydrateBrowserBackend: (backend: BrowserBackend | null) => void;
 
   // Issue #175: global default starting directory for new terminals.
   // '' = unset → os.homedir() fallback in the spawn layer.
@@ -916,6 +950,24 @@ export const createUISlice: StateCreator<StoreState, [['zustand/immer', never]],
 
   setBrowserDiscardHidden: (enabled) => set((state) => {
     state.browserDiscardHidden = enabled;
+  }),
+
+  // #517 backend choice — mirror of main's authoritative value. Read
+  // synchronously at module load (readInitialBrowserBackend) so it is correct
+  // before the first render; AppLayout's async hydration is a fallback/refresh.
+  browserBackend: INITIAL_BROWSER_BACKEND.backend,
+
+  setBrowserBackend: (backend) => set((state) => {
+    state.browserBackend = backend;
+  }),
+
+  browserBackendHydrated: INITIAL_BROWSER_BACKEND.hydrated,
+
+  // One-shot boot hydration: applies main's persisted value (null = nothing to
+  // hydrate, e.g. jsdom or an older main) and unlocks the Settings control.
+  hydrateBrowserBackend: (backend) => set((state) => {
+    if (backend !== null) state.browserBackend = backend;
+    state.browserBackendHydrated = true;
   }),
 
   startupDirectory: '',

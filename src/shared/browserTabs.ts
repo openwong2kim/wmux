@@ -38,6 +38,10 @@ export interface BrowserTabsErrorResult {
 export type BrowserTabsSuccessResult =
   | { ok: true; action: 'list'; tabs: BrowserTabDescriptor[] }
   | { ok: true; action: 'new'; tab: BrowserTabDescriptor }
+  // #517 external backend: the tab was opened in the OS default browser.
+  // Fire-and-forget — there is no BrowserTabDescriptor because wmux gets no
+  // handle on the opened tab (it cannot be listed, selected, or closed).
+  | { ok: true; action: 'new'; backend: 'external'; opened: true; url: string }
   | { ok: true; action: 'select'; tab: BrowserTabDescriptor }
   | { ok: true; action: 'close'; closed: BrowserTabDescriptor };
 
@@ -75,6 +79,13 @@ export function isBrowserTabsResult(value: unknown): value is BrowserTabsResult 
           && result['tabs'].every(isBrowserTabDescriptor)
         );
       case 'new':
+        return (
+          isBrowserTabDescriptor(result['tab'])
+          // #517 external-backend variant: opened in the OS browser, no descriptor.
+          || (result['backend'] === 'external'
+            && result['opened'] === true
+            && typeof result['url'] === 'string')
+        );
       case 'select':
         return isBrowserTabDescriptor(result['tab']);
       case 'close':

@@ -520,3 +520,47 @@ describe('UISlice — Fleet View overlay (S-C1)', () => {
     expect(store.getState().mutedNotificationCategories).toEqual(['approval']);
   });
 });
+
+// #517 browser backend mirror. Unlike the lightweight/discard flags (which the
+// SessionData allowlist persists in the renderer), main owns the authoritative
+// backend value; this slice field is a NON-PERSISTED mirror that AppLayout
+// hydrates from IPC on boot. These tests pin the default and the setter; the
+// non-persistence is enforced by its absence from buildSessionData/loadSession
+// and asserted separately below.
+describe('UISlice — browser backend mirror (#517)', () => {
+  let store: ReturnType<typeof createTestStore>;
+
+  beforeEach(() => {
+    store = createTestStore();
+  });
+
+  it('browserBackend defaults to \'builtin\' (preserves current behavior)', () => {
+    expect(store.getState().browserBackend).toBe('builtin');
+  });
+
+  it('setBrowserBackend(\'external\') flips the mirror', () => {
+    store.getState().setBrowserBackend('external');
+    expect(store.getState().browserBackend).toBe('external');
+  });
+
+  it('setBrowserBackend(\'builtin\') restores after external', () => {
+    store.getState().setBrowserBackend('external');
+    expect(store.getState().browserBackend).toBe('external');
+
+    store.getState().setBrowserBackend('builtin');
+    expect(store.getState().browserBackend).toBe('builtin');
+  });
+
+  it('browserBackendHydrated starts false and hydrateBrowserBackend applies value + unlocks', () => {
+    expect(store.getState().browserBackendHydrated).toBe(false);
+    store.getState().hydrateBrowserBackend('external');
+    expect(store.getState().browserBackend).toBe('external');
+    expect(store.getState().browserBackendHydrated).toBe(true);
+  });
+
+  it('hydrateBrowserBackend(null) unlocks without touching the value (no bridge / older main)', () => {
+    store.getState().hydrateBrowserBackend(null);
+    expect(store.getState().browserBackend).toBe('builtin');
+    expect(store.getState().browserBackendHydrated).toBe(true);
+  });
+});
