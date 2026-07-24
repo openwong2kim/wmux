@@ -117,11 +117,19 @@ describe('browser_tabs MCP workspace contract', () => {
     });
   });
 
-  it('rejects the removed numeric tabId shape without making an RPC', async () => {
+  it('rejects the removed numeric tabId at the schema, and never reaches the RPC', async () => {
+    // Pin the rejection to the tabId tombstone itself. Asserting only
+    // `success === false` would still pass if someone deleted `tabId:
+    // z.never()`, because zod would then strip the unknown key and the call
+    // would fail later for an unrelated reason.
+    const parsed = z.object(BROWSER_TABS_SHAPE).safeParse({ action: 'list', tabId: 0 });
+    expect(parsed.success).toBe(false);
     expect(
-      z.object(BROWSER_TABS_SHAPE).safeParse({ action: 'list', tabId: 0 }).success,
-    ).toBe(false);
+      parsed.success ? [] : parsed.error.issues.map((issue) => issue.path[0]),
+    ).toContain('tabId');
 
+    // Belt and braces: a caller that bypassed the schema still finds no index
+    // shim to reach — tabId is never treated as an address.
     const result = await browserTabs({ action: 'select', tabId: 0 });
 
     expect(result.isError).toBe(true);

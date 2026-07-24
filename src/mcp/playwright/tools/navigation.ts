@@ -176,7 +176,7 @@ export function registerNavigationTools(server: McpServer, deps: NavigationToolD
   // -----------------------------------------------------------------------
   server.tool(
     'browser_tabs',
-    'Manage browser surfaces in the calling workspace. Pass the stable surfaceId returned by list/new explicitly to subsequent browser tools; select changes workspace-local UI focus only and does not retarget their default guest. List positions are never addresses.',
+    'Manage browser surfaces in the calling workspace. Address a surface only by the opaque surfaceId returned by list or new — a list position is never an address. select moves this workspace\'s UI focus only: it does NOT change which surface the other browser tools act on when they omit surfaceId, so pass surfaceId explicitly on every follow-up browser call.',
     BROWSER_TABS_SHAPE,
     async ({ action, surfaceId, url }) => {
       const resolvedAction: BrowserTabsAction = action ?? 'list';

@@ -72,6 +72,17 @@ function findBrowserTab(
   return null;
 }
 
+/**
+ * Browser surfaces owned by one workspace, in pane-tree depth-first order.
+ * Reads the logical surface tree only — a discarded guest (#517) has no live
+ * CDP target but is still a tab, and the app shell / DevTools are not surfaces
+ * so they cannot appear here.
+ *
+ * Returns `null` for an unknown workspace, which is NOT the same as `[]` ("the
+ * workspace exists and owns no browser"). Callers must keep the two apart:
+ * reporting an unresolvable workspace as an empty successful list would hide a
+ * failed ownership check behind a plausible-looking answer.
+ */
 export function listBrowserTabs(
   workspaces: Workspace[],
   workspaceId: string,
