@@ -164,7 +164,12 @@ describe('deriveShimPaths', () => {
 // including under ConstrainedLanguage, the exact mode that caused the wipe.
 import { execFileSync } from 'child_process';
 
-describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox key)', () => {
+// Each case spawns real powershell.exe + reg.exe. On a busy Windows CI runner
+// the FIRST case pays the one-time PowerShell cold-start and lands just over
+// vitest's 5s default (observed 5.6s in CI while its siblings ran 1–2s), so it
+// flakes intermittently. Raise the per-test budget for the whole suite — these
+// are the slowest tests here anyway, and a genuinely hung reg.exe still fails.
+describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox key)', { timeout: 15_000 }, () => {
   const SUB = 'Software\\wmux-cliShim-test';
   const BAK = 'Software\\wmux-cliShim-test-bak';
   const BIN = 'C:\\Users\\u\\AppData\\Local\\wmux\\bin';
