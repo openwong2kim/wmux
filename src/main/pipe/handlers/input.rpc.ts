@@ -189,22 +189,38 @@ export function registerInputRpc(
 
     // D2 — role→model enforcement. When the text is being COMMITTED (submit) and
     // the target pane carries a bound role, transparently rewrite a bare agent
-    // launcher (`claude`) into its enforced form (`claude --model haiku`). This
-    // is the single chokepoint covering both the orchestrator's
-    // terminal_send("claude") reflex and a human typing `claude⏎`. We only touch
-    // the commit edge — a half-typed line (submit=false) or a multi-line paste is
-    // never rewritten. Fail OPEN on any resolver error so a role lookup that
-    // races can never block a legitimate send.
+    // launcher (`claude`) into its enforced form (`claude --model haiku`).
+    //
+    // Coverage is RPC-issued launches only: this handler serves the
+    // orchestrator's terminal_send("claude", submit:true) reflex and other pipe
+    // callers. Human keystrokes do NOT flow through here — Terminal.tsx writes
+    // straight to the pty IPC handler — so typing `claude⏎` yourself is not
+    // enforced. The other two enforcement points are the seeded initialCommand
+    // (ptyCreateOptions.withRoleBinding) and the resume chip.
+    //
+    // Only the commit edge is touched. A half-typed line (submit=false), a
+    // multi-line paste, and a `raw:true` write (which deliberately bypasses
+    // sanitizePtyText, i.e. the caller is sending bytes, not a command) are all
+    // left alone. Fail OPEN on any resolver error so a role lookup that races
+    // can never block a legitimate send.
     let enforcedModel: string | undefined;
     let enforcementNote: string | undefined;
-    if (params['submit'] === true && resolveRoleBinding && !safeText.includes('\n')) {
+    // ESC joins the line terminators here: a line carrying terminal control
+    // sequences is not a plain command and must not be spliced into.
+    // eslint-disable-next-line no-control-regex -- intentional control-char match
+    const NON_COMMAND_CHARS = /[\n\r\x1b]/;
+    const rewritable =
+      params['submit'] === true && params['raw'] !== true && !NON_COMMAND_CHARS.test(safeText);
+    if (rewritable && resolveRoleBinding) {
       try {
         const binding = await resolveRoleBinding(ptyId);
         if (binding) {
           const rewrite = applyRoleBinding(safeText, binding);
           if (rewrite.changed) {
             safeText = rewrite.command;
-            enforcedModel = binding.model;
+            // Report the model ONLY when the flag was actually injected —
+            // args-only rewrites leave whatever model the line already names.
+            if (rewrite.modelInjected) enforcedModel = binding.model;
           }
           if (rewrite.note) enforcementNote = rewrite.note;
         }

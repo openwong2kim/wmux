@@ -359,7 +359,7 @@ describe('input.send — role→model enforcement (D2)', () => {
   const bind = (binding: RoleBinding | undefined): RoleBindingResolver => () => Promise.resolve(binding);
 
   it('rewrites a bare bound launcher on submit — the written text carries --model', async () => {
-    const { router, writeMock } = setupWithResolver(bind({ model: 'haiku' }));
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
     const res = await router.dispatch({
       id: '1',
       method: 'input.send',
@@ -375,7 +375,7 @@ describe('input.send — role→model enforcement (D2)', () => {
   });
 
   it('leaves an explicit --model untouched', async () => {
-    const { router, writeMock } = setupWithResolver(bind({ model: 'haiku' }));
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
     await router.dispatch({
       id: '2',
       method: 'input.send',
@@ -395,7 +395,7 @@ describe('input.send — role→model enforcement (D2)', () => {
   });
 
   it('does not rewrite when submit is not set', async () => {
-    const { router, writeMock } = setupWithResolver(bind({ model: 'haiku' }));
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
     await router.dispatch({
       id: '4',
       method: 'input.send',
@@ -405,7 +405,7 @@ describe('input.send — role→model enforcement (D2)', () => {
   });
 
   it('does not rewrite multi-line text', async () => {
-    const { router, writeMock } = setupWithResolver(bind({ model: 'haiku' }));
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
     await router.dispatch({
       id: '5',
       method: 'input.send',
@@ -435,5 +435,75 @@ describe('input.send — role→model enforcement (D2)', () => {
     });
     const note = res.ok ? (res.result as { note?: string }).note : undefined;
     expect(note).toMatch(/no known --model flag/);
+  });
+
+  // P2-2 — \r is a line terminator too, and a raw write is bytes, not a command.
+  it('does not rewrite text containing a carriage return', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
+    await router.dispatch({
+      id: '8',
+      method: 'input.send',
+      params: { text: 'claude\rsecond', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude\rsecond']);
+  });
+
+  it('does not rewrite a raw:true write', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
+    await router.dispatch({
+      id: '9',
+      method: 'input.send',
+      params: { text: 'claude', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true, raw: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude']);
+  });
+
+  // P2-5 — an args-only rewrite must not advertise a model that isn't running.
+  it('reports enforcedModel only when the model flag was actually injected', async () => {
+    const { router, writeMock } = setupWithResolver(
+      bind({ agent: 'claude', model: 'haiku', args: '--foo' }),
+    );
+    const res = await router.dispatch({
+      id: '10',
+      method: 'input.send',
+      params: {
+        text: 'claude --model opus',
+        ptyId: 'pty-a',
+        workspaceId: 'ws-self',
+        submit: true,
+      },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude --model opus --foo']);
+    const payload = res.ok ? (res.result as { enforcedModel?: string }) : {};
+    expect(payload.enforcedModel).toBeUndefined();
+  });
+
+  // P1-1 — the handler runs on EVERY submitted line in a bound pane.
+  it('leaves a shell command in a bound pane byte-identical', async () => {
+    const { router, writeMock } = setupWithResolver(
+      bind({ agent: 'claude', model: 'haiku', args: '--dangerously-skip-permissions' }),
+    );
+    await router.dispatch({
+      id: '11',
+      method: 'input.send',
+      params: { text: 'git commit -m "wip"', ptyId: 'pty-a', workspaceId: 'ws-self', submit: true },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'git commit -m "wip"']);
+  });
+
+  // P2-1 — terminal_send is also how the orchestrator prompts a RUNNING agent.
+  it('leaves a prose instruction starting with the launcher word alone', async () => {
+    const { router, writeMock } = setupWithResolver(bind({ agent: 'claude', model: 'haiku' }));
+    await router.dispatch({
+      id: '12',
+      method: 'input.send',
+      params: {
+        text: 'claude code is failing on windows',
+        ptyId: 'pty-a',
+        workspaceId: 'ws-self',
+        submit: true,
+      },
+    });
+    expect(writeMock.mock.calls[0]).toEqual(['pty-a', 'claude code is failing on windows']);
   });
 });
