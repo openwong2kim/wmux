@@ -70,6 +70,14 @@ export interface WorkspaceBriefing {
   pendingDecision: WorkspaceDecision | null;
   /** The running loop's objective + how many done-when tasks pass. */
   loop: { objective: string; passes: number; taskCount: number } | null;
+  /** The ptyIds that are blocked RIGHT NOW (awaiting_input / waiting), capped.
+   *  This is CURRENT state, not a delta: it is the card's rising-edge input, and
+   *  a rising edge is "blocked in this observation, not in the previous one".
+   *  Deriving it from `changed.newlyBlocked` mixed two clocks — that field is
+   *  diffed against the persisted last-ACKED baseline, so a pane that was
+   *  created already blocked never appeared in it, and a re-block after an
+   *  unacknowledged recovery never read as new. See `briefingSignal`. */
+  blockedPtyIds: string[];
   /** The TOP of the priority ladder — the single "look at this first" pane, and
    *  the only pane the card names. Owner decision 2026-07-24: the briefing does
    *  NOT render a pane roster; DeckFleet is mounted directly above it with a
@@ -115,10 +123,36 @@ export const BRIEFING_LIMITS = {
   MAX_AGENT_NAME_CHARS: 80,
   MAX_CWD_CHARS: 200,
   MAX_OBJECTIVE_CHARS: 200,
+  /** Bound on `blockedPtyIds`. The list is taken off the priority-sorted panes
+   *  (blocked first, ties by ptyId), so the cap is deterministic rather than
+   *  arbitrary — and a fleet with more than this many simultaneously blocked
+   *  panes has bigger problems than a missed auto-expand. */
+  MAX_BLOCKED_IDS: 64,
 } as const;
 
 function cap(s: string, max: number): string {
   return s.length > max ? s.slice(0, max) : s;
+}
+
+/**
+ * The mirror rows that are actually AGENTS. `buildFleetSnapshots` emits one row
+ * per leaf even when the leaf has no PTY, so the raw snapshot also carries
+ * unspawned leaves and browser/editor/diff surfaces — all of which are created
+ * with `ptyId: ''` (surfaceSlice.ts addBrowserSurface / addEditorSurface /
+ * addDiffSurface / addWorkspaceDiffSurface). An empty ptyId is therefore an
+ * exact proxy for "not a live terminal" here, which is why this filters on that
+ * alone rather than plumbing `surfaceType` through the mirror payload: the
+ * cheap test is equivalent to DeckFleet's `ptyId !== '' && surfaceType ===
+ * 'terminal'` (DeckFleet.tsx), and widening the shared FleetSnapshotPane wire
+ * shape would also touch the heartbeat's `[fleet-snapshot]` consumer for no
+ * additional coverage.
+ *
+ * Without this a workspace holding only an empty leaf briefed as "The agent is
+ * idle." — the dead-chrome failure DESIGN.md forbids — and browser panes
+ * inflated every count.
+ */
+function agentPanes(snapshot: FleetSnapshot | null): FleetSnapshot['panes'] {
+  return (snapshot?.panes ?? []).filter((p) => p.ptyId !== '');
 }
 
 function reasonFor(status: AgentStatus): BriefingReason {
@@ -166,7 +200,7 @@ export interface BuildBriefingInputs {
  * rendered as rows.
  */
 export function buildBriefingPanes(snapshot: FleetSnapshot | null): BriefingPane[] {
-  return (snapshot?.panes ?? [])
+  return agentPanes(snapshot)
     .map((p) => ({
       ptyId: p.ptyId,
       agentName: p.agentName ? cap(p.agentName, BRIEFING_LIMITS.MAX_AGENT_NAME_CHARS) : p.agentName,
@@ -187,7 +221,7 @@ export function buildWorkspaceBriefing(inputs: BuildBriefingInputs): WorkspaceBr
 
   const pendingDecision = decision && decision.status === 'pending' ? decision : null;
 
-  const rawPanes = snapshot?.panes ?? [];
+  const rawPanes = agentPanes(snapshot);
   const panes = buildBriefingPanes(snapshot);
 
   const loopSummary =
@@ -208,6 +242,12 @@ export function buildWorkspaceBriefing(inputs: BuildBriefingInputs): WorkspaceBr
     counts: summarizeBriefingCounts(panes),
     pendingDecision,
     loop: loopSummary,
+    // Sorted blocked-first with ptyId tie-breaks, so the cap takes a stable
+    // prefix rather than whichever panes the mirror happened to emit first.
+    blockedPtyIds: panes
+      .filter((p) => p.reason === 'blocked')
+      .slice(0, BRIEFING_LIMITS.MAX_BLOCKED_IDS)
+      .map((p) => p.ptyId),
     topPane: panes[0] ?? null,
     changed,
     coldStart,
@@ -232,7 +272,12 @@ function computeChange(
   const finished: string[] = [];
   const newlyBlocked: string[] = [];
   const errored: string[] = [];
+  // One transition per pane: a ptyId repeated in the snapshot must not read as
+  // "2 finished" for a single pane.
+  const counted = new Set<string>();
   for (const p of currentPanes) {
+    if (counted.has(p.ptyId)) continue;
+    counted.add(p.ptyId);
     const before = priorStatus.get(p.ptyId);
     if (before === undefined) continue; // new pane — no transition to report
     if (p.agentStatus === 'complete' && before !== 'complete') finished.push(p.ptyId);
@@ -316,7 +361,11 @@ export function shouldAutoExpandBriefing(b: WorkspaceBriefing): boolean {
   return b.changed.newDecision || b.changed.newlyBlocked.length > 0;
 }
 
-/** The actionable-state fingerprint the card diffs between refreshes. */
+/**
+ * The actionable-state fingerprint the card diffs between refreshes. Both
+ * fields are CURRENT state at build time — the rising edge is computed by the
+ * card from two consecutive observations, never from the persisted delta.
+ */
 export interface BriefingSignal {
   decisionId: string | null;
   blocked: readonly string[];
@@ -325,7 +374,7 @@ export interface BriefingSignal {
 export function briefingSignal(b: WorkspaceBriefing): BriefingSignal {
   return {
     decisionId: b.pendingDecision?.id ?? null,
-    blocked: b.changed ? [...b.changed.newlyBlocked] : [],
+    blocked: b.blockedPtyIds,
   };
 }
 
@@ -335,6 +384,12 @@ export function briefingSignal(b: WorkspaceBriefing): BriefingSignal {
  * rising edge only; a background refresh that merely re-reports the same blocked
  * pane must leave the operator's expand/collapse alone (the card fought the user
  * when every 200ms stream tick re-applied the auto-expand rule).
+ *
+ * `prev`/`next` are two CONSECUTIVE LIVE observations. That is the whole reason
+ * `blocked` is current state rather than `changed.newlyBlocked`: the delta is
+ * measured against the last ACKED baseline, which only moves when the operator
+ * actually sees the card, so a pane that recovered and blocked again — or one
+ * that spawned already blocked — never produced an edge here.
  */
 export function isNewlyActionable(prev: BriefingSignal | null, next: BriefingSignal): boolean {
   if (!prev) return false; // first observation — the hydration path owns that decision
@@ -351,15 +406,21 @@ export function isNewlyActionable(prev: BriefingSignal | null, next: BriefingSig
  * every pane's status. The handler already holds the raw snapshot, so this reads
  * from the source instead of round-tripping through a payload field that exists
  * only to feed it.
+ *
+ * Filtered + deduped by the same rule the briefing counts use, so the baseline
+ * can never disagree with the panes the operator was actually shown.
  */
 export function toBriefedSnapshot(
   snapshot: FleetSnapshot | null,
   decisionId: string | null,
   at: number,
 ): BriefedSnapshot {
-  return {
-    panes: (snapshot?.panes ?? []).map((p) => ({ ptyId: p.ptyId, agentStatus: p.agentStatus })),
-    decisionId,
-    at,
-  };
+  const seen = new Set<string>();
+  const panes: BriefedSnapshot['panes'] = [];
+  for (const p of agentPanes(snapshot)) {
+    if (seen.has(p.ptyId)) continue;
+    seen.add(p.ptyId);
+    panes.push({ ptyId: p.ptyId, agentStatus: p.agentStatus });
+  }
+  return { panes, decisionId, at };
 }

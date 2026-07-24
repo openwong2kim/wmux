@@ -33,6 +33,9 @@ const snap = (panes: { ptyId: string; agentStatus: AgentStatus; agentName?: stri
   })),
 });
 
+/** BRIEFING_LIMITS.MAX_BLOCKED_IDS is exercised directly below. */
+const blockedIdCap = BRIEFING_LIMITS.MAX_BLOCKED_IDS;
+
 const decision = (over: Partial<WorkspaceDecision> = {}): WorkspaceDecision => ({
   id: 'dec-1',
   question: 'Ship it?',
@@ -304,7 +307,7 @@ describe('isNewlyActionable (the card\'s rising-edge rule)', () => {
     expect(isNewlyActionable(withBlocked(['p1'], 'dec-1'), withBlocked([], null))).toBe(false);
   });
 
-  it('briefingSignal extracts the decision id + newly-blocked ids', () => {
+  it('briefingSignal reports the CURRENTLY blocked panes + the decision id', () => {
     const prior: BriefedSnapshot = { panes: [{ ptyId: 'p', agentStatus: 'running' }], decisionId: null, at: 1 };
     const b = buildWorkspaceBriefing({
       ...baseInputs,
@@ -313,6 +316,188 @@ describe('isNewlyActionable (the card\'s rising-edge rule)', () => {
       prior,
     });
     expect(briefingSignal(b)).toEqual({ decisionId: 'dec-7', blocked: ['p'] });
+  });
+
+  it('the signal is live state, NOT the persisted delta (a steady block still reports)', () => {
+    // The pane was already blocked at the last acked view, so `changed` is
+    // empty — but the signal must still say "this pane is blocked right now",
+    // otherwise the next recovery→re-block cannot read as an edge.
+    const prior: BriefedSnapshot = {
+      panes: [{ ptyId: 'p', agentStatus: 'awaiting_input' }],
+      decisionId: null,
+      at: 1,
+    };
+    const b = buildWorkspaceBriefing({
+      ...baseInputs,
+      snapshot: snap([{ ptyId: 'p', agentStatus: 'awaiting_input' }]),
+      prior,
+    });
+    expect(b.changed?.newlyBlocked).toEqual([]);
+    expect(briefingSignal(b).blocked).toEqual(['p']);
+  });
+
+  it('caps the blocked id list at MAX_BLOCKED_IDS, taking the stable sorted prefix', () => {
+    const many = Array.from({ length: blockedIdCap + 5 }, (_, i) => ({
+      ptyId: `p${String(i).padStart(3, '0')}`,
+      agentStatus: 'awaiting_input' as AgentStatus,
+    }));
+    const b = buildWorkspaceBriefing({ ...baseInputs, snapshot: snap(many) });
+    expect(b.blockedPtyIds.length).toBe(blockedIdCap);
+    expect(b.blockedPtyIds[0]).toBe('p000');
+  });
+});
+
+// ── THE RISING EDGE, DRIVEN THROUGH THE REAL PIPELINE ───────────────────────
+// Every case below builds a briefing from a fleet snapshot, derives the signal
+// with briefingSignal, and only then asks isNewlyActionable — no hand-built
+// signals. The round-1 tests injected signals directly, which is exactly why
+// they passed while the pipeline was mixing two clocks (the persisted
+// last-acked baseline vs. two consecutive live observations).
+describe('rising edge through build → briefingSignal → isNewlyActionable', () => {
+  /** One live observation: build the briefing for this fleet + decision and
+   *  return its signal. `prior` is the persisted baseline, deliberately left at
+   *  a fixed stale value so the test proves the edge does NOT depend on it. */
+  const observe = (
+    panes: { ptyId: string; agentStatus: AgentStatus }[],
+    over: Partial<Parameters<typeof buildWorkspaceBriefing>[0]> = {},
+  ) => briefingSignal(buildWorkspaceBriefing({ ...baseInputs, snapshot: snap(panes), ...over }));
+
+  it('a pane CREATED already blocked is a rising edge', () => {
+    // The common case: an agent spawns and immediately hits a permission
+    // prompt. It is absent from the baseline, so computeChange skips it and
+    // `changed.newlyBlocked` is empty — the card must still open.
+    const prior: BriefedSnapshot = {
+      panes: [{ ptyId: 'old', agentStatus: 'running' }],
+      decisionId: null,
+      at: 1,
+    };
+    const before = observe([{ ptyId: 'old', agentStatus: 'running' }], { prior });
+    const after = observe(
+      [
+        { ptyId: 'old', agentStatus: 'running' },
+        { ptyId: 'fresh', agentStatus: 'awaiting_input' },
+      ],
+      { prior },
+    );
+    const built = buildWorkspaceBriefing({
+      ...baseInputs,
+      snapshot: snap([
+        { ptyId: 'old', agentStatus: 'running' },
+        { ptyId: 'fresh', agentStatus: 'awaiting_input' },
+      ]),
+      prior,
+    });
+    expect(built.changed?.newlyBlocked).toEqual([]); // the delta genuinely can't see it
+    expect(isNewlyActionable(before, after)).toBe(true);
+  });
+
+  it('a steadily blocked pane re-reported every tick is NOT a rising edge', () => {
+    const fleet = [{ ptyId: 'p', agentStatus: 'awaiting_input' as AgentStatus }];
+    const first = observe(fleet);
+    const second = observe(fleet);
+    const third = observe(fleet);
+    expect(isNewlyActionable(first, second)).toBe(false);
+    expect(isNewlyActionable(second, third)).toBe(false);
+  });
+
+  it('blocked → running → blocked IS a second rising edge', () => {
+    // The Codex case: the ack is skipped between the two blocks, so the
+    // persisted baseline still reads "blocked" and computeChange reports
+    // nothing new. Consecutive live observations still see the edge.
+    const prior: BriefedSnapshot = {
+      panes: [{ ptyId: 'p', agentStatus: 'awaiting_input' }],
+      decisionId: null,
+      at: 1,
+    };
+    const blocked1 = observe([{ ptyId: 'p', agentStatus: 'awaiting_input' }], { prior });
+    const running = observe([{ ptyId: 'p', agentStatus: 'running' }], { prior });
+    const blocked2 = observe([{ ptyId: 'p', agentStatus: 'awaiting_input' }], { prior });
+    const built = buildWorkspaceBriefing({
+      ...baseInputs,
+      snapshot: snap([{ ptyId: 'p', agentStatus: 'awaiting_input' }]),
+      prior,
+    });
+    expect(built.changed?.newlyBlocked).toEqual([]); // stale baseline sees nothing
+    expect(isNewlyActionable(blocked1, running)).toBe(false); // recovery is never an edge
+    expect(isNewlyActionable(running, blocked2)).toBe(true);
+  });
+
+  it('a decision that appears is still a rising edge', () => {
+    const fleet = [{ ptyId: 'p', agentStatus: 'running' as AgentStatus }];
+    const before = observe(fleet);
+    const after = observe(fleet, { decision: decision({ id: 'dec-1' }) });
+    expect(isNewlyActionable(before, after)).toBe(true);
+    // ...and the same decision persisting is not.
+    const again = observe(fleet, { decision: decision({ id: 'dec-1' }) });
+    expect(isNewlyActionable(after, again)).toBe(false);
+  });
+
+  it('a `waiting` pane counts as blocked for the edge, same as awaiting_input', () => {
+    const before = observe([{ ptyId: 'p', agentStatus: 'running' }]);
+    const after = observe([{ ptyId: 'p', agentStatus: 'waiting' }]);
+    expect(isNewlyActionable(before, after)).toBe(true);
+  });
+});
+
+// ── mirror rows that are not agents ─────────────────────────────────────────
+describe('non-terminal / unspawned mirror rows', () => {
+  it('a workspace holding only an empty leaf has NOTHING to brief (no dead chrome)', () => {
+    // buildFleetSnapshots emits a row per leaf with ptyId '' for an unspawned
+    // leaf; without the filter this briefed as "The agent is idle.".
+    const b = buildWorkspaceBriefing({
+      ...baseInputs,
+      snapshot: snap([{ ptyId: '', agentStatus: 'idle' }]),
+    });
+    expect(b.counts.total).toBe(0);
+    expect(b.topPane).toBeNull();
+    expect(briefingHasContent(b)).toBe(false);
+  });
+
+  it('browser / editor / diff surfaces (ptyId "") never inflate the counts', () => {
+    const b = buildWorkspaceBriefing({
+      ...baseInputs,
+      snapshot: snap([
+        { ptyId: '', agentStatus: 'idle' },
+        { ptyId: '', agentStatus: 'idle' },
+        { ptyId: 'p-real', agentStatus: 'running' },
+      ]),
+    });
+    expect(b.counts).toEqual({ total: 1, blocked: 0, errored: 0, running: 1, done: 0, idle: 0 });
+    expect(b.topPane?.ptyId).toBe('p-real');
+  });
+
+  it('the persisted baseline is filtered the same way', () => {
+    expect(
+      toBriefedSnapshot(
+        snap([
+          { ptyId: '', agentStatus: 'idle' },
+          { ptyId: 'p1', agentStatus: 'running' },
+        ]),
+        null,
+        1,
+      ).panes,
+    ).toEqual([{ ptyId: 'p1', agentStatus: 'running' }]);
+  });
+
+  it('a duplicated ptyId is counted once in the delta (no "2 finished" for one pane)', () => {
+    const prior: BriefedSnapshot = {
+      panes: [{ ptyId: 'p', agentStatus: 'running' }],
+      decisionId: null,
+      at: 1,
+    };
+    const b = buildWorkspaceBriefing({
+      ...baseInputs,
+      snapshot: snap([
+        { ptyId: 'p', agentStatus: 'complete' },
+        { ptyId: 'p', agentStatus: 'complete' },
+      ]),
+      prior,
+    });
+    expect(b.changed?.finished).toEqual(['p']);
+    expect(toBriefedSnapshot(snap([
+      { ptyId: 'p', agentStatus: 'complete' },
+      { ptyId: 'p', agentStatus: 'complete' },
+    ]), null, 1).panes).toEqual([{ ptyId: 'p', agentStatus: 'complete' }]);
   });
 });
 
