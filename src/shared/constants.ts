@@ -227,9 +227,13 @@ export const IPC = {
   //   one-shot summary of EXISTING judgment-engine state (fleet, pending
   //   decision, loop, delta-since-last-view) as a synchronous main-process READ:
   //   no brain turn, no globalTurnGate acquire, renders in every autonomy mode
-  //   including 'off'. CONFIG get/set are the Settings enabled/autoShow toggles.
-  //   Same renderer-only trust boundary as DECK_DECISION_*.
+  //   including 'off'. GET is PURE — SEEN is the separate acknowledge the card
+  //   sends once the briefing is actually rendered expanded, and only that
+  //   advances the "what you last saw" baseline (fetching must never consume a
+  //   delta nobody read). CONFIG get/set are the Settings enabled/autoShow
+  //   toggles. Same renderer-only trust boundary as DECK_DECISION_*.
   DECK_BRIEFING_GET: 'deck:briefing:get',
+  DECK_BRIEFING_SEEN: 'deck:briefing:seen',
   DECK_BRIEFING_CONFIG_GET: 'deck:briefing:config:get',
   DECK_BRIEFING_CONFIG_SET: 'deck:briefing:config:set',
   //   WORKSPACE_MIRROR_PUSH (send) renderer → main: a fire-and-forget full

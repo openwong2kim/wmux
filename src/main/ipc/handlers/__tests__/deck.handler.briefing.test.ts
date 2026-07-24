@@ -30,6 +30,7 @@ vi.mock('../../../deck/commanderSessionStore', () => ({
 // In-memory briefing store — config + snapshots, assertable.
 let briefingConfig = { enabled: true, autoShow: true };
 const briefedSnapshots = new Map<string, unknown>();
+const saveOpts: { workspaceId: string; liveWorkspaceIds?: readonly string[] }[] = [];
 vi.mock('../../../deck/deckBriefingStore', () => ({
   loadDeckBriefingConfig: vi.fn(() => briefingConfig),
   saveDeckBriefingConfig: vi.fn(async (patch: Partial<typeof briefingConfig>) => {
@@ -37,9 +38,17 @@ vi.mock('../../../deck/deckBriefingStore', () => ({
     return briefingConfig;
   }),
   loadBriefedSnapshot: vi.fn((ws: string) => briefedSnapshots.get(ws) ?? null),
-  saveBriefedSnapshot: vi.fn(async (ws: string, snap: unknown) => {
-    briefedSnapshots.set(ws, snap);
-  }),
+  saveBriefedSnapshot: vi.fn(
+    async (
+      ws: string,
+      snap: unknown,
+      _dir?: string,
+      opts?: { liveWorkspaceIds?: readonly string[] },
+    ) => {
+      briefedSnapshots.set(ws, snap);
+      saveOpts.push({ workspaceId: ws, ...(opts ?? {}) });
+    },
+  ),
 }));
 
 // Loop / autonomy / schedule / policy / decision — same lean fakes as the loop
@@ -155,6 +164,7 @@ beforeEach(() => {
   loops.clear();
   decisions.clear();
   briefedSnapshots.clear();
+  saveOpts.length = 0;
   briefingConfig = { enabled: true, autoShow: true };
   mockMode = 'assist';
   adapterCreated = 0;
@@ -211,22 +221,41 @@ describe('DECK_BRIEFING_GET', () => {
     expect(r.briefing).toBeNull();
   });
 
-  it('persists the last-viewed snapshot after building (delta seed)', async () => {
+  it('GET IS PURE: fetching never advances the last-viewed baseline', async () => {
     seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'running' }]);
-    decisions.set('ws-1', { id: 'dec-1', question: 'q', options: [], context: '', status: 'pending', raisedAt: 1 });
-    // First view: null prior ⇒ no delta.
-    const first = (await invoke(IPC.DECK_BRIEFING_GET, { workspaceId: 'ws-1' })) as unknown as {
-      briefing: WorkspaceBriefing;
-    };
-    expect(first.briefing.changed).toBeNull();
-    // The snapshot was persisted; flip a pane to complete and re-view — the delta
-    // is now computed against what we last saw.
-    await Promise.resolve(); // let the fire-and-forget save settle
+    await invoke(IPC.DECK_BRIEFING_GET, { workspaceId: 'ws-1' });
+    await Promise.resolve();
+    expect(briefedSnapshots.size).toBe(0);
+    // The delta a collapsed card fetched must still be there on the next GET —
+    // the bug was a "2 finished, 1 now blocked" consumed unread.
     seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'complete' }]);
     const second = (await invoke(IPC.DECK_BRIEFING_GET, { workspaceId: 'ws-1' })) as unknown as {
       briefing: WorkspaceBriefing;
     };
-    expect(second.briefing.changed?.finished).toEqual(['p1']);
+    expect(second.briefing.changed).toBeNull(); // still no baseline stored
+  });
+
+  it('returns mirrorReady:false and consumes NOTHING before the mirror is populated', async () => {
+    // No seedMirror: the renderer's push waits for the pane gate, so a deck
+    // opened during startup can beat it.
+    const early = (await invoke(IPC.DECK_BRIEFING_GET, { workspaceId: 'ws-1' })) as unknown as {
+      briefing: WorkspaceBriefing | null;
+      mirrorReady?: boolean;
+    };
+    expect(early.briefing).toBeNull();
+    expect(early.mirrorReady).toBe(false);
+    await Promise.resolve();
+    expect(briefedSnapshots.size).toBe(0); // no empty baseline persisted
+    // The one-shot cold-start flag was NOT burned — the real first briefing,
+    // once the mirror arrives, still reads as a cold start.
+    seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'running' }]);
+    const real = (await invoke(IPC.DECK_BRIEFING_GET, { workspaceId: 'ws-1' })) as unknown as {
+      briefing: WorkspaceBriefing;
+      mirrorReady?: boolean;
+    };
+    expect(real.mirrorReady).toBe(true);
+    expect(real.briefing.coldStart).toBe(true);
+    expect(real.briefing.panes.map((p) => p.ptyId)).toEqual(['p1']);
   });
 
   it('THE READ GUARANTEE: no brain adapter is created and the turn gate is never touched', async () => {
@@ -237,6 +266,64 @@ describe('DECK_BRIEFING_GET', () => {
     expect(tryAcquireSpy).not.toHaveBeenCalled();
     expect(acquireWhenAvailableSpy).not.toHaveBeenCalled();
     expect(turnGate.inFlight).toBe(0);
+  });
+});
+
+describe('DECK_BRIEFING_SEEN (acknowledge)', () => {
+  const getBriefing = async (workspaceId: string): Promise<WorkspaceBriefing> =>
+    (
+      (await invoke(IPC.DECK_BRIEFING_GET, { workspaceId })) as unknown as {
+        briefing: WorkspaceBriefing;
+      }
+    ).briefing;
+
+  it('acknowledging a build persists THAT build as the new baseline', async () => {
+    seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'running' }]);
+    const first = await getBriefing('ws-1');
+    expect(first.changed).toBeNull();
+    expect(await invoke(IPC.DECK_BRIEFING_SEEN, { workspaceId: 'ws-1', builtAt: first.builtAt })).toEqual({ ok: true });
+    await Promise.resolve(); // fire-and-forget persist
+    seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'complete' }]);
+    const second = await getBriefing('ws-1');
+    expect(second.changed?.finished).toEqual(['p1']);
+  });
+
+  it('a stale builtAt is a no-op (only the build the operator saw may commit)', async () => {
+    seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'running' }]);
+    const first = await getBriefing('ws-1');
+    // A newer build supersedes it; acknowledging the OLD one must not commit the
+    // newer snapshot, which the operator never saw.
+    seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'awaiting_input' }]);
+    await getBriefing('ws-1');
+    expect(await invoke(IPC.DECK_BRIEFING_SEEN, { workspaceId: 'ws-1', builtAt: first.builtAt - 1 })).toEqual({ ok: false });
+    await Promise.resolve();
+    expect(briefedSnapshots.size).toBe(0);
+  });
+
+  it('a repeated acknowledge of the same build does not write again', async () => {
+    seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'running' }]);
+    const b = await getBriefing('ws-1');
+    await invoke(IPC.DECK_BRIEFING_SEEN, { workspaceId: 'ws-1', builtAt: b.builtAt });
+    await Promise.resolve();
+    expect(saveOpts.length).toBe(1);
+    expect(await invoke(IPC.DECK_BRIEFING_SEEN, { workspaceId: 'ws-1', builtAt: b.builtAt })).toEqual({ ok: false });
+    await Promise.resolve();
+    expect(saveOpts.length).toBe(1);
+  });
+
+  it('acknowledging without a preceding GET is a no-op', async () => {
+    expect(await invoke(IPC.DECK_BRIEFING_SEEN, { workspaceId: 'ws-1', builtAt: 123 })).toEqual({ ok: false });
+    expect(await invoke(IPC.DECK_BRIEFING_SEEN, { workspaceId: '' })).toEqual({ ok: false });
+    await Promise.resolve();
+    expect(briefedSnapshots.size).toBe(0);
+  });
+
+  it('passes the live workspace list so dead workspaces get pruned', async () => {
+    seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'running' }]);
+    const b = await getBriefing('ws-1');
+    await invoke(IPC.DECK_BRIEFING_SEEN, { workspaceId: 'ws-1', builtAt: b.builtAt });
+    await Promise.resolve();
+    expect(saveOpts[0]).toEqual({ workspaceId: 'ws-1', liveWorkspaceIds: ['ws-1'] });
   });
 });
 

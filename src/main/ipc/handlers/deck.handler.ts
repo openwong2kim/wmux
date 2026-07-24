@@ -74,7 +74,12 @@ import {
   type WorkspaceDecision,
 } from '../../deck/deckDecisionStore';
 import { scanSkillCatalog, type SkillCatalogEntry } from '../../deck/skillCatalogScan';
-import { buildWorkspaceBriefing, toBriefedSnapshot, type WorkspaceBriefing } from '../../deck/deckBriefing';
+import {
+  buildWorkspaceBriefing,
+  toBriefedSnapshot,
+  type BriefedSnapshot,
+  type WorkspaceBriefing,
+} from '../../deck/deckBriefing';
 import {
   loadDeckBriefingConfig,
   saveDeckBriefingConfig,
@@ -1498,10 +1503,18 @@ export function registerDeckHandler(
   // A synchronous main-process READ of existing judgment-engine state — NO brain
   // turn, NO globalTurnGate acquire, renders in every autonomy mode including
   // 'off'. Every feed is a main-singleton read (mirror snapshot/entries,
-  // decision, mode, loop) plus the last-viewed snapshot for the delta. The
-  // snapshot is persisted after each build so the next open diffs against "what
-  // you last saw". markColdStart returns true the FIRST time a workspace is
-  // briefed since this handler registered (process start), false thereafter.
+  // decision, mode, loop) plus the last-viewed snapshot for the delta.
+  //
+  // READ and ACKNOWLEDGE are deliberately SEPARATE channels. The card fetches on
+  // every deck stream tick (and while collapsed), so persisting the baseline
+  // inside GET consumed deltas nobody ever saw: "2 finished, 1 now blocked"
+  // could be folded into the snapshot while the operator was on another tab and
+  // was then unrecoverable. GET is therefore pure; the card calls
+  // DECK_BRIEFING_SEEN only once the briefing is actually rendered expanded, and
+  // only THAT advances the "what you last saw" baseline.
+  //
+  // markColdStart returns true the FIRST time a workspace is briefed since this
+  // handler registered (process start), false thereafter.
   const briefedSinceStart = new Set<string>();
   const markColdStart = (workspaceId: string): boolean => {
     if (briefedSinceStart.has(workspaceId)) return false;
@@ -1509,13 +1522,20 @@ export function registerDeckHandler(
     return true;
   };
 
+  // The snapshot each GET *would* persist, held until the renderer acknowledges
+  // that build. Keyed by workspace, matched by builtAt so an acknowledge can only
+  // ever commit the exact build the operator saw — a newer build that landed in
+  // between is not silently consumed, and the renderer never gets to hand main
+  // its own snapshot data.
+  const pendingSeen = new Map<string, { builtAt: number; snapshot: BriefedSnapshot }>();
+
   ipcMain.removeHandler(IPC.DECK_BRIEFING_GET);
   ipcMain.handle(
     IPC.DECK_BRIEFING_GET,
     wrapHandler(IPC.DECK_BRIEFING_GET, async (
       _event: Electron.IpcMainInvokeEvent,
       raw: unknown,
-    ): Promise<{ briefing: WorkspaceBriefing | null; autoShow?: boolean }> => {
+    ): Promise<{ briefing: WorkspaceBriefing | null; autoShow?: boolean; mirrorReady?: boolean }> => {
       const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
         ? (raw as Record<string, unknown>)
         : {};
@@ -1524,6 +1544,12 @@ export function registerDeckHandler(
       const cfg = loadDeckBriefingConfig();
       if (!cfg.enabled) return { briefing: null };
       const mirror = getWorkspaceMirror();
+      // The mirror push waits for paneGate === 'ready', so an early GET during
+      // startup sees an EMPTY fleet that is not the truth. Building on it would
+      // burn the one-shot cold-start flag and (once acknowledged) seed an empty
+      // baseline, leaving recovered panes invisible. Report "not ready" instead
+      // and let the card retry — nothing is consumed.
+      if (!mirror.hasEverBeenPopulated()) return { briefing: null, mirrorReady: false };
       const snapshot = mirror.getFleetSnapshot(workspaceId);
       const entry = mirror.getEntries()?.find((e) => e.id === workspaceId) ?? null;
       const briefing = buildWorkspaceBriefing({
@@ -1536,11 +1562,39 @@ export function registerDeckHandler(
         prior: loadBriefedSnapshot(workspaceId),
         coldStart: markColdStart(workspaceId),
       });
-      // Persist the snapshot AFTER building the delta so the next open diffs
-      // against what the operator just saw. Fire-and-forget — a failed persist
-      // only costs a slightly-stale delta next time.
-      void saveBriefedSnapshot(workspaceId, toBriefedSnapshot(briefing)).catch(() => {});
-      return { briefing, autoShow: cfg.autoShow };
+      pendingSeen.set(workspaceId, {
+        builtAt: briefing.builtAt,
+        snapshot: toBriefedSnapshot(briefing),
+      });
+      return { briefing, autoShow: cfg.autoShow, mirrorReady: true };
+    }),
+  );
+
+  ipcMain.removeHandler(IPC.DECK_BRIEFING_SEEN);
+  ipcMain.handle(
+    IPC.DECK_BRIEFING_SEEN,
+    wrapHandler(IPC.DECK_BRIEFING_SEEN, async (
+      _event: Electron.IpcMainInvokeEvent,
+      raw: unknown,
+    ): Promise<{ ok: boolean }> => {
+      const req = (raw && typeof raw === 'object' && !Array.isArray(raw))
+        ? (raw as Record<string, unknown>)
+        : {};
+      const workspaceId = readWorkspaceId(req);
+      if (!workspaceId) return { ok: false };
+      const builtAt = typeof req.builtAt === 'number' ? req.builtAt : NaN;
+      const pending = pendingSeen.get(workspaceId);
+      // No-op unless this acknowledges the exact build main handed out. Also
+      // makes a repeated ack for the same build free (no disk write).
+      if (!pending || pending.builtAt !== builtAt) return { ok: false };
+      pendingSeen.delete(workspaceId);
+      const live = getWorkspaceMirror().getEntries()?.map((e) => e.id);
+      // Fire-and-forget, same never-throw posture as the rest of the store: a
+      // failed persist only costs a slightly-stale delta on the next open.
+      void saveBriefedSnapshot(workspaceId, pending.snapshot, undefined, {
+        ...(live ? { liveWorkspaceIds: live } : {}),
+      }).catch(() => {});
+      return { ok: true };
     }),
   );
 
@@ -1640,6 +1694,7 @@ export function registerDeckHandler(
     ipcMain.removeHandler(IPC.DECK_DECISION_GET);
     ipcMain.removeHandler(IPC.DECK_DECISION_RESOLVE);
     ipcMain.removeHandler(IPC.DECK_BRIEFING_GET);
+    ipcMain.removeHandler(IPC.DECK_BRIEFING_SEEN);
     ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_GET);
     ipcMain.removeHandler(IPC.DECK_BRIEFING_CONFIG_SET);
   };
