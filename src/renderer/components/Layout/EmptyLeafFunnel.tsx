@@ -152,11 +152,25 @@ export function EmptyLeafFunnel() {
       // RESOURCE_EXHAUSTED when the daemon session cap is hit during a
       // Ctrl+D split) surfaces an actionable toast instead of leaving the
       // split as a permanent empty-leaf placeholder.
-      // D2 — if this (restored) pane already carries a bound role, enforce its
-      // agent/model on the seeded initialCommand. No-op for the exec/supervised
-      // branch (no initialCommand) and for panes whose role is set only later.
-      const seedRoleName = storeState.paneRole[paneId];
+      // D2 — enforce this pane's bound role on the command wmux is about to run
+      // for it (initialCommand, or the supervised exec unit).
+      //
+      // The layout's declared role comes FIRST: applyProjectLayout rebuilt the
+      // tree with fresh pane ids, so the paneRole mirror — which is keyed by pane
+      // id and fed by the daemon's metadata relay — is necessarily empty for a
+      // pane created a moment ago. Falling back to the mirror covers a pane that
+      // already carried a role (a restored one).
+      const seedRoleName = projectSeed?.role ?? storeState.paneRole[paneId];
       const seedRoleBinding = seedRoleName ? storeState.orchestratorRoleBindings[seedRoleName] : undefined;
+      if (projectSeed?.role) {
+        // Assign it for real, through the SAME authority as the Fleet dropdown
+        // (MetadataStore), so the role persists in metadata.json, relays back
+        // into the paneRole mirror, and reaches the orchestrator's snapshot —
+        // rather than existing only for the length of this one launch.
+        // Optional-chained like the Fleet dropdown's own call — the funnel runs
+        // in renderer tests that stub only the APIs they exercise.
+        void window.electronAPI?.metadata?.setRole?.(paneId, wsId, projectSeed.role);
+      }
       void ipcInvoke<{ id: string; shell?: string; cwd?: string }>(() =>
         window.electronAPI.pty.create(
           withRoleBinding(

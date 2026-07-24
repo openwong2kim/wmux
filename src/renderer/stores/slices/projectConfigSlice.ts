@@ -29,6 +29,15 @@ export interface ProjectPaneSeed {
   restart?: 'on-failure' | 'always';
   restartLimit?: { burst?: number; healthyUptimeSec?: number };
   /**
+   * D2 orchestrator role declared by the layout leaf (terminal leaves only).
+   * The tree is rebuilt with FRESH pane ids, so the paneRole mirror — keyed by
+   * pane id — cannot carry a role across an apply; this seed is how a project
+   * pane gets one. The funnel both assigns it (through the same MetadataStore
+   * IPC the Fleet dropdown uses) and enforces the role's binding on the seeded
+   * command.
+   */
+  role?: string;
+  /**
    * U-PERM: the EFFECTIVE unattended permission-restore decision — the leaf's
    * `restorePermissionMode` intent AND the project's explicit unattended consent
    * (ProjectConfigState.unattended), computed at layout-apply time. The funnel
@@ -114,6 +123,7 @@ function buildTree(
       seed.url = node.url;
     } else {
       if (node.command !== undefined) seed.command = node.command;
+      if (node.role !== undefined) seed.role = node.role;
       // Terminal leaves always pin cwd to the project (or its sub-dir) — that
       // IS the feature: "open this repo, panes start in it".
       seed.cwd = joinProjectCwd(root, node.cwd);

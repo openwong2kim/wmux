@@ -18,8 +18,24 @@ describe('withRoleBinding (D2)', () => {
     expect(withRoleBinding(options, undefined)).toBe(options);
   });
 
-  it('is a no-op when there is no initialCommand (exec/supervised branch)', () => {
-    const options = { workspaceId: 'ws', exec: 'claude' };
+  // P2-C — a wmux.json leaf can declare a role next to `restart`, which makes
+  // the funnel pick the exec branch. Skipping exec would have made that exact
+  // combination a silent no-op.
+  it("enforces the bound model on a supervised leaf's exec unit", () => {
+    const out = withRoleBinding(
+      { workspaceId: 'ws', exec: 'claude /loop' },
+      { agent: 'claude', model: 'haiku' },
+    );
+    expect(out.exec).toBe('claude --model haiku /loop');
+  });
+
+  it('leaves a non-agent exec unit untouched', () => {
+    const options = { workspaceId: 'ws', exec: 'npm run dev' };
+    expect(withRoleBinding(options, { agent: 'claude', model: 'haiku' })).toBe(options);
+  });
+
+  it('is a no-op when there is no command of either shape', () => {
+    const options = { workspaceId: 'ws' };
     expect(withRoleBinding(options, { agent: 'claude', model: 'haiku' })).toBe(options);
   });
 
@@ -43,7 +59,20 @@ describe('withRoleBinding (D2)', () => {
     );
     expect(logSpy).toHaveBeenCalledWith(
       '[wmux:role-binding] seed command rewritten',
-      expect.objectContaining({ role: 'Builder', before: 'claude', after: 'claude --model haiku' }),
+      expect.objectContaining({
+        role: 'Builder',
+        field: 'initialCommand',
+        before: 'claude',
+        after: 'claude --model haiku',
+      }),
+    );
+  });
+
+  it('names the exec field in the audit line so the two paths are distinguishable', () => {
+    withRoleBinding({ workspaceId: 'ws', exec: 'claude' }, { agent: 'claude', model: 'haiku' }, 'Tester');
+    expect(logSpy).toHaveBeenCalledWith(
+      '[wmux:role-binding] seed command rewritten',
+      expect.objectContaining({ role: 'Tester', field: 'exec' }),
     );
   });
 

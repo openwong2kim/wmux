@@ -215,6 +215,10 @@ export const en = {
   // as a process that wmux auto-restarts. {restart}=on-failure|always,
   // {burst}=consecutive-failure cap before the runaway guard stops it.
   'project.supervisionBadge': '↻ auto-restarts ({restart}, up to {burst} consecutive)',
+  // D2 — a declared role makes wmux rewrite the command shown beside it, using
+  // the agent/model YOU bound to that role in Settings. Shown on the approval
+  // screen so the command list is not read as the literal thing that runs.
+  'project.roleBadge': '[role: {role} — launches with your binding for it]',
   // Unattended reboot-survival consent — a SEPARATE opt-in from base trust. The
   // checkbox restores each unattended pane's last-used permission mode on reboot
   // (may include --dangerously-skip-permissions), so it is surfaced explicitly.
@@ -327,7 +331,7 @@ export const en = {
   // D2 — role → agent/model enforcement editor (Settings › Orchestrator).
   'settings.roleBindings': 'Role → model enforcement',
   'settings.roleBindingsDesc':
-    'Pin an agent and model to each role. Launches that wmux itself assembles for a pane carrying that role run with the bound model: agent launches the orchestrator issues, a project pane’s seeded command, and the pane resume command. A launcher you type into the terminal yourself is not rewritten. Leave a row blank to keep the role unbound.',
+    'Pin an agent and model to each role. Launches that wmux itself assembles for a pane carrying that role run with the bound model: agent launches the orchestrator issues, the seeded command of a project pane whose wmux.json leaf declares a role, and the pane resume command. A launcher you type into the terminal yourself is not rewritten. Leave a row blank to keep the role unbound.',
   'settings.roleBindingAgentPlaceholder': 'agent',
   'settings.roleBindingModelPlaceholder': 'model (optional)',
   'settings.roleBindingArgsPlaceholder': 'extra args (optional)',
