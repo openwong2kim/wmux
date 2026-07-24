@@ -268,13 +268,13 @@ Requires Node 18+ and Python 3.x, plus a native toolchain: VS Build Tools (C++ w
 
 ## 🙌 Contributors
 
-Forge Mux is built in the open. Huge thanks to everyone who's shipped code, squashed bugs, and translated locales:
+Forge Mux is a fork of [wmux](https://github.com/openwong2kim/wmux), based on upstream version 3.33. All credit for the source Forge Mux builds on goes to the upstream project. Huge thanks to everyone who's shipped code, squashed bugs, and translated locales over there:
 
-[![Contributors](https://contrib.rocks/image?repo=skflowne/fmux)](https://github.com/skflowne/fmux/graphs/contributors)
+[![Contributors](https://contrib.rocks/image?repo=openwong2kim/wmux)](https://github.com/openwong2kim/wmux/graphs/contributors)
 
-Community shout-outs to [@snowyukitty](https://github.com/snowyukitty), [@matdac6](https://github.com/matdac6), [@margvez](https://github.com/margvez), [@zer0ken](https://github.com/zer0ken), [@AnandSundar](https://github.com/AnandSundar), [@cloim](https://github.com/cloim), [@cheyras](https://github.com/cheyras), [@junbeom09](https://github.com/junbeom09), [@rayss868](https://github.com/rayss868), [@dev-minggyu](https://github.com/dev-minggyu), and [@alphabeen](https://github.com/alphabeen) for their contributions. 💛
+Community shout-outs to [@snowyukitty](https://github.com/snowyukitty), [@matdac6](https://github.com/matdac6), [@margvez](https://github.com/margvez), [@zer0ken](https://github.com/zer0ken), [@AnandSundar](https://github.com/AnandSundar), [@cloim](https://github.com/cloim), [@cheyras](https://github.com/cheyras), [@junbeom09](https://github.com/junbeom09), [@rayss868](https://github.com/rayss868), [@dev-minggyu](https://github.com/dev-minggyu), and [@alphabeen](https://github.com/alphabeen) for their contributions to upstream wmux. 💛
 
-**New here?** Grab a [**good first issue**](https://github.com/skflowne/fmux/labels/good%20first%20issue), help translate a locale (한국어 complete · 日本語 / 中文 in progress), or read [**CONTRIBUTING.md**](CONTRIBUTING.md). PRs welcome.
+**New here?** Grab a [**good first issue**](https://github.com/skflowne/fmux/labels/good%20first%20issue) on the Forge Mux fork, help translate a locale (한국어 complete · 日本語 / 中文 in progress), or read [**CONTRIBUTING.md**](CONTRIBUTING.md). PRs welcome.
 
 Built on [xterm.js](https://xtermjs.org/), [node-pty](https://github.com/microsoft/node-pty), [Electron](https://www.electronjs.org/), and [Playwright](https://playwright.dev/).
 
