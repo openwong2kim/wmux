@@ -190,10 +190,19 @@
     if (authProbing || Date.now() - authProbeAt < AUTH_PROBE_MS) return;
     authProbing = true;
     authProbeAt = Date.now();
+    // Snapshot the token the probe is actually asking about, and send it by
+    // hand rather than through api(). Re-authenticating (auth form or pairing)
+    // while this request is in flight would otherwise let the OLD token's 401
+    // tear down the session that just came up — the verdict only applies while
+    // `token` is still the one we asked with.
+    var probed = token;
     var done = function () { authProbing = false; };
-    // A rejection is either the 401 (auth screen already shown) or a genuine
-    // outage (the "reconnecting…" the caller set is the right answer).
-    api('/api/config').then(done, done);
+    fetch('/api/config', { headers: { Authorization: 'Bearer ' + probed } }).then(function (r) {
+      done();
+      if (r.status === 401 && token === probed) requireToken(true);
+      // Anything else: a genuine outage, or a stale verdict about a token we
+      // no longer use — the "reconnecting…" the caller set is the right answer.
+    }, done);
   }
 
   /** Show the inline auth form. `stale` marks a rejected token vs a missing one. */
