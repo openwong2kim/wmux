@@ -2,16 +2,19 @@
 //
 // Render tests for the D1 "welcome home" briefing card — fake api/onStream
 // injected, no store/IPC. Covers the collapse/expand rules (including the
-// "never fight the operator" preservation contract), the acknowledge-vs-fetch
-// split, the mirror-not-ready retry, the empty-state guard, the reqSeq
-// workspace-switch race guard, the single top-priority jump that replaced the
-// pane roster, the channels-unread overlay, scoped onStream refetch, and the
-// Settings config bus.
+// "never fight the operator" preservation contract and the rising edge over
+// CURRENT blocked state: a fresh block, a recovery, a re-block, a pane that
+// spawns blocked), the acknowledge-vs-fetch split AND its visibility gate (off
+// screen / hidden window / acknowledged on return), the mirror-not-ready retry
+// and its backoff, the fleet-signature refetch that carries autonomy mode
+// 'off', the empty-state guard, the reqSeq workspace-switch race guard, the
+// single top-priority jump that replaced the pane roster, the channels-unread
+// overlay, scoped onStream refetch, and the Settings config bus.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { createElement, act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { DeckBriefingCard, type DeckBriefingApi } from '../DeckBriefingCard';
+import { DeckBriefingCard, mirrorRetryDelayMs, type DeckBriefingApi } from '../DeckBriefingCard';
 import { notifyBriefingConfigChanged } from '../deckBriefingConfigBus';
 import {
   summarizeBriefingCounts,
@@ -23,7 +26,70 @@ import type { AgentStatus } from '../../../../shared/types';
 let container: HTMLDivElement;
 let root: Root;
 
+// ── the ack visibility gate harness ──────────────────────────────────────────
+// jsdom has no layout and no IntersectionObserver, so the card's "is it actually
+// on screen" input is driven explicitly here. Default: on screen + document
+// visible, i.e. the ordinary operator-is-looking-at-it case.
+interface FakeIO {
+  cb: (entries: { isIntersecting: boolean; target: Element }[]) => void;
+  el: Element | null;
+}
+let ioInstances: FakeIO[] = [];
+let ioIntersecting = true;
+
+function installFakeIntersectionObserver(): void {
+  ioInstances = [];
+  ioIntersecting = true;
+  class Fake implements FakeIO {
+    cb: FakeIO['cb'];
+    el: Element | null = null;
+    constructor(cb: FakeIO['cb']) {
+      this.cb = cb;
+      ioInstances.push(this);
+    }
+    observe(el: Element): void {
+      this.el = el;
+      this.cb([{ isIntersecting: ioIntersecting, target: el }]);
+    }
+    unobserve(): void {}
+    disconnect(): void {
+      const i = ioInstances.indexOf(this);
+      if (i >= 0) ioInstances.splice(i, 1);
+    }
+    takeRecords(): [] {
+      return [];
+    }
+  }
+  (globalThis as unknown as { IntersectionObserver: unknown }).IntersectionObserver = Fake;
+}
+
+/** Scroll the card into / out of the viewport. */
+async function setOnScreen(v: boolean): Promise<void> {
+  ioIntersecting = v;
+  await act(async () => {
+    for (const io of [...ioInstances]) {
+      if (io.el) io.cb([{ isIntersecting: v, target: io.el }]);
+    }
+  });
+}
+
+/** Minimize / restore the window. */
+async function setDocumentVisible(v: boolean): Promise<void> {
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    get: () => (v ? 'visible' : 'hidden'),
+  });
+  await act(async () => {
+    document.dispatchEvent(new Event('visibilitychange'));
+  });
+}
+
 beforeEach(() => {
+  installFakeIntersectionObserver();
+  Object.defineProperty(document, 'visibilityState', {
+    configurable: true,
+    get: () => 'visible',
+  });
   container = document.createElement('div');
   document.body.appendChild(container);
   root = createRoot(container);
@@ -31,6 +97,7 @@ beforeEach(() => {
 afterEach(() => {
   act(() => root.unmount());
   container.remove();
+  delete (globalThis as unknown as { IntersectionObserver?: unknown }).IntersectionObserver;
 });
 
 const REASON: Record<AgentStatus, BriefingPane['reason']> = {
@@ -68,6 +135,9 @@ const briefing = (
     mode: 'assist',
     counts: summarizeBriefingCounts(list),
     topPane: list[0] ?? null,
+    // Live blocked state, exactly as the real builder derives it — the card's
+    // rising-edge input is current state, not the persisted delta.
+    blockedPtyIds: list.filter((p) => p.reason === 'blocked').map((p) => p.ptyId),
     pendingDecision: null,
     loop: null,
     changed: null,
@@ -307,8 +377,10 @@ describe('DeckBriefingCard — expansion rules', () => {
   });
 
   it('a background refresh does NOT re-open a card the operator collapsed', async () => {
+    const blocked = [pane('p1', 'awaiting_input')];
     const b = briefing({
       coldStart: true,
+      panes: blocked,
       changed: { finished: [], newlyBlocked: ['p1'], errored: [], newDecision: false },
     });
     const { api, set } = makeApi({ briefing: b, autoShow: true });
@@ -318,7 +390,7 @@ describe('DeckBriefingCard — expansion rules', () => {
     await click(toggle()); // manual collapse
     expect(isExpanded()).toBe(false);
     // The SAME blocked pane keeps being reported on every tick — that is not new.
-    set({ briefing: briefing({ ...b, builtAt: 2 }), autoShow: true });
+    set({ briefing: briefing({ panes: blocked, builtAt: 2 }), autoShow: true });
     await stream.tick();
     await stream.tick();
     expect(isExpanded()).toBe(false);
@@ -326,6 +398,7 @@ describe('DeckBriefingCard — expansion rules', () => {
 
   it('a genuine rising edge (an additional blocked pane) re-expands', async () => {
     const b = briefing({
+      panes: [pane('p1', 'awaiting_input')],
       changed: { finished: [], newlyBlocked: ['p1'], errored: [], newDecision: false },
     });
     const { api, set } = makeApi({ briefing: b, autoShow: true });
@@ -336,7 +409,52 @@ describe('DeckBriefingCard — expansion rules', () => {
     set({
       briefing: briefing({
         builtAt: 2,
-        changed: { finished: [], newlyBlocked: ['p1', 'p2'], errored: [], newDecision: false },
+        panes: [pane('p1', 'awaiting_input'), pane('p2', 'awaiting_input')],
+      }),
+      autoShow: true,
+    });
+    await stream.tick();
+    expect(isExpanded()).toBe(true);
+  });
+
+  it('a pane that RECOVERED and blocked again re-expands (blocked → running → blocked)', async () => {
+    // The delta could never see this: the ack baseline is not what the card
+    // diffs. Two consecutive live observations are.
+    const { api, set } = makeApi({
+      briefing: briefing({ coldStart: true, panes: [pane('p1', 'awaiting_input')] }),
+      autoShow: true,
+    });
+    const stream = streamHarness();
+    await mount({ api, onStream: stream.onStream, workspaceId: 'ws-1' });
+    expect(isExpanded()).toBe(true);
+    await click(toggle()); // operator reads it, collapses
+    expect(isExpanded()).toBe(false);
+    set({ briefing: briefing({ builtAt: 2, panes: [pane('p1', 'running')] }), autoShow: true });
+    await stream.tick();
+    expect(isExpanded()).toBe(false); // a recovery is never a reason to open
+    set({
+      briefing: briefing({ builtAt: 3, panes: [pane('p1', 'awaiting_input')] }),
+      autoShow: true,
+    });
+    await stream.tick();
+    expect(isExpanded()).toBe(true);
+  });
+
+  it('a pane that spawns already blocked is a rising edge', async () => {
+    const { api, set } = makeApi({
+      briefing: briefing({ panes: [pane('p1', 'running')] }),
+      autoShow: true,
+    });
+    const stream = streamHarness();
+    await mount({ api, onStream: stream.onStream, workspaceId: 'ws-1' });
+    expect(isExpanded()).toBe(false);
+    // A brand-new pane, blocked from its first observation. main's `changed`
+    // reports nothing (it has no prior status to transition FROM).
+    set({
+      briefing: briefing({
+        builtAt: 2,
+        panes: [pane('p1', 'running'), pane('fresh', 'awaiting_input')],
+        changed: { finished: [], newlyBlocked: [], errored: [], newDecision: false },
       }),
       autoShow: true,
     });
@@ -374,6 +492,14 @@ describe('DeckBriefingCard — acknowledge is viewing, not fetching', () => {
       builtAt,
       changed: { finished: ['p1'], newlyBlocked: [], errored: [], newDecision: false },
     });
+  /** Same delta, but auto-expanded on mount (the cold-start path) — the case
+   *  where nobody clicked, so "did they SEE it" is the only gate left. */
+  const openOnMount = (builtAt: number): WorkspaceBriefing =>
+    briefing({
+      builtAt,
+      coldStart: true,
+      changed: { finished: ['p1'], newlyBlocked: [], errored: [], newDecision: false },
+    });
 
   it('a collapsed card fetches but never acknowledges', async () => {
     const { api, seenCalls, calls } = makeApi({ briefing: withDelta(1), autoShow: true });
@@ -393,7 +519,11 @@ describe('DeckBriefingCard — acknowledge is viewing, not fetching', () => {
     expect(seenCalls).toEqual([{ workspaceId: 'ws-1', builtAt: 7 }]);
   });
 
-  it('does not acknowledge a no-news refresh (keeps the store off the disk)', async () => {
+  it('acknowledges a NO-NEWS build too — the baseline has to follow a recovery', async () => {
+    // Round 1 skipped the ack when there was no delta. That is what left the
+    // baseline pinned to an old "blocked" record, so the next genuine block
+    // never re-opened the card. Main de-duplicates the write instead, so this
+    // still costs no disk IO when the state truly did not move.
     const noDelta = briefing({
       builtAt: 3,
       changed: { finished: [], newlyBlocked: [], errored: [], newDecision: false },
@@ -401,6 +531,54 @@ describe('DeckBriefingCard — acknowledge is viewing, not fetching', () => {
     const { api, seenCalls } = makeApi({ briefing: noDelta, autoShow: true });
     await mount({ api, workspaceId: 'ws-1' });
     await click(toggle());
+    expect(seenCalls).toEqual([{ workspaceId: 'ws-1', builtAt: 3 }]);
+  });
+
+  it('an auto-expanded card that is scrolled OFF SCREEN does not acknowledge', async () => {
+    // The commander thread pins to the bottom once it has history, so an
+    // auto-expanded briefing at the top can be entirely out of view.
+    ioIntersecting = false;
+    const { api, seenCalls } = makeApi({ briefing: openOnMount(11), autoShow: true });
+    await mount({ api, workspaceId: 'ws-1' });
+    expect(isExpanded()).toBe(true);
+    expect(seenCalls).toEqual([]);
+    // The operator scrolls up to it — NOW it has been seen.
+    await setOnScreen(true);
+    expect(seenCalls).toEqual([{ workspaceId: 'ws-1', builtAt: 11 }]);
+  });
+
+  it('a hidden window does not acknowledge, and acknowledges on return', async () => {
+    // Leaving the deck open and walking away is the single most likely way to
+    // be "away" — precisely what this card exists for.
+    await setDocumentVisible(false);
+    const { api, seenCalls } = makeApi({ briefing: openOnMount(12), autoShow: true });
+    await mount({ api, workspaceId: 'ws-1' });
+    expect(isExpanded()).toBe(true);
+    expect(seenCalls).toEqual([]);
+    await setDocumentVisible(true);
+    expect(seenCalls).toEqual([{ workspaceId: 'ws-1', builtAt: 12 }]);
+  });
+
+  it('a late acknowledge carries the build that is actually on screen', async () => {
+    // The builtAt match in main is what stops a stale ack committing a build
+    // the operator never saw; the card must therefore acknowledge the CURRENT
+    // build, not the one that was pending when it went off screen.
+    ioIntersecting = false;
+    const { api, set, seenCalls } = makeApi({ briefing: openOnMount(20), autoShow: true });
+    const stream = streamHarness();
+    await mount({ api, onStream: stream.onStream, workspaceId: 'ws-1' });
+    expect(seenCalls).toEqual([]);
+    set({ briefing: openOnMount(21), autoShow: true });
+    await stream.tick();
+    expect(seenCalls).toEqual([]);
+    await setOnScreen(true);
+    expect(seenCalls).toEqual([{ workspaceId: 'ws-1', builtAt: 21 }]);
+  });
+
+  it('a collapsed card on screen still never acknowledges', async () => {
+    const { api, seenCalls } = makeApi({ briefing: withDelta(13), autoShow: false });
+    await mount({ api, workspaceId: 'ws-1' });
+    expect(isExpanded()).toBe(false);
     expect(seenCalls).toEqual([]);
   });
 
@@ -448,6 +626,61 @@ describe('DeckBriefingCard — mirror not ready', () => {
     expect(calls.length).toBeGreaterThan(1);
     expect(container.querySelector('[data-deck-briefing]')).not.toBeNull();
     expect(isExpanded()).toBe(true); // the cold start was not burned while waiting
+  });
+
+  it('the retry ceiling clears a heavy cold recovery, backing off rather than hammering', async () => {
+    // Issue #537: a 35-session cold recovery took ~23s, which is why a 15s
+    // launcher budget became a 90s ceiling. A flat 750ms × 20 gave up at 15s.
+    expect(mirrorRetryDelayMs(0)).toBe(750);
+    expect(mirrorRetryDelayMs(1)).toBeGreaterThan(mirrorRetryDelayMs(0));
+    // Bounded: it settles to a calm cadence instead of polling forever at 750ms.
+    expect(mirrorRetryDelayMs(50)).toBe(5000);
+    let budget = 0;
+    for (let i = 0; i < 45; i += 1) budget += mirrorRetryDelayMs(i);
+    expect(budget).toBeGreaterThan(60_000);
+  });
+});
+
+describe('DeckBriefingCard — autonomy mode `off` (no brain stream)', () => {
+  it('refetches when the fleet signature changes, debounced', async () => {
+    const { api, calls } = makeApi({ briefing: briefing(), autoShow: false });
+    await mount({ api, workspaceId: 'ws-1', fleetSignature: 'p1:running' });
+    expect(calls.length).toBe(1); // mount fetch only — the first signature is a no-op
+    await mount({ api, workspaceId: 'ws-1', fleetSignature: 'p1:awaiting_input' });
+    expect(calls.length).toBe(1); // still debouncing
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 250));
+    });
+    expect(calls.length).toBe(2);
+  });
+
+  it('an unchanged signature does not refetch (no storm)', async () => {
+    const { api, calls } = makeApi({ briefing: briefing(), autoShow: false });
+    await mount({ api, workspaceId: 'ws-1', fleetSignature: 'p1:running' });
+    await mount({ api, workspaceId: 'ws-1', fleetSignature: 'p1:running' });
+    await mount({ api, workspaceId: 'ws-1', fleetSignature: 'p1:running' });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 250));
+    });
+    expect(calls.length).toBe(1);
+  });
+
+  it('a fleet change that blocks a pane re-expands the card with no stream tick', async () => {
+    const { api, set } = makeApi({
+      briefing: briefing({ panes: [pane('p1', 'running')] }),
+      autoShow: true,
+    });
+    await mount({ api, workspaceId: 'ws-1', fleetSignature: 'p1:running' });
+    expect(isExpanded()).toBe(false);
+    set({
+      briefing: briefing({ builtAt: 2, panes: [pane('p1', 'awaiting_input')] }),
+      autoShow: true,
+    });
+    await mount({ api, workspaceId: 'ws-1', fleetSignature: 'p1:awaiting_input' });
+    await act(async () => {
+      await new Promise((r) => setTimeout(r, 250));
+    });
+    expect(isExpanded()).toBe(true);
   });
 });
 

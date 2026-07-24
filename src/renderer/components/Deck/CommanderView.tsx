@@ -27,6 +27,7 @@ import { FOCUS_RING } from '../focusRing';
 import { formatChatTime, type DeckLimitNotice } from './deckBrain';
 import DeckFleet from './DeckFleet';
 import { findLeafPanes } from '../../hooks/a2aAddressing';
+import { getLeafPanes } from '../../../shared/paneUtils';
 import { generateId } from '../../../shared/types';
 import type { ChannelMention, ChannelMessage } from '../../../shared/channels';
 import {
@@ -124,6 +125,10 @@ export interface CommanderViewContentProps {
   channelsUnread?: number;
   /** Jump to the Channels tab (the briefing's unread-line affordance). */
   onJumpToChannels?: () => void;
+  /** D1 briefing — fingerprint of the active workspace's status-relevant fleet
+   *  state; the card refetches when it moves (the autonomy-'off' path, where no
+   *  brain stream ever fires). */
+  fleetSignature?: string;
   t?: (key: string) => string;
 }
 
@@ -149,6 +154,7 @@ export function CommanderViewContent({
   fleetSlot,
   channelsUnread = 0,
   onJumpToChannels,
+  fleetSignature,
   t: tProp,
 }: CommanderViewContentProps): React.ReactElement {
   const t = tProp ?? ((key: string) => key);
@@ -267,6 +273,7 @@ export function CommanderViewContent({
           resolvePtyPane={resolvePtyPane}
           channelsUnread={channelsUnread}
           onJumpToChannels={onJumpToChannels}
+          fleetSignature={fleetSignature}
         />
 
         {/* Decision gate — a brain-raised decision blocking the loop until the
@@ -873,6 +880,29 @@ export function CommanderView(): React.ReactElement {
   const workspaceNamesKey = useStore((s) =>
     s.workspaces.map((w) => `${w.id}=${encodeURIComponent(w.name)}`).join('&'),
   );
+  // D1 briefing: a primitive fingerprint of the ACTIVE workspace's
+  // status-relevant fleet state, so the card can refetch when a pane changes
+  // even in autonomy mode 'off' (where no brain turn ever streams). Collapsed
+  // to a string inside the selector — the workspaceNamesKey idiom — so an
+  // unrelated pane-tree mutation neither re-renders this view nor wakes the
+  // card. Deliberately NOT included: the hook-running decay clock
+  // (`agentClockMs`), which ticks continuously and would turn this into a
+  // refetch loop. Every state the briefing actually acts on (blocked, error,
+  // complete) is a retained ATTENTION status and lives in `surfaceAgentStatus`;
+  // the workspace-level status covers the active pane's running/idle.
+  const fleetSignature = useStore((s) => {
+    const ws = s.workspaces.find((w) => w.id === s.activeWorkspaceId);
+    if (!ws) return '';
+    const parts: string[] = [`~${ws.metadata?.agentStatus ?? ''}`];
+    for (const leaf of getLeafPanes(ws.rootPane)) {
+      for (const surface of leaf.surfaces) {
+        if (!surface.ptyId) continue;
+        parts.push(`${surface.ptyId}:${s.surfaceAgentStatus[surface.ptyId] ?? ''}`);
+      }
+    }
+    return parts.join('|');
+  });
+
   const workspaceName = useMemo(() => {
     const names = new Map<string, string>();
     for (const pair of workspaceNamesKey.split('&')) {
@@ -1187,6 +1217,7 @@ export function CommanderView(): React.ReactElement {
       fleetSlot={<DeckFleet onJumpToPane={onJumpToPane} />}
       channelsUnread={channelsUnread}
       onJumpToChannels={onJumpToChannels}
+      fleetSignature={fleetSignature}
       t={t}
     />
   );

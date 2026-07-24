@@ -25,10 +25,15 @@
 //      event for the workspace, so automatic expansion applies ONLY on the first
 //      briefing for a workspace and on a genuine rising edge of newly-actionable
 //      state; a background refresh updates DATA and never touches `expanded`.
-//   2. Fetching is not viewing. The "while you were away" delta is acknowledged
-//      (DECK_BRIEFING_SEEN) only once it is actually rendered expanded — and the
-//      shown delta then STAYS on screen until the operator collapses or leaves,
-//      so it can't blink out from under them on the next refresh.
+//   2. Fetching is not viewing, and mounting is not seeing. The "while you were
+//      away" delta is acknowledged (DECK_BRIEFING_SEEN) only once the card is
+//      expanded AND actually on screen (it lives at the top of a scroll
+//      container that pins to the bottom, so an auto-expanded card can be
+//      entirely off-view) AND the document is visible (leaving the deck open and
+//      walking away is the single most likely way to be "away" — the exact
+//      scenario this card exists for). The shown delta then STAYS on screen
+//      until the operator collapses or leaves, so it can't blink out from under
+//      them on the next refresh.
 //   3. Nothing to say ⇒ render nothing. DESIGN.md: no dead gauges, no extra
 //      chrome row (the always-on instrument strip was removed the day it landed).
 //
@@ -76,10 +81,22 @@ export type DeckBriefingStream = (
 ) => () => void;
 
 /** Retry cadence while the workspace mirror is still unpopulated. The mirror
- *  push waits for the pane gate, so a deck opened during startup can beat it;
- *  bounded so a renderer that never pushes doesn't poll forever. */
-const MIRROR_RETRY_MS = 750;
-const MIRROR_MAX_RETRIES = 20;
+ *  push waits for the pane gate, so a deck opened during startup can beat it —
+ *  and on a heavy fleet that wait is a COLD RECOVERY: issue #537 recorded 35
+ *  sessions taking ~23s, which is why the launcher's 15s budget became a 90s
+ *  ceiling. A flat 750ms × 20 gave up after 15s, so the cold-start briefing was
+ *  silently skipped on exactly the fleets that need it. Backs off to a calm
+ *  cadence instead of hammering, with a ceiling (~3.5 min) that clears a heavy
+ *  recovery by a wide margin while still bounded, so a renderer that never
+ *  pushes doesn't poll forever. */
+const MIRROR_RETRY_BASE_MS = 750;
+const MIRROR_RETRY_MAX_MS = 5000;
+const MIRROR_MAX_RETRIES = 45;
+
+/** Delay before retry #n (0-based). */
+export function mirrorRetryDelayMs(attempt: number): number {
+  return Math.min(MIRROR_RETRY_BASE_MS * 1.5 ** attempt, MIRROR_RETRY_MAX_MS);
+}
 
 type T = (key: string) => string;
 
@@ -209,6 +226,7 @@ export function DeckBriefingCard({
   resolvePtyPane,
   channelsUnread = 0,
   onJumpToChannels,
+  fleetSignature,
 }: {
   api?: DeckBriefingApi;
   onStream?: DeckBriefingStream;
@@ -220,6 +238,14 @@ export function DeckBriefingCard({
   channelsUnread?: number;
   /** Jump to the Channels tab (the unread-line affordance). */
   onJumpToChannels?: () => void;
+  /** A string that changes when the active workspace's status-relevant fleet
+   *  state changes (CommanderView derives it from the store). The card also
+   *  refetches on it, because `onStream` only fires on BRAIN output: in autonomy
+   *  mode `off` no turns run at all, so a pane that finished or blocked reached
+   *  the mirror but never reached this card, which then sat stale forever —
+   *  despite the briefing deliberately rendering in every mode. Compared, not
+   *  counted: an unchanged signature costs nothing. */
+  fleetSignature?: string;
 }): React.ReactElement | null {
   const t = tProp ?? (() => '');
   const resolvedApi =
@@ -249,6 +275,16 @@ export function DeckBriefingCard({
   const retryRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const retriesRef = useRef(0);
   const refreshRef = useRef<() => void>(() => undefined);
+  // Fleet-signature refetch debounce (declared here so the workspace-switch
+  // reset below can cancel it).
+  const fleetDebounceRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  // Ack visibility gate — the card element (for the intersection observer) and
+  // the document's own visibility.
+  const [cardEl, setCardEl] = useState<HTMLElement | null>(null);
+  const [onScreen, setOnScreen] = useState(false);
+  const [docVisible, setDocVisible] = useState(
+    () => typeof document === 'undefined' || document.visibilityState === 'visible',
+  );
 
   const refresh = useCallback(async () => {
     if (!resolvedApi || !workspaceId) return;
@@ -260,12 +296,17 @@ export function DeckBriefingCard({
         // Nothing was built and nothing was consumed — leave the current view
         // alone and try again once the renderer has pushed its tree.
         if (retriesRef.current < MIRROR_MAX_RETRIES) {
+          const delay = mirrorRetryDelayMs(retriesRef.current);
           retriesRef.current += 1;
           if (retryRef.current) clearTimeout(retryRef.current);
-          retryRef.current = setTimeout(() => refreshRef.current(), MIRROR_RETRY_MS);
+          retryRef.current = setTimeout(() => refreshRef.current(), delay);
         }
         return;
       }
+      // The mirror answered — a later cold recovery (a workspace switch, a
+      // daemon restart) gets the full retry budget again rather than the tail
+      // of the one this startup already spent.
+      retriesRef.current = 0;
       setBriefing(r.briefing);
       if (!r.briefing) {
         signalRef.current = null;
@@ -303,15 +344,21 @@ export function DeckBriefingCard({
   // never lingers while the new fetch is in flight, bump reqSeq so any in-flight
   // get for the old workspace is ignored, and reset the whole expansion state
   // machine (hydration + manual control + rising-edge baseline are per-workspace).
+  const lastFleetSigRef = useRef<string | undefined>(undefined);
   useEffect(() => {
     reqSeq.current++;
     hydratedRef.current = false;
     userToggledRef.current = false;
     signalRef.current = null;
     retriesRef.current = 0;
+    lastFleetSigRef.current = undefined;
     if (retryRef.current) {
       clearTimeout(retryRef.current);
       retryRef.current = null;
+    }
+    if (fleetDebounceRef.current) {
+      clearTimeout(fleetDebounceRef.current);
+      fleetDebounceRef.current = null;
     }
     setBriefing(null);
     setExpanded(false);
@@ -346,20 +393,81 @@ export function DeckBriefingCard({
     };
   }, [resolvedStream, workspaceId, refresh]);
 
+  // Refetch (debounced, same shape) when the renderer's own fleet state moves.
+  // This is the mode-'off' path: no brain turns run, so `onStream` never fires
+  // and the stream subscription above can't see a pane finishing or blocking.
+  useEffect(() => {
+    if (fleetSignature === undefined) return;
+    // First observation for this workspace — the mount fetch already covers it.
+    if (lastFleetSigRef.current === undefined) {
+      lastFleetSigRef.current = fleetSignature;
+      return;
+    }
+    if (lastFleetSigRef.current === fleetSignature) return;
+    lastFleetSigRef.current = fleetSignature;
+    if (fleetDebounceRef.current) clearTimeout(fleetDebounceRef.current);
+    fleetDebounceRef.current = setTimeout(() => void refresh(), 200);
+  }, [fleetSignature, refresh]);
+  useEffect(() => {
+    return () => {
+      if (fleetDebounceRef.current) clearTimeout(fleetDebounceRef.current);
+    };
+  }, []);
+
   // Settings toggled the briefing on/off in MAIN — re-read the authoritative
   // config (a disabled briefing comes back null and the card unmounts itself).
   useEffect(() => onBriefingConfigChanged(() => void refresh()), [refresh]);
 
-  // ACKNOWLEDGE — only what was actually rendered expanded. `changed === null` is
-  // the first-ever view (no baseline stored yet) and must seed one; otherwise
-  // there has to be a real delta to consume, which keeps this off the disk on the
-  // common no-news refresh.
+  // ── the ack visibility gate ───────────────────────────────────────────────
+  // Is the card itself in the viewport? It sits at the TOP of the commander
+  // thread, which pins to the bottom as soon as there is history, so "mounted
+  // and expanded" says nothing about whether the operator ever saw it.
+  useEffect(() => {
+    if (!cardEl) {
+      setOnScreen(false);
+      return;
+    }
+    if (typeof IntersectionObserver === 'undefined') {
+      // No observer (older embedder / test env): fall back to "visible" rather
+      // than never acknowledging — a delta stuck forever is the worse failure.
+      setOnScreen(true);
+      return;
+    }
+    const io = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) setOnScreen(e.isIntersecting);
+      },
+      { threshold: 0.01 },
+    );
+    io.observe(cardEl);
+    return () => io.disconnect();
+  }, [cardEl]);
+
+  // Is the WINDOW visible? A minimized/backgrounded deck must not consume the
+  // very delta it exists to hold for the operator's return.
+  useEffect(() => {
+    if (typeof document === 'undefined') return;
+    const onVis = (): void => setDocVisible(document.visibilityState === 'visible');
+    document.addEventListener('visibilitychange', onVis);
+    onVis();
+    return () => document.removeEventListener('visibilitychange', onVis);
+  }, []);
+
+  // ACKNOWLEDGE — this build was genuinely SEEN: expanded, on screen, in a
+  // visible window. Fires on every such build, delta or not: the baseline is
+  // what "you last saw", so a refresh showing a pane back to `running` has to
+  // advance it too, or a pane that goes blocked → running → blocked diffs
+  // against the stale blocked baseline and the second block reads as old news.
+  // The "don't hammer the disk" property lives in main instead, which skips the
+  // write when the snapshot matches the stored one (deckBriefingStore.ts).
+  // Re-runs whenever any gate flips, so a card scrolled into view — or a window
+  // brought back to the front — acknowledges then rather than never.
   const seen = resolvedApi?.seen;
   useEffect(() => {
     if (!expanded || !briefing || !workspaceId || !seen) return;
-    if (briefing.changed !== null && !hasBriefingDelta(briefing.changed)) return;
+    if (!onScreen || !docVisible) return;
     void seen(workspaceId, briefing.builtAt).catch(() => undefined);
-  }, [expanded, briefing, workspaceId, seen]);
+  }, [expanded, briefing, workspaceId, seen, onScreen, docVisible]);
 
   if (!resolvedApi || !briefing) return null;
   // Nothing to say ⇒ no card at all (DESIGN.md: no dead gauges). The sticky delta
@@ -383,6 +491,7 @@ export function DeckBriefingCard({
 
   return (
     <div
+      ref={setCardEl}
       data-deck-briefing
       className="rounded-[7px] px-4 py-2.5 bg-[rgba(var(--bg-surface-rgb),0.55)]"
       {...tokenAttrs('bgSurface', 'bg')}
@@ -399,11 +508,12 @@ export function DeckBriefingCard({
         aria-expanded={expanded}
         onClick={() => {
           userToggledRef.current = true;
-          setExpanded((v) => {
-            // Collapsing dismisses the while-away line — it has been read.
-            if (v) setShownChange(null);
-            return !v;
-          });
+          // Read the current value and call both setters sequentially — a React
+          // state updater must be pure, so it cannot drive the second setState.
+          const wasExpanded = expanded;
+          setExpanded(!wasExpanded);
+          // Collapsing dismisses the while-away line — it has been read.
+          if (wasExpanded) setShownChange(null);
         }}
         className={`group flex-1 min-w-0 flex items-center gap-2 text-left ${FOCUS_RING}`}
       >
