@@ -27,6 +27,13 @@ interface CdpInfoResponse {
    * isElectronShellUrl() heuristic. See browser.cdp.info handler.
    */
   shellUrl?: string;
+  /**
+   * True when the main process filtered `targets` to the caller's workspace
+   * (#580, Option 1). Distinguishes an empty scoped list ("caller owns no live
+   * targets") from an older main that cannot scope at all — the leniency
+   * fallback in resolveCallerSurface is gated on its ABSENCE.
+   */
+  targetsScoped?: boolean;
   targets: CdpTargetInfo[];
 }
 
@@ -407,14 +414,27 @@ export class PlaywrightEngine {
 
     let info: CdpInfoResponse;
     try {
-      info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
+      // Pass our resolved workspace so main filters `targets` server-side
+      // (#580, Option 1). The response then carries only our own targets.
+      info = (await sendRpc('browser.cdp.info', { workspaceId })) as CdpInfoResponse;
     } catch {
       return { kind: 'unscoped' };
     }
     this.cacheShellUrl(info);
 
-    // Older mains don't tag targets with a workspaceId. If NONE carry one we
-    // cannot scope, so stay lenient rather than fail-closing a working setup.
+    // A main that honored the scope request marks the response `targetsScoped`.
+    // Then an empty list unambiguously means "we own no live target" (kind:
+    // 'none'), and a present one is already ours — no client-side filter needed.
+    if (info.targetsScoped) {
+      const own = info.targets[0];
+      return own
+        ? { kind: 'surface', surfaceId: own.surfaceId, workspaceId }
+        : { kind: 'none', workspaceId };
+    }
+
+    // Legacy path: an older main ignored the param and returned every target.
+    // If NONE carry a workspaceId we cannot scope at all, so stay lenient rather
+    // than fail-closing a working single-workspace setup; otherwise filter here.
     const anyTagged = info.targets.some(
       (t) => typeof t.workspaceId === 'string' && t.workspaceId.length > 0,
     );
@@ -436,22 +456,22 @@ export class PlaywrightEngine {
    */
   private async resolveSelectionContext(
     explicitSurfaceId?: string,
-  ): Promise<{ key: string; surfaceId?: string; callerHasNoSurface: boolean }> {
+  ): Promise<{ key: string; surfaceId?: string; callerHasNoSurface: boolean; workspaceId?: string }> {
     if (explicitSurfaceId) {
       return { key: `surf:${explicitSurfaceId}`, surfaceId: explicitSurfaceId, callerHasNoSurface: false };
     }
     const owned = await this.resolveCallerSurface();
     if (owned.kind === 'surface') {
-      return { key: `ws:${owned.workspaceId}`, surfaceId: owned.surfaceId, callerHasNoSurface: false };
+      return { key: `ws:${owned.workspaceId}`, surfaceId: owned.surfaceId, callerHasNoSurface: false, workspaceId: owned.workspaceId };
     }
     if (owned.kind === 'none') {
-      return { key: `ws:${owned.workspaceId}`, surfaceId: undefined, callerHasNoSurface: true };
+      return { key: `ws:${owned.workspaceId}`, surfaceId: undefined, callerHasNoSurface: true, workspaceId: owned.workspaceId };
     }
     return { key: 'unscoped', surfaceId: undefined, callerHasNoSurface: false };
   }
 
   private async _getPageImpl(
-    ctx: { key: string; surfaceId?: string; callerHasNoSurface: boolean },
+    ctx: { key: string; surfaceId?: string; callerHasNoSurface: boolean; workspaceId?: string },
   ): Promise<Page | null> {
 
     await this.ensureConnected();
@@ -475,7 +495,7 @@ export class PlaywrightEngine {
         // negative "any non-shell page" heuristic, to avoid ever returning the
         // shell when the shell happens to slip past URL classification.
         if (this.browser) {
-          const page = await this.findViaTargetDomain(surfaceId);
+          const page = await this.findViaTargetDomain(surfaceId, ctx.workspaceId);
           if (page) return page;
         }
 
@@ -501,7 +521,7 @@ export class PlaywrightEngine {
 
         // Strategy 3: Use /json endpoint + match registered targets
         if (this.cdpPort) {
-          const page = await this.findViaJsonEndpoint(surfaceId);
+          const page = await this.findViaJsonEndpoint(surfaceId, ctx.workspaceId);
           if (page) return page;
         }
         } // end !callerHasNoSurface
@@ -604,7 +624,7 @@ export class PlaywrightEngine {
   /**
    * Use CDP Target domain to discover webview targets and create a page for them.
    */
-  private async findViaTargetDomain(surfaceId?: string): Promise<Page | null> {
+  private async findViaTargetDomain(surfaceId?: string, workspaceId?: string): Promise<Page | null> {
     if (!this.browser) return null;
 
     try {
@@ -638,8 +658,13 @@ export class PlaywrightEngine {
 
         console.error(`[PlaywrightEngine] CDP targets: ${targetInfos.map(t => `${t.type}:${t.url.substring(0, 40)}`).join(', ')}`);
 
-        // Get registered wmux targets for matching
-        const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
+        // Get registered wmux targets for matching, scoped to the caller's
+        // workspace when known so the no-surfaceId fallback (info.targets[0])
+        // can never resolve to another workspace's guest (#580, Option 1).
+        const info = (await sendRpc(
+          'browser.cdp.info',
+          workspaceId ? { workspaceId } : {},
+        )) as CdpInfoResponse;
         this.cacheShellUrl(info);
         const wmuxTarget = surfaceId
           ? info.targets.find((t) => t.surfaceId === surfaceId)
@@ -710,7 +735,7 @@ export class PlaywrightEngine {
   /**
    * Use the /json HTTP endpoint to find webview targets and attach via CDP.
    */
-  private async findViaJsonEndpoint(surfaceId?: string): Promise<Page | null> {
+  private async findViaJsonEndpoint(surfaceId?: string, workspaceId?: string): Promise<Page | null> {
     if (!this.cdpPort || !this.browser) return null;
 
     try {
@@ -725,8 +750,12 @@ export class PlaywrightEngine {
 
       console.error(`[PlaywrightEngine] /json targets: ${targets.map(t => `${t.type}:${t.url.substring(0, 40)}`).join(', ')}`);
 
-      // Get registered wmux targets
-      const info = (await sendRpc('browser.cdp.info')) as CdpInfoResponse;
+      // Get registered wmux targets, scoped to the caller's workspace when
+      // known so the no-surfaceId fallback can't cross workspaces (#580).
+      const info = (await sendRpc(
+        'browser.cdp.info',
+        workspaceId ? { workspaceId } : {},
+      )) as CdpInfoResponse;
       this.cacheShellUrl(info);
       const wmuxTarget = surfaceId
         ? info.targets.find((t) => t.surfaceId === surfaceId)

@@ -317,7 +317,7 @@ Security rules:
 - an older main without workspace ownership support MUST NOT trigger legacy global enumeration; and
 - no action may acquire `withAutomationLease(undefined)`.
 
-These rules bound what **this tool** discloses. They are not a system-wide guarantee that workspace ownership is unobservable: §8.2 records a sibling RPC that still exposes live-target metadata across workspaces.
+These rules bound what **this tool** discloses. They are not a system-wide guarantee that workspace ownership is unobservable: §8.2 records a sibling RPC (`browser.cdp.info`) whose cross-workspace metadata is now scoped as defense-in-depth, but which — like any holder of the shared CDP port — cannot hard-seal enumeration within the same-OS-user trust ceiling.
 
 If a later implementation needs CDP for a specific action, it acquires a lease for the positively owned `surfaceId` only.
 
@@ -403,19 +403,21 @@ That path is not fixed merely by making `browser_tabs select` workspace-scoped. 
 
 This should be confirmed with a focused two-workspace test and, if reproduced, tracked separately rather than silently expanding the #565 implementation.
 
-### 8.2 `browser.cdp.info` still exposes live-target metadata across workspaces
+### 8.2 `browser.cdp.info` cross-workspace target metadata (now scoped, defense-in-depth)
 
-Independent review of the implementation surfaced a pre-existing side channel that §5 does not close, and that a reader could otherwise assume it did.
+Independent review of the implementation surfaced a pre-existing side channel that §5 does not close, and that a reader could otherwise assume it did. Both legs below are now addressed; this section is kept as the record of what the boundary does and does not guarantee.
 
-`browser.cdp.info` (`src/main/pipe/handlers/browser.rpc.ts`) returns every **registered** CDP target with its `surfaceId`, `targetId`, and owning `workspaceId`, unfiltered by caller. Its capability is `browser.read` — an ordinary declarable capability, not `wmux.internal` — so a plugin the user approved for browser reads can enumerate which workspaces currently hold live browser guests, and learn their surface IDs.
+`browser.cdp.info` (`src/main/pipe/handlers/browser.rpc.ts`) used to return every **registered** CDP target with its `surfaceId`, `targetId`, and owning `workspaceId`, unfiltered by caller. Its capability is `browser.read` — an ordinary declarable capability, not `wmux.internal` — so a plugin the user approved for browser reads could enumerate which workspaces held live browser guests, and learn their surface IDs.
 
 It originally composed with a sibling in `browser.close`, which resolved an explicit `surfaceId` across **every** workspace: a caller holding `browser.read` plus `browser.navigate` could read a foreign `surfaceId` out of `browser.cdp.info` and hand it to `browser.close` to destroy another workspace's browser.
 
 **The destructive half is now closed (#580).** `browser.close` scopes an explicit `surfaceId` to the caller's own workspace — through `decideBrowserClose` + the same `closeBrowserTabInWorkspace` helper `browser_tabs` uses — and fails closed when caller identity is absent rather than falling back to the UI-active workspace (§5). This does not reintroduce the old "surface.close lesson" (an explicit ID scoped to the *active* workspace manufacturing false not-founds), because it scopes to the *caller's* workspace, which MCP always supplies and the CLI never reaches with a `surfaceId`. The surface-id-less "close the browser pane" convenience is unchanged.
 
-**The disclosure half remains.** `browser.cdp.info` still returns cross-workspace target metadata, so the read-only enumeration described above is still possible; only the close-based destruction is fixed. Both legs predated #565 and neither was introduced by it. `browser_tabs` never consults `browser.cdp.info` and never leaves the caller's workspace, so its own contract was always unaffected. The exposure is bounded: no URL, title, or page content, and a discarded surface is absent because it holds no registered target. It sits inside the repository's same-OS-user trust ceiling.
+**The disclosure half is now scoped (#580, Option 1).** `browser.cdp.info` accepts the caller's resolved `workspaceId` and filters `targets` to it server-side, marking the response `targetsScoped: true`; `PlaywrightEngine` passes its resolved workspace on every target-reading call, so the RPC no longer volunteers other workspaces' live targets to a caller that identifies itself. `cdpPort` and `shellUrl` stay unscoped because they are workspace-agnostic and load-bearing for shell recognition. A param-less call keeps the legacy unscoped shape, so an older engine still works; the engine uses the `targetsScoped` flag to tell an empty scoped list ("I own no target") from a legacy main that cannot scope.
 
-Closing the disclosure half is a separate change. `browser.cdp.info` is load-bearing for `PlaywrightEngine`'s attach path, which legitimately needs global target data to recognize the app shell, so scoping it needs its own design and its own regression tests. It is tracked in #580.
+This is **defense-in-depth within the same-OS-user trust ceiling, not a hard seal.** As long as `browser.cdp.info` returns `cdpPort`, a holder of it can still enumerate every target by querying the CDP `/json` endpoint directly (the engine itself does exactly that during discovery). Sealing that would mean brokering CDP attach instead of sharing the port — a larger change, out of scope here. What Option 1 removes is the casual/accidental cross-workspace read through the well-behaved RPC path.
+
+Both legs predated #565 and neither was introduced by it. `browser_tabs` never consulted `browser.cdp.info` and never left the caller's workspace, so its own contract was always unaffected. The exposure was already bounded: no URL, title, or page content, and a discarded surface is absent because it holds no registered target.
 
 ### 8.3 Other non-goals
 
