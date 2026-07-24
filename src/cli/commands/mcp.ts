@@ -144,7 +144,10 @@ export function canConnectBrokerPipe(timeoutMs = 300): Promise<boolean> {
     socket.setTimeout(timeoutMs);
     socket.once('connect', () => finish(true));
     socket.once('timeout', () => finish(false));
-    socket.once('error', () => finish(false));
+    // on(), not once(): a stray second 'error' after destroy() would be an
+    // unhandled exception that crashes `wmux mcp register`. finish() is
+    // idempotent, so absorbing every 'error' is safe.
+    socket.on('error', () => finish(false));
   });
 }
 
