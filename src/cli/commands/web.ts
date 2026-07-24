@@ -52,8 +52,21 @@ export async function handleWeb(args: string[], jsonMode: boolean): Promise<void
   const explicitHost = parseFlag(args, '--host');
   const host = explicitHost ?? (hasFlag(args, '--expose') ? EXPOSE_HOST : LOOPBACK_HOST);
   const allowInput = hasFlag(args, '--allow-input');
+  // Extra Host-header names the server should accept (comma-separated). A
+  // reverse proxy in front of the loopback bind forwards the browser's Host
+  // verbatim — `tailscale serve` sends the MagicDNS name, which the default
+  // allowlist (loopback + bound addresses) would reject with 403.
+  const allowedHosts = (parseFlag(args, '--allow-host') ?? '')
+    .split(',')
+    .map((h) => h.trim())
+    .filter(Boolean);
 
-  const response = await sendDaemonStringRequest('daemon.web.start', { port, host, allowInput });
+  const response = await sendDaemonStringRequest('daemon.web.start', {
+    port,
+    host,
+    allowInput,
+    allowedHosts,
+  });
   return report(response, jsonMode, 'start');
 }
 
@@ -70,7 +83,10 @@ function pickPairHost(urls: string[], info: WebInfo, loopbackOnly: boolean): str
       }
     }
   }
-  return `${info.host ?? '127.0.0.1'}:${info.port ?? DEFAULT_PORT}`;
+  // IPv6 literals must be bracketed in a URL authority (`[::1]:7681`).
+  const host = info.host ?? '127.0.0.1';
+  const authority = host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
+  return `${authority}:${info.port ?? DEFAULT_PORT}`;
 }
 
 function report(response: RpcResponse, jsonMode: boolean, mode: 'start' | 'status'): void {
@@ -102,7 +118,9 @@ function report(response: RpcResponse, jsonMode: boolean, mode: 'start' | 'statu
     console.log('  This bind is LOCAL-ONLY (127.0.0.1) — not reachable from your phone.');
     console.log('  For remote access, either:');
     console.log('    • run `wmux web --expose` to bind all interfaces (tailnet + LAN), or');
-    console.log('    • keep loopback and front it with `tailscale serve` (adds HTTPS).');
+    console.log('    • keep loopback and front it with `tailscale serve` (adds HTTPS) —');
+    console.log('      restart with `wmux web --allow-host <your-magicdns-name>` so the');
+    console.log('      proxied Host header is accepted.');
   } else if (exposed) {
     console.log('  ⚠ Reachable on ALL network interfaces (0.0.0.0). The access token is');
     console.log('    the only thing gating it — treat the URL below as a secret.');

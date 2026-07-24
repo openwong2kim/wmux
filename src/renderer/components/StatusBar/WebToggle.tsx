@@ -368,33 +368,34 @@ export default function WebToggle({ variant = 'statusbar' }: { variant?: WebTogg
   }, [open]);
 
   const toggleOpen = useCallback(() => {
-    setOpen((v) => {
-      if (!v) {
-        // Seed the checkboxes from the live state so reopening while running
-        // reflects the actual mode, and anchor the popover under the button.
-        const r = btnRef.current?.getBoundingClientRect();
-        const menuWidth = 288; // w-72
-        if (r) {
-          if (variant === 'sidebar') {
-            // Fly out beside the row, bottom-aligned with it: opening upward
-            // would cover the sibling Agent / Git rows. Prefer the side facing
-            // the content area, and fall back if it would overflow.
-            const toRight = r.right + 6 + menuWidth <= window.innerWidth - 8;
-            setAnchorLeft(
-              toRight
-                ? r.right + 6
-                : Math.max(8, r.left - 6 - menuWidth),
-            );
-            setAnchorBottom(Math.max(8, window.innerHeight - r.bottom));
-          } else {
-            setAnchorLeft(Math.max(8, Math.min(r.left, window.innerWidth - menuWidth - 8)));
-            setAnchorBottom(null);
-          }
+    // Measure + anchor OUTSIDE the setOpen updater: state updaters must stay
+    // pure (React may invoke them twice in StrictMode), and these are DOM
+    // reads plus sibling setState calls.
+    if (!open) {
+      // Seed the checkboxes from the live state so reopening while running
+      // reflects the actual mode, and anchor the popover under the button.
+      const r = btnRef.current?.getBoundingClientRect();
+      const menuWidth = 288; // w-72
+      if (r) {
+        if (variant === 'sidebar') {
+          // Fly out beside the row, bottom-aligned with it: opening upward
+          // would cover the sibling Agent / Git rows. Prefer the side facing
+          // the content area, and fall back if it would overflow.
+          const toRight = r.right + 6 + menuWidth <= window.innerWidth - 8;
+          setAnchorLeft(
+            toRight
+              ? r.right + 6
+              : Math.max(8, r.left - 6 - menuWidth),
+          );
+          setAnchorBottom(Math.max(8, window.innerHeight - r.bottom));
+        } else {
+          setAnchorLeft(Math.max(8, Math.min(r.left, window.innerWidth - menuWidth - 8)));
+          setAnchorBottom(null);
         }
       }
-      return !v;
-    });
-  }, [variant]);
+    }
+    setOpen(!open);
+  }, [open, variant]);
 
   const handleStart = useCallback(async () => {
     const a = webApi();

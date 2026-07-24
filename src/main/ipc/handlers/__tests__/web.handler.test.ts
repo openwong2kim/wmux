@@ -81,6 +81,16 @@ describe('web.handler — forwarding', () => {
     });
   });
 
+  it('start tolerates a null payload (safe defaults, never rejects)', async () => {
+    installConnected({ running: true });
+    await getHandler(IPC.WEB_START)(fakeEvent, null);
+    expect(rpc).toHaveBeenCalledWith('daemon.web.start', {
+      port: WEB_DEFAULT_PORT,
+      host: WEB_LOOPBACK_HOST,
+      allowInput: false,
+    });
+  });
+
   it('stop forwards daemon.web.stop', async () => {
     installConnected({ running: false });
     const res = (await getHandler(IPC.WEB_STOP)(fakeEvent)) as { running: boolean };

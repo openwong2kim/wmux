@@ -1,7 +1,9 @@
 # wmux web — Handoff (2026-07-24)
 
-Status of the `feat/wmux-web-ttyd` branch: **feature-complete, rebased, verified
-end to end, not pushed, no PR yet.** This document is the pickup point for whoever ships it.
+Status of the `feat/wmux-web-ttyd` branch: **feature-complete, verified end to
+end, under review as [PR #578](https://github.com/openwong2kim/wmux/pull/578).**
+This document was written as the pre-PR pickup point and is kept for the
+architecture/verification record.
 
 ---
 
@@ -14,7 +16,7 @@ terminal. Read-only remains the default and is enforced server-side.
 
 Everything below is committed on the branch, which is **rebased onto current
 `origin/main` (3.32.0)** and verified end to end against a real daemon and a real
-PTY. It is ready to push and open as a PR.
+PTY.
 
 ---
 
@@ -36,8 +38,10 @@ True PR scope (three-dot vs `origin/main`): **28 files, +4299 / -2.**
 
 ### 1.1 Browser surface (`src/daemon/web/frontend/`)
 
-No bundler, no npm deps — `index.html` + `styles.css` + `app.js` are inlined into
-one `terminal.html` by `scripts/build-daemon-web.mjs`. Vanilla ES5-ish JS.
+No bundler, no **runtime** frontend deps — `index.html` + `styles.css` + `app.js`
+are inlined into one `terminal.html` by `scripts/build-daemon-web.mjs`. Vanilla
+ES5-ish JS. (The build itself still needs the repo's dev dependencies — `@xterm/*`
+and `esbuild` — so `npm install` remains required before `build:daemon-web`.)
 
 - **Chrome redesign** per `DESIGN.md`: custom session switcher + sheet (replaced
   the native `<select>`), dot-vocabulary connection chip, full
@@ -78,7 +82,7 @@ one `terminal.html` by `scripts/build-daemon-web.mjs`. Vanilla ES5-ish JS.
 
 ### 1.3 GUI toggle
 
-```
+```text
 StatusBar/WebToggle.tsx → IPC web:status|start|stop
   → main/ipc/handlers/web.handler.ts → DaemonClient.rpc
   → daemon.web.{status,start,stop} → WebTerminalServer
@@ -143,7 +147,7 @@ app. Every step used only what a phone has — no physical keyboard:
 4. Typed `echo PHONE_OK_777146` and pressed **Enter from the key bar's agent row**.
 5. The real shell executed it and streamed the result back:
 
-```
+```text
 PS C:\Users\rizz> echo PHONE_OK_777146
 PHONE_OK_777146
 PS C:\Users\rizz>

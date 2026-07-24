@@ -9,6 +9,7 @@
  * <select>), a dot-vocabulary connection chip, and explicit loading / empty /
  * error / auth states instead of a bare status string.
  */
+/* global Terminal */ // provided by the inlined __XTERM_JS__ bundle
 (function () {
   'use strict';
   var $ = function (s) { return document.querySelector(s); };
@@ -176,6 +177,13 @@
   /** Show the inline auth form. `stale` marks a rejected token vs a missing one. */
   function requireToken(stale) {
     if (es) { es.close(); es = null; }
+    // Split tiles hold their OWN streams carrying the stale token; left alive,
+    // buildGrid() would happily reuse the dead tiles after re-auth. Tear the
+    // grid down so the next successful init starts clean.
+    destroyTiles();
+    gridEl.setAttribute('hidden', '');
+    gridEl.removeAttribute('data-mode');
+    scalerEl.style.display = '';
     sessions = [];
     currentSession = null;
     switcherEl.disabled = true;
@@ -191,14 +199,22 @@
     if (authInput) { authInput.value = ''; setTimeout(function () { authInput.focus(); }, 50); }
   }
 
+  // One in-flight input POST per session at a time. xterm's onData fires per
+  // chunk, and parallel fetches carry no ordering guarantee — fast typing or a
+  // paste split across requests could reach the PTY out of order. Each link in
+  // the chain resolves and is replaced, so the chain never grows.
+  var inputChain = {};
   function sendTo(sessionId, data) {
     if (!allowInput || !sessionId) return;
-    fetch('/api/input?session=' + encodeURIComponent(sessionId), {
-      method: 'POST',
-      body: data,
-      headers: authHeaders({ 'Content-Type': 'application/octet-stream' }),
-      keepalive: true
-    }).catch(function () { /* transient */ });
+    var prev = inputChain[sessionId] || Promise.resolve();
+    inputChain[sessionId] = prev.then(function () {
+      return fetch('/api/input?session=' + encodeURIComponent(sessionId), {
+        method: 'POST',
+        body: data,
+        headers: authHeaders({ 'Content-Type': 'application/octet-stream' }),
+        keepalive: true
+      }).catch(function () { /* transient */ });
+    });
   }
 
   /** Key bar / single-view input always targets the pane you are focused on. */
@@ -322,14 +338,18 @@
       });
       kbAgentRow.appendChild(b);
     });
-
-    kbAgentBtn.addEventListener('click', function () {
-      var open = kbAgentRow.hasAttribute('hidden');
-      if (open) kbAgentRow.removeAttribute('hidden'); else kbAgentRow.setAttribute('hidden', '');
-      kbAgentBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
-      rescale();
-    });
   }
+
+  // Registered ONCE, not inside buildKeybar(): buildKeybar runs on every
+  // successful init() (Retry, re-auth after a token rotation), and stacking a
+  // second toggle handler on this persistent button would open-and-close the
+  // agent row in the same tap.
+  kbAgentBtn.addEventListener('click', function () {
+    var open = kbAgentRow.hasAttribute('hidden');
+    if (open) kbAgentRow.removeAttribute('hidden'); else kbAgentRow.setAttribute('hidden', '');
+    kbAgentBtn.setAttribute('aria-expanded', open ? 'true' : 'false');
+    rescale();
+  });
 
   // ── font size ────────────────────────────────────────────────────────────
   var MIN_FONT = 8, MAX_FONT = 22;
@@ -632,7 +652,18 @@
       renderSheet();
       renderFleet();
       var cur = sessions.filter(function (x) { return x.id === currentSession; })[0];
-      if (cur) updateSwitcher(cur);
+      if (cur) {
+        updateSwitcher(cur);
+      } else if (sessions.length) {
+        // The watched pane closed between polls. Fall over to the first live
+        // pane (same choice as the initial load) instead of staying pinned to
+        // a dead stream applyViewMode() would never replace.
+        currentSession = sessions[0].id;
+        if (es) { es.close(); es = null; }
+        updateSwitcher(sessions[0]);
+        renderSheet();
+        renderFleet();
+      }
       // Keep a split in sync with the fleet: refresh tile headers, and rebuild
       // only if the set of panes it should show actually changed (a pane died,
       // a new one appeared). applyViewMode is a no-op otherwise, so the 30s
@@ -1160,7 +1191,7 @@
   // Over plain-HTTP tailnet it is skipped — the page still works as a normal
   // web app; only offline caching / Android install prompt are unavailable.
   if ('serviceWorker' in navigator && window.isSecureContext) {
-    navigator.serviceWorker.register('/sw.js').catch(function () {});
+    navigator.serviceWorker.register('/sw.js').catch(function () { /* registration is best-effort */ });
   }
 
   // The /pair route always opens the pairing screen (even if a stale token is

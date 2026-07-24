@@ -32,6 +32,13 @@ export interface WebTerminalStartOptions {
   port: number;
   host: string;
   allowInput: boolean;
+  /**
+   * Extra hostnames to accept in the `Host` header, beyond loopback and the
+   * bound addresses. Needed when a reverse proxy in front of the loopback bind
+   * forwards the browser's Host verbatim — `tailscale serve` forwards the
+   * MagicDNS name, which the default allowlist would 403.
+   */
+  allowedHosts?: string[];
 }
 
 export interface WebTerminalInfo {
@@ -138,12 +145,6 @@ export class WebTerminalServer {
     this.opts = options;
     this.generatePairCode();
 
-    // Tee fleet-wide attention signals into EVERY connected SSE client — a
-    // viewer watching pane A must still hear that pane B needs an answer. These
-    // are attached once here and removed in stop() so restarts rotate cleanly.
-    this.deps.sessionManager.on('session:critical', this.onSessionCritical);
-    this.deps.sessionManager.on('session:notification', this.onSessionNotification);
-
     const server = http.createServer((req, res) => {
       // Never let a handler error escape into the daemon event loop.
       try {
@@ -187,6 +188,15 @@ export class WebTerminalServer {
     });
 
     this.server = server;
+
+    // Tee fleet-wide attention signals into EVERY connected SSE client — a
+    // viewer watching pane A must still hear that pane B needs an answer.
+    // Attached only AFTER the listen succeeded (a failed bind must not leak
+    // listeners stop() would never remove) and removed in stop() so restarts
+    // rotate cleanly.
+    this.deps.sessionManager.on('session:critical', this.onSessionCritical);
+    this.deps.sessionManager.on('session:notification', this.onSessionNotification);
+
     // Record the ACTUAL bound port so status()/urls report it even when the
     // caller requested port 0 (ephemeral — used by the unit tests for a
     // hermetic bind that never collides).
@@ -201,6 +211,17 @@ export class WebTerminalServer {
       for (const ip of collectIpv4()) this.allowedHosts.add(ip);
     }
     this.allowedHosts.add(options.host);
+    // An IPv6 bind arrives in the Host header bracketed (`[fd00::5]:7681`),
+    // which is the form the guard normalizes to — allow both spellings.
+    if (options.host.includes(':') && !options.host.startsWith('[')) {
+      this.allowedHosts.add(`[${options.host}]`.toLowerCase());
+    }
+    // Operator-supplied extra hostnames (e.g. the machine's MagicDNS name when
+    // `tailscale serve` fronts the loopback bind and forwards Host verbatim).
+    for (const extra of options.allowedHosts ?? []) {
+      const name = extra.trim().toLowerCase();
+      if (name) this.allowedHosts.add(name);
+    }
 
     this.deps.log(
       'info',
@@ -261,6 +282,7 @@ export class WebTerminalServer {
 
   status(): WebTerminalInfo {
     if (!this.server || !this.opts) return { running: false };
+    const pair = this.activePairCode();
     return {
       running: true,
       port: this.opts.port,
@@ -269,9 +291,27 @@ export class WebTerminalServer {
       token: this.token,
       urls: this.buildUrls(),
       clients: this.clients.size,
-      pairCode: this.pairCode || undefined,
-      pairExpiresAt: this.pairCode ? this.pairExpiresAt : undefined,
+      pairCode: pair.code,
+      pairExpiresAt: pair.expiresAt,
     };
+  }
+
+  /**
+   * The pairing code as far as the OPERATOR surfaces (status/CLI/GUI) are
+   * concerned. A code past its TTL must never be advertised — the phone would
+   * only be told "expired" — so an expired code is dropped here and, when the
+   * regeneration cooldown allows, replaced with a fresh one on the spot.
+   */
+  private activePairCode(): { code?: string; expiresAt?: number } {
+    if (this.pairCode && Date.now() <= this.pairExpiresAt) {
+      return { code: this.pairCode, expiresAt: this.pairExpiresAt };
+    }
+    this.pairCode = '';
+    if (Date.now() - this.pairRegeneratedAt >= PAIR_REGEN_COOLDOWN_MS) {
+      this.generatePairCode();
+      return { code: this.pairCode, expiresAt: this.pairExpiresAt };
+    }
+    return {};
   }
 
   // --- request routing ---------------------------------------------------
@@ -315,6 +355,16 @@ export class WebTerminalServer {
     // short single-use code for the real token, so it cannot itself require the
     // token. Placed before the /api/* auth gate.
     if (req.method === 'GET' && p === '/api/pair') {
+      // Cross-site loads (an `<img src="http://127.0.0.1:7681/api/pair?…">` on
+      // any web page) pass the Host guard because they target the loopback
+      // literal directly — and this is the one unauthenticated route, so five
+      // such loads would burn the pairing code. Browsers stamp those requests
+      // `Sec-Fetch-Site: cross-site`; refuse them before touching the attempt
+      // budget. Same-origin fetches from the pairing page, direct navigation
+      // ('none'), and non-browser clients (header absent) are unaffected.
+      if (req.headers['sec-fetch-site'] === 'cross-site') {
+        return this.json(res, 403, { error: 'cross-site request refused' });
+      }
       return this.handlePair(res, url);
     }
 
@@ -385,6 +435,7 @@ export class WebTerminalServer {
       'Cache-Control': 'no-cache, no-transform',
       Connection: 'keep-alive',
       'X-Accel-Buffering': 'no',
+      ...this.securityHeaders(),
     });
 
     // Initial paint: the exact bytes SessionPipe flushes to the GUI on attach.
@@ -644,7 +695,7 @@ export class WebTerminalServer {
       urls.push(`http://127.0.0.1${suffix}`);
       return urls;
     }
-    return [`http://${host}${suffix}`];
+    return [`http://${urlAuthority(host)}${suffix}`];
   }
 
   private loadAssets(): void {
@@ -726,6 +777,14 @@ function readIfExists(p: string): Buffer | null {
 
 function errMsg(err: unknown): string {
   return err instanceof Error ? err.message : String(err);
+}
+
+/**
+ * A host as it may appear in a URL authority: IPv6 literals must be bracketed
+ * (`http://::1:7681` is rejected by browsers and `new URL()` alike).
+ */
+function urlAuthority(host: string): string {
+  return host.includes(':') && !host.startsWith('[') ? `[${host}]` : host;
 }
 
 /**

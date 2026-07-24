@@ -66,14 +66,17 @@ Boundary strengths already in place (no action needed):
 
 ## 2. Findings summary
 
-| ID | Severity | Finding | Location |
-|---|---|---|---|
-| W1 | **Medium** | `--expose` sends the token + full scrollback in cleartext over HTTP; warning understates sniffing risk | `WebTerminalServer.ts:131` (no TLS), `web.ts:96-109` (warning) |
-| W2 | **Medium** | No frame protection → authenticated localhost page is clickjackable (worse with `--allow-input`) | `WebTerminalServer.ts:517` (`serveStatic`) |
-| W3 | **Low-Med** | No `Host` header validation → DNS rebinding can reach unauthenticated `/api/pair` and burn it (pairing DoS) | `WebTerminalServer.ts:238` |
-| W4 | **Low** | No `Content-Security-Policy`; an XSS (future regression) would exfiltrate the token freely | `index.html` / `serveStatic` |
-| W5 | **Low** | Pairing code is generated once per start; after burn/expiry it is gone until restart → permanent pairing DoS | `WebTerminalServer.ts:123,449` |
-| W6 | **Info** | `timingSafeEqual` short-circuits on length; `nosniff` absent; SSE token in URL (unavoidable, contained) | `WebTerminalServer.ts:512-514`, `:528` |
+| ID | Severity | Finding | Location | Status |
+|---|---|---|---|---|
+| W1 | **Medium** | `--expose` sends the token + full scrollback in cleartext over HTTP; warning understates sniffing risk | `WebTerminalServer.ts:131` (no TLS), `web.ts:96-109` (warning) | ⏳ Open (Tier A wording shipped; TLS is follow-up) |
+| W2 | **Medium** | No frame protection → authenticated localhost page is clickjackable (worse with `--allow-input`) | `WebTerminalServer.ts:517` (`serveStatic`) | ✅ Resolved — `securityHeaders()` on every response |
+| W3 | **Low-Med** | No `Host` header validation → DNS rebinding can reach unauthenticated `/api/pair` and burn it (pairing DoS) | `WebTerminalServer.ts:238` | ✅ Resolved — Host allowlist checked before routing |
+| W4 | **Low** | No `Content-Security-Policy`; an XSS (future regression) would exfiltrate the token freely | `index.html` / `serveStatic` | ⏳ Open (`frame-ancestors 'none'` only; full policy is follow-up) |
+| W5 | **Low** | Pairing code is generated once per start; after burn/expiry it is gone until restart → permanent pairing DoS | `WebTerminalServer.ts:123,449` | ✅ Resolved — cooldown-limited regeneration |
+| W6 | **Info** | `timingSafeEqual` short-circuits on length; `nosniff` absent; SSE token in URL (unavoidable, contained) | `WebTerminalServer.ts:512-514`, `:528` | ✅ No action needed (nosniff shipped with W2) |
+
+The detailed findings below are kept as reviewed (pre-remediation), for the record; the
+Status column above is authoritative for what actually shipped.
 
 Severity assumes the **default** config unless the finding is specifically about the
 opt-in. "Low" = defense-in-depth or availability; "Medium" = real exploitable risk under
@@ -101,7 +104,7 @@ convenience, so it reads as optional rather than as the security floor.
 - **Tier A (wording, ship now):** When `exposed === true`, print a stronger, explicit
   cleartext warning, e.g.:
 
-  ```
+  ```text
   ⚠ EXPOSED OVER PLAIN HTTP. The access token and your full scrollback travel
     UNENCRYPTED. Anyone on this network who can sniff traffic (open Wi-Fi, ARP
     spoof, corporate proxy) can steal the token and read every pane. Use this
@@ -182,8 +185,12 @@ if (host === '0.0.0.0' || host === '::') {
   this.allowedHosts.add(host);
 }
 
-// top of handle():
-const h = (req.headers.host ?? '').split(':')[0].toLowerCase();
+// top of handle() — bracket-aware, so a legitimate `[::1]:7681` Host is not
+// mangled into `[` by a naive split(':'):
+const hostHeader = req.headers.host ?? '';
+const h = hostHeader.startsWith('[')
+  ? hostHeader.slice(0, hostHeader.indexOf(']') + 1).toLowerCase()
+  : hostHeader.split(':')[0].toLowerCase();
 if (!this.allowedHosts.has(h)) {
   return this.json(res, 403, { error: 'host not allowed' });
 }
@@ -216,7 +223,7 @@ cannot leave the origin.
   (`xterm.js`, `app.js`) after substitution and inject them into a CSP `<meta>` or the
   response header. Then:
 
-  ```
+  ```text
   default-src 'none';
   script-src 'self' 'sha256-<xterm>' 'sha256-<app>';
   style-src 'self' 'unsafe-inline';     // xterm + app CSS, or hash these too
@@ -278,16 +285,17 @@ regen-on-demand option) rather than none; or, after N wrong attempts from one fa
 
 ## 4. Suggested phasing
 
-| Phase | Items | Effort | Risk reduced |
-|---|---|---|---|
-| **P1 — ship now** | W2 (frame + nosniff + referrer) + W1 Tier A (wording) | ~1 h | Clickjacking; operator misuse of `--expose` |
-| **P2 — next PR** | W3 (Host allowlist) + W5 (pairing regen/rate-limit) | ~3 h | DNS-rebinding DoS; pairing DoS |
-| **P3 — hardening** | W4 (full hashed CSP via build script) | ~0.5 day | Containment under future XSS |
-| **P4 — optional** | W1 Tier C (native TLS or `tailscale serve` wrapper) | larger | Removes cleartext risk instead of warning |
+| Phase | Items | Effort | Risk reduced | Status |
+|---|---|---|---|---|
+| **P1 — ship now** | W2 (frame + nosniff + referrer) + W1 Tier A (wording) | ~1 h | Clickjacking; operator misuse of `--expose` | ✅ Shipped in this PR |
+| **P2 — next PR** | W3 (Host allowlist) + W5 (pairing regen/rate-limit) | ~3 h | DNS-rebinding DoS; pairing DoS | ✅ Shipped in this PR |
+| **P3 — hardening** | W4 (full hashed CSP via build script) | ~0.5 day | Containment under future XSS | ⏳ Follow-up |
+| **P4 — optional** | W1 Tier C (native TLS or `tailscale serve` wrapper) | larger | Removes cleartext risk instead of warning | ⏳ Follow-up |
 
-P1 + P2 together bring the web surface up to the same localhost-service baseline that
-Docker/VS Code/Electron ship, at negligible cost and no behavior change for legitimate
-users.
+P1 + P2 (both shipped) bring the web surface up to the same localhost-service baseline
+that Docker/VS Code/Electron ship, at negligible cost and no behavior change for
+legitimate users. Remaining work is P3 (full CSP) and P4 (TLS) before any default-on
+exposure path.
 
 ---
 

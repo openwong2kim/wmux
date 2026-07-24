@@ -1631,14 +1631,19 @@ function registerRpcHandlers(
   }
   const webServer = webTerminalServer;
   pipeServer.onRpc('daemon.web.start', async (params) => {
-    const p = params as { port?: number; host?: string; allowInput?: boolean };
+    const p = params as { port?: number; host?: string; allowInput?: boolean; allowedHosts?: unknown };
     const port =
       typeof p.port === 'number' && p.port > 0 && p.port < 65536 ? Math.floor(p.port) : 7681;
     // Safe default: bind loopback only. Network exposure is an explicit
     // caller decision (the CLI `--expose` flag sends host '0.0.0.0').
     const host = typeof p.host === 'string' && p.host ? p.host : '127.0.0.1';
     const allowInput = p.allowInput === true;
-    return webServer.start({ port, host, allowInput });
+    // Extra Host-header names for reverse-proxy fronts (`tailscale serve`
+    // forwards the MagicDNS name). Strings only; anything else is dropped.
+    const allowedHosts = Array.isArray(p.allowedHosts)
+      ? p.allowedHosts.filter((h): h is string => typeof h === 'string')
+      : [];
+    return webServer.start({ port, host, allowInput, allowedHosts });
   });
   pipeServer.onRpc('daemon.web.stop', async () => webServer.stop());
   pipeServer.onRpc('daemon.web.status', async () => webServer.status());

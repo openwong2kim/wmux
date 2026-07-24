@@ -371,4 +371,93 @@ describe('WebTerminalServer', () => {
     expect(wire).not.toContain('--token');
     expect(wire).not.toContain('Program Files');
   });
+
+  it('carries the baseline security headers on the SSE stream response too', async () => {
+    const info = await startRO();
+    const ac = new AbortController();
+    const sse = await fetch(
+      `${base()}/api/stream?session=s1&token=${encodeURIComponent(info.token as string)}`,
+      { signal: ac.signal },
+    );
+    expect(sse.status).toBe(200);
+    expect(sse.headers.get('x-frame-options')).toBe('DENY');
+    expect(sse.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(sse.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(sse.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+    ac.abort();
+  });
+
+  it('refuses a cross-site /api/pair load without touching the attempt budget', async () => {
+    const info = await startRO();
+    const code = info.pairCode as string;
+    // A hostile page embedding <img src="http://127.0.0.1:<port>/api/pair?…">
+    // reaches this route with Sec-Fetch-Site: cross-site stamped by the browser.
+    const evil = await fetch(`${base()}/api/pair?code=ZZZZZZ`, {
+      headers: { 'Sec-Fetch-Site': 'cross-site' },
+    });
+    expect(evil.status).toBe(403);
+    expect((await evil.json()).error).toBe('cross-site request refused');
+    // The attempt budget was untouched: the legitimate code still pairs.
+    const ok = await fetch(`${base()}/api/pair?code=${code}`);
+    expect(ok.status).toBe(200);
+  });
+
+  it('never advertises an expired pairing code — status() replaces it past the cooldown', async () => {
+    const info = await startRO();
+    const first = info.pairCode as string;
+    // Jump past both the 10-min TTL and the 30-s regen cooldown.
+    const realNow = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 11 * 60_000);
+    try {
+      const status = server.status();
+      expect(status.pairCode).toHaveLength(6);
+      expect(status.pairCode).not.toBe(first);
+      expect(status.pairExpiresAt as number).toBeGreaterThan(realNow + 11 * 60_000);
+    } finally {
+      nowSpy.mockRestore();
+    }
+  });
+
+  it('accepts an operator-listed extra Host (reverse-proxy front, e.g. tailscale serve)', async () => {
+    const info = await server.start({
+      port: 0,
+      host: '127.0.0.1',
+      allowInput: false,
+      allowedHosts: ['machine.tail-net.ts.net'],
+    });
+    // 401 (not 403) proves the host gate passed and the token gate took over.
+    const ok = await getWithHost(info.port as number, '/api/config', 'machine.tail-net.ts.net');
+    expect(ok.status).toBe(401);
+    // Anything not listed is still rejected.
+    const bad = await getWithHost(info.port as number, '/api/config', 'evil.com');
+    expect(bad.status).toBe(403);
+  });
+
+  it('brackets an IPv6 bind host in the advertised URL', async () => {
+    let info: Awaited<ReturnType<typeof server.start>>;
+    try {
+      info = await server.start({ port: 0, host: '::1', allowInput: false });
+    } catch {
+      return; // environment without IPv6 loopback — nothing to assert
+    }
+    expect(info.urls?.[0]).toBe(`http://[::1]:${info.port}/?token=${info.token}`);
+  });
+
+  it('does not leak session-manager listeners when the bind itself fails', async () => {
+    // Occupy a port, then ask the web server to bind the same one.
+    const blockerInfo = await startRO();
+    const em = sessionManager as unknown as EventEmitter;
+    const second = new WebTerminalServer({
+      sessionManager,
+      log: () => { /* silent */ },
+      assetsDir: os.tmpdir(),
+    });
+    await expect(
+      second.start({ port: blockerInfo.port as number, host: '127.0.0.1', allowInput: false }),
+    ).rejects.toThrow();
+    // Only the FIRST (running) server's listeners remain.
+    expect(em.listenerCount('session:critical')).toBe(1);
+    expect(em.listenerCount('session:notification')).toBe(1);
+    expect(second.isRunning).toBe(false);
+  });
 });

@@ -67,7 +67,11 @@ export function registerWebHandlers(getDaemonClient: () => DaemonClient | null):
     IPC.WEB_START,
     wrapHandler(
       IPC.WEB_START,
-      async (_event, args: WebStartArgs = {}): Promise<WebTerminalInfo> => {
+      async (_event, input: unknown): Promise<WebTerminalInfo> => {
+        // A default parameter only covers `undefined` — an explicit `null`
+        // payload would throw here instead of resolving `{running:false}`,
+        // breaking this handler's never-rejects contract.
+        const args: WebStartArgs = input && typeof input === 'object' ? (input as WebStartArgs) : {};
         // Safe defaults enforced main-side too: read-only + loopback unless the
         // renderer explicitly opted into input / network exposure.
         const allowInput = args.allowInput === true;
