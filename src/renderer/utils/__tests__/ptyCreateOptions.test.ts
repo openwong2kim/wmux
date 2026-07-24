@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveRespawnCwd, resolveStartupCwd, withDefaultShell, withWorkspaceProfile, withRoleBinding } from '../ptyCreateOptions';
 
 describe('withRoleBinding (D2)', () => {
-  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => undefined);
   beforeEach(() => logSpy.mockClear());
 
   it('enforces the bound model on a bound pane\'s initialCommand', () => {
