@@ -57,9 +57,14 @@ export function resetFreshPathCacheForTests(): void {
 function readRegistryEnvPath(root: string): string | null {
   try {
     const reg = path.join(process.env.SystemRoot || 'C:\\Windows', 'System32', 'reg.exe');
+    // The read is synchronous because both callers sit on the synchronous
+    // pty-create path (PTYManager.create). A normal `reg query` returns in tens
+    // of ms; the timeout only bounds the pathological case (AV hooking child
+    // spawns), capping the worst-case main-process stall at 2×800ms per cache
+    // miss instead of hanging. On timeout we fail open to the existing PATH.
     const out = execFileSync(reg, ['query', root, '/v', 'Path'], {
       encoding: 'utf8',
-      timeout: 3_000,
+      timeout: 800,
       windowsHide: true,
     });
     for (const line of out.split(/\r?\n/)) {
