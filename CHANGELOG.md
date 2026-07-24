@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Installing wmux can no longer wipe your entire user PATH.** On a machine where PowerShell runs in ConstrainedLanguage — how AppLocker/WDAC lock down enterprise Windows — the CLI shim's PATH edit could replace all of `HKCU\Environment\Path` with a single entry, the wmux `bin` directory. Every other entry was destroyed and unrecoverable: npm-global CLIs (`%APPDATA%\npm`), toolchains, everything user-scoped. The cause was an asymmetry rather than an overwrite: the script *read* the registry with a .NET method call (blocked in ConstrainedLanguage) but *wrote* it back with a cmdlet (not blocked), and with no `$ErrorActionPreference = 'Stop'` it sailed past both read errors, resolved the current PATH to empty, and persisted the bin directory as the whole thing. The edit is now fail-closed and, more importantly, actually works under ConstrainedLanguage: the raw value is read via `reg.exe`, which is immune to language mode and — unlike `Get-ItemProperty` — does not expand `%VAR%` entries and bake them in. If every read strategy fails the registry is left untouched, a structural invariant aborts any edit that would drop an entry other than the bin directory, the pre-edit value is backed up to `HKCU:\Software\wmux\UserPathBackup`, and the cosmetic `WM_SETTINGCHANGE` broadcast can no longer report a successful write as a failure. The source-build `install.ps1` path was verified unaffected. (#573)
+
 ## [3.32.0] — 2026-07-24
 
 ### Added

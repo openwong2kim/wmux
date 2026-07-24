@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { buildShimCmd, buildPathEditScript, deriveShimPaths } from '../cliShim';
+import { buildShimCmd, buildPathEditScript, deriveShimPaths, explainPathEditExit } from '../cliShim';
 
 describe('buildShimCmd', () => {
   it('discovers app-* dynamically, scopes ELECTRON_RUN_AS_NODE, and forwards args + exit code', () => {
@@ -40,7 +40,7 @@ describe('buildPathEditScript', () => {
     expect(script).toContain("'Environment'");
     // Idempotency: only writes when membership actually changes
     expect(script).toContain('if (-not $hit) { $parts += $bin; $changed = $true }');
-    expect(script).toContain('if ($changed) {');
+    expect(script).toContain('if (-not $changed) { exit 0 }');
   });
 
   it('remove: filters only the exact bin entry', () => {
@@ -62,6 +62,81 @@ describe('buildPathEditScript', () => {
       expect(script).not.toContain('SetEnvironmentVariable');
     }
   });
+
+  // Regression: the original script read the registry with a .NET method call
+  // and wrote it back with a cmdlet. Under ConstrainedLanguage the read throws
+  // but the write succeeds, so the user's entire PATH was replaced by binDir.
+  describe('fail-closed guarantees', () => {
+    for (const op of ['add', 'remove'] as const) {
+      it(`${op}: refuses to write on an untrusted read`, () => {
+        const script = buildPathEditScript('C:\\wmux\\bin', op);
+        // Errors must not be swallowed into a subsequent write.
+        expect(script.split('\n')[0]).toBe(`$ErrorActionPreference = 'Stop'`);
+        // The .NET read is wrapped, and a failure leaves $cur null...
+        expect(script).toContain('} catch { $cur = $null }');
+        // ...which bails out before any Set-ItemProperty.
+        expect(script).toContain('if ($null -eq $cur) { exit 10 }');
+        expect(script.indexOf('if ($null -eq $cur) { exit 10 }')).toBeLessThan(
+          script.indexOf('Set-ItemProperty'),
+        );
+      });
+
+      it(`${op}: asserts no unrelated entry is dropped before writing`, () => {
+        const script = buildPathEditScript('C:\\wmux\\bin', op);
+        expect(script).toContain('$orig = @($parts)');
+        expect(script).toContain('if ($lost.Count -gt 0) { exit 11 }');
+        expect(script.indexOf('exit 11')).toBeLessThan(script.indexOf('Set-ItemProperty'));
+      });
+    }
+
+    it('falls back to reg.exe, which survives ConstrainedLanguage and stays unexpanded', () => {
+      const script = buildPathEditScript('C:\\wmux\\bin', 'add');
+      expect(script).toContain('reg.exe');
+      // Get-ItemProperty would EXPAND %VAR% and bake it in — must not be the reader.
+      expect(script).not.toContain('Get-ItemProperty');
+      // Whole-key query, so "no Path value" is distinguishable from "unreadable".
+      expect(script).toContain(`query 'HKCU\\Environment'`);
+      expect(script).not.toContain('/v Path');
+    });
+
+    it('backs up the previous value outside HKCU:\\Environment', () => {
+      const script = buildPathEditScript('C:\\wmux\\bin', 'add');
+      expect(script).toContain(`Set-ItemProperty -Path 'HKCU:\\Software\\wmux' -Name 'UserPathBackup'`);
+      // A stray value under Environment would become a real env var.
+      expect(script).not.toContain(`-Path 'HKCU:\\Environment' -Name 'UserPathBackup'`);
+    });
+
+    it('isolates the WM_SETTINGCHANGE broadcast so it cannot mask a good write', () => {
+      const script = buildPathEditScript('C:\\wmux\\bin', 'add');
+      const write = script.indexOf(`-Name 'Path'`);
+      const broadcast = script.indexOf('Add-Type');
+      expect(write).toBeLessThan(broadcast);
+      expect(script.slice(broadcast)).toContain('} catch { }');
+      expect(script.trimEnd().endsWith('exit 0')).toBe(true);
+    });
+
+    it('subKey redirects every registry site together', () => {
+      const script = buildPathEditScript('C:\\wmux\\bin', 'add', 'Software\\wmux-test');
+      expect(script).toContain(`OpenSubKey('Software\\wmux-test'`);
+      expect(script).toContain(`query 'HKCU\\Software\\wmux-test'`);
+      expect(script).toContain(`Set-ItemProperty -Path 'HKCU:\\Software\\wmux-test' -Name 'Path'`);
+      // No registry site may still point at the real Environment key. (The bare
+      // literal 'Environment' legitimately remains as the WM_SETTINGCHANGE lParam.)
+      expect(script).not.toContain(`OpenSubKey('Environment'`);
+      expect(script).not.toContain(`query 'HKCU\\Environment'`);
+      expect(script).not.toContain(`-Path 'HKCU:\\Environment'`);
+    });
+  });
+});
+
+describe('explainPathEditExit', () => {
+  it('explains the deliberate bail-outs and nothing else', () => {
+    expect(explainPathEditExit(10, 'C:\\wmux\\bin')).toContain('ConstrainedLanguage');
+    expect(explainPathEditExit(10, 'C:\\wmux\\bin')).toContain('C:\\wmux\\bin');
+    expect(explainPathEditExit(11, 'C:\\wmux\\bin')).toContain('aborted');
+    expect(explainPathEditExit(0, 'C:\\wmux\\bin')).toBeNull();
+    expect(explainPathEditExit(1, 'C:\\wmux\\bin')).toBeNull();
+  });
 });
 
 describe('deriveShimPaths', () => {
@@ -73,6 +148,101 @@ describe('deriveShimPaths', () => {
     expect(cliJsPath).toBe(
       'C:\\Users\\u\\AppData\\Local\\wmux\\app-3.2.0\\resources\\cli-bundle\\index.js',
     );
+  });
+});
+
+// ─── live PATH edit against a throwaway registry key (Windows only) ──────────
+// The string assertions above can only prove the guards are *present*. This
+// runs the real generated script through the real spawn path and asserts the
+// property that actually matters: a pre-existing PATH is never destroyed —
+// including under ConstrainedLanguage, the exact mode that caused the wipe.
+import { execFileSync } from 'child_process';
+
+describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox key)', () => {
+  const SUB = 'Software\\wmux-cliShim-test';
+  const BAK = 'Software\\wmux-cliShim-test-bak';
+  const BIN = 'C:\\Users\\u\\AppData\\Local\\wmux\\bin';
+  // A %VAR% entry is included on purpose: it must survive unexpanded.
+  const SEED = '%USERPROFILE%\\AppData\\Roaming\\npm;C:\\Program Files\\nodejs';
+  const PS = `${process.env.SystemRoot || 'C:\\Windows'}\\System32\\WindowsPowerShell\\v1.0\\powershell.exe`;
+
+  const ps = (script: string) => {
+    try {
+      return { code: 0, out: execFileSync(PS, ['-NoProfile', '-NonInteractive', '-Command', script], {
+        encoding: 'utf8', windowsHide: true, timeout: 20000,
+      }) };
+    } catch (e) {
+      const err = e as { status?: number; stdout?: string };
+      return { code: err.status ?? -1, out: err.stdout ?? '' };
+    }
+  };
+
+  const seed = () => ps(
+    `if (Test-Path 'HKCU:\\${SUB}') { Remove-Item 'HKCU:\\${SUB}' -Recurse -Force }\n` +
+    `New-Item -Path 'HKCU:\\${SUB}' -Force | Out-Null\n` +
+    `Set-ItemProperty -Path 'HKCU:\\${SUB}' -Name 'Path' -Value '${SEED}' -Type ExpandString`,
+  );
+
+  /** Raw (unexpanded) current value of the sandbox Path, via reg.exe. */
+  const readRaw = () => {
+    const out = ps(`& "$env:SystemRoot\\System32\\reg.exe" query 'HKCU\\${SUB}' /v Path`).out;
+    const m = out.match(/^\s+Path\s+REG_\S+\s{4}(.*)$/m);
+    return m ? m[1].trim() : null;
+  };
+
+  const run = (op: 'add' | 'remove', constrained: boolean) => {
+    const prefix = constrained ? `$ExecutionContext.SessionState.LanguageMode = 'ConstrainedLanguage'\n` : '';
+    return ps(prefix + buildPathEditScript(BIN, op, SUB, BAK));
+  };
+
+  afterEach(() => {
+    ps(`Remove-Item 'HKCU:\\${SUB}' -Recurse -Force -ErrorAction SilentlyContinue\n` +
+       `Remove-Item 'HKCU:\\${BAK}' -Recurse -Force -ErrorAction SilentlyContinue`);
+  });
+
+  for (const constrained of [false, true]) {
+    const mode = constrained ? 'ConstrainedLanguage' : 'FullLanguage';
+
+    it(`${mode}: add appends without destroying existing entries`, () => {
+      seed();
+      const r = run('add', constrained);
+      const after = readRaw();
+      expect(r.code).toBe(0);
+      // Every seeded entry survives, unexpanded, in order — and bin is appended.
+      expect(after).toBe(`${SEED};${BIN}`);
+      expect(after).toContain('%USERPROFILE%');
+    });
+
+    it(`${mode}: add is idempotent`, () => {
+      seed();
+      expect(run('add', constrained).code).toBe(0);
+      expect(run('add', constrained).code).toBe(0);
+      expect(readRaw()).toBe(`${SEED};${BIN}`);
+    });
+
+    it(`${mode}: remove strips only the bin entry`, () => {
+      seed();
+      run('add', constrained);
+      expect(run('remove', constrained).code).toBe(0);
+      expect(readRaw()).toBe(SEED);
+    });
+  }
+
+  it('an unreadable key fails closed: exits READ_FAILED and writes nothing', () => {
+    // No sandbox key at all — both readers must fail rather than invent an empty PATH.
+    ps(`Remove-Item 'HKCU:\\${SUB}' -Recurse -Force -ErrorAction SilentlyContinue`);
+    const r = ps(buildPathEditScript(BIN, 'add', SUB, BAK));
+    expect(r.code).toBe(10);
+    expect(explainPathEditExit(r.code, BIN)).toContain('ConstrainedLanguage');
+    // Crucially: the key was NOT created as a side effect of the failed edit.
+    expect(readRaw()).toBeNull();
+  });
+
+  it('backs the previous value up before writing', () => {
+    seed();
+    run('add', false);
+    const bak = ps(`(Get-ItemProperty -Path 'HKCU:\\${BAK}' -Name 'UserPathBackup').UserPathBackup`).out.trim();
+    expect(bak).toBe(SEED);
   });
 });
 

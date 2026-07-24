@@ -15,13 +15,37 @@
  * PATH editing runs as ONE PowerShell invocation per operation (Squirrel
  * event handlers must not stall on serial spawns) and goes through the raw
  * registry, not [Environment]::Get/SetEnvironmentVariable:
- *   - read with GetValue(..., DoNotExpandEnvironmentNames) so existing
- *     `%VAR%` entries are NOT expanded-and-baked-in on rewrite,
+ *   - read the raw value so existing `%VAR%` entries are NOT
+ *     expanded-and-baked-in on rewrite,
  *   - write with Set-ItemProperty -Type ExpandString so REG_EXPAND_SZ is
  *     preserved (SetEnvironmentVariable demotes to REG_SZ),
  *   - broadcast WM_SETTINGCHANGE so newly opened shells see the change
  *     (a bare registry write never notifies Explorer).
  * `setx` is avoided entirely — it truncates values over 1024 chars.
+ *
+ * The PATH edit is a read-modify-write against a value whose loss is
+ * unrecoverable, so it is built to FAIL CLOSED. Every rule below exists
+ * because the original version violated it and wiped user PATHs outright:
+ *
+ *   1. The write only ever runs on a *trusted* read. `[Microsoft.Win32.Registry]`
+ *      method calls throw under ConstrainedLanguage (AppLocker/WDAC lock down
+ *      enterprise machines this way), but `Set-ItemProperty` keeps working —
+ *      so a script that reads with .NET and writes with a cmdlet silently
+ *      resolves the current PATH to empty and then persists `<binDir>` as the
+ *      user's ENTIRE PATH. `reg.exe` is an external process, so it is immune
+ *      to language mode AND returns the raw (unexpanded) value, which
+ *      `Get-ItemProperty` does not. It is the fallback reader; when both
+ *      readers fail we exit without touching the registry.
+ *   2. A structural invariant is asserted between the read and the write: no
+ *      pre-existing entry other than `binDir` may disappear. Any future bug
+ *      that resolves the current PATH to the wrong thing aborts here instead
+ *      of persisting.
+ *   3. The pre-edit raw value is copied to HKCU:\Software\wmux\UserPathBackup
+ *      first (NOT into HKCU:\Environment, where a stray value would become a
+ *      bogus environment variable).
+ *   4. The WM_SETTINGCHANGE broadcast is best-effort and isolated: `Add-Type`
+ *      is blocked under ConstrainedLanguage, and a cosmetic notification
+ *      failure must not be reported as an edit failure.
  */
 
 import * as fs from 'fs';
@@ -59,6 +83,17 @@ export function buildShimCmd(): string {
 }
 
 /**
+ * Exit codes from the PATH edit script. Anything non-zero other than these is
+ * an unexpected PowerShell failure. All of them mean "registry NOT modified".
+ */
+export const PATH_EDIT_EXIT = {
+  /** Registry unreadable by both strategies — refused to write. */
+  READ_FAILED: 10,
+  /** Computed result would have dropped unrelated entries — refused to write. */
+  INVARIANT_VIOLATED: 11,
+} as const;
+
+/**
  * One-shot PowerShell script that adds/removes `binDir` on the user Path.
  *
  * The membership test is an exact, case-insensitive string match (PowerShell
@@ -66,31 +101,103 @@ export function buildShimCmd(): string {
  * the identical literal from deriveShimPaths, so no normalization beyond
  * trailing-separator trim is needed — and entries we did NOT add are passed
  * through byte-for-byte (quotes, `%VAR%` tokens and all).
+ *
+ * See the module header for why the read/write asymmetry below is load-bearing.
+ *
+ * `subKey`/`backupSubKey` exist so the regression test can execute the real
+ * script against throwaway HKCU subkeys instead of the user's actual
+ * Environment. Production callers must never pass them.
  */
-export function buildPathEditScript(binDir: string, op: 'add' | 'remove'): string {
+export function buildPathEditScript(
+  binDir: string,
+  op: 'add' | 'remove',
+  subKey = 'Environment',
+  backupSubKey = 'Software\\wmux',
+): string {
   const escaped = binDir.replace(/'/g, "''");
+  // PowerShell single-quoted literals treat `\` literally, so only `'` needs escaping.
+  const key = subKey.replace(/'/g, "''");
+  const bakKey = backupSubKey.replace(/'/g, "''");
   const mutate =
     op === 'add'
       ? `if (-not $hit) { $parts += $bin; $changed = $true }`
       : `if ($hit) { $parts = @($parts | Where-Object { $_.TrimEnd('\\','/') -ne $bin }); $changed = $true }`;
   return [
+    `$ErrorActionPreference = 'Stop'`,
     `$bin = '${escaped}'.TrimEnd('\\','/')`,
-    // Raw (unexpanded) read — keeps %VAR% entries intact across the rewrite.
-    `$key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('Environment', $true)`,
-    `$cur = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)`,
+    ``,
+    // ── Read the CURRENT raw user Path ──────────────────────────────────────
+    // Strategy 1 (fast path): .NET raw read. Throws under ConstrainedLanguage.
+    `$cur = $null`,
+    `try {`,
+    `  $key = [Microsoft.Win32.Registry]::CurrentUser.OpenSubKey('${key}', $false)`,
+    `  if ($null -ne $key) {`,
+    `    $cur = [string]$key.GetValue('Path', '', [Microsoft.Win32.RegistryValueOptions]::DoNotExpandEnvironmentNames)`,
+    `  }`,
+    `} catch { $cur = $null }`,
+    ``,
+    // Strategy 2: reg.exe — immune to language mode, and unlike Get-ItemProperty
+    // it returns the value UNEXPANDED, so %VAR% entries survive the rewrite.
+    // Queries the whole key (not /v Path) so "value absent" is distinguishable
+    // from "key unreadable": a fresh profile legitimately has no user Path.
+    `if ($null -eq $cur) {`,
+    `  try {`,
+    `    $prevEap = $ErrorActionPreference`,
+    `    $ErrorActionPreference = 'Continue'`,
+    `    $out = & "$env:SystemRoot\\System32\\reg.exe" query 'HKCU\\${key}' 2>$null`,
+    `    $rc = $LASTEXITCODE`,
+    `    $ErrorActionPreference = $prevEap`,
+    `    if ($rc -eq 0) {`,
+    `      $cur = ''`,
+    `      foreach ($line in $out) {`,
+    `        if ($line -match '^\\s+Path\\s+(REG_\\S+)\\s{4}(.*)$') {`,
+    // An unexpected value type means we do not understand the current state.
+    `          if ($matches[1] -ne 'REG_EXPAND_SZ' -and $matches[1] -ne 'REG_SZ') { exit ${PATH_EDIT_EXIT.READ_FAILED} }`,
+    `          $cur = $matches[2]`,
+    `          break`,
+    `        }`,
+    `      }`,
+    `    }`,
+    `  } catch { $cur = $null }`,
+    `}`,
+    // Fail closed: never derive a write from a read that did not happen.
+    `if ($null -eq $cur) { exit ${PATH_EDIT_EXIT.READ_FAILED} }`,
+    ``,
+    // ── Compute the edit ────────────────────────────────────────────────────
     `$parts = @($cur -split ';' | Where-Object { $_.Trim().Length -gt 0 })`,
+    `$orig = @($parts)`,
     `$hit = [bool]($parts | Where-Object { $_.TrimEnd('\\','/') -eq $bin })`,
     `$changed = $false`,
     mutate,
-    `if ($changed) {`,
+    `if (-not $changed) { exit 0 }`,
+    ``,
+    // ── Invariant: this edit may only ever touch $bin ────────────────────────
+    `$lost = @($orig | Where-Object { $_.TrimEnd('\\','/') -ne $bin } | Where-Object { $parts -notcontains $_ })`,
+    `if ($lost.Count -gt 0) { exit ${PATH_EDIT_EXIT.INVARIANT_VIOLATED} }`,
+    op === 'add'
+      ? `if ($parts -notcontains $bin) { exit ${PATH_EDIT_EXIT.INVARIANT_VIOLATED} }`
+      : `if ($parts | Where-Object { $_.TrimEnd('\\','/') -eq $bin }) { exit ${PATH_EDIT_EXIT.INVARIANT_VIOLATED} }`,
+    ``,
+    // ── Back up, then write ─────────────────────────────────────────────────
+    // Backup lives under Software\wmux, NOT Environment: any value written
+    // there becomes a real environment variable for the user.
+    `try {`,
+    `  if (-not (Test-Path 'HKCU:\\${bakKey}')) { New-Item -Path 'HKCU:\\${bakKey}' -Force | Out-Null }`,
+    `  Set-ItemProperty -Path 'HKCU:\\${bakKey}' -Name 'UserPathBackup' -Value $cur -Type String`,
+    `} catch { }`,
     // ExpandString == REG_EXPAND_SZ — SetEnvironmentVariable would demote to REG_SZ.
-    `  Set-ItemProperty -Path 'HKCU:\\Environment' -Name 'Path' -Value ($parts -join ';') -Type ExpandString`,
-    // WM_SETTINGCHANGE broadcast so new shells pick the change up without relogin.
+    `Set-ItemProperty -Path 'HKCU:\\${key}' -Name 'Path' -Value ($parts -join ';') -Type ExpandString`,
+    ``,
+    // WM_SETTINGCHANGE broadcast so new shells pick the change up without
+    // relogin. Cosmetic and Add-Type is blocked under ConstrainedLanguage, so
+    // its failure must never mask a successful write.
+    `try {`,
     `  $sig = '[DllImport("user32.dll", SetLastError = true, CharSet = CharSet.Auto)] public static extern System.IntPtr SendMessageTimeout(System.IntPtr hWnd, uint Msg, System.UIntPtr wParam, string lParam, uint fuFlags, uint uTimeout, out System.UIntPtr lpdwResult);'`,
     `  $w = Add-Type -MemberDefinition $sig -Name 'Win32SendMessageTimeout' -Namespace 'Wmux' -PassThru`,
     `  [System.UIntPtr]$res = [System.UIntPtr]::Zero`,
     `  $null = $w::SendMessageTimeout([System.IntPtr]0xffff, 0x1A, [System.UIntPtr]::Zero, 'Environment', 2, 5000, [ref]$res)`,
-    `}`,
+    `} catch { }`,
+    `exit 0`,
   ].join('\n');
 }
 
@@ -104,12 +211,47 @@ function powershellExe(): string {
   );
 }
 
+/**
+ * Human-readable explanation for a PATH edit that refused to run, or null when
+ * the exit code is not one of our deliberate fail-closed bail-outs.
+ */
+export function explainPathEditExit(code: number, binDir: string): string | null {
+  switch (code) {
+    case PATH_EDIT_EXIT.READ_FAILED:
+      return (
+        `could not read the current user PATH from the registry, so it was left ` +
+        `untouched. This usually means PowerShell is locked to ConstrainedLanguage ` +
+        `by AppLocker/WDAC policy. Add "${binDir}" to your PATH manually to use the ` +
+        `wmux CLI.`
+      );
+    case PATH_EDIT_EXIT.INVARIANT_VIOLATED:
+      return (
+        `the computed PATH would have dropped unrelated entries, so the edit was ` +
+        `aborted and the registry left untouched. Add "${binDir}" to your PATH manually.`
+      );
+    default:
+      return null;
+  }
+}
+
 function runPathEdit(binDir: string, op: 'add' | 'remove'): void {
-  execFileSync(
-    powershellExe(),
-    ['-NoProfile', '-NonInteractive', '-Command', buildPathEditScript(binDir, op)],
-    { encoding: 'utf8', windowsHide: true, timeout: 20000 },
-  );
+  try {
+    execFileSync(
+      powershellExe(),
+      ['-NoProfile', '-NonInteractive', '-Command', buildPathEditScript(binDir, op)],
+      { encoding: 'utf8', windowsHide: true, timeout: 20000 },
+    );
+  } catch (err) {
+    const code = (err as { status?: number }).status;
+    const explained = typeof code === 'number' ? explainPathEditExit(code, binDir) : null;
+    // A deliberate bail-out is a warning, not a failure: the registry is intact
+    // and the only cost is that the CLI is not on PATH yet.
+    if (explained) {
+      console.warn(`[cliShim] PATH ${op} skipped — ${explained}`);
+      return;
+    }
+    throw err;
+  }
 }
 
 export interface ShimPaths {
