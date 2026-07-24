@@ -146,9 +146,20 @@ function _ensureDragListeners(): void {
       _terminalDragActive = true;
     }
   }, true);
-  const clear = (): void => { _terminalDragActive = false; };
-  document.addEventListener('mouseup', clear, true);
-  window.addEventListener('blur', clear, true);
+  document.addEventListener('mouseup', () => { _terminalDragActive = false; }, true);
+  // A `window.blur` clear used to sit here. It cleared the flag on Alt+Tab or
+  // a click into another window — but the button is still held at that point
+  // and xterm's document listeners are still armed, so the clear un-guarded
+  // exactly the case the guard exists for: dispose ran immediately and a
+  // `mouseup` delivered afterwards (mouse capture survives blur) hit the
+  // half-torn-down instance. `buttons === 0` on the next mousemove is the
+  // correct end-of-drag signal for a release we never saw: it is true only
+  // once no button is held, so a drag that outlives a blur stays guarded and
+  // a drag released outside the window clears the moment the pointer moves
+  // back over the window. The dispose backstop covers the pathological rest.
+  document.addEventListener('mousemove', (e: Event) => {
+    if ((e as MouseEvent).buttons === 0) _terminalDragActive = false;
+  }, true);
 }
 /** Returns true while a mouse button is held down over any terminal element. */
 export function isTerminalDragActive(): boolean {
@@ -159,6 +170,82 @@ export function isTerminalDragActive(): boolean {
 export function __resetTerminalDragForTests(): void {
   _terminalDragActive = false;
   _dragListenersInstalled = false;
+}
+
+export interface DeferredDisposeOptions {
+  /** Re-check cadence while a drag is still active. */
+  intervalMs?: number;
+  /** How many re-checks before the leak guard forces disposal. */
+  maxWaits?: number;
+  /** Called instead of the default warning when disposal is forced. */
+  onForce?: (waitedMs: number) => void;
+}
+
+/**
+ * #582: dispose a terminal as soon as it is safe — immediately when no mouse
+ * drag is in flight, otherwise once the drag releases.
+ *
+ * Extracted from the unmount cleanup so the defer/force paths are unit
+ * testable (the cleanup closure itself needs a mounted hook to reach).
+ *
+ * The `mouseup` listener is deliberately bubble-phase: xterm's own
+ * document-level handler was registered first and in the same phase, so it
+ * runs (against a still-live terminal) before this disposal fires.
+ *
+ * Forcing disposal while a drag is genuinely still active reopens the very
+ * race this guards, so it is a last-resort leak guard for a button that never
+ * reports release — and it warns, so a recurrence of the #582 TypeError is
+ * traceable to this path instead of looking like a fresh regression.
+ */
+export function disposeWhenDragEnds(dispose: () => void, opts: DeferredDisposeOptions = {}): void {
+  const intervalMs = opts.intervalMs ?? 2000;
+  const maxWaits = opts.maxWaits ?? 15;
+  const onForce = opts.onForce ?? ((waitedMs: number) => {
+    console.warn(`[useTerminal] #582: forcing terminal dispose after ${waitedMs}ms with a mouse drag still active — the xterm dispose race can recur on this path.`);
+  });
+
+  let done = false;
+  let timer: ReturnType<typeof setTimeout> | null = null;
+  let onMouseUp: (() => void) | null = null;
+  let waits = 0;
+
+  const finish = (forced: boolean): void => {
+    if (done) return;
+    done = true;
+    if (timer !== null) {
+      clearTimeout(timer);
+      timer = null;
+    }
+    if (onMouseUp) {
+      document.removeEventListener('mouseup', onMouseUp);
+      onMouseUp = null;
+    }
+    if (forced) onForce(waits * intervalMs);
+    try { dispose(); } catch { /* already disposed */ }
+  };
+
+  if (!isTerminalDragActive()) {
+    finish(false);
+    return;
+  }
+
+  onMouseUp = () => finish(false);
+  document.addEventListener('mouseup', onMouseUp);
+
+  const schedule = (): void => {
+    timer = setTimeout(() => {
+      if (done) return;
+      waits++;
+      if (!isTerminalDragActive()) {
+        finish(false);
+      } else if (waits >= maxWaits) {
+        finish(true);
+      } else {
+        schedule();
+      }
+    }, intervalMs);
+  };
+  schedule();
 }
 
 // === P0-5: per-pane freshness state for the UI ==============================
@@ -1943,53 +2030,13 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       discardTerminalOutput(terminal);
       // #582: defer terminal.dispose() if a mouse drag is active on any
       // terminal. xterm nullifies _renderService before removing its
-      // document-level mouseup/mousemove listeners — a mouseup firing in
-      // that gap throws an uncaught TypeError from getMouseReportCoords.
-      // All PTY listeners above are already torn down (including onData, so
-      // no stray input flows during the wait), so deferring only the internal
-      // dispose is safe. The backstop covers a drag abandoned outside the
-      // window (no mouseup, no blur); it re-checks the flag so a genuinely
-      // long selection isn't cut down mid-drag — which would reopen the exact
-      // half-disposed race this guard exists to close. Both handles are
-      // released on either completion path so neither lingers.
-      let _disposed = false;
-      let _deferTimer: ReturnType<typeof setTimeout> | null = null;
-      let _deferMouseUp: (() => void) | null = null;
-      const safeDispose = (): void => {
-        if (_disposed) return;
-        _disposed = true;
-        if (_deferTimer !== null) {
-          clearTimeout(_deferTimer);
-          _deferTimer = null;
-        }
-        if (_deferMouseUp) {
-          document.removeEventListener('mouseup', _deferMouseUp);
-          _deferMouseUp = null;
-        }
-        try { terminal.dispose(); } catch { /* already disposed */ }
-      };
-      if (isTerminalDragActive()) {
-        _deferMouseUp = safeDispose;
-        document.addEventListener('mouseup', _deferMouseUp);
-        // Bounded retries: if the drag is still active when each 2s interval
-        // elapses, keep waiting (a real selection can exceed 2s). After
-        // _retriesLeft hits zero the terminal is force-disposed as a leak
-        // guard for a stuck button that never emits mouseup/blur.
-        let _retriesLeft = 5;
-        const scheduleBackstop = (): void => {
-          _deferTimer = setTimeout(() => {
-            if (_disposed) return;
-            if (isTerminalDragActive() && _retriesLeft-- > 0) {
-              scheduleBackstop();
-            } else {
-              safeDispose();
-            }
-          }, 2000);
-        };
-        scheduleBackstop();
-      } else {
-        safeDispose();
-      }
+      // document-level mouseup/mousemove listeners — a mouseup landing on the
+      // half-torn-down instance throws an uncaught TypeError from
+      // getMouseReportCoords. All PTY listeners above are already torn down
+      // (including onData, so no stray input flows during the wait), so
+      // deferring only the internal dispose is safe. See disposeWhenDragEnds
+      // for the wait/force policy.
+      disposeWhenDragEnds(() => terminal.dispose());
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;
