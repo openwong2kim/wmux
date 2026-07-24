@@ -44,11 +44,17 @@ describe('useRpcBridge browser.close cascade (issue #143)', () => {
     return match[0];
   }
 
-  it('cascades into closePane when the last surface is closed', () => {
+  it('cascades into closePane ONLY inside the wasLastSurface branch', () => {
     const block = closeHelperBlock();
     expect(block).toMatch(/state\.closeSurface\(/);
-    // The empty-pane cleanup that issue #143 was missing.
-    expect(block).toMatch(/state\.closePane\(target\.pane\.id,\s*target\.workspace\.id\)/);
+    // The empty-pane cleanup that issue #143 was missing — and it has to stay
+    // INSIDE the guard. Asserting `if (wasLastSurface)` and the closePane call
+    // as two independent matches would still pass if a rewrite hoisted
+    // closePane out of the branch, which would tear down panes the browser
+    // merely shares with a terminal.
+    expect(block).toMatch(
+      /if\s*\(\s*wasLastSurface\s*\)\s*\{\s*state\.closePane\(\s*target\.pane\.id,\s*target\.workspace\.id,?\s*\);?\s*\}/,
+    );
   });
 
   it('decides last-surface BEFORE closeSurface (no off-by-one on the snapshot)', () => {
@@ -61,8 +67,12 @@ describe('useRpcBridge browser.close cascade (issue #143)', () => {
     // decision would be off-by-one (length already decremented).
     const snapAt = block.indexOf('wasLastSurface =');
     const closeAt = block.indexOf('state.closeSurface(');
+    const paneAt = block.indexOf('state.closePane(');
     expect(snapAt).toBeGreaterThanOrEqual(0);
     expect(closeAt).toBeGreaterThan(snapAt);
+    // ...and the pane teardown follows the surface removal. Reversing them
+    // would close the leaf while it still holds the surface.
+    expect(paneAt).toBeGreaterThan(closeAt);
   });
 });
 
