@@ -30,9 +30,18 @@ application IDs, data directories, IPC endpoints, project config filenames, and
 integration destinations.
 
 Development happens on `develop`, rebased onto `origin/main` and verified. A
-release promotes that verified delta to `main` as one squash merge. The isolated
-identity commit is tagged `fmux-identity-boundary`; rebase it with `develop`, or
-recover it with `git cherry-pick fmux-identity-boundary`.
+release promotes that verified delta to `main` as one squash merge. The fmux
+identity layer is the range of fork-local commits above the upstream base
+(`git merge-base main origin/main`); to pull upstream changes, run
+`git fetch origin && git rebase origin/main main`, which replays the whole
+layer onto the new upstream tip.
+
+Forge Mux versioning restarts at 1.0.0, and this repository's `v*` tags mark
+Forge Mux releases only — wmux's historical release tags live in the upstream
+repository. Release tags are pushed individually (`git push fork vX.Y.Z`,
+never bare `git push --tags`), and clones set
+`git config remote.origin.tagOpt --no-tags` so upstream fetches don't
+re-import wmux tags.
 
 ---
 

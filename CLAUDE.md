@@ -44,8 +44,65 @@ In QA/design-review mode, flag any code that doesn't match DESIGN.md.
   `[Unreleased]` → `[X.Y.Z] — YYYY-MM-DD`, run
   `node scripts/gen-api-reference.mjs` (the generated header bakes the
   version — the CI drift guard enforces this), commit `chore(release)`,
-  then push a `v*` tag (installer builds hang off the tag).
+  then push the tag explicitly to the fork — `git push fork vX.Y.Z`,
+  never bare `git push --tags` (installer builds hang off the tag).
 - Consequence accepted with this decision: same-version dev builds are not
   distinguishable by semver, so the stale-daemon auto-replacement triggers
   only on (a) pre-B′ daemons (missing version field) and (b) release-to-
   release upgrades and (c) `CHANNELS_EPOCH` bumps — not on every dev rebuild.
+
+## Fork workflow (owner decision, 2026-07-23)
+
+- `origin/main` is the upstream tracking reference. Do not add fork-specific
+  commits directly to it.
+- `develop` is the long-lived integration branch. Rebase it onto `origin/main`,
+  resolve conflicts there, and verify it before promoting changes.
+- For a fork release, rebase `main` onto the same upstream base and squash merge
+  the verified `develop` delta into `main`. Do not cherry-pick its history.
+- Keep `develop`; feature branches may be deleted after their integrated work is
+  verified and released. Keep a recovery ref if needed.
+- Preserve upstream CHANGELOG history. Fork-facing changes go under
+  `## [Unreleased]`; releases follow the explicit versioning policy above.
+
+## Fork identity boundary (owner decision, 2026-07-23)
+
+Forge Mux must coexist with upstream wmux while remaining easy to rebase. Keep its
+identity as a small, deliberate patch layer; never perform repository-wide
+wording or symbol renames.
+
+- Preserve upstream identifiers, module and file names, historical docs, tests,
+  and comments unless a change is required for real coexistence.
+- Change only collision-facing boundaries: package, product, and CLI names;
+  installer/updater and application IDs; data directories; IPC endpoints;
+  project config filenames; and installed integration destinations.
+- Centralize identity values at existing packaging and path boundaries. Do not
+  scatter product-name literals through feature code.
+- Keep the patch isolated and replayable after rebasing `develop` onto
+  `origin/main`.
+- Do not read or migrate wmux state automatically. Forge Mux uses its own namespace.
+- The identity layer is the range of fork-local commits above the upstream
+  base; `git merge-base main origin/main` marks the boundary, so no tag is
+  needed. To sync with upstream, run
+  `git fetch origin && git rebase origin/main main`, which replays the whole
+  layer onto the new upstream tip (then force-push `main` to the fork).
+  The former single-commit `fmux-identity-boundary` tag is retired — the
+  layer may span multiple commits, but keep them few and focused.
+
+## Remotes & tag policy (owner decision, 2026-07-24)
+
+- Remotes: `origin` is upstream `openwong2kim/wmux` — read-only tracking,
+  never push there. `fork` is `github.com/skflowne/fmux`, the repository
+  Forge Mux ships from. Upstream syncs rewrite `main`, so pushing `main`
+  to `fork` uses `--force-with-lease`.
+- Forge Mux versioning restarts at **1.0.0**, and the fork's `v*` tag
+  namespace belongs to fmux releases only. The inherited wmux tags
+  (`v1.0.1`–`v3.31.0`) were purged from the fork remote and the local
+  clone on 2026-07-24; upstream keeps them all, so fetch one explicitly
+  if ever needed (`git fetch origin tag vX.Y.Z`) and delete it locally
+  after use.
+- Every clone must set `git config remote.origin.tagOpt --no-tags` — this
+  is per-clone config, not versioned — so fetching upstream never
+  re-imports wmux tags.
+- Release tags are annotated, point at the `chore(release)` commit on
+  `main`, and are pushed one at a time (`git push fork vX.Y.Z`). Never run
+  bare `git push --tags`.
