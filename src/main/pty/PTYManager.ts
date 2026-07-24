@@ -5,6 +5,7 @@ import path from 'node:path';
 import { getPipeName, ENV_KEYS, getPidMapDir } from '../../shared/constants';
 import { expandTilde } from '../../shared/expandTilde';
 import { resolveSpawnEnv } from './resolveSpawnEnv';
+import { withFreshWindowsPath } from '../../shared/windowsPathEnv';
 import { resolveEnvPolicy, type SpawnKind } from '../../shared/spawnKind';
 import { getAccountStore } from '../account/accountStore';
 import { withheldCredentialNames } from '../../shared/envFilter';
@@ -189,7 +190,10 @@ export class PTYManager {
           ),
         )
       : undefined;
-    const env = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale(), policy, accountEnv);
+    // Refresh PATH from the live registry (win32) so a pane spawned by a
+    // long-lived control process still finds tools installed after it started —
+    // native-terminal freshness. No-op off win32 / on failure (withFreshWindowsPath).
+    const env = resolveSpawnEnv(withFreshWindowsPath(globalThis.process.env), options?.env, identity, getShellUtf8Locale(), policy, accountEnv);
     // 관측 floor: gated pane에서 자격증명을 withheld하면 로컬 로그 1줄로 남긴다.
     // 침묵이 신고 사건의 실제 원인이었다 — "왜 없지?"를 로그로 즉시 답한다.
     if (policy === 'gated') {
