@@ -104,20 +104,56 @@ describe('terminal mouse-drag guard (#582)', () => {
     document.body.removeChild(xtermEl);
   });
 
-  it('clears on a mousemove reporting no buttons held (released off-window)', () => {
-    // The release we never saw: mouseup landed outside the window, so the
-    // first mousemove back over the window carries buttons === 0.
+  it('hands xterm a mouseup when the release happened off-window', () => {
+    // The release we never saw: the button came up outside the window, so no
+    // mouseup reached the document and xterm's own listeners are still armed.
+    // Merely clearing our flag would let dispose proceed and leave xterm's
+    // stale listener to throw on the next mouseup anywhere on the page, so the
+    // guard synthesizes the mouseup xterm is waiting for instead.
     const xtermEl = document.createElement('div');
     xtermEl.className = 'xterm';
     document.body.appendChild(xtermEl);
+
+    // Stand in for xterm's document-level mouseup listener.
+    const xtermMouseUp = vi.fn();
+    document.addEventListener('mouseup', xtermMouseUp);
 
     isTerminalDragActive();
     xtermEl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
     expect(isTerminalDragActive()).toBe(true);
 
-    document.dispatchEvent(new MouseEvent('mousemove', { buttons: 0 }));
+    document.dispatchEvent(new MouseEvent('mousemove', { buttons: 0, clientX: 42, clientY: 24 }));
+
+    expect(xtermMouseUp).toHaveBeenCalledTimes(1);
+    // Coordinates come from the live pointer so the mouse report is real.
+    const ev = xtermMouseUp.mock.calls[0][0] as MouseEvent;
+    expect([ev.clientX, ev.clientY]).toEqual([42, 24]);
+    expect(ev.buttons).toBe(0);
     expect(isTerminalDragActive()).toBe(false);
 
+    document.removeEventListener('mouseup', xtermMouseUp);
+    document.body.removeChild(xtermEl);
+  });
+
+  it('synthesizes the mouseup once, not once per mousemove', () => {
+    const xtermEl = document.createElement('div');
+    xtermEl.className = 'xterm';
+    document.body.appendChild(xtermEl);
+
+    const xtermMouseUp = vi.fn();
+    document.addEventListener('mouseup', xtermMouseUp);
+
+    isTerminalDragActive();
+    xtermEl.dispatchEvent(new MouseEvent('mousedown', { bubbles: true }));
+
+    document.dispatchEvent(new MouseEvent('mousemove', { buttons: 0 }));
+    document.dispatchEvent(new MouseEvent('mousemove', { buttons: 0 }));
+    document.dispatchEvent(new MouseEvent('mousemove', { buttons: 0 }));
+
+    // Disarmed by the first one — later moves are ordinary pointer traffic.
+    expect(xtermMouseUp).toHaveBeenCalledTimes(1);
+
+    document.removeEventListener('mouseup', xtermMouseUp);
     document.body.removeChild(xtermEl);
   });
 
@@ -233,14 +269,25 @@ describe('deferred terminal disposal (#582)', () => {
     expect(dispose).toHaveBeenCalledTimes(1);
   });
 
-  it('disposes on the next re-check when the drag ends without a mouseup', () => {
-    // Release off-window: the flag clears via the buttons === 0 mousemove, so
-    // the pending mouseup listener never fires and the backstop must catch it.
+  it('disposes on the release the terminal never saw (off-window mouseup)', () => {
+    // The guard synthesizes the missing mouseup, which both disarms xterm and
+    // satisfies this pending disposal — no waiting for the backstop.
     startDrag();
     const dispose = vi.fn();
     disposeWhenDragEnds(dispose, { intervalMs: 1000, maxWaits: 5 });
 
     document.dispatchEvent(new MouseEvent('mousemove', { buttons: 0 }));
+    expect(dispose).toHaveBeenCalledTimes(1);
+  });
+
+  it('disposes on the next re-check if the drag ends without any mouseup', () => {
+    // Defensive: should the flag ever clear by a path that does not dispatch a
+    // mouseup, the pending listener never fires and the backstop must catch it.
+    startDrag();
+    const dispose = vi.fn();
+    disposeWhenDragEnds(dispose, { intervalMs: 1000, maxWaits: 5 });
+
+    __resetTerminalDragForTests();
     expect(dispose).not.toHaveBeenCalled();
 
     vi.advanceTimersByTime(1000);

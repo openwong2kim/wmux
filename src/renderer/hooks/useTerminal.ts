@@ -143,6 +143,7 @@ export function __resetPtyDispatchersForTests(): void {
 // disposeWhenDragEnds below and its tests — can be deleted.
 let _terminalDragActive = false;
 let _dragListenersInstalled = false;
+let _syntheticMouseUp = false;
 function _ensureDragListeners(): void {
   if (_dragListenersInstalled || typeof document === 'undefined') return;
   _dragListenersInstalled = true;
@@ -153,22 +154,52 @@ function _ensureDragListeners(): void {
       _terminalDragActive = true;
     }
   }, true);
+  // Only a real document `mouseup` disarms xterm: that is the one handler
+  // that calls removeEventListener on its own document listeners. So the flag
+  // tracks "xterm's listeners are still armed", not "a button is still down" —
+  // the two diverge, and the dispose hazard follows the former.
+  //
+  // A `window.blur` clear used to sit here. It cleared on Alt+Tab or a click
+  // into another window — but the button is still held then and xterm is still
+  // armed, so it un-guarded exactly the case the guard exists for: dispose ran
+  // immediately and a `mouseup` delivered afterwards (mouse capture survives
+  // blur) hit the half-torn-down instance.
   document.addEventListener('mouseup', () => { _terminalDragActive = false; }, true);
-  // A `window.blur` clear used to sit here. It cleared the flag on Alt+Tab or
-  // a click into another window — but the button is still held at that point
-  // and xterm's document listeners are still armed, so the clear un-guarded
-  // exactly the case the guard exists for: dispose ran immediately and a
-  // `mouseup` delivered afterwards (mouse capture survives blur) hit the
-  // half-torn-down instance. `buttons === 0` on the next mousemove is the
-  // correct end-of-drag signal for a release we never saw: it is true only
-  // once no button is held, so a drag that outlives a blur stays guarded and
-  // a drag released outside the window clears the moment the pointer moves
-  // back over the window. The dispose backstop covers the pathological rest.
+  // Release we never saw: the button came up outside the window, so no mouseup
+  // reached the document and xterm is still armed even though nothing is held.
+  // Clearing the flag here would repeat the blur mistake in a subtler way
+  // (dispose proceeds, xterm's stale listener throws on the next mouseup
+  // anywhere). Instead, hand xterm the mouseup it is waiting for while the
+  // terminal is still alive: its handler tears down its own document
+  // listeners, our capture listener above clears the flag, and the release
+  // report the PTY gets is one the user actually performed. The synthetic
+  // event carries the current pointer position so the report coordinates are
+  // real, and `_syntheticMouseUp` keeps a re-entrant mousemove from looping.
   document.addEventListener('mousemove', (e: Event) => {
-    if ((e as MouseEvent).buttons === 0) _terminalDragActive = false;
+    const ev = e as MouseEvent;
+    if (ev.buttons !== 0 || !_terminalDragActive || _syntheticMouseUp) return;
+    _syntheticMouseUp = true;
+    try {
+      document.dispatchEvent(new MouseEvent('mouseup', {
+        bubbles: true,
+        cancelable: true,
+        button: 0,
+        buttons: 0,
+        clientX: ev.clientX,
+        clientY: ev.clientY
+      }));
+    } finally {
+      _syntheticMouseUp = false;
+      // Belt and braces: if nothing consumed the synthetic event, do not stay
+      // armed forever on the strength of a release that already happened.
+      _terminalDragActive = false;
+    }
   }, true);
 }
-/** Returns true while a mouse button is held down over any terminal element. */
+/**
+ * Returns true while xterm's document-level mouse listeners are still armed —
+ * i.e. a drag started on a terminal and xterm has not seen its `mouseup` yet.
+ */
 export function isTerminalDragActive(): boolean {
   _ensureDragListeners();
   return _terminalDragActive;
@@ -177,6 +208,7 @@ export function isTerminalDragActive(): boolean {
 export function __resetTerminalDragForTests(): void {
   _terminalDragActive = false;
   _dragListenersInstalled = false;
+  _syntheticMouseUp = false;
 }
 
 export interface DeferredDisposeOptions {
