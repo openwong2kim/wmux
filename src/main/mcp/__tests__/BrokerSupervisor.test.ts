@@ -89,6 +89,25 @@ describe('BrokerSupervisor exit-75 reclaim (W2)', () => {
     vi.useRealTimers();
   });
 
+  it('start() while a reclaim timer is armed clears it (no interval leak)', async () => {
+    vi.useFakeTimers();
+    const first = makeChild();
+    const second = makeChild();
+    vi.mocked(spawn).mockReturnValueOnce(first as never).mockReturnValueOnce(second as never);
+    // Broker stays reachable, so reclaimTick would never clear the timer itself.
+    vi.mocked(canConnectBrokerPipe).mockResolvedValue(true);
+    const sup = new BrokerSupervisor();
+    sup.start();
+    first.emit('exit', 75, null); // arm reclaim probe, child now null
+    // Directly re-invoking start() (defensive path) must tear the timer down.
+    sup.start();
+    expect(spawn).toHaveBeenCalledTimes(2);
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(canConnectBrokerPipe).not.toHaveBeenCalled(); // interval was cleared, never ticked
+    sup.stop();
+    vi.useRealTimers();
+  });
+
   it('stop() clears the reclaim probe timer', async () => {
     vi.useFakeTimers();
     const first = makeChild();

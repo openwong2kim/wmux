@@ -59,6 +59,16 @@ export class BrokerSupervisor {
     }
     this.scriptMissing = false;
 
+    // Defensive: if a reclaim probe is somehow still armed as we spawn our own
+    // child, tear it down — otherwise every 15s tick would see our live broker
+    // and early-return without ever clearing, leaking the interval. Not
+    // reachable in current wiring (reclaimTick clears its own timer before
+    // calling start()), purely belt-and-suspenders.
+    if (this.reclaimTimer) {
+      clearInterval(this.reclaimTimer);
+      this.reclaimTimer = null;
+    }
+
     const startedAt = Date.now();
     const child = spawn(process.execPath, [script], {
       env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' },
