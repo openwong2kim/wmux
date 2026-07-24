@@ -51,20 +51,27 @@ export function readOrchRole(
 // ─── D2: Role → agent/model binding (ENFORCED, unlike the soft role hint) ─────
 //
 // A soft role (above) is a routing HINT the orchestrator may ignore. A binding
-// turns a role into policy: "every agent launched in a Reviewer pane runs
-// `codex --model o3`". Enforcement happens at wmux-owned command-assembly time
-// (input.send rewrite is the backbone) — see applyRoleBinding. The map is a
-// GLOBAL operator-level concept (the owner's cross-repo "빌더1 리뷰어2" team),
-// persisted next to deckBrainModel; all roles are unbound until the operator
-// sets them in Settings.
+// turns a role into policy: "an agent launched into a Reviewer pane BY WMUX runs
+// `codex --model o3`". The scope is exactly the commands wmux assembles itself —
+// see applyRoleBinding — which today means three sites:
+//   1. input.send (the pipe RPC behind the orchestrator's terminal_send),
+//   2. a pane's seeded initialCommand (ptyCreateOptions.withRoleBinding),
+//   3. the per-pane resume command (ResumeInfoChip.buildPaneResumeCommand).
+// A human's KEYSTROKES are NOT covered: Terminal.tsx writes straight to the pty
+// IPC handler and never passes through any of the three. The map is a GLOBAL
+// operator-level concept (the owner's cross-repo "빌더1 리뷰어2" team), persisted
+// next to deckBrainModel; all roles are unbound until the operator sets them in
+// Settings.
 
 /** A role's enforced launch policy. All fields optional: an empty binding is a
- *  no-op. `args` is the injection-risk surface — it carries arbitrary launch
- *  flags — so it is control-char stripped + length-capped at every boundary. */
+ *  no-op. `args` is the widest surface — it carries arbitrary launch flags — so
+ *  it is control-char stripped, shell-metachar rejected, and length-capped at
+ *  every boundary (see normalizeArgsField). */
 export interface RoleBinding {
   /** Launcher stem this role expects: 'claude' | 'codex' | 'opencode' | 'gemini'.
-   *  When set, the model flag is injected ONLY if the actual launcher matches
-   *  (so a codex model alias is never forced into a claude launch). */
+   *  REQUIRED for model injection: a model alias is meaningless without knowing
+   *  whose `--model` grammar it belongs to (`codex --model haiku` is an invalid
+   *  launch), so a model-only binding never injects — see applyRoleBinding. */
   agent?: string;
   /** Model alias/id passed to the agent's model flag, e.g. 'haiku'. */
   model?: string;
@@ -98,11 +105,13 @@ export function launcherSupportsModelFlag(stem: string): boolean {
   return stem in MODEL_FLAG_BY_LAUNCHER;
 }
 
-/** Launcher stems wmux recognizes as agent CLIs. Used ONLY to decide whether an
- *  agent-mismatch is worth reporting: launching `ls` in a bound pane is normal
- *  and silent, launching a DIFFERENT agent than the role binding names is a
- *  policy deviation the operator should hear about. Mirrors the AgentSlug
- *  vocabulary (shared/events.ts). */
+/** Launcher stems wmux recognizes as agent CLIs. This is applyRoleBinding's
+ *  OUTER gate: a command whose stem is absent here is never rewritten in any
+ *  way, so `git commit -m "wip"` and `npm test` in a bound pane come back
+ *  byte-identical. It also decides whether a mismatch is worth reporting —
+ *  launching a DIFFERENT known agent than the role names is a policy deviation
+ *  the operator should hear about. Mirrors the AgentSlug vocabulary
+ *  (shared/events.ts). */
 const KNOWN_AGENT_STEMS: ReadonlySet<string> = new Set([
   'claude',
   'codex',
@@ -122,15 +131,63 @@ export const ROLE_BINDING_ARGS_MAX = 200;
 export const ROLE_BINDINGS_MAX_ENTRIES = 64;
 
 /** Strip control chars (incl. newline/CR/tab → space), collapse runs of
- *  whitespace, trim, and length-cap. Shared shape for all binding fields so a
- *  crafted value can never forge extra command lines when written to a shell.
- *  Mirrors readOrchRole's control-char posture + normalizeCommand's length cap. */
+ *  whitespace, trim, and length-cap.
+ *
+ *  What this guarantees: the value is single-line and bounded, so it cannot
+ *  forge an extra COMMAND LINE (a `\n` that a shell would read as a second
+ *  command) and cannot crowd out a length budget.
+ *
+ *  What it does NOT guarantee: shell safety. `;`, `|`, `&`, backticks and
+ *  `$(...)` all survive this pass, so a value that reaches a shell still runs
+ *  as whatever that shell makes of it. That is acceptable ONLY because every
+ *  writer of a binding value is already trusted at least as much as the shell
+ *  it lands in (the Settings dropdowns, operator-typed args, and session.json —
+ *  editing which already requires filesystem access). The per-field validators
+ *  below carry the actual safety posture; if a binding is ever made writable
+ *  over RPC/MCP/wmux.json/team presets, THOSE are the checks to revisit. */
 function normalizeBindingField(input: unknown, max: number): string | undefined {
   if (typeof input !== 'string') return undefined;
   // eslint-disable-next-line no-control-regex -- intentional control-char strip
   const cleaned = input.replace(/[\x00-\x1F\x7F]/g, ' ').replace(/\s+/g, ' ').trim();
   if (cleaned.length === 0) return undefined;
   return cleaned.slice(0, max);
+}
+
+/** A model alias/id is a single opaque token — `haiku`, `gpt-5.5`,
+ *  `claude-opus-4-8`, `us.anthropic.claude:1`. Anything else is rejected rather
+ *  than passed through: a model containing a SPACE (`claude sonnet 4`, easy to
+ *  hand-write into session.json) would split into positional args, and for the
+ *  claude CLI a trailing positional is a PROMPT — so a malformed model silently
+ *  injects text into the agent instead of failing. */
+const MODEL_TOKEN_RE = /^[A-Za-z0-9._:-]+$/;
+
+/** Shell metacharacters that make a token do something other than "be an
+ *  argument". `args` is rejected WHOLESALE when any of its tokens contains one
+ *  (rather than dropping the offending token) so the accepted value is always
+ *  the operator's string verbatim — re-serializing a tokenized command would
+ *  lose the original quoting. Conservative on purpose: a quoted `'a;b'` is
+ *  rejected too, since the tokenizer strips quotes before this check. */
+const SHELL_METACHAR_RE = /[;|&`$()<>{}!*?~#[\]]/;
+
+/** Normalize + validate the `model` field. Returns undefined for a value that
+ *  is not a single safe token (see MODEL_TOKEN_RE). */
+function normalizeModelField(input: unknown): string | undefined {
+  const cleaned = normalizeBindingField(input, ROLE_BINDING_MODEL_MAX);
+  if (!cleaned) return undefined;
+  return MODEL_TOKEN_RE.test(cleaned) ? cleaned : undefined;
+}
+
+/** Normalize + validate the `args` field. `args` is operator-controlled and
+ *  appended verbatim — it is equivalent to typing those flags yourself — but it
+ *  is still rejected outright when any token carries a shell metacharacter, so
+ *  a hand-edited session.json cannot turn a launch into a chained command. */
+function normalizeArgsField(input: unknown): string | undefined {
+  const cleaned = normalizeBindingField(input, ROLE_BINDING_ARGS_MAX);
+  if (!cleaned) return undefined;
+  for (const tkn of tokenize(cleaned)) {
+    if (SHELL_METACHAR_RE.test(tkn.value)) return undefined;
+  }
+  return cleaned;
 }
 
 /** Build a clean RoleBinding from untrusted input (Settings write / session.json
@@ -143,8 +200,8 @@ export function normalizeRoleBinding(input: unknown): RoleBinding | undefined {
   // command's stem (drops a path/extension a hand-edited value might carry).
   const agentRaw = normalizeBindingField(src.agent, ROLE_BINDING_AGENT_MAX);
   const agent = agentRaw ? launcherStem(agentRaw) : undefined;
-  const model = normalizeBindingField(src.model, ROLE_BINDING_MODEL_MAX);
-  const args = normalizeBindingField(src.args, ROLE_BINDING_ARGS_MAX);
+  const model = normalizeModelField(src.model);
+  const args = normalizeArgsField(src.args);
   if (agent) binding.agent = agent;
   if (model) binding.model = model;
   if (args) binding.args = args;
@@ -172,88 +229,160 @@ export function normalizeRoleBindings(input: unknown): OrchestratorRoleBindings 
   return out;
 }
 
-/** Unquoted tokens that mean an explicit model flag is already present, so the
- *  rewrite must NOT add a second one (D-4: a manual `--model` wins for that
- *  launch). Checked on UNQUOTED tokens only, so `claude "explain --model"` is
- *  not a false match. */
+/** Tokens that mean an explicit model flag is already present, so the rewrite
+ *  must NOT add a second one (D-4: a manual `--model` wins for that launch).
+ *
+ *  Quoting rule: a quoted token counts ONLY when its whole value is exactly the
+ *  flag — `claude "--model" opus` really does pass a `--model` argument, so it
+ *  must suppress injection. A `--model` mentioned INSIDE a longer quoted string
+ *  (`claude "explain the --model flag"`) is prose and is ignored. */
 function hasExplicitModelFlag(tokens: ReturnType<typeof tokenize>): boolean {
   for (const tkn of tokens) {
-    if (tkn.quoted) continue;
-    if (tkn.value === '--model' || tkn.value.startsWith('--model=') || tkn.value === '-m') {
-      return true;
-    }
+    if (tkn.value === '--model' || tkn.value === '-m') return true;
+    if (!tkn.quoted && tkn.value.startsWith('--model=')) return true;
   }
   return false;
+}
+
+/** Sub-commands that may legitimately follow a launcher as a bare word.
+ *  `codex resume --last` / `codex exec …` are launches, not prose. */
+const LAUNCH_SUBCOMMANDS: ReadonlySet<string> = new Set(['resume', 'exec', 'e']);
+
+/**
+ * Does everything after the launcher token look like SHELL ARGUMENTS rather
+ * than prose?
+ *
+ * This is the guard that keeps the rewrite off `terminal_send`'s main use: the
+ * orchestrator instructing a RUNNING TUI. "claude code is failing on windows"
+ * starts with the token `claude` but is a sentence typed into an agent's
+ * composer — splicing `--model haiku` into it corrupts the message. A real bare
+ * invocation only ever carries flags, flag values, quoted arguments, or a known
+ * sub-command, so we require exactly that and treat any other bare word as
+ * prose. Erring toward NOT rewriting is the right failure direction: a missed
+ * enforcement is recoverable, a mangled prompt is not.
+ */
+function looksLikeLaunchInvocation(tokens: ReturnType<typeof tokenize>): boolean {
+  for (let i = 1; i < tokens.length; i++) {
+    const tkn = tokens[i];
+    // A quoted span is a deliberate shell argument (`claude "explain this"`).
+    if (tkn.quoted) continue;
+    if (tkn.value.startsWith('-')) continue;
+    // A bare word directly after a flag is that flag's value (`--model opus`).
+    // Quoting of the FLAG is irrelevant here — `claude "--model" opus` passes a
+    // real flag — and a quoted prose span never starts with `-`.
+    const prev = tokens[i - 1];
+    if (prev.value.startsWith('-') && !prev.value.includes('=')) continue;
+    if (i === 1 && LAUNCH_SUBCOMMANDS.has(tkn.value)) continue;
+    // ...and that sub-command's own argument (`codex resume <session-id>`).
+    if (i === 2 && !tokens[1].quoted && LAUNCH_SUBCOMMANDS.has(tokens[1].value)) continue;
+    return false;
+  }
+  return true;
+}
+
+/** Is `args` already the trailing token run of `command`? Compared on TOKEN
+ *  boundaries, not as a suffix string: `endsWith('--foo')` also matched a
+ *  command ending in `--bar-foo` and silently skipped the append. */
+function alreadyEndsWithArgs(command: string, args: string): boolean {
+  const cmdTokens = tokenize(command).map((t) => t.value);
+  const argTokens = tokenize(args).map((t) => t.value);
+  if (argTokens.length === 0 || argTokens.length > cmdTokens.length) return false;
+  const tail = cmdTokens.slice(cmdTokens.length - argTokens.length);
+  return tail.every((v, i) => v === argTokens[i]);
 }
 
 /**
  * Pure transform: given a launch command + a role's binding, return the command
  * with the bound agent's model (and any extra args) enforced.
  *
- * Rules:
- *  - No binding, or a binding with neither model nor args → unchanged.
- *  - `binding.agent` set and the command's launcher stem differs → unchanged
- *    (the binding targets a different agent; never force a codex model alias
- *    into a claude launch).
+ * The rewrite fires ONLY on something that is recognizably an agent launch.
+ * Both gates below are load-bearing, because this runs on every submitted line
+ * in a bound pane — including shell commands and prose sent to a live TUI:
+ *  1. the launcher stem must be a known agent CLI (KNOWN_AGENT_STEMS). Chosen
+ *     over MODEL_FLAG_BY_LAUNCHER so that `args`-only enforcement still reaches
+ *     an agent whose `--model` grammar we haven't verified (opencode/gemini),
+ *     while `git`/`ls`/`npm` are never touched by any part of the binding.
+ *  2. the rest of the line must look like arguments, not prose — see
+ *     {@link looksLikeLaunchInvocation}.
+ *
+ * Rules once past the gates:
+ *  - `binding.agent` set and the launcher stem differs → unchanged + a note
+ *    (a policy deviation the operator should hear about).
+ *  - `binding.model` without `binding.agent` → NOT injected + note. A model
+ *    alias is only meaningful for a specific launcher's grammar; injecting it
+ *    blind produced `codex --model haiku`, an invalid launch.
  *  - `binding.model` set but the launcher has no known `--model` grammar
- *    (gemini/aider/custom) → unchanged + advisory `note` (D-5).
- *  - An explicit `--model` already in the (unquoted) command → model NOT
- *    re-injected (D-4), though `binding.args` may still be appended.
+ *    (gemini/opencode/aider) → not injected + advisory note (D-5). `args` still
+ *    applies — it is launcher-agnostic.
+ *  - An explicit `--model` already on the line → model NOT re-injected (D-4),
+ *    though `binding.args` may still be appended.
  *  - Otherwise: inject `--model <m>` right after the launcher token and append
  *    normalized `binding.args` at the end.
  *
+ * `modelInjected` reports whether the model flag was ACTUALLY spliced in, so a
+ * caller never advertises an enforced model when only `args` changed.
+ *
  * Idempotent: re-applying never double-adds the model flag (an explicit
- * `--model` short-circuits) nor the args (guarded by a trailing-match check).
+ * `--model` short-circuits) nor the args (token-boundary trailing check).
  */
 export function applyRoleBinding(
   command: string,
   binding: RoleBinding | undefined,
-): { command: string; changed: boolean; note?: string } {
-  if (!binding) return { command, changed: false };
+): { command: string; changed: boolean; modelInjected: boolean; note?: string } {
+  const unchanged = { command, changed: false, modelInjected: false };
+  if (!binding) return unchanged;
   const model = binding.model?.trim() || undefined;
   const args = binding.args?.trim() || undefined;
-  if (!model && !args) return { command, changed: false };
+  if (!model && !args) return unchanged;
 
   const tokens = tokenize(command);
-  if (tokens.length === 0) return { command, changed: false };
+  if (tokens.length === 0) return unchanged;
   const stem = launcherStem(tokens[0].value);
 
-  // Agent gate: a binding that names an agent only applies to that launcher —
-  // never force a codex model alias into a claude launch. Launching a DIFFERENT
-  // known agent than the role names is a silent policy deviation, so say so;
-  // an ordinary shell command (`ls`) in a bound pane stays silent.
+  // Gate 1 — only agent launches are ever rewritten (see the doc block).
+  if (!KNOWN_AGENT_STEMS.has(stem)) return unchanged;
+  // Gate 2 — and only when the line is an invocation, not prose.
+  if (!looksLikeLaunchInvocation(tokens)) return unchanged;
+
+  // A binding that names an agent only applies to that launcher. Launching a
+  // DIFFERENT known agent than the role names is a silent policy deviation.
   if (binding.agent && binding.agent !== stem) {
-    if (KNOWN_AGENT_STEMS.has(stem)) {
-      return {
-        command,
-        changed: false,
-        note: `Role is bound to "${binding.agent}", but "${stem}" was launched here; the binding does not apply and nothing was enforced.`,
-      };
-    }
-    return { command, changed: false };
-  }
-
-  const grammar = MODEL_FLAG_BY_LAUNCHER[stem];
-
-  // Model requested but this launcher has no known flag → no-op + note.
-  if (model && !grammar) {
     return {
-      command,
-      changed: false,
-      note: `Role bound to model "${model}", but launcher "${stem}" has no known --model flag; launched unchanged.`,
+      ...unchanged,
+      note: `Role is bound to "${binding.agent}", but "${stem}" was launched here; the binding does not apply and nothing was enforced.`,
     };
   }
 
+  const grammar = MODEL_FLAG_BY_LAUNCHER[stem];
+  let note: string | undefined;
+  let injectModel = false;
+
+  if (model) {
+    if (!binding.agent) {
+      note =
+        `Role is bound to model "${model}" but to no agent, so wmux cannot tell whose ` +
+        `--model grammar applies; nothing was enforced. Set the role's agent in Settings.`;
+    } else if (!grammar) {
+      note = `Role bound to model "${model}", but launcher "${stem}" has no known --model flag; launched unchanged.`;
+    } else if (!hasExplicitModelFlag(tokens)) {
+      injectModel = true;
+    }
+  }
+
   let out = command;
-  // Inject the model flag unless an explicit one is already present (D-4).
-  if (model && grammar && !hasExplicitModelFlag(tokens)) {
+  if (injectModel && grammar) {
     const at = tokens[0].end;
-    out = `${command.slice(0, at)} ${grammar.flag(model)}${command.slice(at)}`;
+    out = `${command.slice(0, at)} ${grammar.flag(model as string)}${command.slice(at)}`;
   }
   // Append extra args verbatim, but only when not already trailing (idempotence).
-  if (args && !out.trimEnd().endsWith(args)) {
+  if (args && !alreadyEndsWithArgs(out, args)) {
     out = `${out} ${args}`;
   }
 
-  return { command: out, changed: out !== command };
+  return {
+    command: out,
+    changed: out !== command,
+    modelInjected: injectModel,
+    ...(note ? { note } : {}),
+  };
 }
