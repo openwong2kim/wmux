@@ -45,7 +45,13 @@ export const ORCH_ROLE_MAX = 64;
 export function readOrchRole(
   custom: Record<string, string> | undefined,
 ): string | undefined {
-  const raw = custom?.[ORCH_ROLE_KEY];
+  return sanitizeOrchRole(custom?.[ORCH_ROLE_KEY]);
+}
+
+/** The role read-boundary neutralizer readOrchRole applies, exposed so any OTHER
+ *  entry point for a role string (today: a trusted `wmux.json` layout leaf) is
+ *  held to the same rule instead of re-deriving it. */
+export function sanitizeOrchRole(raw: unknown): string | undefined {
   if (typeof raw !== 'string') return undefined;
   // Collapse C0 control chars + DEL (incl. newline/CR/tab) to spaces so a
   // crafted role can't forge extra lines/instructions when injected.
@@ -109,6 +115,25 @@ const MODEL_FLAG_BY_LAUNCHER: Readonly<Record<string, ModelFlagGrammar>> = {
 /** Whether wmux knows how to inject a model flag for a launcher stem. */
 export function launcherSupportsModelFlag(stem: string): boolean {
   return stem in MODEL_FLAG_BY_LAUNCHER;
+}
+
+/**
+ * Will this binding actually cause a model flag to be spliced into a launch?
+ *
+ * The three conditions are exactly applyRoleBinding's: a model to pin, an agent
+ * to say whose `--model` grammar it belongs to, and a verified grammar for that
+ * agent. A binding failing any of them is stored and shown in Settings — with
+ * the inline hint explaining why — but the launch goes out UNCHANGED.
+ *
+ * Every affordance that tells the operator "this pane runs that model" must gate
+ * on this. Rendering the model because it is merely CONFIGURED is how an
+ * operator ends up believing a pane is pinned to a cheap model while it launches
+ * on the expensive default.
+ */
+export function bindingEnforcesModel(binding: RoleBinding | undefined): boolean {
+  return (
+    !!binding?.model && !!binding.agent && launcherSupportsModelFlag(binding.agent)
+  );
 }
 
 /** Launcher stems wmux recognizes as agent CLIs. This is applyRoleBinding's
@@ -235,19 +260,31 @@ export function normalizeRoleBindings(input: unknown): OrchestratorRoleBindings 
   return out;
 }
 
-/** Tokens that mean an explicit model flag is already present, so the rewrite
- *  must NOT add a second one (D-4: a manual `--model` wins for that launch).
+/** Does this token's VALUE carry an explicit model flag?
  *
- *  Quoting rule: a quoted token counts ONLY when its whole value is exactly the
- *  flag — `claude "--model" opus` really does pass a `--model` argument, so it
- *  must suppress injection. A `--model` mentioned INSIDE a longer quoted string
- *  (`claude "explain the --model flag"`) is prose and is ignored. */
+ *  Decided on the value alone, because that is what the CLI receives: the shell
+ *  hands `claude "--model=opus"` to claude as the single argument
+ *  `--model=opus`, exactly as the unquoted spelling would. Reading the quoting
+ *  instead used to miss that form and inject a second `--model`.
+ *
+ *  The prose exclusion is the whitespace test, not the quote flag. A `--model`
+ *  mentioned inside a longer string (`claude "explain the --model flag"`) is a
+ *  sentence, and a sentence always carries whitespace — no single argv entry
+ *  ever does. So a value with whitespace is never a flag, and a value without
+ *  it is judged purely on shape. */
+function isExplicitModelFlagToken(value: string): boolean {
+  if (/\s/.test(value)) return false;
+  if (value === '--model' || value === '-m') return true;
+  // `--model=opus` / `-m=opus`. Suppressing on the short `=` form even if a CLI
+  // rejects it errs toward "never emit a duplicate flag": a bad hand-written
+  // flag fails visibly, a silently doubled one does not.
+  return value.startsWith('--model=') || value.startsWith('-m=');
+}
+
+/** Is an explicit model flag already present, so the rewrite must NOT add a
+ *  second one (D-4: a manual `--model` wins for that launch)? */
 function hasExplicitModelFlag(tokens: ReturnType<typeof tokenize>): boolean {
-  for (const tkn of tokens) {
-    if (tkn.value === '--model' || tkn.value === '-m') return true;
-    if (!tkn.quoted && tkn.value.startsWith('--model=')) return true;
-  }
-  return false;
+  return tokens.some((tkn) => isExplicitModelFlagToken(tkn.value));
 }
 
 /** Sub-commands that may legitimately follow a launcher as a bare word.
@@ -309,7 +346,9 @@ function alreadyEndsWithArgs(command: string, args: string): boolean {
  *     an agent whose `--model` grammar we haven't verified (opencode/gemini),
  *     while `git`/`ls`/`npm` are never touched by any part of the binding.
  *  2. the rest of the line must look like arguments, not prose — see
- *     {@link looksLikeLaunchInvocation}.
+ *     {@link looksLikeLaunchInvocation}. A caller that SPAWNS the string rather
+ *     than submitting it to a pane knows this without guessing, and says so with
+ *     {@link ApplyRoleBindingOptions.spawnedProcess}.
  *
  * Rules once past the gates:
  *  - `binding.agent` set and the launcher stem differs → unchanged + a note
@@ -331,9 +370,32 @@ function alreadyEndsWithArgs(command: string, args: string): boolean {
  * Idempotent: re-applying never double-adds the model flag (an explicit
  * `--model` short-circuits) nor the args (token-boundary trailing check).
  */
+export interface ApplyRoleBindingOptions {
+  /**
+   * The command will be SPAWNED as a process, not submitted as a line into a
+   * pane that may already be running an agent.
+   *
+   * That distinction is what {@link looksLikeLaunchInvocation} exists to guess
+   * at, and on this path it is known rather than guessed: an X8 supervised leaf's
+   * `exec` string becomes the pane's root process, so there is no live TUI for it
+   * to be prose for. Skipping the prose gate here keeps enforcement on the shape
+   * a supervised agent leaf actually uses — `claude /loop`, a launch whose
+   * argument is a bare word — which the gate must otherwise reject, since on the
+   * submitted-line path that same string is far more likely to be a slash command
+   * typed at a running agent.
+   *
+   * Gate 1 is NOT affected: a non-agent stem (`npm run dev`) is still never
+   * touched, on any path. Set this only where the caller genuinely spawns the
+   * string; defaulting it on would re-open the mangled-prompt hazard the gate
+   * was built for.
+   */
+  spawnedProcess?: boolean;
+}
+
 export function applyRoleBinding(
   command: string,
   binding: RoleBinding | undefined,
+  options?: ApplyRoleBindingOptions,
 ): { command: string; changed: boolean; modelInjected: boolean; note?: string } {
   const unchanged = { command, changed: false, modelInjected: false };
   if (!binding) return unchanged;
@@ -347,8 +409,9 @@ export function applyRoleBinding(
 
   // Gate 1 — only agent launches are ever rewritten (see the doc block).
   if (!KNOWN_AGENT_STEMS.has(stem)) return unchanged;
-  // Gate 2 — and only when the line is an invocation, not prose.
-  if (!looksLikeLaunchInvocation(tokens)) return unchanged;
+  // Gate 2 — and only when the line is an invocation, not prose. A spawned
+  // process is one by construction (see ApplyRoleBindingOptions.spawnedProcess).
+  if (!options?.spawnedProcess && !looksLikeLaunchInvocation(tokens)) return unchanged;
 
   // A binding that names an agent only applies to that launcher. Launching a
   // DIFFERENT known agent than the role names is a silent policy deviation.

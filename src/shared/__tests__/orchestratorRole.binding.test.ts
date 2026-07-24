@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import {
   applyRoleBinding,
+  bindingEnforcesModel,
   launcherSupportsModelFlag,
   normalizeRoleBinding,
   normalizeRoleBindings,
@@ -46,6 +47,39 @@ describe('applyRoleBinding — model enforcement transform (D2)', () => {
     const r = applyRoleBinding('claude "--model" opus', { agent: 'claude', model: 'haiku' });
     expect(r.command).toBe('claude "--model" opus');
     expect(r.changed).toBe(false);
+  });
+
+  // P3 — the `=` form used to be checked only on UNQUOTED tokens, so this
+  // produced `claude --model haiku "--model=opus"`: two model flags on a line
+  // the operator had explicitly pinned.
+  it('treats a quoted "--model=x" as an explicit flag (the shell passes it whole)', () => {
+    const r = applyRoleBinding('claude "--model=opus"', { agent: 'claude', model: 'haiku' });
+    expect(r.command).toBe('claude "--model=opus"');
+    expect(r.changed).toBe(false);
+    expect(r.modelInjected).toBe(false);
+  });
+
+  it("treats the -m short form as explicit, quoted or not, bare or with '='", () => {
+    for (const line of ['claude -m opus', 'claude -m=opus', 'claude "-m=opus"', "claude '-m' opus"]) {
+      expect(applyRoleBinding(line, { agent: 'claude', model: 'haiku' }).changed).toBe(false);
+    }
+  });
+
+  // The prose exclusion must survive the quoting relaxation: whitespace, not the
+  // quote flag, is what disqualifies a token now.
+  it('still injects when a quoted PROSE span merely opens with --model=', () => {
+    const r = applyRoleBinding('claude "--model=opus is what I meant"', {
+      agent: 'claude',
+      model: 'haiku',
+    });
+    expect(r.command).toBe('claude --model haiku "--model=opus is what I meant"');
+    expect(r.modelInjected).toBe(true);
+  });
+
+  it('does not mistake a longer flag that merely starts with --model', () => {
+    const r = applyRoleBinding('claude --models=all', { agent: 'claude', model: 'haiku' });
+    expect(r.command).toBe('claude --model haiku --models=all');
+    expect(r.modelInjected).toBe(true);
   });
 
   it('is a no-op + note for an agent with no known model-flag grammar', () => {
@@ -298,11 +332,110 @@ describe('normalizeRoleBinding — field validation', () => {
   });
 });
 
+// The spawnedProcess escape hatch exists for X8 supervised leaves, whose `exec`
+// string becomes the pane's root process. These pin BOTH halves: that it lifts
+// the prose gate, and that it lifts nothing else — the default path, gate 1, and
+// every other rule must be exactly as they were.
+describe('applyRoleBinding — spawnedProcess lifts the prose gate and nothing else', () => {
+  it('enforces on a launch whose argument is a bare word', () => {
+    const line = 'claude /loop';
+    const bound: RoleBinding = { agent: 'claude', model: 'haiku' };
+    // Submitted into a pane this is most likely a slash command typed at a
+    // running agent, so the default still refuses.
+    expect(applyRoleBinding(line, bound).changed).toBe(false);
+    expect(applyRoleBinding(line, bound, { spawnedProcess: true }).command).toBe(
+      'claude --model haiku /loop',
+    );
+  });
+
+  it('still refuses a non-agent stem — gate 1 is not an option', () => {
+    for (const cmd of ['npm run dev', 'git commit -m wip', 'ls']) {
+      expect(applyRoleBinding(cmd, { agent: 'claude', model: 'haiku', args: '--x' }, {
+        spawnedProcess: true,
+      }).changed).toBe(false);
+    }
+  });
+
+  it('still refuses when the launched agent is not the bound one', () => {
+    const r = applyRoleBinding('codex /loop', { agent: 'claude', model: 'haiku' }, {
+      spawnedProcess: true,
+    });
+    expect(r.changed).toBe(false);
+    expect(r.note).toMatch(/bound to "claude"/);
+  });
+
+  it('still honors an explicit --model and the no-agent/no-grammar rules', () => {
+    expect(applyRoleBinding('claude --model opus /loop', { agent: 'claude', model: 'haiku' }, {
+      spawnedProcess: true,
+    }).modelInjected).toBe(false);
+    expect(applyRoleBinding('claude /loop', { model: 'haiku' }, { spawnedProcess: true })
+      .modelInjected).toBe(false);
+    expect(applyRoleBinding('gemini /loop', { agent: 'gemini', model: 'flash' }, {
+      spawnedProcess: true,
+    }).modelInjected).toBe(false);
+  });
+
+  it('leaves the prose gate armed for every caller that does not opt out', () => {
+    // The regression this guards: a default-on flag would splice flags into an
+    // orchestrator's message to a live TUI.
+    for (const prose of ['claude code is failing on windows', 'claude please retry the build']) {
+      expect(applyRoleBinding(prose, { agent: 'claude', model: 'haiku' }).changed).toBe(false);
+      expect(applyRoleBinding(prose, { agent: 'claude', model: 'haiku' }, {}).changed).toBe(false);
+      expect(applyRoleBinding(prose, { agent: 'claude', model: 'haiku' }, {
+        spawnedProcess: false,
+      }).changed).toBe(false);
+    }
+  });
+});
+
 describe('launcherSupportsModelFlag', () => {
   it('knows claude + codex, not gemini/aider', () => {
     expect(launcherSupportsModelFlag('claude')).toBe(true);
     expect(launcherSupportsModelFlag('codex')).toBe(true);
     expect(launcherSupportsModelFlag('gemini')).toBe(false);
     expect(launcherSupportsModelFlag('aider')).toBe(false);
+  });
+});
+
+// P2-B — the predicate every "this pane runs that model" affordance gates on.
+// Its contract is that it agrees with applyRoleBinding: whenever it says true,
+// the rewrite really injects; whenever false, the launch is untouched.
+describe('bindingEnforcesModel — the UI may only claim what the rewrite does', () => {
+  it('is true only for a model + agent + verified grammar', () => {
+    expect(bindingEnforcesModel({ agent: 'claude', model: 'haiku' })).toBe(true);
+    expect(bindingEnforcesModel({ agent: 'codex', model: 'gpt-5.5' })).toBe(true);
+  });
+
+  it('is false for a model with no agent — nobody owns that --model grammar', () => {
+    expect(bindingEnforcesModel({ model: 'haiku' })).toBe(false);
+  });
+
+  it('is false for an agent whose --model grammar is unverified', () => {
+    expect(bindingEnforcesModel({ agent: 'gemini', model: 'flash' })).toBe(false);
+    expect(bindingEnforcesModel({ agent: 'opencode', model: 'x' })).toBe(false);
+  });
+
+  it('is false for a binding with nothing to pin', () => {
+    expect(bindingEnforcesModel(undefined)).toBe(false);
+    expect(bindingEnforcesModel({})).toBe(false);
+    expect(bindingEnforcesModel({ agent: 'claude' })).toBe(false);
+    // Args-only really is enforced — but no MODEL is, and the badge shows a model.
+    expect(bindingEnforcesModel({ agent: 'claude', args: '--verbose' })).toBe(false);
+  });
+
+  it('agrees with applyRoleBinding on every combination it reports', () => {
+    const cases: RoleBinding[] = [
+      { agent: 'claude', model: 'haiku' },
+      { agent: 'codex', model: 'gpt-5.5' },
+      { model: 'haiku' },
+      { agent: 'gemini', model: 'flash' },
+      { agent: 'opencode', model: 'x' },
+      { agent: 'claude', args: '--verbose' },
+      {},
+    ];
+    for (const binding of cases) {
+      const launched = applyRoleBinding(binding.agent ?? 'claude', binding);
+      expect(launched.modelInjected).toBe(bindingEnforcesModel(binding));
+    }
   });
 });
