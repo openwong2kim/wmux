@@ -130,6 +130,25 @@ export function loadDeckBriefingConfig(dir?: string): DeckBriefingConfig {
   return loadFile(dir).config;
 }
 
+/**
+ * Chain-ordered reads. The sync loaders above see the file as it is on DISK, so
+ * a read issued while an acknowledge write is still queued computes from
+ * pre-write state — the briefing then reports a delta the operator already
+ * consumed until the next refresh corrects it. No data is lost either way, but
+ * a deterministic feature should not depend on which promise ticks first, and
+ * joining the chain costs only the in-flight write (one atomic JSON write).
+ */
+export function readDeckBriefingConfig(dir?: string): Promise<DeckBriefingConfig> {
+  return serialize(async () => loadDeckBriefingConfig(dir));
+}
+
+export function readBriefedSnapshot(
+  workspaceId: string,
+  dir?: string,
+): Promise<BriefedSnapshot | null> {
+  return serialize(async () => loadBriefedSnapshot(workspaceId, dir));
+}
+
 /** Persist a config patch, merging over the current value (a partial update
  *  keeps the other field) and preserving all stored snapshots. Returns the
  *  config now in force. */
@@ -177,19 +196,41 @@ function pruneSnapshots(
   }
 }
 
+/** Whether two baselines describe the SAME observed state — same pending
+ *  decision and the same ptyId→status map. `at` is deliberately excluded: it is
+ *  the write clock, not part of what the operator saw. */
+function sameBriefedState(prev: BriefedSnapshot | undefined, next: BriefedSnapshot): boolean {
+  if (!prev) return false;
+  if (prev.decisionId !== next.decisionId) return false;
+  if (prev.panes.length !== next.panes.length) return false;
+  const before = new Map(prev.panes.map((p) => [p.ptyId, p.agentStatus]));
+  return next.panes.every((p) => before.get(p.ptyId) === p.agentStatus);
+}
+
 /** Persist one workspace's last-viewed snapshot, preserving config + the other
  *  workspaces' snapshots. Fire-and-forget from the handler (a failed persist
- *  only costs a slightly-stale delta on the next open). */
+ *  only costs a slightly-stale delta on the next open).
+ *
+ *  Returns whether anything was written. The acknowledge path fires on EVERY
+ *  briefing the operator genuinely sees — it has to, or a workspace that goes
+ *  blocked → running → blocked never re-baselines and the second block reads as
+ *  old news — so the "don't hammer the disk on a no-news refresh" property is
+ *  enforced HERE instead: an acknowledge whose snapshot matches what is already
+ *  stored costs no IO. The stored `at` therefore only advances when the state
+ *  did, which is fine for the 30-day TTL (a workspace nobody's fleet changed in
+ *  a month re-seeds its baseline on the next view). */
 export async function saveBriefedSnapshot(
   workspaceId: string,
   snapshot: BriefedSnapshot,
   dir?: string,
   opts?: { liveWorkspaceIds?: readonly string[]; now?: number },
-): Promise<void> {
-  await serialize(async () => {
+): Promise<boolean> {
+  return serialize(async () => {
     const file = loadFile(dir);
+    if (sameBriefedState(file.snapshots[workspaceId], snapshot)) return false;
     pruneSnapshots(file.snapshots, opts?.liveWorkspaceIds, opts?.now ?? Date.now());
     file.snapshots[workspaceId] = snapshot;
     await atomicWriteJSON(getDeckBriefingPath(dir), file);
+    return true;
   });
 }

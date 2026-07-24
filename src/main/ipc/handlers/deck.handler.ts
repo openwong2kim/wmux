@@ -83,7 +83,8 @@ import {
 import {
   loadDeckBriefingConfig,
   saveDeckBriefingConfig,
-  loadBriefedSnapshot,
+  readDeckBriefingConfig,
+  readBriefedSnapshot,
   saveBriefedSnapshot,
   type DeckBriefingConfig,
 } from '../../deck/deckBriefingStore';
@@ -1541,7 +1542,9 @@ export function registerDeckHandler(
         : {};
       const workspaceId = readWorkspaceId(req);
       if (!workspaceId) return { briefing: null };
-      const cfg = loadDeckBriefingConfig();
+      // Both reads join the store's write chain so a GET that races a queued
+      // acknowledge still computes its delta from POST-write state.
+      const cfg = await readDeckBriefingConfig();
       if (!cfg.enabled) return { briefing: null };
       const mirror = getWorkspaceMirror();
       // The mirror push waits for paneGate === 'ready', so an early GET during
@@ -1559,7 +1562,7 @@ export function registerDeckHandler(
         decision: loadWorkspaceDecision(workspaceId),
         mode: loadWorkspaceMode(workspaceId),
         loop: loadWorkspaceLoopState(workspaceId),
-        prior: loadBriefedSnapshot(workspaceId),
+        prior: await readBriefedSnapshot(workspaceId),
         coldStart: markColdStart(workspaceId),
       });
       pendingSeen.set(workspaceId, {

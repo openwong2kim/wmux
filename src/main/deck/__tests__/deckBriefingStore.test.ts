@@ -14,6 +14,8 @@ import {
   saveDeckBriefingConfig,
   loadBriefedSnapshot,
   saveBriefedSnapshot,
+  readBriefedSnapshot,
+  readDeckBriefingConfig,
   getDeckBriefingPath,
 } from '../deckBriefingStore';
 import type { BriefedSnapshot } from '../deckBriefing';
@@ -91,6 +93,81 @@ describe('deckBriefingStore — snapshots', () => {
       'utf8',
     );
     expect(loadBriefedSnapshot('ws-1', dir)?.panes).toEqual([{ ptyId: 'ok', agentStatus: 'running' }]);
+  });
+});
+
+describe('deckBriefingStore — an equivalent acknowledge costs no IO', () => {
+  // The card now acknowledges EVERY briefing it genuinely shows (a no-delta one
+  // included, or the baseline never advances past a stale block). The "don't
+  // hammer the disk" property therefore lives here.
+  it('re-saving the same observed state does not write', async () => {
+    expect(await saveBriefedSnapshot('ws-1', snap(), dir)).toBe(true);
+    const before = fs.statSync(getDeckBriefingPath(dir)).mtimeMs;
+    expect(await saveBriefedSnapshot('ws-1', snap({ at: NOW + 5000 }), dir)).toBe(false);
+    expect(fs.statSync(getDeckBriefingPath(dir)).mtimeMs).toBe(before);
+    // `at` is the write clock, not part of what was seen — the stored one stands.
+    expect(loadBriefedSnapshot('ws-1', dir)?.at).toBe(NOW);
+  });
+
+  it('a changed status, a changed decision, or a new pane all still write', async () => {
+    await saveBriefedSnapshot('ws-1', snap(), dir);
+    expect(
+      await saveBriefedSnapshot('ws-1', snap({ panes: [{ ptyId: 'p1', agentStatus: 'complete' }] }), dir),
+    ).toBe(true);
+    expect(await saveBriefedSnapshot('ws-1', snap({ decisionId: 'dec-1' }), dir)).toBe(true);
+    expect(
+      await saveBriefedSnapshot(
+        'ws-1',
+        snap({
+          decisionId: 'dec-1',
+          panes: [
+            { ptyId: 'p1', agentStatus: 'running' },
+            { ptyId: 'p2', agentStatus: 'running' },
+          ],
+        }),
+        dir,
+      ),
+    ).toBe(true);
+  });
+
+  it('pane ORDER alone is not a change (the baseline is a status map)', async () => {
+    const panes = [
+      { ptyId: 'p1', agentStatus: 'running' as const },
+      { ptyId: 'p2', agentStatus: 'complete' as const },
+    ];
+    await saveBriefedSnapshot('ws-1', snap({ panes }), dir);
+    expect(await saveBriefedSnapshot('ws-1', snap({ panes: [...panes].reverse() }), dir)).toBe(false);
+  });
+
+  it('the first save for a workspace always writes (no baseline to match)', async () => {
+    expect(await saveBriefedSnapshot('ws-new', snap(), dir)).toBe(true);
+  });
+});
+
+describe('deckBriefingStore — chain-ordered reads', () => {
+  it('a read issued while a write is queued sees the POST-write state', async () => {
+    await saveBriefedSnapshot('ws-1', snap(), dir);
+    // Do not await the save: the read must queue behind it, not race it.
+    const write = saveBriefedSnapshot(
+      'ws-1',
+      snap({ panes: [{ ptyId: 'p1', agentStatus: 'complete' }] }),
+      dir,
+    );
+    const read = readBriefedSnapshot('ws-1', dir);
+    expect((await read)?.panes).toEqual([{ ptyId: 'p1', agentStatus: 'complete' }]);
+    await write;
+  });
+
+  it('a config read queued behind a toggle sees the toggle', async () => {
+    const write = saveDeckBriefingConfig({ enabled: false }, dir);
+    expect(await readDeckBriefingConfig(dir)).toEqual({ enabled: false, autoShow: true });
+    await write;
+  });
+
+  it('the async readers fail open exactly like the sync ones', async () => {
+    fs.writeFileSync(getDeckBriefingPath(dir), 'CORRUPT{', 'utf8');
+    expect(await readDeckBriefingConfig(dir)).toEqual(DEFAULT_BRIEFING);
+    expect(await readBriefedSnapshot('ws-1', dir)).toBeNull();
   });
 });
 

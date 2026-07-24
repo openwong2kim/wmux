@@ -33,11 +33,13 @@ const briefedSnapshots = new Map<string, unknown>();
 const saveOpts: { workspaceId: string; liveWorkspaceIds?: readonly string[] }[] = [];
 vi.mock('../../../deck/deckBriefingStore', () => ({
   loadDeckBriefingConfig: vi.fn(() => briefingConfig),
+  readDeckBriefingConfig: vi.fn(async () => briefingConfig),
   saveDeckBriefingConfig: vi.fn(async (patch: Partial<typeof briefingConfig>) => {
     briefingConfig = { ...briefingConfig, ...patch };
     return briefingConfig;
   }),
   loadBriefedSnapshot: vi.fn((ws: string) => briefedSnapshots.get(ws) ?? null),
+  readBriefedSnapshot: vi.fn(async (ws: string) => briefedSnapshots.get(ws) ?? null),
   saveBriefedSnapshot: vi.fn(
     async (
       ws: string,
@@ -47,6 +49,7 @@ vi.mock('../../../deck/deckBriefingStore', () => ({
     ) => {
       briefedSnapshots.set(ws, snap);
       saveOpts.push({ workspaceId: ws, ...(opts ?? {}) });
+      return true;
     },
   ),
 }));
@@ -268,6 +271,48 @@ describe('DECK_BRIEFING_GET', () => {
     expect(real.briefing.topPane?.ptyId).toBe('p1');
   });
 
+  it('ships the currently-blocked ptyIds (the card\'s rising-edge input)', async () => {
+    seedMirror('ws-1', [
+      { ptyId: 'p-run', agentStatus: 'running' },
+      { ptyId: 'p-b', agentStatus: 'awaiting_input' },
+      { ptyId: 'p-a', agentStatus: 'waiting' },
+    ]);
+    const r = (await invoke(IPC.DECK_BRIEFING_GET, { workspaceId: 'ws-1' })) as unknown as {
+      briefing: WorkspaceBriefing;
+    };
+    // Live state, sorted — no prior baseline exists, so a delta-derived list
+    // would have been empty here.
+    expect(r.briefing.changed).toBeNull();
+    expect(r.briefing.blockedPtyIds).toEqual(['p-a', 'p-b']);
+  });
+
+  it('mirror rows with no PTY (empty leaves, browser/editor surfaces) are not agents', async () => {
+    // A workspace holding only an unspawned leaf must brief NOTHING — it used
+    // to render "The agent is idle.", the dead-chrome case.
+    seedMirror('ws-1', [{ ptyId: '', agentStatus: 'idle' }]);
+    const empty = (await invoke(IPC.DECK_BRIEFING_GET, { workspaceId: 'ws-1' })) as unknown as {
+      briefing: WorkspaceBriefing;
+    };
+    expect(empty.briefing.counts.total).toBe(0);
+    expect(empty.briefing.topPane).toBeNull();
+
+    seedMirror('ws-2', [
+      { ptyId: '', agentStatus: 'idle' },
+      { ptyId: 'p1', agentStatus: 'running' },
+    ]);
+    const mixed = (await invoke(IPC.DECK_BRIEFING_GET, { workspaceId: 'ws-2' })) as unknown as {
+      briefing: WorkspaceBriefing;
+    };
+    expect(mixed.briefing.counts).toEqual({
+      total: 1,
+      blocked: 0,
+      errored: 0,
+      running: 1,
+      done: 0,
+      idle: 0,
+    });
+  });
+
   it('THE READ GUARANTEE: no brain adapter is created and the turn gate is never touched', async () => {
     seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'running' }]);
     await invoke(IPC.DECK_BRIEFING_GET, { workspaceId: 'ws-1' });
@@ -300,14 +345,43 @@ describe('DECK_BRIEFING_SEEN (acknowledge)', () => {
 
   it('a stale builtAt is a no-op (only the build the operator saw may commit)', async () => {
     seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'running' }]);
+    // Pin the clock so the two builds are guaranteed distinct: the assertion is
+    // "the EXACT previous build is rejected", which a third arbitrary number
+    // would satisfy without proving anything.
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(1_000);
     const first = await getBriefing('ws-1');
     // A newer build supersedes it; acknowledging the OLD one must not commit the
     // newer snapshot, which the operator never saw.
+    nowSpy.mockReturnValue(2_000);
     seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'awaiting_input' }]);
-    await getBriefing('ws-1');
-    expect(await invoke(IPC.DECK_BRIEFING_SEEN, { workspaceId: 'ws-1', builtAt: first.builtAt - 1 })).toEqual({ ok: false });
+    const second = await getBriefing('ws-1');
+    nowSpy.mockRestore();
+    expect(second.builtAt).not.toBe(first.builtAt);
+    expect(await invoke(IPC.DECK_BRIEFING_SEEN, { workspaceId: 'ws-1', builtAt: first.builtAt })).toEqual({ ok: false });
     await Promise.resolve();
     expect(briefedSnapshots.size).toBe(0);
+  });
+
+  it('a no-delta acknowledge still advances the baseline (blocked → running → blocked)', async () => {
+    // The round-1 renderer skipped the ack when there was no delta, so a pane
+    // that RECOVERED never re-baselined and the next genuine block diffed
+    // against a stale "already blocked" record — reported as old news.
+    seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'awaiting_input' }]);
+    const blocked1 = await getBriefing('ws-1');
+    await invoke(IPC.DECK_BRIEFING_SEEN, { workspaceId: 'ws-1', builtAt: blocked1.builtAt });
+    await Promise.resolve();
+
+    seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'running' }]);
+    const recovered = await getBriefing('ws-1');
+    expect(recovered.changed?.newlyBlocked).toEqual([]); // nothing to "consume"
+    expect(
+      await invoke(IPC.DECK_BRIEFING_SEEN, { workspaceId: 'ws-1', builtAt: recovered.builtAt }),
+    ).toEqual({ ok: true });
+    await Promise.resolve();
+
+    seedMirror('ws-1', [{ ptyId: 'p1', agentStatus: 'awaiting_input' }]);
+    const blocked2 = await getBriefing('ws-1');
+    expect(blocked2.changed?.newlyBlocked).toEqual(['p1']);
   });
 
   it('a repeated acknowledge of the same build does not write again', async () => {
