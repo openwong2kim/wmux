@@ -1020,7 +1020,7 @@ async function measureRam(inst, label) {
     appMetricsRaw = await inst.page.evaluate(() =>
       window.electronAPI?.system?.getMemoryUsage ? window.electronAPI.system.getMemoryUsage() : null);
   } catch { /* informational only */ }
-  console.log(`[${label}] workingSet=${(workingSetBytes / 1048576).toFixed(1)}MB commit=${(commitBytes / 1048576).toFixed(1)}MB procs=${seen.size}${daemonPid ? '' : ' (daemon pid missing!)'}`);
+  console.log(`[${label}] workingSet=${(workingSetBytes / 1048576).toFixed(1)}MB commit=${(commitBytes / 1048576).toFixed(1)}MB procs=${seen.size}${daemonPid && seen.has(daemonPid) ? '' : ' (daemon pid missing!)'}`);
   // Per-category working-set line (MB), only the non-empty buckets.
   const breakdownLine = RAM_CATEGORIES
     .filter((c) => breakdown[c].processCount > 0)
