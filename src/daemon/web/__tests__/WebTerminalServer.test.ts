@@ -494,6 +494,26 @@ describe('WebTerminalServer', () => {
     return (await res.json()) as Backlog;
   };
 
+  /**
+   * `reader.read()` on a silent stream never settles, so polling the deadline
+   * only BETWEEN reads hangs until the Vitest timeout. Race each read against
+   * the remaining budget and treat `null` as "deadline hit, stop reading".
+   */
+  const readWithin = async (
+    reader: ReadableStreamDefaultReader<Uint8Array>,
+    deadline: number,
+  ): Promise<ReadableStreamReadResult<Uint8Array> | null> => {
+    let timer: NodeJS.Timeout | undefined;
+    const budget = new Promise<null>((resolve) => {
+      timer = setTimeout(() => resolve(null), Math.max(0, deadline - Date.now()));
+    });
+    try {
+      return await Promise.race([reader.read(), budget]);
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+  };
+
   /** Open the SSE variant and read until `want` appears (or the deadline). */
   const readEventStream = async (url: string, want: RegExp, headers: Record<string, string> = {}) => {
     const ac = new AbortController();
@@ -506,9 +526,9 @@ describe('WebTerminalServer', () => {
       const reader = (res.body as ReadableStream<Uint8Array>).getReader();
       const deadline = Date.now() + 700;
       while (Date.now() < deadline && !want.test(text)) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (value) text += Buffer.from(value).toString('utf8');
+        const chunk = await readWithin(reader, deadline);
+        if (!chunk || chunk.done) break;
+        if (chunk.value) text += Buffer.from(chunk.value).toString('utf8');
       }
     }
     ac.abort();
@@ -534,6 +554,35 @@ describe('WebTerminalServer', () => {
       body: 'Build finished, 3 tests failed',
     });
     expect(data.headId).toBe(1);
+  });
+
+  it('★ never lets a pane-supplied payload shadow the server-assigned identity', async () => {
+    const info = await startRO();
+    const token = info.token as string;
+
+    // A pane can put anything in the notification event — including keys that
+    // collide with the fields the client dedups and resyncs on.
+    (sessionManager as unknown as EventEmitter).emit('session:notification', {
+      sessionId: 's3',
+      event: { source: 'osc9', title: null, body: 'spoofed', id: 999999, epoch: 'evil', kind: 'critical' },
+    });
+
+    const data = await backlog(token);
+    expect(data.events).toHaveLength(1);
+    expect(data.events[0].id).toBe(1);
+    expect(data.events[0].kind).toBe('notify');
+    expect(data.events[0].body).toBe('spoofed');
+    expect(data.headId).toBe(1);
+
+    // Same on the wire: the SSE body carries the server's id/epoch, not the payload's.
+    const out = await readEventStream(
+      `${base()}/api/events?token=${encodeURIComponent(token)}`,
+      /"body":"spoofed"/,
+    );
+    expect(out.text).toContain('"id":1');
+    expect(out.text).not.toContain('"id":999999');
+    expect(out.text).toContain(`"epoch":"${data.epoch}"`);
+    expect(out.text).not.toContain('"epoch":"evil"');
   });
 
   it('★ treats a cursor from another epoch as a full resync', async () => {
@@ -659,9 +708,9 @@ describe('WebTerminalServer', () => {
     const pump = async (until: RegExp) => {
       const deadline = Date.now() + 700;
       while (Date.now() < deadline && !until.test(text)) {
-        const { value, done } = await reader.read();
-        if (done) break;
-        if (value) text += Buffer.from(value).toString('utf8');
+        const chunk = await readWithin(reader, deadline);
+        if (!chunk || chunk.done) break;
+        if (chunk.value) text += Buffer.from(chunk.value).toString('utf8');
       }
     };
     await pump(/"body":"backlogged"/);

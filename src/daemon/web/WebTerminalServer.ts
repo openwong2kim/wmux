@@ -678,7 +678,8 @@ export class WebTerminalServer {
 
   /** The exact JSON one attention event carries on the wire, live or replayed. */
   private attentionWireBody(entry: AttentionEntry): string {
-    return JSON.stringify({ id: entry.id, epoch: this.attentionEpoch, ...entry.payload });
+    // Identity fields go LAST so pane-supplied payload data can never shadow them.
+    return JSON.stringify({ ...entry.payload, id: entry.id, epoch: this.attentionEpoch });
   }
 
   /** SSE `id:` value — epoch-qualified so a stale cursor is detectable. */
@@ -750,7 +751,12 @@ export class WebTerminalServer {
       writeSse(res, 'reset', JSON.stringify({ epoch: this.attentionEpoch, headId: this.headId() }));
     }
     for (const entry of entries) {
-      writeSse(res, entry.kind, this.attentionWireBody(entry), this.sseId(entry.id));
+      try {
+        writeSse(res, entry.kind, this.attentionWireBody(entry), this.sseId(entry.id));
+      } catch {
+        /* client vanished mid-replay — its own 'close' handler cleans up */
+        return;
+      }
     }
 
     const heartbeat = setInterval(() => {
@@ -784,7 +790,8 @@ export class WebTerminalServer {
       epoch: this.attentionEpoch,
       headId: this.headId(),
       reset,
-      events: entries.map((e) => ({ id: e.id, kind: e.kind, ...e.payload, at: e.at })),
+      // Identity fields go LAST so pane-supplied payload data can never shadow them.
+      events: entries.map((e) => ({ ...e.payload, id: e.id, kind: e.kind, at: e.at })),
     });
   }
 

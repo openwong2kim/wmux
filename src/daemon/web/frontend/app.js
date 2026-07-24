@@ -721,9 +721,14 @@
   var replaying = false;
   var replayCount = 0;
   var replayTimer = null;
+  // The last id the server had when it told us to resync. Once we have replayed
+  // up to it the backlog is provably over, so the very next event is LIVE.
+  var replayUntilId = 0;
 
   function endReplay() {
+    if (replayTimer) clearTimeout(replayTimer);
     replayTimer = null;
+    replayUntilId = 0;
     replaying = false;
     if (replayCount > 0) {
       pushNotif({
@@ -737,13 +742,16 @@
     }
     replayCount = 0;
   }
-  function beginReplay() {
+  function beginReplay(headId) {
     replaying = true;
     replayCount = 0;
+    replayUntilId = typeof headId === 'number' && headId > 0 ? headId : 0;
     armReplayEnd();
   }
-  // The backlog can span several network chunks, so the end of it is not an
-  // event we are told about — it is a short quiet period after the last one.
+  // Fallback for a server that sent no headId: the backlog can span several
+  // network chunks, so its end is not an event we are told about — it is a
+  // short quiet period after the last one. With a headId we close the window
+  // exactly, so a live event arriving inside 200ms keeps its banner.
   function armReplayEnd() {
     if (replayTimer) clearTimeout(replayTimer);
     replayTimer = setTimeout(endReplay, 200);
@@ -774,7 +782,13 @@
     if (replaying) {
       if (sid !== currentSession) { attn[sid] = true; renderFleet(); }
       replayCount += 1;
-      armReplayEnd();
+      if (replayUntilId && typeof data.id === 'number' && data.id >= replayUntilId) {
+        // That was the last event the backlog could contain — close the window
+        // now so the next one is treated as live (banner + vibration intact).
+        endReplay();
+      } else {
+        armReplayEnd();
+      }
       return;
     }
 
@@ -890,14 +904,28 @@
     var path = '/api/events';
     if (lastAttentionCursor) path += '?since=' + encodeURIComponent(lastAttentionCursor);
     attnEs = new EventSource(streamUrl(path));
-    attnEs.addEventListener('reset', function () { beginReplay(); });
+    attnEs.addEventListener('reset', function (e) {
+      var head = 0;
+      try { head = JSON.parse(e.data).headId; } catch (err) { head = 0; }
+      beginReplay(typeof head === 'number' ? head : 0);
+    });
     attnEs.addEventListener('critical', function (e) { handleAttention('critical', e.data); });
     attnEs.addEventListener('notify', function (e) { handleAttention('notify', e.data); });
     // Left to EventSource's own retry, which resends Last-Event-ID for us.
     // MERGE FOLLOW-UP: #596 adds a 401 probe (diagnoseStreamError) for a stream
     // that fails because the token rotated; this stream should use it too once
     // both branches are on main.
-    attnEs.onerror = function () { /* browser reconnects and replays */ };
+    attnEs.onerror = function () {
+      // readyState CONNECTING (0) means the browser is retrying by itself and
+      // will resend Last-Event-ID — leave it alone. CLOSED (2) means it gave up
+      // (a non-200, e.g. a 401 after the token rotated) and will NEVER retry;
+      // the handle must be released or the `if (attnEs) return` guard above
+      // blocks every future open and the channel is dead for the page's life.
+      if (attnEs && attnEs.readyState === 2) {
+        attnEs.close();
+        attnEs = null;
+      }
+    };
   }
 
   function connect(sessionId) {

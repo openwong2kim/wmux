@@ -9,6 +9,7 @@
  * OSC 9 carries no title at all, which is why "body only" must produce a real
  * headline instead of the literal word "Notification".
  */
+/* global globalThis */
 (function (root) {
   'use strict';
   function formatAttention(kind, data) {
