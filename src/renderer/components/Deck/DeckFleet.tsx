@@ -9,7 +9,7 @@ import {
 } from '../../stores/selectors/fleet';
 import type { AgentStatus } from '../../../shared/types';
 import { shellDisplayName } from '../../utils/ptyCreateOptions';
-import { ORCH_ROLES } from '../../../shared/orchestratorRole';
+import { ORCH_ROLES, bindingEnforcesModel } from '../../../shared/orchestratorRole';
 
 /**
  * Bridge P2① — the Fleet roster inside the deck's Orchestrator tab.
@@ -120,9 +120,15 @@ export default function DeckFleet({
             : [...ORCH_ROLES];
           // D2 — the enforced agent/model for this role, shown as a muted
           // sub-label so the operator sees what a worker will actually launch as.
+          // Gated on the binding REALLY injecting the model (bindingEnforcesModel),
+          // the same gate the pane badge uses: a stored-but-inert binding gets no
+          // chip here, because a chip reading "gemini · flash" is indistinguishable
+          // from an enforced one while the launch is untouched. Settings is where
+          // an inert row explains itself; this roster only states facts about the
+          // launch. Consequence: an args-only binding shows no chip either.
           const binding = role ? roleBindings[role] : undefined;
-          const bindingLabel = binding
-            ? [binding.agent, binding.model].filter(Boolean).join(' · ')
+          const bindingLabel = bindingEnforcesModel(binding)
+            ? [binding?.agent, binding?.model].filter(Boolean).join(' · ')
             : '';
           return (
             // Row = flex container so the jump button and the role <select> are

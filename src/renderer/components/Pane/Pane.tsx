@@ -10,6 +10,7 @@ import DiffPanel from '../Diff/DiffPanel';
 import SurfaceTabs, { PANE_ACTIONS_CLUSTER_WIDTH } from './SurfaceTabs';
 import { ErrorBoundary } from '../ErrorBoundary';
 import { agentSupportsPermissionFlag, permissionFlagFor, resumeGrammarFor } from '../../../shared/agentResume';
+import { bindingEnforcesModel, type RoleBinding } from '../../../shared/orchestratorRole';
 import { ResumeInfoChipGate } from './ResumeInfoChip';
 import { tokenAttrs } from '../../themes';
 import PaneDecorations from '../../plugins/PaneDecorations';
@@ -74,6 +75,25 @@ export function composePaneClassName(opts: {
  *  terminal (the field postdates the original Surface shape). */
 export function isTerminalSurfaceType(surfaceType: string | undefined): boolean {
   return surfaceType === undefined || surfaceType === 'terminal';
+}
+
+/**
+ * D2 — may this pane display a "role-enforced launch" model badge?
+ *
+ * Both halves are load-bearing and neither is obvious at the call site, which is
+ * why this is a named predicate rather than an inline `&&`:
+ *  - the binding must REALLY inject the model (bindingEnforcesModel). A
+ *    model-only binding, or one naming an agent whose `--model` grammar wmux has
+ *    not verified, is stored and shown in Settings but never applied — badging it
+ *    would tell the operator a pane is pinned to a model while the launch goes
+ *    out on the default.
+ *  - the surface must be a terminal, since nothing else launches an agent.
+ */
+export function showsEnforcedModelBadge(opts: {
+  binding: RoleBinding | undefined;
+  surfaceType: string | undefined;
+}): boolean {
+  return bindingEnforcesModel(opts.binding) && isTerminalSurfaceType(opts.surfaceType);
 }
 
 /**
@@ -298,9 +318,10 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
   const paneRoleBinding = useStore((s) =>
     paneRoleName ? s.orchestratorRoleBindings[paneRoleName] : undefined,
   );
-  const isTerminalSurface = isTerminalSurfaceType(
-    pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.surfaceType,
-  );
+  const showsEnforcedModel = showsEnforcedModelBadge({
+    binding: paneRoleBinding,
+    surfaceType: pane.surfaces.find((s) => s.id === pane.activeSurfaceId)?.surfaceType,
+  });
   // The persistent resume chip's "is this pane's agent busy?" gate — and the
   // store-wide `agentClockMs` decay-clock subscription it needs — lives in the
   // <ResumeInfoChipGate> leaf below, NOT here: Pane mounts that leaf only when a
@@ -695,8 +716,9 @@ export default function PaneComponent({ pane, workspace, isActive, isWorkspaceVi
       {/* D2 — muted enforced-model badge on a role-bound TERMINAL pane. Amber
           stays reserved for alive+focus (DESIGN.md), so this rides the sub
           tones. A browser/diff/editor surface never launches an agent, so the
-          badge would be a lie there — hence the surface-type gate. */}
-      {paneRoleBinding?.model && isTerminalSurface && (
+          badge would be a lie there — hence the surface-type gate, and the
+          enforceability gate beside it (see showsEnforcedModel). */}
+      {showsEnforcedModel && paneRoleBinding && (
         <span
           data-pane-enforced-model
           title={t('pane.enforcedLaunch', {

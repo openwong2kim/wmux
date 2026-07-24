@@ -9,7 +9,7 @@
  * composePaneClassName).
  */
 import { describe, it, expect } from 'vitest';
-import { enforcedModelBadgeOffset, isTerminalSurfaceType } from '../Pane';
+import { enforcedModelBadgeOffset, isTerminalSurfaceType, showsEnforcedModelBadge } from '../Pane';
 import { PANE_ACTIONS_CLUSTER_WIDTH } from '../SurfaceTabs';
 
 describe('isTerminalSurfaceType — the badge only claims a terminal', () => {
@@ -21,6 +21,53 @@ describe('isTerminalSurfaceType — the badge only claims a terminal', () => {
   it('rejects every non-terminal surface type', () => {
     for (const st of ['browser', 'editor', 'diff', 'git', 'review']) {
       expect(isTerminalSurfaceType(st)).toBe(false);
+    }
+  });
+});
+
+// P2-B — the badge used to render whenever a model was CONFIGURED, so a binding
+// the launch path deliberately ignores (model with no agent; an agent with no
+// verified --model grammar) told the operator a pane was pinned while it
+// launched on the default.
+describe('showsEnforcedModelBadge — only claims a model wmux really injects', () => {
+  it('shows for a binding the rewrite actually applies', () => {
+    expect(showsEnforcedModelBadge({
+      binding: { agent: 'claude', model: 'haiku' },
+      surfaceType: 'terminal',
+    })).toBe(true);
+    expect(showsEnforcedModelBadge({
+      binding: { agent: 'codex', model: 'gpt-5.5' },
+      surfaceType: undefined,
+    })).toBe(true);
+  });
+
+  it('stays silent for a model with no agent', () => {
+    expect(showsEnforcedModelBadge({ binding: { model: 'haiku' }, surfaceType: 'terminal' }))
+      .toBe(false);
+  });
+
+  it('stays silent for an agent whose --model grammar is unverified', () => {
+    for (const agent of ['opencode', 'gemini', 'aider']) {
+      expect(showsEnforcedModelBadge({ binding: { agent, model: 'x' }, surfaceType: 'terminal' }))
+        .toBe(false);
+    }
+  });
+
+  it('stays silent when there is no model to claim at all', () => {
+    expect(showsEnforcedModelBadge({ binding: undefined, surfaceType: 'terminal' })).toBe(false);
+    expect(showsEnforcedModelBadge({ binding: { agent: 'claude' }, surfaceType: 'terminal' }))
+      .toBe(false);
+    // Args-only IS enforced, but the badge shows a model — and there is none.
+    expect(showsEnforcedModelBadge({
+      binding: { agent: 'claude', args: '--verbose' },
+      surfaceType: 'terminal',
+    })).toBe(false);
+  });
+
+  it('stays silent on a surface that cannot launch an agent', () => {
+    for (const surfaceType of ['browser', 'editor', 'diff']) {
+      expect(showsEnforcedModelBadge({ binding: { agent: 'claude', model: 'haiku' }, surfaceType }))
+        .toBe(false);
     }
   });
 });
