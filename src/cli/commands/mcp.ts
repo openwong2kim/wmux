@@ -1,6 +1,8 @@
 import * as fs from 'fs';
+import * as net from 'net';
 import * as os from 'os';
 import * as path from 'path';
+import { getMcpBrokerPipeName } from '../../shared/constants';
 import { MCP_TARGETS, type McpTarget } from '../../shared/mcpTargets';
 import {
   readAllTargetStatuses,
@@ -86,21 +88,30 @@ function printCheck(statuses: TargetRegStatus[], jsonMode: boolean): void {
   }
 }
 
+// Full single-child MCP bundle candidates (the pre-broker layout). Used when the
+// broker is unreachable, so an agent still gets a self-contained MCP server.
+const FULL_BUNDLE_CANDIDATES = [
+  path.join('mcp-bundle', 'index.js'),
+  path.join('dist', 'mcp-bundle', 'index.js'),
+  // Unbundled dev layout: entry.js is the stdio boot (index.js became a
+  // side-effect-free factory after the broker split).
+  path.join('dist', 'mcp', 'mcp', 'entry.js'),
+  path.join('dist', 'mcp', 'mcp', 'index.js'),
+];
+
+// Thin shim candidates (the broker topology). Preferred only when a broker is
+// actually listening — the shim is worthless (agent gets no tools) without one.
+const SHIM_CANDIDATES = [
+  path.join('mcp-bundle', 'shim.js'),
+  path.join('dist', 'mcp-bundle', 'shim.js'),
+  path.join('dist', 'mcp', 'mcp', 'shim.js'),
+];
+
 /**
- * Find the bundled wmux MCP script when this CLI is invoked from a packaged
- * install. The CLI bundle lives in `dist/cli-bundle/index.js` next to
- * `dist/mcp-bundle/index.js` (or the legacy `dist/mcp/mcp/index.js` layout).
- * Returns null when no candidate exists.
+ * Walk up to 6 dirs from this file, returning the first candidate that exists.
+ * Mirrors McpRegistrar's packaged/dev layout resolution.
  */
-function resolveWmuxScript(): string | null {
-  const candidates = [
-    path.join('mcp-bundle', 'index.js'),
-    path.join('dist', 'mcp-bundle', 'index.js'),
-    // Unbundled dev layout: entry.js is the stdio boot (index.js became a
-    // side-effect-free factory after the broker split).
-    path.join('dist', 'mcp', 'mcp', 'entry.js'),
-    path.join('dist', 'mcp', 'mcp', 'index.js'),
-  ];
+function findScriptUp(candidates: string[]): string | null {
   let dir = __dirname;
   for (let i = 0; i < 6; i++) {
     for (const rel of candidates) {
@@ -112,6 +123,54 @@ function resolveWmuxScript(): string | null {
     dir = parent;
   }
   return null;
+}
+
+/**
+ * Single-shot probe: is a broker listening on the MCP broker pipe? Resolves
+ * true on connect, false on timeout/error. Never rejects. A Windows named-pipe
+ * connect can hang if the server process exists but hasn't called `listen()`
+ * yet, so the socket carries an explicit timeout and is always destroyed.
+ */
+export function canConnectBrokerPipe(timeoutMs = 300): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = net.connect(getMcpBrokerPipeName());
+    let settled = false;
+    const finish = (ok: boolean) => {
+      if (settled) return;
+      settled = true;
+      socket.destroy();
+      resolve(ok);
+    };
+    socket.setTimeout(timeoutMs);
+    socket.once('connect', () => finish(true));
+    socket.once('timeout', () => finish(false));
+    socket.once('error', () => finish(false));
+  });
+}
+
+/**
+ * Find the bundled wmux MCP script when this CLI is invoked from a packaged
+ * install. The CLI bundle lives in `dist/cli-bundle/index.js` next to
+ * `dist/mcp-bundle/index.js` (or the legacy `dist/mcp/mcp/index.js` layout).
+ * Returns null when no candidate exists.
+ *
+ * Broker-aware (plans/mcp-broker-enable-plan-2026-07-24.md W4 / RISK 4): if a
+ * broker is actually listening, prefer the thin shim so `wmux mcp register`
+ * doesn't silently overwrite the shim path with the ~32 MB full bundle and
+ * destroy the broker topology. The decision is made by a live PIPE PROBE, not
+ * the env flag: the CLI shell env is not the app env, so env-gating would write
+ * the shim path when no broker is running (every agent exits after its retry
+ * window) or the bundle when one is. `WMUX_MCP_BROKER=0` is honored only as an
+ * explicit escape hatch that skips the probe entirely. Falls back to the full
+ * bundle whenever the broker is unreachable or the shim file is missing
+ * (fail-open, mirroring McpRegistrar).
+ */
+export async function resolveWmuxScript(): Promise<string | null> {
+  if (process.env.WMUX_MCP_BROKER !== '0' && (await canConnectBrokerPipe(300))) {
+    const shim = findScriptUp(SHIM_CANDIDATES);
+    if (shim) return shim;
+  }
+  return findScriptUp(FULL_BUNDLE_CANDIDATES);
 }
 
 export async function handleMcp(args: string[], jsonMode: boolean): Promise<void> {
@@ -141,7 +200,7 @@ export async function handleMcp(args: string[], jsonMode: boolean): Promise<void
     }
 
     case 'register': {
-      const wmuxScript = resolveWmuxScript();
+      const wmuxScript = await resolveWmuxScript();
       // The wmux MCP script is required; bail if the bundle can't be found.
       if (!wmuxScript) {
         const warning =
