@@ -199,6 +199,12 @@ const config: ForgeConfig = {
     ignoreModules: ['node-pty'],
   },
   packagerConfig: {
+    // The binary must be fmux.exe / fmux, not derived from productName
+    // ("Forge Mux.exe"): the Windows CLI shim invokes `<app-dir>\fmux.exe`,
+    // the AUMID is com.squirrel.fmux.fmux (= com.squirrel.<nupkg>.<exe>), and
+    // the macOS shim targets <bundle>/Contents/MacOS/fmux. The bundle/app
+    // display name stays "Forge Mux" via productName.
+    executableName: 'fmux',
     asar: {
       unpack: '**/node_modules/node-pty/**',
     },
