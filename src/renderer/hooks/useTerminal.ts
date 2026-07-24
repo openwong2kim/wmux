@@ -123,6 +123,43 @@ export function __resetPtyDispatchersForTests(): void {
   ptyFlushDispatcher.reset();
 }
 
+// === #582: terminal mouse-drag dispose guard =================================
+// xterm's CoreMouseService registers document-level `mouseup`/`mousemove`
+// listeners dynamically on mousedown (so a selection/mouse-tracking drag can
+// be released outside the terminal element). On Terminal.dispose(), xterm
+// nullifies `_renderService` before removing those document listeners. If a
+// mouseup fires in that gap — which happens during remount churn (workspace
+// switch, StrictMode double-mount) — getMouseReportCoords reads
+// `_renderService.dimensions` on a half-torn-down instance and throws an
+// uncaught TypeError. We track active drags on any `.xterm` element so the
+// cleanup path can defer `terminal.dispose()` until the drag completes,
+// closing the race window without patching xterm internals.
+let _terminalDragActive = false;
+let _dragListenersInstalled = false;
+function _ensureDragListeners(): void {
+  if (_dragListenersInstalled || typeof document === 'undefined') return;
+  _dragListenersInstalled = true;
+  // Capture-phase: fire before xterm's own listeners so the flag is accurate.
+  document.addEventListener('mousedown', (e: Event) => {
+    const target = e.target;
+    if (target instanceof Element && target.closest('.xterm')) {
+      _terminalDragActive = true;
+    }
+  }, true);
+  const clear = (): void => { _terminalDragActive = false; };
+  document.addEventListener('mouseup', clear, true);
+  window.addEventListener('blur', clear, true);
+}
+/** Returns true while a mouse button is held down over any terminal element. */
+export function isTerminalDragActive(): boolean {
+  _ensureDragListeners();
+  return _terminalDragActive;
+}
+/** Test seam: reset the drag flag between test cases. */
+export function __resetTerminalDragForTests(): void {
+  _terminalDragActive = false;
+}
+
 // === P0-5: per-pane freshness state for the UI ==============================
 // 'syncing'  — a daemon resync is in flight (reveal/read of a dirty pane).
 // 'stale'    — a resync degraded; the screen may be missing output until the
@@ -1885,7 +1922,26 @@ export function useTerminal(containerRef: React.RefObject<HTMLDivElement | null>
       // is being disposed, parsing the backlog would be wasted work and a
       // post-dispose drain write would throw.
       discardTerminalOutput(terminal);
-      terminal.dispose();
+      // #582: defer terminal.dispose() if a mouse drag is active on any
+      // terminal. xterm nullifies _renderService before removing its
+      // document-level mouseup/mousemove listeners — a mouseup firing in
+      // that gap throws an uncaught TypeError from getMouseReportCoords.
+      // All PTY listeners above are already torn down, so deferring only
+      // the internal dispose is safe (no new data arrives). The backstop
+      // timeout covers the edge case where the mouse leaves the window
+      // mid-drag (no mouseup fires).
+      let _disposed = false;
+      const safeDispose = (): void => {
+        if (_disposed) return;
+        _disposed = true;
+        try { terminal.dispose(); } catch { /* already disposed */ }
+      };
+      if (isTerminalDragActive()) {
+        document.addEventListener('mouseup', safeDispose, { once: true });
+        setTimeout(safeDispose, 2000);
+      } else {
+        safeDispose();
+      }
       terminalRef.current = null;
       fitAddonRef.current = null;
       searchAddonRef.current = null;

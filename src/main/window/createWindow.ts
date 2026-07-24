@@ -141,11 +141,20 @@ export function createWindow(opts: { deferLoad?: boolean } = {}): BrowserWindow 
   }
 
   // CSP header — production only.
-  // In development, Vite serves scripts from localhost with inline module loaders,
-  // which are incompatible with strict CSP. We only enforce CSP in production builds.
+  // In development, Vite serves scripts from localhost with inline module
+  // loaders and eval-based HMR, which are incompatible with strict CSP.
+  // We only enforce CSP in production builds.
   // 'unsafe-inline' in style-src is required because Tailwind CSS and xterm.js
   // inject inline styles at runtime; removing it breaks UI rendering.
-  if (!MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+  //
+  // #582: In dev, we suppress Electron's "Insecure Content-Security-Policy"
+  // warning via ELECTRON_DISABLE_SECURITY_WARNINGS. Vite's HMR requires
+  // unsafe-eval, so any dev CSP we set would still trip the warning. The
+  // production CSP below is strict (no unsafe-eval), so this suppression is
+  // dev-only noise reduction, not a security trade-off.
+  if (MAIN_WINDOW_VITE_DEV_SERVER_URL) {
+    process.env.ELECTRON_DISABLE_SECURITY_WARNINGS = 'true';
+  } else {
     const cspPolicy = "default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; connect-src 'self'; font-src 'self'; frame-src 'self' https: http:";
 
     mainWindow.webContents.session.webRequest.onHeadersReceived((details, callback) => {
