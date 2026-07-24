@@ -12,9 +12,11 @@ on:
   pull_request:
     paths:
       - 'src/**'
-      - 'scripts/perf-bench.mjs'
-      - 'scripts/perf-compare.mjs'
-      - 'scripts/perf-scenarios.mjs'
+      # Every perf harness module, not an explicit allow-list: perf-bench.mjs
+      # imports perf-process-classify.mjs and perf-process-tree.mjs, so a PR
+      # touching only a helper (e.g. the tree-walk contamination guard, #570)
+      # must still re-run the gate. A named list silently skipped those.
+      - 'scripts/perf-*.mjs'
       - 'package.json'
       - 'package-lock.json'
       - '.github/workflows/perf.yml'
