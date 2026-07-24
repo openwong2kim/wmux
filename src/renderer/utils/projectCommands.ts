@@ -64,6 +64,7 @@ export async function runProjectCommand(
           ws.profile,
         ),
         roleBinding,
+        paneRoleName,
       ),
     ) as { id: string; shell?: string; cwd?: string };
     const fresh = useStore.getState();

@@ -176,6 +176,7 @@ export function EmptyLeafFunnel() {
               activeWorkspace.profile,
             ),
             seedRoleBinding,
+            seedRoleName,
           )
         )
       ).then((result) => {

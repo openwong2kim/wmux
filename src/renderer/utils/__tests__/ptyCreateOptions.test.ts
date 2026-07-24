@@ -1,9 +1,15 @@
-import { describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { resolveRespawnCwd, resolveStartupCwd, withDefaultShell, withWorkspaceProfile, withRoleBinding } from '../ptyCreateOptions';
 
 describe('withRoleBinding (D2)', () => {
+  const logSpy = vi.spyOn(console, 'log').mockImplementation(() => {});
+  beforeEach(() => logSpy.mockClear());
+
   it('enforces the bound model on a bound pane\'s initialCommand', () => {
-    const out = withRoleBinding({ workspaceId: 'ws', initialCommand: 'claude' }, { model: 'haiku' });
+    const out = withRoleBinding(
+      { workspaceId: 'ws', initialCommand: 'claude' },
+      { agent: 'claude', model: 'haiku' },
+    );
     expect(out.initialCommand).toBe('claude --model haiku');
   });
 
@@ -14,12 +20,36 @@ describe('withRoleBinding (D2)', () => {
 
   it('is a no-op when there is no initialCommand (exec/supervised branch)', () => {
     const options = { workspaceId: 'ws', exec: 'claude' };
-    expect(withRoleBinding(options, { model: 'haiku' })).toBe(options);
+    expect(withRoleBinding(options, { agent: 'claude', model: 'haiku' })).toBe(options);
   });
 
   it('does not override an explicit --model already in the seed command', () => {
     const options = { workspaceId: 'ws', initialCommand: 'claude --model opus' };
-    expect(withRoleBinding(options, { model: 'haiku' })).toBe(options);
+    expect(withRoleBinding(options, { agent: 'claude', model: 'haiku' })).toBe(options);
+  });
+
+  // P1-1 — a seeded project command is usually NOT an agent launch.
+  it('leaves a non-agent seed command untouched even with args bound', () => {
+    const options = { workspaceId: 'ws', initialCommand: 'npm run dev' };
+    expect(withRoleBinding(options, { args: '--dangerously-skip-permissions' })).toBe(options);
+  });
+
+  // P2-7 — this path alters what runs with no response to carry a note.
+  it('logs an audit line with the role and before/after when it rewrites', () => {
+    withRoleBinding(
+      { workspaceId: 'ws', initialCommand: 'claude' },
+      { agent: 'claude', model: 'haiku' },
+      'Builder',
+    );
+    expect(logSpy).toHaveBeenCalledWith(
+      '[wmux:role-binding] seed command rewritten',
+      expect.objectContaining({ role: 'Builder', before: 'claude', after: 'claude --model haiku' }),
+    );
+  });
+
+  it('logs nothing when the seed command is unchanged', () => {
+    withRoleBinding({ workspaceId: 'ws', initialCommand: 'npm run dev' }, { args: '--foo' }, 'Builder');
+    expect(logSpy).not.toHaveBeenCalled();
   });
 });
 

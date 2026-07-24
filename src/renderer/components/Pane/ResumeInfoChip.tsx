@@ -46,7 +46,7 @@ export function buildPaneResumeCommand(
   paneCwds: ReadonlyArray<string | undefined>,
   skipPermissions: boolean,
   roleBinding?: RoleBinding,
-): { command: string; exact: boolean } | null {
+): { command: string; exact: boolean; roleRewritten: boolean } | null {
   const grammar = resumeGrammarFor(binding.agent);
   if (!grammar) return null;
   // Lowercase ONLY a leading Windows drive letter; POSIX stays case-sensitive.
@@ -72,8 +72,11 @@ export function buildPaneResumeCommand(
   // rebuilds from the agent stem + resume/permission flags only, so a bound
   // model would silently drop; applyRoleBinding re-injects it (unless the
   // operator already put an explicit --model on the line).
-  const command = applyRoleBinding(base, roleBinding).command;
-  return { command, exact };
+  // `roleRewritten` is reported rather than logged here so this stays a pure
+  // function (it runs on every render of the chip); the caller emits the audit
+  // line once, from an effect.
+  const rewrite = applyRoleBinding(base, roleBinding);
+  return { command: rewrite.command, exact, roleRewritten: rewrite.changed };
 }
 
 /**
@@ -97,8 +100,10 @@ export default function ResumeInfoChip(props: {
   paneCwds: ReadonlyArray<string | undefined>;
   /** D2 — the pane's enforced role→model binding (re-asserted on resume). */
   roleBinding?: RoleBinding;
+  /** D2 — the role name that supplied `roleBinding`, for the audit log. */
+  role?: string;
 }): React.ReactElement | null {
-  const { ptyId, binding, paneCwds, roleBinding } = props;
+  const { ptyId, binding, paneCwds, roleBinding, role } = props;
   const t = useT();
   const [open, setOpen] = useState(false);
   const [copied, setCopied] = useState(false);
@@ -115,6 +120,15 @@ export default function ResumeInfoChip(props: {
 
   const onRecover = (e: React.MouseEvent) => {
     e.stopPropagation();
+    if (built.roleRewritten) {
+      // Audit trail — a role silently changed what this chip types. Logged at
+      // the ACTION (not while building the preview) so it fires once per use.
+      console.log('[wmux:role-binding] resume command rewritten', {
+        role,
+        agent: binding.agent,
+        after: command,
+      });
+    }
     // No trailing \r — the user presses Enter to run (D6: bypass is re-granted
     // only by an explicit keystroke, never automatically).
     window.electronAPI.pty.write(ptyId, command);
@@ -304,8 +318,9 @@ export function ResumeInfoChipGate(props: {
   binding: ResumeBinding;
   paneCwds: ReadonlyArray<string | undefined>;
   roleBinding?: RoleBinding;
+  role?: string;
 }): React.ReactElement | null {
-  const { ptyId, binding, paneCwds, roleBinding } = props;
+  const { ptyId, binding, paneCwds, roleBinding, role } = props;
   // The reactive decay clock — subscribing HERE (not in Pane) is the whole point.
   const agentClockMs = useStore((s) => s.agentClockMs);
   const activityAt = useStore((s) => s.surfaceActivityAt[ptyId] ?? 0);
@@ -319,5 +334,13 @@ export function ResumeInfoChipGate(props: {
   const agentProcessAlive = useStore((s) => s.agentAliveByPtyId[ptyId]);
   const agentBusy = isPaneAgentBusy({ activityAt, agentClockMs, status, commandRunning, agentProcessAlive });
   if (agentBusy) return null;
-  return <ResumeInfoChip ptyId={ptyId} binding={binding} paneCwds={paneCwds} roleBinding={roleBinding} />;
+  return (
+    <ResumeInfoChip
+      ptyId={ptyId}
+      binding={binding}
+      paneCwds={paneCwds}
+      roleBinding={roleBinding}
+      role={role}
+    />
+  );
 }

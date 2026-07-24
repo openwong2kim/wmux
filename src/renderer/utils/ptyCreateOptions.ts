@@ -106,10 +106,16 @@ export function withWorkspaceProfile<T extends PtyCreateOptions>(
 export function withRoleBinding<T extends PtyCreateOptions>(
   options: T,
   binding: RoleBinding | undefined,
+  role?: string,
 ): T {
   if (!binding || options.initialCommand === undefined) return options;
-  const { command, changed } = applyRoleBinding(options.initialCommand, binding);
+  const before = options.initialCommand;
+  const { command, changed } = applyRoleBinding(before, binding);
   if (!changed) return options;
+  // Audit trail: this path alters what a pane will RUN with no request/response
+  // to carry a note (unlike input.send, which reports `enforcedModel` back to
+  // the caller), so the rewrite would otherwise be invisible.
+  console.log('[wmux:role-binding] seed command rewritten', { role, before, after: command });
   return { ...options, initialCommand: command };
 }
 
