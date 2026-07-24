@@ -19,6 +19,7 @@ import type {
   LanLinkSendArgs,
   LanLinkPeersListResult,
 } from '../shared/lanlink';
+import type { WebStartArgs, WebTerminalInfo } from '../shared/web';
 
 /** Mirrors {@link McpStatusPayload} in src/main/ipc/handlers/mcp.handler.ts. */
 export interface McpTargetStatusPayload {
@@ -1111,6 +1112,19 @@ document.addEventListener('DOMContentLoaded', () => {
   peersList: () => ipcRenderer.invoke(IPC.LANLINK_PEERS_LIST) as Promise<LanLinkPeersListResult>,
   peersRemove: (peerUuid: string) =>
     ipcRenderer.invoke(IPC.LANLINK_PEERS_REMOVE, peerUuid) as Promise<{ ok: true }>,
+};
+
+// wmux web — titlebar toggle bridge (renderer → main → daemon control pipe).
+// Request/response via invoke (mirrors mcp / lanlink). Every call resolves a
+// WebTerminalInfo; the main handler never rejects (daemon-unreachable is
+// reported as `{ running:false, error }`), so callers read `.error` instead of
+// try/catch. Extends the electronAPI literal in place (mirrors .lanlink above).
+(electronAPI as Record<string, unknown>).web = {
+  status: () => ipcRenderer.invoke(IPC.WEB_STATUS) as Promise<WebTerminalInfo>,
+  pairRefresh: () => ipcRenderer.invoke(IPC.WEB_PAIR_REFRESH) as Promise<WebTerminalInfo>,
+  start: (args: WebStartArgs) =>
+    ipcRenderer.invoke(IPC.WEB_START, args) as Promise<WebTerminalInfo>,
+  stop: () => ipcRenderer.invoke(IPC.WEB_STOP) as Promise<WebTerminalInfo>,
 };
 
 contextBridge.exposeInMainWorld('electronAPI', electronAPI);

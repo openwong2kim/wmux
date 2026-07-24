@@ -6,6 +6,7 @@ import { DaemonSessionManager } from './DaemonSessionManager';
 import { PaneSupervisor } from './PaneSupervisor';
 import { DaemonPipeServer } from './DaemonPipeServer';
 import { SessionPipe } from './SessionPipe';
+import { WebTerminalServer } from './web/WebTerminalServer';
 import { generateSnapshot, generateSnapshotUnqueued, enqueueSnapshotJob, generateTextSnapshot, capTextRowsToFrameBudget, MAX_SCROLLBACK } from './HeadlessSnapshot';
 import { StateWriter, scrubPersistedCredentials } from './StateWriter';
 import { stripCredentialValues } from '../shared/envFilter';
@@ -47,6 +48,34 @@ import { agentDisplayToSlug } from '../main/pty/AgentDetector';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
+
+// wmux web — read-only-by-default browser terminal. Instantiated lazily in
+// registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives.
+// Module-scoped so the shutdown() path can tear it down too.
+let webTerminalServer: WebTerminalServer | null = null;
+
+/**
+ * Resolve the built frontend assets dir (dist/daemon-web) for BOTH dev and
+ * packaged layouts. The daemon bundle runs from `dist/daemon-bundle/index.js`
+ * (dev) or `resources/daemon-bundle/index.js` (packaged), so `dist/daemon-web`
+ * sits as its sibling (`../daemon-web`). Falls back to a cwd-relative dev path,
+ * then to the first candidate (WebTerminalServer surfaces a missing-asset warn).
+ */
+function resolveWebAssetsDir(): string {
+  const candidates = [
+    path.join(__dirname, '..', 'daemon-web'),
+    path.join(__dirname, 'daemon-web'),
+    path.join(process.cwd(), 'dist', 'daemon-web'),
+  ];
+  for (const c of candidates) {
+    try {
+      if (fs.existsSync(path.join(c, 'terminal.html'))) return c;
+    } catch {
+      /* ignore — try the next candidate */
+    }
+  }
+  return candidates[0];
+}
 
 // X6 Feature ②: sessions RECOVERED this daemon boot that were running an
 // INTERACTIVE agent (non-exec, non-supervised) → ptyId → the agent slug to
@@ -1585,6 +1614,42 @@ function registerRpcHandlers(
       };
     });
   });
+
+  // wmux web (read-only-by-default browser terminal). Lives in the daemon so it
+  // can tee the NON-exclusive DaemonPTYBridge without contending with the GUI's
+  // single-client SessionPipe, and so web access survives a GUI close. Nothing
+  // listens until daemon.web.start; a fresh web token is minted per start (the
+  // daemon master token never reaches the network — see WebTerminalServer).
+  // Token-only daemon-pipe methods (same class as daemon.serializeSession):
+  // deliberately NOT in the RpcMethod union / methodCapabilityMap.
+  if (!webTerminalServer) {
+    webTerminalServer = new WebTerminalServer({
+      sessionManager,
+      assetsDir: resolveWebAssetsDir(),
+      log: (level, msg) => log(level, msg),
+    });
+  }
+  const webServer = webTerminalServer;
+  pipeServer.onRpc('daemon.web.start', async (params) => {
+    const p = params as { port?: number; host?: string; allowInput?: boolean; allowedHosts?: unknown };
+    const port =
+      typeof p.port === 'number' && p.port > 0 && p.port < 65536 ? Math.floor(p.port) : 7681;
+    // Safe default: bind loopback only. Network exposure is an explicit
+    // caller decision (the CLI `--expose` flag sends host '0.0.0.0').
+    const host = typeof p.host === 'string' && p.host ? p.host : '127.0.0.1';
+    const allowInput = p.allowInput === true;
+    // Extra Host-header names for reverse-proxy fronts (`tailscale serve`
+    // forwards the MagicDNS name). Strings only; anything else is dropped.
+    const allowedHosts = Array.isArray(p.allowedHosts)
+      ? p.allowedHosts.filter((h): h is string => typeof h === 'string')
+      : [];
+    return webServer.start({ port, host, allowInput, allowedHosts });
+  });
+  pipeServer.onRpc('daemon.web.stop', async () => webServer.stop());
+  pipeServer.onRpc('daemon.web.status', async () => webServer.status());
+  // Operator-initiated pairing-code refresh — the escape hatch when a code has
+  // been used or has expired and another device still needs to pair.
+  pipeServer.onRpc('daemon.web.pairRefresh', async () => webServer.refreshPairCode());
 
   // X8 supervision control — renderer-only surface (main IPC → daemon).
   // External pipe clients are blocked upstream by the 'wmux.internal'
@@ -3152,6 +3217,17 @@ async function shutdown(
   if (shuttingDown) return { stateSaved: false };
   shuttingDown = true;
   log('info', `Received ${signal} — shutting down gracefully`);
+
+  // Tear down the wmux web server first (best-effort) so its HTTP listener +
+  // SSE streams release before the session pipes do. The OS would reclaim the
+  // port on exit anyway; this just makes a graceful shutdown clean.
+  if (webTerminalServer) {
+    try {
+      await webTerminalServer.stop();
+    } catch {
+      /* ignore — never block shutdown on the optional web server */
+    }
+  }
 
   // Cancel pending shutdown-kill reclassifications — the suspend loop below is
   // now the single owner of every non-dead session's persisted state.

@@ -290,6 +290,35 @@ export const en = {
   'statusBar.settingsTooltip': 'Settings (Ctrl+,)',
   'statusBar.channelsTooltip': 'Toggle channels',
 
+  // wmux web — titlebar toggle + popover (browser/PWA terminal server)
+  'web.label': 'web',
+  'web.tooltip': 'Serve panes to a browser',
+  'web.headline': 'Serve panes to a browser',
+  'web.allowInput': 'Allow input',
+  'web.expose': 'Expose to network',
+  'web.start': 'Start',
+  'web.stop': 'Stop',
+  'web.starting': 'Starting…',
+  'web.stopping': 'Stopping…',
+  'web.scrollbackWarning':
+    'Anyone who opens the page can read the full scrollback of the served pane — even read-only. Do not serve panes showing secrets.',
+  'web.exposeWarning':
+    'Reachable on all network interfaces (0.0.0.0). The access token is the only thing gating it — treat the URL as a secret.',
+  'web.readOnly': 'read-only',
+  'web.inputEnabled': 'INPUT ENABLED',
+  'web.viewers': '{count} viewer(s)',
+  'web.copied': 'Copied',
+  'web.copy': 'Copy',
+  'web.open': 'Open',
+  'web.openHere': 'Open on this machine',
+  'web.onPhone': 'On your phone',
+  'web.pairHint': 'Open this address, then enter the code:',
+  'web.pairCode': 'Pairing code',
+  'web.pairValidity': 'valid 10 min · single use',
+  'web.pairSpent': 'The code was used or expired.',
+  'web.newPairCode': 'New code',
+  'web.daemonOffline': 'wmux web needs the background daemon, which is not running.',
+
   // Settings
   'settings.title': 'Settings',
   'settings.language': 'Language',

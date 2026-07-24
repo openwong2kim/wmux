@@ -17,6 +17,7 @@ import { handleSetupHooks } from './commands/setupHooks';
 import { handleSetupStatusline } from './commands/setupStatusline';
 import { handleDoctor } from './commands/doctor';
 import { handleChannel } from './commands/channel';
+import { handleWeb } from './commands/web';
 
 const HELP_TEXT = `
 wmux CLI
@@ -53,6 +54,18 @@ INPUT COMMANDS
 
 BROWSER PANE
   open <url> [--workspace <id>]     Open/reuse a browser pane at <url>
+
+WEB ACCESS (browser / PWA over Tailscale)
+  web                               Serve wmux panes to a browser (read-only,
+                                    LOCAL-ONLY by default). NOTE: even read-only
+                                    exposes a pane's FULL scrollback to viewers.
+        [--port <n>]                Listen port (default 7681)
+        [--expose]                  Bind all interfaces (0.0.0.0) for phone
+                                    access. Off by default (loopback only).
+        [--host <addr>]             Explicit bind address (overrides --expose)
+        [--allow-input]             Enable keyboard input (off by default)
+        [--status]                  Show whether the web server is running
+        [--stop]                    Stop the web server
 
 NOTIFICATION COMMANDS
   notify <title> [body]             Show a notification in wmux
@@ -182,6 +195,8 @@ async function main(): Promise<void> {
       await handleOpen(rest, jsonMode);
     } else if (cmd === 'browser') {
       await handleBrowser(rest, jsonMode);
+    } else if (cmd === 'web') {
+      await handleWeb(rest, jsonMode);
     } else if (cmd === 'mcp') {
       await handleMcp(rest, jsonMode);
     } else if (cmd === 'setup-hooks') {

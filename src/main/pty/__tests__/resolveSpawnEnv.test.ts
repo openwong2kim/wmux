@@ -114,6 +114,34 @@ describe('resolveSpawnEnv', () => {
     expect(env.WMUX_SOCKET_PATH).toBeUndefined();
   });
 
+  it('carries the display-only workspace NAME with the same forced-identity ordering as the id', () => {
+    // WMUX_WORKSPACE_NAME is a label (wmux web shows "Workspace 1 · claude"
+    // instead of a bare cwd), but it rides in the identity block, so a profile
+    // or an account overlay cannot rewrite what a pane claims its workspace is.
+    const env = resolveSpawnEnv(
+      { PATH: '/usr/bin', WMUX_WORKSPACE_NAME: 'inherited-parent-ws' },
+      { WMUX_WORKSPACE_NAME: 'spoof-profile' },
+      { WMUX_WORKSPACE_ID: 'ws-1', WMUX_WORKSPACE_NAME: 'Workspace 1' },
+      undefined,
+      'gated',
+      { WMUX_WORKSPACE_NAME: 'spoof-account' },
+    );
+    expect(env.WMUX_WORKSPACE_NAME).toBe('Workspace 1');
+    expect(env.WMUX_WORKSPACE_ID).toBe('ws-1');
+  });
+
+  it('omits the workspace name when the caller has none (never fabricated downstream)', () => {
+    // The name is optional: main only stamps it when the workspace mirror knows
+    // one. Its absence is what tells wmux web to fall back to the cwd label —
+    // so a stale inherited value must not survive to fill the gap.
+    const env = resolveSpawnEnv(
+      { PATH: '/usr/bin', WMUX_WORKSPACE_NAME: 'parent-pane-ws' },
+      undefined,
+      { WMUX_WORKSPACE_ID: 'ws-1' },
+    );
+    expect(env.WMUX_WORKSPACE_NAME).toBeUndefined();
+  });
+
   it('lets identity carry a socket path (local-mode shape) without profile spoofing', () => {
     const env = resolveSpawnEnv({}, undefined, {
       WMUX_SOCKET_PATH: '\\\\.\\pipe\\wmux',
