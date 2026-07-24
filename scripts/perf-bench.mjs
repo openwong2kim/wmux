@@ -32,7 +32,12 @@
  *                  process categories (main / renderer / gpu / utility / daemon
  *                  / conhost / other) via the Electron `--type=` flag, so a
  *                  diet candidate (scrollback cap, V8 heap, GPU release) can be
- *                  located before it is built. With --scrollback-lines N the
+ *                  located before it is built. The tree walk itself is guarded
+ *                  against Windows pid recycling (issue #570 —
+ *                  perf-process-tree.mjs): a stale ParentProcessId pointing at
+ *                  a reused pid used to graft whole foreign subtrees onto the
+ *                  total, which is what tripped the Perf gate on an unrelated
+ *                  PR. With --scrollback-lines N the
  *                  bench pre-seeds session.json so EVERY measured pane mounts at
  *                  that scrollback size (clean A/B at both idle1Pane and 8
  *                  panes — see buildScrollbackSeedSession). With
@@ -85,7 +90,8 @@ import os from 'node:os';
 import { randomUUID } from 'node:crypto';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { chromium } from 'playwright-core';
-import { accumulateBreakdown, RAM_CATEGORIES } from './perf-process-classify.mjs';
+import { accumulateBreakdown, classifyProcess, RAM_CATEGORIES } from './perf-process-classify.mjs';
+import { collectProcessTree, looksLikeDaemonRow } from './perf-process-tree.mjs';
 import { summarizeSamples, compareImeEcho, judgeFrameStall } from './perf-scenarios.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -957,7 +963,11 @@ function snapshotProcesses() {
     // total to per-process categories (the Electron `--type=` flag lives on the
     // command line). CommandLine is null for processes the bench user can't read
     // — the classifier tolerates that and buckets them by image name / fallback.
-    const ps = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,WorkingSetSize,PageFileUsage | ConvertTo-Json -Compress';
+    // Issue #570: CreationDate feeds the tree walk's creation-time guard, which
+    // is what keeps a recycled pid from grafting a foreign subtree onto the RAM
+    // total (see perf-process-tree.mjs). Unlike CommandLine it is always
+    // readable, so the guard never has to fall back to trusting an edge.
+    const ps = 'Get-CimInstance Win32_Process | Select-Object ProcessId,ParentProcessId,Name,CommandLine,CreationDate,WorkingSetSize,PageFileUsage | ConvertTo-Json -Compress';
     execFile(POWERSHELL_EXE, ['-NoProfile', '-NonInteractive', '-Command', ps],
       { maxBuffer: 64 * 1024 * 1024, windowsHide: true }, (err, stdout) => {
         if (err) return reject(err);
@@ -967,24 +977,22 @@ function snapshotProcesses() {
 }
 async function measureRam(inst, label) {
   const procs = await snapshotProcesses();
-  const byParent = new Map();
-  const byPid = new Map();
-  for (const p of procs) {
-    byPid.set(p.ProcessId, p);
-    if (!byParent.has(p.ParentProcessId)) byParent.set(p.ParentProcessId, []);
-    byParent.get(p.ParentProcessId).push(p);
-  }
+  const byPid = new Map(procs.map((p) => [p.ProcessId, p]));
   const roots = [inst.proc.pid];
-  const daemonPid = readDaemonPid(inst);
+  // Issue #570: the daemon pid comes from a pid file and is used as a SECOND
+  // tree root, so a stale file pointing at a recycled slot would graft a
+  // foreign subtree on before the per-edge guard can weigh in (it validates
+  // edges, not roots). Verify the live process still looks like our daemon —
+  // answered from the snapshot we already hold, no extra PowerShell spawn.
+  const pidFileDaemonPid = readDaemonPid(inst);
+  const daemonRootRejected =
+    pidFileDaemonPid != null &&
+    byPid.has(pidFileDaemonPid) &&
+    !looksLikeDaemonRow(byPid.get(pidFileDaemonPid), byPid.get(inst.proc.pid));
+  const daemonPid = daemonRootRejected ? null : pidFileDaemonPid;
   if (daemonPid) roots.push(daemonPid);
-  const seen = new Set();
-  const queue = roots.filter((pid) => byPid.has(pid));
-  while (queue.length) {
-    const pid = queue.shift();
-    if (seen.has(pid)) continue;
-    seen.add(pid);
-    for (const child of byParent.get(pid) ?? []) queue.push(child.ProcessId);
-  }
+  const { pids: seen, rejectedEdgeCount, rejectedEdges, unresolvedRoots } =
+    collectProcessTree(procs, roots);
   let workingSetBytes = 0;
   let commitBytes = 0;
   // PR D: collect the normalized per-process rows over the SAME tree the flat
@@ -1012,7 +1020,7 @@ async function measureRam(inst, label) {
     appMetricsRaw = await inst.page.evaluate(() =>
       window.electronAPI?.system?.getMemoryUsage ? window.electronAPI.system.getMemoryUsage() : null);
   } catch { /* informational only */ }
-  console.log(`[${label}] workingSet=${(workingSetBytes / 1048576).toFixed(1)}MB commit=${(commitBytes / 1048576).toFixed(1)}MB procs=${seen.size}${daemonPid ? '' : ' (daemon pid missing!)'}`);
+  console.log(`[${label}] workingSet=${(workingSetBytes / 1048576).toFixed(1)}MB commit=${(commitBytes / 1048576).toFixed(1)}MB procs=${seen.size}${daemonPid && seen.has(daemonPid) ? '' : ' (daemon pid missing!)'}`);
   // Per-category working-set line (MB), only the non-empty buckets.
   const breakdownLine = RAM_CATEGORIES
     .filter((c) => breakdown[c].processCount > 0)
@@ -1025,7 +1033,39 @@ async function measureRam(inst, label) {
   if (breakdown.commandLineNullCount > 0) {
     console.error(`[${label}] attribution may be skewed: ${breakdown.commandLineNullCount} wmux processes had unreadable CommandLine`);
   }
-  return { workingSetBytes, commitBytes, processCount: seen.size, breakdown, appMetricsRaw };
+  // Issue #570 forensics. The run that tripped the gate on PR #569 reported
+  // `other n=136 3736M` and nothing else — enough to prove the total was
+  // foreign, not enough to name a single process. `otherTop` fixes that: the
+  // heaviest rows of the catch-all bucket travel in the artifact, so the next
+  // anomaly is diagnosable from the JSON alone instead of by re-deriving it.
+  // Names and sizes only — CommandLine can carry paths and tokens.
+  const otherTop = treeRows
+    .filter((r) => classifyProcess(
+      { name: r.name, commandLine: r.commandLine },
+      { pid: r.pid, mainPid: inst.proc.pid, daemonPid },
+    ) === 'other')
+    .sort((a, b) => b.workingSetBytes - a.workingSetBytes)
+    .slice(0, 5)
+    .map((r) => ({ pid: r.pid, name: r.name, workingSetBytes: r.workingSetBytes }));
+  const treeGuard = {
+    rejectedEdgeCount,
+    rejectedEdges,
+    unresolvedRoots,
+    daemonRootRejected,
+    otherTop,
+  };
+  if (rejectedEdgeCount > 0) {
+    const sample = rejectedEdges
+      .map((e) => `${e.name}(${e.pid})<-${e.parentName}(${e.parentPid})${e.skewMs == null ? ' undated' : ` ${e.skewMs}ms`}`)
+      .join(', ');
+    console.error(`[${label}] tree guard rejected ${rejectedEdgeCount} stale parent edge(s): ${sample}`);
+  }
+  if (daemonRootRejected) {
+    console.error(`[${label}] daemon pid ${pidFileDaemonPid} does not look like our daemon (image ${byPid.get(pidFileDaemonPid)?.Name}) — excluded from the tree`);
+  }
+  return {
+    workingSetBytes, commitBytes, processCount: seen.size, breakdown, treeGuard, appMetricsRaw,
+  };
 }
 
 // === Scrollback A/B seed (PR D) ===
