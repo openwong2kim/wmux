@@ -260,7 +260,7 @@ export function installStatusline(paths: SetupStatuslinePaths): StatuslineOutcom
 
 /** What a boot-time script refresh did — see refreshStatuslineScript. */
 export type RefreshOutcome =
-  | 'refreshed'     // the installed script was stale; the bundled one replaced it
+  | 'refreshed'     // installed script was stale OR missing; the bundled one (re)written
   | 'up-to-date'    // byte-identical, nothing written
   | 'not-installed' // no wmux-owned statusLine — the user never opted in
   | 'no-source'     // bundled script not locatable (broken install / odd layout)
@@ -281,21 +281,38 @@ export type RefreshOutcome =
  * decision 2026-07-17) intact — that rule is about opting a user IN, not about
  * keeping a file they already opted into correct.
  *
+ * Ownership is checked BEFORE the file is read, so a `statusLine` that still
+ * points at a script which has since been deleted (manual cleanup, a partial
+ * reinstall) is REPAIRED, not written off as uninstalled — otherwise Claude
+ * Code would keep invoking a nonexistent script every tick and this boot
+ * reconcile, the very thing meant to heal it, would skip it forever.
+ *
  * The write is tmp+rename because the statusline runs at input-box frequency;
- * a plain copy could hand a half-written script to a tick landing mid-copy.
+ * a plain copy could hand a half-written script to a tick landing mid-copy. The
+ * tmp name carries the pid so two instances racing at boot (a Squirrel swap can
+ * briefly overlap old and new) can't interleave writes into one temp file.
  */
 export function refreshStatuslineScript(paths: SetupStatuslinePaths): RefreshOutcome {
   if (!paths.scriptSource) return 'no-source';
   try {
-    if (!fs.existsSync(paths.scriptDest)) return 'not-installed';
     const owned = paths.targets.some((t) => {
       const load = loadSettings(t.settingsPath);
       return !load.corrupted && classifyStatusLine(load.settings) === 'wmux';
     });
     if (!owned) return 'not-installed';
     const source = fs.readFileSync(paths.scriptSource);
-    if (source.equals(fs.readFileSync(paths.scriptDest))) return 'up-to-date';
-    const tmp = paths.scriptDest + '.tmp';
+    // A missing destination is a repair case, not "up to date" — read it
+    // defensively (ENOENT → force a write) rather than gating on existsSync.
+    let current: Buffer | null = null;
+    try {
+      current = fs.readFileSync(paths.scriptDest);
+    } catch {
+      current = null;
+    }
+    if (current && source.equals(current)) return 'up-to-date';
+    const destDir = path.dirname(paths.scriptDest);
+    if (!fs.existsSync(destDir)) fs.mkdirSync(destDir, { recursive: true });
+    const tmp = paths.scriptDest + '.' + process.pid + '.tmp';
     fs.writeFileSync(tmp, source);
     fs.renameSync(tmp, paths.scriptDest);
     return 'refreshed';

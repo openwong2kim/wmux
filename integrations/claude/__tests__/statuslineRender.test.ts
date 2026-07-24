@@ -9,7 +9,7 @@
 // neither — model plus effort, nothing else — so what these lock down is that
 // the window never leaks into the label from EITHER source, on either version.
 
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, afterAll } from 'vitest';
 import { execFileSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import fs from 'node:fs';
@@ -22,10 +22,17 @@ const SCRIPT = fileURLToPath(new URL('../bin/wmux-statusline.mjs', import.meta.u
  *  instead of reading the developer's real ~/.claude.json. */
 const FAKE_HOME = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-statusline-render-'));
 
+afterAll(() => {
+  fs.rmSync(FAKE_HOME, { recursive: true, force: true });
+});
+
 function render(input: Record<string, unknown>): string {
   return execFileSync(process.execPath, [SCRIPT], {
     input: JSON.stringify(input),
     encoding: 'utf8',
+    // Hard cap so a regression that leaves the script waiting on stdin EOF
+    // fails the test instead of hanging the whole run / CI.
+    timeout: 10_000,
     env: {
       ...process.env,
       USERPROFILE: FAKE_HOME,

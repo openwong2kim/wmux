@@ -875,17 +875,17 @@ app.on('ready', async () => {
       try {
         const sl = refreshStatuslineScript(defaultStatuslinePaths());
         // 정상 무동작(up-to-date/not-installed)은 로그 소음이라 남기지 않는다.
-        if (sl === 'refreshed' || sl === 'failed' || sl === 'no-source') {
-          logLine('info', 'main', `statusline script refresh: ${sl}`);
-        }
+        // refreshed는 info, failed(실제 IO 실패)·no-source(설치 레이아웃 이상)는
+        // 정상과 섞이지 않게 warn으로 올린다.
+        if (sl === 'refreshed') logLine('info', 'main', `statusline script refresh: ${sl}`);
+        else if (sl === 'failed' || sl === 'no-source') logLine('warn', 'main', `statusline script refresh: ${sl}`);
       } catch (err) {
         console.warn('[statusline] script refresh failed (non-fatal):', err);
       }
       try {
         const br = refreshHookBridge(defaultHooksPaths());
-        if (br === 'refreshed' || br === 'failed' || br === 'no-source') {
-          logLine('info', 'main', `hook bridge refresh: ${br}`);
-        }
+        if (br === 'refreshed') logLine('info', 'main', `hook bridge refresh: ${br}`);
+        else if (br === 'failed' || br === 'no-source') logLine('warn', 'main', `hook bridge refresh: ${br}`);
       } catch (err) {
         console.warn('[hooks] bridge refresh failed (non-fatal):', err);
       }

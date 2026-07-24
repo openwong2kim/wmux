@@ -192,6 +192,27 @@ describe('refreshStatuslineScript', () => {
     expect(fs.existsSync(t.settingsPath)).toBe(false);
   });
 
+  it('restores a referenced script that was deleted, without writing settings', () => {
+    const t = target('acc-a');
+    const paths = makePaths([t]);
+    installStatusline(paths);
+    const settingsBefore = fs.readFileSync(t.settingsPath, 'utf8');
+    fs.rmSync(paths.scriptDest); // file gone, but settings still points at it
+    expect(refreshStatuslineScript(paths)).toBe('refreshed');
+    expect(fs.existsSync(paths.scriptDest)).toBe(true);
+    expect(fs.readFileSync(t.settingsPath, 'utf8')).toBe(settingsBefore);
+  });
+
+  it('does NOT restore when no target references the script', () => {
+    const t = target('acc-a');
+    const paths = makePaths([t]);
+    // settings.json exists but with no wmux statusLine; script absent.
+    fs.mkdirSync(path.dirname(t.settingsPath), { recursive: true });
+    fs.writeFileSync(t.settingsPath, JSON.stringify({ model: 'opus' }), 'utf8');
+    expect(refreshStatuslineScript(paths)).toBe('not-installed');
+    expect(fs.existsSync(paths.scriptDest)).toBe(false);
+  });
+
   it('leaves the script alone when every target runs a FOREIGN statusLine', () => {
     const t = target('acc-a');
     const paths = makePaths([t]);

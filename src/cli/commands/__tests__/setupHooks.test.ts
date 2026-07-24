@@ -429,6 +429,27 @@ describe('refreshHookBridge', () => {
     expect(fs.existsSync(settingsPath)).toBe(false);
   });
 
+  it('restores a referenced bridge that was deleted, without writing settings', () => {
+    installHooks(paths());
+    const settingsBefore = fs.readFileSync(settingsPath, 'utf8');
+    fs.rmSync(bridgeDest); // file gone, but settings hooks still reference it
+    expect(refreshHookBridge(paths())).toBe('refreshed');
+    expect(fs.existsSync(bridgeDest)).toBe(true);
+    expect(fs.readFileSync(settingsPath, 'utf8')).toBe(settingsBefore);
+  });
+
+  it('does NOT restore when settings has no wmux hooks referencing the bridge', () => {
+    // settings.json present with only foreign hooks; bridge absent.
+    fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
+    fs.writeFileSync(
+      settingsPath,
+      JSON.stringify({ hooks: { Stop: [{ matcher: '', hooks: [{ type: 'command', command: 'node other.js' }] }] } }),
+      'utf8',
+    );
+    expect(refreshHookBridge(paths())).toBe('not-installed');
+    expect(fs.existsSync(bridgeDest)).toBe(false);
+  });
+
   it('leaves the bridge alone when settings.json no longer references it', () => {
     // A leftover bridge file, but the user has since removed the hooks — the
     // plugin now owns the signals, and refreshing this orphan is pure surprise.
