@@ -123,7 +123,7 @@ Validation limits live in `src/shared/types.ts` (PANE_METADATA_MAX_BYTES, PANE_M
 
 | Method | Params | Tier | Notes |
 |---|---|---|---|
-| `browser.tabs` | `{ action, workspaceId, surfaceId?, url? }` | internal | Workspace-exact lifecycle backing for the bundled MCP `browser_tabs` tool. `workspaceId` is supplied by its strict caller-identity resolver and is not exposed as public tool input; the renderer re-checks surface ownership before select/close. |
+| `browser.tabs` | `{ action, workspaceId, surfaceId?, url? }` | internal | Workspace-exact lifecycle backing for the bundled MCP `browser_tabs` tool. `workspaceId` is supplied by its strict caller-identity resolver and is not exposed as public tool input; the renderer re-checks surface ownership before select/close. The handler trusts the supplied `workspaceId` rather than binding it to the caller, which is exactly why the method stays reserved — see the note in `methodCapabilityMap.ts`. |
 | `browser.open` | `{ url? }` | experimental | The browser/CDP surface backs the MCP `browser_*` tools. Wire shapes may evolve before v3.0. Currently the primary AI-agent capability driver, but not part of the substrate identity. |
 | `browser.navigate`, `browser.goBack`, `browser.close` | various | experimental | |
 | `browser.session.{start,stop,status,list}` | various | experimental | |
