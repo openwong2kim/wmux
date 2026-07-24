@@ -26,6 +26,8 @@
 //      │ 2. meter.recordSignal(agent, fireTs) — workspace-match-agnostic
 //      │    (Codex P1#2: surface plugin health even for cwds outside any
 //      │    wmux workspace)
+//      │ 2b. M1: daemon connected → relay to `daemon.hooks.signal` and return
+//      │    its response. Steps 3+ are the daemon-unreachable fallback.
 //      │ 3. resolve cwd → {workspaceId, ptyId} via workspace.list
 //      │ 4. meter.recordWorkspaceMatch(ptyId != null) — separate counter
 //      │ 5. if matched: forward token usage, run dedup, emit notification
@@ -98,6 +100,109 @@ function readLastAssistantMessageSafely(
 }
 
 /**
+ * The transcript tail a turn-end signal carries, or null when there is none to
+ * read. Claude only: the reader parses Claude Code's transcript JSONL, so
+ * another agent's `transcript_path` would be a different format at best and
+ * pointless main-thread I/O at worst.
+ *
+ * Exported because M1 gives this signal TWO arrival paths — the local handler
+ * below, and `DaemonNotificationRouter` replaying the daemon's hook event —
+ * and both must read the same field with the same guards.
+ */
+export function readStopMessage(signal: AgentSignal): AgentLastMessage | null {
+  return signal.kind === 'agent.stop' && signal.agent === 'claude'
+    ? readLastAssistantMessageSafely(signal.payload)
+    : null;
+}
+
+/** Fleet View activity string for an `agent.activity` (PostToolUse) payload. */
+export function activityFromSignalPayload(payload: Record<string, unknown> | undefined): string {
+  return summarizeActivity(payload?.tool_name, payload?.tool_input);
+}
+
+/**
+ * The single metadata broadcast a turn BOUNDARY produces, or null when the kind
+ * is not a boundary.
+ *
+ * Codex review catch: PostToolUse populates surfaceActivity (+ its freshness
+ * stamp), but nothing ever cleared it. A turn that ends without the final prompt
+ * matching the detector (hook-only agents, or any turn once the hook-authority
+ * veto suppresses the detector) left Fleet View showing the pane as
+ * "running: <last tool>" for the full HOOK_RUNNING_TTL_MS (120s) after the turn
+ * was actually done — a stale status that reads as "still working" right when it
+ * finished. Cleared on agent.stop (the turn definitively ended) and
+ * agent.session_start (fresh session on this ptyId — a previous session's tool
+ * label must not leak in). NOT on agent.subagent_stop: a Task-tool subagent
+ * finishing happens WITHIN the parent turn, which may still have more tool calls
+ * coming, so clearing there would erase live activity. `activity: ''` is the
+ * established clear signal (setSurfaceActivity deletes both the string and its
+ * freshness timestamp on a falsy value).
+ *
+ * The same turn boundary also decides the pane's PENDING QUESTION, so both
+ * fields ride ONE broadcast — a stop is a single state transition and must not
+ * fan out as two IPC messages. `pendingQuestion` lets a poller (`pane_list`, the
+ * sidebar) tell "finished" from "blocked on an answer" without reading the
+ * terminal, where an agent's printed question is indistinguishable from text
+ * pending in its input box. It is written on EVERY stop: a stop that asks
+ * nothing CLEARS a question left by an earlier turn, otherwise a pane reads as
+ * blocked forever. session_start clears it for the same reason it clears
+ * activity.
+ *
+ * `agentStatus: 'complete'` is hook-authoritative turn completion. A long-lived
+ * agent TUI (OpenCode, etc.) is a foreground command the WHOLE time it is open,
+ * so the byte-silence heuristic (ActivityMonitor) never flips it to idle — its
+ * periodic repaints keep the idle timer perpetually rescheduled — and no precise
+ * idle-prompt detector event ever lands. The pane was therefore stuck reporting
+ * 'running' forever between turns, both in the fleet badge (via ws metadata /
+ * surfaceAgent) and in `pane_list` (surfaceAgent.status), misleading the
+ * orchestrator and hiding the finished pane from the heartbeat level review
+ * (which only scans attention statuses). 'complete' is an ATTENTION status that
+ * outranks the busy-derived 'running' in selectFleetPanes and flows to
+ * surfaceAgent for pane_list. A genuinely new turn re-arms 'running' via
+ * ActivityMonitor.onActive / a fresh awaiting_input hook, both of which clear
+ * this attention entry (setSurfaceAgentStatus drops any non-attention status).
+ * session_start is a turn BEGINNING, not an end, so it must not set it.
+ */
+export function buildTurnBoundaryMetadata(
+  kind: AgentSignal['kind'],
+  stopMessage: AgentLastMessage | null,
+): { activity: string; pendingQuestion: string; agentStatus?: 'complete' } | null {
+  if (kind !== 'agent.stop' && kind !== 'agent.session_start') return null;
+  return {
+    activity: '',
+    pendingQuestion: stopMessage?.endsWithQuestion ? stopMessage.text : '',
+    ...(kind === 'agent.stop' ? { agentStatus: 'complete' as const } : {}),
+  };
+}
+
+/**
+ * Per-key leading-edge throttle: the first call for a key passes and stamps,
+ * everything inside `windowMs` after it is dropped. No timers and no per-key
+ * sweep — the only residue is a `number` per key, cleared wholesale by `clear()`.
+ *
+ * Shared by the two activity paths (this handler and DaemonNotificationRouter's
+ * replay) so a pane's Fleet View activity line is rate-limited the same way
+ * whichever one serves it.
+ */
+export function createLeadingEdgeThrottle(
+  windowMs: number,
+  now: () => number = Date.now,
+): { allow(key: string): boolean; clear(): void } {
+  const lastAt = new Map<string, number>();
+  return {
+    allow(key: string): boolean {
+      const at = now();
+      if (at - (lastAt.get(key) ?? 0) < windowMs) return false;
+      lastAt.set(key, at);
+      return true;
+    },
+    clear(): void {
+      lastAt.clear();
+    },
+  };
+}
+
+/**
  * X6 ③ (codex P2): durable spool written by MAIN when the daemon.setResumeBinding
  * relay can't land (daemon down / restarting). The bridge already spools when the
  * MAIN pipe is down; this closes the symmetric hole where main is up and resolved
@@ -145,6 +250,53 @@ interface WorkspaceListEntry {
   metadata?: { cwd?: string | null };
   activePtyId?: string | null;
   ptyIds?: string[];
+}
+
+/**
+ * M1 relay budget. Must stay under the bridge's HOOK_TIMEOUT_MS (2s) so a slow
+ * daemon still lets this handler answer before the bridge gives up on us.
+ */
+export const DAEMON_RELAY_TIMEOUT_MS = 1_500;
+
+/**
+ * Forward a hook envelope to the daemon's `daemon.hooks.signal` (M1).
+ *
+ * After M1 the daemon is the hook-ingest authority: it runs the detector and
+ * owns the dedup ledger, so arbitration must happen in ONE process. A new
+ * bridge reaches it directly; an OLD bridge (or one whose daemon token is
+ * missing) still lands on the main pipe, and this relay puts that signal into
+ * the same ledger instead of a second, divergent one in main.
+ *
+ * Returns the daemon's verdict, or `null` when the daemon did not take the
+ * signal — daemon down / mid-restart, or too old to know the method (an
+ * `Unknown method` reply rejects the DaemonClient promise and lands in the
+ * catch). `null` means "main owns this one": the caller falls through to the
+ * pre-M1 local processing.
+ *
+ * A daemon that ANSWERED has ingested the signal, so a response we can't parse
+ * still resolves to `{ ok: true }` — re-processing it locally would double-fire
+ * the notification and poison the ledger for the turn.
+ */
+export async function relayHookSignalToDaemon(
+  client: Pick<DaemonClient, 'isConnected' | 'rpc'> | null,
+  signal: AgentSignal,
+): Promise<HookSignalResponse | null> {
+  if (!client || !client.isConnected) return null;
+  let result: unknown;
+  try {
+    result = await client.rpc(
+      'daemon.hooks.signal',
+      signal as unknown as Record<string, unknown>,
+      { timeoutMs: DAEMON_RELAY_TIMEOUT_MS },
+    );
+  } catch (err) {
+    console.warn(`[hooks.signal] daemon relay failed, processing locally: ${String(err)}`);
+    return null;
+  }
+  if (result && typeof result === 'object' && typeof (result as HookSignalResponse).ok === 'boolean') {
+    return result as HookSignalResponse;
+  }
+  return { ok: true };
 }
 
 // RCA (2026-05-29 dogfood, bridge.log): the handler used to do a renderer
@@ -229,11 +381,10 @@ export function registerHooksRpc(
   // hot path reads it directly — no renderer round-trip when it can serve.
   const mirror = getMirror();
 
-  // Fleet activity leading-edge throttle: ptyId → lastSentMs. Scoped to this
-  // registration (like workspaceCache/floodMeter) so it lives for the handler's
-  // lifetime and is cleared wholesale on the returned cleanup — no per-ptyId GC
-  // needed (see ACTIVITY_THROTTLE_MS).
-  const activityLastSent = new Map<string, number>();
+  // Fleet activity leading-edge throttle. Scoped to this registration (like
+  // workspaceCache/floodMeter) so it lives for the handler's lifetime and is
+  // cleared wholesale on the returned cleanup (see ACTIVITY_THROTTLE_MS).
+  const activityThrottle = createLeadingEdgeThrottle(ACTIVITY_THROTTLE_MS);
 
   // Observability: surface a hook-RPC flood in the main log (postmortem
   // visible) by tallying slow/failed workspace.list resolutions per window.
@@ -262,6 +413,17 @@ export function registerHooksRpc(
     //    count toward "plugin is alive" (Codex P1#2). The workspace
     //    match outcome is tracked as a separate counter below.
     meter.recordSignal(signal.agent, signal.ts);
+
+    // 2b. M1 relay. The daemon owns hook ingest now (contract §7): when its
+    //     client is connected, forward the envelope and return its verdict
+    //     verbatim, so a bridge that still targets the MAIN pipe arbitrates
+    //     against the same ledger as one that reaches the daemon directly.
+    //     Everything below this line is the daemon-UNREACHABLE fallback — the
+    //     pre-M1 local path, unchanged. The latency meter is fed above the
+    //     relay on purpose: the Settings hook-health card must keep counting
+    //     signals that main merely passes through.
+    const relayed = await relayHookSignalToDaemon(getDaemonClient?.() ?? null, signal);
+    if (relayed) return relayed;
 
     // 3. Resolve signal → ptyId. Env-first (workspaceId/surfaceId from
     //    WMUX_* env vars that wmux PTYManager injects into the shell)
@@ -364,79 +526,25 @@ export function registerHooksRpc(
     // Throttled leading-edge per ptyId (see ACTIVITY_THROTTLE_MS) so a tool-heavy
     // turn doesn't flood IPC. ptyId is already guaranteed non-null here (the
     // !ptyId early-return ran above).
-    if (signal.kind === 'agent.activity') {
-      const now = Date.now();
-      const lastSent = activityLastSent.get(ptyId) ?? 0;
-      if (now - lastSent >= ACTIVITY_THROTTLE_MS) {
-        activityLastSent.set(ptyId, now);
-        const activity = summarizeActivity(signal.payload?.tool_name, signal.payload?.tool_input);
-        const win = getWindow();
-        if (win) {
-          broadcastMetadataUpdate(win, { ptyId, activity });
-        }
+    if (signal.kind === 'agent.activity' && activityThrottle.allow(ptyId)) {
+      const win = getWindow();
+      if (win) {
+        broadcastMetadataUpdate(win, { ptyId, activity: activityFromSignalPayload(signal.payload) });
       }
     }
 
-    // Codex review catch: PostToolUse populates surfaceActivity (+ its
-    // freshness stamp), but nothing ever cleared it. A turn that ends
-    // without the final prompt matching the detector (hook-only agents, or
-    // any turn once the hook-authority veto suppresses the detector) left
-    // Fleet View showing the pane as "running: <last tool>" for the full
-    // HOOK_RUNNING_TTL_MS (120s) after the turn was actually done — a stale
-    // status that reads as "still working" right when it finished. Clear on
-    // agent.stop (the turn definitively ended) and agent.session_start
-    // (fresh session on this ptyId — a previous session's tool label must
-    // not leak in). NOT on agent.subagent_stop: a Task-tool subagent
-    // finishing happens WITHIN the parent turn, which may still have more
-    // tool calls coming — clearing there would erase live activity.
-    // `activity: ''` is the established clear signal (setSurfaceActivity
-    // deletes both the string and its freshness timestamp on a falsy value).
-    //
-    // The same turn boundary also decides the pane's PENDING QUESTION, so both
-    // fields ride ONE broadcast — a stop is a single state transition and must
-    // not fan out as two IPC messages. `pendingQuestion` lets a poller
-    // (`pane_list`, the sidebar) tell "finished" from "blocked on an answer"
-    // without reading the terminal, where an agent's printed question is
-    // indistinguishable from text pending in its input box. It is written on
-    // EVERY stop: a stop that asks nothing CLEARS a question left by an earlier
-    // turn, otherwise a pane reads as blocked forever. session_start clears it
-    // for the same reason it clears activity.
+    // Turn-boundary metadata (activity clear + pendingQuestion + completion
+    // status). See buildTurnBoundaryMetadata for the full rationale — it is
+    // shared with DaemonNotificationRouter's replay of the same signal.
     //
     // The transcript tail is read ONCE here and reused for the EventBus tee
     // below — it is real file I/O inside the hook's 2s budget.
-    // Claude only: the reader parses Claude Code's transcript JSONL. Another
-    // agent's transcript_path would be a different format at best, and reading
-    // it is pointless main-thread I/O at worst.
-    const stopMessage = signal.kind === 'agent.stop' && signal.agent === 'claude'
-      ? readLastAssistantMessageSafely(signal.payload)
-      : null;
-    if (signal.kind === 'agent.stop' || signal.kind === 'agent.session_start') {
+    const stopMessage = readStopMessage(signal);
+    const boundary = buildTurnBoundaryMetadata(signal.kind, stopMessage);
+    if (boundary) {
       const win = getWindow();
       if (win) {
-        broadcastMetadataUpdate(win, {
-          ptyId,
-          activity: '',
-          pendingQuestion: stopMessage?.endsWithQuestion ? stopMessage.text : '',
-          // Hook-authoritative turn completion. A long-lived agent TUI
-          // (OpenCode, etc.) is a foreground command the WHOLE time it is open,
-          // so the byte-silence heuristic (ActivityMonitor) never flips it to
-          // idle — its periodic repaints keep the idle timer perpetually
-          // rescheduled — and no precise idle-prompt detector event ever lands.
-          // The pane was therefore stuck reporting 'running' forever between
-          // turns, both in the fleet badge (via ws metadata / surfaceAgent) and
-          // in `pane_list` (surfaceAgent.status), misleading the orchestrator
-          // and hiding the finished pane from the heartbeat level review (which
-          // only scans attention statuses). While the bridge is alive its Stop
-          // signal is canonical (hookRouter.touchAuthority just fired above), so
-          // mark the pane 'complete' — an ATTENTION status that outranks the
-          // busy-derived 'running' in selectFleetPanes and flows to
-          // surfaceAgent for pane_list. A genuinely new turn re-arms 'running'
-          // via ActivityMonitor.onActive / a fresh awaiting_input hook, both of
-          // which clear this attention entry (setSurfaceAgentStatus drops any
-          // non-attention status). session_start is a turn BEGINNING, not an
-          // end, so it must not set 'complete'.
-          ...(signal.kind === 'agent.stop' ? { agentStatus: 'complete' as const } : {}),
-        });
+        broadcastMetadataUpdate(win, { ptyId, ...boundary });
       }
     }
 
@@ -577,7 +685,7 @@ export function registerHooksRpc(
     throttledPush.cancel();
     clearInterval(floodTimer);
     // Drop the activity throttle state wholesale (no per-ptyId sweep needed).
-    activityLastSent.clear();
+    activityThrottle.clear();
   };
 }
 

@@ -6,11 +6,12 @@
 //   1. Determines the hook name from process.argv[2].
 //   2. Reads the OpenClaude hook payload from stdin (JSON).
 //   3. Builds the canonical AgentSignal envelope.
-//   4. Reads the wmux auth token from ~/.wmux-auth-token.
-//   5. Connects to the wmux main-process named pipe.
-//   6. Sends an RPC: hooks.signal { ...envelope }
-//   7. Logs the outcome to ~/.wmux/bridge.log.
-//   8. Exits 0 ALWAYS (so a wmux problem never breaks OpenClaude).
+//   4. Sends it to the first wmux endpoint that answers: the DAEMON control
+//      pipe (`daemon.hooks.signal`, token ~/.wmux/daemon-auth-token — works
+//      with the GUI closed), else the MAIN pipe (`hooks.signal`, token
+//      ~/.wmux-auth-token). WMUX_HOOKS_TO_MAIN=1 forces main-only.
+//   5. Logs the outcome (and the endpoint that served it) to ~/.wmux/bridge.log.
+//   6. Exits 0 ALWAYS (so a wmux problem never breaks OpenClaude).
 //
 // THIS FILE IS SELF-CONTAINED. It runs from inside an OpenClaude plugin
 // where TypeScript transpilation is NOT available. Do not import anything
@@ -25,7 +26,9 @@ import { createConnection } from 'node:net';
 import { randomUUID } from 'node:crypto';
 
 const HOOK_TIMEOUT_MS = 2000; // hard cap so we never slow OpenClaude
-const BRIDGE_VERSION = '0.1.0';
+// Stamped on every bridge.log line; bump on behavior changes.
+//   0.2.0 — daemon-first targeting (daemon.hooks.signal -> hooks.signal).
+const BRIDGE_VERSION = '0.2.0';
 
 // Retry transient connect failures within the HOOK_TIMEOUT_MS budget.
 // A pipe that is ABSENT (ENOENT — wmux not running) is NOT retried.
@@ -60,6 +63,61 @@ function getPipeName() {
     return `\\\\.\\pipe\\wmux-${username}`;
   }
   return join(homedir() || '/tmp', '.wmux.sock');
+}
+
+// ----- Daemon endpoint (M1: hook ingest lives in the daemon) ---------------
+//
+// The daemon is the always-on process and owns hook ingest, so it is tried
+// first; the main pipe stays as the fallback for an older wmux or a daemon
+// that is down. Same ~/.wmux (no data-suffix) limitation as bridge.log — the
+// pane env strips WMUX_DATA_SUFFIX, so a dev-suffix daemon is unreachable here.
+function getDaemonAuthTokenPath() {
+  const home = process.env.USERPROFILE || process.env.HOME || homedir();
+  return join(home, '.wmux', 'daemon-auth-token');
+}
+
+// Prefer the `daemon-pipe` hint file the daemon writes at boot (the name it
+// ACTUALLY bound, which differs from the convention after a zombie-pipe
+// fallback rename), then the derived name.
+function getDaemonPipeName() {
+  const home = process.env.USERPROFILE || process.env.HOME || homedir();
+  try {
+    const fromFile = readFileSync(join(home, '.wmux', 'daemon-pipe'), 'utf8').trim();
+    if (fromFile) return fromFile;
+  } catch {
+    // Hint file absent/unreadable — fall through to the derived name.
+  }
+  if (process.platform === 'win32') {
+    const username = userInfo().username || 'default';
+    return `\\\\.\\pipe\\wmux-daemon-${username}`;
+  }
+  return join(home, '.wmux', 'daemon.sock');
+}
+
+function readTokenFile(tokenPath) {
+  try {
+    const token = readFileSync(tokenPath, 'utf8').trim();
+    return token || null;
+  } catch {
+    return null;
+  }
+}
+
+// Ordered endpoints. A target with no token file is skipped (that endpoint has
+// never run). WMUX_HOOKS_TO_MAIN=1 drops the daemon target — the kill switch.
+function resolveTargets() {
+  const targets = [];
+  if (process.env.WMUX_HOOKS_TO_MAIN !== '1') {
+    const token = readTokenFile(getDaemonAuthTokenPath());
+    if (token) {
+      targets.push({ name: 'daemon', pipe: getDaemonPipeName(), token, method: 'daemon.hooks.signal' });
+    }
+  }
+  const mainToken = readTokenFile(getAuthTokenPath());
+  if (mainToken) {
+    targets.push({ name: 'main', pipe: getPipeName(), token: mainToken, method: 'hooks.signal' });
+  }
+  return targets;
 }
 
 function getBridgeLogPath() {
@@ -294,7 +352,7 @@ function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
     };
 
     const timer = setTimeout(() => {
-      settle({ ok: false, error: 'timeout' });
+      settle({ ok: false, error: 'timeout', retryable: !wrote });
     }, timeoutMs);
 
     sock.on('connect', () => {
@@ -303,15 +361,24 @@ function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
     });
     sock.on('data', (chunk) => {
       buffer += chunk.toString('utf8');
-      const nl = buffer.indexOf('\n');
-      if (nl !== -1) {
+      // Match OUR response by id and skip everything else: the daemon control
+      // pipe BROADCASTS session events (no `id`) to every connected socket, and
+      // one landing before the reply would otherwise be settled as the reply.
+      for (;;) {
+        const nl = buffer.indexOf('\n');
+        if (nl === -1) return;
         const line = buffer.slice(0, nl);
-        clearTimeout(timer);
+        buffer = buffer.slice(nl + 1);
+        let parsed;
         try {
-          settle(JSON.parse(line));
+          parsed = JSON.parse(line);
         } catch {
-          settle({ ok: false, error: 'malformed-response' });
+          continue;
         }
+        if (!parsed || parsed.id !== request.id) continue;
+        clearTimeout(timer);
+        settle(parsed);
+        return;
       }
     });
     sock.on('error', (err) => {
@@ -320,14 +387,14 @@ function sendRpc(pipePath, request, timeoutMs = HOOK_TIMEOUT_MS) {
     });
     sock.on('close', () => {
       clearTimeout(timer);
-      settle({ ok: false, error: 'closed-without-response' });
+      settle({ ok: false, error: 'closed-without-response', retryable: !wrote });
     });
   });
 }
 
-// sendRpc with bounded connect retry for transient errors.
-async function sendRpcWithRetry(pipePath, request) {
-  const deadline = Date.now() + HOOK_TIMEOUT_MS;
+// sendRpc with bounded connect retry for transient errors. `deadline` is passed
+// in so a multi-target walk shares ONE HOOK_TIMEOUT_MS budget.
+async function sendRpcWithRetry(pipePath, request, deadline = Date.now() + HOOK_TIMEOUT_MS) {
   let attempt = 0;
   let last = { ok: false, error: 'timeout' };
   for (;;) {
@@ -344,6 +411,32 @@ async function sendRpcWithRetry(pipePath, request) {
     if (Date.now() + backoff >= deadline) return last;
     await sleep(backoff);
   }
+}
+
+// Advance to the next endpoint only when the request PROVABLY never reached a
+// server: an answered call (outer ok) owns the signal, and a written-but-
+// unanswered one (retryable === false) is ambiguous — re-sending would risk a
+// duplicate notification. A refusal (`Unknown method` from a pre-M1 daemon,
+// `unauthorized`) carries no `retryable` and does advance.
+function shouldTryNextTarget(result) {
+  if (result && result.ok === true) return false;
+  if (result && result.retryable === false) return false;
+  return true;
+}
+
+// Walk targets in order under one shared deadline; returns the last result and
+// the endpoint that produced it (logged so bridge.log shows who served it).
+async function sendToTargets(targets, buildRequest) {
+  const deadline = Date.now() + HOOK_TIMEOUT_MS;
+  let result = { ok: false, error: 'no-target' };
+  let target = null;
+  for (const candidate of targets) {
+    if (Date.now() >= deadline) break;
+    target = candidate;
+    result = await sendRpcWithRetry(candidate.pipe, buildRequest(candidate), deadline);
+    if (!shouldTryNextTarget(result)) break;
+  }
+  return { result, target };
 }
 
 // ----- Main ---------------------------------------------------------------
@@ -376,20 +469,11 @@ async function main() {
     return;
   }
 
-  const tokenPath = getAuthTokenPath();
-  if (!existsSync(tokenPath)) {
-    logEvent('no-auth-token', { path: tokenPath });
-    return;
-  }
-  let token;
-  try {
-    token = readFileSync(tokenPath, 'utf8').trim();
-  } catch (err) {
-    logEvent('auth-token-read-error', { error: String(err) });
-    return;
-  }
-  if (!token) {
-    logEvent('empty-auth-token', {});
+  // Endpoints to try, daemon first (see resolveTargets). No token for either
+  // endpoint means wmux has never run for this user — drop as before.
+  const targets = resolveTargets();
+  if (targets.length === 0) {
+    logEvent('no-auth-token', { paths: [getDaemonAuthTokenPath(), getAuthTokenPath()] });
     return;
   }
 
@@ -462,29 +546,33 @@ async function main() {
     );
   }
 
-  const request = {
-    id: `bridge-${randomUUID()}`,
-    method: 'hooks.signal',
+  // One id across the walk so a fallback is correlatable in the logs; each
+  // target carries its own method + token (see resolveTargets).
+  const requestId = `bridge-${randomUUID()}`;
+  const { result: rpcResult, target } = await sendToTargets(targets, (t) => ({
+    id: requestId,
+    method: t.method,
     params: envelope,
-    token,
-  };
-
-  const rpcResult = await sendRpcWithRetry(getPipeName(), request);
+    token: t.token,
+  }));
+  const targetName = target?.name;
 
   // Unwrap both RPC layers.
   const outerOk = rpcResult && rpcResult.ok === true;
   const innerOk = outerOk && rpcResult.result && rpcResult.result.ok === true;
 
   if (innerOk) {
-    logEvent('ok', { hook: hookName });
+    logEvent('ok', { hook: hookName, target: targetName });
   } else if (outerOk) {
     logEvent('rpc-rejected', {
       hook: hookName,
+      target: targetName,
       reason: rpcResult.result?.reason ?? 'unknown',
     });
   } else {
     logEvent('rpc-failed', {
       hook: hookName,
+      target: targetName,
       error: rpcResult?.error ?? 'unknown',
       detail: rpcResult?.detail,
     });

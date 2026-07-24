@@ -45,11 +45,21 @@ vi.mock('../../pipe/handlers/_bridge', () => ({
   sendToRenderer: vi.fn(),
 }));
 
+// The transcript reader does real file I/O; the M1 replay only needs to prove it
+// is called with the envelope's path and that the result rides the tee.
+vi.mock('../../claude/lastAssistantMessage', () => ({
+  readLastAssistantMessage: vi.fn(),
+}));
+
 import { sendToRenderer } from '../../pipe/handlers/_bridge';
 import { dispatchNotification } from '../dispatchNotification';
+import { broadcastMetadataUpdate } from '../../ipc/handlers/metadata.handler';
+import { readLastAssistantMessage } from '../../claude/lastAssistantMessage';
 import { DaemonNotificationRouter } from '../DaemonNotificationRouter';
 
 const dispatchNotificationMock = vi.mocked(dispatchNotification);
+const broadcastMetadataUpdateMock = vi.mocked(broadcastMetadataUpdate);
+const readLastAssistantMessageMock = vi.mocked(readLastAssistantMessage);
 
 const sendToRendererMock = vi.mocked(sendToRenderer);
 
@@ -63,7 +73,10 @@ interface CapturedListeners {
   died?: (payload: { sessionId: string }) => void;
 }
 
-function makeRouter(opts: { hookRouter?: HookSignalRouter | null } = {}) {
+function makeRouter(opts: {
+  hookRouter?: HookSignalRouter | null;
+  onClaudeTurnEnd?: (workspaceId: string) => void;
+} = {}) {
   const captured: CapturedListeners = {};
   const fakeDaemon = {
     on: vi.fn((event: string, cb: (payload: never) => void) => {
@@ -74,7 +87,14 @@ function makeRouter(opts: { hookRouter?: HookSignalRouter | null } = {}) {
     off: vi.fn(),
   } as unknown as DaemonClient;
   const getHookRouter = opts.hookRouter !== undefined ? () => opts.hookRouter ?? null : undefined;
-  const router = new DaemonNotificationRouter(fakeDaemon, () => null, getHookRouter);
+  const router = new DaemonNotificationRouter(
+    fakeDaemon,
+    () => null,
+    getHookRouter,
+    undefined,
+    undefined,
+    opts.onClaudeTurnEnd,
+  );
   router.start();
   return { router, captured };
 }
@@ -104,6 +124,8 @@ async function flushMicrotasks(): Promise<void> {
 beforeEach(() => {
   sendToRendererMock.mockReset();
   sendToRendererMock.mockResolvedValue(FIXTURE_WORKSPACE_LIST);
+  readLastAssistantMessageMock.mockReset();
+  readLastAssistantMessageMock.mockReturnValue(null);
   eventBus.reset();
 });
 
@@ -224,6 +246,549 @@ describe('DaemonNotificationRouter — detector lifecycle tee (awaiting_input)',
       expect(awaiting).toMatchObject({ decision: 'emit' });
     } finally {
       nr.stop();
+    }
+  });
+});
+
+describe('DaemonNotificationRouter — M1 daemon-arbitrated events (source field)', () => {
+  it('a source:"hook" event skips the hook-authority veto and still dispatches', async () => {
+    // The pane IS hook-governed — by this very signal. Applying the veto to a
+    // hook-sourced event would make every hook completion silent.
+    const hookRouter = {
+      recordDetector: vi.fn(),
+      recordHook: vi.fn(),
+      touchAuthority: vi.fn(),
+      isGovernedFor: vi.fn().mockReturnValue(true),
+    } as unknown as HookSignalRouter;
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      dispatchNotificationMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: {
+          agent: 'Claude Code',
+          status: 'complete',
+          message: 'Task finished',
+          source: 'hook',
+          hookKind: 'agent.stop',
+        },
+      });
+      await flushMicrotasks();
+
+      expect(dispatchNotificationMock).toHaveBeenCalledTimes(1);
+      const events = pollLifecycle();
+      expect(events).toHaveLength(1);
+      expect(events[0]).toMatchObject({ kind: 'agent.stop', source: 'hook', decision: 'emit' });
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('never writes main\'s dedup ledger for an arbitrated event (hook or detector)', async () => {
+    const hookRouter = stubHookRouter('dedup');
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'complete', message: 'done', source: 'detector' },
+      });
+      await flushMicrotasks();
+
+      expect(hookRouter.recordDetector).not.toHaveBeenCalled();
+      expect(pollLifecycle()[0]).toMatchObject({ source: 'detector', decision: 'emit' });
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('carries hookKind through so agent.subagent_stop survives the trip', async () => {
+    // The detector's status vocabulary cannot express a subagent turn; only the
+    // hook can, and the renderer mutes on that distinction (#516).
+    const { router: nr, captured } = makeRouter();
+    try {
+      dispatchNotificationMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: {
+          agent: 'Claude Code',
+          status: 'complete',
+          message: 'Subagent finished',
+          source: 'hook',
+          hookKind: 'agent.subagent_stop',
+        },
+      });
+      await flushMicrotasks();
+
+      expect(pollLifecycle()[0]).toMatchObject({ kind: 'agent.subagent_stop', source: 'hook' });
+      expect(dispatchNotificationMock.mock.calls[0][2]).toMatchObject({ category: 'subagent' });
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('decision:"veto" updates the status dot only — no toast, no tee', async () => {
+    // The daemon applied the hook-authority rule main used to apply locally.
+    const hookRouter = stubHookRouter('emit');
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      dispatchNotificationMock.mockClear();
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: {
+          agent: 'Claude Code',
+          status: 'complete',
+          message: 'done',
+          source: 'detector',
+          decision: 'veto',
+        },
+      });
+      await flushMicrotasks();
+
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalled(); // dot stays live
+      expect(dispatchNotificationMock).not.toHaveBeenCalled();
+      expect(pollLifecycle()).toHaveLength(0);
+      expect(hookRouter.recordDetector).not.toHaveBeenCalled();
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('decision:"dedup" tees the event but suppresses the second toast', async () => {
+    const { router: nr, captured } = makeRouter();
+    try {
+      dispatchNotificationMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: {
+          agent: 'Claude Code',
+          status: 'complete',
+          message: 'done',
+          source: 'hook',
+          hookKind: 'agent.stop',
+          decision: 'dedup',
+        },
+      });
+      await flushMicrotasks();
+
+      expect(dispatchNotificationMock).not.toHaveBeenCalled();
+      expect(pollLifecycle()[0]).toMatchObject({ source: 'hook', decision: 'dedup' });
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('a stamped event with no decision emits (daemon could not arbitrate)', async () => {
+    const { router: nr, captured } = makeRouter();
+    try {
+      dispatchNotificationMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'waiting', message: 'Ready', source: 'detector' },
+      });
+      await flushMicrotasks();
+
+      expect(dispatchNotificationMock).toHaveBeenCalledTimes(1);
+      expect(pollLifecycle()[0]).toMatchObject({ source: 'detector', decision: 'emit' });
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('an event WITHOUT source keeps the pre-M1 behavior (veto + ledger write)', async () => {
+    const hookRouter = {
+      recordDetector: vi.fn().mockReturnValue('emit'),
+      recordHook: vi.fn(),
+      touchAuthority: vi.fn(),
+      isGovernedFor: vi.fn().mockReturnValue(true),
+    } as unknown as HookSignalRouter;
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'complete', message: 'done' },
+      });
+      await flushMicrotasks();
+
+      expect(vi.mocked(hookRouter.isGovernedFor)).toHaveBeenCalledWith('pty-a', 'claude');
+      expect(hookRouter.recordDetector).not.toHaveBeenCalled(); // vetoed
+      expect(pollLifecycle()).toHaveLength(0);
+    } finally {
+      nr.stop();
+    }
+  });
+
+  it('an unrecognized source value is treated as un-arbitrated (fails closed to the old path)', async () => {
+    const hookRouter = stubHookRouter('emit');
+    const { router: nr, captured } = makeRouter({ hookRouter });
+    try {
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'complete', message: 'done', source: 'bogus' },
+      });
+      await flushMicrotasks();
+
+      expect(hookRouter.recordDetector).toHaveBeenCalledWith('claude', 'agent.stop', 'pty-a');
+      expect(pollLifecycle()[0]).toMatchObject({ source: 'detector' });
+    } finally {
+      nr.stop();
+    }
+  });
+});
+
+describe('DaemonNotificationRouter — M1 side-effect replay', () => {
+  // The envelope the daemon ships back on hook-sourced events. Main replays the
+  // side effects its own hooks.signal handler used to run from its copy.
+  function hookSignal(overrides: Record<string, unknown> = {}) {
+    return {
+      kind: 'agent.stop',
+      agent: 'claude',
+      cwd: '/repo',
+      payload: {},
+      ts: 1_700_000_000_000,
+      ...overrides,
+    };
+  }
+
+  function activityEvent(toolName: string) {
+    return {
+      agent: 'Claude Code',
+      status: 'running',
+      message: '',
+      source: 'hook',
+      hookKind: 'agent.activity',
+      decision: 'activity',
+      signal: hookSignal({
+        kind: 'agent.activity',
+        payload: { tool_name: toolName, tool_input: {} },
+      }),
+    };
+  }
+
+  it('activity events feed the Fleet View line and nothing else', async () => {
+    const { router, captured } = makeRouter();
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      dispatchNotificationMock.mockClear();
+      captured.agent!({ sessionId: 'pty-a', event: activityEvent('Read') });
+      await flushMicrotasks();
+
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
+      expect(broadcastMetadataUpdateMock.mock.calls[0][1]).toEqual({
+        ptyId: 'pty-a',
+        activity: expect.stringContaining('Read'),
+      });
+      // No toast, no lifecycle tee, and no agentStatus broadcast — a tool-heavy
+      // turn must not produce IPC per tool call.
+      expect(dispatchNotificationMock).not.toHaveBeenCalled();
+      expect(pollLifecycle()).toHaveLength(0);
+    } finally {
+      router.stop();
+    }
+  });
+
+  it('throttles the activity line per pane (leading edge)', async () => {
+    const { router, captured } = makeRouter();
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({ sessionId: 'pty-a', event: activityEvent('Read') });
+      captured.agent!({ sessionId: 'pty-a', event: activityEvent('Edit') });
+      captured.agent!({ sessionId: 'pty-b', event: activityEvent('Bash') });
+      await flushMicrotasks();
+
+      // pty-a's second call is inside the window; pty-b is a different key.
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(2);
+      const ptyIds = broadcastMetadataUpdateMock.mock.calls.map((c) => (c[1] as { ptyId: string }).ptyId);
+      expect(ptyIds).toEqual(['pty-a', 'pty-b']);
+    } finally {
+      router.stop();
+    }
+  });
+
+  it('drops an activity event that carries no envelope', async () => {
+    const { router, captured } = makeRouter();
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      const { signal: _omitted, ...noSignal } = activityEvent('Read');
+      captured.agent!({ sessionId: 'pty-a', event: noSignal });
+      await flushMicrotasks();
+
+      expect(broadcastMetadataUpdateMock).not.toHaveBeenCalled();
+    } finally {
+      router.stop();
+    }
+  });
+
+  function sessionStartEvent(withSignal = true) {
+    return {
+      agent: 'Claude Code',
+      status: 'running',
+      message: '',
+      source: 'hook',
+      hookKind: 'agent.session_start',
+      decision: 'activity',
+      ...(withSignal ? { signal: hookSignal({ kind: 'agent.session_start' }) } : {}),
+    };
+  }
+
+  it('session_start clears BOTH the activity line and the pending question', async () => {
+    const { router, captured } = makeRouter();
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      dispatchNotificationMock.mockClear();
+      captured.agent!({ sessionId: 'pty-a', event: sessionStartEvent() });
+      await flushMicrotasks();
+
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
+      expect(broadcastMetadataUpdateMock.mock.calls[0][1]).toEqual({
+        ptyId: 'pty-a',
+        activity: '',
+        pendingQuestion: '',
+      });
+      // Still metadata-only: no toast, no lifecycle tee.
+      expect(dispatchNotificationMock).not.toHaveBeenCalled();
+      expect(pollLifecycle()).toHaveLength(0);
+    } finally {
+      router.stop();
+    }
+  });
+
+  it('session_start is NEVER throttle-dropped behind a recent activity event', async () => {
+    // A dropped clear would leave the previous session's tool label on a
+    // brand-new session — the exact failure the bypass exists to prevent.
+    const { router, captured } = makeRouter();
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({ sessionId: 'pty-a', event: activityEvent('Read') });
+      captured.agent!({ sessionId: 'pty-a', event: sessionStartEvent() });
+      await flushMicrotasks();
+
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(2);
+      expect(broadcastMetadataUpdateMock.mock.calls[1][1]).toEqual({
+        ptyId: 'pty-a',
+        activity: '',
+        pendingQuestion: '',
+      });
+    } finally {
+      router.stop();
+    }
+  });
+
+  it('session_start clears even when the event carries no envelope', async () => {
+    // The clear is derived from the KIND, so it must not depend on `signal`.
+    const { router, captured } = makeRouter();
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({ sessionId: 'pty-a', event: sessionStartEvent(false) });
+      await flushMicrotasks();
+
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(1);
+      expect(broadcastMetadataUpdateMock.mock.calls[0][1]).toMatchObject({
+        activity: '',
+        pendingQuestion: '',
+      });
+    } finally {
+      router.stop();
+    }
+  });
+
+  it('session_start leaves the activity throttle window untouched (documented choice)', async () => {
+    // It neither stamps nor resets the window: the throttle keeps running off
+    // the previous session's last tool call, so the next activity event is still
+    // suppressed. The pane shows an EMPTY line in that gap (the clear just ran),
+    // never a stale one — a sub-window delay on the first label, never wrong data.
+    const { router, captured } = makeRouter();
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({ sessionId: 'pty-a', event: activityEvent('Read') });   // stamps
+      captured.agent!({ sessionId: 'pty-a', event: sessionStartEvent() });     // clear
+      captured.agent!({ sessionId: 'pty-a', event: activityEvent('Edit') });   // suppressed
+      await flushMicrotasks();
+
+      expect(broadcastMetadataUpdateMock).toHaveBeenCalledTimes(2);
+      const fields = broadcastMetadataUpdateMock.mock.calls.map((c) => c[1] as Record<string, unknown>);
+      expect(fields[0]).toMatchObject({ activity: expect.stringContaining('Read') });
+      expect(fields[1]).toMatchObject({ pendingQuestion: '' });
+    } finally {
+      router.stop();
+    }
+  });
+
+  it('replays turn-boundary metadata, lastMessage and the turn-end probe on a hook stop', async () => {
+    readLastAssistantMessageMock.mockReturnValue({
+      text: 'Should I proceed?',
+      endsWithQuestion: true,
+    });
+    const onClaudeTurnEnd = vi.fn();
+    const { router, captured } = makeRouter({ onClaudeTurnEnd });
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: {
+          agent: 'Claude Code',
+          status: 'complete',
+          message: 'Task finished',
+          source: 'hook',
+          hookKind: 'agent.stop',
+          decision: 'emit',
+          signal: hookSignal({ payload: { transcript_path: '/t/session.jsonl' } }),
+        },
+      });
+      await flushMicrotasks();
+
+      expect(readLastAssistantMessageMock).toHaveBeenCalledWith('/t/session.jsonl');
+      // Boundary patch rides ONE broadcast alongside the status one.
+      const boundary = broadcastMetadataUpdateMock.mock.calls
+        .map((c) => c[1] as Record<string, unknown>)
+        .find((p) => 'pendingQuestion' in p);
+      expect(boundary).toEqual({
+        ptyId: 'pty-a',
+        activity: '',
+        pendingQuestion: 'Should I proceed?',
+        agentStatus: 'complete',
+      });
+      expect(pollLifecycle()[0]).toMatchObject({
+        source: 'hook',
+        kind: 'agent.stop',
+        lastMessage: { text: 'Should I proceed?', endsWithQuestion: true },
+      });
+      expect(onClaudeTurnEnd).toHaveBeenCalledExactlyOnceWith('ws-1');
+    } finally {
+      router.stop();
+    }
+  });
+
+  it('a stop that asks nothing clears the pending question', async () => {
+    readLastAssistantMessageMock.mockReturnValue({ text: 'All done.', endsWithQuestion: false });
+    const { router, captured } = makeRouter();
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: {
+          agent: 'Claude Code',
+          status: 'complete',
+          message: 'Task finished',
+          source: 'hook',
+          hookKind: 'agent.stop',
+          decision: 'emit',
+          signal: hookSignal({ payload: { transcript_path: '/t/session.jsonl' } }),
+        },
+      });
+      await flushMicrotasks();
+
+      const boundary = broadcastMetadataUpdateMock.mock.calls
+        .map((c) => c[1] as Record<string, unknown>)
+        .find((p) => 'pendingQuestion' in p);
+      expect(boundary).toMatchObject({ pendingQuestion: '' });
+    } finally {
+      router.stop();
+    }
+  });
+
+  it('fires the turn-end probe on a dedup verdict too (the turn still ended)', async () => {
+    const onClaudeTurnEnd = vi.fn();
+    const { router, captured } = makeRouter({ onClaudeTurnEnd });
+    try {
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: {
+          agent: 'Claude Code',
+          status: 'complete',
+          message: 'Task finished',
+          source: 'hook',
+          hookKind: 'agent.stop',
+          decision: 'dedup',
+          signal: hookSignal(),
+        },
+      });
+      await flushMicrotasks();
+
+      expect(onClaudeTurnEnd).toHaveBeenCalledExactlyOnceWith('ws-1');
+    } finally {
+      router.stop();
+    }
+  });
+
+  it('does not read a transcript or probe usage for a non-claude agent', async () => {
+    const onClaudeTurnEnd = vi.fn();
+    const { router, captured } = makeRouter({ onClaudeTurnEnd });
+    try {
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: {
+          agent: 'OpenCode',
+          status: 'complete',
+          message: 'Task finished',
+          source: 'hook',
+          hookKind: 'agent.stop',
+          decision: 'emit',
+          signal: hookSignal({ agent: 'opencode', payload: { transcript_path: '/t/x.jsonl' } }),
+        },
+      });
+      await flushMicrotasks();
+
+      expect(readLastAssistantMessageMock).not.toHaveBeenCalled();
+      expect(onClaudeTurnEnd).not.toHaveBeenCalled();
+      // The boundary itself is agent-agnostic and still fires.
+      const boundary = broadcastMetadataUpdateMock.mock.calls
+        .map((c) => c[1] as Record<string, unknown>)
+        .find((p) => 'pendingQuestion' in p);
+      expect(boundary).toMatchObject({ activity: '', agentStatus: 'complete' });
+    } finally {
+      router.stop();
+    }
+  });
+
+  it('subagent_stop does NOT clear the activity line (parent turn continues)', async () => {
+    const { router, captured } = makeRouter();
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: {
+          agent: 'Claude Code',
+          status: 'complete',
+          message: 'Subagent finished',
+          source: 'hook',
+          hookKind: 'agent.subagent_stop',
+          decision: 'emit',
+          signal: hookSignal({ kind: 'agent.subagent_stop' }),
+        },
+      });
+      await flushMicrotasks();
+
+      const boundary = broadcastMetadataUpdateMock.mock.calls
+        .map((c) => c[1] as Record<string, unknown>)
+        .find((p) => 'pendingQuestion' in p);
+      expect(boundary).toBeUndefined();
+    } finally {
+      router.stop();
+    }
+  });
+
+  it('a detector-sourced arbitrated event replays nothing (it carries no envelope)', async () => {
+    const onClaudeTurnEnd = vi.fn();
+    const { router, captured } = makeRouter({ onClaudeTurnEnd });
+    try {
+      broadcastMetadataUpdateMock.mockClear();
+      captured.agent!({
+        sessionId: 'pty-a',
+        event: { agent: 'Claude Code', status: 'complete', message: 'done', source: 'detector', decision: 'emit' },
+      });
+      await flushMicrotasks();
+
+      const boundary = broadcastMetadataUpdateMock.mock.calls
+        .map((c) => c[1] as Record<string, unknown>)
+        .find((p) => 'pendingQuestion' in p);
+      expect(boundary).toBeUndefined();
+      expect(onClaudeTurnEnd).not.toHaveBeenCalled();
+      expect(readLastAssistantMessageMock).not.toHaveBeenCalled();
+      // The tee still fires — only the hook-only side effects are skipped.
+      expect(pollLifecycle()[0]).toMatchObject({ source: 'detector' });
+    } finally {
+      router.stop();
     }
   });
 });
