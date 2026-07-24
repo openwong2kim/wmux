@@ -134,6 +134,13 @@ export function __resetPtyDispatchersForTests(): void {
 // uncaught TypeError. We track active drags on any `.xterm` element so the
 // cleanup path can defer `terminal.dispose()` until the drag completes,
 // closing the race window without patching xterm internals.
+//
+// Reported upstream as xtermjs/xterm.js#6070. In 6.0.0 (what we bundle) those
+// document listeners are attached on mousedown and removed only from inside
+// the mouseup handler, so a dispose mid-drag orphans them; xterm master has
+// since made them disposables (xtermjs/xterm.js#6019), which should fix it at
+// the source. Once that ships and we upgrade, this whole guard — including
+// disposeWhenDragEnds below and its tests — can be deleted.
 let _terminalDragActive = false;
 let _dragListenersInstalled = false;
 function _ensureDragListeners(): void {
