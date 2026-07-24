@@ -35,6 +35,22 @@ describe('HookFloodMeter', () => {
     expect(m.flush(30_000)).toBeNull();
   });
 
+  it('peek() reads the window without consuming it', () => {
+    // The daemon health RPC polls this. A destructive read would blank the
+    // periodic log line every time something polled, hiding a real flood.
+    const m = new HookFloodMeter();
+    expect(m.peek(30_000)).toBeNull();
+    m.record({ degraded: false, fetchMs: 3, fastPathed: true });
+    m.record({ degraded: true, fetchMs: 900 });
+
+    const first = m.peek(30_000);
+    expect(first).toEqual({ windowMs: 30_000, total: 2, degraded: 1, maxFetchMs: 900, fastPathed: 1 });
+    // Repeated peeks are identical, and the pending flush still sees everything.
+    expect(m.peek(30_000)).toEqual(first);
+    expect(m.flush(30_000)).toEqual(first);
+    expect(m.peek(30_000)).toBeNull();
+  });
+
   it('accumulates across records within a window', () => {
     const m = new HookFloodMeter();
     for (let i = 0; i < 5; i++) m.record({ degraded: i % 2 === 0, fetchMs: i });

@@ -156,17 +156,26 @@ describe('X6 ② reboot-survival durability', () => {
 
   // --- X6 ③ all-pane reliability guards (Rung 0/1/3) ------------------------
 
-  it('Rung 1: setResumeBinding ALSO arms lastDetectedAgent (pill 2nd writer)', () => {
+  it('Rung 1: the resume-binding applier ALSO arms lastDetectedAgent (pill 2nd writer)', () => {
     // The pill must not be hostage to the once-per-session live banner. A
     // captured hook binding proves the pane ran claude, so it sets the pill gate
     // too — otherwise a banner-missed-but-hook-landed pane holds the exact uuid
-    // yet shows NO pill after reboot. Lock the write into the handler.
+    // yet shows NO pill after reboot. Lock the write into the applier.
+    //
+    // M1 moved this body out of the `daemon.setResumeBinding` RPC callback and
+    // into a named `applyResumeBinding`, because the daemon-side hook ingest
+    // has to make the same capture as a LOCAL call (after M1 the bridge talks
+    // to the daemon directly and main never relays). Anchor on the applier —
+    // the RPC is now a two-line wrapper around it.
     const src = fs.readFileSync(daemonIndexPath, 'utf-8');
-    const idx = src.indexOf("onRpc('daemon.setResumeBinding'");
+    const idx = src.indexOf('const applyResumeBinding =');
     expect(idx).toBeGreaterThan(-1);
     const body = src.slice(idx, idx + 3400);
     expect(body).toMatch(/lastDetectedAgent\s*=\s*next\.agent/);
     expect(body).toMatch(/KNOWN_AGENT_SLUGS/);
+    // ...and the RPC must still route through it, or the wire path silently
+    // stops persisting bindings for older (main-relaying) bridges.
+    expect(src).toMatch(/onRpc\('daemon\.setResumeBinding'[\s\S]{0,220}applyResumeBinding\(/);
   });
 
   it('Rung 0: the daemon stamps WMUX_PTY_ID into each pane env (per-pane routing key)', () => {

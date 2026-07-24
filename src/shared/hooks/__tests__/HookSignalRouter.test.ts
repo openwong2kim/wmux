@@ -1,7 +1,7 @@
 import { describe, it, expect, beforeEach } from 'vitest';
 import { HookSignalRouter, DEFAULT_DEDUP_WINDOW_MS } from '../HookSignalRouter';
 import { SignalLatencyMeter } from '../SignalLatencyMeter';
-import type { AgentSignal } from '../../../../integrations/shared/signal-types';
+import type { AgentSignal } from '../signal-types';
 
 function makeSignal(overrides: Partial<AgentSignal> = {}): AgentSignal {
   return {

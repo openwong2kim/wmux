@@ -45,6 +45,7 @@ import { DAEMON_EXIT_ALREADY_RUNNING, ENV_KEYS } from '../shared/constants';
 import { toResumeCommand, resumeOfferForRecovered, mergeResumeBinding, normalizeResumeCwd } from '../shared/agentResume';
 import type { ResumeBinding } from '../shared/agentResume';
 import { agentDisplayToSlug } from '../main/pty/AgentDetector';
+import { HookIngest, type HookArbitration } from './hooks/HookIngest';
 import type { AgentSlug } from '../shared/events';
 import { LANLINK_SENTINEL_SESSION_ID } from '../shared/lanlink';
 import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, type ProcessLiveness } from '../shared/processLiveness';
@@ -53,6 +54,13 @@ import { classifyTasklistOutput, classifyKillOutcome, lockOwnerIsReclaimable, ty
 // registerRpcHandlers; nothing listens until a `daemon.web.start` RPC arrives.
 // Module-scoped so the shutdown() path can tear it down too.
 let webTerminalServer: WebTerminalServer | null = null;
+
+// M1 — hook ingest. Owns the ONE HookSignalRouter ledger in this process, so
+// both the hook RPC (registerRpcHandlers) and the detector broadcast site
+// (wireEvents) arbitrate against the same dedup state. Module-scoped because
+// those two live in separate functions; registerRpcHandlers runs first and
+// constructs it.
+let hookIngest: HookIngest | null = null;
 
 /**
  * Resolve the built frontend assets dir (dist/daemon-web) for BOTH dev and
@@ -1671,10 +1679,16 @@ function registerRpcHandlers(
   // permission-mode transition, exactly like lastDetectedAgent (X6 ②). The
   // SIGKILL-survival rule is the whole point: the binding must be on disk before
   // a reboot, and a reboot fires no exit hook.
-  pipeServer.onRpc('daemon.setResumeBinding', async (params) => {
-    const p = params as unknown as DaemonSetResumeBindingParams;
-    const managed = sessionManager.getSession(p.id);
-    if (!managed || !p.resumeBinding || !p.resumeBinding.sessionId) return { ok: false };
+  //
+  // Extracted from the RPC body so the daemon-side hook ingest (M1) can make
+  // the SAME capture as a plain local call: after M1 the bridge reaches the
+  // daemon directly and main never sees the signal, so this must not stay
+  // reachable only over the wire. Returns false when there is nothing to
+  // apply (dead session / empty binding) — the callers report it differently.
+  const applyResumeBinding = (id: string, resumeBinding: ResumeBinding | undefined): boolean => {
+    const managed = sessionManager.getSession(id);
+    if (!managed || !resumeBinding || !resumeBinding.sessionId) return false;
+    const p = { id, resumeBinding };
     // Resume-chip edge trigger: a hook reaching this RPC proves claude is
     // running in the pane RIGHT NOW — attach the process watch (no-op while a
     // live watch exists, so hook storms cost nothing). Runs before the
@@ -1687,7 +1701,7 @@ function registerRpcHandlers(
     // not replace the durable exact id. The spool ingest already does this; mirror
     // it on the live path so a reboot can't resume the wrong conversation.
     if (prev && typeof p.resumeBinding.ts === 'number' && p.resumeBinding.ts < prev.ts) {
-      return { ok: true };
+      return true;
     }
     // codex P2: a SessionStart fired before its transcript exists (F9) sends the
     // #12235-UNSAFE payload.session_id as the id and carries NO transcriptPath.
@@ -1696,7 +1710,7 @@ function registerRpcHandlers(
     // then `--resume <wrong id>`.
     if (prev && prev.transcriptPath && !p.resumeBinding.transcriptPath
         && prev.sessionId !== p.resumeBinding.sessionId) {
-      return { ok: true };
+      return true;
     }
     // Sticky-merge: a capture that couldn't read permissionMode (transcript tail
     // miss) must not wipe a previously-captured mode (codex review 2026-06-14).
@@ -1727,8 +1741,43 @@ function registerRpcHandlers(
     if (durableChange) {
       stateWriter.saveImmediate(buildState(sessionManager));
     }
-    return { ok: true };
+    return true;
+  };
+
+  pipeServer.onRpc('daemon.setResumeBinding', async (params) => {
+    const p = params as unknown as DaemonSetResumeBindingParams;
+    return { ok: applyResumeBinding(p.id, p.resumeBinding) };
   });
+
+  // M1 — daemon.hooks.signal. The hook bridge's daemon-first target: the
+  // daemon is the always-on process, so a Stop signal lands here with the GUI
+  // closed, and hook-vs-detector dedup becomes local to one process instead of
+  // a cross-process race. Token-only string method in the same class as
+  // daemon.web.* / daemon.serializeSession — deliberately NOT in the RpcMethod
+  // union or methodCapabilityMap, so it adds no gen-api-reference surface.
+  //
+  // Params are the existing AgentSignal envelope, response the existing
+  // HookSignalResponse — both validated inside HookIngest, which never throws
+  // (the bridge runs on a 2s budget inside the agent's process and treats an
+  // RPC error as a fatal hook).
+  if (!hookIngest) {
+    hookIngest = new HookIngest({
+      listLiveSessions: () => sessionManager.listLiveSessions(),
+      emitAgentEvent: (sessionId, data) => {
+        const event: DaemonEvent = { type: 'agent.event', sessionId, data };
+        pipeServer.broadcast(event);
+      },
+      applyResumeBinding: (id, binding) => { applyResumeBinding(id, binding); },
+      log: (level, message) => log(level, message),
+    });
+  }
+  const ingest = hookIngest;
+  pipeServer.onRpc('daemon.hooks.signal', async (params) => ingest.handle(params));
+  // A2 — signal-health readout for the Settings "Plugin signal health" card.
+  // Main's own meter goes dark once the bridge targets the daemon directly, so
+  // the card has to poll the daemon instead. Read-only and non-destructive; see
+  // HookIngest.health for the two time bases in the payload.
+  pipeServer.onRpc('daemon.hooks.health', async () => ingest.health());
 
   // daemon.getAgentName — daemon AgentDetector가 gate로 확정한 에이전트 표시명을
   // 직접 조회한다. renderer detection pull의 권위 소스: main으로의 session:agent
@@ -2717,6 +2766,10 @@ function wireEvents(
     log('info', `[lifecycle] session:died id=${payload.id} reason=${payload.reason ?? 'pty-exit'} exitCode=${payload.exitCode ?? 'null'} signal=${payload.signal ?? 'none'} cmd=${payload.cmd ?? '?'} idleMsBeforeExit=${payload.lastActivityMsAgo ?? '?'} liveTotal=${sessionManager.listSessions().length}`);
     recoveredAgentShellIds.delete(payload.id); // X6 ②: drop a stale resume hint
     recoveredResumeBindings.delete(payload.id); // X6 ③: ...and its exact binding (id reuse, CodeRabbit)
+    // M1: drop the dedup ledger + hook authority for the dead pane. Without
+    // this the ledger accrues dead-id entries over a long daemon lifetime, and
+    // a reused id would inherit a hook veto that suppresses its detector.
+    hookIngest?.dropPty(payload.id);
     try {
       const event: DaemonEvent = {
         type: 'session.died',
@@ -2960,10 +3013,18 @@ function wireEvents(
       // which has no hooks (the setResumeBinding arm never fires for it).
       if (managed) agentProcessTracker.arm(payload.sessionId, managed.meta.pid);
     }
+    // M1: the daemon owns hook-vs-detector arbitration now — the hook lands
+    // here, not in main, so main can no longer run it and reads the outcome
+    // off the payload instead (see HookIngest.arbitrateDetector for the
+    // semantics, which are a straight port of main's DaemonNotificationRouter).
+    // Before registerRpcHandlers has run there is no ingest and nothing to
+    // arbitrate against; the bare tag is the legacy always-emit behavior.
+    const arbitration: HookArbitration =
+      hookIngest?.arbitrateDetector(payload.sessionId, payload.event) ?? { source: 'detector' };
     const event: DaemonEvent = {
       type: 'agent.event',
       sessionId: payload.sessionId,
-      data: payload.event,
+      data: { ...payload.event, ...arbitration },
     };
     pipeServer.broadcast(event);
   });
@@ -3048,6 +3109,7 @@ function wireEvents(
   sessionManager.on('session:destroyed', (payload: { id: string }) => {
     recoveredAgentShellIds.delete(payload.id); // X6 ②: drop hint on explicit close too (CodeRabbit #2)
     recoveredResumeBindings.delete(payload.id); // X6 ③: drop the exact binding too (id reuse, CodeRabbit)
+    hookIngest?.dropPty(payload.id); // M1: ...and the dedup ledger / hook authority
     const event: DaemonEvent = {
       type: 'session.destroyed',
       sessionId: payload.id,
@@ -3228,6 +3290,11 @@ async function shutdown(
       /* ignore — never block shutdown on the optional web server */
     }
   }
+
+  // Stop the hook flood logger. Its timer is unref'd so it never held the
+  // process open; clearing it just keeps a shutdown from logging one last
+  // rolling summary on the way out.
+  hookIngest?.dispose();
 
   // Cancel pending shutdown-kill reclassifications — the suspend loop below is
   // now the single owner of every non-dead session's persisted state.
