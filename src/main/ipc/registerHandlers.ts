@@ -28,6 +28,7 @@ import { registerGithubHandlers } from './handlers/github.handler';
 import { registerMcpHandlers } from './handlers/mcp.handler';
 import { registerLanLinkHandlers } from './handlers/lanlink.handler';
 import { registerPaneResourcesHandlers } from './handlers/paneResources.handler';
+import { registerWebHandlers } from './handlers/web.handler';
 import { registerAccountHandlers } from './handlers/account.handler';
 import { createFlashFrameHandler } from '../window/flashFrame';
 import { IPC } from '../../shared/constants';
@@ -180,6 +181,13 @@ export function registerAllHandlers(
   // live in the daemon session list). Renderer polls this ONLY while Fleet View
   // is visible, so a closed cockpit costs nothing.
   const cleanupPaneResources = daemonClient ? registerPaneResourcesHandlers(daemonClient) : null;
+
+  // wmux web — registered UNCONDITIONALLY (unlike LanLink above) so the titlebar
+  // toggle always resolves. The getter closes over the `daemonClient` snapshot;
+  // this whole function is re-run on every daemon connect/disconnect, so the
+  // snapshot is refreshed each swap. With no daemon the handler resolves
+  // `{ running:false, error }` rather than throwing (see web.handler.ts).
+  const cleanupWeb = registerWebHandlers(() => daemonClient ?? null);
 
   // Multi-account registry (M1) — renderer-only, mode-agnostic (main owns
   // accounts.json in both local and daemon mode; spawn env is resolved in main).
@@ -398,6 +406,7 @@ export function registerAllHandlers(
     if (cleanupMcp) cleanupMcp();
     if (cleanupLanLink) cleanupLanLink();
     if (cleanupPaneResources) cleanupPaneResources();
+    cleanupWeb();
     cleanupAccounts();
     // Mirror the register-side removeHandler so a teardown leaves no stale
     // handle behind (handle handlers are not .on listeners — see above).

@@ -10,6 +10,7 @@ import type {
   LanLinkSendArgs,
   LanLinkPeersListResult,
 } from './lanlink';
+import type { WebStartArgs, WebTerminalInfo } from './web';
 import type {
   FirstRunCheckResult,
   RegisterMcpResult,
@@ -94,6 +95,20 @@ declare global {
         peersList: () => Promise<LanLinkPeersListResult>;
         /** PR-5 — revoke a peer (live destroy of its AEAD connection). */
         peersRemove: (peerUuid: string) => Promise<{ ok: true }>;
+      };
+      /**
+       * wmux web — titlebar toggle for the daemon-hosted browser/PWA terminal
+       * server. Every call resolves a WebTerminalInfo and NEVER rejects: a
+       * daemon-unreachable state is reported as `{ running:false, error }`, so
+       * callers read `.error` rather than try/catch.
+       */
+      web?: {
+        /** Read the current server state (running/port/host/viewers/pair code). */
+        status: () => Promise<WebTerminalInfo>;
+        /** Start the server. `allowInput`/`expose` default false (read-only + loopback). */
+        start: (args: WebStartArgs) => Promise<WebTerminalInfo>;
+        /** Stop the server. Resolves the post-stop state (`running:false`). */
+        stop: () => Promise<WebTerminalInfo>;
       };
     };
     clipboardAPI: {

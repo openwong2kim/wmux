@@ -404,6 +404,13 @@ export const IPC = {
   LANLINK_SEND: 'lanlink:send',
   LANLINK_PEERS_LIST: 'lanlink:peers:list',
   LANLINK_PEERS_REMOVE: 'lanlink:peers:remove',
+  // wmux web — browser/PWA terminal server control (renderer → main → daemon
+  // control pipe). The server lives inside the daemon; these forward the
+  // daemon.web.{status,start,stop} string RPCs and degrade gracefully when the
+  // daemon is unreachable.
+  WEB_STATUS: 'web:status',
+  WEB_START: 'web:start',
+  WEB_STOP: 'web:stop',
   // First-run wizard (Plan 1.15) — magical-moment onboarding flow
   FIRST_RUN_CHECK: 'first-run:check',
   FIRST_RUN_COMPLETE: 'first-run:complete',
