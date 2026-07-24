@@ -201,6 +201,62 @@ describe('AutoUpdater two-step flow (win32)', () => {
     expect(quit).not.toHaveBeenCalled();
   });
 
+  it('a manual press mid-poll preserves the one-shot intent so the in-flight download installs', async () => {
+    const { AutoUpdater, openPath, quit, win } = await loadWin32();
+    const updater = new AutoUpdater(() => win as never);
+    updater.start();
+
+    const internals = updater as unknown as {
+      isChecking: boolean;
+      oneShotInstall: boolean;
+      pendingUpdate: { name: string; notes: string; url: string } | null;
+      check: (oneShot?: boolean) => Promise<void>;
+      downloadUpdate: () => Promise<void>;
+    };
+    // A background poll is already in flight (downloading), so isChecking is true.
+    internals.isChecking = true;
+    internals.pendingUpdate = { name: NEW_VERSION, notes: 'n', url: DL_URL };
+
+    // Manual press lands mid-poll: guarded out of a second check, but the intent
+    // is recorded (set before the isChecking guard).
+    await internals.check(true);
+    expect(internals.oneShotInstall).toBe(true);
+
+    // The in-flight poll now finishes its download → it honors the intent and installs.
+    internals.isChecking = false;
+    await internals.downloadUpdate();
+    await until(() => openPath.mock.calls.length > 0);
+    expect(openPath).toHaveBeenCalledTimes(1);
+    expect(quit).toHaveBeenCalledTimes(1);
+  });
+
+  it('a failed one-shot fast-path install clears the intent (no unattended restart later)', async () => {
+    const { AutoUpdater, openPath, quit, win } = await loadWin32();
+    openPath.mockResolvedValueOnce('launch failed'); // shell.openPath resolves with an error string, never throws
+    const updater = new AutoUpdater(() => win as never);
+    updater.start();
+
+    const internals = updater as unknown as {
+      oneShotInstall: boolean;
+      downloadedPath: string | null;
+      pendingUpdate: { name: string; notes: string; url: string } | null;
+      check: (oneShot?: boolean) => Promise<void>;
+    };
+    // Pretend a background poll already downloaded + verified this version.
+    internals.downloadedPath = 'C:/tmp/wmux-update-9.9.10.Setup.exe';
+    internals.pendingUpdate = { name: NEW_VERSION, notes: 'n', url: DL_URL };
+
+    // Manual press → fast path → performInstall, whose launch fails.
+    await internals.check(true);
+    await until(() => openPath.mock.calls.length > 0);
+    await flush();
+
+    // The failed launch must NOT quit, and must have cleared the intent so a
+    // later background download can't auto-restart the app.
+    expect(quit).not.toHaveBeenCalled();
+    expect(internals.oneShotInstall).toBe(false);
+  });
+
   it('a failed one-shot download does not restart the app (install intent cleared)', async () => {
     const BAD_SHA = 'a'.repeat(64);
     const { AutoUpdater, ipcHandlers, openPath, quit, win } = await loadWin32({ sha: BAD_SHA });

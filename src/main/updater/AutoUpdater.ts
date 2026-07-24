@@ -54,6 +54,11 @@ export class AutoUpdater {
   // instead of waiting for a second click. Background 30-min polls never set
   // this, so the auto-poll only ever downloads and surfaces a Restart button.
   private oneShotInstall = false;
+  // Re-entrancy guard for performInstall: the one-shot path fire-and-forgets it
+  // while UPDATE_INSTALL awaits its own call, so both can reach it. shell.openPath
+  // resolves (never throws) on failure, so without this a second call would
+  // launch the installer twice.
+  private isInstalling = false;
 
   constructor(getWindow: () => BrowserWindow | null) {
     this.getWindow = getWindow;
@@ -128,7 +133,11 @@ export class AutoUpdater {
         });
         if (this.oneShotInstall && this.downloadedPath) {
           // A background poll already downloaded + verified this exact version:
-          // skip straight to install rather than re-downloading.
+          // skip straight to install rather than re-downloading. Clear the
+          // intent BEFORE launching (mirrors the downloadUpdate path) so a
+          // failed shell.openPath can't leave it set for a later background
+          // poll to act on — that would restart the app with no user action.
+          this.oneShotInstall = false;
           void this.performInstall();
         } else {
           // Two-step: auto-download + verify, then emit 'downloaded' (which
@@ -374,6 +383,11 @@ export class AutoUpdater {
       console.log('[AutoUpdater] install ignored — no verified installer downloaded yet.');
       return;
     }
+    if (this.isInstalling) {
+      console.log('[AutoUpdater] install already in progress — ignoring re-entrant call.');
+      return;
+    }
+    this.isInstalling = true;
 
     const win = this.getWindow();
     if (win && !win.isDestroyed() && !win.webContents.isCrashed()) {
@@ -392,6 +406,7 @@ export class AutoUpdater {
     // never launch an unverified artifact.
     const openErr = await shell.openPath(tempPath);
     if (openErr) {
+      this.isInstalling = false; // launch failed — allow the user to retry
       this.sendToRenderer(IPC.UPDATE_ERROR, {
         status: 'error',
         message: `failed to launch verified installer: ${openErr}`,
