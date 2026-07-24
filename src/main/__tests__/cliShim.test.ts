@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { buildShimCmd, buildPathEditScript, deriveShimPaths, explainPathEditExit } from '../cliShim';
+import {
+  buildShimCmd,
+  buildPathEditScript,
+  deriveShimPaths,
+  explainPathEditExit,
+  PATH_EDIT_EXIT,
+} from '../cliShim';
 
 describe('buildShimCmd', () => {
   it('discovers app-* dynamically, scopes ELECTRON_RUN_AS_NODE, and forwards args + exit code', () => {
@@ -226,24 +232,26 @@ describe.skipIf(process.platform !== 'win32')('PATH edit (live registry, sandbox
       expect(run('remove', constrained).code).toBe(0);
       expect(readRaw()).toBe(SEED);
     });
+
+    it(`${mode}: an unreadable key fails closed — exits READ_FAILED and writes nothing`, () => {
+      // No sandbox key at all — both readers must fail rather than invent an empty PATH.
+      ps(`Remove-Item 'HKCU:\\${SUB}' -Recurse -Force -ErrorAction SilentlyContinue`);
+      const r = run('add', constrained);
+      expect(r.code).toBe(PATH_EDIT_EXIT.READ_FAILED);
+      expect(explainPathEditExit(r.code, BIN)).toContain('ConstrainedLanguage');
+      // Crucially: the key was NOT created as a side effect of the failed edit.
+      expect(readRaw()).toBeNull();
+    });
+
+    it(`${mode}: backs the previous value up before writing`, () => {
+      seed();
+      expect(run('add', constrained).code).toBe(0);
+      // Read back from the harness (always FullLanguage) — this asserts what the
+      // script wrote, not how it read.
+      const bak = ps(`(Get-ItemProperty -Path 'HKCU:\\${BAK}' -Name 'UserPathBackup').UserPathBackup`).out.trim();
+      expect(bak).toBe(SEED);
+    });
   }
-
-  it('an unreadable key fails closed: exits READ_FAILED and writes nothing', () => {
-    // No sandbox key at all — both readers must fail rather than invent an empty PATH.
-    ps(`Remove-Item 'HKCU:\\${SUB}' -Recurse -Force -ErrorAction SilentlyContinue`);
-    const r = ps(buildPathEditScript(BIN, 'add', SUB, BAK));
-    expect(r.code).toBe(10);
-    expect(explainPathEditExit(r.code, BIN)).toContain('ConstrainedLanguage');
-    // Crucially: the key was NOT created as a side effect of the failed edit.
-    expect(readRaw()).toBeNull();
-  });
-
-  it('backs the previous value up before writing', () => {
-    seed();
-    run('add', false);
-    const bak = ps(`(Get-ItemProperty -Path 'HKCU:\\${BAK}' -Name 'UserPathBackup').UserPathBackup`).out.trim();
-    expect(bak).toBe(SEED);
-  });
 });
 
 // ─── darwin CLI shim (P3) ────────────────────────────────────────────────────
