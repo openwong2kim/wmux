@@ -117,6 +117,10 @@ button { font: inherit; color: inherit; cursor: pointer; }
 }
 #sw-label .sw-agent { font-weight: 600; }
 #sw-label .sw-cwd { color: var(--text-sub); font-family: var(--mono); font-size: 11.5px; }
+/* Workspace is context, not the subject: quiet sans ahead of the agent name.
+   The dot separator is the same muted weight so the eye lands on the agent. */
+#sw-label .sw-ws { color: var(--text-sub); }
+.lbl-sep { color: var(--text-muted); padding: 0 4px; }
 #sw-chevron { flex: 0 0 auto; color: var(--text-muted); transition: transform 120ms ease-out; }
 #switcher[aria-expanded="true"] #sw-chevron { transform: rotate(180deg); }
 
@@ -190,6 +194,93 @@ button { font: inherit; color: inherit; cursor: pointer; }
   border-radius: 5px;
 }
 .xterm-viewport::-webkit-scrollbar-thumb:hover { background: #4a4a52; }
+
+/* ── split view ──────────────────────────────────────────────────────────── */
+/* One tile per watched pane. The 1px gap IS the divider — the grid background
+   shows through as a hairline, so there is no extra border to double up. */
+#grid {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  gap: 1px;
+  background: var(--hairline-strong);
+}
+#grid[hidden] { display: none; }
+#grid[data-mode="2"] { grid-template-columns: 1fr 1fr; }
+/* Three panes: the focused one takes the full top row rather than leaving a
+   dead cell in a 2×2. */
+#grid[data-mode="3"] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+#grid[data-mode="3"] .tile:first-child { grid-column: span 2; }
+#grid[data-mode="4"] { grid-template-columns: 1fr 1fr; grid-template-rows: 1fr 1fr; }
+
+.tile {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-base);
+  overflow: hidden;
+}
+/* Steel = "where you are", the same treatment the sheet row gives the current
+   pane: surface lift + a 2px steel edge. The lift matters here — a 2px line
+   alone reads as a divider once four tiles are on screen. */
+.tile[data-focus="1"] .tile-head {
+  background: var(--raised);
+  box-shadow: inset 2px 0 0 var(--steel), inset 0 -1px 0 var(--hairline);
+  color: var(--text-main);
+}
+.tile-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  height: 24px;
+  padding: 0 8px;
+  background: var(--bg-mantle);
+  box-shadow: inset 0 -1px 0 var(--hairline);
+  font-size: 11.5px;
+  color: var(--text-sub);
+  white-space: nowrap;
+  overflow: hidden;
+  user-select: none;
+}
+.tile-dot {
+  flex: 0 0 auto;
+  width: 6px; height: 6px;
+  border-radius: 50%;
+  background: var(--text-muted);
+}
+.tile-dot[data-state="running"] { background: var(--amber); }
+.tile-dot[data-state="idle"] { background: var(--success); }
+.tile-ws { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; }
+.tile-name { color: var(--text-main); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
+.tile-cwd { margin-left: auto; font-family: var(--mono); font-size: 10.5px; color: var(--text-muted); }
+.tile-body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 2px;
+}
+.tile-scaler { transform-origin: top left; }
+/* A pane whose PTY exited: the header says so instead of the tile looking live. */
+.tile[data-ended="1"] .tile-head { color: var(--text-muted); }
+.tile-end {
+  margin-left: 6px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--danger);
+}
+
+/* The 1/2/4 control sits with Fit — both are view state, so both use steel. */
+#kb-views { display: flex; gap: 5px; }
+.kb-view { min-width: 30px; padding: 0 6px; }
+.kb-view[aria-pressed="true"] { border-color: var(--steel); color: var(--steel); }
+/* Phone guard: no split control at all below 700px (see app.js SPLIT_MIN_WIDTH).
+   Offering a button that produces an unreadable layout is worse than not
+   offering it, and the JS force-collapses to 1-up at the same threshold. */
+@media (max-width: 699px) { #kb-views { display: none; } }
 
 /* ── state overlays (loading / empty / error) ────────────────────────────── */
 #overlay {
@@ -485,11 +576,13 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .sess-title {
   display: flex;
   align-items: baseline;
-  gap: 6px;
+  gap: 0;
   overflow: hidden;
 }
+.sess-ws { color: var(--text-sub); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .sess-agent { font-weight: 600; color: var(--text-main); white-space: nowrap; }
 .sess-state {
+  margin-left: 6px;
   font-size: 10px;
   text-transform: uppercase;
   letter-spacing: 0.06em;
@@ -623,6 +716,13 @@ button { font: inherit; color: inherit; cursor: pointer; }
 .fleet-dot[data-state="running"] { background: var(--amber); }
 .fleet-dot[data-state="idle"] { background: var(--success); }
 .fleet-name { overflow: hidden; text-overflow: ellipsis; max-width: 18ch; }
+/* Workspace prefix on a chip: quieter than the agent name and capped tighter,
+   so a long workspace name can never crowd out what the pane is running. */
+.fleet-ws { color: var(--text-muted); overflow: hidden; text-overflow: ellipsis; max-width: 12ch; }
+/* The chip is a flex row with its own gap — drop the separator's inline padding
+   so the dot/name rhythm stays even. */
+.fleet-chip .lbl-sep { padding: 0; }
+.fleet-chip[aria-current="true"] .fleet-ws { color: var(--text-sub); }
 /* Unviewed attention marker — small red dot trailing the name. */
 .fleet-chip[data-attn="1"] .fleet-alert {
   width: 6px; height: 6px;

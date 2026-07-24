@@ -47,6 +47,10 @@
   <main id="stage">
     <div id="scaler"><div id="term"></div></div>
 
+    <!-- Split view: one tile per watched pane, each with its own SSE stream and
+         xterm. Empty and hidden in 1-up. -->
+    <div id="grid" hidden></div>
+
     <div id="overlay" data-show="loading">
      <div id="ov-card">
       <div class="spinner" aria-hidden="true"></div>
@@ -96,6 +100,13 @@
         <button class="kb-zoom" type="button" data-zoom="-1" aria-label="Smaller text">A&#8722;</button>
         <button class="kb-zoom" type="button" data-zoom="1" aria-label="Larger text">A+</button>
         <button id="kb-fit" class="kb-zoom" type="button" aria-pressed="true" title="Fit whole width">Fit</button>
+        <!-- Split view. Hidden under 700px: two 80-col terminals side by side on
+             a phone are unreadable at any font size we offer. -->
+        <div id="kb-views" role="group" aria-label="Split view">
+          <button class="kb-zoom kb-view" type="button" data-view="1" aria-pressed="true" title="One pane">1</button>
+          <button class="kb-zoom kb-view" type="button" data-view="2" aria-pressed="false" title="Two panes">2</button>
+          <button class="kb-zoom kb-view" type="button" data-view="4" aria-pressed="false" title="Four panes">4</button>
+        </div>
       </div>
     </div>
     <div id="kb-agent-row" hidden></div>

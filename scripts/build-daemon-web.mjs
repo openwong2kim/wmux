@@ -15,6 +15,7 @@
 //   icon-192.png / icon-512.png — app icons (reused from assets/icon.png)
 
 import { readFileSync, writeFileSync, mkdirSync, copyFileSync, existsSync } from 'node:fs';
+import { createHash } from 'node:crypto';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -54,7 +55,16 @@ html = inject(html, '/*__APP_JS__*/', appJs);
 mkdirSync(outDir, { recursive: true });
 writeFileSync(join(outDir, 'terminal.html'), html);
 copyFileSync(join(frontendDir, 'manifest.webmanifest'), join(outDir, 'manifest.webmanifest'));
-copyFileSync(join(frontendDir, 'sw.js'), join(outDir, 'sw.js'));
+// Stamp the service worker with a hash of the page it caches. Without this the
+// cache name is a constant, so an installed PWA keeps serving the build it first
+// saw and no update can ever reach it.
+const buildId = createHash('sha256').update(html).digest('hex').slice(0, 12);
+const sw = read(join(frontendDir, 'sw.js')).replace('__BUILD_ID__', () => buildId);
+if (sw.includes('__BUILD_ID__')) {
+  console.error('build-daemon-web: sw.js build stamp not substituted');
+  process.exit(1);
+}
+writeFileSync(join(outDir, 'sw.js'), sw);
 
 // Reuse the app icon for both declared PWA sizes (browsers scale). A dedicated
 // 192 is a follow-up polish; one 512 PNG already satisfies installability.
@@ -67,4 +77,4 @@ if (existsSync(iconSrc)) {
 }
 
 const kb = (readFileSync(join(outDir, 'terminal.html')).length / 1024).toFixed(0);
-console.log(`build-daemon-web: wrote dist/daemon-web/terminal.html (${kb} KB) + manifest + sw + icons`);
+console.log(`build-daemon-web: wrote dist/daemon-web/terminal.html (${kb} KB, build ${buildId}) + manifest + sw + icons`);

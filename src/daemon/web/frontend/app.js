@@ -30,6 +30,7 @@
   var swLabel = $('#sw-label');
   var termHost = $('#term');
   var scalerEl = $('#scaler');
+  var gridEl = $('#grid');
   var bannerEl = $('#banner');
   var overlayEl = $('#overlay');
   var ovTitle = $('#ov-title');
@@ -76,8 +77,9 @@
     brightBlue: '#6E9BC4', brightMagenta: '#9E8CFF', brightCyan: '#5FB6C9', brightWhite: '#FFFFFF'
   };
 
-  var term = null;
-  var es = null;
+  var term = null;               // the 1-up terminal (null while split view owns the stage)
+  var es = null;                 // the 1-up SSE stream
+  var tiles = [];                // split-view tiles, each with its OWN stream + terminal
   var allowInput = false;
   var currentSession = null;
   var sessions = [];
@@ -87,18 +89,22 @@
   var reduceMotion = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
   var fleetTimer = null;
 
+  function newTerm(cols, rows) {
+    return new Terminal({
+      cols: cols || 80,
+      rows: rows || 24,
+      fontFamily: 'ui-monospace, SFMono-Regular, "Cascadia Code", Menlo, Consolas, "DejaVu Sans Mono", monospace',
+      fontSize: fontSize,
+      theme: THEME,
+      cursorBlink: false,
+      scrollback: 5000,
+      disableStdin: !allowInput
+    });
+  }
+
   function ensureTerm(cols, rows) {
     if (!term) {
-      term = new Terminal({
-        cols: cols || 80,
-        rows: rows || 24,
-        fontFamily: 'ui-monospace, SFMono-Regular, "Cascadia Code", Menlo, Consolas, "DejaVu Sans Mono", monospace',
-        fontSize: fontSize,
-        theme: THEME,
-        cursorBlink: false,
-        scrollback: 5000,
-        disableStdin: !allowInput
-      });
+      term = newTerm(cols, rows);
       term.open(termHost);
       if (allowInput) term.onData(function (d) { sendInput(d); });
     } else if (cols && rows) {
@@ -115,14 +121,20 @@
   // Changing the font size implies zoom mode; "Fit" returns to the overview.
   var fitMode = localStorage.getItem('wmux-web-fit') !== '0';
 
-  function rescale() {
-    if (!term || !term.element) return;
-    var natural = term.element.offsetWidth || 1;
-    var avail = document.documentElement.clientWidth - 8;
+  /** Scale one terminal into `avail` px of width (fit) or leave it 1:1 (zoom). */
+  function scaleInto(scaler, t, avail) {
+    if (!t || !t.element) return;
+    var natural = t.element.offsetWidth || 1;
     var s = fitMode ? Math.min(1, avail / natural) : 1;
-    scalerEl.style.transform = 'scale(' + s + ')';
-    scalerEl.style.width = (natural * s) + 'px';
-    scalerEl.style.height = (term.element.offsetHeight * s) + 'px';
+    scaler.style.transform = 'scale(' + s + ')';
+    scaler.style.width = (natural * s) + 'px';
+    scaler.style.height = (t.element.offsetHeight * s) + 'px';
+  }
+
+  function rescale() {
+    scaleInto(scalerEl, term, document.documentElement.clientWidth - 8);
+    // Split tiles fit into their OWN column, not the viewport.
+    tiles.forEach(function (t) { scaleInto(t.scaler, t.term, (t.el.clientWidth || 1) - 8); });
   }
 
   function setFit(on) {
@@ -132,8 +144,14 @@
     if (btn) btn.setAttribute('aria-pressed', on ? 'true' : 'false');
     rescale();
   }
-  window.addEventListener('resize', rescale);
-  window.addEventListener('orientationchange', function () { setTimeout(rescale, 200); });
+  window.addEventListener('resize', function () {
+    // A resize can cross the phone threshold, which forces 1-up (and back).
+    applyViewMode();
+    rescale();
+  });
+  window.addEventListener('orientationchange', function () {
+    setTimeout(function () { applyViewMode(); rescale(); }, 200);
+  });
 
   // SSE is the ONLY endpoint that carries the token in the query string
   // (EventSource cannot set headers). Every other call uses a Bearer header so
@@ -173,15 +191,18 @@
     if (authInput) { authInput.value = ''; setTimeout(function () { authInput.focus(); }, 50); }
   }
 
-  function sendInput(data) {
-    if (!allowInput || !currentSession) return;
-    fetch('/api/input?session=' + encodeURIComponent(currentSession), {
+  function sendTo(sessionId, data) {
+    if (!allowInput || !sessionId) return;
+    fetch('/api/input?session=' + encodeURIComponent(sessionId), {
       method: 'POST',
       body: data,
       headers: authHeaders({ 'Content-Type': 'application/octet-stream' }),
       keepalive: true
     }).catch(function () { /* transient */ });
   }
+
+  /** Key bar / single-view input always targets the pane you are focused on. */
+  function sendInput(data) { sendTo(currentSession, data); }
 
   // ── touch key bar ────────────────────────────────────────────────────────
   // A phone keyboard cannot produce Esc, Tab, Ctrl-anything or arrows, which is
@@ -319,6 +340,7 @@
     fontSize = Math.max(MIN_FONT, Math.min(MAX_FONT, next));
     try { localStorage.setItem('wmux-web-font', String(fontSize)); } catch (e) { /* private mode */ }
     if (term) term.options.fontSize = fontSize;
+    tiles.forEach(function (t) { if (t.term) t.term.options.fontSize = fontSize; });
     // Resizing the font under fit-to-width is a no-op (the scale just absorbs
     // it), so asking for a size change means leaving fit mode.
     setFit(false);
@@ -334,8 +356,57 @@
     return parts.slice(-2).join('/');
   }
 
+  // ── session labels ────────────────────────────────────────────────────────
+  // `s.workspace` is the workspace a pane belongs to, resolved daemon-side from
+  // the identity the desktop app stamps into the pane env at spawn.
+  //
+  // HONEST LIMITATION: that stamp is a SNAPSHOT. Panes started before this
+  // feature existed carry no workspace at all (the field is simply absent, and
+  // we label by cwd exactly as before — we never invent a workspace), and a
+  // workspace RENAMED after a pane spawned keeps showing the name it had then.
   function labelFor(s) {
-    return { agent: s.agent || shortenCwd(s.cwd), cwd: s.agent ? shortenCwd(s.cwd) : '' };
+    var ws = s.workspace || '';
+    var cwd = shortenCwd(s.cwd);
+    return {
+      ws: ws,
+      // The identifying half of the label: the agent when we know it. Falls back
+      // to the cwd tail ONLY when there is no workspace either — with a
+      // workspace present, "Workspace 1" already answers "which pane is this"
+      // and the cwd stays where it belongs, in the mono secondary line.
+      agent: s.agent || (ws ? '' : cwd),
+      cwd: cwd
+    };
+  }
+
+  /** Flat one-line form ("Workspace 1 · claude") for notification bodies. */
+  function sessionName(s) {
+    var l = labelFor(s);
+    if (l.ws && l.agent) return l.ws + ' · ' + l.agent;
+    return l.ws || l.agent || shortenCwd(s.cwd);
+  }
+
+  function sepEl() {
+    var el = document.createElement('span');
+    el.className = 'lbl-sep';
+    el.textContent = '·';
+    return el;
+  }
+
+  /** Append `Workspace 1 · claude` into `host`, using the given class names. */
+  function appendLabel(host, l, wsClass, agentClass) {
+    if (l.ws) {
+      var w = document.createElement('span');
+      w.className = wsClass;
+      w.textContent = l.ws;
+      host.appendChild(w);
+      if (l.agent) host.appendChild(sepEl());
+    }
+    if (l.agent) {
+      var a = document.createElement('span');
+      a.className = agentClass;
+      a.textContent = l.agent;
+      host.appendChild(a);
+    }
   }
 
   function updateSwitcher(s) {
@@ -346,11 +417,13 @@
     }
     var l = labelFor(s);
     swLabel.innerHTML = '';
-    var a = document.createElement('span');
-    a.className = 'sw-agent';
-    a.textContent = l.agent;
-    swLabel.appendChild(a);
-    if (l.cwd) {
+    appendLabel(swLabel, l, 'sw-ws', 'sw-agent');
+    // The switcher is the narrowest label on the page. Once a workspace is in
+    // it, the cwd is dropped here — "Workspace 1 · claude" fits a phone bar,
+    // "Workspace 1 · claude wmux/src" ellipsizes mid-word. The sheet row and the
+    // split-view tile headers still carry the path. `agent !== cwd` guards the
+    // no-workspace-no-agent pane, whose headline IS the cwd (never print it twice).
+    if (!l.ws && l.cwd && l.agent && l.agent !== l.cwd) {
       var c = document.createElement('span');
       c.className = 'sw-cwd';
       c.textContent = ' ' + l.cwd;
@@ -402,13 +475,10 @@
       main.className = 'sess-main';
       var title = document.createElement('span');
       title.className = 'sess-title';
-      var agent = document.createElement('span');
-      agent.className = 'sess-agent';
-      agent.textContent = s.agent || shortenCwd(s.cwd);
+      appendLabel(title, labelFor(s), 'sess-ws', 'sess-agent');
       var state = document.createElement('span');
       state.className = 'sess-state';
       state.textContent = s.state || '';
-      title.appendChild(agent);
       title.appendChild(state);
       var cwd = document.createElement('span');
       cwd.className = 'sess-cwd';
@@ -420,7 +490,7 @@
       btn.appendChild(main);
       btn.addEventListener('click', function () {
         closeSheet();
-        if (s.id !== currentSession) connect(s.id);
+        if (s.id !== currentSession) selectSession(s.id);
       });
       li.appendChild(btn);
       sheetList.appendChild(li);
@@ -431,8 +501,6 @@
   // A glanceable row of every pane. Text-first chips, boxless until active;
   // the current pane gets a steel underline ("where you are"). Hidden entirely
   // below 2 sessions (dead chrome rule).
-  function sessionName(s) { return s.agent || shortenCwd(s.cwd); }
-
   function renderFleet() {
     if (!fleetEl) return;
     if (sessions.length < 2) {
@@ -454,18 +522,14 @@
       // amber = running, green = idle, gray = anything else.
       if (s.state === 'running' || s.state === 'idle') dot.setAttribute('data-state', s.state);
 
-      var name = document.createElement('span');
-      name.className = 'fleet-name';
-      name.textContent = sessionName(s);
-
       var alert = document.createElement('span');
       alert.className = 'fleet-alert';
       alert.setAttribute('aria-hidden', 'true');
 
       btn.appendChild(dot);
-      btn.appendChild(name);
+      appendLabel(btn, labelFor(s), 'fleet-ws', 'fleet-name');
       btn.appendChild(alert);
-      btn.addEventListener('click', function () { if (s.id !== currentSession) connect(s.id); });
+      btn.addEventListener('click', function () { if (s.id !== currentSession) selectSession(s.id); });
       fleetEl.appendChild(btn);
     });
   }
@@ -479,6 +543,11 @@
       renderFleet();
       var cur = sessions.filter(function (x) { return x.id === currentSession; })[0];
       if (cur) updateSwitcher(cur);
+      // Keep a split in sync with the fleet: refresh tile headers, and rebuild
+      // only if the set of panes it should show actually changed (a pane died,
+      // a new one appeared). applyViewMode is a no-op otherwise, so the 30s
+      // poll never disturbs a live stream.
+      applyViewMode();
     }).catch(function () { /* transient; next tick retries */ });
   }
   function startFleetPolling() {
@@ -568,7 +637,7 @@
     el.addEventListener('click', function () {
       var sid = n.sessionId;
       ack();
-      if (sid && sid !== currentSession) connect(sid);
+      if (sid && sid !== currentSession) selectSession(sid);
     });
 
     el.appendChild(body);
@@ -580,6 +649,33 @@
   }
 
   // ── stream ───────────────────────────────────────────────────────────────
+  // ONE subscription implementation, used by the single-pane view and by every
+  // split tile, so stream lifecycle (framing, the fleet-wide attention tee,
+  // teardown) can never drift between the two. The caller owns the returned
+  // EventSource and MUST close() it.
+  //
+  // `sink.attention` must be true for EXACTLY ONE open stream: the daemon
+  // broadcasts critical/notify to every connected client, so binding it on all
+  // four tiles would show four copies of the same alert.
+  function openStream(sessionId, sink) {
+    var src = new EventSource(streamUrl('/api/stream?session=' + encodeURIComponent(sessionId)));
+    src.addEventListener('meta', function (e) {
+      var m;
+      try { m = JSON.parse(e.data); } catch (err) { return; }
+      if (sink.meta) sink.meta(m);
+    });
+    src.addEventListener('snapshot', function (e) { if (sink.snapshot) sink.snapshot(b64ToBytes(e.data)); });
+    src.addEventListener('data', function (e) { if (sink.data) sink.data(b64ToBytes(e.data)); });
+    src.addEventListener('exit', function () { if (sink.exit) sink.exit(); });
+    if (sink.attention) {
+      src.addEventListener('critical', function (e) { handleAttention('critical', e.data); });
+      src.addEventListener('notify', function (e) { handleAttention('notify', e.data); });
+    }
+    src.onopen = function () { if (sink.open) sink.open(); };
+    src.onerror = function () { if (sink.error) sink.error(); };
+    return src;
+  }
+
   function connect(sessionId) {
     if (es) { es.close(); es = null; }
     currentSession = sessionId;
@@ -592,27 +688,259 @@
     setConn('connecting', 'connecting…');
     showOverlay('loading', 'Attaching to pane', 'Loading scrollback and live output.');
 
-    es = new EventSource(streamUrl('/api/stream?session=' + encodeURIComponent(sessionId)));
-    es.addEventListener('meta', function (e) {
-      var m = JSON.parse(e.data);
-      ensureTerm(m.cols, m.rows);
+    es = openStream(sessionId, {
+      attention: true,
+      meta: function (m) { ensureTerm(m.cols, m.rows); },
+      snapshot: function (bytes) {
+        if (term) { term.reset(); term.write(bytes); }
+        hideOverlay();
+        setConn('live', 'live');
+      },
+      data: function (bytes) { if (term) term.write(bytes); },
+      exit: function () { setConn('ended', 'ended'); },
+      open: function () { setConn('live', 'live'); },
+      error: function () { setConn('reconnect', 'reconnecting…'); }
     });
-    es.addEventListener('snapshot', function (e) {
-      if (term) { term.reset(); term.write(b64ToBytes(e.data)); }
-      hideOverlay();
-      setConn('live', 'live');
-    });
-    es.addEventListener('data', function (e) {
-      if (term) term.write(b64ToBytes(e.data));
-    });
-    es.addEventListener('exit', function () { setConn('ended', 'ended'); });
-    // Fleet-wide attention events — broadcast on EVERY stream, so we hear about
-    // pane B while watching pane A.
-    es.addEventListener('critical', function (e) { handleAttention('critical', e.data); });
-    es.addEventListener('notify', function (e) { handleAttention('notify', e.data); });
-    es.onopen = function () { setConn('live', 'live'); };
-    es.onerror = function () { setConn('reconnect', 'reconnecting…'); };
   }
+
+  // ── split view (1 / 2 / 4 panes) ─────────────────────────────────────────
+  // Below this viewport width a split is not offered at all: two 80-column
+  // terminals side by side on a 390px phone are a smear at every font size the
+  // zoom control can reach, so the buttons are hidden (CSS) AND the stored
+  // preference is force-collapsed to 1-up (here) — a narrow window must never
+  // be able to land in a layout the user cannot read.
+  var SPLIT_MIN_WIDTH = 700;
+  var VIEW_MODES = [1, 2, 4];
+  var viewMode = Number(localStorage.getItem('wmux-web-view')) || 1;
+  if (VIEW_MODES.indexOf(viewMode) < 0) viewMode = 1;
+
+  function splitAllowed() { return document.documentElement.clientWidth >= SPLIT_MIN_WIDTH; }
+  function effectiveMode() { return splitAllowed() ? viewMode : 1; }
+  function tileFor(sessionId) {
+    return tiles.filter(function (t) { return t.sessionId === sessionId; })[0] || null;
+  }
+
+  /** Which panes a split shows: the current one first, then fleet order. */
+  function pickSessions(n) {
+    var out = [];
+    var cur = sessions.filter(function (x) { return x.id === currentSession; })[0];
+    if (cur) out.push(cur);
+    for (var i = 0; i < sessions.length && out.length < n; i++) {
+      if (!cur || sessions[i].id !== cur.id) out.push(sessions[i]);
+    }
+    return out;
+  }
+
+  /** Close every tile's stream, dispose its terminal, drop its DOM. */
+  function destroyTiles() {
+    tiles.forEach(function (t) {
+      if (t.es) { t.es.close(); t.es = null; }
+      try { t.term.dispose(); } catch (e) { /* already torn down */ }
+      t.term = null;
+      if (t.el.parentNode) t.el.parentNode.removeChild(t.el);
+    });
+    tiles = [];
+  }
+
+  /** (Re)fill a tile header: status dot + workspace/agent label + cwd. */
+  function renderTileHead(t) {
+    var s = sessions.filter(function (x) { return x.id === t.sessionId; })[0] || { id: t.sessionId };
+    t.head.innerHTML = '';
+    var dot = document.createElement('span');
+    dot.className = 'tile-dot';
+    if (s.state === 'running' || s.state === 'idle') dot.setAttribute('data-state', s.state);
+    t.head.appendChild(dot);
+    appendLabel(t.head, labelFor(s), 'tile-ws', 'tile-name');
+    var cwd = document.createElement('span');
+    cwd.className = 'tile-cwd';
+    cwd.textContent = shortenCwd(s.cwd);
+    t.head.appendChild(cwd);
+    if (t.ended) {
+      var end = document.createElement('span');
+      end.className = 'tile-end';
+      end.textContent = 'ended';
+      t.head.appendChild(end);
+      t.el.setAttribute('data-ended', '1');
+    }
+  }
+
+  function makeTile(s, isAttentionSource) {
+    var el = document.createElement('div');
+    el.className = 'tile';
+    var head = document.createElement('div');
+    head.className = 'tile-head';
+    var body = document.createElement('div');
+    body.className = 'tile-body';
+    var scaler = document.createElement('div');
+    scaler.className = 'tile-scaler';
+    var host = document.createElement('div');
+    scaler.appendChild(host);
+    body.appendChild(scaler);
+    el.appendChild(head);
+    el.appendChild(body);
+    // Attach BEFORE term.open(): xterm measures its container on open, and a
+    // detached node measures as 0 and renders nothing.
+    gridEl.appendChild(el);
+
+    var tile = { sessionId: s.id, term: null, es: null, el: el, head: head, scaler: scaler, ended: false };
+    tile.term = newTerm(s.cols, s.rows);
+    tile.term.open(host);
+    if (allowInput) {
+      // Typing into a tile targets THAT tile's pane — and tapping it already
+      // made it the focused one, so "input goes to the focused tile" holds.
+      //
+      // Deliberately does NOT move focus: xterm's onData also carries the
+      // terminal's AUTOMATIC replies (DSR cursor reports, device attributes)
+      // that a TUI provokes on its own. Focusing here made every tile yank
+      // focus back on each reply, which pinned the page to whichever pane
+      // chattered most (caught in live dogfood — a tap looked like it did
+      // nothing). Focus moves on an explicit tap only.
+      tile.term.onData(function (d) { sendTo(tile.sessionId, d); });
+    }
+    renderTileHead(tile);
+    el.addEventListener('pointerdown', function () { focusTile(tile); });
+
+    tile.es = openStream(s.id, {
+      attention: isAttentionSource,
+      meta: function (m) {
+        if (tile.term && m.cols && m.rows) tile.term.resize(m.cols, m.rows);
+        rescale();
+      },
+      snapshot: function (bytes) {
+        if (tile.term) { tile.term.reset(); tile.term.write(bytes); }
+        rescale();
+        if (tile.sessionId === currentSession) setConn('live', 'live');
+      },
+      data: function (bytes) { if (tile.term) tile.term.write(bytes); },
+      exit: function () {
+        tile.ended = true;
+        renderTileHead(tile);
+        if (tile.sessionId === currentSession) setConn('ended', 'ended');
+      },
+      open: function () { if (tile.sessionId === currentSession) setConn('live', 'live'); },
+      error: function () { if (tile.sessionId === currentSession) setConn('reconnect', 'reconnecting…'); }
+    });
+    tiles.push(tile);
+    return tile;
+  }
+
+  function focusTile(t) {
+    if (!t) return;
+    tiles.forEach(function (x) {
+      if (x === t) x.el.setAttribute('data-focus', '1');
+      else x.el.removeAttribute('data-focus');
+    });
+    if (currentSession !== t.sessionId) {
+      currentSession = t.sessionId;
+      if (attn[currentSession]) delete attn[currentSession];
+      var s = sessions.filter(function (x) { return x.id === currentSession; })[0];
+      updateSwitcher(s);
+      renderSheet();
+      renderFleet();
+      setConn(t.ended ? 'ended' : 'live', t.ended ? 'ended' : 'live');
+    }
+    if (allowInput && t.term) t.term.focus();
+  }
+
+  function showSingle() {
+    destroyTiles();
+    gridEl.setAttribute('hidden', '');
+    gridEl.removeAttribute('data-mode');
+    scalerEl.style.display = '';
+    if (currentSession && !es) connect(currentSession);
+    rescale();
+  }
+
+  function buildGrid(mode) {
+    var picked = pickSessions(mode);
+    // One live pane is not a split — a 2-up grid would be a tile plus a dead
+    // cell. Stay 1-up until there is something to compare it with.
+    if (picked.length < 2) { showSingle(); return; }
+
+    // Compare the SET, not the order: pickSessions puts the focused pane first,
+    // so an order-sensitive check would rebuild the whole grid (and reflash every
+    // stream) on the first poll after a tap, shuffling tiles under the user's
+    // finger. Panes only move when the fleet itself changes.
+    var want = picked.map(function (s) { return s.id; }).sort().join(',');
+    var have = tiles.map(function (t) { return t.sessionId; }).sort().join(',');
+    if (have === want) {
+      // Same panes on screen: refresh labels/status only.
+      tiles.forEach(renderTileHead);
+      return;
+    }
+
+    destroyTiles();
+    // The 1-up stream and terminal must not survive behind the grid — that is
+    // exactly how a "hidden" viewer keeps a stream open forever.
+    if (es) { es.close(); es = null; }
+    if (term) { try { term.dispose(); } catch (e) { /* ignore */ } term = null; }
+    scalerEl.style.display = 'none';
+    hideOverlay();
+    gridEl.removeAttribute('hidden');
+    gridEl.setAttribute('data-mode', String(picked.length));
+    picked.forEach(function (s, i) { makeTile(s, i === 0); });
+    focusTile(tileFor(currentSession) || tiles[0]);
+    rescale();
+  }
+
+  function updateViewButtons() {
+    var mode = effectiveMode();
+    Array.prototype.forEach.call(document.querySelectorAll('.kb-view'), function (btn) {
+      btn.setAttribute('aria-pressed', Number(btn.getAttribute('data-view')) === mode ? 'true' : 'false');
+    });
+  }
+
+  function applyViewMode() {
+    if (!sessions.length) return;   // the empty-state overlay owns the stage
+    updateViewButtons();
+    if (effectiveMode() === 1) showSingle();
+    else buildGrid(effectiveMode());
+  }
+
+  Array.prototype.forEach.call(document.querySelectorAll('.kb-view'), function (btn) {
+    btn.addEventListener('click', function () {
+      var next = Number(btn.getAttribute('data-view'));
+      if (VIEW_MODES.indexOf(next) < 0) return;
+      viewMode = next;
+      try { localStorage.setItem('wmux-web-view', String(next)); } catch (e) { /* private mode */ }
+      applyViewMode();
+    });
+  });
+
+  /**
+   * Switch which pane the page is centred on. In a split that means focusing
+   * the tile if it is already up, or rebuilding the grid around it if not.
+   */
+  function selectSession(sessionId) {
+    if (sessionId === currentSession && tileFor(sessionId)) return;
+    if (effectiveMode() > 1 && tiles.length) {
+      var t = tileFor(sessionId);
+      if (t) { focusTile(t); return; }
+      currentSession = sessionId;
+      if (attn[sessionId]) delete attn[sessionId];
+      buildGrid(effectiveMode());
+      var s = sessions.filter(function (x) { return x.id === sessionId; })[0];
+      updateSwitcher(s);
+      renderSheet();
+      renderFleet();
+      return;
+    }
+    connect(sessionId);
+  }
+
+  // Dogfood hook: the split view's real risk is a leaked stream or terminal, so
+  // expose the counts a driver can assert on after switching modes.
+  window.__wmuxWeb = function () {
+    return {
+      mode: effectiveMode(),
+      stored: viewMode,
+      tiles: tiles.length,
+      streams: (es ? 1 : 0) + tiles.filter(function (t) { return !!t.es; }).length,
+      terms: (term ? 1 : 0) + tiles.filter(function (t) { return !!t.term; }).length,
+      xtermNodes: document.querySelectorAll('.xterm').length,
+      focused: currentSession
+    };
+  };
 
   function loadSessions() {
     return api('/api/sessions').then(function (r) { return r.json(); }).then(function (data) {
@@ -628,7 +956,10 @@
         return;
       }
       switcherEl.disabled = false;
-      connect(sessions[0].id);
+      if (!currentSession || !sessions.filter(function (x) { return x.id === currentSession; })[0]) {
+        currentSession = sessions[0].id;
+      }
+      applyViewMode();
     });
   }
 
