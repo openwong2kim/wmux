@@ -37,8 +37,6 @@ function electronApp(): Electron.App | null {
 
 const RUN_KEY = 'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Run';
 const VALUE_NAME = 'fmux';
-/** Pre-identity-boundary Run value — remove on write so login doesn't start twice. */
-const LEGACY_VALUE_NAME = 'wmux';
 
 // Hard cap on every reg.exe spawn. A wedged reg.exe (AV interception, a
 // corrupt hive, a GPO hook) would otherwise hang the synchronous call — which
@@ -62,9 +60,9 @@ function regExe(): string {
  */
 
 /**
- * True only when the per-user Run key currently holds a `fmux` (or legacy
- * `wmux`) value. On any platform other than win32, or if reg.exe errors for
- * any reason, returns false.
+ * True only when the per-user Run key currently holds a `fmux` value. An
+ * upstream `wmux` Run entry is foreign and must not count as Forge autostart
+ * (and must never be deleted by Forge enable/disable).
  */
 export function isAutostartEnabled(): boolean {
   if (process.platform === 'darwin') {
@@ -77,7 +75,7 @@ export function isAutostartEnabled(): boolean {
     }
   }
   if (process.platform !== 'win32') return false;
-  return hasRunValue(VALUE_NAME) || hasRunValue(LEGACY_VALUE_NAME);
+  return hasRunValue(VALUE_NAME);
 }
 
 function hasRunValue(name: string): boolean {
@@ -124,8 +122,6 @@ export function enableAutostart(exePath: string = process.execPath): void {
       ['add', RUN_KEY, '/v', VALUE_NAME, '/t', 'REG_SZ', '/d', `"${exePath}"`, '/f'],
       { windowsHide: true, timeout: REG_TIMEOUT_MS },
     );
-    // Drop the legacy value so a prior identity doesn't double-launch at login.
-    deleteRunValue(LEGACY_VALUE_NAME);
   } catch {
     /* best-effort */
   }
@@ -143,7 +139,6 @@ export function disableAutostart(): void {
   }
   if (process.platform !== 'win32') return;
   deleteRunValue(VALUE_NAME);
-  deleteRunValue(LEGACY_VALUE_NAME);
 }
 
 /** Convenience wrapper used by the IPC handler: set to the requested state. */

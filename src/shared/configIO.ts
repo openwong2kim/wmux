@@ -326,8 +326,9 @@ export function removeMcpServers(
 // decision 1: skip-if-foreign). Root keys must precede tables in TOML, so the
 // insert lands before the first table header.
 
-/** Basename of the wmux Codex notify bridge — how we recognize our own entry. */
-export const CODEX_NOTIFY_BASENAME = 'wmux-codex-notify.mjs';
+/** Basename of the Forge Mux Codex notify bridge — how we recognize our own entry.
+ *  Upstream uses `wmux-codex-notify.mjs`; that must remain foreign. */
+export const CODEX_NOTIFY_BASENAME = 'fmux-codex-notify.mjs';
 
 /** Read the root `notify` value (array of string tokens), or null when absent /
  *  not an array. Non-string elements are dropped (a shape we don't own). */
@@ -337,8 +338,8 @@ export function getNotify(parsed: Record<string, unknown>): string[] | null {
   return n.filter((x): x is string => typeof x === 'string');
 }
 
-/** True when the notify entry is wmux-owned: `["node", "<…/wmux-codex-notify.mjs>"]`.
- *  A foreign notify (user's own program) returns false so we leave it untouched. */
+/** True when the notify entry is Forge-owned: `["node", "<…/fmux-codex-notify.mjs>"]`.
+ *  A foreign notify (user's own program or upstream wmux) returns false so we leave it untouched. */
 export function isWmuxOwnedNotify(notify: string[] | null): boolean {
   return (
     !!notify &&

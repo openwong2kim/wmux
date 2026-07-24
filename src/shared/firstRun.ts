@@ -19,7 +19,7 @@ export type FirstRunMode = 'firstRun' | 'reopen';
 export interface FirstRunStatus {
   /** `~/.claude/` directory + `~/.claude.json` both present. */
   claudeFound: boolean;
-  /** `mcpServers.wmux` key present in ~/.claude.json. */
+  /** `mcpServers.fmux` key present in ~/.claude.json. */
   mcpRegistered: boolean;
   /** Resolved absolute path to ~/.claude.json (informational, may not exist). */
   claudeJsonPath: string;

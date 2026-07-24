@@ -21,7 +21,7 @@ const destDir = join(repoRoot, 'dist', 'cli-bundle');
 const bridges = [
   join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-bridge.mjs'),
   join(repoRoot, 'integrations', 'claude', 'bin', 'wmux-statusline.mjs'),
-  join(repoRoot, 'integrations', 'codex', 'bin', 'wmux-codex-notify.mjs'),
+  join(repoRoot, 'integrations', 'codex', 'bin', 'fmux-codex-notify.mjs'),
 ];
 
 mkdirSync(destDir, { recursive: true });

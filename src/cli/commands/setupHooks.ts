@@ -31,7 +31,7 @@ USAGE
 
 ACTIONS (mutually exclusive; default = install)
   (default)    Install Forge Mux hook entries into ~/.claude/settings.json and copy
-               the bridge to ~/.fmux/hooks/wmux-bridge.mjs.
+               the bridge to ~/.fmux/hooks/fmux-bridge.mjs.
   --remove     Remove only the Forge Mux-owned hook entries (leaves your other hooks).
   --status     Report whether Forge Mux hooks are installed, whether the copied bridge
                is up to date, and a double-signal warning if the plugin is also
@@ -48,11 +48,26 @@ GLOBAL FLAGS
 const HOOK_EVENTS = ['Stop', 'SubagentStop', 'SessionStart'] as const;
 type HookEvent = (typeof HOOK_EVENTS)[number];
 
-/** Substring that identifies a wmux-owned hook command in settings.json. */
-const WMUX_BRIDGE_MARKER = 'wmux-bridge.mjs';
+/** Installed bridge basename under `~/.fmux/hooks/` (collision-facing). */
+const FMUX_BRIDGE_BASENAME = 'fmux-bridge.mjs';
 
-/** Substring that identifies the wmux Claude Code marketplace plugin. */
-const WMUX_PLUGIN_MARKER = 'wmux-claude-integration';
+/**
+ * True when a settings.json hook command belongs to Forge Mux — never match a
+ * bare upstream `wmux-bridge.mjs` under `~/.wmux/hooks/`.
+ */
+export function isForgeOwnedHookCommand(command: string): boolean {
+  const norm = command.replace(/\\/g, '/');
+  if (norm.includes(FMUX_BRIDGE_BASENAME)) return true;
+  // Prior Forge installs copied the upstream-named script under ~/.fmux/hooks/.
+  if (norm.includes('/.fmux/hooks/')) return true;
+  return false;
+}
+
+/**
+ * Marketplace plugin id scoped to this fork's marketplace (`@fmux`). Matching
+ * bare `wmux-claude-integration` would treat an upstream `@wmux` plugin as ours.
+ */
+const FMUX_PLUGIN_MARKER = 'wmux-claude-integration@fmux';
 
 /**
  * Filesystem paths the command operates on. Injectable so unit tests can point
@@ -63,7 +78,7 @@ const WMUX_PLUGIN_MARKER = 'wmux-claude-integration';
 export interface SetupHooksPaths {
   /** Claude Code user settings: `~/.claude/settings.json`. */
   settingsPath: string;
-  /** Stable bridge install location: `~/.fmux/hooks/wmux-bridge.mjs`. */
+  /** Stable bridge install location: `~/.fmux/hooks/fmux-bridge.mjs`. */
   bridgeDest: string;
   /** Bundled bridge source, or null when it could not be located. */
   bridgeSource: string | null;
@@ -73,7 +88,7 @@ export function defaultPaths(): SetupHooksPaths {
   const home = os.homedir();
   return {
     settingsPath: path.join(home, '.claude', 'settings.json'),
-    bridgeDest: path.join(home, '.fmux', 'hooks', 'wmux-bridge.mjs'),
+    bridgeDest: path.join(home, '.fmux', 'hooks', FMUX_BRIDGE_BASENAME),
     bridgeSource: findBridgeSource(),
   };
 }
@@ -156,7 +171,7 @@ interface HookGroup {
   [k: string]: unknown;
 }
 
-/** True when a hook group contains a wmux-owned command leaf. */
+/** True when a hook group contains a Forge Mux-owned command leaf. */
 function isWmuxGroup(group: unknown): boolean {
   if (!group || typeof group !== 'object') return false;
   const hooks = (group as HookGroup).hooks;
@@ -166,7 +181,7 @@ function isWmuxGroup(group: unknown): boolean {
       h &&
       typeof h === 'object' &&
       typeof (h as HookLeaf).command === 'string' &&
-      (h as HookLeaf).command.includes(WMUX_BRIDGE_MARKER),
+      isForgeOwnedHookCommand((h as HookLeaf).command),
   );
 }
 
@@ -259,12 +274,9 @@ function jsonMentions(value: unknown, needle: string, depth = 0): boolean {
 }
 
 /**
- * Authoritative install-time detection of the `wmux-claude-integration`
- * marketplace plugin via Claude Code's installed-plugins manifest
- * (`<claudeDir>/plugins/installed_plugins.json`). Returns true when the manifest
- * references the plugin by key or value. A missing OR malformed manifest is
- * tolerated and treated as "not installed" — fail-open to the plugin-LESS
- * install path so a corrupt manifest never blocks `fmux setup-hooks`.
+ * Authoritative install-time detection of the Forge Mux marketplace plugin via
+ * Claude Code's installed-plugins manifest. Only `…@fmux` counts — an upstream
+ * `wmux-claude-integration@…` install must not short-circuit Forge setup-hooks.
  */
 function detectPluginViaManifest(settingsPath: string): boolean {
   const manifestPath = path.join(path.dirname(settingsPath), 'plugins', 'installed_plugins.json');
@@ -276,7 +288,7 @@ function detectPluginViaManifest(settingsPath: string): boolean {
   }
   try {
     const parsed = JSON.parse(raw, safeReviver) as unknown;
-    return jsonMentions(parsed, WMUX_PLUGIN_MARKER);
+    return jsonMentions(parsed, FMUX_PLUGIN_MARKER);
   } catch {
     return false; // malformed
   }
@@ -294,7 +306,7 @@ function isPluginExplicitlyDisabled(settings: Record<string, unknown>): boolean 
   const enabled = settings['enabledPlugins'];
   if (!enabled || typeof enabled !== 'object' || Array.isArray(enabled)) return false;
   for (const [key, value] of Object.entries(enabled as Record<string, unknown>)) {
-    if (key.includes(WMUX_PLUGIN_MARKER) && value === false) return true;
+    if (key.includes(FMUX_PLUGIN_MARKER) && value === false) return true;
   }
   return false;
 }
@@ -313,7 +325,7 @@ function copyBridge(paths: SetupHooksPaths): BridgeCopyResult {
     return {
       copied: false,
       warning:
-        'Could not locate the bundled wmux-bridge.mjs next to this CLI. Reinstall Forge Mux or run from a repo checkout.',
+        'Could not locate the bundled hook bridge next to this CLI. Reinstall Forge Mux or run from a repo checkout.',
     };
   }
   const dir = path.dirname(paths.bridgeDest);
@@ -558,37 +570,12 @@ export interface StatusOutcome {
 }
 
 /**
- * Best-effort detection of the `wmux-claude-integration` marketplace plugin.
- * Claude Code stores installed plugins under `~/.claude/plugins/`. We only need
- * a heuristic for the double-signal warning, so a directory-name match is enough.
+ * Best-effort detection of the Forge Mux marketplace plugin (`…@fmux`).
+ * Uses the same scoped marker as install-time plugin short-circuit — never a
+ * bare `wmux-claude-integration` directory that could belong to upstream.
  */
 function detectPluginInstalled(settingsPath: string): boolean {
-  // settingsPath is `<claudeDir>/settings.json`; the plugins live next to it.
-  const claudeDir = path.dirname(settingsPath);
-  const pluginsDir = path.join(claudeDir, 'plugins');
-  try {
-    if (!fs.existsSync(pluginsDir)) return false;
-    const stack = [pluginsDir];
-    let depth = 0;
-    while (stack.length > 0 && depth < 5000) {
-      const cur = stack.pop() as string;
-      depth++;
-      let entries: fs.Dirent[];
-      try {
-        entries = fs.readdirSync(cur, { withFileTypes: true });
-      } catch {
-        continue;
-      }
-      for (const e of entries) {
-        if (!e.isDirectory()) continue;
-        if (e.name === 'wmux-claude-integration') return true;
-        stack.push(path.join(cur, e.name));
-      }
-    }
-  } catch {
-    return false;
-  }
-  return false;
+  return detectPluginViaManifest(settingsPath);
 }
 
 export function statusHooks(paths: SetupHooksPaths): StatusOutcome {

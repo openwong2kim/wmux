@@ -21,7 +21,7 @@ import * as path from 'path';
  * entirely, so each account dir needs its own statusLine entry.
  *
  * Same durability strategy as `fmux setup-hooks`: the script is copied to the
- * stable `~/.fmux/hooks/wmux-statusline.mjs` (survives Squirrel app-x.y.z
+ * stable `~/.fmux/hooks/fmux-statusline.mjs` (survives Squirrel app-x.y.z
  * updates), settings writes are atomic tmp+rename, corrupted settings.json
  * aborts that target, and a FOREIGN statusLine (user's own) is never clobbered.
  */
@@ -48,13 +48,13 @@ NOTE
   hasn't arrived yet (or the account has no subscription rate limits).
 `.trimStart();
 
-/** Substring identifying a wmux-owned statusLine command. */
-export const WMUX_STATUSLINE_MARKER = 'wmux-statusline.mjs';
+/** Substring identifying a Forge Mux-owned statusLine command. */
+export const WMUX_STATUSLINE_MARKER = 'fmux-statusline.mjs';
 
 export interface SetupStatuslinePaths {
   /** Settings files to edit: default dir first, then registered claude accounts. */
   targets: Array<{ label: string; settingsPath: string }>;
-  /** Stable install location: `~/.fmux/hooks/wmux-statusline.mjs`. */
+  /** Stable install location: `~/.fmux/hooks/fmux-statusline.mjs`. */
   scriptDest: string;
   /** Bundled script source, or null when it could not be located. */
   scriptSource: string | null;
@@ -64,8 +64,10 @@ export interface SetupStatuslinePaths {
  *  script (bundled next to the CLI / in cli-bundle / repo checkout). */
 export function findStatuslineSourceFrom(startDir: string): string | null {
   const candidates = [
-    'wmux-statusline.mjs',
+    'wmux-statusline.mjs', // packaged source basename (kept for rebase ease)
+    'fmux-statusline.mjs',
     path.join('cli-bundle', 'wmux-statusline.mjs'),
+    path.join('cli-bundle', 'fmux-statusline.mjs'),
     path.join('dist', 'cli-bundle', 'wmux-statusline.mjs'),
     path.join('integrations', 'claude', 'bin', 'wmux-statusline.mjs'),
   ];
@@ -130,7 +132,7 @@ export function defaultPaths(): SetupStatuslinePaths {
   });
   return {
     targets: deduped,
-    scriptDest: path.join(home, '.fmux', 'hooks', 'wmux-statusline.mjs'),
+    scriptDest: path.join(home, '.fmux', 'hooks', 'fmux-statusline.mjs'),
     scriptSource: findStatuslineSourceFrom(__dirname),
   };
 }
@@ -180,13 +182,20 @@ function loadSettings(settingsPath: string): LoadResult {
   }
 }
 
-/** 'none' | 'wmux' | 'foreign' — what the target's statusLine currently is. */
+/** 'none' | 'wmux' | 'foreign' — what the target's statusLine currently is.
+ *  'wmux' here means Forge-owned (historical enum). Ownership matches the
+ *  Forge basename or a prior copy under ~/.fmux/hooks/ — never upstream
+ *  ~/.wmux/hooks/wmux-statusline.mjs. */
 export function classifyStatusLine(settings: Record<string, unknown>): 'none' | 'wmux' | 'foreign' {
   const sl = settings.statusLine;
   if (sl === undefined || sl === null) return 'none';
   if (sl && typeof sl === 'object' && !Array.isArray(sl)) {
     const cmd = (sl as Record<string, unknown>).command;
-    if (typeof cmd === 'string' && cmd.includes(WMUX_STATUSLINE_MARKER)) return 'wmux';
+    if (typeof cmd === 'string') {
+      const norm = cmd.replace(/\\/g, '/');
+      if (norm.includes(WMUX_STATUSLINE_MARKER)) return 'wmux';
+      if (norm.includes('/.fmux/hooks/') && norm.includes('statusline')) return 'wmux';
+    }
   }
   return 'foreign';
 }

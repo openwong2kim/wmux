@@ -343,7 +343,7 @@ export class McpRegistrar {
 
   /**
    * Install the Codex notify bridge to a STABLE, version-free location
-   * (`~/.wmux/hooks/wmux-codex-notify.mjs`) and register it as Codex's `notify`
+   * (`~/.fmux/hooks/fmux-codex-notify.mjs`) and register it as Codex's `notify`
    * program. Copying fresh on every boot keeps the installed script in lock-step
    * with the running app version while the config path never goes stale (unlike
    * the versioned resources path). Skip-if-foreign lives in registerCodexNotify.

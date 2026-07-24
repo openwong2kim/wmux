@@ -45,13 +45,12 @@ export interface McpTarget {
 // The MCP server key Forge Mux owns in every target config. (A formerly-paired
 // `wmux-a2a` server was removed as dead code: no a2a bundle was ever built or
 // packaged, so it never registered — the A2A tools live in the main server.)
-// Primary key is `fmux` (collision-facing identity). `wmux` remains in the
-// sweep list so unregister / register can clear a legacy owned entry left by
-// an older build or an upstream wmux install the user no longer wants.
+// Primary key is `fmux` only. Upstream's live `wmux` key must NEVER be swept —
+// a co-installed wmux still owns that entry.
 import { PRODUCT_SLUG } from './productIdentity';
 
 export const WMUX_SERVER_KEY = PRODUCT_SLUG;
-export const WMUX_SERVER_KEYS: readonly string[] = [WMUX_SERVER_KEY, 'wmux'];
+export const WMUX_SERVER_KEYS: readonly string[] = [WMUX_SERVER_KEY];
 
 export const MCP_TARGETS: readonly McpTarget[] = [
   {

@@ -3,7 +3,7 @@ import path from 'node:path';
 import fs from 'node:fs/promises';
 
 import type { FirstRunStatus } from '../../shared/firstRun';
-import { WMUX_SERVER_KEYS } from '../../shared/mcpTargets';
+import { WMUX_SERVER_KEY } from '../../shared/mcpTargets';
 
 /**
  * Read-only detector for Claude Code installation + Forge Mux MCP registration.
@@ -68,8 +68,8 @@ export class ClaudeDetector {
     const mcpServers = (parsed as { mcpServers?: unknown }).mcpServers;
     if (mcpServers === null || typeof mcpServers !== 'object') return false;
     const servers = mcpServers as Record<string, unknown>;
-    // Prefer the current key; accept legacy owned keys so first-run doesn't
-    // nag before McpRegistrar migrates them.
-    return WMUX_SERVER_KEYS.some((k) => Boolean(servers[k]));
+    // Only the Forge key counts. An upstream-only `wmux` entry must not
+    // suppress the first-run prompt to register `fmux`.
+    return Boolean(servers[WMUX_SERVER_KEY]);
   }
 }

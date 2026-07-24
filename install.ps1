@@ -146,7 +146,7 @@ function ConvertFrom-JsonSafe {
 # ---------------------------------------------------------------------------
 
 $repo = 'skflowne/fmux'
-$installDir = "$env:LOCALAPPDATA\wmux"
+$installDir = "$env:LOCALAPPDATA\fmux"
 
 if (-not $env:LOCALAPPDATA -or -not $installDir) {
     Write-Host "  [!] Cannot determine install directory (LOCALAPPDATA is not set)" -ForegroundColor Red
@@ -154,7 +154,7 @@ if (-not $env:LOCALAPPDATA -or -not $installDir) {
 }
 
 Write-Host ""
-Write-Host "  wmux installer" -ForegroundColor Cyan
+Write-Host "  Forge Mux installer" -ForegroundColor Cyan
 Write-Host "  AI Agent Terminal for Windows" -ForegroundColor DarkGray
 if ($FromSource) { Write-Host "  (build-from-source mode)" -ForegroundColor DarkGray }
 Write-Host ""
@@ -211,11 +211,11 @@ if (-not $FromSource) {
     }
 
     Write-Host "  [1/3] Downloading $($setupAsset.name)..." -ForegroundColor DarkGray
-    $tempExe = Join-Path $env:TEMP "wmux-$($version.TrimStart('v')).Setup.exe"
+    $tempExe = Join-Path $env:TEMP "fmux-$($version.TrimStart('v')).Setup.exe"
     $ProgressPreference = 'SilentlyContinue'  # massively speeds up Invoke-WebRequest
     try {
         Invoke-WebRequest -Uri $setupAsset.browser_download_url -OutFile $tempExe `
-            -Headers @{ 'User-Agent' = 'wmux-installer' } -TimeoutSec 300
+            -Headers @{ 'User-Agent' = 'fmux-installer' } -TimeoutSec 300
     } catch {
         Write-Host "  [!] Download failed: $($_.Exception.Message)" -ForegroundColor Red
         return
@@ -495,8 +495,8 @@ try {
         }
         # Create a .cmd wrapper
         $nodePath = (Get-Command node).Source
-        $wmuxCmd = "$installDir\wmux.cmd"
-        Set-Content -Path $wmuxCmd -Value "@echo off`r`n`"$nodePath`" `"$cliEntry`" %*" -Encoding ASCII
+        $fmuxCmd = "$installDir\fmux.cmd"
+        Set-Content -Path $fmuxCmd -Value "@echo off`r`n`"$nodePath`" `"$cliEntry`" %*" -Encoding ASCII
         # Add to user PATH persistently (exact match, not substring)
         $userPath = [Environment]::GetEnvironmentVariable('Path', 'User')
         $pathEntries = if ($userPath) { $userPath.Split(';') } else { @() }
@@ -518,11 +518,11 @@ Write-Host "  [3/5] Dependencies installed" -ForegroundColor Green
 
 Write-Host "  [5/5] Verifying installation..." -ForegroundColor DarkGray
 
-$wmuxPath = (Get-Command wmux -ErrorAction SilentlyContinue).Source
-if ($wmuxPath) {
-    Write-Host "  [5/5] wmux CLI available at: $wmuxPath" -ForegroundColor Green
+$fmuxPath = (Get-Command fmux -ErrorAction SilentlyContinue).Source
+if ($fmuxPath) {
+    Write-Host "  [5/5] fmux CLI available at: $fmuxPath" -ForegroundColor Green
 } else {
-    Write-Host "  [5/5] CLI linked (restart terminal to use 'wmux' command)" -ForegroundColor Yellow
+    Write-Host "  [5/5] CLI linked (restart terminal to use 'fmux' command)" -ForegroundColor Yellow
 }
 
 # ---------------------------------------------------------------------------
@@ -545,5 +545,5 @@ Write-Host ""
 Write-Host "  Installation complete!" -ForegroundColor Green
 Write-Host ""
 Write-Host "  Usage:" -ForegroundColor Cyan
-Write-Host "    wmux --help            # CLI help" -ForegroundColor White
+Write-Host "    fmux --help            # CLI help" -ForegroundColor White
 Write-Host ""

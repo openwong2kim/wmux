@@ -8,9 +8,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 ## [Unreleased]
 
 ## [3.35.1] — 2026-07-26
+### Fixed
+
+- **Side-by-side installs with upstream wmux no longer clobber each other's machine state.** Forge Mux stops removing a live `mcpServers.wmux` entry on MCP register/unregister, ignores upstream-only `wmux` for first-run detection, manages only the `fmux` Windows Run value (never deletes `wmux`), leaves `wmux LanLink` firewall rules alone, owns Claude hooks/statusline only under `~/.fmux/hooks/` with `fmux-bridge` / `fmux-statusline` markers (and only the `…@fmux` marketplace plugin), uses `fmux-codex-notify.mjs` so an upstream Codex notify stays foreign, and installs from-source under `%LOCALAPPDATA%\fmux`.
+
 ### Changed
 
-- **User-facing chrome and install destinations now say Forge Mux / fmux.** Window title, tray, About, Settings brand link, titlebar **FMUX** wordmark, i18n copy, CLI help, autostart Run key, CLI shim name, MCP server registration key, and `system.identify` app id use the Forge identity. Agent-visible envelopes (`FMUX MESSAGE` / `FMUX A2A` / `FMUX-MSG`), doctor and MCP error copy, daemon dialogs, company-mode CLI examples, and Windows LanLink firewall rule names follow the same identity. Claude/Codex/OpenCode/OpenClaude bridges and the event-recorder example now connect to `\\.\pipe\fmux-<user>` (not the legacy `wmux` pipe). Homebrew Cask detection looks under `Caskroom/fmux`. Re-registering MCP cleans up a legacy owned `wmux` server entry; enabling or disabling start-on-login migrates the old `wmux` Run value to `fmux`. Source symbols, event names, protocol strings, hook script basenames, and historical docs keep `wmux` where that reduces upstream merge noise.
+- **User-facing chrome and install destinations now say Forge Mux / fmux.** Window title, tray, About, Settings brand link, titlebar **FMUX** wordmark, i18n copy, CLI help, autostart Run key, CLI shim name, MCP server registration key, and `system.identify` app id use the Forge identity. Agent-visible envelopes (`FMUX MESSAGE` / `FMUX A2A` / `FMUX-MSG`), doctor and MCP error copy, daemon dialogs, company-mode CLI examples, and Windows LanLink firewall rule names follow the same identity. Claude/Codex/OpenCode/OpenClaude bridges and the event-recorder example now connect to `\\.\pipe\fmux-<user>` (not the legacy `wmux` pipe). Homebrew Cask detection looks under `Caskroom/fmux`. Source symbols, event names, protocol strings, and historical docs keep `wmux` where that reduces upstream merge noise.
 
 ## [1.0.0] — 2026-07-23
 

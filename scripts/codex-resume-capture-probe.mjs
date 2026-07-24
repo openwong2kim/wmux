@@ -24,7 +24,7 @@ import { createServer } from 'node:net';
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 
-const SCRIPT = join(fileURLToPath(new URL('../integrations/codex/bin/wmux-codex-notify.mjs', import.meta.url)));
+const SCRIPT = join(fileURLToPath(new URL('../integrations/codex/bin/fmux-codex-notify.mjs', import.meta.url)));
 const TOKEN = 'probe-token-abc';
 // Isolated test pipe (WMUX_PIPE_NAME override) so the probe runs even while the
 // real wmux holds `\\.\pipe\wmux-<user>`. Unique per pid to avoid collisions.

@@ -52,7 +52,7 @@ describe('ClaudeDetector', () => {
     expect(vi.mocked(fs.readFile)).toHaveBeenCalledWith(EXPECTED_JSON, 'utf8');
   });
 
-  it('also treats a legacy mcpServers.wmux entry as registered', async () => {
+  it('does NOT treat an upstream-only mcpServers.wmux entry as Forge-registered', async () => {
     vi.mocked(fs.stat).mockResolvedValueOnce(makeDirStat() as unknown as Awaited<ReturnType<typeof fs.stat>>);
     vi.mocked(fs.readFile).mockResolvedValueOnce(
       JSON.stringify({ mcpServers: { wmux: { command: 'node', args: ['/old.js'] } } }),
@@ -60,7 +60,7 @@ describe('ClaudeDetector', () => {
 
     const result = await new ClaudeDetector().detect();
 
-    expect(result.mcpRegistered).toBe(true);
+    expect(result.mcpRegistered).toBe(false);
   });
 
   it('returns mcpRegistered:false when ~/.claude.json parses but lacks mcpServers.fmux', async () => {

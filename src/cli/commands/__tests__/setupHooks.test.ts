@@ -49,7 +49,7 @@ function allHookCommands(): string[] {
 beforeEach(() => {
   tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'wmux-setup-hooks-'));
   settingsPath = path.join(tmpDir, '.claude', 'settings.json');
-  bridgeDest = path.join(tmpDir, '.wmux', 'hooks', 'wmux-bridge.mjs');
+  bridgeDest = path.join(tmpDir, '.fmux', 'hooks', 'fmux-bridge.mjs');
   bridgeSource = path.join(tmpDir, 'src-bridge.mjs');
   fs.writeFileSync(bridgeSource, 'BRIDGE_CONTENT_V1\n', 'utf8');
 });
@@ -126,10 +126,10 @@ describe('installHooks', () => {
       (g) => g.hooks[0].command,
     );
     expect(stopCmds).toContain('echo foreign-stop');
-    expect(stopCmds.some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
+    expect(stopCmds.some((c) => c.includes('fmux-bridge.mjs'))).toBe(true);
   });
 
-  it('is idempotent — re-install does not duplicate wmux entries', () => {
+  it('is idempotent — re-install does not duplicate Forge Mux entries', () => {
     installHooks(paths());
     installHooks(paths());
     installHooks(paths());
@@ -137,7 +137,7 @@ describe('installHooks', () => {
     const hooks = readSettings().hooks as Record<string, unknown[]>;
     for (const event of ['Stop', 'SubagentStop', 'SessionStart']) {
       const wmuxGroups = (hooks[event] as { hooks: { command: string }[] }[]).filter((g) =>
-        g.hooks.some((h) => h.command.includes('wmux-bridge.mjs')),
+        g.hooks.some((h) => h.command.includes('fmux-bridge.mjs')),
       );
       expect(wmuxGroups).toHaveLength(1);
     }
@@ -173,10 +173,10 @@ describe('installHooks', () => {
 });
 
 describe('installHooks — plugin-aware', () => {
-  it('strips duplicate wmux entries, does not re-add, and preserves foreign hooks', () => {
-    // Seed a prior plugin-LESS install so settings.json carries wmux entries.
+  it('strips duplicate Forge entries, does not re-add, and preserves foreign hooks', () => {
+    // Seed a prior plugin-LESS install so settings.json carries Forge entries.
     installHooks(paths());
-    // Add foreign hooks alongside the wmux ones.
+    // Add foreign hooks alongside the Forge ones.
     const s0 = readSettings();
     (s0.hooks as Record<string, unknown[]>).Stop.push({
       matcher: '',
@@ -187,9 +187,9 @@ describe('installHooks — plugin-aware', () => {
     ];
     fs.writeFileSync(settingsPath, JSON.stringify(s0), 'utf8');
 
-    // Now the marketplace plugin appears.
+    // Forge marketplace plugin appears (@fmux scope).
     writePluginManifest(
-      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+      JSON.stringify({ 'wmux-claude-integration@fmux': { version: '1.0.0' } }),
     );
 
     const outcome = installHooks(paths());
@@ -198,8 +198,8 @@ describe('installHooks — plugin-aware', () => {
     expect(outcome.removedForPlugin).toBe(3);
     expect(outcome.events).toEqual([]);
 
-    // No wmux command remains; both foreign hooks are preserved.
-    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(false);
+    // No Forge command remains; both foreign hooks are preserved.
+    expect(allHookCommands().some((c) => c.includes('fmux-bridge.mjs'))).toBe(false);
     expect(allHookCommands()).toContain('echo foreign-stop');
     expect(allHookCommands()).toContain('echo foreign-pre');
 
@@ -207,10 +207,21 @@ describe('installHooks — plugin-aware', () => {
     const again = installHooks(paths());
     expect(again.pluginDetected).toBe(true);
     expect(again.removedForPlugin).toBe(0);
-    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(false);
+    expect(allHookCommands().some((c) => c.includes('fmux-bridge.mjs'))).toBe(false);
   });
 
-  it('installs normally when the manifest exists but lacks the wmux plugin key', () => {
+  it('does NOT treat an upstream wmux marketplace plugin as Forge\'s', () => {
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+    );
+    const outcome = installHooks(paths());
+    expect(outcome.ok).toBe(true);
+    expect(outcome.pluginDetected).toBe(false);
+    expect(outcome.events.sort()).toEqual(['SessionStart', 'Stop', 'SubagentStop']);
+    expect(allHookCommands().some((c) => c.includes('fmux-bridge.mjs'))).toBe(true);
+  });
+
+  it('installs normally when the manifest exists but lacks the Forge plugin key', () => {
     writePluginManifest(JSON.stringify({ 'some-other-plugin@market': {} }));
     const outcome = installHooks(paths());
     expect(outcome.ok).toBe(true);
@@ -226,11 +237,11 @@ describe('installHooks — plugin-aware', () => {
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
     expect(outcome.events.sort()).toEqual(['SessionStart', 'Stop', 'SubagentStop']);
-    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
+    expect(allHookCommands().some((c) => c.includes('fmux-bridge.mjs'))).toBe(true);
   });
 
-  it('detects the plugin when referenced as an array value, not just a key', () => {
-    writePluginManifest(JSON.stringify({ 'wmux-marketplace': ['wmux-claude-integration'] }));
+  it('detects the plugin when referenced as an array value containing @fmux', () => {
+    writePluginManifest(JSON.stringify({ plugins: ['wmux-claude-integration@fmux'] }));
     const outcome = installHooks(paths());
     expect(outcome.pluginDetected).toBe(true);
     expect(outcome.events).toEqual([]);
@@ -239,15 +250,15 @@ describe('installHooks — plugin-aware', () => {
   // Codex review: installed_plugins.json keeps listing a plugin the user
   // disabled via settings `enabledPlugins` — its hooks.json is NOT loaded, so
   // the settings.json entries are the only live installation and must not be
-  // stripped (that would leave zero wmux hooks).
+  // stripped (that would leave zero Forge hooks).
   it('installs normally when the plugin is installed but explicitly disabled', () => {
     writePluginManifest(
-      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+      JSON.stringify({ 'wmux-claude-integration@fmux': { version: '1.0.0' } }),
     );
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(
       settingsPath,
-      JSON.stringify({ enabledPlugins: { 'wmux-claude-integration@wmux-marketplace': false } }),
+      JSON.stringify({ enabledPlugins: { 'wmux-claude-integration@fmux': false } }),
       'utf8',
     );
 
@@ -255,21 +266,21 @@ describe('installHooks — plugin-aware', () => {
     expect(outcome.ok).toBe(true);
     expect(outcome.pluginDetected).toBe(false);
     expect(outcome.events.sort()).toEqual(['SessionStart', 'Stop', 'SubagentStop']);
-    expect(allHookCommands().some((c) => c.includes('wmux-bridge.mjs'))).toBe(true);
+    expect(allHookCommands().some((c) => c.includes('fmux-bridge.mjs'))).toBe(true);
     // The user's enabledPlugins map is preserved untouched.
     expect((readSettings().enabledPlugins as Record<string, unknown>)[
-      'wmux-claude-integration@wmux-marketplace'
+      'wmux-claude-integration@fmux'
     ]).toBe(false);
   });
 
-  it('still short-circuits when enabledPlugins lists the plugin as true', () => {
+  it('still short-circuits when enabledPlugins lists the Forge plugin as true', () => {
     writePluginManifest(
-      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+      JSON.stringify({ 'wmux-claude-integration@fmux': { version: '1.0.0' } }),
     );
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(
       settingsPath,
-      JSON.stringify({ enabledPlugins: { 'wmux-claude-integration@wmux-marketplace': true } }),
+      JSON.stringify({ enabledPlugins: { 'wmux-claude-integration@fmux': true } }),
       'utf8',
     );
 
@@ -280,7 +291,7 @@ describe('installHooks — plugin-aware', () => {
 });
 
 describe('removeHooks', () => {
-  it('removes only wmux entries and preserves foreign hooks', () => {
+  it('removes only Forge entries and preserves foreign hooks', () => {
     fs.mkdirSync(path.dirname(settingsPath), { recursive: true });
     fs.writeFileSync(
       settingsPath,
@@ -289,6 +300,13 @@ describe('removeHooks', () => {
         hooks: {
           Stop: [
             { matcher: '', hooks: [{ type: 'command', command: 'echo foreign-stop' }] },
+            {
+              matcher: '',
+              hooks: [{
+                type: 'command',
+                command: `node "${path.join(tmpDir, '.wmux', 'hooks', 'wmux-bridge.mjs')}" Stop`,
+              }],
+            },
           ],
         },
       }),
@@ -303,10 +321,13 @@ describe('removeHooks', () => {
     const s = readSettings();
     expect(s.model).toBe('opus');
     const hooks = s.hooks as Record<string, unknown[]>;
-    // Foreign Stop entry survives; wmux events with no foreign content are gone.
-    expect(hooks.Stop).toEqual([
-      { matcher: '', hooks: [{ type: 'command', command: 'echo foreign-stop' }] },
-    ]);
+    // Foreign Stop + upstream wmux-bridge under ~/.wmux survive; Forge events gone.
+    const stopCmds = (hooks.Stop as { hooks: { command: string }[] }[]).map(
+      (g) => g.hooks[0].command,
+    );
+    expect(stopCmds).toContain('echo foreign-stop');
+    expect(stopCmds.some((c) => c.includes('.wmux') && c.includes('wmux-bridge.mjs'))).toBe(true);
+    expect(stopCmds.some((c) => c.includes('fmux-bridge.mjs'))).toBe(false);
     expect(hooks.SubagentStop).toBeUndefined();
     expect(hooks.PostToolUse).toBeUndefined();
   });
@@ -381,17 +402,22 @@ describe('statusHooks', () => {
     expect(s.installedEvents).toEqual([]);
   });
 
-  it('detects a co-installed marketplace plugin (double-signal risk)', () => {
+  it('detects a co-installed Forge marketplace plugin (double-signal risk)', () => {
     installHooks(paths());
-    const pluginDir = path.join(
-      path.dirname(settingsPath),
-      'plugins',
-      'repos',
-      'wmux-claude-integration',
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@fmux': { version: '1.0.0' } }),
     );
-    fs.mkdirSync(pluginDir, { recursive: true });
     const s = statusHooks(paths());
     expect(s.pluginAlsoInstalled).toBe(true);
+  });
+
+  it('does NOT flag an upstream-only marketplace plugin as Forge\'s', () => {
+    installHooks(paths());
+    writePluginManifest(
+      JSON.stringify({ 'wmux-claude-integration@wmux-marketplace': { version: '1.0.0' } }),
+    );
+    const s = statusHooks(paths());
+    expect(s.pluginAlsoInstalled).toBe(false);
   });
 });
 

@@ -198,11 +198,12 @@ describe('configIO — read helpers', () => {
 // ── Codex notify (root-level array) ──────────────────────────────────────────
 
 describe('configIO — codex notify', () => {
-  const SCRIPT = 'C:\\Users\\u\\.wmux\\hooks\\wmux-codex-notify.mjs';
+  const SCRIPT = 'C:\\Users\\u\\.fmux\\hooks\\fmux-codex-notify.mjs';
 
-  it('isWmuxOwnedNotify recognizes ours (node + our basename), rejects foreign', () => {
+  it('isWmuxOwnedNotify recognizes Forge basename; rejects upstream wmux notify', () => {
     expect(isWmuxOwnedNotify(['node', SCRIPT])).toBe(true);
-    expect(isWmuxOwnedNotify(['node', '/home/u/.wmux/hooks/wmux-codex-notify.mjs'])).toBe(true);
+    expect(isWmuxOwnedNotify(['node', '/home/u/.fmux/hooks/fmux-codex-notify.mjs'])).toBe(true);
+    expect(isWmuxOwnedNotify(['node', '/home/u/.wmux/hooks/wmux-codex-notify.mjs'])).toBe(false);
     expect(isWmuxOwnedNotify(['notify-send', 'Codex'])).toBe(false);
     expect(isWmuxOwnedNotify(['node', '/some/other-script.mjs'])).toBe(false);
     expect(isWmuxOwnedNotify(['node'])).toBe(false);

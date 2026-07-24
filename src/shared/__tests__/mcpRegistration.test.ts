@@ -65,18 +65,45 @@ describe('registerTarget — Claude (json, createIfMissing)', () => {
     expect(after.mcpServers.fmux).toBeTruthy();
   });
 
-  it('replaces an owned legacy wmux key with fmux on re-register', () => {
+  it('leaves a co-installed upstream wmux MCP key intact when registering fmux', () => {
     const p = claudeTarget.configPath(home);
     fs.writeFileSync(
       p,
-      JSON.stringify({ mcpServers: { wmux: { command: 'node', args: ['C:\\old\\index.js'] } } }),
+      JSON.stringify({ mcpServers: { wmux: { command: 'node', args: ['C:\\upstream\\wmux\\index.js'] } } }),
       'utf8',
     );
     const r = registerTarget(claudeTarget, home, WMUX_SCRIPT);
     expect(r.wrote).toContain('fmux');
-    const after = JSON.parse(fs.readFileSync(p, 'utf8')) as { mcpServers: Record<string, unknown> };
+    const after = JSON.parse(fs.readFileSync(p, 'utf8')) as {
+      mcpServers: Record<string, { command: string; args: string[] }>;
+    };
     expect(after.mcpServers.fmux).toBeTruthy();
-    expect(after.mcpServers.wmux).toBeUndefined();
+    expect(after.mcpServers.wmux).toEqual({
+      command: 'node',
+      args: ['C:\\upstream\\wmux\\index.js'],
+    });
+  });
+
+  it('unregister removes fmux only — never a co-installed wmux key', () => {
+    const p = claudeTarget.configPath(home);
+    fs.writeFileSync(
+      p,
+      JSON.stringify({
+        mcpServers: {
+          wmux: { command: 'node', args: ['C:\\upstream\\wmux\\index.js'] },
+          fmux: { command: 'node', args: [WMUX_SCRIPT] },
+        },
+      }),
+      'utf8',
+    );
+    const r = unregisterTarget(claudeTarget, home);
+    expect(r.removed).toEqual(['fmux']);
+    const after = JSON.parse(fs.readFileSync(p, 'utf8')) as { mcpServers: Record<string, unknown> };
+    expect(after.mcpServers.fmux).toBeUndefined();
+    expect(after.mcpServers.wmux).toEqual({
+      command: 'node',
+      args: ['C:\\upstream\\wmux\\index.js'],
+    });
   });
 });
 
@@ -128,7 +155,8 @@ describe('registerTarget — Codex (toml, only if installed)', () => {
 });
 
 describe('registerCodexNotify — resume-capture notify (skip-if-foreign)', () => {
-  const NOTIFY = 'C:\\Users\\u\\.wmux\\hooks\\wmux-codex-notify.mjs';
+  const NOTIFY = 'C:\\Users\\u\\.fmux\\hooks\\fmux-codex-notify.mjs';
+  const UPSTREAM_NOTIFY = 'C:\\Users\\u\\.wmux\\hooks\\wmux-codex-notify.mjs';
   const writeCodex = (text: string): string => {
     const p = codexTarget.configPath(home);
     fs.mkdirSync(path.dirname(p), { recursive: true });
@@ -162,12 +190,21 @@ describe('registerCodexNotify — resume-capture notify (skip-if-foreign)', () =
     expect(r2.skipped).toBeNull();
   });
 
-  it('updates a stale path written by a prior session', () => {
+  it('updates a stale Forge path written by a prior session', () => {
     writeCodex('model = "x"\n');
-    registerCodexNotify(home, 'C:\\old\\wmux-codex-notify.mjs');
+    registerCodexNotify(home, 'C:\\old\\fmux-codex-notify.mjs');
     const r = registerCodexNotify(home, NOTIFY);
     expect(r.wrote).toBe(true);
     expect(readCodexNotifyStatus(home).path).toBe(NOTIFY);
+  });
+
+  it('SKIPS an upstream wmux notify — never steals the shared Codex slot', () => {
+    const p = writeCodex(`model = "x"\nnotify = ["node", ${JSON.stringify(UPSTREAM_NOTIFY)}]\n`);
+    const r = registerCodexNotify(home, NOTIFY);
+    expect(r.skipped).toBe('foreign');
+    expect(r.wrote).toBe(false);
+    expect(fs.readFileSync(p, 'utf8')).toContain('wmux-codex-notify.mjs');
+    expect(readCodexNotifyStatus(home).state).toBe('foreign');
   });
 
   it('SKIPS a foreign notify — never clobbers the user’s program', () => {
@@ -192,6 +229,13 @@ describe('registerCodexNotify — resume-capture notify (skip-if-foreign)', () =
     const r = unregisterCodexNotify(home);
     expect(r.removed).toBe(true);
     expect(readCodexNotifyStatus(home).state).toBe('none');
+  });
+
+  it('unregisterCodexNotify leaves an upstream wmux notify intact', () => {
+    writeCodex(`model = "x"\nnotify = ["node", ${JSON.stringify(UPSTREAM_NOTIFY)}]\n`);
+    const r = unregisterCodexNotify(home);
+    expect(r.removed).toBe(false);
+    expect(readCodexNotifyStatus(home).state).toBe('foreign');
   });
 
   it('readCodexNotifyStatus reports none when no notify / config absent', () => {
