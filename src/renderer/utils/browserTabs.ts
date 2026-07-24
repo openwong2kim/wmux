@@ -125,6 +125,59 @@ export function closeBrowserTabInWorkspace(
   return closed;
 }
 
+/**
+ * Routing decision for the `browser.close` RPC, separated from the store effect
+ * so the ownership policy can be unit-tested without the whole renderer.
+ *
+ * `bySurface` — an explicit `surfaceId` is scoped to the CALLER's workspace,
+ * never searched across every workspace. The old global search let any
+ * `browser.navigate` caller close another workspace's browser by id (it
+ * composed with `browser.cdp.info`'s cross-workspace target disclosure — see
+ * #580 / contract §8.2). The scoped lookup runs through `closeBrowserTabInWorkspace`,
+ * the same helper `browser_tabs` uses, so a foreign or missing id simply fails.
+ *
+ * `reject` — an explicit `surfaceId` WITHOUT a caller `workspaceId` fails closed
+ * rather than falling back to the UI-active workspace: UI activity is not caller
+ * identity (contract §5, "unresolved identity MUST NOT fall back to the UI-active
+ * workspace"). No legitimate caller depends on the old shape — MCP `browser_close`
+ * always sends a verified `workspaceId` via `requireWorkspaceId`, and the CLI
+ * `browser close` command never sends a `surfaceId`.
+ *
+ * `byWorkspace` — the surfaceId-less "close the browser pane" convenience is
+ * UNCHANGED: it resolves the first browser surface inside the routed workspace
+ * (explicit `workspaceId`, else the UI-active one). This path only ever closes a
+ * surface in the routed workspace, so it never crossed the boundary.
+ */
+export type BrowserCloseDecision =
+  | { kind: 'reject'; error: string }
+  | { kind: 'bySurface'; workspaceId: string; surfaceId: string }
+  | { kind: 'byWorkspace'; workspaceId: string };
+
+export function decideBrowserClose(
+  params: { surfaceId?: unknown; workspaceId?: unknown },
+  activeWorkspaceId: string,
+): BrowserCloseDecision {
+  const surfaceId =
+    typeof params.surfaceId === 'string' && params.surfaceId.length > 0
+      ? params.surfaceId
+      : undefined;
+  const workspaceId =
+    typeof params.workspaceId === 'string' && params.workspaceId.length > 0
+      ? params.workspaceId
+      : undefined;
+
+  if (surfaceId) {
+    if (!workspaceId) {
+      return {
+        kind: 'reject',
+        error: 'browser.close: workspace identity is required to close a browser by surfaceId',
+      };
+    }
+    return { kind: 'bySurface', workspaceId, surfaceId };
+  }
+  return { kind: 'byWorkspace', workspaceId: workspaceId ?? activeWorkspaceId };
+}
+
 const workspaceUnavailable = () =>
   browserTabsError(
     'BROWSER_TABS_WORKSPACE_UNRESOLVED',

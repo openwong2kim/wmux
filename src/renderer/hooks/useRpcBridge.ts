@@ -16,6 +16,7 @@ import { requestExecuteApproval } from '../utils/executeApprovalGate';
 import { openUrlInBrowserPane } from '../utils/browserPaneActions';
 import {
   closeBrowserTabInWorkspace,
+  decideBrowserClose,
   handleBrowserTabsRpc,
 } from '../utils/browserTabs';
 import { terminalRegistry, hydrateTerminalForRead } from './useTerminal';
@@ -1469,65 +1470,45 @@ async function handleRpcMethod(method: string, params: RpcParams): Promise<RpcRe
   }
 
   if (method === 'browser.close') {
-    const surfaceId = typeof params.surfaceId === 'string' ? params.surfaceId : undefined;
-    // Workspace routing mirrors browser.open (lines above): an explicit
-    // workspaceId (MCP requireWorkspaceId / CLI verified identity) pins the
-    // close to the CALLER's workspace; absent, fall back to the UI-active one.
-    // Without this, an agent in workspace A issuing browser_close closed
-    // whatever browser the USER happened to be looking at in workspace B —
-    // the open path was fixed in #193, close kept the asymmetry.
-    const targetWsId = typeof params.workspaceId === 'string'
-      ? params.workspaceId
-      : store.activeWorkspaceId;
+    // Ownership policy lives in decideBrowserClose (browserTabs.ts) so it is
+    // unit-testable without the whole renderer. #580: an explicit surfaceId is
+    // scoped to the caller's workspace instead of searched across every one —
+    // the old global search let any browser.navigate caller close another
+    // workspace's browser by id. Absent caller identity it fails closed rather
+    // than falling back to the UI-active workspace (contract §5).
+    const decision = decideBrowserClose(params, store.activeWorkspaceId);
+    if (decision.kind === 'reject') {
+      return { error: decision.error };
+    }
 
-    let targetWs: Workspace | null = null;
-    let targetLeaf: PaneLeaf | null = null;
+    if (decision.kind === 'bySurface') {
+      // Scoped, workspace-exact close through the same helper browser.tabs uses,
+      // so a foreign or missing id fails identically and the last-surface pane
+      // cascade (#143) is preserved.
+      return closeBrowserTabInWorkspace(store, decision.workspaceId, decision.surfaceId)
+        ? { ok: true }
+        : { error: 'browser.close: no browser surface found' };
+    }
+
+    // byWorkspace: surfaceId-less "close the browser pane" convenience. Resolve
+    // the first browser surface inside the routed workspace only — never reach
+    // into another workspace. Unchanged legacy behavior (CLI `wmux browser close`).
+    const ws = store.workspaces.find((w) => w.id === decision.workspaceId);
+    if (!ws) return { error: 'browser.close: workspace not found' };
     let targetSurfaceId: string | null = null;
-
-    if (surfaceId) {
-      // Explicit surface id — unambiguous target, so search EVERY workspace.
-      // Scoping an explicit id to one workspace only manufactures false
-      // "not found" errors (the surface.close lesson — see cli/utils.ts).
-      for (const ws of store.workspaces) {
-        for (const leaf of findLeafPanes(ws.rootPane)) {
-          const surface = leaf.surfaces.find((s) => s.id === surfaceId && s.surfaceType === 'browser');
-          if (surface) {
-            targetWs = ws;
-            targetLeaf = leaf;
-            targetSurfaceId = surface.id;
-            break;
-          }
-        }
-        if (targetLeaf) break;
-      }
-    } else {
-      // No surface id — "the browser pane" is ambiguous, so resolve it inside
-      // the routed workspace only. Never reach into other workspaces here.
-      const ws = store.workspaces.find((w) => w.id === targetWsId);
-      if (!ws) return { error: 'browser.close: workspace not found' };
-      for (const leaf of findLeafPanes(ws.rootPane)) {
-        const surface = leaf.surfaces.find((s) => s.surfaceType === 'browser');
-        if (surface) {
-          targetWs = ws;
-          targetLeaf = leaf;
-          targetSurfaceId = surface.id;
-          break;
-        }
+    for (const leaf of findLeafPanes(ws.rootPane)) {
+      const surface = leaf.surfaces.find((s) => s.surfaceType === 'browser');
+      if (surface) {
+        targetSurfaceId = surface.id;
+        break;
       }
     }
-
-    if (!targetWs || !targetLeaf || !targetSurfaceId) {
+    if (!targetSurfaceId) {
       return { error: 'browser.close: no browser surface found' };
     }
-
-    // Shared with browser.tabs close so both paths preserve the exact UI
-    // last-surface cascade. The helper re-resolves within targetWs immediately
-    // before mutation; browser.close keeps its legacy global explicit-id
-    // resolution above, while browser.tabs never leaves caller scope.
-    if (!closeBrowserTabInWorkspace(store, targetWs.id, targetSurfaceId)) {
-      return { error: 'browser.close: no browser surface found' };
-    }
-    return { ok: true };
+    return closeBrowserTabInWorkspace(store, ws.id, targetSurfaceId)
+      ? { ok: true }
+      : { error: 'browser.close: no browser surface found' };
   }
 
   if (method === 'browser.navigate') {

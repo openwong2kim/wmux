@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PaneLeaf, Surface, Workspace } from '../../../shared/types';
 import {
   closeBrowserTabInWorkspace,
+  decideBrowserClose,
   handleBrowserTabsRpc,
   listBrowserTabs,
   type BrowserTabsStoreLike,
@@ -305,5 +306,81 @@ describe('workspace-scoped browser tab mutations', () => {
     expect(openUrl).not.toHaveBeenCalled();
     expect(data.focusPaneSurface).not.toHaveBeenCalled();
     expect(data.closeSurface).not.toHaveBeenCalled();
+  });
+});
+
+// The `browser.close` RPC (the legacy MCP browser_close / CLI path, distinct
+// from browser_tabs) previously resolved an explicit surfaceId across EVERY
+// workspace, so a caller in one workspace could close another's browser by id
+// (#580). It now routes through decideBrowserClose + the same workspace-exact
+// closeBrowserTabInWorkspace helper as browser_tabs.
+describe('browser.close ownership policy (#580)', () => {
+  describe('decideBrowserClose', () => {
+    it('scopes an explicit surfaceId to the caller workspace', () => {
+      expect(
+        decideBrowserClose({ surfaceId: 'browser-b', workspaceId: 'ws-a' }, 'ws-b'),
+      ).toEqual({ kind: 'bySurface', workspaceId: 'ws-a', surfaceId: 'browser-b' });
+    });
+
+    it('fails closed on an explicit surfaceId with no caller workspace — never the active one', () => {
+      const decision = decideBrowserClose({ surfaceId: 'browser-b' }, 'ws-active');
+      expect(decision.kind).toBe('reject');
+      // The UI-active workspace must not become the authority (contract §5).
+      expect(JSON.stringify(decision)).not.toContain('ws-active');
+    });
+
+    it('routes a surfaceId-less close to the caller workspace when provided', () => {
+      expect(decideBrowserClose({ workspaceId: 'ws-a' }, 'ws-b')).toEqual({
+        kind: 'byWorkspace',
+        workspaceId: 'ws-a',
+      });
+    });
+
+    it('falls back to the active workspace only for a surfaceId-less close', () => {
+      expect(decideBrowserClose({}, 'ws-b')).toEqual({
+        kind: 'byWorkspace',
+        workspaceId: 'ws-b',
+      });
+    });
+
+    it('treats empty-string ids as absent', () => {
+      expect(decideBrowserClose({ surfaceId: '', workspaceId: '' }, 'ws-b')).toEqual({
+        kind: 'byWorkspace',
+        workspaceId: 'ws-b',
+      });
+    });
+  });
+
+  // The mutation the bySurface decision drives. The store's activeWorkspaceId is
+  // 'ws-b' in the fixture, so ws-a is a BACKGROUND workspace throughout — the
+  // regression guard against the old active-workspace scoping bug.
+  describe('scoped close effect (closeBrowserTabInWorkspace)', () => {
+    let data: ReturnType<typeof fixtures>;
+    beforeEach(() => {
+      data = fixtures();
+    });
+
+    it('workspace A cannot close workspace B\'s surface — no mutation', () => {
+      const closed = closeBrowserTabInWorkspace(data.state, 'ws-a', 'browser-b');
+      expect(closed).toBeNull();
+      expect(data.closeSurface).not.toHaveBeenCalled();
+      expect(data.closePane).not.toHaveBeenCalled();
+    });
+
+    it('workspace A closes its own surface while B is the active workspace', () => {
+      const closed = closeBrowserTabInWorkspace(data.state, 'ws-a', 'browser-a2');
+      expect(closed?.surfaceId).toBe('browser-a2');
+      expect(data.closeSurface).toHaveBeenCalledWith('pane-a2', 'browser-a2', 'ws-a');
+      expect(data.state.activeWorkspaceId).toBe('ws-b'); // unchanged
+    });
+
+    it('a background workspace can still close its own surface (no active-workspace regression)', () => {
+      // ws-b is active; ws-a is background and owns browser-a2. The old global
+      // search made this work by luck; the scoped path must keep it working.
+      expect(closeBrowserTabInWorkspace(data.state, 'ws-a', 'browser-a2')?.surfaceId).toBe(
+        'browser-a2',
+      );
+      expect(data.closeSurface).toHaveBeenCalledWith('pane-a2', 'browser-a2', 'ws-a');
+    });
   });
 });

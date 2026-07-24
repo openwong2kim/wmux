@@ -29,6 +29,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 - **`browser_tabs` can no longer enumerate, select, or close another workspace's browser.** The tool used to flatten every Playwright page in the Electron CDP connection — including the app shell, DevTools, and guests from other workspaces — then address them by a mutable numeric index. It now inventories logical wmux browser surfaces only inside the calling session's strictly resolved workspace, so discarded surfaces remain visible while shell/DevTools targets are excluded by construction. `select` and `close` re-check ownership at the renderer mutation boundary; `new` creates a real, non-yanking surface in that same workspace. Because browser tools are experimental, the unsafe numeric `tabId` input is removed in favor of the stable opaque `surfaceId` returned by `list` and `new`. (#565)
 
+- **`browser_close` can no longer close another workspace's browser by surface id.** Closing by an explicit `surfaceId` searched every workspace, so a caller in workspace A could tear down workspace B's browser if it learned B's id (composing with the cross-workspace target ids `browser.cdp.info` still exposes — [#580](https://github.com/openwong2kim/wmux/issues/580)). An explicit `surfaceId` is now scoped to the caller's own workspace and fails closed when caller identity is absent, rather than falling back to whichever workspace is on screen — matching the boundary `browser_tabs` already enforces. The surface-id-less "close the browser pane" convenience is unchanged. This closes the destructive half of #580; scoping the `browser.cdp.info` disclosure itself is tracked separately. (#580)
+
 ## [3.32.0] — 2026-07-24
 
 ### Added
