@@ -1,0 +1,18 @@
+# Check out every text file with LF, on every platform. Several tests read
+# source files byte-wise and assert on "\n" sequences, and CI runs on
+# windows-latest where core.autocrlf=true would otherwise smudge the checkout
+# to CRLF. Runtime artifacts that require CRLF (e.g. the generated fmux.cmd
+# CLI shim) build their line endings explicitly in code, not from checkout.
+* text=auto eol=lf
+
+# Terminal harness recordings are captured PTY byte streams whose CR/LF
+# sequences are data — git's text heuristic misclassifies them, so force
+# binary to keep normalization from corrupting them.
+*.bin binary
+
+# Binary assets.
+*.png binary
+*.gif binary
+*.ico binary
+*.icns binary
+*.woff2 binary
