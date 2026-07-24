@@ -327,10 +327,21 @@ export const en = {
   // D2 — role → agent/model enforcement editor (Settings › Orchestrator).
   'settings.roleBindings': 'Role → model enforcement',
   'settings.roleBindingsDesc':
-    'Pin an agent and model to each role. When an agent is launched in a pane carrying that role — by you or the orchestrator — it is run with the bound model automatically. Leave a row blank to keep the role unbound.',
+    'Pin an agent and model to each role. Launches that wmux itself assembles for a pane carrying that role run with the bound model: agent launches the orchestrator issues, a project pane’s seeded command, and the pane resume command. A launcher you type into the terminal yourself is not rewritten. Leave a row blank to keep the role unbound.',
   'settings.roleBindingAgentPlaceholder': 'agent',
-  'settings.roleBindingModelDefault': 'model…',
+  'settings.roleBindingModelPlaceholder': 'model (optional)',
   'settings.roleBindingArgsPlaceholder': 'extra args (optional)',
+  'settings.roleBindingAgentLabel': '{role} agent',
+  'settings.roleBindingModelLabel': '{role} model',
+  'settings.roleBindingArgsLabel': '{role} extra args',
+  'settings.roleBindingHintNoAgent':
+    'Pick an agent too — a model on its own is not enforced (wmux can’t tell whose --model flag it is).',
+  'settings.roleBindingHintNoGrammar':
+    'wmux has no verified --model flag for {agent}, so the model is ignored. Extra args still apply.',
+  'settings.roleBindingHintInert': 'Add a model or extra args — an agent alone enforces nothing.',
+  // D2 — enforced-launch affordances (Fleet roster chip + pane badge).
+  'deck.fleet.enforcedLaunch': 'Enforced launch: {binding}',
+  'pane.enforcedLaunch': 'Role-enforced launch: {binding}',
   // M3: surfaced subscription rate-limit notices in the orchestrator thread.
   // Sentences are assembled from optional fragments ({on}/{util}/{reset}) that
   // formatLimitNotice blanks when the field is absent — keep the leading spaces.

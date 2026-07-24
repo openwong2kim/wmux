@@ -23,7 +23,7 @@ import {
 } from '../../contrastSafety';
 import type { CustomThemeColors, NotificationCategory, XtermThemeColors } from '../../../shared/types';
 import { NOTIFICATION_CATEGORIES } from '../../../shared/types';
-import { ORCH_ROLES } from '../../../shared/orchestratorRole';
+import { ORCH_ROLES, launcherSupportsModelFlag } from '../../../shared/orchestratorRole';
 import { MODEL_OPTIONS } from '../Deck/OrchestratorModelChip';
 import type { NicInfo, LanLinkNic, LanLinkStatus, LanLinkPeerSummary } from '../../../shared/lanlink';
 import type { FirstRunCheckResult } from '../../../shared/firstRun';
@@ -608,19 +608,48 @@ const ORCHESTRATOR_MODEL_OPTIONS = [
 
 // D2 — global role→model enforcement editor. One compact row per built-in role
 // (v1 binds only the 4 fixed roles; a custom-role combobox is deferred): an
-// agent select, a model select (reusing the orchestrator MODEL_OPTIONS), and a
-// free-text extra-args field. Writing through setOrchestratorRoleBinding
-// normalizes + persists; clearing every field unbinds the role.
+// agent select, a model combobox, and a free-text extra-args field. Writing
+// through setOrchestratorRoleBinding normalizes + persists; clearing every field
+// unbinds the role.
+//
+// The agent list keeps launchers with no verified `--model` grammar
+// (opencode/gemini) because an args-only binding is still enforceable for them —
+// but a row that cannot do what it looks like it does says so INLINE rather than
+// no-op'ing silently. Model entry is a datalist combobox, not a <select>: only
+// claude's aliases are known to us, and a codex model id (`gpt-5.5`) must be
+// typeable.
 const ROLE_BINDING_AGENTS = ['claude', 'codex', 'opencode', 'gemini'] as const;
 
-function RoleBindingEditor() {
-  const t = useT();
-  const bindings = useStore((s) => s.orchestratorRoleBindings);
-  const setBinding = useStore((s) => s.setOrchestratorRoleBinding);
+const ROLE_BINDING_FIELD_CLASS =
+  'text-[11px] rounded px-1.5 py-1 font-mono bg-[color:var(--bg-surface)] ' +
+  'text-[color:var(--text-main)] border border-[color:var(--border-soft)] outline-none';
 
+/** The one honest thing to say about a row's current state, or none when the
+ *  row does exactly what it appears to. Keeps a mis-set binding from looking
+ *  bound while enforcing nothing. */
+export function roleBindingHint(b: { agent?: string; model?: string; args?: string }):
+  | { key: string; params?: Record<string, string> }
+  | undefined {
+  if (b.model && !b.agent) return { key: 'settings.roleBindingHintNoAgent' };
+  if (b.model && b.agent && !launcherSupportsModelFlag(b.agent)) {
+    return { key: 'settings.roleBindingHintNoGrammar', params: { agent: b.agent } };
+  }
+  if (b.agent && !b.model && !b.args) return { key: 'settings.roleBindingHintInert' };
+  return undefined;
+}
+
+export interface RoleBindingsViewProps {
+  bindings: Record<string, { agent?: string; model?: string; args?: string }>;
+  /** Called with the FULL next binding for a role (the view merges the patch). */
+  onChange: (role: string, next: { agent?: string; model?: string; args?: string }) => void;
+  t: (key: string, vars?: Record<string, string | number>) => string;
+}
+
+/** Presentational half — the container below owns the store. Split so the view
+ *  is renderable (and assertable) without a live store, matching NotificationsView. */
+export function RoleBindingsView({ bindings, onChange, t }: RoleBindingsViewProps) {
   const update = (role: string, patch: { agent?: string; model?: string; args?: string }) => {
-    const current = bindings[role] ?? {};
-    setBinding(role, { ...current, ...patch });
+    onChange(role, { ...(bindings[role] ?? {}), ...patch });
   };
 
   return (
@@ -632,48 +661,72 @@ function RoleBindingEditor() {
       <div className="flex flex-col gap-1.5 mt-1">
         {ORCH_ROLES.map((role) => {
           const b = bindings[role] ?? {};
+          const hint = roleBindingHint(b);
+          const listId = `role-binding-models-${role}`;
           return (
-            <div key={role} className="flex items-center gap-2" data-role-binding-row={role}>
-              <span className="text-[12px] text-[color:var(--text-sub)] w-[64px] shrink-0">{role}</span>
-              <select
-                aria-label={`${role} agent`}
-                value={b.agent ?? ''}
-                onChange={(e) => update(role, { agent: e.target.value })}
-                className="text-[11px] rounded px-1.5 py-1 font-mono bg-[var(--bg-surface)] text-[var(--text-main)] outline-none"
-                style={{ border: '1px solid var(--bg-overlay)', minWidth: 92 }}
-              >
-                <option value="">{t('settings.roleBindingAgentPlaceholder')}</option>
-                {ROLE_BINDING_AGENTS.map((a) => (
-                  <option key={a} value={a}>{a}</option>
-                ))}
-              </select>
-              <select
-                aria-label={`${role} model`}
-                value={b.model ?? ''}
-                onChange={(e) => update(role, { model: e.target.value })}
-                className="text-[11px] rounded px-1.5 py-1 font-mono bg-[var(--bg-surface)] text-[var(--text-main)] outline-none"
-                style={{ border: '1px solid var(--bg-overlay)', minWidth: 92 }}
-              >
-                <option value="">{t('settings.roleBindingModelDefault')}</option>
-                {MODEL_OPTIONS.filter((o) => o.value).map((o) => (
-                  <option key={o.value} value={o.value}>{o.label}</option>
-                ))}
-              </select>
-              <input
-                aria-label={`${role} extra args`}
-                type="text"
-                value={b.args ?? ''}
-                placeholder={t('settings.roleBindingArgsPlaceholder')}
-                onChange={(e) => update(role, { args: e.target.value })}
-                className="flex-1 min-w-0 text-[11px] rounded px-1.5 py-1 font-mono bg-[var(--bg-surface)] text-[var(--text-main)] outline-none"
-                style={{ border: '1px solid var(--bg-overlay)' }}
-              />
+            <div key={role} className="flex flex-col gap-0.5" data-role-binding-row={role}>
+              <div className="flex items-center gap-2">
+                <span className="text-[12px] text-[color:var(--text-sub)] w-[64px] shrink-0">{role}</span>
+                <select
+                  aria-label={t('settings.roleBindingAgentLabel', { role })}
+                  value={b.agent ?? ''}
+                  onChange={(e) => update(role, { agent: e.target.value })}
+                  className={`${ROLE_BINDING_FIELD_CLASS} ${FOCUS_RING}`}
+                  style={{ minWidth: 92 }}
+                >
+                  <option value="">{t('settings.roleBindingAgentPlaceholder')}</option>
+                  {ROLE_BINDING_AGENTS.map((a) => (
+                    <option key={a} value={a}>{a}</option>
+                  ))}
+                </select>
+                <input
+                  aria-label={t('settings.roleBindingModelLabel', { role })}
+                  type="text"
+                  list={listId}
+                  value={b.model ?? ''}
+                  placeholder={t('settings.roleBindingModelPlaceholder')}
+                  onChange={(e) => update(role, { model: e.target.value })}
+                  className={`${ROLE_BINDING_FIELD_CLASS} ${FOCUS_RING}`}
+                  style={{ minWidth: 92, width: 116 }}
+                />
+                {/* Suggestions only — free text is required for codex model ids.
+                    We only know claude's aliases, so that is all we suggest. */}
+                <datalist id={listId}>
+                  {b.agent === 'claude' &&
+                    MODEL_OPTIONS.filter((o) => o.value).map((o) => (
+                      <option key={o.value} value={o.value}>{o.label}</option>
+                    ))}
+                </datalist>
+                <input
+                  aria-label={t('settings.roleBindingArgsLabel', { role })}
+                  type="text"
+                  value={b.args ?? ''}
+                  placeholder={t('settings.roleBindingArgsPlaceholder')}
+                  onChange={(e) => update(role, { args: e.target.value })}
+                  className={`flex-1 min-w-0 ${ROLE_BINDING_FIELD_CLASS} ${FOCUS_RING}`}
+                />
+              </div>
+              {hint && (
+                <p
+                  className="text-[10px] text-[color:var(--text-muted)] pl-[72px]"
+                  data-role-binding-hint={role}
+                >
+                  {t(hint.key, hint.params)}
+                </p>
+              )}
             </div>
           );
         })}
       </div>
     </Card>
   );
+}
+
+function RoleBindingEditor() {
+  const t = useT();
+  const bindings = useStore((s) => s.orchestratorRoleBindings);
+  const setBinding = useStore((s) => s.setOrchestratorRoleBinding);
+  return <RoleBindingsView bindings={bindings} onChange={setBinding} t={t} />;
 }
 
 function OrchestratorSection() {
