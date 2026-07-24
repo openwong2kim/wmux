@@ -159,7 +159,9 @@ interface WsState {
    *  state, is still recovered — then retires it so it is not re-reviewed every
    *  interval while it sits idle-and-finished (issue #561). Re-armed the moment
    *  the pane is next observed in any non-`complete` state (new activity), so its
-   *  next completion surfaces fresh. Bounded: pruned each flush to only ptyIds
+   *  next completion surfaces fresh — and immediately if the turn it was retired
+   *  for is rejected `busy`, since the brain never reviewed it. Never holds a pane
+   *  no wake was actually attempted on. Bounded: pruned each flush to only ptyIds
    *  still `complete` in the latest snapshot, so it can't outgrow the live fleet. */
   snapshotSurfacedComplete: Set<string>;
 }
@@ -346,6 +348,10 @@ export class CommanderEventCoalescer {
         isAttentionStatus(p.agentStatus) &&
         !(p.agentStatus === 'complete' && st.snapshotSurfacedComplete.has(p.ptyId)),
     );
+    // Assist (`value-filtered`) therefore never retires anything: no `complete`
+    // pane reaches snapPanes, so none is added to the retired set. That is the
+    // correct no-op, not a gap — assist already drops a lone finished pane before
+    // the worthiness gate, so there is no repeat review to suppress there.
     const snapPanes =
       policy === 'value-filtered'
         ? attention.filter((p) => p.agentStatus === 'awaiting_input')
@@ -395,13 +401,13 @@ export class CommanderEventCoalescer {
     // snapPanes' complete IDs are exactly the currently-complete panes going into
     // the prompt, so adding them now cannot re-add a pane that a LATER snapshot has
     // since re-armed (the stale-add race a settle-time retire would have). A future
-    // reconcile drops any of these the moment its pane moves off `complete`. The
-    // sync busy gate above already returned before this point, so a pane the brain
-    // is too busy (mid-turn) to review is never retired here.
-    this.retireSurfacedComplete(
-      st,
-      snapPanes.filter((p) => p.agentStatus === 'complete').map((p) => p.ptyId),
-    );
+    // reconcile drops any of these the moment its pane moves off `complete`.
+    // The ADD must be synchronous; the UNDO (busy branch below) must not be — see
+    // rearmSurfacedComplete for why that asymmetry is the safe direction.
+    const retiredThisFlush = snapPanes
+      .filter((p) => p.agentStatus === 'complete')
+      .map((p) => p.ptyId);
+    this.retireSurfacedComplete(st, retiredThisFlush);
 
     void this.deps
       .runTurn(workspaceId, prompt)
@@ -414,6 +420,15 @@ export class CommanderEventCoalescer {
           this.pruneBuffer(st, snapshotMaxSeq);
           st.phase = st.buffer.size > 0 ? 'buffering' : 'idle';
         } else if (r.code === 'busy') {
+          // The turn never ran, so the brain never reviewed these — put them back
+          // (issue #561 review). The sync isBusy() gate above only sees THIS
+          // workspace's manager mid-turn; runTurn rejects `busy` for two more
+          // reasons it cannot see — the fleet-wide concurrent-turn slot gate, and
+          // a manager that is non-idle without being `busy` (e.g. disposed). A
+          // pane left wrongly retired here would not self-heal: re-arming needs
+          // the pane to be observed non-`complete`, and a finished pane only moves
+          // when the brain drives it — which this very filter is preventing.
+          this.rearmSurfacedComplete(st, retiredThisFlush);
           // The snapshot drops (next heartbeat re-reads level state); buffered
           // edges survive untouched. Retry the edge path if any remain.
           st.phase = st.buffer.size > 0 ? 'buffering' : 'idle';
@@ -573,6 +588,18 @@ export class CommanderEventCoalescer {
    *  sync busy gate, so a pane the brain is mid-turn on is never retired here. */
   private retireSurfacedComplete(st: WsState, ptyIds: readonly string[]): void {
     for (const id of ptyIds) st.snapshotSurfacedComplete.add(id);
+  }
+
+  /** Undo a retire whose turn never actually ran (runTurn rejected `busy` after
+   *  the sync gate — a full fleet slot gate, or a manager that went non-idle).
+   *  Unlike the ADD, this is safe to apply late: the two directions fail
+   *  differently. A stale add SUPPRESSES a completion a newer snapshot already
+   *  re-armed (a review silently lost — the race the sync retire closes); a stale
+   *  remove at worst re-arms a pane a newer flush retired for real, costing ONE
+   *  redundant review that the next reconcile then settles. Fail open toward
+   *  surfacing: the snapshot path exists to catch what the edge path dropped. */
+  private rearmSurfacedComplete(st: WsState, ptyIds: readonly string[]): void {
+    for (const id of ptyIds) st.snapshotSurfacedComplete.delete(id);
   }
 
   /** ms until the oldest in-window wake ages out and the window next opens.

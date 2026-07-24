@@ -155,8 +155,10 @@ function mk(opts: {
 } = {}): Harness {
   let busy = false;
   let runResult: { ok: boolean; code?: string } = { ok: true };
-  // Auto-wake and loop start from the opts value but can be toggled mid-test.
-  let autoWake = opts.isAutoWakeEnabled ? opts.isAutoWakeEnabled() : true;
+  // Auto-wake and loop start from the opts value but can be toggled mid-test. A
+  // supplied isAutoWakeEnabled stays LIVE (re-read every flush, so a predicate
+  // closing over test state still works); setAutoWake is an explicit override.
+  let autoWakeOverride: boolean | null = null;
   let loop = opts.loop ?? null;
   const prompts: { ws: string; prompt: string }[] = [];
   const c = new CommanderEventCoalescer({
@@ -167,7 +169,7 @@ function mk(opts: {
     isBusy: () => busy,
     getAutonomy: () => opts.autonomy ?? { ...AUTO_AUTONOMY },
     getLoop: () => loop,
-    isAutoWakeEnabled: () => autoWake,
+    isAutoWakeEnabled: () => autoWakeOverride ?? opts.isAutoWakeEnabled?.() ?? true,
     ...(opts.hasPendingDecision ? { hasPendingDecision: opts.hasPendingDecision } : {}),
     debounceMs: 50,
     wakeBudget: opts.wakeBudget ?? 100,
@@ -177,7 +179,7 @@ function mk(opts: {
     c, prompts,
     setBusy: (b) => { busy = b; },
     setRunResult: (r) => { runResult = r; },
-    setAutoWake: (b) => { autoWake = b; },
+    setAutoWake: (b) => { autoWakeOverride = b; },
     setLoop: (l) => { loop = l; },
   };
 }
@@ -415,6 +417,85 @@ describe('flushSnapshot — retire a surfaced complete pane (#561)', () => {
     h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
     await settle();
     expect(h.prompts).toHaveLength(2);
+  });
+
+  it('an async busy reject (fleet slot gate full) leaves the pane ARMED', async () => {
+    const h = mk();
+    // The workspace's own brain is idle, so the flush passes the sync isBusy()
+    // gate, commits and dispatches — and runTurn rejects anyway. In production
+    // that is the fleet-wide concurrent-turn slot gate (deck.handler.ts), or a
+    // manager that went non-idle without being `busy`. Either way the brain never
+    // reviewed this pane, so it must not be retired.
+    h.setRunResult({ ok: false, code: 'busy' });
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.c.getWakeBudgetRemaining('ws-1')).toBe(100); // rejected → no wake spent
+
+    // The gate frees up. The completion must still surface — this is exactly the
+    // dropped-stop recovery the snapshot path exists for, and a finished pane
+    // never re-arms itself: it only moves when the brain drives it.
+    h.setRunResult({ ok: true });
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(2);
+    expect(h.prompts[1].prompt).toContain('state=complete');
+
+    // …and once it HAS been reviewed, the retire holds as normal.
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(2);
+  });
+
+  it('a non-busy failure still retires — the watermark advances there too', async () => {
+    const h = mk();
+    // Unlike a busy reject, a real failure consumes the flush (same rule the
+    // folded edges follow) so a poison prompt cannot loop the brain every 3 min.
+    h.setRunResult({ ok: false, code: 'error' });
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    h.setRunResult({ ok: true });
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+  });
+
+  it('two panes complete at once, then retire and re-arm independently', async () => {
+    const h = mk();
+    h.c.flushSnapshot('ws-1', snap([
+      pane({ ptyId: 'ptyA', agentStatus: 'complete' }),
+      pane({ ptyId: 'ptyB', agentStatus: 'complete' }),
+    ]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('pane=ptyA');
+    expect(h.prompts[0].prompt).toContain('pane=ptyB');
+
+    // Both still finished → nothing to re-review.
+    h.c.flushSnapshot('ws-1', snap([
+      pane({ ptyId: 'ptyA', agentStatus: 'complete' }),
+      pane({ ptyId: 'ptyB', agentStatus: 'complete' }),
+    ]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+
+    // Only ptyB picks up new work and finishes again: it re-arms on its own,
+    // and ptyA's retirement is untouched by its neighbour's lifecycle.
+    h.c.flushSnapshot('ws-1', snap([
+      pane({ ptyId: 'ptyA', agentStatus: 'complete' }),
+      pane({ ptyId: 'ptyB', agentStatus: 'running' }),
+    ]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    h.c.flushSnapshot('ws-1', snap([
+      pane({ ptyId: 'ptyA', agentStatus: 'complete' }),
+      pane({ ptyId: 'ptyB', agentStatus: 'complete' }),
+    ]));
+    await settle();
+    expect(h.prompts).toHaveLength(2);
+    expect(h.prompts[1].prompt).toContain('pane=ptyB');
+    expect(h.prompts[1].prompt).not.toContain('pane=ptyA');
   });
 
   it('error panes are NOT retired — a still-broken pane keeps surfacing', async () => {
