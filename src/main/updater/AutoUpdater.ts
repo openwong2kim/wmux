@@ -49,6 +49,16 @@ export class AutoUpdater {
   private pendingUpdate: UpdateInfo | null = null;
   private downloadedPath: string | null = null;
   private isDownloading = false;
+  // When a user presses "check for updates" it reads as an "update now" intent:
+  // once an update is detected + verified, install it (restart) automatically
+  // instead of waiting for a second click. Background 30-min polls never set
+  // this, so the auto-poll only ever downloads and surfaces a Restart button.
+  private oneShotInstall = false;
+  // Re-entrancy guard for performInstall: the one-shot path fire-and-forgets it
+  // while UPDATE_INSTALL awaits its own call, so both can reach it. shell.openPath
+  // resolves (never throws) on failure, so without this a second call would
+  // launch the installer twice.
+  private isInstalling = false;
 
   constructor(getWindow: () => BrowserWindow | null) {
     this.getWindow = getWindow;
@@ -91,11 +101,22 @@ export class AutoUpdater {
     ipcMain.removeHandler(IPC.UPDATE_INSTALL);
   }
 
-  private async check(): Promise<void> {
+  /**
+   * @param oneShot when true (a user-triggered "check for updates" press),
+   *   auto-install the update once it's detected + verified instead of leaving
+   *   a Restart button — a single click that means "update now". Background
+   *   polls pass false, so they only ever download and surface the button.
+   */
+  private async check(oneShot = false): Promise<void> {
     // Defense in depth: never poll the win32-only update feed off Windows, even
     // if a caller invokes check() directly.
     if (!isUpdaterSupported) return;
-    if (!this.enabled || this.isChecking) return;
+    if (!this.enabled) return;
+    // Record the one-shot intent BEFORE the isChecking guard: if a background
+    // poll is already downloading, its downloadUpdate completion will honor the
+    // intent and install, so a manual press mid-poll still updates in one click.
+    if (oneShot) this.oneShotInstall = true;
+    if (this.isChecking) return;
     this.isChecking = true;
     this.sendToRenderer(IPC.UPDATE_CHECK, { status: 'checking' });
 
@@ -110,12 +131,25 @@ export class AutoUpdater {
           releaseName: update.name,
           releaseNotes: update.notes,
         });
-        // Two-step: auto-download + verify in the background, then emit 'downloaded'.
-        void this.downloadUpdate();
+        if (this.oneShotInstall && this.downloadedPath) {
+          // A background poll already downloaded + verified this exact version:
+          // skip straight to install rather than re-downloading. Clear the
+          // intent BEFORE launching (mirrors the downloadUpdate path) so a
+          // failed shell.openPath can't leave it set for a later background
+          // poll to act on — that would restart the app with no user action.
+          this.oneShotInstall = false;
+          void this.performInstall();
+        } else {
+          // Two-step: auto-download + verify, then emit 'downloaded' (which
+          // triggers performInstall when oneShotInstall is set).
+          void this.downloadUpdate();
+        }
       } else {
+        this.oneShotInstall = false; // up to date — nothing to install
         this.sendToRenderer(IPC.UPDATE_NOT_AVAILABLE, { status: 'not-available' });
       }
     } catch (err) {
+      this.oneShotInstall = false; // don't leave a stale install intent after a failed check
       const message = err instanceof Error ? err.message : String(err);
       console.warn('[AutoUpdater] check error:', message);
       this.sendToRenderer(IPC.UPDATE_ERROR, { status: 'error', message });
@@ -154,7 +188,16 @@ export class AutoUpdater {
         status: 'downloaded',
         releaseName: pending.name,
       });
+      // One-shot (user pressed "check for updates" as "update now"): the
+      // verified installer is ready — restart into it now. The 'downloaded'
+      // event above still fires first, so the UI briefly shows the Restart
+      // state during performInstall's session-save delay.
+      if (this.oneShotInstall) {
+        this.oneShotInstall = false;
+        void this.performInstall();
+      }
     } catch (err) {
+      this.oneShotInstall = false; // failed download → drop any pending install intent
       const message = err instanceof Error ? err.message : String(err);
       console.error('[AutoUpdater] download aborted (fail-closed):', message);
       if (tempPath) {
@@ -307,60 +350,77 @@ export class AutoUpdater {
       if (process.env.NODE_ENV === 'development' || !isUpdaterSupported) {
         return { status: 'not-available' };
       }
-      // Don't await — fire and forget, results come via IPC events
-      this.check();
+      // Don't await — fire and forget, results come via IPC events. A manual
+      // press is a one-shot "update now": auto-install once verified.
+      this.check(true);
       return { status: 'checking' };
     });
 
     ipcMain.handle(IPC.UPDATE_INSTALL, async () => {
-      if (!isUpdaterSupported) {
-        // No in-app installer on this platform — never download/launch a
-        // Windows .Setup.exe on macOS/Linux. The win32 install path below is
-        // unreachable here.
-        console.log(`[AutoUpdater] UPDATE_INSTALL ignored on ${process.platform} — no in-app installer for this platform.`);
-        return;
-      }
-      const tempPath = this.downloadedPath;
-      if (!tempPath) {
-        // The UI only surfaces the install button after 'downloaded' fired, so
-        // this is a defensive no-op (e.g. a prior download failed).
-        console.log('[AutoUpdater] UPDATE_INSTALL ignored — no verified installer downloaded yet.');
-        return;
-      }
-
-      const win = this.getWindow();
-      if (win && !win.isDestroyed() && !win.webContents.isCrashed()) {
-        try {
-          await win.webContents.executeJavaScript(
-            `try { window.dispatchEvent(new Event('beforeunload')); } catch(e) {}`
-          );
-          await new Promise(resolve => setTimeout(resolve, 500));
-          console.log('[AutoUpdater] Session save triggered before update install');
-        } catch {
-          console.warn('[AutoUpdater] Could not trigger session save before update');
-        }
-      }
-
-      // Launch the LOCAL, already-verified installer. Download + SHA-256 verify
-      // happened during detection (downloadUpdate); we never launch an
-      // unverified artifact.
-      const openErr = await shell.openPath(tempPath);
-      if (openErr) {
-        this.sendToRenderer(IPC.UPDATE_ERROR, {
-          status: 'error',
-          message: `failed to launch verified installer: ${openErr}`,
-        });
-        return;
-      }
-      // #502: Squirrel's installer crashes when it runs against a live
-      // instance (locked old-version files + a single-instance collision on
-      // the post-install relaunch). "Restart to install" means restart: quit
-      // NOW — a normal quit only detaches, so the daemon and every live
-      // session persist — and the --squirrel-updated/-install hook relaunches
-      // the updated app once the install completes.
-      console.log('[AutoUpdater] Installer launched — quitting so Squirrel can install (sessions persist in the daemon)');
-      app.quit();
+      // Explicit "Restart to install" button (surfaces after a background poll
+      // downloaded an update). Shares performInstall with the one-shot path.
+      await this.performInstall();
     });
+  }
+
+  /**
+   * Launch the LOCAL, already-verified installer and quit so Squirrel installs
+   * against a dead instance. Shared by the explicit "Restart to install" button
+   * (UPDATE_INSTALL) and the one-shot user-triggered check.
+   */
+  private async performInstall(): Promise<void> {
+    if (!isUpdaterSupported) {
+      // No in-app installer on this platform — never download/launch a
+      // Windows .Setup.exe on macOS/Linux. The win32 install path below is
+      // unreachable here.
+      console.log(`[AutoUpdater] install ignored on ${process.platform} — no in-app installer for this platform.`);
+      return;
+    }
+    const tempPath = this.downloadedPath;
+    if (!tempPath) {
+      // The UI only surfaces the install button after 'downloaded' fired, so
+      // this is a defensive no-op (e.g. a prior download failed).
+      console.log('[AutoUpdater] install ignored — no verified installer downloaded yet.');
+      return;
+    }
+    if (this.isInstalling) {
+      console.log('[AutoUpdater] install already in progress — ignoring re-entrant call.');
+      return;
+    }
+    this.isInstalling = true;
+
+    const win = this.getWindow();
+    if (win && !win.isDestroyed() && !win.webContents.isCrashed()) {
+      try {
+        await win.webContents.executeJavaScript(
+          `try { window.dispatchEvent(new Event('beforeunload')); } catch(e) {}`
+        );
+        await new Promise(resolve => setTimeout(resolve, 500));
+        console.log('[AutoUpdater] Session save triggered before update install');
+      } catch {
+        console.warn('[AutoUpdater] Could not trigger session save before update');
+      }
+    }
+
+    // Download + SHA-256 verify happened during detection (downloadUpdate); we
+    // never launch an unverified artifact.
+    const openErr = await shell.openPath(tempPath);
+    if (openErr) {
+      this.isInstalling = false; // launch failed — allow the user to retry
+      this.sendToRenderer(IPC.UPDATE_ERROR, {
+        status: 'error',
+        message: `failed to launch verified installer: ${openErr}`,
+      });
+      return;
+    }
+    // #502: Squirrel's installer crashes when it runs against a live instance
+    // (locked old-version files + a single-instance collision on the
+    // post-install relaunch). "Restart to install" means restart: quit NOW — a
+    // normal quit only detaches, so the daemon and every live session persist —
+    // and the --squirrel-updated/-install hook relaunches the updated app once
+    // the install completes.
+    console.log('[AutoUpdater] Installer launched — quitting so Squirrel can install (sessions persist in the daemon)');
+    app.quit();
   }
 
   private sendToRenderer(channel: string, data: Record<string, unknown>): void {

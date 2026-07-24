@@ -257,9 +257,11 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
   }
 
   /**
-   * Drive check() → auto-download → 'downloaded' with real timers. IPC
-   * handlers are registered directly (not via start()) so no stray 15s
-   * background-check timer outlives the test.
+   * Drive a background check() → auto-download → 'downloaded' with real timers.
+   * A background (non-one-shot) check downloads WITHOUT auto-installing, so
+   * these tests can drive UPDATE_INSTALL explicitly. IPC handlers are
+   * registered directly (not via start()) so no stray 15s background-check
+   * timer outlives the test.
    */
   async function downloadUpdateFor(loaded: Awaited<ReturnType<typeof loadForPlatform>>) {
     const { AutoUpdater, ipcHandlers } = loaded;
@@ -267,12 +269,11 @@ describe('AutoUpdater #502 — quit after launching the installer', () => {
     const updater = new AutoUpdater(() => win as never);
     (updater as unknown as { registerIpcHandlers: () => void }).registerIpcHandlers();
 
-    const checkHandler = ipcHandlers.get(IPC.UPDATE_CHECK);
     const installHandler = ipcHandlers.get(IPC.UPDATE_INSTALL);
-    if (typeof checkHandler !== 'function' || typeof installHandler !== 'function') {
-      throw new Error('UPDATE_CHECK / UPDATE_INSTALL handlers were not registered');
+    if (typeof installHandler !== 'function') {
+      throw new Error('UPDATE_INSTALL handler was not registered');
     }
-    await checkHandler();
+    await (updater as unknown as { check: (oneShot?: boolean) => Promise<void> }).check();
     await until(() => sent.some((m) => m.channel === IPC.UPDATE_AVAILABLE && m.data.status === 'downloaded'));
     return { updater, installHandler, sent };
   }
