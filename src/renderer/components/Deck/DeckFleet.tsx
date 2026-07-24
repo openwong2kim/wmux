@@ -131,7 +131,7 @@ export default function DeckFleet({
             <div
               key={`${p.workspaceId}:${p.paneId}`}
               data-deck-fleet-row
-              className="group flex items-center gap-1 min-h-[26px] px-1 rounded-[4px]"
+              className="group flex items-center gap-1 h-[26px] px-1 rounded-[4px]"
               // The needs-input wash is the ONE permitted area wash (DESIGN.md
               // attention grammar). color-mix so every theme's danger hue works.
               style={attention ? { backgroundColor: 'color-mix(in srgb, var(--accent-red) 9%, transparent)' } : undefined}
@@ -171,35 +171,34 @@ export default function DeckFleet({
               </button>
               {/* Operator-assigned role — soft routing hint the orchestrator reads.
                   Writes through MetadataStore (setRole) so it relays to the brain.
-                  D2: when the role is bound, a muted agent·model sub-label shows
-                  what an agent launched here will actually run as (amber stays
-                  reserved for alive+focus per DESIGN.md). */}
-              <div className="shrink-0 flex flex-col items-end">
-                <select
-                  aria-label={`${rowLabel(p)} role`}
-                  value={role}
-                  onChange={(e) => {
-                    void window.electronAPI?.metadata?.setRole?.(p.paneId, p.workspaceId, e.target.value);
-                  }}
-                  className="h-[18px] max-w-[84px] bg-transparent text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)] focus:text-[var(--text-main)] rounded-[3px] outline-none cursor-pointer"
+                  D2: when the role is bound, a muted agent·model chip sits INLINE
+                  beside the select (not stacked — the row keeps its 26px density
+                  contract) showing what an agent launched here will run as. Amber
+                  stays reserved for alive+focus per DESIGN.md. */}
+              {bindingLabel && (
+                <span
+                  className="shrink-0 font-mono text-[10px] leading-none text-[var(--text-muted)] max-w-[92px] truncate"
                   {...tokenAttrs('textMuted', 'text')}
-                  title="Preferred role — the orchestrator routes matching work here"
+                  title={t('deck.fleet.enforcedLaunch', { binding: bindingLabel })}
                 >
-                  <option value="">role…</option>
-                  {roleOptions.map((r) => (
-                    <option key={r} value={r}>{r}</option>
-                  ))}
-                </select>
-                {bindingLabel && (
-                  <span
-                    className="font-mono text-[9px] leading-none text-[var(--text-muted)] max-w-[100px] truncate"
-                    {...tokenAttrs('textMuted', 'text')}
-                    title={`Enforced launch: ${bindingLabel}`}
-                  >
-                    {bindingLabel}
-                  </span>
-                )}
-              </div>
+                  {bindingLabel}
+                </span>
+              )}
+              <select
+                aria-label={`${rowLabel(p)} role`}
+                value={role}
+                onChange={(e) => {
+                  void window.electronAPI?.metadata?.setRole?.(p.paneId, p.workspaceId, e.target.value);
+                }}
+                className="shrink-0 h-[18px] max-w-[84px] bg-transparent text-[10px] text-[var(--text-muted)] hover:text-[var(--text-main)] focus:text-[var(--text-main)] rounded-[3px] outline-none cursor-pointer"
+                {...tokenAttrs('textMuted', 'text')}
+                title="Preferred role — the orchestrator routes matching work here"
+              >
+                <option value="">role…</option>
+                {roleOptions.map((r) => (
+                  <option key={r} value={r}>{r}</option>
+                ))}
+              </select>
             </div>
           );
         })}
