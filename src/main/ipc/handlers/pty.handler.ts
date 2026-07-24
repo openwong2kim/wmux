@@ -16,6 +16,7 @@ import { getAccountStore } from '../../account/accountStore';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
 import { getShellUtf8Locale } from '../../pty/shellLocale';
+import { getWorkspaceMirror } from '../../workspace/WorkspaceMirror';
 import { scheduleInitialCommand } from './scheduleInitialCommand';
 import {
   createSessionDataDispatcher,
@@ -394,7 +395,24 @@ export function registerPTYHandlers(
       // separate `profileEnv` field, and recovery (which replays session.env)
       // reproduces the exact create-time environment without re-filtering.
       const identity: Record<string, string> = {};
-      if (options?.workspaceId) identity[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
+      if (options?.workspaceId) {
+        identity[ENV_KEYS.WORKSPACE_ID] = options.workspaceId;
+        // Display-only companion to the id (see ENV_KEYS.WORKSPACE_NAME). The
+        // daemon persists `env` verbatim, so this is how a daemon-side surface
+        // that never sees the renderer's workspace tree — wmux web — can label a
+        // pane by workspace instead of by cwd. Read from the main-side
+        // WorkspaceMirror, which the renderer re-pushes on every structural tree
+        // change. Best-effort by design: a workspace whose very first pane spawns
+        // before the mirror push lands has no name yet, and a LATER rename is
+        // never re-stamped. Both cases stay honest by omission/staleness rather
+        // than fabricating a label — consumers fall back to the cwd.
+        const mirroredName = getWorkspaceMirror()
+          .getEntries()
+          ?.find((w) => w.id === options.workspaceId)?.name;
+        if (typeof mirroredName === 'string' && mirroredName.trim()) {
+          identity[ENV_KEYS.WORKSPACE_NAME] = mirroredName.trim();
+        }
+      }
       if (options?.surfaceId) identity[ENV_KEYS.SURFACE_ID] = options.surfaceId;
       // 1d: default channel member id = the pane's session id (mirrors the
       // daemon's WMUX_PTY_ID stamp). Forced identity, so a profile cannot
