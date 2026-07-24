@@ -104,11 +104,7 @@ irm https://raw.githubusercontent.com/skflowne/fmux/main/install.ps1 | iex
 
 <sub>or [**download Setup.exe**](https://github.com/skflowne/fmux/releases/latest) directly — either way a SmartScreen prompt appears because the installer isn't Authenticode-signed yet ([why?](#install-help)). Once installed, Forge Mux keeps itself up to date via the in-app updater.</sub>
 
-**macOS** (Apple Silicon)
-
-<sub>[**Download the .dmg**](https://github.com/skflowne/fmux/releases/latest) and drag Forge Mux to Applications. On first launch the `fmux` CLI installs itself onto your PATH. If Gatekeeper warns, right-click the app → **Open** ([more](#install-help)).</sub>
-
-**Linux** — experimental AppImage / .deb / .rpm builds are on the [releases page](https://github.com/skflowne/fmux/releases/latest).
+**macOS / Linux** — prebuilt binaries aren't published yet; Forge Mux currently ships Windows installers only. Both platforms build and run from source (see [Build from source](#build-from-source)).
 
 ---
 
@@ -234,7 +230,7 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 
 **Is Forge Mux a tmux port?** No — tmux was the inspiration, not the base. Forge Mux is a native **workspace multiplexer** on Electron (ConPTY on Windows, forkpty on macOS): tmux-*style* split panes, prefix keys, and session persistence, but it also multiplexes agents, git worktrees, a browser, and channels. No WSL / Cygwin / MSYS2.
 
-**Which Macs are supported?** Apple Silicon (arm64) — download the `.dmg` from [releases](https://github.com/skflowne/fmux/releases/latest). Intel builds aren't produced right now; open an issue if you need one. If Gatekeeper warns on first launch, right-click the app → **Open**.
+**Which Macs are supported?** Apple Silicon (arm64), building from source — prebuilt `.dmg` releases aren't published yet; open an issue if you need one. If Gatekeeper warns on first launch, right-click the app → **Open**.
 
 **Can I reach my panes from my phone?** Yes — `fmux web` serves your live panes to a browser (PWA-installable). It is **read-only and loopback-only by default**; `--allow-input` and `--expose` are explicit opt-ins, and even read-only shows a pane's full scrollback to whoever can reach the port, so keep it behind Tailscale rather than the open internet.
 
@@ -253,6 +249,8 @@ Electron Main          Renderer (React 19 + Zustand)     Daemon (standalone)
 </details>
 
 ---
+
+<a id="build-from-source"></a>
 
 ## 🛠️ Build from source
 
