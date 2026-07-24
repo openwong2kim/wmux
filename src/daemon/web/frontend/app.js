@@ -364,25 +364,35 @@
   // feature existed carry no workspace at all (the field is simply absent, and
   // we label by cwd exactly as before — we never invent a workspace), and a
   // workspace RENAMED after a pane spawned keeps showing the name it had then.
+  // What to CALL a pane, in one place so it can never be named two different
+  // things depending on where you look (switcher, fleet chip, sheet row, split
+  // tile). Precedence:
+  //   agent — the thing you are supervising, when one was detected;
+  //   shell — the short program name the daemon recorded for the pane (`pwsh`),
+  //           which is what an agent-less pane actually is;
+  //   cwd tail — last resort only, and only when there is no workspace either.
+  //           Before `shell` existed this was the fallback for every agent-less
+  //           pane, so the row read "Users/rizz" directly above the full
+  //           "C:\Users\rizz" — the same string twice, and every plain shell
+  //           pane looked identical to every other.
+  // `kind` travels with the name so the renderer can voice a shell more quietly
+  // than an agent without re-deriving the precedence.
   function labelFor(s) {
     var ws = s.workspace || '';
     var cwd = shortenCwd(s.cwd);
-    return {
-      ws: ws,
-      // The identifying half of the label: the agent when we know it. Falls back
-      // to the cwd tail ONLY when there is no workspace either — with a
-      // workspace present, "Workspace 1" already answers "which pane is this"
-      // and the cwd stays where it belongs, in the mono secondary line.
-      agent: s.agent || (ws ? '' : cwd),
-      cwd: cwd
-    };
+    var name = '';
+    var kind = '';
+    if (s.agent) { name = s.agent; kind = 'agent'; }
+    else if (s.shell) { name = s.shell; kind = 'shell'; }
+    else if (!ws) { name = cwd; kind = 'cwd'; }
+    return { ws: ws, name: name, kind: kind, cwd: cwd };
   }
 
   /** Flat one-line form ("Workspace 1 · claude") for notification bodies. */
   function sessionName(s) {
     var l = labelFor(s);
-    if (l.ws && l.agent) return l.ws + ' · ' + l.agent;
-    return l.ws || l.agent || shortenCwd(s.cwd);
+    if (l.ws && l.name) return l.ws + ' · ' + l.name;
+    return l.ws || l.name || shortenCwd(s.cwd);
   }
 
   function sepEl() {
@@ -392,19 +402,24 @@
     return el;
   }
 
-  /** Append `Workspace 1 · claude` into `host`, using the given class names. */
-  function appendLabel(host, l, wsClass, agentClass) {
+  /**
+   * Append `Workspace 1 · claude` into `host`, using the given class names.
+   * A shell name additionally carries `lbl-shell`, which voices it a step
+   * quieter than an agent — same slot, but a shell is only the program the pane
+   * is running, not something you are supervising.
+   */
+  function appendLabel(host, l, wsClass, nameClass) {
     if (l.ws) {
       var w = document.createElement('span');
       w.className = wsClass;
       w.textContent = l.ws;
       host.appendChild(w);
-      if (l.agent) host.appendChild(sepEl());
+      if (l.name) host.appendChild(sepEl());
     }
-    if (l.agent) {
+    if (l.name) {
       var a = document.createElement('span');
-      a.className = agentClass;
-      a.textContent = l.agent;
+      a.className = l.kind === 'shell' ? nameClass + ' lbl-shell' : nameClass;
+      a.textContent = l.name;
       host.appendChild(a);
     }
   }
@@ -421,9 +436,9 @@
     // The switcher is the narrowest label on the page. Once a workspace is in
     // it, the cwd is dropped here — "Workspace 1 · claude" fits a phone bar,
     // "Workspace 1 · claude wmux/src" ellipsizes mid-word. The sheet row and the
-    // split-view tile headers still carry the path. `agent !== cwd` guards the
-    // no-workspace-no-agent pane, whose headline IS the cwd (never print it twice).
-    if (!l.ws && l.cwd && l.agent && l.agent !== l.cwd) {
+    // split-view tile headers still carry the path. The `kind` guard covers the
+    // pane whose headline IS its cwd tail (never print the path twice).
+    if (!l.ws && l.cwd && l.name && l.kind !== 'cwd') {
       var c = document.createElement('span');
       c.className = 'sw-cwd';
       c.textContent = ' ' + l.cwd;
@@ -450,6 +465,102 @@
     if (e.key === 'Escape' && sheetEl.hasAttribute('data-open')) closeSheet();
   });
 
+  /**
+   * Bucket the fleet by workspace WITHOUT reordering it. Groups appear in the
+   * order their first pane appears in the fleet list, and panes keep their fleet
+   * order inside a group, so the sheet and the fleet strip always agree.
+   *
+   * Panes the daemon reports no workspace for (they spawned before wmux stamped
+   * the name into the pane env) collect in a final bucket. It is labelled for
+   * what it is — unknown — never given an invented workspace name.
+   */
+  function groupSessions(list) {
+    var groups = [];
+    var byName = {};
+    list.forEach(function (s) {
+      var name = s.workspace || '';
+      if (!Object.prototype.hasOwnProperty.call(byName, name)) {
+        byName[name] = { name: name, sessions: [] };
+        groups.push(byName[name]);
+      }
+      byName[name].sessions.push(s);
+    });
+    var named = groups.filter(function (g) { return g.name !== ''; });
+    var unknown = groups.filter(function (g) { return g.name === ''; });
+    return named.concat(unknown);
+  }
+
+  function groupHeader(g) {
+    var li = document.createElement('li');
+    li.className = 'sess-group';
+    var name = document.createElement('span');
+    name.className = 'sess-group-name';
+    if (g.name) {
+      name.textContent = g.name;
+    } else {
+      name.textContent = 'workspace unknown';
+      li.title = 'These panes started before wmux recorded workspace names, so their workspace cannot be resolved.';
+    }
+    var count = document.createElement('span');
+    count.className = 'sess-group-count';
+    count.textContent = String(g.sessions.length);
+    li.appendChild(name);
+    li.appendChild(count);
+    return li;
+  }
+
+  /**
+   * A sheet row's label. Under a NAMED group header the workspace is already on
+   * screen, so the row drops the prefix and leads with the pane's own name
+   * (agent → shell → cwd tail, see labelFor).
+   */
+  function rowLabel(s, underNamedGroup) {
+    var l = labelFor(s);
+    if (!underNamedGroup) return l;
+    // Drop the workspace prefix, but never leave the row without a headline:
+    // a pane with neither agent nor shell falls back to its cwd tail here.
+    if (l.name) return { ws: '', name: l.name, kind: l.kind, cwd: l.cwd };
+    return { ws: '', name: l.cwd, kind: 'cwd', cwd: l.cwd };
+  }
+
+  function sessionRow(s, underNamedGroup) {
+    var li = document.createElement('li');
+    var btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'sess';
+    if (s.id === currentSession) btn.setAttribute('aria-current', 'true');
+
+    var dot = document.createElement('span');
+    dot.className = 'sess-dot';
+    dot.setAttribute('data-state', s.state === 'running' ? 'running' : 'idle');
+
+    var main = document.createElement('span');
+    main.className = 'sess-main';
+    var title = document.createElement('span');
+    title.className = 'sess-title';
+    appendLabel(title, rowLabel(s, underNamedGroup), 'sess-ws', 'sess-agent');
+    var state = document.createElement('span');
+    state.className = 'sess-state';
+    state.textContent = s.state || '';
+    title.appendChild(state);
+    var cwd = document.createElement('span');
+    cwd.className = 'sess-cwd';
+    cwd.textContent = s.cwd || '';
+    main.appendChild(title);
+    main.appendChild(cwd);
+
+    btn.appendChild(dot);
+    btn.appendChild(main);
+    btn.addEventListener('click', function () {
+      closeSheet();
+      // selectSession, NOT connect: in a split this focuses the pane's tile
+      // instead of tearing the grid down.
+      if (s.id !== currentSession) selectSession(s.id);
+    });
+    li.appendChild(btn);
+    return li;
+  }
+
   function renderSheet() {
     sheetList.innerHTML = '';
     sheetCount.textContent = sessions.length ? String(sessions.length) : '';
@@ -460,40 +571,19 @@
       sheetList.appendChild(li);
       return;
     }
-    sessions.forEach(function (s) {
-      var li = document.createElement('li');
-      var btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'sess';
-      if (s.id === currentSession) btn.setAttribute('aria-current', 'true');
-
-      var dot = document.createElement('span');
-      dot.className = 'sess-dot';
-      dot.setAttribute('data-state', s.state === 'running' ? 'running' : 'idle');
-
-      var main = document.createElement('span');
-      main.className = 'sess-main';
-      var title = document.createElement('span');
-      title.className = 'sess-title';
-      appendLabel(title, labelFor(s), 'sess-ws', 'sess-agent');
-      var state = document.createElement('span');
-      state.className = 'sess-state';
-      state.textContent = s.state || '';
-      title.appendChild(state);
-      var cwd = document.createElement('span');
-      cwd.className = 'sess-cwd';
-      cwd.textContent = s.cwd || '';
-      main.appendChild(title);
-      main.appendChild(cwd);
-
-      btn.appendChild(dot);
-      btn.appendChild(main);
-      btn.addEventListener('click', function () {
-        closeSheet();
-        if (s.id !== currentSession) selectSession(s.id);
+    var groups = groupSessions(sessions);
+    // One group, and it is the unknown bucket: nothing has a workspace name yet
+    // (every pane predates the stamp). A single "workspace unknown" header over
+    // the whole list would be dead chrome, so render flat — the pre-grouping
+    // shape, unchanged.
+    var grouped = !(groups.length === 1 && groups[0].name === '');
+    if (grouped) sheetList.setAttribute('data-grouped', '');
+    else sheetList.removeAttribute('data-grouped');
+    groups.forEach(function (g) {
+      if (grouped) sheetList.appendChild(groupHeader(g));
+      g.sessions.forEach(function (s) {
+        sheetList.appendChild(sessionRow(s, grouped && g.name !== ''));
       });
-      li.appendChild(btn);
-      sheetList.appendChild(li);
     });
   }
 
@@ -720,13 +810,31 @@
     return tiles.filter(function (t) { return t.sessionId === sessionId; })[0] || null;
   }
 
-  /** Which panes a split shows: the current one first, then fleet order. */
+  /**
+   * Which panes a split shows: the current one first, then its OWN workspace's
+   * panes in fleet order, and only then everything else.
+   *
+   * Filling straight from the global fleet order looked like a bug: picking a
+   * pane in Workspace 1 left a Workspace 2 pane sitting beside it, so the split
+   * silently mixed two contexts. A split is for watching one thing from several
+   * angles, so it stays inside the chosen workspace while that workspace still
+   * has panes to give, and spills over only to avoid leaving a tile empty.
+   */
   function pickSessions(n) {
     var out = [];
     var cur = sessions.filter(function (x) { return x.id === currentSession; })[0];
     if (cur) out.push(cur);
+    var seen = function (s) { return out.some(function (o) { return o.id === s.id; }); };
+    // `workspace` is absent for panes that predate the env stamp; treat all of
+    // those as one bucket rather than matching them against everything.
+    var sameWs = function (s) {
+      return cur ? (s.workspace || '') === (cur.workspace || '') : true;
+    };
     for (var i = 0; i < sessions.length && out.length < n; i++) {
-      if (!cur || sessions[i].id !== cur.id) out.push(sessions[i]);
+      if (sameWs(sessions[i]) && !seen(sessions[i])) out.push(sessions[i]);
+    }
+    for (var j = 0; j < sessions.length && out.length < n; j++) {
+      if (!seen(sessions[j])) out.push(sessions[j]);
     }
     return out;
   }
