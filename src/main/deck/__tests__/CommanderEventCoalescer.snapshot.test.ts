@@ -141,6 +141,8 @@ interface Harness {
   prompts: { ws: string; prompt: string }[];
   setBusy: (b: boolean) => void;
   setRunResult: (r: { ok: boolean; code?: string }) => void;
+  setAutoWake: (b: boolean) => void;
+  setLoop: (l: { running: boolean; iterations: number } | null) => void;
 }
 
 function mk(opts: {
@@ -153,6 +155,11 @@ function mk(opts: {
 } = {}): Harness {
   let busy = false;
   let runResult: { ok: boolean; code?: string } = { ok: true };
+  // Auto-wake and loop start from the opts value but can be toggled mid-test. A
+  // supplied isAutoWakeEnabled stays LIVE (re-read every flush, so a predicate
+  // closing over test state still works); setAutoWake is an explicit override.
+  let autoWakeOverride: boolean | null = null;
+  let loop = opts.loop ?? null;
   const prompts: { ws: string; prompt: string }[] = [];
   const c = new CommanderEventCoalescer({
     runTurn: async (ws, prompt) => {
@@ -161,8 +168,8 @@ function mk(opts: {
     },
     isBusy: () => busy,
     getAutonomy: () => opts.autonomy ?? { ...AUTO_AUTONOMY },
-    getLoop: () => opts.loop ?? null,
-    ...(opts.isAutoWakeEnabled ? { isAutoWakeEnabled: opts.isAutoWakeEnabled } : {}),
+    getLoop: () => loop,
+    isAutoWakeEnabled: () => autoWakeOverride ?? opts.isAutoWakeEnabled?.() ?? true,
     ...(opts.hasPendingDecision ? { hasPendingDecision: opts.hasPendingDecision } : {}),
     debounceMs: 50,
     wakeBudget: opts.wakeBudget ?? 100,
@@ -172,6 +179,8 @@ function mk(opts: {
     c, prompts,
     setBusy: (b) => { busy = b; },
     setRunResult: (r) => { runResult = r; },
+    setAutoWake: (b) => { autoWakeOverride = b; },
+    setLoop: (l) => { loop = l; },
   };
 }
 
@@ -313,5 +322,190 @@ describe('flushSnapshot — gate stack + accounting', () => {
     await settle();
     expect(h.prompts).toHaveLength(1);
     expect(h.c.getPhase('ws-1')).toBe('budget-blocked');
+  });
+});
+
+// ── retire a surfaced complete pane (issue #561) ─────────────────────────────
+//
+// A `complete` pane is retained on the surface until genuinely new activity
+// clears it. The heartbeat scans `complete` (so a DROPPED agent.stop edge, which
+// shows as `complete` in level state, is still recovered), but must surface a
+// finished pane ONCE, not re-review it on every ~3-min interval while it sits
+// idle. Retirement is keyed by ptyId, tied to a real (non-busy) wake, and
+// re-armed the moment the pane is next seen in any non-`complete` state.
+
+describe('flushSnapshot — retire a surfaced complete pane (#561)', () => {
+  it('surfaces a complete pane once, then stops re-reviewing it on later heartbeats', async () => {
+    const h = mk();
+    // First heartbeat: surfaces it (this is the dropped-stop-edge recovery).
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('state=complete');
+    // Two more heartbeats with the pane still finished → no further wakes.
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.c.getWakeBudgetRemaining('ws-1')).toBe(99); // only the one wake spent
+  });
+
+  it('re-arms once the pane shows new activity, so its NEXT completion surfaces again', async () => {
+    const h = mk();
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    // The pane starts a new turn — a heartbeat observes it non-complete → re-armed.
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'running' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1); // running is quiescent, no wake — but it re-arms
+    // Completes again → a fresh completion, surfaced once more.
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(2);
+  });
+
+  it('a busy reject leaves the pane ARMED — it re-surfaces once the brain frees up', async () => {
+    const h = mk();
+    h.setBusy(true);
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(0); // dropped at the busy gate — never reviewed
+    // Brain frees up; the next heartbeat must still surface it (not wrongly retired).
+    h.setBusy(false);
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('state=complete');
+  });
+
+  it('retiring one complete pane never suppresses another attention pane', async () => {
+    const h = mk();
+    // Surface + retire the complete pane on the first heartbeat.
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    // Same finished pane, plus a newly-blocked one: the blocked pane must wake.
+    h.c.flushSnapshot('ws-1', snap([
+      pane({ ptyId: 'ptyA', agentStatus: 'complete' }),
+      pane({ ptyId: 'ptyB', agentStatus: 'awaiting_input' }),
+    ]));
+    await settle();
+    expect(h.prompts).toHaveLength(2);
+    const p = h.prompts[1].prompt;
+    expect(p).toContain('pane=ptyB');      // the blocked pane surfaces…
+    expect(p).not.toContain('pane=ptyA');  // …the already-reviewed complete pane does not
+  });
+
+  it('re-arms even when the re-observing flush early-returns (auto-wake OFF between)', async () => {
+    // Surface + retire under a running loop (which overrides the auto-wake switch).
+    const h = mk({ isAutoWakeEnabled: () => true, loop: { running: true, iterations: 100 } });
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    // Auto-wake goes OFF and the loop stops; the pane starts a new turn. This flush
+    // early-returns at the auto-wake gate — but reconcile still re-arms ptyA.
+    h.setAutoWake(false);
+    h.setLoop(null);
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'running' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    // Auto-wake back on; the pane completes again → surfaces fresh (not suppressed
+    // by a stale retired entry the early-returning flush failed to clear).
+    h.setAutoWake(true);
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(2);
+  });
+
+  it('an async busy reject (fleet slot gate full) leaves the pane ARMED', async () => {
+    const h = mk();
+    // The workspace's own brain is idle, so the flush passes the sync isBusy()
+    // gate, commits and dispatches — and runTurn rejects anyway. In production
+    // that is the fleet-wide concurrent-turn slot gate (deck.handler.ts), or a
+    // manager that went non-idle without being `busy`. Either way the brain never
+    // reviewed this pane, so it must not be retired.
+    h.setRunResult({ ok: false, code: 'busy' });
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.c.getWakeBudgetRemaining('ws-1')).toBe(100); // rejected → no wake spent
+
+    // The gate frees up. The completion must still surface — this is exactly the
+    // dropped-stop recovery the snapshot path exists for, and a finished pane
+    // never re-arms itself: it only moves when the brain drives it.
+    h.setRunResult({ ok: true });
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(2);
+    expect(h.prompts[1].prompt).toContain('state=complete');
+
+    // …and once it HAS been reviewed, the retire holds as normal.
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(2);
+  });
+
+  it('a non-busy failure still retires — the watermark advances there too', async () => {
+    const h = mk();
+    // Unlike a busy reject, a real failure consumes the flush (same rule the
+    // folded edges follow) so a poison prompt cannot loop the brain every 3 min.
+    h.setRunResult({ ok: false, code: 'error' });
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    h.setRunResult({ ok: true });
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'complete' })]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+  });
+
+  it('two panes complete at once, then retire and re-arm independently', async () => {
+    const h = mk();
+    h.c.flushSnapshot('ws-1', snap([
+      pane({ ptyId: 'ptyA', agentStatus: 'complete' }),
+      pane({ ptyId: 'ptyB', agentStatus: 'complete' }),
+    ]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    expect(h.prompts[0].prompt).toContain('pane=ptyA');
+    expect(h.prompts[0].prompt).toContain('pane=ptyB');
+
+    // Both still finished → nothing to re-review.
+    h.c.flushSnapshot('ws-1', snap([
+      pane({ ptyId: 'ptyA', agentStatus: 'complete' }),
+      pane({ ptyId: 'ptyB', agentStatus: 'complete' }),
+    ]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+
+    // Only ptyB picks up new work and finishes again: it re-arms on its own,
+    // and ptyA's retirement is untouched by its neighbour's lifecycle.
+    h.c.flushSnapshot('ws-1', snap([
+      pane({ ptyId: 'ptyA', agentStatus: 'complete' }),
+      pane({ ptyId: 'ptyB', agentStatus: 'running' }),
+    ]));
+    await settle();
+    expect(h.prompts).toHaveLength(1);
+    h.c.flushSnapshot('ws-1', snap([
+      pane({ ptyId: 'ptyA', agentStatus: 'complete' }),
+      pane({ ptyId: 'ptyB', agentStatus: 'complete' }),
+    ]));
+    await settle();
+    expect(h.prompts).toHaveLength(2);
+    expect(h.prompts[1].prompt).toContain('pane=ptyB');
+    expect(h.prompts[1].prompt).not.toContain('pane=ptyA');
+  });
+
+  it('error panes are NOT retired — a still-broken pane keeps surfacing', async () => {
+    const h = mk();
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'error' })]));
+    await settle();
+    h.c.flushSnapshot('ws-1', snap([pane({ ptyId: 'ptyA', agentStatus: 'error' })]));
+    await settle();
+    // error is genuinely-blocked (needs a look until resolved), unlike informational
+    // `complete` — the retire is scoped to `complete` only.
+    expect(h.prompts).toHaveLength(2);
   });
 });

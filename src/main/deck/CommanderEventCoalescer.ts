@@ -153,6 +153,17 @@ interface WsState {
    *  reset by a human send (the ceiling is a raw-frequency guard, independent of
    *  the consecutive budget which the human DOES reset). */
   wakeTimestamps: number[];
+  /** ptyIds whose `complete` level-state has already been folded into an accepted
+   *  (or attempted-and-consumed) snapshot wake. The heartbeat surfaces a finished
+   *  pane ONCE — so a dropped agent.stop edge, which shows as `complete` in level
+   *  state, is still recovered — then retires it so it is not re-reviewed every
+   *  interval while it sits idle-and-finished (issue #561). Re-armed the moment
+   *  the pane is next observed in any non-`complete` state (new activity), so its
+   *  next completion surfaces fresh — and immediately if the turn it was retired
+   *  for is rejected `busy`, since the brain never reviewed it. Never holds a pane
+   *  no wake was actually attempted on. Bounded: pruned each flush to only ptyIds
+   *  still `complete` in the latest snapshot, so it can't outgrow the live fleet. */
+  snapshotSurfacedComplete: Set<string>;
 }
 
 /** A running loop's wake-relevant slice (read fresh at every flush). */
@@ -305,6 +316,13 @@ export class CommanderEventCoalescer {
   flushSnapshot(workspaceId: string, snapshot: FleetSnapshot): void {
     if (this.disposed) return;
     const st = this.ensureState(workspaceId);
+    // Re-arm the "already surfaced" set against the CURRENT level state BEFORE any
+    // gate: a pane observed non-`complete` here (new activity, or gone) must drop
+    // out of the retired set even on a flush that early-returns below (pending
+    // decision, auto-wake off, policy 'none'), so its NEXT completion surfaces fresh
+    // once the workspace can wake again (issue #561). The snapshot is ground truth
+    // regardless of whether this flush acts on it.
+    this.reconcileSurfacedComplete(st, snapshot);
     // Decision gate: a pending decision blocks EVERY wake, snapshot included.
     // Drop the snapshot (the next heartbeat re-reads it); leave buffered edges
     // untouched for the normal edge path to govern.
@@ -322,7 +340,18 @@ export class CommanderEventCoalescer {
     // pane; 'value-filtered' (assist) narrows to the blocked ones — a plain
     // turn-ended/complete pane is the summary-spam the assist filter drops,
     // exactly as it drops a plain agent.stop edge.
-    const attention = snapshot.panes.filter((p) => isAttentionStatus(p.agentStatus));
+    // A `complete` pane already surfaced by an earlier heartbeat is dropped here:
+    // it was folded into a review once (recovering any dropped stop edge); it is
+    // not re-reviewed every interval while it sits finished (issue #561).
+    const attention = snapshot.panes.filter(
+      (p) =>
+        isAttentionStatus(p.agentStatus) &&
+        !(p.agentStatus === 'complete' && st.snapshotSurfacedComplete.has(p.ptyId)),
+    );
+    // Assist (`value-filtered`) therefore never retires anything: no `complete`
+    // pane reaches snapPanes, so none is added to the retired set. That is the
+    // correct no-op, not a gap — assist already drops a lone finished pane before
+    // the worthiness gate, so there is no repeat review to suppress there.
     const snapPanes =
       policy === 'value-filtered'
         ? attention.filter((p) => p.agentStatus === 'awaiting_input')
@@ -367,6 +396,18 @@ export class CommanderEventCoalescer {
       { loopRunning, fleetTail: this.safeFleetTail(workspaceId) },
     );
     st.phase = 'send-pending';
+    // Retire the `complete` panes this flush surfaces SYNCHRONOUSLY, here at the
+    // commit point — never after the async runTurn settles. At this instant
+    // snapPanes' complete IDs are exactly the currently-complete panes going into
+    // the prompt, so adding them now cannot re-add a pane that a LATER snapshot has
+    // since re-armed (the stale-add race a settle-time retire would have). A future
+    // reconcile drops any of these the moment its pane moves off `complete`.
+    // The ADD must be synchronous; the UNDO (busy branch below) must not be — see
+    // rearmSurfacedComplete for why that asymmetry is the safe direction.
+    const retiredThisFlush = snapPanes
+      .filter((p) => p.agentStatus === 'complete')
+      .map((p) => p.ptyId);
+    this.retireSurfacedComplete(st, retiredThisFlush);
 
     void this.deps
       .runTurn(workspaceId, prompt)
@@ -379,6 +420,15 @@ export class CommanderEventCoalescer {
           this.pruneBuffer(st, snapshotMaxSeq);
           st.phase = st.buffer.size > 0 ? 'buffering' : 'idle';
         } else if (r.code === 'busy') {
+          // The turn never ran, so the brain never reviewed these — put them back
+          // (issue #561 review). The sync isBusy() gate above only sees THIS
+          // workspace's manager mid-turn; runTurn rejects `busy` for two more
+          // reasons it cannot see — the fleet-wide concurrent-turn slot gate, and
+          // a manager that is non-idle without being `busy` (e.g. disposed). A
+          // pane left wrongly retired here would not self-heal: re-arming needs
+          // the pane to be observed non-`complete`, and a finished pane only moves
+          // when the brain drives it — which this very filter is preventing.
+          this.rearmSurfacedComplete(st, retiredThisFlush);
           // The snapshot drops (next heartbeat re-reads level state); buffered
           // edges survive untouched. Retry the edge path if any remain.
           st.phase = st.buffer.size > 0 ? 'buffering' : 'idle';
@@ -472,6 +522,7 @@ export class CommanderEventCoalescer {
         watermark: 0,
         autoWakesUsed: 0,
         wakeTimestamps: [],
+        snapshotSurfacedComplete: new Set(),
       };
       this.states.set(workspaceId, st);
     }
@@ -514,6 +565,41 @@ export class CommanderEventCoalescer {
   /** Record one ACCEPTED wake against the ceiling (edge OR snapshot). */
   private recordWake(st: WsState, now: number): void {
     st.wakeTimestamps.push(now);
+  }
+
+  /** Re-arm the retired-`complete` set against the current level state (issue
+   *  #561): drop any ptyId that is no longer `complete` in this snapshot (new
+   *  activity moved it on, or it left the fleet), so its next completion surfaces
+   *  fresh. Rebuilds via intersection, which also bounds the set to the live
+   *  fleet — it never accumulates dead panes. */
+  private reconcileSurfacedComplete(st: WsState, snapshot: FleetSnapshot): void {
+    if (st.snapshotSurfacedComplete.size === 0) return;
+    const stillComplete = new Set(
+      snapshot.panes.filter((p) => p.agentStatus === 'complete').map((p) => p.ptyId),
+    );
+    for (const id of [...st.snapshotSurfacedComplete]) {
+      if (!stillComplete.has(id)) st.snapshotSurfacedComplete.delete(id);
+    }
+  }
+
+  /** Mark the `complete` panes a snapshot flush is surfacing as retired, so a
+   *  later heartbeat drops them instead of re-reviewing the same finished pane
+   *  (issue #561). Called synchronously at the flush's commit point — after the
+   *  sync busy gate, so a pane the brain is mid-turn on is never retired here. */
+  private retireSurfacedComplete(st: WsState, ptyIds: readonly string[]): void {
+    for (const id of ptyIds) st.snapshotSurfacedComplete.add(id);
+  }
+
+  /** Undo a retire whose turn never actually ran (runTurn rejected `busy` after
+   *  the sync gate — a full fleet slot gate, or a manager that went non-idle).
+   *  Unlike the ADD, this is safe to apply late: the two directions fail
+   *  differently. A stale add SUPPRESSES a completion a newer snapshot already
+   *  re-armed (a review silently lost — the race the sync retire closes); a stale
+   *  remove at worst re-arms a pane a newer flush retired for real, costing ONE
+   *  redundant review that the next reconcile then settles. Fail open toward
+   *  surfacing: the snapshot path exists to catch what the edge path dropped. */
+  private rearmSurfacedComplete(st: WsState, ptyIds: readonly string[]): void {
+    for (const id of ptyIds) st.snapshotSurfacedComplete.delete(id);
   }
 
   /** ms until the oldest in-window wake ages out and the window next opens.
