@@ -1,6 +1,6 @@
 # `browser_tabs` Workspace-Scoped Contract
 
-> **Status:** Local implementation candidate; independent security/TypeScript reviews and isolated live dogfood are complete, awaiting explicit launch approval.
+> **Status:** Implemented and submitted as PR [#575](https://github.com/openwong2kim/wmux/pull/575). Independent security/TypeScript reviews and the §7.2 live dogfood are complete; the §9 gate was satisfied before submission and now governs future changes to this contract.
 > **Issue:** [#565](https://github.com/openwong2kim/wmux/issues/565), follow-up to [#554](https://github.com/openwong2kim/wmux/issues/554) / PR [#563](https://github.com/openwong2kim/wmux/pull/563).
 > **Scope:** Define the caller-visible tab model, isolation boundary, wire shape, and acceptance criteria for `browser_tabs`.
 > **Out of scope:** External-Chrome routing (#517), a privileged cross-workspace operator view, and general authorization changes for every browser tool that accepts an explicit `surfaceId`.
@@ -407,7 +407,11 @@ This should be confirmed with a focused two-workspace test and, if reproduced, t
 
 ## 9. Implementation review gate
 
-Before implementation is pushed or a PR is created:
+All five steps were completed before this contract and its implementation were
+submitted. They stay here as a standing gate rather than a one-off checklist:
+any later change to the isolation boundary defined above repeats them before it
+is pushed, because the guarantees in §5 are only as good as the last time
+someone re-ran §7.2 against a real two-workspace instance.
 
 1. produce the implementation diff against current upstream main;
 2. run the focused unit/contract suite plus typecheck and lint for touched files;
