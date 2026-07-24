@@ -1,6 +1,7 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from 'vitest';
 import os from 'node:os';
 import { EventEmitter } from 'node:events';
+import { request as httpReq } from 'node:http';
 import { WebTerminalServer } from '../WebTerminalServer';
 import type { DaemonSessionManager } from '../../DaemonSessionManager';
 
@@ -239,5 +240,68 @@ describe('WebTerminalServer', () => {
     await server.stop();
     expect(em.listenerCount('session:critical')).toBe(0);
     expect(em.listenerCount('session:notification')).toBe(0);
+  });
+  it('sets frame/sniff/referrer protection on responses', async () => {
+    const info = await startRO();
+    const res = await fetch(`http://127.0.0.1:${info.port}/api/config`, {
+      headers: { Authorization: `Bearer ${info.token}` },
+    });
+    expect(res.headers.get('x-frame-options')).toBe('DENY');
+    expect(res.headers.get('x-content-type-options')).toBe('nosniff');
+    expect(res.headers.get('referrer-policy')).toBe('no-referrer');
+    expect(res.headers.get('content-security-policy')).toContain("frame-ancestors 'none'");
+  });
+
+  /** Raw request so we can set Host (undici forbids overriding it on fetch()). */
+  const getWithHost = (port: number, path: string, host: string) =>
+    new Promise<{ status: number; body: string }>((resolve, reject) => {
+      const req = httpReq({ host: '127.0.0.1', port, path, headers: { Host: host } }, (r) => {
+        let body = '';
+        r.setEncoding('utf8');
+        r.on('data', (c) => { body += c; });
+        r.on('end', () => resolve({ status: r.statusCode ?? 0, body }));
+      });
+      req.on('error', reject);
+      req.end();
+    });
+
+  it('rejects a request addressed to a foreign Host (DNS-rebinding guard)', async () => {
+    const info = await startRO();
+    const res = await getWithHost(info.port as number, '/api/pair?code=WHATEVER', 'evil.com');
+    expect(res.status).toBe(403);
+    expect(JSON.parse(res.body).error).toBe('host not allowed');
+  });
+
+  it('accepts loopback Host names', async () => {
+    const info = await startRO();
+    const res = await getWithHost(info.port as number, '/api/config', `localhost:${info.port}`);
+    // 401 (not 403) proves the host gate passed and the token gate took over.
+    expect(res.status).toBe(401);
+  });
+
+  it('mints a replacement pairing code once the old one is burned', async () => {
+    const info = await startRO();
+    const first = info.pairCode as string;
+    expect(first).toHaveLength(6);
+    // Burn the attempt budget with wrong guesses.
+    for (let i = 0; i < 5; i++) {
+      await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZ`);
+    }
+    // Burned, and inside the regeneration cooldown: deliberately still gone.
+    await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZ`);
+    expect(server.status().pairCode).toBeUndefined();
+
+    // Past the cooldown, the next attempt mints a replacement so a burned code
+    // costs a short wait instead of a server restart.
+    const realNow = Date.now();
+    const nowSpy = vi.spyOn(Date, 'now').mockReturnValue(realNow + 31_000);
+    try {
+      await fetch(`http://127.0.0.1:${info.port}/api/pair?code=ZZZZZZ`);
+    } finally {
+      nowSpy.mockRestore();
+    }
+    const after = server.status().pairCode;
+    expect(after).toHaveLength(6);
+    expect(after).not.toBe(first);
   });
 });

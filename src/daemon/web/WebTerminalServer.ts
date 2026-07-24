@@ -69,6 +69,12 @@ const HEARTBEAT_MS = 25_000;
 const PAIR_TTL_MS = 10 * 60 * 1000;
 /** Wrong-code attempts before the pairing code is burned. */
 const PAIR_MAX_ATTEMPTS = 5;
+/**
+ * Minimum gap between automatic pairing-code regenerations. Without a cooldown,
+ * an attacker who can burn codes could force a regeneration loop; with one, a
+ * burned code costs the legitimate operator a short wait instead of a restart.
+ */
+const PAIR_REGEN_COOLDOWN_MS = 30_000;
 /** Pairing alphabet: A-Z2-9 minus the visually ambiguous 0/O/1/I. */
 const PAIR_ALPHABET = 'ABCDEFGHJKLMNPQRSTUVWXYZ23456789';
 const PAIR_CODE_LEN = 6;
@@ -89,6 +95,15 @@ export class WebTerminalServer {
   private pairCode = '';
   private pairExpiresAt = 0;
   private pairAttempts = 0;
+  /**
+   * Hostnames this server answers to. A local HTTP server that accepts any
+   * `Host` can be reached by a malicious page that rebinds its own domain to
+   * this address (DNS rebinding); the token still gates `/api/*`, but the
+   * unauthenticated `/api/pair` route would be reachable and its code burnable.
+   */
+  private allowedHosts = new Set<string>();
+  /** When the current pairing code was minted (throttles regeneration). */
+  private pairRegeneratedAt = 0;
 
   // Bound so on()/off() reference the SAME listener across start()/stop().
   private readonly onSessionCritical = (payload: { sessionId: string; event?: unknown }): void =>
@@ -176,6 +191,16 @@ export class WebTerminalServer {
     // hermetic bind that never collides).
     const addr = server.address();
     if (addr && typeof addr === 'object') this.opts.port = addr.port;
+
+    // Host allowlist: loopback names always (the PWA's own origin), plus every
+    // concrete address we actually serve on, so a phone hitting the LAN /
+    // tailnet IP is accepted while a rebound attacker domain is not.
+    this.allowedHosts = new Set(['localhost', '127.0.0.1', '::1', '[::1]']);
+    if (options.host === '0.0.0.0' || options.host === '::') {
+      for (const ip of collectIpv4()) this.allowedHosts.add(ip);
+    }
+    this.allowedHosts.add(options.host);
+
     this.deps.log(
       'info',
       `[web] listening on ${this.opts.host}:${this.opts.port} (input ${options.allowInput ? 'ENABLED' : 'read-only'})`,
@@ -238,6 +263,17 @@ export class WebTerminalServer {
   private handle(req: http.IncomingMessage, res: http.ServerResponse): void {
     const url = new URL(req.url ?? '/', 'http://localhost');
     const p = url.pathname;
+
+    // Reject anything addressed to a host we do not serve (DNS-rebinding guard).
+    // Checked before routing so it also covers the unauthenticated /api/pair.
+    const hostHeader = req.headers.host ?? '';
+    // Strip the port; keep IPv6 literals ("[::1]:7681") intact.
+    const hostname = hostHeader.startsWith('[')
+      ? hostHeader.slice(0, hostHeader.indexOf(']') + 1).toLowerCase()
+      : hostHeader.split(':')[0].toLowerCase();
+    if (!this.allowedHosts.has(hostname)) {
+      return this.json(res, 403, { error: 'host not allowed' });
+    }
 
     // Static, unauthenticated app shell (no secrets live in these). `/pair`
     // is the same SPA shell — the frontend renders the pairing screen for it.
@@ -455,6 +491,7 @@ export class WebTerminalServer {
     this.pairCode = code;
     this.pairExpiresAt = Date.now() + PAIR_TTL_MS;
     this.pairAttempts = PAIR_MAX_ATTEMPTS;
+    this.pairRegeneratedAt = Date.now();
   }
 
   /**
@@ -466,11 +503,21 @@ export class WebTerminalServer {
     const supplied = (url.searchParams.get('code') ?? '').trim().toUpperCase();
 
     if (!this.pairCode || Date.now() > this.pairExpiresAt) {
+      // A burned or expired code used to be gone until the next `start()`,
+      // which turned "5 wrong guesses" into a permanent pairing outage. Mint a
+      // fresh one instead — rate-limited so this cannot be spun as an oracle —
+      // and let the operator read it from `daemon.web.status` / the GUI popover.
       this.pairCode = '';
+      if (Date.now() - this.pairRegeneratedAt >= PAIR_REGEN_COOLDOWN_MS) {
+        this.generatePairCode();
+      }
       return this.json(res, 403, { error: 'expired' });
     }
     if (this.pairAttempts <= 0) {
       this.pairCode = '';
+      if (Date.now() - this.pairRegeneratedAt >= PAIR_REGEN_COOLDOWN_MS) {
+        this.generatePairCode();
+      }
       return this.json(res, 403, { error: 'too many attempts' });
     }
 
@@ -514,6 +561,24 @@ export class WebTerminalServer {
     return a.length === b.length && crypto.timingSafeEqual(a, b);
   }
 
+  /**
+   * Baseline headers every response carries — the hardening a local HTTP server
+   * owes the browser (the same controls Docker / VS Code / Electron apply):
+   *   - frame protection, so a page on evil.com cannot iframe this authenticated
+   *     terminal and redress clicks into a pane (worse with `--allow-input`);
+   *   - `nosniff`, so nothing is re-interpreted as an executable type;
+   *   - `no-referrer`, which also keeps the SSE URL's `?token=` (the one route
+   *     that must carry it) out of any outbound Referer.
+   */
+  private securityHeaders(): Record<string, string> {
+    return {
+      'X-Frame-Options': 'DENY',
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'Content-Security-Policy': "frame-ancestors 'none'",
+    };
+  }
+
   private serveStatic(
     res: http.ServerResponse,
     body: Buffer | null,
@@ -521,17 +586,27 @@ export class WebTerminalServer {
     extraHeaders: Record<string, string> = {},
   ): void {
     if (!body) {
-      res.writeHead(503, { 'Content-Type': 'text/plain; charset=utf-8' });
+      res.writeHead(503, {
+        'Content-Type': 'text/plain; charset=utf-8',
+        ...this.securityHeaders(),
+      });
       res.end('wmux web assets not built — run `npm run build:daemon-web`.');
       return;
     }
-    res.writeHead(200, { 'Content-Type': contentType, ...extraHeaders });
+    res.writeHead(200, {
+      'Content-Type': contentType,
+      ...this.securityHeaders(),
+      ...extraHeaders,
+    });
     res.end(body);
   }
 
   private json(res: http.ServerResponse, status: number, obj: unknown): void {
     const body = JSON.stringify(obj);
-    res.writeHead(status, { 'Content-Type': 'application/json; charset=utf-8' });
+    res.writeHead(status, {
+      'Content-Type': 'application/json; charset=utf-8',
+      ...this.securityHeaders(),
+    });
     res.end(body);
   }
 
