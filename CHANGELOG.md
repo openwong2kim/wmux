@@ -7,6 +7,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **Dragging your mouse across a terminal during a workspace switch no longer throws a recurring uncaught error.** Selecting text in a terminal registers document-level mouse listeners (so a drag that leaves the terminal can still be released), and on a remount — a workspace switch, a reconnect — `Terminal.dispose()` nullified xterm's internal render service before those listeners came down. A `mouseup` landing in that gap read `dimensions` off a half-torn-down instance and threw `TypeError: Cannot read properties of undefined (reading 'dimensions')`, dozens of times per session. wmux now tracks whether a drag is active on any terminal and defers only the internal `dispose()` until the mouse is released (with a 2-second backstop for a drag abandoned outside the window), closing the race without patching xterm internals; all PTY listeners are already torn down at that point, so no new data arrives while disposal waits. The redundant back-to-back reconciliation runs visible on load are now numbered in the console — so "one cycle walking four workspaces" is distinguishable from "four cycles" — and the dev-only Electron "Insecure Content-Security-Policy" warning is suppressed in development (Vite's HMR requires `unsafe-eval`; the production CSP remains strict with no `unsafe-eval`).
+
 ## [3.33.0] — 2026-07-24
 
 ### Added
