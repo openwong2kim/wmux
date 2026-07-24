@@ -6,10 +6,18 @@
 // the wmux data dir, WMUX_DATA_SUFFIX isolated) — config and snapshots share ONE
 // file so a partial write of either preserves the other.
 //
-// The snapshot is written when the operator VIEWS the briefing (the get handler
-// persists it after building the delta), so the next open diffs against "what
-// you last saw", not "what main last pushed". Status-only per pane (ptyId→status
-// + decisionId) keeps the file tiny even at 30+ sessions.
+// The snapshot is written when the operator actually SEES the briefing (the
+// acknowledge handler, NOT the get handler), so the next open diffs against
+// "what you last saw", not "what main last pushed" and not "what the card
+// happened to fetch while collapsed". Status-only per pane (ptyId→status +
+// decisionId) keeps the file tiny even at 30+ sessions.
+//
+// Every mutation runs through ONE per-process promise chain (the
+// deckDecisionStore precedent): loadFile is sync but `await atomicWriteJSON` is
+// an async boundary, so two unserialized read-modify-writes could each start
+// from the same snapshot and the later write would silently revert the earlier
+// one — losing a workspace's snapshot or, worse, reverting the operator's
+// Settings toggle. atomicWriteJSON prevents torn reads, not lost updates.
 
 import path from 'node:path';
 import { getWmuxDir } from '../../daemon/config';
@@ -102,6 +110,21 @@ function sanitizeSnapshot(raw: unknown): BriefedSnapshot | null {
   };
 }
 
+// Single-writer serialization for every mutation of this file — config saves and
+// snapshot saves share one chain, because they share one file: an unserialized
+// snapshot save that read the file before a Settings toggle landed would write
+// the OLD config back and silently re-enable a briefing the operator turned off.
+let opChain: Promise<unknown> = Promise.resolve();
+function serialize<T>(fn: () => Promise<T>): Promise<T> {
+  const run = opChain.then(fn, fn);
+  // Keep the chain alive even if a write rejects (never wedge future mutates).
+  opChain = run.then(
+    () => undefined,
+    () => undefined,
+  );
+  return run;
+}
+
 /** The current briefing config. Never throws (fail-open to the default). */
 export function loadDeckBriefingConfig(dir?: string): DeckBriefingConfig {
   return loadFile(dir).config;
@@ -114,18 +137,44 @@ export async function saveDeckBriefingConfig(
   patch: Partial<DeckBriefingConfig>,
   dir?: string,
 ): Promise<DeckBriefingConfig> {
-  const file = loadFile(dir);
-  const next: DeckBriefingConfig = {
-    enabled: typeof patch.enabled === 'boolean' ? patch.enabled : file.config.enabled,
-    autoShow: typeof patch.autoShow === 'boolean' ? patch.autoShow : file.config.autoShow,
-  };
-  await atomicWriteJSON(getDeckBriefingPath(dir), { config: next, snapshots: file.snapshots });
-  return next;
+  return serialize(async () => {
+    const file = loadFile(dir);
+    const next: DeckBriefingConfig = {
+      enabled: typeof patch.enabled === 'boolean' ? patch.enabled : file.config.enabled,
+      autoShow: typeof patch.autoShow === 'boolean' ? patch.autoShow : file.config.autoShow,
+    };
+    await atomicWriteJSON(getDeckBriefingPath(dir), { config: next, snapshots: file.snapshots });
+    return next;
+  });
 }
 
 /** The last-viewed snapshot for a workspace, or null if none was ever stored. */
 export function loadBriefedSnapshot(workspaceId: string, dir?: string): BriefedSnapshot | null {
   return loadFile(dir).snapshots[workspaceId] ?? null;
+}
+
+/** How long an untouched snapshot survives. A workspace nobody has briefed in a
+ *  month is either gone or so stale its delta would be meaningless, and this map
+ *  is read synchronously on every briefing GET — it must not grow forever. */
+export const BRIEFED_SNAPSHOT_TTL_MS = 30 * 24 * 60 * 60 * 1000;
+
+/** Drop snapshots for workspaces that no longer exist (`liveWorkspaceIds`, when
+ *  the caller can supply a trustworthy list) and any that aged past the TTL.
+ *  `liveWorkspaceIds` is IGNORED when empty — an unpopulated mirror must not be
+ *  read as "every workspace was deleted". */
+function pruneSnapshots(
+  snapshots: Record<string, BriefedSnapshot>,
+  liveWorkspaceIds: readonly string[] | undefined,
+  now: number,
+): void {
+  const live = liveWorkspaceIds && liveWorkspaceIds.length > 0 ? new Set(liveWorkspaceIds) : null;
+  for (const [wsId, snap] of Object.entries(snapshots)) {
+    if (live && !live.has(wsId)) {
+      delete snapshots[wsId];
+      continue;
+    }
+    if (snap.at > 0 && now - snap.at > BRIEFED_SNAPSHOT_TTL_MS) delete snapshots[wsId];
+  }
 }
 
 /** Persist one workspace's last-viewed snapshot, preserving config + the other
@@ -135,8 +184,12 @@ export async function saveBriefedSnapshot(
   workspaceId: string,
   snapshot: BriefedSnapshot,
   dir?: string,
+  opts?: { liveWorkspaceIds?: readonly string[]; now?: number },
 ): Promise<void> {
-  const file = loadFile(dir);
-  file.snapshots[workspaceId] = snapshot;
-  await atomicWriteJSON(getDeckBriefingPath(dir), file);
+  await serialize(async () => {
+    const file = loadFile(dir);
+    pruneSnapshots(file.snapshots, opts?.liveWorkspaceIds, opts?.now ?? Date.now());
+    file.snapshots[workspaceId] = snapshot;
+    await atomicWriteJSON(getDeckBriefingPath(dir), file);
+  });
 }

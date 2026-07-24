@@ -1,12 +1,14 @@
 // Unit tests for the briefing config + snapshot store: default-on config,
 // partial-merge saves that preserve snapshots (and vice-versa), snapshot
-// round-trip, torn-file → defaults (never throws), and suffix isolation.
+// round-trip, SERIALIZED read-modify-write (no lost updates), snapshot pruning,
+// torn-file → defaults (never throws), and suffix isolation.
 
 import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import {
+  BRIEFED_SNAPSHOT_TTL_MS,
   DEFAULT_BRIEFING,
   loadDeckBriefingConfig,
   saveDeckBriefingConfig,
@@ -25,10 +27,15 @@ afterEach(() => {
   fs.rmSync(dir, { recursive: true, force: true });
 });
 
+// Fixed once per run: `at` must be a realistic clock reading, because every
+// snapshot save prunes entries older than BRIEFED_SNAPSHOT_TTL_MS and a toy
+// timestamp reads as a month-old snapshot.
+const NOW = Date.now();
+
 const snap = (over: Partial<BriefedSnapshot> = {}): BriefedSnapshot => ({
   panes: [{ ptyId: 'p1', agentStatus: 'running' }],
   decisionId: null,
-  at: 5,
+  at: NOW,
   ...over,
 });
 
@@ -84,6 +91,64 @@ describe('deckBriefingStore — snapshots', () => {
       'utf8',
     );
     expect(loadBriefedSnapshot('ws-1', dir)?.panes).toEqual([{ ptyId: 'ok', agentStatus: 'running' }]);
+  });
+});
+
+describe('deckBriefingStore — serialized read-modify-write (no lost updates)', () => {
+  it('two concurrent snapshot saves both survive', async () => {
+    await Promise.all([
+      saveBriefedSnapshot('ws-1', snap({ decisionId: 'a' }), dir),
+      saveBriefedSnapshot('ws-2', snap({ decisionId: 'b' }), dir),
+    ]);
+    expect(loadBriefedSnapshot('ws-1', dir)?.decisionId).toBe('a');
+    expect(loadBriefedSnapshot('ws-2', dir)?.decisionId).toBe('b');
+  });
+
+  it('a snapshot save concurrent with a config toggle cannot revert the toggle', async () => {
+    // The regression: the snapshot save reads the file (config still enabled),
+    // the Settings toggle writes enabled:false, then the snapshot save writes its
+    // stale copy back — silently re-enabling a briefing the operator turned off.
+    await Promise.all([
+      saveBriefedSnapshot('ws-1', snap(), dir),
+      saveDeckBriefingConfig({ enabled: false }, dir),
+      saveBriefedSnapshot('ws-2', snap(), dir),
+    ]);
+    expect(loadDeckBriefingConfig(dir).enabled).toBe(false);
+    expect(loadBriefedSnapshot('ws-1', dir)).not.toBeNull();
+    expect(loadBriefedSnapshot('ws-2', dir)).not.toBeNull();
+  });
+
+  it('concurrent config patches to different fields both land', async () => {
+    await Promise.all([
+      saveDeckBriefingConfig({ enabled: false }, dir),
+      saveDeckBriefingConfig({ autoShow: false }, dir),
+    ]);
+    expect(loadDeckBriefingConfig(dir)).toEqual({ enabled: false, autoShow: false });
+  });
+});
+
+describe('deckBriefingStore — snapshot pruning', () => {
+  it('drops workspaces absent from the live list, keeps the ones present', async () => {
+    await saveBriefedSnapshot('ws-gone', snap(), dir);
+    await saveBriefedSnapshot('ws-keep', snap(), dir);
+    await saveBriefedSnapshot('ws-new', snap(), dir, { liveWorkspaceIds: ['ws-keep', 'ws-new'] });
+    expect(loadBriefedSnapshot('ws-gone', dir)).toBeNull();
+    expect(loadBriefedSnapshot('ws-keep', dir)).not.toBeNull();
+    expect(loadBriefedSnapshot('ws-new', dir)).not.toBeNull();
+  });
+
+  it('an EMPTY live list prunes nothing (an unpopulated mirror is not "all deleted")', async () => {
+    await saveBriefedSnapshot('ws-1', snap(), dir);
+    await saveBriefedSnapshot('ws-2', snap(), dir, { liveWorkspaceIds: [] });
+    expect(loadBriefedSnapshot('ws-1', dir)).not.toBeNull();
+  });
+
+  it('drops snapshots older than the TTL even when still live', async () => {
+    const now = 10_000_000_000;
+    await saveBriefedSnapshot('ws-old', snap({ at: now - BRIEFED_SNAPSHOT_TTL_MS - 1 }), dir);
+    await saveBriefedSnapshot('ws-fresh', snap({ at: now }), dir, { now });
+    expect(loadBriefedSnapshot('ws-old', dir)).toBeNull();
+    expect(loadBriefedSnapshot('ws-fresh', dir)).not.toBeNull();
   });
 });
 
