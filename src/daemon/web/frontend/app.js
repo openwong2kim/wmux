@@ -174,6 +174,28 @@
     });
   }
 
+  // A stream error carries no status: EventSource exposes only `onerror`, and
+  // it retries forever either way. So "the daemon is restarting" and "this
+  // token has been revoked" look identical from here, and the second one would
+  // sit on "reconnecting…" until someone walked to the desktop — the exact
+  // failure this app exists to avoid. Probe ONE authenticated route to tell
+  // them apart; api() already routes a 401 to the token/pairing screen.
+  //
+  // Rate-limited because four split tiles all retry independently: at most one
+  // probe in flight, and at most one per AUTH_PROBE_MS across all of them.
+  var AUTH_PROBE_MS = 5000;
+  var authProbeAt = 0;
+  var authProbing = false;
+  function diagnoseStreamError() {
+    if (authProbing || Date.now() - authProbeAt < AUTH_PROBE_MS) return;
+    authProbing = true;
+    authProbeAt = Date.now();
+    var done = function () { authProbing = false; };
+    // A rejection is either the 401 (auth screen already shown) or a genuine
+    // outage (the "reconnecting…" the caller set is the right answer).
+    api('/api/config').then(done, done);
+  }
+
   /** Show the inline auth form. `stale` marks a rejected token vs a missing one. */
   function requireToken(stale) {
     if (es) { es.close(); es = null; }
@@ -193,7 +215,7 @@
       'auth',
       stale ? 'Access token rejected' : 'Access token required',
       stale
-        ? 'The stored token is no longer valid. Tokens rotate every time the server restarts.'
+        ? 'The stored token is no longer valid — the server was stopped, or a new token was issued. A pairing code is the quickest way back in.'
         : 'Paste the token printed by wmux web, or open the full URL that includes it.'
     );
     if (authInput) { authInput.value = ''; setTimeout(function () { authInput.focus(); }, 50); }
@@ -820,7 +842,7 @@
       data: function (bytes) { if (term) term.write(bytes); },
       exit: function () { setConn('ended', 'ended'); },
       open: function () { setConn('live', 'live'); },
-      error: function () { setConn('reconnect', 'reconnecting…'); }
+      error: function () { setConn('reconnect', 'reconnecting…'); diagnoseStreamError(); }
     });
   }
 
@@ -957,7 +979,10 @@
         if (tile.sessionId === currentSession) setConn('ended', 'ended');
       },
       open: function () { if (tile.sessionId === currentSession) setConn('live', 'live'); },
-      error: function () { if (tile.sessionId === currentSession) setConn('reconnect', 'reconnecting…'); }
+      error: function () {
+        if (tile.sessionId === currentSession) setConn('reconnect', 'reconnecting…');
+        diagnoseStreamError();
+      }
     });
     tiles.push(tile);
     return tile;

@@ -159,6 +159,44 @@ describe('WebTerminalServer', () => {
     expect(fresh.status).toBe(200);
   });
 
+  // #596 — the daemon carries the previous token across a restart so a phone
+  // that already paired keeps working. The seam is caller-supplied, never RPC
+  // params: the daemon reads it from its own 0600 state file.
+  it('reuses a caller-supplied token so a paired device survives a restart', async () => {
+    const a = (await startRO()).token as string;
+    await server.stop();
+
+    const b = (await server.start({ port: 0, host: '127.0.0.1', allowInput: false, token: a }))
+      .token as string;
+    expect(b).toBe(a);
+
+    // The token the phone already has still opens the door.
+    const carried = await fetch(`${base()}/api/config`, { headers: bearer(a) });
+    expect(carried.status).toBe(200);
+  });
+
+  it('mints a fresh token when the supplied one is empty (no accidental blank-token server)', async () => {
+    const info = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, token: '' });
+    expect(info.token).toBeTruthy();
+    expect((info.token as string).length).toBeGreaterThan(8);
+    // An empty Bearer must not authenticate against it.
+    const blank = await fetch(`${base()}/api/config`, { headers: bearer('') });
+    expect(blank.status).toBe(401);
+  });
+
+  it('still rotates the pairing code across a token-carrying restart', async () => {
+    const first = await startRO();
+    const token = first.token as string;
+    const codeA = first.pairCode as string;
+    await server.stop();
+
+    const second = await server.start({ port: 0, host: '127.0.0.1', allowInput: false, token });
+    // The token is carried, the single-use pairing code is NOT — handing back a
+    // burned code would be worse than asking for a fresh one.
+    expect(second.token).toBe(token);
+    expect(second.pairCode).not.toBe(codeA);
+  });
+
   it('teardown stops accepting connections and removes all bridge listeners', async () => {
     const info = await startRO();
     const token = info.token as string;

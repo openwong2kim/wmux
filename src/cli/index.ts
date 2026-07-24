@@ -64,8 +64,13 @@ WEB ACCESS (browser / PWA over Tailscale)
                                     access. Off by default (loopback only).
         [--host <addr>]             Explicit bind address (overrides --expose)
         [--allow-input]             Enable keyboard input (off by default)
+        [--allow-host <h1,h2>]      Extra Host headers to accept, for a reverse
+                                    proxy in front (e.g. a `tailscale serve`
+                                    MagicDNS name)
+        [--new-token]               Mint a fresh access token, revoking every
+                                    device already paired
         [--status]                  Show whether the web server is running
-        [--stop]                    Stop the web server
+        [--stop]                    Stop the web server and revoke its token
 
 NOTIFICATION COMMANDS
   notify <title> [body]             Show a notification in wmux

@@ -39,6 +39,15 @@ export interface WebTerminalStartOptions {
    * MagicDNS name, which the default allowlist would 403.
    */
   allowedHosts?: string[];
+  /**
+   * Reuse this bearer token instead of minting a fresh one (#596).
+   *
+   * Set ONLY by the daemon's own restore/start path, from the 0600
+   * `web-state.json` it wrote itself — never from `daemon.web.start` RPC
+   * params, so no pipe client can choose the token a browser will be handed.
+   * Absent (the default, and every unit test) → a fresh `randomUUID`.
+   */
+  token?: string;
 }
 
 export interface WebTerminalInfo {
@@ -133,15 +142,20 @@ export class WebTerminalServer {
 
   /**
    * Start (or restart) the web server. A running server is stopped first so a
-   * second `wmux web --allow-input` cleanly re-applies options; the web token
-   * rotates on every start.
+   * second `wmux web --allow-input` cleanly re-applies options.
+   *
+   * The web token is minted fresh unless the caller supplies one to reuse
+   * (`options.token`, #596) — see the field doc for why that seam is
+   * daemon-internal only. The pairing code always rotates: it is single-use
+   * and short-lived by design, so carrying one across a restart would only
+   * hand the phone an already-burned code.
    */
   async start(options: WebTerminalStartOptions): Promise<WebTerminalInfo> {
     if (this.server) {
       await this.stop();
     }
     this.loadAssets();
-    this.token = crypto.randomUUID();
+    this.token = options.token || crypto.randomUUID();
     this.opts = options;
     this.generatePairCode();
 
