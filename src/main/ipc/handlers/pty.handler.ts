@@ -12,6 +12,7 @@ import { writePidMap, removePidMapByPtyId } from '../../pty/pidMap';
 import { DaemonDataBatcher } from '../../pty/DaemonDataBatcher';
 import { sanitizePtyText } from '../../../shared/types';
 import { resolveSpawnEnv } from '../../pty/resolveSpawnEnv';
+import { withFreshWindowsPath } from '../../../shared/windowsPathEnv';
 import { getAccountStore } from '../../account/accountStore';
 import { resolveEnvPolicy, type SpawnKind } from '../../../shared/spawnKind';
 import { withheldCredentialNames } from '../../../shared/envFilter';
@@ -421,7 +422,11 @@ export function registerPTYHandlers(
             ),
           )
         : undefined;
-      const resolvedEnv = resolveSpawnEnv(globalThis.process.env, options?.env, identity, getShellUtf8Locale(), envPolicy, accountEnv);
+      // Refresh PATH from the live registry (win32) so a daemon-mode pane, whose
+      // env is assembled HERE in main, finds tools installed after main started —
+      // native-terminal freshness. No-op off win32 / on failure. (Recovery replays
+      // the persisted create-time env verbatim; refreshing that is a follow-up.)
+      const resolvedEnv = resolveSpawnEnv(withFreshWindowsPath(globalThis.process.env), options?.env, identity, getShellUtf8Locale(), envPolicy, accountEnv);
       // 관측 floor: gated pane에서 자격증명을 withheld하면 로컬 로그 1줄.
       if (envPolicy === 'gated') {
         const withheld = withheldCredentialNames(globalThis.process.env);
